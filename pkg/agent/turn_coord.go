@@ -202,6 +202,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			if finalContent == "" {
 				finalContent = ts.opts.DefaultResponse
 			}
+			finalContent = synthesizeFinalActionSummary(turnCtx, al, ts, exec, finalContent)
 			return pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 		case ControlToolLoop:
 			// Execute tools via Pipeline
@@ -229,6 +230,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				if exec.allResponsesHandled {
 					finalContent = ""
 				}
+				finalContent = synthesizeFinalActionSummary(turnCtx, al, ts, exec, finalContent)
 				return pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 			}
 		}
@@ -246,6 +248,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			finalContent = ts.opts.DefaultResponse
 		}
 	}
+	finalContent = synthesizeFinalActionSummary(turnCtx, al, ts, exec, finalContent)
 
 	// Check hard abort before finalizing (may have been set during tool execution)
 	if ts.hardAbortRequested() {

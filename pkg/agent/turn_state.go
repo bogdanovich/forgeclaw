@@ -119,6 +119,7 @@ type turnExecution struct {
 
 	// Turn output
 	finalContent string
+	actionLog    []TurnActionRecord
 	sawSteering  bool
 
 	// Iteration tracking

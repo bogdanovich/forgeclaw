@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -482,6 +483,11 @@ toolLoop:
 
 		if toolResult == nil {
 			toolResult = tools.ErrorResult("hook returned nil tool result")
+		}
+
+		toolSummary := strings.TrimSpace(toolResult.ForUser)
+		if toolSummary != "" {
+			exec.actionLog = appendTurnActionRecord(exec.actionLog, "tool_result", toolName, toolSummary, toolResult.IsError)
 		}
 
 		if len(toolResult.Media) > 0 && toolResult.ResponseHandled {
