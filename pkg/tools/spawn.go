@@ -43,14 +43,14 @@ func (t *SpawnTool) SetSpawner(spawner SubTurnSpawner) {
 			hasMaxTokens, hasTemperature bool,
 		) (*ToolResult, error) {
 			return spawner.SpawnSubTurn(ctx, SubTurnConfig{
-				AgentID:      strings.TrimSpace(agentID),
-				Model:        t.defaultModel,
-				Tools:        nil,
-				SystemPrompt: buildSpawnSystemPrompt(task, label),
-				MaxTokens:    maxTokens,
-				Temperature:  temperature,
-				Async:        true,
-				Critical:     true,
+				TargetAgentID: strings.TrimSpace(agentID),
+				Model:         t.defaultModel,
+				Tools:         nil,
+				SystemPrompt:  buildSpawnSystemPrompt(task, label),
+				MaxTokens:     maxTokens,
+				Temperature:   temperature,
+				Async:         true,
+				Critical:      true,
 			})
 		})
 	}

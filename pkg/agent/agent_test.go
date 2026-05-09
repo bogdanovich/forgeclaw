@@ -58,36 +58,45 @@ func (f *fakeMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 	return nil, nil
 }
 
-type recordingChannelManager struct {
+type outboundRecordingChannelManager struct {
 	dismissed []string
 }
 
-func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
+func (m *outboundRecordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
 	return nil, false
 }
 
-func (m *recordingChannelManager) GetEnabledChannels() []string {
+func (m *outboundRecordingChannelManager) GetEnabledChannels() []string {
 	return nil
 }
 
-func (m *recordingChannelManager) InvokeTypingStop(channel, chatID string) {}
+func (m *outboundRecordingChannelManager) InvokeTypingStop(channel, chatID string) {}
 
-func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
+func (m *outboundRecordingChannelManager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
 	return nil
 }
 
-func (m *recordingChannelManager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
+func (m *outboundRecordingChannelManager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
 	return nil
 }
 
-func (m *recordingChannelManager) SendPlaceholder(ctx context.Context, channel, chatID string) bool {
+func (m *outboundRecordingChannelManager) SendPlaceholder(ctx context.Context, channel, chatID string) bool {
 	return false
 }
 
-func (m *recordingChannelManager) DismissToolFeedback(
+func (m *outboundRecordingChannelManager) DismissToolFeedback(
 	ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext,
 ) {
 	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s", channel, chatID))
+}
+
+func (m *outboundRecordingChannelManager) DismissToolFeedbackForSession(
+	ctx context.Context,
+	channel, chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+) {
+	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s:%s", channel, chatID, sessionKey))
 }
 
 func newStartedTestChannelManager(
@@ -397,7 +406,7 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	_ = provider
 	_ = sessions
 
-	cm := &recordingChannelManager{}
+	cm := &outboundRecordingChannelManager{}
 	al.channelManager = cm
 
 	defaultAgent := al.registry.GetDefaultAgent()
