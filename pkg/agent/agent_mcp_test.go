@@ -225,7 +225,7 @@ func TestAgentHasDiscoverableMCPServers(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		allowed map[string]struct{}
+		allowed *config.AgentToolsConfig
 		want    bool
 	}{
 		{
@@ -234,29 +234,28 @@ func TestAgentHasDiscoverableMCPServers(t *testing.T) {
 		},
 		{
 			name:    "empty allowlist denies all servers",
-			allowed: map[string]struct{}{},
+			allowed: &config.AgentToolsConfig{Allow: []string{}},
 			want:    false,
 		},
 		{
-			name: "selected server discoverable",
-			allowed: map[string]struct{}{
-				"github": {},
-			},
-			want: true,
+			name:    "selected server discoverable",
+			allowed: &config.AgentToolsConfig{Allow: []string{"github"}},
+			want:    true,
 		},
 		{
-			name: "selected server opted out of discovery",
-			allowed: map[string]struct{}{
-				"filesystem": {},
-			},
-			want: false,
+			name:    "selected server opted out of discovery",
+			allowed: &config.AgentToolsConfig{Allow: []string{"filesystem"}},
+			want:    false,
 		},
 		{
-			name: "unknown allowlist server matches nothing",
-			allowed: map[string]struct{}{
-				"slack": {},
-			},
-			want: false,
+			name:    "unknown allowlist server matches nothing",
+			allowed: &config.AgentToolsConfig{Allow: []string{"slack"}},
+			want:    false,
+		},
+		{
+			name:    "deny-only policy can exclude discoverable server",
+			allowed: &config.AgentToolsConfig{Deny: []string{"github"}},
+			want:    false,
 		},
 	}
 

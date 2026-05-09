@@ -12,16 +12,27 @@ func agentAllowsTool(agent *AgentInstance, toolName string) bool {
 	if agent == nil {
 		return true
 	}
+	if !toolAllowedByPolicy(agent.ToolPolicy, toolName) {
+		return false
+	}
 	return toolAllowedByConfig(agent.ID, agent.ToolFilter, toolName)
 }
 
-func toolAllowedByConfig(agentID string, cfg *config.AgentToolsConfig, toolName string) bool {
+func toolAllowedByConfig(_ string, cfg *config.AgentToolsConfig, toolName string) bool {
+	if cfg == nil {
+		return true
+	}
+
+	return toolAllowedByPolicy(cfg, toolName)
+}
+
+func toolAllowedByPolicy(cfg *config.AgentToolsConfig, toolName string) bool {
 	if cfg == nil {
 		return true
 	}
 
 	allowed := true
-	if len(cfg.Allow) > 0 {
+	if cfg.Allow != nil {
 		allowed = matchesAnyGlob(toolName, cfg.Allow)
 	}
 	if !allowed {
@@ -30,6 +41,23 @@ func toolAllowedByConfig(agentID string, cfg *config.AgentToolsConfig, toolName 
 	if len(cfg.Deny) > 0 && matchesAnyGlob(toolName, cfg.Deny) {
 		return false
 	}
+	return true
+}
+
+func registerToolWithPolicies(
+	registry *tools.ToolRegistry,
+	tool tools.Tool,
+	policies ...*config.AgentToolsConfig,
+) bool {
+	if registry == nil || tool == nil {
+		return false
+	}
+	for _, policy := range policies {
+		if !toolAllowedByPolicy(policy, tool.Name()) {
+			return false
+		}
+	}
+	registry.Register(tool)
 	return true
 }
 
