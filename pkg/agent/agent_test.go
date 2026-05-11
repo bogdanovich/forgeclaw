@@ -24,7 +24,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
-	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -58,45 +57,46 @@ func (f *fakeMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 	return nil, nil
 }
 
-type outboundRecordingChannelManager struct {
-	dismissed []string
+type recordingChannelManager struct {
+	dismissed         []string
+	dismissedSessions []string
 }
 
-func (m *outboundRecordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
+func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
 	return nil, false
 }
 
-func (m *outboundRecordingChannelManager) GetEnabledChannels() []string {
+func (m *recordingChannelManager) GetEnabledChannels() []string {
 	return nil
 }
 
-func (m *outboundRecordingChannelManager) InvokeTypingStop(channel, chatID string) {}
+func (m *recordingChannelManager) InvokeTypingStop(channel, chatID string) {}
 
-func (m *outboundRecordingChannelManager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
+func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
 	return nil
 }
 
-func (m *outboundRecordingChannelManager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
+func (m *recordingChannelManager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
 	return nil
 }
 
-func (m *outboundRecordingChannelManager) SendPlaceholder(ctx context.Context, channel, chatID string) bool {
+func (m *recordingChannelManager) SendPlaceholder(ctx context.Context, channel, chatID string) bool {
 	return false
 }
 
-func (m *outboundRecordingChannelManager) DismissToolFeedback(
+func (m *recordingChannelManager) DismissToolFeedback(
 	ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext,
 ) {
 	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s", channel, chatID))
 }
 
-func (m *outboundRecordingChannelManager) DismissToolFeedbackForSession(
+func (m *recordingChannelManager) DismissToolFeedbackForSession(
 	ctx context.Context,
 	channel, chatID string,
 	outboundCtx *bus.InboundContext,
 	sessionKey string,
 ) {
-	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s:%s", channel, chatID, sessionKey))
+	m.dismissedSessions = append(m.dismissedSessions, fmt.Sprintf("%s:%s:%s", channel, chatID, sessionKey))
 }
 
 func newStartedTestChannelManager(
@@ -204,149 +204,6 @@ func newTestAgentLoop(
 	return al, cfg, msgBus, provider, func() { os.RemoveAll(tmpDir) }
 }
 
-func TestPublishResponseWithContextIfNeeded_PreservesSessionMetadata(t *testing.T) {
-	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
-	defer cleanup()
-
-	inboundCtx := &bus.InboundContext{
-		Channel:  "telegram",
-		ChatID:   "-100123",
-		ChatType: "group",
-		TopicID:  "6",
-		SenderID: "user-1",
-	}
-	al.publishResponseWithContextIfNeeded(
-		context.Background(),
-		"telegram",
-		"-100123",
-		"session-async-1",
-		"done",
-		inboundCtx,
-		finalResponseSuppressIfMessageToolSent,
-	)
-
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		if outbound.Channel != "telegram" || outbound.ChatID != "-100123" {
-			t.Fatalf("unexpected outbound target: channel=%q chat=%q", outbound.Channel, outbound.ChatID)
-		}
-		if outbound.Context.TopicID != "6" {
-			t.Fatalf("outbound topic_id = %q, want 6", outbound.Context.TopicID)
-		}
-		if outbound.AgentID != routing.DefaultAgentID {
-			t.Fatalf("outbound agent_id = %q, want %q", outbound.AgentID, routing.DefaultAgentID)
-		}
-		if outbound.SessionKey != "session-async-1" {
-			t.Fatalf("outbound session_key = %q, want session-async-1", outbound.SessionKey)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected outbound response")
-	}
-}
-
-func TestPublishResponseWithContextIfNeeded_AlwaysPublishesFinalAfterMessageTool(t *testing.T) {
-	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
-	defer cleanup()
-
-	agent := al.registry.GetDefaultAgent()
-	if agent == nil {
-		t.Fatal("expected default agent")
-	}
-	rawTool, ok := agent.Tools.Get("message")
-	if !ok {
-		mt := tools.NewMessageTool()
-		agent.Tools.Register(mt)
-		rawTool = mt
-		ok = true
-	}
-	mt, ok := rawTool.(*tools.MessageTool)
-	if !ok {
-		t.Fatalf("message tool type = %T", rawTool)
-	}
-	mt.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
-		return nil
-	})
-
-	ctx := tools.WithToolSessionContext(context.Background(), routing.DefaultAgentID, "session-msg-1", nil)
-	res := mt.Execute(ctx, map[string]any{
-		"content": "working on it",
-		"channel": "telegram",
-		"chat_id": "-100123",
-	})
-	if res == nil || res.IsError {
-		t.Fatalf("message tool execute failed: %+v", res)
-	}
-
-	al.publishResponseWithContextIfNeeded(
-		context.Background(),
-		"telegram",
-		"-100123",
-		"session-msg-1",
-		"final result",
-		&bus.InboundContext{Channel: "telegram", ChatID: "-100123", ChatType: "group"},
-		finalResponseAlwaysPublish,
-	)
-
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		if outbound.Content != "final result" {
-			t.Fatalf("outbound content = %q, want final result", outbound.Content)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected outbound response")
-	}
-}
-
-func TestPublishResponseWithContextIfNeeded_SuppressesWhenMessageToolAlreadySent(t *testing.T) {
-	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
-	defer cleanup()
-
-	agent := al.registry.GetDefaultAgent()
-	if agent == nil {
-		t.Fatal("expected default agent")
-	}
-	rawTool, ok := agent.Tools.Get("message")
-	if !ok {
-		mt := tools.NewMessageTool()
-		agent.Tools.Register(mt)
-		rawTool = mt
-		ok = true
-	}
-	mt, ok := rawTool.(*tools.MessageTool)
-	if !ok {
-		t.Fatalf("message tool type = %T", rawTool)
-	}
-	mt.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
-		return nil
-	})
-
-	ctx := tools.WithToolSessionContext(context.Background(), routing.DefaultAgentID, "session-msg-2", nil)
-	res := mt.Execute(ctx, map[string]any{
-		"content": "working on it",
-		"channel": "telegram",
-		"chat_id": "-100123",
-	})
-	if res == nil || res.IsError {
-		t.Fatalf("message tool execute failed: %+v", res)
-	}
-
-	al.publishResponseWithContextIfNeeded(
-		context.Background(),
-		"telegram",
-		"-100123",
-		"session-msg-2",
-		"final result",
-		&bus.InboundContext{Channel: "telegram", ChatID: "-100123", ChatType: "group"},
-		finalResponseSuppressIfMessageToolSent,
-	)
-
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		t.Fatalf("unexpected outbound response: %+v", outbound)
-	case <-time.After(150 * time.Millisecond):
-	}
-}
-
 func TestNewAgentLoop_RegistersWebSearchTool(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
@@ -406,7 +263,7 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	_ = provider
 	_ = sessions
 
-	cm := &outboundRecordingChannelManager{}
+	cm := &recordingChannelManager{}
 	al.channelManager = cm
 
 	defaultAgent := al.registry.GetDefaultAgent()
@@ -414,7 +271,11 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 		t.Fatal("expected default agent")
 	}
 	mt := tools.NewMessageTool()
-	mt.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
+	mt.SetSendCallback(func(
+		ctx context.Context,
+		channel, chatID, content, replyToMessageID string,
+		mediaParts []bus.MediaPart,
+	) error {
 		return nil
 	})
 	defaultAgent.Tools.Register(mt)
@@ -432,8 +293,8 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	}
 	al.PublishResponseIfNeeded(context.Background(), "telegram", "-100123", "session-1", "final reply")
 
-	if got := cm.dismissed; len(got) != 1 || got[0] != "telegram:-100123" {
-		t.Fatalf("dismissed = %v, want [telegram:-100123]", got)
+	if got := cm.dismissedSessions; len(got) != 1 || got[0] != "telegram:-100123:session-1" {
+		t.Fatalf("dismissedSessions = %v, want [telegram:-100123:session-1]", got)
 	}
 }
 
@@ -901,276 +762,6 @@ func TestHandleCommand_UseCommandRejectsUnknownSkill(t *testing.T) {
 	}
 	if !strings.Contains(reply, "Unknown skill: missing") {
 		t.Fatalf("reply = %q, want unknown skill error", reply)
-	}
-}
-
-func TestProcessMessage_ResetCommandStartsFreshSession(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-	}
-	msgBus := bus.NewMessageBus()
-	provider := &recordingProvider{}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	initialMsg := testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "first message",
-	})
-	if _, err := al.processMessage(context.Background(), initialMsg); err != nil {
-		t.Fatalf("initial processMessage() error = %v", err)
-	}
-
-	route, _, err := al.resolveMessageRoute(initialMsg)
-	if err != nil {
-		t.Fatalf("resolveMessageRoute() error = %v", err)
-	}
-	allocation := al.allocateRouteSession(route, initialMsg)
-	routeSessionKey := allocation.SessionKey
-	defaultAgent := al.GetRegistry().GetDefaultAgent()
-	originalHistory := defaultAgent.Sessions.GetHistory(routeSessionKey)
-	if len(originalHistory) == 0 {
-		t.Fatal("expected initial history in routed session")
-	}
-
-	resetReply, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "/reset",
-	}))
-	if err != nil {
-		t.Fatalf("reset processMessage() error = %v", err)
-	}
-	if !strings.Contains(resetReply, "Started a fresh session") {
-		t.Fatalf("reset reply = %q, want fresh-session confirmation", resetReply)
-	}
-
-	overrideSessionKey := al.getSessionOverride(routeSessionKey)
-	if overrideSessionKey == "" || overrideSessionKey == routeSessionKey {
-		t.Fatalf("override session key = %q, want distinct session key", overrideSessionKey)
-	}
-
-	if _, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "second message",
-	})); err != nil {
-		t.Fatalf("second processMessage() error = %v", err)
-	}
-
-	gotOriginalHistory := defaultAgent.Sessions.GetHistory(routeSessionKey)
-	if len(gotOriginalHistory) != len(originalHistory) {
-		t.Fatalf("original history len = %d, want preserved len %d", len(gotOriginalHistory), len(originalHistory))
-	}
-
-	resetHistory := defaultAgent.Sessions.GetHistory(overrideSessionKey)
-	if len(resetHistory) == 0 {
-		t.Fatal("expected fresh session history after /reset")
-	}
-}
-
-func TestProcessMessage_ResetClearRestoresDefaultSession(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-	}
-	msgBus := bus.NewMessageBus()
-	provider := &recordingProvider{}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	initialMsg := testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "before reset",
-	})
-	if _, err := al.processMessage(context.Background(), initialMsg); err != nil {
-		t.Fatalf("initial processMessage() error = %v", err)
-	}
-
-	route, _, err := al.resolveMessageRoute(initialMsg)
-	if err != nil {
-		t.Fatalf("resolveMessageRoute() error = %v", err)
-	}
-	allocation := al.allocateRouteSession(route, initialMsg)
-	routeSessionKey := allocation.SessionKey
-	defaultAgent := al.GetRegistry().GetDefaultAgent()
-	originalHistoryLen := len(defaultAgent.Sessions.GetHistory(routeSessionKey))
-
-	if _, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "/reset",
-	})); err != nil {
-		t.Fatalf("reset processMessage() error = %v", err)
-	}
-	overrideSessionKey := al.getSessionOverride(routeSessionKey)
-	if overrideSessionKey == "" {
-		t.Fatal("expected override session key after /reset")
-	}
-
-	if _, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "during reset",
-	})); err != nil {
-		t.Fatalf("during-reset processMessage() error = %v", err)
-	}
-	overrideHistoryLen := len(defaultAgent.Sessions.GetHistory(overrideSessionKey))
-	if overrideHistoryLen == 0 {
-		t.Fatal("expected override history after reset message")
-	}
-
-	clearReply, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "/reset clear",
-	}))
-	if err != nil {
-		t.Fatalf("reset clear processMessage() error = %v", err)
-	}
-	if !strings.Contains(clearReply, "Soft reset cleared") {
-		t.Fatalf("reset clear reply = %q, want clear confirmation", clearReply)
-	}
-	if got := al.getSessionOverride(routeSessionKey); got != "" {
-		t.Fatalf("override session key after clear = %q, want empty", got)
-	}
-
-	if _, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "after clear",
-	})); err != nil {
-		t.Fatalf("after-clear processMessage() error = %v", err)
-	}
-
-	gotOriginalHistoryLen := len(defaultAgent.Sessions.GetHistory(routeSessionKey))
-	if gotOriginalHistoryLen <= originalHistoryLen {
-		t.Fatalf("original history len = %d, want > %d after reset clear", gotOriginalHistoryLen, originalHistoryLen)
-	}
-	gotOverrideHistoryLen := len(defaultAgent.Sessions.GetHistory(overrideSessionKey))
-	if gotOverrideHistoryLen != overrideHistoryLen {
-		t.Fatalf("override history len = %d, want preserved len %d after reset clear", gotOverrideHistoryLen, overrideHistoryLen)
-	}
-}
-
-func TestProcessMessage_ToolFeedbackCommandPersistsOverride(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-				ToolFeedback: config.ToolFeedbackConfig{
-					Enabled: true,
-					Style:   utils.ToolFeedbackStyleWorkingSummary,
-				},
-			},
-		},
-	}
-	msgBus := bus.NewMessageBus()
-	provider := &recordingProvider{}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	msg := testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "/toolfeedback off",
-	})
-	reply, err := al.processMessage(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("toolfeedback off processMessage() error = %v", err)
-	}
-	if !strings.Contains(reply, "Tool feedback is now off") {
-		t.Fatalf("toolfeedback off reply = %q, want off confirmation", reply)
-	}
-
-	route, _, err := al.resolveMessageRoute(msg)
-	if err != nil {
-		t.Fatalf("resolveMessageRoute() error = %v", err)
-	}
-	allocation := al.allocateRouteSession(route, msg)
-	if got, ok := al.getToolFeedbackOverride(allocation.SessionKey); !ok || got {
-		t.Fatalf("tool feedback override = (%v, %v), want (false, true)", got, ok)
-	}
-}
-
-func TestProcessMessage_ToolFeedbackCommandDefaultClearsOverride(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-				ToolFeedback: config.ToolFeedbackConfig{
-					Enabled: true,
-					Style:   utils.ToolFeedbackStyleWorkingSummary,
-				},
-			},
-		},
-	}
-	msgBus := bus.NewMessageBus()
-	provider := &recordingProvider{}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	offMsg := testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "/toolfeedback off",
-	})
-	if _, err := al.processMessage(context.Background(), offMsg); err != nil {
-		t.Fatalf("toolfeedback off processMessage() error = %v", err)
-	}
-
-	defaultReply, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "telegram:123",
-		ChatID:   "chat-1",
-		Content:  "/toolfeedback default",
-	}))
-	if err != nil {
-		t.Fatalf("toolfeedback default processMessage() error = %v", err)
-	}
-	if !strings.Contains(defaultReply, "Tool feedback is now on") ||
-		!strings.Contains(defaultReply, "config default") {
-		t.Fatalf("toolfeedback default reply = %q, want config default confirmation", defaultReply)
-	}
-
-	route, _, err := al.resolveMessageRoute(offMsg)
-	if err != nil {
-		t.Fatalf("resolveMessageRoute() error = %v", err)
-	}
-	allocation := al.allocateRouteSession(route, offMsg)
-	if got, ok := al.getToolFeedbackOverride(allocation.SessionKey); ok {
-		t.Fatalf("tool feedback override after default = (%v, %v), want (_, false)", got, ok)
 	}
 }
 
@@ -1654,291 +1245,6 @@ func TestProcessMessage_HandledToolProcessesQueuedSteeringBeforeReturning(t *tes
 	if len(telegramChannel.sentMedia) != 1 {
 		t.Fatalf("expected exactly 1 synchronously sent media message, got %d", len(telegramChannel.sentMedia))
 	}
-}
-
-type activitySummaryWithSteeringProvider struct {
-	calls int
-}
-
-func (m *activitySummaryWithSteeringProvider) Chat(
-	ctx context.Context,
-	messages []providers.Message,
-	tools []providers.ToolDefinition,
-	model string,
-	opts map[string]any,
-) (*providers.LLMResponse, error) {
-	m.calls++
-	if len(messages) > 0 && tools == nil {
-		last := messages[len(messages)-1]
-		if last.Role == "user" && strings.Contains(last.Content, "already-completed turn") {
-			return &providers.LLMResponse{
-				Content: "Записал.\n\nДобавил активности:\n- yoga — 30 мин\n- squats — 20 повторений",
-			}, nil
-		}
-	}
-	if m.calls == 1 {
-		return &providers.LLMResponse{
-			Content: "Записал yoga — 30 мин.",
-			ToolCalls: []providers.ToolCall{{
-				ID:        "call_activity_steering",
-				Type:      "function",
-				Name:      "activity_with_steering_tool",
-				Arguments: map[string]any{},
-			}},
-		}, nil
-	}
-
-	for _, msg := range messages {
-		if msg.Role == "user" && msg.Content == "и еще 20 приседаний" {
-			return &providers.LLMResponse{Content: "Записал squats — 20 повторений."}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("provider did not receive steering or synthesis prompt")
-}
-
-func (m *activitySummaryWithSteeringProvider) GetDefaultModel() string {
-	return "activity-summary-with-steering-model"
-}
-
-type activityWithSteeringTool struct {
-	loop *AgentLoop
-}
-
-func (m *activityWithSteeringTool) Name() string { return "activity_with_steering_tool" }
-func (m *activityWithSteeringTool) Description() string {
-	return "Queues a follow-up steering message after recording an activity"
-}
-
-func (m *activityWithSteeringTool) Parameters() map[string]any {
-	return map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-	}
-}
-
-func (m *activityWithSteeringTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
-	if err := m.loop.Steer(providers.Message{Role: "user", Content: "и еще 20 приседаний"}); err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
-	}
-	return &tools.ToolResult{
-		ForLLM:  "activity recorded",
-		ForUser: "Записал yoga — 30 мин.",
-	}
-}
-
-func TestProcessMessage_FinalActionSummarySynthesizesAcrossSteering(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:           tmpDir,
-				ModelName:           "test-model",
-				MaxTokens:           4096,
-				MaxToolIterations:   10,
-				FinalTurnRenderMode: "llm",
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &activitySummaryWithSteeringProvider{}
-	al := NewAgentLoop(cfg, msgBus, provider)
-	al.RegisterTool(&activityWithSteeringTool{loop: al})
-
-	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		ChatID:   "chat1",
-		SenderID: "user1",
-		Content:  "я позанимался йогой 30 минут",
-	}))
-	if err != nil {
-		t.Fatalf("processMessage() error = %v", err)
-	}
-
-	want := "Записал.\n\nДобавил активности:\n- yoga — 30 мин\n- squats — 20 повторений"
-	if response != want {
-		t.Fatalf("response = %q, want %q", response, want)
-	}
-	if provider.calls != 3 {
-		t.Fatalf("expected 3 LLM calls including final synthesis, got %d", provider.calls)
-	}
-}
-
-type daySummaryAcrossSteeringProvider struct {
-	calls int
-}
-
-func (p *daySummaryAcrossSteeringProvider) Chat(
-	ctx context.Context,
-	messages []providers.Message,
-	tools []providers.ToolDefinition,
-	model string,
-	opts map[string]any,
-) (*providers.LLMResponse, error) {
-	p.calls++
-	if len(messages) > 0 && tools == nil {
-		last := messages[len(messages)-1]
-		if last.Role == "user" && strings.Contains(last.Content, "already-completed turn") {
-			full := flattenMessageContents(messages)
-			if !strings.Contains(full, "today total: 428 kcal") ||
-				!strings.Contains(full, "yesterday total: 1561 kcal") ||
-				!strings.Contains(full, "day-before total: 1455 kcal") {
-				return nil, fmt.Errorf("final render pass missing accumulated tool results")
-			}
-			return &providers.LLMResponse{
-				Content: "Коротко по итогам:\n- сегодня — 428 ккал\n- вчера — 1561 ккал\n- позавчера — 1455 ккал",
-			}, nil
-		}
-	}
-
-	switch p.calls {
-	case 1:
-		return &providers.LLMResponse{
-			Content: "",
-			ToolCalls: []providers.ToolCall{{
-				ID:   "call_day_today",
-				Type: "function",
-				Name: "day_summary_with_steering_tool",
-				Arguments: map[string]any{
-					"day": "today",
-				},
-			}},
-		}, nil
-	case 2:
-		if !messageExists(messages, "А за вчера?") {
-			return nil, fmt.Errorf("provider did not receive yesterday steering")
-		}
-		return &providers.LLMResponse{
-			Content: "",
-			ToolCalls: []providers.ToolCall{{
-				ID:   "call_day_yesterday",
-				Type: "function",
-				Name: "day_summary_with_steering_tool",
-				Arguments: map[string]any{
-					"day": "yesterday",
-				},
-			}},
-		}, nil
-	case 3:
-		if !messageExists(messages, "И за позавчера?") {
-			return nil, fmt.Errorf("provider did not receive day-before steering")
-		}
-		return &providers.LLMResponse{
-			Content: "",
-			ToolCalls: []providers.ToolCall{{
-				ID:   "call_day_before",
-				Type: "function",
-				Name: "day_summary_with_steering_tool",
-				Arguments: map[string]any{
-					"day": "day_before",
-				},
-			}},
-		}, nil
-	default:
-		return nil, fmt.Errorf("unexpected provider call count %d", p.calls)
-	}
-}
-
-func (p *daySummaryAcrossSteeringProvider) GetDefaultModel() string {
-	return "day-summary-across-steering-model"
-}
-
-type daySummaryWithSteeringTool struct {
-	loop *AgentLoop
-}
-
-func (t *daySummaryWithSteeringTool) Name() string { return "day_summary_with_steering_tool" }
-func (t *daySummaryWithSteeringTool) Description() string {
-	return "Fetches one day summary and queues the next follow-up question"
-}
-
-func (t *daySummaryWithSteeringTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"day": map[string]any{"type": "string"},
-		},
-		"required": []string{"day"},
-	}
-}
-
-func (t *daySummaryWithSteeringTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
-	day, _ := args["day"].(string)
-	switch day {
-	case "today":
-		if err := t.loop.Steer(providers.Message{Role: "user", Content: "А за вчера?"}); err != nil {
-			return tools.ErrorResult(err.Error()).WithError(err)
-		}
-		return &tools.ToolResult{ForLLM: "today total: 428 kcal"}
-	case "yesterday":
-		if err := t.loop.Steer(providers.Message{Role: "user", Content: "И за позавчера?"}); err != nil {
-			return tools.ErrorResult(err.Error()).WithError(err)
-		}
-		return &tools.ToolResult{ForLLM: "yesterday total: 1561 kcal"}
-	case "day_before":
-		return &tools.ToolResult{ForLLM: "day-before total: 1455 kcal"}
-	default:
-		return tools.ErrorResult("unknown day")
-	}
-}
-
-func TestProcessMessage_FinalActionSummaryRendersAcrossInformationalSteering(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:           tmpDir,
-				ModelName:           "test-model",
-				MaxTokens:           4096,
-				MaxToolIterations:   10,
-				FinalTurnRenderMode: "llm",
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &daySummaryAcrossSteeringProvider{}
-	al := NewAgentLoop(cfg, msgBus, provider)
-	al.RegisterTool(&daySummaryWithSteeringTool{loop: al})
-
-	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		ChatID:   "chat1",
-		SenderID: "user1",
-		Content:  "А сколько я за сегодня съел?",
-	}))
-	if err != nil {
-		t.Fatalf("processMessage() error = %v", err)
-	}
-
-	want := "Коротко по итогам:\n- сегодня — 428 ккал\n- вчера — 1561 ккал\n- позавчера — 1455 ккал"
-	if response != want {
-		t.Fatalf("response = %q, want %q", response, want)
-	}
-	if provider.calls != 4 {
-		t.Fatalf("expected 4 LLM calls including final render, got %d", provider.calls)
-	}
-}
-
-func messageExists(messages []providers.Message, want string) bool {
-	for _, msg := range messages {
-		if msg.Role == "user" && msg.Content == want {
-			return true
-		}
-	}
-	return false
-}
-
-func flattenMessageContents(messages []providers.Message) string {
-	parts := make([]string, 0, len(messages))
-	for _, msg := range messages {
-		if strings.TrimSpace(msg.Content) == "" {
-			continue
-		}
-		parts = append(parts, msg.Content)
-	}
-	return strings.Join(parts, "\n")
 }
 
 func TestRunAgentLoop_ResponseHandledToolPublishesForUserWhenSendResponseDisabled(t *testing.T) {
@@ -2499,40 +1805,6 @@ func (m *messageToolProvider) GetDefaultModel() string {
 	return "message-tool-model"
 }
 
-type explicitChatMessageToolProvider struct {
-	calls int
-}
-
-func (m *explicitChatMessageToolProvider) Chat(
-	ctx context.Context,
-	messages []providers.Message,
-	tools []providers.ToolDefinition,
-	model string,
-	opts map[string]any,
-) (*providers.LLMResponse, error) {
-	m.calls++
-	if m.calls == 1 {
-		return &providers.LLMResponse{
-			Content: "",
-			ToolCalls: []providers.ToolCall{{
-				ID:   "call_message",
-				Type: "function",
-				Name: "message",
-				Arguments: map[string]any{
-					"channel": "telegram",
-					"chat_id": "-1001234567890",
-					"content": "topic tool message",
-				},
-			}},
-		}, nil
-	}
-	return &providers.LLMResponse{}, nil
-}
-
-func (m *explicitChatMessageToolProvider) GetDefaultModel() string {
-	return "message-tool-model"
-}
-
 type reasoningVisibleToolProvider struct {
 	filePath string
 	calls    int
@@ -2863,58 +2135,6 @@ func TestToolFeedbackArgsPreview_UsesJSONAndTruncates(t *testing.T) {
 	want := "{\n  \"limit\": 42,\n  \"path\": \"README.md\"\n}"
 	if got != want {
 		t.Fatalf("toolFeedbackArgsPreview() = %q, want %q", got, want)
-	}
-}
-
-func TestShouldPublishToolFeedback_DisablesSubagentFeedback(t *testing.T) {
-	subagents := false
-	cfg := config.DefaultConfig()
-	cfg.Agents.Defaults.ToolFeedback = config.ToolFeedbackConfig{
-		Enabled:   true,
-		Subagents: &subagents,
-	}
-	al := &AgentLoop{cfg: cfg, state: state.NewManager(t.TempDir())}
-
-	if shouldPublishToolFeedback(al, &turnState{
-		channel:    "telegram",
-		sessionKey: "subturn-1",
-	}) {
-		t.Fatal("shouldPublishToolFeedback() = true for disabled subagent feedback, want false")
-	}
-
-	if !shouldPublishToolFeedback(al, &turnState{
-		channel:    "telegram",
-		sessionKey: "chat-1",
-	}) {
-		t.Fatal("shouldPublishToolFeedback() = false for main turn, want true")
-	}
-}
-
-func TestShouldPublishToolFeedback_ConversationOverrideWins(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Agents.Defaults.ToolFeedback.Enabled = false
-	al := &AgentLoop{cfg: cfg, state: state.NewManager(t.TempDir())}
-
-	ts := &turnState{
-		channel:    "telegram",
-		sessionKey: "subturn-1",
-		opts: processOptions{
-			Dispatch: DispatchRequest{RouteSessionKey: "route-1"},
-		},
-	}
-
-	if err := al.setToolFeedbackOverride("route-1", false); err != nil {
-		t.Fatalf("setToolFeedbackOverride(false): %v", err)
-	}
-	if shouldPublishToolFeedback(al, ts) {
-		t.Fatal("shouldPublishToolFeedback() = true with override off, want false")
-	}
-
-	if err := al.setToolFeedbackOverride("route-1", true); err != nil {
-		t.Fatalf("setToolFeedbackOverride(true): %v", err)
-	}
-	if !shouldPublishToolFeedback(al, ts) {
-		t.Fatal("shouldPublishToolFeedback() = false with override on, want true even when config default is off")
 	}
 }
 
@@ -3379,115 +2599,6 @@ func TestProcessMessage_UsesRouteSessionKey(t *testing.T) {
 	}
 	if history[0].Role != "user" || history[0].Content != "hello" {
 		t.Fatalf("unexpected first message in session: %+v", history[0])
-	}
-}
-
-func TestProcessMessageSync_PreservesInboundTopicOnFinalResponse(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &simpleMockProvider{response: "topic response"}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	msg := testInboundMessage(bus.InboundMessage{
-		Context: bus.InboundContext{
-			Channel:   "telegram",
-			ChatID:    "-1001234567890",
-			ChatType:  "group",
-			TopicID:   "42",
-			SenderID:  "user1",
-			MessageID: "123",
-		},
-		Content: "hello topic",
-	})
-
-	al.processMessageSync(context.Background(), msg)
-
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		if outbound.Content != "topic response" {
-			t.Fatalf("outbound content = %q, want topic response", outbound.Content)
-		}
-		if outbound.Channel != "telegram" || outbound.ChatID != "-1001234567890" {
-			t.Fatalf("outbound route = %s/%s, want telegram/-1001234567890", outbound.Channel, outbound.ChatID)
-		}
-		if outbound.Context.TopicID != "42" {
-			t.Fatalf("outbound topic = %q, want 42; context=%+v", outbound.Context.TopicID, outbound.Context)
-		}
-		if outbound.Context.MessageID != "123" {
-			t.Fatalf("outbound context message ID = %q, want 123", outbound.Context.MessageID)
-		}
-	case <-time.After(responseTimeout):
-		t.Fatal("timed out waiting for outbound response")
-	}
-}
-
-func TestProcessSystemMessage_PreservesOriginTopicOnFinalResponse(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &simpleMockProvider{response: "follow-up response"}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	msg := testInboundMessage(bus.InboundMessage{
-		Context: bus.InboundContext{
-			Channel:  "system",
-			ChatID:   "telegram:-1001234567890",
-			ChatType: "direct",
-			TopicID:  "42",
-			SenderID: "async:spawn",
-			Raw: map[string]string{
-				systemFollowUpOriginChannelKey:  "telegram",
-				systemFollowUpOriginChatIDKey:   "-1001234567890",
-				systemFollowUpOriginChatTypeKey: "group",
-				systemFollowUpOriginTopicIDKey:  "42",
-			},
-		},
-		Content: "Task 'deep-research' completed.\n\nResult:\nreport URL",
-	})
-
-	if _, err := al.processSystemMessage(context.Background(), msg); err != nil {
-		t.Fatalf("processSystemMessage() error = %v", err)
-	}
-
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		if outbound.Content != "follow-up response" {
-			t.Fatalf("outbound content = %q, want follow-up response", outbound.Content)
-		}
-		if outbound.Channel != "telegram" || outbound.ChatID != "-1001234567890" {
-			t.Fatalf("outbound route = %s/%s, want telegram/-1001234567890", outbound.Channel, outbound.ChatID)
-		}
-		if outbound.Context.ChatType != "group" {
-			t.Fatalf("outbound chat type = %q, want group; context=%+v", outbound.Context.ChatType, outbound.Context)
-		}
-		if outbound.Context.TopicID != "42" {
-			t.Fatalf("outbound topic = %q, want 42; context=%+v", outbound.Context.TopicID, outbound.Context)
-		}
-	case <-time.After(responseTimeout):
-		t.Fatal("timed out waiting for outbound response")
 	}
 }
 
@@ -4946,7 +4057,6 @@ func TestProcessHeartbeat_DoesNotPublishToolFeedback(t *testing.T) {
 				ToolFeedback: config.ToolFeedbackConfig{
 					Enabled:       true,
 					MaxArgsLength: 300,
-					Style:         utils.ToolFeedbackStyleWorkingSummary,
 				},
 			},
 		},
@@ -4976,58 +4086,6 @@ func TestProcessHeartbeat_DoesNotPublishToolFeedback(t *testing.T) {
 	}
 }
 
-func TestProcessScheduledWithChannel_DoesNotPublishToolFeedback(t *testing.T) {
-	tmpDir := t.TempDir()
-	heartbeatFile := filepath.Join(tmpDir, "scheduled-task.txt")
-	if err := os.WriteFile(heartbeatFile, []byte("scheduled task"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-				ToolFeedback: config.ToolFeedbackConfig{
-					Enabled:       true,
-					MaxArgsLength: 300,
-				},
-			},
-		},
-		Tools: config.ToolsConfig{
-			ReadFile: config.ReadFileToolConfig{
-				Enabled: true,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &toolFeedbackProvider{filePath: heartbeatFile}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	response, err := al.ProcessScheduledWithChannel(
-		context.Background(),
-		"run scheduled task",
-		"agent:cron-test",
-		"telegram",
-		"chat-1",
-	)
-	if err != nil {
-		t.Fatalf("ProcessScheduledWithChannel() error = %v", err)
-	}
-	if response != "HEARTBEAT_OK" {
-		t.Fatalf("ProcessScheduledWithChannel() response = %q, want %q", response, "HEARTBEAT_OK")
-	}
-
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		t.Fatalf("expected no outbound tool feedback during scheduled turn, got %+v", outbound)
-	case <-time.After(200 * time.Millisecond):
-	}
-}
-
 func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	heartbeatFile := filepath.Join(tmpDir, "tool-feedback.txt")
@@ -5045,7 +4103,6 @@ func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 				ToolFeedback: config.ToolFeedbackConfig{
 					Enabled:       true,
 					MaxArgsLength: 300,
-					Style:         utils.ToolFeedbackStyleWorkingSummary,
 				},
 			},
 		},
@@ -5075,6 +4132,7 @@ func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
+		escapedHeartbeatFile := strings.ReplaceAll(heartbeatFile, `\`, `\\`)
 		if outbound.Channel != "telegram" {
 			t.Fatalf("tool feedback channel = %q, want %q", outbound.Channel, "telegram")
 		}
@@ -5084,13 +4142,20 @@ func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 		if outbound.Context.Channel != "telegram" || outbound.Context.ChatID != "chat-1" {
 			t.Fatalf("unexpected tool feedback context: %+v", outbound.Context)
 		}
-		if !strings.Contains(outbound.Content, "tool: `read_file`") {
+		if !strings.Contains(outbound.Content, "`read_file`") {
 			t.Fatalf("tool feedback content = %q, want read_file summary", outbound.Content)
 		}
-		if strings.Contains(outbound.Content, utils.ToolFeedbackContinuationHint) ||
-			strings.Contains(outbound.Content, "check tool feedback") ||
-			strings.Contains(outbound.Content, "\"path\":") {
-			t.Fatalf("tool feedback content = %q, should only include compact tool names", outbound.Content)
+		if !strings.Contains(outbound.Content, utils.ToolFeedbackContinuationHint) {
+			t.Fatalf("tool feedback content = %q, want continuation hint fallback", outbound.Content)
+		}
+		if !strings.Contains(outbound.Content, "check tool feedback") {
+			t.Fatalf("tool feedback content = %q, want current user intent fallback", outbound.Content)
+		}
+		if !strings.Contains(outbound.Content, "\"path\":") {
+			t.Fatalf("tool feedback content = %q, want serialized tool arguments", outbound.Content)
+		}
+		if !strings.Contains(outbound.Content, escapedHeartbeatFile) {
+			t.Fatalf("tool feedback content = %q, want tool argument value", outbound.Content)
 		}
 		if strings.Contains(outbound.Content, "Previous turn explanation") {
 			t.Fatalf("tool feedback content = %q, want no previous assistant fallback", outbound.Content)
@@ -5302,7 +4367,6 @@ func TestProcessMessage_DoesNotLeakReasoningContentInToolFeedback(t *testing.T) 
 				ToolFeedback: config.ToolFeedbackConfig{
 					Enabled:       true,
 					MaxArgsLength: 300,
-					Style:         utils.ToolFeedbackStyleWorkingSummary,
 				},
 			},
 		},
@@ -5333,14 +4397,20 @@ func TestProcessMessage_DoesNotLeakReasoningContentInToolFeedback(t *testing.T) 
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		escapedHeartbeatFile := strings.ReplaceAll(heartbeatFile, `\`, `\\`)
-		if !strings.Contains(outbound.Content, "tool: `read_file`") {
+		if !strings.Contains(outbound.Content, "`read_file`") {
 			t.Fatalf("tool feedback content = %q, want read_file summary", outbound.Content)
 		}
-		if strings.Contains(outbound.Content, utils.ToolFeedbackContinuationHint) ||
-			strings.Contains(outbound.Content, "check reasoning fallback") ||
-			strings.Contains(outbound.Content, "\"path\":") ||
-			strings.Contains(outbound.Content, escapedHeartbeatFile) {
-			t.Fatalf("tool feedback content = %q, should only include compact tool names", outbound.Content)
+		if !strings.Contains(outbound.Content, utils.ToolFeedbackContinuationHint) {
+			t.Fatalf("tool feedback content = %q, want continuation hint fallback", outbound.Content)
+		}
+		if !strings.Contains(outbound.Content, "check reasoning fallback") {
+			t.Fatalf("tool feedback content = %q, want current user intent fallback", outbound.Content)
+		}
+		if !strings.Contains(outbound.Content, "\"path\":") {
+			t.Fatalf("tool feedback content = %q, want serialized tool arguments", outbound.Content)
+		}
+		if !strings.Contains(outbound.Content, escapedHeartbeatFile) {
+			t.Fatalf("tool feedback content = %q, want tool argument value", outbound.Content)
 		}
 		if strings.Contains(outbound.Content, "Read README.md first") {
 			t.Fatalf("tool feedback content = %q, should not leak hidden reasoning", outbound.Content)
@@ -5452,52 +4522,6 @@ func TestProcessMessage_MessageToolPublishesOutboundWithTurnMetadata(t *testing.
 		}
 		if outbound.Context.Channel != "telegram" || outbound.Context.ChatID != "chat-1" {
 			t.Fatalf("unexpected message tool outbound context: %+v", outbound.Context)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected message tool outbound")
-	}
-}
-
-func TestProcessMessage_MessageToolInheritsTelegramTopicWithExplicitChatID(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Agents.Defaults.Workspace = t.TempDir()
-	cfg.Agents.Defaults.ModelName = "test-model"
-	cfg.Agents.Defaults.MaxTokens = 4096
-	cfg.Agents.Defaults.MaxToolIterations = 10
-	cfg.Session.Dimensions = []string{"chat"}
-
-	msgBus := bus.NewMessageBus()
-	provider := &explicitChatMessageToolProvider{}
-	al := NewAgentLoop(cfg, msgBus, provider)
-
-	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Context: bus.InboundContext{
-			Channel:   "telegram",
-			ChatID:    "-1001234567890",
-			ChatType:  "group",
-			TopicID:   "6",
-			SenderID:  "user-1",
-			MessageID: "475",
-		},
-		Content: "send an interim message",
-	}))
-	if err != nil {
-		t.Fatalf("processMessage() error = %v", err)
-	}
-	if response == "" {
-		t.Fatal("expected processMessage() to return a final loop response")
-	}
-
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		if outbound.Content != "topic tool message" {
-			t.Fatalf("outbound content = %q, want topic tool message", outbound.Content)
-		}
-		if outbound.Context.Channel != "telegram" || outbound.Context.ChatID != "-1001234567890" {
-			t.Fatalf("unexpected message tool outbound context: %+v", outbound.Context)
-		}
-		if outbound.Context.TopicID != "6" {
-			t.Fatalf("outbound topic = %q, want 6; context=%+v scope=%+v", outbound.Context.TopicID, outbound.Context, outbound.Scope)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected message tool outbound")

@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
@@ -131,7 +130,7 @@ func registerSharedTools(
 			if err != nil {
 				logger.ErrorCF("agent", "Failed to create web search tool", map[string]any{"error": err.Error()})
 			} else if searchTool != nil {
-				registerToolIfAllowed(agent, searchTool)
+				agent.Tools.Register(searchTool)
 			}
 		}
 		if cfg.Tools.IsToolEnabled("web_fetch") {
@@ -144,30 +143,34 @@ func registerSharedTools(
 			if err != nil {
 				logger.ErrorCF("agent", "Failed to create web fetch tool", map[string]any{"error": err.Error()})
 			} else {
-				registerToolIfAllowed(agent, fetchTool)
+				agent.Tools.Register(fetchTool)
 			}
 		}
 
 		// Hardware tools (I2C, SPI) - Linux only, returns error on other platforms
 		if cfg.Tools.IsToolEnabled("i2c") {
-			registerToolIfAllowed(agent, tools.NewI2CTool())
+			agent.Tools.Register(tools.NewI2CTool())
 		}
 		if cfg.Tools.IsToolEnabled("spi") {
-			registerToolIfAllowed(agent, tools.NewSPITool())
+			agent.Tools.Register(tools.NewSPITool())
 		}
 		if cfg.Tools.IsToolEnabled("serial") {
-			registerToolIfAllowed(agent, tools.NewSerialTool())
-		}
-		if cfg.Tools.IsToolEnabled("update_plan") {
-			registerToolIfAllowed(agent, tools.NewUpdatePlanTool())
+			agent.Tools.Register(tools.NewSerialTool())
 		}
 
 		// Message tool
 		if cfg.Tools.IsToolEnabled("message") {
 			messageTool := tools.NewMessageTool()
+			messageTool.ConfigureLocalMedia(
+				agent.Workspace,
+				cfg.Agents.Defaults.RestrictToWorkspace,
+				cfg.Agents.Defaults.GetMaxMediaSize(),
+				allowReadPaths,
+			)
 			messageTool.SetSendCallback(func(
 				ctx context.Context,
 				channel, chatID, content, replyToMessageID string,
+				mediaParts []bus.MediaPart,
 			) error {
 				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer pubCancel()
@@ -177,7 +180,15 @@ func registerSharedTools(
 					tools.ToolSessionKey(ctx),
 					tools.ToolSessionScope(ctx),
 				)
-				inheritToolTopic(ctx, &outboundCtx, channel, chatID, outboundScope)
+				if len(mediaParts) > 0 {
+					return msgBus.PublishOutboundMedia(pubCtx, bus.OutboundMediaMessage{
+						Context:    outboundCtx,
+						AgentID:    outboundAgentID,
+						SessionKey: outboundSessionKey,
+						Scope:      outboundScope,
+						Parts:      mediaParts,
+					})
+				}
 				return msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
 					Context:          outboundCtx,
 					AgentID:          outboundAgentID,
@@ -187,7 +198,7 @@ func registerSharedTools(
 					ReplyToMessageID: replyToMessageID,
 				})
 			})
-			registerToolIfAllowed(agent, messageTool)
+			agent.Tools.Register(messageTool)
 		}
 		if cfg.Tools.IsToolEnabled("reaction") {
 			reactionTool := tools.NewReactionTool()
@@ -206,7 +217,7 @@ func registerSharedTools(
 				_, err := rc.ReactToMessage(ctx, chatID, messageID)
 				return err
 			})
-			registerToolIfAllowed(agent, reactionTool)
+			agent.Tools.Register(reactionTool)
 		}
 
 		// Send file tool (outbound media via MediaStore — store injected later by SetMediaStore)
@@ -218,11 +229,11 @@ func registerSharedTools(
 				nil,
 				allowReadPaths,
 			)
-			registerToolIfAllowed(agent, sendFileTool)
+			agent.Tools.Register(sendFileTool)
 		}
 
 		if ttsProvider != nil {
-			registerToolIfAllowed(agent, tools.NewSendTTSTool(ttsProvider, nil))
+			agent.Tools.Register(tools.NewSendTTSTool(ttsProvider, nil))
 		}
 
 		if cfg.Tools.IsToolEnabled("load_image") {
@@ -233,12 +244,7 @@ func registerSharedTools(
 				nil,
 				allowReadPaths,
 			)
-			registerToolIfAllowed(agent, loadImageTool)
-		}
-
-		if cfg.Tools.IsToolEnabled("image_generate") {
-			imageModel := cfg.Tools.ImageGenerate.EffectiveModel(cfg.Agents.Defaults)
-			registerToolIfAllowed(agent, tools.NewImageGenerateTool(agent.Workspace, imageModel, nil))
+			agent.Tools.Register(loadImageTool)
 		}
 
 		// Skill discovery and installation tools
@@ -253,11 +259,11 @@ func registerSharedTools(
 					cfg.Tools.Skills.SearchCache.MaxSize,
 					time.Duration(cfg.Tools.Skills.SearchCache.TTLSeconds)*time.Second,
 				)
-				registerToolIfAllowed(agent, tools.NewFindSkillsTool(registryMgr, searchCache))
+				agent.Tools.Register(tools.NewFindSkillsTool(registryMgr, searchCache))
 			}
 
 			if install_skills_enable {
-				registerToolIfAllowed(agent, tools.NewInstallSkillTool(registryMgr, agent.Workspace))
+				agent.Tools.Register(tools.NewInstallSkillTool(registryMgr, agent.Workspace))
 			}
 		}
 
@@ -350,15 +356,15 @@ func registerSharedTools(
 					return registry.CanSpawnSubagent(currentAgentID, targetAgentID)
 				})
 
-				registerToolIfAllowed(agent, spawnTool)
+				agent.Tools.Register(spawnTool)
 
 				// Also register the synchronous subagent tool
 				subagentTool := tools.NewSubagentTool(subagentManager)
 				subagentTool.SetSpawner(NewSubTurnSpawner(al))
-				registerToolIfAllowed(agent, subagentTool)
+				agent.Tools.Register(subagentTool)
 			}
 			if spawnStatusEnabled {
-				registerToolIfAllowed(agent, tools.NewSpawnStatusTool(subagentManager))
+				agent.Tools.Register(tools.NewSpawnStatusTool(subagentManager))
 			}
 		} else if (spawnEnabled || spawnStatusEnabled) && !cfg.Tools.IsToolEnabled("subagent") {
 			logger.WarnCF("agent", "spawn/spawn_status tools require subagent to be enabled", nil)
@@ -376,35 +382,9 @@ func registerSharedTools(
 			delegateTool.SetAllowlistChecker(func(targetAgentID string) bool {
 				return registry.CanSpawnSubagent(currentAgentID, targetAgentID)
 			})
-			registerToolIfAllowed(agent, delegateTool)
+			agent.Tools.Register(delegateTool)
 		}
 
 		warnOnUnknownAgentToolDeclarations(agentID, agent.Workspace, agent.Definition, agent.Tools)
-	}
-}
-
-func inheritToolTopic(
-	ctx context.Context,
-	outboundCtx *bus.InboundContext,
-	channel, chatID string,
-	scope *bus.OutboundScope,
-) {
-	if outboundCtx == nil || strings.TrimSpace(outboundCtx.TopicID) != "" {
-		return
-	}
-	if strings.TrimSpace(channel) != strings.TrimSpace(tools.ToolChannel(ctx)) ||
-		strings.TrimSpace(chatID) != strings.TrimSpace(tools.ToolChatID(ctx)) {
-		return
-	}
-	if scope == nil || scope.Values == nil {
-		return
-	}
-	if topic := strings.TrimPrefix(strings.TrimSpace(scope.Values["topic"]), "topic:"); topic != "" {
-		outboundCtx.TopicID = topic
-		return
-	}
-	chatScope := strings.TrimSpace(scope.Values["chat"])
-	if idx := strings.LastIndex(chatScope, "/"); idx >= 0 && idx+1 < len(chatScope) {
-		outboundCtx.TopicID = strings.TrimSpace(chatScope[idx+1:])
 	}
 }

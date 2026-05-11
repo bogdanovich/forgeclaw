@@ -129,12 +129,6 @@ func (c *FeishuChannel) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *FeishuChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
-	if c.progress != nil {
-		c.progress.Configure(cfg)
-	}
-}
-
 func (c *FeishuChannel) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	if c.cancel != nil {
@@ -503,8 +497,16 @@ func (c *FeishuChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
 	}
 
+	caption := firstMediaCaption(msg.Parts)
+	sentAny := false
 	for _, part := range msg.Parts {
 		if err := c.sendMediaPart(ctx, msg.ChatID, part, store); err != nil {
+			return nil, err
+		}
+		sentAny = true
+	}
+	if sentAny && caption != "" {
+		if _, err := c.sendText(ctx, msg.ChatID, caption); err != nil {
 			return nil, err
 		}
 	}
@@ -561,6 +563,15 @@ func (c *FeishuChannel) sendMediaPart(
 		return fmt.Errorf("feishu send media: %w", channels.ErrTemporary)
 	}
 	return nil
+}
+
+func firstMediaCaption(parts []bus.MediaPart) string {
+	for _, part := range parts {
+		if caption := strings.TrimSpace(part.Caption); caption != "" {
+			return caption
+		}
+	}
+	return ""
 }
 
 // --- Inbound message handling ---

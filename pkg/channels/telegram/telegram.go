@@ -44,7 +44,10 @@ var (
 	reInlineCode = regexp.MustCompile("`([^`]+)`")
 )
 
-const defaultMediaGroupDelay = 500 * time.Millisecond
+const (
+	defaultMediaGroupDelay = 500 * time.Millisecond
+	telegramCaptionLimit   = 1024
+)
 
 type TelegramChannel struct {
 	*channels.BaseChannel
@@ -188,12 +191,6 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *TelegramChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
-	if c.progress != nil {
-		c.progress.Configure(cfg)
-	}
-}
-
 func (c *TelegramChannel) Stop(ctx context.Context) error {
 	logger.InfoC("telegram", "Stopping Telegram bot...")
 	c.SetRunning(false)
@@ -239,7 +236,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 	if isToolFeedback {
 		toolFeedbackContent = fitToolFeedbackForTelegram(msg.Content, useMarkdownV2, 4096)
 	}
-	trackedChatID := telegramToolFeedbackTrackerKey(msg)
+	trackedChatID := telegramToolFeedbackChatKey(msg.ChatID, &msg.Context)
 	if isToolFeedback {
 		if msgID, handled, err := c.progress.Update(ctx, trackedChatID, toolFeedbackContent); handled {
 			if err != nil {
@@ -249,7 +246,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		}
 	}
 	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(trackedChatID)
-	if channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
+	if !isToolFeedback {
 		if msgIDs, handled := c.finalizeToolFeedbackMessageForChat(ctx, trackedChatID, msg); handled {
 			return msgIDs, nil
 		}
@@ -346,7 +343,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 
 	if isToolFeedback && len(messageIDs) > 0 {
 		c.RecordToolFeedbackMessage(trackedChatID, messageIDs[0], toolFeedbackContent)
-	} else if hasTrackedMsg && channels.OutboundMessageDismissesTrackedToolFeedback(msg) {
+	} else if !isToolFeedback && hasTrackedMsg {
 		c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
 	}
 
@@ -447,7 +444,6 @@ func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(
 // EditMessage implements channels.MessageEditor.
 func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
-	chatID = telegramToolFeedbackDeliveryChatID(chatID)
 	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return err
@@ -504,7 +500,6 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 
 // DeleteMessage implements channels.MessageDeleter.
 func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
-	chatID = telegramToolFeedbackDeliveryChatID(chatID)
 	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return err
@@ -524,23 +519,6 @@ func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
-}
-
-func telegramToolFeedbackTrackerKey(msg bus.OutboundMessage) string {
-	key := telegramResolvedChatID(msg.ChatID, &msg.Context)
-	sessionKey := strings.TrimSpace(msg.SessionKey)
-	if key == "" || sessionKey == "" {
-		return key
-	}
-	return key + "#session:" + sessionKey
-}
-
-func telegramToolFeedbackDeliveryChatID(chatID string) string {
-	chatID = strings.TrimSpace(chatID)
-	if idx := strings.Index(chatID, "#session:"); idx >= 0 {
-		return strings.TrimSpace(chatID[:idx])
-	}
-	return chatID
 }
 
 func (c *TelegramChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
@@ -584,7 +562,7 @@ func (c *TelegramChannel) dismissTrackedToolFeedbackMessage(ctx context.Context,
 		return
 	}
 	c.ClearToolFeedbackMessage(chatID)
-	_ = c.DeleteMessage(ctx, telegramToolFeedbackDeliveryChatID(chatID), messageID)
+	_ = c.DeleteMessage(ctx, chatID, messageID)
 }
 
 func (c *TelegramChannel) finalizeTrackedToolFeedbackMessage(
@@ -597,7 +575,7 @@ func (c *TelegramChannel) finalizeTrackedToolFeedbackMessage(
 	if !ok || editFn == nil {
 		return nil, false
 	}
-	if err := editFn(ctx, telegramToolFeedbackDeliveryChatID(chatID), msgID, content); err != nil {
+	if err := editFn(ctx, chatID, msgID, content); err != nil {
 		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
 		return nil, false
 	}
@@ -605,10 +583,10 @@ func (c *TelegramChannel) finalizeTrackedToolFeedbackMessage(
 }
 
 func (c *TelegramChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
-	if !channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
+	if outboundMessageIsToolFeedback(msg) {
 		return nil, false
 	}
-	return c.finalizeToolFeedbackMessageForChat(ctx, telegramToolFeedbackTrackerKey(msg), msg)
+	return c.finalizeToolFeedbackMessageForChat(ctx, telegramToolFeedbackChatKey(msg.ChatID, &msg.Context), msg)
 }
 
 func (c *TelegramChannel) finalizeToolFeedbackMessageForChat(
@@ -650,7 +628,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
-	trackedChatID := telegramResolvedChatID(msg.ChatID, &msg.Context)
+	trackedChatID := telegramToolFeedbackChatKey(msg.ChatID, &msg.Context)
 	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(trackedChatID)
 
 	chatID, threadID, err := resolveTelegramOutboundTarget(msg.ChatID, &msg.Context)
@@ -664,6 +642,34 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 
 	var messageIDs []string
+	leadingCaption := telegramLeadingCaption(msg.Parts)
+	if len([]rune(leadingCaption)) > telegramCaptionLimit {
+		leadingIDs, leadingErr := c.sendCaptionText(ctx, chatID, threadID, leadingCaption)
+		if leadingErr != nil {
+			return nil, leadingErr
+		}
+		messageIDs = append(messageIDs, leadingIDs...)
+		msg = telegramClearMediaCaptions(msg)
+	}
+
+	if len(msg.Parts) > 1 && telegramCanSendMediaGroup(msg.Parts) {
+		groupIDs, err := c.sendImageMediaGroups(ctx, chatID, threadID, store, msg.Parts)
+		if err != nil {
+			logger.ErrorCF("telegram", "Failed to send media group", map[string]any{
+				"count": len(msg.Parts),
+				"error": err.Error(),
+			})
+			return nil, fmt.Errorf("telegram send media group: %w", channels.ErrTemporary)
+		}
+		if len(groupIDs) > 0 {
+			messageIDs = append(messageIDs, groupIDs...)
+			if hasTrackedMsg {
+				c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
+			}
+			return messageIDs, nil
+		}
+	}
+
 	for _, part := range msg.Parts {
 		localPath, err := store.Resolve(part.Ref)
 		if err != nil {
@@ -765,6 +771,154 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 
 	return messageIDs, nil
+}
+
+func telegramCanSendMediaGroup(parts []bus.MediaPart) bool {
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part.Type != "image" {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *TelegramChannel) sendImageMediaGroups(
+	ctx context.Context,
+	chatID int64,
+	threadID int,
+	store media.MediaStore,
+	parts []bus.MediaPart,
+) ([]string, error) {
+	const maxGroupSize = 10
+
+	messageIDs := make([]string, 0, len(parts))
+	for start := 0; start < len(parts); start += maxGroupSize {
+		end := start + maxGroupSize
+		if end > len(parts) {
+			end = len(parts)
+		}
+		groupIDs, err := c.sendSingleImageMediaGroup(ctx, chatID, threadID, store, parts[start:end])
+		if err != nil {
+			return nil, err
+		}
+		messageIDs = append(messageIDs, groupIDs...)
+	}
+	return messageIDs, nil
+}
+
+func (c *TelegramChannel) sendSingleImageMediaGroup(
+	ctx context.Context,
+	chatID int64,
+	threadID int,
+	store media.MediaStore,
+	parts []bus.MediaPart,
+) ([]string, error) {
+	opened := make([]*os.File, 0, len(parts))
+	defer func() {
+		for _, file := range opened {
+			file.Close()
+		}
+	}()
+
+	inputMedia := make([]telego.InputMedia, 0, len(parts))
+	for i, part := range parts {
+		localPath, err := store.Resolve(part.Ref)
+		if err != nil {
+			logger.ErrorCF("telegram", "Failed to resolve media ref for media group", map[string]any{
+				"ref":   part.Ref,
+				"error": err.Error(),
+			})
+			return nil, err
+		}
+
+		file, err := os.Open(localPath)
+		if err != nil {
+			logger.ErrorCF("telegram", "Failed to open media file for media group", map[string]any{
+				"path":  localPath,
+				"error": err.Error(),
+			})
+			return nil, err
+		}
+		opened = append(opened, file)
+
+		mediaItem := &telego.InputMediaPhoto{
+			Type:  telego.MediaTypePhoto,
+			Media: telego.InputFile{File: file},
+		}
+		if i == 0 {
+			mediaItem.Caption = part.Caption
+		}
+		inputMedia = append(inputMedia, mediaItem)
+	}
+
+	results, err := c.bot.SendMediaGroup(ctx, &telego.SendMediaGroupParams{
+		ChatID:          tu.ID(chatID),
+		MessageThreadID: threadID,
+		Media:           inputMedia,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	messageIDs := make([]string, 0, len(results))
+	for _, result := range results {
+		messageIDs = append(messageIDs, strconv.Itoa(result.MessageID))
+	}
+	return messageIDs, nil
+}
+
+func (c *TelegramChannel) sendCaptionText(
+	ctx context.Context,
+	chatID int64,
+	threadID int,
+	text string,
+) ([]string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, nil
+	}
+	chunks := channels.SplitMessage(text, c.MaxMessageLength())
+	messageIDs := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+		msgID, err := c.sendChunk(ctx, sendChunkParams{
+			chatID:        chatID,
+			threadID:      threadID,
+			content:       chunk,
+			mdFallback:    chunk,
+			useMarkdownV2: false,
+		})
+		if err != nil {
+			return nil, err
+		}
+		messageIDs = append(messageIDs, msgID)
+	}
+	return messageIDs, nil
+}
+
+func telegramLeadingCaption(parts []bus.MediaPart) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0].Caption)
+}
+
+func telegramClearMediaCaptions(msg bus.OutboundMediaMessage) bus.OutboundMediaMessage {
+	if len(msg.Parts) == 0 {
+		return msg
+	}
+	cloned := msg
+	cloned.Parts = append([]bus.MediaPart(nil), msg.Parts...)
+	for i := range cloned.Parts {
+		cloned.Parts[i].Caption = ""
+	}
+	return cloned
 }
 
 func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Message) error {
@@ -970,17 +1124,12 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 
 	// In group chats, apply unified group trigger filtering
 	isMentioned := false
-	threadID := message.MessageThreadID
 	if message.Chat.Type != "private" {
 		isMentioned = c.isBotMentioned(message)
 		if isMentioned {
 			content = c.stripBotMention(content)
 		}
-		topicID := ""
-		if message.Chat.IsForum && threadID != 0 {
-			topicID = fmt.Sprintf("%d", threadID)
-		}
-		respond, cleaned := c.ShouldRespondInGroupForTopic(isMentioned, content, topicID)
+		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
 		if !respond {
 			return nil
 		}
@@ -1009,6 +1158,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	// Only forum groups (IsForum) are handled; regular group reply threads
 	// must share one session per group.
 	compositeChatID := fmt.Sprintf("%d", chatID)
+	threadID := message.MessageThreadID
 	if message.Chat.IsForum && threadID != 0 {
 		compositeChatID = fmt.Sprintf("%d/%d", chatID, threadID)
 	}
@@ -1333,7 +1483,7 @@ func (c *TelegramChannel) PrepareToolFeedbackMessageContent(content string) stri
 	return fitToolFeedbackForTelegram(content, c.tgCfg.UseMarkdownV2, 4096)
 }
 
-func telegramResolvedChatID(chatID string, outboundCtx *bus.InboundContext) string {
+func telegramToolFeedbackChatKey(chatID string, outboundCtx *bus.InboundContext) string {
 	resolvedChatID, threadID, err := resolveTelegramOutboundTarget(chatID, outboundCtx)
 	if err != nil || threadID == 0 {
 		return strings.TrimSpace(chatID)
@@ -1341,8 +1491,8 @@ func telegramResolvedChatID(chatID string, outboundCtx *bus.InboundContext) stri
 	return fmt.Sprintf("%d/%d", resolvedChatID, threadID)
 }
 
-func (c *TelegramChannel) ResolveOutboundChatID(chatID string, outboundCtx *bus.InboundContext) string {
-	return telegramResolvedChatID(chatID, outboundCtx)
+func (c *TelegramChannel) ToolFeedbackMessageChatID(chatID string, outboundCtx *bus.InboundContext) string {
+	return telegramToolFeedbackChatKey(chatID, outboundCtx)
 }
 
 // parseTelegramChatID splits "chatID/threadID" into its components.
