@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -896,6 +897,9 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 			},
+		},
+		Tools: config.ToolsConfig{
+			Message: config.ToolConfig{Enabled: true},
 		},
 	}
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), panicProvider)
@@ -2377,6 +2381,119 @@ func TestSpawnSubTurn_TargetAgentID_EmptyModelAccepted(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestSpawnSubTurn_InheritsSessionScopeForMessageToolTopic(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "default-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+			List: []config.AgentConfig{
+				{
+					ID:        "alpha",
+					Workspace: filepath.Join(tmpDir, "alpha"),
+					Model:     &config.AgentModelConfig{Primary: "model-alpha"},
+				},
+			},
+		},
+	}
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, "alpha"), 0o755); err != nil {
+		t.Fatalf("create alpha workspace: %v", err)
+	}
+
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &explicitChatMessageToolProvider{})
+
+	alphaAgent, ok := al.registry.GetAgent("alpha")
+	if !ok {
+		t.Fatal("alpha agent not in registry")
+	}
+	messageTool := tools.NewMessageTool()
+	messageTool.SetSendCallback(func(
+		ctx context.Context,
+		channel, chatID, content, replyToMessageID string,
+	) error {
+		outboundCtx := bus.NewOutboundContext(channel, chatID, replyToMessageID)
+		outboundAgentID, outboundSessionKey, outboundScope := outboundTurnMetadata(
+			tools.ToolAgentID(ctx),
+			tools.ToolSessionKey(ctx),
+			tools.ToolSessionScope(ctx),
+		)
+		inheritToolTopic(ctx, &outboundCtx, channel, chatID, outboundScope)
+		return msgBus.PublishOutbound(context.Background(), bus.OutboundMessage{
+			Context:          outboundCtx,
+			AgentID:          outboundAgentID,
+			SessionKey:       outboundSessionKey,
+			Scope:            outboundScope,
+			Content:          content,
+			ReplyToMessageID: replyToMessageID,
+		})
+	})
+	alphaAgent.Tools.Register(messageTool)
+
+	parent := &turnState{
+		ctx:            context.Background(),
+		turnID:         "parent-topic-scope",
+		depth:          0,
+		pendingResults: make(chan *tools.ToolResult, 4),
+		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
+		session:        &ephemeralSessionStore{},
+		agent:          alphaAgent,
+		opts: processOptions{
+			Dispatch: DispatchRequest{
+				InboundContext: &bus.InboundContext{
+					Channel:  "telegram",
+					ChatID:   "-1001234567890",
+					ChatType: "group",
+					TopicID:  "6",
+				},
+				SessionScope: &session.SessionScope{
+					Version:    session.ScopeVersionV1,
+					AgentID:    "alpha",
+					Channel:    "telegram",
+					Account:    "-1001234567890",
+					Dimensions: []string{"chat", "topic"},
+					Values: map[string]string{
+						"chat":  "group:-1001234567890/6",
+						"topic": "topic:6",
+					},
+				},
+			},
+		},
+	}
+
+	result, err := spawnSubTurn(context.Background(), al, parent, SubTurnConfig{
+		Model:        "model-alpha",
+		SystemPrompt: "send an interim message",
+		Async:        false,
+	})
+	if err != nil {
+		t.Fatalf("spawnSubTurn failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Content != "topic tool message" {
+			t.Fatalf("outbound content = %q, want topic tool message", outbound.Content)
+		}
+		if outbound.Context.Channel != "telegram" || outbound.Context.ChatID != "-1001234567890" {
+			t.Fatalf("unexpected outbound context: %+v", outbound.Context)
+		}
+		if outbound.Context.TopicID != "6" {
+			t.Fatalf("outbound topic = %q, want 6; context=%+v scope=%+v", outbound.Context.TopicID, outbound.Context, outbound.Scope)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected message tool outbound")
 	}
 }
 

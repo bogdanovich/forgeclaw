@@ -12,6 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -373,6 +374,7 @@ func spawnSubTurn(
 		UserMessage:    cfg.SystemPrompt,
 		Media:          nil,
 		InboundContext: cloneInboundContext(parentTS.opts.Dispatch.InboundContext),
+		SessionScope:   session.CloneScope(parentTS.opts.Dispatch.SessionScope),
 	}
 	opts := processOptions{
 		Dispatch:                dispatch,
