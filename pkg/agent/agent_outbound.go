@@ -111,19 +111,9 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 		return
 	}
 
-	alreadySentToSameChat := false
-	if policy == finalResponseSuppressIfMessageToolSent {
-		defaultAgent := al.GetRegistry().GetDefaultAgent()
-		if defaultAgent != nil {
-			if tool, ok := defaultAgent.Tools.Get("message"); ok {
-				if mt, ok := tool.(*tools.MessageTool); ok {
-					alreadySentToSameChat = mt.HasSentTo(sessionKey, channel, chatID)
-				}
-			}
-		}
-	}
+	messageToolSentToSameChat := al.messageToolSentToSameChat(sessionKey, channel, chatID)
 
-	if alreadySentToSameChat {
+	if policy == finalResponseSuppressIfMessageToolSent && messageToolSentToSameChat {
 		if al.channelManager != nil && channel != "" && chatID != "" {
 			dismissCtx, dismissCancel := context.WithTimeout(ctx, 5*time.Second)
 			al.channelManager.DismissToolFeedbackForSession(
@@ -156,10 +146,43 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 		SessionKey: sessionKey,
 		Content:    response,
 	}
+	if policy == finalResponseAlwaysPublish && messageToolSentToSameChat {
+		if msg.Context.Raw == nil {
+			msg.Context.Raw = make(map[string]string, 1)
+		}
+		msg.Context.Raw[metadataKeyMessageKind] = messageKindFinalReply
+	}
 	if sessionKey != "" {
 		msg.ContextUsage = computeContextUsage(agent, sessionKey)
 	}
 	al.bus.PublishOutbound(ctx, msg)
+}
+
+func (al *AgentLoop) messageToolSentToSameChat(sessionKey, channel, chatID string) bool {
+	if strings.TrimSpace(sessionKey) == "" {
+		return false
+	}
+	agents := make([]*AgentInstance, 0, 2)
+	if agent := al.agentForSession(sessionKey); agent != nil {
+		agents = append(agents, agent)
+	}
+	if defaultAgent := al.GetRegistry().GetDefaultAgent(); defaultAgent != nil {
+		agents = append(agents, defaultAgent)
+	}
+	for _, agent := range agents {
+		if agent == nil || agent.Tools == nil {
+			continue
+		}
+		tool, ok := agent.Tools.Get("message")
+		if !ok {
+			continue
+		}
+		mt, ok := tool.(*tools.MessageTool)
+		if ok && mt.HasSentTo(sessionKey, channel, chatID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {

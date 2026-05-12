@@ -82,7 +82,10 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 				"error":   continueErr.Error(),
 			})
 	} else {
-		responses = appendSteeringResponse(responses, continued)
+		continuedResponses := appendSteeringResponse(nil, continued)
+		if len(continuedResponses) > 0 {
+			responses = continuedResponses
+		}
 	}
 
 	// Publish final response

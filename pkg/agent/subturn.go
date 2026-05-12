@@ -412,11 +412,14 @@ func spawnSubTurn(
 
 	// Create processOptions for the child turn
 	dispatch := DispatchRequest{
-		SessionKey:     childID,
-		UserMessage:    cfg.SystemPrompt,
-		Media:          nil,
-		InboundContext: cloneInboundContext(parentTS.opts.Dispatch.InboundContext),
-		SessionScope:   session.CloneScope(parentTS.opts.Dispatch.SessionScope),
+		RouteSessionKey: parentTS.opts.Dispatch.RouteSessionKey,
+		SessionKey:      childID,
+		SessionAliases:  append([]string(nil), parentTS.opts.Dispatch.SessionAliases...),
+		UserMessage:     cfg.SystemPrompt,
+		Media:           nil,
+		InboundContext:  cloneInboundContext(parentTS.opts.Dispatch.InboundContext),
+		RouteResult:     cloneResolvedRoute(parentTS.opts.Dispatch.RouteResult),
+		SessionScope:    session.CloneScope(parentTS.opts.Dispatch.SessionScope),
 	}
 	opts := processOptions{
 		Dispatch:                 dispatch,

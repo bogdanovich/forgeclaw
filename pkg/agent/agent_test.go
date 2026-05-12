@@ -57,6 +57,34 @@ func (f *fakeMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 	return nil, nil
 }
 
+type blockingMediaChannel struct {
+	fakeMediaChannel
+	started chan struct{}
+	release chan struct{}
+	done    chan struct{}
+	once    sync.Once
+}
+
+func (f *blockingMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	f.sentMedia = append(f.sentMedia, msg)
+	close(f.done)
+	return []string{"media-1"}, nil
+}
+
+func newBlockingMediaChannel() *blockingMediaChannel {
+	return &blockingMediaChannel{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+}
+
 type recordingChannelManager struct {
 	dismissed         []string
 	dismissedSessions []string
@@ -257,11 +285,11 @@ func TestNewAgentLoop_DoesNotRegisterWebSearchTool_WhenNoReadyProviders(t *testi
 }
 
 func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent(t *testing.T) {
-	al, msgBus, provider, sessions, cleanup := newTestAgentLoop(t)
+	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
+	_ = cfg
 	_ = msgBus
 	_ = provider
-	_ = sessions
 
 	cm := &recordingChannelManager{}
 	al.channelManager = cm
@@ -295,6 +323,89 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 
 	if got := cm.dismissedSessions; len(got) != 1 || got[0] != "telegram:-100123:session-1" {
 		t.Fatalf("dismissedSessions = %v, want [telegram:-100123:session-1]", got)
+	}
+}
+
+func TestPublishResponseAlwaysPublishMarksFinalReplyAfterMessageTool(t *testing.T) {
+	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	_ = cfg
+	_ = provider
+
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
+	mt := tools.NewMessageTool()
+	mt.SetSendCallback(func(
+		ctx context.Context,
+		channel, chatID, content, replyToMessageID string,
+		mediaParts []bus.MediaPart,
+	) error {
+		return nil
+	})
+	defaultAgent.Tools.Register(mt)
+
+	result := mt.Execute(
+		tools.WithToolSessionContext(context.Background(), "main", "session-1", nil),
+		map[string]any{
+			"content": "ack",
+			"channel": "telegram",
+			"chat_id": "-100123",
+		},
+	)
+	if result == nil || result.IsError {
+		t.Fatalf("message tool execute failed: %+v", result)
+	}
+
+	al.publishResponseWithContextIfNeeded(
+		context.Background(),
+		"telegram",
+		"-100123",
+		"session-1",
+		"final reply",
+		&bus.InboundContext{Channel: "telegram", ChatID: "-100123"},
+		finalResponseAlwaysPublish,
+	)
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Content != "final reply" {
+			t.Fatalf("outbound content = %q, want final reply", outbound.Content)
+		}
+		if got := strings.TrimSpace(outbound.Context.Raw[metadataKeyMessageKind]); got != messageKindFinalReply {
+			t.Fatalf("message kind = %q, want %q", got, messageKindFinalReply)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected final reply outbound")
+	}
+}
+
+func TestShouldPublishToolFeedback_SubTurnUsesRouteSessionOverride(t *testing.T) {
+	al, cfg, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	cfg.Agents.Defaults.ToolFeedback.Enabled = true
+	subagentsEnabled := true
+	cfg.Agents.Defaults.ToolFeedback.Subagents = &subagentsEnabled
+
+	if err := al.setToolFeedbackOverride("route-session-1", false); err != nil {
+		t.Fatalf("setToolFeedbackOverride() error = %v", err)
+	}
+
+	ts := &turnState{
+		channel:    "telegram",
+		chatID:     "chat-1",
+		sessionKey: "subturn-1",
+		opts: processOptions{
+			Dispatch: DispatchRequest{
+				RouteSessionKey: "route-session-1",
+				SessionKey:      "subturn-1",
+			},
+		},
+	}
+
+	if shouldPublishToolFeedback(al, ts) {
+		t.Fatal("expected child turn tool feedback to inherit disabled route-session override")
 	}
 }
 
@@ -1832,6 +1943,44 @@ func (m *messageToolThenFinalProvider) Chat(
 
 func (m *messageToolThenFinalProvider) GetDefaultModel() string {
 	return "message-tool-final-model"
+}
+
+type messageToolMediaThenFinalProvider struct {
+	calls     int
+	mediaPath string
+}
+
+func (m *messageToolMediaThenFinalProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		return &providers.LLMResponse{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "call_message_media",
+				Type: "function",
+				Name: "message",
+				Arguments: map[string]any{
+					"content": "media caption",
+					"media": []any{
+						map[string]any{
+							"path": m.mediaPath,
+							"type": "video",
+						},
+					},
+				},
+			}},
+		}, nil
+	}
+	return &providers.LLMResponse{Content: "final answer after media"}, nil
+}
+
+func (m *messageToolMediaThenFinalProvider) GetDefaultModel() string {
+	return "message-tool-media-final-model"
 }
 
 type reasoningVisibleToolProvider struct {
@@ -4609,6 +4758,110 @@ func TestRunAgentLoop_FinalResponseAfterMessageToolUsesNewReply(t *testing.T) {
 		t.Fatalf("second outbound content = %q, want final answer after message tool", outbounds[1].Content)
 	}
 	if got := strings.TrimSpace(outbounds[1].Context.Raw[metadataKeyMessageKind]); got != messageKindFinalReply {
+		t.Fatalf("final response message kind = %q, want %q", got, messageKindFinalReply)
+	}
+}
+
+func TestRunAgentLoop_MessageToolMediaDeliveryBlocksBeforeFinalResponse(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ModelName = "test-model"
+	cfg.Agents.Defaults.MaxTokens = 4096
+	cfg.Agents.Defaults.MaxToolIterations = 10
+	cfg.Agents.Defaults.ToolFeedback.Enabled = false
+	cfg.Session.Dimensions = []string{"chat"}
+
+	videoPath := filepath.Join(cfg.Agents.Defaults.Workspace, "clip.mp4")
+	if err := os.WriteFile(videoPath, []byte("not really a video"), 0o600); err != nil {
+		t.Fatalf("write media fixture: %v", err)
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &messageToolMediaThenFinalProvider{mediaPath: videoPath}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	store := media.NewFileMediaStore()
+	al.SetMediaStore(store)
+	mediaChannel := newBlockingMediaChannel()
+	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", mediaChannel))
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	done := make(chan struct{})
+	var response string
+	var runErr error
+	go func() {
+		defer close(done)
+		response, runErr = al.runAgentLoop(context.Background(), agent, processOptions{
+			Dispatch: DispatchRequest{
+				SessionKey:  "message-tool-media-final-test",
+				UserMessage: "send media then final answer",
+				InboundContext: &bus.InboundContext{
+					Channel:  "telegram",
+					ChatID:   "chat-1",
+					SenderID: "user-1",
+				},
+			},
+			DefaultResponse: defaultResponse,
+			SendResponse:    true,
+		})
+	}()
+
+	select {
+	case <-mediaChannel.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected message tool media delivery to start")
+	}
+
+	select {
+	case <-done:
+		t.Fatal("runAgentLoop finished before media delivery completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider calls before media delivery = %d, want 1", provider.calls)
+	}
+
+	close(mediaChannel.release)
+
+	select {
+	case <-mediaChannel.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected media delivery to complete")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAgentLoop did not finish after media delivery")
+	}
+	if runErr != nil {
+		t.Fatalf("runAgentLoop() error = %v", runErr)
+	}
+	if response != "final answer after media" {
+		t.Fatalf("response = %q, want final answer after media", response)
+	}
+	if len(mediaChannel.sentMedia) != 1 {
+		t.Fatalf("sent media count = %d, want 1", len(mediaChannel.sentMedia))
+	}
+	if got := mediaChannel.sentMedia[0].Parts[0].Caption; got != "media caption" {
+		t.Fatalf("media caption = %q, want media caption", got)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for len(mediaChannel.sentMessages) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected final response to be sent after media delivery")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	outbound := mediaChannel.sentMessages[0]
+	if outbound.Content != "final answer after media" {
+		t.Fatalf("final outbound content = %q, want final answer after media", outbound.Content)
+	}
+	if got := strings.TrimSpace(outbound.Context.Raw[metadataKeyMessageKind]); got != messageKindFinalReply {
 		t.Fatalf("final response message kind = %q, want %q", got, messageKindFinalReply)
 	}
 }
