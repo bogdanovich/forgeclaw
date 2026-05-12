@@ -1017,6 +1017,30 @@ func TestSend_UsesContextTopicIDWhenChatIDDoesNotIncludeThread(t *testing.T) {
 	assert.Equal(t, "Hello from topic context", params.Text)
 }
 
+func TestResolveOutboundChatID_UsesContextTopicID(t *testing.T) {
+	ch := &TelegramChannel{}
+
+	got := ch.ResolveOutboundChatID("-1001234567890", &bus.InboundContext{
+		Channel: "telegram",
+		ChatID:  "-1001234567890",
+		TopicID: "42",
+	})
+
+	assert.Equal(t, "-1001234567890/42", got)
+}
+
+func TestResolveOutboundChatID_PreservesCompositeChatID(t *testing.T) {
+	ch := &TelegramChannel{}
+
+	got := ch.ResolveOutboundChatID("-1001234567890/42", &bus.InboundContext{
+		Channel: "telegram",
+		ChatID:  "-1001234567890",
+		TopicID: "99",
+	})
+
+	assert.Equal(t, "-1001234567890/42", got)
+}
+
 func TestBeginStream_UpdateUsesForumThreadID(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {

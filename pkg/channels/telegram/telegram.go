@@ -1536,6 +1536,21 @@ func resolveTelegramOutboundTarget(chatID string, outboundCtx *bus.InboundContex
 	return resolvedChatID, resolvedThreadID, nil
 }
 
+// ResolveOutboundChatID returns the concrete delivery key used for Telegram
+// cleanup state such as typing indicators, reactions, and placeholders. Forum
+// topics are registered as "<chat>/<thread>", while the normalized bus context
+// keeps ChatID and TopicID separate.
+func (c *TelegramChannel) ResolveOutboundChatID(chatID string, outboundCtx *bus.InboundContext) string {
+	resolvedChatID, resolvedThreadID, err := resolveTelegramOutboundTarget(chatID, outboundCtx)
+	if err != nil {
+		return strings.TrimSpace(chatID)
+	}
+	if resolvedThreadID != 0 {
+		return fmt.Sprintf("%d/%d", resolvedChatID, resolvedThreadID)
+	}
+	return fmt.Sprintf("%d", resolvedChatID)
+}
+
 func logParseFailed(err error, useMarkdownV2 bool) {
 	parsingName := "HTML"
 	if useMarkdownV2 {
