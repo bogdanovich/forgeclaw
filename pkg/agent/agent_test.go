@@ -1369,6 +1369,82 @@ func TestProcessMessage_HandledCompletionMediaUsesCompletionTextAsCaption(t *tes
 	}
 }
 
+func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace: tmpDir,
+				ModelName: "test-model",
+				MaxTokens: 4096,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	store := media.NewFileMediaStore()
+	al.SetMediaStore(store)
+	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
+	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
+
+	videoPath := filepath.Join(tmpDir, "reel.mp4")
+	if err := os.WriteFile(videoPath, []byte("fake video"), 0o644); err != nil {
+		t.Fatalf("WriteFile(videoPath) error = %v", err)
+	}
+	ref, err := store.Store(videoPath, media.MediaMeta{
+		Filename:    "reel.mp4",
+		ContentType: "video/mp4",
+		Source:      "test:final_turn",
+	}, "test:final_turn")
+	if err != nil {
+		t.Fatalf("Store(videoPath) error = %v", err)
+	}
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	const finalText = "Video saved. Recipe translation is below."
+	al.deliverFinalTurnResult(context.Background(), agent, processOptions{
+		Dispatch: DispatchRequest{
+			SessionKey:  "final-media-session",
+			UserMessage: "save the reel and translate the recipe",
+			InboundContext: &bus.InboundContext{
+				Channel:  "telegram",
+				ChatID:   "chat1",
+				SenderID: "user1",
+			},
+		},
+		SendResponse: true,
+	}, turnResult{
+		finalContent: finalText,
+		completionMedia: []tools.CompletionMedia{{
+			Ref:         ref,
+			Type:        "video",
+			Filename:    "reel.mp4",
+			ContentType: "video/mp4",
+		}},
+	})
+
+	if len(telegramChannel.sentMedia) != 1 {
+		t.Fatalf("expected exactly 1 final media message, got %d", len(telegramChannel.sentMedia))
+	}
+	parts := telegramChannel.sentMedia[0].Parts
+	if len(parts) != 1 {
+		t.Fatalf("expected exactly 1 media part, got %d", len(parts))
+	}
+	if parts[0].Caption != finalText {
+		t.Fatalf("caption = %q, want %q", parts[0].Caption, finalText)
+	}
+	if parts[0].Type != "video" {
+		t.Fatalf("media type = %q, want video", parts[0].Type)
+	}
+	if len(telegramChannel.sentMessages) != 0 {
+		t.Fatalf("expected no separate final text message, got %+v", telegramChannel.sentMessages)
+	}
+}
+
 func TestProcessMessage_HandledToolProcessesQueuedSteeringBeforeReturning(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{

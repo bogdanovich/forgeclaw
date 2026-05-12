@@ -168,7 +168,7 @@ func (al *AgentLoop) deliverFinalTurnResult(
 	if al == nil || al.bus == nil || agent == nil {
 		return
 	}
-	if !opts.SendResponse || result.finalContent == "" {
+	if !opts.SendResponse {
 		return
 	}
 
@@ -191,6 +191,43 @@ func (al *AgentLoop) deliverFinalTurnResult(
 			opts.Dispatch.ReplyToMessageID(),
 			messageKindFinalReply,
 		)
+	}
+
+	if len(result.completionMedia) > 0 {
+		mediaResult := (&tools.ToolResult{
+			ForLLM:          "Final turn output delivered as media.",
+			ForUser:         result.finalContent,
+			Silent:          true,
+			ResponseHandled: true,
+		}).WithCompletion(&tools.CompletionResult{
+			Text:  result.finalContent,
+			Media: append([]tools.CompletionMedia(nil), result.completionMedia...),
+		})
+		mediaRefs := completionMediaRefs(result.completionMedia)
+		mediaResult.Media = append(mediaResult.Media, mediaRefs...)
+		ts := &turnState{
+			agent:      agent,
+			agentID:    agent.ID,
+			channel:    opts.Dispatch.Channel(),
+			chatID:     opts.Dispatch.ChatID(),
+			sessionKey: sessionKey,
+			opts:       opts,
+		}
+		if _, delivered, err := al.deliverToolResultToUser(ctx, ts, mediaResult, "final_turn"); err != nil {
+			logger.WarnCF("agent", "Failed to deliver final turn media; falling back to text",
+				map[string]any{
+					"agent_id": agent.ID,
+					"channel":  opts.Dispatch.Channel(),
+					"chat_id":  opts.Dispatch.ChatID(),
+					"error":    err.Error(),
+				})
+		} else if delivered {
+			return
+		}
+	}
+
+	if result.finalContent == "" {
+		return
 	}
 	al.bus.PublishOutbound(ctx, bus.OutboundMessage{
 		Context:      outboundCtx,
