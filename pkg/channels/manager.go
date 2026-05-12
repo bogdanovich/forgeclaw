@@ -462,12 +462,12 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 			logger.InfoCF("channels", "Evaluating placeholder edit bypass",
 				map[string]any{
-					"channel":         name,
-					"chat_id":         chatID,
-					"placeholder_id":  entry.id,
-					"message_kind":    strings.TrimSpace(msg.Context.Raw["message_kind"]),
+					"channel":          name,
+					"chat_id":          chatID,
+					"placeholder_id":   entry.id,
+					"message_kind":     strings.TrimSpace(msg.Context.Raw["message_kind"]),
 					"is_tool_feedback": isToolFeedback,
-					"bypass":          outboundMessageBypassesPlaceholderEdit(msg),
+					"bypass":           outboundMessageBypassesPlaceholderEdit(msg),
 				})
 			if isToolFeedback && separateToolFeedbackMessages {
 				if deleter, ok := ch.(MessageDeleter); ok {
@@ -514,7 +514,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 // replace it with; it only attempts to delete the placeholder when possible.
 func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.OutboundMediaMessage, ch Channel) {
 	chatID := outboundMediaChatID(msg)
-	key := name + ":" + chatID
 	cleanupChatIDs := candidateChatIDs(chatID, resolvedOutboundMediaChatID(ch, msg))
 
 	// 1. Stop typing
@@ -536,17 +535,20 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 	}
 
 	// 3. Clear any finalized stream marker for this chat before media delivery.
-	m.streamActive.LoadAndDelete(key)
-
-	if m.toolFeedbackSeparateMessagesEnabled() {
-		dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
+	for _, cleanupChatID := range cleanupChatIDs {
+		m.streamActive.LoadAndDelete(name + ":" + cleanupChatID)
 	}
 
+	dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
+	dismissTrackedToolFeedbackMessageForSession(ctx, ch, chatID, &msg.Context, msg.SessionKey)
+
 	// 4. Delete placeholder if present.
-	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
-		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
-			if deleter, ok := ch.(MessageDeleter); ok {
-				deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+	for _, cleanupChatID := range cleanupChatIDs {
+		if v, loaded := m.placeholders.LoadAndDelete(name + ":" + cleanupChatID); loaded {
+			if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+				if deleter, ok := ch.(MessageDeleter); ok {
+					deleter.DeleteMessage(ctx, cleanupChatID, entry.id) // best effort
+				}
 			}
 		}
 	}

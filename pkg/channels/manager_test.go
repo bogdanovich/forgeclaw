@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1566,7 +1567,7 @@ func TestPreSend_StaleToolFeedbackDoesNotConsumeStreamActiveMarker(t *testing.T)
 	}
 }
 
-func TestPreSendMedia_LeavesTrackedMessageForChannelSend(t *testing.T) {
+func TestPreSendMedia_DismissesTrackedMessageBeforeChannelSend(t *testing.T) {
 	m := newTestManager()
 	ch := &mockDeletingMediaChannel{}
 
@@ -1578,11 +1579,8 @@ func TestPreSendMedia_LeavesTrackedMessageForChannelSend(t *testing.T) {
 		},
 	}, ch)
 
-	if ch.dismissedChatID != "" {
-		t.Fatalf(
-			"expected tracked tool feedback cleanup to be deferred to channel media send, got %q",
-			ch.dismissedChatID,
-		)
+	if ch.dismissedChatID != "123" {
+		t.Fatalf("expected tracked tool feedback message to be dismissed before media delivery, got %q", ch.dismissedChatID)
 	}
 }
 
@@ -1614,6 +1612,33 @@ func TestPreSendMedia_SeparateMessagesDismissesTrackedMessage(t *testing.T) {
 	}
 	if ch.clearedChatID != "" {
 		t.Fatalf("expected dismissal to handle tracked state cleanup, got clear for %q", ch.clearedChatID)
+	}
+}
+
+func TestPreSendMedia_DismissesSessionScopedTrackedMessage(t *testing.T) {
+	m := newTestManager()
+	ch := &mockResolvedToolFeedbackEditor{
+		resolveChatIDFn: func(chatID string, outboundCtx *bus.InboundContext) string {
+			if outboundCtx == nil || outboundCtx.TopicID != "42" {
+				return chatID
+			}
+			return chatID + "/" + outboundCtx.TopicID
+		},
+	}
+
+	m.preSendMedia(context.Background(), "test", bus.OutboundMediaMessage{
+		ChatID:     "123",
+		SessionKey: "subturn-1",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			TopicID: "42",
+		},
+	}, ch)
+
+	want := []string{"123/42", "123/42#session:subturn-1", "123#session:subturn-1"}
+	if !slices.Equal(ch.dismissedChatIDs, want) {
+		t.Fatalf("dismissed chatIDs = %v, want %v", ch.dismissedChatIDs, want)
 	}
 }
 
