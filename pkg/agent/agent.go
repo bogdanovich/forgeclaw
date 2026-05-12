@@ -60,6 +60,7 @@ type AgentLoop struct {
 	steering       *steeringQueue
 	pendingSkills  sync.Map
 	pendingStops   sync.Map
+	compactions    sync.Map
 	mu             sync.RWMutex
 
 	// workerSem limits concurrent turn processing workers.
@@ -609,7 +610,56 @@ func (al *AgentLoop) runAgentLoop(
 			})
 	}
 
+	al.compactAfterFinalDelivery(ctx, agent, opts, result)
+
 	return result.finalContent, nil
+}
+
+func (al *AgentLoop) compactAfterFinalDelivery(
+	ctx context.Context,
+	agent *AgentInstance,
+	opts processOptions,
+	result turnResult,
+) {
+	if !result.compactAfterDelivery || al.contextManager == nil || agent == nil {
+		return
+	}
+	sessionKey := opts.Dispatch.SessionKey
+	if sessionKey == "" {
+		return
+	}
+	key := agent.ID + ":" + sessionKey
+	if _, loaded := al.compactions.LoadOrStore(key, struct{}{}); loaded {
+		logger.DebugCF("agent", "Post-delivery context compaction already running", map[string]any{
+			"agent_id":    agent.ID,
+			"session_key": sessionKey,
+		})
+		return
+	}
+
+	budget := agent.ContextWindow
+	go func() {
+		defer al.compactions.Delete(key)
+
+		compactCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		if err := al.contextManager.Compact(
+			compactCtx,
+			&CompactRequest{
+				SessionKey: sessionKey,
+				Reason:     ContextCompressReasonSummarize,
+				Budget:     budget,
+			},
+		); err != nil {
+			logger.WarnCF("agent", "Post-delivery context compaction failed", map[string]any{
+				"agent_id":     agent.ID,
+				"session_key":  sessionKey,
+				"message_kind": "final_reply",
+				"error":        err.Error(),
+			})
+		}
+	}()
 }
 
 func agentMessageToolSentToTurnTarget(agent *AgentInstance, sessionKey string, dispatch DispatchRequest) bool {

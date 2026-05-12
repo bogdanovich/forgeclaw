@@ -87,6 +87,7 @@ type turnResult struct {
 	status                 TurnEndStatus
 	followUps              []bus.InboundMessage
 	preferNewOutboundReply bool
+	compactAfterDelivery   bool
 }
 
 // =============================================================================

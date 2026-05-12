@@ -65,17 +65,6 @@ func (p *Pipeline) Finalize(
 		}
 	}
 
-	if ts.opts.EnableSummary {
-		al.contextManager.Compact(
-			turnCtx,
-			&CompactRequest{
-				SessionKey: ts.sessionKey,
-				Reason:     ContextCompressReasonSummarize,
-				Budget:     ts.agent.ContextWindow,
-			},
-		)
-	}
-
 	ts.setPhase(TurnPhaseCompleted)
 	return turnResult{
 		finalContent:           finalContent,
@@ -83,5 +72,6 @@ func (p *Pipeline) Finalize(
 		status:                 turnStatus,
 		followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
 		preferNewOutboundReply: exec.sawAdditionalUserInput,
+		compactAfterDelivery:   ts.opts.EnableSummary,
 	}, nil
 }
