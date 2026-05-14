@@ -1040,3 +1040,50 @@ func TestProcessAsyncCompletionMessageSkipsDuplicateCompletionID(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 1", provider.calls)
 	}
 }
+
+func TestProcessAsyncCompletionMessageDoesNotSendDefaultFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace: tmpDir,
+				ModelName: "test-model",
+				MaxTokens: 4096,
+			},
+		},
+	}
+	provider := &captureMessagesProvider{response: ""}
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	msg := bus.InboundMessage{
+		Channel:  "system",
+		ChatID:   "telegram:chat-1",
+		SenderID: "async:spawn",
+		Context: bus.InboundContext{
+			Channel:  "system",
+			ChatID:   "telegram:chat-1",
+			ChatType: "direct",
+			SenderID: "async:spawn",
+			Raw: systemFollowUpAsyncCompletionRaw(&bus.InboundContext{
+				Channel:  "telegram",
+				ChatID:   "chat-1",
+				ChatType: "direct",
+			}, "telegram", "chat-1", "completion-empty"),
+		},
+		Content: asyncCompletionPrompt("spawn", "fresh background result"),
+	}
+
+	got, err := al.processSystemMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("processSystemMessage failed: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("response = %q, want empty", got)
+	}
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		t.Fatalf("unexpected outbound message: %#v", outbound)
+	default:
+	}
+}

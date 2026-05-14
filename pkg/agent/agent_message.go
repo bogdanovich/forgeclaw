@@ -521,7 +521,7 @@ func (al *AgentLoop) processAsyncCompletionMessage(
 
 	return al.runAgentLoop(runCtx, agent, processOptions{
 		Dispatch:             dispatch,
-		DefaultResponse:      "Background task completed.",
+		DefaultResponse:      "",
 		EnableSummary:        false,
 		SendResponse:         true,
 		SuppressToolFeedback: true,
