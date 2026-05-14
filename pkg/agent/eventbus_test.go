@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -903,5 +904,93 @@ func TestAsyncToolResultDeliveryRouting(t *testing.T) {
 				t.Fatalf("shouldQueueAsyncToolResultForParent() = %v, want %v", got, tt.wantQueueParent)
 			}
 		})
+	}
+}
+
+type captureMessagesProvider struct {
+	response string
+	messages []providers.Message
+}
+
+func (p *captureMessagesProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.messages = append([]providers.Message(nil), messages...)
+	return &providers.LLMResponse{Content: p.response}, nil
+}
+
+func (p *captureMessagesProvider) GetDefaultModel() string {
+	return "capture-messages"
+}
+
+func TestProcessAsyncCompletionMessageUsesNoHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace: tmpDir,
+				ModelName: "test-model",
+				MaxTokens: 4096,
+			},
+		},
+	}
+	provider := &captureMessagesProvider{response: "completion summary"}
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, provider)
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := session.BuildMainSessionKey(defaultAgent.ID)
+	defaultAgent.Sessions.AddMessage(sessionKey, "user", "old user message")
+	defaultAgent.Sessions.AddMessage(sessionKey, "assistant", "[System: async:spawn] old background result")
+
+	msg := bus.InboundMessage{
+		Channel:  "system",
+		ChatID:   "telegram:chat-1",
+		SenderID: "async:spawn",
+		Context: bus.InboundContext{
+			Channel:  "system",
+			ChatID:   "telegram:chat-1",
+			ChatType: "direct",
+			SenderID: "async:spawn",
+			Raw: systemFollowUpAsyncCompletionRaw(&bus.InboundContext{
+				Channel:  "telegram",
+				ChatID:   "chat-1",
+				ChatType: "direct",
+			}, "telegram", "chat-1"),
+		},
+		Content: asyncCompletionPrompt("spawn", "fresh background result"),
+	}
+
+	got, err := al.processSystemMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("processSystemMessage failed: %v", err)
+	}
+	if got != "completion summary" {
+		t.Fatalf("response = %q, want completion summary", got)
+	}
+
+	var prompt strings.Builder
+	for _, message := range provider.messages {
+		prompt.WriteString(message.Content)
+		prompt.WriteByte('\n')
+	}
+	promptText := prompt.String()
+	if !strings.Contains(promptText, "fresh background result") {
+		t.Fatalf("prompt did not include fresh async completion result: %q", promptText)
+	}
+	if strings.Contains(promptText, "old background result") || strings.Contains(promptText, "old user message") {
+		t.Fatalf("async completion prompt leaked session history: %q", promptText)
+	}
+
+	history := defaultAgent.Sessions.GetHistory(sessionKey)
+	if len(history) != 2 {
+		t.Fatalf("history length = %d, want 2 existing messages only", len(history))
 	}
 }

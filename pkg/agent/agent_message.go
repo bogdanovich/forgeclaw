@@ -22,6 +22,8 @@ const (
 	systemFollowUpOriginTopicIDKey          = "origin_topic_id"
 	systemFollowUpOriginMessageIDKey        = "origin_message_id"
 	systemFollowUpOriginReplyToMessageIDKey = "origin_reply_to_message_id"
+	systemFollowUpKindKey                   = "kind"
+	systemFollowUpKindAsyncCompletion       = "async_completion"
 )
 
 func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuationTarget, error) {
@@ -335,6 +337,22 @@ func systemFollowUpOriginRaw(origin *bus.InboundContext, channel, chatID string)
 	return raw
 }
 
+func systemFollowUpAsyncCompletionRaw(origin *bus.InboundContext, channel, chatID string) map[string]string {
+	raw := systemFollowUpOriginRaw(origin, channel, chatID)
+	raw[systemFollowUpKindKey] = systemFollowUpKindAsyncCompletion
+	return raw
+}
+
+func isAsyncCompletionSystemMessage(msg bus.InboundMessage) bool {
+	if msg.Channel != "system" {
+		return false
+	}
+	if msg.Context.Raw == nil {
+		return false
+	}
+	return strings.TrimSpace(msg.Context.Raw[systemFollowUpKindKey]) == systemFollowUpKindAsyncCompletion
+}
+
 func (al *AgentLoop) processSystemMessage(
 	ctx context.Context,
 	msg bus.InboundMessage,
@@ -386,6 +404,18 @@ func (al *AgentLoop) processSystemMessage(
 		}
 	}
 
+	if isAsyncCompletionSystemMessage(msg) {
+		return al.processAsyncCompletionMessage(ctx, msg, bus.InboundContext{
+			Channel:          originChannel,
+			ChatID:           originChatID,
+			ChatType:         originChatType,
+			TopicID:          originTopicID,
+			SenderID:         msg.SenderID,
+			MessageID:        originMessageID,
+			ReplyToMessageID: originReplyToMessageID,
+		})
+	}
+
 	// Extract subagent result from message content
 	// Format: "Task 'label' completed.\n\nResult:\n<actual content>"
 	content := msg.Content
@@ -433,5 +463,42 @@ func (al *AgentLoop) processSystemMessage(
 		DefaultResponse: "Background task completed.",
 		EnableSummary:   false,
 		SendResponse:    true,
+	})
+}
+
+func (al *AgentLoop) processAsyncCompletionMessage(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	origin bus.InboundContext,
+) (string, error) {
+	if constants.IsInternalChannel(origin.Channel) {
+		logger.InfoCF("agent", "Async completion received for internal channel",
+			map[string]any{
+				"sender_id":   msg.SenderID,
+				"content_len": len(msg.Content),
+				"channel":     origin.Channel,
+			})
+		return "", nil
+	}
+
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		return "", fmt.Errorf("no default agent for async completion message")
+	}
+
+	sessionKey := session.BuildMainSessionKey(agent.ID)
+	dispatch := DispatchRequest{
+		SessionKey:     sessionKey,
+		UserMessage:    msg.Content,
+		InboundContext: &origin,
+	}
+
+	return al.runAgentLoop(ctx, agent, processOptions{
+		Dispatch:             dispatch,
+		DefaultResponse:      "Background task completed.",
+		EnableSummary:        false,
+		SendResponse:         true,
+		SuppressToolFeedback: true,
+		NoHistory:            true,
 	})
 }

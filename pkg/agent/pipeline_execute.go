@@ -648,9 +648,9 @@ toolLoop:
 					ChatType: "direct",
 					SenderID: fmt.Sprintf("async:%s", asyncToolName),
 					TopicID:  originTopicID(ts.opts.Dispatch.InboundContext),
-					Raw:      systemFollowUpOriginRaw(ts.opts.Dispatch.InboundContext, ts.channel, ts.chatID),
+					Raw:      systemFollowUpAsyncCompletionRaw(ts.opts.Dispatch.InboundContext, ts.channel, ts.chatID),
 				},
-				Content: content,
+				Content: asyncCompletionPrompt(asyncToolName, content),
 			})
 		}
 
