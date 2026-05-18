@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 func TestSpawnStatusTool_Name(t *testing.T) {
@@ -434,5 +436,40 @@ func TestSpawnStatusTool_RestoresTasksFromPersistentRegistry(t *testing.T) {
 	}
 	if !strings.Contains(result.ForLLM, "saved result") {
 		t.Fatalf("Expected restored result, got:\n%s", result.ForLLM)
+	}
+}
+
+func TestSpawnStatusTool_DoesNotRestoreExpiredTerminalTasks(t *testing.T) {
+	provider := &MockLLMProvider{}
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	endedAt := time.Now().Add(-8 * 24 * time.Hour).UnixMilli()
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID:          "subagent-1",
+		Runtime:         taskregistry.RuntimeSubagent,
+		TaskKind:        "spawn",
+		Task:            "expired task",
+		Status:          taskregistry.StatusSucceeded,
+		DeliveryStatus:  taskregistry.DeliveryDelivered,
+		NotifyPolicy:    taskregistry.NotifyDoneOnly,
+		CreatedAt:       endedAt,
+		StartedAt:       endedAt,
+		EndedAt:         endedAt,
+		LastEventAt:     endedAt,
+		CleanupAfter:    time.Now().Add(-time.Hour).UnixMilli(),
+		TerminalSummary: "old result",
+	}); err != nil {
+		t.Fatalf("Upsert expired task: %v", err)
+	}
+
+	reloaded := NewSubagentManager(provider, "test-model", workspace)
+	tool := NewSpawnStatusTool(reloaded)
+	result := tool.Execute(context.Background(), map[string]any{"task_id": "subagent-1"})
+
+	if !result.IsError {
+		t.Fatalf("Expected expired restored task to be absent, got: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "No subagent found") {
+		t.Fatalf("Expected not-found message for expired task, got: %s", result.ForLLM)
 	}
 }
