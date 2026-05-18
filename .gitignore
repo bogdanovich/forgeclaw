@@ -39,7 +39,7 @@ coverage.html
 # Ralph workspace
 ralph/
 .ralph/
-tasks/
+/tasks/
 
 # Plans
 docs/plans/
