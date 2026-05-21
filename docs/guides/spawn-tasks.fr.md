@@ -18,7 +18,7 @@
 | ----------------------- | --------------------------------------------------------------- |
 | **spawn**               | Crée un subagent asynchrone, ne bloque pas le heartbeat         |
 | **Independent context** | Le subagent a son propre contexte, pas d'historique de session  |
-| **message tool**        | Le subagent communique directement avec l'utilisateur via l'outil message |
+| **Delivery mode**       | La completion peut etre livree a l'utilisateur, au parent, ou aux deux |
 | **Non-blocking**        | Après le spawn, le heartbeat continue à la tâche suivante       |
 
 #### Fonctionnement de la Communication du Subagent
@@ -34,7 +34,7 @@ Continue à la tâche suivante  Le subagent travaille indépendamment
     ↓                           ↓
 Toutes les tâches terminées  Le subagent utilise l'outil "message"
     ↓                           ↓
-Répond HEARTBEAT_OK          L'utilisateur reçoit le résultat directement
+Répond HEARTBEAT_OK          Le coordinateur de livraison route le résultat
 ```
 
 Le subagent a accès aux outils (message, web_search, etc.) et peut communiquer avec l'utilisateur indépendamment sans passer par l'agent principal.

@@ -120,7 +120,7 @@ InboundMessage
 5. 后续读写时，`JSONLBackend.ResolveSessionKey` 会先把 alias 映射回 canonical key。
 
 `MainSessionKey` 和普通聊天会话是分开的。
-它主要服务于 agent 级、系统级的上下文场景，比如 `processSystemMessage`。
+它主要服务于需要稳定 agent 级会话的兼容场景，比如 legacy `processSystemMessage` adapter。新的异步任务 completion 不应再通过 synthetic system inbound message 传输，而应使用 typed `AsyncCompletionInput` delivery。
 
 ## Scope 构建规则
 

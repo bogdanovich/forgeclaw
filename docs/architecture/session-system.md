@@ -119,7 +119,7 @@ More concretely:
 5. During later reads or writes, `JSONLBackend.ResolveSessionKey` maps aliases back onto the canonical key.
 
 The main session key is separate from routed chat sessions.
-It is mainly used for agent-level or system-style flows that need one stable per-agent conversation, for example `processSystemMessage`.
+It is used for agent-level or compatibility flows that need one stable per-agent conversation, for example legacy `processSystemMessage` adapters. New async task completions should not be transported as synthetic system inbound messages; they use typed `AsyncCompletionInput` delivery instead.
 
 ## Scope Construction Rules
 

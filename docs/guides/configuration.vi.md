@@ -269,7 +269,7 @@ Cho tác vụ chạy lâu (tìm kiếm web, gọi API), sử dụng công cụ `
 | ---------------- | ------------------------------------------------------------------ |
 | **spawn**        | Tạo subagent bất đồng bộ, không chặn heartbeat                    |
 | **Ngữ cảnh độc lập** | Subagent có ngữ cảnh riêng, không có lịch sử phiên             |
-| **message tool** | Subagent giao tiếp trực tiếp với người dùng qua message tool      |
+| **Delivery mode** | Completion can be delivered to the user, the parent agent, or both |
 | **Không chặn**   | Sau khi spawn, heartbeat tiếp tục tác vụ tiếp theo                |
 
 #### Luồng Giao Tiếp Của Subagent

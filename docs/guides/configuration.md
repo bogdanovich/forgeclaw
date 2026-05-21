@@ -630,12 +630,13 @@ For long-running tasks (web search, API calls), use the `spawn` tool to create a
 
 **Key behaviors:**
 
-| Feature                 | Description                                               |
-| ----------------------- | --------------------------------------------------------- |
-| **spawn**               | Creates async subagent, doesn't block heartbeat           |
-| **Independent context** | Subagent has its own context, no session history          |
-| **message tool**        | Subagent communicates with user directly via message tool |
-| **Non-blocking**        | After spawning, heartbeat continues to next task          |
+| Feature                 | Description                                                                 |
+| ----------------------- | --------------------------------------------------------------------------- |
+| **spawn**               | Creates an async task/subagent and records it in the durable task registry  |
+| **Independent context** | Subagent has its own context, no session history                            |
+| **Delivery mode**       | Completion can be delivered to the user, the parent agent, or both          |
+| **Non-blocking**        | After spawning, heartbeat continues to next task                            |
+| **Status**              | Use `task_status` for durable status; `spawn_status` is a spawn-only view   |
 
 #### How Subagent Communication Works
 
@@ -648,12 +649,12 @@ For long task: spawn subagent
     ↓                           ↓
 Continue to next task      Subagent works independently
     ↓                           ↓
-All tasks done            Subagent uses "message" tool
+All tasks done            Subagent completes task record
     ↓                           ↓
-Respond HEARTBEAT_OK      User receives result directly
+Respond HEARTBEAT_OK      Delivery coordinator routes result
 ```
 
-The subagent has access to tools (message, web_search, etc.) and can communicate with the user independently without going through the main agent.
+The subagent has access to its configured tools, but completion delivery is owned by the async task delivery path. A terminal background task usually uses user delivery. A compositional task can route the completion back to the parent so the parent can synthesize the final user-facing answer.
 
 **Configuration:**
 

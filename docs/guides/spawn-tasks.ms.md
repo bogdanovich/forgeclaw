@@ -18,7 +18,7 @@
 | ----------------------- | --------------------------------------------------------- |
 | **spawn**               | Mencipta sub-agen async, tidak menyekat heartbeat         |
 | **Independent context** | Sub-agen mempunyai konteks sendiri, tiada sejarah sesi    |
-| **message tool**        | Sub-agen berkomunikasi terus dengan pengguna melalui message tool |
+| **Delivery mode**       | Completion boleh dihantar kepada pengguna, parent agent, atau kedua-duanya |
 | **Non-blocking**        | Selepas spawn, heartbeat terus ke tugasan seterusnya      |
 
 #### Cara Komunikasi Sub-agen Berfungsi
@@ -34,7 +34,7 @@ Terus ke tugasan seterusnya  Sub-agen bekerja secara bebas
     ↓                           ↓
 Semua tugasan selesai     Sub-agen menggunakan tool "message"
     ↓                           ↓
-Balas HEARTBEAT_OK        Pengguna menerima hasil secara terus
+Balas HEARTBEAT_OK        Delivery coordinator menghalakan hasil
 ```
 
 Sub-agen mempunyai akses kepada tools (message, web_search, dan sebagainya) dan boleh berkomunikasi dengan pengguna secara bebas tanpa melalui agen utama.

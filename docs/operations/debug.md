@@ -42,7 +42,7 @@ When debug mode is active, the agent emits structured log entries at each stage 
 | `Tool call: <name>(<args>)` | INFO | `tool`, `iteration` | The tool name and a preview of its arguments (truncated to 200 chars) |
 | `Sent tool result to user` | DEBUG | `tool`, `content_len` | Fired when a tool result is forwarded to the chat channel |
 | `TTL tick after tool execution` | DEBUG | `agent_id`, `iteration` | MCP tool-discovery TTL decrement after each tool round |
-| `Async tool completed, publishing result` | INFO | `tool`, `content_len`, `channel` | Only for tools that run asynchronously in the background |
+| `Async tool completed, publishing result` | INFO | `tool`, `content_len`, `channel` | Emitted by the async delivery coordinator for background completions |
 
 ### Reading a tool call log entry
 
@@ -69,7 +69,7 @@ Debug logs are server-side only. If you want the agent to send a visible notific
         "separate_messages": true,
         "subagents": true,
         "animation_interval_secs": 3,
-        "edit_min_interval_seconds": 0
+        "edit_min_interval_seconds": 0,
         "style": "raw"
       }
     }
@@ -100,6 +100,8 @@ Set `style` to `working_summary` to use a compact, non-argument progress message
   }
 }
 ```
+
+Feedback updates are coordinated per turn. Editable channels reuse a tracked progress message, respect `edit_min_interval_seconds`, and close the progress message before the final assistant reply or handled media result so users do not see a stale "Working..." state.
 
 The message starts as:
 

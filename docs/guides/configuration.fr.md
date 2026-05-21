@@ -268,7 +268,7 @@ Pour les tâches longues (recherche web, appels API), utilisez l'outil `spawn` p
 | ---------------- | ------------------------------------------------------------------ |
 | **spawn**        | Crée un subagent asynchrone, ne bloque pas le heartbeat            |
 | **Contexte indépendant** | Le subagent a son propre contexte, sans historique de session |
-| **message tool** | Le subagent communique directement avec l'utilisateur              |
+| **Delivery mode** | La completion peut etre livree a l'utilisateur, au parent, ou aux deux |
 | **Non-bloquant** | Après le spawn, le heartbeat continue vers la tâche suivante       |
 
 #### Flux de Communication du Subagent

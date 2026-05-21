@@ -27,7 +27,7 @@ PicoClaw 通过 `spawn` 工具支持**异步任务执行**。主要由 **Heartbe
 | ---------------- | ---------------------------------------- |
 | **spawn**        | 创建异步子 Agent，不阻塞主心跳进程       |
 | **独立上下文**   | 子 Agent 拥有独立上下文，无会话历史      |
-| **message tool** | 子 Agent 通过 message 工具直接与用户通信 |
+| **Delivery mode** | completion 可投递给用户、父 Agent，或两者 |
 | **非阻塞**       | spawn 后，心跳继续处理下一个任务         |
 
 #### 子 Agent 通信原理
@@ -43,7 +43,7 @@ Agent 读取 HEARTBEAT.md
     ↓                           ↓
 所有任务完成                 子 Agent 使用 "message" 工具
     ↓                           ↓
-响应 HEARTBEAT_OK            用户直接收到结果
+响应 HEARTBEAT_OK            delivery coordinator 路由结果
 ```
 
 子 Agent 可以访问工具（message, web_search 等），并且无需通过主 Agent 即可独立与用户通信。

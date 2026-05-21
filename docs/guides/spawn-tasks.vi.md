@@ -18,7 +18,7 @@
 | ----------------------- | --------------------------------------------------------- |
 | **spawn**               | Creates async subagent, doesn't block heartbeat           |
 | **Independent context** | Subagent has its own context, no session history          |
-| **message tool**        | Subagent communicates with user directly via message tool |
+| **Delivery mode**       | Completion can be delivered to the user, the parent agent, or both |
 | **Non-blocking**        | After spawning, heartbeat continues to next task          |
 
 #### Cách Giao Tiếp Subagent Hoạt Động
@@ -37,7 +37,7 @@ Tất cả tác vụ hoàn thành     Subagent sử dụng công cụ "message"
 Phản hồi HEARTBEAT_OK        Người dùng nhận kết quả trực tiếp
 ```
 
-Subagent có quyền truy cập công cụ (message, web_search, v.v.) và có thể giao tiếp với người dùng độc lập mà không cần qua agent chính.
+Subagent có quyền truy cập công cụ được cấu hình, nhưng completion delivery đi qua async task delivery path. Dùng `task_status` để xem trạng thái bền vững.
 
 **Cấu hình:**
 

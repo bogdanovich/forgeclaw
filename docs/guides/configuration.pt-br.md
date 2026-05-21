@@ -269,7 +269,7 @@ Para tarefas de longa duração (busca na web, chamadas de API), use a ferrament
 | ---------------- | ------------------------------------------------------------------ |
 | **spawn**        | Cria subagente assíncrono, não bloqueia o heartbeat                |
 | **Contexto independente** | Subagente tem seu próprio contexto, sem histórico de sessão |
-| **message tool** | Subagente comunica diretamente com o usuário via message tool      |
+| **Delivery mode** | Completion can be delivered to the user, the parent agent, or both |
 | **Não-bloqueante** | Após o spawn, o heartbeat continua para a próxima tarefa         |
 
 #### Fluxo de Comunicação do Subagente
@@ -285,7 +285,7 @@ Continua próxima tarefa    Subagente trabalha independentemente
     ↓                           ↓
 Todas tarefas concluídas   Subagente usa ferramenta "message"
     ↓                           ↓
-Responde HEARTBEAT_OK      Usuário recebe resultado diretamente
+Responde HEARTBEAT_OK      Coordenador de entrega roteia o resultado
 ```
 
 **Configuração:**

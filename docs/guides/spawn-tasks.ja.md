@@ -25,7 +25,7 @@
 | ---------------- | ------------------------------------------------ |
 | **spawn**        | 非同期サブ Agent を作成、メインハートビートをブロックしない |
 | **独立コンテキスト** | サブ Agent は独自のコンテキストを持ち、セッション履歴なし |
-| **message tool** | サブ Agent は message ツールでユーザーと直接通信   |
+| **Delivery mode** | completion はユーザー、親 Agent、または両方へ配送できます |
 | **ノンブロッキング** | spawn 後、ハートビートは次のタスクに進む         |
 
 #### サブ Agent の通信の仕組み
@@ -41,7 +41,7 @@ Agent が HEARTBEAT.md を読み取り
     ↓                           ↓
 すべてのタスク完了           サブ Agent が "message" ツールを使用
     ↓                           ↓
-HEARTBEAT_OK を応答          ユーザーが直接結果を受信
+HEARTBEAT_OK を応答          delivery coordinator が結果を配送
 ```
 
 サブ Agent はツール（message、web_search など）にアクセスでき、メイン Agent を経由せずにユーザーと独立して通信できます。
