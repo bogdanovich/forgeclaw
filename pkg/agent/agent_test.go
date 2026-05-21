@@ -88,6 +88,7 @@ func newBlockingMediaChannel() *blockingMediaChannel {
 type recordingChannelManager struct {
 	dismissed         []string
 	dismissedSessions []string
+	sentMedia         []bus.OutboundMediaMessage
 }
 
 func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
@@ -105,6 +106,7 @@ func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.Outbo
 }
 
 func (m *recordingChannelManager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
+	m.sentMedia = append(m.sentMedia, msg)
 	return nil
 }
 
@@ -1367,6 +1369,82 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	}
 	if len(last.Attachments) != 1 {
 		t.Fatalf("expected handled assistant summary attachments in history, got %+v", last.Attachments)
+	}
+}
+
+func TestProcessMessage_HandledMediaDismissesToolFeedbackWithoutFinalText(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				ToolFeedback: config.ToolFeedbackConfig{
+					Enabled: true,
+				},
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &handledMediaProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	store := media.NewFileMediaStore()
+	al.SetMediaStore(store)
+	channelManager := &recordingChannelManager{}
+	al.channelManager = channelManager
+
+	imagePath := filepath.Join(tmpDir, "screen.png")
+	if err := os.WriteFile(imagePath, []byte("fake screenshot"), 0o644); err != nil {
+		t.Fatalf("WriteFile(imagePath) error = %v", err)
+	}
+	al.RegisterTool(&handledMediaTool{
+		store: store,
+		path:  imagePath,
+	})
+
+	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+		Channel:  "telegram",
+		ChatID:   "chat1",
+		SenderID: "user1",
+		Content:  "take a screenshot of the screen and send it to me",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response != "" {
+		t.Fatalf("expected no final response when media tool already handled delivery, got %q", response)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected exactly 1 LLM call, got %d", provider.calls)
+	}
+	if len(channelManager.sentMedia) != 1 {
+		t.Fatalf("expected media delivery through channel manager, got %d", len(channelManager.sentMedia))
+	}
+	if len(channelManager.dismissed) != 1 || channelManager.dismissed[0] != "telegram:chat1" {
+		t.Fatalf("expected tool feedback dismissal for telegram:chat1, got %+v", channelManager.dismissed)
+	}
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if got := strings.TrimSpace(outbound.Context.Raw[metadataKeyMessageKind]); got != messageKindToolFeedback {
+			t.Fatalf("first outbound kind = %q, want %q; outbound=%+v", got, messageKindToolFeedback, outbound)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected one tool feedback outbound")
+	}
+	select {
+	case extra := <-msgBus.OutboundChan():
+		t.Fatalf("expected no final/empty text after handled media delivery, got %+v", extra)
+	default:
+	}
+	select {
+	case extra := <-msgBus.OutboundMediaChan():
+		t.Fatalf("expected handled media to bypass async media queue, got %+v", extra)
+	default:
 	}
 }
 
