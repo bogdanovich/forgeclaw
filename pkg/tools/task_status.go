@@ -62,10 +62,11 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 	}
 	callerChannel := ToolChannel(ctx)
 	callerChatID := ToolChatID(ctx)
+	callerTopicID := ToolTopicID(ctx)
 
 	if taskID != "" {
 		rec, ok := t.registry.Get(taskID)
-		if !ok || !taskRecordVisibleToCaller(rec, callerChannel, callerChatID) {
+		if !ok || !taskRecordVisibleToCaller(rec, callerChannel, callerChatID, callerTopicID) {
 			return ErrorResult(fmt.Sprintf("No task found with task ID: %s", taskID))
 		}
 		return NewToolResult(formatTaskRecord(rec))
@@ -77,7 +78,7 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		if taskKind != "" && rec.TaskKind != taskKind {
 			continue
 		}
-		if !taskRecordVisibleToCaller(rec, callerChannel, callerChatID) {
+		if !taskRecordVisibleToCaller(rec, callerChannel, callerChatID, callerTopicID) {
 			continue
 		}
 		filtered = append(filtered, rec)
@@ -136,11 +137,14 @@ func optionalTaskStatusStringArg(args map[string]any, key string) (string, error
 	return strings.TrimSpace(value), nil
 }
 
-func taskRecordVisibleToCaller(rec taskregistry.Record, channel, chatID string) bool {
+func taskRecordVisibleToCaller(rec taskregistry.Record, channel, chatID, topicID string) bool {
 	if channel != "" && rec.Channel != "" && rec.Channel != channel {
 		return false
 	}
 	if chatID != "" && rec.ChatID != "" && rec.ChatID != chatID {
+		return false
+	}
+	if topicID != "" && rec.TopicID != "" && rec.TopicID != topicID {
 		return false
 	}
 	return true

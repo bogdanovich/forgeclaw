@@ -89,3 +89,147 @@ func TestTaskStatusTool_TaskID(t *testing.T) {
 		t.Fatalf("unexpected result:\n%s", result.ForLLM)
 	}
 }
+
+func TestTaskStatusTool_ListsSpawnAndDelegateRecords(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	now := time.Now().UnixMilli()
+	records := []taskregistry.Record{
+		{
+			TaskID:         "subagent-1",
+			Runtime:        taskregistry.RuntimeSubagent,
+			TaskKind:       "spawn",
+			Channel:        "telegram",
+			ChatID:         "chat-1",
+			TopicID:        "topic-1",
+			AgentID:        "research",
+			Task:           "background research",
+			Status:         taskregistry.StatusRunning,
+			DeliveryStatus: taskregistry.DeliveryPending,
+			CreatedAt:      now,
+		},
+		{
+			TaskID:         "delegate-1",
+			Runtime:        taskregistry.RuntimeDelegate,
+			TaskKind:       "delegate",
+			Channel:        "telegram",
+			ChatID:         "chat-1",
+			TopicID:        "topic-1",
+			AgentID:        "media",
+			Task:           "download media",
+			Status:         taskregistry.StatusSucceeded,
+			DeliveryStatus: taskregistry.DeliverySessionQueued,
+			CreatedAt:      now + 1,
+		},
+	}
+	for _, rec := range records {
+		if err := registry.Upsert(rec); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", rec.TaskID, err)
+		}
+	}
+
+	tool := NewTaskStatusTool(registry)
+	ctx := WithToolTopicID(WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1")
+	result := tool.Execute(ctx, nil)
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	for _, want := range []string{
+		"Task status report (2 total)",
+		"subagent-1",
+		"subagent/spawn",
+		"delegate-1",
+		"delegate/delegate",
+	} {
+		if !strings.Contains(result.ForLLM, want) {
+			t.Fatalf("result missing %q:\n%s", want, result.ForLLM)
+		}
+	}
+}
+
+func TestTaskStatusTool_TaskKindFilter(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	for _, rec := range []taskregistry.Record{
+		{
+			TaskID:         "subagent-1",
+			Runtime:        taskregistry.RuntimeSubagent,
+			TaskKind:       "spawn",
+			Channel:        "telegram",
+			ChatID:         "chat-1",
+			Status:         taskregistry.StatusRunning,
+			DeliveryStatus: taskregistry.DeliveryPending,
+		},
+		{
+			TaskID:         "delegate-1",
+			Runtime:        taskregistry.RuntimeDelegate,
+			TaskKind:       "delegate",
+			Channel:        "telegram",
+			ChatID:         "chat-1",
+			Status:         taskregistry.StatusSucceeded,
+			DeliveryStatus: taskregistry.DeliverySessionQueued,
+		},
+	} {
+		if err := registry.Upsert(rec); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", rec.TaskID, err)
+		}
+	}
+
+	tool := NewTaskStatusTool(registry)
+	result := tool.Execute(WithToolContext(context.Background(), "telegram", "chat-1"), map[string]any{
+		"task_kind": "delegate",
+	})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "delegate-1") {
+		t.Fatalf("expected delegate record:\n%s", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, "subagent-1") {
+		t.Fatalf("spawn record leaked through delegate filter:\n%s", result.ForLLM)
+	}
+}
+
+func TestTaskStatusTool_TopicScoping(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	for _, rec := range []taskregistry.Record{
+		{
+			TaskID:         "delegate-topic-1",
+			Runtime:        taskregistry.RuntimeDelegate,
+			TaskKind:       "delegate",
+			Channel:        "telegram",
+			ChatID:         "chat-1",
+			TopicID:        "topic-1",
+			Status:         taskregistry.StatusSucceeded,
+			DeliveryStatus: taskregistry.DeliverySessionQueued,
+		},
+		{
+			TaskID:         "delegate-topic-2",
+			Runtime:        taskregistry.RuntimeDelegate,
+			TaskKind:       "delegate",
+			Channel:        "telegram",
+			ChatID:         "chat-1",
+			TopicID:        "topic-2",
+			Status:         taskregistry.StatusSucceeded,
+			DeliveryStatus: taskregistry.DeliverySessionQueued,
+		},
+	} {
+		if err := registry.Upsert(rec); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", rec.TaskID, err)
+		}
+	}
+
+	tool := NewTaskStatusTool(registry)
+	ctx := WithToolTopicID(WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1")
+	result := tool.Execute(ctx, nil)
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "delegate-topic-1") {
+		t.Fatalf("expected topic-1 record:\n%s", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, "delegate-topic-2") {
+		t.Fatalf("topic-2 record leaked into topic-1 status:\n%s", result.ForLLM)
+	}
+}
