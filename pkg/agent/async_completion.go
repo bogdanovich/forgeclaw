@@ -3,7 +3,22 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
+
+// AsyncCompletionInput is the typed internal form of an async tool completion
+// that needs parent-agent synthesis. Legacy system inbound messages are still
+// adapted into this shape for compatibility, but new runtime code should call
+// processAsyncCompletion directly instead of publishing a synthetic chat
+// message.
+type AsyncCompletionInput struct {
+	SourceTool   string
+	CompletionID string
+	Content      string
+	Origin       bus.InboundContext
+	SenderID     string
+}
 
 func asyncCompletionID(turnID, toolCallID, toolName string) string {
 	parts := []string{

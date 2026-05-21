@@ -477,11 +477,25 @@ func (al *AgentLoop) processAsyncCompletionMessage(
 	msg bus.InboundMessage,
 	origin bus.InboundContext,
 ) (response string, err error) {
+	return al.processAsyncCompletion(ctx, AsyncCompletionInput{
+		SourceTool:   strings.TrimPrefix(strings.TrimSpace(msg.SenderID), "async:"),
+		CompletionID: strings.TrimSpace(msg.Context.Raw[systemFollowUpIDKey]),
+		Content:      msg.Content,
+		Origin:       origin,
+		SenderID:     msg.SenderID,
+	})
+}
+
+func (al *AgentLoop) processAsyncCompletion(
+	ctx context.Context,
+	input AsyncCompletionInput,
+) (response string, err error) {
+	origin := input.Origin
 	if constants.IsInternalChannel(origin.Channel) {
 		logger.InfoCF("agent", "Async completion received for internal channel",
 			map[string]any{
-				"sender_id":   msg.SenderID,
-				"content_len": len(msg.Content),
+				"sender_id":   input.SenderID,
+				"content_len": len(input.Content),
 				"channel":     origin.Channel,
 			})
 		return "", nil
@@ -489,16 +503,16 @@ func (al *AgentLoop) processAsyncCompletionMessage(
 
 	agent := al.GetRegistry().GetDefaultAgent()
 	if agent == nil {
-		return "", fmt.Errorf("no default agent for async completion message")
+		return "", fmt.Errorf("no default agent for async completion")
 	}
 
-	completionID := strings.TrimSpace(msg.Context.Raw[systemFollowUpIDKey])
+	completionID := strings.TrimSpace(input.CompletionID)
 	if completionID != "" {
 		if _, loaded := al.asyncCompletions.LoadOrStore(completionID, struct{}{}); loaded {
 			logger.InfoCF("agent", "Skipping duplicate async completion",
 				map[string]any{
 					"completion_id": completionID,
-					"sender_id":     msg.SenderID,
+					"sender_id":     input.SenderID,
 				})
 			return "", nil
 		}
@@ -512,7 +526,7 @@ func (al *AgentLoop) processAsyncCompletionMessage(
 	sessionKey := session.BuildMainSessionKey(agent.ID)
 	dispatch := DispatchRequest{
 		SessionKey:     sessionKey,
-		UserMessage:    msg.Content,
+		UserMessage:    input.Content,
 		InboundContext: &origin,
 	}
 

@@ -776,6 +776,37 @@ func waitForOutboundMessage(t *testing.T, ch <-chan bus.OutboundMessage, timeout
 	}
 }
 
+func waitForToolCallProviderCalls(t *testing.T, provider *toolCallProvider, timeout time.Duration, minCalls int) {
+	t.Helper()
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		provider.mu.Lock()
+		calls := provider.calls
+		provider.mu.Unlock()
+		if calls >= minCalls {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("timeout waiting for provider calls >= %d, got %d", minCalls, calls)
+		}
+	}
+}
+
+func assertNoSyntheticAsyncCompletionInbound(t *testing.T, msgBus *bus.MessageBus) {
+	t.Helper()
+	select {
+	case inbound := <-msgBus.InboundChan():
+		if isAsyncCompletionSystemMessage(inbound) {
+			t.Fatalf("unexpected synthetic async completion inbound: %+v", inbound)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 var (
 	_ tools.Tool          = (*mockCustomTool)(nil)
 	_ tools.AsyncExecutor = (*asyncFollowUpTool)(nil)
@@ -1182,15 +1213,8 @@ func TestAgentLoop_AsyncParentOnlyQueuesFollowUpWithoutUserDelivery(t *testing.T
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for async completion")
 	}
-	inbound := waitForInboundMessage(t, msgBus.InboundChan(), 2*time.Second, func(msg bus.InboundMessage) bool {
-		return msg.Context.Channel == "system" && strings.Contains(msg.Content, "parent-only completion")
-	})
-	if inbound.Context.TopicID != "topic-1" {
-		t.Fatalf("inbound topic_id = %q, want topic-1", inbound.Context.TopicID)
-	}
-	if !isAsyncCompletionSystemMessage(inbound) {
-		t.Fatalf("expected async completion system message, got %+v", inbound.Context.Raw)
-	}
+	waitForToolCallProviderCalls(t, provider, 2*time.Second, 3)
+	assertNoSyntheticAsyncCompletionInbound(t, msgBus)
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		if strings.Contains(outbound.Content, "do not send this directly") {
@@ -1269,12 +1293,8 @@ func TestAgentLoop_AsyncUserAndParentPublishesUserAndQueuesFollowUp(t *testing.T
 	if outbound.Context.TopicID != "topic-1" {
 		t.Fatalf("outbound topic_id = %q, want topic-1", outbound.Context.TopicID)
 	}
-	inbound := waitForInboundMessage(t, msgBus.InboundChan(), 2*time.Second, func(msg bus.InboundMessage) bool {
-		return msg.Context.Channel == "system" && strings.Contains(msg.Content, "parent completion")
-	})
-	if inbound.Context.TopicID != "topic-1" {
-		t.Fatalf("inbound topic_id = %q, want topic-1", inbound.Context.TopicID)
-	}
+	waitForToolCallProviderCalls(t, provider, 2*time.Second, 3)
+	assertNoSyntheticAsyncCompletionInbound(t, msgBus)
 }
 
 type captureMessagesProvider struct {

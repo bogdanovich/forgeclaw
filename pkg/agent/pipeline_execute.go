@@ -659,19 +659,44 @@ toolLoop:
 					ContentLen: len(content),
 				},
 			)
-			pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer pubCancel()
-			_ = al.bus.PublishInbound(pubCtx, bus.InboundMessage{
-				Context: bus.InboundContext{
-					Channel:  "system",
-					ChatID:   fmt.Sprintf("%s:%s", ts.channel, ts.chatID),
-					ChatType: "direct",
-					SenderID: fmt.Sprintf("async:%s", asyncToolName),
-					TopicID:  originTopicID(ts.opts.Dispatch.InboundContext),
-					Raw:      systemFollowUpAsyncCompletionRaw(ts.opts.Dispatch.InboundContext, ts.channel, ts.chatID, completionID),
-				},
-				Content: asyncCompletionPrompt(asyncToolName, content),
-			})
+			origin := bus.InboundContext{
+				Channel:  ts.channel,
+				ChatID:   ts.chatID,
+				ChatType: "direct",
+				SenderID: fmt.Sprintf("async:%s", asyncToolName),
+				TopicID:  originTopicID(ts.opts.Dispatch.InboundContext),
+			}
+			if ts.opts.Dispatch.InboundContext != nil {
+				origin = *cloneInboundContext(ts.opts.Dispatch.InboundContext)
+				if strings.TrimSpace(origin.Channel) == "" {
+					origin.Channel = ts.channel
+				}
+				if strings.TrimSpace(origin.ChatID) == "" {
+					origin.ChatID = ts.chatID
+				}
+				if strings.TrimSpace(origin.ChatType) == "" {
+					origin.ChatType = "direct"
+				}
+				origin.SenderID = fmt.Sprintf("async:%s", asyncToolName)
+			}
+			completionCtx, completionCancel := context.WithTimeout(context.Background(), asyncCompletionSynthesisTimeout)
+			defer completionCancel()
+			if _, err := al.processAsyncCompletion(completionCtx, AsyncCompletionInput{
+				SourceTool:   asyncToolName,
+				CompletionID: completionID,
+				Content:      asyncCompletionPrompt(asyncToolName, content),
+				Origin:       origin,
+				SenderID:     fmt.Sprintf("async:%s", asyncToolName),
+			}); err != nil {
+				logger.WarnCF("agent", "Failed to process async completion",
+					map[string]any{
+						"tool":          asyncToolName,
+						"completion_id": completionID,
+						"channel":       ts.channel,
+						"chat_id":       ts.chatID,
+						"error":         err.Error(),
+					})
+			}
 		}
 
 		toolStart := time.Now()
