@@ -11,7 +11,7 @@ PicoClaw background work now uses an explicit task/completion/delivery shape:
 
 ## Status Tools
 
-Use `task_status` for durable task history across spawn, delegate, and future background runtimes. It is the source of truth for completed tasks and restart-persistent state.
+Use `task_status` for durable task history across spawn, delegate, cron executions, and future background runtimes. It is the source of truth for completed tasks and restart-persistent state.
 
 `spawn_status` is kept as a compatibility/debug view for tasks started specifically by the `spawn` tool. It is backed by the same durable registry but intentionally remains spawn-only.
 
@@ -25,6 +25,7 @@ New producers must not enqueue async completions through `PublishInbound(system)
 
 - Run a simple media task that only sends a video.
 - Run a composite media task that sends a video and returns text for parent synthesis.
+- Run or trigger a scheduled cron task and confirm it appears as `runtime=cron`.
 - Check `task_status` after completion.
 - Restart the service.
 - Check `task_status` again and confirm completed tasks are still visible.

@@ -11,6 +11,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 type stubJobExecutor struct {
@@ -276,6 +277,8 @@ func TestCronTool_ExecuteJobPublishesErrorWhenExecDisabled(t *testing.T) {
 func TestCronTool_ExecuteJobPublishesAgentResponse(t *testing.T) {
 	executor := &stubJobExecutor{response: "generated reply"}
 	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	tool.SetTaskRegistry(registry)
 
 	job := &cron.CronJob{ID: "job-1"}
 	job.Payload.Channel = "telegram"
@@ -306,6 +309,26 @@ func TestCronTool_ExecuteJobPublishesAgentResponse(t *testing.T) {
 	}
 	if executor.publishedChan != "telegram" || executor.publishedChatID != "chat-1" {
 		t.Fatalf("published target = %s/%s, want telegram/chat-1", executor.publishedChan, executor.publishedChatID)
+	}
+
+	rec := singleCronTaskRecord(t, registry)
+	if rec.Runtime != taskregistry.RuntimeCron || rec.TaskKind != "cron" {
+		t.Fatalf("runtime/task_kind = %s/%s, want cron/cron", rec.Runtime, rec.TaskKind)
+	}
+	if rec.Status != taskregistry.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", rec.Status)
+	}
+	if rec.DeliveryStatus != taskregistry.DeliveryDelivered {
+		t.Fatalf("DeliveryStatus = %q, want delivered", rec.DeliveryStatus)
+	}
+	if rec.Channel != "telegram" || rec.ChatID != "chat-1" {
+		t.Fatalf("scope = %s/%s, want telegram/chat-1", rec.Channel, rec.ChatID)
+	}
+	if rec.Task != "send me a poem" {
+		t.Fatalf("Task = %q, want prompt", rec.Task)
+	}
+	if rec.TerminalSummary != "generated reply" {
+		t.Fatalf("TerminalSummary = %q, want generated reply", rec.TerminalSummary)
 	}
 }
 
@@ -387,6 +410,8 @@ func TestCronTool_ExecuteJobReturnsErrorWithoutPublish(t *testing.T) {
 		err:      fmt.Errorf("agent failure"),
 	}
 	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	tool.SetTaskRegistry(registry)
 
 	job := &cron.CronJob{ID: "job-err"}
 	job.Payload.Channel = "telegram"
@@ -401,4 +426,58 @@ func TestCronTool_ExecuteJobReturnsErrorWithoutPublish(t *testing.T) {
 	if executor.publishedResp != "" {
 		t.Fatalf("unexpected publish on error path: %q", executor.publishedResp)
 	}
+
+	rec := singleCronTaskRecord(t, registry)
+	if rec.Status != taskregistry.StatusFailed {
+		t.Fatalf("Status = %q, want failed", rec.Status)
+	}
+	if rec.DeliveryStatus != taskregistry.DeliveryFailed {
+		t.Fatalf("DeliveryStatus = %q, want failed", rec.DeliveryStatus)
+	}
+	if !strings.Contains(rec.Error, "agent failure") {
+		t.Fatalf("Error = %q, want agent failure", rec.Error)
+	}
+}
+
+func TestCronTool_ExecuteJobCommandRecordsTaskRegistry(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Exec.Enabled = false
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	tool.SetTaskRegistry(registry)
+	job := &cron.CronJob{ID: "job-command"}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Command = "df -h"
+
+	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
+		t.Fatalf("ExecuteJob() = %q, want ok", got)
+	}
+
+	rec := singleCronTaskRecord(t, registry)
+	if rec.Status != taskregistry.StatusFailed {
+		t.Fatalf("Status = %q, want failed", rec.Status)
+	}
+	if rec.DeliveryStatus != taskregistry.DeliveryDelivered {
+		t.Fatalf("DeliveryStatus = %q, want delivered", rec.DeliveryStatus)
+	}
+	if rec.Task != "df -h" {
+		t.Fatalf("Task = %q, want command", rec.Task)
+	}
+	if !strings.Contains(rec.TerminalSummary, "command execution is disabled") {
+		t.Fatalf("TerminalSummary = %q, want command disabled", rec.TerminalSummary)
+	}
+}
+
+func singleCronTaskRecord(t *testing.T, registry *taskregistry.Registry) taskregistry.Record {
+	t.Helper()
+	records := registry.List()
+	if len(records) != 1 {
+		t.Fatalf("task record count = %d, want 1: %+v", len(records), records)
+	}
+	if !strings.HasPrefix(records[0].TaskID, "cron-") {
+		t.Fatalf("TaskID = %q, want cron-*", records[0].TaskID)
+	}
+	return records[0]
 }

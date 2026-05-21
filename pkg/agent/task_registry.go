@@ -33,6 +33,12 @@ func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Re
 	return registry
 }
 
+// TaskRegistryForWorkspace returns the durable task registry shared by agent
+// tools and gateway-managed runtimes for the given workspace.
+func (al *AgentLoop) TaskRegistryForWorkspace(workspace string) *taskregistry.Registry {
+	return al.taskRegistryForWorkspace(workspace)
+}
+
 func (al *AgentLoop) updateAsyncTaskDeliveryStatus(
 	workspace string,
 	taskID string,

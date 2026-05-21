@@ -12,6 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -35,6 +36,7 @@ type CronTool struct {
 	execTool     *ExecTool
 	allowCommand bool
 	execEnabled  bool
+	taskRegistry *taskregistry.Registry
 }
 
 // NewCronTool creates a new CronTool
@@ -70,6 +72,12 @@ func NewCronTool(
 		allowCommand: allowCommand,
 		execEnabled:  execEnabled,
 	}, nil
+}
+
+func (t *CronTool) SetTaskRegistry(registry *taskregistry.Registry) {
+	if t != nil {
+		t.taskRegistry = registry
+	}
 }
 
 // Name returns the tool name
@@ -309,6 +317,7 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	if chatID == "" {
 		chatID = "direct"
 	}
+	taskID := t.startCronTaskRecord(job, channel, chatID)
 
 	// Execute command if present
 	if job.Payload.Command != "" {
@@ -316,10 +325,11 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 			output := "Error executing scheduled command: command execution is disabled"
 			pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer pubCancel()
-			t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+			err := t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
 				Context: bus.NewOutboundContext(channel, chatID, ""),
 				Content: output,
 			})
+			t.finishCronTaskRecord(taskID, taskregistry.StatusFailed, cronDeliveryStatusForPublish(err), output, err)
 			return "ok"
 		}
 
@@ -339,10 +349,15 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 
 		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer pubCancel()
-		t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+		err := t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
 			Context: bus.NewOutboundContext(channel, chatID, ""),
 			Content: output,
 		})
+		if result.IsError {
+			t.finishCronTaskRecord(taskID, taskregistry.StatusFailed, cronDeliveryStatusForPublish(err), output, err)
+		} else {
+			t.finishCronTaskRecord(taskID, taskregistry.StatusSucceeded, cronDeliveryStatusForPublish(err), output, err)
+		}
 		return "ok"
 	}
 
@@ -371,15 +386,85 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		)
 	}
 	if err != nil {
+		t.finishCronTaskRecord(taskID, taskregistry.StatusFailed, taskregistry.DeliveryFailed, "", err)
 		return fmt.Sprintf("Error: %v", err)
 	}
 
 	if response != "" {
 		trimmed := strings.TrimSpace(response)
 		if strings.EqualFold(trimmed, "NO_REPLY") || strings.EqualFold(trimmed, "HEARTBEAT_OK") {
+			t.finishCronTaskRecord(taskID, taskregistry.StatusSucceeded, taskregistry.DeliveryNotApplicable, trimmed, nil)
 			return "ok"
 		}
 		t.executor.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
+		t.finishCronTaskRecord(taskID, taskregistry.StatusSucceeded, taskregistry.DeliveryDelivered, response, nil)
+		return "ok"
 	}
+	t.finishCronTaskRecord(taskID, taskregistry.StatusSucceeded, taskregistry.DeliveryNotApplicable, "", nil)
 	return "ok"
+}
+
+func (t *CronTool) startCronTaskRecord(job *cron.CronJob, channel, chatID string) string {
+	if t == nil || t.taskRegistry == nil || job == nil {
+		return ""
+	}
+	runID := uuid.New().String()
+	jobID := strings.TrimSpace(job.ID)
+	if jobID == "" {
+		jobID = "unknown"
+	}
+	taskID := fmt.Sprintf("cron-%s-%s", jobID, runID)
+	taskText := job.Payload.Message
+	if strings.TrimSpace(job.Payload.Command) != "" {
+		taskText = job.Payload.Command
+	}
+	_ = t.taskRegistry.Upsert(taskregistry.Record{
+		TaskID:         taskID,
+		Runtime:        taskregistry.RuntimeCron,
+		TaskKind:       "cron",
+		Channel:        channel,
+		ChatID:         chatID,
+		Label:          job.Name,
+		Task:           taskText,
+		Status:         taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+		NotifyPolicy:   taskregistry.NotifyDoneOnly,
+		DeliveryMode:   "deliver",
+	})
+	return taskID
+}
+
+func (t *CronTool) finishCronTaskRecord(
+	taskID string,
+	status taskregistry.Status,
+	delivery taskregistry.DeliveryStatus,
+	summary string,
+	err error,
+) {
+	if t == nil || t.taskRegistry == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	now := time.Now().UnixMilli()
+	_ = t.taskRegistry.Update(taskID, func(rec *taskregistry.Record) {
+		rec.Status = status
+		rec.DeliveryStatus = delivery
+		rec.EndedAt = now
+		rec.LastEventAt = now
+		rec.TerminalSummary = strings.TrimSpace(summary)
+		if err != nil {
+			rec.Error = err.Error()
+			rec.DeliveryError = err.Error()
+		}
+		if delivery == taskregistry.DeliveryDelivered || delivery == taskregistry.DeliveryNotApplicable {
+			rec.DeliveredAt = now
+			rec.DeliveryError = ""
+		}
+	})
+}
+
+func cronDeliveryStatusForPublish(err error) taskregistry.DeliveryStatus {
+	if err != nil {
+		return taskregistry.DeliveryFailed
+	}
+	return taskregistry.DeliveryDelivered
 }

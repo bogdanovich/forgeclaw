@@ -805,6 +805,7 @@ func setupCronTool(
 		if err != nil {
 			return nil, fmt.Errorf("critical error during CronTool initialization: %w", err)
 		}
+		cronTool.SetTaskRegistry(agentLoop.TaskRegistryForWorkspace(workspace))
 
 		agentLoop.RegisterTool(cronTool)
 	}

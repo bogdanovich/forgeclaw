@@ -6,8 +6,8 @@
 //
 //	TaskRegistry -> typed async completion event -> delivery coordinator
 //
-// Today the registry is used by spawn/subagent status so completed background
-// work survives manager recreation and service restarts. A future delivery
-// coordinator can use the same records to route user_only, parent_only, and
-// user_and_parent completions, then update DeliveryStatus after delivery.
+// Today the registry is used by spawn, delegate, cron execution, and status
+// tools so completed background work survives manager recreation and service
+// restarts. Additional long-running runtimes should prefer this registry
+// instead of inventing parallel status stores.
 package tasks

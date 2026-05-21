@@ -11,7 +11,7 @@ import (
 )
 
 // TaskStatusTool reports durable runtime task/run records across spawn,
-// delegate, and future background runtimes.
+// delegate, cron, and future background runtimes.
 type TaskStatusTool struct {
 	registry *taskregistry.Registry
 }
@@ -25,7 +25,7 @@ func (t *TaskStatusTool) Name() string {
 }
 
 func (t *TaskStatusTool) Description() string {
-	return "Get durable runtime task status for spawn/delegate/subtask runs. " +
+	return "Get durable runtime task status for spawn/delegate/cron/subtask runs. " +
 		"Prefer this for general task history, completed task checks, and after service restarts. " +
 		"Use this instead of spawn_status when the task may have used delegate or another child-run mechanism. " +
 		"Results are scoped to the current conversation's channel/chat when available."
