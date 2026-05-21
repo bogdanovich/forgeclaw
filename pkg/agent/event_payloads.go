@@ -152,6 +152,7 @@ type FollowUpQueuedPayload struct {
 type AsyncCompletionPayload struct {
 	SourceTool   string
 	CompletionID string
+	TaskID       string
 	DeliveryMode string
 	ContentLen   int
 	ForUserLen   int

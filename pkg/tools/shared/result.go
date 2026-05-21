@@ -55,6 +55,10 @@ type ToolResult struct {
 	//   - user_and_parent
 	AsyncDelivery AsyncDeliveryMode `json:"async_delivery,omitempty"`
 
+	// AsyncTaskID links an async result back to a durable task registry record
+	// when the tool runtime has one, for example "subagent-42".
+	AsyncTaskID string `json:"async_task_id,omitempty"`
+
 	// Err is the underlying error (not JSON serialized).
 	// Used for internal error handling and logging.
 	Err error `json:"-"`
@@ -295,6 +299,12 @@ func (tr *ToolResult) WithResponseHandled() *ToolResult {
 // WithAsyncDelivery sets the async delivery policy for this tool result.
 func (tr *ToolResult) WithAsyncDelivery(mode AsyncDeliveryMode) *ToolResult {
 	tr.AsyncDelivery = mode
+	return tr
+}
+
+// WithAsyncTaskID links this result to a durable async task registry record.
+func (tr *ToolResult) WithAsyncTaskID(taskID string) *ToolResult {
+	tr.AsyncTaskID = strings.TrimSpace(taskID)
 	return tr
 }
 

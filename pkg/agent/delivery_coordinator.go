@@ -9,6 +9,7 @@ import "github.com/sipeed/picoclaw/pkg/tools"
 // through this type so media, duplicate, timeout, and restart handling can move
 // behind the same coordinator boundary later.
 type AsyncDeliveryDecision struct {
+	TaskID        string
 	DeliveryMode  tools.AsyncDeliveryMode
 	PublishToUser bool
 	QueueParent   bool
@@ -27,6 +28,7 @@ func decideAsyncToolResultDelivery(result *tools.ToolResult) AsyncDeliveryDecisi
 	}
 
 	content := result.ContentForLLM()
+	decision.TaskID = result.AsyncTaskID
 	decision.ContentLen = len(content)
 	decision.ForUserLen = len(result.ForUser)
 	decision.MediaCount = len(result.Media)

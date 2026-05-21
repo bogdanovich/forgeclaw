@@ -279,6 +279,7 @@ After completing the task, provide a clear summary of what was done.`
 		sm.mu.Unlock()
 		// Call callback if provided and result is set
 		if callback != nil && result != nil {
+			result.WithAsyncTaskID(task.ID)
 			callback(ctx, result)
 		}
 	}()
@@ -304,6 +305,7 @@ After completing the task, provide a clear summary of what was done.`
 		}
 	} else {
 		task.Status = "completed"
+		result.WithAsyncTaskID(task.ID)
 		task.Result = result.ForLLM
 		sm.recordTaskResult(task, result)
 	}

@@ -701,6 +701,7 @@ type asyncFollowUpTool struct {
 	followUpText  string
 	completionSig chan struct{}
 	deliveryMode  tools.AsyncDeliveryMode
+	taskID        string
 }
 
 func (t *asyncFollowUpTool) Name() string {
@@ -731,6 +732,9 @@ func (t *asyncFollowUpTool) ExecuteAsync(
 		res := &tools.ToolResult{ForLLM: t.followUpText}
 		if t.deliveryMode != "" {
 			res.WithAsyncDelivery(t.deliveryMode)
+		}
+		if t.taskID != "" {
+			res.WithAsyncTaskID(t.taskID)
 		}
 		cb(ctx, res)
 		if t.completionSig != nil {
@@ -864,6 +868,7 @@ func TestAgentLoop_EmitsAsyncCompletionEvent(t *testing.T) {
 		followUpText:  "background result",
 		completionSig: doneCh,
 		deliveryMode:  tools.AsyncDeliveryUserOnly,
+		taskID:        "subagent-42",
 	})
 	defaultAgent := al.registry.GetDefaultAgent()
 	if defaultAgent == nil {
@@ -924,6 +929,9 @@ func TestAgentLoop_EmitsAsyncCompletionEvent(t *testing.T) {
 	}
 	if payload.CompletionID == "" {
 		t.Fatal("expected completion id")
+	}
+	if payload.TaskID != "subagent-42" {
+		t.Fatalf("TaskID = %q, want subagent-42", payload.TaskID)
 	}
 }
 

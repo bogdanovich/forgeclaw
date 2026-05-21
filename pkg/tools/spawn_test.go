@@ -191,6 +191,9 @@ func TestSpawnTool_ExecuteAsync_MarksCallbackResultUserOnly(t *testing.T) {
 		if cbResult.AsyncDelivery != AsyncDeliveryUserOnly {
 			t.Fatalf("AsyncDelivery = %q, want %q", cbResult.AsyncDelivery, AsyncDeliveryUserOnly)
 		}
+		if !strings.HasPrefix(cbResult.AsyncTaskID, "subagent-") {
+			t.Fatalf("AsyncTaskID = %q, want subagent-*", cbResult.AsyncTaskID)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for spawn callback result")
 	}

@@ -116,6 +116,14 @@ func TestToolResultWithAsyncDelivery(t *testing.T) {
 	}
 }
 
+func TestToolResultWithAsyncTaskID(t *testing.T) {
+	result := AsyncResult("async task started").WithAsyncTaskID(" subagent-7 ")
+
+	if result.AsyncTaskID != "subagent-7" {
+		t.Fatalf("AsyncTaskID = %q, want subagent-7", result.AsyncTaskID)
+	}
+}
+
 func TestToolResultContentForLLMIncludesCompletion(t *testing.T) {
 	result := NewToolResult("child finished").WithCompletion(&CompletionResult{
 		Text: "recipe text",

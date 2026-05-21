@@ -21,10 +21,12 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 		{
 			name: "default routes user text and parent content",
 			in: &tools.ToolResult{
-				ForLLM:  "parent text",
-				ForUser: "user text",
+				ForLLM:      "parent text",
+				ForUser:     "user text",
+				AsyncTaskID: "subagent-9",
 			},
 			want: AsyncDeliveryDecision{
+				TaskID:        "subagent-9",
 				DeliveryMode:  tools.AsyncDeliveryUserAndParent,
 				PublishToUser: true,
 				QueueParent:   true,

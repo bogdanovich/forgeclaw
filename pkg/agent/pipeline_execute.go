@@ -582,6 +582,7 @@ toolLoop:
 				AsyncCompletionPayload{
 					SourceTool:   asyncToolName,
 					CompletionID: completionID,
+					TaskID:       delivery.TaskID,
 					DeliveryMode: string(delivery.DeliveryMode),
 					ContentLen:   delivery.ContentLen,
 					ForUserLen:   delivery.ForUserLen,
