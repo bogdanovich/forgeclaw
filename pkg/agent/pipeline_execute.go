@@ -165,65 +165,24 @@ func inferSkillNamesFromToolCall(ts *turnState, toolName string, toolArgs map[st
 	return names
 }
 
-func effectiveAsyncToolResultDelivery(result *tools.ToolResult) tools.AsyncDeliveryMode {
-	if result == nil || result.AsyncDelivery == "" {
-		return tools.AsyncDeliveryUserAndParent
-	}
-	return result.AsyncDelivery
-}
-
 func shouldPublishAsyncToolResultToUser(result *tools.ToolResult) bool {
-	if result == nil {
-		return false
-	}
-	switch effectiveAsyncToolResultDelivery(result) {
-	case tools.AsyncDeliveryParentOnly:
-		return false
-	default:
-		return !result.Silent && result.ForUser != ""
-	}
+	return decideAsyncToolResultDelivery(result).PublishToUser
 }
 
 func shouldQueueAsyncToolResultForParent(result *tools.ToolResult) bool {
-	if result == nil {
-		return false
-	}
-	content := result.ContentForLLM()
-	if content == "" {
-		return false
-	}
-	switch effectiveAsyncToolResultDelivery(result) {
-	case tools.AsyncDeliveryUserOnly:
-		return false
-	case tools.AsyncDeliveryParentOnly, tools.AsyncDeliveryUserAndParent:
-		return true
-	}
-	return true
+	return decideAsyncToolResultDelivery(result).QueueParent
 }
 
 func asyncResultContentLen(result *tools.ToolResult) int {
-	if result == nil {
-		return 0
-	}
-	return len(result.ContentForLLM())
+	return decideAsyncToolResultDelivery(result).ContentLen
 }
 
 func asyncResultForUserLen(result *tools.ToolResult) int {
-	if result == nil {
-		return 0
-	}
-	return len(result.ForUser)
+	return decideAsyncToolResultDelivery(result).ForUserLen
 }
 
 func asyncResultMediaCount(result *tools.ToolResult) int {
-	if result == nil {
-		return 0
-	}
-	count := len(result.Media)
-	if result.Completion != nil {
-		count += len(result.Completion.Media)
-	}
-	return count
+	return decideAsyncToolResultDelivery(result).MediaCount
 }
 
 func recordCompletionMedia(exec *turnExecution, store media.MediaStore, refs []string) {
@@ -616,19 +575,20 @@ toolLoop:
 		mcpServerName := mcpServerNameForTool(ts, toolName)
 		asyncCallback := func(_ context.Context, result *tools.ToolResult) {
 			completionID := asyncCompletionID(ts.turnID, toolCallID, asyncToolName)
+			delivery := decideAsyncToolResultDelivery(result)
 			al.emitEvent(
 				runtimeevents.KindAgentAsyncCompletion,
 				ts.scope.meta(iteration, "runTurn", "turn.async.completion"),
 				AsyncCompletionPayload{
 					SourceTool:   asyncToolName,
 					CompletionID: completionID,
-					DeliveryMode: string(effectiveAsyncToolResultDelivery(result)),
-					ContentLen:   asyncResultContentLen(result),
-					ForUserLen:   asyncResultForUserLen(result),
-					MediaCount:   asyncResultMediaCount(result),
-					IsError:      result != nil && result.IsError,
-					WillUser:     shouldPublishAsyncToolResultToUser(result),
-					WillParent:   shouldQueueAsyncToolResultForParent(result),
+					DeliveryMode: string(delivery.DeliveryMode),
+					ContentLen:   delivery.ContentLen,
+					ForUserLen:   delivery.ForUserLen,
+					MediaCount:   delivery.MediaCount,
+					IsError:      delivery.IsError,
+					WillUser:     delivery.PublishToUser,
+					WillParent:   delivery.QueueParent,
 				},
 			)
 			if result != nil && result.IsError {
@@ -643,7 +603,7 @@ toolLoop:
 				}
 				return
 			}
-			if shouldPublishAsyncToolResultToUser(result) {
+			if delivery.PublishToUser {
 				outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer outCancel()
 				if _, delivered, err := al.deliverToolResultToUser(outCtx, ts, result, asyncToolName); err != nil {
@@ -659,7 +619,7 @@ toolLoop:
 				}
 			}
 
-			if !shouldQueueAsyncToolResultForParent(result) {
+			if !delivery.QueueParent {
 				return
 			}
 
