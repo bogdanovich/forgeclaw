@@ -6,18 +6,25 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 // SpawnStatusTool reports the status of subagents that were spawned via the
 // spawn tool. It can query a specific task by ID, or list every known task with
 // a summary count broken-down by status.
 type SpawnStatusTool struct {
-	manager *SubagentManager
+	manager  *SubagentManager
+	registry *taskregistry.Registry
 }
 
 // NewSpawnStatusTool creates a SpawnStatusTool backed by the given manager.
 func NewSpawnStatusTool(manager *SubagentManager) *SpawnStatusTool {
-	return &SpawnStatusTool{manager: manager}
+	var registry *taskregistry.Registry
+	if manager != nil {
+		registry = manager.taskRegistry
+	}
+	return &SpawnStatusTool{manager: manager, registry: registry}
 }
 
 func (t *SpawnStatusTool) Name() string {
@@ -25,8 +32,8 @@ func (t *SpawnStatusTool) Name() string {
 }
 
 func (t *SpawnStatusTool) Description() string {
-	return "Get the status of subagents started specifically with the spawn tool. " +
-		"This is a spawn-only compatibility/debug view; use task_status for general task history, " +
+	return "Get durable status for subagents started specifically with the spawn tool. " +
+		"This is a spawn-only compatibility view over the task registry; use task_status for general task history, " +
 		"delegate runs, or restart-persistent completed task checks. " +
 		"Returns a list of all subagents and their current state " +
 		"(running, completed, failed, or canceled), or retrieves details " +
@@ -51,7 +58,7 @@ func (t *SpawnStatusTool) Parameters() map[string]any {
 }
 
 func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	if t.manager == nil {
+	if t.manager == nil && t.registry == nil {
 		return ErrorResult("Subagent manager not configured")
 	}
 
@@ -68,6 +75,23 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 			return ErrorResult("task_id must be a string")
 		}
 		taskID = strings.TrimSpace(taskIDStr)
+	}
+
+	if t.registry != nil {
+		result, found := t.executeFromRegistry(taskID, callerChannel, callerChatID)
+		if found {
+			return result
+		}
+		// Fall through to the legacy in-memory manager for ad-hoc tests and
+		// non-registry callers. Normal gateway execution should be satisfied by
+		// the durable task registry path above.
+	}
+
+	if t.manager == nil {
+		if taskID != "" {
+			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
+		}
+		return NewToolResult("No visible spawned subagents are registered. This tool only reports tasks started with the spawn tool. For delegate runs, other child-run mechanisms, or broader task checks, use task_status.")
 	}
 
 	if taskID != "" {
@@ -144,6 +168,106 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 	}
 
 	return NewToolResult(strings.TrimRight(sb.String(), "\n"))
+}
+
+func (t *SpawnStatusTool) executeFromRegistry(taskID, callerChannel, callerChatID string) (*ToolResult, bool) {
+	if taskID != "" {
+		rec, ok := t.registry.Get(taskID)
+		if !ok {
+			return nil, false
+		}
+		if !spawnRecordVisibleToCaller(rec, callerChannel, callerChatID) {
+			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID)), true
+		}
+		return NewToolResult(spawnStatusFormatRecord(rec)), true
+	}
+
+	records := t.registry.List()
+	filtered := make([]taskregistry.Record, 0, len(records))
+	for _, rec := range records {
+		if !spawnRecordVisibleToCaller(rec, callerChannel, callerChatID) {
+			continue
+		}
+		filtered = append(filtered, rec)
+	}
+	if len(filtered) == 0 {
+		return nil, false
+	}
+
+	counts := map[string]int{}
+	for _, rec := range filtered {
+		counts[spawnStatusFromRecord(rec)]++
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Subagent status report (%d total):\n", len(filtered)))
+	for _, status := range []string{"running", "completed", "failed", "canceled"} {
+		if n := counts[status]; n > 0 {
+			label := strings.ToUpper(status[:1]) + status[1:] + ":"
+			sb.WriteString(fmt.Sprintf("  %-10s %d\n", label, n))
+		}
+	}
+	sb.WriteString("\n")
+
+	for _, rec := range filtered {
+		sb.WriteString(spawnStatusFormatRecord(rec))
+		sb.WriteString("\n\n")
+	}
+
+	return NewToolResult(strings.TrimRight(sb.String(), "\n")), true
+}
+
+func spawnRecordVisibleToCaller(rec taskregistry.Record, channel, chatID string) bool {
+	if rec.Runtime != taskregistry.RuntimeSubagent || rec.TaskKind != "spawn" {
+		return false
+	}
+	if channel != "" && rec.Channel != "" && rec.Channel != channel {
+		return false
+	}
+	if chatID != "" && rec.ChatID != "" && rec.ChatID != chatID {
+		return false
+	}
+	return true
+}
+
+func spawnStatusFromRecord(rec taskregistry.Record) string {
+	switch rec.Status {
+	case taskregistry.StatusSucceeded:
+		return "completed"
+	case taskregistry.StatusFailed:
+		return "failed"
+	case taskregistry.StatusCancelled, taskregistry.StatusTimedOut:
+		return "canceled"
+	case taskregistry.StatusRunning, taskregistry.StatusQueued:
+		return "running"
+	default:
+		return string(rec.Status)
+	}
+}
+
+func spawnStatusFormatRecord(rec taskregistry.Record) string {
+	task := &SubagentTask{
+		ID:            rec.TaskID,
+		Task:          rec.Task,
+		Label:         rec.Label,
+		AgentID:       rec.AgentID,
+		OriginChannel: rec.Channel,
+		OriginChatID:  rec.ChatID,
+		Status:        spawnStatusFromRecord(rec),
+		Result:        rec.TerminalSummary,
+		Created:       rec.CreatedAt,
+	}
+	out := spawnStatusFormatTask(task)
+	if rec.DeliveryStatus != "" {
+		out += fmt.Sprintf("\n  delivery: %s", rec.DeliveryStatus)
+		if rec.DeliveryMode != "" {
+			out += fmt.Sprintf(" (%s)", rec.DeliveryMode)
+		}
+	}
+	if rec.DeliveryError != "" {
+		out += fmt.Sprintf("\n  delivery_error: %s", truncateTaskText(rec.DeliveryError, 300))
+	}
+	return out
 }
 
 // spawnStatusFormatTask renders a single SubagentTask as a human-readable block.
