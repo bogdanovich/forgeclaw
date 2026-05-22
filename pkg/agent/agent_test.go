@@ -5183,6 +5183,7 @@ func TestRunAgentLoop_MessageToolMediaDeliveryBlocksBeforeFinalResponse(t *testi
 	cfg.Agents.Defaults.MaxTokens = 4096
 	cfg.Agents.Defaults.MaxToolIterations = 10
 	cfg.Agents.Defaults.ToolFeedback.Enabled = false
+	cfg.Tools.Message.MediaEnabled = true
 	cfg.Session.Dimensions = []string{"chat"}
 
 	videoPath := filepath.Join(cfg.Agents.Defaults.Workspace, "clip.mp4")

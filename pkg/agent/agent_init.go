@@ -162,12 +162,14 @@ func registerSharedTools(
 		// Message tool
 		if cfg.Tools.IsToolEnabled("message") {
 			messageTool := tools.NewMessageTool()
-			messageTool.ConfigureLocalMedia(
-				agent.Workspace,
-				cfg.Agents.Defaults.RestrictToWorkspace,
-				cfg.Agents.Defaults.GetMaxMediaSize(),
-				allowReadPaths,
-			)
+			if cfg.Tools.Message.MediaEnabled {
+				messageTool.ConfigureLocalMedia(
+					agent.Workspace,
+					cfg.Agents.Defaults.RestrictToWorkspace,
+					cfg.Agents.Defaults.GetMaxMediaSize(),
+					allowReadPaths,
+				)
+			}
 			messageTool.SetSendCallback(func(
 				ctx context.Context,
 				channel, chatID, content, replyToMessageID string,

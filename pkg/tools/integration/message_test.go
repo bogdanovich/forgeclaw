@@ -250,9 +250,9 @@ func TestMessageTool_Parameters(t *testing.T) {
 	}
 
 	// Check required properties
-	anyOf, ok := params["anyOf"].([]map[string]any)
-	if !ok || len(anyOf) != 2 {
-		t.Fatal("Expected anyOf content/media requirement")
+	required, ok := params["required"].([]string)
+	if !ok || len(required) != 1 || required[0] != "content" {
+		t.Fatal("Expected content-only required schema when local media is disabled")
 	}
 
 	// Check content property
@@ -264,12 +264,8 @@ func TestMessageTool_Parameters(t *testing.T) {
 		t.Error("Expected content type to be 'string'")
 	}
 
-	mediaProp, ok := props["media"].(map[string]any)
-	if !ok {
-		t.Fatal("Expected 'media' property")
-	}
-	if mediaProp["type"] != "array" {
-		t.Error("Expected media type to be 'array'")
+	if _, ok := props["media"]; ok {
+		t.Fatal("did not expect 'media' property when local media is disabled")
 	}
 
 	// Check channel property (optional)
@@ -297,6 +293,56 @@ func TestMessageTool_Parameters(t *testing.T) {
 	}
 	if replyToProp["type"] != "string" {
 		t.Error("Expected reply_to_message_id type to be 'string'")
+	}
+}
+
+func TestMessageTool_Parameters_WithLocalMediaEnabled(t *testing.T) {
+	tool := NewMessageTool()
+	tool.ConfigureLocalMedia(t.TempDir(), true, 1024*1024, nil)
+	params := tool.Parameters()
+
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("Expected properties to be a map")
+	}
+	mediaProp, ok := props["media"].(map[string]any)
+	if !ok {
+		t.Fatal("Expected 'media' property")
+	}
+	if mediaProp["type"] != "array" {
+		t.Error("Expected media type to be 'array'")
+	}
+	anyOf, ok := params["anyOf"].([]map[string]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatal("Expected anyOf content/media requirement")
+	}
+	if _, ok := params["required"]; ok {
+		t.Fatal("did not expect top-level required content when media is enabled")
+	}
+}
+
+func TestMessageTool_Execute_WithMediaDisabled(t *testing.T) {
+	tool := NewMessageTool()
+	tool.SetSendCallback(func(
+		ctx context.Context,
+		channel, chatID, content, replyToMessageID string,
+		mediaParts []bus.MediaPart,
+	) error {
+		t.Fatal("send callback should not run when message media is disabled")
+		return nil
+	})
+
+	ctx := WithToolContext(context.Background(), "telegram", "-1001")
+	result := tool.Execute(ctx, map[string]any{
+		"media": []any{
+			map[string]any{"path": "photo.jpg"},
+		},
+	})
+	if !result.IsError {
+		t.Fatal("expected error when message media is disabled")
+	}
+	if result.ForLLM != "message media attachments are disabled; enable tools.message.media_enabled to send local media through message" {
+		t.Fatalf("unexpected error: %q", result.ForLLM)
 	}
 }
 

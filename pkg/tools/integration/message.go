@@ -37,14 +37,15 @@ type sentTarget struct {
 }
 
 type MessageTool struct {
-	sendCallback SendCallbackWithContext
-	workspace    string
-	restrict     bool
-	maxFileSize  int
-	mediaStore   media.MediaStore
-	allowPaths   []*regexp.Regexp
-	mu           sync.Mutex
-	sentTargets  map[string][]sentTarget
+	sendCallback      SendCallbackWithContext
+	workspace         string
+	restrict          bool
+	maxFileSize       int
+	mediaStore        media.MediaStore
+	allowPaths        []*regexp.Regexp
+	localMediaEnabled bool
+	mu                sync.Mutex
+	sentTargets       map[string][]sentTarget
 }
 
 func NewMessageTool() *MessageTool {
@@ -58,58 +59,67 @@ func (t *MessageTool) Name() string {
 }
 
 func (t *MessageTool) Description() string {
+	if !t.localMediaEnabled {
+		return "Send a text message to the user on a chat channel."
+	}
 	return "Send a message to the user on a chat channel. Supports text-only, media-only, or text with media attachments. " +
 		"When sending media with substantive text, put the complete user-facing text in content so it becomes the media caption/body; do not use placeholder text like 'attached' and then answer separately."
 }
 
 func (t *MessageTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"content": map[string]any{
-				"type":        "string",
-				"description": "Optional message text. When media is present, this text is used as the caption/body for the media message. If the user asked for media plus a recipe, summary, translation, or other substantive text, include that complete text here instead of a placeholder.",
-			},
-			"media": map[string]any{
-				"type":        "array",
-				"description": "Optional local media attachments to send with the message.",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": "Path to the local file. Relative paths are resolved from workspace.",
-						},
-						"type": map[string]any{
-							"type":        "string",
-							"description": "Optional media type hint: image, audio, video, or file.",
-						},
-						"filename": map[string]any{
-							"type":        "string",
-							"description": "Optional display filename. Defaults to the basename of path.",
-						},
-					},
-					"required": []string{"path"},
-				},
-			},
-			"channel": map[string]any{
-				"type":        "string",
-				"description": "Optional: target channel (telegram, whatsapp, etc.)",
-			},
-			"chat_id": map[string]any{
-				"type":        "string",
-				"description": "Optional: target chat/user ID",
-			},
-			"reply_to_message_id": map[string]any{
-				"type":        "string",
-				"description": "Optional: reply target message ID for channels that support threaded replies",
-			},
+	properties := map[string]any{
+		"content": map[string]any{
+			"type":        "string",
+			"description": "Optional message text. When media is present, this text is used as the caption/body for the media message. If the user asked for media plus a recipe, summary, translation, or other substantive text, include that complete text here instead of a placeholder.",
 		},
-		"anyOf": []map[string]any{
-			{"required": []string{"content"}},
-			{"required": []string{"media"}},
+		"channel": map[string]any{
+			"type":        "string",
+			"description": "Optional: target channel (telegram, whatsapp, etc.)",
+		},
+		"chat_id": map[string]any{
+			"type":        "string",
+			"description": "Optional: target chat/user ID",
+		},
+		"reply_to_message_id": map[string]any{
+			"type":        "string",
+			"description": "Optional: reply target message ID for channels that support threaded replies",
 		},
 	}
+	params := map[string]any{
+		"type":       "object",
+		"properties": properties,
+		"required":   []string{"content"},
+	}
+	if t.localMediaEnabled {
+		properties["media"] = map[string]any{
+			"type":        "array",
+			"description": "Optional local media attachments to send with the message. Requires tools.message.media_enabled.",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path to the local file. Relative paths are resolved from workspace.",
+					},
+					"type": map[string]any{
+						"type":        "string",
+						"description": "Optional media type hint: image, audio, video, or file.",
+					},
+					"filename": map[string]any{
+						"type":        "string",
+						"description": "Optional display filename. Defaults to the basename of path.",
+					},
+				},
+				"required": []string{"path"},
+			},
+		}
+		delete(params, "required")
+		params["anyOf"] = []map[string]any{
+			{"required": []string{"content"}},
+			{"required": []string{"media"}},
+		}
+	}
+	return params
 }
 
 func (t *MessageTool) ConfigureLocalMedia(
@@ -125,6 +135,7 @@ func (t *MessageTool) ConfigureLocalMedia(
 	}
 	t.maxFileSize = maxFileSize
 	t.allowPaths = allowPaths
+	t.localMediaEnabled = true
 }
 
 func (t *MessageTool) SetMediaStore(store media.MediaStore) {
@@ -173,6 +184,9 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	mediaArgs, err := parseMessageMediaArgs(args["media"])
 	if err != nil {
 		return &ToolResult{ForLLM: err.Error(), IsError: true}
+	}
+	if len(mediaArgs) > 0 && !t.localMediaEnabled {
+		return &ToolResult{ForLLM: "message media attachments are disabled; enable tools.message.media_enabled to send local media through message", IsError: true}
 	}
 	if content == "" && len(mediaArgs) == 0 {
 		return &ToolResult{ForLLM: "content or media is required", IsError: true}
@@ -262,6 +276,9 @@ func (t *MessageTool) buildMediaParts(
 ) ([]bus.MediaPart, error) {
 	if len(mediaArgs) == 0 {
 		return nil, nil
+	}
+	if !t.localMediaEnabled {
+		return nil, fmt.Errorf("message media attachments are disabled")
 	}
 	if t.mediaStore == nil {
 		return nil, fmt.Errorf("media store not configured")
