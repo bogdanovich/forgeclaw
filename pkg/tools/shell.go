@@ -511,6 +511,7 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 			if output != "" {
 				msg += "\n\nPartial output before timeout:\n" + output
 			}
+			msg = truncateCommandOutput(msg)
 			return &ToolResult{
 				ForLLM:  msg,
 				ForUser: msg,
@@ -538,10 +539,7 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 		output = "(no output)"
 	}
 
-	maxLen := 10000
-	if len(output) > maxLen {
-		output = output[:maxLen] + fmt.Sprintf("\n... (truncated, %d more chars)", len(output)-maxLen)
-	}
+	output = truncateCommandOutput(output)
 
 	if err != nil {
 		return &ToolResult{
@@ -556,6 +554,14 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 		ForUser: output,
 		IsError: false,
 	}
+}
+
+func truncateCommandOutput(output string) string {
+	maxLen := 10000
+	if len(output) > maxLen {
+		output = output[:maxLen] + fmt.Sprintf("\n... (truncated, %d more chars)", len(output)-maxLen)
+	}
+	return output
 }
 
 func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEnabled bool) *ToolResult {

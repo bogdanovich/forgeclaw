@@ -600,6 +600,30 @@ func TestShellTool_TimeoutWithPartialOutput(t *testing.T) {
 	t.Logf("Timeout result: %s", result.ForLLM)
 }
 
+func TestShellTool_TimeoutWithLargePartialOutputTruncates(t *testing.T) {
+	tool, err := NewExecTool("", false)
+	if err != nil {
+		t.Fatalf("unable to configure exec tool: %s", err)
+	}
+
+	tool.SetTimeout(1 * time.Second)
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"action":  "run",
+		"command": "python3 -c \"import sys, time; print('x' * 20000, flush=True); time.sleep(30)\"",
+	})
+
+	if !result.IsError {
+		t.Fatal("expected timeout error")
+	}
+	if len(result.ForLLM) > 12000 {
+		t.Fatalf("timeout output should be truncated, got length %d", len(result.ForLLM))
+	}
+	if !strings.Contains(result.ForLLM, "truncated") {
+		t.Fatalf("timeout output should include truncation marker, got: %s", result.ForLLM)
+	}
+}
+
 // TestShellTool_CustomAllowPatterns verifies that custom allow patterns exempt
 // commands from deny pattern checks.
 func TestShellTool_CustomAllowPatterns(t *testing.T) {
