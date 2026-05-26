@@ -351,6 +351,10 @@ func (failingMessageBus) PublishInbound(context.Context, bus.InboundMessage) err
 	return errors.New("publish failed")
 }
 
+func (failingMessageBus) PublishObserved(context.Context, bus.ObservedMessage) error {
+	return errors.New("publish failed")
+}
+
 func (failingMessageBus) PublishOutbound(context.Context, bus.OutboundMessage) error {
 	return errors.New("publish failed")
 }
@@ -364,6 +368,10 @@ func (failingMessageBus) GetStreamer(context.Context, string, string, string) (b
 }
 
 func (failingMessageBus) InboundChan() <-chan bus.InboundMessage {
+	return nil
+}
+
+func (failingMessageBus) ObservedChan() <-chan bus.ObservedMessage {
 	return nil
 }
 

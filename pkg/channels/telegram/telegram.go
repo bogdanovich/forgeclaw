@@ -1156,12 +1156,32 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	isMentioned := false
 	if message.Chat.Type != "private" {
 		isMentioned = c.isBotMentioned(message)
-		if isMentioned {
-			content = c.stripBotMention(content)
-		}
 		topicID := ""
 		if message.Chat.IsForum && message.MessageThreadID != 0 {
 			topicID = fmt.Sprintf("%d", message.MessageThreadID)
+		}
+		if !isMentioned && c.IgnoreNonBotMentionsForTopic(topicID, true) && c.hasNonBotMention(message) {
+			c.observeSuppressedTelegramMessage(ctx, message, chatID, content, mediaPaths, sender, isMentioned, "mentions another user/bot without mentioning this bot")
+			logger.DebugCF("telegram", "Message ignored because it mentions another user/bot but not this bot", map[string]any{
+				"chat_id":    chatIDStr,
+				"message_id": messageIDStr,
+			})
+			return nil
+		}
+		if !isMentioned && c.IgnoreNonBotRepliesForTopic(topicID, false) && c.isReplyToNonBotMessage(message) {
+			observedContent := content
+			if message.ReplyToMessage != nil {
+				observedContent = c.prependTelegramQuotedReply(observedContent, message.ReplyToMessage)
+			}
+			c.observeSuppressedTelegramMessage(ctx, message, chatID, observedContent, mediaPaths, sender, isMentioned, "reply to a non-bot message without mentioning this bot")
+			logger.DebugCF("telegram", "Message ignored because it replies to a non-bot message without mentioning this bot", map[string]any{
+				"chat_id":    chatIDStr,
+				"message_id": messageIDStr,
+			})
+			return nil
+		}
+		if isMentioned {
+			content = c.stripBotMention(content)
 		}
 		respond, cleaned := c.ShouldRespondInGroupForTopic(isMentioned, content, topicID)
 		if !respond {
@@ -1242,6 +1262,60 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		sender,
 	)
 	return nil
+}
+
+func (c *TelegramChannel) observeSuppressedTelegramMessage(
+	ctx context.Context,
+	message *telego.Message,
+	chatID int64,
+	content string,
+	mediaPaths []string,
+	sender bus.SenderInfo,
+	isMentioned bool,
+	reason string,
+) {
+	if message == nil || message.From == nil {
+		return
+	}
+	threadID := message.MessageThreadID
+	compositeChatID := fmt.Sprintf("%d", chatID)
+	if message.Chat.IsForum && threadID != 0 {
+		compositeChatID = fmt.Sprintf("%d/%d", chatID, threadID)
+	}
+	peerKind := "direct"
+	if message.Chat.Type != "private" {
+		peerKind = "group"
+	}
+	metadata := map[string]string{
+		"user_id":    fmt.Sprintf("%d", message.From.ID),
+		"username":   message.From.Username,
+		"first_name": message.From.FirstName,
+		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
+	}
+	inboundCtx := bus.InboundContext{
+		Channel:   c.Name(),
+		ChatID:    fmt.Sprintf("%d", chatID),
+		ChatType:  peerKind,
+		SenderID:  fmt.Sprintf("%d", message.From.ID),
+		MessageID: fmt.Sprintf("%d", message.MessageID),
+		Mentioned: isMentioned,
+		Raw:       metadata,
+	}
+	if message.Chat.IsForum && threadID != 0 {
+		inboundCtx.TopicID = fmt.Sprintf("%d", threadID)
+	}
+	if message.ReplyToMessage != nil {
+		inboundCtx.ReplyToMessageID = fmt.Sprintf("%d", message.ReplyToMessage.MessageID)
+	}
+	c.ObserveMessageWithContext(
+		ctx,
+		compositeChatID,
+		content,
+		mediaPaths,
+		inboundCtx,
+		reason,
+		sender,
+	)
 }
 
 func (c *TelegramChannel) collectTelegramMessageParts(
@@ -1651,6 +1725,79 @@ func (c *TelegramChannel) isBotMentioned(message *telego.Message) bool {
 		}
 	}
 	return false
+}
+
+func (c *TelegramChannel) hasNonBotMention(message *telego.Message) bool {
+	text, entities := telegramEntityTextAndList(message)
+	if text == "" || len(entities) == 0 {
+		return false
+	}
+
+	botUsername := ""
+	if c.bot != nil {
+		botUsername = c.bot.Username()
+	}
+	runes := []rune(text)
+
+	for _, entity := range entities {
+		entityText, ok := telegramEntityText(runes, entity)
+		if !ok {
+			continue
+		}
+
+		switch entity.Type {
+		case telego.EntityTypeMention:
+			username := strings.TrimPrefix(entityText, "@")
+			if username != "" && !strings.EqualFold(username, botUsername) {
+				return true
+			}
+		case telego.EntityTypeTextMention:
+			if entity.User == nil {
+				continue
+			}
+			if entity.User.IsBot && botUsername != "" && strings.EqualFold(entity.User.Username, botUsername) {
+				continue
+			}
+			return true
+		case telego.EntityTypeBotCommand:
+			if strings.Contains(entityText, "@") && !isBotCommandEntityForThisBot(entityText, botUsername) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *TelegramChannel) isReplyToNonBotMessage(message *telego.Message) bool {
+	if message == nil || message.ReplyToMessage == nil {
+		return false
+	}
+	quoted := message.ReplyToMessage
+	if isTelegramServiceMessage(quoted) {
+		return false
+	}
+	if quoted.From == nil {
+		return false
+	}
+	return !c.isOwnBotUser(quoted.From)
+}
+
+func isTelegramServiceMessage(message *telego.Message) bool {
+	if message == nil {
+		return false
+	}
+	return message.ForumTopicCreated != nil ||
+		message.ForumTopicEdited != nil ||
+		message.ForumTopicClosed != nil ||
+		message.ForumTopicReopened != nil ||
+		len(message.NewChatMembers) > 0 ||
+		message.LeftChatMember != nil ||
+		message.NewChatTitle != "" ||
+		len(message.NewChatPhoto) > 0 ||
+		message.DeleteChatPhoto ||
+		message.GroupChatCreated ||
+		message.SupergroupChatCreated ||
+		message.ChannelChatCreated
 }
 
 func telegramEntityTextAndList(message *telego.Message) (string, []telego.MessageEntity) {

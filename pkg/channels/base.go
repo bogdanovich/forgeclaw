@@ -175,6 +175,32 @@ func (c *BaseChannel) ShouldRespondInGroupForTopic(isMentioned bool, content str
 	return shouldRespondInGroup(gt, isMentioned, content)
 }
 
+func (c *BaseChannel) IgnoreNonBotMentionsForTopic(topicID string, fallback bool) bool {
+	gt := c.groupTrigger
+	if topicID != "" && gt.Topics != nil {
+		if topicTrigger, ok := gt.Topics[topicID]; ok {
+			gt = topicTrigger
+		}
+	}
+	if gt.IgnoreNonBotMentions != nil {
+		return *gt.IgnoreNonBotMentions
+	}
+	return fallback
+}
+
+func (c *BaseChannel) IgnoreNonBotRepliesForTopic(topicID string, fallback bool) bool {
+	gt := c.groupTrigger
+	if topicID != "" && gt.Topics != nil {
+		if topicTrigger, ok := gt.Topics[topicID]; ok {
+			gt = topicTrigger
+		}
+	}
+	if gt.IgnoreNonBotReplies != nil {
+		return *gt.IgnoreNonBotReplies
+	}
+	return fallback
+}
+
 func shouldRespondInGroup(gt config.GroupTriggerConfig, isMentioned bool, content string) (bool, string) {
 	// Mentioned → always respond
 	if isMentioned {
@@ -364,6 +390,64 @@ func (c *BaseChannel) HandleMessageWithContext(
 
 	if err := c.bus.PublishInbound(ctx, msg); err != nil {
 		logger.ErrorCF("channels", "Failed to publish inbound message", map[string]any{
+			"channel": c.name,
+			"chat_id": deliveryChatID,
+			"error":   err.Error(),
+		})
+	}
+}
+
+func (c *BaseChannel) ObserveMessageWithContext(
+	ctx context.Context,
+	deliveryChatID, content string,
+	media []string,
+	inboundCtx bus.InboundContext,
+	reason string,
+	senderOpts ...bus.SenderInfo,
+) {
+	var sender bus.SenderInfo
+	if len(senderOpts) > 0 {
+		sender = senderOpts[0]
+	}
+	senderID := strings.TrimSpace(inboundCtx.SenderID)
+	if sender.CanonicalID != "" || sender.PlatformID != "" {
+		if !c.IsAllowedSender(sender) {
+			return
+		}
+	} else {
+		if !c.IsAllowed(senderID) {
+			return
+		}
+	}
+
+	resolvedSenderID := senderID
+	if sender.CanonicalID != "" {
+		resolvedSenderID = sender.CanonicalID
+	}
+	if resolvedSenderID == "" {
+		resolvedSenderID = senderID
+	}
+
+	inboundCtx.Channel = c.name
+	if inboundCtx.ChatID == "" {
+		inboundCtx.ChatID = deliveryChatID
+	}
+	if inboundCtx.SenderID == "" {
+		inboundCtx.SenderID = resolvedSenderID
+	}
+
+	msg := bus.ObservedMessage{
+		Context:    inboundCtx,
+		Sender:     sender,
+		Content:    content,
+		Media:      media,
+		MediaScope: BuildMediaScope(c.name, deliveryChatID, inboundCtx.MessageID),
+		Reason:     reason,
+	}
+	msg = bus.NormalizeObservedMessage(msg)
+
+	if err := c.bus.PublishObserved(ctx, msg); err != nil {
+		logger.ErrorCF("channels", "Failed to publish observed message", map[string]any{
 			"channel": c.name,
 			"chat_id": deliveryChatID,
 			"error":   err.Error(),

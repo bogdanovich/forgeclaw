@@ -10,6 +10,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -269,6 +270,92 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	}
 
 	return al.runAgentLoop(ctx, agent, opts)
+}
+
+func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage) {
+	msg = bus.NormalizeObservedMessage(msg)
+	if strings.TrimSpace(msg.Content) == "" && len(msg.Media) == 0 {
+		return
+	}
+
+	inbound := bus.InboundMessage{
+		Context:    msg.Context,
+		Sender:     msg.Sender,
+		Content:    msg.Content,
+		Media:      append([]string(nil), msg.Media...),
+		MediaScope: msg.MediaScope,
+		SessionKey: msg.SessionKey,
+	}
+	route, agent, routeErr := al.resolveMessageRoute(inbound)
+	if routeErr != nil {
+		logger.WarnCF("agent", "Failed to route observed message", map[string]any{
+			"channel": msg.Channel,
+			"chat_id": msg.ChatID,
+			"error":   routeErr.Error(),
+		})
+		return
+	}
+
+	allocation := al.allocateRouteSession(route, inbound)
+	sessionKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
+	ensureSessionMetadata(
+		agent.Sessions,
+		sessionKey,
+		session.CloneScope(&allocation.Scope),
+		buildSessionAliases(sessionKey, sessionAliasCandidates(allocation.SessionKey, sessionKey, allocation.SessionAliases, msg.SessionKey)...),
+	)
+
+	content := formatObservedMessageContent(msg)
+	record := providers.Message{
+		Role:    "user",
+		Content: content,
+		Media:   append([]string(nil), msg.Media...),
+	}
+	if len(record.Media) > 0 {
+		agent.Sessions.AddFullMessage(sessionKey, record)
+	} else {
+		agent.Sessions.AddMessage(sessionKey, record.Role, record.Content)
+	}
+	if err := agent.Sessions.Save(sessionKey); err != nil {
+		logger.WarnCF("agent", "Failed to save observed message", map[string]any{
+			"session_key": sessionKey,
+			"error":       err.Error(),
+		})
+	}
+	if al.contextManager != nil {
+		if err := al.contextManager.Ingest(ctx, &IngestRequest{
+			SessionKey: sessionKey,
+			Message:    record,
+		}); err != nil {
+			logger.WarnCF("agent", "Context manager ingest failed for observed message", map[string]any{
+				"session_key": sessionKey,
+				"error":       err.Error(),
+			})
+		}
+	}
+	logger.DebugCF("agent", "Observed passive message", map[string]any{
+		"agent_id":    agent.ID,
+		"session_key": sessionKey,
+		"channel":     msg.Channel,
+		"chat_id":     msg.ChatID,
+		"reason":      msg.Reason,
+	})
+}
+
+func formatObservedMessageContent(msg bus.ObservedMessage) string {
+	reason := strings.TrimSpace(msg.Reason)
+	if reason == "" {
+		reason = "passive context"
+	}
+	author := strings.TrimSpace(msg.Sender.DisplayName)
+	if author == "" {
+		author = strings.TrimSpace(msg.Sender.Username)
+	}
+	if author == "" {
+		author = strings.TrimSpace(msg.SenderID)
+	}
+	content := strings.TrimSpace(msg.Content)
+	return fmt.Sprintf("[observed group message from %s; no reply requested; reason: %s]\n%s", author, reason, content)
 }
 
 func (al *AgentLoop) resolveMessageRoute(msg bus.InboundMessage) (routing.ResolvedRoute, *AgentInstance, error) {

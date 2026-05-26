@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
@@ -13,6 +14,106 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers/common"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
+
+const maxFunctionCallOutputBytes = 8 * 1024 * 1024
+
+func truncateFunctionCallOutput(s string) string {
+	if len(s) <= maxFunctionCallOutputBytes {
+		return s
+	}
+
+	const markerReserve = 128
+	headBudget := (maxFunctionCallOutputBytes - markerReserve) / 2
+	tailBudget := maxFunctionCallOutputBytes - markerReserve - headBudget
+	if headBudget < 0 {
+		headBudget = 0
+	}
+	if tailBudget < 0 {
+		tailBudget = 0
+	}
+
+	head := validUTF8Prefix(s, headBudget)
+	tail := validUTF8Suffix(s, tailBudget)
+	omitted := len(s) - len(head) - len(tail)
+	if omitted < 0 {
+		omitted = 0
+	}
+	marker := "\n... [tool output truncated, omitted " + itoa(omitted) + " bytes]\n"
+
+	result := head + marker + tail
+	for len(result) > maxFunctionCallOutputBytes && len(tail) > 0 {
+		shrink := len(result) - maxFunctionCallOutputBytes
+		newTailBytes := len(tail) - shrink
+		if newTailBytes < 0 {
+			newTailBytes = 0
+		}
+		tail = validUTF8Suffix(tail, newTailBytes)
+		result = head + marker + tail
+	}
+	for len(result) > maxFunctionCallOutputBytes && len(head) > 0 {
+		shrink := len(result) - maxFunctionCallOutputBytes
+		newHeadBytes := len(head) - shrink
+		if newHeadBytes < 0 {
+			newHeadBytes = 0
+		}
+		head = validUTF8Prefix(head, newHeadBytes)
+		result = head + marker + tail
+	}
+	if len(result) > maxFunctionCallOutputBytes {
+		result = validUTF8Prefix(result, maxFunctionCallOutputBytes)
+	}
+	return result
+}
+
+func validUTF8Prefix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	prefix := s[:maxBytes]
+	for len(prefix) > 0 && !utf8.ValidString(prefix) {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return prefix
+}
+
+func validUTF8Suffix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	start := len(s) - maxBytes
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
+}
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	buf := make([]byte, 0, 20)
+	for v > 0 {
+		buf = append(buf, byte('0'+(v%10)))
+		v /= 10
+	}
+	if neg {
+		buf = append(buf, '-')
+	}
+	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
+		buf[i], buf[j] = buf[j], buf[i]
+	}
+	return string(buf)
+}
 
 // TranslateMessages converts internal Message entries to the OpenAI Responses API
 // input format. System messages are extracted as instructions (returned separately),
@@ -31,7 +132,7 @@ func TranslateMessages(messages []protocoltypes.Message) (input responses.Respon
 					OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 						CallID: msg.ToolCallID,
 						Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-							OfString: openai.Opt(msg.Content),
+							OfString: openai.Opt(truncateFunctionCallOutput(msg.Content)),
 						},
 					},
 				})
@@ -87,7 +188,7 @@ func TranslateMessages(messages []protocoltypes.Message) (input responses.Respon
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: msg.ToolCallID,
 					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-						OfString: openai.Opt(msg.Content),
+						OfString: openai.Opt(truncateFunctionCallOutput(msg.Content)),
 					},
 				},
 			})

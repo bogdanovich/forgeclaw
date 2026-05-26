@@ -50,6 +50,24 @@ type InboundMessage struct {
 	MessageID string `json:"message_id,omitempty"` // platform message ID
 }
 
+// ObservedMessage is passive chat context. It is persisted for future context
+// but must not start an agent turn or produce an outbound response.
+type ObservedMessage struct {
+	Context    InboundContext `json:"context"`
+	Sender     SenderInfo     `json:"sender"`
+	Content    string         `json:"content"`
+	Media      []string       `json:"media,omitempty"`
+	MediaScope string         `json:"media_scope,omitempty"`
+	SessionKey string         `json:"session_key,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+
+	// Convenience mirrors derived from Context for runtime consumers.
+	Channel   string `json:"channel"`
+	SenderID  string `json:"sender_id"`
+	ChatID    string `json:"chat_id"`
+	MessageID string `json:"message_id,omitempty"`
+}
+
 // OutboundScope captures the structured session scope associated with an
 // outbound turn result without depending on the session package.
 type OutboundScope struct {

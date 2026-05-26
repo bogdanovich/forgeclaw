@@ -15,6 +15,9 @@ type MessageBus interface {
 	// PublishInbound sends an inbound message to be processed.
 	PublishInbound(ctx context.Context, msg bus.InboundMessage) error
 
+	// PublishObserved sends passive context that should be persisted without starting a turn.
+	PublishObserved(ctx context.Context, msg bus.ObservedMessage) error
+
 	// PublishOutbound sends an outbound message to the appropriate channel.
 	PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error
 
@@ -26,6 +29,9 @@ type MessageBus interface {
 
 	// InboundChan returns the channel for receiving inbound messages.
 	InboundChan() <-chan bus.InboundMessage
+
+	// ObservedChan returns passive messages that should be recorded without a response.
+	ObservedChan() <-chan bus.ObservedMessage
 }
 
 // ChannelManager manages channel lifecycle and provides channel access.

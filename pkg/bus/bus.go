@@ -53,6 +53,7 @@ type ReasoningStreamer interface {
 
 type MessageBus struct {
 	inbound       chan InboundMessage
+	observed      chan ObservedMessage
 	outbound      chan OutboundMessage
 	outboundMedia chan OutboundMediaMessage
 	audioChunks   chan AudioChunk
@@ -75,6 +76,7 @@ type EventPublisher interface {
 func NewMessageBus() *MessageBus {
 	return &MessageBus{
 		inbound:       make(chan InboundMessage, defaultBusBufferSize),
+		observed:      make(chan ObservedMessage, defaultBusBufferSize),
 		outbound:      make(chan OutboundMessage, defaultBusBufferSize),
 		outboundMedia: make(chan OutboundMediaMessage, defaultBusBufferSize),
 		audioChunks:   make(chan AudioChunk, defaultBusBufferSize*4), // Audio chunks need more buffer.
@@ -126,6 +128,23 @@ func (mb *MessageBus) PublishInbound(ctx context.Context, msg InboundMessage) er
 
 func (mb *MessageBus) InboundChan() <-chan InboundMessage {
 	return mb.inbound
+}
+
+func (mb *MessageBus) PublishObserved(ctx context.Context, msg ObservedMessage) error {
+	msg = NormalizeObservedMessage(msg)
+	if msg.Context.isZero() {
+		mb.publishFailure("observed", runtimeScopeFromInboundContext(msg.Context), ErrMissingInboundContext)
+		return ErrMissingInboundContext
+	}
+	if err := publish(ctx, mb, mb.observed, msg); err != nil {
+		mb.publishFailure("observed", runtimeScopeFromInboundContext(msg.Context), err)
+		return err
+	}
+	return nil
+}
+
+func (mb *MessageBus) ObservedChan() <-chan ObservedMessage {
+	return mb.observed
 }
 
 func (mb *MessageBus) PublishOutbound(ctx context.Context, msg OutboundMessage) error {
@@ -219,6 +238,7 @@ func (mb *MessageBus) Close() {
 
 		// close channels safely
 		close(mb.inbound)
+		close(mb.observed)
 		close(mb.outbound)
 		close(mb.outboundMedia)
 		close(mb.audioChunks)
@@ -227,6 +247,9 @@ func (mb *MessageBus) Close() {
 		// clean up any remaining messages in channels
 		drained := 0
 		for range mb.inbound {
+			drained++
+		}
+		for range mb.observed {
 			drained++
 		}
 		for range mb.outbound {

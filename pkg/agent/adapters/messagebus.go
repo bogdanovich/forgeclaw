@@ -23,6 +23,10 @@ func (a *messageBusAdapter) PublishInbound(ctx context.Context, msg bus.InboundM
 	return a.inner.PublishInbound(ctx, msg)
 }
 
+func (a *messageBusAdapter) PublishObserved(ctx context.Context, msg bus.ObservedMessage) error {
+	return a.inner.PublishObserved(ctx, msg)
+}
+
 func (a *messageBusAdapter) PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error {
 	return a.inner.PublishOutbound(ctx, msg)
 }
@@ -37,4 +41,8 @@ func (a *messageBusAdapter) GetStreamer(ctx context.Context, channel, chatID, se
 
 func (a *messageBusAdapter) InboundChan() <-chan bus.InboundMessage {
 	return a.inner.InboundChan()
+}
+
+func (a *messageBusAdapter) ObservedChan() <-chan bus.ObservedMessage {
+	return a.inner.ObservedChan()
 }

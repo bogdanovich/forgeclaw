@@ -126,6 +126,11 @@
       "type": "telegram",
       "allow_from": ["YOUR_USER_ID"],
       "reasoning_channel_id": "",
+      "group_trigger": {
+        "mention_only": false,
+        "ignore_non_bot_mentions": true,
+        "ignore_non_bot_replies": false
+      },
       "settings": {
         "token": "YOUR_TELEGRAM_BOT_TOKEN",
         "base_url": "",

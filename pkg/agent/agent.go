@@ -304,6 +304,11 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// 		}
 			// 	}
 			// }()
+		case msg, ok := <-al.bus.ObservedChan():
+			if !ok {
+				return nil
+			}
+			al.observeMessage(ctx, msg)
 		}
 	}
 }
