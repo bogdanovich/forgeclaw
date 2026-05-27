@@ -665,7 +665,7 @@ func (e *CompactionEngine) generateLeafSummary(
 
 	// Level 1 only succeeds if it actually reaches the requested target size.
 	if content != "" && tokenizer.EstimateMessageTokens(providers.Message{Content: content}) <= targetTokens {
-		return content, nil
+		return capSummaryText(content, LeafTargetTokens), nil
 	}
 
 	// Level 2: aggressive prompt
@@ -689,7 +689,7 @@ func (e *CompactionEngine) generateLeafSummary(
 		}
 	}
 	if content != "" && tokenizer.EstimateMessageTokens(providers.Message{Content: content}) <= aggressiveTarget {
-		return content, nil
+		return capSummaryText(content, LeafTargetTokens), nil
 	}
 
 	// Level 3: deterministic truncation
@@ -725,7 +725,7 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 		}
 	}
 	if content != "" {
-		return content, nil
+		return capSummaryText(content, CondensedTargetTokens), nil
 	}
 
 	// Level 2: aggressive prompt
@@ -739,7 +739,7 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 		return "", err
 	}
 	if content != "" {
-		return content, nil
+		return capSummaryText(content, CondensedTargetTokens), nil
 	}
 
 	// Level 3: deterministic fallback
@@ -933,6 +933,37 @@ func truncateCondensedSummaries(summaries []Summary) string {
 	}
 	content += fmt.Sprintf("\n[Condensed from %d summaries]", len(summaries))
 	return content
+}
+
+func capSummaryText(content string, targetTokens int) string {
+	limit := targetTokens * SummaryMaxOverage
+	if limit <= 0 {
+		return content
+	}
+	originalTokens := tokenizer.EstimateMessageTokens(providers.Message{Content: content})
+	if originalTokens <= limit {
+		return content
+	}
+
+	marker := fmt.Sprintf("\n[Summary capped from %d tokens; expand for full details]", originalTokens)
+	runes := []rune(content)
+	keep := limit * 4
+	if keep > len(runes) {
+		keep = len(runes)
+	}
+	if keep < 256 && len(runes) > 256 {
+		keep = 256
+	}
+
+	for keep > 0 {
+		capped := string(runes[:keep]) + marker
+		if tokenizer.EstimateMessageTokens(providers.Message{Content: capped}) <= limit {
+			return capped
+		}
+		keep = int(float64(keep) * 0.8)
+	}
+
+	return marker
 }
 
 func sumMessageTokens(messages []Message) int {

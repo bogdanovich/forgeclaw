@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tokenizer"
 )
 
 // --- Test Helpers ---
@@ -881,6 +884,30 @@ func TestGenerateCondensedSummaryEscalation(t *testing.T) {
 	// Should fall back to concatenation
 	if content == "" {
 		t.Error("expected non-empty content from fallback")
+	}
+}
+
+func TestGenerateCondensedSummaryHardCapsOversizedOutput(t *testing.T) {
+	oversizedComplete := func(ctx context.Context, prompt string, opts CompleteOptions) (string, error) {
+		return strings.Repeat("oversized summary detail ", 10000), nil
+	}
+
+	s := openTestStore(t)
+	ce, _ := newTestCompactionEngineWithStore(s, oversizedComplete)
+
+	content, err := ce.generateCondensedSummary(context.Background(), []Summary{
+		{SummaryID: "sum_a", Content: "source summary", TokenCount: 1000},
+		{SummaryID: "sum_b", Content: "source summary 2", TokenCount: 1000},
+	})
+	if err != nil {
+		t.Fatalf("generateCondensedSummary: %v", err)
+	}
+	if !strings.Contains(content, "Summary capped from") {
+		t.Fatalf("expected capped marker, got: %.200s", content)
+	}
+	tokens := tokenizer.EstimateMessageTokens(providers.Message{Content: content})
+	if tokens > CondensedTargetTokens*SummaryMaxOverage {
+		t.Fatalf("capped summary tokens = %d, want <= %d", tokens, CondensedTargetTokens*SummaryMaxOverage)
 	}
 }
 

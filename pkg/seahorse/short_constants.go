@@ -21,6 +21,7 @@ const (
 	LeafTargetTokens      int = 1200  // Target tokens for leaf summaries
 	CondensedTargetTokens int = 2000  // Target tokens for condensed summaries
 	SummaryPrefixTokens   int = 32000 // Max active summarized prefix before pressure condensation
+	SummaryMaxOverage     int = 2     // Hard cap generated summaries at target × this factor
 	MaxExpandTokens       int = 4000  // Token cap for expansion queries
 
 	// MaxCompactIterations caps CompactUntilUnder to prevent infinite loops.

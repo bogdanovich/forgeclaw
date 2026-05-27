@@ -688,3 +688,29 @@ func TestFormatSummaryXMLNoTimestampsWhenNil(t *testing.T) {
 		t.Errorf("should not have latest_at when nil, got: %s", xml)
 	}
 }
+
+func TestFormatSummaryXMLEscapesAttributesButNotTextQuotes(t *testing.T) {
+	s := Summary{
+		SummaryID:       `sum_"quoted"`,
+		Kind:            SummaryKindLeaf,
+		Depth:           0,
+		Content:         `text with "quotes" and <tag>`,
+		TokenCount:      30,
+		DescendantCount: 0,
+	}
+
+	xml := FormatSummaryXML(&s, nil)
+
+	if !contains(xml, `id="sum_&quot;quoted&quot;"`) {
+		t.Fatalf("summary id attribute was not escaped: %s", xml)
+	}
+	if contains(xml, `&quot;quotes&quot;`) {
+		t.Fatalf("text quotes should remain readable in content: %s", xml)
+	}
+	if !contains(xml, `"quotes"`) {
+		t.Fatalf("text quotes missing from content: %s", xml)
+	}
+	if !contains(xml, `&lt;tag&gt;`) {
+		t.Fatalf("text XML delimiters should be escaped: %s", xml)
+	}
+}

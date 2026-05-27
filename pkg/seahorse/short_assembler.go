@@ -11,13 +11,21 @@ import (
 	"github.com/sipeed/picoclaw/pkg/tokenizer"
 )
 
-// escapeXML escapes special characters for safe inclusion in XML content.
-func escapeXML(s string) string {
+// escapeXMLAttr escapes special characters for safe inclusion in XML attributes.
+func escapeXMLAttr(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	s = strings.ReplaceAll(s, "\"", "&quot;")
 	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
+}
+
+// escapeXMLText escapes only characters that can break XML text nodes.
+func escapeXMLText(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
 }
 
@@ -422,19 +430,19 @@ func FormatSummaryXML(s *Summary, parentIDs []string) string {
 	if s.Kind == SummaryKindCondensed && len(parentIDs) > 0 {
 		parents := "<parents>\n"
 		for _, pid := range parentIDs {
-			parents += fmt.Sprintf("    <summary_ref id=\"%s\" />\n", pid)
+			parents += fmt.Sprintf("    <summary_ref id=\"%s\" />\n", escapeXMLAttr(pid))
 		}
 		parents += "  </parents>\n"
 		parentsSection = parents
 	}
 	return fmt.Sprintf(
 		"<summary id=\"%s\" kind=\"%s\" depth=\"%d\" descendant_count=\"%d\"%s>\n  <content>\n    %s\n  </content>\n%s</summary>",
-		s.SummaryID,
-		string(s.Kind),
+		escapeXMLAttr(s.SummaryID),
+		escapeXMLAttr(string(s.Kind)),
 		s.Depth,
 		s.DescendantCount,
 		attrs,
-		escapeXML(s.Content),
+		escapeXMLText(s.Content),
 		parentsSection,
 	)
 }
