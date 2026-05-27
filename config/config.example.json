@@ -539,6 +539,9 @@
     "send_tts": {
       "enabled": false
     },
+    "search_files": {
+      "enabled": true
+    },
     "spawn": {
       "enabled": true
     },

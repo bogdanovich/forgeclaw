@@ -15,6 +15,7 @@ type (
 	EditFileTool      = fstools.EditFileTool
 	AppendFileTool    = fstools.AppendFileTool
 	ApplyPatchTool    = fstools.ApplyPatchTool
+	SearchFilesTool   = fstools.SearchFilesTool
 	LoadImageTool     = fstools.LoadImageTool
 	SendFileTool      = fstools.SendFileTool
 )
@@ -86,6 +87,15 @@ func NewApplyPatchTool(
 	allowPaths ...[]*regexp.Regexp,
 ) *ApplyPatchTool {
 	return fstools.NewApplyPatchTool(workspace, restrict, allowPaths...)
+}
+
+func NewSearchFilesTool(
+	workspace string,
+	restrict bool,
+	maxFileSize int,
+	allowPaths ...[]*regexp.Regexp,
+) *SearchFilesTool {
+	return fstools.NewSearchFilesTool(workspace, restrict, maxFileSize, allowPaths...)
 }
 
 func NewLoadImageTool(

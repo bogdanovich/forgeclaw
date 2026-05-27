@@ -112,6 +112,9 @@ func NewAgentInstance(
 	if cfg.Tools.IsToolEnabled("list_dir") {
 		registerTool(tools.NewListDirTool(workspace, readRestrict, allowReadPaths))
 	}
+	if cfg.Tools.IsToolEnabled("search_files") {
+		registerTool(tools.NewSearchFilesTool(workspace, readRestrict, cfg.Tools.ReadFile.MaxReadFileSize, allowReadPaths))
+	}
 	if cfg.Tools.IsToolEnabled("exec") {
 		execTool, err := tools.NewExecToolWithConfig(workspace, restrict, cfg, allowReadPaths)
 		if err != nil {

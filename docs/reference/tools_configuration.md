@@ -244,6 +244,39 @@ Example:
 *** End Patch
 ```
 
+## Search Files Tool
+
+The `search_files` tool searches workspace files without shelling out to
+`grep`, `rg`, `find`, or `ls`. It is intended for routine repository and
+workspace discovery while preserving PicoClaw's read workspace restrictions and
+`tools.allow_read_paths`.
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `tools.search_files.enabled` | bool | `true` | Enable the `search_files` file-search tool |
+
+### `search_files` Tool Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pattern` | string | yes | Regex pattern for content search, or glob/name pattern for file search |
+| `target` | string | no | `content` or `files`; default `content` |
+| `path` | string | no | Directory or file to search; default `.` |
+| `file_glob` | string | no | Restrict content search to matching file names, such as `*.go` |
+| `output_mode` | string | no | `content`, `files_only`, or `count`; default `content` |
+| `context` | int | no | Context lines around content matches; default `0`, max `10` |
+| `limit` | int | no | Maximum returned matches/files; default `100`, max `500` |
+
+Examples:
+
+```json
+{"pattern": "NewAgentInstance", "path": "pkg", "file_glob": "*.go"}
+```
+
+```json
+{"target": "files", "pattern": "*.md", "path": "docs"}
+```
+
 ## Exec Tool
 
 The exec tool is used to execute shell commands.

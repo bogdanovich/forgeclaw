@@ -616,6 +616,38 @@ func TestNewAgentInstance_CanDisableApplyPatchTool(t *testing.T) {
 	}
 }
 
+func TestNewAgentInstance_RegistersSearchFilesTool(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = workspace
+	cfg.Agents.Defaults.ModelName = "test-model"
+
+	agent := NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, &mockProvider{})
+	tool, ok := agent.Tools.Get("search_files")
+	if !ok {
+		t.Fatal("search_files tool not registered")
+	}
+
+	params := tool.Parameters()
+	props, _ := params["properties"].(map[string]any)
+	if _, ok := props["pattern"]; !ok {
+		t.Fatalf("expected search_files schema to expose pattern, got %#v", props)
+	}
+}
+
+func TestNewAgentInstance_CanDisableSearchFilesTool(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = workspace
+	cfg.Agents.Defaults.ModelName = "test-model"
+	cfg.Tools.SearchFiles.Enabled = false
+
+	agent := NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, &mockProvider{})
+	if _, ok := agent.Tools.Get("search_files"); ok {
+		t.Fatal("search_files tool should not be registered when disabled")
+	}
+}
+
 func TestNewAgentInstance_InvalidExecConfigDoesNotExit(t *testing.T) {
 	workspace := t.TempDir()
 

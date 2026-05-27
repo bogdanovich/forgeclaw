@@ -1091,6 +1091,7 @@ type ToolsConfig struct {
 	Serial          ToolConfig               `json:"serial"            yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
 	SendFile        ToolConfig               `json:"send_file"         yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
 	SendTTS         ToolConfig               `json:"send_tts"          yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
+	SearchFiles     ToolConfig               `json:"search_files"      yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEARCH_FILES_"`
 	Spawn           ToolConfig               `json:"spawn"             yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
 	SpawnStatus     ToolConfig               `json:"spawn_status"      yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
 	SPI             ToolConfig               `json:"spi"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPI_"`
@@ -1847,6 +1848,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.ReadFile.Enabled
 	case "serial":
 		return t.Serial.Enabled
+	case "search_files":
+		return t.SearchFiles.Enabled
 	case "spawn":
 		return t.Spawn.Enabled
 	case "spawn_status":
