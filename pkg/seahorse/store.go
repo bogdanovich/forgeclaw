@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const sqliteTimeLayout = "2006-01-02 15:04:05"
+
 // Store provides SQLite storage for seahorse.
 type Store struct {
 	db *sql.DB
@@ -75,8 +77,8 @@ func (s *Store) GetConversationBySessionKey(ctx context.Context, sessionKey stri
 	if err != nil {
 		return nil, fmt.Errorf("get conversation by session key: %w", err)
 	}
-	conv.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-	conv.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+	conv.CreatedAt = parseSQLiteTime(createdAt)
+	conv.UpdatedAt = parseSQLiteTime(updatedAt)
 	return &conv, nil
 }
 
@@ -153,8 +155,8 @@ func (s *Store) getMessageTimeRange(ctx context.Context, convID int64) (time.Tim
 	if err != nil || minTime == "" {
 		return time.Time{}, time.Time{}, err
 	}
-	oldest, _ := time.Parse("2006-01-02 15:04:05", minTime)
-	newest, _ := time.Parse("2006-01-02 15:04:05", maxTime)
+	oldest := parseSQLiteTime(minTime)
+	newest := parseSQLiteTime(maxTime)
 	return oldest, newest, nil
 }
 
@@ -162,7 +164,7 @@ func (s *Store) getMessageTimeRange(ctx context.Context, convID int64) (time.Tim
 
 // AddMessage appends a message to a conversation.
 func (s *Store) AddMessage(ctx context.Context, convID int64, role, content string, tokenCount int) (*Message, error) {
-	return s.AddMessageWithReasoning(ctx, convID, role, content, "", "", tokenCount)
+	return s.AddMessageWithReasoning(ctx, convID, role, content, "", "", tokenCount, time.Time{})
 }
 
 // AddMessageWithReasoning appends a message with reasoning content to a conversation.
@@ -171,16 +173,22 @@ func (s *Store) AddMessageWithReasoning(
 	convID int64,
 	role, content, modelName, reasoningContent string,
 	tokenCount int,
+	createdAt time.Time,
 ) (*Message, error) {
+	storedCreatedAt := normalizeMessageCreatedAt(createdAt)
+	if storedCreatedAt.IsZero() {
+		storedCreatedAt = normalizeMessageCreatedAt(time.Now())
+	}
 	result, err := s.db.ExecContext(
 		ctx,
-		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, token_count) VALUES (?, ?, ?, ?, ?, ?)",
+		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		convID,
 		role,
 		content,
 		modelName,
 		reasoningContent,
 		tokenCount,
+		formatSQLiteTime(storedCreatedAt),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("add message: %w", err)
@@ -194,6 +202,7 @@ func (s *Store) AddMessageWithReasoning(
 		ModelName:        modelName,
 		ReasoningContent: reasoningContent,
 		TokenCount:       tokenCount,
+		CreatedAt:        storedCreatedAt,
 	}, nil
 }
 
@@ -231,7 +240,7 @@ func (s *Store) AddMessageWithParts(
 	parts []MessagePart,
 	tokenCount int,
 ) (*Message, error) {
-	return s.AddMessageWithPartsAndReasoning(ctx, convID, role, parts, "", "", tokenCount)
+	return s.AddMessageWithPartsAndReasoning(ctx, convID, role, parts, "", "", tokenCount, time.Time{})
 }
 
 // AddMessageWithPartsAndReasoning adds a message with structured parts and reasoning content.
@@ -243,6 +252,7 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 	modelName string,
 	reasoningContent string,
 	tokenCount int,
+	createdAt time.Time,
 ) (*Message, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -250,18 +260,24 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 	}
 	defer tx.Rollback()
 
+	storedCreatedAt := normalizeMessageCreatedAt(createdAt)
+	if storedCreatedAt.IsZero() {
+		storedCreatedAt = normalizeMessageCreatedAt(time.Now())
+	}
+
 	// Derive readable content from Parts for FTS5 indexing and summary formatting
 	readableContent := partsToReadableContent(parts)
 
 	result, err := tx.ExecContext(
 		ctx,
-		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, token_count) VALUES (?, ?, ?, ?, ?, ?)",
+		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		convID,
 		role,
 		readableContent,
 		modelName,
 		reasoningContent,
 		tokenCount,
+		formatSQLiteTime(storedCreatedAt),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("add message: %w", err)
@@ -299,6 +315,7 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 		ModelName:        modelName,
 		ReasoningContent: reasoningContent,
 		TokenCount:       tokenCount,
+		CreatedAt:        storedCreatedAt,
 		Parts:            make([]MessagePart, len(parts)),
 	}
 	for i, p := range parts {
@@ -344,7 +361,7 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 		); err != nil {
 			return nil, err
 		}
-		msg.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		msg.CreatedAt = parseSQLiteTime(createdAt)
 		msgs = append(msgs, msg)
 	}
 	if err := rows.Err(); err != nil {
@@ -387,7 +404,7 @@ func (s *Store) GetMessageByID(ctx context.Context, messageID int64) (*Message, 
 	if err != nil {
 		return nil, err
 	}
-	msg.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+	msg.CreatedAt = parseSQLiteTime(createdAt)
 	msg.Parts, _ = s.loadMessageParts(ctx, msg.ID)
 	return &msg, nil
 }
@@ -428,6 +445,32 @@ func (s *Store) UpdateMessageModelName(ctx context.Context, messageID int64, mod
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("update message model_name rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("message %d not found", messageID)
+	}
+	return nil
+}
+
+func (s *Store) UpdateMessageCreatedAt(ctx context.Context, messageID int64, createdAt time.Time) error {
+	storedCreatedAt := normalizeMessageCreatedAt(createdAt)
+	if storedCreatedAt.IsZero() {
+		return fmt.Errorf("message %d created_at cannot be zero", messageID)
+	}
+
+	result, err := s.db.ExecContext(
+		ctx,
+		"UPDATE messages SET created_at = ? WHERE message_id = ?",
+		formatSQLiteTime(storedCreatedAt),
+		messageID,
+	)
+	if err != nil {
+		return fmt.Errorf("update message created_at: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update message created_at rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("message %d not found", messageID)
@@ -648,7 +691,7 @@ func (s *Store) GetSummarySourceMessages(ctx context.Context, summaryID string) 
 		); err != nil {
 			return nil, err
 		}
-		msg.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		msg.CreatedAt = parseSQLiteTime(createdAt)
 		msgs = append(msgs, msg)
 	}
 	if err := rows.Err(); err != nil {
@@ -714,8 +757,7 @@ func (s *Store) GetContextItems(ctx context.Context, convID int64) ([]ContextIte
 			item.MessageID = messageID.Int64
 		}
 		if createdAt.Valid {
-			t, _ := time.Parse("2006-01-02 15:04:05", createdAt.String)
-			item.CreatedAt = t
+			item.CreatedAt = parseSQLiteTime(createdAt.String)
 		}
 		items = append(items, item)
 	}
@@ -1449,7 +1491,7 @@ func (s *Store) scanSearchResults(rows *sql.Rows, withRank bool) ([]SearchResult
 			}
 		}
 		r.Kind = SummaryKind(kind)
-		r.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		r.CreatedAt = parseSQLiteTime(createdAt)
 		results = append(results, r)
 	}
 	return results, nil
@@ -1573,7 +1615,7 @@ func (s *Store) scanMessageSearchResults(rows *sql.Rows, withRank bool) ([]Searc
 			}
 		}
 		r.Snippet = content
-		r.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		r.CreatedAt = parseSQLiteTime(createdAt)
 		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -1606,7 +1648,7 @@ func (s *Store) scanSummary(ctx context.Context, where string, args ...any) (*Su
 		return nil, err
 	}
 	sum.Kind = SummaryKind(kind)
-	sum.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+	sum.CreatedAt = parseSQLiteTime(createdAt)
 	if earliestAt.Valid {
 		t, _ := time.Parse(time.RFC3339, earliestAt.String)
 		sum.EarliestAt = &t
@@ -1633,7 +1675,7 @@ func (s *Store) scanSummaries(rows *sql.Rows) ([]Summary, error) {
 			return nil, err
 		}
 		sum.Kind = SummaryKind(kind)
-		sum.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		sum.CreatedAt = parseSQLiteTime(createdAt)
 		if earliestAt.Valid {
 			t, _ := time.Parse(time.RFC3339, earliestAt.String)
 			sum.EarliestAt = &t
@@ -1657,6 +1699,22 @@ func generateSummaryID(content string, t time.Time) string {
 func isUniqueViolation(err error) bool {
 	return err != nil && (contains(err.Error(), "UNIQUE constraint failed") ||
 		contains(err.Error(), "constraint failed"))
+}
+
+func normalizeMessageCreatedAt(createdAt time.Time) time.Time {
+	if createdAt.IsZero() {
+		return time.Time{}
+	}
+	return createdAt.UTC().Truncate(time.Second)
+}
+
+func formatSQLiteTime(t time.Time) string {
+	return normalizeMessageCreatedAt(t).Format(sqliteTimeLayout)
+}
+
+func parseSQLiteTime(raw string) time.Time {
+	parsed, _ := time.Parse(sqliteTimeLayout, raw)
+	return parsed
 }
 
 func contains(s, sub string) bool {

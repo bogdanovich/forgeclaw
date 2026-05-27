@@ -83,3 +83,32 @@ func TestSave_RejectsPathTraversal(t *testing.T) {
 		t.Errorf("expected foo_bar.json in storage (sanitized from foo/bar)")
 	}
 }
+
+func TestLoadSessions_NormalizesMissingCreatedAt(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionPath := filepath.Join(tmpDir, "telegram_legacy.json")
+	legacy := `{
+  "key": "telegram:legacy",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello"
+    }
+  ],
+  "created": "2026-01-01T00:00:00Z",
+  "updated": "2026-01-01T00:00:00Z"
+}`
+
+	if err := os.WriteFile(sessionPath, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sm := NewSessionManager(tmpDir)
+	history := sm.GetHistory("telegram:legacy")
+	if len(history) != 1 {
+		t.Fatalf("history = %d, want 1", len(history))
+	}
+	if history[0].CreatedAt == nil || history[0].CreatedAt.IsZero() {
+		t.Fatalf("history[0].CreatedAt = %v, want non-zero timestamp", history[0].CreatedAt)
+	}
+}

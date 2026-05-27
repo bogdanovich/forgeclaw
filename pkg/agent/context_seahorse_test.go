@@ -171,11 +171,13 @@ func TestProviderToSeahorseMessageWithMedia(t *testing.T) {
 }
 
 func TestProviderToSeahorseMessageWithReasoning(t *testing.T) {
+	createdAt := time.Date(2026, 5, 6, 7, 8, 9, 123000000, time.UTC)
 	msg := protocoltypes.Message{
 		Role:             "assistant",
 		Content:          "response text",
 		ModelName:        "gpt-5.4-mini",
 		ReasoningContent: "I thought about this carefully",
+		CreatedAt:        &createdAt,
 	}
 
 	result := providerToSeahorseMessage(msg)
@@ -184,6 +186,9 @@ func TestProviderToSeahorseMessageWithReasoning(t *testing.T) {
 	}
 	if result.ModelName != "gpt-5.4-mini" {
 		t.Errorf("ModelName = %q, want %q", result.ModelName, "gpt-5.4-mini")
+	}
+	if !result.CreatedAt.Equal(time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)) {
+		t.Errorf("CreatedAt = %v, want 2026-05-06 07:08:09 UTC", result.CreatedAt)
 	}
 }
 

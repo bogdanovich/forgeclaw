@@ -57,8 +57,8 @@ func prepareBootstrapRepairConversation(
 	}
 
 	return conv, []Message{
-		{Role: "user", Content: "hello", TokenCount: 3},
-		{Role: "assistant", Content: "world", TokenCount: 3},
+		{Role: "user", Content: "hello", TokenCount: 3, CreatedAt: userMsg.CreatedAt},
+		{Role: "assistant", Content: "world", TokenCount: 3, CreatedAt: assistantMsg.CreatedAt},
 	}
 }
 
@@ -464,13 +464,19 @@ func TestBootstrapRepairsReasoningContentAndModelNameTogether(t *testing.T) {
 	}
 
 	err = eng.Bootstrap(ctx, sessionKey, []Message{
-		{Role: "user", Content: "hello", TokenCount: 3},
+		{
+			Role:       "user",
+			Content:    "hello",
+			TokenCount: 3,
+			CreatedAt:  time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
+		},
 		{
 			Role:             "assistant",
 			Content:          "world",
 			ModelName:        "gpt-5.4",
 			ReasoningContent: "let me think this through",
 			TokenCount:       3,
+			CreatedAt:        time.Date(2026, 3, 4, 5, 6, 8, 0, time.UTC),
 		},
 	})
 	if err != nil {
@@ -515,6 +521,7 @@ func TestBootstrapRepairsIncorrectNonEmptyModelName(t *testing.T) {
 		"wrong-model",
 		"",
 		3,
+		time.Time{},
 	)
 	if err != nil {
 		t.Fatalf("AddMessageWithReasoning assistant: %v", err)
@@ -542,6 +549,64 @@ func TestBootstrapRepairsIncorrectNonEmptyModelName(t *testing.T) {
 	}
 	if stored[1].ModelName != "gpt-5.4" {
 		t.Fatalf("stored[1].ModelName = %q, want %q", stored[1].ModelName, "gpt-5.4")
+	}
+}
+
+func TestBootstrapRepairsCreatedAt(t *testing.T) {
+	eng := newTestEngine(t)
+	ctx := context.Background()
+	sessionKey := "agent:repair-created-at"
+	conv, msgs := prepareBootstrapRepairConversation(t, eng, ctx, sessionKey)
+
+	wantCreatedAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	msgs[1].CreatedAt = wantCreatedAt
+
+	err := eng.Bootstrap(ctx, sessionKey, msgs)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	stored, err := eng.store.GetMessages(ctx, conv.ConversationID, 10, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored messages = %d, want 2", len(stored))
+	}
+	if !stored[1].CreatedAt.Equal(wantCreatedAt) {
+		t.Fatalf("stored[1].CreatedAt = %v, want %v", stored[1].CreatedAt, wantCreatedAt)
+	}
+}
+
+func TestEngineIngestPreservesCreatedAt(t *testing.T) {
+	eng := newTestEngine(t)
+	ctx := context.Background()
+	wantCreatedAt := time.Date(2026, 4, 5, 6, 7, 8, 0, time.UTC)
+
+	msgs := []Message{
+		{
+			Role:       "assistant",
+			Content:    "world",
+			TokenCount: 4,
+			CreatedAt:  wantCreatedAt,
+		},
+	}
+
+	_, err := eng.Ingest(ctx, "agent:created-at", msgs)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	conv, _ := eng.store.GetOrCreateConversation(ctx, "agent:created-at")
+	stored, err := eng.store.GetMessages(ctx, conv.ConversationID, 10, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("stored messages = %d, want 1", len(stored))
+	}
+	if !stored[0].CreatedAt.Equal(wantCreatedAt) {
+		t.Fatalf("stored[0].CreatedAt = %v, want %v", stored[0].CreatedAt, wantCreatedAt)
 	}
 }
 
@@ -864,8 +929,19 @@ func TestBootstrapRepairsMissingReasoningContentWithoutDroppingSummaries(t *test
 	}
 
 	err = eng.Bootstrap(ctx, sessionKey, []Message{
-		{Role: "user", Content: "hello", TokenCount: 3},
-		{Role: "assistant", Content: "world", ReasoningContent: "let me think this through", TokenCount: 3},
+		{
+			Role:       "user",
+			Content:    "hello",
+			TokenCount: 3,
+			CreatedAt:  time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
+		},
+		{
+			Role:             "assistant",
+			Content:          "world",
+			ReasoningContent: "let me think this through",
+			TokenCount:       3,
+			CreatedAt:        time.Date(2026, 3, 4, 5, 6, 8, 0, time.UTC),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)

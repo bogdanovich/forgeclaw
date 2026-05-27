@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -204,6 +205,7 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 		ModelName:        msg.ModelName,
 		ReasoningContent: msg.ReasoningContent,
 		TokenCount:       tokenizer.EstimateMessageTokens(msg),
+		CreatedAt:        normalizeSeahorseMessageCreatedAt(msg.CreatedAt),
 	}
 
 	// Convert ToolCalls → MessageParts
@@ -237,6 +239,13 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 	}
 
 	return result
+}
+
+func normalizeSeahorseMessageCreatedAt(createdAt *time.Time) time.Time {
+	if createdAt == nil || createdAt.IsZero() {
+		return time.Time{}
+	}
+	return createdAt.UTC().Truncate(time.Second)
 }
 
 // seahorseToProviderMessages converts a seahorse.AssembleResult to []providers.Message.
