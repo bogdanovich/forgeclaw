@@ -129,6 +129,15 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 
 	// Combine: selected evictable + fresh tail
 	final := append(selected, freshTail...)
+	var droppedCoveredSummaries int
+	final, droppedCoveredSummaries = a.dropCoveredSummaries(ctx, final)
+	if droppedCoveredSummaries > 0 {
+		logger.InfoCF("seahorse", "assemble: dropped covered summaries", map[string]any{
+			"conv_id":    convID,
+			"dropped":    droppedCoveredSummaries,
+			"final_size": len(final),
+		})
+	}
 
 	// Build result
 	var messages []Message
@@ -191,6 +200,75 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		Messages: messages,
 		Summary:  summary,
 	}, nil
+}
+
+func (a *Assembler) dropCoveredSummaries(ctx context.Context, items []resolvedItem) ([]resolvedItem, int) {
+	selectedSummaries := make(map[string]bool)
+	for _, item := range items {
+		if item.itemType == "summary" && item.summary != nil {
+			selectedSummaries[item.summary.SummaryID] = true
+		}
+	}
+	if len(selectedSummaries) == 0 {
+		return items, 0
+	}
+
+	keep := make([]resolvedItem, 0, len(items))
+	dropped := 0
+	for _, item := range items {
+		if item.itemType != "summary" || item.summary == nil {
+			keep = append(keep, item)
+			continue
+		}
+		covered, err := a.hasSelectedSummaryDescendant(ctx, item.summary.SummaryID, selectedSummaries, nil)
+		if err != nil {
+			logger.WarnCF("seahorse", "assemble: covered summary check failed", map[string]any{
+				"summary_id": item.summary.SummaryID,
+				"error":      err.Error(),
+			})
+			keep = append(keep, item)
+			continue
+		}
+		if covered {
+			dropped++
+			continue
+		}
+		keep = append(keep, item)
+	}
+	return keep, dropped
+}
+
+func (a *Assembler) hasSelectedSummaryDescendant(
+	ctx context.Context,
+	summaryID string,
+	selected map[string]bool,
+	visited map[string]bool,
+) (bool, error) {
+	if visited == nil {
+		visited = make(map[string]bool)
+	}
+	if visited[summaryID] {
+		return false, nil
+	}
+	visited[summaryID] = true
+
+	children, err := a.store.GetSummaryChildren(ctx, summaryID)
+	if err != nil {
+		return false, err
+	}
+	for _, childID := range children {
+		if selected[childID] {
+			return true, nil
+		}
+		covered, err := a.hasSelectedSummaryDescendant(ctx, childID, selected, visited)
+		if err != nil {
+			return false, err
+		}
+		if covered {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func trimFreshTailToSafeBudget(tail []resolvedItem, budget int) ([]resolvedItem, int, bool) {

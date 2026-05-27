@@ -155,6 +155,57 @@ func TestAssemblerSummaryBudgetUsesFormattedXML(t *testing.T) {
 	}
 }
 
+func TestAssemblerDropsCoveredLeafWhenCondensedSelected(t *testing.T) {
+	s, convID := setupAssemblerStore(t)
+	ctx := context.Background()
+
+	leaf, err := s.CreateSummary(ctx, CreateSummaryInput{
+		ConversationID: convID,
+		Kind:           SummaryKindLeaf,
+		Depth:          0,
+		Content:        "leaf content should be covered",
+		TokenCount:     10,
+	})
+	if err != nil {
+		t.Fatalf("CreateSummary leaf: %v", err)
+	}
+	condensed, err := s.CreateSummary(ctx, CreateSummaryInput{
+		ConversationID: convID,
+		Kind:           SummaryKindCondensed,
+		Depth:          1,
+		Content:        "condensed content should remain",
+		TokenCount:     10,
+		ParentIDs:      []string{leaf.SummaryID},
+	})
+	if err != nil {
+		t.Fatalf("CreateSummary condensed: %v", err)
+	}
+	msg, err := s.AddMessage(ctx, convID, "user", "fresh", 1)
+	if err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	if err := s.UpsertContextItems(ctx, convID, []ContextItem{
+		{Ordinal: 100, ItemType: "summary", SummaryID: leaf.SummaryID, TokenCount: 10},
+		{Ordinal: 200, ItemType: "summary", SummaryID: condensed.SummaryID, TokenCount: 10},
+		{Ordinal: 300, ItemType: "message", MessageID: msg.ID, TokenCount: 1},
+	}); err != nil {
+		t.Fatalf("UpsertContextItems: %v", err)
+	}
+
+	a := &Assembler{store: s, config: Config{}}
+	result, err := a.Assemble(ctx, convID, AssembleInput{Budget: 1000})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if strings.Contains(result.Summary, leaf.Content) {
+		t.Fatalf("covered leaf summary was assembled: %s", result.Summary)
+	}
+	if !strings.Contains(result.Summary, condensed.Content) {
+		t.Fatalf("condensed summary missing: %s", result.Summary)
+	}
+}
+
 func TestAssemblerBudgetEvictsOldest(t *testing.T) {
 	s, convID := setupAssemblerStore(t)
 	ctx := context.Background()
