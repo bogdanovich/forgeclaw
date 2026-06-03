@@ -93,7 +93,7 @@ func TestImageGenerateToolUsesConfiguredOutputDir(t *testing.T) {
 	}
 }
 
-func TestImageGenerateToolContinueAfterLeavesResponseUnhandled(t *testing.T) {
+func TestImageGenerateToolImmediateContinueLeavesResponseUnhandled(t *testing.T) {
 	store := media.NewFileMediaStore()
 	provider := &fakeImageGenerationProvider{
 		id:           "test-provider",
@@ -109,21 +109,21 @@ func TestImageGenerateToolContinueAfterLeavesResponseUnhandled(t *testing.T) {
 	result := tool.Execute(
 		WithToolContext(t.Context(), "telegram", "chat-1"),
 		map[string]any{
-			"prompt":         "make the first architecture diagram",
-			"continue_after": true,
+			"prompt":          "make the first architecture diagram",
+			"delivery_intent": string(DeliveryImmediateContinue),
 		},
 	)
 	if result.IsError {
 		t.Fatalf("Execute returned error: %s", result.ContentForLLM())
 	}
 	if result.ResponseHandled {
-		t.Fatal("expected continue_after image generation result to leave response unhandled")
+		t.Fatal("expected immediate_continue image generation result to leave response unhandled")
 	}
 	if !result.ImmediateDelivery {
-		t.Fatal("expected continue_after image generation result to request immediate delivery")
+		t.Fatal("expected immediate_continue image generation result to request immediate delivery")
 	}
 	if !result.Silent {
-		t.Fatal("expected continue_after image generation result to be silent")
+		t.Fatal("expected immediate_continue image generation result to be silent")
 	}
 	if len(result.Media) != 1 {
 		t.Fatalf("media refs = %d, want 1", len(result.Media))
