@@ -207,21 +207,9 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		return &ToolResult{ForLLM: "No target channel/chat specified", IsError: true}
 	}
 
-	if t.sendCallback == nil {
-		return &ToolResult{ForLLM: "Message sending not configured", IsError: true}
-	}
-
 	parts, err := t.buildMediaParts(channel, chatID, content, mediaArgs)
 	if err != nil {
 		return &ToolResult{ForLLM: err.Error(), IsError: true, Err: err}
-	}
-
-	if err := t.sendCallback(ctx, channel, chatID, content, replyToMessageID, parts); err != nil {
-		return &ToolResult{
-			ForLLM:  fmt.Sprintf("sending message: %v", err),
-			IsError: true,
-			Err:     err,
-		}
 	}
 
 	sessionKey := ToolSessionKey(ctx)
@@ -234,10 +222,16 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		status = fmt.Sprintf("Message with %d media attachment(s) sent to %s:%s", len(parts), channel, chatID)
 	}
 
-	return &ToolResult{
+	return (&ToolResult{
 		ForLLM: status,
 		Silent: true,
-	}
+	}).WithOutboundDelivery(OutboundDelivery{
+		Channel:          channel,
+		ChatID:           chatID,
+		ReplyToMessageID: replyToMessageID,
+		Text:             content,
+		Media:            parts,
+	}).WithDeliveryIntent(DeliveryImmediateContinue)
 }
 
 func parseMessageMediaArgs(raw any) ([]messageMediaArg, error) {

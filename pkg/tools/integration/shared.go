@@ -8,9 +8,20 @@ import (
 )
 
 type (
-	Tool          = toolshared.Tool
-	ToolResult    = toolshared.ToolResult
-	AsyncCallback = toolshared.AsyncCallback
+	Tool             = toolshared.Tool
+	ToolResult       = toolshared.ToolResult
+	AsyncCallback    = toolshared.AsyncCallback
+	DeliveryIntent   = toolshared.DeliveryIntent
+	OutboundDelivery = toolshared.OutboundDelivery
+)
+
+const (
+	DeliveryDefault           = toolshared.DeliveryDefault
+	DeliveryImmediateContinue = toolshared.DeliveryImmediateContinue
+	DeliveryFinalHandled      = toolshared.DeliveryFinalHandled
+	DeliveryFinalWithFollowup = toolshared.DeliveryFinalWithFollowup
+	DeliveryParentOnly        = toolshared.DeliveryParentOnly
+	DeliverySilent            = toolshared.DeliverySilent
 )
 
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {

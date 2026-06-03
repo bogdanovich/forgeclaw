@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -18,6 +19,17 @@ const (
 	AsyncDeliveryUserOnly      AsyncDeliveryMode = "user_only"
 	AsyncDeliveryParentOnly    AsyncDeliveryMode = "parent_only"
 	AsyncDeliveryUserAndParent AsyncDeliveryMode = "user_and_parent"
+)
+
+type DeliveryIntent string
+
+const (
+	DeliveryDefault           DeliveryIntent = ""
+	DeliveryImmediateContinue DeliveryIntent = "immediate_continue"
+	DeliveryFinalHandled      DeliveryIntent = "final_handled"
+	DeliveryFinalWithFollowup DeliveryIntent = "final_with_followup"
+	DeliveryParentOnly        DeliveryIntent = "parent_only"
+	DeliverySilent            DeliveryIntent = "silent"
 )
 
 // ToolResult represents the structured return value from tool execution.
@@ -100,6 +112,23 @@ type ToolResult struct {
 	// equivalent of the message tool's direct-send behavior for tools that
 	// produce MediaStore refs or other ToolResult outputs.
 	ImmediateDelivery bool `json:"immediate_delivery,omitempty"`
+
+	// DeliveryIntent is the canonical output ownership policy for this tool
+	// result. Legacy ResponseHandled/ImmediateDelivery fields remain as
+	// compatibility projections for older tools and callers.
+	DeliveryIntent DeliveryIntent `json:"delivery_intent,omitempty"`
+
+	// Outbound carries a fully resolved chat output for the runtime delivery
+	// coordinator. Tools should prefer this over sending directly.
+	Outbound *OutboundDelivery `json:"outbound,omitempty"`
+}
+
+type OutboundDelivery struct {
+	Channel          string          `json:"channel,omitempty"`
+	ChatID           string          `json:"chat_id,omitempty"`
+	ReplyToMessageID string          `json:"reply_to_message_id,omitempty"`
+	Text             string          `json:"text,omitempty"`
+	Media            []bus.MediaPart `json:"media,omitempty"`
 }
 
 // CompletionResult is the structured handoff payload used when one agent run
@@ -393,6 +422,7 @@ func (tr *ToolResult) WithError(err error) *ToolResult {
 // WithResponseHandled marks the tool result as already delivered to the user.
 func (tr *ToolResult) WithResponseHandled() *ToolResult {
 	tr.ResponseHandled = true
+	tr.DeliveryIntent = DeliveryFinalHandled
 	return tr
 }
 
@@ -400,7 +430,28 @@ func (tr *ToolResult) WithResponseHandled() *ToolResult {
 // immediately without treating the whole turn as answered.
 func (tr *ToolResult) WithImmediateDelivery() *ToolResult {
 	tr.ImmediateDelivery = true
+	tr.DeliveryIntent = DeliveryImmediateContinue
 	tr.Silent = true
+	return tr
+}
+
+func (tr *ToolResult) WithDeliveryIntent(intent DeliveryIntent) *ToolResult {
+	tr.DeliveryIntent = intent
+	switch intent {
+	case DeliveryImmediateContinue:
+		tr.ImmediateDelivery = true
+		tr.ResponseHandled = false
+		tr.Silent = true
+	case DeliveryFinalHandled:
+		tr.ResponseHandled = true
+	case DeliverySilent, DeliveryParentOnly:
+		tr.Silent = true
+	}
+	return tr
+}
+
+func (tr *ToolResult) WithOutboundDelivery(outbound OutboundDelivery) *ToolResult {
+	tr.Outbound = &outbound
 	return tr
 }
 

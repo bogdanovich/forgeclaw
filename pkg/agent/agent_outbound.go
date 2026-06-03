@@ -260,6 +260,10 @@ func (al *AgentLoop) deliverToolResultToUser(
 		return nil, false, nil
 	}
 
+	if result.Outbound != nil {
+		return al.deliverExplicitToolOutbound(ctx, ts, result, toolName)
+	}
+
 	mediaRefs := toolResultMediaRefs(result)
 	text := toolResultUserText(result)
 	if len(mediaRefs) > 0 {
@@ -318,6 +322,96 @@ func (al *AgentLoop) deliverToolResultToUser(
 			"content_len": len(text),
 		})
 	return nil, true, nil
+}
+
+func (al *AgentLoop) deliverExplicitToolOutbound(
+	ctx context.Context,
+	ts *turnState,
+	result *tools.ToolResult,
+	toolName string,
+) ([]providers.Attachment, bool, error) {
+	out := result.Outbound
+	if out == nil {
+		return nil, false, nil
+	}
+	channel := firstNonEmptyString(out.Channel, ts.channel)
+	chatID := firstNonEmptyString(out.ChatID, ts.chatID)
+	replyToMessageID := firstNonEmptyString(out.ReplyToMessageID, ts.opts.Dispatch.ReplyToMessageID())
+	outboundCtx := outboundContextFromInbound(
+		ts.opts.Dispatch.InboundContext,
+		channel,
+		chatID,
+		replyToMessageID,
+	)
+	agentID := ""
+	if ts.agent != nil {
+		agentID = ts.agent.ID
+	}
+	if len(out.Media) > 0 {
+		outboundMedia := bus.OutboundMediaMessage{
+			Channel:    channel,
+			ChatID:     chatID,
+			Context:    outboundCtx,
+			AgentID:    agentID,
+			SessionKey: ts.sessionKey,
+			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
+			Parts:      append([]bus.MediaPart(nil), out.Media...),
+		}
+		if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
+			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
+				logger.WarnCF("agent", "Failed to deliver explicit tool media",
+					map[string]any{
+						"agent_id": agentID,
+						"tool":     toolName,
+						"channel":  channel,
+						"chat_id":  chatID,
+						"error":    err.Error(),
+					})
+				return nil, false, err
+			}
+			return buildProviderAttachmentsFromMediaParts(out.Media), true, nil
+		}
+		if al.bus != nil {
+			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
+				return nil, false, err
+			}
+		}
+		return nil, false, nil
+	}
+	if strings.TrimSpace(out.Text) == "" {
+		return nil, false, nil
+	}
+	outboundMessage := bus.OutboundMessage{
+		Channel:          channel,
+		ChatID:           chatID,
+		Context:          outboundCtx,
+		AgentID:          agentID,
+		SessionKey:       ts.sessionKey,
+		Scope:            outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
+		Content:          out.Text,
+		ReplyToMessageID: replyToMessageID,
+	}
+	if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
+		if err := al.channelManager.SendMessage(ctx, outboundMessage); err != nil {
+			return nil, false, err
+		}
+		return nil, true, nil
+	}
+	if al.bus != nil {
+		if err := al.bus.PublishOutbound(ctx, outboundMessage); err != nil {
+			return nil, false, err
+		}
+	}
+	return nil, false, nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func toolResultUserText(result *tools.ToolResult) string {

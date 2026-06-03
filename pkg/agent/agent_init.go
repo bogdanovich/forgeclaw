@@ -13,7 +13,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/constants"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -170,54 +169,6 @@ func registerSharedTools(
 					allowReadPaths,
 				)
 			}
-			messageTool.SetSendCallback(func(
-				ctx context.Context,
-				channel, chatID, content, replyToMessageID string,
-				mediaParts []bus.MediaPart,
-			) error {
-				outboundCtx := bus.NewOutboundContext(channel, chatID, replyToMessageID)
-				if topicID := tools.ToolTopicID(ctx); topicID != "" {
-					outboundCtx.TopicID = topicID
-				}
-				outboundAgentID, outboundSessionKey, outboundScope := outboundTurnMetadata(
-					tools.ToolAgentID(ctx),
-					tools.ToolSessionKey(ctx),
-					tools.ToolSessionScope(ctx),
-				)
-				if len(mediaParts) > 0 {
-					outboundMedia := bus.OutboundMediaMessage{
-						Channel:    channel,
-						ChatID:     chatID,
-						Context:    outboundCtx,
-						AgentID:    outboundAgentID,
-						SessionKey: outboundSessionKey,
-						Scope:      outboundScope,
-						Parts:      mediaParts,
-					}
-					if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
-						return al.channelManager.SendMedia(ctx, outboundMedia)
-					}
-					pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer pubCancel()
-					return msgBus.PublishOutboundMedia(pubCtx, outboundMedia)
-				}
-				outboundMessage := bus.OutboundMessage{
-					Channel:          channel,
-					ChatID:           chatID,
-					Context:          outboundCtx,
-					AgentID:          outboundAgentID,
-					SessionKey:       outboundSessionKey,
-					Scope:            outboundScope,
-					Content:          content,
-					ReplyToMessageID: replyToMessageID,
-				}
-				if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
-					return al.channelManager.SendMessage(ctx, outboundMessage)
-				}
-				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer pubCancel()
-				return msgBus.PublishOutbound(pubCtx, outboundMessage)
-			})
 			registerToolIfAllowed(agent, messageTool)
 		}
 		if cfg.Tools.IsToolEnabled("reaction") {

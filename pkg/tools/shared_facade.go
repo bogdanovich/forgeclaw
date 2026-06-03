@@ -26,6 +26,8 @@ type (
 	CompletionResult       = toolshared.CompletionResult
 	DeliverableItem        = toolshared.DeliverableItem
 	DeliverableResult      = toolshared.DeliverableResult
+	DeliveryIntent         = toolshared.DeliveryIntent
+	OutboundDelivery       = toolshared.OutboundDelivery
 	PromptMetadata         = toolshared.PromptMetadata
 	PromptMetadataProvider = toolshared.PromptMetadataProvider
 	ToolResult             = toolshared.ToolResult
@@ -44,6 +46,13 @@ const (
 	AsyncDeliveryUserOnly      = toolshared.AsyncDeliveryUserOnly
 	AsyncDeliveryParentOnly    = toolshared.AsyncDeliveryParentOnly
 	AsyncDeliveryUserAndParent = toolshared.AsyncDeliveryUserAndParent
+
+	DeliveryDefault           = toolshared.DeliveryDefault
+	DeliveryImmediateContinue = toolshared.DeliveryImmediateContinue
+	DeliveryFinalHandled      = toolshared.DeliveryFinalHandled
+	DeliveryFinalWithFollowup = toolshared.DeliveryFinalWithFollowup
+	DeliveryParentOnly        = toolshared.DeliveryParentOnly
+	DeliverySilent            = toolshared.DeliverySilent
 )
 
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {

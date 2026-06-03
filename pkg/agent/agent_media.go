@@ -16,6 +16,7 @@ import (
 
 	"github.com/h2non/filetype"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -216,6 +217,22 @@ func buildProviderAttachments(store media.MediaStore, refs []string) []providers
 		attachments = append(attachments, attachment)
 	}
 
+	return attachments
+}
+
+func buildProviderAttachmentsFromMediaParts(parts []bus.MediaPart) []providers.Attachment {
+	if len(parts) == 0 {
+		return nil
+	}
+	attachments := make([]providers.Attachment, 0, len(parts))
+	for _, part := range parts {
+		attachments = append(attachments, providers.Attachment{
+			Ref:         part.Ref,
+			Type:        part.Type,
+			Filename:    part.Filename,
+			ContentType: part.ContentType,
+		})
+	}
 	return attachments
 }
 
