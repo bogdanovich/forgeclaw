@@ -17,6 +17,12 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
+const (
+	maxLLMRequestLogChars        = 20_000
+	maxLLMToolDescriptionChars   = 500
+	maxLLMToolParametersLogChars = 200
+)
+
 func outboundContextFromInbound(
 	inbound *bus.InboundContext,
 	channel, chatID, replyToMessageID string,
@@ -527,7 +533,7 @@ func formatMessagesForLog(messages []providers.Message) string {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("]")
-	return sb.String()
+	return utils.Truncate(sb.String(), maxLLMRequestLogChars)
 }
 
 func formatToolsForLog(toolDefs []providers.ToolDefinition) string {
@@ -539,17 +545,17 @@ func formatToolsForLog(toolDefs []providers.ToolDefinition) string {
 	sb.WriteString("[\n")
 	for i, tool := range toolDefs {
 		fmt.Fprintf(&sb, "  [%d] Type: %s, Name: %s\n", i, tool.Type, tool.Function.Name)
-		fmt.Fprintf(&sb, "      Description: %s\n", tool.Function.Description)
+		fmt.Fprintf(&sb, "      Description: %s\n", utils.Truncate(tool.Function.Description, maxLLMToolDescriptionChars))
 		if len(tool.Function.Parameters) > 0 {
 			fmt.Fprintf(
 				&sb,
 				"      Parameters: %s\n",
-				utils.Truncate(fmt.Sprintf("%v", tool.Function.Parameters), 200),
+				utils.Truncate(fmt.Sprintf("%v", tool.Function.Parameters), maxLLMToolParametersLogChars),
 			)
 		}
 	}
 	sb.WriteString("]")
-	return sb.String()
+	return utils.Truncate(sb.String(), maxLLMRequestLogChars)
 }
 
 func activeSkillNames(agent *AgentInstance, opts processOptions) []string {
