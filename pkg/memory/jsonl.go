@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -227,6 +229,11 @@ func (s *JSONLStore) UpsertSessionMeta(
 
 // PromoteAliasHistory atomically promotes the first non-empty alias session
 // into the canonical session when the canonical session is still empty.
+//
+// Main-session aliases (e.g. "agent:main:main" or its opaque form) are
+// skipped during promotion.  The main session is a shared global fallback
+// and promoting its history into individual sessions would attach stale
+// messages to every new Web UI session (issue #2972).
 func (s *JSONLStore) PromoteAliasHistory(
 	_ context.Context,
 	sessionKey string,
@@ -240,6 +247,9 @@ func (s *JSONLStore) PromoteAliasHistory(
 
 	aliases = normalizeAliases(sessionKey, aliases)
 	for _, alias := range aliases {
+		if isMainSessionAlias(alias) {
+			continue
+		}
 		unlock := s.lockSessionPair(sessionKey, alias)
 		promoted, err := s.promoteAliasHistoryLocked(sessionKey, alias, scope, aliases)
 		unlock()
@@ -249,6 +259,34 @@ func (s *JSONLStore) PromoteAliasHistory(
 	}
 
 	return false, nil
+}
+
+// isMainSessionAlias reports whether alias is the legacy or opaque main-session
+// key.  The main session ("agent:<agent>:main") is a shared fallback and should
+// not have its history promoted into individual per-channel sessions.
+func isMainSessionAlias(alias string) bool {
+	if alias == "" {
+		return false
+	}
+	// Legacy form: "agent:main:main" (exactly 3 colon-separated parts)
+	// Must not match "agent:sales:direct:main" etc.
+	if strings.HasPrefix(alias, "agent:") && strings.HasSuffix(alias, ":main") {
+		parts := strings.SplitN(alias, ":", 4)
+		if len(parts) == 3 {
+			return true
+		}
+	}
+	// Opaque form: "sk_v1_" + SHA256("agent:main:main")
+	if strings.HasPrefix(alias, "sk_v1_") {
+		for _, agentID := range []string{"main", "Main", "MAIN"} {
+			legacy := "agent:" + agentID + ":main"
+			hash := sha256.Sum256([]byte(legacy))
+			if "sk_v1_"+hex.EncodeToString(hash[:]) == alias {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ResolveSessionKey returns the canonical session key for a candidate key.

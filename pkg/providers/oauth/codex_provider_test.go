@@ -538,6 +538,84 @@ func TestCodexProvider_ChatRoundTrip_OutputTextDeltaFallback(t *testing.T) {
 	}
 }
 
+func TestCodexProvider_ChatRoundTrip_OutputItemDoneFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.Error(w, "not found: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		if reqBody["stream"] != true {
+			http.Error(w, "stream must be true", http.StatusBadRequest)
+			return
+		}
+
+		item := map[string]any{
+			"id":        "fc_1",
+			"type":      "function_call",
+			"call_id":   "call_abc",
+			"name":      "write_file",
+			"arguments": `{"path":"x.txt","content":"ok"}`,
+			"status":    "completed",
+		}
+		resp := map[string]any{
+			"id":     "resp_test",
+			"object": "response",
+			"status": "completed",
+			"output": []map[string]any{},
+		}
+		writeOutputItemDoneSSE(w, item, resp)
+	}))
+	defer server.Close()
+
+	provider := NewCodexProvider("test-token", "acc-123")
+	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+
+	resp, err := provider.Chat(
+		t.Context(),
+		[]Message{{Role: "user", Content: "Create x.txt"}},
+		[]ToolDefinition{
+			{
+				Type: "function",
+				Function: ToolFunctionDefinition{
+					Name:        "write_file",
+					Description: "write file",
+					Parameters:  map[string]any{"type": "object"},
+				},
+			},
+		},
+		"gpt-5.5",
+		map[string]any{},
+	)
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1", len(resp.ToolCalls))
+	}
+	tc := resp.ToolCalls[0]
+	if tc.ID != "call_abc" {
+		t.Errorf("ToolCall.ID = %q, want %q", tc.ID, "call_abc")
+	}
+	if tc.Name != "write_file" {
+		t.Errorf("ToolCall.Name = %q, want %q", tc.Name, "write_file")
+	}
+	if tc.Arguments["path"] != "x.txt" {
+		t.Errorf("ToolCall.Arguments[path] = %v, want x.txt", tc.Arguments["path"])
+	}
+	if tc.Arguments["content"] != "ok" {
+		t.Errorf("ToolCall.Arguments[content] = %v, want ok", tc.Arguments["content"])
+	}
+	if resp.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "tool_calls")
+	}
+}
+
 func TestCodexProvider_ChatRoundTrip_WebSearchDisabled(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {
@@ -828,6 +906,28 @@ func writeOutputTextDeltaSSE(w http.ResponseWriter, delta string, response map[s
 	w.Header().Set("Content-Type", "text/event-stream")
 	fmt.Fprintf(w, "event: response.output_text.delta\n")
 	fmt.Fprintf(w, "data: %s\n\n", string(deltaBytes))
+	fmt.Fprintf(w, "event: response.completed\n")
+	fmt.Fprintf(w, "data: %s\n\n", string(completedBytes))
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+}
+
+func writeOutputItemDoneSSE(w http.ResponseWriter, item map[string]any, response map[string]any) {
+	itemEvent := map[string]any{
+		"type":            "response.output_item.done",
+		"sequence_number": 1,
+		"output_index":    0,
+		"item":            item,
+	}
+	completedEvent := map[string]any{
+		"type":            "response.completed",
+		"sequence_number": 2,
+		"response":        response,
+	}
+	itemBytes, _ := json.Marshal(itemEvent)
+	completedBytes, _ := json.Marshal(completedEvent)
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprintf(w, "event: response.output_item.done\n")
+	fmt.Fprintf(w, "data: %s\n\n", string(itemBytes))
 	fmt.Fprintf(w, "event: response.completed\n")
 	fmt.Fprintf(w, "data: %s\n\n", string(completedBytes))
 	fmt.Fprintf(w, "data: [DONE]\n\n")
