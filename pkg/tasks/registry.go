@@ -1,6 +1,8 @@
 package tasks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -59,6 +61,19 @@ const (
 const (
 	DefaultTerminalRetention = 7 * 24 * time.Hour
 	DefaultMaxRecords        = 1000
+	DefaultMaxEvents         = 5000
+	TaskEventSchemaVersion   = "task_event.v1"
+)
+
+type EventType string
+
+const (
+	EventTaskUpserted        EventType = "task.upserted"
+	EventTaskStatusChanged   EventType = "task.status_changed"
+	EventTaskDeliveryChanged EventType = "task.delivery_changed"
+	EventTaskProgress        EventType = "task.progress"
+	EventTaskUpdated         EventType = "task.updated"
+	EventTaskReconciled      EventType = "task.reconciled"
 )
 
 type CompletionPayload struct {
@@ -116,6 +131,28 @@ type TaskPacketResource struct {
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
+// TaskEvent is the append-only canonical event stream for task state. Records
+// remain the current-state projection; chat, terminal, and status tools should
+// render from records or reports, not treat prose output as source of truth.
+type TaskEvent struct {
+	SchemaVersion  string            `json:"schema_version"`
+	EventID        string            `json:"event_id"`
+	TaskID         string            `json:"task_id"`
+	Runtime        Runtime           `json:"runtime,omitempty"`
+	BoardID        string            `json:"board_id,omitempty"`
+	ParentTaskID   string            `json:"parent_task_id,omitempty"`
+	StepID         string            `json:"step_id,omitempty"`
+	Type           EventType         `json:"type"`
+	Status         Status            `json:"status,omitempty"`
+	DeliveryStatus DeliveryStatus    `json:"delivery_status,omitempty"`
+	Seq            int64             `json:"seq"`
+	EmittedAt      int64             `json:"emitted_at"`
+	Source         string            `json:"source,omitempty"`
+	Producer       string            `json:"producer,omitempty"`
+	Fingerprint    string            `json:"fingerprint,omitempty"`
+	Payload        map[string]string `json:"payload,omitempty"`
+}
+
 type Record struct {
 	TaskID              string              `json:"task_id"`
 	Runtime             Runtime             `json:"runtime"`
@@ -161,6 +198,7 @@ type Record struct {
 type Options struct {
 	TerminalRetention time.Duration
 	MaxRecords        int
+	MaxEvents         int
 }
 
 type Registry struct {
@@ -168,11 +206,13 @@ type Registry struct {
 	store    string
 	options  Options
 	records  map[string]Record
+	events   []TaskEvent
 	lastLoad error
 }
 
 type Snapshot struct {
-	Tasks []Record `json:"tasks"`
+	Tasks  []Record    `json:"tasks"`
+	Events []TaskEvent `json:"events,omitempty"`
 }
 
 func NewRegistry(storePath string) *Registry {
@@ -186,10 +226,14 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 	if opts.MaxRecords <= 0 {
 		opts.MaxRecords = DefaultMaxRecords
 	}
+	if opts.MaxEvents <= 0 {
+		opts.MaxEvents = DefaultMaxEvents
+	}
 	r := &Registry{
 		store:   strings.TrimSpace(storePath),
 		options: opts,
 		records: make(map[string]Record),
+		events:  make([]TaskEvent, 0),
 	}
 	if r.store != "" {
 		r.lastLoad = r.load()
@@ -257,6 +301,10 @@ func (r *Registry) Upsert(rec Record) error {
 
 	r.mu.Lock()
 	r.records[rec.TaskID] = rec
+	r.appendEventLocked(rec, EventTaskUpserted, now, map[string]string{
+		"task_kind": rec.TaskKind,
+		"label":     rec.Label,
+	})
 	r.pruneLocked(now)
 	err := r.saveLocked()
 	r.mu.Unlock()
@@ -273,12 +321,15 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 		r.mu.Unlock()
 		return fmt.Errorf("task %q not found", taskID)
 	}
+	before := rec
 	mutate(&rec)
-	if rec.LastEventAt == 0 {
-		rec.LastEventAt = time.Now().UnixMilli()
+	now := time.Now().UnixMilli()
+	if rec.LastEventAt == 0 || recordChanged(before, rec) {
+		rec.LastEventAt = now
 	}
 	rec = r.normalizeRecord(rec, rec.LastEventAt)
 	r.records[taskID] = rec
+	r.appendUpdateEventsLocked(before, rec, rec.LastEventAt)
 	r.pruneLocked(rec.LastEventAt)
 	err := r.saveLocked()
 	r.mu.Unlock()
@@ -327,6 +378,31 @@ func (r *Registry) List() []Record {
 	return out
 }
 
+func (r *Registry) ListEvents(taskID string) []TaskEvent {
+	if r == nil {
+		return nil
+	}
+	taskID = strings.TrimSpace(taskID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]TaskEvent, 0, len(r.events))
+	for _, evt := range r.events {
+		if taskID == "" || evt.TaskID == taskID {
+			out = append(out, evt)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].EmittedAt != out[j].EmittedAt {
+			return out[i].EmittedAt < out[j].EmittedAt
+		}
+		if out[i].Seq != out[j].Seq {
+			return out[i].Seq < out[j].Seq
+		}
+		return out[i].EventID < out[j].EventID
+	})
+	return out
+}
+
 func (r *Registry) ListBoard(boardID string) []Record {
 	boardID = strings.TrimSpace(boardID)
 	if boardID == "" {
@@ -370,6 +446,7 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
 		}
+		before := rec
 		ref := rec.LastEventAt
 		if ref == 0 {
 			ref = rec.StartedAt
@@ -391,6 +468,8 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 		}
 		rec = r.normalizeRecord(rec, now)
 		r.records[id] = rec
+		r.appendUpdateEventsLocked(before, rec, now)
+		r.appendEventLocked(rec, EventTaskReconciled, now, map[string]string{"reason": reason})
 		changed++
 	}
 	err := error(nil)
@@ -418,6 +497,7 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
 		}
+		before := rec
 		rec.Status = StatusLost
 		if !isFinalDeliveryStatus(rec.DeliveryStatus) {
 			rec.DeliveryStatus = DeliveryNotApplicable
@@ -429,6 +509,8 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 		}
 		rec = r.normalizeRecord(rec, now)
 		r.records[id] = rec
+		r.appendUpdateEventsLocked(before, rec, now)
+		r.appendEventLocked(rec, EventTaskReconciled, now, map[string]string{"reason": reason})
 		changed++
 	}
 	err := error(nil)
@@ -520,6 +602,30 @@ func (r *Registry) pruneLocked(now int64) bool {
 		delete(r.records, victim.TaskID)
 		changed = true
 	}
+	if r.pruneEventsLocked() {
+		changed = true
+	}
+	return changed
+}
+
+func (r *Registry) pruneEventsLocked() bool {
+	if r == nil || len(r.events) == 0 {
+		return false
+	}
+	changed := false
+	kept := r.events[:0]
+	for _, evt := range r.events {
+		if _, ok := r.records[evt.TaskID]; ok {
+			kept = append(kept, evt)
+		} else {
+			changed = true
+		}
+	}
+	r.events = kept
+	if r.options.MaxEvents > 0 && len(r.events) > r.options.MaxEvents {
+		r.events = append([]TaskEvent(nil), r.events[len(r.events)-r.options.MaxEvents:]...)
+		changed = true
+	}
 	return changed
 }
 
@@ -573,6 +679,15 @@ func (r *Registry) load() error {
 		}
 		r.records[rec.TaskID] = r.normalizeRecord(rec, now)
 	}
+	for _, evt := range snap.Events {
+		if strings.TrimSpace(evt.TaskID) == "" || evt.Type == "" {
+			continue
+		}
+		if evt.SchemaVersion == "" {
+			evt.SchemaVersion = TaskEventSchemaVersion
+		}
+		r.events = append(r.events, evt)
+	}
 	return nil
 }
 
@@ -590,9 +705,130 @@ func (r *Registry) saveLocked() error {
 		}
 		return tasks[i].TaskID < tasks[j].TaskID
 	})
-	data, err := json.MarshalIndent(Snapshot{Tasks: tasks}, "", "  ")
+	events := append([]TaskEvent(nil), r.events...)
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].EmittedAt != events[j].EmittedAt {
+			return events[i].EmittedAt < events[j].EmittedAt
+		}
+		if events[i].Seq != events[j].Seq {
+			return events[i].Seq < events[j].Seq
+		}
+		return events[i].EventID < events[j].EventID
+	})
+	data, err := json.MarshalIndent(Snapshot{Tasks: tasks, Events: events}, "", "  ")
 	if err != nil {
 		return err
 	}
 	return fileutil.WriteFileAtomic(r.store, data, 0o600)
+}
+
+func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int64) {
+	if before.Status != after.Status {
+		r.appendEventLocked(after, EventTaskStatusChanged, emittedAt, map[string]string{
+			"from": string(before.Status),
+			"to":   string(after.Status),
+		})
+	}
+	if before.DeliveryStatus != after.DeliveryStatus {
+		r.appendEventLocked(after, EventTaskDeliveryChanged, emittedAt, map[string]string{
+			"from": string(before.DeliveryStatus),
+			"to":   string(after.DeliveryStatus),
+		})
+	}
+	if before.ProgressSummary != after.ProgressSummary && strings.TrimSpace(after.ProgressSummary) != "" {
+		r.appendEventLocked(after, EventTaskProgress, emittedAt, map[string]string{
+			"summary": after.ProgressSummary,
+		})
+	}
+	if before.Status == after.Status &&
+		before.DeliveryStatus == after.DeliveryStatus &&
+		before.ProgressSummary == after.ProgressSummary &&
+		recordChanged(before, after) {
+		r.appendEventLocked(after, EventTaskUpdated, emittedAt, nil)
+	}
+}
+
+func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt int64, payload map[string]string) {
+	if r == nil || strings.TrimSpace(rec.TaskID) == "" || eventType == "" {
+		return
+	}
+	if emittedAt == 0 {
+		emittedAt = time.Now().UnixMilli()
+	}
+	seq := r.nextEventSeqLocked(rec.TaskID)
+	evt := TaskEvent{
+		SchemaVersion:  TaskEventSchemaVersion,
+		TaskID:         rec.TaskID,
+		Runtime:        rec.Runtime,
+		BoardID:        rec.BoardID,
+		ParentTaskID:   rec.ParentTaskID,
+		StepID:         rec.StepID,
+		Type:           eventType,
+		Status:         rec.Status,
+		DeliveryStatus: rec.DeliveryStatus,
+		Seq:            seq,
+		EmittedAt:      emittedAt,
+		Source:         "task_registry",
+		Producer:       firstNonEmpty(rec.Owner, rec.AgentID, string(rec.Runtime)),
+		Payload:        cleanPayload(payload),
+	}
+	evt.EventID = fmt.Sprintf("%s:%06d:%s", rec.TaskID, seq, eventType)
+	evt.Fingerprint = taskEventFingerprint(evt)
+	r.events = append(r.events, evt)
+}
+
+func (r *Registry) nextEventSeqLocked(taskID string) int64 {
+	var maxSeq int64
+	for _, evt := range r.events {
+		if evt.TaskID == taskID && evt.Seq > maxSeq {
+			maxSeq = evt.Seq
+		}
+	}
+	return maxSeq + 1
+}
+
+func taskEventFingerprint(evt TaskEvent) string {
+	payload, _ := json.Marshal(evt.Payload)
+	parts := []string{
+		evt.TaskID,
+		string(evt.Type),
+		string(evt.Status),
+		string(evt.DeliveryStatus),
+		string(payload),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+func recordChanged(before, after Record) bool {
+	b, _ := json.Marshal(before)
+	a, _ := json.Marshal(after)
+	return string(b) != string(a)
+}
+
+func cleanPayload(payload map[string]string) map[string]string {
+	if len(payload) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(payload))
+	for key, value := range payload {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

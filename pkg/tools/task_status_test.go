@@ -109,6 +109,47 @@ func TestTaskStatusTool_TaskID(t *testing.T) {
 	}
 }
 
+func TestTaskStatusTool_TaskIDIncludesEvents(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID:         "subagent-1",
+		Runtime:        taskregistry.RuntimeSubagent,
+		TaskKind:       "spawn",
+		Task:           "background work",
+		Status:         taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert(subagent) error = %v", err)
+	}
+	if err := registry.Update("subagent-1", func(rec *taskregistry.Record) {
+		rec.Status = taskregistry.StatusSucceeded
+		rec.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatalf("Update(subagent) error = %v", err)
+	}
+
+	tool := NewTaskStatusTool(registry)
+	result := tool.Execute(context.Background(), map[string]any{
+		"task_id":        "subagent-1",
+		"include_events": true,
+	})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	for _, want := range []string{
+		"Events:",
+		"#1 task.upserted",
+		"#2 task.status_changed",
+		"#3 task.delivery_changed",
+		"payload={from=\"running\", to=\"succeeded\"}",
+	} {
+		if !strings.Contains(result.ForLLM, want) {
+			t.Fatalf("result missing %q:\n%s", want, result.ForLLM)
+		}
+	}
+}
+
 func TestTaskStatusTool_ListsSpawnAndDelegateRecords(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	now := time.Now().UnixMilli()

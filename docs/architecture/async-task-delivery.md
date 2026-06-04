@@ -39,6 +39,56 @@ Migration TODO:
 - Remove `Completion` from public API/storage after all producers and persisted
   records have migrated.
 
+## Typed Task Events
+
+The task registry has two layers:
+
+- `Record`: the current-state projection for status tools, board views, and
+  existing integrations.
+- `TaskEvent`: the append-only canonical event stream for lifecycle and
+  delivery transitions.
+
+This follows the same principle as durable deliverables: structured state is
+canonical; chat, terminal text, and UI strings are projections. Producers should
+not require another agent to parse prose in order to decide whether a task
+started, completed, failed, delivered, or needs recovery.
+
+`TaskEvent` currently records:
+
+- schema version
+- task, board, parent, and step identity
+- runtime and producer
+- event type
+- task status and delivery status
+- per-task sequence number
+- emitted timestamp
+- fingerprint
+- small structured payload
+
+The initial event types are:
+
+- `task.upserted`
+- `task.status_changed`
+- `task.delivery_changed`
+- `task.progress`
+- `task.updated`
+- `task.reconciled`
+
+The event stream is persisted in the same `state/task_registry.json` snapshot
+as `tasks`. `Record` remains the compatibility API and is still what most tools
+read. New consumers that care about auditability, idempotency, or recovery
+should prefer events and treat records as a projection.
+
+Migration TODO:
+
+- Add a status/debug surface for task events once there is a concrete consumer.
+- Move async delivery reconciliation to emit explicit delivery events at every
+  coordinator decision point.
+- Introduce a versioned `DeliverableReport` shape for rich outputs with claims,
+  artifacts, field deltas, and provenance.
+- Render Telegram/GitHub/web summaries from structured reports instead of
+  freeform child-agent prose.
+
 ## Task Boards
 
 The task registry also carries lightweight task-board metadata:
