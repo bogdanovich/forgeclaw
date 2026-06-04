@@ -229,7 +229,7 @@ func TestMessageTool_Parameters(t *testing.T) {
 		t.Error("Expected content type to be 'string'")
 	}
 
-	if _, ok := props["media"]; ok {
+	if _, hasMediaProp := props["media"]; hasMediaProp {
 		t.Fatal("did not expect 'media' property when local media is disabled")
 	}
 

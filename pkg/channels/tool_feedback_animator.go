@@ -10,14 +10,18 @@ import (
 	"time"
 )
 
-const defaultToolFeedbackAnimationInterval = 3 * time.Second
-const workingSummaryToolFeedbackAnimationInterval = 10 * time.Second
-const maxMergedToolFeedbackLines = 8
+const (
+	defaultToolFeedbackAnimationInterval        = 3 * time.Second
+	workingSummaryToolFeedbackAnimationInterval = 10 * time.Second
+	maxMergedToolFeedbackLines                  = 8
+)
 
 const initialToolFeedbackAnimationFrame = ""
 
-var toolFeedbackAnimationFrames = []string{"..", "."}
-var retryAfterPattern = regexp.MustCompile(`retry after:? (\d+)`)
+var (
+	toolFeedbackAnimationFrames = []string{"..", "."}
+	retryAfterPattern           = regexp.MustCompile(`retry after:? (\d+)`)
+)
 
 // MaxToolFeedbackAnimationFrameLength returns the largest frame suffix length
 // so callers can reserve room before sending messages to length-limited APIs.
@@ -324,7 +328,8 @@ func (a *ToolFeedbackAnimator) retryAfterDelay(err error) (time.Duration, bool) 
 		return 0, false
 	}
 	errText := strings.ToLower(err.Error())
-	if !errors.Is(err, ErrRateLimit) && !strings.Contains(errText, "too many requests") && !strings.Contains(errText, "429") {
+	if !errors.Is(err, ErrRateLimit) && !strings.Contains(errText, "too many requests") &&
+		!strings.Contains(errText, "429") {
 		return 0, false
 	}
 	match := retryAfterPattern.FindStringSubmatch(errText)

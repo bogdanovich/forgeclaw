@@ -226,8 +226,12 @@ var (
 		regexp.MustCompile(`\b\d{6,}:[A-Za-z0-9_-]{20,}`),
 		regexp.MustCompile(`\b(?:ghp|github_pat|glpat|xox[baprs])_[A-Za-z0-9_-]{16,}`),
 	}
-	toolFeedbackSecretKVPattern   = regexp.MustCompile(`(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|authorization)\b\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s&]+)`)
-	toolFeedbackSecretFlagPattern = regexp.MustCompile(`(?i)(--(?:api-key|access-token|auth-token|token|secret|password|authorization)(?:=|\s+))("[^"]*"|'[^']*'|[^\s&]+)`)
+	toolFeedbackSecretKVPattern = regexp.MustCompile(
+		`(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|authorization)\b\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s&]+)`,
+	)
+	toolFeedbackSecretFlagPattern = regexp.MustCompile(
+		`(?i)(--(?:api-key|access-token|auth-token|token|secret|password|authorization)(?:=|\s+))("[^"]*"|'[^']*'|[^\s&]+)`,
+	)
 )
 
 func redactToolFeedbackSecrets(text string) string {

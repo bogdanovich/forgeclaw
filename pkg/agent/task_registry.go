@@ -61,7 +61,8 @@ func (al *AgentLoop) updateAsyncTaskDeliveryStatus(
 		if strings.TrimSpace(completionID) != "" {
 			rec.LastCompletionID = strings.TrimSpace(completionID)
 		}
-		if status == taskregistry.DeliveryDelivered || status == taskregistry.DeliverySessionQueued || status == taskregistry.DeliveryNotApplicable {
+		if status == taskregistry.DeliveryDelivered || status == taskregistry.DeliverySessionQueued ||
+			status == taskregistry.DeliveryNotApplicable {
 			rec.DeliveredAt = time.Now().UnixMilli()
 			rec.DeliveryError = ""
 		}

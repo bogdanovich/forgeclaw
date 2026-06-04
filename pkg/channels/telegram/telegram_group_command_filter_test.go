@@ -392,7 +392,10 @@ func TestHandleMessage_GroupTopicIgnoresReplyToHumanWithoutBotMention(t *testing
 		if observed.Reason == "" {
 			t.Fatal("expected observed reason")
 		}
-		if !strings.Contains(observed.Content, "[quoted user message from AntonBogdanovich]: Ок это отдельно другой рецепт") {
+		if !strings.Contains(
+			observed.Content,
+			"[quoted user message from AntonBogdanovich]: Ок это отдельно другой рецепт",
+		) {
 			t.Fatalf("observed content should include quoted human context, got %q", observed.Content)
 		}
 		if !strings.Contains(observed.Content, "Тебе понравился рецепт?") {

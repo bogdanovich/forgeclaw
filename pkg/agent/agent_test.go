@@ -6304,7 +6304,10 @@ func TestRunAgentLoop_ImmediateMediaDeliveryContinuesToFinalResponse(t *testing.
 		t.Fatalf("sent message count = %d, want 1", len(mediaChannel.sentMessages))
 	}
 	if mediaChannel.sentMessages[0].Content != "final answer after immediate media" {
-		t.Fatalf("final outbound content = %q, want final answer after immediate media", mediaChannel.sentMessages[0].Content)
+		t.Fatalf(
+			"final outbound content = %q, want final answer after immediate media",
+			mediaChannel.sentMessages[0].Content,
+		)
 	}
 }
 

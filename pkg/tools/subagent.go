@@ -15,7 +15,9 @@ import (
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
-var labeledArtifactPathRe = regexp.MustCompile(`(?im)(?:^|\n)\s*(?:[-*]\s*)?(?:sendable_file_path|file_path|artifact_path|local_path)\s*:\s*` + "`?" + `([^` + "`" + `\n]+)` + "`?")
+var labeledArtifactPathRe = regexp.MustCompile(
+	`(?im)(?:^|\n)\s*(?:[-*]\s*)?(?:sendable_file_path|file_path|artifact_path|local_path)\s*:\s*` + "`?" + `([^` + "`" + `\n]+)` + "`?",
+)
 
 // SubTurnSpawner is an interface for spawning sub-turns.
 // This avoids circular dependency between tools and agent packages.
@@ -427,7 +429,9 @@ func (sm *SubagentManager) recordTask(
 	if rec.StartedAt == 0 {
 		rec.StartedAt = rec.CreatedAt
 	}
-	if status == taskregistry.StatusSucceeded || status == taskregistry.StatusFailed || status == taskregistry.StatusCancelled || status == taskregistry.StatusTimedOut {
+	if status == taskregistry.StatusSucceeded || status == taskregistry.StatusFailed ||
+		status == taskregistry.StatusCancelled ||
+		status == taskregistry.StatusTimedOut {
 		rec.EndedAt = now
 		rec.TerminalSummary = summary
 	}

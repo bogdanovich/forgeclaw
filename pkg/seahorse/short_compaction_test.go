@@ -633,32 +633,32 @@ func TestSelectOldestChunkAtDepthSkipsOlderDifferentDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSummary condensed: %v", err)
 	}
-	if err := s.AppendContextSummary(ctx, convID, olderCondensed.SummaryID); err != nil {
-		t.Fatalf("AppendContextSummary condensed: %v", err)
+	if appendErr := s.AppendContextSummary(ctx, convID, olderCondensed.SummaryID); appendErr != nil {
+		t.Fatalf("AppendContextSummary condensed: %v", appendErr)
 	}
 
 	for i := 0; i < 5; i++ {
-		summary, err := s.CreateSummary(ctx, CreateSummaryInput{
+		summary, createErr := s.CreateSummary(ctx, CreateSummaryInput{
 			ConversationID: convID,
 			Kind:           SummaryKindLeaf,
 			Depth:          0,
 			Content:        fmt.Sprintf("leaf %d", i),
 			TokenCount:     500,
 		})
-		if err != nil {
-			t.Fatalf("CreateSummary leaf %d: %v", i, err)
+		if createErr != nil {
+			t.Fatalf("CreateSummary leaf %d: %v", i, createErr)
 		}
-		if err := s.AppendContextSummary(ctx, convID, summary.SummaryID); err != nil {
-			t.Fatalf("AppendContextSummary leaf %d: %v", i, err)
+		if appendErr := s.AppendContextSummary(ctx, convID, summary.SummaryID); appendErr != nil {
+			t.Fatalf("AppendContextSummary leaf %d: %v", i, appendErr)
 		}
 	}
 	for i := 0; i < FreshTailCount+1; i++ {
-		m, err := s.AddMessage(ctx, convID, "user", fmt.Sprintf("tail %d", i), 10)
-		if err != nil {
-			t.Fatalf("AddMessage: %v", err)
+		m, addErr := s.AddMessage(ctx, convID, "user", fmt.Sprintf("tail %d", i), 10)
+		if addErr != nil {
+			t.Fatalf("AddMessage: %v", addErr)
 		}
-		if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
-			t.Fatalf("AppendContextMessage: %v", err)
+		if appendErr := s.AppendContextMessage(ctx, convID, m.ID); appendErr != nil {
+			t.Fatalf("AppendContextMessage: %v", appendErr)
 		}
 	}
 

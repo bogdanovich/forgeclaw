@@ -159,7 +159,7 @@ type toolFeedbackMessageContentPreparer interface {
 }
 
 type toolFeedbackAnimatorConfigurer interface {
-	ConfigureToolFeedbackAnimator(ToolFeedbackAnimatorConfig)
+	ConfigureToolFeedbackAnimator(config ToolFeedbackAnimatorConfig)
 }
 
 type asyncTask struct {
@@ -181,10 +181,6 @@ func outboundMessageChannel(msg bus.OutboundMessage) string {
 
 func outboundMessageChatID(msg bus.OutboundMessage) string {
 	return msg.ChatID
-}
-
-func resolvedOutboundMessageChatID(ch Channel, msg bus.OutboundMessage) string {
-	return resolveOutboundChatID(ch, outboundMessageChatID(msg), &msg.Context)
 }
 
 func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
@@ -237,10 +233,6 @@ func outboundMediaChannel(msg bus.OutboundMediaMessage) string {
 
 func outboundMediaChatID(msg bus.OutboundMediaMessage) string {
 	return msg.ChatID
-}
-
-func resolvedOutboundMediaChatID(ch Channel, msg bus.OutboundMediaMessage) string {
-	return resolveOutboundChatID(ch, outboundMediaChatID(msg), &msg.Context)
 }
 
 func candidateChatIDs(raw, resolved string) []string {

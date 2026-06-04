@@ -172,18 +172,6 @@ func shouldQueueAsyncToolResultForParent(result *tools.ToolResult) bool {
 	return decideAsyncToolResultDelivery(result).QueueParent
 }
 
-func asyncResultContentLen(result *tools.ToolResult) int {
-	return decideAsyncToolResultDelivery(result).ContentLen
-}
-
-func asyncResultForUserLen(result *tools.ToolResult) int {
-	return decideAsyncToolResultDelivery(result).ForUserLen
-}
-
-func asyncResultMediaCount(result *tools.ToolResult) int {
-	return decideAsyncToolResultDelivery(result).MediaCount
-}
-
 func recordCompletionMedia(exec *turnExecution, store media.MediaStore, refs []string) {
 	if exec == nil || len(refs) == 0 {
 		return

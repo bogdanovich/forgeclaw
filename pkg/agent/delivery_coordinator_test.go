@@ -220,7 +220,11 @@ func TestDeliverAsyncToolCompletion_UserAndParentDeliversBothOnce(t *testing.T) 
 	assertTaskDeliveryStatusForTest(t, al, workspace, taskID, taskregistry.DeliveryDelivered)
 	assertNoSyntheticAsyncCompletionInbound(t, msgBus)
 
-	reloaded, reloadedBus, reloadedTS, _ := newDeliveryCoordinatorTestRuntimeWithWorkspace(t, workspace, "parent duplicate")
+	reloaded, reloadedBus, reloadedTS, _ := newDeliveryCoordinatorTestRuntimeWithWorkspace(
+		t,
+		workspace,
+		"parent duplicate",
+	)
 	req.TurnState = reloadedTS
 	reloaded.deliverAsyncToolCompletion(req)
 	assertNoOutboundMessage(t, reloadedBus, "duplicate user_and_parent delivery")
@@ -274,7 +278,11 @@ func TestDeliverAsyncToolCompletion_SkipsDuplicateParentDeliveryAfterReload(t *t
 		return msg.Content == "parent once"
 	})
 
-	reloaded, reloadedBus, reloadedTS, _ := newDeliveryCoordinatorTestRuntimeWithWorkspace(t, workspace, "parent duplicate")
+	reloaded, reloadedBus, reloadedTS, _ := newDeliveryCoordinatorTestRuntimeWithWorkspace(
+		t,
+		workspace,
+		"parent duplicate",
+	)
 	req.TurnState = reloadedTS
 	reloaded.deliverAsyncToolCompletion(req)
 	assertNoOutboundMessage(t, reloadedBus, "duplicate parent delivery")

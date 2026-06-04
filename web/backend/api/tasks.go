@@ -11,8 +11,10 @@ import (
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
-const defaultTaskListLimit = 50
-const maxTaskListLimit = 500
+const (
+	defaultTaskListLimit = 50
+	maxTaskListLimit     = 500
+)
 
 type taskListResponse struct {
 	Workspace string                      `json:"workspace"`

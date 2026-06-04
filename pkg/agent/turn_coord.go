@@ -237,7 +237,8 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				messages = exec.messages
 				continue
 			case ToolControlFinalize:
-				finalContent, rendered := tryRenderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
+				renderedContent, rendered := tryRenderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
+				finalContent = renderedContent
 				if !rendered {
 					messages = exec.messages
 					continue

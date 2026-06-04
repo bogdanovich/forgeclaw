@@ -55,9 +55,9 @@ func TestTaskBoardTool_CreateAddStepAndList(t *testing.T) {
 		t.Fatalf("list failed: %s", list.ForLLM)
 	}
 	var payload struct {
-		BoardID string `json:"board_id"`
-		Count   int    `json:"count"`
-		Counts  map[string]int
+		BoardID string         `json:"board_id"`
+		Count   int            `json:"count"`
+		Counts  map[string]int `json:"counts"`
 		Steps   []struct {
 			TaskID    string   `json:"task_id"`
 			Status    string   `json:"status"`

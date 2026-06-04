@@ -149,7 +149,11 @@ tools:
 	if policy == nil {
 		t.Fatal("resolveAgentToolPolicy() = nil, want policy")
 	}
-	if got, want := policy.Allow, []string{"mcp_*", "web_fetch"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if got, want := policy.Allow, []string{
+		"mcp_*",
+		"web_fetch",
+	}; len(got) != len(want) || got[0] != want[0] ||
+		got[1] != want[1] {
 		t.Fatalf("allow = %v, want %v", got, want)
 	}
 	if got, want := policy.Deny, []string{"mcp_gpt_researcher_*"}; len(got) != len(want) || got[0] != want[0] {

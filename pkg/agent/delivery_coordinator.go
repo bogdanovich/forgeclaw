@@ -81,11 +81,29 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		}
 		switch {
 		case delivered:
-			al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryDelivered, completionID, "")
+			al.updateAsyncTaskDeliveryStatus(
+				ts.workspace,
+				delivery.TaskID,
+				taskregistry.DeliveryDelivered,
+				completionID,
+				"",
+			)
 		case deliveryErr != "":
-			al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryFailed, completionID, deliveryErr)
+			al.updateAsyncTaskDeliveryStatus(
+				ts.workspace,
+				delivery.TaskID,
+				taskregistry.DeliveryFailed,
+				completionID,
+				deliveryErr,
+			)
 		default:
-			al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryNotApplicable, completionID, "")
+			al.updateAsyncTaskDeliveryStatus(
+				ts.workspace,
+				delivery.TaskID,
+				taskregistry.DeliveryNotApplicable,
+				completionID,
+				"",
+			)
 		}
 		return
 	}
@@ -114,18 +132,42 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		}
 		if !delivery.QueueParent {
 			if userDelivered {
-				al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryDelivered, completionID, "")
+				al.updateAsyncTaskDeliveryStatus(
+					ts.workspace,
+					delivery.TaskID,
+					taskregistry.DeliveryDelivered,
+					completionID,
+					"",
+				)
 			} else if userDeliveryErr != "" {
-				al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryFailed, completionID, userDeliveryErr)
+				al.updateAsyncTaskDeliveryStatus(
+					ts.workspace,
+					delivery.TaskID,
+					taskregistry.DeliveryFailed,
+					completionID,
+					userDeliveryErr,
+				)
 			} else {
-				al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryNotApplicable, completionID, "")
+				al.updateAsyncTaskDeliveryStatus(
+					ts.workspace,
+					delivery.TaskID,
+					taskregistry.DeliveryNotApplicable,
+					completionID,
+					"",
+				)
 			}
 			return
 		}
 	}
 
 	if !delivery.QueueParent {
-		al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryNotApplicable, completionID, "")
+		al.updateAsyncTaskDeliveryStatus(
+			ts.workspace,
+			delivery.TaskID,
+			taskregistry.DeliveryNotApplicable,
+			completionID,
+			"",
+		)
 		return
 	}
 
@@ -175,7 +217,13 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		Origin:       origin,
 		SenderID:     fmt.Sprintf("async:%s", asyncToolName),
 	}); err != nil {
-		al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryFailed, completionID, err.Error())
+		al.updateAsyncTaskDeliveryStatus(
+			ts.workspace,
+			delivery.TaskID,
+			taskregistry.DeliveryFailed,
+			completionID,
+			err.Error(),
+		)
 		logger.WarnCF("agent", "Failed to process async completion",
 			map[string]any{
 				"tool":          asyncToolName,
@@ -185,9 +233,21 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 				"error":         err.Error(),
 			})
 	} else if delivery.DeliveryMode == tools.AsyncDeliveryParentOnly {
-		al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliverySessionQueued, completionID, "")
+		al.updateAsyncTaskDeliveryStatus(
+			ts.workspace,
+			delivery.TaskID,
+			taskregistry.DeliverySessionQueued,
+			completionID,
+			"",
+		)
 	} else {
-		al.updateAsyncTaskDeliveryStatus(ts.workspace, delivery.TaskID, taskregistry.DeliveryDelivered, completionID, "")
+		al.updateAsyncTaskDeliveryStatus(
+			ts.workspace,
+			delivery.TaskID,
+			taskregistry.DeliveryDelivered,
+			completionID,
+			"",
+		)
 	}
 }
 
@@ -215,7 +275,8 @@ func decideAsyncToolResultDelivery(result *tools.ToolResult) AsyncDeliveryDecisi
 	if decision.DeliveryMode != tools.AsyncDeliveryUserOnly {
 		decision.QueueParent = content != ""
 	}
-	decision.ParentHandled = !decision.QueueParent && !result.IsError && decision.DeliveryMode == tools.AsyncDeliveryUserOnly
+	decision.ParentHandled = !decision.QueueParent && !result.IsError &&
+		decision.DeliveryMode == tools.AsyncDeliveryUserOnly
 	return decision
 }
 

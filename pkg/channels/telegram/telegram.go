@@ -1161,11 +1161,24 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 			topicID = fmt.Sprintf("%d", message.MessageThreadID)
 		}
 		if !isMentioned && c.IgnoreNonBotMentionsForTopic(topicID, true) && c.hasNonBotMention(message) {
-			c.observeSuppressedTelegramMessage(ctx, message, chatID, content, mediaPaths, sender, isMentioned, "mentions another user/bot without mentioning this bot")
-			logger.DebugCF("telegram", "Message ignored because it mentions another user/bot but not this bot", map[string]any{
-				"chat_id":    chatIDStr,
-				"message_id": messageIDStr,
-			})
+			c.observeSuppressedTelegramMessage(
+				ctx,
+				message,
+				chatID,
+				content,
+				mediaPaths,
+				sender,
+				isMentioned,
+				"mentions another user/bot without mentioning this bot",
+			)
+			logger.DebugCF(
+				"telegram",
+				"Message ignored because it mentions another user/bot but not this bot",
+				map[string]any{
+					"chat_id":    chatIDStr,
+					"message_id": messageIDStr,
+				},
+			)
 			return nil
 		}
 		if !isMentioned && c.IgnoreNonBotRepliesForTopic(topicID, false) && c.isReplyToNonBotMessage(message) {
@@ -1173,11 +1186,24 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 			if message.ReplyToMessage != nil {
 				observedContent = c.prependTelegramQuotedReply(observedContent, message.ReplyToMessage)
 			}
-			c.observeSuppressedTelegramMessage(ctx, message, chatID, observedContent, mediaPaths, sender, isMentioned, "reply to a non-bot message without mentioning this bot")
-			logger.DebugCF("telegram", "Message ignored because it replies to a non-bot message without mentioning this bot", map[string]any{
-				"chat_id":    chatIDStr,
-				"message_id": messageIDStr,
-			})
+			c.observeSuppressedTelegramMessage(
+				ctx,
+				message,
+				chatID,
+				observedContent,
+				mediaPaths,
+				sender,
+				isMentioned,
+				"reply to a non-bot message without mentioning this bot",
+			)
+			logger.DebugCF(
+				"telegram",
+				"Message ignored because it replies to a non-bot message without mentioning this bot",
+				map[string]any{
+					"chat_id":    chatIDStr,
+					"message_id": messageIDStr,
+				},
+			)
 			return nil
 		}
 		if isMentioned {

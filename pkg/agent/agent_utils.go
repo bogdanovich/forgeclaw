@@ -545,7 +545,11 @@ func formatToolsForLog(toolDefs []providers.ToolDefinition) string {
 	sb.WriteString("[\n")
 	for i, tool := range toolDefs {
 		fmt.Fprintf(&sb, "  [%d] Type: %s, Name: %s\n", i, tool.Type, tool.Function.Name)
-		fmt.Fprintf(&sb, "      Description: %s\n", utils.Truncate(tool.Function.Description, maxLLMToolDescriptionChars))
+		fmt.Fprintf(
+			&sb,
+			"      Description: %s\n",
+			utils.Truncate(tool.Function.Description, maxLLMToolDescriptionChars),
+		)
 		if len(tool.Function.Parameters) > 0 {
 			fmt.Fprintf(
 				&sb,

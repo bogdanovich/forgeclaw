@@ -231,8 +231,18 @@ func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
 	records := []Record{
 		{TaskID: "active-1", Status: StatusRunning, CreatedAt: time.Now().Add(-4 * time.Minute).UnixMilli()},
 		{TaskID: "active-2", Status: StatusRunning, CreatedAt: time.Now().Add(-3 * time.Minute).UnixMilli()},
-		{TaskID: "old-terminal", Status: StatusSucceeded, CreatedAt: time.Now().Add(-2 * time.Minute).UnixMilli(), EndedAt: time.Now().Add(-2 * time.Minute).UnixMilli()},
-		{TaskID: "new-terminal", Status: StatusSucceeded, CreatedAt: time.Now().Add(-time.Minute).UnixMilli(), EndedAt: time.Now().Add(-time.Minute).UnixMilli()},
+		{
+			TaskID:    "old-terminal",
+			Status:    StatusSucceeded,
+			CreatedAt: time.Now().Add(-2 * time.Minute).UnixMilli(),
+			EndedAt:   time.Now().Add(-2 * time.Minute).UnixMilli(),
+		},
+		{
+			TaskID:    "new-terminal",
+			Status:    StatusSucceeded,
+			CreatedAt: time.Now().Add(-time.Minute).UnixMilli(),
+			EndedAt:   time.Now().Add(-time.Minute).UnixMilli(),
+		},
 	}
 	for _, rec := range records {
 		rec.Runtime = RuntimeSubagent
@@ -274,7 +284,10 @@ func TestRegistryListPendingTerminalDelivery(t *testing.T) {
 		t.Fatalf("pending terminal count = %d, want 2: %+v", len(got), got)
 	}
 	if got[0].TaskID != "pending-done" || got[1].TaskID != "pending-failed" {
-		t.Fatalf("pending terminal tasks = %v, want pending-done,pending-failed", []string{got[0].TaskID, got[1].TaskID})
+		t.Fatalf(
+			"pending terminal tasks = %v, want pending-done,pending-failed",
+			[]string{got[0].TaskID, got[1].TaskID},
+		)
 	}
 }
 

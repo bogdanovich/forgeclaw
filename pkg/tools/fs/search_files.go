@@ -268,17 +268,17 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 	filesScanned := 0
 	filesSkipped := 0
 
-	err = walkSearchFiles(ctx, t.fs, opts.path, opts.includeIgnored, func(path string, entry os.DirEntry) error {
+	walkErr := walkSearchFiles(ctx, t.fs, opts.path, opts.includeIgnored, func(path string, entry os.DirEntry) error {
 		if entry.IsDir() {
 			return nil
 		}
 		if opts.fileGlob != "" && !matchGlob(opts.fileGlob, entry.Name(), path) {
 			return nil
 		}
-		data, err := t.fs.ReadFile(path)
-		if err != nil {
+		data, readErr := t.fs.ReadFile(path)
+		if readErr != nil {
 			filesSkipped++
-			return nil
+			return errSearchFileSkipped
 		}
 		if len(data) > t.maxFileSize || looksBinary(data) {
 			filesSkipped++
@@ -318,8 +318,8 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 		}
 		return nil
 	})
-	if err != nil && err != errSearchLimitReached {
-		return ErrorResult(err.Error())
+	if walkErr != nil && walkErr != errSearchLimitReached && walkErr != errSearchFileSkipped {
+		return ErrorResult(walkErr.Error())
 	}
 
 	return formatContentSearchResult(opts, matches, filesOnly, fileCounts, filesScanned, filesSkipped, truncated)
@@ -433,7 +433,10 @@ func contextAfter(lines []string, idx int, count int) []numberedLine {
 	return out
 }
 
-var errSearchLimitReached = fmt.Errorf("search limit reached")
+var (
+	errSearchLimitReached = fmt.Errorf("search limit reached")
+	errSearchFileSkipped  = fmt.Errorf("search file skipped")
+)
 
 func walkSearchFiles(
 	ctx context.Context,
@@ -489,6 +492,9 @@ func walkSearchFilesWithIgnore(
 			continue
 		}
 		if err := fn(path, entry); err != nil {
+			if err == errSearchFileSkipped {
+				continue
+			}
 			return err
 		}
 		if entry.IsDir() {

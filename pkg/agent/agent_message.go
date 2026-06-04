@@ -234,12 +234,19 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		Dispatch: DispatchRequest{
 			RouteSessionKey: allocation.SessionKey,
 			SessionKey:      sessionKey,
-			SessionAliases:  buildSessionAliases(sessionKey, sessionAliasCandidates(allocation.SessionKey, sessionKey, allocation.SessionAliases, msg.SessionKey)...),
-			InboundContext:  cloneInboundContext(&msg.Context),
-			RouteResult:     cloneResolvedRoute(&route),
-			SessionScope:    session.CloneScope(&allocation.Scope),
-			UserMessage:     msg.Content,
-			Media:           append([]string(nil), msg.Media...),
+			SessionAliases: buildSessionAliases(
+				sessionKey,
+				sessionAliasCandidates(
+					allocation.SessionKey,
+					sessionKey,
+					allocation.SessionAliases,
+					msg.SessionKey,
+				)...),
+			InboundContext: cloneInboundContext(&msg.Context),
+			RouteResult:    cloneResolvedRoute(&route),
+			SessionScope:   session.CloneScope(&allocation.Scope),
+			UserMessage:    msg.Content,
+			Media:          append([]string(nil), msg.Media...),
 		},
 		SenderID:                msg.SenderID,
 		SenderDisplayName:       msg.Sender.DisplayName,
@@ -302,7 +309,9 @@ func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage
 		agent.Sessions,
 		sessionKey,
 		session.CloneScope(&allocation.Scope),
-		buildSessionAliases(sessionKey, sessionAliasCandidates(allocation.SessionKey, sessionKey, allocation.SessionAliases, msg.SessionKey)...),
+		buildSessionAliases(
+			sessionKey,
+			sessionAliasCandidates(allocation.SessionKey, sessionKey, allocation.SessionAliases, msg.SessionKey)...),
 	)
 
 	content := formatObservedMessageContent(msg)

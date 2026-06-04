@@ -87,8 +87,17 @@ func (t *TaskBoardTool) Parameters() map[string]any {
 				},
 			},
 			"status": map[string]any{
-				"type":        "string",
-				"enum":        []string{"planned", "queued", "running", "succeeded", "failed", "timed_out", "cancelled", "lost"},
+				"type": "string",
+				"enum": []string{
+					"planned",
+					"queued",
+					"running",
+					"succeeded",
+					"failed",
+					"timed_out",
+					"canceled",
+					"lost",
+				},
 				"description": "New status for action=update.",
 			},
 			"summary": map[string]any{
@@ -97,7 +106,7 @@ func (t *TaskBoardTool) Parameters() map[string]any {
 			},
 			"error": map[string]any{
 				"type":        "string",
-				"description": "Optional error text for failed/timed_out/cancelled/lost updates.",
+				"description": "Optional error text for failed/timed_out/canceled/lost updates.",
 			},
 		},
 		"required": []string{"action"},
@@ -322,7 +331,8 @@ func (t *TaskBoardTool) list(ctx context.Context, args map[string]any, resultsOn
 		if !taskRecordVisibleToCaller(rec, channel, chatID, topicID) {
 			continue
 		}
-		if resultsOnly && rec.Deliverable == nil && rec.Completion == nil && strings.TrimSpace(rec.TerminalSummary) == "" {
+		if resultsOnly && rec.Deliverable == nil && rec.Completion == nil &&
+			strings.TrimSpace(rec.TerminalSummary) == "" {
 			continue
 		}
 		filtered = append(filtered, rec)
@@ -469,18 +479,26 @@ func parseTaskBoardStatus(value string) (taskregistry.Status, error) {
 		return taskregistry.StatusFailed, nil
 	case taskregistry.StatusTimedOut:
 		return taskregistry.StatusTimedOut, nil
+	case "canceled":
+		return taskregistry.StatusCancelled, nil
 	case taskregistry.StatusCancelled:
 		return taskregistry.StatusCancelled, nil
 	case taskregistry.StatusLost:
 		return taskregistry.StatusLost, nil
 	default:
-		return "", fmt.Errorf("status must be one of: planned, queued, running, succeeded, failed, timed_out, cancelled, lost")
+		return "", fmt.Errorf(
+			"status must be one of: planned, queued, running, succeeded, failed, timed_out, canceled, lost",
+		)
 	}
 }
 
 func isTaskBoardTerminalStatus(status taskregistry.Status) bool {
 	switch status {
-	case taskregistry.StatusSucceeded, taskregistry.StatusFailed, taskregistry.StatusTimedOut, taskregistry.StatusCancelled, taskregistry.StatusLost:
+	case taskregistry.StatusSucceeded,
+		taskregistry.StatusFailed,
+		taskregistry.StatusTimedOut,
+		taskregistry.StatusCancelled,
+		taskregistry.StatusLost:
 		return true
 	default:
 		return false

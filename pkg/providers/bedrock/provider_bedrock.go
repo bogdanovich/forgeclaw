@@ -158,7 +158,12 @@ func modelDeprecatesTemperature(model string) bool {
 	return strings.Contains(m, "claude-opus-4-8")
 }
 
-func buildConverseParams(messages []Message, tools []ToolDefinition, model string, options map[string]any) converseParams {
+func buildConverseParams(
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+) converseParams {
 	bedrockMessages, systemPrompts := convertMessages(messages)
 
 	var inferenceConfig *types.InferenceConfiguration

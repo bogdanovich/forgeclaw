@@ -852,8 +852,8 @@ type ToolConfig struct {
 }
 
 type MessageToolsConfig struct {
-	ToolConfig   `yaml:"-" envPrefix:"PICOCLAW_TOOLS_MESSAGE_"`
-	MediaEnabled bool `json:"media_enabled" yaml:"-" env:"PICOCLAW_TOOLS_MESSAGE_MEDIA_ENABLED"`
+	ToolConfig   `     yaml:"-" envPrefix:"PICOCLAW_TOOLS_MESSAGE_"`
+	MediaEnabled bool `yaml:"-"                                     json:"media_enabled" env:"PICOCLAW_TOOLS_MESSAGE_MEDIA_ENABLED"`
 }
 
 type ImageGenerateToolsConfig struct {

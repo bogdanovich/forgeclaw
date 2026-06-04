@@ -77,7 +77,7 @@ func withAuthStoreLock(fn func() error) error {
 	for {
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, _ = f.Write([]byte(time.Now().Format(time.RFC3339Nano)))
+			_, _ = f.WriteString(time.Now().Format(time.RFC3339Nano))
 			_ = f.Close()
 			defer os.Remove(lockPath)
 			return fn()

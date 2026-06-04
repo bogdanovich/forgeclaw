@@ -91,7 +91,9 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 		if taskID != "" {
 			return ErrorResult(fmt.Sprintf("No subagent found with task ID: %s", taskID))
 		}
-		return NewToolResult("No visible spawned subagents are registered. This tool only reports tasks started with the spawn tool. For delegate runs, other child-run mechanisms, or broader task checks, use task_status.")
+		return NewToolResult(
+			"No visible spawned subagents are registered. This tool only reports tasks started with the spawn tool. For delegate runs, other child-run mechanisms, or broader task checks, use task_status.",
+		)
 	}
 
 	if taskID != "" {
@@ -116,7 +118,9 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 	// ListTaskCopies returns consistent snapshots under the manager lock.
 	origTasks := t.manager.ListTaskCopies()
 	if len(origTasks) == 0 {
-		return NewToolResult("No visible spawned subagents are registered in the current process. This tool only reports tasks started with the spawn tool. For delegate runs, other child-run mechanisms, or restart-persistent completed task checks, use task_status.")
+		return NewToolResult(
+			"No visible spawned subagents are registered in the current process. This tool only reports tasks started with the spawn tool. For delegate runs, other child-run mechanisms, or restart-persistent completed task checks, use task_status.",
+		)
 	}
 
 	tasks := make([]*SubagentTask, 0, len(origTasks))
@@ -135,7 +139,9 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 	}
 
 	if len(tasks) == 0 {
-		return NewToolResult("No spawned subagents found for this conversation. This tool only reports tasks started with the spawn tool. For delegate runs or other child-run mechanisms, use task_status.")
+		return NewToolResult(
+			"No spawned subagents found for this conversation. This tool only reports tasks started with the spawn tool. For delegate runs or other child-run mechanisms, use task_status.",
+		)
 	}
 
 	// Order by creation time (ascending) so spawning order is preserved.

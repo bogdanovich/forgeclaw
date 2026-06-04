@@ -106,7 +106,8 @@ mcpServers:
 	if definition.Agent.Frontmatter.ToolPolicy == nil {
 		t.Fatal("expected tool policy to be parsed")
 	}
-	if got := definition.Agent.Frontmatter.ToolPolicy.Allow; len(got) != 2 || got[0] != "mcp_*" || got[1] != "web_fetch" {
+	if got := definition.Agent.Frontmatter.ToolPolicy.Allow; len(got) != 2 || got[0] != "mcp_*" ||
+		got[1] != "web_fetch" {
 		t.Fatalf("tool allow = %v", got)
 	}
 	if got := definition.Agent.Frontmatter.ToolPolicy.Deny; len(got) != 1 || got[0] != "mcp_gpt_researcher_*" {

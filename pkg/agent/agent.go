@@ -643,7 +643,13 @@ func (al *AgentLoop) compactAfterFinalDelivery(
 	if sessionKey == "" {
 		return
 	}
-	al.scheduleBackgroundCompaction(agent, sessionKey, ContextCompressReasonSummarize, agent.ContextWindow, "final_reply")
+	al.scheduleBackgroundCompaction(
+		agent,
+		sessionKey,
+		ContextCompressReasonSummarize,
+		agent.ContextWindow,
+		"final_reply",
+	)
 }
 
 func (al *AgentLoop) scheduleBackgroundCompaction(

@@ -50,7 +50,10 @@ func systemFollowUpOriginRaw(origin *bus.InboundContext, channel, chatID string)
 	return raw
 }
 
-func systemFollowUpAsyncCompletionRaw(origin *bus.InboundContext, channel, chatID, completionID string) map[string]string {
+func systemFollowUpAsyncCompletionRaw(
+	origin *bus.InboundContext,
+	channel, chatID, completionID string,
+) map[string]string {
 	raw := systemFollowUpOriginRaw(origin, channel, chatID)
 	raw[systemFollowUpKindKey] = systemFollowUpKindAsyncCompletion
 	if strings.TrimSpace(completionID) != "" {

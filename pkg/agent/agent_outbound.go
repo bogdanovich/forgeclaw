@@ -25,17 +25,6 @@ const (
 	finalResponseAlwaysPublish
 )
 
-func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, sessionKey string, err error) bool {
-	return al.maybePublishErrorWithPolicy(
-		ctx,
-		channel,
-		chatID,
-		sessionKey,
-		err,
-		finalResponseSuppressIfMessageToolSent,
-	)
-}
-
 func (al *AgentLoop) maybePublishErrorWithPolicy(
 	ctx context.Context,
 	channel, chatID, sessionKey string,
@@ -55,39 +44,6 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 		policy,
 	)
 	return true
-}
-
-func (al *AgentLoop) publishResponseOrError(
-	ctx context.Context,
-	channel, chatID, sessionKey string,
-	response string,
-	err error,
-) {
-	al.publishResponseOrErrorWithPolicy(
-		ctx,
-		channel,
-		chatID,
-		sessionKey,
-		response,
-		err,
-		finalResponseSuppressIfMessageToolSent,
-	)
-}
-
-func (al *AgentLoop) publishResponseOrErrorWithPolicy(
-	ctx context.Context,
-	channel, chatID, sessionKey string,
-	response string,
-	err error,
-	policy finalResponseDeliveryPolicy,
-) {
-	if err != nil {
-		if !al.maybePublishErrorWithPolicy(ctx, channel, chatID, sessionKey, err, policy) {
-			return
-		}
-		response = ""
-	}
-	al.publishResponseWithContextIfNeeded(ctx, channel, chatID, sessionKey, response, nil, policy)
 }
 
 func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) {
@@ -234,7 +190,8 @@ func (al *AgentLoop) deliverFinalTurnResult(
 		Content:      result.finalContent,
 		ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
 	}
-	if al.channelManager != nil && opts.Dispatch.Channel() != "" && !constants.IsInternalChannel(opts.Dispatch.Channel()) {
+	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
+		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
 		if err := al.channelManager.SendMessage(ctx, msg); err != nil {
 			logger.WarnCF("agent", "Failed to deliver final turn message synchronously; falling back to bus",
 				map[string]any{

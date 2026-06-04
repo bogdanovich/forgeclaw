@@ -83,7 +83,11 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 			}()
 		}
 	}
-	if summaryPrefixTokens, err := e.summaryPrefixTokens(ctx, convID); err == nil && summaryPrefixTokens > SummaryPrefixTokens {
+	if summaryPrefixTokens, err := e.summaryPrefixTokens(
+		ctx,
+		convID,
+	); err == nil &&
+		summaryPrefixTokens > SummaryPrefixTokens {
 		if _, loaded := e.condensing.LoadOrStore(convID, struct{}{}); !loaded {
 			go func() {
 				defer e.condensing.Delete(convID)
@@ -117,16 +121,16 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 			return result, fmt.Errorf("get tokens: %w", err)
 		}
 		if tokens <= budget {
-			summaryPrefixTokens, err := e.summaryPrefixTokens(ctx, convID)
-			if err != nil {
-				return result, fmt.Errorf("summary prefix tokens: %w", err)
+			currentPrefixTokens, prefixErr := e.summaryPrefixTokens(ctx, convID)
+			if prefixErr != nil {
+				return result, fmt.Errorf("summary prefix tokens: %w", prefixErr)
 			}
-			if summaryPrefixTokens <= SummaryPrefixTokens {
+			if currentPrefixTokens <= SummaryPrefixTokens {
 				logger.InfoCF("seahorse", "compact_until_under: done", map[string]any{
 					"conv_id":               convID,
 					"budget":                budget,
 					"tokens":                tokens,
-					"summary_prefix_tokens": summaryPrefixTokens,
+					"summary_prefix_tokens": currentPrefixTokens,
 					"leaf":                  result.LeafSummaries,
 					"condensed":             result.CondensedSummaries,
 				})
@@ -139,9 +143,9 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 			return result, fmt.Errorf("summary prefix tokens: %w", err)
 		}
 		if summaryPrefixTokens > SummaryPrefixTokens {
-			condensedID, err := e.compactCondensed(ctx, convID)
-			if err != nil {
-				return result, err
+			condensedID, compactErr := e.compactCondensed(ctx, convID)
+			if compactErr != nil {
+				return result, compactErr
 			}
 			if condensedID != nil {
 				result.SummariesCreated = append(result.SummariesCreated, *condensedID)

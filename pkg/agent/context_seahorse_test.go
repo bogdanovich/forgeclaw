@@ -623,12 +623,12 @@ func TestSeahorseCompactProactiveDoesNotForceCompactUntilUnder(t *testing.T) {
 		})
 	}
 
-	if err := mgr.Compact(ctx, &CompactRequest{
+	if compactErr := mgr.Compact(ctx, &CompactRequest{
 		SessionKey: "proactive-compact-test",
 		Reason:     ContextCompressReasonProactive,
 		Budget:     500,
-	}); err != nil {
-		t.Fatalf("Compact proactive: %v", err)
+	}); compactErr != nil {
+		t.Fatalf("Compact proactive: %v", compactErr)
 	}
 
 	result, err := engine.Assemble(ctx, "proactive-compact-test", seahorse.AssembleInput{Budget: 50000})

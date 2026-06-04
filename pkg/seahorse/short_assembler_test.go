@@ -185,12 +185,12 @@ func TestAssemblerDropsCoveredLeafWhenCondensedSelected(t *testing.T) {
 		t.Fatalf("AddMessage: %v", err)
 	}
 
-	if err := s.UpsertContextItems(ctx, convID, []ContextItem{
+	if upsertErr := s.UpsertContextItems(ctx, convID, []ContextItem{
 		{Ordinal: 100, ItemType: "summary", SummaryID: leaf.SummaryID, TokenCount: 10},
 		{Ordinal: 200, ItemType: "summary", SummaryID: condensed.SummaryID, TokenCount: 10},
 		{Ordinal: 300, ItemType: "message", MessageID: msg.ID, TokenCount: 1},
-	}); err != nil {
-		t.Fatalf("UpsertContextItems: %v", err)
+	}); upsertErr != nil {
+		t.Fatalf("UpsertContextItems: %v", upsertErr)
 	}
 
 	a := &Assembler{store: s, config: Config{}}
@@ -299,11 +299,11 @@ func TestAssemblerFreshTailMaxTokensPreservesNewestMessageOverCap(t *testing.T) 
 	if err != nil {
 		t.Fatalf("AddMessage huge: %v", err)
 	}
-	if err := s.UpsertContextItems(ctx, convID, []ContextItem{
+	if upsertErr := s.UpsertContextItems(ctx, convID, []ContextItem{
 		{Ordinal: 100, ItemType: "message", MessageID: msg1.ID, TokenCount: 10},
 		{Ordinal: 200, ItemType: "message", MessageID: msg2.ID, TokenCount: 100},
-	}); err != nil {
-		t.Fatalf("UpsertContextItems: %v", err)
+	}); upsertErr != nil {
+		t.Fatalf("UpsertContextItems: %v", upsertErr)
 	}
 
 	a := &Assembler{store: s, config: Config{FreshTailMaxTokens: 50}}

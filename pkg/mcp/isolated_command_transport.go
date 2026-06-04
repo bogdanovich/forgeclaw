@@ -73,7 +73,9 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if td <= 0 {
 		td = isolatedCommandTerminateDuration
 	}
-	return newIsolatedIOConn(&isolatedPipeRWC{cmd: t.Command, stdout: stdout, stdin: stdin, waitCh: waitCh, terminateDuration: td}), nil
+	return newIsolatedIOConn(
+		&isolatedPipeRWC{cmd: t.Command, stdout: stdout, stdin: stdin, waitCh: waitCh, terminateDuration: td},
+	), nil
 }
 
 type isolatedPipeRWC struct {

@@ -797,8 +797,8 @@ func TestEvolutionBridge_TurnEndUsesPayloadWorkspace(t *testing.T) {
 		t.Fatalf("newEvolutionBridge: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := bridge.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
+		if closeErr := bridge.Close(); closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
 		}
 	})
 
@@ -840,8 +840,8 @@ func TestEvolutionBridge_TurnEndUsesExplicitAttemptTrail(t *testing.T) {
 		t.Fatalf("newEvolutionBridge: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := bridge.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
+		if closeErr := bridge.Close(); closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
 		}
 	})
 

@@ -314,7 +314,9 @@ func TestShellTool_OutputTruncation(t *testing.T) {
 }
 
 func TestShellTool_OutputTruncationPreservesUTF8(t *testing.T) {
-	output := truncateCommandOutput(strings.Repeat("начало", 1000) + strings.Repeat("中", 1000) + strings.Repeat("конец", 1000))
+	output := truncateCommandOutput(
+		strings.Repeat("начало", 1000) + strings.Repeat("中", 1000) + strings.Repeat("конец", 1000),
+	)
 
 	if !utf8.ValidString(output) {
 		t.Fatalf("truncated output should remain valid UTF-8")

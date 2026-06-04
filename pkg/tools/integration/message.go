@@ -186,7 +186,10 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		return &ToolResult{ForLLM: err.Error(), IsError: true}
 	}
 	if len(mediaArgs) > 0 && !t.localMediaEnabled {
-		return &ToolResult{ForLLM: "message media attachments are disabled; enable tools.message.media_enabled to send local media through message", IsError: true}
+		return &ToolResult{
+			ForLLM:  "message media attachments are disabled; enable tools.message.media_enabled to send local media through message",
+			IsError: true,
+		}
 	}
 	if content == "" && len(mediaArgs) == 0 {
 		return &ToolResult{ForLLM: "content or media is required", IsError: true}

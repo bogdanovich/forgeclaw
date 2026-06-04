@@ -192,7 +192,12 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *T
 		paths = append(paths, path)
 	}
 
-	message := fmt.Sprintf("Generated %d image(s) with %s via %s.", len(refs), req.Model, t.provider.ImageGenerationProviderID())
+	message := fmt.Sprintf(
+		"Generated %d image(s) with %s via %s.",
+		len(refs),
+		req.Model,
+		t.provider.ImageGenerationProviderID(),
+	)
 	result := MediaResult(message, refs)
 	switch readDeliveryIntentDefault(args, DeliveryFinalHandled) {
 	case DeliveryImmediateContinue:

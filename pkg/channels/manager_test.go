@@ -1962,7 +1962,10 @@ func TestPreSendMedia_DismissesTrackedMessageBeforeChannelSend(t *testing.T) {
 	}, ch)
 
 	if ch.dismissedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback message to be dismissed before media delivery, got %q", ch.dismissedChatID)
+		t.Fatalf(
+			"expected tracked tool feedback message to be dismissed before media delivery, got %q",
+			ch.dismissedChatID,
+		)
 	}
 }
 
@@ -1990,7 +1993,10 @@ func TestPreSendMedia_SeparateMessagesDismissesTrackedMessage(t *testing.T) {
 	}, ch)
 
 	if ch.dismissedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback message to be dismissed before media delivery, got %q", ch.dismissedChatID)
+		t.Fatalf(
+			"expected tracked tool feedback message to be dismissed before media delivery, got %q",
+			ch.dismissedChatID,
+		)
 	}
 	if ch.clearedChatID != "" {
 		t.Fatalf("expected dismissal to handle tracked state cleanup, got clear for %q", ch.clearedChatID)

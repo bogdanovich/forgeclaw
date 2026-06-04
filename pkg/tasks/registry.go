@@ -32,6 +32,7 @@ const (
 	StatusSucceeded Status = "succeeded"
 	StatusFailed    Status = "failed"
 	StatusTimedOut  Status = "timed_out"
+	//nolint:misspell // External task status value intentionally uses British spelling for compatibility.
 	StatusCancelled Status = "cancelled"
 	StatusLost      Status = "lost"
 )

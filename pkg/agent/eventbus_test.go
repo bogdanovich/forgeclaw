@@ -747,22 +747,12 @@ func (t *asyncFollowUpTool) ExecuteAsync(
 	return tools.AsyncResult("async follow-up scheduled")
 }
 
-func waitForInboundMessage(t *testing.T, ch <-chan bus.InboundMessage, timeout time.Duration, match func(bus.InboundMessage) bool) bus.InboundMessage {
-	t.Helper()
-	deadline := time.After(timeout)
-	for {
-		select {
-		case msg := <-ch:
-			if match == nil || match(msg) {
-				return msg
-			}
-		case <-deadline:
-			t.Fatal("timeout waiting for inbound message")
-		}
-	}
-}
-
-func waitForOutboundMessage(t *testing.T, ch <-chan bus.OutboundMessage, timeout time.Duration, match func(bus.OutboundMessage) bool) bus.OutboundMessage {
+func waitForOutboundMessage(
+	t *testing.T,
+	ch <-chan bus.OutboundMessage,
+	timeout time.Duration,
+	match func(bus.OutboundMessage) bool,
+) bus.OutboundMessage {
 	t.Helper()
 	deadline := time.After(timeout)
 	for {
@@ -1319,10 +1309,13 @@ func TestAgentLoop_AsyncUserAndParentPublishesUserAndQueuesFollowUp(t *testing.T
 	provider := &toolCallProvider{
 		toolCalls: []providers.ToolCall{
 			{
-				ID:        "call_spawn_1",
-				Type:      "function",
-				Name:      "spawn",
-				Arguments: map[string]any{"task": "download media", "delivery_mode": string(tools.AsyncDeliveryUserAndParent)},
+				ID:   "call_spawn_1",
+				Type: "function",
+				Name: "spawn",
+				Arguments: map[string]any{
+					"task":          "download media",
+					"delivery_mode": string(tools.AsyncDeliveryUserAndParent),
+				},
 			},
 		},
 		finalResp: "parent final response",

@@ -234,10 +234,22 @@ func formatTaskRecord(rec taskregistry.Record) string {
 		sb.WriteString(fmt.Sprintf("  Error: %s\n", truncateTaskText(rec.Error, 500)))
 	}
 	if rec.Deliverable != nil {
-		sb.WriteString(fmt.Sprintf("  Deliverable: text=%t artifacts=%d\n", rec.Deliverable.Text != "", len(rec.Deliverable.Artifacts)))
+		sb.WriteString(
+			fmt.Sprintf(
+				"  Deliverable: text=%t artifacts=%d\n",
+				rec.Deliverable.Text != "",
+				len(rec.Deliverable.Artifacts),
+			),
+		)
 	}
 	if rec.Completion != nil && rec.Deliverable == nil {
-		sb.WriteString(fmt.Sprintf("  Legacy completion: text=%t media=%d\n", rec.Completion.Text != "", len(rec.Completion.Media)))
+		sb.WriteString(
+			fmt.Sprintf(
+				"  Legacy completion: text=%t media=%d\n",
+				rec.Completion.Text != "",
+				len(rec.Completion.Media),
+			),
+		)
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -246,10 +258,10 @@ func formatTaskTime(ms int64) string {
 	return time.UnixMilli(ms).Format(time.RFC3339)
 }
 
-func truncateTaskText(s string, max int) string {
+func truncateTaskText(s string, limit int) string {
 	s = strings.TrimSpace(s)
-	if max <= 0 || len(s) <= max {
+	if limit <= 0 || len(s) <= limit {
 		return s
 	}
-	return s[:max] + "..."
+	return s[:limit] + "..."
 }

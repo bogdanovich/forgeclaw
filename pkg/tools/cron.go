@@ -639,7 +639,13 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	if response != "" {
 		trimmed := strings.TrimSpace(response)
 		if strings.EqualFold(trimmed, "NO_REPLY") || strings.EqualFold(trimmed, "HEARTBEAT_OK") {
-			t.finishCronTaskRecord(taskID, taskregistry.StatusSucceeded, taskregistry.DeliveryNotApplicable, trimmed, nil)
+			t.finishCronTaskRecord(
+				taskID,
+				taskregistry.StatusSucceeded,
+				taskregistry.DeliveryNotApplicable,
+				trimmed,
+				nil,
+			)
 			return "ok"
 		}
 		t.executor.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)

@@ -422,15 +422,16 @@ func spawnSubTurn(
 		SessionScope:    session.CloneScope(parentTS.opts.Dispatch.SessionScope),
 	}
 	opts := processOptions{
-		Dispatch:                 dispatch,
-		SenderID:                 parentTS.opts.Dispatch.SenderID(),
-		SenderDisplayName:        parentTS.opts.SenderDisplayName,
-		TurnProfile:              parentTS.profile,
-		SystemPromptOverride:     cfg.ActualSystemPrompt,
-		InitialSteeringMessages:  cfg.InitialMessages,
-		DefaultResponse:          "",
-		EnableSummary:            false,
-		SendResponse:             !cfg.Async && (deliveryMode == tools.AsyncDeliveryUserOnly || deliveryMode == tools.AsyncDeliveryUserAndParent),
+		Dispatch:                dispatch,
+		SenderID:                parentTS.opts.Dispatch.SenderID(),
+		SenderDisplayName:       parentTS.opts.SenderDisplayName,
+		TurnProfile:             parentTS.profile,
+		SystemPromptOverride:    cfg.ActualSystemPrompt,
+		InitialSteeringMessages: cfg.InitialMessages,
+		DefaultResponse:         "",
+		EnableSummary:           false,
+		SendResponse: !cfg.Async &&
+			(deliveryMode == tools.AsyncDeliveryUserOnly || deliveryMode == tools.AsyncDeliveryUserAndParent),
 		SuppressToolUserDelivery: !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly,
 		SuppressToolFeedback:     parentTS.opts.SuppressToolFeedback,
 		NoHistory:                true, // SubTurns don't use session history

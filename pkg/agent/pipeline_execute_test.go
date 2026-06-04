@@ -58,7 +58,9 @@ func TestInferSkillNamesFromToolCall_NonSkillFileIgnored(t *testing.T) {
 }
 
 func TestIsFatalMCPTransportErrorSummary(t *testing.T) {
-	if !isFatalMCPTransportErrorSummary(`MCP tool execution failed: failed to call tool: connection closed: calling "tools/call": client is closing: invalid character 'ð' looking for beginning of value`) {
+	if !isFatalMCPTransportErrorSummary(
+		`MCP tool execution failed: failed to call tool: connection closed: calling "tools/call": client is closing: invalid character 'ð' looking for beginning of value`,
+	) {
 		t.Fatal("expected fatal MCP transport error to match")
 	}
 	if isFatalMCPTransportErrorSummary("MCP tool returned error: rate limited, retry later") {
@@ -97,6 +99,7 @@ func (t *repeatingFatalTool) Name() string { return "mcp_gpt_researcher_quick_se
 func (t *repeatingFatalTool) Description() string {
 	return "Always fails with a fatal MCP transport error"
 }
+
 func (t *repeatingFatalTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -107,6 +110,7 @@ func (t *repeatingFatalTool) Parameters() map[string]any {
 		},
 	}
 }
+
 func (t *repeatingFatalTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
 	err := `MCP tool execution failed: failed to call tool: connection closed: calling "tools/call": client is closing: invalid character 'ð' looking for beginning of value`
 	return tools.ErrorResult(err)
@@ -186,6 +190,7 @@ func (t *fatalMCPServerTool) Name() string { return "mcp_gpt_researcher_quick_se
 func (t *fatalMCPServerTool) Description() string {
 	return "Fails with a fatal MCP server transport error"
 }
+
 func (t *fatalMCPServerTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
