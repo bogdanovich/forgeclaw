@@ -80,6 +80,12 @@ executed records for one workflow. Use `task_board {"action":"results",...}` to
 read durable deliverables produced by completed child runs. `task_status
 {"board_id":"..."}` remains the lower-level status view over the same records.
 
+`task_board results` returns raw result-bearing records for compatibility and a
+`step_results` view for orchestration. `step_results` groups records by
+`step_id`, hides placeholder board steps, exposes the latest successful
+deliverable for each step, and includes latest run/failure metadata so the
+parent can decide whether to continue, retry, or report a failure.
+
 `task_board list` also returns an effective board view derived from the raw
 records:
 

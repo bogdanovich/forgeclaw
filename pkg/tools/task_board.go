@@ -389,7 +389,7 @@ func (t *TaskBoardTool) list(ctx context.Context, args map[string]any, resultsOn
 			continue
 		}
 		if resultsOnly && rec.Deliverable == nil && rec.Completion == nil &&
-			strings.TrimSpace(rec.TerminalSummary) == "" {
+			strings.TrimSpace(rec.TerminalSummary) == "" && strings.TrimSpace(rec.Error) == "" {
 			continue
 		}
 		filtered = append(filtered, rec)
@@ -418,7 +418,9 @@ func (t *TaskBoardTool) list(ctx context.Context, args map[string]any, resultsOn
 		"results_only": resultsOnly,
 		"steps":        steps,
 	}
-	if !resultsOnly {
+	if resultsOnly {
+		payload["step_results"] = buildTaskBoardStepResults(filtered)
+	} else {
 		effective := buildTaskBoardEffectiveView(filtered, time.Now(), taskBoardStalledAfter)
 		payload["overall_status"] = effective.OverallStatus
 		payload["effective_counts"] = effective.Counts
@@ -468,6 +470,23 @@ type taskBoardEffectiveStepView struct {
 	Blocked             bool   `json:"blocked,omitempty"`
 }
 
+type taskBoardStepResultView struct {
+	StepID                  string                           `json:"step_id"`
+	StepTitle               string                           `json:"step_title,omitempty"`
+	Owner                   string                           `json:"owner,omitempty"`
+	LatestTaskID            string                           `json:"latest_task_id,omitempty"`
+	LatestStatus            string                           `json:"latest_status,omitempty"`
+	LatestSuccessfulTaskID  string                           `json:"latest_successful_task_id,omitempty"`
+	LatestSuccessfulEndedAt string                           `json:"latest_successful_ended_at,omitempty"`
+	LatestFailureTaskID     string                           `json:"latest_failure_task_id,omitempty"`
+	LatestFailureStatus     string                           `json:"latest_failure_status,omitempty"`
+	LatestFailureError      string                           `json:"latest_failure_error,omitempty"`
+	Deliverable             *taskregistry.DeliverablePayload `json:"deliverable,omitempty"`
+	LegacyCompletion        *taskregistry.CompletionPayload  `json:"legacy_completion,omitempty"`
+	TerminalSummary         string                           `json:"terminal_summary,omitempty"`
+	HasResult               bool                             `json:"has_result"`
+}
+
 func taskBoardView(rec taskregistry.Record, includePayloads bool) taskBoardRecordView {
 	view := taskBoardRecordView{
 		TaskID:         rec.TaskID,
@@ -494,6 +513,68 @@ func taskBoardView(rec taskregistry.Record, includePayloads bool) taskBoardRecor
 	if includePayloads {
 		view.Deliverable = rec.Deliverable
 		view.Completion = rec.Completion
+	}
+	return view
+}
+
+func buildTaskBoardStepResults(records []taskregistry.Record) []taskBoardStepResultView {
+	byStep := make(map[string][]taskregistry.Record)
+	for _, rec := range records {
+		if rec.StepID == "" || rec.StepID == "board-root" || rec.TaskKind == "task_board" ||
+			rec.TaskKind == "task_board_step" {
+			continue
+		}
+		byStep[rec.StepID] = append(byStep[rec.StepID], rec)
+	}
+	stepIDs := make([]string, 0, len(byStep))
+	for stepID := range byStep {
+		stepIDs = append(stepIDs, stepID)
+	}
+	sort.Strings(stepIDs)
+
+	out := make([]taskBoardStepResultView, 0, len(stepIDs))
+	for _, stepID := range stepIDs {
+		out = append(out, taskBoardStepResultFromRecords(stepID, byStep[stepID]))
+	}
+	return out
+}
+
+func taskBoardStepResultFromRecords(stepID string, records []taskregistry.Record) taskBoardStepResultView {
+	sort.Slice(records, func(i, j int) bool {
+		if taskBoardRecordEventTime(records[i]) != taskBoardRecordEventTime(records[j]) {
+			return taskBoardRecordEventTime(records[i]) < taskBoardRecordEventTime(records[j])
+		}
+		return records[i].TaskID < records[j].TaskID
+	})
+
+	latest := records[len(records)-1]
+	view := taskBoardStepResultView{
+		StepID:       stepID,
+		StepTitle:    latest.StepTitle,
+		Owner:        firstNonEmpty(latest.Owner, latest.AgentID),
+		LatestTaskID: latest.TaskID,
+		LatestStatus: string(latest.Status),
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		rec := records[i]
+		if view.LatestFailureTaskID == "" && isTaskBoardFailureStatus(rec.Status) {
+			view.LatestFailureTaskID = rec.TaskID
+			view.LatestFailureStatus = string(rec.Status)
+			view.LatestFailureError = rec.Error
+		}
+		if view.LatestSuccessfulTaskID != "" ||
+			rec.Status != taskregistry.StatusSucceeded ||
+			!recordHasDeliverable(rec) {
+			continue
+		}
+		view.StepTitle = firstNonEmpty(rec.StepTitle, view.StepTitle)
+		view.Owner = firstNonEmpty(rec.Owner, rec.AgentID, view.Owner)
+		view.LatestSuccessfulTaskID = rec.TaskID
+		view.LatestSuccessfulEndedAt = formatTaskBoardTime(rec.EndedAt)
+		view.Deliverable = rec.Deliverable
+		view.LegacyCompletion = rec.Completion
+		view.TerminalSummary = rec.TerminalSummary
+		view.HasResult = true
 	}
 	return view
 }
@@ -785,6 +866,25 @@ func isTaskBoardTerminalStatus(status taskregistry.Status) bool {
 	default:
 		return false
 	}
+}
+
+func isTaskBoardFailureStatus(status taskregistry.Status) bool {
+	switch status {
+	case taskregistry.StatusFailed,
+		taskregistry.StatusTimedOut,
+		taskregistry.StatusCancelled,
+		taskregistry.StatusLost:
+		return true
+	default:
+		return false
+	}
+}
+
+func formatTaskBoardTime(value int64) string {
+	if value <= 0 {
+		return ""
+	}
+	return time.UnixMilli(value).Format(time.RFC3339)
 }
 
 func optionalTaskPacketArg(args map[string]any, key string) (*taskregistry.TaskPacketPayload, error) {

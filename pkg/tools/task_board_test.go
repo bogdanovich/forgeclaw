@@ -292,6 +292,25 @@ func TestTaskBoardTool_ResultsReturnsDeliverablesForVisibleBoard(t *testing.T) {
 		t.Fatalf("Upsert(delegate) error = %v", err)
 	}
 	if err := registry.Upsert(taskregistry.Record{
+		TaskID:         "delegate-2",
+		Runtime:        taskregistry.RuntimeDelegate,
+		TaskKind:       "delegate",
+		BoardID:        "workflow-1",
+		StepID:         "media-extract",
+		StepTitle:      "Extract media",
+		Channel:        "telegram",
+		ChatID:         "chat-1",
+		AgentID:        "media",
+		Task:           "download reel retry",
+		Status:         taskregistry.StatusFailed,
+		DeliveryStatus: taskregistry.DeliveryFailed,
+		CreatedAt:      now + 3,
+		EndedAt:        now + 4,
+		Error:          "transient media backend failure",
+	}); err != nil {
+		t.Fatalf("Upsert(delegate failure) error = %v", err)
+	}
+	if err := registry.Upsert(taskregistry.Record{
 		TaskID:         "delegate-other",
 		Runtime:        taskregistry.RuntimeDelegate,
 		TaskKind:       "delegate",
@@ -324,6 +343,43 @@ func TestTaskBoardTool_ResultsReturnsDeliverablesForVisibleBoard(t *testing.T) {
 		!strings.Contains(result.ForLLM, `"text": "caption text"`) ||
 		!strings.Contains(result.ForLLM, `"artifacts"`) {
 		t.Fatalf("results missing deliverable:\n%s", result.ForLLM)
+	}
+
+	var payload struct {
+		StepResults []struct {
+			StepID                 string                           `json:"step_id"`
+			LatestTaskID           string                           `json:"latest_task_id"`
+			LatestStatus           string                           `json:"latest_status"`
+			LatestSuccessfulTaskID string                           `json:"latest_successful_task_id"`
+			LatestFailureTaskID    string                           `json:"latest_failure_task_id"`
+			LatestFailureStatus    string                           `json:"latest_failure_status"`
+			LatestFailureError     string                           `json:"latest_failure_error"`
+			Deliverable            *taskregistry.DeliverablePayload `json:"deliverable"`
+			LegacyCompletion       *taskregistry.CompletionPayload  `json:"legacy_completion"`
+		} `json:"step_results"`
+	}
+	if err := json.Unmarshal([]byte(result.ForLLM), &payload); err != nil {
+		t.Fatalf("results JSON error = %v\n%s", err, result.ForLLM)
+	}
+	if len(payload.StepResults) != 1 {
+		t.Fatalf("step_results len = %d, want 1: %+v\n%s", len(payload.StepResults), payload.StepResults, result.ForLLM)
+	}
+	step := payload.StepResults[0]
+	if step.StepID != "media-extract" ||
+		step.LatestTaskID != "delegate-2" ||
+		step.LatestStatus != "failed" ||
+		step.LatestSuccessfulTaskID != "delegate-1" ||
+		step.LatestFailureTaskID != "delegate-2" ||
+		step.LatestFailureStatus != "failed" ||
+		step.LatestFailureError != "transient media backend failure" {
+		t.Fatalf("unexpected step result metadata: %+v\n%s", step, result.ForLLM)
+	}
+	if step.Deliverable == nil || step.Deliverable.Text != "caption text" ||
+		len(step.Deliverable.Artifacts) != 1 {
+		t.Fatalf("unexpected step result deliverable: %+v\n%s", step.Deliverable, result.ForLLM)
+	}
+	if step.LegacyCompletion != nil {
+		t.Fatalf("unexpected legacy completion: %+v", step.LegacyCompletion)
 	}
 }
 
