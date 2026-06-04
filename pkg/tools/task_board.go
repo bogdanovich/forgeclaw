@@ -471,20 +471,23 @@ type taskBoardEffectiveStepView struct {
 }
 
 type taskBoardStepResultView struct {
-	StepID                  string                           `json:"step_id"`
-	StepTitle               string                           `json:"step_title,omitempty"`
-	Owner                   string                           `json:"owner,omitempty"`
-	LatestTaskID            string                           `json:"latest_task_id,omitempty"`
-	LatestStatus            string                           `json:"latest_status,omitempty"`
-	LatestSuccessfulTaskID  string                           `json:"latest_successful_task_id,omitempty"`
-	LatestSuccessfulEndedAt string                           `json:"latest_successful_ended_at,omitempty"`
-	LatestFailureTaskID     string                           `json:"latest_failure_task_id,omitempty"`
-	LatestFailureStatus     string                           `json:"latest_failure_status,omitempty"`
-	LatestFailureError      string                           `json:"latest_failure_error,omitempty"`
-	Deliverable             *taskregistry.DeliverablePayload `json:"deliverable,omitempty"`
-	LegacyCompletion        *taskregistry.CompletionPayload  `json:"legacy_completion,omitempty"`
-	TerminalSummary         string                           `json:"terminal_summary,omitempty"`
-	HasResult               bool                             `json:"has_result"`
+	StepID                           string                           `json:"step_id"`
+	StepTitle                        string                           `json:"step_title,omitempty"`
+	Owner                            string                           `json:"owner,omitempty"`
+	LatestTaskID                     string                           `json:"latest_task_id,omitempty"`
+	LatestStatus                     string                           `json:"latest_status,omitempty"`
+	LatestSuccessfulTaskID           string                           `json:"latest_successful_task_id,omitempty"`
+	LatestSuccessfulEndedAt          string                           `json:"latest_successful_ended_at,omitempty"`
+	LatestSuccessfulDeliverable      *taskregistry.DeliverablePayload `json:"latest_successful_deliverable,omitempty"`
+	LatestSuccessfulLegacyCompletion *taskregistry.CompletionPayload  `json:"latest_successful_legacy_completion,omitempty"`
+	LatestSuccessfulTerminalSummary  string                           `json:"latest_successful_terminal_summary,omitempty"`
+	LatestFailureTaskID              string                           `json:"latest_failure_task_id,omitempty"`
+	LatestFailureStatus              string                           `json:"latest_failure_status,omitempty"`
+	LatestFailureError               string                           `json:"latest_failure_error,omitempty"`
+	Deliverable                      *taskregistry.DeliverablePayload `json:"deliverable,omitempty"`
+	LegacyCompletion                 *taskregistry.CompletionPayload  `json:"legacy_completion,omitempty"`
+	TerminalSummary                  string                           `json:"terminal_summary,omitempty"`
+	HasResult                        bool                             `json:"has_result"`
 }
 
 func taskBoardView(rec taskregistry.Record, includePayloads bool) taskBoardRecordView {
@@ -555,6 +558,12 @@ func taskBoardStepResultFromRecords(stepID string, records []taskregistry.Record
 		LatestTaskID: latest.TaskID,
 		LatestStatus: string(latest.Status),
 	}
+	if latest.Status == taskregistry.StatusSucceeded && recordHasDeliverable(latest) {
+		view.Deliverable = latest.Deliverable
+		view.LegacyCompletion = latest.Completion
+		view.TerminalSummary = latest.TerminalSummary
+		view.HasResult = true
+	}
 	for i := len(records) - 1; i >= 0; i-- {
 		rec := records[i]
 		if view.LatestFailureTaskID == "" && isTaskBoardFailureStatus(rec.Status) {
@@ -571,10 +580,9 @@ func taskBoardStepResultFromRecords(stepID string, records []taskregistry.Record
 		view.Owner = firstNonEmpty(rec.Owner, rec.AgentID, view.Owner)
 		view.LatestSuccessfulTaskID = rec.TaskID
 		view.LatestSuccessfulEndedAt = formatTaskBoardTime(rec.EndedAt)
-		view.Deliverable = rec.Deliverable
-		view.LegacyCompletion = rec.Completion
-		view.TerminalSummary = rec.TerminalSummary
-		view.HasResult = true
+		view.LatestSuccessfulDeliverable = rec.Deliverable
+		view.LatestSuccessfulLegacyCompletion = rec.Completion
+		view.LatestSuccessfulTerminalSummary = rec.TerminalSummary
 	}
 	return view
 }

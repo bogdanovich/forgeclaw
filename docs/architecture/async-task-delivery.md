@@ -82,9 +82,11 @@ read durable deliverables produced by completed child runs. `task_status
 
 `task_board results` returns raw result-bearing records for compatibility and a
 `step_results` view for orchestration. `step_results` groups records by
-`step_id`, hides placeholder board steps, exposes the latest successful
-deliverable for each step, and includes latest run/failure metadata so the
-parent can decide whether to continue, retry, or report a failure.
+`step_id`, hides placeholder board steps, exposes current latest-run output at
+top level, and includes latest run/failure metadata so the parent can decide
+whether to continue, retry, or report a failure. If the latest run failed,
+top-level `deliverable`/`has_result` remain empty/false; any older successful
+output is exposed only under explicit `latest_successful_*` fields.
 
 `task_board list` also returns an effective board view derived from the raw
 records:

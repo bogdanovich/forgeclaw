@@ -354,7 +354,9 @@ func TestTaskBoardTool_ResultsReturnsDeliverablesForVisibleBoard(t *testing.T) {
 			LatestFailureTaskID    string                           `json:"latest_failure_task_id"`
 			LatestFailureStatus    string                           `json:"latest_failure_status"`
 			LatestFailureError     string                           `json:"latest_failure_error"`
+			HasResult              bool                             `json:"has_result"`
 			Deliverable            *taskregistry.DeliverablePayload `json:"deliverable"`
+			LatestSuccessful       *taskregistry.DeliverablePayload `json:"latest_successful_deliverable"`
 			LegacyCompletion       *taskregistry.CompletionPayload  `json:"legacy_completion"`
 		} `json:"step_results"`
 	}
@@ -374,9 +376,12 @@ func TestTaskBoardTool_ResultsReturnsDeliverablesForVisibleBoard(t *testing.T) {
 		step.LatestFailureError != "transient media backend failure" {
 		t.Fatalf("unexpected step result metadata: %+v\n%s", step, result.ForLLM)
 	}
-	if step.Deliverable == nil || step.Deliverable.Text != "caption text" ||
-		len(step.Deliverable.Artifacts) != 1 {
-		t.Fatalf("unexpected step result deliverable: %+v\n%s", step.Deliverable, result.ForLLM)
+	if step.HasResult || step.Deliverable != nil {
+		t.Fatalf("latest failed run should not expose stale top-level result: %+v\n%s", step, result.ForLLM)
+	}
+	if step.LatestSuccessful == nil || step.LatestSuccessful.Text != "caption text" ||
+		len(step.LatestSuccessful.Artifacts) != 1 {
+		t.Fatalf("unexpected latest successful deliverable: %+v\n%s", step.LatestSuccessful, result.ForLLM)
 	}
 	if step.LegacyCompletion != nil {
 		t.Fatalf("unexpected legacy completion: %+v", step.LegacyCompletion)
