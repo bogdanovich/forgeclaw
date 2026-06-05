@@ -862,22 +862,20 @@ func normalizeDeliverablePayload(payload *DeliverablePayload, generatedAt int64)
 	out.Artifacts = append([]DeliverableItem(nil), payload.Artifacts...)
 	out.Metadata = copyStringMap(payload.Metadata)
 	if payload.Report != nil {
-		report := *payload.Report
+		report := cloneDeliverableReport(payload.Report)
 		if report.SchemaVersion == "" {
 			report.SchemaVersion = DeliverableReportV1
 		}
 		if report.GeneratedAt == 0 {
 			report.GeneratedAt = generatedAt
 		}
-		report.Metadata = copyStringMap(report.Metadata)
-		report.Provenance = copyStringMap(report.Provenance)
 		if report.ContentHash == "" {
 			report.ContentHash = deliverableContentHash(&out)
 		}
 		if report.ReportID == "" {
 			report.ReportID = "deliverable:" + report.ContentHash
 		}
-		out.Report = &report
+		out.Report = report
 		return &out
 	}
 	if strings.TrimSpace(out.Text) == "" && len(out.Artifacts) == 0 && len(out.Metadata) == 0 {
@@ -925,6 +923,33 @@ func deliverableContentHash(payload *DeliverablePayload) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func cloneDeliverableReport(report *DeliverableReport) *DeliverableReport {
+	if report == nil {
+		return nil
+	}
+	cloned := &DeliverableReport{
+		SchemaVersion: report.SchemaVersion,
+		ReportID:      report.ReportID,
+		ContentHash:   report.ContentHash,
+		GeneratedAt:   report.GeneratedAt,
+		Summary:       report.Summary,
+		Provenance:    copyStringMap(report.Provenance),
+		Metadata:      copyStringMap(report.Metadata),
+		Extra:         copyAnyMap(report.Extra),
+	}
+	for _, claim := range report.Claims {
+		cloned.Claims = append(cloned.Claims, ReportClaim{
+			Kind:       claim.Kind,
+			Text:       claim.Text,
+			Confidence: claim.Confidence,
+			SourceRefs: append([]string(nil), claim.SourceRefs...),
+			Metadata:   copyStringMap(claim.Metadata),
+		})
+	}
+	cloned.FieldDeltas = append([]ReportFieldDelta(nil), report.FieldDeltas...)
+	return cloned
+}
+
 func recordChanged(before, after Record) bool {
 	b, _ := json.Marshal(before)
 	a, _ := json.Marshal(after)
@@ -967,4 +992,30 @@ func copyStringMap(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func copyAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = copyAnyValue(value)
+	}
+	return out
+}
+
+func copyAnyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return copyAnyMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = copyAnyValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
 }

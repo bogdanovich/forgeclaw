@@ -255,6 +255,66 @@ func TestDelegateTool_Execute_RecordsDeliverableFromCompletion(t *testing.T) {
 	}
 }
 
+func TestDelegateTool_Execute_RecordsExplicitDeliverableReport(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	spawner := &delegateMockSpawner{
+		result: (&ToolResult{
+			ForLLM: "review finished",
+		}).WithDeliverable(&DeliverableResult{
+			Text: "No issues found",
+			Report: &DeliverableReport{
+				SchemaVersion: taskregistry.DeliverableReportV1,
+				ReportID:      "review-1",
+				ContentHash:   "abc123",
+				Summary:       "No high-confidence issues found",
+				Claims: []ReportClaim{{
+					Kind:       "negative_evidence",
+					Text:       "No correctness issues found",
+					Confidence: "high",
+				}},
+				FieldDeltas: []ReportFieldDelta{{
+					Field: "review_status",
+					From:  "pending",
+					To:    "clean",
+				}},
+				Provenance: map[string]string{"producer": "reviewer"},
+			},
+		}),
+	}
+	tool := NewDelegateTool()
+	tool.SetSpawner(spawner)
+	tool.SetTaskRegistry(registry)
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"agent_id": "reviewer",
+		"task":     "review PR",
+	})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	records := registry.List()
+	if len(records) != 1 {
+		t.Fatalf("registry records = %d, want 1: %#v", len(records), records)
+	}
+	report := records[0].Deliverable.Report
+	if report == nil {
+		t.Fatal("expected explicit deliverable report")
+	}
+	if report.ReportID != "review-1" || report.ContentHash != "abc123" {
+		t.Fatalf("report identity = %+v", report)
+	}
+	if len(report.Claims) != 1 || report.Claims[0].Kind != "negative_evidence" {
+		t.Fatalf("report claims = %+v", report.Claims)
+	}
+	if len(report.FieldDeltas) != 1 || report.FieldDeltas[0].To != "clean" {
+		t.Fatalf("field deltas = %+v", report.FieldDeltas)
+	}
+	if report.Provenance["producer"] != "reviewer" {
+		t.Fatalf("provenance = %+v", report.Provenance)
+	}
+}
+
 func TestDelegateTool_Execute_RecordsDeliverableArtifactFromLabeledPath(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	spawner := &delegateMockSpawner{

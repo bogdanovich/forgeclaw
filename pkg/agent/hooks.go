@@ -923,6 +923,7 @@ func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
 				[]tools.DeliverableItem(nil),
 				result.Deliverable.Artifacts...,
 			),
+			Report: cloneToolDeliverableReport(result.Deliverable.Report),
 		}
 		if len(result.Deliverable.Metadata) > 0 {
 			cloned.Deliverable.Metadata = make(map[string]string, len(result.Deliverable.Metadata))
@@ -936,6 +937,75 @@ func cloneToolResult(result *tools.ToolResult) *tools.ToolResult {
 		copy(cloned.Messages, result.Messages)
 	}
 	return &cloned
+}
+
+func cloneToolDeliverableReport(report *tools.DeliverableReport) *tools.DeliverableReport {
+	if report == nil {
+		return nil
+	}
+	cloned := &tools.DeliverableReport{
+		SchemaVersion: report.SchemaVersion,
+		ReportID:      report.ReportID,
+		ContentHash:   report.ContentHash,
+		GeneratedAt:   report.GeneratedAt,
+		Summary:       report.Summary,
+		Provenance:    cloneHookStringMap(report.Provenance),
+		Metadata:      cloneHookStringMap(report.Metadata),
+		Extra:         cloneHookAnyMap(report.Extra),
+	}
+	if len(report.Claims) > 0 {
+		cloned.Claims = make([]tools.ReportClaim, len(report.Claims))
+		for i, claim := range report.Claims {
+			cloned.Claims[i] = tools.ReportClaim{
+				Kind:       claim.Kind,
+				Text:       claim.Text,
+				Confidence: claim.Confidence,
+				SourceRefs: append([]string(nil), claim.SourceRefs...),
+				Metadata:   cloneHookStringMap(claim.Metadata),
+			}
+		}
+	}
+	if len(report.FieldDeltas) > 0 {
+		cloned.FieldDeltas = append([]tools.ReportFieldDelta(nil), report.FieldDeltas...)
+	}
+	return cloned
+}
+
+func cloneHookStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(src))
+	for key, value := range src {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneHookAnyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(src))
+	for key, value := range src {
+		cloned[key] = cloneHookAnyValue(value)
+	}
+	return cloned
+}
+
+func cloneHookAnyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneHookAnyMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneHookAnyValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 func closeHookIfPossible(hook any) {

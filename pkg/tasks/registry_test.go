@@ -236,41 +236,71 @@ func TestRegistryPersistsTaskBoardAndDeliverableFields(t *testing.T) {
 
 func TestRegistryPreservesExplicitDeliverableReport(t *testing.T) {
 	registry := NewRegistry("")
+	report := &DeliverableReport{
+		SchemaVersion: DeliverableReportV1,
+		ReportID:      "review-1",
+		ContentHash:   "abc123",
+		Summary:       "No findings",
+		Claims: []ReportClaim{{
+			Kind:       "negative_evidence",
+			Text:       "No high-confidence issues found",
+			Confidence: "high",
+			SourceRefs: []string{"diff"},
+			Metadata:   map[string]string{"path": "pkg/review.go"},
+		}},
+		FieldDeltas: []ReportFieldDelta{{
+			Field: "review_status",
+			To:    "clean",
+		}},
+		Provenance: map[string]string{"producer": "reviewer"},
+		Extra: map[string]any{
+			"nested": map[string]any{"key": "value"},
+		},
+	}
 	if err := registry.Upsert(Record{
 		TaskID: "delegate-1",
 		Task:   "review code",
 		Deliverable: &DeliverablePayload{
-			Text: "reviewed",
-			Report: &DeliverableReport{
-				SchemaVersion: DeliverableReportV1,
-				ReportID:      "review-1",
-				ContentHash:   "abc123",
-				Summary:       "No findings",
-				Claims: []ReportClaim{{
-					Kind:       "negative_evidence",
-					Text:       "No high-confidence issues found",
-					Confidence: "high",
-				}},
-				Provenance: map[string]string{"producer": "reviewer"},
-			},
+			Text:   "reviewed",
+			Report: report,
 		},
 	}); err != nil {
 		t.Fatalf("Upsert() error = %v", err)
 	}
+	report.ReportID = "mutated"
+	report.Claims[0].Kind = "fact"
+	report.Claims[0].SourceRefs[0] = "mutated"
+	report.Claims[0].Metadata["path"] = "mutated"
+	report.FieldDeltas[0].To = "mutated"
+	report.Provenance["producer"] = "mutated"
+	report.Extra["nested"].(map[string]any)["key"] = "mutated"
 
 	rec, ok := registry.Get("delegate-1")
 	if !ok {
 		t.Fatal("expected task")
 	}
-	report := rec.Deliverable.Report
-	if report.ReportID != "review-1" || report.ContentHash != "abc123" {
-		t.Fatalf("explicit report identity changed: %+v", report)
+	storedReport := rec.Deliverable.Report
+	if storedReport.ReportID != "review-1" || storedReport.ContentHash != "abc123" {
+		t.Fatalf("explicit report identity changed: %+v", storedReport)
 	}
-	if report.GeneratedAt == 0 {
-		t.Fatalf("expected GeneratedAt to be filled: %+v", report)
+	if storedReport.GeneratedAt == 0 {
+		t.Fatalf("expected GeneratedAt to be filled: %+v", storedReport)
 	}
-	if report.Provenance["producer"] != "reviewer" {
-		t.Fatalf("explicit provenance lost: %+v", report.Provenance)
+	if storedReport.Provenance["producer"] != "reviewer" {
+		t.Fatalf("explicit provenance lost: %+v", storedReport.Provenance)
+	}
+	if storedReport.Claims[0].SourceRefs[0] != "diff" {
+		t.Fatalf("source refs aliased: %+v", storedReport.Claims[0].SourceRefs)
+	}
+	if storedReport.Claims[0].Metadata["path"] != "pkg/review.go" {
+		t.Fatalf("claim metadata aliased: %+v", storedReport.Claims[0].Metadata)
+	}
+	if storedReport.FieldDeltas[0].To != "clean" {
+		t.Fatalf("field deltas aliased: %+v", storedReport.FieldDeltas)
+	}
+	nested := storedReport.Extra["nested"].(map[string]any)
+	if nested["key"] != "value" {
+		t.Fatalf("extra map aliased: %+v", storedReport.Extra)
 	}
 }
 

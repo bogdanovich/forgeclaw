@@ -25,10 +25,13 @@ type (
 	CompletionMedia        = toolshared.CompletionMedia
 	CompletionResult       = toolshared.CompletionResult
 	DeliverableItem        = toolshared.DeliverableItem
+	DeliverableReport      = toolshared.DeliverableReport
 	DeliverableResult      = toolshared.DeliverableResult
 	DeliveryIntent         = toolshared.DeliveryIntent
 	OutboundDelivery       = toolshared.OutboundDelivery
 	PromptMetadata         = toolshared.PromptMetadata
+	ReportClaim            = toolshared.ReportClaim
+	ReportFieldDelta       = toolshared.ReportFieldDelta
 	PromptMetadataProvider = toolshared.PromptMetadataProvider
 	ToolResult             = toolshared.ToolResult
 )

@@ -1075,6 +1075,71 @@ func TestHookManager_BeforeTool_RespondAction(t *testing.T) {
 	}
 }
 
+func TestCloneToolResultPreservesDeliverableReport(t *testing.T) {
+	original := &tools.ToolResult{
+		ForLLM: "review finished",
+		Deliverable: &tools.DeliverableResult{
+			Report: &tools.DeliverableReport{
+				SchemaVersion: "deliverable_report.v1",
+				ReportID:      "review-1",
+				ContentHash:   "abc123",
+				Summary:       "No high-confidence issues found",
+				Claims: []tools.ReportClaim{{
+					Kind:       "negative_evidence",
+					Text:       "No correctness issues found",
+					Confidence: "high",
+					SourceRefs: []string{"diff"},
+					Metadata:   map[string]string{"path": "pkg/review.go"},
+				}},
+				FieldDeltas: []tools.ReportFieldDelta{{
+					Field: "review_status",
+					To:    "clean",
+				}},
+				Provenance: map[string]string{"producer": "reviewer"},
+				Extra: map[string]any{
+					"nested": map[string]any{"key": "value"},
+				},
+			},
+		},
+	}
+
+	cloned := cloneToolResult(original)
+	original.Deliverable.Report.ReportID = "mutated"
+	original.Deliverable.Report.Claims[0].Kind = "fact"
+	original.Deliverable.Report.Claims[0].SourceRefs[0] = "mutated"
+	original.Deliverable.Report.Claims[0].Metadata["path"] = "mutated"
+	original.Deliverable.Report.FieldDeltas[0].To = "mutated"
+	original.Deliverable.Report.Provenance["producer"] = "mutated"
+	original.Deliverable.Report.Extra["nested"].(map[string]any)["key"] = "mutated"
+
+	report := cloned.Deliverable.Report
+	if report == nil {
+		t.Fatal("expected cloned report")
+	}
+	if report.ReportID != "review-1" || report.ContentHash != "abc123" {
+		t.Fatalf("cloned report identity = %+v", report)
+	}
+	if report.Claims[0].Kind != "negative_evidence" {
+		t.Fatalf("cloned claims = %+v", report.Claims)
+	}
+	if report.Claims[0].SourceRefs[0] != "diff" {
+		t.Fatalf("cloned source refs aliased: %+v", report.Claims[0].SourceRefs)
+	}
+	if report.Claims[0].Metadata["path"] != "pkg/review.go" {
+		t.Fatalf("cloned claim metadata aliased: %+v", report.Claims[0].Metadata)
+	}
+	if report.FieldDeltas[0].To != "clean" {
+		t.Fatalf("cloned field deltas aliased: %+v", report.FieldDeltas)
+	}
+	if report.Provenance["producer"] != "reviewer" {
+		t.Fatalf("cloned provenance aliased: %+v", report.Provenance)
+	}
+	nested := report.Extra["nested"].(map[string]any)
+	if nested["key"] != "value" {
+		t.Fatalf("cloned extra aliased: %+v", report.Extra)
+	}
+}
+
 type respondWithMediaHook struct {
 	respondTools    map[string]bool
 	media           []string
