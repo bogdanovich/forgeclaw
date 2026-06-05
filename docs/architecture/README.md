@@ -6,6 +6,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [SubTurn Mechanism](subturn.md): sub-agent coordination, concurrency control, and lifecycle handling.
 - [Session System](session-system.md): session scope allocation, JSONL persistence, alias compatibility, and migration.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing.
+- [Durable Ingress](durable-ingress.md): normalized inbound message spool and restart replay semantics.
 - [Runtime Events](runtime-events.md): runtime event envelope, centralized event logging, filters, and examples.
 - [Workspace Temp Directory](workspace-temp.md): standard scratch path, `PICOCLAW_WORKSPACE_TMP`, and where temporary files should go.
 - [Shellguard](shellguard.md): reusable shell command validation, command classification, permission modes, and path-scope limits.

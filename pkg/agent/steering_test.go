@@ -287,6 +287,56 @@ func TestAgentLoop_SteeringMode_ConfiguredFromConfig(t *testing.T) {
 	}
 }
 
+func TestAgentLoop_DequeueSteeringDoesNotAckInboundSpool(t *testing.T) {
+	tmpDir := t.TempDir()
+	msgBus := bus.NewMessageBus()
+	defer msgBus.Close()
+	spool, err := bus.NewInboundSpool(filepath.Join(tmpDir, "spool"))
+	if err != nil {
+		t.Fatalf("NewInboundSpool failed: %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+	al := NewAgentLoop(&config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}, msgBus, &mockProvider{})
+
+	if err := msgBus.PublishInbound(context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			SenderID: "user1",
+		},
+		Content: "queued follow-up",
+	}); err != nil {
+		t.Fatalf("PublishInbound failed: %v", err)
+	}
+	inbound := <-msgBus.InboundChan()
+	if inbound.SpoolID == "" {
+		t.Fatal("expected inbound SpoolID")
+	}
+	if err := al.enqueueSteeringMessage("session-1", "main", providers.Message{
+		Role:           "user",
+		Content:        inbound.Content,
+		InboundSpoolID: inbound.SpoolID,
+	}); err != nil {
+		t.Fatalf("enqueueSteeringMessage failed: %v", err)
+	}
+	msgs := al.dequeueSteeringMessagesForScope("session-1")
+	if len(msgs) != 1 {
+		t.Fatalf("dequeued messages = %d, want 1", len(msgs))
+	}
+	waitForSpoolEntries(t, spool.Dir(), "*.processing", 1)
+	al.ackAcceptedSteeringMessages(context.Background(), msgs)
+	waitForSpoolEntries(t, spool.Dir(), "*.processing", 0)
+}
+
 func TestAgentLoop_Continue_NoMessages(t *testing.T) {
 	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
@@ -748,6 +798,12 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
+	spoolDir := filepath.Join(tmpDir, "state", "ingress-spool", "inbound")
+	spool, err := bus.NewInboundSpool(spoolDir)
+	if err != nil {
+		t.Fatalf("NewInboundSpool failed: %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
 	provider := &lateSteeringProvider{
 		firstCallStarted: make(chan struct{}),
 		releaseFirstCall: make(chan struct{}),
@@ -796,6 +852,7 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	if err := msgBus.PublishInbound(pubCtx, late); err != nil {
 		t.Fatalf("publish late inbound: %v", err)
 	}
+	waitForSpoolEntries(t, spoolDir, "*.processing", 2)
 
 	close(provider.releaseFirstCall)
 
@@ -851,6 +908,25 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	}
 	if !foundLateMessage {
 		t.Fatal("expected queued late message to be processed in an automatic follow-up turn")
+	}
+	waitForSpoolEntries(t, spoolDir, "*.processing", 0)
+}
+
+func waitForSpoolEntries(t *testing.T, dir, pattern string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		matches, err := filepath.Glob(filepath.Join(dir, pattern))
+		if err != nil {
+			t.Fatalf("glob spool entries: %v", err)
+		}
+		if len(matches) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spool entries matching %q = %d, want %d (%v)", pattern, len(matches), want, matches)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -515,6 +515,14 @@ func (failingMessageBus) PublishInbound(context.Context, bus.InboundMessage) err
 	return errors.New("publish failed")
 }
 
+func (failingMessageBus) AckInbound(context.Context, bus.InboundMessage) error {
+	return nil
+}
+
+func (failingMessageBus) ReleaseInbound(context.Context, bus.InboundMessage, error) error {
+	return nil
+}
+
 func (failingMessageBus) PublishObserved(context.Context, bus.ObservedMessage) error {
 	return errors.New("publish failed")
 }

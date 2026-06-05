@@ -10,7 +10,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
-func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) {
+func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) bool {
 	if al.channelManager != nil {
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
@@ -25,7 +25,7 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 			err,
 			finalResponseAlwaysPublish,
 		) {
-			return
+			return false
 		}
 		response = ""
 	}
@@ -38,9 +38,42 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 		&msg.Context,
 		finalResponseAlwaysPublish,
 	)
+	return true
 }
 
-func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.InboundMessage) {
+func (al *AgentLoop) ackInboundMessage(ctx context.Context, msg bus.InboundMessage) {
+	if msg.SpoolID == "" || al.bus == nil {
+		return
+	}
+	if err := al.bus.AckInbound(ctx, msg); err != nil {
+		logger.WarnCF("agent", "Failed to ack inbound spool entry",
+			map[string]any{
+				"spool_id":    msg.SpoolID,
+				"channel":     msg.Channel,
+				"chat_id":     msg.ChatID,
+				"session_key": msg.SessionKey,
+				"error":       err.Error(),
+			})
+	}
+}
+
+func (al *AgentLoop) releaseInboundMessage(ctx context.Context, msg bus.InboundMessage, cause error) {
+	if msg.SpoolID == "" || al.bus == nil {
+		return
+	}
+	if err := al.bus.ReleaseInbound(ctx, msg, cause); err != nil {
+		logger.WarnCF("agent", "Failed to release inbound spool entry",
+			map[string]any{
+				"spool_id":    msg.SpoolID,
+				"channel":     msg.Channel,
+				"chat_id":     msg.ChatID,
+				"session_key": msg.SessionKey,
+				"error":       err.Error(),
+			})
+	}
+}
+
+func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.InboundMessage) bool {
 	// Process the initial message
 	response, err := al.processMessage(ctx, initialMsg)
 	if err != nil {
@@ -52,7 +85,7 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 			err,
 			finalResponseAlwaysPublish,
 		) {
-			return // context canceled
+			return false // context canceled
 		}
 		response = ""
 	}
@@ -66,15 +99,18 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 				"channel": initialMsg.Channel,
 				"error":   targetErr.Error(),
 			})
-		return
+		return true
 	}
 	if target == nil {
 		// System message or non-routable, response already published
-		return
+		return true
 	}
 
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
+		if ctx.Err() != nil {
+			return false
+		}
 		logger.WarnCF("agent", "Failed to continue queued steering",
 			map[string]any{
 				"channel": target.Channel,
@@ -113,6 +149,7 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 			finalResponseAlwaysPublish,
 		)
 	}
+	return true
 }
 
 func (al *AgentLoop) drainQueuedSteeringContinuations(

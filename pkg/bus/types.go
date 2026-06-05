@@ -42,6 +42,7 @@ type InboundMessage struct {
 	Media      []string       `json:"media,omitempty"`
 	MediaScope string         `json:"media_scope,omitempty"` // media lifecycle scope
 	SessionKey string         `json:"session_key"`
+	SpoolID    string         `json:"spool_id,omitempty"` // durable ingress spool entry ID, when enabled
 
 	// Convenience mirrors derived from Context for runtime consumers.
 	Channel   string `json:"channel"`
