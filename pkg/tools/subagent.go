@@ -526,6 +526,7 @@ func deliverablePayloadForTaskRegistry(result *ToolResult) *taskregistry.Deliver
 	payload := &taskregistry.DeliverablePayload{
 		Text:     deliverable.Text,
 		Metadata: copyDeliverableMetadata(deliverable.Metadata),
+		Report:   deliverableReportPayloadForTaskRegistry(deliverable.Report),
 	}
 	for _, item := range deliverable.Artifacts {
 		payload.Artifacts = append(payload.Artifacts, taskregistry.DeliverableItem{
@@ -536,10 +537,65 @@ func deliverablePayloadForTaskRegistry(result *ToolResult) *taskregistry.Deliver
 			Delivered:   item.Delivered,
 		})
 	}
-	if payload.Text == "" && len(payload.Artifacts) == 0 && len(payload.Metadata) == 0 {
+	if payload.Text == "" && len(payload.Artifacts) == 0 && len(payload.Metadata) == 0 && payload.Report == nil {
 		return nil
 	}
 	return payload
+}
+
+func deliverableReportPayloadForTaskRegistry(report *DeliverableReport) *taskregistry.DeliverableReport {
+	if report == nil {
+		return nil
+	}
+	payload := &taskregistry.DeliverableReport{
+		SchemaVersion: report.SchemaVersion,
+		ReportID:      report.ReportID,
+		ContentHash:   report.ContentHash,
+		GeneratedAt:   report.GeneratedAt,
+		Summary:       report.Summary,
+		Provenance:    copyDeliverableMetadata(report.Provenance),
+		Metadata:      copyDeliverableMetadata(report.Metadata),
+		Extra:         copyReportExtra(report.Extra),
+	}
+	for _, claim := range report.Claims {
+		payload.Claims = append(payload.Claims, taskregistry.ReportClaim{
+			Kind:       claim.Kind,
+			Text:       claim.Text,
+			Confidence: claim.Confidence,
+			SourceRefs: append([]string(nil), claim.SourceRefs...),
+			Metadata:   copyDeliverableMetadata(claim.Metadata),
+		})
+	}
+	for _, delta := range report.FieldDeltas {
+		payload.FieldDeltas = append(payload.FieldDeltas, taskregistry.ReportFieldDelta{
+			Field: delta.Field,
+			From:  delta.From,
+			To:    delta.To,
+		})
+	}
+	if payload.SchemaVersion == "" &&
+		payload.ReportID == "" &&
+		payload.ContentHash == "" &&
+		payload.Summary == "" &&
+		len(payload.Claims) == 0 &&
+		len(payload.FieldDeltas) == 0 &&
+		len(payload.Provenance) == 0 &&
+		len(payload.Metadata) == 0 &&
+		len(payload.Extra) == 0 {
+		return nil
+	}
+	return payload
+}
+
+func copyReportExtra(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func appendMissingDeliverableArtifacts(existing, extra []DeliverableItem) []DeliverableItem {

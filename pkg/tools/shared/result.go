@@ -153,9 +153,10 @@ type CompletionMedia struct {
 // child runs. It represents what was produced, not how it should be worded to
 // the LLM or user.
 type DeliverableResult struct {
-	Text      string            `json:"text,omitempty"`
-	Artifacts []DeliverableItem `json:"artifacts,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Text      string             `json:"text,omitempty"`
+	Artifacts []DeliverableItem  `json:"artifacts,omitempty"`
+	Metadata  map[string]string  `json:"metadata,omitempty"`
+	Report    *DeliverableReport `json:"report,omitempty"`
 }
 
 // DeliverableItem describes a concrete produced artifact. Ref may be a
@@ -166,6 +167,36 @@ type DeliverableItem struct {
 	Filename    string `json:"filename,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
 	Delivered   bool   `json:"delivered,omitempty"`
+}
+
+// DeliverableReport is the tool-level versioned report contract for durable
+// outputs. Task registries may store it directly; chat/terminal text should be
+// rendered from this structured report rather than parsed back into state.
+type DeliverableReport struct {
+	SchemaVersion string             `json:"schema_version,omitempty"`
+	ReportID      string             `json:"report_id,omitempty"`
+	ContentHash   string             `json:"content_hash,omitempty"`
+	GeneratedAt   int64              `json:"generated_at,omitempty"`
+	Summary       string             `json:"summary,omitempty"`
+	Claims        []ReportClaim      `json:"claims,omitempty"`
+	FieldDeltas   []ReportFieldDelta `json:"field_deltas,omitempty"`
+	Provenance    map[string]string  `json:"provenance,omitempty"`
+	Metadata      map[string]string  `json:"metadata,omitempty"`
+	Extra         map[string]any     `json:"extra,omitempty"`
+}
+
+type ReportClaim struct {
+	Kind       string            `json:"kind"`
+	Text       string            `json:"text"`
+	Confidence string            `json:"confidence,omitempty"`
+	SourceRefs []string          `json:"source_refs,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+type ReportFieldDelta struct {
+	Field string `json:"field"`
+	From  string `json:"from,omitempty"`
+	To    string `json:"to,omitempty"`
 }
 
 // ContentForLLM returns the normalized textual content to append to the
@@ -251,7 +282,10 @@ func (tr *ToolResult) deliverableNoteForLLM() string {
 	if payload == nil {
 		return ""
 	}
-	if strings.TrimSpace(payload.Text) == "" && len(payload.Artifacts) == 0 && len(payload.Metadata) == 0 {
+	if strings.TrimSpace(payload.Text) == "" &&
+		len(payload.Artifacts) == 0 &&
+		len(payload.Metadata) == 0 &&
+		payload.Report == nil {
 		return ""
 	}
 	data, err := json.Marshal(payload)

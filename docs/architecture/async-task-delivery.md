@@ -29,6 +29,10 @@ New producers may provide a richer report directly. New consumers that need a
 machine contract should prefer `deliverable.report`; `text`, `artifacts`, and
 `metadata` remain the compatibility projection.
 
+Tool results can now carry the same report shape on `DeliverableResult`.
+Delegate and spawn persist explicit tool reports into task registry records.
+When no report is supplied, the registry still derives the minimal projection.
+
 Legacy child-run `Completion` remains supported and is mirrored into
 `Deliverable` when possible.
 
@@ -42,6 +46,8 @@ Migration status:
 - Done: new delegate/spawn registry writes store `Deliverable` as the durable payload and keep `Completion` only when no deliverable is available.
 - Done: task registry projects legacy deliverables into `DeliverableReport`
   automatically when producers do not supply one.
+- Done: delegate/spawn task registry mapping preserves explicit
+  `DeliverableResult.Report` payloads from tool producers.
 
 Migration TODO:
 

@@ -190,6 +190,34 @@ func TestToolResultContentForLLMIncludesDeliverable(t *testing.T) {
 	}
 }
 
+func TestToolResultContentForLLMIncludesDeliverableReport(t *testing.T) {
+	result := NewToolResult("tool finished").WithDeliverable(&DeliverableResult{
+		Report: &DeliverableReport{
+			SchemaVersion: "deliverable_report.v1",
+			ReportID:      "review-1",
+			Summary:       "No high-confidence issues found",
+			Claims: []ReportClaim{{
+				Kind:       "negative_evidence",
+				Text:       "No correctness issues found",
+				Confidence: "high",
+			}},
+		},
+	})
+
+	content := result.ContentForLLM()
+	for _, want := range []string{
+		"tool finished",
+		"Structured deliverable:",
+		`"report_id":"review-1"`,
+		`"summary":"No high-confidence issues found"`,
+		`"kind":"negative_evidence"`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected %q in content:\n%s", want, content)
+		}
+	}
+}
+
 func TestMediaResultCreatesDeliverable(t *testing.T) {
 	result := MediaResult("media ready", []string{"media://one", "media://two"})
 
