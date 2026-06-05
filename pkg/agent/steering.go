@@ -295,6 +295,24 @@ func (al *AgentLoop) dequeueSteeringMessagesForScopeWithFallback(scope string) [
 	return al.steering.dequeueScopeWithFallback(scope)
 }
 
+func (al *AgentLoop) ackAcceptedSteeringMessages(ctx context.Context, msgs []providers.Message) {
+	for _, msg := range msgs {
+		if msg.InboundSpoolID == "" {
+			continue
+		}
+		al.ackInboundMessage(ctx, bus.InboundMessage{SpoolID: msg.InboundSpoolID})
+	}
+}
+
+func (al *AgentLoop) releaseSteeringMessages(ctx context.Context, msgs []providers.Message, cause error) {
+	for _, msg := range msgs {
+		if msg.InboundSpoolID == "" {
+			continue
+		}
+		al.releaseInboundMessage(ctx, bus.InboundMessage{SpoolID: msg.InboundSpoolID}, cause)
+	}
+}
+
 func (al *AgentLoop) pendingSteeringCountForScope(scope string) int {
 	if al.steering == nil {
 		return 0
@@ -403,7 +421,9 @@ func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID s
 	agent := al.agentForSession(sessionKey)
 	if agent == nil {
 		al.activeTurnStates.Delete(sessionKey)
-		return "", fmt.Errorf("no agent available for session %q", sessionKey)
+		err := fmt.Errorf("no agent available for session %q", sessionKey)
+		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)
+		return "", err
 	}
 
 	if tool, ok := agent.Tools.Get("message"); ok {
@@ -417,7 +437,11 @@ func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID s
 		scope = metaStore.GetSessionScope(sessionKey)
 	}
 
-	return al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, scope, steeringMsgs)
+	response, err := al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, scope, steeringMsgs)
+	if err != nil {
+		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)
+	}
+	return response, err
 }
 
 func (al *AgentLoop) InterruptGraceful(hint string) error {

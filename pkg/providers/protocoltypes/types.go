@@ -118,9 +118,10 @@ type Message struct {
 
 	// Prompt metadata is internal to the agent runtime. It records where a
 	// message or system part came from without changing provider/session JSON.
-	PromptLayer  string `json:"-"`
-	PromptSlot   string `json:"-"`
-	PromptSource string `json:"-"`
+	PromptLayer    string `json:"-"`
+	PromptSlot     string `json:"-"`
+	PromptSource   string `json:"-"`
+	InboundSpoolID string `json:"-"`
 }
 
 type ToolDefinition struct {

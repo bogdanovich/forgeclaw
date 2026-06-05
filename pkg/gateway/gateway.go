@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -200,6 +201,9 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	}
 
 	msgBus := bus.NewMessageBus()
+	if spoolErr := configureGatewayInboundSpool(cfg, msgBus); spoolErr != nil {
+		return fmt.Errorf("configure inbound spool: %w", spoolErr)
+	}
 	agentLoop := agent.NewAgentLoop(cfg, msgBus, provider)
 	msgBus.SetEventPublisher(agentLoop.RuntimeEventBus())
 	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayStart, startedAt, nil)
@@ -253,6 +257,13 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	defer cancel()
 
 	go agentLoop.Run(ctx)
+	if replayed, err := msgBus.ReplayInboundSpool(ctx); err != nil {
+		logger.WarnCF("gateway", "Failed to replay inbound spool",
+			map[string]any{"error": err.Error()})
+	} else if replayed > 0 {
+		logger.InfoCF("gateway", "Replayed durable inbound messages",
+			map[string]any{"count": replayed})
+	}
 
 	var configReloadChan <-chan *config.Config
 	stopWatch := func() {}
@@ -354,6 +365,24 @@ func createStartupProvider(
 		return nil, "", err
 	}
 	return provider, modelID, nil
+}
+
+func configureGatewayInboundSpool(cfg *config.Config, msgBus *bus.MessageBus) error {
+	if cfg == nil || msgBus == nil {
+		return nil
+	}
+	workspace := strings.TrimSpace(cfg.WorkspacePath())
+	if workspace == "" {
+		return nil
+	}
+	spool, err := bus.NewInboundSpool(filepath.Join(workspace, "state", "ingress-spool", "inbound"))
+	if err != nil {
+		return err
+	}
+	msgBus.SetInboundSpool(spool)
+	logger.InfoCF("gateway", "Durable inbound spool enabled",
+		map[string]any{"dir": spool.Dir()})
+	return nil
 }
 
 func setupAndStartServices(
