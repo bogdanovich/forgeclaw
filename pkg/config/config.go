@@ -1488,6 +1488,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateTurnProfile(); err != nil {
 		return nil, err
 	}
+	if err = cfg.ValidateExecConfig(); err != nil {
+		return nil, err
+	}
 	cfg.Gateway.Host, err = resolveGatewayHostFromEnv(gatewayHostBeforeEnv)
 	if err != nil {
 		return nil, fmt.Errorf("invalid gateway host: %w", err)
@@ -1715,6 +1718,18 @@ func (c *Config) ValidateModelList() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) ValidateExecConfig() error {
+	mode := strings.TrimSpace(strings.ToLower(c.Tools.Exec.PermissionMode))
+	switch mode {
+	case "", "read_only":
+		c.Tools.Exec.PermissionMode = mode
+		return nil
+	default:
+		return fmt.Errorf("tools.exec.permission_mode: unsupported value %q (allowed: \"\", \"read_only\")",
+			c.Tools.Exec.PermissionMode)
+	}
 }
 
 func (c *Config) SecurityCopyFrom(path string) error {
