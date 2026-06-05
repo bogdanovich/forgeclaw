@@ -1788,7 +1788,7 @@ func TestLoadConfig_ExecAllowRemoteDefaultsTrueWhenUnset(t *testing.T) {
 func TestLoadConfig_ExecPermissionMode(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(configPath, []byte(`{"version":1,"tools":{"exec":{"permission_mode":"read_only"}}}`),
+	if err := os.WriteFile(configPath, []byte(`{"version":1,"tools":{"exec":{"permission_mode":" READ_ONLY "}}}`),
 		0o600); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
@@ -1799,6 +1799,40 @@ func TestLoadConfig_ExecPermissionMode(t *testing.T) {
 	}
 	if cfg.Tools.Exec.PermissionMode != "read_only" {
 		t.Fatalf("tools.exec.permission_mode = %q, want read_only", cfg.Tools.Exec.PermissionMode)
+	}
+}
+
+func TestLoadConfig_InvalidExecPermissionMode(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"version":1,"tools":{"exec":{"permission_mode":"readonly"}}}`),
+		0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	_, err := LoadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected invalid exec permission mode error")
+	}
+	if !strings.Contains(err.Error(), "tools.exec.permission_mode") {
+		t.Fatalf("expected tools.exec.permission_mode error, got %q", err.Error())
+	}
+}
+
+func TestLoadConfig_InvalidExecPermissionModeFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	t.Setenv("PICOCLAW_TOOLS_EXEC_PERMISSION_MODE", "readonly")
+
+	_, err := LoadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected invalid exec permission mode error")
+	}
+	if !strings.Contains(err.Error(), "tools.exec.permission_mode") {
+		t.Fatalf("expected tools.exec.permission_mode error, got %q", err.Error())
 	}
 }
 
