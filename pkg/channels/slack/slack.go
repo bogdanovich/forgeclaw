@@ -557,6 +557,13 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 	senderID := ev.User
 	channelID := ev.Channel
+	if !c.shouldProcessChannel(channelID) {
+		logger.DebugCF("slack", "Message ignored by channel filter", map[string]any{
+			"channel_id": channelID,
+			"user_id":    ev.User,
+		})
+		return
+	}
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
 	if c.markInboundEventHandled(channelID, messageTS) {
@@ -680,6 +687,13 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 		CanonicalID: identity.BuildCanonicalID("slack", senderID),
 	}
 	channelID := ev.Channel
+	if !c.shouldProcessChannel(channelID) {
+		logger.DebugCF("slack", "Mention ignored by channel filter", map[string]any{
+			"channel_id": channelID,
+			"user_id":    ev.User,
+		})
+		return
+	}
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
 	if c.markInboundEventHandled(channelID, messageTS) {
@@ -752,6 +766,28 @@ func (c *SlackChannel) markInboundEventHandled(channelID, messageTS string) bool
 	return false
 }
 
+func (c *SlackChannel) shouldProcessChannel(channelID string) bool {
+	if channelID == "" || c == nil || c.config == nil {
+		return true
+	}
+	if len(c.config.AllowedChannelIDs) > 0 && !containsSlackChannelID(c.config.AllowedChannelIDs, channelID) {
+		return false
+	}
+	if containsSlackChannelID(c.config.IgnoredChannelIDs, channelID) {
+		return false
+	}
+	return true
+}
+
+func containsSlackChannelID(ids []string, channelID string) bool {
+	for _, id := range ids {
+		if strings.TrimSpace(id) == channelID {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
 	cmd, ok := event.Data.(slack.SlashCommand)
 	if !ok {
@@ -776,6 +812,13 @@ func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
 
 	senderID := cmd.UserID
 	channelID := cmd.ChannelID
+	if !c.shouldProcessChannel(channelID) {
+		logger.DebugCF("slack", "Slash command ignored by channel filter", map[string]any{
+			"channel_id": channelID,
+			"user_id":    cmd.UserID,
+		})
+		return
+	}
 	chatID := channelID
 	content := cmd.Text
 

@@ -577,8 +577,10 @@ type DingTalkSettings struct {
 }
 
 type SlackSettings struct {
-	BotToken SecureString `json:"bot_token,omitzero" yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_BOT_TOKEN"`
-	AppToken SecureString `json:"app_token,omitzero" yaml:"app_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_APP_TOKEN"`
+	BotToken          SecureString        `json:"bot_token,omitzero"          yaml:"bot_token,omitempty"          env:"PICOCLAW_CHANNELS_SLACK_BOT_TOKEN"`
+	AppToken          SecureString        `json:"app_token,omitzero"          yaml:"app_token,omitempty"          env:"PICOCLAW_CHANNELS_SLACK_APP_TOKEN"`
+	AllowedChannelIDs FlexibleStringSlice `json:"allowed_channel_ids,omitempty" yaml:"-"                             env:"PICOCLAW_CHANNELS_SLACK_ALLOWED_CHANNEL_IDS"`
+	IgnoredChannelIDs FlexibleStringSlice `json:"ignored_channel_ids,omitempty" yaml:"-"                             env:"PICOCLAW_CHANNELS_SLACK_IGNORED_CHANNEL_IDS"`
 }
 
 type MatrixSettings struct {

@@ -209,6 +209,25 @@ func TestSlackChannelIsAllowed(t *testing.T) {
 	})
 }
 
+func TestSlackChannelShouldProcessChannel(t *testing.T) {
+	ch := &SlackChannel{
+		config: &config.SlackSettings{
+			AllowedChannelIDs: []string{"C_REVIEW"},
+			IgnoredChannelIDs: []string{"C_IGNORE"},
+		},
+	}
+
+	if !ch.shouldProcessChannel("C_REVIEW") {
+		t.Fatal("allowed channel should be processed")
+	}
+	if ch.shouldProcessChannel("C_OTHER") {
+		t.Fatal("channel outside allowed_channel_ids should be ignored")
+	}
+	if ch.shouldProcessChannel("C_IGNORE") {
+		t.Fatal("ignored_channel_ids should override processing")
+	}
+}
+
 func TestSendMedia_SendsCaptionFallbackAfterUploads(t *testing.T) {
 	ch := &SlackChannel{
 		BaseChannel: channels.NewBaseChannel("slack", nil, nil, nil),
