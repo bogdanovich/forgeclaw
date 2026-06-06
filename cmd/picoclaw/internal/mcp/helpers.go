@@ -54,6 +54,10 @@ const mcpConfigSchemaJSON = `{
                 "properties": {
                   "enabled": { "type": "boolean" },
                   "deferred": { "type": "boolean" },
+                  "visible_tools": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
                   "command": { "type": "string" },
                   "args": {
                     "type": "array",

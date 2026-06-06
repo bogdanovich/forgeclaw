@@ -172,6 +172,30 @@ func TestToolRegistryIncludesReportsOnlyRegisteredTools(t *testing.T) {
 	}
 }
 
+func TestConfiguredVisibleMCPTools(t *testing.T) {
+	serverCfg := config.MCPServerConfig{
+		VisibleTools: []string{
+			"mcp_inventorydb_shopping_add_item",
+			"  ",
+			"mcp_inventorydb_shopping_list_items",
+		},
+	}
+
+	got := configuredVisibleMCPTools(serverCfg)
+	if len(got) != 2 {
+		t.Fatalf("configuredVisibleMCPTools() len = %d, want 2", len(got))
+	}
+	if _, ok := got["mcp_inventorydb_shopping_add_item"]; !ok {
+		t.Fatal("expected shopping_add_item to be visible")
+	}
+	if _, ok := got["mcp_inventorydb_shopping_list_items"]; !ok {
+		t.Fatal("expected shopping_list_items to be visible")
+	}
+	if toolVisibleFromDeferredSet("mcp_inventorydb_shopping_update_items", got) {
+		t.Fatal("did not expect unlisted tool to be visible")
+	}
+}
+
 func TestFilterMCPConfigServersCaseInsensitivePreservesOriginalKeys(t *testing.T) {
 	mcpCfg := config.MCPConfig{
 		Servers: map[string]config.MCPServerConfig{
