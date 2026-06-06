@@ -318,8 +318,10 @@ func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int6
 			return nil
 		}
 
-		// Use gronx to calculate next run time
-		now := time.UnixMilli(nowMS)
+		// Use the schedule timezone when provided so cron expressions are
+		// interpreted in the intended wall-clock timezone instead of the host's
+		// local timezone.
+		now := time.UnixMilli(nowMS).In(scheduleLocation(schedule))
 		nextTime, err := gronx.NextTickAfter(schedule.Expr, now, false)
 		if err != nil {
 			log.Printf("[cron] failed to compute next run for expr '%s': %v", schedule.Expr, err)
@@ -332,6 +334,18 @@ func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int6
 		log.Printf("[cron] unknown schedule kind '%s'", schedule.Kind)
 		return nil
 	}
+}
+
+func scheduleLocation(schedule *CronSchedule) *time.Location {
+	if schedule == nil || schedule.TZ == "" {
+		return time.Local
+	}
+	loc, err := time.LoadLocation(schedule.TZ)
+	if err != nil {
+		log.Printf("[cron] failed to load timezone '%s', falling back to local timezone: %v", schedule.TZ, err)
+		return time.Local
+	}
+	return loc
 }
 
 // wake up the loop to re-evaluate next wake time immediately (e.g. after add/update/remove jobs)
