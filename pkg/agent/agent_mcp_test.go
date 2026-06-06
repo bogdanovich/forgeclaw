@@ -140,13 +140,13 @@ func TestRegisterMCPServerPromptContributorUsesActualRegisteredToolCount(t *test
 	cb := NewContextBuilder(t.TempDir())
 	agent := &AgentInstance{ContextBuilder: cb}
 
-	registerMCPServerPromptContributor("research", agent, "github", 0, false)
+	registerMCPServerPromptContributor("research", agent, "github", mcpToolVisibilityCounts{})
 	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{CurrentMessage: "hello"})
 	if prompt := messages[0].Content; strings.Contains(prompt, "MCP server `github`") {
 		t.Fatalf("expected no MCP prompt when no tools were registered, got %q", prompt)
 	}
 
-	registerMCPServerPromptContributor("research", agent, "github", 2, false)
+	registerMCPServerPromptContributor("research", agent, "github", mcpToolVisibilityCounts{visible: 2})
 	messages = cb.BuildMessagesFromPrompt(PromptBuildRequest{CurrentMessage: "hello"})
 	prompt := messages[0].Content
 	if !strings.Contains(prompt, "MCP server `github` is connected") {
@@ -154,6 +154,27 @@ func TestRegisterMCPServerPromptContributorUsesActualRegisteredToolCount(t *test
 	}
 	if !strings.Contains(prompt, "It contributes 2 tool(s)") {
 		t.Fatalf("expected actual registered tool count in prompt, got %q", prompt)
+	}
+}
+
+func TestRegisterMCPServerPromptContributorMixedVisibility(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	agent := &AgentInstance{ContextBuilder: cb}
+
+	registerMCPServerPromptContributor(
+		"research",
+		agent,
+		"github",
+		mcpToolVisibilityCounts{visible: 1, hidden: 2},
+	)
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{CurrentMessage: "hello"})
+	prompt := messages[0].Content
+	if !strings.Contains(prompt, "It contributes 3 tool(s)") {
+		t.Fatalf("expected total tool count in prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "1 available as native tools and 2 hidden behind tool discovery until unlocked") {
+		t.Fatalf("expected mixed visibility prompt, got %q", prompt)
 	}
 }
 
@@ -169,6 +190,30 @@ func TestToolRegistryIncludesReportsOnlyRegisteredTools(t *testing.T) {
 	}
 	if toolRegistryIncludes(registry, "mcp_github_create_issue") {
 		t.Fatal("blocked MCP tool should not be included")
+	}
+}
+
+func TestConfiguredVisibleMCPTools(t *testing.T) {
+	serverCfg := config.MCPServerConfig{
+		VisibleTools: []string{
+			"mcp_inventorydb_shopping_add_item",
+			"  ",
+			"mcp_inventorydb_shopping_list_items",
+		},
+	}
+
+	got := configuredVisibleMCPTools(serverCfg)
+	if len(got) != 2 {
+		t.Fatalf("configuredVisibleMCPTools() len = %d, want 2", len(got))
+	}
+	if _, ok := got["mcp_inventorydb_shopping_add_item"]; !ok {
+		t.Fatal("expected shopping_add_item to be visible")
+	}
+	if _, ok := got["mcp_inventorydb_shopping_list_items"]; !ok {
+		t.Fatal("expected shopping_list_items to be visible")
+	}
+	if toolVisibleFromDeferredSet("mcp_inventorydb_shopping_update_items", got) {
+		t.Fatal("did not expect unlisted tool to be visible")
 	}
 }
 
@@ -201,70 +246,6 @@ func TestFilterMCPConfigServersCaseInsensitivePreservesOriginalKeys(t *testing.T
 	}
 	if _, ok := filtered.Servers["Slack"]; ok {
 		t.Fatal("did not expect unallowed Slack server")
-	}
-}
-
-func TestAgentHasDiscoverableMCPServers(t *testing.T) {
-	deferredFalse := false
-	cfg := &config.Config{
-		Tools: config.ToolsConfig{
-			MCP: config.MCPConfig{
-				ToolConfig: config.ToolConfig{Enabled: true},
-				Discovery: config.ToolDiscoveryConfig{
-					Enabled:  true,
-					UseBM25:  true,
-					UseRegex: false,
-				},
-				Servers: map[string]config.MCPServerConfig{
-					"github":     {Enabled: true},
-					"filesystem": {Enabled: true, Deferred: &deferredFalse},
-				},
-			},
-		},
-	}
-
-	tests := []struct {
-		name    string
-		allowed *PatternPolicy
-		want    bool
-	}{
-		{
-			name: "nil allowlist includes discoverable enabled server",
-			want: true,
-		},
-		{
-			name:    "empty allowlist denies all servers",
-			allowed: &PatternPolicy{Allow: []string{}, form: patternPolicyFormList},
-			want:    false,
-		},
-		{
-			name:    "selected server discoverable",
-			allowed: &PatternPolicy{Allow: []string{"github"}, form: patternPolicyFormList},
-			want:    true,
-		},
-		{
-			name:    "selected server opted out of discovery",
-			allowed: &PatternPolicy{Allow: []string{"filesystem"}, form: patternPolicyFormList},
-			want:    false,
-		},
-		{
-			name:    "unknown allowlist server matches nothing",
-			allowed: &PatternPolicy{Allow: []string{"slack"}, form: patternPolicyFormList},
-			want:    false,
-		},
-		{
-			name:    "deny-only policy can exclude discoverable server",
-			allowed: &PatternPolicy{Deny: []string{"github"}, form: patternPolicyFormObject},
-			want:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := agentHasDiscoverableMCPServers(cfg, tt.allowed); got != tt.want {
-				t.Fatalf("agentHasDiscoverableMCPServers() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 

@@ -55,9 +55,9 @@ func (c toolDiscoveryPromptContributor) ContributePrompt(
 }
 
 type mcpServerPromptContributor struct {
-	serverName string
-	toolCount  int
-	deferred   bool
+	serverName   string
+	visibleCount int
+	hiddenCount  int
 }
 
 func (c mcpServerPromptContributor) PromptSource() PromptSourceDescriptor {
@@ -78,7 +78,8 @@ func (c mcpServerPromptContributor) ContributePrompt(
 		return nil, nil
 	}
 	serverName := strings.TrimSpace(c.serverName)
-	if serverName == "" || c.toolCount <= 0 {
+	toolCount := c.visibleCount + c.hiddenCount
+	if serverName == "" || toolCount <= 0 {
 		return nil, nil
 	}
 	if len(req.AllowedTools) > 0 &&
@@ -87,7 +88,14 @@ func (c mcpServerPromptContributor) ContributePrompt(
 	}
 
 	availability := "available as native tools"
-	if c.deferred {
+	switch {
+	case c.hiddenCount > 0 && c.visibleCount > 0:
+		availability = fmt.Sprintf(
+			"%d available as native tools and %d hidden behind tool discovery until unlocked",
+			c.visibleCount,
+			c.hiddenCount,
+		)
+	case c.hiddenCount > 0:
 		availability = "hidden behind tool discovery until unlocked"
 	}
 
@@ -101,7 +109,7 @@ func (c mcpServerPromptContributor) ContributePrompt(
 			Content: fmt.Sprintf(
 				"MCP server `%s` is connected. It contributes %d tool(s), currently %s.",
 				serverName,
-				c.toolCount,
+				toolCount,
 				availability,
 			),
 			Stable: true,
