@@ -76,7 +76,8 @@ func TestSpawnTool_Execute_ValidTask(t *testing.T) {
 	spawner := &mockSpawner{done: make(chan struct{})}
 	tool.SetSpawner(spawner)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	args := map[string]any{
 		"task":     "Write a haiku about coding",
 		"label":    "haiku-task",
@@ -99,6 +100,25 @@ func TestSpawnTool_Execute_ValidTask(t *testing.T) {
 	}
 	if !spawner.lastConfig.Critical {
 		t.Error("SpawnTool should mark background subturns as critical")
+	}
+	tasks := manager.ListTaskCopies()
+	if len(tasks) != 1 {
+		t.Fatalf("ListTaskCopies count = %d, want 1", len(tasks))
+	}
+	taskID := tasks[0].ID
+	if !strings.HasPrefix(taskID, "subagent-") {
+		t.Fatalf("task ID = %q, want subagent-*", taskID)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rec, ok := manager.taskRegistry.Get(taskID)
+		if ok && rec.Status == taskregistry.StatusSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task registry never observed succeeded result for %q", taskID)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
