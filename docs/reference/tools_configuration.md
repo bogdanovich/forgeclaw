@@ -623,6 +623,16 @@ default (deferred). `aws` explicitly opts in to deferred mode even though it is 
           "command": "npx",
           "args": ["-y", "aws-mcp-server"],
           "deferred": true
+        },
+        "inventorydb": {
+          "enabled": true,
+          "command": "/path/to/inventorydb-mcp",
+          "deferred": true,
+          "visible_tools": [
+            "mcp_inventorydb_shopping_add_item",
+            "mcp_inventorydb_shopping_list_items",
+            "mcp_inventorydb_shopping_update_items"
+          ]
         }
       }
     }
@@ -633,6 +643,9 @@ default (deferred). `aws` explicitly opts in to deferred mode even though it is 
 > **Tip:** `deferred` on a per-server basis is independent of `discovery.enabled`. You can keep
 > `discovery.enabled: false` globally (all tools visible by default) and still mark individual
 > high-volume servers as `"deferred": true` to avoid polluting the context with their tools.
+>
+> When a server stays deferred, `visible_tools` can keep a small allowlist of directly visible
+> MCP tools while all other tools from that server remain hidden behind discovery.
 
 ## Skills Tool
 

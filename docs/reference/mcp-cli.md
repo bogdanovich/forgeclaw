@@ -187,6 +187,25 @@ picoclaw mcp add --deferred sqlite npx -y @modelcontextprotocol/server-sqlite --
 }
 ```
 
+If you want to keep a server deferred but expose a small stable subset of tools directly, edit the
+config manually and add `visible_tools`:
+
+```json
+{
+  "inventorydb": {
+    "enabled": true,
+    "type": "stdio",
+    "command": "/path/to/inventorydb-mcp",
+    "deferred": true,
+    "visible_tools": [
+      "mcp_inventorydb_shopping_add_item",
+      "mcp_inventorydb_shopping_list_items",
+      "mcp_inventorydb_shopping_update_items"
+    ]
+  }
+}
+```
+
 ### Add Command Rules
 
 For `stdio`:

@@ -9,6 +9,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -144,6 +145,7 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 			// Per-server "deferred" field takes precedence over the global Discovery.Enabled.
 			serverCfg := mcpCfg.Servers[serverName]
 			registerAsHidden := serverIsDeferred(al.cfg.Tools.MCP.Discovery.Enabled, serverCfg)
+			visibleTools := configuredVisibleMCPTools(serverCfg)
 			registeredToolsByAgent := make(map[string]map[string]struct{}, len(agentIDs))
 
 			for _, tool := range conn.Tools {
@@ -169,10 +171,11 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 					mcpTool.SetEventPublisher(al.runtimeEvents)
 
 					var registered bool
-					if registerAsHidden {
-						registered = registerHiddenToolIfAllowed(agent, mcpTool)
-					} else {
+					registerVisible := !registerAsHidden || toolVisibleFromDeferredSet(toolName, visibleTools)
+					if registerVisible {
 						registered = registerToolIfAllowed(agent, mcpTool)
+					} else {
+						registered = registerHiddenToolIfAllowed(agent, mcpTool)
 					}
 					if !registered {
 						continue
@@ -190,6 +193,7 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 							"tool":     tool.Name,
 							"name":     toolName,
 							"deferred": registerAsHidden,
+							"visible":  registerVisible,
 						})
 				}
 			}
@@ -312,6 +316,29 @@ func toolRegistryIncludes(registry *tools.ToolRegistry, name string) bool {
 		return false
 	}
 	return registry.HasRegistered(name)
+}
+
+func configuredVisibleMCPTools(serverCfg config.MCPServerConfig) map[string]struct{} {
+	if len(serverCfg.VisibleTools) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(serverCfg.VisibleTools))
+	for _, toolName := range serverCfg.VisibleTools {
+		toolName = strings.TrimSpace(toolName)
+		if toolName == "" {
+			continue
+		}
+		out[toolName] = struct{}{}
+	}
+	return out
+}
+
+func toolVisibleFromDeferredSet(toolName string, visible map[string]struct{}) bool {
+	if len(visible) == 0 {
+		return false
+	}
+	_, ok := visible[toolName]
+	return ok
 }
 
 func filterMCPConfigServers(
