@@ -269,6 +269,24 @@ func TestContextBuilder_SuppressesToolDiscoveryContributorWhenToolsUnavailable(t
 	}
 }
 
+func TestContextBuilder_OmitsToolDiscoveryContributorWhenDisabled(t *testing.T) {
+	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	cb := NewContextBuilder(t.TempDir())
+	if err := cb.RegisterPromptContributor(toolDiscoveryPromptContributor{
+		useBM25:  false,
+		useRegex: false,
+	}); err != nil {
+		t.Fatalf("RegisterPromptContributor() error = %v", err)
+	}
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{CurrentMessage: "hello"})
+	system := messages[0]
+	if strings.Contains(system.Content, "tool_search_tool_bm25") ||
+		strings.Contains(system.Content, "tool_search_tool_regex") {
+		t.Fatalf("system prompt includes tool discovery despite contributor being disabled: %q", system.Content)
+	}
+}
+
 func TestContextBuilder_SuppressesToolReferencesWhenToolsUnavailable(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
@@ -323,9 +341,9 @@ func TestContextBuilder_CollectsMCPServerContributor(t *testing.T) {
 	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
 	cb := NewContextBuilder(t.TempDir())
 	err := cb.RegisterPromptContributor(mcpServerPromptContributor{
-		serverName: "GitHub Server",
-		toolCount:  3,
-		deferred:   true,
+		serverName:   "GitHub Server",
+		visibleCount: 0,
+		hiddenCount:  3,
 	})
 	if err != nil {
 		t.Fatalf("RegisterPromptContributor() error = %v", err)
@@ -358,9 +376,9 @@ func TestContextBuilder_SuppressesMCPServerContributorWhenToolsUnavailable(t *te
 	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
 	cb := NewContextBuilder(t.TempDir())
 	err := cb.RegisterPromptContributor(mcpServerPromptContributor{
-		serverName: "GitHub Server",
-		toolCount:  3,
-		deferred:   false,
+		serverName:   "GitHub Server",
+		visibleCount: 3,
+		hiddenCount:  0,
 	})
 	if err != nil {
 		t.Fatalf("RegisterPromptContributor() error = %v", err)
@@ -426,9 +444,9 @@ func TestContextBuilder_CustomToolAllowListSuppressesUnallowedToolContributors(t
 			},
 		)
 	err := cb.RegisterPromptContributor(mcpServerPromptContributor{
-		serverName: "GitHub Server",
-		toolCount:  3,
-		deferred:   false,
+		serverName:   "GitHub Server",
+		visibleCount: 3,
+		hiddenCount:  0,
 	})
 	if err != nil {
 		t.Fatalf("RegisterPromptContributor() error = %v", err)
