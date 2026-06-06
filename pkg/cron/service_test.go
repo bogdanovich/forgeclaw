@@ -20,7 +20,13 @@ func TestSaveStore_FilePermissions(t *testing.T) {
 
 	cs := NewCronService(storePath, nil)
 
-	_, err := cs.AddJob("test", CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)}, "hello", "cli", "direct")
+	_, err := cs.AddJob(
+		"test",
+		CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)},
+		"hello",
+		"cli",
+		"direct",
+	)
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -87,7 +93,13 @@ func TestCronService_GetJobReturnsCopy(t *testing.T) {
 	defer os.Remove(path)
 
 	everyMS := int64(60_000)
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "every", EveryMS: &everyMS}, "msg", "ch", "to")
+	job, err := cs.AddJob(
+		"Task1",
+		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"msg",
+		"ch",
+		"to",
+	)
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -179,7 +191,13 @@ func TestCronService_UpdateJobPreservesRunStateOnPayloadOnlyChange(t *testing.T)
 	defer os.Remove(path)
 
 	everyMS := int64(60_000)
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "every", EveryMS: &everyMS}, "msg", "ch", "to")
+	job, err := cs.AddJob(
+		"Task1",
+		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"msg",
+		"ch",
+		"to",
+	)
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -208,7 +226,11 @@ func TestCronService_UpdateJobPreservesRunStateOnPayloadOnlyChange(t *testing.T)
 		t.Fatalf("last status changed: %+v", updated.State)
 	}
 	if updated.State.NextRunAtMS == nil || *updated.State.NextRunAtMS != nextRun {
-		t.Fatalf("next run should be preserved: before=%d after=%+v", nextRun, updated.State.NextRunAtMS)
+		t.Fatalf(
+			"next run should be preserved: before=%d after=%+v",
+			nextRun,
+			updated.State.NextRunAtMS,
+		)
 	}
 }
 
@@ -259,7 +281,11 @@ func TestCronService_ComputeNextRun_UsesScheduleTimezone(t *testing.T) {
 
 	want := time.Date(2024, 1, 1, 16, 30, 0, 0, time.UTC).UnixMilli()
 	if *got != want {
-		t.Fatalf("next run = %s, want %s", time.UnixMilli(*got).UTC().Format(time.RFC3339), time.UnixMilli(want).UTC().Format(time.RFC3339))
+		t.Fatalf(
+			"next run = %s, want %s",
+			time.UnixMilli(*got).UTC().Format(time.RFC3339),
+			time.UnixMilli(want).UTC().Format(time.RFC3339),
+		)
 	}
 }
 
@@ -365,7 +391,13 @@ func TestCronService_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := range iterations {
 				at := time.Now().Add(time.Hour).UnixMilli()
-				cs.AddJob(fmt.Sprintf("Job-%d-%d", id, j), CronSchedule{Kind: "at", AtMS: &at}, "", "", "")
+				cs.AddJob(
+					fmt.Sprintf("Job-%d-%d", id, j),
+					CronSchedule{Kind: "at", AtMS: &at},
+					"",
+					"",
+					"",
+				)
 				time.Sleep(100 * time.Microsecond)
 			}
 		}(i)

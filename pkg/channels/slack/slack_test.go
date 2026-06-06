@@ -52,21 +52,34 @@ func TestParseSlackChatID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			chanID, threadTS := parseSlackChatID(tt.chatID)
 			if chanID != tt.wantChanID {
-				t.Errorf("parseSlackChatID(%q) channelID = %q, want %q", tt.chatID, chanID, tt.wantChanID)
+				t.Errorf(
+					"parseSlackChatID(%q) channelID = %q, want %q",
+					tt.chatID,
+					chanID,
+					tt.wantChanID,
+				)
 			}
 			if threadTS != tt.wantThread {
-				t.Errorf("parseSlackChatID(%q) threadTS = %q, want %q", tt.chatID, threadTS, tt.wantThread)
+				t.Errorf(
+					"parseSlackChatID(%q) threadTS = %q, want %q",
+					tt.chatID,
+					threadTS,
+					tt.wantThread,
+				)
 			}
 		})
 	}
 }
 
 func TestResolveSlackOutboundTarget_PrefersContextTopicID(t *testing.T) {
-	deliveryChatID, channelID, threadTS := resolveSlackOutboundTarget("C123456", &bus.InboundContext{
-		Channel: "slack",
-		ChatID:  "C123456",
-		TopicID: "1234567890.123456",
-	})
+	deliveryChatID, channelID, threadTS := resolveSlackOutboundTarget(
+		"C123456",
+		&bus.InboundContext{
+			Channel: "slack",
+			ChatID:  "C123456",
+			TopicID: "1234567890.123456",
+		},
+	)
 
 	if deliveryChatID != "C123456/1234567890.123456" {
 		t.Fatalf("deliveryChatID = %q, want %q", deliveryChatID, "C123456/1234567890.123456")
@@ -195,7 +208,11 @@ func TestSlackChannelIsAllowed(t *testing.T) {
 	})
 
 	t.Run("allowlist restricts users", func(t *testing.T) {
-		bc := &config.Channel{Type: config.ChannelSlack, Enabled: true, AllowFrom: []string{"U_ALLOWED"}}
+		bc := &config.Channel{
+			Type:      config.ChannelSlack,
+			Enabled:   true,
+			AllowFrom: []string{"U_ALLOWED"},
+		}
 		cfg := &config.SlackSettings{}
 		cfg.BotToken = *config.NewSecureString("xoxb-test")
 		cfg.AppToken = *config.NewSecureString("xapp-test")
@@ -352,7 +369,12 @@ func TestSlackChannelSend_ToolFeedbackUpdatesTrackedMessage(t *testing.T) {
 	if len(posted) != 1 {
 		t.Fatalf("posted after update = %v, want still 1 message", posted)
 	}
-	if !reflect.DeepEqual(edited, []string{"C123456|msg-1|Media working...\n• tool: `read_file` — `README.md`\n• tool: `delegate`"}) {
+	if !reflect.DeepEqual(
+		edited,
+		[]string{
+			"C123456|msg-1|Media working...\n• tool: `read_file` — `README.md`\n• tool: `delegate`",
+		},
+	) {
 		t.Fatalf("edited = %v, want merged tracked message edit", edited)
 	}
 }
@@ -369,7 +391,11 @@ func TestSlackChannelFinalizeToolFeedbackMessage_EditsTrackedMessage(t *testing.
 		t.Fatalf("NewSlackChannel() error = %v", err)
 	}
 
-	ch.RecordToolFeedbackMessage("C123456/1234567890.123456#session:s1", "msg-progress", "Working...")
+	ch.RecordToolFeedbackMessage(
+		"C123456/1234567890.123456#session:s1",
+		"msg-progress",
+		"Working...",
+	)
 
 	var edited []string
 	ch.editMessageFn = func(_ context.Context, channelID, messageID, text string) error {
