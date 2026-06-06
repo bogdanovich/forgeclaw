@@ -241,6 +241,32 @@ func TestCronService_ComputeNextRun(t *testing.T) {
 	}
 }
 
+func TestCronService_ComputeNextRun_UsesScheduleTimezone(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	schedule := CronSchedule{
+		Kind: "cron",
+		Expr: "30 19 * * *",
+		TZ:   "Europe/Moscow",
+	}
+
+	got := cs.computeNextRun(&schedule, now)
+	if got == nil {
+		t.Fatal("expected next run")
+	}
+
+	want := time.Date(2024, 1, 1, 16, 30, 0, 0, time.UTC).UnixMilli()
+	if *got != want {
+		t.Fatalf(
+			"next run = %s, want %s",
+			time.UnixMilli(*got).UTC().Format(time.RFC3339),
+			time.UnixMilli(want).UTC().Format(time.RFC3339),
+		)
+	}
+}
+
 // 3. Test Execution Flow
 func TestCronService_ExecutionFlow(t *testing.T) {
 	var mu sync.Mutex
