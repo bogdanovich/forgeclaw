@@ -3,8 +3,10 @@ package slack
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -21,16 +23,22 @@ import (
 
 type SlackChannel struct {
 	*channels.BaseChannel
-	config       *config.SlackSettings
-	api          *slack.Client
-	socketClient *socketmode.Client
-	botUserID    string
-	teamID       string
-	ctx          context.Context
-	cancel       context.CancelFunc
-	pendingAcks  sync.Map
-	uploadFileFn func(context.Context, slack.UploadFileParameters) error
-	postTextFn   func(context.Context, string, string, string) error
+	bc              *config.Channel
+	config          *config.SlackSettings
+	api             *slack.Client
+	socketClient    *socketmode.Client
+	botUserID       string
+	teamID          string
+	ctx             context.Context
+	cancel          context.CancelFunc
+	pendingAcks     sync.Map
+	inboundDedup    sync.Map
+	progress        *channels.ToolFeedbackAnimator
+	postMessageFn   func(context.Context, string, string, string) (string, error)
+	editMessageFn   func(context.Context, string, string, string) error
+	deleteMessageFn func(context.Context, string, string) error
+	uploadFileFn    func(context.Context, slack.UploadFileParameters) error
+	postTextFn      func(context.Context, string, string, string) error
 }
 
 type slackMessageRef struct {
@@ -60,24 +68,86 @@ func NewSlackChannel(
 		channels.WithReasoningChannelID(bc.ReasoningChannelID),
 	)
 
-	return &SlackChannel{
+	ch := &SlackChannel{
 		BaseChannel:  base,
+		bc:           bc,
 		config:       cfg,
 		api:          api,
 		socketClient: socketClient,
-		uploadFileFn: func(ctx context.Context, params slack.UploadFileParameters) error {
-			_, err := api.UploadFileContext(ctx, params)
-			return err
-		},
-		postTextFn: func(ctx context.Context, channelID, threadTS, text string) error {
-			opts := []slack.MsgOption{slack.MsgOptionText(text, false)}
-			if threadTS != "" {
-				opts = append(opts, slack.MsgOptionTS(threadTS))
-			}
-			_, _, err := api.PostMessageContext(ctx, channelID, opts...)
-			return err
-		},
-	}, nil
+	}
+	ch.postMessageFn = func(ctx context.Context, channelID, threadTS, text string) (string, error) {
+		opts := ch.slackMessageOptions(text, threadTS)
+		if threadTS != "" {
+			opts = append(opts, slack.MsgOptionTS(threadTS))
+		}
+		_, ts, err := api.PostMessageContext(ctx, channelID, opts...)
+		return ts, err
+	}
+	ch.editMessageFn = func(ctx context.Context, channelID, messageID, text string) error {
+		opts := ch.slackMessageOptions(text, "")
+		_, _, _, err := api.UpdateMessageContext(
+			ctx,
+			channelID,
+			messageID,
+			opts...,
+		)
+		return err
+	}
+	ch.deleteMessageFn = func(ctx context.Context, channelID, messageID string) error {
+		_, _, err := api.DeleteMessageContext(ctx, channelID, messageID)
+		return err
+	}
+	ch.uploadFileFn = func(ctx context.Context, params slack.UploadFileParameters) error {
+		_, err := api.UploadFileContext(ctx, params)
+		return err
+	}
+	ch.postTextFn = func(ctx context.Context, channelID, threadTS, text string) error {
+		opts := ch.slackMessageOptions(text, threadTS)
+		if threadTS != "" {
+			opts = append(opts, slack.MsgOptionTS(threadTS))
+		}
+		_, _, err := api.PostMessageContext(ctx, channelID, opts...)
+		return err
+	}
+	ch.progress = channels.NewToolFeedbackAnimator(func(ctx context.Context, chatID, messageID, content string) error {
+		return ch.EditMessage(ctx, slackToolFeedbackDeliveryChatKey(chatID), messageID, content)
+	})
+	return ch, nil
+}
+
+func (c *SlackChannel) slackMessageOptions(text, threadTS string) []slack.MsgOption {
+	formatted := formatSlackMessage(text)
+	opts := []slack.MsgOption{
+		slack.MsgOptionText(formatted, false),
+	}
+	blocks := c.slackBlocks(formatted)
+	if len(blocks) > 0 {
+		opts = append(opts, slack.MsgOptionBlocks(blocks...))
+	}
+	return opts
+}
+
+func (c *SlackChannel) slackBlocks(text string) []slack.Block {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	// Avoid splitting fenced code blocks across section blocks; Slack renders
+	// broken mrkdwn when a long code fence is chunked mid-block.
+	if strings.Contains(text, "```") && len([]rune(text)) > slackMaxTextBlockLength {
+		return nil
+	}
+	chunks := splitSlackText(text, slackMaxTextBlockLength)
+	blocks := make([]slack.Block, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+		textObj := slack.NewTextBlockObject(slack.MarkdownType, chunk, false, false)
+		blocks = append(blocks, slack.NewSectionBlock(textObj, nil, nil))
+	}
+	return blocks
 }
 
 func (c *SlackChannel) Start(ctx context.Context) error {
@@ -120,6 +190,9 @@ func (c *SlackChannel) Stop(ctx context.Context) error {
 	if c.cancel != nil {
 		c.cancel()
 	}
+	if c.progress != nil {
+		c.progress.StopAll()
+	}
 
 	c.SetRunning(false)
 	logger.InfoC("slack", "Slack channel stopped")
@@ -135,22 +208,45 @@ func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]str
 	if channelID == "" {
 		return nil, fmt.Errorf("invalid slack chat ID: %s", msg.ChatID)
 	}
+	if len([]rune(msg.Content)) == 0 {
+		return nil, nil
+	}
 
-	opts := []slack.MsgOption{
-		slack.MsgOptionText(msg.Content, false),
+	isToolFeedback := outboundMessageIsToolFeedback(msg)
+	trackedChatID := slackToolFeedbackMessageKey(msg.ChatID, &msg.Context, msg.SessionKey)
+	if isToolFeedback {
+		if msgID, handled, err := c.progress.Update(ctx, trackedChatID, msg.Content); handled {
+			if err != nil {
+				return nil, err
+			}
+			return []string{msgID}, nil
+		}
+	}
+	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(trackedChatID)
+	if channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
+		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
+			return msgIDs, nil
+		}
+	}
+
+	content := msg.Content
+	if isToolFeedback {
+		content = channels.InitialAnimatedToolFeedbackContent(msg.Content)
 	}
 
 	if msg.ReplyToMessageID != "" && threadTS == "" {
 		// Answer to the message by creating a Thread under it
-		opts = append(opts, slack.MsgOptionTS(msg.ReplyToMessageID))
-	} else if threadTS != "" {
-		// If we are already in a thread, continue in the thread
-		opts = append(opts, slack.MsgOptionTS(threadTS))
+		threadTS = msg.ReplyToMessageID
 	}
 
-	_, ts, err := c.api.PostMessageContext(ctx, channelID, opts...)
+	ts, err := c.postMessageFn(ctx, channelID, threadTS, content)
 	if err != nil {
 		return nil, fmt.Errorf("slack send: %w", channels.ErrTemporary)
+	}
+	if isToolFeedback {
+		c.RecordEditedToolFeedbackMessage(trackedChatID, ts, msg.Content)
+	} else if hasTrackedMsg && channels.OutboundMessageDismissesTrackedToolFeedback(msg) {
+		c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
 	}
 
 	if ref, ok := c.pendingAcks.LoadAndDelete(deliveryChatID); ok {
@@ -211,6 +307,7 @@ func (c *SlackChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessa
 			Channel:         channelID,
 			ThreadTimestamp: threadTS,
 			File:            localPath,
+			FileSize:        slackUploadFileSize(localPath),
 			Filename:        filename,
 			Title:           title,
 		})
@@ -235,6 +332,124 @@ func (c *SlackChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessa
 	return nil, nil
 }
 
+func (c *SlackChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
+	if c.progress != nil {
+		c.progress.Configure(cfg)
+	}
+}
+
+func (c *SlackChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
+	channelID, _ := parseSlackChatID(slackToolFeedbackDeliveryChatKey(chatID))
+	if channelID == "" {
+		return fmt.Errorf("invalid slack chat ID: %s", chatID)
+	}
+	return c.editMessageFn(ctx, channelID, messageID, content)
+}
+
+func (c *SlackChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
+	channelID, _ := parseSlackChatID(slackToolFeedbackDeliveryChatKey(chatID))
+	if channelID == "" {
+		return fmt.Errorf("invalid slack chat ID: %s", chatID)
+	}
+	return c.deleteMessageFn(ctx, channelID, messageID)
+}
+
+func (c *SlackChannel) SendPlaceholder(ctx context.Context, chatID string) (string, error) {
+	if c.bc == nil || !c.bc.Placeholder.Enabled {
+		return "", nil
+	}
+	deliveryChatID, channelID, threadTS := resolveSlackOutboundTarget(chatID, nil)
+	if channelID == "" {
+		return "", fmt.Errorf("invalid slack chat ID: %s", chatID)
+	}
+	if deliveryChatID == "" {
+		return "", nil
+	}
+	return c.postMessageFn(ctx, channelID, threadTS, c.bc.Placeholder.GetRandomText())
+}
+
+func (c *SlackChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
+	if c.progress == nil {
+		return "", false
+	}
+	return c.progress.Current(chatID)
+}
+
+func (c *SlackChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
+	if c.progress == nil {
+		return "", "", false
+	}
+	return c.progress.Take(chatID)
+}
+
+func (c *SlackChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
+	if c.progress == nil {
+		return
+	}
+	c.progress.Record(chatID, messageID, content)
+}
+
+func (c *SlackChannel) RecordEditedToolFeedbackMessage(chatID, messageID, content string) {
+	if c.progress == nil {
+		return
+	}
+	c.progress.RecordEdited(chatID, messageID, content)
+}
+
+func (c *SlackChannel) ClearToolFeedbackMessage(chatID string) {
+	if c.progress == nil {
+		return
+	}
+	c.progress.Clear(chatID)
+}
+
+func (c *SlackChannel) DismissToolFeedbackMessage(ctx context.Context, chatID string) {
+	msgID, ok := c.currentToolFeedbackMessage(chatID)
+	if !ok {
+		return
+	}
+	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
+}
+
+func (c *SlackChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
+	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
+		return
+	}
+	c.ClearToolFeedbackMessage(chatID)
+	_ = c.DeleteMessage(ctx, chatID, messageID)
+}
+
+func (c *SlackChannel) finalizeTrackedToolFeedbackMessage(
+	ctx context.Context,
+	chatID string,
+	content string,
+	editFn func(context.Context, string, string, string) error,
+) ([]string, bool) {
+	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
+	if !ok || editFn == nil {
+		return nil, false
+	}
+	if err := editFn(ctx, chatID, msgID, content); err != nil {
+		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
+		return nil, false
+	}
+	return []string{msgID}, true
+}
+
+func (c *SlackChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
+	if !channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
+		return nil, false
+	}
+	return c.finalizeTrackedToolFeedbackMessage(
+		ctx,
+		slackToolFeedbackMessageKey(msg.ChatID, &msg.Context, msg.SessionKey),
+		msg.Content,
+		func(ctx context.Context, chatID, messageID, content string) error {
+			return c.EditMessage(ctx, slackToolFeedbackDeliveryChatKey(chatID), messageID, content)
+		},
+	)
+}
+
 func slackFirstMediaCaption(parts []bus.MediaPart) string {
 	for _, part := range parts {
 		if caption := strings.TrimSpace(part.Caption); caption != "" {
@@ -242,6 +457,20 @@ func slackFirstMediaCaption(parts []bus.MediaPart) string {
 		}
 	}
 	return ""
+}
+
+func slackUploadFileSize(path string) int {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if info.Size() <= 0 {
+		return 0
+	}
+	if info.Size() > int64(^uint(0)>>1) {
+		return int(^uint(0) >> 1)
+	}
+	return int(info.Size())
 }
 
 // ReactToMessage implements channels.ReactionCapable.
@@ -333,8 +562,18 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 	senderID := ev.User
 	channelID := ev.Channel
+	if !c.shouldProcessChannel(channelID) {
+		logger.DebugCF("slack", "Message ignored by channel filter", map[string]any{
+			"channel_id": channelID,
+			"user_id":    ev.User,
+		})
+		return
+	}
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
+	if c.markInboundEventHandled("message", channelID, messageTS) {
+		return
+	}
 
 	chatID := channelID
 	if threadTS != "" {
@@ -453,8 +692,18 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 		CanonicalID: identity.BuildCanonicalID("slack", senderID),
 	}
 	channelID := ev.Channel
+	if !c.shouldProcessChannel(channelID) {
+		logger.DebugCF("slack", "Mention ignored by channel filter", map[string]any{
+			"channel_id": channelID,
+			"user_id":    ev.User,
+		})
+		return
+	}
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
+	if c.markInboundEventHandled("app_mention", channelID, messageTS) {
+		return
+	}
 
 	var chatID string
 	if threadTS != "" {
@@ -504,6 +753,47 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 	c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, mentionSender)
 }
 
+const slackInboundDedupTTL = 2 * time.Minute
+
+func (c *SlackChannel) markInboundEventHandled(eventKind, channelID, messageTS string) bool {
+	eventKind = strings.TrimSpace(eventKind)
+	channelID = strings.TrimSpace(channelID)
+	messageTS = strings.TrimSpace(messageTS)
+	if eventKind == "" || channelID == "" || messageTS == "" {
+		return false
+	}
+	key := eventKind + "|" + channelID + "|" + messageTS
+	if _, exists := c.inboundDedup.LoadOrStore(key, time.Now()); exists {
+		return true
+	}
+	time.AfterFunc(slackInboundDedupTTL, func() {
+		c.inboundDedup.Delete(key)
+	})
+	return false
+}
+
+func (c *SlackChannel) shouldProcessChannel(channelID string) bool {
+	if channelID == "" || c == nil || c.config == nil {
+		return true
+	}
+	if len(c.config.AllowedChannelIDs) > 0 && !containsSlackChannelID(c.config.AllowedChannelIDs, channelID) {
+		return false
+	}
+	if containsSlackChannelID(c.config.IgnoredChannelIDs, channelID) {
+		return false
+	}
+	return true
+}
+
+func containsSlackChannelID(ids []string, channelID string) bool {
+	for _, id := range ids {
+		if strings.TrimSpace(id) == channelID {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
 	cmd, ok := event.Data.(slack.SlashCommand)
 	if !ok {
@@ -528,6 +818,13 @@ func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
 
 	senderID := cmd.UserID
 	channelID := cmd.ChannelID
+	if !c.shouldProcessChannel(channelID) {
+		logger.DebugCF("slack", "Slash command ignored by channel filter", map[string]any{
+			"channel_id": channelID,
+			"user_id":    cmd.UserID,
+		})
+		return
+	}
 	chatID := channelID
 	content := cmd.Text
 
@@ -627,4 +924,41 @@ func resolveSlackMediaOutboundTarget(chatID string, outboundCtx *bus.InboundCont
 		}
 	}
 	return deliveryChatID, channelID, threadTS
+}
+
+func (c *SlackChannel) ResolveOutboundChatID(chatID string, outboundCtx *bus.InboundContext) string {
+	return slackToolFeedbackChatKey(chatID, outboundCtx)
+}
+
+func (c *SlackChannel) ToolFeedbackMessageChatID(chatID string, outboundCtx *bus.InboundContext) string {
+	return slackToolFeedbackChatKey(chatID, outboundCtx)
+}
+
+func slackToolFeedbackChatKey(chatID string, outboundCtx *bus.InboundContext) string {
+	deliveryChatID, _, _ := resolveSlackOutboundTarget(chatID, outboundCtx)
+	return strings.TrimSpace(deliveryChatID)
+}
+
+func slackToolFeedbackMessageKey(chatID string, outboundCtx *bus.InboundContext, sessionKey string) string {
+	key := slackToolFeedbackChatKey(chatID, outboundCtx)
+	sessionKey = strings.TrimSpace(sessionKey)
+	if key == "" || sessionKey == "" {
+		return key
+	}
+	return key + "#session:" + sessionKey
+}
+
+func slackToolFeedbackDeliveryChatKey(chatID string) string {
+	chatID = strings.TrimSpace(chatID)
+	if idx := strings.Index(chatID, "#session:"); idx >= 0 {
+		return strings.TrimSpace(chatID[:idx])
+	}
+	return chatID
+}
+
+func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
 }

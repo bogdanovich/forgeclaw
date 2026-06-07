@@ -577,8 +577,10 @@ type DingTalkSettings struct {
 }
 
 type SlackSettings struct {
-	BotToken SecureString `json:"bot_token,omitzero" yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_BOT_TOKEN"`
-	AppToken SecureString `json:"app_token,omitzero" yaml:"app_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_APP_TOKEN"`
+	BotToken          SecureString        `json:"bot_token,omitzero"            yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_BOT_TOKEN"`
+	AppToken          SecureString        `json:"app_token,omitzero"            yaml:"app_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_APP_TOKEN"`
+	AllowedChannelIDs FlexibleStringSlice `json:"allowed_channel_ids,omitempty" yaml:"-"                   env:"PICOCLAW_CHANNELS_SLACK_ALLOWED_CHANNEL_IDS"`
+	IgnoredChannelIDs FlexibleStringSlice `json:"ignored_channel_ids,omitempty" yaml:"-"                   env:"PICOCLAW_CHANNELS_SLACK_IGNORED_CHANNEL_IDS"`
 }
 
 type MatrixSettings struct {
@@ -1276,7 +1278,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if e := json.Unmarshal(data, &versionInfo); e != nil {
 		e = wrapJSONError(data, e, "config.json")
-		logger.ErrorCF("config", formatDiagnosticLogMessage("Malformed config file", e), map[string]any{"path": path})
+		logger.ErrorCF(
+			"config",
+			formatDiagnosticLogMessage("Malformed config file", e),
+			map[string]any{"path": path},
+		)
 		return nil, e
 	}
 	if len(data) <= 10 {
@@ -1730,8 +1736,10 @@ func (c *Config) ValidateExecConfig() error {
 		c.Tools.Exec.PermissionMode = mode
 		return nil
 	default:
-		return fmt.Errorf("tools.exec.permission_mode: unsupported value %q (allowed: \"\", \"read_only\")",
-			c.Tools.Exec.PermissionMode)
+		return fmt.Errorf(
+			"tools.exec.permission_mode: unsupported value %q (allowed: \"\", \"read_only\")",
+			c.Tools.Exec.PermissionMode,
+		)
 	}
 }
 

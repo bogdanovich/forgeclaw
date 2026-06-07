@@ -12,20 +12,26 @@ Slack is a leading enterprise instant messaging platform. PicoClaw uses Slack's 
     "slack": {
       "enabled": true,
       "type": "slack",
-      "bot_token": "xoxb-...",
-      "app_token": "xapp-...",
-      "allow_from": []
+      "allow_from": [],
+      "settings": {
+        "bot_token": "xoxb-...",
+        "app_token": "xapp-...",
+        "allowed_channel_ids": ["C0123456789"],
+        "ignored_channel_ids": ["C0987654321"]
+      }
     }
   }
 }
 ```
 
-| Field      | Type   | Required | Description                                                              |
-| ---------- | ------ | -------- | ------------------------------------------------------------------------ |
-| enabled    | bool   | Yes      | Whether to enable the Slack channel                                      |
-| bot_token  | string | Yes      | Bot User OAuth Token for the Slack bot (starts with xoxb-)               |
-| app_token  | string | Yes      | Socket Mode App Level Token for the Slack app (starts with xapp-)        |
-| allow_from | array  | No       | User ID whitelist; empty means all users are allowed                     |
+| Field                 | Type   | Required | Description                                                              |
+| --------------------- | ------ | -------- | ------------------------------------------------------------------------ |
+| enabled               | bool   | Yes      | Whether to enable the Slack channel                                      |
+| settings.bot_token    | string | Yes      | Bot User OAuth Token for the Slack bot (starts with xoxb-)               |
+| settings.app_token    | string | Yes      | Socket Mode App Level Token for the Slack app (starts with xapp-)        |
+| allow_from            | array  | No       | User ID whitelist; empty means all users are allowed                     |
+| settings.allowed_channel_ids | array  | No       | Only process messages from these Slack channel IDs; empty means all      |
+| settings.ignored_channel_ids | array  | No       | Ignore messages from these Slack channel IDs                             |
 
 ## Setup
 

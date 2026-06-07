@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	slacksdk "github.com/slack-go/slack"
@@ -51,21 +53,34 @@ func TestParseSlackChatID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			chanID, threadTS := parseSlackChatID(tt.chatID)
 			if chanID != tt.wantChanID {
-				t.Errorf("parseSlackChatID(%q) channelID = %q, want %q", tt.chatID, chanID, tt.wantChanID)
+				t.Errorf(
+					"parseSlackChatID(%q) channelID = %q, want %q",
+					tt.chatID,
+					chanID,
+					tt.wantChanID,
+				)
 			}
 			if threadTS != tt.wantThread {
-				t.Errorf("parseSlackChatID(%q) threadTS = %q, want %q", tt.chatID, threadTS, tt.wantThread)
+				t.Errorf(
+					"parseSlackChatID(%q) threadTS = %q, want %q",
+					tt.chatID,
+					threadTS,
+					tt.wantThread,
+				)
 			}
 		})
 	}
 }
 
 func TestResolveSlackOutboundTarget_PrefersContextTopicID(t *testing.T) {
-	deliveryChatID, channelID, threadTS := resolveSlackOutboundTarget("C123456", &bus.InboundContext{
-		Channel: "slack",
-		ChatID:  "C123456",
-		TopicID: "1234567890.123456",
-	})
+	deliveryChatID, channelID, threadTS := resolveSlackOutboundTarget(
+		"C123456",
+		&bus.InboundContext{
+			Channel: "slack",
+			ChatID:  "C123456",
+			TopicID: "1234567890.123456",
+		},
+	)
 
 	if deliveryChatID != "C123456/1234567890.123456" {
 		t.Fatalf("deliveryChatID = %q, want %q", deliveryChatID, "C123456/1234567890.123456")
@@ -120,6 +135,35 @@ func TestStripBotMention(t *testing.T) {
 				t.Errorf("stripBotMention(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSlackChannelInboundDedupByChannelAndTimestamp(t *testing.T) {
+	ch := &SlackChannel{}
+	if ch.markInboundEventHandled("message", "C123456", "1780730899.262309") {
+		t.Fatal("first inbound event should not be treated as duplicate")
+	}
+	if !ch.markInboundEventHandled("message", "C123456", "1780730899.262309") {
+		t.Fatal("second inbound event with same channel/timestamp should be deduplicated")
+	}
+	if ch.markInboundEventHandled("message", "C123456", "1780730900.000001") {
+		t.Fatal("different timestamp should not be treated as duplicate")
+	}
+	if ch.markInboundEventHandled("message", "C999999", "1780730899.262309") {
+		t.Fatal("different channel should not be treated as duplicate")
+	}
+}
+
+func TestSlackChannelInboundDedupDistinguishesEventKind(t *testing.T) {
+	ch := &SlackChannel{}
+	if ch.markInboundEventHandled("message", "C123456", "1780730899.262309") {
+		t.Fatal("first message event should not be treated as duplicate")
+	}
+	if ch.markInboundEventHandled("app_mention", "C123456", "1780730899.262309") {
+		t.Fatal("app_mention should not be deduplicated against message event")
+	}
+	if !ch.markInboundEventHandled("app_mention", "C123456", "1780730899.262309") {
+		t.Fatal("second app_mention event with same channel/timestamp should be deduplicated")
 	}
 }
 
@@ -178,7 +222,11 @@ func TestSlackChannelIsAllowed(t *testing.T) {
 	})
 
 	t.Run("allowlist restricts users", func(t *testing.T) {
-		bc := &config.Channel{Type: config.ChannelSlack, Enabled: true, AllowFrom: []string{"U_ALLOWED"}}
+		bc := &config.Channel{
+			Type:      config.ChannelSlack,
+			Enabled:   true,
+			AllowFrom: []string{"U_ALLOWED"},
+		}
 		cfg := &config.SlackSettings{}
 		cfg.BotToken = *config.NewSecureString("xoxb-test")
 		cfg.AppToken = *config.NewSecureString("xapp-test")
@@ -190,6 +238,25 @@ func TestSlackChannelIsAllowed(t *testing.T) {
 			t.Error("non-allowed user should be blocked")
 		}
 	})
+}
+
+func TestSlackChannelShouldProcessChannel(t *testing.T) {
+	ch := &SlackChannel{
+		config: &config.SlackSettings{
+			AllowedChannelIDs: []string{"C_REVIEW"},
+			IgnoredChannelIDs: []string{"C_IGNORE"},
+		},
+	}
+
+	if !ch.shouldProcessChannel("C_REVIEW") {
+		t.Fatal("allowed channel should be processed")
+	}
+	if ch.shouldProcessChannel("C_OTHER") {
+		t.Fatal("channel outside allowed_channel_ids should be ignored")
+	}
+	if ch.shouldProcessChannel("C_IGNORE") {
+		t.Fatal("ignored_channel_ids should override processing")
+	}
 }
 
 func TestSendMedia_SendsCaptionFallbackAfterUploads(t *testing.T) {
@@ -221,6 +288,7 @@ func TestSendMedia_SendsCaptionFallbackAfterUploads(t *testing.T) {
 			Channel: params.Channel,
 			Thread:  params.ThreadTimestamp,
 			File:    params.File,
+			Size:    params.FileSize,
 			Name:    params.Filename,
 			Title:   params.Title,
 		})
@@ -250,8 +318,170 @@ func TestSendMedia_SendsCaptionFallbackAfterUploads(t *testing.T) {
 	if uploaded[0].Title != "shared caption" {
 		t.Fatalf("upload title = %q, want shared caption", uploaded[0].Title)
 	}
+	if uploaded[0].Size != len([]byte("attachment body")) {
+		t.Fatalf("upload size = %d, want %d", uploaded[0].Size, len([]byte("attachment body")))
+	}
 	if len(posted) != 1 || posted[0] != "C123456|1234567890.123456|shared caption" {
 		t.Fatalf("posted = %v, want fallback text in same thread", posted)
+	}
+}
+
+func TestSlackChannelSend_ToolFeedbackUpdatesTrackedMessage(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	cfg := &config.SlackSettings{}
+	cfg.BotToken = *config.NewSecureString("xoxb-test")
+	cfg.AppToken = *config.NewSecureString("xapp-test")
+	bc := &config.Channel{Type: "slack", Enabled: true}
+
+	ch, err := NewSlackChannel(bc, cfg, msgBus)
+	if err != nil {
+		t.Fatalf("NewSlackChannel() error = %v", err)
+	}
+	ch.SetRunning(true)
+
+	var posted []string
+	var edited []string
+	ch.postMessageFn = func(_ context.Context, channelID, threadTS, text string) (string, error) {
+		posted = append(posted, channelID+"|"+threadTS+"|"+text)
+		return "msg-1", nil
+	}
+	ch.editMessageFn = func(_ context.Context, channelID, messageID, text string) error {
+		edited = append(edited, channelID+"|"+messageID+"|"+text)
+		return nil
+	}
+
+	toolFeedback := bus.OutboundMessage{
+		ChatID:  "C123456",
+		Content: "Working...\n• tool: `read_file` — `README.md`",
+		Context: bus.InboundContext{Raw: map[string]string{
+			"message_kind": "tool_feedback",
+		}},
+	}
+
+	msgIDs, err := ch.Send(context.Background(), toolFeedback)
+	if err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+	if !reflect.DeepEqual(msgIDs, []string{"msg-1"}) {
+		t.Fatalf("first Send() ids = %v, want [msg-1]", msgIDs)
+	}
+	if len(posted) != 1 {
+		t.Fatalf("posted = %v, want 1 message", posted)
+	}
+	if len(edited) != 0 {
+		t.Fatalf("edited = %v, want no edits on first send", edited)
+	}
+
+	toolFeedback.Content = "Media working...\n• tool: `delegate`"
+	msgIDs, err = ch.Send(context.Background(), toolFeedback)
+	if err != nil {
+		t.Fatalf("second Send() error = %v", err)
+	}
+	if !reflect.DeepEqual(msgIDs, []string{"msg-1"}) {
+		t.Fatalf("second Send() ids = %v, want [msg-1]", msgIDs)
+	}
+	if len(posted) != 1 {
+		t.Fatalf("posted after update = %v, want still 1 message", posted)
+	}
+	if !reflect.DeepEqual(
+		edited,
+		[]string{
+			"C123456|msg-1|Media working...\n• tool: `read_file` — `README.md`\n• tool: `delegate`",
+		},
+	) {
+		t.Fatalf("edited = %v, want merged tracked message edit", edited)
+	}
+}
+
+func TestSlackChannelFinalizeToolFeedbackMessage_EditsTrackedMessage(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	cfg := &config.SlackSettings{}
+	cfg.BotToken = *config.NewSecureString("xoxb-test")
+	cfg.AppToken = *config.NewSecureString("xapp-test")
+	bc := &config.Channel{Type: "slack", Enabled: true}
+
+	ch, err := NewSlackChannel(bc, cfg, msgBus)
+	if err != nil {
+		t.Fatalf("NewSlackChannel() error = %v", err)
+	}
+
+	ch.RecordToolFeedbackMessage(
+		"C123456/1234567890.123456#session:s1",
+		"msg-progress",
+		"Working...",
+	)
+
+	var edited []string
+	ch.editMessageFn = func(_ context.Context, channelID, messageID, text string) error {
+		edited = append(edited, channelID+"|"+messageID+"|"+text)
+		return nil
+	}
+
+	msgIDs, handled := ch.FinalizeToolFeedbackMessage(context.Background(), bus.OutboundMessage{
+		ChatID:     "C123456",
+		Content:    "Final answer",
+		SessionKey: "s1",
+		Context:    bus.InboundContext{ChatID: "C123456", TopicID: "1234567890.123456"},
+	})
+	if !handled {
+		t.Fatal("FinalizeToolFeedbackMessage() handled = false, want true")
+	}
+	if !reflect.DeepEqual(msgIDs, []string{"msg-progress"}) {
+		t.Fatalf("FinalizeToolFeedbackMessage() ids = %v, want [msg-progress]", msgIDs)
+	}
+	if !reflect.DeepEqual(edited, []string{"C123456|msg-progress|Final answer"}) {
+		t.Fatalf("edited = %v, want final edit on tracked message", edited)
+	}
+}
+
+func TestFormatSlackMessage_ConvertsMarkdownToMrkdwn(t *testing.T) {
+	input := "Here’s a concise summary:\n\n## Main idea\n**Bold** and *italic* with ~~strike~~.\n- first item\n- second item\n[OpenAI](https://openai.com)\n`inline`"
+	want := "Here’s a concise summary:\n\n*Main idea*\n*Bold* and _italic_ with ~strike~.\n• first item\n• second item\n<https://openai.com|OpenAI>\n`inline`"
+	if got := formatSlackMessage(input); got != want {
+		t.Fatalf("formatSlackMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestSlackBlocks_DropsBlocksForLongFencedCode(t *testing.T) {
+	ch := &SlackChannel{}
+	longCode := "```\n" + strings.Repeat("x", slackMaxTextBlockLength+32) + "\n```"
+	if blocks := ch.slackBlocks(longCode); len(blocks) != 0 {
+		t.Fatalf("slackBlocks() = %d block(s), want none for long fenced code", len(blocks))
+	}
+}
+
+func TestSlackChannelSend_FormatsFinalMessageForSlack(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	cfg := &config.SlackSettings{}
+	cfg.BotToken = *config.NewSecureString("xoxb-test")
+	cfg.AppToken = *config.NewSecureString("xapp-test")
+	bc := &config.Channel{Type: "slack", Enabled: true}
+
+	ch, err := NewSlackChannel(bc, cfg, msgBus)
+	if err != nil {
+		t.Fatalf("NewSlackChannel() error = %v", err)
+	}
+	ch.SetRunning(true)
+
+	var posted []string
+	ch.postMessageFn = func(_ context.Context, channelID, threadTS, text string) (string, error) {
+		posted = append(posted, channelID+"|"+threadTS+"|"+formatSlackMessage(text))
+		return "msg-1", nil
+	}
+
+	msgIDs, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "C123456",
+		Content: "## Main idea\n**Bold**\n- item\n[link](https://example.com)",
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if !reflect.DeepEqual(msgIDs, []string{"msg-1"}) {
+		t.Fatalf("Send() ids = %v, want [msg-1]", msgIDs)
+	}
+	want := []string{"C123456||*Main idea*\n*Bold*\n• item\n<https://example.com|link>"}
+	if !reflect.DeepEqual(posted, want) {
+		t.Fatalf("posted = %v, want %v", posted, want)
 	}
 }
 
@@ -259,6 +489,7 @@ type slackUploadRecord struct {
 	Channel string
 	Thread  string
 	File    string
+	Size    int
 	Name    string
 	Title   string
 }
