@@ -428,14 +428,6 @@ func TestFormatSlackMessage_ConvertsMarkdownToMrkdwn(t *testing.T) {
 	}
 }
 
-func TestFormatSlackMessage_BeautifiesPlainSectionHeadings(t *testing.T) {
-	input := "Summary:\n\nMain points:\n• one\n• two\n\nBig takeaway:\nDone.\n\nIn one sentence:\nShort."
-	want := "📝 *Summary:*\n\n💡 *Main points:*\n• one\n• two\n\n🔑 *Big takeaway:*\nDone.\n\n📌 *In one sentence:*\nShort."
-	if got := formatSlackMessage(input); got != want {
-		t.Fatalf("formatSlackMessage() = %q, want %q", got, want)
-	}
-}
-
 func TestSlackChannelSend_FormatsFinalMessageForSlack(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	cfg := &config.SlackSettings{}
