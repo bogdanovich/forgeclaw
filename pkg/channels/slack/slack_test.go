@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	slacksdk "github.com/slack-go/slack"
@@ -139,17 +140,30 @@ func TestStripBotMention(t *testing.T) {
 
 func TestSlackChannelInboundDedupByChannelAndTimestamp(t *testing.T) {
 	ch := &SlackChannel{}
-	if ch.markInboundEventHandled("C123456", "1780730899.262309") {
+	if ch.markInboundEventHandled("message", "C123456", "1780730899.262309") {
 		t.Fatal("first inbound event should not be treated as duplicate")
 	}
-	if !ch.markInboundEventHandled("C123456", "1780730899.262309") {
+	if !ch.markInboundEventHandled("message", "C123456", "1780730899.262309") {
 		t.Fatal("second inbound event with same channel/timestamp should be deduplicated")
 	}
-	if ch.markInboundEventHandled("C123456", "1780730900.000001") {
+	if ch.markInboundEventHandled("message", "C123456", "1780730900.000001") {
 		t.Fatal("different timestamp should not be treated as duplicate")
 	}
-	if ch.markInboundEventHandled("C999999", "1780730899.262309") {
+	if ch.markInboundEventHandled("message", "C999999", "1780730899.262309") {
 		t.Fatal("different channel should not be treated as duplicate")
+	}
+}
+
+func TestSlackChannelInboundDedupDistinguishesEventKind(t *testing.T) {
+	ch := &SlackChannel{}
+	if ch.markInboundEventHandled("message", "C123456", "1780730899.262309") {
+		t.Fatal("first message event should not be treated as duplicate")
+	}
+	if ch.markInboundEventHandled("app_mention", "C123456", "1780730899.262309") {
+		t.Fatal("app_mention should not be deduplicated against message event")
+	}
+	if !ch.markInboundEventHandled("app_mention", "C123456", "1780730899.262309") {
+		t.Fatal("second app_mention event with same channel/timestamp should be deduplicated")
 	}
 }
 
@@ -425,6 +439,14 @@ func TestFormatSlackMessage_ConvertsMarkdownToMrkdwn(t *testing.T) {
 	want := "Here’s a concise summary:\n\n*Main idea*\n*Bold* and _italic_ with ~strike~.\n• first item\n• second item\n<https://openai.com|OpenAI>\n`inline`"
 	if got := formatSlackMessage(input); got != want {
 		t.Fatalf("formatSlackMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestSlackBlocks_DropsBlocksForLongFencedCode(t *testing.T) {
+	ch := &SlackChannel{}
+	longCode := "```\n" + strings.Repeat("x", slackMaxTextBlockLength+32) + "\n```"
+	if blocks := ch.slackBlocks(longCode); len(blocks) != 0 {
+		t.Fatalf("slackBlocks() = %d block(s), want none for long fenced code", len(blocks))
 	}
 }
 

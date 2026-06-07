@@ -132,6 +132,11 @@ func (c *SlackChannel) slackBlocks(text string) []slack.Block {
 	if text == "" {
 		return nil
 	}
+	// Avoid splitting fenced code blocks across section blocks; Slack renders
+	// broken mrkdwn when a long code fence is chunked mid-block.
+	if strings.Contains(text, "```") && len([]rune(text)) > slackMaxTextBlockLength {
+		return nil
+	}
 	chunks := splitSlackText(text, slackMaxTextBlockLength)
 	blocks := make([]slack.Block, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -566,7 +571,7 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
-	if c.markInboundEventHandled(channelID, messageTS) {
+	if c.markInboundEventHandled("message", channelID, messageTS) {
 		return
 	}
 
@@ -696,7 +701,7 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 	}
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
-	if c.markInboundEventHandled(channelID, messageTS) {
+	if c.markInboundEventHandled("app_mention", channelID, messageTS) {
 		return
 	}
 
@@ -750,13 +755,14 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 
 const slackInboundDedupTTL = 2 * time.Minute
 
-func (c *SlackChannel) markInboundEventHandled(channelID, messageTS string) bool {
+func (c *SlackChannel) markInboundEventHandled(eventKind, channelID, messageTS string) bool {
+	eventKind = strings.TrimSpace(eventKind)
 	channelID = strings.TrimSpace(channelID)
 	messageTS = strings.TrimSpace(messageTS)
-	if channelID == "" || messageTS == "" {
+	if eventKind == "" || channelID == "" || messageTS == "" {
 		return false
 	}
-	key := channelID + "|" + messageTS
+	key := eventKind + "|" + channelID + "|" + messageTS
 	if _, exists := c.inboundDedup.LoadOrStore(key, time.Now()); exists {
 		return true
 	}
