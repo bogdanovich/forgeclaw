@@ -62,6 +62,41 @@ type AgentInstance struct {
 	CandidateProviders map[string]providers.LLMProvider
 }
 
+type agentToolInitConfig struct {
+	restrict      bool
+	readRestrict  bool
+	allowRead     []*regexp.Regexp
+	allowWrite    []*regexp.Regexp
+	toolPolicy    *PatternPolicy
+	toolsRegistry *tools.ToolRegistry
+}
+
+type agentIdentityConfig struct {
+	agentID      string
+	agentName    string
+	subagents    *config.SubagentsConfig
+	skillsFilter []string
+}
+
+type agentRuntimeConfig struct {
+	maxIterations             int
+	maxTokens                 int
+	contextWindow             int
+	temperature               float64
+	thinkingLevel             ThinkingLevel
+	thinkingLevelConfigured   bool
+	summarizeMessageThreshold int
+	summarizeTokenPercent     int
+}
+
+type agentRoutingConfig struct {
+	candidates         []providers.FallbackCandidate
+	candidateProviders map[string]providers.LLMProvider
+	router             *routing.Router
+	lightCandidates    []providers.FallbackCandidate
+	lightProvider      providers.LLMProvider
+}
+
 // NewAgentInstance creates an agent instance from config.
 func NewAgentInstance(
 	agentCfg *config.AgentConfig,
@@ -79,46 +114,120 @@ func NewAgentInstance(
 	os.MkdirAll(workspace, 0o755)
 
 	definition := loadAgentDefinition(workspace)
-
 	model := resolveAgentModel(agentCfg, defaults, definition)
 	fallbacks := resolveAgentFallbacks(agentCfg, defaults)
-
-	restrict := defaults.RestrictToWorkspace
-	readRestrict := restrict && !defaults.AllowReadOutsideWorkspace
-
-	// Compile path whitelist patterns from config.
-	allowReadPaths := buildAllowReadPatterns(cfg)
-	allowWritePaths := compilePatterns(cfg.Tools.AllowWritePaths)
 	agentToolPolicy := resolveAgentToolPolicy(definition)
 	agentMCPServerPolicy := resolveAgentMCPServerPolicy(definition)
 
-	toolsRegistry := tools.NewToolRegistry()
+	sessionsDir := filepath.Join(workspace, "sessions")
+	sessions := initSessionStore(sessionsDir)
+	contextBuilder := NewContextBuilder(workspace).
+		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
+
+	identity := buildAgentIdentityConfig(agentCfg, definition)
+	provider = resolvePrimaryProviderForAgent(cfg, workspace, identity.agentID, model, provider)
+	warnOnUnknownAgentMCPServerDeclarations(identity.agentID, workspace, cfg, definition)
+
+	toolInit := newAgentToolInitConfig(defaults, cfg, agentToolPolicy)
+	initCoreAgentTools(workspace, cfg, toolInit)
+	runtimeCfg := buildAgentRuntimeConfig(defaults, cfg, model)
+	routingCfg := buildAgentRoutingConfig(cfg, defaults, workspace, model, fallbacks, identity.agentID)
+
+	return &AgentInstance{
+		ID:                        identity.agentID,
+		Name:                      identity.agentName,
+		Model:                     model,
+		Fallbacks:                 fallbacks,
+		Workspace:                 workspace,
+		MaxIterations:             runtimeCfg.maxIterations,
+		MaxTokens:                 runtimeCfg.maxTokens,
+		Temperature:               runtimeCfg.temperature,
+		ThinkingLevel:             runtimeCfg.thinkingLevel,
+		ThinkingLevelConfigured:   runtimeCfg.thinkingLevelConfigured,
+		ContextWindow:             runtimeCfg.contextWindow,
+		SummarizeMessageThreshold: runtimeCfg.summarizeMessageThreshold,
+		SummarizeTokenPercent:     runtimeCfg.summarizeTokenPercent,
+		Provider:                  provider,
+		Sessions:                  sessions,
+		ContextBuilder:            contextBuilder,
+		Tools:                     toolInit.toolsRegistry,
+		Definition:                definition,
+		Subagents:                 identity.subagents,
+		SkillsFilter:              identity.skillsFilter,
+		MCPServerPolicy:           agentMCPServerPolicy,
+		ToolPolicy:                agentToolPolicy,
+		Candidates:                routingCfg.candidates,
+		Router:                    routingCfg.router,
+		LightCandidates:           routingCfg.lightCandidates,
+		LightProvider:             routingCfg.lightProvider,
+		CandidateProviders:        routingCfg.candidateProviders,
+	}
+}
+
+func newAgentToolInitConfig(
+	defaults *config.AgentDefaults,
+	cfg *config.Config,
+	toolPolicy *PatternPolicy,
+) agentToolInitConfig {
+	restrict := defaults.RestrictToWorkspace
+	return agentToolInitConfig{
+		restrict:      restrict,
+		readRestrict:  restrict && !defaults.AllowReadOutsideWorkspace,
+		allowRead:     buildAllowReadPatterns(cfg),
+		allowWrite:    compilePatterns(cfg.Tools.AllowWritePaths),
+		toolPolicy:    toolPolicy,
+		toolsRegistry: tools.NewToolRegistry(),
+	}
+}
+
+func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolInitConfig) {
 	registerTool := func(tool tools.Tool) {
-		registerToolWithPolicies(toolsRegistry, tool, agentToolPolicy)
+		registerToolWithPolicies(initCfg.toolsRegistry, tool, initCfg.toolPolicy)
 	}
 
 	if cfg.Tools.IsToolEnabled("read_file") {
 		maxReadFileSize := cfg.Tools.ReadFile.MaxReadFileSize
 		switch cfg.Tools.ReadFile.EffectiveMode() {
 		case config.ReadFileModeLines:
-			registerTool(tools.NewReadFileLinesTool(workspace, readRestrict, maxReadFileSize, allowReadPaths))
+			registerTool(
+				tools.NewReadFileLinesTool(
+					workspace,
+					initCfg.readRestrict,
+					maxReadFileSize,
+					initCfg.allowRead,
+				),
+			)
 		default:
-			registerTool(tools.NewReadFileBytesTool(workspace, readRestrict, maxReadFileSize, allowReadPaths))
+			registerTool(
+				tools.NewReadFileBytesTool(
+					workspace,
+					initCfg.readRestrict,
+					maxReadFileSize,
+					initCfg.allowRead,
+				),
+			)
 		}
 	}
 	if cfg.Tools.IsToolEnabled("write_file") {
-		registerTool(tools.NewWriteFileTool(workspace, restrict, allowWritePaths))
+		registerTool(tools.NewWriteFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}
 	if cfg.Tools.IsToolEnabled("list_dir") {
-		registerTool(tools.NewListDirTool(workspace, readRestrict, allowReadPaths))
+		registerTool(
+			tools.NewListDirTool(workspace, initCfg.readRestrict, initCfg.allowRead),
+		)
 	}
 	if cfg.Tools.IsToolEnabled("search_files") {
 		registerTool(
-			tools.NewSearchFilesTool(workspace, readRestrict, cfg.Tools.ReadFile.MaxReadFileSize, allowReadPaths),
+			tools.NewSearchFilesTool(
+				workspace,
+				initCfg.readRestrict,
+				cfg.Tools.ReadFile.MaxReadFileSize,
+				initCfg.allowRead,
+			),
 		)
 	}
 	if cfg.Tools.IsToolEnabled("exec") {
-		execTool, err := tools.NewExecToolWithConfig(workspace, restrict, cfg, allowReadPaths)
+		execTool, err := tools.NewExecToolWithConfig(workspace, initCfg.restrict, cfg, initCfg.allowRead)
 		if err != nil {
 			logger.ErrorCF("agent", "Failed to initialize exec tool; continuing without exec",
 				map[string]any{"error": err.Error()})
@@ -126,43 +235,45 @@ func NewAgentInstance(
 			registerTool(execTool)
 		}
 	}
-
 	if cfg.Tools.IsToolEnabled("edit_file") {
-		registerTool(tools.NewEditFileTool(workspace, restrict, allowWritePaths))
+		registerTool(tools.NewEditFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}
 	if cfg.Tools.IsToolEnabled("append_file") {
-		registerTool(tools.NewAppendFileTool(workspace, restrict, allowWritePaths))
+		registerTool(tools.NewAppendFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}
 	if cfg.Tools.IsToolEnabled("apply_patch") {
-		registerTool(tools.NewApplyPatchTool(workspace, restrict, allowWritePaths))
+		registerTool(tools.NewApplyPatchTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}
+}
 
-	sessionsDir := filepath.Join(workspace, "sessions")
-	sessions := initSessionStore(sessionsDir)
-
-	contextBuilder := NewContextBuilder(workspace).
-		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
-
-	agentID := routing.DefaultAgentID
-	agentName := ""
-	var subagents *config.SubagentsConfig
-	var skillsFilter []string
-
-	if agentCfg != nil {
-		agentID = routing.NormalizeAgentID(agentCfg.ID)
-		agentName = agentCfg.Name
-		if definition.Agent != nil && strings.TrimSpace(definition.Agent.Frontmatter.Name) != "" {
-			agentName = strings.TrimSpace(definition.Agent.Frontmatter.Name)
-		}
-		subagents = agentCfg.Subagents
-		skillsFilter = resolveAgentSkillsFilter(agentCfg, definition)
+func buildAgentIdentityConfig(
+	agentCfg *config.AgentConfig,
+	definition AgentContextDefinition,
+) agentIdentityConfig {
+	identity := agentIdentityConfig{
+		agentID: routing.DefaultAgentID,
 	}
-	provider = resolvePrimaryProviderForAgent(cfg, workspace, agentID, model, provider)
-	warnOnUnknownAgentMCPServerDeclarations(agentID, workspace, cfg, definition)
+	if agentCfg == nil {
+		return identity
+	}
+	identity.agentID = routing.NormalizeAgentID(agentCfg.ID)
+	identity.agentName = agentCfg.Name
+	if definition.Agent != nil && strings.TrimSpace(definition.Agent.Frontmatter.Name) != "" {
+		identity.agentName = strings.TrimSpace(definition.Agent.Frontmatter.Name)
+	}
+	identity.subagents = agentCfg.Subagents
+	identity.skillsFilter = resolveAgentSkillsFilter(agentCfg, definition)
+	return identity
+}
 
-	maxIter := defaults.MaxToolIterations
-	if maxIter == 0 {
-		maxIter = 20
+func buildAgentRuntimeConfig(
+	defaults *config.AgentDefaults,
+	cfg *config.Config,
+	model string,
+) agentRuntimeConfig {
+	maxIterations := defaults.MaxToolIterations
+	if maxIterations == 0 {
+		maxIterations = 20
 	}
 
 	maxTokens := defaults.MaxTokens
@@ -172,12 +283,6 @@ func NewAgentInstance(
 
 	contextWindow := defaults.ContextWindow
 	if contextWindow == 0 {
-		// Default heuristic: 4x the output token limit.
-		// Most models have context windows well above their output limits
-		// (e.g., GPT-4o 128k ctx / 16k out, Claude 200k ctx / 8k out).
-		// 4x is a conservative lower bound that avoids premature
-		// summarization while remaining safe — the reactive
-		// forceCompression handles any overshoot.
 		contextWindow = maxTokens * 4
 	}
 
@@ -190,8 +295,6 @@ func NewAgentInstance(
 	if mc, err := cfg.GetModelConfig(model); err == nil {
 		thinkingLevelStr = mc.ThinkingLevel
 	}
-	thinkingLevel := parseThinkingLevel(thinkingLevelStr)
-	thinkingLevelConfigured := isConfiguredThinkingLevel(thinkingLevelStr)
 
 	summarizeMessageThreshold := defaults.SummarizeMessageThreshold
 	if summarizeMessageThreshold == 0 {
@@ -203,81 +306,72 @@ func NewAgentInstance(
 		summarizeTokenPercent = 75
 	}
 
-	// Resolve fallback candidates
-	candidates := resolveModelCandidates(cfg, defaults.Provider, model, fallbacks)
+	return agentRuntimeConfig{
+		maxIterations:             maxIterations,
+		maxTokens:                 maxTokens,
+		contextWindow:             contextWindow,
+		temperature:               temperature,
+		thinkingLevel:             parseThinkingLevel(thinkingLevelStr),
+		thinkingLevelConfigured:   isConfiguredThinkingLevel(thinkingLevelStr),
+		summarizeMessageThreshold: summarizeMessageThreshold,
+		summarizeTokenPercent:     summarizeTokenPercent,
+	}
+}
 
-	candidateProviders := make(map[string]providers.LLMProvider)
-	populateCandidateProvidersFromNames(cfg, workspace, fallbacks, candidateProviders)
+func buildAgentRoutingConfig(
+	cfg *config.Config,
+	defaults *config.AgentDefaults,
+	workspace, model string,
+	fallbacks []string,
+	agentID string,
+) agentRoutingConfig {
+	routingCfg := agentRoutingConfig{
+		candidates:         resolveModelCandidates(cfg, defaults.Provider, model, fallbacks),
+		candidateProviders: make(map[string]providers.LLMProvider),
+	}
+	populateCandidateProvidersFromNames(cfg, workspace, fallbacks, routingCfg.candidateProviders)
 
-	// Model routing setup: pre-resolve light model candidates at creation time
-	// to avoid repeated model_list lookups on every incoming message.
-	var router *routing.Router
-	var lightCandidates []providers.FallbackCandidate
-	var lightProvider providers.LLMProvider
-	if rc := defaults.Routing; rc != nil && rc.Enabled && rc.LightModel != "" {
-		resolved := resolveModelCandidates(cfg, defaults.Provider, rc.LightModel, nil)
-		if len(resolved) > 0 {
-			lightModelCfg, err := resolvedModelConfig(cfg, rc.LightModel, workspace)
-			if err != nil {
-				logger.WarnCF(
-					"agent",
-					"Routing light model config invalid; routing disabled",
-					map[string]any{
-						"light_model": rc.LightModel,
-						"agent_id":    agentID,
-						"error":       err.Error(),
-					},
-				)
-			} else {
-				lp, _, err := providers.CreateProviderFromConfig(lightModelCfg)
-				if err != nil {
-					logger.WarnCF("agent", "Routing light model provider init failed; routing disabled",
-						map[string]any{"light_model": rc.LightModel, "agent_id": agentID, "error": err.Error()})
-				} else {
-					router = routing.New(routing.RouterConfig{
-						LightModel: rc.LightModel,
-						Threshold:  rc.Threshold,
-					})
-					lightCandidates = resolved
-					lightProvider = lp
-					populateCandidateProvidersFromNames(cfg, workspace, []string{rc.LightModel}, candidateProviders)
-				}
-			}
-		} else {
-			logger.WarnCF("agent", "Routing light model not found; routing disabled",
-				map[string]any{"light_model": rc.LightModel, "agent_id": agentID})
-		}
+	rc := defaults.Routing
+	if rc == nil || !rc.Enabled || rc.LightModel == "" {
+		return routingCfg
 	}
 
-	return &AgentInstance{
-		ID:                        agentID,
-		Name:                      agentName,
-		Model:                     model,
-		Fallbacks:                 fallbacks,
-		Workspace:                 workspace,
-		MaxIterations:             maxIter,
-		MaxTokens:                 maxTokens,
-		Temperature:               temperature,
-		ThinkingLevel:             thinkingLevel,
-		ThinkingLevelConfigured:   thinkingLevelConfigured,
-		ContextWindow:             contextWindow,
-		SummarizeMessageThreshold: summarizeMessageThreshold,
-		SummarizeTokenPercent:     summarizeTokenPercent,
-		Provider:                  provider,
-		Sessions:                  sessions,
-		ContextBuilder:            contextBuilder,
-		Tools:                     toolsRegistry,
-		Definition:                definition,
-		Subagents:                 subagents,
-		SkillsFilter:              skillsFilter,
-		MCPServerPolicy:           agentMCPServerPolicy,
-		ToolPolicy:                agentToolPolicy,
-		Candidates:                candidates,
-		Router:                    router,
-		LightCandidates:           lightCandidates,
-		LightProvider:             lightProvider,
-		CandidateProviders:        candidateProviders,
+	resolved := resolveModelCandidates(cfg, defaults.Provider, rc.LightModel, nil)
+	if len(resolved) == 0 {
+		logger.WarnCF("agent", "Routing light model not found; routing disabled",
+			map[string]any{"light_model": rc.LightModel, "agent_id": agentID})
+		return routingCfg
 	}
+
+	lightModelCfg, err := resolvedModelConfig(cfg, rc.LightModel, workspace)
+	if err != nil {
+		logger.WarnCF(
+			"agent",
+			"Routing light model config invalid; routing disabled",
+			map[string]any{
+				"light_model": rc.LightModel,
+				"agent_id":    agentID,
+				"error":       err.Error(),
+			},
+		)
+		return routingCfg
+	}
+
+	lightProvider, _, err := providers.CreateProviderFromConfig(lightModelCfg)
+	if err != nil {
+		logger.WarnCF("agent", "Routing light model provider init failed; routing disabled",
+			map[string]any{"light_model": rc.LightModel, "agent_id": agentID, "error": err.Error()})
+		return routingCfg
+	}
+
+	routingCfg.router = routing.New(routing.RouterConfig{
+		LightModel: rc.LightModel,
+		Threshold:  rc.Threshold,
+	})
+	routingCfg.lightCandidates = resolved
+	routingCfg.lightProvider = lightProvider
+	populateCandidateProvidersFromNames(cfg, workspace, []string{rc.LightModel}, routingCfg.candidateProviders)
+	return routingCfg
 }
 
 // populateCandidateProvidersFromNames resolves each model name (alias or
