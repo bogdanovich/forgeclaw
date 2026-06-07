@@ -25,6 +25,14 @@ const (
 	finalResponseAlwaysPublish
 )
 
+type toolResultDeliveryOutcome uint8
+
+const (
+	toolResultDeliveryNone toolResultDeliveryOutcome = iota
+	toolResultDeliveryDirect
+	toolResultDeliveryQueued
+)
+
 func (al *AgentLoop) maybePublishErrorWithPolicy(
 	ctx context.Context,
 	channel, chatID, sessionKey string,
@@ -166,7 +174,7 @@ func (al *AgentLoop) deliverFinalTurnResult(
 			sessionKey: sessionKey,
 			opts:       opts,
 		}
-		if _, delivered, err := al.deliverToolResultToUser(ctx, ts, mediaResult, "final_turn"); err != nil {
+		if _, outcome, err := al.deliverToolResultToUser(ctx, ts, mediaResult, "final_turn"); err != nil {
 			logger.WarnCF("agent", "Failed to deliver final turn media; falling back to text",
 				map[string]any{
 					"agent_id": agent.ID,
@@ -174,7 +182,7 @@ func (al *AgentLoop) deliverFinalTurnResult(
 					"chat_id":  opts.Dispatch.ChatID(),
 					"error":    err.Error(),
 				})
-		} else if delivered {
+		} else if outcome != toolResultDeliveryNone {
 			return
 		}
 	}
@@ -212,9 +220,9 @@ func (al *AgentLoop) deliverToolResultToUser(
 	ts *turnState,
 	result *tools.ToolResult,
 	toolName string,
-) ([]providers.Attachment, bool, error) {
+) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
 	if al == nil || ts == nil || result == nil {
-		return nil, false, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 
 	if result.Outbound != nil {
@@ -249,36 +257,36 @@ func (al *AgentLoop) deliverToolResultToUser(
 						"chat_id":  ts.chatID,
 						"error":    err.Error(),
 					})
-				return nil, false, err
+				return nil, toolResultDeliveryNone, err
 			}
-			return buildProviderAttachments(al.mediaStore, mediaRefs), true, nil
+			return buildProviderAttachments(al.mediaStore, mediaRefs), toolResultDeliveryDirect, nil
 		}
 		if al.bus != nil {
 			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
-				return nil, false, err
+				return nil, toolResultDeliveryNone, err
 			}
 		}
-		return nil, false, nil
+		return nil, toolResultDeliveryQueued, nil
 	}
 
 	if strings.TrimSpace(text) == "" {
-		return nil, false, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 	if result.Silent && result.Completion == nil {
-		return nil, false, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 	if al.bus == nil {
-		return nil, false, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 	if err := al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, text)); err != nil {
-		return nil, false, err
+		return nil, toolResultDeliveryNone, err
 	}
 	logger.DebugCF("agent", "Sent tool result to user",
 		map[string]any{
 			"tool":        toolName,
 			"content_len": len(text),
 		})
-	return nil, true, nil
+	return nil, toolResultDeliveryQueued, nil
 }
 
 func (al *AgentLoop) deliverExplicitToolOutbound(
@@ -286,10 +294,10 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	ts *turnState,
 	result *tools.ToolResult,
 	toolName string,
-) ([]providers.Attachment, bool, error) {
+) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
 	out := result.Outbound
 	if out == nil {
-		return nil, false, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 	channel := firstNonEmptyString(out.Channel, ts.channel)
 	chatID := firstNonEmptyString(out.ChatID, ts.chatID)
@@ -324,19 +332,19 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 						"chat_id":  chatID,
 						"error":    err.Error(),
 					})
-				return nil, false, err
+				return nil, toolResultDeliveryNone, err
 			}
-			return buildProviderAttachmentsFromMediaParts(out.Media), true, nil
+			return buildProviderAttachmentsFromMediaParts(out.Media), toolResultDeliveryDirect, nil
 		}
 		if al.bus != nil {
 			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
-				return nil, false, err
+				return nil, toolResultDeliveryNone, err
 			}
 		}
-		return nil, false, nil
+		return nil, toolResultDeliveryQueued, nil
 	}
 	if strings.TrimSpace(out.Text) == "" {
-		return nil, false, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 	outboundMessage := bus.OutboundMessage{
 		Channel:          channel,
@@ -350,16 +358,16 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 	}
 	if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
 		if err := al.channelManager.SendMessage(ctx, outboundMessage); err != nil {
-			return nil, false, err
+			return nil, toolResultDeliveryNone, err
 		}
-		return nil, true, nil
+		return nil, toolResultDeliveryDirect, nil
 	}
 	if al.bus != nil {
 		if err := al.bus.PublishOutbound(ctx, outboundMessage); err != nil {
-			return nil, false, err
+			return nil, toolResultDeliveryNone, err
 		}
 	}
-	return nil, false, nil
+	return nil, toolResultDeliveryQueued, nil
 }
 
 func firstNonEmptyString(values ...string) string {
