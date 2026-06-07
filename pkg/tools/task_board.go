@@ -1335,6 +1335,82 @@ func optionalTaskPacketArg(args map[string]any, key string) (*taskregistry.TaskP
 	packet.AcceptanceCriteria = cleanStringList(packet.AcceptanceCriteria)
 	packet.VerificationPlan = cleanStringList(packet.VerificationPlan)
 	packet.Constraints = cleanStringList(packet.Constraints)
+	if packet.Reporting != nil {
+		packet.Reporting.Audience = strings.TrimSpace(packet.Reporting.Audience)
+		packet.Reporting.Format = strings.TrimSpace(packet.Reporting.Format)
+		packet.Reporting.Channels = cleanStringList(packet.Reporting.Channels)
+		if packet.Reporting.Audience == "" &&
+			packet.Reporting.Format == "" &&
+			len(packet.Reporting.Channels) == 0 &&
+			!packet.Reporting.IncludeStatus &&
+			!packet.Reporting.IncludeReport &&
+			len(packet.Reporting.Extra) == 0 {
+			packet.Reporting = nil
+		}
+	}
+	if packet.Recovery != nil {
+		packet.Recovery.RetryPolicy = strings.TrimSpace(packet.Recovery.RetryPolicy)
+		packet.Recovery.Escalation = strings.TrimSpace(packet.Recovery.Escalation)
+		packet.Recovery.Fallback = strings.TrimSpace(packet.Recovery.Fallback)
+		if packet.Recovery.RetryPolicy == "" &&
+			packet.Recovery.Escalation == "" &&
+			packet.Recovery.Fallback == "" &&
+			packet.Recovery.MaxAttempts == 0 &&
+			len(packet.Recovery.Extra) == 0 {
+			packet.Recovery = nil
+		}
+	}
+	if packet.Coding != nil {
+		packet.Coding.Repo = strings.TrimSpace(packet.Coding.Repo)
+		packet.Coding.Worktree = strings.TrimSpace(packet.Coding.Worktree)
+		packet.Coding.BaseBranch = strings.TrimSpace(packet.Coding.BaseBranch)
+		packet.Coding.HeadBranch = strings.TrimSpace(packet.Coding.HeadBranch)
+		packet.Coding.Paths = cleanStringList(packet.Coding.Paths)
+		packet.Coding.Tests = cleanStringList(packet.Coding.Tests)
+		packet.Coding.CommitPolicy = strings.TrimSpace(packet.Coding.CommitPolicy)
+		packet.Coding.MergePolicy = strings.TrimSpace(packet.Coding.MergePolicy)
+		packet.Coding.ApprovalPolicy = strings.TrimSpace(packet.Coding.ApprovalPolicy)
+		if packet.Coding.Repo == "" &&
+			packet.Coding.Worktree == "" &&
+			packet.Coding.BaseBranch == "" &&
+			packet.Coding.HeadBranch == "" &&
+			len(packet.Coding.Paths) == 0 &&
+			len(packet.Coding.Tests) == 0 &&
+			packet.Coding.CommitPolicy == "" &&
+			packet.Coding.MergePolicy == "" &&
+			packet.Coding.ApprovalPolicy == "" &&
+			len(packet.Coding.Extra) == 0 {
+			packet.Coding = nil
+		}
+	}
+	if packet.Media != nil {
+		packet.Media.SourceURI = strings.TrimSpace(packet.Media.SourceURI)
+		packet.Media.ExpectedArtifacts = cleanStringList(packet.Media.ExpectedArtifacts)
+		packet.Media.OutputLanguage = strings.TrimSpace(packet.Media.OutputLanguage)
+		if packet.Media.SourceURI == "" &&
+			len(packet.Media.ExpectedArtifacts) == 0 &&
+			!packet.Media.SendMedia &&
+			packet.Media.OutputLanguage == "" &&
+			!packet.Media.CaptionRequired &&
+			len(packet.Media.Extra) == 0 {
+			packet.Media = nil
+		}
+	}
+	if packet.Research != nil {
+		packet.Research.Questions = cleanStringList(packet.Research.Questions)
+		packet.Research.Depth = strings.TrimSpace(packet.Research.Depth)
+		packet.Research.SourcePolicy = strings.TrimSpace(packet.Research.SourcePolicy)
+		packet.Research.CitationStyle = strings.TrimSpace(packet.Research.CitationStyle)
+		packet.Research.OutputFormat = strings.TrimSpace(packet.Research.OutputFormat)
+		if len(packet.Research.Questions) == 0 &&
+			packet.Research.Depth == "" &&
+			packet.Research.SourcePolicy == "" &&
+			packet.Research.CitationStyle == "" &&
+			packet.Research.OutputFormat == "" &&
+			len(packet.Research.Extra) == 0 {
+			packet.Research = nil
+		}
+	}
 	if packet.Objective == "" {
 		return nil, fmt.Errorf("%s.objective required when task_packet is provided", key)
 	}

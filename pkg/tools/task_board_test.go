@@ -147,7 +147,7 @@ func TestTaskBoardTool_CreateWithTaskPacket(t *testing.T) {
 	if len(rec.TaskPacket.Resources) != 1 || rec.TaskPacket.Resources[0].URI != "https://example.test/reel" {
 		t.Fatalf("resources = %#v", rec.TaskPacket.Resources)
 	}
-	if rec.TaskPacket.Media["send_media"] != true {
+	if rec.TaskPacket.Media == nil || !rec.TaskPacket.Media.SendMedia {
 		t.Fatalf("media block = %#v", rec.TaskPacket.Media)
 	}
 
