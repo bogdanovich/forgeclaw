@@ -250,6 +250,12 @@ func TestSearchFilesTool_TruncatesOversizedContentResults(t *testing.T) {
 	if !utf8.ValidString(result.ForLLM) {
 		t.Fatal("expected truncated result to remain valid UTF-8")
 	}
+	lines := strings.Split(result.ForLLM, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "sessions/runtime.jsonl") && !strings.HasSuffix(line, "context overflow testing") {
+			t.Fatalf("expected complete match rows only, got partial line %q", line)
+		}
+	}
 }
 
 func TestSearchFilesTool_TruncatesOversizedFilesOnlyResults(t *testing.T) {
@@ -282,8 +288,16 @@ func TestSearchFilesTool_TruncatesOversizedFilesOnlyResults(t *testing.T) {
 			len(result.ForLLM),
 		)
 	}
-	if !strings.Contains(result.ForLLM, "[truncated:") {
-		t.Fatalf("expected truncation note, got:\n%s", result.ForLLM)
+	if strings.Contains(result.ForLLM, "[truncated:") {
+		t.Fatalf("did not expect extra truncation note when logical limit header already fits, got:\n%s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "truncated at limit 500") {
+		t.Fatalf("expected logical limit header, got:\n%s", result.ForLLM)
+	}
+	for _, line := range strings.Split(result.ForLLM, "\n") {
+		if strings.HasPrefix(line, "sessions/session-") && !strings.HasSuffix(line, ".jsonl") {
+			t.Fatalf("expected complete file path rows only, got partial line %q", line)
+		}
 	}
 	if !strings.Contains(result.ForLLM, "sessions/session-") {
 		t.Fatalf("expected matching session paths, got:\n%s", result.ForLLM)

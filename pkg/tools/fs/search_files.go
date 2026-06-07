@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 const (
@@ -431,6 +430,8 @@ func appendSearchResultLines(
 		return
 	}
 
+	base := b.String()
+	appended := make([]string, 0, len(lines))
 	omitted := 0
 	for i, line := range lines {
 		lineWithNewline := line + "\n"
@@ -439,37 +440,39 @@ func appendSearchResultLines(
 			break
 		}
 		b.WriteString(lineWithNewline)
+		appended = append(appended, line)
 	}
 
-	if omitted == 0 && !alreadyTruncated {
+	if omitted == 0 {
 		return
 	}
 
-	note := buildSearchFilesTruncationNote(omitted, unit, alreadyTruncated)
-	noteWithNewline := note + "\n"
-	if b.Len()+len(noteWithNewline) <= maxSearchFilesResultBytes {
-		b.WriteString(noteWithNewline)
-		return
-	}
+	for {
+		note := buildSearchFilesTruncationNote(omitted, unit, alreadyTruncated)
+		noteWithNewline := note + "\n"
+		if len(base)+joinedLinesLen(appended)+len(noteWithNewline) <= maxSearchFilesResultBytes {
+			b.Reset()
+			b.WriteString(base)
+			for _, line := range appended {
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+			b.WriteString(noteWithNewline)
+			return
+		}
 
-	if len(noteWithNewline) > maxSearchFilesResultBytes {
-		return
-	}
+		if len(appended) == 0 {
+			b.Reset()
+			b.WriteString(base)
+			if len(base)+len(noteWithNewline) <= maxSearchFilesResultBytes {
+				b.WriteString(noteWithNewline)
+			}
+			return
+		}
 
-	s := b.String()
-	keep := maxSearchFilesResultBytes - len(noteWithNewline)
-	if keep < 0 {
-		keep = 0
+		appended = appended[:len(appended)-1]
+		omitted++
 	}
-	s = validUTF8Prefix(s, keep)
-	s = strings.TrimRight(s, "\n")
-	b.Reset()
-	b.WriteString(s)
-	if s != "" {
-		b.WriteByte('\n')
-	}
-	b.WriteString(note)
-	b.WriteByte('\n')
 }
 
 func buildSearchFilesTruncationNote(omitted int, unit string, alreadyTruncated bool) string {
@@ -499,15 +502,12 @@ func buildSearchFilesTruncationNote(omitted int, unit string, alreadyTruncated b
 	) + ". Narrow the pattern or use output_mode=files_only/count.]"
 }
 
-func validUTF8Prefix(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
+func joinedLinesLen(lines []string) int {
+	total := 0
+	for _, line := range lines {
+		total += len(line) + 1
 	}
-	prefix := s[:maxBytes]
-	for len(prefix) > 0 && !utf8.ValidString(prefix) {
-		prefix = prefix[:len(prefix)-1]
-	}
-	return prefix
+	return total
 }
 
 func searchNoMatches(filesScanned int, filesSkipped int) string {
