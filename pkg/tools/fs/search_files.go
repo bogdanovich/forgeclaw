@@ -16,6 +16,7 @@ const (
 	maxSearchFilesLimit           = 500
 	maxSearchFilesContext         = 10
 	defaultSearchFilesMaxFileSize = 1024 * 1024
+	maxSearchFilesResultBytes     = 16000
 )
 
 // SearchFilesTool searches workspace files without requiring shell grep/rg.
@@ -211,28 +212,37 @@ func boolArg(value any, fallback bool) bool {
 	}
 }
 
-func (t *SearchFilesTool) searchFileNames(ctx context.Context, opts searchFilesOptions) *ToolResult {
+func (t *SearchFilesTool) searchFileNames(
+	ctx context.Context,
+	opts searchFilesOptions,
+) *ToolResult {
 	var matches []string
 	truncated := false
 
-	err := walkSearchFiles(ctx, t.fs, opts.path, opts.includeIgnored, func(path string, entry os.DirEntry) error {
-		if entry.IsDir() {
-			return nil
-		}
-		name := entry.Name()
-		matched, err := matchFilePattern(opts.pattern, path, name)
-		if err != nil {
-			return err
-		}
-		if matched {
-			matches = append(matches, cleanDisplayPath(path))
-			if len(matches) >= opts.limit {
-				truncated = true
-				return errSearchLimitReached
+	err := walkSearchFiles(
+		ctx,
+		t.fs,
+		opts.path,
+		opts.includeIgnored,
+		func(path string, entry os.DirEntry) error {
+			if entry.IsDir() {
+				return nil
 			}
-		}
-		return nil
-	})
+			name := entry.Name()
+			matched, err := matchFilePattern(opts.pattern, path, name)
+			if err != nil {
+				return err
+			}
+			if matched {
+				matches = append(matches, cleanDisplayPath(path))
+				if len(matches) >= opts.limit {
+					truncated = true
+					return errSearchLimitReached
+				}
+			}
+			return nil
+		},
+	)
 	if err != nil && err != errSearchLimitReached {
 		return ErrorResult(err.Error())
 	}
@@ -248,10 +258,7 @@ func (t *SearchFilesTool) searchFileNames(ctx context.Context, opts searchFilesO
 		fmt.Fprintf(&b, " (truncated at limit %d)", opts.limit)
 	}
 	b.WriteString("\n\n")
-	for _, match := range matches {
-		b.WriteString(match)
-		b.WriteByte('\n')
-	}
+	appendSearchResultLines(&b, matches, "files", truncated)
 	return NewToolResult(strings.TrimRight(b.String(), "\n"))
 }
 
@@ -268,61 +275,75 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 	filesScanned := 0
 	filesSkipped := 0
 
-	walkErr := walkSearchFiles(ctx, t.fs, opts.path, opts.includeIgnored, func(path string, entry os.DirEntry) error {
-		if entry.IsDir() {
-			return nil
-		}
-		if opts.fileGlob != "" && !matchGlob(opts.fileGlob, entry.Name(), path) {
-			return nil
-		}
-		data, readErr := t.fs.ReadFile(path)
-		if readErr != nil {
-			filesSkipped++
-			return errSearchFileSkipped
-		}
-		if len(data) > t.maxFileSize || looksBinary(data) {
-			filesSkipped++
-			return nil
-		}
-
-		filesScanned++
-		lines := strings.Split(string(data), "\n")
-		for i, line := range lines {
-			if !re.MatchString(line) {
-				continue
+	walkErr := walkSearchFiles(
+		ctx,
+		t.fs,
+		opts.path,
+		opts.includeIgnored,
+		func(path string, entry os.DirEntry) error {
+			if entry.IsDir() {
+				return nil
+			}
+			if opts.fileGlob != "" && !matchGlob(opts.fileGlob, entry.Name(), path) {
+				return nil
+			}
+			data, readErr := t.fs.ReadFile(path)
+			if readErr != nil {
+				filesSkipped++
+				return errSearchFileSkipped
+			}
+			if len(data) > t.maxFileSize || looksBinary(data) {
+				filesSkipped++
+				return nil
 			}
 
-			displayPath := cleanDisplayPath(path)
-			fileCounts[displayPath]++
-			filesOnly[displayPath] = true
-
-			switch opts.outputMode {
-			case "files_only", "count":
-				if len(filesOnly) >= opts.limit && opts.outputMode == "files_only" {
-					truncated = true
-					return errSearchLimitReached
+			filesScanned++
+			lines := strings.Split(string(data), "\n")
+			for i, line := range lines {
+				if !re.MatchString(line) {
+					continue
 				}
-			default:
-				matches = append(matches, contentMatch{
-					path:       displayPath,
-					lineNumber: i + 1,
-					line:       line,
-					before:     contextBefore(lines, i, opts.context),
-					after:      contextAfter(lines, i, opts.context),
-				})
-				if len(matches) >= opts.limit {
-					truncated = true
-					return errSearchLimitReached
+
+				displayPath := cleanDisplayPath(path)
+				fileCounts[displayPath]++
+				filesOnly[displayPath] = true
+
+				switch opts.outputMode {
+				case "files_only", "count":
+					if len(filesOnly) >= opts.limit && opts.outputMode == "files_only" {
+						truncated = true
+						return errSearchLimitReached
+					}
+				default:
+					matches = append(matches, contentMatch{
+						path:       displayPath,
+						lineNumber: i + 1,
+						line:       line,
+						before:     contextBefore(lines, i, opts.context),
+						after:      contextAfter(lines, i, opts.context),
+					})
+					if len(matches) >= opts.limit {
+						truncated = true
+						return errSearchLimitReached
+					}
 				}
 			}
-		}
-		return nil
-	})
+			return nil
+		},
+	)
 	if walkErr != nil && walkErr != errSearchLimitReached && walkErr != errSearchFileSkipped {
 		return ErrorResult(walkErr.Error())
 	}
 
-	return formatContentSearchResult(opts, matches, filesOnly, fileCounts, filesScanned, filesSkipped, truncated)
+	return formatContentSearchResult(
+		opts,
+		matches,
+		filesOnly,
+		fileCounts,
+		filesScanned,
+		filesSkipped,
+		truncated,
+	)
 }
 
 func formatContentSearchResult(
@@ -351,19 +372,24 @@ func formatContentSearchResult(
 			fmt.Fprintf(&b, " (truncated at limit %d)", opts.limit)
 		}
 		fmt.Fprintf(&b, "\nFiles scanned: %d, skipped: %d\n\n", filesScanned, filesSkipped)
-		for _, path := range paths {
-			b.WriteString(path)
-			b.WriteByte('\n')
-		}
+		appendSearchResultLines(&b, paths, "files", truncated)
 	case "count":
 		paths := sortedMapKeys(fileCounts)
 		if len(paths) == 0 {
 			return NewToolResult(searchNoMatches(filesScanned, filesSkipped))
 		}
-		fmt.Fprintf(&b, "Matched files: %d\nFiles scanned: %d, skipped: %d\n\n", len(paths), filesScanned, filesSkipped)
+		fmt.Fprintf(
+			&b,
+			"Matched files: %d\nFiles scanned: %d, skipped: %d\n\n",
+			len(paths),
+			filesScanned,
+			filesSkipped,
+		)
+		lines := make([]string, 0, len(paths))
 		for _, path := range paths {
-			fmt.Fprintf(&b, "%s: %d\n", path, fileCounts[path])
+			lines = append(lines, fmt.Sprintf("%s: %d", path, fileCounts[path]))
 		}
+		appendSearchResultLines(&b, lines, "count rows", false)
 	default:
 		if len(matches) == 0 {
 			return NewToolResult(searchNoMatches(filesScanned, filesSkipped))
@@ -373,25 +399,123 @@ func formatContentSearchResult(
 			fmt.Fprintf(&b, " (truncated at limit %d)", opts.limit)
 		}
 		fmt.Fprintf(&b, "\nFiles scanned: %d, skipped: %d\n\n", filesScanned, filesSkipped)
+		lines := make([]string, 0, len(matches))
 		for idx, match := range matches {
+			var section strings.Builder
 			if idx > 0 {
-				b.WriteByte('\n')
+				section.WriteByte('\n')
 			}
 			for _, line := range match.before {
-				fmt.Fprintf(&b, "%s-%d-%s\n", match.path, line.number, line.text)
+				fmt.Fprintf(&section, "%s-%d-%s\n", match.path, line.number, line.text)
 			}
-			fmt.Fprintf(&b, "%s:%d:%s\n", match.path, match.lineNumber, match.line)
+			fmt.Fprintf(&section, "%s:%d:%s\n", match.path, match.lineNumber, match.line)
 			for _, line := range match.after {
-				fmt.Fprintf(&b, "%s-%d-%s\n", match.path, line.number, line.text)
+				fmt.Fprintf(&section, "%s-%d-%s\n", match.path, line.number, line.text)
 			}
+			lines = append(lines, strings.TrimRight(section.String(), "\n"))
 		}
+		appendSearchResultLines(&b, lines, "matches", truncated)
 	}
 
 	return NewToolResult(strings.TrimRight(b.String(), "\n"))
 }
 
+func appendSearchResultLines(
+	b *strings.Builder,
+	lines []string,
+	unit string,
+	alreadyTruncated bool,
+) {
+	if len(lines) == 0 {
+		return
+	}
+
+	base := b.String()
+	appended := make([]string, 0, len(lines))
+	omitted := 0
+	for i, line := range lines {
+		lineWithNewline := line + "\n"
+		if b.Len()+len(lineWithNewline) > maxSearchFilesResultBytes {
+			omitted = len(lines) - i
+			break
+		}
+		b.WriteString(lineWithNewline)
+		appended = append(appended, line)
+	}
+
+	if omitted == 0 {
+		return
+	}
+
+	for {
+		note := buildSearchFilesTruncationNote(omitted, unit, alreadyTruncated)
+		noteWithNewline := note + "\n"
+		if len(base)+joinedLinesLen(appended)+len(noteWithNewline) <= maxSearchFilesResultBytes {
+			b.Reset()
+			b.WriteString(base)
+			for _, line := range appended {
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+			b.WriteString(noteWithNewline)
+			return
+		}
+
+		if len(appended) == 0 {
+			b.Reset()
+			b.WriteString(base)
+			if len(base)+len(noteWithNewline) <= maxSearchFilesResultBytes {
+				b.WriteString(noteWithNewline)
+			}
+			return
+		}
+
+		appended = appended[:len(appended)-1]
+		omitted++
+	}
+}
+
+func buildSearchFilesTruncationNote(omitted int, unit string, alreadyTruncated bool) string {
+	var parts []string
+	if omitted > 0 {
+		parts = append(
+			parts,
+			fmt.Sprintf(
+				"omitted %d additional %s to stay within the tool result size limit",
+				omitted,
+				unit,
+			),
+		)
+	}
+	if alreadyTruncated {
+		parts = append(parts, "search also hit the requested match/file limit")
+	}
+	if len(parts) == 0 {
+		parts = append(
+			parts,
+			"search result was truncated to stay within the tool result size limit",
+		)
+	}
+	return "[truncated: " + strings.Join(
+		parts,
+		"; ",
+	) + ". Narrow the pattern or use output_mode=files_only/count.]"
+}
+
+func joinedLinesLen(lines []string) int {
+	total := 0
+	for _, line := range lines {
+		total += len(line) + 1
+	}
+	return total
+}
+
 func searchNoMatches(filesScanned int, filesSkipped int) string {
-	return fmt.Sprintf("No matches found. Files scanned: %d, skipped: %d", filesScanned, filesSkipped)
+	return fmt.Sprintf(
+		"No matches found. Files scanned: %d, skipped: %d",
+		filesScanned,
+		filesSkipped,
+	)
 }
 
 func sortedMapKeys[T any](m map[string]T) []string {
