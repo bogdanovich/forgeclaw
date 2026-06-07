@@ -109,7 +109,10 @@ func TestMockLLMScenario_QueuedMediaFallbackContinuesToFinalAnswer(t *testing.T)
 						return nil
 					}
 				}
-				return fmt.Errorf("provider call did not include tool result with queued media payload: %#v", call.Messages)
+				return fmt.Errorf(
+					"provider call did not include tool result with queued media payload: %#v",
+					call.Messages,
+				)
 			},
 			Response: llmscenario.TextResponse("Final answer after queued media."),
 		},
