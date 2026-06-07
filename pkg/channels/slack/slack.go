@@ -935,7 +935,13 @@ func (c *SlackChannel) ToolFeedbackMessageChatID(chatID string, outboundCtx *bus
 }
 
 func slackToolFeedbackChatKey(chatID string, outboundCtx *bus.InboundContext) string {
-	deliveryChatID, _, _ := resolveSlackOutboundTarget(chatID, outboundCtx)
+	deliveryChatID, channelID, threadTS := resolveSlackOutboundTarget(chatID, outboundCtx)
+	if threadTS == "" && outboundCtx != nil {
+		threadTS = strings.TrimSpace(outboundCtx.ReplyToMessageID)
+		if threadTS != "" && channelID != "" {
+			deliveryChatID = channelID + "/" + threadTS
+		}
+	}
 	return strings.TrimSpace(deliveryChatID)
 }
 

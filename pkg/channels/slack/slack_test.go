@@ -93,6 +93,17 @@ func TestResolveSlackOutboundTarget_PrefersContextTopicID(t *testing.T) {
 	}
 }
 
+func TestSlackToolFeedbackChatKey_FallsBackToReplyToMessageID(t *testing.T) {
+	got := slackToolFeedbackChatKey("C123456", &bus.InboundContext{
+		Channel:          "slack",
+		ChatID:           "C123456",
+		ReplyToMessageID: "1234567890.123456",
+	})
+	if got != "C123456/1234567890.123456" {
+		t.Fatalf("slackToolFeedbackChatKey() = %q, want %q", got, "C123456/1234567890.123456")
+	}
+}
+
 func TestStripBotMention(t *testing.T) {
 	ch := &SlackChannel{botUserID: "U12345BOT"}
 
@@ -437,6 +448,14 @@ func TestSlackChannelFinalizeToolFeedbackMessage_EditsTrackedMessage(t *testing.
 func TestFormatSlackMessage_ConvertsMarkdownToMrkdwn(t *testing.T) {
 	input := "Here’s a concise summary:\n\n## Main idea\n**Bold** and *italic* with ~~strike~~.\n- first item\n- second item\n[OpenAI](https://openai.com)\n`inline`"
 	want := "Here’s a concise summary:\n\n*Main idea*\n*Bold* and _italic_ with ~strike~.\n• first item\n• second item\n<https://openai.com|OpenAI>\n`inline`"
+	if got := formatSlackMessage(input); got != want {
+		t.Fatalf("formatSlackMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatSlackMessage_PreservesLinksWithParentheses(t *testing.T) {
+	input := "[docs](https://en.wikipedia.org/wiki/Function_(mathematics))"
+	want := "<https://en.wikipedia.org/wiki/Function_(mathematics)|docs>"
 	if got := formatSlackMessage(input); got != want {
 		t.Fatalf("formatSlackMessage() = %q, want %q", got, want)
 	}

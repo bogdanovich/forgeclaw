@@ -10,7 +10,6 @@ const slackMaxTextBlockLength = 3000
 var (
 	slackBoldRe       = regexp.MustCompile(`\*\*([^*]+)\*\*`)
 	slackStrikeRe     = regexp.MustCompile(`~~([^~]+)~~`)
-	slackLinkRe       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
 	slackHeaderRe     = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`)
 	slackBulletRe     = regexp.MustCompile(`(?m)^- (.+)$`)
 	slackCodeBlockRe  = regexp.MustCompile("(?s)```.*?```")
@@ -51,7 +50,7 @@ func formatSlackMessage(text string) string {
 	// Convert common Markdown constructs to Slack mrkdwn.
 	text = slackBoldRe.ReplaceAllString(text, "*$1*")
 	text = slackStrikeRe.ReplaceAllString(text, "~$1~")
-	text = slackLinkRe.ReplaceAllString(text, "<$2|$1>")
+	text = replaceSlackMarkdownLinks(text)
 	text = slackHeaderRe.ReplaceAllString(text, "*$1*")
 	text = slackBulletRe.ReplaceAllString(text, "• $1")
 
@@ -92,4 +91,65 @@ func splitSlackText(text string, maxLen int) []string {
 		runes = runes[splitAt:]
 	}
 	return chunks
+}
+
+func replaceSlackMarkdownLinks(text string) string {
+	var out strings.Builder
+	out.Grow(len(text))
+
+	for i := 0; i < len(text); {
+		if text[i] != '[' {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+
+		labelEnd := strings.IndexByte(text[i+1:], ']')
+		if labelEnd < 0 {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+		labelEnd += i + 1
+		if labelEnd+1 >= len(text) || text[labelEnd+1] != '(' {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+
+		urlStart := labelEnd + 2
+		urlEnd, ok := findMarkdownLinkDestinationEnd(text, urlStart)
+		if !ok {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+
+		label := text[i+1 : labelEnd]
+		url := text[urlStart:urlEnd]
+		out.WriteByte('<')
+		out.WriteString(url)
+		out.WriteByte('|')
+		out.WriteString(label)
+		out.WriteByte('>')
+		i = urlEnd + 1
+	}
+
+	return out.String()
+}
+
+func findMarkdownLinkDestinationEnd(text string, start int) (int, bool) {
+	depth := 0
+	for i := start; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return i, true
+			}
+			depth--
+		}
+	}
+	return 0, false
 }
