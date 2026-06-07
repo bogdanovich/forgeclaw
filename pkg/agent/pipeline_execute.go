@@ -319,13 +319,13 @@ toolLoop:
 					}
 
 					if !ts.opts.SuppressToolUserDelivery && hookResult.ResponseHandled {
-						attachments, delivered, err := al.deliverToolResultToUser(ctx, ts, hookResult, toolName)
+						attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, hookResult, toolName)
 						if err != nil {
 							hookResult.IsError = true
 							hookResult.ForLLM = fmt.Sprintf("failed to deliver attachment: %v", err)
-						} else if delivered {
+						} else if outcome == toolResultDeliveryDirect {
 							handledAttachments = append(handledAttachments, attachments...)
-						} else if len(toolResultMediaRefs(hookResult)) > 0 {
+						} else if outcome == toolResultDeliveryNone && len(toolResultMediaRefs(hookResult)) > 0 {
 							hookResult.ResponseHandled = false
 						}
 					}
@@ -685,12 +685,12 @@ toolLoop:
 		}
 
 		if !ts.opts.SuppressToolUserDelivery && toolResult.ResponseHandled {
-			attachments, delivered, err := al.deliverToolResultToUser(ctx, ts, toolResult, toolName)
+			attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, toolResult, toolName)
 			if err != nil {
 				toolResult = tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
-			} else if delivered {
+			} else if outcome == toolResultDeliveryDirect {
 				handledAttachments = append(handledAttachments, attachments...)
-			} else if len(toolResultMediaRefs(toolResult)) > 0 {
+			} else if outcome == toolResultDeliveryNone && len(toolResultMediaRefs(toolResult)) > 0 {
 				toolResult.ResponseHandled = false
 			}
 		}
