@@ -20,6 +20,16 @@ The system should separate:
 - durable memory
 - user/operator profile memory
 
+The system should also be configurable per agent and per use case.
+
+Not every ForgeClaw instance needs the same memory behavior:
+
+- a repetitive code-review agent may need almost no curated memory
+- a personal daily agent benefits from strong user-memory and promotion
+- a coding agent may want working memory and some durable project memory, but
+  conservative user-memory writes
+- a research agent may want larger working memory and delayed promotion
+
 ## Current State
 
 Today ForgeClaw has two main memory mechanisms:
@@ -121,6 +131,97 @@ Use working memory for:
 
 Working memory is allowed to be larger and noisier than `MEMORY.md`.
 
+## Configurability Requirements
+
+Memory behavior should be policy-driven rather than globally always-on.
+
+At minimum, the target design should support configuration for:
+
+- working-memory writes
+- user-memory writes
+- durable-memory promotion
+- background curation / review
+- recall from recent daily notes
+
+These controls should be available per agent or per routed agent profile, not
+only globally.
+
+### Recommended Policy Surface
+
+The exact config schema can evolve, but the behavior should map to something
+like:
+
+- `working_memory.mode`
+  - `off`
+  - `manual`
+  - `auto`
+- `user_memory.mode`
+  - `off`
+  - `manual`
+  - `auto`
+- `promotion.mode`
+  - `off`
+  - `review_only`
+  - `auto_conservative`
+- `recall.mode`
+  - `off`
+  - `recent_only`
+  - `targeted`
+
+Optional future controls:
+
+- maximum recent daily notes considered
+- whether curation can rewrite or only append/merge
+- separate policies for personal vs project workspaces
+- per-agent memory-file roots if an installation needs isolation
+
+### Example Profiles
+
+#### Reviewer Agent
+
+Recommended defaults:
+
+- working memory: `off` or `manual`
+- user memory: `off`
+- promotion: `off`
+- recall: `recent_only` or `off`
+
+Reasoning:
+
+- review work is repetitive and low-personalization
+- over-curation risks noisy memory with little value
+- deterministic fresh context matters more than continuity
+
+#### Daily Personal Agent
+
+Recommended defaults:
+
+- working memory: `auto`
+- user memory: `auto`
+- promotion: `auto_conservative`
+- recall: `targeted`
+
+Reasoning:
+
+- continuity across days matters
+- learned preferences are valuable
+- durable personal habits should accumulate
+
+#### Coding Agent
+
+Recommended defaults:
+
+- working memory: `auto`
+- user memory: `manual` or conservative `auto`
+- promotion: `review_only` or `auto_conservative`
+- recall: `targeted`
+
+Reasoning:
+
+- project continuity matters
+- user preferences matter somewhat
+- incorrect durable promotion can create stale engineering assumptions
+
 ## Desired Behavior
 
 ### Session Behavior
@@ -146,6 +247,7 @@ Daily memory writes should:
 - prefer facts, outcomes, and short summaries over transcripts
 - avoid duplicating large raw tool output
 - remain safe to overwrite only by append-or-merge, not destructive rewrite
+- be suppressible by policy for agents that do not benefit from daily memory
 
 ### Automatic User Memory Updates
 
@@ -159,6 +261,9 @@ strong and durable, for example:
 
 It should not write transient task context or one-off moods into
 `USER_MEMORY.md`.
+
+For some agents, especially review or triage agents, automatic `USER_MEMORY.md`
+writes should be disabled entirely.
 
 ### Automatic Curation
 
@@ -181,6 +286,9 @@ It should avoid:
 - rewriting bootstrap files like `AGENT.md`, `USER.md`, `SOUL.md`
 - copying transcripts verbatim into durable memory
 - promoting environment failures or transient errors as long-lived truths
+
+Automatic curation should also be optional. For some agents, the correct
+configuration is no curation at all.
 
 ## Recommended Promotion Rules
 
@@ -236,6 +344,17 @@ This is the more important model for ForgeClaw's evolution.
 - keep backward-compatible reads for legacy daily-note layouts
 - update prompts and docs to reflect the memory layers
 
+### Phase 1.5: Config Surface
+
+- add explicit config for memory behavior by agent/profile
+- allow disabling or constraining:
+  - working-memory writes
+  - user-memory writes
+  - promotion
+  - curation
+  - recall
+- set conservative defaults for non-personal agents
+
 ### Phase 2: Safer Automatic Writing
 
 - add explicit write helpers for:
@@ -244,6 +363,7 @@ This is the more important model for ForgeClaw's evolution.
   - daily working memory
 - add append-only / merge-friendly policies
 - add tests around promotion boundaries
+- respect per-agent memory policy when deciding whether to write at all
 
 ### Phase 3: Background Review and Promotion
 
@@ -252,6 +372,7 @@ This is the more important model for ForgeClaw's evolution.
   - proposes or applies promotions
   - updates `MEMORY.md` / `USER_MEMORY.md`
 - make review conservative by default
+- keep reviewer/automation-oriented agents opted out by default
 
 ### Phase 4: Recall Improvements
 
