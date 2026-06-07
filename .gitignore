@@ -69,6 +69,7 @@ web/backend/dist/*
 !web/backend/dist/.gitkeep
 
 .claude/
+.worktrees/
 
 docker/data
 

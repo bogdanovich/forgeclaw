@@ -584,8 +584,13 @@ func extractZip(archivePath, destDir string) error {
 			out.Close()
 			return err
 		}
-		rc.Close()
-		out.Close()
+		if err := rc.Close(); err != nil {
+			out.Close()
+			return fmt.Errorf("close zip entry reader: %w", err)
+		}
+		if err := out.Close(); err != nil {
+			return fmt.Errorf("close extracted file %q: %w", target, err)
+		}
 	}
 	return nil
 }
@@ -649,7 +654,9 @@ func extractTarFromReader(tr *tar.Reader, destDir string) error {
 				out.Close()
 				return err
 			}
-			out.Close()
+			if err := out.Close(); err != nil {
+				return fmt.Errorf("close extracted file %q: %w", target, err)
+			}
 		}
 	}
 	return nil
