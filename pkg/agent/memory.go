@@ -75,8 +75,10 @@ func (ms *MemoryStore) recentDailyCandidatePaths(days int) []string {
 // TrackedPaths returns memory files whose changes should invalidate prompt
 // cache baselines.
 func (ms *MemoryStore) TrackedPaths() []string {
-	paths := []string{ms.memoryFile, ms.userMemoryFile}
-	paths = append(paths, ms.recentDailyCandidatePaths(3)...)
+	recent := ms.recentDailyCandidatePaths(3)
+	paths := make([]string, 0, 2+len(recent))
+	paths = append(paths, ms.memoryFile, ms.userMemoryFile)
+	paths = append(paths, recent...)
 	return paths
 }
 
