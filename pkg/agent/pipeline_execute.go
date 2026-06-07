@@ -77,6 +77,43 @@ func fatalMCPServerErrorReply(serverName, toolName string) string {
 	return "I hit a backend MCP transport error and stopped instead of trying workarounds. Please restart or fix that MCP server, then try again."
 }
 
+func (al *AgentLoop) applySyncToolResultDelivery(
+	ctx context.Context,
+	ts *turnState,
+	result *tools.ToolResult,
+	toolName string,
+) ([]providers.Attachment, *tools.ToolResult) {
+	if result == nil {
+		return nil, tools.ErrorResult("nil tool result")
+	}
+
+	if ts.opts.SuppressToolUserDelivery {
+		result.ResponseHandled = false
+		result.ImmediateDelivery = false
+	}
+
+	if !ts.opts.SuppressToolUserDelivery && result.ImmediateDelivery {
+		if _, _, err := al.deliverToolResultToUser(ctx, ts, result, toolName); err != nil {
+			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
+		}
+	}
+
+	if !ts.opts.SuppressToolUserDelivery && result.ResponseHandled {
+		attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, result, toolName)
+		if err != nil {
+			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
+		}
+		if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(result)) > 0 {
+			result.ResponseHandled = false
+		}
+		if outcome == toolResultDeliveryDirect {
+			return attachments, result
+		}
+	}
+
+	return nil, result
+}
+
 func mcpServerNameForTool(ts *turnState, toolName string) string {
 	if ts == nil || ts.agent == nil || ts.agent.Tools == nil {
 		return ""
@@ -306,29 +343,9 @@ toolLoop:
 
 					toolDuration := time.Duration(0)
 
-					if ts.opts.SuppressToolUserDelivery {
-						hookResult.ResponseHandled = false
-						hookResult.ImmediateDelivery = false
-					}
-
-					if !ts.opts.SuppressToolUserDelivery && hookResult.ImmediateDelivery {
-						if _, _, err := al.deliverToolResultToUser(ctx, ts, hookResult, toolName); err != nil {
-							hookResult.IsError = true
-							hookResult.ForLLM = fmt.Sprintf("failed to deliver attachment: %v", err)
-						}
-					}
-
-					if !ts.opts.SuppressToolUserDelivery && hookResult.ResponseHandled {
-						attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, hookResult, toolName)
-						if err != nil {
-							hookResult.IsError = true
-							hookResult.ForLLM = fmt.Sprintf("failed to deliver attachment: %v", err)
-						} else if outcome == toolResultDeliveryDirect {
-							handledAttachments = append(handledAttachments, attachments...)
-						} else if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(hookResult)) > 0 {
-							hookResult.ResponseHandled = false
-						}
-					}
+					attachments, deliveredResult := al.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
+					hookResult = deliveredResult
+					handledAttachments = append(handledAttachments, attachments...)
 
 					shouldSendForUser := !hookResult.ResponseHandled &&
 						!ts.opts.SuppressToolUserDelivery &&
@@ -673,27 +690,9 @@ toolLoop:
 			exec.actionLog = appendTurnActionRecord(exec.actionLog, "tool_result", toolName, toolSummary, toolResult.IsError)
 		}
 
-		if ts.opts.SuppressToolUserDelivery {
-			toolResult.ResponseHandled = false
-			toolResult.ImmediateDelivery = false
-		}
-
-		if !ts.opts.SuppressToolUserDelivery && toolResult.ImmediateDelivery {
-			if _, _, err := al.deliverToolResultToUser(ctx, ts, toolResult, toolName); err != nil {
-				toolResult = tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
-			}
-		}
-
-		if !ts.opts.SuppressToolUserDelivery && toolResult.ResponseHandled {
-			attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, toolResult, toolName)
-			if err != nil {
-				toolResult = tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
-			} else if outcome == toolResultDeliveryDirect {
-				handledAttachments = append(handledAttachments, attachments...)
-			} else if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(toolResult)) > 0 {
-				toolResult.ResponseHandled = false
-			}
-		}
+		attachments, deliveredResult := al.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
+		toolResult = deliveredResult
+		handledAttachments = append(handledAttachments, attachments...)
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
 			recordCompletionMedia(exec, al.mediaStore, toolResult.Media)
