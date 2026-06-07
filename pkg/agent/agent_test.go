@@ -6897,6 +6897,47 @@ func TestResolveMediaRefs_AudioInjectsAudioPath(t *testing.T) {
 	}
 }
 
+func TestTranscribeAudioInMessage_PreservesAudioMediaRefs(t *testing.T) {
+	cfg := &config.Config{}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+
+	store := media.NewFileMediaStore()
+	dir := t.TempDir()
+
+	audioPath := filepath.Join(dir, "voice.ogg")
+	if err := os.WriteFile(audioPath, []byte("fake audio"), 0o644); err != nil {
+		t.Fatalf("write audio fixture: %v", err)
+	}
+
+	ref, err := store.Store(audioPath, media.MediaMeta{
+		Filename:      "voice.ogg",
+		ContentType:   "audio/ogg",
+		CleanupPolicy: media.CleanupPolicyForgetOnly,
+	}, "scope-voice")
+	if err != nil {
+		t.Fatalf("store audio fixture: %v", err)
+	}
+
+	al.SetMediaStore(store)
+	al.SetTranscriber(&fixedTranscriber{text: "hello from voice"})
+
+	msg := bus.InboundMessage{
+		Content: "[voice]",
+		Media:   []string{ref},
+	}
+
+	got, hadAudio := al.transcribeAudioInMessage(context.Background(), msg)
+	if !hadAudio {
+		t.Fatal("expected audio transcription to run")
+	}
+	if got.Content != "[voice: hello from voice]" {
+		t.Fatalf("expected transcribed content, got %q", got.Content)
+	}
+	if !reflect.DeepEqual(got.Media, []string{ref}) {
+		t.Fatalf("expected audio media refs to be preserved, got %#v", got.Media)
+	}
+}
+
 func TestResolveMediaRefs_VideoInjectsVideoPath(t *testing.T) {
 	store := media.NewFileMediaStore()
 	dir := t.TempDir()
