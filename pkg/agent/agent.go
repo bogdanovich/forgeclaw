@@ -172,7 +172,11 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				// Non-routable message (e.g., system) — process immediately.
 				// Note: system messages are processed in the main goroutine,
 				// so they block the receive loop but guarantee session serialization.
-				al.processMessageSync(ctx, msg)
+				if al.processMessageSync(ctx, msg) {
+					al.ackInboundMessage(ctx, msg)
+				} else {
+					al.releaseInboundMessage(context.Background(), msg, ctx.Err())
+				}
 				continue
 			}
 
@@ -188,6 +192,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			}
 			if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
 				if al.tryHandleStopCommand(ctx, msg, sessionKey) {
+					al.ackInboundMessage(ctx, msg)
 					continue
 				}
 
@@ -195,9 +200,10 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 
 				// Another turn is already active (or reserved) for this session — enqueue
 				if err := al.enqueueSteeringMessage(sessionKey, agentID, providers.Message{
-					Role:    "user",
-					Content: msg.Content,
-					Media:   append([]string(nil), msg.Media...),
+					Role:           "user",
+					Content:        msg.Content,
+					Media:          append([]string(nil), msg.Media...),
+					InboundSpoolID: msg.SpoolID,
 				}); err != nil {
 					logger.WarnCF("agent", "Failed to enqueue steering message",
 						map[string]any{
@@ -206,6 +212,8 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 							"chat_id":     msg.ChatID,
 							"session_key": sessionKey,
 						})
+					al.releaseInboundMessage(ctx, msg, err)
+					continue
 				}
 				continue
 			}
@@ -222,6 +230,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 					// Context canceled while waiting for a slot — clean up the
 					// placeholder to prevent session-level deadlock.
 					al.activeTurnStates.Delete(sessionKey)
+					al.releaseInboundMessage(context.Background(), m, ctx.Err())
 					return
 				}
 
@@ -258,6 +267,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 
 				if al.takePendingStop(sessionKey) {
 					al.activeTurnStates.Delete(sessionKey)
+					al.ackInboundMessage(ctx, m)
 					target := &continuationTarget{
 						SessionKey: sessionKey,
 						Channel:    m.Channel,
@@ -289,7 +299,11 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 					return
 				}
 
-				al.runTurnWithSteering(ctx, m)
+				if al.runTurnWithSteering(ctx, m) {
+					al.ackInboundMessage(ctx, m)
+				} else {
+					al.releaseInboundMessage(context.Background(), m, ctx.Err())
+				}
 			}(msg)
 
 			// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.

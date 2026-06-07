@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -301,6 +302,131 @@ func TestRegistryPreservesExplicitDeliverableReport(t *testing.T) {
 	nested := storedReport.Extra["nested"].(map[string]any)
 	if nested["key"] != "value" {
 		t.Fatalf("extra map aliased: %+v", storedReport.Extra)
+	}
+}
+
+func TestTaskPacketPayload_UnmarshalPreservesTypedAndExtraFields(t *testing.T) {
+	var packet TaskPacketPayload
+	if err := json.Unmarshal([]byte(`{
+		"kind":"coding",
+		"objective":"land the fix",
+		"reporting":{"audience":"user","format":"short","unknown_reporting":"keep"},
+		"recovery":{"retry_policy":"safe","max_attempts":2,"unknown_recovery":"keep"},
+		"coding":{"repo":"owner/repo","tests":["go test ./..."],"unknown_coding":"keep"},
+		"media":{"expected_artifacts":["video"],"send_media":true,"unknown_media":"keep"},
+		"research":{"questions":["what regressed?"],"citation_style":"inline","unknown_research":"keep"},
+		"nutrition":{"meal":"lunch"},
+		"top_unknown":"keep"
+	}`), &packet); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if packet.Reporting == nil || packet.Reporting.Audience != "user" || packet.Reporting.Format != "short" {
+		t.Fatalf("unexpected reporting: %+v", packet.Reporting)
+	}
+	if packet.Reporting.Extra["unknown_reporting"] != "keep" {
+		t.Fatalf("reporting extra lost: %+v", packet.Reporting.Extra)
+	}
+	if packet.Recovery == nil || packet.Recovery.RetryPolicy != "safe" || packet.Recovery.MaxAttempts != 2 {
+		t.Fatalf("unexpected recovery: %+v", packet.Recovery)
+	}
+	if packet.Recovery.Extra["unknown_recovery"] != "keep" {
+		t.Fatalf("recovery extra lost: %+v", packet.Recovery.Extra)
+	}
+	if packet.Coding == nil || packet.Coding.Repo != "owner/repo" || packet.Coding.Tests[0] != "go test ./..." {
+		t.Fatalf("unexpected coding: %+v", packet.Coding)
+	}
+	if packet.Coding.Extra["unknown_coding"] != "keep" {
+		t.Fatalf("coding extra lost: %+v", packet.Coding.Extra)
+	}
+	if packet.Media == nil || len(packet.Media.ExpectedArtifacts) != 1 || !packet.Media.SendMedia {
+		t.Fatalf("unexpected media: %+v", packet.Media)
+	}
+	if packet.Media.Extra["unknown_media"] != "keep" {
+		t.Fatalf("media extra lost: %+v", packet.Media.Extra)
+	}
+	if packet.Research == nil ||
+		packet.Research.Questions[0] != "what regressed?" ||
+		packet.Research.CitationStyle != "inline" {
+		t.Fatalf("unexpected research: %+v", packet.Research)
+	}
+	if packet.Research.Extra["unknown_research"] != "keep" {
+		t.Fatalf("research extra lost: %+v", packet.Research.Extra)
+	}
+	if packet.Nutrition["meal"] != "lunch" {
+		t.Fatalf("nutrition lost: %+v", packet.Nutrition)
+	}
+	if packet.Extra["top_unknown"] != "keep" {
+		t.Fatalf("top-level extra lost: %+v", packet.Extra)
+	}
+}
+
+func TestRegistryClonesTaskPacketTypedBlocks(t *testing.T) {
+	registry := NewRegistry("")
+	packet := &TaskPacketPayload{
+		Kind:      "media",
+		Objective: "deliver result",
+		Reporting: &TaskPacketReporting{
+			Audience: "user",
+			Channels: []string{"telegram"},
+			Extra:    map[string]any{"style": "short"},
+		},
+		Media: &TaskPacketMedia{
+			ExpectedArtifacts: []string{"video", "caption"},
+			SendMedia:         true,
+			Extra:             map[string]any{"variant": "reel"},
+		},
+		Coding: &TaskPacketCoding{
+			Tests: []string{"go test ./pkg/tasks"},
+			Extra: map[string]any{"mode": "safe"},
+		},
+		Extra: map[string]any{"top": "value"},
+	}
+	now := time.Now().UnixMilli()
+	if err := registry.Upsert(Record{
+		TaskID:      "board:typed-packet",
+		Task:        "typed packet",
+		TaskPacket:  packet,
+		Status:      StatusPlanned,
+		Runtime:     RuntimeTool,
+		CreatedAt:   now,
+		LastEventAt: now,
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	packet.Reporting.Channels[0] = "mutated"
+	packet.Reporting.Extra["style"] = "mutated"
+	packet.Media.ExpectedArtifacts[0] = "mutated"
+	packet.Media.Extra["variant"] = "mutated"
+	packet.Coding.Tests[0] = "mutated"
+	packet.Coding.Extra["mode"] = "mutated"
+	packet.Extra["top"] = "mutated"
+
+	rec, ok := registry.Get("board:typed-packet")
+	if !ok {
+		t.Fatal("expected typed packet record")
+	}
+	if rec.TaskPacket.Reporting.Channels[0] != "telegram" {
+		t.Fatalf("reporting channels aliased: %+v", rec.TaskPacket.Reporting)
+	}
+	if rec.TaskPacket.Reporting.Extra["style"] != "short" {
+		t.Fatalf("reporting extra aliased: %+v", rec.TaskPacket.Reporting.Extra)
+	}
+	if rec.TaskPacket.Media.ExpectedArtifacts[0] != "video" {
+		t.Fatalf("media artifacts aliased: %+v", rec.TaskPacket.Media)
+	}
+	if rec.TaskPacket.Media.Extra["variant"] != "reel" {
+		t.Fatalf("media extra aliased: %+v", rec.TaskPacket.Media.Extra)
+	}
+	if rec.TaskPacket.Coding.Tests[0] != "go test ./pkg/tasks" {
+		t.Fatalf("coding tests aliased: %+v", rec.TaskPacket.Coding)
+	}
+	if rec.TaskPacket.Coding.Extra["mode"] != "safe" {
+		t.Fatalf("coding extra aliased: %+v", rec.TaskPacket.Coding.Extra)
+	}
+	if rec.TaskPacket.Extra["top"] != "value" {
+		t.Fatalf("top-level extra aliased: %+v", rec.TaskPacket.Extra)
 	}
 }
 

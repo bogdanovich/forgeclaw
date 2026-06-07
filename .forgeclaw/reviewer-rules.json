@@ -1,0 +1,270 @@
+{
+  "version": 1,
+  "include": [],
+  "exclude": [
+    "docs/**",
+    "**/*.txt",
+    "**/*.svg",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.webp",
+    "**/*.ico",
+    "**/*.lock",
+    "**/go.sum",
+    "third_party/**"
+  ],
+  "path_rules": [
+    {
+      "pattern": "docs/architecture/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check that architecture docs still match the real runtime behavior and rollout assumptions."
+      ]
+    },
+    {
+      "pattern": "pkg/agent/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check turn ownership, async continuation, final delivery, and duplicate-send behavior.",
+        "Look for restart/recovery regressions, state cleanup races, and changes in reply semantics."
+      ]
+    },
+    {
+      "pattern": "pkg/channels/telegram/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check mention/topic routing, formatting, media grouping, replay, and message-loss risk."
+      ]
+    },
+    {
+      "pattern": "pkg/channels/slack/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check channel-specific formatting, webhook semantics, and compatibility with existing Slack behavior."
+      ]
+    },
+    {
+      "pattern": "pkg/channels/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check routing, suppression rules, parse/format behavior, and per-channel delivery semantics.",
+        "Pay attention to replay, idempotency, and message-loss risk."
+      ]
+    },
+    {
+      "pattern": "pkg/gateway/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check startup wiring, ingress/recovery ordering, and durable spool/replay behavior."
+      ]
+    },
+    {
+      "pattern": "pkg/bus/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check inbound/outbound durability, ack/release semantics, and replay ordering."
+      ]
+    },
+    {
+      "pattern": "pkg/cron/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check scheduling semantics, duplicate execution risk, and silent/visible job behavior."
+      ]
+    },
+    {
+      "pattern": "pkg/credential/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check secret storage, redaction, and compatibility with existing credential loading."
+      ]
+    },
+    {
+      "pattern": "pkg/tools/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check tool result contracts, async delivery, task registry integration, and user-visible tool semantics."
+      ]
+    },
+    {
+      "pattern": "pkg/mcp/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check transport lifecycle, tool exposure rules, and failure handling."
+      ]
+    },
+    {
+      "pattern": "pkg/seahorse/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check compaction correctness, summary persistence, and context reconstruction behavior."
+      ]
+    },
+    {
+      "pattern": "pkg/session/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check session identity, reset semantics, persistence boundaries, and cross-channel aliasing behavior."
+      ]
+    },
+    {
+      "pattern": "pkg/state/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check persistent state layout, migration risk, and state ownership invariants."
+      ]
+    },
+    {
+      "pattern": "pkg/workspace/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check workspace isolation, path resolution, and cross-profile leakage risk."
+      ]
+    },
+    {
+      "pattern": "pkg/tasks/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check durable task state transitions, terminal state semantics, and projection/reporting contracts."
+      ]
+    },
+    {
+      "pattern": "pkg/auth/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check token handling, refresh flows, secret exposure, and persistence of credentials."
+      ]
+    },
+    {
+      "pattern": "pkg/routing/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check routing precedence, session targeting, and compatibility with existing dispatch rules."
+      ]
+    },
+    {
+      "pattern": "pkg/evolution/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check lifecycle/state-machine behavior and whether draft/live transitions remain coherent."
+      ]
+    },
+    {
+      "pattern": "pkg/migrate/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check one-way migration safety, idempotency, and upgrade compatibility for existing installs."
+      ]
+    },
+    {
+      "pattern": "web/backend/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check externally reachable API changes, validation, auth boundaries, and migration compatibility."
+      ]
+    },
+    {
+      "pattern": "web/frontend/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check user-visible regressions, API contract drift with backend, and broken workflow affordances."
+      ]
+    },
+    {
+      "pattern": "pkg/providers/oauth/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check token lifecycle, refresh behavior, callback handling, and secret persistence."
+      ]
+    },
+    {
+      "pattern": "pkg/providers/openai_compat/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check provider protocol compatibility, request/response mapping, and tool/media contract behavior."
+      ]
+    },
+    {
+      "pattern": "pkg/providers/openai_responses_common/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check OpenAI Responses API parsing, truncation, and compatibility across provider paths."
+      ]
+    },
+    {
+      "pattern": "pkg/providers/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check provider fallback behavior, request/response parsing, and model/tool contract changes."
+      ]
+    },
+    {
+      "pattern": "pkg/config/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check env/config compatibility, default values, and upgrade risk for existing deployments."
+      ]
+    },
+    {
+      "pattern": "pkg/commands/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check command-surface compatibility, behavior changes, and user-facing semantics."
+      ]
+    },
+    {
+      "pattern": "cmd/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check CLI compatibility and operational behavior changes."
+      ]
+    },
+    {
+      "pattern": ".github/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check CI behavior changes, branch protection expectations, and whether local reviewer guidance needs updating."
+      ]
+    },
+    {
+      "pattern": "**/*_test.go",
+      "risk": "normal",
+      "codex": "auto",
+      "guidance": [
+        "Verify tests actually cover the changed behavior and would fail before the change."
+      ]
+    }
+  ]
+}

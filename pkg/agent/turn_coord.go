@@ -162,6 +162,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					ts.recordPersistedMessage(pm)
 					ts.ingestMessage(turnCtx, al, pm)
 				}
+				al.ackAcceptedSteeringMessages(ctx, []providers.Message{pm})
 				logger.InfoCF("agent", "Injected steering message into context",
 					map[string]any{
 						"agent_id":    ts.agent.ID,

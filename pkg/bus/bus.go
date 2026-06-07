@@ -65,6 +65,7 @@ type MessageBus struct {
 	wg             sync.WaitGroup
 	streamDelegate atomic.Value // stores StreamDelegate
 	eventPublisher atomic.Value // stores EventPublisher
+	inboundSpool   atomic.Value // stores *InboundSpool
 }
 
 // EventPublisher is the minimal runtime event publisher used by MessageBus.
@@ -119,7 +120,20 @@ func (mb *MessageBus) PublishInbound(ctx context.Context, msg InboundMessage) er
 		mb.publishFailure("inbound", runtimeScopeFromInboundContext(msg.Context), ErrMissingInboundContext)
 		return ErrMissingInboundContext
 	}
+	prepared := false
+	if spool := mb.getInboundSpool(); spool != nil && msg.SpoolID == "" {
+		preparedMsg, err := spool.Prepare(ctx, msg)
+		if err != nil {
+			mb.publishFailure("inbound_spool", runtimeScopeFromInboundContext(msg.Context), err)
+			return err
+		}
+		msg = preparedMsg
+		prepared = true
+	}
 	if err := publish(ctx, mb, mb.inbound, msg); err != nil {
+		if prepared {
+			_ = mb.ReleaseInbound(ctx, msg, err)
+		}
 		mb.publishFailure("inbound", runtimeScopeFromInboundContext(msg.Context), err)
 		return err
 	}
@@ -128,6 +142,56 @@ func (mb *MessageBus) PublishInbound(ctx context.Context, msg InboundMessage) er
 
 func (mb *MessageBus) InboundChan() <-chan InboundMessage {
 	return mb.inbound
+}
+
+func (mb *MessageBus) SetInboundSpool(spool *InboundSpool) {
+	mb.inboundSpool.Store(spool)
+}
+
+func (mb *MessageBus) AckInbound(_ context.Context, msg InboundMessage) error {
+	if spool := mb.getInboundSpool(); spool != nil {
+		return spool.Ack(msg.SpoolID)
+	}
+	return nil
+}
+
+func (mb *MessageBus) ReleaseInbound(_ context.Context, msg InboundMessage, cause error) error {
+	if spool := mb.getInboundSpool(); spool != nil {
+		return spool.Release(msg.SpoolID, cause)
+	}
+	return nil
+}
+
+func (mb *MessageBus) ReplayInboundSpool(ctx context.Context) (int, error) {
+	spool := mb.getInboundSpool()
+	if spool == nil {
+		return 0, nil
+	}
+	msgs, err := spool.Pending(ctx, 0)
+	if err != nil {
+		return 0, err
+	}
+	for _, msg := range msgs {
+		if err := publish(ctx, mb, mb.inbound, msg); err != nil {
+			return 0, err
+		}
+	}
+	return len(msgs), nil
+}
+
+func (mb *MessageBus) PendingInboundSpool(ctx context.Context) ([]InboundMessage, error) {
+	spool := mb.getInboundSpool()
+	if spool == nil {
+		return nil, nil
+	}
+	return spool.Pending(ctx, 0)
+}
+
+func (mb *MessageBus) getInboundSpool() *InboundSpool {
+	if spool, ok := mb.inboundSpool.Load().(*InboundSpool); ok {
+		return spool
+	}
+	return nil
 }
 
 func (mb *MessageBus) PublishObserved(ctx context.Context, msg ObservedMessage) error {

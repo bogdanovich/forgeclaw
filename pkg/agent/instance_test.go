@@ -838,7 +838,7 @@ mcpServers: []
 	}
 }
 
-func TestNewAgentInstance_IncludesToolDiscoveryPromptWhenDiscoverableMCPServerSelected(t *testing.T) {
+func TestNewAgentInstance_DoesNotPredeclareToolDiscoveryFromConfigOnly(t *testing.T) {
 	workspace := setupWorkspace(t, map[string]string{
 		"AGENT.md": `---
 mcpServers: [github]
@@ -876,8 +876,8 @@ mcpServers: [github]
 	}, &cfg.Agents.Defaults, cfg, &mockProvider{})
 
 	messages := agent.ContextBuilder.BuildMessagesFromPrompt(PromptBuildRequest{CurrentMessage: "hello"})
-	if prompt := messages[0].Content; !strings.Contains(prompt, tools.BM25SearchToolName) {
-		t.Fatalf("expected tool discovery prompt when a discoverable MCP server is selected, got %q", prompt)
+	if prompt := messages[0].Content; strings.Contains(prompt, tools.BM25SearchToolName) {
+		t.Fatalf("expected no tool discovery prompt before MCP initialization computes hidden tools, got %q", prompt)
 	}
 }
 

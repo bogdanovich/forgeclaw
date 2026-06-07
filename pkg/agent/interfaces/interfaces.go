@@ -15,6 +15,15 @@ type MessageBus interface {
 	// PublishInbound sends an inbound message to be processed.
 	PublishInbound(ctx context.Context, msg bus.InboundMessage) error
 
+	// AckInbound confirms that a durable inbound message has been accepted or processed.
+	AckInbound(ctx context.Context, msg bus.InboundMessage) error
+
+	// ReleaseInbound returns a durable inbound message to the queue after a transient failure.
+	ReleaseInbound(ctx context.Context, msg bus.InboundMessage, cause error) error
+
+	// PendingInboundSpool returns durable inbound messages that are not acked yet.
+	PendingInboundSpool(ctx context.Context) ([]bus.InboundMessage, error)
+
 	// PublishObserved sends passive context that should be persisted without starting a turn.
 	PublishObserved(ctx context.Context, msg bus.ObservedMessage) error
 

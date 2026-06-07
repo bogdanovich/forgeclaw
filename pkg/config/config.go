@@ -194,6 +194,9 @@ type ExposePath struct {
 // Uses strings.Replacer for O(n+m) performance (computed once per SecurityConfig).
 // Short content (below FilterMinLength) is returned unchanged for performance.
 func (c *Config) FilterSensitiveData(content string) string {
+	if c == nil {
+		return content
+	}
 	// Check if filtering is enabled (default: true)
 	if !c.Tools.IsFilterSensitiveDataEnabled() {
 		return content
@@ -577,8 +580,10 @@ type DingTalkSettings struct {
 }
 
 type SlackSettings struct {
-	BotToken SecureString `json:"bot_token,omitzero" yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_BOT_TOKEN"`
-	AppToken SecureString `json:"app_token,omitzero" yaml:"app_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_APP_TOKEN"`
+	BotToken          SecureString        `json:"bot_token,omitzero"            yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_BOT_TOKEN"`
+	AppToken          SecureString        `json:"app_token,omitzero"            yaml:"app_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_APP_TOKEN"`
+	AllowedChannelIDs FlexibleStringSlice `json:"allowed_channel_ids,omitempty" yaml:"-"                   env:"PICOCLAW_CHANNELS_SLACK_ALLOWED_CHANNEL_IDS"`
+	IgnoredChannelIDs FlexibleStringSlice `json:"ignored_channel_ids,omitempty" yaml:"-"                   env:"PICOCLAW_CHANNELS_SLACK_IGNORED_CHANNEL_IDS"`
 }
 
 type MatrixSettings struct {
@@ -1213,6 +1218,9 @@ type MCPServerConfig struct {
 	// When nil, the global Discovery.Enabled setting applies.
 	// When explicitly set to true or false, it overrides the global setting for this server only.
 	Deferred *bool `json:"deferred,omitempty"`
+	// VisibleTools keeps a small allowlist of MCP tool names directly visible even when the
+	// server is otherwise deferred. Hidden registration still applies to all other tools.
+	VisibleTools []string `json:"visible_tools,omitempty"`
 	// Command is the executable to run (e.g., "npx", "python", "/path/to/server")
 	Command string `json:"command"`
 	// Args are the arguments to pass to the command
@@ -1273,7 +1281,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if e := json.Unmarshal(data, &versionInfo); e != nil {
 		e = wrapJSONError(data, e, "config.json")
-		logger.ErrorCF("config", formatDiagnosticLogMessage("Malformed config file", e), map[string]any{"path": path})
+		logger.ErrorCF(
+			"config",
+			formatDiagnosticLogMessage("Malformed config file", e),
+			map[string]any{"path": path},
+		)
 		return nil, e
 	}
 	if len(data) <= 10 {
@@ -1727,8 +1739,10 @@ func (c *Config) ValidateExecConfig() error {
 		c.Tools.Exec.PermissionMode = mode
 		return nil
 	default:
-		return fmt.Errorf("tools.exec.permission_mode: unsupported value %q (allowed: \"\", \"read_only\")",
-			c.Tools.Exec.PermissionMode)
+		return fmt.Errorf(
+			"tools.exec.permission_mode: unsupported value %q (allowed: \"\", \"read_only\")",
+			c.Tools.Exec.PermissionMode,
+		)
 	}
 }
 

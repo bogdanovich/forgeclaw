@@ -113,7 +113,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		defer outCancel()
 		userDelivered := false
 		userDeliveryErr := ""
-		if _, delivered, err := al.deliverToolResultToUser(outCtx, ts, result, asyncToolName); err != nil {
+		if _, outcome, err := al.deliverToolResultToUser(outCtx, ts, result, asyncToolName); err != nil {
 			userDeliveryErr = err.Error()
 			logger.WarnCF("agent", "Failed to deliver async tool result to user",
 				map[string]any{
@@ -122,15 +122,15 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 					"chat_id": ts.chatID,
 					"error":   err.Error(),
 				})
-		} else if !delivered && delivery.MediaCount > 0 {
+		} else if outcome == toolResultDeliveryQueued {
 			userDelivered = true
-		} else if !delivered && strings.TrimSpace(result.ForUser) != "" && !result.Silent {
+		} else if outcome == toolResultDeliveryNone && strings.TrimSpace(result.ForUser) != "" && !result.Silent {
 			if err := al.bus.PublishOutbound(outCtx, outboundMessageForTurn(ts, result.ForUser)); err != nil {
 				userDeliveryErr = err.Error()
 			} else {
 				userDelivered = true
 			}
-		} else if delivered {
+		} else if outcome == toolResultDeliveryDirect {
 			userDelivered = true
 		}
 		if !delivery.QueueParent {

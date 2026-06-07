@@ -57,7 +57,7 @@ PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspa
 ~/.picoclaw/workspace/
 ├── sessions/          # Conversation sessions and history
 ├── memory/           # Workspace memory (MEMORY.md, USER_MEMORY.md, daily notes)
-├── state/            # Persistent state (last channel, etc.)
+├── state/            # Persistent state (last channel, durable ingress spool, etc.)
 ├── cron/             # Scheduled jobs database
 ├── skills/           # Custom skills
 ├── AGENT.md          # Agent behavior guide

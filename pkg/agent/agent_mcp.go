@@ -9,6 +9,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -137,6 +138,8 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 		agentIDs := al.registry.ListAgentIDs()
 		agentCount := len(agentIDs)
 
+		hiddenToolsByAgent := make(map[string]int, len(agentIDs))
+
 		for serverName, conn := range servers {
 			uniqueTools += len(conn.Tools)
 
@@ -144,7 +147,8 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 			// Per-server "deferred" field takes precedence over the global Discovery.Enabled.
 			serverCfg := mcpCfg.Servers[serverName]
 			registerAsHidden := serverIsDeferred(al.cfg.Tools.MCP.Discovery.Enabled, serverCfg)
-			registeredToolsByAgent := make(map[string]map[string]struct{}, len(agentIDs))
+			visibleTools := configuredVisibleMCPTools(serverCfg)
+			registeredToolsByAgent := make(map[string]mcpToolVisibilityCounts, len(agentIDs))
 
 			for _, tool := range conn.Tools {
 				for _, agentID := range agentIDs {
@@ -169,10 +173,11 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 					mcpTool.SetEventPublisher(al.runtimeEvents)
 
 					var registered bool
-					if registerAsHidden {
-						registered = registerHiddenToolIfAllowed(agent, mcpTool)
-					} else {
+					registerVisible := !registerAsHidden || toolVisibleFromDeferredSet(toolName, visibleTools)
+					if registerVisible {
 						registered = registerToolIfAllowed(agent, mcpTool)
+					} else {
+						registered = registerHiddenToolIfAllowed(agent, mcpTool)
 					}
 					if !registered {
 						continue
@@ -181,7 +186,10 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 						continue
 					}
 
-					recordRegisteredMCPTool(registeredToolsByAgent, agentID, toolName)
+					recordRegisteredMCPTool(registeredToolsByAgent, agentID, registerVisible)
+					if !registerVisible {
+						hiddenToolsByAgent[agentID]++
+					}
 					totalRegistrations++
 					logger.DebugCF("agent", "Registered MCP tool",
 						map[string]any{
@@ -190,6 +198,7 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 							"tool":     tool.Name,
 							"name":     toolName,
 							"deferred": registerAsHidden,
+							"visible":  registerVisible,
 						})
 				}
 			}
@@ -203,8 +212,7 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 					agentID,
 					agent,
 					serverName,
-					len(registeredToolsByAgent[agentID]),
-					registerAsHidden,
+					registeredToolsByAgent[agentID],
 				)
 			}
 		}
@@ -254,7 +262,21 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 				if !ok {
 					continue
 				}
-				if !agentHasDiscoverableMCPServers(al.cfg, agent.MCPServerPolicy) {
+				hiddenCount := hiddenToolsByAgent[agentID]
+				if agent.ContextBuilder != nil {
+					if err := agent.ContextBuilder.RegisterPromptContributor(toolDiscoveryPromptContributor{
+						useBM25:  useBM25 && hiddenCount > 0,
+						useRegex: useRegex && hiddenCount > 0,
+					}); err != nil {
+						logger.WarnCF("agent", "Failed to register tool discovery prompt contributor",
+							map[string]any{
+								"agent_id": agentID,
+								"error":    err.Error(),
+							},
+						)
+					}
+				}
+				if hiddenCount <= 0 {
 					continue
 				}
 
@@ -277,16 +299,15 @@ func registerMCPServerPromptContributor(
 	agentID string,
 	agent *AgentInstance,
 	serverName string,
-	toolCount int,
-	registerAsHidden bool,
+	counts mcpToolVisibilityCounts,
 ) {
-	if agent == nil || agent.ContextBuilder == nil || toolCount <= 0 {
+	if agent == nil || agent.ContextBuilder == nil || counts.total() <= 0 {
 		return
 	}
 	if err := agent.ContextBuilder.RegisterPromptContributor(mcpServerPromptContributor{
-		serverName: serverName,
-		toolCount:  toolCount,
-		deferred:   registerAsHidden,
+		serverName:   serverName,
+		visibleCount: counts.visible,
+		hiddenCount:  counts.hidden,
 	}); err != nil {
 		logger.WarnCF("agent", "Failed to register MCP prompt contributor",
 			map[string]any{
@@ -297,14 +318,27 @@ func registerMCPServerPromptContributor(
 	}
 }
 
+type mcpToolVisibilityCounts struct {
+	visible int
+	hidden  int
+}
+
+func (c mcpToolVisibilityCounts) total() int {
+	return c.visible + c.hidden
+}
+
 func recordRegisteredMCPTool(
-	registeredToolsByAgent map[string]map[string]struct{},
-	agentID, toolName string,
+	registeredToolsByAgent map[string]mcpToolVisibilityCounts,
+	agentID string,
+	registerVisible bool,
 ) {
-	if registeredToolsByAgent[agentID] == nil {
-		registeredToolsByAgent[agentID] = make(map[string]struct{})
+	counts := registeredToolsByAgent[agentID]
+	if registerVisible {
+		counts.visible++
+	} else {
+		counts.hidden++
 	}
-	registeredToolsByAgent[agentID][toolName] = struct{}{}
+	registeredToolsByAgent[agentID] = counts
 }
 
 func toolRegistryIncludes(registry *tools.ToolRegistry, name string) bool {
@@ -312,6 +346,29 @@ func toolRegistryIncludes(registry *tools.ToolRegistry, name string) bool {
 		return false
 	}
 	return registry.HasRegistered(name)
+}
+
+func configuredVisibleMCPTools(serverCfg config.MCPServerConfig) map[string]struct{} {
+	if len(serverCfg.VisibleTools) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(serverCfg.VisibleTools))
+	for _, toolName := range serverCfg.VisibleTools {
+		toolName = strings.TrimSpace(toolName)
+		if toolName == "" {
+			continue
+		}
+		out[toolName] = struct{}{}
+	}
+	return out
+}
+
+func toolVisibleFromDeferredSet(toolName string, visible map[string]struct{}) bool {
+	if len(visible) == 0 {
+		return false
+	}
+	_, ok := visible[toolName]
+	return ok
 }
 
 func filterMCPConfigServers(
@@ -339,29 +396,6 @@ func filterMCPConfigServers(
 	}
 
 	return filtered
-}
-
-func agentHasDiscoverableMCPServers(cfg *config.Config, allowed *PatternPolicy) bool {
-	if cfg == nil || !cfg.Tools.MCP.Enabled || !cfg.Tools.MCP.Discovery.Enabled {
-		return false
-	}
-
-	filtered := cfg.Tools.MCP
-	if allowed != nil {
-		filtered.Servers = make(map[string]config.MCPServerConfig)
-		for serverName, serverCfg := range cfg.Tools.MCP.Servers {
-			if toolAllowedByPolicy(allowed, normalizeMCPServerName(serverName)) {
-				filtered.Servers[serverName] = serverCfg
-			}
-		}
-	}
-	for _, serverCfg := range filtered.Servers {
-		if serverCfg.Enabled && serverIsDeferred(cfg.Tools.MCP.Discovery.Enabled, serverCfg) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // serverIsDeferred reports whether an MCP server's tools should be registered

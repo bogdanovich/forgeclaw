@@ -23,6 +23,18 @@ func (a *messageBusAdapter) PublishInbound(ctx context.Context, msg bus.InboundM
 	return a.inner.PublishInbound(ctx, msg)
 }
 
+func (a *messageBusAdapter) AckInbound(ctx context.Context, msg bus.InboundMessage) error {
+	return a.inner.AckInbound(ctx, msg)
+}
+
+func (a *messageBusAdapter) ReleaseInbound(ctx context.Context, msg bus.InboundMessage, cause error) error {
+	return a.inner.ReleaseInbound(ctx, msg, cause)
+}
+
+func (a *messageBusAdapter) PendingInboundSpool(ctx context.Context) ([]bus.InboundMessage, error) {
+	return a.inner.PendingInboundSpool(ctx)
+}
+
 func (a *messageBusAdapter) PublishObserved(ctx context.Context, msg bus.ObservedMessage) error {
 	return a.inner.PublishObserved(ctx, msg)
 }

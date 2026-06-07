@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -170,6 +171,105 @@ func TestPublishInbound_BackfillsContextFromLegacyFields(t *testing.T) {
 	}
 	if got.Context.MessageID != "msg-1" {
 		t.Fatalf("expected context message ID msg-1, got %q", got.Context.MessageID)
+	}
+}
+
+func TestPublishInbound_WithSpoolWritesAndAckRemovesEntry(t *testing.T) {
+	mb := NewMessageBus()
+	defer mb.Close()
+	spool, err := NewInboundSpool(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewInboundSpool failed: %v", err)
+	}
+	mb.SetInboundSpool(spool)
+
+	msg := InboundMessage{
+		Context: InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat",
+			SenderID: "user",
+		},
+		Content: "durable hello",
+	}
+	if err := mb.PublishInbound(context.Background(), msg); err != nil {
+		t.Fatalf("PublishInbound failed: %v", err)
+	}
+	got := <-mb.InboundChan()
+	if got.SpoolID == "" {
+		t.Fatal("expected spooled inbound message to have SpoolID")
+	}
+	if got.Content != "durable hello" {
+		t.Fatalf("content = %q, want durable hello", got.Content)
+	}
+	if _, err := os.Stat(spool.processingPath(got.SpoolID)); err != nil {
+		t.Fatalf("expected processing spool file: %v", err)
+	}
+	if err := mb.AckInbound(context.Background(), got); err != nil {
+		t.Fatalf("AckInbound failed: %v", err)
+	}
+	if _, err := os.Stat(spool.processingPath(got.SpoolID)); !os.IsNotExist(err) {
+		t.Fatalf("expected processing spool file removed, stat err=%v", err)
+	}
+}
+
+func TestReplayInboundSpool_ReplaysUnackedMessage(t *testing.T) {
+	dir := t.TempDir()
+	first := NewMessageBus()
+	spool, err := NewInboundSpool(dir)
+	if err != nil {
+		t.Fatalf("NewInboundSpool failed: %v", err)
+	}
+	first.SetInboundSpool(spool)
+	if publishErr := first.PublishInbound(context.Background(), InboundMessage{
+		Context: InboundContext{
+			Channel:  "slack",
+			ChatID:   "chat",
+			TopicID:  "topic-a",
+			SenderID: "user",
+		},
+		Content:    "before restart",
+		SessionKey: "agent:main:slack:chat:topic-a",
+	}); publishErr != nil {
+		t.Fatalf("PublishInbound failed: %v", publishErr)
+	}
+	published := <-first.InboundChan()
+	if published.SpoolID == "" {
+		t.Fatal("expected published message to have SpoolID")
+	}
+	first.Close()
+
+	second := NewMessageBus()
+	defer second.Close()
+	secondSpool, err := NewInboundSpool(dir)
+	if err != nil {
+		t.Fatalf("NewInboundSpool(second) failed: %v", err)
+	}
+	second.SetInboundSpool(secondSpool)
+	replayed, err := second.ReplayInboundSpool(context.Background())
+	if err != nil {
+		t.Fatalf("ReplayInboundSpool failed: %v", err)
+	}
+	if replayed != 1 {
+		t.Fatalf("replayed = %d, want 1", replayed)
+	}
+	got := <-second.InboundChan()
+	if got.SpoolID != published.SpoolID {
+		t.Fatalf("spool id = %q, want %q", got.SpoolID, published.SpoolID)
+	}
+	if got.Content != "before restart" {
+		t.Fatalf("content = %q, want before restart", got.Content)
+	}
+	if got.Context.TopicID != "topic-a" {
+		t.Fatalf("topic id = %q, want topic-a", got.Context.TopicID)
+	}
+	if got.SessionKey != "agent:main:slack:chat:topic-a" {
+		t.Fatalf("session key = %q, want topic session", got.SessionKey)
+	}
+	if err := second.AckInbound(context.Background(), got); err != nil {
+		t.Fatalf("AckInbound failed: %v", err)
+	}
+	if _, err := os.Stat(secondSpool.processingPath(got.SpoolID)); !os.IsNotExist(err) {
+		t.Fatalf("expected replayed processing file removed, stat err=%v", err)
 	}
 }
 
