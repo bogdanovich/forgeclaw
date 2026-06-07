@@ -325,7 +325,7 @@ toolLoop:
 							hookResult.ForLLM = fmt.Sprintf("failed to deliver attachment: %v", err)
 						} else if outcome == toolResultDeliveryDirect {
 							handledAttachments = append(handledAttachments, attachments...)
-						} else if outcome == toolResultDeliveryNone && len(toolResultMediaRefs(hookResult)) > 0 {
+						} else if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(hookResult)) > 0 {
 							hookResult.ResponseHandled = false
 						}
 					}
@@ -690,7 +690,7 @@ toolLoop:
 				toolResult = tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
 			} else if outcome == toolResultDeliveryDirect {
 				handledAttachments = append(handledAttachments, attachments...)
-			} else if outcome == toolResultDeliveryNone && len(toolResultMediaRefs(toolResult)) > 0 {
+			} else if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(toolResult)) > 0 {
 				toolResult.ResponseHandled = false
 			}
 		}
