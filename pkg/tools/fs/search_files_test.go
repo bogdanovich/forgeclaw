@@ -2,15 +2,22 @@ package fstools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSearchFilesTool_ContentSearch(t *testing.T) {
 	tmpDir := t.TempDir()
-	mustWriteSearchFile(t, tmpDir, "main.go", "package main\n\nfunc main() {\n\tprintln(\"needle\")\n}\n")
+	mustWriteSearchFile(
+		t,
+		tmpDir,
+		"main.go",
+		"package main\n\nfunc main() {\n\tprintln(\"needle\")\n}\n",
+	)
 	mustWriteSearchFile(t, tmpDir, "README.md", "needle in docs\n")
 
 	tool := NewSearchFilesTool(tmpDir, true, 0)
@@ -143,7 +150,10 @@ func TestSearchFilesTool_ExplicitIgnoredFilePathStillRespectsGitignore(t *testin
 		t.Fatalf("search_files failed: %s", result.ForLLM)
 	}
 	if strings.Contains(result.ForLLM, ".env") {
-		t.Fatalf("expected explicit ignored file to be skipped without include_ignored, got:\n%s", result.ForLLM)
+		t.Fatalf(
+			"expected explicit ignored file to be skipped without include_ignored, got:\n%s",
+			result.ForLLM,
+		)
 	}
 
 	result = tool.Execute(context.Background(), map[string]any{
@@ -202,6 +212,81 @@ func TestSearchFilesTool_RestrictsOutsideWorkspace(t *testing.T) {
 		!strings.Contains(result.ForLLM, "access denied") &&
 		!strings.Contains(result.ForLLM, "escapes workspace") {
 		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+}
+
+func TestSearchFilesTool_TruncatesOversizedContentResults(t *testing.T) {
+	tmpDir := t.TempDir()
+	var huge strings.Builder
+	for i := 0; i < 1200; i++ {
+		fmt.Fprintf(&huge, "line %04d: NO_REPLY runtime payload for context overflow testing\n", i)
+	}
+	mustWriteSearchFile(t, tmpDir, "sessions/runtime.jsonl", huge.String())
+
+	tool := NewSearchFilesTool(tmpDir, true, 0)
+	result := tool.Execute(context.Background(), map[string]any{
+		"pattern":     "NO_REPLY",
+		"path":        ".",
+		"output_mode": "content",
+		"limit":       500,
+	})
+
+	if result.IsError {
+		t.Fatalf("search_files failed: %s", result.ForLLM)
+	}
+	if len(result.ForLLM) > maxSearchFilesResultBytes {
+		t.Fatalf(
+			"expected truncated result <= %d bytes, got %d",
+			maxSearchFilesResultBytes,
+			len(result.ForLLM),
+		)
+	}
+	if !strings.Contains(result.ForLLM, "[truncated:") {
+		t.Fatalf("expected truncation note, got:\n%s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "sessions/runtime.jsonl") {
+		t.Fatalf("expected runtime file matches to remain searchable, got:\n%s", result.ForLLM)
+	}
+	if !utf8.ValidString(result.ForLLM) {
+		t.Fatal("expected truncated result to remain valid UTF-8")
+	}
+}
+
+func TestSearchFilesTool_TruncatesOversizedFilesOnlyResults(t *testing.T) {
+	tmpDir := t.TempDir()
+	for i := 0; i < 2000; i++ {
+		mustWriteSearchFile(
+			t,
+			tmpDir,
+			filepath.Join("sessions", fmt.Sprintf("session-%04d.jsonl", i)),
+			"runtime marker\n",
+		)
+	}
+
+	tool := NewSearchFilesTool(tmpDir, true, 0)
+	result := tool.Execute(context.Background(), map[string]any{
+		"pattern":     "session-*.jsonl",
+		"target":      "files",
+		"path":        ".",
+		"output_mode": "files_only",
+		"limit":       500,
+	})
+
+	if result.IsError {
+		t.Fatalf("search_files failed: %s", result.ForLLM)
+	}
+	if len(result.ForLLM) > maxSearchFilesResultBytes {
+		t.Fatalf(
+			"expected truncated result <= %d bytes, got %d",
+			maxSearchFilesResultBytes,
+			len(result.ForLLM),
+		)
+	}
+	if !strings.Contains(result.ForLLM, "[truncated:") {
+		t.Fatalf("expected truncation note, got:\n%s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "sessions/session-") {
+		t.Fatalf("expected matching session paths, got:\n%s", result.ForLLM)
 	}
 }
 
