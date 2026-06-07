@@ -18,23 +18,19 @@ func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.Inbou
 
 	// Transcribe each audio media ref in order.
 	var transcriptions []string
-	var keptMedia []string
 	for _, ref := range msg.Media {
 		path, meta, err := al.mediaStore.ResolveWithMeta(ref)
 		if err != nil {
 			logger.WarnCF("voice", "Failed to resolve media ref", map[string]any{"ref": ref, "error": err})
-			keptMedia = append(keptMedia, ref)
 			continue
 		}
 		if !utils.IsAudioFile(meta.Filename, meta.ContentType) {
-			keptMedia = append(keptMedia, ref)
 			continue
 		}
 		result, err := al.transcriber.Transcribe(ctx, path)
 		if err != nil {
 			logger.WarnCF("voice", "Transcription failed", map[string]any{"ref": ref, "error": err})
 			transcriptions = append(transcriptions, "")
-			keptMedia = append(keptMedia, ref)
 			continue
 		}
 		transcriptions = append(transcriptions, result.Text)
@@ -68,7 +64,6 @@ func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.Inbou
 	}
 
 	msg.Content = newContent
-	msg.Media = keptMedia
 	return msg, true
 }
 
