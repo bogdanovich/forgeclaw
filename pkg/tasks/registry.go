@@ -146,13 +146,61 @@ type TaskPacketPayload struct {
 	VerificationPlan   []string             `json:"verification_plan,omitempty"`
 	Resources          []TaskPacketResource `json:"resources,omitempty"`
 	Constraints        []string             `json:"constraints,omitempty"`
-	Reporting          map[string]any       `json:"reporting,omitempty"`
-	Recovery           map[string]any       `json:"recovery,omitempty"`
-	Coding             map[string]any       `json:"coding,omitempty"`
-	Media              map[string]any       `json:"media,omitempty"`
-	Research           map[string]any       `json:"research,omitempty"`
+	Reporting          *TaskPacketReporting `json:"reporting,omitempty"`
+	Recovery           *TaskPacketRecovery  `json:"recovery,omitempty"`
+	Coding             *TaskPacketCoding    `json:"coding,omitempty"`
+	Media              *TaskPacketMedia     `json:"media,omitempty"`
+	Research           *TaskPacketResearch  `json:"research,omitempty"`
 	Nutrition          map[string]any       `json:"nutrition,omitempty"`
 	Extra              map[string]any       `json:"extra,omitempty"`
+}
+
+type TaskPacketReporting struct {
+	Audience      string         `json:"audience,omitempty"`
+	Format        string         `json:"format,omitempty"`
+	Channels      []string       `json:"channels,omitempty"`
+	IncludeStatus bool           `json:"include_status,omitempty"`
+	IncludeReport bool           `json:"include_report,omitempty"`
+	Extra         map[string]any `json:"extra,omitempty"`
+}
+
+type TaskPacketRecovery struct {
+	RetryPolicy string         `json:"retry_policy,omitempty"`
+	Escalation  string         `json:"escalation,omitempty"`
+	Fallback    string         `json:"fallback,omitempty"`
+	MaxAttempts int            `json:"max_attempts,omitempty"`
+	Extra       map[string]any `json:"extra,omitempty"`
+}
+
+type TaskPacketCoding struct {
+	Repo           string         `json:"repo,omitempty"`
+	Worktree       string         `json:"worktree,omitempty"`
+	BaseBranch     string         `json:"base_branch,omitempty"`
+	HeadBranch     string         `json:"head_branch,omitempty"`
+	Paths          []string       `json:"paths,omitempty"`
+	Tests          []string       `json:"tests,omitempty"`
+	CommitPolicy   string         `json:"commit_policy,omitempty"`
+	MergePolicy    string         `json:"merge_policy,omitempty"`
+	ApprovalPolicy string         `json:"approval_policy,omitempty"`
+	Extra          map[string]any `json:"extra,omitempty"`
+}
+
+type TaskPacketMedia struct {
+	SourceURI         string         `json:"source_uri,omitempty"`
+	ExpectedArtifacts []string       `json:"expected_artifacts,omitempty"`
+	SendMedia         bool           `json:"send_media,omitempty"`
+	OutputLanguage    string         `json:"output_language,omitempty"`
+	CaptionRequired   bool           `json:"caption_required,omitempty"`
+	Extra             map[string]any `json:"extra,omitempty"`
+}
+
+type TaskPacketResearch struct {
+	Questions     []string       `json:"questions,omitempty"`
+	Depth         string         `json:"depth,omitempty"`
+	SourcePolicy  string         `json:"source_policy,omitempty"`
+	CitationStyle string         `json:"citation_style,omitempty"`
+	OutputFormat  string         `json:"output_format,omitempty"`
+	Extra         map[string]any `json:"extra,omitempty"`
 }
 
 // TaskPacketResource identifies an input or reference material used by a task
@@ -624,6 +672,9 @@ func (r *Registry) normalizeRecord(rec Record, now int64) Record {
 	if rec.Deliverable != nil {
 		rec.Deliverable = normalizeDeliverablePayload(rec.Deliverable, now)
 	}
+	if rec.TaskPacket != nil {
+		rec.TaskPacket = cloneTaskPacketPayload(rec.TaskPacket)
+	}
 	return rec
 }
 
@@ -1018,4 +1069,206 @@ func copyAnyValue(value any) any {
 	default:
 		return typed
 	}
+}
+
+func (p *TaskPacketPayload) UnmarshalJSON(data []byte) error {
+	type alias TaskPacketPayload
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	deleteKnownKeys(
+		raw,
+		"kind",
+		"objective",
+		"scope",
+		"acceptance_criteria",
+		"verification_plan",
+		"resources",
+		"constraints",
+		"reporting",
+		"recovery",
+		"coding",
+		"media",
+		"research",
+		"nutrition",
+		"extra",
+	)
+	decoded.Extra = mergeAnyMaps(decoded.Extra, raw)
+	*p = TaskPacketPayload(decoded)
+	return nil
+}
+
+func (p *TaskPacketReporting) UnmarshalJSON(data []byte) error {
+	type alias TaskPacketReporting
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	deleteKnownKeys(raw, "audience", "format", "channels", "include_status", "include_report", "extra")
+	decoded.Extra = mergeAnyMaps(decoded.Extra, raw)
+	*p = TaskPacketReporting(decoded)
+	return nil
+}
+
+func (p *TaskPacketRecovery) UnmarshalJSON(data []byte) error {
+	type alias TaskPacketRecovery
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	deleteKnownKeys(raw, "retry_policy", "escalation", "fallback", "max_attempts", "extra")
+	decoded.Extra = mergeAnyMaps(decoded.Extra, raw)
+	*p = TaskPacketRecovery(decoded)
+	return nil
+}
+
+func (p *TaskPacketCoding) UnmarshalJSON(data []byte) error {
+	type alias TaskPacketCoding
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	deleteKnownKeys(
+		raw,
+		"repo",
+		"worktree",
+		"base_branch",
+		"head_branch",
+		"paths",
+		"tests",
+		"commit_policy",
+		"merge_policy",
+		"approval_policy",
+		"extra",
+	)
+	decoded.Extra = mergeAnyMaps(decoded.Extra, raw)
+	*p = TaskPacketCoding(decoded)
+	return nil
+}
+
+func (p *TaskPacketMedia) UnmarshalJSON(data []byte) error {
+	type alias TaskPacketMedia
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	deleteKnownKeys(
+		raw,
+		"source_uri",
+		"expected_artifacts",
+		"send_media",
+		"output_language",
+		"caption_required",
+		"extra",
+	)
+	decoded.Extra = mergeAnyMaps(decoded.Extra, raw)
+	*p = TaskPacketMedia(decoded)
+	return nil
+}
+
+func (p *TaskPacketResearch) UnmarshalJSON(data []byte) error {
+	type alias TaskPacketResearch
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	deleteKnownKeys(raw, "questions", "depth", "source_policy", "citation_style", "output_format", "extra")
+	decoded.Extra = mergeAnyMaps(decoded.Extra, raw)
+	*p = TaskPacketResearch(decoded)
+	return nil
+}
+
+func mergeAnyMaps(maps ...map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, in := range maps {
+		for key, value := range in {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			out[key] = copyAnyValue(value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func deleteKnownKeys(m map[string]any, keys ...string) {
+	for _, key := range keys {
+		delete(m, key)
+	}
+}
+
+func cloneTaskPacketPayload(in *TaskPacketPayload) *TaskPacketPayload {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.AcceptanceCriteria = append([]string(nil), in.AcceptanceCriteria...)
+	out.VerificationPlan = append([]string(nil), in.VerificationPlan...)
+	out.Resources = append([]TaskPacketResource(nil), in.Resources...)
+	for i := range out.Resources {
+		out.Resources[i].Metadata = copyAnyMap(in.Resources[i].Metadata)
+	}
+	out.Constraints = append([]string(nil), in.Constraints...)
+	if in.Reporting != nil {
+		reporting := *in.Reporting
+		reporting.Channels = append([]string(nil), in.Reporting.Channels...)
+		reporting.Extra = copyAnyMap(in.Reporting.Extra)
+		out.Reporting = &reporting
+	}
+	if in.Recovery != nil {
+		recovery := *in.Recovery
+		recovery.Extra = copyAnyMap(in.Recovery.Extra)
+		out.Recovery = &recovery
+	}
+	if in.Coding != nil {
+		coding := *in.Coding
+		coding.Paths = append([]string(nil), in.Coding.Paths...)
+		coding.Tests = append([]string(nil), in.Coding.Tests...)
+		coding.Extra = copyAnyMap(in.Coding.Extra)
+		out.Coding = &coding
+	}
+	if in.Media != nil {
+		media := *in.Media
+		media.ExpectedArtifacts = append([]string(nil), in.Media.ExpectedArtifacts...)
+		media.Extra = copyAnyMap(in.Media.Extra)
+		out.Media = &media
+	}
+	if in.Research != nil {
+		research := *in.Research
+		research.Questions = append([]string(nil), in.Research.Questions...)
+		research.Extra = copyAnyMap(in.Research.Extra)
+		out.Research = &research
+	}
+	out.Nutrition = copyAnyMap(in.Nutrition)
+	out.Extra = copyAnyMap(in.Extra)
+	return &out
 }
