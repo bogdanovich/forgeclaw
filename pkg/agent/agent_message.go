@@ -84,6 +84,22 @@ func (al *AgentLoop) processDirectWithChannel(
 	return al.processMessage(ctx, msg)
 }
 
+func wrapScheduledPayload(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return content
+	}
+
+	return fmt.Sprintf(
+		"This is the payload of a scheduled job that is firing now.\n\n"+
+			"Treat the text below as something to deliver or act on now, not as a new user request to schedule, reschedule, or manage reminders/jobs.\n"+
+			"Do not create, update, remove, or ask follow-up questions about cron/reminders unless the payload explicitly asks for cron/job management.\n"+
+			"If the payload is itself a reminder, send the reminder content to the user instead of confirming setup.\n\n"+
+			"Scheduled payload:\n%s",
+		trimmed,
+	)
+}
+
 func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	msg = al.prepareInboundMessageForAgent(ctx, msg)
 	route, agent, routeErr := al.resolveMessageRoute(msg)
@@ -106,7 +122,7 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 			InboundContext: cloneInboundContext(&msg.Context),
 			RouteResult:    cloneResolvedRoute(&route),
 			SessionScope:   session.CloneScope(&allocation.Scope),
-			UserMessage:    msg.Content,
+			UserMessage:    wrapScheduledPayload(msg.Content),
 			Media:          append([]string(nil), msg.Media...),
 		},
 		SenderID:             msg.SenderID,
