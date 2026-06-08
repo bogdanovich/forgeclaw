@@ -115,7 +115,10 @@ func ToolChatID(ctx context.Context) string {
 
 // ToolTopicID extracts the inbound topic/thread id from ctx, or "" if unset.
 func ToolTopicID(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKeyTopicID).(string)
+	v, ok := ctx.Value(ctxKeyTopicID).(string)
+	if !ok {
+		return ""
+	}
 	return v
 }
 
