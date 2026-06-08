@@ -559,7 +559,16 @@ func isInvalidJSON(err error) bool {
 
 func lockStoreFile(path string) func() {
 	actual, _ := storeFileLocks.LoadOrStore(path, &sync.Mutex{})
-	mu := actual.(*sync.Mutex)
+	mu, ok := actual.(*sync.Mutex)
+	if !ok {
+		// Delete the corrupted entry so that the next LoadOrStore
+		// atomically creates a fresh mutex. Multiple goroutines may
+		// race to Delete, but LoadOrStore ensures they all converge
+		// on the same mutex before entering the critical section.
+		storeFileLocks.Delete(path)
+		actual, _ = storeFileLocks.LoadOrStore(path, &sync.Mutex{})
+		mu = actual.(*sync.Mutex)
+	}
 	mu.Lock()
 	return mu.Unlock
 }
