@@ -153,7 +153,8 @@ func (p *Provider) buildRequestBody(
 	}
 
 	// When fallback uses a different provider (e.g. DeepSeek), that provider must not inject web_search_preview.
-	nativeSearch, _ := options["native_search"].(bool)
+	nativeSearch, ok := options["native_search"].(bool)
+	_ = ok
 	nativeSearch = nativeSearch && isNativeSearchHost(p.apiBase)
 	if len(tools) > 0 || nativeSearch {
 		requestBody["tools"] = buildToolsList(tools, nativeSearch)
