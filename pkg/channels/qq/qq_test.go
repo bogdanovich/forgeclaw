@@ -26,8 +26,7 @@ func TestHandleC2CMessage_IncludesAccountIDMetadata(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &QQChannel{
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 
@@ -69,8 +68,7 @@ func TestHandleC2CMessage_AttachmentOnlyPublishesMedia(t *testing.T) {
 
 	ch := &QQChannel{
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 		downloadFn: func(urlStr, filename string) string {
 			if filename != "image.png" {
@@ -126,8 +124,7 @@ func TestHandleGroupATMessage_AttachmentOnlyPublishesMedia(t *testing.T) {
 
 	ch := &QQChannel{
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 		downloadFn: func(urlStr, filename string) string {
 			if filename != "report.pdf" {
@@ -200,8 +197,7 @@ func TestSendMedia_UploadsLocalFileAsBase64(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
 		config:      &config.QQSettings{},
 		api:         api,
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 	ch.SetRunning(true)
@@ -297,8 +293,7 @@ func assertAudioWAVUploadType(t *testing.T, duration time.Duration, wantFileType
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
 		config:      &config.QQSettings{},
 		api:         api,
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 	ch.SetRunning(true)
@@ -333,8 +328,7 @@ func TestSendMedia_RemoteAudioFallsBackToFileUpload(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
 		config:      &config.QQSettings{},
 		api:         api,
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 	ch.SetRunning(true)
@@ -379,8 +373,7 @@ func TestSendMedia_LocalAudioWithUnknownDurationFallsBackToFileUpload(t *testing
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
 		config:      &config.QQSettings{},
 		api:         api,
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 	ch.SetRunning(true)
@@ -415,8 +408,7 @@ func TestSendMedia_UsesRemoteURLUploadForC2C(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
 		config:      &config.QQSettings{},
 		api:         api,
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 	ch.SetRunning(true)
@@ -488,8 +480,7 @@ func TestSendMedia_LocalFileUploadIncludesStoredFilename(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
 		config:      &config.QQSettings{},
 		api:         api,
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 	ch.SetRunning(true)
@@ -528,8 +519,7 @@ func TestSendMedia_ReturnsSendFailedWithoutMediaStore(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
 		config:      &config.QQSettings{},
 		api:         &fakeQQAPI{},
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
 	ch.SetRunning(true)
@@ -577,8 +567,7 @@ func TestSendMedia_ReturnsSendFailedWhenLocalFileExceedsBase64MiBLimit(t *testin
 			MaxBase64FileSizeMiB: 1,
 		},
 		api:   api,
-		dedup: make(map[string]time.Time),
-		done:  make(chan struct{}),
+		dedup: channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:   context.Background(),
 	}
 	ch.SetRunning(true)

@@ -36,7 +36,6 @@ import (
 
 const (
 	dedupTTL      = 5 * time.Minute
-	dedupInterval = 60 * time.Second
 	dedupMaxSize  = 10000 // hard cap on dedup map entries
 	typingResend  = 8 * time.Second
 	typingSeconds = 10
@@ -74,13 +73,7 @@ type QQChannel struct {
 	// msg_seq: per-chat atomic counter for multi-part replies.
 	msgSeqCounters sync.Map // chatID → *atomic.Uint64
 
-	// Time-based dedup replacing the unbounded map.
-	dedup   map[string]time.Time
-	muDedup sync.Mutex
-
-	// done is closed on Stop to shut down the dedup janitor.
-	done     chan struct{}
-	stopOnce sync.Once
+	dedup *channels.DedupStore
 }
 
 func NewQQChannel(bc *config.Channel, cfg *config.QQSettings, messageBus *bus.MessageBus) (*QQChannel, error) {
@@ -94,8 +87,7 @@ func NewQQChannel(bc *config.Channel, cfg *config.QQSettings, messageBus *bus.Me
 		BaseChannel: base,
 		bc:          bc,
 		config:      cfg,
-		dedup:       make(map[string]time.Time),
-		done:        make(chan struct{}),
+		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 	}, nil
 }
 
@@ -106,10 +98,6 @@ func (c *QQChannel) Start(ctx context.Context) error {
 
 	botgo.SetLogger(newBotGoLogger("botgo"))
 	logger.InfoC("qq", "Starting QQ bot (WebSocket mode)")
-
-	// Reinitialize shutdown signal for clean restart.
-	c.done = make(chan struct{})
-	c.stopOnce = sync.Once{}
 
 	// create token source
 	credentials := &token.QQBotCredentials{
@@ -158,9 +146,6 @@ func (c *QQChannel) Start(ctx context.Context) error {
 		}
 	}()
 
-	// start dedup janitor goroutine
-	go c.dedupJanitor()
-
 	// Pre-register reasoning_channel_id as group chat if configured,
 	// so outbound-only destinations are routed correctly.
 	if c.bc.ReasoningChannelID != "" {
@@ -176,9 +161,6 @@ func (c *QQChannel) Start(ctx context.Context) error {
 func (c *QQChannel) Stop(ctx context.Context) error {
 	logger.InfoC("qq", "Stopping QQ bot")
 	c.SetRunning(false)
-
-	// Signal the dedup janitor to stop (idempotent).
-	c.stopOnce.Do(func() { close(c.done) })
 
 	if c.cancel != nil {
 		c.cancel()
@@ -909,57 +891,7 @@ func qqAttachmentNote(attachment *dto.MessageAttachment) string {
 // isDuplicate checks whether a message has been seen within the TTL window.
 // It also enforces a hard cap on map size by evicting oldest entries.
 func (c *QQChannel) isDuplicate(messageID string) bool {
-	c.muDedup.Lock()
-	defer c.muDedup.Unlock()
-
-	if ts, exists := c.dedup[messageID]; exists && time.Since(ts) < dedupTTL {
-		return true
-	}
-
-	// Enforce hard cap: evict oldest entries when at capacity.
-	if len(c.dedup) >= dedupMaxSize {
-		var oldestID string
-		var oldestTS time.Time
-		for id, ts := range c.dedup {
-			if oldestID == "" || ts.Before(oldestTS) {
-				oldestID = id
-				oldestTS = ts
-			}
-		}
-		if oldestID != "" {
-			delete(c.dedup, oldestID)
-		}
-	}
-
-	c.dedup[messageID] = time.Now()
-	return false
-}
-
-// dedupJanitor periodically evicts expired entries from the dedup map.
-func (c *QQChannel) dedupJanitor() {
-	ticker := time.NewTicker(dedupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.done:
-			return
-		case <-ticker.C:
-			// Collect expired keys under read-like scan.
-			c.muDedup.Lock()
-			now := time.Now()
-			var expired []string
-			for id, ts := range c.dedup {
-				if now.Sub(ts) >= dedupTTL {
-					expired = append(expired, id)
-				}
-			}
-			for _, id := range expired {
-				delete(c.dedup, id)
-			}
-			c.muDedup.Unlock()
-		}
-	}
+	return c.dedup.Seen(messageID)
 }
 
 // isHTTPURL returns true if s starts with http:// or https://.

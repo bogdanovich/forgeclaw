@@ -32,7 +32,7 @@ type SlackChannel struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	pendingAcks     sync.Map
-	inboundDedup    sync.Map
+	inboundDedup    *channels.DedupStore
 	progress        *channels.ToolFeedbackAnimator
 	postMessageFn   func(context.Context, string, string, string) (string, error)
 	editMessageFn   func(context.Context, string, string, string) error
@@ -74,6 +74,7 @@ func NewSlackChannel(
 		config:       cfg,
 		api:          api,
 		socketClient: socketClient,
+		inboundDedup: channels.NewDedupStore(2*time.Minute, 4096),
 	}
 	ch.postMessageFn = func(ctx context.Context, channelID, threadTS, text string) (string, error) {
 		opts := ch.slackMessageOptions(text, threadTS)
@@ -756,8 +757,6 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 	c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, mentionSender)
 }
 
-const slackInboundDedupTTL = 2 * time.Minute
-
 func (c *SlackChannel) markInboundEventHandled(eventKind, channelID, messageTS string) bool {
 	eventKind = strings.TrimSpace(eventKind)
 	channelID = strings.TrimSpace(channelID)
@@ -765,14 +764,11 @@ func (c *SlackChannel) markInboundEventHandled(eventKind, channelID, messageTS s
 	if eventKind == "" || channelID == "" || messageTS == "" {
 		return false
 	}
-	key := eventKind + "|" + channelID + "|" + messageTS
-	if _, exists := c.inboundDedup.LoadOrStore(key, time.Now()); exists {
-		return true
+	if c.inboundDedup == nil {
+		c.inboundDedup = channels.NewDedupStore(2*time.Minute, 4096)
 	}
-	time.AfterFunc(slackInboundDedupTTL, func() {
-		c.inboundDedup.Delete(key)
-	})
-	return false
+	key := eventKind + "|" + channelID + "|" + messageTS
+	return c.inboundDedup.Seen(key)
 }
 
 func (c *SlackChannel) shouldProcessChannel(channelID string) bool {
