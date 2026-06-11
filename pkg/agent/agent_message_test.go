@@ -25,6 +25,16 @@ func TestWrapScheduledPayloadAddsDeliveryGuard(t *testing.T) {
 	}
 }
 
+func TestWrapScheduledPayloadPreservesWhitespaceSensitiveContent(t *testing.T) {
+	payload := "  line one\n    indented line two\n"
+
+	got := wrapScheduledPayload(payload)
+
+	if !strings.Contains(got, payload) {
+		t.Fatalf("wrapped payload should preserve exact content:\n%s", got)
+	}
+}
+
 func TestProcessScheduledWithChannelWrapsPayloadBeforeLLM(t *testing.T) {
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{

@@ -96,7 +96,7 @@ func wrapScheduledPayload(content string) string {
 			"Do not create, update, remove, or ask follow-up questions about cron/reminders unless the payload explicitly asks for cron/job management.\n"+
 			"If the payload is itself a reminder, send the reminder content to the user instead of confirming setup.\n\n"+
 			"Scheduled payload:\n%s",
-		trimmed,
+		content,
 	)
 }
 
