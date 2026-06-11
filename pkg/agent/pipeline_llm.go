@@ -525,12 +525,13 @@ func (p *Pipeline) CallLLM(
 		}
 	}
 
-	// Save finishReason to turnState for SubTurn truncation detection
-	if innerTS := turnStateFromContext(ctx); innerTS != nil {
-		innerTS.SetLastFinishReason(exec.response.FinishReason)
+	// Save finishReason and provider usage on the active turn state.
+	if ts != nil {
+		ts.SetLastFinishReason(exec.response.FinishReason)
 		if exec.response.Usage != nil {
-			innerTS.SetLastUsage(exec.response.Usage)
+			ts.SetLastUsage(exec.response.Usage)
 		}
+		ts.RecordLLMUsage(exec.response.Usage)
 	}
 
 	if exec.suppressReasoning {
@@ -570,9 +571,13 @@ func (p *Pipeline) CallLLM(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
 		LLMResponsePayload{
-			ContentLen:   len(exec.response.Content),
-			ToolCalls:    len(exec.response.ToolCalls),
-			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
+			ContentLen:       len(exec.response.Content),
+			ToolCalls:        len(exec.response.ToolCalls),
+			HasReasoning:     exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
+			HasProviderUsage: exec.response.Usage != nil,
+			PromptTokens:     usagePromptTokens(exec.response.Usage),
+			CompletionTokens: usageCompletionTokens(exec.response.Usage),
+			TotalTokens:      usageTotalTokens(exec.response.Usage),
 		},
 	)
 

@@ -44,6 +44,10 @@ type TurnEndPayload struct {
 	Workspace             string
 	Iterations            int
 	Duration              time.Duration
+	LLMCalls              int
+	PromptTokens          int
+	CompletionTokens      int
+	TotalTokens           int
 	FinalContentLen       int
 	UserMessage           string
 	FinalContent          string
@@ -66,9 +70,13 @@ type LLMRequestPayload struct {
 
 // LLMResponsePayload describes an inbound LLM response.
 type LLMResponsePayload struct {
-	ContentLen   int
-	ToolCalls    int
-	HasReasoning bool
+	ContentLen       int
+	ToolCalls        int
+	HasReasoning     bool
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	HasProviderUsage bool
 }
 
 // LLMDeltaPayload describes a streamed LLM delta.

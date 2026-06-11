@@ -258,6 +258,10 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["status"] = payload.Status
 		fields["iterations_total"] = payload.Iterations
 		fields["duration_ms"] = payload.Duration.Milliseconds()
+		fields["llm_calls"] = payload.LLMCalls
+		fields["prompt_tokens"] = payload.PromptTokens
+		fields["completion_tokens"] = payload.CompletionTokens
+		fields["total_tokens"] = payload.TotalTokens
 		fields["final_len"] = payload.FinalContentLen
 	case LLMRequestPayload:
 		fields["model"] = payload.Model
@@ -271,6 +275,10 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["content_len"] = payload.ContentLen
 		fields["tool_calls"] = payload.ToolCalls
 		fields["has_reasoning"] = payload.HasReasoning
+		fields["has_provider_usage"] = payload.HasProviderUsage
+		fields["prompt_tokens"] = payload.PromptTokens
+		fields["completion_tokens"] = payload.CompletionTokens
+		fields["total_tokens"] = payload.TotalTokens
 	case LLMRetryPayload:
 		fields["attempt"] = payload.Attempt
 		fields["max_retries"] = payload.MaxRetries

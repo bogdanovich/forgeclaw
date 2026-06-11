@@ -266,6 +266,10 @@ type turnState struct {
 	tokenBudget      *atomic.Int64        // Shared token budget counter
 	lastFinishReason string               // Last LLM finish_reason
 	lastUsage        *providers.UsageInfo // Last LLM usage info
+	llmCallCount     int                  // Successful LLM responses in this turn
+	promptTokens     int                  // Sum of provider-reported prompt tokens for this turn
+	completionTokens int                  // Sum of provider-reported completion tokens for this turn
+	totalTokens      int                  // Sum of provider-reported total tokens for this turn
 
 	// Back-reference to the owning AgentLoop (set for SubTurns only, used for hard abort cascade)
 	al *AgentLoop
@@ -920,6 +924,45 @@ func (ts *turnState) SetLastUsage(usage *providers.UsageInfo) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	ts.lastUsage = usage
+}
+
+func (ts *turnState) RecordLLMUsage(usage *providers.UsageInfo) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.llmCallCount++
+	if usage == nil {
+		return
+	}
+	ts.promptTokens += usage.PromptTokens
+	ts.completionTokens += usage.CompletionTokens
+	ts.totalTokens += usage.TotalTokens
+}
+
+func (ts *turnState) llmUsageTotals() (calls, prompt, completion, total int) {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.llmCallCount, ts.promptTokens, ts.completionTokens, ts.totalTokens
+}
+
+func usagePromptTokens(usage *providers.UsageInfo) int {
+	if usage == nil {
+		return 0
+	}
+	return usage.PromptTokens
+}
+
+func usageCompletionTokens(usage *providers.UsageInfo) int {
+	if usage == nil {
+		return 0
+	}
+	return usage.CompletionTokens
+}
+
+func usageTotalTokens(usage *providers.UsageInfo) int {
+	if usage == nil {
+		return 0
+	}
+	return usage.TotalTokens
 }
 
 // =============================================================================
