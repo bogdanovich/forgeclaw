@@ -212,7 +212,7 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 	}
 	if !strings.Contains(
 		reply,
-		"Use /model <name> for this conversation. Use /switch model to <name> only if you want to change the whole workspace.",
+		"Use /model <name> for this conversation.",
 	) {
 		t.Fatalf("/list models reply=%q, want override hint", reply)
 	}
@@ -252,6 +252,25 @@ func TestBuiltinModel_ShowCurrentSelection(t *testing.T) {
 	}
 	if !strings.Contains(reply, "Workspace Default: gpt-5.4 (Provider: openai)") {
 		t.Fatalf("unexpected /model reply: %q", reply)
+	}
+}
+
+func TestBuiltinSwitchCommandRemoved(t *testing.T) {
+	ex := NewExecutor(NewRegistry(BuiltinDefinitions()), &Runtime{})
+
+	var reply string
+	res := ex.Execute(context.Background(), Request{
+		Text: "/switch model to deepseek",
+		Reply: func(text string) error {
+			reply = text
+			return nil
+		},
+	})
+	if res.Outcome != OutcomeHandled {
+		t.Fatalf("/switch outcome=%v, want=%v", res.Outcome, OutcomeHandled)
+	}
+	if reply != "Unknown command: /switch. Use /help to see available commands." {
+		t.Fatalf("unexpected /switch reply: %q", reply)
 	}
 }
 

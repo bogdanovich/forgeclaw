@@ -4218,7 +4218,7 @@ func TestProcessMessage_MCPCommandsHandledWithoutLLMCall(t *testing.T) {
 	}
 }
 
-func TestProcessMessage_SwitchModelShowModelConsistency(t *testing.T) {
+func TestProcessMessage_RemovedSwitchCommandDoesNotAffectShowModel(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -4264,7 +4264,7 @@ func TestProcessMessage_SwitchModelShowModelConsistency(t *testing.T) {
 		ChatID:   "chat1",
 		Content:  "/switch model to deepseek",
 	})
-	if !strings.Contains(switchResp, "Switched workspace model from local to deepseek") {
+	if switchResp != "Unknown command: /switch. Use /help to see available commands." {
 		t.Fatalf("unexpected /switch reply: %q", switchResp)
 	}
 
@@ -4274,12 +4274,12 @@ func TestProcessMessage_SwitchModelShowModelConsistency(t *testing.T) {
 		ChatID:   "chat1",
 		Content:  "/show model",
 	})
-	if !strings.Contains(showResp, "Current Model: deepseek (Provider: openrouter)") {
-		t.Fatalf("unexpected /show model reply after switch: %q", showResp)
+	if !strings.Contains(showResp, "Current Model: local (Provider: openai)") {
+		t.Fatalf("unexpected /show model reply after removed /switch: %q", showResp)
 	}
 
 	if provider.calls != 0 {
-		t.Fatalf("LLM should not be called for /switch and /show, calls=%d", provider.calls)
+		t.Fatalf("LLM should not be called for removed /switch and /show, calls=%d", provider.calls)
 	}
 }
 
@@ -4823,102 +4823,6 @@ func TestProcessMessage_ResetClearsSessionModelOverride(t *testing.T) {
 	}
 }
 
-func TestProcessMessage_SwitchModelRejectedWhenSessionOverrideActive(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	localCalls := 0
-	localModel := ""
-	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
-	defer localServer.Close()
-
-	remoteCalls := 0
-	remoteModel := ""
-	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
-	defer remoteServer.Close()
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				Provider:          "openai",
-				ModelName:         "gpt-5.4",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-		Session: config.SessionConfig{
-			Dimensions: []string{"chat"},
-		},
-		ModelList: []*config.ModelConfig{
-			{
-				ModelName: "gpt-5.4",
-				Model:     "openai/gpt-5.4",
-				Provider:  "openai",
-				APIBase:   localServer.URL,
-				APIKeys:   config.SimpleSecureStrings("local-key"),
-				Enabled:   true,
-			},
-			{
-				ModelName: "deepseek",
-				Model:     "openrouter/deepseek/deepseek-v3.2",
-				Provider:  "openrouter",
-				APIBase:   remoteServer.URL,
-				APIKeys:   config.SimpleSecureStrings("remote-key"),
-				Enabled:   true,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider, _, err := providers.CreateProvider(cfg)
-	if err != nil {
-		t.Fatalf("CreateProvider() error = %v", err)
-	}
-	al := NewAgentLoop(cfg, msgBus, provider)
-	helper := testHelper{al: al}
-	ctx := context.Background()
-	inbound := bus.InboundContext{
-		Channel:  "telegram",
-		ChatID:   "chat-a",
-		ChatType: "direct",
-		SenderID: "telegram:123",
-	}
-
-	overrideResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
-		Context: inbound,
-		Content: "/model deepseek",
-	})
-	if !strings.Contains(overrideResp, "Set session model override.") {
-		t.Fatalf("unexpected /model reply: %q", overrideResp)
-	}
-
-	switchResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
-		Context: inbound,
-		Content: "/switch model to deepseek",
-	})
-	if !strings.Contains(switchResp, "cannot use /switch while this conversation has /model deepseek active") {
-		t.Fatalf("unexpected /switch rejection: %q", switchResp)
-	}
-
-	showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
-		Context: inbound,
-		Content: "/show model",
-	})
-	if !strings.Contains(showResp, "Current Model: deepseek (Provider: openrouter)") {
-		t.Fatalf("unexpected /show model after rejected switch: %q", showResp)
-	}
-	if !strings.Contains(showResp, "Session Override: deepseek") {
-		t.Fatalf("expected session override to remain active, got %q", showResp)
-	}
-	if !strings.Contains(showResp, "Workspace Default: gpt-5.4 (Provider: openai)") {
-		t.Fatalf("workspace default should remain unchanged, got %q", showResp)
-	}
-}
-
 func TestProcessMessage_InvalidSessionModelOverrideAutoClears(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
@@ -5298,117 +5202,6 @@ func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 	}
 }
 
-func TestProcessMessage_SwitchModelRejectsDisabledAlias(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				Provider:          "openai",
-				ModelName:         "local",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-		ModelList: []*config.ModelConfig{
-			{
-				ModelName: "local",
-				Model:     "openai/local-model",
-				Provider:  "openai",
-				APIKeys:   config.SimpleSecureStrings("test-key"),
-				Enabled:   true,
-			},
-			{
-				ModelName: "disabled-model",
-				Model:     "openai/disabled-model",
-				Provider:  "openai",
-				Enabled:   false,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &countingMockProvider{response: "LLM reply"}
-	al := NewAgentLoop(cfg, msgBus, provider)
-	helper := testHelper{al: al}
-
-	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
-		Context: bus.InboundContext{
-			Channel:  "telegram",
-			ChatID:   "chat-1",
-			ChatType: "direct",
-			SenderID: "telegram:123",
-		},
-		Content: "/switch model to disabled-model",
-	})
-	if resp != `model "disabled-model" not found in enabled model_list` {
-		t.Fatalf("unexpected disabled switch reply: %q", resp)
-	}
-	if provider.calls != 0 {
-		t.Fatalf("LLM should not be called for rejected switch, calls=%d", provider.calls)
-	}
-}
-
-func TestProcessMessage_SwitchModelAcceptsInferredEnabledAlias(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				Provider:          "openai",
-				ModelName:         "local",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-		ModelList: []*config.ModelConfig{
-			{
-				ModelName: "local",
-				Model:     "openai/local-model",
-				Provider:  "openai",
-				APIKeys:   config.SimpleSecureStrings("test-key"),
-			},
-			{
-				ModelName: "deepseek",
-				Model:     "openrouter/deepseek/deepseek-v3.2",
-				Provider:  "openrouter",
-				APIKeys:   config.SimpleSecureStrings("test-key"),
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &countingMockProvider{response: "LLM reply"}
-	al := NewAgentLoop(cfg, msgBus, provider)
-	helper := testHelper{al: al}
-
-	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
-		Context: bus.InboundContext{
-			Channel:  "telegram",
-			ChatID:   "chat-1",
-			ChatType: "direct",
-			SenderID: "telegram:123",
-		},
-		Content: "/switch model to deepseek",
-	})
-	if !strings.Contains(resp, "Switched workspace model from local to deepseek") {
-		t.Fatalf("unexpected inferred-enabled switch reply: %q", resp)
-	}
-	if provider.calls != 0 {
-		t.Fatalf("LLM should not be called for /switch model, calls=%d", provider.calls)
-	}
-}
-
 func TestProcessMessage_ListModelsShowsInferredEnabledAlias(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
@@ -5469,170 +5262,6 @@ func TestProcessMessage_ListModelsShowsInferredEnabledAlias(t *testing.T) {
 	}
 	if strings.Contains(resp, "disabled-model") {
 		t.Fatalf("disabled model should not be listed: %q", resp)
-	}
-}
-
-func TestProcessMessage_SwitchModelRejectsUnknownAlias(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				Provider:          "openai",
-				ModelName:         "local",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-		ModelList: []*config.ModelConfig{
-			{
-				ModelName: "local",
-				Model:     "openai/local-model",
-				APIBase:   "https://local.example.invalid/v1",
-				APIKeys:   config.SimpleSecureStrings("test-key"),
-				Enabled:   true,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider := &countingMockProvider{response: "LLM reply"}
-	al := NewAgentLoop(cfg, msgBus, provider)
-	helper := testHelper{al: al}
-
-	switchResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "/switch model to missing",
-	})
-	if switchResp != `model "missing" not found in enabled model_list` {
-		t.Fatalf("unexpected /switch error reply: %q", switchResp)
-	}
-
-	showResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "/show model",
-	})
-	if !strings.Contains(showResp, "Current Model: local (Provider: openai)") {
-		t.Fatalf("unexpected /show model reply after rejected switch: %q", showResp)
-	}
-
-	if provider.calls != 0 {
-		t.Fatalf("LLM should not be called for rejected /switch and /show, calls=%d", provider.calls)
-	}
-}
-
-func TestProcessMessage_SwitchModelRoutesSubsequentRequestsToSelectedProvider(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	localCalls := 0
-	localModel := ""
-	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
-	defer localServer.Close()
-
-	remoteCalls := 0
-	remoteModel := ""
-	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
-	defer remoteServer.Close()
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				Provider:          "openai",
-				ModelName:         "local",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-		ModelList: []*config.ModelConfig{
-			{
-				ModelName: "local",
-				Model:     "openai/Qwen3.5-35B-A3B",
-				APIBase:   localServer.URL,
-				APIKeys:   config.SimpleSecureStrings("local-key"),
-				Enabled:   true,
-			},
-			{
-				ModelName: "deepseek",
-				Model:     "openrouter/deepseek/deepseek-v3.2",
-				APIBase:   remoteServer.URL,
-				APIKeys:   config.SimpleSecureStrings("remote-key"),
-				Enabled:   true,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	provider, _, err := providers.CreateProvider(cfg)
-	if err != nil {
-		t.Fatalf("CreateProvider() error = %v", err)
-	}
-	al := NewAgentLoop(cfg, msgBus, provider)
-	helper := testHelper{al: al}
-
-	firstResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "hello before switch",
-	})
-	if firstResp != "local reply" {
-		t.Fatalf("unexpected response before switch: %q", firstResp)
-	}
-	if localCalls != 1 {
-		t.Fatalf("local calls before switch = %d, want 1", localCalls)
-	}
-	if remoteCalls != 0 {
-		t.Fatalf("remote calls before switch = %d, want 0", remoteCalls)
-	}
-	if localModel != "Qwen3.5-35B-A3B" {
-		t.Fatalf("local model before switch = %q, want %q", localModel, "Qwen3.5-35B-A3B")
-	}
-
-	switchResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "/switch model to deepseek",
-	})
-	if !strings.Contains(switchResp, "Switched workspace model from local to deepseek") {
-		t.Fatalf("unexpected /switch reply: %q", switchResp)
-	}
-
-	secondResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "hello after switch",
-	})
-	if secondResp != "remote reply" {
-		t.Fatalf("unexpected response after switch: %q", secondResp)
-	}
-	if localCalls != 1 {
-		t.Fatalf("local calls after switch = %d, want 1", localCalls)
-	}
-	if remoteCalls != 1 {
-		t.Fatalf("remote calls after switch = %d, want 1", remoteCalls)
-	}
-	if remoteModel != "deepseek-v3.2" {
-		t.Fatalf(
-			"remote model after switch = %q, want %q",
-			remoteModel,
-			"deepseek-v3.2",
-		)
 	}
 }
 

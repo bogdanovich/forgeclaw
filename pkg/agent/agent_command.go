@@ -13,7 +13,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 func (al *AgentLoop) handleCommand(
@@ -403,52 +402,6 @@ func (al *AgentLoop) buildCommandsRuntime(
 				models = append(models, item.info)
 			}
 			return models
-		}
-		rt.SwitchModel = func(value string) (string, error) {
-			if modelBinding.Override.Model != "" {
-				return "", fmt.Errorf(
-					"cannot use /switch while this conversation has /model %s active; use /model clear first",
-					modelBinding.Override.Model,
-				)
-			}
-			value = strings.TrimSpace(value)
-			modelCfg, err := resolvedModelConfig(cfg, value, workspaceAgent.Workspace)
-			if err != nil {
-				return "", err
-			}
-
-			nextProvider, _, err := providers.CreateProviderFromConfig(modelCfg)
-			if err != nil {
-				return "", fmt.Errorf("failed to initialize model %q: %w", value, err)
-			}
-
-			nextCandidates := resolveModelCandidates(
-				cfg,
-				cfg.Agents.Defaults.Provider,
-				value,
-				workspaceAgent.Fallbacks,
-			)
-			if len(nextCandidates) == 0 {
-				return "", fmt.Errorf("model %q did not resolve to any provider candidates", value)
-			}
-
-			oldModel := workspaceAgent.Model
-			oldProvider := workspaceAgent.Provider
-			workspaceAgent.Model = value
-			workspaceAgent.Provider = nextProvider
-			workspaceAgent.Candidates = nextCandidates
-			workspaceAgent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
-			workspaceAgent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
-			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
-				_ = al.clearAutoModelSelection(routeSessionKey)
-			}
-
-			if oldProvider != nil && oldProvider != nextProvider {
-				if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
-					stateful.Close()
-				}
-			}
-			return oldModel, nil
 		}
 		rt.SetSessionModel = func(value string) error {
 			if modelBinding.RouteSessionKey == "" {
