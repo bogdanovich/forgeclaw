@@ -304,27 +304,17 @@ func (al *AgentLoop) buildCommandsRuntime(
 			rt.ListSkillNames = workspaceAgent.ContextBuilder.ListSkillNames
 		}
 		rt.GetModelInfo = func() (string, string) {
-			info := selectionInfoForBinding(cfg, modelBinding)
+			info := selectionInfoForBinding(
+				cfg,
+				al.buildSelectionBindingView(cfg, modelBinding),
+			)
 			return info.EffectiveName, info.EffectiveProvider
 		}
 		rt.GetModelSelection = func() commands.ModelSelectionInfo {
-			refreshed := modelBinding
-			workspaceSelection := effectiveExecutionStateForAgent(workspaceAgent)
-			if refreshed.RouteSessionKey != "" {
-				override, _ := al.getSessionModelOverride(refreshed.RouteSessionKey)
-				refreshed.Override = override
-			}
-			if refreshed.Override.Model == "" {
-				executionDecision := al.previewStickyAutoFallback(modelSelectionDecision{
-					selectedCandidates: append([]providers.FallbackCandidate(nil), workspaceSelection.Candidates...),
-					activeCandidates:   append([]providers.FallbackCandidate(nil), workspaceSelection.Candidates...),
-					model:              resolvedCandidateModel(workspaceSelection.Candidates, workspaceSelection.Model),
-				}, refreshed.RouteSessionKey)
-				workspaceSelection.Candidates = executionDecision.activeCandidates
-				workspaceSelection.Model = executionDecision.model
-			}
-			refreshed.Execution = workspaceSelection
-			return selectionInfoForBinding(cfg, refreshed)
+			return selectionInfoForBinding(
+				cfg,
+				al.buildSelectionBindingView(cfg, modelBinding),
+			)
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
 			if cfg == nil || len(cfg.ModelList) == 0 {
