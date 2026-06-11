@@ -300,46 +300,53 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if cfg == nil || len(cfg.ModelList) == 0 {
 				return nil
 			}
-			type aggregate struct {
-				info  commands.ConfiguredModelInfo
-				order int
+			type targetAggregate struct {
+				target commands.ConfiguredModelTarget
+				order  int
 			}
-			modelsByName := make(map[string]*aggregate)
+			type modelAggregate struct {
+				info    commands.ConfiguredModelInfo
+				order   int
+				targets map[string]*targetAggregate
+			}
+			modelsByName := make(map[string]*modelAggregate)
 			for idx, modelCfg := range cfg.ModelList {
 				if modelCfg == nil || modelCfg.IsVirtual() || !modelCfg.Enabled {
 					continue
 				}
 				entry, ok := modelsByName[modelCfg.ModelName]
 				if !ok {
-					modelsByName[modelCfg.ModelName] = &aggregate{
+					entry = &modelAggregate{
 						info: commands.ConfiguredModelInfo{
-							Name:      modelCfg.ModelName,
+							Name:    modelCfg.ModelName,
+							Current: modelCfg.ModelName == agent.Model,
+						},
+						order:   idx,
+						targets: map[string]*targetAggregate{},
+					}
+					modelsByName[modelCfg.ModelName] = entry
+				} else if modelCfg.ModelName == agent.Model {
+					entry.info.Current = true
+				}
+				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")
+				targetEntry, ok := entry.targets[targetKey]
+				if !ok {
+					targetEntry = &targetAggregate{
+						target: commands.ConfiguredModelTarget{
 							Provider:  modelCfg.Provider,
 							Model:     modelCfg.Model,
-							Current:   modelCfg.ModelName == agent.Model,
-							Count:     1,
 							Workspace: modelCfg.Workspace,
+							Count:     1,
 						},
-						order: idx,
+						order: len(entry.targets),
 					}
-					continue
-				}
-				entry.info.Count++
-				if entry.info.Provider == "" && modelCfg.Provider != "" {
-					entry.info.Provider = modelCfg.Provider
-				}
-				if entry.info.Model == "" && modelCfg.Model != "" {
-					entry.info.Model = modelCfg.Model
-				}
-				if entry.info.Workspace == "" && modelCfg.Workspace != "" {
-					entry.info.Workspace = modelCfg.Workspace
-				}
-				if modelCfg.ModelName == agent.Model {
-					entry.info.Current = true
+					entry.targets[targetKey] = targetEntry
+				} else {
+					targetEntry.target.Count++
 				}
 			}
 			models := make([]commands.ConfiguredModelInfo, 0, len(modelsByName))
-			order := make([]*aggregate, 0, len(modelsByName))
+			order := make([]*modelAggregate, 0, len(modelsByName))
 			for _, item := range modelsByName {
 				order = append(order, item)
 			}
@@ -352,6 +359,22 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return left < right
 			})
 			for _, item := range order {
+				targetOrder := make([]*targetAggregate, 0, len(item.targets))
+				for _, target := range item.targets {
+					targetOrder = append(targetOrder, target)
+				}
+				sort.Slice(targetOrder, func(i, j int) bool {
+					left := strings.ToLower(targetOrder[i].target.Provider + "\x00" + targetOrder[i].target.Model + "\x00" + targetOrder[i].target.Workspace)
+					right := strings.ToLower(targetOrder[j].target.Provider + "\x00" + targetOrder[j].target.Model + "\x00" + targetOrder[j].target.Workspace)
+					if left == right {
+						return targetOrder[i].order < targetOrder[j].order
+					}
+					return left < right
+				})
+				item.info.Targets = make([]commands.ConfiguredModelTarget, 0, len(targetOrder))
+				for _, target := range targetOrder {
+					item.info.Targets = append(item.info.Targets, target.target)
+				}
 				models = append(models, item.info)
 			}
 			return models

@@ -28,12 +28,16 @@ type MCPToolInfo struct {
 }
 
 type ConfiguredModelInfo struct {
-	Name      string
+	Name    string
+	Current bool
+	Targets []ConfiguredModelTarget
+}
+
+type ConfiguredModelTarget struct {
 	Provider  string
 	Model     string
-	Current   bool
-	Count     int
 	Workspace string
+	Count     int
 }
 
 // ContextStats describes current session context window usage.

@@ -4138,12 +4138,14 @@ func TestProcessMessage_SwitchModelShowModelConsistency(t *testing.T) {
 				Model:     "openai/local-model",
 				APIBase:   "https://local.example.invalid/v1",
 				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   true,
 			},
 			{
 				ModelName: "deepseek",
 				Model:     "openrouter/deepseek/deepseek-v3.2",
 				APIBase:   "https://openrouter.ai/api/v1",
 				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   true,
 			},
 		},
 	}
@@ -4201,6 +4203,7 @@ func TestProcessMessage_UnknownSlashCommandDoesNotCallLLM(t *testing.T) {
 				Model:     "openai/local-model",
 				APIBase:   "https://local.example.invalid/v1",
 				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   true,
 			},
 		},
 	}
@@ -4290,10 +4293,10 @@ func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 	if !strings.Contains(resp, "Available Models:") {
 		t.Fatalf("unexpected /list models reply: %q", resp)
 	}
-	if !strings.Contains(resp, "- gpt-5.4 (current): openai/gpt-5.4 via openai") {
+	if !strings.Contains(resp, "- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai") {
 		t.Fatalf("unexpected /list models current entry: %q", resp)
 	}
-	if !strings.Contains(resp, "- deepseek: openrouter/deepseek/deepseek-v3.2 via openrouter [x2]") {
+	if !strings.Contains(resp, "- deepseek\n  - openrouter/deepseek/deepseek-v3.2 via openrouter [x2]") {
 		t.Fatalf("unexpected /list models deepseek entry: %q", resp)
 	}
 	if strings.Contains(resp, "disabled-model") {
@@ -4301,6 +4304,63 @@ func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 	}
 	if provider.calls != 0 {
 		t.Fatalf("LLM should not be called for /list models, calls=%d", provider.calls)
+	}
+}
+
+func TestProcessMessage_SwitchModelRejectsDisabledAlias(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "local",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "local",
+				Model:     "openai/local-model",
+				Provider:  "openai",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "disabled-model",
+				Model:     "openai/disabled-model",
+				Provider:  "openai",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   false,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			ChatType: "direct",
+			SenderID: "telegram:123",
+		},
+		Content: "/switch model to disabled-model",
+	})
+	if resp != `model "disabled-model" not found in enabled model_list` {
+		t.Fatalf("unexpected disabled switch reply: %q", resp)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("LLM should not be called for rejected switch, calls=%d", provider.calls)
 	}
 }
 
@@ -4327,6 +4387,7 @@ func TestProcessMessage_SwitchModelRejectsUnknownAlias(t *testing.T) {
 				Model:     "openai/local-model",
 				APIBase:   "https://local.example.invalid/v1",
 				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   true,
 			},
 		},
 	}
@@ -4342,7 +4403,7 @@ func TestProcessMessage_SwitchModelRejectsUnknownAlias(t *testing.T) {
 		ChatID:   "chat1",
 		Content:  "/switch model to missing",
 	})
-	if switchResp != `model "missing" not found in model_list or providers` {
+	if switchResp != `model "missing" not found in enabled model_list` {
 		t.Fatalf("unexpected /switch error reply: %q", switchResp)
 	}
 

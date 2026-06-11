@@ -29,14 +29,20 @@ func listCommand() Definition {
 						if model.Current {
 							label += " (current)"
 						}
-						target := model.Model
-						if model.Provider != "" {
-							target = fmt.Sprintf("%s via %s", model.Model, model.Provider)
+						lines = append(lines, label)
+						for _, target := range model.Targets {
+							targetText := target.Model
+							if target.Provider != "" {
+								targetText = fmt.Sprintf("%s via %s", target.Model, target.Provider)
+							}
+							if target.Workspace != "" {
+								targetText += fmt.Sprintf(" (workspace: %s)", target.Workspace)
+							}
+							if target.Count > 1 {
+								targetText += fmt.Sprintf(" [x%d]", target.Count)
+							}
+							lines = append(lines, fmt.Sprintf("  - %s", targetText))
 						}
-						if model.Count > 1 {
-							target += fmt.Sprintf(" [x%d]", model.Count)
-						}
-						lines = append(lines, fmt.Sprintf("%s: %s", label, target))
 					}
 					lines = append(lines, "", "Use /switch model to <name> to change the active model.")
 					return req.Reply(strings.Join(lines, "\n"))

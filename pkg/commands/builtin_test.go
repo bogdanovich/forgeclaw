@@ -159,8 +159,20 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 	rt := &Runtime{
 		ListModels: func() []ConfiguredModelInfo {
 			return []ConfiguredModelInfo{
-				{Name: "deepseek", Provider: "openrouter", Model: "openrouter/deepseek/deepseek-v3.2"},
-				{Name: "gpt-5.4", Provider: "openai", Model: "openai/gpt-5.4", Current: true, Count: 2},
+				{
+					Name: "deepseek",
+					Targets: []ConfiguredModelTarget{
+						{Provider: "openrouter", Model: "openrouter/deepseek/deepseek-v3.2"},
+					},
+				},
+				{
+					Name:    "gpt-5.4",
+					Current: true,
+					Targets: []ConfiguredModelTarget{
+						{Provider: "openai", Model: "openai/gpt-5.4", Count: 2},
+						{Provider: "openrouter", Model: "openrouter/openai/gpt-5.4"},
+					},
+				},
 			}
 		},
 	}
@@ -181,10 +193,10 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 	if !strings.Contains(reply, "Available Models:") {
 		t.Fatalf("/list models reply=%q, want header", reply)
 	}
-	if !strings.Contains(reply, "- deepseek: openrouter/deepseek/deepseek-v3.2 via openrouter") {
+	if !strings.Contains(reply, "- deepseek\n  - openrouter/deepseek/deepseek-v3.2 via openrouter") {
 		t.Fatalf("/list models reply=%q, want deepseek entry", reply)
 	}
-	if !strings.Contains(reply, "- gpt-5.4 (current): openai/gpt-5.4 via openai [x2]") {
+	if !strings.Contains(reply, "- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai [x2]\n  - openrouter/openai/gpt-5.4 via openrouter") {
 		t.Fatalf("/list models reply=%q, want current model entry", reply)
 	}
 	if !strings.Contains(reply, "Use /switch model to <name> to change the active model.") {

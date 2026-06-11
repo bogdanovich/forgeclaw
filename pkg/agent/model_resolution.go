@@ -215,8 +215,7 @@ func resolvedModelConfig(cfg *config.Config, modelName, workspace string) (*conf
 	if cfg == nil {
 		return nil, fmt.Errorf("config is nil")
 	}
-
-	modelCfg, err := cfg.GetModelConfig(strings.TrimSpace(modelName))
+	modelCfg, err := resolvedSwitchableModelConfig(cfg, strings.TrimSpace(modelName))
 	if err != nil {
 		return nil, err
 	}
@@ -227,6 +226,34 @@ func resolvedModelConfig(cfg *config.Config, modelName, workspace string) (*conf
 	}
 
 	return &clone, nil
+}
+
+func resolvedSwitchableModelConfig(cfg *config.Config, modelName string) (*config.ModelConfig, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return nil, fmt.Errorf("model name is required")
+	}
+	var matches []*config.ModelConfig
+	for _, modelCfg := range cfg.ModelList {
+		if modelCfg == nil || modelCfg.IsVirtual() || !modelCfg.Enabled {
+			continue
+		}
+		if modelCfg.ModelName == modelName {
+			matches = append(matches, modelCfg)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("model %q not found in enabled model_list", modelName)
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	filtered := *cfg
+	filtered.ModelList = matches
+	return filtered.GetModelConfig(modelName)
 }
 
 func resolveActiveModelConfig(
