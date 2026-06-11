@@ -34,7 +34,7 @@ func (p *Pipeline) Finalize(
 		ts.setPhase(TurnPhaseCompleted)
 		return turnResult{
 			finalContent:           finalContent,
-			modelName:              exec.llmModelName,
+			modelName:              exec.model.llmModelName,
 			completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
 			status:                 turnStatus,
 			followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
@@ -48,7 +48,7 @@ func (p *Pipeline) Finalize(
 		finalMsg := providers.Message{
 			Role:             "assistant",
 			Content:          finalContent,
-			ModelName:        exec.llmModelName,
+			ModelName:        exec.model.llmModelName,
 			ReasoningContent: responseReasoningContent(exec.response),
 		}
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, finalMsg)
@@ -75,7 +75,7 @@ func (p *Pipeline) Finalize(
 	if ((streamErr != nil && !isConfiguredStreamingVisibleError(streamErr)) || exec.streamingFallback) &&
 		!ts.opts.SendResponse && ts.opts.AllowInterimPicoPublish && finalContent != "" {
 		msg := outboundMessageForTurnWithOptions(ts, finalContent, outboundTurnMessageOptions{
-			modelName: exec.llmModelName,
+			modelName: exec.model.llmModelName,
 		})
 		msg.ContextUsage = contextUsage
 		markFinalOutbound(&msg)
@@ -85,7 +85,7 @@ func (p *Pipeline) Finalize(
 		ts.setPhase(TurnPhaseCompleted)
 		return turnResult{
 			finalContent:           finalContent,
-			modelName:              exec.llmModelName,
+			modelName:              exec.model.llmModelName,
 			completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
 			status:                 TurnEndStatusError,
 			followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
@@ -96,7 +96,7 @@ func (p *Pipeline) Finalize(
 	ts.setPhase(TurnPhaseCompleted)
 	return turnResult{
 		finalContent:           finalContent,
-		modelName:              exec.llmModelName,
+		modelName:              exec.model.llmModelName,
 		completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
 		status:                 turnStatus,
 		followUps:              append([]bus.InboundMessage(nil), ts.followUps...),

@@ -133,12 +133,7 @@ type turnExecution struct {
 	iteration int
 
 	// Per-iteration state set by Pipeline.PreLLM
-	selectedCandidates []providers.FallbackCandidate
-	activeCandidates   []providers.FallbackCandidate
-	activeModel        string
-	activeModelConfig  *config.ModelConfig
-	activeProvider     providers.LLMProvider
-	usedLight          bool
+	model turnExecutionModel
 
 	// LLM call per-iteration state
 	response            *providers.LLMResponse
@@ -150,7 +145,6 @@ type turnExecution struct {
 	callMessages        []providers.Message
 	providerToolDefs    []providers.ToolDefinition
 	llmModel            string
-	llmModelName        string
 	llmOpts             map[string]any
 	gracefulTerminal    bool
 	useNativeSearch     bool
@@ -161,6 +155,16 @@ type turnExecution struct {
 	// Abort signaling for coordinator (set by Pipeline methods)
 	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
 	abortedByHook      bool // true when HookActionAbortTurn triggered
+}
+
+type turnExecutionModel struct {
+	selectedCandidates []providers.FallbackCandidate
+	activeCandidates   []providers.FallbackCandidate
+	activeModel        string
+	activeModelConfig  *config.ModelConfig
+	activeProvider     providers.LLMProvider
+	usedLight          bool
+	llmModelName       string
 }
 
 func (e *turnExecution) markAdditionalUserInputObserved() {

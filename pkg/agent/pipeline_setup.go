@@ -145,19 +145,19 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		summary,
 		messages,
 	)
-	exec.selectedCandidates = selection.selectedCandidates
-	exec.activeCandidates = selection.activeCandidates
-	exec.activeModel = selection.model
-	exec.activeModelConfig = resolveActiveModelConfig(
+	exec.model.selectedCandidates = selection.selectedCandidates
+	exec.model.activeCandidates = selection.activeCandidates
+	exec.model.activeModel = selection.model
+	exec.model.activeModelConfig = resolveActiveModelConfig(
 		p.Cfg,
 		ts.agent.Workspace,
 		selection.activeCandidates,
 		selection.model,
 		p.Cfg.Agents.Defaults.Provider,
 	)
-	exec.llmModelName = activeModelName
-	exec.activeProvider = activeProvider
-	exec.usedLight = selection.usedLight
+	exec.model.llmModelName = activeModelName
+	exec.model.activeProvider = activeProvider
+	exec.model.usedLight = selection.usedLight
 
 	return exec, nil
 }
