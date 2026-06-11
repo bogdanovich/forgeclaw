@@ -140,7 +140,6 @@ func (al *AgentLoop) buildCommandsRuntime(
 	cfg := al.GetConfig()
 	agent := modelBinding.WorkspaceAgent
 	workspaceAgent := modelBinding.WorkspaceAgent
-	execution := modelBinding.ExecutionState()
 	rt := &commands.Runtime{
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
@@ -304,23 +303,21 @@ func (al *AgentLoop) buildCommandsRuntime(
 		if workspaceAgent.ContextBuilder != nil {
 			rt.ListSkillNames = workspaceAgent.ContextBuilder.ListSkillNames
 		}
+		currentModelSelection := func() commands.ModelSelectionInfo {
+			return selectionInfoForInspection(al.buildModelSelectionInspection(cfg, modelBinding))
+		}
 		rt.GetModelInfo = func() (string, string) {
-			info := selectionInfoForBinding(
-				cfg,
-				al.buildSelectionBindingView(modelBinding),
-			)
+			info := currentModelSelection()
 			return info.EffectiveName, info.EffectiveProvider
 		}
 		rt.GetModelSelection = func() commands.ModelSelectionInfo {
-			return selectionInfoForBinding(
-				cfg,
-				al.buildSelectionBindingView(modelBinding),
-			)
+			return currentModelSelection()
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
 			if cfg == nil || len(cfg.ModelList) == 0 {
 				return nil
 			}
+			currentSelection := currentModelSelection()
 			type targetAggregate struct {
 				target commands.ConfiguredModelTarget
 				order  int
@@ -340,13 +337,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 					entry = &modelAggregate{
 						info: commands.ConfiguredModelInfo{
 							Name:    modelCfg.ModelName,
-							Current: modelCfg.ModelName == execution.Model,
+							Current: modelCfg.ModelName == currentSelection.EffectiveName,
 						},
 						order:   idx,
 						targets: map[string]*targetAggregate{},
 					}
 					modelsByName[modelCfg.ModelName] = entry
-				} else if modelCfg.ModelName == execution.Model {
+				} else if modelCfg.ModelName == currentSelection.EffectiveName {
 					entry.info.Current = true
 				}
 				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")
@@ -407,52 +404,6 @@ func (al *AgentLoop) buildCommandsRuntime(
 				models = append(models, item.info)
 			}
 			return models
-		}
-		rt.SwitchModel = func(value string) (string, error) {
-			if modelBinding.Override.Model != "" {
-				return "", fmt.Errorf(
-					"cannot use /switch while this conversation has /model %s active; use /model clear first",
-					modelBinding.Override.Model,
-				)
-			}
-			value = strings.TrimSpace(value)
-			modelCfg, err := resolvedModelConfig(cfg, value, workspaceAgent.Workspace)
-			if err != nil {
-				return "", err
-			}
-
-			nextProvider, _, err := providers.CreateProviderFromConfig(modelCfg)
-			if err != nil {
-				return "", fmt.Errorf("failed to initialize model %q: %w", value, err)
-			}
-
-			nextCandidates := resolveModelCandidates(
-				cfg,
-				cfg.Agents.Defaults.Provider,
-				value,
-				workspaceAgent.Fallbacks,
-			)
-			if len(nextCandidates) == 0 {
-				return "", fmt.Errorf("model %q did not resolve to any provider candidates", value)
-			}
-
-			oldModel := workspaceAgent.Model
-			oldProvider := workspaceAgent.Provider
-			workspaceAgent.Model = value
-			workspaceAgent.Provider = nextProvider
-			workspaceAgent.Candidates = nextCandidates
-			workspaceAgent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
-			workspaceAgent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
-			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
-				_ = al.clearAutoModelSelection(routeSessionKey)
-			}
-
-			if oldProvider != nil && oldProvider != nextProvider {
-				if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
-					stateful.Close()
-				}
-			}
-			return oldModel, nil
 		}
 		rt.SetSessionModel = func(value string) error {
 			if modelBinding.RouteSessionKey == "" {
