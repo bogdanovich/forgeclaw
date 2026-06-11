@@ -174,7 +174,7 @@ func computeAssembledContextUsage(
 	finalHistory := append([]providers.Message(nil), resp.History...)
 	messages := rebuild(finalHistory)
 	fitsBudget := !isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens)
-	if !opts.NoHistory && isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens) {
+	if isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens) {
 		if trimmedHistory, trimmedMessages, fit := trimHistoryToFitContextWindow(
 			finalHistory,
 			rebuild,

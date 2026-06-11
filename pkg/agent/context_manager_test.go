@@ -911,3 +911,41 @@ func TestComputeAssembledContextUsage_ReportsOverBudgetPrompt(t *testing.T) {
 		t.Fatalf("assembled used tokens = %d, want > compressAt %d", got.UsedTokens, got.CompressAtTokens)
 	}
 }
+
+func TestComputeAssembledContextUsage_NoHistoryStillUsesTrimFallback(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Agents.Defaults.MaxTokens = 64
+	cfg.Agents.Defaults.ContextWindow = 5000
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	for i := 0; i < 80; i++ {
+		agent.Sessions.AddFullMessage("ctx-nohistory", providers.Message{Role: "user", Content: strings.Repeat("history ", 80)})
+	}
+
+	got, gotCount, fitsBudget := computeAssembledContextUsage(
+		context.Background(),
+		cfg,
+		agent,
+		al.contextManager,
+		nil,
+		cfg.Agents.Defaults.GetMaxMediaSize(),
+		processOptions{NoHistory: true},
+		"ctx-nohistory",
+	)
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
+	if !fitsBudget {
+		t.Fatal("expected no-history assembled usage to fit after trim fallback")
+	}
+	if gotCount >= 80 {
+		t.Fatalf("assembled history count = %d, want trimmed history after no-history fallback", gotCount)
+	}
+	if got.UsedTokens > got.CompressAtTokens {
+		t.Fatalf("assembled used tokens = %d, want <= compressAt %d", got.UsedTokens, got.CompressAtTokens)
+	}
+}
