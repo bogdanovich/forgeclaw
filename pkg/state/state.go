@@ -30,6 +30,10 @@ type State struct {
 	// for inline tool feedback such as working_summary.
 	ToolFeedbackOverrides map[string]bool `json:"tool_feedback_overrides,omitempty"`
 
+	// SessionModelOverrides stores manual model selections scoped to a routed
+	// conversation. The stored value is the canonical configured model alias.
+	SessionModelOverrides map[string]SessionModelOverride `json:"session_model_overrides,omitempty"`
+
 	// AutoModelSelections stores temporary session-scoped auto-fallback routing
 	// state. SelectedModel identifies the user's intended model; ActiveModel is
 	// the temporary fallback model currently pinned for the conversation.
@@ -47,6 +51,11 @@ type AutoModelSelection struct {
 	Reason           string    `json:"reason,omitempty"`
 	ExpiresAt        time.Time `json:"expires_at,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+}
+
+type SessionModelOverride struct {
+	Model     string    `json:"model,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 // Manager manages persistent state with atomic saves.
@@ -252,6 +261,73 @@ func (sm *Manager) GetToolFeedbackOverride(routeSessionKey string) (bool, bool) 
 		return false, false
 	}
 	value, ok := sm.state.ToolFeedbackOverrides[strings.TrimSpace(routeSessionKey)]
+	return value, ok
+}
+
+// SetSessionModelOverride persists a conversation-scoped manual model
+// selection for a routed session.
+func (sm *Manager) SetSessionModelOverride(routeSessionKey, model string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	model = strings.TrimSpace(model)
+	if routeSessionKey == "" || model == "" {
+		return fmt.Errorf("route session key and model are required")
+	}
+
+	if sm.state.SessionModelOverrides == nil {
+		sm.state.SessionModelOverrides = make(map[string]SessionModelOverride)
+	}
+	sm.state.SessionModelOverrides[routeSessionKey] = SessionModelOverride{
+		Model:     model,
+		UpdatedAt: time.Now(),
+	}
+	sm.state.Timestamp = time.Now()
+
+	if err := sm.saveAtomic(); err != nil {
+		return fmt.Errorf("failed to save state atomically: %w", err)
+	}
+
+	return nil
+}
+
+// ClearSessionModelOverride removes a previously persisted manual model
+// selection for a routed session.
+func (sm *Manager) ClearSessionModelOverride(routeSessionKey string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	if routeSessionKey == "" {
+		return fmt.Errorf("route session key is required")
+	}
+	if len(sm.state.SessionModelOverrides) == 0 {
+		return nil
+	}
+
+	delete(sm.state.SessionModelOverrides, routeSessionKey)
+	if len(sm.state.SessionModelOverrides) == 0 {
+		sm.state.SessionModelOverrides = nil
+	}
+	sm.state.Timestamp = time.Now()
+
+	if err := sm.saveAtomic(); err != nil {
+		return fmt.Errorf("failed to save state atomically: %w", err)
+	}
+
+	return nil
+}
+
+// GetSessionModelOverride returns a persisted manual model selection for a
+// routed session.
+func (sm *Manager) GetSessionModelOverride(routeSessionKey string) (SessionModelOverride, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if len(sm.state.SessionModelOverrides) == 0 {
+		return SessionModelOverride{}, false
+	}
+	value, ok := sm.state.SessionModelOverrides[strings.TrimSpace(routeSessionKey)]
 	return value, ok
 }
 

@@ -20,6 +20,7 @@ func (al *AgentLoop) handleCommand(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	agent *AgentInstance,
+	workspaceAgent *AgentInstance,
 	opts *processOptions,
 ) (string, bool) {
 	normalizeProcessOptionsInPlace(opts)
@@ -36,7 +37,7 @@ func (al *AgentLoop) handleCommand(
 		return "", false
 	}
 
-	rt := al.buildCommandsRuntime(ctx, agent, opts)
+	rt := al.buildCommandsRuntime(ctx, agent, workspaceAgent, opts)
 	executor := commands.NewExecutor(al.cmdRegistry, rt)
 
 	var commandReply string
@@ -127,6 +128,7 @@ func (al *AgentLoop) applyExplicitSkillCommand(
 func (al *AgentLoop) buildCommandsRuntime(
 	ctx context.Context,
 	agent *AgentInstance,
+	workspaceAgent *AgentInstance,
 	opts *processOptions,
 ) *commands.Runtime {
 	normalizeProcessOptionsInPlace(opts)
@@ -290,11 +292,36 @@ func (al *AgentLoop) buildCommandsRuntime(
 		return al.reloadFunc()
 	}
 	if agent != nil {
+		if workspaceAgent == nil {
+			workspaceAgent = agent
+		}
+		modelOverrideKey := modelOverrideScopeKey(
+			workspaceAgent.ID,
+			opts.Dispatch.InboundContext,
+			opts.Dispatch.RouteSessionKey,
+		)
 		if agent.ContextBuilder != nil {
 			rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
 		}
 		rt.GetModelInfo = func() (string, string) {
 			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
+		}
+		rt.GetModelSelection = func() commands.ModelSelectionInfo {
+			override, _ := al.getSessionModelOverride(modelOverrideKey)
+			effectiveAgent := agent
+			override = normalizeSessionModelOverride(override)
+			if override.Model != "" && strings.TrimSpace(effectiveAgent.Model) != override.Model {
+				overrideView := *workspaceAgent
+				overrideView.Model = override.Model
+				overrideView.Candidates = resolveModelCandidates(
+					cfg,
+					cfg.Agents.Defaults.Provider,
+					override.Model,
+					workspaceAgent.Fallbacks,
+				)
+				effectiveAgent = &overrideView
+			}
+			return buildSessionModelSelectionInfo(workspaceAgent, effectiveAgent, override)
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
 			if cfg == nil || len(cfg.ModelList) == 0 {
@@ -389,7 +416,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 		}
 		rt.SwitchModel = func(value string) (string, error) {
 			value = strings.TrimSpace(value)
-			modelCfg, err := resolvedModelConfig(cfg, value, agent.Workspace)
+			modelCfg, err := resolvedModelConfig(cfg, value, workspaceAgent.Workspace)
 			if err != nil {
 				return "", err
 			}
@@ -399,18 +426,23 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return "", fmt.Errorf("failed to initialize model %q: %w", value, err)
 			}
 
-			nextCandidates := resolveModelCandidates(cfg, cfg.Agents.Defaults.Provider, value, agent.Fallbacks)
+			nextCandidates := resolveModelCandidates(
+				cfg,
+				cfg.Agents.Defaults.Provider,
+				value,
+				workspaceAgent.Fallbacks,
+			)
 			if len(nextCandidates) == 0 {
 				return "", fmt.Errorf("model %q did not resolve to any provider candidates", value)
 			}
 
-			oldModel := agent.Model
-			oldProvider := agent.Provider
-			agent.Model = value
-			agent.Provider = nextProvider
-			agent.Candidates = nextCandidates
-			agent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
-			agent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
+			oldModel := workspaceAgent.Model
+			oldProvider := workspaceAgent.Provider
+			workspaceAgent.Model = value
+			workspaceAgent.Provider = nextProvider
+			workspaceAgent.Candidates = nextCandidates
+			workspaceAgent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
+			workspaceAgent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
 			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
 				_ = al.clearAutoModelSelection(routeSessionKey)
 			}
@@ -421,6 +453,32 @@ func (al *AgentLoop) buildCommandsRuntime(
 				}
 			}
 			return oldModel, nil
+		}
+		rt.SetSessionModel = func(value string) error {
+			if modelOverrideKey == "" {
+				return fmt.Errorf("conversation key not available")
+			}
+			modelName, err := canonicalModelOverrideValue(cfg, value)
+			if err != nil {
+				return err
+			}
+			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
+				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
+					return err
+				}
+			}
+			return al.setSessionModelOverride(modelOverrideKey, modelName)
+		}
+		rt.ClearSessionModel = func() error {
+			if modelOverrideKey == "" {
+				return fmt.Errorf("conversation key not available")
+			}
+			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
+				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
+					return err
+				}
+			}
+			return al.clearSessionModelOverride(modelOverrideKey)
 		}
 
 		rt.ClearHistory = func() error {
