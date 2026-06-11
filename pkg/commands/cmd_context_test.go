@@ -39,7 +39,7 @@ func TestFormatContextStats_ShowsStoredAndAssembledSections(t *testing.T) {
 		"- Summarize at: heuristic 98304 full-window tokens; effective budget 122880 tokens; summary prefix target 32000 tokens",
 		"Notes",
 		"- Stored session shows persisted history pressure",
-		"- Assembled prompt estimate is approximate; final requests may differ after runtime shaping",
+		"- Assembled prompt estimate is approximate; final requests may differ after runtime shaping and repair",
 	}
 	for _, want := range wants {
 		if !strings.Contains(got, want) {
@@ -66,7 +66,7 @@ func TestFormatContextStats_MarksAssembledEstimateOverBudget(t *testing.T) {
 	}
 
 	got := formatContextStats(stats)
-	if !strings.Contains(got, "Assembled prompt estimate (over budget)") {
+	if !strings.Contains(got, "Assembled prompt estimate (pre-repair over budget)") {
 		t.Fatalf("formatContextStats missing over-budget label in:\n%s", got)
 	}
 }

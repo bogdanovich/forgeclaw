@@ -338,6 +338,77 @@ func TestTurnProfile_ContextCommandUsesEnabledTurnProfile(t *testing.T) {
 	}
 }
 
+func TestTurnProfile_ContextCommandUsesEffectiveBindingProvider(t *testing.T) {
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			Web: config.WebToolsConfig{
+				ToolConfig:   config.ToolConfig{Enabled: true},
+				PreferNative: true,
+			},
+		},
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				TurnProfile: config.TurnProfileConfig{
+					Enabled:      true,
+					History:      config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					SystemPrompt: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Skills:       config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Tools: config.TurnProfileBlock{
+						Mode:  config.TurnProfileModeCustom,
+						Allow: []string{"web_search"},
+					},
+				},
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &plainProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := "context-binding-provider"
+	opts := processOptions{
+		SessionKey: sessionKey,
+		Dispatch: DispatchRequest{
+			SessionKey:      sessionKey,
+			RouteSessionKey: sessionKey,
+		},
+	}
+
+	rtPlain := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+	}, &opts)
+	statsPlain := rtPlain.GetContextStats()
+	if statsPlain == nil {
+		t.Fatal("expected plain binding context stats")
+	}
+
+	rtNative := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+		Execution: effectiveExecutionState{
+			Provider: &nativeSearchProvider{supported: true},
+		},
+	}, &opts)
+	statsNative := rtNative.GetContextStats()
+	if statsNative == nil {
+		t.Fatal("expected native binding context stats")
+	}
+	if statsNative.AssembledUsedTokens <= statsPlain.AssembledUsedTokens {
+		t.Fatalf(
+			"native binding assembled tokens = %d, want > plain binding %d",
+			statsNative.AssembledUsedTokens,
+			statsPlain.AssembledUsedTokens,
+		)
+	}
+}
+
 func TestTurnProfile_BtwCommandDoesNotAddToolFallbackWhenSystemPromptOff(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := &config.Config{

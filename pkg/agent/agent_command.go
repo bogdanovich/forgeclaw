@@ -585,13 +585,14 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return nil
 			}
 			storedHistory := agent.Sessions.GetHistory(resolvedOpts.SessionKey)
+			statsAgent := contextStatsAgentForBinding(agent, modelBinding)
 			var assembledUsage *bus.ContextUsage
 			assembledMessageCount := len(storedHistory)
 			assembledFitsBudget := true
 			if usage, count, fitsBudget := computeAssembledContextUsage(
 				context.Background(),
 				al.GetConfig(),
-				agent,
+				statsAgent,
 				al.contextManager,
 				resolvedOpts,
 				resolvedOpts.SessionKey,
@@ -627,6 +628,50 @@ func (al *AgentLoop) buildCommandsRuntime(
 		}
 	}
 	return rt
+}
+
+func contextStatsAgentForBinding(
+	workspaceAgent *AgentInstance,
+	modelBinding effectiveModelBinding,
+) *AgentInstance {
+	if workspaceAgent == nil {
+		return nil
+	}
+	execution := modelBinding.ExecutionState()
+	if execution.Model == "" &&
+		execution.Provider == nil &&
+		len(execution.Candidates) == 0 &&
+		len(execution.CandidateProviders) == 0 &&
+		len(execution.LightCandidates) == 0 &&
+		execution.LightProvider == nil &&
+		!execution.ThinkingLevelConfigured {
+		return workspaceAgent
+	}
+
+	cloned := *workspaceAgent
+	if execution.Model != "" {
+		cloned.Model = execution.Model
+	}
+	if execution.Provider != nil {
+		cloned.Provider = execution.Provider
+	}
+	if len(execution.Candidates) > 0 {
+		cloned.Candidates = append([]providers.FallbackCandidate(nil), execution.Candidates...)
+	}
+	if len(execution.CandidateProviders) > 0 {
+		cloned.CandidateProviders = cloneCandidateProviderMap(execution.CandidateProviders)
+	}
+	if len(execution.LightCandidates) > 0 {
+		cloned.LightCandidates = append([]providers.FallbackCandidate(nil), execution.LightCandidates...)
+	}
+	if execution.LightProvider != nil {
+		cloned.LightProvider = execution.LightProvider
+	}
+	if execution.ThinkingLevelConfigured {
+		cloned.ThinkingLevel = execution.ThinkingLevel
+		cloned.ThinkingLevelConfigured = true
+	}
+	return &cloned
 }
 
 func summarizeMCPToolParameters(schema any) []commands.MCPToolParameterInfo {

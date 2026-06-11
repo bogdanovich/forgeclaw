@@ -38,7 +38,7 @@ func formatContextStats(s *ContextStats) string {
 	assembledWindowPercent := s.AssembledUsedTokens * 100 / max(s.TotalTokens, 1)
 	assembledLabel := "Assembled prompt estimate"
 	if !s.AssembledFitsBudget {
-		assembledLabel += " (over budget)"
+		assembledLabel += " (pre-repair over budget)"
 	}
 	msg := fmt.Sprintf(
 		"Context usage  \n"+
@@ -60,7 +60,7 @@ func formatContextStats(s *ContextStats) string {
 			"- Summarize at: %s  \n"+
 			"Notes  \n"+
 			"- Stored session shows persisted history pressure  \n"+
-			"- Assembled prompt estimate is approximate; final requests may differ after runtime shaping",
+			"- Assembled prompt estimate is approximate; final requests may differ after runtime shaping and repair",
 		s.ContextManager,
 		s.StoredMessageCount,
 		s.StoredUsedTokens,
