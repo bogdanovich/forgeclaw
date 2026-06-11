@@ -507,11 +507,21 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if opts == nil || agent.Sessions == nil {
 				return nil
 			}
-			storedUsage := computeContextUsage(agent, opts.SessionKey)
+			resolvedOpts := *opts
+			if resolved, err := resolveTurnProfileOptions(al.GetConfig(), resolvedOpts); err != nil {
+				logger.WarnCF("agent", "Failed to resolve turn profile for /context stats",
+					map[string]any{
+						"error": err.Error(),
+					})
+			} else {
+				resolvedOpts = resolved
+			}
+
+			storedUsage := computeContextUsage(agent, resolvedOpts.SessionKey)
 			if storedUsage == nil {
 				return nil
 			}
-			storedHistory := agent.Sessions.GetHistory(opts.SessionKey)
+			storedHistory := agent.Sessions.GetHistory(resolvedOpts.SessionKey)
 			var assembledUsage *bus.ContextUsage
 			assembledMessageCount := len(storedHistory)
 			assembledFitsBudget := true
@@ -520,8 +530,8 @@ func (al *AgentLoop) buildCommandsRuntime(
 				al.GetConfig(),
 				agent,
 				al.contextManager,
-				*opts,
-				opts.SessionKey,
+				resolvedOpts,
+				resolvedOpts.SessionKey,
 			); usage != nil {
 				assembledUsage = usage
 				assembledMessageCount = count

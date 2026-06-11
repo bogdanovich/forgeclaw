@@ -278,6 +278,63 @@ func TestTurnProfile_BtwCommandUsesEnabledTurnProfile(t *testing.T) {
 	}
 }
 
+func TestTurnProfile_ContextCommandUsesEnabledTurnProfile(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				TurnProfile: config.TurnProfileConfig{
+					Enabled: true,
+					History: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+				},
+			},
+		},
+	}
+	al := newTurnProfileAgentLoop(t, cfg, &turnProfileCaptureProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := "context-profile"
+	agent.Sessions.AddMessage(sessionKey, "user", "old history")
+
+	opts := processOptions{
+		SessionKey: sessionKey,
+		Dispatch: DispatchRequest{
+			SessionKey:      sessionKey,
+			RouteSessionKey: sessionKey,
+		},
+	}
+	rt := al.buildCommandsRuntime(context.Background(), agent, &opts)
+	if rt == nil || rt.GetContextStats == nil {
+		t.Fatal("expected command runtime with context stats")
+	}
+
+	stats := rt.GetContextStats()
+	if stats == nil {
+		t.Fatal("expected context stats")
+	}
+	if stats.StoredMessageCount != 1 {
+		t.Fatalf("stored message count = %d, want 1", stats.StoredMessageCount)
+	}
+	if stats.AssembledMessageCount != 0 {
+		t.Fatalf(
+			"assembled message count = %d, want 0 when turn profile disables history",
+			stats.AssembledMessageCount,
+		)
+	}
+	if stats.AssembledHistoryTokens != 0 {
+		t.Fatalf(
+			"assembled history tokens = %d, want 0 when turn profile disables history",
+			stats.AssembledHistoryTokens,
+		)
+	}
+}
+
 func TestTurnProfile_BtwCommandDoesNotAddToolFallbackWhenSystemPromptOff(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := &config.Config{
