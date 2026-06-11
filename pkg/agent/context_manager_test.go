@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,9 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
 // ---------------------------------------------------------------------------
@@ -779,4 +782,95 @@ func testConfig(t *testing.T) *config.Config {
 func newCMTestAgentLoop(cfg *config.Config) *AgentLoop {
 	msgBus := bus.NewMessageBus()
 	return NewAgentLoop(cfg, msgBus, &simpleMockProvider{response: "test"})
+}
+
+func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
+	cfg := testConfig(t)
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	store := media.NewFileMediaStore()
+	al.SetMediaStore(store)
+
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "ctx.png")
+	pngHeader := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D,
+		0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+		0x00, 0x00, 0x00,
+		0x90, 0x77, 0x53, 0xDE,
+	}
+	if err := os.WriteFile(pngPath, pngHeader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Store(pngPath, media.MediaMeta{}, "ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	agent.Sessions.AddFullMessage("ctx-session", providers.Message{
+		Role:    "assistant",
+		Content: "",
+		ToolCalls: []providers.ToolCall{
+			{
+				ID:   "call_media",
+				Type: "function",
+				Function: &protocoltypes.FunctionCall{
+					Name:      "image_tool",
+					Arguments: "{}",
+				},
+			},
+		},
+	})
+	agent.Sessions.AddFullMessage("ctx-session", providers.Message{
+		Role:       "tool",
+		Content:    "tool produced image",
+		ToolCallID: "call_media",
+		Media:      []string{ref},
+	})
+
+	got, gotCount := computeAssembledContextUsage(
+		context.Background(),
+		agent,
+		al.contextManager,
+		store,
+		cfg.Agents.Defaults.GetMaxMediaSize(),
+		processOptions{},
+		"ctx-session",
+	)
+	resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
+		SessionKey:    "ctx-session",
+		Budget:        agent.ContextWindow,
+		MaxTokens:     agent.MaxTokens,
+		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(agent, processOptions{}),
+	})
+	if err != nil || resp == nil {
+		t.Fatalf("assemble failed: %v", err)
+	}
+	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), processOptions{}.TurnProfile)
+	req := promptBuildRequestForProcessOptions(agent, processOptions{}, resp.History, resp.Summary, "", nil)
+	req.ActiveSkills = append([]string(nil), activeSkillNames(agent, processOptions{})...)
+	expectedMessages := resolveMediaRefs(
+		agent.ContextBuilder.BuildMessagesFromPrompt(req),
+		store,
+		cfg.Agents.Defaults.GetMaxMediaSize(),
+	)
+	expectedUsed := EstimateToolDefsTokens(toolDefs)
+	for _, msg := range expectedMessages {
+		expectedUsed += EstimateMessageTokens(msg)
+	}
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
+	if got.UsedTokens != expectedUsed {
+		t.Fatalf("assembled used tokens = %d, want %d", got.UsedTokens, expectedUsed)
+	}
+	if gotCount != 2 {
+		t.Fatalf("assembled history count = %d, want 2", gotCount)
+	}
 }

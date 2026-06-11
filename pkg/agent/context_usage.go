@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -130,6 +131,8 @@ func computeAssembledContextUsage(
 	ctx context.Context,
 	agent *AgentInstance,
 	cm ContextManager,
+	mediaStore media.MediaStore,
+	maxMediaSize int,
 	opts processOptions,
 	sessionKey string,
 ) (*bus.ContextUsage, int) {
@@ -160,7 +163,8 @@ func computeAssembledContextUsage(
 	rebuild := func(history []providers.Message) []providers.Message {
 		req := promptBuildRequestForProcessOptions(agent, opts, history, resp.Summary, "", nil)
 		req.ActiveSkills = append([]string(nil), contextualSkills...)
-		return agent.ContextBuilder.BuildMessagesFromPrompt(req)
+		messages := agent.ContextBuilder.BuildMessagesFromPrompt(req)
+		return resolveMediaRefs(messages, mediaStore, maxMediaSize)
 	}
 
 	finalHistory := append([]providers.Message(nil), resp.History...)

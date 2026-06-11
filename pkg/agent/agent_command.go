@@ -517,6 +517,8 @@ func (al *AgentLoop) buildCommandsRuntime(
 				context.Background(),
 				agent,
 				al.contextManager,
+				al.mediaStore,
+				al.GetConfig().Agents.Defaults.GetMaxMediaSize(),
 				*opts,
 				opts.SessionKey,
 			); usage != nil {
