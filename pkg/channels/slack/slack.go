@@ -74,7 +74,7 @@ func NewSlackChannel(
 		config:       cfg,
 		api:          api,
 		socketClient: socketClient,
-		inboundDedup: channels.NewDedupStore(2*time.Minute, 4096),
+		inboundDedup: channels.NewDedupStore(2*time.Minute, 0),
 	}
 	ch.postMessageFn = func(ctx context.Context, channelID, threadTS, text string) (string, error) {
 		opts := ch.slackMessageOptions(text, threadTS)
@@ -765,7 +765,7 @@ func (c *SlackChannel) markInboundEventHandled(eventKind, channelID, messageTS s
 		return false
 	}
 	if c.inboundDedup == nil {
-		c.inboundDedup = channels.NewDedupStore(2*time.Minute, 4096)
+		c.inboundDedup = channels.NewDedupStore(2*time.Minute, 0)
 	}
 	key := eventKind + "|" + channelID + "|" + messageTS
 	return c.inboundDedup.Seen(key)

@@ -51,3 +51,16 @@ func TestDedupStoreSeen_EvictsOldestAtCapacity(t *testing.T) {
 		t.Fatal("oldest key should have been evicted")
 	}
 }
+
+func TestDedupStoreSeen_UnboundedCapacityDoesNotEvict(t *testing.T) {
+	store := NewDedupStore(time.Minute, 0)
+	for i := 0; i < 5000; i++ {
+		key := time.Unix(0, int64(i)).Format(time.RFC3339Nano)
+		if store.Seen(key) {
+			t.Fatalf("first sighting for %q should not be duplicate", key)
+		}
+	}
+	if !store.Seen(time.Unix(0, 0).Format(time.RFC3339Nano)) {
+		t.Fatal("old entry should remain duplicate when capacity is unbounded")
+	}
+}
