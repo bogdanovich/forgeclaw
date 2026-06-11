@@ -4584,6 +4584,102 @@ func TestProcessMessage_ResetClearsSessionModelOverride(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_SwitchModelRejectedWhenSessionOverrideActive(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	localCalls := 0
+	localModel := ""
+	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+	defer localServer.Close()
+
+	remoteCalls := 0
+	remoteModel := ""
+	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+	defer remoteServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   localServer.URL,
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIBase:   remoteServer.URL,
+				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	ctx := context.Background()
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+
+	overrideResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+		Context: inbound,
+		Content: "/model deepseek",
+	})
+	if !strings.Contains(overrideResp, "Set session model override.") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+
+	switchResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+		Context: inbound,
+		Content: "/switch model to deepseek",
+	})
+	if !strings.Contains(switchResp, "cannot use /switch while this conversation has /model deepseek active") {
+		t.Fatalf("unexpected /switch rejection: %q", switchResp)
+	}
+
+	showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+		Context: inbound,
+		Content: "/show model",
+	})
+	if !strings.Contains(showResp, "Current Model: deepseek (Provider: openrouter)") {
+		t.Fatalf("unexpected /show model after rejected switch: %q", showResp)
+	}
+	if !strings.Contains(showResp, "Session Override: deepseek") {
+		t.Fatalf("expected session override to remain active, got %q", showResp)
+	}
+	if !strings.Contains(showResp, "Workspace Default: gpt-5.4 (Provider: openai)") {
+		t.Fatalf("workspace default should remain unchanged, got %q", showResp)
+	}
+}
+
 func TestProcessMessage_InvalidSessionModelOverrideAutoClears(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {

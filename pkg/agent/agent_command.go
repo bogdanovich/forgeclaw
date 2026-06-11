@@ -411,6 +411,16 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return models
 		}
 		rt.SwitchModel = func(value string) (string, error) {
+			if modelOverrideKey != "" {
+				override, ok := al.getSessionModelOverride(modelOverrideKey)
+				override = normalizeSessionModelOverride(override)
+				if ok && override.Model != "" {
+					return "", fmt.Errorf(
+						"cannot use /switch while this conversation has /model %s active; use /model clear first",
+						override.Model,
+					)
+				}
+			}
 			value = strings.TrimSpace(value)
 			modelCfg, err := resolvedModelConfig(cfg, value, workspaceAgent.Workspace)
 			if err != nil {

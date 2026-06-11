@@ -105,13 +105,14 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 
 	return al.runAgentLoop(ctx, effectiveAgent, processOptions{
 		Dispatch: DispatchRequest{
-			SessionKey:     sessionKey,
-			SessionAliases: buildSessionAliases(sessionKey, append(allocation.SessionAliases, msg.SessionKey)...),
-			InboundContext: cloneInboundContext(&msg.Context),
-			RouteResult:    cloneResolvedRoute(&route),
-			SessionScope:   session.CloneScope(&allocation.Scope),
-			UserMessage:    msg.Content,
-			Media:          append([]string(nil), msg.Media...),
+			RouteSessionKey: allocation.SessionKey,
+			SessionKey:      sessionKey,
+			SessionAliases:  buildSessionAliases(sessionKey, append(allocation.SessionAliases, msg.SessionKey)...),
+			InboundContext:  cloneInboundContext(&msg.Context),
+			RouteResult:     cloneResolvedRoute(&route),
+			SessionScope:    session.CloneScope(&allocation.Scope),
+			UserMessage:     msg.Content,
+			Media:           append([]string(nil), msg.Media...),
 		},
 		SenderID:             msg.SenderID,
 		SenderDisplayName:    msg.Sender.DisplayName,
