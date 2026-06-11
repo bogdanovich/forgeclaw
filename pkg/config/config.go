@@ -544,8 +544,8 @@ type TelegramSettings struct {
 	Streaming         StreamingConfig     `json:"streaming,omitzero"          yaml:"-"`
 	UseMarkdownV2     bool                `json:"use_markdown_v2"             yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
 	MediaGroupDelayMS int                 `json:"media_group_delay_ms"        yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_MEDIA_GROUP_DELAY_MS"`
-	AllowedTopicIDs   FlexibleStringSlice `json:"allowed_topic_ids,omitempty" yaml:"-"`
-	IgnoredTopicIDs   FlexibleStringSlice `json:"ignored_topic_ids,omitempty" yaml:"-"`
+	AllowedTopicIDs   FlexibleStringSlice `json:"allowed_topic_ids,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS"`
+	IgnoredTopicIDs   FlexibleStringSlice `json:"ignored_topic_ids,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS"`
 }
 
 type FeishuSettings struct {

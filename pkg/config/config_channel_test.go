@@ -249,6 +249,30 @@ func TestInitChannelList_TelegramStreamingEnvCompatibility(t *testing.T) {
 	assert.Equal(t, 0, picoCfg.Streaming.MinGrowthChars)
 }
 
+func TestInitChannelList_TelegramTopicFilterEnvCompatibility(t *testing.T) {
+	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS", "3565,7777")
+	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS", "6")
+
+	channels := ChannelsConfig{
+		"telegram": {
+			Type:     ChannelTelegram,
+			Enabled:  true,
+			Settings: RawNode(`{"token":"telegram-token"}`),
+		},
+	}
+	if err := InitChannelList(channels); err != nil {
+		t.Fatalf("InitChannelList() error = %v", err)
+	}
+
+	tgDecoded, err := channels["telegram"].GetDecoded()
+	if err != nil {
+		t.Fatalf("telegram GetDecoded() error = %v", err)
+	}
+	tgCfg := tgDecoded.(*TelegramSettings)
+	assert.Equal(t, []string{"3565", "7777"}, []string(tgCfg.AllowedTopicIDs))
+	assert.Equal(t, []string{"6"}, []string(tgCfg.IgnoredTopicIDs))
+}
+
 func TestInitChannelList_RejectsNegativeStreamingDeliveryValues(t *testing.T) {
 	tests := []struct {
 		name        string
