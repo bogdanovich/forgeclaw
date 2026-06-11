@@ -1569,7 +1569,10 @@ func TestHandleCommand_UseCommandRejectsUnknownSkill(t *testing.T) {
 		SenderID: "telegram:123",
 		ChatID:   "chat-1",
 		Content:  "/use missing explain how to list files",
-	}, agent, agent, &opts)
+	}, effectiveModelBinding{
+		WorkspaceAgent: agent,
+		EffectiveAgent: agent,
+	}, &opts)
 	if !handled {
 		t.Fatal("expected /use with unknown skill to be handled")
 	}

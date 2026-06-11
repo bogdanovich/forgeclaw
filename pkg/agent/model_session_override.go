@@ -11,6 +11,54 @@ import (
 	"github.com/sipeed/picoclaw/pkg/state"
 )
 
+type effectiveModelBinding struct {
+	RouteSessionKey string
+	WorkspaceAgent  *AgentInstance
+	EffectiveAgent  *AgentInstance
+	Override        state.SessionModelOverride
+	cleanup         func()
+}
+
+func (b effectiveModelBinding) Cleanup() {
+	if b.cleanup != nil {
+		b.cleanup()
+	}
+}
+
+func (b effectiveModelBinding) SelectionInfo() commands.ModelSelectionInfo {
+	return buildSessionModelSelectionInfo(b.WorkspaceAgent, b.EffectiveAgent, b.Override)
+}
+
+func selectionInfoForBinding(
+	cfg *config.Config,
+	binding effectiveModelBinding,
+) commands.ModelSelectionInfo {
+	workspaceAgent := binding.WorkspaceAgent
+	effectiveAgent := binding.EffectiveAgent
+	override := normalizeSessionModelOverride(binding.Override)
+	if workspaceAgent == nil {
+		workspaceAgent = effectiveAgent
+	}
+	if workspaceAgent == nil {
+		return commands.ModelSelectionInfo{}
+	}
+	if override.Model != "" && strings.TrimSpace(workspaceAgent.Model) != override.Model {
+		overrideView := *workspaceAgent
+		overrideView.Model = override.Model
+		overrideView.Candidates = resolveModelCandidates(
+			cfg,
+			cfg.Agents.Defaults.Provider,
+			override.Model,
+			workspaceAgent.Fallbacks,
+		)
+		effectiveAgent = &overrideView
+	}
+	if effectiveAgent == nil {
+		effectiveAgent = workspaceAgent
+	}
+	return buildSessionModelSelectionInfo(workspaceAgent, effectiveAgent, override)
+}
+
 func normalizeSessionModelOverride(
 	override state.SessionModelOverride,
 ) state.SessionModelOverride {
@@ -145,25 +193,31 @@ func (al *AgentLoop) buildSessionOverrideAgent(
 	return &overrideAgent, cleanup, nil
 }
 
-func (al *AgentLoop) materializeSessionOverrideAgent(
+func (al *AgentLoop) bindEffectiveModel(
 	routeSessionKey string,
 	baseAgent *AgentInstance,
-) (*AgentInstance, func()) {
-	effectiveAgent := baseAgent
-	if strings.TrimSpace(routeSessionKey) == "" || baseAgent == nil {
-		return effectiveAgent, nil
+) effectiveModelBinding {
+	binding := effectiveModelBinding{
+		RouteSessionKey: strings.TrimSpace(routeSessionKey),
+		WorkspaceAgent:  baseAgent,
+		EffectiveAgent:  baseAgent,
+	}
+	if binding.RouteSessionKey == "" || baseAgent == nil {
+		return binding
 	}
 
-	override, ok := al.getSessionModelOverride(routeSessionKey)
+	override, ok := al.getSessionModelOverride(binding.RouteSessionKey)
 	if !ok {
-		return effectiveAgent, nil
+		return binding
 	}
 	override = normalizeSessionModelOverride(override)
 	if override.Model == "" {
-		return effectiveAgent, nil
+		return binding
 	}
+
+	binding.Override = override
 	if override.Model == baseAgent.Model {
-		return effectiveAgent, nil
+		return binding
 	}
 
 	overrideAgent, cleanup, err := al.buildSessionOverrideAgent(baseAgent, override.Model)
@@ -171,12 +225,16 @@ func (al *AgentLoop) materializeSessionOverrideAgent(
 		logger.WarnCF("agent", "Clearing invalid session model override",
 			map[string]any{
 				"agent_id":       baseAgent.ID,
-				"session_key":    routeSessionKey,
+				"session_key":    binding.RouteSessionKey,
 				"override":       override.Model,
 				"override_error": err.Error(),
 			})
-		_ = al.clearSessionModelOverride(routeSessionKey)
-		return effectiveAgent, nil
+		_ = al.clearSessionModelOverride(binding.RouteSessionKey)
+		binding.Override = state.SessionModelOverride{}
+		return binding
 	}
-	return overrideAgent, cleanup
+
+	binding.EffectiveAgent = overrideAgent
+	binding.cleanup = cleanup
+	return binding
 }

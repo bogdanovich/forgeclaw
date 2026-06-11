@@ -92,10 +92,9 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 	}
 	allocation := al.allocateRouteSession(route, msg)
 	sessionKey := resolveScopeKey(allocation.SessionKey, msg.SessionKey)
-	effectiveAgent, cleanupEffectiveAgent := al.materializeSessionOverrideAgent(allocation.SessionKey, agent)
-	if cleanupEffectiveAgent != nil {
-		defer cleanupEffectiveAgent()
-	}
+	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
+	defer modelBinding.Cleanup()
+	effectiveAgent := modelBinding.EffectiveAgent
 
 	if tool, ok := effectiveAgent.Tools.Get("message"); ok {
 		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
@@ -216,10 +215,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	// agent-scoped keys supplied by the caller.
 	scopeKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
 	sessionKey := scopeKey
-	effectiveAgent, cleanupEffectiveAgent := al.materializeSessionOverrideAgent(allocation.SessionKey, agent)
-	if cleanupEffectiveAgent != nil {
-		defer cleanupEffectiveAgent()
-	}
+	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
+	defer modelBinding.Cleanup()
+	effectiveAgent := modelBinding.EffectiveAgent
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
 	if tool, ok := effectiveAgent.Tools.Get("message"); ok {
@@ -273,7 +271,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// context-dependent commands check their own Runtime fields and report
 	// "unavailable" when the required capability is nil.
-	if response, handled := al.handleCommand(ctx, msg, effectiveAgent, agent, &opts); handled {
+	if response, handled := al.handleCommand(ctx, msg, modelBinding, &opts); handled {
 		return response, nil
 	}
 

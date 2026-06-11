@@ -66,3 +66,20 @@ merge upstream PicoClaw changes.
   reason.
 - Prefer small compatibility patches over broad rewrites that increase merge
   conflict cost.
+
+## 8. Model Selection Architecture
+
+- Keep `/model` as the conversation-scoped model selector and `/switch` as the
+  explicit workspace-wide operator path until `/switch` is deprecated.
+- Replace ad hoc override-agent cloning with a clearer effective-model
+  resolution path.
+- Resolve model-selection state once per routed turn, then pass that binding
+  through command/runtime and execution code instead of repeatedly re-reading
+  per-session override state.
+- Keep invalid session overrides self-healing and bounded to the routed
+  conversation key.
+- Preserve current provider/model selection semantics while reducing the amount
+  of agent-instance mutation/cloning required to execute a session override.
+- After the binding layer is stable, consider moving from "derived
+  AgentInstance" materialization toward per-turn provider/model resolution so
+  session overrides stop carrying copied tool/router/provider bookkeeping.
