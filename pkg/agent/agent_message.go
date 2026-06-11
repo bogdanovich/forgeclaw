@@ -92,10 +92,10 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 	}
 	allocation := al.allocateRouteSession(route, msg)
 	sessionKey := resolveScopeKey(allocation.SessionKey, msg.SessionKey)
-	modelOverrideKey := modelOverrideScopeKey(agent.ID, &msg.Context, allocation.SessionKey)
 	effectiveAgent := agent
 	var cleanupEffectiveAgent func()
-	if override, ok := al.getSessionModelOverride(modelOverrideKey); ok && strings.TrimSpace(override.Model) != "" {
+	if override, ok := al.getSessionModelOverride(allocation.SessionKey); ok &&
+		strings.TrimSpace(override.Model) != "" {
 		effectiveAgent, cleanupEffectiveAgent, routeErr = al.buildSessionOverrideAgent(agent, override.Model)
 		if routeErr != nil {
 			return "", routeErr
@@ -223,10 +223,10 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	// agent-scoped keys supplied by the caller.
 	scopeKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
 	sessionKey := scopeKey
-	modelOverrideKey := modelOverrideScopeKey(agent.ID, &msg.Context, allocation.SessionKey)
 	effectiveAgent := agent
 	var cleanupEffectiveAgent func()
-	if override, ok := al.getSessionModelOverride(modelOverrideKey); ok && strings.TrimSpace(override.Model) != "" {
+	if override, ok := al.getSessionModelOverride(allocation.SessionKey); ok &&
+		strings.TrimSpace(override.Model) != "" {
 		effectiveAgent, cleanupEffectiveAgent, routeErr = al.buildSessionOverrideAgent(agent, override.Model)
 		if routeErr != nil {
 			return "", routeErr

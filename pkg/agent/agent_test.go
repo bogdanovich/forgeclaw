@@ -842,6 +842,9 @@ func TestProcessMessage_BeforeLLMModelRewriteReevaluatesThinkingOff(t *testing.T
 				MaxToolIterations: 10,
 			},
 		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
 		ModelList: []*config.ModelConfig{
 			{
 				ModelName: "plain-model",
@@ -895,6 +898,9 @@ func TestProcessMessage_BeforeLLMModelRewriteDoesNotLeakThinkingOff(t *testing.T
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
 		},
 		ModelList: []*config.ModelConfig{
 			{
@@ -1001,6 +1007,9 @@ func TestProcessMessage_BtwHookModelRewriteReevaluatesThinkingOff(t *testing.T) 
 				MaxToolIterations: 10,
 			},
 		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
 		ModelList: []*config.ModelConfig{
 			{
 				ModelName: "plain-model",
@@ -1058,6 +1067,9 @@ func TestProcessMessage_BtwHookModelRewriteDoesNotLeakThinkingOff(t *testing.T) 
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
 		},
 		ModelList: []*config.ModelConfig{
 			{
@@ -4262,6 +4274,9 @@ func TestProcessMessage_ModelOverrideIsSessionScoped(t *testing.T) {
 				MaxToolIterations: 10,
 			},
 		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
 		ModelList: []*config.ModelConfig{
 			{
 				ModelName: "gpt-5.4",
@@ -4371,6 +4386,9 @@ func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T)
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
 		},
 		ModelList: []*config.ModelConfig{
 			{

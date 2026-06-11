@@ -295,11 +295,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 		if workspaceAgent == nil {
 			workspaceAgent = agent
 		}
-		modelOverrideKey := modelOverrideScopeKey(
-			workspaceAgent.ID,
-			opts.Dispatch.InboundContext,
-			opts.Dispatch.RouteSessionKey,
-		)
+		modelOverrideKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey)
 		if agent.ContextBuilder != nil {
 			rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
 		}
