@@ -42,6 +42,12 @@ func TestBuiltinHelpHandler_ReturnsFormattedMessage(t *testing.T) {
 	if !strings.Contains(reply, "/list [models|channels|agents|skills|mcp]") {
 		t.Fatalf("/help reply missing /list usage, got %q", reply)
 	}
+	if !strings.Contains(reply, "/model [list|use <name>|clear|default]") {
+		t.Fatalf("/help reply missing /model usage, got %q", reply)
+	}
+	if !strings.Contains(reply, "Show the current model, list choices, set a conversation override, or clear it") {
+		t.Fatalf("/help reply missing /model usage, got %q", reply)
+	}
 	if !strings.Contains(reply, "/stop") {
 		t.Fatalf("/help reply missing /stop usage, got %q", reply)
 	}
@@ -212,7 +218,7 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 	}
 	if !strings.Contains(
 		reply,
-		"Use /model <name> for this conversation.",
+		"Use /model use <name> for this conversation.",
 	) {
 		t.Fatalf("/list models reply=%q, want override hint", reply)
 	}

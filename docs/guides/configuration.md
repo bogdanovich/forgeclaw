@@ -174,9 +174,11 @@ export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
 
 Once skills are installed, and MCP servers are configured, you can inspect and force them directly from a chat channel:
 
-- `/model <name>` applies a conversation-scoped model override for the current chat.
+- `/model` shows the current effective model for the current chat.
+- `/model use <name>` applies a conversation-scoped model override for the current chat.
 - `/model clear` removes that conversation-scoped override.
 - `/show model` displays the effective model, including any active conversation override.
+- `/list models` shows the configured model aliases available for `/model use <name>`.
 - `/list skills` shows the installed skill names available to the current agent.
 - `/list mcp` shows configured MCP servers with enabled/deferred/connected status.
 - `/show mcp <server>` shows the active tools exposed by a connected MCP server.
@@ -188,7 +190,9 @@ Once skills are installed, and MCP servers are configured, you can inspect and f
 Examples:
 
 ```text
-/model deepseek
+/model
+/list models
+/model use deepseek
 /show model
 /list skills
 /list mcp
