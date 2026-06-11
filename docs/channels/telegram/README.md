@@ -106,6 +106,7 @@ Skill-related commands:
 - `/model <name>` sets a conversation-scoped model override for the current chat.
 - `/model clear` removes the conversation-scoped model override.
 - `/show model` reports the current effective model, including any active conversation override.
+- `/switch model to <name>` changes the workspace-wide live model for the running agent. Treat it as an operator command, not a normal per-chat control.
 - `/list skills` lists the installed skills visible to the current agent.
 - `/list mcp` lists configured MCP servers and whether they are deferred/connected.
 - `/show mcp <server>` lists the active tools for a connected MCP server.
@@ -120,6 +121,7 @@ Examples:
 /list skills
 /model deepseek
 /show model
+/switch model to deepseek
 /list mcp
 /show mcp github
 /use git explain how to squash the last 3 commits

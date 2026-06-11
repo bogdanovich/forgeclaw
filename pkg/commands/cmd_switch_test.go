@@ -25,7 +25,7 @@ func TestSwitchModel_Success(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("outcome=%v, want=%v", res.Outcome, OutcomeHandled)
 	}
-	want := "Switched model from old-model to gpt-4"
+	want := "Switched workspace model from old-model to gpt-4.\nUse /model <name> if you only want to override this conversation."
 	if reply != want {
 		t.Fatalf("reply=%q, want=%q", reply, want)
 	}
@@ -253,7 +253,7 @@ func TestSwitch_BangPrefix(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("! prefix: outcome=%v, want=%v", res.Outcome, OutcomeHandled)
 	}
-	if reply != "Switched model from old to gpt-4" {
+	if reply != "Switched workspace model from old to gpt-4.\nUse /model <name> if you only want to override this conversation." {
 		t.Fatalf("! prefix: reply=%q, want success message", reply)
 	}
 }

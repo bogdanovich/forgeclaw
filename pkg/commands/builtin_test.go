@@ -212,7 +212,7 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 	}
 	if !strings.Contains(
 		reply,
-		"Use /model <name> for this conversation, or /switch model to <name> for the whole workspace.",
+		"Use /model <name> for this conversation. Use /switch model to <name> only if you want to change the whole workspace.",
 	) {
 		t.Fatalf("/list models reply=%q, want override hint", reply)
 	}

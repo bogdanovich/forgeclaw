@@ -8,11 +8,11 @@ import (
 func switchCommand() Definition {
 	return Definition{
 		Name:        "switch",
-		Description: "Switch model",
+		Description: "Workspace-wide operator switches",
 		SubCommands: []SubCommand{
 			{
 				Name:        "model",
-				Description: "Switch to a different model",
+				Description: "Switch the whole workspace to a different model",
 				ArgsUsage:   "to <name>",
 				Handler: func(_ context.Context, req Request, rt *Runtime) error {
 					if rt == nil || rt.SwitchModel == nil {
@@ -27,7 +27,11 @@ func switchCommand() Definition {
 					if err != nil {
 						return req.Reply(err.Error())
 					}
-					return req.Reply(fmt.Sprintf("Switched model from %s to %s", oldModel, value))
+					return req.Reply(fmt.Sprintf(
+						"Switched workspace model from %s to %s.\nUse /model <name> if you only want to override this conversation.",
+						oldModel,
+						value,
+					))
 				},
 			},
 			{

@@ -177,6 +177,7 @@ Once skills are installed, and MCP servers are configured, you can inspect and f
 - `/model <name>` applies a conversation-scoped model override for the current chat.
 - `/model clear` removes that conversation-scoped override.
 - `/show model` displays the effective model, including any active conversation override.
+- `/switch model to <name>` changes the live workspace model for all conversations handled by the current running agent. Use it as an operator/workspace command, not as a per-chat selector.
 - `/list skills` shows the installed skill names available to the current agent.
 - `/list mcp` shows configured MCP servers with enabled/deferred/connected status.
 - `/show mcp <server>` shows the active tools exposed by a connected MCP server.
@@ -190,6 +191,7 @@ Examples:
 ```text
 /model deepseek
 /show model
+/switch model to deepseek
 /list skills
 /list mcp
 /show mcp github

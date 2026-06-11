@@ -4264,7 +4264,7 @@ func TestProcessMessage_SwitchModelShowModelConsistency(t *testing.T) {
 		ChatID:   "chat1",
 		Content:  "/switch model to deepseek",
 	})
-	if !strings.Contains(switchResp, "Switched model from local to deepseek") {
+	if !strings.Contains(switchResp, "Switched workspace model from local to deepseek") {
 		t.Fatalf("unexpected /switch reply: %q", switchResp)
 	}
 
@@ -5401,7 +5401,7 @@ func TestProcessMessage_SwitchModelAcceptsInferredEnabledAlias(t *testing.T) {
 		},
 		Content: "/switch model to deepseek",
 	})
-	if !strings.Contains(resp, "Switched model from local to deepseek") {
+	if !strings.Contains(resp, "Switched workspace model from local to deepseek") {
 		t.Fatalf("unexpected inferred-enabled switch reply: %q", resp)
 	}
 	if provider.calls != 0 {
@@ -5608,7 +5608,7 @@ func TestProcessMessage_SwitchModelRoutesSubsequentRequestsToSelectedProvider(t 
 		ChatID:   "chat1",
 		Content:  "/switch model to deepseek",
 	})
-	if !strings.Contains(switchResp, "Switched model from local to deepseek") {
+	if !strings.Contains(switchResp, "Switched workspace model from local to deepseek") {
 		t.Fatalf("unexpected /switch reply: %q", switchResp)
 	}
 
