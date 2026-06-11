@@ -364,8 +364,16 @@ func (al *AgentLoop) buildCommandsRuntime(
 					targetOrder = append(targetOrder, target)
 				}
 				sort.Slice(targetOrder, func(i, j int) bool {
-					left := strings.ToLower(targetOrder[i].target.Provider + "\x00" + targetOrder[i].target.Model + "\x00" + targetOrder[i].target.Workspace)
-					right := strings.ToLower(targetOrder[j].target.Provider + "\x00" + targetOrder[j].target.Model + "\x00" + targetOrder[j].target.Workspace)
+					left := strings.ToLower(
+						targetOrder[i].target.Provider + "\x00" +
+							targetOrder[i].target.Model + "\x00" +
+							targetOrder[i].target.Workspace,
+					)
+					right := strings.ToLower(
+						targetOrder[j].target.Provider + "\x00" +
+							targetOrder[j].target.Model + "\x00" +
+							targetOrder[j].target.Workspace,
+					)
 					if left == right {
 						return targetOrder[i].order < targetOrder[j].order
 					}

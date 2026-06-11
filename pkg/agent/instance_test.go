@@ -388,7 +388,13 @@ func TestPopulateCandidateProviders_ResolvesAlias(t *testing.T) {
 
 	cfg := &config.Config{
 		ModelList: []*config.ModelConfig{
-			{ModelName: "my-gpt", Model: "openai/gpt-4o", APIBase: "https://api.openai.com/v1", Workspace: workspace},
+			{
+				ModelName: "my-gpt",
+				Model:     "openai/gpt-4o",
+				APIBase:   "https://api.openai.com/v1",
+				Workspace: workspace,
+				Enabled:   true,
+			},
 		},
 	}
 	populateCandidateProvidersFromNames(cfg, workspace, []string{"my-gpt"}, out)
@@ -413,6 +419,7 @@ func TestPopulateCandidateProviders_ResolvesProtocolPrefix(t *testing.T) {
 				Model:     "gemini/gemma-3-27b-it",
 				APIKeys:   config.SimpleSecureStrings("gemini-test-key"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 		},
 	}
@@ -489,18 +496,21 @@ func TestNewAgentInstance_CandidateProvidersPopulatedForCrossProviderFallbacks(t
 				APIBase:   "https://openrouter.ai/api/v1",
 				APIKeys:   config.SimpleSecureStrings("sk-or-test"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 			{
 				ModelName: "gemma-3-27b",
 				Model:     "gemini/gemma-3-27b-it",
 				APIKeys:   config.SimpleSecureStrings("AIzaSy-test"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 			{
 				ModelName: "gemini-images",
 				Model:     "gemini/gemini-2.5-flash-lite",
 				APIKeys:   config.SimpleSecureStrings("AIzaSy-test"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 		},
 	}

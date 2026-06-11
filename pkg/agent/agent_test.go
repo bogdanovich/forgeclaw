@@ -846,11 +846,13 @@ func TestProcessMessage_BeforeLLMModelRewriteReevaluatesThinkingOff(t *testing.T
 			{
 				ModelName: "plain-model",
 				Model:     "openai/plain-model",
+				Enabled:   true,
 			},
 			{
 				ModelName:     "off-model",
 				Model:         "openai/off-model",
 				ThinkingLevel: "off",
+				Enabled:       true,
 			},
 		},
 	}
@@ -899,6 +901,7 @@ func TestProcessMessage_BeforeLLMModelRewriteDoesNotLeakThinkingOff(t *testing.T
 				ModelName:     "off-model",
 				Model:         "openai/off-model",
 				ThinkingLevel: "off",
+				Enabled:       true,
 			},
 			{
 				ModelName: "plain-model",
@@ -957,6 +960,7 @@ func TestProcessMessage_BtwCommandSuppressesReasoningWhenThinkingOff(t *testing.
 			ModelName:     "test-model",
 			Model:         "openai/test-model",
 			ThinkingLevel: "off",
+			Enabled:       true,
 		}},
 	}
 
@@ -1001,11 +1005,13 @@ func TestProcessMessage_BtwHookModelRewriteReevaluatesThinkingOff(t *testing.T) 
 			{
 				ModelName: "plain-model",
 				Model:     "openai/plain-model",
+				Enabled:   true,
 			},
 			{
 				ModelName:     "off-model",
 				Model:         "openai/off-model",
 				ThinkingLevel: "off",
+				Enabled:       true,
 			},
 		},
 	}
@@ -1058,10 +1064,12 @@ func TestProcessMessage_BtwHookModelRewriteDoesNotLeakThinkingOff(t *testing.T) 
 				ModelName:     "off-model",
 				Model:         "openai/off-model",
 				ThinkingLevel: "off",
+				Enabled:       true,
 			},
 			{
 				ModelName: "plain-model",
 				Model:     "openai/plain-model",
+				Enabled:   true,
 			},
 		},
 	}
@@ -4455,12 +4463,14 @@ func TestProcessMessage_SwitchModelRoutesSubsequentRequestsToSelectedProvider(t 
 				Model:     "openai/Qwen3.5-35B-A3B",
 				APIBase:   localServer.URL,
 				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
 			},
 			{
 				ModelName: "deepseek",
 				Model:     "openrouter/deepseek/deepseek-v3.2",
 				APIBase:   remoteServer.URL,
 				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
 			},
 		},
 	}
@@ -4573,12 +4583,14 @@ func TestProcessMessage_ModelRoutingUsesLightProvider(t *testing.T) {
 				Model:     "gemini/gemini-2.5-flash",
 				APIBase:   heavyServer.URL,
 				APIKeys:   config.SimpleSecureStrings("heavy-key"),
+				Enabled:   true,
 			},
 			{
 				ModelName: "qwen-light",
 				Model:     "ollama/qwen2.5:0.5b",
 				APIBase:   lightServer.URL,
 				APIKeys:   config.SimpleSecureStrings("light-key"),
+				Enabled:   true,
 			},
 		},
 	}
@@ -4653,6 +4665,7 @@ func TestProcessMessage_FallbackUsesPerCandidateProvider(t *testing.T) {
 				APIBase:   primaryServer.URL,
 				APIKeys:   config.SimpleSecureStrings("primary-key"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 			{
 				ModelName: "gemma-fallback",
@@ -4660,6 +4673,7 @@ func TestProcessMessage_FallbackUsesPerCandidateProvider(t *testing.T) {
 				APIBase:   fallbackServer.URL,
 				APIKeys:   config.SimpleSecureStrings("fallback-key"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 		},
 	}
@@ -4759,6 +4773,7 @@ func TestProcessMessage_FallbackReceivesExplicitThinkingOff(t *testing.T) {
 				APIBase:   primaryServer.URL,
 				APIKeys:   config.SimpleSecureStrings("primary-key"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 			{
 				ModelName:     "doubao-fallback",
@@ -4767,6 +4782,7 @@ func TestProcessMessage_FallbackReceivesExplicitThinkingOff(t *testing.T) {
 				APIKeys:       config.SimpleSecureStrings("fallback-key"),
 				ThinkingLevel: "off",
 				Workspace:     workspace,
+				Enabled:       true,
 			},
 		},
 	}
@@ -4854,6 +4870,7 @@ func TestProcessMessage_PrimaryThinkingOffDoesNotLeakToFallback(t *testing.T) {
 				APIKeys:       config.SimpleSecureStrings("primary-key"),
 				ThinkingLevel: "off",
 				Workspace:     workspace,
+				Enabled:       true,
 			},
 			{
 				ModelName: "doubao-fallback",
@@ -4861,6 +4878,7 @@ func TestProcessMessage_PrimaryThinkingOffDoesNotLeakToFallback(t *testing.T) {
 				APIBase:   fallbackServer.URL,
 				APIKeys:   config.SimpleSecureStrings("fallback-key"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 		},
 	}
@@ -4947,6 +4965,7 @@ func TestProcessMessage_FallbackThinkingOffUsesCandidateIdentity(t *testing.T) {
 				APIBase:   primaryServer.URL,
 				APIKeys:   config.SimpleSecureStrings("primary-key"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 			{
 				ModelName: "doubao-default",
@@ -4954,6 +4973,7 @@ func TestProcessMessage_FallbackThinkingOffUsesCandidateIdentity(t *testing.T) {
 				APIBase:   fallbackServer.URL,
 				APIKeys:   config.SimpleSecureStrings("fallback-key"),
 				Workspace: workspace,
+				Enabled:   true,
 			},
 			{
 				ModelName:     "doubao-off",
@@ -4962,6 +4982,7 @@ func TestProcessMessage_FallbackThinkingOffUsesCandidateIdentity(t *testing.T) {
 				APIKeys:       config.SimpleSecureStrings("fallback-key"),
 				ThinkingLevel: "off",
 				Workspace:     workspace,
+				Enabled:       true,
 			},
 		},
 	}

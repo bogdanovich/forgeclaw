@@ -196,7 +196,10 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 	if !strings.Contains(reply, "- deepseek\n  - openrouter/deepseek/deepseek-v3.2 via openrouter") {
 		t.Fatalf("/list models reply=%q, want deepseek entry", reply)
 	}
-	if !strings.Contains(reply, "- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai [x2]\n  - openrouter/openai/gpt-5.4 via openrouter") {
+	if !strings.Contains(
+		reply,
+		"- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai [x2]\n  - openrouter/openai/gpt-5.4 via openrouter",
+	) {
 		t.Fatalf("/list models reply=%q, want current model entry", reply)
 	}
 	if !strings.Contains(reply, "Use /switch model to <name> to change the active model.") {
