@@ -64,8 +64,13 @@ func normalizeProcessOptionsInPlace(opts *processOptions) {
 }
 
 func normalizeProcessOptions(opts processOptions) processOptions {
+	opts.ModelBinding.RouteSessionKey = strings.TrimSpace(opts.ModelBinding.RouteSessionKey)
 	if opts.Dispatch.RouteSessionKey == "" {
-		opts.Dispatch.RouteSessionKey = strings.TrimSpace(opts.SessionKey)
+		if opts.ModelBinding.RouteSessionKey != "" {
+			opts.Dispatch.RouteSessionKey = opts.ModelBinding.RouteSessionKey
+		} else {
+			opts.Dispatch.RouteSessionKey = strings.TrimSpace(opts.SessionKey)
+		}
 	}
 	if opts.Dispatch.SessionKey == "" {
 		opts.Dispatch.SessionKey = strings.TrimSpace(opts.SessionKey)

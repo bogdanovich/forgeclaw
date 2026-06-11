@@ -298,6 +298,9 @@ func newTurnCoordTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentL
 
 func makeTestProcessOpts(sessionKey string) processOptions {
 	return processOptions{
+		ModelBinding: effectiveModelBinding{
+			RouteSessionKey: sessionKey,
+		},
 		SessionKey:      sessionKey,
 		Channel:         "cli",
 		ChatID:          "test-chat",

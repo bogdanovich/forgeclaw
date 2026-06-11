@@ -19,8 +19,7 @@ import (
 func (al *AgentLoop) handleCommand(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	agent *AgentInstance,
-	workspaceAgent *AgentInstance,
+	modelBinding effectiveModelBinding,
 	opts *processOptions,
 ) (string, bool) {
 	normalizeProcessOptionsInPlace(opts)
@@ -29,7 +28,11 @@ func (al *AgentLoop) handleCommand(
 		return "", false
 	}
 
-	if matched, handled, reply := al.applyExplicitSkillCommand(msg.Content, agent, opts); matched {
+	if matched, handled, reply := al.applyExplicitSkillCommand(
+		msg.Content,
+		modelBinding.EffectiveAgent,
+		opts,
+	); matched {
 		return reply, handled
 	}
 
@@ -37,7 +40,7 @@ func (al *AgentLoop) handleCommand(
 		return "", false
 	}
 
-	rt := al.buildCommandsRuntime(ctx, agent, workspaceAgent, opts)
+	rt := al.buildCommandsRuntime(ctx, modelBinding, opts)
 	executor := commands.NewExecutor(al.cmdRegistry, rt)
 
 	var commandReply string
@@ -127,14 +130,15 @@ func (al *AgentLoop) applyExplicitSkillCommand(
 
 func (al *AgentLoop) buildCommandsRuntime(
 	ctx context.Context,
-	agent *AgentInstance,
-	workspaceAgent *AgentInstance,
+	modelBinding effectiveModelBinding,
 	opts *processOptions,
 ) *commands.Runtime {
 	normalizeProcessOptionsInPlace(opts)
 
 	registry := al.GetRegistry()
 	cfg := al.GetConfig()
+	agent := modelBinding.EffectiveAgent
+	workspaceAgent := modelBinding.WorkspaceAgent
 	rt := &commands.Runtime{
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
@@ -295,7 +299,6 @@ func (al *AgentLoop) buildCommandsRuntime(
 		if workspaceAgent == nil {
 			workspaceAgent = agent
 		}
-		modelOverrideKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey)
 		if agent.ContextBuilder != nil {
 			rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
 		}
@@ -303,21 +306,12 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
 		}
 		rt.GetModelSelection = func() commands.ModelSelectionInfo {
-			override, _ := al.getSessionModelOverride(modelOverrideKey)
-			effectiveAgent := agent
-			override = normalizeSessionModelOverride(override)
-			if override.Model != "" && strings.TrimSpace(effectiveAgent.Model) != override.Model {
-				overrideView := *workspaceAgent
-				overrideView.Model = override.Model
-				overrideView.Candidates = resolveModelCandidates(
-					cfg,
-					cfg.Agents.Defaults.Provider,
-					override.Model,
-					workspaceAgent.Fallbacks,
-				)
-				effectiveAgent = &overrideView
+			refreshed := modelBinding
+			if refreshed.RouteSessionKey != "" {
+				override, _ := al.getSessionModelOverride(refreshed.RouteSessionKey)
+				refreshed.Override = override
 			}
-			return buildSessionModelSelectionInfo(workspaceAgent, effectiveAgent, override)
+			return selectionInfoForBinding(cfg, refreshed)
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
 			if cfg == nil || len(cfg.ModelList) == 0 {
@@ -411,15 +405,11 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return models
 		}
 		rt.SwitchModel = func(value string) (string, error) {
-			if modelOverrideKey != "" {
-				override, ok := al.getSessionModelOverride(modelOverrideKey)
-				override = normalizeSessionModelOverride(override)
-				if ok && override.Model != "" {
-					return "", fmt.Errorf(
-						"cannot use /switch while this conversation has /model %s active; use /model clear first",
-						override.Model,
-					)
-				}
+			if modelBinding.Override.Model != "" {
+				return "", fmt.Errorf(
+					"cannot use /switch while this conversation has /model %s active; use /model clear first",
+					modelBinding.Override.Model,
+				)
 			}
 			value = strings.TrimSpace(value)
 			modelCfg, err := resolvedModelConfig(cfg, value, workspaceAgent.Workspace)
@@ -461,7 +451,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return oldModel, nil
 		}
 		rt.SetSessionModel = func(value string) error {
-			if modelOverrideKey == "" {
+			if modelBinding.RouteSessionKey == "" {
 				return fmt.Errorf("conversation key not available")
 			}
 			modelName, err := canonicalModelOverrideValue(cfg, value)
@@ -473,10 +463,10 @@ func (al *AgentLoop) buildCommandsRuntime(
 					return err
 				}
 			}
-			return al.setSessionModelOverride(modelOverrideKey, modelName)
+			return al.setSessionModelOverride(modelBinding.RouteSessionKey, modelName)
 		}
 		rt.ClearSessionModel = func() error {
-			if modelOverrideKey == "" {
+			if modelBinding.RouteSessionKey == "" {
 				return fmt.Errorf("conversation key not available")
 			}
 			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
@@ -484,7 +474,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 					return err
 				}
 			}
-			return al.clearSessionModelOverride(modelOverrideKey)
+			return al.clearSessionModelOverride(modelBinding.RouteSessionKey)
 		}
 
 		rt.ClearHistory = func() error {

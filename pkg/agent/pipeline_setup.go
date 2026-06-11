@@ -127,7 +127,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		ts.ingestMessage(ctx, p.al, rootMsg)
 	}
 
-	selection := p.al.selectCandidates(ts.agent, ts.userMessage, messages, ts.opts.Dispatch.RouteSessionKey)
+	selection := p.al.selectCandidates(ts.agent, ts.userMessage, messages, ts.model.RouteSessionKey)
 	activeProvider := ts.agent.Provider
 	if selection.usedLight && ts.agent.LightProvider != nil {
 		activeProvider = ts.agent.LightProvider
