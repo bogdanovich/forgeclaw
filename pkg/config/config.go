@@ -946,6 +946,31 @@ func (c *TavilyConfig) SetAPIKeys(keys []string) {
 	}
 }
 
+type KagiConfig struct {
+	Enabled    bool          `json:"enabled"           yaml:"-"                  env:"PICOCLAW_TOOLS_WEB_KAGI_ENABLED"`
+	APIKeys    SecureStrings `json:"api_keys,omitzero" yaml:"api_keys,omitempty" env:"PICOCLAW_TOOLS_WEB_KAGI_API_KEYS"`
+	BaseURL    string        `json:"base_url"          yaml:"-"                  env:"PICOCLAW_TOOLS_WEB_KAGI_BASE_URL"`
+	MaxResults int           `json:"max_results"       yaml:"-"                  env:"PICOCLAW_TOOLS_WEB_KAGI_MAX_RESULTS"`
+}
+
+// APIKey returns the Kagi API key
+func (c *KagiConfig) APIKey() string {
+	if len(c.APIKeys) == 0 {
+		return ""
+	}
+	return c.APIKeys[0].String()
+}
+
+// SetAPIKey sets the Kagi API key
+func (c *KagiConfig) SetAPIKey(key string) {
+	c.APIKeys = SimpleSecureStrings(key)
+}
+
+// SetAPIKeys sets the Kagi API keys
+func (c *KagiConfig) SetAPIKeys(keys []string) {
+	c.APIKeys = SimpleSecureStrings(keys...)
+}
+
 type DuckDuckGoConfig struct {
 	Enabled    bool `json:"enabled"     env:"PICOCLAW_TOOLS_WEB_DUCKDUCKGO_ENABLED"`
 	MaxResults int  `json:"max_results" env:"PICOCLAW_TOOLS_WEB_DUCKDUCKGO_MAX_RESULTS"`
@@ -1009,6 +1034,7 @@ type WebToolsConfig struct {
 	ToolConfig  `                   yaml:"-"                      envPrefix:"PICOCLAW_TOOLS_WEB_"`
 	Brave       BraveConfig        `yaml:"brave,omitempty"                                        json:"brave"`
 	Tavily      TavilyConfig       `yaml:"tavily,omitempty"                                       json:"tavily"`
+	Kagi        KagiConfig         `yaml:"kagi,omitempty"                                         json:"kagi"`
 	Sogou       SogouConfig        `yaml:"-"                                                      json:"sogou"`
 	DuckDuckGo  DuckDuckGoConfig   `yaml:"-"                                                      json:"duckduckgo"`
 	Gemini      GeminiSearchConfig `yaml:"gemini,omitempty"                                       json:"gemini"`

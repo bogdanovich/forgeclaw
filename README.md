@@ -181,6 +181,30 @@ After this one-time step, `picoclaw-launcher` will open normally on subsequent l
 
 </details>
 
+<a id="-run-on-old-android-phones"></a>
+### 📱 Android
+
+Give your decade-old phone a second life. Turn it into a small always-on AI assistant.
+
+**Option 1: APK Install**
+
+Preview:
+
+<table>
+  <tr>
+    <td><img src="assets/fui_main_page.jpg" width="200"></td>
+    <td><img src="assets/fui_web_page.jpg" width="200"></td>
+    <td><img src="assets/fui_log_page.jpg" width="200"></td>
+    <td><img src="assets/fui_setting_page.jpg" width="200"></td>
+  </tr>
+</table>
+
+Download the APK from [picoclaw.io](https://picoclaw.io/download/) and install directly. No Termux required.
+
+**Option 2: Termux**
+
+For a full command-line setup checklist, see the [Android Termux Guide](docs/guides/android-termux.md).
+
 <details>
 <summary><b>Terminal Launcher (for resource-constrained environments)</b></summary>
 

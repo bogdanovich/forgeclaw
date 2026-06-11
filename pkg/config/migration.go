@@ -501,7 +501,10 @@ func mergeModelListsWithMap(mainML []any, secML map[string]any) error {
 	for i, m := range mainML {
 		if mVal, ok := m.(map[string]any); ok {
 			if name, hasName := mVal["model_name"]; hasName {
-				nameStr := name.(string)
+				nameStr, ok := name.(string)
+				if !ok {
+					return fmt.Errorf("model_name must be a string, got %T", name)
+				}
 				index := countMap[nameStr]
 				indexedKeys[fmt.Sprintf("%s:%d", nameStr, index)] = i
 				if _, ok := indexedKeys[nameStr]; !ok {

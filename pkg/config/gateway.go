@@ -88,7 +88,12 @@ func ResolveGatewayLogLevel(path string) string {
 
 	data, err := os.ReadFile(path)
 	if err == nil {
-		_ = json.Unmarshal(data, &cfg)
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			logger.WarnCF("config", "failed to parse gateway config, using defaults", map[string]any{
+				"path":  path,
+				"error": err.Error(),
+			})
+		}
 	}
 
 	if envLevel := os.Getenv("PICOCLAW_LOG_LEVEL"); envLevel != "" {

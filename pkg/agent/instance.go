@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -514,7 +513,10 @@ func compilePatterns(patterns []string) []*regexp.Regexp {
 	for _, p := range patterns {
 		re, err := regexp.Compile(p)
 		if err != nil {
-			fmt.Printf("Warning: invalid path pattern %q: %v\n", p, err)
+			logger.WarnCF("agent", "invalid path pattern in compilePatterns", map[string]any{
+				"pattern": p,
+				"error":   err.Error(),
+			})
 			continue
 		}
 		compiled = append(compiled, re)

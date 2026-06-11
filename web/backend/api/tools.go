@@ -470,6 +470,14 @@ func (h *Handler) handleUpdateWebSearchConfig(w http.ResponseWriter, r *http.Req
 			cfg.Tools.Web.Tavily.SetAPIKeys(keys)
 		}
 	}
+	if settings, ok := req.Settings["kagi"]; ok {
+		cfg.Tools.Web.Kagi.Enabled = settings.Enabled
+		cfg.Tools.Web.Kagi.MaxResults = settings.MaxResults
+		cfg.Tools.Web.Kagi.BaseURL = strings.TrimSpace(settings.BaseURL)
+		if keys, ok := normalizeWebSearchAPIKeys(settings.APIKeys, settings.APIKey); ok {
+			cfg.Tools.Web.Kagi.SetAPIKeys(keys)
+		}
+	}
 	if settings, ok := req.Settings["perplexity"]; ok {
 		cfg.Tools.Web.Perplexity.Enabled = settings.Enabled
 		cfg.Tools.Web.Perplexity.MaxResults = settings.MaxResults
@@ -514,7 +522,16 @@ func normalizeWebSearchProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "", "auto":
 		return "auto"
-	case "sogou", "brave", "tavily", "duckduckgo", "gemini", "perplexity", "searxng", "glm_search", "baidu_search":
+	case "sogou",
+		"brave",
+		"tavily",
+		"kagi",
+		"duckduckgo",
+		"gemini",
+		"perplexity",
+		"searxng",
+		"glm_search",
+		"baidu_search":
 		return strings.ToLower(strings.TrimSpace(provider))
 	default:
 		return ""
@@ -574,6 +591,12 @@ func buildWebSearchConfigResponse(cfg *config.Config) webSearchConfigResponse {
 			MaxResults: cfg.Tools.Web.Tavily.MaxResults,
 			BaseURL:    cfg.Tools.Web.Tavily.BaseURL,
 			APIKeySet:  len(cfg.Tools.Web.Tavily.APIKeys.Values()) > 0,
+		},
+		"kagi": {
+			Enabled:    cfg.Tools.Web.Kagi.Enabled,
+			MaxResults: cfg.Tools.Web.Kagi.MaxResults,
+			BaseURL:    cfg.Tools.Web.Kagi.BaseURL,
+			APIKeySet:  len(cfg.Tools.Web.Kagi.APIKeys.Values()) > 0,
 		},
 		"perplexity": {
 			Enabled:    cfg.Tools.Web.Perplexity.Enabled,
@@ -638,6 +661,13 @@ func buildWebSearchConfigResponse(cfg *config.Config) webSearchConfigResponse {
 			Label:        "Tavily",
 			Configured:   picotools.WebSearchProviderReady(opts, "tavily"),
 			Current:      current == "tavily",
+			RequiresAuth: true,
+		},
+		{
+			ID:           "kagi",
+			Label:        "Kagi Search",
+			Configured:   picotools.WebSearchProviderReady(opts, "kagi"),
+			Current:      current == "kagi",
 			RequiresAuth: true,
 		},
 		{

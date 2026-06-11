@@ -1342,6 +1342,13 @@ func (c *TelegramChannel) collectTelegramMessageParts(
 	if caption := strings.TrimSpace(msg.Caption); caption != "" {
 		parts.content = append(parts.content, caption)
 	}
+	if msg.Location != nil {
+		parts.content = append(parts.content, fmt.Sprintf(
+			"[User location: lat=%.6f, lng=%.6f]",
+			msg.Location.Latitude,
+			msg.Location.Longitude,
+		))
+	}
 	if len(msg.Photo) > 0 {
 		photo := msg.Photo[len(msg.Photo)-1]
 		photoPath := c.downloadPhoto(ctx, photo.FileID)

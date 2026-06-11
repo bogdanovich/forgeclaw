@@ -1081,6 +1081,21 @@ func TestModelProviderOptions(t *testing.T) {
 	} else if option.DefaultAPIBase != "https://api.anthropic.com/v1" {
 		t.Fatalf("anthropic default_api_base = %q, want %q", option.DefaultAPIBase, "https://api.anthropic.com/v1")
 	}
+	// First-party Claude API model IDs use hyphenated formats such as
+	// claude-{name}-{major}-{minor} or claude-{name}-{major}-{minor}-{YYYYMMDD};
+	// dotted provider prefixes are for platform-specific IDs such as Bedrock.
+	// https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+	for _, provider := range []string{"anthropic", "anthropic-messages"} {
+		option, ok := seen[provider]
+		if !ok {
+			t.Fatalf("%s option missing", provider)
+		}
+		for _, model := range option.CommonModels {
+			if strings.Contains(model, ".") {
+				t.Fatalf("%s common_model %q uses dotted ID", provider, model)
+			}
+		}
+	}
 	if _, ok := seen["azure"]; !ok {
 		t.Fatal("azure option missing")
 	}

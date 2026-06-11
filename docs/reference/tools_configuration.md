@@ -128,6 +128,44 @@ Baidu Search uses the [Qianfan AI Search API](https://cloud.baidu.com/doc/qianfa
 | `api_keys`    | string[] | -       | Multiple API keys for rotation (takes priority over `api_key`) |
 | `max_results` | int      | 5       | Maximum number of results                      |
 
+### Kagi Search
+
+Kagi Search uses the official Kagi OpenAPI client for `POST /search` and returns normal web results from `data.search`.
+
+| Config        | Type     | Default                               | Description                                    |
+|---------------|----------|---------------------------------------|------------------------------------------------|
+| `enabled`     | bool     | false                                 | Enable Kagi Search                             |
+| `api_key`     | string   | -                                     | Kagi API key                                   |
+| `api_keys`    | string[] | -                                     | Multiple API keys for rotation (takes priority over `api_key`) |
+| `base_url`    | string   | `https://kagi.com/api/v1/search`      | Kagi Search API endpoint                       |
+| `max_results` | int      | 5                                     | Maximum number of results                      |
+
+```json
+{
+  "tools": {
+    "web": {
+      "provider": "kagi",
+      "kagi": {
+        "enabled": true,
+        "max_results": 5,
+        "base_url": "https://kagi.com/api/v1/search"
+      }
+    }
+  }
+}
+```
+
+Store Kagi API keys in `.security.yml`:
+
+```yaml
+web:
+  kagi:
+    api_keys:
+      - "YOUR_KAGI_API_KEY"
+```
+
+Kagi API usage may be billed or limited separately from a normal Kagi subscription, depending on your account and API setup.
+
 ### Tavily
 
 | Config        | Type   | Default | Description               |
@@ -173,6 +211,7 @@ At runtime, the `web_search` tool accepts the following parameters:
 | `range` | string | no | Optional time filter: `d` (day), `w` (week), `m` (month), `y` (year) |
 
 If `range` is omitted, PicoClaw performs an unrestricted search.
+For Kagi, `d`, `w`, and `m` map to Kagi lens `time_relative`; `y` maps to a lens `time_after` date one year before the current day.
 
 ### Example `web_search` Call
 

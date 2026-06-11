@@ -3,7 +3,6 @@ package state
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // State represents the persistent state for a workspace.
@@ -65,7 +65,10 @@ func NewManager(workspace string) *Manager {
 
 	// Create state directory if it doesn't exist
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		log.Printf("[WARN] state: failed to create state directory %s: %v", stateDir, err)
+		logger.WarnCF("state", "failed to create state directory", map[string]any{
+			"dir":   stateDir,
+			"error": err.Error(),
+		})
 	}
 
 	sm := &Manager{
@@ -81,15 +84,22 @@ func NewManager(workspace string) *Manager {
 			if err := json.Unmarshal(data, sm.state); err == nil {
 				// Migrate to new location
 				if err := sm.saveAtomic(); err != nil {
-					log.Printf("[WARN] state: failed to save state: %v", err)
+					logger.WarnCF("state", "failed to save state", map[string]any{
+						"error": err.Error(),
+					})
 				}
-				log.Printf("[INFO] state: migrated state from %s to %s", oldStateFile, stateFile)
+				logger.InfoCF("state", "migrated state", map[string]any{
+					"from": oldStateFile,
+					"to":   stateFile,
+				})
 			}
 		}
 	} else {
 		// Load from new location
 		if err := sm.load(); err != nil {
-			log.Printf("[WARN] state: failed to load state: %v", err)
+			logger.WarnCF("state", "failed to load state", map[string]any{
+				"error": err.Error(),
+			})
 		}
 	}
 

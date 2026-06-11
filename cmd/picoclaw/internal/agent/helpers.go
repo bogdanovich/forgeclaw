@@ -56,8 +56,14 @@ func agentCmd(message, sessionKey, model string, debug bool) error {
 
 	// Print agent startup info (only for interactive mode)
 	startupInfo := agentLoop.GetStartupInfo()
-	toolsInfo, _ := startupInfo["tools"].(map[string]any)
-	skillsInfo, _ := startupInfo["skills"].(map[string]any)
+	toolsInfo, ok := startupInfo["tools"].(map[string]any)
+	if !ok {
+		toolsInfo = nil
+	}
+	skillsInfo, ok := startupInfo["skills"].(map[string]any)
+	if !ok {
+		skillsInfo = nil
+	}
 	logFields := map[string]any{}
 	if toolsInfo != nil {
 		logFields["tools_count"] = toolsInfo["count"]
