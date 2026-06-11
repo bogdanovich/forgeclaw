@@ -155,17 +155,6 @@ func (al *AgentLoop) deliverFinalTurnResult(
 	}
 
 	if len(result.completionMedia) > 0 {
-		mediaResult := (&tools.ToolResult{
-			ForLLM:          "Final turn output delivered as media.",
-			ForUser:         result.finalContent,
-			Silent:          true,
-			ResponseHandled: true,
-		}).WithCompletion(&tools.CompletionResult{
-			Text:  result.finalContent,
-			Media: append([]tools.CompletionMedia(nil), result.completionMedia...),
-		})
-		mediaRefs := completionMediaRefs(result.completionMedia)
-		mediaResult.Media = append(mediaResult.Media, mediaRefs...)
 		ts := &turnState{
 			agent:      agent,
 			agentID:    agent.ID,
@@ -174,7 +163,8 @@ func (al *AgentLoop) deliverFinalTurnResult(
 			sessionKey: sessionKey,
 			opts:       opts,
 		}
-		if _, outcome, err := al.deliverToolResultToUser(ctx, ts, mediaResult, "final_turn"); err != nil {
+		outcome, err := al.deliverFinalTurnMedia(ctx, ts, result)
+		if err != nil {
 			logger.WarnCF("agent", "Failed to deliver final turn media; falling back to text",
 				map[string]any{
 					"agent_id": agent.ID,
@@ -190,12 +180,44 @@ func (al *AgentLoop) deliverFinalTurnResult(
 	if result.finalContent == "" {
 		return
 	}
+	al.deliverFinalTurnText(ctx, agent, opts, outboundCtx, agentID, sessionKey, scope, result.finalContent)
+}
+
+func (al *AgentLoop) deliverFinalTurnMedia(
+	ctx context.Context,
+	ts *turnState,
+	result turnResult,
+) (toolResultDeliveryOutcome, error) {
+	mediaResult := (&tools.ToolResult{
+		ForLLM:          "Final turn output delivered as media.",
+		ForUser:         result.finalContent,
+		Silent:          true,
+		ResponseHandled: true,
+	}).WithCompletion(&tools.CompletionResult{
+		Text:  result.finalContent,
+		Media: append([]tools.CompletionMedia(nil), result.completionMedia...),
+	})
+	mediaRefs := completionMediaRefs(result.completionMedia)
+	mediaResult.Media = append(mediaResult.Media, mediaRefs...)
+	_, outcome, err := al.deliverToolResultToUser(ctx, ts, mediaResult, "final_turn")
+	return outcome, err
+}
+
+func (al *AgentLoop) deliverFinalTurnText(
+	ctx context.Context,
+	agent *AgentInstance,
+	opts processOptions,
+	outboundCtx bus.InboundContext,
+	agentID, sessionKey string,
+	scope *bus.OutboundScope,
+	content string,
+) {
 	msg := bus.OutboundMessage{
 		Context:      outboundCtx,
 		AgentID:      agentID,
 		SessionKey:   sessionKey,
 		Scope:        scope,
-		Content:      result.finalContent,
+		Content:      content,
 		ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
 	}
 	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
@@ -265,8 +287,9 @@ func (al *AgentLoop) deliverToolResultToUser(
 			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
 				return nil, toolResultDeliveryNone, err
 			}
+			return nil, toolResultDeliveryQueued, nil
 		}
-		return nil, toolResultDeliveryQueued, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 
 	if strings.TrimSpace(text) == "" {
@@ -340,8 +363,9 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
 				return nil, toolResultDeliveryNone, err
 			}
+			return nil, toolResultDeliveryQueued, nil
 		}
-		return nil, toolResultDeliveryQueued, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 	if strings.TrimSpace(out.Text) == "" {
 		return nil, toolResultDeliveryNone, nil
@@ -366,8 +390,9 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		if err := al.bus.PublishOutbound(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}
+		return nil, toolResultDeliveryQueued, nil
 	}
-	return nil, toolResultDeliveryQueued, nil
+	return nil, toolResultDeliveryNone, nil
 }
 
 func firstNonEmptyString(values ...string) string {

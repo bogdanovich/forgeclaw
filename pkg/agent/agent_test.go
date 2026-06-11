@@ -26,6 +26,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -2259,6 +2260,101 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 	}
 	if len(telegramChannel.sentMessages) != 0 {
 		t.Fatalf("expected no separate final text message, got %+v", telegramChannel.sentMessages)
+	}
+}
+
+func TestDeliverToolResultToUser_NoBusDoesNotReportQueuedMedia(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	al.bus = nil
+	store := media.NewFileMediaStore()
+	al.SetMediaStore(store)
+
+	imagePath := filepath.Join(tmpDir, "queued-no-bus.png")
+	if err := os.WriteFile(imagePath, []byte("fake image"), 0o644); err != nil {
+		t.Fatalf("WriteFile(imagePath) error = %v", err)
+	}
+	ref, err := store.Store(imagePath, media.MediaMeta{
+		Filename:    "queued-no-bus.png",
+		ContentType: "image/png",
+		Source:      "test:no_bus_media",
+	}, "test:no_bus_media")
+	if err != nil {
+		t.Fatalf("Store(imagePath) error = %v", err)
+	}
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	ts := &turnState{
+		agent:      agent,
+		agentID:    agent.ID,
+		channel:    "",
+		chatID:     "chat1",
+		sessionKey: "session-no-bus-media",
+	}
+	result := tools.MediaResult("media payload", []string{ref}).WithResponseHandled()
+
+	_, outcome, err := al.deliverToolResultToUser(context.Background(), ts, result, "test_media")
+	if err != nil {
+		t.Fatalf("deliverToolResultToUser() error = %v", err)
+	}
+	if outcome != toolResultDeliveryNone {
+		t.Fatalf("delivery outcome = %v, want none", outcome)
+	}
+}
+
+func TestDeliverExplicitToolOutbound_NoBusDoesNotReportQueuedText(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	al.bus = nil
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	ts := &turnState{
+		agent:      agent,
+		agentID:    agent.ID,
+		channel:    "",
+		chatID:     "chat1",
+		sessionKey: "session-no-bus-text",
+	}
+	result := &tools.ToolResult{
+		Outbound: &toolshared.OutboundDelivery{
+			Text: "explicit outbound text",
+		},
+	}
+
+	_, outcome, err := al.deliverToolResultToUser(context.Background(), ts, result, "test_text")
+	if err != nil {
+		t.Fatalf("deliverToolResultToUser() error = %v", err)
+	}
+	if outcome != toolResultDeliveryNone {
+		t.Fatalf("delivery outcome = %v, want none", outcome)
 	}
 }
 
