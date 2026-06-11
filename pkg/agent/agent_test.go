@@ -4082,6 +4082,52 @@ func TestProcessMessage_SwitchModelShowModelConsistency(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_UnknownSlashCommandDoesNotCallLLM(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "local",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "local",
+				Model:     "openai/local-model",
+				APIBase:   "https://local.example.invalid/v1",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "/model gpt-5.4",
+	})
+	if resp != "Unknown command: /model. Use /help to see available commands." {
+		t.Fatalf("unexpected reply: %q", resp)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("LLM should not be called for unknown slash command, calls=%d", provider.calls)
+	}
+}
+
 func TestProcessMessage_SwitchModelRejectsUnknownAlias(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {

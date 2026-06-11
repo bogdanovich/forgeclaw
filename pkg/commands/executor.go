@@ -44,7 +44,8 @@ func (e *Executor) Execute(ctx context.Context, req Request) ExecuteResult {
 
 	def, found := e.reg.Lookup(cmdName)
 	if !found {
-		return ExecuteResult{Outcome: OutcomePassthrough, Command: cmdName}
+		err := req.Reply(fmt.Sprintf("Unknown command: /%s. Use /help to see available commands.", cmdName))
+		return ExecuteResult{Outcome: OutcomeHandled, Command: cmdName, Err: err}
 	}
 
 	return e.executeDefinition(ctx, req, def)
