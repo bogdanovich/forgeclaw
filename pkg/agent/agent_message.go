@@ -92,17 +92,9 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 	}
 	allocation := al.allocateRouteSession(route, msg)
 	sessionKey := resolveScopeKey(allocation.SessionKey, msg.SessionKey)
-	effectiveAgent := agent
-	var cleanupEffectiveAgent func()
-	if override, ok := al.getSessionModelOverride(allocation.SessionKey); ok &&
-		strings.TrimSpace(override.Model) != "" {
-		effectiveAgent, cleanupEffectiveAgent, routeErr = al.buildSessionOverrideAgent(agent, override.Model)
-		if routeErr != nil {
-			return "", routeErr
-		}
-		if cleanupEffectiveAgent != nil {
-			defer cleanupEffectiveAgent()
-		}
+	effectiveAgent, cleanupEffectiveAgent := al.materializeSessionOverrideAgent(allocation.SessionKey, agent)
+	if cleanupEffectiveAgent != nil {
+		defer cleanupEffectiveAgent()
 	}
 
 	if tool, ok := effectiveAgent.Tools.Get("message"); ok {
@@ -223,17 +215,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	// agent-scoped keys supplied by the caller.
 	scopeKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
 	sessionKey := scopeKey
-	effectiveAgent := agent
-	var cleanupEffectiveAgent func()
-	if override, ok := al.getSessionModelOverride(allocation.SessionKey); ok &&
-		strings.TrimSpace(override.Model) != "" {
-		effectiveAgent, cleanupEffectiveAgent, routeErr = al.buildSessionOverrideAgent(agent, override.Model)
-		if routeErr != nil {
-			return "", routeErr
-		}
-		if cleanupEffectiveAgent != nil {
-			defer cleanupEffectiveAgent()
-		}
+	effectiveAgent, cleanupEffectiveAgent := al.materializeSessionOverrideAgent(allocation.SessionKey, agent)
+	if cleanupEffectiveAgent != nil {
+		defer cleanupEffectiveAgent()
 	}
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/state"
 )
@@ -133,4 +134,40 @@ func (al *AgentLoop) buildSessionOverrideAgent(
 	}
 
 	return &overrideAgent, cleanup, nil
+}
+
+func (al *AgentLoop) materializeSessionOverrideAgent(
+	routeSessionKey string,
+	baseAgent *AgentInstance,
+) (*AgentInstance, func()) {
+	effectiveAgent := baseAgent
+	if strings.TrimSpace(routeSessionKey) == "" || baseAgent == nil {
+		return effectiveAgent, nil
+	}
+
+	override, ok := al.getSessionModelOverride(routeSessionKey)
+	if !ok {
+		return effectiveAgent, nil
+	}
+	override = normalizeSessionModelOverride(override)
+	if override.Model == "" {
+		return effectiveAgent, nil
+	}
+	if override.Model == baseAgent.Model {
+		return effectiveAgent, nil
+	}
+
+	overrideAgent, cleanup, err := al.buildSessionOverrideAgent(baseAgent, override.Model)
+	if err != nil {
+		logger.WarnCF("agent", "Clearing invalid session model override",
+			map[string]any{
+				"agent_id":       baseAgent.ID,
+				"session_key":    routeSessionKey,
+				"override":       override.Model,
+				"override_error": err.Error(),
+			})
+		_ = al.clearSessionModelOverride(routeSessionKey)
+		return effectiveAgent, nil
+	}
+	return overrideAgent, cleanup
 }

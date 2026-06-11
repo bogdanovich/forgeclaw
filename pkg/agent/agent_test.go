@@ -4457,6 +4457,184 @@ func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T)
 	}
 }
 
+func TestProcessMessage_InvalidSessionModelOverrideAutoClears(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	localCalls := 0
+	localModel := ""
+	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+	defer localServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   localServer.URL,
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+	route, _, err := al.resolveMessageRoute(bus.InboundMessage{Context: inbound})
+	if err != nil {
+		t.Fatalf("resolveMessageRoute() error = %v", err)
+	}
+	allocation := al.allocateRouteSession(route, bus.InboundMessage{Context: inbound})
+	if err := al.setSessionModelOverride(allocation.SessionKey, "missing-model"); err != nil {
+		t.Fatalf("setSessionModelOverride() error = %v", err)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/show model",
+	})
+	if !strings.Contains(resp, "Current Model: gpt-5.4 (Provider: openai)") {
+		t.Fatalf("unexpected /show model reply: %q", resp)
+	}
+	if _, ok := al.getSessionModelOverride(allocation.SessionKey); ok {
+		t.Fatal("expected invalid override to be cleared")
+	}
+
+	reply := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "hello after stale override",
+	})
+	if reply != "local reply" {
+		t.Fatalf("unexpected fallback-to-default reply: %q", reply)
+	}
+	if localCalls != 1 {
+		t.Fatalf("local calls = %d, want 1", localCalls)
+	}
+}
+
+func TestProcessMessage_ModelOverrideSameAsDefaultPreservesLightRouting(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	heavyCalls := 0
+	heavyServer := newStrictChatCompletionTestServer(
+		t,
+		"heavy",
+		"gemini-2.5-flash",
+		"heavy reply",
+		&heavyCalls,
+	)
+	defer heavyServer.Close()
+
+	lightCalls := 0
+	lightServer := newStrictChatCompletionTestServer(
+		t,
+		"light",
+		"qwen2.5:0.5b",
+		"light reply",
+		&lightCalls,
+	)
+	defer lightServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "gemini-main",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				Routing: &config.RoutingConfig{
+					Enabled:    true,
+					LightModel: "qwen-light",
+					Threshold:  0.99,
+				},
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gemini-main",
+				Model:     "gemini/gemini-2.5-flash",
+				APIBase:   heavyServer.URL,
+				APIKeys:   config.SimpleSecureStrings("heavy-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "qwen-light",
+				Model:     "ollama/qwen2.5:0.5b",
+				APIBase:   lightServer.URL,
+				APIKeys:   config.SimpleSecureStrings("light-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat1",
+		ChatType: "direct",
+		SenderID: "user1",
+	}
+
+	overrideResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/model gemini-main",
+	})
+	if !strings.Contains(overrideResp, "Set session model override.") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "hi",
+	})
+	if resp != "light reply" {
+		t.Fatalf("response = %q, want %q", resp, "light reply")
+	}
+	if heavyCalls != 0 {
+		t.Fatalf("heavy calls = %d, want 0", heavyCalls)
+	}
+	if lightCalls != 1 {
+		t.Fatalf("light calls = %d, want 1", lightCalls)
+	}
+}
+
 func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
