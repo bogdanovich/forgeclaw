@@ -713,27 +713,56 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 		return
 	}
 
-	defaultProvider := "openai"
-	if p.Cfg != nil {
-		if provider := strings.TrimSpace(p.Cfg.Agents.Defaults.Provider); provider != "" {
-			defaultProvider = provider
+	execution, cleanup, err := p.al.buildExecutionStateForModel(ts.agent, rawModel, nil)
+	if err != nil {
+		logger.WarnCF(
+			"agent",
+			"BeforeLLM model rewrite could not rebuild dedicated execution state; falling back to active provider",
+			map[string]any{
+				"agent_id": ts.agent.ID,
+				"model":    rawModel,
+				"error":    err.Error(),
+			},
+		)
+		defaultProvider := "openai"
+		if p.Cfg != nil {
+			if provider := strings.TrimSpace(p.Cfg.Agents.Defaults.Provider); provider != "" {
+				defaultProvider = provider
+			}
 		}
+		defaultProvider = effectiveDefaultProvider(defaultProvider)
+		candidates := resolveModelCandidates(p.Cfg, defaultProvider, rawModel, nil)
+		exec.model.activeCandidates = candidates
+		exec.model.activeModel = resolvedCandidateModel(candidates, rawModel)
+		exec.llmModel = exec.model.activeModel
+		exec.model.activeModelConfig = resolveActiveModelConfig(
+			p.Cfg,
+			ts.agent.Workspace,
+			candidates,
+			rawModel,
+			defaultProvider,
+		)
+		exec.model.llmModelName = resolvedCandidateModelName(candidates, rawModel)
+		return
 	}
-	defaultProvider = effectiveDefaultProvider(defaultProvider)
-	candidates := resolveModelCandidates(p.Cfg, defaultProvider, rawModel, nil)
-	exec.model.activeCandidates = candidates
-	exec.model.activeModel = resolvedCandidateModel(candidates, rawModel)
+	if exec.model.cleanup != nil {
+		exec.model.cleanup()
+	}
+	exec.model.activeCandidates = execution.Candidates
+	exec.model.activeModel = resolvedCandidateModel(execution.Candidates, rawModel)
 	exec.llmModel = exec.model.activeModel
-	if ts.model.ExecutionState().CandidateProviders != nil {
-		exec.model.candidateProviders = ts.model.ExecutionState().CandidateProviders
-	}
 	exec.model.activeModelConfig = resolveActiveModelConfig(
 		p.Cfg,
 		ts.agent.Workspace,
-		candidates,
+		execution.Candidates,
 		rawModel,
-		defaultProvider,
+		effectiveDefaultProvider(p.Cfg.Agents.Defaults.Provider),
 	)
+	exec.model.activeProvider = execution.Provider
+	exec.model.candidateProviders = execution.CandidateProviders
+	exec.model.cleanup = cleanup
+	exec.model.llmModelName = resolvedCandidateModelName(execution.Candidates, rawModel)
+	exec.model.usedLight = false
 }
 
 func providerForFallbackCandidate(

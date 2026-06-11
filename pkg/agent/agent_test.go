@@ -951,6 +951,85 @@ func TestProcessMessage_BeforeLLMModelRewriteDoesNotLeakThinkingOff(t *testing.T
 	}
 }
 
+func TestApplyBeforeLLMModelRewrite_RebuildsExecutionProviders(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "primary-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "primary-model",
+				Model:     "openai/primary-model",
+				APIBase:   "https://primary.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("primary-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "hook-model",
+				Model:     "openai/hook-model",
+				APIBase:   "https://hook.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("hook-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+		},
+	}
+
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("rewrite-session"), turnEventScope{
+		turnID:  "turn-rewrite-provider",
+		context: newTurnContext(nil, nil, nil),
+	})
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn() error = %v", err)
+	}
+
+	originalProvider := exec.model.activeProvider
+	exec.llmModel = "hook-model"
+	pipeline.applyBeforeLLMModelRewrite(ts, exec)
+	defer func() {
+		if exec.model.cleanup != nil {
+			exec.model.cleanup()
+		}
+	}()
+
+	if exec.model.activeProvider == originalProvider {
+		t.Fatal("expected hook rewrite to replace active provider")
+	}
+	if exec.model.activeModel != "hook-model" {
+		t.Fatalf("activeModel = %q, want %q", exec.model.activeModel, "hook-model")
+	}
+	if exec.model.candidateProviders == nil {
+		t.Fatal("expected candidateProviders to be rebuilt")
+	}
+	if _, err := providerForFallbackCandidate(
+		exec.model.candidateProviders,
+		exec.model.activeProvider,
+		"openai",
+		"hook-model",
+	); err != nil {
+		t.Fatalf("providerForFallbackCandidate() error = %v", err)
+	}
+}
+
 func TestProcessMessage_BtwCommandSuppressesReasoningWhenThinkingOff(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{

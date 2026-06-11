@@ -164,6 +164,7 @@ type turnExecutionModel struct {
 	activeModelConfig  *config.ModelConfig
 	activeProvider     providers.LLMProvider
 	candidateProviders map[string]providers.LLMProvider
+	cleanup            func()
 	usedLight          bool
 	llmModelName       string
 }

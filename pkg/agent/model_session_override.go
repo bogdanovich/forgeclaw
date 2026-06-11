@@ -138,9 +138,10 @@ func cloneCandidateProviderMap(
 	return out
 }
 
-func (al *AgentLoop) buildSessionOverrideExecution(
+func (al *AgentLoop) buildExecutionStateForModel(
 	baseAgent *AgentInstance,
 	modelName string,
+	fallbacks []string,
 ) (effectiveExecutionState, func(), error) {
 	if baseAgent == nil {
 		return effectiveExecutionState{}, nil, fmt.Errorf("agent not initialized")
@@ -160,7 +161,7 @@ func (al *AgentLoop) buildSessionOverrideExecution(
 		cfg,
 		cfg.Agents.Defaults.Provider,
 		modelName,
-		baseAgent.Fallbacks,
+		fallbacks,
 	)
 	if len(overrideCandidates) == 0 {
 		if stateful, ok := overrideProvider.(providers.StatefulProvider); ok {
@@ -183,7 +184,7 @@ func (al *AgentLoop) buildSessionOverrideExecution(
 	populateCandidateProvidersFromNames(
 		cfg,
 		baseAgent.Workspace,
-		append([]string{modelName}, baseAgent.Fallbacks...),
+		append([]string{modelName}, fallbacks...),
 		candidateProviders,
 	)
 	if len(overrideCandidates) > 0 {
@@ -219,6 +220,13 @@ func (al *AgentLoop) buildSessionOverrideExecution(
 		ThinkingLevel:           parseThinkingLevel(modelCfg.ThinkingLevel),
 		ThinkingLevelConfigured: isConfiguredThinkingLevel(modelCfg.ThinkingLevel),
 	}, cleanup, nil
+}
+
+func (al *AgentLoop) buildSessionOverrideExecution(
+	baseAgent *AgentInstance,
+	modelName string,
+) (effectiveExecutionState, func(), error) {
+	return al.buildExecutionStateForModel(baseAgent, modelName, baseAgent.Fallbacks)
 }
 
 func (al *AgentLoop) bindEffectiveModel(

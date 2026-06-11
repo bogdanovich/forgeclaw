@@ -87,6 +87,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	if err != nil {
 		return turnResult{}, err
 	}
+	defer func() {
+		if exec != nil && exec.model.cleanup != nil {
+			exec.model.cleanup()
+		}
+	}()
 
 	// Convenience references to exec fields used throughout the turn loop.
 	messages := exec.messages

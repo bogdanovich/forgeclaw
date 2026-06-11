@@ -160,6 +160,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.model.llmModelName = activeModelName
 	exec.model.activeProvider = activeProvider
 	exec.model.candidateProviders = execution.CandidateProviders
+	exec.model.cleanup = nil
 	exec.model.usedLight = selection.usedLight
 
 	return exec, nil
