@@ -1666,10 +1666,7 @@ func parseTelegramChatID(chatID string) (int64, int, error) {
 }
 
 func resolveTelegramOutboundTarget(chatID string, outboundCtx *bus.InboundContext) (int64, int, error) {
-	targetChatID := strings.TrimSpace(chatID)
-	if targetChatID == "" && outboundCtx != nil {
-		targetChatID = strings.TrimSpace(outboundCtx.ChatID)
-	}
+	targetChatID := channels.EffectiveOutboundChatID(chatID, outboundCtx)
 	resolvedChatID, resolvedThreadID, err := parseTelegramChatID(targetChatID)
 	if err != nil {
 		return 0, 0, err
@@ -1677,7 +1674,7 @@ func resolveTelegramOutboundTarget(chatID string, outboundCtx *bus.InboundContex
 	if resolvedThreadID != 0 || outboundCtx == nil {
 		return resolvedChatID, resolvedThreadID, nil
 	}
-	topicID := strings.TrimSpace(outboundCtx.TopicID)
+	topicID := channels.EffectiveOutboundTopicID("", outboundCtx)
 	if topicID == "" {
 		return resolvedChatID, resolvedThreadID, nil
 	}
