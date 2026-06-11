@@ -17,6 +17,25 @@ type modelSelectionDecision struct {
 	usedLight          bool
 }
 
+func autoModelSelectionLogFields(
+	routeSessionKey string,
+	sel state.AutoModelSelection,
+) map[string]any {
+	fields := map[string]any{
+		"route_session_key": routeSessionKey,
+		"selected_provider": sel.SelectedProvider,
+		"selected_model":    sel.SelectedModel,
+		"active_provider":   sel.ActiveProvider,
+		"active_model":      sel.ActiveModel,
+		"failover_reason":   sel.Reason,
+	}
+	if !sel.ExpiresAt.IsZero() {
+		fields["expires_at"] = sel.ExpiresAt.Format(time.RFC3339)
+		fields["ttl_remaining_secs"] = max(0, int(time.Until(sel.ExpiresAt).Seconds()))
+	}
+	return fields
+}
+
 func autoFallbackTTL(reason providers.FailoverReason) (time.Duration, bool) {
 	switch reason {
 	case providers.FailoverRateLimit, providers.FailoverOverloaded:
@@ -87,14 +106,32 @@ func (al *AgentLoop) setAutoModelSelection(routeSessionKey string, selection sta
 	if al == nil || al.state == nil {
 		return fmt.Errorf("state manager not initialized")
 	}
-	return al.state.SetAutoModelSelection(routeSessionKey, normalizeSelection(selection))
+	selection = normalizeSelection(selection)
+	if err := al.state.SetAutoModelSelection(routeSessionKey, selection); err != nil {
+		return err
+	}
+	logger.InfoCF("agent", "Auto fallback pinned", autoModelSelectionLogFields(routeSessionKey, selection))
+	return nil
 }
 
 func (al *AgentLoop) clearAutoModelSelection(routeSessionKey string) error {
+	return al.clearAutoModelSelectionWithReason(routeSessionKey, "explicit")
+}
+
+func (al *AgentLoop) clearAutoModelSelectionWithReason(routeSessionKey, clearReason string) error {
 	if al == nil || al.state == nil {
 		return fmt.Errorf("state manager not initialized")
 	}
-	return al.state.ClearAutoModelSelection(routeSessionKey)
+	sel, ok := al.getAutoModelSelection(routeSessionKey)
+	if err := al.state.ClearAutoModelSelection(routeSessionKey); err != nil {
+		return err
+	}
+	if ok {
+		fields := autoModelSelectionLogFields(routeSessionKey, sel)
+		fields["clear_reason"] = strings.TrimSpace(clearReason)
+		logger.InfoCF("agent", "Auto fallback cleared", fields)
+	}
+	return nil
 }
 
 func (al *AgentLoop) selectCandidates(
@@ -146,22 +183,25 @@ func (al *AgentLoop) selectCandidates(
 		return decision
 	}
 	if sel.ExpiresAt.IsZero() || time.Now().After(sel.ExpiresAt) {
-		_ = al.clearAutoModelSelection(routeSessionKey)
+		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "expired")
 		return decision
 	}
 	if !selectedModelMatchesSelection(decision.selectedCandidates[0], sel) {
-		_ = al.clearAutoModelSelection(routeSessionKey)
+		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "selected_model_mismatch")
 		return decision
 	}
 
 	reordered, matched := reorderCandidatesForAutoFallback(decision.activeCandidates, sel)
 	if !matched {
-		_ = al.clearAutoModelSelection(routeSessionKey)
+		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "active_candidate_missing")
 		return decision
 	}
 
 	decision.activeCandidates = reordered
 	decision.model = resolvedCandidateModel(reordered, decision.model)
+	fields := autoModelSelectionLogFields(routeSessionKey, sel)
+	fields["active_candidate_count"] = len(reordered)
+	logger.InfoCF("agent", "Auto fallback reused", fields)
 	return decision
 }
 
@@ -198,7 +238,7 @@ func updateAutoFallbackSelection(
 	selectedKey := providers.ModelKey(selected.Provider, selected.Model)
 
 	if winnerKey == selectedKey {
-		_ = al.clearAutoModelSelection(routeSessionKey)
+		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "primary_recovered")
 		return
 	}
 
