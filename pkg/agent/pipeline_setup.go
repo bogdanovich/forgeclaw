@@ -127,16 +127,16 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		ts.ingestMessage(ctx, p.al, rootMsg)
 	}
 
-	activeCandidates, activeModel, usedLight := p.al.selectCandidates(ts.agent, ts.userMessage, messages)
+	selection := p.al.selectCandidates(ts.agent, ts.userMessage, messages, ts.opts.Dispatch.RouteSessionKey)
 	activeProvider := ts.agent.Provider
-	if usedLight && ts.agent.LightProvider != nil {
+	if selection.usedLight && ts.agent.LightProvider != nil {
 		activeProvider = ts.agent.LightProvider
 	}
 	activeModelName := strings.TrimSpace(ts.agent.Model)
-	if usedLight {
+	if selection.usedLight {
 		activeModelName = strings.TrimSpace(sideQuestionModelName(ts.agent, true))
 	}
-	activeModelName = resolvedCandidateModelName(activeCandidates, activeModelName)
+	activeModelName = resolvedCandidateModelName(selection.activeCandidates, activeModelName)
 
 	exec := newTurnExecution(
 		ts.agent,
@@ -145,18 +145,19 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		summary,
 		messages,
 	)
-	exec.activeCandidates = activeCandidates
-	exec.activeModel = activeModel
+	exec.selectedCandidates = selection.selectedCandidates
+	exec.activeCandidates = selection.activeCandidates
+	exec.activeModel = selection.model
 	exec.activeModelConfig = resolveActiveModelConfig(
 		p.Cfg,
 		ts.agent.Workspace,
-		activeCandidates,
-		activeModel,
+		selection.activeCandidates,
+		selection.model,
 		p.Cfg.Agents.Defaults.Provider,
 	)
 	exec.llmModelName = activeModelName
 	exec.activeProvider = activeProvider
-	exec.usedLight = usedLight
+	exec.usedLight = selection.usedLight
 
 	return exec, nil
 }

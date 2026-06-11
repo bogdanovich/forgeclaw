@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestAtomicSave(t *testing.T) {
@@ -273,6 +274,66 @@ func TestToolFeedbackOverridesPersist(t *testing.T) {
 	sm3 := NewManager(tmpDir)
 	if got, ok := sm3.GetToolFeedbackOverride("route-session"); ok {
 		t.Fatalf("persisted GetToolFeedbackOverride() after clear = (%v, %v), want (_, false)", got, ok)
+	}
+}
+
+func TestAutoModelSelectionsPersist(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	selection := AutoModelSelection{
+		SelectedProvider: "openai",
+		SelectedModel:    "gpt-5.4",
+		ActiveProvider:   "anthropic",
+		ActiveModel:      "claude-opus-4.1",
+		Reason:           "rate_limit",
+		ExpiresAt:        time.Now().Add(15 * time.Minute).Round(time.Second),
+	}
+
+	sm := NewManager(tmpDir)
+	if err := sm.SetAutoModelSelection("route-session", selection); err != nil {
+		t.Fatalf("SetAutoModelSelection failed: %v", err)
+	}
+
+	got, ok := sm.GetAutoModelSelection("route-session")
+	if !ok {
+		t.Fatal("GetAutoModelSelection() missing value")
+	}
+	if got.SelectedProvider != selection.SelectedProvider ||
+		got.SelectedModel != selection.SelectedModel ||
+		got.ActiveProvider != selection.ActiveProvider ||
+		got.ActiveModel != selection.ActiveModel ||
+		got.Reason != selection.Reason ||
+		!got.ExpiresAt.Equal(selection.ExpiresAt) {
+		t.Fatalf("GetAutoModelSelection() = %+v, want %+v", got, selection)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatal("expected UpdatedAt to be populated")
+	}
+
+	sm2 := NewManager(tmpDir)
+	got2, ok := sm2.GetAutoModelSelection("route-session")
+	if !ok {
+		t.Fatal("persisted GetAutoModelSelection() missing value")
+	}
+	if got2.SelectedProvider != selection.SelectedProvider ||
+		got2.SelectedModel != selection.SelectedModel ||
+		got2.ActiveProvider != selection.ActiveProvider ||
+		got2.ActiveModel != selection.ActiveModel ||
+		got2.Reason != selection.Reason ||
+		!got2.ExpiresAt.Equal(selection.ExpiresAt) {
+		t.Fatalf("persisted GetAutoModelSelection() = %+v, want %+v", got2, selection)
+	}
+
+	if err := sm2.ClearAutoModelSelection("route-session"); err != nil {
+		t.Fatalf("ClearAutoModelSelection failed: %v", err)
+	}
+	if _, ok := sm2.GetAutoModelSelection("route-session"); ok {
+		t.Fatal("expected auto model selection to be cleared")
+	}
+
+	sm3 := NewManager(tmpDir)
+	if _, ok := sm3.GetAutoModelSelection("route-session"); ok {
+		t.Fatal("expected persisted auto model selection to be cleared")
 	}
 }
 

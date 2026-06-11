@@ -133,11 +133,12 @@ type turnExecution struct {
 	iteration int
 
 	// Per-iteration state set by Pipeline.PreLLM
-	activeCandidates  []providers.FallbackCandidate
-	activeModel       string
-	activeModelConfig *config.ModelConfig
-	activeProvider    providers.LLMProvider
-	usedLight         bool
+	selectedCandidates []providers.FallbackCandidate
+	activeCandidates   []providers.FallbackCandidate
+	activeModel        string
+	activeModelConfig  *config.ModelConfig
+	activeProvider     providers.LLMProvider
+	usedLight          bool
 
 	// LLM call per-iteration state
 	response            *providers.LLMResponse

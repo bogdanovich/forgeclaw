@@ -223,9 +223,36 @@ func (p *Pipeline) CallLLM(
 				)
 				break
 			}
+			updateAutoFallbackSelection(
+				p.al,
+				ts.opts.Dispatch.RouteSessionKey,
+				exec.selectedCandidates,
+				fbResult,
+				exec.usedLight,
+			)
 			return fbResult.Response, nil
 		}
-		return exec.activeProvider.Chat(providerCtx, messagesForCall, toolDefsForCall, exec.llmModel, exec.llmOpts)
+		resp, err := exec.activeProvider.Chat(
+			providerCtx,
+			messagesForCall,
+			toolDefsForCall,
+			exec.llmModel,
+			exec.llmOpts,
+		)
+		if err == nil && strings.TrimSpace(ts.opts.Dispatch.RouteSessionKey) != "" && len(exec.selectedCandidates) > 0 {
+			updateAutoFallbackSelection(
+				p.al,
+				ts.opts.Dispatch.RouteSessionKey,
+				exec.selectedCandidates,
+				&providers.FallbackResult{
+					Response: resp,
+					Provider: exec.activeCandidates[0].Provider,
+					Model:    exec.activeCandidates[0].Model,
+				},
+				exec.usedLight,
+			)
+		}
+		return resp, err
 	}
 
 	// Retry loop
