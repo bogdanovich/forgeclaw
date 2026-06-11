@@ -896,13 +896,10 @@ func parseSlackChatID(chatID string) (channelID, threadTS string) {
 }
 
 func resolveSlackOutboundTarget(chatID string, outboundCtx *bus.InboundContext) (string, string, string) {
-	deliveryChatID := strings.TrimSpace(chatID)
-	if deliveryChatID == "" && outboundCtx != nil {
-		deliveryChatID = strings.TrimSpace(outboundCtx.ChatID)
-	}
+	deliveryChatID := channels.EffectiveOutboundChatID(chatID, outboundCtx)
 	channelID, threadTS := parseSlackChatID(deliveryChatID)
-	if threadTS == "" && outboundCtx != nil {
-		threadTS = strings.TrimSpace(outboundCtx.TopicID)
+	if threadTS == "" {
+		threadTS = channels.EffectiveOutboundTopicID("", outboundCtx)
 		if threadTS != "" && channelID != "" {
 			deliveryChatID = channelID + "/" + threadTS
 		}
@@ -911,13 +908,10 @@ func resolveSlackOutboundTarget(chatID string, outboundCtx *bus.InboundContext) 
 }
 
 func resolveSlackMediaOutboundTarget(chatID string, outboundCtx *bus.InboundContext) (string, string, string) {
-	deliveryChatID := strings.TrimSpace(chatID)
-	if deliveryChatID == "" && outboundCtx != nil {
-		deliveryChatID = strings.TrimSpace(outboundCtx.ChatID)
-	}
+	deliveryChatID := channels.EffectiveOutboundChatID(chatID, outboundCtx)
 	channelID, threadTS := parseSlackChatID(deliveryChatID)
-	if threadTS == "" && outboundCtx != nil {
-		threadTS = strings.TrimSpace(outboundCtx.TopicID)
+	if threadTS == "" {
+		threadTS = channels.EffectiveOutboundTopicID("", outboundCtx)
 		if threadTS != "" && channelID != "" {
 			deliveryChatID = channelID + "/" + threadTS
 		}
@@ -935,8 +929,8 @@ func (c *SlackChannel) ToolFeedbackMessageChatID(chatID string, outboundCtx *bus
 
 func slackToolFeedbackChatKey(chatID string, outboundCtx *bus.InboundContext) string {
 	deliveryChatID, channelID, threadTS := resolveSlackOutboundTarget(chatID, outboundCtx)
-	if threadTS == "" && outboundCtx != nil {
-		threadTS = strings.TrimSpace(outboundCtx.ReplyToMessageID)
+	if threadTS == "" {
+		threadTS = channels.EffectiveOutboundReplyToMessageID("", outboundCtx)
 		if threadTS != "" && channelID != "" {
 			deliveryChatID = channelID + "/" + threadTS
 		}
