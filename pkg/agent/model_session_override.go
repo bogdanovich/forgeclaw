@@ -33,6 +33,12 @@ type effectiveExecutionState struct {
 	ThinkingLevelConfigured bool
 }
 
+type modelSelectionInspection struct {
+	WorkspaceAgent *AgentInstance
+	Execution      effectiveExecutionState
+	Override       state.SessionModelOverride
+}
+
 func (b effectiveModelBinding) Cleanup() {
 	if b.cleanup != nil {
 		b.cleanup()
@@ -64,20 +70,20 @@ func (b effectiveModelBinding) ExecutionState() effectiveExecutionState {
 	return effectiveExecutionStateForAgent(b.WorkspaceAgent)
 }
 
-func selectionInfoForBinding(
+func selectionInfoForInspection(
 	cfg *config.Config,
-	binding effectiveModelBinding,
+	inspection modelSelectionInspection,
 ) commands.ModelSelectionInfo {
-	return buildSessionModelSelectionInfoForBinding(cfg, binding)
+	return buildSessionModelSelectionInfo(cfg, inspection)
 }
 
-func buildSessionModelSelectionInfoForBinding(
+func buildSessionModelSelectionInfo(
 	cfg *config.Config,
-	binding effectiveModelBinding,
+	inspection modelSelectionInspection,
 ) commands.ModelSelectionInfo {
-	workspaceAgent := binding.WorkspaceAgent
-	execution := binding.ExecutionState()
-	override := normalizeSessionModelOverride(binding.Override)
+	workspaceAgent := inspection.WorkspaceAgent
+	execution := inspection.Execution
+	override := normalizeSessionModelOverride(inspection.Override)
 	if workspaceAgent == nil {
 		return commands.ModelSelectionInfo{}
 	}
@@ -90,7 +96,7 @@ func buildSessionModelSelectionInfoForBinding(
 			workspaceAgent.Fallbacks,
 		)
 	}
-	return buildSessionModelSelectionInfo(workspaceAgent, execution, override)
+	return buildSessionModelSelectionInfoValues(workspaceAgent, execution, override)
 }
 
 func normalizeSessionModelOverride(
@@ -100,7 +106,7 @@ func normalizeSessionModelOverride(
 	return override
 }
 
-func buildSessionModelSelectionInfo(
+func buildSessionModelSelectionInfoValues(
 	workspaceAgent *AgentInstance,
 	execution effectiveExecutionState,
 	override state.SessionModelOverride,
@@ -280,29 +286,33 @@ func (al *AgentLoop) bindEffectiveModel(
 	return binding
 }
 
-func (al *AgentLoop) buildSelectionBindingView(
+func (al *AgentLoop) buildModelSelectionInspection(
 	binding effectiveModelBinding,
-) effectiveModelBinding {
-	refreshed := binding
-	workspaceAgent := refreshed.WorkspaceAgent
+) modelSelectionInspection {
+	inspection := modelSelectionInspection{
+		WorkspaceAgent: binding.WorkspaceAgent,
+		Execution:      binding.ExecutionState(),
+		Override:       normalizeSessionModelOverride(binding.Override),
+	}
+	workspaceAgent := inspection.WorkspaceAgent
 	if workspaceAgent == nil {
-		return refreshed
+		return inspection
 	}
 
 	workspaceSelection := effectiveExecutionStateForAgent(workspaceAgent)
-	if refreshed.RouteSessionKey != "" {
-		override, _ := al.getSessionModelOverride(refreshed.RouteSessionKey)
-		refreshed.Override = override
+	if binding.RouteSessionKey != "" {
+		override, _ := al.getSessionModelOverride(binding.RouteSessionKey)
+		inspection.Override = normalizeSessionModelOverride(override)
 	}
-	if refreshed.Override.Model == "" {
+	if inspection.Override.Model == "" {
 		executionDecision := al.previewStickyAutoFallback(modelSelectionDecision{
 			selectedCandidates: append([]providers.FallbackCandidate(nil), workspaceSelection.Candidates...),
 			activeCandidates:   append([]providers.FallbackCandidate(nil), workspaceSelection.Candidates...),
 			model:              resolvedCandidateModel(workspaceSelection.Candidates, workspaceSelection.Model),
-		}, refreshed.RouteSessionKey)
+		}, binding.RouteSessionKey)
 		workspaceSelection.Candidates = executionDecision.activeCandidates
 		workspaceSelection.Model = executionDecision.model
+		inspection.Execution = workspaceSelection
 	}
-	refreshed.Execution = workspaceSelection
-	return refreshed
+	return inspection
 }
