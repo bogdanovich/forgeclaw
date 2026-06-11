@@ -975,6 +975,52 @@ func TestTurnProfile_SystemPromptOffAddsToolFallbackForNativeWebSearch(t *testin
 	}
 }
 
+func TestPromptBuildRequestForProcessOptions_SystemPromptOffAddsToolFallbackForNativeWebSearch(t *testing.T) {
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			Web: config.WebToolsConfig{
+				ToolConfig:   config.ToolConfig{Enabled: true},
+				PreferNative: true,
+			},
+		},
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace: t.TempDir(),
+				ModelName: "test-model",
+				TurnProfile: config.TurnProfileConfig{
+					Enabled:      true,
+					SystemPrompt: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Skills:       config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Tools: config.TurnProfileBlock{
+						Mode:  config.TurnProfileModeCustom,
+						Allow: []string{"web_search"},
+					},
+				},
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &nativeSearchProvider{supported: true})
+	agent := al.GetRegistry().GetDefaultAgent()
+	opts, err := resolveTurnProfileOptions(cfg, processOptions{})
+	if err != nil {
+		t.Fatalf("resolveTurnProfileOptions() error = %v", err)
+	}
+
+	req := promptBuildRequestForProcessOptions(cfg, agent, opts, nil, "", "", nil)
+	if !req.SuppressDefaultSystemPrompt {
+		t.Fatal("expected default system prompt to be suppressed")
+	}
+	if !req.SuppressSkillContext {
+		t.Fatal("expected skill context to be suppressed")
+	}
+	if !req.ToolUseFallback {
+		t.Fatal("expected native-search-only process options prompt to enable tool fallback")
+	}
+	if req.SuppressToolUseRule {
+		t.Fatal("expected tool use rule to remain enabled when native web search is callable")
+	}
+}
+
 func TestTurnProfile_BeforeLLMHookCannotReenableNativeSearchWhenToolsOff(t *testing.T) {
 	cfg := &config.Config{
 		Tools: config.ToolsConfig{

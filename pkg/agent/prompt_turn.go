@@ -72,6 +72,7 @@ func turnProfileNativeSearchCallable(
 }
 
 func promptBuildRequestForProcessOptions(
+	cfg *config.Config,
 	agent *AgentInstance,
 	opts processOptions,
 	history []providers.Message,
@@ -94,7 +95,8 @@ func promptBuildRequestForProcessOptions(
 	profile := opts.TurnProfile
 	hasCallableTools := true
 	if profile.Enabled && agent != nil {
-		hasCallableTools = turnProfileHasCallableTools(profile, agent.Tools.ToProviderDefs())
+		hasCallableTools = turnProfileHasCallableTools(profile, agent.Tools.ToProviderDefs()) ||
+			turnProfileNativeSearchCallable(cfg, profile, agent)
 	}
 	if turnProfileSystemPromptOff(profile) {
 		req.SuppressDefaultSystemPrompt = true

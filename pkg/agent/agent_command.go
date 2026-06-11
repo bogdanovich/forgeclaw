@@ -14,6 +14,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/seahorse"
 )
 
 func (al *AgentLoop) handleCommand(
@@ -515,6 +516,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			assembledMessageCount := len(storedHistory)
 			if usage, count := computeAssembledContextUsage(
 				context.Background(),
+				al.GetConfig(),
 				agent,
 				al.contextManager,
 				al.mediaStore,
@@ -527,12 +529,17 @@ func (al *AgentLoop) buildCommandsRuntime(
 			} else {
 				assembledUsage = storedUsage
 			}
+			summarizeAtTokens := storedUsage.SummarizeAtTokens
+			if contextManagerDisplayName(al.contextManager) == "seahorse" {
+				summarizeAtTokens = int(float64(storedUsage.TotalTokens) * seahorse.ContextThreshold)
+			}
 			return &commands.ContextStats{
 				ContextManager:            contextManagerDisplayName(al.contextManager),
 				TotalTokens:               storedUsage.TotalTokens,
 				CompressAtTokens:          storedUsage.CompressAtTokens,
-				SummarizeAtTokens:         storedUsage.SummarizeAtTokens,
+				SummarizeAtTokens:         summarizeAtTokens,
 				SummarizeMessageThreshold: agent.SummarizeMessageThreshold,
+				SummaryPrefixTokens:       seahorseSummaryPrefixTokens(al.contextManager),
 				StoredUsedTokens:          storedUsage.UsedTokens,
 				StoredHistoryTokens:       storedUsage.HistoryTokens,
 				StoredUsedPercent:         storedUsage.UsedPercent,

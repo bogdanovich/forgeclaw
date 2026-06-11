@@ -11,6 +11,7 @@ func TestFormatContextStats_ShowsStoredAndAssembledSections(t *testing.T) {
 		TotalTokens:            131072,
 		CompressAtTokens:       122880,
 		SummarizeAtTokens:      98304,
+		SummaryPrefixTokens:    32000,
 		StoredUsedTokens:       231900,
 		StoredHistoryTokens:    201300,
 		StoredUsedPercent:      100,
@@ -33,7 +34,7 @@ func TestFormatContextStats_ShowsStoredAndAssembledSections(t *testing.T) {
 		"- Used: ~64200 / 131072 tokens (48%)",
 		"Thresholds",
 		"- Compress at: 122880 tokens",
-		"- Summarize at: 98304 history tokens",
+		"- Summarize at: 98304 assembled tokens; summary prefix target 32000 tokens",
 	}
 	for _, want := range wants {
 		if !strings.Contains(got, want) {

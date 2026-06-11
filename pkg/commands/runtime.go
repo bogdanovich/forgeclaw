@@ -47,6 +47,7 @@ type ContextStats struct {
 	CompressAtTokens          int // hard budget compression threshold
 	SummarizeAtTokens         int // soft summarization trigger
 	SummarizeMessageThreshold int
+	SummaryPrefixTokens       int
 	StoredUsedTokens          int
 	StoredHistoryTokens       int
 	StoredUsedPercent         int // 0-100 against compressAt

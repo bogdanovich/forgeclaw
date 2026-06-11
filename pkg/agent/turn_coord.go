@@ -422,6 +422,7 @@ func (al *AgentLoop) askSideQuestion(
 		}
 	} else {
 		promptReq = promptBuildRequestForProcessOptions(
+			al.GetConfig(),
 			agent,
 			*opts,
 			history,

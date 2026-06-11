@@ -836,6 +836,7 @@ func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
 
 	got, gotCount := computeAssembledContextUsage(
 		context.Background(),
+		cfg,
 		agent,
 		al.contextManager,
 		store,
@@ -847,13 +848,13 @@ func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
 		SessionKey:    "ctx-session",
 		Budget:        agent.ContextWindow,
 		MaxTokens:     agent.MaxTokens,
-		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(agent, processOptions{}),
+		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, processOptions{}),
 	})
 	if err != nil || resp == nil {
 		t.Fatalf("assemble failed: %v", err)
 	}
 	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), processOptions{}.TurnProfile)
-	req := promptBuildRequestForProcessOptions(agent, processOptions{}, resp.History, resp.Summary, "", nil)
+	req := promptBuildRequestForProcessOptions(nil, agent, processOptions{}, resp.History, resp.Summary, "", nil)
 	req.ActiveSkills = append([]string(nil), activeSkillNames(agent, processOptions{})...)
 	expectedMessages := resolveMediaRefs(
 		agent.ContextBuilder.BuildMessagesFromPrompt(req),

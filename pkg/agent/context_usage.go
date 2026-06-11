@@ -6,8 +6,10 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/seahorse"
 )
 
 // computeContextUsage estimates current context window consumption for the
@@ -97,6 +99,7 @@ func computeContextUsage(agent *AgentInstance, sessionKey string) *bus.ContextUs
 }
 
 func estimateNonHistoryPromptReserveForProcessOptions(
+	cfg *config.Config,
 	agent *AgentInstance,
 	opts processOptions,
 ) int {
@@ -116,7 +119,7 @@ func estimateNonHistoryPromptReserveForProcessOptions(
 	}
 
 	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
-	req := promptBuildRequestForProcessOptions(agent, opts, nil, "", "", nil)
+	req := promptBuildRequestForProcessOptions(cfg, agent, opts, nil, "", "", nil)
 	req.ActiveSkills = append([]string(nil), contextualSkills...)
 	messages := agent.ContextBuilder.BuildMessagesFromPrompt(req)
 
@@ -129,6 +132,7 @@ func estimateNonHistoryPromptReserveForProcessOptions(
 
 func computeAssembledContextUsage(
 	ctx context.Context,
+	cfg *config.Config,
 	agent *AgentInstance,
 	cm ContextManager,
 	mediaStore media.MediaStore,
@@ -148,7 +152,7 @@ func computeAssembledContextUsage(
 		SessionKey:    sessionKey,
 		Budget:        contextWindow,
 		MaxTokens:     agent.MaxTokens,
-		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(agent, opts),
+		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, opts),
 	})
 	if err != nil || resp == nil {
 		return nil, 0
@@ -161,7 +165,7 @@ func computeAssembledContextUsage(
 
 	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
 	rebuild := func(history []providers.Message) []providers.Message {
-		req := promptBuildRequestForProcessOptions(agent, opts, history, resp.Summary, "", nil)
+		req := promptBuildRequestForProcessOptions(cfg, agent, opts, history, resp.Summary, "", nil)
 		req.ActiveSkills = append([]string(nil), contextualSkills...)
 		messages := agent.ContextBuilder.BuildMessagesFromPrompt(req)
 		return resolveMediaRefs(messages, mediaStore, maxMediaSize)
@@ -231,4 +235,11 @@ func contextManagerDisplayName(cm ContextManager) string {
 		return "seahorse"
 	}
 	return "custom"
+}
+
+func seahorseSummaryPrefixTokens(cm ContextManager) int {
+	if contextManagerDisplayName(cm) != "seahorse" {
+		return 0
+	}
+	return seahorse.SummaryPrefixTokens
 }

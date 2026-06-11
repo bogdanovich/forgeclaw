@@ -3,6 +3,8 @@ package commands
 import (
 	"context"
 	"fmt"
+
+	"github.com/sipeed/picoclaw/pkg/seahorse"
 )
 
 func contextCommand() Definition {
@@ -76,6 +78,13 @@ func formatContextStats(s *ContextStats) string {
 func formatSummarizeThreshold(s *ContextStats) string {
 	if s == nil {
 		return ""
+	}
+	if s.ContextManager == "seahorse" {
+		summaryPrefixTokens := s.SummaryPrefixTokens
+		if summaryPrefixTokens <= 0 {
+			summaryPrefixTokens = seahorse.SummaryPrefixTokens
+		}
+		return fmt.Sprintf("%d assembled tokens; summary prefix target %d tokens", s.SummarizeAtTokens, summaryPrefixTokens)
 	}
 	if s.ContextManager == "legacy" && s.SummarizeMessageThreshold > 0 {
 		return fmt.Sprintf("%d history tokens or %d messages", s.SummarizeAtTokens, s.SummarizeMessageThreshold)
