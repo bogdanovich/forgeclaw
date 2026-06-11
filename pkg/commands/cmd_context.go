@@ -24,22 +24,51 @@ func contextCommand() Definition {
 }
 
 func formatContextStats(s *ContextStats) string {
-	remaining := s.CompressAtTokens - s.UsedTokens
-	if remaining < 0 {
-		remaining = 0
+	storedRemaining := s.CompressAtTokens - s.StoredUsedTokens
+	if storedRemaining < 0 {
+		storedRemaining = 0
 	}
-	usedWindowPercent := s.UsedTokens * 100 / max(s.TotalTokens, 1)
+	assembledRemaining := s.CompressAtTokens - s.AssembledUsedTokens
+	if assembledRemaining < 0 {
+		assembledRemaining = 0
+	}
+	storedWindowPercent := s.StoredUsedTokens * 100 / max(s.TotalTokens, 1)
+	assembledWindowPercent := s.AssembledUsedTokens * 100 / max(s.TotalTokens, 1)
 	msg := fmt.Sprintf(
-		"Context usage  \nMessages: %d  \nUsed: ~%d / %d tokens (%d%%)  \nHistory: ~%d tokens  \nCompress at: %d tokens  \nSummarize at: %d tokens  \nCompression progress: %d%%  \nRemaining: ~%d tokens",
-		s.MessageCount,
-		s.UsedTokens,
+		"Context usage  \n"+
+			"Manager: %s  \n"+
+			"Stored session  \n"+
+			"- Messages: %d  \n"+
+			"- Used: ~%d / %d tokens (%d%%)  \n"+
+			"- History: ~%d tokens  \n"+
+			"- Compression progress: %d%%  \n"+
+			"- Remaining: ~%d tokens  \n"+
+			"Assembled prompt estimate  \n"+
+			"- Messages: %d  \n"+
+			"- Used: ~%d / %d tokens (%d%%)  \n"+
+			"- History: ~%d tokens  \n"+
+			"- Compression progress: %d%%  \n"+
+			"- Remaining: ~%d tokens  \n"+
+			"Thresholds  \n"+
+			"- Compress at: %d tokens  \n"+
+			"- Summarize at: %d history tokens",
+		s.ContextManager,
+		s.StoredMessageCount,
+		s.StoredUsedTokens,
 		s.TotalTokens,
-		usedWindowPercent,
-		s.HistoryTokens,
+		storedWindowPercent,
+		s.StoredHistoryTokens,
+		s.StoredUsedPercent,
+		storedRemaining,
+		s.AssembledMessageCount,
+		s.AssembledUsedTokens,
+		s.TotalTokens,
+		assembledWindowPercent,
+		s.AssembledHistoryTokens,
+		s.AssembledUsedPercent,
+		assembledRemaining,
 		s.CompressAtTokens,
 		s.SummarizeAtTokens,
-		s.UsedPercent,
-		remaining,
 	)
 	return msg
 }

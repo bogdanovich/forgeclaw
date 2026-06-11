@@ -1,6 +1,10 @@
 package agent
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
@@ -88,4 +92,85 @@ func computeContextUsage(agent *AgentInstance, sessionKey string) *bus.ContextUs
 		SummarizeAtTokens: summarizeAt,
 		UsedPercent:       usedPercent,
 	}
+}
+
+func computeAssembledContextUsage(
+	ctx context.Context,
+	agent *AgentInstance,
+	cm ContextManager,
+	sessionKey string,
+) *bus.ContextUsage {
+	if agent == nil || cm == nil {
+		return nil
+	}
+	contextWindow := agent.ContextWindow
+	if contextWindow <= 0 {
+		return nil
+	}
+
+	resp, err := cm.Assemble(ctx, &AssembleRequest{
+		SessionKey: sessionKey,
+		Budget:     contextWindow,
+		MaxTokens:  agent.MaxTokens,
+	})
+	if err != nil || resp == nil {
+		return nil
+	}
+
+	historyTokens := 0
+	for _, m := range resp.History {
+		historyTokens += EstimateMessageTokens(m)
+	}
+
+	systemTokens := 0
+	if agent.ContextBuilder != nil {
+		systemTokens = agent.ContextBuilder.EstimateSystemTokens(resp.Summary, nil)
+	}
+
+	toolTokens := 0
+	if agent.Tools != nil {
+		toolTokens = EstimateToolDefsTokens(agent.Tools.ToProviderDefs())
+	}
+
+	usedTokens := historyTokens + systemTokens + toolTokens
+
+	effectiveWindow := contextWindow - agent.MaxTokens
+	if effectiveWindow < 0 {
+		effectiveWindow = contextWindow
+	}
+
+	compressAt := effectiveWindow
+	summarizeAt := contextWindow * agent.SummarizeTokenPercent / 100
+	if summarizeAt <= 0 {
+		summarizeAt = compressAt
+	}
+
+	usedPercent := 0
+	if compressAt > 0 {
+		usedPercent = usedTokens * 100 / compressAt
+	}
+	if usedPercent > 100 {
+		usedPercent = 100
+	}
+
+	return &bus.ContextUsage{
+		UsedTokens:        usedTokens,
+		TotalTokens:       contextWindow,
+		HistoryTokens:     historyTokens,
+		CompressAtTokens:  compressAt,
+		SummarizeAtTokens: summarizeAt,
+		UsedPercent:       usedPercent,
+	}
+}
+
+func contextManagerDisplayName(cm ContextManager) string {
+	switch cm.(type) {
+	case *legacyContextManager:
+		return "legacy"
+	}
+	typeName := fmt.Sprintf("%T", cm)
+	if strings.Contains(typeName, "seahorseContextManager") {
+		return "seahorse"
+	}
+	return "custom"
 }

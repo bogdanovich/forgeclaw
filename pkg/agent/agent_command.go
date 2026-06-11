@@ -506,19 +506,41 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if opts == nil || agent.Sessions == nil {
 				return nil
 			}
-			usage := computeContextUsage(agent, opts.SessionKey)
-			if usage == nil {
+			storedUsage := computeContextUsage(agent, opts.SessionKey)
+			if storedUsage == nil {
 				return nil
 			}
-			history := agent.Sessions.GetHistory(opts.SessionKey)
+			assembledUsage := computeAssembledContextUsage(
+				context.Background(),
+				agent,
+				al.contextManager,
+				opts.SessionKey,
+			)
+			if assembledUsage == nil {
+				assembledUsage = storedUsage
+			}
+			storedHistory := agent.Sessions.GetHistory(opts.SessionKey)
+			assembledMessageCount := len(storedHistory)
+			if resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
+				SessionKey: opts.SessionKey,
+				Budget:     agent.ContextWindow,
+				MaxTokens:  agent.MaxTokens,
+			}); err == nil && resp != nil {
+				assembledMessageCount = len(resp.History)
+			}
 			return &commands.ContextStats{
-				UsedTokens:        usage.UsedTokens,
-				TotalTokens:       usage.TotalTokens,
-				HistoryTokens:     usage.HistoryTokens,
-				CompressAtTokens:  usage.CompressAtTokens,
-				SummarizeAtTokens: usage.SummarizeAtTokens,
-				UsedPercent:       usage.UsedPercent,
-				MessageCount:      len(history),
+				ContextManager:         contextManagerDisplayName(al.contextManager),
+				TotalTokens:            storedUsage.TotalTokens,
+				CompressAtTokens:       storedUsage.CompressAtTokens,
+				SummarizeAtTokens:      storedUsage.SummarizeAtTokens,
+				StoredUsedTokens:       storedUsage.UsedTokens,
+				StoredHistoryTokens:    storedUsage.HistoryTokens,
+				StoredUsedPercent:      storedUsage.UsedPercent,
+				StoredMessageCount:     len(storedHistory),
+				AssembledUsedTokens:    assembledUsage.UsedTokens,
+				AssembledHistoryTokens: assembledUsage.HistoryTokens,
+				AssembledUsedPercent:   assembledUsage.UsedPercent,
+				AssembledMessageCount:  assembledMessageCount,
 			}
 		}
 	}

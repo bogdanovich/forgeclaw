@@ -42,13 +42,18 @@ type ConfiguredModelTarget struct {
 
 // ContextStats describes current session context window usage.
 type ContextStats struct {
-	UsedTokens        int
-	TotalTokens       int // model context window
-	HistoryTokens     int // history-only tokens (what maybeSummarize checks)
-	CompressAtTokens  int // hard budget compression threshold
-	SummarizeAtTokens int // soft summarization trigger
-	UsedPercent       int // 0-100
-	MessageCount      int
+	ContextManager         string
+	TotalTokens            int // model context window
+	CompressAtTokens       int // hard budget compression threshold
+	SummarizeAtTokens      int // soft summarization trigger
+	StoredUsedTokens       int
+	StoredHistoryTokens    int
+	StoredUsedPercent      int // 0-100 against compressAt
+	StoredMessageCount     int
+	AssembledUsedTokens    int
+	AssembledHistoryTokens int
+	AssembledUsedPercent   int // 0-100 against compressAt
+	AssembledMessageCount  int
 }
 
 // StopResult describes the outcome of a stop request for the current session.
