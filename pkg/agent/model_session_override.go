@@ -123,16 +123,22 @@ func (al *AgentLoop) buildSessionOverrideAgent(
 	}
 
 	cleanup := func() {
+		overrideClosed := false
 		for key, provider := range overrideAgent.CandidateProviders {
 			if _, exists := existingKeys[key]; exists || provider == nil {
 				continue
+			}
+			if provider == overrideProvider {
+				overrideClosed = true
 			}
 			if stateful, ok := provider.(providers.StatefulProvider); ok {
 				stateful.Close()
 			}
 		}
-		if stateful, ok := overrideProvider.(providers.StatefulProvider); ok {
-			stateful.Close()
+		if !overrideClosed {
+			if stateful, ok := overrideProvider.(providers.StatefulProvider); ok {
+				stateful.Close()
+			}
 		}
 	}
 
