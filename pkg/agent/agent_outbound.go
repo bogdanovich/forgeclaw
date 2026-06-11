@@ -47,11 +47,76 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 		channel,
 		chatID,
 		sessionKey,
-		fmt.Sprintf("Error processing message: %v", err),
+		formatUserFacingAgentError(err),
 		nil,
 		policy,
 	)
 	return true
+}
+
+func formatUserFacingAgentError(err error) string {
+	if err == nil {
+		return "Error processing message."
+	}
+
+	base := fmt.Sprintf("Error processing message: %v", err)
+
+	var exhausted *providers.FallbackExhaustedError
+	if errors.As(err, &exhausted) && exhausted != nil && len(exhausted.Attempts) > 0 {
+		var sb strings.Builder
+		sb.WriteString(base)
+		sb.WriteString("\n\nFailover details:")
+		for i, attempt := range exhausted.Attempts {
+			sb.WriteString(fmt.Sprintf(
+				"\n%d. %s/%s",
+				i+1,
+				strings.TrimSpace(attempt.Provider),
+				strings.TrimSpace(attempt.Model),
+			))
+			if attempt.Skipped {
+				sb.WriteString(" — skipped")
+				if attempt.Error != nil {
+					sb.WriteString(": ")
+					sb.WriteString(strings.TrimSpace(attempt.Error.Error()))
+				}
+				continue
+			}
+			if attempt.Reason != "" {
+				sb.WriteString(fmt.Sprintf(" — classification: %s", attempt.Reason))
+			}
+			if attempt.Error != nil {
+				rawErr := attempt.Error
+				var failErr *providers.FailoverError
+				if errors.As(attempt.Error, &failErr) && failErr != nil && failErr.Wrapped != nil {
+					rawErr = failErr.Wrapped
+				}
+				sb.WriteString("\n   provider error: ")
+				sb.WriteString(strings.TrimSpace(rawErr.Error()))
+			}
+		}
+		return sb.String()
+	}
+
+	var failErr *providers.FailoverError
+	if errors.As(err, &failErr) && failErr != nil {
+		var sb strings.Builder
+		sb.WriteString(base)
+		sb.WriteString(fmt.Sprintf("\n\nFailover classification: %s", failErr.Reason))
+		if failErr.Provider != "" || failErr.Model != "" {
+			sb.WriteString(fmt.Sprintf(
+				"\nFailover target: %s/%s",
+				strings.TrimSpace(failErr.Provider),
+				strings.TrimSpace(failErr.Model),
+			))
+		}
+		if failErr.Wrapped != nil {
+			sb.WriteString("\nProvider error: ")
+			sb.WriteString(strings.TrimSpace(failErr.Wrapped.Error()))
+		}
+		return sb.String()
+	}
+
+	return base
 }
 
 func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) {
