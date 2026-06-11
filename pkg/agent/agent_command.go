@@ -510,23 +510,20 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if storedUsage == nil {
 				return nil
 			}
-			assembledUsage := computeAssembledContextUsage(
+			storedHistory := agent.Sessions.GetHistory(opts.SessionKey)
+			var assembledUsage *bus.ContextUsage
+			assembledMessageCount := len(storedHistory)
+			if usage, count := computeAssembledContextUsage(
 				context.Background(),
 				agent,
 				al.contextManager,
+				*opts,
 				opts.SessionKey,
-			)
-			if assembledUsage == nil {
+			); usage != nil {
+				assembledUsage = usage
+				assembledMessageCount = count
+			} else {
 				assembledUsage = storedUsage
-			}
-			storedHistory := agent.Sessions.GetHistory(opts.SessionKey)
-			assembledMessageCount := len(storedHistory)
-			if resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
-				SessionKey: opts.SessionKey,
-				Budget:     agent.ContextWindow,
-				MaxTokens:  agent.MaxTokens,
-			}); err == nil && resp != nil {
-				assembledMessageCount = len(resp.History)
 			}
 			return &commands.ContextStats{
 				ContextManager:         contextManagerDisplayName(al.contextManager),

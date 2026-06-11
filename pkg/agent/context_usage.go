@@ -94,27 +94,60 @@ func computeContextUsage(agent *AgentInstance, sessionKey string) *bus.ContextUs
 	}
 }
 
+func estimateNonHistoryPromptReserveForProcessOptions(
+	agent *AgentInstance,
+	opts processOptions,
+) int {
+	if agent == nil {
+		return 0
+	}
+	if agent.ContextBuilder == nil || agent.Tools == nil {
+		if agent.Tools != nil {
+			return EstimateToolDefsTokens(filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile))
+		}
+		return 0
+	}
+
+	contextualSkills := activeSkillNames(agent, opts)
+	if agent.ContextBuilder != nil {
+		contextualSkills = agent.ContextBuilder.ResolveActiveSkillsForContext(contextualSkills)
+	}
+
+	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
+	req := promptBuildRequestForProcessOptions(agent, opts, nil, "", "", nil)
+	req.ActiveSkills = append([]string(nil), contextualSkills...)
+	messages := agent.ContextBuilder.BuildMessagesFromPrompt(req)
+
+	tokens := EstimateToolDefsTokens(toolDefs)
+	for _, msg := range messages {
+		tokens += EstimateMessageTokens(msg)
+	}
+	return tokens
+}
+
 func computeAssembledContextUsage(
 	ctx context.Context,
 	agent *AgentInstance,
 	cm ContextManager,
+	opts processOptions,
 	sessionKey string,
-) *bus.ContextUsage {
+) (*bus.ContextUsage, int) {
 	if agent == nil || cm == nil {
-		return nil
+		return nil, 0
 	}
 	contextWindow := agent.ContextWindow
 	if contextWindow <= 0 {
-		return nil
+		return nil, 0
 	}
 
 	resp, err := cm.Assemble(ctx, &AssembleRequest{
-		SessionKey: sessionKey,
-		Budget:     contextWindow,
-		MaxTokens:  agent.MaxTokens,
+		SessionKey:    sessionKey,
+		Budget:        contextWindow,
+		MaxTokens:     agent.MaxTokens,
+		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(agent, opts),
 	})
 	if err != nil || resp == nil {
-		return nil
+		return nil, 0
 	}
 
 	historyTokens := 0
@@ -160,7 +193,7 @@ func computeAssembledContextUsage(
 		CompressAtTokens:  compressAt,
 		SummarizeAtTokens: summarizeAt,
 		UsedPercent:       usedPercent,
-	}
+	}, len(resp.History)
 }
 
 func contextManagerDisplayName(cm ContextManager) string {
