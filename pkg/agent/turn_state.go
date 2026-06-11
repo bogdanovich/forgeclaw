@@ -163,6 +163,8 @@ type turnExecutionModel struct {
 	activeModel        string
 	activeModelConfig  *config.ModelConfig
 	activeProvider     providers.LLMProvider
+	candidateProviders map[string]providers.LLMProvider
+	cleanup            func()
 	usedLight          bool
 	llmModelName       string
 }
@@ -285,10 +287,17 @@ type turnState struct {
 // =============================================================================
 
 func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScope) *turnState {
+	binding := opts.ModelBinding
+	if binding.WorkspaceAgent == nil {
+		binding.WorkspaceAgent = agent
+	}
+	if binding.Execution.Model == "" && binding.Execution.Provider == nil && len(binding.Execution.Candidates) == 0 {
+		binding.Execution = effectiveExecutionStateForAgent(agent)
+	}
 	ts := &turnState{
 		agent:        agent,
 		opts:         opts,
-		model:        opts.ModelBinding,
+		model:        binding,
 		profile:      opts.TurnProfile,
 		scope:        scope,
 		turnID:       scope.turnID,

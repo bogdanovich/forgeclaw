@@ -139,7 +139,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 	cfg := al.GetConfig()
 	agent := modelBinding.WorkspaceAgent
 	workspaceAgent := modelBinding.WorkspaceAgent
-	executionAgent := modelBinding.ExecutionAgent()
+	execution := modelBinding.ExecutionState()
 	rt := &commands.Runtime{
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
@@ -309,10 +309,21 @@ func (al *AgentLoop) buildCommandsRuntime(
 		}
 		rt.GetModelSelection = func() commands.ModelSelectionInfo {
 			refreshed := modelBinding
+			workspaceSelection := effectiveExecutionStateForAgent(workspaceAgent)
 			if refreshed.RouteSessionKey != "" {
 				override, _ := al.getSessionModelOverride(refreshed.RouteSessionKey)
 				refreshed.Override = override
 			}
+			if refreshed.Override.Model == "" {
+				executionDecision := al.previewStickyAutoFallback(modelSelectionDecision{
+					selectedCandidates: append([]providers.FallbackCandidate(nil), workspaceSelection.Candidates...),
+					activeCandidates:   append([]providers.FallbackCandidate(nil), workspaceSelection.Candidates...),
+					model:              resolvedCandidateModel(workspaceSelection.Candidates, workspaceSelection.Model),
+				}, refreshed.RouteSessionKey)
+				workspaceSelection.Candidates = executionDecision.activeCandidates
+				workspaceSelection.Model = executionDecision.model
+			}
+			refreshed.Execution = workspaceSelection
 			return selectionInfoForBinding(cfg, refreshed)
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
@@ -338,13 +349,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 					entry = &modelAggregate{
 						info: commands.ConfiguredModelInfo{
 							Name:    modelCfg.ModelName,
-							Current: executionAgent != nil && modelCfg.ModelName == executionAgent.Model,
+							Current: modelCfg.ModelName == execution.Model,
 						},
 						order:   idx,
 						targets: map[string]*targetAggregate{},
 					}
 					modelsByName[modelCfg.ModelName] = entry
-				} else if executionAgent != nil && modelCfg.ModelName == executionAgent.Model {
+				} else if modelCfg.ModelName == execution.Model {
 					entry.info.Current = true
 				}
 				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")

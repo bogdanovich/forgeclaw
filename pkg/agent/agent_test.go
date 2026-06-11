@@ -25,6 +25,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -951,6 +952,85 @@ func TestProcessMessage_BeforeLLMModelRewriteDoesNotLeakThinkingOff(t *testing.T
 	}
 }
 
+func TestApplyBeforeLLMModelRewrite_RebuildsExecutionProviders(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "primary-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "primary-model",
+				Model:     "openai/primary-model",
+				APIBase:   "https://primary.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("primary-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "hook-model",
+				Model:     "openai/hook-model",
+				APIBase:   "https://hook.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("hook-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+		},
+	}
+
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("rewrite-session"), turnEventScope{
+		turnID:  "turn-rewrite-provider",
+		context: newTurnContext(nil, nil, nil),
+	})
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn() error = %v", err)
+	}
+
+	originalProvider := exec.model.activeProvider
+	exec.llmModel = "hook-model"
+	pipeline.applyBeforeLLMModelRewrite(ts, exec)
+	defer func() {
+		if exec.model.cleanup != nil {
+			exec.model.cleanup()
+		}
+	}()
+
+	if exec.model.activeProvider == originalProvider {
+		t.Fatal("expected hook rewrite to replace active provider")
+	}
+	if exec.model.activeModel != "hook-model" {
+		t.Fatalf("activeModel = %q, want %q", exec.model.activeModel, "hook-model")
+	}
+	if exec.model.candidateProviders == nil {
+		t.Fatal("expected candidateProviders to be rebuilt")
+	}
+	if _, err := providerForFallbackCandidate(
+		exec.model.candidateProviders,
+		exec.model.activeProvider,
+		"openai",
+		"hook-model",
+	); err != nil {
+		t.Fatalf("providerForFallbackCandidate() error = %v", err)
+	}
+}
+
 func TestProcessMessage_BtwCommandSuppressesReasoningWhenThinkingOff(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
@@ -1571,7 +1651,7 @@ func TestHandleCommand_UseCommandRejectsUnknownSkill(t *testing.T) {
 		Content:  "/use missing explain how to list files",
 	}, effectiveModelBinding{
 		WorkspaceAgent: agent,
-		EffectiveAgent: agent,
+		Execution:      effectiveExecutionStateForAgent(agent),
 	}, &opts)
 	if !handled {
 		t.Fatal("expected /use with unknown skill to be handled")
@@ -4360,6 +4440,162 @@ func TestProcessMessage_ModelOverrideIsSessionScoped(t *testing.T) {
 	}
 	if localModel != "openai/gpt-5.4" {
 		t.Fatalf("local model = %q, want %q", localModel, "openai/gpt-5.4")
+	}
+}
+
+func TestProcessMessage_ShowModelReflectsStickyAutoFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				ModelFallbacks:    []string{"deepseek"},
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   "https://local.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIBase:   "https://remote.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+	route, _, err := al.resolveMessageRoute(bus.InboundMessage{Context: inbound})
+	if err != nil {
+		t.Fatalf("resolveMessageRoute() error = %v", err)
+	}
+	allocation := al.allocateRouteSession(route, bus.InboundMessage{Context: inbound})
+	if err := al.setAutoModelSelection(allocation.SessionKey, state.AutoModelSelection{
+		SelectedProvider: "openai",
+		SelectedModel:    "openai/gpt-5.4",
+		ActiveProvider:   "openrouter",
+		ActiveModel:      "openrouter/deepseek/deepseek-v3.2",
+		Reason:           string(providers.FailoverRateLimit),
+		ExpiresAt:        time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("setAutoModelSelection() error = %v", err)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/show model",
+	})
+	if !strings.Contains(resp, "Current Model: deepseek (Provider: openrouter)") {
+		t.Fatalf("unexpected /show model reply with sticky fallback: %q", resp)
+	}
+}
+
+func TestProcessMessage_ShowModelDuringOverrideDoesNotClearStickyAutoFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				ModelFallbacks:    []string{"deepseek"},
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   "https://local.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIBase:   "https://remote.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+	route, _, err := al.resolveMessageRoute(bus.InboundMessage{Context: inbound})
+	if err != nil {
+		t.Fatalf("resolveMessageRoute() error = %v", err)
+	}
+	allocation := al.allocateRouteSession(route, bus.InboundMessage{Context: inbound})
+	if err := al.setAutoModelSelection(allocation.SessionKey, state.AutoModelSelection{
+		SelectedProvider: "openai",
+		SelectedModel:    "openai/gpt-5.4",
+		ActiveProvider:   "openrouter",
+		ActiveModel:      "openrouter/deepseek/deepseek-v3.2",
+		Reason:           string(providers.FailoverRateLimit),
+		ExpiresAt:        time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("setAutoModelSelection() error = %v", err)
+	}
+
+	if err := al.setSessionModelOverride(allocation.SessionKey, "deepseek"); err != nil {
+		t.Fatalf("setSessionModelOverride() error = %v", err)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/show model",
+	})
+	if !strings.Contains(resp, "Current Model: deepseek (Provider: openrouter)") {
+		t.Fatalf("unexpected /show model reply during override: %q", resp)
+	}
+
+	sel, ok := al.getAutoModelSelection(allocation.SessionKey)
+	if !ok {
+		t.Fatalf("auto fallback selection was cleared by read-only model inspection")
+	}
+	if sel.ActiveProvider != "openrouter" || sel.ActiveModel != "openrouter/deepseek/deepseek-v3.2" {
+		t.Fatalf("unexpected sticky auto-fallback state after /show model: %#v", sel)
 	}
 }
 

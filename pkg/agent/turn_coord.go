@@ -87,6 +87,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	if err != nil {
 		return turnResult{}, err
 	}
+	defer func() {
+		if exec != nil && exec.model.cleanup != nil {
+			exec.model.cleanup()
+		}
+	}()
 
 	// Convenience references to exec fields used throughout the turn loop.
 	messages := exec.messages
@@ -437,7 +442,12 @@ func (al *AgentLoop) askSideQuestion(
 	maxMediaSize := al.GetConfig().Agents.Defaults.GetMaxMediaSize()
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
-	selection := al.selectCandidates(agent, question, messages, opts.ModelBinding.RouteSessionKey)
+	selection := al.selectCandidates(
+		effectiveExecutionStateForAgent(agent),
+		question,
+		messages,
+		opts.ModelBinding.RouteSessionKey,
+	)
 	activeCandidates, activeModel, usedLight := selection.activeCandidates, selection.model, selection.usedLight
 	selectedModelName := sideQuestionModelName(agent, usedLight)
 
