@@ -160,7 +160,9 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		rules = append(
 			rules,
 			fmt.Sprintf(
-				"**Memory** - When interacting with me if something seems memorable, update %s/memory/MEMORY.md",
+				"**Memory** - When interacting with me if something seems memorable, update the appropriate workspace memory file: durable/project facts in %s/memory/MEMORY.md, user/operator preferences in %s/memory/USER_MEMORY.md, and short-term notes in %s/memory/YYYY/MM/YYYY-MM-DD.md",
+				workspacePath,
+				workspacePath,
 				workspacePath,
 			),
 			"**Task boards** - For composite workflows that call multiple agents or run multiple child steps, use task_board to create one stable board_id and planned steps. For serious workflows, include task_packet on the board root to capture objective, scope, acceptance criteria, verification plan, resources, reporting, and recovery policy; keep domain-specific fields under coding/media/research/nutrition. Pass that board_id, stable step_id values, readable step_title values, and depends_on to every delegate/spawn call. For synchronous delegate steps that may stall, set timeout_seconds explicitly. Use task_board next to plan the next runnable step; use task_board_execute_next only when it is available and you intentionally want to run one ready delegate-backed step. Use task_board results or task_status with board_id to inspect the workflow. Keep board state truthful: update local/manual/MCP-only steps when they finish, and never tell the user that work is still running or queued unless a real async handle exists (spawn, delegate, cron/job, async tool) or the next tool call will execute in the same turn.",
@@ -178,7 +180,8 @@ You are picoclaw, a helpful AI assistant.
 ## Workspace
 Your workspace is at: %s
 - Memory: %s/memory/MEMORY.md
-- Daily Notes: %s/memory/YYYYMM/YYYYMMDD.md
+- User Memory: %s/memory/USER_MEMORY.md
+- Daily Notes: %s/memory/YYYY/MM/YYYY-MM-DD.md
 - Skills: %s/skills/{skill-name}/SKILL.md
 - Temporary files: %s
 
@@ -187,6 +190,7 @@ Your workspace is at: %s
 %s
 `,
 		version,
+		workspacePath,
 		workspacePath,
 		workspacePath,
 		workspacePath,
@@ -537,7 +541,7 @@ func (cb *ContextBuilder) InvalidateCache() {
 func (cb *ContextBuilder) sourcePaths() []string {
 	agentDefinition := cb.LoadAgentDefinition()
 	paths := agentDefinition.trackedPaths(cb.workspace)
-	paths = append(paths, filepath.Join(cb.workspace, "memory", "MEMORY.md"))
+	paths = append(paths, cb.memory.TrackedPaths()...)
 	return uniquePaths(paths)
 }
 

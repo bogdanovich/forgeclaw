@@ -18,11 +18,13 @@ import (
 
 // MemoryStore manages persistent memory for the agent.
 // - Long-term memory: memory/MEMORY.md
-// - Daily notes: memory/YYYYMM/YYYYMMDD.md
+// - User memory: memory/USER_MEMORY.md
+// - Daily notes: memory/YYYY/MM/YYYY-MM-DD.md
 type MemoryStore struct {
-	workspace  string
-	memoryDir  string
-	memoryFile string
+	workspace      string
+	memoryDir      string
+	memoryFile     string
+	userMemoryFile string
 }
 
 // NewMemoryStore creates a new MemoryStore with the given workspace path.
@@ -30,23 +32,54 @@ type MemoryStore struct {
 func NewMemoryStore(workspace string) *MemoryStore {
 	memoryDir := filepath.Join(workspace, "memory")
 	memoryFile := filepath.Join(memoryDir, "MEMORY.md")
+	userMemoryFile := filepath.Join(memoryDir, "USER_MEMORY.md")
 
 	// Ensure memory directory exists
 	os.MkdirAll(memoryDir, 0o755)
 
 	return &MemoryStore{
-		workspace:  workspace,
-		memoryDir:  memoryDir,
-		memoryFile: memoryFile,
+		workspace:      workspace,
+		memoryDir:      memoryDir,
+		memoryFile:     memoryFile,
+		userMemoryFile: userMemoryFile,
 	}
 }
 
-// getTodayFile returns the path to today's daily note file (memory/YYYYMM/YYYYMMDD.md).
+// getTodayFile returns the path to today's canonical daily note file
+// (memory/YYYY/MM/YYYY-MM-DD.md).
 func (ms *MemoryStore) getTodayFile() string {
-	today := time.Now().Format("20060102") // YYYYMMDD
-	monthDir := today[:6]                  // YYYYMM
-	filePath := filepath.Join(ms.memoryDir, monthDir, today+".md")
-	return filePath
+	return ms.dailyFileForDate(time.Now())
+}
+
+func (ms *MemoryStore) dailyFileForDate(date time.Time) string {
+	yearDir := date.Format("2006")
+	monthDir := date.Format("01")
+	return filepath.Join(ms.memoryDir, yearDir, monthDir, date.Format("2006-01-02")+".md")
+}
+
+func (ms *MemoryStore) legacyDailyFileForDate(date time.Time) string {
+	dateStr := date.Format("20060102") // YYYYMMDD
+	monthDir := dateStr[:6]            // YYYYMM
+	return filepath.Join(ms.memoryDir, monthDir, dateStr+".md")
+}
+
+func (ms *MemoryStore) recentDailyCandidatePaths(days int) []string {
+	paths := make([]string, 0, days*2)
+	for i := range days {
+		date := time.Now().AddDate(0, 0, -i)
+		paths = append(paths, ms.dailyFileForDate(date), ms.legacyDailyFileForDate(date))
+	}
+	return paths
+}
+
+// TrackedPaths returns memory files whose changes should invalidate prompt
+// cache baselines.
+func (ms *MemoryStore) TrackedPaths() []string {
+	recent := ms.recentDailyCandidatePaths(3)
+	paths := make([]string, 0, 2+len(recent))
+	paths = append(paths, ms.memoryFile, ms.userMemoryFile)
+	paths = append(paths, recent...)
+	return paths
 }
 
 // ReadLongTerm reads the long-term memory (MEMORY.md).
@@ -63,6 +96,20 @@ func (ms *MemoryStore) WriteLongTerm(content string) error {
 	// Use unified atomic write utility with explicit sync for flash storage reliability.
 	// Using 0o600 (owner read/write only) for secure default permissions.
 	return fileutil.WriteFileAtomic(ms.memoryFile, []byte(content), 0o600)
+}
+
+// ReadUserMemory reads mutable user/operator memory (USER_MEMORY.md).
+// Returns empty string if the file doesn't exist.
+func (ms *MemoryStore) ReadUserMemory() string {
+	if data, err := os.ReadFile(ms.userMemoryFile); err == nil {
+		return string(data)
+	}
+	return ""
+}
+
+// WriteUserMemory writes content to USER_MEMORY.md.
+func (ms *MemoryStore) WriteUserMemory(content string) error {
+	return fileutil.WriteFileAtomic(ms.userMemoryFile, []byte(content), 0o600)
 }
 
 // ReadToday reads today's daily note.
@@ -113,11 +160,12 @@ func (ms *MemoryStore) GetRecentDailyNotes(days int) string {
 
 	for i := range days {
 		date := time.Now().AddDate(0, 0, -i)
-		dateStr := date.Format("20060102") // YYYYMMDD
-		monthDir := dateStr[:6]            // YYYYMM
-		filePath := filepath.Join(ms.memoryDir, monthDir, dateStr+".md")
-
-		if data, err := os.ReadFile(filePath); err == nil {
+		filePath := ms.dailyFileForDate(date)
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			data, err = os.ReadFile(ms.legacyDailyFileForDate(date))
+		}
+		if err == nil {
 			if !first {
 				sb.WriteString("\n\n---\n\n")
 			}
@@ -133,9 +181,10 @@ func (ms *MemoryStore) GetRecentDailyNotes(days int) string {
 // Includes long-term memory and recent daily notes.
 func (ms *MemoryStore) GetMemoryContext() string {
 	longTerm := ms.ReadLongTerm()
+	userMemory := ms.ReadUserMemory()
 	recentNotes := ms.GetRecentDailyNotes(3)
 
-	if longTerm == "" && recentNotes == "" {
+	if longTerm == "" && userMemory == "" && recentNotes == "" {
 		return ""
 	}
 
@@ -146,8 +195,16 @@ func (ms *MemoryStore) GetMemoryContext() string {
 		sb.WriteString(longTerm)
 	}
 
+	if userMemory != "" {
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n---\n\n")
+		}
+		sb.WriteString("## User Memory\n\n")
+		sb.WriteString(userMemory)
+	}
+
 	if recentNotes != "" {
-		if longTerm != "" {
+		if sb.Len() > 0 {
 			sb.WriteString("\n\n---\n\n")
 		}
 		sb.WriteString("## Recent Daily Notes\n\n")

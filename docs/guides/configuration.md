@@ -56,7 +56,7 @@ PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspa
 ```
 ~/.picoclaw/workspace/
 ├── sessions/          # Conversation sessions and history
-├── memory/           # Long-term memory (MEMORY.md)
+├── memory/           # Workspace memory (MEMORY.md, USER_MEMORY.md, daily notes)
 ├── state/            # Persistent state (last channel, durable ingress spool, etc.)
 ├── cron/             # Scheduled jobs database
 ├── skills/           # Custom skills
@@ -67,7 +67,7 @@ PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspa
 └── USER.md           # User preferences
 ```
 
-> **Note:** Changes to `AGENT.md`, `SOUL.md`, `USER.md` and `memory/MEMORY.md` are automatically detected at runtime via file modification time (mtime) tracking. You do **not** need to restart the gateway after editing these files — the agent picks up the new content on the next request.
+> **Note:** Changes to `AGENT.md`, `SOUL.md`, `USER.md`, workspace memory files like `memory/MEMORY.md` and `memory/USER_MEMORY.md`, and recent daily notes are automatically detected at runtime via file modification time (mtime) tracking. You do **not** need to restart the gateway after editing these files — the agent picks up the new content on the next request.
 
 ### Agent Self-Evolution
 

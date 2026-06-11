@@ -6,6 +6,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Async Task Delivery](async-task-delivery.md): durable task/completion/delivery model, task boards, deliverables, and current source-of-truth boundaries.
 - [SubTurn Mechanism](subturn.md): sub-agent coordination, concurrency control, and lifecycle handling.
 - [Session System](session-system.md): session scope allocation, JSONL persistence, alias compatibility, and migration.
+- [Memory System](memory-system.md): target layered memory architecture, desired behavior, and phased roadmap.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing.
 - [Durable Ingress](durable-ingress.md): normalized inbound message spool and restart replay semantics.
 - [Runtime Events](runtime-events.md): runtime event envelope, centralized event logging, filters, and examples.
