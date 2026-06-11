@@ -99,8 +99,6 @@ Use 'command' to execute shell commands directly.`
 }
 
 // Parameters returns the tool parameters schema
-//
-//nolint:dupl // Tool parameter schemas intentionally use similar JSON-schema map literals.
 func (t *CronTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
