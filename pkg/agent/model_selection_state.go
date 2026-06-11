@@ -185,6 +185,21 @@ func (al *AgentLoop) applyStickyAutoFallback(
 	decision modelSelectionDecision,
 	routeSessionKey string,
 ) modelSelectionDecision {
+	return al.applyStickyAutoFallbackWithMode(decision, routeSessionKey, true)
+}
+
+func (al *AgentLoop) previewStickyAutoFallback(
+	decision modelSelectionDecision,
+	routeSessionKey string,
+) modelSelectionDecision {
+	return al.applyStickyAutoFallbackWithMode(decision, routeSessionKey, false)
+}
+
+func (al *AgentLoop) applyStickyAutoFallbackWithMode(
+	decision modelSelectionDecision,
+	routeSessionKey string,
+	mutate bool,
+) modelSelectionDecision {
 	if strings.TrimSpace(routeSessionKey) == "" || len(decision.selectedCandidates) == 0 {
 		return decision
 	}
@@ -194,17 +209,23 @@ func (al *AgentLoop) applyStickyAutoFallback(
 		return decision
 	}
 	if sel.ExpiresAt.IsZero() || time.Now().After(sel.ExpiresAt) {
-		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "expired")
+		if mutate {
+			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "expired")
+		}
 		return decision
 	}
 	if !selectedModelMatchesSelection(decision.selectedCandidates[0], sel) {
-		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "selected_model_mismatch")
+		if mutate {
+			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "selected_model_mismatch")
+		}
 		return decision
 	}
 
 	reordered, matched := reorderCandidatesForAutoFallback(decision.activeCandidates, sel)
 	if !matched {
-		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "active_candidate_missing")
+		if mutate {
+			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "active_candidate_missing")
+		}
 		return decision
 	}
 

@@ -4515,6 +4515,90 @@ func TestProcessMessage_ShowModelReflectsStickyAutoFallback(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_ShowModelDuringOverrideDoesNotClearStickyAutoFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				ModelFallbacks:    []string{"deepseek"},
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   "https://local.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIBase:   "https://remote.example.invalid",
+				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+	route, _, err := al.resolveMessageRoute(bus.InboundMessage{Context: inbound})
+	if err != nil {
+		t.Fatalf("resolveMessageRoute() error = %v", err)
+	}
+	allocation := al.allocateRouteSession(route, bus.InboundMessage{Context: inbound})
+	if err := al.setAutoModelSelection(allocation.SessionKey, state.AutoModelSelection{
+		SelectedProvider: "openai",
+		SelectedModel:    "openai/gpt-5.4",
+		ActiveProvider:   "openrouter",
+		ActiveModel:      "openrouter/deepseek/deepseek-v3.2",
+		Reason:           string(providers.FailoverRateLimit),
+		ExpiresAt:        time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("setAutoModelSelection() error = %v", err)
+	}
+
+	if err := al.setSessionModelOverride(allocation.SessionKey, "deepseek"); err != nil {
+		t.Fatalf("setSessionModelOverride() error = %v", err)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/show model",
+	})
+	if !strings.Contains(resp, "Current Model: deepseek (Provider: openrouter)") {
+		t.Fatalf("unexpected /show model reply during override: %q", resp)
+	}
+
+	sel, ok := al.getAutoModelSelection(allocation.SessionKey)
+	if !ok {
+		t.Fatalf("auto fallback selection was cleared by read-only model inspection")
+	}
+	if sel.ActiveProvider != "openrouter" || sel.ActiveModel != "openrouter/deepseek/deepseek-v3.2" {
+		t.Fatalf("unexpected sticky auto-fallback state after /show model: %#v", sel)
+	}
+}
+
 func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
