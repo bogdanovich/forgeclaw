@@ -22,6 +22,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/isolation"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/tools/shellguard"
 	workspaceutil "github.com/sipeed/picoclaw/pkg/workspace"
 )
@@ -153,7 +154,9 @@ func NewExecToolWithConfig(
 				denyPatterns = append(denyPatterns, windowsDenyPatterns...)
 			}
 			if len(execConfig.CustomDenyPatterns) > 0 {
-				fmt.Printf("Using custom deny patterns: %v\n", execConfig.CustomDenyPatterns)
+				logger.InfoCF("tools", "using custom deny patterns", map[string]any{
+					"patterns": execConfig.CustomDenyPatterns,
+				})
 				for _, pattern := range execConfig.CustomDenyPatterns {
 					re, err := regexp.Compile(pattern)
 					if err != nil {
@@ -164,7 +167,7 @@ func NewExecToolWithConfig(
 			}
 		} else {
 			// If deny patterns are disabled, we won't add any patterns, allowing all commands.
-			fmt.Println("Warning: deny patterns are disabled. All commands will be allowed.")
+			logger.WarnCF("tools", "deny patterns are disabled, all commands will be allowed", nil)
 		}
 		for _, pattern := range execConfig.CustomAllowPatterns {
 			re, err := regexp.Compile(pattern)
