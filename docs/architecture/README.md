@@ -3,6 +3,7 @@
 Internal architecture notes for major runtime mechanisms and subsystem design.
 
 - [Steering](steering.md): injecting messages into a running agent loop between tool calls.
+- [Async Task Delivery](async-task-delivery.md): durable task/completion/delivery model, task boards, deliverables, and current source-of-truth boundaries.
 - [SubTurn Mechanism](subturn.md): sub-agent coordination, concurrency control, and lifecycle handling.
 - [Session System](session-system.md): session scope allocation, JSONL persistence, alias compatibility, and migration.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing.

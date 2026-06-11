@@ -9,6 +9,50 @@ PicoClaw background work now uses an explicit task/completion/delivery shape:
 5. Parent synthesis calls `processAsyncCompletion` directly. It must not publish a synthetic `system` inbound message.
 6. The task registry records delivery status, completion id, delivery timestamp, and delivery error if one occurs.
 
+## Current Ownership Boundaries
+
+The runtime now has three distinct delivery paths, and each has a clear owner:
+
+1. Sync tool delivery during the turn
+   - Owner: the sync tool loop in `pipeline_execute.go`
+   - Scope: normal tool execution and hook-respond tool results
+   - Source of truth:
+     - `ToolResult.ResponseHandled`
+     - explicit delivery outcome (`none`, `direct`, `queued`)
+   - Current invariant:
+     - `direct` delivery may terminate the turn as fully handled
+     - queued media/text may still require a follow-up LLM turn depending on the tool path
+
+2. Final-turn delivery after the loop
+   - Owner: `agent_outbound.go`
+   - Scope: final answer text and final completion media after the turn result is known
+   - Source of truth:
+     - final `turnResult`
+     - same delivery helpers used for media/text dispatch
+   - Current invariant:
+     - final media prefers the normal tool-style delivery path
+     - if media delivery does not land, the runtime falls back to final text
+
+3. Async completion delivery after child/background work
+   - Owner: `delivery_coordinator.go`
+   - Scope: spawn/delegate/async tool completions
+   - Source of truth:
+     - `AsyncCompletionInput`
+     - registry delivery status
+     - delivery mode: `user_only`, `parent_only`, `user_and_parent`
+   - Current invariant:
+     - duplicate user/media/parent delivery is suppressed durably
+     - parent synthesis never re-enters through synthetic `system` inbound messages
+
+This is not yet a single fully unified delivery coordinator for every runtime
+path. The current state is intentionally incremental:
+
+- async completion policy is centrally coordinated
+- sync tool and final-turn delivery now share more helper logic and explicit
+  delivery outcomes
+- legacy parallel policy branches are being removed step by step instead of via
+  one large rewrite
+
 ## Deliverables
 
 `ToolResult` separates three output channels:
@@ -39,6 +83,18 @@ Legacy child-run `Completion` remains supported and is mirrored into
 New status/API consumers should treat `Deliverable` as the source of truth for
 produced text and artifacts. `Completion` is a legacy child-run handoff payload
 and should not be extended with new artifact semantics.
+
+Current contract summary:
+
+- `deliverable`
+  - durable ownership payload
+  - source of truth for produced text/artifacts in registry/status/board views
+- `completion`
+  - compatibility adapter for older child-run handoff paths
+  - may still be persisted/read, but should not gain new semantics
+- final chat wording
+  - a projection for users
+  - must not be parsed by runtimes as task state
 
 Migration status:
 
@@ -104,6 +160,15 @@ The event stream is persisted in the same `state/task_registry.json` snapshot
 as `tasks`. `Record` remains the compatibility API and is still what most tools
 read. New consumers that care about auditability, idempotency, or recovery
 should prefer events and treat records as a projection.
+
+Current source-of-truth rule:
+
+- audit/debug/recovery
+  - prefer `TaskEvent`
+- task status, board views, tool/UI compatibility
+  - prefer normalized `Record`
+- user-facing prose
+  - never treat chat text as canonical lifecycle state
 
 Migration TODO:
 
@@ -192,6 +257,17 @@ delegate-backed step from the `task_board next` plan. It does not auto-run
 semantics, and it does not execute manual/local steps. For those cases, use
 `task_board next` to get the plan and then call the appropriate tool explicitly.
 
+Current task-board role:
+
+- durable workflow grouping and inspection
+- explicit step planning and dependency visibility
+- optional typed workflow contract via `task_packet`
+- conservative execution bridge for delegate-backed steps
+
+Task boards are intentionally not yet a full autonomous planner/executor. They
+provide durable workflow structure first, then opt-in execution primitives on
+top. That keeps orchestration state explicit and reviewable.
+
 `task_board list` also returns an effective board view derived from the raw
 records:
 
@@ -212,11 +288,23 @@ that it started a long time ago.
 
 `spawn_status` is kept as a compatibility/debug view for tasks started specifically by the `spawn` tool. It is backed by the same durable registry but intentionally remains spawn-only.
 
+Status tool rule of thumb:
+
+- use `task_status` for the durable cross-runtime view
+- use `task_board` for workflow/step inspection and results
+- use `spawn_status` only for spawn-specific debugging or backward compatibility
+
 ## Legacy System Messages
 
 Older async completion paths used synthetic inbound messages with `channel=system` and `kind=async_completion`. That path is now an adapter only, so queued or stored legacy messages can still be processed.
 
 New producers must not enqueue async completions through `PublishInbound(system)`. They should use `AsyncCompletionInput` and the delivery coordinator instead.
+
+Current legacy boundary:
+
+- reading legacy synthetic async completion messages is still supported
+- producing new synthetic async completion messages is not allowed
+- extending legacy `completion` payloads with new semantics is not allowed
 
 ## Runtime Smoke Checklist
 
