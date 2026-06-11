@@ -309,7 +309,10 @@ func TestTurnProfile_ContextCommandUsesEnabledTurnProfile(t *testing.T) {
 			RouteSessionKey: sessionKey,
 		},
 	}
-	rt := al.buildCommandsRuntime(context.Background(), agent, &opts)
+	rt := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+	}, &opts)
 	if rt == nil || rt.GetContextStats == nil {
 		t.Fatal("expected command runtime with context stats")
 	}
