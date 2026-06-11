@@ -4278,7 +4278,6 @@ func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 				ModelName: "disabled-model",
 				Model:     "openai/disabled-model",
 				Provider:  "openai",
-				APIKeys:   config.SimpleSecureStrings("test-key"),
 				Enabled:   false,
 			},
 		},
@@ -4344,7 +4343,6 @@ func TestProcessMessage_SwitchModelRejectsDisabledAlias(t *testing.T) {
 				ModelName: "disabled-model",
 				Model:     "openai/disabled-model",
 				Provider:  "openai",
-				APIKeys:   config.SimpleSecureStrings("test-key"),
 				Enabled:   false,
 			},
 		},
@@ -4369,6 +4367,124 @@ func TestProcessMessage_SwitchModelRejectsDisabledAlias(t *testing.T) {
 	}
 	if provider.calls != 0 {
 		t.Fatalf("LLM should not be called for rejected switch, calls=%d", provider.calls)
+	}
+}
+
+func TestProcessMessage_SwitchModelAcceptsInferredEnabledAlias(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "local",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "local",
+				Model:     "openai/local-model",
+				Provider:  "openai",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			ChatType: "direct",
+			SenderID: "telegram:123",
+		},
+		Content: "/switch model to deepseek",
+	})
+	if !strings.Contains(resp, "Switched model from local to deepseek") {
+		t.Fatalf("unexpected inferred-enabled switch reply: %q", resp)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("LLM should not be called for /switch model, calls=%d", provider.calls)
+	}
+}
+
+func TestProcessMessage_ListModelsShowsInferredEnabledAlias(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "local-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "local-model",
+				Model:     "openai/local-model",
+				Provider:  "openai",
+			},
+			{
+				ModelName: "api-key-alias",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+			},
+			{
+				ModelName: "disabled-model",
+				Model:     "openai/disabled-model",
+				Provider:  "openai",
+				Enabled:   false,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			ChatType: "direct",
+			SenderID: "telegram:123",
+		},
+		Content: "/list models",
+	})
+	if !strings.Contains(resp, "- local-model (current)") {
+		t.Fatalf("local-model should be listed via legacy inferred enablement: %q", resp)
+	}
+	if !strings.Contains(resp, "- api-key-alias") {
+		t.Fatalf("api-key-alias should be listed via API key inferred enablement: %q", resp)
+	}
+	if strings.Contains(resp, "disabled-model") {
+		t.Fatalf("disabled model should not be listed: %q", resp)
 	}
 }
 

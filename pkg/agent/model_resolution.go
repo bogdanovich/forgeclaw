@@ -238,7 +238,7 @@ func resolvedSwitchableModelConfig(cfg *config.Config, modelName string) (*confi
 	}
 	var matches []*config.ModelConfig
 	for _, modelCfg := range cfg.ModelList {
-		if modelCfg == nil || modelCfg.IsVirtual() || !modelCfg.Enabled {
+		if modelCfg == nil || modelCfg.IsVirtual() || !modelCfg.IsEffectivelyEnabled() {
 			continue
 		}
 		if modelCfg.ModelName == modelName {
