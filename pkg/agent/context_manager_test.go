@@ -780,3 +780,203 @@ func newCMTestAgentLoop(cfg *config.Config) *AgentLoop {
 	msgBus := bus.NewMessageBus()
 	return NewAgentLoop(cfg, msgBus, &simpleMockProvider{response: "test"})
 }
+
+func TestComputeAssembledContextUsage_UsesAssembledHistoryAndSummaryReserve(t *testing.T) {
+	cfg := testConfig(t)
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	agent.Sessions.AddFullMessage("ctx-session", providers.Message{
+		Role:    "user",
+		Content: "hello",
+	})
+	agent.Sessions.SetSummary("ctx-session", "brief summary")
+
+	got, gotCount, fitsBudget := computeAssembledContextUsage(
+		context.Background(),
+		cfg,
+		agent,
+		al.contextManager,
+		processOptions{},
+		"ctx-session",
+	)
+	resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
+		SessionKey:    "ctx-session",
+		Budget:        agent.ContextWindow,
+		MaxTokens:     agent.MaxTokens,
+		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, processOptions{}, ""),
+	})
+	if err != nil || resp == nil {
+		t.Fatalf("assemble failed: %v", err)
+	}
+	expectedHistoryTokens := 0
+	for _, msg := range resp.History {
+		expectedHistoryTokens += EstimateMessageTokens(msg)
+	}
+	expectedUsed := expectedHistoryTokens +
+		estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, processOptions{}, resp.Summary)
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
+	if !fitsBudget {
+		t.Fatal("expected assembled usage estimate to fit budget")
+	}
+	if got.UsedTokens != expectedUsed {
+		t.Fatalf("assembled used tokens = %d, want %d", got.UsedTokens, expectedUsed)
+	}
+	if got.HistoryTokens != expectedHistoryTokens {
+		t.Fatalf("assembled history tokens = %d, want %d", got.HistoryTokens, expectedHistoryTokens)
+	}
+	if gotCount != len(resp.History) {
+		t.Fatalf("assembled history count = %d, want %d", gotCount, len(resp.History))
+	}
+}
+
+func TestComputeAssembledContextUsage_ReportsOverBudgetPrompt(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Agents.Defaults.MaxTokens = 64
+	cfg.Agents.Defaults.ContextWindow = 96
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	agent.Sessions.AddFullMessage("ctx-tight", providers.Message{Role: "user", Content: "hello"})
+
+	got, _, fitsBudget := computeAssembledContextUsage(
+		context.Background(),
+		cfg,
+		agent,
+		al.contextManager,
+		processOptions{},
+		"ctx-tight",
+	)
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
+	if fitsBudget {
+		t.Fatal("expected assembled usage to report over-budget prompt")
+	}
+	if got.UsedTokens <= got.CompressAtTokens {
+		t.Fatalf("assembled used tokens = %d, want > compressAt %d", got.UsedTokens, got.CompressAtTokens)
+	}
+}
+
+func TestComputeAssembledContextUsage_NoHistorySkipsSessionAssembly(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Agents.Defaults.MaxTokens = 64
+	cfg.Agents.Defaults.ContextWindow = 5000
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	for i := 0; i < 80; i++ {
+		agent.Sessions.AddFullMessage("ctx-nohistory", providers.Message{
+			Role:    "user",
+			Content: strings.Repeat("history ", 80),
+		})
+	}
+
+	got, gotCount, fitsBudget := computeAssembledContextUsage(
+		context.Background(),
+		cfg,
+		agent,
+		al.contextManager,
+		processOptions{NoHistory: true},
+		"ctx-nohistory",
+	)
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
+	if gotCount != 0 {
+		t.Fatalf("assembled history count = %d, want 0 when no-history skips session assembly", gotCount)
+	}
+	if got.HistoryTokens != 0 {
+		t.Fatalf("assembled history tokens = %d, want 0 when no-history skips session assembly", got.HistoryTokens)
+	}
+	if fitsBudget != (got.UsedTokens <= got.CompressAtTokens) {
+		t.Fatalf(
+			"assembled fitsBudget = %t, want derived comparison %t",
+			fitsBudget,
+			got.UsedTokens <= got.CompressAtTokens,
+		)
+	}
+}
+
+func TestComputeAssembledContextUsage_AllowsNilTools(t *testing.T) {
+	cfg := testConfig(t)
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	agent.Tools = nil
+	agent.Sessions.AddFullMessage("ctx-nil-tools", providers.Message{
+		Role:    "user",
+		Content: "hello",
+	})
+
+	got, gotCount, fitsBudget := computeAssembledContextUsage(
+		context.Background(),
+		cfg,
+		agent,
+		al.contextManager,
+		processOptions{},
+		"ctx-nil-tools",
+	)
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
+	if !fitsBudget {
+		t.Fatal("expected assembled usage estimate to fit budget without tools")
+	}
+	if gotCount != 1 {
+		t.Fatalf("assembled history count = %d, want 1", gotCount)
+	}
+	if got.HistoryTokens <= 0 {
+		t.Fatalf("assembled history tokens = %d, want > 0", got.HistoryTokens)
+	}
+	if got.UsedTokens < got.HistoryTokens {
+		t.Fatalf("assembled used tokens = %d, want >= history tokens %d", got.UsedTokens, got.HistoryTokens)
+	}
+}
+
+func TestEstimateNonHistoryPromptReserveForProcessOptions_PreservesSystemWhenToolsNil(t *testing.T) {
+	cfg := testConfig(t)
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	withTools := estimateNonHistoryPromptReserveForProcessOptions(
+		cfg,
+		agent,
+		processOptions{},
+		"summary text",
+	)
+	if withTools <= 0 {
+		t.Fatalf("reserve with tools = %d, want > 0", withTools)
+	}
+
+	agent.Tools = nil
+	withoutTools := estimateNonHistoryPromptReserveForProcessOptions(
+		cfg,
+		agent,
+		processOptions{},
+		"summary text",
+	)
+	if withoutTools <= 0 {
+		t.Fatalf("reserve without tools = %d, want > 0 from system/context tokens", withoutTools)
+	}
+	if withoutTools >= withTools {
+		t.Fatalf("reserve without tools = %d, want < reserve with tools %d", withoutTools, withTools)
+	}
+}

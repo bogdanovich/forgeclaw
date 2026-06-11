@@ -278,6 +278,189 @@ func TestTurnProfile_BtwCommandUsesEnabledTurnProfile(t *testing.T) {
 	}
 }
 
+func TestTurnProfile_ContextCommandUsesEnabledTurnProfile(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				TurnProfile: config.TurnProfileConfig{
+					Enabled: true,
+					History: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+				},
+			},
+		},
+	}
+	al := newTurnProfileAgentLoop(t, cfg, &turnProfileCaptureProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := "context-profile"
+	agent.Sessions.AddMessage(sessionKey, "user", "old history")
+
+	opts := processOptions{
+		SessionKey: sessionKey,
+		Dispatch: DispatchRequest{
+			SessionKey:      sessionKey,
+			RouteSessionKey: sessionKey,
+		},
+	}
+	rt := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+	}, &opts)
+	if rt == nil || rt.GetContextStats == nil {
+		t.Fatal("expected command runtime with context stats")
+	}
+
+	stats := rt.GetContextStats()
+	if stats == nil {
+		t.Fatal("expected context stats")
+	}
+	if stats.StoredMessageCount != 1 {
+		t.Fatalf("stored message count = %d, want 1", stats.StoredMessageCount)
+	}
+	if stats.AssembledMessageCount != 0 {
+		t.Fatalf(
+			"assembled message count = %d, want 0 when turn profile disables history",
+			stats.AssembledMessageCount,
+		)
+	}
+	if stats.AssembledHistoryTokens != 0 {
+		t.Fatalf(
+			"assembled history tokens = %d, want 0 when turn profile disables history",
+			stats.AssembledHistoryTokens,
+		)
+	}
+}
+
+func TestTurnProfile_ContextCommandUsesEffectiveBindingProvider(t *testing.T) {
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			Web: config.WebToolsConfig{
+				ToolConfig:   config.ToolConfig{Enabled: true},
+				PreferNative: true,
+			},
+		},
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				TurnProfile: config.TurnProfileConfig{
+					Enabled:      true,
+					History:      config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					SystemPrompt: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Skills:       config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Tools: config.TurnProfileBlock{
+						Mode:  config.TurnProfileModeCustom,
+						Allow: []string{"web_search"},
+					},
+				},
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &plainProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := "context-binding-provider"
+	opts := processOptions{
+		SessionKey: sessionKey,
+		Dispatch: DispatchRequest{
+			SessionKey:      sessionKey,
+			RouteSessionKey: sessionKey,
+		},
+	}
+
+	rtPlain := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+	}, &opts)
+	statsPlain := rtPlain.GetContextStats()
+	if statsPlain == nil {
+		t.Fatal("expected plain binding context stats")
+	}
+
+	rtNative := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+		Execution: effectiveExecutionState{
+			Provider: &nativeSearchProvider{supported: true},
+		},
+	}, &opts)
+	statsNative := rtNative.GetContextStats()
+	if statsNative == nil {
+		t.Fatal("expected native binding context stats")
+	}
+	if statsNative.AssembledUsedTokens <= statsPlain.AssembledUsedTokens {
+		t.Fatalf(
+			"native binding assembled tokens = %d, want > plain binding %d",
+			statsNative.AssembledUsedTokens,
+			statsPlain.AssembledUsedTokens,
+		)
+	}
+}
+
+func TestTurnProfile_ContextCommandAllowsNilToolsWithProfile(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				TurnProfile: config.TurnProfileConfig{
+					Enabled:      true,
+					History:      config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					SystemPrompt: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Tools:        config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+				},
+			},
+		},
+	}
+	al := newTurnProfileAgentLoop(t, cfg, &turnProfileCaptureProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	agent.Tools = nil
+	sessionKey := "context-profile-nil-tools"
+	opts := processOptions{
+		SessionKey: sessionKey,
+		Dispatch: DispatchRequest{
+			SessionKey:      sessionKey,
+			RouteSessionKey: sessionKey,
+		},
+	}
+	rt := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+	}, &opts)
+	if rt == nil || rt.GetContextStats == nil {
+		t.Fatal("expected command runtime with context stats")
+	}
+
+	stats := rt.GetContextStats()
+	if stats == nil {
+		t.Fatal("expected context stats")
+	}
+	if stats.AssembledMessageCount != 0 {
+		t.Fatalf("assembled message count = %d, want 0", stats.AssembledMessageCount)
+	}
+	if stats.AssembledUsedTokens <= 0 {
+		t.Fatalf("assembled used tokens = %d, want > 0", stats.AssembledUsedTokens)
+	}
+}
+
 func TestTurnProfile_BtwCommandDoesNotAddToolFallbackWhenSystemPromptOff(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := &config.Config{
@@ -972,6 +1155,52 @@ func TestTurnProfile_SystemPromptOffAddsToolFallbackForNativeWebSearch(t *testin
 	}
 	if len(provider.messages) == 0 || provider.messages[0].Content != toolUseSystemPromptRule() {
 		t.Fatalf("native-search-only prompt = %#v, want tool fallback", provider.messages)
+	}
+}
+
+func TestPromptBuildRequestForProcessOptions_SystemPromptOffAddsToolFallbackForNativeWebSearch(t *testing.T) {
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			Web: config.WebToolsConfig{
+				ToolConfig:   config.ToolConfig{Enabled: true},
+				PreferNative: true,
+			},
+		},
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace: t.TempDir(),
+				ModelName: "test-model",
+				TurnProfile: config.TurnProfileConfig{
+					Enabled:      true,
+					SystemPrompt: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Skills:       config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Tools: config.TurnProfileBlock{
+						Mode:  config.TurnProfileModeCustom,
+						Allow: []string{"web_search"},
+					},
+				},
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &nativeSearchProvider{supported: true})
+	agent := al.GetRegistry().GetDefaultAgent()
+	opts, err := resolveTurnProfileOptions(cfg, processOptions{})
+	if err != nil {
+		t.Fatalf("resolveTurnProfileOptions() error = %v", err)
+	}
+
+	req := promptBuildRequestForProcessOptions(cfg, agent, opts, nil, "", "", nil)
+	if !req.SuppressDefaultSystemPrompt {
+		t.Fatal("expected default system prompt to be suppressed")
+	}
+	if !req.SuppressSkillContext {
+		t.Fatal("expected skill context to be suppressed")
+	}
+	if !req.ToolUseFallback {
+		t.Fatal("expected native-search-only process options prompt to enable tool fallback")
+	}
+	if req.SuppressToolUseRule {
+		t.Fatal("expected tool use rule to remain enabled when native web search is callable")
 	}
 }
 
