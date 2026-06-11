@@ -139,7 +139,6 @@ func (al *AgentLoop) buildCommandsRuntime(
 	cfg := al.GetConfig()
 	agent := modelBinding.WorkspaceAgent
 	workspaceAgent := modelBinding.WorkspaceAgent
-	execution := modelBinding.ExecutionState()
 	rt := &commands.Runtime{
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
@@ -303,23 +302,21 @@ func (al *AgentLoop) buildCommandsRuntime(
 		if workspaceAgent.ContextBuilder != nil {
 			rt.ListSkillNames = workspaceAgent.ContextBuilder.ListSkillNames
 		}
+		currentModelSelection := func() commands.ModelSelectionInfo {
+			return selectionInfoForInspection(al.buildModelSelectionInspection(cfg, modelBinding))
+		}
 		rt.GetModelInfo = func() (string, string) {
-			info := selectionInfoForBinding(
-				cfg,
-				al.buildSelectionBindingView(modelBinding),
-			)
+			info := currentModelSelection()
 			return info.EffectiveName, info.EffectiveProvider
 		}
 		rt.GetModelSelection = func() commands.ModelSelectionInfo {
-			return selectionInfoForBinding(
-				cfg,
-				al.buildSelectionBindingView(modelBinding),
-			)
+			return currentModelSelection()
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
 			if cfg == nil || len(cfg.ModelList) == 0 {
 				return nil
 			}
+			currentSelection := currentModelSelection()
 			type targetAggregate struct {
 				target commands.ConfiguredModelTarget
 				order  int
@@ -339,13 +336,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 					entry = &modelAggregate{
 						info: commands.ConfiguredModelInfo{
 							Name:    modelCfg.ModelName,
-							Current: modelCfg.ModelName == execution.Model,
+							Current: modelCfg.ModelName == currentSelection.EffectiveName,
 						},
 						order:   idx,
 						targets: map[string]*targetAggregate{},
 					}
 					modelsByName[modelCfg.ModelName] = entry
-				} else if modelCfg.ModelName == execution.Model {
+				} else if modelCfg.ModelName == currentSelection.EffectiveName {
 					entry.info.Current = true
 				}
 				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")
