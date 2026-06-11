@@ -145,6 +145,37 @@ func computeAssembledContextUsage(
 		return nil, 0, false
 	}
 
+	if opts.NoHistory {
+		usedTokens := estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, opts, "")
+		effectiveWindow := contextWindow - agent.MaxTokens
+		if effectiveWindow < 0 {
+			effectiveWindow = contextWindow
+		}
+
+		compressAt := effectiveWindow
+		summarizeAt := contextWindow * agent.SummarizeTokenPercent / 100
+		if summarizeAt <= 0 {
+			summarizeAt = compressAt
+		}
+
+		usedPercent := 0
+		if compressAt > 0 {
+			usedPercent = usedTokens * 100 / compressAt
+		}
+		if usedPercent > 100 {
+			usedPercent = 100
+		}
+
+		return &bus.ContextUsage{
+			UsedTokens:        usedTokens,
+			TotalTokens:       contextWindow,
+			HistoryTokens:     0,
+			CompressAtTokens:  compressAt,
+			SummarizeAtTokens: summarizeAt,
+			UsedPercent:       usedPercent,
+		}, 0, usedTokens <= compressAt
+	}
+
 	resp, err := cm.Assemble(ctx, &AssembleRequest{
 		SessionKey:    sessionKey,
 		Budget:        contextWindow,

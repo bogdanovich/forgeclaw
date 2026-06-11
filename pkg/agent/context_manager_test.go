@@ -866,7 +866,7 @@ func TestComputeAssembledContextUsage_ReportsOverBudgetPrompt(t *testing.T) {
 	}
 }
 
-func TestComputeAssembledContextUsage_NoHistoryAvoidsSyntheticTrim(t *testing.T) {
+func TestComputeAssembledContextUsage_NoHistorySkipsSessionAssembly(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Agents.Defaults.MaxTokens = 64
 	cfg.Agents.Defaults.ContextWindow = 5000
@@ -894,8 +894,11 @@ func TestComputeAssembledContextUsage_NoHistoryAvoidsSyntheticTrim(t *testing.T)
 	if got == nil {
 		t.Fatal("expected assembled usage result")
 	}
-	if gotCount != 80 {
-		t.Fatalf("assembled history count = %d, want assembled manager history without synthetic trim", gotCount)
+	if gotCount != 0 {
+		t.Fatalf("assembled history count = %d, want 0 when no-history skips session assembly", gotCount)
+	}
+	if got.HistoryTokens != 0 {
+		t.Fatalf("assembled history tokens = %d, want 0 when no-history skips session assembly", got.HistoryTokens)
 	}
 	if fitsBudget != (got.UsedTokens <= got.CompressAtTokens) {
 		t.Fatalf(
