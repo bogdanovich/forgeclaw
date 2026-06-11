@@ -47,7 +47,7 @@ func listCommand() Definition {
 					lines = append(
 						lines,
 						"",
-						"Use /model <name> for this conversation, or /switch model to <name> for the whole workspace.",
+						"Use /model <name> for this conversation.",
 					)
 					return req.Reply(strings.Join(lines, "\n"))
 				},
