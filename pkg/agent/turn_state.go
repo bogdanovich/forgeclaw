@@ -206,6 +206,7 @@ type turnState struct {
 
 	agent   *AgentInstance
 	opts    processOptions
+	model   effectiveModelBinding
 	profile config.EffectiveTurnProfile
 	scope   turnEventScope
 
@@ -283,6 +284,7 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 	ts := &turnState{
 		agent:        agent,
 		opts:         opts,
+		model:        opts.ModelBinding,
 		profile:      opts.TurnProfile,
 		scope:        scope,
 		turnID:       scope.turnID,

@@ -437,7 +437,7 @@ func (al *AgentLoop) askSideQuestion(
 	maxMediaSize := al.GetConfig().Agents.Defaults.GetMaxMediaSize()
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
-	selection := al.selectCandidates(agent, question, messages, opts.Dispatch.RouteSessionKey)
+	selection := al.selectCandidates(agent, question, messages, opts.ModelBinding.RouteSessionKey)
 	activeCandidates, activeModel, usedLight := selection.activeCandidates, selection.model, selection.usedLight
 	selectedModelName := sideQuestionModelName(agent, usedLight)
 
