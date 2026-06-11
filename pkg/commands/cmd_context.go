@@ -84,7 +84,11 @@ func formatSummarizeThreshold(s *ContextStats) string {
 		if summaryPrefixTokens <= 0 {
 			summaryPrefixTokens = seahorse.SummaryPrefixTokens
 		}
-		return fmt.Sprintf("%d assembled tokens; summary prefix target %d tokens", s.SummarizeAtTokens, summaryPrefixTokens)
+		return fmt.Sprintf(
+			"%d assembled tokens; summary prefix target %d tokens",
+			s.SummarizeAtTokens,
+			summaryPrefixTokens,
+		)
 	}
 	if s.ContextManager == "legacy" && s.SummarizeMessageThreshold > 0 {
 		return fmt.Sprintf("%d history tokens or %d messages", s.SummarizeAtTokens, s.SummarizeMessageThreshold)
