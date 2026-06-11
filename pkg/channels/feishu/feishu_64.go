@@ -508,7 +508,7 @@ func (c *FeishuChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
 	}
 
-	caption := firstMediaCaption(msg.Parts)
+	caption := channels.FirstMediaCaption(msg.Parts)
 	sentAny := false
 	for _, part := range msg.Parts {
 		if err := c.sendMediaPartFn(ctx, msg.ChatID, part, store); err != nil {
@@ -574,15 +574,6 @@ func (c *FeishuChannel) sendMediaPart(
 		return fmt.Errorf("feishu send media: %w", channels.ErrTemporary)
 	}
 	return nil
-}
-
-func firstMediaCaption(parts []bus.MediaPart) string {
-	for _, part := range parts {
-		if caption := strings.TrimSpace(part.Caption); caption != "" {
-			return caption
-		}
-	}
-	return ""
 }
 
 // --- Inbound message handling ---

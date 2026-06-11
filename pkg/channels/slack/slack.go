@@ -285,7 +285,7 @@ func (c *SlackChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessa
 		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
 	}
 
-	caption := slackFirstMediaCaption(msg.Parts)
+	caption := channels.FirstMediaCaption(msg.Parts)
 	sentAny := false
 	for _, part := range msg.Parts {
 		localPath, err := store.Resolve(part.Ref)
@@ -452,15 +452,6 @@ func (c *SlackChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.
 			return c.EditMessage(ctx, slackToolFeedbackDeliveryChatKey(chatID), messageID, content)
 		},
 	)
-}
-
-func slackFirstMediaCaption(parts []bus.MediaPart) string {
-	for _, part := range parts {
-		if caption := strings.TrimSpace(part.Caption); caption != "" {
-			return caption
-		}
-	}
-	return ""
 }
 
 func slackUploadFileSize(path string) int {

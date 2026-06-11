@@ -672,14 +672,14 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 
 	var messageIDs []string
-	leadingCaption := telegramLeadingCaption(msg.Parts)
+	leadingCaption := channels.FirstMediaCaption(msg.Parts)
 	if len([]rune(leadingCaption)) > telegramCaptionLimit {
 		leadingIDs, leadingErr := c.sendCaptionText(ctx, chatID, threadID, leadingCaption)
 		if leadingErr != nil {
 			return nil, leadingErr
 		}
 		messageIDs = append(messageIDs, leadingIDs...)
-		msg = telegramClearMediaCaptions(msg)
+		msg = channels.ClearMediaCaptions(msg)
 	}
 
 	if len(msg.Parts) > 1 && telegramCanSendMediaGroup(msg.Parts) {
@@ -930,25 +930,6 @@ func (c *TelegramChannel) sendCaptionText(
 		messageIDs = append(messageIDs, msgID)
 	}
 	return messageIDs, nil
-}
-
-func telegramLeadingCaption(parts []bus.MediaPart) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(parts[0].Caption)
-}
-
-func telegramClearMediaCaptions(msg bus.OutboundMediaMessage) bus.OutboundMediaMessage {
-	if len(msg.Parts) == 0 {
-		return msg
-	}
-	cloned := msg
-	cloned.Parts = append([]bus.MediaPart(nil), msg.Parts...)
-	for i := range cloned.Parts {
-		cloned.Parts[i].Caption = ""
-	}
-	return cloned
 }
 
 func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Message) error {
