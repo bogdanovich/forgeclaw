@@ -17,6 +17,21 @@ func TestFirstMediaCaption(t *testing.T) {
 	}
 }
 
+func TestFirstPartCaption(t *testing.T) {
+	parts := []bus.MediaPart{
+		{Caption: "   "},
+		{Caption: "second"},
+	}
+	if got := FirstPartCaption(parts); got != "" {
+		t.Fatalf("FirstPartCaption() = %q, want empty", got)
+	}
+
+	parts[0].Caption = " first "
+	if got := FirstPartCaption(parts); got != "first" {
+		t.Fatalf("FirstPartCaption() = %q, want %q", got, "first")
+	}
+}
+
 func TestClearMediaCaptions(t *testing.T) {
 	msg := bus.OutboundMediaMessage{
 		ChatID: "chat1",

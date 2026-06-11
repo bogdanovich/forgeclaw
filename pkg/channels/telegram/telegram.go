@@ -672,7 +672,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 
 	var messageIDs []string
-	leadingCaption := channels.FirstMediaCaption(msg.Parts)
+	leadingCaption := channels.FirstPartCaption(msg.Parts)
 	if len([]rune(leadingCaption)) > telegramCaptionLimit {
 		leadingIDs, leadingErr := c.sendCaptionText(ctx, chatID, threadID, leadingCaption)
 		if leadingErr != nil {
