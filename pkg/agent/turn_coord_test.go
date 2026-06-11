@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/state"
 )
 
 // =============================================================================
@@ -248,6 +249,11 @@ func (p *stickyFallbackProvider) Chat(
 	case "fallback-model":
 		return &providers.LLMResponse{
 			Content:      "fallback ok",
+			FinishReason: "stop",
+		}, nil
+	case "light-model":
+		return &providers.LLMResponse{
+			Content:      "light ok",
 			FinishReason: "stop",
 		}, nil
 	default:
@@ -934,7 +940,7 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 
 	pipeline := NewPipeline(al)
 
-	firstTS := newTurnState(agent, makeTestProcessOpts("sticky-session"), turnEventScope{
+	firstTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
 	})
@@ -950,7 +956,7 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 		t.Fatalf("CallLLM(first) control = %v, want %v", ctrl, ControlBreak)
 	}
 
-	secondTS := newTurnState(agent, makeTestProcessOpts("sticky-session"), turnEventScope{
+	secondTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
 		turnID:  "turn-2",
 		context: newTurnContext(nil, nil, nil),
 	})
@@ -970,6 +976,127 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 	gotCalls := append([]string(nil), provider.calls...)
 	provider.mu.Unlock()
 	wantCalls := []string{"primary-model", "fallback-model", "fallback-model"}
+	if strings.Join(gotCalls, ",") != strings.Join(wantCalls, ",") {
+		t.Fatalf("models called = %v, want %v", gotCalls, wantCalls)
+	}
+}
+
+func TestPipeline_SetupTurn_ClearsStaleAutoFallbackSelectionOnModelMismatch(t *testing.T) {
+	provider := &stickyFallbackProvider{}
+	al, agent, cleanup := newTurnCoordFallbackTestLoop(t, provider)
+	defer cleanup()
+
+	agent.Candidates = []providers.FallbackCandidate{
+		{Provider: "openai", Model: "new-primary-model", IdentityKey: "new-primary-model"},
+		{Provider: "openai", Model: "fallback-model", IdentityKey: "fallback-model"},
+	}
+	agent.Model = "new-primary-model"
+
+	err := al.setAutoModelSelection("sticky-session", state.AutoModelSelection{
+		SelectedProvider: "openai",
+		SelectedModel:    "primary-model",
+		ActiveProvider:   "openai",
+		ActiveModel:      "fallback-model",
+		Reason:           string(providers.FailoverRateLimit),
+		ExpiresAt:        time.Now().Add(15 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("setAutoModelSelection failed: %v", err)
+	}
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
+		turnID:  "turn-stale-selection",
+		context: newTurnContext(nil, nil, nil),
+	})
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	if got := exec.activeCandidates[0].Model; got != "new-primary-model" {
+		t.Fatalf("active candidate model = %q, want %q", got, "new-primary-model")
+	}
+	if _, ok := al.getAutoModelSelection("sticky-session"); ok {
+		t.Fatal("expected stale auto model selection to be cleared")
+	}
+}
+
+func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T) {
+	provider := &stickyFallbackProvider{}
+	al, agent, cleanup := newTurnCoordFallbackTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+
+	firstTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
+		turnID:  "turn-heavy-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+	firstExec, err := pipeline.SetupTurn(context.Background(), firstTS)
+	if err != nil {
+		t.Fatalf("SetupTurn(first) failed: %v", err)
+	}
+	if _, callErr := pipeline.CallLLM(
+		context.Background(),
+		context.Background(),
+		firstTS,
+		firstExec,
+		1,
+	); callErr != nil {
+		t.Fatalf("CallLLM(first) failed: %v", callErr)
+	}
+
+	agent.LightCandidates = []providers.FallbackCandidate{
+		{Provider: "openai", Model: "light-model", IdentityKey: "light-model", DisplayName: "light-model"},
+	}
+	agent.Router = routing.New(routing.RouterConfig{LightModel: "light-model", Threshold: 1})
+
+	lightOpts := normalizeProcessOptions(makeTestProcessOpts("sticky-session"))
+	lightOpts.UserMessage = ""
+	lightTS := newTurnState(agent, lightOpts, turnEventScope{
+		turnID:  "turn-light",
+		context: newTurnContext(nil, nil, nil),
+	})
+	lightExec, err := pipeline.SetupTurn(context.Background(), lightTS)
+	if err != nil {
+		t.Fatalf("SetupTurn(light) failed: %v", err)
+	}
+	if !lightExec.usedLight {
+		t.Fatal("expected light routing to be used")
+	}
+	if _, callErr := pipeline.CallLLM(
+		context.Background(),
+		context.Background(),
+		lightTS,
+		lightExec,
+		1,
+	); callErr != nil {
+		t.Fatalf("CallLLM(light) failed: %v", callErr)
+	}
+
+	agent.Router = nil
+	agent.LightCandidates = nil
+
+	thirdTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
+		turnID:  "turn-heavy-2",
+		context: newTurnContext(nil, nil, nil),
+	})
+	thirdExec, err := pipeline.SetupTurn(context.Background(), thirdTS)
+	if err != nil {
+		t.Fatalf("SetupTurn(third) failed: %v", err)
+	}
+	if got := thirdExec.activeCandidates[0].Model; got != "fallback-model" {
+		t.Fatalf("third active candidate model = %q, want %q", got, "fallback-model")
+	}
+	if _, err := pipeline.CallLLM(context.Background(), context.Background(), thirdTS, thirdExec, 1); err != nil {
+		t.Fatalf("CallLLM(third) failed: %v", err)
+	}
+
+	provider.mu.Lock()
+	gotCalls := append([]string(nil), provider.calls...)
+	provider.mu.Unlock()
+	wantCalls := []string{"primary-model", "fallback-model", "light-model", "fallback-model"}
 	if strings.Join(gotCalls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("models called = %v, want %v", gotCalls, wantCalls)
 	}

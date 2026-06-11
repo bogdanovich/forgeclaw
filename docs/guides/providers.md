@@ -395,6 +395,32 @@ PicoClaw already supports automatic failover when you configure `primary` + `fal
 The runtime fallback chain retries the next candidate for retriable failures such as HTTP `429`, quota/rate-limit errors, and timeout errors.
 It also applies cooldown tracking per candidate to avoid immediately retrying a recently failed target.
 
+In addition to per-request fallback, PicoClaw now keeps a temporary session-scoped sticky failover state for errors that usually persist beyond one turn:
+
+- `rate_limit`
+- `overloaded`
+- `billing`
+
+When one of those errors forces a successful fallback, later turns in the same conversation start on the fallback model instead of retrying the failing primary model first on every message. The persisted state stores:
+
+- the `selected` model for the conversation
+- the temporary `active` fallback model
+- the failover `reason`
+- an expiration time
+
+Sticky failover is intentionally conservative:
+
+- it does **not** persist for transient classes such as `timeout` or `network`
+- it does **not** let light-model routing overwrite the primary conversation's sticky failover state
+- it is cleared automatically when the stored `selected` model no longer matches the current conversation model
+
+Current TTL policy:
+
+- `rate_limit`, `overloaded`: 20 minutes
+- `billing`: 6 hours
+
+User-facing failover errors also include the classified reason and the raw provider error payload when available, which makes quota/auth/provider problems easier to diagnose from chat output alone.
+
 ```json
 {
   "model_list": [

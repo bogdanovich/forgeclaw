@@ -33,6 +33,11 @@ func candidateMatchesSelection(candidate providers.FallbackCandidate, sel state.
 		providers.ModelKey(sel.ActiveProvider, sel.ActiveModel)
 }
 
+func selectedModelMatchesSelection(candidate providers.FallbackCandidate, sel state.AutoModelSelection) bool {
+	return providers.ModelKey(candidate.Provider, candidate.Model) ==
+		providers.ModelKey(sel.SelectedProvider, sel.SelectedModel)
+}
+
 func reorderCandidatesForAutoFallback(
 	candidates []providers.FallbackCandidate,
 	sel state.AutoModelSelection,
@@ -144,6 +149,10 @@ func (al *AgentLoop) selectCandidates(
 		_ = al.clearAutoModelSelection(routeSessionKey)
 		return decision
 	}
+	if !selectedModelMatchesSelection(decision.selectedCandidates[0], sel) {
+		_ = al.clearAutoModelSelection(routeSessionKey)
+		return decision
+	}
 
 	reordered, matched := reorderCandidatesForAutoFallback(decision.activeCandidates, sel)
 	if !matched {
@@ -174,8 +183,13 @@ func updateAutoFallbackSelection(
 	routeSessionKey string,
 	selectedCandidates []providers.FallbackCandidate,
 	result *providers.FallbackResult,
+	usedLight bool,
 ) {
-	if al == nil || strings.TrimSpace(routeSessionKey) == "" || len(selectedCandidates) == 0 || result == nil {
+	if al == nil ||
+		usedLight ||
+		strings.TrimSpace(routeSessionKey) == "" ||
+		len(selectedCandidates) == 0 ||
+		result == nil {
 		return
 	}
 

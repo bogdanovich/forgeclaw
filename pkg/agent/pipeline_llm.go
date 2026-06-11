@@ -223,7 +223,13 @@ func (p *Pipeline) CallLLM(
 				)
 				break
 			}
-			updateAutoFallbackSelection(p.al, ts.opts.Dispatch.RouteSessionKey, exec.selectedCandidates, fbResult)
+			updateAutoFallbackSelection(
+				p.al,
+				ts.opts.Dispatch.RouteSessionKey,
+				exec.selectedCandidates,
+				fbResult,
+				exec.usedLight,
+			)
 			return fbResult.Response, nil
 		}
 		resp, err := exec.activeProvider.Chat(
@@ -243,6 +249,7 @@ func (p *Pipeline) CallLLM(
 					Provider: exec.activeCandidates[0].Provider,
 					Model:    exec.activeCandidates[0].Model,
 				},
+				exec.usedLight,
 			)
 		}
 		return resp, err
