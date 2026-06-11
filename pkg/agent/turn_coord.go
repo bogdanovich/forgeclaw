@@ -34,6 +34,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	defer func() {
 		attemptedSkills := ts.attemptedSkillsSnapshot()
 		skillContextSnapshots := ts.skillContextSnapshotsSnapshot()
+		llmCalls, promptTokens, completionTokens, totalTokens := ts.llmUsageTotals()
 		finalSuccessfulPath := []string(nil)
 		if turnStatus == TurnEndStatusCompleted {
 			if latest := ts.latestSkillContextSnapshot(); len(latest) > 0 {
@@ -50,6 +51,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				Workspace:             ts.workspace,
 				Iterations:            ts.currentIteration(),
 				Duration:              time.Since(ts.startedAt),
+				LLMCalls:              llmCalls,
+				PromptTokens:          promptTokens,
+				CompletionTokens:      completionTokens,
+				TotalTokens:           totalTokens,
 				FinalContentLen:       ts.finalContentLen(),
 				UserMessage:           ts.userMessage,
 				FinalContent:          ts.finalContentSnapshot(),

@@ -123,11 +123,21 @@ func (m *scriptedToolProvider) Chat(
 					Arguments: map[string]any{"task": "ping"},
 				},
 			},
+			Usage: &providers.UsageInfo{
+				PromptTokens:     11,
+				CompletionTokens: 7,
+				TotalTokens:      18,
+			},
 		}, nil
 	}
 
 	return &providers.LLMResponse{
 		Content: "done",
+		Usage: &providers.UsageInfo{
+			PromptTokens:     13,
+			CompletionTokens: 5,
+			TotalTokens:      18,
+		},
 	}, nil
 }
 
@@ -276,6 +286,32 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 		t.Fatal("expected mock_custom tool to succeed")
 	}
 
+	firstLLMResponse, ok := events[2].Payload.(LLMResponsePayload)
+	if !ok {
+		t.Fatalf("expected first LLMResponsePayload, got %T", events[2].Payload)
+	}
+	if !firstLLMResponse.HasProviderUsage {
+		t.Fatal("expected first LLM response to include provider usage")
+	}
+	if firstLLMResponse.PromptTokens != 11 ||
+		firstLLMResponse.CompletionTokens != 7 ||
+		firstLLMResponse.TotalTokens != 18 {
+		t.Fatalf("first LLM usage = %+v, want prompt=11 completion=7 total=18", firstLLMResponse)
+	}
+
+	secondLLMResponse, ok := events[6].Payload.(LLMResponsePayload)
+	if !ok {
+		t.Fatalf("expected second LLMResponsePayload, got %T", events[6].Payload)
+	}
+	if !secondLLMResponse.HasProviderUsage {
+		t.Fatal("expected second LLM response to include provider usage")
+	}
+	if secondLLMResponse.PromptTokens != 13 ||
+		secondLLMResponse.CompletionTokens != 5 ||
+		secondLLMResponse.TotalTokens != 18 {
+		t.Fatalf("second LLM usage = %+v, want prompt=13 completion=5 total=18", secondLLMResponse)
+	}
+
 	turnEndPayload, ok := events[len(events)-1].Payload.(TurnEndPayload)
 	if !ok {
 		t.Fatalf("expected TurnEndPayload, got %T", events[len(events)-1].Payload)
@@ -285,6 +321,14 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 	}
 	if turnEndPayload.Iterations != 2 {
 		t.Fatalf("expected 2 iterations, got %d", turnEndPayload.Iterations)
+	}
+	if turnEndPayload.LLMCalls != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", turnEndPayload.LLMCalls)
+	}
+	if turnEndPayload.PromptTokens != 24 ||
+		turnEndPayload.CompletionTokens != 12 ||
+		turnEndPayload.TotalTokens != 36 {
+		t.Fatalf("turn token usage = %+v, want prompt=24 completion=12 total=36", turnEndPayload)
 	}
 }
 
