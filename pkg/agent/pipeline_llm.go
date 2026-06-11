@@ -45,7 +45,7 @@ func (p *Pipeline) CallLLM(
 	webSearchEnabled := al.cfg.Tools.IsToolEnabled("web") && turnProfileToolAllowed(ts.profile, "web_search")
 	exec.useNativeSearch = webSearchEnabled && al.cfg.Tools.Web.PreferNative &&
 		func() bool {
-			if ns, ok := ts.agent.Provider.(providers.NativeSearchCapable); ok {
+			if ns, ok := exec.model.activeProvider.(providers.NativeSearchCapable); ok {
 				return ns.SupportsNativeSearch()
 			}
 			return false
@@ -75,7 +75,11 @@ func (p *Pipeline) CallLLM(
 	if exec.useNativeSearch {
 		exec.llmOpts["native_search"] = true
 	}
-	applyTurnThinkingOptions(exec, ts.agent, exec.model.activeProvider, true)
+	executionAgent := ts.model.ExecutionAgent()
+	if executionAgent == nil {
+		executionAgent = ts.agent
+	}
+	applyTurnThinkingOptions(exec, executionAgent, exec.model.activeProvider, true)
 
 	exec.llmModel = exec.model.activeModel
 
@@ -105,7 +109,7 @@ func (p *Pipeline) CallLLM(
 				}
 				if strings.TrimSpace(exec.llmModel) != "" && exec.llmModel != prevModel {
 					p.applyBeforeLLMModelRewrite(ts, exec)
-					applyTurnThinkingOptions(exec, ts.agent, exec.model.activeProvider, true)
+					applyTurnThinkingOptions(exec, executionAgent, exec.model.activeProvider, true)
 				}
 			}
 		case HookActionAbortTurn:

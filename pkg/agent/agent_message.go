@@ -94,15 +94,14 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 	sessionKey := resolveScopeKey(allocation.SessionKey, msg.SessionKey)
 	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
 	defer modelBinding.Cleanup()
-	effectiveAgent := modelBinding.EffectiveAgent
 
-	if tool, ok := effectiveAgent.Tools.Get("message"); ok {
+	if tool, ok := agent.Tools.Get("message"); ok {
 		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
 			resetter.ResetSentInRound(sessionKey)
 		}
 	}
 
-	return al.runAgentLoop(ctx, effectiveAgent, processOptions{
+	return al.runAgentLoop(ctx, agent, processOptions{
 		Dispatch: DispatchRequest{
 			RouteSessionKey: allocation.SessionKey,
 			SessionKey:      sessionKey,
@@ -218,10 +217,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	sessionKey := scopeKey
 	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
 	defer modelBinding.Cleanup()
-	effectiveAgent := modelBinding.EffectiveAgent
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
-	if tool, ok := effectiveAgent.Tools.Get("message"); ok {
+	if tool, ok := agent.Tools.Get("message"); ok {
 		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
 			resetter.ResetSentInRound(sessionKey)
 		}
@@ -230,7 +228,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	logger.InfoCF("agent", "Routed message",
 		map[string]any{
 			"agent_id":           agent.ID,
-			"effective_agent_id": effectiveAgent.ID,
+			"effective_agent_id": modelBinding.ExecutionAgent().ID,
 			"scope_key":          scopeKey,
 			"session_key":        sessionKey,
 			"matched_by":         route.MatchedBy,
@@ -286,7 +284,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 			})
 	}
 
-	return al.runAgentLoop(ctx, effectiveAgent, opts)
+	return al.runAgentLoop(ctx, agent, opts)
 }
 
 func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage) {

@@ -30,7 +30,7 @@ func (al *AgentLoop) handleCommand(
 
 	if matched, handled, reply := al.applyExplicitSkillCommand(
 		msg.Content,
-		modelBinding.EffectiveAgent,
+		modelBinding.WorkspaceAgent,
 		opts,
 	); matched {
 		return reply, handled
@@ -137,8 +137,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 
 	registry := al.GetRegistry()
 	cfg := al.GetConfig()
-	agent := modelBinding.EffectiveAgent
+	agent := modelBinding.WorkspaceAgent
 	workspaceAgent := modelBinding.WorkspaceAgent
+	executionAgent := modelBinding.ExecutionAgent()
 	rt := &commands.Runtime{
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
@@ -299,11 +300,12 @@ func (al *AgentLoop) buildCommandsRuntime(
 		if workspaceAgent == nil {
 			workspaceAgent = agent
 		}
-		if agent.ContextBuilder != nil {
-			rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
+		if workspaceAgent.ContextBuilder != nil {
+			rt.ListSkillNames = workspaceAgent.ContextBuilder.ListSkillNames
 		}
 		rt.GetModelInfo = func() (string, string) {
-			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
+			info := selectionInfoForBinding(cfg, modelBinding)
+			return info.EffectiveName, info.EffectiveProvider
 		}
 		rt.GetModelSelection = func() commands.ModelSelectionInfo {
 			refreshed := modelBinding
@@ -336,13 +338,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 					entry = &modelAggregate{
 						info: commands.ConfiguredModelInfo{
 							Name:    modelCfg.ModelName,
-							Current: modelCfg.ModelName == agent.Model,
+							Current: executionAgent != nil && modelCfg.ModelName == executionAgent.Model,
 						},
 						order:   idx,
 						targets: map[string]*targetAggregate{},
 					}
 					modelsByName[modelCfg.ModelName] = entry
-				} else if modelCfg.ModelName == agent.Model {
+				} else if executionAgent != nil && modelCfg.ModelName == executionAgent.Model {
 					entry.info.Current = true
 				}
 				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")

@@ -25,6 +25,13 @@ func (b effectiveModelBinding) Cleanup() {
 	}
 }
 
+func (b effectiveModelBinding) ExecutionAgent() *AgentInstance {
+	if b.EffectiveAgent != nil {
+		return b.EffectiveAgent
+	}
+	return b.WorkspaceAgent
+}
+
 func (b effectiveModelBinding) SelectionInfo() commands.ModelSelectionInfo {
 	return buildSessionModelSelectionInfo(b.WorkspaceAgent, b.EffectiveAgent, b.Override)
 }
