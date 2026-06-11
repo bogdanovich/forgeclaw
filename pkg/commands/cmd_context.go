@@ -36,6 +36,10 @@ func formatContextStats(s *ContextStats) string {
 	}
 	storedWindowPercent := s.StoredUsedTokens * 100 / max(s.TotalTokens, 1)
 	assembledWindowPercent := s.AssembledUsedTokens * 100 / max(s.TotalTokens, 1)
+	assembledLabel := "Assembled prompt estimate"
+	if !s.AssembledFitsBudget {
+		assembledLabel += " (over budget)"
+	}
 	msg := fmt.Sprintf(
 		"Context usage  \n"+
 			"Manager: %s  \n"+
@@ -45,7 +49,7 @@ func formatContextStats(s *ContextStats) string {
 			"- History: ~%d tokens  \n"+
 			"- Compression progress: %d%%  \n"+
 			"- Remaining: ~%d tokens  \n"+
-			"Assembled prompt estimate  \n"+
+			"%s  \n"+
 			"- Messages: %d  \n"+
 			"- Used: ~%d / %d tokens (%d%%)  \n"+
 			"- History: ~%d tokens  \n"+
@@ -62,6 +66,7 @@ func formatContextStats(s *ContextStats) string {
 		s.StoredHistoryTokens,
 		s.StoredUsedPercent,
 		storedRemaining,
+		assembledLabel,
 		s.AssembledMessageCount,
 		s.AssembledUsedTokens,
 		s.TotalTokens,
@@ -84,9 +89,14 @@ func formatSummarizeThreshold(s *ContextStats) string {
 		if summaryPrefixTokens <= 0 {
 			summaryPrefixTokens = seahorse.SummaryPrefixTokens
 		}
+		heuristicTokens := s.SeahorseHeuristicTokens
+		if heuristicTokens <= 0 {
+			heuristicTokens = s.SummarizeAtTokens
+		}
 		return fmt.Sprintf(
-			"%d assembled tokens; summary prefix target %d tokens",
-			s.SummarizeAtTokens,
+			"heuristic %d full-window tokens; effective budget %d tokens; summary prefix target %d tokens",
+			heuristicTokens,
+			s.CompressAtTokens,
 			summaryPrefixTokens,
 		)
 	}

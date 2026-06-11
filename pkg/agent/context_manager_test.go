@@ -834,7 +834,7 @@ func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
 		Media:      []string{ref},
 	})
 
-	got, gotCount := computeAssembledContextUsage(
+	got, gotCount, fitsBudget := computeAssembledContextUsage(
 		context.Background(),
 		cfg,
 		agent,
@@ -868,10 +868,46 @@ func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected assembled usage result")
 	}
+	if !fitsBudget {
+		t.Fatal("expected assembled usage to fit budget in media-resolution test")
+	}
 	if got.UsedTokens != expectedUsed {
 		t.Fatalf("assembled used tokens = %d, want %d", got.UsedTokens, expectedUsed)
 	}
 	if gotCount != 2 {
 		t.Fatalf("assembled history count = %d, want 2", gotCount)
+	}
+}
+
+func TestComputeAssembledContextUsage_ReportsOverBudgetPrompt(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Agents.Defaults.MaxTokens = 64
+	cfg.Agents.Defaults.ContextWindow = 96
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	agent.Sessions.AddFullMessage("ctx-tight", providers.Message{Role: "user", Content: "hello"})
+
+	got, _, fitsBudget := computeAssembledContextUsage(
+		context.Background(),
+		cfg,
+		agent,
+		al.contextManager,
+		nil,
+		cfg.Agents.Defaults.GetMaxMediaSize(),
+		processOptions{},
+		"ctx-tight",
+	)
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
+	if fitsBudget {
+		t.Fatal("expected assembled usage to report over-budget prompt")
+	}
+	if got.UsedTokens <= got.CompressAtTokens {
+		t.Fatalf("assembled used tokens = %d, want > compressAt %d", got.UsedTokens, got.CompressAtTokens)
 	}
 }

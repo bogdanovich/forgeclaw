@@ -514,7 +514,8 @@ func (al *AgentLoop) buildCommandsRuntime(
 			storedHistory := agent.Sessions.GetHistory(opts.SessionKey)
 			var assembledUsage *bus.ContextUsage
 			assembledMessageCount := len(storedHistory)
-			if usage, count := computeAssembledContextUsage(
+			assembledFitsBudget := true
+			if usage, count, fitsBudget := computeAssembledContextUsage(
 				context.Background(),
 				al.GetConfig(),
 				agent,
@@ -526,20 +527,22 @@ func (al *AgentLoop) buildCommandsRuntime(
 			); usage != nil {
 				assembledUsage = usage
 				assembledMessageCount = count
+				assembledFitsBudget = fitsBudget
 			} else {
 				assembledUsage = storedUsage
 			}
-			summarizeAtTokens := storedUsage.SummarizeAtTokens
+			seahorseHeuristicTokens := 0
 			if contextManagerDisplayName(al.contextManager) == "seahorse" {
-				summarizeAtTokens = int(float64(storedUsage.TotalTokens) * seahorse.ContextThreshold)
+				seahorseHeuristicTokens = int(float64(storedUsage.TotalTokens) * seahorse.ContextThreshold)
 			}
 			return &commands.ContextStats{
 				ContextManager:            contextManagerDisplayName(al.contextManager),
 				TotalTokens:               storedUsage.TotalTokens,
 				CompressAtTokens:          storedUsage.CompressAtTokens,
-				SummarizeAtTokens:         summarizeAtTokens,
+				SummarizeAtTokens:         storedUsage.SummarizeAtTokens,
 				SummarizeMessageThreshold: agent.SummarizeMessageThreshold,
 				SummaryPrefixTokens:       seahorseSummaryPrefixTokens(al.contextManager),
+				SeahorseHeuristicTokens:   seahorseHeuristicTokens,
 				StoredUsedTokens:          storedUsage.UsedTokens,
 				StoredHistoryTokens:       storedUsage.HistoryTokens,
 				StoredUsedPercent:         storedUsage.UsedPercent,
@@ -548,6 +551,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 				AssembledHistoryTokens:    assembledUsage.HistoryTokens,
 				AssembledUsedPercent:      assembledUsage.UsedPercent,
 				AssembledMessageCount:     assembledMessageCount,
+				AssembledFitsBudget:       assembledFitsBudget,
 			}
 		}
 	}

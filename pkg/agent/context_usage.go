@@ -139,13 +139,13 @@ func computeAssembledContextUsage(
 	maxMediaSize int,
 	opts processOptions,
 	sessionKey string,
-) (*bus.ContextUsage, int) {
+) (*bus.ContextUsage, int, bool) {
 	if agent == nil || cm == nil {
-		return nil, 0
+		return nil, 0, false
 	}
 	contextWindow := agent.ContextWindow
 	if contextWindow <= 0 {
-		return nil, 0
+		return nil, 0, false
 	}
 
 	resp, err := cm.Assemble(ctx, &AssembleRequest{
@@ -155,7 +155,7 @@ func computeAssembledContextUsage(
 		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, opts),
 	})
 	if err != nil || resp == nil {
-		return nil, 0
+		return nil, 0, false
 	}
 
 	contextualSkills := activeSkillNames(agent, opts)
@@ -173,6 +173,7 @@ func computeAssembledContextUsage(
 
 	finalHistory := append([]providers.Message(nil), resp.History...)
 	messages := rebuild(finalHistory)
+	fitsBudget := !isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens)
 	if !opts.NoHistory && isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens) {
 		if trimmedHistory, trimmedMessages, fit := trimHistoryToFitContextWindow(
 			finalHistory,
@@ -183,6 +184,7 @@ func computeAssembledContextUsage(
 		); fit {
 			finalHistory = trimmedHistory
 			messages = trimmedMessages
+			fitsBudget = true
 		}
 	}
 
@@ -222,7 +224,7 @@ func computeAssembledContextUsage(
 		CompressAtTokens:  compressAt,
 		SummarizeAtTokens: summarizeAt,
 		UsedPercent:       usedPercent,
-	}, len(finalHistory)
+	}, len(finalHistory), fitsBudget
 }
 
 func contextManagerDisplayName(cm ContextManager) string {

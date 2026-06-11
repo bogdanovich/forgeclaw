@@ -48,6 +48,7 @@ type ContextStats struct {
 	SummarizeAtTokens         int // soft summarization trigger
 	SummarizeMessageThreshold int
 	SummaryPrefixTokens       int
+	SeahorseHeuristicTokens   int
 	StoredUsedTokens          int
 	StoredHistoryTokens       int
 	StoredUsedPercent         int // 0-100 against compressAt
@@ -56,6 +57,7 @@ type ContextStats struct {
 	AssembledHistoryTokens    int
 	AssembledUsedPercent      int // 0-100 against compressAt
 	AssembledMessageCount     int
+	AssembledFitsBudget       bool
 }
 
 // StopResult describes the outcome of a stop request for the current session.
