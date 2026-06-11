@@ -109,6 +109,7 @@ Skill-related commands:
 - `/use <skill> <message>` forces a skill for a single request.
 - `/use <skill>` arms the skill for your next message in the same chat.
 - `/use clear` clears a pending skill override.
+- Unknown slash commands return an explicit error instead of being sent through to the LLM as normal chat text.
 
 Examples:
 

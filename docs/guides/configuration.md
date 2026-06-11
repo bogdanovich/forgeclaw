@@ -198,7 +198,7 @@ dammi le ultime news
 
 - Generic slash commands are executed through a single path in `pkg/agent/agent_command.go` via `commands.Executor`.
 - Channel adapters no longer consume generic commands locally; they forward inbound text to the bus/agent path. Telegram still auto-registers supported commands such as `/start`, `/help`, `/show`, `/list`, `/use`, and `/btw` at startup.
-- Unknown slash command (for example `/foo`) passes through to normal LLM processing.
+- Unknown slash command (for example `/foo`) returns an explicit unknown-command error and does not fall through to normal LLM processing.
 - Registered but unsupported command on the current channel (for example `/show` on WhatsApp) returns an explicit user-facing error and stops further processing.
 
 ### Session Isolation
