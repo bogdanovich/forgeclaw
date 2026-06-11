@@ -7,6 +7,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
 )
 
@@ -105,11 +106,13 @@ func estimateNonHistoryPromptReserveForProcessOptions(
 	if agent == nil {
 		return 0
 	}
-	if agent.ContextBuilder == nil || agent.Tools == nil {
-		if agent.Tools != nil {
-			return EstimateToolDefsTokens(filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile))
-		}
-		return 0
+
+	var toolDefs []providers.ToolDefinition
+	if agent.Tools != nil {
+		toolDefs = filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
+	}
+	if agent.ContextBuilder == nil {
+		return EstimateToolDefsTokens(toolDefs)
 	}
 
 	contextualSkills := activeSkillNames(agent, opts)
@@ -117,7 +120,6 @@ func estimateNonHistoryPromptReserveForProcessOptions(
 		contextualSkills = agent.ContextBuilder.ResolveActiveSkillsForContext(contextualSkills)
 	}
 
-	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
 	req := promptBuildRequestForProcessOptions(cfg, agent, opts, nil, summary, "", nil)
 	req.ActiveSkills = append([]string(nil), contextualSkills...)
 	messages := agent.ContextBuilder.BuildMessagesFromPrompt(req)

@@ -947,3 +947,36 @@ func TestComputeAssembledContextUsage_AllowsNilTools(t *testing.T) {
 		t.Fatalf("assembled used tokens = %d, want >= history tokens %d", got.UsedTokens, got.HistoryTokens)
 	}
 }
+
+func TestEstimateNonHistoryPromptReserveForProcessOptions_PreservesSystemWhenToolsNil(t *testing.T) {
+	cfg := testConfig(t)
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	withTools := estimateNonHistoryPromptReserveForProcessOptions(
+		cfg,
+		agent,
+		processOptions{},
+		"summary text",
+	)
+	if withTools <= 0 {
+		t.Fatalf("reserve with tools = %d, want > 0", withTools)
+	}
+
+	agent.Tools = nil
+	withoutTools := estimateNonHistoryPromptReserveForProcessOptions(
+		cfg,
+		agent,
+		processOptions{},
+		"summary text",
+	)
+	if withoutTools <= 0 {
+		t.Fatalf("reserve without tools = %d, want > 0 from system/context tokens", withoutTools)
+	}
+	if withoutTools >= withTools {
+		t.Fatalf("reserve without tools = %d, want < reserve with tools %d", withoutTools, withTools)
+	}
+}
