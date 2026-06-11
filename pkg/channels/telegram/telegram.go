@@ -151,6 +151,27 @@ func telegramMediaGroupDelay(telegramCfg *config.TelegramSettings) time.Duration
 	return defaultMediaGroupDelay
 }
 
+func (c *TelegramChannel) topicAllowed(topicID int) bool {
+	if topicID == 0 || c == nil || c.tgCfg == nil {
+		return true
+	}
+	topic := strconv.Itoa(topicID)
+	for _, ignored := range c.tgCfg.IgnoredTopicIDs {
+		if strings.TrimSpace(ignored) == topic {
+			return false
+		}
+	}
+	if len(c.tgCfg.AllowedTopicIDs) == 0 {
+		return true
+	}
+	for _, allowed := range c.tgCfg.AllowedTopicIDs {
+		if strings.TrimSpace(allowed) == topic {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *TelegramChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
 	if c.progress != nil {
 		c.progress.Configure(cfg)
@@ -1220,6 +1241,14 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	// must share one session per group.
 	compositeChatID := fmt.Sprintf("%d", chatID)
 	threadID := message.MessageThreadID
+	if message.Chat.IsForum && threadID != 0 && !c.topicAllowed(threadID) {
+		logger.DebugCF("telegram", "Message ignored by topic filter", map[string]any{
+			"chat_id":    chatID,
+			"thread_id":  threadID,
+			"message_id": message.MessageID,
+		})
+		return nil
+	}
 	if message.Chat.IsForum && threadID != 0 {
 		compositeChatID = fmt.Sprintf("%d/%d", chatID, threadID)
 	}
