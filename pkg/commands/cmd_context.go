@@ -57,7 +57,10 @@ func formatContextStats(s *ContextStats) string {
 			"- Remaining: ~%d tokens  \n"+
 			"Thresholds  \n"+
 			"- Compress at: %d tokens  \n"+
-			"- Summarize at: %s",
+			"- Summarize at: %s  \n"+
+			"Notes  \n"+
+			"- Stored session shows persisted history pressure  \n"+
+			"- Assembled prompt estimate is approximate; final requests may differ after runtime shaping",
 		s.ContextManager,
 		s.StoredMessageCount,
 		s.StoredUsedTokens,

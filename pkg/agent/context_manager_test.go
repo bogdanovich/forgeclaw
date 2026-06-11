@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,9 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
 // ---------------------------------------------------------------------------
@@ -784,7 +781,7 @@ func newCMTestAgentLoop(cfg *config.Config) *AgentLoop {
 	return NewAgentLoop(cfg, msgBus, &simpleMockProvider{response: "test"})
 }
 
-func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
+func TestComputeAssembledContextUsage_UsesAssembledHistoryAndSummaryReserve(t *testing.T) {
 	cfg := testConfig(t)
 	al := newCMTestAgentLoop(cfg)
 	agent := al.registry.GetDefaultAgent()
@@ -792,55 +789,17 @@ func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
 		t.Fatal("expected default agent")
 	}
 
-	store := media.NewFileMediaStore()
-	al.SetMediaStore(store)
-
-	dir := t.TempDir()
-	pngPath := filepath.Join(dir, "ctx.png")
-	pngHeader := []byte{
-		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-		0x00, 0x00, 0x00, 0x0D,
-		0x49, 0x48, 0x44, 0x52,
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
-		0x00, 0x00, 0x00,
-		0x90, 0x77, 0x53, 0xDE,
-	}
-	if err := os.WriteFile(pngPath, pngHeader, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ref, err := store.Store(pngPath, media.MediaMeta{}, "ctx")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	agent.Sessions.AddFullMessage("ctx-session", providers.Message{
-		Role:    "assistant",
-		Content: "",
-		ToolCalls: []providers.ToolCall{
-			{
-				ID:   "call_media",
-				Type: "function",
-				Function: &protocoltypes.FunctionCall{
-					Name:      "image_tool",
-					Arguments: "{}",
-				},
-			},
-		},
+		Role:    "user",
+		Content: "hello",
 	})
-	agent.Sessions.AddFullMessage("ctx-session", providers.Message{
-		Role:       "tool",
-		Content:    "tool produced image",
-		ToolCallID: "call_media",
-		Media:      []string{ref},
-	})
+	agent.Sessions.SetSummary("ctx-session", "brief summary")
 
 	got, gotCount, fitsBudget := computeAssembledContextUsage(
 		context.Background(),
 		cfg,
 		agent,
 		al.contextManager,
-		store,
-		cfg.Agents.Defaults.GetMaxMediaSize(),
 		processOptions{},
 		"ctx-session",
 	)
@@ -848,34 +807,31 @@ func TestComputeAssembledContextUsage_ResolvesMediaRefs(t *testing.T) {
 		SessionKey:    "ctx-session",
 		Budget:        agent.ContextWindow,
 		MaxTokens:     agent.MaxTokens,
-		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, processOptions{}),
+		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, processOptions{}, ""),
 	})
 	if err != nil || resp == nil {
 		t.Fatalf("assemble failed: %v", err)
 	}
-	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), processOptions{}.TurnProfile)
-	req := promptBuildRequestForProcessOptions(nil, agent, processOptions{}, resp.History, resp.Summary, "", nil)
-	req.ActiveSkills = append([]string(nil), activeSkillNames(agent, processOptions{})...)
-	expectedMessages := resolveMediaRefs(
-		agent.ContextBuilder.BuildMessagesFromPrompt(req),
-		store,
-		cfg.Agents.Defaults.GetMaxMediaSize(),
-	)
-	expectedUsed := EstimateToolDefsTokens(toolDefs)
-	for _, msg := range expectedMessages {
-		expectedUsed += EstimateMessageTokens(msg)
+	expectedHistoryTokens := 0
+	for _, msg := range resp.History {
+		expectedHistoryTokens += EstimateMessageTokens(msg)
 	}
+	expectedUsed := expectedHistoryTokens +
+		estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, processOptions{}, resp.Summary)
 	if got == nil {
 		t.Fatal("expected assembled usage result")
 	}
 	if !fitsBudget {
-		t.Fatal("expected assembled usage to fit budget in media-resolution test")
+		t.Fatal("expected assembled usage estimate to fit budget")
 	}
 	if got.UsedTokens != expectedUsed {
 		t.Fatalf("assembled used tokens = %d, want %d", got.UsedTokens, expectedUsed)
 	}
-	if gotCount != 2 {
-		t.Fatalf("assembled history count = %d, want 2", gotCount)
+	if got.HistoryTokens != expectedHistoryTokens {
+		t.Fatalf("assembled history tokens = %d, want %d", got.HistoryTokens, expectedHistoryTokens)
+	}
+	if gotCount != len(resp.History) {
+		t.Fatalf("assembled history count = %d, want %d", gotCount, len(resp.History))
 	}
 }
 
@@ -896,8 +852,6 @@ func TestComputeAssembledContextUsage_ReportsOverBudgetPrompt(t *testing.T) {
 		cfg,
 		agent,
 		al.contextManager,
-		nil,
-		cfg.Agents.Defaults.GetMaxMediaSize(),
 		processOptions{},
 		"ctx-tight",
 	)
@@ -912,7 +866,7 @@ func TestComputeAssembledContextUsage_ReportsOverBudgetPrompt(t *testing.T) {
 	}
 }
 
-func TestComputeAssembledContextUsage_NoHistoryStillUsesTrimFallback(t *testing.T) {
+func TestComputeAssembledContextUsage_NoHistoryAvoidsSyntheticTrim(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Agents.Defaults.MaxTokens = 64
 	cfg.Agents.Defaults.ContextWindow = 5000
@@ -934,21 +888,59 @@ func TestComputeAssembledContextUsage_NoHistoryStillUsesTrimFallback(t *testing.
 		cfg,
 		agent,
 		al.contextManager,
-		nil,
-		cfg.Agents.Defaults.GetMaxMediaSize(),
 		processOptions{NoHistory: true},
 		"ctx-nohistory",
 	)
 	if got == nil {
 		t.Fatal("expected assembled usage result")
 	}
+	if gotCount != 80 {
+		t.Fatalf("assembled history count = %d, want assembled manager history without synthetic trim", gotCount)
+	}
+	if fitsBudget != (got.UsedTokens <= got.CompressAtTokens) {
+		t.Fatalf(
+			"assembled fitsBudget = %t, want derived comparison %t",
+			fitsBudget,
+			got.UsedTokens <= got.CompressAtTokens,
+		)
+	}
+}
+
+func TestComputeAssembledContextUsage_AllowsNilTools(t *testing.T) {
+	cfg := testConfig(t)
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	agent.Tools = nil
+	agent.Sessions.AddFullMessage("ctx-nil-tools", providers.Message{
+		Role:    "user",
+		Content: "hello",
+	})
+
+	got, gotCount, fitsBudget := computeAssembledContextUsage(
+		context.Background(),
+		cfg,
+		agent,
+		al.contextManager,
+		processOptions{},
+		"ctx-nil-tools",
+	)
+	if got == nil {
+		t.Fatal("expected assembled usage result")
+	}
 	if !fitsBudget {
-		t.Fatal("expected no-history assembled usage to fit after trim fallback")
+		t.Fatal("expected assembled usage estimate to fit budget without tools")
 	}
-	if gotCount >= 80 {
-		t.Fatalf("assembled history count = %d, want trimmed history after no-history fallback", gotCount)
+	if gotCount != 1 {
+		t.Fatalf("assembled history count = %d, want 1", gotCount)
 	}
-	if got.UsedTokens > got.CompressAtTokens {
-		t.Fatalf("assembled used tokens = %d, want <= compressAt %d", got.UsedTokens, got.CompressAtTokens)
+	if got.HistoryTokens <= 0 {
+		t.Fatalf("assembled history tokens = %d, want > 0", got.HistoryTokens)
+	}
+	if got.UsedTokens < got.HistoryTokens {
+		t.Fatalf("assembled used tokens = %d, want >= history tokens %d", got.UsedTokens, got.HistoryTokens)
 	}
 }

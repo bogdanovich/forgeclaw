@@ -7,8 +7,6 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
 )
 
@@ -102,6 +100,7 @@ func estimateNonHistoryPromptReserveForProcessOptions(
 	cfg *config.Config,
 	agent *AgentInstance,
 	opts processOptions,
+	summary string,
 ) int {
 	if agent == nil {
 		return 0
@@ -119,7 +118,7 @@ func estimateNonHistoryPromptReserveForProcessOptions(
 	}
 
 	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
-	req := promptBuildRequestForProcessOptions(cfg, agent, opts, nil, "", "", nil)
+	req := promptBuildRequestForProcessOptions(cfg, agent, opts, nil, summary, "", nil)
 	req.ActiveSkills = append([]string(nil), contextualSkills...)
 	messages := agent.ContextBuilder.BuildMessagesFromPrompt(req)
 
@@ -135,8 +134,6 @@ func computeAssembledContextUsage(
 	cfg *config.Config,
 	agent *AgentInstance,
 	cm ContextManager,
-	mediaStore media.MediaStore,
-	maxMediaSize int,
 	opts processOptions,
 	sessionKey string,
 ) (*bus.ContextUsage, int, bool) {
@@ -152,51 +149,18 @@ func computeAssembledContextUsage(
 		SessionKey:    sessionKey,
 		Budget:        contextWindow,
 		MaxTokens:     agent.MaxTokens,
-		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, opts),
+		ReserveTokens: estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, opts, ""),
 	})
 	if err != nil || resp == nil {
 		return nil, 0, false
 	}
 
-	contextualSkills := activeSkillNames(agent, opts)
-	if agent.ContextBuilder != nil {
-		contextualSkills = agent.ContextBuilder.ResolveActiveSkillsForContext(contextualSkills)
-	}
-
-	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
-	rebuild := func(history []providers.Message) []providers.Message {
-		req := promptBuildRequestForProcessOptions(cfg, agent, opts, history, resp.Summary, "", nil)
-		req.ActiveSkills = append([]string(nil), contextualSkills...)
-		messages := agent.ContextBuilder.BuildMessagesFromPrompt(req)
-		return resolveMediaRefs(messages, mediaStore, maxMediaSize)
-	}
-
-	finalHistory := append([]providers.Message(nil), resp.History...)
-	messages := rebuild(finalHistory)
-	fitsBudget := !isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens)
-	if isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens) {
-		if trimmedHistory, trimmedMessages, fit := trimHistoryToFitContextWindow(
-			finalHistory,
-			rebuild,
-			contextWindow,
-			toolDefs,
-			agent.MaxTokens,
-		); fit {
-			finalHistory = trimmedHistory
-			messages = trimmedMessages
-			fitsBudget = true
-		}
-	}
-
 	historyTokens := 0
-	for _, m := range finalHistory {
+	for _, m := range resp.History {
 		historyTokens += EstimateMessageTokens(m)
 	}
 
-	usedTokens := EstimateToolDefsTokens(toolDefs)
-	for _, msg := range messages {
-		usedTokens += EstimateMessageTokens(msg)
-	}
+	usedTokens := historyTokens + estimateNonHistoryPromptReserveForProcessOptions(cfg, agent, opts, resp.Summary)
 
 	effectiveWindow := contextWindow - agent.MaxTokens
 	if effectiveWindow < 0 {
@@ -217,6 +181,8 @@ func computeAssembledContextUsage(
 		usedPercent = 100
 	}
 
+	fitsBudget := usedTokens <= compressAt
+
 	return &bus.ContextUsage{
 		UsedTokens:        usedTokens,
 		TotalTokens:       contextWindow,
@@ -224,7 +190,7 @@ func computeAssembledContextUsage(
 		CompressAtTokens:  compressAt,
 		SummarizeAtTokens: summarizeAt,
 		UsedPercent:       usedPercent,
-	}, len(finalHistory), fitsBudget
+	}, len(resp.History), fitsBudget
 }
 
 func contextManagerDisplayName(cm ContextManager) string {

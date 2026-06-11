@@ -37,6 +37,9 @@ func TestFormatContextStats_ShowsStoredAndAssembledSections(t *testing.T) {
 		"Thresholds",
 		"- Compress at: 122880 tokens",
 		"- Summarize at: heuristic 98304 full-window tokens; effective budget 122880 tokens; summary prefix target 32000 tokens",
+		"Notes",
+		"- Stored session shows persisted history pressure",
+		"- Assembled prompt estimate is approximate; final requests may differ after runtime shaping",
 	}
 	for _, want := range wants {
 		if !strings.Contains(got, want) {
