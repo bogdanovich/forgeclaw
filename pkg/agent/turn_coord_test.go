@@ -298,6 +298,9 @@ func newTurnCoordTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentL
 
 func makeTestProcessOpts(sessionKey string) processOptions {
 	return processOptions{
+		ModelBinding: effectiveModelBinding{
+			RouteSessionKey: sessionKey,
+		},
 		SessionKey:      sessionKey,
 		Channel:         "cli",
 		ChatID:          "test-chat",
@@ -514,8 +517,8 @@ func TestPipeline_SetupTurn_ModelNameDoesNotUseFallbackAliasBeforeFallback(t *te
 	if err != nil {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
-	if exec.llmModelName != "primary-model" {
-		t.Fatalf("exec.llmModelName = %q, want %q", exec.llmModelName, "primary-model")
+	if exec.model.llmModelName != "primary-model" {
+		t.Fatalf("exec.model.llmModelName = %q, want %q", exec.model.llmModelName, "primary-model")
 	}
 }
 
@@ -558,8 +561,8 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackIdentityAlias(t *testing.T) {
 	if ctrl != ControlBreak {
 		t.Fatalf("expected ControlBreak, got %v", ctrl)
 	}
-	if exec.llmModelName != "secondary" {
-		t.Fatalf("exec.llmModelName = %q, want %q", exec.llmModelName, "secondary")
+	if exec.model.llmModelName != "secondary" {
+		t.Fatalf("exec.model.llmModelName = %q, want %q", exec.model.llmModelName, "secondary")
 	}
 }
 
@@ -602,8 +605,8 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackDisplayNameWithoutAlias(t *testi
 	if ctrl != ControlBreak {
 		t.Fatalf("expected ControlBreak, got %v", ctrl)
 	}
-	if exec.llmModelName != "anthropic/claude-sonnet" {
-		t.Fatalf("exec.llmModelName = %q, want %q", exec.llmModelName, "anthropic/claude-sonnet")
+	if exec.model.llmModelName != "anthropic/claude-sonnet" {
+		t.Fatalf("exec.model.llmModelName = %q, want %q", exec.model.llmModelName, "anthropic/claude-sonnet")
 	}
 }
 
@@ -632,11 +635,11 @@ func TestPipeline_SetupTurn_UsesLightCandidateDisplayName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
-	if !exec.usedLight {
+	if !exec.model.usedLight {
 		t.Fatal("expected light routing to be used")
 	}
-	if exec.llmModelName != "light-model" {
-		t.Fatalf("exec.llmModelName = %q, want %q", exec.llmModelName, "light-model")
+	if exec.model.llmModelName != "light-model" {
+		t.Fatalf("exec.model.llmModelName = %q, want %q", exec.model.llmModelName, "light-model")
 	}
 }
 
@@ -1014,7 +1017,7 @@ func TestPipeline_SetupTurn_ClearsStaleAutoFallbackSelectionOnModelMismatch(t *t
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	if got := exec.activeCandidates[0].Model; got != "new-primary-model" {
+	if got := exec.model.activeCandidates[0].Model; got != "new-primary-model" {
 		t.Fatalf("active candidate model = %q, want %q", got, "new-primary-model")
 	}
 	if _, ok := al.getAutoModelSelection("sticky-session"); ok {
@@ -1062,7 +1065,7 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 	if err != nil {
 		t.Fatalf("SetupTurn(light) failed: %v", err)
 	}
-	if !lightExec.usedLight {
+	if !lightExec.model.usedLight {
 		t.Fatal("expected light routing to be used")
 	}
 	if _, callErr := pipeline.CallLLM(
@@ -1086,7 +1089,7 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 	if err != nil {
 		t.Fatalf("SetupTurn(third) failed: %v", err)
 	}
-	if got := thirdExec.activeCandidates[0].Model; got != "fallback-model" {
+	if got := thirdExec.model.activeCandidates[0].Model; got != "fallback-model" {
 		t.Fatalf("third active candidate model = %q, want %q", got, "fallback-model")
 	}
 	if _, err := pipeline.CallLLM(context.Background(), context.Background(), thirdTS, thirdExec, 1); err != nil {

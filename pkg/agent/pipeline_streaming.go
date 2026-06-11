@@ -26,12 +26,12 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 	if !p.configuredStreamingEligible(ts, exec) {
 		return nil, false, nil
 	}
-	streamProvider, ok := exec.activeProvider.(providers.StreamingProvider)
+	streamProvider, ok := exec.model.activeProvider.(providers.StreamingProvider)
 	if !ok {
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"agent_id": ts.agent.ID,
 			"channel":  ts.channel,
-			"model":    exec.activeModel,
+			"model":    exec.model.activeModel,
 			"reason":   "provider_not_streaming",
 		})
 		return nil, false, nil
@@ -43,7 +43,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 			"agent_id": ts.agent.ID,
 			"channel":  ts.channel,
 			"chat_id":  ts.chatID,
-			"model":    exec.activeModel,
+			"model":    exec.model.activeModel,
 			"reason":   "streamer_unavailable",
 		})
 		return nil, false, nil
@@ -53,7 +53,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		streamer:  streamer,
 		channel:   ts.channel,
 		chatID:    ts.chatID,
-		modelName: exec.llmModelName,
+		modelName: exec.model.llmModelName,
 	}
 
 	logger.DebugCF("agent", "configured streaming enabled", map[string]any{
@@ -76,7 +76,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 	}
 	var response *providers.LLMResponse
 	var streamErr error
-	if eventProvider, ok := exec.activeProvider.(providers.StreamingEventProvider); ok {
+	if eventProvider, ok := exec.model.activeProvider.(providers.StreamingEventProvider); ok {
 		response, streamErr = eventProvider.ChatStreamEvents(
 			ctx,
 			messagesForCall,
@@ -121,7 +121,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 			}
 			logger.WarnCF("agent", "ChatStream update failed before visible output; retrying with Chat", logFields)
 			publisher.Cancel(ctx)
-			fallbackResponse, err := exec.activeProvider.Chat(
+			fallbackResponse, err := exec.model.activeProvider.Chat(
 				ctx,
 				messagesForCall,
 				toolDefsForCall,
@@ -143,7 +143,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 				"error":    streamErr.Error(),
 			})
 			publisher.Cancel(ctx)
-			fallbackResponse, err := exec.activeProvider.Chat(
+			fallbackResponse, err := exec.model.activeProvider.Chat(
 				ctx,
 				messagesForCall,
 				toolDefsForCall,
@@ -268,7 +268,7 @@ func (p *Pipeline) configuredStreamingEligible(ts *turnState, exec *turnExecutio
 			"agent_id": ts.agent.ID,
 			"channel":  ts.channel,
 			"chat_id":  ts.chatID,
-			"model":    exec.activeModel,
+			"model":    exec.model.activeModel,
 			"reason":   "missing_channel_context",
 		})
 		return false
@@ -278,35 +278,35 @@ func (p *Pipeline) configuredStreamingEligible(ts *turnState, exec *turnExecutio
 			"agent_id": ts.agent.ID,
 			"channel":  ts.channel,
 			"chat_id":  ts.chatID,
-			"model":    exec.activeModel,
+			"model":    exec.model.activeModel,
 			"reason":   "turn_output_disabled",
 		})
 		return false
 	}
-	if len(exec.activeCandidates) != 1 {
+	if len(exec.model.activeCandidates) != 1 {
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"agent_id":   ts.agent.ID,
 			"channel":    ts.channel,
-			"model":      exec.activeModel,
-			"candidates": len(exec.activeCandidates),
+			"model":      exec.model.activeModel,
+			"candidates": len(exec.model.activeCandidates),
 			"reason":     "fallback_candidates_enabled",
 		})
 		return false
 	}
-	if exec.activeModelConfig == nil || !exec.activeModelConfig.Streaming.Enabled {
+	if exec.model.activeModelConfig == nil || !exec.model.activeModelConfig.Streaming.Enabled {
 		modelName := ""
 		modelStreaming := false
-		if exec.activeModelConfig != nil {
-			modelName = exec.activeModelConfig.ModelName
-			modelStreaming = exec.activeModelConfig.Streaming.Enabled
+		if exec.model.activeModelConfig != nil {
+			modelName = exec.model.activeModelConfig.ModelName
+			modelStreaming = exec.model.activeModelConfig.Streaming.Enabled
 		}
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"agent_id":         ts.agent.ID,
 			"channel":          ts.channel,
-			"model":            exec.activeModel,
+			"model":            exec.model.activeModel,
 			"model_name":       modelName,
 			"model_streaming":  modelStreaming,
-			"has_model_config": exec.activeModelConfig != nil,
+			"has_model_config": exec.model.activeModelConfig != nil,
 			"reason":           "model_streaming_disabled",
 		})
 		return false
@@ -316,7 +316,7 @@ func (p *Pipeline) configuredStreamingEligible(ts *turnState, exec *turnExecutio
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"agent_id":           ts.agent.ID,
 			"channel":            ts.channel,
-			"model":              exec.activeModel,
+			"model":              exec.model.activeModel,
 			"channel_streaming":  channelStreaming.Enabled,
 			"has_channel_config": ok,
 			"reason":             "channel_streaming_disabled",

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/state"
 )
 
 func buildResetSessionKey(agentID, routeSessionKey string) string {
@@ -58,6 +59,27 @@ func (al *AgentLoop) clearToolFeedbackOverride(routeSessionKey string) error {
 		return fmt.Errorf("state manager not initialized")
 	}
 	return al.state.ClearToolFeedbackOverride(routeSessionKey)
+}
+
+func (al *AgentLoop) getSessionModelOverride(routeSessionKey string) (state.SessionModelOverride, bool) {
+	if al == nil || al.state == nil {
+		return state.SessionModelOverride{}, false
+	}
+	return al.state.GetSessionModelOverride(routeSessionKey)
+}
+
+func (al *AgentLoop) setSessionModelOverride(routeSessionKey, model string) error {
+	if al == nil || al.state == nil {
+		return fmt.Errorf("state manager not initialized")
+	}
+	return al.state.SetSessionModelOverride(routeSessionKey, model)
+}
+
+func (al *AgentLoop) clearSessionModelOverride(routeSessionKey string) error {
+	if al == nil || al.state == nil {
+		return fmt.Errorf("state manager not initialized")
+	}
+	return al.state.ClearSessionModelOverride(routeSessionKey)
 }
 
 func (al *AgentLoop) resolveEffectiveSessionKey(routeSessionKey, msgSessionKey string) string {

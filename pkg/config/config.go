@@ -538,12 +538,14 @@ type WhatsAppSettings struct {
 }
 
 type TelegramSettings struct {
-	Token             SecureString    `json:"token,omitzero"       yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_TELEGRAM_TOKEN"`
-	BaseURL           string          `json:"base_url"             yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
-	Proxy             string          `json:"proxy"                yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
-	Streaming         StreamingConfig `json:"streaming,omitzero"   yaml:"-"`
-	UseMarkdownV2     bool            `json:"use_markdown_v2"      yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
-	MediaGroupDelayMS int             `json:"media_group_delay_ms" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_MEDIA_GROUP_DELAY_MS"`
+	Token             SecureString        `json:"token,omitzero"              yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_TELEGRAM_TOKEN"`
+	BaseURL           string              `json:"base_url"                    yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
+	Proxy             string              `json:"proxy"                       yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
+	Streaming         StreamingConfig     `json:"streaming,omitzero"          yaml:"-"`
+	UseMarkdownV2     bool                `json:"use_markdown_v2"             yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
+	MediaGroupDelayMS int                 `json:"media_group_delay_ms"        yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_MEDIA_GROUP_DELAY_MS"`
+	AllowedTopicIDs   FlexibleStringSlice `json:"allowed_topic_ids,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS"`
+	IgnoredTopicIDs   FlexibleStringSlice `json:"ignored_topic_ids,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS"`
 }
 
 type FeishuSettings struct {

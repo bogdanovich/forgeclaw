@@ -83,16 +83,17 @@ type AgentLoop struct {
 // processOptions configures how a message is processed
 type processOptions struct {
 	Dispatch                 DispatchRequest // Normalized routed request boundary for this turn
-	SessionKey               string          // Session identifier for history/context
-	SessionAliases           []string        // Compatibility aliases for the session key
-	Channel                  string          // Target channel for tool execution
-	ChatID                   string          // Target chat ID for tool execution
-	MessageID                string          // Current inbound platform message ID
-	ReplyToMessageID         string          // Current inbound reply target message ID
-	SenderID                 string          // Current sender ID for dynamic context
-	SenderDisplayName        string          // Current sender display name for dynamic context
-	UserMessage              string          // User message content (may include prefix)
-	ForcedSkills             []string        // Skills explicitly requested for this message
+	ModelBinding             effectiveModelBinding
+	SessionKey               string   // Session identifier for history/context
+	SessionAliases           []string // Compatibility aliases for the session key
+	Channel                  string   // Target channel for tool execution
+	ChatID                   string   // Target chat ID for tool execution
+	MessageID                string   // Current inbound platform message ID
+	ReplyToMessageID         string   // Current inbound reply target message ID
+	SenderID                 string   // Current sender ID for dynamic context
+	SenderDisplayName        string   // Current sender display name for dynamic context
+	UserMessage              string   // User message content (may include prefix)
+	ForcedSkills             []string // Skills explicitly requested for this message
 	TurnProfile              config.EffectiveTurnProfile
 	SystemPromptOverride     string                 // Override the default system prompt (Used by SubTurns)
 	Media                    []string               // media:// refs from inbound message

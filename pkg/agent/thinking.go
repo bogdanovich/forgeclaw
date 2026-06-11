@@ -68,14 +68,18 @@ func thinkingSettingsFromModelConfig(mc *config.ModelConfig) thinkingSettings {
 	}
 }
 
-func activeThinkingSettings(agent *AgentInstance, modelCfg *config.ModelConfig) thinkingSettings {
+func activeThinkingSettings(
+	modelCfg *config.ModelConfig,
+	level ThinkingLevel,
+	levelConfigured bool,
+) thinkingSettings {
 	if settings := thinkingSettingsFromModelConfig(modelCfg); settings.configured {
 		return settings
 	}
-	if modelCfg == nil && agent != nil {
+	if modelCfg == nil {
 		return thinkingSettings{
-			level:      agent.ThinkingLevel,
-			configured: agent.ThinkingLevelConfigured,
+			level:      level,
+			configured: levelConfigured,
 		}
 	}
 	return thinkingSettings{}
@@ -107,7 +111,7 @@ func applyThinkingOption(
 
 func applyTurnThinkingOptions(
 	exec *turnExecution,
-	agent *AgentInstance,
+	execution effectiveExecutionState,
 	provider providers.LLMProvider,
 	warnUnsupported bool,
 ) {
@@ -115,11 +119,12 @@ func applyTurnThinkingOptions(
 		return
 	}
 	delete(exec.llmOpts, "thinking_level")
-	settings := activeThinkingSettings(agent, exec.activeModelConfig)
-	agentID := ""
-	if agent != nil {
-		agentID = agent.ID
-	}
+	settings := activeThinkingSettings(
+		exec.model.activeModelConfig,
+		execution.ThinkingLevel,
+		execution.ThinkingLevelConfigured,
+	)
+	agentID := execution.AgentID
 	applyThinkingOption(exec.llmOpts, provider, settings, warnUnsupported, agentID)
 	exec.suppressReasoning = shouldSuppressReasoningFor(settings)
 }

@@ -277,6 +277,41 @@ func TestToolFeedbackOverridesPersist(t *testing.T) {
 	}
 }
 
+func TestSessionModelOverridesPersist(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	sm := NewManager(tmpDir)
+	if err := sm.SetSessionModelOverride("route-session", "deepseek"); err != nil {
+		t.Fatalf("SetSessionModelOverride failed: %v", err)
+	}
+
+	got, ok := sm.GetSessionModelOverride("route-session")
+	if !ok || got.Model != "deepseek" {
+		t.Fatalf("GetSessionModelOverride() = (%+v, %v), want (deepseek, true)", got, ok)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatal("expected UpdatedAt to be populated")
+	}
+
+	sm2 := NewManager(tmpDir)
+	got2, ok := sm2.GetSessionModelOverride("route-session")
+	if !ok || got2.Model != "deepseek" {
+		t.Fatalf("persisted GetSessionModelOverride() = (%+v, %v), want (deepseek, true)", got2, ok)
+	}
+
+	if err := sm2.ClearSessionModelOverride("route-session"); err != nil {
+		t.Fatalf("ClearSessionModelOverride failed: %v", err)
+	}
+	if _, ok := sm2.GetSessionModelOverride("route-session"); ok {
+		t.Fatal("expected session model override to be cleared")
+	}
+
+	sm3 := NewManager(tmpDir)
+	if _, ok := sm3.GetSessionModelOverride("route-session"); ok {
+		t.Fatal("expected persisted session model override to be cleared")
+	}
+}
+
 func TestAutoModelSelectionsPersist(t *testing.T) {
 	tmpDir := t.TempDir()
 

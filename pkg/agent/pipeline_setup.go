@@ -127,14 +127,16 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		ts.ingestMessage(ctx, p.al, rootMsg)
 	}
 
-	selection := p.al.selectCandidates(ts.agent, ts.userMessage, messages, ts.opts.Dispatch.RouteSessionKey)
-	activeProvider := ts.agent.Provider
-	if selection.usedLight && ts.agent.LightProvider != nil {
-		activeProvider = ts.agent.LightProvider
+	execution := ts.model.ExecutionState()
+
+	selection := p.al.selectCandidates(execution, ts.userMessage, messages, ts.model.RouteSessionKey)
+	activeProvider := execution.Provider
+	if selection.usedLight && execution.LightProvider != nil {
+		activeProvider = execution.LightProvider
 	}
-	activeModelName := strings.TrimSpace(ts.agent.Model)
+	activeModelName := strings.TrimSpace(execution.Model)
 	if selection.usedLight {
-		activeModelName = strings.TrimSpace(sideQuestionModelName(ts.agent, true))
+		activeModelName = strings.TrimSpace(resolvedCandidateModelName(execution.LightCandidates, activeModelName))
 	}
 	activeModelName = resolvedCandidateModelName(selection.activeCandidates, activeModelName)
 
@@ -145,19 +147,21 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		summary,
 		messages,
 	)
-	exec.selectedCandidates = selection.selectedCandidates
-	exec.activeCandidates = selection.activeCandidates
-	exec.activeModel = selection.model
-	exec.activeModelConfig = resolveActiveModelConfig(
+	exec.model.selectedCandidates = selection.selectedCandidates
+	exec.model.activeCandidates = selection.activeCandidates
+	exec.model.activeModel = selection.model
+	exec.model.activeModelConfig = resolveActiveModelConfig(
 		p.Cfg,
 		ts.agent.Workspace,
 		selection.activeCandidates,
 		selection.model,
 		p.Cfg.Agents.Defaults.Provider,
 	)
-	exec.llmModelName = activeModelName
-	exec.activeProvider = activeProvider
-	exec.usedLight = selection.usedLight
+	exec.model.llmModelName = activeModelName
+	exec.model.activeProvider = activeProvider
+	exec.model.candidateProviders = execution.CandidateProviders
+	exec.model.cleanup = nil
+	exec.model.usedLight = selection.usedLight
 
 	return exec, nil
 }

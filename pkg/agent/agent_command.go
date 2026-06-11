@@ -20,7 +20,7 @@ import (
 func (al *AgentLoop) handleCommand(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	agent *AgentInstance,
+	modelBinding effectiveModelBinding,
 	opts *processOptions,
 ) (string, bool) {
 	normalizeProcessOptionsInPlace(opts)
@@ -29,7 +29,11 @@ func (al *AgentLoop) handleCommand(
 		return "", false
 	}
 
-	if matched, handled, reply := al.applyExplicitSkillCommand(msg.Content, agent, opts); matched {
+	if matched, handled, reply := al.applyExplicitSkillCommand(
+		msg.Content,
+		modelBinding.WorkspaceAgent,
+		opts,
+	); matched {
 		return reply, handled
 	}
 
@@ -37,7 +41,7 @@ func (al *AgentLoop) handleCommand(
 		return "", false
 	}
 
-	rt := al.buildCommandsRuntime(ctx, agent, opts)
+	rt := al.buildCommandsRuntime(ctx, modelBinding, opts)
 	executor := commands.NewExecutor(al.cmdRegistry, rt)
 
 	var commandReply string
@@ -127,13 +131,16 @@ func (al *AgentLoop) applyExplicitSkillCommand(
 
 func (al *AgentLoop) buildCommandsRuntime(
 	ctx context.Context,
-	agent *AgentInstance,
+	modelBinding effectiveModelBinding,
 	opts *processOptions,
 ) *commands.Runtime {
 	normalizeProcessOptionsInPlace(opts)
 
 	registry := al.GetRegistry()
 	cfg := al.GetConfig()
+	agent := modelBinding.WorkspaceAgent
+	workspaceAgent := modelBinding.WorkspaceAgent
+	execution := modelBinding.ExecutionState()
 	rt := &commands.Runtime{
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
@@ -291,11 +298,24 @@ func (al *AgentLoop) buildCommandsRuntime(
 		return al.reloadFunc()
 	}
 	if agent != nil {
-		if agent.ContextBuilder != nil {
-			rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
+		if workspaceAgent == nil {
+			workspaceAgent = agent
+		}
+		if workspaceAgent.ContextBuilder != nil {
+			rt.ListSkillNames = workspaceAgent.ContextBuilder.ListSkillNames
 		}
 		rt.GetModelInfo = func() (string, string) {
-			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
+			info := selectionInfoForBinding(
+				cfg,
+				al.buildSelectionBindingView(modelBinding),
+			)
+			return info.EffectiveName, info.EffectiveProvider
+		}
+		rt.GetModelSelection = func() commands.ModelSelectionInfo {
+			return selectionInfoForBinding(
+				cfg,
+				al.buildSelectionBindingView(modelBinding),
+			)
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
 			if cfg == nil || len(cfg.ModelList) == 0 {
@@ -320,13 +340,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 					entry = &modelAggregate{
 						info: commands.ConfiguredModelInfo{
 							Name:    modelCfg.ModelName,
-							Current: modelCfg.ModelName == agent.Model,
+							Current: modelCfg.ModelName == execution.Model,
 						},
 						order:   idx,
 						targets: map[string]*targetAggregate{},
 					}
 					modelsByName[modelCfg.ModelName] = entry
-				} else if modelCfg.ModelName == agent.Model {
+				} else if modelCfg.ModelName == execution.Model {
 					entry.info.Current = true
 				}
 				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")
@@ -389,8 +409,14 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return models
 		}
 		rt.SwitchModel = func(value string) (string, error) {
+			if modelBinding.Override.Model != "" {
+				return "", fmt.Errorf(
+					"cannot use /switch while this conversation has /model %s active; use /model clear first",
+					modelBinding.Override.Model,
+				)
+			}
 			value = strings.TrimSpace(value)
-			modelCfg, err := resolvedModelConfig(cfg, value, agent.Workspace)
+			modelCfg, err := resolvedModelConfig(cfg, value, workspaceAgent.Workspace)
 			if err != nil {
 				return "", err
 			}
@@ -400,18 +426,23 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return "", fmt.Errorf("failed to initialize model %q: %w", value, err)
 			}
 
-			nextCandidates := resolveModelCandidates(cfg, cfg.Agents.Defaults.Provider, value, agent.Fallbacks)
+			nextCandidates := resolveModelCandidates(
+				cfg,
+				cfg.Agents.Defaults.Provider,
+				value,
+				workspaceAgent.Fallbacks,
+			)
 			if len(nextCandidates) == 0 {
 				return "", fmt.Errorf("model %q did not resolve to any provider candidates", value)
 			}
 
-			oldModel := agent.Model
-			oldProvider := agent.Provider
-			agent.Model = value
-			agent.Provider = nextProvider
-			agent.Candidates = nextCandidates
-			agent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
-			agent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
+			oldModel := workspaceAgent.Model
+			oldProvider := workspaceAgent.Provider
+			workspaceAgent.Model = value
+			workspaceAgent.Provider = nextProvider
+			workspaceAgent.Candidates = nextCandidates
+			workspaceAgent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
+			workspaceAgent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
 			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
 				_ = al.clearAutoModelSelection(routeSessionKey)
 			}
@@ -422,6 +453,32 @@ func (al *AgentLoop) buildCommandsRuntime(
 				}
 			}
 			return oldModel, nil
+		}
+		rt.SetSessionModel = func(value string) error {
+			if modelBinding.RouteSessionKey == "" {
+				return fmt.Errorf("conversation key not available")
+			}
+			modelName, err := canonicalModelOverrideValue(cfg, value)
+			if err != nil {
+				return err
+			}
+			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
+				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
+					return err
+				}
+			}
+			return al.setSessionModelOverride(modelBinding.RouteSessionKey, modelName)
+		}
+		rt.ClearSessionModel = func() error {
+			if modelBinding.RouteSessionKey == "" {
+				return fmt.Errorf("conversation key not available")
+			}
+			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
+				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
+					return err
+				}
+			}
+			return al.clearSessionModelOverride(modelBinding.RouteSessionKey)
 		}
 
 		rt.ClearHistory = func() error {
@@ -440,6 +497,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return "", fmt.Errorf("route session key not available")
 			}
 			if clearOverride {
+				if err := al.clearSessionModelOverride(routeSessionKey); err != nil {
+					return "", err
+				}
 				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 					return "", err
 				}
@@ -449,6 +509,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 			nextSessionKey := buildResetSessionKey(agent.ID, routeSessionKey)
 			if nextSessionKey == "" {
 				return "", fmt.Errorf("failed to allocate reset session key")
+			}
+			if err := al.clearSessionModelOverride(routeSessionKey); err != nil {
+				return "", err
 			}
 			if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 				return "", err

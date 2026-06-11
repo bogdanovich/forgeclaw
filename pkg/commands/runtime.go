@@ -40,6 +40,15 @@ type ConfiguredModelTarget struct {
 	Count     int
 }
 
+type ModelSelectionInfo struct {
+	EffectiveName      string
+	EffectiveProvider  string
+	WorkspaceName      string
+	WorkspaceProvider  string
+	SessionOverride    string
+	HasSessionOverride bool
+}
+
 // ContextStats describes current session context window usage.
 type ContextStats struct {
 	ContextManager            string
@@ -72,6 +81,7 @@ type StopResult struct {
 type Runtime struct {
 	Config             *config.Config
 	GetModelInfo       func() (name, provider string)
+	GetModelSelection  func() ModelSelectionInfo
 	ListModels         func() []ConfiguredModelInfo
 	AskSideQuestion    func(ctx context.Context, question string) (string, error)
 	ListAgentIDs       func() []string
@@ -83,6 +93,8 @@ type Runtime struct {
 	GetActiveTurn      func() any // Returning any to avoid circular dependency with agent package
 	GetContextStats    func() *ContextStats
 	SwitchModel        func(value string) (oldModel string, err error)
+	SetSessionModel    func(value string) error
+	ClearSessionModel  func() error
 	SwitchChannel      func(value string) error
 	ResetSession       func(clearOverride bool) (sessionKey string, err error)
 	SetToolFeedback    func(mode string) (enabled bool, source string, err error)

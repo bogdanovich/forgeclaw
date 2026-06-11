@@ -135,34 +135,34 @@ func (al *AgentLoop) clearAutoModelSelectionWithReason(routeSessionKey, clearRea
 }
 
 func (al *AgentLoop) selectCandidates(
-	agent *AgentInstance,
+	execution effectiveExecutionState,
 	userMsg string,
 	history []providers.Message,
 	routeSessionKey string,
 ) modelSelectionDecision {
-	baseCandidates := agent.Candidates
-	baseModel := resolvedCandidateModel(agent.Candidates, agent.Model)
+	baseCandidates := execution.Candidates
+	baseModel := resolvedCandidateModel(execution.Candidates, execution.Model)
 	usedLight := false
 
-	if agent.Router != nil && len(agent.LightCandidates) > 0 {
-		_, usedLightCandidate, score := agent.Router.SelectModel(userMsg, history, agent.Model)
+	if execution.Router != nil && len(execution.LightCandidates) > 0 {
+		_, usedLightCandidate, score := execution.Router.SelectModel(userMsg, history, execution.Model)
 		if usedLightCandidate {
 			logger.InfoCF("agent", "Model routing: light model selected",
 				map[string]any{
-					"agent_id":    agent.ID,
-					"light_model": agent.Router.LightModel(),
+					"agent_id":    execution.AgentID,
+					"light_model": execution.Router.LightModel(),
 					"score":       score,
-					"threshold":   agent.Router.Threshold(),
+					"threshold":   execution.Router.Threshold(),
 				})
-			baseCandidates = agent.LightCandidates
-			baseModel = resolvedCandidateModel(agent.LightCandidates, agent.Router.LightModel())
+			baseCandidates = execution.LightCandidates
+			baseModel = resolvedCandidateModel(execution.LightCandidates, execution.Router.LightModel())
 			usedLight = true
 		} else {
 			logger.DebugCF("agent", "Model routing: primary model selected",
 				map[string]any{
-					"agent_id":  agent.ID,
+					"agent_id":  execution.AgentID,
 					"score":     score,
-					"threshold": agent.Router.Threshold(),
+					"threshold": execution.Router.Threshold(),
 				})
 		}
 	}
@@ -178,22 +178,54 @@ func (al *AgentLoop) selectCandidates(
 		return decision
 	}
 
+	return al.applyStickyAutoFallback(decision, routeSessionKey)
+}
+
+func (al *AgentLoop) applyStickyAutoFallback(
+	decision modelSelectionDecision,
+	routeSessionKey string,
+) modelSelectionDecision {
+	return al.applyStickyAutoFallbackWithMode(decision, routeSessionKey, true)
+}
+
+func (al *AgentLoop) previewStickyAutoFallback(
+	decision modelSelectionDecision,
+	routeSessionKey string,
+) modelSelectionDecision {
+	return al.applyStickyAutoFallbackWithMode(decision, routeSessionKey, false)
+}
+
+func (al *AgentLoop) applyStickyAutoFallbackWithMode(
+	decision modelSelectionDecision,
+	routeSessionKey string,
+	mutate bool,
+) modelSelectionDecision {
+	if strings.TrimSpace(routeSessionKey) == "" || len(decision.selectedCandidates) == 0 {
+		return decision
+	}
+
 	sel, ok := al.getAutoModelSelection(routeSessionKey)
 	if !ok {
 		return decision
 	}
 	if sel.ExpiresAt.IsZero() || time.Now().After(sel.ExpiresAt) {
-		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "expired")
+		if mutate {
+			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "expired")
+		}
 		return decision
 	}
 	if !selectedModelMatchesSelection(decision.selectedCandidates[0], sel) {
-		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "selected_model_mismatch")
+		if mutate {
+			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "selected_model_mismatch")
+		}
 		return decision
 	}
 
 	reordered, matched := reorderCandidatesForAutoFallback(decision.activeCandidates, sel)
 	if !matched {
-		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "active_candidate_missing")
+		if mutate {
+			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "active_candidate_missing")
+		}
 		return decision
 	}
 

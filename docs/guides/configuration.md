@@ -174,6 +174,9 @@ export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
 
 Once skills are installed, and MCP servers are configured, you can inspect and force them directly from a chat channel:
 
+- `/model <name>` applies a conversation-scoped model override for the current chat.
+- `/model clear` removes that conversation-scoped override.
+- `/show model` displays the effective model, including any active conversation override.
 - `/list skills` shows the installed skill names available to the current agent.
 - `/list mcp` shows configured MCP servers with enabled/deferred/connected status.
 - `/show mcp <server>` shows the active tools exposed by a connected MCP server.
@@ -185,6 +188,8 @@ Once skills are installed, and MCP servers are configured, you can inspect and f
 Examples:
 
 ```text
+/model deepseek
+/show model
 /list skills
 /list mcp
 /show mcp github
@@ -197,7 +202,7 @@ dammi le ultime news
 ### Unified Command Execution Policy
 
 - Generic slash commands are executed through a single path in `pkg/agent/agent_command.go` via `commands.Executor`.
-- Channel adapters no longer consume generic commands locally; they forward inbound text to the bus/agent path. Telegram still auto-registers supported commands such as `/start`, `/help`, `/show`, `/list`, `/use`, and `/btw` at startup.
+- Channel adapters no longer consume generic commands locally; they forward inbound text to the bus/agent path. Telegram still auto-registers supported commands such as `/start`, `/help`, `/show`, `/list`, `/model`, `/use`, and `/btw` at startup.
 - Unknown slash command (for example `/foo`) returns an explicit unknown-command error and does not fall through to normal LLM processing.
 - Registered but unsupported command on the current channel (for example `/show` on WhatsApp) returns an explicit user-facing error and stops further processing.
 
@@ -953,6 +958,33 @@ Opt-in example:
 | `model_list[].streaming.enabled` | bool | `false` | Allows this model entry to try provider streaming requests |
 
 Legacy Telegram environment variables remain compatible: `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, and `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. They only apply to Telegram settings and do not enable or modify Pico `settings.streaming`.
+
+Telegram topic ownership filters can also be set through environment overrides:
+`PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS` and
+`PICOCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS`. Use comma-separated topic IDs
+such as `3565,7777`.
+
+For Telegram forum groups, you can restrict a workspace to specific topics:
+
+```json
+{
+  "channel_list": {
+    "telegram": {
+      "enabled": true,
+      "type": "telegram",
+      "settings": {
+        "allowed_topic_ids": ["3565"],
+        "ignored_topic_ids": ["6"]
+      }
+    }
+  }
+}
+```
+
+- `allowed_topic_ids`: if non-empty, the workspace only accepts messages from those forum topic IDs.
+- `ignored_topic_ids`: messages from these forum topic IDs are always dropped.
+- The filter is applied before media download, suppressed-message observation, and session routing side effects.
+- Non-forum chats and regular Telegram private chats are unaffected.
 
 Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, PicoClaw retries once through the normal `Chat()` path. If a chunk has already been shown to the user, PicoClaw does not send a second non-streaming answer, because that would duplicate visible output.
 

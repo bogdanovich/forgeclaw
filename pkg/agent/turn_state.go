@@ -133,12 +133,7 @@ type turnExecution struct {
 	iteration int
 
 	// Per-iteration state set by Pipeline.PreLLM
-	selectedCandidates []providers.FallbackCandidate
-	activeCandidates   []providers.FallbackCandidate
-	activeModel        string
-	activeModelConfig  *config.ModelConfig
-	activeProvider     providers.LLMProvider
-	usedLight          bool
+	model turnExecutionModel
 
 	// LLM call per-iteration state
 	response            *providers.LLMResponse
@@ -150,7 +145,6 @@ type turnExecution struct {
 	callMessages        []providers.Message
 	providerToolDefs    []providers.ToolDefinition
 	llmModel            string
-	llmModelName        string
 	llmOpts             map[string]any
 	gracefulTerminal    bool
 	useNativeSearch     bool
@@ -161,6 +155,18 @@ type turnExecution struct {
 	// Abort signaling for coordinator (set by Pipeline methods)
 	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
 	abortedByHook      bool // true when HookActionAbortTurn triggered
+}
+
+type turnExecutionModel struct {
+	selectedCandidates []providers.FallbackCandidate
+	activeCandidates   []providers.FallbackCandidate
+	activeModel        string
+	activeModelConfig  *config.ModelConfig
+	activeProvider     providers.LLMProvider
+	candidateProviders map[string]providers.LLMProvider
+	cleanup            func()
+	usedLight          bool
+	llmModelName       string
 }
 
 func (e *turnExecution) markAdditionalUserInputObserved() {
@@ -206,6 +212,7 @@ type turnState struct {
 
 	agent   *AgentInstance
 	opts    processOptions
+	model   effectiveModelBinding
 	profile config.EffectiveTurnProfile
 	scope   turnEventScope
 
@@ -280,9 +287,17 @@ type turnState struct {
 // =============================================================================
 
 func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScope) *turnState {
+	binding := opts.ModelBinding
+	if binding.WorkspaceAgent == nil {
+		binding.WorkspaceAgent = agent
+	}
+	if binding.Execution.Model == "" && binding.Execution.Provider == nil && len(binding.Execution.Candidates) == 0 {
+		binding.Execution = effectiveExecutionStateForAgent(agent)
+	}
 	ts := &turnState{
 		agent:        agent,
 		opts:         opts,
+		model:        binding,
 		profile:      opts.TurnProfile,
 		scope:        scope,
 		turnID:       scope.turnID,

@@ -583,7 +583,10 @@ func TestAgentLoop_BtwCommand_UsesLLMHooks(t *testing.T) {
 			SenderID: "hook-user",
 		},
 		Content: "/btw hello",
-	}, agent, &processOptions{
+	}, effectiveModelBinding{
+		WorkspaceAgent: agent,
+		Execution:      effectiveExecutionStateForAgent(agent),
+	}, &processOptions{
 		Dispatch: DispatchRequest{
 			SessionKey: "session-1",
 			InboundContext: &bus.InboundContext{
