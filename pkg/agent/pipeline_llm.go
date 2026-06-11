@@ -732,6 +732,7 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 		}
 		defaultProvider = effectiveDefaultProvider(defaultProvider)
 		candidates := resolveModelCandidates(p.Cfg, defaultProvider, rawModel, nil)
+		exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), candidates...)
 		exec.model.activeCandidates = candidates
 		exec.model.activeModel = resolvedCandidateModel(candidates, rawModel)
 		exec.llmModel = exec.model.activeModel
@@ -745,6 +746,7 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 		exec.model.llmModelName = resolvedCandidateModelName(candidates, rawModel)
 		return
 	}
+	exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), execution.Candidates...)
 	if exec.model.cleanup != nil {
 		exec.model.cleanup()
 	}

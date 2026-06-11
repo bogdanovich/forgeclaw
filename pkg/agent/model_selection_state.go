@@ -178,6 +178,17 @@ func (al *AgentLoop) selectCandidates(
 		return decision
 	}
 
+	return al.applyStickyAutoFallback(decision, routeSessionKey)
+}
+
+func (al *AgentLoop) applyStickyAutoFallback(
+	decision modelSelectionDecision,
+	routeSessionKey string,
+) modelSelectionDecision {
+	if strings.TrimSpace(routeSessionKey) == "" || len(decision.selectedCandidates) == 0 {
+		return decision
+	}
+
 	sel, ok := al.getAutoModelSelection(routeSessionKey)
 	if !ok {
 		return decision

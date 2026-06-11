@@ -313,6 +313,15 @@ func (al *AgentLoop) buildCommandsRuntime(
 				override, _ := al.getSessionModelOverride(refreshed.RouteSessionKey)
 				refreshed.Override = override
 			}
+			selectionExecution := refreshed.ExecutionState()
+			executionDecision := al.applyStickyAutoFallback(modelSelectionDecision{
+				selectedCandidates: append([]providers.FallbackCandidate(nil), selectionExecution.Candidates...),
+				activeCandidates:   append([]providers.FallbackCandidate(nil), selectionExecution.Candidates...),
+				model:              resolvedCandidateModel(selectionExecution.Candidates, selectionExecution.Model),
+			}, refreshed.RouteSessionKey)
+			selectionExecution.Candidates = executionDecision.activeCandidates
+			selectionExecution.Model = executionDecision.model
+			refreshed.Execution = selectionExecution
 			return selectionInfoForBinding(cfg, refreshed)
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {

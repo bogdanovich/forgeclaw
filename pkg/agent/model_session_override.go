@@ -107,7 +107,10 @@ func buildSessionModelSelectionInfo(
 		info.WorkspaceName = workspaceAgent.Model
 		info.WorkspaceProvider = resolvedCandidateProvider(workspaceAgent.Candidates, "")
 	}
-	info.EffectiveName = execution.Model
+	info.EffectiveName = resolvedCandidateModelName(
+		execution.Candidates,
+		strings.TrimSpace(execution.Model),
+	)
 	info.EffectiveProvider = resolvedCandidateProvider(execution.Candidates, "")
 	override = normalizeSessionModelOverride(override)
 	if override.Model != "" {
