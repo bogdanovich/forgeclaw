@@ -127,14 +127,19 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		ts.ingestMessage(ctx, p.al, rootMsg)
 	}
 
-	selection := p.al.selectCandidates(ts.agent, ts.userMessage, messages, ts.model.RouteSessionKey)
-	activeProvider := ts.agent.Provider
-	if selection.usedLight && ts.agent.LightProvider != nil {
-		activeProvider = ts.agent.LightProvider
+	executionAgent := ts.model.ExecutionAgent()
+	if executionAgent == nil {
+		executionAgent = ts.agent
 	}
-	activeModelName := strings.TrimSpace(ts.agent.Model)
+
+	selection := p.al.selectCandidates(executionAgent, ts.userMessage, messages, ts.model.RouteSessionKey)
+	activeProvider := executionAgent.Provider
+	if selection.usedLight && executionAgent.LightProvider != nil {
+		activeProvider = executionAgent.LightProvider
+	}
+	activeModelName := strings.TrimSpace(executionAgent.Model)
 	if selection.usedLight {
-		activeModelName = strings.TrimSpace(sideQuestionModelName(ts.agent, true))
+		activeModelName = strings.TrimSpace(sideQuestionModelName(executionAgent, true))
 	}
 	activeModelName = resolvedCandidateModelName(selection.activeCandidates, activeModelName)
 
