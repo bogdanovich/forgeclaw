@@ -51,7 +51,7 @@ func formatContextStats(s *ContextStats) string {
 			"- Remaining: ~%d tokens  \n"+
 			"Thresholds  \n"+
 			"- Compress at: %d tokens  \n"+
-			"- Summarize at: %d history tokens",
+			"- Summarize at: %s",
 		s.ContextManager,
 		s.StoredMessageCount,
 		s.StoredUsedTokens,
@@ -68,7 +68,17 @@ func formatContextStats(s *ContextStats) string {
 		s.AssembledUsedPercent,
 		assembledRemaining,
 		s.CompressAtTokens,
-		s.SummarizeAtTokens,
+		formatSummarizeThreshold(s),
 	)
 	return msg
+}
+
+func formatSummarizeThreshold(s *ContextStats) string {
+	if s == nil {
+		return ""
+	}
+	if s.ContextManager == "legacy" && s.SummarizeMessageThreshold > 0 {
+		return fmt.Sprintf("%d history tokens or %d messages", s.SummarizeAtTokens, s.SummarizeMessageThreshold)
+	}
+	return fmt.Sprintf("%d history tokens", s.SummarizeAtTokens)
 }

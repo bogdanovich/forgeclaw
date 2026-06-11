@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 // computeContextUsage estimates current context window consumption for the
@@ -150,22 +151,42 @@ func computeAssembledContextUsage(
 		return nil, 0
 	}
 
+	contextualSkills := activeSkillNames(agent, opts)
+	if agent.ContextBuilder != nil {
+		contextualSkills = agent.ContextBuilder.ResolveActiveSkillsForContext(contextualSkills)
+	}
+
+	toolDefs := filterToolsByTurnProfile(agent.Tools.ToProviderDefs(), opts.TurnProfile)
+	rebuild := func(history []providers.Message) []providers.Message {
+		req := promptBuildRequestForProcessOptions(agent, opts, history, resp.Summary, "", nil)
+		req.ActiveSkills = append([]string(nil), contextualSkills...)
+		return agent.ContextBuilder.BuildMessagesFromPrompt(req)
+	}
+
+	finalHistory := append([]providers.Message(nil), resp.History...)
+	messages := rebuild(finalHistory)
+	if !opts.NoHistory && isOverContextBudget(contextWindow, messages, toolDefs, agent.MaxTokens) {
+		if trimmedHistory, trimmedMessages, fit := trimHistoryToFitContextWindow(
+			finalHistory,
+			rebuild,
+			contextWindow,
+			toolDefs,
+			agent.MaxTokens,
+		); fit {
+			finalHistory = trimmedHistory
+			messages = trimmedMessages
+		}
+	}
+
 	historyTokens := 0
-	for _, m := range resp.History {
+	for _, m := range finalHistory {
 		historyTokens += EstimateMessageTokens(m)
 	}
 
-	systemTokens := 0
-	if agent.ContextBuilder != nil {
-		systemTokens = agent.ContextBuilder.EstimateSystemTokens(resp.Summary, nil)
+	usedTokens := EstimateToolDefsTokens(toolDefs)
+	for _, msg := range messages {
+		usedTokens += EstimateMessageTokens(msg)
 	}
-
-	toolTokens := 0
-	if agent.Tools != nil {
-		toolTokens = EstimateToolDefsTokens(agent.Tools.ToProviderDefs())
-	}
-
-	usedTokens := historyTokens + systemTokens + toolTokens
 
 	effectiveWindow := contextWindow - agent.MaxTokens
 	if effectiveWindow < 0 {
@@ -193,7 +214,7 @@ func computeAssembledContextUsage(
 		CompressAtTokens:  compressAt,
 		SummarizeAtTokens: summarizeAt,
 		UsedPercent:       usedPercent,
-	}, len(resp.History)
+	}, len(finalHistory)
 }
 
 func contextManagerDisplayName(cm ContextManager) string {

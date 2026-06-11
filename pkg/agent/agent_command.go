@@ -526,18 +526,19 @@ func (al *AgentLoop) buildCommandsRuntime(
 				assembledUsage = storedUsage
 			}
 			return &commands.ContextStats{
-				ContextManager:         contextManagerDisplayName(al.contextManager),
-				TotalTokens:            storedUsage.TotalTokens,
-				CompressAtTokens:       storedUsage.CompressAtTokens,
-				SummarizeAtTokens:      storedUsage.SummarizeAtTokens,
-				StoredUsedTokens:       storedUsage.UsedTokens,
-				StoredHistoryTokens:    storedUsage.HistoryTokens,
-				StoredUsedPercent:      storedUsage.UsedPercent,
-				StoredMessageCount:     len(storedHistory),
-				AssembledUsedTokens:    assembledUsage.UsedTokens,
-				AssembledHistoryTokens: assembledUsage.HistoryTokens,
-				AssembledUsedPercent:   assembledUsage.UsedPercent,
-				AssembledMessageCount:  assembledMessageCount,
+				ContextManager:            contextManagerDisplayName(al.contextManager),
+				TotalTokens:               storedUsage.TotalTokens,
+				CompressAtTokens:          storedUsage.CompressAtTokens,
+				SummarizeAtTokens:         storedUsage.SummarizeAtTokens,
+				SummarizeMessageThreshold: agent.SummarizeMessageThreshold,
+				StoredUsedTokens:          storedUsage.UsedTokens,
+				StoredHistoryTokens:       storedUsage.HistoryTokens,
+				StoredUsedPercent:         storedUsage.UsedPercent,
+				StoredMessageCount:        len(storedHistory),
+				AssembledUsedTokens:       assembledUsage.UsedTokens,
+				AssembledHistoryTokens:    assembledUsage.HistoryTokens,
+				AssembledUsedPercent:      assembledUsage.UsedPercent,
+				AssembledMessageCount:     assembledMessageCount,
 			}
 		}
 	}
