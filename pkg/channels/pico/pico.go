@@ -747,7 +747,7 @@ func (c *PicoChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessag
 	}
 
 	attachments := make([]map[string]any, 0, len(msg.Parts))
-	caption := channels.FirstMediaCaption(msg.Parts)
+	caption := ""
 
 	for _, part := range msg.Parts {
 		localPath, meta, err := store.ResolveWithMeta(part.Ref)
@@ -795,6 +795,9 @@ func (c *PicoChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessag
 			"filename":     filename,
 			"content_type": contentType,
 		})
+		if caption == "" {
+			caption = strings.TrimSpace(part.Caption)
+		}
 	}
 
 	if len(attachments) == 0 {
