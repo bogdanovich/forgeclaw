@@ -291,9 +291,6 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 	if binding.WorkspaceAgent == nil {
 		binding.WorkspaceAgent = agent
 	}
-	if binding.Execution.Model == "" && binding.Execution.Provider == nil && len(binding.Execution.Candidates) == 0 {
-		binding.Execution = effectiveExecutionStateForAgent(agent)
-	}
 	ts := &turnState{
 		agent:        agent,
 		opts:         opts,

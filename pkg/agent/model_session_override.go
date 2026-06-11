@@ -64,10 +64,6 @@ func (b effectiveModelBinding) ExecutionState() effectiveExecutionState {
 	return effectiveExecutionStateForAgent(b.WorkspaceAgent)
 }
 
-func (b effectiveModelBinding) SelectionInfo() commands.ModelSelectionInfo {
-	return buildSessionModelSelectionInfo(b.WorkspaceAgent, b.ExecutionState(), b.Override)
-}
-
 func selectionInfoForBinding(
 	cfg *config.Config,
 	binding effectiveModelBinding,
@@ -246,7 +242,6 @@ func (al *AgentLoop) bindEffectiveModel(
 	binding := effectiveModelBinding{
 		RouteSessionKey: strings.TrimSpace(routeSessionKey),
 		WorkspaceAgent:  baseAgent,
-		Execution:       effectiveExecutionStateForAgent(baseAgent),
 	}
 	if binding.RouteSessionKey == "" || baseAgent == nil {
 		return binding
@@ -286,7 +281,6 @@ func (al *AgentLoop) bindEffectiveModel(
 }
 
 func (al *AgentLoop) buildSelectionBindingView(
-	cfg *config.Config,
 	binding effectiveModelBinding,
 ) effectiveModelBinding {
 	refreshed := binding
