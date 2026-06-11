@@ -33,6 +33,11 @@ func NewExecutor(reg *Registry, rt *Runtime) *Executor {
 // 1) handled: execute command immediately;
 // 2) passthrough: not a command or intentionally deferred to agent logic.
 func (e *Executor) Execute(ctx context.Context, req Request) ExecuteResult {
+	// Ensure Reply is always non-nil so all command paths can fail closed safely.
+	if req.Reply == nil {
+		req.Reply = func(string) error { return nil }
+	}
+
 	cmdName, ok := parseCommandName(req.Text)
 	if !ok {
 		return ExecuteResult{Outcome: OutcomePassthrough}
@@ -52,11 +57,6 @@ func (e *Executor) Execute(ctx context.Context, req Request) ExecuteResult {
 }
 
 func (e *Executor) executeDefinition(ctx context.Context, req Request, def Definition) ExecuteResult {
-	// Ensure Reply is always non-nil so handlers don't need to check.
-	if req.Reply == nil {
-		req.Reply = func(string) error { return nil }
-	}
-
 	// Simple command — no sub-commands
 	if len(def.SubCommands) == 0 {
 		if def.Handler == nil {

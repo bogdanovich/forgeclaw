@@ -42,6 +42,25 @@ func TestExecutor_UnknownSlashCommand_ReturnsHandledError(t *testing.T) {
 	}
 }
 
+func TestExecutor_UnknownSlashCommand_WithNilReply_DoesNotPanic(t *testing.T) {
+	defs := []Definition{{Name: "show"}}
+	ex := NewExecutor(NewRegistry(defs), nil)
+
+	res := ex.Execute(context.Background(), Request{
+		Channel: "telegram",
+		Text:    "/unknown",
+	})
+	if res.Outcome != OutcomeHandled {
+		t.Fatalf("outcome=%v, want=%v", res.Outcome, OutcomeHandled)
+	}
+	if res.Command != "unknown" {
+		t.Fatalf("command=%q, want=%q", res.Command, "unknown")
+	}
+	if res.Err != nil {
+		t.Fatalf("err=%v, want nil", res.Err)
+	}
+}
+
 func TestExecutor_SupportedCommandWithHandler_ReturnsHandled(t *testing.T) {
 	called := false
 	defs := []Definition{
