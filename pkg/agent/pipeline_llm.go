@@ -75,9 +75,9 @@ func (p *Pipeline) CallLLM(
 	if exec.useNativeSearch {
 		exec.llmOpts["native_search"] = true
 	}
-	applyTurnThinkingOptions(exec, ts.agent, exec.activeProvider, true)
+	applyTurnThinkingOptions(exec, ts.agent, exec.model.activeProvider, true)
 
-	exec.llmModel = exec.activeModel
+	exec.llmModel = exec.model.activeModel
 
 	// BeforeLLM hook
 	if p.Hooks != nil {
@@ -105,7 +105,7 @@ func (p *Pipeline) CallLLM(
 				}
 				if strings.TrimSpace(exec.llmModel) != "" && exec.llmModel != prevModel {
 					p.applyBeforeLLMModelRewrite(ts, exec)
-					applyTurnThinkingOptions(exec, ts.agent, exec.activeProvider, true)
+					applyTurnThinkingOptions(exec, ts.agent, exec.model.activeProvider, true)
 				}
 			}
 		case HookActionAbortTurn:
@@ -172,15 +172,15 @@ func (p *Pipeline) CallLLM(
 			return response, streamErr
 		}
 
-		if len(exec.activeCandidates) > 1 && p.Fallback != nil {
+		if len(exec.model.activeCandidates) > 1 && p.Fallback != nil {
 			fbResult, fbErr := p.Fallback.ExecuteCandidate(
 				providerCtx,
-				exec.activeCandidates,
+				exec.model.activeCandidates,
 				func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {
 					candidateProvider, err := providerForFallbackCandidate(
 						ts.agent,
-						exec.activeProvider,
-						exec.activeCandidates,
+						exec.model.activeProvider,
+						exec.model.activeCandidates,
 						candidate.Provider,
 						candidate.Model,
 					)
@@ -213,43 +213,43 @@ func (p *Pipeline) CallLLM(
 					map[string]any{"agent_id": ts.agent.ID, "iteration": iteration},
 				)
 			}
-			for _, candidate := range exec.activeCandidates {
+			for _, candidate := range exec.model.activeCandidates {
 				if candidate.StableKey() != fbResult.IdentityKey {
 					continue
 				}
-				exec.llmModelName = resolvedCandidateModelName(
+				exec.model.llmModelName = resolvedCandidateModelName(
 					[]providers.FallbackCandidate{candidate},
-					exec.llmModelName,
+					exec.model.llmModelName,
 				)
 				break
 			}
 			updateAutoFallbackSelection(
 				p.al,
 				ts.model.RouteSessionKey,
-				exec.selectedCandidates,
+				exec.model.selectedCandidates,
 				fbResult,
-				exec.usedLight,
+				exec.model.usedLight,
 			)
 			return fbResult.Response, nil
 		}
-		resp, err := exec.activeProvider.Chat(
+		resp, err := exec.model.activeProvider.Chat(
 			providerCtx,
 			messagesForCall,
 			toolDefsForCall,
 			exec.llmModel,
 			exec.llmOpts,
 		)
-		if err == nil && strings.TrimSpace(ts.model.RouteSessionKey) != "" && len(exec.selectedCandidates) > 0 {
+		if err == nil && strings.TrimSpace(ts.model.RouteSessionKey) != "" && len(exec.model.selectedCandidates) > 0 {
 			updateAutoFallbackSelection(
 				p.al,
 				ts.model.RouteSessionKey,
-				exec.selectedCandidates,
+				exec.model.selectedCandidates,
 				&providers.FallbackResult{
 					Response: resp,
-					Provider: exec.activeCandidates[0].Provider,
-					Model:    exec.activeCandidates[0].Model,
+					Provider: exec.model.activeCandidates[0].Provider,
+					Model:    exec.model.activeCandidates[0].Model,
 				},
-				exec.usedLight,
+				exec.model.usedLight,
 			)
 		}
 		return resp, err
@@ -557,7 +557,7 @@ func (p *Pipeline) CallLLM(
 			// Publish pico thoughts before the turn context is canceled at return time.
 			// The async variant can race with turn teardown and intermittently drop the
 			// thought message in CI even though the LLM produced reasoning content.
-			al.publishPicoReasoning(turnCtx, reasoningContent, ts.chatID, ts.sessionKey, exec.llmModelName)
+			al.publishPicoReasoning(turnCtx, reasoningContent, ts.chatID, ts.sessionKey, exec.model.llmModelName)
 		}
 	} else {
 		go al.handleReasoning(
@@ -650,7 +650,7 @@ func (p *Pipeline) CallLLM(
 	assistantMsg := providers.Message{
 		Role:             "assistant",
 		Content:          exec.response.Content,
-		ModelName:        exec.llmModelName,
+		ModelName:        exec.model.llmModelName,
 		ReasoningContent: reasoningContent,
 	}
 	for _, tc := range exec.normalizedToolCalls {
@@ -694,7 +694,7 @@ func (p *Pipeline) CallLLM(
 		al.publishPicoToolCallInterim(
 			turnCtx,
 			ts,
-			exec.llmModelName,
+			exec.model.llmModelName,
 			reasoningContent,
 			exec.response.Content,
 			assistantMsg.ToolCalls,
@@ -721,10 +721,16 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 	}
 	defaultProvider = effectiveDefaultProvider(defaultProvider)
 	candidates := resolveModelCandidates(p.Cfg, defaultProvider, rawModel, nil)
-	exec.activeCandidates = candidates
-	exec.activeModel = resolvedCandidateModel(candidates, rawModel)
-	exec.llmModel = exec.activeModel
-	exec.activeModelConfig = resolveActiveModelConfig(p.Cfg, ts.agent.Workspace, candidates, rawModel, defaultProvider)
+	exec.model.activeCandidates = candidates
+	exec.model.activeModel = resolvedCandidateModel(candidates, rawModel)
+	exec.llmModel = exec.model.activeModel
+	exec.model.activeModelConfig = resolveActiveModelConfig(
+		p.Cfg,
+		ts.agent.Workspace,
+		candidates,
+		rawModel,
+		defaultProvider,
+	)
 }
 
 func providerForFallbackCandidate(

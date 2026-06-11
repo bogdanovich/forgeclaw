@@ -52,11 +52,11 @@ func finalTurnRenderEligible(al *AgentLoop, exec *turnExecution) bool {
 
 func finalTurnRenderModel(ts *turnState, exec *turnExecution) (providers.LLMProvider, string) {
 	if exec != nil {
-		if exec.activeProvider != nil && strings.TrimSpace(exec.activeModel) != "" {
-			return exec.activeProvider, strings.TrimSpace(exec.activeModel)
+		if exec.model.activeProvider != nil && strings.TrimSpace(exec.model.activeModel) != "" {
+			return exec.model.activeProvider, strings.TrimSpace(exec.model.activeModel)
 		}
-		if exec.activeProvider != nil {
-			return exec.activeProvider, strings.TrimSpace(ts.agent.Model)
+		if exec.model.activeProvider != nil {
+			return exec.model.activeProvider, strings.TrimSpace(ts.agent.Model)
 		}
 	}
 	if ts == nil || ts.agent == nil {
