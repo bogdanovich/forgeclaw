@@ -71,32 +71,22 @@ func (b effectiveModelBinding) ExecutionState() effectiveExecutionState {
 }
 
 func selectionInfoForInspection(
-	cfg *config.Config,
 	inspection modelSelectionInspection,
 ) commands.ModelSelectionInfo {
-	return buildSessionModelSelectionInfo(cfg, inspection)
+	return buildModelSelectionInfo(inspection)
 }
 
-func buildSessionModelSelectionInfo(
-	cfg *config.Config,
+func buildModelSelectionInfo(
 	inspection modelSelectionInspection,
 ) commands.ModelSelectionInfo {
-	workspaceAgent := inspection.WorkspaceAgent
-	execution := inspection.Execution
-	override := normalizeSessionModelOverride(inspection.Override)
-	if workspaceAgent == nil {
+	if inspection.WorkspaceAgent == nil {
 		return commands.ModelSelectionInfo{}
 	}
-	if override.Model != "" && strings.TrimSpace(workspaceAgent.Model) != override.Model {
-		execution.Model = override.Model
-		execution.Candidates = resolveModelCandidates(
-			cfg,
-			cfg.Agents.Defaults.Provider,
-			override.Model,
-			workspaceAgent.Fallbacks,
-		)
-	}
-	return buildSessionModelSelectionInfoValues(workspaceAgent, execution, override)
+	return buildModelSelectionInfoValues(
+		inspection.WorkspaceAgent,
+		inspection.Execution,
+		normalizeSessionModelOverride(inspection.Override),
+	)
 }
 
 func normalizeSessionModelOverride(
@@ -106,7 +96,7 @@ func normalizeSessionModelOverride(
 	return override
 }
 
-func buildSessionModelSelectionInfoValues(
+func buildModelSelectionInfoValues(
 	workspaceAgent *AgentInstance,
 	execution effectiveExecutionState,
 	override state.SessionModelOverride,
@@ -287,6 +277,7 @@ func (al *AgentLoop) bindEffectiveModel(
 }
 
 func (al *AgentLoop) buildModelSelectionInspection(
+	cfg *config.Config,
 	binding effectiveModelBinding,
 ) modelSelectionInspection {
 	inspection := modelSelectionInspection{
@@ -303,6 +294,26 @@ func (al *AgentLoop) buildModelSelectionInspection(
 	if binding.RouteSessionKey != "" {
 		override, _ := al.getSessionModelOverride(binding.RouteSessionKey)
 		inspection.Override = normalizeSessionModelOverride(override)
+	}
+	if inspection.Override.Model != "" {
+		if inspection.Override.Model == strings.TrimSpace(workspaceAgent.Model) {
+			inspection.Execution = workspaceSelection
+			return inspection
+		}
+		if inspection.Override.Model != strings.TrimSpace(binding.Override.Model) ||
+			inspection.Execution.Model == "" ||
+			len(inspection.Execution.Candidates) == 0 {
+			inspection.Execution.Model = inspection.Override.Model
+			if cfg != nil {
+				inspection.Execution.Candidates = resolveModelCandidates(
+					cfg,
+					cfg.Agents.Defaults.Provider,
+					inspection.Override.Model,
+					workspaceAgent.Fallbacks,
+				)
+			}
+		}
+		return inspection
 	}
 	if inspection.Override.Model == "" {
 		executionDecision := al.previewStickyAutoFallback(modelSelectionDecision{

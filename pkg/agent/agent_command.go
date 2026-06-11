@@ -303,10 +303,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			rt.ListSkillNames = workspaceAgent.ContextBuilder.ListSkillNames
 		}
 		currentModelSelection := func() commands.ModelSelectionInfo {
-			return selectionInfoForInspection(
-				cfg,
-				al.buildModelSelectionInspection(modelBinding),
-			)
+			return selectionInfoForInspection(al.buildModelSelectionInspection(cfg, modelBinding))
 		}
 		rt.GetModelInfo = func() (string, string) {
 			info := currentModelSelection()
