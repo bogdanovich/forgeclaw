@@ -155,6 +155,58 @@ func TestBuiltinListChannels_UsesGetEnabledChannels(t *testing.T) {
 	}
 }
 
+func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
+	rt := &Runtime{
+		ListModels: func() []ConfiguredModelInfo {
+			return []ConfiguredModelInfo{
+				{
+					Name: "deepseek",
+					Targets: []ConfiguredModelTarget{
+						{Provider: "openrouter", Model: "openrouter/deepseek/deepseek-v3.2"},
+					},
+				},
+				{
+					Name:    "gpt-5.4",
+					Current: true,
+					Targets: []ConfiguredModelTarget{
+						{Provider: "openai", Model: "openai/gpt-5.4", Count: 2},
+						{Provider: "openrouter", Model: "openrouter/openai/gpt-5.4"},
+					},
+				},
+			}
+		},
+	}
+	defs := BuiltinDefinitions()
+	ex := NewExecutor(NewRegistry(defs), rt)
+
+	var reply string
+	res := ex.Execute(context.Background(), Request{
+		Text: "/list models",
+		Reply: func(text string) error {
+			reply = text
+			return nil
+		},
+	})
+	if res.Outcome != OutcomeHandled {
+		t.Fatalf("/list models: outcome=%v, want=%v", res.Outcome, OutcomeHandled)
+	}
+	if !strings.Contains(reply, "Available Models:") {
+		t.Fatalf("/list models reply=%q, want header", reply)
+	}
+	if !strings.Contains(reply, "- deepseek\n  - openrouter/deepseek/deepseek-v3.2 via openrouter") {
+		t.Fatalf("/list models reply=%q, want deepseek entry", reply)
+	}
+	if !strings.Contains(
+		reply,
+		"- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai [x2]\n  - openrouter/openai/gpt-5.4 via openrouter",
+	) {
+		t.Fatalf("/list models reply=%q, want current model entry", reply)
+	}
+	if !strings.Contains(reply, "Use /switch model to <name> to change the active model.") {
+		t.Fatalf("/list models reply=%q, want switch hint", reply)
+	}
+}
+
 func TestBuiltinShowAgents_RestoresOldBehavior(t *testing.T) {
 	rt := &Runtime{
 		ListAgentIDs: func() []string {

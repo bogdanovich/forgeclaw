@@ -296,6 +296,97 @@ func (al *AgentLoop) buildCommandsRuntime(
 		rt.GetModelInfo = func() (string, string) {
 			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
 		}
+		rt.ListModels = func() []commands.ConfiguredModelInfo {
+			if cfg == nil || len(cfg.ModelList) == 0 {
+				return nil
+			}
+			type targetAggregate struct {
+				target commands.ConfiguredModelTarget
+				order  int
+			}
+			type modelAggregate struct {
+				info    commands.ConfiguredModelInfo
+				order   int
+				targets map[string]*targetAggregate
+			}
+			modelsByName := make(map[string]*modelAggregate)
+			for idx, modelCfg := range cfg.ModelList {
+				if modelCfg == nil || modelCfg.IsVirtual() || !modelCfg.IsEffectivelyEnabled() {
+					continue
+				}
+				entry, ok := modelsByName[modelCfg.ModelName]
+				if !ok {
+					entry = &modelAggregate{
+						info: commands.ConfiguredModelInfo{
+							Name:    modelCfg.ModelName,
+							Current: modelCfg.ModelName == agent.Model,
+						},
+						order:   idx,
+						targets: map[string]*targetAggregate{},
+					}
+					modelsByName[modelCfg.ModelName] = entry
+				} else if modelCfg.ModelName == agent.Model {
+					entry.info.Current = true
+				}
+				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")
+				targetEntry, ok := entry.targets[targetKey]
+				if !ok {
+					targetEntry = &targetAggregate{
+						target: commands.ConfiguredModelTarget{
+							Provider:  modelCfg.Provider,
+							Model:     modelCfg.Model,
+							Workspace: modelCfg.Workspace,
+							Count:     1,
+						},
+						order: len(entry.targets),
+					}
+					entry.targets[targetKey] = targetEntry
+				} else {
+					targetEntry.target.Count++
+				}
+			}
+			models := make([]commands.ConfiguredModelInfo, 0, len(modelsByName))
+			order := make([]*modelAggregate, 0, len(modelsByName))
+			for _, item := range modelsByName {
+				order = append(order, item)
+			}
+			sort.Slice(order, func(i, j int) bool {
+				left := strings.ToLower(order[i].info.Name)
+				right := strings.ToLower(order[j].info.Name)
+				if left == right {
+					return order[i].order < order[j].order
+				}
+				return left < right
+			})
+			for _, item := range order {
+				targetOrder := make([]*targetAggregate, 0, len(item.targets))
+				for _, target := range item.targets {
+					targetOrder = append(targetOrder, target)
+				}
+				sort.Slice(targetOrder, func(i, j int) bool {
+					left := strings.ToLower(
+						targetOrder[i].target.Provider + "\x00" +
+							targetOrder[i].target.Model + "\x00" +
+							targetOrder[i].target.Workspace,
+					)
+					right := strings.ToLower(
+						targetOrder[j].target.Provider + "\x00" +
+							targetOrder[j].target.Model + "\x00" +
+							targetOrder[j].target.Workspace,
+					)
+					if left == right {
+						return targetOrder[i].order < targetOrder[j].order
+					}
+					return left < right
+				})
+				item.info.Targets = make([]commands.ConfiguredModelTarget, 0, len(targetOrder))
+				for _, target := range targetOrder {
+					item.info.Targets = append(item.info.Targets, target.target)
+				}
+				models = append(models, item.info)
+			}
+			return models
+		}
 		rt.SwitchModel = func(value string) (string, error) {
 			value = strings.TrimSpace(value)
 			modelCfg, err := resolvedModelConfig(cfg, value, agent.Workspace)

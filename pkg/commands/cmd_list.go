@@ -15,17 +15,37 @@ func listCommand() Definition {
 				Name:        "models",
 				Description: "Configured models",
 				Handler: func(_ context.Context, req Request, rt *Runtime) error {
-					if rt == nil || rt.GetModelInfo == nil {
+					if rt == nil || rt.ListModels == nil {
 						return req.Reply(unavailableMsg)
 					}
-					name, provider := rt.GetModelInfo()
-					if provider == "" {
-						provider = "configured default"
+					models := rt.ListModels()
+					if len(models) == 0 {
+						return req.Reply("No configured models")
 					}
-					return req.Reply(fmt.Sprintf(
-						"Configured Model: %s\nProvider: %s\n\nTo change models, update config.json",
-						name, provider,
-					))
+					lines := make([]string, 0, len(models)+2)
+					lines = append(lines, "Available Models:")
+					for _, model := range models {
+						label := fmt.Sprintf("- %s", model.Name)
+						if model.Current {
+							label += " (current)"
+						}
+						lines = append(lines, label)
+						for _, target := range model.Targets {
+							targetText := target.Model
+							if target.Provider != "" {
+								targetText = fmt.Sprintf("%s via %s", target.Model, target.Provider)
+							}
+							if target.Workspace != "" {
+								targetText += fmt.Sprintf(" (workspace: %s)", target.Workspace)
+							}
+							if target.Count > 1 {
+								targetText += fmt.Sprintf(" [x%d]", target.Count)
+							}
+							lines = append(lines, fmt.Sprintf("  - %s", targetText))
+						}
+					}
+					lines = append(lines, "", "Use /switch model to <name> to change the active model.")
+					return req.Reply(strings.Join(lines, "\n"))
 				},
 			},
 			{

@@ -795,6 +795,23 @@ type ModelConfig struct {
 	isVirtual bool
 }
 
+// IsEffectivelyEnabled reports whether a model entry should be treated as active.
+// For backward compatibility, models with API keys or the reserved "local-model"
+// alias remain active even when callers construct Config directly without
+// materializing Enabled=true first.
+func (c *ModelConfig) IsEffectivelyEnabled() bool {
+	if c == nil {
+		return false
+	}
+	if c.Enabled {
+		return true
+	}
+	if len(c.APIKeys) > 0 {
+		return true
+	}
+	return strings.TrimSpace(c.ModelName) == "local-model"
+}
+
 // APIKey returns the first API key from apiKeys
 func (c *ModelConfig) APIKey() string {
 	if len(c.APIKeys) > 0 {
