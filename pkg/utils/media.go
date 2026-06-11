@@ -146,7 +146,6 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		})
 		return ""
 	}
-	defer out.Close()
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		out.Close()
@@ -154,6 +153,13 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to write file", map[string]any{
 			"error": err.Error(),
 		})
+		return ""
+	}
+	if err := out.Close(); err != nil {
+		logger.ErrorCF(opts.LoggerPrefix, "Failed to close downloaded file", map[string]any{
+			"error": err.Error(),
+		})
+		os.Remove(localPath)
 		return ""
 	}
 

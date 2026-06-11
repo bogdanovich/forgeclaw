@@ -226,6 +226,11 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if err != nil {
 		return err
 	}
+	// All services (channels + shared HTTP server) are up; mark the health
+	// server ready so GET /ready reports "ready". The health endpoints are
+	// mounted on the shared gateway mux, so Health.Server.Start() (which would
+	// otherwise set this) is never called — we flip the flag explicitly here.
+	runningServices.HealthServer.SetReady(true)
 	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReady, startedAt, nil)
 	closeListeners = false
 

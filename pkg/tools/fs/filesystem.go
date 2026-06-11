@@ -1078,6 +1078,9 @@ func (r *sandboxFs) execute(path string, fn func(root *os.Root, relPath string) 
 		return err
 	}
 
+	// os.Root api on windows only accept forward slashes (/)
+	relPath = filepath.ToSlash(relPath)
+
 	return fn(root, relPath)
 }
 

@@ -96,7 +96,7 @@ func (s *isolatedPipeRWC) Write(p []byte) (n int, err error) {
 
 func (s *isolatedPipeRWC) Close() error {
 	if err := s.stdin.Close(); err != nil {
-		return fmt.Errorf("closing stdin: %v", err)
+		return fmt.Errorf("closing stdin: %w", err)
 	}
 	wait := func() (error, bool) {
 		select {
@@ -260,7 +260,7 @@ func (c *isolatedIOConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 	defer c.writeMu.Unlock()
 	data, err := jsonrpc.EncodeMessage(msg)
 	if err != nil {
-		return fmt.Errorf("marshaling message: %v", err)
+		return fmt.Errorf("marshaling message: %w", err)
 	}
 	data = append(data, '\n')
 	_, err = c.rwc.Write(data)

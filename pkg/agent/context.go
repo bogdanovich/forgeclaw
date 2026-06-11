@@ -103,7 +103,13 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 	// Use the skills/ directory under the current working directory
 	builtinSkillsDir := strings.TrimSpace(os.Getenv(config.EnvBuiltinSkills))
 	if builtinSkillsDir == "" {
-		wd, _ := os.Getwd()
+		wd, err := os.Getwd()
+		if err != nil {
+			// os.Getwd failure is extremely rare; fall back to empty
+			// string so that filepath.Join produces a relative "skills"
+			// path, preserving the original lookup behavior.
+			wd = ""
+		}
 		builtinSkillsDir = filepath.Join(wd, "skills")
 	}
 	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -149,8 +150,10 @@ func CopyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
 
-	_, err = io.Copy(dstFile, srcFile)
-	return err
+	_, copyErr := io.Copy(dstFile, srcFile)
+	if closeErr := dstFile.Close(); closeErr != nil && copyErr == nil {
+		return fmt.Errorf("close destination file %s: %w", dst, closeErr)
+	}
+	return copyErr
 }

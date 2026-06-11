@@ -18,7 +18,10 @@ type SkillsRecaller struct {
 func NewSkillsRecaller(workspace string) *SkillsRecaller {
 	builtinSkillsDir := strings.TrimSpace(os.Getenv(config.EnvBuiltinSkills))
 	if builtinSkillsDir == "" {
-		wd, _ := os.Getwd()
+		wd, err := os.Getwd()
+		if err != nil {
+			wd = config.GetHome()
+		}
 		builtinSkillsDir = filepath.Join(wd, "skills")
 	}
 

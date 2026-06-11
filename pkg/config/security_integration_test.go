@@ -191,6 +191,10 @@ func TestAllSecurityKeysAccessible(t *testing.T) {
 		err = os.WriteFile(perplexityAPIKeyFile, []byte("pplx-perplexity-from-file-22222"), 0o600)
 		require.NoError(t, err)
 
+		kagiAPIKeyFile := filepath.Join(tmpDir, "kagi_api_key.txt")
+		err = os.WriteFile(kagiAPIKeyFile, []byte("kagi-from-file-33333"), 0o600)
+		require.NoError(t, err)
+
 		githubTokenFile := filepath.Join(tmpDir, "github_token.txt")
 		err = os.WriteFile(githubTokenFile, []byte("ghp-github-from-file-abc123"), 0o600)
 		require.NoError(t, err)
@@ -270,6 +274,9 @@ func TestAllSecurityKeysAccessible(t *testing.T) {
       "perplexity": {
         "enabled": true
       },
+      "kagi": {
+        "enabled": true
+      },
       "glm_search": {
         "enabled": true
       }
@@ -331,6 +338,9 @@ web:
   perplexity:
     api_keys:
       - "file://perplexity_api_key.txt"
+  kagi:
+    api_keys:
+      - "file://kagi_api_key.txt"
   glm_search:
     api_key: "glm-test-glm-search-key"
 
@@ -455,6 +465,9 @@ skills:
 
 		assert.Equal(t, "pplx-perplexity-from-file-22222", cfg.Tools.Web.Perplexity.APIKey())
 		t.Logf("Perplexity APIKey(): %s", cfg.Tools.Web.Perplexity.APIKey())
+
+		assert.Equal(t, "kagi-from-file-33333", cfg.Tools.Web.Kagi.APIKey())
+		t.Logf("Kagi APIKey(): %s", cfg.Tools.Web.Kagi.APIKey())
 
 		// GLM Search - Note: GLM uses SetAPIKey (lowercase) internally
 		t.Logf("GLMSearch APIKey(): %s", cfg.Tools.Web.GLMSearch.APIKey.String())

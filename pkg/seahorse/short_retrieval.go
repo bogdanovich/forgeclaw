@@ -22,7 +22,10 @@ func ParseLastDuration(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid duration format: %q (use format like 6h, 7d, 2w, 1m)", s)
 	}
 
-	value, _ := strconv.Atoi(matches[1])
+	value, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration value: %q", matches[1])
+	}
 	unit := matches[2]
 
 	switch unit {
