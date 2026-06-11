@@ -795,8 +795,7 @@ func (c *PicoChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessag
 			"filename":     filename,
 			"content_type": contentType,
 		})
-
-		if caption == "" && strings.TrimSpace(part.Caption) != "" {
+		if caption == "" {
 			caption = strings.TrimSpace(part.Caption)
 		}
 	}
