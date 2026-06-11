@@ -409,6 +409,58 @@ func TestTurnProfile_ContextCommandUsesEffectiveBindingProvider(t *testing.T) {
 	}
 }
 
+func TestTurnProfile_ContextCommandAllowsNilToolsWithProfile(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				TurnProfile: config.TurnProfileConfig{
+					Enabled:      true,
+					History:      config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					SystemPrompt: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Tools:        config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+				},
+			},
+		},
+	}
+	al := newTurnProfileAgentLoop(t, cfg, &turnProfileCaptureProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	agent.Tools = nil
+	sessionKey := "context-profile-nil-tools"
+	opts := processOptions{
+		SessionKey: sessionKey,
+		Dispatch: DispatchRequest{
+			SessionKey:      sessionKey,
+			RouteSessionKey: sessionKey,
+		},
+	}
+	rt := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: sessionKey,
+		WorkspaceAgent:  agent,
+	}, &opts)
+	if rt == nil || rt.GetContextStats == nil {
+		t.Fatal("expected command runtime with context stats")
+	}
+
+	stats := rt.GetContextStats()
+	if stats == nil {
+		t.Fatal("expected context stats")
+	}
+	if stats.AssembledMessageCount != 0 {
+		t.Fatalf("assembled message count = %d, want 0", stats.AssembledMessageCount)
+	}
+	if stats.AssembledUsedTokens <= 0 {
+		t.Fatalf("assembled used tokens = %d, want > 0", stats.AssembledUsedTokens)
+	}
+}
+
 func TestTurnProfile_BtwCommandDoesNotAddToolFallbackWhenSystemPromptOff(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := &config.Config{
