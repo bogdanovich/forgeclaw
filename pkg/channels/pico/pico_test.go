@@ -975,6 +975,69 @@ func TestSendMedia_UsesCaptionFromFirstDeliveredAttachment(t *testing.T) {
 	}
 }
 
+func TestSendMedia_DoesNotPromoteCaptionFromSkippedAttachment(t *testing.T) {
+	ch := newTestPicoChannel(t)
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	clientConn, received, cleanup := newTestPicoWebSocket(t)
+	defer cleanup()
+	ch.addConnForTest(&picoConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
+
+	localPath := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(localPath, []byte("png-body"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	goodRef, err := store.Store(localPath, media.MediaMeta{
+		Filename:    "photo.png",
+		ContentType: "image/png",
+	}, "test-scope")
+	if err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "pico:sess-1",
+		Parts: []bus.MediaPart{
+			{
+				Ref:         "media://missing-ref",
+				Type:        "image",
+				Filename:    "missing.png",
+				ContentType: "image/png",
+				Caption:     "should not leak",
+			},
+			{
+				Ref:         goodRef,
+				Type:        "image",
+				Filename:    "photo.png",
+				ContentType: "image/png",
+				Caption:     "   ",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMedia() error = %v", err)
+	}
+
+	select {
+	case msg := <-received:
+		if msg.Type != TypeMessageCreate {
+			t.Fatalf("message type = %q, want %q", msg.Type, TypeMessageCreate)
+		}
+		if got := msg.Payload[PayloadKeyContent]; got != "" {
+			t.Fatalf("content = %#v, want empty", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected media message to be delivered")
+	}
+}
+
 func TestPicoDownloadURLForRef(t *testing.T) {
 	got, err := picoDownloadURLForRef("media://attachment-1")
 	if err != nil {
