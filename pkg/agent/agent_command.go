@@ -306,14 +306,14 @@ func (al *AgentLoop) buildCommandsRuntime(
 		rt.GetModelInfo = func() (string, string) {
 			info := selectionInfoForBinding(
 				cfg,
-				al.buildSelectionBindingView(cfg, modelBinding),
+				al.buildSelectionBindingView(modelBinding),
 			)
 			return info.EffectiveName, info.EffectiveProvider
 		}
 		rt.GetModelSelection = func() commands.ModelSelectionInfo {
 			return selectionInfoForBinding(
 				cfg,
-				al.buildSelectionBindingView(cfg, modelBinding),
+				al.buildSelectionBindingView(modelBinding),
 			)
 		}
 		rt.ListModels = func() []commands.ConfiguredModelInfo {
