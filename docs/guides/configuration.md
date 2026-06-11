@@ -954,6 +954,33 @@ Opt-in example:
 
 Legacy Telegram environment variables remain compatible: `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, and `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. They only apply to Telegram settings and do not enable or modify Pico `settings.streaming`.
 
+Telegram topic ownership filters can also be set through environment overrides:
+`PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS` and
+`PICOCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS`. Use comma-separated topic IDs
+such as `3565,7777`.
+
+For Telegram forum groups, you can restrict a workspace to specific topics:
+
+```json
+{
+  "channel_list": {
+    "telegram": {
+      "enabled": true,
+      "type": "telegram",
+      "settings": {
+        "allowed_topic_ids": ["3565"],
+        "ignored_topic_ids": ["6"]
+      }
+    }
+  }
+}
+```
+
+- `allowed_topic_ids`: if non-empty, the workspace only accepts messages from those forum topic IDs.
+- `ignored_topic_ids`: messages from these forum topic IDs are always dropped.
+- The filter is applied before media download, suppressed-message observation, and session routing side effects.
+- Non-forum chats and regular Telegram private chats are unaffected.
+
 Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, PicoClaw retries once through the normal `Chat()` path. If a chunk has already been shown to the user, PicoClaw does not send a second non-streaming answer, because that would duplicate visible output.
 
 #### Vendor-Specific Examples
