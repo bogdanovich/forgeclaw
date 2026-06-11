@@ -93,12 +93,12 @@ IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool.
 Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). 
 Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). 
 Use 'cron_expr' for complex recurring schedules. 
+Use 'payload_kind=deliver_text' for literal reminders/messages that should be sent later without LLM interpretation. 
+Use 'payload_kind=agent_turn' only for future agent workflows/prompts that should run through the agent when triggered. 
 Use 'command' to execute shell commands directly.`
 }
 
 // Parameters returns the tool parameters schema
-//
-//nolint:dupl // Tool parameter schemas intentionally use similar JSON-schema map literals.
 func (t *CronTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -115,6 +115,11 @@ func (t *CronTool) Parameters() map[string]any {
 			"message": map[string]any{
 				"type":        "string",
 				"description": "The reminder/task message to display when triggered. If 'command' is used, this describes what the command does.",
+			},
+			"payload_kind": map[string]any{
+				"type":        "string",
+				"enum":        []string{"agent_turn", "deliver_text"},
+				"description": "How to execute the scheduled payload. Use 'deliver_text' for direct reminders/messages to send later without agent reinterpretation. Use 'agent_turn' for future agent prompts/workflows. Default is 'agent_turn' for backward compatibility.",
 			},
 			"command": map[string]any{
 				"type":        "string",
@@ -225,6 +230,10 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 	// Non-command reminders remain open to all channels.
 	command, _ := args["command"].(string)
 	commandConfirm, _ := args["command_confirm"].(bool)
+	payloadKind, _, errResult := cronPayloadKind(args, false)
+	if errResult != nil {
+		return errResult
+	}
 	if command != "" {
 		if !t.execEnabled {
 			return ErrorResult("command execution is disabled")
@@ -243,6 +252,7 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 	job, err := t.cronService.AddJob(
 		messagePreview,
 		schedule,
+		payloadKind,
 		message,
 		channel,
 		chatID,
@@ -349,6 +359,15 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 		patches++
 	}
 
+	payloadKind, payloadKindPresent, errResult := cronPayloadKind(args, true)
+	if errResult != nil {
+		return errResult
+	}
+	if payloadKindPresent {
+		job.Payload.Kind = payloadKind
+		patches++
+	}
+
 	schedule, hasSchedule, errResult := schedulePatch(args)
 	if errResult != nil {
 		return errResult
@@ -428,6 +447,26 @@ func optionalString(args map[string]any, key string) (string, bool, *ToolResult)
 		return "", false, ErrorResult(fmt.Sprintf("%s must be a string", key))
 	}
 	return text, true, nil
+}
+
+func cronPayloadKind(args map[string]any, optional bool) (string, bool, *ToolResult) {
+	value, present := args["payload_kind"]
+	if !present {
+		if optional {
+			return "", false, nil
+		}
+		return "agent_turn", false, nil
+	}
+	kind, ok := value.(string)
+	if !ok {
+		return "", false, ErrorResult("payload_kind must be a string")
+	}
+	switch kind {
+	case "agent_turn", "deliver_text":
+		return kind, true, nil
+	default:
+		return "", false, ErrorResult("payload_kind must be one of: agent_turn, deliver_text")
+	}
 }
 
 func schedulePatch(args map[string]any) (cron.CronSchedule, bool, *ToolResult) {
@@ -604,6 +643,22 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		} else {
 			t.finishCronTaskRecord(taskID, taskregistry.StatusSucceeded, cronDeliveryStatusForPublish(err), output, err)
 		}
+		return "ok"
+	}
+
+	if job.Payload.Kind == "deliver_text" {
+		output := job.Payload.Message
+		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer pubCancel()
+		err := t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+			Context: bus.NewOutboundContext(channel, chatID, ""),
+			Content: output,
+		})
+		status := taskregistry.StatusSucceeded
+		if err != nil {
+			status = taskregistry.StatusFailed
+		}
+		t.finishCronTaskRecord(taskID, status, cronDeliveryStatusForPublish(err), output, err)
 		return "ok"
 	}
 

@@ -421,6 +421,7 @@ func (cs *CronService) saveStoreUnsafe() error {
 func (cs *CronService) AddJob(
 	name string,
 	schedule CronSchedule,
+	payloadKind string,
 	message string,
 	channel, to string,
 ) (*CronJob, error) {
@@ -431,6 +432,9 @@ func (cs *CronService) AddJob(
 
 	// One-time tasks (at) should be deleted after execution
 	deleteAfterRun := (schedule.Kind == "at")
+	if payloadKind == "" {
+		payloadKind = "agent_turn"
+	}
 
 	job := CronJob{
 		ID:       generateID(),
@@ -438,7 +442,7 @@ func (cs *CronService) AddJob(
 		Enabled:  true,
 		Schedule: schedule,
 		Payload: CronPayload{
-			Kind:    "agent_turn",
+			Kind:    payloadKind,
 			Message: message,
 			Channel: channel,
 			To:      to,
