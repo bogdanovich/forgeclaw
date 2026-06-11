@@ -118,6 +118,9 @@ func (al *AgentLoop) buildSessionOverrideAgent(
 		append([]string{modelName}, baseAgent.Fallbacks...),
 		overrideAgent.CandidateProviders,
 	)
+	if len(overrideCandidates) > 0 {
+		overrideAgent.CandidateProviders[overrideCandidates[0].StableKey()] = overrideProvider
+	}
 
 	cleanup := func() {
 		for key, provider := range overrideAgent.CandidateProviders {

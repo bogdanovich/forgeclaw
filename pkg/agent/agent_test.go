@@ -4635,6 +4635,128 @@ func TestProcessMessage_ModelOverrideSameAsDefaultPreservesLightRouting(t *testi
 	}
 }
 
+func TestProcessMessage_ModelOverrideUsesOverrideProviderForSharedModelKey(t *testing.T) {
+	workspace := t.TempDir()
+
+	workspaceCalls := 0
+	workspaceModel := ""
+	workspaceServer := newChatCompletionTestServer(
+		t,
+		"workspace",
+		"workspace reply",
+		&workspaceCalls,
+		&workspaceModel,
+	)
+	defer workspaceServer.Close()
+
+	overrideCalls := 0
+	overrideModel := ""
+	overrideServer := newChatCompletionTestServer(
+		t,
+		"override",
+		"override reply",
+		&overrideCalls,
+		&overrideModel,
+	)
+	defer overrideServer.Close()
+
+	fallbackCalls := 0
+	fallbackModel := ""
+	fallbackServer := newChatCompletionTestServer(
+		t,
+		"fallback",
+		"fallback reply",
+		&fallbackCalls,
+		&fallbackModel,
+	)
+	defer fallbackServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "workspace-default",
+				ModelFallbacks:    []string{"real-fallback"},
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "workspace-default",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   workspaceServer.URL,
+				APIKeys:   config.SimpleSecureStrings("workspace-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "override-alias",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   overrideServer.URL,
+				APIKeys:   config.SimpleSecureStrings("override-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "real-fallback",
+				Model:     "openai/fallback-model",
+				Provider:  "openai",
+				APIBase:   fallbackServer.URL,
+				APIKeys:   config.SimpleSecureStrings("fallback-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+		},
+	}
+
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat1",
+		ChatType: "direct",
+		SenderID: "user1",
+	}
+
+	overrideResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/model override-alias",
+	})
+	if !strings.Contains(overrideResp, "Set session model override.") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "hello",
+	})
+	if resp != "override reply" {
+		t.Fatalf("response = %q, want %q", resp, "override reply")
+	}
+	if overrideCalls != 1 {
+		t.Fatalf("override calls = %d, want 1", overrideCalls)
+	}
+	if workspaceCalls != 0 {
+		t.Fatalf("workspace calls = %d, want 0", workspaceCalls)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("fallback calls = %d, want 0", fallbackCalls)
+	}
+	if overrideModel != "openai/gpt-5.4" {
+		t.Fatalf("override model = %q, want %q", overrideModel, "openai/gpt-5.4")
+	}
+}
+
 func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
