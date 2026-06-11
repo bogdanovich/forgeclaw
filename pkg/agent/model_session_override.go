@@ -8,15 +8,29 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/state"
 )
 
 type effectiveModelBinding struct {
 	RouteSessionKey string
 	WorkspaceAgent  *AgentInstance
-	EffectiveAgent  *AgentInstance
+	Execution       effectiveExecutionState
 	Override        state.SessionModelOverride
 	cleanup         func()
+}
+
+type effectiveExecutionState struct {
+	AgentID                 string
+	Model                   string
+	Provider                providers.LLMProvider
+	Candidates              []providers.FallbackCandidate
+	CandidateProviders      map[string]providers.LLMProvider
+	Router                  *routing.Router
+	LightCandidates         []providers.FallbackCandidate
+	LightProvider           providers.LLMProvider
+	ThinkingLevel           ThinkingLevel
+	ThinkingLevelConfigured bool
 }
 
 func (b effectiveModelBinding) Cleanup() {
@@ -25,15 +39,33 @@ func (b effectiveModelBinding) Cleanup() {
 	}
 }
 
-func (b effectiveModelBinding) ExecutionAgent() *AgentInstance {
-	if b.EffectiveAgent != nil {
-		return b.EffectiveAgent
+func effectiveExecutionStateForAgent(agent *AgentInstance) effectiveExecutionState {
+	if agent == nil {
+		return effectiveExecutionState{}
 	}
-	return b.WorkspaceAgent
+	return effectiveExecutionState{
+		AgentID:                 agent.ID,
+		Model:                   agent.Model,
+		Provider:                agent.Provider,
+		Candidates:              append([]providers.FallbackCandidate(nil), agent.Candidates...),
+		CandidateProviders:      cloneCandidateProviderMap(agent.CandidateProviders),
+		Router:                  agent.Router,
+		LightCandidates:         append([]providers.FallbackCandidate(nil), agent.LightCandidates...),
+		LightProvider:           agent.LightProvider,
+		ThinkingLevel:           agent.ThinkingLevel,
+		ThinkingLevelConfigured: agent.ThinkingLevelConfigured,
+	}
+}
+
+func (b effectiveModelBinding) ExecutionState() effectiveExecutionState {
+	if b.Execution.Model != "" || b.Execution.Provider != nil || len(b.Execution.Candidates) > 0 {
+		return b.Execution
+	}
+	return effectiveExecutionStateForAgent(b.WorkspaceAgent)
 }
 
 func (b effectiveModelBinding) SelectionInfo() commands.ModelSelectionInfo {
-	return buildSessionModelSelectionInfo(b.WorkspaceAgent, b.EffectiveAgent, b.Override)
+	return buildSessionModelSelectionInfo(b.WorkspaceAgent, b.ExecutionState(), b.Override)
 }
 
 func selectionInfoForBinding(
@@ -41,29 +73,21 @@ func selectionInfoForBinding(
 	binding effectiveModelBinding,
 ) commands.ModelSelectionInfo {
 	workspaceAgent := binding.WorkspaceAgent
-	effectiveAgent := binding.EffectiveAgent
+	execution := binding.ExecutionState()
 	override := normalizeSessionModelOverride(binding.Override)
-	if workspaceAgent == nil {
-		workspaceAgent = effectiveAgent
-	}
 	if workspaceAgent == nil {
 		return commands.ModelSelectionInfo{}
 	}
 	if override.Model != "" && strings.TrimSpace(workspaceAgent.Model) != override.Model {
-		overrideView := *workspaceAgent
-		overrideView.Model = override.Model
-		overrideView.Candidates = resolveModelCandidates(
+		execution.Model = override.Model
+		execution.Candidates = resolveModelCandidates(
 			cfg,
 			cfg.Agents.Defaults.Provider,
 			override.Model,
 			workspaceAgent.Fallbacks,
 		)
-		effectiveAgent = &overrideView
 	}
-	if effectiveAgent == nil {
-		effectiveAgent = workspaceAgent
-	}
-	return buildSessionModelSelectionInfo(workspaceAgent, effectiveAgent, override)
+	return buildSessionModelSelectionInfo(workspaceAgent, execution, override)
 }
 
 func normalizeSessionModelOverride(
@@ -75,7 +99,7 @@ func normalizeSessionModelOverride(
 
 func buildSessionModelSelectionInfo(
 	workspaceAgent *AgentInstance,
-	effectiveAgent *AgentInstance,
+	execution effectiveExecutionState,
 	override state.SessionModelOverride,
 ) commands.ModelSelectionInfo {
 	info := commands.ModelSelectionInfo{}
@@ -83,10 +107,8 @@ func buildSessionModelSelectionInfo(
 		info.WorkspaceName = workspaceAgent.Model
 		info.WorkspaceProvider = resolvedCandidateProvider(workspaceAgent.Candidates, "")
 	}
-	if effectiveAgent != nil {
-		info.EffectiveName = effectiveAgent.Model
-		info.EffectiveProvider = resolvedCandidateProvider(effectiveAgent.Candidates, "")
-	}
+	info.EffectiveName = execution.Model
+	info.EffectiveProvider = resolvedCandidateProvider(execution.Candidates, "")
 	override = normalizeSessionModelOverride(override)
 	if override.Model != "" {
 		info.SessionOverride = override.Model
@@ -116,22 +138,22 @@ func cloneCandidateProviderMap(
 	return out
 }
 
-func (al *AgentLoop) buildSessionOverrideAgent(
+func (al *AgentLoop) buildSessionOverrideExecution(
 	baseAgent *AgentInstance,
 	modelName string,
-) (*AgentInstance, func(), error) {
+) (effectiveExecutionState, func(), error) {
 	if baseAgent == nil {
-		return nil, nil, fmt.Errorf("agent not initialized")
+		return effectiveExecutionState{}, nil, fmt.Errorf("agent not initialized")
 	}
 	cfg := al.GetConfig()
 	modelCfg, err := resolvedModelConfig(cfg, modelName, baseAgent.Workspace)
 	if err != nil {
-		return nil, nil, err
+		return effectiveExecutionState{}, nil, err
 	}
 
 	overrideProvider, _, err := providers.CreateProviderFromConfig(modelCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize model %q: %w", modelName, err)
+		return effectiveExecutionState{}, nil, fmt.Errorf("failed to initialize model %q: %w", modelName, err)
 	}
 
 	overrideCandidates := resolveModelCandidates(
@@ -144,42 +166,33 @@ func (al *AgentLoop) buildSessionOverrideAgent(
 		if stateful, ok := overrideProvider.(providers.StatefulProvider); ok {
 			stateful.Close()
 		}
-		return nil, nil, fmt.Errorf(
+		return effectiveExecutionState{}, nil, fmt.Errorf(
 			"model %q did not resolve to any provider candidates",
 			modelName,
 		)
 	}
 
-	overrideAgent := *baseAgent
-	overrideAgent.Model = modelName
-	overrideAgent.Provider = overrideProvider
-	overrideAgent.Candidates = overrideCandidates
-	overrideAgent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
-	overrideAgent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
-	overrideAgent.Router = nil
-	overrideAgent.LightCandidates = nil
-	overrideAgent.LightProvider = nil
-	overrideAgent.CandidateProviders = cloneCandidateProviderMap(baseAgent.CandidateProviders)
-	existingKeys := make(map[string]struct{}, len(overrideAgent.CandidateProviders))
-	for key := range overrideAgent.CandidateProviders {
+	candidateProviders := cloneCandidateProviderMap(baseAgent.CandidateProviders)
+	existingKeys := make(map[string]struct{}, len(candidateProviders))
+	for key := range candidateProviders {
 		existingKeys[key] = struct{}{}
 	}
-	if overrideAgent.CandidateProviders == nil {
-		overrideAgent.CandidateProviders = make(map[string]providers.LLMProvider)
+	if candidateProviders == nil {
+		candidateProviders = make(map[string]providers.LLMProvider)
 	}
 	populateCandidateProvidersFromNames(
 		cfg,
 		baseAgent.Workspace,
 		append([]string{modelName}, baseAgent.Fallbacks...),
-		overrideAgent.CandidateProviders,
+		candidateProviders,
 	)
 	if len(overrideCandidates) > 0 {
-		overrideAgent.CandidateProviders[overrideCandidates[0].StableKey()] = overrideProvider
+		candidateProviders[overrideCandidates[0].StableKey()] = overrideProvider
 	}
 
 	cleanup := func() {
 		overrideClosed := false
-		for key, provider := range overrideAgent.CandidateProviders {
+		for key, provider := range candidateProviders {
 			if _, exists := existingKeys[key]; exists || provider == nil {
 				continue
 			}
@@ -197,7 +210,15 @@ func (al *AgentLoop) buildSessionOverrideAgent(
 		}
 	}
 
-	return &overrideAgent, cleanup, nil
+	return effectiveExecutionState{
+		AgentID:                 baseAgent.ID,
+		Model:                   modelName,
+		Provider:                overrideProvider,
+		Candidates:              overrideCandidates,
+		CandidateProviders:      candidateProviders,
+		ThinkingLevel:           parseThinkingLevel(modelCfg.ThinkingLevel),
+		ThinkingLevelConfigured: isConfiguredThinkingLevel(modelCfg.ThinkingLevel),
+	}, cleanup, nil
 }
 
 func (al *AgentLoop) bindEffectiveModel(
@@ -207,7 +228,7 @@ func (al *AgentLoop) bindEffectiveModel(
 	binding := effectiveModelBinding{
 		RouteSessionKey: strings.TrimSpace(routeSessionKey),
 		WorkspaceAgent:  baseAgent,
-		EffectiveAgent:  baseAgent,
+		Execution:       effectiveExecutionStateForAgent(baseAgent),
 	}
 	if binding.RouteSessionKey == "" || baseAgent == nil {
 		return binding
@@ -227,7 +248,7 @@ func (al *AgentLoop) bindEffectiveModel(
 		return binding
 	}
 
-	overrideAgent, cleanup, err := al.buildSessionOverrideAgent(baseAgent, override.Model)
+	execution, cleanup, err := al.buildSessionOverrideExecution(baseAgent, override.Model)
 	if err != nil {
 		logger.WarnCF("agent", "Clearing invalid session model override",
 			map[string]any{
@@ -241,7 +262,7 @@ func (al *AgentLoop) bindEffectiveModel(
 		return binding
 	}
 
-	binding.EffectiveAgent = overrideAgent
+	binding.Execution = execution
 	binding.cleanup = cleanup
 	return binding
 }

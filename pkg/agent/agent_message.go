@@ -228,7 +228,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	logger.InfoCF("agent", "Routed message",
 		map[string]any{
 			"agent_id":           agent.ID,
-			"effective_agent_id": modelBinding.ExecutionAgent().ID,
+			"effective_agent_id": modelBinding.ExecutionState().AgentID,
 			"scope_key":          scopeKey,
 			"session_key":        sessionKey,
 			"matched_by":         route.MatchedBy,

@@ -585,7 +585,7 @@ func TestAgentLoop_BtwCommand_UsesLLMHooks(t *testing.T) {
 		Content: "/btw hello",
 	}, effectiveModelBinding{
 		WorkspaceAgent: agent,
-		EffectiveAgent: agent,
+		Execution:      effectiveExecutionStateForAgent(agent),
 	}, &processOptions{
 		Dispatch: DispatchRequest{
 			SessionKey: "session-1",

@@ -75,11 +75,8 @@ func (p *Pipeline) CallLLM(
 	if exec.useNativeSearch {
 		exec.llmOpts["native_search"] = true
 	}
-	executionAgent := ts.model.ExecutionAgent()
-	if executionAgent == nil {
-		executionAgent = ts.agent
-	}
-	applyTurnThinkingOptions(exec, executionAgent, exec.model.activeProvider, true)
+	execution := ts.model.ExecutionState()
+	applyTurnThinkingOptions(exec, execution, exec.model.activeProvider, true)
 
 	exec.llmModel = exec.model.activeModel
 
@@ -109,7 +106,7 @@ func (p *Pipeline) CallLLM(
 				}
 				if strings.TrimSpace(exec.llmModel) != "" && exec.llmModel != prevModel {
 					p.applyBeforeLLMModelRewrite(ts, exec)
-					applyTurnThinkingOptions(exec, executionAgent, exec.model.activeProvider, true)
+					applyTurnThinkingOptions(exec, execution, exec.model.activeProvider, true)
 				}
 			}
 		case HookActionAbortTurn:
@@ -182,9 +179,8 @@ func (p *Pipeline) CallLLM(
 				exec.model.activeCandidates,
 				func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {
 					candidateProvider, err := providerForFallbackCandidate(
-						ts.agent,
+						exec.model.candidateProviders,
 						exec.model.activeProvider,
-						exec.model.activeCandidates,
 						candidate.Provider,
 						candidate.Model,
 					)
@@ -728,6 +724,9 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 	exec.model.activeCandidates = candidates
 	exec.model.activeModel = resolvedCandidateModel(candidates, rawModel)
 	exec.llmModel = exec.model.activeModel
+	if ts.model.ExecutionState().CandidateProviders != nil {
+		exec.model.candidateProviders = ts.model.ExecutionState().CandidateProviders
+	}
 	exec.model.activeModelConfig = resolveActiveModelConfig(
 		p.Cfg,
 		ts.agent.Workspace,
@@ -738,16 +737,13 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 }
 
 func providerForFallbackCandidate(
-	agent *AgentInstance,
+	candidateProviders map[string]providers.LLMProvider,
 	activeProvider providers.LLMProvider,
-	activeCandidates []providers.FallbackCandidate,
 	provider string,
 	model string,
 ) (providers.LLMProvider, error) {
-	if agent != nil {
-		if cp, ok := agent.CandidateProviders[providers.ModelKey(provider, model)]; ok && cp != nil {
-			return cp, nil
-		}
+	if cp, ok := candidateProviders[providers.ModelKey(provider, model)]; ok && cp != nil {
+		return cp, nil
 	}
 	if activeProvider == nil {
 		return nil, fmt.Errorf("fallback model %q has no active provider", model)

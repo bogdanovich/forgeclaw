@@ -1571,7 +1571,7 @@ func TestHandleCommand_UseCommandRejectsUnknownSkill(t *testing.T) {
 		Content:  "/use missing explain how to list files",
 	}, effectiveModelBinding{
 		WorkspaceAgent: agent,
-		EffectiveAgent: agent,
+		Execution:      effectiveExecutionStateForAgent(agent),
 	}, &opts)
 	if !handled {
 		t.Fatal("expected /use with unknown skill to be handled")

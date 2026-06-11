@@ -139,7 +139,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 	cfg := al.GetConfig()
 	agent := modelBinding.WorkspaceAgent
 	workspaceAgent := modelBinding.WorkspaceAgent
-	executionAgent := modelBinding.ExecutionAgent()
+	execution := modelBinding.ExecutionState()
 	rt := &commands.Runtime{
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
@@ -338,13 +338,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 					entry = &modelAggregate{
 						info: commands.ConfiguredModelInfo{
 							Name:    modelCfg.ModelName,
-							Current: executionAgent != nil && modelCfg.ModelName == executionAgent.Model,
+							Current: modelCfg.ModelName == execution.Model,
 						},
 						order:   idx,
 						targets: map[string]*targetAggregate{},
 					}
 					modelsByName[modelCfg.ModelName] = entry
-				} else if executionAgent != nil && modelCfg.ModelName == executionAgent.Model {
+				} else if modelCfg.ModelName == execution.Model {
 					entry.info.Current = true
 				}
 				targetKey := strings.Join([]string{modelCfg.Provider, modelCfg.Model, modelCfg.Workspace}, "\x00")
