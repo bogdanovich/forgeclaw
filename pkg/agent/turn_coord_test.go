@@ -226,6 +226,39 @@ func (p *failOnceLLMProvider) GetDefaultModel() string {
 	return "fail-once-model"
 }
 
+type stickyFallbackProvider struct {
+	calls []string
+	mu    sync.Mutex
+}
+
+func (p *stickyFallbackProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.calls = append(p.calls, model)
+	p.mu.Unlock()
+
+	switch strings.TrimSpace(model) {
+	case "primary-model":
+		return nil, errors.New("429 too many requests: rate limit exceeded")
+	case "fallback-model":
+		return &providers.LLMResponse{
+			Content:      "fallback ok",
+			FinishReason: "stop",
+		}, nil
+	default:
+		return nil, errors.New("unexpected model: " + model)
+	}
+}
+
+func (p *stickyFallbackProvider) GetDefaultModel() string {
+	return "sticky-fallback-model"
+}
+
 // =============================================================================
 // Test Helper Functions
 // =============================================================================
@@ -267,6 +300,37 @@ func makeTestProcessOpts(sessionKey string) processOptions {
 		EnableSummary:   false,
 		SendResponse:    false,
 		NoHistory:       false,
+	}
+}
+
+func newTurnCoordFallbackTestLoop(
+	t *testing.T,
+	provider providers.LLMProvider,
+) (*AgentLoop, *AgentInstance, func()) {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "primary-model",
+				ModelFallbacks:    []string{"fallback-model"},
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, provider)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	return al, agent, func() {
+		al.Close()
 	}
 }
 
@@ -860,6 +924,54 @@ func TestPipeline_CallLLM_RetryConfigRespected(t *testing.T) {
 	expectedMinTime := 3 * time.Second
 	if elapsed < expectedMinTime {
 		t.Errorf("expected at least %v of backoff, got %v", expectedMinTime, elapsed)
+	}
+}
+
+func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
+	provider := &stickyFallbackProvider{}
+	al, agent, cleanup := newTurnCoordFallbackTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+
+	firstTS := newTurnState(agent, makeTestProcessOpts("sticky-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+	firstExec, err := pipeline.SetupTurn(context.Background(), firstTS)
+	if err != nil {
+		t.Fatalf("SetupTurn(first) failed: %v", err)
+	}
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), firstTS, firstExec, 1)
+	if err != nil {
+		t.Fatalf("CallLLM(first) failed: %v", err)
+	}
+	if ctrl != ControlBreak {
+		t.Fatalf("CallLLM(first) control = %v, want %v", ctrl, ControlBreak)
+	}
+
+	secondTS := newTurnState(agent, makeTestProcessOpts("sticky-session"), turnEventScope{
+		turnID:  "turn-2",
+		context: newTurnContext(nil, nil, nil),
+	})
+	secondExec, err := pipeline.SetupTurn(context.Background(), secondTS)
+	if err != nil {
+		t.Fatalf("SetupTurn(second) failed: %v", err)
+	}
+	ctrl, err = pipeline.CallLLM(context.Background(), context.Background(), secondTS, secondExec, 1)
+	if err != nil {
+		t.Fatalf("CallLLM(second) failed: %v", err)
+	}
+	if ctrl != ControlBreak {
+		t.Fatalf("CallLLM(second) control = %v, want %v", ctrl, ControlBreak)
+	}
+
+	provider.mu.Lock()
+	gotCalls := append([]string(nil), provider.calls...)
+	provider.mu.Unlock()
+	wantCalls := []string{"primary-model", "fallback-model", "fallback-model"}
+	if strings.Join(gotCalls, ",") != strings.Join(wantCalls, ",") {
+		t.Fatalf("models called = %v, want %v", gotCalls, wantCalls)
 	}
 }
 

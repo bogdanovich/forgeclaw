@@ -332,36 +332,6 @@ func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {
 	return turnResult{status: TurnEndStatusAborted}, nil
 }
 
-func (al *AgentLoop) selectCandidates(
-	agent *AgentInstance,
-	userMsg string,
-	history []providers.Message,
-) (candidates []providers.FallbackCandidate, model string, usedLight bool) {
-	if agent.Router == nil || len(agent.LightCandidates) == 0 {
-		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model), false
-	}
-
-	_, usedLight, score := agent.Router.SelectModel(userMsg, history, agent.Model)
-	if !usedLight {
-		logger.DebugCF("agent", "Model routing: primary model selected",
-			map[string]any{
-				"agent_id":  agent.ID,
-				"score":     score,
-				"threshold": agent.Router.Threshold(),
-			})
-		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model), false
-	}
-
-	logger.InfoCF("agent", "Model routing: light model selected",
-		map[string]any{
-			"agent_id":    agent.ID,
-			"light_model": agent.Router.LightModel(),
-			"score":       score,
-			"threshold":   agent.Router.Threshold(),
-		})
-	return agent.LightCandidates, resolvedCandidateModel(agent.LightCandidates, agent.Router.LightModel()), true
-}
-
 func (al *AgentLoop) resolveContextManager() ContextManager {
 	name := al.cfg.Agents.Defaults.ContextManager
 	if name == "" || name == "legacy" {
@@ -462,7 +432,8 @@ func (al *AgentLoop) askSideQuestion(
 	maxMediaSize := al.GetConfig().Agents.Defaults.GetMaxMediaSize()
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
-	activeCandidates, activeModel, usedLight := al.selectCandidates(agent, question, messages)
+	selection := al.selectCandidates(agent, question, messages, opts.Dispatch.RouteSessionKey)
+	activeCandidates, activeModel, usedLight := selection.activeCandidates, selection.model, selection.usedLight
 	selectedModelName := sideQuestionModelName(agent, usedLight)
 
 	llmOpts := map[string]any{

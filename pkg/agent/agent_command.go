@@ -320,6 +320,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 			agent.Candidates = nextCandidates
 			agent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
 			agent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
+			if routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey); routeSessionKey != "" {
+				_ = al.clearAutoModelSelection(routeSessionKey)
+			}
 
 			if oldProvider != nil && oldProvider != nextProvider {
 				if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
@@ -345,12 +348,18 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return "", fmt.Errorf("route session key not available")
 			}
 			if clearOverride {
+				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
+					return "", err
+				}
 				return "", al.clearSessionOverride(routeSessionKey)
 			}
 
 			nextSessionKey := buildResetSessionKey(agent.ID, routeSessionKey)
 			if nextSessionKey == "" {
 				return "", fmt.Errorf("failed to allocate reset session key")
+			}
+			if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
+				return "", err
 			}
 			if err := al.setSessionOverride(routeSessionKey, nextSessionKey); err != nil {
 				return "", err

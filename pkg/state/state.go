@@ -30,8 +30,23 @@ type State struct {
 	// for inline tool feedback such as working_summary.
 	ToolFeedbackOverrides map[string]bool `json:"tool_feedback_overrides,omitempty"`
 
+	// AutoModelSelections stores temporary session-scoped auto-fallback routing
+	// state. SelectedModel identifies the user's intended model; ActiveModel is
+	// the temporary fallback model currently pinned for the conversation.
+	AutoModelSelections map[string]AutoModelSelection `json:"auto_model_selections,omitempty"`
+
 	// Timestamp is the last time this state was updated
 	Timestamp time.Time `json:"timestamp"`
+}
+
+type AutoModelSelection struct {
+	SelectedProvider string    `json:"selected_provider,omitempty"`
+	SelectedModel    string    `json:"selected_model,omitempty"`
+	ActiveProvider   string    `json:"active_provider,omitempty"`
+	ActiveModel      string    `json:"active_model,omitempty"`
+	Reason           string    `json:"reason,omitempty"`
+	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
 // Manager manages persistent state with atomic saves.
@@ -237,6 +252,75 @@ func (sm *Manager) GetToolFeedbackOverride(routeSessionKey string) (bool, bool) 
 		return false, false
 	}
 	value, ok := sm.state.ToolFeedbackOverrides[strings.TrimSpace(routeSessionKey)]
+	return value, ok
+}
+
+// SetAutoModelSelection persists a temporary auto-fallback model selection for
+// a routed session.
+func (sm *Manager) SetAutoModelSelection(routeSessionKey string, selection AutoModelSelection) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	if routeSessionKey == "" {
+		return fmt.Errorf("route session key is required")
+	}
+
+	selection.SelectedProvider = strings.TrimSpace(selection.SelectedProvider)
+	selection.SelectedModel = strings.TrimSpace(selection.SelectedModel)
+	selection.ActiveProvider = strings.TrimSpace(selection.ActiveProvider)
+	selection.ActiveModel = strings.TrimSpace(selection.ActiveModel)
+	selection.Reason = strings.TrimSpace(selection.Reason)
+	selection.UpdatedAt = time.Now()
+
+	if sm.state.AutoModelSelections == nil {
+		sm.state.AutoModelSelections = make(map[string]AutoModelSelection)
+	}
+	sm.state.AutoModelSelections[routeSessionKey] = selection
+	sm.state.Timestamp = selection.UpdatedAt
+
+	if err := sm.saveAtomic(); err != nil {
+		return fmt.Errorf("failed to save state atomically: %w", err)
+	}
+
+	return nil
+}
+
+// ClearAutoModelSelection removes a persisted auto-fallback model selection.
+func (sm *Manager) ClearAutoModelSelection(routeSessionKey string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	if routeSessionKey == "" {
+		return fmt.Errorf("route session key is required")
+	}
+	if len(sm.state.AutoModelSelections) == 0 {
+		return nil
+	}
+
+	delete(sm.state.AutoModelSelections, routeSessionKey)
+	if len(sm.state.AutoModelSelections) == 0 {
+		sm.state.AutoModelSelections = nil
+	}
+	sm.state.Timestamp = time.Now()
+
+	if err := sm.saveAtomic(); err != nil {
+		return fmt.Errorf("failed to save state atomically: %w", err)
+	}
+
+	return nil
+}
+
+// GetAutoModelSelection returns the persisted auto-fallback model selection
+// for a routed session and whether one is present.
+func (sm *Manager) GetAutoModelSelection(routeSessionKey string) (AutoModelSelection, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if len(sm.state.AutoModelSelections) == 0 {
+		return AutoModelSelection{}, false
+	}
+	value, ok := sm.state.AutoModelSelections[strings.TrimSpace(routeSessionKey)]
 	return value, ok
 }
 
