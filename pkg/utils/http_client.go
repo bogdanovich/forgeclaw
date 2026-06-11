@@ -39,9 +39,17 @@ func CreateHTTPClient(proxyURL string, timeout time.Duration) (*http.Client, err
 		if proxy.Host == "" {
 			return nil, fmt.Errorf("invalid proxy URL: missing host")
 		}
-		client.Transport.(*http.Transport).Proxy = http.ProxyURL(proxy)
+		tr, ok := client.Transport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf("internal error: transport is not *http.Transport")
+		}
+		tr.Proxy = http.ProxyURL(proxy)
 	} else {
-		client.Transport.(*http.Transport).Proxy = http.ProxyFromEnvironment
+		tr, ok := client.Transport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf("internal error: transport is not *http.Transport")
+		}
+		tr.Proxy = http.ProxyFromEnvironment
 	}
 
 	return client, nil
