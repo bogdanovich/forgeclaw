@@ -207,6 +207,64 @@ func TestCronTool_CommandBlockedWhenExecDisabled(t *testing.T) {
 	}
 }
 
+func TestCronTool_AddJobStoresExplicitDeliverTextPayloadKind(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":       "add",
+		"message":      "Напоминание: позвонить в PG&E.",
+		"payload_kind": "deliver_text",
+		"at_seconds":   float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf("expected add to succeed, got: %s", result.ForLLM)
+	}
+
+	jobs := tool.cronService.ListJobs(false)
+	if len(jobs) != 1 {
+		t.Fatalf("job count = %d, want 1", len(jobs))
+	}
+	if jobs[0].Payload.Kind != "deliver_text" {
+		t.Fatalf("payload kind = %q, want deliver_text", jobs[0].Payload.Kind)
+	}
+}
+
+func TestCronTool_UpdateJobCanChangePayloadKind(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	add := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "reminder text",
+		"at_seconds": float64(60),
+	})
+	if add.IsError {
+		t.Fatalf("add error: %s", add.ForLLM)
+	}
+
+	jobs := tool.cronService.ListJobs(false)
+	if len(jobs) != 1 {
+		t.Fatalf("job count = %d, want 1", len(jobs))
+	}
+
+	update := tool.Execute(ctx, map[string]any{
+		"action":       "update",
+		"job_id":       jobs[0].ID,
+		"payload_kind": "deliver_text",
+	})
+	if update.IsError {
+		t.Fatalf("update error: %s", update.ForLLM)
+	}
+
+	updated, ok := tool.cronService.GetJob(jobs[0].ID)
+	if !ok {
+		t.Fatalf("job %s not found", jobs[0].ID)
+	}
+	if updated.Payload.Kind != "deliver_text" {
+		t.Fatalf("payload kind = %q, want deliver_text", updated.Payload.Kind)
+	}
+}
+
 // TestCronTool_CommandAllowedFromInternalChannel verifies command scheduling works from internal channels
 func TestCronTool_CommandAllowedFromInternalChannel(t *testing.T) {
 	tool := newTestCronTool(t)
@@ -267,6 +325,7 @@ func TestCronTool_GetReturnsFullJobPayload(t *testing.T) {
 	job, err := tool.cronService.AddJob(
 		"daily",
 		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		message,
 		"telegram",
 		"chat-1",
@@ -302,6 +361,7 @@ func TestCronTool_UpdateSchedulePreservesPayload(t *testing.T) {
 	original, err := tool.cronService.AddJob(
 		"AI daily",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		"",
 		"fetch RSS, include source links",
 		"weixin",
 		"chat-1",
@@ -345,6 +405,7 @@ func TestCronTool_UpdateMessagePreservesScheduleAndNextRun(t *testing.T) {
 	original, err := tool.cronService.AddJob(
 		"reminder",
 		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		"old message",
 		"telegram",
 		"chat-1",
@@ -387,6 +448,7 @@ func TestCronTool_UpdateValidationErrors(t *testing.T) {
 	job, err := tool.cronService.AddJob(
 		"job",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		"",
 		"message",
 		"cli",
 		"direct",
@@ -443,6 +505,7 @@ func TestCronTool_ListFiltersJobsForRemoteChannel(t *testing.T) {
 	ownJob, err := tool.cronService.AddJob(
 		"own",
 		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		"visible",
 		"telegram",
 		"chat-1",
@@ -453,6 +516,7 @@ func TestCronTool_ListFiltersJobsForRemoteChannel(t *testing.T) {
 	otherChatJob, err := tool.cronService.AddJob(
 		"other-chat",
 		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		"hidden",
 		"telegram",
 		"chat-2",
@@ -463,6 +527,7 @@ func TestCronTool_ListFiltersJobsForRemoteChannel(t *testing.T) {
 	otherChannelJob, err := tool.cronService.AddJob(
 		"other-channel",
 		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		"hidden",
 		"feishu",
 		"chat-1",
@@ -473,6 +538,7 @@ func TestCronTool_ListFiltersJobsForRemoteChannel(t *testing.T) {
 	commandJob, err := tool.cronService.AddJob(
 		"command",
 		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		"hidden command",
 		"telegram",
 		"chat-1",
@@ -505,6 +571,7 @@ func TestCronTool_RemoteCannotAccessOtherChatJob(t *testing.T) {
 	job, err := tool.cronService.AddJob(
 		"private",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		"",
 		"secret",
 		"telegram",
 		"chat-1",
@@ -537,6 +604,7 @@ func TestCronTool_RemoteCannotAccessCommandJob(t *testing.T) {
 	job, err := tool.cronService.AddJob(
 		"command",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		"",
 		"run command",
 		"telegram",
 		"chat-1",
@@ -577,6 +645,7 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 		job, err := tool.cronService.AddJob(
 			"job",
 			cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+			"",
 			"message",
 			"cli",
 			"direct",
@@ -605,6 +674,7 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 		job, err := tool.cronService.AddJob(
 			"job",
 			cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+			"",
 			"message",
 			"cli",
 			"direct",
@@ -661,6 +731,7 @@ func TestCronTool_InternalCanAccessCommandJobFromAnyChannel(t *testing.T) {
 	job, err := tool.cronService.AddJob(
 		"command",
 		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		"",
 		"run command",
 		"telegram",
 		"chat-1",
@@ -783,6 +854,51 @@ func TestCronTool_ExecuteJobPublishesAgentResponse(t *testing.T) {
 	}
 	if rec.TerminalSummary != "generated reply" {
 		t.Fatalf("TerminalSummary = %q, want generated reply", rec.TerminalSummary)
+	}
+}
+
+func TestCronTool_ExecuteJobPublishesDeliverTextWithoutAgent(t *testing.T) {
+	executor := &stubJobExecutor{response: "should not run"}
+	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	tool.SetTaskRegistry(registry)
+
+	job := &cron.CronJob{ID: "job-deliver"}
+	job.Payload.Kind = "deliver_text"
+	job.Payload.Channel = "telegram"
+	job.Payload.To = "chat-1"
+	job.Payload.Message = "Напоминание: позвонить в PG&E."
+
+	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
+		t.Fatalf("ExecuteJob() = %q, want ok", got)
+	}
+
+	if executor.lastPrompt != "" {
+		t.Fatalf("expected deliver_text job to bypass agent executor, got prompt %q", executor.lastPrompt)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var msg bus.OutboundMessage
+	select {
+	case msg = <-tool.msgBus.OutboundChan():
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for outbound message")
+	}
+	if msg.Content != job.Payload.Message {
+		t.Fatalf("published content = %q, want %q", msg.Content, job.Payload.Message)
+	}
+
+	rec := singleCronTaskRecord(t, registry)
+	if rec.Status != taskregistry.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", rec.Status)
+	}
+	if rec.DeliveryStatus != taskregistry.DeliveryDelivered {
+		t.Fatalf("DeliveryStatus = %q, want delivered", rec.DeliveryStatus)
+	}
+	if rec.TerminalSummary != job.Payload.Message {
+		t.Fatalf("TerminalSummary = %q, want original message", rec.TerminalSummary)
 	}
 }
 

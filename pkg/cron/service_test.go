@@ -23,6 +23,7 @@ func TestSaveStore_FilePermissions(t *testing.T) {
 	_, err := cs.AddJob(
 		"test",
 		CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)},
+		"",
 		"hello",
 		"cli",
 		"direct",
@@ -58,7 +59,7 @@ func TestCronService_CRUD(t *testing.T) {
 
 	// Test AddJob
 	at := time.Now().Add(time.Hour).UnixMilli()
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "msg", "ch", "to")
+	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "", "msg", "ch", "to")
 	if err != nil || job.ID == "" {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -96,6 +97,7 @@ func TestCronService_GetJobReturnsCopy(t *testing.T) {
 	job, err := cs.AddJob(
 		"Task1",
 		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		"msg",
 		"ch",
 		"to",
@@ -141,7 +143,7 @@ func TestCronService_UpdateJobRecomputesNextRunOnScheduleOrEnabledChange(t *test
 	defer os.Remove(path)
 
 	at := time.Now().Add(time.Hour).UnixMilli()
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "msg", "ch", "to")
+	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "", "msg", "ch", "to")
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -194,6 +196,7 @@ func TestCronService_UpdateJobPreservesRunStateOnPayloadOnlyChange(t *testing.T)
 	job, err := cs.AddJob(
 		"Task1",
 		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		"msg",
 		"ch",
 		"to",
@@ -312,7 +315,7 @@ func TestCronService_ExecutionFlow(t *testing.T) {
 
 	// Add a job then runs 100ms from now
 	target := time.Now().Add(100 * time.Millisecond).UnixMilli()
-	job, _ := cs.AddJob("FastJob", CronSchedule{Kind: "at", AtMS: &target}, "", "", "")
+	job, _ := cs.AddJob("FastJob", CronSchedule{Kind: "at", AtMS: &target}, "", "", "", "")
 
 	// Check for job execution with a timeout
 	success := false
@@ -345,7 +348,7 @@ func TestCronService_PersistenceIntegrity(t *testing.T) {
 	// write a job and persist
 	cs1 := NewCronService(tmpFile, nil)
 	at := int64(2000000000000)
-	cs1.AddJob("PersistMe", CronSchedule{Kind: "at", AtMS: &at}, "payload", "ch1", "")
+	cs1.AddJob("PersistMe", CronSchedule{Kind: "at", AtMS: &at}, "", "payload", "ch1", "")
 
 	// check file exists
 	if _, err := os.Stat(tmpFile); os.IsNotExist(err) {
@@ -394,6 +397,7 @@ func TestCronService_ConcurrentAccess(t *testing.T) {
 				cs.AddJob(
 					fmt.Sprintf("Job-%d-%d", id, j),
 					CronSchedule{Kind: "at", AtMS: &at},
+					"",
 					"",
 					"",
 					"",
