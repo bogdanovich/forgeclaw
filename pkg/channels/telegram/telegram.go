@@ -1106,6 +1106,15 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	}
 
 	chatID := message.Chat.ID
+	threadID := message.MessageThreadID
+	if message.Chat.IsForum && threadID != 0 && !c.topicAllowed(threadID) {
+		logger.DebugCF("telegram", "Message ignored by topic filter", map[string]any{
+			"chat_id":    chatID,
+			"thread_id":  threadID,
+			"message_id": message.MessageID,
+		})
+		return nil
+	}
 	c.chatIDsMu.Lock()
 	c.chatIDs[platformID] = chatID
 	c.chatIDsMu.Unlock()
@@ -1240,15 +1249,6 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	// Only forum groups (IsForum) are handled; regular group reply threads
 	// must share one session per group.
 	compositeChatID := fmt.Sprintf("%d", chatID)
-	threadID := message.MessageThreadID
-	if message.Chat.IsForum && threadID != 0 && !c.topicAllowed(threadID) {
-		logger.DebugCF("telegram", "Message ignored by topic filter", map[string]any{
-			"chat_id":    chatID,
-			"thread_id":  threadID,
-			"message_id": message.MessageID,
-		})
-		return nil
-	}
 	if message.Chat.IsForum && threadID != 0 {
 		compositeChatID = fmt.Sprintf("%d/%d", chatID, threadID)
 	}
