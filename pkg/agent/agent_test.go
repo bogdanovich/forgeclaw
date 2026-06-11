@@ -4457,6 +4457,133 @@ func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T)
 	}
 }
 
+func TestProcessMessage_ResetClearsSessionModelOverride(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		resetCmd string
+	}{
+		{name: "fresh_session", resetCmd: "/reset"},
+		{name: "clear_to_default", resetCmd: "/reset clear"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tmpDir, err := os.MkdirTemp("", "agent-test-*")
+			if err != nil {
+				t.Fatalf("Failed to create temp dir: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			localCalls := 0
+			localModel := ""
+			localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+			defer localServer.Close()
+
+			remoteCalls := 0
+			remoteModel := ""
+			remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+			defer remoteServer.Close()
+
+			cfg := &config.Config{
+				Agents: config.AgentsConfig{
+					Defaults: config.AgentDefaults{
+						Workspace:         tmpDir,
+						Provider:          "openai",
+						ModelName:         "gpt-5.4",
+						MaxTokens:         4096,
+						MaxToolIterations: 10,
+					},
+				},
+				Session: config.SessionConfig{
+					Dimensions: []string{"chat"},
+				},
+				ModelList: []*config.ModelConfig{
+					{
+						ModelName: "gpt-5.4",
+						Model:     "openai/gpt-5.4",
+						Provider:  "openai",
+						APIBase:   localServer.URL,
+						APIKeys:   config.SimpleSecureStrings("local-key"),
+						Enabled:   true,
+					},
+					{
+						ModelName: "deepseek",
+						Model:     "openrouter/deepseek/deepseek-v3.2",
+						Provider:  "openrouter",
+						APIBase:   remoteServer.URL,
+						APIKeys:   config.SimpleSecureStrings("remote-key"),
+						Enabled:   true,
+					},
+				},
+			}
+
+			msgBus := bus.NewMessageBus()
+			provider, _, err := providers.CreateProvider(cfg)
+			if err != nil {
+				t.Fatalf("CreateProvider() error = %v", err)
+			}
+			al := NewAgentLoop(cfg, msgBus, provider)
+			helper := testHelper{al: al}
+			ctx := context.Background()
+			inbound := bus.InboundContext{
+				Channel:  "telegram",
+				ChatID:   "chat-a",
+				ChatType: "direct",
+				SenderID: "telegram:123",
+			}
+
+			overrideResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: "/model deepseek",
+			})
+			if !strings.Contains(overrideResp, "Set session model override.") {
+				t.Fatalf("unexpected /model reply: %q", overrideResp)
+			}
+
+			resetResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: tc.resetCmd,
+			})
+			if !strings.Contains(resetResp, "default routed session") &&
+				!strings.Contains(resetResp, "Started a fresh session.") {
+				t.Fatalf("unexpected reset reply: %q", resetResp)
+			}
+
+			showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: "/show model",
+			})
+			if strings.Contains(showResp, "Session Override:") {
+				t.Fatalf("reset should clear session override, got %q", showResp)
+			}
+			if !strings.Contains(showResp, "Current Model: gpt-5.4 (Provider: openai)") {
+				t.Fatalf("unexpected /show model after reset: %q", showResp)
+			}
+
+			reply := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: "hello after reset",
+			})
+			if reply != "local reply" {
+				t.Fatalf("unexpected reply after reset: %q", reply)
+			}
+			if remoteCalls != 0 {
+				t.Fatalf("remote calls after reset = %d, want 0", remoteCalls)
+			}
+			if localCalls != 1 {
+				t.Fatalf("local calls after reset = %d, want 1", localCalls)
+			}
+			if localModel != "openai/gpt-5.4" {
+				t.Fatalf("local model after reset = %q, want %q", localModel, "openai/gpt-5.4")
+			}
+			if remoteModel != "" {
+				t.Fatalf("remote model after reset = %q, want empty", remoteModel)
+			}
+		})
+	}
+}
+
 func TestProcessMessage_InvalidSessionModelOverrideAutoClears(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {

@@ -493,6 +493,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return "", fmt.Errorf("route session key not available")
 			}
 			if clearOverride {
+				if err := al.clearSessionModelOverride(routeSessionKey); err != nil {
+					return "", err
+				}
 				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 					return "", err
 				}
@@ -502,6 +505,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 			nextSessionKey := buildResetSessionKey(agent.ID, routeSessionKey)
 			if nextSessionKey == "" {
 				return "", fmt.Errorf("failed to allocate reset session key")
+			}
+			if err := al.clearSessionModelOverride(routeSessionKey); err != nil {
+				return "", err
 			}
 			if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 				return "", err
