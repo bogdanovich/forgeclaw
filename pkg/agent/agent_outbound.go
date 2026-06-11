@@ -287,8 +287,9 @@ func (al *AgentLoop) deliverToolResultToUser(
 			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
 				return nil, toolResultDeliveryNone, err
 			}
+			return nil, toolResultDeliveryQueued, nil
 		}
-		return nil, toolResultDeliveryQueued, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 
 	if strings.TrimSpace(text) == "" {
@@ -362,8 +363,9 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
 				return nil, toolResultDeliveryNone, err
 			}
+			return nil, toolResultDeliveryQueued, nil
 		}
-		return nil, toolResultDeliveryQueued, nil
+		return nil, toolResultDeliveryNone, nil
 	}
 	if strings.TrimSpace(out.Text) == "" {
 		return nil, toolResultDeliveryNone, nil
@@ -388,8 +390,9 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		if err := al.bus.PublishOutbound(ctx, outboundMessage); err != nil {
 			return nil, toolResultDeliveryNone, err
 		}
+		return nil, toolResultDeliveryQueued, nil
 	}
-	return nil, toolResultDeliveryQueued, nil
+	return nil, toolResultDeliveryNone, nil
 }
 
 func firstNonEmptyString(values ...string) string {
