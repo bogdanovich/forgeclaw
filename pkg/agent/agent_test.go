@@ -842,6 +842,9 @@ func TestProcessMessage_BeforeLLMModelRewriteReevaluatesThinkingOff(t *testing.T
 				MaxToolIterations: 10,
 			},
 		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
 		ModelList: []*config.ModelConfig{
 			{
 				ModelName: "plain-model",
@@ -895,6 +898,9 @@ func TestProcessMessage_BeforeLLMModelRewriteDoesNotLeakThinkingOff(t *testing.T
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
 		},
 		ModelList: []*config.ModelConfig{
 			{
@@ -1001,6 +1007,9 @@ func TestProcessMessage_BtwHookModelRewriteReevaluatesThinkingOff(t *testing.T) 
 				MaxToolIterations: 10,
 			},
 		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
 		ModelList: []*config.ModelConfig{
 			{
 				ModelName: "plain-model",
@@ -1058,6 +1067,9 @@ func TestProcessMessage_BtwHookModelRewriteDoesNotLeakThinkingOff(t *testing.T) 
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
 		},
 		ModelList: []*config.ModelConfig{
 			{
@@ -1557,7 +1569,7 @@ func TestHandleCommand_UseCommandRejectsUnknownSkill(t *testing.T) {
 		SenderID: "telegram:123",
 		ChatID:   "chat-1",
 		Content:  "/use missing explain how to list files",
-	}, agent, &opts)
+	}, agent, agent, &opts)
 	if !handled {
 		t.Fatal("expected /use with unknown skill to be handled")
 	}
@@ -4225,13 +4237,746 @@ func TestProcessMessage_UnknownSlashCommandDoesNotCallLLM(t *testing.T) {
 		Channel:  "telegram",
 		SenderID: "user1",
 		ChatID:   "chat1",
-		Content:  "/model gpt-5.4",
+		Content:  "/unknown gpt-5.4",
 	})
-	if resp != "Unknown command: /model. Use /help to see available commands." {
+	if resp != "Unknown command: /unknown. Use /help to see available commands." {
 		t.Fatalf("unexpected reply: %q", resp)
 	}
 	if provider.calls != 0 {
 		t.Fatalf("LLM should not be called for unknown slash command, calls=%d", provider.calls)
+	}
+}
+
+func TestProcessMessage_ModelOverrideIsSessionScoped(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	localCalls := 0
+	localModel := ""
+	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+	defer localServer.Close()
+
+	remoteCalls := 0
+	remoteModel := ""
+	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+	defer remoteServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   localServer.URL,
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIBase:   remoteServer.URL,
+				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+
+	overrideResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-a",
+			ChatType: "direct",
+			SenderID: "telegram:123",
+		},
+		Content: "/model deepseek",
+	})
+	if !strings.Contains(overrideResp, "Set session model override.") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+	if !strings.Contains(overrideResp, "Current Model: deepseek (Provider: openrouter)") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+
+	respA := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-a",
+			ChatType: "direct",
+			SenderID: "telegram:123",
+		},
+		Content: "hello from overridden chat",
+	})
+	if respA != "remote reply" {
+		t.Fatalf("unexpected overridden reply: %q", respA)
+	}
+
+	respB := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-b",
+			ChatType: "direct",
+			SenderID: "telegram:456",
+		},
+		Content: "hello from default chat",
+	})
+	if respB != "local reply" {
+		t.Fatalf("unexpected default reply: %q", respB)
+	}
+	if remoteCalls != 1 {
+		t.Fatalf("remote calls = %d, want 1", remoteCalls)
+	}
+	if localCalls != 1 {
+		t.Fatalf("local calls = %d, want 1", localCalls)
+	}
+	if remoteModel != "deepseek/deepseek-v3.2" {
+		t.Fatalf("remote model = %q, want %q", remoteModel, "deepseek/deepseek-v3.2")
+	}
+	if localModel != "openai/gpt-5.4" {
+		t.Fatalf("local model = %q, want %q", localModel, "openai/gpt-5.4")
+	}
+}
+
+func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	localCalls := 0
+	localModel := ""
+	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+	defer localServer.Close()
+
+	remoteCalls := 0
+	remoteModel := ""
+	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+	defer remoteServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   localServer.URL,
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIBase:   remoteServer.URL,
+				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	ctx := context.Background()
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+
+	helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/model deepseek"})
+	showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/show model"})
+	if !strings.Contains(showResp, "Session Override: deepseek") {
+		t.Fatalf("unexpected /show model with override: %q", showResp)
+	}
+
+	clearResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/model clear"})
+	if !strings.Contains(clearResp, "Cleared session model override.") {
+		t.Fatalf("unexpected /model clear reply: %q", clearResp)
+	}
+	if strings.Contains(clearResp, "Session Override:") {
+		t.Fatalf("clear reply should not retain session override: %q", clearResp)
+	}
+
+	resp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "back to default"})
+	if resp != "local reply" {
+		t.Fatalf("unexpected reply after clear: %q", resp)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("remote calls after clear = %d, want 0", remoteCalls)
+	}
+	if localCalls != 1 {
+		t.Fatalf("local calls after clear = %d, want 1", localCalls)
+	}
+	if localModel != "openai/gpt-5.4" {
+		t.Fatalf("local model after clear = %q, want %q", localModel, "openai/gpt-5.4")
+	}
+	if remoteModel != "" {
+		t.Fatalf("remote model after clear = %q, want empty", remoteModel)
+	}
+}
+
+func TestProcessMessage_ResetClearsSessionModelOverride(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		resetCmd string
+	}{
+		{name: "fresh_session", resetCmd: "/reset"},
+		{name: "clear_to_default", resetCmd: "/reset clear"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tmpDir, err := os.MkdirTemp("", "agent-test-*")
+			if err != nil {
+				t.Fatalf("Failed to create temp dir: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			localCalls := 0
+			localModel := ""
+			localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+			defer localServer.Close()
+
+			remoteCalls := 0
+			remoteModel := ""
+			remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+			defer remoteServer.Close()
+
+			cfg := &config.Config{
+				Agents: config.AgentsConfig{
+					Defaults: config.AgentDefaults{
+						Workspace:         tmpDir,
+						Provider:          "openai",
+						ModelName:         "gpt-5.4",
+						MaxTokens:         4096,
+						MaxToolIterations: 10,
+					},
+				},
+				Session: config.SessionConfig{
+					Dimensions: []string{"chat"},
+				},
+				ModelList: []*config.ModelConfig{
+					{
+						ModelName: "gpt-5.4",
+						Model:     "openai/gpt-5.4",
+						Provider:  "openai",
+						APIBase:   localServer.URL,
+						APIKeys:   config.SimpleSecureStrings("local-key"),
+						Enabled:   true,
+					},
+					{
+						ModelName: "deepseek",
+						Model:     "openrouter/deepseek/deepseek-v3.2",
+						Provider:  "openrouter",
+						APIBase:   remoteServer.URL,
+						APIKeys:   config.SimpleSecureStrings("remote-key"),
+						Enabled:   true,
+					},
+				},
+			}
+
+			msgBus := bus.NewMessageBus()
+			provider, _, err := providers.CreateProvider(cfg)
+			if err != nil {
+				t.Fatalf("CreateProvider() error = %v", err)
+			}
+			al := NewAgentLoop(cfg, msgBus, provider)
+			helper := testHelper{al: al}
+			ctx := context.Background()
+			inbound := bus.InboundContext{
+				Channel:  "telegram",
+				ChatID:   "chat-a",
+				ChatType: "direct",
+				SenderID: "telegram:123",
+			}
+
+			overrideResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: "/model deepseek",
+			})
+			if !strings.Contains(overrideResp, "Set session model override.") {
+				t.Fatalf("unexpected /model reply: %q", overrideResp)
+			}
+
+			resetResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: tc.resetCmd,
+			})
+			if !strings.Contains(resetResp, "default routed session") &&
+				!strings.Contains(resetResp, "Started a fresh session.") {
+				t.Fatalf("unexpected reset reply: %q", resetResp)
+			}
+
+			showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: "/show model",
+			})
+			if strings.Contains(showResp, "Session Override:") {
+				t.Fatalf("reset should clear session override, got %q", showResp)
+			}
+			if !strings.Contains(showResp, "Current Model: gpt-5.4 (Provider: openai)") {
+				t.Fatalf("unexpected /show model after reset: %q", showResp)
+			}
+
+			reply := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+				Context: inbound,
+				Content: "hello after reset",
+			})
+			if reply != "local reply" {
+				t.Fatalf("unexpected reply after reset: %q", reply)
+			}
+			if remoteCalls != 0 {
+				t.Fatalf("remote calls after reset = %d, want 0", remoteCalls)
+			}
+			if localCalls != 1 {
+				t.Fatalf("local calls after reset = %d, want 1", localCalls)
+			}
+			if localModel != "openai/gpt-5.4" {
+				t.Fatalf("local model after reset = %q, want %q", localModel, "openai/gpt-5.4")
+			}
+			if remoteModel != "" {
+				t.Fatalf("remote model after reset = %q, want empty", remoteModel)
+			}
+		})
+	}
+}
+
+func TestProcessMessage_SwitchModelRejectedWhenSessionOverrideActive(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	localCalls := 0
+	localModel := ""
+	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+	defer localServer.Close()
+
+	remoteCalls := 0
+	remoteModel := ""
+	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+	defer remoteServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   localServer.URL,
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIBase:   remoteServer.URL,
+				APIKeys:   config.SimpleSecureStrings("remote-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	ctx := context.Background()
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+
+	overrideResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+		Context: inbound,
+		Content: "/model deepseek",
+	})
+	if !strings.Contains(overrideResp, "Set session model override.") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+
+	switchResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+		Context: inbound,
+		Content: "/switch model to deepseek",
+	})
+	if !strings.Contains(switchResp, "cannot use /switch while this conversation has /model deepseek active") {
+		t.Fatalf("unexpected /switch rejection: %q", switchResp)
+	}
+
+	showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
+		Context: inbound,
+		Content: "/show model",
+	})
+	if !strings.Contains(showResp, "Current Model: deepseek (Provider: openrouter)") {
+		t.Fatalf("unexpected /show model after rejected switch: %q", showResp)
+	}
+	if !strings.Contains(showResp, "Session Override: deepseek") {
+		t.Fatalf("expected session override to remain active, got %q", showResp)
+	}
+	if !strings.Contains(showResp, "Workspace Default: gpt-5.4 (Provider: openai)") {
+		t.Fatalf("workspace default should remain unchanged, got %q", showResp)
+	}
+}
+
+func TestProcessMessage_InvalidSessionModelOverrideAutoClears(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	localCalls := 0
+	localModel := ""
+	localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+	defer localServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   localServer.URL,
+				APIKeys:   config.SimpleSecureStrings("local-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+	route, _, err := al.resolveMessageRoute(bus.InboundMessage{Context: inbound})
+	if err != nil {
+		t.Fatalf("resolveMessageRoute() error = %v", err)
+	}
+	allocation := al.allocateRouteSession(route, bus.InboundMessage{Context: inbound})
+	if err := al.setSessionModelOverride(allocation.SessionKey, "missing-model"); err != nil {
+		t.Fatalf("setSessionModelOverride() error = %v", err)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/show model",
+	})
+	if !strings.Contains(resp, "Current Model: gpt-5.4 (Provider: openai)") {
+		t.Fatalf("unexpected /show model reply: %q", resp)
+	}
+	if _, ok := al.getSessionModelOverride(allocation.SessionKey); ok {
+		t.Fatal("expected invalid override to be cleared")
+	}
+
+	reply := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "hello after stale override",
+	})
+	if reply != "local reply" {
+		t.Fatalf("unexpected fallback-to-default reply: %q", reply)
+	}
+	if localCalls != 1 {
+		t.Fatalf("local calls = %d, want 1", localCalls)
+	}
+}
+
+func TestProcessMessage_ModelOverrideSameAsDefaultPreservesLightRouting(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	heavyCalls := 0
+	heavyServer := newStrictChatCompletionTestServer(
+		t,
+		"heavy",
+		"gemini-2.5-flash",
+		"heavy reply",
+		&heavyCalls,
+	)
+	defer heavyServer.Close()
+
+	lightCalls := 0
+	lightServer := newStrictChatCompletionTestServer(
+		t,
+		"light",
+		"qwen2.5:0.5b",
+		"light reply",
+		&lightCalls,
+	)
+	defer lightServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "gemini-main",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				Routing: &config.RoutingConfig{
+					Enabled:    true,
+					LightModel: "qwen-light",
+					Threshold:  0.99,
+				},
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gemini-main",
+				Model:     "gemini/gemini-2.5-flash",
+				APIBase:   heavyServer.URL,
+				APIKeys:   config.SimpleSecureStrings("heavy-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "qwen-light",
+				Model:     "ollama/qwen2.5:0.5b",
+				APIBase:   lightServer.URL,
+				APIKeys:   config.SimpleSecureStrings("light-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat1",
+		ChatType: "direct",
+		SenderID: "user1",
+	}
+
+	overrideResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/model gemini-main",
+	})
+	if !strings.Contains(overrideResp, "Set session model override.") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "hi",
+	})
+	if resp != "light reply" {
+		t.Fatalf("response = %q, want %q", resp, "light reply")
+	}
+	if heavyCalls != 0 {
+		t.Fatalf("heavy calls = %d, want 0", heavyCalls)
+	}
+	if lightCalls != 1 {
+		t.Fatalf("light calls = %d, want 1", lightCalls)
+	}
+}
+
+func TestProcessMessage_ModelOverrideUsesOverrideProviderForSharedModelKey(t *testing.T) {
+	workspace := t.TempDir()
+
+	workspaceCalls := 0
+	workspaceModel := ""
+	workspaceServer := newChatCompletionTestServer(
+		t,
+		"workspace",
+		"workspace reply",
+		&workspaceCalls,
+		&workspaceModel,
+	)
+	defer workspaceServer.Close()
+
+	overrideCalls := 0
+	overrideModel := ""
+	overrideServer := newChatCompletionTestServer(
+		t,
+		"override",
+		"override reply",
+		&overrideCalls,
+		&overrideModel,
+	)
+	defer overrideServer.Close()
+
+	fallbackCalls := 0
+	fallbackModel := ""
+	fallbackServer := newChatCompletionTestServer(
+		t,
+		"fallback",
+		"fallback reply",
+		&fallbackCalls,
+		&fallbackModel,
+	)
+	defer fallbackServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "workspace-default",
+				ModelFallbacks:    []string{"real-fallback"},
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "workspace-default",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   workspaceServer.URL,
+				APIKeys:   config.SimpleSecureStrings("workspace-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "override-alias",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIBase:   overrideServer.URL,
+				APIKeys:   config.SimpleSecureStrings("override-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "real-fallback",
+				Model:     "openai/fallback-model",
+				Provider:  "openai",
+				APIBase:   fallbackServer.URL,
+				APIKeys:   config.SimpleSecureStrings("fallback-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+		},
+	}
+
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	helper := testHelper{al: al}
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat1",
+		ChatType: "direct",
+		SenderID: "user1",
+	}
+
+	overrideResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/model override-alias",
+	})
+	if !strings.Contains(overrideResp, "Set session model override.") {
+		t.Fatalf("unexpected /model reply: %q", overrideResp)
+	}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "hello",
+	})
+	if resp != "override reply" {
+		t.Fatalf("response = %q, want %q", resp, "override reply")
+	}
+	if overrideCalls != 1 {
+		t.Fatalf("override calls = %d, want 1", overrideCalls)
+	}
+	if workspaceCalls != 0 {
+		t.Fatalf("workspace calls = %d, want 0", workspaceCalls)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("fallback calls = %d, want 0", fallbackCalls)
+	}
+	if overrideModel != "openai/gpt-5.4" {
+		t.Fatalf("override model = %q, want %q", overrideModel, "openai/gpt-5.4")
 	}
 }
 

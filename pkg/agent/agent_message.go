@@ -92,22 +92,27 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 	}
 	allocation := al.allocateRouteSession(route, msg)
 	sessionKey := resolveScopeKey(allocation.SessionKey, msg.SessionKey)
+	effectiveAgent, cleanupEffectiveAgent := al.materializeSessionOverrideAgent(allocation.SessionKey, agent)
+	if cleanupEffectiveAgent != nil {
+		defer cleanupEffectiveAgent()
+	}
 
-	if tool, ok := agent.Tools.Get("message"); ok {
+	if tool, ok := effectiveAgent.Tools.Get("message"); ok {
 		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
 			resetter.ResetSentInRound(sessionKey)
 		}
 	}
 
-	return al.runAgentLoop(ctx, agent, processOptions{
+	return al.runAgentLoop(ctx, effectiveAgent, processOptions{
 		Dispatch: DispatchRequest{
-			SessionKey:     sessionKey,
-			SessionAliases: buildSessionAliases(sessionKey, append(allocation.SessionAliases, msg.SessionKey)...),
-			InboundContext: cloneInboundContext(&msg.Context),
-			RouteResult:    cloneResolvedRoute(&route),
-			SessionScope:   session.CloneScope(&allocation.Scope),
-			UserMessage:    msg.Content,
-			Media:          append([]string(nil), msg.Media...),
+			RouteSessionKey: allocation.SessionKey,
+			SessionKey:      sessionKey,
+			SessionAliases:  buildSessionAliases(sessionKey, append(allocation.SessionAliases, msg.SessionKey)...),
+			InboundContext:  cloneInboundContext(&msg.Context),
+			RouteResult:     cloneResolvedRoute(&route),
+			SessionScope:    session.CloneScope(&allocation.Scope),
+			UserMessage:     msg.Content,
+			Media:           append([]string(nil), msg.Media...),
 		},
 		SenderID:             msg.SenderID,
 		SenderDisplayName:    msg.Sender.DisplayName,
@@ -211,9 +216,13 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	// agent-scoped keys supplied by the caller.
 	scopeKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
 	sessionKey := scopeKey
+	effectiveAgent, cleanupEffectiveAgent := al.materializeSessionOverrideAgent(allocation.SessionKey, agent)
+	if cleanupEffectiveAgent != nil {
+		defer cleanupEffectiveAgent()
+	}
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
-	if tool, ok := agent.Tools.Get("message"); ok {
+	if tool, ok := effectiveAgent.Tools.Get("message"); ok {
 		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
 			resetter.ResetSentInRound(sessionKey)
 		}
@@ -222,6 +231,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	logger.InfoCF("agent", "Routed message",
 		map[string]any{
 			"agent_id":           agent.ID,
+			"effective_agent_id": effectiveAgent.ID,
 			"scope_key":          scopeKey,
 			"session_key":        sessionKey,
 			"matched_by":         route.MatchedBy,
@@ -263,7 +273,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// context-dependent commands check their own Runtime fields and report
 	// "unavailable" when the required capability is nil.
-	if response, handled := al.handleCommand(ctx, msg, agent, &opts); handled {
+	if response, handled := al.handleCommand(ctx, msg, effectiveAgent, agent, &opts); handled {
 		return response, nil
 	}
 
@@ -276,7 +286,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 			})
 	}
 
-	return al.runAgentLoop(ctx, agent, opts)
+	return al.runAgentLoop(ctx, effectiveAgent, opts)
 }
 
 func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage) {

@@ -175,6 +175,14 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 				},
 			}
 		},
+		GetModelSelection: func() ModelSelectionInfo {
+			return ModelSelectionInfo{
+				EffectiveName:     "gpt-5.4",
+				EffectiveProvider: "openai",
+				WorkspaceName:     "gpt-5.4",
+				WorkspaceProvider: "openai",
+			}
+		},
 	}
 	defs := BuiltinDefinitions()
 	ex := NewExecutor(NewRegistry(defs), rt)
@@ -202,8 +210,48 @@ func TestBuiltinListModels_UsesRuntimeModels(t *testing.T) {
 	) {
 		t.Fatalf("/list models reply=%q, want current model entry", reply)
 	}
-	if !strings.Contains(reply, "Use /switch model to <name> to change the active model.") {
-		t.Fatalf("/list models reply=%q, want switch hint", reply)
+	if !strings.Contains(
+		reply,
+		"Use /model <name> for this conversation, or /switch model to <name> for the whole workspace.",
+	) {
+		t.Fatalf("/list models reply=%q, want override hint", reply)
+	}
+}
+
+func TestBuiltinModel_ShowCurrentSelection(t *testing.T) {
+	rt := &Runtime{
+		GetModelSelection: func() ModelSelectionInfo {
+			return ModelSelectionInfo{
+				EffectiveName:      "deepseek",
+				EffectiveProvider:  "openrouter",
+				WorkspaceName:      "gpt-5.4",
+				WorkspaceProvider:  "openai",
+				SessionOverride:    "deepseek",
+				HasSessionOverride: true,
+			}
+		},
+	}
+	ex := NewExecutor(NewRegistry(BuiltinDefinitions()), rt)
+
+	var reply string
+	res := ex.Execute(context.Background(), Request{
+		Text: "/model",
+		Reply: func(text string) error {
+			reply = text
+			return nil
+		},
+	})
+	if res.Outcome != OutcomeHandled {
+		t.Fatalf("/model outcome=%v, want=%v", res.Outcome, OutcomeHandled)
+	}
+	if !strings.Contains(reply, "Current Model: deepseek (Provider: openrouter)") {
+		t.Fatalf("unexpected /model reply: %q", reply)
+	}
+	if !strings.Contains(reply, "Session Override: deepseek") {
+		t.Fatalf("unexpected /model reply: %q", reply)
+	}
+	if !strings.Contains(reply, "Workspace Default: gpt-5.4 (Provider: openai)") {
+		t.Fatalf("unexpected /model reply: %q", reply)
 	}
 }
 

@@ -44,7 +44,11 @@ func listCommand() Definition {
 							lines = append(lines, fmt.Sprintf("  - %s", targetText))
 						}
 					}
-					lines = append(lines, "", "Use /switch model to <name> to change the active model.")
+					lines = append(
+						lines,
+						"",
+						"Use /model <name> for this conversation, or /switch model to <name> for the whole workspace.",
+					)
 					return req.Reply(strings.Join(lines, "\n"))
 				},
 			},
