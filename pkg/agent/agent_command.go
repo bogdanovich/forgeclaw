@@ -296,6 +296,66 @@ func (al *AgentLoop) buildCommandsRuntime(
 		rt.GetModelInfo = func() (string, string) {
 			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
 		}
+		rt.ListModels = func() []commands.ConfiguredModelInfo {
+			if cfg == nil || len(cfg.ModelList) == 0 {
+				return nil
+			}
+			type aggregate struct {
+				info  commands.ConfiguredModelInfo
+				order int
+			}
+			modelsByName := make(map[string]*aggregate)
+			for idx, modelCfg := range cfg.ModelList {
+				if modelCfg == nil || modelCfg.IsVirtual() || !modelCfg.Enabled {
+					continue
+				}
+				entry, ok := modelsByName[modelCfg.ModelName]
+				if !ok {
+					modelsByName[modelCfg.ModelName] = &aggregate{
+						info: commands.ConfiguredModelInfo{
+							Name:      modelCfg.ModelName,
+							Provider:  modelCfg.Provider,
+							Model:     modelCfg.Model,
+							Current:   modelCfg.ModelName == agent.Model,
+							Count:     1,
+							Workspace: modelCfg.Workspace,
+						},
+						order: idx,
+					}
+					continue
+				}
+				entry.info.Count++
+				if entry.info.Provider == "" && modelCfg.Provider != "" {
+					entry.info.Provider = modelCfg.Provider
+				}
+				if entry.info.Model == "" && modelCfg.Model != "" {
+					entry.info.Model = modelCfg.Model
+				}
+				if entry.info.Workspace == "" && modelCfg.Workspace != "" {
+					entry.info.Workspace = modelCfg.Workspace
+				}
+				if modelCfg.ModelName == agent.Model {
+					entry.info.Current = true
+				}
+			}
+			models := make([]commands.ConfiguredModelInfo, 0, len(modelsByName))
+			order := make([]*aggregate, 0, len(modelsByName))
+			for _, item := range modelsByName {
+				order = append(order, item)
+			}
+			sort.Slice(order, func(i, j int) bool {
+				left := strings.ToLower(order[i].info.Name)
+				right := strings.ToLower(order[j].info.Name)
+				if left == right {
+					return order[i].order < order[j].order
+				}
+				return left < right
+			})
+			for _, item := range order {
+				models = append(models, item.info)
+			}
+			return models
+		}
 		rt.SwitchModel = func(value string) (string, error) {
 			value = strings.TrimSpace(value)
 			modelCfg, err := resolvedModelConfig(cfg, value, agent.Workspace)

@@ -27,6 +27,15 @@ type MCPToolInfo struct {
 	Parameters  []MCPToolParameterInfo
 }
 
+type ConfiguredModelInfo struct {
+	Name      string
+	Provider  string
+	Model     string
+	Current   bool
+	Count     int
+	Workspace string
+}
+
 // ContextStats describes current session context window usage.
 type ContextStats struct {
 	UsedTokens        int
@@ -50,6 +59,7 @@ type StopResult struct {
 type Runtime struct {
 	Config             *config.Config
 	GetModelInfo       func() (name, provider string)
+	ListModels         func() []ConfiguredModelInfo
 	AskSideQuestion    func(ctx context.Context, question string) (string, error)
 	ListAgentIDs       func() []string
 	ListDefinitions    func() []Definition

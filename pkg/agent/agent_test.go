@@ -4224,6 +4224,86 @@ func TestProcessMessage_UnknownSlashCommandDoesNotCallLLM(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Provider:          "openai",
+				ModelName:         "gpt-5.4",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "gpt-5.4",
+				Model:     "openai/gpt-5.4",
+				Provider:  "openai",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek/deepseek-v3.2",
+				Provider:  "openrouter",
+				APIKeys:   config.SimpleSecureStrings("test-key-2"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "disabled-model",
+				Model:     "openai/disabled-model",
+				Provider:  "openai",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				Enabled:   false,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &countingMockProvider{response: "LLM reply"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	helper := testHelper{al: al}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			ChatType: "direct",
+			SenderID: "telegram:123",
+		},
+		Content: "/list models",
+	})
+	if !strings.Contains(resp, "Available Models:") {
+		t.Fatalf("unexpected /list models reply: %q", resp)
+	}
+	if !strings.Contains(resp, "- gpt-5.4 (current): openai/gpt-5.4 via openai") {
+		t.Fatalf("unexpected /list models current entry: %q", resp)
+	}
+	if !strings.Contains(resp, "- deepseek: openrouter/deepseek/deepseek-v3.2 via openrouter [x2]") {
+		t.Fatalf("unexpected /list models deepseek entry: %q", resp)
+	}
+	if strings.Contains(resp, "disabled-model") {
+		t.Fatalf("disabled model should not be listed: %q", resp)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("LLM should not be called for /list models, calls=%d", provider.calls)
+	}
+}
+
 func TestProcessMessage_SwitchModelRejectsUnknownAlias(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
