@@ -123,7 +123,7 @@ func NewAgentInstance(
 	contextBuilder := NewContextBuilder(workspace).
 		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
 
-	identity := buildAgentIdentityConfig(agentCfg, definition)
+	identity := buildAgentIdentityConfig(defaults, agentCfg, definition)
 	provider = resolvePrimaryProviderForAgent(cfg, workspace, identity.agentID, model, provider)
 	warnOnUnknownAgentMCPServerDeclarations(identity.agentID, workspace, cfg, definition)
 
@@ -246,6 +246,7 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 }
 
 func buildAgentIdentityConfig(
+	defaults *config.AgentDefaults,
 	agentCfg *config.AgentConfig,
 	definition AgentContextDefinition,
 ) agentIdentityConfig {
@@ -260,7 +261,11 @@ func buildAgentIdentityConfig(
 	if definition.Agent != nil && strings.TrimSpace(definition.Agent.Frontmatter.Name) != "" {
 		identity.agentName = strings.TrimSpace(definition.Agent.Frontmatter.Name)
 	}
-	identity.subagents = agentCfg.Subagents
+	var defaultsSubagents *config.SubagentsConfig
+	if defaults != nil {
+		defaultsSubagents = defaults.Subagents
+	}
+	identity.subagents = mergeSubagentsConfig(defaultsSubagents, agentCfg.Subagents)
 	identity.skillsFilter = resolveAgentSkillsFilter(agentCfg, definition)
 	return identity
 }
