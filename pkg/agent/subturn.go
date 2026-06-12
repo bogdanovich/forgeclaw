@@ -398,9 +398,41 @@ func spawnSubTurn(
 	if baseAgent == nil {
 		return nil, errors.New("parent turnState has no agent instance")
 	}
+	modelBinding, err := al.buildSubagentChildBinding(parentTS, baseAgent)
+	if err != nil {
+		return nil, err
+	}
 	ephemeralStore := newEphemeralSession(nil)
 	agent := *baseAgent // shallow copy
 	agent.Sessions = ephemeralStore
+	if modelBinding.WorkspaceAgent == nil {
+		modelBinding.WorkspaceAgent = &agent
+	}
+	executionState := modelBinding.ExecutionState()
+	if executionState.Model != "" {
+		agent.Model = executionState.Model
+	}
+	if executionState.Provider != nil {
+		agent.Provider = executionState.Provider
+	}
+	if len(executionState.Candidates) > 0 {
+		agent.Candidates = append([]providers.FallbackCandidate(nil), executionState.Candidates...)
+	}
+	if executionState.CandidateProviders != nil {
+		agent.CandidateProviders = cloneCandidateProviderMap(executionState.CandidateProviders)
+	}
+	if executionState.Router != nil {
+		agent.Router = executionState.Router
+	}
+	if len(executionState.LightCandidates) > 0 {
+		agent.LightCandidates = append([]providers.FallbackCandidate(nil), executionState.LightCandidates...)
+	}
+	if executionState.LightProvider != nil {
+		agent.LightProvider = executionState.LightProvider
+	}
+	agent.ThinkingLevel = executionState.ThinkingLevel
+	agent.ThinkingLevelConfigured = executionState.ThinkingLevelConfigured
+	modelBinding.WorkspaceAgent = &agent
 	// Clone the tool registry so child turn's tool registrations
 	// don't pollute the parent's registry.
 	if baseAgent.Tools != nil {
@@ -422,6 +454,7 @@ func spawnSubTurn(
 		SessionScope:    session.CloneScope(parentTS.opts.Dispatch.SessionScope),
 	}
 	opts := processOptions{
+		ModelBinding:            modelBinding,
 		Dispatch:                dispatch,
 		SenderID:                parentTS.opts.Dispatch.SenderID(),
 		SenderDisplayName:       parentTS.opts.SenderDisplayName,

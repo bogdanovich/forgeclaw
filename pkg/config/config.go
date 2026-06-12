@@ -322,8 +322,9 @@ type AgentConfig struct {
 }
 
 type SubagentsConfig struct {
-	AllowAgents []string          `json:"allow_agents,omitempty"`
-	Model       *AgentModelConfig `json:"model,omitempty"`
+	AllowAgents              []string          `json:"allow_agents,omitempty"`
+	Model                    *AgentModelConfig `json:"model,omitempty"`
+	SessionModelOverrideMode string            `json:"session_model_override_mode,omitempty"`
 }
 
 type DispatchConfig struct {
@@ -452,6 +453,7 @@ type AgentDefaults struct {
 	TurnProfile               TurnProfileConfig  `json:"turn_profile,omitempty"`
 	MaxLLMRetries             int                `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
+	Subagents                 *SubagentsConfig   `json:"subagents,omitempty"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB
