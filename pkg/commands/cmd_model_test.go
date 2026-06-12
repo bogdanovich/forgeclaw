@@ -140,7 +140,7 @@ func TestModelCommand_ShowListAndUsage(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("/model deepseek outcome=%v, want handled", res.Outcome)
 	}
-	if reply != "Usage: /model [list|use <name>|clear|default]" {
-		t.Fatalf("unexpected strict usage reply: %q", reply)
+	if reply != "Unknown /model subcommand \"deepseek\".\nUse /model use deepseek to set a conversation override." {
+		t.Fatalf("unexpected strict guidance reply: %q", reply)
 	}
 }

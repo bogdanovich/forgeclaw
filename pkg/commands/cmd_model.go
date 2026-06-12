@@ -41,6 +41,13 @@ func modelCommand() Definition {
 			case "help":
 				return req.Reply(formatModelHelp())
 			default:
+				if len(parts) == 2 {
+					return req.Reply(fmt.Sprintf(
+						"Unknown /model subcommand %q.\nUse /model use %s to set a conversation override.",
+						subcmd,
+						parts[1],
+					))
+				}
 				return req.Reply("Usage: /model [list|use <name>|clear|default]")
 			}
 		},
