@@ -514,6 +514,87 @@ func TestSendMedia_MediaGroupLongCaptionSendsTextFirst(t *testing.T) {
 	assert.Contains(t, caller.calls[1].URL, "sendMediaGroup")
 }
 
+func TestSendMedia_VideoCaptionUsesHTMLParseMode(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "sendVideo") {
+				return successResponseWithMessageID(t, 401), nil
+			}
+			t.Fatalf("unexpected API call: %s", url)
+			return nil, nil
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "video.mp4")
+	require.NoError(t, os.WriteFile(path, []byte("fake-video-content"), 0o644))
+	ref, err := store.Store(path, media.MediaMeta{Filename: "video.mp4", ContentType: "video/mp4"}, "scope-1")
+	require.NoError(t, err)
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "video",
+			Ref:     ref,
+			Caption: "**Summary:** hello",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, constructor.calls, 1)
+	assert.Equal(t, telego.ModeHTML, constructor.calls[0].Parameters["parse_mode"])
+	assert.Equal(t, "<b>Summary:</b> hello", constructor.calls[0].Parameters["caption"])
+}
+
+func TestSendMedia_VideoCaptionParseFailureFallsBackToPlainText(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	sendVideoCalls := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if !strings.Contains(url, "sendVideo") {
+				t.Fatalf("unexpected API call: %s", url)
+			}
+			sendVideoCalls++
+			if sendVideoCalls == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+			}
+			return successResponseWithMessageID(t, 402), nil
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "video.mp4")
+	require.NoError(t, os.WriteFile(path, []byte("fake-video-content"), 0o644))
+	ref, err := store.Store(path, media.MediaMeta{Filename: "video.mp4", ContentType: "video/mp4"}, "scope-1")
+	require.NoError(t, err)
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "video",
+			Ref:     ref,
+			Caption: "**Summary:** hello",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, constructor.calls, 2)
+	assert.Equal(t, telego.ModeHTML, constructor.calls[0].Parameters["parse_mode"])
+	assert.Equal(t, "<b>Summary:</b> hello", constructor.calls[0].Parameters["caption"])
+	_, hasParseMode := constructor.calls[1].Parameters["parse_mode"]
+	assert.False(t, hasParseMode)
+	assert.Equal(t, "**Summary:** hello", constructor.calls[1].Parameters["caption"])
+}
+
 func TestSendMedia_MultiGroupLongCaptionSendsTextBeforeGroups(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	longCaption := strings.Repeat("c", telegramCaptionLimit) + " overflow before second album"
