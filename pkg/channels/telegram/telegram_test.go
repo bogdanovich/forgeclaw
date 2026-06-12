@@ -362,6 +362,71 @@ func TestSendMedia_MultipleImagesUseMediaGroup(t *testing.T) {
 	assert.False(t, hasSecondCaption)
 }
 
+func TestSendMedia_MediaGroupCaptionParseFailureFallsBackToPlainText(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	sendGroupCalls := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if !strings.Contains(url, "sendMediaGroup") {
+				t.Fatalf("unexpected API call: %s", url)
+			}
+			sendGroupCalls++
+			if sendGroupCalls == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+			}
+			return successMediaGroupResponse(t, 111, 112), nil
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	firstPath := filepath.Join(tmpDir, "first.png")
+	secondPath := filepath.Join(tmpDir, "second.png")
+	require.NoError(t, os.WriteFile(firstPath, []byte("first-image"), 0o644))
+	require.NoError(t, os.WriteFile(secondPath, []byte("second-image"), 0o644))
+
+	firstRef, err := store.Store(
+		firstPath,
+		media.MediaMeta{Filename: "first.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+	secondRef, err := store.Store(
+		secondPath,
+		media.MediaMeta{Filename: "second.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{
+			{Type: "image", Ref: firstRef, Caption: "**Summary:** hello"},
+			{Type: "image", Ref: secondRef},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"111", "112"}, ids)
+	require.Len(t, constructor.calls, 2)
+
+	var firstPayload []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(constructor.calls[0].Parameters["media"]), &firstPayload))
+	require.Len(t, firstPayload, 2)
+	assert.Equal(t, "<b>Summary:</b> hello", firstPayload[0]["caption"])
+	assert.Equal(t, telego.ModeHTML, firstPayload[0]["parse_mode"])
+
+	var secondPayload []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(constructor.calls[1].Parameters["media"]), &secondPayload))
+	require.Len(t, secondPayload, 2)
+	assert.Equal(t, "**Summary:** hello", secondPayload[0]["caption"])
+	_, hasParseMode := secondPayload[0]["parse_mode"]
+	assert.False(t, hasParseMode)
+}
+
 func TestSendMedia_MoreThanTenImagesSplitIntoMediaGroups(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	callIndex := 0

@@ -920,40 +920,60 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 		}
 	}()
 
-	inputMedia := make([]telego.InputMedia, 0, len(parts))
-	for i, part := range parts {
-		localPath, err := store.Resolve(part.Ref)
-		if err != nil {
-			logger.ErrorCF("telegram", "Failed to resolve media ref for media group", map[string]any{
-				"ref":   part.Ref,
-				"error": err.Error(),
-			})
-			return nil, err
-		}
+	buildInputMedia := func(useParseMode bool) ([]telego.InputMedia, error) {
+		inputMedia := make([]telego.InputMedia, 0, len(parts))
+		for i, part := range parts {
+			var file *os.File
+			if len(opened) > i {
+				file = opened[i]
+				if _, err := file.Seek(0, io.SeekStart); err != nil {
+					return nil, err
+				}
+			} else {
+				localPath, err := store.Resolve(part.Ref)
+				if err != nil {
+					logger.ErrorCF("telegram", "Failed to resolve media ref for media group", map[string]any{
+						"ref":   part.Ref,
+						"error": err.Error(),
+					})
+					return nil, err
+				}
 
-		file, err := os.Open(localPath)
-		if err != nil {
-			logger.ErrorCF("telegram", "Failed to open media file for media group", map[string]any{
-				"path":  localPath,
-				"error": err.Error(),
-			})
-			return nil, err
-		}
-		opened = append(opened, file)
+				file, err = os.Open(localPath)
+				if err != nil {
+					logger.ErrorCF("telegram", "Failed to open media file for media group", map[string]any{
+						"path":  localPath,
+						"error": err.Error(),
+					})
+					return nil, err
+				}
+				opened = append(opened, file)
+			}
 
-		mediaItem := &telego.InputMediaPhoto{
-			Type:  telego.MediaTypePhoto,
-			Media: telego.InputFile{File: file},
+			mediaItem := &telego.InputMediaPhoto{
+				Type:  telego.MediaTypePhoto,
+				Media: telego.InputFile{File: file},
+			}
+			if i == 0 {
+				if useParseMode {
+					telegramApplyCaptionParseMode(
+						&mediaItem.Caption,
+						&mediaItem.ParseMode,
+						part.Caption,
+						c.tgCfg.UseMarkdownV2,
+					)
+				} else {
+					mediaItem.Caption = part.Caption
+				}
+			}
+			inputMedia = append(inputMedia, mediaItem)
 		}
-		if i == 0 {
-			telegramApplyCaptionParseMode(
-				&mediaItem.Caption,
-				&mediaItem.ParseMode,
-				part.Caption,
-				c.tgCfg.UseMarkdownV2,
-			)
-		}
-		inputMedia = append(inputMedia, mediaItem)
+		return inputMedia, nil
+	}
+
+	inputMedia, err := buildInputMedia(true)
+	if err != nil {
+		return nil, err
 	}
 
 	results, err := c.bot.SendMediaGroup(ctx, &telego.SendMediaGroupParams{
@@ -961,6 +981,17 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 		MessageThreadID: threadID,
 		Media:           inputMedia,
 	})
+	if err != nil && telegramIsParseModeError(err) {
+		inputMedia, rebuildErr := buildInputMedia(false)
+		if rebuildErr != nil {
+			return nil, rebuildErr
+		}
+		results, err = c.bot.SendMediaGroup(ctx, &telego.SendMediaGroupParams{
+			ChatID:          tu.ID(chatID),
+			MessageThreadID: threadID,
+			Media:           inputMedia,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
