@@ -5,6 +5,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 const (
@@ -192,6 +193,15 @@ func (al *AgentLoop) buildSubagentChildBinding(
 	}
 	if err != nil {
 		return effectiveModelBinding{}, err
+	}
+	if execution.Router == nil {
+		execution.Router = targetAgent.Router
+	}
+	if len(execution.LightCandidates) == 0 && len(targetAgent.LightCandidates) > 0 {
+		execution.LightCandidates = append([]providers.FallbackCandidate(nil), targetAgent.LightCandidates...)
+	}
+	if execution.LightProvider == nil {
+		execution.LightProvider = targetAgent.LightProvider
 	}
 	binding := effectiveModelBinding{
 		WorkspaceAgent: targetAgent,

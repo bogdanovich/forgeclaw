@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/state"
 )
 
@@ -150,4 +152,74 @@ func TestBuildSubagentChildBinding_ReusesTargetRuntimeWhenPlanMatches(t *testing
 	if got.Override.Model != "gemini-flash-lite" {
 		t.Fatalf("Override.Model = %q, want gemini-flash-lite", got.Override.Model)
 	}
+}
+
+func TestBuildSubagentChildBinding_PreservesTargetRoutingStateOnRebuild(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace: t.TempDir(),
+				ModelName: "test-model",
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "test-model",
+				Provider:  "openai",
+				Model:     "test-model",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				APIBase:   "https://example.invalid/v1",
+			},
+			{
+				ModelName: "gemini-flash-lite",
+				Provider:  "openai",
+				Model:     "gemini-flash-lite",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				APIBase:   "https://example.invalid/v1",
+			},
+			{
+				ModelName: "light-model",
+				Provider:  "openai",
+				Model:     "light-model",
+				APIKeys:   config.SimpleSecureStrings("test-key"),
+				APIBase:   "https://example.invalid/v1",
+			},
+		},
+	}
+	al := &AgentLoop{cfg: cfg}
+	router := routing.New(routing.RouterConfig{LightModel: "light-model", Threshold: 1})
+	target := &AgentInstance{
+		ID:            "child",
+		Model:         "test-model",
+		Fallbacks:     []string{"light-model"},
+		Router:        router,
+		LightProvider: &turnProfileCaptureProvider{},
+		LightCandidates: []providers.FallbackCandidate{
+			{Provider: "openai", Model: "light-model"},
+		},
+		Subagents: &config.SubagentsConfig{
+			SessionModelOverrideMode: subagentSessionModelOverrideInherit,
+		},
+	}
+	parent := &turnState{
+		model: effectiveModelBinding{
+			Override: state.SessionModelOverride{Model: "gemini-flash-lite"},
+		},
+	}
+
+	got, err := al.buildSubagentChildBinding(parent, target)
+	if err != nil {
+		t.Fatalf("buildSubagentChildBinding() error = %v", err)
+	}
+	execution := got.ExecutionState()
+	if execution.Router != router {
+		t.Fatalf("ExecutionState().Router = %#v, want preserved router", execution.Router)
+	}
+	if len(execution.LightCandidates) != 1 || execution.LightCandidates[0].Model != "light-model" {
+		t.Fatalf("ExecutionState().LightCandidates = %#v, want preserved light candidates", execution.LightCandidates)
+	}
+	if execution.LightProvider == nil {
+		t.Fatal("ExecutionState().LightProvider = nil, want preserved provider")
+	}
+	got.Cleanup()
 }
