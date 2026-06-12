@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -257,7 +258,7 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 		Alias: (*Alias)(c),
 	}
 
-	if len(c.Session.Dimensions) > 0 || len(c.Session.IdentityLinks) > 0 {
+	if len(c.Session.Dimensions) > 0 || len(c.Session.IdentityLinks) > 0 || c.Session.DmScope != "" {
 		sessionCfg := c.Session
 		aux.Session = &sessionCfg
 	}
@@ -349,6 +350,47 @@ type DispatchSelector struct {
 type SessionConfig struct {
 	Dimensions    []string            `json:"dimensions,omitempty"`
 	IdentityLinks map[string][]string `json:"identity_links,omitempty"`
+	DmScope       string              `json:"dm_scope,omitempty"`
+}
+
+// ApplyDmScope translates the user-facing dm_scope value into the internal
+// dimensions array that the routing layer consumes. It is a no-op when
+// DmScope is empty or when Dimensions is already set (explicit Dimensions
+// take precedence over the derived value).
+func (s *SessionConfig) ApplyDmScope() {
+	if s.DmScope == "" || len(s.Dimensions) > 0 {
+		return
+	}
+	switch s.DmScope {
+	case "per-channel-peer":
+		s.Dimensions = []string{"chat", "sender"}
+	case "per-channel":
+		s.Dimensions = []string{"chat"}
+	case "per-peer":
+		s.Dimensions = []string{"sender"}
+	case "global":
+		s.Dimensions = nil
+	}
+}
+
+// DeriveDmScope sets DmScope based on Dimensions when DmScope is empty.
+// This handles legacy/fresh configs that only have explicit Dimensions
+// without a corresponding DmScope value, ensuring the API response always
+// includes a dm_scope that matches the actual runtime dimensions.
+func (s *SessionConfig) DeriveDmScope() {
+	if s.DmScope != "" || len(s.Dimensions) == 0 {
+		return
+	}
+	switch {
+	case slices.Equal(s.Dimensions, []string{"chat", "sender"}):
+		s.DmScope = "per-channel-peer"
+	case slices.Equal(s.Dimensions, []string{"chat"}):
+		s.DmScope = "per-channel"
+	case slices.Equal(s.Dimensions, []string{"sender"}):
+		s.DmScope = "per-peer"
+	}
+	// Dimensions not matching any known scope mapping (custom array)
+	// is fine — DmScope stays empty and the UI can handle it.
 }
 
 // RoutingConfig controls the intelligent model routing feature.
@@ -1567,6 +1609,9 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Agents.Defaults.Workspace = filepath.Join(homePath, pkg.WorkspaceName)
 	}
 
+	cfg.Session.ApplyDmScope()
+	cfg.Session.DeriveDmScope()
+
 	return cfg, nil
 }
 
@@ -1802,6 +1847,8 @@ func ResetToDefaults(configPath string) error {
 		return fmt.Errorf("backup before reset: %w", err)
 	}
 	cfg := DefaultConfig()
+	cfg.Session.ApplyDmScope()
+	cfg.Session.DeriveDmScope()
 	if err := cfg.SecurityCopyFrom(configPath); err != nil {
 		logger.WarnF("could not preserve security config", map[string]any{"error": err})
 	}

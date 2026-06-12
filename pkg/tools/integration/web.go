@@ -2275,7 +2275,10 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		"text":      text,
 	}
 
-	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	resultJSON, marshalErr := json.MarshalIndent(result, "", "  ")
+	if marshalErr != nil {
+		return ErrorResult(fmt.Sprintf("failed to marshal result: %v", marshalErr))
+	}
 
 	return &ToolResult{
 		ForLLM: string(resultJSON),

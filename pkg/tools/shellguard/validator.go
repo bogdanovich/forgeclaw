@@ -556,7 +556,7 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 			continue
 		}
 
-		p, err := filepath.Abs(raw)
+		p, err := commandPathAbs(commandPathTextFromMatch(command, loc[0], loc[1]), cwdPath)
 		if err != nil {
 			continue
 		}
@@ -595,6 +595,61 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 	return Decision{Allowed: true, Reason: "allowed", Category: "allowed", CommandClass: ClassifyCommand(command)}
 }
 
+func commandPathAbs(pathText, cwdPath string) (string, error) {
+	if filepath.IsAbs(pathText) {
+		return filepath.Abs(pathText)
+	}
+	return filepath.Abs(filepath.Join(cwdPath, pathText))
+}
+
+func commandPathTextFromMatch(cmd string, start, end int) string {
+	raw := cmd[start:end]
+	if !strings.HasPrefix(raw, "/") || isUnixAbsolutePathMatchStart(cmd, start) {
+		return raw
+	}
+
+	tokenStart, tokenEnd := shellTokenBounds(cmd, start)
+	prefix := cmd[tokenStart:start]
+	if eq := strings.IndexByte(prefix, '='); eq >= 0 {
+		return cmd[tokenStart+eq+1 : tokenEnd]
+	}
+	if strings.HasPrefix(prefix, "-") {
+		return raw
+	}
+	return cmd[tokenStart:tokenEnd]
+}
+
+func shellTokenBounds(cmd string, idx int) (int, int) {
+	start := idx
+	for start > 0 && !isShellTokenBoundary(cmd[start-1]) {
+		start--
+	}
+	end := idx
+	for end < len(cmd) && !isShellTokenBoundary(cmd[end]) {
+		end++
+	}
+	return start, end
+}
+
+func isUnixAbsolutePathMatchStart(cmd string, idx int) bool {
+	if idx <= 0 {
+		return true
+	}
+
+	prev := cmd[idx-1]
+	if isShellTokenBoundary(prev) || prev == '=' || prev == ',' || prev == '(' || prev == '[' || prev == '{' {
+		return true
+	}
+
+	j := idx - 1
+	for j >= 0 && !isShellTokenBoundary(cmd[j]) {
+		j--
+	}
+	prefix := cmd[j+1 : idx]
+
+	return strings.HasPrefix(prefix, "-") && !strings.Contains(prefix, "=")
+}
+
 func skipPathCandidate(command, cwd, raw string, start int) bool {
 	if strings.HasPrefix(raw, "//") && start > 0 {
 		before := command[:start]
@@ -615,7 +670,7 @@ func skipPathCandidate(command, cwd, raw string, start int) bool {
 			return false
 		}
 		if !looksLikeDomain(token) {
-			return true
+			return false
 		}
 		if !localPathExists(cwd, token) {
 			return true

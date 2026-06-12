@@ -76,6 +76,8 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
+	cfg.Session.ApplyDmScope()
+	cfg.Session.DeriveDmScope()
 	if execAllowRemoteOmitted(body) {
 		cfg.Tools.Exec.AllowRemote = config.DefaultConfig().Tools.Exec.AllowRemote
 	}
@@ -164,6 +166,20 @@ func (h *Handler) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Recursively merge patch into base
 	mergeMap(base, patch)
+
+	// When the patch updates dm_scope, the old derived dimensions from the
+	// base must be cleared so that ApplyDmScope() can re-derive them from
+	// the new dm_scope value. Otherwise the stale dimensions survive the
+	// merge and ApplyDmScope() exits early due to its precedence guard.
+	if sess, ok := base["session"].(map[string]any); ok {
+		if patchSess, patchHasSession := patch["session"].(map[string]any); patchHasSession {
+			if _, hasDmScope := patchSess["dm_scope"]; hasDmScope {
+				if _, hasDimsInPatch := patchSess["dimensions"]; !hasDimsInPatch {
+					delete(sess, "dimensions")
+				}
+			}
+		}
+	}
 	if err = normalizeChannelArrayFields(base); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid channel array field: %v", err), http.StatusBadRequest)
 		return
@@ -181,6 +197,8 @@ func (h *Handler) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Merged config is invalid: %v", err), http.StatusBadRequest)
 		return
 	}
+	newCfg.Session.ApplyDmScope()
+	newCfg.Session.DeriveDmScope()
 
 	// Restore security fields (tokens/keys) from the loaded config before validation,
 	// because private fields are lost during JSON round-trip.
