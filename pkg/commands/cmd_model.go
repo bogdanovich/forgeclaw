@@ -81,6 +81,7 @@ func formatModelOverview(rt *Runtime) string {
 		"- /model list",
 		"- /model use <name>",
 		"- /model clear",
+		"- /model default",
 	)
 	return strings.Join(lines, "\n")
 }

@@ -53,7 +53,7 @@ func TestModelCommand_SetAndClear(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("/model use deepseek outcome=%v, want handled", res.Outcome)
 	}
-	if reply != "Set session model override.\nCurrent Model: deepseek (Provider: openrouter)\nSession Override: deepseek\nWorkspace Default: gpt-5.4 (Provider: openai)\n\nUse:\n- /model list\n- /model use <name>\n- /model clear" {
+	if reply != "Set session model override.\nCurrent Model: deepseek (Provider: openrouter)\nSession Override: deepseek\nWorkspace Default: gpt-5.4 (Provider: openai)\n\nUse:\n- /model list\n- /model use <name>\n- /model clear\n- /model default" {
 		t.Fatalf("unexpected set reply: %q", reply)
 	}
 
@@ -68,7 +68,7 @@ func TestModelCommand_SetAndClear(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("/model clear outcome=%v, want handled", res.Outcome)
 	}
-	if reply != "Cleared session model override.\nCurrent Model: gpt-5.4 (Provider: openai)\nWorkspace Default: gpt-5.4 (Provider: openai)\nScope: workspace default\n\nUse:\n- /model list\n- /model use <name>\n- /model clear" {
+	if reply != "Cleared session model override.\nCurrent Model: gpt-5.4 (Provider: openai)\nWorkspace Default: gpt-5.4 (Provider: openai)\nScope: workspace default\n\nUse:\n- /model list\n- /model use <name>\n- /model clear\n- /model default" {
 		t.Fatalf("unexpected clear reply: %q", reply)
 	}
 }
@@ -110,7 +110,7 @@ func TestModelCommand_ShowListAndUsage(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("/model outcome=%v, want handled", res.Outcome)
 	}
-	if reply != "Current Model: gpt-5.4 (Provider: openai)\nWorkspace Default: gpt-5.4 (Provider: openai)\nScope: workspace default\n\nUse:\n- /model list\n- /model use <name>\n- /model clear" {
+	if reply != "Current Model: gpt-5.4 (Provider: openai)\nWorkspace Default: gpt-5.4 (Provider: openai)\nScope: workspace default\n\nUse:\n- /model list\n- /model use <name>\n- /model clear\n- /model default" {
 		t.Fatalf("unexpected /model reply: %q", reply)
 	}
 
