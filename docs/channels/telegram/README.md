@@ -103,9 +103,11 @@ Telegram auto-registers PicoClaw's top-level bot commands at startup, including 
 
 Skill-related commands:
 
-- `/model <name>` sets a conversation-scoped model override for the current chat.
+- `/model` shows the current effective model for this chat, including any active conversation override.
+- `/model use <name>` sets a conversation-scoped model override for the current chat.
 - `/model clear` removes the conversation-scoped model override.
 - `/show model` reports the current effective model, including any active conversation override.
+- `/list models` shows the configured model aliases available for `/model use <name>`.
 - `/list skills` lists the installed skills visible to the current agent.
 - `/list mcp` lists configured MCP servers and whether they are deferred/connected.
 - `/show mcp <server>` lists the active tools for a connected MCP server.
@@ -117,8 +119,10 @@ Skill-related commands:
 Examples:
 
 ```text
+/model
+/list models
 /list skills
-/model deepseek
+/model use deepseek
 /show model
 /list mcp
 /show mcp github

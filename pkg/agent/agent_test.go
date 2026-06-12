@@ -4395,7 +4395,7 @@ func TestProcessMessage_ModelOverrideIsSessionScoped(t *testing.T) {
 			ChatType: "direct",
 			SenderID: "telegram:123",
 		},
-		Content: "/model deepseek",
+		Content: "/model use deepseek",
 	})
 	if !strings.Contains(overrideResp, "Set session model override.") {
 		t.Fatalf("unexpected /model reply: %q", overrideResp)
@@ -4664,7 +4664,7 @@ func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T)
 		SenderID: "telegram:123",
 	}
 
-	helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/model deepseek"})
+	helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/model use deepseek"})
 	showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/show model"})
 	if !strings.Contains(showResp, "Session Override: deepseek") {
 		t.Fatalf("unexpected /show model with override: %q", showResp)
@@ -4774,7 +4774,7 @@ func TestProcessMessage_ResetClearsSessionModelOverride(t *testing.T) {
 
 			overrideResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{
 				Context: inbound,
-				Content: "/model deepseek",
+				Content: "/model use deepseek",
 			})
 			if !strings.Contains(overrideResp, "Set session model override.") {
 				t.Fatalf("unexpected /model reply: %q", overrideResp)
@@ -4980,7 +4980,7 @@ func TestProcessMessage_ModelOverrideSameAsDefaultPreservesLightRouting(t *testi
 
 	overrideResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
 		Context: inbound,
-		Content: "/model gemini-main",
+		Content: "/model use gemini-main",
 	})
 	if !strings.Contains(overrideResp, "Set session model override.") {
 		t.Fatalf("unexpected /model reply: %q", overrideResp)
@@ -5096,7 +5096,7 @@ func TestProcessMessage_ModelOverrideUsesOverrideProviderForSharedModelKey(t *te
 
 	overrideResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
 		Context: inbound,
-		Content: "/model override-alias",
+		Content: "/model use override-alias",
 	})
 	if !strings.Contains(overrideResp, "Set session model override.") {
 		t.Fatalf("unexpected /model reply: %q", overrideResp)

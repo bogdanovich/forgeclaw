@@ -44,16 +44,16 @@ func TestModelCommand_SetAndClear(t *testing.T) {
 
 	var reply string
 	res := ex.Execute(context.Background(), Request{
-		Text: "/model deepseek",
+		Text: "/model use deepseek",
 		Reply: func(text string) error {
 			reply = text
 			return nil
 		},
 	})
 	if res.Outcome != OutcomeHandled {
-		t.Fatalf("/model deepseek outcome=%v, want handled", res.Outcome)
+		t.Fatalf("/model use deepseek outcome=%v, want handled", res.Outcome)
 	}
-	if reply != "Set session model override.\nCurrent Model: deepseek (Provider: openrouter)\nSession Override: deepseek\nWorkspace Default: gpt-5.4 (Provider: openai)" {
+	if reply != "Set session model override.\nCurrent Model: deepseek (Provider: openrouter)\nSession Override: deepseek\nWorkspace Default: gpt-5.4 (Provider: openai)\n\nUse:\n- /model list\n- /model use <name>\n- /model clear\n- /model default" {
 		t.Fatalf("unexpected set reply: %q", reply)
 	}
 
@@ -68,7 +68,79 @@ func TestModelCommand_SetAndClear(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("/model clear outcome=%v, want handled", res.Outcome)
 	}
-	if reply != "Cleared session model override.\nCurrent Model: gpt-5.4 (Provider: openai)\nWorkspace Default: gpt-5.4 (Provider: openai)\nScope: workspace default" {
+	if reply != "Cleared session model override.\nCurrent Model: gpt-5.4 (Provider: openai)\nWorkspace Default: gpt-5.4 (Provider: openai)\nScope: workspace default\n\nUse:\n- /model list\n- /model use <name>\n- /model clear\n- /model default" {
 		t.Fatalf("unexpected clear reply: %q", reply)
+	}
+}
+
+func TestModelCommand_ShowListAndUsage(t *testing.T) {
+	rt := &Runtime{
+		GetModelSelection: func() ModelSelectionInfo {
+			return ModelSelectionInfo{
+				EffectiveName:     "gpt-5.4",
+				EffectiveProvider: "openai",
+				WorkspaceName:     "gpt-5.4",
+				WorkspaceProvider: "openai",
+			}
+		},
+		ListModels: func() []ConfiguredModelInfo {
+			return []ConfiguredModelInfo{
+				{
+					Name:    "gpt-5.4",
+					Current: true,
+					Targets: []ConfiguredModelTarget{{Provider: "openai", Model: "openai/gpt-5.4"}},
+				},
+				{
+					Name:    "kimi",
+					Targets: []ConfiguredModelTarget{{Provider: "openrouter", Model: "moonshotai/kimi-k2.6"}},
+				},
+			}
+		},
+	}
+	ex := NewExecutor(NewRegistry(BuiltinDefinitions()), rt)
+
+	var reply string
+	res := ex.Execute(context.Background(), Request{
+		Text: "/model",
+		Reply: func(text string) error {
+			reply = text
+			return nil
+		},
+	})
+	if res.Outcome != OutcomeHandled {
+		t.Fatalf("/model outcome=%v, want handled", res.Outcome)
+	}
+	if reply != "Current Model: gpt-5.4 (Provider: openai)\nWorkspace Default: gpt-5.4 (Provider: openai)\nScope: workspace default\n\nUse:\n- /model list\n- /model use <name>\n- /model clear\n- /model default" {
+		t.Fatalf("unexpected /model reply: %q", reply)
+	}
+
+	reply = ""
+	res = ex.Execute(context.Background(), Request{
+		Text: "/model list",
+		Reply: func(text string) error {
+			reply = text
+			return nil
+		},
+	})
+	if res.Outcome != OutcomeHandled {
+		t.Fatalf("/model list outcome=%v, want handled", res.Outcome)
+	}
+	if reply != "Available Models:\n- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai\n- kimi\n  - moonshotai/kimi-k2.6 via openrouter\n\nUse /model use <name> for this conversation." {
+		t.Fatalf("unexpected /model list reply: %q", reply)
+	}
+
+	reply = ""
+	res = ex.Execute(context.Background(), Request{
+		Text: "/model deepseek",
+		Reply: func(text string) error {
+			reply = text
+			return nil
+		},
+	})
+	if res.Outcome != OutcomeHandled {
+		t.Fatalf("/model deepseek outcome=%v, want handled", res.Outcome)
+	}
+	if reply != "Unknown /model subcommand \"deepseek\".\nUse /model use deepseek to set a conversation override." {
+		t.Fatalf("unexpected strict guidance reply: %q", reply)
 	}
 }
