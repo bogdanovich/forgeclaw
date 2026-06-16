@@ -826,6 +826,7 @@ type ModelConfig struct {
 	Streaming           ModelStreamingConfig `json:"streaming,omitzero"`              // Opt-in for provider streaming on this model entry
 	ExtraBody           map[string]any       `json:"extra_body,omitempty"`            // Additional fields to inject into request body
 	CustomHeaders       map[string]string    `json:"custom_headers,omitempty"`        // Additional headers to inject into every HTTP request
+	Capabilities        *ModelCapabilities   `json:"capabilities,omitempty"`          // Optional capability-specific model overrides (for example vision)
 
 	APIKeys SecureStrings `json:"api_keys,omitzero" yaml:"api_keys,omitempty"` // API authentication keys (multiple keys for failover)
 
@@ -839,6 +840,15 @@ type ModelConfig struct {
 	// isVirtual marks this model as a virtual model generated from multi-key expansion.
 	// Virtual models should not be persisted to config files.
 	isVirtual bool
+}
+
+type ModelCapabilities struct {
+	Vision *ModelCapabilityOverride `json:"vision,omitempty"`
+}
+
+type ModelCapabilityOverride struct {
+	Model     string   `json:"model,omitempty"`
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsEffectivelyEnabled reports whether a model entry should be treated as active.
@@ -933,9 +943,6 @@ type ImageGenerateToolsConfig struct {
 
 func (c ImageGenerateToolsConfig) EffectiveModel(defaults AgentDefaults) string {
 	if model := strings.TrimSpace(c.Model); model != "" {
-		return model
-	}
-	if model := strings.TrimSpace(defaults.ImageModel); model != "" {
 		return model
 	}
 	return "gpt-image-2"

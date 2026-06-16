@@ -167,6 +167,8 @@ type turnExecutionModel struct {
 	cleanup            func()
 	usedLight          bool
 	llmModelName       string
+	autoFallback       bool
+	visionRoute        string
 }
 
 func (e *turnExecution) markAdditionalUserInputObserved() {

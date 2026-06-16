@@ -773,6 +773,40 @@ This design also enables **multi-agent support** with flexible provider selectio
 - **Centralized configuration**: Manage all providers in one place
 - **Model enable/disable**: Use the `enabled` field to temporarily disable a model without removing its configuration
 
+#### Vision overrides for `load_image`
+
+Image understanding is configured per model entry, not through the
+`image_generate` tool config. By default, a turn with images uses the same
+active chat model. If a model needs a different vision-capable backend for
+`load_image`, add a `capabilities.vision` override on that model entry.
+`model` and `fallbacks` must reference configured `model_name` aliases from
+`model_list`:
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "deepseek-main",
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-chat",
+      "capabilities": {
+        "vision": {
+          "model": "gemini-flash-lite",
+          "fallbacks": ["gpt-5.4-medium"]
+        }
+      }
+    }
+  ]
+}
+```
+
+Semantics:
+
+- No `capabilities.vision`: `load_image` uses the same active model as the turn.
+- `capabilities.vision.model` set: image turns use that model instead.
+- `capabilities.vision.fallbacks`: only apply to the vision route.
+- `tools.image_generate.model` remains separate and only controls image generation.
+
 #### 🔒 Security Configuration (Recommended)
 
 PicoClaw supports separating sensitive data (API keys, tokens, secrets) from your main configuration by storing them in a `.security.yml` file.

@@ -634,8 +634,8 @@ func TestLoadConfig_MCPMaxInlineTextChars(t *testing.T) {
 func TestImageGenerateToolsConfig_EffectiveModel(t *testing.T) {
 	defaults := AgentDefaults{ImageModel: "legacy-image-model"}
 
-	if got := (ImageGenerateToolsConfig{}).EffectiveModel(defaults); got != "legacy-image-model" {
-		t.Fatalf("legacy fallback model = %q, want legacy-image-model", got)
+	if got := (ImageGenerateToolsConfig{}).EffectiveModel(defaults); got != "gpt-image-2" {
+		t.Fatalf("default model = %q, want gpt-image-2", got)
 	}
 
 	cfg := ImageGenerateToolsConfig{Model: "openai-codex/gpt-image-2"}
