@@ -189,7 +189,7 @@ func TestGrepJSONResultMarksTrimmedLargeContent(t *testing.T) {
 		Summaries: []GrepSummaryResult{
 			{
 				ID:      "sum-1",
-				Content: strings.Repeat("x", grepToolMaxSummaryContentRunes+200),
+				Content: strings.Repeat("x", 5000),
 			},
 		},
 		Messages: []GrepMessageResult{
@@ -216,8 +216,8 @@ func TestGrepJSONResultMarksTrimmedLargeContent(t *testing.T) {
 	if output.TruncationNotice == "" {
 		t.Fatal("expected truncation notice")
 	}
-	if got := output.Summaries[0].Content; !strings.Contains(got, "[trimmed]") {
-		t.Fatalf("summary content was not marked trimmed: %q", got)
+	if got := output.Summaries[0].Content; strings.Contains(got, "[trimmed]") {
+		t.Fatalf("summary content should remain intact when present: %q", got)
 	}
 	if got := output.Messages[0].Snippet; !strings.Contains(got, "[trimmed]") {
 		t.Fatalf("message snippet was not marked trimmed: %q", got)
@@ -229,7 +229,7 @@ func TestGrepJSONResultCapsOverallPayloadSize(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		summaries = append(summaries, GrepSummaryResult{
 			ID:      strings.Repeat("s", 32) + string(rune('a'+(i%26))),
-			Content: strings.Repeat("z", grepToolMaxSummaryContentRunes),
+			Content: strings.Repeat("z", 5000),
 		})
 	}
 
@@ -239,7 +239,7 @@ func TestGrepJSONResultCapsOverallPayloadSize(t *testing.T) {
 		TotalSummaries: len(summaries),
 	})
 
-	if got := len(toolResult.ContentForLLM()); got > grepToolMaxForLLMBytes+2048 {
+	if got := len(toolResult.ContentForLLM()); got > grepToolMaxForLLMBytes {
 		t.Fatalf("tool result too large: got %d bytes", got)
 	}
 

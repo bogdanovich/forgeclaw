@@ -16,7 +16,6 @@ type GrepTool struct {
 
 const (
 	grepToolMaxForLLMBytes         = 64 * 1024
-	grepToolMaxSummaryContentRunes = 1200
 	grepToolMaxMessageSnippetRunes = 800
 	grepToolTruncationNotice       = "Response trimmed to stay within tool context limits. Narrow the pattern or use short_expand on specific message IDs."
 )
@@ -182,13 +181,9 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 
 func grepJSONResult(result *GrepResult) *tools.ToolResult {
 	summaries := make([]GrepSummaryResult, len(result.Summaries))
+	copy(summaries, result.Summaries)
+
 	truncated := false
-	for i, summary := range result.Summaries {
-		trimmed, didTrim := truncateRunes(summary.Content, grepToolMaxSummaryContentRunes)
-		summary.Content = trimmed
-		truncated = truncated || didTrim
-		summaries[i] = summary
-	}
 
 	messages := make([]GrepMessageResult, len(result.Messages))
 	for i, message := range result.Messages {
