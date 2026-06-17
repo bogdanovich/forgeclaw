@@ -200,8 +200,6 @@ func TestMigration_Integration_PreservesAllAgentsFields(t *testing.T) {
 				"provider": "anthropic",
 				"model": "claude-opus-4",
 				"model_fallbacks": ["claude-sonnet-4", "claude-haiku-4"],
-				"image_model": "claude-opus-4-vision",
-				"image_model_fallbacks": ["claude-sonnet-4-vision"],
 				"max_tokens": 4096,
 				"temperature": 0.5,
 				"max_tool_iterations": 100,
@@ -270,14 +268,6 @@ func TestMigration_Integration_PreservesAllAgentsFields(t *testing.T) {
 		if d.ModelFallbacks[1] != "claude-haiku-4" {
 			t.Errorf("ModelFallbacks[1] = %q, want %q", d.ModelFallbacks[1], "claude-haiku-4")
 		}
-	}
-	if d.ImageModel != "claude-opus-4-vision" {
-		t.Errorf("ImageModel = %q, want %q", d.ImageModel, "claude-opus-4-vision")
-	}
-	if len(d.ImageModelFallbacks) != 1 {
-		t.Errorf("len(ImageModelFallbacks) = %d, want 1", len(d.ImageModelFallbacks))
-	} else if d.ImageModelFallbacks[0] != "claude-sonnet-4-vision" {
-		t.Errorf("ImageModelFallbacks[0] = %q, want %q", d.ImageModelFallbacks[0], "claude-sonnet-4-vision")
 	}
 	if d.MaxTokens != 4096 {
 		t.Errorf("MaxTokens = %d, want %d", d.MaxTokens, 4096)

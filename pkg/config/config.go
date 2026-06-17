@@ -432,8 +432,6 @@ type AgentDefaults struct {
 	Provider                  string             `json:"provider"                         env:"PICOCLAW_AGENTS_DEFAULTS_PROVIDER"`
 	ModelName                 string             `json:"model_name"                       env:"PICOCLAW_AGENTS_DEFAULTS_MODEL_NAME"`
 	ModelFallbacks            []string           `json:"model_fallbacks,omitempty"`
-	ImageModel                string             `json:"image_model,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_IMAGE_MODEL"`
-	ImageModelFallbacks       []string           `json:"image_model_fallbacks,omitempty"`
 	MaxTokens                 int                `json:"max_tokens"                       env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
 	ContextWindow             int                `json:"context_window,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW"`
 	Temperature               *float64           `json:"temperature,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
@@ -1611,8 +1609,6 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateModelList(); err != nil {
 		return nil, err
 	}
-	cfg.warnLegacyImageGenerateConfig()
-
 	// Ensure Workspace has a default if not set
 	if cfg.Agents.Defaults.Workspace == "" {
 		homePath := GetHome()
@@ -1830,23 +1826,6 @@ func (c *Config) ValidateModelList() error {
 		}
 	}
 	return nil
-}
-
-func (c *Config) warnLegacyImageGenerateConfig() {
-	if c == nil {
-		return
-	}
-	if strings.TrimSpace(c.Tools.ImageGenerate.Model) != "" {
-		return
-	}
-	legacy := strings.TrimSpace(c.Agents.Defaults.ImageModel)
-	if legacy == "" {
-		return
-	}
-	logger.WarnF(
-		"agents.defaults.image_model is deprecated and ignored for image generation; set tools.image_generate.model explicitly",
-		map[string]any{"legacy_image_model": legacy},
-	)
 }
 
 func (c *Config) ValidateExecConfig() error {

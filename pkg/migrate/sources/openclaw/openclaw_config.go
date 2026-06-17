@@ -587,8 +587,6 @@ type AgentDefaults struct {
 	ModelName           string   `json:"model_name"`
 	Model               string   `json:"model,omitempty"`
 	ModelFallbacks      []string `json:"model_fallbacks,omitempty"`
-	ImageModel          string   `json:"image_model,omitempty"`
-	ImageModelFallbacks []string `json:"image_model_fallbacks,omitempty"`
 	MaxTokens           int      `json:"max_tokens"`
 	Temperature         *float64 `json:"temperature,omitempty"`
 	MaxToolIterations   int      `json:"max_tool_iterations"`
