@@ -225,7 +225,7 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 	for len(data) > grepToolMaxForLLMBytes && (len(summaries) > 0 || len(messages) > 0) {
 		truncated = true
 		switch {
-		case len(summaries) > len(messages) && len(summaries) > 0:
+		case len(summaries) > 0 && (len(messages) == 0 || estimateSummaryFootprint(summaries[len(summaries)-1]) >= estimateMessageFootprint(messages[len(messages)-1])):
 			summaries = summaries[:len(summaries)-1]
 			omittedSummaries++
 		case len(messages) > 0:
@@ -261,4 +261,12 @@ func truncateRunes(s string, maxRunes int) (string, bool) {
 		return s, false
 	}
 	return string(runes[:maxRunes]) + "... [trimmed]", true
+}
+
+func estimateSummaryFootprint(summary GrepSummaryResult) int {
+	return len(summary.ID) + len(summary.Content) + 64
+}
+
+func estimateMessageFootprint(message GrepMessageResult) int {
+	return len(message.Snippet) + len(message.Role) + 64
 }

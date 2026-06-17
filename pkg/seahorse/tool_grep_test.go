@@ -261,3 +261,59 @@ func TestGrepJSONResultCapsOverallPayloadSize(t *testing.T) {
 		t.Fatal("expected some summaries to be dropped")
 	}
 }
+
+func TestGrepJSONResultPrefersDroppingLargeSummariesBeforeMessages(t *testing.T) {
+	summaries := []GrepSummaryResult{
+		{
+			ID:      "sum-1",
+			Content: strings.Repeat("s", grepToolMaxForLLMBytes),
+		},
+	}
+	messages := []GrepMessageResult{
+		{
+			ID:      1,
+			Snippet: "message hit one",
+			Role:    "user",
+		},
+		{
+			ID:      2,
+			Snippet: "message hit two",
+			Role:    "assistant",
+		},
+	}
+
+	toolResult := grepJSONResult(&GrepResult{
+		Success:        true,
+		Summaries:      summaries,
+		Messages:       messages,
+		TotalSummaries: len(summaries),
+		TotalMessages:  len(messages),
+	})
+
+	if got := len(toolResult.ContentForLLM()); got > grepToolMaxForLLMBytes {
+		t.Fatalf("tool result too large: got %d bytes", got)
+	}
+
+	var output struct {
+		Truncated        bool                `json:"truncated"`
+		OmittedSummaries int                 `json:"omitted_summaries"`
+		OmittedMessages  int                 `json:"omitted_messages"`
+		Summaries        []GrepSummaryResult `json:"summaries"`
+		Messages         []GrepMessageResult `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(toolResult.ContentForLLM()), &output); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !output.Truncated {
+		t.Fatal("expected truncated=true")
+	}
+	if output.OmittedSummaries == 0 {
+		t.Fatal("expected at least one summary omission")
+	}
+	if output.OmittedMessages != 0 {
+		t.Fatalf("expected to keep message hits, omitted_messages=%d", output.OmittedMessages)
+	}
+	if len(output.Messages) != len(messages) {
+		t.Fatalf("expected all message hits to remain, got %d", len(output.Messages))
+	}
+}
