@@ -14,6 +14,13 @@ type GrepTool struct {
 	engine *RetrievalEngine
 }
 
+const (
+	grepToolMaxForLLMBytes         = 64 * 1024
+	grepToolMaxSummaryContentRunes = 1200
+	grepToolMaxMessageSnippetRunes = 800
+	grepToolTruncationNotice       = "Response trimmed to stay within tool context limits. Narrow the pattern or use short_expand on specific message IDs."
+)
+
 func NewGrepTool(engine *RetrievalEngine) *GrepTool {
 	return &GrepTool{engine: engine}
 }
@@ -174,17 +181,89 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 }
 
 func grepJSONResult(result *GrepResult) *tools.ToolResult {
-	output := map[string]any{
-		"success":   result.Success,
-		"summaries": result.Summaries,
-		"messages":  result.Messages,
+	summaries := make([]GrepSummaryResult, len(result.Summaries))
+	truncated := false
+	for i, summary := range result.Summaries {
+		trimmed, didTrim := truncateRunes(summary.Content, grepToolMaxSummaryContentRunes)
+		summary.Content = trimmed
+		truncated = truncated || didTrim
+		summaries[i] = summary
 	}
 
-	// Add hint if provided
-	if result.Hint != "" {
-		output["hint"] = result.Hint
+	messages := make([]GrepMessageResult, len(result.Messages))
+	for i, message := range result.Messages {
+		trimmed, didTrim := truncateRunes(message.Snippet, grepToolMaxMessageSnippetRunes)
+		message.Snippet = trimmed
+		truncated = truncated || didTrim
+		messages[i] = message
 	}
 
+	omittedSummaries := 0
+	omittedMessages := 0
+
+	buildOutput := func() map[string]any {
+		output := map[string]any{
+			"success":        result.Success,
+			"summaries":      summaries,
+			"messages":       messages,
+			"totalSummaries": result.TotalSummaries,
+			"totalMessages":  result.TotalMessages,
+		}
+		if result.Hint != "" {
+			output["hint"] = result.Hint
+		}
+		if truncated {
+			output["truncated"] = true
+			output["truncation_notice"] = grepToolTruncationNotice
+			if omittedSummaries > 0 {
+				output["omitted_summaries"] = omittedSummaries
+			}
+			if omittedMessages > 0 {
+				output["omitted_messages"] = omittedMessages
+			}
+		}
+		return output
+	}
+
+	output := buildOutput()
 	data, _ := json.Marshal(output)
+	for len(data) > grepToolMaxForLLMBytes && (len(summaries) > 0 || len(messages) > 0) {
+		truncated = true
+		switch {
+		case len(summaries) > len(messages) && len(summaries) > 0:
+			summaries = summaries[:len(summaries)-1]
+			omittedSummaries++
+		case len(messages) > 0:
+			messages = messages[:len(messages)-1]
+			omittedMessages++
+		default:
+			summaries = summaries[:len(summaries)-1]
+			omittedSummaries++
+		}
+		output = buildOutput()
+		data, _ = json.Marshal(output)
+	}
+
+	if len(data) > grepToolMaxForLLMBytes {
+		truncated = true
+		omittedSummaries += len(summaries)
+		omittedMessages += len(messages)
+		summaries = []GrepSummaryResult{}
+		messages = []GrepMessageResult{}
+		output = buildOutput()
+		data, _ = json.Marshal(output)
+	}
+
 	return tools.NewToolResult(string(data))
+}
+
+func truncateRunes(s string, maxRunes int) (string, bool) {
+	if maxRunes <= 0 {
+		return "", len(s) > 0
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s, false
+	}
+	return string(runes[:maxRunes]) + "... [trimmed]", true
 }

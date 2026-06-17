@@ -3,6 +3,7 @@ package seahorse
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -179,5 +180,84 @@ func TestGrepToolEmptySessionDoesNotSearchAllConversations(t *testing.T) {
 	}
 	if len(output.Messages) != 0 {
 		t.Fatalf("messages = %d, want 0: %#v", len(output.Messages), output.Messages)
+	}
+}
+
+func TestGrepJSONResultMarksTrimmedLargeContent(t *testing.T) {
+	result := &GrepResult{
+		Success: true,
+		Summaries: []GrepSummaryResult{
+			{
+				ID:      "sum-1",
+				Content: strings.Repeat("x", grepToolMaxSummaryContentRunes+200),
+			},
+		},
+		Messages: []GrepMessageResult{
+			{
+				ID:      1,
+				Snippet: strings.Repeat("y", grepToolMaxMessageSnippetRunes+200),
+			},
+		},
+	}
+
+	toolResult := grepJSONResult(result)
+	var output struct {
+		Truncated        bool                `json:"truncated"`
+		TruncationNotice string              `json:"truncation_notice"`
+		Summaries        []GrepSummaryResult `json:"summaries"`
+		Messages         []GrepMessageResult `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(toolResult.ContentForLLM()), &output); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !output.Truncated {
+		t.Fatal("expected truncated=true")
+	}
+	if output.TruncationNotice == "" {
+		t.Fatal("expected truncation notice")
+	}
+	if got := output.Summaries[0].Content; !strings.Contains(got, "[trimmed]") {
+		t.Fatalf("summary content was not marked trimmed: %q", got)
+	}
+	if got := output.Messages[0].Snippet; !strings.Contains(got, "[trimmed]") {
+		t.Fatalf("message snippet was not marked trimmed: %q", got)
+	}
+}
+
+func TestGrepJSONResultCapsOverallPayloadSize(t *testing.T) {
+	summaries := make([]GrepSummaryResult, 0, 200)
+	for i := 0; i < 200; i++ {
+		summaries = append(summaries, GrepSummaryResult{
+			ID:      strings.Repeat("s", 32) + string(rune('a'+(i%26))),
+			Content: strings.Repeat("z", grepToolMaxSummaryContentRunes),
+		})
+	}
+
+	toolResult := grepJSONResult(&GrepResult{
+		Success:        true,
+		Summaries:      summaries,
+		TotalSummaries: len(summaries),
+	})
+
+	if got := len(toolResult.ContentForLLM()); got > grepToolMaxForLLMBytes+2048 {
+		t.Fatalf("tool result too large: got %d bytes", got)
+	}
+
+	var output struct {
+		Truncated        bool                `json:"truncated"`
+		OmittedSummaries int                 `json:"omitted_summaries"`
+		Summaries        []GrepSummaryResult `json:"summaries"`
+	}
+	if err := json.Unmarshal([]byte(toolResult.ContentForLLM()), &output); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !output.Truncated {
+		t.Fatal("expected truncated=true")
+	}
+	if output.OmittedSummaries == 0 {
+		t.Fatal("expected omitted_summaries > 0")
+	}
+	if len(output.Summaries) >= len(summaries) {
+		t.Fatal("expected some summaries to be dropped")
 	}
 }
