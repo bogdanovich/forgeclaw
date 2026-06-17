@@ -270,7 +270,8 @@ func TestModelConfig_VisionCapabilities(t *testing.T) {
 	if got := cfg.Capabilities.Vision.Model; got != "openai/gpt-4.1-mini" {
 		t.Fatalf("Vision.Model = %q, want %q", got, "openai/gpt-4.1-mini")
 	}
-	if len(cfg.Capabilities.Vision.Fallbacks) != 1 || cfg.Capabilities.Vision.Fallbacks[0] != "anthropic/claude-sonnet-4" {
+	if len(cfg.Capabilities.Vision.Fallbacks) != 1 ||
+		cfg.Capabilities.Vision.Fallbacks[0] != "anthropic/claude-sonnet-4" {
 		t.Fatalf("Vision.Fallbacks = %#v", cfg.Capabilities.Vision.Fallbacks)
 	}
 }
