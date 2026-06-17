@@ -236,6 +236,10 @@ image generation.
 `tools.image_generate.model` is configured independently from vision / `load_image`
 routing. If it is not set, PicoClaw uses `gpt-image-2`.
 
+`agents.defaults.image_model` no longer controls image generation. If you still
+set the legacy field without `tools.image_generate.model`, PicoClaw logs a
+startup warning and continues using `gpt-image-2`.
+
 ```json
 {
   "tools": {

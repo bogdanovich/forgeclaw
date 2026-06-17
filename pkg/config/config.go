@@ -1611,6 +1611,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateModelList(); err != nil {
 		return nil, err
 	}
+	cfg.warnLegacyImageGenerateConfig()
 
 	// Ensure Workspace has a default if not set
 	if cfg.Agents.Defaults.Workspace == "" {
@@ -1829,6 +1830,23 @@ func (c *Config) ValidateModelList() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) warnLegacyImageGenerateConfig() {
+	if c == nil {
+		return
+	}
+	if strings.TrimSpace(c.Tools.ImageGenerate.Model) != "" {
+		return
+	}
+	legacy := strings.TrimSpace(c.Agents.Defaults.ImageModel)
+	if legacy == "" {
+		return
+	}
+	logger.WarnF(
+		"agents.defaults.image_model is deprecated and ignored for image generation; set tools.image_generate.model explicitly",
+		map[string]any{"legacy_image_model": legacy},
+	)
 }
 
 func (c *Config) ValidateExecConfig() error {

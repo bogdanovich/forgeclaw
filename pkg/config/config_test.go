@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sipeed/picoclaw/pkg/credential"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // mustSetupSSHKey generates a temporary Ed25519 SSH key in t.TempDir() and sets
@@ -645,6 +646,64 @@ func TestImageGenerateToolsConfig_EffectiveModel(t *testing.T) {
 
 	if got := (ImageGenerateToolsConfig{}).EffectiveModel(AgentDefaults{}); got != "gpt-image-2" {
 		t.Fatalf("default model = %q, want gpt-image-2", got)
+	}
+}
+
+func TestLoadConfig_WarnsWhenLegacyImageModelIsIgnored(t *testing.T) {
+	mustSetupSSHKey(t)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	logFile := filepath.Join(dir, "config-warning.log")
+	raw := `{
+		"version": 3,
+		"agents": {
+			"defaults": {
+				"workspace": "/tmp/test",
+				"model_name": "gpt-5.4",
+				"image_model": "legacy-image-model"
+			}
+		},
+		"model_list": [
+			{
+				"model_name": "gpt-5.4",
+				"provider": "openai",
+				"model": "gpt-5.4"
+			}
+		]
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLevel := logger.GetLevel()
+	logger.SetLevel(logger.WARN)
+	if err := logger.EnableFileLogging(logFile); err != nil {
+		t.Fatalf("EnableFileLogging() error = %v", err)
+	}
+	defer func() {
+		logger.DisableFileLogging()
+		logger.SetLevel(prevLevel)
+	}()
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("LoadConfig() returned nil config")
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", logFile, err)
+	}
+	logs := string(data)
+	if !strings.Contains(logs, "agents.defaults.image_model is deprecated and ignored for image generation") {
+		t.Fatalf("warning log = %q, want legacy image_model warning", logs)
+	}
+	if !strings.Contains(logs, `"legacy_image_model":"legacy-image-model"`) {
+		t.Fatalf("warning log = %q, want legacy image model field", logs)
 	}
 }
 
