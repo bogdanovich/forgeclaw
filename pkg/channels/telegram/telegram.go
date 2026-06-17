@@ -681,6 +681,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 	trackedChatID := telegramToolFeedbackMessageKey(msg.ChatID, &msg.Context, msg.SessionKey)
 	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(trackedChatID)
+	useMarkdownV2 := c.tgCfg.UseMarkdownV2
 
 	chatID, threadID, err := resolveTelegramOutboundTarget(msg.ChatID, &msg.Context)
 	if err != nil {
@@ -747,9 +748,14 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
 				Photo:           telego.InputFile{File: file},
-				Caption:         part.Caption,
 			}
+			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
 			tgResult, err = c.bot.SendPhoto(ctx, params)
+			if err != nil && telegramIsParseModeError(err) {
+				params.Caption = part.Caption
+				params.ParseMode = ""
+				tgResult, err = c.bot.SendPhoto(ctx, params)
+			}
 			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
 				if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
 					file.Close()
@@ -760,9 +766,19 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 					ChatID:          tu.ID(chatID),
 					MessageThreadID: threadID,
 					Document:        telego.InputFile{File: file},
-					Caption:         part.Caption,
 				}
+				telegramApplyCaptionParseMode(
+					&docParams.Caption,
+					&docParams.ParseMode,
+					part.Caption,
+					useMarkdownV2,
+				)
 				tgResult, err = c.bot.SendDocument(ctx, docParams)
+				if err != nil && telegramIsParseModeError(err) {
+					docParams.Caption = part.Caption
+					docParams.ParseMode = ""
+					tgResult, err = c.bot.SendDocument(ctx, docParams)
+				}
 			}
 		case "audio":
 			// Send OGG files with "voice" in the filename as Telegram voice
@@ -773,34 +789,64 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 					ChatID:          tu.ID(chatID),
 					MessageThreadID: threadID,
 					Voice:           telego.InputFile{File: file},
-					Caption:         part.Caption,
 				}
+				telegramApplyCaptionParseMode(
+					&vparams.Caption,
+					&vparams.ParseMode,
+					part.Caption,
+					useMarkdownV2,
+				)
 				tgResult, err = c.bot.SendVoice(ctx, vparams)
+				if err != nil && telegramIsParseModeError(err) {
+					vparams.Caption = part.Caption
+					vparams.ParseMode = ""
+					tgResult, err = c.bot.SendVoice(ctx, vparams)
+				}
 			} else {
 				params := &telego.SendAudioParams{
 					ChatID:          tu.ID(chatID),
 					MessageThreadID: threadID,
 					Audio:           telego.InputFile{File: file},
-					Caption:         part.Caption,
 				}
+				telegramApplyCaptionParseMode(
+					&params.Caption,
+					&params.ParseMode,
+					part.Caption,
+					useMarkdownV2,
+				)
 				tgResult, err = c.bot.SendAudio(ctx, params)
+				if err != nil && telegramIsParseModeError(err) {
+					params.Caption = part.Caption
+					params.ParseMode = ""
+					tgResult, err = c.bot.SendAudio(ctx, params)
+				}
 			}
 		case "video":
 			params := &telego.SendVideoParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
 				Video:           telego.InputFile{File: file},
-				Caption:         part.Caption,
 			}
+			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
 			tgResult, err = c.bot.SendVideo(ctx, params)
+			if err != nil && telegramIsParseModeError(err) {
+				params.Caption = part.Caption
+				params.ParseMode = ""
+				tgResult, err = c.bot.SendVideo(ctx, params)
+			}
 		default: // "file" or unknown types
 			params := &telego.SendDocumentParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
 				Document:        telego.InputFile{File: file},
-				Caption:         part.Caption,
 			}
+			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
 			tgResult, err = c.bot.SendDocument(ctx, params)
+			if err != nil && telegramIsParseModeError(err) {
+				params.Caption = part.Caption
+				params.ParseMode = ""
+				tgResult, err = c.bot.SendDocument(ctx, params)
+			}
 		}
 
 		if tgResult != nil {
@@ -874,35 +920,60 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 		}
 	}()
 
-	inputMedia := make([]telego.InputMedia, 0, len(parts))
-	for i, part := range parts {
-		localPath, err := store.Resolve(part.Ref)
-		if err != nil {
-			logger.ErrorCF("telegram", "Failed to resolve media ref for media group", map[string]any{
-				"ref":   part.Ref,
-				"error": err.Error(),
-			})
-			return nil, err
-		}
+	buildInputMedia := func(useParseMode bool) ([]telego.InputMedia, error) {
+		inputMedia := make([]telego.InputMedia, 0, len(parts))
+		for i, part := range parts {
+			var file *os.File
+			if len(opened) > i {
+				file = opened[i]
+				if _, err := file.Seek(0, io.SeekStart); err != nil {
+					return nil, err
+				}
+			} else {
+				localPath, err := store.Resolve(part.Ref)
+				if err != nil {
+					logger.ErrorCF("telegram", "Failed to resolve media ref for media group", map[string]any{
+						"ref":   part.Ref,
+						"error": err.Error(),
+					})
+					return nil, err
+				}
 
-		file, err := os.Open(localPath)
-		if err != nil {
-			logger.ErrorCF("telegram", "Failed to open media file for media group", map[string]any{
-				"path":  localPath,
-				"error": err.Error(),
-			})
-			return nil, err
-		}
-		opened = append(opened, file)
+				file, err = os.Open(localPath)
+				if err != nil {
+					logger.ErrorCF("telegram", "Failed to open media file for media group", map[string]any{
+						"path":  localPath,
+						"error": err.Error(),
+					})
+					return nil, err
+				}
+				opened = append(opened, file)
+			}
 
-		mediaItem := &telego.InputMediaPhoto{
-			Type:  telego.MediaTypePhoto,
-			Media: telego.InputFile{File: file},
+			mediaItem := &telego.InputMediaPhoto{
+				Type:  telego.MediaTypePhoto,
+				Media: telego.InputFile{File: file},
+			}
+			if i == 0 {
+				if useParseMode {
+					telegramApplyCaptionParseMode(
+						&mediaItem.Caption,
+						&mediaItem.ParseMode,
+						part.Caption,
+						c.tgCfg.UseMarkdownV2,
+					)
+				} else {
+					mediaItem.Caption = part.Caption
+				}
+			}
+			inputMedia = append(inputMedia, mediaItem)
 		}
-		if i == 0 {
-			mediaItem.Caption = part.Caption
-		}
-		inputMedia = append(inputMedia, mediaItem)
+		return inputMedia, nil
+	}
+
+	inputMedia, err := buildInputMedia(true)
+	if err != nil {
+		return nil, err
 	}
 
 	results, err := c.bot.SendMediaGroup(ctx, &telego.SendMediaGroupParams{
@@ -910,6 +981,17 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 		MessageThreadID: threadID,
 		Media:           inputMedia,
 	})
+	if err != nil && telegramIsParseModeError(err) {
+		inputMedia, rebuildErr := buildInputMedia(false)
+		if rebuildErr != nil {
+			return nil, rebuildErr
+		}
+		results, err = c.bot.SendMediaGroup(ctx, &telego.SendMediaGroupParams{
+			ChatID:          tu.ID(chatID),
+			MessageThreadID: threadID,
+			Media:           inputMedia,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -919,6 +1001,29 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 		messageIDs = append(messageIDs, strconv.Itoa(result.MessageID))
 	}
 	return messageIDs, nil
+}
+
+func telegramApplyCaptionParseMode(caption *string, parseMode *string, raw string, useMarkdownV2 bool) {
+	if caption == nil || parseMode == nil {
+		return
+	}
+	*caption = parseContent(raw, useMarkdownV2)
+	if useMarkdownV2 {
+		*parseMode = telego.ModeMarkdownV2
+		return
+	}
+	*parseMode = telego.ModeHTML
+}
+
+func telegramIsParseModeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "can't parse") ||
+		strings.Contains(msg, "parse entities") ||
+		strings.Contains(msg, "unsupported start tag") ||
+		strings.Contains(msg, "entity is not closed")
 }
 
 func (c *TelegramChannel) sendCaptionText(
