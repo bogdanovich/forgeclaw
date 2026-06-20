@@ -643,6 +643,84 @@ func TestPipeline_SetupTurn_UsesLightCandidateDisplayName(t *testing.T) {
 	}
 }
 
+func TestMaybeBuildVisionExecutionState_UsesRoutedLightModelOverride(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
+		return &simpleConvProvider{}, mc.Model, nil
+	}
+	al.cfg.ModelList = []*config.ModelConfig{
+		{
+			ModelName: "primary-model",
+			Model:     "openai/gpt-5.4",
+			Enabled:   true,
+		},
+		{
+			ModelName: "light-model",
+			Model:     "openai/gpt-5.4-mini",
+			Enabled:   true,
+			Capabilities: &config.ModelCapabilities{
+				Vision: &config.ModelCapabilityOverride{
+					Model: "openai/gpt-4.1-mini",
+				},
+			},
+		},
+		{
+			ModelName: "openai/gpt-4.1-mini",
+			Model:     "openai/gpt-4.1-mini",
+			Enabled:   true,
+		},
+	}
+
+	agent.Model = "primary-model"
+	agent.Candidates = []providers.FallbackCandidate{
+		{Provider: "openai", Model: "gpt-5.4", IdentityKey: "model_name:primary-model", DisplayName: "primary-model"},
+	}
+	agent.LightCandidates = []providers.FallbackCandidate{
+		{Provider: "openai", Model: "gpt-5.4-mini", IdentityKey: "model_name:light-model", DisplayName: "light-model"},
+	}
+	agent.CandidateProviders = map[string]providers.LLMProvider{
+		"model_name:primary-model": &simpleConvProvider{},
+		"model_name:light-model":   &simpleConvProvider{},
+	}
+	agent.LightProvider = &simpleConvProvider{}
+	agent.Router = routing.New(routing.RouterConfig{LightModel: "light-model", Threshold: 1})
+
+	execution := effectiveExecutionStateForAgent(agent)
+	selection := al.selectCandidates(execution, "", nil, "vision-light-session")
+	if !selection.usedLight {
+		t.Fatal("expected light routing to be used")
+	}
+
+	routedExecution := execution
+	routedExecution.Model = selection.model
+	routedExecution.Provider = agent.LightProvider
+	routedExecution.Candidates = append([]providers.FallbackCandidate(nil), selection.activeCandidates...)
+	routedExecution.CandidateProviders = cloneCandidateProviderMap(execution.CandidateProviders)
+
+	visionExecution, cleanupVision, route, usedOverride, err := al.maybeBuildVisionExecutionState(
+		agent,
+		routedExecution,
+		[]providers.Message{{Role: "user", Media: []string{"media://image-1"}}},
+	)
+	if cleanupVision != nil {
+		defer cleanupVision()
+	}
+	if err != nil {
+		t.Fatalf("maybeBuildVisionExecutionState failed: %v", err)
+	}
+	if !usedOverride {
+		t.Fatal("expected vision override to be used")
+	}
+	if got := route; got != visionRouteModelOverride {
+		t.Fatalf("vision route = %q, want %q", got, visionRouteModelOverride)
+	}
+	if got := resolvedCandidateModelName(visionExecution.Candidates, visionExecution.Model); got != "openai/gpt-4.1-mini" {
+		t.Fatalf("vision model = %q, want %q", got, "openai/gpt-4.1-mini")
+	}
+}
+
 func TestRunTurn_FinalizeSaveErrorEmitsErrorTurnEnd(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()

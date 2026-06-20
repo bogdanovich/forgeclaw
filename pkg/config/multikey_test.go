@@ -253,6 +253,38 @@ func TestExpandMultiKeyModels_PreservesOtherFields(t *testing.T) {
 	}
 }
 
+func TestExpandMultiKeyModels_PreservesCapabilities(t *testing.T) {
+	modelCfg := &ModelConfig{
+		ModelName: "gpt-4",
+		Model:     "openai/gpt-4o",
+		Capabilities: &ModelCapabilities{
+			Vision: &ModelCapabilityOverride{
+				Model:     "openai/gpt-4.1-mini",
+				Fallbacks: []string{"anthropic/claude-sonnet-4"},
+			},
+		},
+	}
+	modelCfg.APIKeys = SimpleSecureStrings("key0", "key1")
+
+	result := expandMultiKeyModels([]*ModelConfig{modelCfg})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(result))
+	}
+
+	for i, model := range result {
+		if model.Capabilities == nil || model.Capabilities.Vision == nil {
+			t.Fatalf("result[%d] missing vision capabilities", i)
+		}
+		if got := model.Capabilities.Vision.Model; got != "openai/gpt-4.1-mini" {
+			t.Fatalf("result[%d] vision model = %q, want %q", i, got, "openai/gpt-4.1-mini")
+		}
+		if len(model.Capabilities.Vision.Fallbacks) != 1 ||
+			model.Capabilities.Vision.Fallbacks[0] != "anthropic/claude-sonnet-4" {
+			t.Fatalf("result[%d] vision fallbacks = %#v", i, model.Capabilities.Vision.Fallbacks)
+		}
+	}
+}
+
 func TestExpandMultiKeyModels_IsVirtualFlag(t *testing.T) {
 	models := []*ModelConfig{
 		{

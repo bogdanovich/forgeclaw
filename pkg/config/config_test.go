@@ -643,6 +643,11 @@ func TestImageGenerateToolsConfig_EffectiveModel(t *testing.T) {
 		t.Fatalf("tool model = %q, want openai-codex/gpt-image-2", got)
 	}
 
+	defaults.ImageModel = "legacy-image-model"
+	if got := (ImageGenerateToolsConfig{}).EffectiveModel(defaults); got != "legacy-image-model" {
+		t.Fatalf("legacy default model = %q, want legacy-image-model", got)
+	}
+
 	if got := (ImageGenerateToolsConfig{}).EffectiveModel(AgentDefaults{}); got != "gpt-image-2" {
 		t.Fatalf("default model = %q, want gpt-image-2", got)
 	}

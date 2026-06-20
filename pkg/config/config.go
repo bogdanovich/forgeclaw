@@ -432,6 +432,8 @@ type AgentDefaults struct {
 	Provider                  string             `json:"provider"                         env:"PICOCLAW_AGENTS_DEFAULTS_PROVIDER"`
 	ModelName                 string             `json:"model_name"                       env:"PICOCLAW_AGENTS_DEFAULTS_MODEL_NAME"`
 	ModelFallbacks            []string           `json:"model_fallbacks,omitempty"`
+	ImageModel                string             `json:"image_model,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_IMAGE_MODEL"`
+	ImageModelFallbacks       []string           `json:"image_model_fallbacks,omitempty"`
 	MaxTokens                 int                `json:"max_tokens"                       env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
 	ContextWindow             int                `json:"context_window,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW"`
 	Temperature               *float64           `json:"temperature,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
@@ -942,6 +944,9 @@ type ImageGenerateToolsConfig struct {
 func (c ImageGenerateToolsConfig) EffectiveModel(defaults AgentDefaults) string {
 	if model := strings.TrimSpace(c.Model); model != "" {
 		return model
+	}
+	if legacy := strings.TrimSpace(defaults.ImageModel); legacy != "" {
+		return legacy
 	}
 	return "gpt-image-2"
 }
@@ -1901,6 +1906,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 				Streaming:           m.Streaming,
 				ExtraBody:           m.ExtraBody,
 				CustomHeaders:       m.CustomHeaders,
+				Capabilities:        m.Capabilities,
 				UserAgent:           m.UserAgent,
 				isVirtual:           true,
 			}
@@ -1926,6 +1932,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 			Streaming:           m.Streaming,
 			ExtraBody:           m.ExtraBody,
 			CustomHeaders:       m.CustomHeaders,
+			Capabilities:        m.Capabilities,
 			UserAgent:           m.UserAgent,
 			APIKeys:             SimpleSecureStrings(keys[0]),
 		}

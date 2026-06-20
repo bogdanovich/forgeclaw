@@ -165,9 +165,15 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.model.autoFallback = true
 	exec.model.visionRoute = visionRouteSameModel
 
+	routedExecution := execution
+	routedExecution.Model = selection.model
+	routedExecution.Provider = activeProvider
+	routedExecution.Candidates = append([]providers.FallbackCandidate(nil), selection.activeCandidates...)
+	routedExecution.CandidateProviders = cloneCandidateProviderMap(execution.CandidateProviders)
+
 	visionExecution, visionCleanup, visionRoute, usedVisionOverride, err := p.al.maybeBuildVisionExecutionState(
 		ts.agent,
-		execution,
+		routedExecution,
 		messages,
 	)
 	if err != nil {
