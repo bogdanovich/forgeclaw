@@ -57,7 +57,11 @@ func (al *AgentLoop) ackInboundMessage(ctx context.Context, msg bus.InboundMessa
 	}
 }
 
-func (al *AgentLoop) releaseInboundMessage(ctx context.Context, msg bus.InboundMessage, cause error) {
+func (al *AgentLoop) releaseInboundMessage(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	cause error,
+) {
 	if msg.SpoolID == "" || al.bus == nil {
 		return
 	}

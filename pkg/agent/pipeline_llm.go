@@ -42,7 +42,8 @@ func (p *Pipeline) CallLLM(
 	exec.providerToolDefs = filterToolsByTurnProfile(exec.providerToolDefs, ts.profile)
 
 	// Native web search support
-	webSearchEnabled := al.cfg.Tools.IsToolEnabled("web") && turnProfileToolAllowed(ts.profile, "web_search")
+	webSearchEnabled := al.cfg.Tools.IsToolEnabled("web") &&
+		turnProfileToolAllowed(ts.profile, "web_search")
 	exec.useNativeSearch = webSearchEnabled && al.cfg.Tools.Web.PreferNative &&
 		func() bool {
 			if ns, ok := exec.model.activeProvider.(providers.NativeSearchCapable); ok {
@@ -62,7 +63,10 @@ func (p *Pipeline) CallLLM(
 
 	exec.callMessages = exec.messages
 	if exec.gracefulTerminal {
-		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.interruptHintMessage())
+		exec.callMessages = append(
+			append([]providers.Message(nil), exec.messages...),
+			ts.interruptHintMessage(),
+		)
 		exec.providerToolDefs = nil
 		ts.markGracefulTerminalUsed()
 	}
@@ -197,9 +201,21 @@ func (p *Pipeline) CallLLM(
 						p.Cfg.Agents.Defaults.Provider,
 					)
 					candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
-					applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
+					applyThinkingOption(
+						callOpts,
+						candidateProvider,
+						candidateThinking,
+						true,
+						ts.agent.ID,
+					)
 					exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
-					return candidateProvider.Chat(ctx, messagesForCall, toolDefsForCall, candidate.Model, callOpts)
+					return candidateProvider.Chat(
+						ctx,
+						messagesForCall,
+						toolDefsForCall,
+						candidate.Model,
+						callOpts,
+					)
 				},
 			)
 			if fbErr != nil {
@@ -315,16 +331,17 @@ func (p *Pipeline) CallLLM(
 
 		errMsg := strings.ToLower(err.Error())
 		retryReason, isTransientError := transientLLMRetryReason(err)
-		isContextError := !isTransientError && (strings.Contains(errMsg, "context_length_exceeded") ||
-			strings.Contains(errMsg, "context window") ||
-			strings.Contains(errMsg, "context_window") ||
-			strings.Contains(errMsg, "maximum context length") ||
-			strings.Contains(errMsg, "token limit") ||
-			strings.Contains(errMsg, "too many tokens") ||
-			strings.Contains(errMsg, "max_tokens") ||
-			strings.Contains(errMsg, "invalidparameter") ||
-			strings.Contains(errMsg, "prompt is too long") ||
-			strings.Contains(errMsg, "request too large"))
+		isContextError := !isTransientError &&
+			(strings.Contains(errMsg, "context_length_exceeded") ||
+				strings.Contains(errMsg, "context window") ||
+				strings.Contains(errMsg, "context_window") ||
+				strings.Contains(errMsg, "maximum context length") ||
+				strings.Contains(errMsg, "token limit") ||
+				strings.Contains(errMsg, "too many tokens") ||
+				strings.Contains(errMsg, "max_tokens") ||
+				strings.Contains(errMsg, "invalidparameter") ||
+				strings.Contains(errMsg, "prompt is too long") ||
+				strings.Contains(errMsg, "request too large"))
 
 		if isTransientError && retry < maxRetries {
 			backoff := time.Duration(retry+1) * time.Duration(backoffSecs) * time.Second
@@ -385,7 +402,9 @@ func (p *Pipeline) CallLLM(
 
 			contextualSkills := ts.activeSkills
 			if ts.agent.ContextBuilder != nil {
-				contextualSkills = ts.agent.ContextBuilder.ResolveActiveSkillsForContext(ts.activeSkills)
+				contextualSkills = ts.agent.ContextBuilder.ResolveActiveSkillsForContext(
+					ts.activeSkills,
+				)
 			}
 			reserveTokens := p.estimateNonHistoryPromptReserve(
 				ts,
@@ -427,8 +446,17 @@ func (p *Pipeline) CallLLM(
 				ts.persistedMessagesSnapshot(),
 			)
 			buildMessages := func(trimmedHistory []providers.Message) []providers.Message {
-				fullHistory := append(append([]providers.Message(nil), trimmedHistory...), protectedTurnTail...)
-				rebuildPromptReq := promptBuildRequestForTurn(ts, fullHistory, exec.summary, "", nil, p.Cfg)
+				fullHistory := append(
+					append([]providers.Message(nil), trimmedHistory...),
+					protectedTurnTail...)
+				rebuildPromptReq := promptBuildRequestForTurn(
+					ts,
+					fullHistory,
+					exec.summary,
+					"",
+					nil,
+					p.Cfg,
+				)
 				rebuildPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
 				return ts.agent.ContextBuilder.BuildMessagesFromPrompt(rebuildPromptReq)
 			}
@@ -440,7 +468,10 @@ func (p *Pipeline) CallLLM(
 				func(trimmedHistory []providers.Message) []providers.Message {
 					rebuilt := buildMessages(trimmedHistory)
 					if exec.gracefulTerminal {
-						return append(append([]providers.Message(nil), rebuilt...), ts.interruptHintMessage())
+						return append(
+							append([]providers.Message(nil), rebuilt...),
+							ts.interruptHintMessage(),
+						)
 					}
 					return rebuilt
 				},
@@ -455,15 +486,19 @@ func (p *Pipeline) CallLLM(
 				exec.callMessages = append(msgs, ts.interruptHintMessage())
 			}
 			if dropped := originalHistoryCount - len(exec.history); dropped > 0 {
-				logger.WarnCF("agent", "Trimmed rebuilt history after context retry compaction", map[string]any{
-					"session_key":     ts.sessionKey,
-					"retry":           retry,
-					"dropped_msgs":    dropped,
-					"remaining_msgs":  len(exec.history),
-					"context_window":  ts.agent.ContextWindow,
-					"max_tokens":      ts.agent.MaxTokens,
-					"still_overlimit": !fit,
-				})
+				logger.WarnCF(
+					"agent",
+					"Trimmed rebuilt history after context retry compaction",
+					map[string]any{
+						"session_key":     ts.sessionKey,
+						"retry":           retry,
+						"dropped_msgs":    dropped,
+						"remaining_msgs":  len(exec.history),
+						"context_window":  ts.agent.ContextWindow,
+						"max_tokens":      ts.agent.MaxTokens,
+						"still_overlimit": !fit,
+					},
+				)
 			} else if !fit {
 				logger.WarnCF("agent", "Context still exceeds budget after retry compaction rebuild", map[string]any{
 					"session_key":         ts.sessionKey,
@@ -608,8 +643,16 @@ func (p *Pipeline) CallLLM(
 		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "pico" {
 			responseContent = exec.response.ReasoningContent
 		}
-		exec.actionLog = appendTurnActionRecord(exec.actionLog, "assistant_direct", "", responseContent, false)
-		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+		exec.actionLog = appendTurnActionRecord(
+			exec.actionLog,
+			"assistant_direct",
+			"",
+			responseContent,
+			false,
+		)
+		if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
+			steerMsgs,
+		) > 0 {
 			exec.markSteeringObserved()
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			logger.InfoCF("agent", "Steering arrived after direct LLM response; continuing turn",
@@ -749,9 +792,12 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 			defaultProvider,
 		)
 		exec.model.llmModelName = resolvedCandidateModelName(candidates, rawModel)
+		exec.model.autoFallback = false
 		return
 	}
-	exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), execution.Candidates...)
+	exec.model.selectedCandidates = append(
+		[]providers.FallbackCandidate(nil),
+		execution.Candidates...)
 	if exec.model.cleanup != nil {
 		exec.model.cleanup()
 	}
@@ -770,6 +816,7 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 	exec.model.cleanup = cleanup
 	exec.model.llmModelName = resolvedCandidateModelName(execution.Candidates, rawModel)
 	exec.model.usedLight = false
+	exec.model.autoFallback = false
 }
 
 func providerForFallbackCandidate(

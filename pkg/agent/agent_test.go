@@ -55,7 +55,10 @@ func (f *fakeMediaChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([
 	return nil, nil
 }
 
-func (f *fakeMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
+func (f *fakeMediaChannel) SendMedia(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) ([]string, error) {
 	f.sentMedia = append(f.sentMedia, msg)
 	return nil, nil
 }
@@ -68,7 +71,10 @@ type blockingMediaChannel struct {
 	once    sync.Once
 }
 
-func (f *blockingMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
+func (f *blockingMediaChannel) SendMedia(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) ([]string, error) {
 	f.once.Do(func() { close(f.started) })
 	select {
 	case <-f.release:
@@ -108,12 +114,18 @@ func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.Outbo
 	return nil
 }
 
-func (m *recordingChannelManager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
+func (m *recordingChannelManager) SendMedia(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) error {
 	m.sentMedia = append(m.sentMedia, msg)
 	return nil
 }
 
-func (m *recordingChannelManager) SendPlaceholder(ctx context.Context, channel, chatID string) bool {
+func (m *recordingChannelManager) SendPlaceholder(
+	ctx context.Context,
+	channel, chatID string,
+) bool {
 	return false
 }
 
@@ -129,7 +141,10 @@ func (m *recordingChannelManager) DismissToolFeedbackForSession(
 	outboundCtx *bus.InboundContext,
 	sessionKey string,
 ) {
-	m.dismissedSessions = append(m.dismissedSessions, fmt.Sprintf("%s:%s:%s", channel, chatID, sessionKey))
+	m.dismissedSessions = append(
+		m.dismissedSessions,
+		fmt.Sprintf("%s:%s:%s", channel, chatID, sessionKey),
+	)
 }
 
 func newStartedTestChannelManager(
@@ -455,7 +470,13 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	if result == nil || result.IsError {
 		t.Fatalf("message tool execute failed: %+v", result)
 	}
-	al.PublishResponseIfNeeded(context.Background(), "telegram", "-100123", "session-1", "final reply")
+	al.PublishResponseIfNeeded(
+		context.Background(),
+		"telegram",
+		"-100123",
+		"session-1",
+		"final reply",
+	)
 
 	if got := cm.dismissedSessions; len(got) != 1 || got[0] != "telegram:-100123:session-1" {
 		t.Fatalf("dismissedSessions = %v, want [telegram:-100123:session-1]", got)
@@ -550,7 +571,13 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 	defer cleanup()
 	_ = provider
 
-	al.PublishResponseIfNeeded(context.Background(), "pico", "pico:session-1", "session-1", "final reply")
+	al.PublishResponseIfNeeded(
+		context.Background(),
+		"pico",
+		"pico:session-1",
+		"session-1",
+		"final reply",
+	)
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
@@ -558,7 +585,11 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 			t.Fatalf("outbound content = %q, want final reply", outbound.Content)
 		}
 		if outbound.Context.Raw[metadataKeyOutboundKind] != outboundKindFinal {
-			t.Fatalf("outbound kind = %q, want %q", outbound.Context.Raw[metadataKeyOutboundKind], outboundKindFinal)
+			t.Fatalf(
+				"outbound kind = %q, want %q",
+				outbound.Context.Raw[metadataKeyOutboundKind],
+				outboundKindFinal,
+			)
 		}
 		if outbound.SessionKey != "session-1" {
 			t.Fatalf("outbound session key = %q, want session-1", outbound.SessionKey)
@@ -587,7 +618,11 @@ func TestPublishPicoReasoningIncludesSessionKey(t *testing.T) {
 			t.Fatalf("outbound session key = %q, want session-1", outbound.SessionKey)
 		}
 		if outbound.Context.Raw[metadataKeyMessageKind] != messageKindThought {
-			t.Fatalf("message kind = %q, want %q", outbound.Context.Raw[metadataKeyMessageKind], messageKindThought)
+			t.Fatalf(
+				"message kind = %q, want %q",
+				outbound.Context.Raw[metadataKeyMessageKind],
+				messageKindThought,
+			)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected pico reasoning outbound")
@@ -674,7 +709,10 @@ func TestProcessMessage_DoesNotPassImplicitThinkingOffToCapableProvider(t *testi
 		t.Fatalf("processMessage() response = %q, want %q", response, "Mock response")
 	}
 	if _, ok := provider.lastOptions["thinking_level"]; ok {
-		t.Fatalf("thinking_level option should be omitted when unset, got %#v", provider.lastOptions["thinking_level"])
+		t.Fatalf(
+			"thinking_level option should be omitted when unset, got %#v",
+			provider.lastOptions["thinking_level"],
+		)
 	}
 }
 
@@ -885,7 +923,10 @@ func TestProcessMessage_BeforeLLMModelRewriteReevaluatesThinkingOff(t *testing.T
 	}
 	select {
 	case outbound := <-msgBus.OutboundChan():
-		t.Fatalf("expected no reasoning outbound after hook rewrote to off model, got %+v", outbound)
+		t.Fatalf(
+			"expected no reasoning outbound after hook rewrote to off model, got %+v",
+			outbound,
+		)
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -1050,7 +1091,11 @@ func TestProcessMessage_BtwCommandSuppressesReasoningWhenThinkingOff(t *testing.
 		}},
 	}
 
-	al := NewAgentLoop(cfg, bus.NewMessageBus(), &sideQuestionFallbackTestProvider{model: "test-model"})
+	al := NewAgentLoop(
+		cfg,
+		bus.NewMessageBus(),
+		&sideQuestionFallbackTestProvider{model: "test-model"},
+	)
 	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
 		model := ""
 		if mc != nil {
@@ -1072,7 +1117,10 @@ func TestProcessMessage_BtwCommandSuppressesReasoningWhenThinkingOff(t *testing.
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if strings.Contains(response, "thinking trace") {
-		t.Fatalf("processMessage() response = %q, should not expose reasoning with thinking off", response)
+		t.Fatalf(
+			"processMessage() response = %q, should not expose reasoning with thinking off",
+			response,
+		)
 	}
 }
 
@@ -1105,7 +1153,11 @@ func TestProcessMessage_BtwHookModelRewriteReevaluatesThinkingOff(t *testing.T) 
 		},
 	}
 
-	al := NewAgentLoop(cfg, bus.NewMessageBus(), &sideQuestionFallbackTestProvider{model: "plain-model"})
+	al := NewAgentLoop(
+		cfg,
+		bus.NewMessageBus(),
+		&sideQuestionFallbackTestProvider{model: "plain-model"},
+	)
 	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
 		model := ""
 		if mc != nil {
@@ -1166,7 +1218,11 @@ func TestProcessMessage_BtwHookModelRewriteDoesNotLeakThinkingOff(t *testing.T) 
 		},
 	}
 
-	al := NewAgentLoop(cfg, bus.NewMessageBus(), &sideQuestionFallbackTestProvider{model: "off-model"})
+	al := NewAgentLoop(
+		cfg,
+		bus.NewMessageBus(),
+		&sideQuestionFallbackTestProvider{model: "off-model"},
+	)
 	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
 		model := ""
 		if mc != nil {
@@ -1191,7 +1247,69 @@ func TestProcessMessage_BtwHookModelRewriteDoesNotLeakThinkingOff(t *testing.T) 
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if response != "thinking trace" {
-		t.Fatalf("processMessage() response = %q, want reasoning after hook rewrote away from off model", response)
+		t.Fatalf(
+			"processMessage() response = %q, want reasoning after hook rewrote away from off model",
+			response,
+		)
+	}
+}
+
+func TestPipeline_CallLLM_BeforeLLMRewriteDoesNotMutateStickyAutoFallbackSelection(t *testing.T) {
+	provider := &stickyFallbackProvider{}
+	al, agent, cleanup := newTurnCoordFallbackTestLoop(t, provider)
+	defer cleanup()
+
+	if err := al.setAutoModelSelection("rewrite-session", state.AutoModelSelection{
+		SelectedProvider: "openai",
+		SelectedModel:    "primary-model",
+		ActiveProvider:   "openai",
+		ActiveModel:      "fallback-model",
+		Reason:           string(providers.FailoverRateLimit),
+		ExpiresAt:        time.Now().Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatalf("setAutoModelSelection failed: %v", err)
+	}
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(
+		agent,
+		normalizeProcessOptions(makeTestProcessOpts("rewrite-session")),
+		turnEventScope{
+			turnID:  "turn-rewrite-sticky-selection",
+			context: newTurnContext(nil, nil, nil),
+		},
+	)
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn() error = %v", err)
+	}
+
+	exec.llmModel = "fallback-model"
+	pipeline.applyBeforeLLMModelRewrite(ts, exec)
+	defer func() {
+		if exec.model.cleanup != nil {
+			exec.model.cleanup()
+		}
+	}()
+
+	if exec.model.autoFallback {
+		t.Fatal("expected before_llm model rewrite to disable sticky auto-fallback updates")
+	}
+
+	control, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	if err != nil {
+		t.Fatalf("CallLLM() error = %v", err)
+	}
+	if control != ControlBreak {
+		t.Fatalf("CallLLM() control = %v, want %v", control, ControlBreak)
+	}
+
+	sel, ok := al.getAutoModelSelection("rewrite-session")
+	if !ok {
+		t.Fatal("expected sticky auto fallback selection to remain present")
+	}
+	if sel.SelectedModel != "primary-model" || sel.ActiveModel != "fallback-model" {
+		t.Fatalf("sticky auto fallback selection mutated: %#v", sel)
 	}
 }
 
@@ -1214,7 +1332,11 @@ func TestProcessMessage_BtwFallbackDoesNotInheritPrimaryThinkingOff(t *testing.T
 		}},
 	}
 
-	al := NewAgentLoop(cfg, bus.NewMessageBus(), &sideQuestionFallbackTestProvider{model: "test-model"})
+	al := NewAgentLoop(
+		cfg,
+		bus.NewMessageBus(),
+		&sideQuestionFallbackTestProvider{model: "test-model"},
+	)
 	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
 		model := ""
 		if mc != nil {
@@ -1236,7 +1358,10 @@ func TestProcessMessage_BtwFallbackDoesNotInheritPrimaryThinkingOff(t *testing.T
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if response != "thinking trace" {
-		t.Fatalf("processMessage() response = %q, want fallback reasoning when fallback has no off", response)
+		t.Fatalf(
+			"processMessage() response = %q, want fallback reasoning when fallback has no off",
+			response,
+		)
 	}
 }
 
@@ -1356,7 +1481,10 @@ func TestProcessMessage_BtwCommandRunsWithoutPersistingHistory(t *testing.T) {
 		t.Fatal("provider did not receive any messages")
 	}
 	if len(provider.lastMessages) != 4 {
-		t.Fatalf("provider messages len = %d, want 4 (system + prior history + user)", len(provider.lastMessages))
+		t.Fatalf(
+			"provider messages len = %d, want 4 (system + prior history + user)",
+			len(provider.lastMessages),
+		)
 	}
 
 	if !reflect.DeepEqual(provider.lastMessages[1:3], initialHistory) {
@@ -1416,7 +1544,10 @@ func TestProcessMessage_BtwCommandIncludesRequestContextAndMedia(t *testing.T) {
 	if !strings.Contains(systemPrompt, "## Current Session\nChannel: discord\nChat ID: group-1") {
 		t.Fatalf("system prompt missing current session context:\n%s", systemPrompt)
 	}
-	if !strings.Contains(systemPrompt, "## Current Sender\nCurrent sender: Alice (ID: discord:123)") {
+	if !strings.Contains(
+		systemPrompt,
+		"## Current Sender\nCurrent sender: Alice (ID: discord:123)",
+	) {
 		t.Fatalf("system prompt missing current sender context:\n%s", systemPrompt)
 	}
 
@@ -1494,7 +1625,11 @@ func TestProcessMessage_BtwCommandUsesIsolatedProvider(t *testing.T) {
 	// Verify main session history was NOT modified
 	currentHistory := defaultAgent.Sessions.GetHistory(mainSessionKey)
 	if !reflect.DeepEqual(currentHistory, initialHistory) {
-		t.Fatalf("main session history was modified:\ngot  %#v\nwant %#v", currentHistory, initialHistory)
+		t.Fatalf(
+			"main session history was modified:\ngot  %#v\nwant %#v",
+			currentHistory,
+			initialHistory,
+		)
 	}
 }
 
@@ -1623,6 +1758,74 @@ func TestProcessMessage_BtwCommandHookModelBypassesFallbackCandidates(t *testing
 	}
 	if provider.lastModel != "hook-model" {
 		t.Fatalf("/btw model = %q, want hook-selected model", provider.lastModel)
+	}
+}
+
+func TestAskSideQuestion_UsesEffectiveModelBindingExecutionState(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "workspace-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{ModelName: "workspace-model", Model: "openai/workspace-model"},
+			{ModelName: "override-model", Model: "openai/override-model"},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &recordingProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	useTestSideQuestionProvider(al, provider)
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	opts := processOptions{
+		SessionKey: "session-1",
+		Dispatch: DispatchRequest{
+			SessionKey:      "session-1",
+			RouteSessionKey: "route-session-1",
+			InboundContext: &bus.InboundContext{
+				Channel:  "telegram",
+				ChatID:   "chat-1",
+				SenderID: "telegram:123",
+			},
+		},
+		ModelBinding: effectiveModelBinding{
+			RouteSessionKey: "route-session-1",
+			WorkspaceAgent:  agent,
+			Execution: effectiveExecutionState{
+				AgentID: "main",
+				Model:   "override-model",
+				Candidates: []providers.FallbackCandidate{
+					{
+						IdentityKey: "model_name:override-model",
+						Provider:    "openai",
+						Model:       "override-model",
+					},
+				},
+			},
+			Override: state.SessionModelOverride{Model: "override-model"},
+		},
+	}
+
+	response, err := al.askSideQuestion(context.Background(), agent, &opts, "explain privately")
+	if err != nil {
+		t.Fatalf("askSideQuestion() error = %v", err)
+	}
+	if response != "Mock response" {
+		t.Fatalf("askSideQuestion() response = %q, want %q", response, "Mock response")
+	}
+	if provider.lastModel != "override-model" {
+		t.Fatalf("/btw model = %q, want override-model", provider.lastModel)
 	}
 }
 
@@ -2068,7 +2271,9 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	store := media.NewFileMediaStore()
 	al.SetMediaStore(store)
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
-	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
+	al.SetChannelManager(
+		newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel),
+	)
 
 	imagePath := filepath.Join(tmpDir, "screen.png")
 	if err := os.WriteFile(imagePath, []byte("fake screenshot"), 0o644); err != nil {
@@ -2090,7 +2295,10 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if response != "" {
-		t.Fatalf("expected no final response when media tool already handled delivery, got %q", response)
+		t.Fatalf(
+			"expected no final response when media tool already handled delivery, got %q",
+			response,
+		)
 	}
 	if provider.calls != 1 {
 		t.Fatalf("expected exactly 1 LLM call, got %d", provider.calls)
@@ -2103,13 +2311,20 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	}
 
 	if len(telegramChannel.sentMedia) != 1 {
-		t.Fatalf("expected exactly 1 synchronously sent media message, got %d", len(telegramChannel.sentMedia))
+		t.Fatalf(
+			"expected exactly 1 synchronously sent media message, got %d",
+			len(telegramChannel.sentMedia),
+		)
 	}
-	if telegramChannel.sentMedia[0].Channel != "telegram" || telegramChannel.sentMedia[0].ChatID != "chat1" {
+	if telegramChannel.sentMedia[0].Channel != "telegram" ||
+		telegramChannel.sentMedia[0].ChatID != "chat1" {
 		t.Fatalf("unexpected sent media target: %+v", telegramChannel.sentMedia[0])
 	}
 	if len(telegramChannel.sentMedia[0].Parts) != 1 {
-		t.Fatalf("expected exactly 1 sent media part, got %d", len(telegramChannel.sentMedia[0].Parts))
+		t.Fatalf(
+			"expected exactly 1 sent media part, got %d",
+			len(telegramChannel.sentMedia[0].Parts),
+		)
 	}
 
 	select {
@@ -2131,22 +2346,29 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	if err != nil {
 		t.Fatalf("resolveMessageRoute() error = %v", err)
 	}
-	sessionKey := resolveScopeKey(al.allocateRouteSession(route, testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		ChatID:   "chat1",
-		SenderID: "user1",
-		Content:  "take a screenshot of the screen and send it to me",
-	})).SessionKey, "")
+	sessionKey := resolveScopeKey(
+		al.allocateRouteSession(route, testInboundMessage(bus.InboundMessage{
+			Channel:  "telegram",
+			ChatID:   "chat1",
+			SenderID: "user1",
+			Content:  "take a screenshot of the screen and send it to me",
+		})).SessionKey,
+		"",
+	)
 	history := defaultAgent.Sessions.GetHistory(sessionKey)
 	if len(history) == 0 {
 		t.Fatal("expected session history to be saved")
 	}
 	last := history[len(history)-1]
-	if last.Role != "assistant" || last.Content != "Requested output delivered via tool attachment." {
+	if last.Role != "assistant" ||
+		last.Content != "Requested output delivered via tool attachment." {
 		t.Fatalf("expected handled assistant summary in history, got %+v", last)
 	}
 	if len(last.Attachments) != 1 {
-		t.Fatalf("expected handled assistant summary attachments in history, got %+v", last.Attachments)
+		t.Fatalf(
+			"expected handled assistant summary attachments in history, got %+v",
+			last.Attachments,
+		)
 	}
 }
 
@@ -2194,22 +2416,36 @@ func TestProcessMessage_HandledMediaDismissesToolFeedbackWithoutFinalText(t *tes
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if response != "" {
-		t.Fatalf("expected no final response when media tool already handled delivery, got %q", response)
+		t.Fatalf(
+			"expected no final response when media tool already handled delivery, got %q",
+			response,
+		)
 	}
 	if provider.calls != 1 {
 		t.Fatalf("expected exactly 1 LLM call, got %d", provider.calls)
 	}
 	if len(channelManager.sentMedia) != 1 {
-		t.Fatalf("expected media delivery through channel manager, got %d", len(channelManager.sentMedia))
+		t.Fatalf(
+			"expected media delivery through channel manager, got %d",
+			len(channelManager.sentMedia),
+		)
 	}
 	if len(channelManager.dismissed) != 1 || channelManager.dismissed[0] != "telegram:chat1" {
-		t.Fatalf("expected tool feedback dismissal for telegram:chat1, got %+v", channelManager.dismissed)
+		t.Fatalf(
+			"expected tool feedback dismissal for telegram:chat1, got %+v",
+			channelManager.dismissed,
+		)
 	}
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		if got := strings.TrimSpace(outbound.Context.Raw[metadataKeyMessageKind]); got != messageKindToolFeedback {
-			t.Fatalf("first outbound kind = %q, want %q; outbound=%+v", got, messageKindToolFeedback, outbound)
+			t.Fatalf(
+				"first outbound kind = %q, want %q; outbound=%+v",
+				got,
+				messageKindToolFeedback,
+				outbound,
+			)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected one tool feedback outbound")
@@ -2246,7 +2482,9 @@ func TestProcessMessage_HandledCompletionMediaUsesCompletionTextAsCaption(t *tes
 	store := media.NewFileMediaStore()
 	al.SetMediaStore(store)
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
-	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
+	al.SetChannelManager(
+		newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel),
+	)
 
 	videoPath := filepath.Join(tmpDir, "reel.mp4")
 	if err := os.WriteFile(videoPath, []byte("fake video"), 0o644); err != nil {
@@ -2270,7 +2508,10 @@ func TestProcessMessage_HandledCompletionMediaUsesCompletionTextAsCaption(t *tes
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if response != "" {
-		t.Fatalf("expected no final response when completion media handled delivery, got %q", response)
+		t.Fatalf(
+			"expected no final response when completion media handled delivery, got %q",
+			response,
+		)
 	}
 	if len(telegramChannel.sentMedia) != 1 {
 		t.Fatalf("expected exactly 1 media message, got %d", len(telegramChannel.sentMedia))
@@ -2307,7 +2548,9 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 	store := media.NewFileMediaStore()
 	al.SetMediaStore(store)
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
-	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
+	al.SetChannelManager(
+		newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel),
+	)
 
 	videoPath := filepath.Join(tmpDir, "reel.mp4")
 	if err := os.WriteFile(videoPath, []byte("fake video"), 0o644); err != nil {
@@ -2481,7 +2724,9 @@ func TestProcessMessage_HandledToolProcessesQueuedSteeringBeforeReturning(t *tes
 	store := media.NewFileMediaStore()
 	al.SetMediaStore(store)
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
-	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
+	al.SetChannelManager(
+		newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel),
+	)
 
 	imagePath := filepath.Join(tmpDir, "screen-steering.png")
 	if err := os.WriteFile(imagePath, []byte("fake screenshot"), 0o644); err != nil {
@@ -2510,7 +2755,10 @@ func TestProcessMessage_HandledToolProcessesQueuedSteeringBeforeReturning(t *tes
 		t.Fatalf("expected 2 LLM calls after queued steering, got %d", provider.calls)
 	}
 	if len(telegramChannel.sentMedia) != 1 {
-		t.Fatalf("expected exactly 1 synchronously sent media message, got %d", len(telegramChannel.sentMedia))
+		t.Fatalf(
+			"expected exactly 1 synchronously sent media message, got %d",
+			len(telegramChannel.sentMedia),
+		)
 	}
 }
 
@@ -2529,7 +2777,9 @@ func TestRunAgentLoop_ResponseHandledToolPublishesForUserWhenSendResponseDisable
 	store := media.NewFileMediaStore()
 	al.SetMediaStore(store)
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
-	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
+	al.SetChannelManager(
+		newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel),
+	)
 	al.RegisterTool(&handledUserTool{})
 
 	defaultAgent := al.registry.GetDefaultAgent()
@@ -2579,10 +2829,17 @@ func TestRunAgentLoop_ResponseHandledToolPublishesForUserWhenSendResponseDisable
 		t.Fatalf("unexpected sent text message: %+v", telegramChannel.sentMessages[0])
 	}
 	if telegramChannel.sentMessages[0].AgentID != defaultAgent.ID {
-		t.Fatalf("sent text agent_id = %q, want %q", telegramChannel.sentMessages[0].AgentID, defaultAgent.ID)
+		t.Fatalf(
+			"sent text agent_id = %q, want %q",
+			telegramChannel.sentMessages[0].AgentID,
+			defaultAgent.ID,
+		)
 	}
 	if telegramChannel.sentMessages[0].SessionKey != "session-1" {
-		t.Fatalf("sent text session_key = %q, want session-1", telegramChannel.sentMessages[0].SessionKey)
+		t.Fatalf(
+			"sent text session_key = %q, want session-1",
+			telegramChannel.sentMessages[0].SessionKey,
+		)
 	}
 	if telegramChannel.sentMessages[0].Scope == nil ||
 		telegramChannel.sentMessages[0].Scope.Values["chat"] != "direct:chat1" {
@@ -2786,7 +3043,9 @@ func TestProcessMessage_MediaArtifactCanBeForwardedBySendFile(t *testing.T) {
 	store := media.NewFileMediaStore()
 	al.SetMediaStore(store)
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
-	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
+	al.SetChannelManager(
+		newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel),
+	)
 
 	mediaDir := media.TempDir()
 	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
@@ -2819,13 +3078,20 @@ func TestProcessMessage_MediaArtifactCanBeForwardedBySendFile(t *testing.T) {
 	}
 
 	if len(telegramChannel.sentMedia) != 1 {
-		t.Fatalf("expected exactly 1 synchronously sent media message, got %d", len(telegramChannel.sentMedia))
+		t.Fatalf(
+			"expected exactly 1 synchronously sent media message, got %d",
+			len(telegramChannel.sentMedia),
+		)
 	}
-	if telegramChannel.sentMedia[0].Channel != "telegram" || telegramChannel.sentMedia[0].ChatID != "chat1" {
+	if telegramChannel.sentMedia[0].Channel != "telegram" ||
+		telegramChannel.sentMedia[0].ChatID != "chat1" {
 		t.Fatalf("unexpected sent media target: %+v", telegramChannel.sentMedia[0])
 	}
 	if len(telegramChannel.sentMedia[0].Parts) != 1 {
-		t.Fatalf("expected exactly 1 sent media part, got %d", len(telegramChannel.sentMedia[0].Parts))
+		t.Fatalf(
+			"expected exactly 1 sent media part, got %d",
+			len(telegramChannel.sentMedia[0].Parts),
+		)
 	}
 
 	select {
@@ -3420,7 +3686,10 @@ func TestToolFeedbackExplanationFromResponse_UsesExplicitToolCallExtraContent(t 
 
 	got := toolFeedbackExplanationFromResponse(response, messages)
 	if got != "Read README.md first to confirm the current project structure." {
-		t.Fatalf("toolFeedbackExplanationFromResponse() = %q, want explicit tool feedback explanation", got)
+		t.Fatalf(
+			"toolFeedbackExplanationFromResponse() = %q, want explicit tool feedback explanation",
+			got,
+		)
 	}
 }
 
@@ -3448,10 +3717,16 @@ func TestToolFeedbackExplanationForToolCall_PrefersToolSpecificExtraContent(t *t
 	got1 := toolFeedbackExplanationForToolCall(response, response.ToolCalls[0], nil)
 	got2 := toolFeedbackExplanationForToolCall(response, response.ToolCalls[1], nil)
 	if got1 != "Read README.md first." {
-		t.Fatalf("toolFeedbackExplanationForToolCall() first = %q, want tool-specific explanation", got1)
+		t.Fatalf(
+			"toolFeedbackExplanationForToolCall() first = %q, want tool-specific explanation",
+			got1,
+		)
 	}
 	if got2 != "Update config example after reading it." {
-		t.Fatalf("toolFeedbackExplanationForToolCall() second = %q, want tool-specific explanation", got2)
+		t.Fatalf(
+			"toolFeedbackExplanationForToolCall() second = %q, want tool-specific explanation",
+			got2,
+		)
 	}
 }
 
@@ -3497,7 +3772,10 @@ func TestToolFeedbackExplanationFromResponse_DoesNotUseReasoningContent(t *testi
 	got := toolFeedbackExplanationFromResponse(response, messages)
 	want := utils.ToolFeedbackContinuationHint + ": Inspect README.md and update the config example."
 	if got != want {
-		t.Fatalf("toolFeedbackExplanationFromResponse() = %q, want latest user content fallback", got)
+		t.Fatalf(
+			"toolFeedbackExplanationFromResponse() = %q, want latest user content fallback",
+			got,
+		)
 	}
 }
 
@@ -3694,7 +3972,10 @@ func (m *handledCompletionMediaTool) Parameters() map[string]any {
 	}
 }
 
-func (m *handledCompletionMediaTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (m *handledCompletionMediaTool) Execute(
+	ctx context.Context,
+	args map[string]any,
+) *tools.ToolResult {
 	ref, err := m.store.Store(m.path, media.MediaMeta{
 		Filename:    filepath.Base(m.path),
 		ContentType: "video/mp4",
@@ -3791,7 +4072,10 @@ func (m *handledMediaWithSteeringTool) Parameters() map[string]any {
 	}
 }
 
-func (m *handledMediaWithSteeringTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (m *handledMediaWithSteeringTool) Execute(
+	ctx context.Context,
+	args map[string]any,
+) *tools.ToolResult {
 	if err := m.loop.Steer(providers.Message{Role: "user", Content: "what about this instead?"}); err != nil {
 		return tools.ErrorResult(err.Error()).WithError(err)
 	}
@@ -3862,7 +4146,8 @@ func (m *immediateMediaTool) Execute(ctx context.Context, args map[string]any) *
 	if err != nil {
 		return tools.ErrorResult(err.Error()).WithError(err)
 	}
-	return tools.MediaResult("Immediate attachment delivered by tool.", []string{ref}).WithImmediateDelivery()
+	return tools.MediaResult("Immediate attachment delivered by tool.", []string{ref}).
+		WithImmediateDelivery()
 }
 
 type toolLimitTestTool struct{}
@@ -3973,7 +4258,11 @@ func newStrictChatCompletionTestServer(
 	}))
 }
 
-func (h testHelper) executeAndGetResponse(tb testing.TB, ctx context.Context, msg bus.InboundMessage) string {
+func (h testHelper) executeAndGetResponse(
+	tb testing.TB,
+	ctx context.Context,
+	msg bus.InboundMessage,
+) string {
 	// Use a short timeout to avoid hanging
 	timeoutCtx, cancel := context.WithTimeout(ctx, responseTimeout)
 	defer cancel()
@@ -4344,7 +4633,13 @@ func TestProcessMessage_ModelOverrideIsSessionScoped(t *testing.T) {
 
 	remoteCalls := 0
 	remoteModel := ""
-	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+	remoteServer := newChatCompletionTestServer(
+		t,
+		"remote",
+		"remote reply",
+		&remoteCalls,
+		&remoteModel,
+	)
 	defer remoteServer.Close()
 
 	cfg := &config.Config{
@@ -4594,7 +4889,8 @@ func TestProcessMessage_ShowModelDuringOverrideDoesNotClearStickyAutoFallback(t 
 	if !ok {
 		t.Fatalf("auto fallback selection was cleared by read-only model inspection")
 	}
-	if sel.ActiveProvider != "openrouter" || sel.ActiveModel != "openrouter/deepseek/deepseek-v3.2" {
+	if sel.ActiveProvider != "openrouter" ||
+		sel.ActiveModel != "openrouter/deepseek/deepseek-v3.2" {
 		t.Fatalf("unexpected sticky auto-fallback state after /show model: %#v", sel)
 	}
 }
@@ -4613,7 +4909,13 @@ func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T)
 
 	remoteCalls := 0
 	remoteModel := ""
-	remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+	remoteServer := newChatCompletionTestServer(
+		t,
+		"remote",
+		"remote reply",
+		&remoteCalls,
+		&remoteModel,
+	)
 	defer remoteServer.Close()
 
 	cfg := &config.Config{
@@ -4664,13 +4966,25 @@ func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T)
 		SenderID: "telegram:123",
 	}
 
-	helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/model use deepseek"})
-	showResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/show model"})
+	helper.executeAndGetResponse(
+		t,
+		ctx,
+		bus.InboundMessage{Context: inbound, Content: "/model use deepseek"},
+	)
+	showResp := helper.executeAndGetResponse(
+		t,
+		ctx,
+		bus.InboundMessage{Context: inbound, Content: "/show model"},
+	)
 	if !strings.Contains(showResp, "Session Override: deepseek") {
 		t.Fatalf("unexpected /show model with override: %q", showResp)
 	}
 
-	clearResp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "/model clear"})
+	clearResp := helper.executeAndGetResponse(
+		t,
+		ctx,
+		bus.InboundMessage{Context: inbound, Content: "/model clear"},
+	)
 	if !strings.Contains(clearResp, "Cleared session model override.") {
 		t.Fatalf("unexpected /model clear reply: %q", clearResp)
 	}
@@ -4678,7 +4992,11 @@ func TestProcessMessage_ModelOverrideClearRestoresWorkspaceDefault(t *testing.T)
 		t.Fatalf("clear reply should not retain session override: %q", clearResp)
 	}
 
-	resp := helper.executeAndGetResponse(t, ctx, bus.InboundMessage{Context: inbound, Content: "back to default"})
+	resp := helper.executeAndGetResponse(
+		t,
+		ctx,
+		bus.InboundMessage{Context: inbound, Content: "back to default"},
+	)
 	if resp != "local reply" {
 		t.Fatalf("unexpected reply after clear: %q", resp)
 	}
@@ -4716,12 +5034,24 @@ func TestProcessMessage_ResetClearsSessionModelOverride(t *testing.T) {
 
 			localCalls := 0
 			localModel := ""
-			localServer := newChatCompletionTestServer(t, "local", "local reply", &localCalls, &localModel)
+			localServer := newChatCompletionTestServer(
+				t,
+				"local",
+				"local reply",
+				&localCalls,
+				&localModel,
+			)
 			defer localServer.Close()
 
 			remoteCalls := 0
 			remoteModel := ""
-			remoteServer := newChatCompletionTestServer(t, "remote", "remote reply", &remoteCalls, &remoteModel)
+			remoteServer := newChatCompletionTestServer(
+				t,
+				"remote",
+				"remote reply",
+				&remoteCalls,
+				&remoteModel,
+			)
 			defer remoteServer.Close()
 
 			cfg := &config.Config{
@@ -5191,7 +5521,10 @@ func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 	if !strings.Contains(resp, "- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai") {
 		t.Fatalf("unexpected /list models current entry: %q", resp)
 	}
-	if !strings.Contains(resp, "- deepseek\n  - openrouter/deepseek/deepseek-v3.2 via openrouter [x2]") {
+	if !strings.Contains(
+		resp,
+		"- deepseek\n  - openrouter/deepseek/deepseek-v3.2 via openrouter [x2]",
+	) {
 		t.Fatalf("unexpected /list models deepseek entry: %q", resp)
 	}
 	if strings.Contains(resp, "disabled-model") {
@@ -5357,18 +5690,20 @@ func TestProcessMessage_FallbackUsesPerCandidateProvider(t *testing.T) {
 	workspace := t.TempDir()
 
 	primaryCalls := 0
-	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		primaryCalls++
-		// Return 429 so FallbackChain classifies this as retriable and moves on.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "rate limit exceeded",
-				"type":    "rate_limit_error",
-			},
-		})
-	}))
+	primaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			primaryCalls++
+			// Return 429 so FallbackChain classifies this as retriable and moves on.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "rate limit exceeded",
+					"type":    "rate_limit_error",
+				},
+			})
+		}),
+	)
 	defer primaryServer.Close()
 
 	fallbackCalls := 0
@@ -5436,53 +5771,57 @@ func TestProcessMessage_FallbackUsesPerCandidateProvider(t *testing.T) {
 func TestProcessMessage_FallbackReceivesExplicitThinkingOff(t *testing.T) {
 	workspace := t.TempDir()
 
-	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "rate limit exceeded",
-				"type":    "rate_limit_error",
-			},
-		})
-	}))
+	primaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "rate limit exceeded",
+					"type":    "rate_limit_error",
+				},
+			})
+		}),
+	)
 	defer primaryServer.Close()
 
 	fallbackCalls := 0
-	fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fallbackCalls++
-		if r.URL.Path != "/chat/completions" {
-			t.Fatalf("fallback server path = %q, want /chat/completions", r.URL.Path)
-		}
-		defer r.Body.Close()
+	fallbackServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fallbackCalls++
+			if r.URL.Path != "/chat/completions" {
+				t.Fatalf("fallback server path = %q, want /chat/completions", r.URL.Path)
+			}
+			defer r.Body.Close()
 
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode fallback request: %v", err)
-		}
-		if got := req["model"]; got != "doubao-seed-1-6-flash-250828" {
-			t.Fatalf("fallback request model = %#v, want doubao-seed-1-6-flash-250828", got)
-		}
-		thinking, ok := req["thinking"].(map[string]any)
-		if !ok {
-			t.Fatalf("fallback request thinking = %#v, want map", req["thinking"])
-		}
-		if got := thinking["type"]; got != "disabled" {
-			t.Fatalf("fallback request thinking.type = %#v, want disabled", got)
-		}
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode fallback request: %v", err)
+			}
+			if got := req["model"]; got != "doubao-seed-1-6-flash-250828" {
+				t.Fatalf("fallback request model = %#v, want doubao-seed-1-6-flash-250828", got)
+			}
+			thinking, ok := req["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("fallback request thinking = %#v, want map", req["thinking"])
+			}
+			if got := thinking["type"]; got != "disabled" {
+				t.Fatalf("fallback request thinking.type = %#v, want disabled", got)
+			}
 
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message":       map[string]any{"content": "fallback reply"},
-					"finish_reason": "stop",
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{
+						"message":       map[string]any{"content": "fallback reply"},
+						"finish_reason": "stop",
+					},
 				},
-			},
-		}); err != nil {
-			t.Fatalf("encode fallback response: %v", err)
-		}
-	}))
+			}); err != nil {
+				t.Fatalf("encode fallback response: %v", err)
+			}
+		}),
+	)
 	defer fallbackServer.Close()
 
 	cfg := &config.Config{
@@ -5541,44 +5880,51 @@ func TestProcessMessage_FallbackReceivesExplicitThinkingOff(t *testing.T) {
 func TestProcessMessage_PrimaryThinkingOffDoesNotLeakToFallback(t *testing.T) {
 	workspace := t.TempDir()
 
-	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "rate limit exceeded",
-				"type":    "rate_limit_error",
-			},
-		})
-	}))
+	primaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "rate limit exceeded",
+					"type":    "rate_limit_error",
+				},
+			})
+		}),
+	)
 	defer primaryServer.Close()
 
-	fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Fatalf("fallback server path = %q, want /chat/completions", r.URL.Path)
-		}
-		defer r.Body.Close()
+	fallbackServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/chat/completions" {
+				t.Fatalf("fallback server path = %q, want /chat/completions", r.URL.Path)
+			}
+			defer r.Body.Close()
 
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode fallback request: %v", err)
-		}
-		if _, ok := req["thinking"]; ok {
-			t.Fatalf("fallback request should not inherit primary thinking off, got thinking=%#v", req["thinking"])
-		}
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode fallback request: %v", err)
+			}
+			if _, ok := req["thinking"]; ok {
+				t.Fatalf(
+					"fallback request should not inherit primary thinking off, got thinking=%#v",
+					req["thinking"],
+				)
+			}
 
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message":       map[string]any{"content": "fallback reply"},
-					"finish_reason": "stop",
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{
+						"message":       map[string]any{"content": "fallback reply"},
+						"finish_reason": "stop",
+					},
 				},
-			},
-		}); err != nil {
-			t.Fatalf("encode fallback response: %v", err)
-		}
-	}))
+			}); err != nil {
+				t.Fatalf("encode fallback response: %v", err)
+			}
+		}),
+	)
 	defer fallbackServer.Close()
 
 	cfg := &config.Config{
@@ -5633,48 +5979,52 @@ func TestProcessMessage_PrimaryThinkingOffDoesNotLeakToFallback(t *testing.T) {
 func TestProcessMessage_FallbackThinkingOffUsesCandidateIdentity(t *testing.T) {
 	workspace := t.TempDir()
 
-	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "rate limit exceeded",
-				"type":    "rate_limit_error",
-			},
-		})
-	}))
+	primaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "rate limit exceeded",
+					"type":    "rate_limit_error",
+				},
+			})
+		}),
+	)
 	defer primaryServer.Close()
 
-	fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Fatalf("fallback server path = %q, want /chat/completions", r.URL.Path)
-		}
-		defer r.Body.Close()
+	fallbackServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/chat/completions" {
+				t.Fatalf("fallback server path = %q, want /chat/completions", r.URL.Path)
+			}
+			defer r.Body.Close()
 
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode fallback request: %v", err)
-		}
-		thinking, ok := req["thinking"].(map[string]any)
-		if !ok {
-			t.Fatalf("fallback request thinking = %#v, want map", req["thinking"])
-		}
-		if got := thinking["type"]; got != "disabled" {
-			t.Fatalf("fallback request thinking.type = %#v, want disabled", got)
-		}
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode fallback request: %v", err)
+			}
+			thinking, ok := req["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("fallback request thinking = %#v, want map", req["thinking"])
+			}
+			if got := thinking["type"]; got != "disabled" {
+				t.Fatalf("fallback request thinking.type = %#v, want disabled", got)
+			}
 
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message":       map[string]any{"content": "fallback reply"},
-					"finish_reason": "stop",
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{
+						"message":       map[string]any{"content": "fallback reply"},
+						"finish_reason": "stop",
+					},
 				},
-			},
-		}); err != nil {
-			t.Fatalf("encode fallback response: %v", err)
-		}
-	}))
+			}); err != nil {
+				t.Fatalf("encode fallback response: %v", err)
+			}
+		}),
+	)
 	defer fallbackServer.Close()
 
 	cfg := &config.Config{
@@ -5744,23 +6094,28 @@ func TestProcessMessage_FallbackUsesActiveProviderWhenCandidateNotRegistered(t *
 	// Both the primary and the unregistered fallback share this server
 	// (same api_base) so activeProvider routes both calls here.
 	callCount := 0
-	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		w.Header().Set("Content-Type", "application/json")
-		if callCount == 1 {
-			w.WriteHeader(http.StatusTooManyRequests)
+	primaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			w.Header().Set("Content-Type", "application/json")
+			if callCount == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{"message": "rate limit", "type": "rate_limit_error"},
+				})
+				return
+			}
+			// Second call (fallback via activeProvider) succeeds.
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{"message": "rate limit", "type": "rate_limit_error"},
+				"choices": []map[string]any{
+					{
+						"message":       map[string]any{"content": "active provider reply"},
+						"finish_reason": "stop",
+					},
+				},
 			})
-			return
-		}
-		// Second call (fallback via activeProvider) succeeds.
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{
-				{"message": map[string]any{"content": "active provider reply"}, "finish_reason": "stop"},
-			},
-		})
-	}))
+		}),
+	)
 	defer primaryServer.Close()
 
 	cfg := &config.Config{
@@ -5804,7 +6159,10 @@ func TestProcessMessage_FallbackUsesActiveProviderWhenCandidateNotRegistered(t *
 		t.Fatalf("response = %q, want %q", resp, "active provider reply")
 	}
 	if callCount < 2 {
-		t.Fatalf("primary server calls = %d, want >= 2 (one 429 + one success via activeProvider)", callCount)
+		t.Fatalf(
+			"primary server calls = %d, want >= 2 (one 429 + one success via activeProvider)",
+			callCount,
+		)
 	}
 }
 
@@ -5943,7 +6301,9 @@ func TestAgentLoop_ContextExhaustionRetry(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 
 	// Create a provider that fails once with a context error
-	contextErr := fmt.Errorf("InvalidParameter: Total tokens of image and text exceed max message tokens")
+	contextErr := fmt.Errorf(
+		"InvalidParameter: Total tokens of image and text exceed max message tokens",
+	)
 	provider := &failFirstMockProvider{
 		failures:    1,
 		failError:   contextErr,
@@ -6190,7 +6550,11 @@ func TestAgentLoop_VisionUnsupportedErrorStripsSessionMedia(t *testing.T) {
 		t.Fatalf("response = %q, want %q", resp, "ok")
 	}
 	if provider.calls != 2 {
-		t.Fatalf("calls = %d, want %d (fail with media, then retry without media)", provider.calls, 2)
+		t.Fatalf(
+			"calls = %d, want %d (fail with media, then retry without media)",
+			provider.calls,
+			2,
+		)
 	}
 	if !slices.Equal(provider.mediaSeen, []bool{true, false}) {
 		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{true, false})
@@ -6257,7 +6621,13 @@ func TestAgentLoop_EmptyModelResponseUsesAccurateFallback(t *testing.T) {
 	provider := &simpleMockProvider{response: ""}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	response, err := al.ProcessDirectWithChannel(context.Background(), "hello", "empty-response", "test", "chat1")
+	response, err := al.ProcessDirectWithChannel(
+		context.Background(),
+		"hello",
+		"empty-response",
+		"test",
+		"chat1",
+	)
 	if err != nil {
 		t.Fatalf("ProcessDirectWithChannel failed: %v", err)
 	}
@@ -6289,7 +6659,13 @@ func TestAgentLoop_ToolLimitUsesDedicatedFallback(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	al.RegisterTool(&toolLimitTestTool{})
 
-	response, err := al.ProcessDirectWithChannel(context.Background(), "hello", "tool-limit", "test", "chat1")
+	response, err := al.ProcessDirectWithChannel(
+		context.Background(),
+		"hello",
+		"tool-limit",
+		"test",
+		"chat1",
+	)
 	if err != nil {
 		t.Fatalf("ProcessDirectWithChannel failed: %v", err)
 	}
@@ -6306,11 +6682,13 @@ func TestAgentLoop_ToolLimitUsesDedicatedFallback(t *testing.T) {
 		ChatType: "direct",
 		SenderID: "cron",
 	})
-	history := defaultAgent.Sessions.GetHistory(al.allocateRouteSession(route, testInboundMessage(bus.InboundMessage{
-		Channel:  "test",
-		SenderID: "cron",
-		ChatID:   "chat1",
-	})).SessionKey)
+	history := defaultAgent.Sessions.GetHistory(
+		al.allocateRouteSession(route, testInboundMessage(bus.InboundMessage{
+			Channel:  "test",
+			SenderID: "cron",
+			ChatID:   "chat1",
+		})).SessionKey,
+	)
 	if len(history) != 4 {
 		t.Fatalf("history len = %d, want 4", len(history))
 	}
@@ -6608,7 +6986,9 @@ func TestHandleReasoning(t *testing.T) {
 					break
 				}
 				if msg.Content == "should timeout" {
-					t.Fatal("expected reasoning message to be dropped when bus is full, but it was published")
+					t.Fatal(
+						"expected reasoning message to be dropped when bus is full, but it was published",
+					)
 				}
 			}
 		}
@@ -6723,7 +7103,11 @@ func TestProcessMessage_PicoPublishesReasoningAsThoughtMessage(t *testing.T) {
 	}
 
 	if thoughtMsg.Channel != "pico" || thoughtMsg.ChatID != "pico:test-session" {
-		t.Fatalf("thought message route = %s/%s, want pico/pico:test-session", thoughtMsg.Channel, thoughtMsg.ChatID)
+		t.Fatalf(
+			"thought message route = %s/%s, want pico/pico:test-session",
+			thoughtMsg.Channel,
+			thoughtMsg.ChatID,
+		)
 	}
 	if thoughtMsg.Context.Raw[metadataKeyMessageKind] != messageKindThought {
 		t.Fatalf(
@@ -6765,7 +7149,12 @@ func TestProcessHeartbeat_DoesNotPublishToolFeedback(t *testing.T) {
 	provider := &toolFeedbackProvider{filePath: heartbeatFile}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	response, err := al.ProcessHeartbeat(context.Background(), "check heartbeat tasks", "telegram", "chat-1")
+	response, err := al.ProcessHeartbeat(
+		context.Background(),
+		"check heartbeat tasks",
+		"telegram",
+		"chat-1",
+	)
 	if err != nil {
 		t.Fatalf("ProcessHeartbeat() error = %v", err)
 	}
@@ -6840,10 +7229,16 @@ func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 			t.Fatalf("tool feedback content = %q, want read_file summary", outbound.Content)
 		}
 		if !strings.Contains(outbound.Content, utils.ToolFeedbackContinuationHint) {
-			t.Fatalf("tool feedback content = %q, want continuation hint fallback", outbound.Content)
+			t.Fatalf(
+				"tool feedback content = %q, want continuation hint fallback",
+				outbound.Content,
+			)
 		}
 		if !strings.Contains(outbound.Content, "check tool feedback") {
-			t.Fatalf("tool feedback content = %q, want current user intent fallback", outbound.Content)
+			t.Fatalf(
+				"tool feedback content = %q, want current user intent fallback",
+				outbound.Content,
+			)
 		}
 		if !strings.Contains(outbound.Content, "\"path\":") {
 			t.Fatalf("tool feedback content = %q, want serialized tool arguments", outbound.Content)
@@ -6852,7 +7247,10 @@ func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 			t.Fatalf("tool feedback content = %q, want tool argument value", outbound.Content)
 		}
 		if strings.Contains(outbound.Content, "Previous turn explanation") {
-			t.Fatalf("tool feedback content = %q, want no previous assistant fallback", outbound.Content)
+			t.Fatalf(
+				"tool feedback content = %q, want no previous assistant fallback",
+				outbound.Content,
+			)
 		}
 		if outbound.AgentID != "main" {
 			t.Fatalf("tool feedback agent_id = %q, want main", outbound.AgentID)
@@ -6860,7 +7258,8 @@ func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 		if outbound.SessionKey == "" {
 			t.Fatal("expected tool feedback to carry session_key")
 		}
-		if outbound.Scope == nil || outbound.Scope.AgentID != "main" || outbound.Scope.Channel != "telegram" {
+		if outbound.Scope == nil || outbound.Scope.AgentID != "main" ||
+			outbound.Scope.Channel != "telegram" {
 			t.Fatalf("expected tool feedback scope, got %+v", outbound.Scope)
 		}
 	case <-time.After(2 * time.Second):
@@ -6919,7 +7318,11 @@ func TestProcessMessage_PersistsReasoningContentInSessionHistory(t *testing.T) {
 		t.Fatalf("last message content = %q, want %q", last.Content, "final answer")
 	}
 	if last.ReasoningContent != "thinking trace" {
-		t.Fatalf("last message reasoning_content = %q, want %q", last.ReasoningContent, "thinking trace")
+		t.Fatalf(
+			"last message reasoning_content = %q, want %q",
+			last.ReasoningContent,
+			"thinking trace",
+		)
 	}
 }
 
@@ -6976,16 +7379,29 @@ func TestProcessMessage_PersistsReasoningToolResponseAsSingleAssistantRecord(t *
 		t.Fatal("expected assistant history record with tool_calls")
 	}
 	if assistantWithToolCall.Content != "I'll inspect that file now." {
-		t.Fatalf("assistant content = %q, want %q", assistantWithToolCall.Content, "I'll inspect that file now.")
+		t.Fatalf(
+			"assistant content = %q, want %q",
+			assistantWithToolCall.Content,
+			"I'll inspect that file now.",
+		)
 	}
 	if assistantWithToolCall.ReasoningContent != "Read the file before answering." {
-		t.Fatalf("assistant reasoning_content = %q, want preserved", assistantWithToolCall.ReasoningContent)
+		t.Fatalf(
+			"assistant reasoning_content = %q, want preserved",
+			assistantWithToolCall.ReasoningContent,
+		)
 	}
 	if len(assistantWithToolCall.ToolCalls) != 1 {
-		t.Fatalf("assistant tool calls = %+v, want single read_file tool", assistantWithToolCall.ToolCalls)
+		t.Fatalf(
+			"assistant tool calls = %+v, want single read_file tool",
+			assistantWithToolCall.ToolCalls,
+		)
 	}
 	if got := providers.NormalizeToolCall(assistantWithToolCall.ToolCalls[0]).Name; got != "read_file" {
-		t.Fatalf("assistant tool calls = %+v, want single read_file tool", assistantWithToolCall.ToolCalls)
+		t.Fatalf(
+			"assistant tool calls = %+v, want single read_file tool",
+			assistantWithToolCall.ToolCalls,
+		)
 	}
 
 	sessionDir := filepath.Join(tmpDir, "sessions")
@@ -7025,7 +7441,8 @@ func TestProcessMessage_PersistsReasoningToolResponseAsSingleAssistantRecord(t *
 		if msg.Role != "assistant" {
 			continue
 		}
-		if msg.Content == "I'll inspect that file now." || msg.ReasoningContent == "Read the file before answering." {
+		if msg.Content == "I'll inspect that file now." ||
+			msg.ReasoningContent == "Read the file before answering." {
 			matchingRecords++
 			toolName := ""
 			if len(msg.ToolCalls) == 1 {
@@ -7035,12 +7452,18 @@ func TestProcessMessage_PersistsReasoningToolResponseAsSingleAssistantRecord(t *
 				msg.ReasoningContent != "Read the file before answering." ||
 				len(msg.ToolCalls) != 1 ||
 				toolName != "read_file" {
-				t.Fatalf("assistant jsonl record = %+v, want content+reasoning+tool_calls in one line", msg)
+				t.Fatalf(
+					"assistant jsonl record = %+v, want content+reasoning+tool_calls in one line",
+					msg,
+				)
 			}
 		}
 	}
 	if matchingRecords != 1 {
-		t.Fatalf("matching assistant jsonl records = %d, want exactly 1 canonical assistant record", matchingRecords)
+		t.Fatalf(
+			"matching assistant jsonl records = %d, want exactly 1 canonical assistant record",
+			matchingRecords,
+		)
 	}
 }
 
@@ -7095,10 +7518,16 @@ func TestProcessMessage_DoesNotLeakReasoningContentInToolFeedback(t *testing.T) 
 			t.Fatalf("tool feedback content = %q, want read_file summary", outbound.Content)
 		}
 		if !strings.Contains(outbound.Content, utils.ToolFeedbackContinuationHint) {
-			t.Fatalf("tool feedback content = %q, want continuation hint fallback", outbound.Content)
+			t.Fatalf(
+				"tool feedback content = %q, want continuation hint fallback",
+				outbound.Content,
+			)
 		}
 		if !strings.Contains(outbound.Content, "check reasoning fallback") {
-			t.Fatalf("tool feedback content = %q, want current user intent fallback", outbound.Content)
+			t.Fatalf(
+				"tool feedback content = %q, want current user intent fallback",
+				outbound.Content,
+			)
 		}
 		if !strings.Contains(outbound.Content, "\"path\":") {
 			t.Fatalf("tool feedback content = %q, want serialized tool arguments", outbound.Content)
@@ -7107,7 +7536,10 @@ func TestProcessMessage_DoesNotLeakReasoningContentInToolFeedback(t *testing.T) 
 			t.Fatalf("tool feedback content = %q, want tool argument value", outbound.Content)
 		}
 		if strings.Contains(outbound.Content, "Read README.md first") {
-			t.Fatalf("tool feedback content = %q, should not leak hidden reasoning", outbound.Content)
+			t.Fatalf(
+				"tool feedback content = %q, should not leak hidden reasoning",
+				outbound.Content,
+			)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected outbound tool feedback without leaking reasoning")
@@ -7162,7 +7594,11 @@ func assertToolFeedbackNotPublishedWhenDisabled(t *testing.T, channel string) {
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
-		t.Fatalf("expected no outbound tool feedback for %s when disabled, got %+v", channel, outbound)
+		t.Fatalf(
+			"expected no outbound tool feedback for %s when disabled, got %+v",
+			channel,
+			outbound,
+		)
 	case <-time.After(200 * time.Millisecond):
 	}
 }
@@ -7271,7 +7707,10 @@ func TestRunAgentLoop_FinalResponseAfterMessageToolUsesNewReply(t *testing.T) {
 		t.Fatalf("first outbound content = %q, want direct tool message", outbounds[0].Content)
 	}
 	if outbounds[1].Content != "final answer after message tool" {
-		t.Fatalf("second outbound content = %q, want final answer after message tool", outbounds[1].Content)
+		t.Fatalf(
+			"second outbound content = %q, want final answer after message tool",
+			outbounds[1].Content,
+		)
 	}
 	if got := strings.TrimSpace(outbounds[1].Context.Raw[metadataKeyMessageKind]); got != messageKindFinalReply {
 		t.Fatalf("final response message kind = %q, want %q", got, messageKindFinalReply)
@@ -7546,13 +7985,20 @@ func TestRun_PicoPublishesAssistantContentDuringToolCallsWithoutFinalDuplicate(t
 	}
 
 	if outputs[0].Content != "intermediate model text" {
-		t.Fatalf("first outbound content = %q, want %q", outputs[0].Content, "intermediate model text")
+		t.Fatalf(
+			"first outbound content = %q, want %q",
+			outputs[0].Content,
+			"intermediate model text",
+		)
 	}
 	if outputs[1].Context.Raw[metadataKeyMessageKind] != messageKindToolCalls {
 		t.Fatalf("second outbound = %+v, want tool_calls message", outputs[1])
 	}
 	if !strings.Contains(outputs[1].Context.Raw[metadataKeyToolCalls], "tool_limit_test_tool") {
-		t.Fatalf("second outbound tool_calls = %q, want tool name", outputs[1].Context.Raw[metadataKeyToolCalls])
+		t.Fatalf(
+			"second outbound tool_calls = %q, want tool name",
+			outputs[1].Context.Raw[metadataKeyToolCalls],
+		)
 	}
 	if outputs[2].Content != "final model text" {
 		t.Fatalf("third outbound content = %q, want %q", outputs[2].Content, "final model text")
@@ -7688,7 +8134,10 @@ func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testi
 		t.Fatalf("first outbound content = %q, want empty tool_calls content", outputs[0].Content)
 	}
 	if !strings.Contains(outputs[0].Context.Raw[metadataKeyToolCalls], "tool_limit_test_tool") {
-		t.Fatalf("first outbound tool_calls = %q, want tool name", outputs[0].Context.Raw[metadataKeyToolCalls])
+		t.Fatalf(
+			"first outbound tool_calls = %q, want tool name",
+			outputs[0].Context.Raw[metadataKeyToolCalls],
+		)
 	}
 	if outputs[1].Content != "final model text" {
 		t.Fatalf("second outbound content = %q, want %q", outputs[1].Content, "final model text")
@@ -7837,7 +8286,8 @@ func TestResolveMediaRefs_MultiToolCallPreservesOrdering(t *testing.T) {
 	if result[3].Role != "user" {
 		t.Fatalf("result[3] expected user, got %q", result[3].Role)
 	}
-	if len(result[3].Media) != 1 || !strings.HasPrefix(result[3].Media[0], "data:image/png;base64,") {
+	if len(result[3].Media) != 1 ||
+		!strings.HasPrefix(result[3].Media[0], "data:image/png;base64,") {
 		t.Fatal("expected synthetic user message to contain base64 image")
 	}
 }
@@ -8387,8 +8837,14 @@ func TestProcessMessage_ContextOverflowRecovery(t *testing.T) {
 	agent := al.GetRegistry().GetDefaultAgent()
 
 	for i := 0; i < 5; i++ {
-		agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "heavy message"})
-		agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "response"})
+		agent.Sessions.AddFullMessage(
+			sessionKey,
+			providers.Message{Role: "user", Content: "heavy message"},
+		)
+		agent.Sessions.AddFullMessage(
+			sessionKey,
+			providers.Message{Role: "assistant", Content: "response"},
+		)
 	}
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{

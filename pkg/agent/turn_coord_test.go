@@ -716,7 +716,10 @@ func TestMaybeBuildVisionExecutionState_UsesRoutedLightModelOverride(t *testing.
 	if got := route; got != visionRouteModelOverride {
 		t.Fatalf("vision route = %q, want %q", got, visionRouteModelOverride)
 	}
-	if got := resolvedCandidateModelName(visionExecution.Candidates, visionExecution.Model); got != "openai/gpt-4.1-mini" {
+	if got := resolvedCandidateModelName(
+		visionExecution.Candidates,
+		visionExecution.Model,
+	); got != "openai/gpt-4.1-mini" {
 		t.Fatalf("vision model = %q, want %q", got, "openai/gpt-4.1-mini")
 	}
 }

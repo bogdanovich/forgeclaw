@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -184,6 +185,137 @@ func TestSteeringQueue_Overflow(t *testing.T) {
 	expectedErr := "steering queue is full"
 	if err.Error() != expectedErr {
 		t.Errorf("expected error message %q, got %q", expectedErr, err.Error())
+	}
+}
+
+func TestSteeringQueue_DequeueForTurnPrefersCurrentSenderAndKeepsOthersQueued(t *testing.T) {
+	sq := newSteeringQueue(SteeringOneAtATime)
+
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "b1"},
+		"user-b",
+	); err != nil {
+		t.Fatalf("push b1: %v", err)
+	}
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "a1"},
+		"user-a",
+	); err != nil {
+		t.Fatalf("push a1: %v", err)
+	}
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "a2"},
+		"user-a",
+	); err != nil {
+		t.Fatalf("push a2: %v", err)
+	}
+
+	msgs := sq.dequeueScopeForTurn("session-1", "user-a")
+	if len(msgs) != 2 {
+		t.Fatalf("dequeued messages = %d, want 2", len(msgs))
+	}
+	if msgs[0].Content != "a1" || msgs[1].Content != "a2" {
+		t.Fatalf("dequeued contents = [%q, %q], want [a1 a2]", msgs[0].Content, msgs[1].Content)
+	}
+
+	remaining := sq.dequeueScope("session-1")
+	if len(remaining) != 1 || remaining[0].Content != "b1" {
+		t.Fatalf("remaining queue = %#v, want only b1", remaining)
+	}
+}
+
+func TestSteeringQueue_DequeueContinuationBatchesOldestDeferredSender(t *testing.T) {
+	sq := newSteeringQueue(SteeringOneAtATime)
+
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "b1"},
+		"user-b",
+	); err != nil {
+		t.Fatalf("push b1: %v", err)
+	}
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "c1"},
+		"user-c",
+	); err != nil {
+		t.Fatalf("push c1: %v", err)
+	}
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "b2"},
+		"user-b",
+	); err != nil {
+		t.Fatalf("push b2: %v", err)
+	}
+
+	msgs := sq.dequeueScopeForContinuation("session-1")
+	if len(msgs) != 2 {
+		t.Fatalf("dequeued messages = %d, want 2", len(msgs))
+	}
+	if msgs[0].Content != "b1" || msgs[1].Content != "b2" {
+		t.Fatalf("dequeued contents = [%q, %q], want [b1 b2]", msgs[0].Content, msgs[1].Content)
+	}
+
+	remaining := sq.dequeueScope("session-1")
+	if len(remaining) != 1 || remaining[0].Content != "c1" {
+		t.Fatalf("remaining queue = %#v, want only c1", remaining)
+	}
+}
+
+func TestSteeringQueue_DequeueContinuationWithSenderlessHeadBatchesOldestSenderCohort(
+	t *testing.T,
+) {
+	sq := newSteeringQueue(SteeringOneAtATime)
+
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "legacy"},
+		"",
+	); err != nil {
+		t.Fatalf("push legacy: %v", err)
+	}
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "b1"},
+		"user-b",
+	); err != nil {
+		t.Fatalf("push b1: %v", err)
+	}
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "c1"},
+		"user-c",
+	); err != nil {
+		t.Fatalf("push c1: %v", err)
+	}
+	if err := sq.pushScopeWithSender(
+		"session-1",
+		providers.Message{Role: "user", Content: "b2"},
+		"user-b",
+	); err != nil {
+		t.Fatalf("push b2: %v", err)
+	}
+
+	msgs := sq.dequeueScopeForContinuation("session-1")
+	if len(msgs) != 3 {
+		t.Fatalf("dequeued messages = %d, want 3", len(msgs))
+	}
+	if msgs[0].Content != "legacy" || msgs[1].Content != "b1" || msgs[2].Content != "b2" {
+		t.Fatalf(
+			"dequeued contents = [%q, %q, %q], want [legacy b1 b2]",
+			msgs[0].Content,
+			msgs[1].Content,
+			msgs[2].Content,
+		)
+	}
+
+	remaining := sq.dequeueScope("session-1")
+	if len(remaining) != 1 || remaining[0].Content != "c1" {
+		t.Fatalf("remaining queue = %#v, want only c1", remaining)
 	}
 }
 
@@ -528,13 +660,86 @@ func (p *lateSteeringProvider) GetDefaultModel() string {
 	return "late-steering-mock"
 }
 
+type stagedContinuationProvider struct {
+	mu                sync.Mutex
+	calls             int
+	firstCallStarted  chan struct{}
+	releaseFirstCall  chan struct{}
+	secondCallStarted chan struct{}
+	releaseSecondCall chan struct{}
+	secondMessages    []providers.Message
+	thirdMessages     []providers.Message
+}
+
+func (p *stagedContinuationProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	firstStarted := p.firstCallStarted
+	releaseFirst := p.releaseFirstCall
+	secondStarted := p.secondCallStarted
+	releaseSecond := p.releaseSecondCall
+	if call == 2 {
+		p.secondMessages = append([]providers.Message(nil), messages...)
+	}
+	if call == 3 {
+		p.thirdMessages = append([]providers.Message(nil), messages...)
+	}
+	p.mu.Unlock()
+
+	switch call {
+	case 1:
+		if firstStarted != nil {
+			close(firstStarted)
+		}
+		<-releaseFirst
+		return &providers.LLMResponse{Content: "first response"}, nil
+	case 2:
+		if secondStarted != nil {
+			close(secondStarted)
+		}
+		<-releaseSecond
+		return &providers.LLMResponse{Content: "response for B"}, nil
+	default:
+		return &providers.LLMResponse{Content: "response for C"}, nil
+	}
+}
+
+func (p *stagedContinuationProvider) GetDefaultModel() string {
+	return "staged-continuation-mock"
+}
+
+type saveFailOnNthSessionStore struct {
+	session.SessionStore
+	failAt int
+	calls  int
+	err    error
+}
+
+func (s *saveFailOnNthSessionStore) Save(sessionKey string) error {
+	s.calls++
+	if s.failAt > 0 && s.calls == s.failAt {
+		return s.err
+	}
+	return s.SessionStore.Save(sessionKey)
+}
+
 type fixedTranscriber struct {
 	text string
 }
 
 func (f *fixedTranscriber) Name() string { return "fixed" }
 
-func (f *fixedTranscriber) Transcribe(ctx context.Context, audioFilePath string) (*asr.TranscriptionResponse, error) {
+func (f *fixedTranscriber) Transcribe(
+	ctx context.Context,
+	audioFilePath string,
+) (*asr.TranscriptionResponse, error) {
 	return &asr.TranscriptionResponse{Text: f.text}, nil
 }
 
@@ -876,7 +1081,10 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	defer cancelNoExtra()
 	select {
 	case out2 := <-msgBus.OutboundChan():
-		t.Fatalf("expected stale direct response to be suppressed, got extra outbound %q", out2.Content)
+		t.Fatalf(
+			"expected stale direct response to be suppressed, got extra outbound %q",
+			out2.Content,
+		)
 	case <-noExtraCtx.Done():
 	}
 
@@ -912,6 +1120,437 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	waitForSpoolEntries(t, spoolDir, "*.processing", 0)
 }
 
+func TestAgentLoop_Run_BatchesDeferredMessagesBySenderIntoOneContinuationTurn(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	spoolDir := filepath.Join(tmpDir, "state", "ingress-spool", "inbound")
+	spool, err := bus.NewInboundSpool(spoolDir)
+	if err != nil {
+		t.Fatalf("NewInboundSpool failed: %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+	provider := &lateSteeringProvider{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- al.Run(runCtx)
+	}()
+
+	first := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-a",
+		},
+		Content: "message from A",
+	}
+	b1 := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-b",
+		},
+		Content: "message B1",
+	}
+	b2 := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-b",
+		},
+		Content: "message B2",
+	}
+
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pubCancel()
+	if err := msgBus.PublishInbound(pubCtx, first); err != nil {
+		t.Fatalf("publish first inbound: %v", err)
+	}
+
+	select {
+	case <-provider.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first provider call to start")
+	}
+
+	if err := msgBus.PublishInbound(pubCtx, b1); err != nil {
+		t.Fatalf("publish b1 inbound: %v", err)
+	}
+	if err := msgBus.PublishInbound(pubCtx, b2); err != nil {
+		t.Fatalf("publish b2 inbound: %v", err)
+	}
+	waitForSpoolEntries(t, spoolDir, "*.processing", 3)
+
+	close(provider.releaseFirstCall)
+
+	subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer subCancel()
+
+	select {
+	case <-msgBus.OutboundChan():
+	case <-subCtx.Done():
+		t.Fatal("expected outbound response")
+	}
+
+	cancelRun()
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for Run to stop")
+	}
+
+	provider.mu.Lock()
+	calls := provider.calls
+	secondMessages := append([]providers.Message(nil), provider.secondCallMessages...)
+	provider.mu.Unlock()
+
+	if calls != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", calls)
+	}
+
+	foundB1 := false
+	foundB2 := false
+	for _, msg := range secondMessages {
+		if msg.Role != "user" {
+			continue
+		}
+		switch msg.Content {
+		case "message B1":
+			foundB1 = true
+		case "message B2":
+			foundB2 = true
+		}
+	}
+	if !foundB1 || !foundB2 {
+		t.Fatalf(
+			"expected grouped continuation to contain both B messages, got %#v",
+			secondMessages,
+		)
+	}
+	waitForSpoolEntries(t, spoolDir, "*.processing", 0)
+}
+
+func TestAgentLoop_Run_ContinuationPreservesSenderAffinityAcrossDeferredTurns(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	spoolDir := filepath.Join(tmpDir, "state", "ingress-spool", "inbound")
+	spool, err := bus.NewInboundSpool(spoolDir)
+	if err != nil {
+		t.Fatalf("NewInboundSpool failed: %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+
+	provider := &stagedContinuationProvider{
+		firstCallStarted:  make(chan struct{}),
+		releaseFirstCall:  make(chan struct{}),
+		secondCallStarted: make(chan struct{}),
+		releaseSecondCall: make(chan struct{}),
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- al.Run(runCtx)
+	}()
+
+	msgA := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-a",
+		},
+		Content: "message from A",
+	}
+	msgB1 := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-b",
+		},
+		Content: "message B1",
+	}
+	msgB2 := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-b",
+		},
+		Content: "message B2",
+	}
+	msgC := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-c",
+		},
+		Content: "message C1",
+	}
+
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pubCancel()
+	if err := msgBus.PublishInbound(pubCtx, msgA); err != nil {
+		t.Fatalf("publish A inbound: %v", err)
+	}
+
+	select {
+	case <-provider.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first provider call to start")
+	}
+
+	if err := msgBus.PublishInbound(pubCtx, msgB1); err != nil {
+		t.Fatalf("publish B1 inbound: %v", err)
+	}
+	if err := msgBus.PublishInbound(pubCtx, msgB2); err != nil {
+		t.Fatalf("publish B2 inbound: %v", err)
+	}
+
+	close(provider.releaseFirstCall)
+
+	select {
+	case <-provider.secondCallStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for continuation turn for sender B")
+	}
+
+	if err := msgBus.PublishInbound(pubCtx, msgC); err != nil {
+		t.Fatalf("publish C inbound: %v", err)
+	}
+
+	close(provider.releaseSecondCall)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		provider.mu.Lock()
+		calls := provider.calls
+		provider.mu.Unlock()
+		if calls >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for chained continuation turns to finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelRun()
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for Run to stop")
+	}
+
+	provider.mu.Lock()
+	calls := provider.calls
+	secondMessages := append([]providers.Message(nil), provider.secondMessages...)
+	thirdMessages := append([]providers.Message(nil), provider.thirdMessages...)
+	provider.mu.Unlock()
+
+	if calls != 3 {
+		t.Fatalf("expected 3 provider calls, got %d", calls)
+	}
+
+	secondHasB1 := false
+	secondHasB2 := false
+	secondHasC1 := false
+	for _, msg := range secondMessages {
+		if msg.Role != "user" {
+			continue
+		}
+		switch msg.Content {
+		case "message B1":
+			secondHasB1 = true
+		case "message B2":
+			secondHasB2 = true
+		case "message C1":
+			secondHasC1 = true
+		}
+	}
+	if !secondHasB1 || !secondHasB2 {
+		t.Fatalf("expected B continuation to contain both B messages, got %#v", secondMessages)
+	}
+	if secondHasC1 {
+		t.Fatalf("expected B continuation to exclude C message, got %#v", secondMessages)
+	}
+
+	thirdHasC1 := false
+	for _, msg := range thirdMessages {
+		if msg.Role == "user" && msg.Content == "message C1" {
+			thirdHasC1 = true
+			break
+		}
+	}
+	if !thirdHasC1 {
+		t.Fatalf("expected third continuation to contain C message, got %#v", thirdMessages)
+	}
+	waitForSpoolEntries(t, spoolDir, "*.processing", 0)
+}
+
+func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	spoolDir := filepath.Join(tmpDir, "state", "ingress-spool", "inbound")
+	spool, err := bus.NewInboundSpool(spoolDir)
+	if err != nil {
+		t.Fatalf("NewInboundSpool failed: %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+
+	provider := &lateSteeringProvider{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	agent.Sessions = &saveFailOnNthSessionStore{
+		SessionStore: session.NewSessionManager(""),
+		failAt:       2,
+		err:          errors.New("session save failed on continuation"),
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- al.Run(runCtx)
+	}()
+
+	first := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-a",
+		},
+		Content: "message from A",
+	}
+	late := bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "group",
+			SenderID: "user-b",
+		},
+		Content: "late append",
+	}
+
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pubCancel()
+	if err := msgBus.PublishInbound(pubCtx, first); err != nil {
+		t.Fatalf("publish first inbound: %v", err)
+	}
+
+	select {
+	case <-provider.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first provider call to start")
+	}
+
+	if err := msgBus.PublishInbound(pubCtx, late); err != nil {
+		t.Fatalf("publish late inbound: %v", err)
+	}
+	waitForSpoolEntries(t, spoolDir, "*.processing", 2)
+
+	close(provider.releaseFirstCall)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		processing, procErr := filepath.Glob(filepath.Join(spoolDir, "*.processing"))
+		if procErr != nil {
+			t.Fatalf("glob processing entries: %v", procErr)
+		}
+		pending, pendErr := filepath.Glob(filepath.Join(spoolDir, "*.json"))
+		if pendErr != nil {
+			t.Fatalf("glob pending entries: %v", pendErr)
+		}
+		if len(processing) == 0 && len(pending) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"expected released steering spool entry after save failure, processing=%v pending=%v",
+				processing,
+				pending,
+			)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelRun()
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for Run to stop")
+	}
+}
+
 func waitForSpoolEntries(t *testing.T, dir, pattern string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -924,7 +1563,13 @@ func waitForSpoolEntries(t *testing.T, dir, pattern string, want int) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("spool entries matching %q = %d, want %d (%v)", pattern, len(matches), want, matches)
+			t.Fatalf(
+				"spool entries matching %q = %d, want %d (%v)",
+				pattern,
+				len(matches),
+				want,
+				matches,
+			)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1036,13 +1681,17 @@ func TestAgentLoop_Run_QueuedVoiceMessageIsTranscribedBeforeSteering(t *testing.
 
 	foundTranscribedVoice := false
 	for _, msg := range secondMessages {
-		if msg.Role == "user" && strings.Contains(msg.Content, "[voice: and also two pieces of bread]") {
+		if msg.Role == "user" &&
+			strings.Contains(msg.Content, "[voice: and also two pieces of bread]") {
 			foundTranscribedVoice = true
 			break
 		}
 	}
 	if !foundTranscribedVoice {
-		t.Fatalf("expected queued voice message to be transcribed before steering injection, got %#v", secondMessages)
+		t.Fatalf(
+			"expected queued voice message to be transcribed before steering injection, got %#v",
+			secondMessages,
+		)
 	}
 }
 
@@ -1153,7 +1802,8 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 	for !stopSeen {
 		select {
 		case outbound := <-msgBus.OutboundChan():
-			if outbound.ChatID == "target-chat" && outbound.Content == "Task stopped. Current task was canceled." {
+			if outbound.ChatID == "target-chat" &&
+				outbound.Content == "Task stopped. Current task was canceled." {
 				stopSeen = true
 			}
 		case <-time.After(10 * time.Millisecond):
@@ -1400,7 +2050,11 @@ func TestAgentLoop_Continue_PreservesSteeringMedia(t *testing.T) {
 	if err = os.WriteFile(pngPath, pngHeader, 0o644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	ref, err := store.Store(pngPath, media.MediaMeta{Filename: "steer.png", ContentType: "image/png"}, "test")
+	ref, err := store.Store(
+		pngPath,
+		media.MediaMeta{Filename: "steer.png", ContentType: "image/png"},
+		"test",
+	)
 	if err != nil {
 		t.Fatalf("Store failed: %v", err)
 	}
@@ -1598,7 +2252,10 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 		t.Fatalf("expected 2 provider calls, got %d", calls)
 	}
 	if terminalToolsCount != 0 {
-		t.Fatalf("expected graceful terminal call to disable tools, got %d tool defs", terminalToolsCount)
+		t.Fatalf(
+			"expected graceful terminal call to disable tools, got %d tool defs",
+			terminalToolsCount,
+		)
 	}
 
 	foundHint := false
@@ -1609,7 +2266,8 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 		if msg.Role == "user" && msg.Content == expectedHint {
 			foundHint = true
 		}
-		if msg.Role == "tool" && msg.ToolCallID == "call_2" && msg.Content == "Skipped due to graceful interrupt." {
+		if msg.Role == "tool" && msg.ToolCallID == "call_2" &&
+			msg.Content == "Skipped due to graceful interrupt." {
 			foundSkipped = true
 		}
 	}
@@ -2052,7 +2710,8 @@ func TestAgentLoop_Steering_SkippedToolsHaveErrorResults(t *testing.T) {
 
 	foundSkipped := false
 	for _, m := range msgs {
-		if m.Role == "tool" && m.ToolCallID == "call_2" && m.Content == "Skipped due to queued user message." {
+		if m.Role == "tool" && m.ToolCallID == "call_2" &&
+			m.Content == "Skipped due to queued user message." {
 			foundSkipped = true
 			break
 		}
@@ -2060,7 +2719,13 @@ func TestAgentLoop_Steering_SkippedToolsHaveErrorResults(t *testing.T) {
 	if !foundSkipped {
 		// Log what we actually got
 		for i, m := range msgs {
-			t.Logf("msg[%d]: role=%s toolCallID=%s content=%s", i, m.Role, m.ToolCallID, truncate(m.Content, 80))
+			t.Logf(
+				"msg[%d]: role=%s toolCallID=%s content=%s",
+				i,
+				m.Role,
+				m.ToolCallID,
+				truncate(m.Content, 80),
+			)
 		}
 		t.Fatal("expected skipped tool result for call_2")
 	}
