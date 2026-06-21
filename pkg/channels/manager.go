@@ -38,9 +38,10 @@ const (
 	baseBackoff             = 500 * time.Millisecond
 	maxBackoff              = 8 * time.Second
 
-	janitorInterval = 10 * time.Second
-	typingStopTTL   = 5 * time.Minute
-	placeholderTTL  = 10 * time.Minute
+	janitorInterval           = 10 * time.Second
+	typingStopTTL             = 5 * time.Minute
+	placeholderTTL            = 10 * time.Minute
+	channelStartRetryInterval = 30 * time.Second
 
 	streamAuxiliaryTombstoneTTL = 30 * time.Second
 )
@@ -101,6 +102,7 @@ type Manager struct {
 	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
 	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
 	channelHashes             map[string]string // channel name → config hash
+	startRetryInterval        time.Duration
 }
 
 type mediaStoreSetter interface {
@@ -697,12 +699,13 @@ func NewManager(
 	opts ...ManagerOption,
 ) (*Manager, error) {
 	m := &Manager{
-		channels:      make(map[string]Channel),
-		workers:       make(map[string]*channelWorker),
-		bus:           messageBus,
-		config:        cfg,
-		mediaStore:    store,
-		channelHashes: make(map[string]string),
+		channels:           make(map[string]Channel),
+		workers:            make(map[string]*channelWorker),
+		bus:                messageBus,
+		config:             cfg,
+		mediaStore:         store,
+		channelHashes:      make(map[string]string),
+		startRetryInterval: channelStartRetryInterval,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -1421,6 +1424,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 
 	// Start the TTL janitor that cleans up stale typing/placeholder entries
 	go m.runTTLJanitor(dispatchCtx)
+	go m.retryMissingChannels(dispatchCtx)
 
 	// Start shared HTTP server if configured
 	if m.httpServer != nil {
@@ -1459,6 +1463,79 @@ func (m *Manager) StartAll(ctx context.Context) error {
 		"total":   len(m.channels),
 	})
 	return nil
+}
+
+func (m *Manager) retryMissingChannels(ctx context.Context) {
+	interval := m.startRetryInterval
+	if interval <= 0 {
+		interval = channelStartRetryInterval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.retryMissingChannelsOnce(ctx)
+		}
+	}
+}
+
+func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.channels) == 0 {
+		return
+	}
+
+	for name, channel := range m.channels {
+		if _, ok := m.workers[name]; ok {
+			continue
+		}
+
+		logger.WarnCF("channels", "Retrying channel start", map[string]any{
+			"channel": name,
+		})
+		if err := channel.Start(ctx); err != nil {
+			logger.ErrorCF("channels", "Channel start retry failed", map[string]any{
+				"channel": name,
+				"error":   err.Error(),
+			})
+			m.publishChannelEvent(
+				runtimeevents.KindChannelLifecycleStartFailed,
+				name,
+				runtimeevents.Scope{Channel: name},
+				runtimeevents.SeverityWarn,
+				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
+			)
+			continue
+		}
+
+		channelType := name
+		if m.config != nil {
+			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
+				channelType = bc.Type
+			}
+		}
+		w := newChannelWorker(name, channel, channelType)
+		m.workers[name] = w
+		go m.runWorker(ctx, name, w)
+		go m.runMediaWorker(ctx, name, w)
+		m.publishChannelEvent(
+			runtimeevents.KindChannelLifecycleStarted,
+			name,
+			runtimeevents.Scope{Channel: name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: channelType},
+		)
+		logger.InfoCF("channels", "Channel started after retry", map[string]any{
+			"channel": name,
+		})
+	}
 }
 
 func (m *Manager) StopAll(ctx context.Context) error {

@@ -213,9 +213,10 @@ func (m *mockStreamingChannel) ResolveOutboundChatID(
 // newTestManager creates a minimal Manager suitable for unit tests.
 func newTestManager() *Manager {
 	return &Manager{
-		channels: make(map[string]Channel),
-		workers:  make(map[string]*channelWorker),
-		bus:      bus.NewMessageBus(),
+		channels:           make(map[string]Channel),
+		workers:            make(map[string]*channelWorker),
+		bus:                bus.NewMessageBus(),
+		startRetryInterval: 10 * time.Millisecond,
 	}
 }
 
@@ -331,6 +332,42 @@ func TestStartAll_PartialFailure_StartsSuccessfulWorkers(t *testing.T) {
 	if err := m.StopAll(stopCtx); err != nil {
 		t.Fatalf("StopAll() error = %v", err)
 	}
+}
+
+func TestStartAll_RetriesFailedChannelStarts(t *testing.T) {
+	m := newTestManager()
+	var attempts int
+
+	m.channels["good"] = &mockChannel{}
+	m.channels["flaky"] = &mockChannel{
+		startFn: func(_ context.Context) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("temporary startup failure")
+			}
+			return nil
+		},
+	}
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	if _, ok := m.workers["flaky"]; ok {
+		t.Fatal("expected flaky channel to be absent immediately after initial failed start")
+	}
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		_, ok := m.workers["flaky"]
+		m.mu.RUnlock()
+		if ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("expected flaky channel worker to be started by retry loop")
 }
 
 func TestStartAllPublishesLifecycleRuntimeEvents(t *testing.T) {
