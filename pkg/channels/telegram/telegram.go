@@ -56,6 +56,9 @@ type TelegramChannel struct {
 	bc        *config.Channel
 	chatIDsMu sync.Mutex
 	chatIDs   map[string]int64
+	selfMu    sync.RWMutex
+	selfID    int64
+	selfName  string
 	ctx       context.Context
 	cancel    context.CancelFunc
 	tgCfg     *config.TelegramSettings
@@ -182,6 +185,7 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 	logger.InfoC("telegram", "Starting Telegram bot (polling mode)...")
 
 	c.ctx, c.cancel = context.WithCancel(ctx)
+	c.refreshOwnBotIdentity(c.ctx)
 
 	updates, err := c.bot.UpdatesViaLongPolling(c.ctx, &telego.GetUpdatesParams{
 		Timeout: 30,
@@ -204,7 +208,7 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 
 	c.SetRunning(true)
 	logger.InfoCF("telegram", "Telegram bot connected", map[string]any{
-		"username": c.bot.Username(),
+		"username": c.ownBotUsername(),
 	})
 
 	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
@@ -1466,19 +1470,62 @@ func (c *TelegramChannel) telegramQuotedRole(message *telego.Message) string {
 }
 
 func (c *TelegramChannel) isOwnBotUser(user *telego.User) bool {
-	if c == nil || c.bot == nil || user == nil || !user.IsBot {
+	if c == nil || user == nil || !user.IsBot {
 		return false
 	}
 
-	if botID := c.bot.ID(); botID != 0 && user.ID == botID {
+	botID, botUsername := c.ownBotIdentity()
+	if botID != 0 && user.ID == botID {
 		return true
 	}
-
-	botUsername := strings.TrimPrefix(strings.TrimSpace(c.bot.Username()), "@")
 	if botUsername == "" {
 		return false
 	}
 	return strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(user.Username), "@"), botUsername)
+}
+
+func (c *TelegramChannel) ownBotIdentity() (int64, string) {
+	if c == nil {
+		return 0, ""
+	}
+
+	c.selfMu.RLock()
+	botID := c.selfID
+	botUsername := c.selfName
+	c.selfMu.RUnlock()
+	if botID != 0 || botUsername != "" {
+		return botID, botUsername
+	}
+
+	c.refreshOwnBotIdentity(context.Background())
+
+	c.selfMu.RLock()
+	defer c.selfMu.RUnlock()
+	return c.selfID, c.selfName
+}
+
+func (c *TelegramChannel) ownBotUsername() string {
+	_, username := c.ownBotIdentity()
+	return username
+}
+
+func (c *TelegramChannel) refreshOwnBotIdentity(ctx context.Context) {
+	if c == nil || c.bot == nil {
+		return
+	}
+
+	me, err := c.bot.GetMe(ctx)
+	if err != nil {
+		logger.DebugCF("telegram", "Telegram bot self lookup failed", map[string]any{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.selfMu.Lock()
+	c.selfID = me.ID
+	c.selfName = strings.TrimPrefix(strings.TrimSpace(me.Username), "@")
+	c.selfMu.Unlock()
 }
 
 func telegramQuotedAuthor(message *telego.Message) string {
@@ -1737,10 +1784,7 @@ func (c *TelegramChannel) isBotMentioned(message *telego.Message) bool {
 		return false
 	}
 
-	botUsername := ""
-	if c.bot != nil {
-		botUsername = c.bot.Username()
-	}
+	botUsername := c.ownBotUsername()
 	runes := []rune(text)
 
 	for _, entity := range entities {
@@ -1773,10 +1817,7 @@ func (c *TelegramChannel) hasNonBotMention(message *telego.Message) bool {
 		return false
 	}
 
-	botUsername := ""
-	if c.bot != nil {
-		botUsername = c.bot.Username()
-	}
+	botUsername := c.ownBotUsername()
 	runes := []rune(text)
 
 	for _, entity := range entities {
@@ -1882,7 +1923,7 @@ func isBotCommandEntityForThisBot(entityText, botUsername string) bool {
 
 // stripBotMention removes the @bot mention from the content.
 func (c *TelegramChannel) stripBotMention(content string) string {
-	botUsername := c.bot.Username()
+	botUsername := c.ownBotUsername()
 	if botUsername == "" {
 		return content
 	}

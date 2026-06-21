@@ -2,8 +2,10 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,12 +29,50 @@ func (c getMeCaller) Call(_ context.Context, url string, _ *ta.RequestData) (*ta
 	return &ta.Response{Ok: true, Result: []byte("true")}, nil
 }
 
+type flakyGetMeCaller struct {
+	mu       sync.Mutex
+	calls    int
+	username string
+	firstErr error
+	botID    int64
+}
+
+func (c *flakyGetMeCaller) Call(_ context.Context, url string, _ *ta.RequestData) (*ta.Response, error) {
+	if !strings.HasSuffix(url, "/getMe") {
+		return &ta.Response{Ok: true, Result: []byte("true")}, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls == 1 && c.firstErr != nil {
+		return nil, c.firstErr
+	}
+
+	result := fmt.Sprintf(`{"id":%d,"is_bot":true,"first_name":"bot","username":%q}`, c.botID, c.username)
+	return &ta.Response{Ok: true, Result: []byte(result)}, nil
+}
+
 func newTestTelegramBot(t *testing.T, username string) *telego.Bot {
 	t.Helper()
 
 	token := "123456:" + strings.Repeat("a", 35)
 	bot, err := telego.NewBot(token,
 		telego.WithAPICaller(getMeCaller{username: username}),
+		telego.WithDiscardLogger(),
+	)
+	if err != nil {
+		t.Fatalf("NewBot error: %v", err)
+	}
+	return bot
+}
+
+func newFlakyTestTelegramBot(t *testing.T, caller *flakyGetMeCaller) *telego.Bot {
+	t.Helper()
+
+	token := "123456:" + strings.Repeat("a", 35)
+	bot, err := telego.NewBot(token,
+		telego.WithAPICaller(caller),
 		telego.WithDiscardLogger(),
 	)
 	if err != nil {
@@ -145,6 +185,74 @@ func TestIsBotMentioned_MentionEntityUnaffected(t *testing.T) {
 
 	if !ch.isBotMentioned(msg) {
 		t.Fatal("expected mention entity to be treated as bot mention")
+	}
+}
+
+func TestIsBotMentioned_RecoversFromPoisonedTelegoCache(t *testing.T) {
+	caller := &flakyGetMeCaller{
+		username: "FamilyJournalBot",
+		firstErr: errors.New("temporary getMe failure"),
+		botID:    8642110061,
+	}
+	bot := newFlakyTestTelegramBot(t, caller)
+
+	if got := bot.Username(); got != "" {
+		t.Fatalf("Username()=%q want empty after first getMe failure", got)
+	}
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, bus.NewMessageBus(), nil),
+		bot:         bot,
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text: "@FamilyJournalBot ответь",
+		Entities: []telego.MessageEntity{{
+			Type:   telego.EntityTypeMention,
+			Offset: 0,
+			Length: len("@FamilyJournalBot"),
+		}},
+	}
+
+	if !ch.isBotMentioned(msg) {
+		t.Fatal("expected bot mention to recover via direct getMe lookup")
+	}
+}
+
+func TestIsReplyToNonBotMessage_TreatsOwnBotReplyAsBotAfterRecovery(t *testing.T) {
+	caller := &flakyGetMeCaller{
+		username: "FamilyJournalBot",
+		firstErr: errors.New("temporary getMe failure"),
+		botID:    8642110061,
+	}
+	bot := newFlakyTestTelegramBot(t, caller)
+
+	if got := bot.Username(); got != "" {
+		t.Fatalf("Username()=%q want empty after first getMe failure", got)
+	}
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, bus.NewMessageBus(), nil),
+		bot:         bot,
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		ReplyToMessage: &telego.Message{
+			From: &telego.User{
+				ID:        8642110061,
+				IsBot:     true,
+				Username:  "FamilyJournalBot",
+				FirstName: "Family",
+			},
+		},
+	}
+
+	if ch.isReplyToNonBotMessage(msg) {
+		t.Fatal("expected reply to own bot message not to be treated as non-bot reply")
 	}
 }
 
