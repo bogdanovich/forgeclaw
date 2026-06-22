@@ -230,7 +230,7 @@ func storeInlineDataURL(
 	}
 	tmpPath := tmpFile.Name()
 	if _, err = tmpFile.Write(decoded); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
 		return "", fmt.Sprintf("[Tool returned inline media content (%s) but it could not be stored.]", mimeType)
 	}

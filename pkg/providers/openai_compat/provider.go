@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"maps"
 	"net/http"
 	"net/url"
@@ -54,6 +53,7 @@ const (
 
 var stripModelPrefixProviders = map[string]struct{}{
 	"litellm":     {},
+	"nearai":      {},
 	"venice":      {},
 	"moonshot":    {},
 	"nvidia":      {},
@@ -769,7 +769,10 @@ func parseStreamResponse(
 		raw := acc.argsJSON.String()
 		if raw != "" {
 			if err := json.Unmarshal([]byte(raw), &args); err != nil {
-				log.Printf("openai_compat stream: failed to decode tool call arguments for %q: %v", acc.name, err)
+				logger.WarnCF("openai_compat", "stream: failed to decode tool call arguments", map[string]any{
+					"tool":  acc.name,
+					"error": err.Error(),
+				})
 				args["raw"] = raw
 			}
 		}

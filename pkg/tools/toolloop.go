@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -132,7 +133,11 @@ func RunToolLoop(
 			Content: response.Content,
 		}
 		for _, tc := range normalizedToolCalls {
-			argumentsJSON, _ := json.Marshal(tc.Arguments)
+			argumentsJSON, err := json.Marshal(tc.Arguments)
+			if err != nil {
+				logger.Warnf("toolloop: failed to marshal tool call arguments for %s: %v", tc.Name, err)
+				argumentsJSON = []byte("{}")
+			}
 			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, providers.ToolCall{
 				ID:        tc.ID,
 				Type:      "function",
@@ -161,6 +166,17 @@ func RunToolLoop(
 			wg.Add(1)
 			go func(idx int, tc providers.ToolCall) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						logger.ErrorCF("toolloop", "tool execution goroutine panic recovered",
+							map[string]any{
+								"tool":  tc.Name,
+								"panic": fmt.Sprintf("%v", r),
+								"stack": string(debug.Stack()),
+							})
+						results[idx].result = ErrorResult(fmt.Sprintf("internal panic in tool %s", tc.Name))
+					}
+				}()
 
 				argsJSON, _ := json.Marshal(tc.Arguments)
 				argsPreview := utils.Truncate(string(argsJSON), 200)

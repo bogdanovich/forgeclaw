@@ -294,9 +294,9 @@ func (m *legacyContextManager) retryLLMCall(
 	var err error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		m.al.activeRequests.Add(1)
+		m.al.activeRequestsInc()
 		resp, err = func() (*providers.LLMResponse, error) {
-			defer m.al.activeRequests.Done()
+			defer m.al.activeRequestsDec()
 			return agent.Provider.Chat(
 				ctx,
 				[]providers.Message{{Role: "user", Content: prompt}},

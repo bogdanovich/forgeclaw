@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -271,6 +273,33 @@ func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
 	assert.Equal(t, len(content), constructor.calls[0].FileSizes["photo"])
 	assert.Equal(t, len(content), constructor.calls[1].FileSizes["document"])
 	assert.Equal(t, "caption", constructor.calls[1].Parameters["caption"])
+}
+
+func TestDownloadFileWithInfo_AllowsLocalConfiguredBaseURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/file/bot"+testToken+"/photos/image"; got != want {
+			t.Fatalf("request path = %q, want %q", got, want)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("telegram-local-bot-api"))
+	}))
+	defer server.Close()
+
+	ch, err := NewTelegramChannel(
+		&config.Channel{Type: config.ChannelTelegram, Enabled: true},
+		&config.TelegramSettings{
+			Token:   *config.NewSecureString(testToken),
+			BaseURL: server.URL,
+		},
+		nil,
+	)
+	require.NoError(t, err)
+
+	path := ch.downloadFileWithInfo(&telego.File{FilePath: "photos/image"}, "")
+	if path == "" {
+		t.Fatal("expected local base_url download to succeed")
+	}
+	defer os.Remove(path)
 }
 
 func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
@@ -1526,8 +1555,9 @@ func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
 	inbound, ok := <-messageBus.InboundChan()
 	require.True(t, ok, "expected inbound message")
 
-	// ChatID remains the parent chat; TopicID isolates the sub-conversation.
-	assert.Equal(t, "-1001234567890", inbound.ChatID)
+	// ChatID includes the thread ID for forum topics so outbound
+	// delivery resolves the correct topic without relying solely on TopicID fallback.
+	assert.Equal(t, "-1001234567890/42", inbound.ChatID)
 	assert.Equal(t, "group", inbound.Context.ChatType)
 	assert.Equal(t, "42", inbound.Context.TopicID)
 }

@@ -101,7 +101,29 @@ func parseCronJobResult(t *testing.T, result *ToolResult) cron.CronJob {
 	return job
 }
 
-// TestCronTool_CommandBlockedFromRemoteChannel verifies command scheduling is restricted to internal channels
+func addTestCronJob(t *testing.T, tool *CronTool, name, channel, chatID, command string) *cron.CronJob {
+	t.Helper()
+	everyMS := int64(60_000)
+	job, err := tool.cronService.AddJob(
+		name,
+		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		name+" message",
+		channel,
+		chatID,
+	)
+	if err != nil {
+		t.Fatalf("AddJob() error: %v", err)
+	}
+	if command != "" {
+		job.Payload.Command = command
+		if err := tool.cronService.UpdateJob(job); err != nil {
+			t.Fatalf("UpdateJob() error: %v", err)
+		}
+	}
+	return job
+}
+
+// TestCronTool_CommandBlockedFromRemoteChannel verifies command scheduling is restricted by default.
 func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
 	tool := newTestCronTool(t)
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
@@ -116,8 +138,148 @@ func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("expected command scheduling to be blocked from remote channel")
 	}
-	if !strings.Contains(result.ForLLM, "restricted to internal channels") {
-		t.Errorf("expected 'restricted to internal channels', got: %s", result.ForLLM)
+	if !strings.Contains(result.ForLLM, "restricted to internal channels or configured remote channels") {
+		t.Errorf("expected remote restriction message, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedFromRemoteChannelAllowlist(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf("expected command scheduling from allowed remote channel to succeed, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedFromRemoteChatIDAllowlist(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{" telegram:1234567890 "}
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "telegram", "1234567890")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf("expected command scheduling from allowed remote chat to succeed, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedFromRemoteWildcardAllowlist(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"*"}
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf("expected wildcard allowlist to allow remote command scheduling, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedRemoteWildcardRequiresNonEmptyChannel(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"*"}
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
+	})
+
+	if !result.IsError {
+		t.Fatal("expected missing channel to remain blocked even with wildcard allowlist")
+	}
+	if !strings.Contains(result.ForLLM, "no session context") {
+		t.Errorf("expected session context error, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandBlockedFromDifferentRemoteChatID(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram:1234567890"}
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "telegram", "other-chat")
+	result := tool.Execute(ctx, map[string]any{
+		"action":          "add",
+		"message":         "check disk",
+		"command":         "df -h",
+		"command_confirm": true,
+		"at_seconds":      float64(60),
+	})
+
+	if !result.IsError {
+		t.Fatal("expected command scheduling from non-allowlisted remote chat to fail")
+	}
+	if !strings.Contains(result.ForLLM, "restricted to internal channels or configured remote channels") {
+		t.Errorf("expected remote restriction message, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedRemoteRequiresConfirmWhenAllowCommandDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.AllowCommand = false
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
+	})
+
+	if !result.IsError {
+		t.Fatal("expected allowlisted remote command scheduling to require confirm when allow_command is disabled")
+	}
+	if !strings.Contains(result.ForLLM, "command_confirm=true") {
+		t.Errorf("expected command_confirm requirement message, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_AllowCommandDoesNotBypassRemoteAllowlist(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.AllowCommand = true
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
+	})
+
+	if !result.IsError {
+		t.Fatal("expected allow_command=true not to bypass remote allowlist")
+	}
+	if !strings.Contains(result.ForLLM, "restricted to internal channels or configured remote channels") {
+		t.Errorf("expected remote restriction message, got: %s", result.ForLLM)
 	}
 }
 
@@ -633,6 +795,296 @@ func TestCronTool_RemoteCannotAccessCommandJob(t *testing.T) {
 	}
 	if unchanged.Payload.Message != "run command" || unchanged.Payload.Command != "df -h" {
 		t.Fatalf("unauthorized update mutated command job: %+v", unchanged.Payload)
+	}
+}
+
+func TestCronTool_AllowlistedRemoteCanAccessOwnCommandJob(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram:chat-1"}
+	tool := newTestCronToolWithConfig(t, cfg)
+	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
+	if listResult.IsError || !strings.Contains(listResult.ForLLM, job.ID) {
+		t.Fatalf("expected list to include own command job, got: %+v", listResult)
+	}
+
+	getResult := tool.Execute(ctx, map[string]any{"action": "get", "job_id": job.ID})
+	if getResult.IsError {
+		t.Fatalf("expected get to access own command job, got: %s", getResult.ForLLM)
+	}
+	got := parseCronJobResult(t, getResult)
+	if got.ID != job.ID || got.Payload.Command != "df -h" {
+		t.Fatalf("get returned wrong command job: %+v", got)
+	}
+
+	updateResult := tool.Execute(ctx, map[string]any{
+		"action":  "update",
+		"job_id":  job.ID,
+		"message": "updated command description",
+	})
+	if updateResult.IsError {
+		t.Fatalf("expected update to access own command job, got: %s", updateResult.ForLLM)
+	}
+	updated, _ := tool.cronService.GetJob(job.ID)
+	if updated.Payload.Message != "updated command description" || updated.Payload.Command != "df -h" {
+		t.Fatalf("update returned wrong command payload: %+v", updated.Payload)
+	}
+}
+
+func TestCronTool_AllowlistedRemoteCannotAccessOtherChatCommandJob(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
+	tool := newTestCronToolWithConfig(t, cfg)
+	job := addTestCronJob(t, tool, "command", "telegram", "chat-2", "df -h")
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
+	if listResult.IsError || strings.Contains(listResult.ForLLM, job.ID) {
+		t.Fatalf("expected list to hide other chat command job, got: %+v", listResult)
+	}
+
+	for _, action := range []string{"get", "update"} {
+		args := map[string]any{"action": action, "job_id": job.ID}
+		if action == "update" {
+			args["message"] = "changed"
+		}
+		result := tool.Execute(ctx, args)
+		if !result.IsError || !strings.Contains(result.ForLLM, "not accessible") {
+			t.Fatalf("expected %s to reject other chat command job, got: %+v", action, result)
+		}
+	}
+}
+
+func TestCronTool_NonAllowlistedRemoteCannotAccessOwnCommandJob(t *testing.T) {
+	tool := newTestCronTool(t)
+	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
+	if listResult.IsError || strings.Contains(listResult.ForLLM, job.ID) {
+		t.Fatalf("expected list to hide non-allowlisted command job, got: %+v", listResult)
+	}
+
+	for _, action := range []string{"get", "update"} {
+		args := map[string]any{"action": action, "job_id": job.ID}
+		if action == "update" {
+			args["message"] = "changed"
+		}
+		result := tool.Execute(ctx, args)
+		if !result.IsError || !strings.Contains(result.ForLLM, "not accessible") {
+			t.Fatalf("expected %s to reject non-allowlisted command job, got: %+v", action, result)
+		}
+	}
+}
+
+func TestCronTool_WildcardRemoteCanAccessOwnCommandJob(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandAllowedRemotes = []string{"*"}
+	tool := newTestCronToolWithConfig(t, cfg)
+	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+	other := addTestCronJob(t, tool, "other", "telegram", "chat-2", "uptime")
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
+	if listResult.IsError || !strings.Contains(listResult.ForLLM, job.ID) {
+		t.Fatalf("expected wildcard list to include own command job, got: %+v", listResult)
+	}
+	if strings.Contains(listResult.ForLLM, other.ID) {
+		t.Fatalf("wildcard list should still hide other chat job, got: %s", listResult.ForLLM)
+	}
+
+	getResult := tool.Execute(ctx, map[string]any{"action": "get", "job_id": job.ID})
+	if getResult.IsError {
+		t.Fatalf("expected wildcard get to access own command job, got: %s", getResult.ForLLM)
+	}
+}
+
+func TestCronTool_InternalChannelCanAccessAllCommandJobs(t *testing.T) {
+	tool := newTestCronTool(t)
+	job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+	ctx := WithToolContext(context.Background(), "cli", "direct")
+
+	listResult := tool.Execute(ctx, map[string]any{"action": "list"})
+	if listResult.IsError || !strings.Contains(listResult.ForLLM, job.ID) {
+		t.Fatalf("expected internal list to include command job, got: %+v", listResult)
+	}
+
+	getResult := tool.Execute(ctx, map[string]any{"action": "get", "job_id": job.ID})
+	if getResult.IsError {
+		t.Fatalf("expected internal get to access command job, got: %s", getResult.ForLLM)
+	}
+
+	updateResult := tool.Execute(ctx, map[string]any{
+		"action":  "update",
+		"job_id":  job.ID,
+		"message": "internal update",
+	})
+	if updateResult.IsError {
+		t.Fatalf("expected internal update to access command job, got: %s", updateResult.ForLLM)
+	}
+}
+
+func TestCronTool_AllowlistedRemoteCanManageOwnCommandJob(t *testing.T) {
+	for _, action := range []string{"remove", "enable", "disable"} {
+		t.Run(action, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram:chat-1"}
+			tool := newTestCronToolWithConfig(t, cfg)
+			job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+			if action == "enable" {
+				tool.cronService.EnableJob(job.ID, false)
+			}
+			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
+			if result.IsError {
+				t.Fatalf("expected %s to access own command job, got: %s", action, result.ForLLM)
+			}
+
+			saved, ok := tool.cronService.GetJob(job.ID)
+			switch action {
+			case "remove":
+				if ok {
+					t.Fatalf("remove should delete own command job: %+v", saved)
+				}
+			case "enable":
+				if !ok || !saved.Enabled {
+					t.Fatalf("enable should enable own command job: %+v", saved)
+				}
+			case "disable":
+				if !ok || saved.Enabled {
+					t.Fatalf("disable should disable own command job: %+v", saved)
+				}
+			}
+		})
+	}
+}
+
+func TestCronTool_RemoteCannotManageOtherChatJob(t *testing.T) {
+	for _, action := range []string{"remove", "enable", "disable"} {
+		t.Run(action, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Tools.Cron.CommandAllowedRemotes = []string{"telegram"}
+			tool := newTestCronToolWithConfig(t, cfg)
+			job := addTestCronJob(t, tool, "command", "telegram", "chat-2", "df -h")
+			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
+			if !result.IsError || !strings.Contains(result.ForLLM, "not accessible") {
+				t.Fatalf("expected %s to reject other chat job, got: %+v", action, result)
+			}
+
+			saved, ok := tool.cronService.GetJob(job.ID)
+			if !ok {
+				t.Fatalf("%s should not remove other chat job", action)
+			}
+			if !saved.Enabled {
+				t.Fatalf("%s should not disable other chat job: %+v", action, saved)
+			}
+		})
+	}
+}
+
+func TestCronTool_RemoteCannotManageCommandJobUnlessAllowlisted(t *testing.T) {
+	for _, action := range []string{"remove", "enable", "disable"} {
+		t.Run(action, func(t *testing.T) {
+			tool := newTestCronTool(t)
+			job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
+			if !result.IsError || !strings.Contains(result.ForLLM, "not accessible") {
+				t.Fatalf("expected %s to reject non-allowlisted command job, got: %+v", action, result)
+			}
+
+			saved, ok := tool.cronService.GetJob(job.ID)
+			if !ok {
+				t.Fatalf("%s should not remove non-allowlisted command job", action)
+			}
+			if !saved.Enabled {
+				t.Fatalf("%s should not disable non-allowlisted command job: %+v", action, saved)
+			}
+		})
+	}
+}
+
+func TestCronTool_InternalChannelCanManageAllJobs(t *testing.T) {
+	for _, action := range []string{"remove", "enable", "disable"} {
+		t.Run(action, func(t *testing.T) {
+			tool := newTestCronTool(t)
+			job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+			if action == "enable" {
+				tool.cronService.EnableJob(job.ID, false)
+			}
+			ctx := WithToolContext(context.Background(), "cli", "direct")
+
+			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
+			if result.IsError {
+				t.Fatalf("expected internal %s to access command job, got: %s", action, result.ForLLM)
+			}
+
+			saved, ok := tool.cronService.GetJob(job.ID)
+			switch action {
+			case "remove":
+				if ok {
+					t.Fatalf("internal remove should delete command job: %+v", saved)
+				}
+			case "enable":
+				if !ok || !saved.Enabled {
+					t.Fatalf("internal enable should enable command job: %+v", saved)
+				}
+			case "disable":
+				if !ok || saved.Enabled {
+					t.Fatalf("internal disable should disable command job: %+v", saved)
+				}
+			}
+		})
+	}
+}
+
+func TestCronTool_RemoteCanManageOwnNonCommandJob(t *testing.T) {
+	for _, action := range []string{"remove", "enable", "disable"} {
+		t.Run(action, func(t *testing.T) {
+			tool := newTestCronTool(t)
+			job := addTestCronJob(t, tool, "reminder", "telegram", "chat-1", "")
+			if action == "enable" {
+				tool.cronService.EnableJob(job.ID, false)
+			}
+			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
+			if result.IsError {
+				t.Fatalf("expected %s to access own non-command job, got: %s", action, result.ForLLM)
+			}
+		})
+	}
+}
+
+func TestCronTool_WildcardRemoteCanManageOwnCommandJob(t *testing.T) {
+	for _, action := range []string{"remove", "enable", "disable"} {
+		t.Run(action, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Tools.Cron.CommandAllowedRemotes = []string{"*"}
+			tool := newTestCronToolWithConfig(t, cfg)
+			job := addTestCronJob(t, tool, "command", "telegram", "chat-1", "df -h")
+			if action == "enable" {
+				tool.cronService.EnableJob(job.ID, false)
+			}
+			other := addTestCronJob(t, tool, "other", "telegram", "chat-2", "uptime")
+			ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+
+			result := tool.Execute(ctx, map[string]any{"action": action, "job_id": job.ID})
+			if result.IsError {
+				t.Fatalf("expected wildcard %s to access own command job, got: %s", action, result.ForLLM)
+			}
+
+			otherResult := tool.Execute(ctx, map[string]any{"action": action, "job_id": other.ID})
+			if !otherResult.IsError || !strings.Contains(otherResult.ForLLM, "not accessible") {
+				t.Fatalf("wildcard %s should still reject other chat job, got: %+v", action, otherResult)
+			}
+		})
 	}
 }
 

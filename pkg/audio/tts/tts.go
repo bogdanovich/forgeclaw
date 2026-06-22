@@ -19,6 +19,10 @@ type TTSProvider interface {
 	Synthesize(ctx context.Context, text string) (io.ReadCloser, error)
 }
 
+type ttsAudioMetaProvider interface {
+	AudioFileMeta() (fileExt string, contentType string)
+}
+
 func providerFromModelConfig(mc *config.ModelConfig) TTSProvider {
 	if mc == nil || mc.APIKey() == "" {
 		return nil
@@ -33,8 +37,29 @@ func providerFromModelConfig(mc *config.ModelConfig) TTSProvider {
 	case "mimo":
 		return NewMimoTTSProvider(mc.APIKey(), providers.ResolveAPIBase(mc), modelID, mc.Proxy)
 	default:
-		return NewOpenAITTSProvider(mc.APIKey(), providers.ResolveAPIBase(mc), mc.Proxy, modelID)
+		return NewOpenAITTSProviderWithOptions(
+			mc.APIKey(),
+			providers.ResolveAPIBase(mc),
+			mc.Proxy,
+			modelID,
+			openAITTSOptionsFromModelConfig(mc),
+		)
 	}
+}
+
+func openAITTSOptionsFromModelConfig(mc *config.ModelConfig) OpenAITTSOptions {
+	options := OpenAITTSOptions{}
+	if mc == nil || mc.ExtraBody == nil {
+		return options
+	}
+
+	if voice, ok := mc.ExtraBody["voice"].(string); ok {
+		options.Voice = strings.TrimSpace(voice)
+	}
+	if responseFormat, ok := mc.ExtraBody["response_format"].(string); ok {
+		options.ResponseFormat = strings.TrimSpace(responseFormat)
+	}
+	return options
 }
 
 func DetectTTS(cfg *config.Config) TTSProvider {
@@ -100,6 +125,12 @@ func SynthesizeAndStore(
 		fileExt = ".mp3"
 		contentType = "audio/mpeg"
 	}
+	if metaProvider, ok := stream.(ttsAudioMetaProvider); ok {
+		if ext, ct := metaProvider.AudioFileMeta(); ext != "" && ct != "" {
+			fileExt = ext
+			contentType = ct
+		}
+	}
 
 	file, err := os.CreateTemp(media.TempDir(), "tts-*"+fileExt)
 	if err != nil {
@@ -115,7 +146,7 @@ func SynthesizeAndStore(
 
 	_, err = io.Copy(file, stream)
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return "", fmt.Errorf("failed to write tts audio: %w", err)
 	}
 

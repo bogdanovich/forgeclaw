@@ -365,22 +365,19 @@ toolLoop:
 						contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
 					}
 
-					toolResultMsg := providers.Message{
-						Role:       "tool",
-						Content:    contentForLLM,
-						ToolCallID: tc.ID,
-					}
-
-					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
-						recordCompletionMedia(exec, al.mediaStore, hookResult.Media)
+					var toolResultMedia []string
+					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled {
+						if !hookResult.ImmediateDelivery {
+							recordCompletionMedia(exec, al.mediaStore, hookResult.Media)
+						}
 						hookResult.ArtifactTags = buildArtifactTags(al.mediaStore, hookResult.Media)
 						contentForLLM = hookResult.ContentForLLM()
 						if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
 							contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
 						}
-						toolResultMsg.Content = contentForLLM
-						toolResultMsg.Media = append(toolResultMsg.Media, hookResult.Media...)
+						toolResultMedia = append(toolResultMedia, hookResult.Media...)
 					}
+					toolResultMsg := toolResultPromptMessage(contentForLLM, tc.ID, toolResultMedia)
 
 					al.emitEvent(
 						runtimeevents.KindAgentToolExecEnd,
@@ -722,14 +719,11 @@ toolLoop:
 			contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
 		}
 
-		toolResultMsg := providers.Message{
-			Role:       "tool",
-			Content:    contentForLLM,
-			ToolCallID: toolCallID,
-		}
+		var toolResultMedia []string
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
-			toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
+			toolResultMedia = append(toolResultMedia, toolResult.Media...)
 		}
+		toolResultMsg := toolResultPromptMessage(contentForLLM, toolCallID, toolResultMedia)
 		al.emitEvent(
 			runtimeevents.KindAgentToolExecEnd,
 			ts.eventMeta("runTurn", "turn.tool.end"),

@@ -285,6 +285,7 @@ func (p *GeminiProvider) buildRequestBody(
 				}
 				if thoughtSignature != "" {
 					part.ThoughtSignature = thoughtSignature
+					part.ThoughtSignatureSnake = thoughtSignature
 				}
 				content.Parts = append(content.Parts, part)
 			}

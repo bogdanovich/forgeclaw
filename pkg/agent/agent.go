@@ -72,8 +72,14 @@ type AgentLoop struct {
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
 
-	turnSeq        atomic.Uint64
-	activeRequests sync.WaitGroup
+	turnSeq atomic.Uint64
+
+	// activeReqMu/activeReqCond/activeReqCount replace sync.WaitGroup to
+	// avoid the "WaitGroup is reused before previous Wait has returned" panic
+	// that occurs when Add(1) races with a goroutine-launched Wait().
+	activeReqMu    sync.Mutex
+	activeReqCond  *sync.Cond
+	activeReqCount int
 
 	reloadFunc func() error
 
@@ -123,6 +129,7 @@ const (
 	handledToolResponseSummary = "Requested output delivered via tool attachment."
 	sessionKeyAgentPrefix      = "agent:"
 	pendingTurnPrefix          = "pending-"
+	providerReloadGracePeriod  = 30 * time.Second
 	metadataKeyMessageKind     = "message_kind"
 	metadataKeyToolCalls       = "tool_calls"
 	metadataKeyOutboundKind    = "outbound_kind"
@@ -222,7 +229,8 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// Session claimed — spawn a worker goroutine that acquires a semaphore
 			// slot. The goroutine is spawned immediately so the main loop keeps
 			// draining the inbound channel. The goroutine blocks on the semaphore.
-			go func(m bus.InboundMessage) {
+			go func(m bus.InboundMessage, ph *turnState) {
+				var releaseSession bool
 				// Acquire semaphore slot (blocks if at capacity)
 				select {
 				case al.workerSem <- struct{}{}:
@@ -230,7 +238,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				case <-ctx.Done():
 					// Context canceled while waiting for a slot — clean up the
 					// placeholder to prevent session-level deadlock.
-					al.activeTurnStates.Delete(sessionKey)
+					al.releaseSessionTurnState(sessionKey, nil)
 					al.releaseInboundMessage(context.Background(), m, ctx.Err())
 					return
 				}
@@ -240,16 +248,28 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				// completes normally, clearActiveTurn deletes the real turnState and
 				// this becomes a no-op (the key is already gone).
 				defer func() {
+					if releaseSession {
+						// Conditional delete: only remove the entry if it still points
+						// to our placeholder. A new message may have claimed the slot
+						// between the panic and this defer.
+						if actual, ok := al.activeTurnStates.Load(sessionKey); ok {
+							if ts, ok := actual.(*turnState); ok && ts == ph {
+								al.releaseSessionTurnState(sessionKey, ts)
+							}
+						}
+						return
+					}
 					if actual, ok := al.activeTurnStates.Load(sessionKey); ok {
 						if ts, ok := actual.(*turnState); ok && strings.HasPrefix(ts.turnID, pendingTurnPrefix) {
 							// Placeholder still present — runTurn never replaced it.
-							al.activeTurnStates.Delete(sessionKey)
+							al.releaseSessionTurnState(sessionKey, ts)
 						}
 					}
 				}()
 
 				defer func() {
 					if r := recover(); r != nil {
+						releaseSession = true
 						logger.RecoverPanicNoExit(r)
 						logger.ErrorCF("agent", "Worker goroutine panicked",
 							map[string]any{
@@ -267,7 +287,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				}
 
 				if al.takePendingStop(sessionKey) {
-					al.activeTurnStates.Delete(sessionKey)
+					al.releaseSessionTurnState(sessionKey, nil)
 					al.ackInboundMessage(ctx, m)
 					target := &continuationTarget{
 						SessionKey: sessionKey,
@@ -406,37 +426,23 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 		return fmt.Errorf("config cannot be nil")
 	}
 
-	// Create new registry with updated config and provider
-	// Wrap in defer/recover to handle any panics gracefully
 	var registry *AgentRegistry
-	var panicErr error
-	done := make(chan struct{}, 1)
-
-	go func() {
+	func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.RecoverPanicNoExit(r)
-				panicErr = fmt.Errorf("panic during registry creation: %v", r)
 				logger.ErrorCF("agent", "Panic during registry creation",
 					map[string]any{"panic": r})
+				registry = nil
 			}
-			close(done)
 		}()
-
 		registry = NewAgentRegistry(cfg, provider)
 	}()
-
-	// Wait for completion or context cancellation
-	select {
-	case <-done:
-		if registry == nil {
-			if panicErr != nil {
-				return fmt.Errorf("registry creation failed: %w", panicErr)
-			}
-			return fmt.Errorf("registry creation failed (nil result)")
+	if registry == nil {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context canceled during registry creation: %w", err)
 		}
-	case <-ctx.Done():
-		return fmt.Errorf("context canceled during registry creation: %w", ctx.Err())
+		return fmt.Errorf("registry creation failed")
 	}
 
 	// Check context again before proceeding
@@ -512,17 +518,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	// This prevents blocking readers while closing
 	if oldProvider, ok := extractProvider(oldRegistry); ok {
 		if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
-			// Give in-flight requests a moment to complete
-			// Use a reasonable timeout that balances cleanup vs resource usage
-			select {
-			case <-time.After(100 * time.Millisecond):
-				stateful.Close()
-			case <-ctx.Done():
-				// Context canceled, close immediately but log warning
-				logger.WarnCF("agent", "Context canceled during provider cleanup, forcing close",
-					map[string]any{"error": ctx.Err()})
-				stateful.Close()
-			}
+			al.closeReloadedProvider(ctx, stateful)
 		}
 	}
 

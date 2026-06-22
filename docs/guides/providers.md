@@ -17,6 +17,7 @@
 | `anthropic`  | LLM (Claude direct)                     | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM (GPT direct)                        | [platform.openai.com](https://platform.openai.com)           |
 | `venice`     | LLM (Venice AI direct)                  | [venice.ai](https://venice.ai)                               |
+| `nearai`     | LLM (NEAR AI Cloud TEE inference)       | [near.ai](https://near.ai)                                   |
 | `deepseek`   | LLM (DeepSeek direct)                   | [platform.deepseek.com](https://platform.deepseek.com)       |
 | `qwen`       | LLM (Qwen direct)                       | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com) |
 | `groq`       | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com)                 |
@@ -50,6 +51,7 @@ This design also enables **multi-agent support** with flexible provider selectio
 | ------------------- | ----------------- |-----------------------------------------------------| --------- | ---------------------------------------------------------------- |
 | **OpenAI**          | `openai`          | `https://api.openai.com/v1`                         | OpenAI    | [Get Key](https://platform.openai.com)                           |
 | **Venice AI**       | `venice`          | `https://api.venice.ai/api/v1`                      | OpenAI    | [Get Key](https://venice.ai)                                     |
+| **NEAR AI Cloud**   | `nearai`          | `https://cloud-api.near.ai/v1`                      | OpenAI    | [Get Key](https://near.ai)                                       |
 | **Anthropic**       | `anthropic`       | `https://api.anthropic.com/v1`                      | Anthropic | [Get Key](https://console.anthropic.com)                         |
 | **智谱 AI (GLM)**   | `zhipu`           | `https://open.bigmodel.cn/api/paas/v4`              | OpenAI    | [Get Key](https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys) |
 | **Z.AI Coding Plan** | `openai`         | `https://api.z.ai/api/coding/paas/v4`               | OpenAI    | [Get Key](https://z.ai/manage-apikey/apikey-list)                |
@@ -138,6 +140,9 @@ This design also enables **multi-agent support** with flexible provider selectio
 
 When streaming is disabled, omit the `streaming` block. Writing `"streaming": {"enabled": false}` is optional and not needed in generated or hand-written config.
 
+`extra_body` is especially useful for model-specific TTS fields on OpenAI-compatible
+speech routes, for example custom `voice` names or `response_format: "mp3"`.
+
 #### Tool Schema Compatibility
 
 By default, PicoClaw now forwards tool JSON Schemas unchanged.
@@ -205,6 +210,41 @@ If `voice.model_name` is not configured, PicoClaw will continue to fall back to 
 }
 ```
 
+#### Voice Synthesis
+
+You can configure a dedicated text-to-speech model with `voice.tts_model_name`.
+When the provider needs model-specific TTS request fields, put them in
+`model_list[].extra_body`.
+
+Example with OpenRouter `microsoft/mai-voice-2`:
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "mai-voice-2",
+      "provider": "openrouter",
+      "model": "microsoft/mai-voice-2",
+      "api_base": "https://openrouter.ai/api/v1",
+      "extra_body": {
+        "voice": "en-US-Harper:MAI-Voice-2",
+        "response_format": "mp3"
+      },
+      "api_keys": ["sk-or-your-openrouter-key"]
+    }
+  ],
+  "voice": {
+    "tts_model_name": "mai-voice-2"
+  }
+}
+```
+
+Notes that matter:
+
+- PicoClaw still uses the OpenAI-compatible `/audio/speech` route for this setup.
+- The default TTS request uses `voice: alloy` and `response_format: opus`.
+- Override those defaults with `extra_body` when your selected TTS model requires different values.
+
 #### Vendor-Specific Examples
 
 **OpenAI**
@@ -215,6 +255,17 @@ If `voice.model_name` is not configured, PicoClaw will continue to fall back to 
   "provider": "openai",
   "model": "gpt-5.4",
   "api_keys": ["sk-..."]
+}
+```
+
+**NEAR AI Cloud**
+
+```json
+{
+  "model_name": "nearai-glm",
+  "provider": "nearai",
+  "model": "zai-org/GLM-5.1-FP8",
+  "api_keys": ["your-nearai-api-key"]
 }
 ```
 
@@ -635,7 +686,9 @@ picoclaw agent -m "Hello"
       }
     },
     "cron": {
-      "exec_timeout_minutes": 5
+      "exec_timeout_minutes": 5,
+      "allow_command": true,
+      "command_allowed_remotes": []
     }
   },
   "heartbeat": {

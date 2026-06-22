@@ -132,6 +132,64 @@ func TestOpenAITTSProvider_SynthesizeNon200(t *testing.T) {
 	}
 }
 
+func TestOpenAITTSProvider_SynthesizeRetriesWithoutResponseFormat(t *testing.T) {
+	var requestBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+
+		var body map[string]any
+		_ = json.Unmarshal(bodyBytes, &body)
+		requestBodies = append(requestBodies, body)
+
+		if len(requestBodies) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"response_format is invalid"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("audio-bytes"))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAITTSProvider("k123", server.URL, "", "x-ai/grok-voice-tts-1.0")
+	stream, err := provider.Synthesize(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Synthesize failed: %v", err)
+	}
+	defer stream.Close()
+
+	data, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatalf("read stream failed: %v", err)
+	}
+	if string(data) != "audio-bytes" {
+		t.Fatalf("response body mismatch: got %q", string(data))
+	}
+
+	if len(requestBodies) != 2 {
+		t.Fatalf("request count mismatch: got %d, want 2", len(requestBodies))
+	}
+	if requestBodies[0]["response_format"] != "opus" {
+		t.Fatalf("first request should include opus response_format, got %#v", requestBodies[0]["response_format"])
+	}
+	if _, ok := requestBodies[1]["response_format"]; ok {
+		t.Fatalf("second request should omit response_format, got %#v", requestBodies[1]["response_format"])
+	}
+
+	metaStream, ok := stream.(interface {
+		AudioFileMeta() (string, string)
+	})
+	if !ok {
+		t.Fatal("stream does not expose audio metadata")
+	}
+	fileExt, contentType := metaStream.AudioFileMeta()
+	if fileExt != ".mp3" || contentType != "audio/mpeg" {
+		t.Fatalf("audio metadata mismatch: got (%q, %q)", fileExt, contentType)
+	}
+}
+
 func TestNewOpenAITTSProvider_UsesConfiguredModel(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +199,27 @@ func TestNewOpenAITTSProvider_UsesConfiguredModel(t *testing.T) {
 	}
 	if provider.apiBase != "https://api.xiaomimimo.com/v1/audio/speech" {
 		t.Fatalf("apiBase mismatch: got %q", provider.apiBase)
+	}
+}
+
+func TestNewOpenAITTSProvider_UsesConfiguredVoiceAndResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAITTSProviderWithOptions(
+		"key",
+		"https://openrouter.ai/api/v1",
+		"",
+		"microsoft/mai-voice-2",
+		OpenAITTSOptions{
+			Voice:          "en-US-Harper:MAI-Voice-2",
+			ResponseFormat: "mp3",
+		},
+	)
+	if provider.voice != "en-US-Harper:MAI-Voice-2" {
+		t.Fatalf("voice mismatch: got %q", provider.voice)
+	}
+	if provider.responseFormat != "mp3" {
+		t.Fatalf("responseFormat mismatch: got %q", provider.responseFormat)
 	}
 }
 
@@ -167,6 +246,36 @@ func TestDetectTTS_UsesMimoProviderForMimoModels(t *testing.T) {
 	}
 	if ttsProvider.apiBase != "https://api.xiaomimimo.com/v1/chat/completions" {
 		t.Fatalf("apiBase mismatch: got %q", ttsProvider.apiBase)
+	}
+}
+
+func TestDetectTTS_UsesOpenAIExtraBodyVoiceAndResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	provider := DetectTTS(&config.Config{
+		Voice: config.VoiceConfig{TTSModelName: "mai-voice"},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "mai-voice",
+				Model:     "openrouter/microsoft/mai-voice-2",
+				APIKeys:   config.SimpleSecureStrings("sk-openrouter"),
+				ExtraBody: map[string]any{
+					"voice":           "en-US-Harper:MAI-Voice-2",
+					"response_format": "mp3",
+				},
+			},
+		},
+	})
+
+	ttsProvider, ok := provider.(*OpenAITTSProvider)
+	if !ok {
+		t.Fatalf("DetectTTS() type = %T, want *OpenAITTSProvider", provider)
+	}
+	if ttsProvider.voice != "en-US-Harper:MAI-Voice-2" {
+		t.Fatalf("voice mismatch: got %q", ttsProvider.voice)
+	}
+	if ttsProvider.responseFormat != "mp3" {
+		t.Fatalf("responseFormat mismatch: got %q", ttsProvider.responseFormat)
 	}
 }
 
@@ -225,6 +334,54 @@ func TestSynthesizeAndStore_UsesMp3MetadataForMimo(t *testing.T) {
 		"hello",
 		"",
 		"discord",
+		"chat123",
+	)
+	if err != nil {
+		t.Fatalf("SynthesizeAndStore failed: %v", err)
+	}
+
+	path, meta, err := store.ResolveWithMeta(ref)
+	if err != nil {
+		t.Fatalf("ResolveWithMeta failed: %v", err)
+	}
+	if meta.ContentType != "audio/mpeg" {
+		t.Fatalf("ContentType = %q, want %q", meta.ContentType, "audio/mpeg")
+	}
+	if filepath.Ext(path) != ".mp3" {
+		t.Fatalf("stored file extension = %q, want %q", filepath.Ext(path), ".mp3")
+	}
+	if filepath.Ext(meta.Filename) != ".mp3" {
+		t.Fatalf("filename extension = %q, want %q", filepath.Ext(meta.Filename), ".mp3")
+	}
+}
+
+func TestSynthesizeAndStore_UsesStreamProvidedAudioMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+
+		var body map[string]any
+		_ = json.Unmarshal(bodyBytes, &body)
+		if body["response_format"] == "opus" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"response_format is invalid"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("mp3-audio"))
+	}))
+	defer server.Close()
+
+	store := media.NewFileMediaStore()
+	provider := NewOpenAITTSProvider("k123", server.URL, "", "x-ai/grok-voice-tts-1.0")
+	ref, err := SynthesizeAndStore(
+		context.Background(),
+		provider,
+		store,
+		"hello",
+		"",
+		"telegram",
 		"chat123",
 	)
 	if err != nil {
