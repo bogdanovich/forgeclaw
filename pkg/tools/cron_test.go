@@ -107,6 +107,7 @@ func addTestCronJob(t *testing.T, tool *CronTool, name, channel, chatID, command
 	job, err := tool.cronService.AddJob(
 		name,
 		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"",
 		name+" message",
 		channel,
 		chatID,
