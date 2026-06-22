@@ -370,6 +370,57 @@ func TestStartAll_RetriesFailedChannelStarts(t *testing.T) {
 	t.Fatal("expected flaky channel worker to be started by retry loop")
 }
 
+func TestStartAll_RetryDoesNotInstallWorkerAfterContextCanceled(t *testing.T) {
+	m := newTestManager()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var attempts int
+	startRelease := make(chan struct{})
+	stopCalled := make(chan struct{}, 1)
+
+	m.channels["good"] = &mockChannel{}
+	m.channels["flaky"] = &mockChannel{
+		startFn: func(_ context.Context) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("temporary startup failure")
+			}
+			<-startRelease
+			return nil
+		},
+		stopFn: func(_ context.Context) error {
+			select {
+			case stopCalled <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+
+	if err := m.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	close(startRelease)
+
+	select {
+	case <-stopCalled:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("expected retried channel to be stopped after canceled context")
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	m.mu.RLock()
+	_, ok := m.workers["flaky"]
+	m.mu.RUnlock()
+	if ok {
+		t.Fatal("did not expect worker installation after retry context was canceled")
+	}
+}
+
 func TestStartAllPublishesLifecycleRuntimeEvents(t *testing.T) {
 	eventBus := runtimeevents.NewBus()
 	defer func() {

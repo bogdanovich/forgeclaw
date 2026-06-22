@@ -1485,55 +1485,86 @@ func (m *Manager) retryMissingChannels(ctx context.Context) {
 }
 
 func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if len(m.channels) == 0 {
-		return
+	type pendingChannelStart struct {
+		name        string
+		channel     Channel
+		channelType string
 	}
 
+	m.mu.RLock()
+	if len(m.channels) == 0 || ctx.Err() != nil || m.dispatchTask == nil {
+		m.mu.RUnlock()
+		return
+	}
+	pending := make([]pendingChannelStart, 0, len(m.channels))
 	for name, channel := range m.channels {
 		if _, ok := m.workers[name]; ok {
 			continue
 		}
-
-		logger.WarnCF("channels", "Retrying channel start", map[string]any{
-			"channel": name,
-		})
-		if err := channel.Start(ctx); err != nil {
-			logger.ErrorCF("channels", "Channel start retry failed", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
-			m.publishChannelEvent(
-				runtimeevents.KindChannelLifecycleStartFailed,
-				name,
-				runtimeevents.Scope{Channel: name},
-				runtimeevents.SeverityWarn,
-				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
-			)
-			continue
-		}
-
 		channelType := name
 		if m.config != nil {
 			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
 				channelType = bc.Type
 			}
 		}
-		w := newChannelWorker(name, channel, channelType)
-		m.workers[name] = w
-		go m.runWorker(ctx, name, w)
-		go m.runMediaWorker(ctx, name, w)
+		pending = append(pending, pendingChannelStart{
+			name:        name,
+			channel:     channel,
+			channelType: channelType,
+		})
+	}
+	m.mu.RUnlock()
+
+	for _, pendingStart := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+
+		logger.WarnCF("channels", "Retrying channel start", map[string]any{
+			"channel": pendingStart.name,
+		})
+		if err := pendingStart.channel.Start(ctx); err != nil {
+			logger.ErrorCF("channels", "Channel start retry failed", map[string]any{
+				"channel": pendingStart.name,
+				"error":   err.Error(),
+			})
+			m.publishChannelEvent(
+				runtimeevents.KindChannelLifecycleStartFailed,
+				pendingStart.name,
+				runtimeevents.Scope{Channel: pendingStart.name},
+				runtimeevents.SeverityWarn,
+				ChannelLifecyclePayload{Type: pendingStart.channelType, Error: err.Error()},
+			)
+			continue
+		}
+
+		shouldStop := false
+		m.mu.Lock()
+		if ctx.Err() != nil || m.dispatchTask == nil {
+			shouldStop = true
+		} else if _, ok := m.workers[pendingStart.name]; ok {
+			shouldStop = true
+		} else {
+			w := newChannelWorker(pendingStart.name, pendingStart.channel, pendingStart.channelType)
+			m.workers[pendingStart.name] = w
+			go m.runWorker(ctx, pendingStart.name, w)
+			go m.runMediaWorker(ctx, pendingStart.name, w)
+		}
+		m.mu.Unlock()
+		if shouldStop {
+			_ = pendingStart.channel.Stop(context.Background())
+			continue
+		}
+
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
-			name,
-			runtimeevents.Scope{Channel: name},
+			pendingStart.name,
+			runtimeevents.Scope{Channel: pendingStart.name},
 			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: channelType},
+			ChannelLifecyclePayload{Type: pendingStart.channelType},
 		)
 		logger.InfoCF("channels", "Channel started after retry", map[string]any{
-			"channel": name,
+			"channel": pendingStart.name,
 		})
 	}
 }
