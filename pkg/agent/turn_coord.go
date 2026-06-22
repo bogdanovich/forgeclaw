@@ -189,7 +189,7 @@ func (al *AgentLoop) runTurn(
 
 		// Inject pending steering messages
 		if len(pendingMessages) > 0 {
-			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize)
+			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize, 0)
 			totalContentLen := 0
 			for i, pm := range pendingMessages {
 				messages = append(messages, resolvedPending[i])
@@ -497,7 +497,11 @@ func (al *AgentLoop) askSideQuestion(
 	messages := agent.ContextBuilder.BuildMessagesFromPrompt(promptReq)
 
 	maxMediaSize := al.GetConfig().Agents.Defaults.GetMaxMediaSize()
-	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
+	currentTurnStart := len(messages)
+	if strings.TrimSpace(question) != "" || len(media) > 0 {
+		currentTurnStart = len(messages) - 1
+	}
+	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize, currentTurnStart)
 
 	execution := effectiveExecutionStateForAgent(agent)
 	routeSessionKey := ""

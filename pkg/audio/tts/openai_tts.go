@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,14 +17,49 @@ import (
 )
 
 type OpenAITTSProvider struct {
-	apiKey     string
-	apiBase    string
-	voice      string
-	model      string
-	httpClient *http.Client
+	apiKey         string
+	apiBase        string
+	voice          string
+	model          string
+	responseFormat string
+	httpClient     *http.Client
+}
+
+type OpenAITTSOptions struct {
+	Voice          string
+	ResponseFormat string
+}
+
+type openAITTSAudioStream struct {
+	io.ReadCloser
+	fileExt     string
+	contentType string
+}
+
+func (s *openAITTSAudioStream) AudioFileMeta() (string, string) {
+	return s.fileExt, s.contentType
+}
+
+type openAITTSAPIError struct {
+	statusCode int
+	body       string
+}
+
+func (e *openAITTSAPIError) Error() string {
+	return fmt.Sprintf("API error (status %d): %s", e.statusCode, e.body)
 }
 
 func NewOpenAITTSProvider(apiKey string, apiBase string, proxyURL string, model string) *OpenAITTSProvider {
+	return NewOpenAITTSProviderWithOptions(apiKey, apiBase, proxyURL, model, OpenAITTSOptions{})
+}
+
+func NewOpenAITTSProviderWithOptions(
+	apiKey string,
+	apiBase string,
+	proxyURL string,
+	model string,
+	options OpenAITTSOptions,
+) *OpenAITTSProvider {
 	// Normalize apiBase to avoid malformed endpoints like
 	// "https://api.openai.com/audio/speech" when "/v1" is required.
 	if apiBase == "" {
@@ -75,12 +111,23 @@ func NewOpenAITTSProvider(apiKey string, apiBase string, proxyURL string, model 
 		model = "tts-1"
 	}
 
+	voice := strings.TrimSpace(options.Voice)
+	if voice == "" {
+		voice = "alloy"
+	}
+
+	responseFormat := strings.TrimSpace(options.ResponseFormat)
+	if responseFormat == "" {
+		responseFormat = "opus"
+	}
+
 	return &OpenAITTSProvider{
-		apiKey:     apiKey,
-		apiBase:    apiBase,
-		voice:      "alloy",
-		model:      model,
-		httpClient: client,
+		apiKey:         apiKey,
+		apiBase:        apiBase,
+		voice:          voice,
+		model:          model,
+		responseFormat: responseFormat,
+		httpClient:     client,
 	}
 }
 
@@ -91,11 +138,42 @@ func (t *OpenAITTSProvider) Name() string {
 func (t *OpenAITTSProvider) Synthesize(ctx context.Context, text string) (io.ReadCloser, error) {
 	logger.DebugCF("voice-tts", "Starting TTS synthesis", map[string]any{"text_len": len(text)})
 
+	responseFormat := t.responseFormat
+	stream, err := t.doSpeechRequest(ctx, text, responseFormat)
+	if err != nil {
+		var apiErr *openAITTSAPIError
+		if errors.As(err, &apiErr) && shouldRetryWithoutResponseFormat(apiErr.body) {
+			logger.InfoCF("voice-tts", "Retrying TTS without response_format after provider rejection", map[string]any{
+				"model": t.model,
+			})
+			responseFormat = ""
+			stream, err = t.doSpeechRequest(ctx, text, responseFormat)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	fileExt, contentType := audioFileMetaForResponseFormat(responseFormat)
+	return &openAITTSAudioStream{
+		ReadCloser:  stream,
+		fileExt:     fileExt,
+		contentType: contentType,
+	}, nil
+}
+
+func (t *OpenAITTSProvider) doSpeechRequest(
+	ctx context.Context,
+	text string,
+	responseFormat string,
+) (io.ReadCloser, error) {
 	reqBody := map[string]any{
-		"model":           t.model,
-		"input":           text,
-		"voice":           t.voice,
-		"response_format": "opus",
+		"model": t.model,
+		"input": text,
+		"voice": t.voice,
+	}
+	if responseFormat != "" {
+		reqBody["response_format"] = responseFormat
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -118,9 +196,34 @@ func (t *OpenAITTSProvider) Synthesize(ctx context.Context, text string) (io.Rea
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			body = []byte(fmt.Sprintf("(failed to read error body: %v)", readErr))
+		}
+		return nil, &openAITTSAPIError{
+			statusCode: resp.StatusCode,
+			body:       string(body),
+		}
 	}
 
 	return resp.Body, nil
+}
+
+func shouldRetryWithoutResponseFormat(body string) bool {
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "response_format") {
+		return false
+	}
+	return strings.Contains(lower, "invalid") || strings.Contains(lower, "unsupported")
+}
+
+func audioFileMetaForResponseFormat(responseFormat string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(responseFormat)) {
+	case "", "mp3":
+		return ".mp3", "audio/mpeg"
+	case "wav":
+		return ".wav", "audio/wav"
+	default:
+		return ".ogg", "audio/ogg"
+	}
 }

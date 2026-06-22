@@ -72,8 +72,14 @@ type AgentLoop struct {
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
 
-	turnSeq        atomic.Uint64
-	activeRequests sync.WaitGroup
+	turnSeq atomic.Uint64
+
+	// activeReqMu/activeReqCond/activeReqCount replace sync.WaitGroup to
+	// avoid the "WaitGroup is reused before previous Wait has returned" panic
+	// that occurs when Add(1) races with a goroutine-launched Wait().
+	activeReqMu    sync.Mutex
+	activeReqCond  *sync.Cond
+	activeReqCount int
 
 	reloadFunc func() error
 

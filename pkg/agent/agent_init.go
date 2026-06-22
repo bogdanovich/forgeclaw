@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
@@ -91,6 +92,7 @@ func NewAgentLoop(
 			})
 		}
 	}
+	al.activeReqCond = sync.NewCond(&al.activeReqMu)
 	al.refreshRuntimeEventLogger(cfg)
 	al.providerFactory = providers.CreateProviderFromConfig
 	al.hooks = NewHookManager(al.runtimeEvents.Channel())
@@ -270,7 +272,7 @@ func registerSharedTools(
 			// This keeps subagent vision support working even when the optimized
 			// sub-turn spawner path is unavailable.
 			subagentManager.SetMediaResolver(func(msgs []providers.Message) []providers.Message {
-				return resolveMediaRefs(msgs, al.mediaStore, cfg.Agents.Defaults.GetMaxMediaSize())
+				return resolveMediaRefs(msgs, al.mediaStore, cfg.Agents.Defaults.GetMaxMediaSize(), 0)
 			})
 
 			// Set the spawner that links into AgentLoop's turnState

@@ -570,7 +570,7 @@ Use `mode = lines` when:
   "tools": {
     "read_file": {
       "enabled": true,
-       "mode": "lines",
+      "mode": "lines",
       "max_read_file_size": 65536
     }
   }
@@ -1026,6 +1026,9 @@ For Telegram forum groups, you can restrict a workspace to specific topics:
 
 Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, PicoClaw retries once through the normal `Chat()` path. If a chunk has already been shown to the user, PicoClaw does not send a second non-streaming answer, because that would duplicate visible output.
 
+For model-specific TTS request fields such as custom speech `voice` names or
+`response_format: "mp3"`, use `model_list[].extra_body`.
+
 #### Vendor-Specific Examples
 
 > **Tip**: You can omit `api_key` fields and store them in `.security.yml` for better security. See [Security Configuration](#-security-configuration-recommended).
@@ -1039,6 +1042,35 @@ Failure behavior is intentionally conservative: if streaming fails before any vi
   "provider": "openai",
   "model": "gpt-5.4"
   // api_key: set in .security.yml
+}
+```
+
+</details>
+
+<details>
+<summary><b>OpenRouter TTS (MAI Voice 2)</b></summary>
+
+```json
+{
+  "model_name": "mai-voice-2",
+  "provider": "openrouter",
+  "model": "microsoft/mai-voice-2",
+  "api_base": "https://openrouter.ai/api/v1",
+  "extra_body": {
+    "voice": "en-US-Harper:MAI-Voice-2",
+    "response_format": "mp3"
+  }
+  // api_key: set in .security.yml
+}
+```
+
+Pair this with:
+
+```json
+{
+  "voice": {
+    "tts_model_name": "mai-voice-2"
+  }
 }
 ```
 

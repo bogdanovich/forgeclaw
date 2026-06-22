@@ -37,6 +37,7 @@ const (
 	PromptSlotMessage      PromptSlot = "message"
 	PromptSlotSteering     PromptSlot = "steering"
 	PromptSlotSubTurn      PromptSlot = "subturn"
+	PromptSlotToolResult   PromptSlot = "tool_result"
 	PromptSlotInterrupt    PromptSlot = "interrupt"
 	PromptSlotOutput       PromptSlot = "output"
 )
@@ -60,6 +61,7 @@ const (
 	PromptSourceUserMessage    PromptSourceID = "turn:user_message"
 	PromptSourceSteering       PromptSourceID = "turn:steering"
 	PromptSourceSubTurnResult  PromptSourceID = "turn:subturn_result"
+	PromptSourceToolResult     PromptSourceID = "turn:tool_result"
 	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
 )
 
