@@ -55,6 +55,12 @@ type Channel interface {
 	ReasoningChannelID() string
 }
 
+// StartRetryCapable is an opt-in interface for channels whose failed Start
+// attempts are safe to retry on the same instance.
+type StartRetryCapable interface {
+	SupportsStartRetry() bool
+}
+
 // BaseChannelOption is a functional option for configuring a BaseChannel.
 type BaseChannelOption func(*BaseChannel)
 

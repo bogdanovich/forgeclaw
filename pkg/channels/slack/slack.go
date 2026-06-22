@@ -185,6 +185,10 @@ func (c *SlackChannel) Start(ctx context.Context) error {
 	return nil
 }
 
+func (c *SlackChannel) SupportsStartRetry() bool {
+	return true
+}
+
 func (c *SlackChannel) Stop(ctx context.Context) error {
 	logger.InfoC("slack", "Stopping Slack channel")
 

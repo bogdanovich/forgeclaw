@@ -26,6 +26,7 @@ type mockChannel struct {
 	sendFn            func(ctx context.Context, msg bus.OutboundMessage) error
 	startFn           func(ctx context.Context) error
 	stopFn            func(ctx context.Context) error
+	retryStartSafe    bool
 	sentMessages      []bus.OutboundMessage
 	placeholdersSent  int
 	editedMessages    int
@@ -52,6 +53,10 @@ func (m *mockChannel) Stop(ctx context.Context) error {
 		return m.stopFn(ctx)
 	}
 	return nil
+}
+
+func (m *mockChannel) SupportsStartRetry() bool {
+	return m.retryStartSafe
 }
 
 func (m *mockChannel) SendPlaceholder(ctx context.Context, chatID string) (string, error) {
@@ -340,6 +345,7 @@ func TestStartAll_RetriesFailedChannelStarts(t *testing.T) {
 
 	m.channels["good"] = &mockChannel{}
 	m.channels["flaky"] = &mockChannel{
+		retryStartSafe: true,
 		startFn: func(_ context.Context) error {
 			attempts++
 			if attempts == 1 {
@@ -381,6 +387,7 @@ func TestStartAll_RetryDoesNotInstallWorkerAfterContextCanceled(t *testing.T) {
 
 	m.channels["good"] = &mockChannel{}
 	m.channels["flaky"] = &mockChannel{
+		retryStartSafe: true,
 		startFn: func(_ context.Context) error {
 			attempts++
 			if attempts == 1 {
@@ -418,6 +425,113 @@ func TestStartAll_RetryDoesNotInstallWorkerAfterContextCanceled(t *testing.T) {
 	m.mu.RUnlock()
 	if ok {
 		t.Fatal("did not expect worker installation after retry context was canceled")
+	}
+}
+
+func TestStartAll_DoesNotRetryChannelWithoutRetrySupport(t *testing.T) {
+	m := newTestManager()
+	var attempts int
+
+	m.channels["good"] = &mockChannel{}
+	m.channels["flaky"] = &mockChannel{
+		startFn: func(_ context.Context) error {
+			attempts++
+			return errors.New("temporary startup failure")
+		},
+	}
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if attempts != 1 {
+		t.Fatalf("start attempts = %d, want 1", attempts)
+	}
+	m.mu.RLock()
+	_, ok := m.workers["flaky"]
+	m.mu.RUnlock()
+	if ok {
+		t.Fatal("did not expect worker installation for non-retryable channel")
+	}
+}
+
+func TestStopAll_DoesNotOverlapRetryStartAndStop(t *testing.T) {
+	m := newTestManager()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startRelease := make(chan struct{})
+	startedRetry := make(chan struct{}, 1)
+	stopCalled := make(chan struct{}, 1)
+	var attempts int32
+	var startInFlight atomic.Bool
+	var concurrentStop atomic.Bool
+
+	m.channels["good"] = &mockChannel{}
+	m.channels["flaky"] = &mockChannel{
+		retryStartSafe: true,
+		startFn: func(_ context.Context) error {
+			n := atomic.AddInt32(&attempts, 1)
+			if n == 1 {
+				return errors.New("temporary startup failure")
+			}
+			startInFlight.Store(true)
+			select {
+			case startedRetry <- struct{}{}:
+			default:
+			}
+			<-startRelease
+			startInFlight.Store(false)
+			return nil
+		},
+		stopFn: func(_ context.Context) error {
+			if startInFlight.Load() {
+				concurrentStop.Store(true)
+			}
+			select {
+			case stopCalled <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+
+	if err := m.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+
+	select {
+	case <-startedRetry:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("expected retry start to begin")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- m.StopAll(context.Background())
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	select {
+	case <-stopCalled:
+		t.Fatal("expected StopAll to wait for in-flight retry start")
+	default:
+	}
+
+	close(startRelease)
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("StopAll() error = %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("expected StopAll to complete after retry start released")
+	}
+
+	if concurrentStop.Load() {
+		t.Fatal("expected retry start and stop to be serialized")
 	}
 }
 

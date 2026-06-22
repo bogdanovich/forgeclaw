@@ -103,6 +103,7 @@ type Manager struct {
 	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
 	channelHashes             map[string]string // channel name → config hash
 	startRetryInterval        time.Duration
+	channelLifecycle          sync.Map // channel name -> *sync.Mutex
 }
 
 type mediaStoreSetter interface {
@@ -1501,6 +1502,9 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 		if _, ok := m.workers[name]; ok {
 			continue
 		}
+		if !supportsStartRetry(channel) {
+			continue
+		}
 		channelType := name
 		if m.config != nil {
 			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
@@ -1520,10 +1524,14 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 			return
 		}
 
+		lifecycle := m.channelLifecycleLock(pendingStart.name)
+		lifecycle.Lock()
+
 		logger.WarnCF("channels", "Retrying channel start", map[string]any{
 			"channel": pendingStart.name,
 		})
 		if err := pendingStart.channel.Start(ctx); err != nil {
+			lifecycle.Unlock()
 			logger.ErrorCF("channels", "Channel start retry failed", map[string]any{
 				"channel": pendingStart.name,
 				"error":   err.Error(),
@@ -1553,8 +1561,10 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 		m.mu.Unlock()
 		if shouldStop {
 			_ = pendingStart.channel.Stop(context.Background())
+			lifecycle.Unlock()
 			continue
 		}
+		lifecycle.Unlock()
 
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
@@ -1571,64 +1581,80 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 
 func (m *Manager) StopAll(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	logger.InfoC("channels", "Stopping all channels")
+	httpServer := m.httpServer
+	httpListeners := append([]net.Listener(nil), m.httpListeners...)
+	m.httpServer = nil
+	m.httpListeners = nil
+
+	dispatchTask := m.dispatchTask
+	m.dispatchTask = nil
+
+	workers := make([]*channelWorker, 0, len(m.workers))
+	for _, w := range m.workers {
+		if w != nil {
+			workers = append(workers, w)
+		}
+	}
+	channelNames := make([]string, 0, len(m.channels))
+	channelSnapshot := make(map[string]Channel, len(m.channels))
+	for name, channel := range m.channels {
+		channelNames = append(channelNames, name)
+		channelSnapshot[name] = channel
+	}
+	m.mu.Unlock()
 
 	// Shutdown shared HTTP server first
-	if m.httpServer != nil {
+	if httpServer != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		if err := m.httpServer.Shutdown(shutdownCtx); err != nil {
+		for _, listener := range httpListeners {
+			_ = listener.Close()
+		}
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			logger.ErrorCF("channels", "Shared HTTP server shutdown error", map[string]any{
 				"error": err.Error(),
 			})
 		}
-		m.httpServer = nil
-		m.httpListeners = nil
 	}
 
 	// Cancel dispatcher
-	if m.dispatchTask != nil {
-		m.dispatchTask.cancel()
-		m.dispatchTask = nil
+	if dispatchTask != nil {
+		dispatchTask.cancel()
 	}
 
 	// Close all worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.queue)
-		}
+	for _, w := range workers {
+		close(w.queue)
 	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.done
-		}
+	for _, w := range workers {
+		<-w.done
 	}
 	// Close all media worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.mediaQueue)
-		}
+	for _, w := range workers {
+		close(w.mediaQueue)
 	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.mediaDone
-		}
+	for _, w := range workers {
+		<-w.mediaDone
 	}
 
 	// Stop all channels
-	for name, channel := range m.channels {
+	for _, name := range channelNames {
+		channel := channelSnapshot[name]
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
+		lifecycle := m.channelLifecycleLock(name)
+		lifecycle.Lock()
 		if err := channel.Stop(ctx); err != nil {
+			lifecycle.Unlock()
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
 				"channel": name,
 				"error":   err.Error(),
 			})
 			continue
 		}
+		lifecycle.Unlock()
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStopped,
 			name,
@@ -1640,6 +1666,22 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 	logger.InfoC("channels", "All channels stopped")
 	return nil
+}
+
+func (m *Manager) channelLifecycleLock(name string) *sync.Mutex {
+	if v, ok := m.channelLifecycle.Load(name); ok {
+		if mu, ok := v.(*sync.Mutex); ok && mu != nil {
+			return mu
+		}
+	}
+	mu := &sync.Mutex{}
+	actual, _ := m.channelLifecycle.LoadOrStore(name, mu)
+	return actual.(*sync.Mutex)
+}
+
+func supportsStartRetry(channel Channel) bool {
+	retryCapable, ok := channel.(StartRetryCapable)
+	return ok && retryCapable.SupportsStartRetry()
 }
 
 // newChannelWorker creates a channelWorker with a rate limiter configured
