@@ -6072,6 +6072,43 @@ func (p *namedResponseProvider) GetDefaultModel() string {
 	return "named-response-model"
 }
 
+type loadImageThenFinalProvider struct {
+	imagePath     string
+	finalResponse string
+	calls         int
+	lastMessages  []providers.Message
+	lastModel     string
+}
+
+func (p *loadImageThenFinalProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	p.lastMessages = append([]providers.Message(nil), messages...)
+	p.lastModel = model
+	if p.calls == 1 {
+		return &providers.LLMResponse{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "call_load_image",
+				Type: "function",
+				Name: "load_image",
+				Arguments: map[string]any{
+					"path": p.imagePath,
+				},
+			}},
+		}, nil
+	}
+	return &providers.LLMResponse{Content: p.finalResponse}, nil
+}
+
+func (p *loadImageThenFinalProvider) GetDefaultModel() string {
+	return "load-image-then-final-model"
+}
+
 func TestProcessMessage_UsesPerModelVisionOverride(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := &config.Config{
@@ -6145,6 +6182,99 @@ func TestProcessMessage_UsesPerModelVisionOverride(t *testing.T) {
 	}
 	if !hasMediaRefs(visionProvider.lastMessages) {
 		t.Fatal("expected vision override provider to receive media")
+	}
+}
+
+func TestProcessMessage_SwitchesToVisionOverrideAfterLoadImageTool(t *testing.T) {
+	workspace := t.TempDir()
+	imagePath := filepath.Join(workspace, "test.png")
+	pngHeader := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+		0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+	}
+	if err := os.WriteFile(imagePath, pngHeader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "main-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+		Tools: config.ToolsConfig{
+			LoadImage: config.ToolConfig{Enabled: true},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "main-model",
+				Enabled:   true,
+				Model:     "openrouter/deepseek/deepseek-chat",
+				Capabilities: &config.ModelCapabilities{
+					Vision: &config.ModelCapabilityOverride{
+						Model: "vision-model",
+					},
+				},
+			},
+			{
+				ModelName: "vision-model",
+				Enabled:   true,
+				Model:     "openai/gpt-4.1-mini",
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	mainProvider := &loadImageThenFinalProvider{
+		imagePath:     imagePath,
+		finalResponse: "main final",
+	}
+	visionProvider := &namedResponseProvider{response: "vision final"}
+	al := NewAgentLoop(cfg, msgBus, mainProvider)
+	al.SetMediaStore(media.NewFileMediaStore())
+	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
+		switch mc.ModelName {
+		case "vision-model":
+			return visionProvider, "gpt-4.1-mini", nil
+		case "main-model":
+			return mainProvider, "deepseek-chat", nil
+		default:
+			return mainProvider, "deepseek-chat", nil
+		}
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
+	defer cancel()
+
+	resp, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "telegram",
+			ChatID:    "chat1",
+			ChatType:  "direct",
+			SenderID:  "user1",
+			MessageID: "m1",
+		},
+		Content: "что на картинке?",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if resp != "vision final" {
+		t.Fatalf("response = %q, want %q", resp, "vision final")
+	}
+	if mainProvider.calls != 1 {
+		t.Fatalf("main provider calls = %d, want 1", mainProvider.calls)
+	}
+	if visionProvider.calls != 1 {
+		t.Fatalf("vision provider calls = %d, want 1", visionProvider.calls)
+	}
+	if !hasMediaRefs(visionProvider.lastMessages) {
+		t.Fatal("expected vision override provider to receive media after load_image tool")
 	}
 }
 

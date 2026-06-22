@@ -51,3 +51,62 @@ func (al *AgentLoop) maybeBuildVisionExecutionState(
 	}
 	return visionExecution, cleanup, visionRouteModelOverride, true, nil
 }
+
+func (al *AgentLoop) maybeApplyVisionExecutionState(
+	baseAgent *AgentInstance,
+	exec *turnExecution,
+) (bool, error) {
+	if baseAgent == nil || exec == nil {
+		return false, nil
+	}
+	if exec.model.visionRoute != visionRouteSameModel || !hasMediaRefs(exec.messages) {
+		return false, nil
+	}
+
+	activeModelConfig := exec.model.activeModelConfig
+	if activeModelConfig == nil {
+		activeModelConfig = resolveActiveModelConfig(
+			al.GetConfig(),
+			baseAgent.Workspace,
+			exec.model.activeCandidates,
+			exec.model.activeModel,
+			al.GetConfig().Agents.Defaults.Provider,
+		)
+	}
+	primary, fallbacks, ok := resolveVisionOverrideModel(activeModelConfig)
+	if !ok {
+		return false, nil
+	}
+
+	visionExecution, cleanup, err := al.buildExecutionStateForModel(baseAgent, primary, fallbacks)
+	if err != nil {
+		return false, err
+	}
+
+	if exec.model.cleanup != nil {
+		exec.model.cleanup()
+	}
+
+	exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
+	exec.model.activeCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
+	exec.model.activeModel = resolvedCandidateModel(visionExecution.Candidates, visionExecution.Model)
+	exec.model.activeModelConfig = resolveActiveModelConfig(
+		al.GetConfig(),
+		baseAgent.Workspace,
+		visionExecution.Candidates,
+		visionExecution.Model,
+		al.GetConfig().Agents.Defaults.Provider,
+	)
+	exec.model.llmModelName = resolvedCandidateModelName(
+		visionExecution.Candidates,
+		strings.TrimSpace(visionExecution.Model),
+	)
+	exec.model.activeProvider = visionExecution.Provider
+	exec.model.candidateProviders = visionExecution.CandidateProviders
+	exec.model.cleanup = cleanup
+	exec.model.usedLight = false
+	exec.model.autoFallback = false
+	exec.model.visionRoute = visionRouteModelOverride
+
+	return true, nil
+}

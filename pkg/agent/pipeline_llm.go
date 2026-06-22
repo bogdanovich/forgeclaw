@@ -34,6 +34,20 @@ func (p *Pipeline) CallLLM(
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
 	if iteration > 1 {
 		exec.messages = resolveMediaRefs(exec.messages, p.MediaStore, maxMediaSize)
+		usedVisionOverride, err := p.al.maybeApplyVisionExecutionState(ts.agent, exec)
+		if err != nil {
+			return ControlBreak, err
+		}
+		if usedVisionOverride {
+			logger.InfoCF("agent", "Switched turn to vision override model after media resolution", map[string]any{
+				"agent_id":         ts.agent.ID,
+				"iteration":        iteration,
+				"vision_model":     exec.model.activeModel,
+				"vision_route":     exec.model.visionRoute,
+				"messages_count":   len(exec.messages),
+				"active_candidate": len(exec.model.activeCandidates),
+			})
+		}
 	}
 
 	// PreLLM: graceful terminal handling
