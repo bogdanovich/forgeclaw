@@ -589,6 +589,60 @@ func TestStopAll_DoesNotOverlapRetryStartAndStop(t *testing.T) {
 	}
 }
 
+func TestReload_FailedReplacementKeepsExistingChannel(t *testing.T) {
+	const channelType = "testreload"
+	RegisterFactory(channelType, func(channelName, _ string, cfg *config.Config, _ *bus.MessageBus) (Channel, error) {
+		if string(cfg.Channels[channelName].Settings) == `{"mode":"bad"}` {
+			return nil, errors.New("bad config")
+		}
+		return &mockChannel{}, nil
+	})
+
+	oldCfg := &config.Config{
+		Channels: config.ChannelsConfig{
+			"test": {
+				Enabled:  true,
+				Type:     channelType,
+				Settings: config.RawNode(`{"mode":"old"}`),
+			},
+		},
+	}
+	newCfg := &config.Config{
+		Channels: config.ChannelsConfig{
+			"test": {
+				Enabled:  true,
+				Type:     channelType,
+				Settings: config.RawNode(`{"mode":"bad"}`),
+			},
+		},
+	}
+
+	m := newTestManager()
+	oldChannel := &mockChannel{}
+	m.config = oldCfg
+	m.channels["test"] = oldChannel
+	m.channelHashes = toChannelHashes(oldCfg)
+
+	oldHash := m.channelHashes["test"]
+	if err := m.Reload(context.Background(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	gotChannel, ok := m.channels["test"]
+	if !ok {
+		t.Fatal("expected existing channel to remain registered")
+	}
+	if gotChannel != oldChannel {
+		t.Fatal("expected existing channel instance to be preserved after failed replacement")
+	}
+	if gotHash := m.channelHashes["test"]; gotHash != oldHash {
+		t.Fatalf("channel hash = %q, want preserved old hash %q", gotHash, oldHash)
+	}
+	if m.config != newCfg {
+		t.Fatal("expected manager config to advance to new config despite failed replacement")
+	}
+}
+
 func TestStartAllPublishesLifecycleRuntimeEvents(t *testing.T) {
 	eventBus := runtimeevents.NewBus()
 	defer func() {
