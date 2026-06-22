@@ -1364,6 +1364,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	m.dispatchTask = &asyncTask{cancel: cancel}
 	failedStarts := make([]error, 0, len(m.channels))
 	failedNames := make([]string, 0, len(m.channels))
+	retryEligibleFailures := 0
 
 	for name, channel := range m.channels {
 		logger.InfoCF("channels", "Starting channel", map[string]any{
@@ -1383,6 +1384,9 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			)
 			failedStarts = append(failedStarts, fmt.Errorf("channel %s: %w", name, err))
 			failedNames = append(failedNames, name)
+			if supportsStartRetry(channel) {
+				retryEligibleFailures++
+			}
 			continue
 		}
 		// Lazily create worker only after channel starts successfully
@@ -1406,23 +1410,40 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 
 	if len(m.channels) > 0 && len(m.workers) == 0 {
-		if m.dispatchTask != nil {
-			m.dispatchTask.cancel()
-			m.dispatchTask = nil
-		}
-
 		sort.Strings(failedNames)
 		if len(failedStarts) == 0 {
+			if m.dispatchTask != nil {
+				m.dispatchTask.cancel()
+				m.dispatchTask = nil
+			}
 			return fmt.Errorf("failed to start any enabled channels")
 		}
 
-		logger.ErrorCF("channels", "All enabled channels failed to start", map[string]any{
-			"failed":          len(failedNames),
-			"total":           len(m.channels),
-			"failed_channels": failedNames,
-		})
+		if retryEligibleFailures == 0 {
+			if m.dispatchTask != nil {
+				m.dispatchTask.cancel()
+				m.dispatchTask = nil
+			}
 
-		return fmt.Errorf("failed to start any enabled channels: %w", errors.Join(failedStarts...))
+			logger.ErrorCF("channels", "All enabled channels failed to start", map[string]any{
+				"failed":          len(failedNames),
+				"total":           len(m.channels),
+				"failed_channels": failedNames,
+			})
+
+			return fmt.Errorf("failed to start any enabled channels: %w", errors.Join(failedStarts...))
+		}
+
+		logger.WarnCF(
+			"channels",
+			"All enabled channels failed to start; waiting for retry-capable channels to recover",
+			map[string]any{
+				"failed":                  len(failedNames),
+				"total":                   len(m.channels),
+				"failed_channels":         failedNames,
+				"retry_eligible_failures": retryEligibleFailures,
+			},
+		)
 	}
 
 	if len(failedNames) > 0 {

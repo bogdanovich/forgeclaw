@@ -376,6 +376,42 @@ func TestStartAll_RetriesFailedChannelStarts(t *testing.T) {
 	t.Fatal("expected flaky channel worker to be started by retry loop")
 }
 
+func TestStartAll_AllRetryableFailuresKeepRetryLoopAlive(t *testing.T) {
+	m := newTestManager()
+	var attempts int
+
+	m.channels["flaky"] = &mockChannel{
+		retryStartSafe: true,
+		startFn: func(_ context.Context) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("temporary startup failure")
+			}
+			return nil
+		},
+	}
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	if _, ok := m.workers["flaky"]; ok {
+		t.Fatal("expected flaky channel to be absent immediately after initial failed start")
+	}
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		_, ok := m.workers["flaky"]
+		m.mu.RUnlock()
+		if ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("expected retry-capable channel worker to be started after initial all-failed startup")
+}
+
 func TestStartAll_RetryDoesNotInstallWorkerAfterContextCanceled(t *testing.T) {
 	m := newTestManager()
 	ctx, cancel := context.WithCancel(context.Background())
