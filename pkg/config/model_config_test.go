@@ -249,33 +249,6 @@ func TestModelConfig_Validate(t *testing.T) {
 	}
 }
 
-func TestModelConfig_VisionCapabilities(t *testing.T) {
-	var cfg ModelConfig
-	err := json.Unmarshal([]byte(`{
-		"model_name": "deepseek-main",
-		"model": "openrouter/deepseek/deepseek-chat",
-		"capabilities": {
-			"vision": {
-				"model": "openai/gpt-4.1-mini",
-				"fallbacks": ["anthropic/claude-sonnet-4"]
-			}
-		}
-	}`), &cfg)
-	if err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-	if cfg.Capabilities == nil || cfg.Capabilities.Vision == nil {
-		t.Fatal("expected vision capabilities to be populated")
-	}
-	if got := cfg.Capabilities.Vision.Model; got != "openai/gpt-4.1-mini" {
-		t.Fatalf("Vision.Model = %q, want %q", got, "openai/gpt-4.1-mini")
-	}
-	if len(cfg.Capabilities.Vision.Fallbacks) != 1 ||
-		cfg.Capabilities.Vision.Fallbacks[0] != "anthropic/claude-sonnet-4" {
-		t.Fatalf("Vision.Fallbacks = %#v", cfg.Capabilities.Vision.Fallbacks)
-	}
-}
-
 func TestConfig_ValidateModelList(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -233,8 +233,8 @@ image generation.
 | `enabled` | bool | false | Enable the image generation tool |
 | `model` | string | `gpt-image-2` | Image generation model. Values may include a provider prefix, for example `openai-codex/gpt-image-2` |
 
-`tools.image_generate.model` is configured independently from vision / `load_image`
-routing. If it is not set, PicoClaw uses `gpt-image-2`.
+If `tools.image_generate.model` is not set, PicoClaw falls back to the legacy
+`agents.defaults.image_model` setting, then to `gpt-image-2`.
 
 ```json
 {

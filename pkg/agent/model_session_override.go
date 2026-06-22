@@ -154,11 +154,7 @@ func (al *AgentLoop) buildExecutionStateForModel(
 		return effectiveExecutionState{}, nil, err
 	}
 
-	factory := al.providerFactory
-	if factory == nil {
-		factory = providers.CreateProviderFromConfig
-	}
-	overrideProvider, _, err := factory(modelCfg)
+	overrideProvider, _, err := providers.CreateProviderFromConfig(modelCfg)
 	if err != nil {
 		return effectiveExecutionState{}, nil, fmt.Errorf("failed to initialize model %q: %w", modelName, err)
 	}

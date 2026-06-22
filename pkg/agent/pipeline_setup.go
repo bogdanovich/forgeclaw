@@ -162,44 +162,6 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.model.candidateProviders = execution.CandidateProviders
 	exec.model.cleanup = nil
 	exec.model.usedLight = selection.usedLight
-	exec.model.autoFallback = true
-	exec.model.visionRoute = visionRouteSameModel
-
-	routedExecution := execution
-	routedExecution.Model = selection.model
-	routedExecution.Provider = activeProvider
-	routedExecution.Candidates = append([]providers.FallbackCandidate(nil), selection.activeCandidates...)
-	routedExecution.CandidateProviders = cloneCandidateProviderMap(execution.CandidateProviders)
-
-	visionExecution, visionCleanup, visionRoute, usedVisionOverride, err := p.al.maybeBuildVisionExecutionState(
-		ts.agent,
-		routedExecution,
-		messages,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if usedVisionOverride {
-		exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
-		exec.model.activeCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
-		exec.model.activeModel = resolvedCandidateModel(visionExecution.Candidates, visionExecution.Model)
-		exec.model.activeModelConfig = resolveActiveModelConfig(
-			p.Cfg,
-			ts.agent.Workspace,
-			visionExecution.Candidates,
-			visionExecution.Model,
-			p.Cfg.Agents.Defaults.Provider,
-		)
-		exec.model.llmModelName = resolvedCandidateModelName(
-			visionExecution.Candidates,
-			strings.TrimSpace(visionExecution.Model),
-		)
-		exec.model.activeProvider = visionExecution.Provider
-		exec.model.candidateProviders = visionExecution.CandidateProviders
-		exec.model.cleanup = visionCleanup
-		exec.model.autoFallback = false
-		exec.model.visionRoute = visionRoute
-	}
 
 	return exec, nil
 }
