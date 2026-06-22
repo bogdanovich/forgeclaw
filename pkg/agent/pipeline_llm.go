@@ -223,13 +223,15 @@ func (p *Pipeline) CallLLM(
 				)
 				break
 			}
-			updateAutoFallbackSelection(
-				p.al,
-				ts.model.RouteSessionKey,
-				exec.model.selectedCandidates,
-				fbResult,
-				exec.model.usedLight,
-			)
+			if exec.model.autoFallback {
+				updateAutoFallbackSelection(
+					p.al,
+					ts.model.RouteSessionKey,
+					exec.model.selectedCandidates,
+					fbResult,
+					exec.model.usedLight,
+				)
+			}
 			return fbResult.Response, nil
 		}
 		resp, err := exec.model.activeProvider.Chat(
@@ -239,7 +241,10 @@ func (p *Pipeline) CallLLM(
 			exec.llmModel,
 			exec.llmOpts,
 		)
-		if err == nil && strings.TrimSpace(ts.model.RouteSessionKey) != "" && len(exec.model.selectedCandidates) > 0 {
+		if err == nil &&
+			exec.model.autoFallback &&
+			strings.TrimSpace(ts.model.RouteSessionKey) != "" &&
+			len(exec.model.selectedCandidates) > 0 {
 			updateAutoFallbackSelection(
 				p.al,
 				ts.model.RouteSessionKey,

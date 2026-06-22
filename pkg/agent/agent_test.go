@@ -6045,6 +6045,109 @@ func (p *visionUnsupportedMediaProvider) GetDefaultModel() string {
 	return "mock-fail-model"
 }
 
+type namedResponseProvider struct {
+	response     string
+	calls        int
+	lastMessages []providers.Message
+	lastModel    string
+}
+
+func (p *namedResponseProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	p.lastMessages = append([]providers.Message(nil), messages...)
+	p.lastModel = model
+	return &providers.LLMResponse{
+		Content:   p.response,
+		ToolCalls: []providers.ToolCall{},
+	}, nil
+}
+
+func (p *namedResponseProvider) GetDefaultModel() string {
+	return "named-response-model"
+}
+
+func TestProcessMessage_UsesPerModelVisionOverride(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "main-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "main-model",
+				Enabled:   true,
+				Model:     "openrouter/deepseek/deepseek-chat",
+				Capabilities: &config.ModelCapabilities{
+					Vision: &config.ModelCapabilityOverride{
+						Model: "vision-model",
+					},
+				},
+			},
+			{
+				ModelName: "vision-model",
+				Enabled:   true,
+				Model:     "openai/gpt-4.1-mini",
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	mainProvider := &namedResponseProvider{response: "main"}
+	visionProvider := &namedResponseProvider{response: "vision"}
+	al := NewAgentLoop(cfg, msgBus, mainProvider)
+	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
+		switch mc.ModelName {
+		case "vision-model":
+			return visionProvider, "gpt-4.1-mini", nil
+		case "main-model":
+			return mainProvider, "deepseek-chat", nil
+		default:
+			return mainProvider, "deepseek-chat", nil
+		}
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
+	defer cancel()
+
+	resp, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "telegram",
+			ChatID:    "chat1",
+			ChatType:  "direct",
+			SenderID:  "user1",
+			MessageID: "m1",
+		},
+		Content: "describe this image",
+		Media:   []string{"data:image/png;base64,abc123"},
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if resp != "vision" {
+		t.Fatalf("response = %q, want %q", resp, "vision")
+	}
+	if mainProvider.calls != 0 {
+		t.Fatalf("main provider calls = %d, want 0", mainProvider.calls)
+	}
+	if visionProvider.calls != 1 {
+		t.Fatalf("vision provider calls = %d, want 1", visionProvider.calls)
+	}
+	if !hasMediaRefs(visionProvider.lastMessages) {
+		t.Fatal("expected vision override provider to receive media")
+	}
+}
+
 func TestAgentLoop_VisionUnsupportedErrorStripsSessionMedia(t *testing.T) {
 	workspace := t.TempDir()
 

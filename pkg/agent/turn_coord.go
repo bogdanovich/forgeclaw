@@ -451,6 +451,29 @@ func (al *AgentLoop) askSideQuestion(
 	)
 	activeCandidates, activeModel, usedLight := selection.activeCandidates, selection.model, selection.usedLight
 	selectedModelName := sideQuestionModelName(agent, usedLight)
+	visionExecution, visionCleanup, _, usedVisionOverride, err := al.maybeBuildVisionExecutionState(
+		agent,
+		effectiveExecutionState{
+			AgentID:            agent.ID,
+			Model:              activeModel,
+			Candidates:         append([]providers.FallbackCandidate(nil), activeCandidates...),
+			CandidateProviders: cloneCandidateProviderMap(effectiveExecutionStateForAgent(agent).CandidateProviders),
+		},
+		messages,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if visionCleanup != nil {
+			visionCleanup()
+		}
+	}()
+	if usedVisionOverride {
+		activeCandidates = visionExecution.Candidates
+		activeModel = resolvedCandidateModel(visionExecution.Candidates, visionExecution.Model)
+		selectedModelName = resolvedCandidateModelName(visionExecution.Candidates, selectedModelName)
+	}
 
 	llmOpts := map[string]any{
 		"max_tokens":       agent.MaxTokens,
@@ -572,9 +595,9 @@ func (al *AgentLoop) askSideQuestion(
 	// Note: Vision retry is only applied to the initial call. If fallback chain
 	// is used, vision errors from fallback providers will not trigger retry.
 	var resp *providers.LLMResponse
-	var err error
-	resp, err = callSideLLM(messages)
-	if err != nil && hasMediaRefs(messages) && isVisionUnsupportedError(err) {
+	var callErr error
+	resp, callErr = callSideLLM(messages)
+	if callErr != nil && hasMediaRefs(messages) && isVisionUnsupportedError(callErr) {
 		al.emitEvent(
 			runtimeevents.KindAgentLLMRetry,
 			HookMeta{
@@ -586,15 +609,15 @@ func (al *AgentLoop) askSideQuestion(
 				Attempt:    1,
 				MaxRetries: 1,
 				Reason:     "vision_unsupported",
-				Error:      err.Error(),
+				Error:      callErr.Error(),
 				Backoff:    0,
 			},
 		)
 		messagesWithoutMedia := stripMessageMedia(messages)
-		resp, err = callSideLLM(messagesWithoutMedia)
+		resp, callErr = callSideLLM(messagesWithoutMedia)
 	}
-	if err != nil {
-		return "", err
+	if callErr != nil {
+		return "", callErr
 	}
 	if resp == nil {
 		return "", nil
