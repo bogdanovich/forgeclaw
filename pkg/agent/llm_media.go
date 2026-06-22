@@ -1,14 +1,10 @@
 package agent
 
 import (
-	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
-
-var resolvedImagePathTagRegex = regexp.MustCompile(`\[image:[^\s\]][^\]]*\]`)
 
 func messagesContainMedia(messages []providers.Message) bool {
 	for _, msg := range messages {
@@ -58,30 +54,5 @@ func isVisionUnsupportedError(err error) bool {
 		return true
 	}
 
-	return false
-}
-
-func visionUnsupportedModelError(modelName string) error {
-	modelName = strings.TrimSpace(modelName)
-	if modelName != "" {
-		return fmt.Errorf(
-			"active model %q does not support image input; configure capabilities.vision.model with a multimodal model",
-			modelName,
-		)
-	}
-	return fmt.Errorf(
-		"the active model does not support image input; configure capabilities.vision.model with a multimodal model",
-	)
-}
-
-func messagesContainCurrentTurnMediaTurn(messages []providers.Message) bool {
-	for _, msg := range messages {
-		if len(msg.Media) > 0 {
-			return true
-		}
-		if resolvedImagePathTagRegex.MatchString(msg.Content) {
-			return true
-		}
-	}
 	return false
 }

@@ -43,11 +43,6 @@ func normalizeCurrentTurnStart(messages []providers.Message, currentTurnStart in
 	return currentTurnStart
 }
 
-func currentTurnMessages(messages []providers.Message, currentTurnStart int) []providers.Message {
-	currentTurnStart = normalizeCurrentTurnStart(messages, currentTurnStart)
-	return messages[currentTurnStart:]
-}
-
 // resolveMediaRefs resolves media:// refs in messages.
 // For user messages: images get path tags only ([image:/path]) so the LLM
 // can decide whether to view them via load_image or operate on the file.
