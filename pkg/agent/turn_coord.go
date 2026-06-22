@@ -14,10 +14,15 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipeline) (turnResult, error) {
+func (al *AgentLoop) runTurn(
+	ctx context.Context,
+	ts *turnState,
+	pipeline *Pipeline,
+) (result turnResult, err error) {
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
 	ts.setTurnCancel(turnCancel)
+	var finalizeErr error
 
 	// Inject turnState and AgentLoop into context so tools (e.g. spawn) can retrieve them.
 	turnCtx = withTurnState(turnCtx, ts)
@@ -66,6 +71,17 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				ToolExecutions:        ts.toolExecutionsSnapshot(),
 			},
 		)
+	}()
+	defer func() {
+		acceptedSteering := ts.acceptedSteeringSnapshot()
+		if len(acceptedSteering) == 0 {
+			return
+		}
+		if turnStatus == TurnEndStatusCompleted && err == nil {
+			al.ackAcceptedSteeringMessages(ctx, acceptedSteering)
+			return
+		}
+		al.releaseSteeringMessages(context.Background(), acceptedSteering, err)
 	}()
 
 	if ts.hardAbortRequested() {
@@ -123,7 +139,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				exec.pendingMessages = nil
 			}
 		} else if !ts.opts.SkipInitialSteeringPoll {
-			if steerMsgs := al.dequeueSteeringMessagesForScopeWithFallback(ts.sessionKey); len(steerMsgs) > 0 {
+			if steerMsgs := al.dequeueSteeringMessagesForTurnWithFallback(
+				ts.sessionKey,
+				ts.opts.Dispatch.SenderID(),
+			); len(steerMsgs) > 0 {
 				exec.markSteeringObserved()
 				pendingMessages = append(pendingMessages, steerMsgs...)
 			}
@@ -132,18 +151,26 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		// Check if parent turn has ended (SubTurn support from HEAD)
 		if ts.parentTurnState != nil && ts.IsParentEnded() {
 			if !ts.critical {
-				logger.InfoCF("agent", "Parent turn ended, non-critical SubTurn exiting gracefully", map[string]any{
+				logger.InfoCF(
+					"agent",
+					"Parent turn ended, non-critical SubTurn exiting gracefully",
+					map[string]any{
+						"agent_id":  ts.agentID,
+						"iteration": iteration,
+						"turn_id":   ts.turnID,
+					},
+				)
+				break
+			}
+			logger.InfoCF(
+				"agent",
+				"Parent turn ended, critical SubTurn continues running",
+				map[string]any{
 					"agent_id":  ts.agentID,
 					"iteration": iteration,
 					"turn_id":   ts.turnID,
-				})
-				break
-			}
-			logger.InfoCF("agent", "Parent turn ended, critical SubTurn continues running", map[string]any{
-				"agent_id":  ts.agentID,
-				"iteration": iteration,
-				"turn_id":   ts.turnID,
-			})
+				},
+			)
 		}
 
 		// Poll for pending SubTurn results (from HEAD)
@@ -172,7 +199,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					ts.recordPersistedMessage(pm)
 					ts.ingestMessage(turnCtx, al, pm)
 				}
-				al.ackAcceptedSteeringMessages(ctx, []providers.Message{pm})
+				ts.recordAcceptedSteeringMessage(pm)
 				logger.InfoCF("agent", "Injected steering message into context",
 					map[string]any{
 						"agent_id":    ts.agent.ID,
@@ -233,7 +260,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				finalContent = ts.opts.DefaultResponse
 			}
 			finalContent = renderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
-			result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+			result, finalizeErr = pipeline.Finalize(
+				ctx,
+				turnCtx,
+				ts,
+				exec,
+				turnStatus,
+				finalContent,
+			)
 			if finalizeErr != nil {
 				turnStatus = TurnEndStatusError
 			}
@@ -248,20 +282,31 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				messages = exec.messages
 				continue
 			case ToolControlFinalize:
-				renderedContent, rendered := tryRenderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
+				renderedContent, rendered := tryRenderFinalTurnReply(
+					turnCtx,
+					al,
+					ts,
+					exec,
+					finalContent,
+				)
 				finalContent = renderedContent
 				if !rendered {
 					messages = exec.messages
 					continue
 				}
-				if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+				if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
+					steerMsgs,
+				) > 0 {
 					exec.markSteeringObserved()
-					logger.InfoCF("agent", "Steering arrived during terminal render; continuing turn",
+					logger.InfoCF(
+						"agent",
+						"Steering arrived during terminal render; continuing turn",
 						map[string]any{
 							"agent_id":       ts.agent.ID,
 							"iteration":      iteration,
 							"steering_count": len(steerMsgs),
-						})
+						},
+					)
 					exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 					messages = exec.messages
 					continue
@@ -288,7 +333,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					finalContent = ""
 				}
 				finalContent = renderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
-				result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+				result, finalizeErr = pipeline.Finalize(
+					ctx,
+					turnCtx,
+					ts,
+					exec,
+					turnStatus,
+					finalContent,
+				)
 				if finalizeErr != nil {
 					turnStatus = TurnEndStatusError
 				}
@@ -317,7 +369,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		return al.abortTurn(ts)
 	}
 
-	result, err := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+	result, err = pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 	if err != nil {
 		turnStatus = TurnEndStatusError
 	}
@@ -356,10 +408,14 @@ func (al *AgentLoop) resolveContextManager() ContextManager {
 	}
 	cm, err := factory(al.cfg.Agents.Defaults.ContextManagerConfig, al)
 	if err != nil {
-		logger.WarnCF("agent", "Failed to create context manager, falling back to legacy", map[string]any{
-			"name":  name,
-			"error": err.Error(),
-		})
+		logger.WarnCF(
+			"agent",
+			"Failed to create context manager, falling back to legacy",
+			map[string]any{
+				"name":  name,
+				"error": err.Error(),
+			},
+		)
 		return &legacyContextManager{al: al}
 	}
 	return cm
@@ -447,21 +503,30 @@ func (al *AgentLoop) askSideQuestion(
 	}
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize, currentTurnStart)
 
+	execution := effectiveExecutionStateForAgent(agent)
+	routeSessionKey := ""
+	if opts != nil {
+		execution = opts.ModelBinding.ExecutionState()
+		routeSessionKey = opts.ModelBinding.RouteSessionKey
+	}
 	selection := al.selectCandidates(
-		effectiveExecutionStateForAgent(agent),
+		execution,
 		question,
 		messages,
-		opts.ModelBinding.RouteSessionKey,
+		routeSessionKey,
 	)
 	activeCandidates, activeModel, usedLight := selection.activeCandidates, selection.model, selection.usedLight
-	selectedModelName := sideQuestionModelName(agent, usedLight)
+	selectedModelName := resolvedCandidateModelName(activeCandidates, activeModel)
+	if selectedModelName == "" {
+		selectedModelName = sideQuestionModelName(agent, usedLight)
+	}
 	visionExecution, visionCleanup, _, usedVisionOverride, err := al.maybeBuildVisionExecutionState(
 		agent,
 		effectiveExecutionState{
 			AgentID:            agent.ID,
 			Model:              activeModel,
 			Candidates:         append([]providers.FallbackCandidate(nil), activeCandidates...),
-			CandidateProviders: cloneCandidateProviderMap(effectiveExecutionStateForAgent(agent).CandidateProviders),
+			CandidateProviders: cloneCandidateProviderMap(execution.CandidateProviders),
 		},
 		messages,
 	)
@@ -476,7 +541,10 @@ func (al *AgentLoop) askSideQuestion(
 	if usedVisionOverride {
 		activeCandidates = visionExecution.Candidates
 		activeModel = resolvedCandidateModel(visionExecution.Candidates, visionExecution.Model)
-		selectedModelName = resolvedCandidateModelName(visionExecution.Candidates, selectedModelName)
+		selectedModelName = resolvedCandidateModelName(
+			visionExecution.Candidates,
+			selectedModelName,
+		)
 	}
 
 	llmOpts := map[string]any{
@@ -524,7 +592,11 @@ func (al *AgentLoop) askSideQuestion(
 
 	turnCtx := newTurnContext(nil, nil, nil)
 	if opts != nil {
-		turnCtx = newTurnContext(opts.Dispatch.InboundContext, opts.Dispatch.RouteResult, opts.Dispatch.SessionScope)
+		turnCtx = newTurnContext(
+			opts.Dispatch.InboundContext,
+			opts.Dispatch.RouteResult,
+			opts.Dispatch.SessionScope,
+		)
 	}
 	llmModel := activeModel
 	if al.hooks != nil {
@@ -667,7 +739,9 @@ func (al *AgentLoop) isolatedSideQuestionProvider(
 	candidate providers.FallbackCandidate,
 ) (providers.LLMProvider, string, *config.ModelConfig, func(), error) {
 	if agent == nil {
-		return nil, "", nil, func() {}, fmt.Errorf("isolatedSideQuestionProvider: no agent available for /btw")
+		return nil, "", nil, func() {}, fmt.Errorf(
+			"isolatedSideQuestionProvider: no agent available for /btw",
+		)
 	}
 
 	modelCfg, err := al.sideQuestionModelConfig(agent, baseModelName, candidate)

@@ -94,14 +94,16 @@ func (al *AgentLoop) applySyncToolResultDelivery(
 
 	if !ts.opts.SuppressToolUserDelivery && result.ImmediateDelivery {
 		if _, _, err := al.deliverToolResultToUser(ctx, ts, result, toolName); err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
+			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
+				WithError(err)
 		}
 	}
 
 	if !ts.opts.SuppressToolUserDelivery && result.ResponseHandled {
 		attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, result, toolName)
 		if err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
+			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
+				WithError(err)
 		}
 		if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(result)) > 0 {
 			result.ResponseHandled = false
@@ -405,7 +407,7 @@ toolLoop:
 						ts.ingestMessage(turnCtx, al, toolResultMsg)
 					}
 
-					if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+					if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(steerMsgs) > 0 {
 						exec.markAdditionalUserInputObserved()
 						exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 					}
@@ -800,7 +802,7 @@ toolLoop:
 			ts.ingestMessage(turnCtx, al, toolResultMsg)
 		}
 
-		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+		if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(steerMsgs) > 0 {
 			exec.markSteeringObserved()
 			exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 		}
@@ -884,7 +886,9 @@ toolLoop:
 	}
 
 	// Poll for newly arrived steering
-	if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+	if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
+		steerMsgs,
+	) > 0 {
 		exec.markSteeringObserved()
 		logger.InfoCF("agent", "Steering arrived after tool delivery; continuing turn",
 			map[string]any{
@@ -898,12 +902,15 @@ toolLoop:
 
 	// No pending steering: finalize or break depending on allResponsesHandled
 	if shouldFinalizeAfterToolLoopWithRender(al, exec) {
-		logger.InfoCF("agent", "Tool loop completed; rendering terminal reply from accumulated turn context",
+		logger.InfoCF(
+			"agent",
+			"Tool loop completed; rendering terminal reply from accumulated turn context",
 			map[string]any{
 				"agent_id":   ts.agent.ID,
 				"iteration":  iteration,
 				"tool_count": len(normalizedToolCalls),
-			})
+			},
+		)
 		return ToolControlFinalize
 	}
 

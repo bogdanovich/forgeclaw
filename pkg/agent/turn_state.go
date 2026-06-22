@@ -253,6 +253,7 @@ type turnState struct {
 	restorePointHistory []providers.Message
 	restorePointSummary string
 	persistedMessages   []providers.Message
+	acceptedSteering    []providers.Message
 
 	// SubTurn support (from HEAD)
 	depth                int                    // SubTurn depth (0 for root turn)
@@ -295,7 +296,8 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 	if binding.WorkspaceAgent == nil {
 		binding.WorkspaceAgent = agent
 	}
-	if binding.Execution.Model == "" && binding.Execution.Provider == nil && len(binding.Execution.Candidates) == 0 {
+	if binding.Execution.Model == "" && binding.Execution.Provider == nil &&
+		len(binding.Execution.Candidates) == 0 {
 		binding.Execution = effectiveExecutionStateForAgent(agent)
 	}
 	ts := &turnState{
@@ -482,7 +484,12 @@ func (ts *turnState) toolKindsSnapshot() []string {
 	return append([]string(nil), ts.toolKinds...)
 }
 
-func (ts *turnState) recordToolExecution(tool string, success bool, errorSummary string, skillNames []string) {
+func (ts *turnState) recordToolExecution(
+	tool string,
+	success bool,
+	errorSummary string,
+	skillNames []string,
+) {
 	tool = strings.TrimSpace(tool)
 	if tool == "" {
 		return
@@ -726,10 +733,22 @@ func (ts *turnState) recordPersistedMessage(msg providers.Message) {
 	ts.persistedMessages = append(ts.persistedMessages, msg)
 }
 
+func (ts *turnState) recordAcceptedSteeringMessage(msg providers.Message) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.acceptedSteering = append(ts.acceptedSteering, msg)
+}
+
 func (ts *turnState) persistedMessagesSnapshot() []providers.Message {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return append([]providers.Message(nil), ts.persistedMessages...)
+}
+
+func (ts *turnState) acceptedSteeringSnapshot() []providers.Message {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return append([]providers.Message(nil), ts.acceptedSteering...)
 }
 
 func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {

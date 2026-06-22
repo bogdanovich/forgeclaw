@@ -207,7 +207,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				msg = al.prepareInboundMessageForAgent(ctx, msg)
 
 				// Another turn is already active (or reserved) for this session — enqueue
-				if err := al.enqueueSteeringMessage(sessionKey, agentID, providers.Message{
+				if err := al.enqueueSteeringMessageWithSender(sessionKey, agentID, msg.SenderID, providers.Message{
 					Role:           "user",
 					Content:        msg.Content,
 					Media:          append([]string(nil), msg.Media...),
@@ -260,7 +260,8 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 						return
 					}
 					if actual, ok := al.activeTurnStates.Load(sessionKey); ok {
-						if ts, ok := actual.(*turnState); ok && strings.HasPrefix(ts.turnID, pendingTurnPrefix) {
+						if ts, ok := actual.(*turnState); ok &&
+							strings.HasPrefix(ts.turnID, pendingTurnPrefix) {
 							// Placeholder still present — runTurn never replaced it.
 							al.releaseSessionTurnState(sessionKey, ts)
 						}
@@ -461,8 +462,11 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	if newEvolution != nil {
 		newEvolution.setCurrentCheck(al.isCurrentEvolutionBridge)
 		if err := newEvolution.subscribeRuntimeEvents(al.runtimeEvents.Channel()); err != nil {
-			logger.WarnCF("agent", "Failed to subscribe reloaded evolution bridge to runtime events",
-				map[string]any{"error": err.Error()})
+			logger.WarnCF(
+				"agent",
+				"Failed to subscribe reloaded evolution bridge to runtime events",
+				map[string]any{"error": err.Error()},
+			)
 		}
 	}
 
@@ -601,7 +605,11 @@ func (al *AgentLoop) runAgentLoop(
 	turnScope := al.newTurnEventScope(
 		agent.ID,
 		opts.Dispatch.SessionKey,
-		newTurnContext(opts.Dispatch.InboundContext, opts.Dispatch.RouteResult, opts.Dispatch.SessionScope),
+		newTurnContext(
+			opts.Dispatch.InboundContext,
+			opts.Dispatch.RouteResult,
+			opts.Dispatch.SessionScope,
+		),
 	)
 	ts := newTurnState(agent, opts, turnScope)
 	pipeline := NewPipeline(al)
@@ -726,7 +734,11 @@ func (al *AgentLoop) scheduleBackgroundCompaction(
 	}()
 }
 
-func agentMessageToolSentToTurnTarget(agent *AgentInstance, sessionKey string, dispatch DispatchRequest) bool {
+func agentMessageToolSentToTurnTarget(
+	agent *AgentInstance,
+	sessionKey string,
+	dispatch DispatchRequest,
+) bool {
 	if agent == nil || agent.Tools == nil || strings.TrimSpace(sessionKey) == "" {
 		return false
 	}
