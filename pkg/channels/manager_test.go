@@ -428,6 +428,60 @@ func TestStartAll_RetryDoesNotInstallWorkerAfterContextCanceled(t *testing.T) {
 	}
 }
 
+func TestStartAll_RetryDoesNotInstallWorkerAfterChannelRemoved(t *testing.T) {
+	m := newTestManager()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var attempts int
+	startRelease := make(chan struct{})
+	stopCalled := make(chan struct{}, 1)
+
+	m.channels["good"] = &mockChannel{}
+	m.channels["flaky"] = &mockChannel{
+		retryStartSafe: true,
+		startFn: func(_ context.Context) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("temporary startup failure")
+			}
+			<-startRelease
+			return nil
+		},
+		stopFn: func(_ context.Context) error {
+			select {
+			case stopCalled <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+
+	if err := m.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	m.mu.Lock()
+	delete(m.channels, "flaky")
+	m.mu.Unlock()
+	close(startRelease)
+
+	select {
+	case <-stopCalled:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("expected retried channel to be stopped after channel removal")
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	m.mu.RLock()
+	_, ok := m.workers["flaky"]
+	m.mu.RUnlock()
+	if ok {
+		t.Fatal("did not expect worker installation after channel removal")
+	}
+}
+
 func TestStartAll_DoesNotRetryChannelWithoutRetrySupport(t *testing.T) {
 	m := newTestManager()
 	var attempts int

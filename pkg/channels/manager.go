@@ -1550,6 +1550,8 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 		m.mu.Lock()
 		if ctx.Err() != nil || m.dispatchTask == nil {
 			shouldStop = true
+		} else if current, ok := m.channels[pendingStart.name]; !ok || current != pendingStart.channel {
+			shouldStop = true
 		} else if _, ok := m.workers[pendingStart.name]; ok {
 			shouldStop = true
 		} else {
@@ -1677,6 +1679,30 @@ func (m *Manager) channelLifecycleLock(name string) *sync.Mutex {
 	mu := &sync.Mutex{}
 	actual, _ := m.channelLifecycle.LoadOrStore(name, mu)
 	return actual.(*sync.Mutex)
+}
+
+func (m *Manager) startChannelWithLifecycle(ctx context.Context, name string, channel Channel) error {
+	lifecycle := m.channelLifecycleLock(name)
+	lifecycle.Lock()
+	defer lifecycle.Unlock()
+	return channel.Start(ctx)
+}
+
+func (m *Manager) stopChannelWithLifecycle(ctx context.Context, name string, channel Channel) error {
+	lifecycle := m.channelLifecycleLock(name)
+	lifecycle.Lock()
+	defer lifecycle.Unlock()
+	return channel.Stop(ctx)
+}
+
+func stopChannelWorker(w *channelWorker) {
+	if w == nil {
+		return
+	}
+	close(w.queue)
+	<-w.done
+	close(w.mediaQueue)
+	<-w.mediaDone
 }
 
 func supportsStartRetry(channel Channel) bool {
@@ -2152,100 +2178,163 @@ func (m *Manager) GetEnabledChannels() []string {
 // Reload updates the config reference without restarting channels.
 // This is used when channel config hasn't changed but other parts of the config have.
 func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
+	type removedChannel struct {
+		name    string
+		channel Channel
+		worker  *channelWorker
+	}
+	type addedChannel struct {
+		name        string
+		channel     Channel
+		channelType string
+	}
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
-	// Save old config so we can revert on error.
 	oldConfig := m.config
+	oldDispatchTask := m.dispatchTask
 
-	// Update config early: initChannel uses m.config via factory(m.config, m.bus).
 	m.config = cfg
-
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
 
-	deferFuncs := make([]func(), 0, len(removed)+len(added))
-	for _, name := range removed {
-		// Stop all channels
-		channel := m.channels[name]
-		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
-		})
-		if err := channel.Stop(ctx); err != nil {
-			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
-		}
-		deferFuncs = append(deferFuncs, func() {
-			m.UnregisterChannel(name)
-		})
-	}
-	dispatchCtx, cancel := context.WithCancel(ctx)
-	m.dispatchTask = &asyncTask{cancel: cancel}
 	cc, err := toChannelConfig(cfg, added)
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
 		m.config = oldConfig
-		cancel()
+		m.mu.Unlock()
 		return err
 	}
-	err = m.initChannels(cc)
-	if err != nil {
-		logger.ErrorC("channels", fmt.Sprintf("initChannels error: %v", err))
-		m.config = oldConfig
-		cancel()
-		return err
-	}
-	for _, name := range added {
-		channel := m.channels[name]
-		logger.InfoCF("channels", "Starting channel", map[string]any{
-			"channel": name,
-		})
-		if err := channel.Start(ctx); err != nil {
-			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
-			m.publishChannelEvent(
-				runtimeevents.KindChannelLifecycleStartFailed,
-				name,
-				runtimeevents.Scope{Channel: name},
-				runtimeevents.SeverityError,
-				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
-			)
+
+	removedChannels := make([]removedChannel, 0, len(removed))
+	for _, name := range removed {
+		channel, ok := m.channels[name]
+		if !ok || channel == nil {
 			continue
 		}
-		// Lazily create worker only after channel starts successfully
+		if m.mux != nil {
+			m.unregisterChannelHTTPHandler(name, channel)
+		}
+		removedChannels = append(removedChannels, removedChannel{
+			name:    name,
+			channel: channel,
+			worker:  m.workers[name],
+		})
+		delete(m.workers, name)
+		delete(m.channels, name)
+	}
+
+	dispatchCtx, cancel := context.WithCancel(ctx)
+	dispatchTask := &asyncTask{cancel: cancel}
+	m.dispatchTask = dispatchTask
+
+	if err := m.initChannels(cc); err != nil {
+		logger.ErrorC("channels", fmt.Sprintf("initChannels error: %v", err))
+		m.dispatchTask = oldDispatchTask
+		m.config = oldConfig
+		for _, removed := range removedChannels {
+			m.channels[removed.name] = removed.channel
+			if removed.worker != nil {
+				m.workers[removed.name] = removed.worker
+			}
+			if m.mux != nil {
+				m.registerChannelHTTPHandler(removed.name, removed.channel)
+			}
+		}
+		m.mu.Unlock()
+		cancel()
+		return err
+	}
+
+	addedChannels := make([]addedChannel, 0, len(added))
+	for _, name := range added {
+		channel, ok := m.channels[name]
+		if !ok || channel == nil {
+			continue
+		}
 		channelType := name
 		if m.config != nil {
 			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
 				channelType = bc.Type
 			}
 		}
-		w := newChannelWorker(name, channel, channelType)
-		m.workers[name] = w
-		go m.runWorker(dispatchCtx, name, w)
-		go m.runMediaWorker(dispatchCtx, name, w)
-		m.publishChannelEvent(
-			runtimeevents.KindChannelLifecycleStarted,
-			name,
-			runtimeevents.Scope{Channel: name},
-			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: channelType},
-		)
-		deferFuncs = append(deferFuncs, func() {
-			m.RegisterChannel(name, channel)
+		addedChannels = append(addedChannels, addedChannel{
+			name:        name,
+			channel:     channel,
+			channelType: channelType,
 		})
 	}
 
-	// Commit hashes only on full success.
 	m.channelHashes = list
-	go func() {
-		for _, f := range deferFuncs {
-			f()
+	m.mu.Unlock()
+
+	for _, removed := range removedChannels {
+		logger.InfoCF("channels", "Stopping channel", map[string]any{
+			"channel": removed.name,
+		})
+		if err := m.stopChannelWithLifecycle(ctx, removed.name, removed.channel); err != nil {
+			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
+				"channel": removed.name,
+				"error":   err.Error(),
+			})
+		} else {
+			m.publishChannelEvent(
+				runtimeevents.KindChannelLifecycleStopped,
+				removed.name,
+				runtimeevents.Scope{Channel: removed.name},
+				runtimeevents.SeverityInfo,
+				ChannelLifecyclePayload{Type: channelTypeForEvent(m, removed.name)},
+			)
 		}
-	}()
+		stopChannelWorker(removed.worker)
+	}
+
+	for _, added := range addedChannels {
+		logger.InfoCF("channels", "Starting channel", map[string]any{
+			"channel": added.name,
+		})
+		if err := m.startChannelWithLifecycle(ctx, added.name, added.channel); err != nil {
+			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
+				"channel": added.name,
+				"error":   err.Error(),
+			})
+			m.publishChannelEvent(
+				runtimeevents.KindChannelLifecycleStartFailed,
+				added.name,
+				runtimeevents.Scope{Channel: added.name},
+				runtimeevents.SeverityError,
+				ChannelLifecyclePayload{Type: channelTypeForEvent(m, added.name), Error: err.Error()},
+			)
+			continue
+		}
+
+		shouldStop := false
+		m.mu.Lock()
+		if current, ok := m.channels[added.name]; !ok || current != added.channel || m.dispatchTask != dispatchTask {
+			shouldStop = true
+		} else if _, ok := m.workers[added.name]; ok {
+			shouldStop = true
+		} else {
+			w := newChannelWorker(added.name, added.channel, added.channelType)
+			m.workers[added.name] = w
+			go m.runWorker(dispatchCtx, added.name, w)
+			go m.runMediaWorker(dispatchCtx, added.name, w)
+		}
+		m.mu.Unlock()
+		if shouldStop {
+			_ = m.stopChannelWithLifecycle(context.Background(), added.name, added.channel)
+			continue
+		}
+
+		m.publishChannelEvent(
+			runtimeevents.KindChannelLifecycleStarted,
+			added.name,
+			runtimeevents.Scope{Channel: added.name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: added.channelType},
+		)
+	}
+
 	return nil
 }
 
@@ -2259,19 +2348,27 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 }
 
 func (m *Manager) UnregisterChannel(name string) {
+	lifecycle := m.channelLifecycleLock(name)
+	lifecycle.Lock()
+
+	var ch Channel
+	var w *channelWorker
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if ch, ok := m.channels[name]; ok && m.mux != nil {
-		m.unregisterChannelHTTPHandler(name, ch)
+	if existing, ok := m.channels[name]; ok {
+		ch = existing
+		if m.mux != nil {
+			m.unregisterChannelHTTPHandler(name, existing)
+		}
 	}
-	if w, ok := m.workers[name]; ok && w != nil {
-		close(w.queue)
-		<-w.done
-		close(w.mediaQueue)
-		<-w.mediaDone
-	}
+	w = m.workers[name]
 	delete(m.workers, name)
 	delete(m.channels, name)
+	m.mu.Unlock()
+
+	stopChannelWorker(w)
+	lifecycle.Unlock()
+
+	_ = ch
 }
 
 // SendMessage sends an outbound message synchronously through the channel

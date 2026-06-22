@@ -156,7 +156,7 @@ func (c *SlackChannel) Start(ctx context.Context) error {
 
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
-	authResp, err := c.api.AuthTest()
+	authResp, err := c.api.AuthTestContext(ctx)
 	if err != nil {
 		return fmt.Errorf("slack auth test failed: %w", err)
 	}
