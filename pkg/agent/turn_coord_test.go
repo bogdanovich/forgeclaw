@@ -269,7 +269,10 @@ func (p *stickyFallbackProvider) GetDefaultModel() string {
 // Test Helper Functions
 // =============================================================================
 
-func newTurnCoordTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentLoop, *AgentInstance, func()) {
+func newTurnCoordTestLoop(
+	t *testing.T,
+	provider providers.LLMProvider,
+) (*AgentLoop, *AgentInstance, func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
 
@@ -359,7 +362,10 @@ type blockingCompactContextManager struct {
 	startOnce      sync.Once
 }
 
-func (m *blockingCompactContextManager) Assemble(_ context.Context, _ *AssembleRequest) (*AssembleResponse, error) {
+func (m *blockingCompactContextManager) Assemble(
+	_ context.Context,
+	_ *AssembleRequest,
+) (*AssembleResponse, error) {
 	return &AssembleResponse{History: append([]providers.Message(nil), m.history...)}, nil
 }
 
@@ -582,7 +588,12 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackDisplayNameWithoutAlias(t *testi
 
 	agent.Model = "primary-model"
 	agent.Candidates = []providers.FallbackCandidate{
-		{Provider: "openai", Model: "gpt-5.4", IdentityKey: "model_name:primary", DisplayName: "primary-model"},
+		{
+			Provider:    "openai",
+			Model:       "gpt-5.4",
+			IdentityKey: "model_name:primary",
+			DisplayName: "primary-model",
+		},
 		{Provider: "anthropic", Model: "claude-sonnet", DisplayName: "anthropic/claude-sonnet"},
 	}
 	al.fallback = providers.NewFallbackChain(providers.NewCooldownTracker(), nil)
@@ -606,7 +617,11 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackDisplayNameWithoutAlias(t *testi
 		t.Fatalf("expected ControlBreak, got %v", ctrl)
 	}
 	if exec.model.llmModelName != "anthropic/claude-sonnet" {
-		t.Fatalf("exec.model.llmModelName = %q, want %q", exec.model.llmModelName, "anthropic/claude-sonnet")
+		t.Fatalf(
+			"exec.model.llmModelName = %q, want %q",
+			exec.model.llmModelName,
+			"anthropic/claude-sonnet",
+		)
 	}
 }
 
@@ -616,10 +631,20 @@ func TestPipeline_SetupTurn_UsesLightCandidateDisplayName(t *testing.T) {
 
 	agent.Model = "primary-model"
 	agent.Candidates = []providers.FallbackCandidate{
-		{Provider: "openai", Model: "gpt-5.4", IdentityKey: "model_name:primary", DisplayName: "primary-model"},
+		{
+			Provider:    "openai",
+			Model:       "gpt-5.4",
+			IdentityKey: "model_name:primary",
+			DisplayName: "primary-model",
+		},
 	}
 	agent.LightCandidates = []providers.FallbackCandidate{
-		{Provider: "openai", Model: "gpt-5.4-mini", IdentityKey: "model_name:light-model", DisplayName: "light-model"},
+		{
+			Provider:    "openai",
+			Model:       "gpt-5.4-mini",
+			IdentityKey: "model_name:light-model",
+			DisplayName: "light-model",
+		},
 	}
 	agent.Router = routing.New(routing.RouterConfig{LightModel: "light-model", Threshold: 1})
 
@@ -675,10 +700,20 @@ func TestMaybeBuildVisionExecutionState_UsesRoutedLightModelOverride(t *testing.
 
 	agent.Model = "primary-model"
 	agent.Candidates = []providers.FallbackCandidate{
-		{Provider: "openai", Model: "gpt-5.4", IdentityKey: "model_name:primary-model", DisplayName: "primary-model"},
+		{
+			Provider:    "openai",
+			Model:       "gpt-5.4",
+			IdentityKey: "model_name:primary-model",
+			DisplayName: "primary-model",
+		},
 	}
 	agent.LightCandidates = []providers.FallbackCandidate{
-		{Provider: "openai", Model: "gpt-5.4-mini", IdentityKey: "model_name:light-model", DisplayName: "light-model"},
+		{
+			Provider:    "openai",
+			Model:       "gpt-5.4-mini",
+			IdentityKey: "model_name:light-model",
+			DisplayName: "light-model",
+		},
 	}
 	agent.CandidateProviders = map[string]providers.LLMProvider{
 		"model_name:primary-model": &simpleConvProvider{},
@@ -696,7 +731,9 @@ func TestMaybeBuildVisionExecutionState_UsesRoutedLightModelOverride(t *testing.
 	routedExecution := execution
 	routedExecution.Model = selection.model
 	routedExecution.Provider = agent.LightProvider
-	routedExecution.Candidates = append([]providers.FallbackCandidate(nil), selection.activeCandidates...)
+	routedExecution.Candidates = append(
+		[]providers.FallbackCandidate(nil),
+		selection.activeCandidates...)
 	routedExecution.CandidateProviders = cloneCandidateProviderMap(execution.CandidateProviders)
 
 	visionExecution, cleanupVision, route, usedOverride, err := al.maybeBuildVisionExecutionState(
@@ -716,7 +753,10 @@ func TestMaybeBuildVisionExecutionState_UsesRoutedLightModelOverride(t *testing.
 	if got := route; got != visionRouteModelOverride {
 		t.Fatalf("vision route = %q, want %q", got, visionRouteModelOverride)
 	}
-	if got := resolvedCandidateModelName(visionExecution.Candidates, visionExecution.Model); got != "openai/gpt-4.1-mini" {
+	if got := resolvedCandidateModelName(
+		visionExecution.Candidates,
+		visionExecution.Model,
+	); got != "openai/gpt-4.1-mini" {
 		t.Fatalf("vision model = %q, want %q", got, "openai/gpt-4.1-mini")
 	}
 }
@@ -1021,10 +1061,14 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 
 	pipeline := NewPipeline(al)
 
-	firstTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
-		turnID:  "turn-1",
-		context: newTurnContext(nil, nil, nil),
-	})
+	firstTS := newTurnState(
+		agent,
+		normalizeProcessOptions(makeTestProcessOpts("sticky-session")),
+		turnEventScope{
+			turnID:  "turn-1",
+			context: newTurnContext(nil, nil, nil),
+		},
+	)
 	firstExec, err := pipeline.SetupTurn(context.Background(), firstTS)
 	if err != nil {
 		t.Fatalf("SetupTurn(first) failed: %v", err)
@@ -1037,15 +1081,25 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 		t.Fatalf("CallLLM(first) control = %v, want %v", ctrl, ControlBreak)
 	}
 
-	secondTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
-		turnID:  "turn-2",
-		context: newTurnContext(nil, nil, nil),
-	})
+	secondTS := newTurnState(
+		agent,
+		normalizeProcessOptions(makeTestProcessOpts("sticky-session")),
+		turnEventScope{
+			turnID:  "turn-2",
+			context: newTurnContext(nil, nil, nil),
+		},
+	)
 	secondExec, err := pipeline.SetupTurn(context.Background(), secondTS)
 	if err != nil {
 		t.Fatalf("SetupTurn(second) failed: %v", err)
 	}
-	ctrl, err = pipeline.CallLLM(context.Background(), context.Background(), secondTS, secondExec, 1)
+	ctrl, err = pipeline.CallLLM(
+		context.Background(),
+		context.Background(),
+		secondTS,
+		secondExec,
+		1,
+	)
 	if err != nil {
 		t.Fatalf("CallLLM(second) failed: %v", err)
 	}
@@ -1086,10 +1140,14 @@ func TestPipeline_SetupTurn_ClearsStaleAutoFallbackSelectionOnModelMismatch(t *t
 	}
 
 	pipeline := NewPipeline(al)
-	ts := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
-		turnID:  "turn-stale-selection",
-		context: newTurnContext(nil, nil, nil),
-	})
+	ts := newTurnState(
+		agent,
+		normalizeProcessOptions(makeTestProcessOpts("sticky-session")),
+		turnEventScope{
+			turnID:  "turn-stale-selection",
+			context: newTurnContext(nil, nil, nil),
+		},
+	)
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
 	if err != nil {
 		t.Fatalf("SetupTurn failed: %v", err)
@@ -1110,10 +1168,14 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 
 	pipeline := NewPipeline(al)
 
-	firstTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
-		turnID:  "turn-heavy-1",
-		context: newTurnContext(nil, nil, nil),
-	})
+	firstTS := newTurnState(
+		agent,
+		normalizeProcessOptions(makeTestProcessOpts("sticky-session")),
+		turnEventScope{
+			turnID:  "turn-heavy-1",
+			context: newTurnContext(nil, nil, nil),
+		},
+	)
 	firstExec, err := pipeline.SetupTurn(context.Background(), firstTS)
 	if err != nil {
 		t.Fatalf("SetupTurn(first) failed: %v", err)
@@ -1129,7 +1191,12 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 	}
 
 	agent.LightCandidates = []providers.FallbackCandidate{
-		{Provider: "openai", Model: "light-model", IdentityKey: "light-model", DisplayName: "light-model"},
+		{
+			Provider:    "openai",
+			Model:       "light-model",
+			IdentityKey: "light-model",
+			DisplayName: "light-model",
+		},
 	}
 	agent.Router = routing.New(routing.RouterConfig{LightModel: "light-model", Threshold: 1})
 
@@ -1159,10 +1226,14 @@ func TestPipeline_CallLLM_LightTurnPreservesPrimaryStickySelection(t *testing.T)
 	agent.Router = nil
 	agent.LightCandidates = nil
 
-	thirdTS := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("sticky-session")), turnEventScope{
-		turnID:  "turn-heavy-2",
-		context: newTurnContext(nil, nil, nil),
-	})
+	thirdTS := newTurnState(
+		agent,
+		normalizeProcessOptions(makeTestProcessOpts("sticky-session")),
+		turnEventScope{
+			turnID:  "turn-heavy-2",
+			context: newTurnContext(nil, nil, nil),
+		},
+	)
 	thirdExec, err := pipeline.SetupTurn(context.Background(), thirdTS)
 	if err != nil {
 		t.Fatalf("SetupTurn(third) failed: %v", err)
@@ -1505,14 +1576,19 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 	ts := &turnState{}
 
 	ts.recordSkillContextSnapshot(skillContextTriggerInitialBuild, []string{"skill-a"})
-	ts.recordSkillContextSnapshot(skillContextTriggerContextRetryRebuild, []string{"skill-b", "skill-c"})
+	ts.recordSkillContextSnapshot(
+		skillContextTriggerContextRetryRebuild,
+		[]string{"skill-b", "skill-c"},
+	)
 
-	if got := ts.attemptedSkillsSnapshot(); len(got) != 3 || got[0] != "skill-a" || got[1] != "skill-b" ||
+	if got := ts.attemptedSkillsSnapshot(); len(got) != 3 || got[0] != "skill-a" ||
+		got[1] != "skill-b" ||
 		got[2] != "skill-c" {
 		t.Fatalf("attemptedSkillsSnapshot = %v, want [skill-a skill-b skill-c]", got)
 	}
 
-	if got := ts.latestSkillContextSnapshot(); len(got) != 2 || got[0] != "skill-b" || got[1] != "skill-c" {
+	if got := ts.latestSkillContextSnapshot(); len(got) != 2 || got[0] != "skill-b" ||
+		got[1] != "skill-c" {
 		t.Fatalf("latestSkillContextSnapshot = %v, want [skill-b skill-c]", got)
 	}
 
@@ -1521,9 +1597,18 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 		t.Fatalf("len(skillContextSnapshotsSnapshot()) = %d, want 2", len(snapshots))
 	}
 	if snapshots[0].Sequence != 1 || snapshots[0].Trigger != skillContextTriggerInitialBuild {
-		t.Fatalf("snapshots[0] = %+v, want sequence=1 trigger=%q", snapshots[0], skillContextTriggerInitialBuild)
+		t.Fatalf(
+			"snapshots[0] = %+v, want sequence=1 trigger=%q",
+			snapshots[0],
+			skillContextTriggerInitialBuild,
+		)
 	}
-	if snapshots[1].Sequence != 2 || snapshots[1].Trigger != skillContextTriggerContextRetryRebuild {
-		t.Fatalf("snapshots[1] = %+v, want sequence=2 trigger=%q", snapshots[1], skillContextTriggerContextRetryRebuild)
+	if snapshots[1].Sequence != 2 ||
+		snapshots[1].Trigger != skillContextTriggerContextRetryRebuild {
+		t.Fatalf(
+			"snapshots[1] = %+v, want sequence=2 trigger=%q",
+			snapshots[1],
+			skillContextTriggerContextRetryRebuild,
+		)
 	}
 }
