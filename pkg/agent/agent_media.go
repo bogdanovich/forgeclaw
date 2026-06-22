@@ -63,12 +63,16 @@ func resolveMediaRefs(
 	messages []providers.Message,
 	store media.MediaStore,
 	maxSize int,
-	currentTurnStart int,
+	currentTurnStart ...int,
 ) []providers.Message {
 	if store == nil {
 		return messages
 	}
-	currentTurnStart = normalizeCurrentTurnStart(messages, currentTurnStart)
+	start := 0
+	if len(currentTurnStart) > 0 {
+		start = currentTurnStart[0]
+	}
+	start = normalizeCurrentTurnStart(messages, start)
 
 	result := make([]providers.Message, 0, len(messages))
 	var pendingToolImages []string
@@ -123,7 +127,7 @@ func resolveMediaRefs(
 			mime := detectMIME(localPath, meta)
 			pathTags = append(pathTags, buildPathTag(mime, localPath))
 
-			if m.Role == "tool" && idx >= currentTurnStart && strings.HasPrefix(mime, "image/") {
+			if m.Role == "tool" && idx >= start && strings.HasPrefix(mime, "image/") {
 				dataURL := encodeImageToDataURL(localPath, mime, info, maxSize)
 				if dataURL != "" {
 					pendingToolImages = append(pendingToolImages, dataURL)

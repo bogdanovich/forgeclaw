@@ -326,7 +326,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				} else {
 					al.releaseInboundMessage(context.Background(), m, ctx.Err())
 				}
-			}(msg)
+			}(msg, placeholder)
 
 			// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
 			// Currently disabled because files are deleted before the LLM can access their content.

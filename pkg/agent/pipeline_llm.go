@@ -178,8 +178,8 @@ func (p *Pipeline) CallLLM(
 			ts.clearProviderCancel(providerCancel)
 		}()
 
-		al.activeRequests.Add(1)
-		defer al.activeRequests.Done()
+		al.activeRequestsInc()
+		defer al.activeRequestsDec()
 
 		if response, handled, streamErr := p.tryConfiguredStreamingLLM(
 			providerCtx,
