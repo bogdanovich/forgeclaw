@@ -471,7 +471,7 @@ func TestStartAll_RetryDoesNotInstallWorkerAfterChannelRemoved(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var attempts int
+	var attempts atomic.Int32
 	startRelease := make(chan struct{})
 	stopCalled := make(chan struct{}, 1)
 
@@ -479,8 +479,8 @@ func TestStartAll_RetryDoesNotInstallWorkerAfterChannelRemoved(t *testing.T) {
 	m.channels["flaky"] = &mockChannel{
 		retryStartSafe: true,
 		startFn: func(_ context.Context) error {
-			attempts++
-			if attempts == 1 {
+			n := attempts.Add(1)
+			if n == 1 {
 				return errors.New("temporary startup failure")
 			}
 			<-startRelease
@@ -517,6 +517,10 @@ func TestStartAll_RetryDoesNotInstallWorkerAfterChannelRemoved(t *testing.T) {
 	m.mu.RUnlock()
 	if ok {
 		t.Fatal("did not expect worker installation after channel removal")
+	}
+	time.Sleep(40 * time.Millisecond)
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("start attempts = %d, want 2 with pending retry retired after removal", got)
 	}
 }
 

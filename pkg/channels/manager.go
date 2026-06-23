@@ -1575,13 +1575,17 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 		}
 
 		shouldStop := false
+		retirePending := false
 		m.mu.Lock()
 		if ctx.Err() != nil || m.dispatchTask == nil {
 			shouldStop = true
+			retirePending = true
 		} else if current, ok := m.channels[pendingStart.name]; !ok || current != pendingStart.channel {
 			shouldStop = true
+			retirePending = true
 		} else if _, ok := m.workers[pendingStart.name]; ok {
 			shouldStop = true
+			retirePending = true
 		} else {
 			w := newChannelWorker(pendingStart.name, pendingStart.channel, pendingStart.channelType)
 			m.workers[pendingStart.name] = w
@@ -1589,6 +1593,9 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 			m.startDispatchLoopsLocked(ctx)
 			go m.runWorker(ctx, pendingStart.name, w)
 			go m.runMediaWorker(ctx, pendingStart.name, w)
+		}
+		if retirePending {
+			delete(m.startupRetryPending, pendingStart.name)
 		}
 		m.mu.Unlock()
 		if shouldStop {
@@ -1760,6 +1767,7 @@ func stopChannelWorker(w *channelWorker) {
 
 func (m *Manager) cleanupRemovedChannel(name string, removed Channel, worker *channelWorker) {
 	m.mu.Lock()
+	delete(m.startupRetryPending, name)
 	current, ok := m.channels[name]
 	if ok && current == removed {
 		delete(m.channels, name)
@@ -2352,6 +2360,7 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	delete(m.startupRetryPending, name)
 	if ch, ok := m.channels[name]; ok && m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
