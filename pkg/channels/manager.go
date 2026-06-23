@@ -1758,6 +1758,20 @@ func stopChannelWorker(w *channelWorker) {
 	})
 }
 
+func (m *Manager) cleanupRemovedChannel(name string, removed Channel, worker *channelWorker) {
+	m.mu.Lock()
+	current, ok := m.channels[name]
+	if ok && current == removed {
+		delete(m.channels, name)
+		delete(m.workers, name)
+	}
+	if m.mux != nil {
+		m.unregisterChannelHTTPHandler(name, removed)
+	}
+	m.mu.Unlock()
+	stopChannelWorker(worker)
+}
+
 func supportsStartRetry(channel Channel) bool {
 	retryCapable, ok := channel.(StartRetryCapable)
 	return ok && retryCapable.SupportsStartRetry()
@@ -2254,6 +2268,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	for _, name := range removed {
 		// Stop all channels
 		channel := m.channels[name]
+		worker := m.workers[name]
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
@@ -2264,7 +2279,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			})
 		}
 		deferFuncs = append(deferFuncs, func() {
-			m.UnregisterChannel(name)
+			m.cleanupRemovedChannel(name, channel, worker)
 		})
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)
@@ -2313,9 +2328,6 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			runtimeevents.SeverityInfo,
 			ChannelLifecyclePayload{Type: channelType},
 		)
-		deferFuncs = append(deferFuncs, func() {
-			m.RegisterChannel(name, channel)
-		})
 	}
 
 	// Commit hashes only on full success.

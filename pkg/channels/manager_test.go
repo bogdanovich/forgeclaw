@@ -678,6 +678,73 @@ func TestStartAllPublishesLifecycleRuntimeEvents(t *testing.T) {
 	}
 }
 
+func TestReload_ReplacedChannelKeepsReplacementWorker(t *testing.T) {
+	const channelType = "testreload_replace_worker"
+	RegisterFactory(channelType, func(channelName, _ string, cfg *config.Config, _ *bus.MessageBus) (Channel, error) {
+		return &mockChannel{}, nil
+	})
+
+	oldCfg := &config.Config{
+		Channels: config.ChannelsConfig{
+			"test": {
+				Enabled:  true,
+				Type:     channelType,
+				Settings: config.RawNode(`{"mode":"old"}`),
+			},
+		},
+	}
+	newCfg := &config.Config{
+		Channels: config.ChannelsConfig{
+			"test": {
+				Enabled:  true,
+				Type:     channelType,
+				Settings: config.RawNode(`{"mode":"new"}`),
+			},
+		},
+	}
+
+	m := newTestManager()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	oldChannel := &mockChannel{}
+	oldWorker := newChannelWorker("test", oldChannel, channelType)
+	m.config = oldCfg
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.channelHashes = toChannelHashes(oldCfg)
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+
+	if err := m.Reload(context.Background(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		ch, chOK := m.channels["test"]
+		w, wOK := m.workers["test"]
+		m.mu.RUnlock()
+		if chOK && wOK && ch != oldChannel && w != oldWorker {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	m.mu.RLock()
+	ch, chOK := m.channels["test"]
+	w, wOK := m.workers["test"]
+	m.mu.RUnlock()
+	t.Fatalf(
+		"replacement channel/worker not preserved: channel_ok=%v worker_ok=%v same_channel=%v same_worker=%v",
+		chOK,
+		wOK,
+		ch == oldChannel,
+		w == oldWorker,
+	)
+}
+
 func testOutboundMessage(msg bus.OutboundMessage) bus.OutboundMessage {
 	if msg.Context.Channel == "" && msg.Context.ChatID == "" {
 		msg.Context = bus.NewOutboundContext(msg.Channel, msg.ChatID, msg.ReplyToMessageID)
