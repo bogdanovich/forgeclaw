@@ -2,8 +2,8 @@ package bus
 
 import (
 	"context"
-	"os"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"

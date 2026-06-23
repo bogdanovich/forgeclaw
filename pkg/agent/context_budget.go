@@ -131,39 +131,50 @@ func trimHistoryToFitContextWindow(
 		return history, messages, true
 	}
 
-	trimmedHistory := append([]providers.Message(nil), history...)
-	for len(trimmedHistory) > 0 {
-		dropUntil := nextHistoryTrimStart(trimmedHistory)
-		if dropUntil <= 0 || dropUntil >= len(trimmedHistory) {
-			trimmedHistory = nil
-		} else {
-			trimmedHistory = append([]providers.Message(nil), trimmedHistory[dropUntil:]...)
-		}
-
-		messages = build(trimmedHistory)
-		if !isOverContextBudget(contextWindow, messages, toolDefs, maxTokens) {
-			return trimmedHistory, messages, true
-		}
-	}
-
-	return nil, messages, false
-}
-
-func nextHistoryTrimStart(history []providers.Message) int {
-	if len(history) == 0 {
-		return 0
-	}
-
 	turns := parseTurnBoundaries(history)
-	if len(turns) >= 2 {
-		return turns[1]
-	}
-	if len(turns) == 1 {
-		if turns[0] > 0 {
-			return turns[0]
-		}
-		return len(history)
+	if len(turns) == 0 {
+		return nil, messages, false
 	}
 
-	return len(history)
+	candidates := make([]int, 0, len(turns)+1)
+	candidates = append(candidates, 0)
+	for _, t := range turns {
+		if t > 0 {
+			candidates = append(candidates, t)
+		}
+	}
+	candidates = append(candidates, len(history))
+
+	bestStart := -1
+	bestMessages := messages
+	lo, hi := 1, len(candidates)-1
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		start := candidates[mid]
+
+		var trimmedHistory []providers.Message
+		if start < len(history) {
+			trimmedHistory = append([]providers.Message(nil), history[start:]...)
+		}
+
+		rebuilt := build(trimmedHistory)
+		if isOverContextBudget(contextWindow, rebuilt, toolDefs, maxTokens) {
+			lo = mid + 1
+			bestMessages = rebuilt
+			continue
+		}
+
+		bestStart = start
+		bestMessages = rebuilt
+		hi = mid - 1
+	}
+
+	if bestStart >= 0 {
+		if bestStart >= len(history) {
+			return nil, bestMessages, true
+		}
+		return append([]providers.Message(nil), history[bestStart:]...), bestMessages, true
+	}
+
+	return nil, bestMessages, false
 }

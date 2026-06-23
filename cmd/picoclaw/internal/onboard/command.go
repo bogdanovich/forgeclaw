@@ -2,11 +2,7 @@ package onboard
 
 import (
 	"github.com/spf13/cobra"
-
-	picoclaw "github.com/sipeed/picoclaw"
 )
-
-var embeddedFiles = picoclaw.OnboardWorkspace
 
 func NewOnboardCommand() *cobra.Command {
 	var encrypt bool

@@ -522,17 +522,22 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	// This prevents blocking readers while closing
 	if oldProvider, ok := extractProvider(oldRegistry); ok {
 		if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
-			// Give in-flight requests a moment to complete
-			// Use a reasonable timeout that balances cleanup vs resource usage
-			select {
-			case <-time.After(100 * time.Millisecond):
-				stateful.Close()
-			case <-ctx.Done():
-				// Context canceled, close immediately but log warning
-				logger.WarnCF("agent", "Context canceled during provider cleanup, forcing close",
-					map[string]any{"error": ctx.Err()})
-				stateful.Close()
+			// Wait for in-flight turns to drain before closing the previous
+			// provider so reload does not interrupt an active request.
+			if !al.waitForActiveRequests(ctx, 2*time.Second) {
+				if ctx.Err() != nil {
+					// Context canceled, close immediately but log warning
+					logger.WarnCF("agent", "Context canceled during provider cleanup, forcing close",
+						map[string]any{"error": ctx.Err()})
+				} else {
+					logger.WarnCF(
+						"agent",
+						"Timed out waiting for active requests during provider cleanup, forcing close",
+						map[string]any{"timeout_ms": 2000},
+					)
+				}
 			}
+			stateful.Close()
 		}
 	}
 
