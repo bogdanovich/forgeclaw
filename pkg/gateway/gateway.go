@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -491,7 +492,13 @@ func setupAndStartServices(
 	)
 
 	if err = runningServices.ChannelManager.StartAll(context.Background()); err != nil {
-		return nil, fmt.Errorf("error starting channels: %w", err)
+		var retryPending *channels.StartupRetryPendingError
+		if !errors.As(err, &retryPending) {
+			return nil, fmt.Errorf("error starting channels: %w", err)
+		}
+		logger.WarnCF("gateway", "Channel startup recovery pending", map[string]any{
+			"error": retryPending.Error(),
+		})
 	}
 
 	logChannelVoiceCapabilities(runningServices.ChannelManager, transcriber != nil, ttsAvailable)

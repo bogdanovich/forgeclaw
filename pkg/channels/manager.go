@@ -82,6 +82,13 @@ type channelWorker struct {
 	done       chan struct{}
 	mediaDone  chan struct{}
 	limiter    *rate.Limiter
+	closeOnce  sync.Once
+}
+
+type startupRetryChannel struct {
+	name        string
+	channel     Channel
+	channelType string
 }
 
 type Manager struct {
@@ -104,6 +111,8 @@ type Manager struct {
 	channelHashes             map[string]string // channel name → config hash
 	startRetryInterval        time.Duration
 	channelLifecycle          sync.Map // channel name -> *sync.Mutex
+	startupRetryPending       map[string]startupRetryChannel
+	dispatchStarted           bool
 }
 
 type mediaStoreSetter interface {
@@ -167,6 +176,24 @@ type toolFeedbackAnimatorConfigurer interface {
 
 type asyncTask struct {
 	cancel context.CancelFunc
+}
+
+type StartupRetryPendingError struct {
+	cause error
+}
+
+func (e *StartupRetryPendingError) Error() string {
+	if e == nil || e.cause == nil {
+		return "startup retries pending"
+	}
+	return fmt.Sprintf("startup retries pending: %v", e.cause)
+}
+
+func (e *StartupRetryPendingError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 type deliveryCleanupOptions struct {
@@ -700,13 +727,14 @@ func NewManager(
 	opts ...ManagerOption,
 ) (*Manager, error) {
 	m := &Manager{
-		channels:           make(map[string]Channel),
-		workers:            make(map[string]*channelWorker),
-		bus:                messageBus,
-		config:             cfg,
-		mediaStore:         store,
-		channelHashes:      make(map[string]string),
-		startRetryInterval: channelStartRetryInterval,
+		channels:            make(map[string]Channel),
+		workers:             make(map[string]*channelWorker),
+		bus:                 messageBus,
+		config:              cfg,
+		mediaStore:          store,
+		channelHashes:       make(map[string]string),
+		startRetryInterval:  channelStartRetryInterval,
+		startupRetryPending: make(map[string]startupRetryChannel),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -1362,6 +1390,8 @@ func (m *Manager) StartAll(ctx context.Context) error {
 
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	m.dispatchTask = &asyncTask{cancel: cancel}
+	m.dispatchStarted = false
+	m.startupRetryPending = make(map[string]startupRetryChannel)
 	failedStarts := make([]error, 0, len(m.channels))
 	failedNames := make([]string, 0, len(m.channels))
 	retryEligibleFailures := 0
@@ -1386,6 +1416,11 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			failedNames = append(failedNames, name)
 			if supportsStartRetry(channel) {
 				retryEligibleFailures++
+				m.startupRetryPending[name] = startupRetryChannel{
+					name:        name,
+					channel:     channel,
+					channelType: channelTypeForEvent(m, name),
+				}
 			}
 			continue
 		}
@@ -1434,9 +1469,14 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			return fmt.Errorf("failed to start any enabled channels: %w", errors.Join(failedStarts...))
 		}
 
+		if m.httpServer != nil {
+			m.startHTTPServerLocked()
+		}
+		go m.retryMissingChannels(dispatchCtx)
+
 		logger.WarnCF(
 			"channels",
-			"All enabled channels failed to start; waiting for retry-capable channels to recover",
+			"All enabled channels failed to start; retry-capable startup recovery scheduled",
 			map[string]any{
 				"failed":                  len(failedNames),
 				"total":                   len(m.channels),
@@ -1444,6 +1484,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 				"retry_eligible_failures": retryEligibleFailures,
 			},
 		)
+		return &StartupRetryPendingError{cause: errors.Join(failedStarts...)}
 	}
 
 	if len(failedNames) > 0 {
@@ -1457,42 +1498,14 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 
 	// Start the dispatcher that reads from the bus and routes to workers
-	go m.dispatchOutbound(dispatchCtx)
-	go m.dispatchOutboundMedia(dispatchCtx)
-
-	// Start the TTL janitor that cleans up stale typing/placeholder entries
-	go m.runTTLJanitor(dispatchCtx)
-	go m.retryMissingChannels(dispatchCtx)
+	m.startDispatchLoopsLocked(dispatchCtx)
+	if len(m.startupRetryPending) > 0 {
+		go m.retryMissingChannels(dispatchCtx)
+	}
 
 	// Start shared HTTP server if configured
 	if m.httpServer != nil {
-		if len(m.httpListeners) > 0 {
-			for _, listener := range m.httpListeners {
-				ln := listener
-				go func() {
-					logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
-						"addr": ln.Addr().String(),
-					})
-					if err := m.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-						logger.FatalCF("channels", "Shared HTTP server error", map[string]any{
-							"addr":  ln.Addr().String(),
-							"error": err.Error(),
-						})
-					}
-				}()
-			}
-		} else {
-			go func() {
-				logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
-					"addr": m.httpServer.Addr,
-				})
-				if err := m.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logger.FatalCF("channels", "Shared HTTP server error", map[string]any{
-						"error": err.Error(),
-					})
-				}
-			}()
-		}
+		m.startHTTPServerLocked()
 	}
 
 	logger.InfoCF("channels", "Channel startup completed", map[string]any{
@@ -1523,36 +1536,14 @@ func (m *Manager) retryMissingChannels(ctx context.Context) {
 }
 
 func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
-	type pendingChannelStart struct {
-		name        string
-		channel     Channel
-		channelType string
-	}
-
 	m.mu.RLock()
-	if len(m.channels) == 0 || ctx.Err() != nil || m.dispatchTask == nil {
+	if len(m.startupRetryPending) == 0 || ctx.Err() != nil || m.dispatchTask == nil {
 		m.mu.RUnlock()
 		return
 	}
-	pending := make([]pendingChannelStart, 0, len(m.channels))
-	for name, channel := range m.channels {
-		if _, ok := m.workers[name]; ok {
-			continue
-		}
-		if !supportsStartRetry(channel) {
-			continue
-		}
-		channelType := name
-		if m.config != nil {
-			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
-				channelType = bc.Type
-			}
-		}
-		pending = append(pending, pendingChannelStart{
-			name:        name,
-			channel:     channel,
-			channelType: channelType,
-		})
+	pending := make([]startupRetryChannel, 0, len(m.startupRetryPending))
+	for _, pendingStart := range m.startupRetryPending {
+		pending = append(pending, pendingStart)
 	}
 	m.mu.RUnlock()
 
@@ -1594,6 +1585,8 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 		} else {
 			w := newChannelWorker(pendingStart.name, pendingStart.channel, pendingStart.channelType)
 			m.workers[pendingStart.name] = w
+			delete(m.startupRetryPending, pendingStart.name)
+			m.startDispatchLoopsLocked(ctx)
 			go m.runWorker(ctx, pendingStart.name, w)
 			go m.runMediaWorker(ctx, pendingStart.name, w)
 		}
@@ -1618,6 +1611,49 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 	}
 }
 
+func (m *Manager) startDispatchLoopsLocked(ctx context.Context) {
+	if m.dispatchStarted {
+		return
+	}
+	m.dispatchStarted = true
+	go m.dispatchOutbound(ctx)
+	go m.dispatchOutboundMedia(ctx)
+	go m.runTTLJanitor(ctx)
+}
+
+func (m *Manager) startHTTPServerLocked() {
+	if m.httpServer == nil {
+		return
+	}
+	if len(m.httpListeners) > 0 {
+		for _, listener := range m.httpListeners {
+			ln := listener
+			go func() {
+				logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
+					"addr": ln.Addr().String(),
+				})
+				if err := m.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+					logger.FatalCF("channels", "Shared HTTP server error", map[string]any{
+						"addr":  ln.Addr().String(),
+						"error": err.Error(),
+					})
+				}
+			}()
+		}
+		return
+	}
+	go func() {
+		logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
+			"addr": m.httpServer.Addr,
+		})
+		if err := m.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.FatalCF("channels", "Shared HTTP server error", map[string]any{
+				"error": err.Error(),
+			})
+		}
+	}()
+}
+
 func (m *Manager) StopAll(ctx context.Context) error {
 	m.mu.Lock()
 	logger.InfoC("channels", "Stopping all channels")
@@ -1628,6 +1664,8 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 	dispatchTask := m.dispatchTask
 	m.dispatchTask = nil
+	m.dispatchStarted = false
+	m.startupRetryPending = make(map[string]startupRetryChannel)
 
 	workers := make([]*channelWorker, 0, len(m.workers))
 	for _, w := range m.workers {
@@ -1664,17 +1702,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 	// Close all worker queues and wait for them to drain
 	for _, w := range workers {
-		close(w.queue)
-	}
-	for _, w := range workers {
-		<-w.done
-	}
-	// Close all media worker queues and wait for them to drain
-	for _, w := range workers {
-		close(w.mediaQueue)
-	}
-	for _, w := range workers {
-		<-w.mediaDone
+		stopChannelWorker(w)
 	}
 
 	// Stop all channels
@@ -1718,36 +1746,16 @@ func (m *Manager) channelLifecycleLock(name string) *sync.Mutex {
 	return actual.(*sync.Mutex)
 }
 
-func (m *Manager) startChannelWithLifecycle(ctx context.Context, name string, channel Channel) error {
-	lifecycle := m.channelLifecycleLock(name)
-	lifecycle.Lock()
-	defer lifecycle.Unlock()
-	return channel.Start(ctx)
-}
-
-func (m *Manager) stopChannelWithLifecycle(ctx context.Context, name string, channel Channel) error {
-	lifecycle := m.channelLifecycleLock(name)
-	lifecycle.Lock()
-	defer lifecycle.Unlock()
-	return channel.Stop(ctx)
-}
-
 func stopChannelWorker(w *channelWorker) {
 	if w == nil {
 		return
 	}
-	close(w.queue)
-	<-w.done
-	close(w.mediaQueue)
-	<-w.mediaDone
-}
-
-func cloneStringMap(src map[string]string) map[string]string {
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
+	w.closeOnce.Do(func() {
+		close(w.queue)
+		<-w.done
+		close(w.mediaQueue)
+		<-w.mediaDone
+	})
 }
 
 func supportsStartRetry(channel Channel) bool {
@@ -2223,19 +2231,14 @@ func (m *Manager) GetEnabledChannels() []string {
 // Reload updates the config reference without restarting channels.
 // This is used when channel config hasn't changed but other parts of the config have.
 func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
-	type removedChannel struct {
-		name    string
-		channel Channel
-		worker  *channelWorker
-	}
-	type addedChannel struct {
-		name        string
-		channel     Channel
-		channelType string
-	}
-
 	m.mu.Lock()
-	oldHashes := m.channelHashes
+	defer m.mu.Unlock()
+
+	// Save old config so we can revert on error.
+	oldConfig := m.config
+
+	// Update config early: initChannel uses m.config via factory(m.config, m.bus).
+	m.config = cfg
 
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
@@ -2243,171 +2246,85 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	cc, err := toChannelConfig(cfg, added)
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
-		m.mu.Unlock()
+		m.config = oldConfig
 		return err
 	}
 
-	addedChannels := make([]addedChannel, 0, len(added))
-	failedAdded := make(map[string]struct{})
-	for _, name := range added {
-		bc, ok := (*cc)[name]
-		if !ok || bc == nil || !bc.Enabled {
-			continue
-		}
-		channelType := bc.Type
-		if channelType == "" {
-			channelType = name
-		}
-		logger.DebugCF("channels", "Attempting to initialize channel", map[string]any{
-			"channel": name,
-			"type":    channelType,
-		})
-		channel, buildErr := m.newConfiguredChannel(cfg, channelType, name)
-		if buildErr != nil {
-			failedAdded[name] = struct{}{}
-			logger.ErrorCF("channels", "Failed to initialize channel", map[string]any{
-				"channel": name,
-				"type":    channelType,
-				"error":   buildErr.Error(),
-			})
-			if _, exists := m.channels[name]; exists {
-				logger.WarnCF(
-					"channels",
-					"Keeping existing channel after replacement initialization failure",
-					map[string]any{
-						"channel": name,
-						"type":    channelType,
-					},
-				)
-			}
-			continue
-		}
-		addedChannels = append(addedChannels, addedChannel{
-			name:        name,
-			channel:     channel,
-			channelType: channelType,
-		})
-	}
-
-	m.config = cfg
-	removedChannels := make([]removedChannel, 0, len(removed))
+	deferFuncs := make([]func(), 0, len(removed)+len(added))
 	for _, name := range removed {
-		if _, keepExisting := failedAdded[name]; keepExisting {
-			continue
-		}
-		channel, ok := m.channels[name]
-		if !ok || channel == nil {
-			continue
-		}
-		if m.mux != nil {
-			m.unregisterChannelHTTPHandler(name, channel)
-		}
-		removedChannels = append(removedChannels, removedChannel{
-			name:    name,
-			channel: channel,
-			worker:  m.workers[name],
-		})
-		delete(m.workers, name)
-		delete(m.channels, name)
-	}
-
-	dispatchCtx, cancel := context.WithCancel(ctx)
-	dispatchTask := &asyncTask{cancel: cancel}
-	m.dispatchTask = dispatchTask
-	for _, added := range addedChannels {
-		m.channels[added.name] = added.channel
-		if m.mux != nil {
-			m.registerChannelHTTPHandler(added.name, added.channel)
-		}
-		m.publishChannelEvent(
-			runtimeevents.KindChannelLifecycleInitialized,
-			added.name,
-			runtimeevents.Scope{Channel: added.name},
-			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: added.channelType},
-		)
-		logger.InfoCF("channels", "Channel enabled successfully", map[string]any{
-			"channel": added.name,
-			"type":    added.channelType,
-		})
-	}
-
-	effectiveHashes := cloneStringMap(list)
-	for name := range failedAdded {
-		if oldHash, ok := oldHashes[name]; ok {
-			effectiveHashes[name] = oldHash
-		}
-	}
-	m.channelHashes = effectiveHashes
-	m.mu.Unlock()
-
-	for _, removed := range removedChannels {
+		// Stop all channels
+		channel := m.channels[name]
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": removed.name,
+			"channel": name,
 		})
-		if err := m.stopChannelWithLifecycle(ctx, removed.name, removed.channel); err != nil {
+		if stopErr := channel.Stop(ctx); stopErr != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": removed.name,
-				"error":   err.Error(),
+				"channel": name,
+				"error":   stopErr.Error(),
 			})
-		} else {
-			m.publishChannelEvent(
-				runtimeevents.KindChannelLifecycleStopped,
-				removed.name,
-				runtimeevents.Scope{Channel: removed.name},
-				runtimeevents.SeverityInfo,
-				ChannelLifecyclePayload{Type: channelTypeForEvent(m, removed.name)},
-			)
 		}
-		stopChannelWorker(removed.worker)
-	}
-
-	for _, added := range addedChannels {
-		logger.InfoCF("channels", "Starting channel", map[string]any{
-			"channel": added.name,
+		deferFuncs = append(deferFuncs, func() {
+			m.UnregisterChannel(name)
 		})
-		if err := m.startChannelWithLifecycle(ctx, added.name, added.channel); err != nil {
+	}
+	dispatchCtx, cancel := context.WithCancel(ctx)
+	m.dispatchTask = &asyncTask{cancel: cancel}
+	err = m.initChannels(cc)
+	if err != nil {
+		logger.ErrorC("channels", fmt.Sprintf("initChannels error: %v", err))
+		m.config = oldConfig
+		cancel()
+		return err
+	}
+	for _, name := range added {
+		channel := m.channels[name]
+		logger.InfoCF("channels", "Starting channel", map[string]any{
+			"channel": name,
+		})
+		if err := channel.Start(ctx); err != nil {
 			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
-				"channel": added.name,
+				"channel": name,
 				"error":   err.Error(),
 			})
 			m.publishChannelEvent(
 				runtimeevents.KindChannelLifecycleStartFailed,
-				added.name,
-				runtimeevents.Scope{Channel: added.name},
+				name,
+				runtimeevents.Scope{Channel: name},
 				runtimeevents.SeverityError,
-				ChannelLifecyclePayload{Type: channelTypeForEvent(m, added.name), Error: err.Error()},
+				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
 			)
 			continue
 		}
-
-		shouldStop := false
-		m.mu.Lock()
-		if current, ok := m.channels[added.name]; !ok || current != added.channel || m.dispatchTask != dispatchTask {
-			shouldStop = true
-		} else if _, ok := m.workers[added.name]; ok {
-			shouldStop = true
-		} else {
-			w := newChannelWorker(added.name, added.channel, added.channelType)
-			m.workers[added.name] = w
-			go m.runWorker(dispatchCtx, added.name, w)
-			go m.runMediaWorker(dispatchCtx, added.name, w)
+		// Lazily create worker only after channel starts successfully
+		channelType := name
+		if m.config != nil {
+			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
+				channelType = bc.Type
+			}
 		}
-		m.mu.Unlock()
-		if shouldStop {
-			_ = m.stopChannelWithLifecycle(context.Background(), added.name, added.channel)
-			continue
-		}
-
+		w := newChannelWorker(name, channel, channelType)
+		m.workers[name] = w
+		go m.runWorker(dispatchCtx, name, w)
+		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
-			added.name,
-			runtimeevents.Scope{Channel: added.name},
+			name,
+			runtimeevents.Scope{Channel: name},
 			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: added.channelType},
+			ChannelLifecyclePayload{Type: channelType},
 		)
+		deferFuncs = append(deferFuncs, func() {
+			m.RegisterChannel(name, channel)
+		})
 	}
 
+	// Commit hashes only on full success.
+	m.channelHashes = list
+	go func() {
+		for _, f := range deferFuncs {
+			f()
+		}
+	}()
 	return nil
 }
 
@@ -2421,27 +2338,16 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 }
 
 func (m *Manager) UnregisterChannel(name string) {
-	lifecycle := m.channelLifecycleLock(name)
-	lifecycle.Lock()
-
-	var ch Channel
-	var w *channelWorker
 	m.mu.Lock()
-	if existing, ok := m.channels[name]; ok {
-		ch = existing
-		if m.mux != nil {
-			m.unregisterChannelHTTPHandler(name, existing)
-		}
+	defer m.mu.Unlock()
+	if ch, ok := m.channels[name]; ok && m.mux != nil {
+		m.unregisterChannelHTTPHandler(name, ch)
 	}
-	w = m.workers[name]
+	if w, ok := m.workers[name]; ok && w != nil {
+		stopChannelWorker(w)
+	}
 	delete(m.workers, name)
 	delete(m.channels, name)
-	m.mu.Unlock()
-
-	stopChannelWorker(w)
-	lifecycle.Unlock()
-
-	_ = ch
 }
 
 // SendMessage sends an outbound message synchronously through the channel
