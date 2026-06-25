@@ -753,11 +753,11 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 				}
 			}
 
-		// All pipes closed, get exit status
-		if stdinWriter != nil {
-			_ = stdinWriter.Close()
-		}
-		cmd.Wait()
+			// All pipes closed, get exit status
+			if stdinWriter != nil {
+				_ = stdinWriter.Close()
+			}
+			cmd.Wait()
 
 			session.mu.Lock()
 			if cmd.ProcessState != nil {

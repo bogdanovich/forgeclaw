@@ -574,19 +574,19 @@ func extractZip(archivePath, destDir string) error {
 		if err != nil {
 			return err
 		}
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, f.FileInfo().Mode())
-	if err != nil {
-		_ = rc.Close()
-		return err
-	}
-	if _, err := io.Copy(out, rc); err != nil {
-		_ = rc.Close()
-		_ = out.Close()
-		return err
-	}
-	if err := rc.Close(); err != nil {
-		_ = out.Close()
-		return fmt.Errorf("close zip entry reader: %w", err)
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, f.FileInfo().Mode())
+		if err != nil {
+			_ = rc.Close()
+			return err
+		}
+		if _, err := io.Copy(out, rc); err != nil {
+			_ = rc.Close()
+			_ = out.Close()
+			return err
+		}
+		if err := rc.Close(); err != nil {
+			_ = out.Close()
+			return fmt.Errorf("close zip entry reader: %w", err)
 		}
 		if err := out.Close(); err != nil {
 			return fmt.Errorf("close extracted file %q: %w", target, err)
