@@ -51,7 +51,7 @@ require (
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 	maunium.net/go/mautrix v0.27.0
-	modernc.org/sqlite v1.51.0
+	modernc.org/sqlite v1.53.0
 	rsc.io/qr v0.2.0
 )
 
@@ -120,7 +120,7 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/text v0.37.0 // indirect
-	modernc.org/libc v1.72.3 // indirect
+	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
