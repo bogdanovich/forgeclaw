@@ -352,7 +352,7 @@ func findAssetInfo(releaseURL, platform, arch string) (string, string, error) {
 					continue
 				}
 				bs, err := io.ReadAll(resp2.Body)
-				resp2.Body.Close()
+				_ = resp2.Body.Close()
 				if err != nil {
 					continue
 				}
