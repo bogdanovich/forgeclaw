@@ -62,7 +62,7 @@ func TestCreateSafeHTTPClient_BlocksPrivateRedirect(t *testing.T) {
 	allowPrivateHosts = false
 	resp, err := client.Get(server.URL)
 	if resp != nil && resp.Body != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	if err == nil {
 		t.Fatal("expected redirect to private host to fail")
