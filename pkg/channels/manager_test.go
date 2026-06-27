@@ -28,6 +28,7 @@ type mockChannel struct {
 	sendFn            func(ctx context.Context, msg bus.OutboundMessage) error
 	startFn           func(ctx context.Context) error
 	stopFn            func(ctx context.Context) error
+	retryStartSafe    bool
 	sentMessages      []bus.OutboundMessage
 	placeholdersSent  int
 	editedMessages    int
@@ -54,6 +55,10 @@ func (m *mockChannel) Stop(ctx context.Context) error {
 		return m.stopFn(ctx)
 	}
 	return nil
+}
+
+func (m *mockChannel) SupportsStartRetry() bool {
+	return m.retryStartSafe
 }
 
 func (m *mockChannel) SendPlaceholder(ctx context.Context, chatID string) (string, error) {
@@ -235,6 +240,8 @@ func newTestManager() *Manager {
 		bus:                 bus.NewMessageBus(),
 		activeWebhookOwners: make(map[string]uint64),
 		activeHealthOwners:  make(map[string]uint64),
+		startRetryInterval:  10 * time.Millisecond,
+		startupRetryPending: make(map[string]startupRetryRecord),
 	}
 }
 
@@ -439,6 +446,66 @@ func TestStartAll_PartialFailure_StartsSuccessfulWorkers(t *testing.T) {
 	defer stopCancel()
 	if err := m.StopAll(stopCtx); err != nil {
 		t.Fatalf("StopAll() error = %v", err)
+	}
+}
+
+func TestStartAll_RetriesRetryCapableStartupFailuresWhenWorkersExist(t *testing.T) {
+	m := newTestManager()
+	var attempts atomic.Int32
+
+	m.channels["good"] = &mockChannel{}
+	m.channels["flaky"] = &mockChannel{
+		retryStartSafe: true,
+		startFn: func(_ context.Context) error {
+			if attempts.Add(1) == 1 {
+				return errors.New("temporary startup failure")
+			}
+			return nil
+		},
+	}
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		_, ok := m.workers["flaky"]
+		m.mu.RUnlock()
+		if ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	m.mu.RLock()
+	_, ok := m.workers["flaky"]
+	m.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected retry-capable failed channel to become active after retry")
+	}
+}
+
+func TestStartAll_DoesNotRetryNonRetryCapableStartupFailures(t *testing.T) {
+	m := newTestManager()
+	var attempts atomic.Int32
+
+	m.channels["good"] = &mockChannel{}
+	m.channels["bad"] = &mockChannel{
+		startFn: func(_ context.Context) error {
+			attempts.Add(1)
+			return errors.New("permanent startup failure")
+		},
+	}
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if attempts.Load() != 1 {
+		t.Fatalf("startup attempts = %d, want 1", attempts.Load())
 	}
 }
 
