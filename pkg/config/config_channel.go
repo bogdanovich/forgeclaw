@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/caarlos0/env/v11"
 	"gopkg.in/yaml.v3"
@@ -655,6 +656,8 @@ func filterSecureFields(r RawNode, secureFields map[string]struct{}) RawNode {
 // channelSettingsFactory maps channel type to a zero-value prototype of the
 // corresponding Settings struct. InitChannelList uses reflect.New to create
 // fresh instances, avoiding repeated closure boilerplate.
+var channelSettingsMu sync.RWMutex
+
 var channelSettingsFactory = map[string]any{
 	ChannelPico:           (PicoSettings{}),
 	ChannelPicoClient:     (PicoClientSettings{}),
@@ -679,10 +682,24 @@ var channelSettingsFactory = map[string]any{
 	ChannelSlackWebHook:   (SlackWebhookSettings{}),
 }
 
+// RegisterChannelSettings registers a settings struct prototype for a custom
+// channel type. External packages (out-of-tree channels registered via
+// channels.RegisterFactory) call this from an init() so their channel type
+// passes config validation (isValidChannelType) and its settings block decodes
+// into the right struct (newChannelSettings). The prototype must be a struct
+// value, e.g. RegisterChannelSettings("my_channel", MyChannelSettings{}).
+func RegisterChannelSettings(channelType string, prototype any) {
+	channelSettingsMu.Lock()
+	defer channelSettingsMu.Unlock()
+	channelSettingsFactory[channelType] = prototype
+}
+
 // newChannelSettings creates a fresh zero-value pointer for the given channel type.
 // Returns nil if the type is not registered.
 func newChannelSettings(channelType string) any {
+	channelSettingsMu.RLock()
 	proto, ok := channelSettingsFactory[channelType]
+	channelSettingsMu.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -691,7 +708,9 @@ func newChannelSettings(channelType string) any {
 
 // isValidChannelType returns true if the channel type is a known, registered type.
 func isValidChannelType(channelType string) bool {
+	channelSettingsMu.RLock()
 	_, ok := channelSettingsFactory[channelType]
+	channelSettingsMu.RUnlock()
 	return ok
 }
 

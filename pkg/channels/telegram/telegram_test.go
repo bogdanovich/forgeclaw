@@ -1526,8 +1526,9 @@ func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
 	inbound, ok := <-messageBus.InboundChan()
 	require.True(t, ok, "expected inbound message")
 
-	// ChatID remains the parent chat; TopicID isolates the sub-conversation.
-	assert.Equal(t, "-1001234567890", inbound.ChatID)
+	// ChatID includes the thread ID for forum topics so outbound
+	// delivery resolves the correct topic without relying solely on TopicID fallback.
+	assert.Equal(t, "-1001234567890/42", inbound.ChatID)
 	assert.Equal(t, "group", inbound.Context.ChatType)
 	assert.Equal(t, "42", inbound.Context.TopicID)
 }

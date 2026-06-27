@@ -110,7 +110,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	// This prevents the renamed file from disappearing after a crash
 	if dirFile, err := os.Open(dir); err == nil {
 		_ = dirFile.Sync()
-		dirFile.Close()
+		_ = dirFile.Close()
 	}
 
 	// Success: skip cleanup (file was renamed, no temp to remove)
