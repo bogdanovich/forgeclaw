@@ -2253,14 +2253,16 @@ func (m *Manager) GetEnabledChannels() []string {
 // Reload updates the config reference without restarting channels.
 // This is used when channel config hasn't changed but other parts of the config have.
 func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
+	type removedChannel struct {
+		name    string
+		channel Channel
+		worker  *channelWorker
+	}
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Save old config so we can revert on error.
 	oldConfig := m.config
-
-	// Update config early: initChannel uses m.config via factory(m.config, m.bus).
-	m.config = cfg
 
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
@@ -2268,28 +2270,54 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	cc, err := toChannelConfig(cfg, added)
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
-		m.config = oldConfig
+		m.mu.Unlock()
 		return err
 	}
 
-	deferFuncs := make([]func(), 0, len(removed)+len(added))
+	removedChannels := make([]removedChannel, 0, len(removed))
 	for _, name := range removed {
-		// Stop all channels
 		channel := m.channels[name]
-		worker := m.workers[name]
-		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
+		if channel == nil {
+			continue
+		}
+		delete(m.startupRetryPending, name)
+		removedChannels = append(removedChannels, removedChannel{
+			name:    name,
+			channel: channel,
+			worker:  m.workers[name],
 		})
-		if stopErr := channel.Stop(ctx); stopErr != nil {
+	}
+	m.mu.Unlock()
+
+	for _, removed := range removedChannels {
+		logger.InfoCF("channels", "Stopping channel", map[string]any{
+			"channel": removed.name,
+		})
+		lifecycle := m.channelLifecycleLock(removed.name)
+		lifecycle.Lock()
+		stopErr := removed.channel.Stop(ctx)
+		lifecycle.Unlock()
+		if stopErr != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": name,
+				"channel": removed.name,
 				"error":   stopErr.Error(),
 			})
 		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Update config after removed channels have been quiesced.
+	m.config = cfg
+
+	deferFuncs := make([]func(), 0, len(removedChannels))
+	for _, removed := range removedChannels {
 		deferFuncs = append(deferFuncs, func() {
-			m.cleanupRemovedChannel(name, channel, worker)
+			m.cleanupRemovedChannel(removed.name, removed.channel, removed.worker)
 		})
 	}
+
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	m.dispatchTask = &asyncTask{cancel: cancel}
 	err = m.initChannels(cc)
