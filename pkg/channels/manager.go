@@ -121,6 +121,8 @@ type Manager struct {
 	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
 	channelHashes             map[string]string // channel name → config hash
 	nextRuntimeGeneration     uint64
+	activeWebhookOwners       map[string]uint64
+	activeHealthOwners        map[string]uint64
 }
 
 type mediaStoreSetter interface {
@@ -717,13 +719,15 @@ func NewManager(
 	opts ...ManagerOption,
 ) (*Manager, error) {
 	m := &Manager{
-		channels:      make(map[string]Channel),
-		workers:       make(map[string]*channelWorker),
-		runtimes:      make(map[string]*channelRuntime),
-		bus:           messageBus,
-		config:        cfg,
-		mediaStore:    store,
-		channelHashes: make(map[string]string),
+		channels:            make(map[string]Channel),
+		workers:             make(map[string]*channelWorker),
+		runtimes:            make(map[string]*channelRuntime),
+		bus:                 messageBus,
+		config:              cfg,
+		mediaStore:          store,
+		channelHashes:       make(map[string]string),
+		activeWebhookOwners: make(map[string]uint64),
+		activeHealthOwners:  make(map[string]uint64),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -1330,8 +1334,8 @@ func (m *Manager) SetupHTTPServerListeners(listeners []net.Listener, addr string
 		healthServer.RegisterOnMux(m.mux)
 	}
 
-	// Discover and register webhook handlers and health checkers
-	m.registerHTTPHandlersLocked()
+	// Register handlers only for already-active runtimes.
+	m.registerActiveHTTPHandlersLocked()
 
 	m.httpServer = &http.Server{
 		Addr:         addr,
@@ -1342,20 +1346,26 @@ func (m *Manager) SetupHTTPServerListeners(listeners []net.Listener, addr string
 	m.httpListeners = append([]net.Listener(nil), listeners...)
 }
 
-// registerHTTPHandlersLocked registers webhook and health-check handlers for
-// all channels currently in m.channels. Caller must hold m.mu (or ensure
-// exclusive access).
-func (m *Manager) registerHTTPHandlersLocked() {
-	for name, ch := range m.channels {
-		m.registerChannelHTTPHandler(name, ch)
+// registerActiveHTTPHandlersLocked registers webhook and health-check handlers
+// only for runtimes that are currently active. Caller must hold m.mu.
+func (m *Manager) registerActiveHTTPHandlersLocked() {
+	for name, rt := range m.runtimes {
+		if rt == nil || rt.state != channelRuntimeActive {
+			continue
+		}
+		m.registerRuntimeHTTPHandlersLocked(name, rt)
 	}
 }
 
-// registerChannelHTTPHandler registers the webhook/health handlers for a
-// single channel onto m.mux.
-func (m *Manager) registerChannelHTTPHandler(name string, ch Channel) {
-	if wh, ok := ch.(WebhookHandler); ok {
+// registerRuntimeHTTPHandlersLocked registers the webhook/health handlers for a
+// single active runtime onto m.mux. Caller must hold m.mu.
+func (m *Manager) registerRuntimeHTTPHandlersLocked(name string, rt *channelRuntime) {
+	if m.mux == nil || rt == nil || rt.channel == nil {
+		return
+	}
+	if wh, ok := rt.channel.(WebhookHandler); ok {
 		m.mux.Handle(wh.WebhookPath(), wh)
+		m.activeWebhookOwners[wh.WebhookPath()] = rt.generation
 		m.publishChannelEvent(
 			runtimeevents.KindChannelWebhookRegistered,
 			name,
@@ -1366,22 +1376,32 @@ func (m *Manager) registerChannelHTTPHandler(name string, ch Channel) {
 		logger.InfoCF("channels", "Webhook handler registered", map[string]any{
 			"channel": name,
 			"path":    wh.WebhookPath(),
+			"gen":     rt.generation,
 		})
 	}
-	if hc, ok := ch.(HealthChecker); ok {
+	if hc, ok := rt.channel.(HealthChecker); ok {
 		m.mux.HandleFunc(hc.HealthPath(), hc.HealthHandler)
+		m.activeHealthOwners[hc.HealthPath()] = rt.generation
 		logger.InfoCF("channels", "Health endpoint registered", map[string]any{
 			"channel": name,
 			"path":    hc.HealthPath(),
+			"gen":     rt.generation,
 		})
 	}
 }
 
-// unregisterChannelHTTPHandler removes the webhook/health handlers for a
-// single channel from m.mux.
-func (m *Manager) unregisterChannelHTTPHandler(name string, ch Channel) {
-	if wh, ok := ch.(WebhookHandler); ok {
-		m.mux.Unhandle(wh.WebhookPath())
+// unregisterRuntimeHTTPHandlersLocked removes the webhook/health handlers for a
+// single runtime from m.mux, but only if that runtime still owns the mounted
+// path. Caller must hold m.mu.
+func (m *Manager) unregisterRuntimeHTTPHandlersLocked(name string, rt *channelRuntime) {
+	if m.mux == nil || rt == nil || rt.channel == nil {
+		return
+	}
+	if wh, ok := rt.channel.(WebhookHandler); ok {
+		if m.activeWebhookOwners[wh.WebhookPath()] == rt.generation {
+			m.mux.Unhandle(wh.WebhookPath())
+			delete(m.activeWebhookOwners, wh.WebhookPath())
+		}
 		m.publishChannelEvent(
 			runtimeevents.KindChannelWebhookUnregistered,
 			name,
@@ -1392,13 +1412,18 @@ func (m *Manager) unregisterChannelHTTPHandler(name string, ch Channel) {
 		logger.InfoCF("channels", "Webhook handler unregistered", map[string]any{
 			"channel": name,
 			"path":    wh.WebhookPath(),
+			"gen":     rt.generation,
 		})
 	}
-	if hc, ok := ch.(HealthChecker); ok {
-		m.mux.Unhandle(hc.HealthPath())
+	if hc, ok := rt.channel.(HealthChecker); ok {
+		if m.activeHealthOwners[hc.HealthPath()] == rt.generation {
+			m.mux.Unhandle(hc.HealthPath())
+			delete(m.activeHealthOwners, hc.HealthPath())
+		}
 		logger.InfoCF("channels", "Health endpoint unregistered", map[string]any{
 			"channel": name,
 			"path":    hc.HealthPath(),
+			"gen":     rt.generation,
 		})
 	}
 }
@@ -1448,7 +1473,8 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			}
 		}
 		w := newChannelWorker(name, channel, channelType)
-		m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
+		rt := m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
+		m.registerRuntimeHTTPHandlersLocked(name, rt)
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
@@ -1587,6 +1613,9 @@ func (m *Manager) StopAll(ctx context.Context) error {
 	// Stop all channels
 	for name, channel := range m.channels {
 		m.setRuntimeStateLocked(name, channelRuntimeStopping)
+		if rt, ok := m.runtimes[name]; ok {
+			m.unregisterRuntimeHTTPHandlersLocked(name, rt)
+		}
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
@@ -2112,6 +2141,9 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		// Stop all channels
 		channel := m.channels[name]
 		m.setRuntimeStateLocked(name, channelRuntimeStopping)
+		if rt, ok := m.runtimes[name]; ok {
+			m.unregisterRuntimeHTTPHandlersLocked(name, rt)
+		}
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
@@ -2170,7 +2202,8 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			}
 		}
 		w := newChannelWorker(name, channel, channelType)
-		m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
+		rt := m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
+		m.registerRuntimeHTTPHandlersLocked(name, rt)
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
@@ -2201,9 +2234,6 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 		existing, ok := m.runtimes[name]
 		if !ok || existing == nil || existing.channel == channel {
 			m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
-			if m.mux != nil {
-				m.registerChannelHTTPHandler(name, channel)
-			}
 			m.mu.Unlock()
 			return
 		}
@@ -2219,9 +2249,7 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 			current != nil &&
 			current.generation == snapshot.generation &&
 			current.channel == snapshot.channel {
-			if m.mux != nil {
-				m.unregisterChannelHTTPHandler(name, snapshot.channel)
-			}
+			m.unregisterRuntimeHTTPHandlersLocked(name, &snapshot)
 			m.removeRuntimeLocked(name)
 		}
 		m.mu.Unlock()
@@ -2231,8 +2259,8 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if ch, ok := m.channels[name]; ok && m.mux != nil {
-		m.unregisterChannelHTTPHandler(name, ch)
+	if rt, ok := m.runtimes[name]; ok {
+		m.unregisterRuntimeHTTPHandlersLocked(name, rt)
 	}
 	if w, ok := m.workers[name]; ok && w != nil {
 		stopChannelWorker(w)

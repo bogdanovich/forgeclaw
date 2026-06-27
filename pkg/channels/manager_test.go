@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -69,6 +71,20 @@ type mockMediaChannel struct {
 	mockChannel
 	sendMediaFn       func(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error)
 	sentMediaMessages []bus.OutboundMediaMessage
+}
+
+type mockWebhookChannel struct {
+	mockChannel
+	path   string
+	status int
+}
+
+func (m *mockWebhookChannel) WebhookPath() string {
+	return m.path
+}
+
+func (m *mockWebhookChannel) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(m.status)
 }
 
 func (m *mockMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
@@ -213,10 +229,12 @@ func (m *mockStreamingChannel) ResolveOutboundChatID(
 // newTestManager creates a minimal Manager suitable for unit tests.
 func newTestManager() *Manager {
 	return &Manager{
-		channels: make(map[string]Channel),
-		workers:  make(map[string]*channelWorker),
-		runtimes: make(map[string]*channelRuntime),
-		bus:      bus.NewMessageBus(),
+		channels:            make(map[string]Channel),
+		workers:             make(map[string]*channelWorker),
+		runtimes:            make(map[string]*channelRuntime),
+		bus:                 bus.NewMessageBus(),
+		activeWebhookOwners: make(map[string]uint64),
+		activeHealthOwners:  make(map[string]uint64),
 	}
 }
 
@@ -333,6 +351,57 @@ func TestRegisterChannel_ReplacingActiveRuntimeStopsPreviousChannelAndWorker(t *
 	}
 	if currentRuntime.generation <= 1 {
 		t.Fatalf("replacement generation = %d, want > 1", currentRuntime.generation)
+	}
+	if currentRuntime.state != channelRuntimeInactive {
+		t.Fatalf("replacement runtime state = %q, want %q", currentRuntime.state, channelRuntimeInactive)
+	}
+}
+
+func TestRegisterChannel_InactiveWebhookIsNotMountedUntilActive(t *testing.T) {
+	m := newTestManager()
+	m.mux = newDynamicServeMux()
+
+	ch := &mockWebhookChannel{path: "/webhook/test", status: http.StatusAccepted}
+	m.RegisterChannel("test", ch)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	m.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("inactive webhook status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	m.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("active webhook status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+}
+
+func TestUnregisterRuntimeHTTPHandlers_KeepsReplacementWebhookMounted(t *testing.T) {
+	m := newTestManager()
+	m.mux = newDynamicServeMux()
+
+	oldChannel := &mockWebhookChannel{path: "/webhook/test", status: http.StatusAccepted}
+	newChannel := &mockWebhookChannel{path: "/webhook/test", status: http.StatusCreated}
+
+	m.mu.Lock()
+	oldRuntime := m.upsertRuntimeLocked("test", oldChannel, nil, channelRuntimeActive)
+	m.registerRuntimeHTTPHandlersLocked("test", oldRuntime)
+	newRuntime := m.upsertRuntimeLocked("test", newChannel, nil, channelRuntimeActive)
+	m.registerRuntimeHTTPHandlersLocked("test", newRuntime)
+	m.unregisterRuntimeHTTPHandlersLocked("test", oldRuntime)
+	m.mu.Unlock()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	m.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("replacement webhook status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 }
 
