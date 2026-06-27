@@ -336,6 +336,50 @@ func TestRegisterChannel_ReplacingActiveRuntimeStopsPreviousChannelAndWorker(t *
 	}
 }
 
+func TestRegisterChannel_SameInstancePreservesActiveRuntime(t *testing.T) {
+	m := newTestManager()
+
+	ch := &mockChannel{}
+	w := newChannelWorker("test", ch, "test")
+	m.nextRuntimeGeneration = 7
+	m.channels["test"] = ch
+	m.workers["test"] = w
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 7,
+		channel:    ch,
+		worker:     w,
+		state:      channelRuntimeActive,
+	}
+
+	m.RegisterChannel("test", ch)
+
+	m.mu.RLock()
+	rt := m.runtimes["test"]
+	currentWorker := m.workers["test"]
+	currentChannel := m.channels["test"]
+	m.mu.RUnlock()
+
+	if rt == nil {
+		t.Fatal("expected runtime to remain registered")
+	}
+	if currentChannel != ch {
+		t.Fatal("expected channel registration to remain unchanged")
+	}
+	if currentWorker != w {
+		t.Fatal("expected active worker to be preserved")
+	}
+	if rt.worker != w {
+		t.Fatal("expected runtime worker to be preserved")
+	}
+	if rt.state != channelRuntimeActive {
+		t.Fatalf("runtime state = %q, want %q", rt.state, channelRuntimeActive)
+	}
+	if rt.generation != 7 {
+		t.Fatalf("runtime generation = %d, want 7", rt.generation)
+	}
+}
+
 func TestStartAll_AllChannelsFail_ReturnsJoinedError(t *testing.T) {
 	m := newTestManager()
 	errA := errors.New("channel-a start failed")

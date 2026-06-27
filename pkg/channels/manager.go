@@ -2199,7 +2199,11 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 	for {
 		m.mu.Lock()
 		existing, ok := m.runtimes[name]
-		if !ok || existing == nil || existing.channel == channel {
+		if ok && existing != nil && existing.channel == channel {
+			m.mu.Unlock()
+			return
+		}
+		if !ok || existing == nil {
 			m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
 			if m.mux != nil {
 				m.registerChannelHTTPHandler(name, channel)
