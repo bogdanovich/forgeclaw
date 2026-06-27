@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -74,6 +76,20 @@ type mockMediaChannel struct {
 	mockChannel
 	sendMediaFn       func(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error)
 	sentMediaMessages []bus.OutboundMediaMessage
+}
+
+type mockWebhookChannel struct {
+	mockChannel
+	path   string
+	status int
+}
+
+func (m *mockWebhookChannel) WebhookPath() string {
+	return m.path
+}
+
+func (m *mockWebhookChannel) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(m.status)
 }
 
 func (m *mockMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
@@ -747,6 +763,50 @@ func TestReload_ReplacedChannelKeepsReplacementWorker(t *testing.T) {
 		ch == oldChannel,
 		w == oldWorker,
 	)
+}
+
+func TestCleanupRemovedChannel_DoesNotUnregisterReplacementWebhook(t *testing.T) {
+	m := newTestManager()
+	m.mux = newDynamicServeMux()
+
+	oldChannel := &mockWebhookChannel{path: "/webhook/test", status: http.StatusAccepted}
+	newChannel := &mockWebhookChannel{path: "/webhook/test", status: http.StatusCreated}
+
+	m.channels["test"] = oldChannel
+	m.registerChannelHTTPHandler("test", oldChannel)
+	m.channels["test"] = newChannel
+	m.registerChannelHTTPHandler("test", newChannel)
+
+	m.cleanupRemovedChannel("test", oldChannel, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	m.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("ServeHTTP() status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
+func TestSetStartupReadyCallback_InvokesOnFirstWorkerInstall(t *testing.T) {
+	m := newTestManager()
+	readyCalls := make(chan struct{}, 2)
+	m.SetStartupReadyCallback(func() {
+		readyCalls <- struct{}{}
+	})
+
+	m.mu.Lock()
+	m.workers["test"] = newChannelWorker("test", &mockChannel{}, "test")
+	m.mu.Unlock()
+
+	m.SetStartupReadyCallback(func() {
+		readyCalls <- struct{}{}
+	})
+
+	select {
+	case <-readyCalls:
+	case <-time.After(time.Second):
+		t.Fatal("expected startup ready callback to fire once workers exist")
+	}
 }
 
 func testOutboundMessage(msg bus.OutboundMessage) bus.OutboundMessage {

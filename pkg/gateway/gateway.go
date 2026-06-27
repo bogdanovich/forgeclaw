@@ -66,16 +66,17 @@ const (
 )
 
 type services struct {
-	CronService      *cron.CronService
-	HeartbeatService *heartbeat.HeartbeatService
-	MediaStore       media.MediaStore
-	ChannelManager   *channels.Manager
-	DeviceService    *devices.Service
-	HealthServer     *health.Server
-	VoiceAgentCancel context.CancelFunc
-	manualReloadChan chan struct{}
-	reloading        atomic.Bool
-	authToken        string
+	CronService         *cron.CronService
+	HeartbeatService    *heartbeat.HeartbeatService
+	MediaStore          media.MediaStore
+	ChannelManager      *channels.Manager
+	DeviceService       *devices.Service
+	HealthServer        *health.Server
+	VoiceAgentCancel    context.CancelFunc
+	manualReloadChan    chan struct{}
+	reloading           atomic.Bool
+	authToken           string
+	startupRetryPending bool
 }
 
 type startupBlockedProvider struct {
@@ -227,12 +228,21 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if err != nil {
 		return err
 	}
-	// All services (channels + shared HTTP server) are up; mark the health
-	// server ready so GET /ready reports "ready". The health endpoints are
-	// mounted on the shared gateway mux, so Health.Server.Start() (which would
-	// otherwise set this) is never called — we flip the flag explicitly here.
-	runningServices.HealthServer.SetReady(true)
-	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReady, startedAt, nil)
+	var readyOnce sync.Once
+	markGatewayReady := func() {
+		readyOnce.Do(func() {
+			// The health endpoints are mounted on the shared gateway mux, so
+			// Health.Server.Start() (which would otherwise set this) is never
+			// called — flip the flag explicitly when channel delivery is ready.
+			runningServices.HealthServer.SetReady(true)
+			publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReady, startedAt, nil)
+		})
+	}
+	if runningServices.startupRetryPending {
+		runningServices.ChannelManager.SetStartupReadyCallback(markGatewayReady)
+	} else {
+		markGatewayReady()
+	}
 	closeListeners = false
 
 	// Setup manual reload channel for /reload endpoint
@@ -496,6 +506,7 @@ func setupAndStartServices(
 		if !errors.As(err, &retryPending) {
 			return nil, fmt.Errorf("error starting channels: %w", err)
 		}
+		runningServices.startupRetryPending = true
 		logger.WarnCF("gateway", "Channel startup recovery pending", map[string]any{
 			"error": retryPending.Error(),
 		})

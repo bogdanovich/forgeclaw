@@ -112,6 +112,7 @@ type Manager struct {
 	startRetryInterval        time.Duration
 	channelLifecycle          sync.Map // channel name -> *sync.Mutex
 	startupRetryPending       map[string]startupRetryChannel
+	startupReadyCallback      func()
 	dispatchStarted           bool
 }
 
@@ -769,6 +770,27 @@ func (m *Manager) SetMediaStore(store media.MediaStore) {
 			setter.SetMediaStore(store)
 		}
 	}
+}
+
+// SetStartupReadyCallback registers a callback fired once channel startup has
+// produced at least one active worker. If workers are already active when the
+// callback is installed, it is invoked immediately after the lock is released.
+func (m *Manager) SetStartupReadyCallback(fn func()) {
+	m.mu.Lock()
+	m.startupReadyCallback = fn
+	shouldInvoke := fn != nil && len(m.workers) > 0
+	m.mu.Unlock()
+
+	if shouldInvoke {
+		fn()
+	}
+}
+
+func (m *Manager) startupReadyCallbackForFirstWorkerLocked() func() {
+	if len(m.workers) != 1 {
+		return nil
+	}
+	return m.startupReadyCallback
 }
 
 // GetStreamer implements bus.StreamDelegate.
@@ -1576,6 +1598,7 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 
 		shouldStop := false
 		retirePending := false
+		var readyCallback func()
 		m.mu.Lock()
 		if ctx.Err() != nil || m.dispatchTask == nil {
 			shouldStop = true
@@ -1590,6 +1613,7 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 			w := newChannelWorker(pendingStart.name, pendingStart.channel, pendingStart.channelType)
 			m.workers[pendingStart.name] = w
 			delete(m.startupRetryPending, pendingStart.name)
+			readyCallback = m.startupReadyCallbackForFirstWorkerLocked()
 			m.startDispatchLoopsLocked(ctx)
 			go m.runWorker(ctx, pendingStart.name, w)
 			go m.runMediaWorker(ctx, pendingStart.name, w)
@@ -1604,6 +1628,9 @@ func (m *Manager) retryMissingChannelsOnce(ctx context.Context) {
 			continue
 		}
 		lifecycle.Unlock()
+		if readyCallback != nil {
+			readyCallback()
+		}
 
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
@@ -1772,8 +1799,6 @@ func (m *Manager) cleanupRemovedChannel(name string, removed Channel, worker *ch
 	if ok && current == removed {
 		delete(m.channels, name)
 		delete(m.workers, name)
-	}
-	if m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, removed)
 	}
 	m.mu.Unlock()
@@ -2355,8 +2380,12 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		}
 		w := newChannelWorker(name, channel, channelType)
 		m.workers[name] = w
+		readyCallback := m.startupReadyCallbackForFirstWorkerLocked()
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
+		if readyCallback != nil {
+			go readyCallback()
+		}
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
 			name,
