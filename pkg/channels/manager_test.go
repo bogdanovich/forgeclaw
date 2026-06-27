@@ -215,6 +215,7 @@ func newTestManager() *Manager {
 	return &Manager{
 		channels: make(map[string]Channel),
 		workers:  make(map[string]*channelWorker),
+		runtimes: make(map[string]*channelRuntime),
 		bus:      bus.NewMessageBus(),
 	}
 }
@@ -236,6 +237,146 @@ func TestSetMediaStorePropagatesToExistingChannels(t *testing.T) {
 	}
 	if got := ch.GetMediaStore(); got != newStore {
 		t.Fatalf("channel media store = %p, want %p", got, newStore)
+	}
+}
+
+func TestRegisterChannel_ReplacingInstanceAdvancesRuntimeGeneration(t *testing.T) {
+	m := newTestManager()
+
+	first := &mockChannel{}
+	second := &mockChannel{}
+
+	m.RegisterChannel("test", first)
+
+	m.mu.RLock()
+	firstRuntime := m.runtimes["test"]
+	m.mu.RUnlock()
+	if firstRuntime == nil {
+		t.Fatal("expected runtime for first channel registration")
+	}
+
+	m.RegisterChannel("test", second)
+
+	m.mu.RLock()
+	secondRuntime := m.runtimes["test"]
+	currentChannel := m.channels["test"]
+	m.mu.RUnlock()
+	if secondRuntime == nil {
+		t.Fatal("expected runtime for replacement channel registration")
+	}
+	if currentChannel != second {
+		t.Fatal("expected replacement channel to become current")
+	}
+	if secondRuntime.channel != second {
+		t.Fatal("expected runtime to track replacement channel")
+	}
+	if secondRuntime.generation <= firstRuntime.generation {
+		t.Fatalf(
+			"replacement generation = %d, want > %d",
+			secondRuntime.generation,
+			firstRuntime.generation,
+		)
+	}
+	if secondRuntime.state != channelRuntimeInactive {
+		t.Fatalf("replacement runtime state = %q, want %q", secondRuntime.state, channelRuntimeInactive)
+	}
+}
+
+func TestRegisterChannel_ReplacingActiveRuntimeStopsPreviousChannelAndWorker(t *testing.T) {
+	m := newTestManager()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopCalls := 0
+	oldChannel := &mockChannel{
+		stopFn: func(_ context.Context) error {
+			stopCalls++
+			return nil
+		},
+	}
+	oldWorker := newChannelWorker("test", oldChannel, "test")
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    oldChannel,
+		worker:     oldWorker,
+		state:      channelRuntimeActive,
+	}
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+
+	newChannel := &mockChannel{}
+	m.RegisterChannel("test", newChannel)
+
+	if stopCalls != 1 {
+		t.Fatalf("previous channel stop calls = %d, want 1", stopCalls)
+	}
+
+	m.mu.RLock()
+	currentChannel := m.channels["test"]
+	currentWorker, hasWorker := m.workers["test"]
+	currentRuntime := m.runtimes["test"]
+	m.mu.RUnlock()
+
+	if currentChannel != newChannel {
+		t.Fatal("expected replacement channel to become current")
+	}
+	if hasWorker || currentWorker != nil {
+		t.Fatal("expected replacement registration to not carry over the previous worker")
+	}
+	if currentRuntime == nil || currentRuntime.channel != newChannel {
+		t.Fatal("expected runtime to track replacement channel")
+	}
+	if currentRuntime.generation <= 1 {
+		t.Fatalf("replacement generation = %d, want > 1", currentRuntime.generation)
+	}
+}
+
+func TestRegisterChannel_SameInstancePreservesActiveRuntime(t *testing.T) {
+	m := newTestManager()
+
+	ch := &mockChannel{}
+	w := newChannelWorker("test", ch, "test")
+	m.nextRuntimeGeneration = 7
+	m.channels["test"] = ch
+	m.workers["test"] = w
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 7,
+		channel:    ch,
+		worker:     w,
+		state:      channelRuntimeActive,
+	}
+
+	m.RegisterChannel("test", ch)
+
+	m.mu.RLock()
+	rt := m.runtimes["test"]
+	currentWorker := m.workers["test"]
+	currentChannel := m.channels["test"]
+	m.mu.RUnlock()
+
+	if rt == nil {
+		t.Fatal("expected runtime to remain registered")
+	}
+	if currentChannel != ch {
+		t.Fatal("expected channel registration to remain unchanged")
+	}
+	if currentWorker != w {
+		t.Fatal("expected active worker to be preserved")
+	}
+	if rt.worker != w {
+		t.Fatal("expected runtime worker to be preserved")
+	}
+	if rt.state != channelRuntimeActive {
+		t.Fatalf("runtime state = %q, want %q", rt.state, channelRuntimeActive)
+	}
+	if rt.generation != 7 {
+		t.Fatalf("runtime generation = %d, want 7", rt.generation)
 	}
 }
 
