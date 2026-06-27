@@ -159,9 +159,12 @@ func (p *Provider) buildRequestBody(
 		// treat it as false — web_search_preview must not be injected
 		// when the caller cannot express a well-typed intent.
 		if _, present := options["native_search"]; present {
-			log.Printf(
-				"[openai_compat] native_search option has unexpected type %T, ignoring",
-				options["native_search"],
+			logger.WarnCF(
+				"provider.openai_compat",
+				"native_search option has unexpected type; ignoring",
+				map[string]any{
+					"type": fmt.Sprintf("%T", options["native_search"]),
+				},
 			)
 		}
 	}
