@@ -604,7 +604,9 @@ func (al *AgentLoop) Continue(
 	)
 	if err != nil {
 		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)
+		return response, err
 	}
+	al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
 	return response, err
 }
 
