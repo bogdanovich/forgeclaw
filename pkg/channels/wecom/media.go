@@ -334,7 +334,7 @@ func (c *WeComChannel) storeRemoteMedia(
 	}
 	tmpPath := tmpFile.Name()
 	if _, writeErr := tmpFile.Write(data); writeErr != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("write temp file: %w", writeErr)
 	}

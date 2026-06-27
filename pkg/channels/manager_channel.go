@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 )
@@ -11,17 +12,27 @@ import (
 func toChannelHashes(cfg *config.Config) map[string]string {
 	result := make(map[string]string)
 	ch := cfg.Channels
-	// should not be error
-	marshal, _ := json.Marshal(ch)
+	marshal, err := json.Marshal(ch)
+	if err != nil {
+		log.Printf("[manager_channel] failed to marshal channels config: %v", err)
+		return result
+	}
 	var channelConfig map[string]map[string]any
-	_ = json.Unmarshal(marshal, &channelConfig)
+	if err := json.Unmarshal(marshal, &channelConfig); err != nil {
+		log.Printf("[manager_channel] failed to unmarshal channels config: %v", err)
+		return result
+	}
 
 	for key, value := range channelConfig {
 		if enabled, ok := value["enabled"].(bool); !ok || !enabled {
 			continue
 		}
 		hiddenValues(key, value, ch.Get(key))
-		valueBytes, _ := json.Marshal(value)
+		valueBytes, err := json.Marshal(value)
+		if err != nil {
+			log.Printf("[manager_channel] failed to marshal channel %s config: %v", key, err)
+			continue
+		}
 		hash := md5.Sum(valueBytes)
 		result[key] = hex.EncodeToString(hash[:])
 	}

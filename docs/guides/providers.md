@@ -138,6 +138,9 @@ This design also enables **multi-agent support** with flexible provider selectio
 
 When streaming is disabled, omit the `streaming` block. Writing `"streaming": {"enabled": false}` is optional and not needed in generated or hand-written config.
 
+`extra_body` is especially useful for model-specific TTS fields on OpenAI-compatible
+speech routes, for example custom `voice` names or `response_format: "mp3"`.
+
 #### Tool Schema Compatibility
 
 By default, PicoClaw now forwards tool JSON Schemas unchanged.
@@ -204,6 +207,41 @@ If `voice.model_name` is not configured, PicoClaw will continue to fall back to 
   }
 }
 ```
+
+#### Voice Synthesis
+
+You can configure a dedicated text-to-speech model with `voice.tts_model_name`.
+When the provider needs model-specific TTS request fields, put them in
+`model_list[].extra_body`.
+
+Example with OpenRouter `microsoft/mai-voice-2`:
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "mai-voice-2",
+      "provider": "openrouter",
+      "model": "microsoft/mai-voice-2",
+      "api_base": "https://openrouter.ai/api/v1",
+      "extra_body": {
+        "voice": "en-US-Harper:MAI-Voice-2",
+        "response_format": "mp3"
+      },
+      "api_keys": ["sk-or-your-openrouter-key"]
+    }
+  ],
+  "voice": {
+    "tts_model_name": "mai-voice-2"
+  }
+}
+```
+
+Notes that matter:
+
+- PicoClaw still uses the OpenAI-compatible `/audio/speech` route for this setup.
+- The default TTS request uses `voice: alloy` and `response_format: opus`.
+- Override those defaults with `extra_body` when your selected TTS model requires different values.
 
 #### Vendor-Specific Examples
 

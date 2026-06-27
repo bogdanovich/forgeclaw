@@ -25,6 +25,8 @@ Instead:
 
 - `voice.tts_model_name` selects a named entry from `model_list`.
 - That `model_list` entry provides the provider, model ID, API base, and proxy settings.
+- For providers that need model-specific TTS parameters, use `model_list[].extra_body`
+  to pass fields such as `voice` and `response_format`.
 - `.security.yml` stores the API key for the same named model entry.
 
 This is the recommended and supported configuration pattern.
@@ -87,6 +89,43 @@ model_list:
 
 If you use a custom MiMo endpoint, you can also set `api_base` explicitly. Otherwise PicoClaw will use the provider default.
 
+### Option C: OpenRouter MAI Voice 2
+
+Some OpenAI-compatible TTS routes require provider-specific request fields.
+OpenRouter's `microsoft/mai-voice-2` is one example: it needs a model-specific
+voice name and works best with `response_format: "mp3"`.
+
+`config.json`
+
+```json
+{
+  "voice": {
+    "tts_model_name": "mai-voice-2"
+  },
+  "model_list": [
+    {
+      "model_name": "mai-voice-2",
+      "provider": "openrouter",
+      "model": "microsoft/mai-voice-2",
+      "api_base": "https://openrouter.ai/api/v1",
+      "extra_body": {
+        "voice": "en-US-Harper:MAI-Voice-2",
+        "response_format": "mp3"
+      }
+    }
+  ]
+}
+```
+
+`.security.yml`
+
+```yaml
+model_list:
+  mai-voice-2:
+    api_keys:
+      - "sk-or-your-openrouter-key"
+```
+
 ## What PicoClaw Sends Today
 
 The current TTS runtime uses an OpenAI-compatible speech request with these defaults:
@@ -96,11 +135,14 @@ The current TTS runtime uses an OpenAI-compatible speech request with these defa
 - Voice: `alloy`
 - Model: taken from the selected `model_list` entry
 
+These defaults can now be overridden per model through `model_list[].extra_body`.
+
 That means:
 
 - `openai/tts-1` works naturally.
 - Other OpenAI-compatible providers can work if they accept the same request format.
-- PicoClaw currently does not expose a user-facing config field for changing the TTS voice from `alloy`.
+- Provider-specific TTS models may need their own `voice` and `response_format` values.
+- If a provider rejects `response_format`, PicoClaw retries once without that field.
 
 ## How PicoClaw Chooses a TTS Provider
 
@@ -124,7 +166,8 @@ PicoClaw normalizes the configured base URL for TTS:
 
 - Setting `voice.tts_model_name` to a name that does not exist in `model_list`.
 - Adding a TTS model but forgetting to put its API key in `.security.yml`.
-- Assuming PicoClaw will automatically use provider-specific custom voices.
+- Assuming PicoClaw will automatically infer provider-specific custom voices.
+- Forgetting to set `model_list[].extra_body.voice` or `model_list[].extra_body.response_format` for TTS models that require them.
 - Using a provider endpoint that is not compatible with the OpenAI `/audio/speech` request format.
 
 ## Minimal Checklist

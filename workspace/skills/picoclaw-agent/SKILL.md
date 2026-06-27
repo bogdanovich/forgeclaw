@@ -468,7 +468,8 @@ Recommended setup:
 1. add a TTS-capable model entry to `model_list`
 2. set `voice.tts_model_name` to that entry's `model_name`
 3. store the API key in `.security.yml`
-4. enable `send_tts` in the tool configuration if you want the agent to emit speech files
+4. if the provider needs model-specific TTS fields, add them under `model_list[].extra_body`
+5. enable `send_tts` in the tool configuration if you want the agent to emit speech files
 
 Example:
 
@@ -493,6 +494,35 @@ model_list:
       - "sk-openai-your-key"
 ```
 
+Example with OpenRouter MAI Voice 2:
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "mai-voice-2",
+      "provider": "openrouter",
+      "model": "microsoft/mai-voice-2",
+      "api_base": "https://openrouter.ai/api/v1",
+      "extra_body": {
+        "voice": "en-US-Harper:MAI-Voice-2",
+        "response_format": "mp3"
+      }
+    }
+  ],
+  "voice": {
+    "tts_model_name": "mai-voice-2"
+  }
+}
+```
+
+```yaml
+model_list:
+  mai-voice-2:
+    api_keys:
+      - "sk-or-your-openrouter-key"
+```
+
 ### Current TTS Provider Paths
 
 | Provider path | Example model | Notes |
@@ -505,6 +535,8 @@ Operational notes:
 - the preferred selection path is `voice.tts_model_name`
 - if that is missing, PicoClaw can still scan `model_list` for the first API-backed model whose ID contains `tts`
 - the current OpenAI-style TTS request defaults to `voice: alloy` and `response_format: opus`
+- you can override `voice` and `response_format` for a specific TTS model through `model_list[].extra_body`
+- if a provider rejects `response_format`, PicoClaw retries once without that field
 - `send_tts` is only registered when TTS detection succeeds
 
 

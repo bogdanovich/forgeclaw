@@ -200,6 +200,17 @@ func userPromptMessage(content string, media []string) providers.Message {
 	return promptMessageWithMetadata(msg, PromptLayerTurn, PromptSlotMessage, PromptSourceUserMessage)
 }
 
+func toolImageFollowUpPromptMessage(media []string) providers.Message {
+	msg := providers.Message{
+		Role:    "user",
+		Content: "[Loaded image from tool result above]",
+	}
+	if len(media) > 0 {
+		msg.Media = append([]string(nil), media...)
+	}
+	return promptMessageWithMetadata(msg, PromptLayerTurn, PromptSlotToolResult, PromptSourceToolResult)
+}
+
 func steeringPromptMessage(msg providers.Message) providers.Message {
 	return promptMessageWithDefaultMetadata(msg, PromptLayerTurn, PromptSlotSteering, PromptSourceSteering)
 }

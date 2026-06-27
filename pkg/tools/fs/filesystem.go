@@ -1125,7 +1125,7 @@ func (r *sandboxFs) WriteFile(path string, data []byte) error {
 		}
 
 		if _, err := tmpFile.Write(data); err != nil {
-			tmpFile.Close()
+			_ = tmpFile.Close()
 			root.Remove(tmpRelPath)
 			return fmt.Errorf("failed to write temp file: %w", err)
 		}
@@ -1133,7 +1133,7 @@ func (r *sandboxFs) WriteFile(path string, data []byte) error {
 		// CRITICAL: Force sync to storage medium before rename.
 		// This ensures data is physically written to disk, not just cached.
 		if err := tmpFile.Sync(); err != nil {
-			tmpFile.Close()
+			_ = tmpFile.Close()
 			root.Remove(tmpRelPath)
 			return fmt.Errorf("failed to sync temp file: %w", err)
 		}
@@ -1151,7 +1151,7 @@ func (r *sandboxFs) WriteFile(path string, data []byte) error {
 		// Sync directory to ensure rename is durable
 		if dirFile, err := root.Open("."); err == nil {
 			_ = dirFile.Sync()
-			dirFile.Close()
+			_ = dirFile.Close()
 		}
 
 		return nil

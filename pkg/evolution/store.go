@@ -88,7 +88,11 @@ func (s *Store) appendJSONLRecords(ctx context.Context, path string, records []L
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	enc := json.NewEncoder(f)
 	for _, record := range records {

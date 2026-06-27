@@ -35,12 +35,9 @@ func isVisionUnsupportedError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 
-	// OpenRouter (and OpenAI-compatible) style.
 	if strings.Contains(msg, "no endpoints found that support image input") {
 		return true
 	}
-
-	// Common provider variants.
 	if strings.Contains(msg, "does not support image input") ||
 		strings.Contains(msg, "does not support image inputs") ||
 		strings.Contains(msg, "does not support images") ||
@@ -50,15 +47,9 @@ func isVisionUnsupportedError(err error) bool {
 		strings.Contains(msg, "unsupported content type: image_url") {
 		return true
 	}
-
-	// Some providers return a generic "invalid" message that still mentions image_url.
 	if strings.Contains(msg, "image_url") && strings.Contains(msg, "invalid") {
 		return true
 	}
-
-	// DeepSeek and other strict providers reject the image_url field at the
-	// JSON schema level with an "unknown variant" error rather than a semantic
-	// "not supported" message.
 	if strings.Contains(msg, "unknown variant") && strings.Contains(msg, "image_url") {
 		return true
 	}

@@ -1,6 +1,8 @@
 package onboard
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/spf13/cobra"
+)
 
 func NewOnboardCommand() *cobra.Command {
 	var encrypt bool
