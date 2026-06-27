@@ -1611,6 +1611,16 @@ func (m *Manager) StopAll(ctx context.Context) error {
 	return nil
 }
 
+func stopChannelWorker(w *channelWorker) {
+	if w == nil {
+		return
+	}
+	close(w.queue)
+	<-w.done
+	close(w.mediaQueue)
+	<-w.mediaDone
+}
+
 // newChannelWorker creates a channelWorker with a rate limiter configured
 // for the given channel type. channelType is used for rate limit lookup.
 func newChannelWorker(name string, ch Channel, channelType string) *channelWorker {
@@ -2186,11 +2196,35 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 }
 
 func (m *Manager) RegisterChannel(name string, channel Channel) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
-	if m.mux != nil {
-		m.registerChannelHTTPHandler(name, channel)
+	for {
+		m.mu.Lock()
+		existing, ok := m.runtimes[name]
+		if !ok || existing == nil || existing.channel == channel {
+			m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
+			if m.mux != nil {
+				m.registerChannelHTTPHandler(name, channel)
+			}
+			m.mu.Unlock()
+			return
+		}
+		snapshot := *existing
+		m.mu.Unlock()
+
+		_ = snapshot.channel.Stop(context.Background())
+		stopChannelWorker(snapshot.worker)
+
+		m.mu.Lock()
+		current, stillPresent := m.runtimes[name]
+		if stillPresent &&
+			current != nil &&
+			current.generation == snapshot.generation &&
+			current.channel == snapshot.channel {
+			if m.mux != nil {
+				m.unregisterChannelHTTPHandler(name, snapshot.channel)
+			}
+			m.removeRuntimeLocked(name)
+		}
+		m.mu.Unlock()
 	}
 }
 
@@ -2201,10 +2235,7 @@ func (m *Manager) UnregisterChannel(name string) {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
 	if w, ok := m.workers[name]; ok && w != nil {
-		close(w.queue)
-		<-w.done
-		close(w.mediaQueue)
-		<-w.mediaDone
+		stopChannelWorker(w)
 	}
 	m.removeRuntimeLocked(name)
 }
