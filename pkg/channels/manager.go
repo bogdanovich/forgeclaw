@@ -101,6 +101,11 @@ type channelRuntime struct {
 	state      channelRuntimeState
 }
 
+type startupRetryRecord struct {
+	name       string
+	generation uint64
+}
+
 type Manager struct {
 	channels                  map[string]Channel
 	workers                   map[string]*channelWorker
@@ -110,6 +115,7 @@ type Manager struct {
 	config                    *config.Config
 	mediaStore                media.MediaStore
 	dispatchTask              *asyncTask
+	startupTask               *asyncTask
 	mux                       *dynamicServeMux
 	httpServer                *http.Server
 	httpListeners             []net.Listener
@@ -123,6 +129,8 @@ type Manager struct {
 	nextRuntimeGeneration     uint64
 	activeWebhookOwners       map[string]uint64
 	activeHealthOwners        map[string]uint64
+	startRetryInterval        time.Duration
+	startupRetryPending       map[string]startupRetryRecord
 }
 
 type mediaStoreSetter interface {
@@ -185,8 +193,11 @@ type toolFeedbackAnimatorConfigurer interface {
 }
 
 type asyncTask struct {
+	ctx    context.Context
 	cancel context.CancelFunc
 }
+
+const channelStartRetryInterval = 10 * time.Second
 
 type deliveryCleanupOptions struct {
 	StopTyping          bool
@@ -728,6 +739,8 @@ func NewManager(
 		channelHashes:       make(map[string]string),
 		activeWebhookOwners: make(map[string]uint64),
 		activeHealthOwners:  make(map[string]uint64),
+		startRetryInterval:  channelStartRetryInterval,
+		startupRetryPending: make(map[string]startupRetryRecord),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -800,6 +813,11 @@ func (m *Manager) runtimeSnapshotLocked(name string) (channelRuntime, bool) {
 	return *rt, true
 }
 
+func supportsStartRetry(ch Channel) bool {
+	retryCapable, ok := ch.(StartRetryCapable)
+	return ok && retryCapable.SupportsStartRetry()
+}
+
 func (m *Manager) runtimeChannelTypeLocked(name string) string {
 	channelType := name
 	if m.config != nil {
@@ -830,6 +848,111 @@ func (m *Manager) markRuntimeStartFailedLocked(name string, err error) {
 		runtimeevents.SeverityError,
 		ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
 	)
+}
+
+func (m *Manager) queueStartupRetryLocked(name string) {
+	rt, ok := m.runtimes[name]
+	if !ok || rt == nil || rt.channel == nil {
+		return
+	}
+	if !supportsStartRetry(rt.channel) || m.dispatchTask == nil || m.dispatchTask.ctx == nil {
+		return
+	}
+	m.startupRetryPending[name] = startupRetryRecord{
+		name:       name,
+		generation: rt.generation,
+	}
+	m.ensureStartupSupervisorLocked(m.dispatchTask.ctx)
+}
+
+func (m *Manager) clearStartupRetryLocked(name string) {
+	delete(m.startupRetryPending, name)
+	if len(m.startupRetryPending) == 0 && m.startupTask != nil {
+		m.startupTask.cancel()
+		m.startupTask = nil
+	}
+}
+
+func (m *Manager) ensureStartupSupervisorLocked(parent context.Context) {
+	if parent == nil || m.startupTask != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	m.startupTask = &asyncTask{ctx: ctx, cancel: cancel}
+	go m.retryPendingStarts(ctx)
+}
+
+func (m *Manager) retryPendingStarts(ctx context.Context) {
+	ticker := time.NewTicker(m.startRetryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.retryPendingStartsOnce(ctx)
+		}
+	}
+}
+
+func (m *Manager) retryPendingStartsOnce(ctx context.Context) {
+	m.mu.RLock()
+	pending := make([]startupRetryRecord, 0, len(m.startupRetryPending))
+	for _, record := range m.startupRetryPending {
+		pending = append(pending, record)
+	}
+	m.mu.RUnlock()
+
+	for _, record := range pending {
+		m.retryPendingStart(ctx, record)
+	}
+}
+
+func (m *Manager) retryPendingStart(ctx context.Context, record startupRetryRecord) {
+	m.mu.RLock()
+	rt, ok := m.runtimes[record.name]
+	dispatchTask := m.dispatchTask
+	if !ok || rt == nil || rt.generation != record.generation || rt.worker != nil || rt.channel == nil {
+		m.mu.RUnlock()
+		m.mu.Lock()
+		m.clearStartupRetryLocked(record.name)
+		m.mu.Unlock()
+		return
+	}
+	channel := rt.channel
+	m.mu.RUnlock()
+
+	logger.WarnCF("channels", "Retrying channel start", map[string]any{
+		"channel":    record.name,
+		"generation": record.generation,
+	})
+	if err := channel.Start(ctx); err != nil {
+		m.mu.Lock()
+		if current, exists := m.runtimes[record.name]; exists &&
+			current != nil &&
+			current.generation == record.generation {
+			m.markRuntimeStartFailedLocked(record.name, err)
+		}
+		m.mu.Unlock()
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.runtimes[record.name]
+	if !ok ||
+		current == nil ||
+		current.generation != record.generation ||
+		current.channel != channel ||
+		current.worker != nil {
+		return
+	}
+	if dispatchTask == nil || dispatchTask.ctx == nil || dispatchTask.ctx.Err() != nil {
+		return
+	}
+	m.activateRuntimeLocked(record.name, dispatchTask.ctx)
+	m.clearStartupRetryLocked(record.name)
 }
 
 func (m *Manager) activateRuntimeLocked(name string, dispatchCtx context.Context) *channelRuntime {
@@ -1500,15 +1623,23 @@ func (m *Manager) StartAll(ctx context.Context) error {
 
 	logger.InfoC("channels", "Starting all channels")
 
+	if m.startupTask != nil {
+		m.startupTask.cancel()
+		m.startupTask = nil
+	}
+	m.startupRetryPending = make(map[string]startupRetryRecord)
+
 	dispatchCtx, cancel := context.WithCancel(ctx)
-	m.dispatchTask = &asyncTask{cancel: cancel}
+	m.dispatchTask = &asyncTask{ctx: dispatchCtx, cancel: cancel}
 	failedStarts := make([]error, 0, len(m.channels))
 	failedNames := make([]string, 0, len(m.channels))
 
 	for name, channel := range m.channels {
+		m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
 		m.markRuntimeStartingLocked(name)
 		if err := channel.Start(ctx); err != nil {
 			m.markRuntimeStartFailedLocked(name, err)
+			m.queueStartupRetryLocked(name)
 			failedStarts = append(failedStarts, fmt.Errorf("channel %s: %w", name, err))
 			failedNames = append(failedNames, name)
 			continue
@@ -1521,6 +1652,11 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			m.dispatchTask.cancel()
 			m.dispatchTask = nil
 		}
+		if m.startupTask != nil {
+			m.startupTask.cancel()
+			m.startupTask = nil
+		}
+		m.startupRetryPending = make(map[string]startupRetryRecord)
 
 		sort.Strings(failedNames)
 		if len(failedStarts) == 0 {
@@ -1616,6 +1752,11 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask.cancel()
 		m.dispatchTask = nil
 	}
+	if m.startupTask != nil {
+		m.startupTask.cancel()
+		m.startupTask = nil
+	}
+	m.startupRetryPending = make(map[string]startupRetryRecord)
 
 	// Close all worker queues and wait for them to drain
 	for _, w := range m.workers {
@@ -2146,6 +2287,11 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 
 	// Update config early: initChannel uses m.config via factory(m.config, m.bus).
 	m.config = cfg
+	if m.startupTask != nil {
+		m.startupTask.cancel()
+		m.startupTask = nil
+	}
+	m.startupRetryPending = make(map[string]startupRetryRecord)
 
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
@@ -2154,6 +2300,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	for _, name := range removed {
 		// Stop all channels
 		channel := m.channels[name]
+		m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
 		m.markRuntimeStoppingLocked(name)
 		if err := channel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
@@ -2166,7 +2313,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		})
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)
-	m.dispatchTask = &asyncTask{cancel: cancel}
+	m.dispatchTask = &asyncTask{ctx: dispatchCtx, cancel: cancel}
 	cc, err := toChannelConfig(cfg, added)
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
@@ -2183,9 +2330,11 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	}
 	for _, name := range added {
 		channel := m.channels[name]
+		m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
 		m.markRuntimeStartingLocked(name)
 		if err := channel.Start(ctx); err != nil {
 			m.markRuntimeStartFailedLocked(name, err)
+			m.queueStartupRetryLocked(name)
 			continue
 		}
 		m.activateRuntimeLocked(name, dispatchCtx)
@@ -2216,6 +2365,7 @@ func (m *Manager) UnregisterChannel(name string) {
 	if rt, ok := m.runtimes[name]; ok {
 		m.unregisterRuntimeHTTPHandlersLocked(name, rt)
 	}
+	m.clearStartupRetryLocked(name)
 	if w, ok := m.workers[name]; ok && w != nil {
 		close(w.queue)
 		<-w.done
