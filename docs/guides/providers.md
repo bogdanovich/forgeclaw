@@ -673,7 +673,9 @@ picoclaw agent -m "Hello"
       }
     },
     "cron": {
-      "exec_timeout_minutes": 5
+      "exec_timeout_minutes": 5,
+      "allow_command": true,
+      "command_allowed_remotes": []
     }
   },
   "heartbeat": {

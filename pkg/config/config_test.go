@@ -1773,6 +1773,16 @@ func TestDefaultConfig_TaskBoardExecuteNextDisabled(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_CronCommandAllowedRemotesEmpty(t *testing.T) {
+	cfg := DefaultConfig()
+	if len(cfg.Tools.Cron.CommandAllowedRemotes) != 0 {
+		t.Fatalf(
+			"DefaultConfig().Tools.Cron.CommandAllowedRemotes = %#v, want empty",
+			cfg.Tools.Cron.CommandAllowedRemotes,
+		)
+	}
+}
+
 func TestDefaultConfig_HooksDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.Hooks.Enabled {
@@ -1881,6 +1891,32 @@ func TestLoadConfig_CronAllowCommandDefaultsTrueWhenUnset(t *testing.T) {
 	}
 	if !cfg.Tools.Cron.AllowCommand {
 		t.Fatal("tools.cron.allow_command should remain true when unset in config file")
+	}
+}
+
+func TestLoadConfig_CronCommandAllowedRemotes(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(
+		configPath,
+		[]byte(`{"version":1,"tools":{"cron":{"command_allowed_remotes":["telegram:1234567890","discord"]}}}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	want := []string{"telegram:1234567890", "discord"}
+	if len(cfg.Tools.Cron.CommandAllowedRemotes) != len(want) {
+		t.Fatalf("CommandAllowedRemotes = %#v, want %#v", cfg.Tools.Cron.CommandAllowedRemotes, want)
+	}
+	for i := range want {
+		if cfg.Tools.Cron.CommandAllowedRemotes[i] != want[i] {
+			t.Fatalf("CommandAllowedRemotes = %#v, want %#v", cfg.Tools.Cron.CommandAllowedRemotes, want)
+		}
 	}
 }
 
