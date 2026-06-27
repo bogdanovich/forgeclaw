@@ -201,14 +201,14 @@ func newTurnExecution(
 	messages []providers.Message,
 ) *turnExecution {
 	return &turnExecution{
-		history:                history,
-		summary:                summary,
-		messages:               messages,
-		pendingMessages:        append([]providers.Message(nil), opts.InitialSteeringMessages...),
-		sawAdditionalUserInput: len(opts.InitialSteeringMessages) > 0,
+		history:                 history,
+		summary:                 summary,
+		messages:                messages,
+		pendingMessages:         append([]providers.Message(nil), opts.InitialSteeringMessages...),
+		sawAdditionalUserInput:  len(opts.InitialSteeringMessages) > 0,
 		initialSteeringSpoolIDs: collectSteeringSpoolIDs(opts.InitialSteeringMessages),
-		iteration:              0,
-		phase:                  LLMPhaseSetup,
+		iteration:               0,
+		phase:                   LLMPhaseSetup,
 	}
 }
 
