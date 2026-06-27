@@ -282,6 +282,60 @@ func TestRegisterChannel_ReplacingInstanceAdvancesRuntimeGeneration(t *testing.T
 	}
 }
 
+func TestRegisterChannel_ReplacingActiveRuntimeStopsPreviousChannelAndWorker(t *testing.T) {
+	m := newTestManager()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopCalls := 0
+	oldChannel := &mockChannel{
+		stopFn: func(_ context.Context) error {
+			stopCalls++
+			return nil
+		},
+	}
+	oldWorker := newChannelWorker("test", oldChannel, "test")
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    oldChannel,
+		worker:     oldWorker,
+		state:      channelRuntimeActive,
+	}
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+
+	newChannel := &mockChannel{}
+	m.RegisterChannel("test", newChannel)
+
+	if stopCalls != 1 {
+		t.Fatalf("previous channel stop calls = %d, want 1", stopCalls)
+	}
+
+	m.mu.RLock()
+	currentChannel := m.channels["test"]
+	currentWorker, hasWorker := m.workers["test"]
+	currentRuntime := m.runtimes["test"]
+	m.mu.RUnlock()
+
+	if currentChannel != newChannel {
+		t.Fatal("expected replacement channel to become current")
+	}
+	if hasWorker || currentWorker != nil {
+		t.Fatal("expected replacement registration to not carry over the previous worker")
+	}
+	if currentRuntime == nil || currentRuntime.channel != newChannel {
+		t.Fatal("expected runtime to track replacement channel")
+	}
+	if currentRuntime.generation <= 1 {
+		t.Fatalf("replacement generation = %d, want > 1", currentRuntime.generation)
+	}
+}
+
 func TestStartAll_AllChannelsFail_ReturnsJoinedError(t *testing.T) {
 	m := newTestManager()
 	errA := errors.New("channel-a start failed")
