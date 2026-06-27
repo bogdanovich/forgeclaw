@@ -83,9 +83,28 @@ type channelWorker struct {
 	limiter    *rate.Limiter
 }
 
+type channelRuntimeState string
+
+const (
+	channelRuntimeInactive channelRuntimeState = "inactive"
+	channelRuntimeStarting channelRuntimeState = "starting"
+	channelRuntimeActive   channelRuntimeState = "active"
+	channelRuntimeStopping channelRuntimeState = "stopping"
+	channelRuntimeFailed   channelRuntimeState = "failed"
+)
+
+type channelRuntime struct {
+	name       string
+	generation uint64
+	channel    Channel
+	worker     *channelWorker
+	state      channelRuntimeState
+}
+
 type Manager struct {
 	channels                  map[string]Channel
 	workers                   map[string]*channelWorker
+	runtimes                  map[string]*channelRuntime
 	bus                       *bus.MessageBus
 	runtimeEvents             runtimeevents.Bus
 	config                    *config.Config
@@ -101,6 +120,7 @@ type Manager struct {
 	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
 	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
 	channelHashes             map[string]string // channel name → config hash
+	nextRuntimeGeneration     uint64
 }
 
 type mediaStoreSetter interface {
@@ -699,6 +719,7 @@ func NewManager(
 	m := &Manager{
 		channels:      make(map[string]Channel),
 		workers:       make(map[string]*channelWorker),
+		runtimes:      make(map[string]*channelRuntime),
 		bus:           messageBus,
 		config:        cfg,
 		mediaStore:    store,
@@ -721,6 +742,58 @@ func NewManager(
 	m.channelHashes = toChannelHashes(cfg)
 
 	return m, nil
+}
+
+func (m *Manager) nextGenerationLocked() uint64 {
+	m.nextRuntimeGeneration++
+	return m.nextRuntimeGeneration
+}
+
+func (m *Manager) upsertRuntimeLocked(
+	name string,
+	ch Channel,
+	worker *channelWorker,
+	state channelRuntimeState,
+) *channelRuntime {
+	rt, ok := m.runtimes[name]
+	if !ok || rt.channel != ch {
+		rt = &channelRuntime{
+			name:       name,
+			generation: m.nextGenerationLocked(),
+			channel:    ch,
+		}
+		m.runtimes[name] = rt
+	}
+	rt.channel = ch
+	rt.worker = worker
+	rt.state = state
+	m.channels[name] = ch
+	if worker != nil {
+		m.workers[name] = worker
+	} else {
+		delete(m.workers, name)
+	}
+	return rt
+}
+
+func (m *Manager) removeRuntimeLocked(name string) {
+	delete(m.runtimes, name)
+	delete(m.workers, name)
+	delete(m.channels, name)
+}
+
+func (m *Manager) setRuntimeStateLocked(name string, state channelRuntimeState) {
+	if rt, ok := m.runtimes[name]; ok {
+		rt.state = state
+	}
+}
+
+func (m *Manager) runtimeSnapshotLocked(name string) (channelRuntime, bool) {
+	rt, ok := m.runtimes[name]
+	if !ok || rt == nil {
+		return channelRuntime{}, false
+	}
+	return *rt, true
 }
 
 // SetMediaStore updates the store used by the manager and every channel that
@@ -1126,7 +1199,7 @@ func (m *Manager) initChannel(typeName, channelName string) {
 				MinEditInterval:   m.config.Agents.Defaults.GetToolFeedbackEditMinInterval(),
 			})
 		}
-		m.channels[channelName] = ch
+		m.upsertRuntimeLocked(channelName, ch, nil, channelRuntimeInactive)
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleInitialized,
 			channelName,
@@ -1346,10 +1419,12 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	failedNames := make([]string, 0, len(m.channels))
 
 	for name, channel := range m.channels {
+		m.setRuntimeStateLocked(name, channelRuntimeStarting)
 		logger.InfoCF("channels", "Starting channel", map[string]any{
 			"channel": name,
 		})
 		if err := channel.Start(ctx); err != nil {
+			m.setRuntimeStateLocked(name, channelRuntimeFailed)
 			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
 				"channel": name,
 				"error":   err.Error(),
@@ -1373,7 +1448,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			}
 		}
 		w := newChannelWorker(name, channel, channelType)
-		m.workers[name] = w
+		m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
@@ -1511,6 +1586,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 	// Stop all channels
 	for name, channel := range m.channels {
+		m.setRuntimeStateLocked(name, channelRuntimeStopping)
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
@@ -1528,6 +1604,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 			runtimeevents.SeverityInfo,
 			ChannelLifecyclePayload{Type: channelTypeForEvent(m, name)},
 		)
+		m.setRuntimeStateLocked(name, channelRuntimeInactive)
 	}
 
 	logger.InfoC("channels", "All channels stopped")
@@ -1980,10 +2057,16 @@ func (m *Manager) GetStatus() map[string]any {
 
 	status := make(map[string]any)
 	for name, channel := range m.channels {
-		status[name] = map[string]any{
+		entry := map[string]any{
 			"enabled": true,
 			"running": channel.IsRunning(),
 		}
+		if rt, ok := m.runtimeSnapshotLocked(name); ok {
+			entry["runtime_state"] = string(rt.state)
+			entry["runtime_generation"] = rt.generation
+			entry["has_worker"] = rt.worker != nil
+		}
+		status[name] = entry
 	}
 	return status
 }
@@ -2018,6 +2101,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	for _, name := range removed {
 		// Stop all channels
 		channel := m.channels[name]
+		m.setRuntimeStateLocked(name, channelRuntimeStopping)
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
@@ -2049,10 +2133,12 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	}
 	for _, name := range added {
 		channel := m.channels[name]
+		m.setRuntimeStateLocked(name, channelRuntimeStarting)
 		logger.InfoCF("channels", "Starting channel", map[string]any{
 			"channel": name,
 		})
 		if err := channel.Start(ctx); err != nil {
+			m.setRuntimeStateLocked(name, channelRuntimeFailed)
 			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
 				"channel": name,
 				"error":   err.Error(),
@@ -2074,7 +2160,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			}
 		}
 		w := newChannelWorker(name, channel, channelType)
-		m.workers[name] = w
+		m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
@@ -2102,7 +2188,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 func (m *Manager) RegisterChannel(name string, channel Channel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.channels[name] = channel
+	m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
 	if m.mux != nil {
 		m.registerChannelHTTPHandler(name, channel)
 	}
@@ -2120,8 +2206,7 @@ func (m *Manager) UnregisterChannel(name string) {
 		close(w.mediaQueue)
 		<-w.mediaDone
 	}
-	delete(m.workers, name)
-	delete(m.channels, name)
+	m.removeRuntimeLocked(name)
 }
 
 // SendMessage sends an outbound message synchronously through the channel

@@ -215,6 +215,7 @@ func newTestManager() *Manager {
 	return &Manager{
 		channels: make(map[string]Channel),
 		workers:  make(map[string]*channelWorker),
+		runtimes: make(map[string]*channelRuntime),
 		bus:      bus.NewMessageBus(),
 	}
 }
@@ -236,6 +237,48 @@ func TestSetMediaStorePropagatesToExistingChannels(t *testing.T) {
 	}
 	if got := ch.GetMediaStore(); got != newStore {
 		t.Fatalf("channel media store = %p, want %p", got, newStore)
+	}
+}
+
+func TestRegisterChannel_ReplacingInstanceAdvancesRuntimeGeneration(t *testing.T) {
+	m := newTestManager()
+
+	first := &mockChannel{}
+	second := &mockChannel{}
+
+	m.RegisterChannel("test", first)
+
+	m.mu.RLock()
+	firstRuntime := m.runtimes["test"]
+	m.mu.RUnlock()
+	if firstRuntime == nil {
+		t.Fatal("expected runtime for first channel registration")
+	}
+
+	m.RegisterChannel("test", second)
+
+	m.mu.RLock()
+	secondRuntime := m.runtimes["test"]
+	currentChannel := m.channels["test"]
+	m.mu.RUnlock()
+	if secondRuntime == nil {
+		t.Fatal("expected runtime for replacement channel registration")
+	}
+	if currentChannel != second {
+		t.Fatal("expected replacement channel to become current")
+	}
+	if secondRuntime.channel != second {
+		t.Fatal("expected runtime to track replacement channel")
+	}
+	if secondRuntime.generation <= firstRuntime.generation {
+		t.Fatalf(
+			"replacement generation = %d, want > %d",
+			secondRuntime.generation,
+			firstRuntime.generation,
+		)
+	}
+	if secondRuntime.state != channelRuntimeInactive {
+		t.Fatalf("replacement runtime state = %q, want %q", secondRuntime.state, channelRuntimeInactive)
 	}
 }
 
