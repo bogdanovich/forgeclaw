@@ -154,19 +154,14 @@ func (t *OpenAITTSProvider) Synthesize(ctx context.Context, text string) (io.Rea
 		}
 	}
 
-	fileExt, contentType := audioFileMetaForResponseFormat(responseFormat)
-	return &openAITTSAudioStream{
-		ReadCloser:  stream,
-		fileExt:     fileExt,
-		contentType: contentType,
-	}, nil
+	return stream, nil
 }
 
 func (t *OpenAITTSProvider) doSpeechRequest(
 	ctx context.Context,
 	text string,
 	responseFormat string,
-) (io.ReadCloser, error) {
+) (*openAITTSAudioStream, error) {
 	reqBody := map[string]any{
 		"model": t.model,
 		"input": text,
@@ -206,7 +201,12 @@ func (t *OpenAITTSProvider) doSpeechRequest(
 		}
 	}
 
-	return resp.Body, nil
+	fileExt, contentType := audioFileMetaForHTTPResponse(resp.Header.Get("Content-Type"), responseFormat)
+	return &openAITTSAudioStream{
+		ReadCloser:  resp.Body,
+		fileExt:     fileExt,
+		contentType: contentType,
+	}, nil
 }
 
 func shouldRetryWithoutResponseFormat(body string) bool {
@@ -226,4 +226,28 @@ func audioFileMetaForResponseFormat(responseFormat string) (string, string) {
 	default:
 		return ".ogg", "audio/ogg"
 	}
+}
+
+func audioFileMetaForHTTPResponse(contentType string, responseFormat string) (string, string) {
+	contentType = normalizeAudioContentType(contentType)
+	switch contentType {
+	case "audio/mpeg", "audio/mp3":
+		return ".mp3", "audio/mpeg"
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return ".wav", "audio/wav"
+	case "audio/opus":
+		return ".opus", "audio/opus"
+	case "audio/ogg", "application/ogg":
+		return ".ogg", "audio/ogg"
+	}
+
+	return audioFileMetaForResponseFormat(responseFormat)
+}
+
+func normalizeAudioContentType(contentType string) string {
+	contentType = strings.TrimSpace(strings.ToLower(contentType))
+	if idx := strings.Index(contentType, ";"); idx >= 0 {
+		contentType = strings.TrimSpace(contentType[:idx])
+	}
+	return contentType
 }

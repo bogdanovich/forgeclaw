@@ -148,8 +148,9 @@ func TestOpenAITTSProvider_SynthesizeRetriesWithoutResponseFormat(t *testing.T) 
 			return
 		}
 
+		w.Header().Set("Content-Type", "audio/wav")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("audio-bytes"))
+		_, _ = w.Write([]byte("wav-audio"))
 	}))
 	defer server.Close()
 
@@ -164,7 +165,7 @@ func TestOpenAITTSProvider_SynthesizeRetriesWithoutResponseFormat(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read stream failed: %v", err)
 	}
-	if string(data) != "audio-bytes" {
+	if string(data) != "wav-audio" {
 		t.Fatalf("response body mismatch: got %q", string(data))
 	}
 
@@ -185,7 +186,7 @@ func TestOpenAITTSProvider_SynthesizeRetriesWithoutResponseFormat(t *testing.T) 
 		t.Fatal("stream does not expose audio metadata")
 	}
 	fileExt, contentType := metaStream.AudioFileMeta()
-	if fileExt != ".mp3" || contentType != "audio/mpeg" {
+	if fileExt != ".wav" || contentType != "audio/wav" {
 		t.Fatalf("audio metadata mismatch: got (%q, %q)", fileExt, contentType)
 	}
 }
@@ -368,8 +369,9 @@ func TestSynthesizeAndStore_UsesStreamProvidedAudioMetadata(t *testing.T) {
 			return
 		}
 
+		w.Header().Set("Content-Type", "audio/wav")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("mp3-audio"))
+		_, _ = w.Write([]byte("wav-audio"))
 	}))
 	defer server.Close()
 
@@ -392,13 +394,13 @@ func TestSynthesizeAndStore_UsesStreamProvidedAudioMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveWithMeta failed: %v", err)
 	}
-	if meta.ContentType != "audio/mpeg" {
-		t.Fatalf("ContentType = %q, want %q", meta.ContentType, "audio/mpeg")
+	if meta.ContentType != "audio/wav" {
+		t.Fatalf("ContentType = %q, want %q", meta.ContentType, "audio/wav")
 	}
-	if filepath.Ext(path) != ".mp3" {
-		t.Fatalf("stored file extension = %q, want %q", filepath.Ext(path), ".mp3")
+	if filepath.Ext(path) != ".wav" {
+		t.Fatalf("stored file extension = %q, want %q", filepath.Ext(path), ".wav")
 	}
-	if filepath.Ext(meta.Filename) != ".mp3" {
-		t.Fatalf("filename extension = %q, want %q", filepath.Ext(meta.Filename), ".mp3")
+	if filepath.Ext(meta.Filename) != ".wav" {
+		t.Fatalf("filename extension = %q, want %q", filepath.Ext(meta.Filename), ".wav")
 	}
 }
