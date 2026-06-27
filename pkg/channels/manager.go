@@ -800,6 +800,68 @@ func (m *Manager) runtimeSnapshotLocked(name string) (channelRuntime, bool) {
 	return *rt, true
 }
 
+func (m *Manager) runtimeChannelTypeLocked(name string) string {
+	channelType := name
+	if m.config != nil {
+		if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
+			channelType = bc.Type
+		}
+	}
+	return channelType
+}
+
+func (m *Manager) markRuntimeStartingLocked(name string) {
+	m.setRuntimeStateLocked(name, channelRuntimeStarting)
+	logger.InfoCF("channels", "Starting channel", map[string]any{
+		"channel": name,
+	})
+}
+
+func (m *Manager) markRuntimeStartFailedLocked(name string, err error) {
+	m.setRuntimeStateLocked(name, channelRuntimeFailed)
+	logger.ErrorCF("channels", "Failed to start channel", map[string]any{
+		"channel": name,
+		"error":   err.Error(),
+	})
+	m.publishChannelEvent(
+		runtimeevents.KindChannelLifecycleStartFailed,
+		name,
+		runtimeevents.Scope{Channel: name},
+		runtimeevents.SeverityError,
+		ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
+	)
+}
+
+func (m *Manager) activateRuntimeLocked(name string, dispatchCtx context.Context) *channelRuntime {
+	channel := m.channels[name]
+	if channel == nil {
+		return nil
+	}
+	w := newChannelWorker(name, channel, m.runtimeChannelTypeLocked(name))
+	rt := m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
+	m.registerRuntimeHTTPHandlersLocked(name, rt)
+	go m.runWorker(dispatchCtx, name, w)
+	go m.runMediaWorker(dispatchCtx, name, w)
+	m.publishChannelEvent(
+		runtimeevents.KindChannelLifecycleStarted,
+		name,
+		runtimeevents.Scope{Channel: name},
+		runtimeevents.SeverityInfo,
+		ChannelLifecyclePayload{Type: m.runtimeChannelTypeLocked(name)},
+	)
+	return rt
+}
+
+func (m *Manager) markRuntimeStoppingLocked(name string) {
+	m.setRuntimeStateLocked(name, channelRuntimeStopping)
+	if rt, ok := m.runtimes[name]; ok {
+		m.unregisterRuntimeHTTPHandlersLocked(name, rt)
+	}
+	logger.InfoCF("channels", "Stopping channel", map[string]any{
+		"channel": name,
+	})
+}
+
 // SetMediaStore updates the store used by the manager and every channel that
 // accepts media store injection. Gateway reload creates a fresh store, so
 // keeping existing channels on the same store as the agent is required for
@@ -1444,46 +1506,14 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	failedNames := make([]string, 0, len(m.channels))
 
 	for name, channel := range m.channels {
-		m.setRuntimeStateLocked(name, channelRuntimeStarting)
-		logger.InfoCF("channels", "Starting channel", map[string]any{
-			"channel": name,
-		})
+		m.markRuntimeStartingLocked(name)
 		if err := channel.Start(ctx); err != nil {
-			m.setRuntimeStateLocked(name, channelRuntimeFailed)
-			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
-			m.publishChannelEvent(
-				runtimeevents.KindChannelLifecycleStartFailed,
-				name,
-				runtimeevents.Scope{Channel: name},
-				runtimeevents.SeverityError,
-				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
-			)
+			m.markRuntimeStartFailedLocked(name, err)
 			failedStarts = append(failedStarts, fmt.Errorf("channel %s: %w", name, err))
 			failedNames = append(failedNames, name)
 			continue
 		}
-		// Lazily create worker only after channel starts successfully
-		channelType := name
-		if m.config != nil {
-			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
-				channelType = bc.Type
-			}
-		}
-		w := newChannelWorker(name, channel, channelType)
-		rt := m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
-		m.registerRuntimeHTTPHandlersLocked(name, rt)
-		go m.runWorker(dispatchCtx, name, w)
-		go m.runMediaWorker(dispatchCtx, name, w)
-		m.publishChannelEvent(
-			runtimeevents.KindChannelLifecycleStarted,
-			name,
-			runtimeevents.Scope{Channel: name},
-			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: channelType},
-		)
+		m.activateRuntimeLocked(name, dispatchCtx)
 	}
 
 	if len(m.channels) > 0 && len(m.workers) == 0 {
@@ -1612,13 +1642,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 	// Stop all channels
 	for name, channel := range m.channels {
-		m.setRuntimeStateLocked(name, channelRuntimeStopping)
-		if rt, ok := m.runtimes[name]; ok {
-			m.unregisterRuntimeHTTPHandlersLocked(name, rt)
-		}
-		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
-		})
+		m.markRuntimeStoppingLocked(name)
 		if err := channel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
 				"channel": name,
@@ -2130,13 +2154,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	for _, name := range removed {
 		// Stop all channels
 		channel := m.channels[name]
-		m.setRuntimeStateLocked(name, channelRuntimeStopping)
-		if rt, ok := m.runtimes[name]; ok {
-			m.unregisterRuntimeHTTPHandlersLocked(name, rt)
-		}
-		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
-		})
+		m.markRuntimeStoppingLocked(name)
 		if err := channel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
 				"channel": name,
@@ -2165,44 +2183,12 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	}
 	for _, name := range added {
 		channel := m.channels[name]
-		m.setRuntimeStateLocked(name, channelRuntimeStarting)
-		logger.InfoCF("channels", "Starting channel", map[string]any{
-			"channel": name,
-		})
+		m.markRuntimeStartingLocked(name)
 		if err := channel.Start(ctx); err != nil {
-			m.setRuntimeStateLocked(name, channelRuntimeFailed)
-			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
-			m.publishChannelEvent(
-				runtimeevents.KindChannelLifecycleStartFailed,
-				name,
-				runtimeevents.Scope{Channel: name},
-				runtimeevents.SeverityError,
-				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
-			)
+			m.markRuntimeStartFailedLocked(name, err)
 			continue
 		}
-		// Lazily create worker only after channel starts successfully
-		channelType := name
-		if m.config != nil {
-			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
-				channelType = bc.Type
-			}
-		}
-		w := newChannelWorker(name, channel, channelType)
-		rt := m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
-		m.registerRuntimeHTTPHandlersLocked(name, rt)
-		go m.runWorker(dispatchCtx, name, w)
-		go m.runMediaWorker(dispatchCtx, name, w)
-		m.publishChannelEvent(
-			runtimeevents.KindChannelLifecycleStarted,
-			name,
-			runtimeevents.Scope{Channel: name},
-			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: channelType},
-		)
+		m.activateRuntimeLocked(name, dispatchCtx)
 		deferFuncs = append(deferFuncs, func() {
 			m.RegisterChannel(name, channel)
 		})
