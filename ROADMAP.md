@@ -43,6 +43,13 @@ merge upstream PicoClaw changes.
 
 ## 5. Channels And Media
 
+- Re-architect channel lifecycle so startup, retry, reload, inbound exposure,
+  and readiness are supervised through explicit runtime state instead of being
+  tightly coupled inside `channels.Manager`.
+- Keep shared webhook/HTTP registration tied to active channel runtimes rather
+  than configured channel presence.
+- Make startup retry generation-aware and cancelable across reload/shutdown.
+- Keep gateway readiness aligned with actual channel delivery capability.
 - Keep Telegram forum-topic routing stable.
 - Preserve media-group handling and forwardable media captions.
 - Keep generated images and files deliverable without duplicate completion
