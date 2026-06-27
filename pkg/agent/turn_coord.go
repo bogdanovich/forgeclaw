@@ -199,7 +199,9 @@ func (al *AgentLoop) runTurn(
 					ts.recordPersistedMessage(pm)
 					ts.ingestMessage(turnCtx, al, pm)
 				}
-				ts.recordAcceptedSteeringMessage(pm)
+				if exec.shouldTrackTurnOwnedSteering(pm) {
+					ts.recordAcceptedSteeringMessage(pm)
+				}
 				logger.InfoCF("agent", "Injected steering message into context",
 					map[string]any{
 						"agent_id":    ts.agent.ID,

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -422,6 +423,16 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.ErrorCF("shell", "cmd.Wait goroutine panic recovered",
+					map[string]any{
+						"panic": fmt.Sprintf("%v", r),
+						"stack": string(debug.Stack()),
+					})
+				done <- fmt.Errorf("panic in cmd.Wait: %v", r)
+			}
+		}()
 		done <- cmd.Wait()
 	}()
 
@@ -630,6 +641,18 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 	// so we need cmd.Wait() in a separate goroutine to detect process exit.
 	if session.PTY && session.ptyMaster != nil {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCF("shell", "PTY cmd.Wait goroutine panic recovered",
+						map[string]any{
+							"panic": fmt.Sprintf("%v", r),
+							"stack": string(debug.Stack()),
+						})
+					session.mu.Lock()
+					session.Status = "error"
+					session.mu.Unlock()
+				}
+			}()
 			cmd.Wait() // Wait for process to exit
 			session.mu.Lock()
 			if cmd.ProcessState != nil {
@@ -640,6 +663,15 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		}()
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCF("shell", "PTY read goroutine panic recovered",
+						map[string]any{
+							"panic": fmt.Sprintf("%v", r),
+							"stack": string(debug.Stack()),
+						})
+				}
+			}()
 			buf := make([]byte, 4096)
 			for {
 				n, err := session.ptyMaster.Read(buf)
@@ -670,6 +702,15 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		// When Read() returns EOF (pipe closed), we break.
 		// When process exits, OS closes pipe write end → Read() returns EOF → we exit.
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCF("shell", "pipe read goroutine panic recovered",
+						map[string]any{
+							"panic": fmt.Sprintf("%v", r),
+							"stack": string(debug.Stack()),
+						})
+				}
+			}()
 			buf := make([]byte, 4096)
 
 			// Read stdout

@@ -146,7 +146,7 @@ func SynthesizeAndStore(
 
 	_, err = io.Copy(file, stream)
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return "", fmt.Errorf("failed to write tts audio: %w", err)
 	}
 

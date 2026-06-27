@@ -152,6 +152,12 @@ type turnExecution struct {
 	// Phase tracking
 	phase LLMPhase
 
+	// Continuation-injected steering is owned by the caller that supplied
+	// InitialSteeringMessages. The turn still persists/injects those messages,
+	// but turn-end cleanup must not ack/release their inbound spool entries
+	// again or it can race with continuation-level cleanup.
+	initialSteeringSpoolIDs map[string]struct{}
+
 	// Abort signaling for coordinator (set by Pipeline methods)
 	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
 	abortedByHook      bool // true when HookActionAbortTurn triggered
@@ -195,14 +201,43 @@ func newTurnExecution(
 	messages []providers.Message,
 ) *turnExecution {
 	return &turnExecution{
-		history:                history,
-		summary:                summary,
-		messages:               messages,
-		pendingMessages:        append([]providers.Message(nil), opts.InitialSteeringMessages...),
-		sawAdditionalUserInput: len(opts.InitialSteeringMessages) > 0,
-		iteration:              0,
-		phase:                  LLMPhaseSetup,
+		history:                 history,
+		summary:                 summary,
+		messages:                messages,
+		pendingMessages:         append([]providers.Message(nil), opts.InitialSteeringMessages...),
+		sawAdditionalUserInput:  len(opts.InitialSteeringMessages) > 0,
+		initialSteeringSpoolIDs: collectSteeringSpoolIDs(opts.InitialSteeringMessages),
+		iteration:               0,
+		phase:                   LLMPhaseSetup,
 	}
+}
+
+func collectSteeringSpoolIDs(msgs []providers.Message) map[string]struct{} {
+	if len(msgs) == 0 {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(msgs))
+	for _, msg := range msgs {
+		if msg.InboundSpoolID == "" {
+			continue
+		}
+		ids[msg.InboundSpoolID] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
+
+func (e *turnExecution) shouldTrackTurnOwnedSteering(msg providers.Message) bool {
+	if e == nil || len(e.initialSteeringSpoolIDs) == 0 {
+		return true
+	}
+	if msg.InboundSpoolID == "" {
+		return true
+	}
+	_, continuationOwned := e.initialSteeringSpoolIDs[msg.InboundSpoolID]
+	return !continuationOwned
 }
 
 // =============================================================================

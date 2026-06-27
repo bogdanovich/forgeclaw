@@ -1384,7 +1384,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 
 	inboundCtx := bus.InboundContext{
 		Channel:   c.Name(),
-		ChatID:    fmt.Sprintf("%d", chatID),
+		ChatID:    compositeChatID,
 		ChatType:  peerKind,
 		SenderID:  platformID,
 		MessageID: messageID,

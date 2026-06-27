@@ -221,7 +221,10 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 	}
 
 	output := buildOutput()
-	data, _ := json.Marshal(output)
+	data, err := json.Marshal(output)
+	if err != nil {
+		return tools.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
+	}
 	for len(data) > grepToolMaxForLLMBytes && (len(summaries) > 0 || len(messages) > 0) {
 		truncated = true
 		switch {
@@ -236,7 +239,10 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 			omittedSummaries++
 		}
 		output = buildOutput()
-		data, _ = json.Marshal(output)
+		data, err = json.Marshal(output)
+		if err != nil {
+			return tools.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
+		}
 	}
 
 	if len(data) > grepToolMaxForLLMBytes {
@@ -246,9 +252,11 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 		summaries = []GrepSummaryResult{}
 		messages = []GrepMessageResult{}
 		output = buildOutput()
-		data, _ = json.Marshal(output)
+		data, err = json.Marshal(output)
+		if err != nil {
+			return tools.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
+		}
 	}
-
 	return tools.NewToolResult(string(data))
 }
 
