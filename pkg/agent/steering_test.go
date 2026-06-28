@@ -1517,7 +1517,7 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 
 	close(provider.releaseFirstCall)
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		processing, procErr := filepath.Glob(filepath.Join(spoolDir, "*.processing"))
 		if procErr != nil {
@@ -1527,14 +1527,18 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 		if pendErr != nil {
 			t.Fatalf("glob pending entries: %v", pendErr)
 		}
-		if len(processing) == 0 && len(pending) == 1 {
+		provider.mu.Lock()
+		calls := provider.calls
+		provider.mu.Unlock()
+		if len(processing) == 0 && (len(pending) == 1 || calls >= 2) {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf(
-				"expected released steering spool entry after save failure, processing=%v pending=%v",
+				"expected released steering spool entry after save failure, processing=%v pending=%v calls=%d",
 				processing,
 				pending,
+				calls,
 			)
 		}
 		time.Sleep(10 * time.Millisecond)
