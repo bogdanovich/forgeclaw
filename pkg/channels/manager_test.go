@@ -4195,6 +4195,82 @@ func TestSendMessage_PreservesOrdering(t *testing.T) {
 	}
 }
 
+func TestSendToChannel_QueuesThroughDeliveryOwner(t *testing.T) {
+	m := newTestManager()
+	sent := make(chan bus.OutboundMessage, 1)
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, msg bus.OutboundMessage) error {
+			sent <- msg
+			return nil
+		},
+	}
+	owner := newDeliveryOwner("test", ch, "test")
+	m.channels["test"] = ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+	owner.StartDelivery(context.Background(), m)
+	t.Cleanup(owner.CloseDeliveryAndWait)
+
+	if err := m.SendToChannel(context.Background(), "test", "chat-1", "hello"); err != nil {
+		t.Fatalf("SendToChannel() error = %v", err)
+	}
+
+	select {
+	case got := <-sent:
+		if got.Context.Channel != "test" || got.Context.ChatID != "chat-1" || got.Content != "hello" {
+			t.Fatalf("queued message = %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queued SendToChannel message")
+	}
+}
+
+func TestSendToChannel_ClosedDeliveryOwnerReturnsError(t *testing.T) {
+	m := newTestManager()
+	var callCount int
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			callCount++
+			return nil
+		},
+	}
+	owner := newDeliveryOwner("test", ch, "test")
+	owner.closed = true
+	m.channels["test"] = ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+
+	err := m.SendToChannel(context.Background(), "test", "chat-1", "hello")
+	if !errors.Is(err, errDeliveryClosed) {
+		t.Fatalf("SendToChannel() err=%v, want errDeliveryClosed", err)
+	}
+	if callCount != 0 {
+		t.Fatalf("SendToChannel called closed channel %d times", callCount)
+	}
+}
+
+func TestSendToChannel_FallbackUsesLockedChannelSnapshot(t *testing.T) {
+	m := newTestManager()
+	var received []bus.OutboundMessage
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, msg bus.OutboundMessage) error {
+			received = append(received, msg)
+			return nil
+		},
+	}
+	m.channels["test"] = ch
+
+	if err := m.SendToChannel(context.Background(), "test", "chat-1", "hello"); err != nil {
+		t.Fatalf("SendToChannel() error = %v", err)
+	}
+	if len(received) != 1 {
+		t.Fatalf("expected 1 fallback message, got %d", len(received))
+	}
+	if received[0].Context.Channel != "test" || received[0].Context.ChatID != "chat-1" {
+		t.Fatalf("fallback message context = %+v", received[0].Context)
+	}
+}
+
 func TestManager_SendPlaceholder(t *testing.T) {
 	mgr := &Manager{
 		channels:     make(map[string]Channel),
