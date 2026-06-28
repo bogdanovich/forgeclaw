@@ -2482,7 +2482,7 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 
 func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, content string) error {
 	m.mu.RLock()
-	_, exists := m.channels[channelName]
+	channel, exists := m.channels[channelName]
 	owner := m.deliveryOwnerLocked(channelName)
 	m.mu.RUnlock()
 
@@ -2509,7 +2509,6 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	}
 
 	// Fallback: direct send (should not happen)
-	channel, _ := m.channels[channelName]
 	_, err := channel.Send(ctx, msg)
 	return err
 }
