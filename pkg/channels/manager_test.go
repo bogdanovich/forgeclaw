@@ -557,6 +557,211 @@ func TestStartAll_CreatesDeliveryOwnerForStartedChannel(t *testing.T) {
 	}
 }
 
+func TestDeliveryOwner_CloseDeliveryDrainsAndRejectsNewWork(t *testing.T) {
+	sent := make(chan bus.OutboundMessage, 1)
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, msg bus.OutboundMessage) error {
+			sent <- msg
+			return nil
+		},
+	}
+	m := newTestManager()
+	owner := newDeliveryOwner("test", ch, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner.StartDelivery(ctx, m)
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "hello",
+	})
+	queued, err := owner.Enqueue(context.Background(), msg)
+	if !queued || err != nil {
+		t.Fatalf("Enqueue() queued=%v err=%v, want true nil", queued, err)
+	}
+
+	owner.CloseDeliveryAndWait()
+
+	select {
+	case got := <-sent:
+		if got.Content != "hello" {
+			t.Fatalf("sent content = %q, want hello", got.Content)
+		}
+	default:
+		t.Fatal("CloseDeliveryAndWait returned before queued message was delivered")
+	}
+
+	queued, err = owner.Enqueue(context.Background(), msg)
+	if queued || !errors.Is(err, errDeliveryClosed) {
+		t.Fatalf("Enqueue() after close queued=%v err=%v, want false errDeliveryClosed", queued, err)
+	}
+}
+
+func TestDeliveryOwner_CloseDeliveryAndWaitIsWaitIdempotent(t *testing.T) {
+	sendStarted := make(chan struct{})
+	proceedSend := make(chan struct{})
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			close(sendStarted)
+			<-proceedSend
+			return nil
+		},
+	}
+	m := newTestManager()
+	owner := newDeliveryOwner("test", ch, "test")
+	owner.StartDelivery(context.Background(), m)
+
+	queued, err := owner.Enqueue(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "hello",
+	}))
+	if !queued || err != nil {
+		t.Fatalf("Enqueue() queued=%v err=%v, want true nil", queued, err)
+	}
+
+	select {
+	case <-sendStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not start sending queued message")
+	}
+
+	firstClosed := make(chan struct{})
+	go func() {
+		defer close(firstClosed)
+		owner.CloseDeliveryAndWait()
+	}()
+	secondClosed := make(chan struct{})
+	go func() {
+		defer close(secondClosed)
+		owner.CloseDeliveryAndWait()
+	}()
+
+	select {
+	case <-secondClosed:
+		t.Fatal("second CloseDeliveryAndWait returned before delivery drained")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(proceedSend)
+	for name, ch := range map[string]<-chan struct{}{
+		"first":  firstClosed,
+		"second": secondClosed,
+	} {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s CloseDeliveryAndWait did not return after delivery drained", name)
+		}
+	}
+}
+
+func TestDispatchOutbound_ClosedOwnerPublishesFailureAndContinues(t *testing.T) {
+	eventBus := runtimeevents.NewBus()
+	defer func() {
+		if err := eventBus.Close(); err != nil {
+			t.Errorf("event bus close failed: %v", err)
+		}
+	}()
+
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindChannelMessageOutboundFailed,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "closed-owner-failure", Buffer: 1})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	m := newTestManager()
+	m.runtimeEvents = eventBus
+	owner := newDeliveryOwner("test", &mockChannel{}, "test")
+	owner.closed = true
+	m.channels["test"] = owner.ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.dispatchOutbound(ctx)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("dispatchOutbound did not stop after cancel")
+		}
+	}()
+
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pubCancel()
+	if err := m.bus.PublishOutbound(pubCtx, testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "hello",
+	})); err != nil {
+		t.Fatalf("PublishOutbound() error = %v", err)
+	}
+
+	failed := receiveChannelRuntimeEvent(t, eventsCh)
+	if failed.Kind != runtimeevents.KindChannelMessageOutboundFailed || failed.Scope.ChatID != "chat-1" {
+		t.Fatalf("failed event = %+v", failed)
+	}
+	if failed.Attrs["error"] != errDeliveryClosed.Error() {
+		t.Fatalf("failed attrs = %#v, want delivery closed error", failed.Attrs)
+	}
+}
+
+func TestUnregisterChannel_DrainsDeliveryOutsideManagerLock(t *testing.T) {
+	m := newTestManager()
+	sendStarted := make(chan struct{})
+	proceedSend := make(chan struct{})
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			close(sendStarted)
+			<-proceedSend
+			m.mu.RLock()
+			m.mu.RUnlock()
+			return nil
+		},
+	}
+	owner := newDeliveryOwner("test", ch, "test")
+	m.channels["test"] = ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+	owner.StartDelivery(context.Background(), m)
+
+	queued, err := owner.Enqueue(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "hello",
+	}))
+	if !queued || err != nil {
+		t.Fatalf("Enqueue() queued=%v err=%v, want true nil", queued, err)
+	}
+
+	select {
+	case <-sendStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not start sending queued message")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.UnregisterChannel("test")
+	}()
+	close(proceedSend)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UnregisterChannel deadlocked while draining delivery")
+	}
+}
+
 func TestStartAllPublishesLifecycleRuntimeEvents(t *testing.T) {
 	eventBus := runtimeevents.NewBus()
 	defer func() {
