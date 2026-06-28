@@ -161,6 +161,32 @@ func compareChannels(old, news map[string]string) (added, removed []string) {
 	return added, removed
 }
 
+func splitChangedChannels(added, removed []string) (changed, addedOnly, removedOnly []string) {
+	removedSet := make(map[string]struct{}, len(removed))
+	for _, name := range removed {
+		removedSet[name] = struct{}{}
+	}
+
+	changedSet := make(map[string]struct{})
+	for _, name := range added {
+		if _, ok := removedSet[name]; ok {
+			changed = append(changed, name)
+			changedSet[name] = struct{}{}
+			continue
+		}
+		addedOnly = append(addedOnly, name)
+	}
+
+	for _, name := range removed {
+		if _, ok := changedSet[name]; ok {
+			continue
+		}
+		removedOnly = append(removedOnly, name)
+	}
+
+	return changed, addedOnly, removedOnly
+}
+
 func toChannelConfig(cfg *config.Config, list []string) (*config.ChannelsConfig, error) {
 	result := make(config.ChannelsConfig)
 	for _, name := range list {
