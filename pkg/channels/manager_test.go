@@ -609,6 +609,172 @@ func TestReload_SameNameReplacementKeepsNewRuntimeActive(t *testing.T) {
 	}
 }
 
+func TestReload_SameNameReplacementKeepsOldWorkerDuringReplacementStart(t *testing.T) {
+	factoryType := "test_reload_same_name_dispatch_during_start"
+	started := make(chan struct{})
+	releaseStart := make(chan struct{})
+	newChannel := &mockChannel{
+		startFn: func(context.Context) error {
+			close(started)
+			<-releaseStart
+			return nil
+		},
+	}
+	RegisterFactory(factoryType, func(string, string, *config.Config, *bus.MessageBus) (Channel, error) {
+		return newChannel, nil
+	})
+
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     factoryType,
+		Settings: config.RawNode(`{"version":"old"}`),
+	}
+	newCfg := config.DefaultConfig()
+	newCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     factoryType,
+		Settings: config.RawNode(`{"version":"new"}`),
+	}
+
+	delivered := make(chan struct{})
+	oldChannel := &mockChannel{
+		sendFn: func(context.Context, bus.OutboundMessage) error {
+			close(delivered)
+			return nil
+		},
+	}
+	oldWorker := newChannelWorker("test", oldChannel, factoryType)
+	m := newTestManager()
+	m.config = oldCfg
+	m.channelHashes = toChannelHashes(oldCfg)
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    oldChannel,
+		worker:     oldWorker,
+		state:      channelRuntimeActive,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+	go m.dispatchOutbound(ctx)
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- m.Reload(ctx, newCfg)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for replacement start")
+	}
+
+	if err := m.bus.PublishOutbound(ctx, bus.OutboundMessage{
+		Context: bus.NewOutboundContext("test", "chat-1", ""),
+		Content: "during replacement",
+	}); err != nil {
+		t.Fatalf("PublishOutbound() error = %v", err)
+	}
+
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected old worker to deliver outbound while replacement starts")
+	}
+
+	close(releaseStart)
+	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("Reload() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for reload")
+	}
+}
+
+func TestReload_SameNameReplacementStartFailurePreservesOldRuntime(t *testing.T) {
+	factoryType := "test_reload_same_name_start_failure"
+	startErr := errors.New("replacement start failed")
+	newChannel := &mockChannel{
+		startFn: func(context.Context) error {
+			return startErr
+		},
+	}
+	RegisterFactory(factoryType, func(string, string, *config.Config, *bus.MessageBus) (Channel, error) {
+		return newChannel, nil
+	})
+
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     factoryType,
+		Settings: config.RawNode(`{"version":"old"}`),
+	}
+	newCfg := config.DefaultConfig()
+	newCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     factoryType,
+		Settings: config.RawNode(`{"version":"new"}`),
+	}
+
+	oldChannel := &mockChannel{}
+	oldWorker := newChannelWorker("test", oldChannel, factoryType)
+	m := newTestManager()
+	m.config = oldCfg
+	m.channelHashes = toChannelHashes(oldCfg)
+	oldHash := m.channelHashes["test"]
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    oldChannel,
+		worker:     oldWorker,
+		state:      channelRuntimeActive,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+
+	if err := m.Reload(ctx, newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	m.mu.RLock()
+	currentRuntime := m.runtimes["test"]
+	currentWorker := m.workers["test"]
+	currentChannel := m.channels["test"]
+	currentHash := m.channelHashes["test"]
+	m.mu.RUnlock()
+
+	if currentChannel != oldChannel {
+		t.Fatal("expected old channel to remain registered after replacement start failure")
+	}
+	if currentWorker != oldWorker {
+		t.Fatal("expected old worker to remain active after replacement start failure")
+	}
+	if currentRuntime == nil || currentRuntime.channel != oldChannel || currentRuntime.worker != oldWorker {
+		t.Fatal("expected old runtime to remain active after replacement start failure")
+	}
+	if currentRuntime.state != channelRuntimeActive {
+		t.Fatalf("runtime state = %q, want %q", currentRuntime.state, channelRuntimeActive)
+	}
+	if currentHash != oldHash {
+		t.Fatal("expected channel hash to remain old after replacement start failure")
+	}
+}
+
 func TestReload_RemovedChannelDrainsWorkerBeforeStop(t *testing.T) {
 	oldCfg := config.DefaultConfig()
 	oldCfg.Channels["test"] = &config.Channel{

@@ -1162,13 +1162,32 @@ func (s *finalizeHookStreamer) ClearFinalizedStreamMarker() {
 // typeName is the channel type used for factory lookup (e.g., "telegram").
 // channelName is the config map key used as the channel's runtime name (e.g., "my_telegram").
 func (m *Manager) initChannel(typeName, channelName string) {
+	ch, ok := m.createChannelLocked(typeName, channelName)
+	if !ok {
+		return
+	}
+	m.upsertRuntimeLocked(channelName, ch, nil, channelRuntimeInactive)
+	m.publishChannelEvent(
+		runtimeevents.KindChannelLifecycleInitialized,
+		channelName,
+		runtimeevents.Scope{Channel: channelName},
+		runtimeevents.SeverityInfo,
+		ChannelLifecyclePayload{Type: typeName},
+	)
+	logger.InfoCF("channels", "Channel enabled successfully", map[string]any{
+		"channel": channelName,
+		"type":    typeName,
+	})
+}
+
+func (m *Manager) createChannelLocked(typeName, channelName string) (Channel, bool) {
 	f, ok := getFactory(typeName)
 	if !ok {
 		logger.WarnCF("channels", "Factory not registered", map[string]any{
 			"channel": channelName,
 			"type":    typeName,
 		})
-		return
+		return nil, false
 	}
 	logger.DebugCF("channels", "Attempting to initialize channel", map[string]any{
 		"channel": channelName,
@@ -1181,40 +1200,29 @@ func (m *Manager) initChannel(typeName, channelName string) {
 			"type":    typeName,
 			"error":   err.Error(),
 		})
-	} else {
-		// Inject MediaStore if channel supports it
-		if m.mediaStore != nil {
-			if setter, ok := ch.(mediaStoreSetter); ok {
-				setter.SetMediaStore(m.mediaStore)
-			}
+		return nil, false
+	}
+	// Inject MediaStore if channel supports it
+	if m.mediaStore != nil {
+		if setter, ok := ch.(mediaStoreSetter); ok {
+			setter.SetMediaStore(m.mediaStore)
 		}
-		// Inject PlaceholderRecorder if channel supports it
-		if setter, ok := ch.(interface{ SetPlaceholderRecorder(r PlaceholderRecorder) }); ok {
-			setter.SetPlaceholderRecorder(m)
-		}
-		// Inject owner reference so BaseChannel.HandleMessage can auto-trigger typing/reaction
-		if setter, ok := ch.(interface{ SetOwner(ch Channel) }); ok {
-			setter.SetOwner(ch)
-		}
-		if setter, ok := ch.(toolFeedbackAnimatorConfigurer); ok && m.config != nil {
-			setter.ConfigureToolFeedbackAnimator(ToolFeedbackAnimatorConfig{
-				AnimationInterval: m.config.Agents.Defaults.GetToolFeedbackAnimationInterval(),
-				MinEditInterval:   m.config.Agents.Defaults.GetToolFeedbackEditMinInterval(),
-			})
-		}
-		m.upsertRuntimeLocked(channelName, ch, nil, channelRuntimeInactive)
-		m.publishChannelEvent(
-			runtimeevents.KindChannelLifecycleInitialized,
-			channelName,
-			runtimeevents.Scope{Channel: channelName},
-			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: typeName},
-		)
-		logger.InfoCF("channels", "Channel enabled successfully", map[string]any{
-			"channel": channelName,
-			"type":    typeName,
+	}
+	// Inject PlaceholderRecorder if channel supports it
+	if setter, ok := ch.(interface{ SetPlaceholderRecorder(r PlaceholderRecorder) }); ok {
+		setter.SetPlaceholderRecorder(m)
+	}
+	// Inject owner reference so BaseChannel.HandleMessage can auto-trigger typing/reaction
+	if setter, ok := ch.(interface{ SetOwner(ch Channel) }); ok {
+		setter.SetOwner(ch)
+	}
+	if setter, ok := ch.(toolFeedbackAnimatorConfigurer); ok && m.config != nil {
+		setter.ConfigureToolFeedbackAnimator(ToolFeedbackAnimatorConfig{
+			AnimationInterval: m.config.Agents.Defaults.GetToolFeedbackAnimationInterval(),
+			MinEditInterval:   m.config.Agents.Defaults.GetToolFeedbackEditMinInterval(),
 		})
 	}
+	return ch, true
 }
 
 func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channel, bool) {
@@ -2157,8 +2165,30 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
-
+	addedSet := make(map[string]bool, len(added))
+	for _, name := range added {
+		addedSet[name] = true
+	}
+	replacementSet := make(map[string]bool)
+	removedOnly := make([]string, 0, len(removed))
 	for _, name := range removed {
+		if addedSet[name] {
+			replacementSet[name] = true
+			continue
+		}
+		removedOnly = append(removedOnly, name)
+	}
+	addedOnly := make([]string, 0, len(added))
+	replacements := make([]string, 0, len(added))
+	for _, name := range added {
+		if replacementSet[name] {
+			replacements = append(replacements, name)
+			continue
+		}
+		addedOnly = append(addedOnly, name)
+	}
+
+	for _, name := range removedOnly {
 		snapshot, hasRuntime := m.runtimeSnapshotLocked(name)
 		channel := m.channels[name]
 		worker := snapshot.worker
@@ -2213,7 +2243,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	m.dispatchTask = &asyncTask{cancel: cancel}
-	cc, err := toChannelConfig(cfg, added)
+	cc, err := toChannelConfig(cfg, addedOnly)
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
 		m.config = oldConfig
@@ -2229,7 +2259,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		m.mu.Unlock()
 		return err
 	}
-	for _, name := range added {
+	for _, name := range addedOnly {
 		channel := m.channels[name]
 		m.setRuntimeStateLocked(name, channelRuntimeStarting)
 		logger.InfoCF("channels", "Starting channel", map[string]any{
@@ -2271,6 +2301,78 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			runtimeevents.SeverityInfo,
 			ChannelLifecyclePayload{Type: channelType},
 		)
+	}
+	for _, name := range replacements {
+		oldSnapshot, hasOld := m.runtimeSnapshotLocked(name)
+		bc := cfg.Channels.Get(name)
+		if bc == nil || !bc.Enabled {
+			continue
+		}
+		typeName := bc.Type
+		if typeName == "" {
+			typeName = name
+		}
+		channel, ok := m.createChannelLocked(typeName, name)
+		if !ok {
+			if oldHash, exists := m.channelHashes[name]; exists {
+				list[name] = oldHash
+			}
+			continue
+		}
+		logger.InfoCF("channels", "Starting channel", map[string]any{
+			"channel": name,
+		})
+		m.mu.Unlock()
+		err := channel.Start(ctx)
+		m.mu.Lock()
+		if err != nil {
+			logger.ErrorCF("channels", "Failed to start channel", map[string]any{
+				"channel": name,
+				"error":   err.Error(),
+			})
+			m.publishChannelEvent(
+				runtimeevents.KindChannelLifecycleStartFailed,
+				name,
+				runtimeevents.Scope{Channel: name},
+				runtimeevents.SeverityError,
+				ChannelLifecyclePayload{Type: typeName, Error: err.Error()},
+			)
+			if oldHash, exists := m.channelHashes[name]; exists {
+				list[name] = oldHash
+			}
+			continue
+		}
+		channelType := name
+		if bc.Type != "" {
+			channelType = bc.Type
+		}
+		w := newChannelWorker(name, channel, channelType)
+		m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
+		if m.mux != nil {
+			m.registerChannelHTTPHandler(name, channel)
+		}
+		go m.runWorker(dispatchCtx, name, w)
+		go m.runMediaWorker(dispatchCtx, name, w)
+		m.publishChannelEvent(
+			runtimeevents.KindChannelLifecycleStarted,
+			name,
+			runtimeevents.Scope{Channel: name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: channelType},
+		)
+
+		if hasOld {
+			m.mu.Unlock()
+			stopChannelWorker(oldSnapshot.worker)
+			_ = oldSnapshot.channel.Stop(ctx)
+			m.mu.Lock()
+			if m.mux != nil {
+				if webhookPath(oldSnapshot.channel) != webhookPath(channel) ||
+					healthPath(oldSnapshot.channel) != healthPath(channel) {
+					m.unregisterChannelHTTPHandler(name, oldSnapshot.channel)
+				}
+			}
+		}
 	}
 
 	// Commit hashes only on full success.
