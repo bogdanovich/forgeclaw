@@ -10,7 +10,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing.
 - [Durable Ingress](durable-ingress.md): normalized inbound message spool and restart replay semantics.
 - [Runtime Events](runtime-events.md): runtime event envelope, centralized event logging, filters, and examples.
-- [Channel Lifecycle](channel-lifecycle.md): target channel supervision model, runtime state, inbound activation, and readiness invariants.
+- [Channel Lifecycle](channel-lifecycle.md): conservative channel reload policy, delivery ownership invariants, and the roadmap for any future hot-replacement work.
 - [Workspace Temp Directory](workspace-temp.md): standard scratch path, `PICOCLAW_WORKSPACE_TMP`, and where temporary files should go.
 - [Shellguard](shellguard.md): reusable shell command validation, command classification, permission modes, and path-scope limits.
 - [Agent Self-Evolution](agent-self-evolution.md): learning records, draft generation, application modes, and state layout.

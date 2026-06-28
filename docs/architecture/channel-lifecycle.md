@@ -1,171 +1,275 @@
 # Channel Lifecycle Architecture
 
-This document defines the target architecture for channel lifecycle management.
-It exists because startup retry, reload, worker ownership, shared HTTP
-registration, and gateway readiness are currently too tightly coupled inside
-`pkg/channels/manager.go`.
+This document records the intended direction for channel lifecycle work after
+the abandoned PR 88-91 refactor track. The goal is to avoid another broad
+rewrite that adds lifecycle machinery without a simpler delivery invariant.
 
-## Problem
+## Why This Exists
 
-Today `channels.Manager` owns too many responsibilities at once:
+`channels.Manager` currently owns channel instances, outbound workers, shared
+HTTP handlers, config reload, shutdown, and delivery lookup maps. That makes
+small lifecycle changes risky because the same channel name can be represented
+in several places:
 
-- channel instance creation and replacement
-- worker creation and teardown
-- startup sequencing
-- retry behavior
-- shared HTTP/webhook registration
-- reload coordination
-- readiness implications
+- `m.channels`
+- `m.workers`
+- shared HTTP handlers
+- config hashes
+- running channel goroutines
+- dispatcher goroutines consuming outbound bus messages
 
-That coupling makes small operational fixes expensive. A bounded startup-retry
-change can easily expand into reload races, stale worker reinstallation,
-incorrect readiness, or inbound acceptance before delivery is actually live.
+The failed refactor track made useful problems visible:
 
-## Goals
+- replacing a channel can temporarily remove the worker while dispatch still
+  consumes outbound messages
+- replacing a worker can reorder messages across old and new workers
+- stopping workers while holding the manager lock can deadlock with send paths
+- unregistering HTTP handlers during replacement can create inbound 404 windows
 
-- Make channel runtime state explicit and inspectable.
-- Ensure only active channel runtimes can accept inbound traffic.
-- Keep retry policy outside ordinary reload logic.
-- Prevent stale channel generations from restarting after reload.
-- Make readiness reflect real delivery capability.
-- Reduce the amount of special-case logic inside `channels.Manager`.
+The lesson is not "add a supervisor". The lesson is that delivery ownership
+needs one clear owner before hot reload can be made correct.
+
+## Design Principles
+
+1. Prefer conservative behavior over complex hot-swap behavior.
+2. Do not consume an outbound message unless there is an owned delivery path.
+3. Preserve per-channel outbound ordering by construction.
+4. Keep inbound HTTP registration tied to a deliverable channel state.
+5. Add abstractions only when they remove a real race or simplify ownership.
+6. Keep each migration PR small enough that its invariant can be reviewed.
 
 ## Non-Goals
 
-- This is not a channel feature rewrite.
-- This does not change channel-specific protocol logic unless required by the
-  new lifecycle boundary.
-- This does not attempt to solve durable outbound persistence in the same track.
+- No durable outbound queue in this track.
+- No general runtime supervision framework unless a later PR proves the need.
+- No transparent zero-drop replacement for every channel type as a first step.
+- No channel-specific protocol rewrites.
+- No readiness policy redesign unless it follows from a concrete runtime state.
 
-## Required Invariants
+## Current Practical Policy
 
-1. A configured channel is not automatically a live runtime.
-2. Only an `active` runtime may:
-   - receive inbound webhook/socket traffic
-   - own outbound/media workers
-   - contribute to gateway readiness
-3. Retry logic must be generation-aware. A runtime created for an old config
-   generation must not reappear after reload.
-4. Reload must reconcile desired channel state atomically at the runtime layer.
-5. Shared HTTP handler registration must follow runtime activation, not config
-   presence.
-6. Shutdown and reload must be able to cancel any in-flight startup attempt.
+Until a stable per-channel delivery owner exists, channel config changes should
+be treated conservatively:
 
-## Target Model
+- adding a new channel may be supported live
+- removing a channel should be conservative until drain/shutdown is fixed
+- changing an existing channel's config should prefer restart-required behavior
+  over in-process replacement
 
-### 1. `ChannelSupervisor`
+This is intentionally less ambitious than hot replacement. It matches the
+current architecture better and avoids pretending that all channel transports
+can be swapped safely under active delivery.
 
-Owns the lifecycle state machine for each configured channel name.
+Runtime reconnects are a separate concern. Reconnecting the same channel
+instance or transport is usually safer than replacing the logical channel
+worker. That path should be improved before full config hot-swap.
 
-Responsibilities:
+## Target Invariants
 
-- create a runtime for a specific config generation
-- start/stop runtime instances
-- schedule bounded retry/backoff for startup failures
-- reject stale retry completions after generation changes
-- expose runtime state for readiness and diagnostics
+### Delivery Ownership
 
-It should be the only component allowed to transition a channel between:
+For a channel name, outbound text and media must pass through one stable
+delivery owner. Dispatch should not enqueue directly into a worker that can be
+replaced independently of the queue.
 
-- `inactive`
-- `starting`
-- `active`
-- `stopping`
-- `failed`
+Minimum invariant:
 
-### 2. `ChannelRuntime`
+- dispatcher resolves a channel delivery owner
+- the owner accepts, rejects, or drains the message
+- closed/replacing owners must not silently consume and drop messages
 
-Represents one live generation of one channel.
+### Ordering
 
-Responsibilities:
+For one channel name, messages accepted by the manager must be sent in the same
+order they were accepted unless the caller explicitly chooses a different
+priority path.
 
-- hold the channel instance
-- own worker goroutines and cancel context
-- expose activation/deactivation hooks
-- stop exactly once
+Minimum invariant:
 
-It should be impossible to install workers or inbound handlers without a
-runtime object.
+- same-name reload must not publish a new worker that can overtake queued work
+  on the old worker
 
-### 3. `InboundRegistry`
+### Shutdown
 
-Owns shared HTTP registration for channel runtimes.
+Shutdown may stop accepting new outbound work, but already accepted work must
+either drain or be reported as not accepted. Shutdown must not wait for worker
+drain while holding locks needed by send paths.
 
-Responsibilities:
+Minimum invariant:
 
-- mount webhook handlers for active runtimes only
-- unmount handlers when a runtime leaves `active`
-- avoid unregistering a replacement runtime's handler during same-name reload
+- detach/mark stopping under lock
+- drain outside manager locks
+- stop transport after accepted queues are drained
 
-This removes HTTP exposure concerns from general manager cleanup paths.
+### Inbound Registration
 
-### 4. `channels.Manager`
+Shared HTTP handlers should only route to a channel state that can handle the
+inbound request. Config presence alone is not enough.
 
-Becomes an orchestrator rather than a lifecycle kitchen sink.
+Minimum invariant:
 
-Responsibilities:
+- no handler points at an unstarted or failed channel
+- replacement must not unregister the currently valid handler until a new valid
+  handler is available, unless the policy is restart-required
 
-- diff desired config against current supervised set
-- ask the supervisor to reconcile state
-- provide lookup surfaces used by the bus and gateway
+## Architecture Options
 
-It should stop directly mixing:
+### Option A: Conservative Restart-Required Replacement
 
-- raw channel map mutation
-- retry goroutine ownership
-- HTTP registration details
-- readiness semantics
+When an enabled channel's config hash changes, reload reports that restart is
+required and leaves the current runtime untouched. Operators get a clear status
+instead of a risky in-process swap.
 
-### 5. Gateway Readiness
+Benefits:
 
-Readiness should be derived from runtime capability, not startup progress.
+- smallest implementation
+- avoids silent drops and ordering regressions
+- preserves current mental model
+- keeps reload useful for non-channel config and simple channel additions
 
-Minimum rule:
+Costs:
 
-- gateway is ready only when at least one channel runtime is `active`
+- changing Telegram/Slack/etc. credentials or webhook settings requires process
+  restart
+- no seamless replacement
 
-Possible future extension:
+This is the preferred next step.
 
-- configurable readiness policy for deployments that need stricter guarantees
+### Option B: Stable Per-Channel Delivery Owner
 
-## Migration Plan
+Introduce a small `channelDelivery` owner per channel name. The manager and
+dispatch loops only talk to this owner, not directly to replaceable workers.
 
-### Phase 1: Runtime State Boundary
+The owner holds:
 
-- introduce a runtime record per channel name
-- add generation IDs
-- move worker ownership under runtime objects
-- keep existing startup behavior otherwise unchanged
+- one text queue
+- one media queue
+- current channel transport
+- lifecycle state: accepting, draining, stopped
 
-### Phase 2: Inbound Activation Boundary
+Replacement, if later supported, happens behind the owner. The queue does not
+change, so ordering remains stable. A transport swap can be implemented as:
 
-- extract webhook/health registration from manager cleanup paths
-- register handlers only for active runtimes
-- make same-name replacement safe by construction
+1. stop accepting new sends only if required
+2. drain current queue through old transport
+3. stop old transport
+4. start new transport
+5. resume accepting through the same owner
 
-### Phase 3: Startup Supervision
+Benefits:
 
-- move startup retry into supervisor-owned state
-- ensure retry cancellation on reload/shutdown
-- ensure stale generations cannot reinstall workers
+- real path to correct hot replacement
+- dispatch never races a replaceable worker pointer
+- ordering can be reasoned about locally
 
-### Phase 4: Readiness Simplification
+Costs:
 
-- derive readiness from active runtime count
-- remove ad hoc startup-pending readiness behavior
+- larger refactor than Option A
+- must carefully preserve existing send/media/placeholder behavior
+- still does not provide durable delivery across process crash
 
-## Acceptance Criteria
+This is worth doing only after Option A is landed and there is a concrete need
+for live channel config replacement.
 
-- a failed startup retry cannot restart an old runtime after reload
-- a same-name reload cannot unregister the replacement webhook handler
-- gateway cannot become ready while no active runtime exists
-- shutdown/reload cannot race a startup retry into reinstalling a worker
-- lifecycle tests become narrower and easier to reason about than the current
-  manager-wide integration-style tests
+### Option C: Full Supervisor Runtime Framework
 
-## Implementation Notes
+Introduce supervisors, generations, retry state, inbound registry state, and
+readiness state as separate subsystems.
 
-- Prefer additive refactors with compatibility shims over a one-shot rewrite.
-- Land this in small PRs with explicit invariants per step.
-- Keep operational behavior conservative while the refactor is in progress:
-  avoid accepting inbound traffic before delivery capability exists.
+Benefits:
+
+- can model sophisticated lifecycle behavior
+- useful if channels need independent long-running recovery policies
+
+Costs:
+
+- too much machinery for the current problems
+- high review surface
+- easy to recreate PR 88-91 complexity
+
+This is not the recommended next step.
+
+## Recommended Roadmap
+
+### Phase 1: Make Reload Conservative
+
+Behavior:
+
+- detect same-name channel config changes
+- keep the existing running channel untouched
+- return/report "restart required for channel config changes"
+- keep live addition behavior only where startup already creates a normal active
+  worker
+- avoid expanding live removal semantics until Phase 2 defines safe drain
+
+Acceptance criteria:
+
+- a same-name config change cannot remove or replace an active worker
+- outbound dispatch behavior is unchanged for active channels
+- status/logs make restart-required state visible
+- tests cover changed-channel reload leaving the old channel active
+
+### Phase 2: Fix Shutdown/Unregister Draining
+
+Behavior:
+
+- avoid holding `m.mu` while waiting for worker goroutines
+- make accepted-vs-rejected outbound behavior explicit during stop
+
+Acceptance criteria:
+
+- no worker drain happens while holding manager locks needed by send paths
+- tests cover in-flight send callbacks during `StopAll` and `UnregisterChannel`
+
+### Phase 3: Introduce Delivery Owner Only If Needed
+
+Trigger:
+
+- only start this if live same-name channel replacement is a real requirement
+
+Behavior:
+
+- dispatch resolves a stable per-channel delivery owner
+- workers become implementation details of the owner
+- replacement never swaps the queue that dispatch writes to
+
+Acceptance criteria:
+
+- closed/replacing worker pointers cannot drop consumed bus messages
+- replacement cannot reorder messages across old/new transports
+- tests exercise dispatcher-level delivery, not only direct queue enqueue
+
+### Phase 4: Optional Runtime Supervision
+
+Trigger:
+
+- only start this if reconnect/retry behavior cannot be kept inside channel
+  implementations or the delivery owner
+
+Behavior:
+
+- bounded retry state is explicit
+- stale retries cannot revive old config
+- readiness derives from actual accepting/deliverable state
+
+Acceptance criteria:
+
+- retry cancellation on reload/shutdown is covered
+- readiness has one documented source of truth
+
+## What Not To Do Next
+
+- Do not reopen PR 88-91 as-is.
+- Do not introduce generations plus worker replacement without a stable queue.
+- Do not publish a replacement worker before old accepted work is drained.
+- Do not make dispatch ignore closed-worker enqueue failures.
+- Do not use HTTP handler registration as a proxy for delivery readiness.
+
+## Decision
+
+The next implementation PR should be Phase 1 only: make same-name channel config
+changes restart-required instead of trying to hot-replace active channels.
+
+That gives an immediate safety improvement with low complexity. If later usage
+shows that seamless channel config replacement matters, build Option B with a
+stable per-channel delivery owner before attempting hot replacement.
