@@ -754,6 +754,19 @@ func (m *Manager) SetMediaStore(store media.MediaStore) {
 	}
 }
 
+func (m *Manager) installDeliveryOwnerLocked(
+	ctx context.Context,
+	name string,
+	channel Channel,
+	channelType string,
+) *deliveryOwner {
+	owner := newDeliveryOwner(name, channel, channelType)
+	m.workers[name] = owner.Worker()
+	m.deliveryOwners[name] = owner
+	owner.StartDelivery(ctx, m)
+	return owner
+}
+
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
 func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
@@ -1387,12 +1400,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 				channelType = bc.Type
 			}
 		}
-		owner := newDeliveryOwner(name, channel, channelType)
-		w := owner.Worker()
-		m.workers[name] = w
-		m.deliveryOwners[name] = owner
-		go m.runWorker(dispatchCtx, name, w)
-		go m.runMediaWorker(dispatchCtx, name, w)
+		m.installDeliveryOwnerLocked(dispatchCtx, name, channel, channelType)
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
 			name,
@@ -1610,6 +1618,14 @@ func (o *deliveryOwner) Worker() *channelWorker {
 		return nil
 	}
 	return o.worker
+}
+
+func (o *deliveryOwner) StartDelivery(ctx context.Context, m *Manager) {
+	if o == nil || o.worker == nil {
+		return
+	}
+	go m.runWorker(ctx, o.name, o.worker)
+	go m.runMediaWorker(ctx, o.name, o.worker)
 }
 
 func (o *deliveryOwner) Enqueue(ctx context.Context, msg bus.OutboundMessage) bool {
@@ -2225,12 +2241,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 				channelType = bc.Type
 			}
 		}
-		owner := newDeliveryOwner(name, channel, channelType)
-		w := owner.Worker()
-		m.workers[name] = w
-		m.deliveryOwners[name] = owner
-		go m.runWorker(dispatchCtx, name, w)
-		go m.runMediaWorker(dispatchCtx, name, w)
+		m.installDeliveryOwnerLocked(dispatchCtx, name, channel, channelType)
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
 			name,
