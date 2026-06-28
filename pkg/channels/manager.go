@@ -2230,6 +2230,9 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 		m.mu.Lock()
 		existing, ok := m.runtimes[name]
 		if ok && existing != nil && existing.channel == channel {
+			if m.mux != nil {
+				m.registerChannelHTTPHandler(name, channel)
+			}
 			m.mu.Unlock()
 			return
 		}
@@ -2242,23 +2245,14 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 			return
 		}
 		snapshot := *existing
+		if m.mux != nil {
+			m.unregisterChannelHTTPHandler(name, snapshot.channel)
+		}
+		m.removeRuntimeLocked(name)
 		m.mu.Unlock()
 
 		_ = snapshot.channel.Stop(context.Background())
 		stopChannelWorker(snapshot.worker)
-
-		m.mu.Lock()
-		current, stillPresent := m.runtimes[name]
-		if stillPresent &&
-			current != nil &&
-			current.generation == snapshot.generation &&
-			current.channel == snapshot.channel {
-			if m.mux != nil {
-				m.unregisterChannelHTTPHandler(name, snapshot.channel)
-			}
-			m.removeRuntimeLocked(name)
-		}
-		m.mu.Unlock()
 	}
 }
 

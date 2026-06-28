@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -69,6 +71,20 @@ type mockMediaChannel struct {
 	mockChannel
 	sendMediaFn       func(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error)
 	sentMediaMessages []bus.OutboundMediaMessage
+}
+
+type mockWebhookChannel struct {
+	mockChannel
+	path   string
+	status int
+}
+
+func (m *mockWebhookChannel) WebhookPath() string {
+	return m.path
+}
+
+func (m *mockWebhookChannel) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(m.status)
 }
 
 func (m *mockMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
@@ -377,6 +393,117 @@ func TestRegisterChannel_SameInstancePreservesActiveRuntime(t *testing.T) {
 	}
 	if rt.generation != 7 {
 		t.Fatalf("runtime generation = %d, want 7", rt.generation)
+	}
+}
+
+func TestRegisterChannel_SameInstanceRemountsHTTPHandler(t *testing.T) {
+	m := newTestManager()
+	m.mux = newDynamicServeMux()
+
+	ch := &mockWebhookChannel{path: "/webhook/test", status: http.StatusAccepted}
+	w := newChannelWorker("test", ch, "test")
+	m.channels["test"] = ch
+	m.workers["test"] = w
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 3,
+		channel:    ch,
+		worker:     w,
+		state:      channelRuntimeActive,
+	}
+
+	m.RegisterChannel("test", ch)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	m.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("webhook status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+}
+
+func TestRegisterChannel_ReplacementUnpublishesRuntimeBeforeStopCompletes(t *testing.T) {
+	m := newTestManager()
+	m.mux = newDynamicServeMux()
+
+	stopStarted := make(chan struct{})
+	releaseStop := make(chan struct{})
+	oldChannel := &mockWebhookChannel{
+		path:   "/webhook/test",
+		status: http.StatusAccepted,
+	}
+	oldChannel.stopFn = func(_ context.Context) error {
+		close(stopStarted)
+		<-releaseStop
+		return nil
+	}
+	oldWorker := newChannelWorker("test", oldChannel, "test")
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    oldChannel,
+		worker:     oldWorker,
+		state:      channelRuntimeActive,
+	}
+	m.registerChannelHTTPHandler("test", oldChannel)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+
+	done := make(chan struct{})
+	newChannel := &mockWebhookChannel{path: "/webhook/test", status: http.StatusCreated}
+	go func() {
+		m.RegisterChannel("test", newChannel)
+		close(done)
+	}()
+
+	<-stopStarted
+
+	m.mu.RLock()
+	currentChannel, channelExists := m.channels["test"]
+	currentWorker, workerExists := m.workers["test"]
+	currentRuntime, runtimeExists := m.runtimes["test"]
+	m.mu.RUnlock()
+
+	if channelExists || currentChannel != nil {
+		t.Fatal("expected replacement to unpublish current channel before stop completes")
+	}
+	if workerExists || currentWorker != nil {
+		t.Fatal("expected replacement to unpublish current worker before stop completes")
+	}
+	if runtimeExists || currentRuntime != nil {
+		t.Fatal("expected replacement to unpublish current runtime before stop completes")
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	m.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("webhook status during replacement = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+
+	close(releaseStop)
+	<-done
+
+	m.mu.RLock()
+	currentRuntime, runtimeExists = m.runtimes["test"]
+	currentChannel, channelExists = m.channels["test"]
+	currentWorker, workerExists = m.workers["test"]
+	m.mu.RUnlock()
+
+	if !runtimeExists || currentRuntime == nil || currentRuntime.channel != newChannel {
+		t.Fatal("expected replacement runtime to be installed after stop completes")
+	}
+	if !channelExists || currentChannel != newChannel {
+		t.Fatal("expected replacement channel to be installed after stop completes")
+	}
+	if workerExists || currentWorker != nil {
+		t.Fatal("expected replacement registration to remain inactive after replacement")
 	}
 }
 
