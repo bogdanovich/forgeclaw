@@ -756,26 +756,30 @@ func fetchUpstreamModels(ctx context.Context, provider, apiBase, apiKey string) 
 	default:
 		// OpenAI-compatible: /v1/models
 		fetchURL = apiBase + "/models"
-		return fetchOpenAICompatibleModels(ctx, fetchURL, apiKey)
+		return fetchOpenAICompatibleModelsForProvider(ctx, provider, fetchURL, apiKey)
 	}
 }
 
-func newSafeModelFetchClient(fetchURL string) (*http.Client, error) {
+func newSafeModelFetchClient(provider, fetchURL string) (*http.Client, error) {
 	whitelist, err := utils.NewPrivateHostWhitelist(modelFetchPrivateHostWhitelist)
 	if err != nil {
 		return nil, err
 	}
-	if err := utils.ValidateSafeHTTPURL(fetchURL, whitelist, nil); err != nil {
+	allowPrivateHosts := func() bool {
+		return providers.IsLocalModelProvider(provider)
+	}
+	if err := utils.ValidateSafeHTTPURL(fetchURL, whitelist, allowPrivateHosts); err != nil {
 		return nil, err
 	}
 	return utils.CreateSafeHTTPClient(utils.SafeHTTPClientOptions{
 		Timeout:              15 * time.Second,
 		PrivateHostWhitelist: modelFetchPrivateHostWhitelist,
+		AllowPrivateHosts:    allowPrivateHosts,
 	})
 }
 
 func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
-	client, err := newSafeModelFetchClient(fetchURL)
+	client, err := newSafeModelFetchClient("nearai", fetchURL)
 	if err != nil {
 		return nil, err
 	}
@@ -786,6 +790,7 @@ func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstream
 	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	utils.AllowConfiguredProxyFirstHop(req, client.Transport)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -826,7 +831,11 @@ func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstream
 }
 
 func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
-	client, err := newSafeModelFetchClient(fetchURL)
+	return fetchOpenAICompatibleModelsForProvider(ctx, "openai", fetchURL, apiKey)
+}
+
+func fetchOpenAICompatibleModelsForProvider(ctx context.Context, provider, fetchURL, apiKey string) ([]upstreamModel, error) {
+	client, err := newSafeModelFetchClient(provider, fetchURL)
 	if err != nil {
 		return nil, err
 	}
@@ -837,6 +846,7 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	utils.AllowConfiguredProxyFirstHop(req, client.Transport)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -858,10 +868,6 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 		OwnedBy string `json:"owned_by"`
 	}
 
-	// {"data": [...]} envelope. Distinguish "envelope shape with empty list"
-	// from "object without a data key" via Data being non-nil after unmarshal:
-	// json.Unmarshal sets Data to []modelItem{} for `{"data":[]}` but leaves
-	// it as nil when "data" is absent or null.
 	var envelope struct {
 		Data []modelItem `json:"data"`
 	}
@@ -875,7 +881,6 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 		return models, nil
 	}
 
-	// Bare-array shape, including `[]`.
 	var arr []modelItem
 	if err := json.Unmarshal(body, &arr); err == nil {
 		models := make([]upstreamModel, 0, len(arr))
@@ -895,7 +900,7 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 }
 
 func fetchOllamaModels(ctx context.Context, fetchURL string) ([]upstreamModel, error) {
-	client, err := newSafeModelFetchClient(fetchURL)
+	client, err := newSafeModelFetchClient("ollama", fetchURL)
 	if err != nil {
 		return nil, err
 	}
@@ -903,6 +908,7 @@ func fetchOllamaModels(ctx context.Context, fetchURL string) ([]upstreamModel, e
 	if err != nil {
 		return nil, err
 	}
+	utils.AllowConfiguredProxyFirstHop(req, client.Transport)
 
 	resp, err := client.Do(req)
 	if err != nil {

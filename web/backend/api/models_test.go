@@ -2711,6 +2711,38 @@ func TestHandleFetchModels_NearAIRejectsPrivateAPIBase(t *testing.T) {
 	}
 }
 
+func TestHandleFetchModels_VLLMAllowsLocalAPIBase(t *testing.T) {
+	configPath, cleanup := setupOAuthTestEnv(t)
+	defer cleanup()
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"Qwen/Qwen3-8B","owned_by":"vllm"}]}`)
+	}))
+	defer srv.Close()
+
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/models/fetch", bytes.NewBufferString(fmt.Sprintf(`{
+		"provider":"vllm",
+		"api_base":"%s/v1"
+	}`, srv.URL)))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if gotPath != "/v1/models" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v1/models")
+	}
+}
+
 func TestHandleFetchModels_ModelIndexUsesStoredKey(t *testing.T) {
 	allowPrivateModelFetchHostsForTests(t)
 
