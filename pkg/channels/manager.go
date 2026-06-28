@@ -2248,19 +2248,21 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 
 	deferFuncs := make([]func(), 0, len(removed)+len(added))
 	for _, name := range removed {
-		// Stop all channels
 		channel := m.channels[name]
-		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
-		})
-		if err := channel.Stop(ctx); err != nil {
-			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
-		}
 		deferFuncs = append(deferFuncs, func() {
 			m.UnregisterChannel(name)
+			if channel == nil {
+				return
+			}
+			logger.InfoCF("channels", "Stopping channel", map[string]any{
+				"channel": name,
+			})
+			if err := channel.Stop(ctx); err != nil {
+				logger.ErrorCF("channels", "Error stopping channel", map[string]any{
+					"channel": name,
+					"error":   err.Error(),
+				})
+			}
 		})
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)

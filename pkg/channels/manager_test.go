@@ -432,6 +432,94 @@ func TestReload_ChangedInactiveChannelPreservedWhenReplacementInitFails(t *testi
 	}
 }
 
+func TestReload_RemovedChannelDrainsDeliveryBeforeStop(t *testing.T) {
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true}`),
+	}
+	newCfg := config.DefaultConfig()
+
+	sendStarted := make(chan struct{})
+	proceedSend := make(chan struct{})
+	stopCalled := make(chan struct{})
+	var stopOnce sync.Once
+	var sendFinished atomic.Bool
+	var stopBeforeDrain atomic.Bool
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			close(sendStarted)
+			<-proceedSend
+			sendFinished.Store(true)
+			return nil
+		},
+		stopFn: func(context.Context) error {
+			if !sendFinished.Load() {
+				stopBeforeDrain.Store(true)
+			}
+			stopOnce.Do(func() { close(stopCalled) })
+			return nil
+		},
+	}
+	owner := newDeliveryOwner("test", ch, "test")
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+	m.channelHashes = toChannelHashes(oldCfg)
+	owner.StartDelivery(context.Background(), m)
+
+	queued, err := owner.Enqueue(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "queued before removal",
+	}))
+	if !queued || err != nil {
+		t.Fatalf("Enqueue() queued=%v err=%v, want true nil", queued, err)
+	}
+	select {
+	case <-sendStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not start sending queued message")
+	}
+
+	if err := m.Reload(t.Context(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	waitForDeliveryOwnerClosed(t, owner)
+	select {
+	case <-stopCalled:
+		t.Fatal("removed channel stopped before delivery drained")
+	default:
+	}
+
+	close(proceedSend)
+	select {
+	case <-stopCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("removed channel was not stopped after delivery drained")
+	}
+	if stopBeforeDrain.Load() {
+		t.Fatal("removed channel Stop ran before queued delivery completed")
+	}
+
+	m.mu.RLock()
+	_, ownerExists := m.deliveryOwners["test"]
+	_, workerExists := m.workers["test"]
+	_, channelExists := m.channels["test"]
+	m.mu.RUnlock()
+	if ownerExists || workerExists || channelExists {
+		t.Fatalf(
+			"removed channel left maps populated after reload: owner=%v worker=%v channel=%v",
+			ownerExists,
+			workerExists,
+			channelExists,
+		)
+	}
+}
+
 func TestStartAll_AllChannelsFail_ReturnsJoinedError(t *testing.T) {
 	m := newTestManager()
 	errA := errors.New("channel-a start failed")
