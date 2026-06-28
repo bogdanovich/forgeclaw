@@ -532,6 +532,156 @@ func TestRegisterChannel_ReplacementDrainsWorkerBeforeStopAndKeepsWebhookMounted
 	}
 }
 
+func TestReload_SameNameReplacementKeepsNewRuntimeActive(t *testing.T) {
+	factoryType := "test_reload_same_name_replacement"
+	newChannel := &mockChannel{}
+	RegisterFactory(factoryType, func(string, string, *config.Config, *bus.MessageBus) (Channel, error) {
+		return newChannel, nil
+	})
+
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     factoryType,
+		Settings: config.RawNode(`{"version":"old"}`),
+	}
+	newCfg := config.DefaultConfig()
+	newCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     factoryType,
+		Settings: config.RawNode(`{"version":"new"}`),
+	}
+
+	stopCalls := 0
+	oldChannel := &mockChannel{
+		stopFn: func(context.Context) error {
+			stopCalls++
+			return nil
+		},
+	}
+	oldWorker := newChannelWorker("test", oldChannel, factoryType)
+	m := newTestManager()
+	m.config = oldCfg
+	m.channelHashes = toChannelHashes(oldCfg)
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    oldChannel,
+		worker:     oldWorker,
+		state:      channelRuntimeActive,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+
+	if err := m.Reload(ctx, newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	m.mu.RLock()
+	currentRuntime := m.runtimes["test"]
+	currentWorker := m.workers["test"]
+	currentChannel := m.channels["test"]
+	m.mu.RUnlock()
+
+	if stopCalls != 1 {
+		t.Fatalf("old channel stop calls = %d, want 1", stopCalls)
+	}
+	if currentChannel != newChannel {
+		t.Fatal("expected reload replacement channel to remain registered")
+	}
+	if currentWorker == nil {
+		t.Fatal("expected reload replacement worker to remain active")
+	}
+	if currentRuntime == nil || currentRuntime.channel != newChannel {
+		t.Fatal("expected reload replacement runtime to track new channel")
+	}
+	if currentRuntime.worker != currentWorker {
+		t.Fatal("expected reload replacement runtime to track active worker")
+	}
+	if currentRuntime.state != channelRuntimeActive {
+		t.Fatalf("replacement runtime state = %q, want %q", currentRuntime.state, channelRuntimeActive)
+	}
+}
+
+func TestReload_RemovedChannelDrainsWorkerBeforeStop(t *testing.T) {
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     "test",
+		Settings: config.RawNode(`{"enabled":true}`),
+	}
+	newCfg := config.DefaultConfig()
+
+	sent := make(chan struct{})
+	stopCalls := 0
+	m := newTestManager()
+	oldChannel := &mockChannel{
+		sendFn: func(context.Context, bus.OutboundMessage) error {
+			close(sent)
+			return nil
+		},
+		stopFn: func(context.Context) error {
+			stopCalls++
+			select {
+			case <-sent:
+			default:
+				t.Fatal("expected queued outbound to drain before channel stop")
+			}
+			m.mu.RLock()
+			_, workerExists := m.workers["test"]
+			m.mu.RUnlock()
+			if workerExists {
+				t.Fatal("expected worker to be undiscoverable before channel stop")
+			}
+			return nil
+		},
+	}
+	oldWorker := newChannelWorker("test", oldChannel, "test")
+	m.config = oldCfg
+	m.channelHashes = toChannelHashes(oldCfg)
+	m.channels["test"] = oldChannel
+	m.workers["test"] = oldWorker
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    oldChannel,
+		worker:     oldWorker,
+		state:      channelRuntimeActive,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runWorker(ctx, "test", oldWorker)
+	go m.runMediaWorker(ctx, "test", oldWorker)
+	oldWorker.queue <- bus.OutboundMessage{
+		Context: bus.NewOutboundContext("test", "chat-1", ""),
+		Content: "queued before reload",
+	}
+
+	if err := m.Reload(ctx, newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	if stopCalls != 1 {
+		t.Fatalf("old channel stop calls = %d, want 1", stopCalls)
+	}
+	m.mu.RLock()
+	_, channelExists := m.channels["test"]
+	_, workerExists := m.workers["test"]
+	_, runtimeExists := m.runtimes["test"]
+	m.mu.RUnlock()
+	if channelExists || workerExists || runtimeExists {
+		t.Fatal("expected removed channel runtime, worker, and channel to be removed after reload")
+	}
+}
+
 func TestStartAll_AllChannelsFail_ReturnsJoinedError(t *testing.T) {
 	m := newTestManager()
 	errA := errors.New("channel-a start failed")

@@ -2148,7 +2148,6 @@ func (m *Manager) GetEnabledChannels() []string {
 // This is used when channel config hasn't changed but other parts of the config have.
 func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Save old config so we can revert on error.
 	oldConfig := m.config
@@ -2159,23 +2158,58 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
 
-	deferFuncs := make([]func(), 0, len(removed)+len(added))
 	for _, name := range removed {
-		// Stop all channels
+		snapshot, hasRuntime := m.runtimeSnapshotLocked(name)
 		channel := m.channels[name]
-		m.setRuntimeStateLocked(name, channelRuntimeStopping)
+		worker := snapshot.worker
+		if hasRuntime {
+			channel = snapshot.channel
+			if rt := m.runtimes[name]; rt != nil &&
+				rt.generation == snapshot.generation &&
+				rt.channel == snapshot.channel {
+				delete(m.workers, name)
+				rt.worker = nil
+				rt.state = channelRuntimeStopping
+			}
+		} else {
+			m.setRuntimeStateLocked(name, channelRuntimeStopping)
+		}
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
+		m.mu.Unlock()
+
+		stopChannelWorker(worker)
 		if err := channel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
 				"channel": name,
 				"error":   err.Error(),
 			})
 		}
-		deferFuncs = append(deferFuncs, func() {
-			m.UnregisterChannel(name)
-		})
+
+		m.mu.Lock()
+		if hasRuntime {
+			current, stillPresent := m.runtimes[name]
+			if stillPresent &&
+				current != nil &&
+				current.generation == snapshot.generation &&
+				current.channel == snapshot.channel {
+				if m.mux != nil {
+					m.unregisterChannelHTTPHandler(name, snapshot.channel)
+				}
+				m.removeRuntimeLocked(name)
+			} else if stillPresent && current != nil && m.mux != nil {
+				if webhookPath(snapshot.channel) != webhookPath(current.channel) ||
+					healthPath(snapshot.channel) != healthPath(current.channel) {
+					m.unregisterChannelHTTPHandler(name, snapshot.channel)
+				}
+			}
+		} else if current := m.channels[name]; current == channel {
+			if m.mux != nil {
+				m.unregisterChannelHTTPHandler(name, channel)
+			}
+			m.removeRuntimeLocked(name)
+		}
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	m.dispatchTask = &asyncTask{cancel: cancel}
@@ -2184,6 +2218,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
 		m.config = oldConfig
 		cancel()
+		m.mu.Unlock()
 		return err
 	}
 	err = m.initChannels(cc)
@@ -2191,6 +2226,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		logger.ErrorC("channels", fmt.Sprintf("initChannels error: %v", err))
 		m.config = oldConfig
 		cancel()
+		m.mu.Unlock()
 		return err
 	}
 	for _, name := range added {
@@ -2223,6 +2259,9 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		}
 		w := newChannelWorker(name, channel, channelType)
 		m.upsertRuntimeLocked(name, channel, w, channelRuntimeActive)
+		if m.mux != nil {
+			m.registerChannelHTTPHandler(name, channel)
+		}
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
@@ -2232,27 +2271,11 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			runtimeevents.SeverityInfo,
 			ChannelLifecyclePayload{Type: channelType},
 		)
-		deferFuncs = append(deferFuncs, func() {
-			m.RegisterChannel(name, channel)
-		})
 	}
 
 	// Commit hashes only on full success.
 	m.channelHashes = list
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.ErrorCF("channels", "channel registration goroutine panic recovered",
-					map[string]any{
-						"panic": fmt.Sprintf("%v", r),
-						"stack": string(debug.Stack()),
-					})
-			}
-		}()
-		for _, f := range deferFuncs {
-			f()
-		}
-	}()
+	m.mu.Unlock()
 	return nil
 }
 
