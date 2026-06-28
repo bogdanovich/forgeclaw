@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/audio/asr"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -728,6 +729,30 @@ func (s *saveFailOnNthSessionStore) Save(sessionKey string) error {
 		return s.err
 	}
 	return s.SessionStore.Save(sessionKey)
+}
+
+type recordingMessageBus struct {
+	interfaces.MessageBus
+
+	mu          sync.Mutex
+	releasedIDs []string
+}
+
+func (b *recordingMessageBus) ReleaseInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	cause error,
+) error {
+	b.mu.Lock()
+	b.releasedIDs = append(b.releasedIDs, msg.SpoolID)
+	b.mu.Unlock()
+	return b.MessageBus.ReleaseInbound(ctx, msg, cause)
+}
+
+func (b *recordingMessageBus) releaseCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.releasedIDs)
 }
 
 type fixedTranscriber struct {
@@ -1460,6 +1485,8 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 		releaseFirstCall: make(chan struct{}),
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	monitoredBus := &recordingMessageBus{MessageBus: al.bus}
+	al.bus = monitoredBus
 
 	agent := al.registry.GetDefaultAgent()
 	if agent == nil {
@@ -1523,18 +1550,14 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 		if procErr != nil {
 			t.Fatalf("glob processing entries: %v", procErr)
 		}
-		pending, pendErr := filepath.Glob(filepath.Join(spoolDir, "*.json"))
-		if pendErr != nil {
-			t.Fatalf("glob pending entries: %v", pendErr)
-		}
-		if len(processing) == 0 && len(pending) == 1 {
+		if len(processing) == 0 && monitoredBus.releaseCount() == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf(
-				"expected released steering spool entry after save failure, processing=%v pending=%v",
+				"expected continuation save failure to release steering spool entry, processing=%v releases=%d",
 				processing,
-				pending,
+				monitoredBus.releaseCount(),
 			)
 		}
 		time.Sleep(10 * time.Millisecond)
