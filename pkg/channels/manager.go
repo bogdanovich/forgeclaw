@@ -84,9 +84,20 @@ type channelWorker struct {
 	limiter    *rate.Limiter
 }
 
+// deliveryOwner is the first narrow ownership boundary around outbound delivery.
+// It intentionally owns only Channel+worker enqueue state today. A later
+// channelSlot abstraction can wrap this with lifecycle/visibility state for
+// safe reload swaps.
+type deliveryOwner struct {
+	name   string
+	ch     Channel
+	worker *channelWorker
+}
+
 type Manager struct {
 	channels                  map[string]Channel
 	workers                   map[string]*channelWorker
+	deliveryOwners            map[string]*deliveryOwner
 	bus                       *bus.MessageBus
 	runtimeEvents             runtimeevents.Bus
 	config                    *config.Config
@@ -701,6 +712,7 @@ func NewManager(
 	m := &Manager{
 		channels:               make(map[string]Channel),
 		workers:                make(map[string]*channelWorker),
+		deliveryOwners:         make(map[string]*deliveryOwner),
 		bus:                    messageBus,
 		config:                 cfg,
 		mediaStore:             store,
@@ -1375,8 +1387,10 @@ func (m *Manager) StartAll(ctx context.Context) error {
 				channelType = bc.Type
 			}
 		}
-		w := newChannelWorker(name, channel, channelType)
+		owner := newDeliveryOwner(name, channel, channelType)
+		w := owner.Worker()
 		m.workers[name] = w
+		m.deliveryOwners[name] = owner
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
@@ -1576,6 +1590,52 @@ func newChannelWorker(name string, ch Channel, channelType string) *channelWorke
 	}
 }
 
+func newDeliveryOwner(name string, ch Channel, channelType string) *deliveryOwner {
+	return &deliveryOwner{
+		name:   name,
+		ch:     ch,
+		worker: newChannelWorker(name, ch, channelType),
+	}
+}
+
+func deliveryOwnerFromWorker(name string, ch Channel, w *channelWorker) *deliveryOwner {
+	if ch == nil || w == nil {
+		return nil
+	}
+	return &deliveryOwner{name: name, ch: ch, worker: w}
+}
+
+func (o *deliveryOwner) Worker() *channelWorker {
+	if o == nil {
+		return nil
+	}
+	return o.worker
+}
+
+func (o *deliveryOwner) Enqueue(ctx context.Context, msg bus.OutboundMessage) bool {
+	if o == nil || o.worker == nil {
+		return true
+	}
+	select {
+	case o.worker.queue <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (o *deliveryOwner) EnqueueMedia(ctx context.Context, msg bus.OutboundMediaMessage) bool {
+	if o == nil || o.worker == nil {
+		return true
+	}
+	select {
+	case o.worker.mediaQueue <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // runWorker processes outbound messages for a single channel.
 // Message processing follows this order:
 //  1. SplitByMarker (if enabled in config) - LLM semantic marker-based splitting
@@ -1751,7 +1811,7 @@ func dispatchLoop[M any](
 	m *Manager,
 	ch <-chan M,
 	getChannel func(M) string,
-	enqueue func(context.Context, *channelWorker, M) bool,
+	enqueue func(context.Context, *deliveryOwner, M) bool,
 	startMsg, stopMsg, unknownMsg, noWorkerMsg string,
 ) {
 	logger.InfoC("channels", startMsg)
@@ -1777,7 +1837,7 @@ func dispatchLoop[M any](
 
 			m.mu.RLock()
 			_, exists := m.channels[channel]
-			w, wExists := m.workers[channel]
+			owner := m.deliveryOwnerLocked(channel)
 			m.mu.RUnlock()
 
 			if !exists {
@@ -1785,8 +1845,8 @@ func dispatchLoop[M any](
 				continue
 			}
 
-			if wExists && w != nil {
-				if !enqueue(ctx, w, msg) {
+			if owner != nil && owner.Worker() != nil {
+				if !enqueue(ctx, owner, msg) {
 					return
 				}
 			} else if exists {
@@ -1801,14 +1861,12 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		ctx, m,
 		m.bus.OutboundChan(),
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
-		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) bool {
-			select {
-			case w.queue <- msg:
+		func(ctx context.Context, owner *deliveryOwner, msg bus.OutboundMessage) bool {
+			if owner.Enqueue(ctx, msg) {
 				m.publishOutboundQueued(outboundMessageChannel(msg), msg)
 				return true
-			case <-ctx.Done():
-				return false
 			}
+			return false
 		},
 		"Outbound dispatcher started",
 		"Outbound dispatcher stopped",
@@ -1822,14 +1880,12 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		ctx, m,
 		m.bus.OutboundMediaChan(),
 		func(msg bus.OutboundMediaMessage) string { return outboundMediaChannel(msg) },
-		func(ctx context.Context, w *channelWorker, msg bus.OutboundMediaMessage) bool {
-			select {
-			case w.mediaQueue <- msg:
+		func(ctx context.Context, owner *deliveryOwner, msg bus.OutboundMediaMessage) bool {
+			if owner.EnqueueMedia(ctx, msg) {
 				m.publishOutboundMediaQueued(outboundMediaChannel(msg), msg)
 				return true
-			case <-ctx.Done():
-				return false
 			}
+			return false
 		},
 		"Outbound media dispatcher started",
 		"Outbound media dispatcher stopped",
@@ -1997,6 +2053,17 @@ func (m *Manager) GetChannel(name string) (Channel, bool) {
 	return channel, ok
 }
 
+func (m *Manager) deliveryOwnerLocked(name string) *deliveryOwner {
+	if m.deliveryOwners != nil {
+		if owner := m.deliveryOwners[name]; owner != nil {
+			return owner
+		}
+	}
+	ch := m.channels[name]
+	w := m.workers[name]
+	return deliveryOwnerFromWorker(name, ch, w)
+}
+
 func (m *Manager) GetStatus() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -2158,8 +2225,10 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 				channelType = bc.Type
 			}
 		}
-		w := newChannelWorker(name, channel, channelType)
+		owner := newDeliveryOwner(name, channel, channelType)
+		w := owner.Worker()
 		m.workers[name] = w
+		m.deliveryOwners[name] = owner
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
 		m.publishChannelEvent(
@@ -2214,6 +2283,7 @@ func (m *Manager) UnregisterChannel(name string) {
 		close(w.mediaQueue)
 		<-w.mediaDone
 	}
+	delete(m.deliveryOwners, name)
 	delete(m.workers, name)
 	delete(m.channels, name)
 }
@@ -2228,13 +2298,17 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 
 	m.mu.RLock()
 	_, exists := m.channels[channelName]
-	w, wExists := m.workers[channelName]
+	owner := m.deliveryOwnerLocked(channelName)
 	m.mu.RUnlock()
 
 	if !exists {
 		return fmt.Errorf("channel %s not found", channelName)
 	}
-	if !wExists || w == nil {
+	var w *channelWorker
+	if owner != nil {
+		w = owner.Worker()
+	}
+	if w == nil {
 		return fmt.Errorf("channel %s has no active worker", channelName)
 	}
 
@@ -2267,13 +2341,17 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 
 	m.mu.RLock()
 	_, exists := m.channels[channelName]
-	w, wExists := m.workers[channelName]
+	owner := m.deliveryOwnerLocked(channelName)
 	m.mu.RUnlock()
 
 	if !exists {
 		return fmt.Errorf("channel %s not found", channelName)
 	}
-	if !wExists || w == nil {
+	var w *channelWorker
+	if owner != nil {
+		w = owner.Worker()
+	}
+	if w == nil {
 		return fmt.Errorf("channel %s has no active worker", channelName)
 	}
 
@@ -2284,7 +2362,7 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, content string) error {
 	m.mu.RLock()
 	_, exists := m.channels[channelName]
-	w, wExists := m.workers[channelName]
+	owner := m.deliveryOwnerLocked(channelName)
 	m.mu.RUnlock()
 
 	if !exists {
@@ -2297,14 +2375,12 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	}
 	msg = bus.NormalizeOutboundMessage(msg)
 
-	if wExists && w != nil {
-		select {
-		case w.queue <- msg:
+	if owner != nil && owner.Worker() != nil {
+		if owner.Enqueue(ctx, msg) {
 			m.publishOutboundQueued(channelName, msg)
 			return nil
-		case <-ctx.Done():
-			return ctx.Err()
 		}
+		return ctx.Err()
 	}
 
 	// Fallback: direct send (should not happen)
