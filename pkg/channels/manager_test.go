@@ -213,9 +213,11 @@ func (m *mockStreamingChannel) ResolveOutboundChatID(
 // newTestManager creates a minimal Manager suitable for unit tests.
 func newTestManager() *Manager {
 	return &Manager{
-		channels: make(map[string]Channel),
-		workers:  make(map[string]*channelWorker),
-		bus:      bus.NewMessageBus(),
+		channels:               make(map[string]Channel),
+		workers:                make(map[string]*channelWorker),
+		bus:                    bus.NewMessageBus(),
+		channelHashes:          make(map[string]string),
+		channelRestartRequired: make(map[string]string),
 	}
 }
 
@@ -236,6 +238,196 @@ func TestSetMediaStorePropagatesToExistingChannels(t *testing.T) {
 	}
 	if got := ch.GetMediaStore(); got != newStore {
 		t.Fatalf("channel media store = %p, want %p", got, newStore)
+	}
+}
+
+func TestReload_ChangedExistingChannelRequiresRestart(t *testing.T) {
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true,"key":"old-value"}`),
+	}
+	newCfg := config.DefaultConfig()
+	newCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true,"key":"new-value"}`),
+	}
+
+	var stopCalls int
+	ch := &mockChannel{
+		stopFn: func(context.Context) error {
+			stopCalls++
+			return nil
+		},
+	}
+	ch.SetRunning(true)
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = ch
+	m.workers["test"] = newChannelWorker("test", ch, "test")
+	m.channelHashes = toChannelHashes(oldCfg)
+	oldHash := m.channelHashes["test"]
+	newHash := toChannelHashes(newCfg)["test"]
+	if oldHash == newHash {
+		t.Fatal("test setup expected channel hash to change")
+	}
+
+	if err := m.Reload(t.Context(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	if stopCalls != 0 {
+		t.Fatalf("changed channel was stopped during reload, calls = %d", stopCalls)
+	}
+	if got := m.channels["test"]; got != ch {
+		t.Fatal("changed channel instance was replaced during reload")
+	}
+	if got := m.workers["test"].ch; got != ch {
+		t.Fatal("changed channel worker was replaced during reload")
+	}
+	if got := m.channelHashes["test"]; got != oldHash {
+		t.Fatalf("active channel hash = %q, want old active hash %q", got, oldHash)
+	}
+
+	status := m.GetStatus()["test"].(map[string]any)
+	if got, _ := status["restart_required"].(bool); !got {
+		t.Fatalf("restart_required status = %v, want true", status["restart_required"])
+	}
+
+	if err := m.SendMessage(t.Context(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "still routed",
+	})); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if len(ch.sentMessages) != 1 {
+		t.Fatalf("old channel sent messages = %d, want 1", len(ch.sentMessages))
+	}
+
+	if err := m.Reload(t.Context(), oldCfg); err != nil {
+		t.Fatalf("Reload(oldCfg) error = %v", err)
+	}
+	status = m.GetStatus()["test"].(map[string]any)
+	if _, ok := status["restart_required"]; ok {
+		t.Fatalf("restart_required was not cleared after config returned to active hash: %#v", status)
+	}
+}
+
+func TestReload_ChangedInactiveChannelIsRecreated(t *testing.T) {
+	const channelType = "reload-inactive-test"
+
+	var started int
+	recreated := &mockChannel{
+		startFn: func(context.Context) error {
+			started++
+			return nil
+		},
+	}
+	RegisterFactory(channelType, func(string, string, *config.Config, *bus.MessageBus) (Channel, error) {
+		return recreated, nil
+	})
+
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     channelType,
+		Settings: config.RawNode(`{"enabled":true,"key":"old-value"}`),
+	}
+	newCfg := config.DefaultConfig()
+	newCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     channelType,
+		Settings: config.RawNode(`{"enabled":true,"key":"new-value"}`),
+	}
+
+	var staleStopCalls int
+	stale := &mockChannel{
+		stopFn: func(context.Context) error {
+			staleStopCalls++
+			return nil
+		},
+	}
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = stale
+	m.channelHashes = toChannelHashes(oldCfg)
+
+	if err := m.Reload(t.Context(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	if staleStopCalls != 1 {
+		t.Fatalf("stale inactive channel stop calls = %d, want 1", staleStopCalls)
+	}
+	if got := m.channels["test"]; got != recreated {
+		t.Fatal("inactive changed channel was not recreated")
+	}
+	if got := m.workers["test"].ch; got != recreated {
+		t.Fatal("inactive changed channel worker was not recreated")
+	}
+	if started != 1 {
+		t.Fatalf("recreated channel start calls = %d, want 1", started)
+	}
+	if _, ok := m.GetStatus()["test"].(map[string]any)["restart_required"]; ok {
+		t.Fatal("inactive changed channel should not require restart after recreation")
+	}
+	if got, want := m.channelHashes["test"], toChannelHashes(newCfg)["test"]; got != want {
+		t.Fatalf("channel hash = %q, want recreated hash %q", got, want)
+	}
+}
+
+func TestReload_ChangedInactiveChannelPreservedWhenReplacementInitFails(t *testing.T) {
+	const channelType = "reload-inactive-fail-test"
+
+	RegisterFactory(channelType, func(string, string, *config.Config, *bus.MessageBus) (Channel, error) {
+		return nil, errors.New("replacement init failed")
+	})
+
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     channelType,
+		Settings: config.RawNode(`{"enabled":true,"key":"old-value"}`),
+	}
+	newCfg := config.DefaultConfig()
+	newCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Type:     channelType,
+		Settings: config.RawNode(`{"enabled":true,"key":"new-value"}`),
+	}
+
+	var staleStopCalls int
+	stale := &mockChannel{
+		stopFn: func(context.Context) error {
+			staleStopCalls++
+			return nil
+		},
+	}
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = stale
+	m.channelHashes = toChannelHashes(oldCfg)
+	oldHash := m.channelHashes["test"]
+
+	err := m.Reload(t.Context(), newCfg)
+	if err == nil || !strings.Contains(err.Error(), "replacement channel test was not initialized") {
+		t.Fatalf("Reload() error = %v, want replacement init failure", err)
+	}
+	if got := m.channels["test"]; got != stale {
+		t.Fatal("stale inactive channel was not preserved after replacement init failure")
+	}
+	if staleStopCalls != 0 {
+		t.Fatalf("stale inactive channel stop calls = %d, want 0", staleStopCalls)
+	}
+	if got := m.channelHashes["test"]; got != oldHash {
+		t.Fatalf("channel hash = %q, want old hash %q", got, oldHash)
+	}
+	if m.config != oldCfg {
+		t.Fatal("manager config was not restored after replacement init failure")
 	}
 }
 

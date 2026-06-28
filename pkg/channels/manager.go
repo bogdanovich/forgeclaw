@@ -102,6 +102,7 @@ type Manager struct {
 	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
 	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
 	channelHashes             map[string]string // channel name → config hash
+	channelRestartRequired    map[string]string // channel name → desired config hash that needs process restart
 }
 
 type mediaStoreSetter interface {
@@ -698,12 +699,13 @@ func NewManager(
 	opts ...ManagerOption,
 ) (*Manager, error) {
 	m := &Manager{
-		channels:      make(map[string]Channel),
-		workers:       make(map[string]*channelWorker),
-		bus:           messageBus,
-		config:        cfg,
-		mediaStore:    store,
-		channelHashes: make(map[string]string),
+		channels:               make(map[string]Channel),
+		workers:                make(map[string]*channelWorker),
+		bus:                    messageBus,
+		config:                 cfg,
+		mediaStore:             store,
+		channelHashes:          make(map[string]string),
+		channelRestartRequired: make(map[string]string),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -2001,10 +2003,15 @@ func (m *Manager) GetStatus() map[string]any {
 
 	status := make(map[string]any)
 	for name, channel := range m.channels {
-		status[name] = map[string]any{
+		channelStatus := map[string]any{
 			"enabled": true,
 			"running": channel.IsRunning(),
 		}
+		if _, ok := m.channelRestartRequired[name]; ok {
+			channelStatus["restart_required"] = true
+			channelStatus["restart_reason"] = "channel config changed"
+		}
+		status[name] = channelStatus
 	}
 	return status
 }
@@ -2032,8 +2039,47 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	// Update config early: initChannel uses m.config via factory(m.config, m.bus).
 	m.config = cfg
 
-	list := toChannelHashes(cfg)
+	desiredHashes := toChannelHashes(cfg)
+	list := make(map[string]string, len(desiredHashes))
+	for name, hash := range desiredHashes {
+		list[name] = hash
+	}
+	if m.channelRestartRequired == nil {
+		m.channelRestartRequired = make(map[string]string)
+	}
 	added, removed := compareChannels(m.channelHashes, list)
+	inactiveChanged := make(map[string]Channel)
+	changed, added, removed := splitChangedChannels(added, removed)
+	for _, name := range changed {
+		currentHash, ok := m.channelHashes[name]
+		if !ok {
+			added = append(added, name)
+			continue
+		}
+		if _, ok := m.channels[name]; !ok {
+			added = append(added, name)
+			continue
+		}
+		if w, ok := m.workers[name]; !ok || w == nil {
+			logger.InfoCF("channels", "Recreating inactive changed channel", map[string]any{
+				"channel": name,
+			})
+			inactiveChanged[name] = m.channels[name]
+			added = append(added, name)
+			continue
+		}
+		m.channelRestartRequired[name] = list[name]
+		list[name] = currentHash
+		logger.WarnCF("channels", "Channel config changed; restart required", map[string]any{
+			"channel": name,
+		})
+	}
+	for name := range m.channelRestartRequired {
+		desiredHash, ok := desiredHashes[name]
+		if !ok || desiredHash == m.channelHashes[name] {
+			delete(m.channelRestartRequired, name)
+		}
+	}
 
 	deferFuncs := make([]func(), 0, len(removed)+len(added))
 	for _, name := range removed {
@@ -2067,6 +2113,24 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		m.config = oldConfig
 		cancel()
 		return err
+	}
+	for name, oldChannel := range inactiveChanged {
+		if m.channels[name] == oldChannel {
+			err := fmt.Errorf("replacement channel %s was not initialized", name)
+			logger.ErrorCF("channels", "Failed to initialize replacement channel", map[string]any{
+				"channel": name,
+				"error":   err.Error(),
+			})
+			m.config = oldConfig
+			cancel()
+			return err
+		}
+		if err := oldChannel.Stop(ctx); err != nil {
+			logger.ErrorCF("channels", "Error stopping inactive changed channel", map[string]any{
+				"channel": name,
+				"error":   err.Error(),
+			})
+		}
 	}
 	for _, name := range added {
 		channel := m.channels[name]
