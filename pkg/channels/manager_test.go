@@ -422,15 +422,20 @@ func TestRegisterChannel_SameInstanceRemountsHTTPHandler(t *testing.T) {
 	}
 }
 
-func TestRegisterChannel_ReplacementUnpublishesRuntimeBeforeStopCompletes(t *testing.T) {
+func TestRegisterChannel_ReplacementDrainsWorkerBeforeStopAndKeepsWebhookMounted(t *testing.T) {
 	m := newTestManager()
 	m.mux = newDynamicServeMux()
 
 	stopStarted := make(chan struct{})
 	releaseStop := make(chan struct{})
+	sent := make(chan struct{})
 	oldChannel := &mockWebhookChannel{
 		path:   "/webhook/test",
 		status: http.StatusAccepted,
+	}
+	oldChannel.sendFn = func(_ context.Context, _ bus.OutboundMessage) error {
+		close(sent)
+		return nil
 	}
 	oldChannel.stopFn = func(_ context.Context) error {
 		close(stopStarted)
@@ -455,6 +460,11 @@ func TestRegisterChannel_ReplacementUnpublishesRuntimeBeforeStopCompletes(t *tes
 	go m.runWorker(ctx, "test", oldWorker)
 	go m.runMediaWorker(ctx, "test", oldWorker)
 
+	oldWorker.queue <- bus.OutboundMessage{
+		Context: bus.NewOutboundContext("test", "chat-1", ""),
+		Content: "queued before replacement",
+	}
+
 	done := make(chan struct{})
 	newChannel := &mockWebhookChannel{path: "/webhook/test", status: http.StatusCreated}
 	go func() {
@@ -464,27 +474,36 @@ func TestRegisterChannel_ReplacementUnpublishesRuntimeBeforeStopCompletes(t *tes
 
 	<-stopStarted
 
+	select {
+	case <-sent:
+	default:
+		t.Fatal("expected queued outbound message to be sent before channel stop")
+	}
+
 	m.mu.RLock()
 	currentChannel, channelExists := m.channels["test"]
 	currentWorker, workerExists := m.workers["test"]
 	currentRuntime, runtimeExists := m.runtimes["test"]
 	m.mu.RUnlock()
 
-	if channelExists || currentChannel != nil {
-		t.Fatal("expected replacement to unpublish current channel before stop completes")
+	if !channelExists || currentChannel != oldChannel {
+		t.Fatal("expected old channel to remain published until replacement is ready")
 	}
 	if workerExists || currentWorker != nil {
-		t.Fatal("expected replacement to unpublish current worker before stop completes")
+		t.Fatal("expected old worker to be undiscoverable while it drains")
 	}
-	if runtimeExists || currentRuntime != nil {
-		t.Fatal("expected replacement to unpublish current runtime before stop completes")
+	if !runtimeExists || currentRuntime == nil || currentRuntime.channel != oldChannel {
+		t.Fatal("expected old runtime to remain published until replacement is ready")
+	}
+	if currentRuntime.state != channelRuntimeStopping {
+		t.Fatalf("runtime state during replacement = %q, want %q", currentRuntime.state, channelRuntimeStopping)
 	}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
 	m.mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("webhook status during replacement = %d, want %d", rec.Code, http.StatusNotFound)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("webhook status during replacement = %d, want %d", rec.Code, http.StatusAccepted)
 	}
 
 	close(releaseStop)
@@ -504,6 +523,12 @@ func TestRegisterChannel_ReplacementUnpublishesRuntimeBeforeStopCompletes(t *tes
 	}
 	if workerExists || currentWorker != nil {
 		t.Fatal("expected replacement registration to remain inactive after replacement")
+	}
+
+	rec = httptest.NewRecorder()
+	m.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("replacement webhook status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 }
 

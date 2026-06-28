@@ -82,6 +82,8 @@ type channelWorker struct {
 	done       chan struct{}
 	mediaDone  chan struct{}
 	limiter    *rate.Limiter
+	enqueueMu  sync.RWMutex
+	closed     bool
 }
 
 type channelRuntimeState string
@@ -1404,6 +1406,20 @@ func (m *Manager) unregisterChannelHTTPHandler(name string, ch Channel) {
 	}
 }
 
+func webhookPath(ch Channel) string {
+	if wh, ok := ch.(WebhookHandler); ok {
+		return wh.WebhookPath()
+	}
+	return ""
+}
+
+func healthPath(ch Channel) string {
+	if hc, ok := ch.(HealthChecker); ok {
+		return hc.HealthPath()
+	}
+	return ""
+}
+
 func (m *Manager) StartAll(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1582,27 +1598,8 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask = nil
 	}
 
-	// Close all worker queues and wait for them to drain
 	for _, w := range m.workers {
-		if w != nil {
-			close(w.queue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.done
-		}
-	}
-	// Close all media worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.mediaQueue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.mediaDone
-		}
+		stopChannelWorker(w)
 	}
 
 	// Stop all channels
@@ -1636,10 +1633,48 @@ func stopChannelWorker(w *channelWorker) {
 	if w == nil {
 		return
 	}
+	w.enqueueMu.Lock()
+	if w.closed {
+		w.enqueueMu.Unlock()
+		<-w.done
+		<-w.mediaDone
+		return
+	}
+	w.closed = true
 	close(w.queue)
-	<-w.done
 	close(w.mediaQueue)
+	w.enqueueMu.Unlock()
+
+	<-w.done
 	<-w.mediaDone
+}
+
+func (w *channelWorker) enqueueOutbound(ctx context.Context, msg bus.OutboundMessage) (bool, bool) {
+	w.enqueueMu.RLock()
+	defer w.enqueueMu.RUnlock()
+	if w.closed {
+		return false, true
+	}
+	select {
+	case w.queue <- msg:
+		return true, true
+	case <-ctx.Done():
+		return false, false
+	}
+}
+
+func (w *channelWorker) enqueueMedia(ctx context.Context, msg bus.OutboundMediaMessage) (bool, bool) {
+	w.enqueueMu.RLock()
+	defer w.enqueueMu.RUnlock()
+	if w.closed {
+		return false, true
+	}
+	select {
+	case w.mediaQueue <- msg:
+		return true, true
+	case <-ctx.Done():
+		return false, false
+	}
 }
 
 // newChannelWorker creates a channelWorker with a rate limiter configured
@@ -1836,7 +1871,7 @@ func dispatchLoop[M any](
 	m *Manager,
 	ch <-chan M,
 	getChannel func(M) string,
-	enqueue func(context.Context, *channelWorker, M) bool,
+	enqueue func(context.Context, *channelWorker, M) (bool, bool),
 	startMsg, stopMsg, unknownMsg, noWorkerMsg string,
 ) {
 	logger.InfoC("channels", startMsg)
@@ -1871,7 +1906,7 @@ func dispatchLoop[M any](
 			}
 
 			if wExists && w != nil {
-				if !enqueue(ctx, w, msg) {
+				if _, keepRunning := enqueue(ctx, w, msg); !keepRunning {
 					return
 				}
 			} else if exists {
@@ -1886,14 +1921,12 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		ctx, m,
 		m.bus.OutboundChan(),
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
-		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) bool {
-			select {
-			case w.queue <- msg:
+		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) (bool, bool) {
+			queued, keepRunning := w.enqueueOutbound(ctx, msg)
+			if queued {
 				m.publishOutboundQueued(outboundMessageChannel(msg), msg)
-				return true
-			case <-ctx.Done():
-				return false
 			}
+			return queued, keepRunning
 		},
 		"Outbound dispatcher started",
 		"Outbound dispatcher stopped",
@@ -1907,14 +1940,12 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		ctx, m,
 		m.bus.OutboundMediaChan(),
 		func(msg bus.OutboundMediaMessage) string { return outboundMediaChannel(msg) },
-		func(ctx context.Context, w *channelWorker, msg bus.OutboundMediaMessage) bool {
-			select {
-			case w.mediaQueue <- msg:
+		func(ctx context.Context, w *channelWorker, msg bus.OutboundMediaMessage) (bool, bool) {
+			queued, keepRunning := w.enqueueMedia(ctx, msg)
+			if queued {
 				m.publishOutboundMediaQueued(outboundMediaChannel(msg), msg)
-				return true
-			case <-ctx.Done():
-				return false
 			}
+			return queued, keepRunning
 		},
 		"Outbound media dispatcher started",
 		"Outbound media dispatcher stopped",
@@ -2245,14 +2276,30 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 			return
 		}
 		snapshot := *existing
-		if m.mux != nil {
-			m.unregisterChannelHTTPHandler(name, snapshot.channel)
-		}
-		m.removeRuntimeLocked(name)
+		delete(m.workers, name)
+		existing.worker = nil
+		existing.state = channelRuntimeStopping
 		m.mu.Unlock()
 
-		_ = snapshot.channel.Stop(context.Background())
 		stopChannelWorker(snapshot.worker)
+		_ = snapshot.channel.Stop(context.Background())
+
+		m.mu.Lock()
+		current, stillPresent := m.runtimes[name]
+		if stillPresent &&
+			current != nil &&
+			current.generation == snapshot.generation &&
+			current.channel == snapshot.channel {
+			m.upsertRuntimeLocked(name, channel, nil, channelRuntimeInactive)
+			if m.mux != nil {
+				if webhookPath(snapshot.channel) != webhookPath(channel) ||
+					healthPath(snapshot.channel) != healthPath(channel) {
+					m.unregisterChannelHTTPHandler(name, snapshot.channel)
+				}
+				m.registerChannelHTTPHandler(name, channel)
+			}
+		}
+		m.mu.Unlock()
 	}
 }
 
@@ -2348,11 +2395,10 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	msg = bus.NormalizeOutboundMessage(msg)
 
 	if wExists && w != nil {
-		select {
-		case w.queue <- msg:
+		if queued, keepRunning := w.enqueueOutbound(ctx, msg); queued {
 			m.publishOutboundQueued(channelName, msg)
 			return nil
-		case <-ctx.Done():
+		} else if !keepRunning {
 			return ctx.Err()
 		}
 	}
