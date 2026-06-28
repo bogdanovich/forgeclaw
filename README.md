@@ -33,14 +33,6 @@
 </p>
 
 <p>
-  <a href="https://picopaw.ai">
-    <img src="assets/picopaw-banner-en.webp" alt="PicoPaw AI: Your AI Desktop Buddy" width="100%">
-  </a>
-</p>
-
-<p>
-  <strong>PicoPaw AI is now live at <a href="https://picopaw.ai">picopaw.ai</a>.</strong><br>
-  Create, preview, and share playful AI companions for the PicoClaw ecosystem.
 </p>
 
 </div>
@@ -65,9 +57,6 @@ This repository is not the upstream PicoClaw project. Treat it as an experimenta
 > [!CAUTION]
 > **Security Notice**
 >
-> * **NO CRYPTO:** PicoClaw has **not** issued any official tokens or cryptocurrency. All claims on `pump.fun` or other trading platforms are **scams**.
-> * **OFFICIAL DOMAIN:** The **ONLY** official PicoClaw website is **[picoclaw.io](https://picoclaw.io)**, and company website is **[sipeed.com](https://sipeed.com)**
-> * **BEWARE:** Many lookalike `.ai/.org/.com/.net/...` domains have been registered by third parties. Only trust domains explicitly linked from this README.
 > * **NOTE:** PicoClaw is in early rapid development. There may be unresolved security issues. Do not deploy to production before v1.0.
 > * **NOTE:** PicoClaw has recently merged many PRs. Recent builds may use 10-20MB RAM. Resource optimization is planned after feature stabilization.
 
@@ -80,7 +69,6 @@ origin   git@github.com:bogdanovich/forgeclaw.git
 
 Recent upstream milestones:
 
-- 2026-06-11: PicoPaw AI launched at [picopaw.ai](https://picopaw.ai).
 - 2026-05-11: LicheeRV-Claw became available on [AliExpress](https://www.aliexpress.com/item/1005006519668532.html).
 
 ## Install
