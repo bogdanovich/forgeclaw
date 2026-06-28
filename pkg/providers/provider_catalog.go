@@ -46,6 +46,13 @@ func IsDefaultModelProvider(provider string) bool {
 	return ok && option.DefaultModelAllowed
 }
 
+// IsLocalModelProvider reports whether the provider is expected to run on the
+// local machine or private network and may legitimately use localhost defaults.
+func IsLocalModelProvider(provider string) bool {
+	option, ok := modelProviderOptionForName(provider)
+	return ok && option.Local
+}
+
 // SplitModelProviderAndID separates a legacy "provider/model" string into its
 // effective provider and canonical model ID. Unknown prefixes are treated as
 // part of the model ID and fall back to defaultProvider.

@@ -53,6 +53,7 @@ const (
 
 var stripModelPrefixProviders = map[string]struct{}{
 	"litellm":     {},
+	"nearai":      {},
 	"venice":      {},
 	"moonshot":    {},
 	"nvidia":      {},
@@ -161,7 +162,7 @@ func (p *Provider) buildRequestBody(
 		if _, present := options["native_search"]; present {
 			logger.WarnCF(
 				"provider.openai_compat",
-				"native_search option has unexpected type; ignoring",
+				"native_search option has unexpected type, ignoring",
 				map[string]any{
 					"type": fmt.Sprintf("%T", options["native_search"]),
 				},

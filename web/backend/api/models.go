@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // registerModelRoutes binds model list management endpoints to the ServeMux.
@@ -732,11 +733,14 @@ type upstreamModel struct {
 	OwnedBy string `json:"owned_by,omitempty"`
 }
 
+var modelFetchPrivateHostWhitelist []string
+
 func fetchUpstreamModels(ctx context.Context, provider, apiBase, apiKey string) ([]upstreamModel, error) {
 	apiBase = strings.TrimRight(strings.TrimSpace(apiBase), "/")
+	provider = providers.NormalizeProvider(provider)
 
 	var fetchURL string
-	switch strings.ToLower(provider) {
+	switch provider {
 	case "ollama":
 		// Strip /v1 suffix if present to get the Ollama root
 		root := apiBase
@@ -746,14 +750,39 @@ func fetchUpstreamModels(ctx context.Context, provider, apiBase, apiKey string) 
 		root = strings.TrimRight(root, "/")
 		fetchURL = root + "/api/tags"
 		return fetchOllamaModels(ctx, fetchURL)
+	case "nearai":
+		fetchURL = apiBase + "/model/list"
+		return fetchNearAIModels(ctx, fetchURL, apiKey)
 	default:
 		// OpenAI-compatible: /v1/models
 		fetchURL = apiBase + "/models"
-		return fetchOpenAICompatibleModels(ctx, fetchURL, apiKey)
+		return fetchOpenAICompatibleModelsForProvider(ctx, provider, fetchURL, apiKey)
 	}
 }
 
-func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
+func newSafeModelFetchClient(provider, fetchURL string) (*http.Client, error) {
+	whitelist, err := utils.NewPrivateHostWhitelist(modelFetchPrivateHostWhitelist)
+	if err != nil {
+		return nil, err
+	}
+	allowPrivateHosts := func() bool {
+		return providers.IsLocalModelProvider(provider)
+	}
+	if err := utils.ValidateSafeHTTPURL(fetchURL, whitelist, allowPrivateHosts); err != nil {
+		return nil, err
+	}
+	return utils.CreateSafeHTTPClient(utils.SafeHTTPClientOptions{
+		Timeout:              15 * time.Second,
+		PrivateHostWhitelist: modelFetchPrivateHostWhitelist,
+		AllowPrivateHosts:    allowPrivateHosts,
+	})
+}
+
+func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
+	client, err := newSafeModelFetchClient("nearai", fetchURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return nil, err
@@ -761,8 +790,68 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	utils.AllowConfiguredProxyFirstHop(req, client.Transport)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("nearai returned status %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Models []struct {
+			ModelID  string `json:"modelId"`
+			OwnedBy  string `json:"ownedBy"`
+			Metadata struct {
+				OwnedBy string `json:"ownedBy"`
+			} `json:"metadata"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+
+	models := make([]upstreamModel, 0, len(parsed.Models))
+	for _, m := range parsed.Models {
+		id := strings.TrimSpace(m.ModelID)
+		if id == "" {
+			continue
+		}
+		ownedBy := strings.TrimSpace(m.OwnedBy)
+		if ownedBy == "" {
+			ownedBy = strings.TrimSpace(m.Metadata.OwnedBy)
+		}
+		models = append(models, upstreamModel{ID: id, OwnedBy: ownedBy})
+	}
+	return models, nil
+}
+
+func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
+	return fetchOpenAICompatibleModelsForProvider(ctx, "openai", fetchURL, apiKey)
+}
+
+func fetchOpenAICompatibleModelsForProvider(
+	ctx context.Context,
+	provider, fetchURL, apiKey string,
+) ([]upstreamModel, error) {
+	client, err := newSafeModelFetchClient(provider, fetchURL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	utils.AllowConfiguredProxyFirstHop(req, client.Transport)
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -782,10 +871,6 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 		OwnedBy string `json:"owned_by"`
 	}
 
-	// {"data": [...]} envelope. Distinguish "envelope shape with empty list"
-	// from "object without a data key" via Data being non-nil after unmarshal:
-	// json.Unmarshal sets Data to []modelItem{} for `{"data":[]}` but leaves
-	// it as nil when "data" is absent or null.
 	var envelope struct {
 		Data []modelItem `json:"data"`
 	}
@@ -799,7 +884,6 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 		return models, nil
 	}
 
-	// Bare-array shape, including `[]`.
 	var arr []modelItem
 	if err := json.Unmarshal(body, &arr); err == nil {
 		models := make([]upstreamModel, 0, len(arr))
@@ -819,12 +903,17 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 }
 
 func fetchOllamaModels(ctx context.Context, fetchURL string) ([]upstreamModel, error) {
+	client, err := newSafeModelFetchClient("ollama", fetchURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	utils.AllowConfiguredProxyFirstHop(req, client.Transport)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
