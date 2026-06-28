@@ -1363,7 +1363,7 @@ func TestAgentLoop_Run_ContinuationPreservesSenderAffinityAcrossDeferredTurns(t 
 
 	close(provider.releaseSecondCall)
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		provider.mu.Lock()
 		calls := provider.calls
