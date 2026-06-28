@@ -762,6 +762,70 @@ func TestUnregisterChannel_DrainsDeliveryOutsideManagerLock(t *testing.T) {
 	}
 }
 
+func TestStopAll_DrainsDeliveryOutsideManagerLock(t *testing.T) {
+	m := newTestManager()
+	sendStarted := make(chan struct{})
+	proceedSend := make(chan struct{})
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			close(sendStarted)
+			<-proceedSend
+			m.mu.RLock()
+			m.mu.RUnlock()
+			return nil
+		},
+	}
+	owner := newDeliveryOwner("test", ch, "test")
+	m.channels["test"] = ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+	owner.StartDelivery(context.Background(), m)
+
+	queued, err := owner.Enqueue(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "hello",
+	}))
+	if !queued || err != nil {
+		t.Fatalf("Enqueue() queued=%v err=%v, want true nil", queued, err)
+	}
+
+	select {
+	case <-sendStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not start sending queued message")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done <- m.StopAll(stopCtx)
+	}()
+	close(proceedSend)
+
+	select {
+	case stopErr := <-done:
+		if stopErr != nil {
+			t.Fatalf("StopAll() error = %v", stopErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopAll deadlocked while draining delivery")
+	}
+
+	if got := m.deliveryOwners["test"]; got != owner {
+		t.Fatal("StopAll removed delivery owner visibility")
+	}
+	queued, err = owner.Enqueue(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "late",
+	}))
+	if queued || !errors.Is(err, errDeliveryClosed) {
+		t.Fatalf("late Enqueue() queued=%v err=%v, want false errDeliveryClosed", queued, err)
+	}
+}
+
 func TestStartAllPublishesLifecycleRuntimeEvents(t *testing.T) {
 	eventBus := runtimeevents.NewBus()
 	defer func() {
