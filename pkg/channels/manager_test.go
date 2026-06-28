@@ -352,6 +352,114 @@ func TestRegisterChannel_ReplacingActiveRuntimeStopsPreviousChannelAndWorker(t *
 	}
 }
 
+func TestUnregisterChannel_DrainsWorkerWithoutHoldingManagerLock(t *testing.T) {
+	m := newTestManager()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			close(sendStarted)
+			<-releaseSend
+			_ = m.GetStatus()
+			return nil
+		},
+	}
+	w := newChannelWorker("test", ch, "test")
+	m.channels["test"] = ch
+	m.workers["test"] = w
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    ch,
+		worker:     w,
+		state:      channelRuntimeActive,
+	}
+	go m.runWorker(ctx, "test", w)
+	go m.runMediaWorker(ctx, "test", w)
+
+	if ok, active := w.enqueueOutbound(ctx, testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "hello",
+	})); !ok || !active {
+		t.Fatalf("enqueueOutbound() = %v, %v; want true, true", ok, active)
+	}
+	<-sendStarted
+
+	unregistered := make(chan struct{})
+	go func() {
+		m.UnregisterChannel("test")
+		close(unregistered)
+	}()
+	close(releaseSend)
+
+	select {
+	case <-unregistered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UnregisterChannel deadlocked while draining an active worker")
+	}
+}
+
+func TestStopAll_DrainsWorkersWithoutHoldingManagerLock(t *testing.T) {
+	m := newTestManager()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			close(sendStarted)
+			<-releaseSend
+			_ = m.GetStatus()
+			return nil
+		},
+	}
+	w := newChannelWorker("test", ch, "test")
+	m.channels["test"] = ch
+	m.workers["test"] = w
+	m.nextRuntimeGeneration = 1
+	m.runtimes["test"] = &channelRuntime{
+		name:       "test",
+		generation: 1,
+		channel:    ch,
+		worker:     w,
+		state:      channelRuntimeActive,
+	}
+	go m.runWorker(ctx, "test", w)
+	go m.runMediaWorker(ctx, "test", w)
+
+	if ok, active := w.enqueueOutbound(ctx, testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "hello",
+	})); !ok || !active {
+		t.Fatalf("enqueueOutbound() = %v, %v; want true, true", ok, active)
+	}
+	<-sendStarted
+
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- m.StopAll(context.Background())
+	}()
+	close(releaseSend)
+
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("StopAll() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopAll deadlocked while draining active workers")
+	}
+}
+
 func TestRegisterChannel_SameInstancePreservesActiveRuntime(t *testing.T) {
 	m := newTestManager()
 

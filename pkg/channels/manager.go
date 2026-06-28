@@ -1583,54 +1583,87 @@ func (m *Manager) StartAll(ctx context.Context) error {
 
 func (m *Manager) StopAll(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	logger.InfoC("channels", "Stopping all channels")
 
+	httpServer := m.httpServer
+	m.httpServer = nil
+	m.httpListeners = nil
+
+	dispatchTask := m.dispatchTask
+	m.dispatchTask = nil
+
+	type channelStopSnapshot struct {
+		name        string
+		channel     Channel
+		channelType string
+	}
+	workers := make([]*channelWorker, 0, len(m.workers))
+	for name, w := range m.workers {
+		if w != nil {
+			workers = append(workers, w)
+		}
+		if rt := m.runtimes[name]; rt != nil {
+			rt.worker = nil
+			rt.state = channelRuntimeStopping
+		}
+		delete(m.workers, name)
+	}
+	channels := make([]channelStopSnapshot, 0, len(m.channels))
+	for name, channel := range m.channels {
+		m.setRuntimeStateLocked(name, channelRuntimeStopping)
+		channels = append(channels, channelStopSnapshot{
+			name:        name,
+			channel:     channel,
+			channelType: channelTypeForEvent(m, name),
+		})
+	}
+	m.mu.Unlock()
+
 	// Shutdown shared HTTP server first
-	if m.httpServer != nil {
+	if httpServer != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		if err := m.httpServer.Shutdown(shutdownCtx); err != nil {
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			logger.ErrorCF("channels", "Shared HTTP server shutdown error", map[string]any{
 				"error": err.Error(),
 			})
 		}
-		m.httpServer = nil
-		m.httpListeners = nil
 	}
 
 	// Cancel dispatcher
-	if m.dispatchTask != nil {
-		m.dispatchTask.cancel()
-		m.dispatchTask = nil
+	if dispatchTask != nil {
+		dispatchTask.cancel()
 	}
 
-	for _, w := range m.workers {
+	for _, w := range workers {
 		stopChannelWorker(w)
 	}
 
 	// Stop all channels
-	for name, channel := range m.channels {
-		m.setRuntimeStateLocked(name, channelRuntimeStopping)
+	for _, snapshot := range channels {
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
+			"channel": snapshot.name,
 		})
-		if err := channel.Stop(ctx); err != nil {
+		if err := snapshot.channel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": name,
+				"channel": snapshot.name,
 				"error":   err.Error(),
 			})
 			continue
 		}
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStopped,
-			name,
-			runtimeevents.Scope{Channel: name},
+			snapshot.name,
+			runtimeevents.Scope{Channel: snapshot.name},
 			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: channelTypeForEvent(m, name)},
+			ChannelLifecyclePayload{Type: snapshot.channelType},
 		)
-		m.setRuntimeStateLocked(name, channelRuntimeInactive)
+		m.mu.Lock()
+		if rt := m.runtimes[snapshot.name]; rt != nil && rt.channel == snapshot.channel {
+			rt.state = channelRuntimeInactive
+		}
+		m.mu.Unlock()
 	}
 
 	logger.InfoC("channels", "All channels stopped")
@@ -2430,14 +2463,41 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
+	snapshot, hasRuntime := m.runtimeSnapshotLocked(name)
+	channel := m.channels[name]
+	worker := snapshot.worker
+	if hasRuntime {
+		channel = snapshot.channel
+		if rt := m.runtimes[name]; rt != nil &&
+			rt.generation == snapshot.generation &&
+			rt.channel == snapshot.channel {
+			delete(m.workers, name)
+			rt.worker = nil
+			rt.state = channelRuntimeStopping
+		}
+	}
+	if channel != nil && m.mux != nil {
+		m.unregisterChannelHTTPHandler(name, channel)
+	}
+	m.mu.Unlock()
+
+	stopChannelWorker(worker)
+
+	m.mu.Lock()
 	defer m.mu.Unlock()
-	if ch, ok := m.channels[name]; ok && m.mux != nil {
-		m.unregisterChannelHTTPHandler(name, ch)
+	if hasRuntime {
+		current, stillPresent := m.runtimes[name]
+		if stillPresent &&
+			current != nil &&
+			current.generation == snapshot.generation &&
+			current.channel == snapshot.channel {
+			m.removeRuntimeLocked(name)
+		}
+		return
 	}
-	if w, ok := m.workers[name]; ok && w != nil {
-		stopChannelWorker(w)
+	if current := m.channels[name]; current == channel {
+		m.removeRuntimeLocked(name)
 	}
-	m.removeRuntimeLocked(name)
 }
 
 // SendMessage sends an outbound message synchronously through the channel
