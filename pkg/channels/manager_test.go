@@ -215,6 +215,7 @@ func newTestManager() *Manager {
 	return &Manager{
 		channels:               make(map[string]Channel),
 		workers:                make(map[string]*channelWorker),
+		deliveryOwners:         make(map[string]*deliveryOwner),
 		bus:                    bus.NewMessageBus(),
 		channelHashes:          make(map[string]string),
 		channelRestartRequired: make(map[string]string),
@@ -522,6 +523,37 @@ func TestStartAll_PartialFailure_StartsSuccessfulWorkers(t *testing.T) {
 	defer stopCancel()
 	if err := m.StopAll(stopCtx); err != nil {
 		t.Fatalf("StopAll() error = %v", err)
+	}
+}
+
+func TestStartAll_CreatesDeliveryOwnerForStartedChannel(t *testing.T) {
+	m := newTestManager()
+	ch := &mockChannel{}
+	m.channels["test"] = ch
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := m.StopAll(stopCtx); err != nil {
+			t.Errorf("StopAll() error = %v", err)
+		}
+	})
+
+	owner := m.deliveryOwners["test"]
+	if owner == nil {
+		t.Fatal("expected delivery owner for started channel")
+	}
+	if owner.ch != ch {
+		t.Fatal("delivery owner channel does not match started channel")
+	}
+	if owner.Worker() == nil {
+		t.Fatal("delivery owner missing worker")
+	}
+	if m.workers["test"] != owner.Worker() {
+		t.Fatal("worker map and delivery owner point at different workers")
 	}
 }
 
