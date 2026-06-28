@@ -48,12 +48,11 @@ needs one clear owner before hot reload can be made correct.
 
 ## Current Practical Policy
 
-Until a stable per-channel delivery owner exists, channel config changes should
-be treated conservatively:
+Channel config changes are currently treated conservatively:
 
 - adding a new channel may be supported live
-- removing a channel should be conservative until drain/shutdown is fixed
-- changing an existing channel's config should prefer restart-required behavior
+- removing a channel drains accepted outbound delivery before stopping transport
+- changing an existing channel's config uses restart-required behavior
   over in-process replacement
 
 This is intentionally less ambitious than hot replacement. It matches the
@@ -63,6 +62,25 @@ can be swapped safely under active delivery.
 Runtime reconnects are a separate concern. Reconnecting the same channel
 instance or transport is usually safer than replacing the logical channel
 worker. That path should be improved before full config hot-swap.
+
+## Implementation Status
+
+This track has already landed the conservative baseline:
+
+- same-name active channel config changes are marked restart-required instead
+  of replacing the running channel
+- dispatch resolves a delivery owner, and closed owners report explicit delivery
+  failures instead of silently dropping consumed bus messages
+- `StopAll` and `UnregisterChannel` close and drain delivery outside manager
+  locks
+- reload removal drains accepted delivery through `UnregisterChannel` before
+  stopping the removed channel transport
+- synchronous delivery helpers reject closed owners instead of bypassing the
+  delivery owner during unregister
+
+That means the original Phase 1 and Phase 2 safety work is complete enough for
+the current restart-required policy. Further lifecycle work should start from a
+specific unmet runtime need, not from a general desire to refactor.
 
 ## Target Invariants
 
@@ -193,6 +211,8 @@ This is not the recommended next step.
 
 ### Phase 1: Make Reload Conservative
 
+Status: implemented.
+
 Behavior:
 
 - detect same-name channel config changes
@@ -211,6 +231,8 @@ Acceptance criteria:
 
 ### Phase 2: Fix Shutdown/Unregister Draining
 
+Status: implemented for the current restart-required policy.
+
 Behavior:
 
 - avoid holding `m.mu` while waiting for worker goroutines
@@ -220,12 +242,14 @@ Acceptance criteria:
 
 - no worker drain happens while holding manager locks needed by send paths
 - tests cover in-flight send callbacks during `StopAll` and `UnregisterChannel`
+- reload removal drains accepted delivery before stopping the removed channel
 
 ### Phase 3: Introduce Delivery Owner Only If Needed
 
 Trigger:
 
 - only start this if live same-name channel replacement is a real requirement
+- do not start this only to make the code look more architectural
 
 Behavior:
 
@@ -245,6 +269,7 @@ Trigger:
 
 - only start this if reconnect/retry behavior cannot be kept inside channel
   implementations or the delivery owner
+- prefer channel-local reconnects before introducing manager-level supervision
 
 Behavior:
 
@@ -267,9 +292,11 @@ Acceptance criteria:
 
 ## Decision
 
-The next implementation PR should be Phase 1 only: make same-name channel config
-changes restart-required instead of trying to hot-replace active channels.
+The next default action is to stop the channel lifecycle refactor track and keep
+the current conservative policy.
 
-That gives an immediate safety improvement with low complexity. If later usage
-shows that seamless channel config replacement matters, build Option B with a
-stable per-channel delivery owner before attempting hot replacement.
+If later usage shows that seamless channel config replacement matters, build
+Option B with a stable per-channel delivery owner before attempting hot
+replacement. If runtime reconnect reliability becomes the concrete issue,
+prefer channel-local reconnect behavior first and only introduce Option C-style
+supervision if local reconnects cannot model the failure mode.
