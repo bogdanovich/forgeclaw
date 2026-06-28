@@ -834,7 +834,10 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 	return fetchOpenAICompatibleModelsForProvider(ctx, "openai", fetchURL, apiKey)
 }
 
-func fetchOpenAICompatibleModelsForProvider(ctx context.Context, provider, fetchURL, apiKey string) ([]upstreamModel, error) {
+func fetchOpenAICompatibleModelsForProvider(
+	ctx context.Context,
+	provider, fetchURL, apiKey string,
+) ([]upstreamModel, error) {
 	client, err := newSafeModelFetchClient(provider, fetchURL)
 	if err != nil {
 		return nil, err
