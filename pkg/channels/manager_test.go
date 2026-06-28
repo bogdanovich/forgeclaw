@@ -431,6 +431,258 @@ func TestReload_ChangedInactiveChannelPreservedWhenReplacementInitFails(t *testi
 	}
 }
 
+func TestReload_RemovedChannelUnregisteredBeforeReturn(t *testing.T) {
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true}`),
+	}
+	newCfg := config.DefaultConfig()
+
+	stopped := make(chan struct{}, 1)
+	ch := &mockChannel{
+		stopFn: func(context.Context) error {
+			stopped <- struct{}{}
+			return nil
+		},
+	}
+	ch.SetRunning(true)
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = ch
+	m.channelHashes = toChannelHashes(oldCfg)
+	m.channelRestartRequired["test"] = "pending-hash"
+
+	if err := m.Reload(t.Context(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	if _, ok := m.channels["test"]; ok {
+		t.Fatal("removed channel still registered after Reload returned")
+	}
+	if _, ok := m.workers["test"]; ok {
+		t.Fatal("removed channel worker still registered after Reload returned")
+	}
+	if _, ok := m.channelRestartRequired["test"]; ok {
+		t.Fatal("removed channel restart-required flag still registered after Reload returned")
+	}
+
+	err := m.SendMessage(t.Context(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "should fail",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "channel test not found") {
+		t.Fatalf("SendMessage() error = %v, want channel not found", err)
+	}
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("removed channel was not stopped")
+	}
+}
+
+func TestReload_RemovedChannelStopDoesNotBlockManagerLock(t *testing.T) {
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true}`),
+	}
+	newCfg := config.DefaultConfig()
+
+	stopStarted := make(chan struct{})
+	releaseStop := make(chan struct{})
+	ch := &mockChannel{
+		stopFn: func(context.Context) error {
+			close(stopStarted)
+			<-releaseStop
+			return nil
+		},
+	}
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = ch
+	m.channelHashes = toChannelHashes(oldCfg)
+
+	if err := m.Reload(t.Context(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	defer close(releaseStop)
+
+	select {
+	case <-stopStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("removed channel stop did not start")
+	}
+
+	statusDone := make(chan struct{})
+	go func() {
+		_ = m.GetStatus()
+		close(statusDone)
+	}()
+	select {
+	case <-statusDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("manager lock was blocked by removed channel stop")
+	}
+}
+
+func TestReload_RemovedChannelDrainsQueuedWorkBeforeStop(t *testing.T) {
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true}`),
+	}
+	newCfg := config.DefaultConfig()
+
+	var orderMu sync.Mutex
+	var order []string
+	stopped := make(chan struct{})
+	ch := &mockChannel{
+		sendFn: func(context.Context, bus.OutboundMessage) error {
+			orderMu.Lock()
+			order = append(order, "send")
+			orderMu.Unlock()
+			return nil
+		},
+		stopFn: func(context.Context) error {
+			orderMu.Lock()
+			order = append(order, "stop")
+			orderMu.Unlock()
+			close(stopped)
+			return nil
+		},
+	}
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = ch
+	w := newChannelWorker("test", ch, "test")
+	m.workers["test"] = w
+	m.channelHashes = toChannelHashes(oldCfg)
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+	go m.runWorker(workerCtx, "test", w)
+	go m.runMediaWorker(workerCtx, "test", w)
+
+	w.queue <- testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "queued before remove",
+	})
+
+	if err := m.Reload(t.Context(), newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("removed channel was not stopped")
+	}
+
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	if len(order) != 2 || order[0] != "send" || order[1] != "stop" {
+		t.Fatalf("order = %v, want [send stop]", order)
+	}
+}
+
+func TestReload_RemovedChannelStopUsesDetachedContext(t *testing.T) {
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["test"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true}`),
+	}
+	newCfg := config.DefaultConfig()
+
+	stopped := make(chan error, 1)
+	ch := &mockChannel{
+		stopFn: func(ctx context.Context) error {
+			stopped <- ctx.Err()
+			return nil
+		},
+	}
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["test"] = ch
+	m.channelHashes = toChannelHashes(oldCfg)
+
+	reloadCtx, cancelReload := context.WithCancel(context.Background())
+	if err := m.Reload(reloadCtx, newCfg); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	cancelReload()
+
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop context error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("removed channel was not stopped")
+	}
+}
+
+func TestReload_RemovedChannelRestoredWhenLaterReloadStepFails(t *testing.T) {
+	const channelType = "reload-removed-rollback-test"
+
+	RegisterFactory(channelType, func(string, string, *config.Config, *bus.MessageBus) (Channel, error) {
+		return nil, errors.New("replacement init failed")
+	})
+
+	oldCfg := config.DefaultConfig()
+	oldCfg.Channels["removed"] = &config.Channel{
+		Enabled:  true,
+		Settings: config.RawNode(`{"enabled":true}`),
+	}
+	oldCfg.Channels["changed"] = &config.Channel{
+		Enabled:  true,
+		Type:     channelType,
+		Settings: config.RawNode(`{"enabled":true,"key":"old-value"}`),
+	}
+	newCfg := config.DefaultConfig()
+	newCfg.Channels["changed"] = &config.Channel{
+		Enabled:  true,
+		Type:     channelType,
+		Settings: config.RawNode(`{"enabled":true,"key":"new-value"}`),
+	}
+
+	removedChannel := &mockChannel{}
+	changedChannel := &mockChannel{}
+
+	m := newTestManager()
+	m.config = oldCfg
+	m.channels["removed"] = removedChannel
+	m.channels["changed"] = changedChannel
+	m.channelHashes = toChannelHashes(oldCfg)
+	oldRemovedHash := m.channelHashes["removed"]
+	oldChangedHash := m.channelHashes["changed"]
+
+	err := m.Reload(t.Context(), newCfg)
+	if err == nil || !strings.Contains(err.Error(), "replacement channel changed was not initialized") {
+		t.Fatalf("Reload() error = %v, want replacement init failure", err)
+	}
+	if got := m.channels["removed"]; got != removedChannel {
+		t.Fatal("removed channel was not restored after failed reload")
+	}
+	if got := m.channels["changed"]; got != changedChannel {
+		t.Fatal("changed channel was not preserved after failed reload")
+	}
+	if got := m.channelHashes["removed"]; got != oldRemovedHash {
+		t.Fatalf("removed channel hash = %q, want old hash %q", got, oldRemovedHash)
+	}
+	if got := m.channelHashes["changed"]; got != oldChangedHash {
+		t.Fatalf("changed channel hash = %q, want old hash %q", got, oldChangedHash)
+	}
+	if m.config != oldCfg {
+		t.Fatal("manager config was not restored after failed reload")
+	}
+}
+
 func TestStartAll_AllChannelsFail_ReturnsJoinedError(t *testing.T) {
 	m := newTestManager()
 	errA := errors.New("channel-a start failed")

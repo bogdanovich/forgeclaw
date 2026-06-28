@@ -76,12 +76,14 @@ var channelRateConfig = map[string]float64{
 }
 
 type channelWorker struct {
+	mu         sync.Mutex
 	ch         Channel
 	queue      chan bus.OutboundMessage
 	mediaQueue chan bus.OutboundMediaMessage
 	done       chan struct{}
 	mediaDone  chan struct{}
 	limiter    *rate.Limiter
+	closed     bool
 }
 
 type Manager struct {
@@ -166,6 +168,14 @@ type toolFeedbackAnimatorConfigurer interface {
 
 type asyncTask struct {
 	cancel context.CancelFunc
+}
+
+type removedChannelState struct {
+	name               string
+	channel            Channel
+	worker             *channelWorker
+	restartHash        string
+	hadRestartRequired bool
 }
 
 type deliveryCleanupOptions struct {
@@ -1576,6 +1586,52 @@ func newChannelWorker(name string, ch Channel, channelType string) *channelWorke
 	}
 }
 
+func (w *channelWorker) enqueue(ctx context.Context, msg bus.OutboundMessage) (queued bool, keepRunning bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return false, true
+	}
+	select {
+	case w.queue <- msg:
+		return true, true
+	case <-ctx.Done():
+		return false, false
+	}
+}
+
+func (w *channelWorker) enqueueMedia(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) (queued bool, keepRunning bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return false, true
+	}
+	select {
+	case w.mediaQueue <- msg:
+		return true, true
+	case <-ctx.Done():
+		return false, false
+	}
+}
+
+func (w *channelWorker) closeQueuesAndWait() {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	close(w.queue)
+	close(w.mediaQueue)
+	w.mu.Unlock()
+
+	<-w.done
+	<-w.mediaDone
+}
+
 // runWorker processes outbound messages for a single channel.
 // Message processing follows this order:
 //  1. SplitByMarker (if enabled in config) - LLM semantic marker-based splitting
@@ -1802,13 +1858,11 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		m.bus.OutboundChan(),
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) bool {
-			select {
-			case w.queue <- msg:
+			queued, keepRunning := w.enqueue(ctx, msg)
+			if queued {
 				m.publishOutboundQueued(outboundMessageChannel(msg), msg)
-				return true
-			case <-ctx.Done():
-				return false
 			}
+			return keepRunning
 		},
 		"Outbound dispatcher started",
 		"Outbound dispatcher stopped",
@@ -1823,13 +1877,11 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		m.bus.OutboundMediaChan(),
 		func(msg bus.OutboundMediaMessage) string { return outboundMediaChannel(msg) },
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMediaMessage) bool {
-			select {
-			case w.mediaQueue <- msg:
+			queued, keepRunning := w.enqueueMedia(ctx, msg)
+			if queued {
 				m.publishOutboundMediaQueued(outboundMediaChannel(msg), msg)
-				return true
-			case <-ctx.Done():
-				return false
 			}
+			return keepRunning
 		},
 		"Outbound media dispatcher started",
 		"Outbound media dispatcher stopped",
@@ -2082,21 +2134,14 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	}
 
 	deferFuncs := make([]func(), 0, len(removed)+len(added))
+	removedStates := make([]removedChannelState, 0, len(removed))
 	for _, name := range removed {
-		// Stop all channels
-		channel := m.channels[name]
-		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
-		})
-		if err := channel.Stop(ctx); err != nil {
-			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
+		removedState, ok := m.removeChannelVisibilityLocked(name)
+		if !ok {
+			delete(m.channelRestartRequired, name)
+			continue
 		}
-		deferFuncs = append(deferFuncs, func() {
-			m.UnregisterChannel(name)
-		})
+		removedStates = append(removedStates, removedState)
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	m.dispatchTask = &asyncTask{cancel: cancel}
@@ -2104,6 +2149,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
 		m.config = oldConfig
+		m.restoreRemovedChannelVisibilityLocked(removedStates)
 		cancel()
 		return err
 	}
@@ -2111,6 +2157,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("initChannels error: %v", err))
 		m.config = oldConfig
+		m.restoreRemovedChannelVisibilityLocked(removedStates)
 		cancel()
 		return err
 	}
@@ -2122,6 +2169,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 				"error":   err.Error(),
 			})
 			m.config = oldConfig
+			m.restoreRemovedChannelVisibilityLocked(removedStates)
 			cancel()
 			return err
 		}
@@ -2176,6 +2224,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 
 	// Commit hashes only on full success.
 	m.channelHashes = list
+	m.stopRemovedChannelsAsync(removedStates)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -2204,18 +2253,77 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if ch, ok := m.channels[name]; ok && m.mux != nil {
-		m.unregisterChannelHTTPHandler(name, ch)
+	removedState, ok := m.removeChannelVisibilityLocked(name)
+	m.mu.Unlock()
+	if ok {
+		m.stopRemovedChannel(context.Background(), removedState)
 	}
-	if w, ok := m.workers[name]; ok && w != nil {
-		close(w.queue)
-		<-w.done
-		close(w.mediaQueue)
-		<-w.mediaDone
+}
+
+func (m *Manager) removeChannelVisibilityLocked(name string) (removedChannelState, bool) {
+	ch, ok := m.channels[name]
+	if !ok {
+		return removedChannelState{}, false
+	}
+	removedState := removedChannelState{
+		name:    name,
+		channel: ch,
+	}
+	if w, ok := m.workers[name]; ok {
+		removedState.worker = w
+	}
+	if restartHash, ok := m.channelRestartRequired[name]; ok {
+		removedState.restartHash = restartHash
+		removedState.hadRestartRequired = true
+	}
+	if m.mux != nil {
+		m.unregisterChannelHTTPHandler(name, ch)
 	}
 	delete(m.workers, name)
 	delete(m.channels, name)
+	delete(m.channelRestartRequired, name)
+	return removedState, true
+}
+
+func (m *Manager) restoreRemovedChannelVisibilityLocked(removedStates []removedChannelState) {
+	for _, removedState := range removedStates {
+		m.channels[removedState.name] = removedState.channel
+		if removedState.worker != nil {
+			m.workers[removedState.name] = removedState.worker
+		}
+		if removedState.hadRestartRequired {
+			m.channelRestartRequired[removedState.name] = removedState.restartHash
+		}
+		if m.mux != nil {
+			m.registerChannelHTTPHandler(removedState.name, removedState.channel)
+		}
+	}
+}
+
+func (m *Manager) stopRemovedChannelsAsync(removedStates []removedChannelState) {
+	if len(removedStates) == 0 {
+		return
+	}
+	go func() {
+		for _, removedState := range removedStates {
+			m.stopRemovedChannel(context.Background(), removedState)
+		}
+	}()
+}
+
+func (m *Manager) stopRemovedChannel(ctx context.Context, removedState removedChannelState) {
+	if w := removedState.worker; w != nil {
+		w.closeQueuesAndWait()
+	}
+	logger.InfoCF("channels", "Stopping channel", map[string]any{
+		"channel": removedState.name,
+	})
+	if err := removedState.channel.Stop(ctx); err != nil {
+		logger.ErrorCF("channels", "Error stopping channel", map[string]any{
+			"channel": removedState.name,
+			"error":   err.Error(),
+		})
+	}
 }
 
 // SendMessage sends an outbound message synchronously through the channel
