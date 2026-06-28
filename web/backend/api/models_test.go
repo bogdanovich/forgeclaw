@@ -37,6 +37,16 @@ func resetModelProbeHooks(t *testing.T) {
 	})
 }
 
+func allowPrivateModelFetchHostsForTests(t *testing.T) {
+	t.Helper()
+
+	orig := modelFetchPrivateHostWhitelist
+	modelFetchPrivateHostWhitelist = []string{"127.0.0.0/8", "::1/128"}
+	t.Cleanup(func() {
+		modelFetchPrivateHostWhitelist = orig
+	})
+}
+
 func addModelAndLoadLatest(t *testing.T, configPath string, body string) *config.ModelConfig {
 	t.Helper()
 
@@ -2376,6 +2386,8 @@ func TestMaskAPIKey(t *testing.T) {
 }
 
 func TestFetchOpenAICompatibleModels_ResponseShapes(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	tests := []struct {
 		name      string
 		response  string
@@ -2440,6 +2452,8 @@ func TestFetchOpenAICompatibleModels_ResponseShapes(t *testing.T) {
 }
 
 func TestFetchOpenAICompatibleModels_EmptyEnvelopeReturnsEmptySlice(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"data":[]}`)
@@ -2456,6 +2470,8 @@ func TestFetchOpenAICompatibleModels_EmptyEnvelopeReturnsEmptySlice(t *testing.T
 }
 
 func TestFetchOpenAICompatibleModels_EmptyBareArrayReturnsEmptySlice(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `[]`)
@@ -2472,6 +2488,8 @@ func TestFetchOpenAICompatibleModels_EmptyBareArrayReturnsEmptySlice(t *testing.
 }
 
 func TestFetchOpenAICompatibleModels_UnrecognizedShape(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"models":[],"error":"unsupported"}`)
@@ -2488,6 +2506,8 @@ func TestFetchOpenAICompatibleModels_UnrecognizedShape(t *testing.T) {
 }
 
 func TestFetchOpenAICompatibleModels_FiltersEmptyIDs(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"data":[`+
@@ -2513,6 +2533,8 @@ func TestFetchOpenAICompatibleModels_FiltersEmptyIDs(t *testing.T) {
 }
 
 func TestFetchOpenAICompatibleModels_SetsAuthorizationHeader(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -2530,6 +2552,8 @@ func TestFetchOpenAICompatibleModels_SetsAuthorizationHeader(t *testing.T) {
 }
 
 func TestFetchOpenAICompatibleModels_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -2547,6 +2571,8 @@ func TestFetchOpenAICompatibleModels_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
 }
 
 func TestHandleFetchModels_SiliconFlowUsesOpenAICompatibleEndpoint(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	configPath, cleanup := setupOAuthTestEnv(t)
 	defer cleanup()
 
@@ -2600,6 +2626,8 @@ func TestHandleFetchModels_SiliconFlowUsesOpenAICompatibleEndpoint(t *testing.T)
 }
 
 func TestHandleFetchModels_NearAIUsesPublicModelListEndpoint(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	configPath, cleanup := setupOAuthTestEnv(t)
 	defer cleanup()
 
@@ -2658,7 +2686,34 @@ func TestHandleFetchModels_NearAIUsesPublicModelListEndpoint(t *testing.T) {
 	}
 }
 
+func TestHandleFetchModels_NearAIRejectsPrivateAPIBase(t *testing.T) {
+	configPath, cleanup := setupOAuthTestEnv(t)
+	defer cleanup()
+
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/models/fetch", bytes.NewBufferString(`{
+		"provider":"nearai",
+		"api_key":"nearai-key",
+		"api_base":"http://127.0.0.1:18080"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "private or local network hosts") {
+		t.Fatalf("body = %q, want private host rejection", rec.Body.String())
+	}
+}
+
 func TestHandleFetchModels_ModelIndexUsesStoredKey(t *testing.T) {
+	allowPrivateModelFetchHostsForTests(t)
+
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")

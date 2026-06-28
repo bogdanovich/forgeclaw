@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // registerModelRoutes binds model list management endpoints to the ServeMux.
@@ -732,6 +733,8 @@ type upstreamModel struct {
 	OwnedBy string `json:"owned_by,omitempty"`
 }
 
+var modelFetchPrivateHostWhitelist []string
+
 func fetchUpstreamModels(ctx context.Context, provider, apiBase, apiKey string) ([]upstreamModel, error) {
 	apiBase = strings.TrimRight(strings.TrimSpace(apiBase), "/")
 	provider = providers.NormalizeProvider(provider)
@@ -757,7 +760,25 @@ func fetchUpstreamModels(ctx context.Context, provider, apiBase, apiKey string) 
 	}
 }
 
+func newSafeModelFetchClient(fetchURL string) (*http.Client, error) {
+	whitelist, err := utils.NewPrivateHostWhitelist(modelFetchPrivateHostWhitelist)
+	if err != nil {
+		return nil, err
+	}
+	if err := utils.ValidateSafeHTTPURL(fetchURL, whitelist, nil); err != nil {
+		return nil, err
+	}
+	return utils.CreateSafeHTTPClient(utils.SafeHTTPClientOptions{
+		Timeout:              15 * time.Second,
+		PrivateHostWhitelist: modelFetchPrivateHostWhitelist,
+	})
+}
+
 func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
+	client, err := newSafeModelFetchClient(fetchURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return nil, err
@@ -766,7 +787,7 @@ func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstream
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -805,6 +826,10 @@ func fetchNearAIModels(ctx context.Context, fetchURL, apiKey string) ([]upstream
 }
 
 func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) ([]upstreamModel, error) {
+	client, err := newSafeModelFetchClient(fetchURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return nil, err
@@ -813,7 +838,7 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -870,12 +895,16 @@ func fetchOpenAICompatibleModels(ctx context.Context, fetchURL, apiKey string) (
 }
 
 func fetchOllamaModels(ctx context.Context, fetchURL string) ([]upstreamModel, error) {
+	client, err := newSafeModelFetchClient(fetchURL)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
