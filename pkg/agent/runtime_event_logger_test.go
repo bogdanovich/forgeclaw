@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -322,7 +323,7 @@ func TestWaitForActiveRequestsHonorsContextCancellation(t *testing.T) {
 
 func TestReloadProviderAndConfigReturnsCanceledErrorWhenRegistryCreationPanics(t *testing.T) {
 	cfg := config.DefaultConfig()
-	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.Workspace = tempDirWithRetryCleanup(t)
 
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
 	defer al.Close()
@@ -334,6 +335,32 @@ func TestReloadProviderAndConfigReturnsCanceledErrorWhenRegistryCreationPanics(t
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReloadProviderAndConfig() error = %v, want context canceled", err)
 	}
+}
+
+func tempDirWithRetryCleanup(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "picoclaw-reload-cancel-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(2 * time.Second)
+		var lastErr error
+		for {
+			lastErr = os.RemoveAll(dir)
+			if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+				return
+			} else if statErr != nil {
+				lastErr = statErr
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("failed to remove temp dir %s: %v", dir, lastErr)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	return dir
 }
 
 type panicProviderForReloadTest struct{}

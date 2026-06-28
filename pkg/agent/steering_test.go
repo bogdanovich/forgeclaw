@@ -716,18 +716,26 @@ func (p *stagedContinuationProvider) GetDefaultModel() string {
 	return "staged-continuation-mock"
 }
 
-type saveFailOnNthSessionStore struct {
+type saveFailOnContentSessionStore struct {
 	session.SessionStore
-	failAt int
-	calls  int
-	err    error
+	mu      sync.Mutex
+	content string
+	err     error
+	failed  bool
 }
 
-func (s *saveFailOnNthSessionStore) Save(sessionKey string) error {
-	s.calls++
-	if s.failAt > 0 && s.calls == s.failAt {
-		return s.err
+func (s *saveFailOnContentSessionStore) Save(sessionKey string) error {
+	s.mu.Lock()
+	if !s.failed {
+		for _, msg := range s.SessionStore.GetHistory(sessionKey) {
+			if strings.Contains(msg.Content, s.content) {
+				s.failed = true
+				s.mu.Unlock()
+				return s.err
+			}
+		}
 	}
+	s.mu.Unlock()
 	return s.SessionStore.Save(sessionKey)
 }
 
@@ -1492,9 +1500,9 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 	if agent == nil {
 		t.Fatal("expected default agent")
 	}
-	agent.Sessions = &saveFailOnNthSessionStore{
+	agent.Sessions = &saveFailOnContentSessionStore{
 		SessionStore: session.NewSessionManager(""),
-		failAt:       2,
+		content:      "continued response",
 		err:          errors.New("session save failed on continuation"),
 	}
 

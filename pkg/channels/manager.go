@@ -771,14 +771,6 @@ func (m *Manager) installDeliveryOwnerLocked(
 	return owner
 }
 
-func (m *Manager) closeDeliveryLocked(name string, w *channelWorker) {
-	if owner := m.deliveryOwnerLocked(name); owner != nil {
-		owner.CloseDeliveryAndWait()
-		return
-	}
-	closeWorkerAndWait(w)
-}
-
 func closeWorkerAndWait(w *channelWorker) {
 	if w == nil {
 		return
@@ -1529,53 +1521,84 @@ func (m *Manager) StartAll(ctx context.Context) error {
 }
 
 func (m *Manager) StopAll(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	logger.InfoC("channels", "Stopping all channels")
-
-	// Shutdown shared HTTP server first
-	if m.httpServer != nil {
-		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		if err := m.httpServer.Shutdown(shutdownCtx); err != nil {
-			logger.ErrorCF("channels", "Shared HTTP server shutdown error", map[string]any{
-				"error": err.Error(),
-			})
-		}
-		m.httpServer = nil
-		m.httpListeners = nil
+	type deliveryCloseTarget struct {
+		owner  *deliveryOwner
+		worker *channelWorker
+	}
+	type channelStopTarget struct {
+		name        string
+		channel     Channel
+		channelType string
 	}
 
-	// Cancel dispatcher
+	m.mu.Lock()
+	httpServer := m.httpServer
+	m.httpServer = nil
+	m.httpListeners = nil
+
 	if m.dispatchTask != nil {
 		m.dispatchTask.cancel()
 		m.dispatchTask = nil
 	}
 
-	// Close delivery queues and wait for accepted work to drain.
+	deliveries := make([]deliveryCloseTarget, 0, len(m.workers))
 	for name, w := range m.workers {
-		m.closeDeliveryLocked(name, w)
+		deliveries = append(deliveries, deliveryCloseTarget{
+			owner:  m.deliveryOwners[name],
+			worker: w,
+		})
+	}
+
+	channels := make([]channelStopTarget, 0, len(m.channels))
+	for name, channel := range m.channels {
+		channels = append(channels, channelStopTarget{
+			name:        name,
+			channel:     channel,
+			channelType: channelTypeForEvent(m, name),
+		})
+	}
+	m.mu.Unlock()
+
+	logger.InfoC("channels", "Stopping all channels")
+
+	// Shutdown shared HTTP server first
+	if httpServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.ErrorCF("channels", "Shared HTTP server shutdown error", map[string]any{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	// Close delivery queues and wait for accepted work to drain.
+	for _, delivery := range deliveries {
+		if delivery.owner != nil {
+			delivery.owner.CloseDeliveryAndWait()
+			continue
+		}
+		closeWorkerAndWait(delivery.worker)
 	}
 
 	// Stop all channels
-	for name, channel := range m.channels {
+	for _, target := range channels {
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
+			"channel": target.name,
 		})
-		if err := channel.Stop(ctx); err != nil {
+		if err := target.channel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": name,
+				"channel": target.name,
 				"error":   err.Error(),
 			})
 			continue
 		}
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStopped,
-			name,
-			runtimeevents.Scope{Channel: name},
+			target.name,
+			runtimeevents.Scope{Channel: target.name},
 			runtimeevents.SeverityInfo,
-			ChannelLifecyclePayload{Type: channelTypeForEvent(m, name)},
+			ChannelLifecyclePayload{Type: target.channelType},
 		)
 	}
 
