@@ -753,12 +753,47 @@ func TestUnregisterChannel_DrainsDeliveryOutsideManagerLock(t *testing.T) {
 		defer close(done)
 		m.UnregisterChannel("test")
 	}()
+
+	waitForDeliveryOwnerClosed(t, owner)
+	m.mu.RLock()
+	visibleOwner := m.deliveryOwners["test"]
+	visibleChannel := m.channels["test"]
+	m.mu.RUnlock()
+	if visibleOwner != owner {
+		t.Fatal("UnregisterChannel removed delivery owner before drain completed")
+	}
+	if visibleChannel != ch {
+		t.Fatal("UnregisterChannel removed channel before drain completed")
+	}
+	err = m.SendMessage(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-2",
+		Content: "late direct",
+	}))
+	if !errors.Is(err, errDeliveryClosed) {
+		t.Fatalf("SendMessage() during unregister err=%v, want errDeliveryClosed", err)
+	}
+
 	close(proceedSend)
 
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("UnregisterChannel deadlocked while draining delivery")
+	}
+
+	m.mu.RLock()
+	_, ownerExists := m.deliveryOwners["test"]
+	_, workerExists := m.workers["test"]
+	_, channelExists := m.channels["test"]
+	m.mu.RUnlock()
+	if ownerExists || workerExists || channelExists {
+		t.Fatalf(
+			"UnregisterChannel left maps populated after drain: owner=%v worker=%v channel=%v",
+			ownerExists,
+			workerExists,
+			channelExists,
+		)
 	}
 }
 
@@ -823,6 +858,23 @@ func TestStopAll_DrainsDeliveryOutsideManagerLock(t *testing.T) {
 	}))
 	if queued || !errors.Is(err, errDeliveryClosed) {
 		t.Fatalf("late Enqueue() queued=%v err=%v, want false errDeliveryClosed", queued, err)
+	}
+}
+
+func waitForDeliveryOwnerClosed(t *testing.T, owner *deliveryOwner) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		owner.mu.Lock()
+		closed := owner.closed
+		owner.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("delivery owner was not closed")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1206,6 +1258,34 @@ func TestSendMedia_UnsupportedChannelReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not support media sending") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendMedia_ClosedDeliveryOwnerReturnsError(t *testing.T) {
+	m := newTestManager()
+	var callCount int
+	ch := &mockMediaChannel{
+		sendMediaFn: func(_ context.Context, _ bus.OutboundMediaMessage) ([]string, error) {
+			callCount++
+			return nil, nil
+		},
+	}
+	owner := newDeliveryOwner("test", ch, "test")
+	owner.closed = true
+	m.channels["test"] = ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+
+	err := m.SendMedia(context.Background(), testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel: "test",
+		ChatID:  "chat1",
+		Parts:   []bus.MediaPart{{Ref: "media://abc"}},
+	}))
+	if !errors.Is(err, errDeliveryClosed) {
+		t.Fatalf("SendMedia() err=%v, want errDeliveryClosed", err)
+	}
+	if callCount != 0 {
+		t.Fatalf("SendMedia called closed channel %d times", callCount)
 	}
 }
 
@@ -3878,6 +3958,34 @@ func TestSendMessage_UnknownChannel(t *testing.T) {
 	err := m.SendMessage(context.Background(), msg)
 	if err == nil {
 		t.Fatal("expected error for unknown channel")
+	}
+}
+
+func TestSendMessage_ClosedDeliveryOwnerReturnsError(t *testing.T) {
+	m := newTestManager()
+	var callCount int
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			callCount++
+			return nil
+		},
+	}
+	owner := newDeliveryOwner("test", ch, "test")
+	owner.closed = true
+	m.channels["test"] = ch
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+
+	err := m.SendMessage(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "hello",
+	}))
+	if !errors.Is(err, errDeliveryClosed) {
+		t.Fatalf("SendMessage() err=%v, want errDeliveryClosed", err)
+	}
+	if callCount != 0 {
+		t.Fatalf("SendMessage called closed channel %d times", callCount)
 	}
 }
 
