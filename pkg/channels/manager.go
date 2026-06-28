@@ -1647,6 +1647,18 @@ func (o *deliveryOwner) Worker() *channelWorker {
 	return o.worker
 }
 
+func (o *deliveryOwner) borrowWorkerForSend() (*channelWorker, func(), error) {
+	if o == nil || o.worker == nil {
+		return nil, nil, errDeliveryClosed
+	}
+	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return nil, nil, errDeliveryClosed
+	}
+	return o.worker, o.mu.Unlock, nil
+}
+
 func (o *deliveryOwner) StartDelivery(ctx context.Context, m *Manager) {
 	if o == nil || o.worker == nil {
 		return
@@ -2354,21 +2366,35 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
-	if ch, ok := m.channels[name]; ok && m.mux != nil {
+	ch := m.channels[name]
+	if ch != nil && m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
 	owner := m.deliveryOwners[name]
 	w := m.workers[name]
-	delete(m.deliveryOwners, name)
-	delete(m.workers, name)
-	delete(m.channels, name)
+	if owner == nil {
+		delete(m.workers, name)
+		delete(m.channels, name)
+	}
 	m.mu.Unlock()
 
 	if owner != nil {
 		owner.CloseDeliveryAndWait()
-		return
+	} else {
+		closeWorkerAndWait(w)
 	}
-	closeWorkerAndWait(w)
+
+	m.mu.Lock()
+	if owner != nil && m.deliveryOwners[name] == owner {
+		delete(m.deliveryOwners, name)
+	}
+	if w != nil && m.workers[name] == w {
+		delete(m.workers, name)
+	}
+	if ch != nil && m.channels[name] == ch {
+		delete(m.channels, name)
+	}
+	m.mu.Unlock()
 }
 
 // SendMessage sends an outbound message synchronously through the channel
@@ -2389,7 +2415,13 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 	}
 	var w *channelWorker
 	if owner != nil {
-		w = owner.Worker()
+		var release func()
+		var err error
+		w, release, err = owner.borrowWorkerForSend()
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 	if w == nil {
 		return fmt.Errorf("channel %s has no active worker", channelName)
@@ -2432,7 +2464,13 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 	}
 	var w *channelWorker
 	if owner != nil {
-		w = owner.Worker()
+		var release func()
+		var err error
+		w, release, err = owner.borrowWorkerForSend()
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 	if w == nil {
 		return fmt.Errorf("channel %s has no active worker", channelName)
