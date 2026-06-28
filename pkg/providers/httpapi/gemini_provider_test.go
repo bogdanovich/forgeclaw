@@ -453,7 +453,7 @@ func TestGeminiProvider_ChatStreamReturnsErrorOnInvalidDataFrame(t *testing.T) {
 	}
 }
 
-func TestGeminiProvider_BuildRequestBody_UsesCamelCaseThoughtSignatureOnly(t *testing.T) {
+func TestGeminiProvider_BuildRequestBody_SetsBothThoughtSignatureFormats(t *testing.T) {
 	provider := NewGeminiProvider("test-key", "https://example.com/v1beta", "", "", 0, nil, nil)
 
 	body := provider.buildRequestBody(
@@ -484,8 +484,12 @@ func TestGeminiProvider_BuildRequestBody_UsesCamelCaseThoughtSignatureOnly(t *te
 	if !strings.Contains(jsonBody, `"thoughtSignature":"sig-1"`) {
 		t.Fatalf("request body = %s, expected camelCase thoughtSignature", jsonBody)
 	}
-	if strings.Contains(jsonBody, `"thought_signature"`) {
-		t.Fatalf("request body = %s, unexpected snake_case thought_signature", jsonBody)
+	if !strings.Contains(jsonBody, `"thought_signature":"sig-1"`) {
+		t.Fatalf(
+			"request body = %s, expected snake_case thought_signature for "+
+				"Gemini 3.5 Flash Agentic compatibility",
+			jsonBody,
+		)
 	}
 }
 

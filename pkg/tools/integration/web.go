@@ -55,9 +55,9 @@ var (
 		`<a class="result__snippet[^"]*".*?>([\s\S]*?)</a>`,
 	)
 	reSogouTitle = regexp.MustCompile(
-		`<a\s+class=resultLink\s+href="([^"]+)"[^>]*id="sogou_vr_\d+_\d+"[^>]*>\s*(.*?)\s*</a>`,
+		`<a\s+class="?resultLink"?\s+href="([^"]+)"[^>]*id="sogou_vr_\d+_\d+"[^>]*>\s*(.*?)\s*</a>`,
 	)
-	reSogouSnippet = regexp.MustCompile(`<div class="clamp\d*">\s*(.*?)\s*</div>`)
+	reSogouSnippet = regexp.MustCompile(`<div class="clamp\d*[^"]*">\s*(.*?)\s*</div>`)
 	reSogouRealURL = regexp.MustCompile(`url=([^&]+)`)
 )
 
@@ -350,6 +350,19 @@ func (p *BraveSearchProvider) Search(
 
 		results := searchResp.Web.Results
 		if len(results) == 0 {
+			// Log a warning when the API returned 200 but no results.
+			// This helps diagnose API format changes or silent errors
+			// where the response body does not match the expected structure.
+			bodyPreview := string(body)
+			if len(bodyPreview) > 300 {
+				bodyPreview = bodyPreview[:300]
+			}
+			logger.WarnCF("web_search", "Brave API returned empty results",
+				map[string]any{
+					"query":        query,
+					"status":       resp.StatusCode,
+					"body_preview": bodyPreview,
+				})
 			return fmt.Sprintf("No results for: %s", query), nil
 		}
 
@@ -2324,16 +2337,6 @@ func newPrivateHostWhitelist(entries []string) (*utils.PrivateHostWhitelist, err
 	return utils.NewPrivateHostWhitelist(entries)
 }
 
-func isObviousPrivateHost(host string, whitelist *utils.PrivateHostWhitelist) bool {
-	return utils.IsObviousPrivateHost(host, whitelist, func() bool {
-		return allowPrivateWebFetchHosts.Load()
-	})
-}
-
 func isPrivateOrRestrictedIP(ip net.IP) bool {
 	return utils.IsPrivateOrRestrictedIP(ip)
-}
-
-func allowConfiguredProxyFirstHop(req *http.Request, rt http.RoundTripper) {
-	utils.AllowConfiguredProxyFirstHop(req, rt)
 }
