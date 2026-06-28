@@ -46,6 +46,8 @@ const (
 	streamAuxiliaryTombstoneTTL = 30 * time.Second
 )
 
+var errDeliveryClosed = errors.New("channel delivery is closed")
+
 // typingEntry wraps a typing stop function with a creation timestamp for TTL eviction.
 type typingEntry struct {
 	stop      func()
@@ -92,6 +94,8 @@ type deliveryOwner struct {
 	name   string
 	ch     Channel
 	worker *channelWorker
+	mu     sync.Mutex
+	closed bool
 }
 
 type Manager struct {
@@ -765,6 +769,24 @@ func (m *Manager) installDeliveryOwnerLocked(
 	m.deliveryOwners[name] = owner
 	owner.StartDelivery(ctx, m)
 	return owner
+}
+
+func (m *Manager) closeDeliveryLocked(name string, w *channelWorker) {
+	if owner := m.deliveryOwnerLocked(name); owner != nil {
+		owner.CloseDeliveryAndWait()
+		return
+	}
+	closeWorkerAndWait(w)
+}
+
+func closeWorkerAndWait(w *channelWorker) {
+	if w == nil {
+		return
+	}
+	close(w.queue)
+	<-w.done
+	close(w.mediaQueue)
+	<-w.mediaDone
 }
 
 // GetStreamer implements bus.StreamDelegate.
@@ -1531,27 +1553,9 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask = nil
 	}
 
-	// Close all worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.queue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.done
-		}
-	}
-	// Close all media worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.mediaQueue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.mediaDone
-		}
+	// Close delivery queues and wait for accepted work to drain.
+	for name, w := range m.workers {
+		m.closeDeliveryLocked(name, w)
 	}
 
 	// Stop all channels
@@ -1628,28 +1632,61 @@ func (o *deliveryOwner) StartDelivery(ctx context.Context, m *Manager) {
 	go m.runMediaWorker(ctx, o.name, o.worker)
 }
 
-func (o *deliveryOwner) Enqueue(ctx context.Context, msg bus.OutboundMessage) bool {
+func (o *deliveryOwner) Enqueue(ctx context.Context, msg bus.OutboundMessage) (bool, error) {
 	if o == nil || o.worker == nil {
-		return true
+		return false, errDeliveryClosed
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return false, errDeliveryClosed
 	}
 	select {
 	case o.worker.queue <- msg:
-		return true
+		return true, nil
 	case <-ctx.Done():
-		return false
+		return false, ctx.Err()
 	}
 }
 
-func (o *deliveryOwner) EnqueueMedia(ctx context.Context, msg bus.OutboundMediaMessage) bool {
+func (o *deliveryOwner) EnqueueMedia(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) (bool, error) {
 	if o == nil || o.worker == nil {
-		return true
+		return false, errDeliveryClosed
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return false, errDeliveryClosed
 	}
 	select {
 	case o.worker.mediaQueue <- msg:
-		return true
+		return true, nil
 	case <-ctx.Done():
-		return false
+		return false, ctx.Err()
 	}
+}
+
+func (o *deliveryOwner) CloseDeliveryAndWait() {
+	if o == nil || o.worker == nil {
+		return
+	}
+	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		<-o.worker.done
+		<-o.worker.mediaDone
+		return
+	}
+	o.closed = true
+	close(o.worker.queue)
+	close(o.worker.mediaQueue)
+	o.mu.Unlock()
+
+	<-o.worker.done
+	<-o.worker.mediaDone
 }
 
 // runWorker processes outbound messages for a single channel.
@@ -1878,8 +1915,13 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		m.bus.OutboundChan(),
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
 		func(ctx context.Context, owner *deliveryOwner, msg bus.OutboundMessage) bool {
-			if owner.Enqueue(ctx, msg) {
+			queued, err := owner.Enqueue(ctx, msg)
+			if queued {
 				m.publishOutboundQueued(outboundMessageChannel(msg), msg)
+				return true
+			}
+			if errors.Is(err, errDeliveryClosed) {
+				m.publishOutboundFailed(outboundMessageChannel(msg), msg, err, false)
 				return true
 			}
 			return false
@@ -1897,8 +1939,13 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		m.bus.OutboundMediaChan(),
 		func(msg bus.OutboundMediaMessage) string { return outboundMediaChannel(msg) },
 		func(ctx context.Context, owner *deliveryOwner, msg bus.OutboundMediaMessage) bool {
-			if owner.EnqueueMedia(ctx, msg) {
+			queued, err := owner.EnqueueMedia(ctx, msg)
+			if queued {
 				m.publishOutboundMediaQueued(outboundMediaChannel(msg), msg)
+				return true
+			}
+			if errors.Is(err, errDeliveryClosed) {
+				m.publishOutboundMediaFailed(outboundMediaChannel(msg), msg, err)
 				return true
 			}
 			return false
@@ -2284,19 +2331,21 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if ch, ok := m.channels[name]; ok && m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
-	if w, ok := m.workers[name]; ok && w != nil {
-		close(w.queue)
-		<-w.done
-		close(w.mediaQueue)
-		<-w.mediaDone
-	}
+	owner := m.deliveryOwners[name]
+	w := m.workers[name]
 	delete(m.deliveryOwners, name)
 	delete(m.workers, name)
 	delete(m.channels, name)
+	m.mu.Unlock()
+
+	if owner != nil {
+		owner.CloseDeliveryAndWait()
+		return
+	}
+	closeWorkerAndWait(w)
 }
 
 // SendMessage sends an outbound message synchronously through the channel
@@ -2387,11 +2436,15 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	msg = bus.NormalizeOutboundMessage(msg)
 
 	if owner != nil && owner.Worker() != nil {
-		if owner.Enqueue(ctx, msg) {
+		queued, err := owner.Enqueue(ctx, msg)
+		if queued {
 			m.publishOutboundQueued(channelName, msg)
 			return nil
 		}
-		return ctx.Err()
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("channel %s has closed delivery", channelName)
 	}
 
 	// Fallback: direct send (should not happen)
