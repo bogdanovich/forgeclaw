@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
@@ -206,6 +208,81 @@ func TestMatrixMediaTempDir(t *testing.T) {
 	if !info.IsDir() {
 		t.Fatalf("expected directory, got mode=%v", info.Mode())
 	}
+}
+
+func TestMatrixSyncLoopReconnectsAfterUnexpectedExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runCalls := make(chan int, 2)
+	var calls int
+	ch := &MatrixChannel{
+		BaseChannel: channels.NewBaseChannel(
+			"matrix",
+			&config.MatrixSettings{},
+			bus.NewMessageBus(),
+			nil,
+		),
+		ctx: ctx,
+		runSyncFn: func(ctx context.Context) error {
+			calls++
+			runCalls <- calls
+			if calls == 1 {
+				return errors.New("sync failed")
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		syncReconnectDelay: func(int) time.Duration {
+			return 10 * time.Millisecond
+		},
+	}
+	ch.SetRunning(true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ch.runSyncLoop()
+	}()
+
+	select {
+	case got := <-runCalls:
+		if got != 1 {
+			t.Fatalf("first sync call = %d, want 1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first sync call")
+	}
+	waitForMatrixRunning(t, ch, false)
+
+	select {
+	case got := <-runCalls:
+		if got != 2 {
+			t.Fatalf("second sync call = %d, want 2", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reconnect")
+	}
+	waitForMatrixRunning(t, ch, true)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sync loop did not exit after context cancel")
+	}
+}
+
+func waitForMatrixRunning(t *testing.T, ch *MatrixChannel, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ch.IsRunning() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("Matrix running = %v, want %v", ch.IsRunning(), want)
 }
 
 func TestMatrixMediaExt(t *testing.T) {

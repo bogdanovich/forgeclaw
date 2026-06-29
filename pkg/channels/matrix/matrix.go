@@ -42,6 +42,8 @@ const (
 	roomKindCacheTTL           = 5 * time.Minute
 	roomKindCacheCleanupPeriod = 1 * time.Minute
 	roomKindCacheMaxEntries    = 2048
+	matrixSyncInitialDelay     = time.Second
+	matrixSyncMaxDelay         = 30 * time.Second
 )
 
 var matrixMentionHrefRegexp = regexp.MustCompile(`(?i)<a[^>]+href=["']([^"']+)["']`)
@@ -200,6 +202,9 @@ type MatrixChannel struct {
 	cryptoHelper *cryptohelper.CryptoHelper
 	cryptoDbPath string
 	progress     *channels.ToolFeedbackAnimator
+
+	runSyncFn          func(context.Context) error
+	syncReconnectDelay func(int) time.Duration
 }
 
 func NewMatrixChannel(
@@ -286,17 +291,72 @@ func (c *MatrixChannel) Start(ctx context.Context) error {
 
 	c.SetRunning(true)
 	go c.runRoomKindCacheJanitor(c.ctx)
-
-	go func() {
-		if err := c.client.SyncWithContext(c.ctx); err != nil && c.ctx.Err() == nil {
-			logger.ErrorCF("matrix", "Matrix sync stopped unexpectedly", map[string]any{
-				"error": err.Error(),
-			})
-		}
-	}()
+	go c.runSyncLoop()
 
 	logger.InfoC("matrix", "Matrix channel started")
 	return nil
+}
+
+func (c *MatrixChannel) runSyncLoop() {
+	attempt := 0
+	for {
+		err := c.runSync(c.ctx)
+		if c.ctx.Err() != nil {
+			return
+		}
+
+		c.SetRunning(false)
+		if err != nil {
+			logger.ErrorCF("matrix", "Matrix sync stopped unexpectedly", map[string]any{
+				"error": err.Error(),
+			})
+		} else {
+			logger.WarnC("matrix", "Matrix sync exited unexpectedly")
+		}
+
+		attempt++
+		delay := c.syncDelay(attempt)
+		logger.WarnCF("matrix", "Reconnecting Matrix sync", map[string]any{
+			"attempt":     attempt,
+			"retry_after": delay.String(),
+		})
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-c.ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+
+		c.SetRunning(true)
+	}
+}
+
+func (c *MatrixChannel) runSync(ctx context.Context) error {
+	if c.runSyncFn != nil {
+		return c.runSyncFn(ctx)
+	}
+	return c.client.SyncWithContext(ctx)
+}
+
+func (c *MatrixChannel) syncDelay(attempt int) time.Duration {
+	if c.syncReconnectDelay != nil {
+		return c.syncReconnectDelay(attempt)
+	}
+	delay := matrixSyncInitialDelay
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay >= matrixSyncMaxDelay {
+			return matrixSyncMaxDelay
+		}
+	}
+	return delay
 }
 
 func (c *MatrixChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
