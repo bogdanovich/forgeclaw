@@ -229,6 +229,7 @@ func (c *TelegramChannel) runBotHandler(runCtx context.Context, runID uint64, st
 	}
 
 	c.SetRunning(false)
+	c.cleanupBackgroundWork(context.Background())
 	if err != nil {
 		logger.ErrorCF("telegram", "Bot handler failed", map[string]any{
 			"error": err.Error(),
@@ -253,6 +254,12 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 	if c.bh != nil {
 		_ = c.bh.StopWithContext(ctx)
 	}
+	c.cleanupBackgroundWork(ctx)
+
+	return nil
+}
+
+func (c *TelegramChannel) cleanupBackgroundWork(ctx context.Context) {
 	c.flushPendingMediaGroups(ctx)
 
 	// Cancel our context (stops long polling)
@@ -265,8 +272,6 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 	if c.commandRegCancel != nil {
 		c.commandRegCancel()
 	}
-
-	return nil
 }
 
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {

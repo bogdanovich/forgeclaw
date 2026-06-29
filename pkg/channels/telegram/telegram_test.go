@@ -238,6 +238,35 @@ func TestTelegramBotHandlerRunUsesCapturedStartFunction(t *testing.T) {
 	}
 }
 
+func TestTelegramBotHandlerExitCleansBackgroundWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	commandRegCanceled := false
+	ch := &TelegramChannel{
+		BaseChannel:       channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:               ctx,
+		cancel:            cancel,
+		commandRegCancel:  func() { commandRegCanceled = true },
+		startBotHandlerFn: func() error { return errors.New("handler failed") },
+	}
+	ch.progress = channels.NewToolFeedbackAnimator(nil)
+	ch.SetRunning(true)
+	runID := ch.handlerRun.Add(1)
+
+	ch.runBotHandler(ctx, runID, ch.startBotHandler)
+
+	if ch.IsRunning() {
+		t.Fatal("expected Telegram channel to stop after handler failure")
+	}
+	if !commandRegCanceled {
+		t.Fatal("expected handler exit to cancel command registration")
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expected handler exit to cancel channel context")
+	}
+}
+
 func TestSend_ToolFeedbackMinEditIntervalAppliesAfterFirstSend(t *testing.T) {
 	nextMessageID := 0
 	caller := &stubCaller{
