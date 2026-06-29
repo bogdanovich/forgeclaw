@@ -323,50 +323,32 @@ func (c *DiscordChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMes
 	if len(files) == 0 {
 		return nil, nil
 	}
+	defer closeDiscordFiles(files)
 
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
-	type mediaResult struct {
-		id  string
-		err error
+	sentMsg, err := c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content: caption,
+		Files:   files,
+	}, discordgo.WithContext(sendCtx))
+	if err != nil {
+		if sendCtx.Err() != nil {
+			return nil, sendCtx.Err()
+		}
+		return nil, fmt.Errorf("discord send media: %w", channels.ErrTemporary)
 	}
-	done := make(chan mediaResult, 1)
-	go func() {
-		sentMsg, err := c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-			Content: caption,
-			Files:   files,
-		})
-		if err != nil {
-			done <- mediaResult{err: err}
-			return
-		}
-		done <- mediaResult{id: sentMsg.ID}
-	}()
+	if hasTrackedMsg {
+		c.dismissTrackedToolFeedbackMessage(ctx, channelID, trackedMsgID)
+	}
+	return []string{sentMsg.ID}, nil
+}
 
-	select {
-	case r := <-done:
-		// Close all file readers
-		for _, f := range files {
-			if closer, ok := f.Reader.(*os.File); ok {
-				closer.Close()
-			}
+func closeDiscordFiles(files []*discordgo.File) {
+	for _, f := range files {
+		if closer, ok := f.Reader.(*os.File); ok {
+			_ = closer.Close()
 		}
-		if r.err != nil {
-			return nil, fmt.Errorf("discord send media: %w", channels.ErrTemporary)
-		}
-		if hasTrackedMsg {
-			c.dismissTrackedToolFeedbackMessage(ctx, channelID, trackedMsgID)
-		}
-		return []string{r.id}, nil
-	case <-sendCtx.Done():
-		// Close all file readers
-		for _, f := range files {
-			if closer, ok := f.Reader.(*os.File); ok {
-				closer.Close()
-			}
-		}
-		return nil, sendCtx.Err()
 	}
 }
 
@@ -390,9 +372,14 @@ func (c *DiscordChannel) SendPlaceholder(ctx context.Context, chatID string) (st
 	}
 
 	text := c.bc.Placeholder.GetRandomText()
+	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+	defer cancel()
 
-	msg, err := c.session.ChannelMessageSend(chatID, text)
+	msg, err := c.session.ChannelMessageSend(chatID, text, discordgo.WithContext(sendCtx))
 	if err != nil {
+		if sendCtx.Err() != nil {
+			return "", sendCtx.Err()
+		}
 		return "", err
 	}
 
@@ -482,48 +469,33 @@ func (c *DiscordChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bu
 }
 
 func (c *DiscordChannel) sendChunk(ctx context.Context, channelID, content, replyToID string) (string, error) {
-	// Use the passed ctx for timeout control
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
-	type result struct {
-		id  string
+	var (
+		msg *discordgo.Message
 		err error
+	)
+
+	if replyToID != "" {
+		msg, err = c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+			Content: content,
+			Reference: &discordgo.MessageReference{
+				MessageID: replyToID,
+				ChannelID: channelID,
+			},
+		}, discordgo.WithContext(sendCtx))
+	} else {
+		msg, err = c.session.ChannelMessageSend(channelID, content, discordgo.WithContext(sendCtx))
 	}
-	done := make(chan result, 1)
-	go func() {
-		var (
-			msg *discordgo.Message
-			err error
-		)
-
-		// If we have an ID, we send the message as "Reply"
-		if replyToID != "" {
-			msg, err = c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-				Content: content,
-				Reference: &discordgo.MessageReference{
-					MessageID: replyToID,
-					ChannelID: channelID,
-				},
-			})
-		} else {
-			// Otherwise, we send a normal message
-			msg, err = c.session.ChannelMessageSend(channelID, content)
+	if err != nil {
+		if ctxErr := sendCtx.Err(); ctxErr != nil {
+			return "", ctxErr
 		}
-
-		if err != nil {
-			done <- result{err: fmt.Errorf("discord send: %w", channels.ErrTemporary)}
-			return
-		}
-		done <- result{id: msg.ID}
-	}()
-
-	select {
-	case r := <-done:
-		return r.id, r.err
-	case <-sendCtx.Done():
-		return "", sendCtx.Err()
+		return "", fmt.Errorf("discord send: %w", channels.ErrTemporary)
 	}
+
+	return msg.ID, nil
 }
 
 // appendContent safely appends content to existing text
