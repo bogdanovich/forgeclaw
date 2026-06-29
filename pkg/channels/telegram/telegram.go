@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mymmrac/telego"
@@ -67,6 +68,8 @@ type TelegramChannel struct {
 	registerFunc      func(context.Context, []commands.Definition) error
 	commandRegDelayFn func(int) time.Duration
 	commandRegCancel  context.CancelFunc
+	startBotHandlerFn func() error
+	handlerRun        atomic.Uint64
 
 	mediaGroupMu    sync.Mutex
 	mediaGroups     map[string]*telegramMediaGroup
@@ -213,15 +216,34 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 
 	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
 
-	go func() {
-		if err = bh.Start(); err != nil {
-			logger.ErrorCF("telegram", "Bot handler failed", map[string]any{
-				"error": err.Error(),
-			})
-		}
-	}()
+	handlerRunID := c.handlerRun.Add(1)
+	go c.runBotHandler(c.ctx, handlerRunID, bh.Start)
 
 	return nil
+}
+
+func (c *TelegramChannel) runBotHandler(runCtx context.Context, runID uint64, startBotHandler func() error) {
+	err := startBotHandler()
+	if runCtx.Err() != nil || c.handlerRun.Load() != runID || !c.IsRunning() {
+		return
+	}
+
+	c.SetRunning(false)
+	c.cleanupBackgroundWork(context.Background())
+	if err != nil {
+		logger.ErrorCF("telegram", "Bot handler failed", map[string]any{
+			"error": err.Error(),
+		})
+		return
+	}
+	logger.WarnC("telegram", "Bot handler exited unexpectedly")
+}
+
+func (c *TelegramChannel) startBotHandler() error {
+	if c.startBotHandlerFn != nil {
+		return c.startBotHandlerFn()
+	}
+	return c.bh.Start()
 }
 
 func (c *TelegramChannel) Stop(ctx context.Context) error {
@@ -232,6 +254,12 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 	if c.bh != nil {
 		_ = c.bh.StopWithContext(ctx)
 	}
+	c.cleanupBackgroundWork(ctx)
+
+	return nil
+}
+
+func (c *TelegramChannel) cleanupBackgroundWork(ctx context.Context) {
 	c.flushPendingMediaGroups(ctx)
 
 	// Cancel our context (stops long polling)
@@ -244,8 +272,6 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 	if c.commandRegCancel != nil {
 		c.commandRegCancel()
 	}
-
-	return nil
 }
 
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {

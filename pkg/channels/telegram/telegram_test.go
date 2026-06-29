@@ -141,6 +141,132 @@ func TestTelegramChannel_ConfigureToolFeedbackAnimator(t *testing.T) {
 	}
 }
 
+func TestTelegramBotHandlerFailureMarksChannelStopped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:         ctx,
+		startBotHandlerFn: func() error {
+			return errors.New("handler failed")
+		},
+	}
+	ch.SetRunning(true)
+	runID := ch.handlerRun.Add(1)
+
+	ch.runBotHandler(ctx, runID, ch.startBotHandler)
+
+	if ch.IsRunning() {
+		t.Fatal("expected Telegram channel to stop after handler failure")
+	}
+}
+
+func TestTelegramBotHandlerUnexpectedExitMarksChannelStopped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:         ctx,
+		startBotHandlerFn: func() error {
+			return nil
+		},
+	}
+	ch.SetRunning(true)
+	runID := ch.handlerRun.Add(1)
+
+	ch.runBotHandler(ctx, runID, ch.startBotHandler)
+
+	if ch.IsRunning() {
+		t.Fatal("expected Telegram channel to stop after unexpected handler exit")
+	}
+}
+
+func TestTelegramStaleBotHandlerExitDoesNotStopNewRun(t *testing.T) {
+	oldCtx, oldCancel := context.WithCancel(context.Background())
+	defer oldCancel()
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:         oldCtx,
+		startBotHandlerFn: func() error {
+			return errors.New("old handler failed")
+		},
+	}
+	ch.SetRunning(true)
+	oldRunID := ch.handlerRun.Add(1)
+
+	ch.ctx = context.Background()
+	ch.handlerRun.Add(1)
+
+	ch.runBotHandler(oldCtx, oldRunID, ch.startBotHandler)
+
+	if !ch.IsRunning() {
+		t.Fatal("stale Telegram handler exit should not stop the newer run")
+	}
+}
+
+func TestTelegramBotHandlerRunUsesCapturedStartFunction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	oldStarted := false
+	newStarted := false
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:         ctx,
+		startBotHandlerFn: func() error {
+			newStarted = true
+			return nil
+		},
+	}
+	ch.SetRunning(true)
+	runID := ch.handlerRun.Add(1)
+	capturedStart := func() error {
+		oldStarted = true
+		return nil
+	}
+
+	ch.runBotHandler(ctx, runID, capturedStart)
+
+	if !oldStarted {
+		t.Fatal("expected captured handler start function to run")
+	}
+	if newStarted {
+		t.Fatal("stale run should not dereference the channel's current handler start")
+	}
+}
+
+func TestTelegramBotHandlerExitCleansBackgroundWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	commandRegCanceled := false
+	ch := &TelegramChannel{
+		BaseChannel:       channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:               ctx,
+		cancel:            cancel,
+		commandRegCancel:  func() { commandRegCanceled = true },
+		startBotHandlerFn: func() error { return errors.New("handler failed") },
+	}
+	ch.progress = channels.NewToolFeedbackAnimator(nil)
+	ch.SetRunning(true)
+	runID := ch.handlerRun.Add(1)
+
+	ch.runBotHandler(ctx, runID, ch.startBotHandler)
+
+	if ch.IsRunning() {
+		t.Fatal("expected Telegram channel to stop after handler failure")
+	}
+	if !commandRegCanceled {
+		t.Fatal("expected handler exit to cancel command registration")
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expected handler exit to cancel channel context")
+	}
+}
+
 func TestSend_ToolFeedbackMinEditIntervalAppliesAfterFirstSend(t *testing.T) {
 	nextMessageID := 0
 	caller := &stubCaller{
