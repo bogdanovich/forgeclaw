@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/audio/tts"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
+	"github.com/sipeed/picoclaw/pkg/media"
 )
 
 type stubTTSProvider struct{}
@@ -30,6 +33,27 @@ type noopReader struct{}
 
 func (*noopReader) Read(p []byte) (int, error) {
 	return 0, io.EOF
+}
+
+type contextRecordingTransport struct {
+	started      chan struct{}
+	canceled     chan struct{}
+	startedOnce  sync.Once
+	canceledOnce sync.Once
+}
+
+func newContextRecordingTransport() *contextRecordingTransport {
+	return &contextRecordingTransport{
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
+}
+
+func (t *contextRecordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.startedOnce.Do(func() { close(t.started) })
+	<-req.Context().Done()
+	t.canceledOnce.Do(func() { close(t.canceled) })
+	return nil, req.Context().Err()
 }
 
 func TestApplyDiscordProxy_CustomProxy(t *testing.T) {
@@ -227,6 +251,101 @@ func TestEditMessage_UsesContextCancellation(t *testing.T) {
 	}
 	if elapsed >= 500*time.Millisecond {
 		t.Fatalf("EditMessage() ignored context timeout, elapsed=%v", elapsed)
+	}
+}
+
+func TestSend_PropagatesContextCancellationToRequest(t *testing.T) {
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New() error: %v", err)
+	}
+	transport := newContextRecordingTransport()
+	session.Client = &http.Client{Transport: transport}
+
+	ch := &DiscordChannel{
+		BaseChannel: channels.NewBaseChannel("discord", nil, bus.NewMessageBus(), nil),
+		session:     session,
+		ctx:         context.Background(),
+	}
+	ch.SetRunning(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err = ch.Send(ctx, bus.OutboundMessage{
+		ChatID:  "chat-1",
+		Content: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected Send() to fail when context times out")
+	}
+
+	select {
+	case <-transport.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected Discord send request to start")
+	}
+	select {
+	case <-transport.canceled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected Discord send request context to receive cancellation")
+	}
+}
+
+func TestSendMedia_PropagatesContextCancellationToRequest(t *testing.T) {
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New() error: %v", err)
+	}
+	transport := newContextRecordingTransport()
+	session.Client = &http.Client{Transport: transport}
+
+	store := media.NewFileMediaStore()
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err = os.WriteFile(localPath, []byte("fake-image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	ref, err := store.Store(localPath, media.MediaMeta{
+		Filename:    "photo.jpg",
+		ContentType: "image/jpeg",
+	}, "scope-1")
+	if err != nil {
+		t.Fatalf("Store() error: %v", err)
+	}
+
+	ch := &DiscordChannel{
+		BaseChannel: channels.NewBaseChannel("discord", nil, bus.NewMessageBus(), nil),
+		session:     session,
+		ctx:         context.Background(),
+	}
+	ch.SetMediaStore(store)
+	ch.SetRunning(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err = ch.SendMedia(ctx, bus.OutboundMediaMessage{
+		ChatID: "chat-1",
+		Parts: []bus.MediaPart{{
+			Type:        "image",
+			Ref:         ref,
+			Filename:    "photo.jpg",
+			ContentType: "image/jpeg",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected SendMedia() to fail when context times out")
+	}
+
+	select {
+	case <-transport.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected Discord media send request to start")
+	}
+	select {
+	case <-transport.canceled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected Discord media send request context to receive cancellation")
 	}
 }
 
