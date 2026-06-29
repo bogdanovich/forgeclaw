@@ -20,7 +20,6 @@ type Pipeline struct {
 	Fallback       *providers.FallbackChain
 	ChannelManager interfaces.ChannelManager
 	MediaStore     media.MediaStore
-	Steering       any // TODO: *Steering
 	al             *AgentLoop
 }
 
@@ -34,7 +33,6 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Fallback:       al.fallback,
 		ChannelManager: al.channelManager,
 		MediaStore:     al.mediaStore,
-		Steering:       al.steering,
 		al:             al,
 	}
 }

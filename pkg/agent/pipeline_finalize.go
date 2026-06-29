@@ -79,7 +79,7 @@ func (p *Pipeline) Finalize(
 		})
 		msg.ContextUsage = contextUsage
 		markFinalOutbound(&msg)
-		_ = al.bus.PublishOutbound(turnCtx, msg)
+		_ = p.Bus.PublishOutbound(turnCtx, msg)
 	}
 	if streamErr != nil && isConfiguredStreamingVisibleError(streamErr) {
 		ts.setPhase(TurnPhaseCompleted)
