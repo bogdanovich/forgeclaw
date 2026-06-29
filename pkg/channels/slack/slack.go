@@ -21,6 +21,11 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
+const (
+	slackSocketReconnectInitialDelay = time.Second
+	slackSocketReconnectMaxDelay     = 30 * time.Second
+)
+
 type SlackChannel struct {
 	*channels.BaseChannel
 	bc              *config.Channel
@@ -39,6 +44,8 @@ type SlackChannel struct {
 	deleteMessageFn func(context.Context, string, string) error
 	uploadFileFn    func(context.Context, slack.UploadFileParameters) error
 	postTextFn      func(context.Context, string, string, string) error
+	runSocketModeFn func(context.Context) error
+	reconnectDelay  func(int) time.Duration
 }
 
 type slackMessageRef struct {
@@ -170,17 +177,8 @@ func (c *SlackChannel) Start(ctx context.Context) error {
 
 	go c.eventLoop()
 
-	go func() {
-		if err := c.socketClient.RunContext(c.ctx); err != nil {
-			if c.ctx.Err() == nil {
-				logger.ErrorCF("slack", "Socket Mode connection error", map[string]any{
-					"error": err.Error(),
-				})
-			}
-		}
-	}()
-
 	c.SetRunning(true)
+	go c.runSocketModeLoop()
 	logger.InfoC("slack", "Slack channel started (Socket Mode)")
 	return nil
 }
@@ -198,6 +196,68 @@ func (c *SlackChannel) Stop(ctx context.Context) error {
 	c.SetRunning(false)
 	logger.InfoC("slack", "Slack channel stopped")
 	return nil
+}
+
+func (c *SlackChannel) runSocketModeLoop() {
+	attempt := 0
+	for {
+		err := c.runSocketMode(c.ctx)
+		if c.ctx.Err() != nil {
+			return
+		}
+
+		c.SetRunning(false)
+		if err != nil {
+			logger.ErrorCF("slack", "Socket Mode connection error", map[string]any{
+				"error": err.Error(),
+			})
+		} else {
+			logger.WarnC("slack", "Socket Mode connection exited unexpectedly")
+		}
+
+		attempt++
+		delay := c.socketReconnectDelay(attempt)
+		logger.WarnCF("slack", "Reconnecting Slack Socket Mode", map[string]any{
+			"attempt":     attempt,
+			"retry_after": delay.String(),
+		})
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-c.ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+
+		c.SetRunning(true)
+	}
+}
+
+func (c *SlackChannel) runSocketMode(ctx context.Context) error {
+	if c.runSocketModeFn != nil {
+		return c.runSocketModeFn(ctx)
+	}
+	return c.socketClient.RunContext(ctx)
+}
+
+func (c *SlackChannel) socketReconnectDelay(attempt int) time.Duration {
+	if c.reconnectDelay != nil {
+		return c.reconnectDelay(attempt)
+	}
+	delay := slackSocketReconnectInitialDelay
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay >= slackSocketReconnectMaxDelay {
+			return slackSocketReconnectMaxDelay
+		}
+	}
+	return delay
 }
 
 func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
