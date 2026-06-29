@@ -2,11 +2,13 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	slacksdk "github.com/slack-go/slack"
 
@@ -216,6 +218,81 @@ func TestNewSlackChannel(t *testing.T) {
 			t.Error("new channel should not be running")
 		}
 	})
+}
+
+func TestSlackSocketModeLoopReconnectsAfterUnexpectedExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runCalls := make(chan int, 2)
+	var calls int
+	ch := &SlackChannel{
+		BaseChannel: channels.NewBaseChannel(
+			"slack",
+			&config.SlackSettings{},
+			bus.NewMessageBus(),
+			nil,
+		),
+		ctx: ctx,
+		runSocketModeFn: func(ctx context.Context) error {
+			calls++
+			runCalls <- calls
+			if calls == 1 {
+				return errors.New("socket failed")
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		reconnectDelay: func(int) time.Duration {
+			return 10 * time.Millisecond
+		},
+	}
+	ch.SetRunning(true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ch.runSocketModeLoop()
+	}()
+
+	select {
+	case got := <-runCalls:
+		if got != 1 {
+			t.Fatalf("first run call = %d, want 1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first socket run")
+	}
+	waitForSlackRunning(t, ch, false)
+
+	select {
+	case got := <-runCalls:
+		if got != 2 {
+			t.Fatalf("second run call = %d, want 2", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reconnect")
+	}
+	waitForSlackRunning(t, ch, true)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("socket loop did not exit after context cancel")
+	}
+}
+
+func waitForSlackRunning(t *testing.T, ch *SlackChannel, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ch.IsRunning() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("Slack running = %v, want %v", ch.IsRunning(), want)
 }
 
 func TestSlackChannelIsAllowed(t *testing.T) {
