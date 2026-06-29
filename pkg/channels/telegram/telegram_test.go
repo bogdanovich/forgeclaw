@@ -141,6 +141,46 @@ func TestTelegramChannel_ConfigureToolFeedbackAnimator(t *testing.T) {
 	}
 }
 
+func TestTelegramBotHandlerFailureMarksChannelStopped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:         ctx,
+		startBotHandlerFn: func() error {
+			return errors.New("handler failed")
+		},
+	}
+	ch.SetRunning(true)
+
+	ch.runBotHandler()
+
+	if ch.IsRunning() {
+		t.Fatal("expected Telegram channel to stop after handler failure")
+	}
+}
+
+func TestTelegramBotHandlerUnexpectedExitMarksChannelStopped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:         ctx,
+		startBotHandlerFn: func() error {
+			return nil
+		},
+	}
+	ch.SetRunning(true)
+
+	ch.runBotHandler()
+
+	if ch.IsRunning() {
+		t.Fatal("expected Telegram channel to stop after unexpected handler exit")
+	}
+}
+
 func TestSend_ToolFeedbackMinEditIntervalAppliesAfterFirstSend(t *testing.T) {
 	nextMessageID := 0
 	caller := &stubCaller{

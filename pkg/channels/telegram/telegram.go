@@ -67,6 +67,7 @@ type TelegramChannel struct {
 	registerFunc      func(context.Context, []commands.Definition) error
 	commandRegDelayFn func(int) time.Duration
 	commandRegCancel  context.CancelFunc
+	startBotHandlerFn func() error
 
 	mediaGroupMu    sync.Mutex
 	mediaGroups     map[string]*telegramMediaGroup
@@ -213,15 +214,32 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 
 	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
 
-	go func() {
-		if err = bh.Start(); err != nil {
-			logger.ErrorCF("telegram", "Bot handler failed", map[string]any{
-				"error": err.Error(),
-			})
-		}
-	}()
+	go c.runBotHandler()
 
 	return nil
+}
+
+func (c *TelegramChannel) runBotHandler() {
+	err := c.startBotHandler()
+	if c.ctx.Err() != nil || !c.IsRunning() {
+		return
+	}
+
+	c.SetRunning(false)
+	if err != nil {
+		logger.ErrorCF("telegram", "Bot handler failed", map[string]any{
+			"error": err.Error(),
+		})
+		return
+	}
+	logger.WarnC("telegram", "Bot handler exited unexpectedly")
+}
+
+func (c *TelegramChannel) startBotHandler() error {
+	if c.startBotHandlerFn != nil {
+		return c.startBotHandlerFn()
+	}
+	return c.bh.Start()
 }
 
 func (c *TelegramChannel) Stop(ctx context.Context) error {
