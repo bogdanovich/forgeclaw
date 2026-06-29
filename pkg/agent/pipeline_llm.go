@@ -56,9 +56,9 @@ func (p *Pipeline) CallLLM(
 	exec.providerToolDefs = filterToolsByTurnProfile(exec.providerToolDefs, ts.profile)
 
 	// Native web search support
-	webSearchEnabled := al.cfg.Tools.IsToolEnabled("web") &&
+	webSearchEnabled := p.Cfg.Tools.IsToolEnabled("web") &&
 		turnProfileToolAllowed(ts.profile, "web_search")
-	exec.useNativeSearch = webSearchEnabled && al.cfg.Tools.Web.PreferNative &&
+	exec.useNativeSearch = webSearchEnabled && p.Cfg.Tools.Web.PreferNative &&
 		func() bool {
 			if ns, ok := exec.model.activeProvider.(providers.NativeSearchCapable); ok {
 				return ns.SupportsNativeSearch()
@@ -408,7 +408,7 @@ func (p *Pipeline) CallLLM(
 			)
 
 			if retry == 0 && !constants.IsInternalChannel(ts.channel) {
-				al.bus.PublishOutbound(ctx, outboundMessageForTurn(
+				p.Bus.PublishOutbound(ctx, outboundMessageForTurn(
 					ts,
 					"Context window exceeded. Compressing history and retrying...",
 				))

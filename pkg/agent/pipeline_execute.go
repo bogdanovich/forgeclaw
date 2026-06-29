@@ -355,7 +355,7 @@ toolLoop:
 						hookResult.ForUser != "" &&
 						ts.opts.SendResponse
 					if shouldSendForUser {
-						al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, hookResult.ForUser))
+						p.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, hookResult.ForUser))
 					}
 
 					if !hookResult.ResponseHandled {
@@ -363,8 +363,8 @@ toolLoop:
 					}
 
 					contentForLLM := hookResult.ContentForLLM()
-					if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
-						contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
+					if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
+						contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
 					}
 
 					toolResultMsg := providers.Message{
@@ -377,8 +377,8 @@ toolLoop:
 						recordCompletionMedia(exec, al.mediaStore, hookResult.Media)
 						hookResult.ArtifactTags = buildArtifactTags(al.mediaStore, hookResult.Media)
 						contentForLLM = hookResult.ContentForLLM()
-						if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
-							contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
+						if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
+							contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
 						}
 						toolResultMsg.Content = contentForLLM
 						toolResultMsg.Media = append(toolResultMsg.Media, hookResult.Media...)
@@ -464,7 +464,7 @@ toolLoop:
 						select {
 						case result, ok := <-ts.pendingResults:
 							if ok && result != nil && result.ForLLM != "" {
-								content := al.cfg.FilterSensitiveData(result.ForLLM)
+								content := p.Cfg.FilterSensitiveData(result.ForLLM)
 								msg := subTurnResultPromptMessage(content)
 								messages = append(messages, msg)
 								if !ts.opts.NoHistory {
@@ -711,7 +711,7 @@ toolLoop:
 			toolResult.ForUser != "" &&
 			ts.opts.SendResponse
 		if shouldSendForUser {
-			al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
+			p.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
 			logger.DebugCF("agent", "Sent tool result to user",
 				map[string]any{
 					"tool":        toolName,
@@ -720,8 +720,8 @@ toolLoop:
 		}
 		contentForLLM := toolResult.ContentForLLM()
 
-		if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
-			contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
+		if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
+			contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
 		}
 
 		toolResultMsg := providers.Message{
@@ -862,7 +862,7 @@ toolLoop:
 			select {
 			case result, ok := <-ts.pendingResults:
 				if ok && result != nil && result.ForLLM != "" {
-					content := al.cfg.FilterSensitiveData(result.ForLLM)
+					content := p.Cfg.FilterSensitiveData(result.ForLLM)
 					msg := subTurnResultPromptMessage(content)
 					messages = append(messages, msg)
 					if !ts.opts.NoHistory {
