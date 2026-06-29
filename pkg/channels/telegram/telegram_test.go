@@ -153,8 +153,9 @@ func TestTelegramBotHandlerFailureMarksChannelStopped(t *testing.T) {
 		},
 	}
 	ch.SetRunning(true)
+	runID := ch.handlerRun.Add(1)
 
-	ch.runBotHandler()
+	ch.runBotHandler(ctx, runID)
 
 	if ch.IsRunning() {
 		t.Fatal("expected Telegram channel to stop after handler failure")
@@ -173,11 +174,36 @@ func TestTelegramBotHandlerUnexpectedExitMarksChannelStopped(t *testing.T) {
 		},
 	}
 	ch.SetRunning(true)
+	runID := ch.handlerRun.Add(1)
 
-	ch.runBotHandler()
+	ch.runBotHandler(ctx, runID)
 
 	if ch.IsRunning() {
 		t.Fatal("expected Telegram channel to stop after unexpected handler exit")
+	}
+}
+
+func TestTelegramStaleBotHandlerExitDoesNotStopNewRun(t *testing.T) {
+	oldCtx, oldCancel := context.WithCancel(context.Background())
+	defer oldCancel()
+
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, nil, nil),
+		ctx:         oldCtx,
+		startBotHandlerFn: func() error {
+			return errors.New("old handler failed")
+		},
+	}
+	ch.SetRunning(true)
+	oldRunID := ch.handlerRun.Add(1)
+
+	ch.ctx = context.Background()
+	ch.handlerRun.Add(1)
+
+	ch.runBotHandler(oldCtx, oldRunID)
+
+	if !ch.IsRunning() {
+		t.Fatal("stale Telegram handler exit should not stop the newer run")
 	}
 }
 

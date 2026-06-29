@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mymmrac/telego"
@@ -68,6 +69,7 @@ type TelegramChannel struct {
 	commandRegDelayFn func(int) time.Duration
 	commandRegCancel  context.CancelFunc
 	startBotHandlerFn func() error
+	handlerRun        atomic.Uint64
 
 	mediaGroupMu    sync.Mutex
 	mediaGroups     map[string]*telegramMediaGroup
@@ -214,14 +216,15 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 
 	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
 
-	go c.runBotHandler()
+	handlerRunID := c.handlerRun.Add(1)
+	go c.runBotHandler(c.ctx, handlerRunID)
 
 	return nil
 }
 
-func (c *TelegramChannel) runBotHandler() {
+func (c *TelegramChannel) runBotHandler(runCtx context.Context, runID uint64) {
 	err := c.startBotHandler()
-	if c.ctx.Err() != nil || !c.IsRunning() {
+	if runCtx.Err() != nil || c.handlerRun.Load() != runID || !c.IsRunning() {
 		return
 	}
 
