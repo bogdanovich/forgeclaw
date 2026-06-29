@@ -217,13 +217,13 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
 
 	handlerRunID := c.handlerRun.Add(1)
-	go c.runBotHandler(c.ctx, handlerRunID)
+	go c.runBotHandler(c.ctx, handlerRunID, bh.Start)
 
 	return nil
 }
 
-func (c *TelegramChannel) runBotHandler(runCtx context.Context, runID uint64) {
-	err := c.startBotHandler()
+func (c *TelegramChannel) runBotHandler(runCtx context.Context, runID uint64, startBotHandler func() error) {
+	err := startBotHandler()
 	if runCtx.Err() != nil || c.handlerRun.Load() != runID || !c.IsRunning() {
 		return
 	}
