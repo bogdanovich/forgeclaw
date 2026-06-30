@@ -55,7 +55,7 @@ func (p *Pipeline) Finalize(
 		ts.recordPersistedMessage(finalMsg)
 		ts.ingestMessage(turnCtx, al, finalMsg)
 		if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
-			al.emitEvent(
+			p.emitEvent(
 				runtimeevents.KindAgentError,
 				ts.eventMeta("runTurn", "turn.error"),
 				ErrorPayload{
