@@ -306,8 +306,8 @@ toolLoop:
 			continue
 		}
 
-		if al.hooks != nil {
-			toolReq, decision := al.hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
+		if p.Hooks != nil {
+			toolReq, decision := p.Hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.before"),
 				Context:   cloneTurnContext(ts.turnCtx),
 				Tool:      toolName,
@@ -374,8 +374,8 @@ toolLoop:
 					}
 
 					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
-						recordCompletionMedia(exec, al.mediaStore, hookResult.Media)
-						hookResult.ArtifactTags = buildArtifactTags(al.mediaStore, hookResult.Media)
+						recordCompletionMedia(exec, p.MediaStore, hookResult.Media)
+						hookResult.ArtifactTags = buildArtifactTags(p.MediaStore, hookResult.Media)
 						contentForLLM = hookResult.ContentForLLM()
 						if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
 							contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
@@ -515,8 +515,8 @@ toolLoop:
 			}
 		}
 
-		if al.hooks != nil {
-			approval := al.hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
+		if p.Hooks != nil {
+			approval := p.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
 				Context:   cloneTurnContext(ts.turnCtx),
 				Tool:      toolName,
@@ -654,8 +654,8 @@ toolLoop:
 			return ToolControlBreak
 		}
 
-		if al.hooks != nil {
-			toolResp, decision := al.hooks.AfterTool(turnCtx, &ToolResultHookResponse{
+		if p.Hooks != nil {
+			toolResp, decision := p.Hooks.AfterTool(turnCtx, &ToolResultHookResponse{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.after"),
 				Context:   cloneTurnContext(ts.turnCtx),
 				Tool:      toolName,
@@ -697,8 +697,8 @@ toolLoop:
 		handledAttachments = append(handledAttachments, attachments...)
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
-			recordCompletionMedia(exec, al.mediaStore, toolResult.Media)
-			toolResult.ArtifactTags = buildArtifactTags(al.mediaStore, toolResult.Media)
+			recordCompletionMedia(exec, p.MediaStore, toolResult.Media)
+			toolResult.ArtifactTags = buildArtifactTags(p.MediaStore, toolResult.Media)
 		}
 
 		if !toolResult.ResponseHandled {
@@ -939,7 +939,7 @@ toolLoop:
 			}
 		}
 		if !ts.opts.NoHistory && ts.opts.EnableSummary {
-			al.contextManager.Compact(turnCtx, &CompactRequest{
+			p.ContextManager.Compact(turnCtx, &CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonSummarize,
 				Budget:     ts.agent.ContextWindow,
