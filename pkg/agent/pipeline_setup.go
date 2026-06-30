@@ -62,7 +62,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 					"reserve_tokens": reserveTokens,
 					"compact_budget": compactBudget,
 				})
-			p.al.scheduleBackgroundCompaction(
+			p.scheduleBackgroundCompaction(
 				ts.agent,
 				ts.sessionKey,
 				ContextCompressReasonProactive,
@@ -124,7 +124,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			ts.agent.Sessions.AddMessage(ts.sessionKey, rootMsg.Role, rootMsg.Content)
 		}
 		ts.recordPersistedMessage(rootMsg)
-		ts.ingestMessage(ctx, p.al, rootMsg)
+		p.ingestMessage(ctx, ts, rootMsg)
 	}
 
 	execution := ts.model.ExecutionState()

@@ -749,7 +749,7 @@ func (p *Pipeline) CallLLM(
 	if !ts.opts.NoHistory {
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
 		ts.recordPersistedMessage(assistantMsg)
-		ts.ingestMessage(turnCtx, al, assistantMsg)
+		p.ingestMessage(turnCtx, ts, assistantMsg)
 	}
 	if shouldPublishPicoToolCallInterim {
 		al.publishPicoToolCallInterim(

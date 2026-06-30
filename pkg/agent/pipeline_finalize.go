@@ -53,7 +53,7 @@ func (p *Pipeline) Finalize(
 		}
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, finalMsg)
 		ts.recordPersistedMessage(finalMsg)
-		ts.ingestMessage(turnCtx, al, finalMsg)
+		p.ingestMessage(turnCtx, ts, finalMsg)
 		if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
 			p.emitEvent(
 				runtimeevents.KindAgentError,
