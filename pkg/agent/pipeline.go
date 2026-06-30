@@ -19,6 +19,7 @@ type Pipeline struct {
 	ContextManager ContextManager
 	Events         runtimeEventEmitter
 	ActiveRequests activeRequestTracker
+	ModelExecution modelExecutionResolver
 	Hooks          *HookManager
 	Fallback       *providers.FallbackChain
 	ChannelManager interfaces.ChannelManager
@@ -35,6 +36,26 @@ type activeRequestTracker interface {
 	activeRequestsDec()
 }
 
+type modelExecutionResolver interface {
+	selectCandidates(
+		execution effectiveExecutionState,
+		userMsg string,
+		history []providers.Message,
+		routeSessionKey string,
+	) modelSelectionDecision
+	maybeBuildVisionExecutionState(
+		baseAgent *AgentInstance,
+		execution effectiveExecutionState,
+		messages []providers.Message,
+	) (effectiveExecutionState, func(), string, bool, error)
+	maybeApplyVisionExecutionState(baseAgent *AgentInstance, exec *turnExecution) (bool, error)
+	buildExecutionStateForModel(
+		baseAgent *AgentInstance,
+		modelName string,
+		fallbacks []string,
+	) (effectiveExecutionState, func(), error)
+}
+
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
 	return &Pipeline{
@@ -43,6 +64,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		ContextManager: al.contextManager,
 		Events:         al,
 		ActiveRequests: al,
+		ModelExecution: al,
 		Hooks:          al.hooks,
 		Fallback:       al.fallback,
 		ChannelManager: al.channelManager,

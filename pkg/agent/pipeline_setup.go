@@ -129,7 +129,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	execution := ts.model.ExecutionState()
 
-	selection := p.al.selectCandidates(execution, ts.userMessage, messages, ts.model.RouteSessionKey)
+	selection := p.ModelExecution.selectCandidates(execution, ts.userMessage, messages, ts.model.RouteSessionKey)
 	activeProvider := execution.Provider
 	if selection.usedLight && execution.LightProvider != nil {
 		activeProvider = execution.LightProvider
@@ -171,7 +171,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	routedExecution.Candidates = append([]providers.FallbackCandidate(nil), selection.activeCandidates...)
 	routedExecution.CandidateProviders = cloneCandidateProviderMap(execution.CandidateProviders)
 
-	visionExecution, visionCleanup, visionRoute, usedVisionOverride, err := p.al.maybeBuildVisionExecutionState(
+	visionExecution, visionCleanup, visionRoute, usedVisionOverride, err := p.ModelExecution.maybeBuildVisionExecutionState(
 		ts.agent,
 		routedExecution,
 		messages,
