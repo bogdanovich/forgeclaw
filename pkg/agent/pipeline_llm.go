@@ -139,7 +139,7 @@ func (p *Pipeline) CallLLM(
 		}
 	}
 
-	al.emitEvent(
+	p.emitEvent(
 		runtimeevents.KindAgentLLMRequest,
 		ts.eventMeta("runTurn", "turn.llm.request"),
 		LLMRequestPayload{
@@ -316,7 +316,7 @@ func (p *Pipeline) CallLLM(
 
 		// Retry without media if vision is unsupported
 		if hasMediaRefs(exec.callMessages) && isVisionUnsupportedError(err) && retry < maxRetries {
-			al.emitEvent(
+			p.emitEvent(
 				runtimeevents.KindAgentLLMRetry,
 				ts.eventMeta("runTurn", "turn.llm.retry"),
 				LLMRetryPayload{
@@ -359,7 +359,7 @@ func (p *Pipeline) CallLLM(
 
 		if isTransientError && retry < maxRetries {
 			backoff := time.Duration(retry+1) * time.Duration(backoffSecs) * time.Second
-			al.emitEvent(
+			p.emitEvent(
 				runtimeevents.KindAgentLLMRetry,
 				ts.eventMeta("runTurn", "turn.llm.retry"),
 				LLMRetryPayload{
@@ -388,7 +388,7 @@ func (p *Pipeline) CallLLM(
 		}
 
 		if isContextError && retry < maxRetries && !ts.opts.NoHistory {
-			al.emitEvent(
+			p.emitEvent(
 				runtimeevents.KindAgentLLMRetry,
 				ts.eventMeta("runTurn", "turn.llm.retry"),
 				LLMRetryPayload{
@@ -536,7 +536,7 @@ func (p *Pipeline) CallLLM(
 	}
 
 	if err != nil {
-		al.emitEvent(
+		p.emitEvent(
 			runtimeevents.KindAgentError,
 			ts.eventMeta("runTurn", "turn.error"),
 			ErrorPayload{
@@ -621,7 +621,7 @@ func (p *Pipeline) CallLLM(
 			al.targetReasoningChannelID(ts.channel),
 		)
 	}
-	al.emitEvent(
+	p.emitEvent(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
 		LLMResponsePayload{

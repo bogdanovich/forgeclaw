@@ -5,6 +5,7 @@ package agent
 import (
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -35,4 +36,11 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		MediaStore:     al.mediaStore,
 		al:             al,
 	}
+}
+
+func (p *Pipeline) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any) {
+	if p == nil || p.al == nil {
+		return
+	}
+	p.al.emitEvent(kind, meta, payload)
 }

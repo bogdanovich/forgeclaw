@@ -281,7 +281,7 @@ toolLoop:
 			}
 			exec.allResponsesHandled = false
 			denyContent := fmt.Sprintf("Tool %q is not allowed by the active turn profile.", toolName)
-			al.emitEvent(
+			p.emitEvent(
 				runtimeevents.KindAgentToolExecSkipped,
 				ts.eventMeta("runTurn", "turn.tool.skipped"),
 				ToolExecSkippedPayload{
@@ -332,7 +332,7 @@ toolLoop:
 							"iteration": iteration,
 						})
 
-					al.emitEvent(
+					p.emitEvent(
 						runtimeevents.KindAgentToolExecStart,
 						ts.eventMeta("runTurn", "turn.tool.start"),
 						ToolExecStartPayload{
@@ -384,7 +384,7 @@ toolLoop:
 						toolResultMsg.Media = append(toolResultMsg.Media, hookResult.Media...)
 					}
 
-					al.emitEvent(
+					p.emitEvent(
 						runtimeevents.KindAgentToolExecEnd,
 						ts.eventMeta("runTurn", "turn.tool.end"),
 						ToolExecEndPayload{
@@ -437,7 +437,7 @@ toolLoop:
 								})
 							for j := i + 1; j < len(normalizedToolCalls); j++ {
 								skippedTC := normalizedToolCalls[j]
-								al.emitEvent(
+								p.emitEvent(
 									runtimeevents.KindAgentToolExecSkipped,
 									ts.eventMeta("runTurn", "turn.tool.skipped"),
 									ToolExecSkippedPayload{
@@ -486,7 +486,7 @@ toolLoop:
 			case HookActionDenyTool:
 				exec.allResponsesHandled = false
 				denyContent := hookDeniedToolContent("Tool execution denied by hook", decision.Reason)
-				al.emitEvent(
+				p.emitEvent(
 					runtimeevents.KindAgentToolExecSkipped,
 					ts.eventMeta("runTurn", "turn.tool.skipped"),
 					ToolExecSkippedPayload{
@@ -525,7 +525,7 @@ toolLoop:
 			if !approval.Approved {
 				exec.allResponsesHandled = false
 				denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
-				al.emitEvent(
+				p.emitEvent(
 					runtimeevents.KindAgentToolExecSkipped,
 					ts.eventMeta("runTurn", "turn.tool.skipped"),
 					ToolExecSkippedPayload{
@@ -559,7 +559,7 @@ toolLoop:
 				"tool":      toolName,
 				"iteration": iteration,
 			})
-		al.emitEvent(
+		p.emitEvent(
 			runtimeevents.KindAgentToolExecStart,
 			ts.eventMeta("runTurn", "turn.tool.start"),
 			ToolExecStartPayload{
@@ -586,7 +586,7 @@ toolLoop:
 		asyncCallback := func(_ context.Context, result *tools.ToolResult) {
 			completionID := asyncCompletionID(ts.turnID, toolCallID, asyncToolName)
 			delivery := decideAsyncToolResultDelivery(result)
-			al.emitEvent(
+			p.emitEvent(
 				runtimeevents.KindAgentAsyncCompletion,
 				ts.scope.meta(iteration, "runTurn", "turn.async.completion"),
 				AsyncCompletionPayload{
@@ -732,7 +732,7 @@ toolLoop:
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
 			toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
 		}
-		al.emitEvent(
+		p.emitEvent(
 			runtimeevents.KindAgentToolExecEnd,
 			ts.eventMeta("runTurn", "turn.tool.end"),
 			ToolExecEndPayload{
@@ -835,7 +835,7 @@ toolLoop:
 					})
 				for j := i + 1; j < len(normalizedToolCalls); j++ {
 					skippedTC := normalizedToolCalls[j]
-					al.emitEvent(
+					p.emitEvent(
 						runtimeevents.KindAgentToolExecSkipped,
 						ts.eventMeta("runTurn", "turn.tool.skipped"),
 						ToolExecSkippedPayload{
