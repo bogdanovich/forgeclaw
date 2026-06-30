@@ -18,6 +18,7 @@ type Pipeline struct {
 	Cfg            *config.Config
 	ContextManager ContextManager
 	Events         runtimeEventEmitter
+	ActiveRequests activeRequestTracker
 	Hooks          *HookManager
 	Fallback       *providers.FallbackChain
 	ChannelManager interfaces.ChannelManager
@@ -29,6 +30,11 @@ type runtimeEventEmitter interface {
 	emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any)
 }
 
+type activeRequestTracker interface {
+	activeRequestsInc()
+	activeRequestsDec()
+}
+
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
 	return &Pipeline{
@@ -36,6 +42,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Cfg:            al.GetConfig(),
 		ContextManager: al.contextManager,
 		Events:         al,
+		ActiveRequests: al,
 		Hooks:          al.hooks,
 		Fallback:       al.fallback,
 		ChannelManager: al.channelManager,
@@ -49,4 +56,12 @@ func (p *Pipeline) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any
 		return
 	}
 	p.Events.emitEvent(kind, meta, payload)
+}
+
+func (p *Pipeline) trackActiveRequest() func() {
+	if p == nil || p.ActiveRequests == nil {
+		return func() {}
+	}
+	p.ActiveRequests.activeRequestsInc()
+	return p.ActiveRequests.activeRequestsDec
 }
