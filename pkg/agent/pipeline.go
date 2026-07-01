@@ -10,6 +10,7 @@ import (
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 // Pipeline holds the runtime dependencies used by Pipeline methods.
@@ -25,6 +26,7 @@ type Pipeline struct {
 	ModelExecution       modelExecutionResolver
 	Steering             steeringDequeuer
 	Reasoning            reasoningPublisher
+	ToolDelivery         toolDeliveryManager
 	Hooks                *HookManager
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
@@ -89,6 +91,26 @@ type reasoningPublisher interface {
 	handleReasoning(ctx context.Context, reasoningContent, channelName, channelID string)
 }
 
+type toolDeliveryManager interface {
+	publishToolFeedbackForCall(
+		ctx context.Context,
+		ts *turnState,
+		response *providers.LLMResponse,
+		toolCall providers.ToolCall,
+		toolName string,
+		toolArgs map[string]any,
+		messages []providers.Message,
+	)
+	applySyncToolResultDelivery(
+		ctx context.Context,
+		ts *turnState,
+		result *tools.ToolResult,
+		toolName string,
+	) ([]providers.Attachment, *tools.ToolResult)
+	deliverAsyncToolCompletion(req AsyncDeliveryRequest)
+	dismissToolFeedbackForTurn(ctx context.Context, ts *turnState)
+}
+
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
 	return &Pipeline{
@@ -101,6 +123,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		ModelExecution:       al,
 		Steering:             al,
 		Reasoning:            al,
+		ToolDelivery:         al,
 		Hooks:                al.hooks,
 		Fallback:             al.fallback,
 		ChannelManager:       al.channelManager,

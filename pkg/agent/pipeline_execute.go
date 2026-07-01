@@ -341,11 +341,11 @@ toolLoop:
 						},
 					)
 
-					al.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, messages)
+					p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, messages)
 
 					toolDuration := time.Duration(0)
 
-					attachments, deliveredResult := al.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
+					attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
 					hookResult = deliveredResult
 					handledAttachments = append(handledAttachments, attachments...)
 
@@ -568,7 +568,7 @@ toolLoop:
 			},
 		)
 
-		al.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, messages)
+		p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, messages)
 
 		toolCallID := tc.ID
 		asyncToolName := toolName
@@ -603,7 +603,7 @@ toolLoop:
 				},
 			)
 			if result != nil && result.IsError {
-				al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
+				p.deliverAsyncToolCompletion(AsyncDeliveryRequest{
 					TurnState:    ts,
 					ToolName:     asyncToolName,
 					CompletionID: completionID,
@@ -612,7 +612,7 @@ toolLoop:
 				})
 				return
 			}
-			al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
+			p.deliverAsyncToolCompletion(AsyncDeliveryRequest{
 				TurnState:    ts,
 				ToolName:     asyncToolName,
 				CompletionID: completionID,
@@ -692,7 +692,7 @@ toolLoop:
 			exec.actionLog = appendTurnActionRecord(exec.actionLog, "tool_result", toolName, toolSummary, toolResult.IsError)
 		}
 
-		attachments, deliveredResult := al.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
+		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
 		toolResult = deliveredResult
 		handledAttachments = append(handledAttachments, attachments...)
 
@@ -947,7 +947,7 @@ toolLoop:
 		}
 		ts.setPhase(TurnPhaseCompleted)
 		ts.setFinalContent("")
-		al.dismissToolFeedbackForTurn(ctx, ts)
+		p.dismissToolFeedbackForTurn(ctx, ts)
 		logger.InfoCF("agent", "Tool output satisfied delivery; ending turn without follow-up LLM",
 			map[string]any{
 				"agent_id":   ts.agent.ID,
