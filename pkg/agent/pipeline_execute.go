@@ -407,7 +407,7 @@ toolLoop:
 					if !ts.opts.NoHistory {
 						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
 						ts.recordPersistedMessage(toolResultMsg)
-						ts.ingestMessage(turnCtx, al, toolResultMsg)
+						p.ingestMessage(turnCtx, ts, toolResultMsg)
 					}
 
 					if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(steerMsgs) > 0 {
@@ -770,7 +770,7 @@ toolLoop:
 					if !ts.opts.NoHistory {
 						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
 						ts.recordPersistedMessage(toolResultMsg)
-						ts.ingestMessage(turnCtx, al, toolResultMsg)
+						p.ingestMessage(turnCtx, ts, toolResultMsg)
 					}
 					exec.messages = messages
 					return ToolControlBreak
@@ -794,7 +794,7 @@ toolLoop:
 					if !ts.opts.NoHistory {
 						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
 						ts.recordPersistedMessage(toolResultMsg)
-						ts.ingestMessage(turnCtx, al, toolResultMsg)
+						p.ingestMessage(turnCtx, ts, toolResultMsg)
 					}
 					exec.messages = messages
 					return ToolControlBreak
@@ -805,7 +805,7 @@ toolLoop:
 		if !ts.opts.NoHistory {
 			ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
 			ts.recordPersistedMessage(toolResultMsg)
-			ts.ingestMessage(turnCtx, al, toolResultMsg)
+			p.ingestMessage(turnCtx, ts, toolResultMsg)
 		}
 
 		if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(steerMsgs) > 0 {
@@ -929,7 +929,7 @@ toolLoop:
 		if !ts.opts.NoHistory {
 			ts.agent.Sessions.AddFullMessage(ts.sessionKey, summaryMsg)
 			ts.recordPersistedMessage(summaryMsg)
-			ts.ingestMessage(turnCtx, al, summaryMsg)
+			p.ingestMessage(turnCtx, ts, summaryMsg)
 			if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
 				logger.WarnCF("agent", "Failed to save session after tool delivery",
 					map[string]any{

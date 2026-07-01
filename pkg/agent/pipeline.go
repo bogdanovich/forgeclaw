@@ -14,21 +14,32 @@ import (
 // It is constructed by runTurn via NewPipeline and passed to sub-methods
 // so that the coordinator can delegate phase execution.
 type Pipeline struct {
-	Bus            interfaces.MessageBus
-	Cfg            *config.Config
-	ContextManager ContextManager
-	Events         runtimeEventEmitter
-	ActiveRequests activeRequestTracker
-	ModelExecution modelExecutionResolver
-	Hooks          *HookManager
-	Fallback       *providers.FallbackChain
-	ChannelManager interfaces.ChannelManager
-	MediaStore     media.MediaStore
-	al             *AgentLoop
+	Bus                  interfaces.MessageBus
+	Cfg                  *config.Config
+	ContextManager       ContextManager
+	BackgroundCompaction backgroundCompactionScheduler
+	Events               runtimeEventEmitter
+	ActiveRequests       activeRequestTracker
+	ModelExecution       modelExecutionResolver
+	Hooks                *HookManager
+	Fallback             *providers.FallbackChain
+	ChannelManager       interfaces.ChannelManager
+	MediaStore           media.MediaStore
+	al                   *AgentLoop
 }
 
 type runtimeEventEmitter interface {
 	emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any)
+}
+
+type backgroundCompactionScheduler interface {
+	scheduleBackgroundCompaction(
+		agent *AgentInstance,
+		sessionKey string,
+		reason ContextCompressReason,
+		budget int,
+		messageKind string,
+	)
 }
 
 type activeRequestTracker interface {
@@ -59,17 +70,18 @@ type modelExecutionResolver interface {
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
 	return &Pipeline{
-		Bus:            al.bus,
-		Cfg:            al.GetConfig(),
-		ContextManager: al.contextManager,
-		Events:         al,
-		ActiveRequests: al,
-		ModelExecution: al,
-		Hooks:          al.hooks,
-		Fallback:       al.fallback,
-		ChannelManager: al.channelManager,
-		MediaStore:     al.mediaStore,
-		al:             al,
+		Bus:                  al.bus,
+		Cfg:                  al.GetConfig(),
+		ContextManager:       al.contextManager,
+		BackgroundCompaction: al,
+		Events:               al,
+		ActiveRequests:       al,
+		ModelExecution:       al,
+		Hooks:                al.hooks,
+		Fallback:             al.fallback,
+		ChannelManager:       al.channelManager,
+		MediaStore:           al.mediaStore,
+		al:                   al,
 	}
 }
 
