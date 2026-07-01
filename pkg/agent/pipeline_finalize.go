@@ -22,14 +22,12 @@ func (p *Pipeline) Finalize(
 	turnStatus TurnEndStatus,
 	finalContent string,
 ) (turnResult, error) {
-	al := p.al
-
 	// When allResponsesHandled=true, ExecuteTools already finalized
 	// (added handledToolResponseSummary, saved session, set phase to Completed).
 	// But still check for hard abort - if requested, abort the turn.
 	if exec.allResponsesHandled {
 		if ts.hardAbortRequested() {
-			return al.abortTurn(ts)
+			return p.abortTurn(ts)
 		}
 		ts.setPhase(TurnPhaseCompleted)
 		return turnResult{

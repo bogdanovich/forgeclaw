@@ -27,6 +27,7 @@ type Pipeline struct {
 	Steering             steeringDequeuer
 	Reasoning            reasoningPublisher
 	ToolDelivery         toolDeliveryManager
+	TurnControl          turnController
 	Hooks                *HookManager
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
@@ -111,6 +112,10 @@ type toolDeliveryManager interface {
 	dismissToolFeedbackForTurn(ctx context.Context, ts *turnState)
 }
 
+type turnController interface {
+	abortTurn(ts *turnState) (turnResult, error)
+}
+
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
 	return &Pipeline{
@@ -124,6 +129,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Steering:             al,
 		Reasoning:            al,
 		ToolDelivery:         al,
+		TurnControl:          al,
 		Hooks:                al.hooks,
 		Fallback:             al.fallback,
 		ChannelManager:       al.channelManager,
