@@ -28,7 +28,6 @@ func (p *Pipeline) CallLLM(
 	exec *turnExecution,
 	iteration int,
 ) (Control, error) {
-	al := p.al
 	maxMediaSize := p.Cfg.Agents.Defaults.GetMaxMediaSize()
 
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
@@ -610,14 +609,14 @@ func (p *Pipeline) CallLLM(
 			// Publish pico thoughts before the turn context is canceled at return time.
 			// The async variant can race with turn teardown and intermittently drop the
 			// thought message in CI even though the LLM produced reasoning content.
-			al.publishPicoReasoning(turnCtx, reasoningContent, ts.chatID, ts.sessionKey, exec.model.llmModelName)
+			p.publishPicoReasoning(turnCtx, reasoningContent, ts.chatID, ts.sessionKey, exec.model.llmModelName)
 		}
 	} else {
-		go al.handleReasoning(
+		go p.handleReasoning(
 			turnCtx,
 			reasoningContent,
 			ts.channel,
-			al.targetReasoningChannelID(ts.channel),
+			p.targetReasoningChannelID(ts.channel),
 		)
 	}
 	p.emitEvent(
@@ -640,7 +639,7 @@ func (p *Pipeline) CallLLM(
 		"content_chars":  len(exec.response.Content),
 		"tool_calls":     len(exec.response.ToolCalls),
 		"reasoning":      exec.response.Reasoning,
-		"target_channel": al.targetReasoningChannelID(ts.channel),
+		"target_channel": p.targetReasoningChannelID(ts.channel),
 		"channel":        ts.channel,
 	}
 	if exec.response.Usage != nil {
@@ -752,7 +751,7 @@ func (p *Pipeline) CallLLM(
 		p.ingestMessage(turnCtx, ts, assistantMsg)
 	}
 	if shouldPublishPicoToolCallInterim {
-		al.publishPicoToolCallInterim(
+		p.publishPicoToolCallInterim(
 			turnCtx,
 			ts,
 			exec.model.llmModelName,
