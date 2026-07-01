@@ -3,6 +3,8 @@
 package agent
 
 import (
+	"context"
+
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
@@ -22,6 +24,7 @@ type Pipeline struct {
 	ActiveRequests       activeRequestTracker
 	ModelExecution       modelExecutionResolver
 	Steering             steeringDequeuer
+	Reasoning            reasoningPublisher
 	Hooks                *HookManager
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
@@ -72,6 +75,20 @@ type steeringDequeuer interface {
 	dequeueSteeringMessagesForTurn(scope, senderID string) []providers.Message
 }
 
+type reasoningPublisher interface {
+	targetReasoningChannelID(channelName string) string
+	publishPicoReasoning(ctx context.Context, reasoningContent, chatID, sessionKey, modelName string)
+	publishPicoToolCallInterim(
+		ctx context.Context,
+		ts *turnState,
+		modelName string,
+		reasoningContent string,
+		content string,
+		toolCalls []providers.ToolCall,
+	)
+	handleReasoning(ctx context.Context, reasoningContent, channelName, channelID string)
+}
+
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
 	return &Pipeline{
@@ -83,6 +100,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		ActiveRequests:       al,
 		ModelExecution:       al,
 		Steering:             al,
+		Reasoning:            al,
 		Hooks:                al.hooks,
 		Fallback:             al.fallback,
 		ChannelManager:       al.channelManager,
