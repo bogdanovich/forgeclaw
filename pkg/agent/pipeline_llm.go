@@ -663,7 +663,7 @@ func (p *Pipeline) CallLLM(
 			responseContent,
 			false,
 		)
-		if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
+		if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(
 			steerMsgs,
 		) > 0 {
 			exec.markSteeringObserved()

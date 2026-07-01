@@ -410,7 +410,7 @@ toolLoop:
 						p.ingestMessage(turnCtx, ts, toolResultMsg)
 					}
 
-					if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(steerMsgs) > 0 {
+					if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(steerMsgs) > 0 {
 						exec.markAdditionalUserInputObserved()
 						exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 					}
@@ -808,7 +808,7 @@ toolLoop:
 			p.ingestMessage(turnCtx, ts, toolResultMsg)
 		}
 
-		if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(steerMsgs) > 0 {
+		if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(steerMsgs) > 0 {
 			exec.markSteeringObserved()
 			exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 		}
@@ -892,7 +892,7 @@ toolLoop:
 	}
 
 	// Poll for newly arrived steering
-	if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
+	if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(
 		steerMsgs,
 	) > 0 {
 		exec.markSteeringObserved()
