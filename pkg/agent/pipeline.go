@@ -21,6 +21,7 @@ type Pipeline struct {
 	Events               runtimeEventEmitter
 	ActiveRequests       activeRequestTracker
 	ModelExecution       modelExecutionResolver
+	Steering             steeringDequeuer
 	Hooks                *HookManager
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
@@ -67,6 +68,10 @@ type modelExecutionResolver interface {
 	) (effectiveExecutionState, func(), error)
 }
 
+type steeringDequeuer interface {
+	dequeueSteeringMessagesForTurn(scope, senderID string) []providers.Message
+}
+
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
 	return &Pipeline{
@@ -77,6 +82,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Events:               al,
 		ActiveRequests:       al,
 		ModelExecution:       al,
+		Steering:             al,
 		Hooks:                al.hooks,
 		Fallback:             al.fallback,
 		ChannelManager:       al.channelManager,
