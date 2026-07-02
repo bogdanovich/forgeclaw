@@ -188,13 +188,6 @@ func renderFinalTurnReply(
 	return strings.TrimSpace(fallback)
 }
 
-func shouldFinalizeAfterToolLoopWithRender(al *AgentLoop, exec *turnExecution) bool {
-	if al == nil {
-		return false
-	}
-	return shouldFinalizeAfterToolLoopWithRenderConfig(al.cfg, exec)
-}
-
 func shouldFinalizeAfterToolLoopWithRenderConfig(cfg *config.Config, exec *turnExecution) bool {
 	if !finalTurnRenderEligibleForConfig(cfg, exec) {
 		return false
