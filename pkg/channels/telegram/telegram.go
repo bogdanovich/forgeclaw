@@ -420,12 +420,23 @@ func (c *TelegramChannel) sendChunk(
 
 	pMsg, err := c.bot.SendMessage(ctx, tgMsg)
 	if err != nil {
-		logParseFailed(err, params.useMarkdownV2)
+		if shouldFallbackToPlainText(err) {
+			logFormattingFallback(err, params.useMarkdownV2)
 
-		tgMsg.Text = params.mdFallback
-		tgMsg.ParseMode = ""
-		pMsg, err = c.bot.SendMessage(ctx, tgMsg)
-		if err != nil {
+			tgMsg.Text = params.mdFallback
+			tgMsg.ParseMode = ""
+			pMsg, err = c.bot.SendMessage(ctx, tgMsg)
+			if err != nil {
+				return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+			}
+		} else {
+			logger.WarnCF("telegram", "sendMessage failed", map[string]any{
+				"chat_id":    params.chatID,
+				"thread_id":  params.threadID,
+				"reply_to":   params.replyToID,
+				"parse_mode": telegramParseModeName(params.useMarkdownV2),
+				"error":      err.Error(),
+			})
 			return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
 		}
 	}
@@ -505,10 +516,10 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 			return nil
 		}
 
-		// Only fallback to plain text if the error looks like a parsing failure (Bad Request).
-		// Network errors or timeouts should NOT trigger a retry with different content.
-		if strings.Contains(err.Error(), "Bad Request") {
-			logParseFailed(err, useMarkdownV2)
+		// Only fallback to plain text for formatting errors. Network errors or
+		// timeouts should not trigger a retry with different content.
+		if shouldFallbackToPlainText(err) {
+			logFormattingFallback(err, useMarkdownV2)
 			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
 		}
 	}
@@ -1868,18 +1879,31 @@ func (c *TelegramChannel) ResolveOutboundChatID(chatID string, outboundCtx *bus.
 	return fmt.Sprintf("%d", resolvedChatID)
 }
 
-func logParseFailed(err error, useMarkdownV2 bool) {
-	parsingName := "HTML"
-	if useMarkdownV2 {
-		parsingName = "MarkdownV2"
-	}
-
+func logFormattingFallback(err error, useMarkdownV2 bool) {
 	logger.ErrorCF("telegram",
-		fmt.Sprintf("%s parse failed, falling back to plain text", parsingName),
+		fmt.Sprintf("%s formatting rejected, falling back to plain text", telegramParseModeName(useMarkdownV2)),
 		map[string]any{
 			"error": err.Error(),
 		},
 	)
+}
+
+func telegramParseModeName(useMarkdownV2 bool) string {
+	if useMarkdownV2 {
+		return "MarkdownV2"
+	}
+	return "HTML"
+}
+
+func shouldFallbackToPlainText(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "parse entities") ||
+		strings.Contains(lower, "can't parse entities") ||
+		strings.Contains(lower, "unsupported start tag") ||
+		strings.Contains(lower, "unsupported end tag")
 }
 
 // isBotMentioned checks if the bot is mentioned in the message via entities.

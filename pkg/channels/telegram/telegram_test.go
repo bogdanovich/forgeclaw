@@ -1063,7 +1063,7 @@ func TestSend_HTMLFallback_PerChunk(t *testing.T) {
 func TestSend_HTMLFallback_BothFail(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return nil, errors.New("send failed")
+			return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -1078,12 +1078,30 @@ func TestSend_HTMLFallback_BothFail(t *testing.T) {
 	assert.Equal(t, 2, len(caller.calls), "should have HTML attempt + plain text attempt")
 }
 
+func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return nil, errors.New("send failed")
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello",
+	})
+
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, channels.ErrTemporary), "error should wrap ErrTemporary")
+	assert.Equal(t, 1, len(caller.calls), "should not retry as plain text for non-formatting errors")
+}
+
 func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 	// With a long message that gets split into 2 chunks, if both HTML and
 	// plain text fail on the first chunk, Send should return early.
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return nil, errors.New("send failed")
+			return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
 		},
 	}
 	ch := newTestChannel(t, caller)
