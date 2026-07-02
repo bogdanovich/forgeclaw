@@ -769,7 +769,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+					return nil, fmt.Errorf(
+						"telegram rewind media after caption parse failure: %w",
+						channels.ErrTemporary,
+					)
 				}
 				params.Caption = part.Caption
 				params.ParseMode = ""
@@ -796,7 +799,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				if err != nil && telegramIsParseModeError(err) {
 					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 						file.Close()
-						return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+						return nil, fmt.Errorf(
+							"telegram rewind media after caption parse failure: %w",
+							channels.ErrTemporary,
+						)
 					}
 					docParams.Caption = part.Caption
 					docParams.ParseMode = ""
@@ -823,7 +829,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				if err != nil && telegramIsParseModeError(err) {
 					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 						file.Close()
-						return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+						return nil, fmt.Errorf(
+							"telegram rewind media after caption parse failure: %w",
+							channels.ErrTemporary,
+						)
 					}
 					vparams.Caption = part.Caption
 					vparams.ParseMode = ""
@@ -845,7 +854,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				if err != nil && telegramIsParseModeError(err) {
 					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 						file.Close()
-						return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+						return nil, fmt.Errorf(
+							"telegram rewind media after caption parse failure: %w",
+							channels.ErrTemporary,
+						)
 					}
 					params.Caption = part.Caption
 					params.ParseMode = ""
@@ -863,7 +875,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+					return nil, fmt.Errorf(
+						"telegram rewind media after caption parse failure: %w",
+						channels.ErrTemporary,
+					)
 				}
 				params.Caption = part.Caption
 				params.ParseMode = ""
@@ -880,7 +895,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+					return nil, fmt.Errorf(
+						"telegram rewind media after caption parse failure: %w",
+						channels.ErrTemporary,
+					)
 				}
 				params.Caption = part.Caption
 				params.ParseMode = ""
