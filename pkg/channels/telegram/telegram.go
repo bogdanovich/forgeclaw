@@ -1088,6 +1088,7 @@ func telegramIsParseModeError(err error) bool {
 	return strings.Contains(msg, "can't parse") ||
 		strings.Contains(msg, "parse entities") ||
 		strings.Contains(msg, "unsupported start tag") ||
+		strings.Contains(msg, "unsupported end tag") ||
 		strings.Contains(msg, "entity is not closed")
 }
 
@@ -1946,14 +1947,7 @@ func telegramParseModeName(useMarkdownV2 bool) string {
 }
 
 func shouldFallbackToPlainText(err error) bool {
-	if err == nil {
-		return false
-	}
-	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, "parse entities") ||
-		strings.Contains(lower, "can't parse entities") ||
-		strings.Contains(lower, "unsupported start tag") ||
-		strings.Contains(lower, "unsupported end tag")
+	return telegramIsParseModeError(err)
 }
 
 // isBotMentioned checks if the bot is mentioned in the message via entities.

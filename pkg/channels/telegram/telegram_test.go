@@ -1144,6 +1144,28 @@ func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
 	assert.Equal(t, 1, len(caller.calls), "should not retry as plain text for non-formatting errors")
 }
 
+func TestSend_EntityNotClosedError_FallsBackToPlainText(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: entity is not closed"`)
+			}
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "<b>hello",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(caller.calls), "should retry as plain text for entity-not-closed parse errors")
+}
+
 func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 	// With a long message that gets split into 2 chunks, if both HTML and
 	// plain text fail on the first chunk, Send should return early.
