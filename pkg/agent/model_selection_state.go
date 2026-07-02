@@ -290,3 +290,12 @@ func updateAutoFallbackSelection(
 	}
 	_ = al.setAutoModelSelection(routeSessionKey, selection)
 }
+
+func (al *AgentLoop) updateAutoFallbackSelection(
+	routeSessionKey string,
+	selectedCandidates []providers.FallbackCandidate,
+	result *providers.FallbackResult,
+	usedLight bool,
+) {
+	updateAutoFallbackSelection(al, routeSessionKey, selectedCandidates, result, usedLight)
+}

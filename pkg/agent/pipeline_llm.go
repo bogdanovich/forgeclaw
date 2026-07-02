@@ -252,9 +252,7 @@ func (p *Pipeline) CallLLM(
 				break
 			}
 			if exec.model.autoFallback {
-				updateAutoFallbackSelection(
-					p.al,
-					ts.model.RouteSessionKey,
+				p.updateAutoFallbackSelection(ts.model.RouteSessionKey,
 					exec.model.selectedCandidates,
 					fbResult,
 					exec.model.usedLight,
@@ -273,9 +271,7 @@ func (p *Pipeline) CallLLM(
 			exec.model.autoFallback &&
 			strings.TrimSpace(ts.model.RouteSessionKey) != "" &&
 			len(exec.model.selectedCandidates) > 0 {
-			updateAutoFallbackSelection(
-				p.al,
-				ts.model.RouteSessionKey,
+			p.updateAutoFallbackSelection(ts.model.RouteSessionKey,
 				exec.model.selectedCandidates,
 				&providers.FallbackResult{
 					Response: resp,
