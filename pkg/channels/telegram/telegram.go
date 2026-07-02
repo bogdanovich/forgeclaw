@@ -1085,11 +1085,23 @@ func telegramIsParseModeError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "can't parse") ||
+	if strings.Contains(msg, "can't parse") ||
 		strings.Contains(msg, "parse entities") ||
 		strings.Contains(msg, "unsupported start tag") ||
 		strings.Contains(msg, "unsupported end tag") ||
-		strings.Contains(msg, "entity is not closed")
+		strings.Contains(msg, "entity is not closed") {
+		return true
+	}
+
+	if !strings.Contains(msg, "bad request") {
+		return false
+	}
+
+	return strings.Contains(msg, "entity") ||
+		strings.Contains(msg, "entities") ||
+		strings.Contains(msg, "tag") ||
+		strings.Contains(msg, "parse") ||
+		strings.Contains(msg, "markup")
 }
 
 func (c *TelegramChannel) sendCaptionText(
