@@ -767,12 +767,16 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
 			tgResult, err = c.bot.SendPhoto(ctx, params)
 			if err != nil && telegramIsParseModeError(err) {
+				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
+					file.Close()
+					return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+				}
 				params.Caption = part.Caption
 				params.ParseMode = ""
 				tgResult, err = c.bot.SendPhoto(ctx, params)
 			}
 			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
-				if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
+				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
 					return nil, fmt.Errorf("telegram rewind media after photo failure: %w", channels.ErrTemporary)
 				}
@@ -790,6 +794,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				)
 				tgResult, err = c.bot.SendDocument(ctx, docParams)
 				if err != nil && telegramIsParseModeError(err) {
+					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
+						file.Close()
+						return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+					}
 					docParams.Caption = part.Caption
 					docParams.ParseMode = ""
 					tgResult, err = c.bot.SendDocument(ctx, docParams)
@@ -813,6 +821,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				)
 				tgResult, err = c.bot.SendVoice(ctx, vparams)
 				if err != nil && telegramIsParseModeError(err) {
+					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
+						file.Close()
+						return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+					}
 					vparams.Caption = part.Caption
 					vparams.ParseMode = ""
 					tgResult, err = c.bot.SendVoice(ctx, vparams)
@@ -831,6 +843,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				)
 				tgResult, err = c.bot.SendAudio(ctx, params)
 				if err != nil && telegramIsParseModeError(err) {
+					if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
+						file.Close()
+						return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+					}
 					params.Caption = part.Caption
 					params.ParseMode = ""
 					tgResult, err = c.bot.SendAudio(ctx, params)
@@ -845,6 +861,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
 			tgResult, err = c.bot.SendVideo(ctx, params)
 			if err != nil && telegramIsParseModeError(err) {
+				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
+					file.Close()
+					return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+				}
 				params.Caption = part.Caption
 				params.ParseMode = ""
 				tgResult, err = c.bot.SendVideo(ctx, params)
@@ -858,6 +878,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
 			tgResult, err = c.bot.SendDocument(ctx, params)
 			if err != nil && telegramIsParseModeError(err) {
+				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
+					file.Close()
+					return nil, fmt.Errorf("telegram rewind media after caption parse failure: %w", channels.ErrTemporary)
+				}
 				params.Caption = part.Caption
 				params.ParseMode = ""
 				tgResult, err = c.bot.SendDocument(ctx, params)
@@ -883,6 +907,14 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 
 	return messageIDs, nil
+}
+
+func rewindTelegramUpload(file *os.File) error {
+	if file == nil {
+		return fmt.Errorf("file is nil")
+	}
+	_, err := file.Seek(0, io.SeekStart)
+	return err
 }
 
 func telegramCanSendMediaGroup(parts []bus.MediaPart) bool {

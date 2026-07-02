@@ -308,6 +308,54 @@ func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 	assert.NotContains(t, caller.calls[0].URL, "sendDocument")
 }
 
+func TestSendMedia_ImageCaptionParseFallbackRewindsUpload(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			switch {
+			case strings.Contains(url, "sendPhoto") && callCount == 1:
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+			case strings.Contains(url, "sendPhoto") && callCount == 2:
+				return successResponse(t), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "image.png")
+	content := []byte("fake-png-content")
+	require.NoError(t, os.WriteFile(localPath, content, 0o644))
+
+	ref, err := store.Store(localPath, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "image",
+			Ref:     ref,
+			Caption: "<b>caption</b>",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	require.Len(t, constructor.calls, 2)
+	assert.Equal(t, len(content), constructor.calls[0].FileSizes["photo"])
+	assert.Equal(t, len(content), constructor.calls[1].FileSizes["photo"])
+	assert.Equal(t, "", constructor.calls[1].Parameters["parse_mode"])
+	assert.Equal(t, "<b>caption</b>", constructor.calls[1].Parameters["caption"])
+}
+
 func TestSendMedia_MultipleImagesUseMediaGroup(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	caller := &stubCaller{
