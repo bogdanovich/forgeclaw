@@ -504,6 +504,9 @@ func DefaultConfig() *Config {
 			TaskBoardExecuteNext: ToolConfig{
 				Enabled: false,
 			},
+			TaskBoardExecuteAll: ToolConfig{
+				Enabled: false,
+			},
 			UpdatePlan: ToolConfig{
 				Enabled: false,
 			},

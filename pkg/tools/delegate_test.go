@@ -13,12 +13,14 @@ import (
 // delegateMockSpawner records the config and returns a canned result.
 type delegateMockSpawner struct {
 	lastCfg SubTurnConfig
+	calls   []SubTurnConfig
 	result  *ToolResult
 	err     error
 }
 
 func (m *delegateMockSpawner) SpawnSubTurn(_ context.Context, cfg SubTurnConfig) (*ToolResult, error) {
 	m.lastCfg = cfg
+	m.calls = append(m.calls, cfg)
 	if m.err != nil {
 		return nil, m.err
 	}
