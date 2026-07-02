@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -44,7 +45,14 @@ func finalTurnRenderEligible(al *AgentLoop, exec *turnExecution) bool {
 	if al == nil || exec == nil {
 		return false
 	}
-	if !al.cfg.Agents.Defaults.UseFinalTurnRender() {
+	return finalTurnRenderEligibleForConfig(al.cfg, exec)
+}
+
+func finalTurnRenderEligibleForConfig(cfg *config.Config, exec *turnExecution) bool {
+	if cfg == nil || exec == nil {
+		return false
+	}
+	if !cfg.Agents.Defaults.UseFinalTurnRender() {
 		return false
 	}
 	return exec.sawSteering
@@ -180,8 +188,8 @@ func renderFinalTurnReply(
 	return strings.TrimSpace(fallback)
 }
 
-func shouldFinalizeAfterToolLoopWithRender(al *AgentLoop, exec *turnExecution) bool {
-	if !finalTurnRenderEligible(al, exec) {
+func shouldFinalizeAfterToolLoopWithRenderConfig(cfg *config.Config, exec *turnExecution) bool {
+	if !finalTurnRenderEligibleForConfig(cfg, exec) {
 		return false
 	}
 	if exec == nil {
