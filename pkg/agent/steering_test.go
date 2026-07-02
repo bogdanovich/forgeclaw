@@ -1544,15 +1544,27 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for first provider call to start")
 	}
+	active := al.GetActiveTurn()
+	if active == nil || active.SessionKey == "" {
+		t.Fatal("expected active turn with session key")
+	}
+	sessionKey := active.SessionKey
 
 	if err := msgBus.PublishInbound(pubCtx, late); err != nil {
 		t.Fatalf("publish late inbound: %v", err)
 	}
 	waitForSpoolEntries(t, spoolDir, "*.processing", 2)
+	deadline := time.Now().Add(2 * time.Second)
+	for al.pendingSteeringCountForScope(sessionKey) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for late message to enter steering queue")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	close(provider.releaseFirstCall)
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for {
 		processing, procErr := filepath.Glob(filepath.Join(spoolDir, "*.processing"))
 		if procErr != nil {
