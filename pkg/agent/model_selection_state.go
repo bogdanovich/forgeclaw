@@ -91,39 +91,42 @@ func normalizeSelection(sel state.AutoModelSelection) state.AutoModelSelection {
 	return sel
 }
 
-func (al *AgentLoop) getAutoModelSelection(routeSessionKey string) (state.AutoModelSelection, bool) {
-	if al == nil || al.state == nil {
+func (m *modelExecutionManager) getAutoModelSelection(routeSessionKey string) (state.AutoModelSelection, bool) {
+	if m == nil || m.state == nil {
 		return state.AutoModelSelection{}, false
 	}
-	sel, ok := al.state.GetAutoModelSelection(routeSessionKey)
+	sel, ok := m.state.GetAutoModelSelection(routeSessionKey)
 	if !ok {
 		return state.AutoModelSelection{}, false
 	}
 	return normalizeSelection(sel), true
 }
 
-func (al *AgentLoop) setAutoModelSelection(routeSessionKey string, selection state.AutoModelSelection) error {
-	if al == nil || al.state == nil {
+func (m *modelExecutionManager) setAutoModelSelection(
+	routeSessionKey string,
+	selection state.AutoModelSelection,
+) error {
+	if m == nil || m.state == nil {
 		return fmt.Errorf("state manager not initialized")
 	}
 	selection = normalizeSelection(selection)
-	if err := al.state.SetAutoModelSelection(routeSessionKey, selection); err != nil {
+	if err := m.state.SetAutoModelSelection(routeSessionKey, selection); err != nil {
 		return err
 	}
 	logger.InfoCF("agent", "Auto fallback pinned", autoModelSelectionLogFields(routeSessionKey, selection))
 	return nil
 }
 
-func (al *AgentLoop) clearAutoModelSelection(routeSessionKey string) error {
-	return al.clearAutoModelSelectionWithReason(routeSessionKey, "explicit")
+func (m *modelExecutionManager) clearAutoModelSelection(routeSessionKey string) error {
+	return m.clearAutoModelSelectionWithReason(routeSessionKey, "explicit")
 }
 
-func (al *AgentLoop) clearAutoModelSelectionWithReason(routeSessionKey, clearReason string) error {
-	if al == nil || al.state == nil {
+func (m *modelExecutionManager) clearAutoModelSelectionWithReason(routeSessionKey, clearReason string) error {
+	if m == nil || m.state == nil {
 		return fmt.Errorf("state manager not initialized")
 	}
-	sel, ok := al.getAutoModelSelection(routeSessionKey)
-	if err := al.state.ClearAutoModelSelection(routeSessionKey); err != nil {
+	sel, ok := m.getAutoModelSelection(routeSessionKey)
+	if err := m.state.ClearAutoModelSelection(routeSessionKey); err != nil {
 		return err
 	}
 	if ok {
@@ -134,7 +137,7 @@ func (al *AgentLoop) clearAutoModelSelectionWithReason(routeSessionKey, clearRea
 	return nil
 }
 
-func (al *AgentLoop) selectCandidates(
+func (m *modelExecutionManager) selectCandidates(
 	execution effectiveExecutionState,
 	userMsg string,
 	history []providers.Message,
@@ -178,24 +181,24 @@ func (al *AgentLoop) selectCandidates(
 		return decision
 	}
 
-	return al.applyStickyAutoFallback(decision, routeSessionKey)
+	return m.applyStickyAutoFallback(decision, routeSessionKey)
 }
 
-func (al *AgentLoop) applyStickyAutoFallback(
+func (m *modelExecutionManager) applyStickyAutoFallback(
 	decision modelSelectionDecision,
 	routeSessionKey string,
 ) modelSelectionDecision {
-	return al.applyStickyAutoFallbackWithMode(decision, routeSessionKey, true)
+	return m.applyStickyAutoFallbackWithMode(decision, routeSessionKey, true)
 }
 
-func (al *AgentLoop) previewStickyAutoFallback(
+func (m *modelExecutionManager) previewStickyAutoFallback(
 	decision modelSelectionDecision,
 	routeSessionKey string,
 ) modelSelectionDecision {
-	return al.applyStickyAutoFallbackWithMode(decision, routeSessionKey, false)
+	return m.applyStickyAutoFallbackWithMode(decision, routeSessionKey, false)
 }
 
-func (al *AgentLoop) applyStickyAutoFallbackWithMode(
+func (m *modelExecutionManager) applyStickyAutoFallbackWithMode(
 	decision modelSelectionDecision,
 	routeSessionKey string,
 	mutate bool,
@@ -204,19 +207,19 @@ func (al *AgentLoop) applyStickyAutoFallbackWithMode(
 		return decision
 	}
 
-	sel, ok := al.getAutoModelSelection(routeSessionKey)
+	sel, ok := m.getAutoModelSelection(routeSessionKey)
 	if !ok {
 		return decision
 	}
 	if sel.ExpiresAt.IsZero() || time.Now().After(sel.ExpiresAt) {
 		if mutate {
-			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "expired")
+			_ = m.clearAutoModelSelectionWithReason(routeSessionKey, "expired")
 		}
 		return decision
 	}
 	if !selectedModelMatchesSelection(decision.selectedCandidates[0], sel) {
 		if mutate {
-			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "selected_model_mismatch")
+			_ = m.clearAutoModelSelectionWithReason(routeSessionKey, "selected_model_mismatch")
 		}
 		return decision
 	}
@@ -224,7 +227,7 @@ func (al *AgentLoop) applyStickyAutoFallbackWithMode(
 	reordered, matched := reorderCandidatesForAutoFallback(decision.activeCandidates, sel)
 	if !matched {
 		if mutate {
-			_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "active_candidate_missing")
+			_ = m.clearAutoModelSelectionWithReason(routeSessionKey, "active_candidate_missing")
 		}
 		return decision
 	}
@@ -250,14 +253,13 @@ func fallbackReasonForSelection(result *providers.FallbackResult) providers.Fail
 	return ""
 }
 
-func updateAutoFallbackSelection(
-	al *AgentLoop,
+func (m *modelExecutionManager) updateAutoFallbackSelection(
 	routeSessionKey string,
 	selectedCandidates []providers.FallbackCandidate,
 	result *providers.FallbackResult,
 	usedLight bool,
 ) {
-	if al == nil ||
+	if m == nil ||
 		usedLight ||
 		strings.TrimSpace(routeSessionKey) == "" ||
 		len(selectedCandidates) == 0 ||
@@ -270,7 +272,7 @@ func updateAutoFallbackSelection(
 	selectedKey := providers.ModelKey(selected.Provider, selected.Model)
 
 	if winnerKey == selectedKey {
-		_ = al.clearAutoModelSelectionWithReason(routeSessionKey, "primary_recovered")
+		_ = m.clearAutoModelSelectionWithReason(routeSessionKey, "primary_recovered")
 		return
 	}
 
@@ -288,7 +290,7 @@ func updateAutoFallbackSelection(
 		Reason:           string(reason),
 		ExpiresAt:        time.Now().Add(ttl),
 	}
-	_ = al.setAutoModelSelection(routeSessionKey, selection)
+	_ = m.setAutoModelSelection(routeSessionKey, selection)
 }
 
 func (al *AgentLoop) updateAutoFallbackSelection(
@@ -297,5 +299,60 @@ func (al *AgentLoop) updateAutoFallbackSelection(
 	result *providers.FallbackResult,
 	usedLight bool,
 ) {
-	updateAutoFallbackSelection(al, routeSessionKey, selectedCandidates, result, usedLight)
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return
+	}
+	manager.updateAutoFallbackSelection(routeSessionKey, selectedCandidates, result, usedLight)
+}
+
+func (al *AgentLoop) getAutoModelSelection(routeSessionKey string) (state.AutoModelSelection, bool) {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return state.AutoModelSelection{}, false
+	}
+	return manager.getAutoModelSelection(routeSessionKey)
+}
+
+func (al *AgentLoop) setAutoModelSelection(
+	routeSessionKey string,
+	selection state.AutoModelSelection,
+) error {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return fmt.Errorf("model execution manager not initialized")
+	}
+	return manager.setAutoModelSelection(routeSessionKey, selection)
+}
+
+func (al *AgentLoop) clearAutoModelSelection(routeSessionKey string) error {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return fmt.Errorf("model execution manager not initialized")
+	}
+	return manager.clearAutoModelSelection(routeSessionKey)
+}
+
+func (al *AgentLoop) selectCandidates(
+	execution effectiveExecutionState,
+	userMsg string,
+	history []providers.Message,
+	routeSessionKey string,
+) modelSelectionDecision {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return modelSelectionDecision{}
+	}
+	return manager.selectCandidates(execution, userMsg, history, routeSessionKey)
+}
+
+func (al *AgentLoop) previewStickyAutoFallback(
+	decision modelSelectionDecision,
+	routeSessionKey string,
+) modelSelectionDecision {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return decision
+	}
+	return manager.previewStickyAutoFallback(decision, routeSessionKey)
 }

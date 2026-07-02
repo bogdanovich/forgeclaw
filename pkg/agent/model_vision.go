@@ -24,7 +24,7 @@ func resolveVisionOverrideModel(mc *config.ModelConfig) (string, []string, bool)
 	return primary, fallbacks, true
 }
 
-func (al *AgentLoop) maybeBuildVisionExecutionState(
+func (m *modelExecutionManager) maybeBuildVisionExecutionState(
 	baseAgent *AgentInstance,
 	execution effectiveExecutionState,
 	messages []providers.Message,
@@ -33,26 +33,39 @@ func (al *AgentLoop) maybeBuildVisionExecutionState(
 		return execution, nil, visionRouteSameModel, false, nil
 	}
 
+	cfg := m.config()
 	activeModelConfig := resolveActiveModelConfig(
-		al.GetConfig(),
+		cfg,
 		baseAgent.Workspace,
 		execution.Candidates,
 		execution.Model,
-		al.GetConfig().Agents.Defaults.Provider,
+		cfg.Agents.Defaults.Provider,
 	)
 	primary, fallbacks, ok := resolveVisionOverrideModel(activeModelConfig)
 	if !ok {
 		return execution, nil, visionRouteSameModel, false, nil
 	}
 
-	visionExecution, cleanup, err := al.buildExecutionStateForModel(baseAgent, primary, fallbacks)
+	visionExecution, cleanup, err := m.buildExecutionStateForModel(baseAgent, primary, fallbacks)
 	if err != nil {
 		return effectiveExecutionState{}, nil, "", false, err
 	}
 	return visionExecution, cleanup, visionRouteModelOverride, true, nil
 }
 
-func (al *AgentLoop) maybeApplyVisionExecutionState(
+func (al *AgentLoop) maybeBuildVisionExecutionState(
+	baseAgent *AgentInstance,
+	execution effectiveExecutionState,
+	messages []providers.Message,
+) (effectiveExecutionState, func(), string, bool, error) {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return execution, nil, visionRouteSameModel, false, nil
+	}
+	return manager.maybeBuildVisionExecutionState(baseAgent, execution, messages)
+}
+
+func (m *modelExecutionManager) maybeApplyVisionExecutionState(
 	baseAgent *AgentInstance,
 	exec *turnExecution,
 ) (bool, error) {
@@ -63,14 +76,15 @@ func (al *AgentLoop) maybeApplyVisionExecutionState(
 		return false, nil
 	}
 
+	cfg := m.config()
 	activeModelConfig := exec.model.activeModelConfig
 	if activeModelConfig == nil {
 		activeModelConfig = resolveActiveModelConfig(
-			al.GetConfig(),
+			cfg,
 			baseAgent.Workspace,
 			exec.model.activeCandidates,
 			exec.model.activeModel,
-			al.GetConfig().Agents.Defaults.Provider,
+			cfg.Agents.Defaults.Provider,
 		)
 	}
 	primary, fallbacks, ok := resolveVisionOverrideModel(activeModelConfig)
@@ -78,7 +92,7 @@ func (al *AgentLoop) maybeApplyVisionExecutionState(
 		return false, nil
 	}
 
-	visionExecution, cleanup, err := al.buildExecutionStateForModel(baseAgent, primary, fallbacks)
+	visionExecution, cleanup, err := m.buildExecutionStateForModel(baseAgent, primary, fallbacks)
 	if err != nil {
 		return false, err
 	}
@@ -91,11 +105,11 @@ func (al *AgentLoop) maybeApplyVisionExecutionState(
 	exec.model.activeCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
 	exec.model.activeModel = resolvedCandidateModel(visionExecution.Candidates, visionExecution.Model)
 	exec.model.activeModelConfig = resolveActiveModelConfig(
-		al.GetConfig(),
+		cfg,
 		baseAgent.Workspace,
 		visionExecution.Candidates,
 		visionExecution.Model,
-		al.GetConfig().Agents.Defaults.Provider,
+		cfg.Agents.Defaults.Provider,
 	)
 	exec.model.llmModelName = resolvedCandidateModelName(
 		visionExecution.Candidates,
@@ -109,4 +123,15 @@ func (al *AgentLoop) maybeApplyVisionExecutionState(
 	exec.model.visionRoute = visionRouteModelOverride
 
 	return true, nil
+}
+
+func (al *AgentLoop) maybeApplyVisionExecutionState(
+	baseAgent *AgentInstance,
+	exec *turnExecution,
+) (bool, error) {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return false, nil
+	}
+	return manager.maybeApplyVisionExecutionState(baseAgent, exec)
 }

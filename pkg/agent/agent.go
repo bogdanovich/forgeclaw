@@ -50,6 +50,7 @@ type AgentLoop struct {
 	running          atomic.Bool
 	contextManager   ContextManager
 	fallback         *providers.FallbackChain
+	modelExecution   *modelExecutionManager
 	channelManager   interfaces.ChannelManager
 	mediaStore       media.MediaStore
 	transcriber      asr.Transcriber

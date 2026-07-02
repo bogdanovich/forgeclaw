@@ -95,6 +95,9 @@ func NewAgentLoop(
 	al.activeReqCond = sync.NewCond(&al.activeReqMu)
 	al.refreshRuntimeEventLogger(cfg)
 	al.providerFactory = providers.CreateProviderFromConfig
+	al.modelExecution = newModelExecutionManager(cfg, stateManager, func() modelProviderFactory {
+		return al.providerFactory
+	})
 	al.hooks = NewHookManager(al.runtimeEvents.Channel())
 	configureHookManagerFromConfig(al.hooks, cfg)
 	al.contextManager = al.resolveContextManager()

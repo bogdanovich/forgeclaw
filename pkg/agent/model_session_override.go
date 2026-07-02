@@ -140,7 +140,7 @@ func cloneCandidateProviderMap(
 	return out
 }
 
-func (al *AgentLoop) buildExecutionStateForModel(
+func (m *modelExecutionManager) buildExecutionStateForModel(
 	baseAgent *AgentInstance,
 	modelName string,
 	fallbacks []string,
@@ -148,16 +148,13 @@ func (al *AgentLoop) buildExecutionStateForModel(
 	if baseAgent == nil {
 		return effectiveExecutionState{}, nil, fmt.Errorf("agent not initialized")
 	}
-	cfg := al.GetConfig()
+	cfg := m.config()
 	modelCfg, err := resolvedModelConfig(cfg, modelName, baseAgent.Workspace)
 	if err != nil {
 		return effectiveExecutionState{}, nil, err
 	}
 
-	factory := al.providerFactory
-	if factory == nil {
-		factory = providers.CreateProviderFromConfig
-	}
+	factory := m.currentProviderFactory()
 	overrideProvider, _, err := factory(modelCfg)
 	if err != nil {
 		return effectiveExecutionState{}, nil, fmt.Errorf("failed to initialize model %q: %w", modelName, err)
@@ -226,6 +223,18 @@ func (al *AgentLoop) buildExecutionStateForModel(
 		ThinkingLevel:           parseThinkingLevel(modelCfg.ThinkingLevel),
 		ThinkingLevelConfigured: isConfiguredThinkingLevel(modelCfg.ThinkingLevel),
 	}, cleanup, nil
+}
+
+func (al *AgentLoop) buildExecutionStateForModel(
+	baseAgent *AgentInstance,
+	modelName string,
+	fallbacks []string,
+) (effectiveExecutionState, func(), error) {
+	manager := al.modelExecutionManager()
+	if manager == nil {
+		return effectiveExecutionState{}, nil, fmt.Errorf("model execution manager not initialized")
+	}
+	return manager.buildExecutionStateForModel(baseAgent, modelName, fallbacks)
 }
 
 func (al *AgentLoop) buildSessionOverrideExecution(
