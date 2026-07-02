@@ -259,7 +259,6 @@ func (p *Pipeline) ExecuteTools(
 	exec *turnExecution,
 	iteration int,
 ) ToolControl {
-	al := p.al
 	normalizedToolCalls := exec.normalizedToolCalls
 
 	ts.setPhase(TurnPhaseTools)
@@ -907,7 +906,7 @@ toolLoop:
 	}
 
 	// No pending steering: finalize or break depending on allResponsesHandled
-	if shouldFinalizeAfterToolLoopWithRender(al, exec) {
+	if shouldFinalizeAfterToolLoopWithRenderConfig(p.Cfg, exec) {
 		logger.InfoCF(
 			"agent",
 			"Tool loop completed; rendering terminal reply from accumulated turn context",
