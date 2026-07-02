@@ -33,7 +33,6 @@ type Pipeline struct {
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
-	al                   *AgentLoop
 }
 
 type runtimeEventEmitter interface {
@@ -145,7 +144,6 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Fallback:             al.fallback,
 		ChannelManager:       al.channelManager,
 		MediaStore:           al.mediaStore,
-		al:                   al,
 	}
 }
 
