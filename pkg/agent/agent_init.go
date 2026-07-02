@@ -387,6 +387,13 @@ func registerSharedTools(
 				logger.WarnCF("agent", "task_board_execute_next requires delegate tool", nil)
 			}
 		}
+		if cfg.Tools.IsToolEnabled("task_board_execute_all") {
+			if _, ok := agent.Tools.Get("delegate"); ok {
+				registerToolIfAllowed(agent, tools.NewTaskBoardExecuteAllTool(taskRegistry, agent.Tools))
+			} else {
+				logger.WarnCF("agent", "task_board_execute_all requires delegate tool", nil)
+			}
+		}
 
 		warnOnUnknownAgentToolDeclarations(agentID, agent.Workspace, agent.Definition, agent.Tools)
 	}

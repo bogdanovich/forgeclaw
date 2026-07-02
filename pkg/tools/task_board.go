@@ -821,8 +821,8 @@ func taskBoardNextStep(
 		out.SpawnArgs["label"] = firstNonEmpty(step.StepTitle, step.StepID)
 		applyTaskBoardExecutionHints(out.DelegateArgs, out.SpawnArgs, meta)
 		if len(step.DependsOn) > 0 {
-			out.DelegateArgs["depends_on"] = append([]string(nil), step.DependsOn...)
-			out.SpawnArgs["depends_on"] = append([]string(nil), step.DependsOn...)
+			out.DelegateArgs["depends_on"] = taskBoardStringSliceAsAny(step.DependsOn)
+			out.SpawnArgs["depends_on"] = taskBoardStringSliceAsAny(step.DependsOn)
 		}
 		return out
 	}
@@ -846,6 +846,14 @@ func applyTaskBoardExecutionHints(delegateArgs, spawnArgs map[string]any, meta t
 	if meta.TimeoutSeconds > 0 {
 		delegateArgs["timeout_seconds"] = meta.TimeoutSeconds
 	}
+}
+
+func taskBoardStringSliceAsAny(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
 }
 
 func taskBoardReadyStep(

@@ -257,6 +257,15 @@ delegate-backed step from the `task_board next` plan. It does not auto-run
 semantics, and it does not execute manual/local steps. For those cases, use
 `task_board next` to get the plan and then call the appropriate tool explicitly.
 
+`task_board_execute_all` applies the same conservative policy repeatedly. It is
+also disabled by default and executes ready delegate-backed steps until the
+board has no more delegate-backed ready work, reaches `max_steps`, hits a
+delegate error, or stops on active/waiting/blocked/non-delegate work. This is
+the generic "continue this approved board workflow" primitive: the model can
+create a board, get one user approval, then call `task_board_execute_all`
+instead of asking for another "continue" between independent delegate steps.
+It still does not run `spawn` or manual/local steps automatically.
+
 Current task-board role:
 
 - durable workflow grouping and inspection
@@ -264,9 +273,10 @@ Current task-board role:
 - optional typed workflow contract via `task_packet`
 - conservative execution bridge for delegate-backed steps
 
-Task boards are intentionally not yet a full autonomous planner/executor. They
-provide durable workflow structure first, then opt-in execution primitives on
-top. That keeps orchestration state explicit and reviewable.
+Task boards are intentionally not a fully autonomous planner. They provide
+durable workflow structure first, then opt-in execution primitives on top. That
+keeps orchestration state explicit and reviewable while still letting approved
+delegate-backed workflows continue without user nudges between every step.
 
 `task_board list` also returns an effective board view derived from the raw
 records:

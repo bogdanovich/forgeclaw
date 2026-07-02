@@ -67,6 +67,9 @@ fields on `spawn` and `delegate`:
 - Use `depends_on` when one step requires another step to finish first.
 - For synchronous `delegate` steps that can block the workflow, set
   `timeout_seconds` explicitly.
+- If `task_board_execute_all` is enabled and the user approves the workflow,
+  use it to run ready delegate-backed steps until the board is complete,
+  blocked, waiting, active, reaches `max_steps`, or reaches a spawn/manual step.
 - Inspect the workflow with `task_board {"action":"list","board_id":"..."}` or
   `task_status {"board_id":"..."}`.
 - Read completed step outputs with `task_board {"action":"results","board_id":"..."}`.

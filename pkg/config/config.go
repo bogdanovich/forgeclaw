@@ -1209,6 +1209,7 @@ type ToolsConfig struct {
 	WriteFile       ToolConfig               `json:"write_file"        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
 
 	TaskBoardExecuteNext ToolConfig `json:"task_board_execute_next" yaml:"-" envPrefix:"PICOCLAW_TOOLS_TASK_BOARD_EXECUTE_NEXT_"`
+	TaskBoardExecuteAll  ToolConfig `json:"task_board_execute_all"  yaml:"-" envPrefix:"PICOCLAW_TOOLS_TASK_BOARD_EXECUTE_ALL_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -2000,6 +2001,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.Subagent.Enabled
 	case "task_board_execute_next":
 		return t.TaskBoardExecuteNext.Enabled
+	case "task_board_execute_all":
+		return t.TaskBoardExecuteAll.Enabled
 	case "update_plan":
 		return t.UpdatePlan.Enabled
 	case "web_fetch":

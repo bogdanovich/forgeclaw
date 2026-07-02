@@ -720,6 +720,9 @@ for ordered steps and inspect the workflow with `task_board
 {"action":"list","board_id":"..."}` or `task_status {"board_id":"..."}`.
 Use `timeout_seconds` on synchronous `delegate` steps when a stalled child would
 block the parent workflow.
+When `task_board_execute_all` is enabled, an approved board can continue through
+ready delegate-backed steps without asking the user to confirm each step. It
+still stops at spawn/manual steps or blocked/waiting/active work.
 
 **Configuration:**
 
