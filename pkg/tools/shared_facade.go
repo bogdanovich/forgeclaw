@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/session"
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -77,6 +78,10 @@ func WithToolInboundContext(
 	return toolshared.WithToolInboundContext(ctx, channel, chatID, messageID, replyToMessageID)
 }
 
+func WithToolInboundMetadata(ctx context.Context, inbound bus.InboundContext) context.Context {
+	return toolshared.WithToolInboundMetadata(ctx, inbound)
+}
+
 func WithToolSessionContext(
 	ctx context.Context,
 	agentID, sessionKey string,
@@ -103,6 +108,30 @@ func ToolMessageID(ctx context.Context) string {
 
 func ToolReplyToMessageID(ctx context.Context) string {
 	return toolshared.ToolReplyToMessageID(ctx)
+}
+
+func ToolInboundContext(ctx context.Context) bus.InboundContext {
+	return toolshared.ToolInboundContext(ctx)
+}
+
+func ToolSenderID(ctx context.Context) string {
+	return toolshared.ToolSenderID(ctx)
+}
+
+func ToolActorID(ctx context.Context) string {
+	return toolshared.ToolActorID(ctx)
+}
+
+func ToolOriginID(ctx context.Context) string {
+	return toolshared.ToolOriginID(ctx)
+}
+
+func ToolOriginType(ctx context.Context) string {
+	return toolshared.ToolOriginType(ctx)
+}
+
+func ToolSourceRef(ctx context.Context) string {
+	return toolshared.ToolSourceRef(ctx)
 }
 
 func ToolAgentID(ctx context.Context) string {

@@ -99,6 +99,12 @@ func TestPublishInbound_NormalizesContext(t *testing.T) {
 	if got.Context.ReplyToMessageID != "1700.01" {
 		t.Fatalf("expected reply_to_message_id 1700.01, got %q", got.Context.ReplyToMessageID)
 	}
+	if got.Context.ActorID != "U123" {
+		t.Fatalf("expected actor_id to default to sender U123, got %q", got.Context.ActorID)
+	}
+	if got.Context.SourceRef != "slack:C456/1712:1712.01" {
+		t.Fatalf("expected source_ref slack:C456/1712:1712.01, got %q", got.Context.SourceRef)
+	}
 }
 
 func TestPublishInbound_MirrorsContextIntoConvenienceFields(t *testing.T) {

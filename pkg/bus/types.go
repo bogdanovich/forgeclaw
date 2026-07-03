@@ -24,7 +24,12 @@ type InboundContext struct {
 	SpaceType string `json:"space_type,omitempty"` // guild / team / workspace / tenant
 
 	SenderID  string `json:"sender_id"`
+	ActorID   string `json:"actor_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
+
+	OriginID   string `json:"origin_id,omitempty"`
+	OriginType string `json:"origin_type,omitempty"`
+	SourceRef  string `json:"source_ref,omitempty"`
 
 	Mentioned bool `json:"mentioned,omitempty"`
 

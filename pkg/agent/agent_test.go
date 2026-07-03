@@ -2211,6 +2211,57 @@ func TestToolContext_Updates(t *testing.T) {
 	if got := tools.ToolReplyToMessageID(inboundCtx); got != "msg-100" {
 		t.Errorf("expected replyToMessageID 'msg-100', got %q", got)
 	}
+
+	metadataCtx := tools.WithToolInboundMetadata(inboundCtx, bus.InboundContext{
+		Channel:      "telegram",
+		ChatID:       "chat-42",
+		SenderID:     "sender-1",
+		ActorID:      "actor-1",
+		MessageID:    "msg-123",
+		OriginID:     "forwarded-user",
+		OriginType:   "forwarded_message",
+		SourceRef:    "telegram:chat-42:msg-123",
+		ReplyHandles: map[string]string{"sender": "original"},
+		Raw:          map[string]string{"platform": "telegram"},
+	})
+	if got := tools.ToolSenderID(metadataCtx); got != "sender-1" {
+		t.Errorf("expected senderID 'sender-1', got %q", got)
+	}
+	if got := tools.ToolActorID(metadataCtx); got != "actor-1" {
+		t.Errorf("expected actorID 'actor-1', got %q", got)
+	}
+	if got := tools.ToolOriginID(metadataCtx); got != "forwarded-user" {
+		t.Errorf("expected originID 'forwarded-user', got %q", got)
+	}
+	if got := tools.ToolOriginType(metadataCtx); got != "forwarded_message" {
+		t.Errorf("expected originType 'forwarded_message', got %q", got)
+	}
+	if got := tools.ToolSourceRef(metadataCtx); got != "telegram:chat-42:msg-123" {
+		t.Errorf("expected sourceRef 'telegram:chat-42:msg-123', got %q", got)
+	}
+	firstRead := tools.ToolInboundContext(metadataCtx)
+	firstRead.ReplyHandles["sender"] = "mutated"
+	firstRead.Raw["platform"] = "mutated"
+	secondRead := tools.ToolInboundContext(metadataCtx)
+	if got := secondRead.ReplyHandles["sender"]; got != "original" {
+		t.Errorf("expected cloned reply handles to remain original, got %q", got)
+	}
+	if got := secondRead.Raw["platform"]; got != "telegram" {
+		t.Errorf("expected cloned raw map to remain telegram, got %q", got)
+	}
+
+	rawMetadataCtx := tools.WithToolInboundMetadata(context.Background(), bus.InboundContext{
+		Channel:   "slack",
+		ChatID:    "C123",
+		SenderID:  "U123",
+		MessageID: "1712.01",
+	})
+	if got := tools.ToolActorID(rawMetadataCtx); got != "U123" {
+		t.Errorf("expected raw metadata actorID to default to sender U123, got %q", got)
+	}
+	if got := tools.ToolSourceRef(rawMetadataCtx); got != "slack:C123:1712.01" {
+		t.Errorf("expected raw metadata sourceRef 'slack:C123:1712.01', got %q", got)
+	}
 }
 
 // TestToolRegistry_GetDefinitions verifies tool definitions can be retrieved
