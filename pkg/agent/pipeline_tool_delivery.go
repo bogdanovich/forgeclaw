@@ -30,10 +30,10 @@ func (p *Pipeline) applySyncToolResultDelivery(
 	result *tools.ToolResult,
 	toolName string,
 ) ([]providers.Attachment, *tools.ToolResult) {
-	if p == nil || p.ToolDelivery == nil {
+	if p == nil || p.SyncToolDelivery == nil {
 		return nil, result
 	}
-	return p.ToolDelivery.applySyncToolResultDelivery(ctx, ts, result, toolName)
+	return p.SyncToolDelivery.applySyncToolResultDelivery(ctx, ts, result, toolName)
 }
 
 func (p *Pipeline) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {

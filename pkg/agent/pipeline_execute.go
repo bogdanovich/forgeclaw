@@ -83,37 +83,7 @@ func (al *AgentLoop) applySyncToolResultDelivery(
 	result *tools.ToolResult,
 	toolName string,
 ) ([]providers.Attachment, *tools.ToolResult) {
-	if result == nil {
-		return nil, tools.ErrorResult("nil tool result")
-	}
-
-	if ts.opts.SuppressToolUserDelivery {
-		result.ResponseHandled = false
-		result.ImmediateDelivery = false
-	}
-
-	if !ts.opts.SuppressToolUserDelivery && result.ImmediateDelivery {
-		if _, _, err := al.deliverToolResultToUser(ctx, ts, result, toolName); err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
-				WithError(err)
-		}
-	}
-
-	if !ts.opts.SuppressToolUserDelivery && result.ResponseHandled {
-		attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, result, toolName)
-		if err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
-				WithError(err)
-		}
-		if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(result)) > 0 {
-			result.ResponseHandled = false
-		}
-		if outcome == toolResultDeliveryDirect {
-			return attachments, result
-		}
-	}
-
-	return nil, result
+	return al.syncToolResultDelivery().applySyncToolResultDelivery(ctx, ts, result, toolName)
 }
 
 func mcpServerNameForTool(ts *turnState, toolName string) string {
