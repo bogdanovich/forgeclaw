@@ -24,7 +24,6 @@ type Pipeline struct {
 	Events               runtimeEventEmitter
 	ActiveRequests       activeRequestTracker
 	ModelExecution       modelExecutionResolver
-	FallbackState        fallbackSelectionUpdater
 	Steering             steeringDequeuer
 	Reasoning            reasoningPublisher
 	ToolDelivery         toolDeliveryManager
@@ -72,9 +71,6 @@ type modelExecutionResolver interface {
 		modelName string,
 		fallbacks []string,
 	) (effectiveExecutionState, func(), error)
-}
-
-type fallbackSelectionUpdater interface {
 	updateAutoFallbackSelection(
 		routeSessionKey string,
 		selectedCandidates []providers.FallbackCandidate,
@@ -135,7 +131,6 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Events:               al,
 		ActiveRequests:       al.activeRequestCounter(),
 		ModelExecution:       al.modelExecutionManager(),
-		FallbackState:        al,
 		Steering:             al.steering,
 		Reasoning:            al.reasoningPublisher(),
 		ToolDelivery:         al,
