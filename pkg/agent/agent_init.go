@@ -75,6 +75,11 @@ func NewAgentLoop(
 		workerSem:         make(chan struct{}, workerPoolSize),
 		ownsRuntimeEvents: true,
 	}
+	al.compactionRunner = &backgroundCompactionRunner{
+		contextManager: func() ContextManager {
+			return al.contextManager
+		},
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(al)
