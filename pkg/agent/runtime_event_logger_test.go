@@ -195,6 +195,59 @@ func TestReloadProviderAndConfigRefreshesRuntimeEventLogger(t *testing.T) {
 	}
 }
 
+func TestReloadProviderAndConfigRefreshesModelExecutionConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.ModelList = config.SecureModelList{{
+		ModelName: "initial-model",
+		Provider:  "openai",
+		Model:     "initial-model",
+		APIBase:   "https://example.invalid/v1",
+		APIKeys:   config.SimpleSecureStrings("initial-key"),
+	}}
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	defer al.Close()
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	if _, cleanup, err := al.buildExecutionStateForModel(agent, "reloaded-model", nil); err == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal("expected reloaded model to be unknown before reload")
+	}
+
+	reloaded := config.DefaultConfig()
+	reloaded.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloaded.Agents.Defaults.ModelName = "reloaded-model"
+	reloaded.Agents.Defaults.Provider = "openai"
+	reloaded.ModelList = config.SecureModelList{{
+		ModelName: "reloaded-model",
+		Provider:  "openai",
+		Model:     "reloaded-model",
+		APIBase:   "https://example.invalid/v1",
+		APIKeys:   config.SimpleSecureStrings("reloaded-key"),
+	}}
+	if err := al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, reloaded); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+
+	reloadedAgent := al.GetRegistry().GetDefaultAgent()
+	execution, cleanup, err := al.buildExecutionStateForModel(reloadedAgent, "reloaded-model", nil)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildExecutionStateForModel() after reload error = %v", err)
+	}
+	if execution.Model != "reloaded-model" {
+		t.Fatalf("execution.Model = %q, want reloaded-model", execution.Model)
+	}
+}
+
 type reloadBlockingProvider struct {
 	chatStarted chan struct{}
 	releaseChat chan struct{}
