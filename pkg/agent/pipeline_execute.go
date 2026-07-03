@@ -628,6 +628,9 @@ toolLoop:
 			ts.opts.Dispatch.MessageID(),
 			ts.opts.Dispatch.ReplyToMessageID(),
 		)
+		if ts.opts.Dispatch.InboundContext != nil {
+			execCtx = tools.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
+		}
 		execCtx = tools.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
 		execCtx = tools.WithToolSessionContext(
 			execCtx,

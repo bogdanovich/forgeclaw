@@ -66,7 +66,11 @@ func (ctx InboundContext) isZero() bool {
 		ctx.SpaceID == "" &&
 		ctx.SpaceType == "" &&
 		ctx.SenderID == "" &&
+		ctx.ActorID == "" &&
 		ctx.MessageID == "" &&
+		ctx.OriginID == "" &&
+		ctx.OriginType == "" &&
+		ctx.SourceRef == "" &&
 		!ctx.Mentioned &&
 		ctx.ReplyToMessageID == "" &&
 		ctx.ReplyToSenderID == "" &&
@@ -83,12 +87,32 @@ func normalizeInboundContext(ctx InboundContext) InboundContext {
 	ctx.SpaceID = strings.TrimSpace(ctx.SpaceID)
 	ctx.SpaceType = normalizeKind(ctx.SpaceType)
 	ctx.SenderID = strings.TrimSpace(ctx.SenderID)
+	ctx.ActorID = strings.TrimSpace(ctx.ActorID)
+	if ctx.ActorID == "" {
+		ctx.ActorID = ctx.SenderID
+	}
 	ctx.MessageID = strings.TrimSpace(ctx.MessageID)
+	ctx.OriginID = strings.TrimSpace(ctx.OriginID)
+	ctx.OriginType = normalizeKind(ctx.OriginType)
+	ctx.SourceRef = strings.TrimSpace(ctx.SourceRef)
+	if ctx.SourceRef == "" {
+		ctx.SourceRef = defaultSourceRef(ctx)
+	}
 	ctx.ReplyToMessageID = strings.TrimSpace(ctx.ReplyToMessageID)
 	ctx.ReplyToSenderID = strings.TrimSpace(ctx.ReplyToSenderID)
 	ctx.ReplyHandles = cloneStringMap(ctx.ReplyHandles)
 	ctx.Raw = cloneStringMap(ctx.Raw)
 	return ctx
+}
+
+func defaultSourceRef(ctx InboundContext) string {
+	channel := strings.TrimSpace(ctx.Channel)
+	chatID := strings.TrimSpace(ctx.ChatID)
+	messageID := strings.TrimSpace(ctx.MessageID)
+	if channel == "" || chatID == "" || messageID == "" {
+		return ""
+	}
+	return channel + ":" + chatID + ":" + messageID
 }
 
 func cloneStringMap(src map[string]string) map[string]string {

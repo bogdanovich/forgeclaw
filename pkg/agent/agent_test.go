@@ -2211,6 +2211,32 @@ func TestToolContext_Updates(t *testing.T) {
 	if got := tools.ToolReplyToMessageID(inboundCtx); got != "msg-100" {
 		t.Errorf("expected replyToMessageID 'msg-100', got %q", got)
 	}
+
+	metadataCtx := tools.WithToolInboundMetadata(inboundCtx, bus.InboundContext{
+		Channel:    "telegram",
+		ChatID:     "chat-42",
+		SenderID:   "sender-1",
+		ActorID:    "actor-1",
+		MessageID:  "msg-123",
+		OriginID:   "forwarded-user",
+		OriginType: "forwarded_message",
+		SourceRef:  "telegram:chat-42:msg-123",
+	})
+	if got := tools.ToolSenderID(metadataCtx); got != "sender-1" {
+		t.Errorf("expected senderID 'sender-1', got %q", got)
+	}
+	if got := tools.ToolActorID(metadataCtx); got != "actor-1" {
+		t.Errorf("expected actorID 'actor-1', got %q", got)
+	}
+	if got := tools.ToolOriginID(metadataCtx); got != "forwarded-user" {
+		t.Errorf("expected originID 'forwarded-user', got %q", got)
+	}
+	if got := tools.ToolOriginType(metadataCtx); got != "forwarded_message" {
+		t.Errorf("expected originType 'forwarded_message', got %q", got)
+	}
+	if got := tools.ToolSourceRef(metadataCtx); got != "telegram:chat-42:msg-123" {
+		t.Errorf("expected sourceRef 'telegram:chat-42:msg-123', got %q", got)
+	}
 }
 
 // TestToolRegistry_GetDefinitions verifies tool definitions can be retrieved
