@@ -372,21 +372,7 @@ func (al *AgentLoop) runTurn(
 }
 
 func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {
-	ts.setPhase(TurnPhaseAborted)
-	if !ts.opts.NoHistory {
-		if err := ts.restoreSession(ts.agent); err != nil {
-			al.emitEvent(
-				runtimeevents.KindAgentError,
-				ts.eventMeta("abortTurn", "turn.error"),
-				ErrorPayload{
-					Stage:   "session_restore",
-					Message: err.Error(),
-				},
-			)
-			return turnResult{}, err
-		}
-	}
-	return turnResult{status: TurnEndStatusAborted}, nil
+	return al.turnAbortController().abortTurn(ts)
 }
 
 func (al *AgentLoop) resolveContextManager() ContextManager {
