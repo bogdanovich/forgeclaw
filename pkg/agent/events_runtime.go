@@ -3,11 +3,7 @@ package agent
 import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 
 func (al *AgentLoop) publishRuntimeEvent(evt runtimeevents.Event) {
-	if al == nil || al.runtimeEvents == nil {
-		return
-	}
-
-	al.runtimeEvents.PublishNonBlocking(evt)
+	al.runtimeEventEmitter().publishRuntimeEvent(evt)
 }
 
 func runtimeScopeFromHookMeta(meta HookMeta, eventCtx *TurnContext) runtimeevents.Scope {
