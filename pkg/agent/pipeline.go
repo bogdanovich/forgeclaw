@@ -139,7 +139,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Reasoning:            al.reasoningPublisher(),
 		ToolFeedback:         al.toolFeedbackPublisher(),
 		ToolDelivery:         al,
-		TurnControl:          al,
+		TurnControl:          al.turnAbortController(),
 		Hooks:                al.hooks,
 		Fallback:             al.fallback,
 		ChannelManager:       al.channelManager,
