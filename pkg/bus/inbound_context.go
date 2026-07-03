@@ -78,6 +78,10 @@ func (ctx InboundContext) isZero() bool {
 		len(ctx.Raw) == 0
 }
 
+func NormalizeInboundContext(ctx InboundContext) InboundContext {
+	return normalizeInboundContext(ctx)
+}
+
 func normalizeInboundContext(ctx InboundContext) InboundContext {
 	ctx.Channel = strings.TrimSpace(ctx.Channel)
 	ctx.Account = strings.TrimSpace(ctx.Account)

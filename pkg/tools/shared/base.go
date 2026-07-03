@@ -94,7 +94,7 @@ func WithToolInboundContext(
 // WithToolInboundMetadata returns a child context carrying the full normalized
 // inbound identity/source metadata available to tools.
 func WithToolInboundMetadata(ctx context.Context, inbound bus.InboundContext) context.Context {
-	return context.WithValue(ctx, ctxKeyInboundContext, inbound)
+	return context.WithValue(ctx, ctxKeyInboundContext, bus.NormalizeInboundContext(inbound))
 }
 
 // WithToolSessionContext returns a child context carrying turn-scoped session metadata.

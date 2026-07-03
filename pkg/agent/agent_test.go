@@ -2237,6 +2237,19 @@ func TestToolContext_Updates(t *testing.T) {
 	if got := tools.ToolSourceRef(metadataCtx); got != "telegram:chat-42:msg-123" {
 		t.Errorf("expected sourceRef 'telegram:chat-42:msg-123', got %q", got)
 	}
+
+	rawMetadataCtx := tools.WithToolInboundMetadata(context.Background(), bus.InboundContext{
+		Channel:   "slack",
+		ChatID:    "C123",
+		SenderID:  "U123",
+		MessageID: "1712.01",
+	})
+	if got := tools.ToolActorID(rawMetadataCtx); got != "U123" {
+		t.Errorf("expected raw metadata actorID to default to sender U123, got %q", got)
+	}
+	if got := tools.ToolSourceRef(rawMetadataCtx); got != "slack:C123:1712.01" {
+		t.Errorf("expected raw metadata sourceRef 'slack:C123:1712.01', got %q", got)
+	}
 }
 
 // TestToolRegistry_GetDefinitions verifies tool definitions can be retrieved
