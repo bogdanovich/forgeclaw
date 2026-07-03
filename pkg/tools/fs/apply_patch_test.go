@@ -40,6 +40,12 @@ func TestApplyPatchTool_UpdateFile(t *testing.T) {
 	if !strings.Contains(result.ForUser, "```diff") {
 		t.Fatalf("expected user diff, got: %s", result.ForUser)
 	}
+	if len(result.WriteAudit) != 1 {
+		t.Fatalf("expected 1 write audit entry, got %+v", result.WriteAudit)
+	}
+	if got := result.WriteAudit[0]; got.Target != "main.go" || got.Action != "update" || got.Tool != "apply_patch" || !got.Success {
+		t.Fatalf("unexpected write audit entry: %+v", got)
+	}
 }
 
 func TestApplyPatchTool_AddAndDeleteFiles(t *testing.T) {
@@ -71,6 +77,19 @@ func TestApplyPatchTool_AddAndDeleteFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(deletePath); !os.IsNotExist(err) {
 		t.Fatalf("old.txt should be deleted, stat err=%v", err)
+	}
+	if len(result.WriteAudit) != 2 {
+		t.Fatalf("expected 2 write audit entries, got %+v", result.WriteAudit)
+	}
+	got := map[string]string{}
+	for _, entry := range result.WriteAudit {
+		if entry.Tool != "apply_patch" || !entry.Success {
+			t.Fatalf("unexpected write audit entry: %+v", entry)
+		}
+		got[entry.Target] = entry.Action
+	}
+	if got["new.txt"] != "add" || got["old.txt"] != "delete" {
+		t.Fatalf("unexpected write audit actions: %+v", got)
 	}
 }
 

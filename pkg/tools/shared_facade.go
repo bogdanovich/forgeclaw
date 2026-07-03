@@ -34,6 +34,7 @@ type (
 	ReportFieldDelta       = toolshared.ReportFieldDelta
 	PromptMetadataProvider = toolshared.PromptMetadataProvider
 	ToolResult             = toolshared.ToolResult
+	WriteAuditEntry        = toolshared.WriteAuditEntry
 )
 
 const (

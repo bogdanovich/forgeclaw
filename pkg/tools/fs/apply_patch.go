@@ -77,6 +77,7 @@ type patchOperation struct {
 
 type appliedPatchResult struct {
 	path   string
+	action string
 	before []byte
 	after  []byte
 }
@@ -176,7 +177,7 @@ func applyPatchOperation(sysFs fileSystem, op patchOperation) (appliedPatchResul
 		if err := sysFs.WriteFile(op.path, after); err != nil {
 			return appliedPatchResult{}, err
 		}
-		return appliedPatchResult{path: op.path, after: after}, nil
+		return appliedPatchResult{path: op.path, action: "add", after: after}, nil
 
 	case patchOpDelete:
 		before, err := sysFs.ReadFile(op.path)
@@ -186,7 +187,7 @@ func applyPatchOperation(sysFs fileSystem, op patchOperation) (appliedPatchResul
 		if err := sysFs.RemoveFile(op.path); err != nil {
 			return appliedPatchResult{}, err
 		}
-		return appliedPatchResult{path: op.path, before: before}, nil
+		return appliedPatchResult{path: op.path, action: "delete", before: before}, nil
 
 	case patchOpUpdate:
 		before, err := sysFs.ReadFile(op.path)
@@ -200,7 +201,7 @@ func applyPatchOperation(sysFs fileSystem, op patchOperation) (appliedPatchResul
 		if err := sysFs.WriteFile(op.path, after); err != nil {
 			return appliedPatchResult{}, err
 		}
-		return appliedPatchResult{path: op.path, before: before, after: after}, nil
+		return appliedPatchResult{path: op.path, action: "update", before: before, after: after}, nil
 	default:
 		return appliedPatchResult{}, fmt.Errorf("%s: unknown patch operation", op.path)
 	}
@@ -327,8 +328,12 @@ func formatApplyPatchResult(results []appliedPatchResult) *ToolResult {
 		llmParts = append(llmParts, fmt.Sprintf("Applied patch to %d file(s)", len(results)))
 	}
 
-	return &ToolResult{
+	result := &ToolResult{
 		ForLLM:  strings.Join(llmParts, "\n\n"),
 		ForUser: strings.Join(userParts, "\n\n"),
 	}
+	for _, patchResult := range results {
+		result.WithFileWriteAudit(patchResult.path, patchResult.action, "apply_patch")
+	}
+	return result
 }

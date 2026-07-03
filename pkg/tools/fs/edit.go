@@ -73,7 +73,8 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
-	return DiffResult(path, beforeContent, afterContent)
+	return DiffResult(path, beforeContent, afterContent).
+		WithFileWriteAudit(path, "edit", t.Name())
 }
 
 type AppendFileTool struct {
@@ -127,7 +128,8 @@ func (t *AppendFileTool) Execute(ctx context.Context, args map[string]any) *Tool
 	if err := appendFile(t.fs, path, content); err != nil {
 		return ErrorResult(err.Error())
 	}
-	return SilentResult(fmt.Sprintf("Appended to %s", path))
+	return SilentResult(fmt.Sprintf("Appended to %s", path)).
+		WithFileWriteAudit(path, "append", t.Name())
 }
 
 // editFile reads the file via sysFs, performs the replacement, and writes back.

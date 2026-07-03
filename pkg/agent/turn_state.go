@@ -126,6 +126,7 @@ type turnExecution struct {
 	finalContent           string
 	completionMedia        []tools.CompletionMedia
 	actionLog              []TurnActionRecord
+	writeAudit             []tools.WriteAuditEntry
 	sawSteering            bool
 	sawAdditionalUserInput bool
 

@@ -8,6 +8,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 type TurnActionRecord struct {
@@ -39,6 +40,46 @@ func appendTurnActionRecord(
 		}
 	}
 	return append(records, rec)
+}
+
+func appendTurnWriteAudit(
+	records []tools.WriteAuditEntry,
+	toolName string,
+	audit []tools.WriteAuditEntry,
+) []tools.WriteAuditEntry {
+	for _, entry := range audit {
+		entry.Kind = strings.TrimSpace(entry.Kind)
+		entry.Target = strings.TrimSpace(entry.Target)
+		entry.Action = strings.TrimSpace(entry.Action)
+		entry.Tool = strings.TrimSpace(entry.Tool)
+		entry.Summary = strings.TrimSpace(entry.Summary)
+		if entry.Target == "" || !entry.Success {
+			continue
+		}
+		if entry.Kind == "" {
+			entry.Kind = "file"
+		}
+		if entry.Action == "" {
+			entry.Action = "write"
+		}
+		if entry.Tool == "" {
+			entry.Tool = strings.TrimSpace(toolName)
+		}
+		duplicate := false
+		for _, existing := range records {
+			if existing.Kind == entry.Kind &&
+				existing.Target == entry.Target &&
+				existing.Action == entry.Action &&
+				existing.Tool == entry.Tool {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			records = append(records, entry)
+		}
+	}
+	return records
 }
 
 func finalTurnRenderEligible(al *AgentLoop, exec *turnExecution) bool {
@@ -89,6 +130,13 @@ func buildFinalTurnRenderInstruction(exec *turnExecution) string {
 	b.WriteString("Keep the reply concise and natural.\n")
 
 	if exec == nil || len(exec.actionLog) == 0 {
+		if exec != nil && len(exec.writeAudit) > 0 {
+			b.WriteString("\nVerified write-side effects from tool execution:\n")
+			if raw, err := json.MarshalIndent(exec.writeAudit, "", "  "); err == nil {
+				_, _ = b.Write(raw)
+				b.WriteString("\nOnly claim that files, notes, artifacts, or records were saved/updated when they appear in this verified write list or were explicitly verified earlier in the conversation.")
+			}
+		}
 		return b.String()
 	}
 
@@ -109,6 +157,14 @@ func buildFinalTurnRenderInstruction(exec *turnExecution) string {
 	}
 	b.WriteString("\nExplicit user-facing outcomes recorded during the turn:\n")
 	_, _ = b.Write(raw)
+	if len(exec.writeAudit) > 0 {
+		writeRaw, err := json.MarshalIndent(exec.writeAudit, "", "  ")
+		if err == nil {
+			b.WriteString("\n\nVerified write-side effects from tool execution:\n")
+			_, _ = b.Write(writeRaw)
+			b.WriteString("\nOnly claim that files, notes, artifacts, or records were saved/updated when they appear in this verified write list or were explicitly verified earlier in the conversation.")
+		}
+	}
 	return b.String()
 }
 

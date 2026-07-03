@@ -347,6 +347,7 @@ toolLoop:
 					attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
 					hookResult = deliveredResult
 					handledAttachments = append(handledAttachments, attachments...)
+					exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, hookResult.WriteAudit)
 
 					shouldSendForUser := !hookResult.ResponseHandled &&
 						!ts.opts.SuppressToolUserDelivery &&
@@ -694,6 +695,7 @@ toolLoop:
 		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
 		toolResult = deliveredResult
 		handledAttachments = append(handledAttachments, attachments...)
+		exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, toolResult.WriteAudit)
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
 			recordCompletionMedia(exec, p.MediaStore, toolResult.Media)

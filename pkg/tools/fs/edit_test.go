@@ -44,6 +44,12 @@ func TestEditTool_EditFile_Success(t *testing.T) {
 	if result.ForLLM == result.ForUser {
 		t.Fatalf("Expected ForLLM to be a compact summary, got identical outputs %q", result.ForLLM)
 	}
+	if len(result.WriteAudit) != 1 {
+		t.Fatalf("expected 1 write audit entry, got %+v", result.WriteAudit)
+	}
+	if got := result.WriteAudit[0]; got.Target != testFile || got.Action != "edit" || got.Tool != "edit_file" || !got.Success {
+		t.Fatalf("unexpected write audit entry: %+v", got)
+	}
 	if result.ForLLM != fmt.Sprintf("File edited: %s", testFile) {
 		t.Fatalf("Expected compact ForLLM summary, got %q", result.ForLLM)
 	}
@@ -267,6 +273,12 @@ func TestEditTool_AppendFile_Success(t *testing.T) {
 	// ForUser should be empty (silent result)
 	if result.ForUser != "" {
 		t.Errorf("Expected ForUser to be empty for SilentResult, got: %s", result.ForUser)
+	}
+	if len(result.WriteAudit) != 1 {
+		t.Fatalf("expected 1 write audit entry, got %+v", result.WriteAudit)
+	}
+	if got := result.WriteAudit[0]; got.Target != testFile || got.Action != "append" || got.Tool != "append_file" || !got.Success {
+		t.Fatalf("unexpected write audit entry: %+v", got)
 	}
 
 	// Verify content was actually appended

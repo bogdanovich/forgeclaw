@@ -121,6 +121,11 @@ type ToolResult struct {
 	// Outbound carries a fully resolved chat output for the runtime delivery
 	// coordinator. Tools should prefer this over sending directly.
 	Outbound *OutboundDelivery `json:"outbound,omitempty"`
+
+	// WriteAudit records verified write-side effects performed by this tool.
+	// Agents should use this as the source of truth for claims like "saved",
+	// "updated", or "created"; prose in ForLLM/ForUser is only descriptive.
+	WriteAudit []WriteAuditEntry `json:"write_audit,omitempty"`
 }
 
 type OutboundDelivery struct {
@@ -129,6 +134,16 @@ type OutboundDelivery struct {
 	ReplyToMessageID string          `json:"reply_to_message_id,omitempty"`
 	Text             string          `json:"text,omitempty"`
 	Media            []bus.MediaPart `json:"media,omitempty"`
+}
+
+type WriteAuditEntry struct {
+	Kind     string            `json:"kind"`
+	Target   string            `json:"target"`
+	Action   string            `json:"action"`
+	Success  bool              `json:"success"`
+	Tool     string            `json:"tool,omitempty"`
+	Summary  string            `json:"summary,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // CompletionResult is the structured handoff payload used when one agent run
@@ -293,6 +308,38 @@ func (tr *ToolResult) deliverableNoteForLLM() string {
 		return ""
 	}
 	return "Structured deliverable: " + string(data)
+}
+
+// WithWriteAudit appends a verified write-side effect to the result.
+func (tr *ToolResult) WithWriteAudit(entry WriteAuditEntry) *ToolResult {
+	if tr == nil {
+		return tr
+	}
+	entry.Kind = strings.TrimSpace(entry.Kind)
+	entry.Target = strings.TrimSpace(entry.Target)
+	entry.Action = strings.TrimSpace(entry.Action)
+	entry.Tool = strings.TrimSpace(entry.Tool)
+	entry.Summary = strings.TrimSpace(entry.Summary)
+	if entry.Kind == "" {
+		entry.Kind = "file"
+	}
+	if entry.Action == "" {
+		entry.Action = "write"
+	}
+	entry.Success = true
+	tr.WriteAudit = append(tr.WriteAudit, entry)
+	return tr
+}
+
+// WithFileWriteAudit records a successful file write/edit side effect.
+func (tr *ToolResult) WithFileWriteAudit(path, action, toolName string) *ToolResult {
+	return tr.WithWriteAudit(WriteAuditEntry{
+		Kind:    "file",
+		Target:  path,
+		Action:  action,
+		Tool:    toolName,
+		Success: true,
+	})
 }
 
 func (tr *ToolResult) effectiveDeliverable() *DeliverableResult {

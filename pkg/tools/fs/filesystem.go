@@ -932,7 +932,8 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) *ToolR
 		return ErrorResult(err.Error())
 	}
 
-	return SilentResult(fmt.Sprintf("File written: %s", path))
+	return SilentResult(fmt.Sprintf("File written: %s", path)).
+		WithFileWriteAudit(path, "write", t.Name())
 }
 
 type ListDirTool struct {
