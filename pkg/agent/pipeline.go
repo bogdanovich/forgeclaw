@@ -133,7 +133,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		ContextManager:       al.contextManager,
 		BackgroundCompaction: al,
 		Events:               al,
-		ActiveRequests:       al,
+		ActiveRequests:       al.activeRequestCounter(),
 		ModelExecution:       al.modelExecutionManager(),
 		FallbackState:        al,
 		Steering:             al,

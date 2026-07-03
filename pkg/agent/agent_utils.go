@@ -737,52 +737,35 @@ func extractProvider(registry *AgentRegistry) (providers.LLMProvider, bool) {
 	return defaultAgent.Provider, true
 }
 
-// activeRequestsInc atomically increments the active request count.
-func (al *AgentLoop) activeRequestsInc() {
-	al.activeReqMu.Lock()
-	al.activeReqCount++
-	al.activeReqMu.Unlock()
+func (al *AgentLoop) activeRequestCounter() *activeRequestCounter {
+	if al == nil {
+		return nil
+	}
+	if al.activeRequests == nil {
+		al.activeRequests = newActiveRequestCounter()
+	}
+	return al.activeRequests
 }
 
-// activeRequestsDec atomically decrements the active request count
-// and wakes any goroutine blocked in waitForActiveRequests when the
-// count reaches zero.
-func (al *AgentLoop) activeRequestsDec() {
-	al.activeReqMu.Lock()
-	al.activeReqCount--
-	if al.activeReqCount == 0 {
-		al.activeReqCond.Broadcast()
+// activeRequestsInc atomically increments the active request count.
+func (al *AgentLoop) activeRequestsInc() {
+	if counter := al.activeRequestCounter(); counter != nil {
+		counter.inc()
 	}
-	al.activeReqMu.Unlock()
+}
+
+// activeRequestsDec atomically decrements the active request count and wakes
+// any goroutine blocked in waitForActiveRequests when the count reaches zero.
+func (al *AgentLoop) activeRequestsDec() {
+	if counter := al.activeRequestCounter(); counter != nil {
+		counter.dec()
+	}
 }
 
 func (al *AgentLoop) waitForActiveRequests(ctx context.Context, timeout time.Duration) bool {
-	al.activeReqMu.Lock()
-	if al.activeReqCount == 0 {
-		al.activeReqMu.Unlock()
+	counter := al.activeRequestCounter()
+	if counter == nil {
 		return true
 	}
-
-	var timedOut bool
-	if timeout > 0 {
-		time.AfterFunc(timeout, func() {
-			al.activeReqMu.Lock()
-			timedOut = true
-			al.activeReqCond.Broadcast()
-			al.activeReqMu.Unlock()
-		})
-	}
-	go func() {
-		<-ctx.Done()
-		al.activeReqMu.Lock()
-		al.activeReqCond.Broadcast()
-		al.activeReqMu.Unlock()
-	}()
-
-	for al.activeReqCount > 0 && !timedOut && ctx.Err() == nil {
-		al.activeReqCond.Wait()
-	}
-	result := al.activeReqCount == 0
-	al.activeReqMu.Unlock()
-	return result
+	return counter.wait(ctx, timeout)
 }

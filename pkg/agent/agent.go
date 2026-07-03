@@ -75,12 +75,7 @@ type AgentLoop struct {
 
 	turnSeq atomic.Uint64
 
-	// activeReqMu/activeReqCond/activeReqCount replace sync.WaitGroup to
-	// avoid the "WaitGroup is reused before previous Wait has returned" panic
-	// that occurs when Add(1) races with a goroutine-launched Wait().
-	activeReqMu    sync.Mutex
-	activeReqCond  *sync.Cond
-	activeReqCount int
+	activeRequests *activeRequestCounter
 
 	reloadFunc func() error
 
