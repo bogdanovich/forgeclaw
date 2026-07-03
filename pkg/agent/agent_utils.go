@@ -747,6 +747,20 @@ func (al *AgentLoop) activeRequestCounter() *activeRequestCounter {
 	return al.activeRequests
 }
 
+func (al *AgentLoop) backgroundCompactionRunner() *backgroundCompactionRunner {
+	if al == nil {
+		return nil
+	}
+	if al.compactionRunner == nil {
+		al.compactionRunner = &backgroundCompactionRunner{
+			contextManager: func() ContextManager {
+				return al.contextManager
+			},
+		}
+	}
+	return al.compactionRunner
+}
+
 // activeRequestsInc atomically increments the active request count.
 func (al *AgentLoop) activeRequestsInc() {
 	if counter := al.activeRequestCounter(); counter != nil {

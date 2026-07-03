@@ -131,7 +131,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Bus:                  al.bus,
 		Cfg:                  al.GetConfig(),
 		ContextManager:       al.contextManager,
-		BackgroundCompaction: al,
+		BackgroundCompaction: al.backgroundCompactionRunner(),
 		Events:               al,
 		ActiveRequests:       al.activeRequestCounter(),
 		ModelExecution:       al.modelExecutionManager(),
