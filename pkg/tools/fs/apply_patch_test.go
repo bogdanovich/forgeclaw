@@ -34,7 +34,8 @@ func TestApplyPatchTool_UpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(data); !strings.Contains(got, `println("new")`) || strings.Contains(got, `println("old")`) {
+	if got := string(data); !strings.Contains(got, `println("new")`) ||
+		strings.Contains(got, `println("old")`) {
 		t.Fatalf("unexpected content:\n%s", got)
 	}
 	if !strings.Contains(result.ForUser, "```diff") {
@@ -43,7 +44,9 @@ func TestApplyPatchTool_UpdateFile(t *testing.T) {
 	if len(result.WriteAudit) != 1 {
 		t.Fatalf("expected 1 write audit entry, got %+v", result.WriteAudit)
 	}
-	if got := result.WriteAudit[0]; got.Target != "main.go" || got.Action != "update" || got.Tool != "apply_patch" || !got.Success {
+	if got := result.WriteAudit[0]; got.Target != "main.go" || got.Action != "update" ||
+		got.Tool != "apply_patch" ||
+		!got.Success {
 		t.Fatalf("unexpected write audit entry: %+v", got)
 	}
 }

@@ -120,7 +120,9 @@ func TestFilesystemTool_WriteFile_Success(t *testing.T) {
 	if len(result.WriteAudit) != 1 {
 		t.Fatalf("expected 1 write audit entry, got %+v", result.WriteAudit)
 	}
-	if got := result.WriteAudit[0]; got.Target != testFile || got.Action != "write" || got.Tool != "write_file" || !got.Success {
+	if got := result.WriteAudit[0]; got.Target != testFile || got.Action != "write" ||
+		got.Tool != "write_file" ||
+		!got.Success {
 		t.Fatalf("unexpected write audit entry: %+v", got)
 	}
 

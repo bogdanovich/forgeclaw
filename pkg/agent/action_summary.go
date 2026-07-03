@@ -35,7 +35,8 @@ func appendTurnActionRecord(
 	}
 	if n := len(records); n > 0 {
 		prev := records[n-1]
-		if prev.Source == rec.Source && prev.Tool == rec.Tool && prev.Text == rec.Text && prev.Error == rec.Error {
+		if prev.Source == rec.Source && prev.Tool == rec.Tool && prev.Text == rec.Text &&
+			prev.Error == rec.Error {
 			return records
 		}
 	}
@@ -119,11 +120,15 @@ func buildFinalTurnRenderInstruction(exec *turnExecution) string {
 	b.WriteString("Write the final user-facing reply for this already-completed turn.\n")
 	b.WriteString("Use the same language and general style as the conversation.\n")
 	b.WriteString("Do not call tools.\n")
-	b.WriteString("Answer the full accumulated user request across this turn, not only the latest follow-up.\n")
+	b.WriteString(
+		"Answer the full accumulated user request across this turn, not only the latest follow-up.\n",
+	)
 	b.WriteString(
 		"If a later follow-up clearly corrected, narrowed, or replaced an earlier request, follow the latest clarified intent.\n",
 	)
-	b.WriteString("If later follow-ups added to earlier requests, include the completed additive results together.\n")
+	b.WriteString(
+		"If later follow-ups added to earlier requests, include the completed additive results together.\n",
+	)
 	b.WriteString(
 		"Use only the facts already present in the conversation and tool results. Do not invent missing results.\n",
 	)
@@ -134,7 +139,9 @@ func buildFinalTurnRenderInstruction(exec *turnExecution) string {
 			b.WriteString("\nVerified write-side effects from tool execution:\n")
 			if raw, err := json.MarshalIndent(exec.writeAudit, "", "  "); err == nil {
 				_, _ = b.Write(raw)
-				b.WriteString("\nOnly claim that files, notes, artifacts, or records were saved/updated when they appear in this verified write list or were explicitly verified earlier in the conversation.")
+				b.WriteString(
+					"\nOnly claim that files, notes, artifacts, or records were saved/updated when they appear in this verified write list or were explicitly verified earlier in the conversation.",
+				)
 			}
 		}
 		return b.String()
@@ -162,7 +169,9 @@ func buildFinalTurnRenderInstruction(exec *turnExecution) string {
 		if err == nil {
 			b.WriteString("\n\nVerified write-side effects from tool execution:\n")
 			_, _ = b.Write(writeRaw)
-			b.WriteString("\nOnly claim that files, notes, artifacts, or records were saved/updated when they appear in this verified write list or were explicitly verified earlier in the conversation.")
+			b.WriteString(
+				"\nOnly claim that files, notes, artifacts, or records were saved/updated when they appear in this verified write list or were explicitly verified earlier in the conversation.",
+			)
 		}
 	}
 	return b.String()
