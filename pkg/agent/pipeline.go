@@ -36,6 +36,28 @@ type Pipeline struct {
 	MediaStore           media.MediaStore
 }
 
+// PipelineDependencies is the explicit dependency set required by Pipeline.
+// NewPipeline remains the AgentLoop adapter for existing call sites.
+type PipelineDependencies struct {
+	Bus                  interfaces.MessageBus
+	Cfg                  *config.Config
+	ContextManager       ContextManager
+	BackgroundCompaction backgroundCompactionScheduler
+	Events               runtimeEventEmitter
+	ActiveRequests       activeRequestTracker
+	ModelExecution       modelExecutionResolver
+	Steering             steeringDequeuer
+	Reasoning            reasoningPublisher
+	ToolFeedback         toolFeedbackManager
+	SyncToolDelivery     syncToolResultDeliveryManager
+	ToolDelivery         toolDeliveryManager
+	TurnControl          turnController
+	Hooks                *HookManager
+	Fallback             *providers.FallbackChain
+	ChannelManager       interfaces.ChannelManager
+	MediaStore           media.MediaStore
+}
+
 type runtimeEventEmitter interface {
 	emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any)
 }
@@ -129,9 +151,32 @@ type turnController interface {
 	abortTurn(ts *turnState) (turnResult, error)
 }
 
+// NewPipelineFromDependencies creates a Pipeline from explicit dependencies.
+func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
+	return &Pipeline{
+		Bus:                  deps.Bus,
+		Cfg:                  deps.Cfg,
+		ContextManager:       deps.ContextManager,
+		BackgroundCompaction: deps.BackgroundCompaction,
+		Events:               deps.Events,
+		ActiveRequests:       deps.ActiveRequests,
+		ModelExecution:       deps.ModelExecution,
+		Steering:             deps.Steering,
+		Reasoning:            deps.Reasoning,
+		ToolFeedback:         deps.ToolFeedback,
+		SyncToolDelivery:     deps.SyncToolDelivery,
+		ToolDelivery:         deps.ToolDelivery,
+		TurnControl:          deps.TurnControl,
+		Hooks:                deps.Hooks,
+		Fallback:             deps.Fallback,
+		ChannelManager:       deps.ChannelManager,
+		MediaStore:           deps.MediaStore,
+	}
+}
+
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
-	return &Pipeline{
+	return NewPipelineFromDependencies(PipelineDependencies{
 		Bus:                  al.bus,
 		Cfg:                  al.GetConfig(),
 		ContextManager:       al.contextManager,
@@ -149,7 +194,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Fallback:             al.fallback,
 		ChannelManager:       al.channelManager,
 		MediaStore:           al.mediaStore,
-	}
+	})
 }
 
 func (p *Pipeline) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any) {
