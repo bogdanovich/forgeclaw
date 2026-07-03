@@ -111,7 +111,6 @@ func (al *AgentLoop) runTurn(
 
 	// Convenience references to exec fields used throughout the turn loop.
 	messages := exec.messages
-	pendingMessages := exec.pendingMessages
 	maxMediaSize := pipeline.Cfg.Agents.Defaults.GetMaxMediaSize()
 	finalContent := exec.finalContent
 
@@ -128,17 +127,12 @@ func (al *AgentLoop) runTurn(
 		ts.setIteration(iteration)
 		ts.setPhase(TurnPhaseRunning)
 
-		if iteration > 1 {
-			// For subsequent iterations, read from exec.pendingMessages which
-			// is where ExecuteTools (or initial poll) deposits steering.
-			// We do NOT call dequeueSteeringMessagesForScope here because
-			// steering was already consumed from al.steering by ExecuteTools.
-			if len(exec.pendingMessages) > 0 {
-				exec.markSteeringObserved()
-				pendingMessages = append(pendingMessages, exec.pendingMessages...)
-				exec.pendingMessages = nil
-			}
-		} else if !ts.opts.SkipInitialSteeringPoll {
+		pendingMessages := append([]providers.Message(nil), exec.pendingMessages...)
+		if len(pendingMessages) > 0 {
+			exec.markSteeringObserved()
+			exec.pendingMessages = nil
+		}
+		if iteration == 1 && !ts.opts.SkipInitialSteeringPoll {
 			if steerMsgs := al.dequeueSteeringMessagesForTurnWithFallback(
 				ts.sessionKey,
 				ts.opts.Dispatch.SenderID(),
@@ -240,7 +234,6 @@ func (al *AgentLoop) runTurn(
 			return turnResult{}, callErr
 		}
 		messages = exec.messages
-		pendingMessages = exec.pendingMessages
 		finalContent = exec.finalContent
 
 		switch ctrl {
