@@ -237,32 +237,7 @@ func toolFeedbackArgsPreview(args map[string]any, maxLen int) string {
 }
 
 func shouldPublishToolFeedback(al *AgentLoop, ts *turnState) bool {
-	if al == nil || ts == nil || ts.channel == "" || ts.opts.SuppressToolFeedback {
-		return false
-	}
-	routeSessionKey := strings.TrimSpace(ts.opts.Dispatch.RouteSessionKey)
-	if routeSessionKey != "" {
-		if enabled, ok := al.getToolFeedbackOverride(routeSessionKey); ok {
-			if !enabled {
-				return false
-			}
-			cfg := al.cfg
-			if cfg != nil && strings.HasPrefix(strings.TrimSpace(ts.sessionKey), "subturn-") &&
-				!cfg.Agents.Defaults.IsSubagentToolFeedbackEnabled() {
-				return false
-			}
-			return true
-		}
-	}
-	cfg := al.cfg
-	if cfg == nil || !cfg.Agents.Defaults.IsToolFeedbackEnabled() {
-		return false
-	}
-	if strings.HasPrefix(strings.TrimSpace(ts.sessionKey), "subturn-") &&
-		!cfg.Agents.Defaults.IsSubagentToolFeedbackEnabled() {
-		return false
-	}
-	return true
+	return al.toolFeedbackPublisher().shouldPublishToolFeedback(ts)
 }
 
 func toolFeedbackTitleForTurn(ts *turnState) string {

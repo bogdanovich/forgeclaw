@@ -26,6 +26,7 @@ type Pipeline struct {
 	ModelExecution       modelExecutionResolver
 	Steering             steeringDequeuer
 	Reasoning            reasoningPublisher
+	ToolFeedback         toolFeedbackManager
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
 	Hooks                *HookManager
@@ -98,6 +99,16 @@ type reasoningPublisher interface {
 }
 
 type toolDeliveryManager interface {
+	applySyncToolResultDelivery(
+		ctx context.Context,
+		ts *turnState,
+		result *tools.ToolResult,
+		toolName string,
+	) ([]providers.Attachment, *tools.ToolResult)
+	deliverAsyncToolCompletion(req AsyncDeliveryRequest)
+}
+
+type toolFeedbackManager interface {
 	publishToolFeedbackForCall(
 		ctx context.Context,
 		ts *turnState,
@@ -107,13 +118,6 @@ type toolDeliveryManager interface {
 		toolArgs map[string]any,
 		messages []providers.Message,
 	)
-	applySyncToolResultDelivery(
-		ctx context.Context,
-		ts *turnState,
-		result *tools.ToolResult,
-		toolName string,
-	) ([]providers.Attachment, *tools.ToolResult)
-	deliverAsyncToolCompletion(req AsyncDeliveryRequest)
 	dismissToolFeedbackForTurn(ctx context.Context, ts *turnState)
 }
 
@@ -133,6 +137,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		ModelExecution:       al.modelExecutionManager(),
 		Steering:             al.steering,
 		Reasoning:            al.reasoningPublisher(),
+		ToolFeedback:         al.toolFeedbackPublisher(),
 		ToolDelivery:         al,
 		TurnControl:          al,
 		Hooks:                al.hooks,
