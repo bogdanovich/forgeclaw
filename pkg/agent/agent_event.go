@@ -31,36 +31,7 @@ func (ts turnEventScope) meta(iteration int, source, tracePath string) HookMeta 
 }
 
 func (al *AgentLoop) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any) {
-	clonedMeta := cloneHookMeta(meta)
-	eventCtx := cloneTurnContext(clonedMeta.turnContext)
-	evt := runtimeevents.Event{
-		Kind:        kind,
-		Source:      runtimeevents.Source{Component: "agent", Name: clonedMeta.AgentID},
-		Scope:       runtimeScopeFromHookMeta(clonedMeta, eventCtx),
-		Correlation: runtimeCorrelationFromHookMeta(clonedMeta),
-		Severity:    runtimeSeverityForAgentEvent(kind, payload),
-		Payload:     payload,
-		Attrs:       runtimeAttrsFromHookMeta(clonedMeta),
-	}
-
-	if al == nil {
-		return
-	}
-
-	deliveredToEvolution := false
-	if kind == runtimeevents.KindAgentTurnEnd {
-		evolution := al.currentEvolutionBridge()
-		if evolution != nil {
-			deliveredToEvolution = evolution.handleRuntimeTurnEnd(evt)
-		}
-	}
-	if deliveredToEvolution {
-		if evt.Attrs == nil {
-			evt.Attrs = make(map[string]any, 1)
-		}
-		evt.Attrs[evolutionDirectDeliveryAttr] = true
-	}
-	al.publishRuntimeEvent(evt)
+	al.runtimeEventEmitter().emitEvent(kind, meta, payload)
 }
 
 func (al *AgentLoop) currentEvolutionBridge() *evolutionBridge {
