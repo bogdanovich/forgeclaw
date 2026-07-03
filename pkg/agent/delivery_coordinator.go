@@ -44,7 +44,7 @@ type AsyncDeliveryRequest struct {
 
 type asyncToolCompletionDelivery struct {
 	bus                             interfaces.MessageBus
-	cfg                             *config.Config
+	currentConfig                   func() *config.Config
 	events                          runtimeEventEmitter
 	deliverToUser                   func(context.Context, *turnState, *tools.ToolResult, string) ([]providers.Attachment, toolResultDeliveryOutcome, error)
 	processCompletion               func(context.Context, AsyncCompletionInput) (string, error)
@@ -59,7 +59,7 @@ func (al *AgentLoop) asyncToolCompletionDelivery() *asyncToolCompletionDelivery 
 	}
 	return &asyncToolCompletionDelivery{
 		bus:                             al.bus,
-		cfg:                             al.GetConfig(),
+		currentConfig:                   al.GetConfig,
 		events:                          al.runtimeEventEmitter(),
 		deliverToUser:                   al.deliverToolResultToUser,
 		processCompletion:               al.processAsyncCompletion,
@@ -209,8 +209,8 @@ func (d *asyncToolCompletionDelivery) deliverAsyncToolCompletion(req AsyncDelive
 	}
 
 	content := result.ContentForLLM()
-	if d.cfg != nil {
-		content = d.cfg.FilterSensitiveData(content)
+	if cfg := d.getConfig(); cfg != nil {
+		content = cfg.FilterSensitiveData(content)
 	}
 
 	logger.InfoCF("agent", "Async tool completed, publishing result",
@@ -295,6 +295,13 @@ func (d *asyncToolCompletionDelivery) publishOutbound(ctx context.Context, msg b
 		return fmt.Errorf("message bus not initialized")
 	}
 	return d.bus.PublishOutbound(ctx, msg)
+}
+
+func (d *asyncToolCompletionDelivery) getConfig() *config.Config {
+	if d == nil || d.currentConfig == nil {
+		return nil
+	}
+	return d.currentConfig()
 }
 
 func (d *asyncToolCompletionDelivery) deliverToUserResult(

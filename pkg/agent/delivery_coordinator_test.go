@@ -152,6 +152,52 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 	}
 }
 
+func TestAsyncToolCompletionDelivery_UsesCurrentConfigForFiltering(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{
+		ModelList: config.SecureModelList{
+			&config.ModelConfig{
+				ModelName: "current",
+				APIKeys:   config.SimpleSecureStrings("sk-new-secret-token"),
+			},
+		},
+	}
+	newCfg.Tools.FilterSensitiveData = true
+	newCfg.Tools.FilterMinLength = 8
+
+	currentCfg := oldCfg
+	var gotInput AsyncCompletionInput
+	delivery := &asyncToolCompletionDelivery{
+		currentConfig: func() *config.Config {
+			return currentCfg
+		},
+		processCompletion: func(_ context.Context, input AsyncCompletionInput) (string, error) {
+			gotInput = input
+			return "ok", nil
+		},
+	}
+
+	currentCfg = newCfg
+	delivery.deliverAsyncToolCompletion(AsyncDeliveryRequest{
+		TurnState: &turnState{
+			channel: "telegram",
+			chatID:  "chat-1",
+		},
+		ToolName:     "spawn",
+		CompletionID: "completion-1",
+		Result: (&tools.ToolResult{
+			ForLLM: "result includes sk-new-secret-token and should be filtered",
+		}).WithAsyncDelivery(tools.AsyncDeliveryParentOnly),
+	})
+
+	if strings.Contains(gotInput.Content, "sk-new-secret-token") {
+		t.Fatalf("async completion content leaked stale secret: %q", gotInput.Content)
+	}
+	if !strings.Contains(gotInput.Content, "[FILTERED]") {
+		t.Fatalf("async completion content was not filtered with current config: %q", gotInput.Content)
+	}
+}
+
 func TestDeliverAsyncToolCompletion_UserOnlyUpdatesDelivered(t *testing.T) {
 	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
 	taskID := "coordinator-user-only"
