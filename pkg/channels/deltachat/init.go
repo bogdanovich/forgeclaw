@@ -14,15 +14,11 @@ func init() {
 			if bc == nil || !bc.Enabled {
 				return nil, nil
 			}
-			decoded, err := bc.GetDecoded()
-			if err != nil {
+			settings := &config.DeltaChatSettings{}
+			if err := bc.Decode(settings); err != nil {
 				return nil, err
 			}
-			c, ok := decoded.(*config.DeltaChatSettings)
-			if !ok {
-				return nil, channels.ErrSendFailed
-			}
-			ch, err := NewDeltaChatChannel(bc, c, b)
+			ch, err := NewDeltaChatChannel(bc, settings, b)
 			if err != nil {
 				return nil, err
 			}
