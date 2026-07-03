@@ -1847,11 +1847,33 @@ func (m *Manager) sendWithRetry(
 	var lastErr error
 	var msgIDs []string
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptStart := time.Now()
 		msgIDs, lastErr = w.ch.Send(ctx, msg)
 		if lastErr == nil {
+			if attempt > 0 {
+				logger.InfoCF("channels", "Outbound send recovered after retry", map[string]any{
+					"channel":        name,
+					"chat_id":        outboundMessageChatID(msg),
+					"attempt":        attempt + 1,
+					"max_attempts":   maxRetries + 1,
+					"duration_ms":    time.Since(attemptStart).Milliseconds(),
+					"classification": "success_after_retry",
+				})
+			}
 			m.publishOutboundSent(name, msg, msgIDs)
 			return msgIDs, true
 		}
+
+		classification := classifySendError(lastErr)
+		logger.WarnCF("channels", "Outbound send attempt failed", map[string]any{
+			"channel":        name,
+			"chat_id":        outboundMessageChatID(msg),
+			"attempt":        attempt + 1,
+			"max_attempts":   maxRetries + 1,
+			"duration_ms":    time.Since(attemptStart).Milliseconds(),
+			"classification": classification,
+			"error":          lastErr.Error(),
+		})
 
 		// Permanent failures — don't retry
 		if errors.Is(lastErr, ErrNotRunning) || errors.Is(lastErr, ErrSendFailed) {
@@ -1892,6 +1914,23 @@ func (m *Manager) sendWithRetry(
 	m.publishOutboundFailed(name, msg, lastErr, false)
 
 	return nil, false
+}
+
+func classifySendError(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, ErrNotRunning):
+		return "not_running"
+	case errors.Is(err, ErrSendFailed):
+		return "permanent"
+	case errors.Is(err, ErrRateLimit):
+		return "rate_limit"
+	case errors.Is(err, ErrTemporary):
+		return "temporary"
+	default:
+		return "unknown"
+	}
 }
 
 func dispatchLoop[M any](

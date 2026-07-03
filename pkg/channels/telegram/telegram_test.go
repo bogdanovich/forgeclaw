@@ -463,6 +463,54 @@ func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 	assert.NotContains(t, caller.calls[0].URL, "sendDocument")
 }
 
+func TestSendMedia_ImageCaptionParseFallbackRewindsUpload(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			switch {
+			case strings.Contains(url, "sendPhoto") && callCount == 1:
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+			case strings.Contains(url, "sendPhoto") && callCount == 2:
+				return successResponse(t), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "image.png")
+	content := []byte("fake-png-content")
+	require.NoError(t, os.WriteFile(localPath, content, 0o644))
+
+	ref, err := store.Store(localPath, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "image",
+			Ref:     ref,
+			Caption: "<b>caption</b>",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	require.Len(t, constructor.calls, 2)
+	assert.Equal(t, len(content), constructor.calls[0].FileSizes["photo"])
+	assert.Equal(t, len(content), constructor.calls[1].FileSizes["photo"])
+	assert.Equal(t, "", constructor.calls[1].Parameters["parse_mode"])
+	assert.Equal(t, "<b>caption</b>", constructor.calls[1].Parameters["caption"])
+}
+
 func TestSendMedia_MultipleImagesUseMediaGroup(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	caller := &stubCaller{
@@ -1218,7 +1266,7 @@ func TestSend_HTMLFallback_PerChunk(t *testing.T) {
 func TestSend_HTMLFallback_BothFail(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return nil, errors.New("send failed")
+			return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -1233,12 +1281,74 @@ func TestSend_HTMLFallback_BothFail(t *testing.T) {
 	assert.Equal(t, 2, len(caller.calls), "should have HTML attempt + plain text attempt")
 }
 
+func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return nil, errors.New("send failed")
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello",
+	})
+
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, channels.ErrTemporary), "error should wrap ErrTemporary")
+	assert.Equal(t, 1, len(caller.calls), "should not retry as plain text for non-formatting errors")
+}
+
+func TestSend_EntityNotClosedError_FallsBackToPlainText(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: entity is not closed"`)
+			}
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "<b>hello",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(caller.calls), "should retry as plain text for entity-not-closed parse errors")
+}
+
+func TestSend_BadRequestTagVariant_FallsBackToPlainText(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: can't find end tag corresponding to start tag b"`)
+			}
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "<b>hello",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(caller.calls), "should retry as plain text for bad-request formatting tag variants")
+}
+
 func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 	// With a long message that gets split into 2 chunks, if both HTML and
 	// plain text fail on the first chunk, Send should return early.
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return nil, errors.New("send failed")
+			return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
 		},
 	}
 	ch := newTestChannel(t, caller)
