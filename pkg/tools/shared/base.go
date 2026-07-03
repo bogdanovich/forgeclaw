@@ -94,7 +94,7 @@ func WithToolInboundContext(
 // WithToolInboundMetadata returns a child context carrying the full normalized
 // inbound identity/source metadata available to tools.
 func WithToolInboundMetadata(ctx context.Context, inbound bus.InboundContext) context.Context {
-	return context.WithValue(ctx, ctxKeyInboundContext, bus.NormalizeInboundContext(inbound))
+	return context.WithValue(ctx, ctxKeyInboundContext, cloneToolInboundContext(bus.NormalizeInboundContext(inbound)))
 }
 
 // WithToolSessionContext returns a child context carrying turn-scoped session metadata.
@@ -160,7 +160,24 @@ func ToolInboundContext(ctx context.Context) bus.InboundContext {
 	if !ok {
 		return bus.InboundContext{}
 	}
-	return v
+	return cloneToolInboundContext(v)
+}
+
+func cloneToolInboundContext(inbound bus.InboundContext) bus.InboundContext {
+	inbound.ReplyHandles = cloneToolStringMap(inbound.ReplyHandles)
+	inbound.Raw = cloneToolStringMap(inbound.Raw)
+	return inbound
+}
+
+func cloneToolStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // ToolSenderID extracts the transport sender ID from ctx.

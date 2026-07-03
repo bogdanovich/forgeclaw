@@ -2213,14 +2213,16 @@ func TestToolContext_Updates(t *testing.T) {
 	}
 
 	metadataCtx := tools.WithToolInboundMetadata(inboundCtx, bus.InboundContext{
-		Channel:    "telegram",
-		ChatID:     "chat-42",
-		SenderID:   "sender-1",
-		ActorID:    "actor-1",
-		MessageID:  "msg-123",
-		OriginID:   "forwarded-user",
-		OriginType: "forwarded_message",
-		SourceRef:  "telegram:chat-42:msg-123",
+		Channel:      "telegram",
+		ChatID:       "chat-42",
+		SenderID:     "sender-1",
+		ActorID:      "actor-1",
+		MessageID:    "msg-123",
+		OriginID:     "forwarded-user",
+		OriginType:   "forwarded_message",
+		SourceRef:    "telegram:chat-42:msg-123",
+		ReplyHandles: map[string]string{"sender": "original"},
+		Raw:          map[string]string{"platform": "telegram"},
 	})
 	if got := tools.ToolSenderID(metadataCtx); got != "sender-1" {
 		t.Errorf("expected senderID 'sender-1', got %q", got)
@@ -2236,6 +2238,16 @@ func TestToolContext_Updates(t *testing.T) {
 	}
 	if got := tools.ToolSourceRef(metadataCtx); got != "telegram:chat-42:msg-123" {
 		t.Errorf("expected sourceRef 'telegram:chat-42:msg-123', got %q", got)
+	}
+	firstRead := tools.ToolInboundContext(metadataCtx)
+	firstRead.ReplyHandles["sender"] = "mutated"
+	firstRead.Raw["platform"] = "mutated"
+	secondRead := tools.ToolInboundContext(metadataCtx)
+	if got := secondRead.ReplyHandles["sender"]; got != "original" {
+		t.Errorf("expected cloned reply handles to remain original, got %q", got)
+	}
+	if got := secondRead.Raw["platform"]; got != "telegram" {
+		t.Errorf("expected cloned raw map to remain telegram, got %q", got)
 	}
 
 	rawMetadataCtx := tools.WithToolInboundMetadata(context.Background(), bus.InboundContext{
