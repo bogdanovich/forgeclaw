@@ -55,7 +55,9 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, args map[string]any) *Tool
 	}
 	results, err := applyPatchOperations(t.fs, ops)
 	if err != nil {
-		return ErrorResult(err.Error())
+		result := ErrorResult(err.Error())
+		addApplyPatchWriteAudit(result, results)
+		return result
 	}
 
 	return formatApplyPatchResult(results)
@@ -155,7 +157,7 @@ func applyPatchOperations(sysFs fileSystem, ops []patchOperation) ([]appliedPatc
 	for _, op := range ops {
 		result, err := applyPatchOperation(sysFs, op)
 		if err != nil {
-			return nil, err
+			return results, err
 		}
 		results = append(results, result)
 	}
@@ -332,8 +334,12 @@ func formatApplyPatchResult(results []appliedPatchResult) *ToolResult {
 		ForLLM:  strings.Join(llmParts, "\n\n"),
 		ForUser: strings.Join(userParts, "\n\n"),
 	}
+	addApplyPatchWriteAudit(result, results)
+	return result
+}
+
+func addApplyPatchWriteAudit(result *ToolResult, results []appliedPatchResult) {
 	for _, patchResult := range results {
 		result.WithFileWriteAudit(patchResult.path, patchResult.action, "apply_patch")
 	}
-	return result
 }

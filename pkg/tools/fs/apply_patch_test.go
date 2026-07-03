@@ -96,6 +96,43 @@ func TestApplyPatchTool_AddAndDeleteFiles(t *testing.T) {
 	}
 }
 
+func TestApplyPatchTool_ErrorPreservesPartialWriteAudit(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tool := NewApplyPatchTool(tmpDir, true)
+	result := tool.Execute(context.Background(), map[string]any{
+		"input": `*** Begin Patch
+*** Add File: created.txt
++created
+*** Update File: missing.txt
+@@
+-old
++new
+*** End Patch`,
+	})
+
+	if !result.IsError {
+		t.Fatalf("expected partial patch error, got success: %s", result.ForLLM)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, "created.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "created\n" {
+		t.Fatalf("created.txt = %q", string(data))
+	}
+	if len(result.WriteAudit) != 1 {
+		t.Fatalf("expected 1 partial write audit entry, got %+v", result.WriteAudit)
+	}
+	got := result.WriteAudit[0]
+	if got.Target != "created.txt" ||
+		got.Action != "add" ||
+		got.Tool != "apply_patch" ||
+		!got.Success {
+		t.Fatalf("unexpected partial write audit entry: %+v", got)
+	}
+}
+
 func TestApplyPatchTool_RejectsAmbiguousHunk(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "dup.txt")
