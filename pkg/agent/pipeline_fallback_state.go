@@ -10,8 +10,8 @@ func (p *Pipeline) updateAutoFallbackSelection(
 	result *providers.FallbackResult,
 	usedLight bool,
 ) {
-	if p == nil || p.FallbackState == nil {
+	if p == nil || p.ModelExecution == nil {
 		return
 	}
-	p.FallbackState.updateAutoFallbackSelection(routeSessionKey, selectedCandidates, result, usedLight)
+	p.ModelExecution.updateAutoFallbackSelection(routeSessionKey, selectedCandidates, result, usedLight)
 }
