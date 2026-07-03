@@ -6,9 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
@@ -39,7 +42,38 @@ type AsyncDeliveryRequest struct {
 	Decision     AsyncDeliveryDecision
 }
 
+type asyncToolCompletionDelivery struct {
+	bus                             interfaces.MessageBus
+	cfg                             *config.Config
+	events                          runtimeEventEmitter
+	deliverToUser                   func(context.Context, *turnState, *tools.ToolResult, string) ([]providers.Attachment, toolResultDeliveryOutcome, error)
+	processCompletion               func(context.Context, AsyncCompletionInput) (string, error)
+	asyncTaskDeliveryAlreadyHandled func(workspace, taskID, completionID string) bool
+	recordAsyncTaskDeliveryDecision func(workspace string, decision AsyncDeliveryDecision, completionID, sourceTool string)
+	updateAsyncTaskDeliveryStatus   func(workspace, taskID string, status taskregistry.DeliveryStatus, completionID, errorSummary string)
+}
+
+func (al *AgentLoop) asyncToolCompletionDelivery() *asyncToolCompletionDelivery {
+	if al == nil {
+		return nil
+	}
+	return &asyncToolCompletionDelivery{
+		bus:                             al.bus,
+		cfg:                             al.GetConfig(),
+		events:                          al.runtimeEventEmitter(),
+		deliverToUser:                   al.deliverToolResultToUser,
+		processCompletion:               al.processAsyncCompletion,
+		asyncTaskDeliveryAlreadyHandled: al.asyncTaskDeliveryAlreadyHandled,
+		recordAsyncTaskDeliveryDecision: al.recordAsyncTaskDeliveryDecision,
+		updateAsyncTaskDeliveryStatus:   al.updateAsyncTaskDeliveryStatus,
+	}
+}
+
 func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
+	al.asyncToolCompletionDelivery().deliverAsyncToolCompletion(req)
+}
+
+func (d *asyncToolCompletionDelivery) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 	ts := req.TurnState
 	result := req.Result
 	asyncToolName := strings.TrimSpace(req.ToolName)
@@ -54,7 +88,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		delivery = decideAsyncToolResultDelivery(result)
 	}
 	completionID := strings.TrimSpace(req.CompletionID)
-	if al.asyncTaskDeliveryAlreadyHandled(ts.workspace, delivery.TaskID, completionID) {
+	if d.isAsyncTaskDeliveryAlreadyHandled(ts.workspace, delivery.TaskID, completionID) {
 		logger.InfoCF("agent", "Skipping duplicate async delivery",
 			map[string]any{
 				"tool":          asyncToolName,
@@ -63,7 +97,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 			})
 		return
 	}
-	al.recordAsyncTaskDeliveryDecision(ts.workspace, delivery, completionID, asyncToolName)
+	d.recordDeliveryDecision(ts.workspace, delivery, completionID, asyncToolName)
 	if result.IsError {
 		content := strings.TrimSpace(result.ForUser)
 		if content == "" {
@@ -74,7 +108,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		if content != "" && !result.Silent {
 			outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer outCancel()
-			if err := al.bus.PublishOutbound(outCtx, outboundMessageForTurn(ts, content)); err != nil {
+			if err := d.publishOutbound(outCtx, outboundMessageForTurn(ts, content)); err != nil {
 				deliveryErr = err.Error()
 			} else {
 				delivered = true
@@ -82,7 +116,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		}
 		switch {
 		case delivered:
-			al.updateAsyncTaskDeliveryStatus(
+			d.updateDeliveryStatus(
 				ts.workspace,
 				delivery.TaskID,
 				taskregistry.DeliveryDelivered,
@@ -90,7 +124,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 				"",
 			)
 		case deliveryErr != "":
-			al.updateAsyncTaskDeliveryStatus(
+			d.updateDeliveryStatus(
 				ts.workspace,
 				delivery.TaskID,
 				taskregistry.DeliveryFailed,
@@ -98,7 +132,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 				deliveryErr,
 			)
 		default:
-			al.updateAsyncTaskDeliveryStatus(
+			d.updateDeliveryStatus(
 				ts.workspace,
 				delivery.TaskID,
 				taskregistry.DeliveryNotApplicable,
@@ -113,7 +147,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		defer outCancel()
 		userDelivered := false
 		userDeliveryErr := ""
-		if _, outcome, err := al.deliverToolResultToUser(outCtx, ts, result, asyncToolName); err != nil {
+		if _, outcome, err := d.deliverToUserResult(outCtx, ts, result, asyncToolName); err != nil {
 			userDeliveryErr = err.Error()
 			logger.WarnCF("agent", "Failed to deliver async tool result to user",
 				map[string]any{
@@ -125,7 +159,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		} else if outcome == toolResultDeliveryQueued {
 			userDelivered = true
 		} else if outcome == toolResultDeliveryNone && strings.TrimSpace(result.ForUser) != "" && !result.Silent {
-			if err := al.bus.PublishOutbound(outCtx, outboundMessageForTurn(ts, result.ForUser)); err != nil {
+			if err := d.publishOutbound(outCtx, outboundMessageForTurn(ts, result.ForUser)); err != nil {
 				userDeliveryErr = err.Error()
 			} else {
 				userDelivered = true
@@ -135,7 +169,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 		}
 		if !delivery.QueueParent {
 			if userDelivered {
-				al.updateAsyncTaskDeliveryStatus(
+				d.updateDeliveryStatus(
 					ts.workspace,
 					delivery.TaskID,
 					taskregistry.DeliveryDelivered,
@@ -143,7 +177,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 					"",
 				)
 			} else if userDeliveryErr != "" {
-				al.updateAsyncTaskDeliveryStatus(
+				d.updateDeliveryStatus(
 					ts.workspace,
 					delivery.TaskID,
 					taskregistry.DeliveryFailed,
@@ -151,7 +185,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 					userDeliveryErr,
 				)
 			} else {
-				al.updateAsyncTaskDeliveryStatus(
+				d.updateDeliveryStatus(
 					ts.workspace,
 					delivery.TaskID,
 					taskregistry.DeliveryNotApplicable,
@@ -164,7 +198,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 	}
 
 	if !delivery.QueueParent {
-		al.updateAsyncTaskDeliveryStatus(
+		d.updateDeliveryStatus(
 			ts.workspace,
 			delivery.TaskID,
 			taskregistry.DeliveryNotApplicable,
@@ -175,7 +209,9 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 	}
 
 	content := result.ContentForLLM()
-	content = al.cfg.FilterSensitiveData(content)
+	if d.cfg != nil {
+		content = d.cfg.FilterSensitiveData(content)
+	}
 
 	logger.InfoCF("agent", "Async tool completed, publishing result",
 		map[string]any{
@@ -183,7 +219,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 			"content_len": len(content),
 			"channel":     ts.channel,
 		})
-	al.emitEvent(
+	d.emitEvent(
 		runtimeevents.KindAgentFollowUpQueued,
 		ts.scope.meta(0, "delivery_coordinator", "turn.follow_up.queued"),
 		FollowUpQueuedPayload{
@@ -213,14 +249,14 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 	}
 	completionCtx, completionCancel := context.WithTimeout(context.Background(), asyncCompletionSynthesisTimeout)
 	defer completionCancel()
-	if _, err := al.processAsyncCompletion(completionCtx, AsyncCompletionInput{
+	if _, err := d.processAsyncCompletion(completionCtx, AsyncCompletionInput{
 		SourceTool:   asyncToolName,
 		CompletionID: completionID,
 		Content:      asyncCompletionPrompt(asyncToolName, content),
 		Origin:       origin,
 		SenderID:     fmt.Sprintf("async:%s", asyncToolName),
 	}); err != nil {
-		al.updateAsyncTaskDeliveryStatus(
+		d.updateDeliveryStatus(
 			ts.workspace,
 			delivery.TaskID,
 			taskregistry.DeliveryFailed,
@@ -236,7 +272,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 				"error":         err.Error(),
 			})
 	} else if delivery.DeliveryMode == tools.AsyncDeliveryParentOnly {
-		al.updateAsyncTaskDeliveryStatus(
+		d.updateDeliveryStatus(
 			ts.workspace,
 			delivery.TaskID,
 			taskregistry.DeliverySessionQueued,
@@ -244,7 +280,7 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 			"",
 		)
 	} else {
-		al.updateAsyncTaskDeliveryStatus(
+		d.updateDeliveryStatus(
 			ts.workspace,
 			delivery.TaskID,
 			taskregistry.DeliveryDelivered,
@@ -252,6 +288,78 @@ func (al *AgentLoop) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 			"",
 		)
 	}
+}
+
+func (d *asyncToolCompletionDelivery) publishOutbound(ctx context.Context, msg bus.OutboundMessage) error {
+	if d == nil || d.bus == nil {
+		return fmt.Errorf("message bus not initialized")
+	}
+	return d.bus.PublishOutbound(ctx, msg)
+}
+
+func (d *asyncToolCompletionDelivery) deliverToUserResult(
+	ctx context.Context,
+	ts *turnState,
+	result *tools.ToolResult,
+	toolName string,
+) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
+	if d == nil || d.deliverToUser == nil {
+		return nil, toolResultDeliveryNone, fmt.Errorf("tool result delivery is not initialized")
+	}
+	return d.deliverToUser(ctx, ts, result, toolName)
+}
+
+func (d *asyncToolCompletionDelivery) processAsyncCompletion(
+	ctx context.Context,
+	input AsyncCompletionInput,
+) (string, error) {
+	if d == nil || d.processCompletion == nil {
+		return "", fmt.Errorf("async completion processor is not initialized")
+	}
+	return d.processCompletion(ctx, input)
+}
+
+func (d *asyncToolCompletionDelivery) isAsyncTaskDeliveryAlreadyHandled(
+	workspace,
+	taskID,
+	completionID string,
+) bool {
+	if d == nil || d.asyncTaskDeliveryAlreadyHandled == nil {
+		return false
+	}
+	return d.asyncTaskDeliveryAlreadyHandled(workspace, taskID, completionID)
+}
+
+func (d *asyncToolCompletionDelivery) recordDeliveryDecision(
+	workspace string,
+	decision AsyncDeliveryDecision,
+	completionID,
+	sourceTool string,
+) {
+	if d == nil || d.recordAsyncTaskDeliveryDecision == nil {
+		return
+	}
+	d.recordAsyncTaskDeliveryDecision(workspace, decision, completionID, sourceTool)
+}
+
+func (d *asyncToolCompletionDelivery) updateDeliveryStatus(
+	workspace,
+	taskID string,
+	status taskregistry.DeliveryStatus,
+	completionID,
+	errorSummary string,
+) {
+	if d == nil || d.updateAsyncTaskDeliveryStatus == nil {
+		return
+	}
+	d.updateAsyncTaskDeliveryStatus(workspace, taskID, status, completionID, errorSummary)
+}
+
+func (d *asyncToolCompletionDelivery) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any) {
+	if d == nil || d.events == nil {
+		return
+	}
+	d.events.emitEvent(kind, meta, payload)
 }
 
 func decideAsyncToolResultDelivery(result *tools.ToolResult) AsyncDeliveryDecision {
