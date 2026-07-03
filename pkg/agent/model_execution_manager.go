@@ -9,21 +9,9 @@ import (
 type modelProviderFactory func(*config.ModelConfig) (providers.LLMProvider, string, error)
 
 type modelExecutionManager struct {
-	cfg             *config.Config
+	configProvider  func() *config.Config
 	state           *state.Manager
 	providerFactory func() modelProviderFactory
-}
-
-func newModelExecutionManager(
-	cfg *config.Config,
-	stateManager *state.Manager,
-	providerFactory func() modelProviderFactory,
-) *modelExecutionManager {
-	return &modelExecutionManager{
-		cfg:             cfg,
-		state:           stateManager,
-		providerFactory: providerFactory,
-	}
 }
 
 func (al *AgentLoop) modelExecutionManager() *modelExecutionManager {
@@ -31,9 +19,13 @@ func (al *AgentLoop) modelExecutionManager() *modelExecutionManager {
 		return nil
 	}
 	if al.modelExecution == nil {
-		al.modelExecution = newModelExecutionManager(al.cfg, al.state, func() modelProviderFactory {
-			return al.providerFactory
-		})
+		al.modelExecution = &modelExecutionManager{
+			configProvider: al.GetConfig,
+			state:          al.state,
+			providerFactory: func() modelProviderFactory {
+				return al.providerFactory
+			},
+		}
 	}
 	return al.modelExecution
 }
@@ -42,7 +34,10 @@ func (m *modelExecutionManager) config() *config.Config {
 	if m == nil {
 		return nil
 	}
-	return m.cfg
+	if m.configProvider == nil {
+		return nil
+	}
+	return m.configProvider()
 }
 
 func (m *modelExecutionManager) currentProviderFactory() modelProviderFactory {
