@@ -143,7 +143,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Reasoning:            al.reasoningPublisher(),
 		ToolFeedback:         al.toolFeedbackPublisher(),
 		SyncToolDelivery:     al.syncToolResultDelivery(),
-		ToolDelivery:         al,
+		ToolDelivery:         al.asyncToolCompletionDelivery(),
 		TurnControl:          al.turnAbortController(),
 		Hooks:                al.hooks,
 		Fallback:             al.fallback,
