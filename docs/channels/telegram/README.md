@@ -16,6 +16,9 @@ The Telegram channel uses long polling via the Telegram Bot API for bot-based co
       "allow_from": ["123456789"],
       "proxy": "",
       "use_markdown_v2": false,
+      "rich_messages": {
+        "enabled": false
+      },
       "media_group_delay_ms": 500
     }
   }
@@ -29,6 +32,7 @@ The Telegram channel uses long polling via the Telegram Bot API for bot-based co
 | allow_from       | array  | No       | Allowlist of user IDs; empty means all users are allowed           |
 | proxy            | string | No       | Proxy URL for connecting to the Telegram API (e.g. http://127.0.0.1:7890) |
 | use_markdown_v2 | bool   | No       | Enable Telegram MarkdownV2 formatting                              |
+| rich_messages.enabled | bool | No    | Enable Telegram Bot API rich messages. Defaults to `false`; plain text/HTML/MarkdownV2 delivery remains the fallback |
 | media_group_delay_ms | int | No       | Idle delay before processing Telegram media groups/albums. Defaults to 500 ms |
 | group_trigger    | object | No       | Group trigger strategy (`mention_only`, `prefixes`, and Telegram forum topic overrides) |
 
@@ -148,3 +152,45 @@ You can set `use_markdown_v2: true` to enable enhanced formatting options. This 
   }
 }
 ```
+
+### Rich Messages
+
+Telegram Bot API rich messages are available behind an explicit feature flag:
+
+```json
+{
+  "channel_list": {
+    "telegram": {
+      "rich_messages": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+Rich messages are rendered only by the Telegram channel. Core agent prompts and
+other channels stay plain-text oriented, so Slack, Discord, and other delivery
+paths are unaffected.
+
+The first supported subset is intentionally conservative:
+
+- headings and paragraphs
+- bold, italic, underline, strikethrough, inline code, and links
+- bullet and numbered lists
+- preformatted code blocks
+- block quotes
+- dividers
+
+In this initial implementation, block structure is rendered with conservative
+Telegram-safe text plus inline HTML tags, rather than relying on every rich HTML
+block tag Telegram documents.
+
+The feature defaults to `false`. When disabled, Telegram uses the existing
+plain text plus HTML/MarkdownV2 formatting path. When rich sending is enabled
+and Telegram rejects a rich message, the channel falls back to the existing safe
+text delivery path.
+
+If `use_markdown_v2` is also enabled, Telegram keeps using the existing
+MarkdownV2 path instead of rich messages so that enabling rich output does not
+change a channel's MarkdownV2 rendering behavior.
