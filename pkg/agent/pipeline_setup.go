@@ -28,7 +28,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	var history []providers.Message
 	var summary string
 	if !ts.opts.NoHistory {
-		if resp, err := p.ContextManager.Assemble(ctx, &AssembleRequest{
+		if resp, err := p.ContextRuntime.Assemble(ctx, &AssembleRequest{
 			SessionKey:    ts.sessionKey,
 			Budget:        ts.agent.ContextWindow,
 			MaxTokens:     ts.agent.MaxTokens,

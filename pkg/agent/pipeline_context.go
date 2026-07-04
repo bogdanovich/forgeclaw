@@ -10,10 +10,10 @@ import (
 )
 
 func (p *Pipeline) ingestMessage(ctx context.Context, ts *turnState, msg providers.Message) {
-	if p == nil || ts == nil || p.ContextManager == nil {
+	if p == nil || ts == nil || p.ContextRuntime == nil {
 		return
 	}
-	if err := p.ContextManager.Ingest(ctx, &IngestRequest{
+	if err := p.ContextRuntime.Ingest(ctx, &IngestRequest{
 		SessionKey: ts.sessionKey,
 		Message:    msg,
 	}); err != nil {

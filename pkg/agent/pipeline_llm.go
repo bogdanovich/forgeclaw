@@ -426,7 +426,7 @@ func (p *Pipeline) CallLLM(
 				reserveTokens,
 			)
 			compactCtx, compactCancel := context.WithTimeout(ctx, contextOverflowCompactTimeout)
-			if compactErr := p.ContextManager.Compact(compactCtx, &CompactRequest{
+			if compactErr := p.ContextRuntime.Compact(compactCtx, &CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonRetry,
 				Budget:     compactBudget,
@@ -439,7 +439,7 @@ func (p *Pipeline) CallLLM(
 			}
 			compactCancel()
 			ts.refreshRestorePointFromSession(ts.agent)
-			if asmResp, asmErr := p.ContextManager.Assemble(ctx, &AssembleRequest{
+			if asmResp, asmErr := p.ContextRuntime.Assemble(ctx, &AssembleRequest{
 				SessionKey:    ts.sessionKey,
 				Budget:        ts.agent.ContextWindow,
 				MaxTokens:     ts.agent.MaxTokens,
