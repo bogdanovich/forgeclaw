@@ -23,6 +23,7 @@ type Pipeline struct {
 	NativeSearch         nativeSearchPolicy
 	LLMRetry             llmRetryPolicy
 	MediaLimits          mediaLimitsProvider
+	FinalTurnRender      finalTurnRenderPolicy
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -48,6 +49,7 @@ type PipelineDependencies struct {
 	NativeSearch         nativeSearchPolicy
 	LLMRetry             llmRetryPolicy
 	MediaLimits          mediaLimitsProvider
+	FinalTurnRender      finalTurnRenderPolicy
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -88,6 +90,10 @@ type llmRetryPolicy interface {
 
 type mediaLimitsProvider interface {
 	maxMediaSize() int
+}
+
+type finalTurnRenderPolicy interface {
+	shouldFinalizeAfterToolLoop(exec *turnExecution) bool
 }
 
 type pipelineContextRuntime interface {
@@ -218,6 +224,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		NativeSearch:         deps.NativeSearch,
 		LLMRetry:             deps.LLMRetry,
 		MediaLimits:          deps.MediaLimits,
+		FinalTurnRender:      deps.FinalTurnRender,
 		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,

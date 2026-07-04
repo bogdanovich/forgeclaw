@@ -881,7 +881,7 @@ toolLoop:
 	}
 
 	// No pending steering: finalize or break depending on allResponsesHandled
-	if shouldFinalizeAfterToolLoopWithRenderConfig(p.Cfg, exec) {
+	if p.shouldFinalizeAfterToolLoop(exec) {
 		logger.InfoCF(
 			"agent",
 			"Tool loop completed; rendering terminal reply from accumulated turn context",
