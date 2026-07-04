@@ -27,7 +27,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	var history []providers.Message
 	var summary string
 	if !ts.opts.NoHistory {
-		if resp, err := p.ContextRuntime.Assemble(ctx, &AssembleRequest{
+		if resp, err := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
 			SessionKey:    ts.sessionKey,
 			Budget:        ts.agent.ContextWindow,
 			MaxTokens:     ts.agent.MaxTokens,
@@ -40,9 +40,16 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	ts.captureRestorePoint(history, summary)
 
 	ts.recordSkillContextSnapshot(skillContextTriggerInitialBuild, contextualSkills)
-	messages := p.buildTurnMessages(ts, history, summary, ts.userMessage, ts.media, contextualSkills)
+	messages := p.buildTurnMessages(
+		ts,
+		history,
+		summary,
+		ts.userMessage,
+		ts.media,
+		contextualSkills,
+	)
 
-	messages = resolveMediaRefs(messages, p.MediaResolver, maxMediaSize)
+	messages = resolveMediaRefs(messages, p.Context.MediaResolver, maxMediaSize)
 
 	if !ts.opts.NoHistory {
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
@@ -79,21 +86,25 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 						ts.media,
 						contextualSkills,
 					)
-					return resolveMediaRefs(rebuilt, p.MediaResolver, maxMediaSize)
+					return resolveMediaRefs(rebuilt, p.Context.MediaResolver, maxMediaSize)
 				},
 				ts.agent.ContextWindow,
 				toolDefs,
 				ts.agent.MaxTokens,
 			)
 			if dropped := originalHistoryCount - len(history); dropped > 0 {
-				logger.WarnCF("agent", "Trimmed rebuilt history after proactive compaction", map[string]any{
-					"session_key":     ts.sessionKey,
-					"dropped_msgs":    dropped,
-					"remaining_msgs":  len(history),
-					"context_window":  ts.agent.ContextWindow,
-					"max_tokens":      ts.agent.MaxTokens,
-					"still_overlimit": !fit,
-				})
+				logger.WarnCF(
+					"agent",
+					"Trimmed rebuilt history after proactive compaction",
+					map[string]any{
+						"session_key":     ts.sessionKey,
+						"dropped_msgs":    dropped,
+						"remaining_msgs":  len(history),
+						"context_window":  ts.agent.ContextWindow,
+						"max_tokens":      ts.agent.MaxTokens,
+						"still_overlimit": !fit,
+					},
+				)
 			} else if !fit {
 				logger.WarnCF("agent", "Context still exceeds budget "+
 					"after proactive compaction rebuild", map[string]any{
@@ -124,14 +135,21 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	execution := ts.model.ExecutionState()
 
-	selection := p.ModelExecution.selectCandidates(execution, ts.userMessage, messages, ts.model.RouteSessionKey)
+	selection := p.Context.ModelExecution.selectCandidates(
+		execution,
+		ts.userMessage,
+		messages,
+		ts.model.RouteSessionKey,
+	)
 	activeProvider := execution.Provider
 	if selection.usedLight && execution.LightProvider != nil {
 		activeProvider = execution.LightProvider
 	}
 	activeModelName := strings.TrimSpace(execution.Model)
 	if selection.usedLight {
-		activeModelName = strings.TrimSpace(resolvedCandidateModelName(execution.LightCandidates, activeModelName))
+		activeModelName = strings.TrimSpace(
+			resolvedCandidateModelName(execution.LightCandidates, activeModelName),
+		)
 	}
 	activeModelName = resolvedCandidateModelName(selection.activeCandidates, activeModelName)
 
@@ -161,10 +179,12 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	routedExecution := execution
 	routedExecution.Model = selection.model
 	routedExecution.Provider = activeProvider
-	routedExecution.Candidates = append([]providers.FallbackCandidate(nil), selection.activeCandidates...)
+	routedExecution.Candidates = append(
+		[]providers.FallbackCandidate(nil),
+		selection.activeCandidates...)
 	routedExecution.CandidateProviders = cloneCandidateProviderMap(execution.CandidateProviders)
 
-	visionExecution, visionCleanup, visionRoute, usedVisionOverride, err := p.ModelExecution.maybeBuildVisionExecutionState(
+	visionExecution, visionCleanup, visionRoute, usedVisionOverride, err := p.Context.ModelExecution.maybeBuildVisionExecutionState(
 		ts.agent,
 		routedExecution,
 		messages,
@@ -173,9 +193,16 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		return nil, err
 	}
 	if usedVisionOverride {
-		exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
-		exec.model.activeCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
-		exec.model.activeModel = resolvedCandidateModel(visionExecution.Candidates, visionExecution.Model)
+		exec.model.selectedCandidates = append(
+			[]providers.FallbackCandidate(nil),
+			visionExecution.Candidates...)
+		exec.model.activeCandidates = append(
+			[]providers.FallbackCandidate(nil),
+			visionExecution.Candidates...)
+		exec.model.activeModel = resolvedCandidateModel(
+			visionExecution.Candidates,
+			visionExecution.Model,
+		)
 		exec.model.activeModelConfig = p.activeModelConfig(
 			ts.agent.Workspace,
 			visionExecution.Candidates,
@@ -221,7 +248,7 @@ func (p *Pipeline) estimateNonHistoryPromptReserve(
 		return EstimateToolDefsTokens(toolDefs)
 	}
 	messages := p.buildTurnMessages(ts, nil, "", ts.userMessage, ts.media, contextualSkills)
-	messages = resolveMediaRefs(messages, p.MediaResolver, maxMediaSize)
+	messages = resolveMediaRefs(messages, p.Context.MediaResolver, maxMediaSize)
 
 	tokens := EstimateToolDefsTokens(toolDefs)
 	for _, msg := range messages {

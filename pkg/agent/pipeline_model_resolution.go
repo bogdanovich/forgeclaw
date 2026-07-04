@@ -53,10 +53,10 @@ func (p *Pipeline) modelCandidates(
 	if p == nil {
 		return nil
 	}
-	if p.ModelResolution == nil {
+	if p.Config.ModelResolution == nil {
 		return newConfigPipelineModelResolution(p.Cfg).modelCandidates(primary, fallbacks)
 	}
-	return p.ModelResolution.modelCandidates(primary, fallbacks)
+	return p.Config.ModelResolution.modelCandidates(primary, fallbacks)
 }
 
 func (p *Pipeline) activeModelConfig(
@@ -67,8 +67,10 @@ func (p *Pipeline) activeModelConfig(
 	if p == nil {
 		return nil
 	}
-	if p.ModelResolution == nil {
-		return newConfigPipelineModelResolution(p.Cfg).activeModelConfig(workspace, candidates, activeModel)
+	if p.Config.ModelResolution == nil {
+		return newConfigPipelineModelResolution(
+			p.Cfg,
+		).activeModelConfig(workspace, candidates, activeModel)
 	}
-	return p.ModelResolution.activeModelConfig(workspace, candidates, activeModel)
+	return p.Config.ModelResolution.activeModelConfig(workspace, candidates, activeModel)
 }

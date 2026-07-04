@@ -37,7 +37,7 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		return nil, false, nil
 	}
 
-	streamer, ok := p.Bus.GetStreamer(ctx, ts.channel, ts.chatID, ts.sessionKey)
+	streamer, ok := p.Runtime.Bus.GetStreamer(ctx, ts.channel, ts.chatID, ts.sessionKey)
 	if !ok || streamer == nil {
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"agent_id": ts.agent.ID,
@@ -120,7 +120,11 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 				logger.WarnCF("agent", "ChatStream update failed after visible output", logFields)
 				return nil, true, configuredStreamingVisibleError{err: updateErr}
 			}
-			logger.WarnCF("agent", "ChatStream update failed before visible output; retrying with Chat", logFields)
+			logger.WarnCF(
+				"agent",
+				"ChatStream update failed before visible output; retrying with Chat",
+				logFields,
+			)
 			publisher.Cancel(ctx)
 			fallbackResponse, err := exec.model.activeProvider.Chat(
 				ctx,
@@ -137,12 +141,16 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 	}
 	if streamErr != nil {
 		if !publisher.Published() {
-			logger.WarnCF("agent", "ChatStream failed before visible output; retrying with Chat", map[string]any{
-				"agent_id": ts.agent.ID,
-				"channel":  ts.channel,
-				"model":    exec.llmModel,
-				"error":    streamErr.Error(),
-			})
+			logger.WarnCF(
+				"agent",
+				"ChatStream failed before visible output; retrying with Chat",
+				map[string]any{
+					"agent_id": ts.agent.ID,
+					"channel":  ts.channel,
+					"model":    exec.llmModel,
+					"error":    streamErr.Error(),
+				},
+			)
 			publisher.Cancel(ctx)
 			fallbackResponse, err := exec.model.activeProvider.Chat(
 				ctx,
@@ -258,7 +266,7 @@ func cancelConfiguredStreamingLLM(ctx context.Context, exec *turnExecution) {
 }
 
 func (p *Pipeline) configuredStreamingEligible(ts *turnState, exec *turnExecution) bool {
-	if p == nil || ts == nil || exec == nil || p.Bus == nil {
+	if p == nil || ts == nil || exec == nil || p.Runtime.Bus == nil {
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"reason": "missing_pipeline_state",
 		})
@@ -331,8 +339,8 @@ func (p *Pipeline) channelStreamingConfig(channelName string) (config.StreamingC
 	if p == nil {
 		return config.StreamingConfig{}, false
 	}
-	if p.ChannelStreaming != nil {
-		return p.ChannelStreaming.channelStreamingConfig(channelName)
+	if p.Config.ChannelStreaming != nil {
+		return p.Config.ChannelStreaming.channelStreamingConfig(channelName)
 	}
 	return newConfigChannelStreamingProvider(p.Cfg).channelStreamingConfig(channelName)
 }
@@ -428,7 +436,11 @@ func (p *streamingChunkPublisher) Err() error {
 	return p.err
 }
 
-func (p *streamingChunkPublisher) Finalize(ctx context.Context, content string, contextUsage *bus.ContextUsage) error {
+func (p *streamingChunkPublisher) Finalize(
+	ctx context.Context,
+	content string,
+	contextUsage *bus.ContextUsage,
+) error {
 	if p == nil || p.streamer == nil {
 		return nil
 	}

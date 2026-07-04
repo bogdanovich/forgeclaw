@@ -289,8 +289,8 @@ toolLoop:
 			continue
 		}
 
-		if p.Hooks != nil {
-			toolReq, decision := p.Hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
+		if p.Interaction.Hooks != nil {
+			toolReq, decision := p.Interaction.Hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.before"),
 				Context:   cloneTurnContext(ts.turnCtx),
 				Tool:      toolName,
@@ -341,7 +341,7 @@ toolLoop:
 						hookResult.ForUser != "" &&
 						ts.opts.SendResponse
 					if shouldSendForUser {
-						p.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, hookResult.ForUser))
+						p.Runtime.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, hookResult.ForUser))
 					}
 
 					if !hookResult.ResponseHandled {
@@ -357,8 +357,8 @@ toolLoop:
 					}
 
 					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
-						recordCompletionMedia(exec, p.MediaResolver, hookResult.Media)
-						hookResult.ArtifactTags = buildArtifactTags(p.MediaResolver, hookResult.Media)
+						recordCompletionMedia(exec, p.Context.MediaResolver, hookResult.Media)
+						hookResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, hookResult.Media)
 						contentForLLM = p.filterToolContentForLLM(hookResult.ContentForLLM())
 						toolResultMsg.Content = contentForLLM
 						toolResultMsg.Media = append(toolResultMsg.Media, hookResult.Media...)
@@ -425,8 +425,8 @@ toolLoop:
 			}
 		}
 
-		if p.Hooks != nil {
-			approval := p.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
+		if p.Interaction.Hooks != nil {
+			approval := p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
 				Context:   cloneTurnContext(ts.turnCtx),
 				Tool:      toolName,
@@ -563,8 +563,8 @@ toolLoop:
 			return ToolControlBreak
 		}
 
-		if p.Hooks != nil {
-			toolResp, decision := p.Hooks.AfterTool(turnCtx, &ToolResultHookResponse{
+		if p.Interaction.Hooks != nil {
+			toolResp, decision := p.Interaction.Hooks.AfterTool(turnCtx, &ToolResultHookResponse{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.after"),
 				Context:   cloneTurnContext(ts.turnCtx),
 				Tool:      toolName,
@@ -616,8 +616,8 @@ toolLoop:
 		runner.handledAttachments = append(runner.handledAttachments, attachments...)
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
-			recordCompletionMedia(exec, p.MediaResolver, toolResult.Media)
-			toolResult.ArtifactTags = buildArtifactTags(p.MediaResolver, toolResult.Media)
+			recordCompletionMedia(exec, p.Context.MediaResolver, toolResult.Media)
+			toolResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, toolResult.Media)
 		}
 
 		if !toolResult.ResponseHandled {
@@ -630,7 +630,7 @@ toolLoop:
 			toolResult.ForUser != "" &&
 			ts.opts.SendResponse
 		if shouldSendForUser {
-			p.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
+			p.Runtime.Bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
 			logger.DebugCF("agent", "Sent tool result to user",
 				map[string]any{
 					"tool":        toolName,
@@ -778,7 +778,7 @@ toolLoop:
 			}
 		}
 		if !ts.opts.NoHistory && ts.opts.EnableSummary {
-			p.ContextRuntime.Compact(turnCtx, &CompactRequest{
+			p.Context.Runtime.Compact(turnCtx, &CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonSummarize,
 				Budget:     ts.agent.ContextWindow,

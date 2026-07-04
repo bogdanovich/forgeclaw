@@ -1520,7 +1520,7 @@ func TestRunTurn_SteeringToolMediaUsesPipelineMediaLimit(t *testing.T) {
 	al.SetMediaStore(store)
 
 	pipeline := NewPipeline(al)
-	pipeline.MediaLimits = &testMediaLimitsProvider{size: 1}
+	pipeline.Config.MediaLimits = &testMediaLimitsProvider{size: 1}
 	opts := makeTestProcessOpts("test-session-steering-media")
 	ts := newTurnState(agent, opts, turnEventScope{
 		turnID:  "turn-steering-media",
@@ -1550,7 +1550,10 @@ func TestRunTurn_SteeringToolMediaUsesPipelineMediaLimit(t *testing.T) {
 			foundPathTag = true
 		}
 		if strings.Contains(msg.Content, "data:image/") {
-			t.Fatalf("unexpected inline media data URL with injected 1-byte media limit: %q", msg.Content)
+			t.Fatalf(
+				"unexpected inline media data URL with injected 1-byte media limit: %q",
+				msg.Content,
+			)
 		}
 	}
 	if !foundPathTag {

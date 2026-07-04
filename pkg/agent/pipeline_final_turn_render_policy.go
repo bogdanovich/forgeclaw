@@ -18,8 +18,8 @@ func (p *Pipeline) shouldFinalizeAfterToolLoop(exec *turnExecution) bool {
 	if p == nil {
 		return false
 	}
-	if p.FinalTurnRender == nil {
+	if p.Config.FinalTurnRender == nil {
 		return newConfigFinalTurnRenderPolicy(p.Cfg).shouldFinalizeAfterToolLoop(exec)
 	}
-	return p.FinalTurnRender.shouldFinalizeAfterToolLoop(exec)
+	return p.Config.FinalTurnRender.shouldFinalizeAfterToolLoop(exec)
 }

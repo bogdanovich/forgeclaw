@@ -18,7 +18,7 @@ func (p *testFinalTurnRenderPolicy) shouldFinalizeAfterToolLoop(*turnExecution) 
 
 func TestPipelineShouldFinalizeAfterToolLoop_UsesInjectedPolicy(t *testing.T) {
 	policy := &testFinalTurnRenderPolicy{result: true}
-	pipeline := &Pipeline{FinalTurnRender: policy}
+	pipeline := &Pipeline{Config: pipelineConfigServices{FinalTurnRender: policy}}
 
 	if !pipeline.shouldFinalizeAfterToolLoop(&turnExecution{}) {
 		t.Fatal("shouldFinalizeAfterToolLoop() = false, want injected policy result")

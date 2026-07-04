@@ -21,10 +21,10 @@ func (p *Pipeline) filterToolContentForLLM(content string) string {
 	if p == nil {
 		return content
 	}
-	if p.ToolContentFilter == nil {
+	if p.Config.ToolContentFilter == nil {
 		return newConfigToolContentFilter(p.Cfg).filterToolContentForLLM(content)
 	}
-	return p.ToolContentFilter.filterToolContentForLLM(content)
+	return p.Config.ToolContentFilter.filterToolContentForLLM(content)
 }
 
 func (p *Pipeline) filterPendingResultForLLM(content string) string {

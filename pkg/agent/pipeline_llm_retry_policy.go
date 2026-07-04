@@ -28,8 +28,8 @@ func (p *Pipeline) llmRetrySettings() (int, int) {
 	if p == nil {
 		return 2, 2
 	}
-	if p.LLMRetry == nil {
+	if p.Config.LLMRetry == nil {
 		return newConfigLLMRetryPolicy(p.Cfg).llmRetrySettings()
 	}
-	return p.LLMRetry.llmRetrySettings()
+	return p.Config.LLMRetry.llmRetrySettings()
 }
