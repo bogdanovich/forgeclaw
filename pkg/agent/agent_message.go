@@ -204,19 +204,48 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return al.processSystemMessage(ctx, msg)
 	}
 
+	plan, err := al.buildMessageTurnPlan(msg)
+	if err != nil {
+		return "", err
+	}
+	defer plan.modelBinding.Cleanup()
+
+	// context-dependent commands check their own Runtime fields and report
+	// "unavailable" when the required capability is nil.
+	if response, handled := al.handleCommand(ctx, msg, plan.modelBinding, &plan.opts); handled {
+		return response, nil
+	}
+
+	if pending := al.takePendingSkills(plan.opts.Dispatch.SessionKey); len(pending) > 0 {
+		plan.opts.ForcedSkills = append(plan.opts.ForcedSkills, pending...)
+		logger.InfoCF("agent", "Applying pending skill override",
+			map[string]any{
+				"session_key": plan.opts.Dispatch.SessionKey,
+				"skills":      strings.Join(pending, ","),
+			})
+	}
+
+	return al.runAgentLoop(ctx, plan.agent, plan.opts)
+}
+
+type messageTurnPlan struct {
+	agent        *AgentInstance
+	modelBinding effectiveModelBinding
+	opts         processOptions
+}
+
+func (al *AgentLoop) buildMessageTurnPlan(msg bus.InboundMessage) (*messageTurnPlan, error) {
 	route, agent, routeErr := al.resolveMessageRoute(msg)
 	if routeErr != nil {
-		return "", routeErr
+		return nil, routeErr
 	}
 
 	allocation := al.allocateRouteSession(route, msg)
 
 	// Resolve session key from the route allocation, while preserving explicit
 	// agent-scoped keys supplied by the caller.
-	scopeKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
-	sessionKey := scopeKey
+	sessionKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
 	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
-	defer modelBinding.Cleanup()
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
 	if tool, ok := agent.Tools.Get("message"); ok {
@@ -229,7 +258,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		map[string]any{
 			"agent_id":           agent.ID,
 			"effective_agent_id": modelBinding.ExecutionState().AgentID,
-			"scope_key":          scopeKey,
+			"scope_key":          sessionKey,
 			"session_key":        sessionKey,
 			"matched_by":         route.MatchedBy,
 			"route_agent":        route.AgentID,
@@ -266,25 +295,15 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	var err error
 	opts, err = resolveTurnProfileOptions(al.GetConfig(), opts)
 	if err != nil {
-		return "", err
+		modelBinding.Cleanup()
+		return nil, err
 	}
 
-	// context-dependent commands check their own Runtime fields and report
-	// "unavailable" when the required capability is nil.
-	if response, handled := al.handleCommand(ctx, msg, modelBinding, &opts); handled {
-		return response, nil
-	}
-
-	if pending := al.takePendingSkills(opts.Dispatch.SessionKey); len(pending) > 0 {
-		opts.ForcedSkills = append(opts.ForcedSkills, pending...)
-		logger.InfoCF("agent", "Applying pending skill override",
-			map[string]any{
-				"session_key": opts.Dispatch.SessionKey,
-				"skills":      strings.Join(pending, ","),
-			})
-	}
-
-	return al.runAgentLoop(ctx, agent, opts)
+	return &messageTurnPlan{
+		agent:        agent,
+		modelBinding: modelBinding,
+		opts:         opts,
+	}, nil
 }
 
 func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage) {

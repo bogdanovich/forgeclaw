@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
@@ -131,5 +132,73 @@ func TestNormalizeProcessOptions_InfersLegacyChatTypeFromSessionScope(t *testing
 	}
 	if opts.Dispatch.InboundContext.ChatType != "group" {
 		t.Fatalf("Dispatch.InboundContext.ChatType = %q, want group", opts.Dispatch.InboundContext.ChatType)
+	}
+}
+
+func TestBuildMessageTurnPlan_NormalizesRoutedDispatch(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+
+	msg := bus.NormalizeInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "telegram",
+			ChatID:    "-100123",
+			ChatType:  "group",
+			TopicID:   "42",
+			SenderID:  "user-1",
+			MessageID: "msg-1",
+		},
+		Sender: bus.SenderInfo{
+			DisplayName: "Test User",
+		},
+		Content:    "hello",
+		Media:      []string{"media://one"},
+		SessionKey: "legacy-session",
+	})
+
+	plan, err := al.buildMessageTurnPlan(msg)
+	if err != nil {
+		t.Fatalf("buildMessageTurnPlan() error = %v", err)
+	}
+	defer plan.modelBinding.Cleanup()
+
+	if plan.agent == nil || plan.agent.ID != routing.DefaultAgentID {
+		t.Fatalf("plan agent = %#v, want default agent", plan.agent)
+	}
+	if plan.opts.Dispatch.SessionKey == "" {
+		t.Fatal("Dispatch.SessionKey is empty")
+	}
+	if plan.opts.Dispatch.UserMessage != "hello" {
+		t.Fatalf("Dispatch.UserMessage = %q, want hello", plan.opts.Dispatch.UserMessage)
+	}
+	if got := plan.opts.Dispatch.Channel(); got != "telegram" {
+		t.Fatalf("Dispatch.Channel() = %q, want telegram", got)
+	}
+	if got := plan.opts.Dispatch.ChatID(); got != "-100123" {
+		t.Fatalf("Dispatch.ChatID() = %q, want -100123", got)
+	}
+	if got := plan.opts.Dispatch.MessageID(); got != "msg-1" {
+		t.Fatalf("Dispatch.MessageID() = %q, want msg-1", got)
+	}
+	if len(plan.opts.Dispatch.Media) != 1 || plan.opts.Dispatch.Media[0] != "media://one" {
+		t.Fatalf("Dispatch.Media = %v, want [media://one]", plan.opts.Dispatch.Media)
+	}
+	if plan.opts.SenderDisplayName != "Test User" {
+		t.Fatalf("SenderDisplayName = %q, want Test User", plan.opts.SenderDisplayName)
+	}
+	if plan.opts.Dispatch.RouteResult == nil {
+		t.Fatal("Dispatch.RouteResult is nil")
+	}
+	if plan.opts.Dispatch.SessionScope == nil {
+		t.Fatal("Dispatch.SessionScope is nil")
 	}
 }
