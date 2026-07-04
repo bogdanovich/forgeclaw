@@ -196,6 +196,19 @@ func (s *cleanableRecordingStreamer) ClearFinalizedStreamMarker() {
 	s.clearMarkers++
 }
 
+type turnUsageRecordingStreamer struct {
+	recordingStreamer
+	inputTokens  int
+	outputTokens int
+	usageCalls   int
+}
+
+func (s *turnUsageRecordingStreamer) SetTurnUsage(inputTokens, outputTokens int) {
+	s.usageCalls++
+	s.inputTokens = inputTokens
+	s.outputTokens = outputTokens
+}
+
 type failingFinalizeStreamer struct {
 	recordingStreamer
 	err error
@@ -1048,6 +1061,58 @@ func TestConfiguredStreamingToolCallsUseCompleteStreamResponse(t *testing.T) {
 	}
 	if len(streamer.finalized) != 1 || streamer.finalized[0] != "tool call handled" {
 		t.Fatalf("stream finalized = %v, want [tool call handled]", streamer.finalized)
+	}
+}
+
+func TestConfiguredStreamingFinalTurnDoesNotReuseStaleUsageFromEarlierIteration(t *testing.T) {
+	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
+	streamer := &turnUsageRecordingStreamer{}
+	msgBus := bus.NewMessageBus()
+	msgBus.SetStreamDelegate(configuredStreamingDelegate{streamer: streamer})
+	provider := &configuredStreamingProvider{
+		streamPlan: []configuredStreamingCall{
+			{
+				chunks: []string{"partial tool-call response"},
+				response: &providers.LLMResponse{
+					Content: "need a tool",
+					ToolCalls: []providers.ToolCall{{
+						ID:        "call-1",
+						Type:      "function",
+						Name:      "tool_limit_test_tool",
+						Arguments: map[string]any{"value": "x"},
+					}},
+					Usage: &providers.UsageInfo{
+						PromptTokens:     123,
+						CompletionTokens: 45,
+						TotalTokens:      168,
+					},
+				},
+			},
+			{
+				response: &providers.LLMResponse{
+					Content: "final answer without usage",
+					Usage:   nil,
+				},
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	agent := al.GetRegistry().GetDefaultAgent()
+	agent.Tools.Register(&toolLimitTestTool{})
+
+	got := runConfiguredStreamingTurn(t, al, "pico")
+
+	if got != "final answer without usage" {
+		t.Fatalf("response = %q, want final answer without usage", got)
+	}
+	if streamer.usageCalls != 0 {
+		t.Fatalf("SetTurnUsage calls = %d, want 0 when final streamed response has nil usage", streamer.usageCalls)
+	}
+	if streamer.inputTokens != 0 || streamer.outputTokens != 0 {
+		t.Fatalf("streamed usage = (%d, %d), want (0, 0)", streamer.inputTokens, streamer.outputTokens)
+	}
+	if len(streamer.finalized) != 1 || streamer.finalized[0] != "final answer without usage" {
+		t.Fatalf("stream finalized = %v, want [final answer without usage]", streamer.finalized)
 	}
 }
 

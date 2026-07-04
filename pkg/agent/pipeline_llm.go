@@ -579,9 +579,7 @@ func (p *Pipeline) CallLLM(
 	// state, and the streaming publisher reads usage from ts at finalize.
 	if ts != nil {
 		ts.SetLastFinishReason(exec.response.FinishReason)
-		if exec.response.Usage != nil {
-			ts.SetLastUsage(exec.response.Usage)
-		}
+		ts.SetLastUsage(exec.response.Usage)
 		ts.RecordLLMUsage(exec.response.Usage)
 	}
 
