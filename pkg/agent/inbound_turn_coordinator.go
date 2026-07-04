@@ -16,6 +16,12 @@ type inboundTurnCoordinator struct {
 	al *AgentLoop
 }
 
+type inboundSessionClaim struct {
+	coordinator *inboundTurnCoordinator
+	sessionKey  string
+	placeholder *turnState
+}
+
 func newInboundTurnCoordinator(al *AgentLoop) *inboundTurnCoordinator {
 	return &inboundTurnCoordinator{al: al}
 }
@@ -35,16 +41,16 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		return
 	}
 
-	placeholder, claimed := c.claimSession(sessionKey)
+	claim, claimed := c.claimSession(sessionKey)
 	if !claimed {
 		c.handleBusySession(ctx, msg, sessionKey, agentID)
 		return
 	}
 
-	c.startWorker(ctx, msg, sessionKey, placeholder)
+	c.startWorker(ctx, msg, claim)
 }
 
-func (c *inboundTurnCoordinator) claimSession(sessionKey string) (*turnState, bool) {
+func (c *inboundTurnCoordinator) claimSession(sessionKey string) (*inboundSessionClaim, bool) {
 	al := c.al
 	placeholder := &turnState{
 		turnID: makePendingTurnID(sessionKey, al.turnSeq.Add(1)),
@@ -53,7 +59,11 @@ func (c *inboundTurnCoordinator) claimSession(sessionKey string) (*turnState, bo
 	if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
 		return nil, false
 	}
-	return placeholder, true
+	return &inboundSessionClaim{
+		coordinator: c,
+		sessionKey:  sessionKey,
+		placeholder: placeholder,
+	}, true
 }
 
 func (c *inboundTurnCoordinator) handleBusySession(
@@ -89,33 +99,31 @@ func (c *inboundTurnCoordinator) handleBusySession(
 func (c *inboundTurnCoordinator) startWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	sessionKey string,
-	placeholder *turnState,
+	claim *inboundSessionClaim,
 ) {
-	go c.runWorker(ctx, msg, sessionKey, placeholder)
+	go c.runWorker(ctx, msg, claim)
 }
 
 func (c *inboundTurnCoordinator) runWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	sessionKey string,
-	placeholder *turnState,
+	claim *inboundSessionClaim,
 ) {
 	al := c.al
-	if !c.acquireWorker(ctx, msg, sessionKey, placeholder) {
+	if !c.acquireWorker(ctx, msg, claim) {
 		return
 	}
 
-	defer c.cleanupPlaceholder(sessionKey, placeholder)
-	defer c.recoverWorkerPanic(sessionKey, msg)
+	defer claim.releaseIfOwned()
+	defer c.recoverWorkerPanic(claim.sessionKey, msg)
 	defer func() { <-al.workerSem }()
 
 	if al.channelManager != nil {
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
-	if al.takePendingStop(sessionKey) {
-		c.handlePendingStop(ctx, msg, sessionKey)
+	if al.takePendingStop(claim.sessionKey) {
+		c.handlePendingStop(ctx, msg, claim)
 		return
 	}
 
@@ -129,14 +137,13 @@ func (c *inboundTurnCoordinator) runWorker(
 func (c *inboundTurnCoordinator) acquireWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	sessionKey string,
-	placeholder *turnState,
+	claim *inboundSessionClaim,
 ) bool {
 	select {
 	case c.al.workerSem <- struct{}{}:
 		return true
 	case <-ctx.Done():
-		c.clearClaim(sessionKey, placeholder)
+		claim.releaseIfOwned()
 		c.al.releaseInboundMessage(context.Background(), msg, ctx.Err())
 		return false
 	}
@@ -145,14 +152,14 @@ func (c *inboundTurnCoordinator) acquireWorker(
 func (c *inboundTurnCoordinator) handlePendingStop(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	sessionKey string,
+	claim *inboundSessionClaim,
 ) {
 	al := c.al
-	al.activeTurnStates.Delete(sessionKey)
+	claim.releaseIfOwned()
 	al.ackInboundMessage(ctx, msg)
 
 	target := &continuationTarget{
-		SessionKey: sessionKey,
+		SessionKey: claim.sessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
 	}
@@ -162,7 +169,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			ctx,
 			msg.Channel,
 			msg.ChatID,
-			sessionKey,
+			claim.sessionKey,
 			continueErr,
 			finalResponseAlwaysPublish,
 		)
@@ -181,16 +188,12 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	}
 }
 
-func (c *inboundTurnCoordinator) cleanupPlaceholder(sessionKey string, placeholder *turnState) {
-	if placeholder == nil {
+func (claim *inboundSessionClaim) releaseIfOwned() {
+	if claim == nil || claim.placeholder == nil || claim.coordinator == nil {
 		return
 	}
-	c.clearClaim(sessionKey, placeholder)
-}
-
-func (c *inboundTurnCoordinator) clearClaim(sessionKey string, placeholder *turnState) {
-	if actual, ok := c.al.activeTurnStates.Load(sessionKey); ok && actual == placeholder {
-		c.al.activeTurnStates.Delete(sessionKey)
+	if actual, ok := claim.coordinator.al.activeTurnStates.Load(claim.sessionKey); ok && actual == claim.placeholder {
+		claim.coordinator.al.activeTurnStates.Delete(claim.sessionKey)
 	}
 }
 
