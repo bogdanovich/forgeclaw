@@ -179,7 +179,11 @@ func (al *AgentLoop) prepareInboundMessageForAgent(
 }
 
 func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
-	msg = al.prepareInboundMessageForAgent(ctx, msg)
+	turn, turnErr := al.buildInboundMessageTurn(ctx, msg)
+	if turnErr != nil {
+		return "", turnErr
+	}
+	msg = turn.Message
 
 	// Add message preview to log (show full content for error messages)
 	var logContent string
@@ -204,65 +208,22 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return al.processSystemMessage(ctx, msg)
 	}
 
-	route, agent, routeErr := al.resolveMessageRoute(msg)
-	if routeErr != nil {
-		return "", routeErr
-	}
-
-	allocation := al.allocateRouteSession(route, msg)
-
-	// Resolve session key from the route allocation, while preserving explicit
-	// agent-scoped keys supplied by the caller.
-	scopeKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
-	sessionKey := scopeKey
-	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
-	defer modelBinding.Cleanup()
-
-	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
-	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
-			resetter.ResetSentInRound(sessionKey)
-		}
-	}
+	defer turn.Cleanup()
+	turn.resetMessageToolRound()
 
 	logger.InfoCF("agent", "Routed message",
 		map[string]any{
-			"agent_id":           agent.ID,
-			"effective_agent_id": modelBinding.ExecutionState().AgentID,
-			"scope_key":          scopeKey,
-			"session_key":        sessionKey,
-			"matched_by":         route.MatchedBy,
-			"route_agent":        route.AgentID,
-			"route_channel":      route.Channel,
-			"route_main_session": allocation.MainSessionKey,
+			"agent_id":           turn.Agent.ID,
+			"effective_agent_id": turn.ModelBinding.ExecutionState().AgentID,
+			"scope_key":          turn.ScopeKey,
+			"session_key":        turn.SessionKey,
+			"matched_by":         turn.Options.Dispatch.RouteResult.MatchedBy,
+			"route_agent":        turn.Options.Dispatch.RouteResult.AgentID,
+			"route_channel":      turn.Options.Dispatch.RouteResult.Channel,
+			"route_main_session": turn.Options.Dispatch.RouteSessionKey,
 		})
 
-	opts := processOptions{
-		Dispatch: DispatchRequest{
-			RouteSessionKey: allocation.SessionKey,
-			SessionKey:      sessionKey,
-			SessionAliases: buildSessionAliases(
-				sessionKey,
-				sessionAliasCandidates(
-					allocation.SessionKey,
-					sessionKey,
-					allocation.SessionAliases,
-					msg.SessionKey,
-				)...),
-			InboundContext: cloneInboundContext(&msg.Context),
-			RouteResult:    cloneResolvedRoute(&route),
-			SessionScope:   session.CloneScope(&allocation.Scope),
-			UserMessage:    msg.Content,
-			Media:          append([]string(nil), msg.Media...),
-		},
-		ModelBinding:            modelBinding,
-		SenderID:                msg.SenderID,
-		SenderDisplayName:       msg.Sender.DisplayName,
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           true,
-		SendResponse:            false,
-		AllowInterimPicoPublish: true,
-	}
+	opts := turn.Options
 	var err error
 	opts, err = resolveTurnProfileOptions(al.GetConfig(), opts)
 	if err != nil {
@@ -271,7 +232,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// context-dependent commands check their own Runtime fields and report
 	// "unavailable" when the required capability is nil.
-	if response, handled := al.handleCommand(ctx, msg, modelBinding, &opts); handled {
+	if response, handled := al.handleCommand(ctx, msg, turn.ModelBinding, &opts); handled {
 		return response, nil
 	}
 
@@ -284,7 +245,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 			})
 	}
 
-	return al.runAgentLoop(ctx, agent, opts)
+	return al.runAgentLoop(ctx, turn.Agent, opts)
 }
 
 func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage) {
