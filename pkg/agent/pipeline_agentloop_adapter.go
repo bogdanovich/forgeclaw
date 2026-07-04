@@ -2,10 +2,11 @@ package agent
 
 // NewPipeline creates a Pipeline from an AgentLoop instance.
 func NewPipeline(al *AgentLoop) *Pipeline {
+	cfg := al.GetConfig()
 	return NewPipelineFromDependencies(PipelineDependencies{
 		Bus:                  al.bus,
-		Cfg:                  al.GetConfig(),
-		ChannelStreaming:     newConfigChannelStreamingProvider(al.GetConfig()),
+		Cfg:                  cfg,
+		ChannelStreaming:     newConfigChannelStreamingProvider(cfg),
 		ContextRuntime:       al.contextManager,
 		BackgroundCompaction: al.backgroundCompactionRunner(),
 		Events:               al.runtimeEventEmitter(),
@@ -14,7 +15,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Steering:             al.steering,
 		Reasoning:            al.reasoningPublisher(),
 		ToolFeedback:         al.toolFeedbackPublisher(),
-		ToolContentFilter:    newConfigToolContentFilter(al.GetConfig()),
+		ToolContentFilter:    newConfigToolContentFilter(cfg),
 		SyncToolDelivery:     al.syncToolResultDelivery(),
 		ToolDelivery:         al.asyncToolCompletionDelivery(),
 		TurnControl:          al.turnAbortController(),

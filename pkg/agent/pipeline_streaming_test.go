@@ -433,6 +433,29 @@ func TestPipelineChannelStreamingConfig_FallsBackToConfig(t *testing.T) {
 	}
 }
 
+func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *testing.T) {
+	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &configuredStreamingChatOnlyProvider{})
+
+	pipeline := NewPipeline(al)
+
+	channelStreaming, ok := pipeline.ChannelStreaming.(configChannelStreamingProvider)
+	if !ok {
+		t.Fatalf("ChannelStreaming = %T, want configChannelStreamingProvider", pipeline.ChannelStreaming)
+	}
+	if channelStreaming.cfg != pipeline.Cfg {
+		t.Fatal("ChannelStreaming config does not match pipeline config snapshot")
+	}
+
+	toolFilter, ok := pipeline.ToolContentFilter.(configToolContentFilter)
+	if !ok {
+		t.Fatalf("ToolContentFilter = %T, want configToolContentFilter", pipeline.ToolContentFilter)
+	}
+	if toolFilter.cfg != pipeline.Cfg {
+		t.Fatal("ToolContentFilter config does not match pipeline config snapshot")
+	}
+}
+
 func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	msgBus := bus.NewMessageBus()
