@@ -15,7 +15,6 @@ import (
 // turnExecution populated with history, messages, and candidate selection.
 // It replaces lines 56-145 of the original runTurn.
 func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution, error) {
-	cfg := p.Cfg
 	maxMediaSize := p.maxMediaSize()
 
 	contextualSkills := ts.activeSkills
@@ -41,9 +40,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	ts.captureRestorePoint(history, summary)
 
 	ts.recordSkillContextSnapshot(skillContextTriggerInitialBuild, contextualSkills)
-	initialPromptReq := promptBuildRequestForTurn(ts, history, summary, ts.userMessage, ts.media, cfg)
-	initialPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
-	messages := ts.agent.ContextBuilder.BuildMessagesFromPrompt(initialPromptReq)
+	messages := p.buildTurnMessages(ts, history, summary, ts.userMessage, ts.media, contextualSkills)
 
 	messages = resolveMediaRefs(messages, p.MediaResolver, maxMediaSize)
 
@@ -74,16 +71,14 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			history, messages, fit = trimHistoryToFitContextWindow(
 				history,
 				func(trimmedHistory []providers.Message) []providers.Message {
-					rebuildPromptReq := promptBuildRequestForTurn(
+					rebuilt := p.buildTurnMessages(
 						ts,
 						trimmedHistory,
 						summary,
 						ts.userMessage,
 						ts.media,
-						cfg,
+						contextualSkills,
 					)
-					rebuildPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
-					rebuilt := ts.agent.ContextBuilder.BuildMessagesFromPrompt(rebuildPromptReq)
 					return resolveMediaRefs(rebuilt, p.MediaResolver, maxMediaSize)
 				},
 				ts.agent.ContextWindow,
@@ -225,9 +220,7 @@ func (p *Pipeline) estimateNonHistoryPromptReserve(
 	if ts == nil || ts.agent == nil || ts.agent.ContextBuilder == nil {
 		return EstimateToolDefsTokens(toolDefs)
 	}
-	req := promptBuildRequestForTurn(ts, nil, "", ts.userMessage, ts.media, p.Cfg)
-	req.ActiveSkills = append([]string(nil), contextualSkills...)
-	messages := ts.agent.ContextBuilder.BuildMessagesFromPrompt(req)
+	messages := p.buildTurnMessages(ts, nil, "", ts.userMessage, ts.media, contextualSkills)
 	messages = resolveMediaRefs(messages, p.MediaResolver, maxMediaSize)
 
 	tokens := EstimateToolDefsTokens(toolDefs)

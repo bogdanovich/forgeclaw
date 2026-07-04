@@ -507,6 +507,14 @@ func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *test
 	if modelResolution.cfg != pipeline.Cfg {
 		t.Fatal("ModelResolution config does not match pipeline config snapshot")
 	}
+
+	promptBuilder, ok := pipeline.PromptBuilder.(configPipelinePromptBuilder)
+	if !ok {
+		t.Fatalf("PromptBuilder = %T, want configPipelinePromptBuilder", pipeline.PromptBuilder)
+	}
+	if promptBuilder.cfg != pipeline.Cfg {
+		t.Fatal("PromptBuilder config does not match pipeline config snapshot")
+	}
 }
 
 func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {
