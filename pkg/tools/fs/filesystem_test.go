@@ -117,6 +117,14 @@ func TestFilesystemTool_WriteFile_Success(t *testing.T) {
 	if result.ForUser != "" {
 		t.Errorf("Expected ForUser to be empty for SilentResult, got: %s", result.ForUser)
 	}
+	if len(result.WriteAudit) != 1 {
+		t.Fatalf("expected 1 write audit entry, got %+v", result.WriteAudit)
+	}
+	if got := result.WriteAudit[0]; got.Target != testFile || got.Action != "write" ||
+		got.Tool != "write_file" ||
+		!got.Success {
+		t.Fatalf("unexpected write audit entry: %+v", got)
+	}
 
 	// Verify file was actually written
 	content, err := os.ReadFile(testFile)

@@ -44,8 +44,7 @@ func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 			return nil, tools.ErrorResult("tool result delivery is not initialized")
 		}
 		if _, _, err := d.deliverToUser(ctx, ts, result, toolName); err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
-				WithError(err)
+			return nil, wrapToolDeliveryError(result, fmt.Sprintf("failed to deliver attachment: %v", err), err)
 		}
 	}
 
@@ -55,8 +54,7 @@ func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 		}
 		attachments, outcome, err := d.deliverToUser(ctx, ts, result, toolName)
 		if err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
-				WithError(err)
+			return nil, wrapToolDeliveryError(result, fmt.Sprintf("failed to deliver attachment: %v", err), err)
 		}
 		if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(result)) > 0 {
 			result.ResponseHandled = false
@@ -67,4 +65,17 @@ func (d *syncToolResultDelivery) applySyncToolResultDelivery(
 	}
 
 	return nil, result
+}
+
+func wrapToolDeliveryError(
+	original *tools.ToolResult,
+	message string,
+	err error,
+) *tools.ToolResult {
+	wrapped := tools.ErrorResult(message).WithError(err)
+	if original == nil || len(original.WriteAudit) == 0 {
+		return wrapped
+	}
+	wrapped.WriteAudit = append(wrapped.WriteAudit, original.WriteAudit...)
+	return wrapped
 }

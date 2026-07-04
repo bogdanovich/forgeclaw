@@ -34,11 +34,20 @@ func TestApplyPatchTool_UpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(data); !strings.Contains(got, `println("new")`) || strings.Contains(got, `println("old")`) {
+	if got := string(data); !strings.Contains(got, `println("new")`) ||
+		strings.Contains(got, `println("old")`) {
 		t.Fatalf("unexpected content:\n%s", got)
 	}
 	if !strings.Contains(result.ForUser, "```diff") {
 		t.Fatalf("expected user diff, got: %s", result.ForUser)
+	}
+	if len(result.WriteAudit) != 1 {
+		t.Fatalf("expected 1 write audit entry, got %+v", result.WriteAudit)
+	}
+	if got := result.WriteAudit[0]; got.Target != "main.go" || got.Action != "update" ||
+		got.Tool != "apply_patch" ||
+		!got.Success {
+		t.Fatalf("unexpected write audit entry: %+v", got)
 	}
 }
 
@@ -71,6 +80,56 @@ func TestApplyPatchTool_AddAndDeleteFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(deletePath); !os.IsNotExist(err) {
 		t.Fatalf("old.txt should be deleted, stat err=%v", err)
+	}
+	if len(result.WriteAudit) != 2 {
+		t.Fatalf("expected 2 write audit entries, got %+v", result.WriteAudit)
+	}
+	got := map[string]string{}
+	for _, entry := range result.WriteAudit {
+		if entry.Tool != "apply_patch" || !entry.Success {
+			t.Fatalf("unexpected write audit entry: %+v", entry)
+		}
+		got[entry.Target] = entry.Action
+	}
+	if got["new.txt"] != "add" || got["old.txt"] != "delete" {
+		t.Fatalf("unexpected write audit actions: %+v", got)
+	}
+}
+
+func TestApplyPatchTool_ErrorPreservesPartialWriteAudit(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tool := NewApplyPatchTool(tmpDir, true)
+	result := tool.Execute(context.Background(), map[string]any{
+		"input": `*** Begin Patch
+*** Add File: created.txt
++created
+*** Update File: missing.txt
+@@
+-old
++new
+*** End Patch`,
+	})
+
+	if !result.IsError {
+		t.Fatalf("expected partial patch error, got success: %s", result.ForLLM)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, "created.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "created\n" {
+		t.Fatalf("created.txt = %q", string(data))
+	}
+	if len(result.WriteAudit) != 1 {
+		t.Fatalf("expected 1 partial write audit entry, got %+v", result.WriteAudit)
+	}
+	got := result.WriteAudit[0]
+	if got.Target != "created.txt" ||
+		got.Action != "add" ||
+		got.Tool != "apply_patch" ||
+		!got.Success {
+		t.Fatalf("unexpected partial write audit entry: %+v", got)
 	}
 }
 
