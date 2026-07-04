@@ -17,6 +17,7 @@ const (
 	maxSearchFilesContext         = 10
 	defaultSearchFilesMaxFileSize = 1024 * 1024
 	maxSearchFilesResultBytes     = 16000
+	searchFilesTruncationReserve  = 1024
 )
 
 // SearchFilesTool searches workspace files without requiring shell grep/rg.
@@ -133,6 +134,31 @@ type numberedLine struct {
 	text   string
 }
 
+type searchTruncationInfo struct {
+	truncated          bool
+	reasons            map[string]bool
+	returned           int
+	limit              int
+	omitted            int
+	omittedKnown       bool
+	omittedUnknown     bool
+	countLimitOmitted  int
+	countLimitSet      bool
+	countLimitUnknown  bool
+	renderedOmitted    int
+	renderedOmittedSet bool
+	skippedIgnored     int
+	skippedMaxFileSize int
+}
+
+type searchWalkStats struct {
+	ignoredSkipped   int
+	maxFileSkipped   int
+	binarySkipped    int
+	readSkipped      int
+	ignoredCandidate func(path string, entry os.DirEntry) bool
+}
+
 func parseSearchFilesOptions(args map[string]any) (searchFilesOptions, error) {
 	pattern, _ := args["pattern"].(string)
 	pattern = strings.TrimSpace(pattern)
@@ -217,13 +243,23 @@ func (t *SearchFilesTool) searchFileNames(
 	opts searchFilesOptions,
 ) *ToolResult {
 	var matches []string
-	truncated := false
+	truncation := newSearchTruncationInfo(opts.limit)
+	stats := &searchWalkStats{
+		ignoredCandidate: func(path string, entry os.DirEntry) bool {
+			if entry.IsDir() {
+				return false
+			}
+			matched, err := matchFilePattern(opts.pattern, path, entry.Name())
+			return err == nil && matched
+		},
+	}
 
-	err := walkSearchFiles(
+	err := walkSearchFilesWithStats(
 		ctx,
 		t.fs,
 		opts.path,
 		opts.includeIgnored,
+		stats,
 		func(path string, entry os.DirEntry) error {
 			if entry.IsDir() {
 				return nil
@@ -236,7 +272,7 @@ func (t *SearchFilesTool) searchFileNames(
 			if matched {
 				matches = append(matches, cleanDisplayPath(path))
 				if len(matches) >= opts.limit {
-					truncated = true
+					truncation.mark("count_limit", len(matches), 0, false)
 					return errSearchLimitReached
 				}
 			}
@@ -247,18 +283,26 @@ func (t *SearchFilesTool) searchFileNames(
 		return ErrorResult(err.Error())
 	}
 	sort.Strings(matches)
+	truncation.addWalkStats(stats, opts.includeIgnored)
 
 	if len(matches) == 0 {
-		return NewToolResult("No files matched.")
+		out := "No files matched."
+		if truncation.truncated {
+			truncation.setReturned(0)
+			out += "\n" + truncationBlock(truncation, opts)
+		}
+		return NewToolResult(out)
 	}
+	truncation.setReturned(len(matches))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Matched files: %d", len(matches))
-	if truncated {
+	if truncation.hasReason("count_limit") {
 		fmt.Fprintf(&b, " (truncated at limit %d)", opts.limit)
 	}
 	b.WriteString("\n\n")
-	appendSearchResultLines(&b, matches, "files", truncated)
+	appendSearchResultLines(&b, matches, truncation)
+	appendSearchTruncationBlock(&b, truncation, opts)
 	return NewToolResult(strings.TrimRight(b.String(), "\n"))
 }
 
@@ -271,15 +315,16 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 	var matches []contentMatch
 	fileCounts := map[string]int{}
 	filesOnly := map[string]bool{}
-	truncated := false
 	filesScanned := 0
-	filesSkipped := 0
+	stats := &searchWalkStats{}
+	truncation := newSearchTruncationInfo(opts.limit)
 
-	walkErr := walkSearchFiles(
+	walkErr := walkSearchFilesWithStats(
 		ctx,
 		t.fs,
 		opts.path,
 		opts.includeIgnored,
+		stats,
 		func(path string, entry os.DirEntry) error {
 			if entry.IsDir() {
 				return nil
@@ -289,11 +334,15 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 			}
 			data, readErr := t.fs.ReadFile(path)
 			if readErr != nil {
-				filesSkipped++
+				stats.readSkipped++
 				return errSearchFileSkipped
 			}
-			if len(data) > t.maxFileSize || looksBinary(data) {
-				filesSkipped++
+			if len(data) > t.maxFileSize {
+				stats.maxFileSkipped++
+				return nil
+			}
+			if looksBinary(data) {
+				stats.binarySkipped++
 				return nil
 			}
 
@@ -310,8 +359,8 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 
 				switch opts.outputMode {
 				case "files_only", "count":
-					if len(filesOnly) >= opts.limit && opts.outputMode == "files_only" {
-						truncated = true
+					if opts.outputMode == "files_only" && len(filesOnly) >= opts.limit {
+						truncation.mark("count_limit", len(filesOnly), 0, false)
 						return errSearchLimitReached
 					}
 				default:
@@ -323,7 +372,7 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 						after:      contextAfter(lines, i, opts.context),
 					})
 					if len(matches) >= opts.limit {
-						truncated = true
+						truncation.mark("count_limit", len(matches), 0, false)
 						return errSearchLimitReached
 					}
 				}
@@ -341,8 +390,8 @@ func (t *SearchFilesTool) searchContent(ctx context.Context, opts searchFilesOpt
 		filesOnly,
 		fileCounts,
 		filesScanned,
-		filesSkipped,
-		truncated,
+		stats,
+		truncation,
 	)
 }
 
@@ -352,36 +401,63 @@ func formatContentSearchResult(
 	filesOnly map[string]bool,
 	fileCounts map[string]int,
 	filesScanned int,
-	filesSkipped int,
-	truncated bool,
+	stats *searchWalkStats,
+	truncation *searchTruncationInfo,
 ) *ToolResult {
 	var b strings.Builder
+	filesSkipped := stats.totalSkipped()
+	truncation.addWalkStats(stats, opts.includeIgnored)
 
 	switch opts.outputMode {
 	case "files_only":
 		paths := sortedMapKeys(filesOnly)
 		if len(paths) == 0 {
-			return NewToolResult(searchNoMatches(filesScanned, filesSkipped))
+			out := searchNoMatches(filesScanned, filesSkipped)
+			if truncation.truncated {
+				truncation.setReturned(0)
+				out += "\n" + truncationBlock(truncation, opts)
+			}
+			return NewToolResult(out)
 		}
 		if len(paths) > opts.limit {
 			paths = paths[:opts.limit]
-			truncated = true
+			truncation.mark("count_limit", len(paths), 0, false)
 		}
+		truncation.setReturned(len(paths))
 		fmt.Fprintf(&b, "Matched files: %d", len(paths))
-		if truncated {
+		if truncation.hasReason("count_limit") {
 			fmt.Fprintf(&b, " (truncated at limit %d)", opts.limit)
 		}
 		fmt.Fprintf(&b, "\nFiles scanned: %d, skipped: %d\n\n", filesScanned, filesSkipped)
-		appendSearchResultLines(&b, paths, "files", truncated)
+		appendSearchResultLines(&b, paths, truncation)
 	case "count":
 		paths := sortedMapKeys(fileCounts)
 		if len(paths) == 0 {
-			return NewToolResult(searchNoMatches(filesScanned, filesSkipped))
+			out := searchNoMatches(filesScanned, filesSkipped)
+			if truncation.truncated {
+				truncation.setReturned(0)
+				out += "\n" + truncationBlock(truncation, opts)
+			}
+			return NewToolResult(out)
+		}
+		if len(paths) > opts.limit {
+			paths = paths[:opts.limit]
+			if !truncation.hasReason("count_limit") {
+				truncation.mark("count_limit", len(paths), len(fileCounts)-len(paths), true)
+			}
+		}
+		truncation.setReturned(len(paths))
+		fmt.Fprintf(
+			&b,
+			"Matched files: %d",
+			len(paths),
+		)
+		if truncation.hasReason("count_limit") {
+			fmt.Fprintf(&b, " (truncated at limit %d)", opts.limit)
 		}
 		fmt.Fprintf(
 			&b,
-			"Matched files: %d\nFiles scanned: %d, skipped: %d\n\n",
-			len(paths),
+			"\nFiles scanned: %d, skipped: %d\n\n",
 			filesScanned,
 			filesSkipped,
 		)
@@ -389,13 +465,19 @@ func formatContentSearchResult(
 		for _, path := range paths {
 			lines = append(lines, fmt.Sprintf("%s: %d", path, fileCounts[path]))
 		}
-		appendSearchResultLines(&b, lines, "count rows", false)
+		appendSearchResultLines(&b, lines, truncation)
 	default:
 		if len(matches) == 0 {
-			return NewToolResult(searchNoMatches(filesScanned, filesSkipped))
+			out := searchNoMatches(filesScanned, filesSkipped)
+			if truncation.truncated {
+				truncation.setReturned(0)
+				out += "\n" + truncationBlock(truncation, opts)
+			}
+			return NewToolResult(out)
 		}
+		truncation.setReturned(len(matches))
 		fmt.Fprintf(&b, "Matches: %d", len(matches))
-		if truncated {
+		if truncation.hasReason("count_limit") {
 			fmt.Fprintf(&b, " (truncated at limit %d)", opts.limit)
 		}
 		fmt.Fprintf(&b, "\nFiles scanned: %d, skipped: %d\n\n", filesScanned, filesSkipped)
@@ -414,17 +496,17 @@ func formatContentSearchResult(
 			}
 			lines = append(lines, strings.TrimRight(section.String(), "\n"))
 		}
-		appendSearchResultLines(&b, lines, "matches", truncated)
+		appendSearchResultLines(&b, lines, truncation)
 	}
 
+	appendSearchTruncationBlock(&b, truncation, opts)
 	return NewToolResult(strings.TrimRight(b.String(), "\n"))
 }
 
 func appendSearchResultLines(
 	b *strings.Builder,
 	lines []string,
-	unit string,
-	alreadyTruncated bool,
+	truncation *searchTruncationInfo,
 ) {
 	if len(lines) == 0 {
 		return
@@ -433,6 +515,7 @@ func appendSearchResultLines(
 	base := b.String()
 	appended := make([]string, 0, len(lines))
 	omitted := 0
+	resultLimit := maxSearchFilesResultBytes
 	for i, line := range lines {
 		lineWithNewline := line + "\n"
 		if b.Len()+len(lineWithNewline) > maxSearchFilesResultBytes {
@@ -446,60 +529,177 @@ func appendSearchResultLines(
 	if omitted == 0 {
 		return
 	}
-
-	for {
-		note := buildSearchFilesTruncationNote(omitted, unit, alreadyTruncated)
-		noteWithNewline := note + "\n"
-		if len(base)+joinedLinesLen(appended)+len(noteWithNewline) <= maxSearchFilesResultBytes {
-			b.Reset()
-			b.WriteString(base)
-			for _, line := range appended {
-				b.WriteString(line)
-				b.WriteByte('\n')
-			}
-			b.WriteString(noteWithNewline)
-			return
-		}
-
-		if len(appended) == 0 {
-			b.Reset()
-			b.WriteString(base)
-			if len(base)+len(noteWithNewline) <= maxSearchFilesResultBytes {
-				b.WriteString(noteWithNewline)
-			}
-			return
-		}
-
+	if resultLimit > searchFilesTruncationReserve {
+		resultLimit -= searchFilesTruncationReserve
+	}
+	for len(appended) > 0 && len(base)+joinedLinesLen(appended) > resultLimit {
 		appended = appended[:len(appended)-1]
 		omitted++
 	}
+	if truncation != nil {
+		truncation.mark("byte_limit", len(appended), omitted, true)
+	}
+	b.Reset()
+	b.WriteString(base)
+	for _, line := range appended {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
 }
 
-func buildSearchFilesTruncationNote(omitted int, unit string, alreadyTruncated bool) string {
-	var parts []string
-	if omitted > 0 {
-		parts = append(
-			parts,
-			fmt.Sprintf(
-				"omitted %d additional %s to stay within the tool result size limit",
-				omitted,
-				unit,
-			),
-		)
+func newSearchTruncationInfo(limit int) *searchTruncationInfo {
+	return &searchTruncationInfo{
+		reasons: map[string]bool{},
+		limit:   limit,
 	}
-	if alreadyTruncated {
-		parts = append(parts, "search also hit the requested match/file limit")
+}
+
+func (i *searchTruncationInfo) mark(reason string, returned int, omitted int, omittedKnown bool) {
+	if i == nil {
+		return
 	}
-	if len(parts) == 0 {
-		parts = append(
-			parts,
-			"search result was truncated to stay within the tool result size limit",
-		)
+	i.truncated = true
+	if i.reasons == nil {
+		i.reasons = map[string]bool{}
 	}
-	return "[truncated: " + strings.Join(
-		parts,
-		"; ",
-	) + ". Narrow the pattern or use output_mode=files_only/count.]"
+	i.reasons[reason] = true
+	if returned > i.returned {
+		i.returned = returned
+	}
+	if !omittedKnown {
+		if reason == "count_limit" {
+			i.countLimitUnknown = true
+			i.omittedUnknown = true
+			i.recomputeOmitted()
+		}
+		return
+	}
+	switch reason {
+	case "count_limit":
+		i.countLimitSet = true
+		i.countLimitUnknown = false
+		i.countLimitOmitted = omitted
+	case "byte_limit":
+		i.returned = returned
+		i.renderedOmittedSet = true
+		i.renderedOmitted = omitted
+	}
+	i.recomputeOmitted()
+}
+
+func (i *searchTruncationInfo) setReturned(returned int) {
+	if i == nil {
+		return
+	}
+	i.returned = returned
+}
+
+func (i *searchTruncationInfo) recomputeOmitted() {
+	i.omittedKnown = !i.omittedUnknown && !i.countLimitUnknown &&
+		(i.countLimitSet || i.renderedOmittedSet)
+	i.omitted = 0
+	if i.omittedUnknown || i.countLimitUnknown {
+		return
+	}
+	if i.countLimitSet {
+		i.omitted += i.countLimitOmitted
+	}
+	if i.renderedOmittedSet {
+		i.omitted += i.renderedOmitted
+	}
+}
+
+func (i *searchTruncationInfo) addWalkStats(stats *searchWalkStats, includeIgnored bool) {
+	if i == nil || stats == nil {
+		return
+	}
+	if stats.maxFileSkipped > 0 {
+		i.mark("max_file_size", i.returned, 0, false)
+		i.omittedUnknown = true
+		i.skippedMaxFileSize = stats.maxFileSkipped
+		i.recomputeOmitted()
+	}
+	if !includeIgnored && stats.ignoredSkipped > 0 {
+		i.mark("ignored_paths", i.returned, 0, false)
+		i.omittedUnknown = true
+		i.skippedIgnored = stats.ignoredSkipped
+		i.recomputeOmitted()
+	}
+}
+
+func (i *searchTruncationInfo) hasReason(reason string) bool {
+	return i != nil && i.reasons != nil && i.reasons[reason]
+}
+
+func (s *searchWalkStats) totalSkipped() int {
+	if s == nil {
+		return 0
+	}
+	return s.ignoredSkipped + s.maxFileSkipped + s.binarySkipped + s.readSkipped
+}
+
+func appendSearchTruncationBlock(
+	b *strings.Builder,
+	truncation *searchTruncationInfo,
+	opts searchFilesOptions,
+) {
+	if truncation == nil || !truncation.truncated {
+		return
+	}
+	if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+		b.WriteByte('\n')
+	}
+	if b.Len() > 0 {
+		b.WriteByte('\n')
+	}
+	b.WriteString(truncationBlock(truncation, opts))
+	b.WriteByte('\n')
+}
+
+func truncationBlock(truncation *searchTruncationInfo, opts searchFilesOptions) string {
+	reasons := truncationReasons(truncation)
+	var b strings.Builder
+	b.WriteString("Search truncation:\n")
+	b.WriteString("  truncated=true\n")
+	fmt.Fprintf(&b, "  reason=%s\n", strings.Join(reasons, ","))
+	fmt.Fprintf(&b, "  returned_count=%d\n", truncation.returned)
+	fmt.Fprintf(&b, "  limit=%d\n", truncation.limit)
+	if truncation.omittedKnown {
+		fmt.Fprintf(&b, "  omitted_count=%d\n", truncation.omitted)
+	} else {
+		b.WriteString("  omitted_count=unknown\n")
+	}
+	if truncation.countLimitSet {
+		fmt.Fprintf(&b, "  count_limit_omitted_count=%d\n", truncation.countLimitOmitted)
+	}
+	if truncation.renderedOmittedSet {
+		fmt.Fprintf(&b, "  rendered_omitted_count=%d\n", truncation.renderedOmitted)
+	}
+	if truncation.skippedIgnored > 0 {
+		fmt.Fprintf(&b, "  skipped_ignored_count=%d\n", truncation.skippedIgnored)
+	}
+	if truncation.skippedMaxFileSize > 0 {
+		fmt.Fprintf(&b, "  skipped_max_file_size_count=%d\n", truncation.skippedMaxFileSize)
+	}
+	b.WriteString("  suggested_narrowing.path=set a narrower path\n")
+	b.WriteString("  suggested_narrowing.file_glob=set file_glob such as *.go or *.md\n")
+	b.WriteString("  suggested_narrowing.pattern=make pattern more specific")
+	if !opts.includeIgnored && truncation.hasReason("ignored_paths") {
+		b.WriteString("\n  suggested_narrowing.include_ignored=true only if ignored/runtime files are needed")
+	}
+	return b.String()
+}
+
+func truncationReasons(truncation *searchTruncationInfo) []string {
+	if truncation == nil || len(truncation.reasons) == 0 {
+		return []string{"unknown"}
+	}
+	reasons := make([]string, 0, len(truncation.reasons))
+	for reason := range truncation.reasons {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	return reasons
 }
 
 func joinedLinesLen(lines []string) int {
@@ -562,14 +762,15 @@ var (
 	errSearchFileSkipped  = fmt.Errorf("search file skipped")
 )
 
-func walkSearchFiles(
+func walkSearchFilesWithStats(
 	ctx context.Context,
 	sysFs fileSystem,
 	root string,
 	includeIgnored bool,
+	stats *searchWalkStats,
 	fn func(path string, entry os.DirEntry) error,
 ) error {
-	return walkSearchFilesWithIgnore(ctx, sysFs, root, includeIgnored, gitIgnoreState{}, fn)
+	return walkSearchFilesWithIgnore(ctx, sysFs, root, includeIgnored, gitIgnoreState{}, stats, fn)
 }
 
 func walkSearchFilesWithIgnore(
@@ -578,6 +779,7 @@ func walkSearchFilesWithIgnore(
 	root string,
 	includeIgnored bool,
 	ignoreState gitIgnoreState,
+	stats *searchWalkStats,
 	fn func(path string, entry os.DirEntry) error,
 ) error {
 	entries, err := sysFs.ReadDir(root)
@@ -590,6 +792,7 @@ func walkSearchFilesWithIgnore(
 			ignoreState = ignoreState.withGitIgnore(sysFs, filepath.Dir(root))
 		}
 		if !includeIgnored && ignoreState.ignored(root, false) {
+			recordIgnoredSearchSkip(stats, root, fakeFileEntry{name: filepath.Base(root), size: int64(len(data))})
 			return nil
 		}
 		return fn(root, fakeFileEntry{name: filepath.Base(root), size: int64(len(data))})
@@ -608,11 +811,15 @@ func walkSearchFilesWithIgnore(
 			return ctx.Err()
 		}
 		if shouldSkipSearchEntry(entry, includeIgnored) {
+			if entry.Name() != ".git" {
+				recordIgnoredSearchSkip(stats, joinSearchPath(root, entry.Name()), entry)
+			}
 			continue
 		}
 
 		path := joinSearchPath(root, entry.Name())
 		if !includeIgnored && ignoreState.ignored(path, entry.IsDir()) {
+			recordIgnoredSearchSkip(stats, path, entry)
 			continue
 		}
 		if err := fn(path, entry); err != nil {
@@ -622,12 +829,30 @@ func walkSearchFilesWithIgnore(
 			return err
 		}
 		if entry.IsDir() {
-			if err := walkSearchFilesWithIgnore(ctx, sysFs, path, includeIgnored, ignoreState, fn); err != nil {
+			if err := walkSearchFilesWithIgnore(
+				ctx,
+				sysFs,
+				path,
+				includeIgnored,
+				ignoreState,
+				stats,
+				fn,
+			); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func recordIgnoredSearchSkip(stats *searchWalkStats, path string, entry os.DirEntry) {
+	if stats == nil {
+		return
+	}
+	if stats.ignoredCandidate != nil && !stats.ignoredCandidate(path, entry) {
+		return
+	}
+	stats.ignoredSkipped++
 }
 
 func joinSearchPath(root string, name string) string {
