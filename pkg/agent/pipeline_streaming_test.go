@@ -150,6 +150,17 @@ func (d configuredStreamingDelegate) GetStreamer(
 	return d.streamer, true
 }
 
+type testChannelStreamingProvider struct {
+	called  bool
+	config  config.StreamingConfig
+	present bool
+}
+
+func (p *testChannelStreamingProvider) channelStreamingConfig(string) (config.StreamingConfig, bool) {
+	p.called = true
+	return p.config, p.present
+}
+
 type recordingStreamer struct {
 	updates            []string
 	finalized          []string
@@ -383,6 +394,42 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 				t.Fatalf("Chat calls = %d, want %d", provider.chatCalls, tt.wantChatCalls)
 			}
 		})
+	}
+}
+
+func TestPipelineChannelStreamingConfig_UsesInjectedProvider(t *testing.T) {
+	provider := &testChannelStreamingProvider{
+		config:  config.StreamingConfig{Enabled: true},
+		present: true,
+	}
+	pipeline := &Pipeline{
+		Cfg:              newConfiguredStreamingTestConfig(t, false, true, nil),
+		ChannelStreaming: provider,
+	}
+
+	got, ok := pipeline.channelStreamingConfig("pico")
+	if !ok {
+		t.Fatal("channelStreamingConfig() ok = false, want true")
+	}
+	if !got.Enabled {
+		t.Fatal("channelStreamingConfig().Enabled = false, want true")
+	}
+	if !provider.called {
+		t.Fatal("injected channel streaming provider was not called")
+	}
+}
+
+func TestPipelineChannelStreamingConfig_FallsBackToConfig(t *testing.T) {
+	pipeline := &Pipeline{
+		Cfg: newConfiguredStreamingTestConfig(t, true, true, nil),
+	}
+
+	got, ok := pipeline.channelStreamingConfig("pico")
+	if !ok {
+		t.Fatal("channelStreamingConfig() ok = false, want true")
+	}
+	if !got.Enabled {
+		t.Fatal("channelStreamingConfig().Enabled = false, want true")
 	}
 }
 

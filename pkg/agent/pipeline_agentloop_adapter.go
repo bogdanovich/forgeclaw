@@ -5,6 +5,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 	return NewPipelineFromDependencies(PipelineDependencies{
 		Bus:                  al.bus,
 		Cfg:                  al.GetConfig(),
+		ChannelStreaming:     newConfigChannelStreamingProvider(al.GetConfig()),
 		ContextRuntime:       al.contextManager,
 		BackgroundCompaction: al.backgroundCompactionRunner(),
 		Events:               al.runtimeEventEmitter(),
