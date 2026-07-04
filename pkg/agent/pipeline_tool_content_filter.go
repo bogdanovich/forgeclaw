@@ -28,8 +28,5 @@ func (p *Pipeline) filterToolContentForLLM(content string) string {
 }
 
 func (p *Pipeline) filterPendingResultForLLM(content string) string {
-	if p == nil || p.Cfg == nil {
-		return content
-	}
-	return p.Cfg.FilterSensitiveData(content)
+	return p.filterToolContentForLLM(content)
 }

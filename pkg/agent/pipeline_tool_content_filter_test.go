@@ -41,3 +41,18 @@ func TestPipelineFilterPendingResultForLLM_UsesConfigPath(t *testing.T) {
 		t.Fatal("expected pending result filter to use config redaction path")
 	}
 }
+
+type testToolContentFilter struct{}
+
+func (testToolContentFilter) filterToolContentForLLM(string) string {
+	return "filtered by dependency"
+}
+
+func TestPipelineFilterPendingResultForLLM_UsesInjectedFilter(t *testing.T) {
+	pipeline := &Pipeline{ToolContentFilter: testToolContentFilter{}}
+
+	got := pipeline.filterPendingResultForLLM("pending content")
+	if got != "filtered by dependency" {
+		t.Fatalf("got %q, want injected filter result", got)
+	}
+}
