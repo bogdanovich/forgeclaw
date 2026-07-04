@@ -49,6 +49,15 @@ var (
 		substr("overloaded"),
 	}
 
+	serverErrorPatterns = []errorPattern{
+		rxp(`server[_ ]error`),
+		rxp(`internal[_ ]server[_ ]error`),
+		substr("servererror"),
+		substr("bad gateway"),
+		substr("service unavailable"),
+		substr("gateway timeout"),
+	}
+
 	timeoutPatterns = []errorPattern{
 		substr("timeout"),
 		substr("timed out"),
@@ -119,6 +128,12 @@ var (
 		substr("error code: 1210"),
 		substr("error code 1210"),
 		substr("zhipu api error code: 1210"),
+		substr("unsupported image"),
+		substr("unsupported media"),
+		substr("unsupported file"),
+		substr("unsupported format"),
+		substr("image format"),
+		substr("invalid image"),
 	}
 	contextOverflowPatterns = []errorPattern{
 		rxp(`context[_ ]?length[_ ]?exceeded`),
@@ -195,6 +210,9 @@ func ClassifyError(err error, provider, model string) *FailoverError {
 	var httpErr *common.HTTPError
 	if errors.As(err, &httpErr) && httpErr != nil {
 		if reason := classifyByStatus(httpErr.StatusCode); reason != "" {
+			if httpErr.StatusCode == 400 {
+				reason = classifyBadRequestMessage(msg)
+			}
 			return &FailoverError{
 				Reason:   reason,
 				Provider: provider,
@@ -206,6 +224,9 @@ func ClassifyError(err error, provider, model string) *FailoverError {
 	}
 	if status := extractHTTPStatus(msg); status > 0 {
 		if reason := classifyByStatus(status); reason != "" {
+			if status == 400 {
+				reason = classifyBadRequestMessage(msg)
+			}
 			return &FailoverError{
 				Reason:   reason,
 				Provider: provider,
@@ -295,6 +316,9 @@ func classifyByMessage(msg string) FailoverReason {
 	if matchesAny(msg, billingPatterns) {
 		return FailoverBilling
 	}
+	if matchesAny(msg, serverErrorPatterns) {
+		return FailoverTimeout
+	}
 	if matchesAny(msg, timeoutPatterns) {
 		return FailoverTimeout
 	}
@@ -311,6 +335,22 @@ func classifyByMessage(msg string) FailoverReason {
 		return FailoverContextOverflow
 	}
 	return ""
+}
+
+func classifyBadRequestMessage(msg string) FailoverReason {
+	if matchesAny(msg, contextOverflowPatterns) {
+		return FailoverContextOverflow
+	}
+	if matchesAny(msg, rateLimitPatterns) {
+		return FailoverRateLimit
+	}
+	if matchesAny(msg, billingPatterns) {
+		return FailoverBilling
+	}
+	if matchesAny(msg, authPatterns) {
+		return FailoverAuth
+	}
+	return FailoverFormat
 }
 
 // extractHTTPStatus extracts an HTTP status code from an error message.

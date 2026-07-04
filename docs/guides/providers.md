@@ -443,8 +443,22 @@ Configure multiple endpoints for the same model name—PicoClaw will automatical
 #### Automatic Model Failover (Cascade)
 
 PicoClaw already supports automatic failover when you configure `primary` + `fallbacks` in the agent model settings.
-The runtime fallback chain retries the next candidate for retriable failures such as HTTP `429`, quota/rate-limit errors, and timeout errors.
+The runtime fallback chain retries the next candidate for retriable failures such as HTTP `429`, quota/rate-limit errors, server-side errors, network errors, and timeout errors.
 It also applies cooldown tracking per candidate to avoid immediately retrying a recently failed target.
+
+Provider errors are first classified into a small provider-agnostic taxonomy:
+
+| Classification | Examples | Fallback behavior |
+| --- | --- | --- |
+| `rate_limit` | HTTP `429`, quota exceeded, resource exhausted, overloaded provider body | Retriable and sticky |
+| `billing` | HTTP `402`, insufficient credits, low credit balance | Retriable and sticky |
+| `timeout` | Context deadline, request timeout, HTTP `408`, transient `5xx`/edge gateway status, provider `server_error` body | Retriable, not sticky |
+| `network` | DNS failures, connection reset/refused, broken pipe, TLS/certificate transport failures | Retriable, not sticky |
+| `auth` | HTTP `401`/`403`, invalid API key, expired OAuth token, re-authentication required | Not retriable, not sticky |
+| `format` | HTTP `400`, invalid tool schema/format, unsupported image/media format, image size or dimension limits | Not retriable, not sticky |
+| `context_overflow` | Context length/window exceeded, prompt too long, request too large | Not retriable, not sticky |
+
+Unknown provider errors intentionally remain unclassified: they do not trigger fallback and they do not create sticky failover state.
 
 In addition to per-request fallback, PicoClaw now keeps a temporary session-scoped sticky failover state for errors that usually persist beyond one turn:
 
@@ -470,7 +484,7 @@ Current TTL policy:
 - `rate_limit`, `overloaded`: 20 minutes
 - `billing`: 6 hours
 
-User-facing failover errors also include the classified reason and the raw provider error payload when available, which makes quota/auth/provider problems easier to diagnose from chat output alone.
+User-facing failover errors also include provider, model, status, classification, and a bounded raw provider error preview when available, which makes quota/auth/provider problems easier to diagnose from chat output alone without dumping an unbounded payload.
 
 ```json
 {

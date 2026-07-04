@@ -7,8 +7,11 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/providers/common"
 )
 
 type stubNetError struct {
@@ -75,6 +78,124 @@ func TestClassifyError_StatusCodes(t *testing.T) {
 		if result.Reason != tt.reason {
 			t.Errorf("status %d: reason = %q, want %q", tt.status, result.Reason, tt.reason)
 		}
+	}
+}
+
+func TestClassifyError_RepresentativeProviderBodies(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		model    string
+		err      error
+		reason   FailoverReason
+		status   int
+	}{
+		{
+			name:     "openai quota exceeded",
+			provider: "openai",
+			model:    "gpt-4o",
+			err: errors.New(`API request failed:
+  Status: 429
+  Body:   {"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}`),
+			reason: FailoverRateLimit,
+			status: 429,
+		},
+		{
+			name:     "codex openai compatible server error",
+			provider: "openai",
+			model:    "codex-mini-latest",
+			err: errors.New(`API request failed:
+  Body:   {"error":{"message":"The server had an error while processing your request.","type":"server_error","code":"server_error"}}`),
+			reason: FailoverTimeout,
+		},
+		{
+			name:     "openrouter auth expired",
+			provider: "openrouter",
+			model:    "anthropic/claude-sonnet-4",
+			err: &common.HTTPError{
+				StatusCode:  401,
+				BodyPreview: `{"error":{"message":"OAuth token has expired. Please re-authenticate.","code":401}}`,
+			},
+			reason: FailoverAuth,
+			status: 401,
+		},
+		{
+			name:     "anthropic billing credits",
+			provider: "anthropic",
+			model:    "claude-sonnet-4",
+			err: errors.New(
+				`{"type":"error","error":{"type":"billing_error","message":"Your credit balance is too low. Please visit Plans & Billing."}}`,
+			),
+			reason: FailoverBilling,
+		},
+		{
+			name:     "gemini resource exhausted",
+			provider: "gemini",
+			model:    "gemini-2.5-pro",
+			err: errors.New(
+				`rpc error: code = ResourceExhausted desc = Quota exceeded for quota metric 'Generate requests' and limit 'GenerateRequestsPerMinute'`,
+			),
+			reason: FailoverRateLimit,
+		},
+		{
+			name:     "openai context overflow inside bad request",
+			provider: "openai",
+			model:    "gpt-4o",
+			err: &common.HTTPError{
+				StatusCode:  400,
+				BodyPreview: `{"error":{"message":"This model's maximum context length is 128000 tokens. Please reduce your prompt.","type":"invalid_request_error","code":"context_length_exceeded"}}`,
+			},
+			reason: FailoverContextOverflow,
+			status: 400,
+		},
+		{
+			name:     "anthropic unsupported image format",
+			provider: "anthropic",
+			model:    "claude-sonnet-4",
+			err: errors.New(
+				`{"type":"error","error":{"type":"invalid_request_error","message":"unsupported image format: image/tiff"}}`,
+			),
+			reason: FailoverFormat,
+		},
+		{
+			name:     "network reset",
+			provider: "openai",
+			model:    "gpt-4o",
+			err: errors.New(
+				`Post "https://api.openai.com/v1/responses": read tcp 10.0.0.1:12345->104.18.33.45:443: read: connection reset by peer`,
+			),
+			reason: FailoverNetwork,
+		},
+		{
+			name:     "timeout",
+			provider: "openrouter",
+			model:    "openai/gpt-4o",
+			err: errors.New(
+				`Post "https://openrouter.ai/api/v1/chat/completions": context deadline exceeded`,
+			),
+			reason: FailoverTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ClassifyError(tt.err, tt.provider, tt.model)
+			if result == nil {
+				t.Fatal("expected non-nil")
+			}
+			if result.Reason != tt.reason {
+				t.Fatalf("reason = %q, want %q", result.Reason, tt.reason)
+			}
+			if result.Status != tt.status {
+				t.Fatalf("status = %d, want %d", result.Status, tt.status)
+			}
+			if result.Provider != tt.provider {
+				t.Fatalf("provider = %q, want %q", result.Provider, tt.provider)
+			}
+			if result.Model != tt.model {
+				t.Fatalf("model = %q, want %q", result.Model, tt.model)
+			}
+		})
 	}
 }
 
@@ -400,6 +521,17 @@ func TestClassifyError_UnknownError(t *testing.T) {
 	}
 }
 
+func TestClassifyError_UnknownProviderBodyDoesNotFallback(t *testing.T) {
+	err := &common.HTTPError{
+		StatusCode:  418,
+		BodyPreview: `{"error":{"message":"model brewed an unexpected response","type":"teapot"}}`,
+	}
+	result := ClassifyError(err, "openrouter", "unknown/model")
+	if result != nil {
+		t.Fatalf("expected nil for unknown provider body, got %+v", result)
+	}
+}
+
 func TestClassifyError_ProviderModelPropagation(t *testing.T) {
 	err := errors.New("rate limit exceeded")
 	result := ClassifyError(err, "my-provider", "my-model")
@@ -439,16 +571,50 @@ func TestFailoverError_IsRetriable(t *testing.T) {
 }
 
 func TestFailoverError_ErrorString(t *testing.T) {
+	longRaw := strings.Join([]string{
+		"too many requests",
+		"Authorization: Bearer secret-token-123",
+		"api_key=sk-proj-openaiProjectKeyShouldNotLeak1234567890",
+		`"access_token":"sk-ant-api03-anthropicKeyShouldNotLeak1234567890"`,
+		"provider_key=gsk_groqKeyShouldNotLeak1234567890",
+		"google_key=AIzaGoogleKeyShouldNotLeak1234567890",
+	}, " ") + strings.Repeat("x", 300)
 	fe := &FailoverError{
 		Reason:   FailoverRateLimit,
 		Provider: "openai",
 		Model:    "gpt-4",
 		Status:   429,
-		Wrapped:  errors.New("too many requests"),
+		Wrapped:  errors.New(longRaw),
 	}
 	s := fe.Error()
-	if s == "" {
-		t.Error("expected non-empty error string")
+	for _, want := range []string{
+		"provider=openai",
+		"model=gpt-4",
+		"status=429",
+		"classification=rate_limit",
+		"raw_error=",
+		"too many requests",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("error string %q missing %q", s, want)
+		}
+	}
+	if strings.Contains(s, "\n") {
+		t.Fatalf("error string should normalize whitespace, got %q", s)
+	}
+	for _, leaked := range []string{
+		"secret-token-123",
+		"sk-proj-openaiProjectKeyShouldNotLeak1234567890",
+		"sk-ant-api03-anthropicKeyShouldNotLeak1234567890",
+		"gsk_groqKeyShouldNotLeak1234567890",
+		"AIzaGoogleKeyShouldNotLeak1234567890",
+	} {
+		if strings.Contains(s, leaked) {
+			t.Fatalf("error string should redact %q, got %q", leaked, s)
+		}
+	}
+	if len(s) > 360 {
+		t.Fatalf("error string should include only a bounded raw preview, len=%d: %q", len(s), s)
 	}
 }
 
