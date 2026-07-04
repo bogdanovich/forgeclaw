@@ -573,7 +573,10 @@ func (p *Pipeline) CallLLM(
 		}
 	}
 
-	// Save finishReason and provider usage on the active turn state.
+	// Save finishReason and usage on the active turn state. Use ts directly
+	// (the authoritative turn state for this call) rather than relying on a
+	// context lookup: the raw ctx passed to CallLLM is not seeded with turn
+	// state, and the streaming publisher reads usage from ts at finalize.
 	if ts != nil {
 		ts.SetLastFinishReason(exec.response.FinishReason)
 		if exec.response.Usage != nil {
