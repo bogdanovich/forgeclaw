@@ -1090,7 +1090,7 @@ func TestSeahorseSteeringMessageIngested(t *testing.T) {
 	// Find steering message in stored messages
 	foundSteering := false
 	for _, msg := range stored {
-		if strings.Contains(msg.Content, "steering message content") {
+		if msg.Content == "steering message content" {
 			foundSteering = true
 			break
 		}

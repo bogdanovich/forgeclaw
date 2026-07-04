@@ -111,7 +111,7 @@ func TestBuildMessagesFromPrompt_IncludesSystemPromptOverlay(t *testing.T) {
 	}
 }
 
-func TestSteeringPromptMessage_WrapsMidTurnContract(t *testing.T) {
+func TestSteeringPromptMessage_PreservesCanonicalContent(t *testing.T) {
 	msg := steeringPromptMessage(providers.Message{
 		Role:    "user",
 		Content: "use this photo too",
@@ -124,6 +124,28 @@ func TestSteeringPromptMessage_WrapsMidTurnContract(t *testing.T) {
 	if len(msg.Media) != 1 || msg.Media[0] != "media://photo" {
 		t.Fatalf("Media = %#v, want original media", msg.Media)
 	}
+	if msg.Content != "use this photo too" {
+		t.Fatalf("Content = %q, want raw user content", msg.Content)
+	}
+	if msg.PromptLayer != string(PromptLayerTurn) ||
+		msg.PromptSlot != string(PromptSlotSteering) ||
+		msg.PromptSource != string(PromptSourceSteering) {
+		t.Fatalf("prompt metadata = (%q, %q, %q), want turn/steering/source",
+			msg.PromptLayer, msg.PromptSlot, msg.PromptSource)
+	}
+}
+
+func TestProviderPromptMessageForTurn_WrapsSteeringContract(t *testing.T) {
+	raw := steeringPromptMessage(providers.Message{
+		Role:    "user",
+		Content: "use this photo too",
+		Media:   []string{"media://photo"},
+	})
+	msg := providerPromptMessageForTurn(raw)
+
+	if raw.Content != "use this photo too" {
+		t.Fatalf("raw Content = %q, want unchanged user content", raw.Content)
+	}
 	for _, want := range []string{
 		"[Mid-turn user message]",
 		"additional context or evidence for the current request",
@@ -135,19 +157,13 @@ func TestSteeringPromptMessage_WrapsMidTurnContract(t *testing.T) {
 			t.Fatalf("Content missing %q:\n%s", want, msg.Content)
 		}
 	}
-	if msg.PromptLayer != string(PromptLayerTurn) ||
-		msg.PromptSlot != string(PromptSlotSteering) ||
-		msg.PromptSource != string(PromptSourceSteering) {
-		t.Fatalf("prompt metadata = (%q, %q, %q), want turn/steering/source",
-			msg.PromptLayer, msg.PromptSlot, msg.PromptSource)
-	}
 }
 
-func TestSteeringPromptMessage_ExplainsMediaOnlySteering(t *testing.T) {
-	msg := steeringPromptMessage(providers.Message{
+func TestProviderPromptMessageForTurn_ExplainsMediaOnlySteering(t *testing.T) {
+	msg := providerPromptMessageForTurn(steeringPromptMessage(providers.Message{
 		Role:  "user",
 		Media: []string{"media://photo"},
-	})
+	}))
 
 	if !strings.Contains(msg.Content, "attached media is part of this mid-turn user message") {
 		t.Fatalf("Content missing media-only explanation:\n%s", msg.Content)

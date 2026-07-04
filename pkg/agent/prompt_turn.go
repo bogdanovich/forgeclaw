@@ -212,8 +212,15 @@ func toolImageFollowUpPromptMessage(media []string) providers.Message {
 }
 
 func steeringPromptMessage(msg providers.Message) providers.Message {
-	msg.Content = formatSteeringPromptContent(msg.Content, len(msg.Media) > 0)
 	return promptMessageWithDefaultMetadata(msg, PromptLayerTurn, PromptSlotSteering, PromptSourceSteering)
+}
+
+func providerPromptMessageForTurn(msg providers.Message) providers.Message {
+	if msg.PromptSlot != string(PromptSlotSteering) {
+		return msg
+	}
+	msg.Content = formatSteeringPromptContent(msg.Content, len(msg.Media) > 0)
+	return msg
 }
 
 func formatSteeringPromptContent(content string, hasMedia bool) string {

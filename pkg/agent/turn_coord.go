@@ -186,8 +186,9 @@ func (al *AgentLoop) runTurn(
 			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize, 0)
 			totalContentLen := 0
 			for i, pm := range pendingMessages {
-				messages = append(messages, resolvedPending[i])
-				totalContentLen += len(pm.Content)
+				providerMsg := providerPromptMessageForTurn(resolvedPending[i])
+				messages = append(messages, providerMsg)
+				totalContentLen += len(providerMsg.Content)
 				if !ts.opts.NoHistory {
 					ts.agent.Sessions.AddFullMessage(ts.sessionKey, pm)
 					ts.recordPersistedMessage(pm)
@@ -200,7 +201,7 @@ func (al *AgentLoop) runTurn(
 					map[string]any{
 						"agent_id":    ts.agent.ID,
 						"iteration":   iteration,
-						"content_len": len(pm.Content),
+						"content_len": len(providerMsg.Content),
 						"media_count": len(pm.Media),
 					})
 			}
