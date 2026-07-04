@@ -19,6 +19,7 @@ import (
 type Pipeline struct {
 	Bus                  pipelineBus
 	Cfg                  *config.Config
+	ChannelStreaming     channelStreamingConfigProvider
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -40,6 +41,7 @@ type Pipeline struct {
 type PipelineDependencies struct {
 	Bus                  pipelineBus
 	Cfg                  *config.Config
+	ChannelStreaming     channelStreamingConfigProvider
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -64,6 +66,10 @@ type runtimeEventEmitter interface {
 type pipelineBus interface {
 	PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error
 	GetStreamer(ctx context.Context, channel, chatID, sessionKey string) (bus.Streamer, bool)
+}
+
+type channelStreamingConfigProvider interface {
+	channelStreamingConfig(channelName string) (config.StreamingConfig, bool)
 }
 
 type pipelineContextRuntime interface {
@@ -190,6 +196,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 	return &Pipeline{
 		Bus:                  deps.Bus,
 		Cfg:                  deps.Cfg,
+		ChannelStreaming:     deps.ChannelStreaming,
 		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,
