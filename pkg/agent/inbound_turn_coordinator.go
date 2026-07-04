@@ -16,12 +16,6 @@ type inboundTurnCoordinator struct {
 	al *AgentLoop
 }
 
-type inboundSessionClaim struct {
-	coordinator *inboundTurnCoordinator
-	sessionKey  string
-	placeholder *turnState
-}
-
 func newInboundTurnCoordinator(al *AgentLoop) *inboundTurnCoordinator {
 	return &inboundTurnCoordinator{al: al}
 }
@@ -50,20 +44,9 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 	c.startWorker(ctx, msg, claim)
 }
 
-func (c *inboundTurnCoordinator) claimSession(sessionKey string) (*inboundSessionClaim, bool) {
+func (c *inboundTurnCoordinator) claimSession(sessionKey string) (*runtimeSessionClaim, bool) {
 	al := c.al
-	placeholder := &turnState{
-		turnID: makePendingTurnID(sessionKey, al.turnSeq.Add(1)),
-		phase:  TurnPhaseSetup,
-	}
-	if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
-		return nil, false
-	}
-	return &inboundSessionClaim{
-		coordinator: c,
-		sessionKey:  sessionKey,
-		placeholder: placeholder,
-	}, true
+	return al.claimRuntimeSession(sessionKey, makePendingTurnID(sessionKey, al.turnSeq.Add(1)))
 }
 
 func (c *inboundTurnCoordinator) handleBusySession(
@@ -99,7 +82,7 @@ func (c *inboundTurnCoordinator) handleBusySession(
 func (c *inboundTurnCoordinator) startWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	claim *inboundSessionClaim,
+	claim *runtimeSessionClaim,
 ) {
 	go c.runWorker(ctx, msg, claim)
 }
@@ -107,7 +90,7 @@ func (c *inboundTurnCoordinator) startWorker(
 func (c *inboundTurnCoordinator) runWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	claim *inboundSessionClaim,
+	claim *runtimeSessionClaim,
 ) {
 	al := c.al
 	if !c.acquireWorker(ctx, msg, claim) {
@@ -137,7 +120,7 @@ func (c *inboundTurnCoordinator) runWorker(
 func (c *inboundTurnCoordinator) acquireWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	claim *inboundSessionClaim,
+	claim *runtimeSessionClaim,
 ) bool {
 	select {
 	case c.al.workerSem <- struct{}{}:
@@ -152,7 +135,7 @@ func (c *inboundTurnCoordinator) acquireWorker(
 func (c *inboundTurnCoordinator) handlePendingStop(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	claim *inboundSessionClaim,
+	claim *runtimeSessionClaim,
 ) {
 	al := c.al
 	claim.releaseIfOwned()
@@ -185,15 +168,6 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			&msg.Context,
 			finalResponseAlwaysPublish,
 		)
-	}
-}
-
-func (claim *inboundSessionClaim) releaseIfOwned() {
-	if claim == nil || claim.placeholder == nil || claim.coordinator == nil {
-		return
-	}
-	if actual, ok := claim.coordinator.al.activeTurnStates.Load(claim.sessionKey); ok && actual == claim.placeholder {
-		claim.coordinator.al.activeTurnStates.Delete(claim.sessionKey)
 	}
 }
 

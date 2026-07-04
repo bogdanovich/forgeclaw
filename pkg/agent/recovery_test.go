@@ -232,20 +232,23 @@ func TestAgentLoopRecoverUnansweredSessionsSkipsUnackedInboundSpool(t *testing.T
 	}
 }
 
-func TestClearRecoveryPlaceholderDoesNotDeleteNewerTurn(t *testing.T) {
+func TestRuntimeSessionClaimReleaseDoesNotDeleteNewerTurn(t *testing.T) {
 	al := &AgentLoop{}
 	sessionKey := "agent:main:telegram:private:123"
-	placeholder := &turnState{turnID: "pending-recovery"}
+	claim, claimed := al.claimRuntimeSession(sessionKey, "pending-recovery")
+	if !claimed {
+		t.Fatal("expected runtime session claim")
+	}
 	newer := &turnState{turnID: "newer-turn"}
 
 	al.activeTurnStates.Store(sessionKey, newer)
-	al.clearRecoveryPlaceholder(sessionKey, placeholder)
+	claim.releaseIfOwned()
 	if current, ok := al.activeTurnStates.Load(sessionKey); !ok || current != newer {
 		t.Fatalf("active turn = %v, %t; want newer turn preserved", current, ok)
 	}
 
-	al.activeTurnStates.Store(sessionKey, placeholder)
-	al.clearRecoveryPlaceholder(sessionKey, placeholder)
+	al.activeTurnStates.Store(sessionKey, claim.placeholder)
+	claim.releaseIfOwned()
 	if current, ok := al.activeTurnStates.Load(sessionKey); ok {
 		t.Fatalf("active turn = %v, want cleared placeholder", current)
 	}
