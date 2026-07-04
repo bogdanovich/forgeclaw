@@ -483,6 +483,14 @@ func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *test
 	if llmRetry.cfg != pipeline.Cfg {
 		t.Fatal("LLMRetry config does not match pipeline config snapshot")
 	}
+
+	mediaLimits, ok := pipeline.MediaLimits.(configMediaLimitsProvider)
+	if !ok {
+		t.Fatalf("MediaLimits = %T, want configMediaLimitsProvider", pipeline.MediaLimits)
+	}
+	if mediaLimits.cfg != pipeline.Cfg {
+		t.Fatal("MediaLimits config does not match pipeline config snapshot")
+	}
 }
 
 func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {

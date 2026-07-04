@@ -16,7 +16,7 @@ import (
 // It replaces lines 56-145 of the original runTurn.
 func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution, error) {
 	cfg := p.Cfg
-	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
+	maxMediaSize := p.maxMediaSize()
 
 	contextualSkills := ts.activeSkills
 	if ts.agent.ContextBuilder != nil {
