@@ -13,6 +13,7 @@ delegated to `Pipeline`.
 | `inboundTurnCoordinator` | inbound scheduling, same-session serialization, busy-session steering enqueue, worker goroutine lifecycle, ack/release decisions | route normalization or LLM/tool execution |
 | `runtimeSessionClaim` | atomic session placeholder claim/release semantics shared by inbound workers and recovery | turn execution, routing, delivery |
 | `inboundMessageTurn` | normalized inbound route/session/model/dispatch envelope for one message | command handling or pipeline execution |
+| `turnRuntimeHost` | narrow host callbacks needed by in-turn execution: runtime events, abort, steering ack/release, sensitive-data filtering, final reply rendering | LLM/tool iteration mechanics, active-turn registration, or pipeline phase policy |
 | `Pipeline` | context assembly, LLM calls, tool loops, steering injection during a turn, finalization | inbound bus scheduling or session claiming |
 
 ## Inbound Flow
@@ -49,6 +50,11 @@ al.runAgentLoop(ctx, turn.Agent, opts)
 `runAgentLoop` remains the boundary for one logical agent turn. Code below that
 boundary should be considered turn execution and belongs in `Pipeline` or
 pipeline-owned helpers.
+
+Inside `runTurn`, host-owned callbacks are exposed to the turn loop through
+`turnRuntimeHost`. This keeps PR-sized refactors honest: `AgentLoop` still owns
+runtime lifecycle and observability, while the loop can move toward
+pipeline-owned code without carrying a full `AgentLoop` dependency with it.
 
 ## Session Claiming
 
