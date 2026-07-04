@@ -32,7 +32,7 @@ type Pipeline struct {
 	TurnControl          turnController
 	Hooks                hookInterceptor
 	Fallback             fallbackExecutor
-	MediaStore           media.MediaStore
+	MediaResolver        mediaResolver
 }
 
 // PipelineDependencies is the explicit dependency set required by Pipeline.
@@ -52,7 +52,7 @@ type PipelineDependencies struct {
 	TurnControl          turnController
 	Hooks                hookInterceptor
 	Fallback             fallbackExecutor
-	MediaStore           media.MediaStore
+	MediaResolver        mediaResolver
 }
 
 type runtimeEventEmitter interface {
@@ -169,6 +169,10 @@ type fallbackExecutor interface {
 	) (*providers.FallbackResult, error)
 }
 
+type mediaResolver interface {
+	ResolveWithMeta(ref string) (localPath string, meta media.MediaMeta, err error)
+}
+
 // NewPipelineFromDependencies creates a Pipeline from explicit dependencies.
 func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 	return &Pipeline{
@@ -187,7 +191,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		TurnControl:          deps.TurnControl,
 		Hooks:                deps.Hooks,
 		Fallback:             deps.Fallback,
-		MediaStore:           deps.MediaStore,
+		MediaResolver:        deps.MediaResolver,
 	}
 }
 
