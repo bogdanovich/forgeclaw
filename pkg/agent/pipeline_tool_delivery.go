@@ -18,10 +18,10 @@ func (p *Pipeline) publishToolFeedbackForCall(
 	toolArgs map[string]any,
 	messages []providers.Message,
 ) {
-	if p == nil || p.ToolDelivery == nil {
+	if p == nil || p.ToolFeedback == nil {
 		return
 	}
-	p.ToolDelivery.publishToolFeedbackForCall(ctx, ts, response, toolCall, toolName, toolArgs, messages)
+	p.ToolFeedback.publishToolFeedbackForCall(ctx, ts, response, toolCall, toolName, toolArgs, messages)
 }
 
 func (p *Pipeline) applySyncToolResultDelivery(
@@ -30,10 +30,10 @@ func (p *Pipeline) applySyncToolResultDelivery(
 	result *tools.ToolResult,
 	toolName string,
 ) ([]providers.Attachment, *tools.ToolResult) {
-	if p == nil || p.ToolDelivery == nil {
+	if p == nil || p.SyncToolDelivery == nil {
 		return nil, result
 	}
-	return p.ToolDelivery.applySyncToolResultDelivery(ctx, ts, result, toolName)
+	return p.SyncToolDelivery.applySyncToolResultDelivery(ctx, ts, result, toolName)
 }
 
 func (p *Pipeline) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
@@ -44,8 +44,8 @@ func (p *Pipeline) deliverAsyncToolCompletion(req AsyncDeliveryRequest) {
 }
 
 func (p *Pipeline) dismissToolFeedbackForTurn(ctx context.Context, ts *turnState) {
-	if p == nil || p.ToolDelivery == nil {
+	if p == nil || p.ToolFeedback == nil {
 		return
 	}
-	p.ToolDelivery.dismissToolFeedbackForTurn(ctx, ts)
+	p.ToolFeedback.dismissToolFeedbackForTurn(ctx, ts)
 }

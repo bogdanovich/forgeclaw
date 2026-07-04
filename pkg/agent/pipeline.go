@@ -24,12 +24,34 @@ type Pipeline struct {
 	Events               runtimeEventEmitter
 	ActiveRequests       activeRequestTracker
 	ModelExecution       modelExecutionResolver
-	FallbackState        fallbackSelectionUpdater
 	Steering             steeringDequeuer
 	Reasoning            reasoningPublisher
+	ToolFeedback         toolFeedbackManager
+	SyncToolDelivery     syncToolResultDeliveryManager
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
-	Hooks                *HookManager
+	Hooks                hookInterceptor
+	Fallback             *providers.FallbackChain
+	ChannelManager       interfaces.ChannelManager
+	MediaStore           media.MediaStore
+}
+
+// PipelineDependencies is the explicit dependency set required by Pipeline.
+type PipelineDependencies struct {
+	Bus                  interfaces.MessageBus
+	Cfg                  *config.Config
+	ContextManager       ContextManager
+	BackgroundCompaction backgroundCompactionScheduler
+	Events               runtimeEventEmitter
+	ActiveRequests       activeRequestTracker
+	ModelExecution       modelExecutionResolver
+	Steering             steeringDequeuer
+	Reasoning            reasoningPublisher
+	ToolFeedback         toolFeedbackManager
+	SyncToolDelivery     syncToolResultDeliveryManager
+	ToolDelivery         toolDeliveryManager
+	TurnControl          turnController
+	Hooks                hookInterceptor
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
@@ -72,9 +94,6 @@ type modelExecutionResolver interface {
 		modelName string,
 		fallbacks []string,
 	) (effectiveExecutionState, func(), error)
-}
-
-type fallbackSelectionUpdater interface {
 	updateAutoFallbackSelection(
 		routeSessionKey string,
 		selectedCandidates []providers.FallbackCandidate,
@@ -102,6 +121,19 @@ type reasoningPublisher interface {
 }
 
 type toolDeliveryManager interface {
+	deliverAsyncToolCompletion(req AsyncDeliveryRequest)
+}
+
+type syncToolResultDeliveryManager interface {
+	applySyncToolResultDelivery(
+		ctx context.Context,
+		ts *turnState,
+		result *tools.ToolResult,
+		toolName string,
+	) ([]providers.Attachment, *tools.ToolResult)
+}
+
+type toolFeedbackManager interface {
 	publishToolFeedbackForCall(
 		ctx context.Context,
 		ts *turnState,
@@ -111,13 +143,6 @@ type toolDeliveryManager interface {
 		toolArgs map[string]any,
 		messages []providers.Message,
 	)
-	applySyncToolResultDelivery(
-		ctx context.Context,
-		ts *turnState,
-		result *tools.ToolResult,
-		toolName string,
-	) ([]providers.Attachment, *tools.ToolResult)
-	deliverAsyncToolCompletion(req AsyncDeliveryRequest)
 	dismissToolFeedbackForTurn(ctx context.Context, ts *turnState)
 }
 
@@ -125,25 +150,34 @@ type turnController interface {
 	abortTurn(ts *turnState) (turnResult, error)
 }
 
-// NewPipeline creates a Pipeline from an AgentLoop instance.
-func NewPipeline(al *AgentLoop) *Pipeline {
+type hookInterceptor interface {
+	BeforeLLM(ctx context.Context, req *LLMHookRequest) (*LLMHookRequest, HookDecision)
+	AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LLMHookResponse, HookDecision)
+	BeforeTool(ctx context.Context, req *ToolCallHookRequest) (*ToolCallHookRequest, HookDecision)
+	AfterTool(ctx context.Context, resp *ToolResultHookResponse) (*ToolResultHookResponse, HookDecision)
+	ApproveTool(ctx context.Context, req *ToolApprovalRequest) ApprovalDecision
+}
+
+// NewPipelineFromDependencies creates a Pipeline from explicit dependencies.
+func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 	return &Pipeline{
-		Bus:                  al.bus,
-		Cfg:                  al.GetConfig(),
-		ContextManager:       al.contextManager,
-		BackgroundCompaction: al,
-		Events:               al,
-		ActiveRequests:       al,
-		ModelExecution:       al.modelExecutionManager(),
-		FallbackState:        al,
-		Steering:             al,
-		Reasoning:            al,
-		ToolDelivery:         al,
-		TurnControl:          al,
-		Hooks:                al.hooks,
-		Fallback:             al.fallback,
-		ChannelManager:       al.channelManager,
-		MediaStore:           al.mediaStore,
+		Bus:                  deps.Bus,
+		Cfg:                  deps.Cfg,
+		ContextManager:       deps.ContextManager,
+		BackgroundCompaction: deps.BackgroundCompaction,
+		Events:               deps.Events,
+		ActiveRequests:       deps.ActiveRequests,
+		ModelExecution:       deps.ModelExecution,
+		Steering:             deps.Steering,
+		Reasoning:            deps.Reasoning,
+		ToolFeedback:         deps.ToolFeedback,
+		SyncToolDelivery:     deps.SyncToolDelivery,
+		ToolDelivery:         deps.ToolDelivery,
+		TurnControl:          deps.TurnControl,
+		Hooks:                deps.Hooks,
+		Fallback:             deps.Fallback,
+		ChannelManager:       deps.ChannelManager,
+		MediaStore:           deps.MediaStore,
 	}
 }
 

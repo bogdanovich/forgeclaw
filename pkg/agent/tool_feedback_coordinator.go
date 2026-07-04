@@ -2,12 +2,34 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
+
+type toolFeedbackPublisher struct {
+	bus                 interfaces.MessageBus
+	cfg                 *config.Config
+	channelManager      interfaces.ChannelManager
+	getFeedbackOverride func(routeSessionKey string) (bool, bool)
+}
+
+func (al *AgentLoop) toolFeedbackPublisher() *toolFeedbackPublisher {
+	if al == nil {
+		return nil
+	}
+	return &toolFeedbackPublisher{
+		bus:                 al.bus,
+		cfg:                 al.GetConfig(),
+		channelManager:      al.channelManager,
+		getFeedbackOverride: al.getToolFeedbackOverride,
+	}
+}
 
 // publishToolFeedbackForCall is the agent-side entry point for visible tool
 // progress. Channel-specific code still owns editing/deleting the message, but
@@ -22,25 +44,38 @@ func (al *AgentLoop) publishToolFeedbackForCall(
 	toolArgs map[string]any,
 	messages []providers.Message,
 ) {
-	if !shouldPublishToolFeedback(al, ts) || ts.channel == "pico" {
+	al.toolFeedbackPublisher().publishToolFeedbackForCall(ctx, ts, response, toolCall, toolName, toolArgs, messages)
+}
+
+func (tf *toolFeedbackPublisher) publishToolFeedbackForCall(
+	ctx context.Context,
+	ts *turnState,
+	response *providers.LLMResponse,
+	toolCall providers.ToolCall,
+	toolName string,
+	toolArgs map[string]any,
+	messages []providers.Message,
+) {
+	if tf == nil || tf.bus == nil || !tf.shouldPublishToolFeedback(ts) || ts.channel == "pico" {
 		return
 	}
-	toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
+	toolFeedbackMaxLen := tf.toolFeedbackMaxArgsLength()
 	toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
 		response,
 		toolCall,
 		messages,
 	)
 	toolArgsPreview := toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen)
+	toolFeedbackStyle := tf.toolFeedbackStyle()
 	feedbackMsg := utils.FormatToolFeedbackMessageWithStyle(
-		al.cfg.Agents.Defaults.GetToolFeedbackStyle(),
+		toolFeedbackStyle,
 		toolName,
 		toolFeedbackExplanation,
 		toolArgsPreview,
 	)
 	if title := toolFeedbackTitleForTurn(ts); title != "" {
 		feedbackMsg = utils.FormatToolFeedbackMessageWithStyleAndTitle(
-			al.cfg.Agents.Defaults.GetToolFeedbackStyle(),
+			toolFeedbackStyle,
 			title,
 			toolName,
 			toolFeedbackExplanation,
@@ -48,7 +83,7 @@ func (al *AgentLoop) publishToolFeedbackForCall(
 		)
 	}
 	fbCtx, fbCancel := context.WithTimeout(ctx, 3*time.Second)
-	_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
+	_ = tf.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
 		ts,
 		feedbackMsg,
 		outboundTurnMessageOptions{kind: messageKindToolFeedback},
@@ -57,10 +92,14 @@ func (al *AgentLoop) publishToolFeedbackForCall(
 }
 
 func (al *AgentLoop) dismissToolFeedbackForTurn(ctx context.Context, ts *turnState) {
-	if al == nil || al.channelManager == nil || ts == nil || ts.channel == "" {
+	al.toolFeedbackPublisher().dismissToolFeedbackForTurn(ctx, ts)
+}
+
+func (tf *toolFeedbackPublisher) dismissToolFeedbackForTurn(ctx context.Context, ts *turnState) {
+	if tf == nil || tf.channelManager == nil || ts == nil || ts.channel == "" {
 		return
 	}
-	al.channelManager.DismissToolFeedback(ctx, ts.channel, ts.chatID, ts.opts.InboundContext)
+	tf.channelManager.DismissToolFeedback(ctx, ts.channel, ts.chatID, ts.opts.InboundContext)
 }
 
 func (al *AgentLoop) dismissToolFeedbackForSession(
@@ -70,11 +109,21 @@ func (al *AgentLoop) dismissToolFeedbackForSession(
 	inboundCtx *bus.InboundContext,
 	sessionKey string,
 ) {
-	if al == nil || al.channelManager == nil || channel == "" || chatID == "" {
+	al.toolFeedbackPublisher().dismissToolFeedbackForSession(ctx, channel, chatID, inboundCtx, sessionKey)
+}
+
+func (tf *toolFeedbackPublisher) dismissToolFeedbackForSession(
+	ctx context.Context,
+	channel string,
+	chatID string,
+	inboundCtx *bus.InboundContext,
+	sessionKey string,
+) {
+	if tf == nil || tf.channelManager == nil || channel == "" || chatID == "" {
 		return
 	}
 	dismissCtx, dismissCancel := context.WithTimeout(ctx, 5*time.Second)
-	al.channelManager.DismissToolFeedbackForSession(
+	tf.channelManager.DismissToolFeedbackForSession(
 		dismissCtx,
 		channel,
 		chatID,
@@ -82,4 +131,47 @@ func (al *AgentLoop) dismissToolFeedbackForSession(
 		sessionKey,
 	)
 	dismissCancel()
+}
+
+func (tf *toolFeedbackPublisher) shouldPublishToolFeedback(ts *turnState) bool {
+	if tf == nil || ts == nil || ts.channel == "" || ts.opts.SuppressToolFeedback {
+		return false
+	}
+	routeSessionKey := strings.TrimSpace(ts.opts.Dispatch.RouteSessionKey)
+	if routeSessionKey != "" && tf.getFeedbackOverride != nil {
+		if enabled, ok := tf.getFeedbackOverride(routeSessionKey); ok {
+			if !enabled {
+				return false
+			}
+			cfg := tf.cfg
+			if cfg != nil && strings.HasPrefix(strings.TrimSpace(ts.sessionKey), "subturn-") &&
+				!cfg.Agents.Defaults.IsSubagentToolFeedbackEnabled() {
+				return false
+			}
+			return true
+		}
+	}
+	cfg := tf.cfg
+	if cfg == nil || !cfg.Agents.Defaults.IsToolFeedbackEnabled() {
+		return false
+	}
+	if strings.HasPrefix(strings.TrimSpace(ts.sessionKey), "subturn-") &&
+		!cfg.Agents.Defaults.IsSubagentToolFeedbackEnabled() {
+		return false
+	}
+	return true
+}
+
+func (tf *toolFeedbackPublisher) toolFeedbackMaxArgsLength() int {
+	if tf == nil || tf.cfg == nil {
+		return 300
+	}
+	return tf.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
+}
+
+func (tf *toolFeedbackPublisher) toolFeedbackStyle() string {
+	if tf == nil || tf.cfg == nil {
+		return ""
+	}
+	return tf.cfg.Agents.Defaults.GetToolFeedbackStyle()
 }

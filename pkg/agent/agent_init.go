@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
@@ -72,8 +71,14 @@ func NewAgentLoop(
 		cmdRegistry:       commands.NewRegistry(commands.BuiltinDefinitions()),
 		evolution:         bridge,
 		steering:          newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
+		activeRequests:    newActiveRequestCounter(),
 		workerSem:         make(chan struct{}, workerPoolSize),
 		ownsRuntimeEvents: true,
+	}
+	al.compactionRunner = &backgroundCompactionRunner{
+		contextManager: func() ContextManager {
+			return al.contextManager
+		},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -92,7 +97,6 @@ func NewAgentLoop(
 			})
 		}
 	}
-	al.activeReqCond = sync.NewCond(&al.activeReqMu)
 	al.refreshRuntimeEventLogger(cfg)
 	al.providerFactory = providers.CreateProviderFromConfig
 	al.modelExecution = &modelExecutionManager{

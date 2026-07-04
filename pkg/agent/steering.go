@@ -145,6 +145,13 @@ func (sq *steeringQueue) dequeueScopeForTurn(scope, senderID string) []providers
 	)
 }
 
+func (sq *steeringQueue) dequeueSteeringMessagesForTurn(scope, senderID string) []providers.Message {
+	if sq == nil {
+		return nil
+	}
+	return sq.dequeueScopeForTurn(scope, senderID)
+}
+
 func (sq *steeringQueue) dequeueScopeForContinuation(scope string) []providers.Message {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()

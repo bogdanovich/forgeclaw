@@ -3,6 +3,7 @@ package toolshared
 import (
 	"context"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
 
@@ -48,6 +49,7 @@ var (
 	ctxKeyTopicID          = &toolCtxKey{"topicID"}
 	ctxKeyMessageID        = &toolCtxKey{"messageID"}
 	ctxKeyReplyToMessageID = &toolCtxKey{"replyToMessageID"}
+	ctxKeyInboundContext   = &toolCtxKey{"inboundContext"}
 	ctxKeyAgentID          = &toolCtxKey{"agentID"}
 	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
@@ -80,7 +82,19 @@ func WithToolInboundContext(
 ) context.Context {
 	ctx = WithToolContext(ctx, channel, chatID)
 	ctx = WithToolMessageContext(ctx, messageID, replyToMessageID)
+	ctx = WithToolInboundMetadata(ctx, bus.InboundContext{
+		Channel:          channel,
+		ChatID:           chatID,
+		MessageID:        messageID,
+		ReplyToMessageID: replyToMessageID,
+	})
 	return ctx
+}
+
+// WithToolInboundMetadata returns a child context carrying the full normalized
+// inbound identity/source metadata available to tools.
+func WithToolInboundMetadata(ctx context.Context, inbound bus.InboundContext) context.Context {
+	return context.WithValue(ctx, ctxKeyInboundContext, cloneToolInboundContext(bus.NormalizeInboundContext(inbound)))
 }
 
 // WithToolSessionContext returns a child context carrying turn-scoped session metadata.
@@ -138,6 +152,57 @@ func ToolReplyToMessageID(ctx context.Context) string {
 		return ""
 	}
 	return v
+}
+
+// ToolInboundContext extracts the full inbound metadata from ctx, or zero value if unset.
+func ToolInboundContext(ctx context.Context) bus.InboundContext {
+	v, ok := ctx.Value(ctxKeyInboundContext).(bus.InboundContext)
+	if !ok {
+		return bus.InboundContext{}
+	}
+	return cloneToolInboundContext(v)
+}
+
+func cloneToolInboundContext(inbound bus.InboundContext) bus.InboundContext {
+	inbound.ReplyHandles = cloneToolStringMap(inbound.ReplyHandles)
+	inbound.Raw = cloneToolStringMap(inbound.Raw)
+	return inbound
+}
+
+func cloneToolStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// ToolSenderID extracts the transport sender ID from ctx.
+func ToolSenderID(ctx context.Context) string {
+	return ToolInboundContext(ctx).SenderID
+}
+
+// ToolActorID extracts the effective actor ID from ctx. It usually equals sender ID.
+func ToolActorID(ctx context.Context) string {
+	return ToolInboundContext(ctx).ActorID
+}
+
+// ToolOriginID extracts the optional content origin ID from ctx.
+func ToolOriginID(ctx context.Context) string {
+	return ToolInboundContext(ctx).OriginID
+}
+
+// ToolOriginType extracts the optional content origin type from ctx.
+func ToolOriginType(ctx context.Context) string {
+	return ToolInboundContext(ctx).OriginType
+}
+
+// ToolSourceRef extracts the stable inbound source reference from ctx.
+func ToolSourceRef(ctx context.Context) string {
+	return ToolInboundContext(ctx).SourceRef
 }
 
 // ToolAgentID extracts the active turn's agent ID from ctx, or "" if unset.

@@ -777,12 +777,13 @@ func (f *fixedTranscriber) Transcribe(
 }
 
 type blockingDirectProvider struct {
-	mu           sync.Mutex
-	calls        int
-	firstStarted chan struct{}
-	releaseFirst chan struct{}
-	firstResp    string
-	finalResp    string
+	mu             sync.Mutex
+	calls          int
+	firstStarted   chan struct{}
+	releaseFirst   chan struct{}
+	firstResp      string
+	finalResp      string
+	secondMessages []providers.Message
 }
 
 func (p *blockingDirectProvider) Chat(
@@ -802,6 +803,9 @@ func (p *blockingDirectProvider) Chat(
 	if call == 1 && p.firstStarted != nil {
 		close(p.firstStarted)
 		p.firstStarted = nil
+	}
+	if call == 2 {
+		p.secondMessages = append([]providers.Message(nil), messages...)
 	}
 	p.mu.Unlock()
 
@@ -2003,6 +2007,91 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 
 	if msgs := al.dequeueSteeringMessagesForScope(sessionKey); len(msgs) != 0 {
 		t.Fatalf("expected steering queue to be empty after continuation, got %v", msgs)
+	}
+}
+
+func TestAgentLoop_Steering_DirectResponseInjectsQueuedMessageOnce(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
+	provider := &blockingDirectProvider{
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+		firstResp:    "stale direct response",
+		finalResp:    "fresh response after steering",
+	}
+
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	resultCh := make(chan struct {
+		resp string
+		err  error
+	}, 1)
+	go func() {
+		resp, err := al.ProcessDirectWithChannel(
+			context.Background(),
+			"initial request",
+			sessionKey,
+			"test",
+			"chat1",
+		)
+		resultCh <- struct {
+			resp string
+			err  error
+		}{resp: resp, err: err}
+	}()
+
+	select {
+	case <-provider.firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first LLM call to start")
+	}
+
+	if err := al.Steer(providers.Message{Role: "user", Content: "single follow-up"}); err != nil {
+		t.Fatalf("Steer failed: %v", err)
+	}
+	close(provider.releaseFirst)
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("unexpected error: %v", result.err)
+		}
+		if result.resp != "fresh response after steering" {
+			t.Fatalf("expected refreshed response, got %q", result.resp)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for ProcessDirectWithChannel")
+	}
+
+	provider.mu.Lock()
+	secondMessages := append([]providers.Message(nil), provider.secondMessages...)
+	provider.mu.Unlock()
+
+	count := 0
+	for _, msg := range secondMessages {
+		if msg.Role == "user" && msg.Content == "single follow-up" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected queued steering once in second LLM call, got %d", count)
 	}
 }
 

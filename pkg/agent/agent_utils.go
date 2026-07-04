@@ -237,32 +237,7 @@ func toolFeedbackArgsPreview(args map[string]any, maxLen int) string {
 }
 
 func shouldPublishToolFeedback(al *AgentLoop, ts *turnState) bool {
-	if al == nil || ts == nil || ts.channel == "" || ts.opts.SuppressToolFeedback {
-		return false
-	}
-	routeSessionKey := strings.TrimSpace(ts.opts.Dispatch.RouteSessionKey)
-	if routeSessionKey != "" {
-		if enabled, ok := al.getToolFeedbackOverride(routeSessionKey); ok {
-			if !enabled {
-				return false
-			}
-			cfg := al.cfg
-			if cfg != nil && strings.HasPrefix(strings.TrimSpace(ts.sessionKey), "subturn-") &&
-				!cfg.Agents.Defaults.IsSubagentToolFeedbackEnabled() {
-				return false
-			}
-			return true
-		}
-	}
-	cfg := al.cfg
-	if cfg == nil || !cfg.Agents.Defaults.IsToolFeedbackEnabled() {
-		return false
-	}
-	if strings.HasPrefix(strings.TrimSpace(ts.sessionKey), "subturn-") &&
-		!cfg.Agents.Defaults.IsSubagentToolFeedbackEnabled() {
-		return false
-	}
-	return true
+	return al.toolFeedbackPublisher().shouldPublishToolFeedback(ts)
 }
 
 func toolFeedbackTitleForTurn(ts *turnState) string {
@@ -737,52 +712,49 @@ func extractProvider(registry *AgentRegistry) (providers.LLMProvider, bool) {
 	return defaultAgent.Provider, true
 }
 
-// activeRequestsInc atomically increments the active request count.
-func (al *AgentLoop) activeRequestsInc() {
-	al.activeReqMu.Lock()
-	al.activeReqCount++
-	al.activeReqMu.Unlock()
+func (al *AgentLoop) activeRequestCounter() *activeRequestCounter {
+	if al == nil {
+		return nil
+	}
+	if al.activeRequests == nil {
+		al.activeRequests = newActiveRequestCounter()
+	}
+	return al.activeRequests
 }
 
-// activeRequestsDec atomically decrements the active request count
-// and wakes any goroutine blocked in waitForActiveRequests when the
-// count reaches zero.
-func (al *AgentLoop) activeRequestsDec() {
-	al.activeReqMu.Lock()
-	al.activeReqCount--
-	if al.activeReqCount == 0 {
-		al.activeReqCond.Broadcast()
+func (al *AgentLoop) backgroundCompactionRunner() *backgroundCompactionRunner {
+	if al == nil {
+		return nil
 	}
-	al.activeReqMu.Unlock()
+	if al.compactionRunner == nil {
+		al.compactionRunner = &backgroundCompactionRunner{
+			contextManager: func() ContextManager {
+				return al.contextManager
+			},
+		}
+	}
+	return al.compactionRunner
+}
+
+// activeRequestsInc atomically increments the active request count.
+func (al *AgentLoop) activeRequestsInc() {
+	if counter := al.activeRequestCounter(); counter != nil {
+		counter.inc()
+	}
+}
+
+// activeRequestsDec atomically decrements the active request count and wakes
+// any goroutine blocked in waitForActiveRequests when the count reaches zero.
+func (al *AgentLoop) activeRequestsDec() {
+	if counter := al.activeRequestCounter(); counter != nil {
+		counter.dec()
+	}
 }
 
 func (al *AgentLoop) waitForActiveRequests(ctx context.Context, timeout time.Duration) bool {
-	al.activeReqMu.Lock()
-	if al.activeReqCount == 0 {
-		al.activeReqMu.Unlock()
+	counter := al.activeRequestCounter()
+	if counter == nil {
 		return true
 	}
-
-	var timedOut bool
-	if timeout > 0 {
-		time.AfterFunc(timeout, func() {
-			al.activeReqMu.Lock()
-			timedOut = true
-			al.activeReqCond.Broadcast()
-			al.activeReqMu.Unlock()
-		})
-	}
-	go func() {
-		<-ctx.Done()
-		al.activeReqMu.Lock()
-		al.activeReqCond.Broadcast()
-		al.activeReqMu.Unlock()
-	}()
-
-	for al.activeReqCount > 0 && !timedOut && ctx.Err() == nil {
-		al.activeReqCond.Wait()
-	}
-	result := al.activeReqCount == 0
-	al.activeReqMu.Unlock()
-	return result
+	return counter.wait(ctx, timeout)
 }

@@ -83,48 +83,7 @@ func (al *AgentLoop) applySyncToolResultDelivery(
 	result *tools.ToolResult,
 	toolName string,
 ) ([]providers.Attachment, *tools.ToolResult) {
-	if result == nil {
-		return nil, tools.ErrorResult("nil tool result")
-	}
-
-	if ts.opts.SuppressToolUserDelivery {
-		result.ResponseHandled = false
-		result.ImmediateDelivery = false
-	}
-
-	if !ts.opts.SuppressToolUserDelivery && result.ImmediateDelivery {
-		if _, _, err := al.deliverToolResultToUser(ctx, ts, result, toolName); err != nil {
-			return nil, wrapToolDeliveryError(result, fmt.Sprintf("failed to deliver attachment: %v", err), err)
-		}
-	}
-
-	if !ts.opts.SuppressToolUserDelivery && result.ResponseHandled {
-		attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, result, toolName)
-		if err != nil {
-			return nil, wrapToolDeliveryError(result, fmt.Sprintf("failed to deliver attachment: %v", err), err)
-		}
-		if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(result)) > 0 {
-			result.ResponseHandled = false
-		}
-		if outcome == toolResultDeliveryDirect {
-			return attachments, result
-		}
-	}
-
-	return nil, result
-}
-
-func wrapToolDeliveryError(
-	original *tools.ToolResult,
-	message string,
-	err error,
-) *tools.ToolResult {
-	wrapped := tools.ErrorResult(message).WithError(err)
-	if original == nil || len(original.WriteAudit) == 0 {
-		return wrapped
-	}
-	wrapped.WriteAudit = append(wrapped.WriteAudit, original.WriteAudit...)
-	return wrapped
+	return al.syncToolResultDelivery().applySyncToolResultDelivery(ctx, ts, result, toolName)
 }
 
 func mcpServerNameForTool(ts *turnState, toolName string) string {
@@ -642,6 +601,9 @@ toolLoop:
 			ts.opts.Dispatch.MessageID(),
 			ts.opts.Dispatch.ReplyToMessageID(),
 		)
+		if ts.opts.Dispatch.InboundContext != nil {
+			execCtx = tools.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
+		}
 		execCtx = tools.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
 		execCtx = tools.WithToolSessionContext(
 			execCtx,

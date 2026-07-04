@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -362,7 +361,6 @@ func TestReloadProviderAndConfigWaitsForInFlightRequestsBeforeClosingOldProvider
 
 func TestWaitForActiveRequestsHonorsContextCancellation(t *testing.T) {
 	al := &AgentLoop{}
-	al.activeReqCond = sync.NewCond(&al.activeReqMu)
 	al.activeRequestsInc()
 	defer al.activeRequestsDec()
 
