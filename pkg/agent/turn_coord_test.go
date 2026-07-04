@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -1482,6 +1485,77 @@ func TestRunTurn_SteeringMessageInjection(t *testing.T) {
 		t.Errorf("expected status Completed, got %v", result.status)
 	}
 	// Steering message should have been injected
+}
+
+func TestRunTurn_SteeringToolMediaUsesPipelineMediaLimit(t *testing.T) {
+	provider := &capturingMockProvider{response: "ack"}
+	var captured []providers.Message
+	provider.captureFn = func(messages []providers.Message) {
+		captured = append([]providers.Message(nil), messages...)
+	}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	store := media.NewFileMediaStore()
+	pngPath := filepath.Join(t.TempDir(), "steer.png")
+	pngHeader := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D,
+		0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+		0x00, 0x00, 0x00,
+		0x90, 0x77, 0x53, 0xDE,
+	}
+	if err := os.WriteFile(pngPath, pngHeader, 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	ref, err := store.Store(
+		pngPath,
+		media.MediaMeta{Filename: "steer.png", ContentType: "image/png"},
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("Store failed: %v", err)
+	}
+	al.SetMediaStore(store)
+
+	pipeline := NewPipeline(al)
+	pipeline.MediaLimits = &testMediaLimitsProvider{size: 1}
+	opts := makeTestProcessOpts("test-session-steering-media")
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-steering-media",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	if steerErr := al.Steer(providers.Message{
+		Role:       "tool",
+		Content:    "[image]",
+		ToolCallID: "call_1",
+		Media:      []string{ref},
+	}); steerErr != nil {
+		t.Fatalf("Steer failed: %v", steerErr)
+	}
+
+	result, err := al.runTurn(context.Background(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+	if result.status != TurnEndStatusCompleted {
+		t.Fatalf("runTurn status = %v, want %v", result.status, TurnEndStatusCompleted)
+	}
+
+	foundPathTag := false
+	for _, msg := range captured {
+		if strings.Contains(msg.Content, "[image:") {
+			foundPathTag = true
+		}
+		if strings.Contains(msg.Content, "data:image/") {
+			t.Fatalf("unexpected inline media data URL with injected 1-byte media limit: %q", msg.Content)
+		}
+	}
+	if !foundPathTag {
+		t.Fatal("expected steering tool media to resolve to an image path tag")
+	}
 }
 
 func TestRunTurn_GracefulInterrupt(t *testing.T) {
