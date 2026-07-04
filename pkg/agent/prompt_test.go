@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 func TestPromptRegistry_RejectsRegisteredSourceWrongPlacement(t *testing.T) {
@@ -106,6 +108,49 @@ func TestBuildMessagesFromPrompt_IncludesSystemPromptOverlay(t *testing.T) {
 	}
 	if messages[1].Role != "user" || messages[1].Content != "do child task" {
 		t.Fatalf("messages[1] = %#v, want user task", messages[1])
+	}
+}
+
+func TestSteeringPromptMessage_WrapsMidTurnContract(t *testing.T) {
+	msg := steeringPromptMessage(providers.Message{
+		Role:    "user",
+		Content: "use this photo too",
+		Media:   []string{"media://photo"},
+	})
+
+	if msg.Role != "user" {
+		t.Fatalf("Role = %q, want user", msg.Role)
+	}
+	if len(msg.Media) != 1 || msg.Media[0] != "media://photo" {
+		t.Fatalf("Media = %#v, want original media", msg.Media)
+	}
+	for _, want := range []string{
+		"[Mid-turn user message]",
+		"additional context or evidence for the current request",
+		"Do not discard the original objective",
+		"use this photo too",
+		"[/Mid-turn user message]",
+	} {
+		if !strings.Contains(msg.Content, want) {
+			t.Fatalf("Content missing %q:\n%s", want, msg.Content)
+		}
+	}
+	if msg.PromptLayer != string(PromptLayerTurn) ||
+		msg.PromptSlot != string(PromptSlotSteering) ||
+		msg.PromptSource != string(PromptSourceSteering) {
+		t.Fatalf("prompt metadata = (%q, %q, %q), want turn/steering/source",
+			msg.PromptLayer, msg.PromptSlot, msg.PromptSource)
+	}
+}
+
+func TestSteeringPromptMessage_ExplainsMediaOnlySteering(t *testing.T) {
+	msg := steeringPromptMessage(providers.Message{
+		Role:  "user",
+		Media: []string{"media://photo"},
+	})
+
+	if !strings.Contains(msg.Content, "attached media is part of this mid-turn user message") {
+		t.Fatalf("Content missing media-only explanation:\n%s", msg.Content)
 	}
 }
 

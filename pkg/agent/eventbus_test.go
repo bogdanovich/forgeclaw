@@ -459,8 +459,9 @@ func TestAgentLoop_EmitsSteeringAndSkippedToolEvents(t *testing.T) {
 	if interruptPayload.Kind != InterruptKindSteering {
 		t.Fatalf("expected steering interrupt kind, got %q", interruptPayload.Kind)
 	}
-	if interruptPayload.ContentLen != len("change course") {
-		t.Fatalf("expected interrupt content len %d, got %d", len("change course"), interruptPayload.ContentLen)
+	wantContentLen := len(formatSteeringPromptContent("change course", false))
+	if interruptPayload.ContentLen != wantContentLen {
+		t.Fatalf("expected interrupt content len %d, got %d", wantContentLen, interruptPayload.ContentLen)
 	}
 }
 

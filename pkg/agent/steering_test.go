@@ -25,6 +25,10 @@ import (
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
+func userMessageContains(msg providers.Message, text string) bool {
+	return msg.Role == "user" && strings.Contains(msg.Content, text)
+}
+
 // --- steeringQueue unit tests ---
 
 func TestSteeringQueue_PushDequeue_OneAtATime(t *testing.T) {
@@ -363,7 +367,7 @@ func TestAgentLoop_Steer_Enqueues(t *testing.T) {
 	}
 
 	msgs := al.dequeueSteeringMessages()
-	if len(msgs) != 1 || msgs[0].Content != "interrupt me" {
+	if len(msgs) != 1 || !userMessageContains(msgs[0], "interrupt me") {
 		t.Fatalf("unexpected dequeued message: %v", msgs)
 	}
 }
@@ -1011,7 +1015,7 @@ func TestAgentLoop_Steering_InitialPoll(t *testing.T) {
 	// Look for the steering message in the captured messages
 	found := false
 	for _, m := range msgs {
-		if m.Content == "pre-enqueued steering" {
+		if strings.Contains(m.Content, "pre-enqueued steering") {
 			found = true
 			break
 		}
@@ -1146,7 +1150,7 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 
 	foundLateMessage := false
 	for _, msg := range secondMessages {
-		if msg.Role == "user" && msg.Content == "late append" {
+		if userMessageContains(msg, "late append") {
 			foundLateMessage = true
 			break
 		}
@@ -1276,10 +1280,10 @@ func TestAgentLoop_Run_BatchesDeferredMessagesBySenderIntoOneContinuationTurn(t 
 		if msg.Role != "user" {
 			continue
 		}
-		switch msg.Content {
-		case "message B1":
+		switch {
+		case userMessageContains(msg, "message B1"):
 			foundB1 = true
-		case "message B2":
+		case userMessageContains(msg, "message B2"):
 			foundB2 = true
 		}
 	}
@@ -1441,12 +1445,12 @@ func TestAgentLoop_Run_ContinuationPreservesSenderAffinityAcrossDeferredTurns(t 
 		if msg.Role != "user" {
 			continue
 		}
-		switch msg.Content {
-		case "message B1":
+		switch {
+		case userMessageContains(msg, "message B1"):
 			secondHasB1 = true
-		case "message B2":
+		case userMessageContains(msg, "message B2"):
 			secondHasB2 = true
-		case "message C1":
+		case userMessageContains(msg, "message C1"):
 			secondHasC1 = true
 		}
 	}
@@ -1459,7 +1463,7 @@ func TestAgentLoop_Run_ContinuationPreservesSenderAffinityAcrossDeferredTurns(t 
 
 	thirdHasC1 := false
 	for _, msg := range thirdMessages {
-		if msg.Role == "user" && msg.Content == "message C1" {
+		if userMessageContains(msg, "message C1") {
 			thirdHasC1 = true
 			break
 		}
@@ -1916,10 +1920,10 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 
 	foundFollowUp := false
 	for _, msg := range secondMessages {
-		if msg.Role == "user" && msg.Content == "run this instead" {
+		if userMessageContains(msg, "run this instead") {
 			foundFollowUp = true
 		}
-		if msg.Role == "user" && msg.Content == "skip this turn" {
+		if userMessageContains(msg, "skip this turn") {
 			t.Fatalf("unexpected canceled message in continuation context: %q", msg.Content)
 		}
 	}
@@ -2086,7 +2090,7 @@ func TestAgentLoop_Steering_DirectResponseInjectsQueuedMessageOnce(t *testing.T)
 
 	count := 0
 	for _, msg := range secondMessages {
-		if msg.Role == "user" && msg.Content == "single follow-up" {
+		if userMessageContains(msg, "single follow-up") {
 			count++
 		}
 	}
