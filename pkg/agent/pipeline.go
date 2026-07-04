@@ -21,6 +21,7 @@ type Pipeline struct {
 	Cfg                  *config.Config
 	ChannelStreaming     channelStreamingConfigProvider
 	NativeSearch         nativeSearchPolicy
+	LLMRetry             llmRetryPolicy
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -44,6 +45,7 @@ type PipelineDependencies struct {
 	Cfg                  *config.Config
 	ChannelStreaming     channelStreamingConfigProvider
 	NativeSearch         nativeSearchPolicy
+	LLMRetry             llmRetryPolicy
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -76,6 +78,10 @@ type channelStreamingConfigProvider interface {
 
 type nativeSearchPolicy interface {
 	useNativeSearch(profile config.EffectiveTurnProfile, provider providers.LLMProvider) bool
+}
+
+type llmRetryPolicy interface {
+	llmRetrySettings() (maxRetries int, backoffSecs int)
 }
 
 type pipelineContextRuntime interface {
@@ -204,6 +210,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		Cfg:                  deps.Cfg,
 		ChannelStreaming:     deps.ChannelStreaming,
 		NativeSearch:         deps.NativeSearch,
+		LLMRetry:             deps.LLMRetry,
 		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,

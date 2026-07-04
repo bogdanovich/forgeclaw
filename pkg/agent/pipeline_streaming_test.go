@@ -475,6 +475,14 @@ func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *test
 	if nativeSearch.cfg != pipeline.Cfg {
 		t.Fatal("NativeSearch config does not match pipeline config snapshot")
 	}
+
+	llmRetry, ok := pipeline.LLMRetry.(configLLMRetryPolicy)
+	if !ok {
+		t.Fatalf("LLMRetry = %T, want configLLMRetryPolicy", pipeline.LLMRetry)
+	}
+	if llmRetry.cfg != pipeline.Cfg {
+		t.Fatal("LLMRetry config does not match pipeline config snapshot")
+	}
 }
 
 func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {
