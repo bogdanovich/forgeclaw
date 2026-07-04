@@ -47,9 +47,16 @@ then calls:
 al.runAgentLoop(ctx, turn.Agent, opts)
 ```
 
-`runAgentLoop` remains the boundary for one logical agent turn. Code below that
-boundary should be considered turn execution and belongs in `Pipeline` or
-pipeline-owned helpers.
+`runAgentLoop` remains the boundary for one logical agent turn. `AgentLoop`
+then wraps the turn with runtime lifecycle concerns in `runTurn` and delegates
+turn progression to:
+
+```go
+pipeline.runTurnLoop(ctx, turnCtx, ts, host)
+```
+
+Code below that boundary should be considered turn execution and belongs in
+`Pipeline` or pipeline-owned helpers.
 
 Inside `runTurn`, host-owned callbacks are exposed to the turn loop through
 `turnRuntimeHost`. This keeps PR-sized refactors honest: `AgentLoop` still owns
