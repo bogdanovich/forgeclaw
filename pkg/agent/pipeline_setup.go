@@ -45,7 +45,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	initialPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
 	messages := ts.agent.ContextBuilder.BuildMessagesFromPrompt(initialPromptReq)
 
-	messages = resolveMediaRefs(messages, p.MediaStore, maxMediaSize)
+	messages = resolveMediaRefs(messages, p.MediaResolver, maxMediaSize)
 
 	if !ts.opts.NoHistory {
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
@@ -84,7 +84,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 					)
 					rebuildPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
 					rebuilt := ts.agent.ContextBuilder.BuildMessagesFromPrompt(rebuildPromptReq)
-					return resolveMediaRefs(rebuilt, p.MediaStore, maxMediaSize)
+					return resolveMediaRefs(rebuilt, p.MediaResolver, maxMediaSize)
 				},
 				ts.agent.ContextWindow,
 				toolDefs,
@@ -232,7 +232,7 @@ func (p *Pipeline) estimateNonHistoryPromptReserve(
 	req := promptBuildRequestForTurn(ts, nil, "", ts.userMessage, ts.media, p.Cfg)
 	req.ActiveSkills = append([]string(nil), contextualSkills...)
 	messages := ts.agent.ContextBuilder.BuildMessagesFromPrompt(req)
-	messages = resolveMediaRefs(messages, p.MediaStore, maxMediaSize)
+	messages = resolveMediaRefs(messages, p.MediaResolver, maxMediaSize)
 
 	tokens := EstimateToolDefsTokens(toolDefs)
 	for _, msg := range messages {

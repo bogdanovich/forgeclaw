@@ -13,7 +13,6 @@ import (
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -181,7 +180,7 @@ func shouldQueueAsyncToolResultForParent(result *tools.ToolResult) bool {
 	return decideAsyncToolResultDelivery(result).QueueParent
 }
 
-func recordCompletionMedia(exec *turnExecution, store media.MediaStore, refs []string) {
+func recordCompletionMedia(exec *turnExecution, store mediaResolver, refs []string) {
 	if exec == nil || len(refs) == 0 {
 		return
 	}
@@ -202,7 +201,7 @@ func recordCompletionMedia(exec *turnExecution, store media.MediaStore, refs []s
 	}
 }
 
-func buildCompletionMedia(store media.MediaStore, ref string) tools.CompletionMedia {
+func buildCompletionMedia(store mediaResolver, ref string) tools.CompletionMedia {
 	item := tools.CompletionMedia{Ref: ref}
 	if store == nil {
 		return item
@@ -346,8 +345,8 @@ toolLoop:
 					}
 
 					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
-						recordCompletionMedia(exec, p.MediaStore, hookResult.Media)
-						hookResult.ArtifactTags = buildArtifactTags(p.MediaStore, hookResult.Media)
+						recordCompletionMedia(exec, p.MediaResolver, hookResult.Media)
+						hookResult.ArtifactTags = buildArtifactTags(p.MediaResolver, hookResult.Media)
 						contentForLLM = hookResult.ContentForLLM()
 						if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
 							contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
@@ -682,8 +681,8 @@ toolLoop:
 		handledAttachments = append(handledAttachments, attachments...)
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
-			recordCompletionMedia(exec, p.MediaStore, toolResult.Media)
-			toolResult.ArtifactTags = buildArtifactTags(p.MediaStore, toolResult.Media)
+			recordCompletionMedia(exec, p.MediaResolver, toolResult.Media)
+			toolResult.ArtifactTags = buildArtifactTags(p.MediaResolver, toolResult.Media)
 		}
 
 		if !toolResult.ResponseHandled {

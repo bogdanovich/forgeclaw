@@ -56,7 +56,7 @@ func normalizeCurrentTurnStart(messages []providers.Message, currentTurnStart in
 // Returns a new slice; original messages are not mutated.
 func resolveMediaRefs(
 	messages []providers.Message,
-	store media.MediaStore,
+	store mediaResolver,
 	maxSize int,
 	currentTurnStart ...int,
 ) []providers.Message {
@@ -206,7 +206,7 @@ func encodeImageToDataURL(localPath, mime string, info os.FileInfo, maxSize int)
 	return buf.String()
 }
 
-func buildArtifactTags(store media.MediaStore, refs []string) []string {
+func buildArtifactTags(store mediaResolver, refs []string) []string {
 	if store == nil || len(refs) == 0 {
 		return nil
 	}
@@ -224,7 +224,7 @@ func buildArtifactTags(store media.MediaStore, refs []string) []string {
 	return tags
 }
 
-func buildProviderAttachments(store media.MediaStore, refs []string) []providers.Attachment {
+func buildProviderAttachments(store mediaResolver, refs []string) []providers.Attachment {
 	if store == nil || len(refs) == 0 {
 		return nil
 	}
