@@ -779,6 +779,7 @@ func (t *CronTool) startCronTaskRecord(job *cron.CronJob, channel, chatID string
 	if strings.TrimSpace(job.Payload.Command) != "" {
 		taskText = job.Payload.Command
 	}
+	deliveryMode := cronTaskDeliveryMode(job)
 	_ = t.taskRegistry.Upsert(taskregistry.Record{
 		TaskID:         taskID,
 		Runtime:        taskregistry.RuntimeCron,
@@ -790,9 +791,31 @@ func (t *CronTool) startCronTaskRecord(job *cron.CronJob, channel, chatID string
 		Status:         taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
 		NotifyPolicy:   taskregistry.NotifyDoneOnly,
-		DeliveryMode:   "deliver",
+		DeliveryMode:   deliveryMode,
+	})
+	_ = t.taskRegistry.AppendEvent(taskID, taskregistry.EventTaskDeliveryDecision, map[string]string{
+		"job_id":        jobID,
+		"job_name":      strings.TrimSpace(job.Name),
+		"payload_kind":  deliveryMode,
+		"delivery_mode": deliveryMode,
+		"channel":       channel,
+		"chat_id":       chatID,
+		"message_len":   fmt.Sprintf("%d", len(job.Payload.Message)),
 	})
 	return taskID
+}
+
+func cronTaskDeliveryMode(job *cron.CronJob) string {
+	if job == nil {
+		return "agent_turn"
+	}
+	if strings.TrimSpace(job.Payload.Command) != "" {
+		return "command"
+	}
+	if strings.TrimSpace(job.Payload.Kind) == "deliver_text" {
+		return "deliver_text"
+	}
+	return "agent_turn"
 }
 
 func (t *CronTool) finishCronTaskRecord(
