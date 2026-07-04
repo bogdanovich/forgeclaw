@@ -215,6 +215,34 @@ func steeringPromptMessage(msg providers.Message) providers.Message {
 	return promptMessageWithDefaultMetadata(msg, PromptLayerTurn, PromptSlotSteering, PromptSourceSteering)
 }
 
+func providerPromptMessageForTurn(msg providers.Message) providers.Message {
+	if msg.PromptSlot != string(PromptSlotSteering) {
+		return msg
+	}
+	msg.Content = formatSteeringPromptContent(msg.Content, len(msg.Media) > 0)
+	return msg
+}
+
+func formatSteeringPromptContent(content string, hasMedia bool) string {
+	content = strings.TrimSpace(content)
+	if content == "" && hasMedia {
+		content = "(no text; attached media is part of this mid-turn user message)"
+	}
+	if content == "" {
+		content = "(empty message)"
+	}
+	return strings.Join([]string{
+		"[Mid-turn user message]",
+		"This message arrived while you were already handling the current user request. It is genuine user input, not tool output.",
+		"Treat it as additional context or evidence for the current request unless it clearly cancels, replaces, or redirects that request.",
+		"Do not discard the original objective. Your next action or final response should account for the accumulated request across the full turn.",
+		"",
+		"Message:",
+		content,
+		"[/Mid-turn user message]",
+	}, "\n")
+}
+
 func subTurnResultPromptMessage(content string) providers.Message {
 	return promptMessageWithMetadata(
 		providers.Message{Role: "user", Content: fmt.Sprintf("[SubTurn Result] %s", content)},

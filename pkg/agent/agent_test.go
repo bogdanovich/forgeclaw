@@ -4093,7 +4093,7 @@ func (m *handledMediaWithSteeringProvider) Chat(
 	}
 
 	for _, msg := range messages {
-		if msg.Role == "user" && msg.Content == "what about this instead?" {
+		if msg.Role == "user" && strings.Contains(msg.Content, "what about this instead?") {
 			return &providers.LLMResponse{Content: "Handled the queued steering message."}, nil
 		}
 	}
