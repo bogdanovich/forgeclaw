@@ -333,10 +333,7 @@ toolLoop:
 						exec.allResponsesHandled = false
 					}
 
-					contentForLLM := hookResult.ContentForLLM()
-					if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
-						contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
-					}
+					contentForLLM := p.filterToolContentForLLM(hookResult.ContentForLLM())
 
 					toolResultMsg := providers.Message{
 						Role:       "tool",
@@ -347,10 +344,7 @@ toolLoop:
 					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
 						recordCompletionMedia(exec, p.MediaResolver, hookResult.Media)
 						hookResult.ArtifactTags = buildArtifactTags(p.MediaResolver, hookResult.Media)
-						contentForLLM = hookResult.ContentForLLM()
-						if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
-							contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
-						}
+						contentForLLM = p.filterToolContentForLLM(hookResult.ContentForLLM())
 						toolResultMsg.Content = contentForLLM
 						toolResultMsg.Media = append(toolResultMsg.Media, hookResult.Media...)
 					}
@@ -435,7 +429,7 @@ toolLoop:
 						select {
 						case result, ok := <-ts.pendingResults:
 							if ok && result != nil && result.ForLLM != "" {
-								content := p.Cfg.FilterSensitiveData(result.ForLLM)
+								content := p.filterPendingResultForLLM(result.ForLLM)
 								msg := subTurnResultPromptMessage(content)
 								messages = append(messages, msg)
 								if !ts.opts.NoHistory {
@@ -702,11 +696,7 @@ toolLoop:
 					"content_len": len(toolResult.ForUser),
 				})
 		}
-		contentForLLM := toolResult.ContentForLLM()
-
-		if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
-			contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
-		}
+		contentForLLM := p.filterToolContentForLLM(toolResult.ContentForLLM())
 
 		toolResultMsg := providers.Message{
 			Role:       "tool",
@@ -846,7 +836,7 @@ toolLoop:
 			select {
 			case result, ok := <-ts.pendingResults:
 				if ok && result != nil && result.ForLLM != "" {
-					content := p.Cfg.FilterSensitiveData(result.ForLLM)
+					content := p.filterPendingResultForLLM(result.ForLLM)
 					msg := subTurnResultPromptMessage(content)
 					messages = append(messages, msg)
 					if !ts.opts.NoHistory {
