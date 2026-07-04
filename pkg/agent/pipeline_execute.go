@@ -94,16 +94,14 @@ func (al *AgentLoop) applySyncToolResultDelivery(
 
 	if !ts.opts.SuppressToolUserDelivery && result.ImmediateDelivery {
 		if _, _, err := al.deliverToolResultToUser(ctx, ts, result, toolName); err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
-				WithError(err)
+			return nil, wrapToolDeliveryError(result, fmt.Sprintf("failed to deliver attachment: %v", err), err)
 		}
 	}
 
 	if !ts.opts.SuppressToolUserDelivery && result.ResponseHandled {
 		attachments, outcome, err := al.deliverToolResultToUser(ctx, ts, result, toolName)
 		if err != nil {
-			return nil, tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).
-				WithError(err)
+			return nil, wrapToolDeliveryError(result, fmt.Sprintf("failed to deliver attachment: %v", err), err)
 		}
 		if outcome != toolResultDeliveryDirect && len(toolResultMediaRefs(result)) > 0 {
 			result.ResponseHandled = false
@@ -114,6 +112,19 @@ func (al *AgentLoop) applySyncToolResultDelivery(
 	}
 
 	return nil, result
+}
+
+func wrapToolDeliveryError(
+	original *tools.ToolResult,
+	message string,
+	err error,
+) *tools.ToolResult {
+	wrapped := tools.ErrorResult(message).WithError(err)
+	if original == nil || len(original.WriteAudit) == 0 {
+		return wrapped
+	}
+	wrapped.WriteAudit = append(wrapped.WriteAudit, original.WriteAudit...)
+	return wrapped
 }
 
 func mcpServerNameForTool(ts *turnState, toolName string) string {
@@ -344,7 +355,9 @@ toolLoop:
 
 					toolDuration := time.Duration(0)
 
+					verifiedWrite := hasVerifiedWriteAudit(hookResult.WriteAudit)
 					exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, hookResult.WriteAudit)
+					recordFinalRenderToolCall(exec, tc.ID, toolName, verifiedWrite)
 					attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
 					hookResult = deliveredResult
 					handledAttachments = append(handledAttachments, attachments...)
@@ -687,12 +700,21 @@ toolLoop:
 			toolResult = tools.ErrorResult("hook returned nil tool result")
 		}
 
+		verifiedWrite := hasVerifiedWriteAudit(toolResult.WriteAudit)
 		toolSummary := strings.TrimSpace(toolResult.ForUser)
 		if toolSummary != "" {
-			exec.actionLog = appendTurnActionRecord(exec.actionLog, "tool_result", toolName, toolSummary, toolResult.IsError)
+			exec.actionLog = appendTurnActionRecord(
+				exec.actionLog,
+				"tool_result",
+				toolName,
+				toolSummary,
+				toolResult.IsError,
+				verifiedWrite,
+			)
 		}
 
 		exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, toolResult.WriteAudit)
+		recordFinalRenderToolCall(exec, toolCallID, toolName, verifiedWrite)
 		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
 		toolResult = deliveredResult
 		handledAttachments = append(handledAttachments, attachments...)

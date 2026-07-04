@@ -12,26 +12,34 @@ import (
 )
 
 type TurnActionRecord struct {
-	Source string `json:"source"`
-	Tool   string `json:"tool,omitempty"`
-	Text   string `json:"text"`
-	Error  bool   `json:"error,omitempty"`
+	Source        string `json:"source"`
+	Tool          string `json:"tool,omitempty"`
+	Text          string `json:"text"`
+	Error         bool   `json:"error,omitempty"`
+	VerifiedWrite bool   `json:"verified_write,omitempty"`
+}
+
+type finalRenderToolCallState struct {
+	Tool          string
+	VerifiedWrite bool
 }
 
 func appendTurnActionRecord(
 	records []TurnActionRecord,
 	source, tool, text string,
 	isError bool,
+	verifiedWrite bool,
 ) []TurnActionRecord {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return records
 	}
 	rec := TurnActionRecord{
-		Source: source,
-		Tool:   strings.TrimSpace(tool),
-		Text:   text,
-		Error:  isError,
+		Source:        source,
+		Tool:          strings.TrimSpace(tool),
+		Text:          text,
+		Error:         isError,
+		VerifiedWrite: verifiedWrite,
 	}
 	if n := len(records); n > 0 {
 		prev := records[n-1]
@@ -41,6 +49,147 @@ func appendTurnActionRecord(
 		}
 	}
 	return append(records, rec)
+}
+
+func hasVerifiedWriteAudit(audit []tools.WriteAuditEntry) bool {
+	for _, entry := range audit {
+		if !entry.Success {
+			continue
+		}
+		if strings.TrimSpace(entry.Target) == "" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func recordFinalRenderToolCall(
+	exec *turnExecution,
+	toolCallID, toolName string,
+	verifiedWrite bool,
+) {
+	if exec == nil || strings.TrimSpace(toolCallID) == "" {
+		return
+	}
+	if exec.finalRenderToolCalls == nil {
+		exec.finalRenderToolCalls = make(map[string]finalRenderToolCallState)
+	}
+	state := exec.finalRenderToolCalls[toolCallID]
+	if strings.TrimSpace(state.Tool) == "" {
+		state.Tool = strings.TrimSpace(toolName)
+	}
+	state.VerifiedWrite = state.VerifiedWrite || verifiedWrite
+	exec.finalRenderToolCalls[toolCallID] = state
+}
+
+func filterFinalTurnActionRecords(records []TurnActionRecord) []TurnActionRecord {
+	if len(records) == 0 {
+		return nil
+	}
+	filtered := make([]TurnActionRecord, 0, len(records))
+	for _, rec := range records {
+		if shouldSuppressUnverifiedWriteOutcome(rec.Tool, rec.Text, rec.Error, rec.VerifiedWrite) {
+			continue
+		}
+		filtered = append(filtered, rec)
+	}
+	return filtered
+}
+
+func buildToolCallNameIndex(messages []providers.Message) map[string]string {
+	if len(messages) == 0 {
+		return nil
+	}
+	index := make(map[string]string)
+	for _, msg := range messages {
+		for _, call := range msg.ToolCalls {
+			if strings.TrimSpace(call.ID) == "" {
+				continue
+			}
+			toolName := strings.TrimSpace(call.Name)
+			if toolName == "" && call.Function != nil {
+				toolName = strings.TrimSpace(call.Function.Name)
+			}
+			if toolName == "" {
+				continue
+			}
+			index[call.ID] = toolName
+		}
+	}
+	return index
+}
+
+func buildFinalTurnRenderMessages(exec *turnExecution) []providers.Message {
+	if exec == nil || len(exec.messages) == 0 {
+		return nil
+	}
+	messages := append([]providers.Message(nil), exec.messages...)
+	toolNames := buildToolCallNameIndex(exec.messages)
+	for i := range messages {
+		msg := &messages[i]
+		if msg.Role != "tool" || strings.TrimSpace(msg.ToolCallID) == "" {
+			continue
+		}
+		state := exec.finalRenderToolCalls[msg.ToolCallID]
+		toolName := strings.TrimSpace(state.Tool)
+		if toolName == "" {
+			toolName = strings.TrimSpace(toolNames[msg.ToolCallID])
+		}
+		if !shouldSuppressUnverifiedWriteOutcome(toolName, msg.Content, false, state.VerifiedWrite) {
+			continue
+		}
+		msg.Content = "[tool result omitted from final render because it may describe unverified write-side effects]"
+		msg.ReasoningContent = ""
+	}
+	return messages
+}
+
+func shouldSuppressUnverifiedWriteOutcome(
+	toolName, text string,
+	isError, verifiedWrite bool,
+) bool {
+	if isError || verifiedWrite {
+		return false
+	}
+	lowerText := strings.ToLower(strings.TrimSpace(text))
+	if lowerText == "" {
+		return false
+	}
+	if strings.Contains(lowerText, "failed") || strings.Contains(lowerText, "error") {
+		return false
+	}
+	lowerTool := strings.ToLower(strings.TrimSpace(toolName))
+	switch lowerTool {
+	case "write_file", "edit_file", "append_file", "apply_patch", "cron", "update_plan":
+		return true
+	}
+	for _, phrase := range []string{
+		"file written",
+		"file edited",
+		"file updated",
+		"file deleted",
+		"saved",
+		"updated",
+		"created",
+		"deleted",
+		"removed",
+		"appended",
+		"patched",
+		"recorded",
+		"cron job added",
+		"cron job updated",
+		"cron job removed",
+		"set plan",
+		"added step",
+		"reminder set",
+		"note saved",
+	} {
+		if strings.Contains(lowerText, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendTurnWriteAudit(
@@ -148,7 +297,7 @@ func buildFinalTurnRenderInstruction(exec *turnExecution) string {
 	}
 
 	records := make([]TurnActionRecord, 0, len(exec.actionLog))
-	for _, rec := range exec.actionLog {
+	for _, rec := range filterFinalTurnActionRecords(exec.actionLog) {
 		if strings.TrimSpace(rec.Text) == "" {
 			continue
 		}
@@ -197,7 +346,7 @@ func tryRenderFinalTurnReply(
 		return fallback, false
 	}
 
-	messages := append([]providers.Message(nil), exec.messages...)
+	messages := buildFinalTurnRenderMessages(exec)
 	instruction := buildFinalTurnRenderInstruction(exec)
 	messages = append(messages, providers.Message{
 		Role:    "user",

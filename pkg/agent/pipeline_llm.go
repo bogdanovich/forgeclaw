@@ -657,6 +657,7 @@ func (p *Pipeline) CallLLM(
 			"",
 			responseContent,
 			false,
+			false,
 		)
 		if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(
 			steerMsgs,
