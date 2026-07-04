@@ -19,7 +19,7 @@ import (
 type Pipeline struct {
 	Bus                  pipelineBus
 	Cfg                  *config.Config
-	ContextManager       ContextManager
+	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
 	ActiveRequests       activeRequestTracker
@@ -39,7 +39,7 @@ type Pipeline struct {
 type PipelineDependencies struct {
 	Bus                  pipelineBus
 	Cfg                  *config.Config
-	ContextManager       ContextManager
+	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
 	ActiveRequests       activeRequestTracker
@@ -62,6 +62,12 @@ type runtimeEventEmitter interface {
 type pipelineBus interface {
 	PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error
 	GetStreamer(ctx context.Context, channel, chatID, sessionKey string) (bus.Streamer, bool)
+}
+
+type pipelineContextRuntime interface {
+	Assemble(ctx context.Context, req *AssembleRequest) (*AssembleResponse, error)
+	Compact(ctx context.Context, req *CompactRequest) error
+	Ingest(ctx context.Context, req *IngestRequest) error
 }
 
 type backgroundCompactionScheduler interface {
@@ -178,7 +184,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 	return &Pipeline{
 		Bus:                  deps.Bus,
 		Cfg:                  deps.Cfg,
-		ContextManager:       deps.ContextManager,
+		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,
 		ActiveRequests:       deps.ActiveRequests,

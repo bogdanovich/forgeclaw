@@ -5,7 +5,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 	return NewPipelineFromDependencies(PipelineDependencies{
 		Bus:                  al.bus,
 		Cfg:                  al.GetConfig(),
-		ContextManager:       al.contextManager,
+		ContextRuntime:       al.contextManager,
 		BackgroundCompaction: al.backgroundCompactionRunner(),
 		Events:               al.runtimeEventEmitter(),
 		ActiveRequests:       al.activeRequestCounter(),
