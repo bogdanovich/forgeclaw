@@ -216,6 +216,18 @@ func buildCompletionMedia(store mediaResolver, ref string) tools.CompletionMedia
 	return item
 }
 
+type toolLoopRunner struct {
+	p         *Pipeline
+	turnCtx   context.Context
+	ts        *turnState
+	exec      *turnExecution
+	iteration int
+	toolCalls []providers.ToolCall
+
+	messages           []providers.Message
+	handledAttachments []providers.Attachment
+}
+
 // ExecuteTools executes the tool loop, handling BeforeTool/ApproveTool/AfterTool hooks,
 // tool execution with async callbacks, media delivery, and steering injection.
 // Returns ToolControl indicating what the coordinator should do next:
@@ -229,10 +241,17 @@ func (p *Pipeline) ExecuteTools(
 	iteration int,
 ) ToolControl {
 	normalizedToolCalls := exec.normalizedToolCalls
+	runner := &toolLoopRunner{
+		p:         p,
+		turnCtx:   turnCtx,
+		ts:        ts,
+		exec:      exec,
+		iteration: iteration,
+		toolCalls: normalizedToolCalls,
+		messages:  exec.messages,
+	}
 
 	ts.setPhase(TurnPhaseTools)
-	messages := exec.messages
-	handledAttachments := make([]providers.Attachment, 0)
 
 toolLoop:
 	for i, tc := range normalizedToolCalls {
@@ -262,7 +281,7 @@ toolLoop:
 				Content:    denyContent,
 				ToolCallID: tc.ID,
 			}
-			messages = p.appendToolMessage(turnCtx, ts, messages, deniedMsg, toolMessagePersistOnly)
+			runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
 			return true
 		}
 
@@ -305,7 +324,7 @@ toolLoop:
 						},
 					)
 
-					p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, messages)
+					p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, runner.messages)
 
 					toolDuration := time.Duration(0)
 
@@ -314,7 +333,7 @@ toolLoop:
 					recordFinalRenderToolCall(exec, tc.ID, toolName, verifiedWrite)
 					attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
 					hookResult = deliveredResult
-					handledAttachments = append(handledAttachments, attachments...)
+					runner.handledAttachments = append(runner.handledAttachments, attachments...)
 
 					shouldSendForUser := !hookResult.ResponseHandled &&
 						!ts.opts.SuppressToolUserDelivery &&
@@ -364,59 +383,10 @@ toolLoop:
 						inferSkillNamesFromToolCall(ts, toolName, toolArgs),
 					)
 
-					messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
+					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 
-					if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(steerMsgs) > 0 {
-						exec.markAdditionalUserInputObserved()
-						exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
-					}
-
-					skipReason := ""
-					skipMessage := ""
-					if len(exec.pendingMessages) > 0 {
-						skipReason = "queued user steering message"
-						skipMessage = "Skipped due to queued user message."
-					} else if gracefulPending, _ := ts.gracefulInterruptRequested(); gracefulPending {
-						skipReason = "graceful interrupt requested"
-						skipMessage = "Skipped due to graceful interrupt."
-					}
-
-					if skipReason != "" {
-						remaining := len(normalizedToolCalls) - i - 1
-						if remaining > 0 {
-							logger.InfoCF("agent", "Turn checkpoint: skipping remaining tools after hook respond",
-								map[string]any{
-									"agent_id":  ts.agent.ID,
-									"completed": i + 1,
-									"skipped":   remaining,
-									"reason":    skipReason,
-								})
-							messages = p.appendSkippedToolMessages(
-								turnCtx,
-								ts,
-								messages,
-								normalizedToolCalls,
-								i+1,
-								skipReason,
-								skipMessage,
-							)
-						}
+					if runner.checkpointAfterTool(i, "Turn checkpoint: skipping remaining tools after hook respond", true) {
 						break toolLoop
-					}
-
-					if ts.pendingResults != nil {
-						select {
-						case result, ok := <-ts.pendingResults:
-							if ok && result != nil && result.ForLLM != "" {
-								content := p.filterPendingResultForLLM(result.ForLLM)
-								msg := subTurnResultPromptMessage(content)
-								messages = append(messages, msg)
-								if !ts.opts.NoHistory {
-									ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
-								}
-							}
-						default:
-						}
 					}
 
 					continue
@@ -443,7 +413,7 @@ toolLoop:
 					Content:    denyContent,
 					ToolCallID: tc.ID,
 				}
-				messages = p.appendToolMessage(turnCtx, ts, messages, deniedMsg, toolMessagePersistOnly)
+				runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
 				continue
 			case HookActionAbortTurn:
 				exec.abortedByHook = true
@@ -478,7 +448,7 @@ toolLoop:
 					Content:    denyContent,
 					ToolCallID: tc.ID,
 				}
-				messages = p.appendToolMessage(turnCtx, ts, messages, deniedMsg, toolMessagePersistOnly)
+				runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
 				continue
 			}
 		}
@@ -504,7 +474,7 @@ toolLoop:
 			},
 		)
 
-		p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, messages)
+		p.publishToolFeedbackForCall(turnCtx, ts, exec.response, tc, toolName, toolArgs, runner.messages)
 
 		toolCallID := tc.ID
 		asyncToolName := toolName
@@ -643,7 +613,7 @@ toolLoop:
 		recordFinalRenderToolCall(exec, toolCallID, toolName, verifiedWrite)
 		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
 		toolResult = deliveredResult
-		handledAttachments = append(handledAttachments, attachments...)
+		runner.handledAttachments = append(runner.handledAttachments, attachments...)
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled && !toolResult.ImmediateDelivery {
 			recordCompletionMedia(exec, p.MediaResolver, toolResult.Media)
@@ -711,8 +681,8 @@ toolLoop:
 						})
 					exec.finalContent = fatalMCPServerErrorReply(mcpServerName, toolName)
 					exec.allResponsesHandled = false
-					messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
-					exec.messages = messages
+					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
+					exec.messages = runner.messages
 					return ToolControlBreak
 				}
 				streak := ts.recentToolExecutionErrorStreak(toolName, func(rec ToolExecutionRecord) bool {
@@ -730,69 +700,20 @@ toolLoop:
 						})
 					exec.finalContent = repeatedFatalToolErrorReply(toolName)
 					exec.allResponsesHandled = false
-					messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
-					exec.messages = messages
+					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
+					exec.messages = runner.messages
 					return ToolControlBreak
 				}
 			}
 		}
-		messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
+		runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 
-		if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(steerMsgs) > 0 {
-			exec.markSteeringObserved()
-			exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
-		}
-
-		skipReason := ""
-		skipMessage := ""
-		if len(exec.pendingMessages) > 0 {
-			skipReason = "queued user steering message"
-			skipMessage = "Skipped due to queued user message."
-		} else if gracefulPending, _ := ts.gracefulInterruptRequested(); gracefulPending {
-			skipReason = "graceful interrupt requested"
-			skipMessage = "Skipped due to graceful interrupt."
-		}
-
-		if skipReason != "" {
-			remaining := len(normalizedToolCalls) - i - 1
-			if remaining > 0 {
-				logger.InfoCF("agent", "Turn checkpoint: skipping remaining tools",
-					map[string]any{
-						"agent_id":  ts.agent.ID,
-						"completed": i + 1,
-						"skipped":   remaining,
-						"reason":    skipReason,
-					})
-				messages = p.appendSkippedToolMessages(
-					turnCtx,
-					ts,
-					messages,
-					normalizedToolCalls,
-					i+1,
-					skipReason,
-					skipMessage,
-				)
-			}
+		if runner.checkpointAfterTool(i, "Turn checkpoint: skipping remaining tools", false) {
 			break toolLoop
-		}
-
-		if ts.pendingResults != nil {
-			select {
-			case result, ok := <-ts.pendingResults:
-				if ok && result != nil && result.ForLLM != "" {
-					content := p.filterPendingResultForLLM(result.ForLLM)
-					msg := subTurnResultPromptMessage(content)
-					messages = append(messages, msg)
-					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
-					}
-				}
-			default:
-			}
 		}
 	}
 
-	exec.messages = messages
+	exec.messages = runner.messages
 
 	// Continue if pending steering exists (regardless of allResponsesHandled).
 	// This covers the case where tools were partially executed and skipped due to steering,
@@ -842,7 +763,7 @@ toolLoop:
 		summaryMsg := providers.Message{
 			Role:        "assistant",
 			Content:     handledToolResponseSummary,
-			Attachments: append([]providers.Attachment(nil), handledAttachments...),
+			Attachments: append([]providers.Attachment(nil), runner.handledAttachments...),
 		}
 		if !ts.opts.NoHistory {
 			ts.agent.Sessions.AddFullMessage(ts.sessionKey, summaryMsg)
@@ -892,51 +813,93 @@ const (
 	toolMessagePersistAndIngest
 )
 
-func (p *Pipeline) appendToolMessage(
-	ctx context.Context,
-	ts *turnState,
-	messages []providers.Message,
-	msg providers.Message,
-	ingest toolMessageIngestMode,
-) []providers.Message {
-	messages = append(messages, msg)
-	if ts == nil || ts.opts.NoHistory {
-		return messages
+func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMessageIngestMode) {
+	r.messages = append(r.messages, msg)
+	if r.ts == nil || r.ts.opts.NoHistory {
+		return
 	}
-	ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
-	ts.recordPersistedMessage(msg)
-	if ingest == toolMessagePersistAndIngest && p != nil {
-		p.ingestMessage(ctx, ts, msg)
+	r.ts.agent.Sessions.AddFullMessage(r.ts.sessionKey, msg)
+	r.ts.recordPersistedMessage(msg)
+	if ingest == toolMessagePersistAndIngest && r.p != nil {
+		r.p.ingestMessage(r.turnCtx, r.ts, msg)
 	}
-	return messages
 }
 
-func (p *Pipeline) appendSkippedToolMessages(
-	ctx context.Context,
-	ts *turnState,
-	messages []providers.Message,
-	toolCalls []providers.ToolCall,
-	start int,
-	reason string,
-	content string,
-) []providers.Message {
-	for i := start; i < len(toolCalls); i++ {
-		messages = p.appendSkippedToolMessage(ctx, ts, messages, toolCalls[i], reason, content)
+func (r *toolLoopRunner) checkpointAfterTool(
+	completedIndex int,
+	skipLogMessage string,
+	markAdditionalSteering bool,
+) bool {
+	if steerMsgs := r.p.dequeueSteeringMessagesForTurn(r.ts); len(steerMsgs) > 0 {
+		if markAdditionalSteering {
+			r.exec.markAdditionalUserInputObserved()
+		} else {
+			r.exec.markSteeringObserved()
+		}
+		r.exec.pendingMessages = append(r.exec.pendingMessages, steerMsgs...)
 	}
-	return messages
+
+	skipReason := ""
+	skipMessage := ""
+	if len(r.exec.pendingMessages) > 0 {
+		skipReason = "queued user steering message"
+		skipMessage = "Skipped due to queued user message."
+	} else if gracefulPending, _ := r.ts.gracefulInterruptRequested(); gracefulPending {
+		skipReason = "graceful interrupt requested"
+		skipMessage = "Skipped due to graceful interrupt."
+	}
+
+	if skipReason != "" {
+		remaining := len(r.toolCalls) - completedIndex - 1
+		if remaining > 0 {
+			logger.InfoCF("agent", skipLogMessage,
+				map[string]any{
+					"agent_id":  r.ts.agent.ID,
+					"completed": completedIndex + 1,
+					"skipped":   remaining,
+					"reason":    skipReason,
+				})
+			r.appendSkippedToolMessages(completedIndex+1, skipReason, skipMessage)
+		}
+		return true
+	}
+
+	r.appendPendingSubTurnResult()
+	return false
 }
 
-func (p *Pipeline) appendSkippedToolMessage(
-	ctx context.Context,
-	ts *turnState,
-	messages []providers.Message,
+func (r *toolLoopRunner) appendPendingSubTurnResult() {
+	if r.ts.pendingResults == nil {
+		return
+	}
+	select {
+	case result, ok := <-r.ts.pendingResults:
+		if ok && result != nil && result.ForLLM != "" {
+			content := r.p.filterPendingResultForLLM(result.ForLLM)
+			msg := subTurnResultPromptMessage(content)
+			r.messages = append(r.messages, msg)
+			if !r.ts.opts.NoHistory {
+				r.ts.agent.Sessions.AddFullMessage(r.ts.sessionKey, msg)
+			}
+		}
+	default:
+	}
+}
+
+func (r *toolLoopRunner) appendSkippedToolMessages(start int, reason string, content string) {
+	for i := start; i < len(r.toolCalls); i++ {
+		r.appendSkippedToolMessage(r.toolCalls[i], reason, content)
+	}
+}
+
+func (r *toolLoopRunner) appendSkippedToolMessage(
 	skippedTC providers.ToolCall,
 	reason string,
 	content string,
-) []providers.Message {
-	p.emitEvent(
+) {
+	r.p.emitEvent(
 		runtimeevents.KindAgentToolExecSkipped,
-		ts.eventMeta("runTurn", "turn.tool.skipped"),
+		r.ts.eventMeta("runTurn", "turn.tool.skipped"),
 		ToolExecSkippedPayload{
 			Tool:   skippedTC.Name,
 			Reason: reason,
@@ -947,5 +910,5 @@ func (p *Pipeline) appendSkippedToolMessage(
 		Content:    content,
 		ToolCallID: skippedTC.ID,
 	}
-	return p.appendToolMessage(ctx, ts, messages, skippedMsg, toolMessagePersistOnly)
+	r.appendToolMessage(skippedMsg, toolMessagePersistOnly)
 }
