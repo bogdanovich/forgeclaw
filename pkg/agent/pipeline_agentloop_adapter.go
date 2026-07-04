@@ -11,6 +11,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		LLMRetry:             newConfigLLMRetryPolicy(cfg),
 		MediaLimits:          newConfigMediaLimitsProvider(cfg),
 		FinalTurnRender:      newConfigFinalTurnRenderPolicy(cfg),
+		ModelResolution:      newConfigPipelineModelResolution(cfg),
 		ContextRuntime:       al.contextManager,
 		BackgroundCompaction: al.backgroundCompactionRunner(),
 		Events:               al.runtimeEventEmitter(),

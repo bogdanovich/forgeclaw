@@ -197,12 +197,10 @@ func (p *Pipeline) CallLLM(
 					}
 					callOpts := shallowCloneLLMOptions(exec.llmOpts)
 					delete(callOpts, "thinking_level")
-					candidateCfg := resolveActiveModelConfig(
-						p.Cfg,
+					candidateCfg := p.activeModelConfig(
 						ts.agent.Workspace,
 						[]providers.FallbackCandidate{candidate},
 						candidate.Model,
-						p.Cfg.Agents.Defaults.Provider,
 					)
 					candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
 					applyThinkingOption(
@@ -767,24 +765,15 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 				"error":    err.Error(),
 			},
 		)
-		defaultProvider := "openai"
-		if p.Cfg != nil {
-			if provider := strings.TrimSpace(p.Cfg.Agents.Defaults.Provider); provider != "" {
-				defaultProvider = provider
-			}
-		}
-		defaultProvider = effectiveDefaultProvider(defaultProvider)
-		candidates := resolveModelCandidates(p.Cfg, defaultProvider, rawModel, nil)
+		candidates := p.modelCandidates(rawModel, nil)
 		exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), candidates...)
 		exec.model.activeCandidates = candidates
 		exec.model.activeModel = resolvedCandidateModel(candidates, rawModel)
 		exec.llmModel = exec.model.activeModel
-		exec.model.activeModelConfig = resolveActiveModelConfig(
-			p.Cfg,
+		exec.model.activeModelConfig = p.activeModelConfig(
 			ts.agent.Workspace,
 			candidates,
 			rawModel,
-			defaultProvider,
 		)
 		exec.model.llmModelName = resolvedCandidateModelName(candidates, rawModel)
 		exec.model.autoFallback = false
@@ -799,12 +788,10 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 	exec.model.activeCandidates = execution.Candidates
 	exec.model.activeModel = resolvedCandidateModel(execution.Candidates, rawModel)
 	exec.llmModel = exec.model.activeModel
-	exec.model.activeModelConfig = resolveActiveModelConfig(
-		p.Cfg,
+	exec.model.activeModelConfig = p.activeModelConfig(
 		ts.agent.Workspace,
 		execution.Candidates,
 		rawModel,
-		effectiveDefaultProvider(p.Cfg.Agents.Defaults.Provider),
 	)
 	exec.model.activeProvider = execution.Provider
 	exec.model.candidateProviders = execution.CandidateProviders
