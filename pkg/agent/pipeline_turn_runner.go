@@ -62,7 +62,7 @@ func (p *Pipeline) runTurnLoop(
 			}
 		}
 
-		// Check if parent turn has ended (SubTurn support from HEAD)
+		// Check if parent turn has ended.
 		if ts.parentTurnState != nil && ts.IsParentEnded() {
 			if !ts.critical {
 				logger.InfoCF(
@@ -87,7 +87,7 @@ func (p *Pipeline) runTurnLoop(
 			)
 		}
 
-		// Poll for pending SubTurn results (from HEAD)
+		// Poll for pending SubTurn results.
 		if ts.pendingResults != nil {
 			select {
 			case result, ok := <-ts.pendingResults:
@@ -246,7 +246,7 @@ func (p *Pipeline) runTurnLoop(
 				}
 				// ExecuteTools returned ControlBreak:
 				// - allResponsesHandled=true: finalize without DefaultResponse (exec.finalContent empty)
-				// - allResponsesHandled=false: coordinator applies DefaultResponse before finalize
+				// - allResponsesHandled=false: finalize with exec.finalContent when present
 				if strings.TrimSpace(exec.finalContent) != "" {
 					finalContent = exec.finalContent
 				}

@@ -33,18 +33,18 @@ const (
 )
 
 // =============================================================================
-// Control signals - returned from Pipeline methods to drive runTurn's coordinator loop
+// Control signals returned from Pipeline methods to drive the turn runner.
 // =============================================================================
 
 type Control int
 
 const (
-	// ControlContinue tells the coordinator to jump back to the top of the turn loop
+	// ControlContinue tells the runner to jump back to the top of the turn loop
 	// (equivalent to the original "goto turnLoop").
 	ControlContinue Control = iota
-	// ControlBreak tells the coordinator to exit the turn loop and proceed to Finalize.
+	// ControlBreak tells the runner to exit the turn loop and proceed to Finalize.
 	ControlBreak
-	// ControlToolLoop tells the coordinator to execute the tool loop.
+	// ControlToolLoop tells the runner to execute the tool loop.
 	ControlToolLoop
 )
 
@@ -55,9 +55,9 @@ const (
 	// ToolControlContinue tells the tool loop to jump to the next iteration
 	// (pendingMessages arrived, SubTurn results, etc.).
 	ToolControlContinue ToolControl = iota
-	// ToolControlBreak tells the tool loop to exit and return to the coordinator.
+	// ToolControlBreak tells the tool loop to exit and return to the runner.
 	ToolControlBreak
-	// ToolControlFinalize tells the coordinator that all tool responses were
+	// ToolControlFinalize tells the runner that all tool responses were
 	// handled and the turn should finalize without another LLM call.
 	ToolControlFinalize
 )
@@ -159,7 +159,7 @@ type turnExecution struct {
 	// again or it can race with continuation-level cleanup.
 	initialSteeringSpoolIDs map[string]struct{}
 
-	// Abort signaling for coordinator (set by Pipeline methods)
+	// Abort signaling for the turn runner, set by Pipeline methods.
 	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
 	abortedByHook      bool // true when HookActionAbortTurn triggered
 }
@@ -289,7 +289,7 @@ type turnState struct {
 	persistedMessages   []providers.Message
 	acceptedSteering    []providers.Message
 
-	// SubTurn support (from HEAD)
+	// SubTurn support.
 	depth                int                    // SubTurn depth (0 for root turn)
 	parentTurnID         string                 // Parent turn ID (empty for root turn)
 	childTurnIDs         []string               // Child turn IDs
