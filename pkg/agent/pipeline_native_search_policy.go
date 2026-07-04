@@ -37,8 +37,8 @@ func (p *Pipeline) nativeSearchEnabled(
 	if p == nil {
 		return false
 	}
-	if p.NativeSearch == nil {
+	if p.Config.NativeSearch == nil {
 		return newConfigNativeSearchPolicy(p.Cfg).useNativeSearch(profile, provider)
 	}
-	return p.NativeSearch.useNativeSearch(profile, provider)
+	return p.Config.NativeSearch.useNativeSearch(profile, provider)
 }

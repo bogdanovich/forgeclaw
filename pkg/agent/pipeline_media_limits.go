@@ -23,8 +23,8 @@ func (p *Pipeline) maxMediaSize() int {
 	if p == nil {
 		return config.DefaultMaxMediaSize
 	}
-	if p.MediaLimits == nil {
+	if p.Config.MediaLimits == nil {
 		return newConfigMediaLimitsProvider(p.Cfg).maxMediaSize()
 	}
-	return p.MediaLimits.maxMediaSize()
+	return p.Config.MediaLimits.maxMediaSize()
 }

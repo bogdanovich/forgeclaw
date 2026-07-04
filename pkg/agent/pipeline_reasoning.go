@@ -9,20 +9,26 @@ import (
 )
 
 func (p *Pipeline) targetReasoningChannelID(channelName string) string {
-	if p == nil || p.Reasoning == nil {
+	if p == nil || p.Interaction.Reasoning == nil {
 		return ""
 	}
-	return p.Reasoning.targetReasoningChannelID(channelName)
+	return p.Interaction.Reasoning.targetReasoningChannelID(channelName)
 }
 
 func (p *Pipeline) publishPicoReasoning(
 	ctx context.Context,
 	reasoningContent, chatID, sessionKey, modelName string,
 ) {
-	if p == nil || p.Reasoning == nil {
+	if p == nil || p.Interaction.Reasoning == nil {
 		return
 	}
-	p.Reasoning.publishPicoReasoning(ctx, reasoningContent, chatID, sessionKey, modelName)
+	p.Interaction.Reasoning.publishPicoReasoning(
+		ctx,
+		reasoningContent,
+		chatID,
+		sessionKey,
+		modelName,
+	)
 }
 
 func (p *Pipeline) publishPicoToolCallInterim(
@@ -33,18 +39,25 @@ func (p *Pipeline) publishPicoToolCallInterim(
 	content string,
 	toolCalls []providers.ToolCall,
 ) {
-	if p == nil || p.Reasoning == nil {
+	if p == nil || p.Interaction.Reasoning == nil {
 		return
 	}
-	p.Reasoning.publishPicoToolCallInterim(ctx, ts, modelName, reasoningContent, content, toolCalls)
+	p.Interaction.Reasoning.publishPicoToolCallInterim(
+		ctx,
+		ts,
+		modelName,
+		reasoningContent,
+		content,
+		toolCalls,
+	)
 }
 
 func (p *Pipeline) handleReasoning(
 	ctx context.Context,
 	reasoningContent, channelName, channelID string,
 ) {
-	if p == nil || p.Reasoning == nil {
+	if p == nil || p.Interaction.Reasoning == nil {
 		return
 	}
-	p.Reasoning.handleReasoning(ctx, reasoningContent, channelName, channelID)
+	p.Interaction.Reasoning.handleReasoning(ctx, reasoningContent, channelName, channelID)
 }

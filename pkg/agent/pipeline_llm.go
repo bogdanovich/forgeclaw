@@ -32,20 +32,27 @@ func (p *Pipeline) CallLLM(
 
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
 	if iteration > 1 {
-		exec.messages = resolveMediaRefs(exec.messages, p.MediaResolver, maxMediaSize)
-		usedVisionOverride, err := p.ModelExecution.maybeApplyVisionExecutionState(ts.agent, exec)
+		exec.messages = resolveMediaRefs(exec.messages, p.Context.MediaResolver, maxMediaSize)
+		usedVisionOverride, err := p.Context.ModelExecution.maybeApplyVisionExecutionState(
+			ts.agent,
+			exec,
+		)
 		if err != nil {
 			return ControlBreak, err
 		}
 		if usedVisionOverride {
-			logger.InfoCF("agent", "Switched turn to vision override model after media resolution", map[string]any{
-				"agent_id":         ts.agent.ID,
-				"iteration":        iteration,
-				"vision_model":     exec.model.activeModel,
-				"vision_route":     exec.model.visionRoute,
-				"messages_count":   len(exec.messages),
-				"active_candidate": len(exec.model.activeCandidates),
-			})
+			logger.InfoCF(
+				"agent",
+				"Switched turn to vision override model after media resolution",
+				map[string]any{
+					"agent_id":         ts.agent.ID,
+					"iteration":        iteration,
+					"vision_model":     exec.model.activeModel,
+					"vision_route":     exec.model.visionRoute,
+					"messages_count":   len(exec.messages),
+					"active_candidate": len(exec.model.activeCandidates),
+				},
+			)
 		}
 	}
 
@@ -90,8 +97,8 @@ func (p *Pipeline) CallLLM(
 	exec.llmModel = exec.model.activeModel
 
 	// BeforeLLM hook
-	if p.Hooks != nil {
-		llmReq, decision := p.Hooks.BeforeLLM(turnCtx, &LLMHookRequest{
+	if p.Interaction.Hooks != nil {
+		llmReq, decision := p.Interaction.Hooks.BeforeLLM(turnCtx, &LLMHookRequest{
 			Meta:             ts.eventMeta("runTurn", "turn.llm.request"),
 			Context:          cloneTurnContext(ts.turnCtx),
 			Model:            exec.llmModel,
@@ -181,8 +188,8 @@ func (p *Pipeline) CallLLM(
 			return response, streamErr
 		}
 
-		if len(exec.model.activeCandidates) > 1 && p.Fallback != nil {
-			fbResult, fbErr := p.Fallback.ExecuteCandidate(
+		if len(exec.model.activeCandidates) > 1 && p.Interaction.Fallback != nil {
+			fbResult, fbErr := p.Interaction.Fallback.ExecuteCandidate(
 				providerCtx,
 				exec.model.activeCandidates,
 				func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {
@@ -385,7 +392,7 @@ func (p *Pipeline) CallLLM(
 			)
 
 			if retry == 0 && !constants.IsInternalChannel(ts.channel) {
-				p.Bus.PublishOutbound(ctx, outboundMessageForTurn(
+				p.Runtime.Bus.PublishOutbound(ctx, outboundMessageForTurn(
 					ts,
 					"Context window exceeded. Compressing history and retrying...",
 				))
@@ -409,7 +416,7 @@ func (p *Pipeline) CallLLM(
 				reserveTokens,
 			)
 			compactCtx, compactCancel := context.WithTimeout(ctx, contextOverflowCompactTimeout)
-			if compactErr := p.ContextRuntime.Compact(compactCtx, &CompactRequest{
+			if compactErr := p.Context.Runtime.Compact(compactCtx, &CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonRetry,
 				Budget:     compactBudget,
@@ -422,7 +429,7 @@ func (p *Pipeline) CallLLM(
 			}
 			compactCancel()
 			ts.refreshRestorePointFromSession(ts.agent)
-			if asmResp, asmErr := p.ContextRuntime.Assemble(ctx, &AssembleRequest{
+			if asmResp, asmErr := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
 				SessionKey:    ts.sessionKey,
 				Budget:        ts.agent.ContextWindow,
 				MaxTokens:     ts.agent.MaxTokens,
@@ -530,8 +537,8 @@ func (p *Pipeline) CallLLM(
 	}
 
 	// AfterLLM hook
-	if p.Hooks != nil {
-		llmResp, decision := p.Hooks.AfterLLM(turnCtx, &LLMHookResponse{
+	if p.Interaction.Hooks != nil {
+		llmResp, decision := p.Interaction.Hooks.AfterLLM(turnCtx, &LLMHookResponse{
 			Meta:     ts.eventMeta("runTurn", "turn.llm.response"),
 			Context:  cloneTurnContext(ts.turnCtx),
 			Model:    exec.llmModel,
@@ -752,7 +759,11 @@ func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution
 		return
 	}
 
-	execution, cleanup, err := p.ModelExecution.buildExecutionStateForModel(ts.agent, rawModel, nil)
+	execution, cleanup, err := p.Context.ModelExecution.buildExecutionStateForModel(
+		ts.agent,
+		rawModel,
+		nil,
+	)
 	if err != nil {
 		logger.WarnCF(
 			"agent",

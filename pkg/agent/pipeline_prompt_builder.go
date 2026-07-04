@@ -40,9 +40,16 @@ func (p *Pipeline) buildTurnMessages(
 	if p == nil {
 		return nil
 	}
-	if p.PromptBuilder == nil {
+	if p.Config.PromptBuilder == nil {
 		return newConfigPipelinePromptBuilder(p.Cfg).
 			buildTurnMessages(ts, history, summary, currentMessage, media, activeSkills)
 	}
-	return p.PromptBuilder.buildTurnMessages(ts, history, summary, currentMessage, media, activeSkills)
+	return p.Config.PromptBuilder.buildTurnMessages(
+		ts,
+		history,
+		summary,
+		currentMessage,
+		media,
+		activeSkills,
+	)
 }

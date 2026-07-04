@@ -156,7 +156,9 @@ type testChannelStreamingProvider struct {
 	present bool
 }
 
-func (p *testChannelStreamingProvider) channelStreamingConfig(string) (config.StreamingConfig, bool) {
+func (p *testChannelStreamingProvider) channelStreamingConfig(
+	string,
+) (config.StreamingConfig, bool) {
 	p.called = true
 	return p.config, p.present
 }
@@ -381,10 +383,17 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := newConfiguredStreamingTestConfig(t, tt.channelStreaming, tt.modelStreaming, tt.fallbacks)
+			cfg := newConfiguredStreamingTestConfig(
+				t,
+				tt.channelStreaming,
+				tt.modelStreaming,
+				tt.fallbacks,
+			)
 			msgBus := bus.NewMessageBus()
 			if tt.streamDelegate {
-				msgBus.SetStreamDelegate(configuredStreamingDelegate{streamer: &recordingStreamer{}})
+				msgBus.SetStreamDelegate(
+					configuredStreamingDelegate{streamer: &recordingStreamer{}},
+				)
 			}
 
 			if tt.streamingProvider {
@@ -392,7 +401,11 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 				al := NewAgentLoop(cfg, msgBus, provider)
 				runConfiguredStreamingTurn(t, al, tt.channel)
 				if provider.streamCalls != tt.wantStreamCalls {
-					t.Fatalf("ChatStream calls = %d, want %d", provider.streamCalls, tt.wantStreamCalls)
+					t.Fatalf(
+						"ChatStream calls = %d, want %d",
+						provider.streamCalls,
+						tt.wantStreamCalls,
+					)
 				}
 				if provider.chatCalls != tt.wantChatCalls {
 					t.Fatalf("Chat calls = %d, want %d", provider.chatCalls, tt.wantChatCalls)
@@ -416,8 +429,8 @@ func TestPipelineChannelStreamingConfig_UsesInjectedProvider(t *testing.T) {
 		present: true,
 	}
 	pipeline := &Pipeline{
-		Cfg:              newConfiguredStreamingTestConfig(t, false, true, nil),
-		ChannelStreaming: provider,
+		Cfg:    newConfiguredStreamingTestConfig(t, false, true, nil),
+		Config: PipelineConfigServices{ChannelStreaming: provider},
 	}
 
 	got, ok := pipeline.channelStreamingConfig("pico")
@@ -452,65 +465,80 @@ func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *test
 
 	pipeline := NewPipeline(al)
 
-	channelStreaming, ok := pipeline.ChannelStreaming.(configChannelStreamingProvider)
+	channelStreaming, ok := pipeline.Config.ChannelStreaming.(configChannelStreamingProvider)
 	if !ok {
-		t.Fatalf("ChannelStreaming = %T, want configChannelStreamingProvider", pipeline.ChannelStreaming)
+		t.Fatalf(
+			"ChannelStreaming = %T, want configChannelStreamingProvider",
+			pipeline.Config.ChannelStreaming,
+		)
 	}
 	if channelStreaming.cfg != pipeline.Cfg {
 		t.Fatal("ChannelStreaming config does not match pipeline config snapshot")
 	}
 
-	toolFilter, ok := pipeline.ToolContentFilter.(configToolContentFilter)
+	toolFilter, ok := pipeline.Config.ToolContentFilter.(configToolContentFilter)
 	if !ok {
-		t.Fatalf("ToolContentFilter = %T, want configToolContentFilter", pipeline.ToolContentFilter)
+		t.Fatalf(
+			"ToolContentFilter = %T, want configToolContentFilter",
+			pipeline.Config.ToolContentFilter,
+		)
 	}
 	if toolFilter.cfg != pipeline.Cfg {
 		t.Fatal("ToolContentFilter config does not match pipeline config snapshot")
 	}
 
-	nativeSearch, ok := pipeline.NativeSearch.(configNativeSearchPolicy)
+	nativeSearch, ok := pipeline.Config.NativeSearch.(configNativeSearchPolicy)
 	if !ok {
-		t.Fatalf("NativeSearch = %T, want configNativeSearchPolicy", pipeline.NativeSearch)
+		t.Fatalf("NativeSearch = %T, want configNativeSearchPolicy", pipeline.Config.NativeSearch)
 	}
 	if nativeSearch.cfg != pipeline.Cfg {
 		t.Fatal("NativeSearch config does not match pipeline config snapshot")
 	}
 
-	llmRetry, ok := pipeline.LLMRetry.(configLLMRetryPolicy)
+	llmRetry, ok := pipeline.Config.LLMRetry.(configLLMRetryPolicy)
 	if !ok {
-		t.Fatalf("LLMRetry = %T, want configLLMRetryPolicy", pipeline.LLMRetry)
+		t.Fatalf("LLMRetry = %T, want configLLMRetryPolicy", pipeline.Config.LLMRetry)
 	}
 	if llmRetry.cfg != pipeline.Cfg {
 		t.Fatal("LLMRetry config does not match pipeline config snapshot")
 	}
 
-	mediaLimits, ok := pipeline.MediaLimits.(configMediaLimitsProvider)
+	mediaLimits, ok := pipeline.Config.MediaLimits.(configMediaLimitsProvider)
 	if !ok {
-		t.Fatalf("MediaLimits = %T, want configMediaLimitsProvider", pipeline.MediaLimits)
+		t.Fatalf("MediaLimits = %T, want configMediaLimitsProvider", pipeline.Config.MediaLimits)
 	}
 	if mediaLimits.cfg != pipeline.Cfg {
 		t.Fatal("MediaLimits config does not match pipeline config snapshot")
 	}
 
-	finalTurnRender, ok := pipeline.FinalTurnRender.(configFinalTurnRenderPolicy)
+	finalTurnRender, ok := pipeline.Config.FinalTurnRender.(configFinalTurnRenderPolicy)
 	if !ok {
-		t.Fatalf("FinalTurnRender = %T, want configFinalTurnRenderPolicy", pipeline.FinalTurnRender)
+		t.Fatalf(
+			"FinalTurnRender = %T, want configFinalTurnRenderPolicy",
+			pipeline.Config.FinalTurnRender,
+		)
 	}
 	if finalTurnRender.cfg != pipeline.Cfg {
 		t.Fatal("FinalTurnRender config does not match pipeline config snapshot")
 	}
 
-	modelResolution, ok := pipeline.ModelResolution.(configPipelineModelResolution)
+	modelResolution, ok := pipeline.Config.ModelResolution.(configPipelineModelResolution)
 	if !ok {
-		t.Fatalf("ModelResolution = %T, want configPipelineModelResolution", pipeline.ModelResolution)
+		t.Fatalf(
+			"ModelResolution = %T, want configPipelineModelResolution",
+			pipeline.Config.ModelResolution,
+		)
 	}
 	if modelResolution.cfg != pipeline.Cfg {
 		t.Fatal("ModelResolution config does not match pipeline config snapshot")
 	}
 
-	promptBuilder, ok := pipeline.PromptBuilder.(configPipelinePromptBuilder)
+	promptBuilder, ok := pipeline.Config.PromptBuilder.(configPipelinePromptBuilder)
 	if !ok {
-		t.Fatalf("PromptBuilder = %T, want configPipelinePromptBuilder", pipeline.PromptBuilder)
+		t.Fatalf(
+			"PromptBuilder = %T, want configPipelinePromptBuilder",
+			pipeline.Config.PromptBuilder,
+		)
 	}
 	if promptBuilder.cfg != pipeline.Cfg {
 		t.Fatal("PromptBuilder config does not match pipeline config snapshot")
@@ -535,12 +563,19 @@ func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {
 		t.Fatalf("response = %q, want chat fallback response", got)
 	}
 	if provider.streamCalls != 1 || provider.chatCalls != 1 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:1", provider.streamCalls, provider.chatCalls)
+		t.Fatalf(
+			"calls = stream:%d chat:%d, want stream:1 chat:1",
+			provider.streamCalls,
+			provider.chatCalls,
+		)
 	}
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		if outbound.Content != "chat after stream failure" {
-			t.Fatalf("fallback outbound content = %q, want chat after stream failure", outbound.Content)
+			t.Fatalf(
+				"fallback outbound content = %q, want chat after stream failure",
+				outbound.Content,
+			)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected fallback outbound after pre-chunk stream failure")
@@ -572,10 +607,18 @@ func TestConfiguredStreamingDisabledForInternalTurnWithoutUserVisibleOutput(t *t
 		t.Fatalf("response = %q, want chat response", got)
 	}
 	if provider.streamCalls != 0 || provider.chatCalls != 1 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:0 chat:1", provider.streamCalls, provider.chatCalls)
+		t.Fatalf(
+			"calls = stream:%d chat:%d, want stream:0 chat:1",
+			provider.streamCalls,
+			provider.chatCalls,
+		)
 	}
 	if len(streamer.updates) != 0 || len(streamer.finalized) != 0 {
-		t.Fatalf("streamer updates=%v finalized=%v, want no streaming output", streamer.updates, streamer.finalized)
+		t.Fatalf(
+			"streamer updates=%v finalized=%v, want no streaming output",
+			streamer.updates,
+			streamer.finalized,
+		)
 	}
 }
 
@@ -673,10 +716,16 @@ func TestConfiguredStreamingSuppressesPicoReasoningWhenThinkingOff(t *testing.T)
 		t.Fatalf("response = %q, want answer", got)
 	}
 	if len(streamer.reasoningUpdates) != 0 {
-		t.Fatalf("reasoning updates = %v, want none when thinking is off", streamer.reasoningUpdates)
+		t.Fatalf(
+			"reasoning updates = %v, want none when thinking is off",
+			streamer.reasoningUpdates,
+		)
 	}
 	if len(streamer.reasoningFinalized) != 0 {
-		t.Fatalf("reasoning finalized = %v, want none when thinking is off", streamer.reasoningFinalized)
+		t.Fatalf(
+			"reasoning finalized = %v, want none when thinking is off",
+			streamer.reasoningFinalized,
+		)
 	}
 	if len(streamer.updates) != 1 || streamer.updates[0] != "answer" {
 		t.Fatalf("content updates = %v, want [answer]", streamer.updates)
@@ -688,7 +737,9 @@ func TestConfiguredStreamingSuppressesPicoReasoningWhenThinkingOff(t *testing.T)
 	}
 }
 
-func TestConfiguredStreamingFinalFlushFailureAfterVisibleOutputReturnsErrorWithoutFallbackOrCancel(t *testing.T) {
+func TestConfiguredStreamingFinalFlushFailureAfterVisibleOutputReturnsErrorWithoutFallbackOrCancel(
+	t *testing.T,
+) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	streamer := &failingFinalizeStreamer{err: errors.New("final failed")}
 	msgBus := bus.NewMessageBus()
@@ -715,7 +766,10 @@ func TestConfiguredStreamingFinalFlushFailureAfterVisibleOutputReturnsErrorWitho
 	default:
 	}
 	if streamer.canceled != 0 {
-		t.Fatalf("streamer canceled = %d, want 0 for already-visible final flush failure", streamer.canceled)
+		t.Fatalf(
+			"streamer canceled = %d, want 0 for already-visible final flush failure",
+			streamer.canceled,
+		)
 	}
 }
 
@@ -806,7 +860,11 @@ func TestConfiguredStreamingUpdateFailureThenStreamErrorFallsBackToChat(t *testi
 		t.Fatalf("response = %q, want chat fallback", got)
 	}
 	if provider.streamCalls != 1 || provider.chatCalls != 1 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:1", provider.streamCalls, provider.chatCalls)
+		t.Fatalf(
+			"calls = stream:%d chat:%d, want stream:1 chat:1",
+			provider.streamCalls,
+			provider.chatCalls,
+		)
 	}
 	if streamer.canceled != 1 {
 		t.Fatalf("streamer canceled = %d, want 1", streamer.canceled)
@@ -814,7 +872,10 @@ func TestConfiguredStreamingUpdateFailureThenStreamErrorFallsBackToChat(t *testi
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		if outbound.Content != "chat fallback after invisible update" {
-			t.Fatalf("fallback outbound content = %q, want chat fallback after invisible update", outbound.Content)
+			t.Fatalf(
+				"fallback outbound content = %q, want chat fallback after invisible update",
+				outbound.Content,
+			)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected fallback outbound after update failure and stream error")
@@ -841,7 +902,11 @@ func TestConfiguredStreamingUpdateFailureThenStreamSuccessFallsBackToChat(t *tes
 		t.Fatalf("response = %q, want chat fallback", got)
 	}
 	if provider.streamCalls != 1 || provider.chatCalls != 1 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:1", provider.streamCalls, provider.chatCalls)
+		t.Fatalf(
+			"calls = stream:%d chat:%d, want stream:1 chat:1",
+			provider.streamCalls,
+			provider.chatCalls,
+		)
 	}
 	if len(streamer.finalized) != 0 {
 		t.Fatalf("stream finalized = %v, want none", streamer.finalized)
@@ -849,7 +914,10 @@ func TestConfiguredStreamingUpdateFailureThenStreamSuccessFallsBackToChat(t *tes
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		if outbound.Content != "chat fallback after invisible update" {
-			t.Fatalf("fallback outbound content = %q, want chat fallback after invisible update", outbound.Content)
+			t.Fatalf(
+				"fallback outbound content = %q, want chat fallback after invisible update",
+				outbound.Content,
+			)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected fallback outbound after update failure and stream success")
@@ -879,7 +947,11 @@ func TestConfiguredStreamingLaterUpdateFailureThenStreamSuccessReturnsVisibleErr
 		t.Fatal("expected post-visible update failure to return an error")
 	}
 	if provider.streamCalls != 1 || provider.chatCalls != 0 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:0", provider.streamCalls, provider.chatCalls)
+		t.Fatalf(
+			"calls = stream:%d chat:%d, want stream:1 chat:0",
+			provider.streamCalls,
+			provider.chatCalls,
+		)
 	}
 	if streamer.canceled != 0 {
 		t.Fatalf("streamer canceled = %d, want 0", streamer.canceled)
@@ -955,7 +1027,11 @@ func TestConfiguredStreamingBeforeLLMModelRewriteReevaluatesModelStreaming(t *te
 				t.Fatalf("Chat calls = %d, want %d", provider.chatCalls, tt.wantChatCalls)
 			}
 			if len(streamer.finalized) != tt.wantFinalizedResponses {
-				t.Fatalf("stream finalized = %v, want %d responses", streamer.finalized, tt.wantFinalizedResponses)
+				t.Fatalf(
+					"stream finalized = %v, want %d responses",
+					streamer.finalized,
+					tt.wantFinalizedResponses,
+				)
 			}
 			if tt.wantChatCalls == 1 && got != "chat response" {
 				t.Fatalf("response = %q, want chat response", got)
@@ -968,7 +1044,8 @@ func TestConfiguredStreamingBeforeLLMModelRewriteReevaluatesModelStreaming(t *te
 				(len(provider.streamModels) != 1 || provider.streamModels[0] != wantResolvedModel) {
 				t.Fatalf("stream models = %v, want [%s]", provider.streamModels, wantResolvedModel)
 			}
-			if tt.wantChatCalls == 1 && (len(provider.chatModels) != 1 || provider.chatModels[0] != wantResolvedModel) {
+			if tt.wantChatCalls == 1 &&
+				(len(provider.chatModels) != 1 || provider.chatModels[0] != wantResolvedModel) {
 				t.Fatalf("chat models = %v, want [%s]", provider.chatModels, wantResolvedModel)
 			}
 		})
@@ -997,13 +1074,20 @@ func TestConfiguredStreamingPostChunkFailureDoesNotFallBackToChat(t *testing.T) 
 		t.Fatal("expected post-chunk stream failure to return an error")
 	}
 	if provider.streamCalls != 1 || provider.chatCalls != 0 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:0", provider.streamCalls, provider.chatCalls)
+		t.Fatalf(
+			"calls = stream:%d chat:%d, want stream:1 chat:0",
+			provider.streamCalls,
+			provider.chatCalls,
+		)
 	}
 	if len(streamer.updates) != 1 || streamer.updates[0] != "partial" {
 		t.Fatalf("stream updates = %v, want [partial]", streamer.updates)
 	}
 	if streamer.canceled != 0 {
-		t.Fatalf("streamer canceled = %d, want 0 for already-visible stream failure", streamer.canceled)
+		t.Fatalf(
+			"streamer canceled = %d, want 0 for already-visible stream failure",
+			streamer.canceled,
+		)
 	}
 }
 
@@ -1030,7 +1114,11 @@ func TestConfiguredStreamingPostChunkEOFDoesNotRetryOrCancelVisibleOutput(t *tes
 		t.Fatal("expected post-chunk EOF to return an error")
 	}
 	if provider.streamCalls != 1 || provider.chatCalls != 0 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:0", provider.streamCalls, provider.chatCalls)
+		t.Fatalf(
+			"calls = stream:%d chat:%d, want stream:1 chat:0",
+			provider.streamCalls,
+			provider.chatCalls,
+		)
 	}
 	if len(streamer.updates) != 1 || streamer.updates[0] != "partial" {
 		t.Fatalf("stream updates = %v, want [partial]", streamer.updates)
@@ -1175,7 +1263,10 @@ func TestConfiguredStreamingToolCallsUseCompleteStreamResponse(t *testing.T) {
 		t.Fatalf("Chat calls = %d, want 0", provider.chatCalls)
 	}
 	if streamer.canceled != 1 {
-		t.Fatalf("streamer canceled = %d, want 1 for non-final tool-call response", streamer.canceled)
+		t.Fatalf(
+			"streamer canceled = %d, want 1 for non-final tool-call response",
+			streamer.canceled,
+		)
 	}
 	if len(streamer.finalized) != 1 || streamer.finalized[0] != "tool call handled" {
 		t.Fatalf("stream finalized = %v, want [tool call handled]", streamer.finalized)
@@ -1224,10 +1315,17 @@ func TestConfiguredStreamingFinalTurnDoesNotReuseStaleUsageFromEarlierIteration(
 		t.Fatalf("response = %q, want final answer without usage", got)
 	}
 	if streamer.usageCalls != 0 {
-		t.Fatalf("SetTurnUsage calls = %d, want 0 when final streamed response has nil usage", streamer.usageCalls)
+		t.Fatalf(
+			"SetTurnUsage calls = %d, want 0 when final streamed response has nil usage",
+			streamer.usageCalls,
+		)
 	}
 	if streamer.inputTokens != 0 || streamer.outputTokens != 0 {
-		t.Fatalf("streamed usage = (%d, %d), want (0, 0)", streamer.inputTokens, streamer.outputTokens)
+		t.Fatalf(
+			"streamed usage = (%d, %d), want (0, 0)",
+			streamer.inputTokens,
+			streamer.outputTokens,
+		)
 	}
 	if len(streamer.finalized) != 1 || streamer.finalized[0] != "final answer without usage" {
 		t.Fatalf("stream finalized = %v, want [final answer without usage]", streamer.finalized)

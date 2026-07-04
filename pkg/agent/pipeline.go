@@ -17,58 +17,55 @@ import (
 // It is constructed by runTurn via NewPipeline and passed to sub-methods
 // so that the coordinator can delegate phase execution.
 type Pipeline struct {
-	Bus                  pipelineBus
-	Cfg                  *config.Config
-	ChannelStreaming     channelStreamingConfigProvider
-	NativeSearch         nativeSearchPolicy
-	LLMRetry             llmRetryPolicy
-	MediaLimits          mediaLimitsProvider
-	FinalTurnRender      finalTurnRenderPolicy
-	ModelResolution      pipelineModelResolution
-	PromptBuilder        pipelinePromptBuilder
-	ContextRuntime       pipelineContextRuntime
-	BackgroundCompaction backgroundCompactionScheduler
-	Events               runtimeEventEmitter
-	ActiveRequests       activeRequestTracker
-	ModelExecution       modelExecutionResolver
-	Steering             steeringDequeuer
-	Reasoning            reasoningPublisher
-	ToolFeedback         toolFeedbackManager
-	ToolContentFilter    toolContentFilter
-	SyncToolDelivery     syncToolResultDeliveryManager
-	ToolDelivery         toolDeliveryManager
-	TurnControl          turnController
-	Hooks                hookInterceptor
-	Fallback             fallbackExecutor
-	MediaResolver        mediaResolver
+	Cfg         *config.Config
+	Runtime     PipelineRuntimeServices
+	Config      PipelineConfigServices
+	Context     PipelineContextServices
+	Interaction PipelineInteractionServices
 }
 
 // PipelineDependencies is the explicit dependency set required by Pipeline.
 type PipelineDependencies struct {
-	Bus                  pipelineBus
-	Cfg                  *config.Config
-	ChannelStreaming     channelStreamingConfigProvider
-	NativeSearch         nativeSearchPolicy
-	LLMRetry             llmRetryPolicy
-	MediaLimits          mediaLimitsProvider
-	FinalTurnRender      finalTurnRenderPolicy
-	ModelResolution      pipelineModelResolution
-	PromptBuilder        pipelinePromptBuilder
-	ContextRuntime       pipelineContextRuntime
+	Cfg         *config.Config
+	Runtime     PipelineRuntimeServices
+	Config      PipelineConfigServices
+	Context     PipelineContextServices
+	Interaction PipelineInteractionServices
+}
+
+type PipelineRuntimeServices struct {
+	Bus            pipelineBus
+	Events         runtimeEventEmitter
+	ActiveRequests activeRequestTracker
+	TurnControl    turnController
+}
+
+type PipelineConfigServices struct {
+	ChannelStreaming  channelStreamingConfigProvider
+	NativeSearch      nativeSearchPolicy
+	LLMRetry          llmRetryPolicy
+	MediaLimits       mediaLimitsProvider
+	FinalTurnRender   finalTurnRenderPolicy
+	ModelResolution   pipelineModelResolution
+	PromptBuilder     pipelinePromptBuilder
+	ToolContentFilter toolContentFilter
+}
+
+type PipelineContextServices struct {
+	Runtime              pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
-	Events               runtimeEventEmitter
-	ActiveRequests       activeRequestTracker
 	ModelExecution       modelExecutionResolver
 	Steering             steeringDequeuer
-	Reasoning            reasoningPublisher
-	ToolFeedback         toolFeedbackManager
-	ToolContentFilter    toolContentFilter
-	SyncToolDelivery     syncToolResultDeliveryManager
-	ToolDelivery         toolDeliveryManager
-	TurnControl          turnController
-	Hooks                hookInterceptor
-	Fallback             fallbackExecutor
 	MediaResolver        mediaResolver
+}
+
+type PipelineInteractionServices struct {
+	Reasoning        reasoningPublisher
+	ToolFeedback     toolFeedbackManager
+	SyncToolDelivery syncToolResultDeliveryManager
+	ToolDelivery     toolDeliveryManager
+	Hooks            hookInterceptor
+	Fallback         fallbackExecutor
 }
 
 type runtimeEventEmitter interface {
@@ -173,7 +170,10 @@ type steeringDequeuer interface {
 
 type reasoningPublisher interface {
 	targetReasoningChannelID(channelName string) string
-	publishPicoReasoning(ctx context.Context, reasoningContent, chatID, sessionKey, modelName string)
+	publishPicoReasoning(
+		ctx context.Context,
+		reasoningContent, chatID, sessionKey, modelName string,
+	)
 	publishPicoToolCallInterim(
 		ctx context.Context,
 		ts *turnState,
@@ -223,7 +223,10 @@ type hookInterceptor interface {
 	BeforeLLM(ctx context.Context, req *LLMHookRequest) (*LLMHookRequest, HookDecision)
 	AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LLMHookResponse, HookDecision)
 	BeforeTool(ctx context.Context, req *ToolCallHookRequest) (*ToolCallHookRequest, HookDecision)
-	AfterTool(ctx context.Context, resp *ToolResultHookResponse) (*ToolResultHookResponse, HookDecision)
+	AfterTool(
+		ctx context.Context,
+		resp *ToolResultHookResponse,
+	) (*ToolResultHookResponse, HookDecision)
 	ApproveTool(ctx context.Context, req *ToolApprovalRequest) ApprovalDecision
 }
 
@@ -242,44 +245,25 @@ type mediaResolver interface {
 // NewPipelineFromDependencies creates a Pipeline from explicit dependencies.
 func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 	return &Pipeline{
-		Bus:                  deps.Bus,
-		Cfg:                  deps.Cfg,
-		ChannelStreaming:     deps.ChannelStreaming,
-		NativeSearch:         deps.NativeSearch,
-		LLMRetry:             deps.LLMRetry,
-		MediaLimits:          deps.MediaLimits,
-		FinalTurnRender:      deps.FinalTurnRender,
-		ModelResolution:      deps.ModelResolution,
-		PromptBuilder:        deps.PromptBuilder,
-		ContextRuntime:       deps.ContextRuntime,
-		BackgroundCompaction: deps.BackgroundCompaction,
-		Events:               deps.Events,
-		ActiveRequests:       deps.ActiveRequests,
-		ModelExecution:       deps.ModelExecution,
-		Steering:             deps.Steering,
-		Reasoning:            deps.Reasoning,
-		ToolFeedback:         deps.ToolFeedback,
-		ToolContentFilter:    deps.ToolContentFilter,
-		SyncToolDelivery:     deps.SyncToolDelivery,
-		ToolDelivery:         deps.ToolDelivery,
-		TurnControl:          deps.TurnControl,
-		Hooks:                deps.Hooks,
-		Fallback:             deps.Fallback,
-		MediaResolver:        deps.MediaResolver,
+		Cfg:         deps.Cfg,
+		Runtime:     deps.Runtime,
+		Config:      deps.Config,
+		Context:     deps.Context,
+		Interaction: deps.Interaction,
 	}
 }
 
 func (p *Pipeline) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any) {
-	if p == nil || p.Events == nil {
+	if p == nil || p.Runtime.Events == nil {
 		return
 	}
-	p.Events.emitEvent(kind, meta, payload)
+	p.Runtime.Events.emitEvent(kind, meta, payload)
 }
 
 func (p *Pipeline) trackActiveRequest() func() {
-	if p == nil || p.ActiveRequests == nil {
+	if p == nil || p.Runtime.ActiveRequests == nil {
 		return func() {}
 	}
-	p.ActiveRequests.activeRequestsInc()
-	return p.ActiveRequests.activeRequestsDec
+	p.Runtime.ActiveRequests.activeRequestsInc()
+	return p.Runtime.ActiveRequests.activeRequestsDec
 }

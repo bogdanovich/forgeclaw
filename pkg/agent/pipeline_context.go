@@ -10,10 +10,10 @@ import (
 )
 
 func (p *Pipeline) ingestMessage(ctx context.Context, ts *turnState, msg providers.Message) {
-	if p == nil || ts == nil || p.ContextRuntime == nil {
+	if p == nil || ts == nil || p.Context.Runtime == nil {
 		return
 	}
-	if err := p.ContextRuntime.Ingest(ctx, &IngestRequest{
+	if err := p.Context.Runtime.Ingest(ctx, &IngestRequest{
 		SessionKey: ts.sessionKey,
 		Message:    msg,
 	}); err != nil {
@@ -31,8 +31,14 @@ func (p *Pipeline) scheduleBackgroundCompaction(
 	budget int,
 	messageKind string,
 ) {
-	if p == nil || p.BackgroundCompaction == nil {
+	if p == nil || p.Context.BackgroundCompaction == nil {
 		return
 	}
-	p.BackgroundCompaction.scheduleBackgroundCompaction(agent, sessionKey, reason, budget, messageKind)
+	p.Context.BackgroundCompaction.scheduleBackgroundCompaction(
+		agent,
+		sessionKey,
+		reason,
+		budget,
+		messageKind,
+	)
 }

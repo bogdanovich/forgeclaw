@@ -49,7 +49,9 @@ func (testToolContentFilter) filterToolContentForLLM(string) string {
 }
 
 func TestPipelineFilterPendingResultForLLM_UsesInjectedFilter(t *testing.T) {
-	pipeline := &Pipeline{ToolContentFilter: testToolContentFilter{}}
+	pipeline := &Pipeline{
+		Config: PipelineConfigServices{ToolContentFilter: testToolContentFilter{}},
+	}
 
 	got := pipeline.filterPendingResultForLLM("pending content")
 	if got != "filtered by dependency" {

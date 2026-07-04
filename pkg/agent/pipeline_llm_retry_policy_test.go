@@ -19,7 +19,7 @@ func (p *testLLMRetryPolicy) llmRetrySettings() (int, int) {
 
 func TestPipelineLLMRetrySettings_UsesInjectedPolicy(t *testing.T) {
 	policy := &testLLMRetryPolicy{maxRetries: 5, backoffSecs: 7}
-	pipeline := &Pipeline{LLMRetry: policy}
+	pipeline := &Pipeline{Config: PipelineConfigServices{LLMRetry: policy}}
 
 	maxRetries, backoffSecs := pipeline.llmRetrySettings()
 	if maxRetries != 5 || backoffSecs != 7 {
