@@ -19,6 +19,7 @@ func (al *AgentLoop) runTurn(
 	ts *turnState,
 	pipeline *Pipeline,
 ) (result turnResult, err error) {
+	host := turnRuntimeHost(al)
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
 	ts.setTurnCancel(turnCancel)
@@ -48,7 +49,7 @@ func (al *AgentLoop) runTurn(
 				finalSuccessfulPath = append([]string(nil), attemptedSkills...)
 			}
 		}
-		al.emitEvent(
+		host.emitEvent(
 			runtimeevents.KindAgentTurnEnd,
 			ts.eventMeta("runTurn", "turn.end"),
 			TurnEndPayload{
@@ -78,18 +79,18 @@ func (al *AgentLoop) runTurn(
 			return
 		}
 		if turnStatus == TurnEndStatusCompleted && err == nil {
-			al.ackAcceptedSteeringMessages(ctx, acceptedSteering)
+			host.ackAcceptedSteeringMessages(ctx, acceptedSteering)
 			return
 		}
-		al.releaseSteeringMessages(context.Background(), acceptedSteering, err)
+		host.releaseSteeringMessages(context.Background(), acceptedSteering, err)
 	}()
 
 	if ts.hardAbortRequested() {
 		turnStatus = TurnEndStatusAborted
-		return al.abortTurn(ts)
+		return host.abortTurn(ts)
 	}
 
-	al.emitEvent(
+	host.emitEvent(
 		runtimeevents.KindAgentTurnStart,
 		ts.eventMeta("runTurn", "turn.start"),
 		TurnStartPayload{
@@ -113,6 +114,7 @@ func (al *AgentLoop) runTurn(
 	messages := exec.messages
 	maxMediaSize := pipeline.maxMediaSize()
 	finalContent := exec.finalContent
+	mediaResolver := pipeline.Context.MediaResolver
 
 	for ts.currentIteration() < ts.agent.MaxIterations || len(exec.pendingMessages) > 0 || func() bool {
 		graceful, _ := ts.gracefulInterruptRequested()
@@ -120,7 +122,7 @@ func (al *AgentLoop) runTurn(
 	}() {
 		if ts.hardAbortRequested() {
 			turnStatus = TurnEndStatusAborted
-			return al.abortTurn(ts)
+			return host.abortTurn(ts)
 		}
 
 		iteration := ts.currentIteration() + 1
@@ -133,7 +135,7 @@ func (al *AgentLoop) runTurn(
 			exec.pendingMessages = nil
 		}
 		if iteration == 1 && !ts.opts.SkipInitialSteeringPoll {
-			if steerMsgs := al.dequeueSteeringMessagesForTurnWithFallback(
+			if steerMsgs := host.dequeueSteeringMessagesForTurnWithFallback(
 				ts.sessionKey,
 				ts.opts.Dispatch.SenderID(),
 			); len(steerMsgs) > 0 {
@@ -172,7 +174,7 @@ func (al *AgentLoop) runTurn(
 			select {
 			case result, ok := <-ts.pendingResults:
 				if ok && result != nil && result.ForLLM != "" {
-					content := al.cfg.FilterSensitiveData(result.ForLLM)
+					content := host.filterSensitiveData(result.ForLLM)
 					msg := subTurnResultPromptMessage(content)
 					pendingMessages = append(pendingMessages, msg)
 				}
@@ -183,7 +185,7 @@ func (al *AgentLoop) runTurn(
 
 		// Inject pending steering messages
 		if len(pendingMessages) > 0 {
-			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize, 0)
+			resolvedPending := resolveMediaRefs(pendingMessages, mediaResolver, maxMediaSize, 0)
 			totalContentLen := 0
 			for i, pm := range pendingMessages {
 				providerMsg := providerPromptMessageForTurn(resolvedPending[i])
@@ -192,7 +194,7 @@ func (al *AgentLoop) runTurn(
 				if !ts.opts.NoHistory {
 					ts.agent.Sessions.AddFullMessage(ts.sessionKey, pm)
 					ts.recordPersistedMessage(pm)
-					ts.ingestMessage(turnCtx, al, pm)
+					pipeline.ingestMessage(turnCtx, ts, pm)
 				}
 				if exec.shouldTrackTurnOwnedSteering(pm) {
 					ts.recordAcceptedSteeringMessage(pm)
@@ -205,7 +207,7 @@ func (al *AgentLoop) runTurn(
 						"media_count": len(pm.Media),
 					})
 			}
-			al.emitEvent(
+			host.emitEvent(
 				runtimeevents.KindAgentSteeringInjected,
 				ts.eventMeta("runTurn", "turn.steering.injected"),
 				SteeringInjectedPayload{
@@ -244,7 +246,7 @@ func (al *AgentLoop) runTurn(
 			// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
 			if exec.abortedByHardAbort {
 				turnStatus = TurnEndStatusAborted
-				return al.abortTurn(ts)
+				return host.abortTurn(ts)
 			}
 			// Hook abort (HookActionAbortTurn): sets TurnEndStatusError, returns error
 			if exec.abortedByHook {
@@ -255,7 +257,7 @@ func (al *AgentLoop) runTurn(
 			if finalContent == "" {
 				finalContent = ts.opts.DefaultResponse
 			}
-			finalContent = renderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
+			finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
 			result, finalizeErr = pipeline.Finalize(
 				ctx,
 				turnCtx,
@@ -278,9 +280,8 @@ func (al *AgentLoop) runTurn(
 				messages = exec.messages
 				continue
 			case ToolControlFinalize:
-				renderedContent, rendered := tryRenderFinalTurnReply(
+				renderedContent, rendered := host.tryRenderFinalTurnReply(
 					turnCtx,
-					al,
 					ts,
 					exec,
 					finalContent,
@@ -290,7 +291,7 @@ func (al *AgentLoop) runTurn(
 					messages = exec.messages
 					continue
 				}
-				if steerMsgs := al.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
+				if steerMsgs := host.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
 					steerMsgs,
 				) > 0 {
 					exec.markSteeringObserved()
@@ -312,7 +313,7 @@ func (al *AgentLoop) runTurn(
 				// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
 				if exec.abortedByHardAbort {
 					turnStatus = TurnEndStatusAborted
-					return al.abortTurn(ts)
+					return host.abortTurn(ts)
 				}
 				// Hook abort (HookActionAbortTurn): sets TurnEndStatusError, returns error
 				if exec.abortedByHook {
@@ -328,7 +329,7 @@ func (al *AgentLoop) runTurn(
 				if exec.allResponsesHandled {
 					finalContent = ""
 				}
-				finalContent = renderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
+				finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
 				result, finalizeErr = pipeline.Finalize(
 					ctx,
 					turnCtx,
@@ -347,7 +348,7 @@ func (al *AgentLoop) runTurn(
 
 	if ts.hardAbortRequested() {
 		turnStatus = TurnEndStatusAborted
-		return al.abortTurn(ts)
+		return host.abortTurn(ts)
 	}
 
 	if finalContent == "" {
@@ -357,12 +358,12 @@ func (al *AgentLoop) runTurn(
 			finalContent = ts.opts.DefaultResponse
 		}
 	}
-	finalContent = renderFinalTurnReply(turnCtx, al, ts, exec, finalContent)
+	finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
 
 	// Check hard abort before finalizing (may have been set during tool execution)
 	if ts.hardAbortRequested() {
 		turnStatus = TurnEndStatusAborted
-		return al.abortTurn(ts)
+		return host.abortTurn(ts)
 	}
 
 	result, err = pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
