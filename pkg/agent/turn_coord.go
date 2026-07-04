@@ -111,7 +111,7 @@ func (al *AgentLoop) runTurn(
 
 	// Convenience references to exec fields used throughout the turn loop.
 	messages := exec.messages
-	maxMediaSize := pipeline.Cfg.Agents.Defaults.GetMaxMediaSize()
+	maxMediaSize := pipeline.maxMediaSize()
 	finalContent := exec.finalContent
 
 	for ts.currentIteration() < ts.agent.MaxIterations || len(exec.pendingMessages) > 0 || func() bool {

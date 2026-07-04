@@ -28,7 +28,7 @@ func (p *Pipeline) CallLLM(
 	exec *turnExecution,
 	iteration int,
 ) (Control, error) {
-	maxMediaSize := p.Cfg.Agents.Defaults.GetMaxMediaSize()
+	maxMediaSize := p.maxMediaSize()
 
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
 	if iteration > 1 {
@@ -403,7 +403,7 @@ func (p *Pipeline) CallLLM(
 				ts,
 				contextualSkills,
 				exec.providerToolDefs,
-				p.Cfg.Agents.Defaults.GetMaxMediaSize(),
+				p.maxMediaSize(),
 			)
 			compactBudget := effectiveHistoryBudget(
 				ts.agent.ContextWindow,

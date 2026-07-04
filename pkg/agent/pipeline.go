@@ -22,6 +22,7 @@ type Pipeline struct {
 	ChannelStreaming     channelStreamingConfigProvider
 	NativeSearch         nativeSearchPolicy
 	LLMRetry             llmRetryPolicy
+	MediaLimits          mediaLimitsProvider
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -46,6 +47,7 @@ type PipelineDependencies struct {
 	ChannelStreaming     channelStreamingConfigProvider
 	NativeSearch         nativeSearchPolicy
 	LLMRetry             llmRetryPolicy
+	MediaLimits          mediaLimitsProvider
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -82,6 +84,10 @@ type nativeSearchPolicy interface {
 
 type llmRetryPolicy interface {
 	llmRetrySettings() (maxRetries int, backoffSecs int)
+}
+
+type mediaLimitsProvider interface {
+	maxMediaSize() int
 }
 
 type pipelineContextRuntime interface {
@@ -211,6 +217,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		ChannelStreaming:     deps.ChannelStreaming,
 		NativeSearch:         deps.NativeSearch,
 		LLMRetry:             deps.LLMRetry,
+		MediaLimits:          deps.MediaLimits,
 		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,
