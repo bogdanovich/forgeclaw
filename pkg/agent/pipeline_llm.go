@@ -440,16 +440,14 @@ func (p *Pipeline) CallLLM(
 				fullHistory := append(
 					append([]providers.Message(nil), trimmedHistory...),
 					protectedTurnTail...)
-				rebuildPromptReq := promptBuildRequestForTurn(
+				return p.buildTurnMessages(
 					ts,
 					fullHistory,
 					exec.summary,
 					"",
 					nil,
-					p.Cfg,
+					contextualSkills,
 				)
-				rebuildPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
-				return ts.agent.ContextBuilder.BuildMessagesFromPrompt(rebuildPromptReq)
 			}
 			originalHistoryCount := len(exec.history)
 			var fit bool

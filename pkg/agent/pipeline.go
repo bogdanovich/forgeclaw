@@ -25,6 +25,7 @@ type Pipeline struct {
 	MediaLimits          mediaLimitsProvider
 	FinalTurnRender      finalTurnRenderPolicy
 	ModelResolution      pipelineModelResolution
+	PromptBuilder        pipelinePromptBuilder
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -52,6 +53,7 @@ type PipelineDependencies struct {
 	MediaLimits          mediaLimitsProvider
 	FinalTurnRender      finalTurnRenderPolicy
 	ModelResolution      pipelineModelResolution
+	PromptBuilder        pipelinePromptBuilder
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -105,6 +107,17 @@ type pipelineModelResolution interface {
 		candidates []providers.FallbackCandidate,
 		activeModel string,
 	) *config.ModelConfig
+}
+
+type pipelinePromptBuilder interface {
+	buildTurnMessages(
+		ts *turnState,
+		history []providers.Message,
+		summary string,
+		currentMessage string,
+		media []string,
+		activeSkills []string,
+	) []providers.Message
 }
 
 type pipelineContextRuntime interface {
@@ -237,6 +250,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		MediaLimits:          deps.MediaLimits,
 		FinalTurnRender:      deps.FinalTurnRender,
 		ModelResolution:      deps.ModelResolution,
+		PromptBuilder:        deps.PromptBuilder,
 		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,
