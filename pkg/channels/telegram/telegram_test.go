@@ -1281,6 +1281,124 @@ func TestSend_HTMLFallback_BothFail(t *testing.T) {
 	assert.Equal(t, 2, len(caller.calls), "should have HTML attempt + plain text attempt")
 }
 
+func TestSend_RichMessagesDisabledUsesLegacySendMessage(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello **world**",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendMessage")
+	assert.NotContains(t, caller.calls[0].URL, "sendRichMessage")
+}
+
+func TestSend_RichMessagesEnabledKeepsMarkdownV2Path(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+	ch.tgCfg.UseMarkdownV2 = true
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello **world**",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendMessage")
+	assert.NotContains(t, caller.calls[0].URL, "sendRichMessage")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	assert.Equal(t, telego.ModeMarkdownV2, payload["parse_mode"])
+}
+
+func TestSend_RichMessagesEnabledUsesSendRichMessage(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello **world**",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	assert.Equal(t, float64(12345), payload["chat_id"])
+	require.IsType(t, map[string]any{}, payload["rich_message"])
+	richMessage := payload["rich_message"].(map[string]any)
+	assert.Equal(t, "Hello <b>world</b>", richMessage["html"])
+}
+
+func TestSend_RichMessagesFallbackUsesLegacySendMessage(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				assert.Contains(t, url, "sendRichMessage")
+				return nil, errors.New(`api: 400 "Bad Request: rich message is not supported"`)
+			}
+			assert.Contains(t, url, "sendMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello **world**",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+	assert.Contains(t, caller.calls[1].URL, "sendMessage")
+}
+
+func TestSend_RichMessagesContentErrorDoesNotFallback(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "sendRichMessage")
+			return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Hello **world**",
+	})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, channels.ErrTemporary))
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+}
+
 func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {

@@ -388,14 +388,21 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 			continue
 		}
 
-		msgID, err := c.sendChunk(ctx, sendChunkParams{
+		params := sendChunkParams{
 			chatID:        chatID,
 			threadID:      threadID,
 			content:       content,
 			replyToID:     replyToID,
 			mdFallback:    chunk,
 			useMarkdownV2: useMarkdownV2,
-		})
+		}
+		var msgID string
+		var err error
+		if c.richMessagesEnabled(useMarkdownV2) && !isToolFeedback {
+			msgID, err = c.sendRichChunk(ctx, chunk, params)
+		} else {
+			msgID, err = c.sendChunk(ctx, params)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -420,6 +427,54 @@ type sendChunkParams struct {
 	replyToID     string
 	mdFallback    string
 	useMarkdownV2 bool
+}
+
+func (c *TelegramChannel) richMessagesEnabled(useMarkdownV2 bool) bool {
+	// Rich messages use Telegram's rich HTML input. If a channel explicitly
+	// requests the legacy MarkdownV2 projector, keep that behavior unchanged.
+	return c.tgCfg != nil && c.tgCfg.RichMessages.Enabled && !useMarkdownV2
+}
+
+func (c *TelegramChannel) sendRichChunk(
+	ctx context.Context,
+	rawContent string,
+	fallbackParams sendChunkParams,
+) (string, error) {
+	params := &telego.SendRichMessageParams{
+		ChatID:          tu.ID(fallbackParams.chatID),
+		MessageThreadID: fallbackParams.threadID,
+		RichMessage:     renderTelegramOutboundRichMessage(rawContent),
+	}
+
+	if fallbackParams.replyToID != "" {
+		if mid, parseErr := strconv.Atoi(fallbackParams.replyToID); parseErr == nil {
+			params.ReplyParameters = &telego.ReplyParameters{
+				MessageID: mid,
+			}
+		}
+	}
+
+	pMsg, err := c.bot.SendRichMessage(ctx, params)
+	if err != nil {
+		if shouldFallbackFromRichMessage(err) {
+			logger.WarnCF("telegram", "sendRichMessage rejected, falling back to text", map[string]any{
+				"chat_id":   fallbackParams.chatID,
+				"thread_id": fallbackParams.threadID,
+				"reply_to":  fallbackParams.replyToID,
+				"error":     err.Error(),
+			})
+			return c.sendChunk(ctx, fallbackParams)
+		}
+		logger.WarnCF("telegram", "sendRichMessage failed", map[string]any{
+			"chat_id":   fallbackParams.chatID,
+			"thread_id": fallbackParams.threadID,
+			"reply_to":  fallbackParams.replyToID,
+			"error":     err.Error(),
+		})
+		return "", fmt.Errorf("telegram send rich message: %w", channels.ErrTemporary)
+	}
+
+	return strconv.Itoa(pMsg.MessageID), nil
 }
 
 // sendChunk sends a single HTML/MarkdownV2 message, falling back to the original
@@ -1986,6 +2041,18 @@ func telegramParseModeName(useMarkdownV2 bool) string {
 
 func shouldFallbackToPlainText(err error) bool {
 	return telegramIsParseModeError(err)
+}
+
+func shouldFallbackFromRichMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "method not found") ||
+		strings.Contains(msg, "sendrichmessage not found") ||
+		strings.Contains(msg, "sendrichmessage is not supported") ||
+		strings.Contains(msg, "rich message is not supported") ||
+		strings.Contains(msg, "rich messages are not supported")
 }
 
 // isBotMentioned checks if the bot is mentioned in the message via entities.
