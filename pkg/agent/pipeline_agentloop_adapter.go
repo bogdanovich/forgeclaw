@@ -18,7 +18,6 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		TurnControl:          al.turnAbortController(),
 		Hooks:                al.hooks,
 		Fallback:             al.fallback,
-		ChannelManager:       al.channelManager,
 		MediaStore:           al.mediaStore,
 	})
 }

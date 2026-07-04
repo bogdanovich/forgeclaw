@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
@@ -33,7 +32,6 @@ type Pipeline struct {
 	TurnControl          turnController
 	Hooks                hookInterceptor
 	Fallback             fallbackExecutor
-	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
 }
 
@@ -54,7 +52,6 @@ type PipelineDependencies struct {
 	TurnControl          turnController
 	Hooks                hookInterceptor
 	Fallback             fallbackExecutor
-	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
 }
 
@@ -190,7 +187,6 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		TurnControl:          deps.TurnControl,
 		Hooks:                deps.Hooks,
 		Fallback:             deps.Fallback,
-		ChannelManager:       deps.ChannelManager,
 		MediaStore:           deps.MediaStore,
 	}
 }
