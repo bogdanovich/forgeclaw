@@ -429,7 +429,7 @@ toolLoop:
 						select {
 						case result, ok := <-ts.pendingResults:
 							if ok && result != nil && result.ForLLM != "" {
-								content := p.filterToolContentForLLM(result.ForLLM)
+								content := p.filterPendingResultForLLM(result.ForLLM)
 								msg := subTurnResultPromptMessage(content)
 								messages = append(messages, msg)
 								if !ts.opts.NoHistory {
@@ -836,7 +836,7 @@ toolLoop:
 			select {
 			case result, ok := <-ts.pendingResults:
 				if ok && result != nil && result.ForLLM != "" {
-					content := p.filterToolContentForLLM(result.ForLLM)
+					content := p.filterPendingResultForLLM(result.ForLLM)
 					msg := subTurnResultPromptMessage(content)
 					messages = append(messages, msg)
 					if !ts.opts.NoHistory {
