@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/media"
@@ -17,7 +18,7 @@ import (
 // It is constructed by runTurn via NewPipeline and passed to sub-methods
 // so that the coordinator can delegate phase execution.
 type Pipeline struct {
-	Bus                  interfaces.MessageBus
+	Bus                  pipelineBus
 	Cfg                  *config.Config
 	ContextManager       ContextManager
 	BackgroundCompaction backgroundCompactionScheduler
@@ -38,7 +39,7 @@ type Pipeline struct {
 
 // PipelineDependencies is the explicit dependency set required by Pipeline.
 type PipelineDependencies struct {
-	Bus                  interfaces.MessageBus
+	Bus                  pipelineBus
 	Cfg                  *config.Config
 	ContextManager       ContextManager
 	BackgroundCompaction backgroundCompactionScheduler
@@ -59,6 +60,11 @@ type PipelineDependencies struct {
 
 type runtimeEventEmitter interface {
 	emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any)
+}
+
+type pipelineBus interface {
+	PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error
+	GetStreamer(ctx context.Context, channel, chatID, sessionKey string) (bus.Streamer, bool)
 }
 
 type backgroundCompactionScheduler interface {
