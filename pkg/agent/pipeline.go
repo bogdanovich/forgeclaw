@@ -32,7 +32,7 @@ type Pipeline struct {
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
 	Hooks                hookInterceptor
-	Fallback             *providers.FallbackChain
+	Fallback             fallbackExecutor
 	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
 }
@@ -53,7 +53,7 @@ type PipelineDependencies struct {
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
 	Hooks                hookInterceptor
-	Fallback             *providers.FallbackChain
+	Fallback             fallbackExecutor
 	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
 }
@@ -162,6 +162,14 @@ type hookInterceptor interface {
 	BeforeTool(ctx context.Context, req *ToolCallHookRequest) (*ToolCallHookRequest, HookDecision)
 	AfterTool(ctx context.Context, resp *ToolResultHookResponse) (*ToolResultHookResponse, HookDecision)
 	ApproveTool(ctx context.Context, req *ToolApprovalRequest) ApprovalDecision
+}
+
+type fallbackExecutor interface {
+	ExecuteCandidate(
+		ctx context.Context,
+		candidates []providers.FallbackCandidate,
+		run func(context.Context, providers.FallbackCandidate) (*providers.LLMResponse, error),
+	) (*providers.FallbackResult, error)
 }
 
 // NewPipelineFromDependencies creates a Pipeline from explicit dependencies.
