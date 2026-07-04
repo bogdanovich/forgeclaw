@@ -33,7 +33,7 @@ func TestPipelineBuildTurnMessages_UsesInjectedBuilder(t *testing.T) {
 			Content: "injected",
 		}},
 	}
-	pipeline := &Pipeline{Config: pipelineConfigServices{PromptBuilder: builder}}
+	pipeline := &Pipeline{Config: PipelineConfigServices{PromptBuilder: builder}}
 
 	got := pipeline.buildTurnMessages(nil, nil, "", "ignored", nil, []string{"skill-a"})
 	if len(got) != 1 || got[0].Content != "injected" {

@@ -18,29 +18,29 @@ import (
 // so that the coordinator can delegate phase execution.
 type Pipeline struct {
 	Cfg         *config.Config
-	Runtime     pipelineRuntimeServices
-	Config      pipelineConfigServices
-	Context     pipelineContextServices
-	Interaction pipelineInteractionServices
+	Runtime     PipelineRuntimeServices
+	Config      PipelineConfigServices
+	Context     PipelineContextServices
+	Interaction PipelineInteractionServices
 }
 
 // PipelineDependencies is the explicit dependency set required by Pipeline.
 type PipelineDependencies struct {
 	Cfg         *config.Config
-	Runtime     pipelineRuntimeServices
-	Config      pipelineConfigServices
-	Context     pipelineContextServices
-	Interaction pipelineInteractionServices
+	Runtime     PipelineRuntimeServices
+	Config      PipelineConfigServices
+	Context     PipelineContextServices
+	Interaction PipelineInteractionServices
 }
 
-type pipelineRuntimeServices struct {
+type PipelineRuntimeServices struct {
 	Bus            pipelineBus
 	Events         runtimeEventEmitter
 	ActiveRequests activeRequestTracker
 	TurnControl    turnController
 }
 
-type pipelineConfigServices struct {
+type PipelineConfigServices struct {
 	ChannelStreaming  channelStreamingConfigProvider
 	NativeSearch      nativeSearchPolicy
 	LLMRetry          llmRetryPolicy
@@ -51,7 +51,7 @@ type pipelineConfigServices struct {
 	ToolContentFilter toolContentFilter
 }
 
-type pipelineContextServices struct {
+type PipelineContextServices struct {
 	Runtime              pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	ModelExecution       modelExecutionResolver
@@ -59,7 +59,7 @@ type pipelineContextServices struct {
 	MediaResolver        mediaResolver
 }
 
-type pipelineInteractionServices struct {
+type PipelineInteractionServices struct {
 	Reasoning        reasoningPublisher
 	ToolFeedback     toolFeedbackManager
 	SyncToolDelivery syncToolResultDeliveryManager

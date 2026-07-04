@@ -72,7 +72,7 @@ func TestIsFatalMCPTransportErrorSummary(t *testing.T) {
 func TestPipelineAppendToolMessage_PersistsWithoutIngest(t *testing.T) {
 	sessionStore := session.NewSessionManager("")
 	cm := &trackingContextManager{}
-	pipeline := &Pipeline{Context: pipelineContextServices{Runtime: cm}}
+	pipeline := &Pipeline{Context: PipelineContextServices{Runtime: cm}}
 	ts := &turnState{
 		agent:      &AgentInstance{Sessions: sessionStore},
 		sessionKey: "session-tool-message",
@@ -104,7 +104,7 @@ func TestPipelineAppendToolMessage_PersistsWithoutIngest(t *testing.T) {
 func TestPipelineAppendToolMessage_PersistsAndIngests(t *testing.T) {
 	sessionStore := session.NewSessionManager("")
 	cm := &trackingContextManager{}
-	pipeline := &Pipeline{Context: pipelineContextServices{Runtime: cm}}
+	pipeline := &Pipeline{Context: PipelineContextServices{Runtime: cm}}
 	ts := &turnState{
 		agent:      &AgentInstance{Sessions: sessionStore},
 		sessionKey: "session-tool-result",
@@ -139,7 +139,7 @@ func TestPipelineAppendToolMessage_PersistsAndIngests(t *testing.T) {
 func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *testing.T) {
 	sessionStore := session.NewSessionManager("")
 	cm := &trackingContextManager{}
-	pipeline := &Pipeline{Context: pipelineContextServices{Runtime: cm}}
+	pipeline := &Pipeline{Context: PipelineContextServices{Runtime: cm}}
 	ts := &turnState{
 		agent:      &AgentInstance{Sessions: sessionStore},
 		sessionKey: "session-skipped-tool",
@@ -183,7 +183,7 @@ func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *tes
 func TestToolLoopRunnerAppendPendingSubTurnResult_PersistsAndIngests(t *testing.T) {
 	sessionStore := session.NewSessionManager("")
 	cm := &trackingContextManager{}
-	pipeline := &Pipeline{Context: pipelineContextServices{Runtime: cm}}
+	pipeline := &Pipeline{Context: PipelineContextServices{Runtime: cm}}
 	ts := &turnState{
 		agent: &AgentInstance{
 			Sessions: sessionStore,

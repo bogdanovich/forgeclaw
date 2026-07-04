@@ -430,7 +430,7 @@ func TestPipelineChannelStreamingConfig_UsesInjectedProvider(t *testing.T) {
 	}
 	pipeline := &Pipeline{
 		Cfg:    newConfiguredStreamingTestConfig(t, false, true, nil),
-		Config: pipelineConfigServices{ChannelStreaming: provider},
+		Config: PipelineConfigServices{ChannelStreaming: provider},
 	}
 
 	got, ok := pipeline.channelStreamingConfig("pico")

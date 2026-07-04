@@ -22,7 +22,7 @@ func (p *testNativeSearchPolicy) useNativeSearch(
 
 func TestPipelineNativeSearchEnabled_UsesInjectedPolicy(t *testing.T) {
 	policy := &testNativeSearchPolicy{result: true}
-	pipeline := &Pipeline{Config: pipelineConfigServices{NativeSearch: policy}}
+	pipeline := &Pipeline{Config: PipelineConfigServices{NativeSearch: policy}}
 
 	if !pipeline.nativeSearchEnabled(config.EffectiveTurnProfile{}, &plainProvider{}) {
 		t.Fatal("nativeSearchEnabled() = false, want injected policy result")

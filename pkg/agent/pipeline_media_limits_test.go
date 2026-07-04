@@ -18,7 +18,7 @@ func (p *testMediaLimitsProvider) maxMediaSize() int {
 
 func TestPipelineMaxMediaSize_UsesInjectedProvider(t *testing.T) {
 	limits := &testMediaLimitsProvider{size: 1234}
-	pipeline := &Pipeline{Config: pipelineConfigServices{MediaLimits: limits}}
+	pipeline := &Pipeline{Config: PipelineConfigServices{MediaLimits: limits}}
 
 	if got := pipeline.maxMediaSize(); got != 1234 {
 		t.Fatalf("maxMediaSize() = %d, want 1234", got)

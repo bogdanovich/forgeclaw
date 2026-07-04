@@ -50,7 +50,7 @@ func (testToolContentFilter) filterToolContentForLLM(string) string {
 
 func TestPipelineFilterPendingResultForLLM_UsesInjectedFilter(t *testing.T) {
 	pipeline := &Pipeline{
-		Config: pipelineConfigServices{ToolContentFilter: testToolContentFilter{}},
+		Config: PipelineConfigServices{ToolContentFilter: testToolContentFilter{}},
 	}
 
 	got := pipeline.filterPendingResultForLLM("pending content")

@@ -38,7 +38,7 @@ func TestPipelineModelCandidates_UsesInjectedResolver(t *testing.T) {
 			Model:    "kimi",
 		}},
 	}
-	pipeline := &Pipeline{Config: pipelineConfigServices{ModelResolution: resolver}}
+	pipeline := &Pipeline{Config: PipelineConfigServices{ModelResolution: resolver}}
 
 	got := pipeline.modelCandidates("ignored", nil)
 	if len(got) != 1 || got[0].Provider != "openrouter" || got[0].Model != "kimi" {
@@ -52,7 +52,7 @@ func TestPipelineModelCandidates_UsesInjectedResolver(t *testing.T) {
 func TestPipelineActiveModelConfig_UsesInjectedResolver(t *testing.T) {
 	want := &config.ModelConfig{ModelName: "injected"}
 	resolver := &testPipelineModelResolution{activeCfg: want}
-	pipeline := &Pipeline{Config: pipelineConfigServices{ModelResolution: resolver}}
+	pipeline := &Pipeline{Config: PipelineConfigServices{ModelResolution: resolver}}
 
 	if got := pipeline.activeModelConfig("/workspace", nil, "ignored"); got != want {
 		t.Fatalf("activeModelConfig() = %#v, want injected config", got)
