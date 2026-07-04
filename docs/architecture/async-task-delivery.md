@@ -156,6 +156,19 @@ the result size hints. The later `task.delivery_changed` event records the
 durable delivery outcome. Keeping both events makes failed deliveries and
 restart recovery auditable without parsing chat text.
 
+Cron-triggered tasks also emit `task.delivery_decision` when the runtime starts
+the cron execution. The cron task record's `delivery_mode` distinguishes the
+execution shape:
+
+- `deliver_text`: publish the scheduled text directly without an agent turn.
+- `agent_turn`: run the scheduled message through the agent.
+- `command`: execute the scheduled command path.
+
+This makes reminders auditable from task status alone: an operator can see why
+the cron run fired, whether it was direct text or an agent turn, and the later
+delivery outcome without reading service logs or inferring behavior from chat
+wording.
+
 The event stream is persisted in the same `state/task_registry.json` snapshot
 as `tasks`. `Record` remains the compatibility API and is still what most tools
 read. New consumers that care about auditability, idempotency, or recovery
@@ -172,7 +185,6 @@ Current source-of-truth rule:
 
 Migration TODO:
 
-- Add a status/debug surface for task events once there is a concrete consumer.
 - Emit explicit delivery events for additional coordinator/reconciliation
   phases when a consumer needs finer-grained observability.
 - Introduce a versioned `DeliverableReport` shape for rich outputs with claims,
@@ -218,6 +230,13 @@ on their result.
 ## Status Tools
 
 Use `task_status` for durable task history across spawn, delegate, cron executions, and future background runtimes. It is the source of truth for completed tasks and restart-persistent state.
+
+Use `task_status {"task_id":"...","include_events":true}` to inspect a task's
+full typed event stream. The output includes the current record projection,
+completion id, delivery timestamp/error, and event lines with runtime, producer,
+source, status, delivery status, payload kind, delivery mode, completion id,
+fingerprint, and payload. Use `task_status {"include_events":true}` without a
+specific `task_id` to show recent events for each visible task in the list.
 
 Use `task_board {"action":"list","board_id":"..."}` to inspect the planned and
 executed records for one workflow. Use `task_board {"action":"results",...}` to

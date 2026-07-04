@@ -1299,6 +1299,9 @@ func TestCronTool_ExecuteJobPublishesAgentResponse(t *testing.T) {
 	if rec.DeliveryStatus != taskregistry.DeliveryDelivered {
 		t.Fatalf("DeliveryStatus = %q, want delivered", rec.DeliveryStatus)
 	}
+	if rec.DeliveryMode != "agent_turn" {
+		t.Fatalf("DeliveryMode = %q, want agent_turn", rec.DeliveryMode)
+	}
 	if rec.Channel != "telegram" || rec.ChatID != "chat-1" {
 		t.Fatalf("scope = %s/%s, want telegram/chat-1", rec.Channel, rec.ChatID)
 	}
@@ -1307,6 +1310,13 @@ func TestCronTool_ExecuteJobPublishesAgentResponse(t *testing.T) {
 	}
 	if rec.TerminalSummary != "generated reply" {
 		t.Fatalf("TerminalSummary = %q, want generated reply", rec.TerminalSummary)
+	}
+	payload := taskEventPayloadForTest(t, registry, rec.TaskID, taskregistry.EventTaskDeliveryDecision)
+	if payload["job_id"] != "job-1" {
+		t.Fatalf("delivery decision job_id = %q, want job-1", payload["job_id"])
+	}
+	if payload["payload_kind"] != "agent_turn" || payload["delivery_mode"] != "agent_turn" {
+		t.Fatalf("delivery decision payload = %+v, want agent_turn", payload)
 	}
 }
 
@@ -1350,8 +1360,18 @@ func TestCronTool_ExecuteJobPublishesDeliverTextWithoutAgent(t *testing.T) {
 	if rec.DeliveryStatus != taskregistry.DeliveryDelivered {
 		t.Fatalf("DeliveryStatus = %q, want delivered", rec.DeliveryStatus)
 	}
+	if rec.DeliveryMode != "deliver_text" {
+		t.Fatalf("DeliveryMode = %q, want deliver_text", rec.DeliveryMode)
+	}
 	if rec.TerminalSummary != job.Payload.Message {
 		t.Fatalf("TerminalSummary = %q, want original message", rec.TerminalSummary)
+	}
+	payload := taskEventPayloadForTest(t, registry, rec.TaskID, taskregistry.EventTaskDeliveryDecision)
+	if payload["job_id"] != "job-deliver" {
+		t.Fatalf("delivery decision job_id = %q, want job-deliver", payload["job_id"])
+	}
+	if payload["payload_kind"] != "deliver_text" || payload["delivery_mode"] != "deliver_text" {
+		t.Fatalf("delivery decision payload = %+v, want deliver_text", payload)
 	}
 }
 
@@ -1510,11 +1530,21 @@ func TestCronTool_ExecuteJobCommandRecordsTaskRegistry(t *testing.T) {
 	if rec.DeliveryStatus != taskregistry.DeliveryDelivered {
 		t.Fatalf("DeliveryStatus = %q, want delivered", rec.DeliveryStatus)
 	}
+	if rec.DeliveryMode != "command" {
+		t.Fatalf("DeliveryMode = %q, want command", rec.DeliveryMode)
+	}
 	if rec.Task != "df -h" {
 		t.Fatalf("Task = %q, want command", rec.Task)
 	}
 	if !strings.Contains(rec.TerminalSummary, "command execution is disabled") {
 		t.Fatalf("TerminalSummary = %q, want command disabled", rec.TerminalSummary)
+	}
+	payload := taskEventPayloadForTest(t, registry, rec.TaskID, taskregistry.EventTaskDeliveryDecision)
+	if payload["job_id"] != "job-command" {
+		t.Fatalf("delivery decision job_id = %q, want job-command", payload["job_id"])
+	}
+	if payload["payload_kind"] != "command" || payload["delivery_mode"] != "command" {
+		t.Fatalf("delivery decision payload = %+v, want command", payload)
 	}
 }
 
@@ -1528,4 +1558,20 @@ func singleCronTaskRecord(t *testing.T, registry *taskregistry.Registry) taskreg
 		t.Fatalf("TaskID = %q, want cron-*", records[0].TaskID)
 	}
 	return records[0]
+}
+
+func taskEventPayloadForTest(
+	t *testing.T,
+	registry *taskregistry.Registry,
+	taskID string,
+	eventType taskregistry.EventType,
+) map[string]string {
+	t.Helper()
+	for _, event := range registry.ListEvents(taskID) {
+		if event.Type == eventType {
+			return event.Payload
+		}
+	}
+	t.Fatalf("event %s not found for task %s; events: %+v", eventType, taskID, registry.ListEvents(taskID))
+	return nil
 }

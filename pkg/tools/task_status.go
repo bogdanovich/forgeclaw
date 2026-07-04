@@ -51,7 +51,7 @@ func (t *TaskStatusTool) Parameters() map[string]any {
 			},
 			"include_events": map[string]any{
 				"type":        "boolean",
-				"description": "When task_id is provided, include the typed task event stream for that task.",
+				"description": "Include typed task event details. With task_id, shows that task's event stream. With list output, shows recent events per visible task.",
 			},
 		},
 		"required": []string{},
@@ -155,6 +155,10 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 	sb.WriteString("\n")
 	for _, rec := range filtered {
 		sb.WriteString(formatTaskRecord(rec))
+		if includeEvents {
+			sb.WriteString("\n")
+			sb.WriteString(formatRecentTaskEvents(t.registry.ListEvents(rec.TaskID), 3))
+		}
 		sb.WriteString("\n")
 	}
 	return NewToolResult(strings.TrimSpace(sb.String()))
@@ -206,6 +210,15 @@ func formatTaskRecord(rec taskregistry.Record) string {
 		sb.WriteString(fmt.Sprintf(" (%s)", rec.DeliveryMode))
 	}
 	sb.WriteString("\n")
+	if rec.LastCompletionID != "" {
+		sb.WriteString(fmt.Sprintf("  Completion ID: %s\n", rec.LastCompletionID))
+	}
+	if rec.DeliveredAt > 0 {
+		sb.WriteString(fmt.Sprintf("  Delivered: %s\n", formatTaskTime(rec.DeliveredAt)))
+	}
+	if rec.DeliveryError != "" {
+		sb.WriteString(fmt.Sprintf("  Delivery error: %s\n", truncateTaskText(rec.DeliveryError, 500)))
+	}
 	if rec.AgentID != "" {
 		sb.WriteString(fmt.Sprintf("  Agent: %s\n", rec.AgentID))
 	}
@@ -340,23 +353,61 @@ func formatTaskEvents(events []taskregistry.TaskEvent) string {
 	var sb strings.Builder
 	sb.WriteString("Events:\n")
 	for _, evt := range events {
-		sb.WriteString(fmt.Sprintf(
-			"  #%d %s status=%s delivery=%s at=%s",
-			evt.Seq,
-			evt.Type,
-			evt.Status,
-			evt.DeliveryStatus,
-			formatTaskTime(evt.EmittedAt),
-		))
-		if evt.Fingerprint != "" {
-			sb.WriteString(fmt.Sprintf(" fingerprint=%s", truncateTaskText(evt.Fingerprint, 12)))
-		}
-		if len(evt.Payload) > 0 {
-			sb.WriteString(fmt.Sprintf(" payload=%s", formatTaskEventPayload(evt.Payload)))
-		}
+		sb.WriteString("  ")
+		sb.WriteString(formatTaskEventLine(evt))
 		sb.WriteString("\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func formatRecentTaskEvents(events []taskregistry.TaskEvent, limit int) string {
+	if len(events) == 0 {
+		return "  Recent events: none"
+	}
+	if limit <= 0 || limit > len(events) {
+		limit = len(events)
+	}
+	start := len(events) - limit
+	var sb strings.Builder
+	sb.WriteString("  Recent events:\n")
+	for _, evt := range events[start:] {
+		sb.WriteString("  ")
+		sb.WriteString(formatTaskEventLine(evt))
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func formatTaskEventLine(evt taskregistry.TaskEvent) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(
+		"#%d %s runtime=%s producer=%s source=%s status=%s delivery=%s at=%s",
+		evt.Seq,
+		evt.Type,
+		evt.Runtime,
+		firstNonEmptyTaskStatus(evt.Producer, "unknown"),
+		firstNonEmptyTaskStatus(evt.Source, "unknown"),
+		evt.Status,
+		evt.DeliveryStatus,
+		formatTaskTime(evt.EmittedAt),
+	))
+	if payloadKind := strings.TrimSpace(evt.Payload["payload_kind"]); payloadKind != "" {
+		sb.WriteString(fmt.Sprintf(" payload_kind=%s", payloadKind))
+	}
+	deliveryMode := firstNonEmptyTaskStatus(evt.Payload["delivery_mode"], evt.Payload["mode"])
+	if deliveryMode != "" {
+		sb.WriteString(fmt.Sprintf(" delivery_mode=%s", deliveryMode))
+	}
+	if completionID := strings.TrimSpace(evt.Payload["completion_id"]); completionID != "" {
+		sb.WriteString(fmt.Sprintf(" completion_id=%s", completionID))
+	}
+	if evt.Fingerprint != "" {
+		sb.WriteString(fmt.Sprintf(" fingerprint=%s", truncateTaskText(evt.Fingerprint, 12)))
+	}
+	if len(evt.Payload) > 0 {
+		sb.WriteString(fmt.Sprintf(" payload=%s", formatTaskEventPayload(evt.Payload)))
+	}
+	return sb.String()
 }
 
 func formatTaskEventPayload(payload map[string]string) string {
@@ -373,6 +424,15 @@ func formatTaskEventPayload(payload map[string]string) string {
 		parts = append(parts, fmt.Sprintf("%s=%q", key, payload[key]))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+func firstNonEmptyTaskStatus(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func formatTaskTime(ms int64) string {

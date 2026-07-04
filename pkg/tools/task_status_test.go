@@ -114,15 +114,26 @@ func TestTaskStatusTool_TaskID(t *testing.T) {
 
 func TestTaskStatusTool_TaskIDIncludesEvents(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	now := time.Now().UnixMilli()
 	if err := registry.Upsert(taskregistry.Record{
-		TaskID:         "subagent-1",
-		Runtime:        taskregistry.RuntimeSubagent,
-		TaskKind:       "spawn",
-		Task:           "background work",
-		Status:         taskregistry.StatusRunning,
-		DeliveryStatus: taskregistry.DeliveryPending,
+		TaskID:           "subagent-1",
+		Runtime:          taskregistry.RuntimeSubagent,
+		TaskKind:         "spawn",
+		Task:             "background work",
+		Status:           taskregistry.StatusRunning,
+		DeliveryStatus:   taskregistry.DeliveryPending,
+		DeliveryMode:     "user_only",
+		LastCompletionID: "completion-1",
+		DeliveredAt:      now,
 	}); err != nil {
 		t.Fatalf("Upsert(subagent) error = %v", err)
+	}
+	if err := registry.AppendEvent("subagent-1", taskregistry.EventTaskDeliveryDecision, map[string]string{
+		"completion_id": "completion-1",
+		"mode":          "user_only",
+		"payload_kind":  "subagent_result",
+	}); err != nil {
+		t.Fatalf("AppendEvent(subagent) error = %v", err)
 	}
 	if err := registry.Update("subagent-1", func(rec *taskregistry.Record) {
 		rec.Status = taskregistry.StatusSucceeded
@@ -141,11 +152,56 @@ func TestTaskStatusTool_TaskIDIncludesEvents(t *testing.T) {
 		t.Fatalf("expected success, got error: %s", result.ForLLM)
 	}
 	for _, want := range []string{
+		"Completion ID: completion-1",
+		"Delivered:",
 		"Events:",
-		"#1 task.upserted",
-		"#2 task.status_changed",
-		"#3 task.delivery_changed",
+		"#1 task.upserted runtime=subagent producer=subagent source=task_registry",
+		"#2 task.delivery_decision runtime=subagent producer=subagent source=task_registry",
+		"payload_kind=subagent_result",
+		"delivery_mode=user_only",
+		"completion_id=completion-1",
+		"#3 task.status_changed",
+		"#4 task.delivery_changed",
 		"payload={from=\"running\", to=\"succeeded\"}",
+	} {
+		if !strings.Contains(result.ForLLM, want) {
+			t.Fatalf("result missing %q:\n%s", want, result.ForLLM)
+		}
+	}
+}
+
+func TestTaskStatusTool_ListIncludesRecentEvents(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID:         "cron-job-1-run",
+		Runtime:        taskregistry.RuntimeCron,
+		TaskKind:       "cron",
+		Task:           "send reminder",
+		Status:         taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+		DeliveryMode:   "deliver_text",
+	}); err != nil {
+		t.Fatalf("Upsert(cron) error = %v", err)
+	}
+	if err := registry.AppendEvent("cron-job-1-run", taskregistry.EventTaskDeliveryDecision, map[string]string{
+		"job_id":        "job-1",
+		"payload_kind":  "deliver_text",
+		"delivery_mode": "deliver_text",
+	}); err != nil {
+		t.Fatalf("AppendEvent(cron) error = %v", err)
+	}
+
+	tool := NewTaskStatusTool(registry)
+	result := tool.Execute(context.Background(), map[string]any{"include_events": true})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	for _, want := range []string{
+		"Recent events:",
+		"task.delivery_decision runtime=cron producer=cron source=task_registry",
+		"payload_kind=deliver_text",
+		"delivery_mode=deliver_text",
 	} {
 		if !strings.Contains(result.ForLLM, want) {
 			t.Fatalf("result missing %q:\n%s", want, result.ForLLM)
