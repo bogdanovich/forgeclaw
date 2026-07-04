@@ -76,14 +76,14 @@ func (al *AgentLoop) recoverUnansweredSession(
 		return fmt.Errorf("session %q has no recoverable channel/chat scope", sessionKey)
 	}
 
-	placeholder := &turnState{
-		turnID: "pending-recovery-" + sessionKey + "-" + fmt.Sprintf("%d", al.turnSeq.Add(1)),
-		phase:  TurnPhaseSetup,
-	}
-	if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
+	claim, claimed := al.claimRuntimeSession(
+		sessionKey,
+		"pending-recovery-"+sessionKey+"-"+fmt.Sprintf("%d", al.turnSeq.Add(1)),
+	)
+	if !claimed {
 		return nil
 	}
-	defer al.clearRecoveryPlaceholder(sessionKey, placeholder)
+	defer claim.releaseIfOwned()
 
 	if tool, ok := agent.Tools.Get("message"); ok {
 		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
@@ -105,12 +105,6 @@ func (al *AgentLoop) recoverUnansweredSession(
 		AllowInterimPicoPublish: true,
 	})
 	return err
-}
-
-func (al *AgentLoop) clearRecoveryPlaceholder(sessionKey string, placeholder *turnState) {
-	if current, ok := al.activeTurnStates.Load(sessionKey); ok && current == placeholder {
-		al.activeTurnStates.Delete(sessionKey)
-	}
 }
 
 func (al *AgentLoop) sessionsWithUnackedInbound(ctx context.Context) map[string]struct{} {

@@ -54,8 +54,8 @@ func TestInboundTurnCoordinatorCleanupOnlyClearsOwnedPlaceholder(t *testing.T) {
 		t.Fatalf("cleanup removed unowned placeholder: got %p, want replacement %p", got, replacement)
 	}
 
-	replacementClaim := &inboundSessionClaim{
-		coordinator: coord,
+	replacementClaim := &runtimeSessionClaim{
+		al:          al,
 		sessionKey:  "session-1",
 		placeholder: replacement,
 	}
