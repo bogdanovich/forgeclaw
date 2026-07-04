@@ -262,11 +262,7 @@ toolLoop:
 				Content:    denyContent,
 				ToolCallID: tc.ID,
 			}
-			messages = append(messages, deniedMsg)
-			if !ts.opts.NoHistory {
-				ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
-				ts.recordPersistedMessage(deniedMsg)
-			}
+			messages = p.appendToolMessage(turnCtx, ts, messages, deniedMsg, toolMessagePersistOnly)
 			return true
 		}
 
@@ -368,12 +364,7 @@ toolLoop:
 						inferSkillNamesFromToolCall(ts, toolName, toolArgs),
 					)
 
-					messages = append(messages, toolResultMsg)
-					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
-						ts.recordPersistedMessage(toolResultMsg)
-						p.ingestMessage(turnCtx, ts, toolResultMsg)
-					}
+					messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
 
 					if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(steerMsgs) > 0 {
 						exec.markAdditionalUserInputObserved()
@@ -415,11 +406,7 @@ toolLoop:
 									Content:    skipMessage,
 									ToolCallID: skippedTC.ID,
 								}
-								messages = append(messages, skippedMsg)
-								if !ts.opts.NoHistory {
-									ts.agent.Sessions.AddFullMessage(ts.sessionKey, skippedMsg)
-									ts.recordPersistedMessage(skippedMsg)
-								}
+								messages = p.appendToolMessage(turnCtx, ts, messages, skippedMsg, toolMessagePersistOnly)
 							}
 						}
 						break toolLoop
@@ -464,11 +451,7 @@ toolLoop:
 					Content:    denyContent,
 					ToolCallID: tc.ID,
 				}
-				messages = append(messages, deniedMsg)
-				if !ts.opts.NoHistory {
-					ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
-					ts.recordPersistedMessage(deniedMsg)
-				}
+				messages = p.appendToolMessage(turnCtx, ts, messages, deniedMsg, toolMessagePersistOnly)
 				continue
 			case HookActionAbortTurn:
 				exec.abortedByHook = true
@@ -503,11 +486,7 @@ toolLoop:
 					Content:    denyContent,
 					ToolCallID: tc.ID,
 				}
-				messages = append(messages, deniedMsg)
-				if !ts.opts.NoHistory {
-					ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
-					ts.recordPersistedMessage(deniedMsg)
-				}
+				messages = p.appendToolMessage(turnCtx, ts, messages, deniedMsg, toolMessagePersistOnly)
 				continue
 			}
 		}
@@ -740,12 +719,7 @@ toolLoop:
 						})
 					exec.finalContent = fatalMCPServerErrorReply(mcpServerName, toolName)
 					exec.allResponsesHandled = false
-					messages = append(messages, toolResultMsg)
-					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
-						ts.recordPersistedMessage(toolResultMsg)
-						p.ingestMessage(turnCtx, ts, toolResultMsg)
-					}
+					messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
 					exec.messages = messages
 					return ToolControlBreak
 				}
@@ -764,23 +738,13 @@ toolLoop:
 						})
 					exec.finalContent = repeatedFatalToolErrorReply(toolName)
 					exec.allResponsesHandled = false
-					messages = append(messages, toolResultMsg)
-					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
-						ts.recordPersistedMessage(toolResultMsg)
-						p.ingestMessage(turnCtx, ts, toolResultMsg)
-					}
+					messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
 					exec.messages = messages
 					return ToolControlBreak
 				}
 			}
 		}
-		messages = append(messages, toolResultMsg)
-		if !ts.opts.NoHistory {
-			ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
-			ts.recordPersistedMessage(toolResultMsg)
-			p.ingestMessage(turnCtx, ts, toolResultMsg)
-		}
+		messages = p.appendToolMessage(turnCtx, ts, messages, toolResultMsg, toolMessagePersistAndIngest)
 
 		if steerMsgs := p.dequeueSteeringMessagesForTurn(ts); len(steerMsgs) > 0 {
 			exec.markSteeringObserved()
@@ -822,11 +786,7 @@ toolLoop:
 						Content:    skipMessage,
 						ToolCallID: skippedTC.ID,
 					}
-					messages = append(messages, skippedMsg)
-					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, skippedMsg)
-						ts.recordPersistedMessage(skippedMsg)
-					}
+					messages = p.appendToolMessage(turnCtx, ts, messages, skippedMsg, toolMessagePersistOnly)
 				}
 			}
 			break toolLoop
@@ -939,4 +899,30 @@ toolLoop:
 		"agent_id": ts.agent.ID, "iteration": iteration,
 	})
 	return ToolControlContinue
+}
+
+type toolMessageIngestMode int
+
+const (
+	toolMessagePersistOnly toolMessageIngestMode = iota
+	toolMessagePersistAndIngest
+)
+
+func (p *Pipeline) appendToolMessage(
+	ctx context.Context,
+	ts *turnState,
+	messages []providers.Message,
+	msg providers.Message,
+	ingest toolMessageIngestMode,
+) []providers.Message {
+	messages = append(messages, msg)
+	if ts == nil || ts.opts.NoHistory {
+		return messages
+	}
+	ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+	ts.recordPersistedMessage(msg)
+	if ingest == toolMessagePersistAndIngest && p != nil {
+		p.ingestMessage(ctx, ts, msg)
+	}
+	return messages
 }

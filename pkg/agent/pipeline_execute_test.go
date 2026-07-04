@@ -68,6 +68,63 @@ func TestIsFatalMCPTransportErrorSummary(t *testing.T) {
 	}
 }
 
+func TestPipelineAppendToolMessage_PersistsWithoutIngest(t *testing.T) {
+	sessionStore := session.NewSessionManager("")
+	cm := &trackingContextManager{}
+	pipeline := &Pipeline{ContextRuntime: cm}
+	ts := &turnState{
+		agent:      &AgentInstance{Sessions: sessionStore},
+		sessionKey: "session-tool-message",
+	}
+	msg := providers.Message{
+		Role:       "tool",
+		Content:    "skipped",
+		ToolCallID: "call-1",
+	}
+
+	messages := pipeline.appendToolMessage(context.Background(), ts, nil, msg, toolMessagePersistOnly)
+	if len(messages) != 1 || messages[0].Content != "skipped" {
+		t.Fatalf("appendToolMessage() = %#v, want appended message", messages)
+	}
+	history := sessionStore.GetHistory(ts.sessionKey)
+	if len(history) != 1 || history[0].Content != "skipped" {
+		t.Fatalf("session history = %#v, want persisted message", history)
+	}
+	if got := cm.ingestCalls.Load(); got != 0 {
+		t.Fatalf("ingest calls = %d, want 0", got)
+	}
+}
+
+func TestPipelineAppendToolMessage_PersistsAndIngests(t *testing.T) {
+	sessionStore := session.NewSessionManager("")
+	cm := &trackingContextManager{}
+	pipeline := &Pipeline{ContextRuntime: cm}
+	ts := &turnState{
+		agent:      &AgentInstance{Sessions: sessionStore},
+		sessionKey: "session-tool-result",
+	}
+	msg := providers.Message{
+		Role:       "tool",
+		Content:    "result",
+		ToolCallID: "call-2",
+	}
+
+	messages := pipeline.appendToolMessage(context.Background(), ts, nil, msg, toolMessagePersistAndIngest)
+	if len(messages) != 1 || messages[0].Content != "result" {
+		t.Fatalf("appendToolMessage() = %#v, want appended message", messages)
+	}
+	history := sessionStore.GetHistory(ts.sessionKey)
+	if len(history) != 1 || history[0].Content != "result" {
+		t.Fatalf("session history = %#v, want persisted message", history)
+	}
+	if got := cm.ingestCalls.Load(); got != 1 {
+		t.Fatalf("ingest calls = %d, want 1", got)
+	}
+	if cm.lastIngest == nil || cm.lastIngest.Message.Content != "result" {
+		t.Fatalf("last ingest = %#v, want result message", cm.lastIngest)
+	}
+}
+
 type repeatingFatalToolProvider struct {
 	calls int
 }
