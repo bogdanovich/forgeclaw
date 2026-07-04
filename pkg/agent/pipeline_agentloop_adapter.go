@@ -7,6 +7,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Bus:                  al.bus,
 		Cfg:                  cfg,
 		ChannelStreaming:     newConfigChannelStreamingProvider(cfg),
+		NativeSearch:         newConfigNativeSearchPolicy(cfg),
 		ContextRuntime:       al.contextManager,
 		BackgroundCompaction: al.backgroundCompactionRunner(),
 		Events:               al.runtimeEventEmitter(),
