@@ -55,15 +55,7 @@ func (p *Pipeline) CallLLM(
 	exec.providerToolDefs = filterToolsByTurnProfile(exec.providerToolDefs, ts.profile)
 
 	// Native web search support
-	webSearchEnabled := p.Cfg.Tools.IsToolEnabled("web") &&
-		turnProfileToolAllowed(ts.profile, "web_search")
-	exec.useNativeSearch = webSearchEnabled && p.Cfg.Tools.Web.PreferNative &&
-		func() bool {
-			if ns, ok := exec.model.activeProvider.(providers.NativeSearchCapable); ok {
-				return ns.SupportsNativeSearch()
-			}
-			return false
-		}()
+	exec.useNativeSearch = p.nativeSearchEnabled(ts.profile, exec.model.activeProvider)
 	if exec.useNativeSearch {
 		filtered := make([]providers.ToolDefinition, 0, len(exec.providerToolDefs))
 		for _, td := range exec.providerToolDefs {

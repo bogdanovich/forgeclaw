@@ -20,6 +20,7 @@ type Pipeline struct {
 	Bus                  pipelineBus
 	Cfg                  *config.Config
 	ChannelStreaming     channelStreamingConfigProvider
+	NativeSearch         nativeSearchPolicy
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -42,6 +43,7 @@ type PipelineDependencies struct {
 	Bus                  pipelineBus
 	Cfg                  *config.Config
 	ChannelStreaming     channelStreamingConfigProvider
+	NativeSearch         nativeSearchPolicy
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -70,6 +72,10 @@ type pipelineBus interface {
 
 type channelStreamingConfigProvider interface {
 	channelStreamingConfig(channelName string) (config.StreamingConfig, bool)
+}
+
+type nativeSearchPolicy interface {
+	useNativeSearch(profile config.EffectiveTurnProfile, provider providers.LLMProvider) bool
 }
 
 type pipelineContextRuntime interface {
@@ -197,6 +203,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		Bus:                  deps.Bus,
 		Cfg:                  deps.Cfg,
 		ChannelStreaming:     deps.ChannelStreaming,
+		NativeSearch:         deps.NativeSearch,
 		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,

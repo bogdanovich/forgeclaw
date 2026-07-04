@@ -467,6 +467,14 @@ func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *test
 	if toolFilter.cfg != pipeline.Cfg {
 		t.Fatal("ToolContentFilter config does not match pipeline config snapshot")
 	}
+
+	nativeSearch, ok := pipeline.NativeSearch.(configNativeSearchPolicy)
+	if !ok {
+		t.Fatalf("NativeSearch = %T, want configNativeSearchPolicy", pipeline.NativeSearch)
+	}
+	if nativeSearch.cfg != pipeline.Cfg {
+		t.Fatal("NativeSearch config does not match pipeline config snapshot")
+	}
 }
 
 func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {
