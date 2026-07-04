@@ -13,6 +13,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		Steering:             al.steering,
 		Reasoning:            al.reasoningPublisher(),
 		ToolFeedback:         al.toolFeedbackPublisher(),
+		ToolContentFilter:    newConfigToolContentFilter(al.GetConfig()),
 		SyncToolDelivery:     al.syncToolResultDelivery(),
 		ToolDelivery:         al.asyncToolCompletionDelivery(),
 		TurnControl:          al.turnAbortController(),

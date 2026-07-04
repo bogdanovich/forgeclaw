@@ -27,6 +27,7 @@ type Pipeline struct {
 	Steering             steeringDequeuer
 	Reasoning            reasoningPublisher
 	ToolFeedback         toolFeedbackManager
+	ToolContentFilter    toolContentFilter
 	SyncToolDelivery     syncToolResultDeliveryManager
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
@@ -47,6 +48,7 @@ type PipelineDependencies struct {
 	Steering             steeringDequeuer
 	Reasoning            reasoningPublisher
 	ToolFeedback         toolFeedbackManager
+	ToolContentFilter    toolContentFilter
 	SyncToolDelivery     syncToolResultDeliveryManager
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
@@ -155,6 +157,10 @@ type toolFeedbackManager interface {
 	dismissToolFeedbackForTurn(ctx context.Context, ts *turnState)
 }
 
+type toolContentFilter interface {
+	filterToolContentForLLM(content string) string
+}
+
 type turnController interface {
 	abortTurn(ts *turnState) (turnResult, error)
 }
@@ -192,6 +198,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		Steering:             deps.Steering,
 		Reasoning:            deps.Reasoning,
 		ToolFeedback:         deps.ToolFeedback,
+		ToolContentFilter:    deps.ToolContentFilter,
 		SyncToolDelivery:     deps.SyncToolDelivery,
 		ToolDelivery:         deps.ToolDelivery,
 		TurnControl:          deps.TurnControl,
