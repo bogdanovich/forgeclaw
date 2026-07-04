@@ -278,14 +278,7 @@ func (p *Pipeline) CallLLM(
 
 	// Retry loop
 	var err error
-	maxRetries := p.Cfg.Agents.Defaults.MaxLLMRetries
-	if maxRetries <= 0 {
-		maxRetries = 2
-	}
-	backoffSecs := p.Cfg.Agents.Defaults.LLMRetryBackoffSecs
-	if backoffSecs <= 0 {
-		backoffSecs = 2
-	}
+	maxRetries, backoffSecs := p.llmRetrySettings()
 	for retry := 0; retry <= maxRetries; retry++ {
 		exec.response, err = callLLM(exec.callMessages, exec.providerToolDefs)
 		if err == nil {
