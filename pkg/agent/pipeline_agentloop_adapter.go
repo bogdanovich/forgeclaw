@@ -10,6 +10,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 		NativeSearch:         newConfigNativeSearchPolicy(cfg),
 		LLMRetry:             newConfigLLMRetryPolicy(cfg),
 		MediaLimits:          newConfigMediaLimitsProvider(cfg),
+		FinalTurnRender:      newConfigFinalTurnRenderPolicy(cfg),
 		ContextRuntime:       al.contextManager,
 		BackgroundCompaction: al.backgroundCompactionRunner(),
 		Events:               al.runtimeEventEmitter(),

@@ -491,6 +491,14 @@ func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *test
 	if mediaLimits.cfg != pipeline.Cfg {
 		t.Fatal("MediaLimits config does not match pipeline config snapshot")
 	}
+
+	finalTurnRender, ok := pipeline.FinalTurnRender.(configFinalTurnRenderPolicy)
+	if !ok {
+		t.Fatalf("FinalTurnRender = %T, want configFinalTurnRenderPolicy", pipeline.FinalTurnRender)
+	}
+	if finalTurnRender.cfg != pipeline.Cfg {
+		t.Fatal("FinalTurnRender config does not match pipeline config snapshot")
+	}
 }
 
 func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {
