@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -76,15 +77,20 @@ func TestPipelineAppendToolMessage_PersistsWithoutIngest(t *testing.T) {
 		agent:      &AgentInstance{Sessions: sessionStore},
 		sessionKey: "session-tool-message",
 	}
+	runner := &toolLoopRunner{
+		p:       pipeline,
+		turnCtx: context.Background(),
+		ts:      ts,
+	}
 	msg := providers.Message{
 		Role:       "tool",
 		Content:    "skipped",
 		ToolCallID: "call-1",
 	}
 
-	messages := pipeline.appendToolMessage(context.Background(), ts, nil, msg, toolMessagePersistOnly)
-	if len(messages) != 1 || messages[0].Content != "skipped" {
-		t.Fatalf("appendToolMessage() = %#v, want appended message", messages)
+	runner.appendToolMessage(msg, toolMessagePersistOnly)
+	if len(runner.messages) != 1 || runner.messages[0].Content != "skipped" {
+		t.Fatalf("messages = %#v, want appended message", runner.messages)
 	}
 	history := sessionStore.GetHistory(ts.sessionKey)
 	if len(history) != 1 || history[0].Content != "skipped" {
@@ -103,15 +109,20 @@ func TestPipelineAppendToolMessage_PersistsAndIngests(t *testing.T) {
 		agent:      &AgentInstance{Sessions: sessionStore},
 		sessionKey: "session-tool-result",
 	}
+	runner := &toolLoopRunner{
+		p:       pipeline,
+		turnCtx: context.Background(),
+		ts:      ts,
+	}
 	msg := providers.Message{
 		Role:       "tool",
 		Content:    "result",
 		ToolCallID: "call-2",
 	}
 
-	messages := pipeline.appendToolMessage(context.Background(), ts, nil, msg, toolMessagePersistAndIngest)
-	if len(messages) != 1 || messages[0].Content != "result" {
-		t.Fatalf("appendToolMessage() = %#v, want appended message", messages)
+	runner.appendToolMessage(msg, toolMessagePersistAndIngest)
+	if len(runner.messages) != 1 || runner.messages[0].Content != "result" {
+		t.Fatalf("messages = %#v, want appended message", runner.messages)
 	}
 	history := sessionStore.GetHistory(ts.sessionKey)
 	if len(history) != 1 || history[0].Content != "result" {
@@ -138,23 +149,25 @@ func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *tes
 		{ID: "call-skip-1", Name: "expensive_tool"},
 		{ID: "call-skip-2", Name: "slow_tool"},
 	}
+	runner := &toolLoopRunner{
+		p:         pipeline,
+		turnCtx:   context.Background(),
+		ts:        ts,
+		toolCalls: toolCalls,
+	}
 
-	messages := pipeline.appendSkippedToolMessages(
-		context.Background(),
-		ts,
-		nil,
-		toolCalls,
+	runner.appendSkippedToolMessages(
 		1,
 		"queued user steering message",
 		"Skipped due to queued user message.",
 	)
-	if len(messages) != 2 {
-		t.Fatalf("messages len = %d, want 2", len(messages))
+	if len(runner.messages) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(runner.messages))
 	}
-	if messages[0].ToolCallID != "call-skip-1" ||
-		messages[1].ToolCallID != "call-skip-2" ||
-		messages[0].Content != "Skipped due to queued user message." {
-		t.Fatalf("messages = %#v, want skipped tool messages", messages)
+	if runner.messages[0].ToolCallID != "call-skip-1" ||
+		runner.messages[1].ToolCallID != "call-skip-2" ||
+		runner.messages[0].Content != "Skipped due to queued user message." {
+		t.Fatalf("messages = %#v, want skipped tool messages", runner.messages)
 	}
 	history := sessionStore.GetHistory(ts.sessionKey)
 	if len(history) != 2 ||
@@ -164,6 +177,45 @@ func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *tes
 	}
 	if got := cm.ingestCalls.Load(); got != 0 {
 		t.Fatalf("ingest calls = %d, want 0", got)
+	}
+}
+
+func TestToolLoopRunnerAppendPendingSubTurnResult_PersistsAndIngests(t *testing.T) {
+	sessionStore := session.NewSessionManager("")
+	cm := &trackingContextManager{}
+	pipeline := &Pipeline{ContextRuntime: cm}
+	ts := &turnState{
+		agent: &AgentInstance{
+			Sessions: sessionStore,
+		},
+		sessionKey:     "session-subturn-result",
+		pendingResults: make(chan *tools.ToolResult, 1),
+	}
+	ts.pendingResults <- &tools.ToolResult{ForLLM: "child result"}
+	runner := &toolLoopRunner{
+		p:       pipeline,
+		turnCtx: context.Background(),
+		ts:      ts,
+	}
+
+	runner.appendPendingSubTurnResult()
+	if len(runner.messages) != 1 ||
+		!strings.Contains(runner.messages[0].Content, "child result") {
+		t.Fatalf("messages = %#v, want subturn result message", runner.messages)
+	}
+	history := sessionStore.GetHistory(ts.sessionKey)
+	if len(history) != 1 || !strings.Contains(history[0].Content, "child result") {
+		t.Fatalf("session history = %#v, want persisted subturn result", history)
+	}
+	persisted := ts.persistedMessagesSnapshot()
+	if len(persisted) != 1 || !strings.Contains(persisted[0].Content, "child result") {
+		t.Fatalf("persisted messages = %#v, want subturn result", persisted)
+	}
+	if got := cm.ingestCalls.Load(); got != 1 {
+		t.Fatalf("ingest calls = %d, want 1", got)
+	}
+	if cm.lastIngest == nil || !strings.Contains(cm.lastIngest.Message.Content, "child result") {
+		t.Fatalf("last ingest = %#v, want subturn result", cm.lastIngest)
 	}
 }
 
