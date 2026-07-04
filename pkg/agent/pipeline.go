@@ -30,7 +30,7 @@ type Pipeline struct {
 	SyncToolDelivery     syncToolResultDeliveryManager
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
-	Hooks                *HookManager
+	Hooks                hookInterceptor
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
@@ -51,7 +51,7 @@ type PipelineDependencies struct {
 	SyncToolDelivery     syncToolResultDeliveryManager
 	ToolDelivery         toolDeliveryManager
 	TurnControl          turnController
-	Hooks                *HookManager
+	Hooks                hookInterceptor
 	Fallback             *providers.FallbackChain
 	ChannelManager       interfaces.ChannelManager
 	MediaStore           media.MediaStore
@@ -148,6 +148,14 @@ type toolFeedbackManager interface {
 
 type turnController interface {
 	abortTurn(ts *turnState) (turnResult, error)
+}
+
+type hookInterceptor interface {
+	BeforeLLM(ctx context.Context, req *LLMHookRequest) (*LLMHookRequest, HookDecision)
+	AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LLMHookResponse, HookDecision)
+	BeforeTool(ctx context.Context, req *ToolCallHookRequest) (*ToolCallHookRequest, HookDecision)
+	AfterTool(ctx context.Context, resp *ToolResultHookResponse) (*ToolResultHookResponse, HookDecision)
+	ApproveTool(ctx context.Context, req *ToolApprovalRequest) ApprovalDecision
 }
 
 // NewPipelineFromDependencies creates a Pipeline from explicit dependencies.
