@@ -18,8 +18,11 @@ func (f configToolContentFilter) filterToolContentForLLM(content string) string 
 }
 
 func (p *Pipeline) filterToolContentForLLM(content string) string {
-	if p == nil || p.ToolContentFilter == nil {
+	if p == nil {
 		return content
+	}
+	if p.ToolContentFilter == nil {
+		return newConfigToolContentFilter(p.Cfg).filterToolContentForLLM(content)
 	}
 	return p.ToolContentFilter.filterToolContentForLLM(content)
 }
