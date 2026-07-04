@@ -10,7 +10,7 @@ import (
 
 func TestValidator_BlocksDangerousPattern(t *testing.T) {
 	validator := New(Config{
-		DenyPatterns: []*regexp.Regexp{regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`)},
+		BuiltInDenyPatterns: []*regexp.Regexp{regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`)},
 	})
 
 	decision := validator.Validate("rm -rf /", "")
@@ -24,13 +24,29 @@ func TestValidator_BlocksDangerousPattern(t *testing.T) {
 
 func TestValidator_CustomAllowBypassesDenyPattern(t *testing.T) {
 	validator := New(Config{
-		DenyPatterns:        []*regexp.Regexp{regexp.MustCompile(`\bgit\s+push\b`)},
+		BuiltInDenyPatterns: []*regexp.Regexp{regexp.MustCompile(`\bgit\s+push\b`)},
 		CustomAllowPatterns: []*regexp.Regexp{regexp.MustCompile(`\bgit\s+push\s+origin\b`)},
 	})
 
 	decision := validator.Validate("git push origin feature", "")
 	if !decision.Allowed {
 		t.Fatalf("expected custom allow to bypass deny pattern: %s", decision.Reason)
+	}
+}
+
+func TestValidator_CustomAllowDoesNotBypassCustomDenyPattern(t *testing.T) {
+	validator := New(Config{
+		BuiltInDenyPatterns: []*regexp.Regexp{regexp.MustCompile(`\bgit\s+push\b`)},
+		CustomDenyPatterns:  []*regexp.Regexp{regexp.MustCompile(`\borigin\b`)},
+		CustomAllowPatterns: []*regexp.Regexp{regexp.MustCompile(`\bgit\s+push\s+origin\b`)},
+	})
+
+	decision := validator.Validate("git push origin feature", "")
+	if decision.Allowed {
+		t.Fatal("expected custom deny pattern to override custom allow")
+	}
+	if decision.Category != "dangerous_pattern" {
+		t.Fatalf("category = %q, want dangerous_pattern", decision.Category)
 	}
 }
 
@@ -50,7 +66,7 @@ func TestValidator_AllowPatternsRequireMatch(t *testing.T) {
 
 func TestValidator_StripsQuotedHeredocBodyBeforeDenyChecks(t *testing.T) {
 	validator := New(Config{
-		DenyPatterns: []*regexp.Regexp{regexp.MustCompile("`[^`]+`")},
+		BuiltInDenyPatterns: []*regexp.Regexp{regexp.MustCompile("`[^`]+`")},
 	})
 
 	command := "gh pr comment 2763 --body-file - <<'TXT'\n" +
@@ -198,7 +214,7 @@ func TestClassifyCommand(t *testing.T) {
 
 func TestValidatorDecisionIncludesCommandClass(t *testing.T) {
 	validator := New(Config{
-		DenyPatterns: []*regexp.Regexp{regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`)},
+		BuiltInDenyPatterns: []*regexp.Regexp{regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`)},
 	})
 
 	decision := validator.Validate("rm -rf tmp", "")
@@ -295,8 +311,8 @@ func TestValidator_ReadOnlyPermissionMode(t *testing.T) {
 
 func TestValidator_ReadOnlyPermissionModeDoesNotBypassDangerousPattern(t *testing.T) {
 	validator := New(Config{
-		PermissionMode: PermissionModeReadOnly,
-		DenyPatterns:   []*regexp.Regexp{regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`)},
+		PermissionMode:      PermissionModeReadOnly,
+		BuiltInDenyPatterns: []*regexp.Regexp{regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`)},
 	})
 
 	decision := validator.Validate("rm -rf tmp", "")

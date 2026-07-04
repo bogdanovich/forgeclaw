@@ -56,7 +56,10 @@ func formatUserFacingAgentError(err error) string {
 		return "Error processing message."
 	}
 
-	base := fmt.Sprintf("Error processing message: %v", err)
+	base := formatProcessingError(err)
+	if strings.TrimSpace(base) == "" {
+		base = fmt.Sprintf("Error processing message: %v", err)
+	}
 
 	var exhausted *providers.FallbackExhaustedError
 	if errors.As(err, &exhausted) && exhausted != nil && len(exhausted.Attempts) > 0 {

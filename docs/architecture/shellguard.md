@@ -20,13 +20,17 @@ Current checks run in this order:
 
 1. Strip quoted heredoc bodies before deny-pattern matching, so PR comments or
    patches containing blocked-looking text do not trip the guard accidentally.
-2. Apply deny patterns unless the command matches a custom allow pattern.
-3. Apply an optional allowlist.
-4. Apply workspace path restrictions when the caller enables them.
-5. Apply mode-aware permission policy, such as `read_only`.
+2. Apply custom deny patterns first. These are workspace/operator hard blocks
+   and always win.
+3. Apply built-in deny patterns unless the command matches a custom allow
+   pattern.
+4. Apply an optional allowlist.
+5. Apply workspace path restrictions when the caller enables them.
+6. Apply mode-aware permission policy, such as `read_only`.
 
-The order is intentional: known dangerous patterns and path escapes stay
-blocked even when higher-level modes are permissive.
+The order is intentional: workspace hard blocks and path escapes stay blocked
+even when higher-level modes are permissive, while custom allow patterns can
+still carve out safe exceptions to broad built-in deny rules.
 
 ## Permission Modes
 

@@ -42,7 +42,8 @@ func getSessionManager() *SessionManager {
 type ExecTool struct {
 	workingDir          string
 	timeout             time.Duration
-	denyPatterns        []*regexp.Regexp
+	builtInDenyPatterns []*regexp.Regexp
+	customDenyPatterns  []*regexp.Regexp
 	allowPatterns       []*regexp.Regexp
 	customAllowPatterns []*regexp.Regexp
 	allowedPathPatterns []*regexp.Regexp
@@ -135,7 +136,8 @@ func NewExecToolWithConfig(
 	cfg *config.Config,
 	allowPaths ...[]*regexp.Regexp,
 ) (*ExecTool, error) {
-	denyPatterns := make([]*regexp.Regexp, 0)
+	builtInDenyPatterns := make([]*regexp.Regexp, 0)
+	customDenyPatterns := make([]*regexp.Regexp, 0)
 	customAllowPatterns := make([]*regexp.Regexp, 0)
 	var allowedPathPatterns []*regexp.Regexp
 	allowRemote := true
@@ -150,9 +152,9 @@ func NewExecToolWithConfig(
 		allowRemote = execConfig.AllowRemote
 		permissionMode = execConfig.PermissionMode
 		if enableDenyPatterns {
-			denyPatterns = append(denyPatterns, defaultDenyPatterns...)
+			builtInDenyPatterns = append(builtInDenyPatterns, defaultDenyPatterns...)
 			if runtime.GOOS == "windows" {
-				denyPatterns = append(denyPatterns, windowsDenyPatterns...)
+				builtInDenyPatterns = append(builtInDenyPatterns, windowsDenyPatterns...)
 			}
 			if len(execConfig.CustomDenyPatterns) > 0 {
 				logger.InfoCF("tools", "using custom deny patterns", map[string]any{
@@ -163,7 +165,7 @@ func NewExecToolWithConfig(
 					if err != nil {
 						return nil, fmt.Errorf("invalid custom deny pattern %q: %w", pattern, err)
 					}
-					denyPatterns = append(denyPatterns, re)
+					customDenyPatterns = append(customDenyPatterns, re)
 				}
 			}
 		} else {
@@ -178,9 +180,9 @@ func NewExecToolWithConfig(
 			customAllowPatterns = append(customAllowPatterns, re)
 		}
 	} else {
-		denyPatterns = append(denyPatterns, defaultDenyPatterns...)
+		builtInDenyPatterns = append(builtInDenyPatterns, defaultDenyPatterns...)
 		if runtime.GOOS == "windows" {
-			denyPatterns = append(denyPatterns, windowsDenyPatterns...)
+			builtInDenyPatterns = append(builtInDenyPatterns, windowsDenyPatterns...)
 		}
 	}
 
@@ -197,7 +199,8 @@ func NewExecToolWithConfig(
 	return &ExecTool{
 		workingDir:          workingDir,
 		timeout:             timeout,
-		denyPatterns:        denyPatterns,
+		builtInDenyPatterns: builtInDenyPatterns,
+		customDenyPatterns:  customDenyPatterns,
 		allowPatterns:       nil,
 		customAllowPatterns: customAllowPatterns,
 		allowedPathPatterns: allowedPathPatterns,
@@ -1170,7 +1173,8 @@ func (t *ExecTool) executeSendKeys(args map[string]any) *ToolResult {
 
 func (t *ExecTool) guardCommand(command, cwd string) string {
 	decision := shellguard.New(shellguard.Config{
-		DenyPatterns:        t.denyPatterns,
+		BuiltInDenyPatterns: t.builtInDenyPatterns,
+		CustomDenyPatterns:  t.customDenyPatterns,
 		AllowPatterns:       t.allowPatterns,
 		CustomAllowPatterns: t.customAllowPatterns,
 		AllowedPathPatterns: t.allowedPathPatterns,

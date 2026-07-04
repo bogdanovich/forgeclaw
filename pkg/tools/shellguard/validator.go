@@ -18,7 +18,8 @@ type Decision struct {
 
 // Config contains the policy inputs needed to validate a shell command.
 type Config struct {
-	DenyPatterns        []*regexp.Regexp
+	BuiltInDenyPatterns []*regexp.Regexp
+	CustomDenyPatterns  []*regexp.Regexp
 	AllowPatterns       []*regexp.Regexp
 	CustomAllowPatterns []*regexp.Regexp
 	AllowedPathPatterns []*regexp.Regexp
@@ -44,8 +45,19 @@ func (v *Validator) Validate(command, cwd string) Decision {
 	lowerForDeny := strings.ToLower(sanitizedForGuards)
 	commandClass := ClassifyCommand(sanitizedForGuards)
 
+	for _, pattern := range v.config.CustomDenyPatterns {
+		if pattern.MatchString(lowerForDeny) {
+			return Decision{
+				Allowed:      false,
+				Reason:       "Command blocked by safety guard (dangerous pattern detected)",
+				Category:     "dangerous_pattern",
+				CommandClass: commandClass,
+			}
+		}
+	}
+
 	if !v.explicitlyAllowed(lower) {
-		for _, pattern := range v.config.DenyPatterns {
+		for _, pattern := range v.config.BuiltInDenyPatterns {
 			if pattern.MatchString(lowerForDeny) {
 				return Decision{
 					Allowed:      false,

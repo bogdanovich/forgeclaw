@@ -315,7 +315,7 @@ func (c *BaseChannel) HandleMessageWithContext(
 	media []string,
 	inboundCtx bus.InboundContext,
 	senderOpts ...bus.SenderInfo,
-) {
+) error {
 	// Use SenderInfo-based allow check when available, else fall back to string
 	var sender bus.SenderInfo
 	if len(senderOpts) > 0 {
@@ -324,11 +324,11 @@ func (c *BaseChannel) HandleMessageWithContext(
 	senderID := strings.TrimSpace(inboundCtx.SenderID)
 	if sender.CanonicalID != "" || sender.PlatformID != "" {
 		if !c.IsAllowedSender(sender) {
-			return
+			return nil
 		}
 	} else {
 		if !c.IsAllowed(senderID) {
-			return
+			return nil
 		}
 	}
 
@@ -399,7 +399,9 @@ func (c *BaseChannel) HandleMessageWithContext(
 			"chat_id": deliveryChatID,
 			"error":   err.Error(),
 		})
+		return err
 	}
+	return nil
 }
 
 func (c *BaseChannel) ObserveMessageWithContext(
@@ -468,8 +470,8 @@ func (c *BaseChannel) HandleInboundContext(
 	media []string,
 	inboundCtx bus.InboundContext,
 	senderOpts ...bus.SenderInfo,
-) {
-	c.HandleMessageWithContext(ctx, deliveryChatID, content, media, inboundCtx, senderOpts...)
+) error {
+	return c.HandleMessageWithContext(ctx, deliveryChatID, content, media, inboundCtx, senderOpts...)
 }
 
 func (c *BaseChannel) SetRunning(running bool) {
