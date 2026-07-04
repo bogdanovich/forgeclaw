@@ -125,6 +125,48 @@ func TestPipelineAppendToolMessage_PersistsAndIngests(t *testing.T) {
 	}
 }
 
+func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *testing.T) {
+	sessionStore := session.NewSessionManager("")
+	cm := &trackingContextManager{}
+	pipeline := &Pipeline{ContextRuntime: cm}
+	ts := &turnState{
+		agent:      &AgentInstance{Sessions: sessionStore},
+		sessionKey: "session-skipped-tool",
+	}
+	toolCalls := []providers.ToolCall{
+		{ID: "call-complete", Name: "done_tool"},
+		{ID: "call-skip-1", Name: "expensive_tool"},
+		{ID: "call-skip-2", Name: "slow_tool"},
+	}
+
+	messages := pipeline.appendSkippedToolMessages(
+		context.Background(),
+		ts,
+		nil,
+		toolCalls,
+		1,
+		"queued user steering message",
+		"Skipped due to queued user message.",
+	)
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(messages))
+	}
+	if messages[0].ToolCallID != "call-skip-1" ||
+		messages[1].ToolCallID != "call-skip-2" ||
+		messages[0].Content != "Skipped due to queued user message." {
+		t.Fatalf("messages = %#v, want skipped tool messages", messages)
+	}
+	history := sessionStore.GetHistory(ts.sessionKey)
+	if len(history) != 2 ||
+		history[0].ToolCallID != "call-skip-1" ||
+		history[1].ToolCallID != "call-skip-2" {
+		t.Fatalf("session history = %#v, want skipped messages persisted", history)
+	}
+	if got := cm.ingestCalls.Load(); got != 0 {
+		t.Fatalf("ingest calls = %d, want 0", got)
+	}
+}
+
 type repeatingFatalToolProvider struct {
 	calls int
 }

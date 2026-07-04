@@ -391,23 +391,15 @@ toolLoop:
 									"skipped":   remaining,
 									"reason":    skipReason,
 								})
-							for j := i + 1; j < len(normalizedToolCalls); j++ {
-								skippedTC := normalizedToolCalls[j]
-								p.emitEvent(
-									runtimeevents.KindAgentToolExecSkipped,
-									ts.eventMeta("runTurn", "turn.tool.skipped"),
-									ToolExecSkippedPayload{
-										Tool:   skippedTC.Name,
-										Reason: skipReason,
-									},
-								)
-								skippedMsg := providers.Message{
-									Role:       "tool",
-									Content:    skipMessage,
-									ToolCallID: skippedTC.ID,
-								}
-								messages = p.appendToolMessage(turnCtx, ts, messages, skippedMsg, toolMessagePersistOnly)
-							}
+							messages = p.appendSkippedToolMessages(
+								turnCtx,
+								ts,
+								messages,
+								normalizedToolCalls,
+								i+1,
+								skipReason,
+								skipMessage,
+							)
 						}
 						break toolLoop
 					}
@@ -771,23 +763,15 @@ toolLoop:
 						"skipped":   remaining,
 						"reason":    skipReason,
 					})
-				for j := i + 1; j < len(normalizedToolCalls); j++ {
-					skippedTC := normalizedToolCalls[j]
-					p.emitEvent(
-						runtimeevents.KindAgentToolExecSkipped,
-						ts.eventMeta("runTurn", "turn.tool.skipped"),
-						ToolExecSkippedPayload{
-							Tool:   skippedTC.Name,
-							Reason: skipReason,
-						},
-					)
-					skippedMsg := providers.Message{
-						Role:       "tool",
-						Content:    skipMessage,
-						ToolCallID: skippedTC.ID,
-					}
-					messages = p.appendToolMessage(turnCtx, ts, messages, skippedMsg, toolMessagePersistOnly)
-				}
+				messages = p.appendSkippedToolMessages(
+					turnCtx,
+					ts,
+					messages,
+					normalizedToolCalls,
+					i+1,
+					skipReason,
+					skipMessage,
+				)
 			}
 			break toolLoop
 		}
@@ -925,4 +909,43 @@ func (p *Pipeline) appendToolMessage(
 		p.ingestMessage(ctx, ts, msg)
 	}
 	return messages
+}
+
+func (p *Pipeline) appendSkippedToolMessages(
+	ctx context.Context,
+	ts *turnState,
+	messages []providers.Message,
+	toolCalls []providers.ToolCall,
+	start int,
+	reason string,
+	content string,
+) []providers.Message {
+	for i := start; i < len(toolCalls); i++ {
+		messages = p.appendSkippedToolMessage(ctx, ts, messages, toolCalls[i], reason, content)
+	}
+	return messages
+}
+
+func (p *Pipeline) appendSkippedToolMessage(
+	ctx context.Context,
+	ts *turnState,
+	messages []providers.Message,
+	skippedTC providers.ToolCall,
+	reason string,
+	content string,
+) []providers.Message {
+	p.emitEvent(
+		runtimeevents.KindAgentToolExecSkipped,
+		ts.eventMeta("runTurn", "turn.tool.skipped"),
+		ToolExecSkippedPayload{
+			Tool:   skippedTC.Name,
+			Reason: reason,
+		},
+	)
+	skippedMsg := providers.Message{
+		Role:       "tool",
+		Content:    content,
+		ToolCallID: skippedTC.ID,
+	}
+	return p.appendToolMessage(ctx, ts, messages, skippedMsg, toolMessagePersistOnly)
 }
