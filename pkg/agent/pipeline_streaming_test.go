@@ -499,6 +499,14 @@ func TestNewPipeline_UsesSingleConfigSnapshotForConfigBackedDependencies(t *test
 	if finalTurnRender.cfg != pipeline.Cfg {
 		t.Fatal("FinalTurnRender config does not match pipeline config snapshot")
 	}
+
+	modelResolution, ok := pipeline.ModelResolution.(configPipelineModelResolution)
+	if !ok {
+		t.Fatalf("ModelResolution = %T, want configPipelineModelResolution", pipeline.ModelResolution)
+	}
+	if modelResolution.cfg != pipeline.Cfg {
+		t.Fatal("ModelResolution config does not match pipeline config snapshot")
+	}
 }
 
 func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {

@@ -24,6 +24,7 @@ type Pipeline struct {
 	LLMRetry             llmRetryPolicy
 	MediaLimits          mediaLimitsProvider
 	FinalTurnRender      finalTurnRenderPolicy
+	ModelResolution      pipelineModelResolution
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -50,6 +51,7 @@ type PipelineDependencies struct {
 	LLMRetry             llmRetryPolicy
 	MediaLimits          mediaLimitsProvider
 	FinalTurnRender      finalTurnRenderPolicy
+	ModelResolution      pipelineModelResolution
 	ContextRuntime       pipelineContextRuntime
 	BackgroundCompaction backgroundCompactionScheduler
 	Events               runtimeEventEmitter
@@ -94,6 +96,15 @@ type mediaLimitsProvider interface {
 
 type finalTurnRenderPolicy interface {
 	shouldFinalizeAfterToolLoop(exec *turnExecution) bool
+}
+
+type pipelineModelResolution interface {
+	modelCandidates(primary string, fallbacks []string) []providers.FallbackCandidate
+	activeModelConfig(
+		workspace string,
+		candidates []providers.FallbackCandidate,
+		activeModel string,
+	) *config.ModelConfig
 }
 
 type pipelineContextRuntime interface {
@@ -225,6 +236,7 @@ func NewPipelineFromDependencies(deps PipelineDependencies) *Pipeline {
 		LLMRetry:             deps.LLMRetry,
 		MediaLimits:          deps.MediaLimits,
 		FinalTurnRender:      deps.FinalTurnRender,
+		ModelResolution:      deps.ModelResolution,
 		ContextRuntime:       deps.ContextRuntime,
 		BackgroundCompaction: deps.BackgroundCompaction,
 		Events:               deps.Events,

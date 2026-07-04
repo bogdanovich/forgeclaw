@@ -150,12 +150,10 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.model.selectedCandidates = selection.selectedCandidates
 	exec.model.activeCandidates = selection.activeCandidates
 	exec.model.activeModel = selection.model
-	exec.model.activeModelConfig = resolveActiveModelConfig(
-		p.Cfg,
+	exec.model.activeModelConfig = p.activeModelConfig(
 		ts.agent.Workspace,
 		selection.activeCandidates,
 		selection.model,
-		p.Cfg.Agents.Defaults.Provider,
 	)
 	exec.model.llmModelName = activeModelName
 	exec.model.activeProvider = activeProvider
@@ -183,12 +181,10 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		exec.model.selectedCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
 		exec.model.activeCandidates = append([]providers.FallbackCandidate(nil), visionExecution.Candidates...)
 		exec.model.activeModel = resolvedCandidateModel(visionExecution.Candidates, visionExecution.Model)
-		exec.model.activeModelConfig = resolveActiveModelConfig(
-			p.Cfg,
+		exec.model.activeModelConfig = p.activeModelConfig(
 			ts.agent.Workspace,
 			visionExecution.Candidates,
 			visionExecution.Model,
-			p.Cfg.Agents.Defaults.Provider,
 		)
 		exec.model.llmModelName = resolvedCandidateModelName(
 			visionExecution.Candidates,
