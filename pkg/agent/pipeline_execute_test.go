@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -176,6 +177,45 @@ func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *tes
 	}
 	if got := cm.ingestCalls.Load(); got != 0 {
 		t.Fatalf("ingest calls = %d, want 0", got)
+	}
+}
+
+func TestToolLoopRunnerAppendPendingSubTurnResult_PersistsAndIngests(t *testing.T) {
+	sessionStore := session.NewSessionManager("")
+	cm := &trackingContextManager{}
+	pipeline := &Pipeline{ContextRuntime: cm}
+	ts := &turnState{
+		agent: &AgentInstance{
+			Sessions: sessionStore,
+		},
+		sessionKey:     "session-subturn-result",
+		pendingResults: make(chan *tools.ToolResult, 1),
+	}
+	ts.pendingResults <- &tools.ToolResult{ForLLM: "child result"}
+	runner := &toolLoopRunner{
+		p:       pipeline,
+		turnCtx: context.Background(),
+		ts:      ts,
+	}
+
+	runner.appendPendingSubTurnResult()
+	if len(runner.messages) != 1 ||
+		!strings.Contains(runner.messages[0].Content, "child result") {
+		t.Fatalf("messages = %#v, want subturn result message", runner.messages)
+	}
+	history := sessionStore.GetHistory(ts.sessionKey)
+	if len(history) != 1 || !strings.Contains(history[0].Content, "child result") {
+		t.Fatalf("session history = %#v, want persisted subturn result", history)
+	}
+	persisted := ts.persistedMessagesSnapshot()
+	if len(persisted) != 1 || !strings.Contains(persisted[0].Content, "child result") {
+		t.Fatalf("persisted messages = %#v, want subturn result", persisted)
+	}
+	if got := cm.ingestCalls.Load(); got != 1 {
+		t.Fatalf("ingest calls = %d, want 1", got)
+	}
+	if cm.lastIngest == nil || !strings.Contains(cm.lastIngest.Message.Content, "child result") {
+		t.Fatalf("last ingest = %#v, want subturn result", cm.lastIngest)
 	}
 }
 

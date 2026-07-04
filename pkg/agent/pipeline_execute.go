@@ -877,12 +877,21 @@ func (r *toolLoopRunner) appendPendingSubTurnResult() {
 		if ok && result != nil && result.ForLLM != "" {
 			content := r.p.filterPendingResultForLLM(result.ForLLM)
 			msg := subTurnResultPromptMessage(content)
-			r.messages = append(r.messages, msg)
-			if !r.ts.opts.NoHistory {
-				r.ts.agent.Sessions.AddFullMessage(r.ts.sessionKey, msg)
-			}
+			r.appendInjectedTurnMessage(msg)
 		}
 	default:
+	}
+}
+
+func (r *toolLoopRunner) appendInjectedTurnMessage(msg providers.Message) {
+	r.messages = append(r.messages, msg)
+	if r.ts == nil || r.ts.opts.NoHistory {
+		return
+	}
+	r.ts.agent.Sessions.AddFullMessage(r.ts.sessionKey, msg)
+	r.ts.recordPersistedMessage(msg)
+	if r.p != nil {
+		r.p.ingestMessage(r.turnCtx, r.ts, msg)
 	}
 }
 
