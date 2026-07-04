@@ -118,7 +118,10 @@ func sameLauncherRequestOrigin(r *http.Request, raw string) bool {
 	}
 
 	wantScheme := launcherRequestScheme(r)
-	wantHost := r.Host
+	wantHost := forwardedHostFirst(r)
+	if wantHost == "" {
+		wantHost = r.Host
+	}
 	if wantHost == "" {
 		wantHost = r.URL.Host
 	}

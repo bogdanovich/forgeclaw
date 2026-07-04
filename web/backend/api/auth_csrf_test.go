@@ -61,3 +61,32 @@ func TestLauncherAuthSetupAllowsSameOriginFirstRun(t *testing.T) {
 		t.Fatalf("same-origin setup store: initialized=%v password=%q", store.initialized, store.password)
 	}
 }
+
+func TestLauncherAuthSetupAllowsSameOriginFirstRunBehindForwardedHost(t *testing.T) {
+	store := &fakePasswordStore{}
+	mux := http.NewServeMux()
+	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
+		SessionCookie: "session-cookie-value",
+		PasswordStore: store,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://127.0.0.1:18800/api/auth/setup",
+		strings.NewReader(`{"password":"ProxySetup123!","confirm":"ProxySetup123!"}`),
+	)
+	req.Header.Set("Origin", "https://dash.example.com")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("X-Forwarded-Host", "dash.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("forwarded-host setup code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !store.initialized || store.password != "ProxySetup123!" {
+		t.Fatalf("forwarded-host setup store: initialized=%v password=%q", store.initialized, store.password)
+	}
+}
