@@ -65,17 +65,22 @@ func recentUserFollowupCandidate(history []providers.Message, now time.Time, win
 	}
 
 	lastUser := history[lastUserIdx]
-	if lastUser.CreatedAt == nil || lastUser.CreatedAt.IsZero() {
-		return false
-	}
-	if now.Sub(*lastUser.CreatedAt) > window {
-		return false
-	}
-
 	for i := lastUserIdx + 1; i < len(history); i++ {
 		if history[i].Role == "assistant" {
 			return false
 		}
+	}
+
+	if lastUser.CreatedAt == nil || lastUser.CreatedAt.IsZero() {
+		// Legacy/default session history does not always preserve timestamps on
+		// replayed providers.Message values. In that case, fall back to the
+		// structural "latest user message still at the tail with no assistant
+		// reply after it" signal rather than disabling adjacent media follow-up
+		// behavior entirely for normal sessions.
+		return true
+	}
+	if now.Sub(*lastUser.CreatedAt) > window {
+		return false
 	}
 
 	return true

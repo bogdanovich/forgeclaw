@@ -39,6 +39,21 @@ func TestClassifyCurrentTurnRelation_AdjacentMediaFollowup(t *testing.T) {
 	}
 }
 
+func TestClassifyCurrentTurnRelation_AdjacentMediaFollowupWithoutTimestamp(t *testing.T) {
+	got := classifyCurrentTurnRelation(currentTurnRelationInput{
+		Content: "[media only]",
+		Media:   []string{"media://image-1"},
+		History: []providers.Message{
+			{Role: "user", Content: "Here is what I ate"},
+		},
+		Now: time.Now(),
+	})
+
+	if got.Kind != currentTurnRelationAdjacentFollowupMedia {
+		t.Fatalf("Kind = %q, want %q", got.Kind, currentTurnRelationAdjacentFollowupMedia)
+	}
+}
+
 func TestClassifyCurrentTurnRelation_StandaloneAfterAssistantReply(t *testing.T) {
 	userTS := time.Now().Add(-time.Minute)
 	assistantTS := time.Now().Add(-30 * time.Second)
