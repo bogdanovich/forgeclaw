@@ -882,7 +882,7 @@ func (t *WriteFileTool) Name() string {
 }
 
 func (t *WriteFileTool) Description() string {
-	return "Write content to a file. Content is written byte-for-byte after argument decoding. Standard JSON escaping applies: \\n for newline and \\\\n for a literal backslash-n sequence. If the file already exists, you must set overwrite=true to replace it."
+	return "Write content to a file, replacing any existing content. Content is written byte-for-byte after argument decoding. Standard JSON escaping applies: \\n for newline and \\\\n for a literal backslash-n sequence. If the file already exists you must set overwrite=true, which replaces the ENTIRE file. To add to or change part of an existing file without losing its current contents, use append_file or edit_file instead."
 }
 
 func (t *WriteFileTool) Parameters() map[string]any {
@@ -899,7 +899,7 @@ func (t *WriteFileTool) Parameters() map[string]any {
 			},
 			"overwrite": map[string]any{
 				"type":        "boolean",
-				"description": "Must be set to true to overwrite an existing file.",
+				"description": "Set to true to replace an existing file in full. This discards the file's current contents — to preserve them, use append_file or edit_file instead of write_file.",
 				"default":     false,
 			},
 		},
@@ -923,7 +923,10 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) *ToolR
 	if !overwrite {
 		if _, err := t.fs.Open(path); err == nil {
 			return ErrorResult(
-				fmt.Sprintf("file: %s already exists. Set overwrite=true to replace.", path),
+				fmt.Sprintf(
+					"file: %s already exists. To add to it or change part of it without losing the current contents, use append_file or edit_file. Only set overwrite=true if you intend to replace the entire file.",
+					path,
+				),
 			)
 		}
 	}

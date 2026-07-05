@@ -250,6 +250,9 @@ func TestFilesystemTool_WriteFile_OverwriteDefaultBlocked(t *testing.T) {
 	assert.True(t, result.IsError, "expected error when overwriting without overwrite=true")
 	assert.Contains(t, result.ForLLM, "already exists")
 	assert.Contains(t, result.ForLLM, "overwrite=true")
+	// The guard must steer toward non-destructive tools rather than only coaching overwrite.
+	assert.Contains(t, result.ForLLM, "append_file")
+	assert.Contains(t, result.ForLLM, "edit_file")
 
 	// Original content must be untouched
 	data, err := os.ReadFile(testFile)
