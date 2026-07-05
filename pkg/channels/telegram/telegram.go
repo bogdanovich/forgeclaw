@@ -33,16 +33,8 @@ import (
 )
 
 var (
-	reHeading    = regexp.MustCompile(`(?m)^#{1,6}\s+([^\n]+)`)
-	reBlockquote = regexp.MustCompile(`^>\s*(.*)$`)
-	reLink       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	reBoldStar   = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reBoldUnder  = regexp.MustCompile(`__(.+?)__`)
-	reItalic     = regexp.MustCompile(`_([^_]+)_`)
-	reStrike     = regexp.MustCompile(`~~(.+?)~~`)
-	reListItem   = regexp.MustCompile(`^[-*]\s+`)
-	reCodeBlock  = regexp.MustCompile("```[\\w]*\\n?([\\s\\S]*?)```")
-	reInlineCode = regexp.MustCompile("`([^`]+)`")
+	reHeading  = regexp.MustCompile(`(?m)^#{1,6}\s+([^\n]+)`)
+	reBoldStar = regexp.MustCompile(`\*\*(.+?)\*\*`)
 )
 
 const (
@@ -144,9 +136,16 @@ func NewTelegramChannel(
 		mediaGroups:     make(map[string]*telegramMediaGroup),
 		mediaGroupDelay: telegramMediaGroupDelay(telegramCfg),
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(func(ctx context.Context, chatID, messageID, content string) error {
-		return ch.EditMessage(ctx, telegramToolFeedbackDeliveryChatKey(chatID), messageID, content)
-	})
+	ch.progress = channels.NewToolFeedbackAnimator(
+		func(ctx context.Context, chatID, messageID, content string) error {
+			return ch.EditMessage(
+				ctx,
+				telegramToolFeedbackDeliveryChatKey(chatID),
+				messageID,
+				content,
+			)
+		},
+	)
 	return ch, nil
 }
 
@@ -222,7 +221,11 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *TelegramChannel) runBotHandler(runCtx context.Context, runID uint64, startBotHandler func() error) {
+func (c *TelegramChannel) runBotHandler(
+	runCtx context.Context,
+	runID uint64,
+	startBotHandler func() error,
+) {
 	err := startBotHandler()
 	if runCtx.Err() != nil || c.handlerRun.Load() != runID || !c.IsRunning() {
 		return
@@ -315,9 +318,9 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		}
 	}
 
-	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
-	// so msg.Content is guaranteed to be within that limit. We still need to
-	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
+	// The Manager already splits messages to <=4000 chars (WithMaxMessageLength),
+	// so msg.Content is guaranteed to be within Telegram's 4096-char API limit
+	// unless MarkdownV2 escaping expands it.
 	replyToID := msg.ReplyToMessageID
 	var messageIDs []string
 	queue := []string{msg.Content}
@@ -457,12 +460,16 @@ func (c *TelegramChannel) sendRichChunk(
 	pMsg, err := c.bot.SendRichMessage(ctx, params)
 	if err != nil {
 		if shouldFallbackFromRichMessage(err) {
-			logger.WarnCF("telegram", "sendRichMessage rejected, falling back to text", map[string]any{
-				"chat_id":   fallbackParams.chatID,
-				"thread_id": fallbackParams.threadID,
-				"reply_to":  fallbackParams.replyToID,
-				"error":     err.Error(),
-			})
+			logger.WarnCF(
+				"telegram",
+				"sendRichMessage rejected, falling back to text",
+				map[string]any{
+					"chat_id":   fallbackParams.chatID,
+					"thread_id": fallbackParams.threadID,
+					"reply_to":  fallbackParams.replyToID,
+					"error":     err.Error(),
+				},
+			)
 			return c.sendChunk(ctx, fallbackParams)
 		}
 		logger.WarnCF("telegram", "sendRichMessage failed", map[string]any{
@@ -477,8 +484,8 @@ func (c *TelegramChannel) sendRichChunk(
 	return strconv.Itoa(pMsg.MessageID), nil
 }
 
-// sendChunk sends a single HTML/MarkdownV2 message, falling back to the original
-// markdown as plain text on parse failure so users never see raw HTML/MarkdownV2 tags.
+// sendChunk sends a single message through Telegram's legacy text endpoint.
+// Rich-message sends bypass this method except when Telegram rejects rich input.
 func (c *TelegramChannel) sendChunk(
 	ctx context.Context,
 	params sendChunkParams,
@@ -571,7 +578,12 @@ func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(
 }
 
 // EditMessage implements channels.MessageEditor.
-func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
+func (c *TelegramChannel) EditMessage(
+	ctx context.Context,
+	chatID string,
+	messageID string,
+	content string,
+) error {
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
 	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
@@ -581,12 +593,19 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 	if err != nil {
 		return err
 	}
-	parsedContent := parseContent(content, useMarkdownV2)
-	editMsg := tu.EditMessageText(tu.ID(cid), mid, parsedContent)
-	if useMarkdownV2 {
-		editMsg.WithParseMode(telego.ModeMarkdownV2)
+	var editMsg *telego.EditMessageTextParams
+	if c.richMessagesEnabled(useMarkdownV2) {
+		richMessage := renderTelegramOutboundRichMessage(content)
+		editMsg = tu.EditMessageText(tu.ID(cid), mid, "")
+		editMsg.RichMessage = &richMessage
 	} else {
-		editMsg.WithParseMode(telego.ModeHTML)
+		parsedContent := parseContent(content, useMarkdownV2)
+		editMsg = tu.EditMessageText(tu.ID(cid), mid, parsedContent)
+		if useMarkdownV2 {
+			editMsg.WithParseMode(telego.ModeMarkdownV2)
+		} else {
+			editMsg.WithParseMode(telego.ModeHTML)
+		}
 	}
 	_, err = c.bot.EditMessageText(ctx, editMsg)
 	if err != nil {
@@ -597,9 +616,21 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 			return nil
 		}
 
-		// Only fallback to plain text for formatting errors. Network errors or
-		// timeouts should not trigger a retry with different content.
-		if shouldFallbackToPlainText(err) {
+		// Only fallback to plain text for formatting/rich-message errors. Network
+		// errors or timeouts should not trigger a retry with different content.
+		if c.richMessagesEnabled(useMarkdownV2) &&
+			(shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
+			logger.WarnCF(
+				"telegram",
+				"rich edit rejected, falling back to plain text",
+				map[string]any{
+					"chat_id": chatID,
+					"mid":     mid,
+					"error":   err.Error(),
+				},
+			)
+			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
+		} else if useMarkdownV2 && shouldFallbackToPlainText(err) {
 			logFormattingFallback(err, useMarkdownV2)
 			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
 		}
@@ -628,7 +659,11 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 }
 
 // DeleteMessage implements channels.MessageDeleter.
-func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
+func (c *TelegramChannel) DeleteMessage(
+	ctx context.Context,
+	chatID string,
+	messageID string,
+) error {
 	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return err
@@ -700,7 +735,10 @@ func (c *TelegramChannel) DismissToolFeedbackMessage(ctx context.Context, chatID
 	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
 }
 
-func (c *TelegramChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
+func (c *TelegramChannel) dismissTrackedToolFeedbackMessage(
+	ctx context.Context,
+	chatID, messageID string,
+) {
 	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
 		return
 	}
@@ -725,7 +763,10 @@ func (c *TelegramChannel) finalizeTrackedToolFeedbackMessage(
 	return []string{msgID}, true
 }
 
-func (c *TelegramChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
+func (c *TelegramChannel) FinalizeToolFeedbackMessage(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) ([]string, bool) {
 	if outboundMessageIsToolFeedback(msg) {
 		return nil, false
 	}
@@ -771,7 +812,10 @@ func (c *TelegramChannel) SendPlaceholder(ctx context.Context, chatID string) (s
 }
 
 // SendMedia implements the channels.MediaSender interface.
-func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
+func (c *TelegramChannel) SendMedia(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
@@ -845,7 +889,12 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				MessageThreadID: threadID,
 				Photo:           telego.InputFile{File: file},
 			}
-			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
+			telegramApplyCaptionParseMode(
+				&params.Caption,
+				&params.ParseMode,
+				part.Caption,
+				useMarkdownV2,
+			)
 			tgResult, err = c.bot.SendPhoto(ctx, params)
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
@@ -862,7 +911,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
 					file.Close()
-					return nil, fmt.Errorf("telegram rewind media after photo failure: %w", channels.ErrTemporary)
+					return nil, fmt.Errorf(
+						"telegram rewind media after photo failure: %w",
+						channels.ErrTemporary,
+					)
 				}
 
 				docParams := &telego.SendDocumentParams{
@@ -894,7 +946,8 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			// Send OGG files with "voice" in the filename as Telegram voice
 			// bubbles (SendVoice) instead of audio attachments (SendAudio).
 			fn := strings.ToLower(part.Filename)
-			if strings.Contains(fn, "voice") && (strings.HasSuffix(fn, ".ogg") || strings.HasSuffix(fn, ".oga")) {
+			if strings.Contains(fn, "voice") &&
+				(strings.HasSuffix(fn, ".ogg") || strings.HasSuffix(fn, ".oga")) {
 				vparams := &telego.SendVoiceParams{
 					ChatID:          tu.ID(chatID),
 					MessageThreadID: threadID,
@@ -951,7 +1004,12 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				MessageThreadID: threadID,
 				Video:           telego.InputFile{File: file},
 			}
-			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
+			telegramApplyCaptionParseMode(
+				&params.Caption,
+				&params.ParseMode,
+				part.Caption,
+				useMarkdownV2,
+			)
 			tgResult, err = c.bot.SendVideo(ctx, params)
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
@@ -971,7 +1029,12 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				MessageThreadID: threadID,
 				Document:        telego.InputFile{File: file},
 			}
-			telegramApplyCaptionParseMode(&params.Caption, &params.ParseMode, part.Caption, useMarkdownV2)
+			telegramApplyCaptionParseMode(
+				&params.Caption,
+				&params.ParseMode,
+				part.Caption,
+				useMarkdownV2,
+			)
 			tgResult, err = c.bot.SendDocument(ctx, params)
 			if err != nil && telegramIsParseModeError(err) {
 				if rewindErr := rewindTelegramUpload(file); rewindErr != nil {
@@ -1149,7 +1212,12 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 	return messageIDs, nil
 }
 
-func telegramApplyCaptionParseMode(caption *string, parseMode *string, raw string, useMarkdownV2 bool) {
+func telegramApplyCaptionParseMode(
+	caption *string,
+	parseMode *string,
+	raw string,
+	useMarkdownV2 bool,
+) {
 	if caption == nil || parseMode == nil {
 		return
 	}
@@ -1224,7 +1292,10 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	return c.handleMessages(ctx, []*telego.Message{message})
 }
 
-func (c *TelegramChannel) bufferMediaGroupMessage(ctx context.Context, message *telego.Message) error {
+func (c *TelegramChannel) bufferMediaGroupMessage(
+	ctx context.Context,
+	message *telego.Message,
+) error {
 	if message == nil {
 		return fmt.Errorf("message is nil")
 	}
@@ -1435,7 +1506,8 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		if message.Chat.IsForum && message.MessageThreadID != 0 {
 			topicID = fmt.Sprintf("%d", message.MessageThreadID)
 		}
-		if !isMentioned && c.IgnoreNonBotMentionsForTopic(topicID, true) && c.hasNonBotMention(message) {
+		if !isMentioned && c.IgnoreNonBotMentionsForTopic(topicID, true) &&
+			c.hasNonBotMention(message) {
 			c.observeSuppressedTelegramMessage(
 				ctx,
 				message,
@@ -1456,10 +1528,14 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 			)
 			return nil
 		}
-		if !isMentioned && c.IgnoreNonBotRepliesForTopic(topicID, false) && c.isReplyToNonBotMessage(message) {
+		if !isMentioned && c.IgnoreNonBotRepliesForTopic(topicID, false) &&
+			c.isReplyToNonBotMessage(message) {
 			observedContent := content
 			if message.ReplyToMessage != nil {
-				observedContent = c.prependTelegramQuotedReply(observedContent, message.ReplyToMessage)
+				observedContent = c.prependTelegramQuotedReply(
+					observedContent,
+					message.ReplyToMessage,
+				)
 			}
 			c.observeSuppressedTelegramMessage(
 				ctx,
@@ -1647,7 +1723,10 @@ func (c *TelegramChannel) collectTelegramMessageParts(
 		photoPath := c.downloadPhoto(ctx, photo.FileID)
 		if photoPath != "" {
 			photoNumber := index + 1
-			parts.mediaPaths = append(parts.mediaPaths, storeMedia(photoPath, fmt.Sprintf("photo-%d.jpg", photoNumber)))
+			parts.mediaPaths = append(
+				parts.mediaPaths,
+				storeMedia(photoPath, fmt.Sprintf("photo-%d.jpg", photoNumber)),
+			)
 			parts.content = append(parts.content, fmt.Sprintf("[image: photo %d]", photoNumber))
 		}
 	}
@@ -1949,7 +2028,11 @@ func telegramToolFeedbackChatKey(chatID string, outboundCtx *bus.InboundContext)
 	return fmt.Sprintf("%d/%d", resolvedChatID, threadID)
 }
 
-func telegramToolFeedbackMessageKey(chatID string, outboundCtx *bus.InboundContext, sessionKey string) string {
+func telegramToolFeedbackMessageKey(
+	chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+) string {
 	key := telegramToolFeedbackChatKey(chatID, outboundCtx)
 	sessionKey = strings.TrimSpace(sessionKey)
 	if key == "" || sessionKey == "" {
@@ -1966,7 +2049,10 @@ func telegramToolFeedbackDeliveryChatKey(chatID string) string {
 	return chatID
 }
 
-func (c *TelegramChannel) ToolFeedbackMessageChatID(chatID string, outboundCtx *bus.InboundContext) string {
+func (c *TelegramChannel) ToolFeedbackMessageChatID(
+	chatID string,
+	outboundCtx *bus.InboundContext,
+) string {
 	return telegramToolFeedbackChatKey(chatID, outboundCtx)
 }
 
@@ -1989,7 +2075,10 @@ func parseTelegramChatID(chatID string) (int64, int, error) {
 	return cid, tid, nil
 }
 
-func resolveTelegramOutboundTarget(chatID string, outboundCtx *bus.InboundContext) (int64, int, error) {
+func resolveTelegramOutboundTarget(
+	chatID string,
+	outboundCtx *bus.InboundContext,
+) (int64, int, error) {
 	targetChatID := channels.EffectiveOutboundChatID(chatID, outboundCtx)
 	resolvedChatID, resolvedThreadID, err := parseTelegramChatID(targetChatID)
 	if err != nil {
@@ -2012,7 +2101,10 @@ func resolveTelegramOutboundTarget(chatID string, outboundCtx *bus.InboundContex
 // cleanup state such as typing indicators, reactions, and placeholders. Forum
 // topics are registered as "<chat>/<thread>", while the normalized bus context
 // keeps ChatID and TopicID separate.
-func (c *TelegramChannel) ResolveOutboundChatID(chatID string, outboundCtx *bus.InboundContext) string {
+func (c *TelegramChannel) ResolveOutboundChatID(
+	chatID string,
+	outboundCtx *bus.InboundContext,
+) string {
 	resolvedChatID, resolvedThreadID, err := resolveTelegramOutboundTarget(chatID, outboundCtx)
 	if err != nil {
 		return strings.TrimSpace(chatID)
@@ -2024,8 +2116,12 @@ func (c *TelegramChannel) ResolveOutboundChatID(chatID string, outboundCtx *bus.
 }
 
 func logFormattingFallback(err error, useMarkdownV2 bool) {
-	logger.ErrorCF("telegram",
-		fmt.Sprintf("%s formatting rejected, falling back to plain text", telegramParseModeName(useMarkdownV2)),
+	logger.ErrorCF(
+		"telegram",
+		fmt.Sprintf(
+			"%s formatting rejected, falling back to plain text",
+			telegramParseModeName(useMarkdownV2),
+		),
 		map[string]any{
 			"error": err.Error(),
 		},
@@ -2077,7 +2173,8 @@ func (c *TelegramChannel) isBotMentioned(message *telego.Message) bool {
 				return true
 			}
 		case telego.EntityTypeTextMention:
-			if botUsername != "" && entity.User != nil && strings.EqualFold(entity.User.Username, botUsername) {
+			if botUsername != "" && entity.User != nil &&
+				strings.EqualFold(entity.User.Username, botUsername) {
 				return true
 			}
 		case telego.EntityTypeBotCommand:
@@ -2114,12 +2211,14 @@ func (c *TelegramChannel) hasNonBotMention(message *telego.Message) bool {
 			if entity.User == nil {
 				continue
 			}
-			if entity.User.IsBot && botUsername != "" && strings.EqualFold(entity.User.Username, botUsername) {
+			if entity.User.IsBot && botUsername != "" &&
+				strings.EqualFold(entity.User.Username, botUsername) {
 				continue
 			}
 			return true
 		case telego.EntityTypeBotCommand:
-			if strings.Contains(entityText, "@") && !isBotCommandEntityForThisBot(entityText, botUsername) {
+			if strings.Contains(entityText, "@") &&
+				!isBotCommandEntityForThisBot(entityText, botUsername) {
 				return true
 			}
 		}
@@ -2212,7 +2311,10 @@ func (c *TelegramChannel) stripBotMention(content string) string {
 }
 
 // BeginStream implements channels.StreamingCapable.
-func (c *TelegramChannel) BeginStream(ctx context.Context, chatID string) (channels.Streamer, error) {
+func (c *TelegramChannel) BeginStream(
+	ctx context.Context,
+	chatID string,
+) (channels.Streamer, error) {
 	if !c.tgCfg.Streaming.Enabled {
 		return nil, fmt.Errorf("streaming disabled in config")
 	}
@@ -2230,6 +2332,7 @@ func (c *TelegramChannel) BeginStream(ctx context.Context, chatID string) (chann
 		draftID:          cryptoRandInt(),
 		throttleInterval: time.Duration(streamCfg.ThrottleSeconds) * time.Second,
 		minGrowth:        streamCfg.MinGrowthChars,
+		richMessages:     c.richMessagesEnabled(c.tgCfg.UseMarkdownV2),
 	}, nil
 }
 
@@ -2243,6 +2346,7 @@ type telegramStreamer struct {
 	draftID          int
 	throttleInterval time.Duration
 	minGrowth        int
+	richMessages     bool
 	lastLen          int
 	lastAt           time.Time
 	failed           bool
@@ -2265,16 +2369,49 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 		return nil
 	}
 
-	htmlContent := markdownToTelegramHTML(content)
 	s.draftTouched = true
 
-	err := s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
-		ChatID:          s.chatID,
-		MessageThreadID: s.threadID,
-		DraftID:         s.draftID,
-		Text:            htmlContent,
-		ParseMode:       telego.ModeHTML,
-	})
+	var err error
+	if s.richMessages {
+		err = s.bot.SendRichMessageDraft(ctx, &telego.SendRichMessageDraftParams{
+			ChatID:          s.chatID,
+			MessageThreadID: s.threadID,
+			DraftID:         s.draftID,
+			RichMessage:     renderTelegramOutboundRichMessage(content),
+		})
+		if err != nil && (shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
+			logger.DebugCF(
+				"telegram",
+				"rich draft rejected, falling back to plain draft",
+				map[string]any{
+					"chat_id": s.chatID,
+					"error":   err.Error(),
+				},
+			)
+			err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
+				ChatID:          s.chatID,
+				MessageThreadID: s.threadID,
+				DraftID:         s.draftID,
+				Text:            content,
+			})
+		}
+	} else {
+		err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
+			ChatID:          s.chatID,
+			MessageThreadID: s.threadID,
+			DraftID:         s.draftID,
+			Text:            markdownToTelegramHTML(content),
+			ParseMode:       telego.ModeHTML,
+		})
+		if err != nil && shouldFallbackToPlainText(err) {
+			err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
+				ChatID:          s.chatID,
+				MessageThreadID: s.threadID,
+				DraftID:         s.draftID,
+				Text:            content,
+			})
+		}
+	}
 	if err != nil {
 		logger.WarnCF("telegram", "sendMessageDraft failed, disabling streaming", map[string]any{
 			"error": err.Error(),
@@ -2289,22 +2426,45 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 }
 
 func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
-	htmlContent := markdownToTelegramHTML(content)
-	tgMsg := tu.Message(tu.ID(s.chatID), htmlContent)
-	tgMsg.MessageThreadID = s.threadID
-	tgMsg.ParseMode = telego.ModeHTML
-
-	if _, err := s.bot.SendMessage(ctx, tgMsg); err != nil {
-		// Fallback to plain text
-		tgMsg.ParseMode = ""
-		if _, err = s.bot.SendMessage(ctx, tgMsg); err != nil {
-			logger.ErrorCF("telegram", "Finalize failed after HTML and plain-text attempts", map[string]any{
-				"chat_id": s.chatID,
-				"error":   err.Error(),
-				"len":     len(content),
-			})
-			return fmt.Errorf("telegram finalize: %w", err)
+	var err error
+	if s.richMessages {
+		_, err = s.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
+			ChatID:          tu.ID(s.chatID),
+			MessageThreadID: s.threadID,
+			RichMessage:     renderTelegramOutboundRichMessage(content),
+		})
+		if err != nil && (shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
+			logger.WarnCF(
+				"telegram",
+				"rich stream finalize rejected, falling back to plain text",
+				map[string]any{
+					"chat_id": s.chatID,
+					"error":   err.Error(),
+				},
+			)
+			tgMsg := tu.Message(tu.ID(s.chatID), content)
+			tgMsg.MessageThreadID = s.threadID
+			_, err = s.bot.SendMessage(ctx, tgMsg)
 		}
+	} else {
+		tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
+		tgMsg.MessageThreadID = s.threadID
+		tgMsg.ParseMode = telego.ModeHTML
+		_, err = s.bot.SendMessage(ctx, tgMsg)
+		if err != nil && shouldFallbackToPlainText(err) {
+			tgMsg.Text = content
+			tgMsg.ParseMode = ""
+			_, err = s.bot.SendMessage(ctx, tgMsg)
+		}
+	}
+
+	if err != nil {
+		logger.ErrorCF("telegram", "Finalize failed", map[string]any{
+			"chat_id": s.chatID,
+			"error":   err.Error(),
+			"len":     len(content),
+		})
+		return fmt.Errorf("telegram finalize: %w", err)
 	}
 	s.Cancel(ctx)
 	return nil

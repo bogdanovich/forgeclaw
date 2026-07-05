@@ -67,7 +67,7 @@ func renderTelegramRichMessage(message telegramRichMessage) telego.InputRichMess
 
 func renderTelegramOutboundRichMessage(content string) telego.InputRichMessage {
 	return telego.InputRichMessage{
-		HTML: parseContent(content, false),
+		Markdown: markdownToTelegramRichMarkdown(content),
 	}
 }
 
