@@ -310,6 +310,15 @@ ignored env/config/runtime/self-evolution files.
 | `limit` | int | no | Maximum returned matches/files; default `100`, max `500` |
 | `include_ignored` | bool | no | Include `.gitignore`d files and default noisy dirs such as `node_modules`; default `false` |
 
+When results are incomplete because of a result count limit, byte limit, max
+file size skip, or ignored-path exclusion, `search_files` appends a `Search
+truncation` block. The block includes `truncated=true`, the reason, returned
+count, configured limit, total omitted result rows when known, reason-specific
+sub-counts such as `count_limit_omitted_count` and `rendered_omitted_count`,
+separate skipped counts for ignored or max-size files, and suggestions to narrow
+by `path`, `file_glob`, or `pattern`. For ignored/runtime files, rerun with
+`include_ignored: true` only when those files are explicitly needed.
+
 Examples:
 
 ```json
