@@ -31,22 +31,6 @@ func (al *AgentLoop) toolFeedbackPublisher() *toolFeedbackPublisher {
 	}
 }
 
-// publishToolFeedbackForCall is the agent-side entry point for visible tool
-// progress. Channel-specific code still owns editing/deleting the message, but
-// this function owns whether a turn should emit a feedback update and how that
-// update is formatted.
-func (al *AgentLoop) publishToolFeedbackForCall(
-	ctx context.Context,
-	ts *turnState,
-	response *providers.LLMResponse,
-	toolCall providers.ToolCall,
-	toolName string,
-	toolArgs map[string]any,
-	messages []providers.Message,
-) {
-	al.toolFeedbackPublisher().publishToolFeedbackForCall(ctx, ts, response, toolCall, toolName, toolArgs, messages)
-}
-
 func (tf *toolFeedbackPublisher) publishToolFeedbackForCall(
 	ctx context.Context,
 	ts *turnState,
@@ -89,10 +73,6 @@ func (tf *toolFeedbackPublisher) publishToolFeedbackForCall(
 		outboundTurnMessageOptions{kind: messageKindToolFeedback},
 	))
 	fbCancel()
-}
-
-func (al *AgentLoop) dismissToolFeedbackForTurn(ctx context.Context, ts *turnState) {
-	al.toolFeedbackPublisher().dismissToolFeedbackForTurn(ctx, ts)
 }
 
 func (tf *toolFeedbackPublisher) dismissToolFeedbackForTurn(ctx context.Context, ts *turnState) {

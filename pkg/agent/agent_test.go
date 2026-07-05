@@ -3808,6 +3808,27 @@ func TestToolFeedbackExplanationForToolCall_DoesNotReuseAnotherToolCallExplanati
 	}
 }
 
+func TestToolFeedbackExplanationForToolCall_DoesNotUseGenericResponseContent(t *testing.T) {
+	response := &providers.LLMResponse{
+		Content: "Started the workflow and waiting for status.",
+		ToolCalls: []providers.ToolCall{
+			{
+				ID:   "call_1",
+				Name: "browser",
+			},
+		},
+	}
+	messages := []providers.Message{
+		{Role: "user", Content: "Post this listing to Craigslist"},
+	}
+
+	got := toolFeedbackExplanationForToolCall(response, response.ToolCalls[0], messages)
+	want := utils.ToolFeedbackContinuationHint + ": Post this listing to Craigslist"
+	if got != want {
+		t.Fatalf("toolFeedbackExplanationForToolCall() = %q, want %q", got, want)
+	}
+}
+
 func TestToolFeedbackExplanationFromResponse_DoesNotUseReasoningContent(t *testing.T) {
 	response := &providers.LLMResponse{
 		Content:          "",
