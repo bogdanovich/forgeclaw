@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -25,6 +26,7 @@ func promptBuildRequestForTurn(
 		ChatID:            ts.chatID,
 		SenderID:          ts.opts.Dispatch.SenderID(),
 		SenderDisplayName: ts.opts.SenderDisplayName,
+		ReplyToMessageID:  ts.opts.Dispatch.ReplyToMessageID(),
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
 		Overlays:          promptOverlaysForOptions(ts.opts),
 	}
@@ -89,6 +91,7 @@ func promptBuildRequestForProcessOptions(
 		ChatID:            opts.ChatID,
 		SenderID:          opts.SenderID,
 		SenderDisplayName: opts.SenderDisplayName,
+		ReplyToMessageID:  opts.ReplyToMessageID,
 		ActiveSkills:      activeSkillNames(agent, opts),
 		Overlays:          promptOverlaysForOptions(opts),
 	}
@@ -198,6 +201,50 @@ func userPromptMessage(content string, media []string) providers.Message {
 		msg.Media = append([]string(nil), media...)
 	}
 	return promptMessageWithMetadata(msg, PromptLayerTurn, PromptSlotMessage, PromptSourceUserMessage)
+}
+
+func currentTurnUserPromptMessage(
+	content string,
+	media []string,
+	replyToMessageID string,
+	history []providers.Message,
+	now time.Time,
+) providers.Message {
+	relation := classifyCurrentTurnRelation(currentTurnRelationInput{
+		Content:          content,
+		Media:            media,
+		ReplyToMessageID: replyToMessageID,
+		History:          history,
+		Now:              now,
+	})
+	content = strings.TrimSpace(content)
+	if relation.MediaOnly {
+		lines := []string{
+			"[New user message with attached media only]",
+			"No text or caption was provided with this message.",
+			"Treat the attached media as the current turn input.",
+		}
+		switch relation.Kind {
+		case currentTurnRelationReplyToMessage:
+			lines = append(
+				lines,
+				"This message was sent as a reply to an earlier chat message, so use that quoted/reply context when relevant.",
+			)
+		case currentTurnRelationAdjacentFollowupMedia:
+			lines = append(
+				lines,
+				"This media-only message arrived shortly after the user's previous message and likely adds context to it.",
+				"Use the most recent user message as companion context unless the new media clearly starts a different request.",
+			)
+		default:
+			lines = append(
+				lines,
+				"Do not assume it continues the previous request unless the user explicitly referenced earlier context.",
+			)
+		}
+		content = strings.Join(lines, "\n")
+	}
+	return userPromptMessage(content, media)
 }
 
 func toolImageFollowUpPromptMessage(media []string) providers.Message {
