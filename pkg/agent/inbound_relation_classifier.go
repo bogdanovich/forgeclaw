@@ -9,6 +9,15 @@ import (
 
 const adjacentMediaFollowupWindow = 2 * time.Minute
 
+var attachmentOnlyPlaceholders = map[string]struct{}{
+	"[media only]": {},
+	"[image]":      {},
+	"[photo]":      {},
+	"[audio]":      {},
+	"[video]":      {},
+	"[file]":       {},
+}
+
 type currentTurnRelationKind string
 
 const (
@@ -32,7 +41,8 @@ type currentTurnRelationInput struct {
 
 func classifyCurrentTurnRelation(input currentTurnRelationInput) currentTurnRelation {
 	content := strings.TrimSpace(input.Content)
-	mediaOnly := len(input.Media) > 0 && (content == "" || content == "[media only]")
+	_, placeholderOnly := attachmentOnlyPlaceholders[content]
+	mediaOnly := len(input.Media) > 0 && (content == "" || placeholderOnly)
 	if !mediaOnly {
 		return currentTurnRelation{Kind: currentTurnRelationStandalone, MediaOnly: false}
 	}

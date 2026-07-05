@@ -217,7 +217,6 @@ func currentTurnUserPromptMessage(
 		History:          history,
 		Now:              now,
 	})
-	content = strings.TrimSpace(content)
 	if relation.MediaOnly {
 		lines := []string{
 			"[New user message with attached media only]",

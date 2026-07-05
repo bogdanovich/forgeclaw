@@ -89,3 +89,17 @@ func TestClassifyCurrentTurnRelation_TextMessageStaysStandalone(t *testing.T) {
 		t.Fatal("MediaOnly = true, want false")
 	}
 }
+
+func TestClassifyCurrentTurnRelation_KnownAttachmentPlaceholderCountsAsMediaOnly(t *testing.T) {
+	got := classifyCurrentTurnRelation(currentTurnRelationInput{
+		Content: "[image]",
+		Media:   []string{"media://image-1"},
+	})
+
+	if got.Kind != currentTurnRelationStandalone {
+		t.Fatalf("Kind = %q, want %q", got.Kind, currentTurnRelationStandalone)
+	}
+	if !got.MediaOnly {
+		t.Fatal("MediaOnly = false, want true")
+	}
+}

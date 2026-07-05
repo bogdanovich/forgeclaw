@@ -194,6 +194,34 @@ func TestBuildMessagesFromPrompt_MediaOnlyDoesNotAttachAfterAssistantReply(t *te
 	}
 }
 
+func TestBuildMessagesFromPrompt_PreservesNonMediaWhitespace(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	raw := "\n  line one\nline two\n"
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		CurrentMessage: raw,
+	})
+
+	last := messages[len(messages)-1]
+	if last.Content != raw {
+		t.Fatalf("last content = %q, want %q", last.Content, raw)
+	}
+}
+
+func TestBuildMessagesFromPrompt_KnownAttachmentPlaceholderUsesMediaOnlyFlow(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		CurrentMessage: "[image]",
+		Media:          []string{"media://image-1"},
+	})
+
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "[New user message with attached media only]") {
+		t.Fatalf("last content = %q, want media-only marker", last.Content)
+	}
+}
+
 func TestSteeringPromptMessage_PreservesCanonicalContent(t *testing.T) {
 	msg := steeringPromptMessage(providers.Message{
 		Role:    "user",
