@@ -2290,6 +2290,9 @@ func TestHandleMessage_MediaGroupCombinesCaptionMessages(t *testing.T) {
 	case inbound := <-messageBus.InboundChan():
 		assert.Equal(t, "2", inbound.Context.MessageID)
 		assert.Equal(t, "meal caption", inbound.Content)
+		assert.Equal(t, "album-1", inbound.Context.Raw["media_group_id"])
+		assert.Equal(t, "2", inbound.Context.Raw["media_group_count"])
+		assert.Equal(t, "1,2", inbound.Context.Raw["media_group_message_ids"])
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for combined media group message")
 	}

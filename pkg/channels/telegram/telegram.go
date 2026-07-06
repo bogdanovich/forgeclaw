@@ -1536,6 +1536,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		"first_name": user.FirstName,
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
 	}
+	addTelegramMediaGroupMetadata(metadata, messages)
 
 	inboundCtx := bus.InboundContext{
 		Channel:   c.Name(),
@@ -1562,6 +1563,29 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		sender,
 	)
 	return nil
+}
+
+func addTelegramMediaGroupMetadata(metadata map[string]string, messages []*telego.Message) {
+	if metadata == nil || len(messages) == 0 {
+		return
+	}
+	messageIDs := make([]string, 0, len(messages))
+	mediaGroupID := ""
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		if mediaGroupID == "" {
+			mediaGroupID = strings.TrimSpace(msg.MediaGroupID)
+		}
+		messageIDs = append(messageIDs, strconv.Itoa(msg.MessageID))
+	}
+	if mediaGroupID == "" {
+		return
+	}
+	metadata["media_group_id"] = mediaGroupID
+	metadata["media_group_count"] = strconv.Itoa(len(messageIDs))
+	metadata["media_group_message_ids"] = strings.Join(messageIDs, ",")
 }
 
 func (c *TelegramChannel) observeSuppressedTelegramMessage(
