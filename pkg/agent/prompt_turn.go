@@ -153,6 +153,28 @@ func allowAdjacentMediaFollowupForChatType(chatType string) bool {
 	return strings.EqualFold(strings.TrimSpace(chatType), "direct")
 }
 
+func normalizePromptBuildRequestRelations(
+	req PromptBuildRequest,
+	history []providers.Message,
+	now time.Time,
+) PromptBuildRequest {
+	if strings.TrimSpace(req.CurrentMessage) == "" && len(req.Media) == 0 {
+		return req
+	}
+	if !req.CurrentMessageRelation.IsZero() {
+		return req
+	}
+	req.CurrentMessageRelation = classifyPromptCurrentMessageRelation(
+		req.CurrentMessage,
+		req.Media,
+		req.ReplyToMessageID,
+		req.AllowAdjacentMediaFollowup,
+		history,
+		now,
+	)
+	return req
+}
+
 func promptOverlaysForOptions(opts processOptions) []PromptPart {
 	systemPrompt := strings.TrimSpace(opts.SystemPromptOverride)
 	if systemPrompt == "" {

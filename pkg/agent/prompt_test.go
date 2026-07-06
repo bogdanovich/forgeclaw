@@ -194,6 +194,50 @@ func TestBuildMessagesFromPrompt_UsesProvidedCurrentMessageRelation(t *testing.T
 	}
 }
 
+func TestNormalizePromptBuildRequestRelations_PreservesProvidedRelation(t *testing.T) {
+	req := normalizePromptBuildRequestRelations(
+		PromptBuildRequest{
+			CurrentMessage: "[media only]",
+			Media:          []string{"media://image-1"},
+			CurrentMessageRelation: InboundMessageRelation{
+				Kind:      InboundRelationReplyToMessage,
+				MediaOnly: true,
+			},
+		},
+		nil,
+		time.Now(),
+	)
+
+	if req.CurrentMessageRelation.Kind != InboundRelationReplyToMessage {
+		t.Fatalf(
+			"CurrentMessageRelation.Kind = %q, want %q",
+			req.CurrentMessageRelation.Kind,
+			InboundRelationReplyToMessage,
+		)
+	}
+}
+
+func TestNormalizePromptBuildRequestRelations_ClassifiesMissingRelation(t *testing.T) {
+	ts := time.Now().Add(-time.Minute)
+	req := normalizePromptBuildRequestRelations(
+		PromptBuildRequest{
+			CurrentMessage:             "[media only]",
+			Media:                      []string{"media://image-1"},
+			AllowAdjacentMediaFollowup: true,
+		},
+		[]providers.Message{{Role: "user", Content: "Here is what I ate", CreatedAt: &ts}},
+		time.Now(),
+	)
+
+	if req.CurrentMessageRelation.Kind != InboundRelationAdjacentFollowupMedia {
+		t.Fatalf(
+			"CurrentMessageRelation.Kind = %q, want %q",
+			req.CurrentMessageRelation.Kind,
+			InboundRelationAdjacentFollowupMedia,
+		)
+	}
+}
+
 func TestBuildMessagesFromPrompt_MediaOnlyRecentUserFollowupDefaultsToStandalone(t *testing.T) {
 	cb := NewContextBuilder(t.TempDir())
 	ts := time.Now().Add(-time.Minute)
