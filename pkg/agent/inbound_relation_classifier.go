@@ -32,11 +32,12 @@ type currentTurnRelation struct {
 }
 
 type currentTurnRelationInput struct {
-	Content          string
-	Media            []string
-	ReplyToMessageID string
-	History          []providers.Message
-	Now              time.Time
+	Content                    string
+	Media                      []string
+	ReplyToMessageID           string
+	AllowAdjacentMediaFollowup bool
+	History                    []providers.Message
+	Now                        time.Time
 }
 
 func classifyCurrentTurnRelation(input currentTurnRelationInput) currentTurnRelation {
@@ -49,7 +50,8 @@ func classifyCurrentTurnRelation(input currentTurnRelationInput) currentTurnRela
 	if strings.TrimSpace(input.ReplyToMessageID) != "" {
 		return currentTurnRelation{Kind: currentTurnRelationReplyToMessage, MediaOnly: true}
 	}
-	if recentUserFollowupCandidate(input.History, input.Now, adjacentMediaFollowupWindow) {
+	if input.AllowAdjacentMediaFollowup &&
+		recentUserFollowupCandidate(input.History, input.Now, adjacentMediaFollowupWindow) {
 		return currentTurnRelation{Kind: currentTurnRelationAdjacentFollowupMedia, MediaOnly: true}
 	}
 	return currentTurnRelation{Kind: currentTurnRelationStandalone, MediaOnly: true}

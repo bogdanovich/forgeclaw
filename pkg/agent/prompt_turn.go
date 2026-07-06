@@ -27,8 +27,11 @@ func promptBuildRequestForTurn(
 		SenderID:          ts.opts.Dispatch.SenderID(),
 		SenderDisplayName: ts.opts.SenderDisplayName,
 		ReplyToMessageID:  ts.opts.Dispatch.ReplyToMessageID(),
-		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
-		Overlays:          promptOverlaysForOptions(ts.opts),
+		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowupForChatType(
+			ts.opts.Dispatch.ChatType(),
+		),
+		ActiveSkills: activeSkillNames(ts.agent, ts.opts),
+		Overlays:     promptOverlaysForOptions(ts.opts),
 	}
 	hasCallableTools := true
 	if ts.profile.Enabled {
@@ -92,8 +95,11 @@ func promptBuildRequestForProcessOptions(
 		SenderID:          opts.SenderID,
 		SenderDisplayName: opts.SenderDisplayName,
 		ReplyToMessageID:  opts.ReplyToMessageID,
-		ActiveSkills:      activeSkillNames(agent, opts),
-		Overlays:          promptOverlaysForOptions(opts),
+		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowupForChatType(
+			opts.Dispatch.ChatType(),
+		),
+		ActiveSkills: activeSkillNames(agent, opts),
+		Overlays:     promptOverlaysForOptions(opts),
 	}
 	profile := opts.TurnProfile
 	hasCallableTools := true
@@ -123,6 +129,10 @@ func promptBuildRequestForProcessOptions(
 		req.AllowedTools = append([]string(nil), profile.AllowedTools...)
 	}
 	return req
+}
+
+func allowAdjacentMediaFollowupForChatType(chatType string) bool {
+	return strings.EqualFold(strings.TrimSpace(chatType), "direct")
 }
 
 func promptOverlaysForOptions(opts processOptions) []PromptPart {
@@ -207,15 +217,17 @@ func currentTurnUserPromptMessage(
 	content string,
 	media []string,
 	replyToMessageID string,
+	allowAdjacentMediaFollowup bool,
 	history []providers.Message,
 	now time.Time,
 ) providers.Message {
 	relation := classifyCurrentTurnRelation(currentTurnRelationInput{
-		Content:          content,
-		Media:            media,
-		ReplyToMessageID: replyToMessageID,
-		History:          history,
-		Now:              now,
+		Content:                    content,
+		Media:                      media,
+		ReplyToMessageID:           replyToMessageID,
+		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowup,
+		History:                    history,
+		Now:                        now,
 	})
 	if relation.MediaOnly {
 		lines := []string{

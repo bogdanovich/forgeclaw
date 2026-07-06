@@ -49,6 +49,13 @@ func (r DispatchRequest) ReplyToMessageID() string {
 	return r.InboundContext.ReplyToMessageID
 }
 
+func (r DispatchRequest) ChatType() string {
+	if r.InboundContext == nil {
+		return ""
+	}
+	return r.InboundContext.ChatType
+}
+
 func (r DispatchRequest) SenderID() string {
 	if r.InboundContext == nil {
 		return ""

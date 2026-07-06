@@ -1022,6 +1022,7 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 				req.CurrentMessage,
 				req.Media,
 				req.ReplyToMessageID,
+				req.AllowAdjacentMediaFollowup,
 				history,
 				time.Now(),
 			),

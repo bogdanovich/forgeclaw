@@ -221,6 +221,25 @@ Suggested configuration direction:
 - enable/disable inferred media follow-ups
 - enable/disable same-burst text grouping
 
+## Execution Discipline
+
+This design is not just background context. It should actively constrain the
+implementation as the refactor proceeds.
+
+For each PR in this track:
+
+- pick one explicit design step or invariant and implement only that slice
+- state which design section the PR is advancing
+- prefer carrying explicit relation metadata over adding new prompt-local
+  inference
+- prefer preserving raw inbound truth over hiding behavior in adapter-local
+  merges
+- if a change would violate this design, stop and revise the design or narrow
+  the implementation instead of slipping in a local heuristic
+
+That keeps the rollout from drifting back toward ad hoc prompt guessing while
+still allowing small, reviewable increments.
+
 ## Rollout Plan
 
 ### PR 1: document and isolate current heuristic

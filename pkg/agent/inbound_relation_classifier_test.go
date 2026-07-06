@@ -26,8 +26,9 @@ func TestClassifyCurrentTurnRelation_AdjacentMediaFollowup(t *testing.T) {
 	ts := time.Now().Add(-time.Minute)
 
 	got := classifyCurrentTurnRelation(currentTurnRelationInput{
-		Content: "[media only]",
-		Media:   []string{"media://image-1"},
+		Content:                    "[media only]",
+		Media:                      []string{"media://image-1"},
+		AllowAdjacentMediaFollowup: true,
 		History: []providers.Message{
 			{Role: "user", Content: "Here is what I ate", CreatedAt: &ts},
 		},
@@ -39,10 +40,31 @@ func TestClassifyCurrentTurnRelation_AdjacentMediaFollowup(t *testing.T) {
 	}
 }
 
-func TestClassifyCurrentTurnRelation_AdjacentMediaFollowupWithoutTimestamp(t *testing.T) {
+func TestClassifyCurrentTurnRelation_AdjacentMediaFollowupRequiresExplicitAllow(t *testing.T) {
+	ts := time.Now().Add(-time.Minute)
+
 	got := classifyCurrentTurnRelation(currentTurnRelationInput{
 		Content: "[media only]",
 		Media:   []string{"media://image-1"},
+		History: []providers.Message{
+			{Role: "user", Content: "Here is what I ate", CreatedAt: &ts},
+		},
+		Now: time.Now(),
+	})
+
+	if got.Kind != currentTurnRelationStandalone {
+		t.Fatalf("Kind = %q, want %q", got.Kind, currentTurnRelationStandalone)
+	}
+	if !got.MediaOnly {
+		t.Fatal("MediaOnly = false, want true")
+	}
+}
+
+func TestClassifyCurrentTurnRelation_AdjacentMediaFollowupWithoutTimestamp(t *testing.T) {
+	got := classifyCurrentTurnRelation(currentTurnRelationInput{
+		Content:                    "[media only]",
+		Media:                      []string{"media://image-1"},
+		AllowAdjacentMediaFollowup: true,
 		History: []providers.Message{
 			{Role: "user", Content: "Here is what I ate"},
 		},

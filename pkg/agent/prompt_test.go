@@ -164,13 +164,46 @@ func TestBuildMessagesFromPrompt_MediaOnlyRecentUserFollowupUsesAdjacentContext(
 		History: []providers.Message{
 			{Role: "user", Content: "Here is what I ate", CreatedAt: &ts},
 		},
-		CurrentMessage: "[media only]",
-		Media:          []string{"media://image-1"},
+		CurrentMessage:             "[media only]",
+		Media:                      []string{"media://image-1"},
+		AllowAdjacentMediaFollowup: true,
 	})
 
 	last := messages[len(messages)-1]
 	if !strings.Contains(last.Content, "arrived shortly after the user's previous message") {
 		t.Fatalf("last content = %q, want adjacent follow-up marker", last.Content)
+	}
+}
+
+func TestBuildMessagesFromPrompt_MediaOnlyRecentUserFollowupDefaultsToStandalone(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	ts := time.Now().Add(-time.Minute)
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		History: []providers.Message{
+			{Role: "user", Content: "Here is what I ate", CreatedAt: &ts},
+		},
+		CurrentMessage: "[media only]",
+		Media:          []string{"media://image-1"},
+	})
+
+	last := messages[len(messages)-1]
+	if strings.Contains(last.Content, "arrived shortly after the user's previous message") {
+		t.Fatalf("last content = %q, should not infer adjacent follow-up by default", last.Content)
+	}
+	if !strings.Contains(last.Content, "Do not assume it continues the previous request") {
+		t.Fatalf("last content = %q, want standalone marker", last.Content)
+	}
+}
+
+func TestAllowAdjacentMediaFollowupForChatType_OnlyDirect(t *testing.T) {
+	for _, chatType := range []string{"", "group", "channel", "private"} {
+		if allowAdjacentMediaFollowupForChatType(chatType) {
+			t.Fatalf("allowAdjacentMediaFollowupForChatType(%q) = true, want false", chatType)
+		}
+	}
+	if !allowAdjacentMediaFollowupForChatType("direct") {
+		t.Fatal("allowAdjacentMediaFollowupForChatType(direct) = false, want true")
 	}
 }
 
