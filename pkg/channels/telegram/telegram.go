@@ -1426,6 +1426,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	if content == "" {
 		content = "[media only]"
 	}
+	mediaGroupMetadata := telegramMediaGroupMetadata(messages)
 
 	// In group chats, apply unified group trigger filtering
 	isMentioned := false
@@ -1445,6 +1446,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 				sender,
 				isMentioned,
 				"mentions another user/bot without mentioning this bot",
+				mediaGroupMetadata,
 			)
 			logger.DebugCF(
 				"telegram",
@@ -1470,6 +1472,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 				sender,
 				isMentioned,
 				"reply to a non-bot message without mentioning this bot",
+				mediaGroupMetadata,
 			)
 			logger.DebugCF(
 				"telegram",
@@ -1536,6 +1539,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		"first_name": user.FirstName,
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
 	}
+	mergeTelegramRawMetadata(metadata, mediaGroupMetadata)
 
 	inboundCtx := bus.InboundContext{
 		Channel:   c.Name(),
@@ -1564,6 +1568,37 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	return nil
 }
 
+func telegramMediaGroupMetadata(messages []*telego.Message) map[string]string {
+	messageIDs := make([]string, 0, len(messages))
+	mediaGroupID := ""
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		if mediaGroupID == "" {
+			mediaGroupID = strings.TrimSpace(msg.MediaGroupID)
+		}
+		messageIDs = append(messageIDs, strconv.Itoa(msg.MessageID))
+	}
+	if mediaGroupID == "" {
+		return nil
+	}
+	return map[string]string{
+		"media_group_id":          mediaGroupID,
+		"media_group_count":       strconv.Itoa(len(messageIDs)),
+		"media_group_message_ids": strings.Join(messageIDs, ","),
+	}
+}
+
+func mergeTelegramRawMetadata(dst, src map[string]string) {
+	if dst == nil {
+		return
+	}
+	for key, value := range src {
+		dst[key] = value
+	}
+}
+
 func (c *TelegramChannel) observeSuppressedTelegramMessage(
 	ctx context.Context,
 	message *telego.Message,
@@ -1573,6 +1608,7 @@ func (c *TelegramChannel) observeSuppressedTelegramMessage(
 	sender bus.SenderInfo,
 	isMentioned bool,
 	reason string,
+	extraRaw map[string]string,
 ) {
 	if message == nil || message.From == nil {
 		return
@@ -1592,6 +1628,7 @@ func (c *TelegramChannel) observeSuppressedTelegramMessage(
 		"first_name": message.From.FirstName,
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
 	}
+	mergeTelegramRawMetadata(metadata, extraRaw)
 	inboundCtx := bus.InboundContext{
 		Channel:   c.Name(),
 		ChatID:    fmt.Sprintf("%d", chatID),
