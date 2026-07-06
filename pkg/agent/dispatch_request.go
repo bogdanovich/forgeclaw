@@ -49,6 +49,13 @@ func (r DispatchRequest) ReplyToMessageID() string {
 	return r.InboundContext.ReplyToMessageID
 }
 
+func (r DispatchRequest) ChatType() string {
+	if r.InboundContext == nil {
+		return ""
+	}
+	return r.InboundContext.ChatType
+}
+
 func (r DispatchRequest) SenderID() string {
 	if r.InboundContext == nil {
 		return ""
@@ -103,6 +110,9 @@ func normalizeProcessOptions(opts processOptions) processOptions {
 				ReplyToMessageID: strings.TrimSpace(opts.ReplyToMessageID),
 			}
 			inbound.ChatType = inferChatTypeFromSessionScope(opts.Dispatch.SessionScope)
+			if inbound.ChatType == "" {
+				inbound.ChatType = "direct"
+			}
 			if inbound.Channel != "" || inbound.ChatID != "" || inbound.SenderID != "" ||
 				inbound.MessageID != "" || inbound.ReplyToMessageID != "" {
 				inbound = bus.NormalizeInboundMessage(bus.InboundMessage{Context: inbound}).Context

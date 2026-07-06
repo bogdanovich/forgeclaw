@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/session"
 )
 
 func TestPromptRegistry_RejectsRegisteredSourceWrongPlacement(t *testing.T) {
@@ -108,6 +110,186 @@ func TestBuildMessagesFromPrompt_IncludesSystemPromptOverlay(t *testing.T) {
 	}
 	if messages[1].Role != "user" || messages[1].Content != "do child task" {
 		t.Fatalf("messages[1] = %#v, want user task", messages[1])
+	}
+}
+
+func TestBuildMessagesFromPrompt_MediaOnlyCurrentTurnGetsStandaloneMarker(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		CurrentMessage: "[media only]",
+		Media:          []string{"media://image-1"},
+	})
+
+	if len(messages) == 0 {
+		t.Fatal("expected messages")
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "user" {
+		t.Fatalf("last role = %q, want user", last.Role)
+	}
+	if !strings.Contains(last.Content, "[New user message with attached media only]") {
+		t.Fatalf("last content = %q, want standalone media marker", last.Content)
+	}
+	if !strings.Contains(last.Content, "Do not assume it continues the previous request") {
+		t.Fatalf("last content = %q, want anti-carryover guidance", last.Content)
+	}
+	if len(last.Media) != 1 || last.Media[0] != "media://image-1" {
+		t.Fatalf("last media = %#v, want media://image-1", last.Media)
+	}
+}
+
+func TestBuildMessagesFromPrompt_MediaOnlyReplyTurnPreservesReplySemantics(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		CurrentMessage:   "[media only]",
+		Media:            []string{"media://image-1"},
+		ReplyToMessageID: "123",
+	})
+
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "This message was sent as a reply to an earlier chat message") {
+		t.Fatalf("last content = %q, want reply-aware media marker", last.Content)
+	}
+	if strings.Contains(last.Content, "Do not assume it continues the previous request") {
+		t.Fatalf("last content = %q, should not suppress reply continuity", last.Content)
+	}
+}
+
+func TestBuildMessagesFromPrompt_MediaOnlyRecentUserFollowupUsesAdjacentContext(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	ts := time.Now().Add(-time.Minute)
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		History: []providers.Message{
+			{Role: "user", Content: "Here is what I ate", CreatedAt: &ts},
+		},
+		CurrentMessage:             "[media only]",
+		Media:                      []string{"media://image-1"},
+		AllowAdjacentMediaFollowup: true,
+	})
+
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "arrived shortly after the user's previous message") {
+		t.Fatalf("last content = %q, want adjacent follow-up marker", last.Content)
+	}
+}
+
+func TestBuildMessagesFromPrompt_MediaOnlyRecentUserFollowupDefaultsToStandalone(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	ts := time.Now().Add(-time.Minute)
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		History: []providers.Message{
+			{Role: "user", Content: "Here is what I ate", CreatedAt: &ts},
+		},
+		CurrentMessage: "[media only]",
+		Media:          []string{"media://image-1"},
+	})
+
+	last := messages[len(messages)-1]
+	if strings.Contains(last.Content, "arrived shortly after the user's previous message") {
+		t.Fatalf("last content = %q, should not infer adjacent follow-up by default", last.Content)
+	}
+	if !strings.Contains(last.Content, "Do not assume it continues the previous request") {
+		t.Fatalf("last content = %q, want standalone marker", last.Content)
+	}
+}
+
+func TestAllowAdjacentMediaFollowupForChatType_OnlyDirect(t *testing.T) {
+	for _, chatType := range []string{"", "group", "channel", "private"} {
+		if allowAdjacentMediaFollowupForChatType(chatType) {
+			t.Fatalf("allowAdjacentMediaFollowupForChatType(%q) = true, want false", chatType)
+		}
+	}
+	if !allowAdjacentMediaFollowupForChatType("direct") {
+		t.Fatal("allowAdjacentMediaFollowupForChatType(direct) = false, want true")
+	}
+}
+
+func TestPromptBuildRequestForProcessOptions_AllowsLegacyDirectAdjacentMedia(t *testing.T) {
+	opts := normalizeProcessOptions(processOptions{
+		SessionKey:  "session-1",
+		Channel:     "telegram",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+		UserMessage: "[media only]",
+		Media:       []string{"media://image-1"},
+	})
+
+	req := promptBuildRequestForProcessOptions(nil, nil, opts, nil, "", opts.UserMessage, opts.Media)
+	if !req.AllowAdjacentMediaFollowup {
+		t.Fatal("AllowAdjacentMediaFollowup = false, want true for legacy direct processOptions")
+	}
+}
+
+func TestPromptBuildRequestForProcessOptions_DisablesAdjacentMediaForGroupScope(t *testing.T) {
+	opts := normalizeProcessOptions(processOptions{
+		SessionKey: "session-1",
+		Channel:    "telegram",
+		ChatID:     "chat-1",
+		SenderID:   "user-1",
+		SessionScope: &session.SessionScope{
+			Values: map[string]string{
+				"chat": "group:chat-1",
+			},
+		},
+		UserMessage: "[media only]",
+		Media:       []string{"media://image-1"},
+	})
+
+	req := promptBuildRequestForProcessOptions(nil, nil, opts, nil, "", opts.UserMessage, opts.Media)
+	if req.AllowAdjacentMediaFollowup {
+		t.Fatal("AllowAdjacentMediaFollowup = true, want false for group-scoped processOptions")
+	}
+}
+
+func TestBuildMessagesFromPrompt_MediaOnlyDoesNotAttachAfterAssistantReply(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	userTS := time.Now().Add(-time.Minute)
+	assistantTS := time.Now().Add(-30 * time.Second)
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		History: []providers.Message{
+			{Role: "user", Content: "Here is what I ate", CreatedAt: &userTS},
+			{Role: "assistant", Content: "Saved.", CreatedAt: &assistantTS},
+		},
+		CurrentMessage: "[media only]",
+		Media:          []string{"media://image-1"},
+	})
+
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "Do not assume it continues the previous request") {
+		t.Fatalf("last content = %q, want standalone marker after assistant reply", last.Content)
+	}
+}
+
+func TestBuildMessagesFromPrompt_PreservesNonMediaWhitespace(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	raw := "\n  line one\nline two\n"
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		CurrentMessage: raw,
+	})
+
+	last := messages[len(messages)-1]
+	if last.Content != raw {
+		t.Fatalf("last content = %q, want %q", last.Content, raw)
+	}
+}
+
+func TestBuildMessagesFromPrompt_KnownAttachmentPlaceholderUsesMediaOnlyFlow(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		CurrentMessage: "[image]",
+		Media:          []string{"media://image-1"},
+	})
+
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "[New user message with attached media only]") {
+		t.Fatalf("last content = %q, want media-only marker", last.Content)
 	}
 }
 

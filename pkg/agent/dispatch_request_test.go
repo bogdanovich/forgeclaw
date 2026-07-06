@@ -40,6 +40,9 @@ func TestNormalizeProcessOptions_PopulatesDispatchFromLegacyFields(t *testing.T)
 	if opts.Dispatch.ReplyToMessageID() != "reply-1" {
 		t.Fatalf("Dispatch.ReplyToMessageID() = %q, want reply-1", opts.Dispatch.ReplyToMessageID())
 	}
+	if opts.Dispatch.ChatType() != "direct" {
+		t.Fatalf("Dispatch.ChatType() = %q, want direct", opts.Dispatch.ChatType())
+	}
 	if opts.Dispatch.UserMessage != "hello" {
 		t.Fatalf("Dispatch.UserMessage = %q, want hello", opts.Dispatch.UserMessage)
 	}
