@@ -176,6 +176,24 @@ func TestBuildMessagesFromPrompt_MediaOnlyRecentUserFollowupUsesAdjacentContext(
 	}
 }
 
+func TestBuildMessagesFromPrompt_UsesProvidedCurrentMessageRelation(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		CurrentMessage: "[media only]",
+		Media:          []string{"media://image-1"},
+		CurrentMessageRelation: InboundMessageRelation{
+			Kind:      InboundRelationAdjacentFollowupMedia,
+			MediaOnly: true,
+		},
+	})
+
+	last := messages[len(messages)-1]
+	if !strings.Contains(last.Content, "arrived shortly after the user's previous message") {
+		t.Fatalf("last content = %q, want relation-provided adjacent follow-up marker", last.Content)
+	}
+}
+
 func TestBuildMessagesFromPrompt_MediaOnlyRecentUserFollowupDefaultsToStandalone(t *testing.T) {
 	cb := NewContextBuilder(t.TempDir())
 	ts := time.Now().Add(-time.Minute)
@@ -221,6 +239,39 @@ func TestPromptBuildRequestForProcessOptions_AllowsLegacyDirectAdjacentMedia(t *
 	req := promptBuildRequestForProcessOptions(nil, nil, opts, nil, "", opts.UserMessage, opts.Media)
 	if !req.AllowAdjacentMediaFollowup {
 		t.Fatal("AllowAdjacentMediaFollowup = false, want true for legacy direct processOptions")
+	}
+}
+
+func TestPromptBuildRequestForProcessOptions_CarriesCurrentMessageRelation(t *testing.T) {
+	ts := time.Now().Add(-time.Minute)
+	opts := normalizeProcessOptions(processOptions{
+		SessionKey:  "session-1",
+		Channel:     "telegram",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+		UserMessage: "[media only]",
+		Media:       []string{"media://image-1"},
+	})
+
+	req := promptBuildRequestForProcessOptions(
+		nil,
+		nil,
+		opts,
+		[]providers.Message{{Role: "user", Content: "Here is what I ate", CreatedAt: &ts}},
+		"",
+		opts.UserMessage,
+		opts.Media,
+	)
+
+	if req.CurrentMessageRelation.Kind != InboundRelationAdjacentFollowupMedia {
+		t.Fatalf(
+			"CurrentMessageRelation.Kind = %q, want %q",
+			req.CurrentMessageRelation.Kind,
+			InboundRelationAdjacentFollowupMedia,
+		)
+	}
+	if !req.CurrentMessageRelation.MediaOnly {
+		t.Fatal("CurrentMessageRelation.MediaOnly = false, want true")
 	}
 }
 

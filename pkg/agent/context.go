@@ -1016,15 +1016,23 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// multimodal providers receive the uploaded image even when the user sends
 	// no accompanying text.
 	if strings.TrimSpace(req.CurrentMessage) != "" || len(req.Media) > 0 {
-		messages = append(
-			messages,
-			currentTurnUserPromptMessage(
+		relation := req.CurrentMessageRelation
+		if relation.IsZero() {
+			relation = classifyPromptCurrentMessageRelation(
 				req.CurrentMessage,
 				req.Media,
 				req.ReplyToMessageID,
 				req.AllowAdjacentMediaFollowup,
 				history,
 				time.Now(),
+			)
+		}
+		messages = append(
+			messages,
+			currentTurnUserPromptMessage(
+				req.CurrentMessage,
+				req.Media,
+				relation,
 			),
 		)
 	}

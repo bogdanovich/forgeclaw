@@ -18,18 +18,28 @@ var attachmentOnlyPlaceholders = map[string]struct{}{
 	"[file]":       {},
 }
 
-type currentTurnRelationKind string
+type InboundRelationKind string
 
 const (
-	currentTurnRelationStandalone            currentTurnRelationKind = "standalone"
-	currentTurnRelationReplyToMessage        currentTurnRelationKind = "reply_to_message"
-	currentTurnRelationAdjacentFollowupMedia currentTurnRelationKind = "adjacent_followup_media"
+	InboundRelationStandalone            InboundRelationKind = "standalone"
+	InboundRelationReplyToMessage        InboundRelationKind = "reply_to_message"
+	InboundRelationAdjacentFollowupMedia InboundRelationKind = "adjacent_followup_media"
+
+	currentTurnRelationStandalone            = InboundRelationStandalone
+	currentTurnRelationReplyToMessage        = InboundRelationReplyToMessage
+	currentTurnRelationAdjacentFollowupMedia = InboundRelationAdjacentFollowupMedia
 )
 
-type currentTurnRelation struct {
-	Kind      currentTurnRelationKind
+type InboundMessageRelation struct {
+	Kind      InboundRelationKind
 	MediaOnly bool
 }
+
+func (r InboundMessageRelation) IsZero() bool {
+	return r.Kind == ""
+}
+
+type currentTurnRelation = InboundMessageRelation
 
 type currentTurnRelationInput struct {
 	Content                    string
@@ -55,6 +65,24 @@ func classifyCurrentTurnRelation(input currentTurnRelationInput) currentTurnRela
 		return currentTurnRelation{Kind: currentTurnRelationAdjacentFollowupMedia, MediaOnly: true}
 	}
 	return currentTurnRelation{Kind: currentTurnRelationStandalone, MediaOnly: true}
+}
+
+func classifyPromptCurrentMessageRelation(
+	content string,
+	media []string,
+	replyToMessageID string,
+	allowAdjacentMediaFollowup bool,
+	history []providers.Message,
+	now time.Time,
+) InboundMessageRelation {
+	return classifyCurrentTurnRelation(currentTurnRelationInput{
+		Content:                    content,
+		Media:                      media,
+		ReplyToMessageID:           replyToMessageID,
+		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowup,
+		History:                    history,
+		Now:                        now,
+	})
 }
 
 func recentUserFollowupCandidate(history []providers.Message, now time.Time, window time.Duration) bool {
