@@ -17,18 +17,27 @@ func promptBuildRequestForTurn(
 	media []string,
 	cfg *config.Config,
 ) PromptBuildRequest {
+	allowAdjacentMediaFollowup := allowAdjacentMediaFollowupForChatType(
+		ts.opts.Dispatch.ChatType(),
+	)
 	req := PromptBuildRequest{
-		History:           history,
-		Summary:           summary,
-		CurrentMessage:    currentMessage,
-		Media:             append([]string(nil), media...),
-		Channel:           ts.channel,
-		ChatID:            ts.chatID,
-		SenderID:          ts.opts.Dispatch.SenderID(),
-		SenderDisplayName: ts.opts.SenderDisplayName,
-		ReplyToMessageID:  ts.opts.Dispatch.ReplyToMessageID(),
-		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowupForChatType(
-			ts.opts.Dispatch.ChatType(),
+		History:                    history,
+		Summary:                    summary,
+		CurrentMessage:             currentMessage,
+		Media:                      append([]string(nil), media...),
+		Channel:                    ts.channel,
+		ChatID:                     ts.chatID,
+		SenderID:                   ts.opts.Dispatch.SenderID(),
+		SenderDisplayName:          ts.opts.SenderDisplayName,
+		ReplyToMessageID:           ts.opts.Dispatch.ReplyToMessageID(),
+		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowup,
+		CurrentMessageRelation: classifyPromptCurrentMessageRelation(
+			currentMessage,
+			media,
+			ts.opts.Dispatch.ReplyToMessageID(),
+			allowAdjacentMediaFollowup,
+			history,
+			time.Now(),
 		),
 		ActiveSkills: activeSkillNames(ts.agent, ts.opts),
 		Overlays:     promptOverlaysForOptions(ts.opts),
@@ -85,18 +94,27 @@ func promptBuildRequestForProcessOptions(
 	currentMessage string,
 	media []string,
 ) PromptBuildRequest {
+	allowAdjacentMediaFollowup := allowAdjacentMediaFollowupForChatType(
+		opts.Dispatch.ChatType(),
+	)
 	req := PromptBuildRequest{
-		History:           history,
-		Summary:           summary,
-		CurrentMessage:    currentMessage,
-		Media:             append([]string(nil), media...),
-		Channel:           opts.Channel,
-		ChatID:            opts.ChatID,
-		SenderID:          opts.SenderID,
-		SenderDisplayName: opts.SenderDisplayName,
-		ReplyToMessageID:  opts.ReplyToMessageID,
-		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowupForChatType(
-			opts.Dispatch.ChatType(),
+		History:                    history,
+		Summary:                    summary,
+		CurrentMessage:             currentMessage,
+		Media:                      append([]string(nil), media...),
+		Channel:                    opts.Channel,
+		ChatID:                     opts.ChatID,
+		SenderID:                   opts.SenderID,
+		SenderDisplayName:          opts.SenderDisplayName,
+		ReplyToMessageID:           opts.ReplyToMessageID,
+		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowup,
+		CurrentMessageRelation: classifyPromptCurrentMessageRelation(
+			currentMessage,
+			media,
+			opts.ReplyToMessageID,
+			allowAdjacentMediaFollowup,
+			history,
+			time.Now(),
 		),
 		ActiveSkills: activeSkillNames(agent, opts),
 		Overlays:     promptOverlaysForOptions(opts),
@@ -216,19 +234,8 @@ func userPromptMessage(content string, media []string) providers.Message {
 func currentTurnUserPromptMessage(
 	content string,
 	media []string,
-	replyToMessageID string,
-	allowAdjacentMediaFollowup bool,
-	history []providers.Message,
-	now time.Time,
+	relation InboundMessageRelation,
 ) providers.Message {
-	relation := classifyCurrentTurnRelation(currentTurnRelationInput{
-		Content:                    content,
-		Media:                      media,
-		ReplyToMessageID:           replyToMessageID,
-		AllowAdjacentMediaFollowup: allowAdjacentMediaFollowup,
-		History:                    history,
-		Now:                        now,
-	})
 	if relation.MediaOnly {
 		lines := []string{
 			"[New user message with attached media only]",

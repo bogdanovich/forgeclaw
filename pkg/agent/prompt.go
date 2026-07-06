@@ -120,6 +120,7 @@ type PromptBuildRequest struct {
 	// is known to be single-sender-safe, or when sender metadata can prove the
 	// prior user message came from the same sender.
 	AllowAdjacentMediaFollowup bool
+	CurrentMessageRelation     InboundMessageRelation
 
 	ActiveSkills []string
 	Overlays     []PromptPart
