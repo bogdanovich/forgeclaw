@@ -2298,6 +2298,37 @@ func TestHandleMessage_MediaGroupCombinesCaptionMessages(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_SuppressedMediaGroupPreservesProvenance(t *testing.T) {
+	messageBus, ch := newMediaGroupTestChannel(10 * time.Millisecond)
+	base := testMediaGroupMessage("album-suppressed")
+	base.Chat.Type = "group"
+	base.Caption = "@someone album caption"
+	base.CaptionEntities = []telego.MessageEntity{
+		{Type: telego.EntityTypeMention, Offset: 0, Length: len("@someone")},
+	}
+	first := base
+	first.MessageID = 1
+	second := base
+	second.MessageID = 2
+	second.Caption = "second"
+	second.CaptionEntities = nil
+
+	require.NoError(t, ch.handleMessage(context.Background(), &first))
+	require.NoError(t, ch.handleMessage(context.Background(), &second))
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		t.Fatalf("expected grouped album to be observed, got inbound: %#v", inbound)
+	case observed := <-messageBus.ObservedChan():
+		assert.Equal(t, "@someone album caption\nsecond", observed.Content)
+		assert.Equal(t, "album-suppressed", observed.Context.Raw["media_group_id"])
+		assert.Equal(t, "2", observed.Context.Raw["media_group_count"])
+		assert.Equal(t, "1,2", observed.Context.Raw["media_group_message_ids"])
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for suppressed media group observation")
+	}
+}
+
 func TestHandleMessage_MediaGroupWaitsForStaggeredMessages(t *testing.T) {
 	messageBus, ch := newMediaGroupTestChannel(100 * time.Millisecond)
 	base := testMediaGroupMessage("album-staggered")
