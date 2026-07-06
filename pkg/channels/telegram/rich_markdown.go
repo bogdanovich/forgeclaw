@@ -44,7 +44,11 @@ func markdownToTelegramRichMarkdown(text string) string {
 		if label == "" {
 			label = parts[1]
 		}
-		return fmt.Sprintf("[%s](%s)", label, parts[1])
+		return fmt.Sprintf(
+			"[%s](%s)",
+			escapeRichMarkdownLinkLabel(label),
+			escapeRichMarkdownLinkURL(html.UnescapeString(parts[1])),
+		)
 	})
 	text = reRichMarkdownBlockquote.ReplaceAllStringFunc(text, func(match string) string {
 		parts := reRichMarkdownBlockquote.FindStringSubmatch(match)
@@ -158,4 +162,17 @@ func replaceKnownRichMarkdownHTMLTags(text string) string {
 
 func stripKnownRichMarkdownHTMLTags(text string) string {
 	return html.UnescapeString(text)
+}
+
+func escapeRichMarkdownLinkLabel(text string) string {
+	text = strings.ReplaceAll(text, `\`, `\\`)
+	text = strings.ReplaceAll(text, `[`, `\[`)
+	text = strings.ReplaceAll(text, `]`, `\]`)
+	return text
+}
+
+func escapeRichMarkdownLinkURL(text string) string {
+	text = strings.ReplaceAll(text, `\`, `\\`)
+	text = strings.ReplaceAll(text, `)`, `\)`)
+	return text
 }

@@ -28,6 +28,11 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 			want: `<b>bold</b> <i>ital</i> <s>gone</s> <code>x := 1</code> [site](https://example.com)`,
 		},
 		{
+			name: "escapes generated rich markdown links",
+			in:   `<a href="https://example.com/search?q=a)&amp;ok=1">docs [beta]</a>`,
+			want: `[docs \[beta\]](https://example.com/search?q=a\)&ok=1)`,
+		},
+		{
 			name: "converts html blockquote",
 			in:   "Intro\n<blockquote>first\nsecond</blockquote>",
 			want: "Intro\n> first\n> second",

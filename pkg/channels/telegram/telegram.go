@@ -138,7 +138,7 @@ func NewTelegramChannel(
 	}
 	ch.progress = channels.NewToolFeedbackAnimator(
 		func(ctx context.Context, chatID, messageID, content string) error {
-			return ch.EditMessage(
+			return ch.editToolFeedbackMessage(
 				ctx,
 				telegramToolFeedbackDeliveryChatKey(chatID),
 				messageID,
@@ -459,7 +459,7 @@ func (c *TelegramChannel) sendRichChunk(
 
 	pMsg, err := c.bot.SendRichMessage(ctx, params)
 	if err != nil {
-		if shouldFallbackFromRichMessage(err) {
+		if shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err) {
 			logger.WarnCF(
 				"telegram",
 				"sendRichMessage rejected, falling back to text",
@@ -584,6 +584,25 @@ func (c *TelegramChannel) EditMessage(
 	messageID string,
 	content string,
 ) error {
+	return c.editMessageText(ctx, chatID, messageID, content, true)
+}
+
+func (c *TelegramChannel) editToolFeedbackMessage(
+	ctx context.Context,
+	chatID string,
+	messageID string,
+	content string,
+) error {
+	return c.editMessageText(ctx, chatID, messageID, content, false)
+}
+
+func (c *TelegramChannel) editMessageText(
+	ctx context.Context,
+	chatID string,
+	messageID string,
+	content string,
+	useRichMessages bool,
+) error {
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
 	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
@@ -594,7 +613,7 @@ func (c *TelegramChannel) EditMessage(
 		return err
 	}
 	var editMsg *telego.EditMessageTextParams
-	if c.richMessagesEnabled(useMarkdownV2) {
+	if useRichMessages && c.richMessagesEnabled(useMarkdownV2) {
 		richMessage := renderTelegramOutboundRichMessage(content)
 		editMsg = tu.EditMessageText(tu.ID(cid), mid, "")
 		editMsg.RichMessage = &richMessage
@@ -618,7 +637,7 @@ func (c *TelegramChannel) EditMessage(
 
 		// Only fallback to plain text for formatting/rich-message errors. Network
 		// errors or timeouts should not trigger a retry with different content.
-		if c.richMessagesEnabled(useMarkdownV2) &&
+		if useRichMessages && c.richMessagesEnabled(useMarkdownV2) &&
 			(shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
 			logger.WarnCF(
 				"telegram",
@@ -630,7 +649,7 @@ func (c *TelegramChannel) EditMessage(
 				},
 			)
 			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
-		} else if useMarkdownV2 && shouldFallbackToPlainText(err) {
+		} else if shouldFallbackToPlainText(err) {
 			logFormattingFallback(err, useMarkdownV2)
 			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
 		}
@@ -782,7 +801,7 @@ func (c *TelegramChannel) finalizeToolFeedbackMessageForChat(
 	chatID string,
 	msg bus.OutboundMessage,
 ) ([]string, bool) {
-	return c.finalizeTrackedToolFeedbackMessage(ctx, chatID, msg.Content, c.EditMessage)
+	return c.finalizeTrackedToolFeedbackMessage(ctx, chatID, msg.Content, c.editToolFeedbackMessage)
 }
 
 // SendPlaceholder implements channels.PlaceholderCapable.

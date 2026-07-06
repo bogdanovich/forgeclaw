@@ -355,7 +355,16 @@ func newTestChannelWithConstructor(
 		bc:          &config.Channel{Type: config.ChannelTelegram, Enabled: true},
 		tgCfg:       &config.TelegramSettings{},
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
+	ch.progress = channels.NewToolFeedbackAnimator(
+		func(ctx context.Context, chatID, messageID, content string) error {
+			return ch.editToolFeedbackMessage(
+				ctx,
+				telegramToolFeedbackDeliveryChatKey(chatID),
+				messageID,
+				content,
+			)
+		},
+	)
 	return ch
 }
 
@@ -1058,17 +1067,23 @@ func TestSend_NonToolFeedbackDeletesTrackedProgressMessage(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
 	ch.RecordToolFeedbackMessage("12345", "1", "🔧 `read_file`")
 
 	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
-		Content: "final reply",
+		Content: "final **reply**\n- item",
 	})
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"1"}, ids)
 	require.Len(t, caller.calls, 1)
 	assert.Contains(t, caller.calls[0].URL, "editMessageText")
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	assert.Nil(t, payload["rich_message"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	assert.Equal(t, "final <b>reply</b>\n- item", payload["text"])
 	_, ok := ch.currentToolFeedbackMessage("12345")
 	assert.False(t, ok, "tracked tool feedback should be cleared after final reply")
 }
@@ -1095,6 +1110,51 @@ func TestEditMessage_RichMessagesEnabledUsesRichMarkdown(t *testing.T) {
 	assert.Equal(t, content, richMessage["markdown"])
 	assert.Empty(t, payload["text"])
 	assert.Empty(t, payload["parse_mode"])
+}
+
+func TestSend_ToolFeedbackUpdateUsesLegacyTextWhenRichMessagesEnabled(t *testing.T) {
+	nextMessageID := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			nextMessageID++
+			return successResponseWithMessageID(t, nextMessageID), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	first := bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Working...\n• tool: `read_file`",
+		Context: bus.InboundContext{
+			Channel: "telegram",
+			ChatID:  "12345",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	}
+	second := first
+	second.Content = "Working...\n• tool: `write_file`"
+
+	ids, err := ch.Send(context.Background(), first)
+	require.NoError(t, err)
+	require.Equal(t, []string{"1"}, ids)
+
+	ids, err = ch.Send(context.Background(), second)
+	require.NoError(t, err)
+	require.Equal(t, []string{"1"}, ids)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendMessage")
+	assert.Contains(t, caller.calls[1].URL, "editMessageText")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Nil(t, payload["rich_message"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	text, ok := payload["text"].(string)
+	require.True(t, ok)
+	assert.Contains(t, text, "\n• tool: ")
+	assert.Contains(t, text, "<code>read_file</code>")
+	assert.Contains(t, text, "<code>write_file</code>")
 }
 
 func TestEditMessage_LegacyHTMLUsesHTMLParseMode(t *testing.T) {
@@ -1499,51 +1559,48 @@ func TestSend_RichMessagesEnabledUsesSendRichMessage(t *testing.T) {
 }
 
 func TestSend_RichMessagesFallbackUsesLegacySendMessage(t *testing.T) {
-	callCount := 0
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			callCount++
-			if callCount == 1 {
-				assert.Contains(t, url, "sendRichMessage")
-				return nil, errors.New(`api: 400 "Bad Request: rich message is not supported"`)
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "unsupported rich messages",
+			err:  errors.New(`api: 400 "Bad Request: rich message is not supported"`),
+		},
+		{
+			name: "rich markdown parse error",
+			err:  errors.New(`api: 400 "Bad Request: can't parse entities"`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			callCount := 0
+			caller := &stubCaller{
+				callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+					callCount++
+					if callCount == 1 {
+						assert.Contains(t, url, "sendRichMessage")
+						return nil, tc.err
+					}
+					assert.Contains(t, url, "sendMessage")
+					return successResponse(t), nil
+				},
 			}
-			assert.Contains(t, url, "sendMessage")
-			return successResponse(t), nil
-		},
+			ch := newTestChannel(t, caller)
+			ch.tgCfg.RichMessages.Enabled = true
+
+			_, err := ch.Send(context.Background(), bus.OutboundMessage{
+				ChatID:  "12345",
+				Content: "Hello **world**",
+			})
+
+			require.NoError(t, err)
+			require.Len(t, caller.calls, 2)
+			assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+			assert.Contains(t, caller.calls[1].URL, "sendMessage")
+		})
 	}
-	ch := newTestChannel(t, caller)
-	ch.tgCfg.RichMessages.Enabled = true
-
-	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "12345",
-		Content: "Hello **world**",
-	})
-
-	require.NoError(t, err)
-	require.Len(t, caller.calls, 2)
-	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
-	assert.Contains(t, caller.calls[1].URL, "sendMessage")
-}
-
-func TestSend_RichMessagesContentErrorDoesNotFallback(t *testing.T) {
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			assert.Contains(t, url, "sendRichMessage")
-			return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
-		},
-	}
-	ch := newTestChannel(t, caller)
-	ch.tgCfg.RichMessages.Enabled = true
-
-	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "12345",
-		Content: "Hello **world**",
-	})
-
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, channels.ErrTemporary))
-	require.Len(t, caller.calls, 1)
-	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
 }
 
 func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
