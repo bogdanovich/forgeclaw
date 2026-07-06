@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/session"
 )
 
 func TestPromptRegistry_RejectsRegisteredSourceWrongPlacement(t *testing.T) {
@@ -204,6 +205,43 @@ func TestAllowAdjacentMediaFollowupForChatType_OnlyDirect(t *testing.T) {
 	}
 	if !allowAdjacentMediaFollowupForChatType("direct") {
 		t.Fatal("allowAdjacentMediaFollowupForChatType(direct) = false, want true")
+	}
+}
+
+func TestPromptBuildRequestForProcessOptions_AllowsLegacyDirectAdjacentMedia(t *testing.T) {
+	opts := normalizeProcessOptions(processOptions{
+		SessionKey:  "session-1",
+		Channel:     "telegram",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+		UserMessage: "[media only]",
+		Media:       []string{"media://image-1"},
+	})
+
+	req := promptBuildRequestForProcessOptions(nil, nil, opts, nil, "", opts.UserMessage, opts.Media)
+	if !req.AllowAdjacentMediaFollowup {
+		t.Fatal("AllowAdjacentMediaFollowup = false, want true for legacy direct processOptions")
+	}
+}
+
+func TestPromptBuildRequestForProcessOptions_DisablesAdjacentMediaForGroupScope(t *testing.T) {
+	opts := normalizeProcessOptions(processOptions{
+		SessionKey: "session-1",
+		Channel:    "telegram",
+		ChatID:     "chat-1",
+		SenderID:   "user-1",
+		SessionScope: &session.SessionScope{
+			Values: map[string]string{
+				"chat": "group:chat-1",
+			},
+		},
+		UserMessage: "[media only]",
+		Media:       []string{"media://image-1"},
+	})
+
+	req := promptBuildRequestForProcessOptions(nil, nil, opts, nil, "", opts.UserMessage, opts.Media)
+	if req.AllowAdjacentMediaFollowup {
+		t.Fatal("AllowAdjacentMediaFollowup = true, want false for group-scoped processOptions")
 	}
 }
 
