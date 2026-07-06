@@ -1011,28 +1011,18 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 
 	// Add conversation history
 	messages = append(messages, history...)
+	req = normalizePromptBuildRequestRelations(req, history, time.Now())
 
 	// Add current user message. Media-only turns must still be preserved so
 	// multimodal providers receive the uploaded image even when the user sends
 	// no accompanying text.
 	if strings.TrimSpace(req.CurrentMessage) != "" || len(req.Media) > 0 {
-		relation := req.CurrentMessageRelation
-		if relation.IsZero() {
-			relation = classifyPromptCurrentMessageRelation(
-				req.CurrentMessage,
-				req.Media,
-				req.ReplyToMessageID,
-				req.AllowAdjacentMediaFollowup,
-				history,
-				time.Now(),
-			)
-		}
 		messages = append(
 			messages,
 			currentTurnUserPromptMessage(
 				req.CurrentMessage,
 				req.Media,
-				relation,
+				req.CurrentMessageRelation,
 			),
 		)
 	}
