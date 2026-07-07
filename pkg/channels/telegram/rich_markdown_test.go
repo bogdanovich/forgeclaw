@@ -13,64 +13,19 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 		want string
 	}{
 		{
-			name: "keeps common markdown blocks",
-			in:   "# Title\n\n## Section\n\n### Subsection\n\n> quote\n\n- one\n- two\n\n| A | B |\n|---|---|\n| x | y |",
-			want: "# Title\n\n## Section\n\n### Subsection\n\n> quote\n\n- one\n- two\n\n| A | B |\n|---|---|\n| x | y |",
+			name: "normalizes line endings and trims outer whitespace",
+			in:   " \r\n# Title\r\n\r\n- one\r\n ",
+			want: "# Title\n\n- one",
 		},
 		{
-			name: "keeps all rich markdown headings",
-			in:   "#### H4\n##### H5\n###### H6",
-			want: "#### H4\n##### H5\n###### H6",
+			name: "preserves common markdown blocks",
+			in:   "# Title\n\n## Section\n\n> quote\n\n- one\n- two\n\n| A | B |\n|---|---|\n| x | y |",
+			want: "# Title\n\n## Section\n\n> quote\n\n- one\n- two\n\n| A | B |\n|---|---|\n| x | y |",
 		},
 		{
-			name: "preserves rich inline tags and converts html links",
-			in:   `<b>bold</b> <i>ital</i> <s>gone</s> <code>x := 1</code> <a href="https://example.com">site</a>`,
-			want: `<b>bold</b> <i>ital</i> <s>gone</s> <code>x := 1</code> [site](https://example.com)`,
-		},
-		{
-			name: "escapes generated rich markdown links",
-			in:   `<a href="https://example.com/search?q=a)&amp;ok=1">docs [beta]</a>`,
-			want: `[docs \[beta\]](https://example.com/search?q=a\)&ok=1)`,
-		},
-		{
-			name: "converts html blockquote",
-			in:   "Intro\n<blockquote>first\nsecond</blockquote>",
-			want: "Intro\n> first\n> second",
-		},
-		{
-			name: "preserves rich markdown image and media blocks",
-			in:   "![diagram](https://example.com/a.png)",
-			want: "![diagram](https://example.com/a.png)",
-		},
-		{
-			name: "converts single tilde strike",
-			in:   "before ~gone~ after",
-			want: "before ~~gone~~ after",
-		},
-		{
-			name: "does not rewrite code",
-			in:   "```html\n<b>raw</b>\n```\n\n`~raw~`",
-			want: "```html\n<b>raw</b>\n```\n\n`~raw~`",
-		},
-		{
-			name: "does not rewrite fenced code containing backticks",
-			in:   "```go\nraw := `value with <b>tag</b>`\nfmt.Println(\"``` inside text\")\n```\n\noutside <b>bold</b>",
-			want: "```go\nraw := `value with <b>tag</b>`\nfmt.Println(\"``` inside text\")\n```\n\noutside <b>bold</b>",
-		},
-		{
-			name: "does not close longer fence on literal shorter fence line",
-			in:   "````markdown\nbefore\n```\n<b>still code</b>\n````\n\noutside <b>bold</b>",
-			want: "````markdown\nbefore\n```\n<b>still code</b>\n````\n\noutside <b>bold</b>",
-		},
-		{
-			name: "normalizes double backtick inline code",
-			in:   "``double backticks``",
-			want: "`double backticks`",
-		},
-		{
-			name: "preserves markdown markers inside inline code",
-			in:   "`code with **bold** inside`\n`code with *italic* inside`",
-			want: "`code with **bold** inside`\n`code with *italic* inside`",
+			name: "preserves code blocks verbatim",
+			in:   "````markdown\nbefore\n```\n<b>still code</b>\n````\n\n`~raw~`",
+			want: "````markdown\nbefore\n```\n<b>still code</b>\n````\n\n`~raw~`",
 		},
 		{
 			name: "preserves telegram rich markdown features",
@@ -78,24 +33,14 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 			want: "<!-- separator -->\n==marked text== ||spoiler|| $x^2 + y^2$\n\n---\n\n- [ ] task\n- [x] done\n\n<u>underlined</u> <sup>sup</sup> <sub>sub</sub> <tg-spoiler>hidden</tg-spoiler>\n\n<details open><summary>Summary with **bold**</summary>\n\n### Details heading\n- item\n\n</details>\n\n<tg-collage>\n\n![](https://telegram.org/example/photo.jpg)\n\n</tg-collage>",
 		},
 		{
-			name: "strips inline html tags from generated links",
-			in:   `<a href="https://example.com"><code>x</code> <b>bold</b> <i>ital</i></a>`,
-			want: `[x bold ital](https://example.com)`,
+			name: "preserves html-looking content instead of translating it",
+			in:   `<a href="https://example.com"><code>x</code> <b>bold</b></a>` + "\n<blockquote><b>hi</b></blockquote>",
+			want: `<a href="https://example.com"><code>x</code> <b>bold</b></a>` + "\n<blockquote><b>hi</b></blockquote>",
 		},
 		{
-			name: "strips unknown nested html tags from generated links",
-			in:   `<a href="https://example.com"><custom><code>x</code></custom> <kbd>key</kbd></a>`,
-			want: `[x key](https://example.com)`,
-		},
-		{
-			name: "strips inline html tags from blockquotes",
-			in:   `<blockquote><b>hi</b> <i>there</i> <code>x</code></blockquote>`,
-			want: `> hi there x`,
-		},
-		{
-			name: "strips unknown nested html tags from blockquotes",
-			in:   `<blockquote><custom><b>hi</b></custom> <kbd>key</kbd></blockquote>`,
-			want: `> hi key`,
+			name: "does not normalize single tilde strike",
+			in:   "before ~gone~ after",
+			want: "before ~gone~ after",
 		},
 	}
 

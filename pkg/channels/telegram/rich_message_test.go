@@ -145,6 +145,6 @@ func TestRenderTelegramOutboundRichMessage_UsesTelegramRichMarkdown(t *testing.T
 	got := renderTelegramOutboundRichMessage(content)
 
 	assert.Equal(t, telego.InputRichMessage{
-		Markdown: "Hello **world**\n\n> quote\n\n- one\n- two\n\n~~gone~~",
+		Markdown: "Hello **world**\n\n> quote\n\n- one\n- two\n\n~gone~",
 	}, got)
 }
