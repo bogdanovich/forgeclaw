@@ -1282,6 +1282,7 @@ func (c *TelegramChannel) sendCaptionText(
 	if text == "" {
 		return nil, nil
 	}
+	useMarkdownV2 := c.tgCfg.UseMarkdownV2
 	chunks := channels.SplitMessage(text, c.MaxMessageLength())
 	messageIDs := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -1289,13 +1290,20 @@ func (c *TelegramChannel) sendCaptionText(
 		if chunk == "" {
 			continue
 		}
-		msgID, err := c.sendChunk(ctx, sendChunkParams{
+		params := sendChunkParams{
 			chatID:        chatID,
 			threadID:      threadID,
-			content:       chunk,
+			content:       parseContent(chunk, useMarkdownV2),
 			mdFallback:    chunk,
-			useMarkdownV2: false,
-		})
+			useMarkdownV2: useMarkdownV2,
+		}
+		var msgID string
+		var err error
+		if c.richMessagesEnabled(useMarkdownV2) {
+			msgID, err = c.sendRichChunk(ctx, chunk, params)
+		} else {
+			msgID, err = c.sendChunk(ctx, params)
+		}
 		if err != nil {
 			return nil, err
 		}

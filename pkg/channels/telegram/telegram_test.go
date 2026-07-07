@@ -796,6 +796,61 @@ func TestSendMedia_SingleImageLongCaptionSendsTextFirst(t *testing.T) {
 	assert.Equal(t, "", constructor.calls[0].Parameters["caption"])
 }
 
+func TestSendMedia_LongCaptionUsesRichMessageWhenEnabled(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	longCaption := "**Summary:**\n\n| Food | Amount |\n| --- | --- |\n| Eggs | 2 |\n\n" +
+		strings.Repeat("rich caption ", 100)
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			switch {
+			case strings.Contains(url, "sendRichMessage"):
+				return successResponseWithMessageID(t, 211), nil
+			case strings.Contains(url, "sendPhoto"):
+				return successResponseWithMessageID(t, 212), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "image.png")
+	require.NoError(t, os.WriteFile(path, []byte("img"), 0o644))
+	ref, err := store.Store(
+		path,
+		media.MediaMeta{Filename: "image.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "image",
+			Ref:     ref,
+			Caption: longCaption,
+		}},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"211", "212"}, ids)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+	assert.Contains(t, caller.calls[1].URL, "sendPhoto")
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	require.IsType(t, map[string]any{}, payload["rich_message"])
+	richMessage := payload["rich_message"].(map[string]any)
+	assert.Equal(t, strings.TrimSpace(longCaption), richMessage["markdown"])
+	assert.Equal(t, "", constructor.calls[0].Parameters["caption"])
+}
+
 func TestSendMedia_MediaGroupLongCaptionSendsTextFirst(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	longCaption := strings.Repeat("b", telegramCaptionLimit) + " trailing explanation"
