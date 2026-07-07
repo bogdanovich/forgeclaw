@@ -2171,7 +2171,8 @@ func shouldFallbackFromRichMessage(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "method not found") ||
+	return (strings.Contains(msg, "404") && strings.Contains(msg, "not found")) ||
+		strings.Contains(msg, "method not found") ||
 		strings.Contains(msg, "sendrichmessage not found") ||
 		strings.Contains(msg, "sendrichmessage is not supported") ||
 		strings.Contains(msg, "rich message is not supported") ||

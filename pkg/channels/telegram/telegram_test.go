@@ -1623,6 +1623,10 @@ func TestSend_RichMessagesFallbackUsesLegacySendMessage(t *testing.T) {
 			err:  errors.New(`api: 400 "Bad Request: rich message is not supported"`),
 		},
 		{
+			name: "older bot api generic not found",
+			err:  errors.New(`api: 404 "Not Found"`),
+		},
+		{
 			name: "rich markdown parse error",
 			err:  errors.New(`api: 400 "Bad Request: can't parse entities"`),
 		},
