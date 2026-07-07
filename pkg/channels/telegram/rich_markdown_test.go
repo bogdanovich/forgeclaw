@@ -58,6 +58,11 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 			want: "```go\nraw := `value with <b>tag</b>`\nfmt.Println(\"``` inside text\")\n```\n\noutside <b>bold</b>",
 		},
 		{
+			name: "does not close longer fence on literal shorter fence line",
+			in:   "````markdown\nbefore\n```\n<b>still code</b>\n````\n\noutside <b>bold</b>",
+			want: "````markdown\nbefore\n```\n<b>still code</b>\n````\n\noutside <b>bold</b>",
+		},
+		{
 			name: "normalizes double backtick inline code",
 			in:   "``double backticks``",
 			want: "`double backticks`",
@@ -69,8 +74,8 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 		},
 		{
 			name: "preserves telegram rich markdown features",
-			in:   "==marked text== ||spoiler|| $x^2 + y^2$\n\n---\n\n- [ ] task\n- [x] done\n\n<u>underlined</u> <sup>sup</sup> <sub>sub</sub> <tg-spoiler>hidden</tg-spoiler>\n\n<details open><summary>Summary with **bold**</summary>\n\n### Details heading\n- item\n\n</details>\n\n<tg-collage>\n\n![](https://telegram.org/example/photo.jpg)\n\n</tg-collage>",
-			want: "==marked text== ||spoiler|| $x^2 + y^2$\n\n---\n\n- [ ] task\n- [x] done\n\n<u>underlined</u> <sup>sup</sup> <sub>sub</sub> <tg-spoiler>hidden</tg-spoiler>\n\n<details open><summary>Summary with **bold**</summary>\n\n### Details heading\n- item\n\n</details>\n\n<tg-collage>\n\n![](https://telegram.org/example/photo.jpg)\n\n</tg-collage>",
+			in:   "<!-- separator -->\n==marked text== ||spoiler|| $x^2 + y^2$\n\n---\n\n- [ ] task\n- [x] done\n\n<u>underlined</u> <sup>sup</sup> <sub>sub</sub> <tg-spoiler>hidden</tg-spoiler>\n\n<details open><summary>Summary with **bold**</summary>\n\n### Details heading\n- item\n\n</details>\n\n<tg-collage>\n\n![](https://telegram.org/example/photo.jpg)\n\n</tg-collage>",
+			want: "<!-- separator -->\n==marked text== ||spoiler|| $x^2 + y^2$\n\n---\n\n- [ ] task\n- [x] done\n\n<u>underlined</u> <sup>sup</sup> <sub>sub</sub> <tg-spoiler>hidden</tg-spoiler>\n\n<details open><summary>Summary with **bold**</summary>\n\n### Details heading\n- item\n\n</details>\n\n<tg-collage>\n\n![](https://telegram.org/example/photo.jpg)\n\n</tg-collage>",
 		},
 		{
 			name: "strips inline html tags from generated links",
@@ -78,9 +83,19 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 			want: `[x bold ital](https://example.com)`,
 		},
 		{
+			name: "strips unknown nested html tags from generated links",
+			in:   `<a href="https://example.com"><custom><code>x</code></custom> <kbd>key</kbd></a>`,
+			want: `[x key](https://example.com)`,
+		},
+		{
 			name: "strips inline html tags from blockquotes",
 			in:   `<blockquote><b>hi</b> <i>there</i> <code>x</code></blockquote>`,
 			want: `> hi there x`,
+		},
+		{
+			name: "strips unknown nested html tags from blockquotes",
+			in:   `<blockquote><custom><b>hi</b></custom> <kbd>key</kbd></blockquote>`,
+			want: `> hi key`,
 		},
 	}
 

@@ -10,7 +10,6 @@ import (
 var (
 	reRichMarkdownMultiBacktickCode  = regexp.MustCompile("`{2,}([^`\n]+)`{2,}")
 	reRichMarkdownSingleBacktickCode = regexp.MustCompile("`[^`\n]+`")
-	reRichMarkdownHTMLComment        = regexp.MustCompile(`(?s)<!--.*?-->`)
 	reRichMarkdownHTMLLink           = regexp.MustCompile(
 		`(?is)<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>`,
 	)
@@ -33,7 +32,6 @@ func markdownToTelegramRichMarkdown(text string) string {
 	code := protectRichMarkdownCode(text)
 	text = code.text
 
-	text = reRichMarkdownHTMLComment.ReplaceAllString(text, "")
 	text = reRichMarkdownHTMLLink.ReplaceAllStringFunc(text, func(match string) string {
 		parts := reRichMarkdownHTMLLink.FindStringSubmatch(match)
 		if len(parts) != 3 {
@@ -109,7 +107,8 @@ func protectRichMarkdownFencedCode(text string, items *[]string) string {
 	lineStart := 0
 	for lineStart < len(text) {
 		lineEnd, nextLineStart := richMarkdownLineBounds(text, lineStart)
-		if !isRichMarkdownFenceLine(text[lineStart:lineEnd]) {
+		openLen, ok := richMarkdownOpeningFenceLength(text[lineStart:lineEnd])
+		if !ok {
 			lineStart = nextLineStart
 			continue
 		}
@@ -118,7 +117,7 @@ func protectRichMarkdownFencedCode(text string, items *[]string) string {
 		found := false
 		for searchStart < len(text) {
 			closeLineEnd, closeNextLineStart := richMarkdownLineBounds(text, searchStart)
-			if isRichMarkdownFenceLine(text[searchStart:closeLineEnd]) {
+			if isRichMarkdownClosingFenceLine(text[searchStart:closeLineEnd], openLen) {
 				b.WriteString(text[unchangedStart:lineStart])
 				block := text[lineStart:closeNextLineStart]
 				*items = append(*items, block)
@@ -146,9 +145,27 @@ func richMarkdownLineBounds(text string, start int) (lineEnd int, nextLineStart 
 	return len(text), len(text)
 }
 
-func isRichMarkdownFenceLine(line string) bool {
+func richMarkdownOpeningFenceLength(line string) (int, bool) {
 	line = strings.TrimLeft(line, " \t")
-	return strings.HasPrefix(line, "```")
+	count := countLeadingBackticks(line)
+	return count, count >= 3
+}
+
+func isRichMarkdownClosingFenceLine(line string, openLen int) bool {
+	line = strings.TrimSpace(line)
+	count := countLeadingBackticks(line)
+	if count < openLen {
+		return false
+	}
+	return strings.TrimSpace(line[count:]) == ""
+}
+
+func countLeadingBackticks(text string) int {
+	count := 0
+	for count < len(text) && text[count] == '`' {
+		count++
+	}
+	return count
 }
 
 func normalizeRichMarkdownInlineCode(match string) string {
@@ -213,7 +230,7 @@ func stripKnownRichMarkdownHTMLTags(text string) string {
 		{`(?is)<\s*br\s*/?\s*>`, "\n"},
 		{`(?is)</\s*(p|div|li|h[1-6])\s*>`, "\n"},
 		{`(?is)<\s*li(?:\s+[^<>]*)?>`, "- "},
-		{`(?is)</?\s*(b|strong|i|em|u|s|strike|del|code|pre|span|p|div|ul|ol|h[1-6])(?:\s+[^<>]*)?>`, ""},
+		{`(?is)<[^>]*>`, ""},
 	}
 	for _, repl := range replacements {
 		text = regexp.MustCompile(repl.pattern).ReplaceAllString(text, repl.value)
