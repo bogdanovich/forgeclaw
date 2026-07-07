@@ -9,5 +9,5 @@ func markdownToTelegramRichMarkdown(text string) string {
 
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	return strings.TrimSpace(text)
+	return text
 }

@@ -13,9 +13,9 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 		want string
 	}{
 		{
-			name: "normalizes line endings and trims outer whitespace",
+			name: "normalizes line endings and preserves outer whitespace",
 			in:   " \r\n# Title\r\n\r\n- one\r\n ",
-			want: "# Title\n\n- one",
+			want: " \n# Title\n\n- one\n ",
 		},
 		{
 			name: "preserves common markdown blocks",
