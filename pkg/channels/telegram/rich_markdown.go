@@ -8,7 +8,6 @@ import (
 )
 
 var (
-	reRichMarkdownFence              = regexp.MustCompile("(?s)```[^`]*?```")
 	reRichMarkdownMultiBacktickCode  = regexp.MustCompile("`{2,}([^`\n]+)`{2,}")
 	reRichMarkdownSingleBacktickCode = regexp.MustCompile("`[^`\n]+`")
 	reRichMarkdownHTMLComment        = regexp.MustCompile(`(?s)<!--.*?-->`)
@@ -92,10 +91,7 @@ type richMarkdownCodePlaceholders struct {
 
 func protectRichMarkdownCode(text string) richMarkdownCodePlaceholders {
 	items := make([]string, 0)
-	text = reRichMarkdownFence.ReplaceAllStringFunc(text, func(match string) string {
-		items = append(items, match)
-		return fmt.Sprintf("\x00TGCODE%d\x00", len(items)-1)
-	})
+	text = protectRichMarkdownFencedCode(text, &items)
 	text = reRichMarkdownMultiBacktickCode.ReplaceAllStringFunc(text, func(match string) string {
 		items = append(items, normalizeRichMarkdownInlineCode(match))
 		return fmt.Sprintf("\x00TGCODE%d\x00", len(items)-1)
@@ -105,6 +101,54 @@ func protectRichMarkdownCode(text string) richMarkdownCodePlaceholders {
 		return fmt.Sprintf("\x00TGCODE%d\x00", len(items)-1)
 	})
 	return richMarkdownCodePlaceholders{text: text, items: items}
+}
+
+func protectRichMarkdownFencedCode(text string, items *[]string) string {
+	var b strings.Builder
+	unchangedStart := 0
+	lineStart := 0
+	for lineStart < len(text) {
+		lineEnd, nextLineStart := richMarkdownLineBounds(text, lineStart)
+		if !isRichMarkdownFenceLine(text[lineStart:lineEnd]) {
+			lineStart = nextLineStart
+			continue
+		}
+
+		searchStart := nextLineStart
+		found := false
+		for searchStart < len(text) {
+			closeLineEnd, closeNextLineStart := richMarkdownLineBounds(text, searchStart)
+			if isRichMarkdownFenceLine(text[searchStart:closeLineEnd]) {
+				b.WriteString(text[unchangedStart:lineStart])
+				block := text[lineStart:closeNextLineStart]
+				*items = append(*items, block)
+				b.WriteString(fmt.Sprintf("\x00TGCODE%d\x00", len(*items)-1))
+				unchangedStart = closeNextLineStart
+				lineStart = closeNextLineStart
+				found = true
+				break
+			}
+			searchStart = closeNextLineStart
+		}
+		if !found {
+			lineStart = nextLineStart
+		}
+	}
+	b.WriteString(text[unchangedStart:])
+	return b.String()
+}
+
+func richMarkdownLineBounds(text string, start int) (lineEnd int, nextLineStart int) {
+	if idx := strings.IndexByte(text[start:], '\n'); idx >= 0 {
+		lineEnd = start + idx
+		return lineEnd, lineEnd + 1
+	}
+	return len(text), len(text)
+}
+
+func isRichMarkdownFenceLine(line string) bool {
+	line = strings.TrimLeft(line, " \t")
+	return strings.HasPrefix(line, "```")
 }
 
 func normalizeRichMarkdownInlineCode(match string) string {
@@ -161,7 +205,20 @@ func replaceKnownRichMarkdownHTMLTags(text string) string {
 }
 
 func stripKnownRichMarkdownHTMLTags(text string) string {
-	return html.UnescapeString(text)
+	text = html.UnescapeString(text)
+	replacements := []struct {
+		pattern string
+		value   string
+	}{
+		{`(?is)<\s*br\s*/?\s*>`, "\n"},
+		{`(?is)</\s*(p|div|li|h[1-6])\s*>`, "\n"},
+		{`(?is)<\s*li(?:\s+[^<>]*)?>`, "- "},
+		{`(?is)</?\s*(b|strong|i|em|u|s|strike|del|code|pre|span|p|div|ul|ol|h[1-6])(?:\s+[^<>]*)?>`, ""},
+	}
+	for _, repl := range replacements {
+		text = regexp.MustCompile(repl.pattern).ReplaceAllString(text, repl.value)
+	}
+	return strings.TrimSpace(text)
 }
 
 func escapeRichMarkdownLinkLabel(text string) string {
