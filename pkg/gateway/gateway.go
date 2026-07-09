@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -157,6 +158,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if err = preCheckConfig(cfg); err != nil {
 		return fmt.Errorf("config pre-check failed: %w", err)
 	}
+	logLatestRestartSentinel(cfg)
 
 	// Debug mode permanently overrides the config log level to DEBUG.
 	if debug {
@@ -438,6 +440,58 @@ func configureGatewayInboundSpool(cfg *config.Config, msgBus *bus.MessageBus) er
 	return nil
 }
 
+func restartSentinelDir(cfg *config.Config) string {
+	return filepath.Join(cfg.WorkspacePath(), "state", "gateway-restart")
+}
+
+func setupSafeRestartTool(cfg *config.Config, agentLoop *agent.AgentLoop, msgBus *bus.MessageBus) error {
+	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
+		return nil
+	}
+	store, err := NewRestartSentinelStore(restartSentinelDir(cfg))
+	if err != nil {
+		return err
+	}
+	controller, err := NewRestartController(RestartControllerOptions{
+		Config: cfg.Gateway.SafeRestart,
+		Source: msgBus,
+		Store:  store,
+	})
+	if err != nil {
+		return err
+	}
+	agentLoop.RegisterTool(NewGatewayRestartTool(controller))
+	logger.InfoCF("gateway", "Safe restart tool enabled", map[string]any{
+		"service_manager": cfg.Gateway.SafeRestart.EffectiveServiceManager(),
+		"service":         cfg.Gateway.SafeRestart.EffectiveService(),
+	})
+	return nil
+}
+
+func logLatestRestartSentinel(cfg *config.Config) {
+	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
+		return
+	}
+	store, err := NewRestartSentinelStore(restartSentinelDir(cfg))
+	if err != nil {
+		logger.WarnCF("gateway", "Failed to open restart sentinel store", map[string]any{"error": err.Error()})
+		return
+	}
+	sentinel, err := store.Read()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.WarnCF("gateway", "Failed to read restart sentinel", map[string]any{"error": err.Error()})
+		}
+		return
+	}
+	logger.InfoCF("gateway", "Latest restart sentinel", map[string]any{
+		"status":            sentinel.Status,
+		"requested_service": sentinel.RequestedService,
+		"requested_at":      sentinel.RequestedAt,
+		"updated_at":        sentinel.UpdatedAt,
+	})
+}
+
 func setupAndStartServices(
 	cfg *config.Config,
 	agentLoop *agent.AgentLoop,
@@ -459,6 +513,9 @@ func setupAndStartServices(
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error setting up cron service: %w", err)
+	}
+	if err = setupSafeRestartTool(cfg, agentLoop, msgBus); err != nil {
+		return nil, fmt.Errorf("error setting up safe restart tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return nil, fmt.Errorf("error starting cron service: %w", err)
