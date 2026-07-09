@@ -16,6 +16,31 @@ type GatewayConfig struct {
 	Port      int    `json:"port"                env:"PICOCLAW_GATEWAY_PORT"`
 	HotReload bool   `json:"hot_reload"          env:"PICOCLAW_GATEWAY_HOT_RELOAD"`
 	LogLevel  string `json:"log_level,omitempty" env:"PICOCLAW_LOG_LEVEL"`
+
+	SafeRestart GatewaySafeRestartConfig `json:"safe_restart,omitempty"`
+}
+
+type GatewaySafeRestartConfig struct {
+	Enabled             bool   `json:"enabled,omitempty"`
+	ServiceManager      string `json:"service_manager,omitempty"`
+	Service             string `json:"service,omitempty"`
+	DrainTimeoutSeconds int    `json:"drain_timeout_seconds,omitempty"`
+	ForceAfterTimeout   bool   `json:"force_after_timeout,omitempty"`
+}
+
+func (c GatewaySafeRestartConfig) EffectiveDrainTimeoutSeconds() int {
+	if c.DrainTimeoutSeconds > 0 {
+		return c.DrainTimeoutSeconds
+	}
+	return 300
+}
+
+func (c GatewaySafeRestartConfig) EffectiveServiceManager() string {
+	return strings.TrimSpace(c.ServiceManager)
+}
+
+func (c GatewaySafeRestartConfig) EffectiveService() string {
+	return strings.TrimSpace(c.Service)
 }
 
 func canonicalGatewayLogLevel(level logger.LogLevel) string {

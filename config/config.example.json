@@ -606,6 +606,13 @@
     "host": "localhost",
     "port": 18790,
     "hot_reload": false,
-    "log_level": "fatal"
+    "log_level": "fatal",
+    "safe_restart": {
+      "enabled": false,
+      "service_manager": "systemd-user",
+      "service": "picoclaw-main.service",
+      "drain_timeout_seconds": 300,
+      "force_after_timeout": true
+    }
   }
 }
