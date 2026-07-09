@@ -63,6 +63,16 @@ func TestMarkdownToTelegramHTML(t *testing.T) {
 			expected: "a &amp; b &lt; c &gt; d",
 		},
 		{
+			name:     "blockquote preserves quote structure",
+			input:    "> quoted text",
+			expected: "<blockquote>quoted text</blockquote>",
+		},
+		{
+			name:     "blockquote preserves inline markdown",
+			input:    "> **quoted** [site](https://example.com?q=a&b=c)",
+			expected: `<blockquote><b>quoted</b> <a href="https://example.com?q=a&amp;b=c">site</a></blockquote>`,
+		},
+		{
 			name:     "code block with language",
 			input:    "```json\n{\n  \"path\": \"README.md\"\n}\n```",
 			expected: "<pre><code>{\n  \"path\": \"README.md\"\n}\n</code></pre>",

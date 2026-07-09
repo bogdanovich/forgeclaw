@@ -7,15 +7,15 @@ import (
 )
 
 var (
-	reBlockquote = regexp.MustCompile(`^>\s*(.*)$`)
-	reLink       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	reBoldUnder  = regexp.MustCompile(`__(.+?)__`)
-	reItalic     = regexp.MustCompile(`_([^_]+)_`)
-	reStrike     = regexp.MustCompile(`~~(.+?)~~`)
-	reListItem   = regexp.MustCompile(`^[-*]\s+`)
-	reCodeBlock  = regexp.MustCompile("```[\\w]*\\n?([\\s\\S]*?)```")
-	reInlineCode = regexp.MustCompile("`([^`]+)`")
-	reRawURL     = regexp.MustCompile(`https?://[^\s<]+`)
+	reEscapedBlockquote = regexp.MustCompile(`(?m)^&gt;\s*(.*)$`)
+	reLink              = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	reBoldUnder         = regexp.MustCompile(`__(.+?)__`)
+	reItalic            = regexp.MustCompile(`_([^_]+)_`)
+	reStrike            = regexp.MustCompile(`~~(.+?)~~`)
+	reListItem          = regexp.MustCompile(`^[-*]\s+`)
+	reCodeBlock         = regexp.MustCompile("```[\\w]*\\n?([\\s\\S]*?)```")
+	reInlineCode        = regexp.MustCompile("`([^`]+)`")
+	reRawURL            = regexp.MustCompile(`https?://[^\s<]+`)
 )
 
 func markdownToTelegramHTML(text string) string {
@@ -36,7 +36,6 @@ func markdownToTelegramHTML(text string) string {
 	text = rawURLs.text
 
 	text = reHeading.ReplaceAllString(text, "$1")
-	text = reBlockquote.ReplaceAllString(text, "$1")
 	text = escapeHTML(text)
 	text = reBoldStar.ReplaceAllString(text, "<b>$1</b>")
 	text = reBoldUnder.ReplaceAllString(text, "<b>$1</b>")
@@ -86,6 +85,8 @@ func markdownToTelegramHTML(text string) string {
 			fmt.Sprintf("<pre><code>%s</code></pre>", escaped),
 		)
 	}
+
+	text = reEscapedBlockquote.ReplaceAllString(text, "<blockquote>$1</blockquote>")
 
 	return text
 }
