@@ -43,6 +43,8 @@ const (
 	telegramTextLimit      = 4096
 )
 
+var errTelegramMessageTooLong = errors.New("telegram message too long")
+
 type TelegramChannel struct {
 	*channels.BaseChannel
 	bot       *telego.Bot
@@ -365,13 +367,7 @@ func (c *TelegramChannel) sendTextChunks(
 		queue = queue[1:]
 
 		content := parseContent(chunk, baseParams.useMarkdownV2)
-		payload := content
-		if useRich {
-			payload = markdownToTelegramRichMarkdown(chunk)
-			if len([]rune(content)) > len([]rune(payload)) {
-				payload = content
-			}
-		}
+		payload := telegramTextLimitPayload(chunk, baseParams.useMarkdownV2, useRich)
 
 		if len([]rune(payload)) > telegramTextLimit {
 			if isToolFeedback {
@@ -449,6 +445,28 @@ func (c *TelegramChannel) sendTextChunks(
 			msgID, err = c.sendChunk(ctx, params)
 		}
 		if err != nil {
+			if useRich && errors.Is(err, errTelegramMessageTooLong) {
+				runeChunk := []rune(chunk)
+				if len(runeChunk) <= 1 {
+					return nil, err
+				}
+				smallerLen := len(runeChunk) / 2
+				subChunks := channels.SplitMessage(chunk, smallerLen)
+				if len(subChunks) == 1 && subChunks[0] == chunk {
+					subChunks = []string{
+						string(runeChunk[:smallerLen]),
+						string(runeChunk[smallerLen:]),
+					}
+				}
+				nonEmpty := make([]string, 0, len(subChunks))
+				for _, s := range subChunks {
+					if s != "" {
+						nonEmpty = append(nonEmpty, s)
+					}
+				}
+				queue = append(nonEmpty, queue...)
+				continue
+			}
 			return nil, err
 		}
 		messageIDs = append(messageIDs, msgID)
@@ -462,6 +480,18 @@ func (c *TelegramChannel) richMessagesEnabled(useMarkdownV2 bool) bool {
 	// Rich messages use Telegram's rich HTML input. If a channel explicitly
 	// requests the legacy MarkdownV2 projector, keep that behavior unchanged.
 	return c.tgCfg != nil && c.tgCfg.RichMessages.Enabled && !useMarkdownV2
+}
+
+func telegramTextLimitPayload(text string, useMarkdownV2 bool, useRich bool) string {
+	content := parseContent(text, useMarkdownV2)
+	if !useRich {
+		return content
+	}
+	richContent := markdownToTelegramRichMarkdown(text)
+	if len([]rune(content)) > len([]rune(richContent)) {
+		return content
+	}
+	return richContent
 }
 
 func (c *TelegramChannel) sendRichChunk(
@@ -492,6 +522,9 @@ func (c *TelegramChannel) sendRichChunk(
 
 	pMsg, err := c.bot.SendRichMessage(ctx, params)
 	if err != nil {
+		if telegramIsMessageTooLong(err) {
+			return "", fmt.Errorf("telegram send rich message too long: %w", errTelegramMessageTooLong)
+		}
 		if shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err) {
 			logger.WarnCF(
 				"telegram",
@@ -2187,6 +2220,17 @@ func shouldFallbackToPlainText(err error) bool {
 	return telegramIsParseModeError(err)
 }
 
+func telegramIsMessageTooLong(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "message is too long") ||
+		strings.Contains(msg, "message text is too long") ||
+		strings.Contains(msg, "message too long") ||
+		strings.Contains(msg, "too long")
+}
+
 func shouldFallbackFromRichMessage(err error) bool {
 	if err == nil {
 		return false
@@ -2375,6 +2419,7 @@ func (c *TelegramChannel) BeginStream(
 
 	streamCfg := c.tgCfg.Streaming.WithDefaults(3, 200)
 	return &telegramStreamer{
+		channel:          c,
 		bot:              c.bot,
 		chatID:           cid,
 		threadID:         threadID,
@@ -2389,6 +2434,7 @@ func (c *TelegramChannel) BeginStream(
 // Draft update failures are returned to the agent, which decides whether the
 // stream was already visible enough to keep or should fall back to Chat().
 type telegramStreamer struct {
+	channel          *TelegramChannel
 	bot              *telego.Bot
 	chatID           int64
 	threadID         int
@@ -2418,16 +2464,21 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 		return nil
 	}
 
-	s.draftTouched = true
-
 	var err error
 	if s.richMessages {
+		if len([]rune(telegramTextLimitPayload(content, false, true))) > telegramTextLimit {
+			return nil
+		}
+		s.draftTouched = true
 		err = s.bot.SendRichMessageDraft(ctx, &telego.SendRichMessageDraftParams{
 			ChatID:          s.chatID,
 			MessageThreadID: s.threadID,
 			DraftID:         s.draftID,
 			RichMessage:     renderTelegramOutboundRichMessage(content),
 		})
+		if err != nil && telegramIsMessageTooLong(err) {
+			return nil
+		}
 		if err != nil && (shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
 			logger.DebugCF(
 				"telegram",
@@ -2454,6 +2505,7 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 			}
 		}
 	} else {
+		s.draftTouched = true
 		err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
 			ChatID:          s.chatID,
 			MessageThreadID: s.threadID,
@@ -2486,30 +2538,11 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 	var err error
 	if s.richMessages {
-		_, err = s.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
-			ChatID:          tu.ID(s.chatID),
-			MessageThreadID: s.threadID,
-			RichMessage:     renderTelegramOutboundRichMessage(content),
-		})
-		if err != nil && (shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
-			logger.WarnCF(
-				"telegram",
-				"rich stream finalize rejected, falling back to plain text",
-				map[string]any{
-					"chat_id": s.chatID,
-					"error":   err.Error(),
-				},
-			)
-			tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
-			tgMsg.MessageThreadID = s.threadID
-			tgMsg.ParseMode = telego.ModeHTML
-			_, err = s.bot.SendMessage(ctx, tgMsg)
-			if err != nil && shouldFallbackToPlainText(err) {
-				tgMsg.Text = content
-				tgMsg.ParseMode = ""
-				_, err = s.bot.SendMessage(ctx, tgMsg)
-			}
-		}
+		_, err = s.channel.sendTextChunks(ctx, content, sendChunkParams{
+			chatID:        s.chatID,
+			threadID:      s.threadID,
+			useMarkdownV2: false,
+		}, true, false)
 	} else {
 		tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
 		tgMsg.MessageThreadID = s.threadID

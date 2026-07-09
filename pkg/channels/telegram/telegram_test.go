@@ -1942,6 +1942,31 @@ func TestSend_RichFallbackSplitsAgainstLegacyHTMLPayload(t *testing.T) {
 	}
 }
 
+func TestSend_RichLengthErrorResplitsAndRetries(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "sendRichMessage")
+			if callCount == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: message is too long"`)
+			}
+			return successResponseWithMessageID(t, callCount), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: strings.Repeat("a", 1000),
+	})
+
+	require.NoError(t, err)
+	assert.Greater(t, len(ids), 1)
+	require.Len(t, caller.calls, len(ids)+1)
+}
+
 func TestSendCaptionText_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
@@ -2430,6 +2455,24 @@ func TestBeginStream_RichDraftFallbackUsesLegacyHTML(t *testing.T) {
 	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
 }
 
+func TestBeginStream_RichDraftSkipsOversizedContent(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			t.Fatalf("unexpected API call for oversized rich draft: %s", url)
+			return nil, nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Update(context.Background(), strings.Repeat("a", telegramTextLimit+1)))
+
+	assert.Empty(t, caller.calls)
+}
+
 func TestBeginStream_RichFinalizeFallbackUsesLegacyHTML(t *testing.T) {
 	callCount := 0
 	caller := &stubCaller{
@@ -2458,6 +2501,30 @@ func TestBeginStream_RichFinalizeFallbackUsesLegacyHTML(t *testing.T) {
 	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
 	assert.Equal(t, "<b>final</b>", payload["text"])
 	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+}
+
+func TestBeginStream_RichFinalizeLengthErrorUsesChunkedSend(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "sendRichMessage")
+			assert.NotContains(t, url, "Draft")
+			if callCount == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: message is too long"`)
+			}
+			return successResponseWithMessageID(t, callCount), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Finalize(context.Background(), strings.Repeat("a", 1000)))
+
+	assert.Greater(t, len(caller.calls), 2)
 }
 
 func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
