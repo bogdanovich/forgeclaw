@@ -1193,6 +1193,35 @@ func TestEditMessage_RichFallbackUsesLegacyHTMLParseMode(t *testing.T) {
 	assert.Empty(t, payload["rich_message"])
 }
 
+func TestEditMessage_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "editMessageText")
+			switch callCount {
+			case 1:
+				return nil, errors.New(`api: 404 "Not Found"`)
+			case 2:
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
+			default:
+				return successResponseWithMessageID(t, 1), nil
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	err := ch.EditMessage(context.Background(), "12345", "1", "**broken")
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 3)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
+	assert.Equal(t, "**broken", payload["text"])
+	assert.Empty(t, payload["parse_mode"])
+}
+
 func TestSend_ToolFeedbackUpdateUsesLegacyTextWhenRichMessagesEnabled(t *testing.T) {
 	nextMessageID := 0
 	caller := &stubCaller{
@@ -1879,6 +1908,40 @@ func TestSend_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testin
 	assert.Len(t, caller.calls, 2)
 }
 
+func TestSend_RichFallbackSplitsAgainstLegacyHTMLPayload(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "sendRichMessage") {
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			assert.Contains(t, url, "sendMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	markdownContent := strings.Repeat("**a** ", 600) // raw markdown fits, legacy HTML exceeds 4096.
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: markdownContent,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 4)
+	for _, call := range caller.calls {
+		if !strings.Contains(call.URL, "sendMessage") || strings.Contains(call.URL, "sendRichMessage") {
+			continue
+		}
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(call.Data.BodyRaw, &payload))
+		text, ok := payload["text"].(string)
+		require.True(t, ok)
+		assert.LessOrEqual(t, len([]rune(text)), telegramTextLimit)
+		assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	}
+}
+
 func TestSendCaptionText_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
@@ -2305,6 +2368,64 @@ func TestBeginStream_RichMessagesUsesRichDraftAndFinalize(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &finalParams))
 	assert.Equal(t, "# final", finalParams.RichMessage["markdown"])
+}
+
+func TestBeginStream_RichDraftFallbackUsesLegacyHTML(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				assert.Contains(t, url, "sendRichMessageDraft")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			assert.Contains(t, url, "sendMessageDraft")
+			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Update(context.Background(), "**partial**"))
+
+	require.Len(t, caller.calls, 2)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, "<b>partial</b>", payload["text"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+}
+
+func TestBeginStream_RichFinalizeFallbackUsesLegacyHTML(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				assert.Contains(t, url, "sendRichMessage")
+				assert.NotContains(t, url, "Draft")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			assert.Contains(t, url, "sendMessage")
+			assert.NotContains(t, url, "Draft")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Finalize(context.Background(), "**final**"))
+
+	require.Len(t, caller.calls, 2)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, "<b>final</b>", payload["text"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
 }
 
 func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {

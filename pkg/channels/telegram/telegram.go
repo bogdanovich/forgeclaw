@@ -368,6 +368,9 @@ func (c *TelegramChannel) sendTextChunks(
 		payload := content
 		if useRich {
 			payload = markdownToTelegramRichMarkdown(chunk)
+			if len([]rune(content)) > len([]rune(payload)) {
+				payload = content
+			}
 		}
 
 		if len([]rune(payload)) > telegramTextLimit {
@@ -685,6 +688,10 @@ func (c *TelegramChannel) editMessageText(
 				legacyEditMsg.WithParseMode(telego.ModeHTML)
 			}
 			_, err = c.bot.EditMessageText(ctx, legacyEditMsg)
+			if err != nil && shouldFallbackToPlainText(err) {
+				logFormattingFallback(err, useMarkdownV2)
+				_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
+			}
 		} else if shouldFallbackToPlainText(err) {
 			logFormattingFallback(err, useMarkdownV2)
 			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
@@ -2434,8 +2441,17 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 				ChatID:          s.chatID,
 				MessageThreadID: s.threadID,
 				DraftID:         s.draftID,
-				Text:            content,
+				Text:            markdownToTelegramHTML(content),
+				ParseMode:       telego.ModeHTML,
 			})
+			if err != nil && shouldFallbackToPlainText(err) {
+				err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
+					ChatID:          s.chatID,
+					MessageThreadID: s.threadID,
+					DraftID:         s.draftID,
+					Text:            content,
+				})
+			}
 		}
 	} else {
 		err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
@@ -2484,9 +2500,15 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 					"error":   err.Error(),
 				},
 			)
-			tgMsg := tu.Message(tu.ID(s.chatID), content)
+			tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
 			tgMsg.MessageThreadID = s.threadID
+			tgMsg.ParseMode = telego.ModeHTML
 			_, err = s.bot.SendMessage(ctx, tgMsg)
+			if err != nil && shouldFallbackToPlainText(err) {
+				tgMsg.Text = content
+				tgMsg.ParseMode = ""
+				_, err = s.bot.SendMessage(ctx, tgMsg)
+			}
 		}
 	} else {
 		tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
