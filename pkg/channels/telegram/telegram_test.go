@@ -1167,6 +1167,32 @@ func TestEditMessage_RichMessagesEnabledUsesRichMarkdown(t *testing.T) {
 	assert.Empty(t, payload["parse_mode"])
 }
 
+func TestEditMessage_RichFallbackUsesLegacyHTMLParseMode(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "editMessageText")
+			if callCount == 1 {
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	err := ch.EditMessage(context.Background(), "12345", "1", "**Summary:** [site](https://example.com)")
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, "<b>Summary:</b> <a href=\"https://example.com\">site</a>", payload["text"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	assert.Empty(t, payload["rich_message"])
+}
+
 func TestSend_ToolFeedbackUpdateUsesLegacyTextWhenRichMessagesEnabled(t *testing.T) {
 	nextMessageID := 0
 	caller := &stubCaller{
@@ -1688,6 +1714,34 @@ func TestSend_RichMessagesFallbackUsesLegacySendMessage(t *testing.T) {
 			assert.Contains(t, caller.calls[1].URL, "sendMessage")
 		})
 	}
+}
+
+func TestSendRichChunk_FallbackBuildsLegacyMarkdownV2Content(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				assert.Contains(t, url, "sendRichMessage")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			assert.Contains(t, url, "sendMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.sendRichChunk(context.Background(), "**bold**", sendChunkParams{
+		chatID:        12345,
+		useMarkdownV2: true,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, parseContent("**bold**", true), payload["text"])
+	assert.Equal(t, telego.ModeMarkdownV2, payload["parse_mode"])
 }
 
 func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {

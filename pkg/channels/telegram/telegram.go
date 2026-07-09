@@ -466,6 +466,13 @@ func (c *TelegramChannel) sendRichChunk(
 	rawContent string,
 	fallbackParams sendChunkParams,
 ) (string, error) {
+	if fallbackParams.content == "" {
+		fallbackParams.content = parseContent(rawContent, fallbackParams.useMarkdownV2)
+	}
+	if fallbackParams.mdFallback == "" {
+		fallbackParams.mdFallback = rawContent
+	}
+
 	params := &telego.SendRichMessageParams{
 		ChatID:          tu.ID(fallbackParams.chatID),
 		MessageThreadID: fallbackParams.threadID,
@@ -671,7 +678,13 @@ func (c *TelegramChannel) editMessageText(
 					"error":   err.Error(),
 				},
 			)
-			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
+			legacyEditMsg := tu.EditMessageText(tu.ID(cid), mid, parseContent(content, useMarkdownV2))
+			if useMarkdownV2 {
+				legacyEditMsg.WithParseMode(telego.ModeMarkdownV2)
+			} else {
+				legacyEditMsg.WithParseMode(telego.ModeHTML)
+			}
+			_, err = c.bot.EditMessageText(ctx, legacyEditMsg)
 		} else if shouldFallbackToPlainText(err) {
 			logFormattingFallback(err, useMarkdownV2)
 			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
