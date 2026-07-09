@@ -67,6 +67,13 @@ func testRestartConfig() config.GatewaySafeRestartConfig {
 	}
 }
 
+func knownPreflightOptions() RestartPreflightOptions {
+	return RestartPreflightOptions{
+		ActiveTurnsAvailable: true,
+		CronJobsAvailable:    true,
+	}
+}
+
 func TestNewRestartControllerRejectsDisabledConfig(t *testing.T) {
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
@@ -124,10 +131,11 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	}
 	restarter := &fakeServiceRestarter{}
 	controller, err := NewRestartController(RestartControllerOptions{
-		Config:    testRestartConfig(),
-		Source:    &restartSourceSequence{},
-		Store:     store,
-		Restarter: restarter,
+		Config:           testRestartConfig(),
+		Source:           &restartSourceSequence{},
+		Store:            store,
+		Restarter:        restarter,
+		PreflightOptions: knownPreflightOptions(),
 	})
 	if err != nil {
 		t.Fatalf("NewRestartController() error = %v", err)
@@ -168,11 +176,12 @@ func TestRestartControllerDefersUntilIdle(t *testing.T) {
 	}
 	restarter := &fakeServiceRestarter{}
 	controller, err := NewRestartController(RestartControllerOptions{
-		Config:       testRestartConfig(),
-		Source:       source,
-		Store:        store,
-		Restarter:    restarter,
-		PollInterval: time.Millisecond,
+		Config:           testRestartConfig(),
+		Source:           source,
+		Store:            store,
+		Restarter:        restarter,
+		PollInterval:     time.Millisecond,
+		PreflightOptions: knownPreflightOptions(),
 	})
 	if err != nil {
 		t.Fatalf("NewRestartController() error = %v", err)
@@ -201,9 +210,10 @@ func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
 		Source: &restartSourceSequence{
 			pending: [][]bus.InboundMessage{{{SpoolID: "pending"}}},
 		},
-		Store:        store,
-		Restarter:    &fakeServiceRestarter{},
-		PollInterval: time.Millisecond,
+		Store:            store,
+		Restarter:        &fakeServiceRestarter{},
+		PollInterval:     time.Millisecond,
+		PreflightOptions: knownPreflightOptions(),
 		Now: func() time.Time {
 			now = now.Add(2 * time.Second)
 			return now
@@ -235,9 +245,10 @@ func TestRestartControllerFailsWhenDrainTimesOutWithoutForce(t *testing.T) {
 		Source: &restartSourceSequence{
 			pending: [][]bus.InboundMessage{{{SpoolID: "pending"}}},
 		},
-		Store:        store,
-		Restarter:    &fakeServiceRestarter{},
-		PollInterval: time.Millisecond,
+		Store:            store,
+		Restarter:        &fakeServiceRestarter{},
+		PollInterval:     time.Millisecond,
+		PreflightOptions: knownPreflightOptions(),
 		Now: func() time.Time {
 			now = now.Add(2 * time.Second)
 			return now
@@ -266,9 +277,11 @@ func TestGatewayRestartToolReportsControllerErrors(t *testing.T) {
 		restarter: &fakeServiceRestarter{
 			err: errors.New("boom"),
 		},
-		source: &restartSourceSequence{},
-		store:  mustRestartSentinelStore(t),
-		now:    func() time.Time { return time.Date(2026, 7, 9, 1, 0, 0, 0, time.UTC) },
+		source:           &restartSourceSequence{},
+		store:            mustRestartSentinelStore(t),
+		pollInterval:     time.Millisecond,
+		preflightOptions: knownPreflightOptions(),
+		now:              func() time.Time { return time.Date(2026, 7, 9, 1, 0, 0, 0, time.UTC) },
 	})
 
 	ctx := tools.WithToolContext(context.Background(), "telegram", "chat-1")

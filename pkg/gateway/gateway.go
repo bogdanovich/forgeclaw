@@ -484,6 +484,17 @@ func logLatestRestartSentinel(cfg *config.Config) {
 		}
 		return
 	}
+	if recovered, ok, recoverErr := store.MarkInterruptedRestartComplete(time.Now().UTC()); recoverErr != nil {
+		logger.WarnCF("gateway", "Failed to recover restart sentinel", map[string]any{"error": recoverErr.Error()})
+	} else if ok {
+		sentinel = recovered
+		logger.InfoCF("gateway", "Recovered interrupted restart sentinel", map[string]any{
+			"status":            sentinel.Status,
+			"requested_service": sentinel.RequestedService,
+			"requested_at":      sentinel.RequestedAt,
+			"updated_at":        sentinel.UpdatedAt,
+		})
+	}
 	logger.InfoCF("gateway", "Latest restart sentinel", map[string]any{
 		"status":            sentinel.Status,
 		"requested_service": sentinel.RequestedService,
@@ -764,6 +775,9 @@ func restartServices(
 	)
 	if err != nil {
 		return fmt.Errorf("error restarting cron service: %w", err)
+	}
+	if err = setupSafeRestartTool(cfg, al, msgBus); err != nil {
+		return fmt.Errorf("error setting up safe restart tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return fmt.Errorf("error restarting cron service: %w", err)

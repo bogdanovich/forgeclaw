@@ -45,6 +45,7 @@ type RestartController struct {
 	restarter        ServiceRestarter
 	pollInterval     time.Duration
 	preflightTimeout time.Duration
+	preflightOptions RestartPreflightOptions
 	now              func() time.Time
 }
 
@@ -55,6 +56,7 @@ type RestartControllerOptions struct {
 	Restarter        ServiceRestarter
 	PollInterval     time.Duration
 	PreflightTimeout time.Duration
+	PreflightOptions RestartPreflightOptions
 	Now              func() time.Time
 }
 
@@ -111,6 +113,7 @@ func NewRestartController(opts RestartControllerOptions) (*RestartController, er
 		restarter:        restarter,
 		pollInterval:     pollInterval,
 		preflightTimeout: preflightTimeout,
+		preflightOptions: opts.PreflightOptions,
 		now:              now,
 	}, nil
 }
@@ -178,10 +181,10 @@ func (c *RestartController) RequestRestart(
 }
 
 func (c *RestartController) collectPreflight(ctx context.Context) RestartPreflight {
-	return CollectRestartPreflight(ctx, c.source, RestartPreflightOptions{
-		Now:     c.now,
-		Timeout: c.preflightTimeout,
-	})
+	opts := c.preflightOptions
+	opts.Now = c.now
+	opts.Timeout = c.preflightTimeout
+	return CollectRestartPreflight(ctx, c.source, opts)
 }
 
 func (c *RestartController) waitUntilSafe(
@@ -193,7 +196,11 @@ func (c *RestartController) waitUntilSafe(
 	}
 	timeout := time.Duration(c.cfg.EffectiveDrainTimeoutSeconds()) * time.Second
 	deadline := c.now().Add(timeout)
-	ticker := time.NewTicker(c.pollInterval)
+	pollInterval := c.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultRestartPollInterval
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	latest := initial
 	for {

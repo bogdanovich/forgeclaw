@@ -75,6 +75,25 @@ func TestCollectRestartPreflightCapturesPendingInboundError(t *testing.T) {
 	}
 }
 
+func TestRestartPreflightTreatsUnknownStateAsActiveWork(t *testing.T) {
+	got := RestartPreflight{
+		ActiveTurnsUnavailable: true,
+		CronJobsUnavailable:    true,
+	}
+
+	if !got.HasActiveWork() {
+		t.Fatal("unknown active-turn or cron state should be treated as unsafe active work")
+	}
+	got = RestartPreflight{PendingInboundError: "spool unavailable"}
+	if !got.HasActiveWork() {
+		t.Fatal("pending inbound errors should be treated as unsafe active work")
+	}
+	got = RestartPreflight{PendingInboundTimedOut: true}
+	if !got.HasActiveWork() {
+		t.Fatal("pending inbound timeout should be treated as unsafe active work")
+	}
+}
+
 func TestCollectRestartPreflightTimesOutPendingInbound(t *testing.T) {
 	source := restartPreflightSourceStub{delay: 50 * time.Millisecond}
 
@@ -144,5 +163,36 @@ func TestRestartSentinelStoreWriteReadClear(t *testing.T) {
 	}
 	if _, err := store.Read(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Read() after Clear() error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRestartSentinelStoreMarksInterruptedRestartComplete(t *testing.T) {
+	store, err := NewRestartSentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRestartSentinelStore() error = %v", err)
+	}
+	requestedAt := time.Date(2026, 7, 9, 2, 3, 4, 0, time.UTC)
+	updatedAt := requestedAt.Add(time.Minute)
+	if writeErr := store.Write(RestartSentinel{
+		Status:           "running",
+		RequestedService: "picoclaw-main.service",
+		RequestedAt:      requestedAt,
+		UpdatedAt:        requestedAt,
+	}); writeErr != nil {
+		t.Fatalf("Write() error = %v", writeErr)
+	}
+
+	got, changed, err := store.MarkInterruptedRestartComplete(updatedAt)
+	if err != nil {
+		t.Fatalf("MarkInterruptedRestartComplete() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("running restart sentinel should be recovered")
+	}
+	if got.Status != "succeeded" {
+		t.Fatalf("status = %q, want succeeded", got.Status)
+	}
+	if !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("updated_at = %v, want %v", got.UpdatedAt, updatedAt)
 	}
 }

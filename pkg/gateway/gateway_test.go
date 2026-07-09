@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +113,31 @@ func TestGatewayRunStartupFailureHelper(t *testing.T) {
 
 	fmt.Fprintln(os.Stdout, err.Error())
 	os.Exit(0)
+}
+
+func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
+		Enabled:             true,
+		ServiceManager:      "systemd-user",
+		Service:             "picoclaw-main.service",
+		DrainTimeoutSeconds: 1,
+		ForceAfterTimeout:   true,
+	}
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+
+	if err := setupSafeRestartTool(cfg, al, msgBus); err != nil {
+		t.Fatalf("setupSafeRestartTool() error = %v", err)
+	}
+
+	info := al.GetStartupInfo()
+	toolsInfo := info["tools"].(map[string]any)
+	toolsList := toolsInfo["names"].([]string)
+	if !slices.Contains(toolsList, "gateway_restart") {
+		t.Fatalf("registered tools = %#v, want gateway_restart", toolsList)
+	}
 }
 
 func TestCollectGatewayStartupStatusHandlesMalformedInfo(t *testing.T) {
