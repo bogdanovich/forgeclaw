@@ -301,9 +301,9 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 	}
 	trackedChatID := telegramToolFeedbackMessageKey(msg.ChatID, &msg.Context, msg.SessionKey)
 	if isToolFeedback {
-		if msgID, handled, err := c.progress.Update(ctx, trackedChatID, toolFeedbackContent); handled {
-			if err != nil {
-				return nil, err
+		if msgID, handled, updateErr := c.progress.Update(ctx, trackedChatID, toolFeedbackContent); handled {
+			if updateErr != nil {
+				return nil, updateErr
 			}
 			return []string{msgID}, nil
 		}
