@@ -27,8 +27,16 @@ func TestRenderTelegramRichHTML_ReportShape(t *testing.T) {
 			{
 				Kind: telegramRichBlockBulletList,
 				Items: []telegramRichListItem{
-					{Inlines: []telegramRichInline{{Kind: telegramRichInlineText, Text: "tests pass"}}},
-					{Inlines: []telegramRichInline{{Kind: telegramRichInlineItalic, Text: "lint pending"}}},
+					{
+						Inlines: []telegramRichInline{
+							{Kind: telegramRichInlineText, Text: "tests pass"},
+						},
+					},
+					{
+						Inlines: []telegramRichInline{
+							{Kind: telegramRichInlineItalic, Text: "lint pending"},
+						},
+					},
 				},
 			},
 			{
@@ -62,7 +70,10 @@ func TestRenderTelegramRichHTML_EscapesUserText(t *testing.T) {
 		Blocks: []telegramRichBlock{{
 			Kind: telegramRichBlockParagraph,
 			Inlines: []telegramRichInline{
-				{Kind: telegramRichInlineText, Text: "literal *bold* _italic_ [x](https://bad) #1 <tag> & ok"},
+				{
+					Kind: telegramRichInlineText,
+					Text: "literal *bold* _italic_ [x](https://bad) #1 <tag> & ok",
+				},
 			},
 		}},
 	}
@@ -129,10 +140,11 @@ func TestRenderTelegramRichMessage_OutputUsesHTMLRichMessage(t *testing.T) {
 	}, got)
 }
 
-func TestRenderTelegramOutboundRichMessage_UsesExistingTelegramHTMLProjection(t *testing.T) {
-	got := renderTelegramOutboundRichMessage("Hello **world** and `code`")
+func TestRenderTelegramOutboundRichMessage_UsesTelegramRichMarkdown(t *testing.T) {
+	content := "Hello **world**\n\n> quote\n\n- one\n- two\n\n~gone~"
+	got := renderTelegramOutboundRichMessage(content)
 
 	assert.Equal(t, telego.InputRichMessage{
-		HTML: "Hello <b>world</b> and <code>code</code>",
+		Markdown: "Hello **world**\n\n> quote\n\n- one\n- two\n\n~gone~",
 	}, got)
 }

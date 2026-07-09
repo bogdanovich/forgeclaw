@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_markdownToTelegramHTML(t *testing.T) {
+func TestMarkdownToTelegramHTML(t *testing.T) {
 	cases := []struct {
 		name     string
 		input    string
@@ -38,12 +38,9 @@ func Test_markdownToTelegramHTML(t *testing.T) {
 			expected: `Apri <a href="https://accounts.google.com/o/oauth2/auth?response_type=code&amp;client_id=test-client&amp;redirect_uri=http%3A%2F%2Flocalhost%3A8001%2Foauth2callback&amp;code_challenge=abc_def&amp;code_challenge_method=S256">https://accounts.google.com/o/oauth2/auth?response_type=code&amp;client_id=test-client&amp;redirect_uri=http%3A%2F%2Flocalhost%3A8001%2Foauth2callback&amp;code_challenge=abc_def&amp;code_challenge_method=S256</a>`,
 		},
 		{
-			name: "link with underscores in URL is not corrupted by italic regex",
-			// Google Flights URLs use URL-safe base64 with underscores in the tfs param.
-			// Previously reItalic ran after reLink, matching _text_ inside href and injecting
-			// <i> tags into the URL, which broke the link in Telegram.
-			input:    "[3 → 10 сентября — от $202](https://www.google.com/travel/flights/search?tfs=CBwQAho_EgoyURL_safe_base64)",
-			expected: `<a href="https://www.google.com/travel/flights/search?tfs=CBwQAho_EgoyURL_safe_base64">3 → 10 сентября — от $202</a>`,
+			name:     "link with underscores in URL is not corrupted by italic regex",
+			input:    "[3 -> 10 September - from $202](https://www.google.com/travel/flights/search?tfs=CBwQAho_EgoyURL_safe_base64)",
+			expected: `<a href="https://www.google.com/travel/flights/search?tfs=CBwQAho_EgoyURL_safe_base64">3 -&gt; 10 September - from $202</a>`,
 		},
 		{
 			name:     "multiple links all survive",
@@ -64,6 +61,16 @@ func Test_markdownToTelegramHTML(t *testing.T) {
 			name:     "HTML special chars in plain text are escaped",
 			input:    "a & b < c > d",
 			expected: "a &amp; b &lt; c &gt; d",
+		},
+		{
+			name:     "blockquote preserves quote structure",
+			input:    "> quoted text",
+			expected: "<blockquote>quoted text</blockquote>",
+		},
+		{
+			name:     "blockquote preserves inline markdown",
+			input:    "> **quoted** [site](https://example.com?q=a&b=c)",
+			expected: `<blockquote><b>quoted</b> <a href="https://example.com?q=a&amp;b=c">site</a></blockquote>`,
 		},
 		{
 			name:     "code block with language",

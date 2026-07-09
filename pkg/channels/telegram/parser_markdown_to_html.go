@@ -2,12 +2,21 @@ package telegram
 
 import (
 	"fmt"
-	"html"
 	"regexp"
 	"strings"
 )
 
-var reRawURL = regexp.MustCompile(`https?://[^\s<]+`)
+var (
+	reEscapedBlockquote = regexp.MustCompile(`(?m)^&gt;\s*(.*)$`)
+	reLink              = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	reBoldUnder         = regexp.MustCompile(`__(.+?)__`)
+	reItalic            = regexp.MustCompile(`_([^_]+)_`)
+	reStrike            = regexp.MustCompile(`~~(.+?)~~`)
+	reListItem          = regexp.MustCompile(`^[-*]\s+`)
+	reCodeBlock         = regexp.MustCompile("```[\\w]*\\n?([\\s\\S]*?)```")
+	reInlineCode        = regexp.MustCompile("`([^`]+)`")
+	reRawURL            = regexp.MustCompile(`https?://[^\s<]+`)
+)
 
 func markdownToTelegramHTML(text string) string {
 	if text == "" {
@@ -27,15 +36,9 @@ func markdownToTelegramHTML(text string) string {
 	text = rawURLs.text
 
 	text = reHeading.ReplaceAllString(text, "$1")
-
-	text = reBlockquote.ReplaceAllString(text, "$1")
-
 	text = escapeHTML(text)
-
 	text = reBoldStar.ReplaceAllString(text, "<b>$1</b>")
-
 	text = reBoldUnder.ReplaceAllString(text, "<b>$1</b>")
-
 	text = reItalic.ReplaceAllStringFunc(text, func(s string) string {
 		match := reItalic.FindStringSubmatch(s)
 		if len(match) < 2 {
@@ -43,15 +46,17 @@ func markdownToTelegramHTML(text string) string {
 		}
 		return "<i>" + match[1] + "</i>"
 	})
-
 	text = reStrike.ReplaceAllString(text, "<s>$1</s>")
-
 	text = reListItem.ReplaceAllString(text, "• ")
 
 	for i, lnk := range links.links {
 		label := escapeHTML(lnk[0])
 		url := escapeHTMLAttr(lnk[1])
-		text = strings.ReplaceAll(text, fmt.Sprintf("\x00LK%d\x00", i), fmt.Sprintf(`<a href="%s">%s</a>`, url, label))
+		text = strings.ReplaceAll(
+			text,
+			fmt.Sprintf("\x00LK%d\x00", i),
+			fmt.Sprintf(`<a href="%s">%s</a>`, url, label),
+		)
 	}
 
 	for i, rawURL := range rawURLs.urls {
@@ -65,7 +70,11 @@ func markdownToTelegramHTML(text string) string {
 
 	for i, code := range inlineCodes.codes {
 		escaped := escapeHTML(code)
-		text = strings.ReplaceAll(text, fmt.Sprintf("\x00IC%d\x00", i), fmt.Sprintf("<code>%s</code>", escaped))
+		text = strings.ReplaceAll(
+			text,
+			fmt.Sprintf("\x00IC%d\x00", i),
+			fmt.Sprintf("<code>%s</code>", escaped),
+		)
 	}
 
 	for i, code := range codeBlocks.codes {
@@ -77,12 +86,14 @@ func markdownToTelegramHTML(text string) string {
 		)
 	}
 
+	text = reEscapedBlockquote.ReplaceAllString(text, "<blockquote>$1</blockquote>")
+
 	return text
 }
 
 type linkMatch struct {
 	text  string
-	links [][2]string // [label, url]
+	links [][2]string
 }
 
 func extractLinks(text string) linkMatch {
@@ -108,11 +119,6 @@ type codeBlockMatch struct {
 	codes []string
 }
 
-type rawURLMatch struct {
-	text string
-	urls []string
-}
-
 func extractCodeBlocks(text string) codeBlockMatch {
 	matches := reCodeBlock.FindAllStringSubmatch(text, -1)
 
@@ -129,6 +135,11 @@ func extractCodeBlocks(text string) codeBlockMatch {
 	})
 
 	return codeBlockMatch{text: text, codes: codes}
+}
+
+type rawURLMatch struct {
+	text string
+	urls []string
 }
 
 func extractRawURLs(text string) rawURLMatch {
@@ -170,15 +181,4 @@ func extractInlineCodes(text string) inlineCodeMatch {
 	})
 
 	return inlineCodeMatch{text: text, codes: codes}
-}
-
-func escapeHTML(text string) string {
-	text = strings.ReplaceAll(text, "&", "&amp;")
-	text = strings.ReplaceAll(text, "<", "&lt;")
-	text = strings.ReplaceAll(text, ">", "&gt;")
-	return text
-}
-
-func escapeHTMLAttr(text string) string {
-	return html.EscapeString(text)
 }

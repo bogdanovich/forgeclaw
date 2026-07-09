@@ -38,7 +38,11 @@ type stubCall struct {
 	Data *ta.RequestData
 }
 
-func (s *stubCaller) Call(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+func (s *stubCaller) Call(
+	ctx context.Context,
+	url string,
+	data *ta.RequestData,
+) (*ta.Response, error) {
 	s.calls = append(s.calls, stubCall{URL: url, Data: data})
 	return s.callFn(ctx, url, data)
 }
@@ -301,7 +305,12 @@ func TestSend_ToolFeedbackMinEditIntervalAppliesAfterFirstSend(t *testing.T) {
 	ids, err = ch.Send(context.Background(), second)
 	require.NoError(t, err)
 	require.Equal(t, []string{firstProgressID}, ids)
-	require.Len(t, caller.calls, 1, "second feedback update should be debounced, not edited or sent")
+	require.Len(
+		t,
+		caller.calls,
+		1,
+		"second feedback update should be debounced, not edited or sent",
+	)
 
 	_, baseContent, ok := ch.takeToolFeedbackMessage("12345")
 	require.True(t, ok)
@@ -346,7 +355,16 @@ func newTestChannelWithConstructor(
 		bc:          &config.Channel{Type: config.ChannelTelegram, Enabled: true},
 		tgCfg:       &config.TelegramSettings{},
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
+	ch.progress = channels.NewToolFeedbackAnimator(
+		func(ctx context.Context, chatID, messageID, content string) error {
+			return ch.editToolFeedbackMessage(
+				ctx,
+				telegramToolFeedbackDeliveryChatKey(chatID),
+				messageID,
+				content,
+			)
+		},
+	)
 	return ch
 }
 
@@ -366,6 +384,7 @@ func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
 		},
 	}
 	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
@@ -436,6 +455,7 @@ func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 		},
 	}
 	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
@@ -444,7 +464,11 @@ func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 	localPath := filepath.Join(tmpDir, "image.png")
 	require.NoError(t, os.WriteFile(localPath, []byte("fake-png-content"), 0o644))
 
-	ref, err := store.Store(localPath, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
+	ref, err := store.Store(
+		localPath,
+		media.MediaMeta{Filename: "image.png", ContentType: "image/png"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 
 	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
@@ -471,7 +495,9 @@ func TestSendMedia_ImageCaptionParseFallbackRewindsUpload(t *testing.T) {
 			callCount++
 			switch {
 			case strings.Contains(url, "sendPhoto") && callCount == 1:
-				return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+				return nil, errors.New(
+					`api: 400 "Bad Request: can't parse entities: unsupported start tag"`,
+				)
 			case strings.Contains(url, "sendPhoto") && callCount == 2:
 				return successResponse(t), nil
 			default:
@@ -481,6 +507,7 @@ func TestSendMedia_ImageCaptionParseFallbackRewindsUpload(t *testing.T) {
 		},
 	}
 	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
@@ -490,7 +517,11 @@ func TestSendMedia_ImageCaptionParseFallbackRewindsUpload(t *testing.T) {
 	content := []byte("fake-png-content")
 	require.NoError(t, os.WriteFile(localPath, content, 0o644))
 
-	ref, err := store.Store(localPath, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
+	ref, err := store.Store(
+		localPath,
+		media.MediaMeta{Filename: "image.png", ContentType: "image/png"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 
 	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
@@ -523,6 +554,7 @@ func TestSendMedia_MultipleImagesUseMediaGroup(t *testing.T) {
 		},
 	}
 	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
@@ -533,7 +565,11 @@ func TestSendMedia_MultipleImagesUseMediaGroup(t *testing.T) {
 	require.NoError(t, os.WriteFile(firstPath, []byte("first-image"), 0o644))
 	require.NoError(t, os.WriteFile(secondPath, []byte("second-image"), 0o644))
 
-	firstRef, err := store.Store(firstPath, media.MediaMeta{Filename: "first.png", ContentType: "image/png"}, "scope-1")
+	firstRef, err := store.Store(
+		firstPath,
+		media.MediaMeta{Filename: "first.png", ContentType: "image/png"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 	secondRef, err := store.Store(
 		secondPath,
@@ -558,7 +594,10 @@ func TestSendMedia_MultipleImagesUseMediaGroup(t *testing.T) {
 	require.Len(t, constructor.calls[0].FileSizes, 2)
 
 	var mediaPayload []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(constructor.calls[0].Parameters["media"]), &mediaPayload))
+	require.NoError(
+		t,
+		json.Unmarshal([]byte(constructor.calls[0].Parameters["media"]), &mediaPayload),
+	)
 	require.Len(t, mediaPayload, 2)
 	assert.Equal(t, "album caption", mediaPayload[0]["caption"])
 	_, hasSecondCaption := mediaPayload[1]["caption"]
@@ -575,12 +614,15 @@ func TestSendMedia_MediaGroupCaptionParseFailureFallsBackToPlainText(t *testing.
 			}
 			sendGroupCalls++
 			if sendGroupCalls == 1 {
-				return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+				return nil, errors.New(
+					`api: 400 "Bad Request: can't parse entities: unsupported start tag"`,
+				)
 			}
 			return successMediaGroupResponse(t, 111, 112), nil
 		},
 	}
 	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
@@ -617,13 +659,18 @@ func TestSendMedia_MediaGroupCaptionParseFailureFallsBackToPlainText(t *testing.
 	require.Len(t, constructor.calls, 2)
 
 	var firstPayload []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(constructor.calls[0].Parameters["media"]), &firstPayload))
+	require.NoError(
+		t,
+		json.Unmarshal([]byte(constructor.calls[0].Parameters["media"]), &firstPayload),
+	)
 	require.Len(t, firstPayload, 2)
-	assert.Equal(t, "<b>Summary:</b> hello", firstPayload[0]["caption"])
-	assert.Equal(t, telego.ModeHTML, firstPayload[0]["parse_mode"])
+	assert.Equal(t, telego.ModeMarkdownV2, firstPayload[0]["parse_mode"])
 
 	var secondPayload []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(constructor.calls[1].Parameters["media"]), &secondPayload))
+	require.NoError(
+		t,
+		json.Unmarshal([]byte(constructor.calls[1].Parameters["media"]), &secondPayload),
+	)
 	require.Len(t, secondPayload, 2)
 	assert.Equal(t, "**Summary:** hello", secondPayload[0]["caption"])
 	_, hasParseMode := secondPayload[0]["parse_mode"]
@@ -640,7 +687,19 @@ func TestSendMedia_MoreThanTenImagesSplitIntoMediaGroups(t *testing.T) {
 			}
 			callIndex++
 			if callIndex == 1 {
-				return successMediaGroupResponse(t, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010), nil
+				return successMediaGroupResponse(
+					t,
+					1001,
+					1002,
+					1003,
+					1004,
+					1005,
+					1006,
+					1007,
+					1008,
+					1009,
+					1010,
+				), nil
 			}
 			if callIndex == 2 {
 				return successMediaGroupResponse(t, 1011, 1012, 1013, 1014, 1015), nil
@@ -650,6 +709,7 @@ func TestSendMedia_MoreThanTenImagesSplitIntoMediaGroups(t *testing.T) {
 		},
 	}
 	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
@@ -704,6 +764,7 @@ func TestSendMedia_SingleImageLongCaptionSendsTextFirst(t *testing.T) {
 		},
 	}
 	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
@@ -711,7 +772,11 @@ func TestSendMedia_SingleImageLongCaptionSendsTextFirst(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "image.png")
 	require.NoError(t, os.WriteFile(path, []byte("img"), 0o644))
-	ref, err := store.Store(path, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
+	ref, err := store.Store(
+		path,
+		media.MediaMeta{Filename: "image.png", ContentType: "image/png"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 
 	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
@@ -728,6 +793,61 @@ func TestSendMedia_SingleImageLongCaptionSendsTextFirst(t *testing.T) {
 	require.Len(t, caller.calls, 2)
 	assert.Contains(t, caller.calls[0].URL, "sendMessage")
 	assert.Contains(t, caller.calls[1].URL, "sendPhoto")
+	assert.Equal(t, "", constructor.calls[0].Parameters["caption"])
+}
+
+func TestSendMedia_LongCaptionUsesRichMessageWhenEnabled(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	longCaption := "**Summary:**\n\n| Food | Amount |\n| --- | --- |\n| Eggs | 2 |\n\n" +
+		strings.Repeat("rich caption ", 100)
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			switch {
+			case strings.Contains(url, "sendRichMessage"):
+				return successResponseWithMessageID(t, 211), nil
+			case strings.Contains(url, "sendPhoto"):
+				return successResponseWithMessageID(t, 212), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "image.png")
+	require.NoError(t, os.WriteFile(path, []byte("img"), 0o644))
+	ref, err := store.Store(
+		path,
+		media.MediaMeta{Filename: "image.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+
+	ids, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "image",
+			Ref:     ref,
+			Caption: longCaption,
+		}},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"211", "212"}, ids)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+	assert.Contains(t, caller.calls[1].URL, "sendPhoto")
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	require.IsType(t, map[string]any{}, payload["rich_message"])
+	richMessage := payload["rich_message"].(map[string]any)
+	assert.Equal(t, strings.TrimSpace(longCaption), richMessage["markdown"])
 	assert.Equal(t, "", constructor.calls[0].Parameters["caption"])
 }
 
@@ -758,7 +878,11 @@ func TestSendMedia_MediaGroupLongCaptionSendsTextFirst(t *testing.T) {
 	require.NoError(t, os.WriteFile(firstPath, []byte("first-image"), 0o644))
 	require.NoError(t, os.WriteFile(secondPath, []byte("second-image"), 0o644))
 
-	firstRef, err := store.Store(firstPath, media.MediaMeta{Filename: "first.png", ContentType: "image/png"}, "scope-1")
+	firstRef, err := store.Store(
+		firstPath,
+		media.MediaMeta{Filename: "first.png", ContentType: "image/png"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 	secondRef, err := store.Store(
 		secondPath,
@@ -801,7 +925,11 @@ func TestSendMedia_VideoCaptionUsesHTMLParseMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "video.mp4")
 	require.NoError(t, os.WriteFile(path, []byte("fake-video-content"), 0o644))
-	ref, err := store.Store(path, media.MediaMeta{Filename: "video.mp4", ContentType: "video/mp4"}, "scope-1")
+	ref, err := store.Store(
+		path,
+		media.MediaMeta{Filename: "video.mp4", ContentType: "video/mp4"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 
 	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
@@ -819,7 +947,7 @@ func TestSendMedia_VideoCaptionUsesHTMLParseMode(t *testing.T) {
 	assert.Equal(t, "<b>Summary:</b> hello", constructor.calls[0].Parameters["caption"])
 }
 
-func TestSendMedia_VideoCaptionParseFailureFallsBackToPlainText(t *testing.T) {
+func TestSendMedia_VideoHTMLCaptionParseFailureFallsBackToPlainText(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	sendVideoCalls := 0
 	caller := &stubCaller{
@@ -829,7 +957,9 @@ func TestSendMedia_VideoCaptionParseFailureFallsBackToPlainText(t *testing.T) {
 			}
 			sendVideoCalls++
 			if sendVideoCalls == 1 {
-				return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+				return nil, errors.New(
+					`api: 400 "Bad Request: can't parse entities: unsupported start tag"`,
+				)
 			}
 			return successResponseWithMessageID(t, 402), nil
 		},
@@ -842,7 +972,11 @@ func TestSendMedia_VideoCaptionParseFailureFallsBackToPlainText(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "video.mp4")
 	require.NoError(t, os.WriteFile(path, []byte("fake-video-content"), 0o644))
-	ref, err := store.Store(path, media.MediaMeta{Filename: "video.mp4", ContentType: "video/mp4"}, "scope-1")
+	ref, err := store.Store(
+		path,
+		media.MediaMeta{Filename: "video.mp4", ContentType: "video/mp4"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 
 	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
@@ -876,7 +1010,19 @@ func TestSendMedia_MultiGroupLongCaptionSendsTextBeforeGroups(t *testing.T) {
 			case strings.Contains(url, "sendMediaGroup"):
 				callOrder = append(callOrder, "group")
 				if len(callOrder) == 2 {
-					return successMediaGroupResponse(t, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410), nil
+					return successMediaGroupResponse(
+						t,
+						401,
+						402,
+						403,
+						404,
+						405,
+						406,
+						407,
+						408,
+						409,
+						410,
+					), nil
 				}
 				if len(callOrder) == 3 {
 					return successMediaGroupResponse(t, 411, 412, 413, 414, 415), nil
@@ -952,6 +1098,7 @@ func TestSend_ShortMessage_SingleCall(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -975,19 +1122,174 @@ func TestSend_NonToolFeedbackDeletesTrackedProgressMessage(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
 	ch.RecordToolFeedbackMessage("12345", "1", "🔧 `read_file`")
 
 	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
-		Content: "final reply",
+		Content: "final **reply**\n- item",
 	})
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"1"}, ids)
 	require.Len(t, caller.calls, 1)
 	assert.Contains(t, caller.calls[0].URL, "editMessageText")
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	assert.Nil(t, payload["rich_message"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	assert.Equal(t, "final <b>reply</b>\n- item", payload["text"])
 	_, ok := ch.currentToolFeedbackMessage("12345")
 	assert.False(t, ok, "tracked tool feedback should be cleared after final reply")
+}
+
+func TestEditMessage_RichMessagesEnabledUsesRichMarkdown(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "editMessageText")
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	content := "**Numbered list:**\n1. First item\n2. Second item\n   1. Nested 1\n   2. Nested 2\n3. Third item\n\n**Table:**\n| Left | Center | Right |\n|------|--------|-------|\n| a | b | c |"
+	err := ch.EditMessage(context.Background(), "12345", "1", content)
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	require.IsType(t, map[string]any{}, payload["rich_message"])
+	richMessage := payload["rich_message"].(map[string]any)
+	assert.Equal(t, content, richMessage["markdown"])
+	assert.Empty(t, payload["text"])
+	assert.Empty(t, payload["parse_mode"])
+}
+
+func TestEditMessage_RichFallbackUsesLegacyHTMLParseMode(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "editMessageText")
+			if callCount == 1 {
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	err := ch.EditMessage(context.Background(), "12345", "1", "**Summary:** [site](https://example.com)")
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, "<b>Summary:</b> <a href=\"https://example.com\">site</a>", payload["text"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	assert.Empty(t, payload["rich_message"])
+}
+
+func TestEditMessage_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "editMessageText")
+			switch callCount {
+			case 1:
+				return nil, errors.New(`api: 404 "Not Found"`)
+			case 2:
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
+			default:
+				return successResponseWithMessageID(t, 1), nil
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	err := ch.EditMessage(context.Background(), "12345", "1", "**broken")
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 3)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
+	assert.Equal(t, "**broken", payload["text"])
+	assert.Empty(t, payload["parse_mode"])
+}
+
+func TestSend_ToolFeedbackUpdateUsesLegacyTextWhenRichMessagesEnabled(t *testing.T) {
+	nextMessageID := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			nextMessageID++
+			return successResponseWithMessageID(t, nextMessageID), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	first := bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "Working...\n• tool: `read_file`",
+		Context: bus.InboundContext{
+			Channel: "telegram",
+			ChatID:  "12345",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	}
+	second := first
+	second.Content = "Working...\n• tool: `write_file`"
+
+	ids, err := ch.Send(context.Background(), first)
+	require.NoError(t, err)
+	require.Equal(t, []string{"1"}, ids)
+
+	ids, err = ch.Send(context.Background(), second)
+	require.NoError(t, err)
+	require.Equal(t, []string{"1"}, ids)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendMessage")
+	assert.Contains(t, caller.calls[1].URL, "editMessageText")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Nil(t, payload["rich_message"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	text, ok := payload["text"].(string)
+	require.True(t, ok)
+	assert.Contains(t, text, "\n• tool: ")
+	assert.Contains(t, text, "<code>read_file</code>")
+	assert.Contains(t, text, "<code>write_file</code>")
+}
+
+func TestEditMessage_LegacyHTMLUsesHTMLParseMode(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "editMessageText")
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	err := ch.EditMessage(
+		context.Background(),
+		"12345",
+		"1",
+		"**Summary:** [site](https://example.com)",
+	)
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	assert.Equal(t, "<b>Summary:</b> <a href=\"https://example.com\">site</a>", payload["text"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	assert.Empty(t, payload["rich_message"])
 }
 
 func TestSend_FinalReplyDoesNotEditTrackedProgressMessage(t *testing.T) {
@@ -1197,7 +1499,12 @@ func TestSend_ToolFeedbackStaysSingleMessageAfterHTMLExpansion(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.Len(t, caller.calls, 1, "tool feedback should stay a single Telegram message after HTML escaping")
+	assert.Len(
+		t,
+		caller.calls,
+		1,
+		"tool feedback should stay a single Telegram message after HTML escaping",
+	)
 }
 
 func TestFitToolFeedbackForTelegram_ReservesAnimationFrame(t *testing.T) {
@@ -1236,15 +1543,48 @@ func TestSend_LongMessage_SingleCall(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.Len(t, caller.calls, 1, "pre-split message within limit should result in one SendMessage call")
+	assert.Len(
+		t,
+		caller.calls,
+		1,
+		"pre-split message within limit should result in one SendMessage call",
+	)
 }
 
-func TestSend_HTMLFallback_PerChunk(t *testing.T) {
+func TestSend_RichMarkdownPayloadOverLimit_SplitsBeforeSending(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "sendRichMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: strings.Repeat("a", 4100),
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	for _, call := range caller.calls {
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(call.Data.BodyRaw, &payload))
+		require.IsType(t, map[string]any{}, payload["rich_message"])
+		richMessage := payload["rich_message"].(map[string]any)
+		markdown, ok := richMessage["markdown"].(string)
+		require.True(t, ok)
+		assert.LessOrEqual(t, len([]rune(markdown)), telegramTextLimit)
+	}
+}
+
+func TestSend_MarkdownV2Fallback_PerChunk(t *testing.T) {
 	callCount := 0
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			callCount++
-			// Fail on odd calls (HTML attempt), succeed on even calls (plain text fallback)
+			// Fail on odd calls (MarkdownV2 attempt), succeed on even calls (plain text fallback).
 			if callCount%2 == 1 {
 				return nil, errors.New("Bad Request: can't parse entities")
 			}
@@ -1252,6 +1592,7 @@ func TestSend_HTMLFallback_PerChunk(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -1259,17 +1600,19 @@ func TestSend_HTMLFallback_PerChunk(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	// One short message → 1 HTML attempt (fail) + 1 plain text fallback (success) = 2 calls
-	assert.Equal(t, 2, len(caller.calls), "should have HTML attempt + plain text fallback")
+	assert.Equal(t, 2, len(caller.calls), "should have MarkdownV2 attempt + plain text fallback")
 }
 
-func TestSend_HTMLFallback_BothFail(t *testing.T) {
+func TestSend_MarkdownV2Fallback_BothFail(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+			return nil, errors.New(
+				`api: 400 "Bad Request: can't parse entities: unsupported start tag"`,
+			)
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -1278,7 +1621,7 @@ func TestSend_HTMLFallback_BothFail(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, channels.ErrTemporary), "error should wrap ErrTemporary")
-	assert.Equal(t, 2, len(caller.calls), "should have HTML attempt + plain text attempt")
+	assert.Equal(t, 2, len(caller.calls), "should have MarkdownV2 attempt + plain text attempt")
 }
 
 func TestSend_RichMessagesDisabledUsesLegacySendMessage(t *testing.T) {
@@ -1288,6 +1631,7 @@ func TestSend_RichMessagesDisabledUsesLegacySendMessage(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -1348,55 +1692,85 @@ func TestSend_RichMessagesEnabledUsesSendRichMessage(t *testing.T) {
 	assert.Equal(t, float64(12345), payload["chat_id"])
 	require.IsType(t, map[string]any{}, payload["rich_message"])
 	richMessage := payload["rich_message"].(map[string]any)
-	assert.Equal(t, "Hello <b>world</b>", richMessage["html"])
+	assert.Equal(t, "Hello **world**", richMessage["markdown"])
+	assert.Nil(t, richMessage["html"])
 }
 
 func TestSend_RichMessagesFallbackUsesLegacySendMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "unsupported rich messages",
+			err:  errors.New(`api: 400 "Bad Request: rich message is not supported"`),
+		},
+		{
+			name: "older bot api generic not found",
+			err:  errors.New(`api: 404 "Not Found"`),
+		},
+		{
+			name: "rich markdown parse error",
+			err:  errors.New(`api: 400 "Bad Request: can't parse entities"`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			callCount := 0
+			caller := &stubCaller{
+				callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+					callCount++
+					if callCount == 1 {
+						assert.Contains(t, url, "sendRichMessage")
+						return nil, tc.err
+					}
+					assert.Contains(t, url, "sendMessage")
+					return successResponse(t), nil
+				},
+			}
+			ch := newTestChannel(t, caller)
+			ch.tgCfg.RichMessages.Enabled = true
+
+			_, err := ch.Send(context.Background(), bus.OutboundMessage{
+				ChatID:  "12345",
+				Content: "Hello **world**",
+			})
+
+			require.NoError(t, err)
+			require.Len(t, caller.calls, 2)
+			assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+			assert.Contains(t, caller.calls[1].URL, "sendMessage")
+		})
+	}
+}
+
+func TestSendRichChunk_FallbackBuildsLegacyMarkdownV2Content(t *testing.T) {
 	callCount := 0
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			callCount++
 			if callCount == 1 {
 				assert.Contains(t, url, "sendRichMessage")
-				return nil, errors.New(`api: 400 "Bad Request: rich message is not supported"`)
+				return nil, errors.New(`api: 404 "Not Found"`)
 			}
 			assert.Contains(t, url, "sendMessage")
 			return successResponse(t), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
-	ch.tgCfg.RichMessages.Enabled = true
 
-	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "12345",
-		Content: "Hello **world**",
+	_, err := ch.sendRichChunk(context.Background(), "**bold**", sendChunkParams{
+		chatID:        12345,
+		useMarkdownV2: true,
 	})
 
 	require.NoError(t, err)
 	require.Len(t, caller.calls, 2)
-	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
-	assert.Contains(t, caller.calls[1].URL, "sendMessage")
-}
-
-func TestSend_RichMessagesContentErrorDoesNotFallback(t *testing.T) {
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			assert.Contains(t, url, "sendRichMessage")
-			return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
-		},
-	}
-	ch := newTestChannel(t, caller)
-	ch.tgCfg.RichMessages.Enabled = true
-
-	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "12345",
-		Content: "Hello **world**",
-	})
-
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, channels.ErrTemporary))
-	require.Len(t, caller.calls, 1)
-	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, parseContent("**bold**", true), payload["text"])
+	assert.Equal(t, telego.ModeMarkdownV2, payload["parse_mode"])
 }
 
 func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
@@ -1414,7 +1788,12 @@ func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, channels.ErrTemporary), "error should wrap ErrTemporary")
-	assert.Equal(t, 1, len(caller.calls), "should not retry as plain text for non-formatting errors")
+	assert.Equal(
+		t,
+		1,
+		len(caller.calls),
+		"should not retry as plain text for non-formatting errors",
+	)
 }
 
 func TestSend_EntityNotClosedError_FallsBackToPlainText(t *testing.T) {
@@ -1429,6 +1808,7 @@ func TestSend_EntityNotClosedError_FallsBackToPlainText(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -1436,7 +1816,12 @@ func TestSend_EntityNotClosedError_FallsBackToPlainText(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.Equal(t, 2, len(caller.calls), "should retry as plain text for entity-not-closed parse errors")
+	assert.Equal(
+		t,
+		2,
+		len(caller.calls),
+		"should retry as plain text for entity-not-closed parse errors",
+	)
 }
 
 func TestSend_BadRequestTagVariant_FallsBackToPlainText(t *testing.T) {
@@ -1445,12 +1830,15 @@ func TestSend_BadRequestTagVariant_FallsBackToPlainText(t *testing.T) {
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			callCount++
 			if callCount == 1 {
-				return nil, errors.New(`api: 400 "Bad Request: can't find end tag corresponding to start tag b"`)
+				return nil, errors.New(
+					`api: 400 "Bad Request: can't find end tag corresponding to start tag b"`,
+				)
 			}
 			return successResponse(t), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -1458,18 +1846,26 @@ func TestSend_BadRequestTagVariant_FallsBackToPlainText(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.Equal(t, 2, len(caller.calls), "should retry as plain text for bad-request formatting tag variants")
+	assert.Equal(
+		t,
+		2,
+		len(caller.calls),
+		"should retry as plain text for bad-request formatting tag variants",
+	)
 }
 
-func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
-	// With a long message that gets split into 2 chunks, if both HTML and
+func TestSend_LongMessage_MarkdownV2Fallback_StopsOnError(t *testing.T) {
+	// With a long message that gets split into 2 chunks, if both MarkdownV2 and
 	// plain text fail on the first chunk, Send should return early.
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return nil, errors.New(`api: 400 "Bad Request: can't parse entities: unsupported start tag"`)
+			return nil, errors.New(
+				`api: 400 "Bad Request: can't parse entities: unsupported start tag"`,
+			)
 		},
 	}
 	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseMarkdownV2 = true
 
 	longContent := strings.Repeat("x", 4001)
 
@@ -1479,11 +1875,15 @@ func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 	})
 
 	assert.Error(t, err)
-	// Should fail on the first chunk (2 calls: HTML + fallback), never reaching the second chunk.
-	assert.Equal(t, 2, len(caller.calls), "should stop after first chunk fails both HTML and plain text")
+	assert.Equal(
+		t,
+		2,
+		len(caller.calls),
+		"should stop after first chunk fails both MarkdownV2 and plain text",
+	)
 }
 
-func TestSend_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) {
+func TestSend_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			return successResponse(t), nil
@@ -1491,16 +1891,12 @@ func TestSend_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	// Create markdown whose length is <= 4000 but whose HTML expansion is much longer.
-	// "**a** " (6 chars) becomes "<b>a</b> " (9 chars) in HTML, so repeating it many times
-	// yields HTML that exceeds Telegram's limit while markdown stays within it.
 	markdownContent := strings.Repeat("**a** ", 600) // 3600 chars markdown, HTML ~5400+ chars
-	assert.LessOrEqual(t, len([]rune(markdownContent)), 4000, "markdown content must not exceed chunk size")
-
-	htmlExpanded := markdownToTelegramHTML(markdownContent)
-	assert.Greater(
-		t, len([]rune(htmlExpanded)), 4096,
-		"HTML expansion must exceed Telegram limit for this test to be meaningful",
+	assert.LessOrEqual(
+		t,
+		len([]rune(markdownContent)),
+		4000,
+		"markdown content must not exceed chunk size",
 	)
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
@@ -1509,10 +1905,115 @@ func TestSend_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.Greater(
-		t, len(caller.calls), 1,
-		"markdown-short but HTML-long message should be split into multiple SendMessage calls",
-	)
+	assert.Len(t, caller.calls, 2)
+}
+
+func TestSend_RichFallbackSplitsAgainstLegacyHTMLPayload(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "sendRichMessage") {
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			assert.Contains(t, url, "sendMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	markdownContent := strings.Repeat("**a** ", 600) // raw markdown fits, legacy HTML exceeds 4096.
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: markdownContent,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 4)
+	for _, call := range caller.calls {
+		if !strings.Contains(call.URL, "sendMessage") || strings.Contains(call.URL, "sendRichMessage") {
+			continue
+		}
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(call.Data.BodyRaw, &payload))
+		text, ok := payload["text"].(string)
+		require.True(t, ok)
+		assert.LessOrEqual(t, len([]rune(text)), telegramTextLimit)
+		assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+	}
+}
+
+func TestSend_RichLengthErrorResplitsAndRetries(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "sendRichMessage")
+			if callCount == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: message is too long"`)
+			}
+			return successResponseWithMessageID(t, callCount), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: strings.Repeat("a", 1000),
+	})
+
+	require.NoError(t, err)
+	assert.Greater(t, len(ids), 1)
+	require.Len(t, caller.calls, len(ids)+1)
+}
+
+func TestSendCaptionText_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "sendMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	markdownContent := strings.Repeat("**a** ", 600) // 3600 chars markdown, HTML ~5400+ chars
+	ids, err := ch.sendCaptionText(context.Background(), 12345, 0, markdownContent)
+
+	require.NoError(t, err)
+	assert.Len(t, ids, 2)
+	assert.Len(t, caller.calls, 2)
+}
+
+func TestSendCaptionText_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				assert.Contains(t, url, "sendRichMessage")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			case 2:
+				assert.Contains(t, url, "sendMessage")
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
+			default:
+				assert.Contains(t, url, "sendMessage")
+				return successResponse(t), nil
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	ids, err := ch.sendCaptionText(context.Background(), 12345, 0, "**caption")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1"}, ids)
+	require.Len(t, caller.calls, 3)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
+	assert.Equal(t, "**caption", payload["text"])
+	assert.Empty(t, payload["parse_mode"])
 }
 
 func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
@@ -1536,7 +2037,12 @@ func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
 	content := prefix + targetWord + suffix
 
 	// Ensure the test content matches the intended boundary conditions.
-	assert.LessOrEqual(t, len([]rune(content)), 4000, "markdown content must not exceed chunk size for this test")
+	assert.LessOrEqual(
+		t,
+		len([]rune(content)),
+		4000,
+		"markdown content must not exceed chunk size for this test",
+	)
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "123456",
@@ -1725,7 +2231,7 @@ func TestBeginStream_UpdateUsesForumThreadID(t *testing.T) {
 
 	streamer, err := ch.BeginStream(context.Background(), "-1001234567890/42")
 	require.NoError(t, err)
-	require.NoError(t, streamer.Update(context.Background(), "partial"))
+	require.NoError(t, streamer.Update(context.Background(), "**partial**"))
 	require.Len(t, caller.calls, 1)
 	assert.Contains(t, caller.calls[0].URL, "sendMessageDraft")
 
@@ -1733,11 +2239,13 @@ func TestBeginStream_UpdateUsesForumThreadID(t *testing.T) {
 		ChatID          int64  `json:"chat_id"`
 		MessageThreadID int    `json:"message_thread_id"`
 		Text            string `json:"text"`
+		ParseMode       string `json:"parse_mode"`
 	}
 	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &params))
 	assert.Equal(t, int64(-1001234567890), params.ChatID)
 	assert.Equal(t, 42, params.MessageThreadID)
-	assert.Equal(t, "partial", params.Text)
+	assert.Equal(t, "<b>partial</b>", params.Text)
+	assert.Equal(t, telego.ModeHTML, params.ParseMode)
 }
 
 func TestBeginStream_UsesDefaultThrottleWhenOnlyEnabled(t *testing.T) {
@@ -1865,7 +2373,7 @@ func TestBeginStream_FinalizeUsesForumThreadID(t *testing.T) {
 
 	streamer, err := ch.BeginStream(context.Background(), "-1001234567890/42")
 	require.NoError(t, err)
-	require.NoError(t, streamer.Finalize(context.Background(), "final"))
+	require.NoError(t, streamer.Finalize(context.Background(), "**final**"))
 	require.Len(t, caller.calls, 1)
 	assert.Contains(t, caller.calls[0].URL, "sendMessage")
 
@@ -1873,11 +2381,156 @@ func TestBeginStream_FinalizeUsesForumThreadID(t *testing.T) {
 		ChatID          int64  `json:"chat_id"`
 		MessageThreadID int    `json:"message_thread_id"`
 		Text            string `json:"text"`
+		ParseMode       string `json:"parse_mode"`
 	}
 	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &params))
 	assert.Equal(t, int64(-1001234567890), params.ChatID)
 	assert.Equal(t, 42, params.MessageThreadID)
-	assert.Equal(t, "final", params.Text)
+	assert.Equal(t, "<b>final</b>", params.Text)
+	assert.Equal(t, telego.ModeHTML, params.ParseMode)
+}
+
+func TestBeginStream_RichMessagesUsesRichDraftAndFinalize(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "Draft") {
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			}
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Update(context.Background(), "# partial"))
+	require.NoError(t, streamer.Finalize(context.Background(), "# final"))
+
+	require.Len(t, caller.calls, 3)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessageDraft")
+	assert.Contains(t, caller.calls[1].URL, "sendRichMessage")
+	assert.NotContains(t, caller.calls[1].URL, "Draft")
+	assert.Contains(t, caller.calls[2].URL, "sendMessageDraft")
+
+	var draftParams struct {
+		RichMessage map[string]any `json:"rich_message"`
+	}
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &draftParams))
+	assert.Equal(t, "# partial", draftParams.RichMessage["markdown"])
+
+	var finalParams struct {
+		RichMessage map[string]any `json:"rich_message"`
+	}
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &finalParams))
+	assert.Equal(t, "# final", finalParams.RichMessage["markdown"])
+}
+
+func TestBeginStream_RichDraftFallbackUsesLegacyHTML(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				assert.Contains(t, url, "sendRichMessageDraft")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			assert.Contains(t, url, "sendMessageDraft")
+			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Update(context.Background(), "**partial**"))
+
+	require.Len(t, caller.calls, 2)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, "<b>partial</b>", payload["text"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+}
+
+func TestBeginStream_RichDraftDowngradesOversizedContent(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "sendMessageDraft")
+			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Update(context.Background(), strings.Repeat("a", telegramTextLimit+1)))
+
+	require.Len(t, caller.calls, 1)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	text, ok := payload["text"].(string)
+	require.True(t, ok)
+	assert.Len(t, []rune(text), telegramTextLimit)
+	assert.Empty(t, payload["parse_mode"])
+}
+
+func TestBeginStream_RichFinalizeFallbackUsesLegacyHTML(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				assert.Contains(t, url, "sendRichMessage")
+				assert.NotContains(t, url, "Draft")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			}
+			assert.Contains(t, url, "sendMessage")
+			assert.NotContains(t, url, "Draft")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Finalize(context.Background(), "**final**"))
+
+	require.Len(t, caller.calls, 2)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	assert.Equal(t, "<b>final</b>", payload["text"])
+	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+}
+
+func TestBeginStream_RichFinalizeLengthErrorUsesChunkedSend(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "sendRichMessage")
+			assert.NotContains(t, url, "Draft")
+			if callCount == 1 {
+				return nil, errors.New(`api: 400 "Bad Request: message is too long"`)
+			}
+			return successResponseWithMessageID(t, callCount), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Finalize(context.Background(), strings.Repeat("a", 1000)))
+
+	assert.Greater(t, len(caller.calls), 2)
 }
 
 func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
