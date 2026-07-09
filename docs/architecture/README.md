@@ -10,6 +10,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Session System](session-system.md): session scope allocation, JSONL persistence, alias compatibility, and migration.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing.
 - [Durable Ingress](durable-ingress.md): normalized inbound message spool and restart replay semantics.
+- [Safe Restart And Deploy](safe-restart-and-deploy.md): bounded restart/deploy handoff, shared binary targets, and durability boundaries.
 - [Inbound Message Relations](inbound-message-relations.md): explicit relation typing for replies, adjacent follow-ups, media-only turns, and platform-native grouping.
 - [Runtime Events](runtime-events.md): runtime event envelope, centralized event logging, filters, and examples.
 - [Channel Lifecycle](channel-lifecycle.md): conservative channel reload policy, delivery ownership invariants, and the roadmap for any future hot-replacement work.
