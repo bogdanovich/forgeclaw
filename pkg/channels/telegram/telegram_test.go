@@ -1959,6 +1959,38 @@ func TestSendCaptionText_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTM
 	assert.Len(t, caller.calls, 2)
 }
 
+func TestSendCaptionText_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				assert.Contains(t, url, "sendRichMessage")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			case 2:
+				assert.Contains(t, url, "sendMessage")
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
+			default:
+				assert.Contains(t, url, "sendMessage")
+				return successResponse(t), nil
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	ids, err := ch.sendCaptionText(context.Background(), 12345, 0, "**caption")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1"}, ids)
+	require.Len(t, caller.calls, 3)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
+	assert.Equal(t, "**caption", payload["text"])
+	assert.Empty(t, payload["parse_mode"])
+}
+
 func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
