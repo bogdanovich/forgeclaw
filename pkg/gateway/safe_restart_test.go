@@ -75,16 +75,19 @@ func TestCollectRestartPreflightCapturesPendingInboundError(t *testing.T) {
 	}
 }
 
-func TestRestartPreflightTreatsUnknownStateAsActiveWork(t *testing.T) {
+func TestRestartPreflightTreatsUnavailableFutureProbesAsInformational(t *testing.T) {
 	got := RestartPreflight{
 		ActiveTurnsUnavailable: true,
 		CronJobsUnavailable:    true,
 	}
 
-	if !got.HasActiveWork() {
-		t.Fatal("unknown active-turn or cron state should be treated as unsafe active work")
+	if got.HasActiveWork() {
+		t.Fatal("unimplemented active-turn or cron probes should not block an otherwise idle restart")
 	}
-	got = RestartPreflight{PendingInboundError: "spool unavailable"}
+}
+
+func TestRestartPreflightTreatsPendingInboundUncertaintyAsActiveWork(t *testing.T) {
+	got := RestartPreflight{PendingInboundError: "spool unavailable"}
 	if !got.HasActiveWork() {
 		t.Fatal("pending inbound errors should be treated as unsafe active work")
 	}

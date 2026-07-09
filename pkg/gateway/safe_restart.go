@@ -40,14 +40,12 @@ type RestartPreflight struct {
 
 func (p RestartPreflight) HasActiveWork() bool {
 	return p.ActiveTurns > 0 ||
-		p.ActiveTurnsUnavailable ||
 		p.PendingInbound > 0 ||
 		p.PendingInboundError != "" ||
 		p.PendingInboundTimedOut ||
 		p.OutboundDepth > 0 ||
 		p.OutboundMediaDepth > 0 ||
-		p.ActiveCronJobs > 0 ||
-		p.CronJobsUnavailable
+		p.ActiveCronJobs > 0
 }
 
 type RestartPreflightOptions struct {
