@@ -494,6 +494,17 @@ func telegramTextLimitPayload(text string, useMarkdownV2 bool, useRich bool) str
 	return richContent
 }
 
+func telegramClampText(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit])
+}
+
 func (c *TelegramChannel) sendRichChunk(
 	ctx context.Context,
 	rawContent string,
@@ -2464,48 +2475,58 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 		return nil
 	}
 
+	s.draftTouched = true
 	var err error
 	if s.richMessages {
 		if len([]rune(telegramTextLimitPayload(content, false, true))) > telegramTextLimit {
-			return nil
-		}
-		s.draftTouched = true
-		err = s.bot.SendRichMessageDraft(ctx, &telego.SendRichMessageDraftParams{
-			ChatID:          s.chatID,
-			MessageThreadID: s.threadID,
-			DraftID:         s.draftID,
-			RichMessage:     renderTelegramOutboundRichMessage(content),
-		})
-		if err != nil && telegramIsMessageTooLong(err) {
-			return nil
-		}
-		if err != nil && (shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
-			logger.DebugCF(
-				"telegram",
-				"rich draft rejected, falling back to plain draft",
-				map[string]any{
-					"chat_id": s.chatID,
-					"error":   err.Error(),
-				},
-			)
 			err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
 				ChatID:          s.chatID,
 				MessageThreadID: s.threadID,
 				DraftID:         s.draftID,
-				Text:            markdownToTelegramHTML(content),
-				ParseMode:       telego.ModeHTML,
+				Text:            telegramClampText(content, telegramTextLimit),
 			})
-			if err != nil && shouldFallbackToPlainText(err) {
+		} else {
+			err = s.bot.SendRichMessageDraft(ctx, &telego.SendRichMessageDraftParams{
+				ChatID:          s.chatID,
+				MessageThreadID: s.threadID,
+				DraftID:         s.draftID,
+				RichMessage:     renderTelegramOutboundRichMessage(content),
+			})
+			if err != nil && telegramIsMessageTooLong(err) {
 				err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
 					ChatID:          s.chatID,
 					MessageThreadID: s.threadID,
 					DraftID:         s.draftID,
-					Text:            content,
+					Text:            telegramClampText(content, telegramTextLimit),
 				})
+			}
+			if err != nil && (shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
+				logger.DebugCF(
+					"telegram",
+					"rich draft rejected, falling back to plain draft",
+					map[string]any{
+						"chat_id": s.chatID,
+						"error":   err.Error(),
+					},
+				)
+				err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
+					ChatID:          s.chatID,
+					MessageThreadID: s.threadID,
+					DraftID:         s.draftID,
+					Text:            markdownToTelegramHTML(content),
+					ParseMode:       telego.ModeHTML,
+				})
+				if err != nil && shouldFallbackToPlainText(err) {
+					err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
+						ChatID:          s.chatID,
+						MessageThreadID: s.threadID,
+						DraftID:         s.draftID,
+						Text:            content,
+					})
+				}
 			}
 		}
 	} else {
-		s.draftTouched = true
 		err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
 			ChatID:          s.chatID,
 			MessageThreadID: s.threadID,

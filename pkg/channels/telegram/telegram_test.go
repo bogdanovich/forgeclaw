@@ -2455,11 +2455,11 @@ func TestBeginStream_RichDraftFallbackUsesLegacyHTML(t *testing.T) {
 	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
 }
 
-func TestBeginStream_RichDraftSkipsOversizedContent(t *testing.T) {
+func TestBeginStream_RichDraftDowngradesOversizedContent(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			t.Fatalf("unexpected API call for oversized rich draft: %s", url)
-			return nil, nil
+			assert.Contains(t, url, "sendMessageDraft")
+			return &ta.Response{Ok: true, Result: []byte("true")}, nil
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -2470,7 +2470,13 @@ func TestBeginStream_RichDraftSkipsOversizedContent(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, streamer.Update(context.Background(), strings.Repeat("a", telegramTextLimit+1)))
 
-	assert.Empty(t, caller.calls)
+	require.Len(t, caller.calls, 1)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	text, ok := payload["text"].(string)
+	require.True(t, ok)
+	assert.Len(t, []rune(text), telegramTextLimit)
+	assert.Empty(t, payload["parse_mode"])
 }
 
 func TestBeginStream_RichFinalizeFallbackUsesLegacyHTML(t *testing.T) {
