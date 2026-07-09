@@ -40,6 +40,7 @@ var (
 const (
 	defaultMediaGroupDelay = 500 * time.Millisecond
 	telegramCaptionLimit   = 1024
+	telegramTextLimit      = 4096
 )
 
 type TelegramChannel struct {
@@ -318,52 +319,89 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		}
 	}
 
-	// The Manager already splits messages to <=4000 chars (WithMaxMessageLength),
-	// so msg.Content is guaranteed to be within Telegram's 4096-char API limit
-	// unless MarkdownV2 escaping expands it.
-	replyToID := msg.ReplyToMessageID
-	var messageIDs []string
-	queue := []string{msg.Content}
+	textContent := msg.Content
 	if isToolFeedback {
-		queue = []string{channels.InitialAnimatedToolFeedbackContent(toolFeedbackContent)}
+		textContent = channels.InitialAnimatedToolFeedbackContent(toolFeedbackContent)
 	}
+	messageIDs, err := c.sendTextChunks(ctx, textContent, sendChunkParams{
+		chatID:        chatID,
+		threadID:      threadID,
+		replyToID:     msg.ReplyToMessageID,
+		useMarkdownV2: useMarkdownV2,
+	}, c.richMessagesEnabled(useMarkdownV2) && !isToolFeedback, isToolFeedback)
+	if err != nil {
+		return nil, err
+	}
+
+	if isToolFeedback && len(messageIDs) > 0 {
+		c.RecordEditedToolFeedbackMessage(trackedChatID, messageIDs[0], toolFeedbackContent)
+	} else if !isToolFeedback && hasTrackedMsg {
+		c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
+	}
+
+	return messageIDs, nil
+}
+
+type sendChunkParams struct {
+	chatID        int64
+	threadID      int
+	content       string
+	replyToID     string
+	mdFallback    string
+	useMarkdownV2 bool
+}
+
+func (c *TelegramChannel) sendTextChunks(
+	ctx context.Context,
+	text string,
+	baseParams sendChunkParams,
+	useRich bool,
+	isToolFeedback bool,
+) ([]string, error) {
+	queue := []string{text}
+	var messageIDs []string
 	for len(queue) > 0 {
 		chunk := queue[0]
 		queue = queue[1:]
 
-		content := parseContent(chunk, useMarkdownV2)
+		content := parseContent(chunk, baseParams.useMarkdownV2)
+		payload := content
+		if useRich {
+			payload = markdownToTelegramRichMarkdown(chunk)
+		}
 
-		if len([]rune(content)) > 4096 {
+		if len([]rune(payload)) > telegramTextLimit {
 			if isToolFeedback {
-				fittedChunk := fitToolFeedbackForTelegram(chunk, useMarkdownV2, 4096)
+				fittedChunk := fitToolFeedbackForTelegram(chunk, baseParams.useMarkdownV2, telegramTextLimit)
 				if fittedChunk != "" && fittedChunk != chunk {
 					queue = append([]string{fittedChunk}, queue...)
 					continue
 				}
 			}
-			runeChunk := []rune(chunk)
-			ratio := float64(len(runeChunk)) / float64(len([]rune(content)))
-			smallerLen := int(float64(4096) * ratio * 0.95) // 5% safety margin
 
-			// Guarantee progress: if estimated length is >= chunk length, force it smaller
+			runeChunk := []rune(chunk)
+			ratio := float64(len(runeChunk)) / float64(len([]rune(payload)))
+			smallerLen := int(float64(telegramTextLimit) * ratio * 0.95) // 5% safety margin
+
+			// Guarantee progress: if estimated length is >= chunk length, force it smaller.
 			if smallerLen >= len(runeChunk) {
 				smallerLen = len(runeChunk) - 1
 			}
 
 			if smallerLen <= 0 {
 				msgID, err := c.sendChunk(ctx, sendChunkParams{
-					chatID:        chatID,
-					threadID:      threadID,
+					chatID:        baseParams.chatID,
+					threadID:      baseParams.threadID,
 					content:       content,
-					replyToID:     replyToID,
+					replyToID:     baseParams.replyToID,
 					mdFallback:    chunk,
-					useMarkdownV2: useMarkdownV2,
+					useMarkdownV2: baseParams.useMarkdownV2,
 				})
 				if err != nil {
 					return nil, err
 				}
 				messageIDs = append(messageIDs, msgID)
-				replyToID = ""
+				baseParams.replyToID = ""
 				continue
 			}
 
@@ -386,22 +424,23 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 				}
 			}
 
-			// Push sub-chunks back to the front of the queue
+			// Push sub-chunks back to the front of the queue.
 			queue = append(nonEmpty, queue...)
 			continue
 		}
 
 		params := sendChunkParams{
-			chatID:        chatID,
-			threadID:      threadID,
+			chatID:        baseParams.chatID,
+			threadID:      baseParams.threadID,
 			content:       content,
-			replyToID:     replyToID,
+			replyToID:     baseParams.replyToID,
 			mdFallback:    chunk,
-			useMarkdownV2: useMarkdownV2,
+			useMarkdownV2: baseParams.useMarkdownV2,
 		}
+
 		var msgID string
 		var err error
-		if c.richMessagesEnabled(useMarkdownV2) && !isToolFeedback {
+		if useRich {
 			msgID, err = c.sendRichChunk(ctx, chunk, params)
 		} else {
 			msgID, err = c.sendChunk(ctx, params)
@@ -411,25 +450,9 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		}
 		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
-		replyToID = ""
+		baseParams.replyToID = ""
 	}
-
-	if isToolFeedback && len(messageIDs) > 0 {
-		c.RecordEditedToolFeedbackMessage(trackedChatID, messageIDs[0], toolFeedbackContent)
-	} else if !isToolFeedback && hasTrackedMsg {
-		c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
-	}
-
 	return messageIDs, nil
-}
-
-type sendChunkParams struct {
-	chatID        int64
-	threadID      int
-	content       string
-	replyToID     string
-	mdFallback    string
-	useMarkdownV2 bool
 }
 
 func (c *TelegramChannel) richMessagesEnabled(useMarkdownV2 bool) bool {
@@ -1283,33 +1306,11 @@ func (c *TelegramChannel) sendCaptionText(
 		return nil, nil
 	}
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
-	chunks := channels.SplitMessage(text, c.MaxMessageLength())
-	messageIDs := make([]string, 0, len(chunks))
-	for _, chunk := range chunks {
-		chunk = strings.TrimSpace(chunk)
-		if chunk == "" {
-			continue
-		}
-		params := sendChunkParams{
-			chatID:        chatID,
-			threadID:      threadID,
-			content:       parseContent(chunk, useMarkdownV2),
-			mdFallback:    chunk,
-			useMarkdownV2: useMarkdownV2,
-		}
-		var msgID string
-		var err error
-		if c.richMessagesEnabled(useMarkdownV2) {
-			msgID, err = c.sendRichChunk(ctx, chunk, params)
-		} else {
-			msgID, err = c.sendChunk(ctx, params)
-		}
-		if err != nil {
-			return nil, err
-		}
-		messageIDs = append(messageIDs, msgID)
-	}
-	return messageIDs, nil
+	return c.sendTextChunks(ctx, text, sendChunkParams{
+		chatID:        chatID,
+		threadID:      threadID,
+		useMarkdownV2: useMarkdownV2,
+	}, c.richMessagesEnabled(useMarkdownV2), false)
 }
 
 func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Message) error {

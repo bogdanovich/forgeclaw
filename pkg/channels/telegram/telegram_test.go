@@ -1496,6 +1496,34 @@ func TestSend_LongMessage_SingleCall(t *testing.T) {
 	)
 }
 
+func TestSend_RichMarkdownPayloadOverLimit_SplitsBeforeSending(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "sendRichMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: strings.Repeat("a", 4100),
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	for _, call := range caller.calls {
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(call.Data.BodyRaw, &payload))
+		require.IsType(t, map[string]any{}, payload["rich_message"])
+		richMessage := payload["rich_message"].(map[string]any)
+		markdown, ok := richMessage["markdown"].(string)
+		require.True(t, ok)
+		assert.LessOrEqual(t, len([]rune(markdown)), telegramTextLimit)
+	}
+}
+
 func TestSend_MarkdownV2Fallback_PerChunk(t *testing.T) {
 	callCount := 0
 	caller := &stubCaller{
@@ -1794,6 +1822,23 @@ func TestSend_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testin
 	})
 
 	assert.NoError(t, err)
+	assert.Len(t, caller.calls, 2)
+}
+
+func TestSendCaptionText_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "sendMessage")
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	markdownContent := strings.Repeat("**a** ", 600) // 3600 chars markdown, HTML ~5400+ chars
+	ids, err := ch.sendCaptionText(context.Background(), 12345, 0, markdownContent)
+
+	require.NoError(t, err)
+	assert.Len(t, ids, 2)
 	assert.Len(t, caller.calls, 2)
 }
 
