@@ -120,6 +120,13 @@ func (p *Pipeline) publishPicoToolCallInterim(
 	)
 }
 
+func (p *Pipeline) shouldPublishToolFeedback(ts *turnState) bool {
+	if p == nil || p.Interaction.ToolFeedback == nil {
+		return false
+	}
+	return p.Interaction.ToolFeedback.shouldPublishToolFeedback(ts)
+}
+
 func (p *Pipeline) handleReasoning(
 	ctx context.Context,
 	reasoningContent, channelName, channelID string,

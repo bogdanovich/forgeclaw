@@ -737,12 +737,16 @@ func (p *Pipeline) CallLLM(
 		p.ingestMessage(turnCtx, ts, assistantMsg)
 	}
 	if shouldPublishPicoToolCallInterim {
+		interimContent := exec.response.Content
+		if p.shouldPublishToolFeedback(ts) {
+			interimContent = ""
+		}
 		p.publishPicoToolCallInterim(
 			turnCtx,
 			ts,
 			exec.model.llmModelName,
 			reasoningContent,
-			exec.response.Content,
+			interimContent,
 			assistantMsg.ToolCalls,
 		)
 	}
