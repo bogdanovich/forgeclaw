@@ -169,50 +169,6 @@ func TestDelegateTool_Execute_RecordsTaskRegistry(t *testing.T) {
 	}
 }
 
-func TestDelegateTool_Execute_RecordsBoardMetadata(t *testing.T) {
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
-	tool := NewDelegateTool()
-	tool.SetSpawner(&delegateMockSpawner{})
-	tool.SetTaskRegistry(registry)
-
-	for _, step := range []struct {
-		id    string
-		title string
-		agent string
-		deps  []any
-	}{
-		{id: "download-media", title: "Download media", agent: "media"},
-		{id: "translate-recipe", title: "Translate recipe", agent: "research", deps: []any{"download-media"}},
-	} {
-		result := tool.Execute(context.Background(), map[string]any{
-			"agent_id":       step.agent,
-			"task":           step.title,
-			"board_id":       "instagram-recipe-1",
-			"parent_task_id": "workflow-root-1",
-			"step_id":        step.id,
-			"step_title":     step.title,
-			"depends_on":     step.deps,
-		})
-		if result.IsError {
-			t.Fatalf("delegate step %q failed: %s", step.id, result.ForLLM)
-		}
-	}
-
-	records := registry.ListBoard("instagram-recipe-1")
-	if len(records) != 2 {
-		t.Fatalf("ListBoard count = %d, want 2: %+v", len(records), records)
-	}
-	if records[0].StepID != "download-media" || records[0].StepTitle != "Download media" {
-		t.Fatalf("first board step = %+v, want download-media", records[0])
-	}
-	if records[1].ParentTaskID != "workflow-root-1" || records[1].Owner != "research" {
-		t.Fatalf("second board ownership = %+v, want parent root and owner research", records[1])
-	}
-	if len(records[1].DependsOn) != 1 || records[1].DependsOn[0] != "download-media" {
-		t.Fatalf("second board dependencies = %+v, want download-media", records[1].DependsOn)
-	}
-}
-
 func TestDelegateTool_Execute_RecordsDeliverableFromCompletion(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	spawner := &delegateMockSpawner{

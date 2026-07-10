@@ -88,7 +88,6 @@ func (t *SpawnTool) Parameters() map[string]any {
 			},
 		},
 	}
-	addTaskBoardMetadataParameters(props)
 	return map[string]any{
 		"type":       "object",
 		"properties": props,
@@ -137,10 +136,6 @@ func (t *SpawnTool) execute(
 	if err != nil {
 		return ErrorResult(err.Error()).WithError(err)
 	}
-	boardMeta, err := parseTaskBoardMetadata(args)
-	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
-	}
 
 	// Check allowlist if targeting a specific agent
 	if targetAgentID != "" && t.allowlistCheck != nil {
@@ -169,7 +164,6 @@ func (t *SpawnTool) execute(
 			ToolChannel(ctx),
 			ToolChatID(ctx),
 			wrappedCallback,
-			boardMeta,
 		)
 		if err != nil {
 			return ErrorResult(fmt.Sprintf("Spawn failed: %v", err)).WithError(err)
