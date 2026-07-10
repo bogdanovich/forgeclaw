@@ -439,12 +439,32 @@ func restartSentinelDir(cfg *config.Config) string {
 }
 
 func setupSafeRestartTool(cfg *config.Config, agentLoop *agent.AgentLoop, msgBus *bus.MessageBus) error {
-	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
+	if cfg == nil {
 		return nil
+	}
+	err := agentLoop.RegisterRuntimeTool("gateway_restart", func(cfg *config.Config) (tools.Tool, error) {
+		return newGatewayRestartToolFromConfig(cfg, msgBus)
+	})
+	if err != nil {
+		return err
+	}
+	if !cfg.Gateway.SafeRestart.Enabled {
+		return nil
+	}
+	logger.InfoCF("gateway", "Safe restart tool enabled", map[string]any{
+		"service_manager": cfg.Gateway.SafeRestart.EffectiveServiceManager(),
+		"service":         cfg.Gateway.SafeRestart.EffectiveService(),
+	})
+	return nil
+}
+
+func newGatewayRestartToolFromConfig(cfg *config.Config, msgBus *bus.MessageBus) (tools.Tool, error) {
+	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
+		return nil, nil
 	}
 	store, err := NewRestartSentinelStore(restartSentinelDir(cfg))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config: cfg.Gateway.SafeRestart,
@@ -452,14 +472,9 @@ func setupSafeRestartTool(cfg *config.Config, agentLoop *agent.AgentLoop, msgBus
 		Store:  store,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	agentLoop.RegisterTool(NewGatewayRestartTool(controller))
-	logger.InfoCF("gateway", "Safe restart tool enabled", map[string]any{
-		"service_manager": cfg.Gateway.SafeRestart.EffectiveServiceManager(),
-		"service":         cfg.Gateway.SafeRestart.EffectiveService(),
-	})
-	return nil
+	return NewGatewayRestartTool(controller), nil
 }
 
 func logLatestRestartSentinel(cfg *config.Config) {

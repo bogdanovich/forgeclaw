@@ -140,6 +140,42 @@ func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
 	}
 }
 
+func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
+		Enabled:             true,
+		ServiceManager:      "systemd-user",
+		Service:             "picoclaw-main.service",
+		DrainTimeoutSeconds: 1,
+		ForceAfterTimeout:   true,
+	}
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	if err := setupSafeRestartTool(cfg, al, msgBus); err != nil {
+		t.Fatalf("setupSafeRestartTool() error = %v", err)
+	}
+
+	reloadCfg := config.DefaultConfig()
+	reloadCfg.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloadCfg.Gateway.SafeRestart = cfg.Gateway.SafeRestart
+	err := al.ReloadProviderAndConfig(
+		context.Background(),
+		&startupBlockedProvider{reason: "not used"},
+		reloadCfg,
+	)
+	if err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+
+	info := al.GetStartupInfo()
+	toolsInfo := info["tools"].(map[string]any)
+	toolsList := toolsInfo["names"].([]string)
+	if !slices.Contains(toolsList, "gateway_restart") {
+		t.Fatalf("registered tools after reload = %#v, want gateway_restart", toolsList)
+	}
+}
+
 func TestReplayGatewayInboundSpoolReplaysBeforeIngressStart(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	spool, err := bus.NewInboundSpool(t.TempDir())
