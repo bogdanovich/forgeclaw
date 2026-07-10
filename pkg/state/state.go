@@ -496,7 +496,11 @@ func (sm *Manager) EditSessionGoal(routeSessionKey, objective string) (SessionGo
 }
 
 // SetSessionGoalStatus changes goal state without changing the objective.
-func (sm *Manager) SetSessionGoalStatus(routeSessionKey string, status SessionGoalStatus, note string) (SessionGoal, error) {
+func (sm *Manager) SetSessionGoalStatus(
+	routeSessionKey string,
+	status SessionGoalStatus,
+	note string,
+) (SessionGoal, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
