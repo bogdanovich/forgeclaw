@@ -140,6 +140,41 @@ func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
 	}
 }
 
+func TestReplayGatewayInboundSpoolReplaysBeforeIngressStart(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	spool, err := bus.NewInboundSpool(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewInboundSpool() error = %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+	ctx := context.Background()
+	original := bus.InboundMessage{
+		Channel: "telegram",
+		ChatID:  "chat-1",
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			SenderID: "user-1",
+		},
+		SenderID: "user-1",
+		Content:  "pending restart message",
+	}
+	if _, err = spool.Prepare(ctx, original); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+
+	replayGatewayInboundSpool(ctx, msgBus)
+
+	select {
+	case got := <-msgBus.InboundChan():
+		if got.Content != original.Content {
+			t.Fatalf("replayed content = %q, want %q", got.Content, original.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected replayed inbound message")
+	}
+}
+
 func TestCollectGatewayStartupStatusHandlesMalformedInfo(t *testing.T) {
 	t.Parallel()
 

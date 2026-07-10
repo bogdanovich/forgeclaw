@@ -144,40 +144,51 @@ func (c *RestartController) RequestRestart(
 		return RestartRequestResult{}, err
 	}
 
+	go c.runRestart(context.WithoutCancel(ctx), sentinel, preflight)
+
+	return RestartRequestResult{
+		Service:   service,
+		Status:    restartStatusPending,
+		Preflight: preflight,
+	}, nil
+}
+
+func (c *RestartController) runRestart(
+	ctx context.Context,
+	sentinel RestartSentinel,
+	preflight RestartPreflight,
+) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	service := sentinel.RequestedService
 	forced, latestPreflight, err := c.waitUntilSafe(ctx, preflight)
 	if err != nil {
 		sentinel.Status = restartStatusFailed
 		sentinel.UpdatedAt = c.now()
 		sentinel.Preflight = latestPreflight
 		_ = c.store.Write(sentinel)
-		return RestartRequestResult{}, err
+		return
 	}
 
 	sentinel.Status = restartStatusRunning
 	sentinel.UpdatedAt = c.now()
 	sentinel.Preflight = latestPreflight
 	if err := c.store.Write(sentinel); err != nil {
-		return RestartRequestResult{}, err
+		return
 	}
 
 	if err := c.restarter.RestartService(ctx, service); err != nil {
 		sentinel.Status = restartStatusFailed
 		sentinel.UpdatedAt = c.now()
 		_ = c.store.Write(sentinel)
-		return RestartRequestResult{}, err
+		return
 	}
 
 	sentinel.Status = restartStatusSucceeded
 	sentinel.UpdatedAt = c.now()
-	if err := c.store.Write(sentinel); err != nil {
-		return RestartRequestResult{}, err
-	}
-	return RestartRequestResult{
-		Service:          service,
-		Status:           restartStatusSucceeded,
-		ForcedAfterDrain: forced,
-		Preflight:        latestPreflight,
-	}, nil
+	sentinel.ForcedAfterDrain = forced
+	_ = c.store.Write(sentinel)
 }
 
 func (c *RestartController) collectPreflight(ctx context.Context) RestartPreflight {
@@ -266,10 +277,7 @@ func (t *GatewayRestartTool) Execute(ctx context.Context, args map[string]any) *
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("gateway restart failed: %v", err)).WithError(err)
 	}
-	message := fmt.Sprintf("Gateway restart requested for %s.", result.Service)
-	if result.ForcedAfterDrain {
-		message += " Active work did not drain before timeout, so force_after_timeout was used."
-	}
+	message := fmt.Sprintf("Gateway restart scheduled for %s. It will run after active work drains.", result.Service)
 	return tools.UserResult(message).WithImmediateDelivery()
 }
 

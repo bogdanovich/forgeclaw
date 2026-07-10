@@ -218,7 +218,12 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 
 	logger.InfoCF("agent", "Agent initialized", startupStatus.logFields)
 
-	runningServices, err := setupAndStartServices(cfg, agentLoop, msgBus, pidData.Token, listenResult)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go agentLoop.Run(ctx)
+
+	runningServices, err := setupAndStartServices(ctx, cfg, agentLoop, msgBus, pidData.Token, listenResult)
 	if err != nil {
 		return err
 	}
@@ -254,17 +259,6 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	}
 	fmt.Println("Press Ctrl+C to stop")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go agentLoop.Run(ctx)
-	if replayed, err := msgBus.ReplayInboundSpool(ctx); err != nil {
-		logger.WarnCF("gateway", "Failed to replay inbound spool",
-			map[string]any{"error": err.Error()})
-	} else if replayed > 0 {
-		logger.InfoCF("gateway", "Replayed durable inbound messages",
-			map[string]any{"count": replayed})
-	}
 	go func() {
 		if recovered := agentLoop.RecoverUnansweredSessions(ctx); recovered > 0 {
 			logger.InfoCF("gateway", "Recovered unanswered sessions",
@@ -503,7 +497,18 @@ func logLatestRestartSentinel(cfg *config.Config) {
 	})
 }
 
+func replayGatewayInboundSpool(ctx context.Context, msgBus *bus.MessageBus) {
+	if replayed, err := msgBus.ReplayInboundSpool(ctx); err != nil {
+		logger.WarnCF("gateway", "Failed to replay inbound spool",
+			map[string]any{"error": err.Error()})
+	} else if replayed > 0 {
+		logger.InfoCF("gateway", "Replayed durable inbound messages",
+			map[string]any{"count": replayed})
+	}
+}
+
 func setupAndStartServices(
+	ctx context.Context,
 	cfg *config.Config,
 	agentLoop *agent.AgentLoop,
 	msgBus *bus.MessageBus,
@@ -599,6 +604,8 @@ func setupAndStartServices(
 		listenAddr,
 		runningServices.HealthServer,
 	)
+
+	replayGatewayInboundSpool(ctx, msgBus)
 
 	if err = runningServices.ChannelManager.StartAll(context.Background()); err != nil {
 		return nil, fmt.Errorf("error starting channels: %w", err)

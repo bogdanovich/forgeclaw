@@ -138,6 +138,7 @@ type RestartSentinel struct {
 	UpdatedAt        time.Time        `json:"updated_at"`
 	Reason           string           `json:"reason,omitempty"`
 	Preflight        RestartPreflight `json:"preflight"`
+	ForcedAfterDrain bool             `json:"forced_after_drain,omitempty"`
 }
 
 type RestartSentinelStore struct {

@@ -42,12 +42,19 @@ type fakeServiceRestarter struct {
 	mu       sync.Mutex
 	services []string
 	err      error
+	called   chan string
 }
 
 func (r *fakeServiceRestarter) RestartService(_ context.Context, service string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.services = append(r.services, service)
+	if r.called != nil {
+		select {
+		case r.called <- service:
+		default:
+		}
+	}
 	return r.err
 }
 
@@ -55,6 +62,21 @@ func (r *fakeServiceRestarter) calledWith(service string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.services) == 1 && r.services[0] == service
+}
+
+func (r *fakeServiceRestarter) waitCalledWith(t *testing.T, service string) {
+	t.Helper()
+	if r.called == nil {
+		t.Fatal("fake restarter called channel is nil")
+	}
+	select {
+	case got := <-r.called:
+		if got != service {
+			t.Fatalf("RestartService called with %q, want %q", got, service)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("RestartService was not called with %q", service)
+	}
 }
 
 func testRestartConfig() config.GatewaySafeRestartConfig {
@@ -129,7 +151,7 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
 	}
-	restarter := &fakeServiceRestarter{}
+	restarter := &fakeServiceRestarter{called: make(chan string, 1)}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config:           testRestartConfig(),
 		Source:           &restartSourceSequence{},
@@ -148,9 +170,11 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequestRestart() error = %v", err)
 	}
-	if result.Status != restartStatusSucceeded {
-		t.Fatalf("status = %q, want %q", result.Status, restartStatusSucceeded)
+	if result.Status != restartStatusPending {
+		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
 	}
+	restarter.waitCalledWith(t, "picoclaw-main.service")
+	waitForRestartSentinelStatus(t, store, restartStatusSucceeded)
 	if !restarter.calledWith("picoclaw-main.service") {
 		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
 	}
@@ -174,7 +198,7 @@ func TestRestartControllerDefersUntilIdle(t *testing.T) {
 	source := &restartSourceSequence{
 		pending: [][]bus.InboundMessage{{{SpoolID: "pending"}}, nil},
 	}
-	restarter := &fakeServiceRestarter{}
+	restarter := &fakeServiceRestarter{called: make(chan string, 1)}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config:           testRestartConfig(),
 		Source:           source,
@@ -194,6 +218,7 @@ func TestRestartControllerDefersUntilIdle(t *testing.T) {
 	if result.ForcedAfterDrain {
 		t.Fatal("restart should not force when work drains")
 	}
+	restarter.waitCalledWith(t, "picoclaw-main.service")
 	if !restarter.calledWith("picoclaw-main.service") {
 		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
 	}
@@ -205,13 +230,14 @@ func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
 	}
 	now := time.Date(2026, 7, 9, 1, 0, 0, 0, time.UTC)
+	restarter := &fakeServiceRestarter{called: make(chan string, 1)}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config: testRestartConfig(),
 		Source: &restartSourceSequence{
 			pending: [][]bus.InboundMessage{{{SpoolID: "pending"}}},
 		},
 		Store:            store,
-		Restarter:        &fakeServiceRestarter{},
+		Restarter:        restarter,
 		PollInterval:     time.Millisecond,
 		PreflightOptions: knownPreflightOptions(),
 		Now: func() time.Time {
@@ -227,7 +253,16 @@ func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequestRestart() error = %v", err)
 	}
-	if !result.ForcedAfterDrain {
+	if result.Status != restartStatusPending {
+		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
+	}
+	restarter.waitCalledWith(t, "picoclaw-main.service")
+	waitForRestartSentinelStatus(t, store, restartStatusSucceeded)
+	sentinel, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if !sentinel.ForcedAfterDrain {
 		t.Fatal("restart should force after drain timeout")
 	}
 }
@@ -240,13 +275,14 @@ func TestRestartControllerFailsWhenDrainTimesOutWithoutForce(t *testing.T) {
 	cfg := testRestartConfig()
 	cfg.ForceAfterTimeout = false
 	now := time.Date(2026, 7, 9, 1, 0, 0, 0, time.UTC)
+	restarter := &fakeServiceRestarter{called: make(chan string, 1)}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config: cfg,
 		Source: &restartSourceSequence{
 			pending: [][]bus.InboundMessage{{{SpoolID: "pending"}}},
 		},
 		Store:            store,
-		Restarter:        &fakeServiceRestarter{},
+		Restarter:        restarter,
 		PollInterval:     time.Millisecond,
 		PreflightOptions: knownPreflightOptions(),
 		Now: func() time.Time {
@@ -258,10 +294,14 @@ func TestRestartControllerFailsWhenDrainTimesOutWithoutForce(t *testing.T) {
 		t.Fatalf("NewRestartController() error = %v", err)
 	}
 
-	_, err = controller.RequestRestart(context.Background(), RestartRequest{})
-	if err == nil || !strings.Contains(err.Error(), "did not drain") {
-		t.Fatalf("RequestRestart() error = %v, want drain timeout", err)
+	result, err := controller.RequestRestart(context.Background(), RestartRequest{})
+	if err != nil {
+		t.Fatalf("RequestRestart() error = %v", err)
 	}
+	if result.Status != restartStatusPending {
+		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
+	}
+	waitForRestartSentinelStatus(t, store, restartStatusFailed)
 	sentinel, readErr := store.Read()
 	if readErr != nil {
 		t.Fatalf("Read() error = %v", readErr)
@@ -272,33 +312,64 @@ func TestRestartControllerFailsWhenDrainTimesOutWithoutForce(t *testing.T) {
 }
 
 func TestGatewayRestartToolReportsControllerErrors(t *testing.T) {
-	tool := NewGatewayRestartTool(&RestartController{
-		cfg: testRestartConfig(),
-		restarter: &fakeServiceRestarter{
-			err: errors.New("boom"),
-		},
-		source:           &restartSourceSequence{},
-		store:            mustRestartSentinelStore(t),
-		pollInterval:     time.Millisecond,
-		preflightOptions: knownPreflightOptions(),
-		now:              func() time.Time { return time.Date(2026, 7, 9, 1, 0, 0, 0, time.UTC) },
-	})
+	tool := NewGatewayRestartTool(nil)
 
 	ctx := tools.WithToolContext(context.Background(), "telegram", "chat-1")
 	got := tool.Execute(ctx, map[string]any{"reason": "test"})
 	if !got.IsError {
 		t.Fatal("tool result should be an error")
 	}
-	if !strings.Contains(got.ForLLM, "boom") {
-		t.Fatalf("tool result = %q, want boom", got.ForLLM)
+	if !strings.Contains(got.ForLLM, "not configured") {
+		t.Fatalf("tool result = %q, want not configured", got.ForLLM)
 	}
 }
 
-func mustRestartSentinelStore(t *testing.T) *RestartSentinelStore {
-	t.Helper()
+func TestRestartControllerBackgroundFailureWritesFailedSentinel(t *testing.T) {
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
 	}
-	return store
+	restarter := &fakeServiceRestarter{
+		err:    errors.New("boom"),
+		called: make(chan string, 1),
+	}
+	controller, err := NewRestartController(RestartControllerOptions{
+		Config:           testRestartConfig(),
+		Source:           &restartSourceSequence{},
+		Store:            store,
+		Restarter:        restarter,
+		PollInterval:     time.Millisecond,
+		PreflightOptions: knownPreflightOptions(),
+		Now:              func() time.Time { return time.Date(2026, 7, 9, 1, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewRestartController() error = %v", err)
+	}
+
+	result, err := controller.RequestRestart(context.Background(), RestartRequest{})
+	if err != nil {
+		t.Fatalf("RequestRestart() error = %v", err)
+	}
+	if result.Status != restartStatusPending {
+		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
+	}
+	restarter.waitCalledWith(t, "picoclaw-main.service")
+	waitForRestartSentinelStatus(t, store, restartStatusFailed)
+}
+
+func waitForRestartSentinelStatus(t *testing.T, store *RestartSentinelStore, status string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sentinel, err := store.Read()
+		if err == nil && sentinel.Status == status {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sentinel, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	t.Fatalf("sentinel status = %q, want %q", sentinel.Status, status)
 }
