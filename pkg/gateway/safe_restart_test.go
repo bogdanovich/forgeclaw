@@ -75,14 +75,39 @@ func TestCollectRestartPreflightCapturesPendingInboundError(t *testing.T) {
 	}
 }
 
-func TestRestartPreflightTreatsUnavailableFutureProbesAsInformational(t *testing.T) {
+func TestRestartPreflightTreatsUnavailableProbesAsActiveWork(t *testing.T) {
 	got := RestartPreflight{
 		ActiveTurnsUnavailable: true,
 		CronJobsUnavailable:    true,
 	}
 
-	if got.HasActiveWork() {
-		t.Fatal("unimplemented active-turn or cron probes should not block an otherwise idle restart")
+	if !got.HasActiveWork() {
+		t.Fatal("unavailable active-turn or cron probes should block restart")
+	}
+}
+
+func TestCollectRestartPreflightUsesActiveWorkProbeCounts(t *testing.T) {
+	got := CollectRestartPreflight(context.Background(), restartPreflightSourceStub{}, RestartPreflightOptions{
+		ActiveTurnCount: func() (int, bool) { return 2, true },
+		ActiveCronJobCount: func() (int, bool) {
+			return 1, true
+		},
+	})
+
+	if got.ActiveTurnsUnavailable {
+		t.Fatal("active turns should be available")
+	}
+	if got.CronJobsUnavailable {
+		t.Fatal("cron jobs should be available")
+	}
+	if got.ActiveTurns != 2 {
+		t.Fatalf("active turns = %d, want 2", got.ActiveTurns)
+	}
+	if got.ActiveCronJobs != 1 {
+		t.Fatalf("active cron jobs = %d, want 1", got.ActiveCronJobs)
+	}
+	if !got.HasActiveWork() {
+		t.Fatal("active turn and cron counts should block restart")
 	}
 }
 
@@ -170,32 +195,44 @@ func TestRestartSentinelStoreWriteReadClear(t *testing.T) {
 }
 
 func TestRestartSentinelStoreMarksInterruptedRestartComplete(t *testing.T) {
-	store, err := NewRestartSentinelStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewRestartSentinelStore() error = %v", err)
+	tests := []struct {
+		name       string
+		status     string
+		wantStatus string
+	}{
+		{name: "running restart completed by replacement process", status: "running", wantStatus: "succeeded"},
+		{name: "pending restart failed before command started", status: "pending", wantStatus: "failed"},
 	}
-	requestedAt := time.Date(2026, 7, 9, 2, 3, 4, 0, time.UTC)
-	updatedAt := requestedAt.Add(time.Minute)
-	if writeErr := store.Write(RestartSentinel{
-		Status:           "running",
-		RequestedService: "picoclaw-main.service",
-		RequestedAt:      requestedAt,
-		UpdatedAt:        requestedAt,
-	}); writeErr != nil {
-		t.Fatalf("Write() error = %v", writeErr)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := NewRestartSentinelStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewRestartSentinelStore() error = %v", err)
+			}
+			requestedAt := time.Date(2026, 7, 9, 2, 3, 4, 0, time.UTC)
+			updatedAt := requestedAt.Add(time.Minute)
+			if writeErr := store.Write(RestartSentinel{
+				Status:           tt.status,
+				RequestedService: "picoclaw-main.service",
+				RequestedAt:      requestedAt,
+				UpdatedAt:        requestedAt,
+			}); writeErr != nil {
+				t.Fatalf("Write() error = %v", writeErr)
+			}
 
-	got, changed, err := store.MarkInterruptedRestartComplete(updatedAt)
-	if err != nil {
-		t.Fatalf("MarkInterruptedRestartComplete() error = %v", err)
-	}
-	if !changed {
-		t.Fatal("running restart sentinel should be recovered")
-	}
-	if got.Status != "succeeded" {
-		t.Fatalf("status = %q, want succeeded", got.Status)
-	}
-	if !got.UpdatedAt.Equal(updatedAt) {
-		t.Fatalf("updated_at = %v, want %v", got.UpdatedAt, updatedAt)
+			got, changed, err := store.MarkInterruptedRestartComplete(updatedAt)
+			if err != nil {
+				t.Fatalf("MarkInterruptedRestartComplete() error = %v", err)
+			}
+			if !changed {
+				t.Fatalf("%s restart sentinel should be recovered", tt.status)
+			}
+			if got.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %s", got.Status, tt.wantStatus)
+			}
+			if !got.UpdatedAt.Equal(updatedAt) {
+				t.Fatalf("updated_at = %v, want %v", got.UpdatedAt, updatedAt)
+			}
+		})
 	}
 }

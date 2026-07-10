@@ -438,12 +438,17 @@ func restartSentinelDir(cfg *config.Config) string {
 	return filepath.Join(cfg.WorkspacePath(), "state", "gateway-restart")
 }
 
-func setupSafeRestartTool(cfg *config.Config, agentLoop *agent.AgentLoop, msgBus *bus.MessageBus) error {
+func setupSafeRestartTool(
+	cfg *config.Config,
+	agentLoop *agent.AgentLoop,
+	msgBus *bus.MessageBus,
+	preflightOptions RestartPreflightOptions,
+) error {
 	if cfg == nil {
 		return nil
 	}
 	err := agentLoop.RegisterRuntimeTool("gateway_restart", func(cfg *config.Config) (tools.Tool, error) {
-		return newGatewayRestartToolFromConfig(cfg, msgBus)
+		return newGatewayRestartToolFromConfig(cfg, msgBus, preflightOptions)
 	})
 	if err != nil {
 		return err
@@ -458,7 +463,11 @@ func setupSafeRestartTool(cfg *config.Config, agentLoop *agent.AgentLoop, msgBus
 	return nil
 }
 
-func newGatewayRestartToolFromConfig(cfg *config.Config, msgBus *bus.MessageBus) (tools.Tool, error) {
+func newGatewayRestartToolFromConfig(
+	cfg *config.Config,
+	msgBus *bus.MessageBus,
+	preflightOptions RestartPreflightOptions,
+) (tools.Tool, error) {
 	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
 		return nil, nil
 	}
@@ -467,14 +476,32 @@ func newGatewayRestartToolFromConfig(cfg *config.Config, msgBus *bus.MessageBus)
 		return nil, err
 	}
 	controller, err := NewRestartController(RestartControllerOptions{
-		Config: cfg.Gateway.SafeRestart,
-		Source: msgBus,
-		Store:  store,
+		Config:           cfg.Gateway.SafeRestart,
+		Source:           msgBus,
+		Store:            store,
+		PreflightOptions: preflightOptions,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return NewGatewayRestartTool(controller), nil
+}
+
+func restartPreflightOptions(agentLoop *agent.AgentLoop, runningServices *services) RestartPreflightOptions {
+	return RestartPreflightOptions{
+		ActiveTurnCount: func() (int, bool) {
+			if agentLoop == nil {
+				return 0, false
+			}
+			return agentLoop.ActiveTurnCount(), true
+		},
+		ActiveCronJobCount: func() (int, bool) {
+			if runningServices == nil || runningServices.CronService == nil {
+				return 0, false
+			}
+			return runningServices.CronService.ActiveJobCount(), true
+		},
+	}
 }
 
 func logLatestRestartSentinel(cfg *config.Config) {
@@ -545,7 +572,12 @@ func setupAndStartServices(
 	if err != nil {
 		return nil, fmt.Errorf("error setting up cron service: %w", err)
 	}
-	if err = setupSafeRestartTool(cfg, agentLoop, msgBus); err != nil {
+	if err = setupSafeRestartTool(
+		cfg,
+		agentLoop,
+		msgBus,
+		restartPreflightOptions(agentLoop, runningServices),
+	); err != nil {
 		return nil, fmt.Errorf("error setting up safe restart tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
@@ -798,7 +830,7 @@ func restartServices(
 	if err != nil {
 		return fmt.Errorf("error restarting cron service: %w", err)
 	}
-	if err = setupSafeRestartTool(cfg, al, msgBus); err != nil {
+	if err = setupSafeRestartTool(cfg, al, msgBus, restartPreflightOptions(al, runningServices)); err != nil {
 		return fmt.Errorf("error setting up safe restart tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {

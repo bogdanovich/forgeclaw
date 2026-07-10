@@ -40,11 +40,13 @@ type RestartPreflight struct {
 
 func (p RestartPreflight) HasActiveWork() bool {
 	return p.ActiveTurns > 0 ||
+		p.ActiveTurnsUnavailable ||
 		p.PendingInbound > 0 ||
 		p.PendingInboundError != "" ||
 		p.PendingInboundTimedOut ||
 		p.OutboundDepth > 0 ||
 		p.OutboundMediaDepth > 0 ||
+		p.CronJobsUnavailable ||
 		p.ActiveCronJobs > 0
 }
 
@@ -53,6 +55,8 @@ type RestartPreflightOptions struct {
 	Timeout              time.Duration
 	ActiveTurnsAvailable bool
 	CronJobsAvailable    bool
+	ActiveTurnCount      func() (int, bool)
+	ActiveCronJobCount   func() (int, bool)
 }
 
 type RestartPreflightSource interface {
@@ -76,6 +80,16 @@ func CollectRestartPreflight(
 		CheckedAt:              now().UTC(),
 		ActiveTurnsUnavailable: !opts.ActiveTurnsAvailable,
 		CronJobsUnavailable:    !opts.CronJobsAvailable,
+	}
+	if opts.ActiveTurnCount != nil {
+		activeTurns, ok := opts.ActiveTurnCount()
+		result.ActiveTurns = activeTurns
+		result.ActiveTurnsUnavailable = !ok
+	}
+	if opts.ActiveCronJobCount != nil {
+		activeCronJobs, ok := opts.ActiveCronJobCount()
+		result.ActiveCronJobs = activeCronJobs
+		result.CronJobsUnavailable = !ok
 	}
 	if source == nil {
 		return result
@@ -214,7 +228,11 @@ func (s *RestartSentinelStore) MarkInterruptedRestartComplete(now time.Time) (Re
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	sentinel.Status = "succeeded"
+	if sentinel.Status == "pending" {
+		sentinel.Status = "failed"
+	} else {
+		sentinel.Status = "succeeded"
+	}
 	sentinel.UpdatedAt = now.UTC()
 	if err := s.Write(sentinel); err != nil {
 		return RestartSentinel{}, false, err

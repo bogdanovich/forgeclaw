@@ -128,7 +128,7 @@ func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
 
-	if err := setupSafeRestartTool(cfg, al, msgBus); err != nil {
+	if err := setupSafeRestartTool(cfg, al, msgBus, knownPreflightOptions()); err != nil {
 		t.Fatalf("setupSafeRestartTool() error = %v", err)
 	}
 
@@ -152,7 +152,7 @@ func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 	}
 	msgBus := bus.NewMessageBus()
 	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
-	if err := setupSafeRestartTool(cfg, al, msgBus); err != nil {
+	if err := setupSafeRestartTool(cfg, al, msgBus, knownPreflightOptions()); err != nil {
 		t.Fatalf("setupSafeRestartTool() error = %v", err)
 	}
 

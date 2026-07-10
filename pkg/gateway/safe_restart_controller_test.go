@@ -174,7 +174,7 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
 	}
 	restarter.waitCalledWith(t, "picoclaw-main.service")
-	waitForRestartSentinelStatus(t, store, restartStatusSucceeded)
+	waitForRestartSentinelStatus(t, store, restartStatusRunning)
 	if !restarter.calledWith("picoclaw-main.service") {
 		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
 	}
@@ -182,8 +182,8 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
-	if sentinel.Status != restartStatusSucceeded {
-		t.Fatalf("sentinel status = %q, want %q", sentinel.Status, restartStatusSucceeded)
+	if sentinel.Status != restartStatusRunning {
+		t.Fatalf("sentinel status = %q, want %q", sentinel.Status, restartStatusRunning)
 	}
 	if sentinel.Origin.ChatID != "chat-1" {
 		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
@@ -257,7 +257,7 @@ func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
 		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
 	}
 	restarter.waitCalledWith(t, "picoclaw-main.service")
-	waitForRestartSentinelStatus(t, store, restartStatusSucceeded)
+	waitForRestartSentinelForcedAfterDrain(t, store)
 	sentinel, err := store.Read()
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
@@ -372,4 +372,21 @@ func waitForRestartSentinelStatus(t *testing.T, store *RestartSentinelStore, sta
 		t.Fatalf("Read() error = %v", err)
 	}
 	t.Fatalf("sentinel status = %q, want %q", sentinel.Status, status)
+}
+
+func waitForRestartSentinelForcedAfterDrain(t *testing.T, store *RestartSentinelStore) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sentinel, err := store.Read()
+		if err == nil && sentinel.ForcedAfterDrain {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sentinel, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	t.Fatalf("forced_after_drain = %v, want true", sentinel.ForcedAfterDrain)
 }

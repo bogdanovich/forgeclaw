@@ -185,7 +185,6 @@ func (c *RestartController) runRestart(
 		return
 	}
 
-	sentinel.Status = restartStatusSucceeded
 	sentinel.UpdatedAt = c.now()
 	sentinel.ForcedAfterDrain = forced
 	_ = c.store.Write(sentinel)
