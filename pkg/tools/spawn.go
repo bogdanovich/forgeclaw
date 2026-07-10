@@ -61,7 +61,7 @@ func (t *SpawnTool) Name() string {
 }
 
 func (t *SpawnTool) Description() string {
-	return "Spawn a subagent to handle a task in the background. Use this for complex or time-consuming tasks that can run independently. The subagent will complete the task and report back when done. Optional delivery_mode controls whether the final async result goes to the user, the parent agent, or both. For multi-step workflows, create/inspect the workflow with task_board, then pass board_id and step metadata so related delegate/spawn runs appear together in task_board and task_status."
+	return "Spawn a subagent to handle a task in the background. Use this for complex or time-consuming tasks that can run independently. The subagent will complete the task and report back when done. Optional delivery_mode controls whether the final async result goes to the user, the parent agent, or both."
 }
 
 func (t *SpawnTool) Parameters() map[string]any {

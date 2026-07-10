@@ -52,8 +52,7 @@ func (t *DelegateTool) Description() string {
 	return "Delegate a task to another agent and wait for the result. " +
 		"Use this when another agent is better suited to handle a specific task " +
 		"based on their capabilities. The target agent runs with its own workspace, " +
-		"model, and tools. For multi-step workflows, create/inspect the workflow with task_board, " +
-		"then pass board_id and step metadata so related delegate/spawn runs appear together in task_board and task_status."
+		"model, and tools."
 }
 
 func (t *DelegateTool) Parameters() map[string]any {

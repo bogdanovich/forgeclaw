@@ -5,7 +5,6 @@
 >
 > * **Image generation support:** provider-backed image generation tool and pluggable image generation provider wiring.
 > * **Local coding tools:** `apply_patch` for guarded file edits, `search_files` for workspace search with optional gitignore override, and `update_plan` for explicit task progress.
-> * **Task-board workflow tracking:** durable `task_board` boards with explicit local/manual step updates, so composite workflows can keep truthful step status without pretending work is still queued.
 > * **Planning and search providers:** Gemini web search provider, related web-search UI/config support, and safer provider behavior around unsupported range filters.
 > * **Agent / subagent runtime fixes:** async follow-up origin preservation, direct async error surfacing, final-reply delivery after interim progress messages, improved `spawn` / `delegate` delivery semantics, and durable task status behavior.
 > * **Runtime delivery coordination:** typed async completion handling, legacy synthetic system-message adapter isolation, delivery-mode routing (`user_only`, `parent_only`, `user_and_parent`), duplicate/restart idempotency, and task-registry-backed `spawn_status` / `task_status`.
@@ -46,7 +45,7 @@ This repository is not the upstream PicoClaw project. Treat it as an experimenta
 ## Features
 
 - **Go-native agent runtime** with chat channels, local tools, MCP servers, providers, hooks, cron, and subagents.
-- **Durable workflow state** through task-registry-backed `spawn_status`, `task_status`, cron records, and `task_board`.
+- **Durable workflow state** through task-registry-backed `spawn_status`, `task_status`, and cron records.
 - **Unified tool delivery intents** for intermediate user-visible output, final handled output, parent-only handoffs, and silent tool results.
 - **Media-aware workflows** including generated images, file delivery, multimodal input, and reduced duplicate final replies.
 - **Context-management hardening** through Seahorse compaction improvements and fail-closed oversized-context behavior.
