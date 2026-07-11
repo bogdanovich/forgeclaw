@@ -17,6 +17,11 @@ func TestBuildCommandsRuntime_GoalCallbacksUseRouteSessionKey(t *testing.T) {
 	if workspaceAgent == nil {
 		t.Fatal("expected default agent")
 	}
+	for _, toolName := range []string{"get_goal", "create_goal", "update_goal"} {
+		if _, ok := workspaceAgent.Tools.Get(toolName); !ok {
+			t.Fatalf("expected %s to be registered", toolName)
+		}
+	}
 
 	buildRuntime := func(routeSessionKey string) *commands.Runtime {
 		return al.buildCommandsRuntime(context.Background(), effectiveModelBinding{

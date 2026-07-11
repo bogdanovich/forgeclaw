@@ -91,6 +91,10 @@ func WithToolSessionContext(
 	return toolshared.WithToolSessionContext(ctx, agentID, sessionKey, scope)
 }
 
+func WithToolRouteSessionKey(ctx context.Context, routeSessionKey string) context.Context {
+	return toolshared.WithToolRouteSessionKey(ctx, routeSessionKey)
+}
+
 func ToolChannel(ctx context.Context) string {
 	return toolshared.ToolChannel(ctx)
 }
@@ -141,6 +145,10 @@ func ToolAgentID(ctx context.Context) string {
 
 func ToolSessionKey(ctx context.Context) string {
 	return toolshared.ToolSessionKey(ctx)
+}
+
+func ToolRouteSessionKey(ctx context.Context) string {
+	return toolshared.ToolRouteSessionKey(ctx)
 }
 
 func ToolSessionScope(ctx context.Context) *session.SessionScope {

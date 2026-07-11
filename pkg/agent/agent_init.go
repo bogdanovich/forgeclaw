@@ -137,6 +137,11 @@ func registerSharedTools(
 			continue
 		}
 		taskRegistry := al.taskRegistryForWorkspace(agent.Workspace)
+		if al.state != nil {
+			registerToolIfAllowed(agent, tools.NewGetGoalTool(al.state))
+			registerToolIfAllowed(agent, tools.NewCreateGoalTool(al.state))
+			registerToolIfAllowed(agent, tools.NewUpdateGoalTool(al.state))
+		}
 
 		if cfg.Tools.IsToolEnabled("web") {
 			searchTool, err := tools.NewWebSearchTool(tools.WebSearchToolOptionsFromConfig(cfg))
