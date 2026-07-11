@@ -372,6 +372,223 @@ func TestAutoModelSelectionsPersist(t *testing.T) {
 	}
 }
 
+func TestSessionGoalsPersist(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	sm := NewManager(tmpDir)
+	goal, err := sm.CreateSessionGoal("route-session", "  finish the PR  ")
+	if err != nil {
+		t.Fatalf("CreateSessionGoal failed: %v", err)
+	}
+	if goal.Objective != "finish the PR" {
+		t.Fatalf("CreateSessionGoal objective = %q, want trimmed objective", goal.Objective)
+	}
+	if goal.Status != SessionGoalActive {
+		t.Fatalf("CreateSessionGoal status = %q, want %q", goal.Status, SessionGoalActive)
+	}
+	if goal.CreatedAt.IsZero() || goal.UpdatedAt.IsZero() {
+		t.Fatal("expected goal timestamps to be populated")
+	}
+
+	got, ok := sm.GetSessionGoal("route-session")
+	if !ok {
+		t.Fatal("GetSessionGoal missing value")
+	}
+	if got.Objective != "finish the PR" || got.Status != SessionGoalActive {
+		t.Fatalf("GetSessionGoal() = %+v, want active finish the PR", got)
+	}
+
+	sm2 := NewManager(tmpDir)
+	got2, ok := sm2.GetSessionGoal("route-session")
+	if !ok {
+		t.Fatal("persisted GetSessionGoal missing value")
+	}
+	if got2.Objective != "finish the PR" || got2.Status != SessionGoalActive {
+		t.Fatalf("persisted GetSessionGoal() = %+v, want active finish the PR", got2)
+	}
+}
+
+func TestSessionGoalsRejectDuplicateAndInvalidInput(t *testing.T) {
+	sm := NewManager(t.TempDir())
+
+	if _, err := sm.CreateSessionGoal("", "objective"); err == nil {
+		t.Fatal("expected empty session key to fail")
+	}
+	if _, err := sm.CreateSessionGoal("route-session", " "); err == nil {
+		t.Fatal("expected empty objective to fail")
+	}
+
+	if _, err := sm.CreateSessionGoal("route-session", "first"); err != nil {
+		t.Fatalf("CreateSessionGoal failed: %v", err)
+	}
+	if _, err := sm.CreateSessionGoal("route-session", "second"); err == nil {
+		t.Fatal("expected duplicate goal create to fail")
+	}
+}
+
+func TestSessionGoalsAreSessionScoped(t *testing.T) {
+	sm := NewManager(t.TempDir())
+
+	if _, err := sm.CreateSessionGoal("route-a", "goal a"); err != nil {
+		t.Fatalf("CreateSessionGoal route-a failed: %v", err)
+	}
+	if _, err := sm.CreateSessionGoal("route-b", "goal b"); err != nil {
+		t.Fatalf("CreateSessionGoal route-b failed: %v", err)
+	}
+
+	gotA, okA := sm.GetSessionGoal("route-a")
+	gotB, okB := sm.GetSessionGoal("route-b")
+	if !okA || gotA.Objective != "goal a" {
+		t.Fatalf("route-a goal = (%+v, %v), want goal a", gotA, okA)
+	}
+	if !okB || gotB.Objective != "goal b" {
+		t.Fatalf("route-b goal = (%+v, %v), want goal b", gotB, okB)
+	}
+}
+
+func TestSessionGoalEditStatusAndClear(t *testing.T) {
+	tmpDir := t.TempDir()
+	sm := NewManager(tmpDir)
+
+	created, err := sm.CreateSessionGoal("route-session", "first objective")
+	if err != nil {
+		t.Fatalf("CreateSessionGoal failed: %v", err)
+	}
+
+	edited, err := sm.EditSessionGoal("route-session", "updated objective")
+	if err != nil {
+		t.Fatalf("EditSessionGoal failed: %v", err)
+	}
+	if edited.Objective != "updated objective" {
+		t.Fatalf("EditSessionGoal objective = %q, want updated objective", edited.Objective)
+	}
+	if edited.Status != SessionGoalActive {
+		t.Fatalf("EditSessionGoal status = %q, want active", edited.Status)
+	}
+	if !edited.CreatedAt.Equal(created.CreatedAt) {
+		t.Fatalf("EditSessionGoal changed CreatedAt: got %v want %v", edited.CreatedAt, created.CreatedAt)
+	}
+
+	blocked, err := sm.SetSessionGoalStatus("route-session", SessionGoalBlocked, " waiting on CI ")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus blocked failed: %v", err)
+	}
+	if blocked.Status != SessionGoalBlocked || blocked.Note != "waiting on CI" || blocked.BlockedAt == nil {
+		t.Fatalf("blocked goal = %+v, want blocked note and timestamp", blocked)
+	}
+	if blocked.CompletedAt != nil {
+		t.Fatalf("blocked goal CompletedAt = %v, want nil", blocked.CompletedAt)
+	}
+	blockedAt := *blocked.BlockedAt
+
+	blockedAgain, err := sm.SetSessionGoalStatus("route-session", SessionGoalBlocked, "still waiting on CI")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus blocked again failed: %v", err)
+	}
+	if !blockedAgain.BlockedAt.Equal(blockedAt) {
+		t.Fatalf("blocked goal changed BlockedAt: got %v want %v", blockedAgain.BlockedAt, blockedAt)
+	}
+
+	complete, err := sm.SetSessionGoalStatus("route-session", SessionGoalComplete, "done")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus complete failed: %v", err)
+	}
+	if complete.Status != SessionGoalComplete || complete.CompletedAt == nil {
+		t.Fatalf("complete goal = %+v, want complete timestamp", complete)
+	}
+	if complete.BlockedAt == nil || !complete.BlockedAt.Equal(blockedAt) {
+		t.Fatalf("complete goal changed BlockedAt: got %v want %v", complete.BlockedAt, blockedAt)
+	}
+	completedAt := *complete.CompletedAt
+
+	completeAgain, err := sm.SetSessionGoalStatus("route-session", SessionGoalComplete, "still done")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus complete again failed: %v", err)
+	}
+	if !completeAgain.CompletedAt.Equal(completedAt) {
+		t.Fatalf("complete goal changed CompletedAt: got %v want %v", completeAgain.CompletedAt, completedAt)
+	}
+
+	paused, err := sm.SetSessionGoalStatus("route-session", SessionGoalPaused, "waiting for input")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus pause failed: %v", err)
+	}
+	if paused.BlockedAt == nil || paused.CompletedAt == nil ||
+		!paused.BlockedAt.Equal(blockedAt) || !paused.CompletedAt.Equal(completedAt) {
+		t.Fatalf("paused goal lost terminal history: %+v", paused)
+	}
+
+	resumed, err := sm.SetSessionGoalStatus("route-session", SessionGoalActive, "continuing")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus resume failed: %v", err)
+	}
+	if resumed.BlockedAt == nil || resumed.CompletedAt == nil ||
+		!resumed.BlockedAt.Equal(blockedAt) || !resumed.CompletedAt.Equal(completedAt) {
+		t.Fatalf("resumed goal lost terminal history: %+v", resumed)
+	}
+
+	sm2 := NewManager(tmpDir)
+	persisted, ok := sm2.GetSessionGoal("route-session")
+	if !ok || persisted.Status != SessionGoalActive || persisted.CompletedAt == nil || persisted.BlockedAt == nil {
+		t.Fatalf("persisted resumed goal = (%+v, %v), want active with terminal history", persisted, ok)
+	}
+
+	if err := sm2.ClearSessionGoal("route-session"); err != nil {
+		t.Fatalf("ClearSessionGoal failed: %v", err)
+	}
+	if _, ok := sm2.GetSessionGoal("route-session"); ok {
+		t.Fatal("expected goal to be cleared")
+	}
+	sm3 := NewManager(tmpDir)
+	if _, ok := sm3.GetSessionGoal("route-session"); ok {
+		t.Fatal("expected cleared goal to stay cleared")
+	}
+}
+
+func TestSessionGoalStatusValidation(t *testing.T) {
+	sm := NewManager(t.TempDir())
+	if _, err := sm.SetSessionGoalStatus("route-session", SessionGoalActive, ""); err == nil {
+		t.Fatal("expected missing goal status update to fail")
+	}
+	if _, err := sm.CreateSessionGoal("route-session", "objective"); err != nil {
+		t.Fatalf("CreateSessionGoal failed: %v", err)
+	}
+	if _, err := sm.SetSessionGoalStatus("route-session", SessionGoalStatus("unknown"), ""); err == nil {
+		t.Fatal("expected invalid status to fail")
+	}
+	if _, err := sm.EditSessionGoal("missing", "objective"); err == nil {
+		t.Fatal("expected edit of missing goal to fail")
+	}
+}
+
+func TestSessionGoalGetReturnsCopy(t *testing.T) {
+	sm := NewManager(t.TempDir())
+	if _, err := sm.CreateSessionGoal("route-session", "objective"); err != nil {
+		t.Fatalf("CreateSessionGoal failed: %v", err)
+	}
+	blocked, err := sm.SetSessionGoalStatus("route-session", SessionGoalBlocked, "blocked")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus failed: %v", err)
+	}
+	if blocked.BlockedAt == nil {
+		t.Fatal("expected BlockedAt to be set")
+	}
+
+	got, ok := sm.GetSessionGoal("route-session")
+	if !ok {
+		t.Fatal("GetSessionGoal missing value")
+	}
+	*got.BlockedAt = got.BlockedAt.Add(24 * time.Hour)
+
+	again, ok := sm.GetSessionGoal("route-session")
+	if !ok {
+		t.Fatal("GetSessionGoal missing value after mutation")
+	}
+	if !again.BlockedAt.Equal(*blocked.BlockedAt) {
+		t.Fatalf("GetSessionGoal returned shared timestamp pointer: got %v want %v", again.BlockedAt, blocked.BlockedAt)
+	}
+}
+
 func TestNewManager_MkdirFailureDoesNotCrash(t *testing.T) {
 	if os.Getenv("BE_CRASHER") == "1" {
 		tmpDir := os.Getenv("CRASH_DIR")
