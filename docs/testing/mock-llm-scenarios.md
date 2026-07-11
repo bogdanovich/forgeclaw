@@ -9,7 +9,7 @@ Use it when a regression spans more than one package, for example:
 - tool execution and tool-result history
 - channel/chat context propagation
 - async delivery and duplicate suppression
-- task registry or task board state
+- task registry state
 - restart/idempotency behavior
 - oversized tool output truncation
 
