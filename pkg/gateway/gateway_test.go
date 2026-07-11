@@ -176,7 +176,7 @@ func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 	}
 }
 
-func TestReplayGatewayInboundSpoolReplaysBeforeIngressStart(t *testing.T) {
+func TestReplayGatewayInboundSnapshotReplaysCapturedMessages(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	spool, err := bus.NewInboundSpool(t.TempDir())
 	if err != nil {
@@ -199,7 +199,11 @@ func TestReplayGatewayInboundSpoolReplaysBeforeIngressStart(t *testing.T) {
 		t.Fatalf("Prepare() error = %v", err)
 	}
 
-	replayGatewayInboundSpool(ctx, msgBus)
+	pending := snapshotGatewayInboundSpool(ctx, msgBus)
+	if len(pending) != 1 {
+		t.Fatalf("snapshot entries = %d, want 1", len(pending))
+	}
+	replayGatewayInboundSnapshot(ctx, msgBus, pending)
 
 	select {
 	case got := <-msgBus.InboundChan():
@@ -208,6 +212,50 @@ func TestReplayGatewayInboundSpoolReplaysBeforeIngressStart(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected replayed inbound message")
+	}
+}
+
+func TestReplayGatewayInboundSnapshotDoesNotReplayMessagesAddedAfterSnapshot(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	spool, err := bus.NewInboundSpool(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewInboundSpool() error = %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+	ctx := context.Background()
+	first := bus.InboundMessage{
+		Channel: "telegram",
+		ChatID:  "chat-1",
+		Context: bus.InboundContext{
+			Channel: "telegram",
+			ChatID:  "chat-1",
+		},
+		Content: "durable before startup",
+	}
+	if _, err := spool.Prepare(ctx, first); err != nil {
+		t.Fatalf("Prepare(first) error = %v", err)
+	}
+	pending := snapshotGatewayInboundSpool(ctx, msgBus)
+
+	second := first
+	second.Content = "arrived after snapshot"
+	if _, err := spool.Prepare(ctx, second); err != nil {
+		t.Fatalf("Prepare(second) error = %v", err)
+	}
+	replayGatewayInboundSnapshot(ctx, msgBus, pending)
+
+	select {
+	case got := <-msgBus.InboundChan():
+		if got.Content != first.Content {
+			t.Fatalf("replayed content = %q, want %q", got.Content, first.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected snapshot message to be replayed")
+	}
+	select {
+	case got := <-msgBus.InboundChan():
+		t.Fatalf("unexpected replay of post-snapshot message: %#v", got)
+	default:
 	}
 }
 

@@ -357,6 +357,52 @@ func TestRestartControllerBackgroundFailureWritesFailedSentinel(t *testing.T) {
 	waitForRestartSentinelStatus(t, store, restartStatusFailed)
 }
 
+func TestRestartControllerDoesNotScheduleOverlappingRestart(t *testing.T) {
+	store, err := NewRestartSentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRestartSentinelStore() error = %v", err)
+	}
+	restarter := &fakeServiceRestarter{called: make(chan string, 2)}
+	controller, err := NewRestartController(RestartControllerOptions{
+		Config:           testRestartConfig(),
+		Source:           &restartSourceSequence{pending: [][]bus.InboundMessage{{{SpoolID: "pending"}}}},
+		Store:            store,
+		Restarter:        restarter,
+		PollInterval:     time.Hour,
+		PreflightOptions: knownPreflightOptions(),
+	})
+	if err != nil {
+		t.Fatalf("NewRestartController() error = %v", err)
+	}
+
+	first, err := controller.RequestRestart(context.Background(), RestartRequest{Reason: "first"})
+	if err != nil {
+		t.Fatalf("first RequestRestart() error = %v", err)
+	}
+	if first.AlreadyScheduled {
+		t.Fatal("first restart unexpectedly reported already scheduled")
+	}
+	second, err := controller.RequestRestart(context.Background(), RestartRequest{Reason: "second"})
+	if err != nil {
+		t.Fatalf("second RequestRestart() error = %v", err)
+	}
+	if !second.AlreadyScheduled {
+		t.Fatal("second restart should report the existing pending restart")
+	}
+	sentinel, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if sentinel.Reason != "first" {
+		t.Fatalf("sentinel reason = %q, want first request to remain canonical", sentinel.Reason)
+	}
+	select {
+	case <-restarter.called:
+		t.Fatal("restart should still be waiting for the original request to drain")
+	default:
+	}
+}
+
 func waitForRestartSentinelStatus(t *testing.T, store *RestartSentinelStore, status string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

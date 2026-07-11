@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -47,6 +49,7 @@ type RestartController struct {
 	preflightTimeout time.Duration
 	preflightOptions RestartPreflightOptions
 	now              func() time.Time
+	mu               sync.Mutex
 }
 
 type RestartControllerOptions struct {
@@ -68,6 +71,7 @@ type RestartRequest struct {
 type RestartRequestResult struct {
 	Service          string           `json:"service"`
 	Status           string           `json:"status"`
+	AlreadyScheduled bool             `json:"already_scheduled,omitempty"`
 	ForcedAfterDrain bool             `json:"forced_after_drain,omitempty"`
 	Preflight        RestartPreflight `json:"preflight"`
 }
@@ -128,6 +132,23 @@ func (c *RestartController) RequestRestart(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if existing, err := c.store.Read(); err == nil {
+		if existing.Kind == "restart" &&
+			(existing.Status == restartStatusPending || existing.Status == restartStatusRunning) {
+			return RestartRequestResult{
+				Service:          existing.RequestedService,
+				Status:           existing.Status,
+				AlreadyScheduled: true,
+				Preflight:        existing.Preflight,
+			}, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return RestartRequestResult{}, fmt.Errorf("read existing restart sentinel: %w", err)
+	}
+
 	service := c.cfg.EffectiveService()
 	preflight := c.collectPreflight(ctx)
 	sentinel := RestartSentinel{
@@ -275,6 +296,10 @@ func (t *GatewayRestartTool) Execute(ctx context.Context, args map[string]any) *
 	})
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("gateway restart failed: %v", err)).WithError(err)
+	}
+	if result.AlreadyScheduled {
+		message := fmt.Sprintf("Gateway restart for %s is already %s.", result.Service, result.Status)
+		return tools.UserResult(message).WithImmediateDelivery()
 	}
 	message := fmt.Sprintf("Gateway restart scheduled for %s. It will run after active work drains.", result.Service)
 	return tools.UserResult(message).WithImmediateDelivery()

@@ -539,13 +539,23 @@ func logLatestRestartSentinel(cfg *config.Config) {
 	})
 }
 
-func replayGatewayInboundSpool(ctx context.Context, msgBus *bus.MessageBus) {
-	if replayed, err := msgBus.ReplayInboundSpool(ctx); err != nil {
+func snapshotGatewayInboundSpool(ctx context.Context, msgBus *bus.MessageBus) []bus.InboundMessage {
+	pending, err := msgBus.PendingInboundSpool(ctx)
+	if err != nil {
 		logger.WarnCF("gateway", "Failed to replay inbound spool",
 			map[string]any{"error": err.Error()})
-	} else if replayed > 0 {
+		return nil
+	}
+	return pending
+}
+
+func replayGatewayInboundSnapshot(ctx context.Context, msgBus *bus.MessageBus, pending []bus.InboundMessage) {
+	if err := msgBus.ReplayInboundMessages(ctx, pending); err != nil {
+		logger.WarnCF("gateway", "Failed to replay inbound spool",
+			map[string]any{"error": err.Error()})
+	} else if len(pending) > 0 {
 		logger.InfoCF("gateway", "Replayed durable inbound messages",
-			map[string]any{"count": replayed})
+			map[string]any{"count": len(pending)})
 	}
 }
 
@@ -652,11 +662,14 @@ func setupAndStartServices(
 		runningServices.HealthServer,
 	)
 
-	replayGatewayInboundSpool(ctx, msgBus)
+	// Capture durable work before channel ingress starts, then replay the exact
+	// snapshot after outbound dispatch is live.
+	inboundReplaySnapshot := snapshotGatewayInboundSpool(ctx, msgBus)
 
 	if err = runningServices.ChannelManager.StartAll(context.Background()); err != nil {
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
+	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)
 
 	logChannelVoiceCapabilities(runningServices.ChannelManager, transcriber != nil, ttsAvailable)
 
