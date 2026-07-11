@@ -18,6 +18,23 @@ type GatewayConfig struct {
 	LogLevel  string `json:"log_level,omitempty" env:"PICOCLAW_LOG_LEVEL"`
 
 	SafeRestart GatewaySafeRestartConfig `json:"safe_restart,omitempty"`
+	Deploy      GatewayDeployConfig      `json:"deploy,omitempty"`
+}
+
+type GatewayDeployConfig struct {
+	Enabled        bool     `json:"enabled,omitempty"`
+	Group          string   `json:"group,omitempty"`
+	Command        string   `json:"command,omitempty"`
+	DefaultTarget  string   `json:"default_target,omitempty"`
+	AllowedTargets []string `json:"allowed_targets,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+}
+
+func (c GatewayDeployConfig) EffectiveTimeoutSeconds() int {
+	if c.TimeoutSeconds > 0 {
+		return c.TimeoutSeconds
+	}
+	return 600
 }
 
 type GatewaySafeRestartConfig struct {
