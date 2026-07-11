@@ -89,7 +89,11 @@ func TestGoalCommandLifecycle(t *testing.T) {
 		t.Fatalf("implicit start goal = %+v", store.goal)
 	}
 
-	if got := executeGoalCommand(t, rt, "/goal edit ship the verified release checklist"); !strings.Contains(got, "Goal updated.") {
+	if got := executeGoalCommand(
+		t,
+		rt,
+		"/goal edit ship the verified release checklist",
+	); !strings.Contains(got, "Goal updated.") {
 		t.Fatalf("edit reply = %q", got)
 	}
 	if store.goal.Objective != "ship the verified release checklist" {

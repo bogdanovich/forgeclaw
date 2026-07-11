@@ -8,8 +8,11 @@ import (
 )
 
 func TestBuildCommandsRuntime_GoalCallbacksUseRouteSessionKey(t *testing.T) {
-	al, _, _, _, cleanup := newTestAgentLoop(t)
+	al, cfg, _, _, cleanup := newTestAgentLoop(t)
 	t.Cleanup(cleanup)
+	if cfg == nil {
+		t.Fatal("expected test config")
+	}
 	workspaceAgent := al.registry.GetDefaultAgent()
 	if workspaceAgent == nil {
 		t.Fatal("expected default agent")
@@ -35,12 +38,13 @@ func TestBuildCommandsRuntime_GoalCallbacksUseRouteSessionKey(t *testing.T) {
 	}
 
 	runtimeB := buildRuntime("route-b")
-	if goal, found, err := runtimeB.GetGoal(); err != nil || found || goal.Objective != "" {
-		t.Fatalf("route-b goal = (%+v, %v, %v), want no goal", goal, found, err)
+	goalB, foundB, getErr := runtimeB.GetGoal()
+	if getErr != nil || foundB || goalB.Objective != "" {
+		t.Fatalf("route-b goal = (%+v, %v, %v), want no goal", goalB, foundB, getErr)
 	}
 
-	goal, found, err := runtimeA.GetGoal()
-	if err != nil || !found || goal.Objective != "finish command support" {
-		t.Fatalf("route-a goal = (%+v, %v, %v)", goal, found, err)
+	goalA, foundA, getErr := runtimeA.GetGoal()
+	if getErr != nil || !foundA || goalA.Objective != "finish command support" {
+		t.Fatalf("route-a goal = (%+v, %v, %v)", goalA, foundA, getErr)
 	}
 }
