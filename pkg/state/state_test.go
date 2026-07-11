@@ -496,6 +496,9 @@ func TestSessionGoalEditStatusAndClear(t *testing.T) {
 	if complete.Status != SessionGoalComplete || complete.CompletedAt == nil {
 		t.Fatalf("complete goal = %+v, want complete timestamp", complete)
 	}
+	if complete.BlockedAt == nil || !complete.BlockedAt.Equal(blockedAt) {
+		t.Fatalf("complete goal changed BlockedAt: got %v want %v", complete.BlockedAt, blockedAt)
+	}
 	completedAt := *complete.CompletedAt
 
 	completeAgain, err := sm.SetSessionGoalStatus("route-session", SessionGoalComplete, "still done")
@@ -506,10 +509,28 @@ func TestSessionGoalEditStatusAndClear(t *testing.T) {
 		t.Fatalf("complete goal changed CompletedAt: got %v want %v", completeAgain.CompletedAt, completedAt)
 	}
 
+	paused, err := sm.SetSessionGoalStatus("route-session", SessionGoalPaused, "waiting for input")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus pause failed: %v", err)
+	}
+	if paused.BlockedAt == nil || paused.CompletedAt == nil ||
+		!paused.BlockedAt.Equal(blockedAt) || !paused.CompletedAt.Equal(completedAt) {
+		t.Fatalf("paused goal lost terminal history: %+v", paused)
+	}
+
+	resumed, err := sm.SetSessionGoalStatus("route-session", SessionGoalActive, "continuing")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus resume failed: %v", err)
+	}
+	if resumed.BlockedAt == nil || resumed.CompletedAt == nil ||
+		!resumed.BlockedAt.Equal(blockedAt) || !resumed.CompletedAt.Equal(completedAt) {
+		t.Fatalf("resumed goal lost terminal history: %+v", resumed)
+	}
+
 	sm2 := NewManager(tmpDir)
 	persisted, ok := sm2.GetSessionGoal("route-session")
-	if !ok || persisted.Status != SessionGoalComplete || persisted.CompletedAt == nil {
-		t.Fatalf("persisted complete goal = (%+v, %v), want complete", persisted, ok)
+	if !ok || persisted.Status != SessionGoalActive || persisted.CompletedAt == nil || persisted.BlockedAt == nil {
+		t.Fatalf("persisted resumed goal = (%+v, %v), want active with terminal history", persisted, ok)
 	}
 
 	if err := sm2.ClearSessionGoal("route-session"); err != nil {

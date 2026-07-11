@@ -516,24 +516,20 @@ func (sm *Manager) SetSessionGoalStatus(
 		return SessionGoal{}, fmt.Errorf("session goal not found")
 	}
 
+	previousStatus := goal.Status
 	now := time.Now()
 	goal.Status = status
 	goal.Note = strings.TrimSpace(note)
 	goal.UpdatedAt = now
 	switch status {
 	case SessionGoalBlocked:
-		if goal.BlockedAt == nil {
+		if previousStatus != SessionGoalBlocked {
 			goal.BlockedAt = &now
 		}
-		goal.CompletedAt = nil
 	case SessionGoalComplete:
-		goal.BlockedAt = nil
-		if goal.CompletedAt == nil {
+		if previousStatus != SessionGoalComplete {
 			goal.CompletedAt = &now
 		}
-	case SessionGoalActive, SessionGoalPaused:
-		goal.BlockedAt = nil
-		goal.CompletedAt = nil
 	}
 
 	sm.state.SessionGoals[routeSessionKey] = goal
