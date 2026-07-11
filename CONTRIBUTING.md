@@ -155,7 +155,7 @@ Use concise imperative messages, preferably with a functional scope:
 
 ```text
 fix(agent): preserve media delivery status
-feat(tasks): add task board readiness view
+feat(tasks): add task delivery status view
 docs: clarify fork maintenance workflow
 ```
 

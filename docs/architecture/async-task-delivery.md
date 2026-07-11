@@ -192,13 +192,6 @@ Migration TODO:
 - Render Telegram/GitHub/web summaries from structured reports instead of
   freeform child-agent prose.
 
-## Workflow Notes
-
-Task-board workflow orchestration has been removed from the agent-facing
-surface. Durable runtime status continues to live in the task registry and is
-reported through `task_status`, `spawn_status`, completion records, and
-delivery-state reporting.
-
 ## Status Tools
 
 Use `task_status` for durable task history across spawn, delegate, cron executions, and future background runtimes. It is the source of truth for completed tasks and restart-persistent state.

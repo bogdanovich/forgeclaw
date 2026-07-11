@@ -125,7 +125,6 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Task status report (%d total):\n", len(filtered)))
 	for _, status := range []taskregistry.Status{
-		taskregistry.StatusPlanned,
 		taskregistry.StatusQueued,
 		taskregistry.StatusRunning,
 		taskregistry.StatusSucceeded,
