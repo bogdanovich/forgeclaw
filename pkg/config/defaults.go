@@ -501,12 +501,6 @@ func DefaultConfig() *Config {
 			Subagent: ToolConfig{
 				Enabled: true,
 			},
-			TaskBoardExecuteNext: ToolConfig{
-				Enabled: false,
-			},
-			TaskBoardExecuteAll: ToolConfig{
-				Enabled: false,
-			},
 			UpdatePlan: ToolConfig{
 				Enabled: false,
 			},

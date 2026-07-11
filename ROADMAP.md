@@ -24,7 +24,6 @@ merge upstream PicoClaw changes.
 
 ## 3. Tooling And Workflow State
 
-- Expand `task_board` only where it improves truthful multi-step execution.
 - Keep `task_status` as the primary user-facing progress/status command.
 - Retire duplicated status surfaces when they no longer add value.
 - Improve deterministic test coverage for tool loops, spawned work, and async
