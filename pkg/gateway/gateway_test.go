@@ -140,6 +140,31 @@ func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
 	}
 }
 
+func TestSetupSafeRestartToolDisabledDoesNotAffectReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+
+	if err := setupSafeRestartTool(cfg, al, msgBus, knownPreflightOptions()); err != nil {
+		t.Fatalf("setupSafeRestartTool() error = %v", err)
+	}
+	if err := al.ReloadProviderAndConfig(
+		context.Background(),
+		&startupBlockedProvider{reason: "not used"},
+		cfg,
+	); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+
+	info := al.GetStartupInfo()
+	toolsInfo := info["tools"].(map[string]any)
+	toolsList := toolsInfo["names"].([]string)
+	if slices.Contains(toolsList, "gateway_restart") {
+		t.Fatalf("registered tools = %#v, gateway_restart should stay disabled", toolsList)
+	}
+}
+
 func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()

@@ -447,14 +447,14 @@ func setupSafeRestartTool(
 	if cfg == nil {
 		return nil
 	}
+	if !cfg.Gateway.SafeRestart.Enabled {
+		return nil
+	}
 	err := agentLoop.RegisterRuntimeTool("gateway_restart", func(cfg *config.Config) (tools.Tool, error) {
 		return newGatewayRestartToolFromConfig(cfg, msgBus, preflightOptions)
 	})
 	if err != nil {
 		return err
-	}
-	if !cfg.Gateway.SafeRestart.Enabled {
-		return nil
 	}
 	logger.InfoCF("gateway", "Safe restart tool enabled", map[string]any{
 		"service_manager": cfg.Gateway.SafeRestart.EffectiveServiceManager(),

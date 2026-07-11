@@ -222,6 +222,7 @@ func TestRestartControllerDefersUntilIdle(t *testing.T) {
 	if !restarter.calledWith("picoclaw-main.service") {
 		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
 	}
+	waitForRestartSentinelStatus(t, store, restartStatusRunning)
 }
 
 func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
