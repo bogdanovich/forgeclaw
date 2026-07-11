@@ -82,7 +82,11 @@ func TestGoalCommandLifecycle(t *testing.T) {
 		t.Fatalf("empty goal status = %q", got)
 	}
 
-	if got := executeGoalCommand(t, rt, "/goal ship the release checklist"); !strings.Contains(got, "Goal started.") {
+	if got := executeGoalCommand(
+		t,
+		rt,
+		"/goal ship the release checklist",
+	); !strings.Contains(got, "Goal started.") {
 		t.Fatalf("implicit start reply = %q", got)
 	}
 	if store.goal.Objective != "ship the release checklist" || store.goal.Status != "active" {
@@ -139,10 +143,18 @@ func TestGoalCommandAliasesAndValidation(t *testing.T) {
 	if got := executeGoalCommand(t, rt, "/goal create first goal"); !strings.Contains(got, "Goal started.") {
 		t.Fatalf("create reply = %q", got)
 	}
-	if got := executeGoalCommand(t, rt, "/goal set second goal"); !strings.Contains(got, "session goal already exists") {
+	if got := executeGoalCommand(
+		t,
+		rt,
+		"/goal set second goal",
+	); !strings.Contains(got, "session goal already exists") {
 		t.Fatalf("duplicate set reply = %q", got)
 	}
-	if got := executeGoalCommand(t, rt, "/goal block external dependency"); !strings.Contains(got, "Status: blocked") {
+	if got := executeGoalCommand(
+		t,
+		rt,
+		"/goal block external dependency",
+	); !strings.Contains(got, "Status: blocked") {
 		t.Fatalf("block reply = %q", got)
 	}
 	if got := executeGoalCommand(t, rt, "/goal clear extra"); got != "Usage: /goal clear" {
