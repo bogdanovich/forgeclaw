@@ -454,9 +454,6 @@ func DefaultConfig() *Config {
 			ApplyPatch: ToolConfig{
 				Enabled: true,
 			},
-			EditFile: ToolConfig{
-				Enabled: true,
-			},
 			FindSkills: ToolConfig{
 				Enabled: true,
 			},

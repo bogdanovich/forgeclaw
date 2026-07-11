@@ -3757,7 +3757,7 @@ func TestToolFeedbackExplanationForToolCall_PrefersToolSpecificExtraContent(t *t
 			},
 			{
 				ID:   "call_2",
-				Name: "edit_file",
+				Name: "apply_patch",
 				ExtraContent: &providers.ExtraContent{
 					ToolFeedbackExplanation: "Update config example after reading it.",
 				},
@@ -3790,7 +3790,7 @@ func TestToolFeedbackExplanationForToolCall_DoesNotReuseAnotherToolCallExplanati
 			},
 			{
 				ID:   "call_2",
-				Name: "edit_file",
+				Name: "apply_patch",
 				ExtraContent: &providers.ExtraContent{
 					ToolFeedbackExplanation: "Update config example after reading it.",
 				},

@@ -12,7 +12,6 @@ type (
 	ReadFileLinesTool = fstools.ReadFileLinesTool
 	WriteFileTool     = fstools.WriteFileTool
 	ListDirTool       = fstools.ListDirTool
-	EditFileTool      = fstools.EditFileTool
 	AppendFileTool    = fstools.AppendFileTool
 	ApplyPatchTool    = fstools.ApplyPatchTool
 	SearchFilesTool   = fstools.SearchFilesTool
@@ -63,14 +62,6 @@ func NewListDirTool(
 	allowPaths ...[]*regexp.Regexp,
 ) *ListDirTool {
 	return fstools.NewListDirTool(workspace, restrict, allowPaths...)
-}
-
-func NewEditFileTool(
-	workspace string,
-	restrict bool,
-	allowPaths ...[]*regexp.Regexp,
-) *EditFileTool {
-	return fstools.NewEditFileTool(workspace, restrict, allowPaths...)
 }
 
 func NewAppendFileTool(

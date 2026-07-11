@@ -89,12 +89,6 @@ var toolCatalog = []toolCatalogEntry{
 		ConfigKey:   "list_dir",
 	},
 	{
-		Name:        "edit_file",
-		Description: "Apply targeted edits to existing files without rewriting everything.",
-		Category:    "filesystem",
-		ConfigKey:   "edit_file",
-	},
-	{
 		Name:        "append_file",
 		Description: "Append content to the end of an existing file.",
 		Category:    "filesystem",
@@ -342,8 +336,6 @@ func applyToolState(cfg *config.Config, toolName string, enabled bool) error {
 		cfg.Tools.WriteFile.Enabled = enabled
 	case "list_dir":
 		cfg.Tools.ListDir.Enabled = enabled
-	case "edit_file":
-		cfg.Tools.EditFile.Enabled = enabled
 	case "append_file":
 		cfg.Tools.AppendFile.Enabled = enabled
 	case "exec":

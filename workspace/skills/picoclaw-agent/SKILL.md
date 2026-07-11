@@ -225,7 +225,7 @@ Important activation rules:
 
 | Family | Runtime tool names | What they provide |
 | --- | --- | --- |
-| Filesystem | `read_file`, `write_file`, `list_dir`, `edit_file`, `append_file` | Read, write, list, and patch workspace files |
+| Filesystem | `read_file`, `write_file`, `list_dir`, `append_file`, `apply_patch` | Read, write, list, and patch workspace files |
 | Web | `web_search`, `web_fetch` | Search the web and fetch readable page content |
 | Command execution | `exec` | Shell command execution with deny-pattern guardrails |
 | Scheduling | `cron` | Scheduled jobs, reminders, recurring tasks, and command jobs |

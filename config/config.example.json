@@ -521,9 +521,6 @@
     "apply_patch": {
       "enabled": true
     },
-    "edit_file": {
-      "enabled": true
-    },
     "find_skills": {
       "enabled": true
     },
