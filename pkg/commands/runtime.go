@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 )
@@ -75,6 +76,18 @@ type StopResult struct {
 	TaskName string
 }
 
+// GoalInfo is the command-facing view of a durable session goal.
+// Runtime callbacks keep command handlers independent from goal persistence.
+type GoalInfo struct {
+	Objective   string
+	Status      string
+	Note        string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	BlockedAt   *time.Time
+	CompletedAt *time.Time
+}
+
 // Runtime provides runtime dependencies to command handlers. It is constructed
 // per-request by the agent loop so that per-request state (like session scope)
 // can coexist with long-lived callbacks (like GetModelInfo).
@@ -101,4 +114,9 @@ type Runtime struct {
 	ClearHistory       func() error
 	ReloadConfig       func() error
 	StopActiveTurn     func() (StopResult, error)
+	GetGoal            func() (GoalInfo, bool, error)
+	CreateGoal         func(objective string) (GoalInfo, error)
+	EditGoal           func(objective string) (GoalInfo, error)
+	SetGoalStatus      func(status, note string) (GoalInfo, error)
+	ClearGoal          func() error
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
+	"github.com/sipeed/picoclaw/pkg/state"
 )
 
 func (al *AgentLoop) handleCommand(
@@ -286,6 +287,33 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return commands.StopResult{}, fmt.Errorf("process options not available")
 		}
 		return al.stopActiveTurnForSession(opts.Dispatch.SessionKey)
+	}
+	if al.state != nil && opts != nil {
+		routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey)
+		if routeSessionKey == "" {
+			routeSessionKey = strings.TrimSpace(modelBinding.RouteSessionKey)
+		}
+		if routeSessionKey != "" {
+			rt.GetGoal = func() (commands.GoalInfo, bool, error) {
+				goal, found := al.state.GetSessionGoal(routeSessionKey)
+				return commandGoalInfo(goal), found, nil
+			}
+			rt.CreateGoal = func(objective string) (commands.GoalInfo, error) {
+				goal, err := al.state.CreateSessionGoal(routeSessionKey, objective)
+				return commandGoalInfo(goal), err
+			}
+			rt.EditGoal = func(objective string) (commands.GoalInfo, error) {
+				goal, err := al.state.EditSessionGoal(routeSessionKey, objective)
+				return commandGoalInfo(goal), err
+			}
+			rt.SetGoalStatus = func(status, note string) (commands.GoalInfo, error) {
+				goal, err := al.state.SetSessionGoalStatus(routeSessionKey, state.SessionGoalStatus(status), note)
+				return commandGoalInfo(goal), err
+			}
+			rt.ClearGoal = func() error {
+				return al.state.ClearSessionGoal(routeSessionKey)
+			}
+		}
 	}
 	if agent != nil && agent.ContextBuilder != nil {
 		rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
@@ -588,6 +616,18 @@ func (al *AgentLoop) buildCommandsRuntime(
 		}
 	}
 	return rt
+}
+
+func commandGoalInfo(goal state.SessionGoal) commands.GoalInfo {
+	return commands.GoalInfo{
+		Objective:   goal.Objective,
+		Status:      string(goal.Status),
+		Note:        goal.Note,
+		CreatedAt:   goal.CreatedAt,
+		UpdatedAt:   goal.UpdatedAt,
+		BlockedAt:   goal.BlockedAt,
+		CompletedAt: goal.CompletedAt,
+	}
 }
 
 func contextStatsAgentForBinding(
