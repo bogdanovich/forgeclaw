@@ -278,14 +278,24 @@ func (mb *MessageBus) ReplayInboundSpool(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := mb.ReplayInboundMessages(ctx, msgs); err != nil {
+		return 0, err
+	}
+	return len(msgs), nil
+}
+
+// ReplayInboundMessages republishes a previously captured durable inbound
+// snapshot. Callers that need to start ingress before replaying should capture
+// the snapshot first, then use this method to avoid replaying newer messages.
+func (mb *MessageBus) ReplayInboundMessages(ctx context.Context, msgs []InboundMessage) error {
 	for _, msg := range msgs {
 		if err := publish(ctx, mb, mb.inbound, msg, publishPolicy{
 			stream: "inbound",
 		}, &mb.inboundStats, runtimeScopeFromInboundContext(msg.Context)); err != nil {
-			return 0, err
+			return err
 		}
 	}
-	return len(msgs), nil
+	return nil
 }
 
 func (mb *MessageBus) PendingInboundSpool(ctx context.Context) ([]InboundMessage, error) {

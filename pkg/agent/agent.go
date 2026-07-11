@@ -64,6 +64,7 @@ type AgentLoop struct {
 	pendingStops     sync.Map
 	asyncCompletions sync.Map
 	taskRegistries   sync.Map
+	runtimeTools     map[string]RuntimeToolFactory
 	mu               sync.RWMutex
 
 	// workerSem limits concurrent turn processing workers.
@@ -297,6 +298,9 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 
 	// Ensure shared tools are re-registered on the new registry
 	registerSharedTools(al, cfg, al.bus, registry, provider)
+	if err := al.registerRuntimeToolsForRegistry(cfg, registry); err != nil {
+		return err
+	}
 
 	newEvolution, evolutionErr := newEvolutionBridge(registry, cfg, provider)
 	if evolutionErr != nil {

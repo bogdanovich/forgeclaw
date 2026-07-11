@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +113,175 @@ func TestGatewayRunStartupFailureHelper(t *testing.T) {
 
 	fmt.Fprintln(os.Stdout, err.Error())
 	os.Exit(0)
+}
+
+func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
+		Enabled:             true,
+		ServiceManager:      "systemd-user",
+		Service:             "picoclaw-main.service",
+		DrainTimeoutSeconds: 1,
+		ForceAfterTimeout:   true,
+	}
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+
+	if err := setupSafeRestartTool(cfg, al, msgBus, knownPreflightOptions()); err != nil {
+		t.Fatalf("setupSafeRestartTool() error = %v", err)
+	}
+
+	info := al.GetStartupInfo()
+	toolsInfo := info["tools"].(map[string]any)
+	toolsList := toolsInfo["names"].([]string)
+	if !slices.Contains(toolsList, "gateway_restart") {
+		t.Fatalf("registered tools = %#v, want gateway_restart", toolsList)
+	}
+}
+
+func TestSetupSafeRestartToolDisabledDoesNotAffectReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+
+	if err := setupSafeRestartTool(cfg, al, msgBus, knownPreflightOptions()); err != nil {
+		t.Fatalf("setupSafeRestartTool() error = %v", err)
+	}
+	if err := al.ReloadProviderAndConfig(
+		context.Background(),
+		&startupBlockedProvider{reason: "not used"},
+		cfg,
+	); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+
+	info := al.GetStartupInfo()
+	toolsInfo := info["tools"].(map[string]any)
+	toolsList := toolsInfo["names"].([]string)
+	if slices.Contains(toolsList, "gateway_restart") {
+		t.Fatalf("registered tools = %#v, gateway_restart should stay disabled", toolsList)
+	}
+}
+
+func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
+		Enabled:             true,
+		ServiceManager:      "systemd-user",
+		Service:             "picoclaw-main.service",
+		DrainTimeoutSeconds: 1,
+		ForceAfterTimeout:   true,
+	}
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	if err := setupSafeRestartTool(cfg, al, msgBus, knownPreflightOptions()); err != nil {
+		t.Fatalf("setupSafeRestartTool() error = %v", err)
+	}
+
+	reloadCfg := config.DefaultConfig()
+	reloadCfg.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloadCfg.Gateway.SafeRestart = cfg.Gateway.SafeRestart
+	err := al.ReloadProviderAndConfig(
+		context.Background(),
+		&startupBlockedProvider{reason: "not used"},
+		reloadCfg,
+	)
+	if err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+
+	info := al.GetStartupInfo()
+	toolsInfo := info["tools"].(map[string]any)
+	toolsList := toolsInfo["names"].([]string)
+	if !slices.Contains(toolsList, "gateway_restart") {
+		t.Fatalf("registered tools after reload = %#v, want gateway_restart", toolsList)
+	}
+}
+
+func TestReplayGatewayInboundSnapshotReplaysCapturedMessages(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	spool, err := bus.NewInboundSpool(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewInboundSpool() error = %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+	ctx := context.Background()
+	original := bus.InboundMessage{
+		Channel: "telegram",
+		ChatID:  "chat-1",
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			SenderID: "user-1",
+		},
+		SenderID: "user-1",
+		Content:  "pending restart message",
+	}
+	if _, err = spool.Prepare(ctx, original); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+
+	pending := snapshotGatewayInboundSpool(ctx, msgBus)
+	if len(pending) != 1 {
+		t.Fatalf("snapshot entries = %d, want 1", len(pending))
+	}
+	replayGatewayInboundSnapshot(ctx, msgBus, pending)
+
+	select {
+	case got := <-msgBus.InboundChan():
+		if got.Content != original.Content {
+			t.Fatalf("replayed content = %q, want %q", got.Content, original.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected replayed inbound message")
+	}
+}
+
+func TestReplayGatewayInboundSnapshotDoesNotReplayMessagesAddedAfterSnapshot(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	spool, err := bus.NewInboundSpool(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewInboundSpool() error = %v", err)
+	}
+	msgBus.SetInboundSpool(spool)
+	ctx := context.Background()
+	first := bus.InboundMessage{
+		Channel: "telegram",
+		ChatID:  "chat-1",
+		Context: bus.InboundContext{
+			Channel: "telegram",
+			ChatID:  "chat-1",
+		},
+		Content: "durable before startup",
+	}
+	if _, err := spool.Prepare(ctx, first); err != nil {
+		t.Fatalf("Prepare(first) error = %v", err)
+	}
+	pending := snapshotGatewayInboundSpool(ctx, msgBus)
+
+	second := first
+	second.Content = "arrived after snapshot"
+	if _, err := spool.Prepare(ctx, second); err != nil {
+		t.Fatalf("Prepare(second) error = %v", err)
+	}
+	replayGatewayInboundSnapshot(ctx, msgBus, pending)
+
+	select {
+	case got := <-msgBus.InboundChan():
+		if got.Content != first.Content {
+			t.Fatalf("replayed content = %q, want %q", got.Content, first.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected snapshot message to be replayed")
+	}
+	select {
+	case got := <-msgBus.InboundChan():
+		t.Fatalf("unexpected replay of post-snapshot message: %#v", got)
+	default:
+	}
 }
 
 func TestCollectGatewayStartupStatusHandlesMalformedInfo(t *testing.T) {

@@ -416,6 +416,20 @@ func (al *AgentLoop) GetActiveTurn() *ActiveTurnInfo {
 	return &info
 }
 
+func (al *AgentLoop) ActiveTurnCount() int {
+	if al == nil {
+		return 0
+	}
+	count := 0
+	al.activeTurnStates.Range(func(_, value any) bool {
+		if _, ok := value.(*turnState); ok {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
 func (al *AgentLoop) GetActiveTurnBySession(sessionKey string) *ActiveTurnInfo {
 	ts := al.getActiveTurnState(sessionKey)
 	if ts == nil {

@@ -36,6 +36,10 @@ place or implement Go hot-code reload.
 ## Safe Restart Flow
 
 Safe restart is designed for commands like "restart this gateway when safe".
+The runtime entry point is the `gateway_restart` tool when
+`gateway.safe_restart.enabled` is true. The tool accepts an optional reason; the
+service manager and service unit are always read from config, never from
+model-supplied arguments.
 
 1. Validate that safe restart is enabled in config.
 2. Run a bounded preflight that reports known active work:
@@ -57,6 +61,10 @@ Safe restart is designed for commands like "restart this gateway when safe".
 
 Safe restart should reduce risk by waiting for active work to drain. It is not a
 checkpointing system for an in-flight LLM call or tool execution.
+
+The first supported platform implementation is `systemd-user`. Its configured
+unit must be a simple `.service` name, for example `picoclaw-main.service`; core
+does not pass arbitrary shell fragments to a service manager.
 
 ## Deploy Flow
 
