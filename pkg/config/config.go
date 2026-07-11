@@ -1425,6 +1425,11 @@ func LoadConfig(path string) (*Config, error) {
 		return DefaultConfig(), nil
 	}
 
+	data, err = removeDeprecatedConfigFields(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to migrate deprecated config fields: %w", err)
+	}
+
 	// Load config based on detected version
 	var cfg *Config
 	switch versionInfo.Version {

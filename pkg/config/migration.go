@@ -80,6 +80,34 @@ func migrateLegacyAgentDefaultsModel(m map[string]any) {
 	delete(defaults, "model")
 }
 
+func removeDeprecatedConfigFields(data []byte) ([]byte, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+
+	toolsJSON, ok := root["tools"]
+	if !ok {
+		return data, nil
+	}
+	var tools map[string]json.RawMessage
+	if err := json.Unmarshal(toolsJSON, &tools); err != nil {
+		// Preserve the original value so strict decoding can report its type error.
+		return data, nil
+	}
+	if _, ok := tools["edit_file"]; !ok {
+		return data, nil
+	}
+
+	delete(tools, "edit_file")
+	migratedTools, err := json.Marshal(tools)
+	if err != nil {
+		return nil, err
+	}
+	root["tools"] = migratedTools
+	return json.Marshal(root)
+}
+
 // loadConfigV1 loads a version 1 config (current schema)
 func loadConfig(data []byte) (*Config, error) {
 	cfg := DefaultConfig()
