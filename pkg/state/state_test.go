@@ -479,6 +479,15 @@ func TestSessionGoalEditStatusAndClear(t *testing.T) {
 	if blocked.CompletedAt != nil {
 		t.Fatalf("blocked goal CompletedAt = %v, want nil", blocked.CompletedAt)
 	}
+	blockedAt := *blocked.BlockedAt
+
+	blockedAgain, err := sm.SetSessionGoalStatus("route-session", SessionGoalBlocked, "still waiting on CI")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus blocked again failed: %v", err)
+	}
+	if !blockedAgain.BlockedAt.Equal(blockedAt) {
+		t.Fatalf("blocked goal changed BlockedAt: got %v want %v", blockedAgain.BlockedAt, blockedAt)
+	}
 
 	complete, err := sm.SetSessionGoalStatus("route-session", SessionGoalComplete, "done")
 	if err != nil {
@@ -486,6 +495,15 @@ func TestSessionGoalEditStatusAndClear(t *testing.T) {
 	}
 	if complete.Status != SessionGoalComplete || complete.CompletedAt == nil {
 		t.Fatalf("complete goal = %+v, want complete timestamp", complete)
+	}
+	completedAt := *complete.CompletedAt
+
+	completeAgain, err := sm.SetSessionGoalStatus("route-session", SessionGoalComplete, "still done")
+	if err != nil {
+		t.Fatalf("SetSessionGoalStatus complete again failed: %v", err)
+	}
+	if !completeAgain.CompletedAt.Equal(completedAt) {
+		t.Fatalf("complete goal changed CompletedAt: got %v want %v", completeAgain.CompletedAt, completedAt)
 	}
 
 	sm2 := NewManager(tmpDir)

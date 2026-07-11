@@ -522,11 +522,15 @@ func (sm *Manager) SetSessionGoalStatus(
 	goal.UpdatedAt = now
 	switch status {
 	case SessionGoalBlocked:
-		goal.BlockedAt = &now
+		if goal.BlockedAt == nil {
+			goal.BlockedAt = &now
+		}
 		goal.CompletedAt = nil
 	case SessionGoalComplete:
 		goal.BlockedAt = nil
-		goal.CompletedAt = &now
+		if goal.CompletedAt == nil {
+			goal.CompletedAt = &now
+		}
 	case SessionGoalActive, SessionGoalPaused:
 		goal.BlockedAt = nil
 		goal.CompletedAt = nil
