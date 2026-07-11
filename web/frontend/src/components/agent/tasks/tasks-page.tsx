@@ -58,7 +58,6 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
       return "destructive"
     case "running":
     case "queued":
-    case "planned":
       return "secondary"
     default:
       return "outline"
@@ -188,8 +187,8 @@ export function TasksPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-5">
-            {["running", "queued", "planned", "succeeded", "failed"].map((status) => (
+          <div className="grid gap-3 sm:grid-cols-4">
+            {["running", "queued", "succeeded", "failed"].map((status) => (
               <Card key={status} size="sm" className="bg-card/60">
                 <CardContent>
                   <div className="text-muted-foreground text-xs uppercase tracking-wide">

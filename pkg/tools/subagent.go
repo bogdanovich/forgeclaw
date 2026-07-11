@@ -48,13 +48,6 @@ type SubagentTask struct {
 	Task          string
 	Label         string
 	AgentID       string
-	BoardID       string
-	ParentTaskID  string
-	StepID        string
-	StepTitle     string
-	Owner         string
-	DependsOn     []string
-	BlockedBy     []string
 	OriginChannel string
 	OriginChatID  string
 	Status        string
@@ -173,7 +166,6 @@ func (sm *SubagentManager) Spawn(
 	ctx context.Context,
 	task, label, agentID, originChannel, originChatID string,
 	callback AsyncCallback,
-	boardMeta ...TaskBoardMetadata,
 ) (string, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -190,15 +182,6 @@ func (sm *SubagentManager) Spawn(
 		OriginChatID:  originChatID,
 		Status:        "running",
 		Created:       time.Now().UnixMilli(),
-	}
-	if len(boardMeta) > 0 {
-		subagentTask.BoardID = boardMeta[0].BoardID
-		subagentTask.ParentTaskID = boardMeta[0].ParentTaskID
-		subagentTask.StepID = boardMeta[0].StepID
-		subagentTask.StepTitle = boardMeta[0].StepTitle
-		subagentTask.Owner = boardMeta[0].Owner
-		subagentTask.DependsOn = append([]string(nil), boardMeta[0].DependsOn...)
-		subagentTask.BlockedBy = append([]string(nil), boardMeta[0].BlockedBy...)
 	}
 	sm.tasks[taskID] = subagentTask
 	sm.recordTask(subagentTask, taskregistry.StatusRunning, taskregistry.DeliveryPending, "")
@@ -377,13 +360,6 @@ func subagentTaskFromRecord(rec taskregistry.Record) *SubagentTask {
 		Task:          rec.Task,
 		Label:         rec.Label,
 		AgentID:       rec.AgentID,
-		BoardID:       rec.BoardID,
-		ParentTaskID:  rec.ParentTaskID,
-		StepID:        rec.StepID,
-		StepTitle:     rec.StepTitle,
-		Owner:         rec.Owner,
-		DependsOn:     append([]string(nil), rec.DependsOn...),
-		BlockedBy:     append([]string(nil), rec.BlockedBy...),
 		OriginChannel: rec.Channel,
 		OriginChatID:  rec.ChatID,
 		Status:        status,
@@ -406,13 +382,6 @@ func (sm *SubagentManager) recordTask(
 		TaskID:         task.ID,
 		Runtime:        taskregistry.RuntimeSubagent,
 		TaskKind:       "spawn",
-		BoardID:        task.BoardID,
-		ParentTaskID:   task.ParentTaskID,
-		StepID:         task.StepID,
-		StepTitle:      task.StepTitle,
-		Owner:          task.Owner,
-		DependsOn:      append([]string(nil), task.DependsOn...),
-		BlockedBy:      append([]string(nil), task.BlockedBy...),
 		Channel:        task.OriginChannel,
 		ChatID:         task.OriginChatID,
 		AgentID:        task.AgentID,

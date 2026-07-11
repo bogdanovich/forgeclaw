@@ -50,8 +50,6 @@ Respond HEARTBEAT_OK      Delivery coordinator routes result
 The subagent has access to its configured tools, but completion delivery is owned by the async task delivery path. A terminal background task usually uses user delivery. A compositional task can route the completion back to the parent so the parent can synthesize the final user-facing answer. See [Async Task Delivery](../architecture/async-task-delivery.md) for the registry and delivery model.
 
 Use `task_status` and `spawn_status` to inspect durable child-task execution.
-The task-board workflow planner and its board/step metadata have been removed
-from the agent-facing surface.
 
 **Configuration:**
 

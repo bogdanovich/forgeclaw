@@ -45,10 +45,6 @@ func (t *TaskStatusTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Optional task kind filter, e.g. spawn or delegate.",
 			},
-			"board_id": map[string]any{
-				"type":        "string",
-				"description": "Optional task board/workflow ID. Use this to inspect all steps belonging to one durable workflow.",
-			},
 			"include_events": map[string]any{
 				"type":        "boolean",
 				"description": "Include typed task event details. With task_id, shows that task's event stream. With list output, shows recent events per visible task.",
@@ -73,10 +69,6 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		return ErrorResult(err.Error())
 	}
 	taskKind, err := optionalTaskStatusStringArg(args, "task_kind")
-	if err != nil {
-		return ErrorResult(err.Error())
-	}
-	boardID, err := optionalTaskStatusStringArg(args, "board_id")
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
@@ -106,18 +98,12 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		if taskKind != "" && rec.TaskKind != taskKind {
 			continue
 		}
-		if boardID != "" && rec.BoardID != boardID {
-			continue
-		}
 		if !taskRecordVisibleToCaller(rec, callerChannel, callerChatID, callerTopicID) {
 			continue
 		}
 		filtered = append(filtered, rec)
 	}
 	if len(filtered) == 0 {
-		if boardID != "" {
-			return NewToolResult(fmt.Sprintf("No visible tasks found for board_id %q.", boardID))
-		}
 		if taskKind != "" {
 			return NewToolResult(fmt.Sprintf("No visible tasks found for task_kind %q.", taskKind))
 		}
@@ -139,7 +125,6 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Task status report (%d total):\n", len(filtered)))
 	for _, status := range []taskregistry.Status{
-		taskregistry.StatusPlanned,
 		taskregistry.StatusQueued,
 		taskregistry.StatusRunning,
 		taskregistry.StatusSucceeded,
@@ -221,32 +206,6 @@ func formatTaskRecord(rec taskregistry.Record) string {
 	}
 	if rec.AgentID != "" {
 		sb.WriteString(fmt.Sprintf("  Agent: %s\n", rec.AgentID))
-	}
-	if rec.BoardID != "" || rec.ParentTaskID != "" || rec.Owner != "" {
-		sb.WriteString("  Board:")
-		if rec.BoardID != "" {
-			sb.WriteString(fmt.Sprintf(" board_id=%s", rec.BoardID))
-		}
-		if rec.ParentTaskID != "" {
-			sb.WriteString(fmt.Sprintf(" parent=%s", rec.ParentTaskID))
-		}
-		if rec.Owner != "" {
-			sb.WriteString(fmt.Sprintf(" owner=%s", rec.Owner))
-		}
-		sb.WriteString("\n")
-	}
-	if rec.StepTitle != "" {
-		sb.WriteString(fmt.Sprintf("  Step: %s", rec.StepTitle))
-		if rec.StepID != "" && rec.StepID != rec.TaskID {
-			sb.WriteString(fmt.Sprintf(" (%s)", rec.StepID))
-		}
-		sb.WriteString("\n")
-	}
-	if len(rec.DependsOn) > 0 {
-		sb.WriteString(fmt.Sprintf("  Depends on: %s\n", strings.Join(rec.DependsOn, ", ")))
-	}
-	if len(rec.BlockedBy) > 0 {
-		sb.WriteString(fmt.Sprintf("  Blocked by: %s\n", strings.Join(rec.BlockedBy, ", ")))
 	}
 	if rec.Channel != "" || rec.ChatID != "" || rec.TopicID != "" {
 		sb.WriteString(fmt.Sprintf("  Scope: %s/%s", rec.Channel, rec.ChatID))
