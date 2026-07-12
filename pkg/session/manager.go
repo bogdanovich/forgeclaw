@@ -14,16 +14,24 @@ import (
 )
 
 type Session struct {
-	Key      string              `json:"key"`
-	Messages []providers.Message `json:"messages"`
-	Summary  string              `json:"summary,omitempty"`
-	Created  time.Time           `json:"created"`
-	Updated  time.Time           `json:"updated"`
+	Key             string              `json:"key"`
+	Messages        []providers.Message `json:"messages"`
+	Summary         string              `json:"summary,omitempty"`
+	Created         time.Time           `json:"created"`
+	Updated         time.Time           `json:"updated"`
+	HistoryRevision uint64              `json:"history_revision,omitempty"`
 }
 
-// GetHistoryRevision provides a best-effort revision for the legacy store.
-// Legacy sessions are rewritten atomically, so Updated is their durable
-// mutation identity.
+func advanceHistoryRevision(session *Session) {
+	session.HistoryRevision++
+	if session.HistoryRevision == 0 {
+		session.HistoryRevision = 1
+	}
+}
+
+// GetHistoryRevision returns the monotonic logical history revision persisted
+// with legacy sessions. Wall-clock timestamps are not mutation identities:
+// multiple writes may observe the same clock tick.
 func (sm *SessionManager) GetHistoryRevision(key string) (memory.HistoryRevision, error) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -32,7 +40,7 @@ func (sm *SessionManager) GetHistoryRevision(key string) (memory.HistoryRevision
 		return memory.HistoryRevision{}, nil
 	}
 	return memory.HistoryRevision{
-		Revision: uint64(session.Updated.UnixNano()),
+		Revision: session.HistoryRevision,
 		Count:    len(session.Messages),
 	}, nil
 }
@@ -123,6 +131,7 @@ func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Messag
 	ensureMessageCreatedAt(&msg, now)
 
 	session.Messages = append(session.Messages, msg)
+	advanceHistoryRevision(session)
 	session.Updated = now
 }
 
@@ -172,7 +181,11 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 	}
 
 	if keepLast <= 0 {
+		if len(session.Messages) == 0 {
+			return
+		}
 		session.Messages = []providers.Message{}
+		advanceHistoryRevision(session)
 		session.Updated = time.Now()
 		return
 	}
@@ -182,6 +195,7 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 	}
 
 	session.Messages = session.Messages[len(session.Messages)-keepLast:]
+	advanceHistoryRevision(session)
 	session.Updated = time.Now()
 }
 
@@ -230,10 +244,11 @@ func (sm *SessionManager) Save(key string) error {
 	}
 
 	snapshot := Session{
-		Key:     stored.Key,
-		Summary: stored.Summary,
-		Created: stored.Created,
-		Updated: stored.Updated,
+		Key:             stored.Key,
+		Summary:         stored.Summary,
+		Created:         stored.Created,
+		Updated:         stored.Updated,
+		HistoryRevision: stored.HistoryRevision,
 	}
 	if len(stored.Messages) > 0 {
 		snapshot.Messages = messageutil.FilterInvalidHistoryMessages(stored.Messages)
@@ -338,6 +353,7 @@ func (sm *SessionManager) SetHistory(key string, history []providers.Message) {
 		copy(msgs, history)
 		normalizeHistoryCreatedAt(msgs)
 		session.Messages = msgs
+		advanceHistoryRevision(session)
 		session.Updated = time.Now()
 	}
 }
