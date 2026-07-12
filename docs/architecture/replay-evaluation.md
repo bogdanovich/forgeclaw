@@ -294,6 +294,19 @@ context, provider, tool-loop, and evolution projections. This verifies ordering,
 legal transitions, idempotency, correlation, and terminal invariants without
 starting an agent loop.
 
+The implemented `pkg/evalreplay` reducer accepts only traces that pass the
+versioned `evaltrace.Validate` contract. It decodes each record into its exact
+typed payload, produces a canonical JSON projection, and emits stable
+diagnostics for illegal transitions, missing correlations, unresolved tool
+calls, duplicate terminal outcomes, and incomplete turns. It does not repair or
+reinterpret malformed evidence.
+
+Replay safety primitives include a virtual clock, sequential ID source,
+deep-copy isolated session/task/evolution checkpoints, a deny-only external
+side-effect policy, and a tool catalog that can invoke only explicitly compiled
+safe stubs. These primitives do not import or construct production providers,
+channels, gateways, MCP, shell, or filesystem tools.
+
 ### Scenario replay
 
 Fixtures may include scripted provider responses, tool results, virtual inbound
@@ -312,6 +325,10 @@ real orchestration path with:
 A trace cannot name a production tool and cause it to execute. Fixture tools
 must be registered by test code or a compiled safe stub catalog. Unknown tools
 produce a deterministic denied result.
+
+The real-orchestration scenario adapter is intentionally separate from the pure
+reducer. Until that adapter is present, the safety primitives are available for
+tests but do not claim that a complete agent turn has been replayed.
 
 Replay output contains observations and diagnostics, never production writes.
 The same fixture, binary, options, and evaluator versions must produce identical
