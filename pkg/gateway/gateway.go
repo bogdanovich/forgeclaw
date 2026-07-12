@@ -463,6 +463,26 @@ func setupSafeRestartTool(
 	return nil
 }
 
+func setupDeployTool(cfg *config.Config, agentLoop *agent.AgentLoop) error {
+	if cfg == nil || !cfg.Gateway.Deploy.Enabled {
+		return nil
+	}
+	return agentLoop.RegisterRuntimeTool("gateway_deploy", func(reloadCfg *config.Config) (tools.Tool, error) {
+		if reloadCfg == nil || !reloadCfg.Gateway.Deploy.Enabled {
+			return nil, nil
+		}
+		runner, err := NewDeployRunner(
+			reloadCfg.Gateway.Deploy,
+			reloadCfg.WorkspacePath(),
+			reloadCfg.Gateway.SafeRestart.EffectiveService(),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return &GatewayDeployTool{runner: runner}, nil
+	})
+}
+
 func newGatewayRestartToolFromConfig(
 	cfg *config.Config,
 	msgBus *bus.MessageBus,
@@ -589,6 +609,9 @@ func setupAndStartServices(
 		restartPreflightOptions(agentLoop, runningServices),
 	); err != nil {
 		return nil, fmt.Errorf("error setting up safe restart tool: %w", err)
+	}
+	if err = setupDeployTool(cfg, agentLoop); err != nil {
+		return nil, fmt.Errorf("error setting up deploy tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return nil, fmt.Errorf("error starting cron service: %w", err)
@@ -845,6 +868,9 @@ func restartServices(
 	}
 	if err = setupSafeRestartTool(cfg, al, msgBus, restartPreflightOptions(al, runningServices)); err != nil {
 		return fmt.Errorf("error setting up safe restart tool: %w", err)
+	}
+	if err = setupDeployTool(cfg, al); err != nil {
+		return fmt.Errorf("error setting up deploy tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return fmt.Errorf("error restarting cron service: %w", err)
