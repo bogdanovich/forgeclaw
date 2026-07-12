@@ -212,15 +212,7 @@ func toolFeedbackExplanationForToolCall(
 			return explanation
 		}
 	}
-	if response == nil {
-		return toolFeedbackExplanationFromMessages(messages)
-	}
-
-	explanation := strings.TrimSpace(response.Content)
-	if explanation == "" {
-		explanation = toolFeedbackExplanationFromMessages(messages)
-	}
-	return explanation
+	return toolFeedbackExplanationFromMessages(messages)
 }
 
 func toolFeedbackExplanationFromMessages(messages []providers.Message) string {

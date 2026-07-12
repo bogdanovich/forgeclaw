@@ -3,10 +3,13 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
+
+const adjacentMediaFollowupWindow = 2 * time.Minute
 
 func promptBuildRequestForTurn(
 	ts *turnState,
@@ -25,6 +28,7 @@ func promptBuildRequestForTurn(
 		ChatID:            ts.chatID,
 		SenderID:          ts.opts.Dispatch.SenderID(),
 		SenderDisplayName: ts.opts.SenderDisplayName,
+		ReplyToMessageID:  ts.opts.Dispatch.ReplyToMessageID(),
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
 		Overlays:          promptOverlaysForOptions(ts.opts),
 	}
@@ -89,6 +93,7 @@ func promptBuildRequestForProcessOptions(
 		ChatID:            opts.ChatID,
 		SenderID:          opts.SenderID,
 		SenderDisplayName: opts.SenderDisplayName,
+		ReplyToMessageID:  opts.ReplyToMessageID,
 		ActiveSkills:      activeSkillNames(agent, opts),
 		Overlays:          promptOverlaysForOptions(opts),
 	}
@@ -198,6 +203,78 @@ func userPromptMessage(content string, media []string) providers.Message {
 		msg.Media = append([]string(nil), media...)
 	}
 	return promptMessageWithMetadata(msg, PromptLayerTurn, PromptSlotMessage, PromptSourceUserMessage)
+}
+
+func currentTurnUserPromptMessage(
+	content string,
+	media []string,
+	replyToMessageID string,
+	history []providers.Message,
+	now time.Time,
+) providers.Message {
+	content = strings.TrimSpace(content)
+	if len(media) > 0 && (content == "" || content == "[media only]") {
+		lines := []string{
+			"[New user message with attached media only]",
+			"No text or caption was provided with this message.",
+			"Treat the attached media as the current turn input.",
+		}
+		if strings.TrimSpace(replyToMessageID) != "" {
+			lines = append(
+				lines,
+				"This message was sent as a reply to an earlier chat message, so use that quoted/reply context when relevant.",
+			)
+		} else if recentUserFollowupCandidate(history, now, adjacentMediaFollowupWindow) {
+			lines = append(
+				lines,
+				"This media-only message arrived shortly after the user's previous message and likely adds context to it.",
+				"Use the most recent user message as companion context unless the new media clearly starts a different request.",
+			)
+		} else {
+			lines = append(
+				lines,
+				"Do not assume it continues the previous request unless the user explicitly referenced earlier context.",
+			)
+		}
+		content = strings.Join(lines, "\n")
+	}
+	return userPromptMessage(content, media)
+}
+
+func recentUserFollowupCandidate(history []providers.Message, now time.Time, window time.Duration) bool {
+	if len(history) == 0 || window <= 0 {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	lastUserIdx := -1
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			lastUserIdx = i
+			break
+		}
+	}
+	if lastUserIdx < 0 {
+		return false
+	}
+
+	lastUser := history[lastUserIdx]
+	if lastUser.CreatedAt == nil || lastUser.CreatedAt.IsZero() {
+		return false
+	}
+	if now.Sub(*lastUser.CreatedAt) > window {
+		return false
+	}
+
+	for i := lastUserIdx + 1; i < len(history); i++ {
+		if history[i].Role == "assistant" {
+			return false
+		}
+	}
+
+	return true
 }
 
 func toolImageFollowUpPromptMessage(media []string) providers.Message {
