@@ -21,6 +21,7 @@ const DefaultRestartPreflightTimeout = 2 * time.Second
 type RestartOrigin struct {
 	Channel    string `json:"channel,omitempty"`
 	ChatID     string `json:"chat_id,omitempty"`
+	TopicID    string `json:"topic_id,omitempty"`
 	SessionKey string `json:"session_key,omitempty"`
 }
 

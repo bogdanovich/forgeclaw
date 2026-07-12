@@ -230,6 +230,7 @@ func (t *GatewayDeployTool) Execute(ctx context.Context, args map[string]any) *t
 	out, _, err := t.runner.Run(ctx, target, RestartOrigin{
 		Channel:    tools.ToolChannel(ctx),
 		ChatID:     tools.ToolChatID(ctx),
+		TopicID:    tools.ToolTopicID(ctx),
 		SessionKey: tools.ToolSessionKey(ctx),
 	})
 	if err != nil {

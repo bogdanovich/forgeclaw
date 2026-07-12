@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 func deployConfig(script string) config.GatewayDeployConfig {
@@ -40,7 +41,7 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin := RestartOrigin{Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1"}
+	origin := RestartOrigin{Channel: "telegram", ChatID: "chat-1", TopicID: "topic-1", SessionKey: "session-1"}
 	out, code, err := runner.Run(context.Background(), "current", origin)
 	if err != nil || code != 0 || out != "--target:current" {
 		t.Fatalf("Run() = %q, %d, %v", out, code, err)
@@ -74,6 +75,32 @@ func TestNewDeployRunnerRejectsDisabledAndRelativeCommand(t *testing.T) {
 	cfg.Enabled = false
 	if _, err := NewDeployRunner(cfg, t.TempDir(), ""); err == nil {
 		t.Fatal("expected disabled deploy to be rejected")
+	}
+}
+
+func TestGatewayDeployToolPersistsTopicOrigin(t *testing.T) {
+	workspace := t.TempDir()
+	runner, err := NewDeployRunner(deployConfig(writeDeployScript(t, "true")), workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithToolTopicID(
+		tools.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
+	)
+	result := (&GatewayDeployTool{runner: runner}).Execute(ctx, map[string]any{})
+	if result.Err != nil {
+		t.Fatalf("Execute() error = %v", result.Err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "state", "gateway-deploy", "deploy-sentinel.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sentinel DeploySentinel
+	if err := json.Unmarshal(data, &sentinel); err != nil {
+		t.Fatal(err)
+	}
+	if sentinel.Origin.Channel != "telegram" || sentinel.Origin.ChatID != "chat-1" || sentinel.Origin.TopicID != "topic-1" {
+		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
 	}
 }
 

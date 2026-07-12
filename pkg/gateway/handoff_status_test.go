@@ -21,7 +21,7 @@ func TestReportRestartHandoffRecoversAndDeliversOnce(t *testing.T) {
 	if writeErr := store.Write(RestartSentinel{
 		Status:           restartStatusRunning,
 		RequestedService: "picoclaw-main.service",
-		Origin:           RestartOrigin{Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1"},
+		Origin:           RestartOrigin{Channel: "telegram", ChatID: "chat-1", TopicID: "topic-1", SessionKey: "session-1"},
 		RequestedAt:      now,
 		UpdatedAt:        now,
 	}); writeErr != nil {
@@ -32,7 +32,7 @@ func TestReportRestartHandoffRecoversAndDeliversOnce(t *testing.T) {
 
 	select {
 	case message := <-messageBus.OutboundChan():
-		if message.Channel != "telegram" || message.ChatID != "chat-1" || message.SessionKey != "session-1" {
+		if message.Channel != "telegram" || message.ChatID != "chat-1" || message.Context.TopicID != "topic-1" || message.SessionKey != "session-1" {
 			t.Fatalf("outbound message = %#v", message)
 		}
 		if !strings.Contains(message.Content, "Gateway is back") || !strings.Contains(message.Content, "succeeded") {
@@ -71,7 +71,7 @@ func TestReportDeployHandoffShowsFailureAndDoesNotDuplicate(t *testing.T) {
 		Command:     "/opt/deploy.sh",
 		OutputTail:  "health check failed",
 		ExitCode:    7,
-		Origin:      RestartOrigin{Channel: "slack", ChatID: "C123", SessionKey: "session-2"},
+		Origin:      RestartOrigin{Channel: "slack", ChatID: "C123", TopicID: "thread-1", SessionKey: "session-2"},
 		RequestedAt: now,
 		UpdatedAt:   now,
 	}); err != nil {
@@ -82,7 +82,7 @@ func TestReportDeployHandoffShowsFailureAndDoesNotDuplicate(t *testing.T) {
 
 	select {
 	case message := <-messageBus.OutboundChan():
-		if !strings.Contains(message.Content, "failed") || !strings.Contains(message.Content, "exit code 7") {
+		if message.Context.TopicID != "thread-1" || !strings.Contains(message.Content, "failed") || !strings.Contains(message.Content, "exit code 7") {
 			t.Fatalf("continuation = %q", message.Content)
 		}
 	case <-time.After(time.Second):

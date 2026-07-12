@@ -138,8 +138,10 @@ func publishHandoffContinuation(
 	if strings.TrimSpace(origin.Channel) == "" || strings.TrimSpace(origin.ChatID) == "" {
 		return errors.New("handoff origin does not include channel and chat ID")
 	}
+	outboundContext := bus.NewOutboundContext(origin.Channel, origin.ChatID, "")
+	outboundContext.TopicID = strings.TrimSpace(origin.TopicID)
 	return msgBus.PublishOutbound(ctx, bus.OutboundMessage{
-		Context:    bus.NewOutboundContext(origin.Channel, origin.ChatID, ""),
+		Context:    outboundContext,
 		SessionKey: origin.SessionKey,
 		Content:    content,
 	})

@@ -206,9 +206,10 @@ Sentinels provide the bridge across process exit:
 
 - Before restart or deploy, core records the requested operation and origin.
 - During or after deploy, core records status, exit code, and bounded output tail.
-- Core also records the originating channel and chat when they are known, so a
-  later process can address a continuation without asking the model to infer a
-  destination.
+- Core also records the originating channel, chat, and topic/thread when they
+  are known, so a later process can address a continuation without asking the
+  model to infer a destination. A restart or deploy initiated in a Telegram
+  forum topic must continue in that same topic rather than the parent chat.
 - After channels are running on startup, core inspects the latest sentinel,
   logs its status, and may send one continuation such as "gateway is back" or
   "deploy failed" to that saved origin.
