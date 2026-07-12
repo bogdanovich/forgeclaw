@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -63,7 +64,12 @@ type Summary struct {
 }
 
 type Options struct {
-	ConfigPath string
+	ConfigPath         string
+	StaleTaskAge       time.Duration
+	PendingDeliveryAge time.Duration
+	RecentFailureAge   time.Duration
+	HandoffAge         time.Duration
+	Now                time.Time
 }
 
 type rawDocuments struct {
@@ -92,6 +98,7 @@ func Run(opts Options) (*Report, error) {
 	}
 
 	findings := runChecks(cfg, raw)
+	findings = append(findings, runOperationalChecks(cfg, opts)...)
 	sortFindings(findings)
 
 	report := &Report{

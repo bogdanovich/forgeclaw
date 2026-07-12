@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -25,6 +26,10 @@ func NewDoctorCommand() *cobra.Command {
 	var configPath string
 	var jsonOutput bool
 	var strict bool
+	var staleTaskAge time.Duration
+	var pendingDeliveryAge time.Duration
+	var recentFailureAge time.Duration
+	var handoffAge time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -40,7 +45,13 @@ Exit codes:
 			if strings.TrimSpace(configPath) == "" {
 				configPath = internal.GetConfigPath()
 			}
-			report, err := doctorpkg.Run(doctorpkg.Options{ConfigPath: configPath})
+			report, err := doctorpkg.Run(doctorpkg.Options{
+				ConfigPath:         configPath,
+				StaleTaskAge:       staleTaskAge,
+				PendingDeliveryAge: pendingDeliveryAge,
+				RecentFailureAge:   recentFailureAge,
+				HandoffAge:         handoffAge,
+			})
 			if err != nil {
 				return err
 			}
@@ -65,6 +76,17 @@ Exit codes:
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.json (default: active PicoClaw config)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit stable JSON report")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on warning findings")
+	cmd.Flags().DurationVar(&staleTaskAge, "stale-task-age", 30*time.Minute, "Age after which active tasks are stale")
+	cmd.Flags().DurationVar(
+		&pendingDeliveryAge,
+		"pending-delivery-age",
+		15*time.Minute,
+		"Age after which terminal pending deliveries are reported",
+	)
+	cmd.Flags().
+		DurationVar(&recentFailureAge, "recent-failure-age", 24*time.Hour, "Window for recent task/delivery failures")
+	cmd.Flags().
+		DurationVar(&handoffAge, "handoff-age", 10*time.Minute, "Age after which unresolved handoffs are reported")
 	return cmd
 }
 
