@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -31,6 +32,16 @@ type SystemdUserServiceRestarter struct{}
 
 var systemctlCommandContext = exec.CommandContext
 
+// restartDispatchUncertainError means systemd may have accepted the restart
+// before terminating the caller's cgroup. The replacement gateway confirms it.
+type restartDispatchUncertainError struct {
+	err error
+}
+
+func (e *restartDispatchUncertainError) Error() string { return e.err.Error() }
+
+func (e *restartDispatchUncertainError) Unwrap() error { return e.err }
+
 func (SystemdUserServiceRestarter) RestartService(ctx context.Context, service string) error {
 	if err := validateSystemdUserService(service); err != nil {
 		return err
@@ -39,7 +50,14 @@ func (SystemdUserServiceRestarter) RestartService(ctx context.Context, service s
 	// for the job can terminate the caller and incorrectly mark a real restart failed.
 	cmd := systemctlCommandContext(ctx, "systemctl", "--user", "restart", "--no-block", service)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl --user restart %s failed: %w: %s", service, err, strings.TrimSpace(string(output)))
+		wrapped := fmt.Errorf(
+			"systemctl --user restart %s failed: %w: %s",
+			service, err, strings.TrimSpace(string(output)),
+		)
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == -1 {
+			return &restartDispatchUncertainError{err: wrapped}
+		}
+		return wrapped
 	}
 	return nil
 }
@@ -204,6 +222,18 @@ func (c *RestartController) runRestart(
 	}
 
 	if err := c.restarter.RestartService(ctx, service); err != nil {
+		var uncertain *restartDispatchUncertainError
+		if errors.As(err, &uncertain) {
+			logger.WarnCF(
+				"gateway",
+				"Restart dispatch outcome is uncertain; awaiting replacement gateway",
+				map[string]any{
+					"service": service,
+					"error":   err.Error(),
+				},
+			)
+			return
+		}
 		sentinel.Status = restartStatusFailed
 		sentinel.UpdatedAt = c.now()
 		_ = c.store.Write(sentinel)

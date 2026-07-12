@@ -79,6 +79,20 @@ func TestSystemdUserServiceRestarterHelper(t *testing.T) {
 	}
 }
 
+func TestSystemdUserServiceRestarterMarksSignaledCommandUncertain(t *testing.T) {
+	original := systemctlCommandContext
+	t.Cleanup(func() { systemctlCommandContext = original })
+	systemctlCommandContext = func(_ context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", "kill -TERM $$")
+	}
+
+	err := (SystemdUserServiceRestarter{}).RestartService(context.Background(), "picoclaw-main.service")
+	var uncertain *restartDispatchUncertainError
+	if !errors.As(err, &uncertain) {
+		t.Fatalf("RestartService() error = %v, want restartDispatchUncertainError", err)
+	}
+}
+
 func (r *fakeServiceRestarter) RestartService(_ context.Context, service string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -257,6 +271,32 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 		sentinel.Origin.TopicID != "topic-1" {
 		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
 	}
+}
+
+func TestRestartControllerKeepsRunningStatusForUncertainDispatch(t *testing.T) {
+	store, err := NewRestartSentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarter := &fakeServiceRestarter{
+		called: make(chan string, 1),
+		err:    &restartDispatchUncertainError{err: errors.New("signal: terminated")},
+	}
+	controller, err := NewRestartController(RestartControllerOptions{
+		Config:           testRestartConfig(),
+		Source:           &restartSourceSequence{},
+		Store:            store,
+		Restarter:        restarter,
+		PreflightOptions: knownPreflightOptions(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.RequestRestart(context.Background(), RestartRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	restarter.waitCalledWith(t, "picoclaw-main.service")
+	waitForRestartSentinelStatus(t, store, restartStatusRunning)
 }
 
 func TestRestartControllerDefersUntilIdle(t *testing.T) {
