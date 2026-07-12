@@ -225,8 +225,19 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 			)
 		}
 	}
+	if cfg.Tools.IsToolEnabled("append_file") {
+		registerTool(tools.NewAppendFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
+	}
+	// Build write_file's copy from the registered editors so it steers the agent
+	// to append_file only when that tool is actually available.
 	if cfg.Tools.IsToolEnabled("write_file") {
-		registerTool(tools.NewWriteFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
+		writeTool := tools.NewWriteFileTool(workspace, initCfg.restrict, initCfg.allowWrite)
+		var altTools []string
+		if initCfg.toolsRegistry.HasRegistered("append_file") {
+			altTools = append(altTools, "append_file")
+		}
+		writeTool.SetAlternativeTools(altTools)
+		registerTool(writeTool)
 	}
 	if cfg.Tools.IsToolEnabled("list_dir") {
 		registerTool(
@@ -251,9 +262,6 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 		} else {
 			registerTool(execTool)
 		}
-	}
-	if cfg.Tools.IsToolEnabled("append_file") {
-		registerTool(tools.NewAppendFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}
 	if cfg.Tools.IsToolEnabled("apply_patch") {
 		registerTool(tools.NewApplyPatchTool(workspace, initCfg.restrict, initCfg.allowWrite))
