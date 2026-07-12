@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 // AgentInstance represents a fully configured agent with its own workspace,
@@ -59,6 +60,7 @@ type AgentInstance struct {
 	// instances. This allows each fallback model to use its own api_base and api_key
 	// from model_list, instead of inheriting the primary model's provider config.
 	CandidateProviders map[string]providers.LLMProvider
+	ToolLoopDetection  loopguard.Config
 }
 
 type agentToolInitConfig struct {
@@ -160,7 +162,23 @@ func NewAgentInstance(
 		LightCandidates:           routingCfg.lightCandidates,
 		LightProvider:             routingCfg.lightProvider,
 		CandidateProviders:        routingCfg.candidateProviders,
+		ToolLoopDetection:         loopGuardConfigFromConfig(cfg.Tools.LoopDetection),
 	}
+}
+
+func loopGuardConfigFromConfig(cfg config.ToolLoopDetectionConfig) loopguard.Config {
+	return loopguard.Config{
+		Enabled:             cfg.Enabled,
+		WarningsEnabled:     cfg.WarningsEnabled,
+		HardStopsEnabled:    cfg.HardStopsEnabled,
+		ExactFailureWarn:    cfg.ExactFailureWarn,
+		ExactFailureBlock:   cfg.ExactFailureBlock,
+		SameToolFailureWarn: cfg.SameToolFailureWarn,
+		SameToolFailureHalt: cfg.SameToolFailureHalt,
+		NoProgressWarn:      cfg.NoProgressWarn,
+		NoProgressBlock:     cfg.NoProgressBlock,
+		MaxSignatures:       cfg.MaxSignatures,
+	}.Normalized()
 }
 
 func newAgentToolInitConfig(

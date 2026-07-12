@@ -13,6 +13,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/providers"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 var labeledArtifactPathRe = regexp.MustCompile(
@@ -85,6 +86,7 @@ type SubagentManager struct {
 	// This lets subagents reuse the same media handling behavior as the
 	// main agent loop without importing pkg/agent and creating a cycle.
 	mediaResolver func([]providers.Message) []providers.Message
+	loopDetection loopguard.Config
 }
 
 func NewSubagentManager(
@@ -110,6 +112,7 @@ func NewSubagentManagerWithRegistry(
 		workspace:     workspace,
 		tools:         NewToolRegistry(),
 		maxIterations: 10,
+		loopDetection: loopguard.DefaultConfig(),
 		nextID:        registry.MaxNumericSuffix("subagent-") + 1,
 		taskRegistry:  registry,
 	}
@@ -118,6 +121,12 @@ func NewSubagentManagerWithRegistry(
 	}
 	manager.restoreTasksFromRegistry()
 	return manager
+}
+
+func (sm *SubagentManager) SetLoopDetection(config loopguard.Config) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.loopDetection = config.Normalized()
 }
 
 func (sm *SubagentManager) SetSpawner(spawner SpawnSubTurnFunc) {
@@ -227,6 +236,7 @@ func (sm *SubagentManager) runTask(
 	hasMaxTokens := sm.hasMaxTokens
 	hasTemperature := sm.hasTemperature
 	mediaResolver := sm.mediaResolver
+	loopDetection := sm.loopDetection
 	sm.mu.RUnlock()
 
 	var result *ToolResult
@@ -276,6 +286,7 @@ After completing the task, provide a clear summary of what was done.`
 			MaxIterations: maxIter,
 			LLMOptions:    llmOptions,
 			MediaResolver: mediaResolver,
+			LoopDetection: loopDetection,
 		}, messages, task.OriginChannel, task.OriginChatID)
 
 		if err == nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 type ToolEntry struct {
@@ -166,6 +167,26 @@ func (r *ToolRegistry) TickTTL() {
 // Version returns the current registry version (atomically).
 func (r *ToolRegistry) Version() uint64 {
 	return r.version.Load()
+}
+
+// LoopSemantics returns explicit loop-detection semantics for a registered
+// tool. Unclassified and unavailable tools fail closed as unknown.
+func (r *ToolRegistry) LoopSemantics(name string) loopguard.Semantics {
+	tool, ok := r.Get(name)
+	if !ok || tool == nil {
+		return loopguard.SemanticsUnknown
+	}
+	provider, ok := tool.(LoopSemanticsProvider)
+	if !ok {
+		return loopguard.SemanticsUnknown
+	}
+	semantics := provider.ToolLoopSemantics()
+	switch semantics {
+	case loopguard.SemanticsReadOnlyIdempotent, loopguard.SemanticsMutating:
+		return semantics
+	default:
+		return loopguard.SemanticsUnknown
+	}
 }
 
 func (r *ToolRegistry) toolAllowedLocked(name string) bool {

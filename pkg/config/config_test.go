@@ -1003,6 +1003,18 @@ func TestDefaultConfig_MaxToolIterations(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_ToolLoopDetection(t *testing.T) {
+	cfg := DefaultConfig().Tools.LoopDetection
+	if !cfg.Enabled || !cfg.WarningsEnabled || cfg.HardStopsEnabled {
+		t.Fatalf("unexpected loop detection switches: %#v", cfg)
+	}
+	if cfg.ExactFailureWarn != 2 || cfg.ExactFailureBlock != 5 ||
+		cfg.SameToolFailureWarn != 3 || cfg.SameToolFailureHalt != 8 ||
+		cfg.NoProgressWarn != 2 || cfg.NoProgressBlock != 5 || cfg.MaxSignatures <= 0 {
+		t.Fatalf("unexpected loop detection thresholds: %#v", cfg)
+	}
+}
+
 // TestDefaultConfig_Temperature verifies temperature has default value
 func TestDefaultConfig_Temperature(t *testing.T) {
 	cfg := DefaultConfig()

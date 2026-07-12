@@ -320,6 +320,18 @@ func DefaultConfig() *Config {
 		Tools: ToolsConfig{
 			FilterSensitiveData: true,
 			FilterMinLength:     8,
+			LoopDetection: ToolLoopDetectionConfig{
+				Enabled:             true,
+				WarningsEnabled:     true,
+				HardStopsEnabled:    false,
+				ExactFailureWarn:    2,
+				ExactFailureBlock:   5,
+				SameToolFailureWarn: 3,
+				SameToolFailureHalt: 8,
+				NoProgressWarn:      2,
+				NoProgressBlock:     5,
+				MaxSignatures:       64,
+			},
 			MediaCleanup: MediaCleanupConfig{
 				ToolConfig: ToolConfig{
 					Enabled: true,

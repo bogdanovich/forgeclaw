@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 // GrepTool searches summaries and messages for matching content.
@@ -26,6 +27,10 @@ func NewGrepTool(engine *RetrievalEngine) *GrepTool {
 
 func (t *GrepTool) Name() string {
 	return "short_grep"
+}
+
+func (t *GrepTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
 }
 
 func (t *GrepTool) Description() string {

@@ -69,6 +69,49 @@ PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspa
 
 > **Note:** Changes to `AGENT.md`, `SOUL.md`, `USER.md` and `memory/MEMORY.md` are automatically detected at runtime via file modification time (mtime) tracking. You do **not** need to restart the gateway after editing these files — the agent picks up the new content on the next request.
 
+### Tool-Loop Detection
+
+`tools.loop_detection` detects repeated tool failures and repeated read-only
+calls that return no new information. Warnings are enabled by default. Hard
+stops are opt-in: when enabled, a blocked call is returned to the model as a
+synthetic tool error so it can choose another strategy without breaking tool
+call/result history.
+
+```json
+{
+  "tools": {
+    "loop_detection": {
+      "enabled": true,
+      "warnings_enabled": true,
+      "hard_stops_enabled": false,
+      "exact_failure_warn": 2,
+      "exact_failure_block": 5,
+      "same_tool_failure_warn": 3,
+      "same_tool_failure_halt": 8,
+      "no_progress_warn": 2,
+      "no_progress_block": 5,
+      "max_signatures": 64
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Enables per-turn tool-loop observation. |
+| `warnings_enabled` | `true` | Adds model-visible recovery guidance before blocking thresholds. |
+| `hard_stops_enabled` | `false` | Blocks repeated calls after the configured threshold. |
+| `exact_failure_warn` / `exact_failure_block` | `2` / `5` | Thresholds for the same tool and canonical argument hash failing repeatedly. |
+| `same_tool_failure_warn` / `same_tool_failure_halt` | `3` / `8` | Thresholds for consecutive failures from one tool even when arguments change. |
+| `no_progress_warn` / `no_progress_block` | `2` / `5` | Thresholds for explicitly read-only tools returning the same result for the same arguments. |
+| `max_signatures` | `64` | Maximum call signatures retained within one turn. |
+
+Arguments and results are represented internally by SHA-256 identities; raw
+values are not retained in detector state or loop-decision events. Successful
+repeated output from unclassified, MCP, dynamic, or mutating tools is never
+treated as read-only no progress. Current audited read-only tools are
+`read_file`, `list_dir`, `search_files`, and `short_grep`.
+
 ### Agent Self-Evolution
 
 The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, the agent records completed turns as learning records. In higher modes it can group repeated successful patterns, generate skill drafts, and optionally apply accepted drafts into workspace skills.

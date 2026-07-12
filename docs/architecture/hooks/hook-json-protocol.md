@@ -469,7 +469,7 @@ Runtime observer event, broadcast only, no response required. `id` is `0` or abs
 Common `Kind` values:
 - `agent.turn.start` / `agent.turn.end`
 - `agent.llm.request` / `agent.llm.response`
-- `agent.tool.exec_start` / `agent.tool.exec_end` / `agent.tool.exec_skipped`
+- `agent.tool.exec_start` / `agent.tool.exec_end` / `agent.tool.exec_skipped` / `agent.tool.loop_decision`
 - `agent.steering.injected`
 - `agent.interrupt.received`
 - `agent.error`

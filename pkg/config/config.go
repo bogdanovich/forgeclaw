@@ -1186,6 +1186,19 @@ type ReadFileToolConfig struct {
 	MaxReadFileSize int    `json:"max_read_file_size"`
 }
 
+type ToolLoopDetectionConfig struct {
+	Enabled             bool `json:"enabled"                yaml:"enabled"                env:"PICOCLAW_TOOLS_LOOP_DETECTION_ENABLED"`
+	WarningsEnabled     bool `json:"warnings_enabled"       yaml:"warnings_enabled"       env:"PICOCLAW_TOOLS_LOOP_DETECTION_WARNINGS_ENABLED"`
+	HardStopsEnabled    bool `json:"hard_stops_enabled"     yaml:"hard_stops_enabled"     env:"PICOCLAW_TOOLS_LOOP_DETECTION_HARD_STOPS_ENABLED"`
+	ExactFailureWarn    int  `json:"exact_failure_warn"     yaml:"exact_failure_warn"     env:"PICOCLAW_TOOLS_LOOP_DETECTION_EXACT_FAILURE_WARN"`
+	ExactFailureBlock   int  `json:"exact_failure_block"    yaml:"exact_failure_block"    env:"PICOCLAW_TOOLS_LOOP_DETECTION_EXACT_FAILURE_BLOCK"`
+	SameToolFailureWarn int  `json:"same_tool_failure_warn" yaml:"same_tool_failure_warn" env:"PICOCLAW_TOOLS_LOOP_DETECTION_SAME_TOOL_FAILURE_WARN"`
+	SameToolFailureHalt int  `json:"same_tool_failure_halt" yaml:"same_tool_failure_halt" env:"PICOCLAW_TOOLS_LOOP_DETECTION_SAME_TOOL_FAILURE_HALT"`
+	NoProgressWarn      int  `json:"no_progress_warn"       yaml:"no_progress_warn"       env:"PICOCLAW_TOOLS_LOOP_DETECTION_NO_PROGRESS_WARN"`
+	NoProgressBlock     int  `json:"no_progress_block"      yaml:"no_progress_block"      env:"PICOCLAW_TOOLS_LOOP_DETECTION_NO_PROGRESS_BLOCK"`
+	MaxSignatures       int  `json:"max_signatures"         yaml:"max_signatures"         env:"PICOCLAW_TOOLS_LOOP_DETECTION_MAX_SIGNATURES"`
+}
+
 const (
 	ReadFileModeBytes = "bytes"
 	ReadFileModeLines = "lines"
@@ -1213,6 +1226,7 @@ type ToolsConfig struct {
 	// Content shorter than this will be returned unchanged for performance.
 	// Default: 8
 	FilterMinLength int                      `json:"filter_min_length" yaml:"-"                env:"PICOCLAW_TOOLS_FILTER_MIN_LENGTH"`
+	LoopDetection   ToolLoopDetectionConfig  `json:"loop_detection"    yaml:"-"`
 	Web             WebToolsConfig           `json:"web"               yaml:"web,omitempty"`
 	Cron            CronToolsConfig          `json:"cron"              yaml:"-"`
 	Exec            ExecConfig               `json:"exec"              yaml:"-"`

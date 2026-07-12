@@ -26,6 +26,8 @@ const (
 	KindAgentToolExecEnd Kind = "agent.tool.exec_end"
 	// KindAgentToolExecSkipped is emitted when a tool call is skipped.
 	KindAgentToolExecSkipped Kind = "agent.tool.exec_skipped"
+	// KindAgentToolLoopDecision is emitted when loop protection warns or blocks.
+	KindAgentToolLoopDecision Kind = "agent.tool.loop_decision"
 
 	// KindAgentSteeringInjected is emitted when steering is injected into context.
 	KindAgentSteeringInjected Kind = "agent.steering.injected"
@@ -119,6 +121,7 @@ var knownKinds = []Kind{
 	KindAgentToolExecStart,
 	KindAgentToolExecEnd,
 	KindAgentToolExecSkipped,
+	KindAgentToolLoopDecision,
 	KindAgentSteeringInjected,
 	KindAgentFollowUpQueued,
 	KindAgentAsyncCompletion,
