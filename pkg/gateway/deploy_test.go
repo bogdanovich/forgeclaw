@@ -42,7 +42,7 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 	if err != nil || code != 0 || out != "--target:current" {
 		t.Fatalf("Run() = %q, %d, %v", out, code, err)
 	}
-	if _, _, err := runner.Run(context.Background(), "bad", ""); err == nil {
+	if _, _, runErr := runner.Run(context.Background(), "bad", ""); runErr == nil {
 		t.Fatal("expected invalid target error")
 	}
 
@@ -54,7 +54,8 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 	if err := json.Unmarshal(data, &sentinel); err != nil {
 		t.Fatal(err)
 	}
-	if sentinel.Kind != "deploy" || sentinel.Status != "succeeded" || sentinel.Group != "local" || sentinel.Target != "current" {
+	if sentinel.Kind != "deploy" || sentinel.Status != "succeeded" ||
+		sentinel.Group != "local" || sentinel.Target != "current" {
 		t.Fatalf("sentinel = %#v", sentinel)
 	}
 	if sentinel.Command != script || sentinel.ExitCode != 0 || sentinel.Origin.SessionKey != "session-1" {
