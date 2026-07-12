@@ -602,7 +602,20 @@ func shouldReconnectCallError(err error) bool {
 	if errors.Is(err, mcp.ErrSessionMissing) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(err.Error()), mcp.ErrSessionMissing.Error())
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, mcp.ErrSessionMissing.Error()) {
+		return true
+	}
+
+	// Stdio MCP servers can disappear after a config reload or an external
+	// process failure. The SDK wraps the underlying pipe error in a
+	// "client is closing" error rather than ErrSessionMissing, so recognize
+	// the concrete closed-transport forms too and reconnect once.
+	return strings.Contains(message, "client is closing") ||
+		strings.Contains(message, "connection closed") ||
+		strings.Contains(message, "file already closed") ||
+		strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "unexpected eof")
 }
 
 func (m *Manager) reconnectServer(

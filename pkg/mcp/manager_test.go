@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -609,6 +610,80 @@ func TestCallTool_ReconnectsWhenHTTPServerLosesSession(t *testing.T) {
 	}
 	if freshTransport.toolCallCalls != 1 {
 		t.Fatalf("fresh toolCallCalls = %d, want 1", freshTransport.toolCallCalls)
+	}
+}
+
+func TestCallTool_ReconnectsWhenStdioTransportIsClosed(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() {
+		connectServerFunc = originalConnectServerFunc
+	})
+
+	staleConn, staleTransport, err := newScriptedServerConnection(
+		"",
+		nil,
+		fmt.Errorf(`connection closed: calling "tools/call": client is closing: read |0: file already closed`),
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	freshConn, freshTransport, err := newScriptedServerConnection(
+		"",
+		&sdkmcp.CallToolResult{
+			Content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: "reconnected"},
+			},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+	}
+
+	connectCalls := 0
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig) (*ServerConnection, error) {
+		connectCalls++
+		if connectCalls == 1 {
+			return freshConn, nil
+		}
+		return nil, fmt.Errorf("unexpected reconnect attempt %d", connectCalls)
+	}
+
+	mgr := NewManager()
+	mgr.servers["flaky"] = staleConn
+
+	result, err := mgr.CallTool(context.Background(), "flaky", "echo", map[string]any{"query": "hello"})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if result == nil || len(result.Content) != 1 {
+		t.Fatalf("CallTool() returned unexpected content: %#v", result)
+	}
+	text, ok := result.Content[0].(*sdkmcp.TextContent)
+	if !ok || text.Text != "reconnected" {
+		t.Fatalf("CallTool() content = %#v, want reconnected text", result.Content)
+	}
+	if connectCalls != 1 {
+		t.Fatalf("connectCalls = %d, want 1", connectCalls)
+	}
+	if staleTransport.toolCallCalls != 1 || freshTransport.toolCallCalls != 1 {
+		t.Fatalf(
+			"tool call counts stale=%d fresh=%d, want 1 each",
+			staleTransport.toolCallCalls,
+			freshTransport.toolCallCalls,
+		)
+	}
+}
+
+func TestShouldReconnectCallError_ClosedTransport(t *testing.T) {
+	for _, message := range []string{
+		`connection closed: calling "tools/call": client is closing: read |0: file already closed`,
+		"write |1: broken pipe",
+		"unexpected EOF",
+	} {
+		if !shouldReconnectCallError(errors.New(message)) {
+			t.Fatalf("shouldReconnectCallError(%q) = false, want true", message)
+		}
 	}
 }
 
