@@ -91,9 +91,9 @@ func removeDeprecatedConfigFields(data []byte) ([]byte, error) {
 		return data, nil
 	}
 	var tools map[string]json.RawMessage
-	if err := json.Unmarshal(toolsJSON, &tools); err != nil {
+	if json.Unmarshal(toolsJSON, &tools) != nil {
 		// Preserve the original value so strict decoding can report its type error.
-		return data, nil
+		return data, nil //nolint:nilerr // The strict config decoder owns this diagnostic.
 	}
 	if _, ok := tools["edit_file"]; !ok {
 		return data, nil
