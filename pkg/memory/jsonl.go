@@ -259,8 +259,8 @@ func (s *JSONLStore) GetHistoryRevision(
 				meta.Skip = rawCount
 			}
 		}
-		if err := s.finishHistoryMutation(sessionKey, &meta); err != nil {
-			return HistoryRevision{}, err
+		if finishErr := s.finishHistoryMutation(sessionKey, &meta); finishErr != nil {
+			return HistoryRevision{}, finishErr
 		}
 	}
 	var size, modTimeNS int64
@@ -696,8 +696,8 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 		meta.CreatedAt = now
 	}
 	meta.UpdatedAt = now
-	if err := s.beginHistoryMutation(sessionKey, &meta, true); err != nil {
-		return err
+	if mutationErr := s.beginHistoryMutation(sessionKey, &meta, true); mutationErr != nil {
+		return mutationErr
 	}
 
 	if msg.CreatedAt == nil {

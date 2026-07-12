@@ -8,9 +8,9 @@ import (
 )
 
 func TestJSONLHistoryRevisionTracksLogicalMutations(t *testing.T) {
-	store, err := NewJSONLStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	store, storeErr := NewJSONLStore(t.TempDir())
+	if storeErr != nil {
+		t.Fatal(storeErr)
 	}
 	ctx := context.Background()
 	key := "revision"
@@ -49,9 +49,9 @@ func TestJSONLHistoryRevisionTracksLogicalMutations(t *testing.T) {
 }
 
 func TestJSONLHistoryRevisionRepairsDirtyMetadata(t *testing.T) {
-	store, err := NewJSONLStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	store, storeErr := NewJSONLStore(t.TempDir())
+	if storeErr != nil {
+		t.Fatal(storeErr)
 	}
 	ctx := context.Background()
 	key := "dirty"

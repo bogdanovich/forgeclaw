@@ -17,9 +17,9 @@ import (
 func newReconciliationTestManager(t *testing.T) (*seahorseContextManager, *memory.JSONLStore) {
 	t.Helper()
 	dir := t.TempDir()
-	canonical, err := memory.NewJSONLStore(dir + "/sessions")
-	if err != nil {
-		t.Fatal(err)
+	canonical, storeErr := memory.NewJSONLStore(dir + "/sessions")
+	if storeErr != nil {
+		t.Fatal(storeErr)
 	}
 	engine, err := seahorse.NewEngine(seahorse.Config{DBPath: dir + "/seahorse.db"}, nil)
 	if err != nil {
@@ -62,9 +62,9 @@ func TestSeahorseReconciliationCleanRestartUsesDurableWatermark(t *testing.T) {
 	if err := canonical.AddMessage(ctx, key, "user", "persisted"); err != nil {
 		t.Fatal(err)
 	}
-	engine1, err := seahorse.NewEngine(seahorse.Config{DBPath: dir + "/seahorse.db"}, nil)
-	if err != nil {
-		t.Fatal(err)
+	engine1, engineErr := seahorse.NewEngine(seahorse.Config{DBPath: dir + "/seahorse.db"}, nil)
+	if engineErr != nil {
+		t.Fatal(engineErr)
 	}
 	mgr1 := &seahorseContextManager{engine: engine1, sessions: backend}
 	if err := mgr1.ensureReconciled(ctx, key, backend); err != nil {
@@ -73,9 +73,9 @@ func TestSeahorseReconciliationCleanRestartUsesDurableWatermark(t *testing.T) {
 	if err := engine1.Close(); err != nil {
 		t.Fatal(err)
 	}
-	engine2, err := seahorse.NewEngine(seahorse.Config{DBPath: dir + "/seahorse.db"}, nil)
-	if err != nil {
-		t.Fatal(err)
+	engine2, reopenErr := seahorse.NewEngine(seahorse.Config{DBPath: dir + "/seahorse.db"}, nil)
+	if reopenErr != nil {
+		t.Fatal(reopenErr)
 	}
 	defer engine2.Close()
 	mgr2 := &seahorseContextManager{engine: engine2, sessions: backend}

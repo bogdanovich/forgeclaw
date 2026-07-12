@@ -247,7 +247,11 @@ func (m *seahorseContextManager) reconcile(ctx context.Context, sessionKey strin
 	return m.engine.Bootstrap(ctx, sessionKey, msgs)
 }
 
-func (m *seahorseContextManager) ensureReconciled(ctx context.Context, sessionKey string, store session.SessionStore) error {
+func (m *seahorseContextManager) ensureReconciled(
+	ctx context.Context,
+	sessionKey string,
+	store session.SessionStore,
+) error {
 	if store == nil {
 		return nil
 	}

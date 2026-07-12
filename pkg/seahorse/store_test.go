@@ -61,11 +61,11 @@ func TestStoreGetMessagesLoadsPartsAcrossBatchBoundary(t *testing.T) {
 	}
 	const count = messagePartsBatchSize + 1
 	for i := 0; i < count; i++ {
-		_, err := s.AddMessageWithParts(ctx, conv.ConversationID, "user", []MessagePart{{
+		_, addErr := s.AddMessageWithParts(ctx, conv.ConversationID, "user", []MessagePart{{
 			Type: "text", Text: fmt.Sprintf("part-%d", i),
 		}}, 1)
-		if err != nil {
-			t.Fatal(err)
+		if addErr != nil {
+			t.Fatal(addErr)
 		}
 	}
 	messages, err := s.GetMessages(ctx, conv.ConversationID, 0, 0)
