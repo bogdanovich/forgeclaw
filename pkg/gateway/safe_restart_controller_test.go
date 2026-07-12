@@ -219,7 +219,8 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sentinel.Origin.Channel != "telegram" || sentinel.Origin.ChatID != "chat-1" || sentinel.Origin.TopicID != "topic-1" {
+	if sentinel.Origin.Channel != "telegram" || sentinel.Origin.ChatID != "chat-1" ||
+		sentinel.Origin.TopicID != "topic-1" {
 		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
 	}
 }
