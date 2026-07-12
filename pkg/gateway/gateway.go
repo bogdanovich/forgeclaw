@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -158,8 +157,6 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if err = preCheckConfig(cfg); err != nil {
 		return fmt.Errorf("config pre-check failed: %w", err)
 	}
-	logLatestRestartSentinel(cfg)
-
 	// Debug mode permanently overrides the config log level to DEBUG.
 	if debug {
 		fmt.Println("🔍 Debug mode enabled")
@@ -232,6 +229,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	// mounted on the shared gateway mux, so Health.Server.Start() (which would
 	// otherwise set this) is never called — we flip the flag explicitly here.
 	runningServices.HealthServer.SetReady(true)
+	reportGatewayHandoffStatus(ctx, cfg, msgBus)
 	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReady, startedAt, nil)
 	closeListeners = false
 
@@ -438,6 +436,10 @@ func restartSentinelDir(cfg *config.Config) string {
 	return filepath.Join(cfg.WorkspacePath(), "state", "gateway-restart")
 }
 
+func deploySentinelDir(cfg *config.Config) string {
+	return filepath.Join(cfg.WorkspacePath(), "state", "gateway-deploy")
+}
+
 func setupSafeRestartTool(
 	cfg *config.Config,
 	agentLoop *agent.AgentLoop,
@@ -524,41 +526,6 @@ func restartPreflightOptions(agentLoop *agent.AgentLoop, runningServices *servic
 	}
 }
 
-func logLatestRestartSentinel(cfg *config.Config) {
-	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
-		return
-	}
-	store, err := NewRestartSentinelStore(restartSentinelDir(cfg))
-	if err != nil {
-		logger.WarnCF("gateway", "Failed to open restart sentinel store", map[string]any{"error": err.Error()})
-		return
-	}
-	sentinel, err := store.Read()
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			logger.WarnCF("gateway", "Failed to read restart sentinel", map[string]any{"error": err.Error()})
-		}
-		return
-	}
-	if recovered, ok, recoverErr := store.MarkInterruptedRestartComplete(time.Now().UTC()); recoverErr != nil {
-		logger.WarnCF("gateway", "Failed to recover restart sentinel", map[string]any{"error": recoverErr.Error()})
-	} else if ok {
-		sentinel = recovered
-		logger.InfoCF("gateway", "Recovered interrupted restart sentinel", map[string]any{
-			"status":            sentinel.Status,
-			"requested_service": sentinel.RequestedService,
-			"requested_at":      sentinel.RequestedAt,
-			"updated_at":        sentinel.UpdatedAt,
-		})
-	}
-	logger.InfoCF("gateway", "Latest restart sentinel", map[string]any{
-		"status":            sentinel.Status,
-		"requested_service": sentinel.RequestedService,
-		"requested_at":      sentinel.RequestedAt,
-		"updated_at":        sentinel.UpdatedAt,
-	})
-}
-
 func snapshotGatewayInboundSpool(ctx context.Context, msgBus *bus.MessageBus) []bus.InboundMessage {
 	pending, err := msgBus.PendingInboundSpool(ctx)
 	if err != nil {
@@ -612,6 +579,9 @@ func setupAndStartServices(
 	}
 	if err = setupDeployTool(cfg, agentLoop); err != nil {
 		return nil, fmt.Errorf("error setting up deploy tool: %w", err)
+	}
+	if err = setupGatewayHandoffStatusTool(cfg, agentLoop); err != nil {
+		return nil, fmt.Errorf("error setting up gateway handoff status tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return nil, fmt.Errorf("error starting cron service: %w", err)

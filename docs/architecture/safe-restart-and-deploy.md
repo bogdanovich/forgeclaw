@@ -84,6 +84,13 @@ Core responsibilities:
 8. Treat command exit status, and optional structured JSON if later specified,
    as the only source of truth.
 
+Core also takes a non-blocking, kernel-managed advisory lock scoped to the
+configured deploy group before writing its singleton deploy sentinel. This
+prevents two workspace services in the same shared-binary group from launching
+overlapping deploy scripts. The lock is released automatically if the gateway
+process exits; the operator script must still use its own `flock` because it is
+the final authority over local build and service operations.
+
 Operator script responsibilities:
 
 1. Acquire a deploy lock, for example with `flock`.
@@ -199,9 +206,16 @@ Sentinels provide the bridge across process exit:
 
 - Before restart or deploy, core records the requested operation and origin.
 - During or after deploy, core records status, exit code, and bounded output tail.
-- On startup, core inspects the latest sentinel and exposes operator status.
-- When an originating session is known, startup may send one continuation such as
-  "gateway is back" or "deploy failed" and then mark that notification delivered.
+- Core also records the originating channel and chat when they are known, so a
+  later process can address a continuation without asking the model to infer a
+  destination.
+- After channels are running on startup, core inspects the latest sentinel,
+  logs its status, and may send one continuation such as "gateway is back" or
+  "deploy failed" to that saved origin.
+- The read-only `gateway_handoff_status` tool exposes the latest restart/deploy
+  handoff, including deploy exit code and a bounded output preview.
+- Core records `continuation_sent_at` after queueing the startup continuation.
+  This makes the startup handoff at-most-once, not a durable outbound queue.
 
 Startup notification must be idempotent. Repeated process starts must not spam
 the same session with duplicate continuation messages.

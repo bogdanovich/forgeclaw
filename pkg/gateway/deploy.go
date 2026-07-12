@@ -23,16 +23,17 @@ const deployOutputLimit = 16 * 1024
 var ErrDeployAlreadyRunning = errors.New("gateway deploy is already running")
 
 type DeploySentinel struct {
-	Kind        string        `json:"kind"`
-	Status      string        `json:"status"`
-	Group       string        `json:"group"`
-	Target      string        `json:"target"`
-	Command     string        `json:"command"`
-	OutputTail  string        `json:"output_tail,omitempty"`
-	ExitCode    int           `json:"exit_code"`
-	Origin      RestartOrigin `json:"origin"`
-	RequestedAt time.Time     `json:"requested_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	Kind               string        `json:"kind"`
+	Status             string        `json:"status"`
+	Group              string        `json:"group"`
+	Target             string        `json:"target"`
+	Command            string        `json:"command"`
+	OutputTail         string        `json:"output_tail,omitempty"`
+	ExitCode           int           `json:"exit_code"`
+	Origin             RestartOrigin `json:"origin"`
+	RequestedAt        time.Time     `json:"requested_at"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	ContinuationSentAt time.Time     `json:"continuation_sent_at,omitempty"`
 }
 type DeploySentinelStore struct{ path string }
 
@@ -49,6 +50,31 @@ func (s *DeploySentinelStore) Write(v DeploySentinel) error {
 		return err
 	}
 	return fileutil.WriteFileAtomic(s.path, b, 0o600)
+}
+
+func (s *DeploySentinelStore) Read() (DeploySentinel, error) {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return DeploySentinel{}, err
+	}
+	var sentinel DeploySentinel
+	if err := json.Unmarshal(data, &sentinel); err != nil {
+		return DeploySentinel{}, fmt.Errorf("decode deploy sentinel: %w", err)
+	}
+	return sentinel, nil
+}
+
+func (s *DeploySentinelStore) MarkContinuationSent(now time.Time) error {
+	sentinel, err := s.Read()
+	if err != nil {
+		return err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	sentinel.ContinuationSentAt = now.UTC()
+	sentinel.UpdatedAt = now.UTC()
+	return s.Write(sentinel)
 }
 
 func deployGroupLockPath(group string) (string, error) {
@@ -110,7 +136,7 @@ func NewDeployRunner(cfg config.GatewayDeployConfig, workspace, service string) 
 	return &DeployRunner{cfg: cfg, workspace: workspace, service: service, store: store, lockPath: lockPath}, nil
 }
 
-func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (string, int, error) {
+func (r *DeployRunner) Run(ctx context.Context, target string, origin RestartOrigin) (string, int, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		target = strings.TrimSpace(r.cfg.DefaultTarget)
@@ -131,7 +157,7 @@ func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (stri
 		Target:      target,
 		Command:     r.cfg.Command,
 		ExitCode:    -1,
-		Origin:      RestartOrigin{SessionKey: sessionKey},
+		Origin:      origin,
 		RequestedAt: now,
 		UpdatedAt:   now,
 	}
@@ -146,7 +172,7 @@ func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (stri
 		"FORGECLAW_DEPLOY_TARGET="+target,
 		"FORGECLAW_WORKSPACE="+r.workspace,
 		"FORGECLAW_SERVICE="+r.service,
-		"FORGECLAW_SESSION_KEY="+sessionKey,
+		"FORGECLAW_SESSION_KEY="+origin.SessionKey,
 	)
 	out, err := cmd.CombinedOutput()
 	text := truncateDeployOutput(string(out))
@@ -201,7 +227,11 @@ func (t *GatewayDeployTool) Parameters() map[string]any {
 
 func (t *GatewayDeployTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
 	target, _ := args["target"].(string)
-	out, _, err := t.runner.Run(ctx, target, tools.ToolSessionKey(ctx))
+	out, _, err := t.runner.Run(ctx, target, RestartOrigin{
+		Channel:    tools.ToolChannel(ctx),
+		ChatID:     tools.ToolChatID(ctx),
+		SessionKey: tools.ToolSessionKey(ctx),
+	})
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("gateway deploy failed: %v\n%s", err, out)).WithError(err)
 	}
