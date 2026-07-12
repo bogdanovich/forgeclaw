@@ -39,9 +39,21 @@ type State struct {
 	// the temporary fallback model currently pinned for the conversation.
 	AutoModelSelections map[string]AutoModelSelection `json:"auto_model_selections,omitempty"`
 
+	// SessionGoals stores one durable operator objective per routed session.
+	SessionGoals map[string]SessionGoal `json:"session_goals,omitempty"`
+
 	// Timestamp is the last time this state was updated
 	Timestamp time.Time `json:"timestamp"`
 }
+
+type SessionGoalStatus string
+
+const (
+	SessionGoalActive   SessionGoalStatus = "active"
+	SessionGoalPaused   SessionGoalStatus = "paused"
+	SessionGoalBlocked  SessionGoalStatus = "blocked"
+	SessionGoalComplete SessionGoalStatus = "complete"
+)
 
 type AutoModelSelection struct {
 	SelectedProvider string    `json:"selected_provider,omitempty"`
@@ -56,6 +68,16 @@ type AutoModelSelection struct {
 type SessionModelOverride struct {
 	Model     string    `json:"model,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type SessionGoal struct {
+	Objective   string            `json:"objective"`
+	Status      SessionGoalStatus `json:"status"`
+	Note        string            `json:"note,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	BlockedAt   *time.Time        `json:"blocked_at,omitempty"`
+	CompletedAt *time.Time        `json:"completed_at,omitempty"`
 }
 
 // Manager manages persistent state with atomic saves.
@@ -408,6 +430,173 @@ func (sm *Manager) GetAutoModelSelection(routeSessionKey string) (AutoModelSelec
 	}
 	value, ok := sm.state.AutoModelSelections[strings.TrimSpace(routeSessionKey)]
 	return value, ok
+}
+
+// CreateSessionGoal creates one durable goal for a routed session. It fails
+// when a goal already exists so command/tool callers cannot silently replace an
+// operator objective.
+func (sm *Manager) CreateSessionGoal(routeSessionKey, objective string) (SessionGoal, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	objective = strings.TrimSpace(objective)
+	if routeSessionKey == "" || objective == "" {
+		return SessionGoal{}, fmt.Errorf("route session key and objective are required")
+	}
+	if _, exists := sm.state.SessionGoals[routeSessionKey]; exists {
+		return SessionGoal{}, fmt.Errorf("session goal already exists")
+	}
+
+	now := time.Now()
+	goal := SessionGoal{
+		Objective: objective,
+		Status:    SessionGoalActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if sm.state.SessionGoals == nil {
+		sm.state.SessionGoals = make(map[string]SessionGoal)
+	}
+	sm.state.SessionGoals[routeSessionKey] = goal
+	sm.state.Timestamp = now
+
+	if err := sm.saveAtomic(); err != nil {
+		return SessionGoal{}, fmt.Errorf("failed to save state atomically: %w", err)
+	}
+	return goal, nil
+}
+
+// EditSessionGoal updates the current objective while preserving status and
+// creation metadata.
+func (sm *Manager) EditSessionGoal(routeSessionKey, objective string) (SessionGoal, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	objective = strings.TrimSpace(objective)
+	if routeSessionKey == "" || objective == "" {
+		return SessionGoal{}, fmt.Errorf("route session key and objective are required")
+	}
+	goal, exists := sm.state.SessionGoals[routeSessionKey]
+	if !exists {
+		return SessionGoal{}, fmt.Errorf("session goal not found")
+	}
+
+	now := time.Now()
+	goal.Objective = objective
+	goal.UpdatedAt = now
+	sm.state.SessionGoals[routeSessionKey] = goal
+	sm.state.Timestamp = now
+
+	if err := sm.saveAtomic(); err != nil {
+		return SessionGoal{}, fmt.Errorf("failed to save state atomically: %w", err)
+	}
+	return goal, nil
+}
+
+// SetSessionGoalStatus changes goal state without changing the objective.
+func (sm *Manager) SetSessionGoalStatus(
+	routeSessionKey string,
+	status SessionGoalStatus,
+	note string,
+) (SessionGoal, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	if routeSessionKey == "" {
+		return SessionGoal{}, fmt.Errorf("route session key is required")
+	}
+	if !validSessionGoalStatus(status) {
+		return SessionGoal{}, fmt.Errorf("invalid session goal status %q", status)
+	}
+	goal, exists := sm.state.SessionGoals[routeSessionKey]
+	if !exists {
+		return SessionGoal{}, fmt.Errorf("session goal not found")
+	}
+
+	previousStatus := goal.Status
+	now := time.Now()
+	goal.Status = status
+	goal.Note = strings.TrimSpace(note)
+	goal.UpdatedAt = now
+	switch status {
+	case SessionGoalBlocked:
+		if previousStatus != SessionGoalBlocked {
+			goal.BlockedAt = &now
+		}
+	case SessionGoalComplete:
+		if previousStatus != SessionGoalComplete {
+			goal.CompletedAt = &now
+		}
+	}
+
+	sm.state.SessionGoals[routeSessionKey] = goal
+	sm.state.Timestamp = now
+
+	if err := sm.saveAtomic(); err != nil {
+		return SessionGoal{}, fmt.Errorf("failed to save state atomically: %w", err)
+	}
+	return goal, nil
+}
+
+// ClearSessionGoal removes the goal for a routed session. Missing goals are a
+// no-op so reset/new callers can clear defensively.
+func (sm *Manager) ClearSessionGoal(routeSessionKey string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	routeSessionKey = strings.TrimSpace(routeSessionKey)
+	if routeSessionKey == "" {
+		return fmt.Errorf("route session key is required")
+	}
+	if len(sm.state.SessionGoals) == 0 {
+		return nil
+	}
+
+	delete(sm.state.SessionGoals, routeSessionKey)
+	if len(sm.state.SessionGoals) == 0 {
+		sm.state.SessionGoals = nil
+	}
+	sm.state.Timestamp = time.Now()
+
+	if err := sm.saveAtomic(); err != nil {
+		return fmt.Errorf("failed to save state atomically: %w", err)
+	}
+	return nil
+}
+
+// GetSessionGoal returns the durable goal for a routed session.
+func (sm *Manager) GetSessionGoal(routeSessionKey string) (SessionGoal, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if len(sm.state.SessionGoals) == 0 {
+		return SessionGoal{}, false
+	}
+	value, ok := sm.state.SessionGoals[strings.TrimSpace(routeSessionKey)]
+	return cloneSessionGoal(value), ok
+}
+
+func validSessionGoalStatus(status SessionGoalStatus) bool {
+	switch status {
+	case SessionGoalActive, SessionGoalPaused, SessionGoalBlocked, SessionGoalComplete:
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneSessionGoal(goal SessionGoal) SessionGoal {
+	if goal.BlockedAt != nil {
+		blockedAt := *goal.BlockedAt
+		goal.BlockedAt = &blockedAt
+	}
+	if goal.CompletedAt != nil {
+		completedAt := *goal.CompletedAt
+		goal.CompletedAt = &completedAt
+	}
+	return goal
 }
 
 // GetLastChannel returns the last channel from the state.

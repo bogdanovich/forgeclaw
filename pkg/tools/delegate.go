@@ -52,8 +52,7 @@ func (t *DelegateTool) Description() string {
 	return "Delegate a task to another agent and wait for the result. " +
 		"Use this when another agent is better suited to handle a specific task " +
 		"based on their capabilities. The target agent runs with its own workspace, " +
-		"model, and tools. For multi-step workflows, create/inspect the workflow with task_board, " +
-		"then pass board_id and step metadata so related delegate/spawn runs appear together in task_board and task_status."
+		"model, and tools."
 }
 
 func (t *DelegateTool) Parameters() map[string]any {
@@ -80,7 +79,6 @@ func (t *DelegateTool) Parameters() map[string]any {
 			"description": "Optional maximum time to wait for this delegated child step. If omitted, the runtime subturn default is used.",
 		},
 	}
-	addTaskBoardMetadataParameters(props)
 	return map[string]any{
 		"type":       "object",
 		"properties": props,
@@ -103,10 +101,6 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if err != nil {
 		return ErrorResult(err.Error()).WithError(err)
 	}
-	boardMeta, err := parseTaskBoardMetadata(args)
-	if err != nil {
-		return ErrorResult(err.Error()).WithError(err)
-	}
 	timeout, err := parseOptionalTimeoutSeconds(args["timeout_seconds"])
 	if err != nil {
 		return ErrorResult(err.Error()).WithError(err)
@@ -126,7 +120,7 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 
 	taskID := t.nextTaskID()
 	t.recordDelegateTask(
-		ctx, taskID, agentID, task, deliveryMode, boardMeta,
+		ctx, taskID, agentID, task, deliveryMode,
 		taskregistry.StatusRunning,
 		taskregistry.DeliveryPending,
 		"",
@@ -150,7 +144,7 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			status = taskregistry.StatusTimedOut
 		}
 		t.recordDelegateTask(
-			ctx, taskID, agentID, task, deliveryMode, boardMeta,
+			ctx, taskID, agentID, task, deliveryMode,
 			status,
 			taskregistry.DeliveryPending,
 			msg,
@@ -162,7 +156,7 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if result == nil {
 		msg := fmt.Sprintf("delegation to agent %q returned no result", agentID)
 		t.recordDelegateTask(
-			ctx, taskID, agentID, task, deliveryMode, boardMeta,
+			ctx, taskID, agentID, task, deliveryMode,
 			taskregistry.StatusFailed,
 			taskregistry.DeliveryPending,
 			msg,
@@ -178,7 +172,7 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		result.ResponseHandled = true
 	}
 	t.recordDelegateTask(
-		ctx, taskID, agentID, task, deliveryMode, boardMeta,
+		ctx, taskID, agentID, task, deliveryMode,
 		taskregistry.StatusSucceeded,
 		delegateDeliveryStatus(result, deliveryMode),
 		result.ContentForLLM(),
@@ -198,7 +192,6 @@ func (t *DelegateTool) recordDelegateTask(
 	ctx context.Context,
 	taskID, agentID, task string,
 	deliveryMode AsyncDeliveryMode,
-	boardMeta TaskBoardMetadata,
 	status taskregistry.Status,
 	delivery taskregistry.DeliveryStatus,
 	summary string,
@@ -231,7 +224,6 @@ func (t *DelegateTool) recordDelegateTask(
 		Completion:          completion,
 		Deliverable:         deliverable,
 	}
-	applyTaskBoardMetadata(&rec, boardMeta)
 	if status == taskregistry.StatusRunning {
 		rec.CreatedAt = now
 		rec.StartedAt = now

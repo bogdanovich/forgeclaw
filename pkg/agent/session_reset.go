@@ -40,6 +40,13 @@ func (al *AgentLoop) clearSessionOverride(routeSessionKey string) error {
 	return al.state.ClearSessionOverride(routeSessionKey)
 }
 
+func (al *AgentLoop) clearSessionGoal(routeSessionKey string) error {
+	if al == nil || al.state == nil {
+		return nil
+	}
+	return al.state.ClearSessionGoal(routeSessionKey)
+}
+
 func (al *AgentLoop) getToolFeedbackOverride(routeSessionKey string) (bool, bool) {
 	if al == nil || al.state == nil {
 		return false, false

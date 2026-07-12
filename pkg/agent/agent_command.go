@@ -15,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
+	"github.com/sipeed/picoclaw/pkg/state"
 )
 
 func (al *AgentLoop) handleCommand(
@@ -287,6 +288,33 @@ func (al *AgentLoop) buildCommandsRuntime(
 		}
 		return al.stopActiveTurnForSession(opts.Dispatch.SessionKey)
 	}
+	if al.state != nil && opts != nil {
+		routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey)
+		if routeSessionKey == "" {
+			routeSessionKey = strings.TrimSpace(modelBinding.RouteSessionKey)
+		}
+		if routeSessionKey != "" {
+			rt.GetGoal = func() (commands.GoalInfo, bool, error) {
+				goal, found := al.state.GetSessionGoal(routeSessionKey)
+				return commandGoalInfo(goal), found, nil
+			}
+			rt.CreateGoal = func(objective string) (commands.GoalInfo, error) {
+				goal, err := al.state.CreateSessionGoal(routeSessionKey, objective)
+				return commandGoalInfo(goal), err
+			}
+			rt.EditGoal = func(objective string) (commands.GoalInfo, error) {
+				goal, err := al.state.EditSessionGoal(routeSessionKey, objective)
+				return commandGoalInfo(goal), err
+			}
+			rt.SetGoalStatus = func(status, note string) (commands.GoalInfo, error) {
+				goal, err := al.state.SetSessionGoalStatus(routeSessionKey, state.SessionGoalStatus(status), note)
+				return commandGoalInfo(goal), err
+			}
+			rt.ClearGoal = func() error {
+				return al.state.ClearSessionGoal(routeSessionKey)
+			}
+		}
+	}
 	if agent != nil && agent.ContextBuilder != nil {
 		rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
 	}
@@ -463,7 +491,10 @@ func (al *AgentLoop) buildCommandsRuntime(
 				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 					return "", err
 				}
-				return "", al.clearSessionOverride(routeSessionKey)
+				if err := al.clearSessionOverride(routeSessionKey); err != nil {
+					return "", err
+				}
+				return "", al.clearSessionGoal(routeSessionKey)
 			}
 
 			nextSessionKey := buildResetSessionKey(agent.ID, routeSessionKey)
@@ -480,6 +511,16 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return "", err
 			}
 			return nextSessionKey, nil
+		}
+		rt.StartFreshSession = func() (string, error) {
+			routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey)
+			if routeSessionKey == "" {
+				return "", fmt.Errorf("route session key not available")
+			}
+			if err := al.clearSessionGoal(routeSessionKey); err != nil {
+				return "", err
+			}
+			return rt.ResetSession(false)
 		}
 
 		rt.GetToolFeedback = func() (bool, string) {
@@ -539,6 +580,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			} else {
 				resolvedOpts = resolved
 			}
+			al.applyActiveGoalPrompt(&resolvedOpts)
 
 			storedUsage := computeContextUsage(agent, resolvedOpts.SessionKey)
 			if storedUsage == nil {
@@ -588,6 +630,18 @@ func (al *AgentLoop) buildCommandsRuntime(
 		}
 	}
 	return rt
+}
+
+func commandGoalInfo(goal state.SessionGoal) commands.GoalInfo {
+	return commands.GoalInfo{
+		Objective:   goal.Objective,
+		Status:      string(goal.Status),
+		Note:        goal.Note,
+		CreatedAt:   goal.CreatedAt,
+		UpdatedAt:   goal.UpdatedAt,
+		BlockedAt:   goal.BlockedAt,
+		CompletedAt: goal.CompletedAt,
+	}
 }
 
 func contextStatsAgentForBinding(

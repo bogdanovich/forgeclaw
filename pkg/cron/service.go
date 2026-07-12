@@ -58,14 +58,15 @@ type CronStore struct {
 type JobHandler func(job *CronJob) (string, error)
 
 type CronService struct {
-	storePath string
-	store     *CronStore
-	onJob     JobHandler
-	mu        sync.RWMutex
-	running   bool
-	stopChan  chan struct{}
-	wakeChan  chan struct{}
-	gronx     *gronx.Gronx
+	storePath  string
+	store      *CronStore
+	onJob      JobHandler
+	mu         sync.RWMutex
+	running    bool
+	stopChan   chan struct{}
+	wakeChan   chan struct{}
+	gronx      *gronx.Gronx
+	activeJobs int
 }
 
 func NewCronService(storePath string, onJob JobHandler) *CronService {
@@ -237,6 +238,8 @@ func (cs *CronService) executeJobByID(jobID string) {
 
 	var err error
 	if cs.onJob != nil {
+		cs.incrementActiveJobs()
+		defer cs.decrementActiveJobs()
 		_, err = cs.onJob(callbackJob)
 	}
 
@@ -631,8 +634,32 @@ func (cs *CronService) Status() map[string]any {
 	return map[string]any{
 		"enabled":      cs.running,
 		"jobs":         len(cs.store.Jobs),
+		"activeJobs":   cs.activeJobs,
 		"nextWakeAtMS": cs.getNextWakeMS(),
 	}
+}
+
+func (cs *CronService) ActiveJobCount() int {
+	if cs == nil {
+		return 0
+	}
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.activeJobs
+}
+
+func (cs *CronService) incrementActiveJobs() {
+	cs.mu.Lock()
+	cs.activeJobs++
+	cs.mu.Unlock()
+}
+
+func (cs *CronService) decrementActiveJobs() {
+	cs.mu.Lock()
+	if cs.activeJobs > 0 {
+		cs.activeJobs--
+	}
+	cs.mu.Unlock()
 }
 
 func generateID() string {

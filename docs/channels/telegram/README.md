@@ -103,7 +103,7 @@ topic override to `disabled`:
 
 ## Built-in Commands
 
-Telegram auto-registers PicoClaw's top-level bot commands at startup, including `/start`, `/help`, `/show`, `/list`, `/model`, and `/use`.
+Telegram auto-registers PicoClaw's top-level bot commands at startup, including `/start`, `/help`, `/show`, `/list`, `/model`, `/goal`, `/new`, and `/use`.
 
 Skill-related commands:
 
@@ -118,6 +118,8 @@ Skill-related commands:
 - `/use <skill> <message>` forces a skill for a single request.
 - `/use <skill>` arms the skill for your next message in the same chat.
 - `/use clear` clears a pending skill override.
+- `/goal` shows or manages one durable objective for the current conversation.
+- `/new` starts a fresh session and clears the current goal.
 - Unknown slash commands return an explicit error instead of being sent through to the LLM as normal chat text.
 
 Examples:

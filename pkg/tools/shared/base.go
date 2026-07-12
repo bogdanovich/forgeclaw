@@ -52,6 +52,7 @@ var (
 	ctxKeyInboundContext   = &toolCtxKey{"inboundContext"}
 	ctxKeyAgentID          = &toolCtxKey{"agentID"}
 	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
+	ctxKeyRouteSessionKey  = &toolCtxKey{"routeSessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
 )
 
@@ -107,6 +108,13 @@ func WithToolSessionContext(
 	ctx = context.WithValue(ctx, ctxKeySessionKey, sessionKey)
 	ctx = context.WithValue(ctx, ctxKeySessionScope, session.CloneScope(scope))
 	return ctx
+}
+
+// WithToolRouteSessionKey carries the canonical routed conversation key used
+// for durable session-scoped state. It can differ from ToolSessionKey after a
+// user starts a fresh history session through /new or /reset.
+func WithToolRouteSessionKey(ctx context.Context, routeSessionKey string) context.Context {
+	return context.WithValue(ctx, ctxKeyRouteSessionKey, routeSessionKey)
 }
 
 // ToolChannel extracts the channel from ctx, or "" if unset.
@@ -217,6 +225,15 @@ func ToolAgentID(ctx context.Context) string {
 // ToolSessionKey extracts the active turn's session key from ctx, or "" if unset.
 func ToolSessionKey(ctx context.Context) string {
 	v, ok := ctx.Value(ctxKeySessionKey).(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
+
+// ToolRouteSessionKey extracts the canonical routed conversation key from ctx.
+func ToolRouteSessionKey(ctx context.Context) string {
+	v, ok := ctx.Value(ctxKeyRouteSessionKey).(string)
 	if !ok {
 		return ""
 	}

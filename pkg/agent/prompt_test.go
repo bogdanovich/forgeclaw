@@ -462,43 +462,6 @@ func TestBuildMessagesFromPrompt_IncludesWorkspaceTmpPath(t *testing.T) {
 	}
 }
 
-func TestBuildMessagesFromPrompt_IncludesTaskBoardGuidanceWhenToolsAvailable(t *testing.T) {
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
-	cb := NewContextBuilder(t.TempDir())
-
-	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
-		CurrentMessage: "do composite work",
-	})
-	system := messages[0].Content
-	for _, want := range []string{
-		"**Task boards**",
-		"one stable board_id",
-		"task_board",
-		"delegate/spawn",
-		"stable step_id",
-		"task_board results",
-		"task_status with board_id",
-	} {
-		if !strings.Contains(system, want) {
-			t.Fatalf("system prompt missing task-board guidance %q:\n%s", want, system)
-		}
-	}
-}
-
-func TestBuildMessagesFromPrompt_OmitsTaskBoardGuidanceWhenToolsUnavailable(t *testing.T) {
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
-	cb := NewContextBuilder(t.TempDir())
-
-	messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
-		CurrentMessage:      "hello",
-		SuppressToolUseRule: true,
-	})
-	system := messages[0].Content
-	if strings.Contains(system, "**Task boards**") {
-		t.Fatalf("system prompt should omit task-board guidance when tools are unavailable:\n%s", system)
-	}
-}
-
 func TestBuildMessagesFromPrompt_AttachesInternalPromptMetadata(t *testing.T) {
 	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
 	cb := NewContextBuilder(t.TempDir())

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -157,6 +158,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if err = preCheckConfig(cfg); err != nil {
 		return fmt.Errorf("config pre-check failed: %w", err)
 	}
+	logLatestRestartSentinel(cfg)
 
 	// Debug mode permanently overrides the config log level to DEBUG.
 	if debug {
@@ -216,7 +218,12 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 
 	logger.InfoCF("agent", "Agent initialized", startupStatus.logFields)
 
-	runningServices, err := setupAndStartServices(cfg, agentLoop, msgBus, pidData.Token, listenResult)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go agentLoop.Run(ctx)
+
+	runningServices, err := setupAndStartServices(ctx, cfg, agentLoop, msgBus, pidData.Token, listenResult)
 	if err != nil {
 		return err
 	}
@@ -252,17 +259,6 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	}
 	fmt.Println("Press Ctrl+C to stop")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go agentLoop.Run(ctx)
-	if replayed, err := msgBus.ReplayInboundSpool(ctx); err != nil {
-		logger.WarnCF("gateway", "Failed to replay inbound spool",
-			map[string]any{"error": err.Error()})
-	} else if replayed > 0 {
-		logger.InfoCF("gateway", "Replayed durable inbound messages",
-			map[string]any{"count": replayed})
-	}
 	go func() {
 		if recovered := agentLoop.RecoverUnansweredSessions(ctx); recovered > 0 {
 			logger.InfoCF("gateway", "Recovered unanswered sessions",
@@ -438,7 +434,133 @@ func configureGatewayInboundSpool(cfg *config.Config, msgBus *bus.MessageBus) er
 	return nil
 }
 
+func restartSentinelDir(cfg *config.Config) string {
+	return filepath.Join(cfg.WorkspacePath(), "state", "gateway-restart")
+}
+
+func setupSafeRestartTool(
+	cfg *config.Config,
+	agentLoop *agent.AgentLoop,
+	msgBus *bus.MessageBus,
+	preflightOptions RestartPreflightOptions,
+) error {
+	if cfg == nil {
+		return nil
+	}
+	if !cfg.Gateway.SafeRestart.Enabled {
+		return nil
+	}
+	err := agentLoop.RegisterRuntimeTool("gateway_restart", func(cfg *config.Config) (tools.Tool, error) {
+		return newGatewayRestartToolFromConfig(cfg, msgBus, preflightOptions)
+	})
+	if err != nil {
+		return err
+	}
+	logger.InfoCF("gateway", "Safe restart tool enabled", map[string]any{
+		"service_manager": cfg.Gateway.SafeRestart.EffectiveServiceManager(),
+		"service":         cfg.Gateway.SafeRestart.EffectiveService(),
+	})
+	return nil
+}
+
+func newGatewayRestartToolFromConfig(
+	cfg *config.Config,
+	msgBus *bus.MessageBus,
+	preflightOptions RestartPreflightOptions,
+) (tools.Tool, error) {
+	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
+		return nil, nil
+	}
+	store, err := NewRestartSentinelStore(restartSentinelDir(cfg))
+	if err != nil {
+		return nil, err
+	}
+	controller, err := NewRestartController(RestartControllerOptions{
+		Config:           cfg.Gateway.SafeRestart,
+		Source:           msgBus,
+		Store:            store,
+		PreflightOptions: preflightOptions,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return NewGatewayRestartTool(controller), nil
+}
+
+func restartPreflightOptions(agentLoop *agent.AgentLoop, runningServices *services) RestartPreflightOptions {
+	return RestartPreflightOptions{
+		ActiveTurnCount: func() (int, bool) {
+			if agentLoop == nil {
+				return 0, false
+			}
+			return agentLoop.ActiveTurnCount(), true
+		},
+		ActiveCronJobCount: func() (int, bool) {
+			if runningServices == nil || runningServices.CronService == nil {
+				return 0, false
+			}
+			return runningServices.CronService.ActiveJobCount(), true
+		},
+	}
+}
+
+func logLatestRestartSentinel(cfg *config.Config) {
+	if cfg == nil || !cfg.Gateway.SafeRestart.Enabled {
+		return
+	}
+	store, err := NewRestartSentinelStore(restartSentinelDir(cfg))
+	if err != nil {
+		logger.WarnCF("gateway", "Failed to open restart sentinel store", map[string]any{"error": err.Error()})
+		return
+	}
+	sentinel, err := store.Read()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.WarnCF("gateway", "Failed to read restart sentinel", map[string]any{"error": err.Error()})
+		}
+		return
+	}
+	if recovered, ok, recoverErr := store.MarkInterruptedRestartComplete(time.Now().UTC()); recoverErr != nil {
+		logger.WarnCF("gateway", "Failed to recover restart sentinel", map[string]any{"error": recoverErr.Error()})
+	} else if ok {
+		sentinel = recovered
+		logger.InfoCF("gateway", "Recovered interrupted restart sentinel", map[string]any{
+			"status":            sentinel.Status,
+			"requested_service": sentinel.RequestedService,
+			"requested_at":      sentinel.RequestedAt,
+			"updated_at":        sentinel.UpdatedAt,
+		})
+	}
+	logger.InfoCF("gateway", "Latest restart sentinel", map[string]any{
+		"status":            sentinel.Status,
+		"requested_service": sentinel.RequestedService,
+		"requested_at":      sentinel.RequestedAt,
+		"updated_at":        sentinel.UpdatedAt,
+	})
+}
+
+func snapshotGatewayInboundSpool(ctx context.Context, msgBus *bus.MessageBus) []bus.InboundMessage {
+	pending, err := msgBus.PendingInboundSpool(ctx)
+	if err != nil {
+		logger.WarnCF("gateway", "Failed to replay inbound spool",
+			map[string]any{"error": err.Error()})
+		return nil
+	}
+	return pending
+}
+
+func replayGatewayInboundSnapshot(ctx context.Context, msgBus *bus.MessageBus, pending []bus.InboundMessage) {
+	if err := msgBus.ReplayInboundMessages(ctx, pending); err != nil {
+		logger.WarnCF("gateway", "Failed to replay inbound spool",
+			map[string]any{"error": err.Error()})
+	} else if len(pending) > 0 {
+		logger.InfoCF("gateway", "Replayed durable inbound messages",
+			map[string]any{"count": len(pending)})
+	}
+}
+
 func setupAndStartServices(
+	ctx context.Context,
 	cfg *config.Config,
 	agentLoop *agent.AgentLoop,
 	msgBus *bus.MessageBus,
@@ -459,6 +581,14 @@ func setupAndStartServices(
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error setting up cron service: %w", err)
+	}
+	if err = setupSafeRestartTool(
+		cfg,
+		agentLoop,
+		msgBus,
+		restartPreflightOptions(agentLoop, runningServices),
+	); err != nil {
+		return nil, fmt.Errorf("error setting up safe restart tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return nil, fmt.Errorf("error starting cron service: %w", err)
@@ -532,9 +662,14 @@ func setupAndStartServices(
 		runningServices.HealthServer,
 	)
 
+	// Capture durable work before channel ingress starts, then replay the exact
+	// snapshot after outbound dispatch is live.
+	inboundReplaySnapshot := snapshotGatewayInboundSpool(ctx, msgBus)
+
 	if err = runningServices.ChannelManager.StartAll(context.Background()); err != nil {
 		return nil, fmt.Errorf("error starting channels: %w", err)
 	}
+	replayGatewayInboundSnapshot(ctx, msgBus, inboundReplaySnapshot)
 
 	logChannelVoiceCapabilities(runningServices.ChannelManager, transcriber != nil, ttsAvailable)
 
@@ -707,6 +842,9 @@ func restartServices(
 	)
 	if err != nil {
 		return fmt.Errorf("error restarting cron service: %w", err)
+	}
+	if err = setupSafeRestartTool(cfg, al, msgBus, restartPreflightOptions(al, runningServices)); err != nil {
+		return fmt.Errorf("error setting up safe restart tool: %w", err)
 	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return fmt.Errorf("error restarting cron service: %w", err)

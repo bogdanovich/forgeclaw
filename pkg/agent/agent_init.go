@@ -137,6 +137,11 @@ func registerSharedTools(
 			continue
 		}
 		taskRegistry := al.taskRegistryForWorkspace(agent.Workspace)
+		if al.state != nil {
+			registerToolIfAllowed(agent, tools.NewGetGoalTool(al.state))
+			registerToolIfAllowed(agent, tools.NewCreateGoalTool(al.state))
+			registerToolIfAllowed(agent, tools.NewUpdateGoalTool(al.state))
+		}
 
 		if cfg.Tools.IsToolEnabled("web") {
 			searchTool, err := tools.NewWebSearchTool(tools.WebSearchToolOptionsFromConfig(cfg))
@@ -264,9 +269,6 @@ func registerSharedTools(
 		// Spawn and spawn_status tools share a SubagentManager. task_status uses
 		// the same durable registry, but does not require the SubagentManager.
 		// Construct the manager when either spawn-specific tool is enabled.
-		if cfg.Tools.IsToolEnabled("task_board") {
-			registerToolIfAllowed(agent, tools.NewTaskBoardTool(taskRegistry))
-		}
 		spawnEnabled := cfg.Tools.IsToolEnabled("spawn")
 		spawnStatusEnabled := cfg.Tools.IsToolEnabled("spawn_status")
 		if (spawnEnabled || spawnStatusEnabled) && cfg.Tools.IsToolEnabled("subagent") {
@@ -347,7 +349,7 @@ func registerSharedTools(
 			})
 
 			// Clone the parent's tool registry so subagents can use all tools
-			// registered so far (file, web, task_board, etc.) but NOT spawn/spawn_status/task_status
+			// registered so far (file, web, etc.) but NOT spawn/spawn_status/task_status
 			// which are added below — preventing recursive subagent spawning.
 			subagentManager.SetTools(agent.Tools.Clone())
 			if spawnEnabled {
@@ -391,21 +393,6 @@ func registerSharedTools(
 			})
 			registerToolIfAllowed(agent, delegateTool)
 		}
-		if cfg.Tools.IsToolEnabled("task_board_execute_next") {
-			if _, ok := agent.Tools.Get("delegate"); ok {
-				registerToolIfAllowed(agent, tools.NewTaskBoardExecuteNextTool(taskRegistry, agent.Tools))
-			} else {
-				logger.WarnCF("agent", "task_board_execute_next requires delegate tool", nil)
-			}
-		}
-		if cfg.Tools.IsToolEnabled("task_board_execute_all") {
-			if _, ok := agent.Tools.Get("delegate"); ok {
-				registerToolIfAllowed(agent, tools.NewTaskBoardExecuteAllTool(taskRegistry, agent.Tools))
-			} else {
-				logger.WarnCF("agent", "task_board_execute_all requires delegate tool", nil)
-			}
-		}
-
 		warnOnUnknownAgentToolDeclarations(agentID, agent.Workspace, agent.Definition, agent.Tools)
 	}
 }

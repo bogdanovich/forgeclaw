@@ -4502,7 +4502,7 @@ func TestProcessMessage_CommandOutcomes(t *testing.T) {
 		},
 		Content: "/new",
 	})
-	if newResp != "Unknown command: /new. Use /help to see available commands." {
+	if !strings.Contains(newResp, "cleared the current goal") {
 		t.Fatalf("unexpected /new reply: %q", newResp)
 	}
 	if provider.calls != 0 {
@@ -5689,12 +5689,12 @@ func TestProcessMessage_ListModelsShowsConfiguredAliases(t *testing.T) {
 	if !strings.Contains(resp, "Available Models:") {
 		t.Fatalf("unexpected /list models reply: %q", resp)
 	}
-	if !strings.Contains(resp, "- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai") {
+	if !strings.Contains(resp, "- gpt-5.4 (current) — openai/gpt-5.4 via openai") {
 		t.Fatalf("unexpected /list models current entry: %q", resp)
 	}
 	if !strings.Contains(
 		resp,
-		"- deepseek\n  - openrouter/deepseek/deepseek-v3.2 via openrouter [x2]",
+		"- deepseek — openrouter/deepseek/deepseek-v3.2 via openrouter [x2]",
 	) {
 		t.Fatalf("unexpected /list models deepseek entry: %q", resp)
 	}

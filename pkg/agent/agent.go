@@ -64,6 +64,7 @@ type AgentLoop struct {
 	pendingStops     sync.Map
 	asyncCompletions sync.Map
 	taskRegistries   sync.Map
+	runtimeTools     map[string]RuntimeToolFactory
 	mu               sync.RWMutex
 
 	// workerSem limits concurrent turn processing workers.
@@ -100,6 +101,7 @@ type processOptions struct {
 	SystemPromptOverride     string                 // Override the default system prompt (Used by SubTurns)
 	Media                    []string               // media:// refs from inbound message
 	InitialSteeringMessages  []providers.Message    // Steering messages from refactor/agent
+	ActiveGoal               string                 // Dynamic session goal reminder for normal LLM turns
 	DefaultResponse          string                 // Response when LLM returns empty
 	EnableSummary            bool                   // Whether to trigger summarization
 	SendResponse             bool                   // Whether to send response via bus
@@ -297,6 +299,9 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 
 	// Ensure shared tools are re-registered on the new registry
 	registerSharedTools(al, cfg, al.bus, registry, provider)
+	if err := al.registerRuntimeToolsForRegistry(cfg, registry); err != nil {
+		return err
+	}
 
 	newEvolution, evolutionErr := newEvolutionBridge(registry, cfg, provider)
 	if evolutionErr != nil {
@@ -439,6 +444,7 @@ func (al *AgentLoop) runAgentLoop(
 	if err != nil {
 		return "", err
 	}
+	al.applyActiveGoalPrompt(&opts)
 
 	// Record last channel for heartbeat notifications (skip internal channels and cli)
 	if opts.Dispatch.Channel() != "" &&
