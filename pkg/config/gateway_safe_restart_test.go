@@ -51,3 +51,38 @@ func TestGatewaySafeRestartDefaultDisabled(t *testing.T) {
 		t.Fatalf("default drain timeout = %d", cfg.Gateway.SafeRestart.EffectiveDrainTimeoutSeconds())
 	}
 }
+
+func TestGatewayDeployConfigParsing(t *testing.T) {
+	raw := []byte(`{
+		"version": 3,
+		"gateway": {
+			"deploy": {
+				"enabled": true,
+				"group": "picoclaw-local",
+				"command": "/opt/picoclaw/deploy.sh",
+				"default_target": "current",
+				"allowed_targets": ["current", "all", "reviewer"],
+				"timeout_seconds": 120
+			}
+		}
+	}`)
+
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	got := cfg.Gateway.Deploy
+	if !got.Enabled || got.Group != "picoclaw-local" || got.Command != "/opt/picoclaw/deploy.sh" {
+		t.Fatalf("deploy config = %#v", got)
+	}
+	if got.DefaultTarget != "current" || got.EffectiveTimeoutSeconds() != 120 {
+		t.Fatalf("deploy target/timeout = %q/%d", got.DefaultTarget, got.EffectiveTimeoutSeconds())
+	}
+	if len(got.AllowedTargets) != 3 || got.AllowedTargets[2] != "reviewer" {
+		t.Fatalf("allowed targets = %#v", got.AllowedTargets)
+	}
+	if (GatewayDeployConfig{}).EffectiveTimeoutSeconds() != 600 {
+		t.Fatalf("default deploy timeout = %d", (GatewayDeployConfig{}).EffectiveTimeoutSeconds())
+	}
+}

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,8 @@ func writeDeployScript(t *testing.T, body string) string {
 
 func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 	script := writeDeployScript(t, "printf '%s:%s' \"$1\" \"$FORGECLAW_DEPLOY_TARGET\"")
-	runner, err := NewDeployRunner(deployConfig(script), t.TempDir(), "main.service")
+	workspace := t.TempDir()
+	runner, err := NewDeployRunner(deployConfig(script), workspace, "main.service")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +44,32 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 	}
 	if _, _, err := runner.Run(context.Background(), "bad", ""); err == nil {
 		t.Fatal("expected invalid target error")
+	}
+
+	data, err := os.ReadFile(filepath.Join(workspace, "state", "gateway-deploy", "deploy-sentinel.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sentinel DeploySentinel
+	if err := json.Unmarshal(data, &sentinel); err != nil {
+		t.Fatal(err)
+	}
+	if sentinel.Kind != "deploy" || sentinel.Status != "succeeded" || sentinel.Group != "local" || sentinel.Target != "current" {
+		t.Fatalf("sentinel = %#v", sentinel)
+	}
+	if sentinel.Command != script || sentinel.ExitCode != 0 || sentinel.Origin.SessionKey != "session-1" {
+		t.Fatalf("sentinel command/result/origin = %#v", sentinel)
+	}
+}
+
+func TestNewDeployRunnerRejectsDisabledAndRelativeCommand(t *testing.T) {
+	cfg := deployConfig("deploy.sh")
+	if _, err := NewDeployRunner(cfg, t.TempDir(), ""); err == nil {
+		t.Fatal("expected relative command to be rejected")
+	}
+	cfg.Enabled = false
+	if _, err := NewDeployRunner(cfg, t.TempDir(), ""); err == nil {
+		t.Fatal("expected disabled deploy to be rejected")
 	}
 }
 
