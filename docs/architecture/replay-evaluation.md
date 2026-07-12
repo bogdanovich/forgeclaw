@@ -282,6 +282,25 @@ Current capture limitations are explicit:
   trace transitions expose only successful apply and persisted draft states;
 - user correction remains an explicit fixture/CLI annotation and is never
   inferred during production capture.
+- final outcome is authoritative in the trace envelope and turn-end record;
+  there is no separate runtime source for `outcome.final`;
+- the context managers do not emit a typed reconciliation event with revision
+  identity, so `context.reconciliation` is currently unavailable from
+  production capture;
+- process startup/reload does not emit a typed restart-boundary event. Durable
+  task events record reconciliation to `lost`, but `runtime.restart` itself is
+  currently fixture-only;
+- the inbound spool exposes prepare/ack/release operations but no typed
+  transition event. Bus failures alone cannot reconstruct spool state, so
+  `inbound_spool.transition` is currently fixture-only;
+- the evolution observer emits durable records, saved drafts, and successful
+  applies. Review, rollback, and profile updates have no observer callback, so
+  `evolution.review`, `evolution.rollback`, and `evolution.profile` are
+  currently fixture-only.
+
+Evaluators that require one of these unavailable categories return
+`not_evaluable` unless an explicit sanitized fixture supplies the evidence.
+They never infer a passing result from adjacent logs or state.
 
 ## Deterministic Replay
 
@@ -451,9 +470,14 @@ acceptable foundation outputs because they are independently validated.
 
 ## Completion Criteria
 
+The merged-main evidence audit is recorded in
+[`replay-evaluation-audit.md`](replay-evaluation-audit.md).
+
 - Every required trace category is captured or explicitly documented as
   unavailable with a source-level reason.
-- Serialized traces pass secret, bounds, schema, ordering, and migration tests.
+- Serialized traces pass secret, bounds, schema, and ordering tests. Migration
+  tests become mandatory when a second supported schema version is introduced;
+  v1 readers currently reject every unknown major version explicitly.
 - Replay demonstrates that live side effects are structurally unavailable.
 - Every named deterministic evaluator has passing and failing sourced fixtures.
 - CLI output is stable and machine-readable; deterministic fixtures run in CI.
