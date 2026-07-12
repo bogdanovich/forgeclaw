@@ -61,7 +61,7 @@ func (al *AgentLoop) runTurn(
 			TurnEndPayload{
 				Status:                turnStatus,
 				Workspace:             ts.workspace,
-				DeliveryExpected:      ts.opts.SendResponse,
+				DeliveryExpected:      ts.opts.SendResponse || ts.opts.ExpectFinalDelivery,
 				Iterations:            ts.currentIteration(),
 				Duration:              time.Since(ts.startedAt),
 				LLMCalls:              llmCalls,

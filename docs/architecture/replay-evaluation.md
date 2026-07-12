@@ -315,20 +315,27 @@ messages, and delivery outcomes. Scenario replay uses the existing
 real orchestration path with:
 
 - virtual clock and deterministic ID source;
-- in-memory isolated session/task/evolution stores;
+- isolated session/task/evolution state confined to a runner-owned temporary
+  workspace that is removed after each scenario;
 - scripted providers and explicitly registered stub tools;
 - recording delivery sink that never starts a channel;
-- denied network, MCP, shell, filesystem mutation, subprocess, and gateway
-  construction;
+- denied network, MCP, shell, external filesystem mutation tools, subprocess,
+  and gateway construction; the agent's own state writes are confined to its
+  disposable workspace;
 - explicit restart checkpoints that reconstruct only allowed isolated state.
 
 A trace cannot name a production tool and cause it to execute. Fixture tools
 must be registered by test code or a compiled safe stub catalog. Unknown tools
 produce a deterministic denied result.
 
-The real-orchestration scenario adapter is intentionally separate from the pure
-reducer. Until that adapter is present, the safety primitives are available for
-tests but do not claim that a complete agent turn has been replayed.
+The implemented `pkg/evalscenario` adapter drives the real inbound
+`AgentLoop.Run` path with scripted model responses and sealed text-only stub
+tools. It writes an explicit tool/MCP allowlist before constructing the loop,
+uses an isolated bootstrap option that skips shared production tool and state
+manager construction, verifies the resulting registry contains exactly the
+declared stubs, records the outbound delivery, normalizes the captured evidence
+to fixture identity, and feeds it through contract replay. The temporary
+workspace is deleted before the runner returns.
 
 Replay output contains observations and diagnostics, never production writes.
 The same fixture, binary, options, and evaluator versions must produce identical
