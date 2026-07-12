@@ -97,3 +97,6 @@ Model-assisted grading is currently deferred because there is no approved
 semantic rubric, provider, cost budget, or variance threshold. The current
 failure classes are covered by deterministic evidence and do not justify model
 calls.
+
+The fixture matrix is part of the package test suite and therefore runs in
+pull-request CI.

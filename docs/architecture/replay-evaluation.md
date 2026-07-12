@@ -399,7 +399,7 @@ permission to copy private production content.
 
 The checked-in versioned manifest contains one passing and one failing fixture
 for every deterministic evaluator. `picoclaw eval fixtures` validates the
-manifest, and pull-request CI runs that validation explicitly.
+manifest, and the pull-request Go test job runs the manifest fixture matrix.
 
 ## User Corrections
 
