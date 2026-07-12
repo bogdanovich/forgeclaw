@@ -39,8 +39,8 @@ func TestSeahorseReconciliationCleanRevisionSkipsDeepComparison(t *testing.T) {
 	if err := canonical.AddMessage(ctx, key, "user", "canonical"); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.ensureReconciled(ctx, key, mgr.sessions); err != nil {
-		t.Fatal(err)
+	if reconcileErr := mgr.ensureReconciled(ctx, key, mgr.sessions); reconcileErr != nil {
+		t.Fatal(reconcileErr)
 	}
 	before := mgr.reconciliations.Load()
 	if err := mgr.ensureReconciled(ctx, key, mgr.sessions); err != nil {
@@ -189,8 +189,8 @@ func TestSeahorseIngestKeepsLiveMessageAfterCanonicalWriteFailure(t *testing.T) 
 		t.Fatalf("failed canonical write advanced watermark: %+v", state)
 	}
 
-	if err := mgr.ensureReconciled(ctx, key, mgr.sessions); err != nil {
-		t.Fatal(err)
+	if reconcileErr := mgr.ensureReconciled(ctx, key, mgr.sessions); reconcileErr != nil {
+		t.Fatal(reconcileErr)
 	}
 	stored, err = store.GetMessages(ctx, conv.ConversationID, 0, 0)
 	if err != nil {
