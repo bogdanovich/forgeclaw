@@ -124,13 +124,16 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	if !ts.opts.NoHistory && (strings.TrimSpace(ts.userMessage) != "" || len(ts.media) > 0) {
 		rootMsg := userPromptMessage(ts.userMessage, ts.media)
+		var writeErr error
 		if len(rootMsg.Media) > 0 {
-			ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg)
+			writeErr = persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, rootMsg)
 		} else {
-			ts.agent.Sessions.AddMessage(ts.sessionKey, rootMsg.Role, rootMsg.Content)
+			writeErr = persistSessionMessage(ts.agent.Sessions, ts.sessionKey, rootMsg.Role, rootMsg.Content)
 		}
-		ts.recordPersistedMessage(rootMsg)
-		p.ingestMessage(ctx, ts, rootMsg)
+		if writeErr == nil {
+			ts.recordPersistedMessage(rootMsg)
+		}
+		p.ingestMessage(ctx, ts, rootMsg, writeErr)
 	}
 
 	execution := ts.model.ExecutionState()

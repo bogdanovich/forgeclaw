@@ -289,12 +289,18 @@ func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage
 		Content: content,
 		Media:   append([]string(nil), msg.Media...),
 	}
+	var writeErr error
 	if len(record.Media) > 0 {
-		agent.Sessions.AddFullMessage(sessionKey, record)
+		writeErr = persistFullSessionMessage(agent.Sessions, sessionKey, record)
 	} else {
-		agent.Sessions.AddMessage(sessionKey, record.Role, record.Content)
+		writeErr = persistSessionMessage(agent.Sessions, sessionKey, record.Role, record.Content)
 	}
-	if err := agent.Sessions.Save(sessionKey); err != nil {
+	if writeErr != nil {
+		logger.WarnCF("agent", "Failed to persist observed message", map[string]any{
+			"session_key": sessionKey,
+			"error":       writeErr.Error(),
+		})
+	} else if err := agent.Sessions.Save(sessionKey); err != nil {
 		logger.WarnCF("agent", "Failed to save observed message", map[string]any{
 			"session_key": sessionKey,
 			"error":       err.Error(),
@@ -302,8 +308,9 @@ func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage
 	}
 	if al.contextManager != nil {
 		if err := al.contextManager.Ingest(ctx, &IngestRequest{
-			SessionKey: sessionKey,
-			Message:    record,
+			SessionKey:        sessionKey,
+			Message:           record,
+			CanonicalWriteErr: writeErr,
 		}); err != nil {
 			logger.WarnCF("agent", "Context manager ingest failed for observed message", map[string]any{
 				"session_key": sessionKey,

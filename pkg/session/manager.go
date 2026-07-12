@@ -8,16 +8,41 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
 )
 
 type Session struct {
-	Key      string              `json:"key"`
-	Messages []providers.Message `json:"messages"`
-	Summary  string              `json:"summary,omitempty"`
-	Created  time.Time           `json:"created"`
-	Updated  time.Time           `json:"updated"`
+	Key             string              `json:"key"`
+	Messages        []providers.Message `json:"messages"`
+	Summary         string              `json:"summary,omitempty"`
+	Created         time.Time           `json:"created"`
+	Updated         time.Time           `json:"updated"`
+	HistoryRevision uint64              `json:"history_revision,omitempty"`
+}
+
+func advanceHistoryRevision(session *Session) {
+	session.HistoryRevision++
+	if session.HistoryRevision == 0 {
+		session.HistoryRevision = 1
+	}
+}
+
+// GetHistoryRevision returns the monotonic logical history revision persisted
+// with legacy sessions. Wall-clock timestamps are not mutation identities:
+// multiple writes may observe the same clock tick.
+func (sm *SessionManager) GetHistoryRevision(key string) (memory.HistoryRevision, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	session, ok := sm.sessions[key]
+	if !ok {
+		return memory.HistoryRevision{}, nil
+	}
+	return memory.HistoryRevision{
+		Revision: session.HistoryRevision,
+		Count:    len(session.Messages),
+	}, nil
 }
 
 type SessionManager struct {
@@ -82,6 +107,11 @@ func (sm *SessionManager) AddMessage(sessionKey, role, content string) {
 	})
 }
 
+func (sm *SessionManager) AddMessageWithError(sessionKey, role, content string) error {
+	sm.AddMessage(sessionKey, role, content)
+	return nil
+}
+
 // AddFullMessage adds a complete message with tool calls and tool call ID to the session.
 // This is used to save the full conversation flow including tool calls and tool results.
 func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Message) {
@@ -106,7 +136,13 @@ func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Messag
 	ensureMessageCreatedAt(&msg, now)
 
 	session.Messages = append(session.Messages, msg)
+	advanceHistoryRevision(session)
 	session.Updated = now
+}
+
+func (sm *SessionManager) AddFullMessageWithError(sessionKey string, msg providers.Message) error {
+	sm.AddFullMessage(sessionKey, msg)
+	return nil
 }
 
 func (sm *SessionManager) GetHistory(key string) []providers.Message {
@@ -121,6 +157,10 @@ func (sm *SessionManager) GetHistory(key string) []providers.Message {
 	history := make([]providers.Message, len(session.Messages))
 	copy(history, session.Messages)
 	return history
+}
+
+func (sm *SessionManager) GetHistoryWithError(key string) ([]providers.Message, error) {
+	return sm.GetHistory(key), nil
 }
 
 func (sm *SessionManager) GetSummary(key string) string {
@@ -155,7 +195,11 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 	}
 
 	if keepLast <= 0 {
+		if len(session.Messages) == 0 {
+			return
+		}
 		session.Messages = []providers.Message{}
+		advanceHistoryRevision(session)
 		session.Updated = time.Now()
 		return
 	}
@@ -165,6 +209,7 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 	}
 
 	session.Messages = session.Messages[len(session.Messages)-keepLast:]
+	advanceHistoryRevision(session)
 	session.Updated = time.Now()
 }
 
@@ -213,10 +258,11 @@ func (sm *SessionManager) Save(key string) error {
 	}
 
 	snapshot := Session{
-		Key:     stored.Key,
-		Summary: stored.Summary,
-		Created: stored.Created,
-		Updated: stored.Updated,
+		Key:             stored.Key,
+		Summary:         stored.Summary,
+		Created:         stored.Created,
+		Updated:         stored.Updated,
+		HistoryRevision: stored.HistoryRevision,
 	}
 	if len(stored.Messages) > 0 {
 		snapshot.Messages = messageutil.FilterInvalidHistoryMessages(stored.Messages)
@@ -321,6 +367,7 @@ func (sm *SessionManager) SetHistory(key string, history []providers.Message) {
 		copy(msgs, history)
 		normalizeHistoryCreatedAt(msgs)
 		session.Messages = msgs
+		advanceHistoryRevision(session)
 		session.Updated = time.Now()
 	}
 }

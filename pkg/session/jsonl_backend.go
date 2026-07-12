@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -119,27 +120,43 @@ func (b *JSONLBackend) GetSessionScope(sessionKey string) *SessionScope {
 }
 
 func (b *JSONLBackend) AddMessage(sessionKey, role, content string) {
-	sessionKey = b.resolveSessionKey(sessionKey)
-	if err := b.store.AddMessage(context.Background(), sessionKey, role, content); err != nil {
+	if err := b.AddMessageWithError(sessionKey, role, content); err != nil {
 		log.Printf("session: add message: %v", err)
 	}
 }
 
-func (b *JSONLBackend) AddFullMessage(sessionKey string, msg providers.Message) {
+func (b *JSONLBackend) AddMessageWithError(sessionKey, role, content string) error {
 	sessionKey = b.resolveSessionKey(sessionKey)
-	if err := b.store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
+	return b.store.AddMessage(context.Background(), sessionKey, role, content)
+}
+
+func (b *JSONLBackend) AddFullMessage(sessionKey string, msg providers.Message) {
+	if err := b.AddFullMessageWithError(sessionKey, msg); err != nil {
 		log.Printf("session: add full message: %v", err)
 	}
 }
 
+func (b *JSONLBackend) AddFullMessageWithError(sessionKey string, msg providers.Message) error {
+	sessionKey = b.resolveSessionKey(sessionKey)
+	return b.store.AddFullMessage(context.Background(), sessionKey, msg)
+}
+
 func (b *JSONLBackend) GetHistory(key string) []providers.Message {
-	key = b.resolveSessionKey(key)
-	msgs, err := b.store.GetHistory(context.Background(), key)
+	msgs, err := b.GetHistoryWithError(key)
 	if err != nil {
 		log.Printf("session: get history: %v", err)
 		return []providers.Message{}
 	}
 	return msgs
+}
+
+func (b *JSONLBackend) GetHistoryWithError(key string) ([]providers.Message, error) {
+	key = b.resolveSessionKey(key)
+	msgs, err := b.store.GetHistory(context.Background(), key)
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 func (b *JSONLBackend) GetSummary(key string) string {
@@ -189,4 +206,15 @@ func (b *JSONLBackend) Close() error {
 // ListSessions returns all known session keys.
 func (b *JSONLBackend) ListSessions() []string {
 	return b.store.ListSessions()
+}
+
+// GetHistoryRevision returns the canonical history identity when supported by
+// the underlying store.
+func (b *JSONLBackend) GetHistoryRevision(sessionKey string) (memory.HistoryRevision, error) {
+	sessionKey = b.resolveSessionKey(sessionKey)
+	store, ok := b.store.(memory.HistoryRevisionStore)
+	if !ok {
+		return memory.HistoryRevision{}, fmt.Errorf("session: history revision unsupported")
+	}
+	return store.GetHistoryRevision(context.Background(), sessionKey)
 }

@@ -15,6 +15,59 @@ type Store struct {
 	db *sql.DB
 }
 
+// ReconciliationState records which canonical history revision has been
+// incorporated into Seahorse for a session.
+type ReconciliationState struct {
+	SessionKey       string
+	SourceRevision   uint64
+	SourceCount      int
+	SourceSkip       int
+	SourceFileSize   int64
+	SourceModTimeNS  int64
+	SchemaGeneration int
+}
+
+func (s *Store) GetReconciliationState(ctx context.Context, sessionKey string) (*ReconciliationState, error) {
+	var state ReconciliationState
+	var revision int64
+	err := s.db.QueryRowContext(ctx, `SELECT session_key, source_revision, source_count,
+		source_skip, source_file_size, source_mod_time_ns, schema_generation
+		FROM reconciliation_state WHERE session_key = ?`, sessionKey).Scan(
+		&state.SessionKey, &revision, &state.SourceCount, &state.SourceSkip,
+		&state.SourceFileSize, &state.SourceModTimeNS, &state.SchemaGeneration,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get reconciliation state: %w", err)
+	}
+	state.SourceRevision = uint64(revision)
+	return &state, nil
+}
+
+func (s *Store) SetReconciliationState(ctx context.Context, state ReconciliationState) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO reconciliation_state (
+		session_key, source_revision, source_count, source_skip, source_file_size,
+		source_mod_time_ns, schema_generation, reconciled_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+	ON CONFLICT(session_key) DO UPDATE SET
+		source_revision = excluded.source_revision,
+		source_count = excluded.source_count,
+		source_skip = excluded.source_skip,
+		source_file_size = excluded.source_file_size,
+		source_mod_time_ns = excluded.source_mod_time_ns,
+		schema_generation = excluded.schema_generation,
+		reconciled_at = excluded.reconciled_at`,
+		state.SessionKey, int64(state.SourceRevision), state.SourceCount, state.SourceSkip,
+		state.SourceFileSize, state.SourceModTimeNS, state.SchemaGeneration,
+	)
+	if err != nil {
+		return fmt.Errorf("set reconciliation state: %w", err)
+	}
+	return nil
+}
+
 // CreateSummaryInput holds parameters for creating a summary.
 type CreateSummaryInput struct {
 	ConversationID       int64
@@ -358,7 +411,7 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 	for rows.Next() {
 		var msg Message
 		var createdAt string
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&msg.ID,
 			&msg.ConversationID,
 			&msg.Role,
@@ -367,26 +420,69 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 			&msg.ReasoningContent,
 			&msg.TokenCount,
 			&createdAt,
-		); err != nil {
-			return nil, err
+		); scanErr != nil {
+			return nil, scanErr
 		}
 		msg.CreatedAt = parseSQLiteTime(createdAt)
 		msgs = append(msgs, msg)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
-	// Load parts for all messages
+	partsByMessage, err := s.loadMessagePartsBatch(ctx, msgs)
+	if err != nil {
+		return nil, err
+	}
 	for i := range msgs {
-		parts, err := s.loadMessageParts(ctx, msgs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		msgs[i].Parts = parts
+		msgs[i].Parts = partsByMessage[msgs[i].ID]
 	}
 
 	return msgs, nil
+}
+
+const messagePartsBatchSize = 500
+
+func (s *Store) loadMessagePartsBatch(ctx context.Context, messages []Message) (map[int64][]MessagePart, error) {
+	result := make(map[int64][]MessagePart, len(messages))
+	for start := 0; start < len(messages); start += messagePartsBatchSize {
+		end := min(start+messagePartsBatchSize, len(messages))
+		if err := s.loadMessagePartsChunk(ctx, messages[start:end], result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) loadMessagePartsChunk(
+	ctx context.Context,
+	messages []Message,
+	result map[int64][]MessagePart,
+) error {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(messages)), ",")
+	args := make([]any, 0, len(messages))
+	for i := range messages {
+		args = append(args, messages[i].ID)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT part_id, message_id, type, text,
+		name, arguments, tool_call_id, media_uri, mime_type, ordinal
+		FROM message_parts WHERE message_id IN (`+placeholders+`)
+		ORDER BY message_id, ordinal`, args...)
+	if err != nil {
+		return fmt.Errorf("load message parts batch: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var part MessagePart
+		var ordinal int
+		if scanErr := rows.Scan(&part.ID, &part.MessageID, &part.Type, &part.Text,
+			&part.Name, &part.Arguments, &part.ToolCallID, &part.MediaURI,
+			&part.MimeType, &ordinal); scanErr != nil {
+			return scanErr
+		}
+		result[part.MessageID] = append(result[part.MessageID], part)
+	}
+	return rows.Err()
 }
 
 // GetMessageCount returns total message count for a conversation.

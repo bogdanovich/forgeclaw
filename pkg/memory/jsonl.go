@@ -49,6 +49,13 @@ type SessionMeta struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 	Scope     json.RawMessage `json:"scope,omitempty"`
 	Aliases   []string        `json:"aliases,omitempty"`
+	// HistoryRevision changes whenever the visible canonical history changes.
+	// HistoryDirty remains set across crashes during multi-file mutations.
+	HistoryRevision      uint64 `json:"history_revision,omitempty"`
+	HistoryDirty         bool   `json:"history_dirty,omitempty"`
+	HistoryHasPrevious   bool   `json:"history_has_previous,omitempty"`
+	HistoryPreviousCount int    `json:"history_previous_count,omitempty"`
+	HistoryPreviousSkip  int    `json:"history_previous_skip,omitempty"`
 }
 
 // JSONLStore implements Store using append-only JSONL files.
@@ -139,6 +146,29 @@ func (s *JSONLStore) writeMeta(key string, meta SessionMeta) error {
 	return fileutil.WriteFileAtomic(s.metaPath(key), data, 0o644)
 }
 
+func bumpHistoryRevision(meta *SessionMeta) {
+	meta.HistoryRevision++
+	if meta.HistoryRevision == 0 {
+		meta.HistoryRevision = 1
+	}
+}
+
+func (s *JSONLStore) beginHistoryMutation(key string, meta *SessionMeta, bump bool) error {
+	if bump {
+		bumpHistoryRevision(meta)
+	}
+	meta.HistoryDirty = true
+	return s.writeMeta(key, *meta)
+}
+
+func (s *JSONLStore) finishHistoryMutation(key string, meta *SessionMeta) error {
+	meta.HistoryDirty = false
+	meta.HistoryHasPrevious = false
+	meta.HistoryPreviousCount = 0
+	meta.HistoryPreviousSkip = 0
+	return s.writeMeta(key, *meta)
+}
+
 func cloneRawJSON(data json.RawMessage) json.RawMessage {
 	if len(data) == 0 {
 		return nil
@@ -198,6 +228,57 @@ func (s *JSONLStore) GetSessionMeta(_ context.Context, sessionKey string) (Sessi
 		meta.Aliases = append([]string(nil), meta.Aliases...)
 	}
 	return meta, nil
+}
+
+// GetHistoryRevision returns a cheap durable identity while holding the same
+// per-session lock used by writers, so callers never observe an in-process
+// mutation halfway through.
+func (s *JSONLStore) GetHistoryRevision(
+	_ context.Context,
+	sessionKey string,
+) (HistoryRevision, error) {
+	l := s.sessionLock(sessionKey)
+	l.Lock()
+	defer l.Unlock()
+
+	meta, err := s.readMeta(sessionKey)
+	if err != nil {
+		return HistoryRevision{}, err
+	}
+	if meta.HistoryDirty {
+		rawCount, _, scanErr := scanRetainedMessageLines(s.jsonlPath(sessionKey))
+		if scanErr != nil {
+			return HistoryRevision{}, scanErr
+		}
+		if meta.HistoryHasPrevious && rawCount != meta.Count {
+			meta.Count = meta.HistoryPreviousCount
+			meta.Skip = meta.HistoryPreviousSkip
+		} else {
+			meta.Count = rawCount
+			if meta.Skip > rawCount {
+				meta.Skip = rawCount
+			}
+		}
+		if finishErr := s.finishHistoryMutation(sessionKey, &meta); finishErr != nil {
+			return HistoryRevision{}, finishErr
+		}
+	}
+	var size, modTimeNS int64
+	info, err := os.Stat(s.jsonlPath(sessionKey))
+	if err == nil {
+		size = info.Size()
+		modTimeNS = info.ModTime().UnixNano()
+	} else if !os.IsNotExist(err) {
+		return HistoryRevision{}, err
+	}
+	return HistoryRevision{
+		Revision:  meta.HistoryRevision,
+		Count:     meta.Count,
+		Skip:      meta.Skip,
+		Dirty:     meta.HistoryDirty,
+		FileSize:  size,
+		ModTimeNS: modTimeNS,
+	}, nil
 }
 
 // UpsertSessionMeta stores structured session metadata while preserving
@@ -419,6 +500,7 @@ func (s *JSONLStore) promoteAliasHistoryLocked(
 		return false, err
 	}
 
+	previousCount, previousSkip := canonicalMeta.Count, canonicalMeta.Skip
 	now := time.Now()
 	if canonicalMeta.CreatedAt.IsZero() {
 		canonicalMeta.CreatedAt = now
@@ -431,11 +513,17 @@ func (s *JSONLStore) promoteAliasHistoryLocked(
 	if aliasSummary != "" {
 		canonicalMeta.Summary = aliasSummary
 	}
+	canonicalMeta.HistoryHasPrevious = true
+	canonicalMeta.HistoryPreviousCount = previousCount
+	canonicalMeta.HistoryPreviousSkip = previousSkip
 
+	if err := s.beginHistoryMutation(sessionKey, &canonicalMeta, true); err != nil {
+		return false, err
+	}
 	if err := s.rewriteJSONL(sessionKey, aliasHistory); err != nil {
 		return false, err
 	}
-	if err := s.writeMeta(sessionKey, canonicalMeta); err != nil {
+	if err := s.finishHistoryMutation(sessionKey, &canonicalMeta); err != nil {
 		if rollbackErr := s.restoreRawJSONL(sessionKey, previousJSONL, hadPreviousJSONL); rollbackErr != nil {
 			return false, fmt.Errorf("memory: write promoted meta: %w (rollback jsonl: %v)", err, rollbackErr)
 		}
@@ -600,6 +688,17 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 	defer l.Unlock()
 
 	now := time.Now()
+	meta, err := s.readMeta(sessionKey)
+	if err != nil {
+		return err
+	}
+	if meta.Count == 0 && meta.CreatedAt.IsZero() {
+		meta.CreatedAt = now
+	}
+	meta.UpdatedAt = now
+	if mutationErr := s.beginHistoryMutation(sessionKey, &meta, true); mutationErr != nil {
+		return mutationErr
+	}
 
 	if msg.CreatedAt == nil {
 		msg.CreatedAt = &now
@@ -637,18 +736,10 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 		return fmt.Errorf("memory: close jsonl: %w", closeErr)
 	}
 
-	// Update metadata.
-	meta, err := s.readMeta(sessionKey)
-	if err != nil {
-		return err
-	}
-	if meta.Count == 0 && meta.CreatedAt.IsZero() {
-		meta.CreatedAt = now
-	}
 	meta.Count++
 	meta.UpdatedAt = now
 
-	return s.writeMeta(sessionKey, meta)
+	return s.finishHistoryMutation(sessionKey, &meta)
 }
 
 func (s *JSONLStore) GetHistory(
@@ -742,6 +833,8 @@ func (s *JSONLStore) TruncateHistory(
 		meta.Skip = activeRawLines[activeRetainedCount-keepLast-1]
 	}
 	meta.UpdatedAt = time.Now()
+	bumpHistoryRevision(&meta)
+	meta.HistoryDirty = false
 
 	return s.writeMeta(sessionKey, meta)
 }
@@ -761,6 +854,7 @@ func (s *JSONLStore) SetHistory(
 	if err != nil {
 		return err
 	}
+	previousCount, previousSkip := meta.Count, meta.Skip
 	now := time.Now()
 	if meta.CreatedAt.IsZero() {
 		meta.CreatedAt = now
@@ -768,6 +862,12 @@ func (s *JSONLStore) SetHistory(
 	meta.Skip = 0
 	meta.Count = len(history)
 	meta.UpdatedAt = now
+	meta.HistoryHasPrevious = true
+	meta.HistoryPreviousCount = previousCount
+	meta.HistoryPreviousSkip = previousSkip
+	if err := s.beginHistoryMutation(sessionKey, &meta, true); err != nil {
+		return err
+	}
 
 	for i := range history {
 		if history[i].CreatedAt == nil {
@@ -775,16 +875,12 @@ func (s *JSONLStore) SetHistory(
 		}
 	}
 
-	// Write meta BEFORE rewriting the JSONL file. If we crash between
-	// the two writes, meta has Skip=0 and the old file is still intact,
-	// so GetHistory reads from line 1 — returning "too many" messages
-	// rather than losing data. The next SetHistory call corrects this.
-	err = s.writeMeta(sessionKey, meta)
-	if err != nil {
+	// A dirty marker written before replacement forces derived stores to
+	// rebuild if the process exits between the metadata and JSONL writes.
+	if err := s.rewriteJSONL(sessionKey, history); err != nil {
 		return err
 	}
-
-	return s.rewriteJSONL(sessionKey, history)
+	return s.finishHistoryMutation(sessionKey, &meta)
 }
 
 // Compact physically rewrites the JSONL file, dropping all logically
@@ -815,21 +911,23 @@ func (s *JSONLStore) Compact(
 		return err
 	}
 
-	// Write meta BEFORE rewriting the JSONL file. If the process
-	// crashes between the two writes, meta has Skip=0 and the old
-	// (uncompacted) file is still intact, so GetHistory reads from
-	// line 1 — returning previously-truncated messages rather than
-	// losing data. The next Compact or TruncateHistory corrects this.
+	previousCount, previousSkip := meta.Count, meta.Skip
 	meta.Skip = 0
 	meta.Count = len(active)
 	meta.UpdatedAt = time.Now()
-
-	err = s.writeMeta(sessionKey, meta)
-	if err != nil {
+	meta.HistoryHasPrevious = true
+	meta.HistoryPreviousCount = previousCount
+	meta.HistoryPreviousSkip = previousSkip
+	// Compact preserves the visible history, so it uses a dirty marker but
+	// does not advance the logical history revision.
+	if err := s.beginHistoryMutation(sessionKey, &meta, false); err != nil {
 		return err
 	}
 
-	return s.rewriteJSONL(sessionKey, active)
+	if err := s.rewriteJSONL(sessionKey, active); err != nil {
+		return err
+	}
+	return s.finishHistoryMutation(sessionKey, &meta)
 }
 
 // rewriteJSONL atomically replaces the JSONL file with the given messages

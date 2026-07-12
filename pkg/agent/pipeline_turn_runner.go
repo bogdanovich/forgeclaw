@@ -110,9 +110,11 @@ func (p *Pipeline) runTurnLoop(
 				messages = append(messages, providerMsg)
 				totalContentLen += len(providerMsg.Content)
 				if !ts.opts.NoHistory {
-					ts.agent.Sessions.AddFullMessage(ts.sessionKey, pm)
-					ts.recordPersistedMessage(pm)
-					p.ingestMessage(turnCtx, ts, pm)
+					writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, pm)
+					if writeErr == nil {
+						ts.recordPersistedMessage(pm)
+					}
+					p.ingestMessage(turnCtx, ts, pm, writeErr)
 				}
 				if exec.shouldTrackTurnOwnedSteering(pm) {
 					ts.recordAcceptedSteeringMessage(pm)

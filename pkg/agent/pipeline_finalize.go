@@ -49,9 +49,11 @@ func (p *Pipeline) Finalize(
 			ModelName:        exec.model.llmModelName,
 			ReasoningContent: responseReasoningContent(exec.response),
 		}
-		ts.agent.Sessions.AddFullMessage(ts.sessionKey, finalMsg)
-		ts.recordPersistedMessage(finalMsg)
-		p.ingestMessage(turnCtx, ts, finalMsg)
+		writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, finalMsg)
+		if writeErr == nil {
+			ts.recordPersistedMessage(finalMsg)
+		}
+		p.ingestMessage(turnCtx, ts, finalMsg, writeErr)
 		if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
 			p.emitEvent(
 				runtimeevents.KindAgentError,
