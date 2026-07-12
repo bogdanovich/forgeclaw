@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cliui"
 	configcmd "github.com/sipeed/picoclaw/cmd/picoclaw/internal/config"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cron"
+	doctorcmd "github.com/sipeed/picoclaw/cmd/picoclaw/internal/doctor"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/gateway"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/mcp"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/migrate"
@@ -134,6 +136,7 @@ picoclaw --no-color status`,
 		auth.NewAuthCommand(),
 		gateway.NewGatewayCommand(),
 		status.NewStatusCommand(),
+		doctorcmd.NewDoctorCommand(),
 		cron.NewCronCommand(),
 		mcp.NewMCPCommand(),
 		migrate.NewMigrateCommand(),
@@ -196,6 +199,10 @@ func main() {
 	cmd := NewPicoclawCommand()
 	last, err := cmd.ExecuteC()
 	if err != nil {
+		var doctorExit *doctorcmd.ExitError
+		if errors.As(err, &doctorExit) {
+			os.Exit(doctorExit.Code)
+		}
 		syncCliUIColor(cmd)
 		fmt.Fprint(os.Stderr, cliui.FormatCLIError(err.Error(), last))
 		os.Exit(1)
