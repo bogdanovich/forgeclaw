@@ -21,6 +21,7 @@ const DefaultRestartPreflightTimeout = 2 * time.Second
 type RestartOrigin struct {
 	Channel    string `json:"channel,omitempty"`
 	ChatID     string `json:"chat_id,omitempty"`
+	TopicID    string `json:"topic_id,omitempty"`
 	SessionKey string `json:"session_key,omitempty"`
 }
 
@@ -144,15 +145,16 @@ func collectPendingInboundBounded(
 }
 
 type RestartSentinel struct {
-	Kind             string           `json:"kind"`
-	Status           string           `json:"status"`
-	RequestedService string           `json:"requested_service,omitempty"`
-	Origin           RestartOrigin    `json:"origin,omitempty"`
-	RequestedAt      time.Time        `json:"requested_at"`
-	UpdatedAt        time.Time        `json:"updated_at"`
-	Reason           string           `json:"reason,omitempty"`
-	Preflight        RestartPreflight `json:"preflight"`
-	ForcedAfterDrain bool             `json:"forced_after_drain,omitempty"`
+	Kind               string           `json:"kind"`
+	Status             string           `json:"status"`
+	RequestedService   string           `json:"requested_service,omitempty"`
+	Origin             RestartOrigin    `json:"origin,omitempty"`
+	RequestedAt        time.Time        `json:"requested_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	Reason             string           `json:"reason,omitempty"`
+	Preflight          RestartPreflight `json:"preflight"`
+	ForcedAfterDrain   bool             `json:"forced_after_drain,omitempty"`
+	ContinuationSentAt time.Time        `json:"continuation_sent_at,omitempty"`
 }
 
 type RestartSentinelStore struct {
@@ -248,6 +250,19 @@ func (s *RestartSentinelStore) Clear() error {
 		return err
 	}
 	return nil
+}
+
+func (s *RestartSentinelStore) MarkContinuationSent(now time.Time) error {
+	sentinel, err := s.Read()
+	if err != nil {
+		return err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	sentinel.ContinuationSentAt = now.UTC()
+	sentinel.UpdatedAt = now.UTC()
+	return s.Write(sentinel)
 }
 
 func (s *RestartSentinelStore) path() string {

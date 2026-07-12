@@ -164,7 +164,7 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	}
 
 	result, err := controller.RequestRestart(context.Background(), RestartRequest{
-		Origin: RestartOrigin{Channel: "telegram", ChatID: "chat-1", SessionKey: "s1"},
+		Origin: RestartOrigin{Channel: "telegram", ChatID: "chat-1", TopicID: "topic-1", SessionKey: "s1"},
 		Reason: "test restart",
 	})
 	if err != nil {
@@ -185,7 +185,42 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	if sentinel.Status != restartStatusRunning {
 		t.Fatalf("sentinel status = %q, want %q", sentinel.Status, restartStatusRunning)
 	}
-	if sentinel.Origin.ChatID != "chat-1" {
+	if sentinel.Origin.ChatID != "chat-1" || sentinel.Origin.TopicID != "topic-1" {
+		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
+	}
+}
+
+func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
+	store, err := NewRestartSentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarter := &fakeServiceRestarter{called: make(chan string, 1), err: errors.New("planned restart failure")}
+	controller, err := NewRestartController(RestartControllerOptions{
+		Config:           testRestartConfig(),
+		Source:           &restartSourceSequence{},
+		Store:            store,
+		Restarter:        restarter,
+		PreflightOptions: knownPreflightOptions(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithToolTopicID(
+		tools.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
+	)
+	result := NewGatewayRestartTool(controller).Execute(ctx, map[string]any{})
+	if result.Err != nil {
+		t.Fatalf("Execute() error = %v", result.Err)
+	}
+	restarter.waitCalledWith(t, "picoclaw-main.service")
+	waitForRestartSentinelStatus(t, store, restartStatusFailed)
+	sentinel, err := store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sentinel.Origin.Channel != "telegram" || sentinel.Origin.ChatID != "chat-1" ||
+		sentinel.Origin.TopicID != "topic-1" {
 		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
 	}
 }

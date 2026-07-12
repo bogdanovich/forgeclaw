@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 func deployConfig(script string) config.GatewayDeployConfig {
@@ -40,11 +41,12 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, code, err := runner.Run(context.Background(), "current", "session-1")
+	origin := RestartOrigin{Channel: "telegram", ChatID: "chat-1", TopicID: "topic-1", SessionKey: "session-1"}
+	out, code, err := runner.Run(context.Background(), "current", origin)
 	if err != nil || code != 0 || out != "--target:current" {
 		t.Fatalf("Run() = %q, %d, %v", out, code, err)
 	}
-	if _, _, runErr := runner.Run(context.Background(), "bad", ""); runErr == nil {
+	if _, _, runErr := runner.Run(context.Background(), "bad", RestartOrigin{}); runErr == nil {
 		t.Fatal("expected invalid target error")
 	}
 
@@ -60,7 +62,7 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 		sentinel.Group != "local" || sentinel.Target != "current" {
 		t.Fatalf("sentinel = %#v", sentinel)
 	}
-	if sentinel.Command != script || sentinel.ExitCode != 0 || sentinel.Origin.SessionKey != "session-1" {
+	if sentinel.Command != script || sentinel.ExitCode != 0 || sentinel.Origin != origin {
 		t.Fatalf("sentinel command/result/origin = %#v", sentinel)
 	}
 }
@@ -76,17 +78,44 @@ func TestNewDeployRunnerRejectsDisabledAndRelativeCommand(t *testing.T) {
 	}
 }
 
+func TestGatewayDeployToolPersistsTopicOrigin(t *testing.T) {
+	workspace := t.TempDir()
+	runner, err := NewDeployRunner(deployConfig(writeDeployScript(t, "true")), workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithToolTopicID(
+		tools.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
+	)
+	result := (&GatewayDeployTool{runner: runner}).Execute(ctx, map[string]any{})
+	if result.Err != nil {
+		t.Fatalf("Execute() error = %v", result.Err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "state", "gateway-deploy", "deploy-sentinel.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sentinel DeploySentinel
+	if err := json.Unmarshal(data, &sentinel); err != nil {
+		t.Fatal(err)
+	}
+	if sentinel.Origin.Channel != "telegram" || sentinel.Origin.ChatID != "chat-1" ||
+		sentinel.Origin.TopicID != "topic-1" {
+		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
+	}
+}
+
 func TestDeployRunnerFailureTimeoutAndTruncation(t *testing.T) {
 	t.Run("failure", func(t *testing.T) {
 		r, _ := NewDeployRunner(deployConfig(writeDeployScript(t, "echo fail; exit 7")), t.TempDir(), "")
-		_, code, err := r.Run(context.Background(), "", "")
+		_, code, err := r.Run(context.Background(), "", RestartOrigin{})
 		if err == nil || code != 7 {
 			t.Fatalf("code=%d err=%v", code, err)
 		}
 	})
 	t.Run("timeout", func(t *testing.T) {
 		r, _ := NewDeployRunner(deployConfig(writeDeployScript(t, "sleep 2")), t.TempDir(), "")
-		_, _, err := r.Run(context.Background(), "", "")
+		_, _, err := r.Run(context.Background(), "", RestartOrigin{})
 		if err == nil || !strings.Contains(err.Error(), "timed out") {
 			t.Fatalf("err=%v", err)
 		}
@@ -94,7 +123,7 @@ func TestDeployRunnerFailureTimeoutAndTruncation(t *testing.T) {
 	t.Run("truncation", func(t *testing.T) {
 		script := writeDeployScript(t, "head -c 20000 /dev/zero | tr '\\000' x")
 		r, _ := NewDeployRunner(deployConfig(script), t.TempDir(), "")
-		out, _, err := r.Run(context.Background(), "", "")
+		out, _, err := r.Run(context.Background(), "", RestartOrigin{})
 		if err != nil || !strings.HasPrefix(out, "[output truncated]") {
 			t.Fatalf("len=%d err=%v", len(out), err)
 		}
@@ -116,7 +145,7 @@ func TestDeployRunnerRejectsConcurrentDeploy(t *testing.T) {
 	}
 	firstDone := make(chan error, 1)
 	go func() {
-		_, _, runErr := first.Run(context.Background(), "", "")
+		_, _, runErr := first.Run(context.Background(), "", RestartOrigin{})
 		firstDone <- runErr
 	}()
 
@@ -131,7 +160,7 @@ func TestDeployRunnerRejectsConcurrentDeploy(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, _, err := second.Run(context.Background(), "", ""); !errors.Is(err, ErrDeployAlreadyRunning) {
+	if _, _, err := second.Run(context.Background(), "", RestartOrigin{}); !errors.Is(err, ErrDeployAlreadyRunning) {
 		t.Fatalf("second Run() error = %v, want ErrDeployAlreadyRunning", err)
 	}
 	if err := <-firstDone; err != nil {
