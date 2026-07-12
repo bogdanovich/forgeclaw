@@ -29,11 +29,15 @@ type ServiceRestarter interface {
 
 type SystemdUserServiceRestarter struct{}
 
+var systemctlCommandContext = exec.CommandContext
+
 func (SystemdUserServiceRestarter) RestartService(ctx context.Context, service string) error {
 	if err := validateSystemdUserService(service); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "systemctl", "--user", "restart", service)
+	// Queue the restart before systemd tears down this service's cgroup. Waiting
+	// for the job can terminate the caller and incorrectly mark a real restart failed.
+	cmd := systemctlCommandContext(ctx, "systemctl", "--user", "restart", "--no-block", service)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl --user restart %s failed: %w: %s", service, err, strings.TrimSpace(string(output)))
 	}
