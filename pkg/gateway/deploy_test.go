@@ -104,11 +104,13 @@ func TestDeployRunnerFailureTimeoutAndTruncation(t *testing.T) {
 func TestDeployRunnerRejectsConcurrentDeploy(t *testing.T) {
 	workspace := t.TempDir()
 	script := writeDeployScript(t, "touch \"$FORGECLAW_WORKSPACE/started\"; sleep 2")
-	first, err := NewDeployRunner(deployConfig(script), workspace, "")
+	cfg := deployConfig(script)
+	cfg.TimeoutSeconds = 5
+	first, err := NewDeployRunner(cfg, workspace, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewDeployRunner(deployConfig(script), workspace, "")
+	second, err := NewDeployRunner(cfg, t.TempDir(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

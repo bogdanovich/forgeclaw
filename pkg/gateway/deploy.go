@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,8 +51,21 @@ func (s *DeploySentinelStore) Write(v DeploySentinel) error {
 	return fileutil.WriteFileAtomic(s.path, b, 0o600)
 }
 
-func (s *DeploySentinelStore) acquireLock() (*os.File, error) {
-	lock, err := os.OpenFile(filepath.Join(filepath.Dir(s.path), "deploy.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+func deployGroupLockPath(group string) (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve deploy lock directory: %w", err)
+	}
+	dir := filepath.Join(cacheDir, "picoclaw", "deploy-locks")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create deploy lock directory: %w", err)
+	}
+	hash := sha256.Sum256([]byte(group))
+	return filepath.Join(dir, fmt.Sprintf("%x.lock", hash)), nil
+}
+
+func acquireDeployLock(path string) (*os.File, error) {
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open deploy lock: %w", err)
 	}
@@ -69,6 +83,7 @@ type DeployRunner struct {
 	cfg                config.GatewayDeployConfig
 	workspace, service string
 	store              *DeploySentinelStore
+	lockPath           string
 }
 
 func NewDeployRunner(cfg config.GatewayDeployConfig, workspace, service string) (*DeployRunner, error) {
@@ -88,7 +103,11 @@ func NewDeployRunner(cfg config.GatewayDeployConfig, workspace, service string) 
 	if err != nil {
 		return nil, err
 	}
-	return &DeployRunner{cfg: cfg, workspace: workspace, service: service, store: store}, nil
+	lockPath, err := deployGroupLockPath(cfg.Group)
+	if err != nil {
+		return nil, err
+	}
+	return &DeployRunner{cfg: cfg, workspace: workspace, service: service, store: store, lockPath: lockPath}, nil
 }
 
 func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (string, int, error) {
@@ -99,7 +118,7 @@ func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (stri
 	if !containsTarget(r.cfg.AllowedTargets, target) {
 		return "", -1, fmt.Errorf("deploy target %q is not allowed", target)
 	}
-	lock, err := r.store.acquireLock()
+	lock, err := acquireDeployLock(r.lockPath)
 	if err != nil {
 		return "", -1, err
 	}
@@ -116,8 +135,8 @@ func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (stri
 		RequestedAt: now,
 		UpdatedAt:   now,
 	}
-	if err := r.store.Write(sentinel); err != nil {
-		return "", -1, err
+	if writeErr := r.store.Write(sentinel); writeErr != nil {
+		return "", -1, writeErr
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.cfg.EffectiveTimeoutSeconds())*time.Second)
 	defer cancel()
