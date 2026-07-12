@@ -67,6 +67,40 @@ func TestFallback_SecondCandidateSuccess(t *testing.T) {
 	}
 }
 
+func TestFallbackObservedReportsFailuresAndSuccessWithoutChangingAttempts(t *testing.T) {
+	fc := NewFallbackChain(NewCooldownTracker(), nil)
+	candidates := []FallbackCandidate{
+		{Provider: "openai", Model: "primary", IdentityKey: "primary-id"},
+		{Provider: "anthropic", Model: "fallback", IdentityKey: "fallback-id"},
+	}
+	var observations []FallbackAttempt
+	calls := 0
+	result, err := fc.ExecuteCandidateObserved(
+		context.Background(),
+		candidates,
+		func(_ context.Context, _ FallbackCandidate) (*LLMResponse, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("rate limit exceeded")
+			}
+			return &LLMResponse{Content: "ok"}, nil
+		},
+		func(attempt FallbackAttempt) { observations = append(observations, attempt) },
+	)
+	if err != nil {
+		t.Fatalf("ExecuteCandidateObserved: %v", err)
+	}
+	if len(result.Attempts) != 1 {
+		t.Fatalf("compatibility attempts = %d, want 1", len(result.Attempts))
+	}
+	if len(observations) != 2 || observations[0].Succeeded || !observations[1].Succeeded {
+		t.Fatalf("observations = %#v", observations)
+	}
+	if observations[0].IdentityKey != "primary-id" || observations[1].IdentityKey != "fallback-id" {
+		t.Fatalf("identity keys = %#v", observations)
+	}
+}
+
 func TestFallback_AllFail(t *testing.T) {
 	ct := NewCooldownTracker()
 	fc := NewFallbackChain(ct, nil)

@@ -42,13 +42,17 @@ type FallbackResult struct {
 
 // FallbackAttempt records one attempt in the fallback chain.
 type FallbackAttempt struct {
-	Provider string
-	Model    string
-	Error    error
-	Reason   FailoverReason
-	Duration time.Duration
-	Skipped  bool // true if skipped due to cooldown
+	Provider    string
+	Model       string
+	IdentityKey string
+	Error       error
+	Reason      FailoverReason
+	Duration    time.Duration
+	Skipped     bool // true if skipped due to cooldown
+	Succeeded   bool
 }
+
+type FallbackAttemptObserver func(FallbackAttempt)
 
 // NewFallbackChain creates a new fallback chain with the given cooldown tracker
 // and rate limiter registry.
@@ -135,12 +139,36 @@ func (fc *FallbackChain) ExecuteCandidate(
 	candidates []FallbackCandidate,
 	run func(ctx context.Context, candidate FallbackCandidate) (*LLMResponse, error),
 ) (*FallbackResult, error) {
+	return fc.ExecuteCandidateObserved(ctx, candidates, run, nil)
+}
+
+// ExecuteCandidateObserved reports every skipped, failed, and successful
+// candidate without changing the compatibility Attempts projection.
+func (fc *FallbackChain) ExecuteCandidateObserved(
+	ctx context.Context,
+	candidates []FallbackCandidate,
+	run func(ctx context.Context, candidate FallbackCandidate) (*LLMResponse, error),
+	observer FallbackAttemptObserver,
+) (*FallbackResult, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("fallback: no candidates configured")
 	}
 
 	result := &FallbackResult{
 		Attempts: make([]FallbackAttempt, 0, len(candidates)),
+	}
+	recordAttempt := func(attempt FallbackAttempt) {
+		attempt.IdentityKey = candidatesIdentityKey(attempt, candidates)
+		result.Attempts = append(result.Attempts, attempt)
+		notifyFallbackObserver(observer, attempt)
+	}
+	recordSuccess := func(candidate FallbackCandidate, duration time.Duration) {
+		if observer != nil {
+			notifyFallbackObserver(observer, FallbackAttempt{
+				Provider: candidate.Provider, Model: candidate.Model,
+				IdentityKey: candidate.StableKey(), Duration: duration, Succeeded: true,
+			})
+		}
 	}
 
 	for i, candidate := range candidates {
@@ -154,7 +182,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 		cooldownKey := candidate.StableKey()
 		if !fc.cooldown.IsAvailable(cooldownKey) {
 			remaining := fc.cooldown.CooldownRemaining(cooldownKey)
-			result.Attempts = append(result.Attempts, FallbackAttempt{
+			recordAttempt(FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
 				Skipped:  true,
@@ -173,7 +201,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 		if fc.rl != nil {
 			if !fc.rl.TryAcquire(cooldownKey) {
 				if i < len(candidates)-1 {
-					result.Attempts = append(result.Attempts, FallbackAttempt{
+					recordAttempt(FallbackAttempt{
 						Provider: candidate.Provider,
 						Model:    candidate.Model,
 						Skipped:  true,
@@ -183,7 +211,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 					continue
 				}
 				if waitErr := fc.rl.Wait(ctx, cooldownKey); waitErr != nil {
-					result.Attempts = append(result.Attempts, FallbackAttempt{
+					recordAttempt(FallbackAttempt{
 						Provider: candidate.Provider,
 						Model:    candidate.Model,
 						Skipped:  true,
@@ -202,6 +230,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 
 		if err == nil {
 			// Success.
+			recordSuccess(candidate, elapsed)
 			fc.cooldown.MarkSuccess(cooldownKey)
 			result.Response = resp
 			result.Provider = candidate.Provider
@@ -212,7 +241,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 
 		// Context cancellation: abort immediately, no fallback.
 		if ctx.Err() == context.Canceled {
-			result.Attempts = append(result.Attempts, FallbackAttempt{
+			recordAttempt(FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
 				Error:    err,
@@ -226,7 +255,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 
 		if failErr == nil {
 			// Unclassifiable error: do not fallback, return immediately.
-			result.Attempts = append(result.Attempts, FallbackAttempt{
+			recordAttempt(FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
 				Error:    err,
@@ -238,7 +267,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 
 		// Non-retriable error: abort immediately.
 		if !failErr.IsRetriable() {
-			result.Attempts = append(result.Attempts, FallbackAttempt{
+			recordAttempt(FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
 				Error:    failErr,
@@ -250,7 +279,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 
 		// Retriable error: mark failure and continue to next candidate.
 		fc.cooldown.MarkFailure(cooldownKey, failErr.Reason)
-		result.Attempts = append(result.Attempts, FallbackAttempt{
+		recordAttempt(FallbackAttempt{
 			Provider: candidate.Provider,
 			Model:    candidate.Model,
 			Error:    failErr,
@@ -266,6 +295,23 @@ func (fc *FallbackChain) ExecuteCandidate(
 
 	// All candidates were skipped (all in cooldown).
 	return nil, &FallbackExhaustedError{Attempts: result.Attempts}
+}
+
+func notifyFallbackObserver(observer FallbackAttemptObserver, attempt FallbackAttempt) {
+	if observer == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	observer(attempt)
+}
+
+func candidatesIdentityKey(attempt FallbackAttempt, candidates []FallbackCandidate) string {
+	for _, candidate := range candidates {
+		if candidate.Provider == attempt.Provider && candidate.Model == attempt.Model {
+			return candidate.StableKey()
+		}
+	}
+	return ModelKey(attempt.Provider, attempt.Model)
 }
 
 // ExecuteImage runs the fallback chain for image/vision requests.

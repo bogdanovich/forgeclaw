@@ -34,6 +34,7 @@ type RuntimeOptions struct {
 	SuccessJudgeFactory func(workspace string) SuccessJudge
 	Applier             *Applier
 	ApplierFactory      func(workspace string) *Applier
+	Observer            func(Observation)
 }
 
 type Runtime struct {
@@ -51,6 +52,22 @@ type Runtime struct {
 	successJudgeFactory func(workspace string) SuccessJudge
 	applier             *Applier
 	applierFactory      func(workspace string) *Applier
+	observer            func(Observation)
+}
+
+type Observation struct {
+	Workspace     string
+	TurnID        string
+	SessionKey    string
+	AgentID       string
+	RecordID      string
+	DraftID       string
+	SkillName     string
+	Action        string
+	Status        string
+	Success       *bool
+	ProvenanceIDs []string
+	PolicyCodes   []string
 }
 
 type TurnCaseInput struct {
@@ -103,7 +120,38 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		successJudgeFactory: opts.SuccessJudgeFactory,
 		applier:             opts.Applier,
 		applierFactory:      opts.ApplierFactory,
+		observer:            opts.Observer,
 	}, nil
+}
+
+func (rt *Runtime) SetObserver(observer func(Observation)) {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	rt.observer = observer
+	rt.mu.Unlock()
+}
+
+func (rt *Runtime) observe(observation Observation) {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	observer := rt.observer
+	rt.mu.Unlock()
+	if observer != nil {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logger.WarnCF("evolution", "Recovered evolution observer panic", map[string]any{
+						"action": observation.Action, "record_id": observation.RecordID,
+					})
+				}
+			}()
+			observer(observation)
+		}()
+	}
 }
 
 func (rt *Runtime) FinalizeTurn(ctx context.Context, input TurnCaseInput) error {
@@ -145,6 +193,11 @@ func (rt *Runtime) FinalizeTurn(ctx context.Context, input TurnCaseInput) error 
 	if err := rt.recordSkillUsage(input, success); err != nil {
 		return err
 	}
+	rt.observe(Observation{
+		Workspace: input.Workspace, TurnID: input.TurnID, SessionKey: input.SessionKey,
+		AgentID: input.AgentID, RecordID: record.ID, Action: "recorded",
+		Status: string(record.Status), Success: record.Success,
+	})
 
 	logger.DebugCF("evolution", "Recorded hot path learning record", map[string]any{
 		"workspace":   input.Workspace,
@@ -336,6 +389,13 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 				return mergeErr
 			}
 			patternRecords = merged
+			for _, rule := range rules {
+				rt.observe(Observation{
+					Workspace: workspace, RecordID: rule.ID, Action: "pattern_saved",
+					Status:        string(rule.Status),
+					ProvenanceIDs: append([]string(nil), rule.SourceRecordIDs...),
+				})
+			}
 		}
 		if len(clusteredTaskIDs) > 0 {
 			if markErr := markTaskRecordsClustered(store, clusteredTaskIDs); markErr != nil {
@@ -413,6 +473,7 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 			if saveErr := store.SaveDrafts([]SkillDraft{draft}); saveErr != nil {
 				return saveErr
 			}
+			rt.observeDraft(workspace, draft, "draft_saved")
 			continue
 		}
 		updatedDraft, applyErr := rt.applyCandidateDraft(ctx, workspace, store, applier, draft, runID)
@@ -506,6 +567,7 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 			if err := store.SaveDrafts([]SkillDraft{draft}); err != nil {
 				return err
 			}
+			rt.observeDraft(workspace, draft, "draft_saved")
 		}
 		logger.DebugCF("evolution", "Saved skill draft", map[string]any{
 			"workspace":    workspace,
@@ -1432,7 +1494,24 @@ func (rt *Runtime) applyCandidateDraft(
 		"target_skill": draft.TargetSkillName,
 		"run_id":       runID,
 	})
+	rt.observeDraft(workspace, draft, "applied")
 	return draft, nil
+}
+
+func (rt *Runtime) observeDraft(workspace string, draft SkillDraft, action string) {
+	policyCodes := make([]string, 0, len(draft.ReviewNotes)+len(draft.ScanFindings))
+	for range draft.ReviewNotes {
+		policyCodes = append(policyCodes, "review_note")
+	}
+	for range draft.ScanFindings {
+		policyCodes = append(policyCodes, "scan_finding")
+	}
+	rt.observe(Observation{
+		Workspace: workspace, RecordID: draft.SourceRecordID, DraftID: draft.ID,
+		SkillName: draft.TargetSkillName, Action: action, Status: string(draft.Status),
+		ProvenanceIDs: []string{draft.SourceRecordID},
+		PolicyCodes:   policyCodes,
+	})
 }
 
 func (rt *Runtime) recordRollbackAudit(store *Store, draft SkillDraft, applyErr error) error {

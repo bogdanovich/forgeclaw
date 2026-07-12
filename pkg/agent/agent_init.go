@@ -89,8 +89,10 @@ func NewAgentLoop(
 		al.runtimeEvents = runtimeevents.NewBus()
 		al.ownsRuntimeEvents = true
 	}
+	al.traceCapture = newTraceCaptureManager(cfg, al.runtimeEvents)
 	if bridge != nil {
 		bridge.setCurrentCheck(al.isCurrentEvolutionBridge)
+		bridge.setObserver(al.observeEvolutionTransition)
 		if err := bridge.subscribeRuntimeEvents(al.runtimeEvents.Channel()); err != nil {
 			logger.WarnCF("agent", "Failed to subscribe evolution bridge to runtime events", map[string]any{
 				"error": err.Error(),

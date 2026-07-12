@@ -239,6 +239,28 @@ type fallbackExecutor interface {
 	) (*providers.FallbackResult, error)
 }
 
+type observedFallbackExecutor interface {
+	ExecuteCandidateObserved(
+		ctx context.Context,
+		candidates []providers.FallbackCandidate,
+		run func(context.Context, providers.FallbackCandidate) (*providers.LLMResponse, error),
+		observer providers.FallbackAttemptObserver,
+	) (*providers.FallbackResult, error)
+}
+
+func executeFallbackWithObserver(
+	executor fallbackExecutor,
+	ctx context.Context,
+	candidates []providers.FallbackCandidate,
+	run func(context.Context, providers.FallbackCandidate) (*providers.LLMResponse, error),
+	observer providers.FallbackAttemptObserver,
+) (*providers.FallbackResult, error) {
+	if observed, ok := executor.(observedFallbackExecutor); ok {
+		return observed.ExecuteCandidateObserved(ctx, candidates, run, observer)
+	}
+	return executor.ExecuteCandidate(ctx, candidates, run)
+}
+
 type mediaResolver interface {
 	ResolveWithMeta(ref string) (localPath string, meta media.MediaMeta, err error)
 }

@@ -141,7 +141,9 @@ func (p *Pipeline) CallLLM(
 		runtimeevents.KindAgentLLMRequest,
 		ts.eventMeta("runTurn", "turn.llm.request"),
 		LLMRequestPayload{
+			Provider:      primaryCandidateProvider(exec.model.activeCandidates),
 			Model:         exec.llmModel,
+			PromptHash:    safeJSONHash(traceCaptureSettingsFromConfig(p.Cfg), exec.callMessages),
 			MessagesCount: len(exec.callMessages),
 			ToolsCount:    len(exec.providerToolDefs),
 			MaxTokens:     ts.agent.MaxTokens,
@@ -189,7 +191,9 @@ func (p *Pipeline) CallLLM(
 		}
 
 		if len(exec.model.activeCandidates) > 1 && p.Interaction.Fallback != nil {
-			fbResult, fbErr := p.Interaction.Fallback.ExecuteCandidate(
+			fallbackAttempt := 0
+			fbResult, fbErr := executeFallbackWithObserver(
+				p.Interaction.Fallback,
 				providerCtx,
 				exec.model.activeCandidates,
 				func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {
@@ -224,6 +228,26 @@ func (p *Pipeline) CallLLM(
 						toolDefsForCall,
 						candidate.Model,
 						callOpts,
+					)
+				},
+				func(attempt providers.FallbackAttempt) {
+					fallbackAttempt++
+					status := "failed"
+					if attempt.Skipped {
+						status = "skipped"
+					} else if attempt.Succeeded {
+						status = "succeeded"
+					}
+					reason := string(attempt.Reason)
+					p.emitEvent(
+						runtimeevents.KindAgentLLMFallbackAttempt,
+						ts.eventMeta("runTurn", "turn.llm.fallback_attempt"),
+						LLMFallbackAttemptPayload{
+							Provider: attempt.Provider, Model: attempt.Model,
+							IdentityKey: attempt.IdentityKey, Attempt: fallbackAttempt,
+							Status: status, Reason: reason, ErrorCode: reason,
+							Skipped: attempt.Skipped,
+						},
 					)
 				},
 			)
@@ -608,6 +632,7 @@ func (p *Pipeline) CallLLM(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
 		LLMResponsePayload{
+			ResponseHash:     evaluationSafeHash(p.Cfg, exec.response.Content),
 			ContentLen:       len(exec.response.Content),
 			ToolCalls:        len(exec.response.ToolCalls),
 			HasReasoning:     exec.response.Reasoning != "" || exec.response.ReasoningContent != "",

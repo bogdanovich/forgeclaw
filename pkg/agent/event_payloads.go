@@ -18,6 +18,30 @@ const (
 type TurnStartPayload struct {
 	UserMessage string
 	MediaCount  int
+	Workspace   string
+}
+
+type LLMFallbackAttemptPayload struct {
+	Provider    string
+	Model       string
+	IdentityKey string
+	Attempt     int
+	Status      string
+	Reason      string
+	ErrorCode   string
+	Skipped     bool
+}
+
+type EvolutionTransitionPayload struct {
+	Workspace     string
+	RecordID      string
+	DraftID       string
+	SkillName     string
+	Action        string
+	Status        string
+	Success       *bool
+	ProvenanceIDs []string
+	PolicyCodes   []string
 }
 
 const (
@@ -42,6 +66,7 @@ type ToolExecutionRecord struct {
 type TurnEndPayload struct {
 	Status                TurnEndStatus
 	Workspace             string
+	DeliveryExpected      bool
 	Iterations            int
 	Duration              time.Duration
 	LLMCalls              int
@@ -61,7 +86,9 @@ type TurnEndPayload struct {
 
 // LLMRequestPayload describes an outbound LLM request.
 type LLMRequestPayload struct {
+	Provider      string
 	Model         string
+	PromptHash    string
 	MessagesCount int
 	ToolsCount    int
 	MaxTokens     int
@@ -70,6 +97,7 @@ type LLMRequestPayload struct {
 
 // LLMResponsePayload describes an inbound LLM response.
 type LLMResponsePayload struct {
+	ResponseHash     string
 	ContentLen       int
 	ToolCalls        int
 	HasReasoning     bool
@@ -113,6 +141,14 @@ type ContextCompressPayload struct {
 	RemainingMessages int
 }
 
+type ContextSnapshotPayload struct {
+	MessageCount     int
+	SnapshotHash     string
+	GoalHash         string
+	SteeringCount    int
+	ToolPairingValid bool
+}
+
 // SessionSummarizePayload describes a completed async session summarization.
 type SessionSummarizePayload struct {
 	SummarizedMessages int
@@ -123,24 +159,28 @@ type SessionSummarizePayload struct {
 
 // ToolExecStartPayload describes a tool execution request.
 type ToolExecStartPayload struct {
-	Tool      string
-	Arguments map[string]any
+	ToolCallID string
+	Tool       string
+	Arguments  map[string]any
 }
 
 // ToolExecEndPayload describes the outcome of a tool execution.
 type ToolExecEndPayload struct {
+	ToolCallID string
 	Tool       string
 	Duration   time.Duration
 	ForLLMLen  int
 	ForUserLen int
 	IsError    bool
 	Async      bool
+	ResultHash string
 }
 
 // ToolExecSkippedPayload describes a skipped tool call.
 type ToolExecSkippedPayload struct {
-	Tool   string
-	Reason string
+	ToolCallID string
+	Tool       string
+	Reason     string
 }
 
 // ToolLoopDecisionPayload contains only hash-safe loop protection metadata.
@@ -190,11 +230,12 @@ const (
 
 // InterruptReceivedPayload describes accepted turn-control input.
 type InterruptReceivedPayload struct {
-	Kind       InterruptKind
-	Role       string
-	ContentLen int
-	QueueDepth int
-	HintLen    int
+	Kind        InterruptKind
+	Role        string
+	ContentLen  int
+	QueueDepth  int
+	HintLen     int
+	MessageHash string
 }
 
 // SubTurnSpawnPayload describes the creation of a child turn.

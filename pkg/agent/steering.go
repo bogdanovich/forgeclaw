@@ -370,10 +370,11 @@ func (al *AgentLoop) enqueueSteeringMessageWithSender(
 		runtimeevents.KindAgentInterruptReceived,
 		meta,
 		InterruptReceivedPayload{
-			Kind:       InterruptKindSteering,
-			Role:       msg.Role,
-			ContentLen: len(msg.Content),
-			QueueDepth: queueDepth,
+			Kind:        InterruptKindSteering,
+			Role:        msg.Role,
+			ContentLen:  len(msg.Content),
+			QueueDepth:  queueDepth,
+			MessageHash: evaluationSafeHash(al.GetConfig(), msg.Content),
 		},
 	)
 

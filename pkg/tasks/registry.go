@@ -195,12 +195,13 @@ type Options struct {
 }
 
 type Registry struct {
-	mu       sync.RWMutex
-	store    string
-	options  Options
-	records  map[string]Record
-	events   []TaskEvent
-	lastLoad error
+	mu        sync.RWMutex
+	store     string
+	options   Options
+	records   map[string]Record
+	events    []TaskEvent
+	observers []observerEntry
+	lastLoad  error
 }
 
 type Snapshot struct {
@@ -280,14 +281,19 @@ func (r *Registry) Upsert(rec Record) error {
 	rec = r.normalizeRecord(rec, now)
 
 	r.mu.Lock()
+	eventStart := len(r.events)
 	r.records[rec.TaskID] = rec
 	r.appendEventLocked(rec, EventTaskUpserted, now, map[string]string{
 		"task_kind": rec.TaskKind,
 		"label":     rec.Label,
 	})
+	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
 	r.mu.Unlock()
+	if err == nil {
+		r.notifyEvents(newEvents)
+	}
 	return err
 }
 
@@ -296,6 +302,7 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 		return nil
 	}
 	r.mu.Lock()
+	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
 		r.mu.Unlock()
@@ -310,9 +317,13 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	rec = r.normalizeRecord(rec, rec.LastEventAt)
 	r.records[taskID] = rec
 	r.appendUpdateEventsLocked(before, rec, rec.LastEventAt)
+	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(rec.LastEventAt)
 	err := r.saveLocked()
 	r.mu.Unlock()
+	if err == nil {
+		r.notifyEvents(newEvents)
+	}
 	return err
 }
 
@@ -321,6 +332,7 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 		return nil
 	}
 	r.mu.Lock()
+	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
 		r.mu.Unlock()
@@ -328,9 +340,13 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	}
 	now := time.Now().UnixMilli()
 	r.appendEventLocked(rec, eventType, now, payload)
+	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
 	r.mu.Unlock()
+	if err == nil {
+		r.notifyEvents(newEvents)
+	}
 	return err
 }
 
@@ -425,6 +441,7 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	changed := 0
 
 	r.mu.Lock()
+	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
@@ -456,11 +473,15 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 		changed++
 	}
 	err := error(nil)
+	newEvents := r.eventsSinceLocked(eventStart)
 	if changed > 0 {
 		r.pruneLocked(now)
 		err = r.saveLocked()
 	}
 	r.mu.Unlock()
+	if err == nil {
+		r.notifyEvents(newEvents)
+	}
 	return changed, err
 }
 
@@ -476,6 +497,7 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	changed := 0
 
 	r.mu.Lock()
+	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
@@ -497,11 +519,15 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 		changed++
 	}
 	err := error(nil)
+	newEvents := r.eventsSinceLocked(eventStart)
 	if changed > 0 {
 		r.pruneLocked(now)
 		err = r.saveLocked()
 	}
 	r.mu.Unlock()
+	if err == nil {
+		r.notifyEvents(newEvents)
+	}
 	return changed, err
 }
 

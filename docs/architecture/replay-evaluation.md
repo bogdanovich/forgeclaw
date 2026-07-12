@@ -247,6 +247,42 @@ Task registry and session stores remain authoritative. The recorder may read a
 bounded snapshot during finalization but never acknowledges spool entries,
 changes delivery status, truncates history, or updates evolution state.
 
+### Implemented capture boundary
+
+The capture implementation subscribes to typed runtime events and observes task
+events only after the task registry has persisted them. Root turns and
+long-lived tasks are stored as separate traces. When a task is first observed,
+its existing durable event history is imported before the new event, which
+preserves restart-reconciliation evidence without replacing the registry.
+
+Captured runtime evidence includes turn outcomes; model request/response hashes
+and fallback attempts; tool call/result hashes and call IDs; steering acceptance
+and injection; compaction counts and final context identity; tool-loop
+decisions; channel delivery attempts/outcomes while a unique active or
+delivery-settling target can be identified; task delivery decisions/outcomes;
+and durable evolution record,
+pattern, draft, and apply transitions. Evolution event payloads contain policy
+codes and provenance IDs, never draft bodies or review prose.
+
+Capture persistence runs on a bounded worker. Event and record limits never
+block the agent. Runtime-event subscriber drops mark active turn traces
+incomplete; persistence-queue overflow drops the finalized trace and emits a
+safe operational warning. Disabling capture during reload discards unfinished
+in-memory traces immediately.
+
+Current capture limitations are explicit:
+
+- channel events do not carry a turn ID or session key, so they are associated
+  only when channel/chat identifies one active or delivery-settling turn;
+  expected delivery has a bounded settlement timeout, and durable task delivery
+  remains authoritative for async work;
+- context content is represented by filtered hashes, counts, goal presence,
+  steering count, and tool-pair validity, not by raw session messages;
+- failed evolution apply rollback details remain canonical in evolution state;
+  trace transitions expose only successful apply and persisted draft states;
+- user correction remains an explicit fixture/CLI annotation and is never
+  inferred during production capture.
+
 ## Deterministic Replay
 
 Replay has two levels:
