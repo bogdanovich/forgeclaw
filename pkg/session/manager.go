@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
 )
@@ -18,6 +19,22 @@ type Session struct {
 	Summary  string              `json:"summary,omitempty"`
 	Created  time.Time           `json:"created"`
 	Updated  time.Time           `json:"updated"`
+}
+
+// GetHistoryRevision provides a best-effort revision for the legacy store.
+// Legacy sessions are rewritten atomically, so Updated is their durable
+// mutation identity.
+func (sm *SessionManager) GetHistoryRevision(key string) (memory.HistoryRevision, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	session, ok := sm.sessions[key]
+	if !ok {
+		return memory.HistoryRevision{}, nil
+	}
+	return memory.HistoryRevision{
+		Revision: uint64(session.Updated.UnixNano()),
+		Count:    len(session.Messages),
+	}, nil
 }
 
 type SessionManager struct {

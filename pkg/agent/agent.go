@@ -153,6 +153,11 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return err
 	}
+	if reconciler, ok := al.contextManager.(interface {
+		StartBackgroundReconciliation(context.Context)
+	}); ok {
+		reconciler.StartBackgroundReconciliation(ctx)
+	}
 
 	ingress := newInboundTurnCoordinator(al)
 	idleTicker := time.NewTicker(100 * time.Millisecond)

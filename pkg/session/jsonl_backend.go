@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -189,4 +190,15 @@ func (b *JSONLBackend) Close() error {
 // ListSessions returns all known session keys.
 func (b *JSONLBackend) ListSessions() []string {
 	return b.store.ListSessions()
+}
+
+// GetHistoryRevision returns the canonical history identity when supported by
+// the underlying store.
+func (b *JSONLBackend) GetHistoryRevision(sessionKey string) (memory.HistoryRevision, error) {
+	sessionKey = b.resolveSessionKey(sessionKey)
+	store, ok := b.store.(memory.HistoryRevisionStore)
+	if !ok {
+		return memory.HistoryRevision{}, fmt.Errorf("session: history revision unsupported")
+	}
+	return store.GetHistoryRevision(context.Background(), sessionKey)
 }

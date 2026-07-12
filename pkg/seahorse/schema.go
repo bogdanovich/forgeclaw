@@ -105,6 +105,17 @@ func runSchema(db *sql.DB) error {
 			PRIMARY KEY (conversation_id, ordinal)
 		)`,
 
+		`CREATE TABLE IF NOT EXISTS reconciliation_state (
+			session_key       TEXT PRIMARY KEY,
+			source_revision   INTEGER NOT NULL,
+			source_count      INTEGER NOT NULL,
+			source_skip       INTEGER NOT NULL,
+			source_file_size  INTEGER NOT NULL,
+			source_mod_time_ns INTEGER NOT NULL,
+			schema_generation INTEGER NOT NULL,
+			reconciled_at     TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+
 		// FTS5 virtual table with trigram tokenizer for CJK support
 		sqlCreateSummariesFTS,
 

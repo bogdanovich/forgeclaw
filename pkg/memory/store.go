@@ -43,3 +43,21 @@ type Store interface {
 	// Close releases any resources held by the store.
 	Close() error
 }
+
+// HistoryRevision identifies the canonical visible history for a session.
+// Dirty is durable evidence that a multi-file history mutation did not finish
+// and consumers must rebuild from the canonical store before trusting a cache.
+type HistoryRevision struct {
+	Revision  uint64
+	Count     int
+	Skip      int
+	Dirty     bool
+	FileSize  int64
+	ModTimeNS int64
+}
+
+// HistoryRevisionStore is implemented by stores that can expose a cheap,
+// durable identity for their canonical session history.
+type HistoryRevisionStore interface {
+	GetHistoryRevision(ctx context.Context, sessionKey string) (HistoryRevision, error)
+}

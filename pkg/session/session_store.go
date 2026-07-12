@@ -1,6 +1,9 @@
 package session
 
-import "github.com/sipeed/picoclaw/pkg/providers"
+import (
+	"github.com/sipeed/picoclaw/pkg/memory"
+	"github.com/sipeed/picoclaw/pkg/providers"
+)
 
 // SessionStore defines the persistence operations used by the agent loop.
 // Both SessionManager (legacy JSON backend) and JSONLBackend satisfy this
@@ -31,4 +34,10 @@ type SessionStore interface {
 	ListSessions() []string
 	// Close releases resources held by the store.
 	Close() error
+}
+
+// HistoryRevisionProvider exposes a cheap identity for the canonical history.
+// Context caches use it to avoid rereading unchanged histories at startup.
+type HistoryRevisionProvider interface {
+	GetHistoryRevision(sessionKey string) (memory.HistoryRevision, error)
 }

@@ -52,6 +52,32 @@ func TestStoreGetOrCreateConversation(t *testing.T) {
 	}
 }
 
+func TestStoreGetMessagesLoadsPartsAcrossBatchBoundary(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	conv, err := s.GetOrCreateConversation(ctx, "parts-batch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = messagePartsBatchSize + 1
+	for i := 0; i < count; i++ {
+		_, err := s.AddMessageWithParts(ctx, conv.ConversationID, "user", []MessagePart{{
+			Type: "text", Text: fmt.Sprintf("part-%d", i),
+		}}, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages, err := s.GetMessages(ctx, conv.ConversationID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != count || len(messages[count-1].Parts) != 1 ||
+		messages[count-1].Parts[0].Text != fmt.Sprintf("part-%d", count-1) {
+		t.Fatalf("batched messages were incomplete: count=%d last=%+v", len(messages), messages[count-1])
+	}
+}
+
 func TestStoreGetConversationBySessionKey(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
