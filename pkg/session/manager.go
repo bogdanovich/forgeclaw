@@ -107,6 +107,11 @@ func (sm *SessionManager) AddMessage(sessionKey, role, content string) {
 	})
 }
 
+func (sm *SessionManager) AddMessageWithError(sessionKey, role, content string) error {
+	sm.AddMessage(sessionKey, role, content)
+	return nil
+}
+
 // AddFullMessage adds a complete message with tool calls and tool call ID to the session.
 // This is used to save the full conversation flow including tool calls and tool results.
 func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Message) {
@@ -133,6 +138,11 @@ func (sm *SessionManager) AddFullMessage(sessionKey string, msg providers.Messag
 	session.Messages = append(session.Messages, msg)
 	advanceHistoryRevision(session)
 	session.Updated = now
+}
+
+func (sm *SessionManager) AddFullMessageWithError(sessionKey string, msg providers.Message) error {
+	sm.AddFullMessage(sessionKey, msg)
+	return nil
 }
 
 func (sm *SessionManager) GetHistory(key string) []providers.Message {

@@ -120,17 +120,25 @@ func (b *JSONLBackend) GetSessionScope(sessionKey string) *SessionScope {
 }
 
 func (b *JSONLBackend) AddMessage(sessionKey, role, content string) {
-	sessionKey = b.resolveSessionKey(sessionKey)
-	if err := b.store.AddMessage(context.Background(), sessionKey, role, content); err != nil {
+	if err := b.AddMessageWithError(sessionKey, role, content); err != nil {
 		log.Printf("session: add message: %v", err)
 	}
 }
 
-func (b *JSONLBackend) AddFullMessage(sessionKey string, msg providers.Message) {
+func (b *JSONLBackend) AddMessageWithError(sessionKey, role, content string) error {
 	sessionKey = b.resolveSessionKey(sessionKey)
-	if err := b.store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
+	return b.store.AddMessage(context.Background(), sessionKey, role, content)
+}
+
+func (b *JSONLBackend) AddFullMessage(sessionKey string, msg providers.Message) {
+	if err := b.AddFullMessageWithError(sessionKey, msg); err != nil {
 		log.Printf("session: add full message: %v", err)
 	}
+}
+
+func (b *JSONLBackend) AddFullMessageWithError(sessionKey string, msg providers.Message) error {
+	sessionKey = b.resolveSessionKey(sessionKey)
+	return b.store.AddFullMessage(context.Background(), sessionKey, msg)
 }
 
 func (b *JSONLBackend) GetHistory(key string) []providers.Message {

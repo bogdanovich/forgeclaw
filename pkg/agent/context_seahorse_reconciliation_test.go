@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -152,6 +153,51 @@ func TestSeahorseReconciliationGenerationAndFailureRetry(t *testing.T) {
 	state, _ = store.GetReconciliationState(context.Background(), key)
 	if state.SchemaGeneration != seahorseReconciliationGeneration {
 		t.Fatalf("generation = %d", state.SchemaGeneration)
+	}
+}
+
+func TestSeahorseIngestKeepsLiveMessageAfterCanonicalWriteFailure(t *testing.T) {
+	mgr, _ := newReconciliationTestManager(t)
+	ctx := context.Background()
+	const key = "failed-canonical-write"
+	live := providers.Message{Role: "user", Content: "live despite disk failure"}
+	if err := mgr.Ingest(ctx, &IngestRequest{
+		SessionKey:        key,
+		Message:           live,
+		CanonicalWriteErr: errors.New("disk full"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store := mgr.engine.GetRetrieval().Store()
+	conv, err := store.GetConversationBySessionKey(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.GetMessages(ctx, conv.ConversationID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || stored[0].Content != live.Content {
+		t.Fatalf("live Seahorse messages = %#v", stored)
+	}
+	state, err := store.GetReconciliationState(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != nil {
+		t.Fatalf("failed canonical write advanced watermark: %+v", state)
+	}
+
+	if err := mgr.ensureReconciled(ctx, key, mgr.sessions); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = store.GetMessages(ctx, conv.ConversationID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("reconciliation did not restore canonical authority: %#v", stored)
 	}
 }
 

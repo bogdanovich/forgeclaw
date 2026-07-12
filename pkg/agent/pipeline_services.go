@@ -5,16 +5,52 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
-func (p *Pipeline) ingestMessage(ctx context.Context, ts *turnState, msg providers.Message) {
+func persistFullSessionMessage(
+	store session.SessionStore,
+	sessionKey string,
+	msg providers.Message,
+) error {
+	if writer, ok := store.(session.ErrorAwareSessionWriter); ok {
+		return writer.AddFullMessageWithError(sessionKey, msg)
+	}
+	store.AddFullMessage(sessionKey, msg)
+	return nil
+}
+
+func persistSessionMessage(
+	store session.SessionStore,
+	sessionKey, role, content string,
+) error {
+	if writer, ok := store.(session.ErrorAwareSessionWriter); ok {
+		return writer.AddMessageWithError(sessionKey, role, content)
+	}
+	store.AddMessage(sessionKey, role, content)
+	return nil
+}
+
+func (p *Pipeline) ingestMessage(
+	ctx context.Context,
+	ts *turnState,
+	msg providers.Message,
+	canonicalWriteErr error,
+) {
 	if p == nil || ts == nil || p.Context.Runtime == nil {
 		return
 	}
+	if canonicalWriteErr != nil {
+		logger.WarnCF("agent", "Canonical session write failed before context ingest", map[string]any{
+			"session_key": ts.sessionKey,
+			"error":       canonicalWriteErr.Error(),
+		})
+	}
 	if err := p.Context.Runtime.Ingest(ctx, &IngestRequest{
-		SessionKey: ts.sessionKey,
-		Message:    msg,
+		SessionKey:        ts.sessionKey,
+		Message:           msg,
+		CanonicalWriteErr: canonicalWriteErr,
 	}); err != nil {
 		logger.WarnCF("agent", "Context manager ingest failed", map[string]any{
 			"session_key": ts.sessionKey,

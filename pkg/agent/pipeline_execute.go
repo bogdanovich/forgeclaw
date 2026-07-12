@@ -767,9 +767,11 @@ toolLoop:
 			Attachments: append([]providers.Attachment(nil), runner.handledAttachments...),
 		}
 		if !ts.opts.NoHistory {
-			ts.agent.Sessions.AddFullMessage(ts.sessionKey, summaryMsg)
-			ts.recordPersistedMessage(summaryMsg)
-			p.ingestMessage(turnCtx, ts, summaryMsg)
+			writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, summaryMsg)
+			if writeErr == nil {
+				ts.recordPersistedMessage(summaryMsg)
+			}
+			p.ingestMessage(turnCtx, ts, summaryMsg, writeErr)
 			if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
 				logger.WarnCF("agent", "Failed to save session after tool delivery",
 					map[string]any{
@@ -819,10 +821,17 @@ func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMes
 	if r.ts == nil || r.ts.opts.NoHistory {
 		return
 	}
-	r.ts.agent.Sessions.AddFullMessage(r.ts.sessionKey, msg)
-	r.ts.recordPersistedMessage(msg)
+	writeErr := persistFullSessionMessage(r.ts.agent.Sessions, r.ts.sessionKey, msg)
+	if writeErr == nil {
+		r.ts.recordPersistedMessage(msg)
+	}
 	if ingest == toolMessagePersistAndIngest && r.p != nil {
-		r.p.ingestMessage(r.turnCtx, r.ts, msg)
+		r.p.ingestMessage(r.turnCtx, r.ts, msg, writeErr)
+	} else if writeErr != nil {
+		logger.WarnCF("agent", "Canonical tool message write failed", map[string]any{
+			"session_key": r.ts.sessionKey,
+			"error":       writeErr.Error(),
+		})
 	}
 }
 
@@ -889,10 +898,12 @@ func (r *toolLoopRunner) appendInjectedTurnMessage(msg providers.Message) {
 	if r.ts == nil || r.ts.opts.NoHistory {
 		return
 	}
-	r.ts.agent.Sessions.AddFullMessage(r.ts.sessionKey, msg)
-	r.ts.recordPersistedMessage(msg)
+	writeErr := persistFullSessionMessage(r.ts.agent.Sessions, r.ts.sessionKey, msg)
+	if writeErr == nil {
+		r.ts.recordPersistedMessage(msg)
+	}
 	if r.p != nil {
-		r.p.ingestMessage(r.turnCtx, r.ts, msg)
+		r.p.ingestMessage(r.turnCtx, r.ts, msg, writeErr)
 	}
 }
 

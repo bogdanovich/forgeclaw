@@ -732,9 +732,11 @@ func (p *Pipeline) CallLLM(
 	}
 	exec.messages = append(exec.messages, assistantMsg)
 	if !ts.opts.NoHistory {
-		ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
-		ts.recordPersistedMessage(assistantMsg)
-		p.ingestMessage(turnCtx, ts, assistantMsg)
+		writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, assistantMsg)
+		if writeErr == nil {
+			ts.recordPersistedMessage(assistantMsg)
+		}
+		p.ingestMessage(turnCtx, ts, assistantMsg, writeErr)
 	}
 	if shouldPublishPicoToolCallInterim {
 		interimContent := exec.response.Content

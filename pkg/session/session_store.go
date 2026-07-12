@@ -41,3 +41,11 @@ type SessionStore interface {
 type HistoryRevisionProvider interface {
 	GetHistoryRevision(sessionKey string) (memory.HistoryRevision, error)
 }
+
+// ErrorAwareSessionWriter exposes canonical write failures to callers that
+// must coordinate a derived store. SessionStore keeps its legacy fire-and-
+// forget methods for compatibility.
+type ErrorAwareSessionWriter interface {
+	AddMessageWithError(sessionKey, role, content string) error
+	AddFullMessageWithError(sessionKey string, msg providers.Message) error
+}

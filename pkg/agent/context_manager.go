@@ -54,8 +54,9 @@ type CompactRequest struct {
 
 // IngestRequest is the input to Ingest.
 type IngestRequest struct {
-	SessionKey string            // session identifier
-	Message    providers.Message // the message just persisted
+	SessionKey        string            // session identifier
+	Message           providers.Message // the message submitted to canonical history
+	CanonicalWriteErr error             // non-nil when canonical persistence failed
 }
 
 // ContextManagerFactory constructs a ContextManager from config.

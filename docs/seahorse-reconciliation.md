@@ -36,6 +36,9 @@ path, but it is lazy for active sessions and background work for inactive ones.
 6. Routed sessions are read from the owning agent's SessionStore. Background
    reconciliation enumerates every registered agent after `AgentLoop.Run`
    begins; context-manager construction never scans historical sessions.
+7. Error-aware canonical writes are reported to context ingest. If a live
+   append fails, Seahorse ingests that message without advancing its watermark;
+   the next successful reconciliation restores JSONL authority.
 
 Full reconciliation compares canonical and derived messages and repairs or
 rebuilds SQLite as before. Message parts are loaded in bounded SQL batches, so

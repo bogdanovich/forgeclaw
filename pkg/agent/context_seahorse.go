@@ -178,6 +178,13 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 	}
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
+	if req.CanonicalWriteErr != nil {
+		logger.WarnCF("seahorse", "canonical history write failed; ingesting live message without watermark",
+			map[string]any{"session": req.SessionKey, "error": req.CanonicalWriteErr.Error()})
+		msg := providerToSeahorseMessage(req.Message)
+		_, err := m.engine.Ingest(ctx, req.SessionKey, []seahorse.Message{msg})
+		return err
+	}
 	store := m.sessionStore(req.SessionKey)
 	if store == nil {
 		msg := providerToSeahorseMessage(req.Message)
