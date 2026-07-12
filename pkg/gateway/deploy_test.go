@@ -11,7 +11,14 @@ import (
 )
 
 func deployConfig(script string) config.GatewayDeployConfig {
-	return config.GatewayDeployConfig{Enabled: true, Group: "local", Command: script, DefaultTarget: "current", AllowedTargets: []string{"current", "all"}, TimeoutSeconds: 1}
+	return config.GatewayDeployConfig{
+		Enabled:        true,
+		Group:          "local",
+		Command:        script,
+		DefaultTarget:  "current",
+		AllowedTargets: []string{"current", "all"},
+		TimeoutSeconds: 1,
+	}
 }
 
 func writeDeployScript(t *testing.T, body string) string {

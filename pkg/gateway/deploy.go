@@ -38,6 +38,7 @@ func NewDeploySentinelStore(dir string) (*DeploySentinelStore, error) {
 	}
 	return &DeploySentinelStore{path: filepath.Join(dir, "deploy-sentinel.json")}, nil
 }
+
 func (s *DeploySentinelStore) Write(v DeploySentinel) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -81,14 +82,30 @@ func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (stri
 		return "", -1, fmt.Errorf("deploy target %q is not allowed", target)
 	}
 	now := time.Now().UTC()
-	sentinel := DeploySentinel{Kind: "deploy", Status: "running", Group: r.cfg.Group, Target: target, Command: r.cfg.Command, ExitCode: -1, Origin: RestartOrigin{SessionKey: sessionKey}, RequestedAt: now, UpdatedAt: now}
+	sentinel := DeploySentinel{
+		Kind:        "deploy",
+		Status:      "running",
+		Group:       r.cfg.Group,
+		Target:      target,
+		Command:     r.cfg.Command,
+		ExitCode:    -1,
+		Origin:      RestartOrigin{SessionKey: sessionKey},
+		RequestedAt: now,
+		UpdatedAt:   now,
+	}
 	if err := r.store.Write(sentinel); err != nil {
 		return "", -1, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.cfg.EffectiveTimeoutSeconds())*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.cfg.Command, "--target", target)
-	cmd.Env = append(cmd.Environ(), "FORGECLAW_DEPLOY_GROUP="+r.cfg.Group, "FORGECLAW_DEPLOY_TARGET="+target, "FORGECLAW_WORKSPACE="+r.workspace, "FORGECLAW_SERVICE="+r.service, "FORGECLAW_SESSION_KEY="+sessionKey)
+	cmd.Env = append(cmd.Environ(),
+		"FORGECLAW_DEPLOY_GROUP="+r.cfg.Group,
+		"FORGECLAW_DEPLOY_TARGET="+target,
+		"FORGECLAW_WORKSPACE="+r.workspace,
+		"FORGECLAW_SERVICE="+r.service,
+		"FORGECLAW_SESSION_KEY="+sessionKey,
+	)
 	out, err := cmd.CombinedOutput()
 	text := truncateDeployOutput(string(out))
 	code := 0

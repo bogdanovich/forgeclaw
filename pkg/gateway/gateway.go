@@ -471,7 +471,11 @@ func setupDeployTool(cfg *config.Config, agentLoop *agent.AgentLoop) error {
 		if reloadCfg == nil || !reloadCfg.Gateway.Deploy.Enabled {
 			return nil, nil
 		}
-		runner, err := NewDeployRunner(reloadCfg.Gateway.Deploy, reloadCfg.WorkspacePath(), reloadCfg.Gateway.SafeRestart.EffectiveService())
+		runner, err := NewDeployRunner(
+			reloadCfg.Gateway.Deploy,
+			reloadCfg.WorkspacePath(),
+			reloadCfg.Gateway.SafeRestart.EffectiveService(),
+		)
 		if err != nil {
 			return nil, err
 		}
