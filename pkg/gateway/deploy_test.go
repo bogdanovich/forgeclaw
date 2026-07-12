@@ -3,10 +3,12 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 )
@@ -97,4 +99,40 @@ func TestDeployRunnerFailureTimeoutAndTruncation(t *testing.T) {
 			t.Fatalf("len=%d err=%v", len(out), err)
 		}
 	})
+}
+
+func TestDeployRunnerRejectsConcurrentDeploy(t *testing.T) {
+	workspace := t.TempDir()
+	script := writeDeployScript(t, "touch \"$FORGECLAW_WORKSPACE/started\"; sleep 2")
+	first, err := NewDeployRunner(deployConfig(script), workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewDeployRunner(deployConfig(script), workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, runErr := first.Run(context.Background(), "", "")
+		firstDone <- runErr
+	}()
+
+	started := filepath.Join(workspace, "started")
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first deploy did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, _, err := second.Run(context.Background(), "", ""); !errors.Is(err, ErrDeployAlreadyRunning) {
+		t.Fatalf("second Run() error = %v, want ErrDeployAlreadyRunning", err)
+	}
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -17,6 +18,8 @@ import (
 )
 
 const deployOutputLimit = 16 * 1024
+
+var ErrDeployAlreadyRunning = errors.New("gateway deploy is already running")
 
 type DeploySentinel struct {
 	Kind        string        `json:"kind"`
@@ -45,6 +48,21 @@ func (s *DeploySentinelStore) Write(v DeploySentinel) error {
 		return err
 	}
 	return fileutil.WriteFileAtomic(s.path, b, 0o600)
+}
+
+func (s *DeploySentinelStore) acquireLock() (*os.File, error) {
+	lock, err := os.OpenFile(filepath.Join(filepath.Dir(s.path), "deploy.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open deploy lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, ErrDeployAlreadyRunning
+		}
+		return nil, fmt.Errorf("lock deploy: %w", err)
+	}
+	return lock, nil
 }
 
 type DeployRunner struct {
@@ -81,6 +99,11 @@ func (r *DeployRunner) Run(ctx context.Context, target, sessionKey string) (stri
 	if !containsTarget(r.cfg.AllowedTargets, target) {
 		return "", -1, fmt.Errorf("deploy target %q is not allowed", target)
 	}
+	lock, err := r.store.acquireLock()
+	if err != nil {
+		return "", -1, err
+	}
+	defer lock.Close()
 	now := time.Now().UTC()
 	sentinel := DeploySentinel{
 		Kind:        "deploy",
