@@ -829,6 +829,7 @@ func runtimeEventRecord(
 		payload = evaltrace.EvolutionPayload{
 			RecordID: value.RecordID, DraftID: value.DraftID, SkillName: value.SkillName,
 			Action: value.Action, Status: value.Status, Success: value.Success,
+			Eligible:      value.Eligible,
 			ProvenanceIDs: append([]string(nil), value.ProvenanceIDs...),
 			PolicyCodes:   append([]string(nil), value.PolicyCodes...),
 		}
@@ -912,6 +913,7 @@ func (al *AgentLoop) observeEvolutionTransition(observation evolution.Observatio
 			Workspace: observation.Workspace, RecordID: observation.RecordID,
 			DraftID: observation.DraftID, SkillName: observation.SkillName,
 			Action: observation.Action, Status: observation.Status, Success: observation.Success,
+			Eligible:      observation.Eligible,
 			ProvenanceIDs: append([]string(nil), observation.ProvenanceIDs...),
 			PolicyCodes:   append([]string(nil), observation.PolicyCodes...),
 		},

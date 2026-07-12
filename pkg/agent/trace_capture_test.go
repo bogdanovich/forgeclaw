@@ -316,7 +316,7 @@ func TestTraceCaptureStoresStandaloneEvolutionTransition(t *testing.T) {
 		Source: runtimeevents.Source{Component: "agent"},
 		Payload: EvolutionTransitionPayload{
 			Workspace: workspace, RecordID: "record-1", DraftID: "draft-1",
-			SkillName: "test-skill", Action: "draft_saved", Status: "candidate",
+			SkillName: "test-skill", Action: "draft_saved", Status: "candidate", Eligible: true,
 			ProvenanceIDs: []string{"record-1"},
 		},
 	})
@@ -331,6 +331,13 @@ func TestTraceCaptureStoresStandaloneEvolutionTransition(t *testing.T) {
 	}
 	if len(trace.Records) != 1 || trace.Records[0].Kind != evaltrace.RecordEvolutionDraft {
 		t.Fatalf("evolution trace = %#v", trace)
+	}
+	var payload evaltrace.EvolutionPayload
+	if err := json.Unmarshal(trace.Records[0].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Eligible {
+		t.Fatalf("evolution eligibility was not captured: %#v", payload)
 	}
 	manager.close()
 	_ = eventBus.Close()
