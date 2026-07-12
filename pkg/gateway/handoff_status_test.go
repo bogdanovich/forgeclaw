@@ -2,11 +2,14 @@ package gateway
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent"
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 )
 
 func TestReportRestartHandoffRecoversAndDeliversOnce(t *testing.T) {
@@ -112,5 +115,26 @@ func TestReportDeployHandoffLeavesUndeliverableOriginPending(t *testing.T) {
 	}
 	if !sentinel.ContinuationSentAt.IsZero() {
 		t.Fatalf("undeliverable sentinel marked sent: %#v", sentinel)
+	}
+}
+
+func TestGatewayHandoffStatusToolSurvivesAgentRegistryReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Gateway.Deploy = config.GatewayDeployConfig{Enabled: true}
+	messageBus := bus.NewMessageBus()
+	loop := agent.NewAgentLoop(cfg, messageBus, &startupBlockedProvider{reason: "not used"})
+	if err := setupGatewayHandoffStatusTool(cfg, loop); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.ReloadProviderAndConfig(
+		context.Background(), &startupBlockedProvider{reason: "not used"}, cfg,
+	); err != nil {
+		t.Fatal(err)
+	}
+	toolsInfo := loop.GetStartupInfo()["tools"].(map[string]any)
+	toolsList := toolsInfo["names"].([]string)
+	if !slices.Contains(toolsList, "gateway_handoff_status") {
+		t.Fatalf("registered tools after reload = %#v, want gateway_handoff_status", toolsList)
 	}
 }

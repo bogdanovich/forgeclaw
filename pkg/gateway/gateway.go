@@ -842,6 +842,9 @@ func restartServices(
 	if err = setupDeployTool(cfg, al); err != nil {
 		return fmt.Errorf("error setting up deploy tool: %w", err)
 	}
+	if err = setupGatewayHandoffStatusTool(cfg, al); err != nil {
+		return fmt.Errorf("error setting up gateway handoff status tool: %w", err)
+	}
 	if err = runningServices.CronService.Start(); err != nil {
 		return fmt.Errorf("error restarting cron service: %w", err)
 	}
