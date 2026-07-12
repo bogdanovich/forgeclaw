@@ -1662,6 +1662,41 @@ func TestLoadConfig_ToleratesDeprecatedEditFileTool(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_MigratesDeprecatedEditFileToolFromLegacyVersions(t *testing.T) {
+	for _, version := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("version_%d", version), func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.json")
+			raw := fmt.Sprintf(`{
+  "version": %d,
+  "tools": {
+    "edit_file": {"enabled": true},
+    "apply_patch": {"enabled": false}
+  }
+}`, version)
+			if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+
+			cfg, err := LoadConfig(configPath)
+			if err != nil {
+				t.Fatalf("LoadConfig() error: %v", err)
+			}
+			if cfg.Tools.ApplyPatch.Enabled {
+				t.Fatal("LoadConfig().Tools.ApplyPatch.Enabled should be false")
+			}
+
+			stored, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("ReadFile() error: %v", err)
+			}
+			if strings.Contains(string(stored), `"edit_file"`) {
+				t.Fatal("legacy migration should remove the deprecated field on disk")
+			}
+		})
+	}
+}
+
 func TestDefaultConfig_ExecAllowRemoteEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.Tools.Exec.AllowRemote {

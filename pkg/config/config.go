@@ -1448,7 +1448,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 
 		var m map[string]any
-		m, err = loadConfigMap(path)
+		m, err = loadConfigMapData(path, data)
 		if err != nil {
 			logger.ErrorCF(
 				"config",
@@ -1506,7 +1506,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 
 		var m map[string]any
-		m, err = loadConfigMap(path)
+		m, err = loadConfigMapData(path, data)
 		if err != nil {
 			logger.ErrorCF(
 				"config",
@@ -1563,7 +1563,7 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 		var m map[string]any
-		m, err = loadConfigMap(path)
+		m, err = loadConfigMapData(path, data)
 		if err != nil {
 			logger.ErrorCF(
 				"config",

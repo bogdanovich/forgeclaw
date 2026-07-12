@@ -430,14 +430,19 @@ func migrateV2ToV3(m map[string]any) error {
 }
 
 func loadConfigMap(path string) (map[string]any, error) {
-	var m1, m2 map[string]any
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return m1, nil
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
+	return loadConfigMapData(path, data)
+}
+
+func loadConfigMapData(path string, data []byte) (map[string]any, error) {
+	var m1, m2 map[string]any
+	var err error
 	if err = json.Unmarshal(data, &m1); err != nil {
 		return nil, wrapJSONError(data, err, "config.json")
 	}
