@@ -106,6 +106,7 @@ type processOptions struct {
 	DefaultResponse          string                 // Response when LLM returns empty
 	EnableSummary            bool                   // Whether to trigger summarization
 	SendResponse             bool                   // Whether to send response via bus
+	ExpectFinalDelivery      bool                   // Whether an outer coordinator will publish the final response
 	AllowInterimPicoPublish  bool                   // Whether pico tool-call interim text can be published when SendResponse is false
 	SuppressToolUserDelivery bool                   // Whether direct user-facing delivery from tools is suppressed for this turn
 	SuppressToolFeedback     bool                   // Whether to suppress inline tool feedback messages
