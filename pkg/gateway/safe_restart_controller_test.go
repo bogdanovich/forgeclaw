@@ -44,7 +44,7 @@ func (s *restartSourceSequence) PendingInboundSpool(context.Context) ([]bus.Inbo
 type fakeServiceRestarter struct {
 	mu       sync.Mutex
 	services []string
-	err      error
+	dispatch RestartDispatchResult
 	called   chan string
 }
 
@@ -60,10 +60,10 @@ func TestSystemdUserServiceRestarterQueuesRestartWithoutBlocking(t *testing.T) {
 		return exec.Command(os.Args[0], "-test.run=^TestSystemdUserServiceRestarterHelper$")
 	}
 
-	if err := (SystemdUserServiceRestarter{}).RestartService(
+	if got := (SystemdUserServiceRestarter{}).DispatchRestart(
 		context.Background(), "picoclaw-main.service",
-	); err != nil {
-		t.Fatalf("RestartService() error = %v", err)
+	); got.Outcome != RestartDispatchAccepted {
+		t.Fatalf("DispatchRestart() = %#v", got)
 	}
 	if gotName != "systemctl" {
 		t.Fatalf("command = %q, want systemctl", gotName)
@@ -86,14 +86,13 @@ func TestSystemdUserServiceRestarterMarksSignaledCommandUncertain(t *testing.T) 
 		return exec.Command("sh", "-c", "kill -TERM $$")
 	}
 
-	err := (SystemdUserServiceRestarter{}).RestartService(context.Background(), "picoclaw-main.service")
-	var uncertain *restartDispatchUncertainError
-	if !errors.As(err, &uncertain) {
-		t.Fatalf("RestartService() error = %v, want restartDispatchUncertainError", err)
+	got := (SystemdUserServiceRestarter{}).DispatchRestart(context.Background(), "picoclaw-main.service")
+	if got.Outcome != RestartDispatchIndeterminate {
+		t.Fatalf("DispatchRestart() = %#v, want indeterminate", got)
 	}
 }
 
-func (r *fakeServiceRestarter) RestartService(_ context.Context, service string) error {
+func (r *fakeServiceRestarter) DispatchRestart(_ context.Context, service string) RestartDispatchResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.services = append(r.services, service)
@@ -103,7 +102,10 @@ func (r *fakeServiceRestarter) RestartService(_ context.Context, service string)
 		default:
 		}
 	}
-	return r.err
+	if r.dispatch.Outcome == "" {
+		return RestartDispatchResult{Outcome: RestartDispatchAccepted}
+	}
+	return r.dispatch
 }
 
 func (r *fakeServiceRestarter) calledWith(service string) bool {
@@ -243,7 +245,10 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarter := &fakeServiceRestarter{called: make(chan string, 1), err: errors.New("planned restart failure")}
+	restarter := &fakeServiceRestarter{
+		called:   make(chan string, 1),
+		dispatch: failedRestartDispatch(errors.New("planned restart failure")),
+	}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config:           testRestartConfig(),
 		Source:           &restartSourceSequence{},
@@ -279,8 +284,8 @@ func TestRestartControllerKeepsRunningStatusForUncertainDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarter := &fakeServiceRestarter{
-		called: make(chan string, 1),
-		err:    &restartDispatchUncertainError{err: errors.New("signal: terminated")},
+		called:   make(chan string, 1),
+		dispatch: RestartDispatchResult{Outcome: RestartDispatchIndeterminate, Err: errors.New("signal: terminated")},
 	}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config:           testRestartConfig(),
@@ -440,8 +445,8 @@ func TestRestartControllerBackgroundFailureWritesFailedSentinel(t *testing.T) {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
 	}
 	restarter := &fakeServiceRestarter{
-		err:    errors.New("boom"),
-		called: make(chan string, 1),
+		dispatch: failedRestartDispatch(errors.New("boom")),
+		called:   make(chan string, 1),
 	}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config:           testRestartConfig(),
