@@ -567,6 +567,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			} else {
 				resolvedOpts = resolved
 			}
+			al.applyActiveGoalPrompt(&resolvedOpts)
 
 			storedUsage := computeContextUsage(agent, resolvedOpts.SessionKey)
 			if storedUsage == nil {

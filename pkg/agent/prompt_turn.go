@@ -176,13 +176,10 @@ func normalizePromptBuildRequestRelations(
 }
 
 func promptOverlaysForOptions(opts processOptions) []PromptPart {
+	var overlays []PromptPart
 	systemPrompt := strings.TrimSpace(opts.SystemPromptOverride)
-	if systemPrompt == "" {
-		return nil
-	}
-
-	return []PromptPart{
-		{
+	if systemPrompt != "" {
+		overlays = append(overlays, PromptPart{
 			ID:      "instruction.subturn_profile",
 			Layer:   PromptLayerInstruction,
 			Slot:    PromptSlotWorkspace,
@@ -191,8 +188,23 @@ func promptOverlaysForOptions(opts processOptions) []PromptPart {
 			Content: systemPrompt,
 			Stable:  false,
 			Cache:   PromptCacheNone,
-		},
+		})
 	}
+
+	if activeGoal := strings.TrimSpace(opts.ActiveGoal); activeGoal != "" {
+		overlays = append(overlays, PromptPart{
+			ID:      "context.active_goal",
+			Layer:   PromptLayerContext,
+			Slot:    PromptSlotRuntime,
+			Source:  PromptSource{ID: PromptSourceRuntime, Name: "session.goal"},
+			Title:   "active session goal",
+			Content: activeGoal,
+			Stable:  false,
+			Cache:   PromptCacheNone,
+		})
+	}
+
+	return overlays
 }
 
 func promptContentBlock(part PromptPart, cache *providers.CacheControl) providers.ContentBlock {
