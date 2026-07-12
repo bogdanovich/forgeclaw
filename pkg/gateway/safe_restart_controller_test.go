@@ -92,6 +92,51 @@ func TestSystemdUserServiceRestarterMarksSignaledCommandUncertain(t *testing.T) 
 	}
 }
 
+func TestLaunchdServiceRestarterKickstartsConfiguredTarget(t *testing.T) {
+	original := launchctlCommandContext
+	t.Cleanup(func() { launchctlCommandContext = original })
+	t.Setenv("GO_WANT_SYSTEMCTL_HELPER", "1")
+	var gotName string
+	var gotArgs []string
+	launchctlCommandContext = func(_ context.Context, name string, args ...string) *exec.Cmd {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return exec.Command(os.Args[0], "-test.run=^TestSystemdUserServiceRestarterHelper$")
+	}
+
+	got := (LaunchdServiceRestarter{}).DispatchRestart(context.Background(), "gui/501/com.example.picoclaw")
+	if got.Outcome != RestartDispatchAccepted {
+		t.Fatalf("DispatchRestart() = %#v", got)
+	}
+	if gotName != "launchctl" {
+		t.Fatalf("command = %q, want launchctl", gotName)
+	}
+	if want := []string{"kickstart", "-k", "gui/501/com.example.picoclaw"}; !slices.Equal(gotArgs, want) {
+		t.Fatalf("args = %#v, want %#v", gotArgs, want)
+	}
+}
+
+func TestConfiguredServiceRestarterGuardsPlatformAndWindowsSCM(t *testing.T) {
+	original := restartRuntimeGOOS
+	t.Cleanup(func() { restartRuntimeGOOS = original })
+	cfg := testRestartConfig()
+
+	restartRuntimeGOOS = "darwin"
+	if _, err := newConfiguredServiceRestarter(cfg); err == nil || !strings.Contains(err.Error(), "requires linux") {
+		t.Fatalf("systemd guard error = %v", err)
+	}
+	cfg.ServiceManager = "launchd"
+	cfg.Service = "gui/501/com.example.picoclaw"
+	if _, err := newConfiguredServiceRestarter(cfg); err != nil {
+		t.Fatalf("launchd factory error = %v", err)
+	}
+	cfg.ServiceManager = "windows-scm"
+	if _, err := newConfiguredServiceRestarter(cfg); err == nil ||
+		!strings.Contains(err.Error(), "external supervisor helper") {
+		t.Fatalf("windows SCM guard error = %v", err)
+	}
+}
+
 func (r *fakeServiceRestarter) DispatchRestart(_ context.Context, service string) RestartDispatchResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
