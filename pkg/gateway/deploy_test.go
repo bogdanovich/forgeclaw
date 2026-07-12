@@ -61,7 +61,8 @@ func TestDeployRunnerFailureTimeoutAndTruncation(t *testing.T) {
 		}
 	})
 	t.Run("truncation", func(t *testing.T) {
-		r, _ := NewDeployRunner(deployConfig(writeDeployScript(t, "head -c 20000 /dev/zero | tr '\\000' x")), t.TempDir(), "")
+		script := writeDeployScript(t, "head -c 20000 /dev/zero | tr '\\000' x")
+		r, _ := NewDeployRunner(deployConfig(script), t.TempDir(), "")
 		out, _, err := r.Run(context.Background(), "", "")
 		if err != nil || !strings.HasPrefix(out, "[output truncated]") {
 			t.Fatalf("len=%d err=%v", len(out), err)

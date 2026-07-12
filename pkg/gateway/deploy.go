@@ -138,6 +138,7 @@ func containsTarget(targets []string, target string) bool {
 	}
 	return false
 }
+
 func truncateDeployOutput(s string) string {
 	if len(s) <= deployOutputLimit {
 		return s
