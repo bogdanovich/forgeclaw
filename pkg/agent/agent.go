@@ -48,25 +48,26 @@ type AgentLoop struct {
 	hooks              *HookManager
 
 	// Runtime state
-	running          atomic.Bool
-	contextManager   ContextManager
-	fallback         *providers.FallbackChain
-	modelExecution   *modelExecutionManager
-	channelManager   interfaces.ChannelManager
-	mediaStore       media.MediaStore
-	transcriber      asr.Transcriber
-	cmdRegistry      *commands.Registry
-	mcp              mcpRuntime
-	evolution        *evolutionBridge
-	hookRuntime      hookRuntime
-	steering         *steeringQueue
-	compactionRunner *backgroundCompactionRunner
-	pendingSkills    sync.Map
-	pendingStops     sync.Map
-	asyncCompletions sync.Map
-	taskRegistries   sync.Map
-	runtimeTools     map[string]RuntimeToolFactory
-	mu               sync.RWMutex
+	running               atomic.Bool
+	contextManager        ContextManager
+	fallback              *providers.FallbackChain
+	modelExecution        *modelExecutionManager
+	channelManager        interfaces.ChannelManager
+	mediaStore            media.MediaStore
+	transcriber           asr.Transcriber
+	cmdRegistry           *commands.Registry
+	mcp                   mcpRuntime
+	evolution             *evolutionBridge
+	hookRuntime           hookRuntime
+	steering              *steeringQueue
+	compactionRunner      *backgroundCompactionRunner
+	pendingSkills         sync.Map
+	pendingStops          sync.Map
+	asyncCompletions      sync.Map
+	taskRegistries        sync.Map
+	runtimeTools          map[string]RuntimeToolFactory
+	isolatedToolBootstrap bool
+	mu                    sync.RWMutex
 
 	// workerSem limits concurrent turn processing workers.
 	workerSem chan struct{}
@@ -106,6 +107,7 @@ type processOptions struct {
 	DefaultResponse          string                 // Response when LLM returns empty
 	EnableSummary            bool                   // Whether to trigger summarization
 	SendResponse             bool                   // Whether to send response via bus
+	ExpectFinalDelivery      bool                   // Whether an outer coordinator will publish the final response
 	AllowInterimPicoPublish  bool                   // Whether pico tool-call interim text can be published when SendResponse is false
 	SuppressToolUserDelivery bool                   // Whether direct user-facing delivery from tools is suppressed for this turn
 	SuppressToolFeedback     bool                   // Whether to suppress inline tool feedback messages
@@ -307,7 +309,9 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	}
 
 	// Ensure shared tools are re-registered on the new registry
-	registerSharedTools(al, cfg, al.bus, registry, provider)
+	if !al.isolatedToolBootstrap {
+		registerSharedTools(al, cfg, al.bus, registry, provider)
+	}
 	if err := al.registerRuntimeToolsForRegistry(cfg, registry); err != nil {
 		return err
 	}
@@ -389,8 +393,11 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 			if !al.waitForActiveRequests(ctx, 2*time.Second) {
 				if ctx.Err() != nil {
 					// Context canceled, close immediately but log warning
-					logger.WarnCF("agent", "Context canceled during provider cleanup, forcing close",
-						map[string]any{"error": ctx.Err()})
+					logger.WarnCF(
+						"agent",
+						"Context canceled during provider cleanup, forcing close",
+						map[string]any{"error": ctx.Err()},
+					)
 				} else {
 					logger.WarnCF(
 						"agent",

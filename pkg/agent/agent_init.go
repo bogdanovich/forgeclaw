@@ -42,13 +42,6 @@ func NewAgentLoop(
 	}
 	fallbackChain := providers.NewFallbackChain(cooldown, rl)
 
-	// Create state manager using default agent's workspace for channel recording
-	defaultAgent := registry.GetDefaultAgent()
-	var stateManager *state.Manager
-	if defaultAgent != nil {
-		stateManager = state.NewManager(defaultAgent.Workspace)
-	}
-
 	bridge, err := newEvolutionBridge(registry, cfg, provider)
 	if err != nil {
 		logger.WarnCF("agent", "Failed to initialize evolution bridge", map[string]any{
@@ -66,7 +59,6 @@ func NewAgentLoop(
 		bus:               msgBus,
 		cfg:               cfg,
 		registry:          registry,
-		state:             stateManager,
 		fallback:          fallbackChain,
 		cmdRegistry:       commands.NewRegistry(commands.BuiltinDefinitions()),
 		evolution:         bridge,
@@ -85,6 +77,11 @@ func NewAgentLoop(
 			opt(al)
 		}
 	}
+	if !al.isolatedToolBootstrap {
+		if defaultAgent := registry.GetDefaultAgent(); defaultAgent != nil {
+			al.state = state.NewManager(defaultAgent.Workspace)
+		}
+	}
 	if al.runtimeEvents == nil {
 		al.runtimeEvents = runtimeevents.NewBus()
 		al.ownsRuntimeEvents = true
@@ -94,16 +91,20 @@ func NewAgentLoop(
 		bridge.setCurrentCheck(al.isCurrentEvolutionBridge)
 		bridge.setObserver(al.observeEvolutionTransition)
 		if err := bridge.subscribeRuntimeEvents(al.runtimeEvents.Channel()); err != nil {
-			logger.WarnCF("agent", "Failed to subscribe evolution bridge to runtime events", map[string]any{
-				"error": err.Error(),
-			})
+			logger.WarnCF(
+				"agent",
+				"Failed to subscribe evolution bridge to runtime events",
+				map[string]any{
+					"error": err.Error(),
+				},
+			)
 		}
 	}
 	al.refreshRuntimeEventLogger(cfg)
 	al.providerFactory = providers.CreateProviderFromConfig
 	al.modelExecution = &modelExecutionManager{
 		configProvider: al.GetConfig,
-		state:          stateManager,
+		state:          al.state,
 		providerFactory: func() modelProviderFactory {
 			return al.providerFactory
 		},
@@ -113,7 +114,9 @@ func NewAgentLoop(
 	al.contextManager = al.resolveContextManager()
 
 	// Register shared tools to all agents (now that al is created)
-	registerSharedTools(al, cfg, msgBus, registry, provider)
+	if !al.isolatedToolBootstrap {
+		registerSharedTools(al, cfg, msgBus, registry, provider)
+	}
 
 	return al
 }
@@ -148,7 +151,11 @@ func registerSharedTools(
 		if cfg.Tools.IsToolEnabled("web") {
 			searchTool, err := tools.NewWebSearchTool(tools.WebSearchToolOptionsFromConfig(cfg))
 			if err != nil {
-				logger.ErrorCF("agent", "Failed to create web search tool", map[string]any{"error": err.Error()})
+				logger.ErrorCF(
+					"agent",
+					"Failed to create web search tool",
+					map[string]any{"error": err.Error()},
+				)
 			} else if searchTool != nil {
 				registerToolIfAllowed(agent, searchTool)
 			}
@@ -161,7 +168,11 @@ func registerSharedTools(
 				cfg.Tools.Web.FetchLimitBytes,
 				cfg.Tools.Web.PrivateHostWhitelist)
 			if err != nil {
-				logger.ErrorCF("agent", "Failed to create web fetch tool", map[string]any{"error": err.Error()})
+				logger.ErrorCF(
+					"agent",
+					"Failed to create web fetch tool",
+					map[string]any{"error": err.Error()},
+				)
 			} else {
 				registerToolIfAllowed(agent, fetchTool)
 			}
@@ -193,21 +204,23 @@ func registerSharedTools(
 		}
 		if cfg.Tools.IsToolEnabled("reaction") {
 			reactionTool := tools.NewReactionTool()
-			reactionTool.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID string) error {
-				if al.channelManager == nil {
-					return fmt.Errorf("channel manager not configured")
-				}
-				ch, ok := al.channelManager.GetChannel(channel)
-				if !ok {
-					return fmt.Errorf("channel %s not found", channel)
-				}
-				rc, ok := ch.(channels.ReactionCapable)
-				if !ok {
-					return fmt.Errorf("channel %s does not support reactions", channel)
-				}
-				_, err := rc.ReactToMessage(ctx, chatID, messageID)
-				return err
-			})
+			reactionTool.SetReactionCallback(
+				func(ctx context.Context, channel, chatID, messageID string) error {
+					if al.channelManager == nil {
+						return fmt.Errorf("channel manager not configured")
+					}
+					ch, ok := al.channelManager.GetChannel(channel)
+					if !ok {
+						return fmt.Errorf("channel %s not found", channel)
+					}
+					rc, ok := ch.(channels.ReactionCapable)
+					if !ok {
+						return fmt.Errorf("channel %s does not support reactions", channel)
+					}
+					_, err := rc.ReactToMessage(ctx, chatID, messageID)
+					return err
+				},
+			)
 			registerToolIfAllowed(agent, reactionTool)
 		}
 
@@ -264,7 +277,10 @@ func registerSharedTools(
 			}
 
 			if install_skills_enable {
-				registerToolIfAllowed(agent, tools.NewInstallSkillTool(registryMgr, agent.Workspace))
+				registerToolIfAllowed(
+					agent,
+					tools.NewInstallSkillTool(registryMgr, agent.Workspace),
+				)
 			}
 		}
 
@@ -288,7 +304,12 @@ func registerSharedTools(
 			// This keeps subagent vision support working even when the optimized
 			// sub-turn spawner path is unavailable.
 			subagentManager.SetMediaResolver(func(msgs []providers.Message) []providers.Message {
-				return resolveMediaRefs(msgs, al.mediaStore, cfg.Agents.Defaults.GetMaxMediaSize(), 0)
+				return resolveMediaRefs(
+					msgs,
+					al.mediaStore,
+					cfg.Agents.Defaults.GetMaxMediaSize(),
+					0,
+				)
 			})
 
 			// Set the spawner that links into AgentLoop's turnState

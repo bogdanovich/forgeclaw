@@ -23,6 +23,7 @@ import (
 	configcmd "github.com/sipeed/picoclaw/cmd/picoclaw/internal/config"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cron"
 	doctorcmd "github.com/sipeed/picoclaw/cmd/picoclaw/internal/doctor"
+	evalcmd "github.com/sipeed/picoclaw/cmd/picoclaw/internal/eval"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/gateway"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/mcp"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/migrate"
@@ -138,6 +139,7 @@ picoclaw --no-color status`,
 		status.NewStatusCommand(),
 		doctorcmd.NewDoctorCommand(),
 		cron.NewCronCommand(),
+		evalcmd.NewEvalCommand(),
 		mcp.NewMCPCommand(),
 		migrate.NewMigrateCommand(),
 		skills.NewSkillsCommand(),

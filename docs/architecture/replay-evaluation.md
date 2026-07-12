@@ -315,20 +315,27 @@ messages, and delivery outcomes. Scenario replay uses the existing
 real orchestration path with:
 
 - virtual clock and deterministic ID source;
-- in-memory isolated session/task/evolution stores;
+- isolated session/task/evolution state confined to a runner-owned temporary
+  workspace that is removed after each scenario;
 - scripted providers and explicitly registered stub tools;
 - recording delivery sink that never starts a channel;
-- denied network, MCP, shell, filesystem mutation, subprocess, and gateway
-  construction;
+- denied network, MCP, shell, external filesystem mutation tools, subprocess,
+  and gateway construction; the agent's own state writes are confined to its
+  disposable workspace;
 - explicit restart checkpoints that reconstruct only allowed isolated state.
 
 A trace cannot name a production tool and cause it to execute. Fixture tools
 must be registered by test code or a compiled safe stub catalog. Unknown tools
 produce a deterministic denied result.
 
-The real-orchestration scenario adapter is intentionally separate from the pure
-reducer. Until that adapter is present, the safety primitives are available for
-tests but do not claim that a complete agent turn has been replayed.
+The implemented `pkg/evalscenario` adapter drives the real inbound
+`AgentLoop.Run` path with scripted model responses and sealed text-only stub
+tools. It writes an explicit tool/MCP allowlist before constructing the loop,
+uses an isolated bootstrap option that skips shared production tool and state
+manager construction, verifies the resulting registry contains exactly the
+declared stubs, records the outbound delivery, normalizes the captured evidence
+to fixture identity, and feeds it through contract replay. The temporary
+workspace is deleted before the runner returns.
 
 Replay output contains observations and diagnostics, never production writes.
 The same fixture, binary, options, and evaluator versions must produce identical
@@ -363,6 +370,11 @@ Initial evaluators:
   drafts, quarantine/review policy is honored, provenance exists, and apply or
   rollback transitions match lifecycle rules.
 
+All eight deterministic evaluators are implemented in `pkg/evalevaluator`.
+Their findings are independent and include stable status, severity, record
+references, expected and observed facts, and remediation. Missing evidence is
+reported as `not_evaluable`; malformed typed evidence is `error`.
+
 These are correctness checks, not a single quality score. Missing required
 evidence returns `error` or `not_evaluable`, never `pass`.
 
@@ -385,6 +397,10 @@ The fixture manifest records source references, sanitized status, expected
 evaluators, and why the failure mattered. A source reference is evidence, not
 permission to copy private production content.
 
+The checked-in versioned manifest contains one passing and one failing fixture
+for every deterministic evaluator. `picoclaw eval fixtures` validates the
+manifest, and the pull-request Go test job runs the manifest fixture matrix.
+
 ## User Corrections
 
 ForgeClaw does not currently have a reliable correction signal. A reply,
@@ -405,6 +421,16 @@ Results record model identity, provider, rubric hash, sampling parameters,
 usage, latency, and every sample score. Multiple samples report variance.
 Model failure produces `not_evaluable`; it never changes deterministic findings
 or ordinary CI status.
+
+### Current decision
+
+Model-assisted grading is deferred. The current roadmap questions are delivery,
+transition, correlation, recovery, and policy invariants, all of which are
+deterministically evaluable. No specific semantic rubric, acceptable model,
+cost budget, or variance threshold has been approved. Adding a grader now would
+increase nondeterminism and data exposure without answering a concrete question.
+This decision can be revisited only with an explicit semantic target and budget;
+deterministic findings remain authoritative.
 
 ## Delivery Plan
 

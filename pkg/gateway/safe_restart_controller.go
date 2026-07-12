@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -25,41 +24,7 @@ const (
 )
 
 type ServiceRestarter interface {
-	RestartService(ctx context.Context, service string) error
-}
-
-type SystemdUserServiceRestarter struct{}
-
-var systemctlCommandContext = exec.CommandContext
-
-// restartDispatchUncertainError means systemd may have accepted the restart
-// before terminating the caller's cgroup. The replacement gateway confirms it.
-type restartDispatchUncertainError struct {
-	err error
-}
-
-func (e *restartDispatchUncertainError) Error() string { return e.err.Error() }
-
-func (e *restartDispatchUncertainError) Unwrap() error { return e.err }
-
-func (SystemdUserServiceRestarter) RestartService(ctx context.Context, service string) error {
-	if err := validateSystemdUserService(service); err != nil {
-		return err
-	}
-	// Queue the restart before systemd tears down this service's cgroup. Waiting
-	// for the job can terminate the caller and incorrectly mark a real restart failed.
-	cmd := systemctlCommandContext(ctx, "systemctl", "--user", "restart", "--no-block", service)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		wrapped := fmt.Errorf(
-			"systemctl --user restart %s failed: %w: %s",
-			service, err, strings.TrimSpace(string(output)),
-		)
-		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == -1 {
-			return &restartDispatchUncertainError{err: wrapped}
-		}
-		return wrapped
-	}
-	return nil
+	DispatchRestart(ctx context.Context, service string) RestartDispatchResult
 }
 
 type RestartController struct {
@@ -108,17 +73,13 @@ func NewRestartController(opts RestartControllerOptions) (*RestartController, er
 	if opts.Store == nil {
 		return nil, errors.New("restart sentinel store is required")
 	}
-	manager := opts.Config.EffectiveServiceManager()
-	if manager != "systemd-user" {
-		return nil, fmt.Errorf("unsupported safe restart service manager %q", manager)
+	configuredRestarter, err := newConfiguredServiceRestarter(opts.Config)
+	if err != nil {
+		return nil, err
 	}
 	restarter := opts.Restarter
 	if restarter == nil {
-		restarter = SystemdUserServiceRestarter{}
-	}
-	service := opts.Config.EffectiveService()
-	if err := validateConfiguredRestartService(manager, service); err != nil {
-		return nil, err
+		restarter = configuredRestarter
 	}
 	pollInterval := opts.PollInterval
 	if pollInterval <= 0 {
@@ -221,28 +182,29 @@ func (c *RestartController) runRestart(
 		return
 	}
 
-	if err := c.restarter.RestartService(ctx, service); err != nil {
-		var uncertain *restartDispatchUncertainError
-		if errors.As(err, &uncertain) {
-			logger.WarnCF(
-				"gateway",
-				"Restart dispatch outcome is uncertain; awaiting replacement gateway",
-				map[string]any{
-					"service": service,
-					"error":   err.Error(),
-				},
-			)
-			return
-		}
+	dispatch := c.restarter.DispatchRestart(ctx, service)
+	switch dispatch.Outcome {
+	case RestartDispatchAccepted:
+		sentinel.UpdatedAt = c.now()
+		sentinel.ForcedAfterDrain = forced
+		_ = c.store.Write(sentinel)
+		return
+	case RestartDispatchIndeterminate:
+		logger.WarnCF(
+			"gateway",
+			"Restart dispatch outcome is uncertain; awaiting replacement gateway",
+			map[string]any{
+				"service": service,
+				"error":   fmt.Sprint(dispatch.Err),
+			},
+		)
+		return
+	default:
 		sentinel.Status = restartStatusFailed
 		sentinel.UpdatedAt = c.now()
 		_ = c.store.Write(sentinel)
 		return
 	}
-
-	sentinel.UpdatedAt = c.now()
-	sentinel.ForcedAfterDrain = forced
-	_ = c.store.Write(sentinel)
 }
 
 func (c *RestartController) collectPreflight(ctx context.Context) RestartPreflight {
@@ -338,16 +300,6 @@ func (t *GatewayRestartTool) Execute(ctx context.Context, args map[string]any) *
 	}
 	message := fmt.Sprintf("Gateway restart scheduled for %s. It will run after active work drains.", result.Service)
 	return tools.UserResult(message).WithImmediateDelivery()
-}
-
-func validateConfiguredRestartService(manager, service string) error {
-	if strings.TrimSpace(service) == "" {
-		return errors.New("safe restart service is required")
-	}
-	if manager == "systemd-user" {
-		return validateSystemdUserService(service)
-	}
-	return nil
 }
 
 func validateSystemdUserService(service string) error {

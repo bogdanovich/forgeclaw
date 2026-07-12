@@ -39,6 +39,7 @@ type EvolutionTransitionPayload struct {
 	SkillName     string
 	Action        string
 	Status        string
+	Eligible      bool
 	Success       *bool
 	ProvenanceIDs []string
 	PolicyCodes   []string

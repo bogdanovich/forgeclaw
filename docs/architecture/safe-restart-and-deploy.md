@@ -62,9 +62,17 @@ model-supplied arguments.
 Safe restart should reduce risk by waiting for active work to drain. It is not a
 checkpointing system for an in-flight LLM call or tool execution.
 
-The first supported platform implementation is `systemd-user`. Its configured
-unit must be a simple `.service` name, for example `picoclaw-main.service`; core
-does not pass arbitrary shell fragments to a service manager.
+## Platform Support Matrix
+
+| Platform | `service_manager` | Service identifier | Status |
+| --- | --- | --- | --- |
+| Linux | `systemd-user` | Simple `.service` unit, such as `picoclaw-main.service` | Supported. Core uses `systemctl --user restart --no-block`. A signalled caller is an indeterminate handoff, confirmed by the replacement gateway. |
+| macOS | `launchd` | Explicit launchctl target, such as `gui/501/com.example.picoclaw` | Supported backend. Core uses `launchctl kickstart -k`; the operator owns bootstrap, plist installation, and target domain selection. |
+| Windows | `windows-scm` | Windows service name | Explicitly unsupported for self-restart. SCM has no atomic self-restart primitive; core rejects this configuration until an operator-provided external supervisor helper is implemented. |
+
+Core validates the manager against the running operating system before any
+restart work is scheduled. It never silently routes a non-Linux configuration
+to `systemctl`.
 
 ## Deploy Flow
 
@@ -124,6 +132,21 @@ Core must not accept arbitrary shell fragments from the model or chat command.
       "default_target": "current",
       "allowed_targets": ["current", "all", "main", "nutrition", "spouse", "reviewer"],
       "timeout_seconds": 600
+    }
+  }
+}
+```
+
+For a macOS LaunchAgent, use the configured launchctl target rather than a
+plist path:
+
+```json
+{
+  "gateway": {
+    "safe_restart": {
+      "enabled": true,
+      "service_manager": "launchd",
+      "service": "gui/501/com.example.picoclaw"
     }
   }
 }

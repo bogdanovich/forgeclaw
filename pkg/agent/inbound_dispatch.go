@@ -78,6 +78,7 @@ func (al *AgentLoop) buildInboundMessageTurn(
 		DefaultResponse:         defaultResponse,
 		EnableSummary:           true,
 		SendResponse:            false,
+		ExpectFinalDelivery:     true,
 		AllowInterimPicoPublish: true,
 	}
 

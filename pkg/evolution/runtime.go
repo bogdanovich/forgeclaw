@@ -65,6 +65,7 @@ type Observation struct {
 	SkillName     string
 	Action        string
 	Status        string
+	Eligible      bool
 	Success       *bool
 	ProvenanceIDs []string
 	PolicyCodes   []string
@@ -1509,6 +1510,7 @@ func (rt *Runtime) observeDraft(workspace string, draft SkillDraft, action strin
 	rt.observe(Observation{
 		Workspace: workspace, RecordID: draft.SourceRecordID, DraftID: draft.ID,
 		SkillName: draft.TargetSkillName, Action: action, Status: string(draft.Status),
+		Eligible:      draft.Status == DraftStatusCandidate || draft.Status == DraftStatusAccepted,
 		ProvenanceIDs: []string{draft.SourceRecordID},
 		PolicyCodes:   policyCodes,
 	})
