@@ -74,9 +74,9 @@ func TestJSONLHistoryRevisionRepairsDirtyMetadata(t *testing.T) {
 }
 
 func TestJSONLHistoryRevisionRestoresMetadataAfterInterruptedCompact(t *testing.T) {
-	store, err := NewJSONLStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	store, storeErr := NewJSONLStore(t.TempDir())
+	if storeErr != nil {
+		t.Fatal(storeErr)
 	}
 	ctx := context.Background()
 	key := "interrupted-compact"
@@ -102,9 +102,9 @@ func TestJSONLHistoryRevisionRestoresMetadataAfterInterruptedCompact(t *testing.
 	if _, err := store.GetHistoryRevision(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	history, err := store.GetHistory(ctx, key)
-	if err != nil {
-		t.Fatal(err)
+	history, historyErr := store.GetHistory(ctx, key)
+	if historyErr != nil {
+		t.Fatal(historyErr)
 	}
 	if len(history) != 1 || history[0].Content != "three" {
 		t.Fatalf("interrupted compact exposed history: %#v", history)

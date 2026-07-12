@@ -288,7 +288,11 @@ func reconciliationMatches(state *seahorse.ReconciliationState, revision memory.
 		state.SourceModTimeNS == revision.ModTimeNS
 }
 
-func (m *seahorseContextManager) setReconciliationState(ctx context.Context, key string, revision memory.HistoryRevision) error {
+func (m *seahorseContextManager) setReconciliationState(
+	ctx context.Context,
+	key string,
+	revision memory.HistoryRevision,
+) error {
 	return m.engine.GetRetrieval().Store().SetReconciliationState(ctx, seahorse.ReconciliationState{
 		SessionKey: key, SourceRevision: revision.Revision, SourceCount: revision.Count,
 		SourceSkip: revision.Skip, SourceFileSize: revision.FileSize,
