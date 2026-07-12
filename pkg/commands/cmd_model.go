@@ -126,12 +126,15 @@ func formatConfiguredModels(models []ConfiguredModelInfo) string {
 	lines := make([]string, 0, len(models)+5)
 	lines = append(lines, "Available Models:")
 	for _, model := range models {
-		label := fmt.Sprintf("- %s", model.Name)
+		label := model.Name
 		if model.Current {
 			label += " (current)"
 		}
-		lines = append(lines, label)
-		for _, target := range model.Targets {
+		if len(model.Targets) == 0 {
+			lines = append(lines, fmt.Sprintf("- %s", label))
+			continue
+		}
+		for i, target := range model.Targets {
 			targetText := target.Model
 			if target.Provider != "" {
 				targetText = fmt.Sprintf("%s via %s", target.Model, target.Provider)
@@ -142,7 +145,11 @@ func formatConfiguredModels(models []ConfiguredModelInfo) string {
 			if target.Count > 1 {
 				targetText += fmt.Sprintf(" [x%d]", target.Count)
 			}
-			lines = append(lines, fmt.Sprintf("  - %s", targetText))
+			if i == 0 {
+				lines = append(lines, fmt.Sprintf("- %s — %s", label, targetText))
+			} else {
+				lines = append(lines, fmt.Sprintf("- %s — %s", model.Name, targetText))
+			}
 		}
 	}
 	lines = append(

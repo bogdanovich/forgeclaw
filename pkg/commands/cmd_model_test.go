@@ -125,7 +125,7 @@ func TestModelCommand_ShowListAndUsage(t *testing.T) {
 	if res.Outcome != OutcomeHandled {
 		t.Fatalf("/model list outcome=%v, want handled", res.Outcome)
 	}
-	if reply != "Available Models:\n- gpt-5.4 (current)\n  - openai/gpt-5.4 via openai\n- kimi\n  - moonshotai/kimi-k2.6 via openrouter\n\nUse /model use <name> for this conversation." {
+	if reply != "Available Models:\n- gpt-5.4 (current) — openai/gpt-5.4 via openai\n- kimi — moonshotai/kimi-k2.6 via openrouter\n\nUse /model use <name> for this conversation." {
 		t.Fatalf("unexpected /model list reply: %q", reply)
 	}
 

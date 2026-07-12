@@ -5,7 +5,6 @@ cd "$(git rev-parse --show-toplevel)"
 
 mode="${1:---changed}"
 base="${PRE_PUSH_BASE:-origin/main}"
-
 run_step() {
 	local label="$1"
 	shift
