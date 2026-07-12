@@ -317,6 +317,7 @@ func DefaultConfig() *Config {
 		Events: EventsConfig{
 			Logging: defaultEventLoggingConfig(),
 		},
+		Evaluation: defaultEvaluationConfig(),
 		Tools: ToolsConfig{
 			FilterSensitiveData: true,
 			FilterMinLength:     8,

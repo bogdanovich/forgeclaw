@@ -142,6 +142,49 @@ The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, 
 
 Use `observe` first if you want to inspect learning records without generating skill changes. Use `draft` when you want PicoClaw to prepare reviewable improvements. Use `apply` only when you are comfortable letting accepted drafts update workspace skills.
 
+### Evaluation Trace Capture
+
+The `evaluation.trace_capture` block reserves safe bounds and storage policy for
+the replay/evaluation recorder. Capture is disabled by default. The foundation
+contract does not yet wire a production recorder, so enabling this block has no
+effect until the capture PR lands.
+
+```json
+{
+  "evaluation": {
+    "trace_capture": {
+      "enabled": false,
+      "content_mode": "metadata_only",
+      "state_dir": "",
+      "max_trace_bytes": 2097152,
+      "max_records": 2000,
+      "max_record_bytes": 16384,
+      "max_corrections": 8,
+      "retention_hours": 24,
+      "max_traces": 100
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Explicitly enables future production trace capture. Evaluation commands do not enable recording. |
+| `content_mode` | `metadata_only` | `metadata_only` stores safe counts, statuses, hashes, and IDs. `redacted_content` permits explicitly allowlisted filtered content. Runtime configuration never accepts fixture mode. |
+| `state_dir` | `""` | Optional trace directory. Empty selects the workspace evaluation state directory when capture is wired. |
+| `max_trace_bytes` | `2097152` | Soft serialized size limit for one trace. Compiled hard ceilings still apply. |
+| `max_records` | `2000` | Maximum normalized records per trace. |
+| `max_record_bytes` | `16384` | Maximum redacted JSON payload size for one record. |
+| `max_corrections` | `8` | Maximum explicit correction annotations. Corrections are never inferred from ordinary follow-ups. |
+| `retention_hours` | `24` | Default trace retention period. |
+| `max_traces` | `100` | Maximum retained traces per workspace. |
+
+Trace files use owner-only permissions and atomic writes. Raw runtime-event
+payloads, arbitrary attributes, credentials, provider options, and unrestricted
+errors are not valid capture inputs. See
+[`../architecture/replay-evaluation.md`](../architecture/replay-evaluation.md)
+for the security and replay-isolation contract.
+
 ### Request Context Policy
 
 `turn_profile` is an optional request context policy under `agents.defaults.turn_profile`. Leave it unset or set `"enabled": false` to keep PicoClaw's normal behavior. When `"enabled": true`, the same policy applies to every new turn.
