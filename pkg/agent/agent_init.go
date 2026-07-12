@@ -279,6 +279,7 @@ func registerSharedTools(
 				taskRegistry,
 			)
 			subagentManager.SetLLMOptions(agent.MaxTokens, agent.Temperature)
+			subagentManager.SetLoopDetection(agent.ToolLoopDetection)
 
 			// Inject a media resolver so the legacy RunToolLoop fallback path can
 			// resolve media:// refs in the same way the main AgentLoop does.

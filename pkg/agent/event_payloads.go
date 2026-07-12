@@ -143,6 +143,16 @@ type ToolExecSkippedPayload struct {
 	Reason string
 }
 
+// ToolLoopDecisionPayload contains only hash-safe loop protection metadata.
+type ToolLoopDecisionPayload struct {
+	Tool      string
+	ArgsHash  string
+	Action    string
+	Code      string
+	Count     int
+	Threshold int
+}
+
 // SteeringInjectedPayload describes steering messages appended before the next LLM call.
 type SteeringInjectedPayload struct {
 	Count           int

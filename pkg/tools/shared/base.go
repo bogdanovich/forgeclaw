@@ -5,6 +5,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 // Tool is the interface that all tools must implement.
@@ -13,6 +14,12 @@ type Tool interface {
 	Description() string
 	Parameters() map[string]any
 	Execute(ctx context.Context, args map[string]any) *ToolResult
+}
+
+// LoopSemanticsProvider explicitly classifies tool side-effect behavior for
+// loop detection. Tools without this optional capability remain unknown.
+type LoopSemanticsProvider interface {
+	ToolLoopSemantics() loopguard.Semantics
 }
 
 const (

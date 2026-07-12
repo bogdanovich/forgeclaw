@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 const (
@@ -47,6 +49,10 @@ func NewSearchFilesTool(
 
 func (t *SearchFilesTool) Name() string {
 	return "search_files"
+}
+
+func (t *SearchFilesTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
 }
 
 func (t *SearchFilesTool) Description() string {

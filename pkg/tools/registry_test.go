@@ -11,6 +11,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 // --- mock types ---
@@ -20,6 +21,36 @@ type mockRegistryTool struct {
 	desc   string
 	params map[string]any
 	result *ToolResult
+}
+
+type semanticRegistryTool struct {
+	mockRegistryTool
+	semantics loopguard.Semantics
+}
+
+func (t *semanticRegistryTool) ToolLoopSemantics() loopguard.Semantics {
+	return t.semantics
+}
+
+func TestToolRegistryLoopSemanticsFailsClosed(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockRegistryTool{name: "unknown", result: SilentResult("ok")})
+	registry.Register(&semanticRegistryTool{
+		mockRegistryTool: mockRegistryTool{name: "read", result: SilentResult("ok")},
+		semantics:        loopguard.SemanticsReadOnlyIdempotent,
+	})
+	registry.Register(&semanticRegistryTool{
+		mockRegistryTool: mockRegistryTool{name: "invalid", result: SilentResult("ok")},
+		semantics:        loopguard.Semantics("unsafe_custom_value"),
+	})
+	if got := registry.LoopSemantics("read"); got != loopguard.SemanticsReadOnlyIdempotent {
+		t.Fatalf("read semantics = %q", got)
+	}
+	for _, name := range []string{"unknown", "invalid", "missing"} {
+		if got := registry.LoopSemantics(name); got != loopguard.SemanticsUnknown {
+			t.Fatalf("%s semantics = %q, want unknown", name, got)
+		}
+	}
 }
 
 func (m *mockRegistryTool) Name() string               { return m.name }

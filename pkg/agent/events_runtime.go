@@ -43,7 +43,8 @@ func runtimeSeverityForAgentEvent(kind runtimeevents.Kind, payload any) runtimee
 		return runtimeevents.SeverityError
 	case runtimeevents.KindAgentLLMRetry,
 		runtimeevents.KindAgentContextCompress,
-		runtimeevents.KindAgentToolExecSkipped:
+		runtimeevents.KindAgentToolExecSkipped,
+		runtimeevents.KindAgentToolLoopDecision:
 		return runtimeevents.SeverityWarn
 	case runtimeevents.KindAgentTurnEnd:
 		payload, ok := payload.(TurnEndPayload)

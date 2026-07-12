@@ -17,5 +17,6 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Channel Lifecycle](channel-lifecycle.md): conservative channel reload policy, delivery ownership invariants, and the roadmap for any future hot-replacement work.
 - [Workspace Temp Directory](workspace-temp.md): standard scratch path, `PICOCLAW_WORKSPACE_TMP`, and where temporary files should go.
 - [Shellguard](shellguard.md): reusable shell command validation, command classification, permission modes, and path-scope limits.
+- [Tool-Loop Stagnation Protection](tool-loop-stagnation.md): warning-first repeated failure and read-only no-progress detection with hash-safe state and events.
 - [Agent Self-Evolution](agent-self-evolution.md): learning records, draft generation, application modes, and state layout.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.

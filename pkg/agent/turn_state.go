@@ -15,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 // =============================================================================
@@ -132,6 +133,7 @@ type turnExecution struct {
 
 	// Iteration tracking
 	iteration int
+	loopGuard *loopguard.Controller
 
 	// Per-iteration state set by Pipeline.PreLLM
 	model turnExecutionModel
@@ -209,6 +211,7 @@ func newTurnExecution(
 		sawAdditionalUserInput:  len(opts.InitialSteeringMessages) > 0,
 		initialSteeringSpoolIDs: collectSteeringSpoolIDs(opts.InitialSteeringMessages),
 		iteration:               0,
+		loopGuard:               loopguard.New(agent.ToolLoopDetection),
 		phase:                   LLMPhaseSetup,
 	}
 }

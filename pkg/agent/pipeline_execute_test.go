@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,11 +11,273 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
+
+type pipelineLoopGuardTool struct {
+	executions int
+}
+
+type pipelineLoopGuardReadTool struct {
+	executions int
+}
+
+func (t *pipelineLoopGuardReadTool) Name() string        { return "loop_hook_test" }
+func (t *pipelineLoopGuardReadTool) Description() string { return "hook loop test" }
+func (t *pipelineLoopGuardReadTool) Parameters() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"text": map[string]any{"type": "string"}},
+	}
+}
+
+func (t *pipelineLoopGuardReadTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
+}
+
+func (t *pipelineLoopGuardReadTool) Execute(_ context.Context, args map[string]any) *tools.ToolResult {
+	t.executions++
+	text, _ := args["text"].(string)
+	return tools.SilentResult(text)
+}
+
+type capturedRuntimeEvent struct {
+	kind    runtimeevents.Kind
+	payload any
+}
+
+type captureRuntimeEmitter struct {
+	events []capturedRuntimeEvent
+}
+
+type oneShotLoopGuardSteering struct {
+	messages []providers.Message
+}
+
+func (s *oneShotLoopGuardSteering) dequeueSteeringMessagesForTurn(string, string) []providers.Message {
+	messages := s.messages
+	s.messages = nil
+	return messages
+}
+
+func (e *captureRuntimeEmitter) emitEvent(kind runtimeevents.Kind, _ HookMeta, payload any) {
+	e.events = append(e.events, capturedRuntimeEvent{kind: kind, payload: payload})
+}
+
+func (t *pipelineLoopGuardTool) Name() string        { return "pipeline_loop_test" }
+func (t *pipelineLoopGuardTool) Description() string { return "pipeline loop test" }
+func (t *pipelineLoopGuardTool) Parameters() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"value": map[string]any{"type": "string"}},
+	}
+}
+
+func (t *pipelineLoopGuardTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
+}
+
+func (t *pipelineLoopGuardTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+	t.executions++
+	return tools.ErrorResult("stable pipeline failure")
+}
+
+func TestPipelineLoopGuardBlocksAndPreservesToolCallResults(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &pipelineLoopGuardTool{}
+	registry.Register(tool)
+	guardConfig := loopguard.DefaultConfig()
+	guardConfig.HardStopsEnabled = true
+	guardConfig.ExactFailureWarn = 1
+	guardConfig.ExactFailureBlock = 2
+	guardConfig.SameToolFailureHalt = 99
+	agent := &AgentInstance{
+		ID: "main", Tools: registry, Sessions: session.NewSessionManager(""),
+		ToolLoopDetection: guardConfig,
+	}
+	ts := &turnState{
+		agent: agent, agentID: "main", turnID: "turn-loop-guard",
+		sessionKey: "session-loop-guard", opts: processOptions{NoHistory: true},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	emitter := &captureRuntimeEmitter{}
+	pipeline := &Pipeline{Runtime: PipelineRuntimeServices{Events: emitter}}
+
+	for i := 1; i <= 3; i++ {
+		exec.normalizedToolCalls = []providers.ToolCall{{
+			ID: fmt.Sprintf("call-%d", i), Name: tool.Name(),
+			Arguments: map[string]any{"value": "same"},
+		}}
+		if i == 3 {
+			exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.ToolCall{
+				ID: "call-3-skipped", Name: tool.Name(), Arguments: map[string]any{"value": "other"},
+			})
+			pipeline.Context.Steering = &oneShotLoopGuardSteering{
+				messages: []providers.Message{{Role: "user", Content: "change course"}},
+			}
+		}
+		exec.allResponsesHandled = true
+		if got := pipeline.ExecuteTools(
+			context.Background(),
+			context.Background(),
+			ts,
+			exec,
+			i,
+		); got != ToolControlContinue {
+			t.Fatalf("iteration %d control = %v", i, got)
+		}
+	}
+
+	if tool.executions != 2 {
+		t.Fatalf("tool executions = %d, want 2", tool.executions)
+	}
+	if len(exec.messages) != 4 {
+		t.Fatalf("tool messages = %d, want 4", len(exec.messages))
+	}
+	for i, message := range exec.messages[:3] {
+		wantID := fmt.Sprintf("call-%d", i+1)
+		if message.Role != "tool" || message.ToolCallID != wantID {
+			t.Fatalf("message %d = %#v, want tool result for %s", i, message, wantID)
+		}
+	}
+	if !strings.Contains(exec.messages[2].Content, "repeated_exact_failure_block") {
+		t.Fatalf("blocked content = %q", exec.messages[2].Content)
+	}
+	if exec.messages[3].ToolCallID != "call-3-skipped" ||
+		!strings.Contains(exec.messages[3].Content, "queued user message") {
+		t.Fatalf("steering-skipped result = %#v", exec.messages[3])
+	}
+	var decisions []ToolLoopDecisionPayload
+	for _, event := range emitter.events {
+		if event.kind == runtimeevents.KindAgentToolLoopDecision {
+			decisions = append(decisions, event.payload.(ToolLoopDecisionPayload))
+		}
+	}
+	if len(decisions) != 3 || decisions[len(decisions)-1].Action != "block" {
+		t.Fatalf("loop decision events = %#v", decisions)
+	}
+	encoded, err := json.Marshal(decisions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "same") || strings.Contains(string(encoded), "stable pipeline failure") {
+		t.Fatalf("decision events exposed arguments/results: %s", encoded)
+	}
+}
+
+func TestTurnExecutionsHaveIsolatedLoopGuardState(t *testing.T) {
+	config := loopguard.DefaultConfig()
+	config.ExactFailureWarn = 1
+	agent := &AgentInstance{ToolLoopDetection: config}
+	first := newTurnExecution(agent, processOptions{}, nil, "", nil)
+	second := newTurnExecution(agent, processOptions{}, nil, "", nil)
+	observation := loopguard.Observation{
+		Tool: "read_file", Args: map[string]any{"path": "x"}, Failed: true,
+	}
+	if got := first.loopGuard.After(observation); got.Action != loopguard.ActionWarn {
+		t.Fatalf("first decision = %#v", got)
+	}
+	if got := second.loopGuard.Before(
+		"read_file",
+		observation.Args,
+		loopguard.SemanticsReadOnlyIdempotent,
+	); !got.AllowsExecution() ||
+		got.Count != 0 {
+		t.Fatalf("second turn inherited state: %#v", got)
+	}
+}
+
+func TestPipelineLoopGuardUsesHookModifiedArgumentsAndResults(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &pipelineLoopGuardReadTool{}
+	registry.Register(tool)
+	config := loopguard.DefaultConfig()
+	config.NoProgressWarn = 2
+	agent := &AgentInstance{
+		ID:                "main",
+		Tools:             registry,
+		Sessions:          session.NewSessionManager(""),
+		ToolLoopDetection: config,
+	}
+	ts := &turnState{
+		agent:      agent,
+		agentID:    "main",
+		turnID:     "turn-hook-loop",
+		sessionKey: "hook-loop",
+		opts:       processOptions{NoHistory: true},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	hooks := NewHookManager(nil)
+	defer hooks.Close()
+	if err := hooks.Mount(NamedHook("rewrite", &toolRewriteHook{})); err != nil {
+		t.Fatal(err)
+	}
+	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Hooks: hooks}}
+
+	for i, value := range []string{"original-one", "original-two"} {
+		exec.normalizedToolCalls = []providers.ToolCall{{
+			ID: fmt.Sprintf("hook-%d", i), Name: tool.Name(), Arguments: map[string]any{"text": value},
+		}}
+		exec.allResponsesHandled = true
+		pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, i+1)
+	}
+	if tool.executions != 2 {
+		t.Fatalf("executions = %d", tool.executions)
+	}
+	if !strings.Contains(exec.messages[1].Content, "read_only_no_progress_warning") ||
+		!strings.Contains(exec.messages[1].Content, "after:modified") {
+		t.Fatalf("second hook result = %q", exec.messages[1].Content)
+	}
+}
+
+func TestPipelineLoopGuardDoesNotCountPolicyDenials(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &pipelineLoopGuardTool{}
+	registry.Register(tool)
+	config := loopguard.DefaultConfig()
+	config.HardStopsEnabled = true
+	config.ExactFailureWarn = 1
+	config.ExactFailureBlock = 1
+	config.SameToolFailureHalt = 99
+	agent := &AgentInstance{
+		ID:                "main",
+		Tools:             registry,
+		Sessions:          session.NewSessionManager(""),
+		ToolLoopDetection: config,
+	}
+	ts := &turnState{
+		agent:      agent,
+		agentID:    "main",
+		turnID:     "turn-denial-loop",
+		sessionKey: "denial-loop",
+		opts:       processOptions{NoHistory: true},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	hooks := NewHookManager(nil)
+	defer hooks.Close()
+	if err := hooks.Mount(NamedHook("deny", &denyToolHook{denyTools: map[string]bool{tool.Name(): true}})); err != nil {
+		t.Fatal(err)
+	}
+	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Hooks: hooks}}
+	call := providers.ToolCall{ID: "denied", Name: tool.Name(), Arguments: map[string]any{"value": "same"}}
+	exec.normalizedToolCalls = []providers.ToolCall{call}
+	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, 1)
+	hooks.Unmount("deny")
+	call.ID = "executed"
+	exec.normalizedToolCalls = []providers.ToolCall{call}
+	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, 2)
+	if tool.executions != 1 {
+		t.Fatalf("policy denial affected loop state; executions = %d", tool.executions)
+	}
+	if strings.Contains(exec.messages[1].Content, "_block") {
+		t.Fatalf("first executed failure was incorrectly blocked: %q", exec.messages[1].Content)
+	}
+}
 
 func TestInferSkillNamesFromToolCall_ReadFileSkillMarkdown(t *testing.T) {
 	workspace := t.TempDir()

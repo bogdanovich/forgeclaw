@@ -15,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -349,19 +350,23 @@ toolLoop:
 					}
 
 					contentForLLM := p.filterToolContentForLLM(hookResult.ContentForLLM())
-
-					toolResultMsg := providers.Message{
-						Role:       "tool",
-						Content:    contentForLLM,
-						ToolCallID: tc.ID,
-					}
-
+					var toolResultMedia []string
 					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled && !hookResult.ImmediateDelivery {
 						recordCompletionMedia(exec, p.Context.MediaResolver, hookResult.Media)
 						hookResult.ArtifactTags = buildArtifactTags(p.Context.MediaResolver, hookResult.Media)
 						contentForLLM = p.filterToolContentForLLM(hookResult.ContentForLLM())
-						toolResultMsg.Content = contentForLLM
-						toolResultMsg.Media = append(toolResultMsg.Media, hookResult.Media...)
+						toolResultMedia = append(toolResultMedia, hookResult.Media...)
+					}
+					_, semantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
+					loopDecision := p.afterToolLoopDecision(
+						ts, exec, toolName, toolArgs, hookResult, contentForLLM, semantics,
+					)
+					contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
+					toolResultMsg := providers.Message{
+						Role:       "tool",
+						Content:    contentForLLM,
+						ToolCallID: tc.ID,
+						Media:      toolResultMedia,
 					}
 
 					p.emitEvent(
@@ -384,6 +389,14 @@ toolLoop:
 					)
 
 					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
+					if loopDecision.Action == loopguard.ActionHalt {
+						runner.appendSkippedToolMessages(
+							i+1,
+							"tool loop hard stop",
+							"Skipped because tool-loop protection stopped the current batch.",
+						)
+						break toolLoop
+					}
 
 					if runner.checkpointAfterTool(i, "Turn checkpoint: skipping remaining tools after hook respond", true) {
 						break toolLoop
@@ -454,6 +467,26 @@ toolLoop:
 		}
 
 		if denyByTurnProfile() {
+			continue
+		}
+
+		loopDecision, toolSemantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
+		if !loopDecision.AllowsExecution() {
+			p.emitToolLoopDecision(ts, loopDecision)
+			blockedResult := blockedToolLoopResult(loopDecision)
+			blockedContent := p.filterToolContentForLLM(blockedResult.ContentForLLM())
+			p.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{Tool: toolName, Reason: loopDecision.Code},
+			)
+			runner.appendToolMessage(providers.Message{
+				Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
+			}, toolMessagePersistAndIngest)
+			exec.allResponsesHandled = false
+			if runner.checkpointAfterTool(i, "Turn checkpoint after loop-protected tool", false) {
+				break toolLoop
+			}
 			continue
 		}
 
@@ -639,6 +672,10 @@ toolLoop:
 				})
 		}
 		contentForLLM := p.filterToolContentForLLM(toolResult.ContentForLLM())
+		loopDecision = p.afterToolLoopDecision(
+			ts, exec, toolName, toolArgs, toolResult, contentForLLM, toolSemantics,
+		)
+		contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
 
 		toolResultMsg := providers.Message{
 			Role:       "tool",
@@ -708,6 +745,14 @@ toolLoop:
 			}
 		}
 		runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
+		if loopDecision.Action == loopguard.ActionHalt {
+			runner.appendSkippedToolMessages(
+				i+1,
+				"tool loop hard stop",
+				"Skipped because tool-loop protection stopped the current batch.",
+			)
+			break toolLoop
+		}
 
 		if runner.checkpointAfterTool(i, "Turn checkpoint: skipping remaining tools", false) {
 			break toolLoop

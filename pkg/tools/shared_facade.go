@@ -34,6 +34,7 @@ type (
 	ReportClaim            = toolshared.ReportClaim
 	ReportFieldDelta       = toolshared.ReportFieldDelta
 	PromptMetadataProvider = toolshared.PromptMetadataProvider
+	LoopSemanticsProvider  = toolshared.LoopSemanticsProvider
 	ToolResult             = toolshared.ToolResult
 	WriteAuditEntry        = toolshared.WriteAuditEntry
 )

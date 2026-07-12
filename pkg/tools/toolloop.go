@@ -15,6 +15,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -25,6 +26,7 @@ type ToolLoopConfig struct {
 	Tools         *ToolRegistry
 	MaxIterations int
 	LLMOptions    map[string]any
+	LoopDetection loopguard.Config
 
 	// MediaResolver resolves media:// refs in messages before each LLM call.
 	// This is optional and is mainly used by subagent legacy fallback execution
@@ -48,6 +50,7 @@ func RunToolLoop(
 ) (*ToolLoopResult, error) {
 	iteration := 0
 	var finalContent string
+	guard := loopguard.New(config.LoopDetection)
 
 	for iteration < config.MaxIterations {
 		iteration++
@@ -153,8 +156,10 @@ func RunToolLoop(
 
 		// 7. Execute tool calls in parallel
 		type indexedResult struct {
-			result *ToolResult
-			tc     providers.ToolCall
+			result    *ToolResult
+			tc        providers.ToolCall
+			semantics loopguard.Semantics
+			decision  loopguard.Decision
 		}
 
 		results := make([]indexedResult, len(normalizedToolCalls))
@@ -162,6 +167,14 @@ func RunToolLoop(
 
 		for i, tc := range normalizedToolCalls {
 			results[i].tc = tc
+			if config.Tools != nil {
+				results[i].semantics = config.Tools.LoopSemantics(tc.Name)
+			}
+			results[i].decision = guard.Before(tc.Name, tc.Arguments, results[i].semantics)
+			if !results[i].decision.AllowsExecution() {
+				results[i].result = legacyBlockedToolResult(results[i].decision)
+				continue
+			}
 
 			wg.Add(1)
 			go func(idx int, tc providers.ToolCall) {
@@ -198,8 +211,19 @@ func RunToolLoop(
 		wg.Wait()
 
 		// Append results in original order
-		for _, r := range results {
+		for i := range results {
+			r := &results[i]
+			if r.result == nil {
+				r.result = ErrorResult("tool returned no result")
+			}
 			contentForLLM := r.result.ContentForLLM()
+			if r.decision.AllowsExecution() {
+				r.decision = guard.After(loopguard.Observation{
+					Tool: r.tc.Name, Args: r.tc.Arguments, ResultText: contentForLLM,
+					Failed: r.result.IsError, Semantics: r.semantics,
+				})
+				contentForLLM = legacyAppendLoopGuidance(contentForLLM, r.decision)
+			}
 
 			toolMsg := providers.Message{
 				Role:       "tool",
@@ -217,4 +241,33 @@ func RunToolLoop(
 		Content:    finalContent,
 		Iterations: iteration,
 	}, nil
+}
+
+func legacyBlockedToolResult(decision loopguard.Decision) *ToolResult {
+	payload := map[string]any{
+		"error": decision.Message,
+		"loop_guard": map[string]any{
+			"action": decision.Action, "code": decision.Code, "tool": decision.Tool,
+			"args_hash": decision.ArgsHash, "count": decision.Count, "threshold": decision.Threshold,
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ErrorResult("tool execution blocked by loop protection")
+	}
+	return ErrorResult(string(data))
+}
+
+func legacyAppendLoopGuidance(content string, decision loopguard.Decision) string {
+	if decision.Action != loopguard.ActionWarn && decision.Action != loopguard.ActionHalt {
+		return content
+	}
+	label := "Tool loop warning"
+	if decision.Action == loopguard.ActionHalt {
+		label = "Tool loop hard stop"
+	}
+	return content + fmt.Sprintf(
+		"\n\n[%s: %s; count=%d; %s]",
+		label, decision.Code, decision.Count, decision.Message,
+	)
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
 
 const MaxReadFileSize = 64 * 1024 // 64KB limit to avoid context overflow
@@ -335,8 +336,16 @@ func (t *ReadFileTool) Name() string {
 	return "read_file"
 }
 
+func (t *ReadFileTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
+}
+
 func (t *ReadFileLinesTool) Name() string {
 	return "read_file"
+}
+
+func (t *ReadFileLinesTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
 }
 
 func (t *ReadFileTool) Description() string {
@@ -950,6 +959,10 @@ func NewListDirTool(workspace string, restrict bool, allowPaths ...[]*regexp.Reg
 
 func (t *ListDirTool) Name() string {
 	return "list_dir"
+}
+
+func (t *ListDirTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
 }
 
 func (t *ListDirTool) Description() string {
