@@ -109,6 +109,7 @@ type Runtime struct {
 	ClearSessionModel  func() error
 	SwitchChannel      func(value string) error
 	ResetSession       func(clearOverride bool) (sessionKey string, err error)
+	StartFreshSession  func() (sessionKey string, err error)
 	SetToolFeedback    func(mode string) (enabled bool, source string, err error)
 	GetToolFeedback    func() (enabled bool, source string)
 	ClearHistory       func() error

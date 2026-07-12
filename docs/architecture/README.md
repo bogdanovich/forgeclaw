@@ -8,6 +8,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [SubTurn Mechanism](subturn.md): sub-agent coordination, concurrency control, and lifecycle handling.
 - [Subagent Model Policy](subagent-model-policy.md): child-run model selection, inherited session override modes, and precedence.
 - [Session System](session-system.md): session scope allocation, JSONL persistence, alias compatibility, and migration.
+- [Session Goals](session-goals.md): durable per-conversation objectives, command and tool interfaces, prompt injection, and reset semantics.
 - [Routing System](routing-system.md): agent dispatch, session policy selection, and light/heavy model routing.
 - [Durable Ingress](durable-ingress.md): normalized inbound message spool and restart replay semantics.
 - [Safe Restart And Deploy](safe-restart-and-deploy.md): bounded restart/deploy handoff, shared binary targets, and durability boundaries.

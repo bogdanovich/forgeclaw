@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/commands"
@@ -51,5 +52,63 @@ func TestBuildCommandsRuntime_GoalCallbacksUseRouteSessionKey(t *testing.T) {
 	goalA, foundA, getErr := runtimeA.GetGoal()
 	if getErr != nil || !foundA || goalA.Objective != "finish command support" {
 		t.Fatalf("route-a goal = (%+v, %v, %v)", goalA, foundA, getErr)
+	}
+}
+
+func TestGoalResetSemantics(t *testing.T) {
+	al, cfg, _, _, cleanup := newTestAgentLoop(t)
+	t.Cleanup(cleanup)
+	if cfg == nil {
+		t.Fatal("expected test config")
+	}
+	workspaceAgent := al.registry.GetDefaultAgent()
+	if workspaceAgent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	const routeSessionKey = "route-goal"
+	rt := al.buildCommandsRuntime(context.Background(), effectiveModelBinding{
+		RouteSessionKey: routeSessionKey,
+		WorkspaceAgent:  workspaceAgent,
+	}, &processOptions{Dispatch: DispatchRequest{RouteSessionKey: routeSessionKey}})
+	executor := commands.NewExecutor(commands.NewRegistry(commands.BuiltinDefinitions()), rt)
+	execute := func(command string) string {
+		var reply string
+		result := executor.Execute(context.Background(), commands.Request{
+			Text: command,
+			Reply: func(text string) error {
+				reply = text
+				return nil
+			},
+		})
+		if result.Outcome != commands.OutcomeHandled || result.Err != nil {
+			t.Fatalf("%s result = %+v", command, result)
+		}
+		return reply
+	}
+
+	if _, err := rt.CreateGoal("finish reset support"); err != nil {
+		t.Fatalf("CreateGoal failed: %v", err)
+	}
+	execute("/reset")
+	if _, found, err := rt.GetGoal(); err != nil || !found {
+		t.Fatalf("/reset should preserve goal: found=%v err=%v", found, err)
+	}
+
+	if reply := execute("/reset clear"); !strings.Contains(reply, "Current goal cleared") {
+		t.Fatalf("/reset clear reply = %q", reply)
+	}
+	if _, found, err := rt.GetGoal(); err != nil || found {
+		t.Fatalf("/reset clear should remove goal: found=%v err=%v", found, err)
+	}
+
+	if _, err := rt.CreateGoal("finish new support"); err != nil {
+		t.Fatalf("CreateGoal failed: %v", err)
+	}
+	if reply := execute("/new"); !strings.Contains(reply, "cleared the current goal") {
+		t.Fatalf("/new reply = %q", reply)
+	}
+	if _, found, err := rt.GetGoal(); err != nil || found {
+		t.Fatalf("/new should remove goal: found=%v err=%v", found, err)
 	}
 }

@@ -491,7 +491,10 @@ func (al *AgentLoop) buildCommandsRuntime(
 				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 					return "", err
 				}
-				return "", al.clearSessionOverride(routeSessionKey)
+				if err := al.clearSessionOverride(routeSessionKey); err != nil {
+					return "", err
+				}
+				return "", al.clearSessionGoal(routeSessionKey)
 			}
 
 			nextSessionKey := buildResetSessionKey(agent.ID, routeSessionKey)
@@ -508,6 +511,16 @@ func (al *AgentLoop) buildCommandsRuntime(
 				return "", err
 			}
 			return nextSessionKey, nil
+		}
+		rt.StartFreshSession = func() (string, error) {
+			routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey)
+			if routeSessionKey == "" {
+				return "", fmt.Errorf("route session key not available")
+			}
+			if err := al.clearSessionGoal(routeSessionKey); err != nil {
+				return "", err
+			}
+			return rt.ResetSession(false)
 		}
 
 		rt.GetToolFeedback = func() (bool, string) {
