@@ -50,7 +50,10 @@ func (SystemdUserServiceRestarter) RestartService(ctx context.Context, service s
 	// for the job can terminate the caller and incorrectly mark a real restart failed.
 	cmd := systemctlCommandContext(ctx, "systemctl", "--user", "restart", "--no-block", service)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		wrapped := fmt.Errorf("systemctl --user restart %s failed: %w: %s", service, err, strings.TrimSpace(string(output)))
+		wrapped := fmt.Errorf(
+			"systemctl --user restart %s failed: %w: %s",
+			service, err, strings.TrimSpace(string(output)),
+		)
 		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == -1 {
 			return &restartDispatchUncertainError{err: wrapped}
 		}
@@ -221,10 +224,14 @@ func (c *RestartController) runRestart(
 	if err := c.restarter.RestartService(ctx, service); err != nil {
 		var uncertain *restartDispatchUncertainError
 		if errors.As(err, &uncertain) {
-			logger.WarnCF("gateway", "Restart dispatch outcome is uncertain; awaiting replacement gateway", map[string]any{
-				"service": service,
-				"error":   err.Error(),
-			})
+			logger.WarnCF(
+				"gateway",
+				"Restart dispatch outcome is uncertain; awaiting replacement gateway",
+				map[string]any{
+					"service": service,
+					"error":   err.Error(),
+				},
+			)
 			return
 		}
 		sentinel.Status = restartStatusFailed
