@@ -3,6 +3,9 @@ package gateway
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +46,35 @@ type fakeServiceRestarter struct {
 	services []string
 	err      error
 	called   chan string
+}
+
+func TestSystemdUserServiceRestarterQueuesRestartWithoutBlocking(t *testing.T) {
+	original := systemctlCommandContext
+	t.Cleanup(func() { systemctlCommandContext = original })
+	t.Setenv("GO_WANT_SYSTEMCTL_HELPER", "1")
+	var gotName string
+	var gotArgs []string
+	systemctlCommandContext = func(_ context.Context, name string, args ...string) *exec.Cmd {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return exec.Command(os.Args[0], "-test.run=^TestSystemdUserServiceRestarterHelper$")
+	}
+
+	if err := (SystemdUserServiceRestarter{}).RestartService(context.Background(), "picoclaw-main.service"); err != nil {
+		t.Fatalf("RestartService() error = %v", err)
+	}
+	if gotName != "systemctl" {
+		t.Fatalf("command = %q, want systemctl", gotName)
+	}
+	if want := []string{"--user", "restart", "--no-block", "picoclaw-main.service"}; !slices.Equal(gotArgs, want) {
+		t.Fatalf("args = %#v, want %#v", gotArgs, want)
+	}
+}
+
+func TestSystemdUserServiceRestarterHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_SYSTEMCTL_HELPER") == "1" {
+		os.Exit(0)
+	}
 }
 
 func (r *fakeServiceRestarter) RestartService(_ context.Context, service string) error {
