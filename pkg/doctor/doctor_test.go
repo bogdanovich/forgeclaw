@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/config"
 )
 
 func writeConfig(t *testing.T, dir, body string) string {
@@ -125,4 +127,22 @@ func TestFileAndEnvCredentialReferencesAreNotPlaintextFindings(t *testing.T) {
 			t.Fatalf("unexpected plaintext finding for reference credential: %+v", finding)
 		}
 	}
+}
+
+func TestDefaultAgentFallbackReferencesAreAudited(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ModelList = config.SecureModelList{
+		&config.ModelConfig{ModelName: "primary"},
+	}
+	cfg.Agents.Defaults.ModelName = "primary"
+	cfg.Agents.Defaults.ModelFallbacks = []string{"missing"}
+
+	findings := checkFallbacks(cfg)
+	for _, finding := range findings {
+		if finding.ID == CheckAgentFallbackMissing && len(finding.Evidence) == 1 &&
+			finding.Evidence[0].Path == "agents.defaults.model_name" {
+			return
+		}
+	}
+	t.Fatalf("missing defaults fallback finding: %+v", findings)
 }

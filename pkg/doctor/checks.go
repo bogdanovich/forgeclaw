@@ -374,6 +374,17 @@ func checkFallbacks(cfg *config.Config) []Finding {
 		))
 	}
 
+	defaults := cfg.Agents.Defaults
+	findings = append(findings, checkModelRefs(
+		"agents.defaults.model_name",
+		append([]string{defaults.ModelName}, defaults.ModelFallbacks...),
+		modelNames,
+	)...)
+	findings = append(findings, checkModelRefs(
+		"agents.defaults.image_model",
+		append([]string{defaults.ImageModel}, defaults.ImageModelFallbacks...),
+		modelNames,
+	)...)
 	for idx, agent := range cfg.Agents.List {
 		findings = append(findings, checkAgentModelRef(idx, "model", agent.Model, modelNames)...)
 		if agent.Subagents != nil {
@@ -553,8 +564,15 @@ func checkAgentModelRef(
 	if model == nil {
 		return nil
 	}
+	return checkModelRefs(
+		fmt.Sprintf("agents.list[%d].%s", agentIndex, field),
+		append([]string{model.Primary}, model.Fallbacks...),
+		modelNames,
+	)
+}
+
+func checkModelRefs(path string, refs []string, modelNames map[string]struct{}) []Finding {
 	var findings []Finding
-	refs := append([]string{model.Primary}, model.Fallbacks...)
 	for _, ref := range refs {
 		ref = strings.TrimSpace(ref)
 		if ref == "" {
@@ -568,7 +586,7 @@ func checkAgentModelRef(
 				"Missing agent model references can prevent agent startup or subagent delegation.",
 				"Add the referenced model to model_list or update the agent model reference.",
 				Evidence{
-					Path:    fmt.Sprintf("agents.list[%d].%s", agentIndex, field),
+					Path:    path,
 					Summary: "referenced model is not defined",
 				},
 			))
