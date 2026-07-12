@@ -152,6 +152,7 @@ func (t *GatewayDeployTool) Name() string { return "gateway_deploy" }
 func (t *GatewayDeployTool) Description() string {
 	return "Run the configured deploy script for an allowed target."
 }
+
 func (t *GatewayDeployTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{"target": map[string]any{"type": "string"}}}
 }
