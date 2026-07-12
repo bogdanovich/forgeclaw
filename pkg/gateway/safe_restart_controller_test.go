@@ -218,8 +218,8 @@ func TestNewRestartControllerRejectsUnsupportedManager(t *testing.T) {
 		Source: &restartSourceSequence{},
 		Store:  store,
 	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("NewRestartController() error = %v, want unsupported", err)
+	if err == nil || !strings.Contains(err.Error(), "requires darwin") {
+		t.Fatalf("NewRestartController() error = %v, want darwin platform guard", err)
 	}
 }
 
