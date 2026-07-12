@@ -92,7 +92,7 @@ func Run(ctx context.Context, scenario Scenario) (Observation, error) {
 	provider := scriptedProvider(scenario)
 	messageBus := bus.NewMessageBus()
 	cfg := scenarioConfig(workspace, scenario)
-	loop := agent.NewAgentLoop(cfg, messageBus, provider)
+	loop := agent.NewAgentLoop(cfg, messageBus, provider, agent.WithIsolatedToolBootstrap())
 	messageBus.SetEventPublisher(loop.RuntimeEventBus())
 
 	stubs, registerErr := registerScenarioTools(loop, scenario.Tools)
@@ -213,15 +213,15 @@ func scriptedProvider(scenario Scenario) *llmscenario.ScriptedProvider {
 }
 
 func scenarioConfig(workspace string, scenario Scenario) *config.Config {
-	cfg := config.DefaultConfig()
-	cfg.Agents.Defaults.Workspace = workspace
-	cfg.Agents.Defaults.ModelName = scenarioModel(scenario)
-	cfg.Agents.Defaults.MaxTokens = 4096
-	cfg.Agents.Defaults.MaxToolIterations = 10
-	cfg.Agents.Defaults.SummarizeMessageThreshold = 0
-	cfg.Agents.Defaults.SummarizeTokenPercent = 0
-	cfg.Evaluation.TraceCapture.Enabled = true
-	cfg.Evaluation.TraceCapture.ContentMode = "metadata_only"
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{Defaults: config.AgentDefaults{
+			Workspace: workspace, ModelName: scenarioModel(scenario), MaxTokens: 4096, MaxToolIterations: 10,
+		}},
+		Evaluation: config.EvaluationConfig{TraceCapture: config.EvaluationTraceCaptureConfig{
+			Enabled: true, ContentMode: "metadata_only",
+		}},
+		Tools: config.ToolsConfig{FilterSensitiveData: true, FilterMinLength: 8},
+	}
 	_ = cfg.SensitiveDataReplacer()
 	return cfg
 }

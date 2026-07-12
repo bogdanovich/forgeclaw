@@ -9,6 +9,24 @@ import (
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 )
 
+func TestScenarioConfigDisablesEveryProductionToolFamily(t *testing.T) {
+	cfg := scenarioConfig(t.TempDir(), Scenario{Model: "fixture-model"})
+	toolNames := []string{
+		"web", "cron", "exec", "skills", "media_cleanup", "append_file", "apply_patch", "find_skills",
+		"i2c", "image_generate", "install_skill", "list_dir", "load_image", "message", "read_file",
+		"serial", "search_files", "spawn", "spawn_status", "spi", "subagent", "update_plan", "web_fetch",
+		"write_file", "send_file", "send_tts", "mcp",
+	}
+	for _, name := range toolNames {
+		if cfg.Tools.IsToolEnabled(name) {
+			t.Fatalf("production tool family %q is enabled", name)
+		}
+	}
+	if len(cfg.Tools.MCP.Servers) != 0 {
+		t.Fatalf("MCP servers = %#v", cfg.Tools.MCP.Servers)
+	}
+}
+
 func TestRunUsesRealAgentPathAndProducesReplayableTrace(t *testing.T) {
 	scenario := Scenario{
 		ID: "real-agent-tool", Source: "pkg/evalscenario/scenario_test.go",

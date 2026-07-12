@@ -18,3 +18,12 @@ func WithRuntimeEvents(bus runtimeevents.Bus) AgentLoopOption {
 		al.ownsRuntimeEvents = false
 	}
 }
+
+// WithIsolatedToolBootstrap prevents shared production tools and their state
+// managers from being constructed. Callers must provide an explicit tool
+// allowlist and register every permitted tool after construction.
+func WithIsolatedToolBootstrap() AgentLoopOption {
+	return func(al *AgentLoop) {
+		al.isolatedToolBootstrap = true
+	}
+}

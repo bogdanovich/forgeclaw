@@ -331,10 +331,11 @@ produce a deterministic denied result.
 The implemented `pkg/evalscenario` adapter drives the real inbound
 `AgentLoop.Run` path with scripted model responses and sealed text-only stub
 tools. It writes an explicit tool/MCP allowlist before constructing the loop,
-verifies the resulting registry contains exactly the declared stubs, records
-the outbound delivery, normalizes the captured evidence to fixture identity,
-and feeds it through contract replay. The temporary workspace is deleted before
-the runner returns.
+uses an isolated bootstrap option that skips shared production tool and state
+manager construction, verifies the resulting registry contains exactly the
+declared stubs, records the outbound delivery, normalizes the captured evidence
+to fixture identity, and feeds it through contract replay. The temporary
+workspace is deleted before the runner returns.
 
 Replay output contains observations and diagnostics, never production writes.
 The same fixture, binary, options, and evaluator versions must produce identical
