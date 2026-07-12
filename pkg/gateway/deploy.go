@@ -156,6 +156,7 @@ func (t *GatewayDeployTool) Description() string {
 func (t *GatewayDeployTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{"target": map[string]any{"type": "string"}}}
 }
+
 func (t *GatewayDeployTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
 	target, _ := args["target"].(string)
 	out, _, err := t.runner.Run(ctx, target, tools.ToolSessionKey(ctx))
