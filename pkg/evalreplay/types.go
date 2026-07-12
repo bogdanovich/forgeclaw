@@ -40,6 +40,7 @@ type Projection struct {
 	ToolLoop       ToolLoopProjection            `json:"tool_loop,omitempty"`
 	Evolution      EvolutionProjection           `json:"evolution,omitempty"`
 	Restarts       []RestartProjection           `json:"restarts,omitempty"`
+	Corrections    []CorrectionProjection        `json:"corrections,omitempty"`
 	Diagnostics    []Diagnostic                  `json:"diagnostics,omitempty"`
 }
 
@@ -127,6 +128,13 @@ type RestartProjection struct {
 	StateHash string `json:"state_hash,omitempty"`
 }
 
+type CorrectionProjection struct {
+	CorrectionID string   `json:"correction_id"`
+	Sequence     uint64   `json:"sequence,omitempty"`
+	RecordRefs   []uint64 `json:"record_refs,omitempty"`
+	Category     string   `json:"category,omitempty"`
+}
+
 type Result struct {
 	Projection Projection      `json:"projection"`
 	Canonical  json.RawMessage `json:"canonical"`
@@ -139,6 +147,7 @@ type reducer struct {
 	turnEnded    bool
 	lastSequence uint64
 	lastOffset   int64
+	corrections  map[string]struct{}
 }
 
 func newReducer(trace evaltrace.Trace) *reducer {
@@ -151,6 +160,7 @@ func newReducer(trace evaltrace.Trace) *reducer {
 			Steering:       SteeringProjection{Messages: make(map[string]int)},
 			Tools:          make(map[string]ToolProjection),
 		},
-		origins: make(map[string]string),
+		origins:     make(map[string]string),
+		corrections: make(map[string]struct{}),
 	}
 }

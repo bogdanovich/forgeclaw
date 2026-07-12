@@ -176,6 +176,39 @@ func TestReplayRejectsPayloadOutsideTypedContract(t *testing.T) {
 	}
 }
 
+func TestReplayProjectsCorrectionRecords(t *testing.T) {
+	trace := finalizeReplayTrace(t, replayTrace(
+		t,
+		replayRecord(t, 1, evaltrace.RecordTurnStart, "turn-start", evaltrace.TurnPayload{}),
+		replayRecord(t, 2, evaltrace.RecordUserCorrection, "correction", evaltrace.Correction{
+			CorrectionID: "correction-1", RecordRefs: []uint64{1}, Category: "wrong_outcome", Note: "fixture note",
+		}),
+		replayRecord(
+			t,
+			3,
+			evaltrace.RecordTurnEnd,
+			"turn-end",
+			evaltrace.TurnPayload{Status: "completed"},
+		),
+	))
+
+	result, err := Replay(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Projection.Corrections) != 1 {
+		t.Fatalf("corrections = %#v", result.Projection.Corrections)
+	}
+	correction := result.Projection.Corrections[0]
+	if correction.CorrectionID != "correction-1" || correction.Sequence != 2 ||
+		correction.Category != "wrong_outcome" {
+		t.Fatalf("correction = %#v", correction)
+	}
+	if strings.Contains(string(result.Canonical), "fixture note") {
+		t.Fatalf("canonical projection leaked correction note: %s", result.Canonical)
+	}
+}
+
 func TestReplayRejectsInvalidTraceBeforeProjection(t *testing.T) {
 	trace := replayTrace(
 		t,

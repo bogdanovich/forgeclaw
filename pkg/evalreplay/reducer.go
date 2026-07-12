@@ -112,6 +112,8 @@ func (r *reducer) apply(record evaltrace.Record) {
 		evaltrace.RecordEvolutionRollback,
 		evaltrace.RecordEvolutionProfile:
 		r.applyEvolution(record)
+	case evaltrace.RecordUserCorrection:
+		r.applyCorrection(record)
 	}
 }
 
@@ -402,7 +404,45 @@ func (r *reducer) applyEvolution(record evaltrace.Record) {
 	}
 }
 
+func (r *reducer) applyCorrection(record evaltrace.Record) {
+	var correction evaltrace.Correction
+	if !r.decode(record, &correction) {
+		return
+	}
+	r.appendCorrection(record.Sequence, correction, record)
+}
+
+func (r *reducer) appendCorrection(
+	sequence uint64,
+	correction evaltrace.Correction,
+	record evaltrace.Record,
+) {
+	if correction.CorrectionID == "" {
+		r.diagnostic(record, "correction_id_missing", SeverityError, "correction has no identifier")
+		return
+	}
+	if _, exists := r.corrections[correction.CorrectionID]; exists {
+		r.diagnostic(
+			record,
+			"duplicate_correction",
+			SeverityError,
+			"correction ID was applied more than once",
+		)
+		return
+	}
+	r.corrections[correction.CorrectionID] = struct{}{}
+	r.projection.Corrections = append(r.projection.Corrections, CorrectionProjection{
+		CorrectionID: correction.CorrectionID,
+		Sequence:     sequence,
+		RecordRefs:   append([]uint64(nil), correction.RecordRefs...),
+		Category:     correction.Category,
+	})
+}
+
 func (r *reducer) finish(trace evaltrace.Trace) {
+	for _, correction := range trace.Corrections {
+		r.appendCorrection(0, correction, evaltrace.Record{})
+	}
 	r.projection.Terminal = trace.Outcome != nil || r.turnEnded ||
 		allTasksTerminal(r.projection.Tasks)
 	if r.turnStarted && !r.turnEnded && trace.Outcome == nil {
