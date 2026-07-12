@@ -14,9 +14,13 @@ const (
 	KindAgentLLMResponse Kind = "agent.llm.response"
 	// KindAgentLLMRetry is emitted before retrying an LLM request.
 	KindAgentLLMRetry Kind = "agent.llm.retry"
+	// KindAgentLLMFallbackAttempt records one fallback candidate outcome.
+	KindAgentLLMFallbackAttempt Kind = "agent.llm.fallback_attempt"
 
 	// KindAgentContextCompress is emitted when agent context is compressed.
 	KindAgentContextCompress Kind = "agent.context.compress"
+	// KindAgentContextSnapshot captures a bounded final context identity.
+	KindAgentContextSnapshot Kind = "agent.context.snapshot"
 	// KindAgentSessionSummarize is emitted when session summarization completes.
 	KindAgentSessionSummarize Kind = "agent.session.summarize"
 
@@ -28,6 +32,8 @@ const (
 	KindAgentToolExecSkipped Kind = "agent.tool.exec_skipped"
 	// KindAgentToolLoopDecision is emitted when loop protection warns or blocks.
 	KindAgentToolLoopDecision Kind = "agent.tool.loop_decision"
+	// KindAgentEvolutionTransition records a durable evolution transition.
+	KindAgentEvolutionTransition Kind = "agent.evolution.transition"
 
 	// KindAgentSteeringInjected is emitted when steering is injected into context.
 	KindAgentSteeringInjected Kind = "agent.steering.injected"
@@ -116,12 +122,15 @@ var knownKinds = []Kind{
 	KindAgentLLMDelta,
 	KindAgentLLMResponse,
 	KindAgentLLMRetry,
+	KindAgentLLMFallbackAttempt,
 	KindAgentContextCompress,
+	KindAgentContextSnapshot,
 	KindAgentSessionSummarize,
 	KindAgentToolExecStart,
 	KindAgentToolExecEnd,
 	KindAgentToolExecSkipped,
 	KindAgentToolLoopDecision,
+	KindAgentEvolutionTransition,
 	KindAgentSteeringInjected,
 	KindAgentFollowUpQueued,
 	KindAgentAsyncCompletion,

@@ -273,8 +273,9 @@ toolLoop:
 				runtimeevents.KindAgentToolExecSkipped,
 				ts.eventMeta("runTurn", "turn.tool.skipped"),
 				ToolExecSkippedPayload{
-					Tool:   toolName,
-					Reason: denyContent,
+					ToolCallID: tc.ID,
+					Tool:       toolName,
+					Reason:     denyContent,
 				},
 			)
 			deniedMsg := providers.Message{
@@ -320,8 +321,9 @@ toolLoop:
 						runtimeevents.KindAgentToolExecStart,
 						ts.eventMeta("runTurn", "turn.tool.start"),
 						ToolExecStartPayload{
-							Tool:      toolName,
-							Arguments: cloneEventArguments(toolArgs),
+							ToolCallID: tc.ID,
+							Tool:       toolName,
+							Arguments:  cloneEventArguments(toolArgs),
 						},
 					)
 
@@ -373,12 +375,14 @@ toolLoop:
 						runtimeevents.KindAgentToolExecEnd,
 						ts.eventMeta("runTurn", "turn.tool.end"),
 						ToolExecEndPayload{
+							ToolCallID: tc.ID,
 							Tool:       toolName,
 							Duration:   toolDuration,
 							ForLLMLen:  len(contentForLLM),
 							ForUserLen: len(hookResult.ForUser),
 							IsError:    hookResult.IsError,
 							Async:      hookResult.Async,
+							ResultHash: evaluationSafeHash(p.Cfg, contentForLLM),
 						},
 					)
 					ts.recordToolExecution(
@@ -417,8 +421,9 @@ toolLoop:
 					runtimeevents.KindAgentToolExecSkipped,
 					ts.eventMeta("runTurn", "turn.tool.skipped"),
 					ToolExecSkippedPayload{
-						Tool:   toolName,
-						Reason: denyContent,
+						ToolCallID: tc.ID,
+						Tool:       toolName,
+						Reason:     denyContent,
 					},
 				)
 				deniedMsg := providers.Message{
@@ -452,8 +457,9 @@ toolLoop:
 					runtimeevents.KindAgentToolExecSkipped,
 					ts.eventMeta("runTurn", "turn.tool.skipped"),
 					ToolExecSkippedPayload{
-						Tool:   toolName,
-						Reason: denyContent,
+						ToolCallID: tc.ID,
+						Tool:       toolName,
+						Reason:     denyContent,
 					},
 				)
 				deniedMsg := providers.Message{
@@ -478,7 +484,7 @@ toolLoop:
 			p.emitEvent(
 				runtimeevents.KindAgentToolExecSkipped,
 				ts.eventMeta("runTurn", "turn.tool.skipped"),
-				ToolExecSkippedPayload{Tool: toolName, Reason: loopDecision.Code},
+				ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: loopDecision.Code},
 			)
 			runner.appendToolMessage(providers.Message{
 				Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
@@ -502,8 +508,9 @@ toolLoop:
 			runtimeevents.KindAgentToolExecStart,
 			ts.eventMeta("runTurn", "turn.tool.start"),
 			ToolExecStartPayload{
-				Tool:      toolName,
-				Arguments: cloneEventArguments(toolArgs),
+				ToolCallID: tc.ID,
+				Tool:       toolName,
+				Arguments:  cloneEventArguments(toolArgs),
 			},
 		)
 
@@ -689,12 +696,14 @@ toolLoop:
 			runtimeevents.KindAgentToolExecEnd,
 			ts.eventMeta("runTurn", "turn.tool.end"),
 			ToolExecEndPayload{
+				ToolCallID: toolCallID,
 				Tool:       toolName,
 				Duration:   toolDuration,
 				ForLLMLen:  len(contentForLLM),
 				ForUserLen: len(toolResult.ForUser),
 				IsError:    toolResult.IsError,
 				Async:      toolResult.Async,
+				ResultHash: evaluationSafeHash(p.Cfg, contentForLLM),
 			},
 		)
 		ts.recordToolExecution(
@@ -967,8 +976,9 @@ func (r *toolLoopRunner) appendSkippedToolMessage(
 		runtimeevents.KindAgentToolExecSkipped,
 		r.ts.eventMeta("runTurn", "turn.tool.skipped"),
 		ToolExecSkippedPayload{
-			Tool:   skippedTC.Name,
-			Reason: reason,
+			ToolCallID: skippedTC.ID,
+			Tool:       skippedTC.Name,
+			Reason:     reason,
 		},
 	)
 	skippedMsg := providers.Message{

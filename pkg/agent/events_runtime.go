@@ -46,6 +46,12 @@ func runtimeSeverityForAgentEvent(kind runtimeevents.Kind, payload any) runtimee
 		runtimeevents.KindAgentToolExecSkipped,
 		runtimeevents.KindAgentToolLoopDecision:
 		return runtimeevents.SeverityWarn
+	case runtimeevents.KindAgentLLMFallbackAttempt:
+		attempt, ok := payload.(LLMFallbackAttemptPayload)
+		if ok && attempt.Status == "failed" {
+			return runtimeevents.SeverityWarn
+		}
+		return runtimeevents.SeverityInfo
 	case runtimeevents.KindAgentTurnEnd:
 		payload, ok := payload.(TurnEndPayload)
 		if !ok {

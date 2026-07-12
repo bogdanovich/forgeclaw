@@ -144,10 +144,9 @@ Use `observe` first if you want to inspect learning records without generating s
 
 ### Evaluation Trace Capture
 
-The `evaluation.trace_capture` block reserves safe bounds and storage policy for
-the replay/evaluation recorder. Capture is disabled by default. The foundation
-contract does not yet wire a production recorder, so enabling this block has no
-effect until the capture PR lands.
+The `evaluation.trace_capture` block controls bounded replay/evaluation trace
+recording. Capture is disabled by default and enabling evaluation commands does
+not enable recording.
 
 ```json
 {
@@ -169,9 +168,9 @@ effect until the capture PR lands.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Explicitly enables future production trace capture. Evaluation commands do not enable recording. |
+| `enabled` | `false` | Explicitly enables production trace capture. Evaluation commands do not enable recording. |
 | `content_mode` | `metadata_only` | `metadata_only` stores safe counts, statuses, hashes, and IDs. `redacted_content` permits explicitly allowlisted filtered content. Runtime configuration never accepts fixture mode. |
-| `state_dir` | `""` | Optional trace directory. Empty selects the workspace evaluation state directory when capture is wired. |
+| `state_dir` | `""` | Optional trace directory. Empty selects the workspace evaluation state directory. |
 | `max_trace_bytes` | `2097152` | Soft serialized size limit for one trace. Compiled hard ceilings still apply. |
 | `max_records` | `2000` | Maximum normalized records per trace. |
 | `max_record_bytes` | `16384` | Maximum redacted JSON payload size for one record. |
@@ -184,6 +183,12 @@ payloads, arbitrary attributes, credentials, provider options, and unrestricted
 errors are not valid capture inputs. See
 [`../architecture/replay-evaluation.md`](../architecture/replay-evaluation.md)
 for the security and replay-isolation contract.
+
+When `state_dir` is empty, traces are written under
+`WORKSPACE/state/evaluation/traces`. Relative custom paths are resolved from the
+workspace; absolute paths are used directly with a `traces` child directory.
+Root turns and long-lived tasks receive separate linked traces so async task
+completion does not keep a turn recorder open indefinitely.
 
 ### Request Context Policy
 

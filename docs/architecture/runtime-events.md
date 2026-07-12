@@ -92,12 +92,15 @@ The table below lists the current runtime event kinds, when they are emitted, an
 | `agent.llm.delta` | Reserved for streaming LLM deltas; the kind is defined, but the current implementation has no natural emit site. | `content_delta_len`, `reasoning_delta_len` |
 | `agent.llm.response` | After the LLM provider returns a complete response. | `content_len`, `tool_calls`, `has_reasoning` |
 | `agent.llm.retry` | Before retrying an LLM request after context, rate-limit, transient provider, or fallback handling. | `attempt`, `max_retries`, `reason`, `error`, `backoff_ms` |
+| `agent.llm.fallback_attempt` | A fallback candidate is skipped, fails, or succeeds. | `provider`, `model`, `identity_key`, `attempt`, `status`, `reason`, `skipped`; raw provider errors are excluded |
 | `agent.context.compress` | Agent context history is compressed, for example during proactive budget checks or LLM retry handling. | `reason`, `dropped_messages`, `remaining_messages` |
+| `agent.context.snapshot` | Trace capture records a final bounded context identity before turn completion. Emitted only while trace capture is enabled. | `message_count`, `snapshot_hash`, `has_goal`, `steering_count`, `tool_pairing_valid`; no message content |
 | `agent.session.summarize` | Async session history summarization completes. | `summarized_messages`, `kept_messages`, `summary_len`, `omitted_oversized` |
 | `agent.tool.exec_start` | Before the agent executes a tool call. | `tool`, `args_count`; full arguments are not logged by default |
 | `agent.tool.exec_end` | After a tool call completes, including successful results, tool errors, and async results. | `tool`, `duration_ms`, `for_llm_len`, `for_user_len`, `is_error`, `async` |
 | `agent.tool.exec_skipped` | A tool call is skipped because the tool is unavailable, arguments are invalid, or turn control logic requires skipping it. | `tool`, `reason` |
 | `agent.tool.loop_decision` | Tool-loop protection warns about or blocks a repeated non-progressing call. Arguments and results are represented only by safe metadata. | `tool`, `args_hash`, `action`, `code`, `count`, `threshold` |
+| `agent.evolution.transition` | A learning record, pattern, draft, or applied skill transition is durably stored. | `record_id`, `draft_id`, `skill_name`, `action`, `status`; draft bodies and user content are excluded |
 | `agent.steering.injected` | Queued steering messages are injected into the next LLM context. | `count`, `total_content_len` |
 | `agent.follow_up.queued` | An async tool result is queued back into the inbound/follow-up flow. | `source_tool`, `content_len` |
 | `agent.interrupt.received` | A turn accepts steering, graceful interrupt, or hard-abort input. | `interrupt_kind`, `role`, `content_len`, `queue_depth`, `hint_len` |
@@ -190,12 +193,15 @@ Agent events add safe payload summaries:
 | `agent.llm.delta` | `content_delta_len`, `reasoning_delta_len` |
 | `agent.llm.response` | `content_len`, `tool_calls`, `has_reasoning` |
 | `agent.llm.retry` | `attempt`, `max_retries`, `reason`, `error`, `backoff_ms` |
+| `agent.llm.fallback_attempt` | `provider`, `model`, `identity_key`, `attempt`, `status`, `reason`, `skipped` |
 | `agent.context.compress` | `reason`, `dropped_messages`, `remaining_messages` |
+| `agent.context.snapshot` | `message_count`, `snapshot_hash`, `has_goal`, `steering_count`, `tool_pairing_valid` |
 | `agent.session.summarize` | `summarized_messages`, `kept_messages`, `summary_len`, `omitted_oversized` |
 | `agent.tool.exec_start` | `tool`, `args_count` |
 | `agent.tool.exec_end` | `tool`, `duration_ms`, `for_llm_len`, `for_user_len`, `is_error`, `async` |
 | `agent.tool.exec_skipped` | `tool`, `reason` |
 | `agent.tool.loop_decision` | `tool`, `args_hash`, `action`, `code`, `count`, `threshold` |
+| `agent.evolution.transition` | `record_id`, `draft_id`, `skill_name`, `action`, `status` |
 | `agent.steering.injected` | `count`, `total_content_len` |
 | `agent.follow_up.queued` | `source_tool`, `content_len` |
 | `agent.interrupt.received` | `interrupt_kind`, `role`, `content_len`, `queue_depth`, `hint_len` |

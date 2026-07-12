@@ -267,6 +267,13 @@ func (b *evolutionBridge) setCurrentCheck(check func(*evolutionBridge) bool) {
 	b.isCurrent = check
 }
 
+func (b *evolutionBridge) setObserver(observer func(evolution.Observation)) {
+	if b == nil || b.runtime == nil {
+		return
+	}
+	b.runtime.SetObserver(observer)
+}
+
 func (b *evolutionBridge) startScheduledColdPath(workspace string, times []string) {
 	if b == nil || b.coldPathRunner == nil || len(times) == 0 {
 		return

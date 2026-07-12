@@ -48,12 +48,20 @@ func (al *AgentLoop) runTurn(
 				finalSuccessfulPath = append([]string(nil), attemptedSkills...)
 			}
 		}
+		if al.traceCapture != nil && al.traceCapture.enabled() {
+			host.emitEvent(
+				runtimeevents.KindAgentContextSnapshot,
+				ts.eventMeta("runTurn", "turn.context.snapshot"),
+				buildContextSnapshotPayload(al.GetConfig(), ts),
+			)
+		}
 		host.emitEvent(
 			runtimeevents.KindAgentTurnEnd,
 			ts.eventMeta("runTurn", "turn.end"),
 			TurnEndPayload{
 				Status:                turnStatus,
 				Workspace:             ts.workspace,
+				DeliveryExpected:      ts.opts.SendResponse,
 				Iterations:            ts.currentIteration(),
 				Duration:              time.Since(ts.startedAt),
 				LLMCalls:              llmCalls,
@@ -95,6 +103,7 @@ func (al *AgentLoop) runTurn(
 		TurnStartPayload{
 			UserMessage: ts.userMessage,
 			MediaCount:  len(ts.media),
+			Workspace:   ts.workspace,
 		},
 	)
 

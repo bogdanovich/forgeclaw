@@ -30,12 +30,15 @@ const (
 	EventKindLLMDelta               EventKind = runtimeevents.KindAgentLLMDelta
 	EventKindLLMResponse            EventKind = runtimeevents.KindAgentLLMResponse
 	EventKindLLMRetry               EventKind = runtimeevents.KindAgentLLMRetry
+	EventKindLLMFallbackAttempt     EventKind = runtimeevents.KindAgentLLMFallbackAttempt
 	EventKindContextCompress        EventKind = runtimeevents.KindAgentContextCompress
+	EventKindContextSnapshot        EventKind = runtimeevents.KindAgentContextSnapshot
 	EventKindSessionSummarize       EventKind = runtimeevents.KindAgentSessionSummarize
 	EventKindToolExecStart          EventKind = runtimeevents.KindAgentToolExecStart
 	EventKindToolExecEnd            EventKind = runtimeevents.KindAgentToolExecEnd
 	EventKindToolExecSkipped        EventKind = runtimeevents.KindAgentToolExecSkipped
 	EventKindToolLoopDecision       EventKind = runtimeevents.KindAgentToolLoopDecision
+	EventKindEvolutionTransition    EventKind = runtimeevents.KindAgentEvolutionTransition
 	EventKindSteeringInjected       EventKind = runtimeevents.KindAgentSteeringInjected
 	EventKindFollowUpQueued         EventKind = runtimeevents.KindAgentFollowUpQueued
 	EventKindAsyncCompletion        EventKind = runtimeevents.KindAgentAsyncCompletion

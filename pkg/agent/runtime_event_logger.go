@@ -285,10 +285,24 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["reason"] = payload.Reason
 		fields["error"] = payload.Error
 		fields["backoff_ms"] = payload.Backoff.Milliseconds()
+	case LLMFallbackAttemptPayload:
+		fields["provider"] = payload.Provider
+		fields["model"] = payload.Model
+		fields["identity_key"] = payload.IdentityKey
+		fields["attempt"] = payload.Attempt
+		fields["status"] = payload.Status
+		fields["reason"] = payload.Reason
+		fields["skipped"] = payload.Skipped
 	case ContextCompressPayload:
 		fields["reason"] = payload.Reason
 		fields["dropped_messages"] = payload.DroppedMessages
 		fields["remaining_messages"] = payload.RemainingMessages
+	case ContextSnapshotPayload:
+		fields["message_count"] = payload.MessageCount
+		fields["snapshot_hash"] = payload.SnapshotHash
+		fields["has_goal"] = payload.GoalHash != ""
+		fields["steering_count"] = payload.SteeringCount
+		fields["tool_pairing_valid"] = payload.ToolPairingValid
 	case SessionSummarizePayload:
 		fields["summarized_messages"] = payload.SummarizedMessages
 		fields["kept_messages"] = payload.KeptMessages
@@ -314,6 +328,12 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["code"] = payload.Code
 		fields["count"] = payload.Count
 		fields["threshold"] = payload.Threshold
+	case EvolutionTransitionPayload:
+		fields["record_id"] = payload.RecordID
+		fields["draft_id"] = payload.DraftID
+		fields["skill_name"] = payload.SkillName
+		fields["action"] = payload.Action
+		fields["status"] = payload.Status
 	case SteeringInjectedPayload:
 		fields["count"] = payload.Count
 		fields["total_content_len"] = payload.TotalContentLen

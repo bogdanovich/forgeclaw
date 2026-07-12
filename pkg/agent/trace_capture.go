@@ -1,0 +1,1289 @@
+package agent
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/sipeed/picoclaw/pkg/channels"
+	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/evolution"
+	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+)
+
+const (
+	traceCaptureBuffer             = 512
+	tracePersistBuffer             = 128
+	traceDeliverySettlementTimeout = 30 * time.Second
+)
+
+type traceCaptureSettings struct {
+	enabled     bool
+	contentMode evaltrace.ContentMode
+	stateDir    string
+	limits      evaltrace.AppliedLimits
+	retention   time.Duration
+	maxTraces   int
+	filter      func(string) string
+}
+
+type activeTraceCapture struct {
+	trace           evaltrace.Trace
+	turnID          string
+	workspace       string
+	startedAt       time.Time
+	critical        map[uint64]bool
+	origins         map[string]struct{}
+	settlementTimer *time.Timer
+}
+
+type traceCaptureManager struct {
+	mu      sync.Mutex
+	closed  bool
+	startMu sync.Mutex
+
+	settings traceCaptureSettings
+	turns    map[string]*activeTraceCapture
+	tasks    map[string]*activeTraceCapture
+	sessions map[string]string
+	targets  map[string]map[string]struct{}
+	taskSubs map[string]func()
+	sub      runtimeevents.Subscription
+	eventBus runtimeevents.Bus
+
+	lastDropped     uint64
+	persistCh       chan tracePersistRequest
+	persistWG       sync.WaitGroup
+	persistMu       sync.RWMutex
+	persistClosed   bool
+	droppedPersists atomic.Uint64
+}
+
+type tracePersistRequest struct {
+	settings traceCaptureSettings
+	trace    *activeTraceCapture
+}
+
+func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *traceCaptureManager {
+	m := &traceCaptureManager{
+		settings: traceCaptureSettingsFromConfig(cfg),
+		turns:    make(map[string]*activeTraceCapture),
+		tasks:    make(map[string]*activeTraceCapture),
+		sessions: make(map[string]string),
+		targets:  make(map[string]map[string]struct{}),
+		taskSubs: make(map[string]func()),
+		eventBus: eventBus,
+	}
+	if !m.settings.enabled {
+		return m
+	}
+	m.start()
+	return m
+}
+
+func (m *traceCaptureManager) start() {
+	if m == nil {
+		return
+	}
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return
+	}
+	m.persistMu.Lock()
+	if m.persistCh == nil && !m.persistClosed {
+		m.persistCh = make(chan tracePersistRequest, tracePersistBuffer)
+		m.persistWG.Add(1)
+		go m.runPersistWorker(m.persistCh)
+	}
+	m.persistMu.Unlock()
+	if m.sub != nil || m.eventBus == nil {
+		return
+	}
+	sub, err := m.eventBus.Channel().Subscribe(context.Background(), runtimeevents.SubscribeOptions{
+		Name:         "evaluation-trace-capture",
+		Buffer:       traceCaptureBuffer,
+		Concurrency:  runtimeevents.Locked,
+		Backpressure: runtimeevents.DropNewest,
+		PanicPolicy:  runtimeevents.RecoverAndLog,
+	}, func(_ context.Context, event runtimeevents.Event) error {
+		m.observeRuntimeEvent(event)
+		return nil
+	})
+	if err != nil {
+		logger.WarnCF(
+			"evaltrace",
+			"Failed to subscribe trace capture",
+			map[string]any{"error": err.Error()},
+		)
+		return
+	}
+	m.sub = sub
+}
+
+func traceCaptureSettingsFromConfig(cfg *config.Config) traceCaptureSettings {
+	if cfg == nil {
+		return traceCaptureSettings{}
+	}
+	capture := cfg.Evaluation.TraceCapture
+	return traceCaptureSettings{
+		enabled:     capture.Enabled,
+		contentMode: evaltrace.ContentMode(capture.EffectiveContentMode()),
+		stateDir:    strings.TrimSpace(capture.StateDir),
+		limits: evaltrace.NormalizeLimits(evaltrace.AppliedLimits{
+			MaxTraceBytes: capture.MaxTraceBytes, MaxRecords: capture.MaxRecords,
+			MaxRecordBytes: capture.MaxRecordBytes, MaxCorrections: capture.MaxCorrections,
+		}),
+		retention: time.Duration(capture.RetentionHours) * time.Hour,
+		maxTraces: capture.MaxTraces,
+		filter:    cfg.FilterSensitiveData,
+	}
+}
+
+func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	updated := traceCaptureSettingsFromConfig(cfg)
+	if m.settings.enabled && !updated.enabled {
+		for _, trace := range m.turns {
+			if trace.settlementTimer != nil {
+				trace.settlementTimer.Stop()
+			}
+		}
+		m.turns = make(map[string]*activeTraceCapture)
+		m.tasks = make(map[string]*activeTraceCapture)
+		m.sessions = make(map[string]string)
+		m.targets = make(map[string]map[string]struct{})
+	}
+	m.settings = updated
+	m.mu.Unlock()
+	if updated.enabled {
+		m.start()
+	}
+}
+
+func (m *traceCaptureManager) enabled() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.closed && m.settings.enabled
+}
+
+func (m *traceCaptureManager) attachTaskRegistry(
+	workspace string,
+	registry *taskregistry.Registry,
+) {
+	if m == nil || registry == nil {
+		return
+	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if _, exists := m.taskSubs[workspace]; exists {
+		m.mu.Unlock()
+		return
+	}
+	unsubscribe := registry.SubscribeEvents(func(observation taskregistry.EventObservation) {
+		m.observeTaskEvent(workspace, registry, observation)
+	})
+	m.taskSubs[workspace] = unsubscribe
+	m.mu.Unlock()
+}
+
+func (m *traceCaptureManager) close() {
+	if m == nil {
+		return
+	}
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if m.sub != nil {
+		_ = m.sub.Close()
+		<-m.sub.Done()
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
+	m.markRuntimeDropsLocked()
+	for _, unsubscribe := range m.taskSubs {
+		unsubscribe()
+	}
+	m.taskSubs = nil
+	settings := m.settings
+	traces := make([]*activeTraceCapture, 0, len(m.turns)+len(m.tasks))
+	for _, trace := range m.turns {
+		if trace.settlementTimer != nil {
+			trace.settlementTimer.Stop()
+			trace.settlementTimer = nil
+		}
+		trace.trace.Truncation.Incomplete = true
+		trace.trace.Truncation.Reasons = append(
+			trace.trace.Truncation.Reasons,
+			"runtime_closed_before_terminal_outcome",
+		)
+		traces = append(traces, trace)
+	}
+	for _, trace := range m.tasks {
+		trace.trace.Truncation.Incomplete = true
+		trace.trace.Truncation.Reasons = append(
+			trace.trace.Truncation.Reasons,
+			"runtime_closed_before_terminal_task_delivery",
+		)
+		traces = append(traces, trace)
+	}
+	m.turns = nil
+	m.tasks = nil
+	m.mu.Unlock()
+	for _, trace := range traces {
+		m.enqueuePersist(settings, trace)
+	}
+	m.persistMu.Lock()
+	m.persistClosed = true
+	if m.persistCh != nil {
+		close(m.persistCh)
+	}
+	m.persistMu.Unlock()
+	m.persistWG.Wait()
+}
+
+func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	settings := m.settings
+	m.markRuntimeDropsLocked()
+	if !settings.enabled {
+		m.mu.Unlock()
+		return
+	}
+	if event.Time.IsZero() {
+		event.Time = time.Now()
+	}
+	turnID := strings.TrimSpace(event.Scope.TurnID)
+	if event.Kind == runtimeevents.KindAgentTurnStart && turnID != "" {
+		m.startTurnLocked(settings, event)
+	}
+	trace := m.turns[turnID]
+	if trace == nil && event.Scope.SessionKey != "" {
+		trace = m.turns[m.sessions[event.Scope.SessionKey]]
+	}
+	if trace == nil && event.Scope.Channel != "" && event.Scope.ChatID != "" {
+		trace = m.uniqueTargetTraceLocked(event.Scope.Channel, event.Scope.ChatID)
+	}
+	if trace == nil && event.Kind == runtimeevents.KindAgentEvolutionTransition {
+		standalone := standaloneEvolutionTrace(settings, event)
+		m.mu.Unlock()
+		m.enqueuePersist(settings, standalone)
+		return
+	}
+	if trace != nil {
+		if record, critical, ok := runtimeEventRecord(settings, trace, event); ok {
+			appendCaptureRecord(trace, record, critical)
+		}
+	}
+	if trace != nil && isTerminalChannelDeliveryEvent(event.Kind) && trace.settlementTimer != nil {
+		m.removeTurnLocked(trace.turnID, trace)
+		trace.settlementTimer.Stop()
+		trace.settlementTimer = nil
+		m.mu.Unlock()
+		m.enqueuePersist(settings, trace)
+		return
+	}
+	if event.Kind != runtimeevents.KindAgentTurnEnd || trace == nil {
+		m.mu.Unlock()
+		return
+	}
+	deliveryExpected := false
+	if payload, ok := event.Payload.(TurnEndPayload); ok {
+		trace.workspace = strings.TrimSpace(payload.Workspace)
+		deliveryExpected = payload.DeliveryExpected
+		trace.trace.Outcome = &evaltrace.Outcome{
+			Status: string(payload.Status), ContentHash: safeHash(settings, payload.FinalContent),
+			ContentLen: payload.FinalContentLen,
+		}
+	}
+	if deliveryExpected {
+		settlementTurnID := turnID
+		trace.settlementTimer = time.AfterFunc(traceDeliverySettlementTimeout, func() {
+			m.expireTurnSettlement(settlementTurnID, trace)
+		})
+		m.mu.Unlock()
+		return
+	}
+	m.removeTurnLocked(turnID, trace)
+	m.mu.Unlock()
+	m.enqueuePersist(settings, trace)
+}
+
+func (m *traceCaptureManager) expireTurnSettlement(turnID string, trace *activeTraceCapture) {
+	m.mu.Lock()
+	if m.closed || m.turns[turnID] != trace || trace.settlementTimer == nil {
+		m.mu.Unlock()
+		return
+	}
+	settings := m.settings
+	trace.settlementTimer = nil
+	trace.trace.Truncation.Incomplete = true
+	trace.trace.Truncation.Reasons = appendUnique(
+		trace.trace.Truncation.Reasons,
+		"delivery_settlement_timeout",
+	)
+	m.removeTurnLocked(turnID, trace)
+	m.mu.Unlock()
+	m.enqueuePersist(settings, trace)
+}
+
+func isTerminalChannelDeliveryEvent(kind runtimeevents.Kind) bool {
+	return kind == runtimeevents.KindChannelMessageOutboundSent ||
+		kind == runtimeevents.KindChannelMessageOutboundFailed
+}
+
+func (m *traceCaptureManager) startTurnLocked(
+	settings traceCaptureSettings,
+	event runtimeevents.Event,
+) {
+	turnID := strings.TrimSpace(event.Scope.TurnID)
+	if _, exists := m.turns[turnID]; exists {
+		return
+	}
+	workspace := ""
+	if payload, ok := event.Payload.(TurnStartPayload); ok {
+		workspace = strings.TrimSpace(payload.Workspace)
+	}
+	trace := &activeTraceCapture{
+		turnID:    turnID,
+		workspace: workspace,
+		startedAt: event.Time,
+		critical:  make(map[uint64]bool),
+		origins:   make(map[string]struct{}),
+		trace: evaltrace.Trace{
+			SchemaVersion: evaltrace.SchemaVersionV1,
+			TraceID:       opaqueTraceID("turn", turnID, event.Time),
+			CreatedAt:     event.Time.UTC(),
+			Policy: evaltrace.CapturePolicy{
+				ContentMode: settings.contentMode,
+				Redactor:    captureRedactorVersion(settings.contentMode),
+			},
+			Limits: settings.limits,
+			Metadata: evaltrace.Metadata{
+				RootTurnID: turnID, SessionHash: safeHash(settings, event.Scope.SessionKey),
+				AgentID: event.Scope.AgentID, RuntimeID: event.Scope.RuntimeID,
+			},
+			Records: make([]evaltrace.Record, 0, 32),
+		},
+	}
+	m.turns[turnID] = trace
+	if event.Scope.SessionKey != "" {
+		m.sessions[event.Scope.SessionKey] = turnID
+	}
+	key := targetKey(event.Scope.Channel, event.Scope.ChatID)
+	if key != "" {
+		if m.targets[key] == nil {
+			m.targets[key] = make(map[string]struct{})
+		}
+		m.targets[key][turnID] = struct{}{}
+	}
+}
+
+func (m *traceCaptureManager) observeTaskEvent(
+	workspace string,
+	registry *taskregistry.Registry,
+	observation taskregistry.EventObservation,
+) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	settings := m.settings
+	if !settings.enabled {
+		m.mu.Unlock()
+		return
+	}
+	event := observation.Event
+	record := observation.Record
+	trace := m.tasks[event.TaskID]
+	createdTrace := false
+	if trace == nil {
+		emittedAt := time.UnixMilli(event.EmittedAt)
+		trace = &activeTraceCapture{
+			workspace: workspace, startedAt: emittedAt,
+			critical: make(map[uint64]bool), origins: make(map[string]struct{}),
+			trace: evaltrace.Trace{
+				SchemaVersion: evaltrace.SchemaVersionV1,
+				TraceID: opaqueTraceID(
+					"task",
+					event.TaskID,
+					emittedAt,
+				), CreatedAt: emittedAt.UTC(),
+				Policy: evaltrace.CapturePolicy{
+					ContentMode: settings.contentMode,
+					Redactor:    captureRedactorVersion(settings.contentMode),
+				},
+				Limits: settings.limits,
+				Metadata: evaltrace.Metadata{
+					SessionHash: safeHash(settings, record.RequesterSessionKey),
+					AgentID:     record.AgentID,
+				},
+				Records: make([]evaltrace.Record, 0, 16),
+			},
+		}
+		m.tasks[event.TaskID] = trace
+		createdTrace = true
+	}
+	observations := []taskregistry.EventObservation{observation}
+	if createdTrace && registry != nil {
+		history := registry.ListEvents(event.TaskID)
+		observations = make([]taskregistry.EventObservation, 0, len(history))
+		for i, historical := range history {
+			observations = append(observations, taskregistry.EventObservation{
+				Event: historical, Record: record, FinalForTask: i == len(history)-1,
+			})
+		}
+	}
+	for _, item := range observations {
+		taskRecord, critical := normalizedTaskEventRecord(settings, trace, item)
+		appendCaptureRecord(trace, taskRecord, critical)
+		if turn := m.turns[m.sessions[record.RequesterSessionKey]]; turn != nil {
+			appendCaptureRecord(turn, taskRecord, critical)
+		}
+	}
+	if !observation.FinalForTask || !taskRecordIsTerminal(record) {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.tasks, event.TaskID)
+	trace.trace.Outcome = &evaltrace.Outcome{
+		Status:    string(record.Status),
+		ErrorCode: taskErrorCode(record),
+	}
+	m.mu.Unlock()
+	m.enqueuePersist(settings, trace)
+}
+
+func (m *traceCaptureManager) enqueuePersist(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+) {
+	if m == nil || trace == nil {
+		return
+	}
+	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
+	if m.persistClosed {
+		return
+	}
+	select {
+	case m.persistCh <- tracePersistRequest{settings: settings, trace: trace}:
+	default:
+		m.droppedPersists.Add(1)
+		logger.WarnCF(
+			"evaltrace",
+			"Dropped finalized evaluation trace due to persistence backpressure",
+			map[string]any{
+				"trace_id": trace.trace.TraceID,
+			},
+		)
+	}
+}
+
+func (m *traceCaptureManager) runPersistWorker(ch <-chan tracePersistRequest) {
+	defer m.persistWG.Done()
+	for request := range ch {
+		m.persistNow(request.settings, request.trace)
+	}
+}
+
+func (m *traceCaptureManager) persistNow(settings traceCaptureSettings, trace *activeTraceCapture) {
+	if trace == nil || strings.TrimSpace(trace.workspace) == "" {
+		return
+	}
+	finalized, err := finalizeCaptureTrace(trace)
+	if err != nil {
+		logger.WarnCF("evaltrace", "Failed to finalize evaluation trace", map[string]any{
+			"trace_id": trace.trace.TraceID, "error": err.Error(),
+		})
+		return
+	}
+	store := evaltrace.Store{
+		Root: traceStoreRoot(settings, trace.workspace), Retention: settings.retention,
+		MaxTraces: settings.maxTraces,
+	}
+	if _, err := store.Save(finalized); err != nil {
+		logger.WarnCF("evaltrace", "Failed to store evaluation trace", map[string]any{
+			"trace_id": trace.trace.TraceID, "error": err.Error(),
+		})
+		return
+	}
+	if _, err := store.Prune(); err != nil {
+		logger.WarnCF(
+			"evaltrace",
+			"Failed to prune evaluation traces",
+			map[string]any{"error": err.Error()},
+		)
+	}
+}
+
+func (m *traceCaptureManager) markRuntimeDropsLocked() {
+	if m == nil || m.sub == nil {
+		return
+	}
+	dropped := m.sub.Stats().Dropped
+	if dropped <= m.lastDropped {
+		return
+	}
+	delta := int(dropped - m.lastDropped)
+	m.lastDropped = dropped
+	for _, trace := range m.turns {
+		trace.trace.Truncation.Incomplete = true
+		trace.trace.Truncation.DroppedRecords += delta
+		trace.trace.Truncation.Reasons = appendUnique(
+			trace.trace.Truncation.Reasons,
+			"runtime_event_backpressure",
+		)
+	}
+}
+
+func runtimeEventRecord(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+	event runtimeevents.Event,
+) (evaltrace.Record, bool, bool) {
+	var kind evaltrace.RecordKind
+	var payload any
+	critical := false
+	toolCallID := ""
+	switch event.Kind {
+	case runtimeevents.KindAgentTurnStart:
+		value, ok := event.Payload.(TurnStartPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordTurnStart
+		payload = evaltrace.TurnPayload{
+			InputHash: safeHash(settings, value.UserMessage),
+			InputLen:  len(value.UserMessage),
+		}
+		critical = true
+	case runtimeevents.KindAgentTurnEnd:
+		value, ok := event.Payload.(TurnEndPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordTurnEnd
+		payload = evaltrace.TurnPayload{
+			Status:     string(value.Status),
+			FinalHash:  safeHash(settings, value.FinalContent),
+			FinalLen:   value.FinalContentLen,
+			Iterations: value.Iterations,
+		}
+		critical = true
+	case runtimeevents.KindAgentLLMRequest:
+		value, ok := event.Payload.(LLMRequestPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordModelRequest
+		payload = evaltrace.ModelPayload{
+			Provider:   value.Provider,
+			Model:      value.Model,
+			PromptHash: value.PromptHash,
+			Messages:   value.MessagesCount,
+			Tools:      value.ToolsCount,
+		}
+	case runtimeevents.KindAgentLLMResponse:
+		value, ok := event.Payload.(LLMResponsePayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordModelResponse
+		payload = evaltrace.ModelPayload{
+			Status:         "success",
+			ResponseHash:   value.ResponseHash,
+			PromptTokens:   value.PromptTokens,
+			ResponseTokens: value.CompletionTokens,
+		}
+	case runtimeevents.KindAgentLLMRetry:
+		value, ok := event.Payload.(LLMRetryPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordModelRetry
+		payload = evaltrace.ModelPayload{
+			Attempt:   value.Attempt,
+			Status:    "retry",
+			Reason:    value.Reason,
+			ErrorCode: value.Reason,
+		}
+	case runtimeevents.KindAgentLLMFallbackAttempt:
+		value, ok := event.Payload.(LLMFallbackAttemptPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordModelFallbackAttempt
+		payload = evaltrace.ModelPayload{
+			Provider:    value.Provider,
+			Model:       value.Model,
+			IdentityKey: value.IdentityKey,
+			Attempt:     value.Attempt,
+			Status:      value.Status,
+			Reason:      value.Reason,
+			Skipped:     value.Skipped,
+			ErrorCode:   value.ErrorCode,
+		}
+	case runtimeevents.KindAgentToolExecStart:
+		value, ok := event.Payload.(ToolExecStartPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordToolCall
+		payload = evaltrace.ToolPayload{
+			Tool:     value.Tool,
+			ArgsHash: safeJSONHash(settings, value.Arguments),
+			Status:   "started",
+			Executed: true,
+		}
+		toolCallID = value.ToolCallID
+	case runtimeevents.KindAgentToolExecEnd:
+		value, ok := event.Payload.(ToolExecEndPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordToolResult
+		payload = evaltrace.ToolPayload{
+			Tool:       value.Tool,
+			ResultHash: value.ResultHash,
+			Status:     "completed",
+			Executed:   true,
+			IsError:    value.IsError,
+		}
+		toolCallID = value.ToolCallID
+	case runtimeevents.KindAgentToolExecSkipped:
+		value, ok := event.Payload.(ToolExecSkippedPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordToolSkipped
+		payload = evaltrace.ToolPayload{
+			Tool:         value.Tool,
+			Status:       "skipped",
+			Executed:     false,
+			DecisionCode: safeCode(value.Reason),
+		}
+		toolCallID = value.ToolCallID
+	case runtimeevents.KindAgentToolLoopDecision:
+		value, ok := event.Payload.(ToolLoopDecisionPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordToolLoopDecision
+		payload = evaltrace.ToolPayload{
+			Tool:         value.Tool,
+			ArgsHash:     value.ArgsHash,
+			Action:       value.Action,
+			DecisionCode: value.Code,
+			Count:        value.Count,
+			Threshold:    value.Threshold,
+		}
+	case runtimeevents.KindAgentSteeringInjected:
+		value, ok := event.Payload.(SteeringInjectedPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordSteeringInjected
+		payload = evaltrace.SteeringPayload{
+			Status:     "injected",
+			Count:      value.Count,
+			ContentLen: value.TotalContentLen,
+		}
+	case runtimeevents.KindAgentInterruptReceived:
+		value, ok := event.Payload.(InterruptReceivedPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordInterrupt
+		payload = evaltrace.SteeringPayload{
+			Status:      string(value.Kind),
+			Role:        value.Role,
+			MessageHash: value.MessageHash,
+			ContentLen:  value.ContentLen,
+			QueueDepth:  value.QueueDepth,
+		}
+	case runtimeevents.KindAgentContextCompress, runtimeevents.KindAgentSessionSummarize:
+		kind = evaltrace.RecordContextCompaction
+		switch value := event.Payload.(type) {
+		case ContextCompressPayload:
+			payload = evaltrace.ContextPayload{
+				Reason:         string(value.Reason),
+				BeforeMessages: value.DroppedMessages + value.RemainingMessages,
+				AfterMessages:  value.RemainingMessages,
+			}
+		case SessionSummarizePayload:
+			payload = evaltrace.ContextPayload{
+				Reason:         "summarize",
+				BeforeMessages: value.SummarizedMessages + value.KeptMessages,
+				AfterMessages:  value.KeptMessages,
+			}
+		default:
+			return evaltrace.Record{}, false, false
+		}
+	case runtimeevents.KindAgentContextSnapshot:
+		value, ok := event.Payload.(ContextSnapshotPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind, critical = evaltrace.RecordContextSnapshot, true
+		protected := []string{"tool_pairing_valid:" + strconv.FormatBool(value.ToolPairingValid)}
+		if value.GoalHash != "" {
+			protected = append(protected, "goal:"+value.GoalHash)
+		}
+		if value.SteeringCount > 0 {
+			protected = append(protected, "steering_count:"+strconv.Itoa(value.SteeringCount))
+		}
+		payload = evaltrace.ContextPayload{
+			AfterMessages: value.MessageCount, SnapshotHash: value.SnapshotHash,
+			ProtectedFactRefs: protected,
+		}
+	case runtimeevents.KindChannelMessageOutboundQueued,
+		runtimeevents.KindChannelMessageOutboundSent,
+		runtimeevents.KindChannelMessageOutboundFailed:
+		value, ok := event.Payload.(channels.ChannelOutboundPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordDeliveryAttempt
+		status := "queued"
+		if event.Kind == runtimeevents.KindChannelMessageOutboundSent {
+			kind, status, critical = evaltrace.RecordDeliveryOutcome, "sent", true
+		} else if event.Kind == runtimeevents.KindChannelMessageOutboundFailed {
+			kind, status, critical = evaltrace.RecordDeliveryOutcome, "failed", true
+		}
+		payload = evaltrace.DeliveryPayload{
+			Status:     status,
+			TargetHash: safeHash(settings, targetKey(event.Scope.Channel, event.Scope.ChatID)),
+			ContentLen: value.ContentLen,
+			Attempt:    value.Retries,
+			ErrorCode:  deliveryErrorCode(value.Error),
+		}
+	case runtimeevents.KindAgentAsyncCompletion:
+		value, ok := event.Payload.(AsyncCompletionPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordDeliveryDecision
+		payload = evaltrace.DeliveryPayload{
+			Mode:       value.DeliveryMode,
+			Status:     "decided",
+			WillUser:   value.WillUser,
+			WillParent: value.WillParent,
+			ContentLen: value.ContentLen,
+		}
+	case runtimeevents.KindAgentEvolutionTransition:
+		value, ok := event.Payload.(EvolutionTransitionPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordEvolutionRecord
+		switch value.Action {
+		case "pattern_saved":
+			kind = evaltrace.RecordEvolutionRecord
+		case "draft_saved":
+			kind = evaltrace.RecordEvolutionDraft
+		case "applied":
+			kind, critical = evaltrace.RecordEvolutionApply, true
+		}
+		payload = evaltrace.EvolutionPayload{
+			RecordID: value.RecordID, DraftID: value.DraftID, SkillName: value.SkillName,
+			Action: value.Action, Status: value.Status, Success: value.Success,
+			ProvenanceIDs: append([]string(nil), value.ProvenanceIDs...),
+			PolicyCodes:   append([]string(nil), value.PolicyCodes...),
+		}
+	default:
+		return evaltrace.Record{}, false, false
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return evaltrace.Record{}, false, false
+	}
+	return evaltrace.Record{
+		OffsetNanos: max(0, event.Time.Sub(trace.startedAt).Nanoseconds()), Kind: kind,
+		Origin: evaltrace.Origin{Kind: "runtime_event", ID: event.ID},
+		Scope: evaltrace.Scope{
+			AgentID:     event.Scope.AgentID,
+			SessionHash: safeHash(settings, event.Scope.SessionKey),
+			TurnID:      event.Scope.TurnID,
+			Channel:     event.Scope.Channel,
+			TargetHash:  safeHash(settings, targetKey(event.Scope.Channel, event.Scope.ChatID)),
+		},
+		Correlation: evaltrace.Correlation{
+			ParentTurnID: event.Correlation.ParentTurnID,
+			RequestID:    event.Correlation.RequestID,
+			ToolCallID:   toolCallID,
+			EventID:      event.ID,
+		},
+		Data: data,
+	}, critical, true
+}
+
+func standaloneEvolutionTrace(
+	settings traceCaptureSettings,
+	event runtimeevents.Event,
+) *activeTraceCapture {
+	payload, ok := event.Payload.(EvolutionTransitionPayload)
+	if !ok || strings.TrimSpace(payload.Workspace) == "" {
+		return nil
+	}
+	trace := &activeTraceCapture{
+		workspace: payload.Workspace, startedAt: event.Time,
+		critical: make(map[uint64]bool), origins: make(map[string]struct{}),
+		trace: evaltrace.Trace{
+			SchemaVersion: evaltrace.SchemaVersionV1,
+			TraceID: opaqueTraceID(
+				"evolution",
+				firstNonEmpty(payload.DraftID, payload.RecordID, event.ID),
+				event.Time,
+			),
+			CreatedAt: event.Time.UTC(),
+			Policy: evaltrace.CapturePolicy{
+				ContentMode: settings.contentMode,
+				Redactor:    captureRedactorVersion(settings.contentMode),
+			},
+			Limits: settings.limits,
+			Metadata: evaltrace.Metadata{
+				RootTurnID:  event.Scope.TurnID,
+				SessionHash: safeHash(settings, event.Scope.SessionKey),
+				AgentID:     event.Scope.AgentID,
+			},
+			Records: make([]evaltrace.Record, 0, 1),
+		},
+	}
+	if record, critical, mapped := runtimeEventRecord(settings, trace, event); mapped {
+		appendCaptureRecord(trace, record, critical)
+		trace.trace.Outcome = &evaltrace.Outcome{Status: payload.Status}
+	}
+	return trace
+}
+
+func (al *AgentLoop) observeEvolutionTransition(observation evolution.Observation) {
+	if al == nil {
+		return
+	}
+	al.emitEvent(
+		runtimeevents.KindAgentEvolutionTransition,
+		HookMeta{
+			AgentID: observation.AgentID, SessionKey: observation.SessionKey,
+			TurnID: observation.TurnID, Source: "evolution", TracePath: "evolution.transition",
+		},
+		EvolutionTransitionPayload{
+			Workspace: observation.Workspace, RecordID: observation.RecordID,
+			DraftID: observation.DraftID, SkillName: observation.SkillName,
+			Action: observation.Action, Status: observation.Status, Success: observation.Success,
+			ProvenanceIDs: append([]string(nil), observation.ProvenanceIDs...),
+			PolicyCodes:   append([]string(nil), observation.PolicyCodes...),
+		},
+	)
+}
+
+func normalizedTaskEventRecord(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+	observation taskregistry.EventObservation,
+) (evaltrace.Record, bool) {
+	event, state := observation.Event, observation.Record
+	kind := evaltrace.RecordTaskTransition
+	critical := false
+	if event.Type == taskregistry.EventTaskDeliveryDecision {
+		kind = evaltrace.RecordDeliveryDecision
+	} else if event.Type == taskregistry.EventTaskDeliveryChanged {
+		kind, critical = evaltrace.RecordDeliveryOutcome, true
+	}
+	var payload any
+	if kind == evaltrace.RecordTaskTransition {
+		payload = evaltrace.TaskPayload{
+			EventType:      string(event.Type),
+			Runtime:        string(event.Runtime),
+			Status:         string(event.Status),
+			DeliveryStatus: string(event.DeliveryStatus),
+			Sequence:       event.Seq,
+			Fingerprint:    event.Fingerprint,
+			Producer:       event.Producer,
+		}
+	} else {
+		payload = evaltrace.DeliveryPayload{
+			Mode: event.Payload["mode"], Status: string(event.DeliveryStatus),
+			WillUser: parseBool(event.Payload["will_user"]), WillParent: parseBool(event.Payload["will_parent"]),
+			ContentLen: parseInt(event.Payload["content_len"]), ErrorCode: taskErrorCode(state),
+		}
+	}
+	data, _ := json.Marshal(payload)
+	return evaltrace.Record{
+		OffsetNanos: max(0, time.UnixMilli(event.EmittedAt).Sub(trace.startedAt).Nanoseconds()),
+		Kind:        kind, Origin: evaltrace.Origin{Kind: "task_event", ID: event.EventID},
+		Scope: evaltrace.Scope{
+			AgentID:     state.AgentID,
+			SessionHash: safeHash(settings, state.RequesterSessionKey),
+			TaskID:      event.TaskID,
+			Channel:     state.Channel,
+			TargetHash:  safeHash(settings, targetKey(state.Channel, state.ChatID)),
+		},
+		Correlation: evaltrace.Correlation{
+			CompletionID: firstNonEmpty(event.Payload["completion_id"], state.LastCompletionID),
+			EventID:      event.EventID,
+		},
+		Data: data,
+	}, critical
+}
+
+func appendCaptureRecord(trace *activeTraceCapture, record evaltrace.Record, critical bool) {
+	if trace == nil {
+		return
+	}
+	if trace.origins == nil {
+		trace.origins = make(map[string]struct{})
+	}
+	originKey := record.Origin.Kind + "\x00" + record.Origin.ID
+	if record.Origin.ID != "" {
+		if _, exists := trace.origins[originKey]; exists {
+			return
+		}
+	}
+	limits := trace.trace.Limits
+	if len(record.Data) > limits.MaxRecordBytes {
+		trace.trace.Truncation.Incomplete = true
+		trace.trace.Truncation.DroppedRecords++
+		trace.trace.Truncation.Reasons = appendUnique(
+			trace.trace.Truncation.Reasons,
+			"record_size_limit",
+		)
+		trace.trace.Truncation.DroppedByKind = incrementDropped(
+			trace.trace.Truncation.DroppedByKind,
+			record.Kind,
+		)
+		return
+	}
+	if len(trace.trace.Records) >= limits.MaxRecords {
+		if !critical {
+			trace.trace.Truncation.Incomplete = true
+			trace.trace.Truncation.DroppedRecords++
+			trace.trace.Truncation.Reasons = appendUnique(
+				trace.trace.Truncation.Reasons,
+				"record_count_limit",
+			)
+			trace.trace.Truncation.DroppedByKind = incrementDropped(
+				trace.trace.Truncation.DroppedByKind,
+				record.Kind,
+			)
+			return
+		}
+		for i := len(trace.trace.Records) - 1; i >= 0; i-- {
+			if trace.critical[trace.trace.Records[i].Sequence] {
+				continue
+			}
+			dropped := trace.trace.Records[i]
+			trace.trace.Records = append(trace.trace.Records[:i], trace.trace.Records[i+1:]...)
+			delete(trace.critical, dropped.Sequence)
+			trace.trace.Truncation.DroppedRecords++
+			trace.trace.Truncation.DroppedByKind = incrementDropped(
+				trace.trace.Truncation.DroppedByKind,
+				dropped.Kind,
+			)
+			break
+		}
+		if len(trace.trace.Records) >= limits.MaxRecords {
+			return
+		}
+	}
+	record.Sequence = nextCaptureSequence(trace.trace.Records)
+	trace.trace.Records = append(trace.trace.Records, record)
+	trace.critical[record.Sequence] = critical
+	if record.Origin.ID != "" {
+		trace.origins[originKey] = struct{}{}
+	}
+}
+
+func finalizeCaptureTrace(trace *activeTraceCapture) (evaltrace.Trace, error) {
+	for {
+		finalized, err := evaltrace.Finalize(trace.trace)
+		if err == nil {
+			return finalized, nil
+		}
+		if !strings.Contains(err.Error(), "trace exceeds byte limit") ||
+			len(trace.trace.Records) == 0 {
+			return evaltrace.Trace{}, err
+		}
+		dropped := trace.trace.Records[len(trace.trace.Records)-1]
+		trace.trace.Records = trace.trace.Records[:len(trace.trace.Records)-1]
+		trace.trace.Truncation.Incomplete = true
+		trace.trace.Truncation.DroppedRecords++
+		trace.trace.Truncation.Reasons = appendUnique(
+			trace.trace.Truncation.Reasons,
+			"trace_size_limit",
+		)
+		trace.trace.Truncation.DroppedByKind = incrementDropped(
+			trace.trace.Truncation.DroppedByKind,
+			dropped.Kind,
+		)
+	}
+}
+
+func (m *traceCaptureManager) uniqueTargetTraceLocked(channel, chatID string) *activeTraceCapture {
+	turnIDs := m.targets[targetKey(channel, chatID)]
+	if len(turnIDs) != 1 {
+		return nil
+	}
+	for turnID := range turnIDs {
+		return m.turns[turnID]
+	}
+	return nil
+}
+
+func (m *traceCaptureManager) removeTurnLocked(turnID string, trace *activeTraceCapture) {
+	delete(m.turns, turnID)
+	for session, id := range m.sessions {
+		if id == turnID {
+			delete(m.sessions, session)
+		}
+	}
+	for key, ids := range m.targets {
+		delete(ids, turnID)
+		if len(ids) == 0 {
+			delete(m.targets, key)
+		}
+	}
+}
+
+func traceStoreRoot(settings traceCaptureSettings, workspace string) string {
+	if settings.stateDir == "" {
+		return filepath.Join(workspace, "state", "evaluation", "traces")
+	}
+	if filepath.IsAbs(settings.stateDir) {
+		return filepath.Join(settings.stateDir, "traces")
+	}
+	clean := filepath.Clean(settings.stateDir)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return filepath.Join(workspace, "state", "evaluation", "traces")
+	}
+	return filepath.Join(workspace, clean, "traces")
+}
+
+func taskRecordIsTerminal(record taskregistry.Record) bool {
+	statusTerminal := record.Status == taskregistry.StatusSucceeded ||
+		record.Status == taskregistry.StatusFailed ||
+		record.Status == taskregistry.StatusTimedOut ||
+		record.Status == taskregistry.StatusCancelled ||
+		record.Status == taskregistry.StatusLost
+	deliveryTerminal := record.DeliveryStatus == taskregistry.DeliveryDelivered ||
+		record.DeliveryStatus == taskregistry.DeliverySessionQueued ||
+		record.DeliveryStatus == taskregistry.DeliveryFailed ||
+		record.DeliveryStatus == taskregistry.DeliveryParentMissing ||
+		record.DeliveryStatus == taskregistry.DeliveryNotApplicable
+	return statusTerminal && deliveryTerminal
+}
+
+func taskErrorCode(record taskregistry.Record) string {
+	if record.DeliveryStatus == taskregistry.DeliveryFailed {
+		return "delivery_failed"
+	}
+	if record.Status == taskregistry.StatusLost {
+		return "task_lost"
+	}
+	if record.Status == taskregistry.StatusFailed {
+		return "task_failed"
+	}
+	return ""
+}
+
+func deliveryErrorCode(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return "channel_delivery_failed"
+}
+
+func safeCode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, value)
+	if len(value) > 64 {
+		value = value[:64]
+	}
+	return value
+}
+
+func safeHash(settings traceCaptureSettings, value string) string {
+	if value == "" {
+		return ""
+	}
+	if settings.filter != nil {
+		value = settings.filter(value)
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func evaluationSafeHash(cfg *config.Config, value string) string {
+	return safeHash(traceCaptureSettingsFromConfig(cfg), value)
+}
+
+func buildContextSnapshotPayload(cfg *config.Config, ts *turnState) ContextSnapshotPayload {
+	if ts == nil {
+		return ContextSnapshotPayload{}
+	}
+	messages := ts.persistedMessagesSnapshot()
+	canonical := make([]map[string]any, 0, len(messages))
+	toolCalls := make(map[string]struct{})
+	toolResults := make(map[string]struct{})
+	for _, message := range messages {
+		item := map[string]any{"role": message.Role, "content": message.Content}
+		if len(message.ToolCalls) > 0 {
+			ids := make([]string, 0, len(message.ToolCalls))
+			for _, call := range message.ToolCalls {
+				ids = append(ids, call.ID)
+				toolCalls[call.ID] = struct{}{}
+			}
+			item["tool_call_ids"] = ids
+		}
+		if message.ToolCallID != "" {
+			item["tool_call_id"] = message.ToolCallID
+			toolResults[message.ToolCallID] = struct{}{}
+		}
+		canonical = append(canonical, item)
+	}
+	pairingValid := len(toolCalls) == len(toolResults)
+	if pairingValid {
+		for id := range toolCalls {
+			if _, ok := toolResults[id]; !ok {
+				pairingValid = false
+				break
+			}
+		}
+	}
+	return ContextSnapshotPayload{
+		MessageCount:     len(messages),
+		SnapshotHash:     safeJSONHash(traceCaptureSettingsFromConfig(cfg), canonical),
+		GoalHash:         evaluationSafeHash(cfg, ts.opts.ActiveGoal),
+		SteeringCount:    len(ts.acceptedSteeringSnapshot()),
+		ToolPairingValid: pairingValid,
+	}
+}
+
+func safeJSONHash(settings traceCaptureSettings, value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return safeHash(settings, string(data))
+}
+
+func opaqueTraceID(kind, id string, created time.Time) string {
+	sum := sha256.Sum256(
+		[]byte(kind + "\x00" + id + "\x00" + created.UTC().Format(time.RFC3339Nano)),
+	)
+	return "trace-" + kind + "-" + hex.EncodeToString(sum[:12])
+}
+
+func targetKey(channel, chatID string) string {
+	channel, chatID = strings.TrimSpace(channel), strings.TrimSpace(chatID)
+	if channel == "" || chatID == "" {
+		return ""
+	}
+	return channel + "\x00" + chatID
+}
+
+func captureRedactorVersion(mode evaltrace.ContentMode) string {
+	if mode == evaltrace.ContentRedacted {
+		return "forgeclaw.config_filter.v1"
+	}
+	return ""
+}
+
+func nextCaptureSequence(records []evaltrace.Record) uint64 {
+	if len(records) == 0 {
+		return 1
+	}
+	return records[len(records)-1].Sequence + 1
+}
+
+func incrementDropped(
+	values map[evaltrace.RecordKind]int,
+	kind evaltrace.RecordKind,
+) map[evaltrace.RecordKind]int {
+	if values == nil {
+		values = make(map[evaltrace.RecordKind]int)
+	}
+	values[kind]++
+	return values
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func parseBool(value string) bool {
+	parsed, _ := strconv.ParseBool(value)
+	return parsed
+}
+
+func parseInt(value string) int {
+	parsed, _ := strconv.Atoi(value)
+	return parsed
+}
+
+func primaryCandidateProvider(candidates []providers.FallbackCandidate) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0].Provider
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}

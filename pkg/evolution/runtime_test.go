@@ -38,6 +38,32 @@ func TestRuntime_FinalizeTurnDisabledDoesNothing(t *testing.T) {
 	}
 }
 
+func TestRuntimeObserverRunsAfterLearningRecordIsDurable(t *testing.T) {
+	workspace := t.TempDir()
+	var observed []evolution.Observation
+	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Config: config.EvolutionConfig{Enabled: true, Mode: "observe"},
+		Observer: func(observation evolution.Observation) {
+			if _, statErr := os.Stat(evolution.NewPaths(workspace, "").TaskRecords); statErr != nil {
+				t.Errorf("observer ran before durable record: %v", statErr)
+			}
+			observed = append(observed, observation)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if err := rt.FinalizeTurn(context.Background(), evolution.TurnCaseInput{
+		Workspace: workspace, TurnID: "turn-observed", SessionKey: "session-1",
+		AgentID: "agent-1", Status: "completed", UserMessage: "test",
+	}); err != nil {
+		t.Fatalf("FinalizeTurn: %v", err)
+	}
+	if len(observed) != 1 || observed[0].Action != "recorded" || observed[0].RecordID == "" {
+		t.Fatalf("observed = %#v", observed)
+	}
+}
+
 func TestRuntime_FinalizeTurnWithEmptyWorkspaceDoesNothing(t *testing.T) {
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
 		Config: config.EvolutionConfig{Enabled: true, Mode: "observe"},
