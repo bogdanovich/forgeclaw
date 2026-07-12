@@ -370,6 +370,11 @@ Initial evaluators:
   drafts, quarantine/review policy is honored, provenance exists, and apply or
   rollback transitions match lifecycle rules.
 
+All eight deterministic evaluators are implemented in `pkg/evalevaluator`.
+Their findings are independent and include stable status, severity, record
+references, expected and observed facts, and remediation. Missing evidence is
+reported as `not_evaluable`; malformed typed evidence is `error`.
+
 These are correctness checks, not a single quality score. Missing required
 evidence returns `error` or `not_evaluable`, never `pass`.
 
@@ -392,6 +397,10 @@ The fixture manifest records source references, sanitized status, expected
 evaluators, and why the failure mattered. A source reference is evidence, not
 permission to copy private production content.
 
+The checked-in versioned manifest contains one passing and one failing fixture
+for every deterministic evaluator. `picoclaw eval fixtures` validates the
+manifest, and pull-request CI runs that validation explicitly.
+
 ## User Corrections
 
 ForgeClaw does not currently have a reliable correction signal. A reply,
@@ -412,6 +421,16 @@ Results record model identity, provider, rubric hash, sampling parameters,
 usage, latency, and every sample score. Multiple samples report variance.
 Model failure produces `not_evaluable`; it never changes deterministic findings
 or ordinary CI status.
+
+### Current decision
+
+Model-assisted grading is deferred. The current roadmap questions are delivery,
+transition, correlation, recovery, and policy invariants, all of which are
+deterministically evaluable. No specific semantic rubric, acceptable model,
+cost budget, or variance threshold has been approved. Adding a grader now would
+increase nondeterminism and data exposure without answering a concrete question.
+This decision can be revisited only with an explicit semantic target and budget;
+deterministic findings remain authoritative.
 
 ## Delivery Plan
 

@@ -184,6 +184,9 @@ errors are not valid capture inputs. See
 [`../architecture/replay-evaluation.md`](../architecture/replay-evaluation.md)
 for the security and replay-isolation contract.
 
+See [`replay-evaluation.md`](replay-evaluation.md) for trace evaluation,
+fixture validation, CLI output, and scenario safety.
+
 When `state_dir` is empty, traces are written under
 `WORKSPACE/state/evaluation/traces`. Relative custom paths are resolved from the
 workspace; absolute paths are used directly with a `traces` child directory.

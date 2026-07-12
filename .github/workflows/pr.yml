@@ -65,6 +65,9 @@ jobs:
       - name: Run go test
         run: go test -tags goolm,stdjson ./...
 
+      - name: Validate deterministic evaluation fixtures
+        run: go run -tags goolm,stdjson ./cmd/picoclaw --no-color eval fixtures pkg/evalevaluator/testdata/historical_failures.json
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest

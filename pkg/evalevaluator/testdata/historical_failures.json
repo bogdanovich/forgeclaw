@@ -1,0 +1,107 @@
+{
+  "schema_version": "forgeclaw.eval_fixture_manifest.v1",
+  "fixtures": [
+    {
+      "id": "delivery-reliability-pass", "evaluator": "delivery_reliability.v1", "source": "c877f564,b987e242 delivery coordinator tests", "sanitized": true, "why": "Required delivery must settle exactly once.", "expected": "pass",
+      "records": [
+        {"kind":"delivery.decision","completion_id":"c1","target_hash":"u1","data":{"mode":"user_only","target_hash":"u1","will_user":true}},
+        {"kind":"delivery.outcome","completion_id":"c1","target_hash":"u1","data":{"mode":"user_only","target_hash":"u1","status":"delivered"}}
+      ]
+    },
+    {
+      "id": "delivery-reliability-fail", "evaluator": "delivery_reliability.v1", "source": "c877f564,b987e242 delivery coordinator tests", "sanitized": true, "why": "Missing delivery outcomes previously lost user-visible results.", "expected": "fail",
+      "records": [{"kind":"delivery.decision","completion_id":"c1","target_hash":"u1","data":{"mode":"user_only","target_hash":"u1","will_user":true}}]
+    },
+    {
+      "id": "duplicate-response-pass", "evaluator": "duplicate_response.v1", "source": "c877f564 duplicate completion tests", "sanitized": true, "why": "Completion identity must prevent duplicate sends.", "expected": "pass",
+      "records": [{"kind":"delivery.outcome","completion_id":"c1","target_hash":"u1","data":{"mode":"user_only","target_hash":"u1","status":"delivered"}}]
+    },
+    {
+      "id": "duplicate-response-fail", "evaluator": "duplicate_response.v1", "source": "c877f564 duplicate completion tests", "sanitized": true, "why": "Duplicate terminal sends produce repeated user responses.", "expected": "fail",
+      "records": [
+        {"kind":"delivery.outcome","completion_id":"c1","target_hash":"u1","data":{"mode":"user_only","target_hash":"u1","status":"delivered"}},
+        {"kind":"delivery.outcome","completion_id":"c1","target_hash":"u1","data":{"mode":"user_only","target_hash":"u1","status":"delivered"}}
+      ]
+    },
+    {
+      "id": "steering-correctness-pass", "evaluator": "steering_correctness.v1", "source": "4de727cd steering tests", "sanitized": true, "why": "Accepted steering must be injected once.", "expected": "pass",
+      "records": [
+        {"kind":"steering.enqueued","data":{"message_hash":"s1","status":"accepted"}},
+        {"kind":"steering.injected","data":{"count":1,"status":"injected"}}
+      ]
+    },
+    {
+      "id": "steering-correctness-fail", "evaluator": "steering_correctness.v1", "source": "4de727cd steering tests", "sanitized": true, "why": "Queued steering that is never injected is lost guidance.", "expected": "fail",
+      "records": [{"kind":"steering.enqueued","data":{"message_hash":"s1","status":"accepted"}}]
+    },
+    {
+      "id": "restart-recovery-pass", "evaluator": "restart_recovery.v1", "source": "7368ca47 task reconciliation tests", "sanitized": true, "why": "Restart reconciliation must leave explicit terminal state.", "expected": "pass",
+      "records": [
+        {"kind":"runtime.restart","data":{"phase":"reconcile","status":"completed","state_hash":"r1"}},
+        {"kind":"task.transition","task_id":"t1","data":{"event_type":"lost","status":"lost","sequence":2}}
+      ]
+    },
+    {
+      "id": "restart-recovery-fail", "evaluator": "restart_recovery.v1", "source": "7368ca47 task reconciliation tests", "sanitized": true, "why": "Stale running tasks after restart misrepresent work as active.", "expected": "fail",
+      "records": [
+        {"kind":"runtime.restart","data":{"phase":"reconcile","status":"completed","state_hash":"r1"}},
+        {"kind":"task.transition","task_id":"t1","data":{"event_type":"running","status":"running","sequence":2}}
+      ]
+    },
+    {
+      "id": "compaction-retention-pass", "evaluator": "compaction_retention.v1", "source": "Seahorse reconciliation and context tests", "sanitized": true, "why": "Compaction must preserve paired tool context.", "expected": "pass",
+      "records": [
+        {"kind":"context.compaction","data":{"reason":"budget","before_messages":12,"after_messages":6}},
+        {"kind":"context.snapshot","data":{"after_messages":6,"snapshot_hash":"snap1","protected_fact_refs":["tool_pairing_valid:true","goal:g1"]}}
+      ]
+    },
+    {
+      "id": "compaction-retention-fail", "evaluator": "compaction_retention.v1", "source": "Seahorse reconciliation and context tests", "sanitized": true, "why": "Missing protected facts cause context loss after compaction.", "expected": "fail",
+      "records": [
+        {"kind":"context.compaction","data":{"reason":"budget","before_messages":12,"after_messages":6}},
+        {"kind":"context.snapshot","data":{"after_messages":6,"snapshot_hash":"snap1"}}
+      ]
+    },
+    {
+      "id": "tool-loop-recovery-pass", "evaluator": "tool_loop_recovery.v1", "source": "0984d65a fatal MCP and loopguard tests", "sanitized": true, "why": "Blocked repeated calls must not execute.", "expected": "pass",
+      "records": [
+        {"kind":"tool.loop_decision","data":{"tool":"shell","action":"block","decision_code":"repeat","count":5,"threshold":5}},
+        {"kind":"tool.call","tool_call_id":"call1","data":{"tool":"shell","status":"started"}},
+        {"kind":"tool.skipped","tool_call_id":"call1","data":{"tool":"shell","status":"skipped","decision_code":"repeat"}}
+      ]
+    },
+    {
+      "id": "tool-loop-recovery-fail", "evaluator": "tool_loop_recovery.v1", "source": "0984d65a fatal MCP and loopguard tests", "sanitized": true, "why": "Executing after a block wastes cost and can repeat side effects.", "expected": "fail",
+      "records": [
+        {"kind":"tool.loop_decision","data":{"tool":"shell","action":"block","decision_code":"repeat","count":5,"threshold":5}},
+        {"kind":"tool.call","tool_call_id":"call1","data":{"tool":"shell","status":"started"}},
+        {"kind":"tool.result","tool_call_id":"call1","data":{"tool":"shell","status":"completed","executed":true}}
+      ]
+    },
+    {
+      "id": "provider-failover-pass", "evaluator": "provider_failover.v1", "source": "7a3de0f2,59d88050 fallback tests", "sanitized": true, "why": "Fallback must select one final provider identity.", "expected": "pass",
+      "records": [
+        {"kind":"model.fallback_attempt","data":{"identity_key":"p1:m1","attempt":1,"status":"failed"}},
+        {"kind":"model.fallback_attempt","data":{"identity_key":"p2:m2","attempt":2,"status":"succeeded"}}
+      ]
+    },
+    {
+      "id": "provider-failover-fail", "evaluator": "provider_failover.v1", "source": "7a3de0f2,59d88050 fallback tests", "sanitized": true, "why": "Continuing after success makes provider selection inconsistent.", "expected": "fail",
+      "records": [
+        {"kind":"model.fallback_attempt","data":{"identity_key":"p1:m1","attempt":1,"status":"succeeded"}},
+        {"kind":"model.fallback_attempt","data":{"identity_key":"p2:m2","attempt":2,"status":"succeeded"}}
+      ]
+    },
+    {
+      "id": "evolution-safety-pass", "evaluator": "evolution_safety.v1", "source": "88684cdc evolution quarantine tests", "sanitized": true, "why": "Promoted drafts require eligibility and provenance.", "expected": "pass",
+      "records": [
+        {"kind":"evolution.draft","data":{"draft_id":"d1","eligible":true,"provenance_ids":["r1"],"status":"candidate"}},
+        {"kind":"evolution.apply","data":{"draft_id":"d1","action":"apply","status":"applied"}}
+      ]
+    },
+    {
+      "id": "evolution-safety-fail", "evaluator": "evolution_safety.v1", "source": "88684cdc evolution quarantine tests", "sanitized": true, "why": "Ineligible drafts must remain quarantined.", "expected": "fail",
+      "records": [{"kind":"evolution.draft","data":{"draft_id":"d1","eligible":false,"status":"candidate"}}]
+    }
+  ]
+}
