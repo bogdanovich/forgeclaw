@@ -60,7 +60,9 @@ func TestSystemdUserServiceRestarterQueuesRestartWithoutBlocking(t *testing.T) {
 		return exec.Command(os.Args[0], "-test.run=^TestSystemdUserServiceRestarterHelper$")
 	}
 
-	if err := (SystemdUserServiceRestarter{}).RestartService(context.Background(), "picoclaw-main.service"); err != nil {
+	if err := (SystemdUserServiceRestarter{}).RestartService(
+		context.Background(), "picoclaw-main.service",
+	); err != nil {
 		t.Fatalf("RestartService() error = %v", err)
 	}
 	if gotName != "systemctl" {
