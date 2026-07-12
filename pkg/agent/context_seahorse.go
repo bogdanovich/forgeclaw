@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -179,6 +180,10 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
 	if req.CanonicalWriteErr != nil {
+		store := m.sessionStore(req.SessionKey)
+		if canonicalHistoryContains(store, req.SessionKey, req.Message) {
+			return m.ensureReconciled(ctx, req.SessionKey, store)
+		}
 		logger.WarnCF("seahorse", "canonical history write failed; ingesting live message without watermark",
 			map[string]any{"session": req.SessionKey, "error": req.CanonicalWriteErr.Error()})
 		msg := providerToSeahorseMessage(req.Message)
@@ -212,6 +217,26 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 	return m.ensureReconciled(ctx, req.SessionKey, store)
 }
 
+func canonicalHistoryContains(store session.SessionStore, key string, target providers.Message) bool {
+	reader, ok := store.(session.ErrorAwareHistoryReader)
+	if !ok {
+		return false
+	}
+	history, err := reader.GetHistoryWithError(key)
+	if err != nil {
+		return false
+	}
+	target.CreatedAt = nil
+	for i := len(history) - 1; i >= 0; i-- {
+		candidate := history[i]
+		candidate.CreatedAt = nil
+		if reflect.DeepEqual(candidate, target) {
+			return true
+		}
+	}
+	return false
+}
+
 // Clear removes all stored context for a session (seahorse DB + JSONL).
 func (m *seahorseContextManager) Clear(ctx context.Context, sessionKey string) error {
 	unlock := m.lockSession(sessionKey)
@@ -243,7 +268,10 @@ func (m *seahorseContextManager) Clear(ctx context.Context, sessionKey string) e
 }
 
 func (m *seahorseContextManager) reconcile(ctx context.Context, sessionKey string, store session.SessionStore) error {
-	history := store.GetHistory(sessionKey)
+	history, err := canonicalHistory(store, sessionKey)
+	if err != nil {
+		return err
+	}
 	msgs := make([]seahorse.Message, len(history))
 	for i, h := range history {
 		msgs[i] = providerToSeahorseMessage(h)
@@ -252,6 +280,13 @@ func (m *seahorseContextManager) reconcile(ctx context.Context, sessionKey strin
 		return m.engine.ClearSession(ctx, sessionKey)
 	}
 	return m.engine.Bootstrap(ctx, sessionKey, msgs)
+}
+
+func canonicalHistory(store session.SessionStore, key string) ([]providers.Message, error) {
+	if reader, ok := store.(session.ErrorAwareHistoryReader); ok {
+		return reader.GetHistoryWithError(key)
+	}
+	return store.GetHistory(key), nil
 }
 
 func (m *seahorseContextManager) ensureReconciled(

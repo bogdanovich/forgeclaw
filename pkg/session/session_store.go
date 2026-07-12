@@ -49,3 +49,9 @@ type ErrorAwareSessionWriter interface {
 	AddMessageWithError(sessionKey, role, content string) error
 	AddFullMessageWithError(sessionKey string, msg providers.Message) error
 }
+
+// ErrorAwareHistoryReader allows recovery paths to distinguish a failed write
+// from a write that became durable before reporting an error.
+type ErrorAwareHistoryReader interface {
+	GetHistoryWithError(sessionKey string) ([]providers.Message, error)
+}

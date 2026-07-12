@@ -201,6 +201,36 @@ func TestSeahorseIngestKeepsLiveMessageAfterCanonicalWriteFailure(t *testing.T) 
 	}
 }
 
+func TestSeahorseWriteErrorAfterDurableAppendDoesNotDuplicate(t *testing.T) {
+	mgr, canonical := newReconciliationTestManager(t)
+	ctx := context.Background()
+	const key = "durable-before-error"
+	live := providers.Message{Role: "user", Content: "already canonical"}
+	if err := canonical.AddFullMessage(ctx, key, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Ingest(ctx, &IngestRequest{
+		SessionKey:        key,
+		Message:           live,
+		CanonicalWriteErr: errors.New("fsync result unknown"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store := mgr.engine.GetRetrieval().Store()
+	conv, err := store.GetConversationBySessionKey(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.GetMessages(ctx, conv.ConversationID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || stored[0].Content != live.Content {
+		t.Fatalf("durable append produced duplicate messages: %#v", stored)
+	}
+}
+
 func TestSeahorseConcurrentLiveIngestDoesNotDuplicate(t *testing.T) {
 	mgr, canonical := newReconciliationTestManager(t)
 	ctx := context.Background()

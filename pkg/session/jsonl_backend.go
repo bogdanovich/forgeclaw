@@ -142,13 +142,21 @@ func (b *JSONLBackend) AddFullMessageWithError(sessionKey string, msg providers.
 }
 
 func (b *JSONLBackend) GetHistory(key string) []providers.Message {
-	key = b.resolveSessionKey(key)
-	msgs, err := b.store.GetHistory(context.Background(), key)
+	msgs, err := b.GetHistoryWithError(key)
 	if err != nil {
 		log.Printf("session: get history: %v", err)
 		return []providers.Message{}
 	}
 	return msgs
+}
+
+func (b *JSONLBackend) GetHistoryWithError(key string) ([]providers.Message, error) {
+	key = b.resolveSessionKey(key)
+	msgs, err := b.store.GetHistory(context.Background(), key)
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 func (b *JSONLBackend) GetSummary(key string) string {

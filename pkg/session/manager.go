@@ -159,6 +159,10 @@ func (sm *SessionManager) GetHistory(key string) []providers.Message {
 	return history
 }
 
+func (sm *SessionManager) GetHistoryWithError(key string) ([]providers.Message, error) {
+	return sm.GetHistory(key), nil
+}
+
 func (sm *SessionManager) GetSummary(key string) string {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
