@@ -428,9 +428,6 @@ func computeConfigSignature(cfg *config.Config) string {
 	if cfg.Tools.ListDir.Enabled {
 		toolSignatures = append(toolSignatures, "list_dir")
 	}
-	if cfg.Tools.EditFile.Enabled {
-		toolSignatures = append(toolSignatures, "edit_file")
-	}
 	if cfg.Tools.AppendFile.Enabled {
 		toolSignatures = append(toolSignatures, "append_file")
 	}

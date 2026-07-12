@@ -80,6 +80,34 @@ func migrateLegacyAgentDefaultsModel(m map[string]any) {
 	delete(defaults, "model")
 }
 
+func removeDeprecatedConfigFields(data []byte) ([]byte, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+
+	toolsJSON, ok := root["tools"]
+	if !ok {
+		return data, nil
+	}
+	var tools map[string]json.RawMessage
+	if json.Unmarshal(toolsJSON, &tools) != nil {
+		// Preserve the original value so strict decoding can report its type error.
+		return data, nil //nolint:nilerr // The strict config decoder owns this diagnostic.
+	}
+	if _, ok := tools["edit_file"]; !ok {
+		return data, nil
+	}
+
+	delete(tools, "edit_file")
+	migratedTools, err := json.Marshal(tools)
+	if err != nil {
+		return nil, err
+	}
+	root["tools"] = migratedTools
+	return json.Marshal(root)
+}
+
 // loadConfigV1 loads a version 1 config (current schema)
 func loadConfig(data []byte) (*Config, error) {
 	cfg := DefaultConfig()
@@ -402,14 +430,19 @@ func migrateV2ToV3(m map[string]any) error {
 }
 
 func loadConfigMap(path string) (map[string]any, error) {
-	var m1, m2 map[string]any
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return m1, nil
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
+	return loadConfigMapData(path, data)
+}
+
+func loadConfigMapData(path string, data []byte) (map[string]any, error) {
+	var m1, m2 map[string]any
+	var err error
 	if err = json.Unmarshal(data, &m1); err != nil {
 		return nil, wrapJSONError(data, err, "config.json")
 	}

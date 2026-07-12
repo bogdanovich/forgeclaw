@@ -234,9 +234,6 @@ func initCoreAgentTools(workspace string, cfg *config.Config, initCfg agentToolI
 			registerTool(execTool)
 		}
 	}
-	if cfg.Tools.IsToolEnabled("edit_file") {
-		registerTool(tools.NewEditFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
-	}
 	if cfg.Tools.IsToolEnabled("append_file") {
 		registerTool(tools.NewAppendFileTool(workspace, initCfg.restrict, initCfg.allowWrite))
 	}

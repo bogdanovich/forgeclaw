@@ -494,7 +494,7 @@ When `restrict_to_workspace: true`, the following tools are sandboxed:
 | `read_file`   | Read files       | Only files within workspace            |
 | `write_file`  | Write files      | Only files within workspace            |
 | `list_dir`    | List directories | Only directories within workspace      |
-| `edit_file`   | Edit files       | Only files within workspace            |
+| `apply_patch` | Patch files      | Only files within workspace            |
 | `append_file` | Append to files  | Only files within workspace            |
 | `exec`        | Execute commands | Command paths must be within workspace |
 

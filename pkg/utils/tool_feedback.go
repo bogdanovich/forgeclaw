@@ -136,7 +136,6 @@ func summarizeToolFeedbackArgs(toolName, argsPreview string) string {
 func isFileToolFeedbackTool(toolName string) bool {
 	return strings.Contains(toolName, "read_file") ||
 		strings.Contains(toolName, "write_file") ||
-		strings.Contains(toolName, "edit_file") ||
 		strings.Contains(toolName, "append_file") ||
 		strings.Contains(toolName, "list_dir")
 }

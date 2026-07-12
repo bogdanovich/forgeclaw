@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1627,6 +1628,72 @@ func TestLoadConfig_UnknownFieldsReportsExactPaths(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tools.weeb") || !strings.Contains(err.Error(), "tools.web.fatch_limit_bytes") {
 		t.Fatalf("expected exact unknown field paths, got %q", err.Error())
+	}
+}
+
+func TestLoadConfig_ToleratesDeprecatedEditFileTool(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := fmt.Sprintf(`{
+  "version": %d,
+  "tools": {
+    "edit_file": {"enabled": true},
+    "apply_patch": {"enabled": false}
+  }
+}`, CurrentVersion)
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if cfg.Tools.ApplyPatch.Enabled {
+		t.Fatal("LoadConfig().Tools.ApplyPatch.Enabled should be false")
+	}
+
+	stored, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+	if !strings.Contains(string(stored), `"edit_file"`) {
+		t.Fatal("LoadConfig() should not rewrite the deprecated field on disk")
+	}
+}
+
+func TestLoadConfig_MigratesDeprecatedEditFileToolFromLegacyVersions(t *testing.T) {
+	for _, version := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("version_%d", version), func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.json")
+			raw := fmt.Sprintf(`{
+  "version": %d,
+  "tools": {
+    "edit_file": {"enabled": true},
+    "apply_patch": {"enabled": false}
+  }
+}`, version)
+			if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+
+			cfg, err := LoadConfig(configPath)
+			if err != nil {
+				t.Fatalf("LoadConfig() error: %v", err)
+			}
+			if cfg.Tools.ApplyPatch.Enabled {
+				t.Fatal("LoadConfig().Tools.ApplyPatch.Enabled should be false")
+			}
+
+			stored, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("ReadFile() error: %v", err)
+			}
+			if strings.Contains(string(stored), `"edit_file"`) {
+				t.Fatal("legacy migration should remove the deprecated field on disk")
+			}
+		})
 	}
 }
 

@@ -161,7 +161,7 @@ func shouldSuppressUnverifiedWriteOutcome(
 	}
 	lowerTool := strings.ToLower(strings.TrimSpace(toolName))
 	switch lowerTool {
-	case "write_file", "edit_file", "append_file", "apply_patch", "cron", "update_plan":
+	case "write_file", "append_file", "apply_patch", "cron", "update_plan":
 		return true
 	}
 	for _, phrase := range []string{

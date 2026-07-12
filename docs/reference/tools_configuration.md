@@ -250,15 +250,15 @@ routing. If it is not set, PicoClaw uses `gpt-image-2`.
 ## Apply Patch Tool
 
 The `apply_patch` tool applies structured multi-file edits using the Codex patch
-format. It is intended for coding tasks where `edit_file` exact-match
-replacement is too fragile or multiple files should be changed together.
+format. It is the preferred tool for targeted edits and changes spanning
+multiple files.
 
 | Config | Type | Default | Description |
 |--------|------|---------|-------------|
 | `tools.apply_patch.enabled` | bool | `true` | Enable the `apply_patch` file-editing tool |
 
 `apply_patch` uses the same workspace restriction and `tools.allow_write_paths`
-rules as `write_file`, `edit_file`, and `append_file`.
+rules as `write_file` and `append_file`.
 
 ### `apply_patch` Tool Parameters
 
