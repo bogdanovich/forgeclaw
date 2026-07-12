@@ -49,6 +49,19 @@
     "cold_path_trigger": "after_turn",
     "cold_path_times": []
   },
+  "evaluation": {
+    "trace_capture": {
+      "enabled": false,
+      "content_mode": "metadata_only",
+      "state_dir": "",
+      "max_trace_bytes": 2097152,
+      "max_records": 2000,
+      "max_record_bytes": 16384,
+      "max_corrections": 8,
+      "retention_hours": 24,
+      "max_traces": 100
+    }
+  },
   "model_list": [
     {
       "model_name": "gpt-5.4",
