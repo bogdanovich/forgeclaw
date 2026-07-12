@@ -4502,7 +4502,7 @@ func TestProcessMessage_CommandOutcomes(t *testing.T) {
 		},
 		Content: "/new",
 	})
-	if newResp != "Unknown command: /new. Use /help to see available commands." {
+	if !strings.Contains(newResp, "cleared the current goal") {
 		t.Fatalf("unexpected /new reply: %q", newResp)
 	}
 	if provider.calls != 0 {

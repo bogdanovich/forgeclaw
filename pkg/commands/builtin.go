@@ -15,6 +15,7 @@ func BuiltinDefinitions() []Definition {
 		useCommand(),
 		btwCommand(),
 		checkCommand(),
+		newCommand(),
 		resetCommand(),
 		goalCommand(),
 		toolFeedbackCommand(),

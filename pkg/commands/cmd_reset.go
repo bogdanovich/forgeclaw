@@ -27,7 +27,9 @@ func resetCommand() Definition {
 				return req.Reply("Failed to reset session: " + err.Error())
 			}
 			if clearOverride {
-				return req.Reply("Soft reset cleared. Future messages will use the default routed session again.")
+				return req.Reply(
+					"Soft reset cleared. Future messages will use the default routed session again. Current goal cleared.",
+				)
 			}
 			return req.Reply(fmt.Sprintf(
 				"Started a fresh session. Previous history was preserved. New session key: %s",
