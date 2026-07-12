@@ -50,8 +50,8 @@ func TestSessionManagerHistoryRevisionPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Save(key); err != nil {
-		t.Fatal(err)
+	if saveErr := manager.Save(key); saveErr != nil {
+		t.Fatal(saveErr)
 	}
 
 	reloaded := NewSessionManager(dir)
