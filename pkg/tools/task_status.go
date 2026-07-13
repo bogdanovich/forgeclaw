@@ -12,6 +12,11 @@ import (
 
 const taskStatusActiveStaleAfter = 30 * time.Minute
 
+const (
+	defaultTaskStatusListLimit = 12
+	maxTaskStatusListLimit     = 25
+)
+
 // TaskStatusTool reports durable runtime task/run records across spawn,
 // delegate, cron, and future background runtimes.
 type TaskStatusTool struct {
@@ -30,7 +35,8 @@ func (t *TaskStatusTool) Description() string {
 	return "Get durable runtime task status for spawn/delegate/cron/subtask runs. " +
 		"Prefer this for general task history, completed task checks, and after service restarts. " +
 		"Use this instead of spawn_status when the task may have used delegate or another child-run mechanism. " +
-		"Results are scoped to the current conversation's channel/chat when available."
+		"Results are scoped to the current conversation's channel/chat when available. " +
+		"Without task_id, returns a compact list of the most recent tasks; use task_id for a full task record."
 }
 
 func (t *TaskStatusTool) Parameters() map[string]any {
@@ -44,6 +50,12 @@ func (t *TaskStatusTool) Parameters() map[string]any {
 			"task_kind": map[string]any{
 				"type":        "string",
 				"description": "Optional task kind filter, e.g. spawn or delegate.",
+			},
+			"limit": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"maximum":     maxTaskStatusListLimit,
+				"description": "Maximum recent tasks to return in list mode (default 12, maximum 25). Ignored with task_id.",
 			},
 			"include_events": map[string]any{
 				"type":        "boolean",
@@ -91,6 +103,10 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		}
 		return NewToolResult(out)
 	}
+	limit, err := optionalTaskStatusLimitArg(args)
+	if err != nil {
+		return ErrorResult(err.Error())
+	}
 
 	records := t.registry.List()
 	filtered := make([]taskregistry.Record, 0, len(records))
@@ -112,9 +128,9 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 
 	sort.Slice(filtered, func(i, j int) bool {
 		if filtered[i].CreatedAt != filtered[j].CreatedAt {
-			return filtered[i].CreatedAt < filtered[j].CreatedAt
+			return filtered[i].CreatedAt > filtered[j].CreatedAt
 		}
-		return filtered[i].TaskID < filtered[j].TaskID
+		return filtered[i].TaskID > filtered[j].TaskID
 	})
 
 	counts := map[taskregistry.Status]int{}
@@ -138,15 +154,49 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		}
 	}
 	sb.WriteString("\n")
-	for _, rec := range filtered {
-		sb.WriteString(formatTaskRecord(rec))
+	visible := filtered
+	if len(visible) > limit {
+		visible = visible[:limit]
+	}
+	for _, rec := range visible {
+		sb.WriteString(formatTaskListRecord(rec))
 		if includeEvents {
 			sb.WriteString("\n")
 			sb.WriteString(formatRecentTaskEvents(t.registry.ListEvents(rec.TaskID), 3))
 		}
 		sb.WriteString("\n")
 	}
+	if omitted := len(filtered) - len(visible); omitted > 0 {
+		sb.WriteString(fmt.Sprintf("... %d older task(s) omitted. Use task_id for a full task record or limit to show more.\n", omitted))
+	}
 	return NewToolResult(strings.TrimSpace(sb.String()))
+}
+
+func optionalTaskStatusLimitArg(args map[string]any) (int, error) {
+	const key = "limit"
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return defaultTaskStatusListLimit, nil
+	}
+
+	var limit int
+	switch value := raw.(type) {
+	case int:
+		limit = value
+	case int64:
+		limit = int(value)
+	case float64:
+		if value != float64(int(value)) {
+			return 0, fmt.Errorf("%s must be an integer", key)
+		}
+		limit = int(value)
+	default:
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	if limit < 1 || limit > maxTaskStatusListLimit {
+		return 0, fmt.Errorf("%s must be between 1 and %d", key, maxTaskStatusListLimit)
+	}
+	return limit, nil
 }
 
 func optionalTaskStatusBoolArg(args map[string]any, key string) (bool, error) {
@@ -252,6 +302,29 @@ func formatTaskRecord(rec taskregistry.Record) string {
 		)
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func formatTaskListRecord(rec taskregistry.Record) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Task %s [%s/%s] status=%s delivery=%s", rec.TaskID, rec.Runtime, rec.TaskKind, rec.Status, rec.DeliveryStatus))
+	if rec.AgentID != "" {
+		sb.WriteString(fmt.Sprintf(" agent=%s", rec.AgentID))
+	}
+	if rec.CreatedAt > 0 {
+		sb.WriteString(fmt.Sprintf(" created=%s", formatTaskTime(rec.CreatedAt)))
+	}
+	if rec.Task != "" {
+		sb.WriteString(fmt.Sprintf("\n  Task: %s", truncateTaskText(rec.Task, 160)))
+	}
+	if rec.TerminalSummary != "" {
+		sb.WriteString(fmt.Sprintf("\n  Result: %s", truncateTaskText(rec.TerminalSummary, 240)))
+	} else if rec.Error != "" {
+		sb.WriteString(fmt.Sprintf("\n  Error: %s", truncateTaskText(rec.Error, 240)))
+	}
+	if rec.Deliverable != nil {
+		sb.WriteString(fmt.Sprintf("\n  Deliverable: text=%t artifacts=%d report=%t", rec.Deliverable.Text != "", len(rec.Deliverable.Artifacts), rec.Deliverable.Report != nil))
+	}
+	return sb.String()
 }
 
 func formatDeliverableReport(report *taskregistry.DeliverableReport) string {
