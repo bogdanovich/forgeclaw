@@ -101,7 +101,6 @@ The table below lists the current runtime event kinds, when they are emitted, an
 | `agent.tool.exec_skipped` | A tool call is skipped because the tool is unavailable, arguments are invalid, or turn control logic requires skipping it. | `tool`, `reason` |
 | `agent.tool.steering_decision` | Steering policy decides whether a pending tool call finishes or is skipped. | `tool`, `classification`, `decision`, `cause` |
 | `agent.tool.loop_decision` | Tool-loop protection warns about or blocks a repeated non-progressing call. Arguments and results are represented only by safe metadata. | `tool`, `args_hash`, `action`, `code`, `count`, `threshold` |
-| `agent.evolution.transition` | A learning record, pattern, draft, or applied skill transition is durably stored. | `record_id`, `draft_id`, `skill_name`, `action`, `status`; draft bodies and user content are excluded |
 | `agent.steering.injected` | Queued steering messages are injected into the next LLM context. | `count`, `total_content_len` |
 | `agent.follow_up.queued` | An async tool result is queued back into the inbound/follow-up flow. | `source_tool`, `content_len` |
 | `agent.interrupt.received` | A turn accepts steering, graceful interrupt, or hard-abort input. | `interrupt_kind`, `role`, `content_len`, `queue_depth`, `hint_len` |
@@ -203,7 +202,6 @@ Agent events add safe payload summaries:
 | `agent.tool.exec_skipped` | `tool`, `reason` |
 | `agent.tool.steering_decision` | `tool`, `classification`, `decision`, `cause` |
 | `agent.tool.loop_decision` | `tool`, `args_hash`, `action`, `code`, `count`, `threshold` |
-| `agent.evolution.transition` | `record_id`, `draft_id`, `skill_name`, `action`, `status` |
 | `agent.steering.injected` | `count`, `total_content_len` |
 | `agent.follow_up.queued` | `source_tool`, `content_len` |
 | `agent.interrupt.received` | `interrupt_kind`, `role`, `content_len`, `queue_depth`, `hint_len` |

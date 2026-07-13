@@ -42,13 +42,6 @@ func NewAgentLoop(
 	}
 	fallbackChain := providers.NewFallbackChain(cooldown, rl)
 
-	bridge, err := newEvolutionBridge(registry, cfg, provider)
-	if err != nil {
-		logger.WarnCF("agent", "Failed to initialize evolution bridge", map[string]any{
-			"error": err.Error(),
-		})
-	}
-
 	// Determine worker pool size from config (default: 1 = sequential)
 	workerPoolSize := cfg.Agents.Defaults.MaxParallelTurns
 	if workerPoolSize <= 0 {
@@ -61,7 +54,6 @@ func NewAgentLoop(
 		registry:          registry,
 		fallback:          fallbackChain,
 		cmdRegistry:       commands.NewRegistry(commands.BuiltinDefinitions()),
-		evolution:         bridge,
 		steering:          newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
 		activeRequests:    newActiveRequestCounter(),
 		workerSem:         make(chan struct{}, workerPoolSize),
@@ -87,19 +79,6 @@ func NewAgentLoop(
 		al.ownsRuntimeEvents = true
 	}
 	al.traceCapture = newTraceCaptureManager(cfg, al.runtimeEvents)
-	if bridge != nil {
-		bridge.setCurrentCheck(al.isCurrentEvolutionBridge)
-		bridge.setObserver(al.observeEvolutionTransition)
-		if err := bridge.subscribeRuntimeEvents(al.runtimeEvents.Channel()); err != nil {
-			logger.WarnCF(
-				"agent",
-				"Failed to subscribe evolution bridge to runtime events",
-				map[string]any{
-					"error": err.Error(),
-				},
-			)
-		}
-	}
 	al.refreshRuntimeEventLogger(cfg)
 	al.providerFactory = providers.CreateProviderFromConfig
 	al.modelExecution = &modelExecutionManager{

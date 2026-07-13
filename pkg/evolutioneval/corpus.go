@@ -11,8 +11,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/sipeed/picoclaw/pkg/evolution"
 )
 
 const (
@@ -51,11 +49,31 @@ type CandidateAudit struct {
 	SignalCodes []string `json:"signal_codes,omitempty"`
 }
 
+// CorpusRecord is the read-only projection needed to audit historical
+// self-evolution record files. It intentionally does not model runtime behavior.
+type CorpusRecord struct {
+	ID              string   `json:"id"`
+	FinalOutput     string   `json:"final_output,omitempty"`
+	TaskRecordIDs   []string `json:"task_record_ids,omitempty"`
+	SourceRecordIDs []string `json:"source_record_ids,omitempty"`
+}
+
+// CorpusDraft is the read-only projection needed to audit historical draft
+// files after the learning runtime has been removed.
+type CorpusDraft struct {
+	ID               string   `json:"id"`
+	TargetSkillName  string   `json:"target_skill_name"`
+	Status           string   `json:"status"`
+	BodyOrPatch      string   `json:"body_or_patch,omitempty"`
+	MatchedSkillRefs []string `json:"matched_skill_refs,omitempty"`
+	SourceRecordID   string   `json:"source_record_id,omitempty"`
+}
+
 func LoadAndAuditCorpus(recordPaths []string, draftPath string) (CorpusReport, error) {
 	if len(recordPaths) == 0 || strings.TrimSpace(draftPath) == "" {
 		return CorpusReport{}, errors.New("record paths and draft path are required")
 	}
-	records := make([]evolution.LearningRecord, 0)
+	records := make([]CorpusRecord, 0)
 	for _, path := range recordPaths {
 		loaded, err := loadRecordFile(path)
 		if err != nil {
@@ -74,10 +92,10 @@ func LoadAndAuditCorpus(recordPaths []string, draftPath string) (CorpusReport, e
 
 func AuditCorpus(
 	sources []string,
-	records []evolution.LearningRecord,
-	drafts []evolution.SkillDraft,
+	records []CorpusRecord,
+	drafts []CorpusDraft,
 ) CorpusReport {
-	recordByID := make(map[string]evolution.LearningRecord, len(records))
+	recordByID := make(map[string]CorpusRecord, len(records))
 	for _, record := range records {
 		recordByID[record.ID] = record
 	}
@@ -97,7 +115,7 @@ func AuditCorpus(
 	for _, draft := range drafts {
 		signals := auditDraft(draft, recordByID, targetCounts)
 		candidate := CandidateAudit{
-			ID: draft.ID, Target: draft.TargetSkillName, Status: string(draft.Status), SignalCodes: signals,
+			ID: draft.ID, Target: draft.TargetSkillName, Status: draft.Status, SignalCodes: signals,
 		}
 		report.Candidates = append(report.Candidates, candidate)
 		for _, signal := range signals {
@@ -124,8 +142,8 @@ func AuditCorpus(
 }
 
 func auditDraft(
-	draft evolution.SkillDraft,
-	recordByID map[string]evolution.LearningRecord,
+	draft CorpusDraft,
+	recordByID map[string]CorpusRecord,
 	targetCounts map[string]int,
 ) []string {
 	signals := make([]string, 0, 7)
@@ -175,8 +193,8 @@ func markdownSection(body, heading string) string {
 
 func copiesFinalOutput(
 	body string,
-	source evolution.LearningRecord,
-	recordByID map[string]evolution.LearningRecord,
+	source CorpusRecord,
+	recordByID map[string]CorpusRecord,
 ) bool {
 	if containsNormalized(body, source.FinalOutput) {
 		return true
@@ -196,7 +214,7 @@ func containsNormalized(body, excerpt string) bool {
 	return len([]rune(excerpt)) >= 40 && strings.Contains(body, excerpt)
 }
 
-func loadRecordFile(path string) ([]evolution.LearningRecord, error) {
+func loadRecordFile(path string) ([]CorpusRecord, error) {
 	file, err := openBounded(path)
 	if err != nil {
 		return nil, err
@@ -204,13 +222,13 @@ func loadRecordFile(path string) ([]evolution.LearningRecord, error) {
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxCorpusLineBytes)
-	records := make([]evolution.LearningRecord, 0)
+	records := make([]CorpusRecord, 0)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
 		}
-		var record evolution.LearningRecord
+		var record CorpusRecord
 		if err := json.Unmarshal(line, &record); err != nil {
 			return nil, err
 		}
@@ -222,14 +240,14 @@ func loadRecordFile(path string) ([]evolution.LearningRecord, error) {
 	return records, nil
 }
 
-func loadDraftFile(path string) ([]evolution.SkillDraft, error) {
+func loadDraftFile(path string) ([]CorpusDraft, error) {
 	file, err := openBounded(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(file)
-	var drafts []evolution.SkillDraft
+	var drafts []CorpusDraft
 	if err := decoder.Decode(&drafts); err != nil {
 		return nil, err
 	}

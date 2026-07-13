@@ -34,8 +34,6 @@ const (
 	KindAgentToolLoopDecision Kind = "agent.tool.loop_decision"
 	// KindAgentToolSteeringDecision records how steering affected a pending call.
 	KindAgentToolSteeringDecision Kind = "agent.tool.steering_decision"
-	// KindAgentEvolutionTransition records a durable evolution transition.
-	KindAgentEvolutionTransition Kind = "agent.evolution.transition"
 
 	// KindAgentSteeringInjected is emitted when steering is injected into context.
 	KindAgentSteeringInjected Kind = "agent.steering.injected"
@@ -133,7 +131,6 @@ var knownKinds = []Kind{
 	KindAgentToolExecSkipped,
 	KindAgentToolLoopDecision,
 	KindAgentToolSteeringDecision,
-	KindAgentEvolutionTransition,
 	KindAgentSteeringInjected,
 	KindAgentFollowUpQueued,
 	KindAgentAsyncCompletion,

@@ -16,7 +16,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/evolution"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
@@ -300,12 +299,6 @@ func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
 	}
 	if trace == nil && event.Scope.Channel != "" && event.Scope.ChatID != "" {
 		trace = m.uniqueTargetTraceLocked(event.Scope.Channel, event.Scope.ChatID)
-	}
-	if trace == nil && event.Kind == runtimeevents.KindAgentEvolutionTransition {
-		standalone := standaloneEvolutionTrace(settings, event)
-		m.mu.Unlock()
-		m.enqueuePersist(settings, standalone)
-		return
 	}
 	if trace != nil {
 		if record, critical, ok := runtimeEventRecord(settings, trace, event); ok {
@@ -822,27 +815,6 @@ func runtimeEventRecord(
 			WillParent: value.WillParent,
 			ContentLen: value.ContentLen,
 		}
-	case runtimeevents.KindAgentEvolutionTransition:
-		value, ok := event.Payload.(EvolutionTransitionPayload)
-		if !ok {
-			return evaltrace.Record{}, false, false
-		}
-		kind = evaltrace.RecordEvolutionRecord
-		switch value.Action {
-		case "pattern_saved":
-			kind = evaltrace.RecordEvolutionRecord
-		case "draft_saved":
-			kind = evaltrace.RecordEvolutionDraft
-		case "applied":
-			kind, critical = evaltrace.RecordEvolutionApply, true
-		}
-		payload = evaltrace.EvolutionPayload{
-			RecordID: value.RecordID, DraftID: value.DraftID, SkillName: value.SkillName,
-			Action: value.Action, Status: value.Status, Success: value.Success,
-			Eligible:      value.Eligible,
-			ProvenanceIDs: append([]string(nil), value.ProvenanceIDs...),
-			PolicyCodes:   append([]string(nil), value.PolicyCodes...),
-		}
 	default:
 		return evaltrace.Record{}, false, false
 	}
@@ -868,66 +840,6 @@ func runtimeEventRecord(
 		},
 		Data: data,
 	}, critical, true
-}
-
-func standaloneEvolutionTrace(
-	settings traceCaptureSettings,
-	event runtimeevents.Event,
-) *activeTraceCapture {
-	payload, ok := event.Payload.(EvolutionTransitionPayload)
-	if !ok || strings.TrimSpace(payload.Workspace) == "" {
-		return nil
-	}
-	trace := &activeTraceCapture{
-		workspace: payload.Workspace, startedAt: event.Time,
-		critical: make(map[uint64]bool), origins: make(map[string]struct{}),
-		trace: evaltrace.Trace{
-			SchemaVersion: evaltrace.SchemaVersionV1,
-			TraceID: opaqueTraceID(
-				"evolution",
-				firstNonEmpty(payload.DraftID, payload.RecordID, event.ID),
-				event.Time,
-			),
-			CreatedAt: event.Time.UTC(),
-			Policy: evaltrace.CapturePolicy{
-				ContentMode: settings.contentMode,
-				Redactor:    captureRedactorVersion(settings.contentMode),
-			},
-			Limits: settings.limits,
-			Metadata: evaltrace.Metadata{
-				RootTurnID:  event.Scope.TurnID,
-				SessionHash: safeHash(settings, event.Scope.SessionKey),
-				AgentID:     event.Scope.AgentID,
-			},
-			Records: make([]evaltrace.Record, 0, 1),
-		},
-	}
-	if record, critical, mapped := runtimeEventRecord(settings, trace, event); mapped {
-		appendCaptureRecord(trace, record, critical)
-		trace.trace.Outcome = &evaltrace.Outcome{Status: payload.Status}
-	}
-	return trace
-}
-
-func (al *AgentLoop) observeEvolutionTransition(observation evolution.Observation) {
-	if al == nil {
-		return
-	}
-	al.emitEvent(
-		runtimeevents.KindAgentEvolutionTransition,
-		HookMeta{
-			AgentID: observation.AgentID, SessionKey: observation.SessionKey,
-			TurnID: observation.TurnID, Source: "evolution", TracePath: "evolution.transition",
-		},
-		EvolutionTransitionPayload{
-			Workspace: observation.Workspace, RecordID: observation.RecordID,
-			DraftID: observation.DraftID, SkillName: observation.SkillName,
-			Action: observation.Action, Status: observation.Status, Success: observation.Success,
-			Eligible:      observation.Eligible,
-			ProvenanceIDs: append([]string(nil), observation.ProvenanceIDs...),
-			PolicyCodes:   append([]string(nil), observation.PolicyCodes...),
-		},
-	)
 }
 
 func normalizedTaskEventRecord(

@@ -2,10 +2,6 @@ package agent
 
 import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 
-func (al *AgentLoop) publishRuntimeEvent(evt runtimeevents.Event) {
-	al.runtimeEventEmitter().publishRuntimeEvent(evt)
-}
-
 func runtimeScopeFromHookMeta(meta HookMeta, eventCtx *TurnContext) runtimeevents.Scope {
 	scope := runtimeevents.Scope{
 		AgentID:    meta.AgentID,
