@@ -44,7 +44,8 @@ func normalizeCurrentTurnStart(messages []providers.Message, currentTurnStart in
 }
 
 // resolveMediaRefs resolves media:// refs in messages.
-// For user messages: images get path tags only ([image:/path]) so the LLM
+// For user messages: image-only messages in the current turn are attached to
+// the provider request. Other images get path tags ([image:/path]) so the LLM
 // can decide whether to view them via load_image or operate on the file.
 // For tool messages: images are base64-encoded and appended as a synthetic
 // user message only after the contiguous tool-message block ends, so we don't
@@ -93,6 +94,7 @@ func resolveMediaRefs(
 		resolved := make([]string, 0, len(m.Media))
 		var pathTags []string
 		unresolvedRefs := 0
+		attachUserImages := m.Role == "user" && idx >= start && isImageOnlyMessage(m.Content)
 
 		for _, ref := range m.Media {
 			if !strings.HasPrefix(ref, "media://") {
@@ -127,6 +129,13 @@ func resolveMediaRefs(
 			mime := detectMIME(localPath, meta)
 			pathTags = append(pathTags, buildPathTag(mime, localPath))
 
+			if attachUserImages && strings.HasPrefix(mime, "image/") {
+				dataURL := encodeImageToDataURL(localPath, mime, info, maxSize)
+				if dataURL != "" {
+					resolved = append(resolved, dataURL)
+				}
+			}
+
 			if m.Role == "tool" && idx >= start && strings.HasPrefix(mime, "image/") {
 				dataURL := encodeImageToDataURL(localPath, mime, info, maxSize)
 				if dataURL != "" {
@@ -151,6 +160,10 @@ func resolveMediaRefs(
 	}
 
 	return result
+}
+
+func isImageOnlyMessage(content string) bool {
+	return strings.TrimSpace(imagePlaceholderRegex.ReplaceAllString(content, "")) == ""
 }
 
 func markUnavailableMediaPlaceholders(content string) string {
