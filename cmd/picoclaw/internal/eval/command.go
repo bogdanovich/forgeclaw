@@ -198,6 +198,7 @@ func newEvolutionCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Write stable machine-readable JSON")
+	cmd.AddCommand(newEvolutionCorpusCommand())
 	return cmd
 }
 
@@ -215,4 +216,45 @@ func writeEvolutionHuman(writer io.Writer, report evolutioneval.Report) {
 	for _, candidate := range report.Candidates {
 		fmt.Fprintf(writer, "  %s %s: %s\n", candidate.Status, candidate.ID, candidate.Reason)
 	}
+}
+
+func newEvolutionCorpusCommand() *cobra.Command {
+	var jsonOutput bool
+	var recordPaths []string
+	var draftPath string
+	cmd := &cobra.Command{
+		Use:   "corpus",
+		Short: "Audit self-evolution draft corpus quality signals without emitting content",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			report, err := evolutioneval.LoadAndAuditCorpus(recordPaths, draftPath)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(report)
+			}
+			writeEvolutionCorpusHuman(cmd.OutOrStdout(), report)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Write stable machine-readable JSON")
+	cmd.Flags().StringSliceVar(&recordPaths, "records", nil, "Task or pattern JSONL file (repeatable)")
+	cmd.Flags().StringVar(&draftPath, "drafts", "", "Skill draft JSON file")
+	return cmd
+}
+
+func writeEvolutionCorpusHuman(writer io.Writer, report evolutioneval.CorpusReport) {
+	summary := report.Summary
+	fmt.Fprintf(
+		writer,
+		"evolution corpus: %d candidates, %d targets, %d generic, %d output copies, %d missing provenance\n",
+		summary.Candidates,
+		summary.UniqueTargets,
+		summary.GenericTemplateDrafts,
+		summary.CopiedFinalOutputDrafts,
+		summary.MissingProvenanceDrafts,
+	)
 }

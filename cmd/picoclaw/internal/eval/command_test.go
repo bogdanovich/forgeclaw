@@ -103,6 +103,44 @@ func cliEvolutionTrial(correct bool) map[string]any {
 	}
 }
 
+func TestEvalEvolutionCorpusCommandWritesContentFreeJSON(t *testing.T) {
+	dir := t.TempDir()
+	recordPath := filepath.Join(dir, "records.jsonl")
+	draftPath := filepath.Join(dir, "drafts.json")
+	if err := os.WriteFile(
+		recordPath,
+		[]byte(`{"id":"pattern-1","kind":"pattern","summary":"private source text"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		draftPath,
+		[]byte(
+			`[{"id":"draft-1","source_record_id":"pattern-1",`+
+				`"target_skill_name":"target","body_or_patch":"1. do work",`+
+				`"status":"candidate"}]`,
+		),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewEvalCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"evolution", "corpus", "--json", "--records", recordPath, "--drafts", draftPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"schema_version": "forgeclaw.evolution_corpus_report.v1"`) ||
+		strings.Contains(output.String(), "private source text") {
+		t.Fatalf("output = %s", output.String())
+	}
+}
+
 func fixtureCLIRecord(t *testing.T, sequence uint64, kind evaltrace.RecordKind, payload any) evaltrace.Record {
 	t.Helper()
 	data, err := json.Marshal(payload)

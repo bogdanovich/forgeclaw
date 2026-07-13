@@ -101,20 +101,20 @@ func earlyColorDisabled() bool {
 	return false
 }
 
-// doctorJSONRequested reports whether argv selects doctor's machine-readable
-// output. The banner must be suppressed so stdout remains valid JSON.
-func doctorJSONRequested(args []string) bool {
-	hasDoctor := false
+// machineJSONRequested reports whether argv selects machine-readable output.
+// The banner must be suppressed so stdout remains valid JSON.
+func machineJSONRequested(args []string) bool {
+	hasJSONCommand := false
 	hasJSON := false
 	for _, arg := range args {
 		switch arg {
-		case "doctor":
-			hasDoctor = true
+		case "doctor", "eval":
+			hasJSONCommand = true
 		case "--json", "--json=true", "--json=1":
 			hasJSON = true
 		}
 	}
-	return hasDoctor && hasJSON
+	return hasJSONCommand && hasJSON
 }
 
 func NewPicoclawCommand() *cobra.Command {
@@ -195,8 +195,8 @@ func main() {
 
 	cliui.Init(earlyColorDisabled())
 
-	doctorJSON := doctorJSONRequested(os.Args[1:])
-	if doctorJSON {
+	machineJSON := machineJSONRequested(os.Args[1:])
+	if machineJSON {
 		logger.DisableConsole()
 	} else {
 		if earlyColorDisabled() {
