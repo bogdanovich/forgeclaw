@@ -110,7 +110,12 @@ func TestTaskStatusTool_ListReturnsNewestRecordsWithinDefaultLimit(t *testing.T)
 		t.Fatalf("expected omission notice:\n%s", result.ForLLM)
 	}
 	if strings.Count(result.ForLLM, "Task delegate-") != defaultTaskStatusListLimit {
-		t.Fatalf("visible record count = %d, want %d:\n%s", strings.Count(result.ForLLM, "Task delegate-"), defaultTaskStatusListLimit, result.ForLLM)
+		t.Fatalf(
+			"visible record count = %d, want %d:\n%s",
+			strings.Count(result.ForLLM, "Task delegate-"),
+			defaultTaskStatusListLimit,
+			result.ForLLM,
+		)
 	}
 	if strings.Contains(result.ForLLM, strings.Repeat("x", 241)) {
 		t.Fatalf("list mode included an unbounded task payload:\n%s", result.ForLLM)

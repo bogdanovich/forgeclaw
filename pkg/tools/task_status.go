@@ -167,7 +167,10 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		sb.WriteString("\n")
 	}
 	if omitted := len(filtered) - len(visible); omitted > 0 {
-		sb.WriteString(fmt.Sprintf("... %d older task(s) omitted. Use task_id for a full task record or limit to show more.\n", omitted))
+		sb.WriteString(fmt.Sprintf(
+			"... %d older task(s) omitted. Use task_id for a full task record or limit to show more.\n",
+			omitted,
+		))
 	}
 	return NewToolResult(strings.TrimSpace(sb.String()))
 }
