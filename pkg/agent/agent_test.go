@@ -8499,6 +8499,69 @@ func TestResolveMediaRefs_ImageInjectsPathTag(t *testing.T) {
 	}
 }
 
+func TestResolveMediaRefs_CurrentImageOnlyMessageAttachesImage(t *testing.T) {
+	store := media.NewFileMediaStore()
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "current-image.png")
+	pngHeader := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+		0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+	}
+	if err := os.WriteFile(pngPath, pngHeader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Store(pngPath, media.MediaMeta{}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messages := []providers.Message{
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", Content: "old answer"},
+		{Role: "user", Content: "[image: photo]", Media: []string{ref}},
+	}
+	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize, 2)
+
+	if len(result[2].Media) != 1 ||
+		!strings.HasPrefix(result[2].Media[0], "data:image/png;base64,") {
+		t.Fatalf("expected current image-only turn to contain image data, got %#v", result[2].Media)
+	}
+	if !strings.Contains(result[2].Content, "[image:"+pngPath+"]") {
+		t.Fatalf("expected local path tag, got %q", result[2].Content)
+	}
+}
+
+func TestResolveMediaRefs_HistoricalImageOnlyMessageStaysPathOnly(t *testing.T) {
+	store := media.NewFileMediaStore()
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "historical-image.png")
+	if err := os.WriteFile(pngPath, []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+	}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Store(pngPath, media.MediaMeta{}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messages := []providers.Message{
+		{Role: "user", Content: "[image]", Media: []string{ref}},
+		{Role: "assistant", Content: "old answer"},
+		{Role: "user", Content: "new question"},
+	}
+	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize, 2)
+
+	if len(result[0].Media) != 0 {
+		t.Fatalf("historical image data leaked into request: %#v", result[0].Media)
+	}
+	if !strings.Contains(result[0].Content, "[image:"+pngPath+"]") {
+		t.Fatalf("expected historical path tag, got %q", result[0].Content)
+	}
+}
+
 func TestResolveMediaRefs_ToolRoleImageAppendedAsUserMessage(t *testing.T) {
 	store := media.NewFileMediaStore()
 	dir := t.TempDir()
