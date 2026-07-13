@@ -20,4 +20,5 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Tool-Loop Stagnation Protection](tool-loop-stagnation.md): warning-first repeated failure and read-only no-progress detection with hash-safe state and events.
 - [Replay And Evaluation](replay-evaluation.md): bounded redacted traces, side-effect-free deterministic replay, regression fixtures, and reliability evaluators.
 - [Agent Self-Evolution](agent-self-evolution.md): learning records, draft generation, application modes, and state layout.
+- [Self-Evolution Security And Effectiveness Audit](self-evolution-audit.md): trust boundaries, production exposure, findings, and required evidence before mutation.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
