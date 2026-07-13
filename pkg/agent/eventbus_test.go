@@ -1158,13 +1158,13 @@ func TestAsyncToolResultDeliveryRouting(t *testing.T) {
 			wantQueueParent:   true,
 		},
 		{
-			name: "silent_user_only_routes_nowhere",
+			name: "silent_user_only_still_routes_explicit_user_payload",
 			result: (&tools.ToolResult{
 				ForLLM:  "parent text",
 				ForUser: "user text",
 				Silent:  true,
 			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
-			wantPublishToUser: false,
+			wantPublishToUser: true,
 			wantQueueParent:   false,
 		},
 		{

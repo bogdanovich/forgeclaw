@@ -360,7 +360,7 @@ func (al *AgentLoop) deliverToolResultToUser(
 	if strings.TrimSpace(text) == "" {
 		return nil, toolResultDeliveryNone, nil
 	}
-	if result.Silent && result.Completion == nil {
+	if result.Silent && result.Completion == nil && result.AsyncDelivery != tools.AsyncDeliveryUserOnly {
 		return nil, toolResultDeliveryNone, nil
 	}
 	if al.bus == nil {
@@ -478,6 +478,9 @@ func toolResultUserText(result *tools.ToolResult) string {
 	}
 	if result.Completion != nil {
 		return result.Completion.Text
+	}
+	if result.Deliverable != nil {
+		return result.Deliverable.Text
 	}
 	return ""
 }
