@@ -15,6 +15,9 @@ It does not improve an answer automatically, retry a failed task, or change the
 agent's behavior based on a score. It records bounded evidence and lets an
 operator or CI job check that evidence against explicit invariants.
 
+Candidate skill effectiveness uses a separate paired held-out evidence gate.
+See [Self-Evolution Effectiveness Evaluation](self-evolution-evaluation.md).
+
 ## What works automatically
 
 The deterministic evaluator implementation and its historical regression
