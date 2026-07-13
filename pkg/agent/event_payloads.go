@@ -32,19 +32,6 @@ type LLMFallbackAttemptPayload struct {
 	Skipped     bool
 }
 
-type EvolutionTransitionPayload struct {
-	Workspace     string
-	RecordID      string
-	DraftID       string
-	SkillName     string
-	Action        string
-	Status        string
-	Eligible      bool
-	Success       *bool
-	ProvenanceIDs []string
-	PolicyCodes   []string
-}
-
 const (
 	skillContextTriggerInitialBuild        = "initial_build"
 	skillContextTriggerContextRetryRebuild = "context_retry_rebuild"

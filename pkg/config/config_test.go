@@ -297,317 +297,6 @@ func TestDefaultConfig_MCPMaxInlineTextChars(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig_EvolutionDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-
-	assert.False(t, cfg.Evolution.Enabled)
-	assert.Equal(t, "observe", cfg.Evolution.Mode)
-	assert.Equal(t, "", cfg.Evolution.StateDir)
-	assert.Equal(t, 2, cfg.Evolution.MinTaskCount)
-	assert.Equal(t, 0.7, cfg.Evolution.MinSuccessRatio)
-	assert.Equal(t, "after_turn", cfg.Evolution.ColdPathTrigger)
-	assert.Equal(t, 2, cfg.Evolution.EffectiveMinTaskCount())
-	assert.Equal(t, 0.7, cfg.Evolution.EffectiveMinSuccessRatio())
-	assert.False(t, cfg.Evolution.RunsColdPathAutomatically())
-	assert.False(t, cfg.Evolution.AutoAppliesDrafts())
-}
-
-func TestEvolutionConfig_EffectiveMode(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  EvolutionConfig
-		want string
-	}{
-		{
-			name: "disabled returns empty",
-			cfg: EvolutionConfig{
-				Enabled: false,
-				Mode:    "apply",
-			},
-			want: "",
-		},
-		{
-			name: "enabled empty mode defaults to observe",
-			cfg: EvolutionConfig{
-				Enabled: true,
-			},
-			want: "observe",
-		},
-		{
-			name: "enabled whitespace mode defaults to observe",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    " \t\n ",
-			},
-			want: "observe",
-		},
-		{
-			name: "enabled returns configured mode",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    "draft",
-			},
-			want: "draft",
-		},
-		{
-			name: "enabled trims and normalizes mode",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    " Draft ",
-			},
-			want: "draft",
-		},
-		{
-			name: "legacy apply mode fails closed to observe",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    "apply",
-			},
-			want: "observe",
-		},
-		{
-			name: "legacy uppercase apply fails closed to observe",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    "APPLY",
-			},
-			want: "observe",
-		},
-		{
-			name: "enabled unknown mode falls back to observe",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    "propose",
-			},
-			want: "observe",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.cfg.EffectiveMode())
-		})
-	}
-}
-
-func TestEvolutionConfig_ModeSemantics(t *testing.T) {
-	tests := []struct {
-		name          string
-		cfg           EvolutionConfig
-		wantRunsCold  bool
-		wantAutoApply bool
-	}{
-		{
-			name: "disabled does not run cold path",
-			cfg: EvolutionConfig{
-				Enabled: false,
-				Mode:    "apply",
-			},
-			wantRunsCold:  false,
-			wantAutoApply: false,
-		},
-		{
-			name: "observe only records hot path",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    "observe",
-			},
-			wantRunsCold:  false,
-			wantAutoApply: false,
-		},
-		{
-			name: "draft runs cold path without applying",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    "draft",
-			},
-			wantRunsCold:  true,
-			wantAutoApply: false,
-		},
-		{
-			name: "draft scheduled runs cold path without after turn",
-			cfg: EvolutionConfig{
-				Enabled:         true,
-				Mode:            "draft",
-				ColdPathTrigger: "scheduled",
-				ColdPathTimes:   []string{"03:00"},
-			},
-			wantRunsCold:  true,
-			wantAutoApply: false,
-		},
-		{
-			name: "legacy apply is non mutating",
-			cfg: EvolutionConfig{
-				Enabled: true,
-				Mode:    "apply",
-			},
-			wantRunsCold:  false,
-			wantAutoApply: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.wantRunsCold, tt.cfg.RunsColdPathAutomatically())
-			assert.Equal(t, tt.wantAutoApply, tt.cfg.AutoAppliesDrafts())
-		})
-	}
-}
-
-func TestEvolutionConfig_ColdPathTriggerMode(t *testing.T) {
-	assert.Equal(t, "after_turn", (EvolutionConfig{Enabled: true, Mode: "draft"}).ColdPathTriggerMode())
-	assert.True(t, (EvolutionConfig{Enabled: true, Mode: "draft"}).RunsColdPathAfterTurn())
-	assert.False(t, (EvolutionConfig{Enabled: true, Mode: "draft"}).RunsColdPathScheduled())
-
-	scheduled := EvolutionConfig{
-		Enabled:         true,
-		Mode:            "draft",
-		ColdPathTrigger: "scheduled",
-		ColdPathTimes:   []string{"03:00"},
-	}
-	assert.Equal(t, "scheduled", scheduled.ColdPathTriggerMode())
-	assert.False(t, scheduled.RunsColdPathAfterTurn())
-	assert.True(t, scheduled.RunsColdPathScheduled())
-
-	manual := EvolutionConfig{Enabled: true, Mode: "draft", ColdPathTrigger: "manual"}
-	assert.Equal(t, "manual", manual.ColdPathTriggerMode())
-	assert.False(t, manual.RunsColdPathAutomatically())
-}
-
-func TestEvolutionConfig_NewThresholdNamesPreferLegacyAliases(t *testing.T) {
-	cfg := EvolutionConfig{MinTaskCount: 4, MinSuccessRatio: 0.9, MinCaseCount: 1, MinSuccessRate: 0.2}
-	assert.Equal(t, 4, cfg.EffectiveMinTaskCount())
-	assert.Equal(t, 0.9, cfg.EffectiveMinSuccessRatio())
-
-	legacy := EvolutionConfig{MinCaseCount: 5, MinSuccessRate: 0.8}
-	assert.Equal(t, 5, legacy.EffectiveMinTaskCount())
-	assert.Equal(t, 0.8, legacy.EffectiveMinSuccessRatio())
-}
-
-func TestEvolutionConfig_MarshalUsesNewThresholdNames(t *testing.T) {
-	data, err := json.Marshal(EvolutionConfig{
-		Enabled:        true,
-		Mode:           "draft",
-		MinCaseCount:   5,
-		MinSuccessRate: 0.8,
-	})
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if raw["min_task_count"] != float64(5) {
-		t.Fatalf("min_task_count = %#v, want 5", raw["min_task_count"])
-	}
-	if raw["min_success_ratio"] != 0.8 {
-		t.Fatalf("min_success_ratio = %#v, want 0.8", raw["min_success_ratio"])
-	}
-	if _, ok := raw["min_case_count"]; ok {
-		t.Fatalf("min_case_count should not be marshaled: %#v", raw)
-	}
-	if _, ok := raw["min_success_rate"]; ok {
-		t.Fatalf("min_success_rate should not be marshaled: %#v", raw)
-	}
-}
-
-func TestLoadConfig_EvolutionEnabledWithoutModeUsesObserveSemantics(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.json")
-	raw := `{
-		"version": 3,
-		"evolution": {
-			"enabled": true
-		}
-	}`
-	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
-		t.Fatalf("WriteFile(configPath): %v", err)
-	}
-
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig() error: %v", err)
-	}
-
-	assert.True(t, cfg.Evolution.Enabled)
-	assert.Equal(t, "", cfg.Evolution.Mode)
-	assert.Equal(t, "observe", cfg.Evolution.EffectiveMode())
-	assert.False(t, cfg.Evolution.RunsColdPathAutomatically())
-	assert.False(t, cfg.Evolution.AutoAppliesDrafts())
-}
-
-func TestLoadConfig_EvolutionExplicitApplyModeFailsClosed(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.json")
-	raw := `{
-		"version": 3,
-		"evolution": {
-			"enabled": true,
-			"mode": "apply"
-		}
-	}`
-	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
-		t.Fatalf("WriteFile(configPath): %v", err)
-	}
-
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig() error: %v", err)
-	}
-
-	assert.True(t, cfg.Evolution.Enabled)
-	assert.Equal(t, "apply", cfg.Evolution.Mode)
-	assert.Equal(t, "observe", cfg.Evolution.EffectiveMode())
-	assert.False(t, cfg.Evolution.RunsColdPathAutomatically())
-	assert.False(t, cfg.Evolution.AutoAppliesDrafts())
-}
-
-func TestSaveConfig_DisabledEvolutionOmitsApplyMode(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.json")
-	cfg := DefaultConfig()
-
-	if err := SaveConfig(configPath, cfg); err != nil {
-		t.Fatalf("SaveConfig() error: %v", err)
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("ReadFile(configPath): %v", err)
-	}
-
-	var raw map[string]any
-	if unmarshalErr := json.Unmarshal(data, &raw); unmarshalErr != nil {
-		t.Fatalf("Unmarshal saved config: %v", unmarshalErr)
-	}
-	evolutionRaw, ok := raw["evolution"].(map[string]any)
-	if !ok {
-		t.Fatalf("saved evolution config = %#v, want object", raw["evolution"])
-	}
-	if _, ok := evolutionRaw["mode"]; ok {
-		t.Fatalf("disabled evolution should not persist mode: %#v", evolutionRaw)
-	}
-
-	evolutionRaw["enabled"] = true
-	edited, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("Marshal edited config: %v", err)
-	}
-	if writeErr := os.WriteFile(configPath, edited, 0o600); writeErr != nil {
-		t.Fatalf("WriteFile(configPath): %v", writeErr)
-	}
-
-	loaded, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig() error: %v", err)
-	}
-	assert.True(t, loaded.Evolution.Enabled)
-	assert.Equal(t, "observe", loaded.Evolution.EffectiveMode())
-	assert.False(t, loaded.Evolution.AutoAppliesDrafts())
-}
-
 func TestLoadConfig_MCPMaxInlineTextChars(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
@@ -1640,6 +1329,28 @@ func TestLoadConfig_UnknownFieldsReportsExactPaths(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tools.weeb") || !strings.Contains(err.Error(), "tools.web.fatch_limit_bytes") {
 		t.Fatalf("expected exact unknown field paths, got %q", err.Error())
+	}
+}
+
+func TestLoadConfig_RejectsRemovedEvolutionBlock(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 3,
+		"evolution": {
+			"enabled": false
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	_, err := LoadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected removed evolution block to be rejected")
+	}
+	if !strings.Contains(err.Error(), "evolution") {
+		t.Fatalf("expected evolution field in diagnostic, got %q", err)
 	}
 }
 

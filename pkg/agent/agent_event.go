@@ -34,24 +34,6 @@ func (al *AgentLoop) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload a
 	al.runtimeEventEmitter().emitEvent(kind, meta, payload)
 }
 
-func (al *AgentLoop) currentEvolutionBridge() *evolutionBridge {
-	if al == nil {
-		return nil
-	}
-	al.mu.RLock()
-	defer al.mu.RUnlock()
-	return al.evolution
-}
-
-func (al *AgentLoop) isCurrentEvolutionBridge(bridge *evolutionBridge) bool {
-	if al == nil || bridge == nil {
-		return false
-	}
-	al.mu.RLock()
-	defer al.mu.RUnlock()
-	return al.evolution == bridge
-}
-
 // MountHook registers an in-process hook on the agent loop.
 func (al *AgentLoop) MountHook(reg HookRegistration) error {
 	if al == nil || al.hooks == nil {

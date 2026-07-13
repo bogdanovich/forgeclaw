@@ -29,7 +29,6 @@ const (
 	CheckExternalSkillRegistry    = "skills.external_registry"
 	CheckSkillShadowing           = "skills.workspace_global_shadowing"
 	CheckSkillAutoMutability      = "skills.automatic_mutability"
-	CheckEvolutionAutoApply       = "evolution.auto_apply"
 	CheckModelFallbackMissing     = "models.fallback_missing"
 	CheckModelFallbackDuplicate   = "models.fallback_duplicate"
 	CheckModelFallbackCycle       = "models.fallback_cycle"
@@ -46,7 +45,6 @@ func runChecks(cfg *config.Config, raw rawDocuments) []Finding {
 	findings = append(findings, checkMCP(cfg)...)
 	findings = append(findings, checkPlaintextCredentials(raw)...)
 	findings = append(findings, checkSkills(cfg)...)
-	findings = append(findings, checkEvolution(cfg)...)
 	findings = append(findings, checkFallbacks(cfg)...)
 	findings = append(findings, checkTokenBudgets(cfg)...)
 	return findings
@@ -292,25 +290,6 @@ func checkSkills(cfg *config.Config) []Finding {
 		}
 	}
 	return findings
-}
-
-func checkEvolution(cfg *config.Config) []Finding {
-	if cfg.Evolution.Enabled && cfg.Evolution.RunsColdPathAutomatically() {
-		return []Finding{
-			newFinding(
-				CheckEvolutionAutoApply,
-				SeverityWarning,
-				"Evolution can generate drafts automatically",
-				"Automatic evolution can send recorded task evidence to the configured model and create local draft artifacts.",
-				"Use observe/manual modes unless automatic draft generation is intended and reviewed.",
-				Evidence{
-					Path:    "evolution",
-					Summary: "automatic evolution cold-path mode is enabled",
-				},
-			),
-		}
-	}
-	return nil
 }
 
 func checkFallbacks(cfg *config.Config) []Finding {

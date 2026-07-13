@@ -305,44 +305,6 @@ func TestTraceCaptureCreatesCanonicalTerminalTaskTrace(t *testing.T) {
 	_ = eventBus.Close()
 }
 
-func TestTraceCaptureStoresStandaloneEvolutionTransition(t *testing.T) {
-	workspace := t.TempDir()
-	cfg := traceTestConfig(workspace)
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(cfg, eventBus)
-	eventTime := time.Now().UTC()
-	publishCaptureEvent(t, eventBus, runtimeevents.Event{
-		ID: "evolution-1", Kind: runtimeevents.KindAgentEvolutionTransition, Time: eventTime,
-		Source: runtimeevents.Source{Component: "agent"},
-		Payload: EvolutionTransitionPayload{
-			Workspace: workspace, RecordID: "record-1", DraftID: "draft-1",
-			SkillName: "test-skill", Action: "draft_saved", Status: "candidate", Eligible: true,
-			ProvenanceIDs: []string{"record-1"},
-		},
-	})
-	tracePath := waitForTraceFile(t, workspace)
-	data, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var trace evaltrace.Trace
-	if err := json.Unmarshal(data, &trace); err != nil {
-		t.Fatal(err)
-	}
-	if len(trace.Records) != 1 || trace.Records[0].Kind != evaltrace.RecordEvolutionDraft {
-		t.Fatalf("evolution trace = %#v", trace)
-	}
-	var payload evaltrace.EvolutionPayload
-	if err := json.Unmarshal(trace.Records[0].Data, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if !payload.Eligible {
-		t.Fatalf("evolution eligibility was not captured: %#v", payload)
-	}
-	manager.close()
-	_ = eventBus.Close()
-}
-
 func TestTraceCaptureBackfillsDurableTaskHistoryOnRestartReconciliation(t *testing.T) {
 	workspace := t.TempDir()
 	initial := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
