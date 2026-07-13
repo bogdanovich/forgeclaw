@@ -1,6 +1,8 @@
 package tasks
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -402,6 +404,43 @@ func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
 		if _, ok := registry.Get(id); !ok {
 			t.Fatalf("expected %s to be preserved", id)
 		}
+	}
+}
+
+func TestRegistryPrunesEventsBelowMaxRecordLimit(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{MaxRecords: 10, MaxEvents: 2})
+	if err := registry.Upsert(Record{
+		TaskID:         "task-1",
+		Runtime:        RuntimeTool,
+		Task:           "test event retention",
+		Status:         StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	for _, eventType := range []EventType{EventTaskProgress, EventTaskUpdated, EventTaskReconciled} {
+		if err := registry.AppendEvent("task-1", eventType, nil); err != nil {
+			t.Fatalf("AppendEvent(%s) error = %v", eventType, err)
+		}
+	}
+
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Tasks) != 1 || snapshot.Tasks[0].TaskID != "task-1" {
+		t.Fatalf("tasks = %#v", snapshot.Tasks)
+	}
+	if len(snapshot.Events) != 2 {
+		t.Fatalf("events = %d, want 2: %#v", len(snapshot.Events), snapshot.Events)
+	}
+	if snapshot.Events[0].Type != EventTaskUpdated || snapshot.Events[1].Type != EventTaskReconciled {
+		t.Fatalf("retained events = %#v", snapshot.Events)
 	}
 }
 
