@@ -421,7 +421,8 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       evolution.enabled === undefined
         ? EMPTY_FORM.evolutionEnabled
         : asBool(evolution.enabled),
-    evolutionMode: asString(evolution.mode) || EMPTY_FORM.evolutionMode,
+    evolutionMode:
+      asString(evolution.mode) === "draft" ? "draft" : EMPTY_FORM.evolutionMode,
     evolutionStateDir:
       asString(evolution.state_dir) || EMPTY_FORM.evolutionStateDir,
     evolutionMinTaskCount: asNumberString(
