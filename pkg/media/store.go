@@ -3,6 +3,7 @@ package media
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -70,8 +71,8 @@ type MediaCleanerConfig struct {
 	Interval time.Duration
 }
 
-// FileMediaStore is a pure in-memory implementation of MediaStore.
-// Files are expected to already exist on disk (e.g. in /tmp/picoclaw_media/).
+// FileMediaStore manages local media refs. When constructed with a persistent
+// index, refs survive process restarts as long as their underlying files remain.
 type FileMediaStore struct {
 	mu          sync.RWMutex
 	refs        map[string]mediaEntry
@@ -84,37 +85,77 @@ type FileMediaStore struct {
 	stop       chan struct{}
 	startOnce  sync.Once
 	stopOnce   sync.Once
+	cleanerWG  sync.WaitGroup
 	nowFunc    func() time.Time // for testing
+	index      *mediaIndex
 }
 
 // NewFileMediaStore creates a new FileMediaStore without background cleanup.
 func NewFileMediaStore() *FileMediaStore {
-	return &FileMediaStore{
-		refs:        make(map[string]mediaEntry),
-		scopeToRefs: make(map[string]map[string]struct{}),
-		refToScope:  make(map[string]string),
-		refToPath:   make(map[string]string),
-		pathStates:  make(map[string]pathRefState),
-		nowFunc:     time.Now,
-	}
+	return newFileMediaStore(MediaCleanerConfig{}, nil)
 }
 
 // NewFileMediaStoreWithCleanup creates a FileMediaStore with TTL-based background cleanup.
 func NewFileMediaStoreWithCleanup(cfg MediaCleanerConfig) *FileMediaStore {
-	return &FileMediaStore{
+	return newFileMediaStore(cfg, nil)
+}
+
+// NewFileMediaStoreWithPersistentIndex creates a MediaStore backed by an
+// atomic workspace-local index. Missing files from an earlier process are
+// discarded during recovery and are never exposed as valid refs.
+func NewFileMediaStoreWithPersistentIndex(indexPath string, cfg MediaCleanerConfig) (*FileMediaStore, error) {
+	index := &mediaIndex{path: indexPath}
+	store := newFileMediaStore(cfg, index)
+	entries, err := loadMediaIndex(indexPath)
+	if err != nil {
+		return nil, err
+	}
+
+	missingEntries := false
+	for _, entry := range entries {
+		if _, err := os.Stat(entry.Path); err != nil {
+			missingEntries = true
+			continue
+		}
+		entry.Meta.CleanupPolicy = normalizeCleanupPolicy(entry.Meta.CleanupPolicy)
+		store.addEntryLocked(
+			entry.Ref,
+			mediaEntry{path: entry.Path, meta: entry.Meta, storedAt: entry.StoredAt},
+			entry.Scope,
+		)
+	}
+	if missingEntries {
+		if err := store.persistLocked(nil, nil); err != nil {
+			return nil, err
+		}
+	}
+	return store, nil
+}
+
+func newFileMediaStore(cfg MediaCleanerConfig, index *mediaIndex) *FileMediaStore {
+	store := &FileMediaStore{
 		refs:        make(map[string]mediaEntry),
 		scopeToRefs: make(map[string]map[string]struct{}),
 		refToScope:  make(map[string]string),
 		refToPath:   make(map[string]string),
 		pathStates:  make(map[string]pathRefState),
 		cleanerCfg:  cfg,
-		stop:        make(chan struct{}),
 		nowFunc:     time.Now,
+		index:       index,
 	}
+	if cfg.Enabled {
+		store.stop = make(chan struct{})
+	}
+	return store
 }
 
 // Store registers a local file under the given scope. The file must exist.
 func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (string, error) {
+	absPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return "", fmt.Errorf("media store: resolve path %q: %w", localPath, err)
+	}
+	localPath = absPath
 	if _, err := os.Stat(localPath); err != nil {
 		return "", fmt.Errorf("media store: %s: %w", localPath, err)
 	}
@@ -122,53 +163,79 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 	ref := "media://" + uuid.New().String()
 	meta.CleanupPolicy = normalizeCleanupPolicy(meta.CleanupPolicy)
 
+	entry := mediaEntry{path: localPath, meta: meta, storedAt: s.nowFunc()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.persistLocked([]persistentMediaEntry{{
+		Ref: ref, Path: entry.path, Meta: entry.meta, Scope: scope, StoredAt: entry.storedAt,
+	}}, nil); err != nil {
+		return "", err
+	}
+	s.addEntryLocked(ref, entry, scope)
+	return ref, nil
+}
 
-	s.refs[ref] = mediaEntry{path: localPath, meta: meta, storedAt: s.nowFunc()}
+func (s *FileMediaStore) addEntryLocked(ref string, entry mediaEntry, scope string) {
+	s.refs[ref] = entry
 	if s.scopeToRefs[scope] == nil {
 		s.scopeToRefs[scope] = make(map[string]struct{})
 	}
 	s.scopeToRefs[scope][ref] = struct{}{}
 	s.refToScope[ref] = scope
-	s.refToPath[ref] = localPath
+	s.refToPath[ref] = entry.path
 
-	pathState := s.pathStates[localPath]
+	pathState := s.pathStates[entry.path]
 	if pathState.refCount == 0 {
-		pathState.deleteEligible = meta.CleanupPolicy == CleanupPolicyDeleteOnCleanup
-	} else if meta.CleanupPolicy == CleanupPolicyForgetOnly {
+		pathState.deleteEligible = entry.meta.CleanupPolicy == CleanupPolicyDeleteOnCleanup
+	} else if entry.meta.CleanupPolicy == CleanupPolicyForgetOnly {
 		// Be conservative: once a path is borrowed externally, never let this
 		// lifecycle auto-delete it even if store-managed refs also exist.
 		pathState.deleteEligible = false
 	}
 	pathState.refCount++
-	s.pathStates[localPath] = pathState
-
-	return ref, nil
+	s.pathStates[entry.path] = pathState
 }
 
 // Resolve returns the local path for the given ref.
 func (s *FileMediaStore) Resolve(ref string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	entry, ok := s.refs[ref]
-	if !ok {
-		return "", fmt.Errorf("media store: unknown ref: %s", ref)
-	}
-	return entry.path, nil
+	path, _, err := s.resolve(ref)
+	return path, err
 }
 
 // ResolveWithMeta returns the local path and metadata for the given ref.
 func (s *FileMediaStore) ResolveWithMeta(ref string) (string, MediaMeta, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	return s.resolve(ref)
+}
 
+func (s *FileMediaStore) resolve(ref string) (string, MediaMeta, error) {
+	s.mu.RLock()
 	entry, ok := s.refs[ref]
+	s.mu.RUnlock()
 	if !ok {
 		return "", MediaMeta{}, fmt.Errorf("media store: unknown ref: %s", ref)
 	}
-	return entry.path, entry.meta, nil
+	if _, err := os.Stat(entry.path); err == nil {
+		return entry.path, entry.meta, nil
+	}
+
+	// Persist removal before dropping the in-memory entry. This may leave an
+	// orphaned file after a crash, but can never revive a released ref.
+	s.mu.Lock()
+	if current, exists := s.refs[ref]; exists && current.path == entry.path {
+		if err := s.persistLocked(nil, map[string]struct{}{ref: {}}); err != nil {
+			s.mu.Unlock()
+			return "", MediaMeta{}, fmt.Errorf("media store: unavailable ref: %s (persist removal: %w)", ref, err)
+		}
+		if scope, exists := s.refToScope[ref]; exists {
+			delete(s.scopeToRefs[scope], ref)
+			if len(s.scopeToRefs[scope]) == 0 {
+				delete(s.scopeToRefs, scope)
+			}
+		}
+		s.releaseRefLocked(ref, entry.path)
+	}
+	s.mu.Unlock()
+	return "", MediaMeta{}, fmt.Errorf("media store: unavailable ref: %s", ref)
 }
 
 // ReleaseAll removes all files under the given scope and cleans up mappings.
@@ -186,6 +253,14 @@ func (s *FileMediaStore) ReleaseAll(scope string) error {
 		return nil
 	}
 
+	removedRefs := make(map[string]struct{}, len(refs))
+	for ref := range refs {
+		removedRefs[ref] = struct{}{}
+	}
+	if err := s.persistLocked(nil, removedRefs); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	for ref := range refs {
 		fallbackPath := ""
 		if entry, exists := s.refs[ref]; exists {
@@ -231,6 +306,29 @@ func (s *FileMediaStore) CleanExpired() int {
 
 	for ref, entry := range s.refs {
 		if entry.storedAt.Before(cutoff) {
+			if expired == nil {
+				expired = make([]expiredEntry, 0)
+			}
+			expired = append(expired, expiredEntry{ref: ref})
+		}
+	}
+	if len(expired) == 0 {
+		s.mu.Unlock()
+		return 0
+	}
+	removedRefs := make(map[string]struct{}, len(expired))
+	for _, item := range expired {
+		removedRefs[item.ref] = struct{}{}
+	}
+	if err := s.persistLocked(nil, removedRefs); err != nil {
+		s.mu.Unlock()
+		logger.WarnCF("media", "cleanup: failed to persist index", map[string]any{"error": err.Error()})
+		return 0
+	}
+	for idx := range expired {
+		ref := expired[idx].ref
+		entry := s.refs[ref]
+		if entry.storedAt.Before(cutoff) {
 			if scope, ok := s.refToScope[ref]; ok {
 				if scopeRefs, ok := s.scopeToRefs[scope]; ok {
 					delete(scopeRefs, ref)
@@ -240,11 +338,9 @@ func (s *FileMediaStore) CleanExpired() int {
 				}
 			}
 
-			expiredItem := expiredEntry{ref: ref}
 			if deletePath, shouldDelete := s.releaseRefLocked(ref, entry.path); shouldDelete {
-				expiredItem.deletePath = deletePath
+				expired[idx].deletePath = deletePath
 			}
-			expired = append(expired, expiredItem)
 		}
 	}
 	s.mu.Unlock()
@@ -263,6 +359,26 @@ func (s *FileMediaStore) CleanExpired() int {
 	}
 
 	return len(expired)
+}
+
+// persistLocked writes a complete bounded snapshot. additions are entries not
+// yet present in memory; removed refs are omitted from the snapshot.
+func (s *FileMediaStore) persistLocked(additions []persistentMediaEntry, removed map[string]struct{}) error {
+	if s.index == nil {
+		return nil
+	}
+	entries := make([]persistentMediaEntry, 0, len(s.refs)+len(additions))
+	for ref, entry := range s.refs {
+		if _, remove := removed[ref]; remove {
+			continue
+		}
+		entries = append(entries, persistentMediaEntry{
+			Ref: ref, Path: entry.path, Meta: entry.meta,
+			Scope: s.refToScope[ref], StoredAt: entry.storedAt,
+		})
+	}
+	entries = append(entries, additions...)
+	return s.index.save(entries)
 }
 
 func normalizeCleanupPolicy(policy CleanupPolicy) CleanupPolicy {
@@ -324,7 +440,9 @@ func (s *FileMediaStore) Start() {
 			"max_age":  s.cleanerCfg.MaxAge.String(),
 		})
 
+		s.cleanerWG.Add(1)
 		go func() {
+			defer s.cleanerWG.Done()
 			ticker := time.NewTicker(s.cleanerCfg.Interval)
 			defer ticker.Stop()
 
@@ -353,4 +471,7 @@ func (s *FileMediaStore) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
 	})
+	// Wait for an in-flight cleanup before another store opens the same durable
+	// index. Otherwise the retired cleaner could overwrite newer state.
+	s.cleanerWG.Wait()
 }

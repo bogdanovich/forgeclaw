@@ -560,6 +560,45 @@ func TestStartStopLifecycle(t *testing.T) {
 	store.Stop()
 }
 
+func TestStopWaitsForInFlightCleanup(t *testing.T) {
+	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
+		Enabled:  true,
+		MaxAge:   time.Minute,
+		Interval: time.Millisecond,
+	})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	store.nowFunc = func() time.Time {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return time.Now()
+	}
+	store.Start()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		store.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before cleanup finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not wait for cleanup to finish")
+	}
+}
+
 func TestCleanExpiredZeroMaxAge(t *testing.T) {
 	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
 		Enabled:  true,
@@ -702,5 +741,199 @@ func TestRefToScopeConsistency(t *testing.T) {
 	}
 	if _, ok := store.refToScope[ref3]; !ok {
 		t.Error("refToScope should still contain ref3")
+	}
+}
+
+func TestPersistentIndexRecoversRefsAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")
+	path := createTempFile(t, dir, "photo.jpg")
+	meta := MediaMeta{Filename: "photo.jpg", ContentType: "image/jpeg", Source: "telegram"}
+
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ref, err := store.Store(path, meta, "chat:123")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	meta.CleanupPolicy = CleanupPolicyDeleteOnCleanup
+
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("restart store: %v", err)
+	}
+	resolvedPath, resolvedMeta, err := restarted.ResolveWithMeta(ref)
+	if err != nil {
+		t.Fatalf("ResolveWithMeta after restart: %v", err)
+	}
+	if resolvedPath != path || resolvedMeta != meta {
+		t.Fatalf("recovered entry = (%q, %#v), want (%q, %#v)", resolvedPath, resolvedMeta, path, meta)
+	}
+}
+
+func TestPersistentIndexDropsMissingFilesDuringRecovery(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")
+	path := createTempFile(t, dir, "expired.jpg")
+
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ref, err := store.Store(path, MediaMeta{Source: "telegram"}, "chat:123")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if removeErr := os.Remove(path); removeErr != nil {
+		t.Fatalf("remove media: %v", removeErr)
+	}
+
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("restart store: %v", err)
+	}
+	if _, resolveErr := restarted.Resolve(ref); resolveErr == nil ||
+		!strings.Contains(resolveErr.Error(), "unknown ref") {
+		t.Fatalf("Resolve after missing-file recovery error = %v, want unknown ref", resolveErr)
+	}
+	entries, err := loadMediaIndex(indexPath)
+	if err != nil {
+		t.Fatalf("load index: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("index entries = %d, want 0", len(entries))
+	}
+}
+
+func TestPersistentIndexResolvePrunesRemovedFile(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")
+	path := createTempFile(t, dir, "removed.jpg")
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ref, err := store.Store(path, MediaMeta{Source: "telegram"}, "chat:123")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if removeErr := os.Remove(path); removeErr != nil {
+		t.Fatalf("remove media: %v", removeErr)
+	}
+	if _, resolveErr := store.Resolve(ref); resolveErr == nil ||
+		!strings.Contains(resolveErr.Error(), "unavailable ref") {
+		t.Fatalf("Resolve after removal error = %v, want unavailable ref", resolveErr)
+	}
+
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("restart store: %v", err)
+	}
+	if _, err := restarted.Resolve(ref); err == nil || !strings.Contains(err.Error(), "unknown ref") {
+		t.Fatalf("Resolve after restart error = %v, want unknown ref", err)
+	}
+}
+
+func TestPersistentIndexCleanupSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")
+	now := time.Now()
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{MaxAge: time.Minute})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	store.nowFunc = func() time.Time { return now.Add(-2 * time.Minute) }
+	path := createTempFile(t, dir, "old.jpg")
+	ref, err := store.Store(path, MediaMeta{Source: "telegram"}, "chat:123")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	store.nowFunc = func() time.Time { return now }
+	if removed := store.CleanExpired(); removed != 1 {
+		t.Fatalf("CleanExpired removed = %d, want 1", removed)
+	}
+
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("restart store: %v", err)
+	}
+	if _, err := restarted.Resolve(ref); err == nil {
+		t.Fatal("expired ref resolved after restart")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expired file still exists: %v", err)
+	}
+}
+
+func TestPersistentIndexWorkspaceIsolation(t *testing.T) {
+	dir := t.TempDir()
+	pathA := createTempFile(t, dir, "a.jpg")
+	pathB := createTempFile(t, dir, "b.jpg")
+	workspaceAIndex := filepath.Join(dir, "workspace-a", "state", "media", "index.json")
+	workspaceBIndex := filepath.Join(dir, "workspace-b", "state", "media", "index.json")
+	storeA, err := NewFileMediaStoreWithPersistentIndex(workspaceAIndex, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("create store A: %v", err)
+	}
+	storeB, err := NewFileMediaStoreWithPersistentIndex(workspaceBIndex, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("create store B: %v", err)
+	}
+	refA, _ := storeA.Store(pathA, MediaMeta{Source: "a"}, "scope")
+	refB, _ := storeB.Store(pathB, MediaMeta{Source: "b"}, "scope")
+
+	restartedA, err := NewFileMediaStoreWithPersistentIndex(workspaceAIndex, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("restart store A: %v", err)
+	}
+	if _, err := restartedA.Resolve(refA); err != nil {
+		t.Fatalf("workspace A did not recover its ref: %v", err)
+	}
+	if _, err := restartedA.Resolve(refB); err == nil {
+		t.Fatal("workspace A recovered workspace B ref")
+	}
+}
+
+func TestPersistentIndexPreservesSharedPathPolicyAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")
+	path := createTempFile(t, dir, "shared.jpg")
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ownedRef, err := store.Store(path, MediaMeta{CleanupPolicy: CleanupPolicyDeleteOnCleanup}, "owned")
+	if err != nil {
+		t.Fatalf("Store owned: %v", err)
+	}
+	borrowedRef, err := store.Store(path, MediaMeta{CleanupPolicy: CleanupPolicyForgetOnly}, "borrowed")
+	if err != nil {
+		t.Fatalf("Store borrowed: %v", err)
+	}
+
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("restart store: %v", err)
+	}
+	if releaseErr := restarted.ReleaseAll("owned"); releaseErr != nil {
+		t.Fatalf("ReleaseAll owned: %v", releaseErr)
+	}
+	if releaseErr := restarted.ReleaseAll("borrowed"); releaseErr != nil {
+		t.Fatalf("ReleaseAll borrowed: %v", releaseErr)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("mixed-policy shared path was deleted after restart: %v", statErr)
+	}
+	finalStore, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatalf("restart after release: %v", err)
+	}
+	if _, err := finalStore.Resolve(ownedRef); err == nil {
+		t.Fatal("released owned ref recovered after restart")
+	}
+	if _, err := finalStore.Resolve(borrowedRef); err == nil {
+		t.Fatal("released borrowed ref recovered after restart")
 	}
 }
