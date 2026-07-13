@@ -248,10 +248,11 @@ automatic apply remain deferred.
    raw stores before re-enabling draft generation.
 3. Remove automatic deletion and automatic candidate apply; add no-follow
    containment and, only if justified, durable review/rollback primitives.
-4. Add a deterministic draft-corpus scorer and isolated baseline/candidate
-   replay fixtures. Retain routine drafting or mutation only if measured yield
-   justifies its storage, model cost, and maintenance burden. Otherwise keep a
-   bounded manual experiment or remove the subsystem.
+4. Use `picoclaw eval evolution` to evaluate paired baseline/candidate trials
+   with held-out record isolation, explicit task criteria, protected invariants,
+   matching seeds, and evidence references. Retain routine drafting only if
+   measured yield justifies its storage, model cost, and maintenance burden.
+   Otherwise keep a bounded manual experiment or remove the subsystem.
 
 ## Completion Evidence
 

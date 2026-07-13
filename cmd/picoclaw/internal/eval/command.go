@@ -14,6 +14,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/evalevaluator"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/evolutioneval"
 )
 
 const outputSchemaV1 = "forgeclaw.eval_report.v1"
@@ -69,6 +70,7 @@ func NewEvalCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Write stable machine-readable JSON")
 	cmd.Flags().StringSliceVar(&evaluatorNames, "evaluator", nil, "Run only the named evaluator (repeatable)")
 	cmd.AddCommand(newFixturesCommand())
+	cmd.AddCommand(newEvolutionCommand())
 	return cmd
 }
 
@@ -171,5 +173,46 @@ func newFixturesCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "validated %d fixtures\n", len(manifest.Fixtures))
 			return nil
 		},
+	}
+}
+
+func newEvolutionCommand() *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "evolution MANIFEST",
+		Short: "Evaluate self-evolution candidates against paired held-out trials",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			manifest, err := evolutioneval.LoadManifest(args[0])
+			if err != nil {
+				return err
+			}
+			report := evolutioneval.Evaluate(manifest)
+			if jsonOutput {
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(report)
+			}
+			writeEvolutionHuman(cmd.OutOrStdout(), report)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Write stable machine-readable JSON")
+	return cmd
+}
+
+func writeEvolutionHuman(writer io.Writer, report evolutioneval.Report) {
+	fmt.Fprintf(
+		writer,
+		"self-evolution: %s (%d/%d evaluated, %d useful, %d regressed, %d invalid)\n",
+		report.Summary.Recommendation,
+		report.Summary.EvaluatedCandidates,
+		report.Summary.TotalCandidates,
+		report.Summary.UsefulCandidates,
+		report.Summary.RegressedCandidates,
+		report.Summary.InvalidCandidates,
+	)
+	for _, candidate := range report.Candidates {
+		fmt.Fprintf(writer, "  %s %s: %s\n", candidate.Status, candidate.ID, candidate.Reason)
 	}
 }
