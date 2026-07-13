@@ -631,7 +631,7 @@ func (r *Registry) normalizeRecord(rec Record, now int64) Record {
 }
 
 func (r *Registry) pruneLocked(now int64) bool {
-	if r == nil || len(r.records) == 0 {
+	if r == nil {
 		return false
 	}
 	changed := false
