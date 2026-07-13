@@ -85,6 +85,7 @@ type FileMediaStore struct {
 	stop       chan struct{}
 	startOnce  sync.Once
 	stopOnce   sync.Once
+	cleanerWG  sync.WaitGroup
 	nowFunc    func() time.Time // for testing
 	index      *mediaIndex
 }
@@ -439,7 +440,9 @@ func (s *FileMediaStore) Start() {
 			"max_age":  s.cleanerCfg.MaxAge.String(),
 		})
 
+		s.cleanerWG.Add(1)
 		go func() {
+			defer s.cleanerWG.Done()
 			ticker := time.NewTicker(s.cleanerCfg.Interval)
 			defer ticker.Stop()
 
@@ -468,4 +471,7 @@ func (s *FileMediaStore) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
 	})
+	// Wait for an in-flight cleanup before another store opens the same durable
+	// index. Otherwise the retired cleaner could overwrite newer state.
+	s.cleanerWG.Wait()
 }

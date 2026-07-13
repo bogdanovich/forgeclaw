@@ -560,6 +560,45 @@ func TestStartStopLifecycle(t *testing.T) {
 	store.Stop()
 }
 
+func TestStopWaitsForInFlightCleanup(t *testing.T) {
+	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
+		Enabled:  true,
+		MaxAge:   time.Minute,
+		Interval: time.Millisecond,
+	})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	store.nowFunc = func() time.Time {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return time.Now()
+	}
+	store.Start()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		store.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before cleanup finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not wait for cleanup to finish")
+	}
+}
+
 func TestCleanExpiredZeroMaxAge(t *testing.T) {
 	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
 		Enabled:  true,
