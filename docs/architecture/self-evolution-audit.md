@@ -133,6 +133,11 @@ useful. This sample is diagnostic rather than a statistical quality estimate,
 but it is sufficient to reject automatic apply and to require an explicit
 effectiveness harness before retaining a mutation feature.
 
+The content-free corpus counters are reproducible with `picoclaw eval evolution
+corpus`. The command reports only aggregate counters, candidate IDs, target
+names, and signal codes; it does not include captured task or draft content.
+The paired effectiveness gate is available through `picoclaw eval evolution`.
+
 ## Findings
 
 | ID | Severity | Finding | Mechanism and exposure | Disposition |

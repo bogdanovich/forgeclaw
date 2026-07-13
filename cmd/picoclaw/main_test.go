@@ -65,7 +65,7 @@ func TestNewPicoclawCommand(t *testing.T) {
 	}
 }
 
-func TestDoctorJSONRequested(t *testing.T) {
+func TestMachineJSONRequested(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -75,12 +75,14 @@ func TestDoctorJSONRequested(t *testing.T) {
 		{name: "global flag first", args: []string{"--no-color", "doctor", "--json=true"}, want: true},
 		{name: "json numeric true", args: []string{"doctor", "--json=1"}, want: true},
 		{name: "human doctor", args: []string{"doctor"}, want: false},
-		{name: "other json command", args: []string{"eval", "--json"}, want: false},
+		{name: "eval json", args: []string{"eval", "--json"}, want: true},
+		{name: "nested eval json", args: []string{"eval", "evolution", "corpus", "--json"}, want: true},
+		{name: "other json command", args: []string{"status", "--json"}, want: false},
 		{name: "explicit false", args: []string{"doctor", "--json=false"}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, doctorJSONRequested(tt.args))
+			assert.Equal(t, tt.want, machineJSONRequested(tt.args))
 		})
 	}
 }

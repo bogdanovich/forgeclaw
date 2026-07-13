@@ -20,6 +20,29 @@ picoclaw eval evolution --json evaluation.json
 
 The JSON report uses schema `forgeclaw.evolution_eval_report.v1`.
 
+## Audit A Draft Corpus
+
+Run content-free structural diagnostics over existing task, pattern, and draft
+stores before selecting candidates for held-out evaluation:
+
+```bash
+picoclaw eval evolution corpus --json \
+  --records WORKSPACE/state/evolution/task-records.jsonl \
+  --records WORKSPACE/state/evolution/pattern-records.jsonl \
+  --drafts WORKSPACE/state/evolution/skill-drafts.json
+```
+
+The `forgeclaw.evolution_corpus_report.v1` output contains candidate IDs, target
+names, aggregate counts, and signal codes. It never emits record summaries,
+final outputs, draft bodies, intended use cases, or review text.
+
+Signals identify deterministic review targets: duplicate targets, known generic
+templates, procedures copied from prior final output, oversized bodies, missing
+provenance, absent ordered steps, and excessive source-skill references. They
+are diagnostics, not usefulness scores. A draft with no signal still requires
+paired held-out evidence, and a signaled draft may still contain a useful idea
+that should be rewritten before evaluation.
+
 ## Evidence Contract
 
 Each candidate declares the record IDs that generated it. Each held-out case
