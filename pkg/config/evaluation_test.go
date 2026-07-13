@@ -20,6 +20,14 @@ func TestDefaultEvaluationTraceCaptureIsDisabledAndBounded(t *testing.T) {
 	}
 }
 
+func TestDefaultTaskRegistryIsBounded(t *testing.T) {
+	cfg := DefaultConfig().Tasks
+	if cfg.MaxSnapshotBytes != 2*1024*1024 || cfg.MaxRecords != 1000 || cfg.MaxEvents != 5000 ||
+		cfg.TerminalRetentionHours != 168 {
+		t.Fatalf("unexpected task registry defaults: %#v", cfg)
+	}
+}
+
 func TestEvaluationTraceCaptureRejectsFixtureModeForRuntime(t *testing.T) {
 	cfg := EvaluationTraceCaptureConfig{Enabled: true, ContentMode: "fixture"}
 	if got := cfg.EffectiveContentMode(); got != "metadata_only" {

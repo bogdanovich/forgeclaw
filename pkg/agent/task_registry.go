@@ -25,7 +25,10 @@ func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Re
 			return registry
 		}
 	}
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	registry := taskregistry.NewRegistryWithOptions(
+		taskregistry.WorkspaceStorePath(workspace),
+		al.taskRegistryOptions(),
+	)
 	actual, _ := al.taskRegistries.LoadOrStore(workspace, registry)
 	if stored, ok := actual.(*taskregistry.Registry); ok {
 		if al.traceCapture != nil {
@@ -34,6 +37,7 @@ func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Re
 		if stored == registry {
 			al.reconcileActiveTasksAfterRegistryRestore(workspace, stored)
 			al.reconcilePendingTerminalTaskDelivery(workspace, stored)
+			al.logTaskRegistryStats(workspace, stored)
 		}
 		return stored
 	}
@@ -42,7 +46,42 @@ func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Re
 	}
 	al.reconcileActiveTasksAfterRegistryRestore(workspace, registry)
 	al.reconcilePendingTerminalTaskDelivery(workspace, registry)
+	al.logTaskRegistryStats(workspace, registry)
 	return registry
+}
+
+func (al *AgentLoop) taskRegistryOptions() taskregistry.Options {
+	if al != nil && al.cfg != nil {
+		return al.cfg.Tasks.Options()
+	}
+	return taskregistry.Options{}
+}
+
+func (al *AgentLoop) logTaskRegistryStats(workspace string, registry *taskregistry.Registry) {
+	if registry == nil {
+		return
+	}
+	stats := registry.Stats()
+	fields := map[string]any{
+		"workspace":                workspace,
+		"tasks":                    stats.TaskCount,
+		"events":                   stats.EventCount,
+		"protected_tasks":          stats.ProtectedTaskCount,
+		"snapshot_bytes":           stats.SnapshotBytes,
+		"max_snapshot_bytes":       stats.MaxSnapshotBytes,
+		"max_records":              stats.MaxRecords,
+		"max_events":               stats.MaxEvents,
+		"terminal_retention_hours": int(stats.TerminalRetention / time.Hour),
+	}
+	if stats.OverSnapshotBudget {
+		logger.WarnCF(
+			"agent",
+			"Task registry exceeds snapshot budget; only protected tasks remain",
+			fields,
+		)
+		return
+	}
+	logger.InfoCF("agent", "Loaded task registry", fields)
 }
 
 // TaskRegistryForWorkspace returns the durable task registry shared by agent
@@ -71,7 +110,8 @@ func (al *AgentLoop) updateAsyncTaskDeliveryStatus(
 		if strings.TrimSpace(completionID) != "" {
 			rec.LastCompletionID = strings.TrimSpace(completionID)
 		}
-		if status == taskregistry.DeliveryDelivered || status == taskregistry.DeliverySessionQueued ||
+		if status == taskregistry.DeliveryDelivered ||
+			status == taskregistry.DeliverySessionQueued ||
 			status == taskregistry.DeliveryNotApplicable {
 			rec.DeliveredAt = time.Now().UnixMilli()
 			rec.DeliveryError = ""
@@ -132,14 +172,19 @@ func (al *AgentLoop) asyncTaskDeliveryAlreadyHandled(
 		return false
 	}
 	switch rec.DeliveryStatus {
-	case taskregistry.DeliveryDelivered, taskregistry.DeliverySessionQueued, taskregistry.DeliveryNotApplicable:
+	case taskregistry.DeliveryDelivered,
+		taskregistry.DeliverySessionQueued,
+		taskregistry.DeliveryNotApplicable:
 		return true
 	default:
 		return false
 	}
 }
 
-func (al *AgentLoop) reconcilePendingTerminalTaskDelivery(workspace string, registry *taskregistry.Registry) {
+func (al *AgentLoop) reconcilePendingTerminalTaskDelivery(
+	workspace string,
+	registry *taskregistry.Registry,
+) {
 	if registry == nil {
 		return
 	}
@@ -165,7 +210,10 @@ func (al *AgentLoop) reconcilePendingTerminalTaskDelivery(workspace string, regi
 		})
 }
 
-func (al *AgentLoop) reconcileActiveTasksAfterRegistryRestore(workspace string, registry *taskregistry.Registry) {
+func (al *AgentLoop) reconcileActiveTasksAfterRegistryRestore(
+	workspace string,
+	registry *taskregistry.Registry,
+) {
 	if registry == nil {
 		return
 	}

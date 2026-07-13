@@ -211,6 +211,21 @@ type Snapshot struct {
 	Events []TaskEvent `json:"events,omitempty"`
 }
 
+// Stats describes the current durable registry state and the retention limits
+// that apply to it. Protected records are active, non-terminal, or have not
+// reached a final delivery state, so retention never removes them.
+type Stats struct {
+	TaskCount          int
+	EventCount         int
+	ProtectedTaskCount int
+	SnapshotBytes      int
+	TerminalRetention  time.Duration
+	MaxRecords         int
+	MaxEvents          int
+	MaxSnapshotBytes   int
+	OverSnapshotBudget bool
+}
+
 func NewRegistry(storePath string) *Registry {
 	return NewRegistryWithOptions(storePath, Options{})
 }
@@ -258,6 +273,31 @@ func (r *Registry) LastLoadError() error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.lastLoad
+}
+
+// Stats returns an exact serialized snapshot size and retention state.
+func (r *Registry) Stats() Stats {
+	if r == nil {
+		return Stats{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	stats := Stats{
+		TaskCount:         len(r.records),
+		EventCount:        len(r.events),
+		SnapshotBytes:     r.snapshotSizeLocked(),
+		TerminalRetention: r.options.TerminalRetention,
+		MaxRecords:        r.options.MaxRecords,
+		MaxEvents:         r.options.MaxEvents,
+		MaxSnapshotBytes:  r.options.MaxSnapshotBytes,
+	}
+	for _, rec := range r.records {
+		if !canPruneRecord(rec) {
+			stats.ProtectedTaskCount++
+		}
+	}
+	stats.OverSnapshotBudget = stats.MaxSnapshotBytes > 0 && stats.SnapshotBytes > stats.MaxSnapshotBytes
+	return stats
 }
 
 func (r *Registry) Upsert(rec Record) error {

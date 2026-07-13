@@ -174,6 +174,21 @@ as `tasks`. `Record` remains the compatibility API and is still what most tools
 read. New consumers that care about auditability, idempotency, or recovery
 should prefer events and treat records as a projection.
 
+### Retention and Snapshot Bounds
+
+The registry compacts deterministically: expired terminal records with final
+delivery states are removed first; record-count retention removes the oldest
+remaining eligible terminal records; event-count retention removes the oldest
+events; and byte retention removes the smallest necessary oldest event prefix
+before removing the oldest eligible terminal records. This keeps current task
+projections and active delivery state durable while bounding routine growth.
+
+Records are eligible only after they are terminal and their delivery state is
+final. Running, queued, non-terminal, and pending-delivery tasks are protected
+even if that leaves the serialized snapshot over its configured byte limit.
+The runtime logs that exceptional state on registry load rather than discarding
+recoverable work.
+
 Current source-of-truth rule:
 
 - audit/debug/recovery

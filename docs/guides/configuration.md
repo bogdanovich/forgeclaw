@@ -184,6 +184,35 @@ errors are not valid capture inputs. See
 [`../architecture/replay-evaluation.md`](../architecture/replay-evaluation.md)
 for the security and replay-isolation contract.
 
+### Task Registry Retention
+
+Each workspace stores durable async task state in
+`state/task_registry.json`. The registry is bounded by age, record count,
+event count, and its exact serialized snapshot size:
+
+```json
+{
+  "task_registry": {
+    "terminal_retention_hours": 168,
+    "max_records": 1000,
+    "max_events": 5000,
+    "max_snapshot_bytes": 2097152
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `terminal_retention_hours` | `168` | Retention period for terminal tasks after final delivery. |
+| `max_records` | `1000` | Maximum retained task projections. |
+| `max_events` | `5000` | Maximum retained audit events. |
+| `max_snapshot_bytes` | `2097152` | Maximum serialized registry size (2 MiB). Events are compacted first, then oldest eligible terminal records. |
+
+Active, non-terminal, and terminal tasks that still require delivery are never
+removed by retention. A registry may therefore remain above the byte limit; at
+startup PicoClaw logs a warning that only protected records remain. Zero or
+omitted values use the built-in defaults.
+
 See [`replay-evaluation.md`](replay-evaluation.md) for trace evaluation,
 fixture validation, CLI output, and scenario safety.
 For a task-oriented introduction, see the
