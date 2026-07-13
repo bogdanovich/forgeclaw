@@ -1,8 +1,40 @@
 # PicoClaw Doctor
 
-`picoclaw doctor` runs a read-only static safety audit of the active configuration.
-It does not start processes, call the network, apply remediation, migrate config,
-write backups, or mutate workspace/state.
+`picoclaw doctor` audits a ForgeClaw deployment for unsafe configuration and
+unresolved operational state. It is designed for interactive troubleshooting,
+deployment checks, and CI automation.
+
+Doctor is read-only. It does not start processes, call the network, apply
+remediation, migrate configuration, write backups, reconcile tasks, or mutate
+workspace state. You can run it while the gateway is active.
+
+## Quick Start
+
+Run Doctor on the active deployment:
+
+```sh
+picoclaw doctor
+```
+
+The command prints every finding with:
+
+- a stable check ID, such as `channels.open_allow_from`;
+- severity and status;
+- the reason the configuration or state is risky;
+- a suggested remediation;
+- redacted evidence identifying the relevant configuration or state location.
+
+Doctor does not print credential values, task text, chat IDs, task errors, or
+other persisted payloads.
+
+After changing configuration or resolving operational state, run the same
+command again. A normal remediation workflow is:
+
+```sh
+picoclaw doctor
+# Review and fix findings.
+picoclaw doctor
+```
 
 ## Usage
 
@@ -14,15 +46,69 @@ picoclaw doctor --config /path/to/config.json
 picoclaw doctor --stale-task-age 45m --pending-delivery-age 20m
 ```
 
+`--config` selects a deployment explicitly. Without it, Doctor uses the active
+PicoClaw configuration path in the same way as other CLI commands.
+
+## Reading Results
+
+Severities have the following meaning:
+
+| Severity | Meaning | Default exit behavior |
+| --- | --- | --- |
+| `error` | Doctor could not reliably audit part of the deployment, for example because state is malformed. | Exit `2`. |
+| `fail` | A high-confidence unsafe or broken condition was found. | Exit `2`. |
+| `warning` | A risky or operationally suspicious condition needs review. | Exit `0`, or `2` with `--strict`. |
+| `info` | A relevant trust or configuration characteristic is present. | Exit `0`. |
+
+A finding is not automatically proof of compromise. For example, a public
+gateway bind may be intentional behind an authenticated reverse proxy, and a
+remote MCP endpoint may be acceptable on a trusted authenticated network.
+Doctor reports the locally observable risk and documents where runtime or
+network context still requires operator judgment.
+
 ## Exit Semantics
 
 - `0`: no `error` or `fail` findings; warnings are allowed by default.
 - `1`: command, parsing, or config loading error.
 - `2`: one or more `error`/`fail` findings, or any warning when `--strict` is set.
 
+Exit `2` is an audit result, not a CLI crash. Human-readable findings are still
+written to stdout. Exit `1` means Doctor itself could not complete normally.
+
+Use strict mode for deployment gates where warnings must be resolved or
+explicitly accepted:
+
+```sh
+picoclaw doctor --strict
+```
+
 ## JSON Schema
 
-The JSON output is stable for PR1 and uses `schema_version: "doctor.v1"`.
+Use JSON output for scripts and CI:
+
+```sh
+picoclaw doctor --json > doctor-report.json
+jq '.summary' doctor-report.json
+```
+
+In shell scripts, capture the audit exit code separately because a valid report
+can intentionally exit with `2`:
+
+```sh
+set +e
+picoclaw doctor --json > doctor-report.json
+doctor_status=$?
+set -e
+
+jq empty doctor-report.json
+if [ "$doctor_status" -ne 0 ]; then
+  jq '.findings[] | select(.severity == "error" or .severity == "fail")' doctor-report.json
+  exit "$doctor_status"
+fi
+```
+
+JSON stdout contains only the report, without the interactive PicoClaw banner.
+The output uses `schema_version: "doctor.v1"`.
 Top-level fields are `schema_version`, `generated_by`, `config_path`, `summary`,
 and `findings`. Each finding has `id`, `severity`, `status`, `title`,
 `rationale`, `remediation`, and optional redacted `evidence`.
@@ -36,6 +122,43 @@ lock, reconcile, or create directories. Missing state files are normal. The
 default thresholds are 30 minutes for active tasks, 15 minutes for pending
 terminal deliveries, 24 hours for recent failures, and 10 minutes for gateway
 handoffs; use the corresponding duration flags to tune them.
+
+## Operational Thresholds
+
+Thresholds accept Go duration values such as `30m`, `2h`, or `48h`:
+
+| Flag | Default | Controls |
+| --- | --- | --- |
+| `--stale-task-age` | `30m` | How long a queued/running task may go without activity. |
+| `--pending-delivery-age` | `15m` | How long a terminal task may remain pending delivery. |
+| `--recent-failure-age` | `24h` | How far back task, delivery, and handoff failures are reported. |
+| `--handoff-age` | `10m` | How long restart/deploy reconciliation or continuation may remain unresolved. |
+
+Example for a deployment with intentionally long background jobs:
+
+```sh
+picoclaw doctor \
+  --stale-task-age 2h \
+  --pending-delivery-age 30m \
+  --recent-failure-age 48h
+```
+
+Raising a threshold suppresses age-based findings; it does not modify or
+reconcile the underlying task or delivery.
+
+## What Doctor Does Not Do
+
+Doctor does not:
+
+- inspect firewall, NAT, reverse-proxy, or remote server policy;
+- connect to providers, channels, MCP servers, or skill registries;
+- verify that configured credentials are valid;
+- probe whether platform isolation is available at runtime;
+- retry tasks, resend deliveries, or complete restart reconciliation;
+- replace host monitoring, secret scanning, or incident response.
+
+These boundaries keep the command deterministic, offline, and safe to run on a
+live personal deployment.
 
 ## Checks
 

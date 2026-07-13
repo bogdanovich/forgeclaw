@@ -64,3 +64,23 @@ func TestNewPicoclawCommand(t *testing.T) {
 		assert.False(t, subcmd.Hidden)
 	}
 }
+
+func TestDoctorJSONRequested(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "doctor json", args: []string{"doctor", "--json"}, want: true},
+		{name: "global flag first", args: []string{"--no-color", "doctor", "--json=true"}, want: true},
+		{name: "json numeric true", args: []string{"doctor", "--json=1"}, want: true},
+		{name: "human doctor", args: []string{"doctor"}, want: false},
+		{name: "other json command", args: []string{"eval", "--json"}, want: false},
+		{name: "explicit false", args: []string{"doctor", "--json=false"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, doctorJSONRequested(tt.args))
+		})
+	}
+}
