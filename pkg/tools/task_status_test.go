@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -62,12 +63,9 @@ func TestTaskStatusTool_ListsVisibleRecords(t *testing.T) {
 		"Task status report (1 total)",
 		"delegate-1",
 		"delegate/delegate",
-		"Agent: media",
+		"agent=media",
 		"Deliverable: text=true artifacts=1 report=true",
-		"Report: deliverable_report.v1",
-		"Summary: video downloaded",
-		"Claims: 1",
-		"Scope: telegram/chat-1 topic=topic-1",
+		"Task: download reel",
 	} {
 		if !strings.Contains(result.ForLLM, want) {
 			t.Fatalf("result missing %q:\n%s", want, result.ForLLM)
@@ -75,6 +73,70 @@ func TestTaskStatusTool_ListsVisibleRecords(t *testing.T) {
 	}
 	if strings.Contains(result.ForLLM, "delegate-other") {
 		t.Fatalf("result leaked other chat task:\n%s", result.ForLLM)
+	}
+}
+
+func TestTaskStatusTool_ListReturnsNewestRecordsWithinDefaultLimit(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	now := time.Now().UnixMilli()
+	for i := 1; i <= defaultTaskStatusListLimit+2; i++ {
+		if err := registry.Upsert(taskregistry.Record{
+			TaskID:         fmt.Sprintf("delegate-%02d", i),
+			Runtime:        taskregistry.RuntimeDelegate,
+			TaskKind:       "delegate",
+			Channel:        "telegram",
+			ChatID:         "chat-1",
+			Task:           strings.Repeat("x", 500),
+			Status:         taskregistry.StatusSucceeded,
+			DeliveryStatus: taskregistry.DeliveryDelivered,
+			CreatedAt:      now + int64(i),
+		}); err != nil {
+			t.Fatalf("Upsert(delegate-%02d) error = %v", i, err)
+		}
+	}
+
+	tool := NewTaskStatusTool(registry)
+	result := tool.Execute(WithToolContext(context.Background(), "telegram", "chat-1"), nil)
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, "delegate-01") ||
+		strings.Contains(result.ForLLM, "delegate-02") {
+		t.Fatalf("expected oldest records to be omitted:\n%s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "delegate-14") {
+		t.Fatalf("expected newest record:\n%s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "... 2 older task(s) omitted.") {
+		t.Fatalf("expected omission notice:\n%s", result.ForLLM)
+	}
+	if strings.Count(result.ForLLM, "Task delegate-") != defaultTaskStatusListLimit {
+		t.Fatalf(
+			"visible record count = %d, want %d:\n%s",
+			strings.Count(result.ForLLM, "Task delegate-"),
+			defaultTaskStatusListLimit,
+			result.ForLLM,
+		)
+	}
+	if strings.Contains(result.ForLLM, strings.Repeat("x", 241)) {
+		t.Fatalf("list mode included an unbounded task payload:\n%s", result.ForLLM)
+	}
+}
+
+func TestTaskStatusTool_ListLimitValidation(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	tool := NewTaskStatusTool(registry)
+
+	for _, args := range []map[string]any{
+		{"limit": 0},
+		{"limit": maxTaskStatusListLimit + 1},
+		{"limit": 1.5},
+		{"limit": "12"},
+	} {
+		result := tool.Execute(context.Background(), args)
+		if !result.IsError {
+			t.Fatalf("expected invalid limit %v to fail", args["limit"])
+		}
 	}
 }
 
