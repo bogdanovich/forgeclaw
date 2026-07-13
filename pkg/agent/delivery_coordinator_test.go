@@ -123,6 +123,22 @@ func TestDecideAsyncToolResultDelivery(t *testing.T) {
 			},
 		},
 		{
+			name: "user only durable deliverable publishes even when silent",
+			in: (&tools.ToolResult{
+				ForLLM:      "internal research envelope",
+				Silent:      true,
+				Deliverable: &tools.DeliverableResult{Text: "complete research report"},
+			}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly),
+			want: AsyncDeliveryDecision{
+				DeliveryMode:  tools.AsyncDeliveryUserOnly,
+				PublishToUser: true,
+				QueueParent:   false,
+				ParentHandled: true,
+				ContentLen:    -1,
+				ForUserLen:    len("complete research report"),
+			},
+		},
+		{
 			name: "error is surfaced in decision",
 			in: (&tools.ToolResult{
 				ForLLM:  "failed",
@@ -629,6 +645,32 @@ func TestDeliverAsyncToolCompletion_FailedDeliveryRecordsCompletionError(t *test
 	if !strings.Contains(rec.DeliveryError, "publish failed") {
 		t.Fatalf("DeliveryError = %q, want publish failed", rec.DeliveryError)
 	}
+}
+
+func TestDeliverAsyncToolCompletion_UserOnlyDurableDeliverableIsDelivered(t *testing.T) {
+	al, msgBus, ts, workspace := newDeliveryCoordinatorTestRuntime(t, "ok")
+	taskID := "coordinator-durable-report"
+	upsertAsyncTaskForTest(t, al, workspace, taskID)
+	fullReport := strings.Repeat("research result ", 700)
+	result := (&tools.ToolResult{
+		ForLLM:      "internal research envelope",
+		Silent:      true,
+		AsyncTaskID: taskID,
+		Deliverable: &tools.DeliverableResult{Text: fullReport},
+	}).WithAsyncDelivery(tools.AsyncDeliveryUserOnly)
+
+	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
+		TurnState:    ts,
+		ToolName:     "spawn",
+		CompletionID: "durable-report-completion",
+		Result:       result,
+		Decision:     decideAsyncToolResultDelivery(result),
+	})
+
+	waitForOutboundMessage(t, msgBus.OutboundChan(), 2*time.Second, func(msg bus.OutboundMessage) bool {
+		return msg.Content == fullReport
+	})
+	assertTaskDeliveryStatusForTest(t, al, workspace, taskID, taskregistry.DeliveryDelivered)
 }
 
 func TestDeliverAsyncToolCompletion_ErrorDeliveryUpdatesTaskStatus(t *testing.T) {
