@@ -11,6 +11,7 @@ picoclaw doctor
 picoclaw doctor --json
 picoclaw doctor --strict
 picoclaw doctor --config /path/to/config.json
+picoclaw doctor --stale-task-age 45m --pending-delivery-age 20m
 ```
 
 ## Exit Semantics
@@ -28,6 +29,13 @@ and `findings`. Each finding has `id`, `severity`, `status`, `title`,
 
 Evidence never includes secret values. Credential checks report only document
 paths and a presence summary.
+
+Operational checks inspect each unique configured agent workspace. They read
+persisted JSON directly and never instantiate state stores that prune, save,
+lock, reconcile, or create directories. Missing state files are normal. The
+default thresholds are 30 minutes for active tasks, 15 minutes for pending
+terminal deliveries, 24 hours for recent failures, and 10 minutes for gateway
+handoffs; use the corresponding duration flags to tune them.
 
 ## Checks
 
@@ -53,3 +61,11 @@ paths and a presence summary.
 | `models.fallback_cycle` | fail | Cyclic fallback chains can prevent predictable failover. | Remove an edge in the cycle. | Reports configured graph cycles only. |
 | `agents.fallback_missing` | fail | Missing agent/subagent model references can prevent startup or delegation. | Add the model or update the reference. | Static agent model references only. |
 | `tokens.context_inconsistent` | fail/warning | Inconsistent token/window/summarization settings can produce invalid requests or ineffective compaction. | Keep `max_tokens` below context and summarization thresholds sane. | Uses configured defaults, not provider runtime metadata. |
+| `state.unreadable` | error | Malformed or unreadable persisted state prevents a trustworthy operational audit. | Repair permissions/JSON or restore trusted state. | Contents and parse details are omitted to avoid leaking task data. |
+| `tasks.stale_active` | fail | Old queued/running tasks may have lost their runtime owner. | Inspect and reconcile or restart affected tasks. | Uses persisted heartbeat/start/create timestamps and a configurable threshold. |
+| `tasks.recent_failure` | warning | Recent failed, timed-out, or lost tasks may need attention. | Inspect task status and retry where appropriate. | Historical failures outside the configured window are ignored. |
+| `deliveries.pending_terminal` | warning | Terminal tasks with old pending delivery may never reach recipients. | Inspect and settle or retry delivery. | Reports aggregate counts only. |
+| `deliveries.recent_failure` | warning | Failed or parent-missing deliveries indicate lost results. | Check channel/parent health and retry safely. | Historical failures outside the configured window are ignored. |
+| `restart.reconciliation_pending` | fail | Old pending/running restart or deploy sentinels indicate incomplete reconciliation. | Inspect handoff status/logs before retrying. | Reads the default gateway workspace only. |
+| `restart.continuation_pending` | warning | A terminal handoff lacks continuation acknowledgement. | Inspect channel delivery and acknowledge/retry safely. | Cannot prove whether an out-of-band notification arrived. |
+| `restart.recent_failure` | warning | A restart/deploy handoff failed recently. | Inspect handoff status and logs. | Historical failures outside the configured window are ignored. |

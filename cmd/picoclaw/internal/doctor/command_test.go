@@ -19,7 +19,9 @@ func TestNewDoctorCommand(t *testing.T) {
 	if cmd.RunE == nil {
 		t.Fatal("RunE is nil")
 	}
-	for _, name := range []string{"config", "json", "strict"} {
+	for _, name := range []string{
+		"config", "json", "strict", "stale-task-age", "pending-delivery-age", "recent-failure-age", "handoff-age",
+	} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("missing flag %q", name)
 		}
