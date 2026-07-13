@@ -26,6 +26,10 @@ type gatewayHandoffStatusTool struct {
 
 func (t *gatewayHandoffStatusTool) Name() string { return "gateway_handoff_status" }
 
+func (t *gatewayHandoffStatusTool) ToolSteeringSafety(map[string]any) tools.SteeringSafety {
+	return tools.SteeringSafetyReadOnly
+}
+
 func (t *gatewayHandoffStatusTool) Description() string {
 	return "Show the latest gateway restart and deploy handoff status."
 }

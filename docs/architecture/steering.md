@@ -119,7 +119,7 @@ Steering is checked at the following points in the agent cycle:
 
 ## Tool cancellation safety
 
-Tools optionally implement `ToolSteeringSafety()`. The declared value controls
+Tools optionally implement `ToolSteeringSafety(args)`. The declared value controls
 only calls that have not been dispatched:
 
 | Classification | Pending-call decision |
@@ -132,7 +132,15 @@ only calls that have not been dispatched:
 Once a tool has been dispatched, ForgeClaw lets it finish. Steering does not
 cancel its context because cancellation after an external commit could leave
 the runtime and external system in disagreement. Tool authors must classify
-the externally visible operation, not merely its Go implementation.
+the externally visible operation, not merely its Go implementation. Call
+arguments support mixed-operation tools: `exec` treats `list`, `poll`, and
+`read` as read-only, while commands and session writes, keys, or kills are
+cancellable.
+
+All built-in tool types declare a policy. Remote MCP annotations are not used
+as authorization to continue because MCP defines them as untrusted hints;
+dynamic MCP calls deliberately remain `unknown` unless a trusted wrapper
+implements a stronger local policy.
 
 ### Preventing unwanted side effects
 

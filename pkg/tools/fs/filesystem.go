@@ -341,7 +341,7 @@ func (t *ReadFileTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (t *ReadFileTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (t *ReadFileTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyReadOnly
 }
 
@@ -353,7 +353,7 @@ func (t *ReadFileLinesTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (t *ReadFileLinesTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (t *ReadFileLinesTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyReadOnly
 }
 
@@ -1026,7 +1026,7 @@ func (t *ListDirTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (t *ListDirTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (t *ListDirTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyReadOnly
 }
 

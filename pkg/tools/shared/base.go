@@ -36,7 +36,7 @@ const (
 // SteeringSafetyProvider lets a tool declare whether a pending call may be
 // skipped safely. This policy is evaluated before dispatch, never mid-call.
 type SteeringSafetyProvider interface {
-	ToolSteeringSafety() SteeringSafety
+	ToolSteeringSafety(args map[string]any) SteeringSafety
 }
 
 const (

@@ -264,10 +264,9 @@ toolLoop:
 
 		toolName := tc.Name
 		toolArgs := cloneStringAnyMap(tc.Arguments)
-		if runner.skipPendingToolForInterrupt(tc, toolName) {
+		if p.Interaction.Hooks == nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
 			continue
 		}
-		classifiedToolName := toolName
 		denyByTurnProfile := func() bool {
 			if turnProfileToolAllowed(ts.profile, toolName) {
 				return false
@@ -311,6 +310,7 @@ toolLoop:
 			case HookActionRespond:
 				if toolReq != nil && toolReq.HookResult != nil {
 					hookResult := toolReq.HookResult
+					runner.recordCommittedHookResponseDecision(tc, toolName)
 
 					argsJSON, _ := json.Marshal(toolArgs)
 					argsPreview := utils.Truncate(string(argsJSON), 200)
@@ -444,7 +444,7 @@ toolLoop:
 				return ToolControlBreak
 			}
 		}
-		if toolName != classifiedToolName && runner.skipPendingToolForInterrupt(tc, toolName) {
+		if p.Interaction.Hooks != nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
 			continue
 		}
 
@@ -908,20 +908,29 @@ func (r *toolLoopRunner) captureSteering(markAdditional bool) {
 	r.exec.pendingMessages = append(r.exec.pendingMessages, steerMsgs...)
 }
 
-func (r *toolLoopRunner) skipPendingToolForInterrupt(tc providers.ToolCall, toolName string) bool {
+func (r *toolLoopRunner) pendingInterruptCause() string {
 	cause := ""
 	if len(r.exec.pendingMessages) > 0 {
 		cause = "queued_user_steering"
 	} else if gracefulPending, _ := r.ts.gracefulInterruptRequested(); gracefulPending {
 		cause = "graceful_interrupt"
 	}
+	return cause
+}
+
+func (r *toolLoopRunner) skipPendingToolForInterrupt(
+	tc providers.ToolCall,
+	toolName string,
+	toolArgs map[string]any,
+) bool {
+	cause := r.pendingInterruptCause()
 	if cause == "" {
 		return false
 	}
 
 	safety := tools.SteeringSafetyUnknown
 	if r.ts != nil && r.ts.agent != nil && r.ts.agent.Tools != nil {
-		safety = r.ts.agent.Tools.SteeringSafety(toolName)
+		safety = r.ts.agent.Tools.SteeringSafety(toolName, toolArgs)
 	}
 	decision := "skip"
 	if cause == "queued_user_steering" &&
@@ -945,8 +954,25 @@ func (r *toolLoopRunner) skipPendingToolForInterrupt(tc providers.ToolCall, tool
 		reason = "graceful interrupt requested"
 		content = "Skipped due to graceful interrupt."
 	}
-	r.appendSkippedToolMessage(tc, reason, content)
+	skippedTC := tc
+	skippedTC.Name = toolName
+	r.appendSkippedToolMessage(skippedTC, reason, content)
 	return true
+}
+
+func (r *toolLoopRunner) recordCommittedHookResponseDecision(tc providers.ToolCall, toolName string) {
+	cause := r.pendingInterruptCause()
+	if cause == "" {
+		return
+	}
+	r.p.emitEvent(
+		runtimeevents.KindAgentToolSteeringDecision,
+		r.ts.eventMeta("runTurn", "turn.tool.steering_decision"),
+		ToolSteeringDecisionPayload{
+			ToolCallID: tc.ID, Tool: toolName, Classification: string(tools.SteeringSafetyNonCancellable),
+			Decision: "finish", Cause: cause,
+		},
+	)
 }
 
 func (r *toolLoopRunner) appendPendingSubTurnResult() {

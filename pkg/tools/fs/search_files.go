@@ -56,7 +56,7 @@ func (t *SearchFilesTool) ToolLoopSemantics() loopguard.Semantics {
 	return loopguard.SemanticsReadOnlyIdempotent
 }
 
-func (t *SearchFilesTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (t *SearchFilesTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyReadOnly
 }
 

@@ -38,7 +38,11 @@ func (t *steeringSafetyTestTool) Description() string { return "steering safety 
 func (t *steeringSafetyTestTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
-func (t *steeringSafetyTestTool) ToolSteeringSafety() tools.SteeringSafety { return t.safety }
+
+func (t *steeringSafetyTestTool) ToolSteeringSafety(map[string]any) tools.SteeringSafety {
+	return t.safety
+}
+
 func (t *steeringSafetyTestTool) Execute(context.Context, map[string]any) *tools.ToolResult {
 	t.executions++
 	return tools.SilentResult(t.name + " complete")

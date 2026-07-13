@@ -2,22 +2,22 @@ package fstools
 
 import toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 
-func (*LoadImageTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (*LoadImageTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyReadOnly
 }
 
-func (*WriteFileTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (*WriteFileTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyCancellable
 }
 
-func (*AppendFileTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (*AppendFileTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyCancellable
 }
 
-func (*ApplyPatchTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (*ApplyPatchTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyCancellable
 }
 
-func (*SendFileTool) ToolSteeringSafety() toolshared.SteeringSafety {
+func (*SendFileTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyCancellable
 }
