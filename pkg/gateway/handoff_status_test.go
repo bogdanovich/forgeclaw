@@ -74,6 +74,7 @@ func TestReportDeployHandoffShowsFailureAndDoesNotDuplicate(t *testing.T) {
 		Command:     "/opt/deploy.sh",
 		OutputTail:  "health check failed",
 		ExitCode:    7,
+		Handoff:     true,
 		Origin:      RestartOrigin{Channel: "slack", ChatID: "C123", TopicID: "thread-1", SessionKey: "session-2"},
 		RequestedAt: now,
 		UpdatedAt:   now,
@@ -109,7 +110,7 @@ func TestReportDeployHandoffLeavesUndeliverableOriginPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if writeErr := store.Write(DeploySentinel{Kind: "deploy", Status: "succeeded"}); writeErr != nil {
+	if writeErr := store.Write(DeploySentinel{Kind: "deploy", Status: "succeeded", Handoff: true}); writeErr != nil {
 		t.Fatal(writeErr)
 	}
 	reportDeployHandoff(context.Background(), bus.NewMessageBus(), store)

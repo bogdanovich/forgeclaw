@@ -41,7 +41,12 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin := RestartOrigin{Channel: "telegram", ChatID: "chat-1", TopicID: "topic-1", SessionKey: "session-1"}
+	origin := RestartOrigin{
+		Channel:    "telegram",
+		ChatID:     "chat-1",
+		TopicID:    "topic-1",
+		SessionKey: "session-1",
+	}
 	out, code, err := runner.Run(context.Background(), "current", origin)
 	if err != nil || code != 0 || out != "--target:current" {
 		t.Fatalf("Run() = %q, %d, %v", out, code, err)
@@ -50,7 +55,9 @@ func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
 		t.Fatal("expected invalid target error")
 	}
 
-	data, err := os.ReadFile(filepath.Join(workspace, "state", "gateway-deploy", "deploy-sentinel.json"))
+	data, err := os.ReadFile(
+		filepath.Join(workspace, "state", "gateway-deploy", "deploy-sentinel.json"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +98,9 @@ func TestGatewayDeployToolPersistsTopicOrigin(t *testing.T) {
 	if result.Err != nil {
 		t.Fatalf("Execute() error = %v", result.Err)
 	}
-	data, err := os.ReadFile(filepath.Join(workspace, "state", "gateway-deploy", "deploy-sentinel.json"))
+	data, err := os.ReadFile(
+		filepath.Join(workspace, "state", "gateway-deploy", "deploy-sentinel.json"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,9 +114,70 @@ func TestGatewayDeployToolPersistsTopicOrigin(t *testing.T) {
 	}
 }
 
+type fakeDeployHandoffLauncher struct {
+	called bool
+	target string
+	origin RestartOrigin
+}
+
+func (l *fakeDeployHandoffLauncher) Launch(
+	_ context.Context,
+	_ *DeployRunner,
+	target string,
+	origin RestartOrigin,
+) error {
+	l.called = true
+	l.target = target
+	l.origin = origin
+	return nil
+}
+
+func TestGatewayDeployToolUsesDetachedHandoffForConfiguredTarget(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := deployConfig(writeDeployScript(t, "true"))
+	cfg.HandoffTargets = []string{"current"}
+	runner, err := NewDeployRunner(cfg, workspace, "picoclaw-main.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &fakeDeployHandoffLauncher{}
+	tool := &GatewayDeployTool{runner: runner, launcher: launcher}
+	ctx := tools.WithToolTopicID(
+		tools.WithToolContext(context.Background(), "telegram", "chat-1"), "topic-1",
+	)
+	result := tool.Execute(ctx, nil)
+	if result.Err != nil {
+		t.Fatalf("Execute() error = %v", result.Err)
+	}
+	if !launcher.called || launcher.target != "current" {
+		t.Fatalf("launcher = %#v", launcher)
+	}
+	if launcher.origin.Channel != "telegram" || launcher.origin.ChatID != "chat-1" ||
+		launcher.origin.TopicID != "topic-1" {
+		t.Fatalf("launcher origin = %#v", launcher.origin)
+	}
+	if !strings.Contains(result.ForUser, "detached worker") {
+		t.Fatalf("result = %q", result.ForUser)
+	}
+}
+
+func TestDeployHandoffUnitNameIsStableAndScopedToGroup(t *testing.T) {
+	first := deployHandoffUnitName("picoclaw-local")
+	if first != deployHandoffUnitName("picoclaw-local") {
+		t.Fatalf("unit name must be stable")
+	}
+	if first == deployHandoffUnitName("another-group") {
+		t.Fatalf("unit name must include group identity")
+	}
+}
+
 func TestDeployRunnerFailureTimeoutAndTruncation(t *testing.T) {
 	t.Run("failure", func(t *testing.T) {
-		r, _ := NewDeployRunner(deployConfig(writeDeployScript(t, "echo fail; exit 7")), t.TempDir(), "")
+		r, _ := NewDeployRunner(
+			deployConfig(writeDeployScript(t, "echo fail; exit 7")),
+			t.TempDir(),
+			"",
+		)
 		_, code, err := r.Run(context.Background(), "", RestartOrigin{})
 		if err == nil || code != 7 {
 			t.Fatalf("code=%d err=%v", code, err)
@@ -160,7 +230,10 @@ func TestDeployRunnerRejectsConcurrentDeploy(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, _, err := second.Run(context.Background(), "", RestartOrigin{}); !errors.Is(err, ErrDeployAlreadyRunning) {
+	if _, _, err := second.Run(context.Background(), "", RestartOrigin{}); !errors.Is(
+		err,
+		ErrDeployAlreadyRunning,
+	) {
 		t.Fatalf("second Run() error = %v, want ErrDeployAlreadyRunning", err)
 	}
 	if err := <-firstDone; err != nil {

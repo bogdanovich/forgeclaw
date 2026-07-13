@@ -481,7 +481,10 @@ func setupDeployTool(cfg *config.Config, agentLoop *agent.AgentLoop) error {
 		if err != nil {
 			return nil, err
 		}
-		return &GatewayDeployTool{runner: runner}, nil
+		return &GatewayDeployTool{
+			runner:   runner,
+			launcher: newDeployHandoffLauncher(reloadCfg.Gateway.SafeRestart),
+		}, nil
 	})
 }
 

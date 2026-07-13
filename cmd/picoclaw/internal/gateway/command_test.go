@@ -24,7 +24,10 @@ func TestNewGatewayCommand(t *testing.T) {
 	assert.Nil(t, cmd.PersistentPreRun)
 	assert.Nil(t, cmd.PersistentPostRun)
 
-	assert.False(t, cmd.HasSubCommands())
+	worker, _, err := cmd.Find([]string{"deploy-worker"})
+	require.NoError(t, err)
+	require.NotNil(t, worker)
+	assert.True(t, worker.Hidden)
 
 	assert.True(t, cmd.HasFlags())
 	assert.NotNil(t, cmd.Flags().Lookup("debug"))

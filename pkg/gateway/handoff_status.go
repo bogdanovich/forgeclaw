@@ -17,6 +17,8 @@ import (
 
 const handoffOutputPreviewLimit = 1024
 
+const deployHandoffPollInterval = time.Second
+
 type gatewayHandoffStatusTool struct {
 	restartStore *RestartSentinelStore
 	deployStore  *DeploySentinelStore
@@ -76,7 +78,9 @@ func reportGatewayHandoffStatus(ctx context.Context, cfg *config.Config, msgBus 
 		reportRestartHandoff(ctx, msgBus, restartStore)
 	}
 	if cfg.Gateway.Deploy.Enabled {
-		reportDeployHandoff(ctx, msgBus, deployStore)
+		if reportDeployHandoff(ctx, msgBus, deployStore) {
+			go waitForDeployHandoff(ctx, msgBus, deployStore)
+		}
 	}
 }
 
@@ -107,25 +111,48 @@ func reportRestartHandoff(ctx context.Context, msgBus *bus.MessageBus, store *Re
 	}
 }
 
-func reportDeployHandoff(ctx context.Context, msgBus *bus.MessageBus, store *DeploySentinelStore) {
+// reportDeployHandoff returns true while a detached worker is still running.
+func reportDeployHandoff(ctx context.Context, msgBus *bus.MessageBus, store *DeploySentinelStore) bool {
 	sentinel, err := store.Read()
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			logger.WarnCF("gateway", "Failed to read deploy sentinel", map[string]any{"error": err.Error()})
 		}
-		return
+		return false
 	}
 	logger.InfoCF("gateway", "Latest deploy sentinel", deployLogFields(sentinel))
+	if !sentinel.Handoff {
+		return false
+	}
+	if sentinel.Status == "running" {
+		return true
+	}
 	if !sentinel.ContinuationSentAt.IsZero() {
-		return
+		return false
 	}
 	content := formatDeployContinuation(sentinel)
 	if err := publishHandoffContinuation(ctx, msgBus, sentinel.Origin, content); err != nil {
 		logger.WarnCF("gateway", "Failed to publish deploy continuation", map[string]any{"error": err.Error()})
-		return
+		return false
 	}
 	if err := store.MarkContinuationSent(time.Now().UTC()); err != nil {
 		logger.WarnCF("gateway", "Failed to mark deploy continuation sent", map[string]any{"error": err.Error()})
+	}
+	return false
+}
+
+func waitForDeployHandoff(ctx context.Context, msgBus *bus.MessageBus, store *DeploySentinelStore) {
+	ticker := time.NewTicker(deployHandoffPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !reportDeployHandoff(ctx, msgBus, store) {
+				return
+			}
+		}
 	}
 }
 
