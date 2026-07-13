@@ -227,7 +227,7 @@ func buildDispatchView(inbound bus.InboundContext, identityLinks map[string][]st
 		view.Space = fmt.Sprintf("%s:%s", spaceType, strings.ToLower(spaceID))
 	}
 
-	if chatID := strings.TrimSpace(inbound.ChatID); chatID != "" {
+	if chatID := dispatchChatID(inbound); chatID != "" {
 		chatType := strings.ToLower(strings.TrimSpace(inbound.ChatType))
 		if chatType == "" {
 			chatType = "direct"
@@ -242,6 +242,20 @@ func buildDispatchView(inbound bus.InboundContext, identityLinks map[string][]st
 	view.Sender = canonicalDispatchSenderID(inbound.Channel, inbound.SenderID, identityLinks)
 
 	return view
+}
+
+// dispatchChatID returns the canonical chat identity used by dispatch rules.
+// Telegram forum ingress uses a composite ChatID (<chat>/<topic>) for outbound
+// delivery, while TopicID carries the same topic separately. Routing must match
+// the base chat and topic independently so normal chat+topic rules work.
+func dispatchChatID(inbound bus.InboundContext) string {
+	chatID := strings.TrimSpace(inbound.ChatID)
+	topicID := strings.TrimSpace(inbound.TopicID)
+	if !strings.EqualFold(strings.TrimSpace(inbound.Channel), "telegram") || topicID == "" {
+		return chatID
+	}
+
+	return strings.TrimSuffix(chatID, "/"+topicID)
 }
 
 func normalizeDispatchSelector(selector config.DispatchSelector) config.DispatchSelector {
