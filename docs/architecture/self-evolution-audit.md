@@ -1,9 +1,14 @@
-# Self-Evolution Security And Effectiveness Audit
+# Self-Evolution Effectiveness And Safety Audit
 
 Status: initial source and production evidence audit against
 `bogdanovich/forgeclaw:main` at `70a64648`.
 
 ## Decision
+
+The primary question is whether the subsystem learns reusable behavior that
+measurably improves future tasks. Security and mutation controls are necessary
+acceptance gates, but they cannot justify retaining a subsystem that produces
+no useful improvement.
 
 The current subsystem has not demonstrated that it improves agent outcomes. It
 occasionally creates a concrete, potentially reusable procedure, but most
@@ -17,9 +22,10 @@ quality and security gates land. `apply` must remain unavailable to production
 until a held-out replay gate demonstrates improvement and rollback is an
 operator-usable, durable operation.
 
-This audit does not propose more learning capability. It identifies where the
-current subsystem converts untrusted runtime text into durable records, model
-prompts, candidate skills, workspace mutations, and lifecycle deletion.
+This audit does not propose more learning capability. It first measures whether
+current drafts add value over the existing agent, then identifies where any
+surviving useful path converts untrusted runtime text into durable records,
+model prompts, candidate skills, workspace mutations, and lifecycle deletion.
 
 ## Scope And Method
 

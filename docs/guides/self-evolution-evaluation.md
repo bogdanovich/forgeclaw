@@ -103,3 +103,28 @@ evidence references so another operator can reproduce each boolean result.
 Do not write a rubric after seeing candidate output, substitute a model's
 opinion for an observable criterion, or reuse the task that generated the
 draft. Those practices measure overfitting, not learning.
+
+### Running A Configured Model Safely
+
+The `pkg/evalscenario` package exposes `RunWithProvider` for explicit
+operator-run trials with a configured model. The runner creates a disposable
+workspace, disables every production tool family and MCP server, and registers
+only caller-supplied deterministic stub tools. A scenario may provide baseline
+instructions, isolated skill files, the exact active-skill set, and realistic
+tool descriptions and parameter schemas. Live scenarios must also declare a
+context window, output-token limit, and tool-turn limit matching the evaluated
+deployment when package defaults are not representative. The observation
+includes tool-call counts and arguments so task criteria can be derived from
+behavior rather than the model's explanation of what it did.
+
+Use the same provider/model, prompt, tool schemas, stub results, and declared
+seed for both sides of a pair. The candidate side must differ only by one
+active draft. Run several pairs because a configured model is not deterministic
+even when its request options include a seed. Do not register a production MCP
+tool or point a scenario at a production database, vault, or workspace.
+
+`RunWithProvider` does not run automatically, load production configuration, or
+decide whether an observation passed. Operator code must load the provider
+explicitly, convert observable results into the predeclared criteria, sanitize
+evidence references, and pass the resulting paired trials to `picoclaw eval
+evolution`. CI uses the scripted `Run` path and never makes model calls.

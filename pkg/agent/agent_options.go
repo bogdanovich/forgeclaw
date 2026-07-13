@@ -1,6 +1,9 @@
 package agent
 
-import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+import (
+	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+)
 
 // AgentLoopOption configures an AgentLoop at construction time.
 type AgentLoopOption func(*AgentLoop)
@@ -25,5 +28,33 @@ func WithRuntimeEvents(bus runtimeevents.Bus) AgentLoopOption {
 func WithIsolatedToolBootstrap() AgentLoopOption {
 	return func(al *AgentLoop) {
 		al.isolatedToolBootstrap = true
+	}
+}
+
+// WithIsolatedSkillBootstrap restricts every agent's skill loader to its own
+// workspace. It prevents tests and evaluations from observing global or
+// built-in skills installed in the host process environment.
+func WithIsolatedSkillBootstrap() AgentLoopOption {
+	return func(al *AgentLoop) {
+		if al == nil || al.registry == nil || al.cfg == nil {
+			return
+		}
+		al.isolatedSkillBootstrap = true
+		al.isolateSkillRegistry(al.registry, al.cfg)
+	}
+}
+
+func (al *AgentLoop) isolateSkillRegistry(registry *AgentRegistry, cfg *config.Config) {
+	if registry == nil || cfg == nil {
+		return
+	}
+	for _, agentID := range registry.ListAgentIDs() {
+		instance, ok := registry.GetAgent(agentID)
+		if !ok || instance == nil {
+			continue
+		}
+		instance.ContextBuilder = newContextBuilder(instance.Workspace, "", "").
+			WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker).
+			WithAgentDiscovery(instance.ID, registry.ListSpawnableAgents)
 	}
 }
