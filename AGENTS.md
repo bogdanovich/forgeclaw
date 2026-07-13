@@ -21,3 +21,15 @@ Branch policy:
 - Use conventional PR titles with a functional scope and colon, such as
   `feat(providers): add Gemini search`, `fix(telegram): handle media groups`,
   `fix(agents): preserve topic routing`, or `feat(tools): add update_plan`.
+
+Formatting policy:
+
+- CI enables `golines` as a formatter with a 120-character maximum line
+  length (`.golangci.yaml`), in addition to `gofmt` and `gofumpt`.
+- For every changed Go file, format to the CI rule before committing with
+  `golangci-lint fmt --build-tags=goolm,stdjson <changed Go packages>` (or
+  `golangci-lint run --build-tags=goolm,stdjson <changed Go packages>` when
+  validation is needed). Do not rely on `gofmt` alone.
+- Manually wrap composite literals, calls, conditions, and test assertions
+  approaching 120 characters when the formatter cannot run locally. This
+  prevents avoidable CI-only `golines` failures.
