@@ -151,6 +151,73 @@ func TestResolveRoute_DispatchOverridesSessionDimensions(t *testing.T) {
 	}
 }
 
+func TestResolveRoute_TelegramForumTopicMatchesBaseChatAndTopic(t *testing.T) {
+	cfg := testConfig([]config.AgentConfig{
+		{ID: "main", Default: true},
+		{ID: "coding"},
+	})
+	cfg.Agents.Dispatch = &config.DispatchConfig{
+		Rules: []config.DispatchRule{
+			{
+				Name:  "coding-topic",
+				Agent: "coding",
+				When: config.DispatchSelector{
+					Channel: "telegram",
+					Chat:    "group:-100123",
+					Topic:   "topic:42",
+				},
+			},
+		},
+	}
+	r := NewRouteResolver(cfg)
+
+	route := r.ResolveRoute(bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "-100123/42",
+		ChatType: "group",
+		TopicID:  "42",
+	})
+
+	if route.AgentID != "coding" {
+		t.Fatalf("AgentID = %q, want coding", route.AgentID)
+	}
+	if route.MatchedBy != "dispatch.rule:coding-topic" {
+		t.Fatalf("MatchedBy = %q, want dispatch.rule:coding-topic", route.MatchedBy)
+	}
+}
+
+func TestResolveRoute_TelegramForumTopicDoesNotMatchDifferentTopic(t *testing.T) {
+	cfg := testConfig([]config.AgentConfig{
+		{ID: "main", Default: true},
+		{ID: "coding"},
+	})
+	cfg.Agents.Dispatch = &config.DispatchConfig{
+		Rules: []config.DispatchRule{
+			{
+				Name:  "coding-topic",
+				Agent: "coding",
+				When: config.DispatchSelector{
+					Channel: "telegram",
+					Chat:    "group:-100123",
+					Topic:   "topic:42",
+				},
+			},
+		},
+	}
+	r := NewRouteResolver(cfg)
+
+	route := r.ResolveRoute(bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "-100123/43",
+		ChatType: "group",
+		TopicID:  "43",
+	})
+
+	if route.AgentID != "main" {
+		t.Fatalf("AgentID = %q, want main", route.AgentID)
+	}
+}
+
 func TestResolveRoute_DispatchMentionedRule(t *testing.T) {
 	cfg := testConfig([]config.AgentConfig{
 		{ID: "main", Default: true},
