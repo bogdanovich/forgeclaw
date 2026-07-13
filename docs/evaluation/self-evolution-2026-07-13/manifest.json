@@ -1,0 +1,697 @@
+{
+  "schema_version": "forgeclaw.evolution_eval_manifest.v1",
+  "source": "operator-held-out nutrition trials 2026-07-13",
+  "sanitized": true,
+  "why": "Measure whether production self-evolution drafts improve synthetic unseen nutrition tasks over the current instruction baseline.",
+  "policy": {
+    "min_trials": 3,
+    "min_score_delta": 0.2,
+    "min_useful_yield": 0.25,
+    "min_coverage": 1,
+    "min_evaluated_candidates": 4
+  },
+  "candidates": [
+    {
+      "id": "draft-rule-28b32d9d847d",
+      "source_record_ids": [
+        "rule-28b32d9d847d"
+      ],
+      "cases": [
+        {
+          "id": "nearby-additive",
+          "source": "synthetic operator-held-out fixture v1",
+          "held_out_record_ids": [
+            "held-out-2026-07-13-nearby-additive"
+          ],
+          "criteria": [
+            {
+              "name": "correct_mutation_path",
+              "weight": 0.7,
+              "required": true
+            },
+            {
+              "name": "completed_requested_action",
+              "weight": 0.3,
+              "required": true
+            }
+          ],
+          "protected": [
+            "single_delivery",
+            "bounded_tool_calls",
+            "no_wrong_mutation"
+          ],
+          "baseline_trials": [
+            {
+              "seed": "nearby-additive-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/nearby-additive/nearby-additive-pair-1-baseline"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 12613
+            },
+            {
+              "seed": "nearby-additive-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/nearby-additive/nearby-additive-pair-2-baseline"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 8111
+            },
+            {
+              "seed": "nearby-additive-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/nearby-additive/nearby-additive-pair-3-baseline"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 15620
+            }
+          ],
+          "candidate_trials": [
+            {
+              "seed": "nearby-additive-pair-1",
+              "criteria": {
+                "completed_requested_action": false,
+                "correct_mutation_path": false
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": false,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/nearby-additive/nearby-additive-pair-1-candidate"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 11849
+            },
+            {
+              "seed": "nearby-additive-pair-2",
+              "criteria": {
+                "completed_requested_action": false,
+                "correct_mutation_path": false
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": false,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/nearby-additive/nearby-additive-pair-2-candidate"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 10620
+            },
+            {
+              "seed": "nearby-additive-pair-3",
+              "criteria": {
+                "completed_requested_action": false,
+                "correct_mutation_path": false
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": false,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/nearby-additive/nearby-additive-pair-3-candidate"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 10452
+            }
+          ]
+        },
+        {
+          "id": "explicit-merge",
+          "source": "synthetic operator-held-out fixture v1",
+          "held_out_record_ids": [
+            "held-out-2026-07-13-explicit-merge"
+          ],
+          "criteria": [
+            {
+              "name": "correct_mutation_path",
+              "weight": 0.7,
+              "required": true
+            },
+            {
+              "name": "completed_requested_action",
+              "weight": 0.3,
+              "required": true
+            }
+          ],
+          "protected": [
+            "single_delivery",
+            "bounded_tool_calls",
+            "no_wrong_mutation"
+          ],
+          "baseline_trials": [
+            {
+              "seed": "explicit-merge-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/explicit-merge/explicit-merge-pair-1-baseline"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 11279
+            },
+            {
+              "seed": "explicit-merge-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/explicit-merge/explicit-merge-pair-2-baseline"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 8586
+            },
+            {
+              "seed": "explicit-merge-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/explicit-merge/explicit-merge-pair-3-baseline"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 8417
+            }
+          ],
+          "candidate_trials": [
+            {
+              "seed": "explicit-merge-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/explicit-merge/explicit-merge-pair-1-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 14990
+            },
+            {
+              "seed": "explicit-merge-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/explicit-merge/explicit-merge-pair-2-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 22122
+            },
+            {
+              "seed": "explicit-merge-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-28b32d9d847d/explicit-merge/explicit-merge-pair-3-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 21995
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "draft-rule-60e30041ae5b",
+      "source_record_ids": [
+        "rule-60e30041ae5b"
+      ],
+      "cases": [
+        {
+          "id": "label-correction",
+          "source": "synthetic operator-held-out fixture v1",
+          "held_out_record_ids": [
+            "held-out-2026-07-13-label-correction"
+          ],
+          "criteria": [
+            {
+              "name": "correct_mutation_path",
+              "weight": 0.7,
+              "required": true
+            },
+            {
+              "name": "completed_requested_action",
+              "weight": 0.3,
+              "required": true
+            }
+          ],
+          "protected": [
+            "single_delivery",
+            "bounded_tool_calls",
+            "no_wrong_mutation"
+          ],
+          "baseline_trials": [
+            {
+              "seed": "label-correction-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-60e30041ae5b/label-correction/label-correction-pair-1-baseline"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 9123
+            },
+            {
+              "seed": "label-correction-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-60e30041ae5b/label-correction/label-correction-pair-2-baseline"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 5627
+            },
+            {
+              "seed": "label-correction-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-60e30041ae5b/label-correction/label-correction-pair-3-baseline"
+              ],
+              "tool_calls": 1,
+              "latency_ms": 5431
+            }
+          ],
+          "candidate_trials": [
+            {
+              "seed": "label-correction-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-60e30041ae5b/label-correction/label-correction-pair-1-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 8621
+            },
+            {
+              "seed": "label-correction-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-60e30041ae5b/label-correction/label-correction-pair-2-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 7336
+            },
+            {
+              "seed": "label-correction-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-60e30041ae5b/label-correction/label-correction-pair-3-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 6957
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "draft-rule-408db0ceaa7f",
+      "source_record_ids": [
+        "rule-408db0ceaa7f"
+      ],
+      "cases": [
+        {
+          "id": "save-reference",
+          "source": "synthetic operator-held-out fixture v1",
+          "held_out_record_ids": [
+            "held-out-2026-07-13-save-reference"
+          ],
+          "criteria": [
+            {
+              "name": "correct_mutation_path",
+              "weight": 0.7,
+              "required": true
+            },
+            {
+              "name": "completed_requested_action",
+              "weight": 0.3,
+              "required": true
+            }
+          ],
+          "protected": [
+            "single_delivery",
+            "bounded_tool_calls",
+            "no_wrong_mutation"
+          ],
+          "baseline_trials": [
+            {
+              "seed": "save-reference-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-408db0ceaa7f/save-reference/save-reference-pair-1-baseline"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 10855
+            },
+            {
+              "seed": "save-reference-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-408db0ceaa7f/save-reference/save-reference-pair-2-baseline"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 10516
+            },
+            {
+              "seed": "save-reference-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-408db0ceaa7f/save-reference/save-reference-pair-3-baseline"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 9083
+            }
+          ],
+          "candidate_trials": [
+            {
+              "seed": "save-reference-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-408db0ceaa7f/save-reference/save-reference-pair-1-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 10261
+            },
+            {
+              "seed": "save-reference-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-408db0ceaa7f/save-reference/save-reference-pair-2-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 9562
+            },
+            {
+              "seed": "save-reference-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-408db0ceaa7f/save-reference/save-reference-pair-3-candidate"
+              ],
+              "tool_calls": 2,
+              "latency_ms": 10992
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "draft-rule-26df4403edc5",
+      "source_record_ids": [
+        "rule-26df4403edc5"
+      ],
+      "cases": [
+        {
+          "id": "correct-and-reference",
+          "source": "synthetic operator-held-out fixture v1",
+          "held_out_record_ids": [
+            "held-out-2026-07-13-correct-and-reference"
+          ],
+          "criteria": [
+            {
+              "name": "correct_mutation_path",
+              "weight": 0.7,
+              "required": true
+            },
+            {
+              "name": "completed_requested_action",
+              "weight": 0.3,
+              "required": true
+            }
+          ],
+          "protected": [
+            "single_delivery",
+            "bounded_tool_calls",
+            "no_wrong_mutation"
+          ],
+          "baseline_trials": [
+            {
+              "seed": "correct-and-reference-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-26df4403edc5/correct-and-reference/correct-and-reference-pair-1-baseline"
+              ],
+              "tool_calls": 4,
+              "latency_ms": 15361
+            },
+            {
+              "seed": "correct-and-reference-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-26df4403edc5/correct-and-reference/correct-and-reference-pair-2-baseline"
+              ],
+              "tool_calls": 4,
+              "latency_ms": 16868
+            },
+            {
+              "seed": "correct-and-reference-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-26df4403edc5/correct-and-reference/correct-and-reference-pair-3-baseline"
+              ],
+              "tool_calls": 4,
+              "latency_ms": 15817
+            }
+          ],
+          "candidate_trials": [
+            {
+              "seed": "correct-and-reference-pair-1",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-26df4403edc5/correct-and-reference/correct-and-reference-pair-1-candidate"
+              ],
+              "tool_calls": 4,
+              "latency_ms": 18842
+            },
+            {
+              "seed": "correct-and-reference-pair-2",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-26df4403edc5/correct-and-reference/correct-and-reference-pair-2-candidate"
+              ],
+              "tool_calls": 3,
+              "latency_ms": 15825
+            },
+            {
+              "seed": "correct-and-reference-pair-3",
+              "criteria": {
+                "completed_requested_action": true,
+                "correct_mutation_path": true
+              },
+              "protected": {
+                "bounded_tool_calls": true,
+                "no_wrong_mutation": true,
+                "single_delivery": true
+              },
+              "evidence_refs": [
+                "local://nutrition-evolution/draft-rule-26df4403edc5/correct-and-reference/correct-and-reference-pair-3-candidate"
+              ],
+              "tool_calls": 4,
+              "latency_ms": 15181
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
