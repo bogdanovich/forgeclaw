@@ -131,6 +131,7 @@ Core must not accept arbitrary shell fragments from the model or chat command.
       "command": "/home/server/.picoclaw/shared/deploy/picoclaw/deploy.sh",
       "default_target": "current",
       "allowed_targets": ["current", "all", "main", "nutrition", "spouse", "reviewer"],
+      "handoff_targets": ["current", "all"],
       "timeout_seconds": 600
     }
   }
@@ -179,6 +180,13 @@ FORGECLAW_SESSION_KEY=<originating-session>
 The command path should be absolute or validated according to existing config
 policy. The target must come from `allowed_targets`; model-supplied text must
 never become additional shell arguments.
+
+`handoff_targets` identifies targets that can restart the gateway which invoked
+the deploy. On Linux with `safe_restart.service_manager: "systemd-user"`, those
+targets run in a transient systemd worker rather than in the gateway service
+cgroup. The worker survives the restart and records its terminal deploy status
+for the restarted gateway to deliver. Other supervisors keep the ordinary
+synchronous deploy path, so the configuration remains portable.
 
 ## Shared Binary Groups
 

@@ -86,6 +86,7 @@ func NewGatewayCommand() *cobra.Command {
 		"",
 		"Host address for gateway binding (overrides gateway.host for this run)",
 	)
+	cmd.AddCommand(newDeployWorkerCommand())
 
 	return cmd
 }

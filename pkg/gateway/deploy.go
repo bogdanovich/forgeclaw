@@ -29,6 +29,7 @@ type DeploySentinel struct {
 	Command            string        `json:"command"`
 	OutputTail         string        `json:"output_tail,omitempty"`
 	ExitCode           int           `json:"exit_code"`
+	Handoff            bool          `json:"handoff,omitempty"`
 	Origin             RestartOrigin `json:"origin"`
 	RequestedAt        time.Time     `json:"requested_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
@@ -96,7 +97,10 @@ type DeployRunner struct {
 	lockPath           string
 }
 
-func NewDeployRunner(cfg config.GatewayDeployConfig, workspace, service string) (*DeployRunner, error) {
+func NewDeployRunner(
+	cfg config.GatewayDeployConfig,
+	workspace, service string,
+) (*DeployRunner, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("deploy is disabled")
 	}
@@ -117,10 +121,39 @@ func NewDeployRunner(cfg config.GatewayDeployConfig, workspace, service string) 
 	if err != nil {
 		return nil, err
 	}
-	return &DeployRunner{cfg: cfg, workspace: workspace, service: service, store: store, lockPath: lockPath}, nil
+	return &DeployRunner{
+		cfg:       cfg,
+		workspace: workspace,
+		service:   service,
+		store:     store,
+		lockPath:  lockPath,
+	}, nil
 }
 
-func (r *DeployRunner) Run(ctx context.Context, target string, origin RestartOrigin) (string, int, error) {
+func (r *DeployRunner) Run(
+	ctx context.Context,
+	target string,
+	origin RestartOrigin,
+) (string, int, error) {
+	return r.run(ctx, target, origin, false)
+}
+
+// RunHandoffWorker executes a deploy that was detached from the gateway
+// service because the target may restart that service.
+func (r *DeployRunner) RunHandoffWorker(
+	ctx context.Context,
+	target string,
+	origin RestartOrigin,
+) (string, int, error) {
+	return r.run(ctx, target, origin, true)
+}
+
+func (r *DeployRunner) run(
+	ctx context.Context,
+	target string,
+	origin RestartOrigin,
+	handoff bool,
+) (string, int, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		target = strings.TrimSpace(r.cfg.DefaultTarget)
@@ -141,6 +174,7 @@ func (r *DeployRunner) Run(ctx context.Context, target string, origin RestartOri
 		Target:      target,
 		Command:     r.cfg.Command,
 		ExitCode:    -1,
+		Handoff:     handoff,
 		Origin:      origin,
 		RequestedAt: now,
 		UpdatedAt:   now,
@@ -148,7 +182,10 @@ func (r *DeployRunner) Run(ctx context.Context, target string, origin RestartOri
 	if writeErr := r.store.Write(sentinel); writeErr != nil {
 		return "", -1, writeErr
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.cfg.EffectiveTimeoutSeconds())*time.Second)
+	ctx, cancel := context.WithTimeout(
+		ctx,
+		time.Duration(r.cfg.EffectiveTimeoutSeconds())*time.Second,
+	)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.cfg.Command, "--target", target)
 	cmd.Env = append(cmd.Environ(),
@@ -198,7 +235,10 @@ func truncateDeployOutput(s string) string {
 	return "[output truncated]\n" + s[len(s)-deployOutputLimit:]
 }
 
-type GatewayDeployTool struct{ runner *DeployRunner }
+type GatewayDeployTool struct {
+	runner   *DeployRunner
+	launcher DeployHandoffLauncher
+}
 
 func (t *GatewayDeployTool) Name() string { return "gateway_deploy" }
 func (t *GatewayDeployTool) Description() string {
@@ -206,19 +246,35 @@ func (t *GatewayDeployTool) Description() string {
 }
 
 func (t *GatewayDeployTool) Parameters() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{"target": map[string]any{"type": "string"}}}
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"target": map[string]any{"type": "string"}},
+	}
 }
 
 func (t *GatewayDeployTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
 	target, _ := args["target"].(string)
-	out, _, err := t.runner.Run(ctx, target, RestartOrigin{
+	origin := RestartOrigin{
 		Channel:    tools.ToolChannel(ctx),
 		ChatID:     tools.ToolChatID(ctx),
 		TopicID:    tools.ToolTopicID(ctx),
 		SessionKey: tools.ToolSessionKey(ctx),
-	})
+	}
+	if target = strings.TrimSpace(target); target == "" {
+		target = strings.TrimSpace(t.runner.cfg.DefaultTarget)
+	}
+	if t.runner.cfg.RequiresHandoff(target) && t.launcher != nil {
+		if err := t.launcher.Launch(ctx, t.runner, target, origin); err != nil {
+			return tools.ErrorResult(fmt.Sprintf("gateway deploy handoff failed: %v", err)).
+				WithError(err)
+		}
+		return tools.UserResult("Deploy started in a detached worker. The final handoff status will be reported after completion.").
+			WithImmediateDelivery()
+	}
+	out, _, err := t.runner.Run(ctx, target, origin)
 	if err != nil {
-		return tools.ErrorResult(fmt.Sprintf("gateway deploy failed: %v\n%s", err, out)).WithError(err)
+		return tools.ErrorResult(fmt.Sprintf("gateway deploy failed: %v\n%s", err, out)).
+			WithError(err)
 	}
 	return tools.UserResult(out).WithImmediateDelivery()
 }

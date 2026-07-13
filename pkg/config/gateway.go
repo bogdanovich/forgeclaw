@@ -27,6 +27,7 @@ type GatewayDeployConfig struct {
 	Command        string   `json:"command,omitempty"`
 	DefaultTarget  string   `json:"default_target,omitempty"`
 	AllowedTargets []string `json:"allowed_targets,omitempty"`
+	HandoffTargets []string `json:"handoff_targets,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
 }
 
@@ -35,6 +36,18 @@ func (c GatewayDeployConfig) EffectiveTimeoutSeconds() int {
 		return c.TimeoutSeconds
 	}
 	return 600
+}
+
+// RequiresHandoff reports whether a target may restart the gateway that
+// launched it. Such targets need a detached worker on supported supervisors.
+func (c GatewayDeployConfig) RequiresHandoff(target string) bool {
+	target = strings.TrimSpace(target)
+	for _, item := range c.HandoffTargets {
+		if strings.TrimSpace(item) == target {
+			return true
+		}
+	}
+	return false
 }
 
 type GatewaySafeRestartConfig struct {

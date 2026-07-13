@@ -62,6 +62,7 @@ func TestGatewayDeployConfigParsing(t *testing.T) {
 				"command": "/opt/picoclaw/deploy.sh",
 				"default_target": "current",
 				"allowed_targets": ["current", "all", "reviewer"],
+				"handoff_targets": ["current", "all"],
 				"timeout_seconds": 120
 			}
 		}
@@ -81,6 +82,9 @@ func TestGatewayDeployConfigParsing(t *testing.T) {
 	}
 	if len(got.AllowedTargets) != 3 || got.AllowedTargets[2] != "reviewer" {
 		t.Fatalf("allowed targets = %#v", got.AllowedTargets)
+	}
+	if !got.RequiresHandoff("current") || got.RequiresHandoff("reviewer") {
+		t.Fatalf("handoff targets = %#v", got.HandoffTargets)
 	}
 	if (GatewayDeployConfig{}).EffectiveTimeoutSeconds() != 600 {
 		t.Fatalf("default deploy timeout = %d", (GatewayDeployConfig{}).EffectiveTimeoutSeconds())
