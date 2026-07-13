@@ -511,6 +511,43 @@ func TestRegistryPrunesEventsBelowMaxRecordLimit(t *testing.T) {
 	}
 }
 
+func TestRegistryPrunesOrphanEventsWhenSnapshotHasNoTasks(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	snapshot := Snapshot{Events: []TaskEvent{{
+		EventID:       "event-orphan",
+		SchemaVersion: TaskEventSchemaVersion,
+		TaskID:        "deleted-task",
+		Type:          EventTaskUpdated,
+		EmittedAt:     time.Now().UnixMilli(),
+	}}}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistry(store)
+	if events := reloaded.ListEvents(""); len(events) != 0 {
+		t.Fatalf("orphan events = %#v, want none", events)
+	}
+	data, err = os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot = Snapshot{}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Events) != 0 {
+		t.Fatalf("persisted orphan events = %#v, want none", snapshot.Events)
+	}
+}
+
 func TestRegistryListPendingTerminalDelivery(t *testing.T) {
 	registry := NewRegistry("")
 	records := []Record{
