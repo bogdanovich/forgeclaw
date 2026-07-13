@@ -156,3 +156,24 @@ func TestOperationalHandoffsUseDefaultWorkspace(t *testing.T) {
 		t.Fatalf("default workspace handoff was not audited: %+v", findings)
 	}
 }
+
+func TestOperationalAuditsInheritedNamedAgentWorkspace(t *testing.T) {
+	root := t.TempDir()
+	defaultWorkspace := filepath.Join(root, "workspace")
+	namedWorkspace := filepath.Join(root, "workspace-coding")
+	now := time.Now().UTC()
+	writeOperationalJSON(
+		t,
+		filepath.Join(namedWorkspace, "state", "task_registry.json"),
+		tasks.Snapshot{Tasks: []tasks.Record{{
+			Status: tasks.StatusRunning, LastEventAt: now.Add(-time.Hour).UnixMilli(),
+		}}},
+	)
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = defaultWorkspace
+	cfg.Agents.List = []config.AgentConfig{{ID: "Coding"}}
+	findings := runOperationalChecks(cfg, Options{Now: now})
+	if !findingsHaveID(findings, CheckTaskStaleActive) {
+		t.Fatalf("inherited named-agent workspace was not audited: %+v", findings)
+	}
+}
