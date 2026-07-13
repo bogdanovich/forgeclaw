@@ -1,7 +1,10 @@
 package tasks
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -389,7 +392,11 @@ func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
 	for _, rec := range records {
 		rec.Runtime = RuntimeSubagent
 		rec.Task = rec.TaskID
-		rec.DeliveryStatus = DeliveryPending
+		if isTerminalStatus(rec.Status) {
+			rec.DeliveryStatus = DeliveryDelivered
+		} else {
+			rec.DeliveryStatus = DeliveryPending
+		}
 		if err := registry.Upsert(rec); err != nil {
 			t.Fatalf("Upsert(%s) error = %v", rec.TaskID, err)
 		}
@@ -402,6 +409,105 @@ func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
 		if _, ok := registry.Get(id); !ok {
 			t.Fatalf("expected %s to be preserved", id)
 		}
+	}
+}
+
+func TestRegistryPreservesPendingTerminalTasksAboveMaxRecords(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxRecords: 1})
+	for _, rec := range []Record{
+		{TaskID: "pending-done", Status: StatusSucceeded, DeliveryStatus: DeliveryPending},
+		{TaskID: "running", Status: StatusRunning, DeliveryStatus: DeliveryPending},
+	} {
+		rec.Runtime = RuntimeSubagent
+		rec.Task = rec.TaskID
+		if err := registry.Upsert(rec); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", rec.TaskID, err)
+		}
+	}
+	for _, id := range []string{"pending-done", "running"} {
+		if _, ok := registry.Get(id); !ok {
+			t.Fatalf("expected protected record %q to be preserved", id)
+		}
+	}
+}
+
+func TestRegistryPrunesSnapshotBytesWithoutDroppingProtectedTasks(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{
+		MaxRecords:       10,
+		MaxEvents:        10,
+		MaxSnapshotBytes: 200,
+	})
+	for _, rec := range []Record{
+		{
+			TaskID:         "running",
+			Runtime:        RuntimeTool,
+			Task:           strings.Repeat("running task ", 30),
+			Status:         StatusRunning,
+			DeliveryStatus: DeliveryPending,
+		},
+		{
+			TaskID:         "delivered-terminal",
+			Runtime:        RuntimeTool,
+			Task:           strings.Repeat("terminal task ", 50),
+			Status:         StatusSucceeded,
+			DeliveryStatus: DeliveryDelivered,
+			Deliverable:    &DeliverablePayload{Text: strings.Repeat("deliverable ", 80)},
+		},
+	} {
+		if err := registry.Upsert(rec); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", rec.TaskID, err)
+		}
+	}
+	if _, ok := registry.Get("running"); !ok {
+		t.Fatal("running task must be preserved")
+	}
+	if _, ok := registry.Get("delivered-terminal"); ok {
+		t.Fatal("delivered terminal task should be pruned to satisfy byte budget")
+	}
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) <= 200 {
+		t.Fatal("protected running task should be allowed to exceed the byte budget")
+	}
+}
+
+func TestRegistryPrunesEventsBelowMaxRecordLimit(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{MaxRecords: 10, MaxEvents: 2})
+	if err := registry.Upsert(Record{
+		TaskID:         "task-1",
+		Runtime:        RuntimeTool,
+		Task:           "test event retention",
+		Status:         StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	for _, eventType := range []EventType{EventTaskProgress, EventTaskUpdated, EventTaskReconciled} {
+		if err := registry.AppendEvent("task-1", eventType, nil); err != nil {
+			t.Fatalf("AppendEvent(%s) error = %v", eventType, err)
+		}
+	}
+
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Tasks) != 1 || snapshot.Tasks[0].TaskID != "task-1" {
+		t.Fatalf("tasks = %#v", snapshot.Tasks)
+	}
+	if len(snapshot.Events) != 2 {
+		t.Fatalf("events = %d, want 2: %#v", len(snapshot.Events), snapshot.Events)
+	}
+	if snapshot.Events[0].Type != EventTaskUpdated || snapshot.Events[1].Type != EventTaskReconciled {
+		t.Fatalf("retained events = %#v", snapshot.Events)
 	}
 }
 

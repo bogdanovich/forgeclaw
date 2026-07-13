@@ -61,6 +61,10 @@ func (t *TaskStatusTool) Parameters() map[string]any {
 				"type":        "boolean",
 				"description": "Include typed task event details. With task_id, shows that task's event stream. With list output, shows recent events per visible task.",
 			},
+			"include_deliverable": map[string]any{
+				"type":        "boolean",
+				"description": "Return the complete durable deliverable text. Requires an exact task_id. Use this to recover or present a completed task's full result.",
+			},
 		},
 		"required": []string{},
 	}
@@ -88,6 +92,13 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
+	includeDeliverable, err := optionalTaskStatusBoolArg(args, "include_deliverable")
+	if err != nil {
+		return ErrorResult(err.Error())
+	}
+	if includeDeliverable && taskID == "" {
+		return ErrorResult("include_deliverable requires task_id")
+	}
 	callerChannel := ToolChannel(ctx)
 	callerChatID := ToolChatID(ctx)
 	callerTopicID := ToolTopicID(ctx)
@@ -98,6 +109,9 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 			return ErrorResult(fmt.Sprintf("No task found with task ID: %s", taskID))
 		}
 		out := formatTaskRecord(rec)
+		if includeDeliverable {
+			out += formatCompleteTaskDeliverable(rec)
+		}
 		if includeEvents {
 			out = out + "\n" + formatTaskEvents(t.registry.ListEvents(taskID))
 		}
@@ -173,6 +187,19 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 		))
 	}
 	return NewToolResult(strings.TrimSpace(sb.String()))
+}
+
+func formatCompleteTaskDeliverable(rec taskregistry.Record) string {
+	text := ""
+	if rec.Deliverable != nil {
+		text = rec.Deliverable.Text
+	} else if rec.Completion != nil {
+		text = rec.Completion.Text
+	}
+	if strings.TrimSpace(text) == "" {
+		return "\n\nComplete deliverable: no durable text is available."
+	}
+	return "\n\nComplete deliverable:\n" + text
 }
 
 func optionalTaskStatusLimitArg(args map[string]any) (int, error) {

@@ -164,6 +164,44 @@ func TestTaskStatusTool_TaskID(t *testing.T) {
 	}
 }
 
+func TestTaskStatusTool_TaskIDIncludesCompleteDeliverable(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	fullText := strings.Repeat("research finding ", 80)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID:         "subagent-53",
+		Runtime:        taskregistry.RuntimeSubagent,
+		TaskKind:       "spawn",
+		Status:         taskregistry.StatusSucceeded,
+		DeliveryStatus: taskregistry.DeliveryNotApplicable,
+		Deliverable:    &taskregistry.DeliverablePayload{Text: fullText},
+	}); err != nil {
+		t.Fatalf("Upsert(subagent) error = %v", err)
+	}
+
+	tool := NewTaskStatusTool(registry)
+	result := tool.Execute(context.Background(), map[string]any{
+		"task_id":             "subagent-53",
+		"include_deliverable": true,
+	})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "Complete deliverable:\n"+fullText) {
+		t.Fatalf("complete deliverable missing:\n%s", result.ForLLM)
+	}
+}
+
+func TestTaskStatusTool_CompleteDeliverableRequiresTaskID(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	result := NewTaskStatusTool(registry).Execute(context.Background(), map[string]any{
+		"include_deliverable": true,
+	})
+	if !result.IsError || !strings.Contains(result.ForLLM, "requires task_id") {
+		t.Fatalf("expected task_id validation error, got %#v", result)
+	}
+}
+
 func TestTaskStatusTool_TaskIDIncludesEvents(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	now := time.Now().UnixMilli()

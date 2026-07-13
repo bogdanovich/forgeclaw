@@ -185,6 +185,17 @@ func TestSpawnTool_SpawnStatusSeesSpawnedTask(t *testing.T) {
 	}
 
 	<-spawner.done
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		tasks := manager.ListTaskCopies()
+		if len(tasks) == 1 && tasks[0].Status == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spawned tasks did not complete: %#v", tasks)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestSpawnTool_ExecuteAsync_MarksCallbackResultUserOnly(t *testing.T) {

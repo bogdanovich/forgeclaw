@@ -380,7 +380,7 @@ func decideAsyncToolResultDelivery(result *tools.ToolResult) AsyncDeliveryDecisi
 	content := result.ContentForLLM()
 	decision.TaskID = result.AsyncTaskID
 	decision.ContentLen = len(content)
-	decision.ForUserLen = len(result.ForUser)
+	decision.ForUserLen = len(toolResultUserText(result))
 	decision.MediaCount = len(result.Media)
 	if result.Completion != nil {
 		decision.MediaCount += len(result.Completion.Media)
@@ -388,7 +388,9 @@ func decideAsyncToolResultDelivery(result *tools.ToolResult) AsyncDeliveryDecisi
 	decision.IsError = result.IsError
 
 	if decision.DeliveryMode != tools.AsyncDeliveryParentOnly {
-		decision.PublishToUser = !result.Silent && (result.ForUser != "" || decision.MediaCount > 0)
+		hasUserPayload := decision.ForUserLen > 0 || decision.MediaCount > 0
+		decision.PublishToUser = hasUserPayload &&
+			(!result.Silent || decision.DeliveryMode == tools.AsyncDeliveryUserOnly)
 	}
 	if decision.DeliveryMode != tools.AsyncDeliveryUserOnly {
 		decision.QueueParent = content != ""
