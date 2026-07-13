@@ -61,6 +61,7 @@ const (
 	DefaultTerminalRetention = 7 * 24 * time.Hour
 	DefaultMaxRecords        = 1000
 	DefaultMaxEvents         = 5000
+	DefaultMaxSnapshotBytes  = 2 * 1024 * 1024
 	TaskEventSchemaVersion   = "task_event.v1"
 	DeliverableReportV1      = "deliverable_report.v1"
 )
@@ -192,6 +193,7 @@ type Options struct {
 	TerminalRetention time.Duration
 	MaxRecords        int
 	MaxEvents         int
+	MaxSnapshotBytes  int
 }
 
 type Registry struct {
@@ -222,6 +224,9 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 	}
 	if opts.MaxEvents <= 0 {
 		opts.MaxEvents = DefaultMaxEvents
+	}
+	if opts.MaxSnapshotBytes <= 0 {
+		opts.MaxSnapshotBytes = DefaultMaxSnapshotBytes
 	}
 	r := &Registry{
 		store:   strings.TrimSpace(storePath),
@@ -599,7 +604,7 @@ func (r *Registry) pruneLocked(now int64) bool {
 	if r.options.MaxRecords > 0 && len(r.records) > r.options.MaxRecords {
 		terminal := make([]Record, 0, len(r.records))
 		for _, rec := range r.records {
-			if isTerminalStatus(rec.Status) {
+			if canPruneRecord(rec) {
 				terminal = append(terminal, rec)
 			}
 		}
@@ -616,7 +621,60 @@ func (r *Registry) pruneLocked(now int64) bool {
 	if r.pruneEventsLocked() {
 		changed = true
 	}
+	if r.pruneSnapshotBytesLocked() {
+		changed = true
+	}
 	return changed
+}
+
+func (r *Registry) pruneSnapshotBytesLocked() bool {
+	if r == nil || r.options.MaxSnapshotBytes <= 0 || r.snapshotSizeLocked() <= r.options.MaxSnapshotBytes {
+		return false
+	}
+	changed := false
+	if r.trimEventsForSnapshotBudgetLocked() {
+		changed = true
+	}
+	if r.snapshotSizeLocked() <= r.options.MaxSnapshotBytes {
+		return changed
+	}
+	candidates := make([]Record, 0, len(r.records))
+	for _, rec := range r.records {
+		if canPruneRecord(rec) {
+			candidates = append(candidates, rec)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return recordReferenceAt(candidates[i]) < recordReferenceAt(candidates[j])
+	})
+	for _, rec := range candidates {
+		if r.snapshotSizeLocked() <= r.options.MaxSnapshotBytes {
+			break
+		}
+		delete(r.records, rec.TaskID)
+		r.pruneEventsLocked()
+		changed = true
+	}
+	return changed
+}
+
+func (r *Registry) trimEventsForSnapshotBudgetLocked() bool {
+	if r == nil || len(r.events) == 0 || r.snapshotSizeLocked() <= r.options.MaxSnapshotBytes {
+		return false
+	}
+	original := r.events
+	low, high := 0, len(original)
+	for low < high {
+		mid := low + (high-low)/2
+		r.events = original[mid:]
+		if r.snapshotSizeLocked() <= r.options.MaxSnapshotBytes {
+			high = mid
+		} else {
+			low = mid + 1
+		}
+	}
+	r.events = original[low:]
+	return low > 0
 }
 
 func (r *Registry) pruneEventsLocked() bool {
@@ -641,7 +699,11 @@ func (r *Registry) pruneEventsLocked() bool {
 }
 
 func shouldPruneExpired(rec Record, now int64) bool {
-	return isTerminalStatus(rec.Status) && rec.CleanupAfter > 0 && now >= rec.CleanupAfter
+	return canPruneRecord(rec) && rec.CleanupAfter > 0 && now >= rec.CleanupAfter
+}
+
+func canPruneRecord(rec Record) bool {
+	return isTerminalStatus(rec.Status) && isFinalDeliveryStatus(rec.DeliveryStatus)
 }
 
 func isTerminalStatus(status Status) bool {
@@ -706,6 +768,22 @@ func (r *Registry) saveLocked() error {
 	if r.store == "" {
 		return nil
 	}
+	data, err := json.MarshalIndent(r.snapshotLocked(), "", "  ")
+	if err != nil {
+		return err
+	}
+	return fileutil.WriteFileAtomic(r.store, data, 0o600)
+}
+
+func (r *Registry) snapshotSizeLocked() int {
+	data, err := json.MarshalIndent(r.snapshotLocked(), "", "  ")
+	if err != nil {
+		return 0
+	}
+	return len(data)
+}
+
+func (r *Registry) snapshotLocked() Snapshot {
 	tasks := make([]Record, 0, len(r.records))
 	for _, rec := range r.records {
 		tasks = append(tasks, rec)
@@ -726,11 +804,7 @@ func (r *Registry) saveLocked() error {
 		}
 		return events[i].EventID < events[j].EventID
 	})
-	data, err := json.MarshalIndent(Snapshot{Tasks: tasks, Events: events}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return fileutil.WriteFileAtomic(r.store, data, 0o600)
+	return Snapshot{Tasks: tasks, Events: events}
 }
 
 func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int64) {
