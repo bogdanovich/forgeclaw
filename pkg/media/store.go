@@ -371,7 +371,10 @@ func (s *FileMediaStore) persistLocked(additions []persistentMediaEntry, removed
 		if _, remove := removed[ref]; remove {
 			continue
 		}
-		entries = append(entries, persistentMediaEntry{Ref: ref, Path: entry.path, Meta: entry.meta, Scope: s.refToScope[ref], StoredAt: entry.storedAt})
+		entries = append(entries, persistentMediaEntry{
+			Ref: ref, Path: entry.path, Meta: entry.meta,
+			Scope: s.refToScope[ref], StoredAt: entry.storedAt,
+		})
 	}
 	entries = append(entries, additions...)
 	return s.index.save(entries)

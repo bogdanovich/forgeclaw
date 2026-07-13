@@ -755,7 +755,8 @@ func TestPersistentIndexDropsMissingFilesDuringRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart store: %v", err)
 	}
-	if _, resolveErr := restarted.Resolve(ref); resolveErr == nil || !strings.Contains(resolveErr.Error(), "unknown ref") {
+	if _, resolveErr := restarted.Resolve(ref); resolveErr == nil ||
+		!strings.Contains(resolveErr.Error(), "unknown ref") {
 		t.Fatalf("Resolve after missing-file recovery error = %v, want unknown ref", resolveErr)
 	}
 	entries, err := loadMediaIndex(indexPath)
