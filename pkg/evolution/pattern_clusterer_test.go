@@ -180,7 +180,13 @@ func TestLLMPatternClusterer_PromptFiltersExistingPatternsByWorkspace(t *testing
 	if len(provider.messages) != 2 {
 		t.Fatalf("len(messages) = %d, want 2", len(provider.messages))
 	}
+	if !strings.Contains(provider.messages[0].Content, "untrusted data") {
+		t.Fatalf("system prompt lacks untrusted-data boundary: %q", provider.messages[0].Content)
+	}
 	prompt := provider.messages[1].Content
+	if !strings.Contains(prompt, `"untrusted_tasks"`) {
+		t.Fatalf("prompt lacks explicit untrusted evidence field: %s", prompt)
+	}
 	if !strings.Contains(prompt, "current-weather-path") {
 		t.Fatalf("prompt = %q, want current workspace pattern", prompt)
 	}

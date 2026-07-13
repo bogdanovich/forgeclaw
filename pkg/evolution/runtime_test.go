@@ -53,14 +53,58 @@ func TestRuntimeObserverRunsAfterLearningRecordIsDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRuntime: %v", err)
 	}
-	if err := rt.FinalizeTurn(context.Background(), evolution.TurnCaseInput{
+	if finalizeErr := rt.FinalizeTurn(context.Background(), evolution.TurnCaseInput{
 		Workspace: workspace, TurnID: "turn-observed", SessionKey: "session-1",
 		AgentID: "agent-1", Status: "completed", UserMessage: "test",
-	}); err != nil {
-		t.Fatalf("FinalizeTurn: %v", err)
+	}); finalizeErr != nil {
+		t.Fatalf("FinalizeTurn: %v", finalizeErr)
 	}
 	if len(observed) != 1 || observed[0].Action != "recorded" || observed[0].RecordID == "" {
 		t.Fatalf("observed = %#v", observed)
+	}
+}
+
+func TestRuntime_FinalizeTurnRedactsSensitiveRecordText(t *testing.T) {
+	workspace := t.TempDir()
+	secret := "canary-secret-value-12345"
+	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Config: config.EvolutionConfig{Enabled: true, Mode: "observe"},
+		SensitiveDataFilter: func(value string) string {
+			return strings.ReplaceAll(value, secret, "[FILTERED]")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	if finalizeErr := rt.FinalizeTurn(context.Background(), evolution.TurnCaseInput{
+		Workspace: workspace, TurnID: "turn-redacted", SessionKey: "session-1",
+		Status:       "completed",
+		UserMessage:  "Authorization: Bearer abc.def opaque " + secret,
+		FinalContent: "result API_KEY=" + secret,
+	}); finalizeErr != nil {
+		t.Fatalf("FinalizeTurn: %v", finalizeErr)
+	}
+
+	records, err := evolution.NewStore(evolution.NewPaths(workspace, "")).LoadTaskRecords()
+	if err != nil {
+		t.Fatalf("LoadTaskRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	serialized, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatalf("Marshal(record): %v", err)
+	}
+	text := string(serialized)
+	for _, leaked := range []string{secret, "abc.def"} {
+		if strings.Contains(text, leaked) {
+			t.Fatalf("record leaked %q: %s", leaked, text)
+		}
+	}
+	if !strings.Contains(text, "[REDACTED]") || !strings.Contains(text, "[FILTERED]") {
+		t.Fatalf("record did not retain redaction markers: %s", text)
 	}
 }
 

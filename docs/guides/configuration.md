@@ -114,7 +114,7 @@ treated as read-only no progress. Current audited read-only tools are
 
 ### Agent Self-Evolution
 
-The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, the agent records completed turns as learning records. In higher modes it can group repeated successful patterns, generate skill drafts, and optionally apply accepted drafts into workspace skills.
+The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, the agent records completed turns as learning records. Draft mode can group repeated patterns into candidate skill drafts for offline evaluation. Runtime application is disabled.
 
 ```json
 {
@@ -133,14 +133,14 @@ The `evolution` block controls PicoClaw's self-evolution runtime. When enabled, 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enables learning-record capture for completed agent turns. Heartbeat turns are ignored. |
-| `mode` | `observe` | `observe` records data only. `draft` can generate candidate skill drafts. `apply` can apply accepted drafts to workspace skills. |
+| `mode` | `observe` | `observe` records data only. `draft` can generate candidate skill drafts. Legacy `apply` values fail closed to `observe` and never mutate skills. |
 | `state_dir` | `""` | Optional directory for evolution state. Leave empty to use the default under the workspace. |
 | `min_task_count` | `2` | Minimum related task records required before a pattern is eligible for draft generation. |
 | `min_success_ratio` | `0.7` | Minimum success ratio for a task cluster. Use a value greater than `0` and up to `1`. |
-| `cold_path_trigger` | `after_turn` | Runs draft generation `after_turn`, on a `scheduled` cadence, or disables automatic cold-path runs when set to `manual`. There is no user-facing manual trigger yet. Applies only in `draft` and `apply` modes. |
+| `cold_path_trigger` | `after_turn` | Runs draft generation `after_turn`, on a `scheduled` cadence, or disables automatic cold-path runs when set to `manual`. There is no user-facing manual trigger yet. Applies only in `draft` mode. |
 | `cold_path_times` | `[]` | Scheduled run times used when `cold_path_trigger` is `scheduled`, written as `HH:MM` strings. |
 
-Use `observe` first if you want to inspect learning records without generating skill changes. Use `draft` when you want PicoClaw to prepare reviewable improvements. Use `apply` only when you are comfortable letting accepted drafts update workspace skills.
+Use `observe` to inspect learning records without model-driven draft generation. Treat `draft` as an offline evaluation corpus; candidate drafts are not applied to workspace skills.
 
 ### Evaluation Trace Capture
 

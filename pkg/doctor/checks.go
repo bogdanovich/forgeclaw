@@ -295,18 +295,17 @@ func checkSkills(cfg *config.Config) []Finding {
 }
 
 func checkEvolution(cfg *config.Config) []Finding {
-	if cfg.Evolution.AutoAppliesDrafts() ||
-		(cfg.Evolution.Enabled && cfg.Evolution.RunsColdPathAutomatically()) {
+	if cfg.Evolution.Enabled && cfg.Evolution.RunsColdPathAutomatically() {
 		return []Finding{
 			newFinding(
 				CheckEvolutionAutoApply,
 				SeverityWarning,
-				"Evolution can run automatically",
-				"Automatic evolution or apply mode can create or apply local changes without an explicit per-change command.",
-				"Use observe/manual modes unless automatic local mutation is intended and reviewed.",
+				"Evolution can generate drafts automatically",
+				"Automatic evolution can send recorded task evidence to the configured model and create local draft artifacts.",
+				"Use observe/manual modes unless automatic draft generation is intended and reviewed.",
 				Evidence{
 					Path:    "evolution",
-					Summary: "evolution apply or automatic cold-path mode is enabled",
+					Summary: "automatic evolution cold-path mode is enabled",
 				},
 			),
 		}

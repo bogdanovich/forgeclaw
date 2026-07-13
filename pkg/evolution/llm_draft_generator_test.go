@@ -102,6 +102,9 @@ func TestLLMDraftGenerator_GenerateDraft_ParsesJSONResponse(t *testing.T) {
 	if len(provider.lastMessages) == 0 {
 		t.Fatal("expected prompt messages")
 	}
+	if !strings.Contains(provider.lastMessages[0].Content, "untrusted data") {
+		t.Fatalf("system prompt lacks untrusted-data boundary: %q", provider.lastMessages[0].Content)
+	}
 	if fallback.calls != 0 {
 		t.Fatalf("fallback.calls = %d, want 0", fallback.calls)
 	}

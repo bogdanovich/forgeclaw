@@ -429,9 +429,6 @@ export function EvolutionSection({
             <SelectItem value="draft">
               {t("pages.config.evolution_mode_draft")}
             </SelectItem>
-            <SelectItem value="apply">
-              {t("pages.config.evolution_mode_apply")}
-            </SelectItem>
           </SelectContent>
         </Select>
       </Field>
