@@ -5,8 +5,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
+
+func TestTaskRegistryForWorkspaceUsesConfiguredRetentionLimits(t *testing.T) {
+	workspace := t.TempDir()
+	al := &AgentLoop{cfg: &config.Config{Tasks: config.TaskConfig{
+		TerminalRetentionHours: 12,
+		MaxRecords:             12,
+		MaxEvents:              34,
+		MaxSnapshotBytes:       5678,
+	}}}
+	stats := al.taskRegistryForWorkspace(workspace).Stats()
+	if stats.TerminalRetention != 12*time.Hour || stats.MaxRecords != 12 || stats.MaxEvents != 34 ||
+		stats.MaxSnapshotBytes != 5678 {
+		t.Fatalf("unexpected registry stats: %#v", stats)
+	}
+}
 
 func TestTaskRegistryForWorkspace_ReconcilesRestoredActiveTasksAsLost(t *testing.T) {
 	workspace := t.TempDir()
@@ -35,7 +51,11 @@ func TestTaskRegistryForWorkspace_ReconcilesRestoredActiveTasksAsLost(t *testing
 		t.Fatalf("Status = %q, want %q", rec.Status, taskregistry.StatusLost)
 	}
 	if rec.DeliveryStatus != taskregistry.DeliveryNotApplicable {
-		t.Fatalf("DeliveryStatus = %q, want %q", rec.DeliveryStatus, taskregistry.DeliveryNotApplicable)
+		t.Fatalf(
+			"DeliveryStatus = %q, want %q",
+			rec.DeliveryStatus,
+			taskregistry.DeliveryNotApplicable,
+		)
 	}
 	if rec.EndedAt == 0 {
 		t.Fatal("expected EndedAt to be stamped")
@@ -73,6 +93,10 @@ func TestTaskRegistryForWorkspace_ReconcilesRecentRestoredActiveTaskAsLost(t *te
 		t.Fatalf("Status = %q, want %q", rec.Status, taskregistry.StatusLost)
 	}
 	if rec.DeliveryStatus != taskregistry.DeliveryNotApplicable {
-		t.Fatalf("DeliveryStatus = %q, want %q", rec.DeliveryStatus, taskregistry.DeliveryNotApplicable)
+		t.Fatalf(
+			"DeliveryStatus = %q, want %q",
+			rec.DeliveryStatus,
+			taskregistry.DeliveryNotApplicable,
+		)
 	}
 }

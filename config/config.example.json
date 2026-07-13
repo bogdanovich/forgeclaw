@@ -62,6 +62,12 @@
       "max_traces": 100
     }
   },
+  "task_registry": {
+    "terminal_retention_hours": 168,
+    "max_records": 1000,
+    "max_events": 5000,
+    "max_snapshot_bytes": 2097152
+  },
   "model_list": [
     {
       "model_name": "gpt-5.4",

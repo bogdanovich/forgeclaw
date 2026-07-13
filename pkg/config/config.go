@@ -34,21 +34,22 @@ func init() {
 // Config is the current config structure with version support.
 type Config struct {
 	// Config schema version for migration.
-	Version    int              `json:"version"              yaml:"-"`
-	Isolation  IsolationConfig  `json:"isolation,omitempty"  yaml:"-"`
-	Agents     AgentsConfig     `json:"agents"               yaml:"-"`
-	Session    SessionConfig    `json:"session,omitempty"    yaml:"-"`
-	Evolution  EvolutionConfig  `json:"evolution,omitempty"  yaml:"-"`
-	Evaluation EvaluationConfig `json:"evaluation,omitempty" yaml:"-"`
-	Channels   ChannelsConfig   `json:"channel_list"         yaml:"channel_list"`
-	ModelList  SecureModelList  `json:"model_list"           yaml:"model_list"` // New model-centric provider configuration
-	Gateway    GatewayConfig    `json:"gateway"              yaml:"-"`
-	Events     EventsConfig     `json:"events,omitempty"     yaml:"-"`
-	Hooks      HooksConfig      `json:"hooks,omitempty"      yaml:"-"`
-	Tools      ToolsConfig      `json:"tools"                yaml:",inline"`
-	Heartbeat  HeartbeatConfig  `json:"heartbeat"            yaml:"-"`
-	Devices    DevicesConfig    `json:"devices"              yaml:"-"`
-	Voice      VoiceConfig      `json:"voice"                yaml:"-"`
+	Version    int              `json:"version"                 yaml:"-"`
+	Isolation  IsolationConfig  `json:"isolation,omitempty"     yaml:"-"`
+	Agents     AgentsConfig     `json:"agents"                  yaml:"-"`
+	Session    SessionConfig    `json:"session,omitempty"       yaml:"-"`
+	Evolution  EvolutionConfig  `json:"evolution,omitempty"     yaml:"-"`
+	Evaluation EvaluationConfig `json:"evaluation,omitempty"    yaml:"-"`
+	Tasks      TaskConfig       `json:"task_registry,omitempty" yaml:"-"`
+	Channels   ChannelsConfig   `json:"channel_list"            yaml:"channel_list"`
+	ModelList  SecureModelList  `json:"model_list"              yaml:"model_list"` // New model-centric provider configuration
+	Gateway    GatewayConfig    `json:"gateway"                 yaml:"-"`
+	Events     EventsConfig     `json:"events,omitempty"        yaml:"-"`
+	Hooks      HooksConfig      `json:"hooks,omitempty"         yaml:"-"`
+	Tools      ToolsConfig      `json:"tools"                   yaml:",inline"`
+	Heartbeat  HeartbeatConfig  `json:"heartbeat"               yaml:"-"`
+	Devices    DevicesConfig    `json:"devices"                 yaml:"-"`
+	Voice      VoiceConfig      `json:"voice"                   yaml:"-"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty" yaml:"-"`
 
@@ -257,7 +258,8 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 		Alias: (*Alias)(c),
 	}
 
-	if len(c.Session.Dimensions) > 0 || len(c.Session.IdentityLinks) > 0 || c.Session.DmScope != "" {
+	if len(c.Session.Dimensions) > 0 || len(c.Session.IdentityLinks) > 0 ||
+		c.Session.DmScope != "" {
 		sessionCfg := c.Session
 		aux.Session = &sessionCfg
 	}
