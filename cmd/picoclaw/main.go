@@ -33,6 +33,7 @@ import (
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/status"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/version"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/updater"
 )
 
@@ -98,6 +99,22 @@ func earlyColorDisabled() bool {
 		}
 	}
 	return false
+}
+
+// doctorJSONRequested reports whether argv selects doctor's machine-readable
+// output. The banner must be suppressed so stdout remains valid JSON.
+func doctorJSONRequested(args []string) bool {
+	hasDoctor := false
+	hasJSON := false
+	for _, arg := range args {
+		switch arg {
+		case "doctor":
+			hasDoctor = true
+		case "--json", "--json=true", "--json=1":
+			hasJSON = true
+		}
+	}
+	return hasDoctor && hasJSON
 }
 
 func NewPicoclawCommand() *cobra.Command {
@@ -178,10 +195,15 @@ func main() {
 
 	cliui.Init(earlyColorDisabled())
 
-	if earlyColorDisabled() {
-		fmt.Print(plainBanner)
+	doctorJSON := doctorJSONRequested(os.Args[1:])
+	if doctorJSON {
+		logger.DisableConsole()
 	} else {
-		fmt.Printf("%s", banner)
+		if earlyColorDisabled() {
+			fmt.Print(plainBanner)
+		} else {
+			fmt.Printf("%s", banner)
+		}
 	}
 
 	tzEnv := os.Getenv("TZ")
