@@ -51,11 +51,11 @@ precedence over a no-benefit result.
 ## Decision
 
 The current production self-evolution implementation does not justify its
-runtime, storage, model cost, or mutation complexity. Disable recording and
-draft generation in every profile and remove the current learning runtime.
-Retain the generic trace, scenario, replay, corpus-audit, and paired-evaluation
-tools: they are useful for diagnosing runtime behavior and evaluating any
-future, separately designed learning experiment.
+runtime, storage, model cost, or mutation complexity. ForgeClaw consequently
+removed recording, draft generation, configuration, and workspace mutation in
+merge `7832e23f`. The generic trace, scenario, replay, corpus-audit, and
+paired-evaluation tools remain: they are useful for diagnosing runtime behavior
+and evaluating any future, separately designed learning experiment.
 
 This is an evidence-based rejection of the current implementation. It is not a
 claim that every possible learning design is ineffective. A future design must

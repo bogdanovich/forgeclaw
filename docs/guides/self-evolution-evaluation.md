@@ -6,7 +6,9 @@ compares explicit task outcomes from baseline and candidate runs on held-out
 cases.
 
 It is an offline evidence gate. It does not generate, install, promote, or
-delete skills, and it does not call a model.
+delete skills, and it does not call a model. ForgeClaw no longer has a
+self-evolution runtime; this command remains for auditing archived corpora and
+evaluating bounded future experiments.
 
 ## Run An Evaluation
 

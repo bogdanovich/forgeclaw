@@ -2,7 +2,9 @@
 
 Status: final effectiveness verdict. The initial source and production audit
 was performed at `70a64648`; safeguards and evaluation infrastructure were
-merged through `3225ab1a`, followed by held-out trials on 2026-07-13.
+merged through `3225ab1a`, followed by held-out trials on 2026-07-13. The
+rejected learning runtime was removed in merge `7832e23f` and the resulting
+runtime was deployed and verified the same day.
 
 ## Decision
 
@@ -19,10 +21,10 @@ and one caused a protected wrong-mutation regression in all three candidate
 runs while the baseline succeeded in all three.
 
 Self-evolution is therefore rejected for routine production use. Runtime
-application and automatic deletion were already removed. Recording and draft
-generation should now be disabled in every profile, and the current learning
-runtime should be removed. Generic trace, scenario, replay, corpus-audit, and
-paired-evaluation tools should remain because they are independently useful.
+application and automatic deletion were removed first; recording, draft
+generation, configuration, runtime events, and workspace mutation code were
+then removed together. Generic trace, scenario, replay, corpus-audit, and
+paired-evaluation tools remain because they are independently useful.
 
 This audit does not propose more learning capability. It first measures whether
 current drafts add value over the existing agent, then identifies where any
@@ -53,8 +55,8 @@ Production content was not printed or copied into this document.
 ## Original Trust And Data Flow
 
 The following flow describes the implementation at the initial `70a64648`
-snapshot. Runtime apply and deletion are no longer reachable; the remaining
-recording and generation path is scheduled for removal by this verdict.
+snapshot. None of this learning flow is reachable after `7832e23f`; it is kept
+here as the historical mechanism evaluated by the audit.
 
 1. A runtime turn-end event supplies user message, final content, completion
    status, tool summaries, skill names, session, agent, and workspace.
@@ -116,7 +118,13 @@ Legacy `apply` values fail closed to `observe`, automatic application is not
 reachable from the runtime, automatic deletion is prohibited, stored records
 are redacted before persistence, and evolution files are owner-only. These
 changes contain the original safety exposure but do not create usefulness.
-All profiles should move to disabled after this verdict.
+
+After the final removal and deployment, the top-level `evolution` configuration
+is absent from the root config and all five service-profile configs. The five
+agent services and web launcher run the removal build, and no active workspace
+contains a `state/evolution` directory. The ten legacy state directories were
+moved to an owner-only archive for historical evaluation; generic evaluation
+traces remain in their normal bounded-retention stores.
 
 ## Does It Produce Useful Drafts?
 
@@ -178,19 +186,22 @@ The paired effectiveness gate is available through `picoclaw eval evolution`.
 
 | ID | Severity | Finding | Mechanism and exposure | Disposition |
 |---|---|---|---|---|
-| EVO-001 | Critical | Raw untrusted and potentially secret text was persisted and propagated | User/final excerpts were stored without the configured redactor, mode `0644`, then sent to model operations and retained in drafts. | Contained: redacted projections and owner-only files merged; disable and remove the learning runtime. |
-| EVO-002 | Critical | Prompt injection could become durable skill instructions | Success, cluster, and draft prompts interpolated untrusted text, while automatic apply accepted clean candidates. | Contained: prompt data boundaries improved and runtime apply removed; remove the unused generation path. |
-| EVO-003 | Critical | Workspace containment was not symlink-safe | Apply and lifecycle could reach workspace skill paths through symlinks. | Contained by removing runtime mutation and automatic deletion; remove obsolete mutation code. |
-| EVO-004 | High | Completion and model self-judgment are not reliable success evidence | Initial success is only `status == completed`. The judge sees summary, final output, and used skill names, but no delivery result, user correction/dissatisfaction, full tool failure state, or externally verified outcome. Its untrusted evidence can instruct the judge; fallback accepts any non-empty completed output. | Default fail-closed for drafting; add authoritative outcome evidence and tests. |
-| EVO-005 | High | Clustering lacks user/channel/topic/task-family isolation | Workspace is the only durable isolation dimension. Records do not preserve user, channel, chat, or topic authority. Shared skills/tool paths can cluster semantically unrelated tasks, and production minimum count is two. | Add explicit scope and stronger admission; test contamination. |
-| EVO-006 | Critical | `apply` had no human approval or improvement gate | Candidate meant structurally unflagged, not reviewed. | Fixed: runtime apply removed and legacy configuration fails closed. Do not restore it. |
-| EVO-007 | High | Successful apply had no usable durable rollback | Backups were path-based and transaction-local, with no operator restore contract. | Obsolete after runtime apply removal; remove the remaining mutation code rather than build rollback for a rejected subsystem. |
-| EVO-008 | Critical | Lifecycle could irreversibly delete a skill | Automatic lifecycle deletion removed files without durable recovery. | Fixed: deletion transitions are rejected and runtime mutation is disabled. |
-| EVO-009 | High | Improvement was not measured | Draft status and retention were not outcome comparisons. | Measured: paired gate and live scenario harness merged; best plausible sample produced 0/4 useful and 1/4 regressed. Remove current learning runtime. |
-| EVO-010 | Medium | Logs and persisted findings can repeat sensitive summaries | Cold-path debug fields include pattern summaries and draft metadata derived from raw evidence. Rollback reasons and scan findings are persisted without a common redaction contract. | Centralize sanitized projections and logging. |
-| EVO-011 | High | Draft generation has low observed utility | In the 24-draft sample, 20 were unusable or generic. All four actionable-looking candidates then failed to improve held-out outcomes, and one regressed. | Disable production capture/drafting and remove the current learning runtime. |
+| EVO-001 | Critical | Raw untrusted and potentially secret text was persisted and propagated | User/final excerpts were stored without the configured redactor, mode `0644`, then sent to model operations and retained in drafts. | Closed: the learning runtime was removed and legacy stores were isolated owner-only outside active workspaces. |
+| EVO-002 | Critical | Prompt injection could become durable skill instructions | Success, cluster, and draft prompts interpolated untrusted text, while automatic apply accepted clean candidates. | Closed: generation, apply, and the runtime prompt path were removed. |
+| EVO-003 | Critical | Workspace containment was not symlink-safe | Apply and lifecycle could reach workspace skill paths through symlinks. | Closed: all evolution workspace mutation and lifecycle deletion code was removed. |
+| EVO-004 | High | Completion and model self-judgment were not reliable success evidence | Initial success was only `status == completed`. The judge lacked delivery results, user correction/dissatisfaction, full tool failure state, and externally verified outcomes. | Closed for the rejected design by removing success judging and drafting. Any future experiment must add authoritative outcomes before capture. |
+| EVO-005 | High | Clustering lacked user/channel/topic/task-family isolation | Workspace was the only durable isolation dimension, allowing semantically unrelated tasks to share evidence. | Closed for the rejected design by removing clustering. Any future experiment must declare and test isolation scope. |
+| EVO-006 | Critical | `apply` had no human approval or improvement gate | Candidate meant structurally unflagged, not reviewed. | Closed: runtime apply and its configuration were removed; the old config key is now rejected. Do not restore it. |
+| EVO-007 | High | Successful apply had no usable durable rollback | Backups were path-based and transaction-local, with no operator restore contract. | Closed by removing apply and its mutation code rather than building rollback for a rejected subsystem. |
+| EVO-008 | Critical | Lifecycle could irreversibly delete a skill | Automatic lifecycle deletion removed files without durable recovery. | Closed: deletion transitions were first rejected, then the lifecycle implementation was removed. |
+| EVO-009 | High | Improvement was not measured | Draft status and retention were not outcome comparisons. | Closed: paired evaluation and live trials measured 0/4 useful and 1/4 regressed; the learning runtime was removed. |
+| EVO-010 | Medium | Logs and persisted findings could repeat sensitive summaries | Cold-path debug fields included pattern summaries and draft metadata derived from raw evidence. | Closed for active production by removing the cold path and isolating legacy state; retained generic traces follow their separate capture policy. |
+| EVO-011 | High | Draft generation had low observed utility | In the 24-draft sample, 20 were unusable or generic. All four actionable-looking candidates then failed to improve held-out outcomes, and one regressed. | Closed: production capture and drafting were removed. |
 
-## Required Safety Invariants
+## Acceptance Invariants For Any Future Learning Runtime
+
+The current runtime has no self-evolution path. These invariants are gates for
+a separately designed future experiment, not descriptions of current behavior.
 
 ### Records And Secrets
 
@@ -291,15 +302,25 @@ automatic apply remain deferred.
    subsystem still had to prove usefulness first.
 4. Completed: paired held-out evaluation found 0/4 useful candidates and one
    protected regression.
-5. Disable evolution in every deployed profile and remove the current learning
-   runtime in focused PRs. Preserve the independent evaluation infrastructure
-   and this evidence for future designs.
+5. Completed: removed the current learning runtime, configuration, runtime
+   events, workspace mutation, and user-facing controls while preserving the
+   independent evaluation infrastructure and sanitized evidence.
+6. Completed: removed evolution configuration from every deployed profile,
+   deployed the removal build, restarted all services, and isolated legacy
+   state outside active workspaces.
 
 ## Completion Evidence
 
-The evidence phase is complete: safety containment, corpus diagnostics, paired
-evaluation, isolated live trials, and the final verdict are reproducible from
-merged code and committed sanitized evidence. Operational completion still
-requires disabling evolution in every profile, restarting and verifying the
-deployed runtime, removing the rejected learning runtime, and aligning the
-remaining user-facing documentation with that removal.
+The audit is complete when this evidence PR merges:
+
+- safety containment, corpus diagnostics, paired evaluation, isolated live
+  trials, and the final verdict are reproducible from merged code and committed
+  sanitized evidence;
+- the best plausible candidates measured 0/4 useful and 1/4 regressed;
+- merge `7832e23f` removes the rejected runtime and its configuration while
+  retaining generic replay/evaluation packages and commands;
+- the deployed checkout includes that merge, all six services are active, and
+  recent error-priority journals are empty;
+- the root and five profile configs have no `evolution` key, active workspaces
+  have no evolution state directories, and legacy state is owner-only and
+  outside the runtime path.
