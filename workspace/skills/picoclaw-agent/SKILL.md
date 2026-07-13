@@ -1,12 +1,12 @@
 ---
 name: picoclaw-agent
-description: "Configure, extend, debug, or contribute to PicoClaw itself. Use when the task is about PicoClaw CLI commands, config.json, gateway, auth, models, skills, MCP servers, cron, routing, sessions, self-evolution, built-in slash commands, or repository internals. Use PicoClaw-native workflows, terminology, paths, and configuration."
+description: "Configure, extend, debug, or contribute to PicoClaw itself. Use when the task is about PicoClaw CLI commands, config.json, gateway, auth, models, skills, MCP servers, cron, routing, sessions, built-in slash commands, or repository internals. Use PicoClaw-native workflows, terminology, paths, and configuration."
 metadata: {"nanobot":{"emoji":"🦞"}}
 ---
 
 # PicoClaw Agent
 
-PicoClaw is a lightweight personal AI assistant and agent framework with a native CLI, chat gateway, MCP integration, installable skills, session routing, scheduled jobs, and self-evolution.
+PicoClaw is a lightweight personal AI assistant and agent framework with a native CLI, chat gateway, MCP integration, installable skills, session routing, and scheduled jobs.
 
 Use this skill when the job is about **PicoClaw itself**: onboarding, configuration, debugging, adding features, extending the CLI, changing routing/session behavior, working on skills or MCP support, or contributing to this repository.
 
@@ -684,25 +684,13 @@ Use:
 - `picoclaw mcp show <name>` to inspect active tools
 - `/list mcp` and `/show mcp <server>` from chat channels when debugging live agents
 
-### Self-Evolution
+### Historical Self-Evolution Evidence
 
-The `evolution` block controls self-evolution:
-
-- `enabled`
-- `mode`: `observe`, `draft`, `apply`
-- `state_dir`
-- `min_task_count`
-- `min_success_ratio`
-- `cold_path_trigger`
-- `cold_path_times`
-
-Use `observe` first.
-Use `draft` when the team wants reviewable candidate skill changes.
-Use `apply` only when automatic workspace skill updates are acceptable.
-
-Notes:
-
-- `cold_path_trigger: manual` has no general user-facing CLI/API trigger yet.
+The self-evolution learning runtime and `evolution` config block were removed
+after held-out trials found no beneficial candidates and one regression. Do not
+add or recommend that config block. The offline `picoclaw eval evolution`
+commands remain available for auditing historical corpora and candidate
+evidence; they do not enable runtime learning.
 
 ## Debugging Workflow
 
@@ -780,7 +768,8 @@ When contributing code, these paths matter most:
 - `docs/reference/cron.md` — cron behavior and limitations
 - `docs/operations/debug.md` — debugging workflow
 - `docs/operations/troubleshooting.md` — known misconfiguration patterns
-- `docs/architecture/agent-self-evolution.md` — evolution design and safety
+- `docs/architecture/self-evolution-audit.md` — historical effectiveness and safety verdict
+- `docs/guides/self-evolution-evaluation.md` — offline historical candidate evaluation
 
 ## Contribution Rules
 
@@ -862,7 +851,7 @@ Check:
 
 Read these only when the task needs them:
 
-- `docs/guides/configuration.md` for config, routing, skills, turn profiles, and evolution
+- `docs/guides/configuration.md` for config, routing, skills, and turn profiles
 - `docs/guides/session-guide.md` for session isolation recipes
 - `docs/reference/tools_configuration.md` for tool-specific config
 - `docs/reference/mcp-cli.md` for MCP CLI flags and storage behavior

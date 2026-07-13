@@ -7,6 +7,11 @@ ForgeClaw replay and evaluation. It is based on the runtime at `origin/main`
 after PR #206. Implementation may revise package names or boundaries when code
 evidence requires it, but must update this document in the same pull request.
 
+The self-evolution learning runtime was later rejected by held-out evaluation
+and removed. Evolution record kinds, projections, fixtures, and offline corpus
+evaluation remain supported for historical evidence, but the agent no longer
+emits evolution runtime events or creates new learning records and drafts.
+
 ## Problem
 
 ForgeClaw has regression tests for delivery, steering, restart recovery,
@@ -260,9 +265,8 @@ and fallback attempts; tool call/result hashes and call IDs; steering acceptance
 and injection; compaction counts and final context identity; tool-loop
 decisions; channel delivery attempts/outcomes while a unique active or
 delivery-settling target can be identified; task delivery decisions/outcomes;
-and durable evolution record,
-pattern, draft, and apply transitions. Evolution event payloads contain policy
-codes and provenance IDs, never draft bodies or review prose.
+and durable task transitions. Historical evolution traces remain valid input to
+replay, but no new evolution transitions are captured from the agent runtime.
 
 Capture persistence runs on a bounded worker. Event and record limits never
 block the agent. Runtime-event subscriber drops mark active turn traces
@@ -278,8 +282,6 @@ Current capture limitations are explicit:
   remains authoritative for async work;
 - context content is represented by filtered hashes, counts, goal presence,
   steering count, and tool-pair validity, not by raw session messages;
-- failed evolution apply rollback details remain canonical in evolution state;
-  trace transitions expose only successful apply and persisted draft states;
 - user correction remains an explicit fixture/CLI annotation and is never
   inferred during production capture.
 - final outcome is authoritative in the trace envelope and turn-end record;
@@ -293,10 +295,6 @@ Current capture limitations are explicit:
 - the inbound spool exposes prepare/ack/release operations but no typed
   transition event. Bus failures alone cannot reconstruct spool state, so
   `inbound_spool.transition` is currently fixture-only;
-- the evolution observer emits durable records, saved drafts, and successful
-  applies. Review, rollback, and profile updates have no observer callback, so
-  `evolution.review`, `evolution.rollback`, and `evolution.profile` are
-  currently fixture-only.
 
 Evaluators that require one of these unavailable categories return
 `not_evaluable` unless an explicit sanitized fixture supplies the evidence.

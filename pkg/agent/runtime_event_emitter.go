@@ -3,8 +3,7 @@ package agent
 import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 
 type agentRuntimeEventEmitter struct {
-	events           runtimeevents.Bus
-	currentEvolution func() *evolutionBridge
+	events runtimeevents.Bus
 }
 
 func (al *AgentLoop) runtimeEventEmitter() *agentRuntimeEventEmitter {
@@ -12,8 +11,7 @@ func (al *AgentLoop) runtimeEventEmitter() *agentRuntimeEventEmitter {
 		return nil
 	}
 	return &agentRuntimeEventEmitter{
-		events:           al.runtimeEvents,
-		currentEvolution: al.currentEvolutionBridge,
+		events: al.runtimeEvents,
 	}
 }
 
@@ -30,19 +28,6 @@ func (e *agentRuntimeEventEmitter) emitEvent(kind runtimeevents.Kind, meta HookM
 		Attrs:       runtimeAttrsFromHookMeta(clonedMeta),
 	}
 
-	deliveredToEvolution := false
-	if kind == runtimeevents.KindAgentTurnEnd && e != nil && e.currentEvolution != nil {
-		evolution := e.currentEvolution()
-		if evolution != nil {
-			deliveredToEvolution = evolution.handleRuntimeTurnEnd(evt)
-		}
-	}
-	if deliveredToEvolution {
-		if evt.Attrs == nil {
-			evt.Attrs = make(map[string]any, 1)
-		}
-		evt.Attrs[evolutionDirectDeliveryAttr] = true
-	}
 	e.publishRuntimeEvent(evt)
 }
 

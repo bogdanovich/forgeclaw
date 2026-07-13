@@ -6,22 +6,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/sipeed/picoclaw/pkg/evolution"
 	"github.com/sipeed/picoclaw/pkg/evolutioneval"
 )
 
 func TestAuditCorpusReportsContentFreeFailureSignals(t *testing.T) {
 	finalOutput := "A sufficiently long prior task result that must not become a reusable procedure."
-	records := []evolution.LearningRecord{
-		{ID: "task-1", Kind: evolution.RecordKindTask, FinalOutput: finalOutput},
-		{ID: "pattern-1", Kind: evolution.RecordKindPattern, TaskRecordIDs: []string{"task-1"}},
+	records := []evolutioneval.CorpusRecord{
+		{ID: "task-1", FinalOutput: finalOutput},
+		{ID: "pattern-1", TaskRecordIDs: []string{"task-1"}},
 	}
-	drafts := []evolution.SkillDraft{
+	drafts := []evolutioneval.CorpusDraft{
 		{
 			ID: "draft-1", SourceRecordID: "pattern-1", TargetSkillName: "shared-target",
-			Status: evolution.DraftStatusCandidate, MatchedSkillRefs: []string{"a", "b", "c", "d"},
+			Status: "candidate", MatchedSkillRefs: []string{"a", "b", "c", "d"},
 			BodyOrPatch: "## Start\nStart from the learned path for x.\n" +
 				"Prefer the pattern summarized as x.\n## Procedure\n" + finalOutput,
 		},
@@ -52,14 +50,12 @@ func TestLoadAndAuditCorpusReadsJSONLAndDraftArray(t *testing.T) {
 	dir := t.TempDir()
 	recordPath := filepath.Join(dir, "records.jsonl")
 	draftPath := filepath.Join(dir, "drafts.json")
-	record := evolution.LearningRecord{
-		ID: "pattern-1", Kind: evolution.RecordKindPattern, CreatedAt: time.Now(), Summary: "redacted",
-	}
+	record := evolutioneval.CorpusRecord{ID: "pattern-1"}
 	recordData, _ := json.Marshal(record)
 	if err := os.WriteFile(recordPath, append(recordData, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	draftData, _ := json.Marshal([]evolution.SkillDraft{{
+	draftData, _ := json.Marshal([]evolutioneval.CorpusDraft{{
 		ID: "draft-1", SourceRecordID: "pattern-1", TargetSkillName: "target", BodyOrPatch: "1. Do work",
 	}})
 	if err := os.WriteFile(draftPath, draftData, 0o600); err != nil {

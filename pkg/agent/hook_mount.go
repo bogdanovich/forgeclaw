@@ -330,7 +330,6 @@ func validHookEventKinds() map[string]string {
 	kinds["tool_exec_end"] = runtimeevents.KindAgentToolExecEnd.String()
 	kinds["tool_exec_skipped"] = runtimeevents.KindAgentToolExecSkipped.String()
 	kinds["tool_loop_decision"] = runtimeevents.KindAgentToolLoopDecision.String()
-	kinds["evolution_transition"] = runtimeevents.KindAgentEvolutionTransition.String()
 	kinds["steering_injected"] = runtimeevents.KindAgentSteeringInjected.String()
 	kinds["follow_up_queued"] = runtimeevents.KindAgentFollowUpQueued.String()
 	kinds["async_completion"] = runtimeevents.KindAgentAsyncCompletion.String()

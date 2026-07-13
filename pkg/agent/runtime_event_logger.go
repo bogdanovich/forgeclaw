@@ -333,12 +333,6 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["classification"] = payload.Classification
 		fields["decision"] = payload.Decision
 		fields["cause"] = payload.Cause
-	case EvolutionTransitionPayload:
-		fields["record_id"] = payload.RecordID
-		fields["draft_id"] = payload.DraftID
-		fields["skill_name"] = payload.SkillName
-		fields["action"] = payload.Action
-		fields["status"] = payload.Status
 	case SteeringInjectedPayload:
 		fields["count"] = payload.Count
 		fields["total_content_len"] = payload.TotalContentLen

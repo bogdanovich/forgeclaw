@@ -28,7 +28,7 @@ detected automatically.
 After production trace capture is enabled, ForgeClaw automatically:
 
 1. observes supported runtime, task, delivery, steering, compaction, fallback,
-   tool-loop, and evolution events;
+   and tool-loop events;
 2. normalizes and redacts the permitted evidence;
 3. writes bounded trace files after eligible agent turns;
 4. expires old files according to the configured retention and count limits.

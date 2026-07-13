@@ -26,8 +26,7 @@ Audit target: merged `bogdanovich/forgeclaw:main` at
 | Context reconciliation | Unavailable | Context managers expose no typed revision transition event |
 | Restart boundary | Unavailable | Runtime startup/reload exposes no typed boundary event |
 | Inbound spool transition | Unavailable | Prepare/ack/release expose no typed transition event |
-| Evolution record/draft/apply | Captured | Post-persistence evolution observer |
-| Evolution review/rollback/profile | Unavailable | Evolution runtime exposes no observer callback for these writes |
+| Evolution records | Historical only | Runtime capture was removed with the rejected learning subsystem; schemas and fixtures remain readable |
 | User correction | Fixture-only | ForgeClaw has no reliable automatic correction signal |
 
 Unavailable categories are represented in the closed schema for future source
@@ -57,5 +56,4 @@ adapters and sanitized historical fixtures. Deterministic evaluators return
 
 The implementation roadmap is complete for the deterministic scope. Future
 work should add missing typed source events before claiming production coverage
-for reconciliation, restart, inbound spool, or the remaining evolution
-transitions.
+for reconciliation, restart, or inbound spool transitions.
