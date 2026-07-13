@@ -113,7 +113,10 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 		builtinSkillsDir = filepath.Join(wd, "skills")
 	}
 	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")
+	return newContextBuilder(workspace, globalSkillsDir, builtinSkillsDir)
+}
 
+func newContextBuilder(workspace, globalSkillsDir, builtinSkillsDir string) *ContextBuilder {
 	return &ContextBuilder{
 		workspace:      workspace,
 		skillsLoader:   skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),

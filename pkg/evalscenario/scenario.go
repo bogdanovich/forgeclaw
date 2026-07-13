@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/agent"
@@ -33,13 +34,25 @@ type Scenario struct {
 	ID            string
 	Source        string
 	Prompt        string
+	Instructions  string
 	SessionKey    string
 	Channel       string
 	ChatID        string
 	Model         string
 	ProviderSteps []ProviderStep
 	Tools         []StubTool
+	Skills        []Skill
+	ActiveSkills  []string
+	ContextWindow int
+	MaxTokens     int
+	MaxToolTurns  int
 	Timeout       time.Duration
+}
+
+// Skill is an isolated skill file available only inside one scenario run.
+type Skill struct {
+	Name    string
+	Content string
 }
 
 type ProviderStep struct {
@@ -56,23 +69,64 @@ type ToolCall struct {
 }
 
 type StubTool struct {
-	Name    string
-	Result  string
-	IsError bool
+	Name        string
+	Description string
+	Parameters  map[string]any
+	Result      string
+	IsError     bool
 }
 
 type Observation struct {
-	Response      string
-	ProviderCalls int
-	ToolCalls     map[string]int
-	Trace         evaltrace.Trace
-	Replay        evalreplay.Result
+	Response        string
+	ProviderCalls   int
+	ToolCalls       map[string]int
+	ToolInvocations map[string][]ToolInvocation
+	Trace           evaltrace.Trace
+	Replay          evalreplay.Result
+}
+
+type ToolInvocation struct {
+	Arguments map[string]any
+	Channel   string
+	ChatID    string
 }
 
 func Run(ctx context.Context, scenario Scenario) (Observation, error) {
-	if err := validateScenario(scenario); err != nil {
+	if err := validateScenario(scenario, true); err != nil {
 		return Observation{}, err
 	}
+	provider := scriptedProvider(scenario)
+	return run(ctx, scenario, provider, func() int { return len(provider.Calls()) }, provider.AssertExhausted)
+}
+
+// RunWithProvider executes a scenario with a caller-supplied provider. It is
+// intended for explicit operator-run baseline/candidate trials; normal tests
+// should use Run and scripted provider steps.
+func RunWithProvider(
+	ctx context.Context,
+	scenario Scenario,
+	provider providers.LLMProvider,
+) (Observation, error) {
+	if provider == nil {
+		return Observation{}, errors.New("scenario provider is required")
+	}
+	if len(scenario.ProviderSteps) != 0 {
+		return Observation{}, errors.New("provider steps cannot be used with a supplied provider")
+	}
+	if err := validateScenario(scenario, false); err != nil {
+		return Observation{}, err
+	}
+	recorded := &recordingProvider{provider: provider}
+	return run(ctx, scenario, recorded, recorded.CallCount, nil)
+}
+
+func run(
+	ctx context.Context,
+	scenario Scenario,
+	provider providers.LLMProvider,
+	providerCallCount func() int,
+	assertProvider func() error,
+) (Observation, error) {
 	timeout := scenario.Timeout
 	if timeout <= 0 {
 		timeout = defaultScenarioTimeout
@@ -85,14 +139,19 @@ func Run(ctx context.Context, scenario Scenario) (Observation, error) {
 		return Observation{}, fmt.Errorf("create isolated scenario workspace: %w", workspaceErr)
 	}
 	defer os.RemoveAll(workspace)
-	if err := writeToolPolicy(workspace, scenario.Tools); err != nil {
+	if err := writeScenarioWorkspace(workspace, scenario); err != nil {
 		return Observation{}, err
 	}
 
-	provider := scriptedProvider(scenario)
 	messageBus := bus.NewMessageBus()
 	cfg := scenarioConfig(workspace, scenario)
-	loop := agent.NewAgentLoop(cfg, messageBus, provider, agent.WithIsolatedToolBootstrap())
+	loop := agent.NewAgentLoop(
+		cfg,
+		messageBus,
+		provider,
+		agent.WithIsolatedToolBootstrap(),
+		agent.WithIsolatedSkillBootstrap(),
+	)
 	messageBus.SetEventPublisher(loop.RuntimeEventBus())
 
 	stubs, registerErr := registerScenarioTools(loop, scenario.Tools)
@@ -148,21 +207,35 @@ func Run(ctx context.Context, scenario Scenario) (Observation, error) {
 	if replayErr != nil {
 		return Observation{}, fmt.Errorf("replay captured scenario trace: %w", replayErr)
 	}
-	if err := provider.AssertExhausted(); err != nil {
-		return Observation{}, err
+	if assertProvider != nil {
+		if err := assertProvider(); err != nil {
+			return Observation{}, err
+		}
 	}
 
 	toolCalls := make(map[string]int, len(stubs))
+	toolInvocations := make(map[string][]ToolInvocation, len(stubs))
 	for name, stub := range stubs {
-		toolCalls[name] = len(stub.Calls())
+		calls := stub.Calls()
+		toolCalls[name] = len(calls)
+		invocations := make([]ToolInvocation, 0, len(calls))
+		for _, call := range calls {
+			invocations = append(invocations, ToolInvocation{
+				Arguments: call.Args,
+				Channel:   call.Channel,
+				ChatID:    call.ChatID,
+			})
+		}
+		toolInvocations[name] = invocations
 	}
 	return Observation{
-		Response: outbound.Content, ProviderCalls: len(provider.Calls()),
-		ToolCalls: toolCalls, Trace: trace, Replay: replayed,
+		Response: outbound.Content, ProviderCalls: providerCallCount(),
+		ToolCalls: toolCalls, ToolInvocations: toolInvocations,
+		Trace: trace, Replay: replayed,
 	}, nil
 }
 
-func validateScenario(scenario Scenario) error {
+func validateScenario(scenario Scenario, requireProviderSteps bool) error {
 	if !safeScenarioID.MatchString(scenario.ID) {
 		return errors.New("scenario id must be a path-safe identifier")
 	}
@@ -172,7 +245,10 @@ func validateScenario(scenario Scenario) error {
 	if strings.TrimSpace(scenario.Prompt) == "" {
 		return errors.New("scenario prompt is required")
 	}
-	if len(scenario.ProviderSteps) == 0 {
+	if scenario.ContextWindow < 0 || scenario.MaxTokens < 0 || scenario.MaxToolTurns < 0 {
+		return errors.New("scenario model and tool limits cannot be negative")
+	}
+	if requireProviderSteps && len(scenario.ProviderSteps) == 0 {
 		return errors.New("at least one provider step is required")
 	}
 	seen := make(map[string]struct{}, len(scenario.Tools))
@@ -188,6 +264,31 @@ func validateScenario(scenario Scenario) error {
 			return fmt.Errorf("duplicate stub tool %q", name)
 		}
 		seen[name] = struct{}{}
+	}
+	skills := make(map[string]struct{}, len(scenario.Skills))
+	for _, skill := range scenario.Skills {
+		name := strings.TrimSpace(skill.Name)
+		if !safeScenarioID.MatchString(name) {
+			return fmt.Errorf("skill name %q is not a path-safe identifier", name)
+		}
+		if strings.TrimSpace(skill.Content) == "" {
+			return fmt.Errorf("skill %q content is required", name)
+		}
+		if _, exists := skills[name]; exists {
+			return fmt.Errorf("duplicate skill %q", name)
+		}
+		skills[name] = struct{}{}
+	}
+	active := make(map[string]struct{}, len(scenario.ActiveSkills))
+	for _, rawName := range scenario.ActiveSkills {
+		name := strings.TrimSpace(rawName)
+		if _, exists := skills[name]; !exists {
+			return fmt.Errorf("active skill %q is not present in the isolated scenario", name)
+		}
+		if _, exists := active[name]; exists {
+			return fmt.Errorf("duplicate active skill %q", name)
+		}
+		active[name] = struct{}{}
 	}
 	return nil
 }
@@ -215,7 +316,9 @@ func scriptedProvider(scenario Scenario) *llmscenario.ScriptedProvider {
 func scenarioConfig(workspace string, scenario Scenario) *config.Config {
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{Defaults: config.AgentDefaults{
-			Workspace: workspace, ModelName: scenarioModel(scenario), MaxTokens: 4096, MaxToolIterations: 10,
+			Workspace: workspace, ModelName: scenarioModel(scenario),
+			ContextWindow: scenarioContextWindow(scenario), MaxTokens: scenarioMaxTokens(scenario),
+			MaxToolIterations: scenarioMaxToolTurns(scenario),
 		}},
 		Evaluation: config.EvaluationConfig{TraceCapture: config.EvaluationTraceCaptureConfig{
 			Enabled: true, ContentMode: "metadata_only",
@@ -226,9 +329,30 @@ func scenarioConfig(workspace string, scenario Scenario) *config.Config {
 	return cfg
 }
 
-func writeToolPolicy(workspace string, stubs []StubTool) error {
-	names := make([]string, 0, len(stubs))
-	for _, stub := range stubs {
+func scenarioContextWindow(scenario Scenario) int {
+	if scenario.ContextWindow > 0 {
+		return scenario.ContextWindow
+	}
+	return 16_384
+}
+
+func scenarioMaxTokens(scenario Scenario) int {
+	if scenario.MaxTokens > 0 {
+		return scenario.MaxTokens
+	}
+	return 4096
+}
+
+func scenarioMaxToolTurns(scenario Scenario) int {
+	if scenario.MaxToolTurns > 0 {
+		return scenario.MaxToolTurns
+	}
+	return 10
+}
+
+func writeScenarioWorkspace(workspace string, scenario Scenario) error {
+	names := make([]string, 0, len(scenario.Tools))
+	for _, stub := range scenario.Tools {
 		names = append(names, strings.TrimSpace(stub.Name))
 	}
 	sort.Strings(names)
@@ -242,11 +366,62 @@ func writeToolPolicy(workspace string, stubs []StubTool) error {
 	if len(names) == 0 {
 		builder.WriteString("  []\n")
 	}
+	if len(scenario.ActiveSkills) > 0 {
+		builder.WriteString("skills:\n")
+		for _, name := range scenario.ActiveSkills {
+			builder.WriteString("  - ")
+			builder.WriteString(strings.TrimSpace(name))
+			builder.WriteByte('\n')
+		}
+	}
 	builder.WriteString("mcpServers: []\n---\n# Evaluation fixture\n")
+	if instructions := strings.TrimSpace(scenario.Instructions); instructions != "" {
+		builder.WriteString("\n")
+		builder.WriteString(instructions)
+		builder.WriteByte('\n')
+	}
 	if err := os.WriteFile(filepath.Join(workspace, "AGENT.md"), []byte(builder.String()), 0o600); err != nil {
 		return fmt.Errorf("write isolated tool policy: %w", err)
 	}
+	for _, skill := range scenario.Skills {
+		dir := filepath.Join(workspace, "skills", strings.TrimSpace(skill.Name))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create isolated skill directory: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill.Content), 0o600); err != nil {
+			return fmt.Errorf("write isolated skill %q: %w", skill.Name, err)
+		}
+	}
 	return nil
+}
+
+type recordingProvider struct {
+	provider providers.LLMProvider
+	mu       sync.Mutex
+	calls    int
+}
+
+func (p *recordingProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	return p.provider.Chat(ctx, messages, toolDefs, model, options)
+}
+
+func (p *recordingProvider) GetDefaultModel() string {
+	return p.provider.GetDefaultModel()
+}
+
+func (p *recordingProvider) CallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
 }
 
 func registerScenarioTools(
@@ -260,6 +435,12 @@ func registerScenarioTools(
 			result = tools.ErrorResult(spec.Result)
 		}
 		stub := llmscenario.NewStubTool(spec.Name, result)
+		if description := strings.TrimSpace(spec.Description); description != "" {
+			stub.DescriptionValue = description
+		}
+		if spec.Parameters != nil {
+			stub.ParametersValue = spec.Parameters
+		}
 		loop.RegisterTool(stub)
 		stubs[spec.Name] = stub
 	}

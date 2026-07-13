@@ -48,26 +48,28 @@ type AgentLoop struct {
 	hooks              *HookManager
 
 	// Runtime state
-	running               atomic.Bool
-	contextManager        ContextManager
-	fallback              *providers.FallbackChain
-	modelExecution        *modelExecutionManager
-	channelManager        interfaces.ChannelManager
-	mediaStore            media.MediaStore
-	transcriber           asr.Transcriber
-	cmdRegistry           *commands.Registry
-	mcp                   mcpRuntime
-	evolution             *evolutionBridge
-	hookRuntime           hookRuntime
-	steering              *steeringQueue
-	compactionRunner      *backgroundCompactionRunner
-	pendingSkills         sync.Map
-	pendingStops          sync.Map
-	asyncCompletions      sync.Map
-	taskRegistries        sync.Map
-	runtimeTools          map[string]RuntimeToolFactory
-	isolatedToolBootstrap bool
-	mu                    sync.RWMutex
+	running          atomic.Bool
+	contextManager   ContextManager
+	fallback         *providers.FallbackChain
+	modelExecution   *modelExecutionManager
+	channelManager   interfaces.ChannelManager
+	mediaStore       media.MediaStore
+	transcriber      asr.Transcriber
+	cmdRegistry      *commands.Registry
+	mcp              mcpRuntime
+	evolution        *evolutionBridge
+	hookRuntime      hookRuntime
+	steering         *steeringQueue
+	compactionRunner *backgroundCompactionRunner
+	pendingSkills    sync.Map
+	pendingStops     sync.Map
+	asyncCompletions sync.Map
+	taskRegistries   sync.Map
+	runtimeTools     map[string]RuntimeToolFactory
+	mu               sync.RWMutex
+
+	isolatedToolBootstrap  bool
+	isolatedSkillBootstrap bool
 
 	// workerSem limits concurrent turn processing workers.
 	workerSem chan struct{}
@@ -306,6 +308,9 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	// Check context again before proceeding
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("context canceled after registry creation: %w", err)
+	}
+	if al.isolatedSkillBootstrap {
+		al.isolateSkillRegistry(registry, cfg)
 	}
 
 	// Ensure shared tools are re-registered on the new registry
