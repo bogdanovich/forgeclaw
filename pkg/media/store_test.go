@@ -783,7 +783,8 @@ func TestPersistentIndexResolvePrunesRemovedFile(t *testing.T) {
 	if removeErr := os.Remove(path); removeErr != nil {
 		t.Fatalf("remove media: %v", removeErr)
 	}
-	if _, resolveErr := store.Resolve(ref); resolveErr == nil || !strings.Contains(resolveErr.Error(), "unavailable ref") {
+	if _, resolveErr := store.Resolve(ref); resolveErr == nil ||
+		!strings.Contains(resolveErr.Error(), "unavailable ref") {
 		t.Fatalf("Resolve after removal error = %v, want unavailable ref", resolveErr)
 	}
 
