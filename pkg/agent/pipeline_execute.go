@@ -253,6 +253,7 @@ func (p *Pipeline) ExecuteTools(
 	}
 
 	ts.setPhase(TurnPhaseTools)
+	runner.captureSteering(false)
 
 toolLoop:
 	for i, tc := range normalizedToolCalls {
@@ -263,6 +264,9 @@ toolLoop:
 
 		toolName := tc.Name
 		toolArgs := cloneStringAnyMap(tc.Arguments)
+		if p.Interaction.Hooks == nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
+			continue
+		}
 		denyByTurnProfile := func() bool {
 			if turnProfileToolAllowed(ts.profile, toolName) {
 				return false
@@ -290,7 +294,6 @@ toolLoop:
 		if denyByTurnProfile() {
 			continue
 		}
-
 		if p.Interaction.Hooks != nil {
 			toolReq, decision := p.Interaction.Hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.before"),
@@ -307,6 +310,7 @@ toolLoop:
 			case HookActionRespond:
 				if toolReq != nil && toolReq.HookResult != nil {
 					hookResult := toolReq.HookResult
+					runner.recordCommittedHookResponseDecision(tc, toolName)
 
 					argsJSON, _ := json.Marshal(toolArgs)
 					argsPreview := utils.Truncate(string(argsJSON), 200)
@@ -402,9 +406,7 @@ toolLoop:
 						break toolLoop
 					}
 
-					if runner.checkpointAfterTool(i, "Turn checkpoint: skipping remaining tools after hook respond", true) {
-						break toolLoop
-					}
+					runner.captureAfterToolSteering(true)
 
 					continue
 				}
@@ -441,6 +443,9 @@ toolLoop:
 				exec.abortedByHardAbort = true
 				return ToolControlBreak
 			}
+		}
+		if p.Interaction.Hooks != nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
+			continue
 		}
 
 		if p.Interaction.Hooks != nil {
@@ -490,9 +495,7 @@ toolLoop:
 				Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
 			}, toolMessagePersistAndIngest)
 			exec.allResponsesHandled = false
-			if runner.checkpointAfterTool(i, "Turn checkpoint after loop-protected tool", false) {
-				break toolLoop
-			}
+			runner.captureAfterToolSteering(false)
 			continue
 		}
 
@@ -763,9 +766,7 @@ toolLoop:
 			break toolLoop
 		}
 
-		if runner.checkpointAfterTool(i, "Turn checkpoint: skipping remaining tools", false) {
-			break toolLoop
-		}
+		runner.captureAfterToolSteering(false)
 	}
 
 	exec.messages = runner.messages
@@ -889,47 +890,89 @@ func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMes
 	}
 }
 
-func (r *toolLoopRunner) checkpointAfterTool(
-	completedIndex int,
-	skipLogMessage string,
-	markAdditionalSteering bool,
-) bool {
-	if steerMsgs := r.p.dequeueSteeringMessagesForTurn(r.ts); len(steerMsgs) > 0 {
-		if markAdditionalSteering {
-			r.exec.markAdditionalUserInputObserved()
-		} else {
-			r.exec.markSteeringObserved()
-		}
-		r.exec.pendingMessages = append(r.exec.pendingMessages, steerMsgs...)
-	}
-
-	skipReason := ""
-	skipMessage := ""
-	if len(r.exec.pendingMessages) > 0 {
-		skipReason = "queued user steering message"
-		skipMessage = "Skipped due to queued user message."
-	} else if gracefulPending, _ := r.ts.gracefulInterruptRequested(); gracefulPending {
-		skipReason = "graceful interrupt requested"
-		skipMessage = "Skipped due to graceful interrupt."
-	}
-
-	if skipReason != "" {
-		remaining := len(r.toolCalls) - completedIndex - 1
-		if remaining > 0 {
-			logger.InfoCF("agent", skipLogMessage,
-				map[string]any{
-					"agent_id":  r.ts.agent.ID,
-					"completed": completedIndex + 1,
-					"skipped":   remaining,
-					"reason":    skipReason,
-				})
-			r.appendSkippedToolMessages(completedIndex+1, skipReason, skipMessage)
-		}
-		return true
-	}
-
+func (r *toolLoopRunner) captureAfterToolSteering(markAdditionalSteering bool) {
+	r.captureSteering(markAdditionalSteering)
 	r.appendPendingSubTurnResult()
-	return false
+}
+
+func (r *toolLoopRunner) captureSteering(markAdditional bool) {
+	steerMsgs := r.p.dequeueSteeringMessagesForTurn(r.ts)
+	if len(steerMsgs) == 0 {
+		return
+	}
+	if markAdditional {
+		r.exec.markAdditionalUserInputObserved()
+	} else {
+		r.exec.markSteeringObserved()
+	}
+	r.exec.pendingMessages = append(r.exec.pendingMessages, steerMsgs...)
+}
+
+func (r *toolLoopRunner) pendingInterruptCause() string {
+	cause := ""
+	if len(r.exec.pendingMessages) > 0 {
+		cause = "queued_user_steering"
+	} else if gracefulPending, _ := r.ts.gracefulInterruptRequested(); gracefulPending {
+		cause = "graceful_interrupt"
+	}
+	return cause
+}
+
+func (r *toolLoopRunner) skipPendingToolForInterrupt(
+	tc providers.ToolCall,
+	toolName string,
+	toolArgs map[string]any,
+) bool {
+	cause := r.pendingInterruptCause()
+	if cause == "" {
+		return false
+	}
+
+	safety := tools.SteeringSafetyUnknown
+	if r.ts != nil && r.ts.agent != nil && r.ts.agent.Tools != nil {
+		safety = r.ts.agent.Tools.SteeringSafety(toolName, toolArgs)
+	}
+	decision := "skip"
+	if cause == "queued_user_steering" &&
+		(safety == tools.SteeringSafetyReadOnly || safety == tools.SteeringSafetyNonCancellable) {
+		decision = "finish"
+	}
+	r.p.emitEvent(
+		runtimeevents.KindAgentToolSteeringDecision,
+		r.ts.eventMeta("runTurn", "turn.tool.steering_decision"),
+		ToolSteeringDecisionPayload{
+			ToolCallID: tc.ID, Tool: toolName, Classification: string(safety), Decision: decision, Cause: cause,
+		},
+	)
+	if decision == "finish" {
+		return false
+	}
+
+	reason := "queued user steering message"
+	content := "Skipped due to queued user message."
+	if cause == "graceful_interrupt" {
+		reason = "graceful interrupt requested"
+		content = "Skipped due to graceful interrupt."
+	}
+	skippedTC := tc
+	skippedTC.Name = toolName
+	r.appendSkippedToolMessage(skippedTC, reason, content)
+	return true
+}
+
+func (r *toolLoopRunner) recordCommittedHookResponseDecision(tc providers.ToolCall, toolName string) {
+	cause := r.pendingInterruptCause()
+	if cause == "" {
+		return
+	}
+	r.p.emitEvent(
+		runtimeevents.KindAgentToolSteeringDecision,
+		r.ts.eventMeta("runTurn", "turn.tool.steering_decision"),
+		ToolSteeringDecisionPayload{
+			ToolCallID: tc.ID, Tool: toolName, Classification: string(tools.SteeringSafetyNonCancellable),
+			Decision: "finish", Cause: cause,
+		},
+	)
 }
 
 func (r *toolLoopRunner) appendPendingSubTurnResult() {

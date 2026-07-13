@@ -184,6 +184,16 @@ type ToolExecSkippedPayload struct {
 	Reason     string
 }
 
+// ToolSteeringDecisionPayload records why a pending tool call continued or
+// was skipped after steering reached the current batch.
+type ToolSteeringDecisionPayload struct {
+	ToolCallID     string
+	Tool           string
+	Classification string
+	Decision       string
+	Cause          string
+}
+
 // ToolLoopDecisionPayload contains only hash-safe loop protection metadata.
 type ToolLoopDecisionPayload struct {
 	Tool      string

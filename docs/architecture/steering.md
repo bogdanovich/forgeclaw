@@ -1,14 +1,19 @@
 # Steering
 
-Steering allows injecting messages into an already-running agent loop, interrupting it between tool calls without waiting for the entire cycle to complete.
+Steering allows injecting messages into an already-running agent loop at safe
+boundaries without waiting for the entire cycle to complete.
 
 ## How it works
 
-When the agent is executing a sequence of tool calls (e.g. the model requested 3 tools in a single turn), steering checks the queue **after each tool** completes. If it finds queued messages:
+When the model requests a sequence of tool calls, steering checks the queue
+before the first dispatch and after each tool completes. Once steering is
+pending, every remaining call is evaluated independently:
 
-1. The remaining tools are **skipped** and receive `"Skipped due to queued user message."` as their result
-2. The steering messages are **injected into the conversation context**
-3. The model is called again with the updated context, including the user's steering message
+1. Read-only and explicitly non-cancellable calls finish.
+2. Cancellable and unclassified calls are skipped before dispatch.
+3. Every call receives exactly one source-ordered tool result, including a
+   synthetic result for skipped calls.
+4. Steering is injected before the next model request.
 
 ```
 User ──► Steer("change approach")
@@ -16,8 +21,8 @@ User ──► Steer("change approach")
 Agent Loop      ▼
   ├─ tool[0] ✔  (executed)
   ├─ [polling] → steering found!
-  ├─ tool[1] ✘  (skipped)
-  ├─ tool[2] ✘  (skipped)
+  ├─ tool[1] ✔  (read-only, finished)
+  ├─ tool[2] ✘  (cancellable, skipped)
   └─ new LLM turn with steering message
 ```
 
@@ -107,13 +112,35 @@ the default one.
 Steering is checked at the following points in the agent cycle:
 
 1. **At loop start** — before the first LLM call, to catch messages enqueued during setup
-2. **After every tool completes** — including the first and the last. If steering is found and there are remaining tools, they are all skipped immediately
-3. **After a direct LLM response** — if a new steering message arrived while the model was generating a non-tool response, the loop continues instead of returning a stale answer
-4. **Right before the turn is finalized** — if steering arrived at the very end of the turn, the agent immediately starts a continuation turn instead of leaving the message orphaned in the queue
+2. **Before the first tool dispatch** — catches steering that arrived while the model was responding
+3. **After every tool completes** — including the first and last; remaining calls are classified individually
+4. **After a direct LLM response** — if a new steering message arrived while the model was generating a non-tool response, the loop continues instead of returning a stale answer
+5. **Right before the turn is finalized** — if steering arrived at the very end of the turn, the agent immediately starts a continuation turn instead of leaving the message orphaned in the queue
 
-## Why remaining tools are skipped
+## Tool cancellation safety
 
-When a steering message is detected, all remaining tools in the batch are skipped rather than executed. The alternative — let all tools finish and inject the steering message afterwards — was considered and rejected. Here is why.
+Tools optionally implement `ToolSteeringSafety(args)`. The declared value controls
+only calls that have not been dispatched:
+
+| Classification | Pending-call decision |
+|---|---|
+| `read_only` | Finish; observing state is safe and may still help the next model turn |
+| `non_cancellable` | Finish; the tool contract says skipping at this boundary is unsafe |
+| `cancellable` | Skip before execution |
+| `unknown` or missing | Skip before execution (fail closed) |
+
+Once a tool has been dispatched, ForgeClaw lets it finish. Steering does not
+cancel its context because cancellation after an external commit could leave
+the runtime and external system in disagreement. Tool authors must classify
+the externally visible operation, not merely its Go implementation. Call
+arguments support mixed-operation tools: `exec` treats `list`, `poll`, and
+`read` as read-only, while commands and session writes, keys, or kills are
+cancellable.
+
+All built-in tool types declare a policy. Remote MCP annotations are not used
+as authorization to continue because MCP defines them as untrusted hints;
+dynamic MCP calls deliberately remain `unknown` unless a trusted wrapper
+implements a stronger local policy.
 
 ### Preventing unwanted side effects
 
@@ -133,7 +160,8 @@ With skipping, the agent reacts as soon as the current tool finishes — typical
 
 ### The LLM gets full context
 
-Skipped tools receive an explicit error result (`"Skipped due to queued user message."`), so the model knows exactly which actions were not performed. It can then decide whether to re-execute them with the new context, or take a different path entirely.
+Skipped tools receive an explicit synthetic result describing the cause and
+classification, so the model knows which actions were not performed.
 
 ### Trade-off: sequential execution
 
@@ -141,13 +169,15 @@ Skipping requires tools to run **sequentially** (the previous implementation ran
 
 ## Skipped tool result format
 
-When steering interrupts a batch, each tool that was not executed receives a `tool` result with:
+When steering skips a call, it receives a `tool` result:
 
 ```
 Content: "Skipped due to queued user message."
 ```
 
-This is saved to the session via `AddFullMessage` and sent to the model, so it is aware that some requested actions were not performed.
+The structured `agent.tool.steering_decision` event separately records the
+classification, decision, cause, and tool-call correlation. The result is
+saved to the session and sent to the model, so it knows the action did not run.
 
 ## Full flow example
 
@@ -160,8 +190,8 @@ This is saved to the session via `AddFullMessage` and sent to the model, so it i
 
 4. [polling] → User called Steer("no, search for Y instead")
 
-5. write_file is skipped → "Skipped due to queued user message."
-   message is skipped    → "Skipped due to queued user message."
+5. A pending read-only search finishes, while `write_file` and `message` are
+   skipped with synthetic results.
 
 6. Message "search for Y instead" injected into context
 
@@ -198,7 +228,11 @@ This applies both to in-turn steering and to idle-session continuation through
 
 ## Notes
 
-- Steering **does not interrupt** a tool that is currently executing. It waits for the current tool to finish, then checks the queue.
+- Steering **does not interrupt** a tool that is currently executing. It waits for the current tool to finish, then classifies pending calls.
+- Tool execution is currently sequential, so there is only one already-dispatched call at a time.
+- Steering queues remain in memory. Accepted messages are persisted when they
+  are injected, but a process restart before injection can still lose queued
+  steering; cancellation decisions therefore do not claim restart durability.
 - With `one-at-a-time` mode, if multiple messages are enqueued rapidly, they will be processed one per iteration. This gives the model the opportunity to react to each message individually.
 - With `all` mode, all pending messages are combined into a single injection. Useful when you want the agent to receive all the context at once.
 - The steering queue has a maximum capacity of 10 messages (`MaxQueueSize`). `Steer()` returns an error when the queue is full. In the bus drain path, the error is logged as a warning and the message is effectively dropped.

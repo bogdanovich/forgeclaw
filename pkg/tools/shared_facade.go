@@ -35,6 +35,8 @@ type (
 	ReportFieldDelta       = toolshared.ReportFieldDelta
 	PromptMetadataProvider = toolshared.PromptMetadataProvider
 	LoopSemanticsProvider  = toolshared.LoopSemanticsProvider
+	SteeringSafety         = toolshared.SteeringSafety
+	SteeringSafetyProvider = toolshared.SteeringSafetyProvider
 	ToolResult             = toolshared.ToolResult
 	WriteAuditEntry        = toolshared.WriteAuditEntry
 )
@@ -59,6 +61,11 @@ const (
 	DeliveryFinalWithFollowup = toolshared.DeliveryFinalWithFollowup
 	DeliveryParentOnly        = toolshared.DeliveryParentOnly
 	DeliverySilent            = toolshared.DeliverySilent
+
+	SteeringSafetyUnknown        = toolshared.SteeringSafetyUnknown
+	SteeringSafetyReadOnly       = toolshared.SteeringSafetyReadOnly
+	SteeringSafetyNonCancellable = toolshared.SteeringSafetyNonCancellable
+	SteeringSafetyCancellable    = toolshared.SteeringSafetyCancellable
 )
 
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {

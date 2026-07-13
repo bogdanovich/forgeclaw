@@ -53,6 +53,29 @@ func TestToolRegistryLoopSemanticsFailsClosed(t *testing.T) {
 	}
 }
 
+func TestToolRegistrySteeringSafetyUsesCallArguments(t *testing.T) {
+	registry := NewToolRegistry()
+	execTool, err := NewExecTool(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Register(execTool)
+
+	for _, action := range []string{"list", "poll", "read"} {
+		if got := registry.SteeringSafety("exec", map[string]any{"action": action}); got != SteeringSafetyReadOnly {
+			t.Fatalf("exec action %q safety = %q, want read_only", action, got)
+		}
+	}
+	for _, action := range []string{"run", "write", "send-keys", "kill", ""} {
+		if got := registry.SteeringSafety("exec", map[string]any{"action": action}); got != SteeringSafetyCancellable {
+			t.Fatalf("exec action %q safety = %q, want cancellable", action, got)
+		}
+	}
+	if got := registry.SteeringSafety("missing", nil); got != SteeringSafetyUnknown {
+		t.Fatalf("missing tool safety = %q, want unknown", got)
+	}
+}
+
 func (m *mockRegistryTool) Name() string               { return m.name }
 func (m *mockRegistryTool) Description() string        { return m.desc }
 func (m *mockRegistryTool) Parameters() map[string]any { return m.params }

@@ -719,6 +719,16 @@ func runtimeEventRecord(
 			Count:        value.Count,
 			Threshold:    value.Threshold,
 		}
+	case runtimeevents.KindAgentToolSteeringDecision:
+		value, ok := event.Payload.(ToolSteeringDecisionPayload)
+		if !ok {
+			return evaltrace.Record{}, false, false
+		}
+		kind = evaltrace.RecordToolSteeringDecision
+		payload = evaltrace.ToolPayload{
+			Tool: value.Tool, Action: value.Decision, Classification: value.Classification, Cause: value.Cause,
+		}
+		toolCallID = value.ToolCallID
 	case runtimeevents.KindAgentSteeringInjected:
 		value, ok := event.Payload.(SteeringInjectedPayload)
 		if !ok {

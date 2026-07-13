@@ -129,6 +129,48 @@ func TestReplayProjectsHealthyTraceDeterministically(t *testing.T) {
 	}
 }
 
+func TestReplayProjectsToolSteeringDecision(t *testing.T) {
+	trace := replayTrace(
+		t,
+		replayRecord(
+			t,
+			1,
+			evaltrace.RecordTurnStart,
+			"turn-start",
+			evaltrace.TurnPayload{},
+		),
+		replayRecordWithCorrelation(
+			t,
+			2,
+			evaltrace.RecordToolSteeringDecision,
+			"steering-decision",
+			evaltrace.Correlation{ToolCallID: "call-1"},
+			evaltrace.ToolPayload{
+				Tool: "write_file", Action: "skip", Classification: "cancellable", Cause: "queued_user_steering",
+			},
+		),
+		replayRecord(t, 3, evaltrace.RecordTurnEnd, "turn-end", evaltrace.TurnPayload{Status: "completed"}),
+	)
+	trace.Outcome = &evaltrace.Outcome{Status: "completed"}
+	trace = finalizeReplayTrace(t, trace)
+
+	result, err := Replay(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Projection.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %#v", result.Projection.Diagnostics)
+	}
+	if len(result.Projection.Steering.ToolDecisions) != 1 {
+		t.Fatalf("tool decisions = %#v", result.Projection.Steering.ToolDecisions)
+	}
+	decision := result.Projection.Steering.ToolDecisions[0]
+	if decision.Action != "skip" || decision.Classification != "cancellable" ||
+		decision.Cause != "queued_user_steering" {
+		t.Fatalf("decision = %#v", decision)
+	}
+}
+
 func TestReplayReportsUnresolvedToolAndMissingTurnEnd(t *testing.T) {
 	trace := finalizeReplayTrace(t, replayTrace(
 		t,
