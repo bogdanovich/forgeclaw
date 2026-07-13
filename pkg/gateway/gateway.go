@@ -82,6 +82,17 @@ type startupBlockedProvider struct {
 	reason string
 }
 
+func newWorkspaceMediaStore(cfg *config.Config) (*media.FileMediaStore, error) {
+	return media.NewFileMediaStoreWithPersistentIndex(
+		filepath.Join(cfg.WorkspacePath(), "state", "media", "index.json"),
+		media.MediaCleanerConfig{
+			Enabled:  cfg.Tools.MediaCleanup.Enabled,
+			MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
+			Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
+		},
+	)
+}
+
 func logChannelVoiceCapabilities(cm *channels.Manager, asrAvailable bool, ttsAvailable bool) {
 	if cm == nil {
 		return
@@ -600,14 +611,12 @@ func setupAndStartServices(
 	}
 	fmt.Println("✓ Heartbeat service started")
 
-	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
-		Enabled:  cfg.Tools.MediaCleanup.Enabled,
-		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
-		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
-	})
-	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-		fms.Start()
+	mediaStore, err := newWorkspaceMediaStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("error creating media store: %w", err)
 	}
+	mediaStore.Start()
+	runningServices.MediaStore = mediaStore
 
 	runningServices.ChannelManager, err = channels.NewManager(
 		cfg,
@@ -616,9 +625,7 @@ func setupAndStartServices(
 		channels.WithRuntimeEvents(agentLoop.RuntimeEventBus()),
 	)
 	if err != nil {
-		if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-			fms.Stop()
-		}
+		mediaStore.Stop()
 		return nil, fmt.Errorf("error creating channel manager: %w", err)
 	}
 
@@ -862,14 +869,12 @@ func restartServices(
 	}
 	fmt.Println("  ✓ Heartbeat service restarted")
 
-	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
-		Enabled:  cfg.Tools.MediaCleanup.Enabled,
-		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
-		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
-	})
-	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-		fms.Start()
+	mediaStore, err := newWorkspaceMediaStore(cfg)
+	if err != nil {
+		return fmt.Errorf("error recreating media store: %w", err)
 	}
+	mediaStore.Start()
+	runningServices.MediaStore = mediaStore
 	if runningServices.ChannelManager != nil {
 		runningServices.ChannelManager.SetMediaStore(runningServices.MediaStore)
 	}

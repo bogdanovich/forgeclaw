@@ -16,6 +16,7 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Runtime Events](runtime-events.md): runtime event envelope, centralized event logging, filters, and examples.
 - [Channel Lifecycle](channel-lifecycle.md): conservative channel reload policy, delivery ownership invariants, and the roadmap for any future hot-replacement work.
 - [Workspace Temp Directory](workspace-temp.md): standard scratch path, `PICOCLAW_WORKSPACE_TMP`, and where temporary files should go.
+- [Media Store Durability](media-store.md): workspace-local media reference recovery, retention semantics, and migration limits.
 - [Shellguard](shellguard.md): reusable shell command validation, command classification, permission modes, and path-scope limits.
 - [Tool-Loop Stagnation Protection](tool-loop-stagnation.md): warning-first repeated failure and read-only no-progress detection with hash-safe state and events.
 - [Replay And Evaluation](replay-evaluation.md): bounded redacted traces, side-effect-free deterministic replay, regression fixtures, and reliability evaluators.
