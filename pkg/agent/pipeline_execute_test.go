@@ -27,6 +27,38 @@ type pipelineLoopGuardReadTool struct {
 	executions int
 }
 
+type steeringSafetyTestTool struct {
+	name       string
+	safety     tools.SteeringSafety
+	executions int
+}
+
+func (t *steeringSafetyTestTool) Name() string        { return t.name }
+func (t *steeringSafetyTestTool) Description() string { return "steering safety test" }
+func (t *steeringSafetyTestTool) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (t *steeringSafetyTestTool) ToolSteeringSafety() tools.SteeringSafety { return t.safety }
+func (t *steeringSafetyTestTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+	t.executions++
+	return tools.SilentResult(t.name + " complete")
+}
+
+type unknownSteeringSafetyTestTool struct {
+	executions int
+}
+
+func (*unknownSteeringSafetyTestTool) Name() string        { return "unknown" }
+func (*unknownSteeringSafetyTestTool) Description() string { return "unknown steering safety test" }
+func (*unknownSteeringSafetyTestTool) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+
+func (t *unknownSteeringSafetyTestTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+	t.executions++
+	return tools.SilentResult("unknown complete")
+}
+
 func (t *pipelineLoopGuardReadTool) Name() string        { return "loop_hook_test" }
 func (t *pipelineLoopGuardReadTool) Description() string { return "hook loop test" }
 func (t *pipelineLoopGuardReadTool) Parameters() map[string]any {
@@ -57,6 +89,21 @@ type captureRuntimeEmitter struct {
 
 type oneShotLoopGuardSteering struct {
 	messages []providers.Message
+}
+
+type delayedSteering struct {
+	polls    int
+	messages []providers.Message
+}
+
+func (s *delayedSteering) dequeueSteeringMessagesForTurn(string, string) []providers.Message {
+	s.polls++
+	if s.polls < 2 {
+		return nil
+	}
+	messages := s.messages
+	s.messages = nil
+	return messages
 }
 
 func (s *oneShotLoopGuardSteering) dequeueSteeringMessagesForTurn(string, string) []providers.Message {
@@ -117,7 +164,7 @@ func TestPipelineLoopGuardBlocksAndPreservesToolCallResults(t *testing.T) {
 			exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.ToolCall{
 				ID: "call-3-skipped", Name: tool.Name(), Arguments: map[string]any{"value": "other"},
 			})
-			pipeline.Context.Steering = &oneShotLoopGuardSteering{
+			pipeline.Context.Steering = &delayedSteering{
 				messages: []providers.Message{{Role: "user", Content: "change course"}},
 			}
 		}
@@ -441,6 +488,104 @@ func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *tes
 	}
 	if got := cm.ingestCalls.Load(); got != 0 {
 		t.Fatalf("ingest calls = %d, want 0", got)
+	}
+}
+
+func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	readOnly := &steeringSafetyTestTool{name: "read", safety: tools.SteeringSafetyReadOnly}
+	cancellable := &steeringSafetyTestTool{name: "write", safety: tools.SteeringSafetyCancellable}
+	nonCancellable := &steeringSafetyTestTool{name: "commit", safety: tools.SteeringSafetyNonCancellable}
+	unknown := &unknownSteeringSafetyTestTool{}
+	for _, tool := range []tools.Tool{readOnly, cancellable, nonCancellable, unknown} {
+		registry.Register(tool)
+	}
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
+	ts := &turnState{
+		agent: agent, agentID: "main", turnID: "turn-steering-safety",
+		sessionKey: "session-steering-safety", opts: processOptions{NoHistory: true},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{
+		{ID: "call-read", Name: "read"},
+		{ID: "call-write", Name: "write"},
+		{ID: "call-commit", Name: "commit"},
+		{ID: "call-unknown", Name: "unknown"},
+	}
+	emitter := &captureRuntimeEmitter{}
+	pipeline := &Pipeline{
+		Context: PipelineContextServices{Steering: &oneShotLoopGuardSteering{
+			messages: []providers.Message{{Role: "user", Content: "change course"}},
+		}},
+		Runtime: PipelineRuntimeServices{Events: emitter},
+	}
+
+	if got := pipeline.ExecuteTools(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		1,
+	); got != ToolControlContinue {
+		t.Fatalf("control = %v, want continue", got)
+	}
+	if readOnly.executions != 1 || nonCancellable.executions != 1 {
+		t.Fatalf("safe executions = read:%d commit:%d, want 1 each", readOnly.executions, nonCancellable.executions)
+	}
+	if cancellable.executions != 0 || unknown.executions != 0 {
+		t.Fatalf("unsafe executions = write:%d unknown:%d, want 0", cancellable.executions, unknown.executions)
+	}
+	if len(exec.messages) != 4 {
+		t.Fatalf("tool results = %d, want one per call", len(exec.messages))
+	}
+	for i, call := range exec.normalizedToolCalls {
+		if exec.messages[i].Role != "tool" || exec.messages[i].ToolCallID != call.ID {
+			t.Fatalf("result[%d] = %#v, want source-ordered result for %s", i, exec.messages[i], call.ID)
+		}
+	}
+
+	decisions := make(map[string]ToolSteeringDecisionPayload)
+	for _, event := range emitter.events {
+		if event.kind != runtimeevents.KindAgentToolSteeringDecision {
+			continue
+		}
+		payload := event.payload.(ToolSteeringDecisionPayload)
+		decisions[payload.ToolCallID] = payload
+	}
+	if len(decisions) != 4 || decisions["call-read"].Decision != "finish" ||
+		decisions["call-write"].Decision != "skip" || decisions["call-commit"].Decision != "finish" ||
+		decisions["call-unknown"].Classification != string(tools.SteeringSafetyUnknown) {
+		t.Fatalf("decisions = %#v", decisions)
+	}
+}
+
+func TestPipelineSteeringArrivingDuringBatchDoesNotCancelCompletedCall(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	first := &steeringSafetyTestTool{name: "first-write", safety: tools.SteeringSafetyCancellable}
+	second := &steeringSafetyTestTool{name: "second-write", safety: tools.SteeringSafetyCancellable}
+	registry.Register(first)
+	registry.Register(second)
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
+	ts := &turnState{
+		agent: agent, agentID: "main", turnID: "turn-delayed-steering",
+		sessionKey: "session-delayed-steering", opts: processOptions{NoHistory: true},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{
+		{ID: "call-first", Name: first.Name()},
+		{ID: "call-second", Name: second.Name()},
+	}
+	pipeline := &Pipeline{Context: PipelineContextServices{Steering: &delayedSteering{
+		messages: []providers.Message{{Role: "user", Content: "stop the second write"}},
+	}}}
+
+	pipeline.ExecuteTools(context.Background(), context.Background(), ts, exec, 1)
+	if first.executions != 1 || second.executions != 0 {
+		t.Fatalf("executions = first:%d second:%d, want 1 and 0", first.executions, second.executions)
+	}
+	if len(exec.messages) != 2 || exec.messages[0].ToolCallID != "call-first" ||
+		exec.messages[1].ToolCallID != "call-second" {
+		t.Fatalf("tool results = %#v, want one source-ordered result per call", exec.messages)
 	}
 }
 

@@ -101,7 +101,8 @@ func (r *reducer) apply(record evaltrace.Record) {
 	case evaltrace.RecordToolCall,
 		evaltrace.RecordToolResult,
 		evaltrace.RecordToolSkipped,
-		evaltrace.RecordToolLoopDecision:
+		evaltrace.RecordToolLoopDecision,
+		evaltrace.RecordToolSteeringDecision:
 		r.applyTool(record)
 	case evaltrace.RecordRestartBoundary, evaltrace.RecordInboundSpoolTransition:
 		r.applyRestart(record)
@@ -292,6 +293,16 @@ func (r *reducer) applyProvider(record evaltrace.Record) {
 func (r *reducer) applyTool(record evaltrace.Record) {
 	var payload evaltrace.ToolPayload
 	if !r.decode(record, &payload) {
+		return
+	}
+	if record.Kind == evaltrace.RecordToolSteeringDecision {
+		r.projection.Steering.ToolDecisions = append(
+			r.projection.Steering.ToolDecisions,
+			ToolSteeringDecision{
+				Sequence: record.Sequence, Tool: payload.Tool, Action: payload.Action,
+				Classification: payload.Classification, Cause: payload.Cause,
+			},
+		)
 		return
 	}
 	if record.Kind == evaltrace.RecordToolLoopDecision {

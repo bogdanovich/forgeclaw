@@ -32,16 +32,18 @@ type ModelPayload struct {
 }
 
 type ToolPayload struct {
-	Tool         string `json:"tool"`
-	ArgsHash     string `json:"args_hash,omitempty"`
-	ResultHash   string `json:"result_hash,omitempty"`
-	Status       string `json:"status,omitempty"`
-	Executed     bool   `json:"executed,omitempty"`
-	IsError      bool   `json:"is_error,omitempty"`
-	Action       string `json:"action,omitempty"`
-	DecisionCode string `json:"decision_code,omitempty"`
-	Count        int    `json:"count,omitempty"`
-	Threshold    int    `json:"threshold,omitempty"`
+	Tool           string `json:"tool"`
+	ArgsHash       string `json:"args_hash,omitempty"`
+	ResultHash     string `json:"result_hash,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Executed       bool   `json:"executed,omitempty"`
+	IsError        bool   `json:"is_error,omitempty"`
+	Action         string `json:"action,omitempty"`
+	DecisionCode   string `json:"decision_code,omitempty"`
+	Count          int    `json:"count,omitempty"`
+	Threshold      int    `json:"threshold,omitempty"`
+	Classification string `json:"classification,omitempty"`
+	Cause          string `json:"cause,omitempty"`
 }
 
 type SteeringPayload struct {

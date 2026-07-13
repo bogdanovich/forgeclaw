@@ -31,6 +31,7 @@ const (
 	RecordToolResult             RecordKind = "tool.result"
 	RecordToolSkipped            RecordKind = "tool.skipped"
 	RecordToolLoopDecision       RecordKind = "tool.loop_decision"
+	RecordToolSteeringDecision   RecordKind = "tool.steering_decision"
 	RecordSteeringEnqueued       RecordKind = "steering.enqueued"
 	RecordSteeringInjected       RecordKind = "steering.injected"
 	RecordInterrupt              RecordKind = "steering.interrupt"

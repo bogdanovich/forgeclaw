@@ -22,6 +22,23 @@ type LoopSemanticsProvider interface {
 	ToolLoopSemantics() loopguard.Semantics
 }
 
+// SteeringSafety describes what the runtime should do with a pending tool call
+// after user steering arrives. Unknown tools fail closed and are skipped.
+type SteeringSafety string
+
+const (
+	SteeringSafetyUnknown        SteeringSafety = "unknown"
+	SteeringSafetyReadOnly       SteeringSafety = "read_only"
+	SteeringSafetyNonCancellable SteeringSafety = "non_cancellable"
+	SteeringSafetyCancellable    SteeringSafety = "cancellable"
+)
+
+// SteeringSafetyProvider lets a tool declare whether a pending call may be
+// skipped safely. This policy is evaluated before dispatch, never mid-call.
+type SteeringSafetyProvider interface {
+	ToolSteeringSafety() SteeringSafety
+}
+
 const (
 	ToolPromptLayerCapability = "capability"
 	ToolPromptSlotTooling     = "tooling"

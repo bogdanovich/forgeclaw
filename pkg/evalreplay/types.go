@@ -64,11 +64,20 @@ type DeliveryProjection struct {
 }
 
 type SteeringProjection struct {
-	Enqueued   int            `json:"enqueued,omitempty"`
-	Injected   int            `json:"injected,omitempty"`
-	Pending    int            `json:"pending,omitempty"`
-	Interrupts int            `json:"interrupts,omitempty"`
-	Messages   map[string]int `json:"messages,omitempty"`
+	Enqueued      int                    `json:"enqueued,omitempty"`
+	Injected      int                    `json:"injected,omitempty"`
+	Pending       int                    `json:"pending,omitempty"`
+	Interrupts    int                    `json:"interrupts,omitempty"`
+	Messages      map[string]int         `json:"messages,omitempty"`
+	ToolDecisions []ToolSteeringDecision `json:"tool_decisions,omitempty"`
+}
+
+type ToolSteeringDecision struct {
+	Sequence       uint64 `json:"sequence"`
+	Tool           string `json:"tool,omitempty"`
+	Action         string `json:"action,omitempty"`
+	Classification string `json:"classification,omitempty"`
+	Cause          string `json:"cause,omitempty"`
 }
 
 type ToolLoopProjection struct {
