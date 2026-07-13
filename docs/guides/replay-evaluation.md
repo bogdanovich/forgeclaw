@@ -4,6 +4,10 @@ ForgeClaw can capture bounded execution evidence, replay it without production
 side effects, and run deterministic correctness evaluators over the resulting
 projection. Capture is disabled by default.
 
+For a plain-language explanation of when this is useful, what is automatic,
+and the recommended setup, start with the
+[practical overview](replay-evaluation-overview.md).
+
 ## Enable capture
 
 Set `evaluation.trace_capture.enabled` to `true`. With the default empty

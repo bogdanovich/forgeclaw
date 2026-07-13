@@ -186,6 +186,8 @@ for the security and replay-isolation contract.
 
 See [`replay-evaluation.md`](replay-evaluation.md) for trace evaluation,
 fixture validation, CLI output, and scenario safety.
+For a task-oriented introduction, see the
+[`Replay and Evaluation: Practical Overview`](replay-evaluation-overview.md).
 
 When `state_dir` is empty, traces are written under
 `WORKSPACE/state/evaluation/traces`. Relative custom paths are resolved from the
