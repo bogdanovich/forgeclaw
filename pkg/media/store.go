@@ -117,7 +117,11 @@ func NewFileMediaStoreWithPersistentIndex(indexPath string, cfg MediaCleanerConf
 			continue
 		}
 		entry.Meta.CleanupPolicy = normalizeCleanupPolicy(entry.Meta.CleanupPolicy)
-		store.addEntryLocked(entry.Ref, mediaEntry{path: entry.Path, meta: entry.Meta, storedAt: entry.StoredAt}, entry.Scope)
+		store.addEntryLocked(
+			entry.Ref,
+			mediaEntry{path: entry.Path, meta: entry.Meta, storedAt: entry.StoredAt},
+			entry.Scope,
+		)
 	}
 	if missingEntries {
 		if err := store.persistLocked(nil, nil); err != nil {

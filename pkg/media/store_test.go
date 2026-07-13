@@ -747,16 +747,16 @@ func TestPersistentIndexDropsMissingFilesDuringRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Store: %v", err)
 	}
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove media: %v", err)
+	if removeErr := os.Remove(path); removeErr != nil {
+		t.Fatalf("remove media: %v", removeErr)
 	}
 
 	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
 	if err != nil {
 		t.Fatalf("restart store: %v", err)
 	}
-	if _, err := restarted.Resolve(ref); err == nil || !strings.Contains(err.Error(), "unknown ref") {
-		t.Fatalf("Resolve after missing-file recovery error = %v, want unknown ref", err)
+	if _, resolveErr := restarted.Resolve(ref); resolveErr == nil || !strings.Contains(resolveErr.Error(), "unknown ref") {
+		t.Fatalf("Resolve after missing-file recovery error = %v, want unknown ref", resolveErr)
 	}
 	entries, err := loadMediaIndex(indexPath)
 	if err != nil {
@@ -779,11 +779,11 @@ func TestPersistentIndexResolvePrunesRemovedFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Store: %v", err)
 	}
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove media: %v", err)
+	if removeErr := os.Remove(path); removeErr != nil {
+		t.Fatalf("remove media: %v", removeErr)
 	}
-	if _, err := store.Resolve(ref); err == nil || !strings.Contains(err.Error(), "unavailable ref") {
-		t.Fatalf("Resolve after removal error = %v, want unavailable ref", err)
+	if _, resolveErr := store.Resolve(ref); resolveErr == nil || !strings.Contains(resolveErr.Error(), "unavailable ref") {
+		t.Fatalf("Resolve after removal error = %v, want unavailable ref", resolveErr)
 	}
 
 	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
@@ -830,18 +830,20 @@ func TestPersistentIndexWorkspaceIsolation(t *testing.T) {
 	dir := t.TempDir()
 	pathA := createTempFile(t, dir, "a.jpg")
 	pathB := createTempFile(t, dir, "b.jpg")
-	storeA, err := NewFileMediaStoreWithPersistentIndex(filepath.Join(dir, "workspace-a", "state", "media", "index.json"), MediaCleanerConfig{})
+	workspaceAIndex := filepath.Join(dir, "workspace-a", "state", "media", "index.json")
+	workspaceBIndex := filepath.Join(dir, "workspace-b", "state", "media", "index.json")
+	storeA, err := NewFileMediaStoreWithPersistentIndex(workspaceAIndex, MediaCleanerConfig{})
 	if err != nil {
 		t.Fatalf("create store A: %v", err)
 	}
-	storeB, err := NewFileMediaStoreWithPersistentIndex(filepath.Join(dir, "workspace-b", "state", "media", "index.json"), MediaCleanerConfig{})
+	storeB, err := NewFileMediaStoreWithPersistentIndex(workspaceBIndex, MediaCleanerConfig{})
 	if err != nil {
 		t.Fatalf("create store B: %v", err)
 	}
 	refA, _ := storeA.Store(pathA, MediaMeta{Source: "a"}, "scope")
 	refB, _ := storeB.Store(pathB, MediaMeta{Source: "b"}, "scope")
 
-	restartedA, err := NewFileMediaStoreWithPersistentIndex(filepath.Join(dir, "workspace-a", "state", "media", "index.json"), MediaCleanerConfig{})
+	restartedA, err := NewFileMediaStoreWithPersistentIndex(workspaceAIndex, MediaCleanerConfig{})
 	if err != nil {
 		t.Fatalf("restart store A: %v", err)
 	}
@@ -874,14 +876,14 @@ func TestPersistentIndexPreservesSharedPathPolicyAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart store: %v", err)
 	}
-	if err := restarted.ReleaseAll("owned"); err != nil {
-		t.Fatalf("ReleaseAll owned: %v", err)
+	if releaseErr := restarted.ReleaseAll("owned"); releaseErr != nil {
+		t.Fatalf("ReleaseAll owned: %v", releaseErr)
 	}
-	if err := restarted.ReleaseAll("borrowed"); err != nil {
-		t.Fatalf("ReleaseAll borrowed: %v", err)
+	if releaseErr := restarted.ReleaseAll("borrowed"); releaseErr != nil {
+		t.Fatalf("ReleaseAll borrowed: %v", releaseErr)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("mixed-policy shared path was deleted after restart: %v", err)
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("mixed-policy shared path was deleted after restart: %v", statErr)
 	}
 	finalStore, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
 	if err != nil {
