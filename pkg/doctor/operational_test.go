@@ -177,3 +177,24 @@ func TestOperationalAuditsInheritedNamedAgentWorkspace(t *testing.T) {
 		t.Fatalf("inherited named-agent workspace was not audited: %+v", findings)
 	}
 }
+
+func TestPendingDeliveryAgeUsesTaskEndTime(t *testing.T) {
+	workspace := t.TempDir()
+	now := time.Now().UTC()
+	writeOperationalJSON(
+		t,
+		filepath.Join(workspace, "state", "task_registry.json"),
+		tasks.Snapshot{Tasks: []tasks.Record{{
+			Status:         tasks.StatusSucceeded,
+			DeliveryStatus: tasks.DeliveryPending,
+			LastEventAt:    now.Add(-2 * time.Hour).UnixMilli(),
+			EndedAt:        now.Add(-time.Minute).UnixMilli(),
+		}}},
+	)
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = workspace
+	findings := runOperationalChecks(cfg, Options{Now: now, PendingDeliveryAge: 15 * time.Minute})
+	if findingsHaveID(findings, CheckDeliveryPendingTerminal) {
+		t.Fatalf("newly terminal delivery was reported as old: %+v", findings)
+	}
+}

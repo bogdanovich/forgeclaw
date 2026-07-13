@@ -164,24 +164,26 @@ func auditTaskState(workspace, label string, thresholds operationalThresholds) [
 	counts := struct{ stale, taskFailure, pending, deliveryFailure int }{}
 	nowMillis := thresholds.now.UnixMilli()
 	for _, record := range snapshot.Tasks {
-		ref := taskReferenceTime(record)
-		age := durationSinceMillis(nowMillis, ref)
 		switch record.Status {
 		case tasks.StatusQueued, tasks.StatusRunning:
-			if ref == 0 || age >= thresholds.staleTaskAge {
+			activeRef := activeTaskReferenceTime(record)
+			if activeRef == 0 || durationSinceMillis(nowMillis, activeRef) >= thresholds.staleTaskAge {
 				counts.stale++
 			}
 		case tasks.StatusFailed, tasks.StatusTimedOut, tasks.StatusLost:
-			if ref > 0 && age <= thresholds.recentFailureAge {
+			terminalRef := terminalTaskReferenceTime(record)
+			if terminalRef > 0 && durationSinceMillis(nowMillis, terminalRef) <= thresholds.recentFailureAge {
 				counts.taskFailure++
 			}
 		}
+		terminalRef := terminalTaskReferenceTime(record)
 		if isTerminalTaskStatus(record.Status) && record.DeliveryStatus == tasks.DeliveryPending &&
-			(ref == 0 || age >= thresholds.pendingDeliveryAge) {
+			(terminalRef == 0 || durationSinceMillis(nowMillis, terminalRef) >= thresholds.pendingDeliveryAge) {
 			counts.pending++
 		}
+		deliveryRef := deliveryReferenceTime(record)
 		if (record.DeliveryStatus == tasks.DeliveryFailed || record.DeliveryStatus == tasks.DeliveryParentMissing) &&
-			ref > 0 && age <= thresholds.recentFailureAge {
+			deliveryRef > 0 && durationSinceMillis(nowMillis, deliveryRef) <= thresholds.recentFailureAge {
 			counts.deliveryFailure++
 		}
 	}
@@ -293,8 +295,26 @@ func operationalCountFinding(
 		Evidence{Path: path, Summary: fmt.Sprintf("%d matching record(s); record details omitted", count)})
 }
 
-func taskReferenceTime(record tasks.Record) int64 {
-	for _, value := range []int64{record.LastEventAt, record.EndedAt, record.StartedAt, record.CreatedAt} {
+func activeTaskReferenceTime(record tasks.Record) int64 {
+	for _, value := range []int64{record.LastEventAt, record.StartedAt, record.CreatedAt} {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func terminalTaskReferenceTime(record tasks.Record) int64 {
+	for _, value := range []int64{record.EndedAt, record.LastEventAt, record.StartedAt, record.CreatedAt} {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func deliveryReferenceTime(record tasks.Record) int64 {
+	for _, value := range []int64{record.DeliveredAt, record.LastEventAt, record.EndedAt, record.StartedAt, record.CreatedAt} {
 		if value > 0 {
 			return value
 		}
