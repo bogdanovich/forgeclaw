@@ -358,20 +358,20 @@ func TestEvolutionConfig_EffectiveMode(t *testing.T) {
 			want: "draft",
 		},
 		{
-			name: "enabled returns apply mode",
+			name: "legacy apply mode fails closed to observe",
 			cfg: EvolutionConfig{
 				Enabled: true,
 				Mode:    "apply",
 			},
-			want: "apply",
+			want: "observe",
 		},
 		{
-			name: "enabled normalizes uppercase apply",
+			name: "legacy uppercase apply fails closed to observe",
 			cfg: EvolutionConfig{
 				Enabled: true,
 				Mode:    "APPLY",
 			},
-			want: "apply",
+			want: "observe",
 		},
 		{
 			name: "enabled unknown mode falls back to observe",
@@ -436,13 +436,13 @@ func TestEvolutionConfig_ModeSemantics(t *testing.T) {
 			wantAutoApply: false,
 		},
 		{
-			name: "apply runs cold path and auto applies",
+			name: "legacy apply is non mutating",
 			cfg: EvolutionConfig{
 				Enabled: true,
 				Mode:    "apply",
 			},
-			wantRunsCold:  true,
-			wantAutoApply: true,
+			wantRunsCold:  false,
+			wantAutoApply: false,
 		},
 	}
 
@@ -461,7 +461,7 @@ func TestEvolutionConfig_ColdPathTriggerMode(t *testing.T) {
 
 	scheduled := EvolutionConfig{
 		Enabled:         true,
-		Mode:            "apply",
+		Mode:            "draft",
 		ColdPathTrigger: "scheduled",
 		ColdPathTimes:   []string{"03:00"},
 	}
@@ -538,7 +538,7 @@ func TestLoadConfig_EvolutionEnabledWithoutModeUsesObserveSemantics(t *testing.T
 	assert.False(t, cfg.Evolution.AutoAppliesDrafts())
 }
 
-func TestLoadConfig_EvolutionExplicitApplyModeAutoApplies(t *testing.T) {
+func TestLoadConfig_EvolutionExplicitApplyModeFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	raw := `{
@@ -559,9 +559,9 @@ func TestLoadConfig_EvolutionExplicitApplyModeAutoApplies(t *testing.T) {
 
 	assert.True(t, cfg.Evolution.Enabled)
 	assert.Equal(t, "apply", cfg.Evolution.Mode)
-	assert.Equal(t, "apply", cfg.Evolution.EffectiveMode())
-	assert.True(t, cfg.Evolution.RunsColdPathAutomatically())
-	assert.True(t, cfg.Evolution.AutoAppliesDrafts())
+	assert.Equal(t, "observe", cfg.Evolution.EffectiveMode())
+	assert.False(t, cfg.Evolution.RunsColdPathAutomatically())
+	assert.False(t, cfg.Evolution.AutoAppliesDrafts())
 }
 
 func TestSaveConfig_DisabledEvolutionOmitsApplyMode(t *testing.T) {

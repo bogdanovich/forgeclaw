@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,49 @@ func TestStore_AppendLearningRecordsPersistsCaseAndRule(t *testing.T) {
 	}
 	if _, statErr := os.Stat(paths.PatternRecords); statErr != nil {
 		t.Fatalf("pattern records file should exist: %v", statErr)
+	}
+	for _, path := range []string{paths.TaskRecords, paths.PatternRecords} {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("Stat(%s): %v", path, statErr)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("%s permissions = %o, want 600", path, got)
+		}
+	}
+}
+
+func TestStore_StateFilesAreOwnerOnly(t *testing.T) {
+	root := t.TempDir()
+	paths := evolution.NewPaths(root, "")
+	store := evolution.NewStore(paths)
+	draft := evolution.SkillDraft{
+		ID: "draft-1", WorkspaceID: root, SourceRecordID: "pattern-1",
+		TargetSkillName: "weather", DraftType: evolution.DraftTypeShortcut,
+		ChangeKind: evolution.ChangeKindCreate, HumanSummary: "weather",
+		BodyOrPatch: "body", Status: evolution.DraftStatusCandidate,
+	}
+	if err := store.SaveDrafts([]evolution.SkillDraft{draft}); err != nil {
+		t.Fatalf("SaveDrafts: %v", err)
+	}
+	if err := store.SaveProfile(evolution.SkillProfile{
+		SkillName: "weather", WorkspaceID: root, Status: evolution.SkillStatusActive,
+	}); err != nil {
+		t.Fatalf("SaveProfile: %v", err)
+	}
+	profilePaths, err := filepath.Glob(filepath.Join(paths.ProfilesDir, "*", "weather.json"))
+	if err != nil || len(profilePaths) != 1 {
+		t.Fatalf("profile paths = %v, err = %v", profilePaths, err)
+	}
+	profilePath := profilePaths[0]
+	for _, path := range []string{paths.SkillDrafts, profilePath} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("Stat(%s): %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("%s permissions = %o, want 600", path, got)
+		}
 	}
 }
 

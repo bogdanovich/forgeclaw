@@ -8,7 +8,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/evolution"
 )
 
-func TestApplyLifecycleStateDeletedRemovesSkillFile(t *testing.T) {
+func TestApplyLifecycleStateDeletedIsRejectedAndPreservesSkillFile(t *testing.T) {
 	workspace := t.TempDir()
 	skillDir := filepath.Join(workspace, "skills", "weather")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -25,16 +25,16 @@ func TestApplyLifecycleStateDeletedRemovesSkillFile(t *testing.T) {
 		evolution.SkillProfile{SkillName: "weather"},
 		evolution.SkillStatusDeleted,
 	)
-	if err != nil {
-		t.Fatalf("ApplyLifecycleState: %v", err)
+	if err == nil {
+		t.Fatal("expected automatic deletion to be rejected")
 	}
 
-	if _, err := os.Stat(skillPath); !os.IsNotExist(err) {
-		t.Fatalf("skill file should be removed, stat err = %v", err)
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("skill file should be preserved, stat err = %v", err)
 	}
 }
 
-func TestApplyLifecycleStateDeletedRequiresResolvedWorkspace(t *testing.T) {
+func TestApplyLifecycleStateDeletedRejectsWithoutWorkspace(t *testing.T) {
 	err := evolution.ApplyLifecycleState(
 		evolution.Paths{RootDir: filepath.Join(t.TempDir(), "shared-evolution")},
 		evolution.SkillProfile{SkillName: "weather"},
@@ -45,7 +45,7 @@ func TestApplyLifecycleStateDeletedRequiresResolvedWorkspace(t *testing.T) {
 	}
 }
 
-func TestApplyLifecycleStateDeletedRequiresSkillName(t *testing.T) {
+func TestApplyLifecycleStateDeletedRejectsWithoutSkillName(t *testing.T) {
 	workspace := t.TempDir()
 
 	err := evolution.ApplyLifecycleState(

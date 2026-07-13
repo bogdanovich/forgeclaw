@@ -84,9 +84,13 @@ func (s *Store) appendJSONLRecords(ctx context.Context, path string, records []L
 		return mkdirErr
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
+	}
+	if chmodErr := f.Chmod(0o600); chmodErr != nil {
+		_ = f.Close()
+		return chmodErr
 	}
 	defer func() {
 		if closeErr := f.Close(); closeErr != nil && err == nil {
@@ -292,7 +296,7 @@ func (s *Store) saveJSONLRecordsLocked(path string, records []LearningRecord) er
 			return err
 		}
 	}
-	return fileutil.WriteFileAtomic(path, buf.Bytes(), 0o644)
+	return fileutil.WriteFileAtomic(path, buf.Bytes(), 0o600)
 }
 
 func mergeLearningRecordsByID(base, updates []LearningRecord) []LearningRecord {
@@ -357,7 +361,7 @@ func (s *Store) SaveDrafts(drafts []SkillDraft) error {
 	if err != nil {
 		return err
 	}
-	return fileutil.WriteFileAtomic(s.paths.SkillDrafts, data, 0o644)
+	return fileutil.WriteFileAtomic(s.paths.SkillDrafts, data, 0o600)
 }
 
 func (s *Store) LoadDrafts() ([]SkillDraft, error) {
@@ -395,7 +399,7 @@ func (s *Store) SaveProfile(profile SkillProfile) error {
 	if err != nil {
 		return err
 	}
-	return fileutil.WriteFileAtomic(path, data, 0o644)
+	return fileutil.WriteFileAtomic(path, data, 0o600)
 }
 
 func (s *Store) LoadProfile(skillName string) (SkillProfile, error) {
@@ -436,7 +440,7 @@ func (s *Store) UpdateProfile(
 	if err != nil {
 		return err
 	}
-	return fileutil.WriteFileAtomic(targetPath, data, 0o644)
+	return fileutil.WriteFileAtomic(targetPath, data, 0o600)
 }
 
 func (s *Store) loadProfileForWorkspace(workspaceID, skillName string) (SkillProfile, error) {

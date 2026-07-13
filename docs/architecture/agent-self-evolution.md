@@ -8,7 +8,7 @@ The hot path runs at the end of an agent turn. When `evolution.enabled` is true,
 
 The cold path groups related task records, checks the configured success threshold, and prepares skill drafts for patterns that have enough evidence. Drafts can target new skills or append/replace/merge existing workspace skills.
 
-The apply path validates generated `SKILL.md` content before writing. Invalid drafts are rejected before a skill directory or file is created.
+Generated drafts are evaluation artifacts. Runtime application is disabled, so a candidate cannot write workspace skill content.
 
 ## Safety Considerations
 
@@ -16,7 +16,7 @@ Evolution creates a persistent feedback loop: user input can become a task recor
 
 The current local scanner is a narrow guardrail, not a complete safety boundary. It rejects structurally invalid drafts and a small set of obvious secret-like substrings, but it does not reliably detect prompt injection, unsafe instructions, or every form of sensitive data. Use `observe` or `draft` when human review is required before skill changes reach disk.
 
-In `apply` mode, accepted drafts can update workspace skills automatically. Existing skills are backed up before replacement, but recovery is manual: an operator must restore the desired backup if an applied skill should be rolled back.
+Legacy `apply` configuration fails closed to `observe`. It does not run the cold path or update workspace skills.
 
 ## Modes
 
@@ -24,13 +24,13 @@ In `apply` mode, accepted drafts can update workspace skills automatically. Exis
 |------|----------|
 | `observe` | Record learning data only. No cold-path draft generation runs automatically. |
 | `draft` | Record learning data and generate candidate skill drafts when the cold path runs. |
-| `apply` | Generate drafts and allow accepted drafts to update workspace skills. |
+| `apply` | Legacy value; fails closed to `observe` and never mutates skills. |
 
 When `evolution.enabled` is false, `mode` is treated as disabled at runtime.
 
 ## Cold Path Trigger
 
-`cold_path_trigger` only matters in `draft` and `apply` modes.
+`cold_path_trigger` only matters in `draft` mode.
 
 | Trigger | Behavior |
 |---------|----------|

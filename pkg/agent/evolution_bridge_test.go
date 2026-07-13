@@ -722,7 +722,7 @@ func TestEvolutionBridge_DraftModeKeepsCandidateDraft(t *testing.T) {
 	assertProfileNotExists(t, tmpDir, "weather")
 }
 
-func TestEvolutionBridge_ApplyModeAutomaticallyRunsColdPathAndAppliesMergeDraft(t *testing.T) {
+func TestEvolutionBridge_LegacyApplyModeDoesNotRunColdPathOrMutateSkill(t *testing.T) {
 	tmpDir := t.TempDir()
 	seedReadyRule(t, tmpDir)
 
@@ -755,29 +755,15 @@ func TestEvolutionBridge_ApplyModeAutomaticallyRunsColdPathAndAppliesMergeDraft(
 	}
 
 	waitForEvolutionRecord(t, filepath.Join(tmpDir, "state", "evolution", "task-records.jsonl"))
-	drafts := waitForDrafts(t, filepath.Join(tmpDir, "state", "evolution", "skill-drafts.json"), 1)
-	if drafts[0].Status != evolution.DraftStatusAccepted {
-		t.Fatalf("draft status = %q, want %q", drafts[0].Status, evolution.DraftStatusAccepted)
+	assertNotExists(t, filepath.Join(tmpDir, "state", "evolution", "skill-drafts.json"))
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("ReadFile(skill): %v", err)
 	}
-
-	merged := waitForSkillBody(t, skillPath)
-	if !strings.Contains(merged, "Use city names.") {
-		t.Fatalf("merged skill lost original content:\n%s", merged)
+	if string(got) != original {
+		t.Fatalf("legacy apply mode mutated skill:\n%s", string(got))
 	}
-	if !strings.Contains(merged, "## Merged Knowledge") {
-		t.Fatalf("merged skill missing merged section:\n%s", merged)
-	}
-	if !strings.Contains(merged, "Prefer native-name query first.") {
-		t.Fatalf("merged skill missing learned knowledge:\n%s", merged)
-	}
-
-	profile := waitForProfile(t, tmpDir, "weather")
-	if profile.Status != evolution.SkillStatusActive {
-		t.Fatalf("profile status = %q, want %q", profile.Status, evolution.SkillStatusActive)
-	}
-	if profile.CurrentVersion == "" {
-		t.Fatal("expected applied profile current version")
-	}
+	assertProfileNotExists(t, tmpDir, "weather")
 }
 
 func TestEvolutionBridge_ObserveModeDoesNotRunColdPathOrCreateDraftFile(t *testing.T) {
@@ -1234,39 +1220,6 @@ func waitForDrafts(t *testing.T, path string, want int) []evolution.SkillDraft {
 
 	t.Fatalf("timed out waiting for %d drafts at %s", want, path)
 	return nil
-}
-
-func waitForSkillBody(t *testing.T, path string) string {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return string(data)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for skill file at %s", path)
-	return ""
-}
-
-func waitForProfile(t *testing.T, workspace, skillName string) evolution.SkillProfile {
-	t.Helper()
-
-	store := evolution.NewStore(evolution.NewPaths(workspace, ""))
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		profile, err := store.LoadProfile(skillName)
-		if err == nil {
-			return profile
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for profile %q in %s", skillName, workspace)
-	return evolution.SkillProfile{}
 }
 
 func assertProfileNotExists(t *testing.T, workspace, skillName string) {

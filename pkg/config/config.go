@@ -103,8 +103,6 @@ func (c EvolutionConfig) EffectiveMode() string {
 	switch strings.ToLower(strings.TrimSpace(c.Mode)) {
 	case "draft":
 		return "draft"
-	case "apply":
-		return "apply"
 	case "", "observe":
 		return "observe"
 	default:
@@ -117,7 +115,7 @@ func (c EvolutionConfig) RunsColdPathAutomatically() bool {
 }
 
 func (c EvolutionConfig) ColdPathTriggerMode() string {
-	if c.EffectiveMode() != "draft" && c.EffectiveMode() != "apply" {
+	if c.EffectiveMode() != "draft" {
 		return ""
 	}
 	switch strings.ToLower(strings.TrimSpace(c.ColdPathTrigger)) {
@@ -173,7 +171,7 @@ func (c EvolutionConfig) EffectiveColdPathTimes() []string {
 }
 
 func (c EvolutionConfig) AutoAppliesDrafts() bool {
-	return c.EffectiveMode() == "apply"
+	return false
 }
 
 // IsolationConfig controls subprocess isolation for commands started by PicoClaw.

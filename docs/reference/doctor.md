@@ -178,7 +178,7 @@ live personal deployment.
 | `skills.external_registry` | warning | External registries influence skill discovery/install inputs. | Enable only trusted registries and review installed skills. | Does not fetch registry metadata. |
 | `skills.workspace_global_shadowing` | info | Workspace skills may shadow or supplement global skills. | Keep trusted skill sources separated from untrusted workspaces. | Reports locally knowable workspace differences only. |
 | `skills.automatic_mutability` | info | Skill discovery can feed later installation workflows. | Keep `install_skill` disabled unless delegated installs are intentional. | Discovery itself is not treated as mutation. |
-| `evolution.auto_apply` | warning | Evolution apply or automatic modes can create/apply local changes. | Use observe/manual modes unless automatic mutation is intended. | Does not inspect pending evolution drafts. |
+| `evolution.auto_apply` | warning | Automatic evolution can send task evidence to the configured model and create local draft artifacts. | Use observe/manual modes unless automatic draft generation is intended. | Legacy apply mode fails closed and does not mutate skills. Does not inspect pending evolution drafts. |
 | `models.fallback_missing` | fail | Missing model fallback references break deterministic failover. | Add the referenced model or remove the fallback. | Static model-list references only. |
 | `models.fallback_duplicate` | warning | Duplicate fallbacks reduce failover clarity. | Remove duplicate fallback names. | Does not judge provider equivalence. |
 | `models.fallback_cycle` | fail | Cyclic fallback chains can prevent predictable failover. | Remove an edge in the cycle. | Reports configured graph cycles only. |

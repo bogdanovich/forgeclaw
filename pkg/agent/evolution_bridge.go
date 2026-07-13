@@ -59,9 +59,7 @@ func newEvolutionBridge(
 		SuccessJudgeFactory: func(workspace string) evolution.SuccessJudge {
 			return evolution.NewLLMTaskSuccessJudge(provider, modelID, &evolution.HeuristicSuccessJudge{})
 		},
-		ApplierFactory: func(workspace string) *evolution.Applier {
-			return evolution.NewApplier(evolution.NewPaths(workspace, cfg.Evolution.StateDir), nil)
-		},
+		SensitiveDataFilter: cfg.FilterSensitiveData,
 	})
 	if err != nil {
 		return nil, err

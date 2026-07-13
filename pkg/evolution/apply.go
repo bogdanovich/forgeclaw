@@ -112,7 +112,7 @@ func (a *Applier) backupCurrentSkill(
 	}
 
 	backupPath = filepath.Join(backupDir, "SKILL.md")
-	if err := fileutil.WriteFileAtomic(backupPath, data, 0o644); err != nil {
+	if err := fileutil.WriteFileAtomic(backupPath, data, 0o600); err != nil {
 		return "", "", false, err
 	}
 	return string(data), backupPath, true, nil
@@ -290,19 +290,4 @@ func stripLeadingH1(body string) string {
 		lines = lines[1:]
 	}
 	return strings.Join(lines, "\n")
-}
-
-func errorsJoin(errs ...error) error {
-	var first error
-	for _, err := range errs {
-		if err == nil {
-			continue
-		}
-		if first == nil {
-			first = err
-			continue
-		}
-		first = fmt.Errorf("%w; %v", first, err)
-	}
-	return first
 }

@@ -1,13 +1,8 @@
 package evolution
 
 import (
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
-
-	"github.com/sipeed/picoclaw/pkg/skills"
 )
 
 type LifecycleRunSummary struct {
@@ -33,7 +28,7 @@ func NextLifecycleState(profile SkillProfile, now time.Time) SkillStatus {
 		}
 	case SkillStatusArchived:
 		if idle > 365*24*time.Hour && profile.RetentionScore < 0.1 {
-			return SkillStatusDeleted
+			return SkillStatusArchived
 		}
 	}
 
@@ -41,27 +36,10 @@ func NextLifecycleState(profile SkillProfile, now time.Time) SkillStatus {
 }
 
 func ApplyLifecycleState(paths Paths, profile SkillProfile, next SkillStatus) error {
-	if next != SkillStatusDeleted {
-		return nil
+	if next == SkillStatusDeleted {
+		return fmt.Errorf("automatic skill deletion is disabled")
 	}
-
-	workspace := profile.WorkspaceID
-	if workspace == "" {
-		workspace = inferWorkspaceFromPaths(paths)
-	}
-	if workspace == "" {
-		return fmt.Errorf("resolve lifecycle delete workspace for skill %q: workspace is required", profile.SkillName)
-	}
-	if err := skills.ValidateSkillName(profile.SkillName); err != nil {
-		return fmt.Errorf("resolve lifecycle delete skill name: %w", err)
-	}
-
-	skillPath := filepath.Join(workspace, "skills", profile.SkillName, "SKILL.md")
-	err := os.Remove(skillPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
+	return nil
 }
 
 func RunLifecycleOnce(store *Store, paths Paths, workspace string, now time.Time) (LifecycleRunSummary, error) {
@@ -107,18 +85,6 @@ func RunLifecycleOnce(store *Store, paths Paths, workspace string, now time.Time
 	}
 
 	return summary, nil
-}
-
-func inferWorkspaceFromPaths(paths Paths) string {
-	root := filepath.Clean(paths.RootDir)
-	if filepath.Base(root) != "evolution" {
-		return ""
-	}
-	stateDir := filepath.Dir(root)
-	if filepath.Base(stateDir) != "state" {
-		return ""
-	}
-	return filepath.Dir(stateDir)
 }
 
 func profileBelongsToWorkspace(paths Paths, workspace string, profile SkillProfile) bool {
