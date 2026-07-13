@@ -596,23 +596,22 @@ func (r *Registry) pruneLocked(now int64) bool {
 			changed = true
 		}
 	}
-	if r.options.MaxRecords <= 0 || len(r.records) <= r.options.MaxRecords {
-		return changed
-	}
-	terminal := make([]Record, 0, len(r.records))
-	for _, rec := range r.records {
-		if isTerminalStatus(rec.Status) {
-			terminal = append(terminal, rec)
+	if r.options.MaxRecords > 0 && len(r.records) > r.options.MaxRecords {
+		terminal := make([]Record, 0, len(r.records))
+		for _, rec := range r.records {
+			if isTerminalStatus(rec.Status) {
+				terminal = append(terminal, rec)
+			}
 		}
-	}
-	sort.Slice(terminal, func(i, j int) bool {
-		return recordReferenceAt(terminal[i]) < recordReferenceAt(terminal[j])
-	})
-	for len(r.records) > r.options.MaxRecords && len(terminal) > 0 {
-		victim := terminal[0]
-		terminal = terminal[1:]
-		delete(r.records, victim.TaskID)
-		changed = true
+		sort.Slice(terminal, func(i, j int) bool {
+			return recordReferenceAt(terminal[i]) < recordReferenceAt(terminal[j])
+		})
+		for len(r.records) > r.options.MaxRecords && len(terminal) > 0 {
+			victim := terminal[0]
+			terminal = terminal[1:]
+			delete(r.records, victim.TaskID)
+			changed = true
+		}
 	}
 	if r.pruneEventsLocked() {
 		changed = true
