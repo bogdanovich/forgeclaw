@@ -309,7 +309,14 @@ func formatTaskRecord(rec taskregistry.Record) string {
 
 func formatTaskListRecord(rec taskregistry.Record) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Task %s [%s/%s] status=%s delivery=%s", rec.TaskID, rec.Runtime, rec.TaskKind, rec.Status, rec.DeliveryStatus))
+	sb.WriteString(fmt.Sprintf(
+		"Task %s [%s/%s] status=%s delivery=%s",
+		rec.TaskID,
+		rec.Runtime,
+		rec.TaskKind,
+		rec.Status,
+		rec.DeliveryStatus,
+	))
 	if rec.AgentID != "" {
 		sb.WriteString(fmt.Sprintf(" agent=%s", rec.AgentID))
 	}
@@ -325,7 +332,14 @@ func formatTaskListRecord(rec taskregistry.Record) string {
 		sb.WriteString(fmt.Sprintf("\n  Error: %s", truncateTaskText(rec.Error, 240)))
 	}
 	if rec.Deliverable != nil {
-		sb.WriteString(fmt.Sprintf("\n  Deliverable: text=%t artifacts=%d report=%t", rec.Deliverable.Text != "", len(rec.Deliverable.Artifacts), rec.Deliverable.Report != nil))
+		sb.WriteString(
+			fmt.Sprintf(
+				"\n  Deliverable: text=%t artifacts=%d report=%t",
+				rec.Deliverable.Text != "",
+				len(rec.Deliverable.Artifacts),
+				rec.Deliverable.Report != nil,
+			),
+		)
 	}
 	return sb.String()
 }

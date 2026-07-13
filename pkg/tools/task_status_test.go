@@ -100,7 +100,8 @@ func TestTaskStatusTool_ListReturnsNewestRecordsWithinDefaultLimit(t *testing.T)
 	if result.IsError {
 		t.Fatalf("expected success, got error: %s", result.ForLLM)
 	}
-	if strings.Contains(result.ForLLM, "delegate-01") || strings.Contains(result.ForLLM, "delegate-02") {
+	if strings.Contains(result.ForLLM, "delegate-01") ||
+		strings.Contains(result.ForLLM, "delegate-02") {
 		t.Fatalf("expected oldest records to be omitted:\n%s", result.ForLLM)
 	}
 	if !strings.Contains(result.ForLLM, "delegate-14") {
