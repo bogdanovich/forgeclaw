@@ -6,7 +6,9 @@ compares explicit task outcomes from baseline and candidate runs on held-out
 cases.
 
 It is an offline evidence gate. It does not generate, install, promote, or
-delete skills, and it does not call a model.
+delete skills, and it does not call a model. ForgeClaw no longer has a
+self-evolution runtime; this command remains for auditing archived corpora and
+evaluating bounded future experiments.
 
 ## Run An Evaluation
 
@@ -128,3 +130,11 @@ decide whether an observation passed. Operator code must load the provider
 explicitly, convert observable results into the predeclared criteria, sanitize
 evidence references, and pass the resulting paired trials to `picoclaw eval
 evolution`. CI uses the scripted `Run` path and never makes model calls.
+
+## Production Trial Evidence
+
+The [2026-07-13 held-out nutrition trial](../evaluation/self-evolution-2026-07-13/README.md)
+shows a complete operator-run use of this contract. Four selected production
+drafts produced no beneficial candidates and one protected regression. The
+sanitized manifest, deterministic report, and observations are committed next
+to the methodology; raw model output remains owner-only and local.
