@@ -1159,6 +1159,21 @@ func TestShellTool_Background_ReturnsImmediately(t *testing.T) {
 	require.False(t, result.IsError, "background run should not error: %s", result.ForLLM)
 	require.Less(t, elapsed, time.Second, "background run should return immediately")
 	require.Contains(t, result.ForLLM, "sessionId")
+
+	var response ExecResponse
+	require.NoError(t, json.Unmarshal([]byte(result.ForLLM), &response))
+	require.Equal(t, "process_local", response.SessionScope)
+	require.NotNil(t, response.RestartSafe)
+	require.False(t, *response.RestartSafe)
+}
+
+func TestShellTool_DescriptionWarnsBackgroundSessionsAreNotRestartSafe(t *testing.T) {
+	tool, err := NewExecTool("", false)
+	require.NoError(t, err)
+
+	description := tool.Description()
+	require.Contains(t, description, "process-local")
+	require.Contains(t, description, "not restart-safe")
 }
 
 func TestShellTool_List_Empty(t *testing.T) {

@@ -70,12 +70,14 @@ type ExecRequest struct {
 }
 
 type ExecResponse struct {
-	SessionID string        `json:"sessionId,omitempty"`
-	Status    string        `json:"status,omitempty"`
-	ExitCode  int           `json:"exitCode,omitempty"`
-	Output    string        `json:"output,omitempty"`
-	Error     string        `json:"error,omitempty"`
-	Sessions  []SessionInfo `json:"sessions,omitempty"`
+	SessionID    string        `json:"sessionId,omitempty"`
+	SessionScope string        `json:"sessionScope,omitempty"`
+	RestartSafe  *bool         `json:"restartSafe,omitempty"`
+	Status       string        `json:"status,omitempty"`
+	ExitCode     int           `json:"exitCode,omitempty"`
+	Output       string        `json:"output,omitempty"`
+	Error        string        `json:"error,omitempty"`
+	Sessions     []SessionInfo `json:"sessions,omitempty"`
 }
 
 type SessionInfo struct {
