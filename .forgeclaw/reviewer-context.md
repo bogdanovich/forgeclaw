@@ -18,7 +18,7 @@ prioritizes:
 - deployable multi-workspace runtime behavior;
 - durable background automation;
 - Telegram-first UX correctness;
-- safe evolution without breaking upstream mergeability more than necessary.
+- safe changes without breaking upstream mergeability more than necessary.
 
 Review changes with that fork reality in mind. A change can be locally clean
 and still be a bad ForgeClaw change if it increases operational ambiguity,

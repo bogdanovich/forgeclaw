@@ -112,14 +112,6 @@ repeated output from unclassified, MCP, dynamic, or mutating tools is never
 treated as read-only no progress. Current audited read-only tools are
 `read_file`, `list_dir`, `search_files`, and `short_grep`.
 
-### Removed Self-Evolution Configuration
-
-The self-evolution learning runtime and its top-level `evolution` configuration
-block have been removed. Delete that block before upgrading; the strict config
-loader reports it as an unknown field. Historical corpus and held-out candidate
-evaluation remain available through `picoclaw eval evolution` and do not enable
-runtime learning.
-
 ### Evaluation Trace Capture
 
 The `evaluation.trace_capture` block controls bounded replay/evaluation trace

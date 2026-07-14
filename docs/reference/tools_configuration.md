@@ -291,7 +291,7 @@ workspace discovery while preserving PicoClaw's read workspace restrictions and
 `tools.allow_read_paths`. It respects `.gitignore` by default so normal search
 does not drown in generated/cache/runtime files. This is a noise filter, not a
 security boundary; use `include_ignored: true` only when explicitly inspecting
-ignored env/config/runtime/self-evolution files.
+ignored environment, configuration, and runtime files.
 
 | Config | Type | Default | Description |
 |--------|------|---------|-------------|

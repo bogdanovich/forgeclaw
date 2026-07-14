@@ -76,7 +76,6 @@ func TestMachineJSONRequested(t *testing.T) {
 		{name: "json numeric true", args: []string{"doctor", "--json=1"}, want: true},
 		{name: "human doctor", args: []string{"doctor"}, want: false},
 		{name: "eval json", args: []string{"eval", "--json"}, want: true},
-		{name: "nested eval json", args: []string{"eval", "evolution", "corpus", "--json"}, want: true},
 		{name: "other json command", args: []string{"status", "--json"}, want: false},
 		{name: "explicit false", args: []string{"doctor", "--json=false"}, want: false},
 	}

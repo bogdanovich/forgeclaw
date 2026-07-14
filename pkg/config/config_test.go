@@ -1332,28 +1332,6 @@ func TestLoadConfig_UnknownFieldsReportsExactPaths(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_RejectsRemovedEvolutionBlock(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.json")
-	raw := `{
-		"version": 3,
-		"evolution": {
-			"enabled": false
-		}
-	}`
-	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
-		t.Fatalf("WriteFile(configPath): %v", err)
-	}
-
-	_, err := LoadConfig(configPath)
-	if err == nil {
-		t.Fatal("expected removed evolution block to be rejected")
-	}
-	if !strings.Contains(err.Error(), "evolution") {
-		t.Fatalf("expected evolution field in diagnostic, got %q", err)
-	}
-}
-
 func TestLoadConfig_ToleratesDeprecatedEditFileTool(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")

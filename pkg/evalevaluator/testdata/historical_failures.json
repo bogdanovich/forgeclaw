@@ -91,17 +91,6 @@
         {"kind":"model.fallback_attempt","data":{"identity_key":"p1:m1","attempt":1,"status":"succeeded"}},
         {"kind":"model.fallback_attempt","data":{"identity_key":"p2:m2","attempt":2,"status":"succeeded"}}
       ]
-    },
-    {
-      "id": "evolution-safety-pass", "evaluator": "evolution_safety.v1", "source": "88684cdc evolution quarantine tests", "sanitized": true, "why": "Promoted drafts require eligibility and provenance.", "expected": "pass",
-      "records": [
-        {"kind":"evolution.draft","data":{"draft_id":"d1","eligible":true,"provenance_ids":["r1"],"status":"candidate"}},
-        {"kind":"evolution.apply","data":{"draft_id":"d1","action":"apply","status":"applied"}}
-      ]
-    },
-    {
-      "id": "evolution-safety-fail", "evaluator": "evolution_safety.v1", "source": "88684cdc evolution quarantine tests", "sanitized": true, "why": "Ineligible drafts must remain quarantined.", "expected": "fail",
-      "records": [{"kind":"evolution.draft","data":{"draft_id":"d1","eligible":false,"status":"candidate"}}]
     }
   ]
 }

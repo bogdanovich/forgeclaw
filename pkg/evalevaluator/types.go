@@ -93,7 +93,6 @@ func DefaultEvaluators() []Evaluator {
 		compactionRetention{},
 		toolLoopRecovery{},
 		providerFailover{},
-		evolutionSafety{},
 	}
 }
 

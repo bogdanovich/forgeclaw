@@ -18,7 +18,6 @@ type (
 	compactionRetention struct{}
 	toolLoopRecovery    struct{}
 	providerFailover    struct{}
-	evolutionSafety     struct{}
 )
 
 func (deliveryReliability) Name() string { return "delivery_reliability.v1" }
@@ -28,7 +27,6 @@ func (restartRecovery) Name() string     { return "restart_recovery.v1" }
 func (compactionRetention) Name() string { return "compaction_retention.v1" }
 func (toolLoopRecovery) Name() string    { return "tool_loop_recovery.v1" }
 func (providerFailover) Name() string    { return "provider_failover.v1" }
-func (evolutionSafety) Name() string     { return "evolution_safety.v1" }
 
 func (deliveryReliability) Version() string { return evaluatorVersionV1 }
 func (duplicateResponse) Version() string   { return evaluatorVersionV1 }
@@ -37,7 +35,6 @@ func (restartRecovery) Version() string     { return evaluatorVersionV1 }
 func (compactionRetention) Version() string { return evaluatorVersionV1 }
 func (toolLoopRecovery) Version() string    { return evaluatorVersionV1 }
 func (providerFailover) Version() string    { return evaluatorVersionV1 }
-func (evolutionSafety) Version() string     { return evaluatorVersionV1 }
 
 func (deliveryReliability) Evaluate(input Input) Finding {
 	decisions := recordsOfKind(input.Trace, evaltrace.RecordDeliveryDecision)
@@ -316,58 +313,6 @@ func (providerFailover) Evaluate(input Input) Finding {
 	return finding(StatusPass, SeverityInfo, "fallback selects one final identity", "one final candidate succeeded", "")
 }
 
-func (evolutionSafety) Evaluate(input Input) Finding {
-	evolution := evolutionRecords(input.Trace)
-	if len(evolution) == 0 {
-		return finding(
-			StatusNotEvaluable,
-			SeverityInfo,
-			"evolution lifecycle evidence",
-			"no evolution records",
-			"capture evolution transitions",
-		)
-	}
-	drafts := make(map[string]bool)
-	for _, item := range evolution {
-		var payload evaltrace.EvolutionPayload
-		if err := decode(item, &payload); err != nil {
-			return malformed(item, err)
-		}
-		switch item.Kind {
-		case evaltrace.RecordEvolutionDraft:
-			if !payload.Eligible || len(payload.ProvenanceIDs) == 0 {
-				return finding(
-					StatusFail,
-					SeverityCritical,
-					"draft is eligible and has provenance",
-					"unsafe draft "+payload.DraftID,
-					"require eligibility and source records",
-					item.Sequence,
-				)
-			}
-			drafts[payload.DraftID] = true
-		case evaltrace.RecordEvolutionApply:
-			if !drafts[payload.DraftID] {
-				return finding(
-					StatusFail,
-					SeverityCritical,
-					"apply references an observed safe draft",
-					"apply without draft "+payload.DraftID,
-					"preserve draft lifecycle evidence",
-					item.Sequence,
-				)
-			}
-		}
-	}
-	return finding(
-		StatusPass,
-		SeverityInfo,
-		"evolution lifecycle honors eligibility and provenance",
-		"all drafts and applies satisfy safety invariants",
-		"",
-	)
-}
-
 func malformed(record evaltrace.Record, err error) Finding {
 	return finding(
 		StatusError,
@@ -390,18 +335,6 @@ func recordsOfKind(trace evaltrace.Trace, kind evaltrace.RecordKind) []evaltrace
 	result := make([]evaltrace.Record, 0)
 	for _, record := range trace.Records {
 		if record.Kind == kind {
-			result = append(result, record)
-		}
-	}
-	return result
-}
-
-func evolutionRecords(trace evaltrace.Trace) []evaltrace.Record {
-	result := make([]evaltrace.Record, 0)
-	for _, record := range trace.Records {
-		switch record.Kind {
-		case evaltrace.RecordEvolutionRecord, evaltrace.RecordEvolutionDraft, evaltrace.RecordEvolutionReview,
-			evaltrace.RecordEvolutionApply, evaltrace.RecordEvolutionRollback, evaltrace.RecordEvolutionProfile:
 			result = append(result, record)
 		}
 	}

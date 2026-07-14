@@ -106,13 +106,6 @@ func (r *reducer) apply(record evaltrace.Record) {
 		r.applyTool(record)
 	case evaltrace.RecordRestartBoundary, evaltrace.RecordInboundSpoolTransition:
 		r.applyRestart(record)
-	case evaltrace.RecordEvolutionRecord,
-		evaltrace.RecordEvolutionDraft,
-		evaltrace.RecordEvolutionReview,
-		evaltrace.RecordEvolutionApply,
-		evaltrace.RecordEvolutionRollback,
-		evaltrace.RecordEvolutionProfile:
-		r.applyEvolution(record)
 	case evaltrace.RecordUserCorrection:
 		r.applyCorrection(record)
 	}
@@ -382,39 +375,6 @@ func (r *reducer) applyRestart(record evaltrace.Record) {
 	)
 }
 
-func (r *reducer) applyEvolution(record evaltrace.Record) {
-	var payload evaltrace.EvolutionPayload
-	if !r.decode(record, &payload) {
-		return
-	}
-	switch record.Kind {
-	case evaltrace.RecordEvolutionRecord:
-		r.projection.Evolution.Records++
-	case evaltrace.RecordEvolutionDraft:
-		r.projection.Evolution.Drafts++
-		r.projection.Evolution.DraftIDs = appendUniqueString(
-			r.projection.Evolution.DraftIDs,
-			payload.DraftID,
-		)
-	case evaltrace.RecordEvolutionReview:
-		r.projection.Evolution.Reviews++
-	case evaltrace.RecordEvolutionApply:
-		r.projection.Evolution.Applies++
-		if payload.DraftID != "" && !contains(r.projection.Evolution.DraftIDs, payload.DraftID) {
-			r.diagnostic(
-				record,
-				"evolution_apply_without_draft",
-				SeverityError,
-				"evolution apply has no observed draft",
-			)
-		}
-	case evaltrace.RecordEvolutionRollback:
-		r.projection.Evolution.Rollbacks++
-	case evaltrace.RecordEvolutionProfile:
-		r.projection.Evolution.Profiles++
-	}
-}
-
 func (r *reducer) applyCorrection(record evaltrace.Record) {
 	var correction evaltrace.Correction
 	if !r.decode(record, &correction) {
@@ -576,20 +536,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func appendUniqueString(values []string, value string) []string {
-	if value == "" || contains(values, value) {
-		return values
-	}
-	return append(values, value)
-}
-
-func contains(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
 }
