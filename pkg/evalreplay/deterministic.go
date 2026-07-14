@@ -76,9 +76,8 @@ type ToolCatalog struct {
 }
 
 type IsolatedState struct {
-	Sessions  map[string]json.RawMessage `json:"sessions,omitempty"`
-	Tasks     map[string]json.RawMessage `json:"tasks,omitempty"`
-	Evolution map[string]json.RawMessage `json:"evolution,omitempty"`
+	Sessions map[string]json.RawMessage `json:"sessions,omitempty"`
+	Tasks    map[string]json.RawMessage `json:"tasks,omitempty"`
 }
 
 type CheckpointStore struct {

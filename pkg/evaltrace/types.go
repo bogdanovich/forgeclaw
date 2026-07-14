@@ -44,12 +44,6 @@ const (
 	RecordContextSnapshot        RecordKind = "context.snapshot"
 	RecordRestartBoundary        RecordKind = "runtime.restart"
 	RecordInboundSpoolTransition RecordKind = "inbound_spool.transition"
-	RecordEvolutionRecord        RecordKind = "evolution.record"
-	RecordEvolutionDraft         RecordKind = "evolution.draft"
-	RecordEvolutionReview        RecordKind = "evolution.review"
-	RecordEvolutionApply         RecordKind = "evolution.apply"
-	RecordEvolutionRollback      RecordKind = "evolution.rollback"
-	RecordEvolutionProfile       RecordKind = "evolution.profile"
 	RecordUserCorrection         RecordKind = "user.correction"
 )
 

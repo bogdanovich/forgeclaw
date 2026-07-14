@@ -19,8 +19,7 @@ WORKSPACE/state/evaluation/traces
 
 Production capture stores filtered hashes, counts, statuses, opaque IDs, and
 typed policy codes. It does not store raw prompts, tool arguments, tool results,
-steering text, or evolution draft bodies. Enabling an evaluation command never
-enables capture.
+or steering text. Enabling an evaluation command never enables capture.
 
 ## Evaluate traces
 
@@ -52,7 +51,6 @@ Available evaluators:
 - `compaction_retention.v1`
 - `tool_loop_recovery.v1`
 - `provider_failover.v1`
-- `evolution_safety.v1`
 
 Each finding includes status, severity, relevant record sequences, the expected
 invariant, the observed fact, and a remediation hint. There is no aggregate

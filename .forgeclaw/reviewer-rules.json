@@ -163,14 +163,6 @@
       ]
     },
     {
-      "pattern": "pkg/evolution/**",
-      "risk": "elevated",
-      "codex": "auto",
-      "guidance": [
-        "Check lifecycle/state-machine behavior and whether draft/live transitions remain coherent."
-      ]
-    },
-    {
       "pattern": "pkg/migrate/**",
       "risk": "high",
       "codex": "required",

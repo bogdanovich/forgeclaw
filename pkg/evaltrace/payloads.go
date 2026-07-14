@@ -96,15 +96,3 @@ type RestartPayload struct {
 	Reason    string `json:"reason,omitempty"`
 	StateHash string `json:"state_hash,omitempty"`
 }
-
-type EvolutionPayload struct {
-	RecordID      string   `json:"record_id,omitempty"`
-	DraftID       string   `json:"draft_id,omitempty"`
-	SkillName     string   `json:"skill_name,omitempty"`
-	Action        string   `json:"action,omitempty"`
-	Status        string   `json:"status,omitempty"`
-	Eligible      bool     `json:"eligible,omitempty"`
-	Success       *bool    `json:"success,omitempty"`
-	ProvenanceIDs []string `json:"provenance_ids,omitempty"`
-	PolicyCodes   []string `json:"policy_codes,omitempty"`
-}

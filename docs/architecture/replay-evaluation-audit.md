@@ -26,7 +26,6 @@ Audit target: merged `bogdanovich/forgeclaw:main` at
 | Context reconciliation | Unavailable | Context managers expose no typed revision transition event |
 | Restart boundary | Unavailable | Runtime startup/reload exposes no typed boundary event |
 | Inbound spool transition | Unavailable | Prepare/ack/release expose no typed transition event |
-| Evolution records | Historical only | Runtime capture was removed with the rejected learning subsystem; schemas and fixtures remain readable |
 | User correction | Fixture-only | ForgeClaw has no reliable automatic correction signal |
 
 Unavailable categories are represented in the closed schema for future source

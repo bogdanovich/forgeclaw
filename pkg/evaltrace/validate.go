@@ -19,9 +19,7 @@ var supportedKinds = map[RecordKind]struct{}{
 	RecordSteeringEnqueued:     {}, RecordSteeringInjected: {}, RecordInterrupt: {},
 	RecordTaskTransition: {}, RecordDeliveryDecision: {}, RecordDeliveryAttempt: {}, RecordDeliveryOutcome: {},
 	RecordContextCompaction: {}, RecordContextReconciliation: {}, RecordContextSnapshot: {},
-	RecordRestartBoundary: {}, RecordInboundSpoolTransition: {},
-	RecordEvolutionRecord: {}, RecordEvolutionDraft: {}, RecordEvolutionReview: {}, RecordEvolutionApply: {},
-	RecordEvolutionRollback: {}, RecordEvolutionProfile: {}, RecordUserCorrection: {},
+	RecordRestartBoundary: {}, RecordInboundSpoolTransition: {}, RecordUserCorrection: {},
 }
 
 func Validate(trace Trace) error {

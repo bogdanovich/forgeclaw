@@ -684,14 +684,6 @@ Use:
 - `picoclaw mcp show <name>` to inspect active tools
 - `/list mcp` and `/show mcp <server>` from chat channels when debugging live agents
 
-### Historical Self-Evolution Evidence
-
-The self-evolution learning runtime and `evolution` config block were removed
-after held-out trials found no beneficial candidates and one regression. Do not
-add or recommend that config block. The offline `picoclaw eval evolution`
-commands remain available for auditing historical corpora and candidate
-evidence; they do not enable runtime learning.
-
 ## Debugging Workflow
 
 Start with the most PicoClaw-native path:
@@ -768,8 +760,6 @@ When contributing code, these paths matter most:
 - `docs/reference/cron.md` — cron behavior and limitations
 - `docs/operations/debug.md` — debugging workflow
 - `docs/operations/troubleshooting.md` — known misconfiguration patterns
-- `docs/architecture/self-evolution-audit.md` — historical effectiveness and safety verdict
-- `docs/guides/self-evolution-evaluation.md` — offline historical candidate evaluation
 
 ## Contribution Rules
 

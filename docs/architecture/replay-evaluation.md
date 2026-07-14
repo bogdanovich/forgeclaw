@@ -7,15 +7,10 @@ ForgeClaw replay and evaluation. It is based on the runtime at `origin/main`
 after PR #206. Implementation may revise package names or boundaries when code
 evidence requires it, but must update this document in the same pull request.
 
-The self-evolution learning runtime was later rejected by held-out evaluation
-and removed. Evolution record kinds, projections, fixtures, and offline corpus
-evaluation remain supported for historical evidence, but the agent no longer
-emits evolution runtime events or creates new learning records and drafts.
-
 ## Problem
 
 ForgeClaw has regression tests for delivery, steering, restart recovery,
-compaction, provider fallback, tool loops, and evolution. They do not share a
+compaction, provider fallback, and tool loops. They do not share a
 versioned execution record or evaluation vocabulary. This makes it difficult to
 turn a production failure into a reusable fixture, compare behavior across
 versions, or show that a runtime mechanism improved an outcome.
@@ -27,8 +22,8 @@ tool responses, then evaluate observable invariants.
 ## Goals
 
 - Record a bounded, versioned, redacted execution trace with stable correlation.
-- Reuse canonical task, session, event, delivery, and evolution facts rather
-  than creating a competing source of truth.
+- Reuse canonical task, session, event, and delivery facts rather than creating
+  a competing source of truth.
 - Replay fixtures without network access, live tools, user delivery, or writes
   to production state.
 - Evaluate deterministic reliability properties with machine-readable results.
@@ -62,7 +57,6 @@ tool responses, then evaluate observable invariants.
 | Channel delivery attempts | `channel.message.*` runtime events | Transient | Capture queued/sent/failed normalized records |
 | Provider fallback attempts | `providers.FallbackResult.Attempts` | Transient | Add a typed capture adapter at the fallback boundary |
 | Tool calls/results | provider history plus agent runtime | Session durable; runtime detail transient | Capture sanitized call/result identities and scripted fixture values |
-| Evolution inputs and outputs | evolution JSONL and draft/profile stores | Durable | Snapshot record/draft/profile identities and objective policy facts |
 | User correction | No explicit authority | Unavailable | Explicit annotation only; never infer from message wording |
 
 The runtime event bus is an observation surface, not a durable log. Its payload
@@ -92,8 +86,7 @@ The initial adapters are expected at:
   channel delivery lifecycle;
 - task registry event append for task and async delivery transitions;
 - provider fallback completion for candidate attempts;
-- turn completion for outcome and bounded session/context snapshots;
-- evolution bridge/store boundaries for learning-record and draft decisions.
+- turn completion for outcome and bounded session/context snapshots.
 
 Adapters must use `(origin, origin_id)` deduplication. A task delivery change
 seen through both a task event and a runtime event is recorded from the task
@@ -173,7 +166,6 @@ Records use a closed kind vocabulary. Initial kinds include:
 - task transition and delivery decision/attempt/outcome;
 - compaction/reconciliation transition and context snapshot;
 - restart boundary and inbound spool transition;
-- evolution record, draft, review, apply, rollback, and profile snapshot;
 - explicit user correction annotation.
 
 Unknown record kinds or major schema versions are rejected. Readers may ignore
@@ -250,7 +242,7 @@ drops low-priority records and marks the trace incomplete.
 
 Task registry and session stores remain authoritative. The recorder may read a
 bounded snapshot during finalization but never acknowledges spool entries,
-changes delivery status, truncates history, or updates evolution state.
+changes delivery status, or truncates history.
 
 ### Implemented capture boundary
 
@@ -265,8 +257,7 @@ and fallback attempts; tool call/result hashes and call IDs; steering acceptance
 and injection; compaction counts and final context identity; tool-loop
 decisions; channel delivery attempts/outcomes while a unique active or
 delivery-settling target can be identified; task delivery decisions/outcomes;
-and durable task transitions. Historical evolution traces remain valid input to
-replay, but no new evolution transitions are captured from the agent runtime.
+and durable task transitions.
 
 Capture persistence runs on a bounded worker. Event and record limits never
 block the agent. Runtime-event subscriber drops mark active turn traces
@@ -307,9 +298,9 @@ Replay has two levels:
 ### Contract replay
 
 A pure reducer applies normalized records to typed task, delivery, steering,
-context, provider, tool-loop, and evolution projections. This verifies ordering,
-legal transitions, idempotency, correlation, and terminal invariants without
-starting an agent loop.
+context, provider, and tool-loop projections. This verifies ordering, legal
+transitions, idempotency, correlation, and terminal invariants without starting
+an agent loop.
 
 The implemented `pkg/evalreplay` reducer accepts only traces that pass the
 versioned `evaltrace.Validate` contract. It decodes each record into its exact
@@ -319,7 +310,7 @@ calls, duplicate terminal outcomes, and incomplete turns. It does not repair or
 reinterpret malformed evidence.
 
 Replay safety primitives include a virtual clock, sequential ID source,
-deep-copy isolated session/task/evolution checkpoints, a deny-only external
+deep-copy isolated session/task checkpoints, a deny-only external
 side-effect policy, and a tool catalog that can invoke only explicitly compiled
 safe stubs. These primitives do not import or construct production providers,
 channels, gateways, MCP, shell, or filesystem tools.
@@ -332,7 +323,7 @@ messages, and delivery outcomes. Scenario replay uses the existing
 real orchestration path with:
 
 - virtual clock and deterministic ID source;
-- isolated session/task/evolution state confined to a runner-owned temporary
+- isolated session/task state confined to a runner-owned temporary
   workspace that is removed after each scenario;
 - scripted providers and explicitly registered stub tools;
 - recording delivery sink that never starts a channel;
@@ -383,11 +374,8 @@ Initial evaluators:
   configuration, and blocked calls do not execute.
 - `provider_failover.v1`: candidates follow policy, non-retriable failures stop,
   cooldown/rate-limit skips are explicit, and selected identity is correct.
-- `evolution_safety.v1`: failed/heartbeat/ineligible turns do not promote
-  drafts, quarantine/review policy is honored, provenance exists, and apply or
-  rollback transitions match lifecycle rules.
 
-All eight deterministic evaluators are implemented in `pkg/evalevaluator`.
+All seven deterministic evaluators are implemented in `pkg/evalevaluator`.
 Their findings are independent and include stable status, severity, record
 references, expected and observed facts, and remediation. Missing evidence is
 reported as `not_evaluable`; malformed typed evidence is `error`.
@@ -407,8 +395,6 @@ content. Initial candidates are:
 - Seahorse restart and duplicate ingestion: reconciliation and context tests;
 - repeated fatal MCP loop: `0984d65a` plus current fatal-MCP tests;
 - sticky model failover: `7a3de0f2`, `59d88050`, and fallback/turn tests;
-- evolution quarantine and heartbeat exclusion: evolution bridge/cold-path
-  tests and `88684cdc`.
 
 The fixture manifest records source references, sanitized status, expected
 evaluators, and why the failure mattered. A source reference is evidence, not
@@ -429,10 +415,10 @@ deterministic ground truth.
 
 ## Optional Model-Assisted Evaluation
 
-Model grading is a later, optional adapter for compaction faithfulness, final
-answer usefulness, and evolution draft quality. It requires an explicit flag,
-model/provider, rubric version, request/token/cost budget, timeout, and maximum
-samples. Input is the redacted trace projection, never the raw trace.
+Model grading is a later, optional adapter for compaction faithfulness and final
+answer usefulness. It requires an explicit flag, model/provider, rubric
+version, request/token/cost budget, timeout, and maximum samples. Input is the
+redacted trace projection, never the raw trace.
 
 Results record model identity, provider, rubric hash, sampling parameters,
 usage, latency, and every sample score. Multiple samples report variance.
@@ -454,7 +440,7 @@ deterministic findings remain authoritative.
 1. **Foundation**: this architecture, `pkg/evaltrace` contracts, validation,
    canonicalization, redaction, limits, atomic store, and tests.
 2. **Capture**: recorder lifecycle and source adapters for runtime events, task
-   events, delivery, provider fallback, context snapshots, and evolution.
+   events, delivery, provider fallback, and context snapshots.
 3. **Replay**: pure reducer, side-effect policy, virtual clock/IDs, controlled
    fakes, restart checkpoints, and scenario harness integration.
 4. **Evaluation product**: deterministic evaluators, sourced fixtures, CLI,

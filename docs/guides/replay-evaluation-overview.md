@@ -9,14 +9,10 @@ facility for agent runs. It answers questions such as:
 - Did context compaction retain the facts it was required to preserve?
 - Did loop protection stop repeated tool calls?
 - Did provider fallback stop after selecting a successful provider?
-- Did an evolution candidate respect its safety requirements?
 
 It does not improve an answer automatically, retry a failed task, or change the
 agent's behavior based on a score. It records bounded evidence and lets an
 operator or CI job check that evidence against explicit invariants.
-
-Candidate skill effectiveness uses a separate paired held-out evidence gate.
-See [Self-Evolution Effectiveness Evaluation](self-evolution-evaluation.md).
 
 ## What works automatically
 

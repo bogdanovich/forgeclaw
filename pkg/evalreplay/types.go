@@ -38,7 +38,6 @@ type Projection struct {
 	Providers      ProviderProjection            `json:"providers,omitempty"`
 	Tools          map[string]ToolProjection     `json:"tools,omitempty"`
 	ToolLoop       ToolLoopProjection            `json:"tool_loop,omitempty"`
-	Evolution      EvolutionProjection           `json:"evolution,omitempty"`
 	Restarts       []RestartProjection           `json:"restarts,omitempty"`
 	Corrections    []CorrectionProjection        `json:"corrections,omitempty"`
 	Diagnostics    []Diagnostic                  `json:"diagnostics,omitempty"`
@@ -118,16 +117,6 @@ type ToolProjection struct {
 	Result       bool   `json:"result,omitempty"`
 	Skipped      bool   `json:"skipped,omitempty"`
 	DecisionCode string `json:"decision_code,omitempty"`
-}
-
-type EvolutionProjection struct {
-	Records   int      `json:"records,omitempty"`
-	Drafts    int      `json:"drafts,omitempty"`
-	Reviews   int      `json:"reviews,omitempty"`
-	Applies   int      `json:"applies,omitempty"`
-	Rollbacks int      `json:"rollbacks,omitempty"`
-	Profiles  int      `json:"profiles,omitempty"`
-	DraftIDs  []string `json:"draft_ids,omitempty"`
 }
 
 type RestartProjection struct {
