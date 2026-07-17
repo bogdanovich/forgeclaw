@@ -4,6 +4,11 @@
 
 The Telegram channel uses long polling via the Telegram Bot API for bot-based communication. It supports text messages, media attachments (photos, voice, audio, documents), voice transcription ([setup](../../guides/providers.md#voice-transcription)), and built-in command handling.
 
+Inbound updates preserve polling order within each chat and forum topic. Each
+conversation has an independent FIFO worker, so media download and voice
+transcription cannot let a later short message overtake an earlier long one;
+unrelated chats and topics still process concurrently.
+
 ## Configuration
 
 ```json
