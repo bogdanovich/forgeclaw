@@ -200,7 +200,7 @@ func TestPipelineLoopGuardBlocksAndPreservesToolCallResults(t *testing.T) {
 		t.Fatalf("blocked content = %q", exec.messages[2].Content)
 	}
 	if exec.messages[3].ToolCallID != "call-3-skipped" ||
-		!strings.Contains(exec.messages[3].Content, "queued user message") {
+		!strings.Contains(exec.messages[3].Content, "newer user message arrived") {
 		t.Fatalf("steering-skipped result = %#v", exec.messages[3])
 	}
 	var decisions []ToolLoopDecisionPayload
@@ -474,14 +474,14 @@ func TestPipelineAppendSkippedToolMessages_PersistsRemainingWithoutIngest(t *tes
 	runner.appendSkippedToolMessages(
 		1,
 		"queued user steering message",
-		"Skipped due to queued user message.",
+		queuedSteeringDeferredToolResult,
 	)
 	if len(runner.messages) != 2 {
 		t.Fatalf("messages len = %d, want 2", len(runner.messages))
 	}
 	if runner.messages[0].ToolCallID != "call-skip-1" ||
 		runner.messages[1].ToolCallID != "call-skip-2" ||
-		runner.messages[0].Content != "Skipped due to queued user message." {
+		runner.messages[0].Content != queuedSteeringDeferredToolResult {
 		t.Fatalf("messages = %#v, want skipped tool messages", runner.messages)
 	}
 	history := sessionStore.GetHistory(ts.sessionKey)
@@ -546,6 +546,10 @@ func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testin
 		if exec.messages[i].Role != "tool" || exec.messages[i].ToolCallID != call.ID {
 			t.Fatalf("result[%d] = %#v, want source-ordered result for %s", i, exec.messages[i], call.ID)
 		}
+	}
+	if !strings.Contains(exec.messages[1].Content, "reissue it if it is still requested") ||
+		!strings.Contains(exec.messages[3].Content, "omit it only if the user canceled or replaced it") {
+		t.Fatalf("deferred results do not explain reconciliation: %#v", exec.messages)
 	}
 
 	decisions := make(map[string]ToolSteeringDecisionPayload)

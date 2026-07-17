@@ -161,7 +161,12 @@ With skipping, the agent reacts as soon as the current tool finishes — typical
 ### The LLM gets full context
 
 Skipped tools receive an explicit synthetic result describing the cause and
-classification, so the model knows which actions were not performed.
+the required reconciliation behavior, so the model knows which actions were
+not performed. A queued message defers unsafe pending calls; it does not imply
+that every earlier operation was canceled. At the next model boundary, the
+model must reissue operations that are still requested, update operations
+affected by a correction, and omit only operations the user canceled or
+replaced.
 
 ### Trade-off: sequential execution
 
@@ -172,7 +177,7 @@ Skipping requires tools to run **sequentially** (the previous implementation ran
 When steering skips a call, it receives a `tool` result:
 
 ```
-Content: "Skipped due to queued user message."
+Content: "Deferred without execution because a newer user message arrived. Reconcile this operation after reading the newer message: reissue it if it is still requested, update it if the user corrected it, and omit it only if the user canceled or replaced it."
 ```
 
 The structured `agent.tool.steering_decision` event separately records the

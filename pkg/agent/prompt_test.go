@@ -427,6 +427,8 @@ func TestProviderPromptMessageForTurn_WrapsSteeringContract(t *testing.T) {
 		"[Mid-turn user message]",
 		"additional context or evidence for the current request",
 		"Do not discard the original objective",
+		"Reconcile every preceding tool result marked as deferred",
+		"update only those affected by a correction",
 		"use this photo too",
 		"[/Mid-turn user message]",
 	} {

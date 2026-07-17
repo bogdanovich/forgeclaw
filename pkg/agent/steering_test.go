@@ -2847,7 +2847,7 @@ func TestAgentLoop_Steering_SkippedToolsHaveErrorResults(t *testing.T) {
 	foundSkipped := false
 	for _, m := range msgs {
 		if m.Role == "tool" && m.ToolCallID == "call_2" &&
-			m.Content == "Skipped due to queued user message." {
+			m.Content == queuedSteeringDeferredToolResult {
 			foundSkipped = true
 			break
 		}

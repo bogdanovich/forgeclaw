@@ -229,6 +229,10 @@ type toolLoopRunner struct {
 	handledAttachments []providers.Attachment
 }
 
+const queuedSteeringDeferredToolResult = "Deferred without execution because a newer user message arrived. " +
+	"Reconcile this operation after reading the newer message: reissue it if it is still requested, " +
+	"update it if the user corrected it, and omit it only if the user canceled or replaced it."
+
 // ExecuteTools executes the tool loop, handling BeforeTool/ApproveTool/AfterTool hooks,
 // tool execution with async callbacks, media delivery, and steering injection.
 // Returns ToolControl indicating what the coordinator should do next:
@@ -949,7 +953,7 @@ func (r *toolLoopRunner) skipPendingToolForInterrupt(
 	}
 
 	reason := "queued user steering message"
-	content := "Skipped due to queued user message."
+	content := queuedSteeringDeferredToolResult
 	if cause == "graceful_interrupt" {
 		reason = "graceful interrupt requested"
 		content = "Skipped due to graceful interrupt."

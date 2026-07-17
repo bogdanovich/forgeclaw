@@ -335,6 +335,8 @@ func formatSteeringPromptContent(content string, hasMedia bool) string {
 		"This message arrived while you were already handling the current user request. It is genuine user input, not tool output.",
 		"Treat it as additional context or evidence for the current request unless it clearly cancels, replaces, or redirects that request.",
 		"Do not discard the original objective. Your next action or final response should account for the accumulated request across the full turn.",
+		"Reconcile every preceding tool result marked as deferred: reissue operations that are still requested, " +
+			"update only those affected by a correction, and omit only operations the user canceled or replaced.",
 		"",
 		"Message:",
 		content,
