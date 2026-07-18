@@ -86,6 +86,15 @@ production tools or providers. Every run:
 Unknown tool names receive the normal deterministic missing-tool error. They
 cannot cause a production tool to be resolved or executed.
 
+Memory regressions use a separate deterministic component-replay matrix in
+`pkg/agent/memory_replay_test.go`. These scenarios need real disposable
+filesystem mutations and Seahorse SQLite queries, so they do not weaken the
+generic scenario runner's sealed-stub boundary. Each memory scenario runs twice
+and compares its canonical observation while asserting only operator-visible
+surfaces: rendered prompt content, memory-tool outcomes, privacy-safe audit
+events, retrieval results, and enabled tool capabilities. Raw private memory is
+not added to evaluation traces.
+
 ## Limitations
 
 - Historical traces can prove recorded invariants, not intent or answer quality.
