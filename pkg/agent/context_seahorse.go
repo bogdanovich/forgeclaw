@@ -18,6 +18,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/seahorse"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tokenizer"
+	toolpolicy "github.com/sipeed/picoclaw/pkg/tools/policy"
 )
 
 // seahorseContextManager adapts seahorse.Engine to agent.ContextManager.
@@ -45,16 +46,13 @@ func newSeahorseContextManager(rawConfig json.RawMessage, al *AgentLoop) (Contex
 	// Create CompleteFn from provider
 	completeFn := providerToCompleteFn(agent.Provider, agent.Model)
 
-	seahorseConfig := seahorse.Config{
-		DBPath: dbPath,
-	}
-	if len(rawConfig) > 0 {
-		if err := json.Unmarshal(rawConfig, &seahorseConfig); err != nil {
-			return nil, fmt.Errorf("seahorse: parse config: %w", err)
-		}
-		if seahorseConfig.DBPath == "" {
-			seahorseConfig.DBPath = dbPath
-		}
+	seahorseConfig, err := resolveSeahorseConfig(
+		rawConfig,
+		dbPath,
+		al.cfg.Tools.ResultRetention,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create engine
@@ -75,6 +73,24 @@ func newSeahorseContextManager(rawConfig json.RawMessage, al *AgentLoop) (Contex
 	al.RegisterTool(seahorse.NewExpandTool(retrieval))
 
 	return mgr, nil
+}
+
+func resolveSeahorseConfig(
+	rawConfig json.RawMessage,
+	dbPath string,
+	retention toolpolicy.ResultRetentionPolicy,
+) (seahorse.Config, error) {
+	seahorseConfig := seahorse.Config{DBPath: dbPath}
+	if len(rawConfig) > 0 {
+		if err := json.Unmarshal(rawConfig, &seahorseConfig); err != nil {
+			return seahorse.Config{}, fmt.Errorf("seahorse: parse config: %w", err)
+		}
+		if seahorseConfig.DBPath == "" {
+			seahorseConfig.DBPath = dbPath
+		}
+	}
+	seahorseConfig.ResultRetentionPolicy = retention
+	return seahorseConfig, nil
 }
 
 // providerToCompleteFn wraps providers.LLMProvider as a seahorse.CompleteFn.

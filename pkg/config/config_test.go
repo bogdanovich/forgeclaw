@@ -321,6 +321,107 @@ func TestLoadConfig_MCPMaxInlineTextChars(t *testing.T) {
 	}
 }
 
+func TestLoadConfigResultRetention(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 3,
+		"tools": {
+			"result_retention": {
+				"log_meal": {
+					"mode": "durable",
+					"receipt": "Meal saved."
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	cfg, err := LoadConfigReadOnly(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfigReadOnly() error: %v", err)
+	}
+	rule := cfg.Tools.ResultRetention["log_meal"]
+	if rule.Mode != "durable" || rule.Receipt != "Meal saved." {
+		t.Fatalf("retention rule = %#v", rule)
+	}
+}
+
+func TestLoadConfigRejectsInvalidResultRetention(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 3,
+		"tools": {
+			"result_retention": {
+				"log_meal": {"mode": "durable"}
+			}
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	_, err := LoadConfigReadOnly(configPath)
+	if err == nil || !strings.Contains(err.Error(), "invalid tools.result_retention") {
+		t.Fatalf("LoadConfigReadOnly() error = %v", err)
+	}
+}
+
+func TestLoadConfigRejectsContextManagerOwnedResultRetention(t *testing.T) {
+	for _, legacyKey := range []string{"toolResultRetention", "ToolResultRetention"} {
+		t.Run(legacyKey, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.json")
+			raw := fmt.Sprintf(`{
+				"version": 3,
+				"agents": {
+					"defaults": {
+						"context_manager": "seahorse",
+						"context_manager_config": {
+							%q: {
+								"log_meal": {"mode": "transient"}
+							}
+						}
+					}
+				}
+			}`, legacyKey)
+			if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+				t.Fatalf("WriteFile(configPath): %v", err)
+			}
+
+			_, err := LoadConfigReadOnly(configPath)
+			if err == nil || !strings.Contains(err.Error(), "use tools.result_retention") {
+				t.Fatalf("LoadConfigReadOnly() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsMalformedContextManagerConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 3,
+		"agents": {
+			"defaults": {
+				"context_manager": "seahorse",
+				"context_manager_config": "not-an-object"
+			}
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	_, err := LoadConfigReadOnly(configPath)
+	if err == nil || !strings.Contains(err.Error(), "invalid agents.defaults.context_manager_config") {
+		t.Fatalf("LoadConfigReadOnly() error = %v", err)
+	}
+}
+
 func TestImageGenerateToolsConfig_EffectiveModel(t *testing.T) {
 	defaults := AgentDefaults{}
 

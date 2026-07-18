@@ -1,30 +1,11 @@
 package seahorse
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	toolpolicy "github.com/sipeed/picoclaw/pkg/tools/policy"
 )
-
-// ToolResultRetentionMode controls how successful tool output appears in future prompts.
-type ToolResultRetentionMode string
-
-const (
-	ToolResultRetentionPreserve       ToolResultRetentionMode = "preserve"
-	ToolResultRetentionCompactReceipt ToolResultRetentionMode = "compact_receipt"
-	ToolResultRetentionTransient      ToolResultRetentionMode = "transient"
-	ToolResultRetentionDurable        ToolResultRetentionMode = "durable"
-
-	maxToolResultReceiptBytes = 1024
-)
-
-// ToolResultRetentionRule applies to exact tool names. Errors and unresolved
-// results always bypass the rule and remain fully preserved.
-type ToolResultRetentionRule struct {
-	Mode    ToolResultRetentionMode `json:"mode"`
-	Receipt string                  `json:"receipt,omitempty"`
-}
 
 type toolResultProjectionReport struct {
 	Preserved       int
@@ -40,42 +21,11 @@ type pendingToolCall struct {
 	name         string
 }
 
-func (c Config) validateToolResultRetention() error {
-	for toolName, rule := range c.ToolResultRetention {
-		if strings.TrimSpace(toolName) == "" || toolName != strings.TrimSpace(toolName) {
-			return fmt.Errorf("tool names must be non-empty and trimmed")
-		}
-		switch rule.Mode {
-		case ToolResultRetentionPreserve, ToolResultRetentionTransient:
-			if rule.Receipt != "" {
-				return fmt.Errorf("tool %q mode %q does not accept a receipt", toolName, rule.Mode)
-			}
-		case ToolResultRetentionCompactReceipt, ToolResultRetentionDurable:
-			if strings.TrimSpace(rule.Receipt) == "" {
-				return fmt.Errorf("tool %q mode %q requires a receipt", toolName, rule.Mode)
-			}
-			if rule.Receipt != strings.TrimSpace(rule.Receipt) {
-				return fmt.Errorf("tool %q receipt must be trimmed", toolName)
-			}
-		default:
-			return fmt.Errorf("tool %q has unsupported mode %q", toolName, rule.Mode)
-		}
-		if len(rule.Receipt) > maxToolResultReceiptBytes {
-			return fmt.Errorf(
-				"tool %q receipt exceeds %d bytes",
-				toolName,
-				maxToolResultReceiptBytes,
-			)
-		}
-	}
-	return nil
-}
-
 func projectToolResultMessages(
 	messages []Message,
 	config Config,
 ) ([]Message, toolResultProjectionReport) {
-	if len(messages) == 0 || len(config.ToolResultRetention) == 0 {
+	if len(messages) == 0 || len(config.ResultRetentionPolicy) == 0 {
 		return append([]Message(nil), messages...), toolResultProjectionReport{}
 	}
 
@@ -109,13 +59,13 @@ func projectToolResultMessages(
 		if matched {
 			delete(pendingCalls, result.ToolCallID)
 		}
-		rule, configured := config.ToolResultRetention[call.name]
+		rule, configured := config.ResultRetentionPolicy[call.name]
 		if !matched {
 			report.Preserved++
 			report.SafetyPreserved++
 			continue
 		}
-		if !configured || rule.Mode == ToolResultRetentionPreserve {
+		if !configured || rule.Mode == toolpolicy.ResultRetentionPreserve {
 			report.Preserved++
 			continue
 		}
@@ -128,17 +78,17 @@ func projectToolResultMessages(
 		}
 
 		switch rule.Mode {
-		case ToolResultRetentionCompactReceipt:
+		case toolpolicy.ResultRetentionCompactReceipt:
 			result.Text = strings.TrimSpace(rule.Receipt)
 			projected[i].Content = result.Text
 			projected[i].TokenCount = EstimateMessageTokens(projected[i])
 			report.Receipted++
-		case ToolResultRetentionDurable:
+		case toolpolicy.ResultRetentionDurable:
 			result.Text = strings.TrimSpace(rule.Receipt)
 			projected[i].Content = result.Text
 			projected[i].TokenCount = EstimateMessageTokens(projected[i])
 			report.Durable++
-		case ToolResultRetentionTransient:
+		case toolpolicy.ResultRetentionTransient:
 			keep[i] = false
 			if removeCalls[call.messageIndex] == nil {
 				removeCalls[call.messageIndex] = make(map[int]struct{})
@@ -188,7 +138,7 @@ func (a *Assembler) projectResolvedToolResults(
 	convID int64,
 	items []resolvedItem,
 ) []resolvedItem {
-	if a == nil || len(a.config.ToolResultRetention) == 0 {
+	if a == nil || len(a.config.ResultRetentionPolicy) == 0 {
 		return items
 	}
 	messages := make([]Message, 0, len(items))

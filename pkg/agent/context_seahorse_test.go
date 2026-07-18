@@ -12,6 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
+	toolpolicy "github.com/sipeed/picoclaw/pkg/tools/policy"
 )
 
 // seahorseTestProvider implements providers.LLMProvider for seahorse tests.
@@ -43,6 +44,29 @@ func TestSeahorseCMRegistration(t *testing.T) {
 	}
 	if factory == nil {
 		t.Error("expected non-nil factory")
+	}
+}
+
+func TestResolveSeahorseConfigInjectsToolPolicy(t *testing.T) {
+	retention := toolpolicy.ResultRetentionPolicy{
+		"log_meal": {
+			Mode:    toolpolicy.ResultRetentionDurable,
+			Receipt: "Meal saved.",
+		},
+	}
+	cfg, err := resolveSeahorseConfig(
+		[]byte(`{"historyMaxTokens":12000}`),
+		"/tmp/seahorse.db",
+		retention,
+	)
+	if err != nil {
+		t.Fatalf("resolveSeahorseConfig() error: %v", err)
+	}
+	if cfg.HistoryMaxTokens != 12000 || cfg.DBPath != "/tmp/seahorse.db" {
+		t.Fatalf("seahorse config = %#v", cfg)
+	}
+	if got := cfg.ResultRetentionPolicy["log_meal"]; got != retention["log_meal"] {
+		t.Fatalf("retention rule = %#v", got)
 	}
 }
 

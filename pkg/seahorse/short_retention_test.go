@@ -3,9 +3,10 @@ package seahorse
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"strings"
 	"testing"
+
+	toolpolicy "github.com/sipeed/picoclaw/pkg/tools/policy"
 )
 
 func TestProjectToolResultMessagesAppliesAllRetentionModes(t *testing.T) {
@@ -15,11 +16,11 @@ func TestProjectToolResultMessagesAppliesAllRetentionModes(t *testing.T) {
 		{id: "transient", name: "daily_summary", status: "success", content: "routine summary"},
 		{id: "durable", name: "log_meal", status: "success", content: "meal 42 with all fields"},
 	})
-	config := Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-		"read":          {Mode: ToolResultRetentionPreserve},
-		"lookup":        {Mode: ToolResultRetentionCompactReceipt, Receipt: "Lookup completed."},
-		"daily_summary": {Mode: ToolResultRetentionTransient},
-		"log_meal":      {Mode: ToolResultRetentionDurable, Receipt: "Meal saved in Nutrition DB."},
+	config := Config{ResultRetentionPolicy: toolpolicy.ResultRetentionPolicy{
+		"read":          {Mode: toolpolicy.ResultRetentionPreserve},
+		"lookup":        {Mode: toolpolicy.ResultRetentionCompactReceipt, Receipt: "Lookup completed."},
+		"daily_summary": {Mode: toolpolicy.ResultRetentionTransient},
+		"log_meal":      {Mode: toolpolicy.ResultRetentionDurable, Receipt: "Meal saved in Nutrition DB."},
 	}}
 
 	projected, report := projectToolResultMessages(messages, config)
@@ -53,8 +54,8 @@ func TestProjectToolResultMessagesPreservesUnsafeResults(t *testing.T) {
 		{id: "unknown", name: "routine", content: "legacy unknown status"},
 		{id: "media", name: "routine", status: "success", content: "image created", media: true},
 	})
-	config := Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-		"routine": {Mode: ToolResultRetentionTransient},
+	config := Config{ResultRetentionPolicy: toolpolicy.ResultRetentionPolicy{
+		"routine": {Mode: toolpolicy.ResultRetentionTransient},
 	}}
 
 	projected, report := projectToolResultMessages(messages, config)
@@ -78,9 +79,9 @@ func TestProjectToolResultMessagesScopesReusedCallIDsToTheirRound(t *testing.T) 
 		retentionToolUseMessage(6, "reused", "transient_tool"),
 		retentionToolResultMessage(7, "reused", "success", "drop second result", false),
 	}
-	config := Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-		"preserve_tool":  {Mode: ToolResultRetentionPreserve},
-		"transient_tool": {Mode: ToolResultRetentionTransient},
+	config := Config{ResultRetentionPolicy: toolpolicy.ResultRetentionPolicy{
+		"preserve_tool":  {Mode: toolpolicy.ResultRetentionPreserve},
+		"transient_tool": {Mode: toolpolicy.ResultRetentionTransient},
 	}}
 
 	projected, report := projectToolResultMessages(messages, config)
@@ -130,10 +131,10 @@ func TestAssemblerProjectsRetentionWithoutBreakingToolPairing(t *testing.T) {
 	}
 
 	assembler := &Assembler{store: store, config: Config{
-		ToolResultRetention: map[string]ToolResultRetentionRule{
-			"daily_summary": {Mode: ToolResultRetentionTransient},
+		ResultRetentionPolicy: toolpolicy.ResultRetentionPolicy{
+			"daily_summary": {Mode: toolpolicy.ResultRetentionTransient},
 			"log_meal": {
-				Mode: ToolResultRetentionDurable, Receipt: "Meal saved in Nutrition DB.",
+				Mode: toolpolicy.ResultRetentionDurable, Receipt: "Meal saved in Nutrition DB.",
 			},
 		},
 	}}
@@ -195,9 +196,9 @@ func TestCompactLeafUsesRetentionProjectionWithoutMutatingAuditRows(t *testing.T
 	var prompt string
 	engine := &CompactionEngine{
 		store: store,
-		config: Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-			"lookup":        {Mode: ToolResultRetentionCompactReceipt, Receipt: "Lookup completed."},
-			"daily_summary": {Mode: ToolResultRetentionTransient},
+		config: Config{ResultRetentionPolicy: toolpolicy.ResultRetentionPolicy{
+			"lookup":        {Mode: toolpolicy.ResultRetentionCompactReceipt, Receipt: "Lookup completed."},
+			"daily_summary": {Mode: toolpolicy.ResultRetentionTransient},
 		}},
 		complete: func(_ context.Context, input string, _ CompleteOptions) (string, error) {
 			prompt = input
@@ -280,63 +281,6 @@ func openRetentionTestStore(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
-}
-
-func TestValidateToolResultRetention(t *testing.T) {
-	tests := []struct {
-		name   string
-		config Config
-	}{
-		{
-			name: "unknown mode",
-			config: Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-				"tool": {Mode: "unknown"},
-			}},
-		},
-		{
-			name: "missing receipt",
-			config: Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-				"tool": {Mode: ToolResultRetentionDurable},
-			}},
-		},
-		{
-			name: "untrimmed tool name",
-			config: Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-				" tool": {Mode: ToolResultRetentionTransient},
-			}},
-		},
-		{
-			name: "receipt on transient mode",
-			config: Config{ToolResultRetention: map[string]ToolResultRetentionRule{
-				"tool": {Mode: ToolResultRetentionTransient, Receipt: "unused"},
-			}},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if err := test.config.validateToolResultRetention(); err == nil {
-				t.Fatal("expected invalid retention config")
-			}
-		})
-	}
-}
-
-func TestConfigUnmarshalsToolResultRetention(t *testing.T) {
-	var config Config
-	if err := json.Unmarshal([]byte(`{
-		"toolResultRetention": {
-			"log_meal": {
-				"mode": "durable",
-				"receipt": "Meal saved."
-			}
-		}
-	}`), &config); err != nil {
-		t.Fatal(err)
-	}
-	rule := config.ToolResultRetention["log_meal"]
-	if rule.Mode != ToolResultRetentionDurable || rule.Receipt != "Meal saved." {
-		t.Fatalf("retention rule = %#v", rule)
-	}
 }
 
 type retentionTestCall struct {
