@@ -91,6 +91,34 @@ func TestRunMigrationsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRunSchemaAddsConversationProvenanceColumns(t *testing.T) {
+	db := openTestDB(t)
+	_, err := db.Exec(`CREATE TABLE conversations (
+		conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_key TEXT NOT NULL UNIQUE,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runSchema(db); err != nil {
+		t.Fatalf("runSchema: %v", err)
+	}
+	for _, column := range []string{"route_scope_key", "agent_id"} {
+		var count int
+		if err := db.QueryRow(
+			`SELECT count(*) FROM pragma_table_info('conversations') WHERE name = ?`,
+			column,
+		).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("conversation provenance column %q count = %d, want 1", column, count)
+		}
+	}
+}
+
 func TestRunSchemaAddsMessagesReasoningContentColumn(t *testing.T) {
 	db := openTestDB(t)
 

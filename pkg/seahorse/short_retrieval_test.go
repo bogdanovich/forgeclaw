@@ -38,7 +38,8 @@ func TestRetrievalGrepSummaries(t *testing.T) {
 
 	// FTS5 search (trigram, needs >= 3 chars)
 	results, err := r.Grep(ctx, GrepInput{
-		Pattern: "数据库连",
+		Pattern:        "数据库连",
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -49,7 +50,8 @@ func TestRetrievalGrepSummaries(t *testing.T) {
 
 	// LIKE search with wildcard
 	results, err = r.Grep(ctx, GrepInput{
-		Pattern: "%endpoint%",
+		Pattern:        "%endpoint%",
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep LIKE: %v", err)
@@ -67,7 +69,8 @@ func TestRetrievalGrepMessages(t *testing.T) {
 	s.AddMessage(ctx, convID, "user", "unrelated content here", 5)
 
 	results, err := r.Grep(ctx, GrepInput{
-		Pattern: "testing",
+		Pattern:        "testing",
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -83,7 +86,7 @@ func TestRetrievalExpandMessages(t *testing.T) {
 
 	msg, _ := s.AddMessage(ctx, convID, "user", "expand this message", 10)
 
-	result, err := r.ExpandMessages(ctx, []int64{msg.ID})
+	result, err := r.ExpandMessagesScoped(ctx, []int64{msg.ID}, []int64{convID})
 	if err != nil {
 		t.Fatalf("ExpandMessages: %v", err)
 	}
@@ -103,7 +106,11 @@ func TestRetrievalExpandMultipleMessages(t *testing.T) {
 	msg2, _ := s.AddMessage(ctx, convID, "assistant", "second message", 10)
 	msg3, _ := s.AddMessage(ctx, convID, "user", "third message", 10)
 
-	result, err := r.ExpandMessages(ctx, []int64{msg1.ID, msg2.ID, msg3.ID})
+	result, err := r.ExpandMessagesScoped(
+		ctx,
+		[]int64{msg1.ID, msg2.ID, msg3.ID},
+		[]int64{convID},
+	)
 	if err != nil {
 		t.Fatalf("ExpandMessages: %v", err)
 	}
@@ -128,8 +135,9 @@ func TestRetrievalGrepWithTimeFilter(t *testing.T) {
 
 	// Search with time filter
 	results, err := r.Grep(ctx, GrepInput{
-		Pattern: "auth",
-		Since:   &before,
+		Pattern:        "auth",
+		ConversationID: convID,
+		Since:          &before,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -137,8 +145,8 @@ func TestRetrievalGrepWithTimeFilter(t *testing.T) {
 	_ = results // Just verify no error
 }
 
-func TestRetrievalGrepAllConversations(t *testing.T) {
-	r, s, _ := newTestRetrieval(t)
+func TestRetrievalGrepSelectedConversations(t *testing.T) {
+	r, s, firstConversationID := newTestRetrieval(t)
 	ctx := context.Background()
 
 	// Create another conversation
@@ -147,10 +155,10 @@ func TestRetrievalGrepAllConversations(t *testing.T) {
 	// Add messages to both
 	s.AddMessage(ctx, conv2.ConversationID, "user", "unique keyword xyz", 5)
 
-	// Search all conversations
+	// Search an explicitly resolved set of conversations.
 	results, err := r.Grep(ctx, GrepInput{
-		Pattern:          "xyz",
-		AllConversations: true,
+		Pattern:         "xyz",
+		ConversationIDs: []int64{firstConversationID, conv2.ConversationID},
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -210,7 +218,8 @@ func TestRetrievalGrepRoleFilter(t *testing.T) {
 
 	// Search all roles
 	allResults, err := r.Grep(ctx, GrepInput{
-		Pattern: "alpha",
+		Pattern:        "alpha",
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -221,8 +230,9 @@ func TestRetrievalGrepRoleFilter(t *testing.T) {
 
 	// Search user only
 	userResults, err := r.Grep(ctx, GrepInput{
-		Pattern: "alpha",
-		Role:    "user",
+		Pattern:        "alpha",
+		Role:           "user",
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -236,8 +246,9 @@ func TestRetrievalGrepRoleFilter(t *testing.T) {
 
 	// Search assistant only
 	assistantResults, err := r.Grep(ctx, GrepInput{
-		Pattern: "alpha",
-		Role:    "assistant",
+		Pattern:        "alpha",
+		Role:           "assistant",
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -259,8 +270,9 @@ func TestRetrievalGrepWithLast(t *testing.T) {
 
 	// Test that Last parameter is converted to Since
 	results, err := r.Grep(ctx, GrepInput{
-		Pattern: "testing",
-		Last:    "1d", // last 1 day
+		Pattern:        "testing",
+		Last:           "1d", // last 1 day
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -293,9 +305,10 @@ func TestRetrievalGrepRoleFilterWithSummaries(t *testing.T) {
 	// Search with role filter and scope=both (default), using LIKE mode (%)
 	// This should NOT error even though summaries don't have role column
 	bothResults, err := r.Grep(ctx, GrepInput{
-		Pattern: "%testing%", // LIKE mode to trigger the bug
-		Role:    "user",
-		Scope:   "both",
+		Pattern:        "%testing%", // LIKE mode to trigger the bug
+		Role:           "user",
+		Scope:          "both",
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep with role and scope=both: %v", err)
@@ -336,9 +349,10 @@ func TestRetrievalGrepTotalCounts(t *testing.T) {
 
 	// Search with limit smaller than total
 	results, err := r.Grep(ctx, GrepInput{
-		Pattern: "%testing%", // LIKE mode
-		Scope:   "both",
-		Limit:   2,
+		Pattern:        "%testing%", // LIKE mode
+		Scope:          "both",
+		Limit:          2,
+		ConversationID: convID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)

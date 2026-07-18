@@ -6,8 +6,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
+
+func retrievalTestScope(routeScopeKey, agentID string) *session.SessionScope {
+	return &session.SessionScope{
+		Version:       session.ScopeVersionV2,
+		AgentID:       agentID,
+		RouteScopeKey: routeScopeKey,
+	}
+}
 
 func TestGrepSearchSummaries(t *testing.T) {
 	s := openTestStore(t)
@@ -24,7 +33,8 @@ func TestGrepSearchSummaries(t *testing.T) {
 
 	re := &RetrievalEngine{store: s}
 	results, err := re.Grep(ctx, GrepInput{
-		Pattern: "database",
+		Pattern:        "database",
+		ConversationID: conv.ConversationID,
 	})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
@@ -44,7 +54,8 @@ func TestGrepSearchMessages(t *testing.T) {
 
 	re := &RetrievalEngine{store: s}
 	results, err := re.Grep(ctx, GrepInput{
-		Pattern: "testing",
+		Pattern:        "testing",
+		ConversationID: conv.ConversationID,
 	})
 	if err != nil {
 		t.Fatalf("Grep messages: %v", err)
@@ -63,15 +74,14 @@ func TestGrepMissingPattern(t *testing.T) {
 	}
 }
 
-func TestGrepToolSupportsAllConversations(t *testing.T) {
+func TestGrepToolSupportsRetrievalScope(t *testing.T) {
 	s := openTestStore(t)
 	tool := NewGrepTool(&RetrievalEngine{store: s})
 	params := tool.Parameters()
 	props := params["properties"].(map[string]any)
 
-	// GrepTool should accept all_conversations parameter
-	if _, ok := props["all_conversations"]; !ok {
-		t.Error("Parameters missing 'all_conversations' field")
+	if _, ok := props["retrieval_scope"]; !ok {
+		t.Error("Parameters missing 'retrieval_scope' field")
 	}
 }
 
@@ -104,17 +114,31 @@ func TestGrepToolScopesToCurrentSessionByDefault(t *testing.T) {
 	}
 }
 
-func TestGrepToolCanSearchAllConversations(t *testing.T) {
+func TestGrepToolCanSearchRouteConversation(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	current, _ := s.GetOrCreateConversation(ctx, "session:current")
 	other, _ := s.GetOrCreateConversation(ctx, "session:other")
 	s.AddMessage(ctx, current.ConversationID, "user", "shared needle from current topic", 5)
 	s.AddMessage(ctx, other.ConversationID, "user", "shared needle from other topic", 5)
+	if err := s.SetConversationProvenance(ctx, "session:current", "route:a", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetConversationProvenance(ctx, "session:other", "route:a", "agent"); err != nil {
+		t.Fatal(err)
+	}
 
 	tool := NewGrepTool(&RetrievalEngine{store: s})
-	toolCtx := tools.WithToolSessionContext(ctx, "agent", "session:current", nil)
-	result := tool.Execute(toolCtx, map[string]any{"pattern": "needle", "all_conversations": true})
+	toolCtx := tools.WithToolSessionContext(
+		ctx,
+		"agent",
+		"session:current",
+		retrievalTestScope("route:a", "agent"),
+	)
+	result := tool.Execute(toolCtx, map[string]any{
+		"pattern":         "needle",
+		"retrieval_scope": "conversation",
+	})
 	if result.IsError {
 		t.Fatalf("Execute returned error: %s", result.ContentForLLM())
 	}
@@ -130,7 +154,7 @@ func TestGrepToolCanSearchAllConversations(t *testing.T) {
 	}
 }
 
-func TestGrepToolUnknownSessionDoesNotSearchAllConversations(t *testing.T) {
+func TestGrepToolUnknownSessionFailsClosed(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	current, _ := s.GetOrCreateConversation(ctx, "session:current")
@@ -160,7 +184,7 @@ func TestGrepToolUnknownSessionDoesNotSearchAllConversations(t *testing.T) {
 	}
 }
 
-func TestGrepToolEmptySessionDoesNotSearchAllConversations(t *testing.T) {
+func TestGrepToolEmptySessionFailsClosed(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	conv, _ := s.GetOrCreateConversation(ctx, "session:current")
@@ -241,6 +265,9 @@ func TestGrepJSONResultCapsOverallPayloadSize(t *testing.T) {
 
 	if got := len(toolResult.ContentForLLM()); got > grepToolMaxForLLMBytes {
 		t.Fatalf("tool result too large: got %d bytes", got)
+	}
+	if got := estimateRetrievalResultTokens([]byte(toolResult.ContentForLLM())); got > retrievalToolMaxTokens {
+		t.Fatalf("tool result too large: got %d estimated tokens", got)
 	}
 
 	var output struct {

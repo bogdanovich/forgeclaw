@@ -44,15 +44,15 @@ func ParseLastDuration(s string) (time.Duration, error) {
 
 // GrepInput controls search across summaries and messages.
 type GrepInput struct {
-	Pattern          string     `json:"pattern"`
-	Scope            string     `json:"scope,omitempty"` // "both" (default), "summary", or "message"
-	Role             string     `json:"role,omitempty"`  // "user", "assistant", or "" (all)
-	ConversationID   int64      `json:"conversationId,omitempty"`
-	AllConversations bool       `json:"allConversations,omitempty"`
-	Since            *time.Time `json:"since,omitempty"`
-	Before           *time.Time `json:"before,omitempty"`
-	Last             string     `json:"last,omitempty"` // shortcut: "6h", "7d", "2w", "1m"
-	Limit            int        `json:"limit,omitempty"`
+	Pattern         string     `json:"pattern"`
+	Scope           string     `json:"scope,omitempty"` // "both" (default), "summary", or "message"
+	Role            string     `json:"role,omitempty"`  // "user", "assistant", or "" (all)
+	ConversationID  int64      `json:"conversationId,omitempty"`
+	ConversationIDs []int64    `json:"conversationIds,omitempty"`
+	Since           *time.Time `json:"since,omitempty"`
+	Before          *time.Time `json:"before,omitempty"`
+	Last            string     `json:"last,omitempty"` // shortcut: "6h", "7d", "2w", "1m"
+	Limit           int        `json:"limit,omitempty"`
 }
 
 // GrepResult contains search results.
@@ -122,14 +122,14 @@ func (r *RetrievalEngine) Grep(ctx context.Context, input GrepInput) (*GrepResul
 	}
 
 	searchInput := SearchInput{
-		Pattern:          input.Pattern,
-		Mode:             mode,
-		Role:             input.Role,
-		ConversationID:   input.ConversationID,
-		AllConversations: input.AllConversations,
-		Since:            since,
-		Before:           input.Before,
-		Limit:            limit,
+		Pattern:         input.Pattern,
+		Mode:            mode,
+		Role:            input.Role,
+		ConversationID:  input.ConversationID,
+		ConversationIDs: append([]int64(nil), input.ConversationIDs...),
+		Since:           since,
+		Before:          input.Before,
+		Limit:           limit,
 	}
 
 	result := &GrepResult{
@@ -193,7 +193,7 @@ func (r *RetrievalEngine) Grep(ctx context.Context, input GrepInput) (*GrepResul
 
 	// Add hint if no results
 	if len(result.Summaries) == 0 && len(result.Messages) == 0 {
-		result.Hint = "No matches. Try: %keyword% for fuzzy search, or all_conversations: true"
+		result.Hint = "No matches. Try %keyword% for fuzzy search or narrow the selected retrieval scope."
 	}
 
 	return result, nil
@@ -214,30 +214,19 @@ func (r *RetrievalEngine) ConversationIDForSession(ctx context.Context, sessionK
 	return conv.ConversationID, true, nil
 }
 
-// ExpandMessages retrieves full message content by IDs.
-func (r *RetrievalEngine) ExpandMessages(ctx context.Context, messageIDs []int64) (*ExpandMessagesResult, error) {
-	return r.expandMessages(ctx, messageIDs, 0, true)
-}
-
-// ExpandMessagesScoped retrieves full message content by IDs, restricted to a conversation
-// unless allConversations is true.
+// ExpandMessagesScoped retrieves full message content by IDs restricted to the
+// trusted set of conversation IDs resolved by the tool boundary.
 func (r *RetrievalEngine) ExpandMessagesScoped(
 	ctx context.Context,
 	messageIDs []int64,
-	conversationID int64,
-	allConversations bool,
-) (*ExpandMessagesResult, error) {
-	return r.expandMessages(ctx, messageIDs, conversationID, allConversations)
-}
-
-func (r *RetrievalEngine) expandMessages(
-	ctx context.Context,
-	messageIDs []int64,
-	conversationID int64,
-	allConversations bool,
+	conversationIDs []int64,
 ) (*ExpandMessagesResult, error) {
 	result := &ExpandMessagesResult{
 		Messages: make([]Message, 0, len(messageIDs)),
+	}
+	allowed := make(map[int64]struct{}, len(conversationIDs))
+	for _, conversationID := range conversationIDs {
+		allowed[conversationID] = struct{}{}
 	}
 
 	for _, msgID := range messageIDs {
@@ -246,7 +235,7 @@ func (r *RetrievalEngine) expandMessages(
 			result.RejectedMessageIDs = append(result.RejectedMessageIDs, msgID)
 			continue
 		}
-		if !allConversations && (conversationID <= 0 || msg.ConversationID != conversationID) {
+		if _, ok := allowed[msg.ConversationID]; !ok {
 			result.RejectedMessageIDs = append(result.RejectedMessageIDs, msgID)
 			continue
 		}

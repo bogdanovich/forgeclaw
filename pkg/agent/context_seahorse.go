@@ -105,6 +105,9 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 	}
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
+	if err := m.ensureConversationProvenance(ctx, req.SessionKey); err != nil {
+		return nil, err
+	}
 	if err := m.ensureReconciled(ctx, req.SessionKey, m.sessionStore(req.SessionKey)); err != nil {
 		return nil, err
 	}
@@ -151,6 +154,9 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 	}
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
+	if err := m.ensureConversationProvenance(ctx, req.SessionKey); err != nil {
+		return err
+	}
 	if err := m.ensureReconciled(ctx, req.SessionKey, m.sessionStore(req.SessionKey)); err != nil {
 		return err
 	}
@@ -179,6 +185,9 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 	}
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
+	if err := m.ensureConversationProvenance(ctx, req.SessionKey); err != nil {
+		return err
+	}
 	if req.CanonicalWriteErr != nil {
 		store := m.sessionStore(req.SessionKey)
 		if canonicalHistoryContains(store, req.SessionKey, req.Message) {
@@ -215,6 +224,27 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 	}
 
 	return m.ensureReconciled(ctx, req.SessionKey, store)
+}
+
+func (m *seahorseContextManager) ensureConversationProvenance(ctx context.Context, sessionKey string) error {
+	store := m.sessionStore(sessionKey)
+	metadataStore, ok := store.(session.MetadataAwareSessionStore)
+	if !ok {
+		return nil
+	}
+	scope := metadataStore.GetSessionScope(sessionKey)
+	if scope == nil || scope.RouteScopeKey == "" || scope.AgentID == "" {
+		return nil
+	}
+	if err := m.engine.GetRetrieval().Store().SetConversationProvenance(
+		ctx,
+		sessionKey,
+		scope.RouteScopeKey,
+		scope.AgentID,
+	); err != nil {
+		return fmt.Errorf("seahorse conversation provenance: %w", err)
+	}
+	return nil
 }
 
 func canonicalHistoryContains(store session.SessionStore, key string, target providers.Message) bool {

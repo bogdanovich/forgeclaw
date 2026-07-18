@@ -37,12 +37,14 @@ The structured session identity is represented by `session.SessionScope`:
 
 | Field | Meaning |
 | --- | --- |
-| `Version` | Schema version. Current value is `ScopeVersionV1`. |
+| `Version` | Schema version. Current value is `ScopeVersionV2`. |
 | `AgentID` | Routed agent handling the turn. |
 | `Channel` | Normalized inbound channel name. |
 | `Account` | Normalized account or bot identifier. |
 | `Dimensions` | Ordered list of active partition dimensions such as `chat` or `sender`. |
 | `Values` | Concrete normalized values for each selected dimension. |
+| `RouteScopeKey` | Stable trusted identity shared by all lifecycle epochs of one routed conversation. |
+| `Epoch` | Optional lifecycle partition that selects the current history epoch. |
 
 Only four dimensions are currently recognized by the allocator:
 
@@ -120,6 +122,29 @@ More concretely:
 
 The main session key is separate from routed chat sessions.
 It is used for agent-level or compatibility flows that need one stable per-agent conversation, for example legacy `processSystemMessage` adapters. New async task completions should not be transported as synthetic system inbound messages; they use typed `AsyncCompletionInput` delivery instead.
+
+## Seahorse Retrieval Boundaries
+
+Seahorse stores each lifecycle epoch as a conversation row. The row also carries nullable trusted provenance:
+
+- `route_scope_key`, copied from canonical `SessionScope.RouteScopeKey`
+- `agent_id`, copied from canonical `SessionScope.AgentID`
+
+The context manager records provenance during assemble, compact, and ingest. Existing rows are upgraded on access only
+when canonical session metadata proves their identity. Conflicting provenance is rejected rather than overwritten.
+
+Retrieval tools expose only an enum, not identity values:
+
+- `current_epoch` resolves the active session key to one Seahorse conversation
+- `conversation` resolves all rows with the same route scope and agent
+- `workspace` resolves all rows for the current agent in the workspace-local database
+
+The tool boundary reads the session key and scope from trusted execution context, then passes an explicit conversation
+ID set into every FTS and LIKE query. An empty set matches nothing. Missing or legacy provenance is excluded, and
+`short_expand` checks the same resolved ID set so a message ID from `short_grep` cannot be expanded across scope.
+
+Both retrieval tools bound serialized output. Truncation is reported explicitly with advice and omitted-result counts;
+callers should narrow the pattern or expand message IDs in smaller batches.
 
 ## Scope Construction Rules
 

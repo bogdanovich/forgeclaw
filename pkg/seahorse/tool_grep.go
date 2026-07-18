@@ -52,7 +52,7 @@ Parameters:
 - scope: "both" (default), "summary", or "message" - what to search
 - role: "user", "assistant", or omit for all - filter by message role
 - last: Time shortcut like "6h", "7d", "2w", "1m" (hours/days/weeks/months)
-- all_conversations: Search all conversations (default: current only)
+- retrieval_scope: "current_epoch" (default), "conversation", or "workspace"
 - since: ISO8601 timestamp, content after this time
 - before: ISO8601 timestamp, content before this time
 - limit: Max results (default: 20)
@@ -76,7 +76,7 @@ Examples:
   {"pattern": "%snake%"}
   {"pattern": "project", "scope": "summary"}
   {"pattern": "error", "role": "assistant", "last": "7d"}
-  {"pattern": "error", "all_conversations": true}`
+  {"pattern": "error", "retrieval_scope": "conversation"}`
 }
 
 func (t *GrepTool) Parameters() map[string]any {
@@ -101,9 +101,10 @@ func (t *GrepTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Time shortcut: '6h' (6 hours), '7d' (7 days), '2w' (2 weeks), '1m' (1 month)",
 			},
-			"all_conversations": map[string]any{
-				"type":        "boolean",
-				"description": "Search across all conversations (default: searches current conversation only)",
+			"retrieval_scope": map[string]any{
+				"type":        "string",
+				"enum":        []string{"current_epoch", "conversation", "workspace"},
+				"description": "Trusted search boundary (default: current_epoch)",
 			},
 			"since": map[string]any{
 				"type":        "string",
@@ -139,39 +140,32 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	if last, ok := args["last"].(string); ok && last != "" {
 		input.Last = last
 	}
-	if allConv, ok := args["all_conversations"].(bool); ok {
-		input.AllConversations = allConv
+	retrievalScope, scopeErr := parseRetrievalScope(args["retrieval_scope"])
+	if scopeErr != nil {
+		return tools.ErrorResult("Grep failed: " + scopeErr.Error())
 	}
-	if !input.AllConversations {
-		conversationID, found, err := t.engine.ConversationIDForSession(ctx, tools.ToolSessionKey(ctx))
-		if err != nil {
-			return tools.ErrorResult("Grep failed: resolve current conversation: " + err.Error())
-		}
-		if !found {
-			return grepJSONResult(&GrepResult{
-				Success:   true,
-				Summaries: make([]GrepSummaryResult, 0),
-				Messages:  make([]GrepMessageResult, 0),
-				Hint:      "No current conversation found for this session. Use all_conversations: true to search across conversations.",
-			})
-		}
-		input.ConversationID = conversationID
+	conversationIDs, resolveErr := resolveToolConversationIDs(ctx, t.engine, retrievalScope)
+	if resolveErr != nil {
+		return tools.ErrorResult("Grep failed: resolve retrieval scope: " + resolveErr.Error())
 	}
+	input.ConversationIDs = conversationIDs
 	if limit, ok := args["limit"].(float64); ok {
 		input.Limit = int(limit)
 	}
 	if sinceStr, ok := args["since"].(string); ok && sinceStr != "" {
-		parsed, err := time.Parse(time.RFC3339, sinceStr)
-		if err != nil {
+		parsed, parseErr := time.Parse(time.RFC3339, sinceStr)
+		if parseErr != nil {
 			return tools.ErrorResult(fmt.Sprintf(
-				"Invalid 'since' timestamp. Use RFC3339 format like '2024-01-15T10:00:00Z'. Error: %v", err))
+				"Invalid 'since' timestamp. Use RFC3339 format like '2024-01-15T10:00:00Z'. Error: %v",
+				parseErr,
+			))
 		}
 		input.Since = &parsed
 	}
 	if beforeStr, ok := args["before"].(string); ok && beforeStr != "" {
-		parsed, err := time.Parse(time.RFC3339, beforeStr)
-		if err != nil {
-			return tools.ErrorResult(fmt.Sprintf("Invalid 'before' timestamp format: %v", err))
+		parsed, parseErr := time.Parse(time.RFC3339, beforeStr)
+		if parseErr != nil {
+			return tools.ErrorResult(fmt.Sprintf("Invalid 'before' timestamp format: %v", parseErr))
 		}
 		input.Before = &parsed
 	}
@@ -230,7 +224,8 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("failed to marshal grep result: %v", err))
 	}
-	for len(data) > grepToolMaxForLLMBytes && (len(summaries) > 0 || len(messages) > 0) {
+	for (len(data) > grepToolMaxForLLMBytes || estimateRetrievalResultTokens(data) > retrievalToolMaxTokens) &&
+		(len(summaries) > 0 || len(messages) > 0) {
 		truncated = true
 		switch {
 		case len(summaries) > 0 && (len(messages) == 0 || estimateSummaryFootprint(summaries[len(summaries)-1]) >= estimateMessageFootprint(messages[len(messages)-1])):
@@ -250,7 +245,7 @@ func grepJSONResult(result *GrepResult) *tools.ToolResult {
 		}
 	}
 
-	if len(data) > grepToolMaxForLLMBytes {
+	if len(data) > grepToolMaxForLLMBytes || estimateRetrievalResultTokens(data) > retrievalToolMaxTokens {
 		truncated = true
 		omittedSummaries += len(summaries)
 		omittedMessages += len(messages)

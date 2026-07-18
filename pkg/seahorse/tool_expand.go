@@ -6,6 +6,14 @@ import (
 	"fmt"
 
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+)
+
+const (
+	expandToolMaxForLLMBytes   = 64 * 1024
+	expandToolMaxRejectedIDs   = 100
+	expandToolTruncationNotice = "Response trimmed to stay within tool context limits. " +
+		"Request fewer message IDs or expand them in smaller batches."
 )
 
 // ExpandTool recovers full message content by ID.
@@ -21,6 +29,10 @@ func (t *ExpandTool) Name() string {
 	return "short_expand"
 }
 
+func (t *ExpandTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsReadOnlyIdempotent
+}
+
 func (t *ExpandTool) Description() string {
 	return `Get full message content by ID.
 
@@ -28,7 +40,7 @@ Use when short_grep returns messages and you need complete content (not just sni
 
 Parameters:
 - message_ids (required): Array of message ID strings (from short_grep results)
-- all_conversations: Expand IDs from any conversation (default: current conversation only)
+- retrieval_scope: "current_epoch" (default), "conversation", or "workspace"
 
 Returns message with:
 - content: Full text content
@@ -42,11 +54,11 @@ Notes:
 - tool_result content is not returned (can be large). Re-run the tool if you need the result.
 - Media files are stored on disk at mediaUri path, use bash to access.
 - By default, IDs outside the current conversation are rejected and reported in rejectedMessageIds.
-- If short_grep used all_conversations: true, pass all_conversations: true to expand those IDs.
+- Use the same retrieval_scope that produced the IDs in short_grep.
 
 Example:
   {"message_ids": ["10", "25"]}
-  {"message_ids": ["10", "25"], "all_conversations": true}`
+  {"message_ids": ["10", "25"], "retrieval_scope": "conversation"}`
 }
 
 func (t *ExpandTool) Parameters() map[string]any {
@@ -58,9 +70,10 @@ func (t *ExpandTool) Parameters() map[string]any {
 				"items":       map[string]any{"type": "string"},
 				"description": "Message IDs to expand (from short_grep results, e.g., [\"10\", \"25\"])",
 			},
-			"all_conversations": map[string]any{
-				"type":        "boolean",
-				"description": "Expand IDs across all conversations (default: current conversation only)",
+			"retrieval_scope": map[string]any{
+				"type":        "string",
+				"enum":        []string{"current_epoch", "conversation", "workspace"},
+				"description": "Trusted expansion boundary (default: current_epoch)",
 			},
 		},
 		"required": []string{"message_ids"},
@@ -90,30 +103,33 @@ func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.To
 		}
 	}
 
-	allConversations, _ := args["all_conversations"].(bool)
-	var conversationID int64
-	if !allConversations {
-		var found bool
-		var err error
-		conversationID, found, err = t.engine.ConversationIDForSession(ctx, tools.ToolSessionKey(ctx))
-		if err != nil {
-			return tools.ErrorResult("Expand failed: resolve current conversation: " + err.Error())
-		}
-		if !found {
-			return tools.ErrorResult(
-				"Expand failed: no current conversation found for this session. Use all_conversations: true to expand across conversations.",
-			)
-		}
+	retrievalScope, err := parseRetrievalScope(args["retrieval_scope"])
+	if err != nil {
+		return tools.ErrorResult("Expand failed: " + err.Error())
+	}
+	conversationIDs, err := resolveToolConversationIDs(ctx, t.engine, retrievalScope)
+	if err != nil {
+		return tools.ErrorResult("Expand failed: resolve retrieval scope: " + err.Error())
 	}
 
-	result, err := t.engine.ExpandMessagesScoped(ctx, messageIDs, conversationID, allConversations)
+	result, err := t.engine.ExpandMessagesScoped(ctx, messageIDs, conversationIDs)
 	if err != nil {
 		return tools.ErrorResult("Expand failed: " + err.Error())
 	}
 
-	// Build response with filtered parts
+	return expandJSONResult(result)
+}
+
+func expandJSONResult(result *ExpandMessagesResult) *tools.ToolResult {
 	messages := make([]map[string]any, 0, len(result.Messages))
+	includedMessageTokens := make([]int, 0, len(result.Messages))
+	includedTokens := 0
+	omittedMessages := 0
 	for _, msg := range result.Messages {
+		if includedTokens+msg.TokenCount > retrievalToolMaxTokens {
+			omittedMessages++
+			continue
+		}
 		parts := make([]map[string]any, 0, len(msg.Parts))
 		for _, p := range msg.Parts {
 			part := map[string]any{"type": p.Type}
@@ -141,17 +157,52 @@ func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.To
 			"parts":          parts,
 			"conversationId": msg.ConversationID,
 		})
+		includedMessageTokens = append(includedMessageTokens, msg.TokenCount)
+		includedTokens += msg.TokenCount
 	}
 
-	output := map[string]any{
-		"success":            true,
-		"tokenCount":         result.TokenCount,
-		"messages":           messages,
-		"rejectedMessageIds": result.RejectedMessageIDs,
+	rejectedIDs := result.RejectedMessageIDs
+	omittedRejectedIDs := 0
+	if len(rejectedIDs) > expandToolMaxRejectedIDs {
+		omittedRejectedIDs = len(rejectedIDs) - expandToolMaxRejectedIDs
+		rejectedIDs = rejectedIDs[:expandToolMaxRejectedIDs]
 	}
-	data, err := json.Marshal(output)
+
+	buildOutput := func() map[string]any {
+		output := map[string]any{
+			"success":            true,
+			"tokenCount":         includedTokens,
+			"messages":           messages,
+			"rejectedMessageIds": rejectedIDs,
+		}
+		if omittedMessages > 0 || omittedRejectedIDs > 0 {
+			output["truncated"] = true
+			output["truncation_notice"] = expandToolTruncationNotice
+			if omittedMessages > 0 {
+				output["omitted_messages"] = omittedMessages
+			}
+			if omittedRejectedIDs > 0 {
+				output["omitted_rejected_message_ids"] = omittedRejectedIDs
+			}
+		}
+		return output
+	}
+
+	data, err := json.Marshal(buildOutput())
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("failed to marshal expand result: %v", err))
+	}
+	for (len(data) > expandToolMaxForLLMBytes || estimateRetrievalResultTokens(data) > retrievalToolMaxTokens) &&
+		len(messages) > 0 {
+		lastIndex := len(includedMessageTokens) - 1
+		includedTokens -= includedMessageTokens[lastIndex]
+		includedMessageTokens = includedMessageTokens[:lastIndex]
+		messages = messages[:len(messages)-1]
+		omittedMessages++
+		data, err = json.Marshal(buildOutput())
+		if err != nil {
+			return tools.ErrorResult(fmt.Sprintf("failed to marshal expand result: %v", err))
+		}
 	}
 	return tools.NewToolResult(string(data))
 }

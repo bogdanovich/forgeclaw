@@ -129,8 +129,9 @@ func TestFTS5SpecialCharsShouldNotError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := re.Grep(ctx, GrepInput{
-				Pattern: tt.pattern,
-				Scope:   "both",
+				Pattern:        tt.pattern,
+				Scope:          "both",
+				ConversationID: conv.ConversationID,
 			})
 			if err != nil {
 				t.Fatalf("Grep(%q) returned error: %v", tt.pattern, err)
@@ -191,7 +192,11 @@ func TestFTS5OperatorsNotInterpreted(t *testing.T) {
 		// "crash OR restart" as literal means all three tokens must appear.
 		// The message "restart the service now please" has "restart" but not "crash" or "OR".
 		// Boolean OR would match it; literal AND should not.
-		result, err := re.Grep(ctx, GrepInput{Pattern: "crash OR restart", Scope: "message"})
+		result, err := re.Grep(ctx, GrepInput{
+			Pattern:        "crash OR restart",
+			Scope:          "message",
+			ConversationID: conv.ConversationID,
+		})
 		if err != nil {
 			t.Fatalf("Grep returned error: %v", err)
 		}
@@ -207,7 +212,11 @@ func TestFTS5OperatorsNotInterpreted(t *testing.T) {
 		// "sub*" as literal means exact trigram match on "sub*".
 		// The message "run the subcommand to deploy" contains "sub" as prefix.
 		// Prefix wildcard would match it; literal should not.
-		result, err := re.Grep(ctx, GrepInput{Pattern: "sub*", Scope: "message"})
+		result, err := re.Grep(ctx, GrepInput{
+			Pattern:        "sub*",
+			Scope:          "message",
+			ConversationID: conv.ConversationID,
+		})
 		if err != nil {
 			t.Fatalf("Grep returned error: %v", err)
 		}
@@ -223,7 +232,11 @@ func TestFTS5OperatorsNotInterpreted(t *testing.T) {
 		// "(agent)" as literal means exact trigram match on "(agent)".
 		// The message "the agent processed the request" contains "agent" without parens.
 		// Grouping would match it; literal should not.
-		result, err := re.Grep(ctx, GrepInput{Pattern: "(agent)", Scope: "message"})
+		result, err := re.Grep(ctx, GrepInput{
+			Pattern:        "(agent)",
+			Scope:          "message",
+			ConversationID: conv.ConversationID,
+		})
 		if err != nil {
 			t.Fatalf("Grep returned error: %v", err)
 		}

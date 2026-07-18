@@ -238,7 +238,7 @@ func buildSeahorseContext(
 
 	var contentParts []string
 	if len(messageIDs) > 0 {
-		expandResult, err := retrieval.ExpandMessages(ctx, messageIDs)
+		expandResult, err := retrieval.ExpandMessagesScoped(ctx, messageIDs, []int64{convID})
 		if err == nil {
 			for _, msg := range expandResult.Messages {
 				contentParts = append(contentParts, msg.Content)

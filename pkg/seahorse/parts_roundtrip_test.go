@@ -125,7 +125,10 @@ func TestSearchMessagesFindsPartBasedMessages(t *testing.T) {
 	s.AddMessageWithParts(ctx, convID, "tool", resultParts, 10)
 
 	// Search for "grep" — should find the tool_use message
-	results, err := s.SearchMessages(ctx, SearchInput{Pattern: "grep"})
+	results, err := s.SearchMessages(ctx, SearchInput{
+		Pattern:        "grep",
+		ConversationID: convID,
+	})
 	if err != nil {
 		t.Fatalf("SearchMessages: %v", err)
 	}
@@ -134,7 +137,10 @@ func TestSearchMessagesFindsPartBasedMessages(t *testing.T) {
 	}
 
 	// Search for "TODO fix" — should find the tool_result message
-	results2, err := s.SearchMessages(ctx, SearchInput{Pattern: "TODO fix"})
+	results2, err := s.SearchMessages(ctx, SearchInput{
+		Pattern:        "TODO fix",
+		ConversationID: convID,
+	})
 	if err != nil {
 		t.Fatalf("SearchMessages: %v", err)
 	}
