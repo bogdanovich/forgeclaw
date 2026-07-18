@@ -14,6 +14,11 @@
       "split_on_marker": false,
       "max_llm_retries": 2,
       "llm_retry_backoff_secs": 2,
+      "prompt_memory": {
+        "long_term_max_bytes": 32768,
+        "daily_notes_max_bytes": 16384,
+        "recent_days": 3
+      },
       "tool_feedback": {
         "enabled": false,
         "max_args_length": 300,

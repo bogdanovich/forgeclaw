@@ -123,7 +123,8 @@ func NewAgentInstance(
 	sessionsDir := filepath.Join(workspace, "sessions")
 	sessions := initSessionStore(sessionsDir)
 	contextBuilder := NewContextBuilder(workspace).
-		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
+		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker).
+		WithPromptMemoryConfig(defaults.PromptMemory)
 
 	identity := buildAgentIdentityConfig(defaults, agentCfg, definition)
 	provider = resolvePrimaryProviderForAgent(cfg, workspace, identity.agentID, model, provider)

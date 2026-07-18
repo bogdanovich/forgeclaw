@@ -34,6 +34,11 @@ func DefaultConfig() *Config {
 				SummarizeMessageThreshold: 20,
 				SummarizeTokenPercent:     75,
 				SteeringMode:              "one-at-a-time",
+				PromptMemory: PromptMemoryConfig{
+					LongTermMaxBytes:   DefaultPromptMemoryLongTermMaxBytes,
+					DailyNotesMaxBytes: DefaultPromptMemoryDailyNotesMaxBytes,
+					RecentDays:         DefaultPromptMemoryRecentDays,
+				},
 				ToolFeedback: ToolFeedbackConfig{
 					Enabled:                false,
 					MaxArgsLength:          300,

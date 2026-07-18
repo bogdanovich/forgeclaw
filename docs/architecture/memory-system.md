@@ -140,11 +140,11 @@ Implemented:
 - trusted `current_epoch`, `conversation`, and `workspace` resolution;
 - bounded Seahorse retrieval output;
 - absolute Seahorse history and summary budgets;
-- tool-result projection and retention policy.
+- tool-result projection and retention policy;
+- bounded Markdown prompt memory and complete daily-note cache dependencies.
 
 Planned by the follow-up implementation series:
 
-- bounded Markdown prompt memory and complete cache dependencies;
 - first-class curated-memory mutations and audit events;
 - operator-configured maximum Seahorse retrieval scope;
 - deterministic memory-specific evaluation scenarios.
