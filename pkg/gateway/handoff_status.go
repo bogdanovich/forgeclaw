@@ -82,9 +82,7 @@ func reportGatewayHandoffStatus(ctx context.Context, cfg *config.Config, msgBus 
 		reportRestartHandoff(ctx, msgBus, restartStore)
 	}
 	if cfg.Gateway.Deploy.Enabled {
-		if reportDeployHandoff(ctx, msgBus, deployStore) {
-			go waitForDeployHandoff(ctx, msgBus, deployStore)
-		}
+		go watchDeployHandoffs(ctx, msgBus, deployStore, deployHandoffPollInterval)
 	}
 }
 
@@ -115,47 +113,68 @@ func reportRestartHandoff(ctx context.Context, msgBus *bus.MessageBus, store *Re
 	}
 }
 
-// reportDeployHandoff returns true while a detached worker is still running.
-func reportDeployHandoff(ctx context.Context, msgBus *bus.MessageBus, store *DeploySentinelStore) bool {
+func reportDeployHandoff(ctx context.Context, msgBus *bus.MessageBus, store *DeploySentinelStore) {
 	sentinel, err := store.Read()
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			logger.WarnCF("gateway", "Failed to read deploy sentinel", map[string]any{"error": err.Error()})
 		}
-		return false
+		return
 	}
-	logger.InfoCF("gateway", "Latest deploy sentinel", deployLogFields(sentinel))
 	if !sentinel.Handoff {
-		return false
+		return
 	}
 	if sentinel.Status == "running" {
-		return true
+		return
 	}
 	if !sentinel.ContinuationSentAt.IsZero() {
-		return false
+		return
 	}
-	content := formatDeployContinuation(sentinel)
-	if err := publishHandoffContinuation(ctx, msgBus, sentinel.Origin, content); err != nil {
+	delivered, err := store.DeliverContinuationIfCurrent(
+		sentinel,
+		time.Now().UTC(),
+		func(current DeploySentinel) error {
+			return publishHandoffContinuation(
+				ctx,
+				msgBus,
+				current.Origin,
+				formatDeployContinuation(current),
+			)
+		},
+	)
+	if err != nil {
 		logger.WarnCF("gateway", "Failed to publish deploy continuation", map[string]any{"error": err.Error()})
-		return false
+		return
 	}
-	if err := store.MarkContinuationSent(time.Now().UTC()); err != nil {
-		logger.WarnCF("gateway", "Failed to mark deploy continuation sent", map[string]any{"error": err.Error()})
+	if !delivered {
+		logger.InfoCF(
+			"gateway",
+			"Deploy sentinel changed before continuation acknowledgement",
+			deployLogFields(sentinel),
+		)
+		return
 	}
-	return false
+	logger.InfoCF("gateway", "Published deploy handoff continuation", deployLogFields(sentinel))
 }
 
-func waitForDeployHandoff(ctx context.Context, msgBus *bus.MessageBus, store *DeploySentinelStore) {
-	ticker := time.NewTicker(deployHandoffPollInterval)
+func watchDeployHandoffs(
+	ctx context.Context,
+	msgBus *bus.MessageBus,
+	store *DeploySentinelStore,
+	pollInterval time.Duration,
+) {
+	if pollInterval <= 0 {
+		pollInterval = deployHandoffPollInterval
+	}
+	reportDeployHandoff(ctx, msgBus, store)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !reportDeployHandoff(ctx, msgBus, store) {
-				return
-			}
+			reportDeployHandoff(ctx, msgBus, store)
 		}
 	}
 }
@@ -220,7 +239,7 @@ func formatRestartContinuation(s RestartSentinel) string {
 }
 
 func formatDeployContinuation(s DeploySentinel) string {
-	return fmt.Sprintf("Gateway is back. Deploy handoff for %s target %s is %s (exit code %d).",
+	return fmt.Sprintf("Deploy handoff for %s target %s completed: %s (exit code %d).",
 		s.Group, s.Target, s.Status, s.ExitCode)
 }
 

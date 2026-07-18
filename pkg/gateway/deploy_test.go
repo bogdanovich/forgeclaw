@@ -85,6 +85,45 @@ func TestNewDeployRunnerRejectsDisabledAndRelativeCommand(t *testing.T) {
 	}
 }
 
+func TestDeploySentinelStoreDoesNotAcknowledgeReplacedDeploy(t *testing.T) {
+	store, err := NewDeploySentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := DeploySentinel{
+		Kind: "deploy", Status: "failed", Group: "local", Target: "current",
+		RequestedAt: time.Now().UTC().Add(-time.Minute), UpdatedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	second := DeploySentinel{
+		Kind: "deploy", Status: "running", Group: "local", Target: "current",
+		RequestedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if writeErr := store.Write(second); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	deliveryCalled := false
+	delivered, err := store.DeliverContinuationIfCurrent(first, time.Now().UTC(), func(DeploySentinel) error {
+		deliveryCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivered {
+		t.Fatal("replaced deploy was acknowledged")
+	}
+	if deliveryCalled {
+		t.Fatal("replaced deploy was delivered")
+	}
+	current, err := store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.ContinuationSentAt.IsZero() || !current.RequestedAt.Equal(second.RequestedAt) {
+		t.Fatalf("current sentinel was modified: %#v", current)
+	}
+}
+
 func TestGatewayDeployToolPersistsTopicOrigin(t *testing.T) {
 	workspace := t.TempDir()
 	runner, err := NewDeployRunner(deployConfig(writeDeployScript(t, "true")), workspace, "")

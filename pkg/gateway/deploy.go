@@ -64,17 +64,48 @@ func (s *DeploySentinelStore) Read() (DeploySentinel, error) {
 	return sentinel, nil
 }
 
-func (s *DeploySentinelStore) MarkContinuationSent(now time.Time) error {
+func (s *DeploySentinelStore) DeliverContinuationIfCurrent(
+	expected DeploySentinel,
+	now time.Time,
+	deliver func(DeploySentinel) error,
+) (bool, error) {
+	if deliver == nil {
+		return false, errors.New("deploy continuation delivery callback is required")
+	}
+	lockPath, err := deployGroupLockPath(expected.Group)
+	if err != nil {
+		return false, err
+	}
+	lock, err := acquireDeployLock(lockPath)
+	if errors.Is(err, ErrDeployAlreadyRunning) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+
 	sentinel, err := s.Read()
 	if err != nil {
-		return err
+		return false, err
+	}
+	if sentinel.Kind != expected.Kind || sentinel.Group != expected.Group || sentinel.Target != expected.Target ||
+		!sentinel.RequestedAt.Equal(expected.RequestedAt) || !sentinel.UpdatedAt.Equal(expected.UpdatedAt) ||
+		!sentinel.ContinuationSentAt.IsZero() {
+		return false, nil
+	}
+	if err := deliver(sentinel); err != nil {
+		return false, err
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	sentinel.ContinuationSentAt = now.UTC()
 	sentinel.UpdatedAt = now.UTC()
-	return s.Write(sentinel)
+	if err := s.Write(sentinel); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func deployGroupLockPath(group string) (string, error) {

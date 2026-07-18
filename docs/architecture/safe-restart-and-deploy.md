@@ -241,16 +241,19 @@ Sentinels provide the bridge across process exit:
   are known, so a later process can address a continuation without asking the
   model to infer a destination. A restart or deploy initiated in a Telegram
   forum topic must continue in that same topic rather than the parent chat.
-- After channels are running on startup, core inspects the latest sentinel,
-  logs its status, and may send one continuation such as "gateway is back" or
-  "deploy failed" to that saved origin.
+- After channels are running, a gateway-lifetime reconciler inspects deploy
+  sentinels and sends one terminal continuation to the saved origin. This
+  reports failures while the original gateway remains alive; after a successful
+  self-replacing deploy, the replacement gateway performs the same
+  reconciliation on startup.
 - The read-only `gateway_handoff_status` tool exposes the latest restart/deploy
   handoff, including deploy exit code and a bounded output preview.
-- Core records `continuation_sent_at` after queueing the startup continuation.
-  This makes the startup handoff at-most-once, not a durable outbound queue.
+- Core records `continuation_sent_at` after queueing a continuation. This keeps
+  each handoff idempotent across live polling and process startup, but does not
+  create a durable outbound queue.
 
-Startup notification must be idempotent. Repeated process starts must not spam
-the same session with duplicate continuation messages.
+Handoff notification must be idempotent. Repeated polling and process starts
+must not spam the same session with duplicate continuation messages.
 
 ## Non-Goals
 
