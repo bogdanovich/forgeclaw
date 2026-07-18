@@ -286,7 +286,9 @@ func replayRecallIsolation(t *testing.T) recallReplay {
 	observation.WorkspaceDenied = workspaceResult.IsError &&
 		strings.Contains(workspaceResult.ContentForLLM(), "exceeds operator maximum")
 
-	if len(observation.GrepContents) != 2 ||
+	if !reflect.DeepEqual(observation.GrepContents, []string{
+		"current memoryneedle", "previous memoryneedle",
+	}) ||
 		!reflect.DeepEqual(observation.ExpandedContents, []string{
 			"current memoryneedle", "previous memoryneedle",
 		}) || observation.RejectedCount != 2 || !observation.WorkspaceDenied {
