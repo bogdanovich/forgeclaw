@@ -64,6 +64,9 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		}
 		resolved[i] = r
 	}
+	if a.config.absoluteBudgetsEnabled() {
+		return a.assembleWithAbsoluteBudgets(ctx, convID, resolved, input)
+	}
 
 	// Split into evictable prefix and protected fresh tail
 	tailStart := len(resolved) - FreshTailCount
@@ -155,7 +158,10 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		})
 	}
 
-	// Build result
+	return buildAssembleResult(final, nil), nil
+}
+
+func buildAssembleResult(final []resolvedItem, budget *AssembleBudgetReport) *AssembleResult {
 	var messages []Message
 	var summaries []Summary
 	var sourceIDs []string
@@ -215,7 +221,8 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	return &AssembleResult{
 		Messages: messages,
 		Summary:  summary,
-	}, nil
+		Budget:   budget,
+	}
 }
 
 func (a *Assembler) dropCoveredSummaries(ctx context.Context, items []resolvedItem) ([]resolvedItem, int) {
@@ -382,6 +389,9 @@ func (a *Assembler) resolveItem(ctx context.Context, item ContextItem) (resolved
 		tokens := item.TokenCount
 		if tokens == 0 {
 			tokens = msg.TokenCount
+		}
+		if actualTokens := EstimateMessageTokens(*msg); actualTokens > tokens {
+			tokens = actualTokens
 		}
 		return resolvedItem{
 			ordinal:    item.Ordinal,

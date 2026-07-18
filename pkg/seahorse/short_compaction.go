@@ -116,20 +116,25 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 	logger.InfoCF("seahorse", "compact_until_under: start", map[string]any{"conv_id": convID, "budget": budget})
 
 	for iter := 0; iter < MaxCompactIterations; iter++ {
-		tokens, err := e.store.GetContextTokenCount(ctx, convID)
+		historyTokens, summaryTokens, err := e.store.GetContextTokenCounts(ctx, convID)
 		if err != nil {
 			return result, fmt.Errorf("get tokens: %w", err)
 		}
-		if tokens <= budget {
+		tokens := historyTokens + summaryTokens
+		historyBudget := e.config.historyBudget(budget)
+		summaryBudget := e.config.summaryBudget(budget)
+		if tokens <= budget && historyTokens <= historyBudget && summaryTokens <= summaryBudget {
 			currentPrefixTokens, prefixErr := e.summaryPrefixTokens(ctx, convID)
 			if prefixErr != nil {
 				return result, fmt.Errorf("summary prefix tokens: %w", prefixErr)
 			}
-			if currentPrefixTokens <= SummaryPrefixTokens {
+			if currentPrefixTokens <= e.summaryPrefixMaxTokens(budget) {
 				logger.InfoCF("seahorse", "compact_until_under: done", map[string]any{
 					"conv_id":               convID,
 					"budget":                budget,
 					"tokens":                tokens,
+					"history_tokens":        historyTokens,
+					"summary_tokens":        summaryTokens,
 					"summary_prefix_tokens": currentPrefixTokens,
 					"leaf":                  result.LeafSummaries,
 					"condensed":             result.CondensedSummaries,
@@ -142,8 +147,8 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 		if err != nil {
 			return result, fmt.Errorf("summary prefix tokens: %w", err)
 		}
-		if summaryPrefixTokens > SummaryPrefixTokens {
-			condensedID, compactErr := e.compactCondensed(ctx, convID)
+		if summaryPrefixTokens > e.summaryPrefixMaxTokens(budget) || summaryTokens > summaryBudget {
+			condensedID, compactErr := e.compactCondensed(ctx, convID, true)
 			if compactErr != nil {
 				return result, compactErr
 			}
@@ -154,7 +159,7 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 					"conv_id":                 convID,
 					"summary_id":              *condensedID,
 					"summary_prefix_tokens":   summaryPrefixTokens,
-					"summary_prefix_target":   SummaryPrefixTokens,
+					"summary_prefix_target":   e.summaryPrefixMaxTokens(budget),
 					"summary_prefix_pressure": true,
 				})
 				continue
@@ -177,7 +182,7 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 		}
 
 		// Try condensed with forced fanout
-		condensedID, err := e.compactCondensed(ctx, convID)
+		condensedID, err := e.compactCondensed(ctx, convID, true)
 		if err != nil {
 			return result, err
 		}
@@ -198,6 +203,15 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 				"conv_id": convID,
 				"tokens":  newTokens,
 			})
+			if e.config.absoluteBudgetsEnabled() {
+				return result, fmt.Errorf(
+					"unable to compact context under absolute budgets: tokens=%d total_budget=%d history_budget=%d summary_budget=%d",
+					newTokens,
+					budget,
+					e.config.historyBudget(budget),
+					e.config.summaryBudget(budget),
+				)
+			}
 			return result, nil
 		}
 		prevTokens = newTokens
@@ -210,7 +224,17 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 		"iterations": MaxCompactIterations,
 		"tokens":     prevTokens,
 	})
+	if e.config.absoluteBudgetsEnabled() {
+		return result, fmt.Errorf(
+			"unable to compact context under absolute budgets after %d iterations",
+			MaxCompactIterations,
+		)
+	}
 	return result, nil
+}
+
+func (e *CompactionEngine) summaryPrefixMaxTokens(totalBudget int) int {
+	return minPositive(SummaryPrefixTokens, e.config.summaryBudget(totalBudget))
 }
 
 func (e *CompactionEngine) summaryPrefixTokens(ctx context.Context, convID int64) (int, error) {
@@ -218,9 +242,9 @@ func (e *CompactionEngine) summaryPrefixTokens(ctx context.Context, convID int64
 	if err != nil {
 		return 0, err
 	}
-	tailStartIdx := len(items) - FreshTailCount
-	if tailStartIdx < 0 {
-		tailStartIdx = 0
+	tailStartIdx, err := e.freshTailStartIndex(ctx, items, false)
+	if err != nil {
+		return 0, err
 	}
 	tokens := 0
 	for i := 0; i < tailStartIdx; i++ {
@@ -232,7 +256,8 @@ func (e *CompactionEngine) summaryPrefixTokens(ctx context.Context, convID int64
 }
 
 // compactLeaf compresses the oldest contiguous message chunk into a leaf summary.
-// When force is true, FreshTailCount protection is bypassed (used by CompactUntilUnder).
+// When force is true, the legacy FreshTailCount protection is bypassed. An
+// explicitly configured RecentTailTurns boundary is never bypassed.
 func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force ...bool) (*string, error) {
 	items, err := e.store.GetContextItems(ctx, convID)
 	if err != nil {
@@ -256,12 +281,9 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 
 	// Calculate fresh tail boundary (bypass when forced)
 	useForce := len(force) > 0 && force[0]
-	tailStartIdx := len(items) - FreshTailCount
-	if useForce {
-		tailStartIdx = len(items) // allow compacting everything
-	}
-	if tailStartIdx < 0 {
-		tailStartIdx = 0
+	tailStartIdx, err := e.freshTailStartIndex(ctx, items, useForce)
+	if err != nil {
+		return nil, err
 	}
 
 	// Find oldest contiguous message chunk, accumulating up to LeafChunkTokens
@@ -369,9 +391,14 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 }
 
 // compactCondensed compresses multiple summaries into one higher-level summary.
-func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (*string, error) {
+func (e *CompactionEngine) compactCondensed(
+	ctx context.Context,
+	convID int64,
+	force ...bool,
+) (*string, error) {
 	// Try ordinal-aware selection first (respects consecutive ordering)
 	var candidates []Summary
+	forced := len(force) > 0 && force[0]
 
 	depths, err := e.store.GetDistinctDepthsInContext(ctx, convID, 0)
 	if err != nil {
@@ -380,7 +407,7 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (
 	for _, depth := range depths {
 		var chunkAtDepth []Summary
 		var err2 error
-		chunkAtDepth, err2 = e.selectOldestChunkAtDepth(ctx, convID, depth)
+		chunkAtDepth, err2 = e.selectOldestChunkAtDepth(ctx, convID, depth, forced)
 		if err2 != nil {
 			continue
 		}
@@ -392,7 +419,7 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (
 
 	// Fallback to depth-grouping selection
 	if len(candidates) == 0 {
-		candidates, err = e.selectShallowestCondensationCandidate(ctx, convID, false)
+		candidates, err = e.selectShallowestCondensationCandidate(ctx, convID, forced)
 		if err != nil {
 			return nil, err
 		}
@@ -530,9 +557,9 @@ func (e *CompactionEngine) selectShallowestCondensationCandidate(
 	}
 
 	// Group by depth, find consecutive runs
-	tailStartIdx := len(items) - FreshTailCount
-	if tailStartIdx < 0 {
-		tailStartIdx = 0
+	tailStartIdx, err := e.freshTailStartIndex(ctx, items, forced)
+	if err != nil {
+		return nil, err
 	}
 
 	minFanout := CondensedMinFanout
@@ -585,16 +612,20 @@ func (e *CompactionEngine) selectShallowestCondensationCandidate(
 // summaries at the given depth. Stops at non-summary items, different depth, fresh tail, or
 // token overflow. Returns contiguous chunk of summaries.
 func (e *CompactionEngine) selectOldestChunkAtDepth(
-	ctx context.Context, convID int64, targetDepth int,
+	ctx context.Context,
+	convID int64,
+	targetDepth int,
+	force ...bool,
 ) ([]Summary, error) {
 	items, err := e.store.GetContextItems(ctx, convID)
 	if err != nil {
 		return nil, err
 	}
 
-	tailStartIdx := len(items) - FreshTailCount
-	if tailStartIdx < 0 {
-		tailStartIdx = 0
+	forced := len(force) > 0 && force[0]
+	tailStartIdx, err := e.freshTailStartIndex(ctx, items, forced)
+	if err != nil {
+		return nil, err
 	}
 
 	var chunk []Summary
@@ -639,6 +670,42 @@ func (e *CompactionEngine) selectOldestChunkAtDepth(
 	}
 
 	return chunk, nil
+}
+
+func (e *CompactionEngine) freshTailStartIndex(
+	ctx context.Context,
+	items []ContextItem,
+	forced bool,
+) (int, error) {
+	if e.config.RecentTailTurns > 0 {
+		turns := 0
+		for i := len(items) - 1; i >= 0; i-- {
+			item := items[i]
+			if item.ItemType != "message" || item.MessageID == 0 {
+				continue
+			}
+			message, err := e.store.GetMessageByID(ctx, item.MessageID)
+			if err != nil {
+				return 0, fmt.Errorf("resolve recent-tail message: %w", err)
+			}
+			if message.Role != "user" {
+				continue
+			}
+			turns++
+			if turns == e.config.RecentTailTurns {
+				return i, nil
+			}
+		}
+		return 0, nil
+	}
+	if forced {
+		return len(items), nil
+	}
+	tailStart := len(items) - FreshTailCount
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	return tailStart, nil
 }
 
 // generateLeafSummary calls the LLM to generate a leaf summary with 3-level escalation.

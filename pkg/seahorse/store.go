@@ -1459,6 +1459,22 @@ func (s *Store) GetContextTokenCount(ctx context.Context, convID int64) (int, er
 	return count, err
 }
 
+// GetContextTokenCounts returns stored message and summary token totals.
+func (s *Store) GetContextTokenCounts(ctx context.Context, convID int64) (int, int, error) {
+	var historyTokens, summaryTokens int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT
+			COALESCE(SUM(CASE WHEN item_type = 'message' THEN token_count ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN item_type = 'summary' THEN token_count ELSE 0 END), 0)
+		 FROM context_items WHERE conversation_id = ?`,
+		convID,
+	).Scan(&historyTokens, &summaryTokens)
+	if err != nil {
+		return 0, 0, fmt.Errorf("get context token counts: %w", err)
+	}
+	return historyTokens, summaryTokens, nil
+}
+
 // GetMaxOrdinal returns the highest ordinal in context_items for a conversation.
 func (s *Store) GetMaxOrdinal(ctx context.Context, convID int64) (int, error) {
 	var maxOrd sql.NullInt64

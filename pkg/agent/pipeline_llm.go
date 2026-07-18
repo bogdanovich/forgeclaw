@@ -453,12 +453,17 @@ func (p *Pipeline) CallLLM(
 			}
 			compactCancel()
 			ts.refreshRestorePointFromSession(ts.agent)
-			if asmResp, asmErr := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
+			asmResp, asmErr := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
 				SessionKey:    ts.sessionKey,
 				Budget:        ts.agent.ContextWindow,
 				MaxTokens:     ts.agent.MaxTokens,
 				ReserveTokens: reserveTokens,
-			}); asmErr == nil && asmResp != nil {
+			})
+			if asmErr != nil {
+				err = fmt.Errorf("reassemble context after compaction: %w", asmErr)
+				break
+			}
+			if asmResp != nil {
 				exec.history = asmResp.History
 				exec.summary = asmResp.Summary
 			}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
@@ -360,6 +362,8 @@ func (s *saveFailingSessionStore) Save(_ string) error {
 
 type blockingCompactContextManager struct {
 	history        []providers.Message
+	budget         *ContextBudgetReport
+	assembleErr    error
 	compactStarted chan struct{}
 	releaseCompact chan struct{}
 	startOnce      sync.Once
@@ -369,7 +373,13 @@ func (m *blockingCompactContextManager) Assemble(
 	_ context.Context,
 	_ *AssembleRequest,
 ) (*AssembleResponse, error) {
-	return &AssembleResponse{History: append([]providers.Message(nil), m.history...)}, nil
+	if m.assembleErr != nil {
+		return nil, m.assembleErr
+	}
+	return &AssembleResponse{
+		History: append([]providers.Message(nil), m.history...),
+		Budget:  m.budget,
+	}, nil
 }
 
 func (m *blockingCompactContextManager) Compact(ctx context.Context, _ *CompactRequest) error {
@@ -421,6 +431,25 @@ func TestPipeline_SetupTurn_BasicInitialization(t *testing.T) {
 	}
 }
 
+func TestPipeline_SetupTurn_PropagatesContextAssemblyFailure(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	al.contextManager = &blockingCompactContextManager{
+		assembleErr: errors.New("mandatory recent context exceeds budget"),
+	}
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("assembly-failure"), turnEventScope{
+		turnID:  "turn-assembly-failure",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	_, err := pipeline.SetupTurn(context.Background(), ts)
+	if err == nil || !strings.Contains(err.Error(), "mandatory recent context exceeds budget") {
+		t.Fatalf("expected assembly failure, got %v", err)
+	}
+}
+
 func TestPipeline_SetupTurn_ProactiveCompactionDoesNotBlockResponsePath(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
@@ -469,6 +498,67 @@ func TestPipeline_SetupTurn_ProactiveCompactionDoesNotBlockResponsePath(t *testi
 	case <-cm.compactStarted:
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for proactive background compaction")
+	}
+}
+
+func TestPipeline_SetupTurn_SchedulesAbsoluteBudgetCompaction(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	agent.ContextWindow = 100_000
+	agent.MaxTokens = 1_000
+
+	cm := &blockingCompactContextManager{
+		history: []providers.Message{{Role: "user", Content: "recent"}},
+		budget: &ContextBudgetReport{
+			ContextWindow:         100_000,
+			OutputReserve:         1_000,
+			NonHistoryReserve:     2_000,
+			AvailableContext:      97_000,
+			HistoryBudget:         5_000,
+			SummaryBudget:         2_000,
+			SourceHistoryTokens:   6_000,
+			SelectedHistoryTokens: 5_000,
+			RecentTailTurns:       1,
+			RecentTailTokens:      10,
+			Truncated:             true,
+			NeedsCompaction:       true,
+			PressureReasons:       []string{"history_budget"},
+		},
+		compactStarted: make(chan struct{}),
+		releaseCompact: make(chan struct{}),
+	}
+	al.contextManager = cm
+	defer close(cm.releaseCompact)
+	runtimeCh, closeEvents := subscribeRuntimeEventsForTest(
+		t,
+		al,
+		8,
+		runtimeevents.KindAgentContextCompress,
+	)
+	defer closeEvents()
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("absolute-pressure")), turnEventScope{
+		turnID:  "turn-absolute-pressure",
+		context: newTurnContext(nil, nil, nil),
+	})
+	if _, err := pipeline.SetupTurn(context.Background(), ts); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cm.compactStarted:
+	case <-time.After(time.Second):
+		t.Fatal("absolute budget pressure did not schedule compaction")
+	}
+	select {
+	case event := <-runtimeCh:
+		payload, ok := event.Payload.(ContextCompressPayload)
+		if !ok || payload.HistoryBudget != 5_000 ||
+			!slices.Equal(payload.PressureReasons, []string{"history_budget"}) {
+			t.Fatalf("unexpected context pressure event: %#v", event.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("absolute budget pressure event was not emitted")
 	}
 }
 

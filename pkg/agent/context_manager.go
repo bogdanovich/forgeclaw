@@ -41,8 +41,28 @@ type AssembleRequest struct {
 
 // AssembleResponse is the output of Assemble.
 type AssembleResponse struct {
-	History []providers.Message // assembled conversation history for BuildMessages
-	Summary string              // conversation summary embedded into system prompt by BuildMessages
+	History []providers.Message  // assembled conversation history for BuildMessages
+	Summary string               // conversation summary embedded into system prompt by BuildMessages
+	Budget  *ContextBudgetReport // optional bounded-context selection details
+}
+
+// ContextBudgetReport describes one context manager selection decision.
+type ContextBudgetReport struct {
+	ContextWindow         int
+	OutputReserve         int
+	NonHistoryReserve     int
+	AvailableContext      int
+	HistoryBudget         int
+	SummaryBudget         int
+	SourceHistoryTokens   int
+	SourceSummaryTokens   int
+	SelectedHistoryTokens int
+	SelectedSummaryTokens int
+	RecentTailTurns       int
+	RecentTailTokens      int
+	Truncated             bool
+	NeedsCompaction       bool
+	PressureReasons       []string
 }
 
 // CompactRequest is the input to Compact.

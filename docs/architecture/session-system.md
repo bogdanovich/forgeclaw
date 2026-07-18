@@ -146,6 +146,28 @@ ID set into every FTS and LIKE query. An empty set matches nothing. Missing or l
 Both retrieval tools bound serialized output. Truncation is reported explicitly with advice and omitted-result counts;
 callers should narrow the pattern or expand message IDs in smaller batches.
 
+## Absolute Context Budgets
+
+The Pipeline owns model-request budgeting because it is the only layer that sees the complete dynamic request: system
+prompt, active skills, visible tool definitions, media, and output reserve. It estimates those mandatory costs before
+calling the context manager and passes only the remaining capacity to Seahorse.
+
+When configured, Seahorse applies three independent controls:
+
+- `historyMaxTokens` for raw messages
+- `summaryMaxTokens` for the rendered summary and its guidance
+- `recentTailTurns` for the minimum number of newest complete user turns kept raw
+
+The model context remainder is always the outer hard limit. Selection prioritizes the guaranteed recent turns, then
+adds older complete turns, then adds the newest summaries that fit. It never splits a user turn or a tool-call/result
+sequence. Stored token metadata is treated as a lower bound; assembly re-estimates full messages and rendered summary
+text so stale counts cannot bypass a cap.
+
+If non-history plus output reserves consume the model window, or the mandatory recent tail exceeds its history/total
+budget, assembly returns an error and the Pipeline does not call the provider. Otherwise, source data over any absolute
+cap produces a structured budget report, a context-pressure event, and deduplicated background compaction. Forced
+compaction may bypass the legacy message-count tail, but never an explicitly configured recent-turn boundary.
+
 ## Scope Construction Rules
 
 `pkg/session/allocator.go` builds scope values from normalized inbound context.

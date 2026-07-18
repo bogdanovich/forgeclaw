@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -26,15 +27,21 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	var history []providers.Message
 	var summary string
+	var budgetReport *ContextBudgetReport
 	if !ts.opts.NoHistory {
-		if resp, err := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
+		resp, err := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
 			SessionKey:    ts.sessionKey,
 			Budget:        ts.agent.ContextWindow,
 			MaxTokens:     ts.agent.MaxTokens,
 			ReserveTokens: reserveTokens,
-		}); err == nil && resp != nil {
+		})
+		if err != nil {
+			return nil, fmt.Errorf("assemble context: %w", err)
+		}
+		if resp != nil {
 			history = resp.History
 			summary = resp.Summary
+			budgetReport = resp.Budget
 		}
 	}
 	ts.captureRestorePoint(history, summary)
@@ -52,6 +59,16 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	messages = resolveMediaRefs(messages, p.Context.MediaResolver, maxMediaSize)
 
 	if !ts.opts.NoHistory {
+		if budgetReport != nil && budgetReport.NeedsCompaction {
+			p.emitAbsoluteBudgetPressure(ts, budgetReport, len(history))
+			p.scheduleBackgroundCompaction(
+				ts.agent,
+				ts.sessionKey,
+				ContextCompressReasonProactive,
+				budgetReport.AvailableContext,
+				"absolute_budget_pressure",
+			)
+		}
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
 			compactBudget := effectiveHistoryBudget(
 				ts.agent.ContextWindow,
@@ -230,15 +247,56 @@ func effectiveHistoryBudget(contextWindow, maxTokens, reserveTokens int) int {
 	if budget > 0 {
 		return budget
 	}
-	// Fall back to a conservative fraction so context managers still have a
-	// usable target when static prompt/tool schema estimates exceed the window.
-	if contextWindow > maxTokens {
-		return (contextWindow - maxTokens) / 2
-	}
-	if contextWindow > 0 {
-		return contextWindow / 2
-	}
 	return 0
+}
+
+func (p *Pipeline) emitAbsoluteBudgetPressure(
+	ts *turnState,
+	report *ContextBudgetReport,
+	remainingMessages int,
+) {
+	if ts == nil || report == nil {
+		return
+	}
+	p.emitEvent(
+		runtimeevents.KindAgentContextCompress,
+		ts.eventMeta("SetupTurn", "turn.context.absolute_budget"),
+		ContextCompressPayload{
+			Reason:                ContextCompressReasonProactive,
+			RemainingMessages:     remainingMessages,
+			ContextWindow:         report.ContextWindow,
+			OutputReserve:         report.OutputReserve,
+			NonHistoryReserve:     report.NonHistoryReserve,
+			AvailableContext:      report.AvailableContext,
+			HistoryBudget:         report.HistoryBudget,
+			SummaryBudget:         report.SummaryBudget,
+			SourceHistoryTokens:   report.SourceHistoryTokens,
+			SourceSummaryTokens:   report.SourceSummaryTokens,
+			SelectedHistoryTokens: report.SelectedHistoryTokens,
+			SelectedSummaryTokens: report.SelectedSummaryTokens,
+			RecentTailTurns:       report.RecentTailTurns,
+			RecentTailTokens:      report.RecentTailTokens,
+			Truncated:             report.Truncated,
+			PressureReasons:       append([]string(nil), report.PressureReasons...),
+		},
+	)
+	logger.WarnCF("agent", "absolute context budget pressure", map[string]any{
+		"session_key":             ts.sessionKey,
+		"context_window":          report.ContextWindow,
+		"output_reserve":          report.OutputReserve,
+		"non_history_reserve":     report.NonHistoryReserve,
+		"available_context":       report.AvailableContext,
+		"history_budget":          report.HistoryBudget,
+		"summary_budget":          report.SummaryBudget,
+		"source_history_tokens":   report.SourceHistoryTokens,
+		"source_summary_tokens":   report.SourceSummaryTokens,
+		"selected_history_tokens": report.SelectedHistoryTokens,
+		"selected_summary_tokens": report.SelectedSummaryTokens,
+		"recent_tail_turns":       report.RecentTailTurns,
+		"recent_tail_tokens":      report.RecentTailTokens,
+		"truncated":               report.Truncated,
+		"pressure_reasons":        report.PressureReasons,
+	})
 }
 
 func (p *Pipeline) estimateNonHistoryPromptReserve(
