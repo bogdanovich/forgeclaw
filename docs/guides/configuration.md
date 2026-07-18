@@ -314,6 +314,16 @@ Session scope controls how much memory is shared between chats, users, threads, 
 
 For step-by-step recipes and isolation patterns, see the [Session Guide](session-guide.md).
 
+`session.lifecycle` optionally rotates only conversation history and context. Supported strategies are:
+
+- `never` or omitted: no automatic rotation
+- `calendar`: `period` is `day`, `week`, or `month`, with a required IANA `timezone`
+- `idle`: rotate after `idle_timeout_minutes` without activity
+- `max_age`: rotate after `max_age_minutes` from epoch creation
+
+Idle and max-age checkpoints persist across process restarts. See the Session Guide for complete examples and boundary
+semantics.
+
 ### Final Turn Render
 
 `agents.defaults.final_turn_render_mode` controls an experimental final-response render pass for steering-heavy turns.

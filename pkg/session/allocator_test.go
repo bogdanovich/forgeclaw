@@ -34,8 +34,15 @@ func TestAllocateRouteSession_PerPeerDM(t *testing.T) {
 	if len(allocation.MainAliases) != 1 || allocation.MainAliases[0] != "agent:main:main" {
 		t.Fatalf("MainAliases = %v, want [agent:main:main]", allocation.MainAliases)
 	}
-	if allocation.Scope.Version != ScopeVersionV1 {
-		t.Fatalf("Scope.Version = %d, want %d", allocation.Scope.Version, ScopeVersionV1)
+	if allocation.Scope.Version != ScopeVersionV2 {
+		t.Fatalf("Scope.Version = %d, want %d", allocation.Scope.Version, ScopeVersionV2)
+	}
+	if allocation.Scope.RouteScopeKey != allocation.RouteScopeKey {
+		t.Fatalf(
+			"Scope.RouteScopeKey = %q, want %q",
+			allocation.Scope.RouteScopeKey,
+			allocation.RouteScopeKey,
+		)
 	}
 	if len(allocation.Scope.Dimensions) != 1 || allocation.Scope.Dimensions[0] != "sender" {
 		t.Fatalf("Scope.Dimensions = %v, want [sender]", allocation.Scope.Dimensions)

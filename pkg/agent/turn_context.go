@@ -74,6 +74,7 @@ func cloneResolvedRoute(route *routing.ResolvedRoute) *routing.ResolvedRoute {
 	cloned.SessionPolicy = routing.SessionPolicy{
 		Dimensions:    append([]string(nil), route.SessionPolicy.Dimensions...),
 		IdentityLinks: cloneIdentityLinks(route.SessionPolicy.IdentityLinks),
+		Lifecycle:     route.SessionPolicy.Lifecycle,
 	}
 	return &cloned
 }

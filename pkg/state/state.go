@@ -42,6 +42,10 @@ type State struct {
 	// SessionGoals stores one durable operator objective per routed session.
 	SessionGoals map[string]SessionGoal `json:"session_goals,omitempty"`
 
+	// SessionEpochs stores lifecycle checkpoints for stateful idle and max-age
+	// rotation. Keys are stable trusted route-scope keys.
+	SessionEpochs map[string]SessionEpochState `json:"session_epochs,omitempty"`
+
 	// Timestamp is the last time this state was updated
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -68,6 +72,13 @@ type AutoModelSelection struct {
 type SessionModelOverride struct {
 	Model     string    `json:"model,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type SessionEpochState struct {
+	Strategy       string    `json:"strategy"`
+	EpochID        string    `json:"epoch_id"`
+	StartedAt      time.Time `json:"started_at"`
+	LastActivityAt time.Time `json:"last_activity_at"`
 }
 
 type SessionGoal struct {

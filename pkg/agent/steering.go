@@ -484,9 +484,15 @@ func (al *AgentLoop) continueWithSteeringMessages(
 	modelBinding effectiveModelBinding,
 	steeringMsgs []providers.Message,
 ) (string, error) {
+	routeSessionKey := sessionKey
+	if scope != nil && strings.TrimSpace(scope.RouteScopeKey) != "" {
+		routeSessionKey = strings.TrimSpace(scope.RouteScopeKey)
+	}
 	dispatch := DispatchRequest{
-		SessionKey:   sessionKey,
-		SessionScope: session.CloneScope(scope),
+		RouteSessionKey: routeSessionKey,
+		BaseSessionKey:  sessionKey,
+		SessionKey:      sessionKey,
+		SessionScope:    session.CloneScope(scope),
 	}
 	if channel != "" || chatID != "" {
 		dispatch.InboundContext = &bus.InboundContext{
@@ -596,7 +602,11 @@ func (al *AgentLoop) Continue(
 	if metaStore, ok := agent.Sessions.(session.MetadataAwareSessionStore); ok {
 		scope = metaStore.GetSessionScope(sessionKey)
 	}
-	modelBinding := al.bindEffectiveModel(sessionKey, agent)
+	routeSessionKey := sessionKey
+	if scope != nil && strings.TrimSpace(scope.RouteScopeKey) != "" {
+		routeSessionKey = strings.TrimSpace(scope.RouteScopeKey)
+	}
+	modelBinding := al.bindEffectiveModel(routeSessionKey, agent)
 	defer modelBinding.Cleanup()
 
 	response, err := al.continueWithSteeringMessages(

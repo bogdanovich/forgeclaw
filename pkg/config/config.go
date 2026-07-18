@@ -140,7 +140,7 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 	}
 
 	if len(c.Session.Dimensions) > 0 || len(c.Session.IdentityLinks) > 0 ||
-		c.Session.DmScope != "" {
+		c.Session.DmScope != "" || c.Session.Lifecycle != nil {
 		sessionCfg := c.Session
 		aux.Session = &sessionCfg
 	}
@@ -231,9 +231,63 @@ type DispatchSelector struct {
 }
 
 type SessionConfig struct {
-	Dimensions    []string            `json:"dimensions,omitempty"`
-	IdentityLinks map[string][]string `json:"identity_links,omitempty"`
-	DmScope       string              `json:"dm_scope,omitempty"`
+	Dimensions    []string                `json:"dimensions,omitempty"`
+	IdentityLinks map[string][]string     `json:"identity_links,omitempty"`
+	DmScope       string                  `json:"dm_scope,omitempty"`
+	Lifecycle     *SessionLifecycleConfig `json:"lifecycle,omitempty"`
+}
+
+type SessionLifecycleConfig struct {
+	Strategy           string `json:"strategy,omitempty"`
+	Period             string `json:"period,omitempty"`
+	Timezone           string `json:"timezone,omitempty"`
+	IdleTimeoutMinutes int    `json:"idle_timeout_minutes,omitempty"`
+	MaxAgeMinutes      int    `json:"max_age_minutes,omitempty"`
+}
+
+func (s *SessionLifecycleConfig) Enabled() bool {
+	if s == nil {
+		return false
+	}
+	strategy := strings.ToLower(strings.TrimSpace(s.Strategy))
+	return strategy != "" && strategy != "never"
+}
+
+func (s *SessionLifecycleConfig) Validate() error {
+	if s == nil {
+		return nil
+	}
+	strategy := strings.ToLower(strings.TrimSpace(s.Strategy))
+	switch strategy {
+	case "":
+		return fmt.Errorf("session.lifecycle.strategy is required")
+	case "never":
+		return nil
+	case "calendar":
+		period := strings.ToLower(strings.TrimSpace(s.Period))
+		if period != "day" && period != "week" && period != "month" {
+			return fmt.Errorf("session.lifecycle.period must be day, week, or month")
+		}
+		if strings.TrimSpace(s.Timezone) == "" {
+			return fmt.Errorf("session.lifecycle.timezone is required for calendar strategy")
+		}
+		if _, err := time.LoadLocation(s.Timezone); err != nil {
+			return fmt.Errorf("invalid session.lifecycle.timezone %q: %w", s.Timezone, err)
+		}
+		return nil
+	case "idle":
+		if s.IdleTimeoutMinutes <= 0 {
+			return fmt.Errorf("session.lifecycle.idle_timeout_minutes must be positive")
+		}
+		return nil
+	case "max_age":
+		if s.MaxAgeMinutes <= 0 {
+			return fmt.Errorf("session.lifecycle.max_age_minutes must be positive")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported session.lifecycle.strategy %q", s.Strategy)
+	}
 }
 
 // ApplyDmScope translates the user-facing dm_scope value into the internal
@@ -1536,6 +1590,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateExecConfig(); err != nil {
 		return nil, err
 	}
+	if err = cfg.Session.Lifecycle.Validate(); err != nil {
+		return nil, err
+	}
 	cfg.Gateway.Host, err = resolveGatewayHostFromEnv(gatewayHostBeforeEnv)
 	if err != nil {
 		return nil, fmt.Errorf("invalid gateway host: %w", err)
@@ -1730,6 +1787,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 		return nil, err
 	}
 	if err = cfg.ValidateExecConfig(); err != nil {
+		return nil, err
+	}
+	if err = cfg.Session.Lifecycle.Validate(); err != nil {
 		return nil, err
 	}
 	cfg.Gateway.Host, err = resolveGatewayHostFromEnv(gatewayHostBeforeEnv)

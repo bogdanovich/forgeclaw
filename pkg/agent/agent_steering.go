@@ -77,9 +77,27 @@ func (al *AgentLoop) releaseInboundMessage(
 	}
 }
 
-func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.InboundMessage) bool {
-	// Process the initial message
-	response, err := al.processMessage(ctx, initialMsg)
+func (al *AgentLoop) runInboundTurnWithSteering(
+	ctx context.Context,
+	turn inboundMessageTurn,
+) bool {
+	target := &continuationTarget{
+		SessionKey: turn.SessionKey,
+		Channel:    turn.Message.Channel,
+		ChatID:     turn.Message.ChatID,
+	}
+	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
+		return al.processInboundMessageTurn(ctx, turn)
+	}, target)
+}
+
+func (al *AgentLoop) runTurnAndDrainSteering(
+	ctx context.Context,
+	initialMsg bus.InboundMessage,
+	process func() (string, error),
+	target *continuationTarget,
+) bool {
+	response, err := process()
 	if err != nil {
 		if !al.maybePublishErrorWithPolicy(
 			ctx,
@@ -94,21 +112,6 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 		response = ""
 	}
 	responses := appendSteeringResponse(nil, response)
-
-	// Build continuation target
-	target, targetErr := al.buildContinuationTarget(initialMsg)
-	if targetErr != nil {
-		logger.WarnCF("agent", "Failed to build steering continuation target",
-			map[string]any{
-				"channel": initialMsg.Channel,
-				"error":   targetErr.Error(),
-			})
-		return true
-	}
-	if target == nil {
-		// System message or non-routable, response already published
-		return true
-	}
 
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
@@ -209,16 +212,37 @@ func joinSteeringResponses(responses []string) string {
 	return strings.Join(responses, "\n\n")
 }
 
-func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (string, string, bool) {
+func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (*inboundDispatchTarget, bool) {
 	if msg.Channel == "system" {
-		return "", "", false
+		return nil, false
 	}
 
 	route, agent, err := al.resolveMessageRoute(msg)
 	if err != nil || agent == nil {
-		return "", "", false
+		return nil, false
 	}
 	allocation := al.allocateRouteSession(route, msg)
-
-	return al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey), agent.ID, true
+	routeClaimKey := runtimeRouteClaimKey(allocation.RouteScopeKey, msg.SessionKey)
+	if activeTarget, ok := al.activeRouteSessions.Load(routeClaimKey); ok {
+		target, targetOK := activeTarget.(*inboundDispatchTarget)
+		if targetOK {
+			al.touchActiveSessionLifecycle(target)
+		}
+		return target, targetOK
+	}
+	allocation, err = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
+	if err != nil {
+		return nil, false
+	}
+	return &inboundDispatchTarget{
+		Route:      route,
+		Agent:      agent,
+		Allocation: allocation,
+		SessionKey: al.resolveEffectiveSessionKey(
+			allocation.RouteScopeKey,
+			allocation.SessionKey,
+			msg.SessionKey,
+		),
+		RouteClaimKey: routeClaimKey,
+	}, true
 }

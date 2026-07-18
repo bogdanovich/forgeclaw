@@ -1,5 +1,7 @@
 package bus
 
+import "time"
+
 // SenderInfo provides structured sender identity information.
 type SenderInfo struct {
 	Platform    string `json:"platform,omitempty"`     // "telegram", "discord", "slack", ...
@@ -77,12 +79,20 @@ type ObservedMessage struct {
 // OutboundScope captures the structured session scope associated with an
 // outbound turn result without depending on the session package.
 type OutboundScope struct {
-	Version    int               `json:"version,omitempty"`
-	AgentID    string            `json:"agent_id,omitempty"`
-	Channel    string            `json:"channel,omitempty"`
-	Account    string            `json:"account,omitempty"`
-	Dimensions []string          `json:"dimensions,omitempty"`
-	Values     map[string]string `json:"values,omitempty"`
+	Version       int               `json:"version,omitempty"`
+	AgentID       string            `json:"agent_id,omitempty"`
+	Channel       string            `json:"channel,omitempty"`
+	Account       string            `json:"account,omitempty"`
+	Dimensions    []string          `json:"dimensions,omitempty"`
+	Values        map[string]string `json:"values,omitempty"`
+	RouteScopeKey string            `json:"route_scope_key,omitempty"`
+	Epoch         *OutboundEpoch    `json:"epoch,omitempty"`
+}
+
+type OutboundEpoch struct {
+	Strategy string    `json:"strategy"`
+	ID       string    `json:"id"`
+	Start    time.Time `json:"start"`
 }
 
 // ContextUsage describes how much of the model's context window the current

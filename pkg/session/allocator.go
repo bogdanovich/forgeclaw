@@ -13,6 +13,7 @@ import (
 // layout while moving key construction out of the router.
 type Allocation struct {
 	Scope          SessionScope
+	RouteScopeKey  string
 	SessionKey     string
 	SessionAliases []string
 	MainSessionKey string
@@ -31,11 +32,14 @@ type AllocationInput struct {
 // current opaque session-key format.
 func AllocateRouteSession(input AllocationInput) Allocation {
 	scope := buildSessionScope(input)
+	routeScopeKey := BuildSessionKey(scope)
+	scope.RouteScopeKey = routeScopeKey
 	legacySessionAliases := buildLegacySessionAliases(input)
 	legacyMainSessionKey := strings.ToLower(BuildLegacyMainAlias(input.AgentID))
 	return Allocation{
 		Scope:          scope,
-		SessionKey:     BuildSessionKey(scope),
+		RouteScopeKey:  routeScopeKey,
+		SessionKey:     routeScopeKey,
 		SessionAliases: legacySessionAliases,
 		MainSessionKey: BuildOpaqueSessionKey(legacyMainSessionKey),
 		MainAliases:    []string{legacyMainSessionKey},
@@ -46,7 +50,7 @@ func buildSessionScope(input AllocationInput) SessionScope {
 	inbound := input.Context
 	includeTopicInChatDimension := shouldPreserveTelegramForumIsolation(input)
 	scope := SessionScope{
-		Version: ScopeVersionV1,
+		Version: ScopeVersionV2,
 		AgentID: routing.NormalizeAgentID(input.AgentID),
 		Channel: strings.ToLower(strings.TrimSpace(inbound.Channel)),
 		Account: routing.NormalizeAccountID(inbound.Account),
