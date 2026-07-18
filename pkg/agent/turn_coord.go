@@ -30,6 +30,7 @@ func (al *AgentLoop) runTurn(
 
 	al.registerActiveTurn(ts)
 	defer al.clearActiveTurn(ts)
+	defer ts.Finish(false)
 
 	if al.takePendingStop(ts.sessionKey) {
 		_ = ts.requestHardAbort()

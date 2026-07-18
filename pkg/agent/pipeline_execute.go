@@ -995,14 +995,10 @@ func (r *toolLoopRunner) appendPendingSubTurnResult() {
 	if r.ts.pendingResults == nil {
 		return
 	}
-	select {
-	case result, ok := <-r.ts.pendingResults:
-		if ok && result != nil && result.ForLLM != "" {
-			content := r.p.filterPendingResultForLLM(result.ForLLM)
-			msg := subTurnResultPromptMessage(content)
-			r.appendInjectedTurnMessage(msg)
-		}
-	default:
+	if result, ok := r.ts.dequeuePendingResult(); ok && result != nil && result.ForLLM != "" {
+		content := r.p.filterPendingResultForLLM(result.ForLLM)
+		msg := subTurnResultPromptMessage(content)
+		r.appendInjectedTurnMessage(msg)
 	}
 }
 

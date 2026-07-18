@@ -670,10 +670,10 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-deadlock-test",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 2), // Small buffer to test blocking
+		pendingResults: make(chan *tools.ToolResult, 2),
 	}
 
-	// Simulate multiple child turns delivering results concurrently
+	// Simulate multiple child turns delivering results concurrently.
 	var wg sync.WaitGroup
 	numChildren := 10
 
@@ -686,15 +686,17 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		}(i)
 	}
 
-	// Concurrently read from the channel to prevent blocking
-	// and to actually retrieve the matched number of results
+	// Consume through the lifecycle helper so blocked producers are signaled as
+	// capacity becomes available.
+	received := make(chan struct{})
 	go func() {
+		defer close(received)
 		for i := 0; i < numChildren; i++ {
-			select {
-			case <-parent.pendingResults:
-			case <-time.After(5 * time.Second):
-				t.Error("timeout waiting for result")
-				return
+			for {
+				if _, ok := parent.dequeuePendingResult(); ok {
+					break
+				}
+				time.Sleep(time.Millisecond)
 			}
 		}
 	}()
@@ -711,6 +713,12 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		// Success - no deadlock
 	case <-time.After(3 * time.Second):
 		t.Fatal("deadlock detected: deliverSubTurnResult blocked")
+	}
+
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("consumer did not receive all results")
 	}
 }
 
@@ -809,9 +817,14 @@ func TestFinishedChannelClosedState(t *testing.T) {
 	// Verify Finish() is idempotent
 	ts.Finish(false) // Should not panic
 
-	// Verify deliverSubTurnResult correctly uses Finished() channel and treats as orphan
+	// A writable channel must not let delivery bypass the finished state.
 	result := &tools.ToolResult{ForLLM: "late result"}
-	deliverSubTurnResult(nil, ts, "child-1", result) // Will emit orphan due to <-ts.Finished() case
+	deliverSubTurnResult(nil, ts, "child-1", result)
+	select {
+	case <-ts.pendingResults:
+		t.Fatal("finished parent accepted a late result")
+	default:
+	}
 }
 
 // TestFinalPollCapturesLateResults verifies that the final poll before Finish()
@@ -849,6 +862,74 @@ func TestFinalPollCapturesLateResults(t *testing.T) {
 	results = al.dequeuePendingSubTurnResults(sessionKey)
 	if len(results) != 0 {
 		t.Errorf("expected 0 results on second poll, got %d", len(results))
+	}
+}
+
+func TestSealOrDrainPendingResultsPreventsTerminalGapDelivery(t *testing.T) {
+	ts := &turnState{
+		turnID:         "terminal-gap",
+		pendingResults: make(chan *tools.ToolResult, 2),
+	}
+	ts.pendingResults <- &tools.ToolResult{ForLLM: "queued"}
+
+	results, sealed := ts.sealOrDrainPendingResults()
+	if sealed || len(results) != 1 || results[0].ForLLM != "queued" {
+		t.Fatalf("first terminal check = (%v, %v), want queued result and unsealed", results, sealed)
+	}
+
+	results, sealed = ts.sealOrDrainPendingResults()
+	if !sealed || len(results) != 0 {
+		t.Fatalf("second terminal check = (%v, %v), want empty sealed queue", results, sealed)
+	}
+
+	deliverSubTurnResult(nil, ts, "late-child", &tools.ToolResult{ForLLM: "late"})
+	select {
+	case result := <-ts.pendingResults:
+		t.Fatalf("sealed result queue accepted late delivery: %#v", result)
+	default:
+	}
+}
+
+func TestPendingSubTurnResultForcesIterationAtLoopLimit(t *testing.T) {
+	pipeline := &Pipeline{}
+	ts := &turnState{
+		pendingResults: make(chan *tools.ToolResult, 1),
+		iteration:      3,
+	}
+	ts.pendingResults <- &tools.ToolResult{ForLLM: "boundary result"}
+	exec := &turnExecution{}
+
+	if !pipeline.continueWithPendingSubTurnResults(ts, exec) {
+		t.Fatal("pending result did not request another iteration")
+	}
+	if len(exec.pendingMessages) != 1 || !strings.Contains(exec.pendingMessages[0].Content, "boundary result") {
+		t.Fatalf("pending messages = %#v, want boundary result", exec.pendingMessages)
+	}
+
+	if pipeline.continueWithPendingSubTurnResults(ts, exec) {
+		t.Fatal("empty terminal queue requested another iteration")
+	}
+	deliverSubTurnResult(nil, ts, "after-limit", &tools.ToolResult{ForLLM: "too late"})
+	if got := len(ts.pendingResults); got != 0 {
+		t.Fatalf("sealed terminal queue accepted %d late results", got)
+	}
+}
+
+func TestEmptyPendingSubTurnResultDoesNotResumeTerminalTurn(t *testing.T) {
+	pipeline := &Pipeline{}
+	ts := &turnState{pendingResults: make(chan *tools.ToolResult, 1)}
+	ts.pendingResults <- &tools.ToolResult{}
+	exec := &turnExecution{}
+
+	if pipeline.continueWithPendingSubTurnResults(ts, exec) {
+		t.Fatal("empty subturn result requested another iteration")
+	}
+	if len(exec.pendingMessages) != 0 {
+		t.Fatalf("empty subturn result appended pending messages: %#v", exec.pendingMessages)
+	}
+	deliverSubTurnResult(nil, ts, "after-empty", &tools.ToolResult{ForLLM: "too late"})
+	if got := len(ts.pendingResults); got != 0 {
+		t.Fatalf("terminal queue accepted %d results after empty batch", got)
 	}
 }
 
@@ -1238,6 +1319,14 @@ func TestFinish_ConcurrentCalls(t *testing.T) {
 		t.Error("Expected isFinished to be true")
 	}
 	parentTS.mu.Unlock()
+
+	// Child goroutines may still retain send access, so Finish must not close
+	// pendingResults. Lifecycle completion is signaled through Finished().
+	select {
+	case parentTS.pendingResults <- &tools.ToolResult{ForLLM: "after-finish"}:
+	case <-time.After(time.Second):
+		t.Fatal("pendingResults should remain open after Finish")
+	}
 }
 
 // TestDeliverSubTurnResult_RaceWithFinish verifies that deliverSubTurnResult handles

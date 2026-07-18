@@ -297,19 +297,21 @@ type turnState struct {
 	parentTurnID         string                 // Parent turn ID (empty for root turn)
 	childTurnIDs         []string               // Child turn IDs
 	pendingResults       chan *tools.ToolResult // Channel for SubTurn results
+	pendingResultCond    *sync.Cond             // Signals result capacity or turn completion
+	pendingResultsSealed bool                   // Prevents commits after terminal drain
 	concurrencySem       chan struct{}          // Semaphore for limiting concurrent SubTurns
 	isFinished           atomic.Bool            // Whether this turn has finished
 	session              session.SessionStore   // Session store reference
 	initialHistoryLength int                    // Snapshot of history length at turn start
 
 	// Additional SubTurn fields
-	ctx             context.Context    // Context for this turn
-	cancelFunc      context.CancelFunc // Cancel function for this turn's context
-	critical        bool               // Whether this SubTurn should continue after parent ends
-	parentTurnState *turnState         // Reference to parent turnState
-	parentEnded     atomic.Bool        // Whether parent has ended
-	closeOnce       sync.Once          // Ensures pendingResults channel is closed once
-	finishedChan    chan struct{}      // Closed when turn finishes
+	ctx              context.Context    // Context for this turn
+	cancelFunc       context.CancelFunc // Cancel function for this turn's context
+	critical         bool               // Whether this SubTurn should continue after parent ends
+	parentTurnState  *turnState         // Reference to parent turnState
+	parentEnded      atomic.Bool        // Whether parent has ended
+	finishSignalOnce sync.Once          // Ensures finishedChan is closed once
+	finishedChan     chan struct{}      // Closed when turn finishes
 
 	// Token budget tracking
 	tokenBudget      *atomic.Int64        // Shared token budget counter
@@ -909,22 +911,22 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 // SubTurn-related methods
 // =============================================================================
 
-// Finish marks the turn as finished and closes the pendingResults channel
+// Finish marks the turn as finished and broadcasts completion. pendingResults
+// remains open because asynchronous child deliveries may still hold a sender.
 func (ts *turnState) Finish(isHardAbort bool) {
+	ts.mu.Lock()
 	ts.isFinished.Store(true)
-
-	// Close pendingResults channel exactly once
-	ts.closeOnce.Do(func() {
-		if ts.pendingResults != nil {
-			close(ts.pendingResults)
-		}
-		ts.mu.Lock()
+	ts.pendingResultsSealed = true
+	ts.finishSignalOnce.Do(func() {
 		if ts.finishedChan == nil {
 			ts.finishedChan = make(chan struct{})
 		}
 		close(ts.finishedChan)
-		ts.mu.Unlock()
 	})
+	if ts.pendingResultCond != nil {
+		ts.pendingResultCond.Broadcast()
+	}
+	ts.mu.Unlock()
 
 	// Any graceful finish must signal direct children so nested SubTurns can
 	// observe parent completion and decide whether to stop or continue.
@@ -949,6 +951,80 @@ func (ts *turnState) Finish(isHardAbort bool) {
 				}
 			}
 		}
+	}
+}
+
+// enqueuePendingResult waits for queue capacity while the turn is active. The
+// shared lock makes committing a result mutually exclusive with Finish.
+func (ts *turnState) enqueuePendingResult(result *tools.ToolResult) bool {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	for !ts.isFinished.Load() && !ts.pendingResultsSealed && ts.pendingResults != nil {
+		select {
+		case ts.pendingResults <- result:
+			return true
+		default:
+			if ts.pendingResultCond == nil {
+				ts.pendingResultCond = sync.NewCond(&ts.mu)
+			}
+			ts.pendingResultCond.Wait()
+		}
+	}
+	return false
+}
+
+// sealOrDrainPendingResults atomically drains queued results or seals an empty
+// queue before terminal finalization. A producer cannot commit between the
+// empty observation and the seal.
+func (ts *turnState) sealOrDrainPendingResults() ([]*tools.ToolResult, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	var results []*tools.ToolResult
+	if ts.pendingResults != nil {
+		for {
+			select {
+			case result := <-ts.pendingResults:
+				if result != nil {
+					results = append(results, result)
+				}
+			default:
+				if len(results) > 0 {
+					if ts.pendingResultCond != nil {
+						ts.pendingResultCond.Broadcast()
+					}
+					return results, false
+				}
+				ts.pendingResultsSealed = true
+				if ts.pendingResultCond != nil {
+					ts.pendingResultCond.Broadcast()
+				}
+				return nil, true
+			}
+		}
+	}
+	ts.pendingResultsSealed = true
+	return nil, true
+}
+
+// dequeuePendingResult polls one result and wakes a producer waiting for queue
+// capacity. pendingResults remains open for the lifetime of the turn state.
+func (ts *turnState) dequeuePendingResult() (*tools.ToolResult, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	if ts.pendingResults == nil {
+		return nil, false
+	}
+	select {
+	case result := <-ts.pendingResults:
+		if ts.pendingResultCond != nil {
+			ts.pendingResultCond.Signal()
+		}
+		return result, true
+	default:
+		return nil, false
 	}
 }
 

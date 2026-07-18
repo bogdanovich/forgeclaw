@@ -33,10 +33,12 @@ func (p *Pipeline) runTurnLoop(
 	finalContent := exec.finalContent
 	mediaResolver := p.Context.MediaResolver
 
-	for ts.currentIteration() < ts.agent.MaxIterations || len(exec.pendingMessages) > 0 || func() bool {
+	for {
 		graceful, _ := ts.gracefulInterruptRequested()
-		return graceful
-	}() {
+		canRun := ts.currentIteration() < ts.agent.MaxIterations || len(exec.pendingMessages) > 0 || graceful
+		if !canRun && !p.continueWithPendingSubTurnResults(ts, exec) {
+			break
+		}
 		if ts.hardAbortRequested() {
 			turnStatus = TurnEndStatusAborted
 			result, abortErr := host.abortTurn(ts)
@@ -89,15 +91,10 @@ func (p *Pipeline) runTurnLoop(
 
 		// Poll for pending SubTurn results.
 		if ts.pendingResults != nil {
-			select {
-			case result, ok := <-ts.pendingResults:
-				if ok && result != nil && result.ForLLM != "" {
-					content := host.filterSensitiveData(result.ForLLM)
-					msg := subTurnResultPromptMessage(content)
-					pendingMessages = append(pendingMessages, msg)
-				}
-			default:
-				// No results available
+			if result, ok := ts.dequeuePendingResult(); ok && result != nil && result.ForLLM != "" {
+				content := host.filterSensitiveData(result.ForLLM)
+				msg := subTurnResultPromptMessage(content)
+				pendingMessages = append(pendingMessages, msg)
 			}
 		}
 
@@ -178,6 +175,10 @@ func (p *Pipeline) runTurnLoop(
 			if finalContent == "" {
 				finalContent = ts.opts.DefaultResponse
 			}
+			if p.continueWithPendingSubTurnResults(ts, exec) {
+				messages = exec.messages
+				continue
+			}
 			finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
 			result, finalizeErr := p.Finalize(
 				ctx,
@@ -229,6 +230,10 @@ func (p *Pipeline) runTurnLoop(
 					messages = exec.messages
 					continue
 				}
+				if p.continueWithPendingSubTurnResults(ts, exec) {
+					messages = exec.messages
+					continue
+				}
 				result, finalizeErr := p.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 				if finalizeErr != nil {
 					turnStatus = TurnEndStatusError
@@ -254,6 +259,10 @@ func (p *Pipeline) runTurnLoop(
 				}
 				if exec.allResponsesHandled {
 					finalContent = ""
+				}
+				if p.continueWithPendingSubTurnResults(ts, exec) {
+					messages = exec.messages
+					continue
 				}
 				finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
 				result, finalizeErr := p.Finalize(
@@ -299,4 +308,29 @@ func (p *Pipeline) runTurnLoop(
 		turnStatus = TurnEndStatusError
 	}
 	return result, turnStatus, err
+}
+
+func (p *Pipeline) continueWithPendingSubTurnResults(
+	ts *turnState,
+	exec *turnExecution,
+) bool {
+	for {
+		results, sealed := ts.sealOrDrainPendingResults()
+		if sealed {
+			return false
+		}
+		appended := false
+		for _, result := range results {
+			if result == nil || result.ForLLM == "" {
+				continue
+			}
+			content := p.filterPendingResultForLLM(result.ForLLM)
+			msg := subTurnResultPromptMessage(content)
+			exec.pendingMessages = append(exec.pendingMessages, msg)
+			appended = true
+		}
+		if appended {
+			return true
+		}
+	}
 }
