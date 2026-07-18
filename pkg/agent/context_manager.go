@@ -48,21 +48,24 @@ type AssembleResponse struct {
 
 // ContextBudgetReport describes one context manager selection decision.
 type ContextBudgetReport struct {
-	ContextWindow         int
-	OutputReserve         int
-	NonHistoryReserve     int
-	AvailableContext      int
-	HistoryBudget         int
-	SummaryBudget         int
-	SourceHistoryTokens   int
-	SourceSummaryTokens   int
-	SelectedHistoryTokens int
-	SelectedSummaryTokens int
-	RecentTailTurns       int
-	RecentTailTokens      int
-	Truncated             bool
-	NeedsCompaction       bool
-	PressureReasons       []string
+	ContextWindow            int
+	OutputReserve            int
+	NonHistoryReserve        int
+	AvailableContext         int
+	HistoryBudget            int
+	SummaryBudget            int
+	SourceHistoryTokens      int
+	SourceSummaryTokens      int
+	SelectedHistoryTokens    int
+	SelectedSummaryTokens    int
+	RequestedRecentTailTurns int
+	RecentTailTurns          int
+	RecentTailTokens         int
+	RecentTailOverflowTokens int
+	RecentTailDegraded       bool
+	Truncated                bool
+	NeedsCompaction          bool
+	PressureReasons          []string
 }
 
 // CompactRequest is the input to Compact.

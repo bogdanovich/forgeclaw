@@ -368,20 +368,22 @@ Seahorse can enforce predictable prompt budgets independently of the model's ful
 }
 ```
 
-- `historyMaxTokens` caps raw conversation messages selected for a turn.
+- `historyMaxTokens` is the normal target for raw conversation messages selected for a turn.
 - `summaryMaxTokens` caps the fully rendered Seahorse summary, including its XML and guidance text.
-- `recentTailTurns` guarantees that the newest complete user turns remain raw, including assistant tool calls and their
-  tool results.
+- `recentTailTurns` requests that the newest complete user turns remain raw, including assistant tool calls and their
+  tool results, whenever they fit the model's hard context ceiling.
 
-Each value is optional and zero disables that separate cap. When any value is enabled, the runtime first reserves the
-current system prompt, active skills, visible tool schemas, media, and `max_tokens`. The remaining model capacity is an
-additional hard ceiling over the configured history and summary caps. If mandatory prompt content or the configured
-recent-turn tail cannot fit, the turn fails closed with an actionable context-budget error instead of sending an
-oversized request.
+Each value is optional and zero disables that separate target. When any value is enabled, the runtime first reserves
+the current system prompt, active skills, visible tool schemas, media, and `max_tokens`. The remaining model capacity
+is the hard ceiling. The requested recent tail may exceed `historyMaxTokens` while it fits that ceiling. If it does not,
+Seahorse removes its oldest complete turns until it fits, without splitting tool-call/result sequences. A turn fails
+closed only when the mandatory prompt content itself cannot fit the model window.
 
 Absolute pressure schedules background compaction even when the model context window is not close to full. Structured
-logs and `agent.context.compress` events include reserves, source and selected token counts, tail size, truncation, and
-the pressure reason.
+logs and `agent.context.compress` events include reserves, source and selected token counts, requested and retained
+tail turns, overflow tokens, hard-limit degradation, truncation, and the pressure reason. A degraded tail does not
+schedule compaction because the configured raw-tail boundary still protects those turns; compaction resumes when that
+window advances and older turns become eligible.
 
 ### Tool Result Retention
 

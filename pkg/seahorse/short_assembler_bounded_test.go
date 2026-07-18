@@ -126,7 +126,7 @@ func TestAssemblerRecentTailPreservesToolPairing(t *testing.T) {
 	}
 }
 
-func TestAssemblerRecentTailFailsClosedWhenMandatoryTurnCannotFit(t *testing.T) {
+func TestAssemblerRecentTailMayExceedHistoryTarget(t *testing.T) {
 	store, convID := setupAssemblerStore(t)
 	ctx := context.Background()
 	user, err := store.AddMessage(ctx, convID, "user", strings.Repeat("oversized ", 100), 100)
@@ -139,11 +139,90 @@ func TestAssemblerRecentTailFailsClosedWhenMandatoryTurnCannotFit(t *testing.T) 
 		t.Fatal(upsertErr)
 	}
 
-	assembler := &Assembler{store: store, config: Config{HistoryMaxTokens: 50, RecentTailTurns: 1}}
-	_, err = assembler.Assemble(ctx, convID, AssembleInput{Budget: 1000})
-	if err == nil || !strings.Contains(err.Error(), "mandatory recent tail") {
-		t.Fatalf("expected actionable recent-tail error, got %v", err)
+	assembler := &Assembler{store: store, config: Config{HistoryMaxTokens: 50, RecentTailTurns: 3}}
+	result, err := assembler.Assemble(ctx, convID, AssembleInput{Budget: 1000})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("selected messages = %d, want recent turn", len(result.Messages))
+	}
+	if result.Budget == nil || result.Budget.RequestedRecentTailTurns != 3 ||
+		result.Budget.RecentTailTurns != 1 || result.Budget.RecentTailOverflowTokens <= 0 ||
+		result.Budget.RecentTailDegraded {
+		t.Fatalf("unexpected overflow report: %#v", result.Budget)
+	}
+	if !containsString(result.Budget.PressureReasons, "recent_tail_over_history_budget") {
+		t.Fatalf("missing recent-tail pressure reason: %#v", result.Budget.PressureReasons)
+	}
+	if result.Budget.SelectedHistoryTokens <= result.Budget.HistoryBudget {
+		t.Fatalf("recent tail did not exceed target: %#v", result.Budget)
+	}
+	if result.Budget.SelectedHistoryTokens > result.Budget.TotalBudget {
+		t.Fatalf("recent tail exceeded hard budget: %#v", result.Budget)
+	}
+}
+
+func TestAssemblerRecentTailDegradesAtCompleteTurnBoundary(t *testing.T) {
+	store, convID := setupAssemblerStore(t)
+	ctx := context.Background()
+	items := make([]ContextItem, 0, 4)
+	for turn := 1; turn <= 2; turn++ {
+		user, err := store.AddMessage(
+			ctx,
+			convID,
+			"user",
+			strings.Repeat(string(rune('a'+turn)), 120),
+			60,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assistant, err := store.AddMessage(
+			ctx,
+			convID,
+			"assistant",
+			strings.Repeat(string(rune('k'+turn)), 120),
+			60,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items,
+			ContextItem{Ordinal: turn*200 - 100, ItemType: "message", MessageID: user.ID},
+			ContextItem{Ordinal: turn * 200, ItemType: "message", MessageID: assistant.ID},
+		)
+	}
+	if err := store.UpsertContextItems(ctx, convID, items); err != nil {
+		t.Fatal(err)
+	}
+
+	assembler := &Assembler{store: store, config: Config{HistoryMaxTokens: 50, RecentTailTurns: 2}}
+	result, err := assembler.Assemble(ctx, convID, AssembleInput{Budget: 130})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || result.Messages[0].Role != "user" ||
+		result.Messages[0].Content != strings.Repeat("c", 120) {
+		t.Fatalf("selection did not retain only newest complete turn: %#v", result.Messages)
+	}
+	if result.Budget == nil || result.Budget.RequestedRecentTailTurns != 2 ||
+		result.Budget.RecentTailTurns != 1 || !result.Budget.RecentTailDegraded ||
+		result.Budget.NeedsCompaction {
+		t.Fatalf("unexpected degraded-tail report: %#v", result.Budget)
+	}
+	if !containsString(result.Budget.PressureReasons, "recent_tail_degraded") {
+		t.Fatalf("missing degraded-tail pressure reason: %#v", result.Budget.PressureReasons)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNewEngineRejectsInvalidAbsoluteBudgets(t *testing.T) {

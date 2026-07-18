@@ -59,15 +59,17 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	messages = resolveMediaRefs(messages, p.Context.MediaResolver, maxMediaSize)
 
 	if !ts.opts.NoHistory {
-		if budgetReport != nil && budgetReport.NeedsCompaction {
+		if budgetReport != nil && len(budgetReport.PressureReasons) > 0 {
 			p.emitAbsoluteBudgetPressure(ts, budgetReport, len(history))
-			p.scheduleBackgroundCompaction(
-				ts.agent,
-				ts.sessionKey,
-				ContextCompressReasonProactive,
-				budgetReport.AvailableContext,
-				"absolute_budget_pressure",
-			)
+			if budgetReport.NeedsCompaction {
+				p.scheduleBackgroundCompaction(
+					ts.agent,
+					ts.sessionKey,
+					ContextCompressReasonProactive,
+					budgetReport.AvailableContext,
+					"absolute_budget_pressure",
+				)
+			}
 		}
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
 			compactBudget := effectiveHistoryBudget(
@@ -262,40 +264,46 @@ func (p *Pipeline) emitAbsoluteBudgetPressure(
 		runtimeevents.KindAgentContextCompress,
 		ts.eventMeta("SetupTurn", "turn.context.absolute_budget"),
 		ContextCompressPayload{
-			Reason:                ContextCompressReasonProactive,
-			RemainingMessages:     remainingMessages,
-			ContextWindow:         report.ContextWindow,
-			OutputReserve:         report.OutputReserve,
-			NonHistoryReserve:     report.NonHistoryReserve,
-			AvailableContext:      report.AvailableContext,
-			HistoryBudget:         report.HistoryBudget,
-			SummaryBudget:         report.SummaryBudget,
-			SourceHistoryTokens:   report.SourceHistoryTokens,
-			SourceSummaryTokens:   report.SourceSummaryTokens,
-			SelectedHistoryTokens: report.SelectedHistoryTokens,
-			SelectedSummaryTokens: report.SelectedSummaryTokens,
-			RecentTailTurns:       report.RecentTailTurns,
-			RecentTailTokens:      report.RecentTailTokens,
-			Truncated:             report.Truncated,
-			PressureReasons:       append([]string(nil), report.PressureReasons...),
+			Reason:                   ContextCompressReasonProactive,
+			RemainingMessages:        remainingMessages,
+			ContextWindow:            report.ContextWindow,
+			OutputReserve:            report.OutputReserve,
+			NonHistoryReserve:        report.NonHistoryReserve,
+			AvailableContext:         report.AvailableContext,
+			HistoryBudget:            report.HistoryBudget,
+			SummaryBudget:            report.SummaryBudget,
+			SourceHistoryTokens:      report.SourceHistoryTokens,
+			SourceSummaryTokens:      report.SourceSummaryTokens,
+			SelectedHistoryTokens:    report.SelectedHistoryTokens,
+			SelectedSummaryTokens:    report.SelectedSummaryTokens,
+			RequestedRecentTailTurns: report.RequestedRecentTailTurns,
+			RecentTailTurns:          report.RecentTailTurns,
+			RecentTailTokens:         report.RecentTailTokens,
+			RecentTailOverflowTokens: report.RecentTailOverflowTokens,
+			RecentTailDegraded:       report.RecentTailDegraded,
+			Truncated:                report.Truncated,
+			PressureReasons:          append([]string(nil), report.PressureReasons...),
 		},
 	)
 	logger.WarnCF("agent", "absolute context budget pressure", map[string]any{
-		"session_key":             ts.sessionKey,
-		"context_window":          report.ContextWindow,
-		"output_reserve":          report.OutputReserve,
-		"non_history_reserve":     report.NonHistoryReserve,
-		"available_context":       report.AvailableContext,
-		"history_budget":          report.HistoryBudget,
-		"summary_budget":          report.SummaryBudget,
-		"source_history_tokens":   report.SourceHistoryTokens,
-		"source_summary_tokens":   report.SourceSummaryTokens,
-		"selected_history_tokens": report.SelectedHistoryTokens,
-		"selected_summary_tokens": report.SelectedSummaryTokens,
-		"recent_tail_turns":       report.RecentTailTurns,
-		"recent_tail_tokens":      report.RecentTailTokens,
-		"truncated":               report.Truncated,
-		"pressure_reasons":        report.PressureReasons,
+		"session_key":                 ts.sessionKey,
+		"context_window":              report.ContextWindow,
+		"output_reserve":              report.OutputReserve,
+		"non_history_reserve":         report.NonHistoryReserve,
+		"available_context":           report.AvailableContext,
+		"history_budget":              report.HistoryBudget,
+		"summary_budget":              report.SummaryBudget,
+		"source_history_tokens":       report.SourceHistoryTokens,
+		"source_summary_tokens":       report.SourceSummaryTokens,
+		"selected_history_tokens":     report.SelectedHistoryTokens,
+		"selected_summary_tokens":     report.SelectedSummaryTokens,
+		"requested_recent_tail_turns": report.RequestedRecentTailTurns,
+		"recent_tail_turns":           report.RecentTailTurns,
+		"recent_tail_tokens":          report.RecentTailTokens,
+		"recent_tail_overflow_tokens": report.RecentTailOverflowTokens,
+		"recent_tail_degraded":        report.RecentTailDegraded,
+		"truncated":                   report.Truncated,
+		"pressure_reasons":            report.PressureReasons,
 	})
 }
 
