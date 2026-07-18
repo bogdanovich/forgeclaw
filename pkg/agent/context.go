@@ -176,7 +176,7 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		rules = append(
 			rules,
 			fmt.Sprintf(
-				"**Memory** - When interacting with me if something seems memorable, update %s/memory/MEMORY.md",
+				"**Memory** - When a stable fact should be remembered, corrected, or forgotten, prefer the memory tool when available. Use add for a new fact, replace for a correction, and remove for explicit forgetting. Otherwise update %s/memory/MEMORY.md carefully. Keep transient events in daily notes instead.",
 				workspacePath,
 			),
 		)

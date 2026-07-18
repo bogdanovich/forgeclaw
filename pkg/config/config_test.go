@@ -1233,6 +1233,13 @@ func TestDefaultConfig_ToolFeedbackDisabled(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_MemoryToolEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.Tools.Memory.Enabled || !cfg.Tools.IsToolEnabled("memory") {
+		t.Fatal("memory tool should be enabled by default")
+	}
+}
+
 func TestDefaultConfig_PromptMemoryIsBounded(t *testing.T) {
 	cfg := DefaultConfig().Agents.Defaults.PromptMemory
 	if got := cfg.EffectiveLongTermMaxBytes(); got != DefaultPromptMemoryLongTermMaxBytes {
