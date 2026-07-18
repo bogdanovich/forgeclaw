@@ -26,6 +26,7 @@ const (
 var curatedMemoryLocks sync.Map
 
 type MemoryTool struct {
+	workspace  string
 	path       string
 	invalidate func()
 	events     runtimeevents.Bus
@@ -52,6 +53,7 @@ type MemoryMutationPayload struct {
 
 func NewMemoryTool(workspace string, invalidate func(), eventBus runtimeevents.Bus) *MemoryTool {
 	return &MemoryTool{
+		workspace:  workspace,
 		path:       filepath.Join(workspace, "memory", "MEMORY.md"),
 		invalidate: invalidate,
 		events:     eventBus,
@@ -144,7 +146,11 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	lock.Lock()
 	defer lock.Unlock()
 
-	current, err := os.ReadFile(t.path)
+	validatedPath, err := validatePathWithAllowPaths(curatedMemoryTarget, t.workspace, true, nil)
+	if err != nil {
+		return t.failure(ctx, operation, "path_validation_failed", payload, err)
+	}
+	current, err := os.ReadFile(validatedPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return t.failure(ctx, operation, "read_failed", payload, fmt.Errorf("read curated memory: %w", err))
 	}
@@ -165,10 +171,14 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 		return memoryMutationResult(operation, outcome, false)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(t.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(validatedPath), 0o755); err != nil {
 		return t.failure(ctx, operation, "directory_create_failed", payload, err)
 	}
-	if err := fileutil.WriteFileAtomic(t.path, []byte(updated), 0o600); err != nil {
+	validatedPath, err = validatePathWithAllowPaths(curatedMemoryTarget, t.workspace, true, nil)
+	if err != nil {
+		return t.failure(ctx, operation, "path_validation_failed", payload, err)
+	}
+	if err := fileutil.WriteFileAtomic(validatedPath, []byte(updated), 0o600); err != nil {
 		return t.failure(ctx, operation, "write_failed", payload, fmt.Errorf("write curated memory: %w", err))
 	}
 	if t.invalidate != nil {

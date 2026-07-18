@@ -208,6 +208,52 @@ func TestMemoryToolSerializesConcurrentAdds(t *testing.T) {
 	}
 }
 
+func TestMemoryToolRejectsFileSymlinkEscape(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "secret.md")
+	if err := os.WriteFile(outsideFile, []byte("outside-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	memoryDir := filepath.Join(workspace, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(memoryDir, "MEMORY.md")); err != nil {
+		t.Skipf("symlinks not supported in this environment: %v", err)
+	}
+
+	tool := NewMemoryTool(workspace, nil, nil)
+	result := tool.Execute(t.Context(), map[string]any{
+		"operation": "add",
+		"content":   "must-not-escape",
+	})
+	if !result.IsError || !strings.Contains(result.ForLLM, "symlink resolves outside workspace") {
+		t.Fatalf("file symlink escape result = %#v", result)
+	}
+	assertMemoryFile(t, outsideFile, "outside-secret\n")
+}
+
+func TestMemoryToolRejectsDirectorySymlinkEscape(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(workspace, "memory")); err != nil {
+		t.Skipf("symlinks not supported in this environment: %v", err)
+	}
+
+	tool := NewMemoryTool(workspace, nil, nil)
+	result := tool.Execute(t.Context(), map[string]any{
+		"operation": "add",
+		"content":   "must-not-escape",
+	})
+	if !result.IsError || !strings.Contains(result.ForLLM, "symlink resolves outside workspace") {
+		t.Fatalf("directory symlink escape result = %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "MEMORY.md")); !os.IsNotExist(err) {
+		t.Fatalf("outside memory file was created through directory symlink: %v", err)
+	}
+}
+
 func receiveMemoryMutationEvent(t *testing.T, ch <-chan runtimeevents.Event) runtimeevents.Event {
 	t.Helper()
 	select {
