@@ -18,18 +18,23 @@ func TestGrepToolTrustedRetrievalScopes(t *testing.T) {
 	}
 	seed := func(sessionKey, routeKey, agentID, content string) seededConversation {
 		t.Helper()
-		conv, err := store.GetOrCreateConversation(ctx, sessionKey)
-		if err != nil {
-			t.Fatal(err)
+		conv, createErr := store.GetOrCreateConversation(ctx, sessionKey)
+		if createErr != nil {
+			t.Fatal(createErr)
 		}
 		if routeKey != "" {
-			if err := store.SetConversationProvenance(ctx, sessionKey, routeKey, agentID); err != nil {
-				t.Fatal(err)
+			if provenanceErr := store.SetConversationProvenance(
+				ctx,
+				sessionKey,
+				routeKey,
+				agentID,
+			); provenanceErr != nil {
+				t.Fatal(provenanceErr)
 			}
 		}
-		msg, err := store.AddMessage(ctx, conv.ConversationID, "user", content+" scope-needle", 5)
-		if err != nil {
-			t.Fatal(err)
+		msg, addErr := store.AddMessage(ctx, conv.ConversationID, "user", content+" scope-needle", 5)
+		if addErr != nil {
+			t.Fatal(addErr)
 		}
 		return seededConversation{
 			sessionKey: sessionKey,

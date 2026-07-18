@@ -140,30 +140,32 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	if last, ok := args["last"].(string); ok && last != "" {
 		input.Last = last
 	}
-	retrievalScope, err := parseRetrievalScope(args["retrieval_scope"])
-	if err != nil {
-		return tools.ErrorResult("Grep failed: " + err.Error())
+	retrievalScope, scopeErr := parseRetrievalScope(args["retrieval_scope"])
+	if scopeErr != nil {
+		return tools.ErrorResult("Grep failed: " + scopeErr.Error())
 	}
-	conversationIDs, err := resolveToolConversationIDs(ctx, t.engine, retrievalScope)
-	if err != nil {
-		return tools.ErrorResult("Grep failed: resolve retrieval scope: " + err.Error())
+	conversationIDs, resolveErr := resolveToolConversationIDs(ctx, t.engine, retrievalScope)
+	if resolveErr != nil {
+		return tools.ErrorResult("Grep failed: resolve retrieval scope: " + resolveErr.Error())
 	}
 	input.ConversationIDs = conversationIDs
 	if limit, ok := args["limit"].(float64); ok {
 		input.Limit = int(limit)
 	}
 	if sinceStr, ok := args["since"].(string); ok && sinceStr != "" {
-		parsed, err := time.Parse(time.RFC3339, sinceStr)
-		if err != nil {
+		parsed, parseErr := time.Parse(time.RFC3339, sinceStr)
+		if parseErr != nil {
 			return tools.ErrorResult(fmt.Sprintf(
-				"Invalid 'since' timestamp. Use RFC3339 format like '2024-01-15T10:00:00Z'. Error: %v", err))
+				"Invalid 'since' timestamp. Use RFC3339 format like '2024-01-15T10:00:00Z'. Error: %v",
+				parseErr,
+			))
 		}
 		input.Since = &parsed
 	}
 	if beforeStr, ok := args["before"].(string); ok && beforeStr != "" {
-		parsed, err := time.Parse(time.RFC3339, beforeStr)
-		if err != nil {
-			return tools.ErrorResult(fmt.Sprintf("Invalid 'before' timestamp format: %v", err))
+		parsed, parseErr := time.Parse(time.RFC3339, beforeStr)
+		if parseErr != nil {
+			return tools.ErrorResult(fmt.Sprintf("Invalid 'before' timestamp format: %v", parseErr))
 		}
 		input.Before = &parsed
 	}
