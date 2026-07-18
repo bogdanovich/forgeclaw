@@ -408,7 +408,7 @@ func (d *AgentDefaults) validateResultRetentionOwnership() error {
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(d.ContextManagerConfig, &raw); err != nil {
-		return nil
+		return fmt.Errorf("invalid agents.defaults.context_manager_config: %w", err)
 	}
 	if _, exists := raw["toolResultRetention"]; exists {
 		return fmt.Errorf(

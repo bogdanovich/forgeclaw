@@ -396,6 +396,28 @@ func TestLoadConfigRejectsContextManagerOwnedResultRetention(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsMalformedContextManagerConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 3,
+		"agents": {
+			"defaults": {
+				"context_manager": "seahorse",
+				"context_manager_config": "not-an-object"
+			}
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	_, err := LoadConfigReadOnly(configPath)
+	if err == nil || !strings.Contains(err.Error(), "invalid agents.defaults.context_manager_config") {
+		t.Fatalf("LoadConfigReadOnly() error = %v", err)
+	}
+}
+
 func TestImageGenerateToolsConfig_EffectiveModel(t *testing.T) {
 	defaults := AgentDefaults{}
 
