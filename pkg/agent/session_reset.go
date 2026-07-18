@@ -9,11 +9,11 @@ import (
 	"github.com/sipeed/picoclaw/pkg/state"
 )
 
-func buildResetSessionKey(agentID, routeSessionKey string) string {
+func buildResetSessionKey(agentID, routeScopeKey string) string {
 	alias := fmt.Sprintf(
 		"agent:%s:reset:%s:%d",
 		strings.ToLower(strings.TrimSpace(agentID)),
-		strings.ToLower(strings.TrimSpace(routeSessionKey)),
+		strings.ToLower(strings.TrimSpace(routeScopeKey)),
 		time.Now().UnixNano(),
 	)
 	return session.BuildOpaqueSessionKey(alias)
@@ -89,14 +89,21 @@ func (al *AgentLoop) clearSessionModelOverride(routeSessionKey string) error {
 	return al.state.ClearSessionModelOverride(routeSessionKey)
 }
 
-func (al *AgentLoop) resolveEffectiveSessionKey(routeSessionKey, msgSessionKey string) string {
+func (al *AgentLoop) resolveEffectiveSessionKey(
+	routeScopeKey,
+	baseSessionKey,
+	msgSessionKey string,
+) string {
 	if isExplicitSessionKey(msgSessionKey) {
 		return msgSessionKey
 	}
-	if override := al.getSessionOverride(routeSessionKey); override != "" {
+	if override := al.getSessionOverride(baseSessionKey); override != "" {
 		return override
 	}
-	return routeSessionKey
+	if strings.TrimSpace(baseSessionKey) == "" {
+		return routeScopeKey
+	}
+	return baseSessionKey
 }
 
 func sessionAliasCandidates(

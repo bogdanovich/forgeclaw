@@ -142,6 +142,7 @@ Instead it emits a `SessionPolicy`:
 type SessionPolicy struct {
     Dimensions    []string
     IdentityLinks map[string][]string
+    Lifecycle     config.SessionLifecycleConfig
 }
 ```
 
@@ -162,10 +163,19 @@ Invalid or duplicated entries are silently dropped.
 `pkg/session/AllocateRouteSession(...)` then turns that policy into:
 
 - a structured `SessionScope`
-- a canonical routed session key
+- a stable route-scope key
 - legacy compatibility aliases
 
 So the routing package owns "what should isolate this conversation", while the session package owns "how that isolation becomes keys and durable storage".
+
+When `session.lifecycle` is configured, the stable route scope is combined with a lifecycle epoch to create the
+effective session key used for history. Route-scoped controls such as goals, model overrides, fallback selection, and
+tool-feedback settings continue to use the stable route key. History, context, manual session resets, steering, and
+continuations use the effective epoch session key.
+
+The inbound coordinator resolves this pair before claiming a turn. An accepted message stays pinned to that target;
+follow-ups arriving while the route is active join the same epoch even if midnight, an idle timeout, or a max-age
+boundary passes. The next independent turn resolves the then-current epoch.
 
 ## Identity Links
 

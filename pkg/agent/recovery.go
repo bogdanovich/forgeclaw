@@ -76,10 +76,29 @@ func (al *AgentLoop) recoverUnansweredSession(
 		return fmt.Errorf("session %q has no recoverable channel/chat scope", sessionKey)
 	}
 
-	claim, claimed := al.claimRuntimeSession(
-		sessionKey,
-		"pending-recovery-"+sessionKey+"-"+fmt.Sprintf("%d", al.turnSeq.Add(1)),
+	routeScopeKey := sessionKey
+	if scope != nil && strings.TrimSpace(scope.RouteScopeKey) != "" {
+		routeScopeKey = strings.TrimSpace(scope.RouteScopeKey)
+	}
+	turnID := "pending-recovery-" + sessionKey + "-" + fmt.Sprintf("%d", al.turnSeq.Add(1))
+	var (
+		claim   *runtimeSessionClaim
+		claimed bool
 	)
+	if routeScopeKey != "" {
+		target := &inboundDispatchTarget{
+			Agent: agent,
+			Allocation: session.Allocation{
+				RouteScopeKey: routeScopeKey,
+				SessionKey:    sessionKey,
+				Scope:         *session.CloneScope(scope),
+			},
+			SessionKey: sessionKey,
+		}
+		claim, _, claimed = al.claimRuntimeRouteSession(target, turnID)
+	} else {
+		claim, claimed = al.claimRuntimeSession(sessionKey, turnID)
+	}
 	if !claimed {
 		return nil
 	}
@@ -91,11 +110,17 @@ func (al *AgentLoop) recoverUnansweredSession(
 		}
 	}
 
+	modelBinding := al.bindEffectiveModel(routeScopeKey, agent)
+	defer modelBinding.Cleanup()
+
 	_, err := al.runAgentLoop(ctx, agent, processOptions{
+		ModelBinding: modelBinding,
 		Dispatch: DispatchRequest{
-			SessionKey:     sessionKey,
-			InboundContext: &inbound,
-			SessionScope:   session.CloneScope(scope),
+			RouteSessionKey: routeScopeKey,
+			BaseSessionKey:  sessionKey,
+			SessionKey:      sessionKey,
+			InboundContext:  &inbound,
+			SessionScope:    session.CloneScope(scope),
 			// Leave UserMessage empty. The unanswered user message is already
 			// durable session history; adding it again would duplicate history.
 		},
@@ -135,7 +160,11 @@ func (al *AgentLoop) sessionKeyForInboundRecoveryBlock(msg bus.InboundMessage) s
 		return ""
 	}
 	allocation := al.allocateRouteSession(route, msg)
-	return al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
+	allocation, err = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
+	if err != nil {
+		return ""
+	}
+	return al.resolveEffectiveSessionKey(allocation.RouteScopeKey, allocation.SessionKey, msg.SessionKey)
 }
 
 func sessionNeedsUnansweredRecovery(history []providers.Message) bool {

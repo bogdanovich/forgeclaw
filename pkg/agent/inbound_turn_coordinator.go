@@ -23,7 +23,7 @@ func newInboundTurnCoordinator(al *AgentLoop) *inboundTurnCoordinator {
 func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.InboundMessage) {
 	al := c.al
 
-	sessionKey, agentID, ok := al.resolveSteeringTarget(msg)
+	target, ok := al.resolveSteeringTarget(msg)
 	if !ok {
 		// Non-routable message (e.g. system) stays synchronous so it preserves
 		// the historical ordering guarantee and does not enter session steering.
@@ -35,18 +35,23 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		return
 	}
 
-	claim, claimed := c.claimSession(sessionKey)
+	claim, activeTarget, claimed := c.claimSession(target)
 	if !claimed {
-		c.handleBusySession(ctx, msg, sessionKey, agentID)
+		c.handleBusySession(ctx, msg, activeTarget.SessionKey, activeTarget.Agent.ID)
 		return
 	}
 
-	c.startWorker(ctx, msg, claim)
+	c.startWorker(ctx, msg, target, claim)
 }
 
-func (c *inboundTurnCoordinator) claimSession(sessionKey string) (*runtimeSessionClaim, bool) {
+func (c *inboundTurnCoordinator) claimSession(
+	target *inboundDispatchTarget,
+) (*runtimeSessionClaim, *inboundDispatchTarget, bool) {
 	al := c.al
-	return al.claimRuntimeSession(sessionKey, makePendingTurnID(sessionKey, al.turnSeq.Add(1)))
+	return al.claimRuntimeRouteSession(
+		target,
+		makePendingTurnID(target.SessionKey, al.turnSeq.Add(1)),
+	)
 }
 
 func (c *inboundTurnCoordinator) handleBusySession(
@@ -82,14 +87,16 @@ func (c *inboundTurnCoordinator) handleBusySession(
 func (c *inboundTurnCoordinator) startWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
 	claim *runtimeSessionClaim,
 ) {
-	go c.runWorker(ctx, msg, claim)
+	go c.runWorker(ctx, msg, target, claim)
 }
 
 func (c *inboundTurnCoordinator) runWorker(
 	ctx context.Context,
 	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
 	claim *runtimeSessionClaim,
 ) {
 	al := c.al
@@ -110,7 +117,8 @@ func (c *inboundTurnCoordinator) runWorker(
 		return
 	}
 
-	if al.runTurnWithSteering(ctx, msg) {
+	turn := al.buildInboundMessageTurnForTarget(ctx, msg, target)
+	if al.runInboundTurnWithSteering(ctx, turn) {
 		al.ackInboundMessage(ctx, msg)
 	} else {
 		al.releaseInboundMessage(context.Background(), msg, ctx.Err())

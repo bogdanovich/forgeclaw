@@ -74,8 +74,10 @@ type AgentLoop struct {
 	workerSem chan struct{}
 
 	// activeTurnStates tracks active turns per session to prevent duplicates.
-	activeTurnStates sync.Map
-	subTurnCounter   atomic.Int64
+	activeTurnStates    sync.Map
+	activeRouteSessions sync.Map
+	sessionNow          func() time.Time
+	subTurnCounter      atomic.Int64
 
 	turnSeq atomic.Uint64
 

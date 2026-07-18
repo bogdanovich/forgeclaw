@@ -26,11 +26,19 @@ func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuat
 		return nil, err
 	}
 	allocation := al.allocateRouteSession(route, msg)
+	allocation, err = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
+	if err != nil {
+		return nil, err
+	}
 
 	return &continuationTarget{
-		SessionKey: al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey),
-		Channel:    msg.Channel,
-		ChatID:     msg.ChatID,
+		SessionKey: al.resolveEffectiveSessionKey(
+			allocation.RouteScopeKey,
+			allocation.SessionKey,
+			msg.SessionKey,
+		),
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
 	}, nil
 }
 
@@ -91,8 +99,16 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 		return "", routeErr
 	}
 	allocation := al.allocateRouteSession(route, msg)
-	sessionKey := resolveScopeKey(allocation.SessionKey, msg.SessionKey)
-	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
+	allocation, routeErr = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
+	if routeErr != nil {
+		return "", routeErr
+	}
+	sessionKey := al.resolveEffectiveSessionKey(
+		allocation.RouteScopeKey,
+		allocation.SessionKey,
+		msg.SessionKey,
+	)
+	modelBinding := al.bindEffectiveModel(allocation.RouteScopeKey, agent)
 	defer modelBinding.Cleanup()
 
 	if tool, ok := agent.Tools.Get("message"); ok {
@@ -103,7 +119,8 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 
 	return al.runAgentLoop(ctx, agent, processOptions{
 		Dispatch: DispatchRequest{
-			RouteSessionKey: allocation.SessionKey,
+			RouteSessionKey: allocation.RouteScopeKey,
+			BaseSessionKey:  allocation.SessionKey,
 			SessionKey:      sessionKey,
 			SessionAliases:  buildSessionAliases(sessionKey, append(allocation.SessionAliases, msg.SessionKey)...),
 			InboundContext:  cloneInboundContext(&msg.Context),
@@ -183,7 +200,15 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	if turnErr != nil {
 		return "", turnErr
 	}
-	msg = turn.Message
+	return al.processInboundMessageTurn(ctx, turn)
+}
+
+func (al *AgentLoop) processInboundMessageTurn(
+	ctx context.Context,
+	turn inboundMessageTurn,
+) (string, error) {
+	msg := turn.Message
+	msg.SessionKey = turn.SessionKey
 
 	// Add message preview to log (show full content for error messages)
 	var logContent string
@@ -221,6 +246,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 			"route_agent":        turn.Options.Dispatch.RouteResult.AgentID,
 			"route_channel":      turn.Options.Dispatch.RouteResult.Channel,
 			"route_main_session": turn.Options.Dispatch.RouteSessionKey,
+			"session_epoch":      sessionEpochID(turn.Options.Dispatch.SessionScope),
 		})
 
 	opts := turn.Options
@@ -273,14 +299,32 @@ func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage
 	}
 
 	allocation := al.allocateRouteSession(route, inbound)
-	sessionKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
+	allocation, routeErr = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
+	if routeErr != nil {
+		logger.WarnCF("agent", "Failed to apply session lifecycle for observed message", map[string]any{
+			"channel": msg.Channel,
+			"chat_id": msg.ChatID,
+			"error":   routeErr.Error(),
+		})
+		return
+	}
+	sessionKey := al.resolveEffectiveSessionKey(
+		allocation.RouteScopeKey,
+		allocation.SessionKey,
+		msg.SessionKey,
+	)
 	ensureSessionMetadata(
 		agent.Sessions,
 		sessionKey,
 		session.CloneScope(&allocation.Scope),
 		buildSessionAliases(
 			sessionKey,
-			sessionAliasCandidates(allocation.SessionKey, sessionKey, allocation.SessionAliases, msg.SessionKey)...),
+			sessionAliasCandidates(
+				allocation.SessionKey,
+				sessionKey,
+				allocation.SessionAliases,
+				msg.SessionKey,
+			)...),
 	)
 
 	content := formatObservedMessageContent(msg)

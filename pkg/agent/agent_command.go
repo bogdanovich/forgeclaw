@@ -484,6 +484,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if routeSessionKey == "" {
 				return "", fmt.Errorf("route session key not available")
 			}
+			baseSessionKey := strings.TrimSpace(opts.Dispatch.BaseSessionKey)
+			if baseSessionKey == "" {
+				baseSessionKey = strings.TrimSpace(opts.Dispatch.SessionKey)
+			}
+			if baseSessionKey == "" {
+				return "", fmt.Errorf("base session key not available")
+			}
 			if clearOverride {
 				if err := al.clearSessionModelOverride(routeSessionKey); err != nil {
 					return "", err
@@ -491,13 +498,13 @@ func (al *AgentLoop) buildCommandsRuntime(
 				if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 					return "", err
 				}
-				if err := al.clearSessionOverride(routeSessionKey); err != nil {
+				if err := al.clearSessionOverride(baseSessionKey); err != nil {
 					return "", err
 				}
 				return "", al.clearSessionGoal(routeSessionKey)
 			}
 
-			nextSessionKey := buildResetSessionKey(agent.ID, routeSessionKey)
+			nextSessionKey := buildResetSessionKey(agent.ID, baseSessionKey)
 			if nextSessionKey == "" {
 				return "", fmt.Errorf("failed to allocate reset session key")
 			}
@@ -507,7 +514,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if err := al.clearAutoModelSelection(routeSessionKey); err != nil {
 				return "", err
 			}
-			if err := al.setSessionOverride(routeSessionKey, nextSessionKey); err != nil {
+			if err := al.setSessionOverride(baseSessionKey, nextSessionKey); err != nil {
 				return "", err
 			}
 			return nextSessionKey, nil

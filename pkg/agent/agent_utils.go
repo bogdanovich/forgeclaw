@@ -49,10 +49,18 @@ func outboundScopeFromSessionScope(scope *session.SessionScope) *bus.OutboundSco
 		return nil
 	}
 	outboundScope := &bus.OutboundScope{
-		Version: scope.Version,
-		AgentID: scope.AgentID,
-		Channel: scope.Channel,
-		Account: scope.Account,
+		Version:       scope.Version,
+		AgentID:       scope.AgentID,
+		Channel:       scope.Channel,
+		Account:       scope.Account,
+		RouteScopeKey: scope.RouteScopeKey,
+	}
+	if scope.Epoch != nil {
+		outboundScope.Epoch = &bus.OutboundEpoch{
+			Strategy: scope.Epoch.Strategy,
+			ID:       scope.Epoch.ID,
+			Start:    scope.Epoch.Start,
+		}
 	}
 	if len(scope.Dimensions) > 0 {
 		outboundScope.Dimensions = append([]string(nil), scope.Dimensions...)

@@ -131,6 +131,63 @@ You usually do not need a special workaround for Telegram forums.
 `summarize_message_threshold` and `summarize_token_percent` apply inside each session independently.
 If you create smaller sessions, summarization also happens on smaller per-session histories.
 
+## Session Lifecycle
+
+By default, a routed conversation keeps one session indefinitely. Stateful workspaces can instead rotate conversation
+history at a predictable boundary while preserving route-scoped settings such as model selection and goals.
+
+### Rotate context every calendar day
+
+```json
+{
+  "session": {
+    "dimensions": ["chat"],
+    "lifecycle": {
+      "strategy": "calendar",
+      "period": "day",
+      "timezone": "America/Los_Angeles"
+    }
+  }
+}
+```
+
+`period` accepts `day`, `week`, or `month`. Calendar boundaries use the configured IANA timezone; weeks start on ISO
+Monday. A timezone is required so host timezone changes cannot silently alter session boundaries.
+
+### Rotate after inactivity
+
+```json
+{
+  "session": {
+    "lifecycle": {
+      "strategy": "idle",
+      "idle_timeout_minutes": 120
+    }
+  }
+}
+```
+
+The idle checkpoint is durable. Restarting PicoClaw does not reset the inactivity timer.
+
+### Limit maximum session age
+
+```json
+{
+  "session": {
+    "lifecycle": {
+      "strategy": "max_age",
+      "max_age_minutes": 1440
+    }
+  }
+}
+```
+
+Use `"strategy": "never"` or omit `lifecycle` to disable automatic rotation.
+
+Lifecycle rotation creates a new conversation-history epoch; it does not change the stable routed conversation. Model
+overrides, fallback state, tool-feedback settings, and goals therefore survive rotation. A manual `/new` or `/reset`
+session override applies only to its current lifecycle epoch and does not suppress the next automatic rotation.
+
 ## Common Recipes
 
 ### One shared assistant per group or direct chat

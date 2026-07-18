@@ -196,6 +196,12 @@ func CanonicalScopeSignature(scope SessionScope) string {
 		value := strings.TrimSpace(strings.ToLower(scope.Values[dimension]))
 		parts = append(parts, fmt.Sprintf("%s=%s", dimension, value))
 	}
+	if scope.Epoch != nil {
+		parts = append(parts,
+			fmt.Sprintf("epoch_strategy=%s", strings.TrimSpace(strings.ToLower(scope.Epoch.Strategy))),
+			fmt.Sprintf("epoch_id=%s", strings.TrimSpace(scope.Epoch.ID)),
+		)
+	}
 	return strings.Join(parts, "|")
 }
 

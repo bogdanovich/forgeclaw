@@ -4,8 +4,16 @@ import (
 	"context"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
+
+type inboundDispatchTarget struct {
+	Route      routing.ResolvedRoute
+	Agent      *AgentInstance
+	Allocation session.Allocation
+	SessionKey string
+}
 
 type inboundMessageTurn struct {
 	Message      bus.InboundMessage
@@ -39,24 +47,56 @@ func (al *AgentLoop) buildInboundMessageTurn(
 	ctx context.Context,
 	msg bus.InboundMessage,
 ) (inboundMessageTurn, error) {
-	msg = al.prepareInboundMessageForAgent(ctx, msg)
 	if msg.Channel == "system" {
+		msg = al.prepareInboundMessageForAgent(ctx, msg)
 		return inboundMessageTurn{Message: msg}, nil
 	}
 
+	target, err := al.resolveInboundDispatchTarget(msg)
+	if err != nil {
+		return inboundMessageTurn{}, err
+	}
+	return al.buildInboundMessageTurnForTarget(ctx, msg, target), nil
+}
+
+func (al *AgentLoop) resolveInboundDispatchTarget(msg bus.InboundMessage) (*inboundDispatchTarget, error) {
 	route, agent, routeErr := al.resolveMessageRoute(msg)
 	if routeErr != nil {
-		return inboundMessageTurn{}, routeErr
+		return nil, routeErr
 	}
 
 	allocation := al.allocateRouteSession(route, msg)
-	scopeKey := al.resolveEffectiveSessionKey(allocation.SessionKey, msg.SessionKey)
-	sessionKey := scopeKey
-	modelBinding := al.bindEffectiveModel(allocation.SessionKey, agent)
+	allocation, routeErr = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
+	if routeErr != nil {
+		return nil, routeErr
+	}
+
+	return &inboundDispatchTarget{
+		Route:      route,
+		Agent:      agent,
+		Allocation: allocation,
+		SessionKey: al.resolveEffectiveSessionKey(
+			allocation.RouteScopeKey,
+			allocation.SessionKey,
+			msg.SessionKey,
+		),
+	}, nil
+}
+
+func (al *AgentLoop) buildInboundMessageTurnForTarget(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) inboundMessageTurn {
+	msg = al.prepareInboundMessageForAgent(ctx, msg)
+	allocation := target.Allocation
+	sessionKey := target.SessionKey
+	modelBinding := al.bindEffectiveModel(allocation.RouteScopeKey, target.Agent)
 
 	opts := processOptions{
 		Dispatch: DispatchRequest{
-			RouteSessionKey: allocation.SessionKey,
+			RouteSessionKey: allocation.RouteScopeKey,
+			BaseSessionKey:  allocation.SessionKey,
 			SessionKey:      sessionKey,
 			SessionAliases: buildSessionAliases(
 				sessionKey,
@@ -67,7 +107,7 @@ func (al *AgentLoop) buildInboundMessageTurn(
 					msg.SessionKey,
 				)...),
 			InboundContext: cloneInboundContext(&msg.Context),
-			RouteResult:    cloneResolvedRoute(&route),
+			RouteResult:    cloneResolvedRoute(&target.Route),
 			SessionScope:   session.CloneScope(&allocation.Scope),
 			UserMessage:    msg.Content,
 			Media:          append([]string(nil), msg.Media...),
@@ -84,10 +124,10 @@ func (al *AgentLoop) buildInboundMessageTurn(
 
 	return inboundMessageTurn{
 		Message:      msg,
-		Agent:        agent,
+		Agent:        target.Agent,
 		Options:      opts,
-		ScopeKey:     scopeKey,
+		ScopeKey:     sessionKey,
 		SessionKey:   sessionKey,
 		ModelBinding: modelBinding,
-	}, nil
+	}
 }

@@ -12,6 +12,7 @@ import (
 // after routing and session allocation have completed.
 type DispatchRequest struct {
 	RouteSessionKey string
+	BaseSessionKey  string
 	SessionKey      string
 	SessionAliases  []string
 	InboundContext  *bus.InboundContext
@@ -81,6 +82,9 @@ func normalizeProcessOptions(opts processOptions) processOptions {
 	}
 	if opts.Dispatch.SessionKey == "" {
 		opts.Dispatch.SessionKey = strings.TrimSpace(opts.SessionKey)
+	}
+	if opts.Dispatch.BaseSessionKey == "" {
+		opts.Dispatch.BaseSessionKey = opts.Dispatch.SessionKey
 	}
 	if len(opts.Dispatch.SessionAliases) == 0 && len(opts.SessionAliases) > 0 {
 		opts.Dispatch.SessionAliases = append([]string(nil), opts.SessionAliases...)

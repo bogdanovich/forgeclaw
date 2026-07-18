@@ -12,6 +12,7 @@ import (
 type SessionPolicy struct {
 	Dimensions    []string
 	IdentityLinks map[string][]string
+	Lifecycle     config.SessionLifecycleConfig
 }
 
 // ResolvedRoute is the result of agent routing.
@@ -103,10 +104,14 @@ func (r *RouteResolver) sessionPolicy(rule *config.DispatchRule) SessionPolicy {
 	if rule != nil && len(rule.SessionDimensions) > 0 {
 		dimensions = rule.SessionDimensions
 	}
-	return SessionPolicy{
+	policy := SessionPolicy{
 		Dimensions:    normalizeSessionDimensions(dimensions),
 		IdentityLinks: cloneIdentityLinks(r.cfg.Session.IdentityLinks),
 	}
+	if r.cfg.Session.Lifecycle != nil {
+		policy.Lifecycle = *r.cfg.Session.Lifecycle
+	}
+	return policy
 }
 
 func normalizeSessionDimensions(dimensions []string) []string {

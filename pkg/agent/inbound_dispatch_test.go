@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
 
@@ -209,5 +211,101 @@ func TestBuildInboundMessageTurn_PreparesInboundMessage(t *testing.T) {
 			turn.Options.Dispatch.Channel(),
 			turn.Options.Dispatch.ChatID(),
 		)
+	}
+}
+
+func TestBuildInboundMessageTurn_RotatesEpochWithoutChangingRouteScope(t *testing.T) {
+	al, cfg, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	cfg.Session.Lifecycle = &config.SessionLifecycleConfig{
+		Strategy: "calendar",
+		Period:   "day",
+		Timezone: "America/Los_Angeles",
+	}
+	msg := bus.NormalizeInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			ChatType: "direct",
+			SenderID: "telegram:42",
+		},
+		Content: "hello",
+	})
+
+	al.sessionNow = func() time.Time {
+		return time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	}
+	first, err := al.buildInboundMessageTurn(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("first buildInboundMessageTurn() error = %v", err)
+	}
+	defer first.Cleanup()
+
+	al.sessionNow = func() time.Time {
+		return time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	}
+	second, err := al.buildInboundMessageTurn(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("second buildInboundMessageTurn() error = %v", err)
+	}
+	defer second.Cleanup()
+
+	if first.Options.Dispatch.RouteSessionKey != second.Options.Dispatch.RouteSessionKey {
+		t.Fatal("stable route scope changed across lifecycle epochs")
+	}
+	if first.SessionKey == second.SessionKey {
+		t.Fatal("effective session did not rotate across calendar days")
+	}
+	if first.Options.Dispatch.SessionScope.Epoch == nil || second.Options.Dispatch.SessionScope.Epoch == nil {
+		t.Fatal("session epoch provenance is missing")
+	}
+}
+
+func TestBuildInboundMessageTurn_SessionResetDoesNotCrossEpoch(t *testing.T) {
+	al, cfg, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	cfg.Session.Lifecycle = &config.SessionLifecycleConfig{
+		Strategy: "calendar",
+		Period:   "day",
+		Timezone: "UTC",
+	}
+	msg := bus.NormalizeInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "telegram",
+			ChatID:   "chat-1",
+			ChatType: "direct",
+			SenderID: "telegram:42",
+		},
+		Content: "hello",
+	})
+
+	al.sessionNow = func() time.Time {
+		return time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	}
+	firstTarget, err := al.resolveInboundDispatchTarget(msg)
+	if err != nil {
+		t.Fatalf("resolveInboundDispatchTarget() error = %v", err)
+	}
+	resetKey := session.BuildMainSessionKey("reset")
+	if err := al.setSessionOverride(firstTarget.Allocation.SessionKey, resetKey); err != nil {
+		t.Fatalf("setSessionOverride() error = %v", err)
+	}
+	withReset, err := al.resolveInboundDispatchTarget(msg)
+	if err != nil {
+		t.Fatalf("resolveInboundDispatchTarget() error = %v", err)
+	}
+	if withReset.SessionKey != resetKey {
+		t.Fatalf("session key = %q, want reset key %q", withReset.SessionKey, resetKey)
+	}
+
+	al.sessionNow = func() time.Time {
+		return time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	}
+	nextDay, err := al.resolveInboundDispatchTarget(msg)
+	if err != nil {
+		t.Fatalf("resolveInboundDispatchTarget() error = %v", err)
+	}
+	if nextDay.SessionKey == resetKey {
+		t.Fatal("manual session reset leaked into the next lifecycle epoch")
 	}
 }
