@@ -51,6 +51,33 @@ func TestSeahorseReconciliationCleanRevisionSkipsDeepComparison(t *testing.T) {
 	}
 }
 
+func TestSeahorseContextManagerPersistsTrustedConversationProvenance(t *testing.T) {
+	mgr, _ := newReconciliationTestManager(t)
+	ctx := context.Background()
+	key := "epoch:daily"
+	metadataStore := mgr.sessions.(session.MetadataAwareSessionStore)
+	metadataStore.EnsureSessionMetadata(key, &session.SessionScope{
+		Version:       session.ScopeVersionV2,
+		AgentID:       "nutrition",
+		RouteScopeKey: "telegram:account:chat:topic",
+	}, nil)
+
+	if err := mgr.Ingest(ctx, &IngestRequest{
+		SessionKey: key,
+		Message:    providers.Message{Role: "user", Content: "breakfast"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := mgr.engine.GetRetrieval().Store().GetConversationBySessionKey(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation == nil || conversation.RouteScopeKey != "telegram:account:chat:topic" ||
+		conversation.AgentID != "nutrition" {
+		t.Fatalf("conversation provenance = %#v", conversation)
+	}
+}
+
 func TestSeahorseReconciliationCleanRestartUsesDurableWatermark(t *testing.T) {
 	dir := t.TempDir()
 	canonical, err := memory.NewJSONLStore(dir + "/sessions")

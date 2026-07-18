@@ -37,6 +37,8 @@ func runSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS conversations (
 			conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_key     TEXT NOT NULL UNIQUE,
+			route_scope_key TEXT,
+			agent_id        TEXT,
 			created_at      TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
@@ -176,6 +178,31 @@ func runSchema(db *sql.DB) error {
 	}
 	if err := ensureMessagesModelNameColumn(db); err != nil {
 		return err
+	}
+	if err := ensureConversationProvenanceColumns(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_conversations_route_scope
+		 ON conversations(agent_id, route_scope_key)`,
+	); err != nil {
+		return fmt.Errorf("create conversation route-scope index: %w", err)
+	}
+	return nil
+}
+
+func ensureConversationProvenanceColumns(db *sql.DB) error {
+	for _, column := range []string{"route_scope_key", "agent_id"} {
+		hasColumn, err := tableHasColumn(db, "conversations", column)
+		if err != nil {
+			return fmt.Errorf("check conversations.%s: %w", column, err)
+		}
+		if hasColumn {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE conversations ADD COLUMN " + column + " TEXT"); err != nil {
+			return fmt.Errorf("add conversations.%s: %w", column, err)
+		}
 	}
 	return nil
 }

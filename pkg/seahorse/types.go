@@ -70,6 +70,8 @@ type SummaryNode struct {
 type Conversation struct {
 	ConversationID int64     `json:"conversationId"`
 	SessionKey     string    `json:"sessionKey"`
+	RouteScopeKey  string    `json:"routeScopeKey,omitempty"`
+	AgentID        string    `json:"agentId,omitempty"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
@@ -104,15 +106,15 @@ type SummarySubtreeNode struct {
 
 // SearchInput controls summary search.
 type SearchInput struct {
-	Pattern          string     `json:"pattern"`
-	Mode             string     `json:"mode"`            // "like" (LIKE search) or "full_text" (FTS5, default)
-	Scope            string     `json:"scope,omitempty"` // "messages", "summaries", "both"
-	Role             string     `json:"role,omitempty"`  // "user", "assistant", or "" (all)
-	Since            *time.Time `json:"since,omitempty"`
-	Before           *time.Time `json:"before,omitempty"`
-	Limit            int        `json:"limit,omitempty"`
-	ConversationID   int64      `json:"conversationId,omitempty"`
-	AllConversations bool       `json:"allConversations,omitempty"`
+	Pattern         string     `json:"pattern"`
+	Mode            string     `json:"mode"`            // "like" (LIKE search) or "full_text" (FTS5, default)
+	Scope           string     `json:"scope,omitempty"` // "messages", "summaries", "both"
+	Role            string     `json:"role,omitempty"`  // "user", "assistant", or "" (all)
+	Since           *time.Time `json:"since,omitempty"`
+	Before          *time.Time `json:"before,omitempty"`
+	Limit           int        `json:"limit,omitempty"`
+	ConversationID  int64      `json:"conversationId,omitempty"`
+	ConversationIDs []int64    `json:"conversationIds,omitempty"`
 }
 
 // SearchResult is a search match.

@@ -188,6 +188,25 @@ Lifecycle rotation creates a new conversation-history epoch; it does not change 
 overrides, fallback state, tool-feedback settings, and goals therefore survive rotation. A manual `/new` or `/reset`
 session override applies only to its current lifecycle epoch and does not suppress the next automatic rotation.
 
+### Search older session epochs with Seahorse
+
+When Seahorse context is enabled, lifecycle rotation does not make older epochs globally searchable by default. The
+`short_grep` and `short_expand` tools accept a `retrieval_scope` selected by the agent:
+
+| Scope | Search boundary |
+| --- | --- |
+| `current_epoch` | Only the active lifecycle epoch. This is the default. |
+| `conversation` | All epochs of the same routed conversation. |
+| `workspace` | All conversations owned by the current agent in the workspace. |
+
+The runtime resolves these boundaries from trusted session metadata. The model cannot provide route keys or agent IDs,
+and records without trusted provenance are excluded from broader searches. Use `conversation` for requests such as
+"find the meal I logged two days ago" after daily rotation. Use `workspace` only when the request explicitly requires
+searching across routed chats or topics.
+
+Search and expansion results have strict context-size limits. A truncated result includes `truncated`, a
+`truncation_notice`, and omitted-result counts so the agent can narrow the query or expand fewer message IDs.
+
 ## Common Recipes
 
 ### One shared assistant per group or direct chat

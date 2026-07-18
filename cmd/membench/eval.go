@@ -154,7 +154,7 @@ func EvalSeahorse(
 			// Expand messages to get full content
 			var contentParts []string
 			if len(messageIDs) > 0 {
-				expandResult, err := retrieval.ExpandMessages(ctx, messageIDs)
+				expandResult, err := retrieval.ExpandMessagesScoped(ctx, messageIDs, []int64{convID})
 				if err != nil {
 					log.Printf("WARN: expand failed for sample %s: %v", sample.SampleID, err)
 				} else {

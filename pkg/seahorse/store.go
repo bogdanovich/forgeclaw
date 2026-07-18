@@ -123,10 +123,19 @@ func (s *Store) GetOrCreateConversation(ctx context.Context, sessionKey string) 
 func (s *Store) GetConversationBySessionKey(ctx context.Context, sessionKey string) (*Conversation, error) {
 	var conv Conversation
 	var createdAt, updatedAt string
+	var routeScopeKey, agentID sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		"SELECT conversation_id, session_key, created_at, updated_at FROM conversations WHERE session_key = ?",
+		`SELECT conversation_id, session_key, route_scope_key, agent_id, created_at, updated_at
+		 FROM conversations WHERE session_key = ?`,
 		sessionKey,
-	).Scan(&conv.ConversationID, &conv.SessionKey, &createdAt, &updatedAt)
+	).Scan(
+		&conv.ConversationID,
+		&conv.SessionKey,
+		&routeScopeKey,
+		&agentID,
+		&createdAt,
+		&updatedAt,
+	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -135,7 +144,108 @@ func (s *Store) GetConversationBySessionKey(ctx context.Context, sessionKey stri
 	}
 	conv.CreatedAt = parseSQLiteTime(createdAt)
 	conv.UpdatedAt = parseSQLiteTime(updatedAt)
+	conv.RouteScopeKey = routeScopeKey.String
+	conv.AgentID = agentID.String
 	return &conv, nil
+}
+
+// SetConversationProvenance records trusted route metadata without overwriting
+// an existing, conflicting identity.
+func (s *Store) SetConversationProvenance(
+	ctx context.Context,
+	sessionKey,
+	routeScopeKey,
+	agentID string,
+) error {
+	sessionKey = strings.TrimSpace(sessionKey)
+	routeScopeKey = strings.TrimSpace(routeScopeKey)
+	agentID = strings.TrimSpace(agentID)
+	if sessionKey == "" || routeScopeKey == "" || agentID == "" {
+		return fmt.Errorf("session key, route scope key, and agent ID are required")
+	}
+	conv, err := s.GetOrCreateConversation(ctx, sessionKey)
+	if err != nil {
+		return err
+	}
+	if conv.RouteScopeKey != "" && conv.RouteScopeKey != routeScopeKey ||
+		conv.AgentID != "" && conv.AgentID != agentID {
+		return fmt.Errorf("conversation %q has conflicting route provenance", sessionKey)
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE conversations
+		 SET route_scope_key = CASE
+		       WHEN route_scope_key IS NULL OR route_scope_key = '' THEN ?
+		       ELSE route_scope_key
+		     END,
+		     agent_id = CASE
+		       WHEN agent_id IS NULL OR agent_id = '' THEN ?
+		       ELSE agent_id
+		     END
+		 WHERE conversation_id = ?
+		   AND (route_scope_key IS NULL OR route_scope_key = '' OR route_scope_key = ?)
+		   AND (agent_id IS NULL OR agent_id = '' OR agent_id = ?)`,
+		routeScopeKey,
+		agentID,
+		conv.ConversationID,
+		routeScopeKey,
+		agentID,
+	)
+	if err != nil {
+		return fmt.Errorf("set conversation provenance: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check conversation provenance update: %w", err)
+	}
+	if rowsAffected == 0 && (conv.RouteScopeKey == "" || conv.AgentID == "") {
+		current, getErr := s.GetConversationBySessionKey(ctx, sessionKey)
+		if getErr != nil {
+			return getErr
+		}
+		if current == nil || current.RouteScopeKey != routeScopeKey || current.AgentID != agentID {
+			return fmt.Errorf("conversation %q has conflicting route provenance", sessionKey)
+		}
+	}
+	return nil
+}
+
+func (s *Store) conversationIDsForRouteScope(
+	ctx context.Context,
+	routeScopeKey,
+	agentID string,
+) ([]int64, error) {
+	return s.conversationIDs(ctx,
+		"route_scope_key = ? AND agent_id = ?",
+		strings.TrimSpace(routeScopeKey),
+		strings.TrimSpace(agentID),
+	)
+}
+
+func (s *Store) conversationIDsForAgent(ctx context.Context, agentID string) ([]int64, error) {
+	return s.conversationIDs(ctx, "agent_id = ?", strings.TrimSpace(agentID))
+}
+
+func (s *Store) conversationIDs(ctx context.Context, clause string, args ...any) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT conversation_id FROM conversations WHERE "+clause+" ORDER BY conversation_id",
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list scoped conversations: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan scoped conversation: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate scoped conversations: %w", err)
+	}
+	return ids, nil
 }
 
 // GetSessionStatus returns status for a specific session.
@@ -1473,9 +1583,16 @@ func (s *Store) searchSummariesFTS(ctx context.Context, input SearchInput) ([]Se
 	whereClauses := []string{"summaries_fts MATCH ?"}
 	args := []any{sanitized}
 
-	if input.ConversationID > 0 && !input.AllConversations {
+	if input.ConversationID > 0 {
 		whereClauses = append(whereClauses, "s.conversation_id = ?")
 		args = append(args, input.ConversationID)
+	} else {
+		whereClauses, args = appendConversationIDsWhere(
+			whereClauses,
+			args,
+			"s.conversation_id",
+			input.ConversationIDs,
+		)
 	}
 
 	if input.Since != nil {
@@ -1532,9 +1649,11 @@ func (s *Store) searchSummariesFTS(ctx context.Context, input SearchInput) ([]Se
 // Note: role filtering is NOT applied here since summaries don't have role column.
 // Use buildMessagesLikeQuery for message searches that need role filtering.
 func buildLikeQuery(query string, args []any, input SearchInput) (string, []any) {
-	if input.ConversationID > 0 && !input.AllConversations {
+	if input.ConversationID > 0 {
 		query += " AND conversation_id = ?"
 		args = append(args, input.ConversationID)
+	} else {
+		query, args = appendConversationIDsFilter(query, args, "conversation_id", input.ConversationIDs)
 	}
 	if input.Since != nil {
 		query += " AND created_at >= ?"
@@ -1551,6 +1670,23 @@ func buildLikeQuery(query string, args []any, input SearchInput) (string, []any)
 		args = append(args, input.Limit)
 	}
 	return query, args
+}
+
+func appendConversationIDsFilter(
+	query string,
+	args []any,
+	column string,
+	conversationIDs []int64,
+) (string, []any) {
+	if len(conversationIDs) == 0 {
+		return query + " AND 1 = 0", args
+	}
+	placeholders := make([]string, len(conversationIDs))
+	for i, id := range conversationIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	return query + " AND " + column + " IN (" + strings.Join(placeholders, ",") + ")", args
 }
 
 // buildMessagesLikeQuery is like buildLikeQuery but adds role filtering for messages.
@@ -1626,9 +1762,16 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 	whereClauses := []string{"messages_fts MATCH ?"}
 	args := []any{sanitized}
 
-	if input.ConversationID > 0 && !input.AllConversations {
+	if input.ConversationID > 0 {
 		whereClauses = append(whereClauses, "m.conversation_id = ?")
 		args = append(args, input.ConversationID)
+	} else {
+		whereClauses, args = appendConversationIDsWhere(
+			whereClauses,
+			args,
+			"m.conversation_id",
+			input.ConversationIDs,
+		)
 	}
 
 	if input.Role != "" {
@@ -1684,6 +1827,23 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 		results[i].TotalCount = totalCount
 	}
 	return results, nil
+}
+
+func appendConversationIDsWhere(
+	where []string,
+	args []any,
+	column string,
+	conversationIDs []int64,
+) ([]string, []any) {
+	if len(conversationIDs) == 0 {
+		return append(where, "1 = 0"), args
+	}
+	placeholders := make([]string, len(conversationIDs))
+	for i, id := range conversationIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	return append(where, column+" IN ("+strings.Join(placeholders, ",")+")"), args
 }
 
 func (s *Store) searchMessagesLike(ctx context.Context, input SearchInput) ([]SearchResult, error) {
