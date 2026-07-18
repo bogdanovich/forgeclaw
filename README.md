@@ -472,6 +472,7 @@ For full MCP configuration (stdio, SSE, HTTP transports, Tool Discovery), see [T
 | `picoclaw auth weixin` | Connect WeChat account via QR |
 | `picoclaw agent -m "..."` | Chat with the agent              |
 | `picoclaw agent`          | Interactive chat mode            |
+| `picoclaw agent --stateless -m "..."` | Run without loading or saving conversation history |
 | `picoclaw gateway`        | Start the gateway                |
 | `picoclaw status`         | Show status                      |
 | `picoclaw version`        | Show version info                |

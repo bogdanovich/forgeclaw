@@ -27,20 +27,45 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
 ) (string, error) {
-	return al.processDirectWithChannel(ctx, content, sessionKey, channel, chatID, false)
+	return al.ProcessDirectWithOptions(ctx, content, sessionKey, channel, chatID, DirectTurnOptions{})
+}
+
+// DirectTurnOptions controls persistence for a directly invoked agent turn.
+type DirectTurnOptions struct {
+	// Stateless prevents the turn from loading or saving conversation history.
+	// Tool calls and results remain available for the duration of the turn.
+	Stateless bool
+}
+
+// ProcessDirectWithOptions processes a direct turn with explicit persistence semantics.
+func (al *AgentLoop) ProcessDirectWithOptions(
+	ctx context.Context,
+	content, sessionKey, channel, chatID string,
+	opts DirectTurnOptions,
+) (string, error) {
+	return al.processDirectWithChannel(ctx, content, sessionKey, channel, chatID, false, opts)
 }
 
 func (al *AgentLoop) ProcessScheduledWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
 ) (string, error) {
-	return al.processDirectWithChannel(ctx, content, sessionKey, channel, chatID, true)
+	return al.processDirectWithChannel(
+		ctx,
+		content,
+		sessionKey,
+		channel,
+		chatID,
+		true,
+		DirectTurnOptions{Stateless: true},
+	)
 }
 
 func (al *AgentLoop) processDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
 	scheduled bool,
+	directOpts DirectTurnOptions,
 ) (string, error) {
 	if err := al.ensureHooksInitialized(ctx); err != nil {
 		return "", err
@@ -63,7 +88,15 @@ func (al *AgentLoop) processDirectWithChannel(
 		return al.processScheduledMessage(ctx, msg)
 	}
 
-	return al.processMessage(ctx, msg)
+	turn, err := al.buildInboundMessageTurn(ctx, msg)
+	if err != nil {
+		return "", err
+	}
+	if directOpts.Stateless {
+		turn.Options.NoHistory = true
+		turn.Options.EnableSummary = false
+	}
+	return al.processInboundMessageTurn(ctx, turn)
 }
 
 func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {

@@ -10,6 +10,7 @@ func NewAgentCommand() *cobra.Command {
 		sessionKey string
 		model      string
 		debug      bool
+		stateless  bool
 	)
 
 	cmd := &cobra.Command{
@@ -17,7 +18,7 @@ func NewAgentCommand() *cobra.Command {
 		Short: "Interact with the agent directly",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return agentCmd(message, sessionKey, model, debug)
+			return agentCmd(message, sessionKey, model, debug, stateless)
 		},
 	}
 
@@ -25,6 +26,7 @@ func NewAgentCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Send a single message (non-interactive mode)")
 	cmd.Flags().StringVarP(&sessionKey, "session", "s", "cli:default", "Session key")
 	cmd.Flags().StringVarP(&model, "model", "", "", "Model to use")
+	cmd.Flags().BoolVar(&stateless, "stateless", false, "Do not load or save conversation history")
 
 	return cmd
 }

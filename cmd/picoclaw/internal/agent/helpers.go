@@ -18,7 +18,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-func agentCmd(message, sessionKey, model string, debug bool) error {
+func agentCmd(message, sessionKey, model string, debug, stateless bool) error {
 	if sessionKey == "" {
 		sessionKey = "cli:default"
 	}
@@ -76,7 +76,14 @@ func agentCmd(message, sessionKey, model string, debug bool) error {
 
 	if message != "" {
 		ctx := context.Background()
-		response, err := agentLoop.ProcessDirect(ctx, message, sessionKey)
+		response, err := agentLoop.ProcessDirectWithOptions(
+			ctx,
+			message,
+			sessionKey,
+			"cli",
+			"direct",
+			agent.DirectTurnOptions{Stateless: stateless},
+		)
 		if err != nil {
 			return fmt.Errorf("error processing message: %w", err)
 		}
@@ -85,12 +92,12 @@ func agentCmd(message, sessionKey, model string, debug bool) error {
 	}
 
 	fmt.Printf("%s Interactive mode (Ctrl+C to exit)\n\n", internal.Logo)
-	interactiveMode(agentLoop, sessionKey)
+	interactiveMode(agentLoop, sessionKey, stateless)
 
 	return nil
 }
 
-func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
+func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string, stateless bool) {
 	prompt := fmt.Sprintf("%s You: ", internal.Logo)
 
 	rl, err := readline.NewEx(&readline.Config{
@@ -103,7 +110,7 @@ func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 	if err != nil {
 		fmt.Printf("Error initializing readline: %v\n", err)
 		fmt.Println("Falling back to simple input mode...")
-		simpleInteractiveMode(agentLoop, sessionKey)
+		simpleInteractiveMode(agentLoop, sessionKey, stateless)
 		return
 	}
 	defer rl.Close()
@@ -130,7 +137,14 @@ func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 		}
 
 		ctx := context.Background()
-		response, err := agentLoop.ProcessDirect(ctx, input, sessionKey)
+		response, err := agentLoop.ProcessDirectWithOptions(
+			ctx,
+			input,
+			sessionKey,
+			"cli",
+			"direct",
+			agent.DirectTurnOptions{Stateless: stateless},
+		)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			continue
@@ -140,7 +154,7 @@ func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 	}
 }
 
-func simpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
+func simpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string, stateless bool) {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print(fmt.Sprintf("%s You: ", internal.Logo))
@@ -165,7 +179,14 @@ func simpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 		}
 
 		ctx := context.Background()
-		response, err := agentLoop.ProcessDirect(ctx, input, sessionKey)
+		response, err := agentLoop.ProcessDirectWithOptions(
+			ctx,
+			input,
+			sessionKey,
+			"cli",
+			"direct",
+			agent.DirectTurnOptions{Stateless: stateless},
+		)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			continue
