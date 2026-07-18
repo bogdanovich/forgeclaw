@@ -52,7 +52,7 @@ Parameters:
 - scope: "both" (default), "summary", or "message" - what to search
 - role: "user", "assistant", or omit for all - filter by message role
 - last: Time shortcut like "6h", "7d", "2w", "1m" (hours/days/weeks/months)
-- retrieval_scope: "current_epoch" (default), "conversation", or "workspace"
+- retrieval_scope: Trusted search boundary permitted by operator policy (default: "current_epoch")
 - since: ISO8601 timestamp, content after this time
 - before: ISO8601 timestamp, content before this time
 - limit: Max results (default: 20)
@@ -103,8 +103,8 @@ func (t *GrepTool) Parameters() map[string]any {
 			},
 			"retrieval_scope": map[string]any{
 				"type":        "string",
-				"enum":        []string{"current_epoch", "conversation", "workspace"},
-				"description": "Trusted search boundary (default: current_epoch)",
+				"enum":        t.engine.allowedRetrievalScopes(),
+				"description": "Trusted search boundary permitted by operator policy (default: current_epoch)",
 			},
 			"since": map[string]any{
 				"type":        "string",

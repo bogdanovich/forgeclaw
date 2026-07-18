@@ -143,6 +143,10 @@ The tool boundary reads the session key and scope from trusted execution context
 ID set into every FTS and LIKE query. An empty set matches nothing. Missing or legacy provenance is excluded, and
 `short_expand` checks the same resolved ID set so a message ID from `short_grep` cannot be expanded across scope.
 
+An operator maximum is applied before those IDs are resolved. It defaults to `conversation`; `workspace` requires an
+explicit single-user deployment opt-in. The tools expose only scopes at or below that maximum in their schemas and
+still reject a manually supplied broader value, so model behavior cannot widen the configured privacy boundary.
+
 Both retrieval tools bound serialized output. Truncation is reported explicitly with advice and omitted-result counts;
 callers should narrow the pattern or expand message IDs in smaller batches.
 

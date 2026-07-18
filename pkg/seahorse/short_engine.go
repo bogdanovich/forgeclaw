@@ -26,6 +26,7 @@ type Config struct {
 	HistoryMaxTokens         int                              `json:"historyMaxTokens,omitempty"`
 	SummaryMaxTokens         int                              `json:"summaryMaxTokens,omitempty"`
 	RecentTailTurns          int                              `json:"recentTailTurns,omitempty"`
+	MaxRetrievalScope        string                           `json:"maxRetrievalScope,omitempty"`
 	ResultRetentionPolicy    toolpolicy.ResultRetentionPolicy `json:"-"`
 }
 
@@ -132,6 +133,9 @@ func (r *RetrievalEngine) Store() *Store {
 func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 	if err := config.validateBudgets(); err != nil {
 		return nil, fmt.Errorf("invalid context budget config: %w", err)
+	}
+	if _, err := config.effectiveMaxRetrievalScope(); err != nil {
+		return nil, fmt.Errorf("invalid retrieval policy config: %w", err)
 	}
 	if err := config.ResultRetentionPolicy.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid tool result retention config: %w", err)

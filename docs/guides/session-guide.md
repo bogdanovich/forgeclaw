@@ -197,12 +197,14 @@ When Seahorse context is enabled, lifecycle rotation does not make older epochs 
 | --- | --- |
 | `current_epoch` | Only the active lifecycle epoch. This is the default. |
 | `conversation` | All epochs of the same routed conversation. |
-| `workspace` | All conversations owned by the current agent in the workspace. |
+| `workspace` | All conversations owned by the current agent in the workspace, when the operator opts in. |
 
 The runtime resolves these boundaries from trusted session metadata. The model cannot provide route keys or agent IDs,
 and records without trusted provenance are excluded from broader searches. Use `conversation` for requests such as
 "find the meal I logged two days ago" after daily rotation. Use `workspace` only when the request explicitly requires
-searching across routed chats or topics.
+searching across routed chats or topics and the operator has set
+`agents.defaults.context_manager_config.maxRetrievalScope` to `workspace`. The operator maximum defaults to
+`conversation`; requests above it fail closed in both retrieval tools.
 
 Search and expansion results have strict context-size limits. A truncated result includes `truncated`, a
 `truncation_notice`, and omitted-result counts so the agent can narrow the query or expand fewer message IDs.
