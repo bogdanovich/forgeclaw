@@ -27,14 +27,16 @@ func (a *Assembler) assembleWithAbsoluteBudgets(
 	historyBudget := a.config.historyBudget(input.Budget)
 	summaryBudget := a.config.summaryBudget(input.Budget)
 
-	selectedMessages, recentTailTurns, recentTailTokens, err := selectBoundedMessageTurns(
+	selection, err := selectBoundedMessageTurns(
 		messages,
 		historyBudget,
+		input.Budget,
 		a.config.RecentTailTurns,
 	)
 	if err != nil {
 		return nil, err
 	}
+	selectedMessages := selection.messages
 	selectedHistoryTokens := resolvedItemsTokenCount(selectedMessages)
 	availableForSummaries := input.Budget - selectedHistoryTokens
 	summarySelectionBudget := summaryBudget
@@ -84,17 +86,26 @@ func (a *Assembler) assembleWithAbsoluteBudgets(
 		summaryBudget,
 		input.Budget,
 	)
+	if selection.overflowTokens > 0 {
+		pressureReasons = append(pressureReasons, "recent_tail_over_history_budget")
+	}
+	if selection.degraded {
+		pressureReasons = append(pressureReasons, "recent_tail_degraded")
+	}
 	selectedMessageCount, selectedSummaryCount := countResolvedItemTypes(final)
 	report := &AssembleBudgetReport{
-		TotalBudget:           input.Budget,
-		HistoryBudget:         historyBudget,
-		SummaryBudget:         summaryBudget,
-		SourceHistoryTokens:   sourceHistoryTokens,
-		SourceSummaryTokens:   sourceSummaryTokens,
-		SelectedHistoryTokens: selectedHistoryTokens,
-		SelectedSummaryTokens: selectedSummaryTokens,
-		RecentTailTurns:       recentTailTurns,
-		RecentTailTokens:      recentTailTokens,
+		TotalBudget:              input.Budget,
+		HistoryBudget:            historyBudget,
+		SummaryBudget:            summaryBudget,
+		SourceHistoryTokens:      sourceHistoryTokens,
+		SourceSummaryTokens:      sourceSummaryTokens,
+		SelectedHistoryTokens:    selectedHistoryTokens,
+		SelectedSummaryTokens:    selectedSummaryTokens,
+		RequestedRecentTailTurns: selection.requestedTurns,
+		RecentTailTurns:          selection.selectedTurns,
+		RecentTailTokens:         selection.tailTokens,
+		RecentTailOverflowTokens: selection.overflowTokens,
+		RecentTailDegraded:       selection.degraded,
 		Truncated: selectedMessageCount < len(messages) ||
 			selectedSummaryCount < len(summaries),
 		NeedsCompaction: len(pressureReasons) > 0,
@@ -102,19 +113,22 @@ func (a *Assembler) assembleWithAbsoluteBudgets(
 	}
 	result.Budget = report
 	logger.InfoCF("seahorse", "assemble: absolute context budget selected", map[string]any{
-		"conv_id":                 convID,
-		"total_budget":            report.TotalBudget,
-		"history_budget":          report.HistoryBudget,
-		"summary_budget":          report.SummaryBudget,
-		"source_history_tokens":   report.SourceHistoryTokens,
-		"source_summary_tokens":   report.SourceSummaryTokens,
-		"selected_history_tokens": report.SelectedHistoryTokens,
-		"selected_summary_tokens": report.SelectedSummaryTokens,
-		"recent_tail_turns":       report.RecentTailTurns,
-		"recent_tail_tokens":      report.RecentTailTokens,
-		"truncated":               report.Truncated,
-		"needs_compaction":        report.NeedsCompaction,
-		"pressure_reasons":        report.PressureReasons,
+		"conv_id":                     convID,
+		"total_budget":                report.TotalBudget,
+		"history_budget":              report.HistoryBudget,
+		"summary_budget":              report.SummaryBudget,
+		"source_history_tokens":       report.SourceHistoryTokens,
+		"source_summary_tokens":       report.SourceSummaryTokens,
+		"selected_history_tokens":     report.SelectedHistoryTokens,
+		"selected_summary_tokens":     report.SelectedSummaryTokens,
+		"requested_recent_tail_turns": report.RequestedRecentTailTurns,
+		"recent_tail_turns":           report.RecentTailTurns,
+		"recent_tail_tokens":          report.RecentTailTokens,
+		"recent_tail_overflow_tokens": report.RecentTailOverflowTokens,
+		"recent_tail_degraded":        report.RecentTailDegraded,
+		"truncated":                   report.Truncated,
+		"needs_compaction":            report.NeedsCompaction,
+		"pressure_reasons":            report.PressureReasons,
 	})
 	return result, nil
 }
@@ -133,59 +147,83 @@ func partitionResolvedItems(items []resolvedItem) ([]resolvedItem, []resolvedIte
 	return messages, summaries
 }
 
+type boundedTurnSelection struct {
+	messages       []resolvedItem
+	requestedTurns int
+	selectedTurns  int
+	tailTokens     int
+	overflowTokens int
+	degraded       bool
+}
+
 func selectBoundedMessageTurns(
 	messages []resolvedItem,
-	budget int,
-	minimumRecentTurns int,
-) ([]resolvedItem, int, int, error) {
+	historyTarget int,
+	hardBudget int,
+	requestedRecentTurns int,
+) (boundedTurnSelection, error) {
 	if len(messages) == 0 {
-		return nil, 0, 0, nil
+		return boundedTurnSelection{}, nil
 	}
 	turnStarts := resolvedMessageTurnStarts(messages)
-	protectedTurns := minimumRecentTurns
-	if protectedTurns > len(turnStarts) {
-		protectedTurns = len(turnStarts)
+	requestedTurns := requestedRecentTurns
+	if requestedTurns > len(turnStarts) {
+		requestedTurns = len(turnStarts)
 	}
 
 	selectionStart := len(messages)
 	startIndex := len(turnStarts) - 1
+	selectedTurns := requestedTurns
 	protectedTokens := 0
-	if protectedTurns > 0 {
-		startIndex = len(turnStarts) - protectedTurns
+	for selectedTurns > 0 {
+		startIndex = len(turnStarts) - selectedTurns
 		selectionStart = turnStarts[startIndex]
 		protectedTokens = resolvedItemsTokenCount(messages[selectionStart:])
-		if protectedTokens > budget {
-			return nil, protectedTurns, protectedTokens, fmt.Errorf(
-				"mandatory recent tail cannot fit history budget: turns=%d tokens=%d budget=%d",
-				protectedTurns,
-				protectedTokens,
-				budget,
-			)
+		if protectedTokens <= hardBudget {
+			startIndex--
+			break
 		}
-		startIndex--
+		selectedTurns--
+		selectionStart = len(messages)
+		protectedTokens = 0
 	}
 
+	selectionBudget := historyTarget
+	if selectionBudget > hardBudget {
+		selectionBudget = hardBudget
+	}
+	if protectedTokens > selectionBudget {
+		selectionBudget = protectedTokens
+	}
 	selectedTokens := protectedTokens
 	for startIndex >= 0 {
 		candidateStart := turnStarts[startIndex]
 		candidateTokens := resolvedItemsTokenCount(messages[candidateStart:selectionStart])
-		if selectedTokens+candidateTokens > budget {
+		if selectedTokens+candidateTokens > selectionBudget {
 			break
 		}
 		selectionStart = candidateStart
 		selectedTokens += candidateTokens
 		startIndex--
 	}
+	result := boundedTurnSelection{
+		requestedTurns: requestedTurns,
+		selectedTurns:  selectedTurns,
+		tailTokens:     protectedTokens,
+		overflowTokens: max(0, protectedTokens-historyTarget),
+		degraded:       selectedTurns < requestedTurns,
+	}
 	if selectionStart == len(messages) {
-		return nil, protectedTurns, protectedTokens, nil
+		return result, nil
 	}
 	selected := append([]resolvedItem(nil), messages[selectionStart:]...)
 	if !isProviderSafeHistoryStart(selected) {
-		return nil, protectedTurns, protectedTokens, fmt.Errorf(
+		return boundedTurnSelection{}, fmt.Errorf(
 			"selected history does not start at a provider-safe turn boundary",
 		)
 	}
-	return selected, protectedTurns, protectedTokens, nil
+	result.messages = selected
+	return result, nil
 }
 
 func resolvedMessageTurnStarts(messages []resolvedItem) []int {

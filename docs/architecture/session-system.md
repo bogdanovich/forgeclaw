@@ -154,19 +154,22 @@ calling the context manager and passes only the remaining capacity to Seahorse.
 
 When configured, Seahorse applies three independent controls:
 
-- `historyMaxTokens` for raw messages
+- `historyMaxTokens` as the target for raw messages
 - `summaryMaxTokens` for the rendered summary and its guidance
 - `recentTailTurns` for the minimum number of newest complete user turns kept raw
 
-The model context remainder is always the outer hard limit. Selection prioritizes the guaranteed recent turns, then
-adds older complete turns, then adds the newest summaries that fit. It never splits a user turn or a tool-call/result
-sequence. Stored token metadata is treated as a lower bound; assembly re-estimates full messages and rendered summary
-text so stale counts cannot bypass a cap.
+The model context remainder is always the outer hard limit. Selection prioritizes the requested recent turns, then
+adds older complete turns up to the history target, then adds the newest summaries that fit. A recent tail may exceed
+`historyMaxTokens` when it still fits the outer limit. If the requested tail itself exceeds that hard limit, selection
+drops its oldest complete turns until the remainder fits. It never splits a user turn or a tool-call/result sequence.
+Stored token metadata is treated as a lower bound; assembly re-estimates full messages and rendered summary text so
+stale counts cannot bypass a limit.
 
-If non-history plus output reserves consume the model window, or the mandatory recent tail exceeds its history/total
-budget, assembly returns an error and the Pipeline does not call the provider. Otherwise, source data over any absolute
-cap produces a structured budget report, a context-pressure event, and deduplicated background compaction. Forced
-compaction may bypass the legacy message-count tail, but never an explicitly configured recent-turn boundary.
+If non-history plus output reserves consume the model window, assembly returns an error and the Pipeline does not call
+the provider. Otherwise, source data over a configured target produces a structured budget report, a context-pressure
+event, and deduplicated background compaction. Reports distinguish requested and retained recent turns and expose tail
+overflow or hard-limit degradation. Forced compaction may bypass the legacy message-count tail, but never splits an
+explicit recent turn.
 
 ## Tool Result Projection
 

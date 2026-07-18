@@ -60,18 +60,21 @@ type AssembleResult struct {
 
 // AssembleBudgetReport describes bounded context selection and pressure.
 type AssembleBudgetReport struct {
-	TotalBudget           int      `json:"totalBudget"`
-	HistoryBudget         int      `json:"historyBudget"`
-	SummaryBudget         int      `json:"summaryBudget"`
-	SourceHistoryTokens   int      `json:"sourceHistoryTokens"`
-	SourceSummaryTokens   int      `json:"sourceSummaryTokens"`
-	SelectedHistoryTokens int      `json:"selectedHistoryTokens"`
-	SelectedSummaryTokens int      `json:"selectedSummaryTokens"`
-	RecentTailTurns       int      `json:"recentTailTurns"`
-	RecentTailTokens      int      `json:"recentTailTokens"`
-	Truncated             bool     `json:"truncated"`
-	NeedsCompaction       bool     `json:"needsCompaction"`
-	PressureReasons       []string `json:"pressureReasons,omitempty"`
+	TotalBudget              int      `json:"totalBudget"`
+	HistoryBudget            int      `json:"historyBudget"`
+	SummaryBudget            int      `json:"summaryBudget"`
+	SourceHistoryTokens      int      `json:"sourceHistoryTokens"`
+	SourceSummaryTokens      int      `json:"sourceSummaryTokens"`
+	SelectedHistoryTokens    int      `json:"selectedHistoryTokens"`
+	SelectedSummaryTokens    int      `json:"selectedSummaryTokens"`
+	RequestedRecentTailTurns int      `json:"requestedRecentTailTurns"`
+	RecentTailTurns          int      `json:"recentTailTurns"`
+	RecentTailTokens         int      `json:"recentTailTokens"`
+	RecentTailOverflowTokens int      `json:"recentTailOverflowTokens"`
+	RecentTailDegraded       bool     `json:"recentTailDegraded"`
+	Truncated                bool     `json:"truncated"`
+	NeedsCompaction          bool     `json:"needsCompaction"`
+	PressureReasons          []string `json:"pressureReasons,omitempty"`
 }
 
 const numSessionShards = 256
