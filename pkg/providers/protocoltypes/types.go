@@ -105,16 +105,17 @@ type ImageGenerationResponse struct {
 }
 
 type Message struct {
-	Role             string         `json:"role"`
-	Content          string         `json:"content"`
-	ModelName        string         `json:"model_name,omitempty"`
-	CreatedAt        *time.Time     `json:"created_at,omitempty"`
-	Media            []string       `json:"media,omitempty"`
-	Attachments      []Attachment   `json:"attachments,omitempty"`
-	ReasoningContent string         `json:"reasoning_content,omitempty"`
-	SystemParts      []ContentBlock `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
-	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
-	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	ModelName        string           `json:"model_name,omitempty"`
+	CreatedAt        *time.Time       `json:"created_at,omitempty"`
+	Media            []string         `json:"media,omitempty"`
+	Attachments      []Attachment     `json:"attachments,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	SystemParts      []ContentBlock   `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
+	ToolCalls        []ToolCall       `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ToolResultStatus ToolResultStatus `json:"tool_result_status,omitempty"`
 
 	// Prompt metadata is internal to the agent runtime. It records where a
 	// message or system part came from without changing provider/session JSON.
@@ -123,6 +124,16 @@ type Message struct {
 	PromptSource   string `json:"-"`
 	InboundSpoolID string `json:"-"`
 }
+
+// ToolResultStatus records whether a persisted tool result is safe to compact.
+// Empty means unknown and must be treated conservatively.
+type ToolResultStatus string
+
+const (
+	ToolResultStatusSuccess    ToolResultStatus = "success"
+	ToolResultStatusError      ToolResultStatus = "error"
+	ToolResultStatusUnresolved ToolResultStatus = "unresolved"
+)
 
 type ToolDefinition struct {
 	Type     string                 `json:"type"`

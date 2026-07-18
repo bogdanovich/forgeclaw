@@ -459,14 +459,17 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 	for i, p := range parts {
 		_, err = tx.ExecContext(
 			ctx,
-			`INSERT INTO message_parts (message_id, type, text, name, arguments, tool_call_id, media_uri, mime_type, ordinal)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO message_parts (
+				message_id, type, text, name, arguments, tool_call_id,
+				tool_result_status, media_uri, mime_type, ordinal
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			msgID,
 			p.Type,
 			p.Text,
 			p.Name,
 			p.Arguments,
 			p.ToolCallID,
+			p.ToolResultStatus,
 			p.MediaURI,
 			p.MimeType,
 			i,
@@ -575,7 +578,7 @@ func (s *Store) loadMessagePartsChunk(
 		args = append(args, messages[i].ID)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT part_id, message_id, type, text,
-		name, arguments, tool_call_id, media_uri, mime_type, ordinal
+		name, arguments, tool_call_id, tool_result_status, media_uri, mime_type, ordinal
 		FROM message_parts WHERE message_id IN (`+placeholders+`)
 		ORDER BY message_id, ordinal`, args...)
 	if err != nil {
@@ -586,7 +589,7 @@ func (s *Store) loadMessagePartsChunk(
 		var part MessagePart
 		var ordinal int
 		if scanErr := rows.Scan(&part.ID, &part.MessageID, &part.Type, &part.Text,
-			&part.Name, &part.Arguments, &part.ToolCallID, &part.MediaURI,
+			&part.Name, &part.Arguments, &part.ToolCallID, &part.ToolResultStatus, &part.MediaURI,
 			&part.MimeType, &ordinal); scanErr != nil {
 			return scanErr
 		}
@@ -695,7 +698,8 @@ func (s *Store) UpdateMessageCreatedAt(ctx context.Context, messageID int64, cre
 
 func (s *Store) loadMessageParts(ctx context.Context, msgID int64) ([]MessagePart, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT part_id, message_id, type, text, name, arguments, tool_call_id, media_uri, mime_type
+		`SELECT part_id, message_id, type, text, name, arguments, tool_call_id,
+		        tool_result_status, media_uri, mime_type
 		 FROM message_parts WHERE message_id = ? ORDER BY ordinal`,
 		msgID,
 	)
@@ -708,7 +712,7 @@ func (s *Store) loadMessageParts(ctx context.Context, msgID int64) ([]MessagePar
 	for rows.Next() {
 		var p MessagePart
 		if err := rows.Scan(&p.ID, &p.MessageID, &p.Type, &p.Text, &p.Name, &p.Arguments,
-			&p.ToolCallID, &p.MediaURI, &p.MimeType); err != nil {
+			&p.ToolCallID, &p.ToolResultStatus, &p.MediaURI, &p.MimeType); err != nil {
 			return nil, err
 		}
 		parts = append(parts, p)

@@ -358,6 +358,49 @@ Absolute pressure schedules background compaction even when the model context wi
 logs and `agent.context.compress` events include reserves, source and selected token counts, tail size, truncation, and
 the pressure reason.
 
+### Tool Result Retention
+
+Seahorse can project successful tool results into a smaller future prompt without changing canonical session history or
+the stored audit message:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "context_manager": "seahorse",
+      "context_manager_config": {
+        "toolResultRetention": {
+          "get_day_summary": {
+            "mode": "transient"
+          },
+          "lookup_reference_food": {
+            "mode": "compact_receipt",
+            "receipt": "Reference lookup completed; repeat the lookup if exact values are needed."
+          },
+          "log_meal": {
+            "mode": "durable",
+            "receipt": "Meal saved in the Nutrition database; query the database for current values."
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Rules use exact tool names and support:
+
+- `preserve`: retain the full result; this is the default for tools without a rule.
+- `compact_receipt`: replace a resolved successful result with the configured receipt in future prompts.
+- `transient`: omit a resolved successful result and its matching assistant tool call from future prompts.
+- `durable`: declare that the tool writes to an external source of truth and retain only the configured receipt.
+
+`compact_receipt` and `durable` require a non-empty receipt of at most 1024 bytes. Rules apply only when the runtime
+persisted an explicit `success` status. Errors, async/unresolved results, legacy results with unknown status, and results
+with media remain fully preserved regardless of configuration. The current active turn always sees the full result.
+Projection also runs before Seahorse summary generation, so transient output is not reintroduced through a new summary.
+Raw JSONL and Seahorse message rows remain unchanged and available to audit and scoped historical retrieval.
+
 ### Final Turn Render
 
 `agents.defaults.final_turn_render_mode` controls an experimental final-response render pass for steering-heavy turns.

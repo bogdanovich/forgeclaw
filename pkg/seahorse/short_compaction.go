@@ -328,6 +328,9 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 		}
 		messages = append(messages, *msg)
 	}
+	sourceMessages := messages
+	messages, projection := projectToolResultMessages(messages, e.config)
+	logToolResultProjection("compaction", convID, projection)
 
 	// Get prior summaries for context
 	priorSummary := ""
@@ -352,9 +355,9 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 	tokenCount := tokenizer.EstimateMessageTokens(providers.Message{Content: content})
 
 	var earliestAt, latestAt *time.Time
-	if len(messages) > 0 {
-		earliestAt = &messages[0].CreatedAt
-		latestAt = &messages[len(messages)-1].CreatedAt
+	if len(sourceMessages) > 0 {
+		earliestAt = &sourceMessages[0].CreatedAt
+		latestAt = &sourceMessages[len(sourceMessages)-1].CreatedAt
 	}
 
 	summary, err := e.store.CreateSummary(ctx, CreateSummaryInput{
@@ -365,15 +368,15 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 		TokenCount:          tokenCount,
 		EarliestAt:          earliestAt,
 		LatestAt:            latestAt,
-		SourceMessageTokens: sumMessageTokens(messages),
+		SourceMessageTokens: sumMessageTokens(sourceMessages),
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	// Link to source messages
-	msgIDs := make([]int64, len(messages))
-	for i, m := range messages {
+	msgIDs := make([]int64, len(sourceMessages))
+	for i, m := range sourceMessages {
 		msgIDs[i] = m.ID
 	}
 	if err := e.store.LinkSummaryToMessages(ctx, summary.SummaryID, msgIDs); err != nil {

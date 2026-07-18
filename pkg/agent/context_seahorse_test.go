@@ -142,6 +142,25 @@ func TestProviderToSeahorseMessageWithToolResult(t *testing.T) {
 	}
 }
 
+func TestProviderToSeahorseMessagePreservesToolResultStatus(t *testing.T) {
+	input := protocoltypes.Message{
+		Role:             "tool",
+		Content:          "write failed",
+		ToolCallID:       "tc-status",
+		ToolResultStatus: protocoltypes.ToolResultStatusError,
+	}
+	stored := providerToSeahorseMessage(input)
+	if len(stored.Parts) != 1 || stored.Parts[0].ToolResultStatus != "error" {
+		t.Fatalf("stored tool result = %#v", stored.Parts)
+	}
+	result := seahorseToProviderMessages(&seahorse.AssembleResult{
+		Messages: []seahorse.Message{stored},
+	})
+	if len(result) != 1 || result[0].ToolResultStatus != protocoltypes.ToolResultStatusError {
+		t.Fatalf("round-trip status = %#v", result)
+	}
+}
+
 func TestProviderToSeahorseMessageWithMedia(t *testing.T) {
 	msg := protocoltypes.Message{
 		Role:    "user",

@@ -18,13 +18,14 @@ import (
 
 // Config holds engine configuration.
 type Config struct {
-	DBPath                   string   `json:"dbPath"`
-	IgnoreSessionPatterns    []string `json:"ignoreSessionPatterns,omitempty"`
-	StatelessSessionPatterns []string `json:"statelessSessionPatterns,omitempty"`
-	FreshTailMaxTokens       int      `json:"freshTailMaxTokens,omitempty"`
-	HistoryMaxTokens         int      `json:"historyMaxTokens,omitempty"`
-	SummaryMaxTokens         int      `json:"summaryMaxTokens,omitempty"`
-	RecentTailTurns          int      `json:"recentTailTurns,omitempty"`
+	DBPath                   string                             `json:"dbPath"`
+	IgnoreSessionPatterns    []string                           `json:"ignoreSessionPatterns,omitempty"`
+	StatelessSessionPatterns []string                           `json:"statelessSessionPatterns,omitempty"`
+	FreshTailMaxTokens       int                                `json:"freshTailMaxTokens,omitempty"`
+	HistoryMaxTokens         int                                `json:"historyMaxTokens,omitempty"`
+	SummaryMaxTokens         int                                `json:"summaryMaxTokens,omitempty"`
+	RecentTailTurns          int                                `json:"recentTailTurns,omitempty"`
+	ToolResultRetention      map[string]ToolResultRetentionRule `json:"toolResultRetention,omitempty"`
 }
 
 // CompleteFn is the LLM completion function type.
@@ -127,6 +128,9 @@ func (r *RetrievalEngine) Store() *Store {
 func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 	if err := config.validateBudgets(); err != nil {
 		return nil, fmt.Errorf("invalid context budget config: %w", err)
+	}
+	if err := config.validateToolResultRetention(); err != nil {
+		return nil, fmt.Errorf("invalid tool result retention config: %w", err)
 	}
 	dir := filepath.Dir(config.DBPath)
 	if dir != "" && dir != "." {
@@ -837,7 +841,9 @@ func partsMatch(a, b []MessagePart) bool {
 				return false
 			}
 		case "tool_result":
-			if a[i].ToolCallID != b[i].ToolCallID || a[i].Text != b[i].Text {
+			if a[i].ToolCallID != b[i].ToolCallID ||
+				a[i].Text != b[i].Text ||
+				a[i].ToolResultStatus != b[i].ToolResultStatus {
 				return false
 			}
 		case "media":

@@ -168,6 +168,22 @@ budget, assembly returns an error and the Pipeline does not call the provider. O
 cap produces a structured budget report, a context-pressure event, and deduplicated background compaction. Forced
 compaction may bypass the legacy message-count tail, but never an explicitly configured recent-turn boundary.
 
+## Tool Result Projection
+
+Tool-result retention is a prompt projection, not destructive history cleanup. The agent records an explicit persisted
+result status when execution resolves: successful, failed, or unresolved. Canonical JSONL and Seahorse message rows keep
+the full result and status across reconciliation and restart. Missing status is unknown and therefore conservative.
+
+At future assembly and before leaf-summary generation, Seahorse joins each result to its assistant tool call and applies
+the exact-name workspace rule. Successful results may remain full, become a bounded receipt, or be omitted. Omitting a
+result also removes only its matching tool call; other calls and results in the same assistant batch remain paired. A
+receipt keeps the matching call so provider history remains valid.
+
+Errors, unresolved operations, unknown status, multiple or ambiguous result parts, and media-bearing output bypass
+projection. `durable` is an explicit operator assertion that the configured tool writes to an external source of truth;
+the receipt should tell the model how to query that source again. Runtime logs report preserved, safety-preserved,
+receipted, durable, and transient counts without recording result content.
+
 ## Scope Construction Rules
 
 `pkg/session/allocator.go` builds scope values from normalized inbound context.

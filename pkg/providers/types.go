@@ -16,6 +16,7 @@ type (
 	StreamChunk             = protocoltypes.StreamChunk
 	UsageInfo               = protocoltypes.UsageInfo
 	Message                 = protocoltypes.Message
+	ToolResultStatus        = protocoltypes.ToolResultStatus
 	ToolDefinition          = protocoltypes.ToolDefinition
 	ToolFunctionDefinition  = protocoltypes.ToolFunctionDefinition
 	ExtraContent            = protocoltypes.ExtraContent
@@ -26,6 +27,12 @@ type (
 	ImageGenerationRequest  = protocoltypes.ImageGenerationRequest
 	GeneratedImage          = protocoltypes.GeneratedImage
 	ImageGenerationResponse = protocoltypes.ImageGenerationResponse
+)
+
+const (
+	ToolResultStatusSuccess    = protocoltypes.ToolResultStatusSuccess
+	ToolResultStatusError      = protocoltypes.ToolResultStatusError
+	ToolResultStatusUnresolved = protocoltypes.ToolResultStatusUnresolved
 )
 
 type LLMProvider interface {
