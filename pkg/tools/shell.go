@@ -217,7 +217,7 @@ func (t *ExecTool) Name() string {
 }
 
 func (t *ExecTool) Description() string {
-	return `Execute shell commands. Use background=true for long-running commands (returns sessionId). Use pty=true for interactive commands (can combine with background=true). Use poll/read/write/send-keys/kill with sessionId to manage background sessions. Sessions auto-cleanup 30 minutes after process exits; use kill to terminate early. Output buffer limit: 1MB.`
+	return `Execute shell commands. Use background=true for commands that only need to run while the current gateway process remains alive (returns sessionId). Background sessions are process-local and not restart-safe: a gateway restart loses the session and may terminate its process. Use a durable task system for work that must survive restarts. Use pty=true for interactive commands (can combine with background=true). Use poll/read/write/send-keys/kill with sessionId to manage background sessions. Sessions auto-cleanup 30 minutes after process exits; use kill to terminate early. Output buffer limit: 1MB.`
 }
 
 func (t *ExecTool) Parameters() map[string]any {
@@ -235,7 +235,7 @@ func (t *ExecTool) Parameters() map[string]any {
 			},
 			"sessionId": map[string]any{
 				"type":        "string",
-				"description": "Session ID (required for poll/read/write/kill/send-keys)",
+				"description": "Process-local session ID (required for poll/read/write/kill/send-keys; invalid after gateway restart)",
 			},
 			"keys": map[string]any{
 				"type":        "string",
@@ -247,7 +247,7 @@ func (t *ExecTool) Parameters() map[string]any {
 			},
 			"background": map[string]any{
 				"type":        "string",
-				"description": "Run in background immediately",
+				"description": "Run in background immediately; the session is process-local and not restart-safe",
 			},
 			"pty": map[string]any{
 				"type":        "string",
@@ -771,9 +771,12 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		}()
 	}
 
+	restartSafe := false
 	resp := ExecResponse{
-		SessionID: sessionID,
-		Status:    "running",
+		SessionID:    sessionID,
+		SessionScope: "process_local",
+		RestartSafe:  &restartSafe,
+		Status:       "running",
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
