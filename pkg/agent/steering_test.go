@@ -782,6 +782,7 @@ func (f *fixedTranscriber) Transcribe(
 
 type blockingDirectProvider struct {
 	mu             sync.Mutex
+	firstStartOnce sync.Once
 	calls          int
 	firstStarted   chan struct{}
 	releaseFirst   chan struct{}
@@ -805,8 +806,7 @@ func (p *blockingDirectProvider) Chat(
 	firstResp := p.firstResp
 	finalResp := p.finalResp
 	if call == 1 && p.firstStarted != nil {
-		close(p.firstStarted)
-		p.firstStarted = nil
+		p.firstStartOnce.Do(func() { close(p.firstStarted) })
 	}
 	if call == 2 {
 		p.secondMessages = append([]providers.Message(nil), messages...)
