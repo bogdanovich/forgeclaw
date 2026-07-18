@@ -124,9 +124,23 @@ const (
 
 // ContextCompressPayload describes a forced history compression.
 type ContextCompressPayload struct {
-	Reason            ContextCompressReason
-	DroppedMessages   int
-	RemainingMessages int
+	Reason                ContextCompressReason
+	DroppedMessages       int
+	RemainingMessages     int
+	ContextWindow         int
+	OutputReserve         int
+	NonHistoryReserve     int
+	AvailableContext      int
+	HistoryBudget         int
+	SummaryBudget         int
+	SourceHistoryTokens   int
+	SourceSummaryTokens   int
+	SelectedHistoryTokens int
+	SelectedSummaryTokens int
+	RecentTailTurns       int
+	RecentTailTokens      int
+	Truncated             bool
+	PressureReasons       []string
 }
 
 type ContextSnapshotPayload struct {

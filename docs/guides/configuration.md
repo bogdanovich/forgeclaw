@@ -324,6 +324,40 @@ For step-by-step recipes and isolation patterns, see the [Session Guide](session
 Idle and max-age checkpoints persist across process restarts. See the Session Guide for complete examples and boundary
 semantics.
 
+### Absolute Seahorse Context Budgets
+
+Seahorse can enforce predictable prompt budgets independently of the model's full context window:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "context_manager": "seahorse",
+      "context_manager_config": {
+        "historyMaxTokens": 12000,
+        "summaryMaxTokens": 3000,
+        "recentTailTurns": 2
+      }
+    }
+  }
+}
+```
+
+- `historyMaxTokens` caps raw conversation messages selected for a turn.
+- `summaryMaxTokens` caps the fully rendered Seahorse summary, including its XML and guidance text.
+- `recentTailTurns` guarantees that the newest complete user turns remain raw, including assistant tool calls and their
+  tool results.
+
+Each value is optional and zero disables that separate cap. When any value is enabled, the runtime first reserves the
+current system prompt, active skills, visible tool schemas, media, and `max_tokens`. The remaining model capacity is an
+additional hard ceiling over the configured history and summary caps. If mandatory prompt content or the configured
+recent-turn tail cannot fit, the turn fails closed with an actionable context-budget error instead of sending an
+oversized request.
+
+Absolute pressure schedules background compaction even when the model context window is not close to full. Structured
+logs and `agent.context.compress` events include reserves, source and selected token counts, tail size, truncation, and
+the pressure reason.
+
 ### Final Turn Render
 
 `agents.defaults.final_turn_render_mode` controls an experimental final-response render pass for steering-heavy turns.

@@ -114,37 +114,68 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 
 	budget := req.Budget
 	if budget <= 0 {
-		budget = 100000
+		return nil, fmt.Errorf("seahorse assemble: context window must be positive")
 	}
 
 	// Reserve space for model response and non-history prompt/tool material.
 	effectiveBudget := budget - req.MaxTokens - req.ReserveTokens
 	if effectiveBudget <= 0 {
-		// Reserve >= budget is a configuration/problem-size issue. Use 50% as
-		// a defensive minimum so assembly still returns some bounded context.
-		logger.WarnCF("agent", "context reserve exceeds budget, using 50% fallback",
-			map[string]any{
-				"budget":         budget,
-				"max_tokens":     req.MaxTokens,
-				"reserve_tokens": req.ReserveTokens,
-			})
-		effectiveBudget = budget / 2
+		logger.ErrorCF("agent", "mandatory prompt content exceeds context window", map[string]any{
+			"context_window":      budget,
+			"output_reserve":      req.MaxTokens,
+			"non_history_reserve": req.ReserveTokens,
+			"available_context":   effectiveBudget,
+		})
+		return nil, fmt.Errorf(
+			"mandatory prompt content cannot fit context window: window=%d output_reserve=%d non_history_reserve=%d",
+			budget,
+			req.MaxTokens,
+			req.ReserveTokens,
+		)
 	}
 
 	result, err := m.engine.Assemble(ctx, req.SessionKey, seahorse.AssembleInput{
 		Budget: effectiveBudget,
 	})
 	if err != nil {
+		logger.ErrorCF("seahorse", "context assembly failed closed", map[string]any{
+			"session_key":         req.SessionKey,
+			"context_window":      budget,
+			"output_reserve":      req.MaxTokens,
+			"non_history_reserve": req.ReserveTokens,
+			"available_context":   effectiveBudget,
+			"error":               err.Error(),
+		})
 		return nil, fmt.Errorf("seahorse assemble: %w", err)
 	}
 
 	history := seahorseToProviderMessages(result)
 
 	// Summary is already formatted as XML with system prompt addition by assembler
-	return &AssembleResponse{
+	response := &AssembleResponse{
 		History: history,
 		Summary: result.Summary,
-	}, nil
+	}
+	if result.Budget != nil {
+		response.Budget = &ContextBudgetReport{
+			ContextWindow:         budget,
+			OutputReserve:         req.MaxTokens,
+			NonHistoryReserve:     req.ReserveTokens,
+			AvailableContext:      result.Budget.TotalBudget,
+			HistoryBudget:         result.Budget.HistoryBudget,
+			SummaryBudget:         result.Budget.SummaryBudget,
+			SourceHistoryTokens:   result.Budget.SourceHistoryTokens,
+			SourceSummaryTokens:   result.Budget.SourceSummaryTokens,
+			SelectedHistoryTokens: result.Budget.SelectedHistoryTokens,
+			SelectedSummaryTokens: result.Budget.SelectedSummaryTokens,
+			RecentTailTurns:       result.Budget.RecentTailTurns,
+			RecentTailTokens:      result.Budget.RecentTailTokens,
+			Truncated:             result.Budget.Truncated,
+			NeedsCompaction:       result.Budget.NeedsCompaction,
+			PressureReasons:       append([]string(nil), result.Budget.PressureReasons...),
+		}
+	}
+	return response, nil
 }
 
 // Compact compresses conversation history via seahorse summarization.
@@ -166,7 +197,9 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 	// must stay latency-bounded for interactive turns; SetupTurn performs a
 	// cheap history trim after this normal compact pass if the prompt is still
 	// over budget.
-	if req.Reason == ContextCompressReasonRetry && req.Budget > 0 {
+	if (req.Reason == ContextCompressReasonRetry ||
+		(req.Reason == ContextCompressReasonProactive && m.engine.AbsoluteBudgetsEnabled())) &&
+		req.Budget > 0 {
 		_, err := m.engine.CompactUntilUnder(ctx, req.SessionKey, req.Budget)
 		return err
 	}

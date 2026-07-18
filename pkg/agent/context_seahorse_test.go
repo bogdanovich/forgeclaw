@@ -538,6 +538,72 @@ func TestSeahorseAdapterAssembleSubtractsMaxTokens(t *testing.T) {
 	}
 }
 
+func TestSeahorseAdapterReportsAbsoluteBudgetPressureBelowContextWindow(t *testing.T) {
+	engine, err := seahorse.NewEngine(seahorse.Config{
+		DBPath:           t.TempDir() + "/test.db",
+		HistoryMaxTokens: 160,
+		SummaryMaxTokens: 200,
+		RecentTailTurns:  1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	mgr := &seahorseContextManager{engine: engine}
+	ctx := context.Background()
+	for turn := 0; turn < 3; turn++ {
+		for _, message := range []providers.Message{
+			{Role: "user", Content: strings.Repeat("question ", 20)},
+			{Role: "assistant", Content: strings.Repeat("answer ", 20)},
+		} {
+			if ingestErr := mgr.Ingest(
+				ctx,
+				&IngestRequest{SessionKey: "absolute", Message: message},
+			); ingestErr != nil {
+				t.Fatal(ingestErr)
+			}
+		}
+	}
+
+	response, err := mgr.Assemble(ctx, &AssembleRequest{
+		SessionKey:    "absolute",
+		Budget:        10_000,
+		MaxTokens:     1_000,
+		ReserveTokens: 1_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Budget == nil || !response.Budget.NeedsCompaction ||
+		response.Budget.HistoryBudget != 160 || response.Budget.ContextWindow != 10_000 {
+		t.Fatalf("unexpected budget report: %#v", response.Budget)
+	}
+	if response.Budget.SelectedHistoryTokens > response.Budget.HistoryBudget {
+		t.Fatalf("selected history exceeds cap: %#v", response.Budget)
+	}
+}
+
+func TestSeahorseAdapterFailsClosedWhenMandatoryPromptCannotFit(t *testing.T) {
+	engine, err := seahorse.NewEngine(seahorse.Config{
+		DBPath:           t.TempDir() + "/test.db",
+		HistoryMaxTokens: 100,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	mgr := &seahorseContextManager{engine: engine}
+	_, err = mgr.Assemble(context.Background(), &AssembleRequest{
+		SessionKey:    "mandatory-overflow",
+		Budget:        1_000,
+		MaxTokens:     700,
+		ReserveTokens: 300,
+	})
+	if err == nil || !strings.Contains(err.Error(), "mandatory prompt content cannot fit") {
+		t.Fatalf("expected mandatory-content budget error, got %v", err)
+	}
+}
+
 func TestSeahorseCompactRetryUsesCompactUntilUnder(t *testing.T) {
 	// Track which engine method was called
 	var compactCalled, compactUntilCalled bool

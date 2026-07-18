@@ -180,11 +180,24 @@ func (al *AgentLoop) askSideQuestion(
 	var history []providers.Message
 	var summary string
 	if opts != nil && !opts.NoHistory {
-		if resp, err := al.contextManager.Assemble(ctx, &AssembleRequest{
-			SessionKey: opts.SessionKey,
-			Budget:     agent.ContextWindow,
-			MaxTokens:  agent.MaxTokens,
-		}); err == nil && resp != nil {
+		sideQuestionOpts := *opts
+		sideQuestionOpts.UserMessage = question
+		reserveTokens := estimateNonHistoryPromptReserveForProcessOptions(
+			al.GetConfig(),
+			agent,
+			sideQuestionOpts,
+			"",
+		)
+		resp, err := al.contextManager.Assemble(ctx, &AssembleRequest{
+			SessionKey:    opts.SessionKey,
+			Budget:        agent.ContextWindow,
+			MaxTokens:     agent.MaxTokens,
+			ReserveTokens: reserveTokens,
+		})
+		if err != nil {
+			return "", fmt.Errorf("assemble side-question context: %w", err)
+		}
+		if resp != nil {
 			history = resp.History
 			summary = resp.Summary
 		}

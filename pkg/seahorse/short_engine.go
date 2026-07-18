@@ -22,6 +22,9 @@ type Config struct {
 	IgnoreSessionPatterns    []string `json:"ignoreSessionPatterns,omitempty"`
 	StatelessSessionPatterns []string `json:"statelessSessionPatterns,omitempty"`
 	FreshTailMaxTokens       int      `json:"freshTailMaxTokens,omitempty"`
+	HistoryMaxTokens         int      `json:"historyMaxTokens,omitempty"`
+	SummaryMaxTokens         int      `json:"summaryMaxTokens,omitempty"`
+	RecentTailTurns          int      `json:"recentTailTurns,omitempty"`
 }
 
 // CompleteFn is the LLM completion function type.
@@ -48,8 +51,25 @@ type AssembleInput struct {
 
 // AssembleResult contains assembled context.
 type AssembleResult struct {
-	Messages []Message `json:"messages"`
-	Summary  string    `json:"summary"` // formatted XML summaries + system prompt addition
+	Messages []Message             `json:"messages"`
+	Summary  string                `json:"summary"` // formatted XML summaries + system prompt addition
+	Budget   *AssembleBudgetReport `json:"budget,omitempty"`
+}
+
+// AssembleBudgetReport describes bounded context selection and pressure.
+type AssembleBudgetReport struct {
+	TotalBudget           int      `json:"totalBudget"`
+	HistoryBudget         int      `json:"historyBudget"`
+	SummaryBudget         int      `json:"summaryBudget"`
+	SourceHistoryTokens   int      `json:"sourceHistoryTokens"`
+	SourceSummaryTokens   int      `json:"sourceSummaryTokens"`
+	SelectedHistoryTokens int      `json:"selectedHistoryTokens"`
+	SelectedSummaryTokens int      `json:"selectedSummaryTokens"`
+	RecentTailTurns       int      `json:"recentTailTurns"`
+	RecentTailTokens      int      `json:"recentTailTokens"`
+	Truncated             bool     `json:"truncated"`
+	NeedsCompaction       bool     `json:"needsCompaction"`
+	PressureReasons       []string `json:"pressureReasons,omitempty"`
 }
 
 const numSessionShards = 256
@@ -93,6 +113,11 @@ type RetrievalEngine struct {
 	config Config
 }
 
+// AbsoluteBudgetsEnabled reports whether separate context budgets are configured.
+func (e *Engine) AbsoluteBudgetsEnabled() bool {
+	return e != nil && e.config.absoluteBudgetsEnabled()
+}
+
 // Store returns the underlying store for direct access.
 func (r *RetrievalEngine) Store() *Store {
 	return r.store
@@ -100,6 +125,9 @@ func (r *RetrievalEngine) Store() *Store {
 
 // NewEngine creates a new short-term memory engine.
 func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
+	if err := config.validateBudgets(); err != nil {
+		return nil, fmt.Errorf("invalid context budget config: %w", err)
+	}
 	dir := filepath.Dir(config.DBPath)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

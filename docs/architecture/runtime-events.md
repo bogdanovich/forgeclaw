@@ -93,7 +93,7 @@ The table below lists the current runtime event kinds, when they are emitted, an
 | `agent.llm.response` | After the LLM provider returns a complete response. | `content_len`, `tool_calls`, `has_reasoning` |
 | `agent.llm.retry` | Before retrying an LLM request after context, rate-limit, transient provider, or fallback handling. | `attempt`, `max_retries`, `reason`, `error`, `backoff_ms` |
 | `agent.llm.fallback_attempt` | A fallback candidate is skipped, fails, or succeeds. | `provider`, `model`, `identity_key`, `attempt`, `status`, `reason`, `skipped`; raw provider errors are excluded |
-| `agent.context.compress` | Agent context history is compressed, for example during proactive budget checks or LLM retry handling. | `reason`, `dropped_messages`, `remaining_messages` |
+| `agent.context.compress` | Agent context history is compressed, or absolute budget pressure schedules compaction. | `reason`, message counts, context/output/non-history reserves, history/summary budgets and token counts, recent-tail size, truncation, pressure reasons |
 | `agent.context.snapshot` | Trace capture records a final bounded context identity before turn completion. Emitted only while trace capture is enabled. | `message_count`, `snapshot_hash`, `has_goal`, `steering_count`, `tool_pairing_valid`; no message content |
 | `agent.session.summarize` | Async session history summarization completes. | `summarized_messages`, `kept_messages`, `summary_len`, `omitted_oversized` |
 | `agent.tool.exec_start` | Before the agent executes a tool call. | `tool`, `args_count`; full arguments are not logged by default |
