@@ -123,6 +123,106 @@ func TestReportDeployHandoffLeavesUndeliverableOriginPending(t *testing.T) {
 	}
 }
 
+func TestWatchDeployHandoffsReportsFailureCreatedAfterStartup(t *testing.T) {
+	store, err := NewDeploySentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageBus := bus.NewMessageBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watchDeployHandoffs(ctx, messageBus, store, 10*time.Millisecond)
+
+	now := time.Now().UTC()
+	if writeErr := store.Write(DeploySentinel{
+		Kind:        "deploy",
+		Status:      "failed",
+		Group:       "picoclaw-local",
+		Target:      "current",
+		ExitCode:    128,
+		Handoff:     true,
+		Origin:      RestartOrigin{Channel: "telegram", ChatID: "chat-1", SessionKey: "session-1"},
+		RequestedAt: now,
+		UpdatedAt:   now,
+	}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	select {
+	case message := <-messageBus.OutboundChan():
+		if !strings.Contains(message.Content, "completed: failed") ||
+			!strings.Contains(message.Content, "exit code 128") {
+			t.Fatalf("continuation = %q", message.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live deploy failure continuation was not published")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		sentinel, readErr := store.Read()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !sentinel.ContinuationSentAt.IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("continuation was not marked sent: %#v", sentinel)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case duplicate := <-messageBus.OutboundChan():
+		t.Fatalf("unexpected duplicate continuation: %#v", duplicate)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestReportDeployHandoffWaitsForWorkerLock(t *testing.T) {
+	store, err := NewDeploySentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath, err := deployGroupLockPath("locked-deploy-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireDeployLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if writeErr := store.Write(DeploySentinel{
+		Kind: "deploy", Status: "failed", Group: "locked-deploy-test", Target: "current",
+		ExitCode: 1, Handoff: true,
+		Origin:      RestartOrigin{Channel: "telegram", ChatID: "chat-1"},
+		RequestedAt: now, UpdatedAt: now,
+	}); writeErr != nil {
+		_ = lock.Close()
+		t.Fatal(writeErr)
+	}
+	messageBus := bus.NewMessageBus()
+	reportDeployHandoff(context.Background(), messageBus, store)
+	select {
+	case message := <-messageBus.OutboundChan():
+		_ = lock.Close()
+		t.Fatalf("continuation published before worker released lock: %#v", message)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if closeErr := lock.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	reportDeployHandoff(context.Background(), messageBus, store)
+	select {
+	case <-messageBus.OutboundChan():
+	case <-time.After(time.Second):
+		t.Fatal("continuation was not published after worker released lock")
+	}
+}
+
 func TestGatewayHandoffStatusToolSurvivesAgentRegistryReload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
