@@ -890,6 +890,31 @@ func TestSealOrDrainPendingResultsPreventsTerminalGapDelivery(t *testing.T) {
 	}
 }
 
+func TestPendingSubTurnResultForcesIterationAtLoopLimit(t *testing.T) {
+	pipeline := &Pipeline{}
+	ts := &turnState{
+		pendingResults: make(chan *tools.ToolResult, 1),
+		iteration:      3,
+	}
+	ts.pendingResults <- &tools.ToolResult{ForLLM: "boundary result"}
+	exec := &turnExecution{}
+
+	if !pipeline.continueWithPendingSubTurnResults(ts, exec) {
+		t.Fatal("pending result did not request another iteration")
+	}
+	if len(exec.pendingMessages) != 1 || !strings.Contains(exec.pendingMessages[0].Content, "boundary result") {
+		t.Fatalf("pending messages = %#v, want boundary result", exec.pendingMessages)
+	}
+
+	if pipeline.continueWithPendingSubTurnResults(ts, exec) {
+		t.Fatal("empty terminal queue requested another iteration")
+	}
+	deliverSubTurnResult(nil, ts, "after-limit", &tools.ToolResult{ForLLM: "too late"})
+	if got := len(ts.pendingResults); got != 0 {
+		t.Fatalf("sealed terminal queue accepted %d late results", got)
+	}
+}
+
 // TestSpawnSubTurn_PanicRecovery verifies that even if runTurn panics,
 // the result is still delivered for async calls and SubTurnEndEvent is emitted.
 func TestSpawnSubTurn_PanicRecovery(t *testing.T) {

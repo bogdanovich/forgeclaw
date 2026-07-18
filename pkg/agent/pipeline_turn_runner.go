@@ -33,10 +33,12 @@ func (p *Pipeline) runTurnLoop(
 	finalContent := exec.finalContent
 	mediaResolver := p.Context.MediaResolver
 
-	for ts.currentIteration() < ts.agent.MaxIterations || len(exec.pendingMessages) > 0 || func() bool {
+	for {
 		graceful, _ := ts.gracefulInterruptRequested()
-		return graceful
-	}() {
+		canRun := ts.currentIteration() < ts.agent.MaxIterations || len(exec.pendingMessages) > 0 || graceful
+		if !canRun && !p.continueWithPendingSubTurnResults(ts, exec) {
+			break
+		}
 		if ts.hardAbortRequested() {
 			turnStatus = TurnEndStatusAborted
 			result, abortErr := host.abortTurn(ts)
@@ -173,7 +175,7 @@ func (p *Pipeline) runTurnLoop(
 			if finalContent == "" {
 				finalContent = ts.opts.DefaultResponse
 			}
-			if p.continueWithPendingSubTurnResults(turnCtx, ts, exec) {
+			if p.continueWithPendingSubTurnResults(ts, exec) {
 				messages = exec.messages
 				continue
 			}
@@ -228,7 +230,7 @@ func (p *Pipeline) runTurnLoop(
 					messages = exec.messages
 					continue
 				}
-				if p.continueWithPendingSubTurnResults(turnCtx, ts, exec) {
+				if p.continueWithPendingSubTurnResults(ts, exec) {
 					messages = exec.messages
 					continue
 				}
@@ -258,7 +260,7 @@ func (p *Pipeline) runTurnLoop(
 				if exec.allResponsesHandled {
 					finalContent = ""
 				}
-				if p.continueWithPendingSubTurnResults(turnCtx, ts, exec) {
+				if p.continueWithPendingSubTurnResults(ts, exec) {
 					messages = exec.messages
 					continue
 				}
@@ -309,7 +311,6 @@ func (p *Pipeline) runTurnLoop(
 }
 
 func (p *Pipeline) continueWithPendingSubTurnResults(
-	turnCtx context.Context,
 	ts *turnState,
 	exec *turnExecution,
 ) bool {
@@ -323,14 +324,7 @@ func (p *Pipeline) continueWithPendingSubTurnResults(
 		}
 		content := p.filterPendingResultForLLM(result.ForLLM)
 		msg := subTurnResultPromptMessage(content)
-		exec.messages = append(exec.messages, msg)
-		if !ts.opts.NoHistory {
-			writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, msg)
-			if writeErr == nil {
-				ts.recordPersistedMessage(msg)
-			}
-			p.ingestMessage(turnCtx, ts, msg, writeErr)
-		}
+		exec.pendingMessages = append(exec.pendingMessages, msg)
 	}
 	return true
 }
