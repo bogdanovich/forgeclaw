@@ -94,6 +94,12 @@ Workspace Markdown memory is independently bounded before it is added to the sys
 Zero or omitted values use the defaults shown above. Truncation is UTF-8 safe and inserts a visible marker. These limits
 are separate from Seahorse history and summary budgets.
 
+The native `memory` tool is enabled by default through `tools.memory.enabled`. It provides semantic `add`, `replace`,
+and `remove` operations for `memory/MEMORY.md`. Duplicate additions are no-ops; replacements and removals require one
+exact logical line or block match. Successful writes are atomic, invalidate the prompt cache, and emit
+`agent.memory.mutation` audit metadata without raw memory content. Use ordinary filesystem tools for other workspace
+files and daily notes.
+
 ### Tool-Loop Detection
 
 `tools.loop_detection` detects repeated tool failures and repeated read-only

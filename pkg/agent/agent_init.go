@@ -121,6 +121,17 @@ func registerSharedTools(
 			continue
 		}
 		taskRegistry := al.taskRegistryForWorkspace(agent.Workspace)
+		if cfg.Tools.IsToolEnabled("memory") {
+			workspace := agent.Workspace
+			registerToolIfAllowed(
+				agent,
+				tools.NewMemoryTool(
+					workspace,
+					func() { registry.invalidateWorkspaceContextCaches(workspace) },
+					al.runtimeEvents,
+				),
+			)
+		}
 		if al.state != nil {
 			registerToolIfAllowed(agent, tools.NewGetGoalTool(al.state))
 			registerToolIfAllowed(agent, tools.NewCreateGoalTool(al.state))

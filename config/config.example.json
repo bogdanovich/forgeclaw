@@ -552,6 +552,9 @@
     "list_dir": {
       "enabled": true
     },
+    "memory": {
+      "enabled": true
+    },
     "message": {
       "enabled": true
     },

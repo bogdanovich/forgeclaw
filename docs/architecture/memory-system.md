@@ -141,10 +141,10 @@ Implemented:
 - bounded Seahorse retrieval output;
 - absolute Seahorse history and summary budgets;
 - tool-result projection and retention policy;
-- bounded Markdown prompt memory and complete daily-note cache dependencies.
+- bounded Markdown prompt memory and complete daily-note cache dependencies;
+- atomic curated-memory `add`, `replace`, and `remove` mutations with audit events.
 
 Planned by the follow-up implementation series:
 
-- first-class curated-memory mutations and audit events;
 - operator-configured maximum Seahorse retrieval scope;
 - deterministic memory-specific evaluation scenarios.

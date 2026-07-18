@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"path/filepath"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -17,6 +18,18 @@ type AgentRegistry struct {
 	agents   map[string]*AgentInstance
 	resolver *routing.RouteResolver
 	mu       sync.RWMutex
+}
+
+func (r *AgentRegistry) invalidateWorkspaceContextCaches(workspace string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	want := filepath.Clean(workspace)
+	for _, instance := range r.agents {
+		if instance == nil || instance.ContextBuilder == nil || filepath.Clean(instance.Workspace) != want {
+			continue
+		}
+		instance.ContextBuilder.InvalidateCache()
+	}
 }
 
 // NewAgentRegistry creates a registry from config, instantiating all agents.

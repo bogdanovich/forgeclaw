@@ -448,6 +448,63 @@ func TestNewAgentLoop_RegistersImageGenerateTool(t *testing.T) {
 	}
 }
 
+func TestNewAgentLoop_RegistersMemoryTool(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	if _, ok := agent.Tools.Get("memory"); !ok {
+		t.Fatal("expected memory tool to be registered")
+	}
+}
+
+func TestMemoryToolInvalidatesEveryAgentSharingWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = workspace
+	cfg.Agents.List = []config.AgentConfig{
+		{ID: "first", Default: true, Workspace: workspace},
+		{ID: "second", Workspace: workspace},
+	}
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	first, ok := al.registry.GetAgent("first")
+	if !ok {
+		t.Fatal("first agent not registered")
+	}
+	second, ok := al.registry.GetAgent("second")
+	if !ok {
+		t.Fatal("second agent not registered")
+	}
+	first.ContextBuilder.BuildSystemPromptWithCache()
+	second.ContextBuilder.BuildSystemPromptWithCache()
+
+	memoryTool, ok := first.Tools.Get("memory")
+	if !ok {
+		t.Fatal("memory tool not registered")
+	}
+	result := memoryTool.Execute(t.Context(), map[string]any{
+		"operation": "add",
+		"content":   "shared fact",
+	})
+	if result.IsError {
+		t.Fatalf("memory mutation failed: %s", result.ForLLM)
+	}
+
+	for _, instance := range []*AgentInstance{first, second} {
+		instance.ContextBuilder.systemPromptMutex.RLock()
+		cached := instance.ContextBuilder.cachedSystemPrompt
+		instance.ContextBuilder.systemPromptMutex.RUnlock()
+		if cached != "" {
+			t.Errorf("agent %q retained a cached prompt after shared memory mutation", instance.ID)
+		}
+	}
+}
+
 func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent(t *testing.T) {
 	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
