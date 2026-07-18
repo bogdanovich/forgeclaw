@@ -13,7 +13,8 @@ import (
 
 func coordinatorTestTarget(routeScopeKey, sessionKey string) *inboundDispatchTarget {
 	return &inboundDispatchTarget{
-		Agent: &AgentInstance{ID: "main"},
+		Agent:         &AgentInstance{ID: "main"},
+		RouteClaimKey: runtimeRouteClaimKey(routeScopeKey, ""),
 		Allocation: session.Allocation{
 			RouteScopeKey: routeScopeKey,
 		},

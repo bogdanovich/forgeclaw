@@ -87,7 +87,8 @@ func (al *AgentLoop) recoverUnansweredSession(
 	)
 	if routeScopeKey != "" {
 		target := &inboundDispatchTarget{
-			Agent: agent,
+			Agent:         agent,
+			RouteClaimKey: runtimeRouteClaimKey(routeScopeKey, ""),
 			Allocation: session.Allocation{
 				RouteScopeKey: routeScopeKey,
 				SessionKey:    sessionKey,

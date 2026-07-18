@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/routing"
@@ -9,10 +10,11 @@ import (
 )
 
 type inboundDispatchTarget struct {
-	Route      routing.ResolvedRoute
-	Agent      *AgentInstance
-	Allocation session.Allocation
-	SessionKey string
+	Route         routing.ResolvedRoute
+	Agent         *AgentInstance
+	Allocation    session.Allocation
+	SessionKey    string
+	RouteClaimKey string
 }
 
 type inboundMessageTurn struct {
@@ -80,7 +82,15 @@ func (al *AgentLoop) resolveInboundDispatchTarget(msg bus.InboundMessage) (*inbo
 			allocation.SessionKey,
 			msg.SessionKey,
 		),
+		RouteClaimKey: runtimeRouteClaimKey(allocation.RouteScopeKey, msg.SessionKey),
 	}, nil
+}
+
+func runtimeRouteClaimKey(routeScopeKey, explicitSessionKey string) string {
+	if isExplicitSessionKey(explicitSessionKey) {
+		return "session:" + strings.TrimSpace(explicitSessionKey)
+	}
+	return "route:" + strings.TrimSpace(routeScopeKey)
 }
 
 func (al *AgentLoop) buildInboundMessageTurnForTarget(

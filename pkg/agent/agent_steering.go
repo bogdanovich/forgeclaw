@@ -222,7 +222,8 @@ func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (*inboundDisp
 		return nil, false
 	}
 	allocation := al.allocateRouteSession(route, msg)
-	if activeTarget, ok := al.activeRouteSessions.Load(allocation.RouteScopeKey); ok {
+	routeClaimKey := runtimeRouteClaimKey(allocation.RouteScopeKey, msg.SessionKey)
+	if activeTarget, ok := al.activeRouteSessions.Load(routeClaimKey); ok {
 		target, targetOK := activeTarget.(*inboundDispatchTarget)
 		if targetOK {
 			al.touchActiveSessionLifecycle(target)
@@ -242,5 +243,6 @@ func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (*inboundDisp
 			allocation.SessionKey,
 			msg.SessionKey,
 		),
+		RouteClaimKey: routeClaimKey,
 	}, true
 }
