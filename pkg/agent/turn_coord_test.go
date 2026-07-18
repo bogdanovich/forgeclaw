@@ -562,6 +562,66 @@ func TestPipeline_SetupTurn_SchedulesAbsoluteBudgetCompaction(t *testing.T) {
 	}
 }
 
+func TestPipeline_SetupTurn_ReportsDegradedTailWithoutCompaction(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	agent.ContextWindow = 100_000
+	agent.MaxTokens = 1_000
+
+	cm := &blockingCompactContextManager{
+		history: []providers.Message{{Role: "user", Content: "recent"}},
+		budget: &ContextBudgetReport{
+			ContextWindow:            100_000,
+			OutputReserve:            1_000,
+			NonHistoryReserve:        2_000,
+			AvailableContext:         97_000,
+			HistoryBudget:            5_000,
+			SourceHistoryTokens:      100_000,
+			SelectedHistoryTokens:    4_000,
+			RequestedRecentTailTurns: 4,
+			RecentTailTurns:          2,
+			RecentTailDegraded:       true,
+			Truncated:                true,
+			NeedsCompaction:          false,
+			PressureReasons:          []string{"recent_tail_degraded"},
+		},
+		compactStarted: make(chan struct{}),
+		releaseCompact: make(chan struct{}),
+	}
+	al.contextManager = cm
+	defer close(cm.releaseCompact)
+	runtimeCh, closeEvents := subscribeRuntimeEventsForTest(
+		t,
+		al,
+		8,
+		runtimeevents.KindAgentContextCompress,
+	)
+	defer closeEvents()
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, normalizeProcessOptions(makeTestProcessOpts("degraded-tail")), turnEventScope{
+		turnID:  "turn-degraded-tail",
+		context: newTurnContext(nil, nil, nil),
+	})
+	if _, err := pipeline.SetupTurn(context.Background(), ts); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-runtimeCh:
+		payload, ok := event.Payload.(ContextCompressPayload)
+		if !ok || !payload.RecentTailDegraded || payload.RecentTailTurns != 2 {
+			t.Fatalf("unexpected degraded-tail event: %#v", event.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("degraded-tail pressure event was not emitted")
+	}
+	select {
+	case <-cm.compactStarted:
+		t.Fatal("degraded tail scheduled compaction that cannot make progress")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // =============================================================================
 // Pipeline Method Tests: CallLLM
 // =============================================================================

@@ -108,7 +108,9 @@ func (a *Assembler) assembleWithAbsoluteBudgets(
 		RecentTailDegraded:       selection.degraded,
 		Truncated: selectedMessageCount < len(messages) ||
 			selectedSummaryCount < len(summaries),
-		NeedsCompaction: len(pressureReasons) > 0,
+		// Compaction preserves the configured recent tail, so it cannot make
+		// progress while assembly had to degrade that same boundary.
+		NeedsCompaction: len(pressureReasons) > 0 && !selection.degraded,
 		PressureReasons: pressureReasons,
 	}
 	result.Budget = report
@@ -167,13 +169,14 @@ func selectBoundedMessageTurns(
 	}
 	turnStarts := resolvedMessageTurnStarts(messages)
 	requestedTurns := requestedRecentTurns
-	if requestedTurns > len(turnStarts) {
-		requestedTurns = len(turnStarts)
+	availableTurns := requestedTurns
+	if availableTurns > len(turnStarts) {
+		availableTurns = len(turnStarts)
 	}
 
 	selectionStart := len(messages)
 	startIndex := len(turnStarts) - 1
-	selectedTurns := requestedTurns
+	selectedTurns := availableTurns
 	protectedTokens := 0
 	for selectedTurns > 0 {
 		startIndex = len(turnStarts) - selectedTurns
@@ -211,7 +214,7 @@ func selectBoundedMessageTurns(
 		selectedTurns:  selectedTurns,
 		tailTokens:     protectedTokens,
 		overflowTokens: max(0, protectedTokens-historyTarget),
-		degraded:       selectedTurns < requestedTurns,
+		degraded:       selectedTurns < availableTurns,
 	}
 	if selectionStart == len(messages) {
 		return result, nil

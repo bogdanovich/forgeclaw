@@ -59,15 +59,17 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	messages = resolveMediaRefs(messages, p.Context.MediaResolver, maxMediaSize)
 
 	if !ts.opts.NoHistory {
-		if budgetReport != nil && budgetReport.NeedsCompaction {
+		if budgetReport != nil && len(budgetReport.PressureReasons) > 0 {
 			p.emitAbsoluteBudgetPressure(ts, budgetReport, len(history))
-			p.scheduleBackgroundCompaction(
-				ts.agent,
-				ts.sessionKey,
-				ContextCompressReasonProactive,
-				budgetReport.AvailableContext,
-				"absolute_budget_pressure",
-			)
+			if budgetReport.NeedsCompaction {
+				p.scheduleBackgroundCompaction(
+					ts.agent,
+					ts.sessionKey,
+					ContextCompressReasonProactive,
+					budgetReport.AvailableContext,
+					"absolute_budget_pressure",
+				)
+			}
 		}
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
 			compactBudget := effectiveHistoryBudget(

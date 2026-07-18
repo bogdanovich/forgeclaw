@@ -139,7 +139,7 @@ func TestAssemblerRecentTailMayExceedHistoryTarget(t *testing.T) {
 		t.Fatal(upsertErr)
 	}
 
-	assembler := &Assembler{store: store, config: Config{HistoryMaxTokens: 50, RecentTailTurns: 1}}
+	assembler := &Assembler{store: store, config: Config{HistoryMaxTokens: 50, RecentTailTurns: 3}}
 	result, err := assembler.Assemble(ctx, convID, AssembleInput{Budget: 1000})
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestAssemblerRecentTailMayExceedHistoryTarget(t *testing.T) {
 	if len(result.Messages) != 1 {
 		t.Fatalf("selected messages = %d, want recent turn", len(result.Messages))
 	}
-	if result.Budget == nil || result.Budget.RequestedRecentTailTurns != 1 ||
+	if result.Budget == nil || result.Budget.RequestedRecentTailTurns != 3 ||
 		result.Budget.RecentTailTurns != 1 || result.Budget.RecentTailOverflowTokens <= 0 ||
 		result.Budget.RecentTailDegraded {
 		t.Fatalf("unexpected overflow report: %#v", result.Budget)
@@ -207,7 +207,8 @@ func TestAssemblerRecentTailDegradesAtCompleteTurnBoundary(t *testing.T) {
 		t.Fatalf("selection did not retain only newest complete turn: %#v", result.Messages)
 	}
 	if result.Budget == nil || result.Budget.RequestedRecentTailTurns != 2 ||
-		result.Budget.RecentTailTurns != 1 || !result.Budget.RecentTailDegraded {
+		result.Budget.RecentTailTurns != 1 || !result.Budget.RecentTailDegraded ||
+		result.Budget.NeedsCompaction {
 		t.Fatalf("unexpected degraded-tail report: %#v", result.Budget)
 	}
 	if !containsString(result.Budget.PressureReasons, "recent_tail_degraded") {

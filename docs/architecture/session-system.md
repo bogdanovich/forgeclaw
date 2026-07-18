@@ -168,8 +168,9 @@ stale counts cannot bypass a limit.
 If non-history plus output reserves consume the model window, assembly returns an error and the Pipeline does not call
 the provider. Otherwise, source data over a configured target produces a structured budget report, a context-pressure
 event, and deduplicated background compaction. Reports distinguish requested and retained recent turns and expose tail
-overflow or hard-limit degradation. Forced compaction may bypass the legacy message-count tail, but never splits an
-explicit recent turn.
+overflow or hard-limit degradation. Degradation does not schedule compaction because compaction preserves the configured
+raw tail and cannot make progress until that protected window advances. Forced compaction may bypass the legacy
+message-count tail, but never splits an explicit recent turn.
 
 ## Tool Result Projection
 

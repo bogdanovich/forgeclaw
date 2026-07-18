@@ -381,7 +381,9 @@ closed only when the mandatory prompt content itself cannot fit the model window
 
 Absolute pressure schedules background compaction even when the model context window is not close to full. Structured
 logs and `agent.context.compress` events include reserves, source and selected token counts, requested and retained
-tail turns, overflow tokens, hard-limit degradation, truncation, and the pressure reason.
+tail turns, overflow tokens, hard-limit degradation, truncation, and the pressure reason. A degraded tail does not
+schedule compaction because the configured raw-tail boundary still protects those turns; compaction resumes when that
+window advances and older turns become eligible.
 
 ### Tool Result Retention
 
