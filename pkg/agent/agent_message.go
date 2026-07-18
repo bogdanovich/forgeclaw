@@ -16,32 +16,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
-func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuationTarget, error) {
-	if msg.Channel == "system" {
-		return nil, nil
-	}
-
-	route, _, err := al.resolveMessageRoute(msg)
-	if err != nil {
-		return nil, err
-	}
-	allocation := al.allocateRouteSession(route, msg)
-	allocation, err = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
-	if err != nil {
-		return nil, err
-	}
-
-	return &continuationTarget{
-		SessionKey: al.resolveEffectiveSessionKey(
-			allocation.RouteScopeKey,
-			allocation.SessionKey,
-			msg.SessionKey,
-		),
-		Channel: msg.Channel,
-		ChatID:  msg.ChatID,
-	}, nil
-}
-
 func (al *AgentLoop) ProcessDirect(
 	ctx context.Context,
 	content, sessionKey string,

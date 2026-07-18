@@ -287,8 +287,8 @@ func TestBuildInboundMessageTurn_SessionResetDoesNotCrossEpoch(t *testing.T) {
 		t.Fatalf("resolveInboundDispatchTarget() error = %v", err)
 	}
 	resetKey := session.BuildMainSessionKey("reset")
-	if err := al.setSessionOverride(firstTarget.Allocation.SessionKey, resetKey); err != nil {
-		t.Fatalf("setSessionOverride() error = %v", err)
+	if setErr := al.setSessionOverride(firstTarget.Allocation.SessionKey, resetKey); setErr != nil {
+		t.Fatalf("setSessionOverride() error = %v", setErr)
 	}
 	withReset, err := al.resolveInboundDispatchTarget(msg)
 	if err != nil {

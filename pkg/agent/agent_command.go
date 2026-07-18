@@ -489,7 +489,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 				baseSessionKey = strings.TrimSpace(opts.Dispatch.SessionKey)
 			}
 			if baseSessionKey == "" {
-				return "", fmt.Errorf("base session key not available")
+				baseSessionKey = routeSessionKey
 			}
 			if clearOverride {
 				if err := al.clearSessionModelOverride(routeSessionKey); err != nil {

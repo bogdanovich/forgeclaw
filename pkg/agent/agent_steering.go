@@ -77,17 +77,6 @@ func (al *AgentLoop) releaseInboundMessage(
 	}
 }
 
-func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.InboundMessage) bool {
-	return al.runTurnAndDrainSteering(
-		ctx,
-		initialMsg,
-		nil,
-		func() (*continuationTarget, error) {
-			return al.buildContinuationTarget(initialMsg)
-		},
-	)
-}
-
 func (al *AgentLoop) runInboundTurnWithSteering(
 	ctx context.Context,
 	turn inboundMessageTurn,
@@ -99,22 +88,15 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
 		return al.processInboundMessageTurn(ctx, turn)
-	}, func() (*continuationTarget, error) {
-		return target, nil
-	})
+	}, target)
 }
 
 func (al *AgentLoop) runTurnAndDrainSteering(
 	ctx context.Context,
 	initialMsg bus.InboundMessage,
 	process func() (string, error),
-	resolveTarget func() (*continuationTarget, error),
+	target *continuationTarget,
 ) bool {
-	if process == nil {
-		process = func() (string, error) {
-			return al.processMessage(ctx, initialMsg)
-		}
-	}
 	response, err := process()
 	if err != nil {
 		if !al.maybePublishErrorWithPolicy(
@@ -130,20 +112,6 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 		response = ""
 	}
 	responses := appendSteeringResponse(nil, response)
-
-	target, targetErr := resolveTarget()
-	if targetErr != nil {
-		logger.WarnCF("agent", "Failed to build steering continuation target",
-			map[string]any{
-				"channel": initialMsg.Channel,
-				"error":   targetErr.Error(),
-			})
-		return true
-	}
-	if target == nil {
-		// System message or non-routable, response already published
-		return true
-	}
 
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
