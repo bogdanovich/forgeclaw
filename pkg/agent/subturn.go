@@ -650,34 +650,18 @@ func completionMediaRefs(items []tools.CompletionMedia) []string {
 // return value to avoid double delivery.
 //
 // Delivery behavior:
-//   - If parent turn is still running: attempts to deliver to pendingResults channel
-//   - If channel is full: emits agent.subturn.orphan (result is lost from channel but tracked)
+//   - If parent turn is still running: waits for capacity and delivers to pendingResults
 //   - If parent turn has finished: emits agent.subturn.orphan (late arrival)
 //
 // Thread safety:
-//   - The finish check and non-blocking send are serialized by the parent lock
+//   - The finish check and send are serialized by the parent lifecycle lock
 //   - pendingResults is never closed because child deliveries may outlive the parent
 //
 // Event emissions:
 //   - agent.subturn.result_delivered: successful delivery to channel
 //   - agent.subturn.orphan: delivery failed (parent finished or channel full)
 func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, result *tools.ToolResult) {
-	parentTS.mu.Lock()
-	reason := ""
-	delivered := false
-	if parentTS.isFinished.Load() || parentTS.pendingResults == nil {
-		reason = "parent_finished"
-	} else {
-		select {
-		case parentTS.pendingResults <- result:
-			delivered = true
-		default:
-			reason = "channel_full"
-		}
-	}
-	parentTS.mu.Unlock()
-
-	if delivered {
+	if parentTS.enqueuePendingResult(result) {
 		if al != nil {
 			contentLen := 0
 			if result != nil {
@@ -691,21 +675,14 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 		return
 	}
 
-	if reason == "parent_finished" {
-		logger.WarnCF("subturn", "parent finished before result could be delivered", map[string]any{
-			"parent_id": parentTS.turnID,
-			"child_id":  childID,
-		})
-	} else {
-		logger.WarnCF("subturn", "pendingResults channel full, result orphaned", map[string]any{
-			"parent_id": parentTS.turnID,
-			"child_id":  childID,
-		})
-	}
+	logger.WarnCF("subturn", "parent finished before result could be delivered", map[string]any{
+		"parent_id": parentTS.turnID,
+		"child_id":  childID,
+	})
 	if result != nil && al != nil {
 		al.emitEvent(runtimeevents.KindAgentSubTurnOrphan,
 			parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
-			SubTurnOrphanPayload{ParentTurnID: parentTS.turnID, ChildTurnID: childID, Reason: reason},
+			SubTurnOrphanPayload{ParentTurnID: parentTS.turnID, ChildTurnID: childID, Reason: "parent_finished"},
 		)
 	}
 }

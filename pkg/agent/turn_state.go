@@ -297,6 +297,7 @@ type turnState struct {
 	parentTurnID         string                 // Parent turn ID (empty for root turn)
 	childTurnIDs         []string               // Child turn IDs
 	pendingResults       chan *tools.ToolResult // Channel for SubTurn results
+	pendingResultCond    *sync.Cond             // Signals result capacity or turn completion
 	concurrencySem       chan struct{}          // Semaphore for limiting concurrent SubTurns
 	isFinished           atomic.Bool            // Whether this turn has finished
 	session              session.SessionStore   // Session store reference
@@ -920,6 +921,9 @@ func (ts *turnState) Finish(isHardAbort bool) {
 		}
 		close(ts.finishedChan)
 	})
+	if ts.pendingResultCond != nil {
+		ts.pendingResultCond.Broadcast()
+	}
 	ts.mu.Unlock()
 
 	// Any graceful finish must signal direct children so nested SubTurns can
@@ -945,6 +949,46 @@ func (ts *turnState) Finish(isHardAbort bool) {
 				}
 			}
 		}
+	}
+}
+
+// enqueuePendingResult waits for queue capacity while the turn is active. The
+// shared lock makes committing a result mutually exclusive with Finish.
+func (ts *turnState) enqueuePendingResult(result *tools.ToolResult) bool {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	for !ts.isFinished.Load() && ts.pendingResults != nil {
+		select {
+		case ts.pendingResults <- result:
+			return true
+		default:
+			if ts.pendingResultCond == nil {
+				ts.pendingResultCond = sync.NewCond(&ts.mu)
+			}
+			ts.pendingResultCond.Wait()
+		}
+	}
+	return false
+}
+
+// dequeuePendingResult polls one result and wakes a producer waiting for queue
+// capacity. pendingResults remains open for the lifetime of the turn state.
+func (ts *turnState) dequeuePendingResult() (*tools.ToolResult, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	if ts.pendingResults == nil {
+		return nil, false
+	}
+	select {
+	case result := <-ts.pendingResults:
+		if ts.pendingResultCond != nil {
+			ts.pendingResultCond.Signal()
+		}
+		return result, true
+	default:
+		return nil, false
 	}
 }
 

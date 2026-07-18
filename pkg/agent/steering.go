@@ -693,16 +693,12 @@ func (al *AgentLoop) dequeuePendingSubTurnResults(sessionKey string) []*tools.To
 
 	var results []*tools.ToolResult
 	for {
-		select {
-		case result, ok := <-ts.pendingResults:
-			if !ok {
-				return results
-			}
-			if result != nil {
-				results = append(results, result)
-			}
-		default:
+		result, ok := ts.dequeuePendingResult()
+		if !ok {
 			return results
+		}
+		if result != nil {
+			results = append(results, result)
 		}
 	}
 }

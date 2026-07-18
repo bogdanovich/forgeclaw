@@ -89,15 +89,10 @@ func (p *Pipeline) runTurnLoop(
 
 		// Poll for pending SubTurn results.
 		if ts.pendingResults != nil {
-			select {
-			case result, ok := <-ts.pendingResults:
-				if ok && result != nil && result.ForLLM != "" {
-					content := host.filterSensitiveData(result.ForLLM)
-					msg := subTurnResultPromptMessage(content)
-					pendingMessages = append(pendingMessages, msg)
-				}
-			default:
-				// No results available
+			if result, ok := ts.dequeuePendingResult(); ok && result != nil && result.ForLLM != "" {
+				content := host.filterSensitiveData(result.ForLLM)
+				msg := subTurnResultPromptMessage(content)
+				pendingMessages = append(pendingMessages, msg)
 			}
 		}
 

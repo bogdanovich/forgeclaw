@@ -673,7 +673,7 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		pendingResults: make(chan *tools.ToolResult, 2),
 	}
 
-	// Simulate multiple child turns delivering results concurrently
+	// Simulate multiple child turns delivering results concurrently.
 	var wg sync.WaitGroup
 	numChildren := 10
 
@@ -685,6 +685,21 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 			deliverSubTurnResult(nil, parent, fmt.Sprintf("child-%d", id), result)
 		}(i)
 	}
+
+	// Consume through the lifecycle helper so blocked producers are signaled as
+	// capacity becomes available.
+	received := make(chan struct{})
+	go func() {
+		defer close(received)
+		for i := 0; i < numChildren; i++ {
+			for {
+				if _, ok := parent.dequeuePendingResult(); ok {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
 
 	// Wait for all deliveries to complete (with timeout)
 	done := make(chan struct{})
@@ -700,8 +715,10 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		t.Fatal("deadlock detected: deliverSubTurnResult blocked")
 	}
 
-	if got := len(parent.pendingResults); got != cap(parent.pendingResults) {
-		t.Fatalf("expected %d buffered results, got %d", cap(parent.pendingResults), got)
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("consumer did not receive all results")
 	}
 }
 
