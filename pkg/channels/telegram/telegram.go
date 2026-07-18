@@ -219,7 +219,12 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
 
 	handlerRunID := c.handlerRun.Add(1)
-	go c.runBotHandler(c.ctx, handlerRunID, bh.Start)
+	runCtx := c.ctx
+	go c.runBotHandler(runCtx, handlerRunID, func() error {
+		return runTelegramUpdatesOrdered(runCtx, updates, func(ctx context.Context, update telego.Update) error {
+			return bh.BaseGroup().HandleUpdate(ctx, c.bot, update)
+		})
+	})
 
 	return nil
 }
