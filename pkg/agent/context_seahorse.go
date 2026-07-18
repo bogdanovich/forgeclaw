@@ -485,9 +485,10 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 	// Convert tool result
 	if msg.ToolCallID != "" {
 		part := seahorse.MessagePart{
-			Type:       "tool_result",
-			ToolCallID: msg.ToolCallID,
-			Text:       msg.Content,
+			Type:             "tool_result",
+			ToolCallID:       msg.ToolCallID,
+			ToolResultStatus: string(msg.ToolResultStatus),
+			Text:             msg.Content,
 		}
 		result.Parts = append(result.Parts, part)
 	}
@@ -538,6 +539,7 @@ func seahorseToProviderMessages(result *seahorse.AssembleResult) []protocoltypes
 			}
 			if part.Type == "tool_result" {
 				pm.ToolCallID = part.ToolCallID
+				pm.ToolResultStatus = protocoltypes.ToolResultStatus(part.ToolResultStatus)
 				if pm.Content == "" && part.Text != "" {
 					pm.Content = part.Text
 				}

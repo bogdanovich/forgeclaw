@@ -85,6 +85,21 @@ func TestJSONLBackend_AddFullMessage_PreservesModelName(t *testing.T) {
 	}
 }
 
+func TestJSONLBackend_AddFullMessage_PreservesToolResultStatus(t *testing.T) {
+	b := newBackend(t)
+	b.AddFullMessage("s1", providers.Message{
+		Role:             "tool",
+		Content:          "failed",
+		ToolCallID:       "call-1",
+		ToolResultStatus: providers.ToolResultStatusError,
+	})
+
+	history := b.GetHistory("s1")
+	if len(history) != 1 || history[0].ToolResultStatus != providers.ToolResultStatusError {
+		t.Fatalf("tool result status = %#v", history)
+	}
+}
+
 func TestJSONLBackend_Summary(t *testing.T) {
 	b := newBackend(t)
 

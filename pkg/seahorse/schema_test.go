@@ -91,6 +91,35 @@ func TestRunMigrationsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRunSchemaAddsToolResultStatusColumn(t *testing.T) {
+	db := openTestDB(t)
+	_, err := db.Exec(`CREATE TABLE message_parts (
+		part_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		message_id INTEGER NOT NULL,
+		type TEXT NOT NULL,
+		text TEXT,
+		name TEXT,
+		arguments TEXT,
+		tool_call_id TEXT,
+		media_uri TEXT,
+		mime_type TEXT,
+		ordinal INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrationErr := runSchema(db); migrationErr != nil {
+		t.Fatal(migrationErr)
+	}
+	hasColumn, err := tableHasColumn(db, "message_parts", "tool_result_status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasColumn {
+		t.Fatal("tool_result_status column was not added")
+	}
+}
+
 func TestRunSchemaAddsConversationProvenanceColumns(t *testing.T) {
 	db := openTestDB(t)
 	_, err := db.Exec(`CREATE TABLE conversations (

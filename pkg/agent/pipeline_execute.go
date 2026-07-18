@@ -373,10 +373,11 @@ toolLoop:
 					)
 					contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
 					toolResultMsg := providers.Message{
-						Role:       "tool",
-						Content:    contentForLLM,
-						ToolCallID: tc.ID,
-						Media:      toolResultMedia,
+						Role:             "tool",
+						Content:          contentForLLM,
+						ToolCallID:       tc.ID,
+						ToolResultStatus: toolResultContextStatus(hookResult),
+						Media:            toolResultMedia,
 					}
 
 					p.emitEvent(
@@ -692,9 +693,10 @@ toolLoop:
 		contentForLLM = appendToolLoopGuidance(contentForLLM, loopDecision)
 
 		toolResultMsg := providers.Message{
-			Role:       "tool",
-			Content:    contentForLLM,
-			ToolCallID: toolCallID,
+			Role:             "tool",
+			Content:          contentForLLM,
+			ToolCallID:       toolCallID,
+			ToolResultStatus: toolResultContextStatus(toolResult),
 		}
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
 			toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
@@ -866,6 +868,16 @@ toolLoop:
 		"agent_id": ts.agent.ID, "iteration": iteration,
 	})
 	return ToolControlContinue
+}
+
+func toolResultContextStatus(result *tools.ToolResult) providers.ToolResultStatus {
+	if result == nil || result.Async {
+		return providers.ToolResultStatusUnresolved
+	}
+	if result.IsError {
+		return providers.ToolResultStatusError
+	}
+	return providers.ToolResultStatusSuccess
 }
 
 type toolMessageIngestMode int

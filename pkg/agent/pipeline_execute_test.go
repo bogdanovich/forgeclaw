@@ -23,6 +23,30 @@ type pipelineLoopGuardTool struct {
 	executions int
 }
 
+func TestToolResultContextStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *tools.ToolResult
+		want   providers.ToolResultStatus
+	}{
+		{name: "success", result: tools.NewToolResult("ok"), want: providers.ToolResultStatusSuccess},
+		{name: "error", result: tools.ErrorResult("failed"), want: providers.ToolResultStatusError},
+		{
+			name:   "async unresolved",
+			result: &tools.ToolResult{ForLLM: "started", Async: true},
+			want:   providers.ToolResultStatusUnresolved,
+		},
+		{name: "nil unresolved", want: providers.ToolResultStatusUnresolved},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := toolResultContextStatus(test.result); got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 type pipelineLoopGuardReadTool struct {
 	executions int
 }
@@ -195,6 +219,17 @@ func TestPipelineLoopGuardBlocksAndPreservesToolCallResults(t *testing.T) {
 		if message.Role != "tool" || message.ToolCallID != wantID {
 			t.Fatalf("message %d = %#v, want tool result for %s", i, message, wantID)
 		}
+	}
+	if exec.messages[0].ToolResultStatus != providers.ToolResultStatusError ||
+		exec.messages[1].ToolResultStatus != providers.ToolResultStatusError {
+		t.Fatalf(
+			"executed error statuses = %q, %q",
+			exec.messages[0].ToolResultStatus,
+			exec.messages[1].ToolResultStatus,
+		)
+	}
+	if exec.messages[2].ToolResultStatus != "" || exec.messages[3].ToolResultStatus != "" {
+		t.Fatalf("non-executed results must remain unknown: %#v", exec.messages[2:])
 	}
 	if !strings.Contains(exec.messages[2].Content, "repeated_exact_failure_block") {
 		t.Fatalf("blocked content = %q", exec.messages[2].Content)
@@ -546,6 +581,12 @@ func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testin
 		if exec.messages[i].Role != "tool" || exec.messages[i].ToolCallID != call.ID {
 			t.Fatalf("result[%d] = %#v, want source-ordered result for %s", i, exec.messages[i], call.ID)
 		}
+	}
+	if exec.messages[0].ToolResultStatus != providers.ToolResultStatusSuccess ||
+		exec.messages[1].ToolResultStatus != "" ||
+		exec.messages[2].ToolResultStatus != providers.ToolResultStatusSuccess ||
+		exec.messages[3].ToolResultStatus != "" {
+		t.Fatalf("steering result statuses = %#v", exec.messages)
 	}
 	if !strings.Contains(exec.messages[1].Content, "reissue it if it is still requested") ||
 		!strings.Contains(exec.messages[3].Content, "omit it only if the user canceled or replaced it") {

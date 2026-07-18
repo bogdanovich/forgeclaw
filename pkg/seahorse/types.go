@@ -31,15 +31,16 @@ type Message struct {
 
 // MessagePart holds structured content (tool calls, media, etc.)
 type MessagePart struct {
-	ID         int64  `json:"id"`
-	MessageID  int64  `json:"messageId"`
-	Type       string `json:"type"` // "text", "tool_use", "tool_result", "media"
-	Text       string `json:"text"`
-	Name       string `json:"name"`
-	Arguments  string `json:"arguments"`
-	ToolCallID string `json:"toolCallId"`
-	MediaURI   string `json:"mediaUri"`
-	MimeType   string `json:"mimeType"`
+	ID               int64  `json:"id"`
+	MessageID        int64  `json:"messageId"`
+	Type             string `json:"type"` // "text", "tool_use", "tool_result", "media"
+	Text             string `json:"text"`
+	Name             string `json:"name"`
+	Arguments        string `json:"arguments"`
+	ToolCallID       string `json:"toolCallId"`
+	ToolResultStatus string `json:"toolResultStatus,omitempty"`
+	MediaURI         string `json:"mediaUri"`
+	MimeType         string `json:"mimeType"`
 }
 
 // Summary represents a compressed representation of messages or other summaries.

@@ -62,6 +62,7 @@ func runSchema(db *sql.DB) error {
 			name        TEXT,
 			arguments   TEXT,
 			tool_call_id TEXT,
+			tool_result_status TEXT NOT NULL DEFAULT '',
 			media_uri   TEXT,
 			mime_type   TEXT,
 			ordinal     INTEGER NOT NULL DEFAULT 0
@@ -179,6 +180,9 @@ func runSchema(db *sql.DB) error {
 	if err := ensureMessagesModelNameColumn(db); err != nil {
 		return err
 	}
+	if err := ensureMessagePartsToolResultStatusColumn(db); err != nil {
+		return err
+	}
 	if err := ensureConversationProvenanceColumns(db); err != nil {
 		return err
 	}
@@ -187,6 +191,22 @@ func runSchema(db *sql.DB) error {
 		 ON conversations(agent_id, route_scope_key)`,
 	); err != nil {
 		return fmt.Errorf("create conversation route-scope index: %w", err)
+	}
+	return nil
+}
+
+func ensureMessagePartsToolResultStatusColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "message_parts", "tool_result_status")
+	if err != nil {
+		return fmt.Errorf("check message_parts.tool_result_status: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+	if _, err := db.Exec(
+		`ALTER TABLE message_parts ADD COLUMN tool_result_status TEXT NOT NULL DEFAULT ''`,
+	); err != nil {
+		return fmt.Errorf("add message_parts.tool_result_status: %w", err)
 	}
 	return nil
 }
