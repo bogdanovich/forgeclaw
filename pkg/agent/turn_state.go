@@ -298,6 +298,7 @@ type turnState struct {
 	childTurnIDs         []string               // Child turn IDs
 	pendingResults       chan *tools.ToolResult // Channel for SubTurn results
 	pendingResultCond    *sync.Cond             // Signals result capacity or turn completion
+	pendingResultsSealed bool                   // Prevents commits after terminal drain
 	concurrencySem       chan struct{}          // Semaphore for limiting concurrent SubTurns
 	isFinished           atomic.Bool            // Whether this turn has finished
 	session              session.SessionStore   // Session store reference
@@ -915,6 +916,7 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 func (ts *turnState) Finish(isHardAbort bool) {
 	ts.mu.Lock()
 	ts.isFinished.Store(true)
+	ts.pendingResultsSealed = true
 	ts.finishSignalOnce.Do(func() {
 		if ts.finishedChan == nil {
 			ts.finishedChan = make(chan struct{})
@@ -958,7 +960,7 @@ func (ts *turnState) enqueuePendingResult(result *tools.ToolResult) bool {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	for !ts.isFinished.Load() && ts.pendingResults != nil {
+	for !ts.isFinished.Load() && !ts.pendingResultsSealed && ts.pendingResults != nil {
 		select {
 		case ts.pendingResults <- result:
 			return true
@@ -970,6 +972,40 @@ func (ts *turnState) enqueuePendingResult(result *tools.ToolResult) bool {
 		}
 	}
 	return false
+}
+
+// sealOrDrainPendingResults atomically drains queued results or seals an empty
+// queue before terminal finalization. A producer cannot commit between the
+// empty observation and the seal.
+func (ts *turnState) sealOrDrainPendingResults() ([]*tools.ToolResult, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	var results []*tools.ToolResult
+	if ts.pendingResults != nil {
+		for {
+			select {
+			case result := <-ts.pendingResults:
+				if result != nil {
+					results = append(results, result)
+				}
+			default:
+				if len(results) > 0 {
+					if ts.pendingResultCond != nil {
+						ts.pendingResultCond.Broadcast()
+					}
+					return results, false
+				}
+				ts.pendingResultsSealed = true
+				if ts.pendingResultCond != nil {
+					ts.pendingResultCond.Broadcast()
+				}
+				return nil, true
+			}
+		}
+	}
+	ts.pendingResultsSealed = true
+	return nil, true
 }
 
 // dequeuePendingResult polls one result and wakes a producer waiting for queue

@@ -173,6 +173,10 @@ func (p *Pipeline) runTurnLoop(
 			if finalContent == "" {
 				finalContent = ts.opts.DefaultResponse
 			}
+			if p.continueWithPendingSubTurnResults(turnCtx, ts, exec) {
+				messages = exec.messages
+				continue
+			}
 			finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
 			result, finalizeErr := p.Finalize(
 				ctx,
@@ -224,6 +228,10 @@ func (p *Pipeline) runTurnLoop(
 					messages = exec.messages
 					continue
 				}
+				if p.continueWithPendingSubTurnResults(turnCtx, ts, exec) {
+					messages = exec.messages
+					continue
+				}
 				result, finalizeErr := p.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 				if finalizeErr != nil {
 					turnStatus = TurnEndStatusError
@@ -249,6 +257,10 @@ func (p *Pipeline) runTurnLoop(
 				}
 				if exec.allResponsesHandled {
 					finalContent = ""
+				}
+				if p.continueWithPendingSubTurnResults(turnCtx, ts, exec) {
+					messages = exec.messages
+					continue
 				}
 				finalContent = host.renderFinalTurnReply(turnCtx, ts, exec, finalContent)
 				result, finalizeErr := p.Finalize(
@@ -294,4 +306,31 @@ func (p *Pipeline) runTurnLoop(
 		turnStatus = TurnEndStatusError
 	}
 	return result, turnStatus, err
+}
+
+func (p *Pipeline) continueWithPendingSubTurnResults(
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+) bool {
+	results, sealed := ts.sealOrDrainPendingResults()
+	if sealed {
+		return false
+	}
+	for _, result := range results {
+		if result == nil || result.ForLLM == "" {
+			continue
+		}
+		content := p.filterPendingResultForLLM(result.ForLLM)
+		msg := subTurnResultPromptMessage(content)
+		exec.messages = append(exec.messages, msg)
+		if !ts.opts.NoHistory {
+			writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, msg)
+			if writeErr == nil {
+				ts.recordPersistedMessage(msg)
+			}
+			p.ingestMessage(turnCtx, ts, msg, writeErr)
+		}
+	}
+	return true
 }

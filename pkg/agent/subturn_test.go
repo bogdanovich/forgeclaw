@@ -865,6 +865,31 @@ func TestFinalPollCapturesLateResults(t *testing.T) {
 	}
 }
 
+func TestSealOrDrainPendingResultsPreventsTerminalGapDelivery(t *testing.T) {
+	ts := &turnState{
+		turnID:         "terminal-gap",
+		pendingResults: make(chan *tools.ToolResult, 2),
+	}
+	ts.pendingResults <- &tools.ToolResult{ForLLM: "queued"}
+
+	results, sealed := ts.sealOrDrainPendingResults()
+	if sealed || len(results) != 1 || results[0].ForLLM != "queued" {
+		t.Fatalf("first terminal check = (%v, %v), want queued result and unsealed", results, sealed)
+	}
+
+	results, sealed = ts.sealOrDrainPendingResults()
+	if !sealed || len(results) != 0 {
+		t.Fatalf("second terminal check = (%v, %v), want empty sealed queue", results, sealed)
+	}
+
+	deliverSubTurnResult(nil, ts, "late-child", &tools.ToolResult{ForLLM: "late"})
+	select {
+	case result := <-ts.pendingResults:
+		t.Fatalf("sealed result queue accepted late delivery: %#v", result)
+	default:
+	}
+}
+
 // TestSpawnSubTurn_PanicRecovery verifies that even if runTurn panics,
 // the result is still delivered for async calls and SubTurnEndEvent is emitted.
 func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
