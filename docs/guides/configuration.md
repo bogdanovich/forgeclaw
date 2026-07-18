@@ -360,35 +360,36 @@ the pressure reason.
 
 ### Tool Result Retention
 
-Seahorse can project successful tool results into a smaller future prompt without changing canonical session history or
+Tool-result policy belongs to the tools layer, independently of the configured context manager. Seahorse consumes that
+policy to project successful tool results into a smaller future prompt without changing canonical session history or
 the stored audit message:
 
 ```json
 {
+  "tools": {
+    "result_retention": {
+      "get_day_summary": {
+        "mode": "transient"
+      },
+      "lookup_reference_food": {
+        "mode": "compact_receipt",
+        "receipt": "Reference lookup completed; repeat the lookup if exact values are needed."
+      },
+      "log_meal": {
+        "mode": "durable",
+        "receipt": "Meal saved in the Nutrition database; query the database for current values."
+      }
+    }
+  },
   "agents": {
     "defaults": {
-      "context_manager": "seahorse",
-      "context_manager_config": {
-        "toolResultRetention": {
-          "get_day_summary": {
-            "mode": "transient"
-          },
-          "lookup_reference_food": {
-            "mode": "compact_receipt",
-            "receipt": "Reference lookup completed; repeat the lookup if exact values are needed."
-          },
-          "log_meal": {
-            "mode": "durable",
-            "receipt": "Meal saved in the Nutrition database; query the database for current values."
-          }
-        }
-      }
+      "context_manager": "seahorse"
     }
   }
 }
 ```
 
-Rules use exact tool names and support:
+`tools.result_retention` rules use exact canonical tool names and support:
 
 - `preserve`: retain the full result; this is the default for tools without a rule.
 - `compact_receipt`: replace a resolved successful result with the configured receipt in future prompts.

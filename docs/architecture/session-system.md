@@ -174,10 +174,12 @@ Tool-result retention is a prompt projection, not destructive history cleanup. T
 result status when execution resolves: successful, failed, or unresolved. Canonical JSONL and Seahorse message rows keep
 the full result and status across reconciliation and restart. Missing status is unknown and therefore conservative.
 
-At future assembly and before leaf-summary generation, Seahorse joins each result to its assistant tool call and applies
-the exact-name workspace rule. Successful results may remain full, become a bounded receipt, or be omitted. Omitting a
-result also removes only its matching tool call; other calls and results in the same assistant batch remain paired. A
-receipt keeps the matching call so provider history remains valid.
+The tools layer owns exact-name workspace rules under `tools.result_retention`; context-manager configuration contains
+only context-manager-specific controls. The agent composition root passes the resolved policy to Seahorse. At future
+assembly and before leaf-summary generation, Seahorse joins each result to its assistant tool call and applies that
+policy. Successful results may remain full, become a bounded receipt, or be omitted. Omitting a result also removes only
+its matching tool call; other calls and results in the same assistant batch remain paired. A receipt keeps the matching
+call so provider history remains valid.
 
 Errors, unresolved operations, unknown status, multiple or ambiguous result parts, and media-bearing output bypass
 projection. `durable` is an explicit operator assertion that the configured tool writes to an external source of truth;
