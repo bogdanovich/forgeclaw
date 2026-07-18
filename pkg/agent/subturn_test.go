@@ -1238,6 +1238,14 @@ func TestFinish_ConcurrentCalls(t *testing.T) {
 		t.Error("Expected isFinished to be true")
 	}
 	parentTS.mu.Unlock()
+
+	// Child goroutines may still retain send access, so Finish must not close
+	// pendingResults. Lifecycle completion is signaled through Finished().
+	select {
+	case parentTS.pendingResults <- &tools.ToolResult{ForLLM: "after-finish"}:
+	case <-time.After(time.Second):
+		t.Fatal("pendingResults should remain open after Finish")
+	}
 }
 
 // TestDeliverSubTurnResult_RaceWithFinish verifies that deliverSubTurnResult handles

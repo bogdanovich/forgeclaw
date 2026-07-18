@@ -303,13 +303,13 @@ type turnState struct {
 	initialHistoryLength int                    // Snapshot of history length at turn start
 
 	// Additional SubTurn fields
-	ctx             context.Context    // Context for this turn
-	cancelFunc      context.CancelFunc // Cancel function for this turn's context
-	critical        bool               // Whether this SubTurn should continue after parent ends
-	parentTurnState *turnState         // Reference to parent turnState
-	parentEnded     atomic.Bool        // Whether parent has ended
-	closeOnce       sync.Once          // Ensures pendingResults channel is closed once
-	finishedChan    chan struct{}      // Closed when turn finishes
+	ctx              context.Context    // Context for this turn
+	cancelFunc       context.CancelFunc // Cancel function for this turn's context
+	critical         bool               // Whether this SubTurn should continue after parent ends
+	parentTurnState  *turnState         // Reference to parent turnState
+	parentEnded      atomic.Bool        // Whether parent has ended
+	finishSignalOnce sync.Once          // Ensures finishedChan is closed once
+	finishedChan     chan struct{}      // Closed when turn finishes
 
 	// Token budget tracking
 	tokenBudget      *atomic.Int64        // Shared token budget counter
@@ -909,15 +909,12 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 // SubTurn-related methods
 // =============================================================================
 
-// Finish marks the turn as finished and closes the pendingResults channel
+// Finish marks the turn as finished and broadcasts completion. pendingResults
+// remains open because asynchronous child deliveries may still hold a sender.
 func (ts *turnState) Finish(isHardAbort bool) {
 	ts.isFinished.Store(true)
 
-	// Close pendingResults channel exactly once
-	ts.closeOnce.Do(func() {
-		if ts.pendingResults != nil {
-			close(ts.pendingResults)
-		}
+	ts.finishSignalOnce.Do(func() {
 		ts.mu.Lock()
 		if ts.finishedChan == nil {
 			ts.finishedChan = make(chan struct{})

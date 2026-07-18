@@ -655,31 +655,13 @@ func completionMediaRefs(items []tools.CompletionMedia) []string {
 //   - If parent turn has finished: emits agent.subturn.orphan (late arrival)
 //
 // Thread safety:
-//   - Reads parent state under lock, then releases lock before channel send
-//   - Small race window exists but is acceptable (worst case: result becomes orphan)
+//   - pendingResults is never closed because child deliveries may outlive the parent
+//   - finishedChan broadcasts completion and releases a delivery waiting on a full channel
 //
 // Event emissions:
 //   - agent.subturn.result_delivered: successful delivery to channel
 //   - agent.subturn.orphan: delivery failed (parent finished or channel full)
 func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, result *tools.ToolResult) {
-	// Let GC clean up the pendingResults channel; parent Finish will no longer close it.
-	// We use defer/recover to catch any unlikely channel panics if it were ever closed.
-	defer func() {
-		if r := recover(); r != nil {
-			logger.RecoverPanicNoExit(r)
-			logger.WarnCF("subturn", "recovered panic sending to pendingResults", map[string]any{
-				"parent_id": parentTS.turnID,
-				"child_id":  childID,
-				"recover":   r,
-			})
-			if result != nil && al != nil {
-				al.emitEvent(runtimeevents.KindAgentSubTurnOrphan,
-					parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
-					SubTurnOrphanPayload{ParentTurnID: parentTS.turnID, ChildTurnID: childID, Reason: "panic"},
-				)
-			}
-		}
-	}()
 	parentTS.mu.Lock()
 	isFinished := parentTS.isFinished.Load()
 	resultChan := parentTS.pendingResults
@@ -704,9 +686,13 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 	case resultChan <- result:
 		// Successfully delivered
 		if al != nil {
+			contentLen := 0
+			if result != nil {
+				contentLen = len(result.ForLLM)
+			}
 			al.emitEvent(runtimeevents.KindAgentSubTurnResultDelivered,
 				parentTS.eventMeta("deliverSubTurnResult", "subturn.result_delivered"),
-				SubTurnResultDeliveredPayload{ContentLen: len(result.ForLLM)},
+				SubTurnResultDeliveredPayload{ContentLen: contentLen},
 			)
 		}
 	case <-parentTS.Finished():
