@@ -655,36 +655,29 @@ func completionMediaRefs(items []tools.CompletionMedia) []string {
 //   - If parent turn has finished: emits agent.subturn.orphan (late arrival)
 //
 // Thread safety:
+//   - The finish check and non-blocking send are serialized by the parent lock
 //   - pendingResults is never closed because child deliveries may outlive the parent
-//   - finishedChan broadcasts completion and releases a delivery waiting on a full channel
 //
 // Event emissions:
 //   - agent.subturn.result_delivered: successful delivery to channel
 //   - agent.subturn.orphan: delivery failed (parent finished or channel full)
 func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, result *tools.ToolResult) {
 	parentTS.mu.Lock()
-	isFinished := parentTS.isFinished.Load()
-	resultChan := parentTS.pendingResults
+	reason := ""
+	delivered := false
+	if parentTS.isFinished.Load() || parentTS.pendingResults == nil {
+		reason = "parent_finished"
+	} else {
+		select {
+		case parentTS.pendingResults <- result:
+			delivered = true
+		default:
+			reason = "channel_full"
+		}
+	}
 	parentTS.mu.Unlock()
 
-	// If parent turn has already finished, treat this as an orphan result
-	if isFinished || resultChan == nil {
-		if result != nil && al != nil {
-			al.emitEvent(runtimeevents.KindAgentSubTurnOrphan,
-				parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
-				SubTurnOrphanPayload{ParentTurnID: parentTS.turnID, ChildTurnID: childID, Reason: "parent_finished"},
-			)
-		}
-		return
-	}
-
-	// Parent Turn is still running → attempt to deliver result
-	// We use a select statement with parentTS.Finished() to ensure that if the
-	// parent turn finishes while we are waiting to send the result (e.g. channel
-	// is full), we don't leak this goroutine by blocking forever.
-	select {
-	case resultChan <- result:
-		// Successfully delivered
+	if delivered {
 		if al != nil {
 			contentLen := 0
 			if result != nil {
@@ -695,24 +688,25 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 				SubTurnResultDeliveredPayload{ContentLen: contentLen},
 			)
 		}
-	case <-parentTS.Finished():
-		// Parent finished while we were waiting to deliver.
-		// The result cannot be delivered to the LLM, so it becomes an orphan.
+		return
+	}
+
+	if reason == "parent_finished" {
 		logger.WarnCF("subturn", "parent finished before result could be delivered", map[string]any{
 			"parent_id": parentTS.turnID,
 			"child_id":  childID,
 		})
-		if result != nil && al != nil {
-			al.emitEvent(
-				runtimeevents.KindAgentSubTurnOrphan,
-				parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
-				SubTurnOrphanPayload{
-					ParentTurnID: parentTS.turnID,
-					ChildTurnID:  childID,
-					Reason:       "parent_finished_waiting",
-				},
-			)
-		}
+	} else {
+		logger.WarnCF("subturn", "pendingResults channel full, result orphaned", map[string]any{
+			"parent_id": parentTS.turnID,
+			"child_id":  childID,
+		})
+	}
+	if result != nil && al != nil {
+		al.emitEvent(runtimeevents.KindAgentSubTurnOrphan,
+			parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
+			SubTurnOrphanPayload{ParentTurnID: parentTS.turnID, ChildTurnID: childID, Reason: reason},
+		)
 	}
 }
 

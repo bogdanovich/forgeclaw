@@ -670,7 +670,7 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		ctx:            context.Background(),
 		turnID:         "parent-deadlock-test",
 		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 2), // Small buffer to test blocking
+		pendingResults: make(chan *tools.ToolResult, 2),
 	}
 
 	// Simulate multiple child turns delivering results concurrently
@@ -686,19 +686,6 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		}(i)
 	}
 
-	// Concurrently read from the channel to prevent blocking
-	// and to actually retrieve the matched number of results
-	go func() {
-		for i := 0; i < numChildren; i++ {
-			select {
-			case <-parent.pendingResults:
-			case <-time.After(5 * time.Second):
-				t.Error("timeout waiting for result")
-				return
-			}
-		}
-	}()
-
 	// Wait for all deliveries to complete (with timeout)
 	done := make(chan struct{})
 	go func() {
@@ -711,6 +698,10 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 		// Success - no deadlock
 	case <-time.After(3 * time.Second):
 		t.Fatal("deadlock detected: deliverSubTurnResult blocked")
+	}
+
+	if got := len(parent.pendingResults); got != cap(parent.pendingResults) {
+		t.Fatalf("expected %d buffered results, got %d", cap(parent.pendingResults), got)
 	}
 }
 
@@ -809,9 +800,14 @@ func TestFinishedChannelClosedState(t *testing.T) {
 	// Verify Finish() is idempotent
 	ts.Finish(false) // Should not panic
 
-	// Verify deliverSubTurnResult correctly uses Finished() channel and treats as orphan
+	// A writable channel must not let delivery bypass the finished state.
 	result := &tools.ToolResult{ForLLM: "late result"}
-	deliverSubTurnResult(nil, ts, "child-1", result) // Will emit orphan due to <-ts.Finished() case
+	deliverSubTurnResult(nil, ts, "child-1", result)
+	select {
+	case <-ts.pendingResults:
+		t.Fatal("finished parent accepted a late result")
+	default:
+	}
 }
 
 // TestFinalPollCapturesLateResults verifies that the final poll before Finish()

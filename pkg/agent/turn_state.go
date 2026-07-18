@@ -912,16 +912,15 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 // Finish marks the turn as finished and broadcasts completion. pendingResults
 // remains open because asynchronous child deliveries may still hold a sender.
 func (ts *turnState) Finish(isHardAbort bool) {
+	ts.mu.Lock()
 	ts.isFinished.Store(true)
-
 	ts.finishSignalOnce.Do(func() {
-		ts.mu.Lock()
 		if ts.finishedChan == nil {
 			ts.finishedChan = make(chan struct{})
 		}
 		close(ts.finishedChan)
-		ts.mu.Unlock()
 	})
+	ts.mu.Unlock()
 
 	// Any graceful finish must signal direct children so nested SubTurns can
 	// observe parent completion and decide whether to stop or continue.
