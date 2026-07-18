@@ -171,8 +171,8 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 		return memoryMutationResult(operation, outcome, false)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(validatedPath), 0o755); err != nil {
-		return t.failure(ctx, operation, "directory_create_failed", payload, err)
+	if mkdirErr := os.MkdirAll(filepath.Dir(validatedPath), 0o755); mkdirErr != nil {
+		return t.failure(ctx, operation, "directory_create_failed", payload, mkdirErr)
 	}
 	validatedPath, err = validatePathWithAllowPaths(curatedMemoryTarget, t.workspace, true, nil)
 	if err != nil {
