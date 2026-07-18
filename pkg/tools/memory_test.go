@@ -160,8 +160,14 @@ func TestMemoryToolRejectsAmbiguousMutationAndSubstringDedup(t *testing.T) {
 		t.Fatalf("substring add result = %#v", added)
 	}
 
-	_, _, _, _, err := applyCuratedMemoryMutation("team\n", "remove", "tea", "")
-	if err == nil {
+	if err := os.WriteFile(memoryPath, []byte("team\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	substringRemove := tool.Execute(t.Context(), map[string]any{
+		"operation": "remove",
+		"content":   "tea",
+	})
+	if !substringRemove.IsError {
 		t.Fatal("remove must not match content inside a larger entry")
 	}
 }
