@@ -88,6 +88,77 @@ func TestMockLLMScenario_ProcessDirectExecutesToolAndReturnsFinalAnswer(t *testi
 	}
 }
 
+func TestMockLLMScenario_StatelessDirectTurnsKeepToolsButNotPriorTurns(t *testing.T) {
+	const toolName = "scenario_stateless_lookup"
+	const firstPrompt = "review the first pull request"
+
+	provider := llmscenario.NewScriptedProvider(
+		"scenario-model",
+		llmscenario.ProviderStep{
+			Name: "first turn requests tool",
+			Response: llmscenario.ToolCallResponse(
+				"I will inspect it.",
+				llmscenario.ToolCall("call_stateless_1", toolName, map[string]any{}),
+			),
+		},
+		llmscenario.ProviderStep{
+			Name:     "first turn receives tool result",
+			Assert:   llmscenario.RequireLastMessage("tool", "current pull request details"),
+			Response: llmscenario.TextResponse("first review complete"),
+		},
+		llmscenario.ProviderStep{
+			Name: "second turn excludes first turn",
+			Assert: func(call llmscenario.ProviderCall) error {
+				for _, msg := range call.Messages {
+					if strings.Contains(msg.Content, firstPrompt) ||
+						strings.Contains(msg.Content, "current pull request details") ||
+						strings.Contains(msg.Content, "first review complete") {
+						return fmt.Errorf("second stateless turn inherited prior content: %#v", call.Messages)
+					}
+				}
+				return nil
+			},
+			Response: llmscenario.TextResponse("second review complete"),
+		},
+	)
+
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	agent.Tools.Register(llmscenario.NewStubTool(
+		toolName,
+		tools.NewToolResult("current pull request details"),
+	))
+
+	opts := DirectTurnOptions{Stateless: true}
+	response, err := al.ProcessDirectWithOptions(
+		context.Background(), firstPrompt, "shared-session", "cli", "direct", opts,
+	)
+	if err != nil {
+		t.Fatalf("first stateless turn failed: %v", err)
+	}
+	if response != "first review complete" {
+		t.Fatalf("first response = %q", response)
+	}
+
+	response, err = al.ProcessDirectWithOptions(
+		context.Background(), "review the second pull request", "shared-session", "cli", "direct", opts,
+	)
+	if err != nil {
+		t.Fatalf("second stateless turn failed: %v", err)
+	}
+	if response != "second review complete" {
+		t.Fatalf("second response = %q", response)
+	}
+	for _, sessionKey := range agent.Sessions.ListSessions() {
+		if history := agent.Sessions.GetHistory(sessionKey); len(history) != 0 {
+			t.Fatalf("stateless turns persisted %d messages in %q", len(history), sessionKey)
+		}
+	}
+	if err := provider.AssertExhausted(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMockLLMScenario_QueuedMediaFallbackContinuesToFinalAnswer(t *testing.T) {
 	const toolName = "scenario_media_tool"
 
