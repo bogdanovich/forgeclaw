@@ -11,6 +11,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Lint documentation layout
+        run: bash ./scripts/lint-docs.sh
+
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
