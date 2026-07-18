@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -704,6 +705,61 @@ func TestEmptyWorkspaceBaselineDetectsNewFiles(t *testing.T) {
 	}
 	if sp1 == sp2 {
 		t.Error("cache should have been invalidated after file creation")
+	}
+}
+
+func TestDailyMemoryCreationInvalidatesCache(t *testing.T) {
+	workspace := setupWorkspace(t, nil)
+	defer os.RemoveAll(workspace)
+
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.Local)
+	cb := NewContextBuilder(workspace)
+	cb.memory.now = func() time.Time { return now }
+	initial := cb.BuildSystemPromptWithCache()
+
+	dailyPath := filepath.Join(workspace, "memory", "202607", "20260718.md")
+	if err := os.MkdirAll(filepath.Dir(dailyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dailyPath, []byte("# Today\ncreated after cache"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := cb.BuildSystemPromptWithCache()
+	if initial == updated || !strings.Contains(updated, "created after cache") {
+		t.Fatalf("daily-note creation did not rebuild cache: %q", updated)
+	}
+}
+
+func TestDailyMemoryDateRolloverInvalidatesCache(t *testing.T) {
+	workspace := setupWorkspace(t, nil)
+	defer os.RemoveAll(workspace)
+
+	current := time.Date(2026, time.July, 18, 23, 59, 0, 0, time.Local)
+	for date, content := range map[string]string{
+		"20260718": "first-day-note",
+		"20260719": "second-day-note",
+	} {
+		path := filepath.Join(workspace, "memory", date[:6], date+".md")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cb := NewContextBuilder(workspace).WithPromptMemoryConfig(config.PromptMemoryConfig{RecentDays: 1})
+	cb.memory.now = func() time.Time { return current }
+	before := cb.BuildSystemPromptWithCache()
+	if !strings.Contains(before, "first-day-note") || strings.Contains(before, "second-day-note") {
+		t.Fatalf("unexpected pre-rollover prompt: %q", before)
+	}
+
+	current = current.Add(2 * time.Minute)
+	after := cb.BuildSystemPromptWithCache()
+	if !strings.Contains(after, "second-day-note") || strings.Contains(after, "first-day-note") {
+		t.Fatalf("date rollover did not select the new daily note: %q", after)
 	}
 }
 

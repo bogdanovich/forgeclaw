@@ -55,6 +55,7 @@ func (al *AgentLoop) isolateSkillRegistry(registry *AgentRegistry, cfg *config.C
 		}
 		instance.ContextBuilder = newContextBuilder(instance.Workspace, "", "").
 			WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker).
+			WithPromptMemoryConfig(cfg.Agents.Defaults.PromptMemory).
 			WithAgentDiscovery(instance.ID, registry.ListSpawnableAgents)
 	}
 }

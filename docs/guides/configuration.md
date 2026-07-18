@@ -67,7 +67,32 @@ PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspa
 └── USER.md           # User preferences
 ```
 
-> **Note:** Changes to `AGENT.md`, `SOUL.md`, `USER.md` and `memory/MEMORY.md` are automatically detected at runtime via file modification time (mtime) tracking. You do **not** need to restart the gateway after editing these files — the agent picks up the new content on the next request.
+> **Note:** Changes to `AGENT.md`, `SOUL.md`, `USER.md`, `memory/MEMORY.md`, and selected daily notes are automatically detected at runtime. The daily-note selection also refreshes when the local date changes. You do **not** need to restart the gateway after editing these files.
+
+### Prompt Memory Budgets
+
+Workspace Markdown memory is independently bounded before it is added to the system prompt:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "prompt_memory": {
+        "long_term_max_bytes": 32768,
+        "daily_notes_max_bytes": 16384,
+        "recent_days": 3
+      }
+    }
+  }
+}
+```
+
+- `long_term_max_bytes` bounds `memory/MEMORY.md`. Truncation preserves the beginning and end.
+- `daily_notes_max_bytes` bounds the combined recent daily notes. Newer notes are retained before older notes.
+- `recent_days` selects up to 31 local calendar days, including note paths that do not exist yet.
+
+Zero or omitted values use the defaults shown above. Truncation is UTF-8 safe and inserts a visible marker. These limits
+are separate from Seahorse history and summary budgets.
 
 ### Tool-Loop Detection
 

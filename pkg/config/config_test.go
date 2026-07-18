@@ -1233,6 +1233,47 @@ func TestDefaultConfig_ToolFeedbackDisabled(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_PromptMemoryIsBounded(t *testing.T) {
+	cfg := DefaultConfig().Agents.Defaults.PromptMemory
+	if got := cfg.EffectiveLongTermMaxBytes(); got != DefaultPromptMemoryLongTermMaxBytes {
+		t.Fatalf("long-term max bytes = %d, want %d", got, DefaultPromptMemoryLongTermMaxBytes)
+	}
+	if got := cfg.EffectiveDailyNotesMaxBytes(); got != DefaultPromptMemoryDailyNotesMaxBytes {
+		t.Fatalf("daily-note max bytes = %d, want %d", got, DefaultPromptMemoryDailyNotesMaxBytes)
+	}
+	if got := cfg.EffectiveRecentDays(); got != DefaultPromptMemoryRecentDays {
+		t.Fatalf("recent days = %d, want %d", got, DefaultPromptMemoryRecentDays)
+	}
+}
+
+func TestPromptMemoryConfigValidate(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  PromptMemoryConfig
+		ok   bool
+	}{
+		{name: "defaults", cfg: PromptMemoryConfig{}, ok: true},
+		{
+			name: "custom",
+			cfg:  PromptMemoryConfig{LongTermMaxBytes: 1024, DailyNotesMaxBytes: 512, RecentDays: 7},
+			ok:   true,
+		},
+		{name: "negative long term", cfg: PromptMemoryConfig{LongTermMaxBytes: -1}},
+		{name: "negative daily", cfg: PromptMemoryConfig{DailyNotesMaxBytes: -1}},
+		{name: "negative days", cfg: PromptMemoryConfig{RecentDays: -1}},
+		{name: "too many days", cfg: PromptMemoryConfig{RecentDays: maxPromptMemoryRecentDays + 1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err == nil) != tt.ok {
+				t.Fatalf("Validate() error = %v, want success %t", err, tt.ok)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_ToolFeedbackDefaultsFalseWhenUnset(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")

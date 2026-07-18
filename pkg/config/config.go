@@ -362,6 +362,57 @@ type ToolFeedbackConfig struct {
 	EditMinIntervalSeconds int    `json:"edit_min_interval_seconds" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_EDIT_MIN_INTERVAL_SECONDS"`
 }
 
+const (
+	DefaultPromptMemoryLongTermMaxBytes   = 32 * 1024
+	DefaultPromptMemoryDailyNotesMaxBytes = 16 * 1024
+	DefaultPromptMemoryRecentDays         = 3
+	maxPromptMemoryRecentDays             = 31
+)
+
+// PromptMemoryConfig bounds workspace Markdown injected into the system prompt.
+type PromptMemoryConfig struct {
+	LongTermMaxBytes   int `json:"long_term_max_bytes,omitempty"   env:"PICOCLAW_AGENTS_DEFAULTS_PROMPT_MEMORY_LONG_TERM_MAX_BYTES"`
+	DailyNotesMaxBytes int `json:"daily_notes_max_bytes,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_PROMPT_MEMORY_DAILY_NOTES_MAX_BYTES"`
+	RecentDays         int `json:"recent_days,omitempty"           env:"PICOCLAW_AGENTS_DEFAULTS_PROMPT_MEMORY_RECENT_DAYS"`
+}
+
+func (c PromptMemoryConfig) EffectiveLongTermMaxBytes() int {
+	if c.LongTermMaxBytes > 0 {
+		return c.LongTermMaxBytes
+	}
+	return DefaultPromptMemoryLongTermMaxBytes
+}
+
+func (c PromptMemoryConfig) EffectiveDailyNotesMaxBytes() int {
+	if c.DailyNotesMaxBytes > 0 {
+		return c.DailyNotesMaxBytes
+	}
+	return DefaultPromptMemoryDailyNotesMaxBytes
+}
+
+func (c PromptMemoryConfig) EffectiveRecentDays() int {
+	if c.RecentDays > 0 {
+		return c.RecentDays
+	}
+	return DefaultPromptMemoryRecentDays
+}
+
+func (c PromptMemoryConfig) Validate() error {
+	if c.LongTermMaxBytes < 0 {
+		return errors.New("agents.defaults.prompt_memory.long_term_max_bytes must not be negative")
+	}
+	if c.DailyNotesMaxBytes < 0 {
+		return errors.New("agents.defaults.prompt_memory.daily_notes_max_bytes must not be negative")
+	}
+	if c.RecentDays < 0 || c.RecentDays > maxPromptMemoryRecentDays {
+		return fmt.Errorf(
+			"agents.defaults.prompt_memory.recent_days must be between 0 and %d",
+			maxPromptMemoryRecentDays,
+		)
+	}
+	return nil
+}
+
 type AgentDefaults struct {
 	Workspace                 string             `json:"workspace"                        env:"PICOCLAW_AGENTS_DEFAULTS_WORKSPACE"`
 	RestrictToWorkspace       bool               `json:"restrict_to_workspace"            env:"PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE"`
@@ -383,6 +434,7 @@ type AgentDefaults struct {
 	MaxParallelTurns          int                `json:"max_parallel_turns,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
 	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"`
 	ToolFeedback              ToolFeedbackConfig `json:"tool_feedback,omitempty"`
+	PromptMemory              PromptMemoryConfig `json:"prompt_memory,omitempty"`
 	FinalTurnRenderMode       string             `json:"final_turn_render_mode,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_FINAL_TURN_RENDER_MODE"`
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"PICOCLAW_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
 	ContextManager            string             `json:"context_manager,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER"`
@@ -1620,6 +1672,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.Agents.Defaults.validateResultRetentionOwnership(); err != nil {
 		return nil, err
 	}
+	if err = cfg.Agents.Defaults.PromptMemory.Validate(); err != nil {
+		return nil, err
+	}
 	if err = cfg.Session.Lifecycle.Validate(); err != nil {
 		return nil, err
 	}
@@ -1823,6 +1878,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid tools.result_retention: %w", err)
 	}
 	if err = cfg.Agents.Defaults.validateResultRetentionOwnership(); err != nil {
+		return nil, err
+	}
+	if err = cfg.Agents.Defaults.PromptMemory.Validate(); err != nil {
 		return nil, err
 	}
 	if err = cfg.Session.Lifecycle.Validate(); err != nil {

@@ -47,6 +47,7 @@ type ContextBuilder struct {
 	// build time. This catches nested file creations/deletions/mtime changes
 	// that may not update the top-level skill root directory mtime.
 	skillFilesAtCache map[string]time.Time
+	memoryDateAtCache string
 }
 
 func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuilder {
@@ -69,6 +70,12 @@ func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuil
 
 func (cb *ContextBuilder) WithSplitOnMarker(enabled bool) *ContextBuilder {
 	cb.splitOnMarker = enabled
+	return cb
+}
+
+func (cb *ContextBuilder) WithPromptMemoryConfig(prompt config.PromptMemoryConfig) *ContextBuilder {
+	cb.memory.configurePrompt(prompt)
+	cb.InvalidateCache()
 	return cb
 }
 
@@ -382,6 +389,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache() string {
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
+	cb.memoryDateAtCache = baseline.memoryDate
 
 	logger.DebugCF("agent", "System prompt cached",
 		map[string]any{
@@ -535,6 +543,7 @@ func (cb *ContextBuilder) InvalidateCache() {
 	cb.cachedAt = time.Time{}
 	cb.existedAtCache = nil
 	cb.skillFilesAtCache = nil
+	cb.memoryDateAtCache = ""
 
 	logger.DebugCF("agent", "System prompt cache invalidated", nil)
 }
@@ -545,7 +554,7 @@ func (cb *ContextBuilder) InvalidateCache() {
 func (cb *ContextBuilder) sourcePaths() []string {
 	agentDefinition := cb.LoadAgentDefinition()
 	paths := agentDefinition.trackedPaths(cb.workspace)
-	paths = append(paths, filepath.Join(cb.workspace, "memory", "MEMORY.md"))
+	paths = append(paths, cb.memory.promptSourcePaths()...)
 	return uniquePaths(paths)
 }
 
@@ -569,6 +578,7 @@ type cacheBaseline struct {
 	existed    map[string]bool
 	skillFiles map[string]time.Time
 	maxMtime   time.Time
+	memoryDate string
 }
 
 // buildCacheBaseline records which tracked paths currently exist and computes
@@ -618,7 +628,12 @@ func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
 		maxMtime = time.Unix(1, 0)
 	}
 
-	return cacheBaseline{existed: existed, skillFiles: skillFiles, maxMtime: maxMtime}
+	return cacheBaseline{
+		existed:    existed,
+		skillFiles: skillFiles,
+		maxMtime:   maxMtime,
+		memoryDate: cb.memory.currentDateKey(),
+	}
 }
 
 // sourceFilesChangedLocked checks whether any workspace source file has been
@@ -630,6 +645,9 @@ func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
 // which already holds RLock or Lock).
 func (cb *ContextBuilder) sourceFilesChangedLocked() bool {
 	if cb.cachedAt.IsZero() {
+		return true
+	}
+	if cb.memoryDateAtCache != cb.memory.currentDateKey() {
 		return true
 	}
 
