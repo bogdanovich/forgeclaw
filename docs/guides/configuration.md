@@ -391,6 +391,33 @@ tail turns, overflow tokens, hard-limit degradation, truncation, and the pressur
 schedule compaction because the configured raw-tail boundary still protects those turns; compaction resumes when that
 window advances and older turns become eligible.
 
+### Seahorse Recall Boundary
+
+`agents.defaults.context_manager_config.maxRetrievalScope` sets the broadest boundary that `short_grep` and
+`short_expand` may use. The allowed values, from narrowest to broadest, are `current_epoch`, `conversation`, and
+`workspace`. The default is `conversation`, so a model cannot search unrelated routed conversations even if it asks for
+`workspace`.
+
+Personal single-user workspaces that intentionally need recall across chats or topics can opt in explicitly:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "context_manager": "seahorse",
+      "context_manager_config": {
+        "maxRetrievalScope": "workspace"
+      }
+    }
+  }
+}
+```
+
+Set `maxRetrievalScope` to `current_epoch` for strict lifecycle-epoch isolation. Invalid values fail Seahorse startup.
+This policy is enforced after the model call at the tool boundary and applies identically to search and expansion.
+Session dimensions remain the primary identity boundary; include `sender` where users in one room must not share a
+routed conversation.
+
 ### Tool Result Retention
 
 Tool-result policy belongs to the tools layer, independently of the configured context manager. Seahorse consumes that

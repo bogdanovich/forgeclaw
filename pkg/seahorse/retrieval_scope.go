@@ -16,9 +16,16 @@ const (
 	retrievalScopeWorkspace    retrievalScope = "workspace"
 )
 
+var orderedRetrievalScopes = []retrievalScope{
+	retrievalScopeCurrentEpoch,
+	retrievalScopeConversation,
+	retrievalScopeWorkspace,
+}
+
 func parseRetrievalScope(value any) (retrievalScope, error) {
 	scope, _ := value.(string)
-	if strings.TrimSpace(scope) == "" {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
 		return retrievalScopeCurrentEpoch, nil
 	}
 	switch retrievalScope(scope) {
@@ -32,6 +39,47 @@ func parseRetrievalScope(value any) (retrievalScope, error) {
 	}
 }
 
+func (c Config) effectiveMaxRetrievalScope() (retrievalScope, error) {
+	if strings.TrimSpace(c.MaxRetrievalScope) == "" {
+		return retrievalScopeConversation, nil
+	}
+	scope, err := parseRetrievalScope(c.MaxRetrievalScope)
+	if err != nil {
+		return "", fmt.Errorf(
+			"maxRetrievalScope %q must be current_epoch, conversation, or workspace",
+			c.MaxRetrievalScope,
+		)
+	}
+	return scope, nil
+}
+
+func (r retrievalScope) rank() int {
+	for index, scope := range orderedRetrievalScopes {
+		if r == scope {
+			return index
+		}
+	}
+	return -1
+}
+
+func (e *RetrievalEngine) allowedRetrievalScopes() []string {
+	if e == nil {
+		return []string{string(retrievalScopeCurrentEpoch)}
+	}
+	maxScope, err := e.config.effectiveMaxRetrievalScope()
+	if err != nil {
+		return []string{string(retrievalScopeCurrentEpoch)}
+	}
+	allowed := make([]string, 0, maxScope.rank()+1)
+	for _, scope := range orderedRetrievalScopes {
+		if scope.rank() > maxScope.rank() {
+			break
+		}
+		allowed = append(allowed, string(scope))
+	}
+	return allowed
+}
+
 func resolveToolConversationIDs(
 	ctx context.Context,
 	engine *RetrievalEngine,
@@ -39,6 +87,17 @@ func resolveToolConversationIDs(
 ) ([]int64, error) {
 	if engine == nil || engine.store == nil {
 		return nil, fmt.Errorf("retrieval engine is not initialized")
+	}
+	maxScope, err := engine.config.effectiveMaxRetrievalScope()
+	if err != nil {
+		return nil, fmt.Errorf("invalid operator retrieval policy: %w", err)
+	}
+	if scope.rank() > maxScope.rank() {
+		return nil, fmt.Errorf(
+			"retrieval scope %q exceeds operator maximum %q",
+			scope,
+			maxScope,
+		)
 	}
 	sessionKey := strings.TrimSpace(tools.ToolSessionKey(ctx))
 	sessionScope := tools.ToolSessionScope(ctx)

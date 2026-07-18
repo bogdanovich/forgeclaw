@@ -3,6 +3,8 @@ package seahorse
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -51,7 +53,10 @@ func TestGrepToolTrustedRetrievalScopes(t *testing.T) {
 	otherAgent := seed("epoch:other-agent", current.routeKey, "reviewer", "other-agent")
 	unprovenanced := seed("epoch:legacy", "", "", "legacy")
 
-	tool := NewGrepTool(&RetrievalEngine{store: store})
+	tool := NewGrepTool(&RetrievalEngine{
+		store:  store,
+		config: Config{MaxRetrievalScope: string(retrievalScopeWorkspace)},
+	})
 	toolCtx := tools.WithToolSessionContext(
 		ctx,
 		"main",
@@ -132,6 +137,123 @@ func TestGrepToolTrustedRetrievalScopes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRetrievalScopeDefaultsToConversationMaximum(t *testing.T) {
+	engine := &RetrievalEngine{}
+	if got := engine.allowedRetrievalScopes(); !reflect.DeepEqual(got, []string{"current_epoch", "conversation"}) {
+		t.Fatalf("allowed scopes = %#v", got)
+	}
+}
+
+func TestNewEngineRejectsInvalidMaxRetrievalScope(t *testing.T) {
+	_, err := NewEngine(Config{
+		DBPath:            t.TempDir() + "/seahorse.db",
+		MaxRetrievalScope: "global",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "maxRetrievalScope") {
+		t.Fatalf("NewEngine error = %v", err)
+	}
+}
+
+func TestRetrievalToolSchemasHonorOperatorMaximum(t *testing.T) {
+	engine := &RetrievalEngine{config: Config{MaxRetrievalScope: "current_epoch"}}
+	want := []string{"current_epoch"}
+	for _, tool := range []interface{ Parameters() map[string]any }{
+		NewGrepTool(engine),
+		NewExpandTool(engine),
+	} {
+		properties := tool.Parameters()["properties"].(map[string]any)
+		scope := properties["retrieval_scope"].(map[string]any)
+		if got := scope["enum"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("retrieval scope enum = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestRetrievalScopeRejectsRequestsAboveOperatorMaximum(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	current, err := store.GetOrCreateConversation(ctx, "epoch:current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := store.AddMessage(ctx, current.ConversationID, "user", "scope-needle", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetConversationProvenance(ctx, "epoch:current", "route:a", "main"); err != nil {
+		t.Fatal(err)
+	}
+	toolCtx := tools.WithToolSessionContext(ctx, "main", "epoch:current", retrievalTestScope("route:a", "main"))
+	engine := &RetrievalEngine{store: store}
+
+	grepResult := NewGrepTool(engine).Execute(toolCtx, map[string]any{
+		"pattern":         "scope-needle",
+		"retrieval_scope": "workspace",
+	})
+	if !grepResult.IsError || !strings.Contains(grepResult.ContentForLLM(), "exceeds operator maximum") {
+		t.Fatalf("grep result = %#v", grepResult)
+	}
+
+	expandResult := NewExpandTool(engine).Execute(toolCtx, map[string]any{
+		"message_ids":     []any{float64(message.ID)},
+		"retrieval_scope": "workspace",
+	})
+	if !expandResult.IsError || !strings.Contains(expandResult.ContentForLLM(), "exceeds operator maximum") {
+		t.Fatalf("expand result = %#v", expandResult)
+	}
+}
+
+func TestConversationRetrievalSeparatesSenders(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	seed := func(sessionKey, routeKey, content string) int64 {
+		t.Helper()
+		conversation, err := store.GetOrCreateConversation(ctx, sessionKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if provenanceErr := store.SetConversationProvenance(ctx, sessionKey, routeKey, "main"); provenanceErr != nil {
+			t.Fatal(provenanceErr)
+		}
+		message, addErr := store.AddMessage(ctx, conversation.ConversationID, "user", content+" sender-needle", 5)
+		if addErr != nil {
+			t.Fatal(addErr)
+		}
+		return message.ID
+	}
+
+	currentID := seed("epoch:sender-a:current", "route:chat-a:sender-a", "current")
+	previousID := seed("epoch:sender-a:previous", "route:chat-a:sender-a", "previous")
+	otherSenderID := seed("epoch:sender-b", "route:chat-a:sender-b", "other")
+	toolCtx := tools.WithToolSessionContext(
+		ctx,
+		"main",
+		"epoch:sender-a:current",
+		retrievalTestScope("route:chat-a:sender-a", "main"),
+	)
+	result := NewGrepTool(&RetrievalEngine{store: store}).Execute(toolCtx, map[string]any{
+		"pattern":         "sender-needle",
+		"scope":           "message",
+		"retrieval_scope": "conversation",
+	})
+	if result.IsError {
+		t.Fatal(result.ContentForLLM())
+	}
+	var output struct {
+		Messages []GrepMessageResult `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(result.ContentForLLM()), &output); err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[int64]bool, len(output.Messages))
+	for _, message := range output.Messages {
+		got[message.ID] = true
+	}
+	if !got[currentID] || !got[previousID] || got[otherSenderID] {
+		t.Fatalf("sender-scoped messages = %#v", got)
 	}
 }
 

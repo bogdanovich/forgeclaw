@@ -40,7 +40,7 @@ Use when short_grep returns messages and you need complete content (not just sni
 
 Parameters:
 - message_ids (required): Array of message ID strings (from short_grep results)
-- retrieval_scope: "current_epoch" (default), "conversation", or "workspace"
+- retrieval_scope: Trusted expansion boundary permitted by operator policy (default: "current_epoch")
 
 Returns message with:
 - content: Full text content
@@ -72,8 +72,8 @@ func (t *ExpandTool) Parameters() map[string]any {
 			},
 			"retrieval_scope": map[string]any{
 				"type":        "string",
-				"enum":        []string{"current_epoch", "conversation", "workspace"},
-				"description": "Trusted expansion boundary (default: current_epoch)",
+				"enum":        t.engine.allowedRetrievalScopes(),
+				"description": "Trusted expansion boundary permitted by operator policy (default: current_epoch)",
 			},
 		},
 		"required": []string{"message_ids"},
