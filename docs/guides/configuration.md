@@ -396,6 +396,10 @@ the stored audit message:
 - `transient`: omit a resolved successful result and its matching assistant tool call from future prompts.
 - `durable`: declare that the tool writes to an external source of truth and retain only the configured receipt.
 
+There is no automatic migration from the former Seahorse-owned
+`agents.defaults.context_manager_config.toolResultRetention` field. Move those rules to `tools.result_retention` before
+starting the updated binary; stale configurations fail loading with an actionable error.
+
 `compact_receipt` and `durable` require a non-empty receipt of at most 1024 bytes. Rules apply only when the runtime
 persisted an explicit `success` status. Errors, async/unresolved results, legacy results with unknown status, and results
 with media remain fully preserved regardless of configuration. The current active turn always sees the full result.
