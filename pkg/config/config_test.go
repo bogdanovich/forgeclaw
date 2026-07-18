@@ -371,28 +371,32 @@ func TestLoadConfigRejectsInvalidResultRetention(t *testing.T) {
 }
 
 func TestLoadConfigRejectsContextManagerOwnedResultRetention(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.json")
-	raw := `{
-		"version": 3,
-		"agents": {
-			"defaults": {
-				"context_manager": "seahorse",
-				"context_manager_config": {
-					"toolResultRetention": {
-						"log_meal": {"mode": "transient"}
+	for _, legacyKey := range []string{"toolResultRetention", "ToolResultRetention"} {
+		t.Run(legacyKey, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.json")
+			raw := fmt.Sprintf(`{
+				"version": 3,
+				"agents": {
+					"defaults": {
+						"context_manager": "seahorse",
+						"context_manager_config": {
+							%q: {
+								"log_meal": {"mode": "transient"}
+							}
+						}
 					}
 				}
+			}`, legacyKey)
+			if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+				t.Fatalf("WriteFile(configPath): %v", err)
 			}
-		}
-	}`
-	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
-		t.Fatalf("WriteFile(configPath): %v", err)
-	}
 
-	_, err := LoadConfigReadOnly(configPath)
-	if err == nil || !strings.Contains(err.Error(), "use tools.result_retention") {
-		t.Fatalf("LoadConfigReadOnly() error = %v", err)
+			_, err := LoadConfigReadOnly(configPath)
+			if err == nil || !strings.Contains(err.Error(), "use tools.result_retention") {
+				t.Fatalf("LoadConfigReadOnly() error = %v", err)
+			}
+		})
 	}
 }
 

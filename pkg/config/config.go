@@ -410,11 +410,14 @@ func (d *AgentDefaults) validateResultRetentionOwnership() error {
 	if err := json.Unmarshal(d.ContextManagerConfig, &raw); err != nil {
 		return fmt.Errorf("invalid agents.defaults.context_manager_config: %w", err)
 	}
-	if _, exists := raw["toolResultRetention"]; exists {
-		return fmt.Errorf(
-			"agents.defaults.context_manager_config.toolResultRetention is not supported; " +
-				"use tools.result_retention",
-		)
+	for key := range raw {
+		if strings.EqualFold(key, "toolResultRetention") {
+			return fmt.Errorf(
+				"agents.defaults.context_manager_config.%s is not supported; "+
+					"use tools.result_retention",
+				key,
+			)
+		}
 	}
 	return nil
 }
