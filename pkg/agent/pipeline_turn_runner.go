@@ -314,17 +314,23 @@ func (p *Pipeline) continueWithPendingSubTurnResults(
 	ts *turnState,
 	exec *turnExecution,
 ) bool {
-	results, sealed := ts.sealOrDrainPendingResults()
-	if sealed {
-		return false
-	}
-	for _, result := range results {
-		if result == nil || result.ForLLM == "" {
-			continue
+	for {
+		results, sealed := ts.sealOrDrainPendingResults()
+		if sealed {
+			return false
 		}
-		content := p.filterPendingResultForLLM(result.ForLLM)
-		msg := subTurnResultPromptMessage(content)
-		exec.pendingMessages = append(exec.pendingMessages, msg)
+		appended := false
+		for _, result := range results {
+			if result == nil || result.ForLLM == "" {
+				continue
+			}
+			content := p.filterPendingResultForLLM(result.ForLLM)
+			msg := subTurnResultPromptMessage(content)
+			exec.pendingMessages = append(exec.pendingMessages, msg)
+			appended = true
+		}
+		if appended {
+			return true
+		}
 	}
-	return true
 }

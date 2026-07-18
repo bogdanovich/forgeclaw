@@ -915,6 +915,24 @@ func TestPendingSubTurnResultForcesIterationAtLoopLimit(t *testing.T) {
 	}
 }
 
+func TestEmptyPendingSubTurnResultDoesNotResumeTerminalTurn(t *testing.T) {
+	pipeline := &Pipeline{}
+	ts := &turnState{pendingResults: make(chan *tools.ToolResult, 1)}
+	ts.pendingResults <- &tools.ToolResult{}
+	exec := &turnExecution{}
+
+	if pipeline.continueWithPendingSubTurnResults(ts, exec) {
+		t.Fatal("empty subturn result requested another iteration")
+	}
+	if len(exec.pendingMessages) != 0 {
+		t.Fatalf("empty subturn result appended pending messages: %#v", exec.pendingMessages)
+	}
+	deliverSubTurnResult(nil, ts, "after-empty", &tools.ToolResult{ForLLM: "too late"})
+	if got := len(ts.pendingResults); got != 0 {
+		t.Fatalf("terminal queue accepted %d results after empty batch", got)
+	}
+}
+
 // TestSpawnSubTurn_PanicRecovery verifies that even if runTurn panics,
 // the result is still delivered for async calls and SubTurnEndEvent is emitted.
 func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
