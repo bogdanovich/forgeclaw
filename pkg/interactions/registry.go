@@ -81,12 +81,17 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 		records:   make(map[string]Record),
 	}
 	if r.storePath != "" {
-		r.loadErr = r.load()
-		if r.loadErr == nil {
+		r.mu.Lock()
+		release, err := r.lockAndReloadLocked()
+		if err != nil {
+			r.loadErr = err
+		} else {
 			if r.pruneLocked(r.nowMillis()) {
 				r.loadErr = r.saveLocked()
 			}
+			release()
 		}
+		r.mu.Unlock()
 	}
 	return r
 }
@@ -140,25 +145,34 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 	}
 
 	r.mu.Lock()
-	if err := r.availableLocked(); err != nil {
+	if availableErr := r.availableLocked(); availableErr != nil {
+		r.mu.Unlock()
+		return Record{}, availableErr
+	}
+	releaseStore, err := r.lockAndReloadLocked()
+	if err != nil {
 		r.mu.Unlock()
 		return Record{}, err
 	}
 	if len(r.records) >= r.options.MaxRecords {
+		releaseStore()
 		r.mu.Unlock()
 		return Record{}, fmt.Errorf("%w: max records %d", ErrCapacityExceeded, r.options.MaxRecords)
 	}
 	for _, existing := range r.records {
 		if !isTerminal(existing.Status) && existing.Route.SessionKey == rec.Route.SessionKey {
+			releaseStore()
 			r.mu.Unlock()
 			return Record{}, fmt.Errorf("%w: %s", ErrSessionHasActive, existing.ShortID)
 		}
 		if !isTerminal(existing.Status) && existing.ShortID == rec.ShortID {
+			releaseStore()
 			r.mu.Unlock()
 			return Record{}, fmt.Errorf("%w: duplicate short id", ErrConflict)
 		}
 	}
 	if _, exists := r.records[rec.ID]; exists {
+		releaseStore()
 		r.mu.Unlock()
 		return Record{}, fmt.Errorf("%w: duplicate id", ErrConflict)
 	}
@@ -170,9 +184,11 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 	if err := r.saveLocked(); err != nil {
 		delete(r.records, rec.ID)
 		r.events = eventsBefore
+		releaseStore()
 		r.mu.Unlock()
 		return Record{}, err
 	}
+	releaseStore()
 	r.mu.Unlock()
 	r.notify([]Event{event})
 	return cloneRecord(rec), nil
@@ -258,6 +274,11 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 		r.mu.Unlock()
 		return nil, err
 	}
+	releaseStore, err := r.lockAndReloadLocked()
+	if err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	eventsBefore := append([]Event(nil), r.events...)
 	before := make(map[string]Record)
 	claimed := make([]Record, 0)
@@ -278,6 +299,7 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 		claimed = append(claimed, cloneRecord(rec))
 	}
 	if len(claimed) == 0 {
+		releaseStore()
 		r.mu.Unlock()
 		return nil, nil
 	}
@@ -287,9 +309,11 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 			r.records[id] = rec
 		}
 		r.events = eventsBefore
+		releaseStore()
 		r.mu.Unlock()
 		return nil, err
 	}
+	releaseStore()
 	r.mu.Unlock()
 	r.notify(emitted)
 	sort.Slice(claimed, func(i, j int) bool { return claimed[i].ID < claimed[j].ID })
@@ -463,16 +487,24 @@ func (r *Registry) Prune(now time.Time) error {
 		r.mu.Unlock()
 		return err
 	}
+	releaseStore, err := r.lockAndReloadLocked()
+	if err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	before := r.snapshotLocked()
 	if !r.pruneLocked(nowMillis) {
+		releaseStore()
 		r.mu.Unlock()
 		return nil
 	}
 	if err := r.saveLocked(); err != nil {
 		r.restoreSnapshotLocked(before)
+		releaseStore()
 		r.mu.Unlock()
 		return err
 	}
+	releaseStore()
 	r.mu.Unlock()
 	return nil
 }
@@ -612,12 +644,19 @@ func (r *Registry) update(
 		r.mu.Unlock()
 		return Record{}, err
 	}
+	releaseStore, err := r.lockAndReloadLocked()
+	if err != nil {
+		r.mu.Unlock()
+		return Record{}, err
+	}
 	rec, ok := r.records[id]
 	if !ok {
+		releaseStore()
 		r.mu.Unlock()
 		return Record{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if rec.Revision != expectedRevision {
+		releaseStore()
 		r.mu.Unlock()
 		return Record{}, fmt.Errorf(
 			"%w: have %d, want %d",
@@ -631,6 +670,7 @@ func (r *Registry) update(
 	now := r.nowMillis()
 	eventType, code, success, err := mutate(&rec, now)
 	if err != nil {
+		releaseStore()
 		r.mu.Unlock()
 		return Record{}, err
 	}
@@ -648,9 +688,11 @@ func (r *Registry) update(
 	if err := r.saveLocked(); err != nil {
 		r.records[id] = before
 		r.events = eventsBefore
+		releaseStore()
 		r.mu.Unlock()
 		return Record{}, err
 	}
+	releaseStore()
 	r.mu.Unlock()
 	r.notify([]Event{event})
 	return cloneRecord(rec), nil
@@ -705,6 +747,28 @@ func (r *Registry) availableLocked() error {
 		return fmt.Errorf("%w: %v", ErrStoreUnavailable, r.loadErr)
 	}
 	return nil
+}
+
+func (r *Registry) lockAndReloadLocked() (func(), error) {
+	if r.storePath == "" {
+		return func() {}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(r.storePath), 0o700); err != nil {
+		return nil, fmt.Errorf("create interaction store directory: %w", err)
+	}
+	release, err := acquireStoreFileLock(r.storePath + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	before := r.snapshotLocked()
+	r.records = make(map[string]Record)
+	r.events = nil
+	if err := r.load(); err != nil {
+		r.restoreSnapshotLocked(before)
+		release()
+		return nil, fmt.Errorf("%w: reload under lock: %v", ErrStoreUnavailable, err)
+	}
+	return release, nil
 }
 
 func (r *Registry) load() error {

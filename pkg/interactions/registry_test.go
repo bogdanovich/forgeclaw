@@ -231,6 +231,115 @@ func TestRegistryConcurrentAnswerClaimIsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestConcurrentRegistryInstancesDoNotLoseWrites(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)}
+	path := WorkspaceStorePath(t.TempDir())
+	first := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	second := NewRegistryWithOptions(path, Options{Now: clock.Now})
+
+	requests := []struct {
+		registry *Registry
+		request  CreateRequest
+	}{
+		{first, validCreate(clock, "interaction_17171717aaaaaaaa", "session-1")},
+		{second, validCreate(clock, "interaction_18181818aaaaaaaa", "session-2")},
+	}
+	start := make(chan struct{})
+	errorsByCall := make(chan error, len(requests))
+	for _, call := range requests {
+		go func() {
+			<-start
+			_, err := call.registry.Create(call.request)
+			errorsByCall <- err
+		}()
+	}
+	close(start)
+	for range requests {
+		select {
+		case err := <-errorsByCall:
+			if err != nil {
+				t.Fatalf("concurrent create: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent registry create deadlocked")
+		}
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if records := reloaded.List(); len(records) != 2 {
+		t.Fatalf("records after concurrent writes = %+v", records)
+	}
+	if events := reloaded.ListEvents(""); len(events) != 2 {
+		t.Fatalf("events after concurrent writes = %+v", events)
+	}
+}
+
+func TestConcurrentRegistryInstancesEnforceActiveSessionUniqueness(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)}
+	path := WorkspaceStorePath(t.TempDir())
+	first := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	second := NewRegistryWithOptions(path, Options{Now: clock.Now})
+
+	start := make(chan struct{})
+	errorsByCall := make(chan error, 2)
+	for _, call := range []struct {
+		registry *Registry
+		id       string
+	}{
+		{first, "interaction_19191919aaaaaaaa"},
+		{second, "interaction_20202020aaaaaaaa"},
+	} {
+		go func() {
+			<-start
+			_, err := call.registry.Create(validCreate(clock, call.id, "shared-session"))
+			errorsByCall <- err
+		}()
+	}
+	close(start)
+	var successes, conflicts int
+	for range 2 {
+		err := <-errorsByCall
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrSessionHasActive):
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent create error: %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes=%d conflicts=%d", successes, conflicts)
+	}
+}
+
+func TestStaleRegistryRevisionConflictsAfterLockedReload(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	rec := makeWaiting(t, registry, clock, "interaction_21212121aaaaaaaa", "session-1")
+	stale := NewRegistryWithOptions(path, Options{Now: clock.Now})
+
+	if _, err := registry.ClaimAnswer(
+		rec.ID,
+		rec.Revision,
+		Answer{Text: "Staging", MessageID: "inbound-1"},
+		OutcomeAnswered,
+	); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	_, err := stale.ClaimAnswer(
+		rec.ID,
+		rec.Revision,
+		Answer{Text: "Production", MessageID: "inbound-2"},
+		OutcomeAnswered,
+	)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale claim error = %v", err)
+	}
+}
+
 func TestRegistryRejectsAnswerMessageClaimedByAnotherInteraction(t *testing.T) {
 	registry, clock, _ := newTestRegistry(t)
 	first := makeWaiting(t, registry, clock, "interaction_dddddddd11111111", "session-1")
