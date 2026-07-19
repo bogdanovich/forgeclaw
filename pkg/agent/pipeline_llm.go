@@ -761,8 +761,12 @@ func (p *Pipeline) CallLLM(
 		})
 	}
 	exec.messages = append(exec.messages, assistantMsg)
+	exec.assistantToolCallsPersisted = false
+	exec.assistantToolCallsWriteErr = nil
 	if !ts.opts.NoHistory {
 		writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, assistantMsg)
+		exec.assistantToolCallsWriteErr = writeErr
+		exec.assistantToolCallsPersisted = writeErr == nil
 		if writeErr == nil {
 			ts.recordPersistedMessage(assistantMsg)
 		}

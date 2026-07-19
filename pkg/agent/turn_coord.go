@@ -60,9 +60,10 @@ func (al *AgentLoop) runTurn(
 			runtimeevents.KindAgentTurnEnd,
 			ts.eventMeta("runTurn", "turn.end"),
 			TurnEndPayload{
-				Status:                turnStatus,
-				Workspace:             ts.workspace,
-				DeliveryExpected:      ts.opts.SendResponse || ts.opts.ExpectFinalDelivery,
+				Status:    turnStatus,
+				Workspace: ts.workspace,
+				DeliveryExpected: turnStatus != TurnEndStatusSuspended &&
+					(ts.opts.SendResponse || ts.opts.ExpectFinalDelivery),
 				Iterations:            ts.currentIteration(),
 				Duration:              time.Since(ts.startedAt),
 				LLMCalls:              llmCalls,
@@ -78,6 +79,7 @@ func (al *AgentLoop) runTurn(
 				SkillContextSnapshots: skillContextSnapshots,
 				ToolKinds:             ts.toolKindsSnapshot(),
 				ToolExecutions:        ts.toolExecutionsSnapshot(),
+				InteractionID:         result.suspendedInteractionID,
 			},
 		)
 	}()

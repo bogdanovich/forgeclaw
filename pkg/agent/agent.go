@@ -476,6 +476,9 @@ func (al *AgentLoop) runAgentLoop(
 	if result.status == TurnEndStatusAborted {
 		return "", nil
 	}
+	if result.status == TurnEndStatusSuspended {
+		return "", nil
+	}
 
 	for _, followUp := range result.followUps {
 		if pubErr := al.bus.PublishInbound(ctx, followUp); pubErr != nil {

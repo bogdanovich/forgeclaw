@@ -116,7 +116,10 @@ type Route struct {
 	Channel         string `json:"channel"`
 	AccountID       string `json:"account_id,omitempty"`
 	ChatID          string `json:"chat_id"`
+	ChatType        string `json:"chat_type,omitempty"`
 	TopicID         string `json:"topic_id,omitempty"`
+	SpaceID         string `json:"space_id,omitempty"`
+	SpaceType       string `json:"space_type,omitempty"`
 	SenderID        string `json:"sender_id"`
 }
 
