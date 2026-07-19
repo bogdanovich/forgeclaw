@@ -22,6 +22,9 @@ func TestWriteFileAtomic_PropagatesDirectorySyncFailure(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("WriteFileAtomic error = %v, want %v", err, wantErr)
 	}
+	if !IsCommittedWriteError(err) {
+		t.Fatalf("WriteFileAtomic error = %T, want committed write error", err)
+	}
 	data, readErr := os.ReadFile(path)
 	if readErr != nil || string(data) != "durable marker" {
 		t.Fatalf("renamed file after sync failure = %q, %v", data, readErr)

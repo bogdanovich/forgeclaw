@@ -36,6 +36,7 @@ type MemoryTool struct {
 	invalidate func()
 	events     runtimeevents.Bus
 	now        func() time.Time
+	writeFile  func(string, []byte, os.FileMode) error
 }
 
 type memoryMutationResponse struct {
@@ -77,6 +78,7 @@ func newMemoryTool(
 		invalidate: invalidate,
 		events:     eventBus,
 		now:        now,
+		writeFile:  fileutil.WriteFileAtomic,
 	}
 }
 
@@ -220,7 +222,10 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	if err != nil {
 		return t.failure(ctx, operation, "path_validation_failed", payload, err)
 	}
-	if err := fileutil.WriteFileAtomic(validatedPath, []byte(updated), 0o600); err != nil {
+	if err := t.writeFile(validatedPath, []byte(updated), 0o600); err != nil {
+		if fileutil.IsCommittedWriteError(err) {
+			return t.committedWriteFailure(ctx, operation, curatedMemoryTarget, payload, err)
+		}
 		return t.failure(ctx, operation, "write_failed", payload, fmt.Errorf("write curated memory: %w", err))
 	}
 	if t.invalidate != nil {
@@ -292,11 +297,14 @@ func (t *MemoryTool) appendDaily(
 	if err != nil {
 		return t.failure(ctx, appendDailyMemoryOperation, "path_validation_failed", payload, err)
 	}
-	if err := fileutil.WriteFileAtomic(
+	if err := t.writeFile(
 		validatedPath,
 		[]byte(appendDailyMemory(string(current), dailyDate, marker, content)),
 		0o600,
 	); err != nil {
+		if fileutil.IsCommittedWriteError(err) {
+			return t.committedWriteFailure(ctx, appendDailyMemoryOperation, target, payload, err)
+		}
 		return t.failure(
 			ctx,
 			appendDailyMemoryOperation,
@@ -317,6 +325,32 @@ func (t *MemoryTool) appendDaily(
 		Tool:    t.Name(),
 		Success: true,
 	})
+}
+
+func (t *MemoryTool) committedWriteFailure(
+	ctx context.Context,
+	operation, target string,
+	payload MemoryMutationPayload,
+	err error,
+) *ToolResult {
+	if t.invalidate != nil {
+		t.invalidate()
+	}
+	payload.Outcome = "committed_not_durable"
+	payload.ErrorCode = "directory_sync_failed"
+	t.publish(ctx, payload, runtimeevents.SeverityError)
+	return ErrorResult(fmt.Sprintf("memory was updated, but durability was not confirmed: %v", err)).
+		WithError(err).
+		WithWriteAudit(WriteAuditEntry{
+			Kind:    "memory",
+			Target:  target,
+			Action:  operation,
+			Tool:    t.Name(),
+			Success: true,
+			Metadata: map[string]string{
+				"durability": "unconfirmed",
+			},
+		})
 }
 
 func appendDailyMemory(current, dailyDate, marker, content string) string {

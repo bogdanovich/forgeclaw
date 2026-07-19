@@ -8,11 +8,33 @@
 package fileutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// CommittedWriteError reports that rename committed the new file, but the
+// parent-directory sync failed, so crash durability could not be confirmed.
+type CommittedWriteError struct {
+	Err error
+}
+
+func (e *CommittedWriteError) Error() string {
+	return fmt.Sprintf("write committed but durability was not confirmed: %v", e.Err)
+}
+
+func (e *CommittedWriteError) Unwrap() error {
+	return e.Err
+}
+
+// IsCommittedWriteError distinguishes post-rename failures from failures that
+// leave the original target unchanged.
+func IsCommittedWriteError(err error) bool {
+	var committedErr *CommittedWriteError
+	return errors.As(err, &committedErr)
+}
 
 // WriteFileAtomic atomically writes data to a file using a temp file + rename pattern.
 //
@@ -121,7 +143,7 @@ func writeFileAtomic(
 	// Sync directory to ensure rename is durable
 	// This prevents the renamed file from disappearing after a crash
 	if err := syncDir(dir); err != nil {
-		return fmt.Errorf("failed to sync parent directory: %w", err)
+		return &CommittedWriteError{Err: fmt.Errorf("failed to sync parent directory: %w", err)}
 	}
 
 	return nil

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
 func TestMemoryToolAddDeduplicatesAndAuditsWithoutRawContent(t *testing.T) {
@@ -430,6 +431,64 @@ func TestMemoryToolAppendDailyRequiresIdempotencyKey(t *testing.T) {
 	})
 	if !result.IsError || !strings.Contains(result.ForLLM, "idempotency_key required") {
 		t.Fatalf("missing idempotency key result = %#v", result)
+	}
+}
+
+func TestMemoryToolAppendDailyAuditsCommittedSyncFailure(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	sub, eventsCh, err := eventBus.Channel().OfKind(runtimeevents.KindAgentMemoryMutation).SubscribeChan(
+		t.Context(),
+		runtimeevents.SubscribeOptions{Name: "daily-committed-failure-test", Buffer: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+
+	var invalidations atomic.Int32
+	fixedNow := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tool := newMemoryTool(workspace, func() { invalidations.Add(1) }, eventBus, func() time.Time {
+		return fixedNow
+	})
+	tool.writeFile = func(path string, data []byte, perm os.FileMode) error {
+		if writeErr := os.WriteFile(path, data, perm); writeErr != nil {
+			return writeErr
+		}
+		return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+	}
+
+	result := tool.Execute(t.Context(), map[string]any{
+		"operation":       appendDailyMemoryOperation,
+		"content":         "committed event",
+		"idempotency_key": "committed-event-1",
+	})
+	if !result.IsError || invalidations.Load() != 1 || len(result.WriteAudit) != 1 {
+		t.Fatalf("committed sync failure result = %#v, invalidations = %d", result, invalidations.Load())
+	}
+	audit := result.WriteAudit[0]
+	if !audit.Success || audit.Metadata["durability"] != "unconfirmed" {
+		t.Fatalf("committed sync failure audit = %#v", audit)
+	}
+	event := receiveMemoryMutationEvent(t, eventsCh)
+	payload, ok := event.Payload.(MemoryMutationPayload)
+	if !ok || payload.Outcome != "committed_not_durable" ||
+		payload.ErrorCode != "directory_sync_failed" {
+		t.Fatalf("committed sync failure event = %#v", event.Payload)
+	}
+
+	dailyPath := filepath.Join(workspace, "memory", "202607", "20260718.md")
+	data, err := os.ReadFile(dailyPath)
+	if err != nil || !strings.Contains(string(data), "committed event") {
+		t.Fatalf("committed daily memory = %q, %v", data, err)
+	}
+	retry := tool.Execute(t.Context(), map[string]any{
+		"operation":       appendDailyMemoryOperation,
+		"content":         "committed event",
+		"idempotency_key": "committed-event-1",
+	})
+	if retry.IsError || !strings.Contains(retry.ForLLM, `"status":"duplicate"`) {
+		t.Fatalf("retry after committed sync failure = %#v", retry)
 	}
 }
 
