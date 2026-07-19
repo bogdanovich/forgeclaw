@@ -15,7 +15,7 @@ func TestRenderApprovalActionIdentifiesToolAndRedactsSecrets(t *testing.T) {
 		"token": "plain-secret",
 		"nested": map[string]any{
 			"password": "nested-secret",
-			"url":      "https://user:pass@example.test/run?api_key=url-secret&mode=fast",
+			"url":      "https://example.test",
 		},
 	})
 	if err != nil {
@@ -27,14 +27,14 @@ func TestRenderApprovalActionIdentifiesToolAndRedactsSecrets(t *testing.T) {
 		`"path":"/srv/app"`,
 		`"token":"[REDACTED]"`,
 		`"password":"[REDACTED]"`,
-		"api_key=%5BREDACTED%5D",
+		`"url":"https://example.test"`,
 	} {
 		if !strings.Contains(action, expected) {
 			t.Fatalf("approval action omitted %q: %s", expected, action)
 		}
 	}
 	for _, secret := range []string{
-		"plain-secret", "nested-secret", "url-secret", "user:pass",
+		"plain-secret", "nested-secret",
 	} {
 		if strings.Contains(action, secret) {
 			t.Fatalf("approval action leaked %q: %s", secret, action)
@@ -56,6 +56,21 @@ func TestRenderApprovalActionFailsClosedWhenDisplayWouldHideSemantics(t *testing
 		{name: "unknown string", tool: "custom", args: map[string]any{"selector": "production"}},
 		{name: "oversized string", tool: "read", args: map[string]any{"path": strings.Repeat("x", 501)}},
 		{name: "invalid tool", tool: "exec\nspoofed", args: map[string]any{"target": "production"}},
+		{name: "azure signed URL", tool: "fetch", args: map[string]any{
+			"url": "https://blob.example.test/object?sv=2026-01-01&sig=azure-capability",
+		}},
+		{name: "AWS signed URL", tool: "fetch", args: map[string]any{
+			"url": "https://s3.example.test/object?X-Amz-Signature=aws-capability",
+		}},
+		{name: "GCS signed URL", tool: "fetch", args: map[string]any{
+			"url": "https://storage.example.test/object?X-Goog-Signature=gcs-capability",
+		}},
+		{name: "URL user info", tool: "fetch", args: map[string]any{
+			"url": "https://user:password@example.test",
+		}},
+		{name: "webhook capability path", tool: "notify", args: map[string]any{
+			"url": "https://hooks.slack.com/services/T000/B000/webhook-capability",
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -43,6 +43,9 @@ var (
 		"sha": {}, "source": {}, "src": {}, "target": {}, "targets": {}, "task_id": {},
 		"topic_id": {}, "type": {}, "uri": {}, "url": {}, "urls": {},
 	}
+	approvalURLKeys = map[string]struct{}{
+		"uri": {}, "url": {}, "urls": {},
+	}
 )
 
 func renderApprovalAction(toolName string, arguments map[string]any) (string, error) {
@@ -118,7 +121,7 @@ func redactApprovalValue(key string, value any, depth int) (any, error) {
 		if !utf8.ValidString(typed) || utf8.RuneCountInString(typed) > approvalDisplayMaxStringRune {
 			return nil, fmt.Errorf("approval string field %q exceeds display bounds", key)
 		}
-		return scrubApprovalString(typed), nil
+		return scrubApprovalString(key, typed)
 	case nil, bool, float64, float32, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64, json.Number:
 		return typed, nil
@@ -127,27 +130,30 @@ func redactApprovalValue(key string, value any, depth int) (any, error) {
 	}
 }
 
-func scrubApprovalString(value string) string {
+func scrubApprovalString(key, value string) (string, error) {
+	if _, isURL := approvalURLKeys[strings.ToLower(strings.TrimSpace(key))]; isURL {
+		return renderCredentialFreeApprovalOrigin(value)
+	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "data:") {
-		return "[DATA URL REDACTED]"
+		return "[DATA URL REDACTED]", nil
 	}
 	value = approvalBearerValue.ReplaceAllString(value, "$1 [REDACTED]")
 	value = approvalEnvSecret.ReplaceAllString(value, "$1=[REDACTED]")
 	value = approvalKnownCredential.ReplaceAllString(value, "[REDACTED]")
-	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		if parsed.User != nil {
-			parsed.User = url.User("[REDACTED]")
-		}
-		query := parsed.Query()
-		for queryKey := range query {
-			if approvalSensitiveKey.MatchString(queryKey) {
-				query.Set(queryKey, "[REDACTED]")
-			}
-		}
-		parsed.RawQuery = query.Encode()
-		value = parsed.String()
+	return value, nil
+}
+
+func renderCredentialFreeApprovalOrigin(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("approval URL must be an absolute HTTP(S) origin")
 	}
-	return value
+	if parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") ||
+		parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		return "", fmt.Errorf("approval URL contains opaque or credential-bearing components")
+	}
+	parsed.Path = ""
+	return parsed.String(), nil
 }
 
 func sanitizeApprovalToolName(value string) (string, error) {

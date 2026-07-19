@@ -704,6 +704,62 @@ func TestRegistryCorruptSnapshotFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRegistryObsoleteApprovalDoesNotDisableCurrentRecords(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	question := makeWaiting(
+		t, registry, clock, "interaction_current111111", "session-current",
+	)
+	request := validCreate(clock, "interaction_obsolete11111", "session-obsolete")
+	request.Kind = KindApproval
+	request.Questions = nil
+	request.PromptSummary = "Approve obsolete action?"
+	request.ApprovalAction = "Tool: protected_test\nArguments (redacted JSON): {}"
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	obsolete, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err = json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for index := range snapshot.Records {
+		if snapshot.Records[index].ID != obsolete.ID {
+			continue
+		}
+		snapshot.Records[index].Origin.ArgumentHash = ""
+		snapshot.Records[index].Origin.ExecutionContext = nil
+		snapshot.Records[index].ApprovalAction = ""
+	}
+	data, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("obsolete approval disabled interaction store: %v", err)
+	}
+	if got, ok := reloaded.Get(question.ID); !ok || got.Status != StatusWaiting {
+		t.Fatalf("current interaction unavailable after reload: (%+v, %v)", got, ok)
+	}
+	if got, ok := reloaded.Get(obsolete.ID); !ok ||
+		got.Origin.ArgumentHash != "" || got.Origin.ExecutionContext != nil {
+		t.Fatalf("obsolete approval reload = (%+v, %v)", got, ok)
+	}
+}
+
 func TestRegistrySnapshotRejectsDuplicateActiveSession(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	first := makeWaiting(t, registry, clock, "interaction_14141414aaaaaaaa", "session-1")
@@ -868,10 +924,13 @@ func TestValidateQuestionsAndApprovalAuthorityBounds(t *testing.T) {
 	request.Questions = nil
 	request.PromptSummary = "Policy requests one-time approval."
 	request.ApprovalAction = "Tool: protected_test\nArguments (redacted JSON): {}"
-	request.Origin.ArgumentHash = strings.Repeat("a", 64)
 	request.Origin.ExecutionContext = &bus.InboundContext{
 		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
 	}
+	if _, err := registry.Create(request); !errors.Is(err, ErrInvalidInteraction) {
+		t.Fatalf("new approval without argument hash error = %v", err)
+	}
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
 	approval, err := registry.Create(request)
 	if err != nil {
 		t.Fatalf("policy approval create: %v", err)

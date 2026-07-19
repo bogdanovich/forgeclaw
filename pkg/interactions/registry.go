@@ -1169,7 +1169,7 @@ func validateStoredRecord(rec Record) error {
 	if err := rec.Origin.validate(); err != nil {
 		return err
 	}
-	if !validArgumentHashForKind(rec.Kind, rec.Origin.ArgumentHash) {
+	if !validStoredArgumentHashForKind(rec.Kind, rec.Origin.ArgumentHash) {
 		return fmt.Errorf("invalid argument hash for interaction %q", rec.ID)
 	}
 	if err := validateStoredApprovalMetadata(
@@ -1244,6 +1244,15 @@ func validArgumentHashForKind(kind Kind, value string) bool {
 	}
 	decoded, err := hex.DecodeString(value)
 	return err == nil && len(decoded) == sha256.Size
+}
+
+func validStoredArgumentHashForKind(kind Kind, value string) bool {
+	if kind == KindApproval && strings.TrimSpace(value) == "" {
+		// Obsolete approval records are inert: recovery cannot consume them
+		// without an exact argument hash and immutable execution context.
+		return true
+	}
+	return validArgumentHashForKind(kind, value)
 }
 
 func (r *Registry) saveLocked() error {
@@ -1518,8 +1527,8 @@ func validateStoredApprovalMetadata(
 		}
 		return nil
 	}
-	// Legacy snapshots predate durable execution context and action display.
-	// They remain loadable, but the agent recovery path refuses to execute them.
+	// Obsolete snapshots can remain readable, but the agent recovery path
+	// refuses to execute approvals without current authority metadata.
 	if executionContext != nil {
 		if err := validateExecutionContext(executionContext); err != nil {
 			return err
