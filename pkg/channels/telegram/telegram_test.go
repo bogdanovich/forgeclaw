@@ -447,6 +447,56 @@ func TestDownloadFileWithInfo_AllowsLocalConfiguredBaseURL(t *testing.T) {
 	defer os.Remove(path)
 }
 
+func TestGetFileAddsMetadataDeadline(t *testing.T) {
+	caller := &stubCaller{callFn: func(
+		ctx context.Context,
+		_ string,
+		_ *ta.RequestData,
+	) (*ta.Response, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("GetFile context has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > telegramFileMetadataTimeout {
+			t.Fatalf("GetFile deadline remaining = %v", remaining)
+		}
+		return nil, context.DeadlineExceeded
+	}}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.getFile(context.Background(), "voice-file")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("getFile() error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestGetFilePreservesEarlierCallerDeadline(t *testing.T) {
+	parentCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	parentDeadline, _ := parentCtx.Deadline()
+	caller := &stubCaller{callFn: func(
+		ctx context.Context,
+		_ string,
+		_ *ta.RequestData,
+	) (*ta.Response, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("GetFile context has no deadline")
+		}
+		if !deadline.Equal(parentDeadline) {
+			t.Fatalf("GetFile deadline = %v, want parent deadline %v", deadline, parentDeadline)
+		}
+		return nil, context.Canceled
+	}}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.getFile(parentCtx, "voice-file")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("getFile() error = %v, want canceled", err)
+	}
+}
+
 func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	caller := &stubCaller{
