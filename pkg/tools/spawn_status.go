@@ -246,6 +246,8 @@ func spawnStatusFromRecord(rec taskregistry.Record) string {
 		return "canceled"
 	case taskregistry.StatusRunning, taskregistry.StatusQueued:
 		return "running"
+	case taskregistry.StatusWaitingForInput:
+		return "waiting_for_input"
 	default:
 		return string(rec.Status)
 	}
@@ -272,6 +274,16 @@ func spawnStatusFormatRecord(rec taskregistry.Record) string {
 	}
 	if rec.DeliveryError != "" {
 		out += fmt.Sprintf("\n  delivery_error: %s", truncateTaskText(rec.DeliveryError, 300))
+	}
+	if rec.Status == taskregistry.StatusWaitingForInput {
+		requestID := strings.TrimSpace(rec.InteractionShortID)
+		if requestID == "" {
+			requestID = "unknown"
+		}
+		out += fmt.Sprintf("\n  input_required: request=%s", requestID)
+		if summary := strings.TrimSpace(rec.InteractionSummary); summary != "" {
+			out += fmt.Sprintf(" summary=%s", truncateTaskText(summary, 240))
+		}
 	}
 	return out
 }

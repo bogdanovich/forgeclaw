@@ -157,6 +157,7 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args map[string]any) *Tool
 	for _, status := range []taskregistry.Status{
 		taskregistry.StatusQueued,
 		taskregistry.StatusRunning,
+		taskregistry.StatusWaitingForInput,
 		taskregistry.StatusSucceeded,
 		taskregistry.StatusFailed,
 		taskregistry.StatusTimedOut,
@@ -303,6 +304,7 @@ func formatTaskRecord(rec taskregistry.Record) string {
 	if rec.Task != "" {
 		sb.WriteString(fmt.Sprintf("  Task: %s\n", truncateTaskText(rec.Task, 240)))
 	}
+	appendTaskInteractionStatus(&sb, rec, "  ")
 	if rec.TerminalSummary != "" {
 		sb.WriteString(fmt.Sprintf("  Result: %s\n", truncateTaskText(rec.TerminalSummary, 500)))
 	}
@@ -353,6 +355,7 @@ func formatTaskListRecord(rec taskregistry.Record) string {
 	if rec.Task != "" {
 		sb.WriteString(fmt.Sprintf("\n  Task: %s", truncateTaskText(rec.Task, 160)))
 	}
+	appendTaskInteractionStatus(&sb, rec, "\n  ")
 	if rec.TerminalSummary != "" {
 		sb.WriteString(fmt.Sprintf("\n  Result: %s", truncateTaskText(rec.TerminalSummary, 240)))
 	} else if rec.Error != "" {
@@ -369,6 +372,27 @@ func formatTaskListRecord(rec taskregistry.Record) string {
 		)
 	}
 	return sb.String()
+}
+
+func appendTaskInteractionStatus(
+	sb *strings.Builder,
+	rec taskregistry.Record,
+	prefix string,
+) {
+	if sb == nil || rec.Status != taskregistry.StatusWaitingForInput {
+		return
+	}
+	requestID := strings.TrimSpace(rec.InteractionShortID)
+	if requestID == "" {
+		requestID = "unknown"
+	}
+	sb.WriteString(fmt.Sprintf("%sInput required: request=%s", prefix, requestID))
+	if summary := strings.TrimSpace(rec.InteractionSummary); summary != "" {
+		sb.WriteString(" summary=" + truncateTaskText(summary, 240))
+	}
+	if prefix == "  " {
+		sb.WriteString("\n")
+	}
 }
 
 func formatDeliverableReport(report *taskregistry.DeliverableReport) string {

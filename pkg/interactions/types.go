@@ -138,11 +138,12 @@ type Route struct {
 }
 
 type Origin struct {
-	TurnID       string `json:"turn_id"`
-	ToolCallID   string `json:"tool_call_id"`
-	ToolName     string `json:"tool_name"`
-	TaskID       string `json:"task_id,omitempty"`
-	ArgumentHash string `json:"argument_hash,omitempty"`
+	TurnID                 string `json:"turn_id"`
+	ToolCallID             string `json:"tool_call_id"`
+	ToolName               string `json:"tool_name"`
+	TaskID                 string `json:"task_id,omitempty"`
+	ContinuationSessionKey string `json:"continuation_session_key,omitempty"`
+	ArgumentHash           string `json:"argument_hash,omitempty"`
 }
 
 type Answer struct {

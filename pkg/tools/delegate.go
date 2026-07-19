@@ -131,6 +131,7 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	defer stopHeartbeat()
 
 	result, err := t.spawner.SpawnSubTurn(ctx, SubTurnConfig{
+		TaskID:        taskID,
 		TargetAgentID: agentID,
 		SystemPrompt:  task,
 		Async:         false,
@@ -164,6 +165,9 @@ func (t *DelegateTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			nil,
 		)
 		return ErrorResult(fmt.Sprintf("delegation to agent %q returned no result", agentID))
+	}
+	if result.TaskSuspended {
+		return NewToolResult("Delegated task is waiting for human input.")
 	}
 
 	result.ForLLM = fmt.Sprintf("[Response from agent %q]\n%s", agentID, result.ForLLM)

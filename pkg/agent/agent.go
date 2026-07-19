@@ -101,6 +101,11 @@ type processOptions struct {
 	ModelBinding             effectiveModelBinding
 	SessionKey               string   // Session identifier for history/context
 	SessionAliases           []string // Compatibility aliases for the session key
+	TaskID                   string   // Durable task owning this turn, when one exists
+	InteractionWorkspace     string   // Workspace owning inbound interaction routing
+	InteractionSessionKey    string   // User-facing session that owns interaction answers
+	InteractionRouteKey      string   // Routed scope key that owns interaction answers
+	TurnStatus               *TurnEndStatus
 	Channel                  string   // Target channel for tool execution
 	ChatID                   string   // Target chat ID for tool execution
 	MessageID                string   // Current inbound platform message ID
@@ -485,6 +490,9 @@ func (al *AgentLoop) runAgentLoop(
 	result, err := al.runTurn(ctx, ts, pipeline)
 	if err != nil {
 		return "", err
+	}
+	if opts.TurnStatus != nil {
+		*opts.TurnStatus = result.status
 	}
 	if result.status == TurnEndStatusAborted {
 		return "", nil

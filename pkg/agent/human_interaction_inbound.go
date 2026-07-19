@@ -15,6 +15,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 const answerCommand = "/answer"
@@ -64,7 +66,7 @@ func (al *AgentLoop) cancelInteractionForControlMessage(
 		}
 		if err := al.ensureInteractionCancellationToolResult(
 			ctx,
-			target.Agent,
+			al.interactionContinuationAgent(record, target.Agent),
 			record,
 			record.FailureCode,
 		); err != nil {
@@ -248,7 +250,9 @@ func (al *AgentLoop) processInteractionInbound(
 			al.ackInboundMessage(ctx, msg)
 			return interactionInboundClaimed, al.resumeClaimedInteraction(
 				ctx,
-				target.Agent,
+				registry,
+				target.Agent.Workspace,
+				al.interactionContinuationAgent(record, target.Agent),
 				&target.Allocation.Scope,
 				msg.Context,
 				record,
@@ -307,7 +311,9 @@ func (al *AgentLoop) processInteractionInbound(
 	al.ackInboundMessage(ctx, msg)
 	return interactionInboundClaimed, al.resumeClaimedInteraction(
 		ctx,
-		target.Agent,
+		registry,
+		target.Agent.Workspace,
+		al.interactionContinuationAgent(claimed, target.Agent),
 		&target.Allocation.Scope,
 		msg.Context,
 		claimed,
@@ -442,12 +448,17 @@ type interactionToolResultPayload struct {
 
 func (al *AgentLoop) resumeClaimedInteraction(
 	ctx context.Context,
+	registry *interactions.Registry,
+	interactionWorkspace string,
 	agent *AgentInstance,
 	scope *session.SessionScope,
 	inbound bus.InboundContext,
 	record interactions.Record,
 ) error {
-	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	if registry == nil || agent == nil {
+		return fmt.Errorf("interaction continuation runtime is unavailable")
+	}
+	continuationSessionKey := interactionContinuationSessionKey(record)
 	if err := al.ensureInteractionToolResult(ctx, agent, record); err != nil {
 		_, _ = registry.RecordResumeFailure(record.ID, record.Revision, err.Error())
 		return err
@@ -463,10 +474,12 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		return fmt.Errorf("cannot resume interaction from status %q", record.Status)
 	}
 	if finalContent, ok := interactionFinalAfterToolResult(
-		agent.Sessions.GetHistory(record.Route.SessionKey),
+		agent.Sessions.GetHistory(continuationSessionKey),
 		record.Origin.ToolCallID,
 	); ok {
-		return al.deliverInteractionFinal(ctx, registry, resuming, inbound, finalContent)
+		return al.deliverInteractionFinal(
+			ctx, registry, interactionWorkspace, resuming, inbound, finalContent,
+		)
 	}
 
 	routeSessionKey := record.Route.RouteSessionKey
@@ -475,12 +488,18 @@ func (al *AgentLoop) resumeClaimedInteraction(
 	}
 	modelBinding := al.bindEffectiveModel(routeSessionKey, agent)
 	defer modelBinding.Cleanup()
+	turnStatus := TurnEndStatusCompleted
 	finalContent, runErr := al.runAgentLoop(ctx, agent, processOptions{
-		ModelBinding: modelBinding,
+		ModelBinding:          modelBinding,
+		TaskID:                record.Origin.TaskID,
+		InteractionWorkspace:  interactionWorkspace,
+		InteractionSessionKey: record.Route.SessionKey,
+		InteractionRouteKey:   routeSessionKey,
+		TurnStatus:            &turnStatus,
 		Dispatch: DispatchRequest{
 			RouteSessionKey: routeSessionKey,
-			BaseSessionKey:  record.Route.SessionKey,
-			SessionKey:      record.Route.SessionKey,
+			BaseSessionKey:  continuationSessionKey,
+			SessionKey:      continuationSessionKey,
 			InboundContext:  cloneInboundContext(&inbound),
 			SessionScope:    session.CloneScope(scope),
 		},
@@ -495,18 +514,55 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		_, _ = registry.RecordResumeFailure(resuming.ID, resuming.Revision, runErr.Error())
 		return runErr
 	}
-	return al.deliverInteractionFinal(ctx, registry, resuming, inbound, finalContent)
+	if turnStatus == TurnEndStatusSuspended {
+		return nil
+	}
+	return al.deliverInteractionFinal(
+		ctx, registry, interactionWorkspace, resuming, inbound, finalContent,
+	)
+}
+
+func (al *AgentLoop) interactionContinuationAgent(
+	record interactions.Record,
+	fallback *AgentInstance,
+) *AgentInstance {
+	if al != nil && strings.TrimSpace(record.Route.AgentID) != "" {
+		if registry := al.GetRegistry(); registry != nil {
+			if agent, ok := registry.GetAgent(record.Route.AgentID); ok && agent != nil {
+				return agent
+			}
+		}
+	}
+	return fallback
+}
+
+func interactionContinuationSessionKey(record interactions.Record) string {
+	if key := strings.TrimSpace(record.Origin.ContinuationSessionKey); key != "" {
+		return key
+	}
+	return record.Route.SessionKey
 }
 
 func (al *AgentLoop) deliverInteractionFinal(
 	ctx context.Context,
 	registry *interactions.Registry,
+	interactionWorkspace string,
 	record interactions.Record,
 	inbound bus.InboundContext,
 	content string,
 ) error {
+	if strings.TrimSpace(record.Origin.TaskID) != "" {
+		return al.deliverTaskInteractionFinal(
+			ctx, registry, interactionWorkspace, record, inbound, content,
+		)
+	}
 	if record.FinalDelivered || strings.TrimSpace(content) == "" {
-		_, err := registry.Resolve(record.ID, record.Revision)
+		updated, err := registry.Resolve(record.ID, record.Revision)
+		if err == nil {
+			al.completeInteractionTask(
+				interactionWorkspace, updated, content, taskregistry.DeliveryNotApplicable,
+			)
+		}
 		return err
 	}
 	if al.channelManager == nil {
@@ -543,8 +599,116 @@ func (al *AgentLoop) deliverInteractionFinal(
 	if deliveryErr != nil {
 		return deliveryErr
 	}
+	resolved, err := registry.Resolve(updated.ID, updated.Revision)
+	if err == nil {
+		al.completeInteractionTask(
+			interactionWorkspace, resolved, content, taskregistry.DeliveryDelivered,
+		)
+	}
+	return err
+}
+
+func (al *AgentLoop) deliverTaskInteractionFinal(
+	ctx context.Context,
+	registry *interactions.Registry,
+	workspace string,
+	record interactions.Record,
+	inbound bus.InboundContext,
+	content string,
+) error {
+	taskRegistry := al.taskRegistryForWorkspace(workspace)
+	taskID := strings.TrimSpace(record.Origin.TaskID)
+	if taskRegistry == nil || taskID == "" {
+		return fmt.Errorf("owning task registry is unavailable")
+	}
+	task, ok := taskRegistry.Get(taskID)
+	if !ok {
+		return fmt.Errorf("owning task %q is unavailable", taskID)
+	}
+	if err := taskRegistry.CompleteInteractionTask(
+		taskID, record.ID, content, taskregistry.DeliveryPending,
+	); err != nil {
+		return err
+	}
+	mode := tools.AsyncDeliveryMode(strings.TrimSpace(task.DeliveryMode))
+	switch mode {
+	case tools.AsyncDeliveryParentOnly, tools.AsyncDeliveryUserOnly, tools.AsyncDeliveryUserAndParent:
+	default:
+		mode = tools.AsyncDeliveryUserOnly
+	}
+	result := (&tools.ToolResult{ForLLM: content, ForUser: content}).
+		WithAsyncTaskID(taskID).
+		WithAsyncDelivery(mode)
+	if strings.TrimSpace(content) != "" {
+		result.WithCompletion(&tools.CompletionResult{Text: content})
+	}
+	agent := al.interactionContinuationAgent(record, nil)
+	turnState := &turnState{
+		agent: agent, agentID: record.Route.AgentID,
+		workspace: workspace, channel: record.Route.Channel, chatID: record.Route.ChatID,
+		sessionKey: record.Route.SessionKey,
+		opts: processOptions{Dispatch: DispatchRequest{
+			RouteSessionKey: record.Route.RouteSessionKey,
+			SessionKey:      record.Route.SessionKey,
+			InboundContext:  cloneInboundContext(&inbound),
+		}},
+		scope: al.newTurnEventScope(
+			record.Route.AgentID,
+			record.Route.SessionKey,
+			newTurnContext(&inbound, nil, nil),
+		),
+	}
+	completionID := "interaction:" + record.ID
+	al.deliverAsyncToolCompletion(AsyncDeliveryRequest{
+		TurnState:    turnState,
+		ToolName:     task.TaskKind,
+		CompletionID: completionID,
+		Result:       result,
+		Decision:     decideAsyncToolResultDelivery(result),
+	})
+	task, _ = taskRegistry.Get(taskID)
+	success := task.DeliveryStatus == taskregistry.DeliveryDelivered ||
+		task.DeliveryStatus == taskregistry.DeliverySessionQueued ||
+		task.DeliveryStatus == taskregistry.DeliveryNotApplicable
+	detail := task.DeliveryError
+	updated, stateErr := registry.RecordFinalDeliveryAttempt(
+		record.ID, record.Revision, success, detail,
+	)
+	if stateErr != nil {
+		return fmt.Errorf("record task interaction delivery: %w", stateErr)
+	}
+	if !success {
+		if detail == "" {
+			detail = "task completion delivery did not reach a final state"
+		}
+		return fmt.Errorf("deliver resumed task completion: %s", detail)
+	}
 	_, err := registry.Resolve(updated.ID, updated.Revision)
 	return err
+}
+
+func (al *AgentLoop) completeInteractionTask(
+	workspace string,
+	record interactions.Record,
+	content string,
+	delivery taskregistry.DeliveryStatus,
+) {
+	taskID := strings.TrimSpace(record.Origin.TaskID)
+	if al == nil || taskID == "" {
+		return
+	}
+	registry := al.taskRegistryForWorkspace(workspace)
+	if registry == nil {
+		return
+	}
+	if err := registry.CompleteInteractionTask(
+		taskID, record.ID, content, delivery,
+	); err != nil {
+		logger.WarnCF("agent", "Failed to complete resumed interaction task", map[string]any{
+			"workspace": workspace, "task_id": taskID,
+			"interaction_id": record.ID, "error": err.Error(),
+		})
+	}
 }
 
 func interactionFinalAfterToolResult(
@@ -569,7 +733,7 @@ func (al *AgentLoop) ensureInteractionToolResult(
 	agent *AgentInstance,
 	record interactions.Record,
 ) error {
-	history := agent.Sessions.GetHistory(record.Route.SessionKey)
+	history := agent.Sessions.GetHistory(interactionContinuationSessionKey(record))
 	originIndex, resultIndex := interactionToolPairIndexes(history, record.Origin.ToolCallID)
 	if originIndex < 0 {
 		return fmt.Errorf("originating tool call %q is missing from session history", record.Origin.ToolCallID)
@@ -594,7 +758,7 @@ func (al *AgentLoop) ensureInteractionCancellationToolResult(
 	record interactions.Record,
 	code string,
 ) error {
-	history := agent.Sessions.GetHistory(record.Route.SessionKey)
+	history := agent.Sessions.GetHistory(interactionContinuationSessionKey(record))
 	originIndex, resultIndex := interactionToolPairIndexes(history, record.Origin.ToolCallID)
 	if originIndex < 0 {
 		return fmt.Errorf("originating tool call %q is missing from session history", record.Origin.ToolCallID)
@@ -623,13 +787,14 @@ func (al *AgentLoop) persistInteractionToolResult(
 		Role: "tool", Content: string(content), ToolCallID: record.Origin.ToolCallID,
 		ToolResultStatus: providers.ToolResultStatusSuccess,
 	}
-	writeErr := persistFullSessionMessage(agent.Sessions, record.Route.SessionKey, message)
+	continuationSessionKey := interactionContinuationSessionKey(record)
+	writeErr := persistFullSessionMessage(agent.Sessions, continuationSessionKey, message)
 	if writeErr != nil {
 		return writeErr
 	}
 	if al.contextManager != nil {
 		if err := al.contextManager.Ingest(ctx, &IngestRequest{
-			SessionKey: record.Route.SessionKey,
+			SessionKey: continuationSessionKey,
 			Message:    message,
 		}); err != nil {
 			logger.WarnCF("agent", "Context ingest failed for interaction answer", map[string]any{

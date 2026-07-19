@@ -11,6 +11,7 @@ import (
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 const (
@@ -68,7 +69,9 @@ func (al *AgentLoop) interactionRegistryForWorkspace(workspace string) *interact
 		stored = registry
 	}
 	if !loaded {
-		stored.Subscribe(al.observeInteractionEvent)
+		stored.Subscribe(func(observation interactions.EventObservation) {
+			al.observeInteractionEvent(workspace, observation)
+		})
 		stats := stored.Stats()
 		logger.InfoCF("agent", "Loaded human interaction registry", map[string]any{
 			"workspace":       workspace,
@@ -81,10 +84,14 @@ func (al *AgentLoop) interactionRegistryForWorkspace(workspace string) *interact
 	return stored
 }
 
-func (al *AgentLoop) observeInteractionEvent(observation interactions.EventObservation) {
+func (al *AgentLoop) observeInteractionEvent(
+	workspace string,
+	observation interactions.EventObservation,
+) {
 	if al == nil {
 		return
 	}
+	al.projectInteractionTaskState(workspace, observation)
 	kind := runtimeKindForInteractionEvent(observation.Event.Type)
 	if kind == "" {
 		return
@@ -106,6 +113,63 @@ func (al *AgentLoop) observeInteractionEvent(observation interactions.EventObser
 		Code:          observation.Event.Code,
 		Success:       observation.Event.Success,
 	})
+}
+
+func (al *AgentLoop) projectInteractionTaskState(
+	workspace string,
+	observation interactions.EventObservation,
+) {
+	record := observation.Record
+	taskID := strings.TrimSpace(record.Origin.TaskID)
+	if taskID == "" {
+		return
+	}
+	registry := al.taskRegistryForWorkspace(workspace)
+	if registry == nil {
+		return
+	}
+	var err error
+	switch observation.Event.Type {
+	case interactions.EventCreated, interactions.EventWaiting:
+		err = registry.MarkWaitingForInput(
+			taskID,
+			record.ID,
+			record.ShortID,
+			record.PromptSummary,
+		)
+	case interactions.EventAnswerClaimed, interactions.EventResumeStarted:
+		err = registry.MarkInteractionRunning(taskID, record.ID)
+	case interactions.EventResolved:
+		switch record.Outcome {
+		case interactions.OutcomeTimedOut:
+			err = registry.FinishInteraction(
+				taskID, record.ID, taskregistry.StatusTimedOut, "human input timed out",
+			)
+		case interactions.OutcomeCanceled:
+			err = registry.FinishInteraction(
+				taskID, record.ID, taskregistry.StatusCancelled, "human input was canceled",
+			)
+		}
+	case interactions.EventCancelled:
+		err = registry.FinishInteraction(
+			taskID, record.ID, taskregistry.StatusCancelled, "human input was canceled",
+		)
+	case interactions.EventFailed:
+		summary := strings.TrimSpace(record.FailureDetail)
+		if summary == "" {
+			summary = "human interaction failed"
+		}
+		err = registry.FinishInteraction(
+			taskID, record.ID, taskregistry.StatusFailed, summary,
+		)
+	}
+	if err != nil {
+		logger.WarnCF("agent", "Failed to project human interaction task state", map[string]any{
+			"workspace": workspace, "task_id": taskID,
+			"interaction_id": record.ID, "event": observation.Event.Type,
+			"error": err.Error(),
+		})
+	}
 }
 
 func runtimeKindForInteractionEvent(event interactions.EventType) runtimeevents.Kind {
