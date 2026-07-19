@@ -67,6 +67,7 @@ type AgentLoop struct {
 	taskRegistries             sync.Map
 	interactionRegistries      sync.Map
 	interactionCatalog         *interactions.WorkspaceCatalog
+	interactionCatalogMu       sync.Mutex
 	interactionRecoveryRunning atomic.Bool
 	runtimeTools               map[string]RuntimeToolFactory
 	mu                         sync.RWMutex
@@ -131,6 +132,7 @@ type continuationTarget struct {
 	SessionKey string
 	Channel    string
 	ChatID     string
+	Workspace  string
 }
 
 const (

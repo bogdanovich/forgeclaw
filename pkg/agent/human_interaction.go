@@ -134,17 +134,21 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 	if runtime == nil || runtime.al == nil {
 		return ToolSuspensionDisposition{}, interactions.ErrStoreUnavailable
 	}
+	registry := runtime.al.interactionRegistryForWorkspace(request.Workspace)
+	if registry == nil {
+		return ToolSuspensionDisposition{}, interactions.ErrStoreUnavailable
+	}
+	catalogLocked := false
 	if runtime.al.interactionCatalog != nil {
+		runtime.al.interactionCatalogMu.Lock()
+		catalogLocked = true
 		if err := runtime.al.interactionCatalog.Register(request.Workspace); err != nil {
+			runtime.al.interactionCatalogMu.Unlock()
 			return ToolSuspensionDisposition{}, fmt.Errorf(
 				"register interaction workspace: %w",
 				err,
 			)
 		}
-	}
-	registry := runtime.al.interactionRegistryForWorkspace(request.Workspace)
-	if registry == nil {
-		return ToolSuspensionDisposition{}, interactions.ErrStoreUnavailable
 	}
 	record, err := registry.Create(interactions.CreateRequest{
 		Kind:          request.Prompt.Kind,
@@ -154,6 +158,9 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 		PromptSummary: request.Prompt.PromptSummary,
 		ExpiresAt:     time.Now().Add(request.Prompt.Timeout),
 	})
+	if catalogLocked {
+		runtime.al.interactionCatalogMu.Unlock()
+	}
 	if err != nil {
 		return ToolSuspensionDisposition{}, err
 	}

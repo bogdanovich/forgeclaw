@@ -86,6 +86,9 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 		Channel:    turn.Message.Channel,
 		ChatID:     turn.Message.ChatID,
 	}
+	if turn.Agent != nil {
+		target.Workspace = turn.Agent.Workspace
+	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
 		return al.processInboundMessageTurn(ctx, turn)
 	}, target)
@@ -171,6 +174,10 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 	for al.pendingSteeringCountForScope(target.SessionKey) > 0 {
 		if err := ctx.Err(); err != nil {
 			return joinSteeringResponses(responses), err
+		}
+		if target.Workspace != "" &&
+			al.hasNonterminalInteraction(target.Workspace, target.SessionKey) {
+			return joinSteeringResponses(responses), nil
 		}
 
 		logger.InfoCF("agent", "Continuing queued steering after turn end",

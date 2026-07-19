@@ -941,3 +941,74 @@ func TestRecoverHumanInteractionsTerminalizesCatalogedOrphanWorkspace(t *testing
 		t.Fatal("active agent was disturbed while recovering orphan workspace")
 	}
 }
+
+func TestDrainQueuedSteeringStopsWhileInteractionIsNonterminal(t *testing.T) {
+	provider := &simpleConvProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	sessionKey := "session-suspended-steering"
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.MarkWaiting(record.ID, record.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err = al.enqueueSteeringMessageWithSender(sessionKey, agent.ID, "user-2", providers.Message{
+		Role: "user", Content: "message that arrived during suspension",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	continued, err := al.drainQueuedSteeringContinuations(t.Context(), &continuationTarget{
+		SessionKey: sessionKey,
+		Channel:    "telegram",
+		ChatID:     "chat-1",
+		Workspace:  agent.Workspace,
+	})
+	if err != nil || continued != "" {
+		t.Fatalf("drain = (%q, %v), want empty success", continued, err)
+	}
+	if got := al.pendingSteeringCountForScope(sessionKey); got != 1 {
+		t.Fatalf("deferred queue depth = %d, want 1", got)
+	}
+}
+
+func TestRecoveryKeepsCatalogEntryWhenRegistryLoadFails(t *testing.T) {
+	provider := &simpleConvProvider{}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	catalogRoot := t.TempDir()
+	workspace := filepath.Join(catalogRoot, "corrupt-workspace")
+	storePath := interactions.WorkspaceStorePath(workspace)
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storePath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := interactions.NewWorkspaceCatalog(catalogRoot)
+	if err := catalog.Register(workspace); err != nil {
+		t.Fatal(err)
+	}
+	al.interactionCatalog = catalog
+
+	al.RecoverHumanInteractions(t.Context())
+	workspaces, err := catalog.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workspaces) != 1 || workspaces[0] != workspace {
+		t.Fatalf("catalog workspaces = %#v, want corrupt store retained", workspaces)
+	}
+}

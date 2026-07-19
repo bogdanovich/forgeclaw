@@ -106,10 +106,24 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 				}
 			}
 		}
-		_ = registry.Prune(time.Now())
-		if registry.Stats().RecordCount == 0 && al.interactionCatalog != nil {
-			_ = al.interactionCatalog.Remove(workspace)
+		al.interactionCatalogMu.Lock()
+		pruneErr := registry.Prune(time.Now())
+		if pruneErr != nil {
+			logger.WarnCF("agent", "Failed to prune human interaction registry", map[string]any{
+				"workspace": workspace,
+				"error":     pruneErr.Error(),
+			})
 		}
+		if pruneErr == nil && registry.LastLoadError() == nil &&
+			registry.Stats().RecordCount == 0 && al.interactionCatalog != nil {
+			if err := al.interactionCatalog.Remove(workspace); err != nil {
+				logger.WarnCF("agent", "Failed to remove empty interaction workspace", map[string]any{
+					"workspace": workspace,
+					"error":     err.Error(),
+				})
+			}
+		}
+		al.interactionCatalogMu.Unlock()
 		return true
 	})
 	return recovered

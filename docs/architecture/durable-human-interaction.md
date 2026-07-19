@@ -277,7 +277,9 @@ before an interaction is created. Restart recovery loads cataloged stores in
 addition to stores belonging to currently configured agents. If the originating
 agent was removed, renamed, or moved to another workspace, recovery terminalizes
 the interaction with `agent_unavailable` rather than leaving durable orphaned
-state. Empty stores are removed from the catalog after retention pruning.
+state. Empty stores are removed from the catalog only after a healthy load and
+successful retention prune. Catalog registration and interaction creation are
+serialized against that cleanup so a newly created store cannot lose discovery.
 
 ## `request_user_input` Tool
 
