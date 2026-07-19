@@ -31,12 +31,13 @@ func TestMemoryReplayCorrectionDeletionAndAudit(t *testing.T) {
 }
 
 type curatedMemoryReplay struct {
-	Statuses          []string
-	EventOutcomes     []string
-	CorrectedVisible  bool
-	StaleVisible      bool
-	ForgottenVisible  bool
-	RawContentInEvent bool
+	Statuses                  []string
+	EventOutcomes             []string
+	CorrectedVisible          bool
+	StaleVisible              bool
+	DuplicateCountAfterAdd    int
+	DuplicateCountAfterRemove int
+	RawContentInEvent         bool
 }
 
 func replayCuratedMemoryLifecycle(t *testing.T) curatedMemoryReplay {
@@ -71,16 +72,20 @@ func replayCuratedMemoryLifecycle(t *testing.T) curatedMemoryReplay {
 		"operation": "replace", "content": staleFact, "replacement": correctedFact,
 	}))
 	correctedPrompt := builder.BuildSystemPromptWithCache()
-	results = append(results,
-		tool.Execute(t.Context(), map[string]any{"operation": "add", "content": duplicateInput}),
-		tool.Execute(t.Context(), map[string]any{"operation": "remove", "content": correctedFact}),
-	)
+	results = append(results, tool.Execute(t.Context(), map[string]any{
+		"operation": "add", "content": duplicateInput,
+	}))
+	duplicatePrompt := builder.BuildSystemPromptWithCache()
+	results = append(results, tool.Execute(t.Context(), map[string]any{
+		"operation": "remove", "content": correctedFact,
+	}))
 	forgottenPrompt := builder.BuildSystemPromptWithCache()
 
 	observation := curatedMemoryReplay{
-		CorrectedVisible: strings.Contains(correctedPrompt, correctedFact),
-		StaleVisible:     strings.Contains(correctedPrompt, staleFact),
-		ForgottenVisible: strings.Contains(forgottenPrompt, correctedFact),
+		CorrectedVisible:          strings.Contains(correctedPrompt, correctedFact),
+		StaleVisible:              strings.Contains(correctedPrompt, staleFact),
+		DuplicateCountAfterAdd:    strings.Count(strings.ToLower(duplicatePrompt), "home: san mateo"),
+		DuplicateCountAfterRemove: strings.Count(strings.ToLower(forgottenPrompt), "home: san mateo"),
 	}
 	for _, result := range results {
 		if result.IsError {
@@ -115,7 +120,8 @@ func replayCuratedMemoryLifecycle(t *testing.T) curatedMemoryReplay {
 		}
 	}
 
-	if !observation.CorrectedVisible || observation.StaleVisible || observation.ForgottenVisible {
+	if !observation.CorrectedVisible || observation.StaleVisible ||
+		observation.DuplicateCountAfterAdd != 1 || observation.DuplicateCountAfterRemove != 0 {
 		t.Fatalf("unexpected correction/deletion observation: %#v", observation)
 	}
 	if !reflect.DeepEqual(observation.Statuses, []string{"replaced", "duplicate", "removed"}) ||
