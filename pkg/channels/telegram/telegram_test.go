@@ -458,7 +458,7 @@ func TestGetFileAddsMetadataDeadline(t *testing.T) {
 			t.Fatal("GetFile context has no deadline")
 		}
 		remaining := time.Until(deadline)
-		if remaining <= 0 || remaining > telegramFileMetadataAttemptTimeout {
+		if remaining <= 0 || remaining > telegramFileMetadataFirstAttemptTimeout {
 			t.Fatalf("GetFile deadline remaining = %v", remaining)
 		}
 		return nil, context.DeadlineExceeded
@@ -474,13 +474,19 @@ func TestGetFileAddsMetadataDeadline(t *testing.T) {
 func TestGetFileRetriesTransientServerError(t *testing.T) {
 	calls := 0
 	caller := &stubCaller{callFn: func(
-		_ context.Context,
+		ctx context.Context,
 		_ string,
 		_ *ta.RequestData,
 	) (*ta.Response, error) {
 		calls++
 		if calls == 1 {
 			return nil, &ta.Error{ErrorCode: http.StatusInternalServerError}
+		}
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok)
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > telegramFileMetadataRetryTimeout {
+			t.Fatalf("retry deadline remaining = %v", remaining)
 		}
 		result, err := json.Marshal(&telego.File{FileID: "voice-file", FilePath: "voice.ogg"})
 		require.NoError(t, err)

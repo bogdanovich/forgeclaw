@@ -39,13 +39,14 @@ var (
 )
 
 const (
-	defaultMediaGroupDelay             = 500 * time.Millisecond
-	telegramFileMetadataAttemptTimeout = 20 * time.Second
-	telegramFileMetadataTotalTimeout   = 45 * time.Second
-	telegramFileMetadataMaxAttempts    = 2
-	telegramFileMetadataRetryDelay     = 250 * time.Millisecond
-	telegramCaptionLimit               = 1024
-	telegramTextLimit                  = 4096
+	defaultMediaGroupDelay                  = 500 * time.Millisecond
+	telegramFileMetadataFirstAttemptTimeout = 30 * time.Second
+	telegramFileMetadataRetryTimeout        = 20 * time.Second
+	telegramFileMetadataTotalTimeout        = 50 * time.Second
+	telegramFileMetadataMaxAttempts         = 2
+	telegramFileMetadataRetryDelay          = 250 * time.Millisecond
+	telegramCaptionLimit                    = 1024
+	telegramTextLimit                       = 4096
 )
 
 var errTelegramMessageTooLong = errors.New("telegram message too long")
@@ -2117,7 +2118,11 @@ func (c *TelegramChannel) getFile(ctx context.Context, fileID string) (*telego.F
 	attempts := 0
 	for attempt := 0; attempt < telegramFileMetadataMaxAttempts; attempt++ {
 		attempts++
-		attemptCtx, attemptCancel := context.WithTimeout(requestCtx, telegramFileMetadataAttemptTimeout)
+		attemptTimeout := telegramFileMetadataFirstAttemptTimeout
+		if attempt > 0 {
+			attemptTimeout = telegramFileMetadataRetryTimeout
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(requestCtx, attemptTimeout)
 		file, err := c.bot.GetFile(attemptCtx, &telego.GetFileParams{FileID: fileID})
 		attemptCancel()
 		if err == nil {
