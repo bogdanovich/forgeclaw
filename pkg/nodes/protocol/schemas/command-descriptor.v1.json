@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["name", "capability", "input_schema", "output_schema", "risk"],
   "properties": {
-    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)*\\.v[1-9][0-9]*$"},
+    "name": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)*\\.v[1-9][0-9]*$"},
     "capability": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"},
     "input_schema": {"type": "object"},
     "output_schema": {"type": "object"},

@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -194,7 +195,24 @@ func (snapshot Snapshot) Validate() error {
 	if snapshot.ProtocolVersion < 0 {
 		return fmt.Errorf("%w: negative protocol version", ErrInvalidNode)
 	}
-	return snapshot.Catalog.Validate()
+	if err := snapshot.Catalog.Validate(); err != nil {
+		return err
+	}
+	if snapshot.CatalogHash == "" {
+		return nil
+	}
+	decodedHash, err := hex.DecodeString(snapshot.CatalogHash)
+	if err != nil || len(decodedHash) != sha256.Size {
+		return fmt.Errorf("%w: malformed catalog hash", ErrInvalidNode)
+	}
+	catalogHash, err := snapshot.Catalog.Hash()
+	if err != nil {
+		return err
+	}
+	if snapshot.CatalogHash != catalogHash {
+		return fmt.Errorf("%w: catalog hash does not match catalog", ErrInvalidNode)
+	}
+	return nil
 }
 
 type Filter struct {
@@ -228,8 +246,10 @@ func validateObjectSchema(label string, raw json.RawMessage) error {
 }
 
 func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
 	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := decoder.Decode(&value); err != nil {
 		return nil, fmt.Errorf("canonicalize json: %w", err)
 	}
 	data, err := json.Marshal(value)

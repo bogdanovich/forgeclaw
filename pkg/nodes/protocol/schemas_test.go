@@ -2,9 +2,12 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
+
+	"github.com/sipeed/picoclaw/pkg/nodes"
 )
 
 func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
@@ -20,18 +23,7 @@ func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
 }
 
 func TestEnvelopeSchemaMatchesCodecContract(t *testing.T) {
-	data, err := Schema("envelope.v1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var schema jsonschema.Schema
-	if unmarshalErr := json.Unmarshal(data, &schema); unmarshalErr != nil {
-		t.Fatal(unmarshalErr)
-	}
-	resolved, err := schema.Resolve(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	resolved := resolveSchema(t, "envelope.v1")
 
 	fixtures := []string{
 		`{"type":"request","id":"req_1","method":"node.info","params":{}}`,
@@ -51,6 +43,87 @@ func TestEnvelopeSchemaMatchesCodecContract(t *testing.T) {
 			t.Fatalf("codec rejected %s: %v", fixture, err)
 		}
 	}
+}
+
+func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
+	resolved := resolveSchema(t, "command-descriptor.v1")
+	tests := []struct {
+		name       string
+		descriptor nodes.CommandDescriptor
+		schemaOK   bool
+		domainOK   bool
+	}{
+		{
+			name: "valid",
+			descriptor: nodes.CommandDescriptor{
+				Name:         "system.exec.v1",
+				Capability:   "system",
+				InputSchema:  json.RawMessage(`{"type":"object"}`),
+				OutputSchema: json.RawMessage(`{"type":"object"}`),
+				Risk:         nodes.RiskWrite,
+			},
+			schemaOK: true,
+			domainOK: true,
+		},
+		{
+			name: "overlong command",
+			descriptor: nodes.CommandDescriptor{
+				Name:         "system." + strings.Repeat("x", 120) + ".v1",
+				Capability:   "system",
+				InputSchema:  json.RawMessage(`{}`),
+				OutputSchema: json.RawMessage(`{}`),
+				Risk:         nodes.RiskRead,
+			},
+		},
+		{
+			name: "cross-field capability mismatch",
+			descriptor: nodes.CommandDescriptor{
+				Name:         "system.exec.v1",
+				Capability:   "node",
+				InputSchema:  json.RawMessage(`{}`),
+				OutputSchema: json.RawMessage(`{}`),
+				Risk:         nodes.RiskRead,
+			},
+			schemaOK: true,
+			domainOK: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var instance any
+			if err := json.Unmarshal(data, &instance); err != nil {
+				t.Fatal(err)
+			}
+			if got := resolved.Validate(instance) == nil; got != test.schemaOK {
+				t.Fatalf("schema accepted = %v, want %v", got, test.schemaOK)
+			}
+			if got := test.descriptor.Validate() == nil; got != test.domainOK {
+				t.Fatalf("domain accepted = %v, want %v", got, test.domainOK)
+			}
+		})
+	}
+}
+
+func resolveSchema(t *testing.T, name string) *jsonschema.Resolved {
+	t.Helper()
+	data, err := Schema(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema jsonschema.Schema
+	if unmarshalErr := json.Unmarshal(data, &schema); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func TestUnknownSchemaFails(t *testing.T) {

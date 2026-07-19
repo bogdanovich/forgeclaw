@@ -30,6 +30,27 @@ func TestCapabilityCatalogHashIsCanonical(t *testing.T) {
 	}
 }
 
+func TestCapabilityCatalogHashPreservesLargeIntegers(t *testing.T) {
+	first := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("system.exec.v1", `{"type":"integer","maximum":9007199254740992}`),
+	}}
+	second := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("system.exec.v1", `{"type":"integer","maximum":9007199254740993}`),
+	}}
+
+	firstHash, err := first.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHash, err := second.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstHash == secondHash {
+		t.Fatalf("distinct large integers produced the same hash: %s", firstHash)
+	}
+}
+
 func TestCapabilityCatalogRejectsInvalidDescriptors(t *testing.T) {
 	invalidRisk := descriptor("system.exec.v1", `{}`)
 	invalidRisk.Risk = Risk("unsafe")
@@ -78,6 +99,34 @@ func TestSnapshotValidation(t *testing.T) {
 	snapshot.Aliases = append(snapshot.Aliases, "build-box")
 	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidNode) {
 		t.Fatalf("duplicate aliases error = %v", err)
+	}
+}
+
+func TestSnapshotValidatesCatalogHash(t *testing.T) {
+	catalog := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("node.info.v1", `{}`),
+	}}
+	hash, err := catalog.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := Snapshot{
+		ID:          ID("node_example"),
+		State:       StateConnected,
+		Catalog:     catalog,
+		CatalogHash: hash,
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	snapshot.CatalogHash = strings.Repeat("0", 64)
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("stale catalog hash error = %v", err)
+	}
+	snapshot.CatalogHash = "not-a-digest"
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("malformed catalog hash error = %v", err)
 	}
 }
 
