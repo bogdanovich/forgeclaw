@@ -119,23 +119,33 @@ func TestReloadProviderAndConfigRefreshesAgentTurnAdmissions(t *testing.T) {
 	}
 }
 
-func TestInheritAgentTurnAdmissionsDetachesCancellation(t *testing.T) {
+func TestInheritAgentTurnAdmissionDetachesCancellation(t *testing.T) {
+	released := false
+	lease := newAgentTurnAdmissionLease(func() { released = true })
 	source, cancel := context.WithCancel(context.WithValue(
 		context.Background(),
 		agentTurnAdmissionsKey{},
-		map[string]struct{}{"browser": {}},
+		map[string]*agentTurnAdmissionLease{"browser": lease},
 	))
-	detached := inheritAgentTurnAdmissions(context.Background(), source)
+	detached, releaseDetached := inheritAgentTurnAdmission(context.Background(), source, "browser")
 	cancel()
 
 	if err := detached.Err(); err != nil {
 		t.Fatalf("detached context error = %v", err)
 	}
-	admissions, ok := detached.Value(agentTurnAdmissionsKey{}).(map[string]struct{})
+	admissions, ok := detached.Value(agentTurnAdmissionsKey{}).(map[string]*agentTurnAdmissionLease)
 	if !ok {
 		t.Fatal("detached context has no admissions")
 	}
-	if _, ok := admissions["browser"]; !ok {
+	if admissions["browser"] != lease {
 		t.Fatal("detached context did not inherit browser admission")
+	}
+	lease.releaseRef()
+	if released {
+		t.Fatal("root release released controller while detached child retained lease")
+	}
+	releaseDetached()
+	if !released {
+		t.Fatal("detached release did not release controller after root completed")
 	}
 }
