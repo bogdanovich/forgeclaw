@@ -25,8 +25,8 @@ import (
 // 2. Writes data to temp file
 // 3. Syncs data to disk (critical for SD cards/flash storage)
 // 4. Sets file permissions
-// 5. Syncs directory metadata (ensures rename is durable)
-// 6. Atomically renames temp file to target path
+// 5. Atomically renames temp file to target path
+// 6. Syncs directory metadata where supported (ensures rename is durable)
 //
 // Safety guarantees:
 // - Original file is NEVER modified until successful rename
@@ -50,6 +50,15 @@ import (
 //	// Public readable file
 //	err := utils.WriteFileAtomic("public.txt", data, 0o644)
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomic(path, data, perm, syncDirectory)
+}
+
+func writeFileAtomic(
+	path string,
+	data []byte,
+	perm os.FileMode,
+	syncDir func(string) error,
+) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
@@ -105,16 +114,16 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
+	// The temp path no longer exists after rename, including when directory
+	// durability cannot be confirmed below.
+	cleanup = false
 
 	// Sync directory to ensure rename is durable
 	// This prevents the renamed file from disappearing after a crash
-	if dirFile, err := os.Open(dir); err == nil {
-		_ = dirFile.Sync()
-		_ = dirFile.Close()
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("failed to sync parent directory: %w", err)
 	}
 
-	// Success: skip cleanup (file was renamed, no temp to remove)
-	cleanup = false
 	return nil
 }
 

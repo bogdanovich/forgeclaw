@@ -1,11 +1,32 @@
 package fileutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 )
+
+func TestWriteFileAtomic_PropagatesDirectorySyncFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sync-failure.txt")
+	wantErr := errors.New("directory sync failed")
+
+	err := writeFileAtomic(path, []byte("durable marker"), 0o600, func(gotDir string) error {
+		if gotDir != dir {
+			t.Fatalf("sync directory = %q, want %q", gotDir, dir)
+		}
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("WriteFileAtomic error = %v, want %v", err, wantErr)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || string(data) != "durable marker" {
+		t.Fatalf("renamed file after sync failure = %q, %v", data, readErr)
+	}
+}
 
 func TestWriteFileAtomic_Basic(t *testing.T) {
 	dir := t.TempDir()
