@@ -12,6 +12,9 @@ const (
 	TurnEndStatusError TurnEndStatus = "error"
 	// TurnEndStatusAborted indicates the turn was hard-aborted and rolled back.
 	TurnEndStatusAborted TurnEndStatus = "aborted"
+	// TurnEndStatusSuspended indicates durable continuation ownership moved to
+	// a pending human interaction without completing or failing the turn.
+	TurnEndStatusSuspended TurnEndStatus = "suspended"
 )
 
 // TurnStartPayload describes the start of a turn.
@@ -70,6 +73,7 @@ type TurnEndPayload struct {
 	SkillContextSnapshots []SkillContextSnapshot
 	ToolKinds             []string
 	ToolExecutions        []ToolExecutionRecord
+	InteractionID         string
 }
 
 // LLMRequestPayload describes an outbound LLM request.
@@ -171,14 +175,16 @@ type ToolExecStartPayload struct {
 
 // ToolExecEndPayload describes the outcome of a tool execution.
 type ToolExecEndPayload struct {
-	ToolCallID string
-	Tool       string
-	Duration   time.Duration
-	ForLLMLen  int
-	ForUserLen int
-	IsError    bool
-	Async      bool
-	ResultHash string
+	ToolCallID    string
+	Tool          string
+	Duration      time.Duration
+	ForLLMLen     int
+	ForUserLen    int
+	IsError       bool
+	Async         bool
+	ResultHash    string
+	Suspended     bool
+	InteractionID string
 }
 
 // ToolExecSkippedPayload describes a skipped tool call.

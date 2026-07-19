@@ -19,6 +19,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 // =============================================================================
@@ -1537,6 +1538,77 @@ func TestRunTurn_SimpleConversation(t *testing.T) {
 	}
 	if result.finalContent == "" {
 		t.Error("expected non-empty finalContent")
+	}
+}
+
+func TestRunTurn_SuspensionSkipsFinalizationAndDefaultResponse(t *testing.T) {
+	provider := &toolCallRespProvider{
+		toolName: "request_user_input",
+		toolArgs: map[string]any{
+			"questions": []any{map[string]any{
+				"id": "mode", "question": "Which mode should be used?",
+			}},
+		},
+		response: "must not be called before an answer",
+	}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatalf("NewRequestUserInputTool() error = %v", err)
+	}
+	agent.Tools.Register(requestTool)
+	manager := &fakeToolSuspensionManager{
+		disposition: ToolSuspensionDisposition{InteractionID: "interaction-turn", Durable: true},
+	}
+	pipeline := NewPipeline(al)
+	pipeline.Interaction.Suspension = manager
+	opts := normalizeProcessOptions(processOptions{
+		ModelBinding: effectiveModelBinding{RouteSessionKey: "route-suspend"},
+		Dispatch: DispatchRequest{
+			RouteSessionKey: "route-suspend",
+			SessionKey:      "session-suspend",
+			UserMessage:     "Please deploy this",
+			InboundContext: &bus.InboundContext{
+				Channel: "telegram", ChatID: "chat-1", ChatType: "direct", SenderID: "user-1",
+			},
+		},
+		DefaultResponse: "must not be emitted",
+		SendResponse:    true,
+	})
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID: "turn-suspend",
+		context: newTurnContext(
+			opts.Dispatch.InboundContext,
+			nil,
+			nil,
+		),
+	})
+
+	result, err := al.runTurn(t.Context(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn() error = %v", err)
+	}
+	if result.status != TurnEndStatusSuspended ||
+		result.suspendedInteractionID != "interaction-turn" ||
+		result.finalContent != "" {
+		t.Fatalf("result = %#v, want suspended without final content", result)
+	}
+	if ts.snapshot().Phase != TurnPhaseSuspended {
+		t.Fatalf("turn phase = %q, want suspended", ts.snapshot().Phase)
+	}
+	if provider.callCount != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.callCount)
+	}
+	history := agent.Sessions.GetHistory("session-suspend")
+	if len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" ||
+		len(history[1].ToolCalls) != 1 {
+		t.Fatalf("history = %#v, want user plus incomplete assistant tool call", history)
+	}
+	for _, message := range history {
+		if message.Role == "tool" {
+			t.Fatalf("suspended history contains fabricated tool result: %#v", history)
+		}
 	}
 }
 
