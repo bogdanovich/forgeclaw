@@ -104,6 +104,32 @@ func TestMemoryPromptSourcePathsIncludeAbsentRecentNotes(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreHidesDailyIdempotencyMarkers(t *testing.T) {
+	workspace := t.TempDir()
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.Local)
+	dailyPath := filepath.Join(workspace, "memory", "202607", "20260718.md")
+	if err := os.MkdirAll(filepath.Dir(dailyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const marker = "<!-- picoclaw:append_daily:v1:0123456789abcdef -->"
+	if err := os.WriteFile(dailyPath, []byte("# 2026-07-18\n\n"+marker+"\nVisible event\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newMemoryStore(workspace, config.PromptMemoryConfig{RecentDays: 1}, func() time.Time {
+		return now
+	})
+	for name, content := range map[string]string{
+		"today":   store.ReadToday(),
+		"recent":  store.GetRecentDailyNotes(1),
+		"context": store.GetMemoryContext(),
+	} {
+		if strings.Contains(content, marker) || !strings.Contains(content, "Visible event") {
+			t.Errorf("%s memory content = %q", name, content)
+		}
+	}
+}
+
 func TestMemoryTruncationHonorsTinyByteLimit(t *testing.T) {
 	tests := map[string]string{
 		"middle": truncateMiddleBytes("много текста", 5, "memory"),

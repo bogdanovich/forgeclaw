@@ -23,7 +23,7 @@ const (
 	KindAgentContextSnapshot Kind = "agent.context.snapshot"
 	// KindAgentSessionSummarize is emitted when session summarization completes.
 	KindAgentSessionSummarize Kind = "agent.session.summarize"
-	// KindAgentMemoryMutation records a curated stable-memory mutation outcome.
+	// KindAgentMemoryMutation records a stable or episodic memory mutation outcome.
 	KindAgentMemoryMutation Kind = "agent.memory.mutation"
 
 	// KindAgentToolExecStart is emitted before a tool executes.
