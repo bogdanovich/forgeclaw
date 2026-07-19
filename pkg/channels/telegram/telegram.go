@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mymmrac/telego"
+	ta "github.com/mymmrac/telego/telegoapi"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 
@@ -38,10 +39,14 @@ var (
 )
 
 const (
-	defaultMediaGroupDelay      = 500 * time.Millisecond
-	telegramFileMetadataTimeout = 30 * time.Second
-	telegramCaptionLimit        = 1024
-	telegramTextLimit           = 4096
+	defaultMediaGroupDelay                  = 500 * time.Millisecond
+	telegramFileMetadataFirstAttemptTimeout = 30 * time.Second
+	telegramFileMetadataRetryTimeout        = 20 * time.Second
+	telegramFileMetadataTotalTimeout        = 50 * time.Second
+	telegramFileMetadataMaxAttempts         = 2
+	telegramFileMetadataRetryDelay          = 250 * time.Millisecond
+	telegramCaptionLimit                    = 1024
+	telegramTextLimit                       = 4096
 )
 
 var errTelegramMessageTooLong = errors.New("telegram message too long")
@@ -2106,9 +2111,56 @@ func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) 
 }
 
 func (c *TelegramChannel) getFile(ctx context.Context, fileID string) (*telego.File, error) {
-	requestCtx, cancel := context.WithTimeout(ctx, telegramFileMetadataTimeout)
+	requestCtx, cancel := context.WithTimeout(ctx, telegramFileMetadataTotalTimeout)
 	defer cancel()
-	return c.bot.GetFile(requestCtx, &telego.GetFileParams{FileID: fileID})
+
+	var lastErr error
+	attempts := 0
+	for attempt := 0; attempt < telegramFileMetadataMaxAttempts; attempt++ {
+		attempts++
+		attemptTimeout := telegramFileMetadataFirstAttemptTimeout
+		if attempt > 0 {
+			attemptTimeout = telegramFileMetadataRetryTimeout
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(requestCtx, attemptTimeout)
+		file, err := c.bot.GetFile(attemptCtx, &telego.GetFileParams{FileID: fileID})
+		attemptCancel()
+		if err == nil {
+			return file, nil
+		}
+		lastErr = err
+		if attempt == telegramFileMetadataMaxAttempts-1 || !retryableTelegramFileError(err) {
+			break
+		}
+
+		delay := telegramFileMetadataRetryDelayFor(err)
+		select {
+		case <-time.After(delay):
+		case <-requestCtx.Done():
+			return nil, errors.Join(lastErr, requestCtx.Err())
+		}
+	}
+	return nil, fmt.Errorf("telegram file metadata request failed after %d attempt(s): %w", attempts, lastErr)
+}
+
+func retryableTelegramFileError(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var apiErr *ta.Error
+	if !errors.As(err, &apiErr) {
+		return true
+	}
+	return apiErr.ErrorCode == http.StatusTooManyRequests || apiErr.ErrorCode >= http.StatusInternalServerError
+}
+
+func telegramFileMetadataRetryDelayFor(err error) time.Duration {
+	var apiErr *ta.Error
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == http.StatusTooManyRequests && apiErr.Parameters != nil &&
+		apiErr.Parameters.RetryAfter > 0 {
+		return time.Duration(apiErr.Parameters.RetryAfter) * time.Second
+	}
+	return telegramFileMetadataRetryDelay
 }
 
 func parseContent(text string, useMarkdownV2 bool) string {
