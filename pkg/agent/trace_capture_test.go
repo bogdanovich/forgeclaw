@@ -433,6 +433,76 @@ func TestTraceCaptureBackfillsDurableInteractionHistoryAfterRestart(t *testing.T
 	}
 }
 
+func TestTraceCaptureNormalizesInteractionAgainstActiveTurnClock(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	registry := interactions.NewRegistryWithOptions(
+		interactions.WorkspaceStorePath(workspace),
+		interactions.Options{Now: func() time.Time { return now }},
+	)
+	manager.attachInteractionRegistry(workspace, registry)
+	scope := runtimeevents.Scope{
+		AgentID: "main", SessionKey: "session-1", TurnID: "turn-1",
+		Channel: "telegram", ChatID: "chat-1",
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "turn-start", Kind: runtimeevents.KindAgentTurnStart, Time: now,
+		Scope: scope, Payload: TurnStartPayload{Workspace: workspace},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "tool-start", Kind: runtimeevents.KindAgentToolExecStart, Time: now.Add(time.Millisecond),
+		Scope: scope, Payload: ToolExecStartPayload{Tool: "request_user_input"},
+	})
+	now = now.Add(2 * time.Millisecond)
+	if _, err := registry.Create(interactions.CreateRequest{
+		ID:   "interaction-turn-clock",
+		Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-1", Channel: "telegram",
+			ChatID: "chat-1", SenderID: "sender-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-1", ToolCallID: "call-1", ToolName: "request_user_input",
+		},
+		Questions: []interactions.Question{{ID: "environment", Question: "Which environment?"}},
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "turn-end", Kind: runtimeevents.KindAgentTurnEnd, Time: now.Add(time.Millisecond),
+		Scope: scope, Payload: TurnEndPayload{
+			Workspace: workspace, Status: TurnEndStatusSuspended,
+		},
+	})
+
+	data, err := os.ReadFile(waitForTraceFile(t, workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trace evaltrace.Trace
+	if err := json.Unmarshal(data, &trace); err != nil {
+		t.Fatal(err)
+	}
+	if err := evaltrace.Validate(trace); err != nil {
+		t.Fatalf("turn trace is invalid: %v", err)
+	}
+	if len(trace.Records) != 4 {
+		t.Fatalf("records = %d, want 4", len(trace.Records))
+	}
+	interactionRecord := trace.Records[2]
+	if interactionRecord.Kind != evaltrace.RecordInteractionTransition ||
+		interactionRecord.OffsetNanos != int64(2*time.Millisecond) {
+		t.Fatalf("interaction record = %#v", interactionRecord)
+	}
+}
+
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
 	workspace := t.TempDir()
 	settings := traceCaptureSettings{stateDir: "../../outside"}

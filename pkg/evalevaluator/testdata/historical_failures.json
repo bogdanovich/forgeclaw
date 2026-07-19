@@ -61,12 +61,12 @@
       ]
     },
     {
-      "id": "durable-interaction-fail", "evaluator": "durable_interaction.v1", "source": "durable approval crash-recovery tests", "sanitized": true, "why": "Resolving an allowed approval without spending its allow-once grant can replay protected execution after restart.", "expected": "fail",
+      "id": "durable-interaction-fail", "evaluator": "durable_interaction.v1", "source": "durable interaction answer-claim tests", "sanitized": true, "why": "An ordinary answer cannot bypass waiting and be claimed directly from created state.", "expected": "fail",
       "records": [
         {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.created","kind":"approval","status":"created","revision":1,"sequence":1}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.answer_claimed","kind":"approval","from":"waiting","status":"answer_claimed","outcome":"allowed","revision":2,"sequence":2}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resume_started","kind":"approval","from":"answer_claimed","status":"resuming","outcome":"allowed","revision":3,"sequence":3}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resolved","kind":"approval","from":"resuming","status":"resolved","outcome":"allowed","revision":4,"sequence":4}}
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.answer_claimed","kind":"approval","from":"created","status":"answer_claimed","outcome":"denied","revision":2,"sequence":2}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resume_started","kind":"approval","from":"answer_claimed","status":"resuming","outcome":"denied","revision":3,"sequence":3}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resolved","kind":"approval","from":"resuming","status":"resolved","outcome":"denied","revision":4,"sequence":4}}
       ]
     },
     {

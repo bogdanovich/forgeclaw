@@ -16,7 +16,8 @@ func TestEvaluateReportsMissingEvidenceAsNotEvaluable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Skipped != len(DefaultEvaluators()) || report.Passed != 0 || report.Failed != 0 || report.Errors != 0 {
+	if report.Skipped != len(DefaultEvaluators()) || report.Passed != 0 || report.Failed != 0 ||
+		report.Errors != 0 {
 		t.Fatalf("report = %#v", report)
 	}
 }
@@ -67,6 +68,49 @@ func TestDurableInteractionEvaluatorDefersToLifecycleTrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if report.Skipped != 1 || report.Findings[0].Status != StatusNotEvaluable {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestDurableInteractionEvaluatorAcceptsCreatedStateTimeoutClaim(t *testing.T) {
+	trace, err := (Fixture{
+		ID: "created-timeout", Source: "evaluators_test.go",
+		Records: []FixtureRecord{
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.created","kind":"question","status":"created","revision":1,"sequence":1}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.answer_claimed","kind":"question","from":"created","status":"answer_claimed","outcome":"timed_out","revision":2,"sequence":2,"code":"timeout"}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.resume_started","kind":"question","from":"answer_claimed","status":"resuming","outcome":"timed_out","revision":3,"sequence":3}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.resolved","kind":"question","from":"resuming","status":"resolved","outcome":"timed_out","revision":4,"sequence":4}`,
+				),
+			},
+		},
+	}).Trace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluator, _ := EvaluatorByName("durable_interaction.v1")
+	report, err := Evaluate(trace, evaluator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Passed != 1 || report.Findings[0].Status != StatusPass {
 		t.Fatalf("report = %#v", report)
 	}
 }

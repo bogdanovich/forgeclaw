@@ -600,11 +600,14 @@ func (m *traceCaptureManager) observeInteractionRegistryEvent(
 	for _, item := range observations {
 		interactionRecord, critical := normalizedInteractionEventRecord(settings, trace, item)
 		appendCaptureRecord(trace, interactionRecord, critical)
-		if turn := m.turns[state.Origin.TurnID]; turn != nil {
-			appendCaptureRecord(turn, interactionRecord, critical)
-		} else if turn := m.turns[m.sessions[state.Route.SessionKey]]; turn != nil {
-			appendCaptureRecord(turn, interactionRecord, critical)
-		}
+	}
+	turn := m.turns[state.Origin.TurnID]
+	if turn == nil {
+		turn = m.turns[m.sessions[state.Route.SessionKey]]
+	}
+	if turn != nil {
+		turnRecord, critical := normalizedInteractionEventRecord(settings, turn, observation)
+		appendCaptureRecord(turn, turnRecord, critical)
 	}
 	if !interactionRecordIsTerminal(state) {
 		m.mu.Unlock()

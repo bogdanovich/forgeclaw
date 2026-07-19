@@ -243,7 +243,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 				"interaction answer was claimed more than once",
 			)
 		}
-		if payload.Status != "answer_claimed" {
+		if payload.Status != "answer_claimed" || !validInteractionAnswerClaimSource(payload) {
 			r.diagnostic(
 				record,
 				"interaction_answer_transition_invalid",
@@ -754,6 +754,14 @@ func knownNonterminalInteractionEvent(event string) bool {
 	default:
 		return false
 	}
+}
+
+func validInteractionAnswerClaimSource(payload evaltrace.InteractionPayload) bool {
+	if payload.From == "waiting" {
+		return true
+	}
+	return payload.From == "created" &&
+		(payload.Code == "timeout" || payload.Code == "prompt_delivery_ambiguous")
 }
 
 func firstNonEmpty(values ...string) string {
