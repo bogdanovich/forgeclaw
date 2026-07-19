@@ -1,0 +1,158 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/interactions"
+	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/session"
+)
+
+func (al *AgentLoop) scheduleHumanInteractionRecovery(ctx context.Context) {
+	if al == nil {
+		return
+	}
+	go al.RecoverHumanInteractions(ctx)
+}
+
+// RecoverHumanInteractions retries prompt delivery, claims timeouts, and
+// resumes answers whose durable owner disappeared during restart or reload.
+func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
+	if al == nil || !al.interactionRecoveryRunning.CompareAndSwap(false, true) {
+		return 0
+	}
+	defer al.interactionRecoveryRunning.Store(false)
+	recovered := 0
+	al.interactionRegistries.Range(func(key, value any) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		workspace, _ := key.(string)
+		registry, _ := value.(*interactions.Registry)
+		if registry == nil {
+			return true
+		}
+		if claimed, err := registry.ClaimOverdue(time.Now()); err != nil {
+			logger.WarnCF("agent", "Failed to claim overdue interactions", map[string]any{
+				"workspace": workspace, "error": err.Error(),
+			})
+		} else if len(claimed) > 0 {
+			logger.InfoCF("agent", "Claimed overdue human interactions", map[string]any{
+				"workspace": workspace, "count": len(claimed),
+			})
+		}
+		for _, record := range registry.ListNonterminal() {
+			if ctx.Err() != nil {
+				return false
+			}
+			switch record.Status {
+			case interactions.StatusCreated:
+				if al.retryInteractionPrompt(ctx, registry, record) {
+					recovered++
+				}
+			case interactions.StatusClaimed, interactions.StatusResuming:
+				if al.recoverClaimedInteraction(ctx, workspace, record) {
+					recovered++
+				}
+			}
+		}
+		_ = registry.Prune(time.Now())
+		return true
+	})
+	return recovered
+}
+
+func (al *AgentLoop) retryInteractionPrompt(
+	ctx context.Context,
+	registry *interactions.Registry,
+	record interactions.Record,
+) bool {
+	deliveryErr := al.humanInteractionRuntime().publishPrompt(ctx, record)
+	updated, err := registry.RecordDeliveryAttempt(
+		record.ID,
+		record.Revision,
+		deliveryErr == nil,
+		errString(deliveryErr),
+	)
+	if err != nil || deliveryErr != nil {
+		return false
+	}
+	if _, err := registry.MarkWaiting(updated.ID, updated.Revision); err != nil {
+		return false
+	}
+	return true
+}
+
+func (al *AgentLoop) recoverClaimedInteraction(
+	ctx context.Context,
+	workspace string,
+	record interactions.Record,
+) bool {
+	agent, ok := al.GetRegistry().GetAgent(record.Route.AgentID)
+	if !ok || agent == nil || strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace) {
+		return false
+	}
+	scope := sessionScopeForRecovery(agent.Sessions, record.Route.SessionKey)
+	if scope == nil {
+		scope = &session.SessionScope{
+			Version:       1,
+			AgentID:       record.Route.AgentID,
+			Channel:       record.Route.Channel,
+			RouteScopeKey: record.Route.RouteSessionKey,
+		}
+	}
+	routeSessionKey := record.Route.RouteSessionKey
+	if routeSessionKey == "" {
+		routeSessionKey = record.Route.SessionKey
+	}
+	target := &inboundDispatchTarget{
+		Agent:         agent,
+		RouteClaimKey: runtimeRouteClaimKey(routeSessionKey, ""),
+		Allocation: session.Allocation{
+			RouteScopeKey: routeSessionKey,
+			SessionKey:    record.Route.SessionKey,
+			Scope:         *session.CloneScope(scope),
+		},
+		SessionKey: record.Route.SessionKey,
+	}
+	claim, _, claimed := al.claimRuntimeRouteSession(
+		target,
+		fmt.Sprintf("pending-interaction-recovery-%s-%d", record.ShortID, al.turnSeq.Add(1)),
+	)
+	if !claimed {
+		return false
+	}
+	defer claim.releaseIfOwned()
+	if err := al.resumeClaimedInteraction(
+		ctx,
+		agent,
+		scope,
+		inboundContextForInteraction(record.Route),
+		record,
+	); err != nil {
+		logger.WarnCF("agent", "Failed to recover human interaction", map[string]any{
+			"interaction_id": record.ID,
+			"session_key":    record.Route.SessionKey,
+			"error":          err.Error(),
+		})
+		return false
+	}
+	return true
+}
+
+func inboundContextForInteraction(route interactions.Route) bus.InboundContext {
+	return bus.InboundContext{
+		Channel:   route.Channel,
+		Account:   route.AccountID,
+		ChatID:    route.ChatID,
+		ChatType:  route.ChatType,
+		TopicID:   route.TopicID,
+		SpaceID:   route.SpaceID,
+		SpaceType: route.SpaceType,
+		SenderID:  route.SenderID,
+	}
+}

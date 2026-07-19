@@ -71,9 +71,10 @@ type PipelineInteractionServices struct {
 }
 
 type ToolSuspensionRequest struct {
-	Prompt interactions.SuspensionRequest
-	Route  interactions.Route
-	Origin interactions.Origin
+	Workspace string
+	Prompt    interactions.SuspensionRequest
+	Route     interactions.Route
+	Origin    interactions.Origin
 }
 
 // ToolSuspensionDisposition distinguishes a durable handoff from a failure

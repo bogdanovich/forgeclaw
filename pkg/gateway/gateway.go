@@ -269,6 +269,10 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	fmt.Println("Press Ctrl+C to stop")
 
 	go func() {
+		if recovered := agentLoop.RecoverHumanInteractions(ctx); recovered > 0 {
+			logger.InfoCF("gateway", "Recovered durable human interactions",
+				map[string]any{"count": recovered})
+		}
 		if recovered := agentLoop.RecoverUnansweredSessions(ctx); recovered > 0 {
 			logger.InfoCF("gateway", "Recovered unanswered sessions",
 				map[string]any{"count": recovered})

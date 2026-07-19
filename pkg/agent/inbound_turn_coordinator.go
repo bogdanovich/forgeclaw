@@ -34,6 +34,10 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		}
 		return
 	}
+	if al.hasNonterminalInteraction(target.Agent.Workspace, target.SessionKey) {
+		c.handleInteractionInbound(ctx, msg, target)
+		return
+	}
 
 	claim, activeTarget, claimed := c.claimSession(target)
 	if !claimed {

@@ -1105,8 +1105,9 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		route.SpaceType = inbound.SpaceType
 	}
 	disposition, err := r.p.Interaction.Suspension.SuspendToolCall(ctx, ToolSuspensionRequest{
-		Prompt: *result.Suspension,
-		Route:  route,
+		Workspace: r.ts.workspace,
+		Prompt:    *result.Suspension,
+		Route:     route,
 		Origin: interactions.Origin{
 			TurnID:     r.ts.turnID,
 			ToolCallID: toolCall.ID,

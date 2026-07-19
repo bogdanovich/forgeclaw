@@ -495,6 +495,12 @@ func DefaultConfig() *Config {
 				Mode:            ReadFileModeBytes,
 				MaxReadFileSize: 64 * 1024, // 64KB
 			},
+			RequestUserInput: RequestUserInputToolsConfig{
+				Enabled:               true,
+				DefaultTimeoutSeconds: 3600,
+				MaxTimeoutSeconds:     86400,
+				RetentionHours:        168,
+			},
 			Serial: ToolConfig{
 				Enabled: false, // Hardware tool - requires host serial ports
 			},
