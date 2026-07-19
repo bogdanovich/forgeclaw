@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
@@ -52,14 +53,16 @@ type traceCaptureManager struct {
 	closed  bool
 	startMu sync.Mutex
 
-	settings traceCaptureSettings
-	turns    map[string]*activeTraceCapture
-	tasks    map[string]*activeTraceCapture
-	sessions map[string]string
-	targets  map[string]map[string]struct{}
-	taskSubs map[string]func()
-	sub      runtimeevents.Subscription
-	eventBus runtimeevents.Bus
+	settings        traceCaptureSettings
+	turns           map[string]*activeTraceCapture
+	tasks           map[string]*activeTraceCapture
+	interactions    map[string]*activeTraceCapture
+	sessions        map[string]string
+	targets         map[string]map[string]struct{}
+	taskSubs        map[string]func()
+	interactionSubs map[string]func()
+	sub             runtimeevents.Subscription
+	eventBus        runtimeevents.Bus
 
 	lastDropped     uint64
 	persistCh       chan tracePersistRequest
@@ -76,13 +79,15 @@ type tracePersistRequest struct {
 
 func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *traceCaptureManager {
 	m := &traceCaptureManager{
-		settings: traceCaptureSettingsFromConfig(cfg),
-		turns:    make(map[string]*activeTraceCapture),
-		tasks:    make(map[string]*activeTraceCapture),
-		sessions: make(map[string]string),
-		targets:  make(map[string]map[string]struct{}),
-		taskSubs: make(map[string]func()),
-		eventBus: eventBus,
+		settings:        traceCaptureSettingsFromConfig(cfg),
+		turns:           make(map[string]*activeTraceCapture),
+		tasks:           make(map[string]*activeTraceCapture),
+		interactions:    make(map[string]*activeTraceCapture),
+		sessions:        make(map[string]string),
+		targets:         make(map[string]map[string]struct{}),
+		taskSubs:        make(map[string]func()),
+		interactionSubs: make(map[string]func()),
+		eventBus:        eventBus,
 	}
 	if !m.settings.enabled {
 		return m
@@ -167,6 +172,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 		}
 		m.turns = make(map[string]*activeTraceCapture)
 		m.tasks = make(map[string]*activeTraceCapture)
+		m.interactions = make(map[string]*activeTraceCapture)
 		m.sessions = make(map[string]string)
 		m.targets = make(map[string]map[string]struct{})
 	}
@@ -175,6 +181,33 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 	if updated.enabled {
 		m.start()
 	}
+}
+
+func (m *traceCaptureManager) attachInteractionRegistry(
+	workspace string,
+	registry *interactions.Registry,
+) {
+	if m == nil || registry == nil {
+		return
+	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if _, exists := m.interactionSubs[workspace]; exists {
+		m.mu.Unlock()
+		return
+	}
+	unsubscribe := registry.Subscribe(func(observation interactions.EventObservation) {
+		m.observeInteractionRegistryEvent(workspace, registry, observation)
+	})
+	m.interactionSubs[workspace] = unsubscribe
+	m.mu.Unlock()
 }
 
 func (m *traceCaptureManager) enabled() bool {
@@ -233,9 +266,13 @@ func (m *traceCaptureManager) close() {
 	for _, unsubscribe := range m.taskSubs {
 		unsubscribe()
 	}
+	for _, unsubscribe := range m.interactionSubs {
+		unsubscribe()
+	}
 	m.taskSubs = nil
+	m.interactionSubs = nil
 	settings := m.settings
-	traces := make([]*activeTraceCapture, 0, len(m.turns)+len(m.tasks))
+	traces := make([]*activeTraceCapture, 0, len(m.turns)+len(m.tasks)+len(m.interactions))
 	for _, trace := range m.turns {
 		if trace.settlementTimer != nil {
 			trace.settlementTimer.Stop()
@@ -256,8 +293,17 @@ func (m *traceCaptureManager) close() {
 		)
 		traces = append(traces, trace)
 	}
+	for _, trace := range m.interactions {
+		trace.trace.Truncation.Incomplete = true
+		trace.trace.Truncation.Reasons = append(
+			trace.trace.Truncation.Reasons,
+			"runtime_closed_before_terminal_interaction",
+		)
+		traces = append(traces, trace)
+	}
 	m.turns = nil
 	m.tasks = nil
+	m.interactions = nil
 	m.mu.Unlock()
 	for _, trace := range traces {
 		m.enqueuePersist(settings, trace)
@@ -483,6 +529,91 @@ func (m *traceCaptureManager) observeTaskEvent(
 	trace.trace.Outcome = &evaltrace.Outcome{
 		Status:    string(record.Status),
 		ErrorCode: taskErrorCode(record),
+	}
+	m.mu.Unlock()
+	m.enqueuePersist(settings, trace)
+}
+
+func (m *traceCaptureManager) observeInteractionRegistryEvent(
+	workspace string,
+	registry *interactions.Registry,
+	observation interactions.EventObservation,
+) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	settings := m.settings
+	if !settings.enabled {
+		m.mu.Unlock()
+		return
+	}
+	event, state := observation.Event, observation.Record
+	trace := m.interactions[event.InteractionID]
+	createdTrace := false
+	if trace == nil {
+		emittedAt := time.UnixMilli(event.EmittedAt)
+		trace = &activeTraceCapture{
+			workspace: workspace, startedAt: emittedAt,
+			critical: make(map[uint64]bool), origins: make(map[string]struct{}),
+			trace: evaltrace.Trace{
+				SchemaVersion: evaltrace.SchemaVersionV1,
+				TraceID:       opaqueTraceID("interaction", event.InteractionID, emittedAt),
+				CreatedAt:     emittedAt.UTC(),
+				Policy: evaltrace.CapturePolicy{
+					ContentMode: settings.contentMode,
+					Redactor:    captureRedactorVersion(settings.contentMode),
+				},
+				Limits: settings.limits,
+				Metadata: evaltrace.Metadata{
+					RootTurnID:  state.Origin.TurnID,
+					SessionHash: safeHash(settings, state.Route.SessionKey),
+					AgentID:     state.Route.AgentID,
+				},
+				Records: make([]evaltrace.Record, 0, 16),
+			},
+		}
+		m.interactions[event.InteractionID] = trace
+		createdTrace = true
+	}
+	observations := []interactions.EventObservation{observation}
+	if createdTrace && registry != nil {
+		history := registry.ListEvents(event.InteractionID)
+		if len(history) > 0 && history[0].Sequence > 1 {
+			trace.trace.Truncation.Incomplete = true
+			trace.trace.Truncation.Reasons = appendUnique(
+				trace.trace.Truncation.Reasons,
+				"interaction_event_history_incomplete",
+			)
+		}
+		observations = make([]interactions.EventObservation, 0, len(history))
+		for _, historical := range history {
+			observations = append(observations, interactions.EventObservation{
+				Event: historical, Record: state,
+			})
+		}
+	}
+	for _, item := range observations {
+		interactionRecord, critical := normalizedInteractionEventRecord(settings, trace, item)
+		appendCaptureRecord(trace, interactionRecord, critical)
+		if turn := m.turns[state.Origin.TurnID]; turn != nil {
+			appendCaptureRecord(turn, interactionRecord, critical)
+		} else if turn := m.turns[m.sessions[state.Route.SessionKey]]; turn != nil {
+			appendCaptureRecord(turn, interactionRecord, critical)
+		}
+	}
+	if !interactionRecordIsTerminal(state) {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.interactions, event.InteractionID)
+	trace.trace.Outcome = &evaltrace.Outcome{
+		Status:    string(state.Status),
+		ErrorCode: interactionErrorCode(state),
 	}
 	m.mu.Unlock()
 	m.enqueuePersist(settings, trace)
@@ -892,6 +1023,48 @@ func normalizedTaskEventRecord(
 	}, critical
 }
 
+func normalizedInteractionEventRecord(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+	observation interactions.EventObservation,
+) (evaltrace.Record, bool) {
+	event, state := observation.Event, observation.Record
+	payload := evaltrace.InteractionPayload{
+		EventType: string(event.Type),
+		Kind:      string(state.Kind),
+		From:      string(event.From),
+		Status:    string(event.To),
+		Outcome:   string(event.Outcome),
+		Revision:  event.Revision,
+		Sequence:  event.Sequence,
+		Code:      safeCode(event.Code),
+		Success:   event.Success,
+	}
+	data, _ := json.Marshal(payload)
+	return evaltrace.Record{
+		OffsetNanos: max(0, time.UnixMilli(event.EmittedAt).Sub(trace.startedAt).Nanoseconds()),
+		Kind:        evaltrace.RecordInteractionTransition,
+		Origin:      evaltrace.Origin{Kind: "interaction_event", ID: event.EventID},
+		Scope: evaltrace.Scope{
+			AgentID:     state.Route.AgentID,
+			SessionHash: safeHash(settings, state.Route.SessionKey),
+			TurnID:      state.Origin.TurnID,
+			TaskID:      state.Origin.TaskID,
+			Channel:     state.Route.Channel,
+			TargetHash: safeHash(
+				settings,
+				targetKey(state.Route.Channel, state.Route.ChatID),
+			),
+		},
+		Correlation: evaltrace.Correlation{
+			InteractionID: state.ID,
+			ToolCallID:    state.Origin.ToolCallID,
+			EventID:       event.EventID,
+		},
+		Data: data,
+	}, interactionEventIsCritical(event.Type)
+}
+
 func appendCaptureRecord(trace *activeTraceCapture, record evaltrace.Record, critical bool) {
 	if trace == nil {
 		return
@@ -1036,6 +1209,34 @@ func taskRecordIsTerminal(record taskregistry.Record) bool {
 		record.DeliveryStatus == taskregistry.DeliveryParentMissing ||
 		record.DeliveryStatus == taskregistry.DeliveryNotApplicable
 	return statusTerminal && deliveryTerminal
+}
+
+func interactionRecordIsTerminal(record interactions.Record) bool {
+	return record.Status == interactions.StatusResolved ||
+		record.Status == interactions.StatusCancelled ||
+		record.Status == interactions.StatusFailed
+}
+
+func interactionEventIsCritical(event interactions.EventType) bool {
+	switch event {
+	case interactions.EventCreated,
+		interactions.EventAnswerClaimed,
+		interactions.EventApprovalConsumed,
+		interactions.EventApprovalExpired,
+		interactions.EventResolved,
+		interactions.EventCancelled,
+		interactions.EventFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func interactionErrorCode(record interactions.Record) string {
+	if record.Status == interactions.StatusFailed {
+		return safeCode(record.FailureCode)
+	}
+	return ""
 }
 
 func taskErrorCode(record taskregistry.Record) string {

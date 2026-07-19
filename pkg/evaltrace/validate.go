@@ -17,7 +17,8 @@ var supportedKinds = map[RecordKind]struct{}{
 	RecordToolCall: {}, RecordToolResult: {}, RecordToolSkipped: {}, RecordToolLoopDecision: {},
 	RecordToolSteeringDecision: {},
 	RecordSteeringEnqueued:     {}, RecordSteeringInjected: {}, RecordInterrupt: {},
-	RecordTaskTransition: {}, RecordDeliveryDecision: {}, RecordDeliveryAttempt: {}, RecordDeliveryOutcome: {},
+	RecordTaskTransition: {}, RecordInteractionTransition: {},
+	RecordDeliveryDecision: {}, RecordDeliveryAttempt: {}, RecordDeliveryOutcome: {},
 	RecordContextCompaction: {}, RecordContextReconciliation: {}, RecordContextSnapshot: {},
 	RecordRestartBoundary: {}, RecordInboundSpoolTransition: {}, RecordUserCorrection: {},
 }

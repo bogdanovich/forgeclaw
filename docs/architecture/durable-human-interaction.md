@@ -375,17 +375,22 @@ Events include interaction kind, IDs, route/session hashes, task ID, status,
 latency, and failure codes. They exclude raw answers, full questions, secrets,
 and tool arguments.
 
-Evaluation traces may capture bounded question and answer content according to
-the existing metadata/full capture mode and redaction policy. Correlation fields
-must link interaction ID, turn ID, tool call ID, task ID, inbound message, and
-delivery attempt so replay evaluators can detect:
+Evaluation traces never capture question text, answers, approval summaries,
+routes, sender identity, or tool arguments, including in redacted-content mode.
+They capture typed lifecycle state, opaque IDs and hashes, safe policy codes,
+and success markers. Correlation fields link interaction ID, turn ID, tool call
+ID, and task ID so replay evaluators can detect within one interaction trace:
 
 - duplicate prompts or accepted answers;
-- unauthorized answer acceptance;
-- missing or duplicate tool results;
+- illegal or non-monotonic state transitions;
+- missing or duplicate approval consumption;
 - restart recovery failures;
-- task-state mismatches;
 - final responses emitted while suspended.
+
+Task-state mismatch and missing tool-result checks require a future joined-trace
+projection because task, turn, and long-lived interaction traces are persisted
+separately. A per-file evaluator must return `not_evaluable` rather than infer
+those cross-trace guarantees.
 
 The interaction record, accepted answer, and canonical tool result have
 exactly-once state transitions. Channel publication cannot be exactly once when
@@ -444,6 +449,13 @@ Shutdown does not cancel waiting interactions. Explicit task cancellation does.
 Deploy/restart tooling must report nonterminal interaction counts and perform a
 post-restart reconciliation check.
 
+When `evaluation.trace_capture.enabled` is true, terminal interaction traces
+are written automatically under the workspace evaluation trace directory. Run
+`picoclaw eval --evaluator durable_interaction.v1 TRACE.json` to diagnose a
+question or approval lifecycle. Trace retention uses the existing evaluation
+capture limits; it is independent of the interaction registry's terminal
+record retention.
+
 ## Implementation Sequence
 
 1. **Architecture:** land this contract before runtime changes.
@@ -475,6 +487,6 @@ for persisted data introduced by earlier PRs in this sequence.
   duplicate prompts, or duplicate tool execution.
 - Timeout and cancellation resume or terminate through explicit audited states.
 - Human approval cannot be forged through model arguments or reused.
-- Replay evaluators identify malformed pairing, duplicate delivery, invalid
-  state transitions, and missing task projection.
+- Replay evaluators identify duplicate interaction delivery, invalid state
+  transitions, nonterminal lifecycles, and incorrect approval consumption.
 - Targeted race tests and broader shared-package tests pass before activation.

@@ -36,6 +36,7 @@ const (
 	RecordSteeringInjected       RecordKind = "steering.injected"
 	RecordInterrupt              RecordKind = "steering.interrupt"
 	RecordTaskTransition         RecordKind = "task.transition"
+	RecordInteractionTransition  RecordKind = "interaction.transition"
 	RecordDeliveryDecision       RecordKind = "delivery.decision"
 	RecordDeliveryAttempt        RecordKind = "delivery.attempt"
 	RecordDeliveryOutcome        RecordKind = "delivery.outcome"
@@ -113,11 +114,12 @@ type Scope struct {
 }
 
 type Correlation struct {
-	ParentTurnID string `json:"parent_turn_id,omitempty"`
-	RequestID    string `json:"request_id,omitempty"`
-	ToolCallID   string `json:"tool_call_id,omitempty"`
-	CompletionID string `json:"completion_id,omitempty"`
-	EventID      string `json:"event_id,omitempty"`
+	ParentTurnID  string `json:"parent_turn_id,omitempty"`
+	RequestID     string `json:"request_id,omitempty"`
+	InteractionID string `json:"interaction_id,omitempty"`
+	ToolCallID    string `json:"tool_call_id,omitempty"`
+	CompletionID  string `json:"completion_id,omitempty"`
+	EventID       string `json:"event_id,omitempty"`
 }
 
 type Outcome struct {

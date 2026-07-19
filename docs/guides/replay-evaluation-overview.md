@@ -6,6 +6,7 @@ facility for agent runs. It answers questions such as:
 - Was a required final response delivered exactly once?
 - Was steering applied instead of silently lost?
 - Did an interrupted task recover into a valid terminal state?
+- Did a human question or approval resume and terminalize exactly once?
 - Did context compaction retain the facts it was required to preserve?
 - Did loop protection stop repeated tool calls?
 - Did provider fallback stop after selecting a successful provider?
@@ -23,8 +24,8 @@ detected automatically.
 
 After production trace capture is enabled, ForgeClaw automatically:
 
-1. observes supported runtime, task, delivery, steering, compaction, fallback,
-   and tool-loop events;
+1. observes supported runtime, task, human-interaction, delivery, steering,
+   compaction, fallback, and tool-loop events;
 2. normalizes and redacts the permitted evidence;
 3. writes bounded trace files after eligible agent turns;
 4. expires old files according to the configured retention and count limits.
@@ -63,6 +64,10 @@ WORKSPACE/state/evaluation/traces
 `metadata_only` is the recommended starting mode. It stores typed statuses,
 counts, hashes, opaque identifiers, and policy codes rather than raw prompts,
 tool arguments, tool results, steering text, or draft bodies.
+
+Human-interaction traces always remain metadata-only at the content boundary:
+they exclude questions, answers, approval summaries, routes, sender identity,
+and tool arguments even when the global mode is `redacted_content`.
 
 ## How to use a captured trace
 

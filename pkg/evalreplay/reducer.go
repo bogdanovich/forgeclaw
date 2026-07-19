@@ -81,6 +81,8 @@ func (r *reducer) apply(record evaltrace.Record) {
 		r.turnEnded = true
 	case evaltrace.RecordTaskTransition:
 		r.applyTask(record)
+	case evaltrace.RecordInteractionTransition:
+		r.applyInteraction(record)
 	case evaltrace.RecordDeliveryDecision,
 		evaltrace.RecordDeliveryAttempt,
 		evaltrace.RecordDeliveryOutcome:
@@ -109,6 +111,196 @@ func (r *reducer) apply(record evaltrace.Record) {
 	case evaltrace.RecordUserCorrection:
 		r.applyCorrection(record)
 	}
+}
+
+func (r *reducer) applyInteraction(record evaltrace.Record) {
+	var payload evaltrace.InteractionPayload
+	if !r.decode(record, &payload) {
+		return
+	}
+	id := record.Correlation.InteractionID
+	if id == "" {
+		r.diagnostic(
+			record,
+			"interaction_id_missing",
+			SeverityError,
+			"interaction transition has no correlation",
+		)
+		return
+	}
+	current := r.projection.Interactions[id]
+	if current.Terminal {
+		r.diagnostic(
+			record,
+			"interaction_event_after_terminal",
+			SeverityError,
+			"interaction changed after terminal state",
+		)
+	}
+	if current.Status != "" && payload.From != current.Status {
+		r.diagnostic(
+			record,
+			"interaction_from_status_mismatch",
+			SeverityError,
+			"interaction event source status does not match replay state",
+		)
+	}
+	if current.Kind != "" && payload.Kind != "" && payload.Kind != current.Kind {
+		r.diagnostic(
+			record,
+			"interaction_kind_changed",
+			SeverityError,
+			"interaction kind changed during its lifecycle",
+		)
+	}
+	if current.TaskID != "" && record.Scope.TaskID != "" && record.Scope.TaskID != current.TaskID {
+		r.diagnostic(
+			record,
+			"interaction_task_correlation_changed",
+			SeverityError,
+			"interaction task correlation changed",
+		)
+	}
+	if current.ToolCallID != "" && record.Correlation.ToolCallID != "" &&
+		record.Correlation.ToolCallID != current.ToolCallID {
+		r.diagnostic(
+			record,
+			"interaction_tool_correlation_changed",
+			SeverityError,
+			"interaction tool-call correlation changed",
+		)
+	}
+	if payload.Sequence <= 0 ||
+		current.LastSequence > 0 && payload.Sequence <= current.LastSequence {
+		r.diagnostic(
+			record,
+			"interaction_sequence_not_increasing",
+			SeverityError,
+			"interaction event sequence did not increase",
+		)
+	}
+	if payload.Revision <= 0 ||
+		current.LastRevision > 0 && payload.Revision < current.LastRevision {
+		r.diagnostic(
+			record,
+			"interaction_revision_decreased",
+			SeverityError,
+			"interaction revision decreased",
+		)
+	}
+	if payload.Status == "" {
+		r.diagnostic(
+			record,
+			"interaction_status_missing",
+			SeverityError,
+			"interaction event has no resulting status",
+		)
+	}
+	current.InteractionID = id
+	current.Kind = firstNonEmpty(payload.Kind, current.Kind)
+	current.Status = firstNonEmpty(payload.Status, current.Status)
+	current.Outcome = firstNonEmpty(payload.Outcome, current.Outcome)
+	current.TaskID = firstNonEmpty(record.Scope.TaskID, current.TaskID)
+	current.ToolCallID = firstNonEmpty(record.Correlation.ToolCallID, current.ToolCallID)
+	if payload.Revision > current.LastRevision {
+		current.LastRevision = payload.Revision
+	}
+	if payload.Sequence > current.LastSequence {
+		current.LastSequence = payload.Sequence
+	}
+	switch payload.EventType {
+	case "interaction.created":
+		current.Created++
+		if current.Created > 1 || payload.From != "" || payload.Status != "created" {
+			r.diagnostic(
+				record,
+				"interaction_duplicate_or_invalid_create",
+				SeverityError,
+				"interaction create transition is invalid",
+			)
+		}
+	case "interaction.delivery_attempted":
+		current.PromptAttempts++
+		if payload.Success != nil && *payload.Success {
+			current.PromptSuccesses++
+		}
+	case "interaction.waiting":
+		if payload.From != "created" || payload.Status != "waiting" {
+			r.diagnostic(
+				record,
+				"interaction_waiting_transition_invalid",
+				SeverityError,
+				"interaction waiting transition is invalid",
+			)
+		}
+	case "interaction.answer_claimed":
+		current.AnswerClaims++
+		if current.AnswerClaims > 1 {
+			r.diagnostic(
+				record,
+				"interaction_duplicate_answer_claim",
+				SeverityError,
+				"interaction answer was claimed more than once",
+			)
+		}
+		if payload.Status != "answer_claimed" {
+			r.diagnostic(
+				record,
+				"interaction_answer_transition_invalid",
+				SeverityError,
+				"interaction answer transition is invalid",
+			)
+		}
+	case "interaction.resume_started":
+		current.ResumeStarts++
+		if payload.From != "answer_claimed" || payload.Status != "resuming" {
+			r.diagnostic(
+				record,
+				"interaction_resume_transition_invalid",
+				SeverityError,
+				"interaction resume transition is invalid",
+			)
+		}
+	case "interaction.approval_consumed":
+		current.ApprovalConsumptions++
+		if current.ApprovalConsumptions > 1 || current.Kind != "approval" ||
+			current.Outcome != "allowed" {
+			r.diagnostic(
+				record,
+				"interaction_approval_consumption_invalid",
+				SeverityError,
+				"approval consumption is invalid or repeated",
+			)
+		}
+	case "interaction.final_delivery_attempted":
+		current.FinalAttempts++
+		if payload.Success != nil && *payload.Success {
+			current.FinalSuccesses++
+		}
+		if payload.Status != "resuming" {
+			r.diagnostic(
+				record,
+				"interaction_final_delivery_while_suspended",
+				SeverityError,
+				"final delivery occurred before interaction resumed",
+			)
+		}
+	case "interaction.resolved", "interaction.cancelled", "interaction.failed":
+		current.Terminal = true
+	default:
+		if !knownNonterminalInteractionEvent(payload.EventType) {
+			r.diagnostic(
+				record,
+				"interaction_event_unknown",
+				SeverityError,
+				"interaction event type is unsupported",
+			)
+		}
+	}
+	if terminalInteractionStatus(current.Status) {
+		current.Terminal = true
+	}
+	r.projection.Interactions[id] = current
 }
 
 func (r *reducer) applyTask(record evaltrace.Record) {
@@ -415,7 +607,7 @@ func (r *reducer) finish(trace evaltrace.Trace) {
 		r.appendCorrection(0, correction, evaltrace.Record{})
 	}
 	r.projection.Terminal = trace.Outcome != nil || r.turnEnded ||
-		allTasksTerminal(r.projection.Tasks)
+		allTasksTerminal(r.projection.Tasks) || allInteractionsTerminal(r.projection.Interactions)
 	if r.turnStarted && !r.turnEnded && trace.Outcome == nil {
 		r.projection.Diagnostics = append(
 			r.projection.Diagnostics,
@@ -436,6 +628,14 @@ func (r *reducer) finish(trace evaltrace.Trace) {
 					Message:  "tool call " + callID + " has no result or skipped record",
 				},
 			)
+		}
+	}
+	for id, interaction := range r.projection.Interactions {
+		if interaction.Created != 1 {
+			r.projection.Diagnostics = append(r.projection.Diagnostics, Diagnostic{
+				Code: "interaction_create_missing", Severity: SeverityError,
+				Message: "interaction " + id + " does not have exactly one create event",
+			})
 		}
 	}
 	sort.SliceStable(r.projection.Diagnostics, func(i, j int) bool {
@@ -527,6 +727,33 @@ func allTasksTerminal(tasks map[string]TaskProjection) bool {
 		}
 	}
 	return true
+}
+
+func allInteractionsTerminal(interactions map[string]InteractionProjection) bool {
+	if len(interactions) == 0 {
+		return false
+	}
+	for _, interaction := range interactions {
+		if !interaction.Terminal {
+			return false
+		}
+	}
+	return true
+}
+
+func terminalInteractionStatus(status string) bool {
+	return status == "resolved" || status == "cancel"+"led" || status == "failed"
+}
+
+func knownNonterminalInteractionEvent(event string) bool {
+	switch event {
+	case "interaction.approval_expired",
+		"interaction.canceling",
+		"interaction.recovery_observed":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstNonEmpty(values ...string) string {

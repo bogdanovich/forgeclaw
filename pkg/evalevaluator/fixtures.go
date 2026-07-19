@@ -29,12 +29,13 @@ type Fixture struct {
 }
 
 type FixtureRecord struct {
-	Kind         evaltrace.RecordKind `json:"kind"`
-	Data         json.RawMessage      `json:"data"`
-	TaskID       string               `json:"task_id,omitempty"`
-	TargetHash   string               `json:"target_hash,omitempty"`
-	ToolCallID   string               `json:"tool_call_id,omitempty"`
-	CompletionID string               `json:"completion_id,omitempty"`
+	Kind          evaltrace.RecordKind `json:"kind"`
+	Data          json.RawMessage      `json:"data"`
+	TaskID        string               `json:"task_id,omitempty"`
+	TargetHash    string               `json:"target_hash,omitempty"`
+	ToolCallID    string               `json:"tool_call_id,omitempty"`
+	CompletionID  string               `json:"completion_id,omitempty"`
+	InteractionID string               `json:"interaction_id,omitempty"`
 }
 
 func LoadFixtureManifest(path string) (FixtureManifest, error) {
@@ -86,10 +87,13 @@ func (fixture Fixture) Trace() (evaltrace.Trace, error) {
 		sequence := uint64(i + 1)
 		records = append(records, evaltrace.Record{
 			Sequence: sequence, OffsetNanos: int64(i), Kind: item.Kind,
-			Origin:      evaltrace.Origin{Kind: "fixture", ID: fmt.Sprintf("%s-%d", fixture.ID, sequence)},
-			Scope:       evaltrace.Scope{TaskID: item.TaskID, TargetHash: item.TargetHash},
-			Correlation: evaltrace.Correlation{ToolCallID: item.ToolCallID, CompletionID: item.CompletionID},
-			Data:        append(json.RawMessage(nil), item.Data...),
+			Origin: evaltrace.Origin{Kind: "fixture", ID: fmt.Sprintf("%s-%d", fixture.ID, sequence)},
+			Scope:  evaltrace.Scope{TaskID: item.TaskID, TargetHash: item.TargetHash},
+			Correlation: evaltrace.Correlation{
+				ToolCallID: item.ToolCallID, CompletionID: item.CompletionID,
+				InteractionID: item.InteractionID,
+			},
+			Data: append(json.RawMessage(nil), item.Data...),
 		})
 	}
 	return evaltrace.Finalize(evaltrace.Trace{

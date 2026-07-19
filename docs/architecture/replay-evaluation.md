@@ -153,7 +153,8 @@ type Record struct {
 
 All JSON fields use explicit snake-case names. `schema_version` starts at
 `forgeclaw.eval_trace.v1`. Trace IDs and fixture IDs are opaque. Runtime IDs,
-turn IDs, task IDs, completion IDs, event IDs, request IDs, and session keys
+turn IDs, task IDs, interaction IDs, completion IDs, event IDs, request IDs,
+and session keys
 remain separate typed correlation fields; they must not be overloaded into one
 generic ID.
 
@@ -163,7 +164,7 @@ Records use a closed kind vocabulary. Initial kinds include:
 - model request, response, retry, and fallback attempt;
 - tool call, result, skip, and loop decision;
 - steering enqueue/injection and interrupt;
-- task transition and delivery decision/attempt/outcome;
+- task and interaction transitions plus delivery decision/attempt/outcome;
 - compaction/reconciliation transition and context snapshot;
 - restart boundary and inbound spool transition;
 - explicit user correction annotation.
@@ -232,8 +233,9 @@ and path-safe opaque trace IDs.
 ## Capture Lifecycle
 
 One trace normally covers one root turn and correlated SubTurns/background task
-activity until terminal outcome or a configured duration. Long-lived tasks may
-produce linked child traces rather than keeping a recorder open indefinitely.
+activity until terminal outcome or a configured duration. Long-lived tasks and
+human interactions produce lifecycle traces rather than keeping the originating
+turn recorder open indefinitely.
 
 The recorder subscribes before turn start and finalizes after terminal outcome
 plus bounded delivery settlement. It records its own drop/truncation counters.
@@ -247,17 +249,20 @@ changes delivery status, or truncates history.
 ### Implemented capture boundary
 
 The capture implementation subscribes to typed runtime events and observes task
-events only after the task registry has persisted them. Root turns and
-long-lived tasks are stored as separate traces. When a task is first observed,
-its existing durable event history is imported before the new event, which
-preserves restart-reconciliation evidence without replacing the registry.
+events only after the durable registry has persisted them. Root turns,
+long-lived tasks, and human interactions are stored as separate traces. When a
+task or interaction is first observed, its existing durable event history is
+imported before the new event, which preserves restart-reconciliation evidence
+without replacing the registry.
 
 Captured runtime evidence includes turn outcomes; model request/response hashes
 and fallback attempts; tool call/result hashes and call IDs; steering acceptance
 and injection; compaction counts and final context identity; tool-loop
 decisions; channel delivery attempts/outcomes while a unique active or
 delivery-settling target can be identified; task delivery decisions/outcomes;
-and durable task transitions.
+durable task transitions; and metadata-only human interaction transitions.
+Interaction records exclude question text, answers, approval summaries, routes,
+sender identity, and tool arguments in every content mode.
 
 Capture persistence runs on a bounded worker. Event and record limits never
 block the agent. Runtime-event subscriber drops mark active turn traces
@@ -275,6 +280,9 @@ Current capture limitations are explicit:
   steering count, and tool-pair validity, not by raw session messages;
 - user correction remains an explicit fixture/CLI annotation and is never
   inferred during production capture.
+- task, turn, and interaction traces are not joined by the current single-file
+  replay command. Cross-trace task/tool pairing checks therefore remain
+  unavailable and must not be inferred from an interaction trace alone;
 - final outcome is authoritative in the trace envelope and turn-end record;
   there is no separate runtime source for `outcome.final`;
 - the context managers do not emit a typed reconciliation event with revision
@@ -297,8 +305,8 @@ Replay has two levels:
 
 ### Contract replay
 
-A pure reducer applies normalized records to typed task, delivery, steering,
-context, provider, and tool-loop projections. This verifies ordering, legal
+A pure reducer applies normalized records to typed task, interaction, delivery,
+steering, context, provider, and tool-loop projections. This verifies ordering, legal
 transitions, idempotency, correlation, and terminal invariants without starting
 an agent loop.
 
@@ -367,6 +375,9 @@ Initial evaluators:
 - `restart_recovery.v1`: active work becomes reconciled/lost or resumes by
   policy; completed delivery is not repeated; inbound spool ack/release is
   consistent.
+- `durable_interaction.v1`: interaction transitions are monotonic and terminal,
+  prompt/final delivery and answer acceptance are not duplicated, and an
+  allowed approval is consumed exactly once while other outcomes are not.
 - `compaction_retention.v1`: protected fresh tail, tool-call/result pairing,
   steering, and required goal/context facts survive the recorded compaction
   boundary.
@@ -375,7 +386,7 @@ Initial evaluators:
 - `provider_failover.v1`: candidates follow policy, non-retriable failures stop,
   cooldown/rate-limit skips are explicit, and selected identity is correct.
 
-All seven deterministic evaluators are implemented in `pkg/evalevaluator`.
+All eight deterministic evaluators are implemented in `pkg/evalevaluator`.
 Their findings are independent and include stable status, severity, record
 references, expected and observed facts, and remediation. Missing evidence is
 reported as `not_evaluable`; malformed typed evidence is `error`.

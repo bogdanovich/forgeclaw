@@ -47,3 +47,26 @@ func TestDeliveryEvaluatorReportsMalformedTypedEvidenceAsError(t *testing.T) {
 		t.Fatalf("report = %#v", report)
 	}
 }
+
+func TestDurableInteractionEvaluatorDefersToLifecycleTrace(t *testing.T) {
+	trace, err := (Fixture{
+		ID: "suspended-turn", Source: "evaluators_test.go",
+		Records: []FixtureRecord{{
+			Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+			Data: json.RawMessage(
+				`{"event_type":"interaction.created","kind":"question","status":"created","revision":1,"sequence":1}`,
+			),
+		}},
+	}).Trace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluator, _ := EvaluatorByName("durable_interaction.v1")
+	report, err := Evaluate(trace, evaluator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Skipped != 1 || report.Findings[0].Status != StatusNotEvaluable {
+		t.Fatalf("report = %#v", report)
+	}
+}

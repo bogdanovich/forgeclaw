@@ -49,6 +49,27 @@
       ]
     },
     {
+      "id": "durable-interaction-pass", "evaluator": "durable_interaction.v1", "source": "durable interaction and approval registry tests", "sanitized": true, "why": "An allowed approval must be claimed, resumed, consumed, and resolved exactly once.", "expected": "pass",
+      "records": [
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.created","kind":"approval","status":"created","revision":1,"sequence":1}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.delivery_attempted","kind":"approval","from":"created","status":"created","revision":2,"sequence":2,"success":true}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.waiting","kind":"approval","from":"created","status":"waiting","revision":3,"sequence":3}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.answer_claimed","kind":"approval","from":"waiting","status":"answer_claimed","outcome":"allowed","revision":4,"sequence":4}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resume_started","kind":"approval","from":"answer_claimed","status":"resuming","outcome":"allowed","revision":5,"sequence":5}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.approval_consumed","kind":"approval","from":"resuming","status":"resuming","outcome":"allowed","revision":6,"sequence":6,"code":"allow_once_consumed"}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resolved","kind":"approval","from":"resuming","status":"resolved","outcome":"allowed","revision":7,"sequence":7}}
+      ]
+    },
+    {
+      "id": "durable-interaction-fail", "evaluator": "durable_interaction.v1", "source": "durable approval crash-recovery tests", "sanitized": true, "why": "Resolving an allowed approval without spending its allow-once grant can replay protected execution after restart.", "expected": "fail",
+      "records": [
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.created","kind":"approval","status":"created","revision":1,"sequence":1}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.answer_claimed","kind":"approval","from":"waiting","status":"answer_claimed","outcome":"allowed","revision":2,"sequence":2}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resume_started","kind":"approval","from":"answer_claimed","status":"resuming","outcome":"allowed","revision":3,"sequence":3}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resolved","kind":"approval","from":"resuming","status":"resolved","outcome":"allowed","revision":4,"sequence":4}}
+      ]
+    },
+    {
       "id": "compaction-retention-pass", "evaluator": "compaction_retention.v1", "source": "Seahorse reconciliation and context tests", "sanitized": true, "why": "Compaction must preserve paired tool context.", "expected": "pass",
       "records": [
         {"kind":"context.compaction","data":{"reason":"budget","before_messages":12,"after_messages":6}},

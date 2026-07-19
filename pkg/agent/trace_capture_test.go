@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
@@ -340,6 +341,96 @@ func TestTraceCaptureBackfillsDurableTaskHistoryOnRestartReconciliation(t *testi
 	}
 	manager.close()
 	_ = eventBus.Close()
+}
+
+func TestTraceCaptureBackfillsDurableInteractionHistoryAfterRestart(t *testing.T) {
+	workspace := t.TempDir()
+	secret := "answer-that-must-not-appear"
+	initial := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	record, err := initial.Create(interactions.CreateRequest{
+		ID:   "interaction-restart",
+		Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-secret", Channel: "telegram",
+			ChatID: "chat-secret", SenderID: "sender-secret",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-1", ToolCallID: "call-1", ToolName: "request_user_input",
+			TaskID: "task-1",
+		},
+		Questions: []interactions.Question{{
+			ID: "environment", Question: "Which environment contains " + secret + "?",
+		}},
+		PromptSummary: "sensitive " + secret,
+		ExpiresAt:     time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = initial.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = initial.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = initial.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: secret, MessageID: "message-secret",
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = initial.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+	reloaded := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	manager.attachInteractionRegistry(workspace, reloaded)
+	loaded, ok := reloaded.Get(record.ID)
+	if !ok {
+		t.Fatal("reloaded interaction not found")
+	}
+	if _, resolveErr := reloaded.Resolve(loaded.ID, loaded.Revision); resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
+
+	tracePath := waitForTraceFile(t, workspace)
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), "session-secret") ||
+		strings.Contains(string(data), "chat-secret") || strings.Contains(string(data), "sender-secret") {
+		t.Fatalf("interaction trace leaked private content: %s", data)
+	}
+	var trace evaltrace.Trace
+	if err := json.Unmarshal(data, &trace); err != nil {
+		t.Fatal(err)
+	}
+	if err := evaltrace.Validate(trace); err != nil {
+		t.Fatal(err)
+	}
+	if trace.Outcome == nil || trace.Outcome.Status != string(interactions.StatusResolved) {
+		t.Fatalf("outcome = %#v", trace.Outcome)
+	}
+	if len(trace.Records) != 6 {
+		t.Fatalf("records = %d, want 6", len(trace.Records))
+	}
+	for _, item := range trace.Records {
+		if item.Kind != evaltrace.RecordInteractionTransition ||
+			item.Correlation.InteractionID != record.ID ||
+			item.Correlation.ToolCallID != "call-1" || item.Scope.TaskID != "task-1" {
+			t.Fatalf("interaction correlation = %#v", item)
+		}
+	}
 }
 
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {

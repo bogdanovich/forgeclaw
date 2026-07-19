@@ -48,6 +48,7 @@ Available evaluators:
 - `duplicate_response.v1`
 - `steering_correctness.v1`
 - `restart_recovery.v1`
+- `durable_interaction.v1`
 - `compaction_retention.v1`
 - `tool_loop_recovery.v1`
 - `provider_failover.v1`
@@ -111,3 +112,21 @@ calls.
 
 The fixture matrix is part of the package test suite and therefore runs in
 pull-request CI.
+
+## Debug a human interaction
+
+Question and approval lifecycles are captured automatically when trace capture
+is enabled. Locate an `interaction-*` trace in the workspace trace directory,
+then run:
+
+```bash
+picoclaw eval --evaluator durable_interaction.v1 \
+  WORKSPACE/state/evaluation/traces/interaction-TRACE.json
+```
+
+The trace can identify duplicate answer claims, illegal transitions, an
+interaction that never terminalized, duplicate successful prompt/final sends,
+or an allowed approval that was not consumed exactly once. It contains no raw
+question, answer, approval summary, route, sender identity, or tool arguments.
+Task/tool pairing spans separately persisted traces and is not evaluated by
+this single-file command.

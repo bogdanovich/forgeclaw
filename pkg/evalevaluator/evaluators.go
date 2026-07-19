@@ -15,6 +15,7 @@ type (
 	duplicateResponse   struct{}
 	steeringCorrectness struct{}
 	restartRecovery     struct{}
+	durableInteraction  struct{}
 	compactionRetention struct{}
 	toolLoopRecovery    struct{}
 	providerFailover    struct{}
@@ -24,6 +25,7 @@ func (deliveryReliability) Name() string { return "delivery_reliability.v1" }
 func (duplicateResponse) Name() string   { return "duplicate_response.v1" }
 func (steeringCorrectness) Name() string { return "steering_correctness.v1" }
 func (restartRecovery) Name() string     { return "restart_recovery.v1" }
+func (durableInteraction) Name() string  { return "durable_interaction.v1" }
 func (compactionRetention) Name() string { return "compaction_retention.v1" }
 func (toolLoopRecovery) Name() string    { return "tool_loop_recovery.v1" }
 func (providerFailover) Name() string    { return "provider_failover.v1" }
@@ -32,6 +34,7 @@ func (deliveryReliability) Version() string { return evaluatorVersionV1 }
 func (duplicateResponse) Version() string   { return evaluatorVersionV1 }
 func (steeringCorrectness) Version() string { return evaluatorVersionV1 }
 func (restartRecovery) Version() string     { return evaluatorVersionV1 }
+func (durableInteraction) Version() string  { return evaluatorVersionV1 }
 func (compactionRetention) Version() string { return evaluatorVersionV1 }
 func (toolLoopRecovery) Version() string    { return evaluatorVersionV1 }
 func (providerFailover) Version() string    { return evaluatorVersionV1 }
@@ -216,6 +219,120 @@ func (restartRecovery) Evaluate(input Input) Finding {
 		"all observed tasks are terminal without replay diagnostics",
 		"",
 	)
+}
+
+func (durableInteraction) Evaluate(input Input) Finding {
+	if len(input.Projection.Interactions) == 0 {
+		return finding(
+			StatusNotEvaluable,
+			SeverityInfo,
+			"durable interaction transition evidence",
+			"no interaction activity",
+			"enable trace capture while reproducing the interaction",
+		)
+	}
+	if input.Trace.Truncation.Incomplete {
+		return finding(
+			StatusNotEvaluable,
+			SeverityInfo,
+			"complete durable interaction evidence",
+			"trace is marked incomplete",
+			"reproduce with sufficient trace and registry limits",
+		)
+	}
+	for _, diagnostic := range input.Projection.Diagnostics {
+		if strings.HasPrefix(diagnostic.Code, "interaction_") {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"legal, monotonic, exactly-once interaction transitions",
+				diagnostic.Code,
+				"inspect the correlated interaction registry events",
+				diagnostic.Sequence,
+			)
+		}
+	}
+	for _, interaction := range input.Projection.Interactions {
+		if !interaction.Terminal {
+			if input.Trace.Outcome == nil || !terminalInteractionOutcome(input.Trace.Outcome.Status) {
+				return finding(
+					StatusNotEvaluable,
+					SeverityInfo,
+					"a complete durable interaction lifecycle",
+					"interaction "+interaction.InteractionID+" continues in its lifecycle trace",
+					"evaluate the terminal interaction trace",
+				)
+			}
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"a terminal durable interaction",
+				"interaction "+interaction.InteractionID+" remains "+interaction.Status,
+				"run recovery and inspect the last interaction transition",
+			)
+		}
+		if interaction.PromptSuccesses > 1 || interaction.FinalSuccesses > 1 {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"at most one successful prompt and final delivery",
+				fmt.Sprintf(
+					"interaction %s prompt_successes=%d final_successes=%d",
+					interaction.InteractionID,
+					interaction.PromptSuccesses,
+					interaction.FinalSuccesses,
+				),
+				"repair interaction delivery claiming and retry policy",
+			)
+		}
+		if interaction.AnswerClaims > 1 {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"at most one accepted answer",
+				fmt.Sprintf("interaction %s answer_claims=%d", interaction.InteractionID, interaction.AnswerClaims),
+				"repair answer correlation and atomic claiming",
+			)
+		}
+		if interaction.Kind == "approval" {
+			wantConsumptions := 0
+			if interaction.Outcome == "allowed" {
+				wantConsumptions = 1
+			}
+			if interaction.ApprovalConsumptions != wantConsumptions {
+				return finding(
+					StatusFail,
+					SeverityCritical,
+					fmt.Sprintf("%d approval consumptions for outcome %s", wantConsumptions, interaction.Outcome),
+					fmt.Sprintf(
+						"interaction %s has %d consumptions",
+						interaction.InteractionID,
+						interaction.ApprovalConsumptions,
+					),
+					"repair allow-once consumption or fail the approval closed",
+				)
+			}
+		} else if interaction.ApprovalConsumptions != 0 {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"question interactions never consume approvals",
+				"question interaction consumed an approval",
+				"separate question and approval continuation paths",
+			)
+		}
+	}
+	return finding(
+		StatusPass,
+		SeverityInfo,
+		"terminal exactly-once durable interactions",
+		"all observed interactions satisfy lifecycle and approval invariants",
+		"",
+	)
+}
+
+func terminalInteractionOutcome(status string) bool {
+	return status == "resolved" || status == "cancel"+"led" || status == "failed"
 }
 
 func (compactionRetention) Evaluate(input Input) Finding {

@@ -27,20 +27,41 @@ type Diagnostic struct {
 }
 
 type Projection struct {
-	ReducerVersion string                        `json:"reducer_version"`
-	TraceID        string                        `json:"trace_id"`
-	Processed      int                           `json:"processed"`
-	Terminal       bool                          `json:"terminal"`
-	Tasks          map[string]TaskProjection     `json:"tasks,omitempty"`
-	Deliveries     map[string]DeliveryProjection `json:"deliveries,omitempty"`
-	Steering       SteeringProjection            `json:"steering,omitempty"`
-	Context        ContextProjection             `json:"context,omitempty"`
-	Providers      ProviderProjection            `json:"providers,omitempty"`
-	Tools          map[string]ToolProjection     `json:"tools,omitempty"`
-	ToolLoop       ToolLoopProjection            `json:"tool_loop,omitempty"`
-	Restarts       []RestartProjection           `json:"restarts,omitempty"`
-	Corrections    []CorrectionProjection        `json:"corrections,omitempty"`
-	Diagnostics    []Diagnostic                  `json:"diagnostics,omitempty"`
+	ReducerVersion string                           `json:"reducer_version"`
+	TraceID        string                           `json:"trace_id"`
+	Processed      int                              `json:"processed"`
+	Terminal       bool                             `json:"terminal"`
+	Tasks          map[string]TaskProjection        `json:"tasks,omitempty"`
+	Interactions   map[string]InteractionProjection `json:"interactions,omitempty"`
+	Deliveries     map[string]DeliveryProjection    `json:"deliveries,omitempty"`
+	Steering       SteeringProjection               `json:"steering,omitempty"`
+	Context        ContextProjection                `json:"context,omitempty"`
+	Providers      ProviderProjection               `json:"providers,omitempty"`
+	Tools          map[string]ToolProjection        `json:"tools,omitempty"`
+	ToolLoop       ToolLoopProjection               `json:"tool_loop,omitempty"`
+	Restarts       []RestartProjection              `json:"restarts,omitempty"`
+	Corrections    []CorrectionProjection           `json:"corrections,omitempty"`
+	Diagnostics    []Diagnostic                     `json:"diagnostics,omitempty"`
+}
+
+type InteractionProjection struct {
+	InteractionID        string `json:"interaction_id"`
+	Kind                 string `json:"kind,omitempty"`
+	Status               string `json:"status,omitempty"`
+	Outcome              string `json:"outcome,omitempty"`
+	TaskID               string `json:"task_id,omitempty"`
+	ToolCallID           string `json:"tool_call_id,omitempty"`
+	LastRevision         int64  `json:"last_revision,omitempty"`
+	LastSequence         int64  `json:"last_sequence,omitempty"`
+	Created              int    `json:"created,omitempty"`
+	PromptAttempts       int    `json:"prompt_attempts,omitempty"`
+	PromptSuccesses      int    `json:"prompt_successes,omitempty"`
+	AnswerClaims         int    `json:"answer_claims,omitempty"`
+	ResumeStarts         int    `json:"resume_starts,omitempty"`
+	ApprovalConsumptions int    `json:"approval_consumptions,omitempty"`
+	FinalAttempts        int    `json:"final_attempts,omitempty"`
+	FinalSuccesses       int    `json:"final_successes,omitempty"`
+	Terminal             bool   `json:"terminal"`
 }
 
 type TaskProjection struct {
@@ -154,6 +175,7 @@ func newReducer(trace evaltrace.Trace) *reducer {
 			ReducerVersion: ReducerVersionV1,
 			TraceID:        trace.TraceID,
 			Tasks:          make(map[string]TaskProjection),
+			Interactions:   make(map[string]InteractionProjection),
 			Deliveries:     make(map[string]DeliveryProjection),
 			Steering:       SteeringProjection{Messages: make(map[string]int)},
 			Tools:          make(map[string]ToolProjection),

@@ -66,6 +66,21 @@ type TaskPayload struct {
 	Producer       string `json:"producer,omitempty"`
 }
 
+// InteractionPayload is deliberately metadata-only. Durable interaction
+// capture must never copy questions, answers, approval summaries, routes, or
+// tool arguments into evaluation traces.
+type InteractionPayload struct {
+	EventType string `json:"event_type"`
+	Kind      string `json:"kind,omitempty"`
+	From      string `json:"from,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Outcome   string `json:"outcome,omitempty"`
+	Revision  int64  `json:"revision,omitempty"`
+	Sequence  int64  `json:"sequence,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Success   *bool  `json:"success,omitempty"`
+}
+
 type DeliveryPayload struct {
 	Mode        string `json:"mode,omitempty"`
 	Status      string `json:"status,omitempty"`

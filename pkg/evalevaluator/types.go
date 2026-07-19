@@ -90,6 +90,7 @@ func DefaultEvaluators() []Evaluator {
 		duplicateResponse{},
 		steeringCorrectness{},
 		restartRecovery{},
+		durableInteraction{},
 		compactionRetention{},
 		toolLoopRecovery{},
 		providerFailover{},
