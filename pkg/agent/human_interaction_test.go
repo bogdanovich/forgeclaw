@@ -687,6 +687,71 @@ func TestAdditionalMessageDuringResumeIsDeferred(t *testing.T) {
 	}
 }
 
+func TestReloadWhileWaitingResumesAgainstPersistedSession(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	sessionKey := "session-reload-waiting"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Deploy this"})
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-reload-question", Name: "request_user_input",
+			Function: &providers.FunctionCall{Name: "request_user_input", Arguments: `{}`},
+		}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	request.Origin.ToolCallID = "call-reload-question"
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if _, err = registry.MarkWaiting(record.ID, record.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := *al.GetConfig()
+	if err = al.ReloadProviderAndConfig(t.Context(), &simpleConvProvider{}, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	reloadedAgent, ok := al.GetRegistry().GetAgent(agent.ID)
+	if !ok || reloadedAgent == nil {
+		t.Fatal("reloaded agent is unavailable")
+	}
+	target := &inboundDispatchTarget{
+		Agent: reloadedAgent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	msg := bus.InboundMessage{
+		Content: "Canary", SpoolID: "spool-reload-answer",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	msg.Context.MessageID = "answer-after-reload"
+	ownership, err := al.processInteractionInbound(t.Context(), msg, target)
+	if err != nil || ownership != interactionInboundClaimed {
+		t.Fatalf("processInteractionInbound() = (%v, %v)", ownership, err)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusResolved || !record.FinalDelivered {
+		t.Fatalf("record after reload answer = %#v", record)
+	}
+	select {
+	case outbound := <-manager.sent:
+		if strings.TrimSpace(outbound.Content) == "" {
+			t.Fatalf("reload continuation outbound = %#v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reload continuation")
+	}
+}
+
 func TestStopCancellationPairsSuspendedToolCall(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
