@@ -49,15 +49,16 @@ func NewAgentLoop(
 	}
 
 	al := &AgentLoop{
-		bus:               msgBus,
-		cfg:               cfg,
-		registry:          registry,
-		fallback:          fallbackChain,
-		cmdRegistry:       commands.NewRegistry(commands.BuiltinDefinitions()),
-		steering:          newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
-		activeRequests:    newActiveRequestCounter(),
-		workerSem:         make(chan struct{}, workerPoolSize),
-		ownsRuntimeEvents: true,
+		bus:                 msgBus,
+		cfg:                 cfg,
+		registry:            registry,
+		fallback:            fallbackChain,
+		cmdRegistry:         commands.NewRegistry(commands.BuiltinDefinitions()),
+		steering:            newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
+		activeRequests:      newActiveRequestCounter(),
+		workerSem:           make(chan struct{}, workerPoolSize),
+		agentTurnAdmissions: newAgentTurnAdmissionController(registry),
+		ownsRuntimeEvents:   true,
 	}
 	al.compactionRunner = &backgroundCompactionRunner{
 		contextManager: func() ContextManager {

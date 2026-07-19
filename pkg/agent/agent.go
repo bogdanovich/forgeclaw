@@ -72,6 +72,8 @@ type AgentLoop struct {
 
 	// workerSem limits concurrent turn processing workers.
 	workerSem chan struct{}
+	// agentTurnAdmissions applies optional per-agent limits across every turn entry path.
+	agentTurnAdmissions *agentTurnAdmissionController
 
 	// activeTurnStates tracks active turns per session to prevent duplicates.
 	activeTurnStates    sync.Map
@@ -320,6 +322,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	// Store new values
 	al.cfg = cfg
 	al.registry = registry
+	al.agentTurnAdmissions.update(registry)
 
 	// Also update fallback chain with new config; rebuild rate limiter registry.
 	newRL := providers.NewRateLimiterRegistry()

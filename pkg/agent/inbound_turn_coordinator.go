@@ -100,13 +100,17 @@ func (c *inboundTurnCoordinator) runWorker(
 	claim *runtimeSessionClaim,
 ) {
 	al := c.al
-	if !c.acquireWorker(ctx, msg, claim) {
+	admittedCtx, releaseCapacity, err := c.acquireTurnCapacity(ctx, target.Agent.ID)
+	if err != nil {
+		claim.releaseIfOwned()
+		al.releaseInboundMessage(context.Background(), msg, err)
 		return
 	}
+	defer releaseCapacity()
+	ctx = admittedCtx
 
 	defer claim.releaseIfOwned()
 	defer c.recoverWorkerPanic(claim.sessionKey, msg)
-	defer func() { <-al.workerSem }()
 
 	if al.channelManager != nil {
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
@@ -125,18 +129,33 @@ func (c *inboundTurnCoordinator) runWorker(
 	}
 }
 
-func (c *inboundTurnCoordinator) acquireWorker(
+func (c *inboundTurnCoordinator) acquireTurnCapacity(
 	ctx context.Context,
-	msg bus.InboundMessage,
-	claim *runtimeSessionClaim,
-) bool {
-	select {
-	case c.al.workerSem <- struct{}{}:
-		return true
-	case <-ctx.Done():
-		claim.releaseIfOwned()
-		c.al.releaseInboundMessage(context.Background(), msg, ctx.Err())
-		return false
+	agentID string,
+) (context.Context, func(), error) {
+	for {
+		admittedCtx, releaseAdmission, err := c.al.acquireAgentTurn(ctx, agentID)
+		if err != nil {
+			return ctx, nil, err
+		}
+		select {
+		case c.al.workerSem <- struct{}{}:
+			return admittedCtx, func() {
+				<-c.al.workerSem
+				releaseAdmission()
+			}, nil
+		default:
+			releaseAdmission()
+		}
+
+		// Wait for worker progress without retaining the agent admission. The
+		// worker token is released immediately and both resources are retried.
+		select {
+		case c.al.workerSem <- struct{}{}:
+			<-c.al.workerSem
+		case <-ctx.Done():
+			return ctx, nil, ctx.Err()
+		}
 	}
 }
 

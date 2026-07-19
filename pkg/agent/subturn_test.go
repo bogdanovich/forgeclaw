@@ -193,6 +193,116 @@ func TestSpawnSubTurn(t *testing.T) {
 	}
 }
 
+func TestSpawnSubTurnInheritsSameAgentAdmission(t *testing.T) {
+	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
+	defer cleanup()
+
+	parentAgent := al.registry.GetDefaultAgent()
+	if parentAgent == nil {
+		t.Fatal("expected default parent agent")
+	}
+	al.agentTurnAdmissions.update(&AgentRegistry{agents: map[string]*AgentInstance{
+		parentAgent.ID: {ID: parentAgent.ID, MaxParallelTurns: 1},
+	}})
+	parentCtx, release, err := al.acquireAgentTurn(context.Background(), parentAgent.ID)
+	if err != nil {
+		t.Fatalf("acquireAgentTurn() error = %v", err)
+	}
+	defer release()
+
+	parent := &turnState{
+		ctx:            parentCtx,
+		turnID:         "parent-with-admission",
+		depth:          0,
+		childTurnIDs:   []string{},
+		pendingResults: make(chan *tools.ToolResult, 10),
+		session:        &ephemeralSessionStore{},
+		agent:          parentAgent,
+	}
+	result, err := spawnSubTurn(parentCtx, al, parent, SubTurnConfig{
+		Model:        "test-model",
+		SystemPrompt: "complete the child turn",
+		Timeout:      250 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("spawnSubTurn() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("spawnSubTurn() result is nil")
+	}
+}
+
+func TestSpawnSubTurnRetainsAdmissionAfterParentRelease(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.List = []config.AgentConfig{{
+		ID:               "browser",
+		Default:          true,
+		MaxParallelTurns: 1,
+	}}
+	provider := &reloadBlockingProvider{
+		chatStarted: make(chan struct{}),
+		releaseChat: make(chan struct{}),
+		closeCalled: make(chan struct{}),
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	defer al.Close()
+	parentAgent := al.registry.GetDefaultAgent()
+	if parentAgent == nil {
+		t.Fatal("expected default parent agent")
+	}
+	parentCtx, releaseParent, err := al.acquireAgentTurn(context.Background(), parentAgent.ID)
+	if err != nil {
+		t.Fatalf("acquireAgentTurn() error = %v", err)
+	}
+	parent := &turnState{
+		ctx:            parentCtx,
+		turnID:         "parent-released-before-child",
+		pendingResults: make(chan *tools.ToolResult, 10),
+		session:        &ephemeralSessionStore{},
+		agent:          parentAgent,
+	}
+
+	childDone := make(chan error, 1)
+	go func() {
+		_, spawnErr := spawnSubTurn(parentCtx, al, parent, SubTurnConfig{
+			Model:        "test-model",
+			SystemPrompt: "wait for release",
+			Timeout:      2 * time.Second,
+		})
+		childDone <- spawnErr
+	}()
+	select {
+	case <-provider.chatStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for child provider call")
+	}
+
+	releaseParent()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	_, _, err = al.acquireAgentTurn(waitCtx, parentAgent.ID)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("independent acquire while child active error = %v, want deadline exceeded", err)
+	}
+
+	close(provider.releaseChat)
+	select {
+	case err = <-childDone:
+		if err != nil {
+			t.Fatalf("spawnSubTurn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for child completion")
+	}
+
+	_, releaseNext, err := al.acquireAgentTurn(context.Background(), parentAgent.ID)
+	if err != nil {
+		t.Fatalf("acquireAgentTurn() after child completion error = %v", err)
+	}
+	releaseNext()
+}
+
 // ====================== Extra Independent Test: Ephemeral Session Isolation ======================
 func TestSpawnSubTurn_EphemeralSessionIsolation(t *testing.T) {
 	al, _, _, provider, cleanup := newTestAgentLoop(t)

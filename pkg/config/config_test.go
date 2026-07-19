@@ -96,7 +96,8 @@ func TestAgentConfig_FullParse(t *testing.T) {
 					"id": "sales",
 					"default": true,
 					"name": "Sales Bot",
-					"model": "gpt-4"
+					"model": "gpt-4",
+					"max_parallel_turns": 1
 				},
 			{
 				"id": "support",
@@ -134,6 +135,9 @@ func TestAgentConfig_FullParse(t *testing.T) {
 	}
 	if sales.Model == nil || sales.Model.Primary != "gpt-4" {
 		t.Errorf("sales.Model = %+v", sales.Model)
+	}
+	if sales.MaxParallelTurns != 1 {
+		t.Errorf("sales.MaxParallelTurns = %d, want 1", sales.MaxParallelTurns)
 	}
 
 	support := cfg.Agents.List[1]

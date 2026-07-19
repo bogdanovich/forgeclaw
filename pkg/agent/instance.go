@@ -45,6 +45,7 @@ type AgentInstance struct {
 	MCPServerPolicy           *PatternPolicy
 	ToolPolicy                *PatternPolicy
 	Candidates                []providers.FallbackCandidate
+	MaxParallelTurns          int
 
 	// Router is non-nil when model routing is configured and the light model
 	// was successfully resolved. It scores each incoming message and decides
@@ -158,6 +159,7 @@ func NewAgentInstance(
 		SkillsFilter:              identity.skillsFilter,
 		MCPServerPolicy:           agentMCPServerPolicy,
 		ToolPolicy:                agentToolPolicy,
+		MaxParallelTurns:          resolveAgentMaxParallelTurns(agentCfg),
 		Candidates:                routingCfg.candidates,
 		Router:                    routingCfg.router,
 		LightCandidates:           routingCfg.lightCandidates,
@@ -165,6 +167,13 @@ func NewAgentInstance(
 		CandidateProviders:        routingCfg.candidateProviders,
 		ToolLoopDetection:         loopGuardConfigFromConfig(cfg.Tools.LoopDetection),
 	}
+}
+
+func resolveAgentMaxParallelTurns(agentCfg *config.AgentConfig) int {
+	if agentCfg == nil || agentCfg.MaxParallelTurns <= 0 {
+		return 0
+	}
+	return agentCfg.MaxParallelTurns
 }
 
 func loopGuardConfigFromConfig(cfg config.ToolLoopDetectionConfig) loopguard.Config {
