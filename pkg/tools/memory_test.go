@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -205,6 +206,163 @@ func TestMemoryToolSerializesConcurrentAdds(t *testing.T) {
 		if strings.Count(string(data), fact) != 1 {
 			t.Errorf("memory contains %q %d times", fact, strings.Count(string(data), fact))
 		}
+	}
+}
+
+func TestMemoryToolAppendDailySelectsDateDeduplicatesAndAudits(t *testing.T) {
+	workspace := t.TempDir()
+	fixedNow := time.Date(2026, time.July, 18, 23, 30, 0, 0, time.FixedZone("PDT", -7*60*60))
+	eventBus := runtimeevents.NewBus()
+	sub, eventsCh, err := eventBus.Channel().OfKind(runtimeevents.KindAgentMemoryMutation).SubscribeChan(
+		t.Context(),
+		runtimeevents.SubscribeOptions{Name: "daily-memory-test", Buffer: 4},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+
+	var invalidations atomic.Int32
+	tool := newMemoryTool(workspace, func() { invalidations.Add(1) }, eventBus, func() time.Time {
+		return fixedNow
+	})
+	properties := tool.Parameters()["properties"].(map[string]any)
+	operations := properties["operation"].(map[string]any)["enum"].([]string)
+	if !slices.Contains(operations, appendDailyMemoryOperation) {
+		t.Fatalf("memory operation enum = %#v", operations)
+	}
+	firstContent := "- Finished the private deployment"
+	secondContent := "- Follow up on the rollout tomorrow"
+	first := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   firstContent,
+	})
+	second := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   secondContent,
+	})
+	duplicate := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   "  FINISHED   THE PRIVATE DEPLOYMENT  ",
+	})
+	for _, result := range []*ToolResult{first, second, duplicate} {
+		if result.IsError {
+			t.Fatalf("append_daily result = %#v", result)
+		}
+	}
+	if len(first.WriteAudit) != 1 || len(second.WriteAudit) != 1 || len(duplicate.WriteAudit) != 0 {
+		t.Fatalf(
+			"write audits = first:%#v second:%#v duplicate:%#v",
+			first.WriteAudit,
+			second.WriteAudit,
+			duplicate.WriteAudit,
+		)
+	}
+	const target = "memory/202607/20260718.md"
+	if !strings.Contains(first.ForLLM, `"status":"appended"`) ||
+		!strings.Contains(first.ForLLM, `"target":"`+target+`"`) ||
+		!strings.Contains(duplicate.ForLLM, `"status":"duplicate"`) {
+		t.Fatalf("unexpected results: first=%s duplicate=%s", first.ForLLM, duplicate.ForLLM)
+	}
+	if invalidations.Load() != 2 {
+		t.Fatalf("cache invalidations = %d, want 2", invalidations.Load())
+	}
+
+	dailyPath := filepath.Join(workspace, filepath.FromSlash(target))
+	assertMemoryFile(t, dailyPath, "# 2026-07-18\n\n"+firstContent+"\n\n"+secondContent+"\n")
+	info, err := os.Stat(dailyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("daily memory mode = %o, want 600", info.Mode().Perm())
+	}
+
+	wantOutcomes := []string{"appended", "appended", "duplicate"}
+	for index, wantOutcome := range wantOutcomes {
+		evt := receiveMemoryMutationEvent(t, eventsCh)
+		payload, ok := evt.Payload.(MemoryMutationPayload)
+		if !ok || payload.Operation != appendDailyMemoryOperation || payload.Outcome != wantOutcome ||
+			payload.Target != target || payload.ContentHash == "" {
+			t.Fatalf("event %d payload = %#v", index, evt.Payload)
+		}
+		encoded, marshalErr := json.Marshal(evt)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		for _, raw := range []string{firstContent, secondContent, "FINISHED   THE PRIVATE DEPLOYMENT"} {
+			if strings.Contains(string(encoded), raw) {
+				t.Fatalf("runtime event leaked raw daily content: %s", encoded)
+			}
+		}
+	}
+}
+
+func TestMemoryToolSerializesConcurrentDailyAppends(t *testing.T) {
+	workspace := t.TempDir()
+	fixedNow := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tool := newMemoryTool(workspace, nil, nil, func() time.Time { return fixedNow })
+
+	const count = 24
+	var wg sync.WaitGroup
+	errs := make(chan string, count)
+	for i := range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			content := fmt.Sprintf("daily-event-%02d", i)
+			result := tool.Execute(t.Context(), map[string]any{
+				"operation": appendDailyMemoryOperation,
+				"content":   content,
+			})
+			if result.IsError {
+				errs <- result.ForLLM
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent daily append failed: %s", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workspace, "memory", "202607", "20260718.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "# 2026-07-18") != 1 {
+		t.Fatalf("daily header count = %d, want 1", strings.Count(string(data), "# 2026-07-18"))
+	}
+	for i := range count {
+		content := fmt.Sprintf("daily-event-%02d", i)
+		if strings.Count(string(data), content) != 1 {
+			t.Errorf("daily memory contains %q %d times", content, strings.Count(string(data), content))
+		}
+	}
+}
+
+func TestMemoryToolAppendDailyRejectsMonthSymlinkEscape(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	memoryDir := filepath.Join(workspace, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(memoryDir, "202607")); err != nil {
+		t.Skipf("symlinks not supported in this environment: %v", err)
+	}
+
+	fixedNow := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tool := newMemoryTool(workspace, nil, nil, func() time.Time { return fixedNow })
+	result := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   "must-not-escape",
+	})
+	if !result.IsError || !strings.Contains(result.ForLLM, "symlink resolves outside workspace") {
+		t.Fatalf("daily symlink escape result = %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "20260718.md")); !os.IsNotExist(err) {
+		t.Fatalf("outside daily file was created through symlink: %v", err)
 	}
 }
 

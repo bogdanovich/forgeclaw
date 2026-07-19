@@ -505,6 +505,40 @@ func TestMemoryToolInvalidatesEveryAgentSharingWorkspace(t *testing.T) {
 	}
 }
 
+func TestMemoryToolAppendDailyVisibleInNextPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = workspace
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	before := agent.ContextBuilder.BuildSystemPromptWithCache()
+	const content = "- Daily append is visible on the next turn"
+	if strings.Contains(before, content) {
+		t.Fatal("daily content was present before the tool write")
+	}
+
+	memoryTool, ok := agent.Tools.Get("memory")
+	if !ok {
+		t.Fatal("memory tool not registered")
+	}
+	result := memoryTool.Execute(t.Context(), map[string]any{
+		"operation": "append_daily",
+		"content":   content,
+	})
+	if result.IsError {
+		t.Fatalf("daily memory append failed: %s", result.ForLLM)
+	}
+
+	after := agent.ContextBuilder.BuildSystemPromptWithCache()
+	if !strings.Contains(after, "## Recent Daily Notes") || !strings.Contains(after, content) {
+		t.Fatalf("next prompt did not include daily memory: %q", after)
+	}
+}
+
 func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent(t *testing.T) {
 	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()

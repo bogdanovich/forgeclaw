@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/fileutil"
@@ -19,8 +20,9 @@ import (
 )
 
 const (
-	curatedMemoryTarget           = "memory/MEMORY.md"
-	maxCuratedMemoryMutationBytes = 64 * 1024
+	curatedMemoryTarget        = "memory/MEMORY.md"
+	maxMemoryMutationBytes     = 64 * 1024
+	appendDailyMemoryOperation = "append_daily"
 )
 
 var curatedMemoryLocks sync.Map
@@ -30,6 +32,7 @@ type MemoryTool struct {
 	path       string
 	invalidate func()
 	events     runtimeevents.Bus
+	now        func() time.Time
 }
 
 type memoryMutationResponse struct {
@@ -52,11 +55,24 @@ type MemoryMutationPayload struct {
 }
 
 func NewMemoryTool(workspace string, invalidate func(), eventBus runtimeevents.Bus) *MemoryTool {
+	return newMemoryTool(workspace, invalidate, eventBus, time.Now)
+}
+
+func newMemoryTool(
+	workspace string,
+	invalidate func(),
+	eventBus runtimeevents.Bus,
+	now func() time.Time,
+) *MemoryTool {
+	if now == nil {
+		now = time.Now
+	}
 	return &MemoryTool{
 		workspace:  workspace,
 		path:       filepath.Join(workspace, "memory", "MEMORY.md"),
 		invalidate: invalidate,
 		events:     eventBus,
+		now:        now,
 	}
 }
 
@@ -65,7 +81,7 @@ func (t *MemoryTool) Name() string {
 }
 
 func (t *MemoryTool) Description() string {
-	return "Add, replace, or remove durable stable facts in curated workspace memory. Use replace for corrections and remove for explicit forgetting. Do not use this for transient session state or daily notes."
+	return "Manage workspace memory. Use add, replace, and remove for durable stable facts. Use append_daily for noteworthy transient events, decisions, progress, or unfinished context that may matter over the next few days; do not record routine conversation."
 }
 
 func (t *MemoryTool) Parameters() map[string]any {
@@ -74,12 +90,12 @@ func (t *MemoryTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"operation": map[string]any{
 				"type":        "string",
-				"enum":        []string{"add", "replace", "remove"},
-				"description": "Mutation to apply to curated stable memory.",
+				"enum":        []string{"add", "replace", "remove", appendDailyMemoryOperation},
+				"description": "Mutation to apply. append_daily writes to today's episodic note; other operations modify curated stable memory.",
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "Content to add, or the exact existing content to replace or remove.",
+				"description": "Content to append or add, or the exact existing stable content to replace or remove.",
 			},
 			"replacement": map[string]any{
 				"type":        "string",
@@ -103,24 +119,28 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	if err != nil {
 		return t.failure(ctx, "", "invalid_arguments", MemoryMutationPayload{}, err)
 	}
+	target, dailyDate := t.targetForOperation(operation)
+	payload := MemoryMutationPayload{
+		Operation: operation,
+		Target:    target,
+	}
 	content, err := requiredStringArg(args, "content", "content")
 	if err != nil {
-		return t.failure(ctx, operation, "invalid_arguments", MemoryMutationPayload{}, err)
+		return t.failure(ctx, operation, "invalid_arguments", payload, err)
 	}
-	payload := MemoryMutationPayload{
-		Operation:    operation,
-		Target:       curatedMemoryTarget,
-		ContentHash:  curatedMemoryHash(content),
-		ContentBytes: len(content),
-	}
-	if len(content) > maxCuratedMemoryMutationBytes {
+	payload.ContentHash = curatedMemoryHash(content)
+	payload.ContentBytes = len(content)
+	if len(content) > maxMemoryMutationBytes {
 		return t.failure(
 			ctx,
 			operation,
 			"content_too_large",
 			payload,
-			fmt.Errorf("content exceeds %d bytes", maxCuratedMemoryMutationBytes),
+			fmt.Errorf("content exceeds %d bytes", maxMemoryMutationBytes),
 		)
+	}
+	if operation == appendDailyMemoryOperation {
+		return t.appendDaily(ctx, target, dailyDate, content, payload)
 	}
 
 	replacement := ""
@@ -131,13 +151,13 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 		}
 		payload.ReplacementHash = curatedMemoryHash(replacement)
 		payload.ReplacementBytes = len(replacement)
-		if len(replacement) > maxCuratedMemoryMutationBytes {
+		if len(replacement) > maxMemoryMutationBytes {
 			return t.failure(
 				ctx,
 				operation,
 				"replacement_too_large",
 				payload,
-				fmt.Errorf("replacement exceeds %d bytes", maxCuratedMemoryMutationBytes),
+				fmt.Errorf("replacement exceeds %d bytes", maxMemoryMutationBytes),
 			)
 		}
 	}
@@ -168,7 +188,7 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	if !changed {
 		payload.Outcome = outcome
 		t.publish(ctx, payload, runtimeevents.SeverityInfo)
-		return memoryMutationResult(operation, outcome, false)
+		return memoryMutationResult(operation, outcome, curatedMemoryTarget, false)
 	}
 
 	if mkdirErr := os.MkdirAll(filepath.Dir(validatedPath), 0o755); mkdirErr != nil {
@@ -186,13 +206,98 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 	}
 	payload.Outcome = outcome
 	t.publish(ctx, payload, runtimeevents.SeverityInfo)
-	return memoryMutationResult(operation, outcome, true).WithWriteAudit(WriteAuditEntry{
+	return memoryMutationResult(operation, outcome, curatedMemoryTarget, true).WithWriteAudit(WriteAuditEntry{
 		Kind:    "memory",
 		Target:  curatedMemoryTarget,
 		Action:  operation,
 		Tool:    t.Name(),
 		Success: true,
 	})
+}
+
+func (t *MemoryTool) targetForOperation(operation string) (target, dailyDate string) {
+	if operation != appendDailyMemoryOperation {
+		return curatedMemoryTarget, ""
+	}
+	now := t.now()
+	return filepath.ToSlash(filepath.Join(
+		"memory",
+		now.Format("200601"),
+		now.Format("20060102")+".md",
+	)), now.Format("2006-01-02")
+}
+
+func (t *MemoryTool) appendDaily(
+	ctx context.Context,
+	target, dailyDate, content string,
+	payload MemoryMutationPayload,
+) *ToolResult {
+	lock := curatedMemoryLock(filepath.Join(t.workspace, filepath.FromSlash(target)))
+	lock.Lock()
+	defer lock.Unlock()
+
+	validatedPath, err := validatePathWithAllowPaths(target, t.workspace, true, nil)
+	if err != nil {
+		return t.failure(ctx, appendDailyMemoryOperation, "path_validation_failed", payload, err)
+	}
+	current, err := os.ReadFile(validatedPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return t.failure(
+			ctx,
+			appendDailyMemoryOperation,
+			"read_failed",
+			payload,
+			fmt.Errorf("read daily memory: %w", err),
+		)
+	}
+	if normalizedMemoryContains(string(current), content) {
+		payload.Outcome = "duplicate"
+		payload.MatchCount = 1
+		t.publish(ctx, payload, runtimeevents.SeverityInfo)
+		return memoryMutationResult(appendDailyMemoryOperation, "duplicate", target, false)
+	}
+
+	if mkdirErr := os.MkdirAll(filepath.Dir(validatedPath), 0o755); mkdirErr != nil {
+		return t.failure(ctx, appendDailyMemoryOperation, "directory_create_failed", payload, mkdirErr)
+	}
+	validatedPath, err = validatePathWithAllowPaths(target, t.workspace, true, nil)
+	if err != nil {
+		return t.failure(ctx, appendDailyMemoryOperation, "path_validation_failed", payload, err)
+	}
+	if err := fileutil.WriteFileAtomic(
+		validatedPath,
+		[]byte(appendDailyMemory(string(current), dailyDate, content)),
+		0o600,
+	); err != nil {
+		return t.failure(
+			ctx,
+			appendDailyMemoryOperation,
+			"write_failed",
+			payload,
+			fmt.Errorf("write daily memory: %w", err),
+		)
+	}
+	if t.invalidate != nil {
+		t.invalidate()
+	}
+	payload.Outcome = "appended"
+	t.publish(ctx, payload, runtimeevents.SeverityInfo)
+	return memoryMutationResult(appendDailyMemoryOperation, "appended", target, true).WithWriteAudit(WriteAuditEntry{
+		Kind:    "memory",
+		Target:  target,
+		Action:  appendDailyMemoryOperation,
+		Tool:    t.Name(),
+		Success: true,
+	})
+}
+
+func appendDailyMemory(current, dailyDate, content string) string {
+	current = strings.TrimRight(current, " \t\r\n")
+	content = strings.TrimSpace(content)
+	if current == "" {
+		return "# " + dailyDate + "\n\n" + content + "\n"
+	}
+	return current + "\n\n" + content + "\n"
 }
 
 func applyCuratedMemoryMutation(
@@ -227,7 +332,9 @@ func applyCuratedMemoryMutation(
 		updated = current[:match.start] + current[match.end:]
 		return normalizeCuratedMemoryEnd(updated), "removed", true, 1, nil
 	default:
-		return current, "", false, 0, errors.New("operation must be one of add, replace, remove")
+		return current, "", false, 0, errors.New(
+			"operation must be one of add, replace, remove, append_daily",
+		)
 	}
 }
 
@@ -304,11 +411,11 @@ func curatedMemoryHash(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func memoryMutationResult(operation, status string, changed bool) *ToolResult {
+func memoryMutationResult(operation, status, target string, changed bool) *ToolResult {
 	data, _ := json.Marshal(memoryMutationResponse{
 		Status:    status,
 		Operation: operation,
-		Target:    curatedMemoryTarget,
+		Target:    target,
 		Changed:   changed,
 	})
 	return SilentResult(string(data))
@@ -321,7 +428,9 @@ func (t *MemoryTool) failure(
 	err error,
 ) *ToolResult {
 	payload.Operation = operation
-	payload.Target = curatedMemoryTarget
+	if payload.Target == "" {
+		payload.Target = curatedMemoryTarget
+	}
 	payload.Outcome = "failed"
 	payload.ErrorCode = errorCode
 	t.publish(ctx, payload, runtimeevents.SeverityError)

@@ -96,7 +96,7 @@ The table below lists the current runtime event kinds, when they are emitted, an
 | `agent.context.compress` | Agent context history is compressed, or absolute budget pressure schedules compaction. | `reason`, message counts, context/output/non-history reserves, history/summary budgets and token counts, recent-tail size, truncation, pressure reasons |
 | `agent.context.snapshot` | Trace capture records a final bounded context identity before turn completion. Emitted only while trace capture is enabled. | `message_count`, `snapshot_hash`, `has_goal`, `steering_count`, `tool_pairing_valid`; no message content |
 | `agent.session.summarize` | Async session history summarization completes. | `summarized_messages`, `kept_messages`, `summary_len`, `omitted_oversized` |
-| `agent.memory.mutation` | Curated stable-memory mutation completes, is a no-op, or fails. | `operation`, `outcome`, `target`, content hashes/lengths, `error_code`; no raw memory content |
+| `agent.memory.mutation` | Stable or episodic memory mutation completes, is a no-op, or fails. | `operation`, `outcome`, `target`, content hashes/lengths, `error_code`; no raw memory content |
 | `agent.tool.exec_start` | Before the agent executes a tool call. | `tool`, `args_count`; full arguments are not logged by default |
 | `agent.tool.exec_end` | After a tool call completes, including successful results, tool errors, and async results. | `tool`, `duration_ms`, `for_llm_len`, `for_user_len`, `is_error`, `async` |
 | `agent.tool.exec_skipped` | A tool call is skipped because the tool is unavailable, arguments are invalid, or turn control logic requires skipping it. | `tool`, `reason` |
