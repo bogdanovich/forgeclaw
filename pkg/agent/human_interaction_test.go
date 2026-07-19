@@ -815,6 +815,62 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 	}
 }
 
+func TestHumanApprovalFailsClosedForOpaqueArguments(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: []providers.ToolCall{{
+			ID: "call-opaque", Name: "approval_counting",
+			Arguments: map[string]any{"command": "deploy --password hunter2"},
+			Function: &providers.FunctionCall{
+				Name: "approval_counting", Arguments: `{"command":"deploy --password hunter2"}`,
+			},
+		}}},
+		{Content: "opaque action denied", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	tool := &approvalCountingTool{}
+	agent.Tools.Register(tool)
+	if err := al.MountHook(NamedHook("opaque-approval", &durableApprovalHook{
+		summary: "Approve the opaque action?",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	inbound := &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	turnStatus := TurnEndStatusCompleted
+	response, err := al.runAgentLoop(t.Context(), agent, processOptions{
+		TurnStatus: &turnStatus,
+		Dispatch: DispatchRequest{
+			RouteSessionKey: "route-opaque", SessionKey: "session-opaque",
+			UserMessage: "run opaque action", InboundContext: inbound,
+		},
+		DefaultResponse: defaultResponse, EnableSummary: true, SendResponse: false,
+	})
+	if err != nil || response != "opaque action denied" ||
+		turnStatus != TurnEndStatusCompleted || tool.executions != 0 {
+		t.Fatalf(
+			"opaque approval turn = (%q, %q, executions=%d, err=%v)",
+			response,
+			turnStatus,
+			tool.executions,
+			err,
+		)
+	}
+	if _, ok := activeInteractionForSession(
+		al.interactionRegistryForWorkspace(agent.Workspace), "session-opaque",
+	); ok {
+		t.Fatal("opaque arguments created an approval interaction")
+	}
+	select {
+	case prompt := <-manager.sent:
+		t.Fatalf("opaque arguments produced approval prompt: %#v", prompt)
+	default:
+	}
+}
+
 func TestApprovalRecoveryNeverReexecutesConsumedOrTimedOutCall(t *testing.T) {
 	for _, test := range []struct {
 		name        string

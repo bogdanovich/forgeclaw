@@ -23,6 +23,9 @@ var (
 	approvalSensitiveKey = regexp.MustCompile(
 		`(?i)(authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)`,
 	)
+	approvalOpaqueKey = regexp.MustCompile(
+		`(?i)^(args?|body|command|commands|content|data|env|environment|headers?|input|payload|script|stdin|text)$`,
+	)
 	approvalBearerValue = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+`)
 	approvalEnvSecret   = regexp.MustCompile(
 		`(?i)([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*)=([^\s]+)`,
@@ -30,68 +33,101 @@ var (
 	approvalKnownCredential = regexp.MustCompile(
 		`\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b`,
 	)
+	approvalSafeStringKeys = map[string]struct{}{
+		"action": {}, "agent_id": {}, "branch": {}, "channel": {}, "chat_id": {},
+		"commit": {}, "cwd": {}, "dest": {}, "destination": {}, "dir": {},
+		"directory": {}, "file": {}, "file_path": {}, "host": {}, "hostname": {},
+		"id": {}, "ids": {}, "message_id": {}, "method": {}, "mode": {}, "name": {},
+		"operation": {}, "path": {}, "paths": {}, "port": {}, "ref": {}, "remote": {},
+		"repo": {}, "repository": {}, "reply_to_message_id": {}, "session_key": {},
+		"sha": {}, "source": {}, "src": {}, "target": {}, "targets": {}, "task_id": {},
+		"topic_id": {}, "type": {}, "uri": {}, "url": {}, "urls": {},
+	}
 )
 
-func renderApprovalAction(toolName string, arguments map[string]any) string {
-	toolName = sanitizeApprovalToolName(toolName)
-	redacted := redactApprovalValue("", arguments, 0)
+func renderApprovalAction(toolName string, arguments map[string]any) (string, error) {
+	toolName, err := sanitizeApprovalToolName(toolName)
+	if err != nil {
+		return "", err
+	}
+	redacted, err := redactApprovalValue("", arguments, 0)
+	if err != nil {
+		return "", err
+	}
 	encoded, err := json.Marshal(redacted)
 	if err != nil {
-		encoded = []byte(`"[UNAVAILABLE]"`)
+		return "", fmt.Errorf("encode approval arguments: %w", err)
 	}
 	description := fmt.Sprintf(
 		"Tool: %s\nArguments (redacted JSON): %s",
 		toolName,
 		encoded,
 	)
-	return truncateRunes(description, interactions.MaxApprovalAction)
+	if utf8.RuneCountInString(description) > interactions.MaxApprovalAction {
+		return "", fmt.Errorf("approval action exceeds the complete display limit")
+	}
+	return description, nil
 }
 
-func redactApprovalValue(key string, value any, depth int) any {
+func redactApprovalValue(key string, value any, depth int) (any, error) {
 	if approvalSensitiveKey.MatchString(key) {
-		return "[REDACTED]"
+		return "[REDACTED]", nil
+	}
+	if approvalOpaqueKey.MatchString(strings.TrimSpace(key)) {
+		return nil, fmt.Errorf("approval field %q is opaque and cannot be displayed safely", key)
 	}
 	if depth >= approvalDisplayMaxDepth {
-		return "[DEPTH LIMIT]"
+		return nil, fmt.Errorf("approval arguments exceed the display depth limit")
 	}
 	switch typed := value.(type) {
 	case map[string]any:
-		out := make(map[string]any, min(len(typed), approvalDisplayMaxItems))
+		if len(typed) > approvalDisplayMaxItems {
+			return nil, fmt.Errorf("approval object exceeds the complete display item limit")
+		}
+		out := make(map[string]any, len(typed))
 		keys := make([]string, 0, len(typed))
 		for childKey := range typed {
 			keys = append(keys, childKey)
 		}
 		sort.Strings(keys)
-		limit := min(len(keys), approvalDisplayMaxItems)
-		for _, childKey := range keys[:limit] {
-			out[childKey] = redactApprovalValue(childKey, typed[childKey], depth+1)
+		for _, childKey := range keys {
+			childValue, err := redactApprovalValue(childKey, typed[childKey], depth+1)
+			if err != nil {
+				return nil, err
+			}
+			out[childKey] = childValue
 		}
-		if len(keys) > limit {
-			out["[TRUNCATED]"] = len(keys) - limit
-		}
-		return out
+		return out, nil
 	case []any:
-		limit := min(len(typed), approvalDisplayMaxItems)
-		out := make([]any, 0, limit+1)
-		for _, item := range typed[:limit] {
-			out = append(out, redactApprovalValue(key, item, depth+1))
+		if len(typed) > approvalDisplayMaxItems {
+			return nil, fmt.Errorf("approval array exceeds the complete display item limit")
 		}
-		if len(typed) > limit {
-			out = append(out, fmt.Sprintf("[%d MORE ITEMS]", len(typed)-limit))
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			childValue, err := redactApprovalValue(key, item, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, childValue)
 		}
-		return out
+		return out, nil
 	case string:
-		return scrubApprovalString(typed)
+		if _, allowed := approvalSafeStringKeys[strings.ToLower(strings.TrimSpace(key))]; !allowed {
+			return nil, fmt.Errorf("approval string field %q has no safe display policy", key)
+		}
+		if !utf8.ValidString(typed) || utf8.RuneCountInString(typed) > approvalDisplayMaxStringRune {
+			return nil, fmt.Errorf("approval string field %q exceeds display bounds", key)
+		}
+		return scrubApprovalString(typed), nil
 	case nil, bool, float64, float32, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64, json.Number:
-		return typed
+		return typed, nil
 	default:
-		return "[UNSUPPORTED]"
+		return nil, fmt.Errorf("approval field %q has unsupported type %T", key, value)
 	}
 }
 
 func scrubApprovalString(value string) string {
-	value = strings.ToValidUTF8(value, "[INVALID UTF-8]")
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "data:") {
 		return "[DATA URL REDACTED]"
 	}
@@ -111,30 +147,18 @@ func scrubApprovalString(value string) string {
 		parsed.RawQuery = query.Encode()
 		value = parsed.String()
 	}
-	return truncateRunes(value, approvalDisplayMaxStringRune)
+	return value
 }
 
-func sanitizeApprovalToolName(value string) string {
+func sanitizeApprovalToolName(value string) (string, error) {
 	value = strings.TrimSpace(value)
-	value = strings.Map(func(r rune) rune {
+	if value == "" || utf8.RuneCountInString(value) > 256 {
+		return "", fmt.Errorf("approval tool name exceeds display bounds")
+	}
+	for _, r := range value {
 		if unicode.IsControl(r) {
-			return -1
+			return "", fmt.Errorf("approval tool name contains control characters")
 		}
-		return r
-	}, value)
-	if value == "" {
-		return "[unknown tool]"
 	}
-	return truncateRunes(value, 256)
-}
-
-func truncateRunes(value string, maxRunes int) string {
-	if maxRunes <= 0 || utf8.RuneCountInString(value) <= maxRunes {
-		return value
-	}
-	runes := []rune(value)
-	if maxRunes <= 3 {
-		return string(runes[:maxRunes])
-	}
-	return string(runes[:maxRunes-3]) + "..."
+	return value, nil
 }

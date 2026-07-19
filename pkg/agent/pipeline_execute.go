@@ -504,25 +504,29 @@ toolLoop:
 			if approval.RequireHuman {
 				argumentHash, hashErr := interactions.HashArguments(interactionWorkspace, toolArgs)
 				if hashErr == nil {
-					approvalAction := renderApprovalAction(toolName, toolArgs)
-					control, suspended, fallback := runner.trySuspendToolCall(
-						ctx,
-						i,
-						tc,
-						toolName,
-						0,
-						&tools.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
-							Kind: interactions.KindApproval, PromptSummary: approval.PromptSummary,
-							Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
-						}},
-						argumentHash,
-						approvalAction,
-					)
-					if suspended {
-						return control
-					}
-					if fallback != nil {
-						hashErr = errors.New(fallback.ContentForLLM())
+					approvalAction, displayErr := renderApprovalAction(toolName, toolArgs)
+					if displayErr != nil {
+						hashErr = displayErr
+					} else {
+						control, suspended, fallback := runner.trySuspendToolCall(
+							ctx,
+							i,
+							tc,
+							toolName,
+							0,
+							&tools.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
+								Kind: interactions.KindApproval, PromptSummary: approval.PromptSummary,
+								Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
+							}},
+							argumentHash,
+							approvalAction,
+						)
+						if suspended {
+							return control
+						}
+						if fallback != nil {
+							hashErr = errors.New(fallback.ContentForLLM())
+						}
 					}
 				}
 				exec.allResponsesHandled = false
