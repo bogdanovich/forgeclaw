@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -126,6 +127,11 @@ type ToolResult struct {
 	// Agents should use this as the source of truth for claims like "saved",
 	// "updated", or "created"; prose in ForLLM/ForUser is only descriptive.
 	WriteAudit []WriteAuditEntry `json:"write_audit,omitempty"`
+
+	// Suspension asks the runtime to durably pause this tool call for human
+	// input. It is control-plane state, not model-visible tool output. The
+	// runtime must enrich it with trusted route and origin data before use.
+	Suspension *interactions.SuspensionRequest `json:"-"`
 }
 
 type OutboundDelivery struct {

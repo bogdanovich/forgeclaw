@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/session"
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -39,6 +40,7 @@ type (
 	SteeringSafetyProvider = toolshared.SteeringSafetyProvider
 	ToolResult             = toolshared.ToolResult
 	WriteAuditEntry        = toolshared.WriteAuditEntry
+	SuspensionRequest      = interactions.SuspensionRequest
 )
 
 const (

@@ -61,7 +61,7 @@ const (
 	DefaultMaxBytes       = 2 * 1024 * 1024
 
 	MaxQuestions         = 3
-	MaxOptions           = 4
+	MaxOptions           = 3
 	MaxQuestionIDLength  = 64
 	MaxHeaderLength      = 12
 	MaxQuestionLength    = 1000
@@ -97,6 +97,16 @@ type Question struct {
 	Question    string   `json:"question"`
 	Options     []Option `json:"options,omitempty"`
 	MultiSelect bool     `json:"multi_select,omitempty"`
+}
+
+// SuspensionRequest is the authority-free payload a tool or trusted policy
+// returns when execution must pause for human input. The runtime supplies the
+// route, sender, turn, and tool-call identity before creating a durable record.
+type SuspensionRequest struct {
+	Kind          Kind
+	Questions     []Question
+	PromptSummary string
+	Timeout       time.Duration
 }
 
 type Route struct {
@@ -226,6 +236,22 @@ func (o Origin) validate() error {
 }
 
 func validateQuestions(kind Kind, questions []Question) error {
+	return validateQuestionsWithPolicy(kind, questions, MaxOptions, true)
+}
+
+func validateStoredQuestions(kind Kind, questions []Question) error {
+	// interaction_snapshot.v1 allowed one to four options and did not require
+	// unique labels. Keep load validation tolerant while enforcing the tighter
+	// contract for every new create/suspension request.
+	return validateQuestionsWithPolicy(kind, questions, 4, false)
+}
+
+func validateQuestionsWithPolicy(
+	kind Kind,
+	questions []Question,
+	maxOptions int,
+	strictChoices bool,
+) error {
 	if kind == KindQuestion && (len(questions) == 0 || len(questions) > MaxQuestions) {
 		return fmt.Errorf(
 			"%w: questions must contain 1 to %d entries",
@@ -251,9 +277,10 @@ func validateQuestions(kind Kind, questions []Question) error {
 			!validBoundedString(
 				question.Question,
 				MaxQuestionLength,
-			) || len(question.Options) > MaxOptions {
+			) || len(question.Options) > maxOptions || (strictChoices && len(question.Options) == 1) {
 			return fmt.Errorf("%w: question %q exceeds bounds", ErrInvalidInteraction, question.ID)
 		}
+		optionLabels := make(map[string]struct{}, len(question.Options))
 		for _, option := range question.Options {
 			if strings.TrimSpace(option.Label) == "" ||
 				!validBoundedString(option.Label, MaxOptionLabelLength) ||
@@ -264,7 +291,35 @@ func validateQuestions(kind Kind, questions []Question) error {
 					question.ID,
 				)
 			}
+			label := strings.ToLower(strings.TrimSpace(option.Label))
+			if _, ok := optionLabels[label]; ok && strictChoices {
+				return fmt.Errorf(
+					"%w: question %q has duplicate option %q",
+					ErrInvalidInteraction,
+					question.ID,
+					option.Label,
+				)
+			}
+			optionLabels[label] = struct{}{}
 		}
+	}
+	return nil
+}
+
+// ValidateSuspensionRequest validates model- or policy-produced prompt data.
+// Trusted route and origin data are deliberately absent from this contract.
+func ValidateSuspensionRequest(request SuspensionRequest) error {
+	if request.Kind != KindQuestion && request.Kind != KindApproval {
+		return fmt.Errorf("%w: unsupported suspension kind %q", ErrInvalidInteraction, request.Kind)
+	}
+	if err := validateQuestions(request.Kind, request.Questions); err != nil {
+		return err
+	}
+	if !validBoundedString(request.PromptSummary, MaxSummaryLength) {
+		return fmt.Errorf("%w: prompt summary exceeds bounds", ErrInvalidInteraction)
+	}
+	if request.Timeout < time.Minute || request.Timeout > 24*time.Hour {
+		return fmt.Errorf("%w: timeout must be between 1 minute and 24 hours", ErrInvalidInteraction)
 	}
 	return nil
 }
