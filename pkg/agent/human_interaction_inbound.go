@@ -69,12 +69,16 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 	target *inboundDispatchTarget,
 	claim *runtimeSessionClaim,
 ) {
-	if !c.acquireWorker(ctx, msg, claim) {
+	admittedCtx, releaseCapacity, err := c.acquireTurnCapacity(ctx, target.Agent.ID)
+	if err != nil {
+		claim.releaseIfOwned()
+		c.al.releaseInboundMessage(context.Background(), msg, err)
 		return
 	}
+	defer releaseCapacity()
+	ctx = admittedCtx
 	defer claim.releaseIfOwned()
 	defer c.recoverWorkerPanic(claim.sessionKey, msg)
-	defer func() { <-c.al.workerSem }()
 	if c.al.channelManager != nil {
 		defer c.al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
