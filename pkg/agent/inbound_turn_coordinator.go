@@ -100,6 +100,15 @@ func (c *inboundTurnCoordinator) runWorker(
 	claim *runtimeSessionClaim,
 ) {
 	al := c.al
+	admittedCtx, releaseAdmission, err := al.acquireAgentTurn(ctx, target.Agent.ID)
+	if err != nil {
+		claim.releaseIfOwned()
+		al.releaseInboundMessage(context.Background(), msg, err)
+		return
+	}
+	defer releaseAdmission()
+	ctx = admittedCtx
+
 	if !c.acquireWorker(ctx, msg, claim) {
 		return
 	}

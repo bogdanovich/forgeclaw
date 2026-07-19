@@ -193,6 +193,45 @@ func TestSpawnSubTurn(t *testing.T) {
 	}
 }
 
+func TestSpawnSubTurnInheritsSameAgentAdmission(t *testing.T) {
+	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
+	defer cleanup()
+
+	parentAgent := al.registry.GetDefaultAgent()
+	if parentAgent == nil {
+		t.Fatal("expected default parent agent")
+	}
+	al.agentTurnAdmissions.update(&AgentRegistry{agents: map[string]*AgentInstance{
+		parentAgent.ID: {ID: parentAgent.ID, MaxParallelTurns: 1},
+	}})
+	parentCtx, release, err := al.acquireAgentTurn(context.Background(), parentAgent.ID)
+	if err != nil {
+		t.Fatalf("acquireAgentTurn() error = %v", err)
+	}
+	defer release()
+
+	parent := &turnState{
+		ctx:            parentCtx,
+		turnID:         "parent-with-admission",
+		depth:          0,
+		childTurnIDs:   []string{},
+		pendingResults: make(chan *tools.ToolResult, 10),
+		session:        &ephemeralSessionStore{},
+		agent:          parentAgent,
+	}
+	result, err := spawnSubTurn(parentCtx, al, parent, SubTurnConfig{
+		Model:        "test-model",
+		SystemPrompt: "complete the child turn",
+		Timeout:      250 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("spawnSubTurn() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("spawnSubTurn() result is nil")
+	}
+}
+
 // ====================== Extra Independent Test: Ephemeral Session Isolation ======================
 func TestSpawnSubTurn_EphemeralSessionIsolation(t *testing.T) {
 	al, _, _, provider, cleanup := newTestAgentLoop(t)

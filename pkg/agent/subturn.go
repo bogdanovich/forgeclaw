@@ -373,7 +373,8 @@ func spawnSubTurn(
 	// 4. Create INDEPENDENT child context (not derived from parent ctx).
 	// This allows the child to continue running after parent finishes gracefully.
 	// The child has its own timeout for self-protection.
-	childCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	detachedCtx := inheritAgentTurnAdmissions(context.Background(), ctx)
+	childCtx, cancel := context.WithTimeout(detachedCtx, timeout)
 	defer cancel()
 
 	childID := al.generateSubTurnID()

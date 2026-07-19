@@ -596,12 +596,13 @@ processed inbound turns. Stateful named agents can define a narrower limit with
 }
 ```
 
-The per-agent limit applies to complete turns across inbound, direct,
-scheduled, delegated, and spawned execution paths. A value of `1` serializes
-all work owned by that agent while other agents can continue using the global
-worker capacity. Omit the field or set it to `0` to use no additional
-per-agent limit. Nested turns that inherit an admission for the same agent do
-not acquire it again.
+The per-agent limit applies to top-level work across inbound, direct,
+scheduled, delegated, spawned, and recovery execution paths. A value of `1`
+serializes independent work owned by that agent while other agents can continue
+using the global worker capacity. Nested turns in the same work tree inherit
+the admission instead of reacquiring it. Live configuration reloads update the
+limit without forgetting work that is already active. Omit the field or set it
+to `0` to use no additional per-agent limit.
 
 ### Agent Tool Allowlist
 
