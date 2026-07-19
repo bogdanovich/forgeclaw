@@ -59,6 +59,7 @@ const (
 	EventWaiting          EventType = "interaction.waiting"
 	EventAnswerClaimed    EventType = "interaction.answer_claimed"
 	EventResumeStarted    EventType = "interaction.resume_started"
+	EventApprovalConsumed EventType = "interaction.approval_consumed"
 	EventCanceling        EventType = "interaction.canceling"
 	EventResolved         EventType = "interaction.resolved"
 	EventCancelled        EventType = "interaction.cancelled"
@@ -186,6 +187,7 @@ type Record struct {
 	ResumeError         string        `json:"resume_error,omitempty"`
 	FailureCode         string        `json:"failure_code,omitempty"`
 	FailureDetail       string        `json:"failure_detail,omitempty"`
+	ApprovalConsumedAt  int64         `json:"approval_consumed_at,omitempty"`
 }
 
 type Event struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -197,6 +198,32 @@ func TestRegistryCreateRejectsSecondActiveSessionAndShortID(t *testing.T) {
 	request = validCreate(clock, "interaction_bbbbbbbb11111111", "session-1")
 	if _, err := registry.Create(request); err != nil {
 		t.Fatalf("create after terminal: %v", err)
+	}
+}
+
+func TestRegistryChainsSequentialForegroundInteractions(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	request := validCreate(clock, "interaction_chain11111111", "session-chain")
+	request.Origin.ContinuationSessionKey = "session-chain"
+	first, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ = registry.RecordDeliveryAttempt(first.ID, first.Revision, true, "")
+	first, _ = registry.MarkWaiting(first.ID, first.Revision)
+	first, _ = registry.ClaimAnswer(
+		first.ID, first.Revision, Answer{Text: "continue"}, OutcomeAnswered,
+	)
+	first, _ = registry.MarkResuming(first.ID, first.Revision)
+	nextRequest := validCreate(clock, "interaction_chain22222222", "session-chain")
+	nextRequest.Origin.ContinuationSessionKey = "session-chain"
+	next, err := registry.Create(nextRequest)
+	if err != nil {
+		t.Fatalf("Create(chained foreground) error = %v", err)
+	}
+	resolved, _ := registry.Get(first.ID)
+	if resolved.Status != StatusResolved || next.Status != StatusCreated {
+		t.Fatalf("chained records = first:%#v next:%#v", resolved, next)
 	}
 }
 
@@ -807,6 +834,7 @@ func TestValidateQuestionsAndApprovalAuthorityBounds(t *testing.T) {
 
 	request.Questions = nil
 	request.PromptSummary = "Policy requests one-time approval."
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
 	approval, err := registry.Create(request)
 	if err != nil {
 		t.Fatalf("policy approval create: %v", err)
@@ -834,6 +862,63 @@ func TestValidateQuestionsAndApprovalAuthorityBounds(t *testing.T) {
 		OutcomeAllowed,
 	); err != nil {
 		t.Fatalf("approval allow outcome: %v", err)
+	}
+}
+
+func TestRegistryConsumesApprovalExactlyOnceAndMatchesCall(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	request := validCreate(clock, "interaction_approval111111", "session-approval")
+	request.Kind = KindApproval
+	request.Questions = nil
+	request.PromptSummary = "Policy requires approval."
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	record, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, err = registry.ClaimAnswer(
+		record.ID, record.Revision,
+		Answer{Text: "allow_once", ReceivedAt: clock.Now().UnixMilli()},
+		OutcomeAllowed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, strings.Repeat("b", 64),
+	); err == nil {
+		t.Fatal("mismatched argument hash consumed approval")
+	}
+	record, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, record.Origin.ArgumentHash,
+	)
+	if err != nil || record.ApprovalConsumedAt == 0 {
+		t.Fatalf("ConsumeApproval() = (%#v, %v)", record, err)
+	}
+	if _, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, record.Origin.ArgumentHash,
+	); err == nil {
+		t.Fatal("approval was consumed twice")
+	}
+	record, err = registry.BeginCancellation(record.ID, record.Revision, "operator_stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.CompleteCancellation(record.ID, record.Revision)
+	if err != nil || record.ApprovalConsumedAt == 0 {
+		t.Fatalf("cancel consumed approval = (%#v, %v)", record, err)
+	}
+	if reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now}); reloaded.LastLoadError() != nil {
+		t.Fatalf("reload consumed canceled approval: %v", reloaded.LastLoadError())
 	}
 }
 

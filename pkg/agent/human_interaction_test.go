@@ -26,6 +26,38 @@ type interactionChannelManager struct {
 	sendErr error
 }
 
+type durableApprovalHook struct {
+	summary string
+	revoked bool
+}
+
+func (h *durableApprovalHook) ApproveTool(
+	context.Context,
+	*ToolApprovalRequest,
+) (ApprovalDecision, error) {
+	if h.revoked {
+		return ApprovalDecision{Reason: "policy revoked human override"}, nil
+	}
+	return ApprovalDecision{RequireHuman: true, PromptSummary: h.summary}, nil
+}
+
+type approvalCountingTool struct {
+	executions int
+}
+
+func (*approvalCountingTool) Name() string { return "approval_counting" }
+
+func (*approvalCountingTool) Description() string { return "Run a protected test action" }
+
+func (*approvalCountingTool) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+
+func (t *approvalCountingTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+	t.executions++
+	return tools.NewToolResult("protected action completed")
+}
+
 type interactionOwnershipBus struct {
 	*bus.MessageBus
 	mu       sync.Mutex
@@ -614,6 +646,242 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 		"message-3",
 	); err != nil {
 		t.Fatalf("rendered question IDs did not round-trip through parser: %v", err)
+	}
+}
+
+func TestApprovalPromptAndAnswerUseFixedPolicyChoices(t *testing.T) {
+	record := interactions.Record{
+		Kind: interactions.KindApproval, ShortID: "APR123",
+		PromptSummary: "Run a protected deployment command?",
+	}
+	prompt := renderInteractionPrompt(record)
+	if !strings.Contains(prompt, "Approval needed [APR123]") ||
+		!strings.Contains(prompt, record.PromptSummary) ||
+		!strings.Contains(prompt, "allow_once") || !strings.Contains(prompt, "deny") {
+		t.Fatalf("approval prompt = %q", prompt)
+	}
+	answer, err := parseInteractionAnswer(record, "/answer apr123 allow once", "message-approval")
+	if err != nil || answer.Text != "allow_once" || answer.MessageID != "message-approval" {
+		t.Fatalf("allow answer = (%#v, %v)", answer, err)
+	}
+	answer, err = parseInteractionAnswer(record, "deny", "message-deny")
+	if err != nil || answer.Text != "deny" {
+		t.Fatalf("deny answer = (%#v, %v)", answer, err)
+	}
+	if _, err = parseInteractionAnswer(record, "always", "message-invalid"); err == nil {
+		t.Fatal("approval parser accepted a persistent grant")
+	}
+}
+
+func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		answer         string
+		outcome        interactions.Outcome
+		wantExecutions int
+		wantConsumed   bool
+		revokePolicy   bool
+		mutateArgs     bool
+	}{
+		{name: "allow once", answer: "allow_once", outcome: interactions.OutcomeAllowed, wantExecutions: 1, wantConsumed: true},
+		{name: "deny", answer: "deny", outcome: interactions.OutcomeDenied},
+		{name: "policy revoked", answer: "allow_once", outcome: interactions.OutcomeAllowed, revokePolicy: true},
+		{name: "arguments changed", answer: "allow_once", outcome: interactions.OutcomeAllowed, mutateArgs: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &sequenceProvider{responses: []*providers.LLMResponse{
+				{ToolCalls: []providers.ToolCall{{
+					ID: "call-protected", Name: "approval_counting",
+					Arguments: map[string]any{"token": "secret-value"},
+					Function: &providers.FunctionCall{
+						Name: "approval_counting", Arguments: `{"token":"secret-value"}`,
+					},
+				}}},
+				{Content: "approval flow finished", FinishReason: "stop"},
+			}}
+			al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+			defer cleanup()
+			manager := newInteractionChannelManager()
+			al.channelManager = manager
+			tool := &approvalCountingTool{}
+			agent.Tools.Register(tool)
+			hook := &durableApprovalHook{
+				summary: "Run the protected test action?",
+			}
+			if err := al.MountHook(NamedHook("durable-approval", hook)); err != nil {
+				t.Fatal(err)
+			}
+			inbound := &bus.InboundContext{
+				Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+			}
+			turnStatus := TurnEndStatusCompleted
+			response, err := al.runAgentLoop(t.Context(), agent, processOptions{
+				TurnStatus: &turnStatus,
+				Dispatch: DispatchRequest{
+					RouteSessionKey: "route-approval", SessionKey: "session-approval",
+					UserMessage: "run protected action", InboundContext: inbound,
+				},
+				DefaultResponse: defaultResponse, EnableSummary: true, SendResponse: false,
+			})
+			if err != nil || response != "" || turnStatus != TurnEndStatusSuspended || tool.executions != 0 {
+				t.Fatalf(
+					"initial approval turn = (%q, %q, executions=%d, err=%v)",
+					response,
+					turnStatus,
+					tool.executions,
+					err,
+				)
+			}
+			registry := al.interactionRegistryForWorkspace(agent.Workspace)
+			record, ok := activeInteractionForSession(registry, "session-approval")
+			if !ok || record.Kind != interactions.KindApproval ||
+				record.Status != interactions.StatusWaiting || record.Origin.ArgumentHash == "" {
+				t.Fatalf("approval interaction = %#v", record)
+			}
+			select {
+			case prompt := <-manager.sent:
+				if !strings.Contains(prompt.Content, "Approval needed") ||
+					strings.Contains(prompt.Content, "secret-value") {
+					t.Fatalf("approval prompt = %#v", prompt)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("approval prompt was not delivered")
+			}
+			if test.revokePolicy {
+				hook.revoked = true
+			}
+			if test.mutateArgs {
+				history := agent.Sessions.GetHistory("session-approval")
+				for messageIndex := range history {
+					for callIndex := range history[messageIndex].ToolCalls {
+						call := &history[messageIndex].ToolCalls[callIndex]
+						if call.ID == "call-protected" {
+							call.Arguments = map[string]any{"token": "changed-after-approval"}
+							call.Function.Arguments = `{"token":"changed-after-approval"}`
+						}
+					}
+				}
+				agent.Sessions.SetHistory("session-approval", history)
+			}
+			record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+				Text: test.answer, MessageID: "approval-answer", ReceivedAt: time.Now().UnixMilli(),
+			}, test.outcome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = al.resumeClaimedInteraction(
+				t.Context(), registry, agent.Workspace, agent, nil, *inbound, record,
+			); err != nil {
+				t.Fatalf("resumeClaimedInteraction() error = %v", err)
+			}
+			resolved, _ := registry.Get(record.ID)
+			if resolved.Status != interactions.StatusResolved ||
+				(resolved.ApprovalConsumedAt != 0) != test.wantConsumed ||
+				tool.executions != test.wantExecutions {
+				t.Fatalf("resolved approval = %#v, executions=%d", resolved, tool.executions)
+			}
+			select {
+			case final := <-manager.sent:
+				if final.Content != "approval flow finished" {
+					t.Fatalf("approval final = %#v", final)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("approval continuation final was not delivered")
+			}
+		})
+	}
+}
+
+func TestApprovalRecoveryNeverReexecutesConsumedOrTimedOutCall(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		consume     bool
+		wantOutcome interactions.Outcome
+	}{
+		{name: "consumed before crash", consume: true, wantOutcome: interactions.OutcomeDeliveryUnknown},
+		{name: "timed out", wantOutcome: interactions.OutcomeTimedOut},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+			defer cleanup()
+			manager := newInteractionChannelManager()
+			al.channelManager = manager
+			tool := &approvalCountingTool{}
+			agent.Tools.Register(tool)
+			sessionKey := "session-approval-recovery"
+			args := map[string]any{"token": "recovery-secret"}
+			agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+				Role: "assistant", ToolCalls: []providers.ToolCall{{
+					ID: "call-approval-recovery", Name: tool.Name(), Arguments: args,
+					Function: &providers.FunctionCall{
+						Name: tool.Name(), Arguments: `{"token":"recovery-secret"}`,
+					},
+				}},
+			})
+			argumentHash, err := interactions.HashArguments(agent.Workspace, args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expiresAt := time.Now().Add(time.Minute)
+			registry := al.interactionRegistryForWorkspace(agent.Workspace)
+			record, err := registry.Create(interactions.CreateRequest{
+				Kind: interactions.KindApproval,
+				Route: interactions.Route{
+					AgentID: agent.ID, SessionKey: sessionKey, RouteSessionKey: "route-recovery",
+					Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+				},
+				Origin: interactions.Origin{
+					TurnID: "turn-recovery", ToolCallID: "call-approval-recovery",
+					ToolName: tool.Name(), ArgumentHash: argumentHash,
+				},
+				PromptSummary: "Run recovery action?", ExpiresAt: expiresAt,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+			record, _ = registry.MarkWaiting(record.ID, record.Revision)
+			if test.consume {
+				record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+					Text: "allow_once", MessageID: "answer-recovery", ReceivedAt: time.Now().UnixMilli(),
+				}, interactions.OutcomeAllowed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record, err = registry.MarkResuming(record.ID, record.Revision)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = registry.ConsumeApproval(
+					record.ID, record.Revision, record.Origin.ToolCallID,
+					record.Origin.ToolName, record.Origin.ArgumentHash,
+				); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				claimed, claimErr := registry.ClaimOverdue(expiresAt.Add(time.Second))
+				if claimErr != nil || len(claimed) != 1 {
+					t.Fatalf("ClaimOverdue() = (%#v, %v)", claimed, claimErr)
+				}
+			}
+			if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+				t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+			}
+			resolved, _ := registry.Get(record.ID)
+			if resolved.Status != interactions.StatusResolved || tool.executions != 0 {
+				t.Fatalf("recovered approval = %#v, executions=%d", resolved, tool.executions)
+			}
+			_, resultIndex := interactionToolPairIndexes(
+				agent.Sessions.GetHistory(sessionKey), record.Origin.ToolCallID,
+			)
+			if resultIndex < 0 {
+				t.Fatal("recovery did not pair the protected tool call")
+			}
+			result := agent.Sessions.GetHistory(sessionKey)[resultIndex]
+			if !strings.Contains(result.Content, string(test.wantOutcome)) {
+				t.Fatalf("recovery tool result = %q", result.Content)
+			}
+		})
 	}
 }
 

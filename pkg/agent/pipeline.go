@@ -84,11 +84,24 @@ type ToolSuspensionDisposition struct {
 	Durable       bool
 }
 
+type ToolApprovalGrant struct {
+	InteractionID string
+	Revision      int64
+}
+
+type ToolApprovalConsumptionRequest struct {
+	Workspace     string
+	InteractionID string
+	Revision      int64
+	Origin        interactions.Origin
+}
+
 type toolSuspensionManager interface {
 	SuspendToolCall(
 		ctx context.Context,
 		request ToolSuspensionRequest,
 	) (ToolSuspensionDisposition, error)
+	ConsumeApproval(ctx context.Context, request ToolApprovalConsumptionRequest) error
 }
 
 type runtimeEventEmitter interface {

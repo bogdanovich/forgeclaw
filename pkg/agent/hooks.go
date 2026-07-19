@@ -6,10 +6,13 @@ import (
 	"io"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -46,8 +49,11 @@ func (d HookDecision) normalizedAction() HookAction {
 }
 
 type ApprovalDecision struct {
-	Approved bool   `json:"approved"`
-	Reason   string `json:"reason,omitempty"`
+	Approved       bool   `json:"approved"`
+	RequireHuman   bool   `json:"require_human,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	PromptSummary  string `json:"prompt_summary,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
 type HookSource uint8
@@ -540,6 +546,7 @@ func (hm *HookManager) ApproveTool(ctx context.Context, req *ToolApprovalRequest
 		return ApprovalDecision{Approved: true}
 	}
 
+	var pendingHuman *ApprovalDecision
 	for _, reg := range hm.snapshotHooks() {
 		approver, ok := reg.Hook.(ToolApprover)
 		if !ok {
@@ -553,12 +560,46 @@ func (hm *HookManager) ApproveTool(ctx context.Context, req *ToolApprovalRequest
 				Reason:   fmt.Sprintf("tool approval hook %q failed", reg.Name),
 			}
 		}
-		if !decision.Approved {
+		decision = normalizeApprovalDecision(decision)
+		if !decision.Approved && !decision.RequireHuman {
 			return decision
 		}
+		if decision.RequireHuman && pendingHuman == nil {
+			copy := decision
+			pendingHuman = &copy
+		}
+	}
+	if pendingHuman != nil {
+		return *pendingHuman
 	}
 
 	return ApprovalDecision{Approved: true}
+}
+
+func normalizeApprovalDecision(decision ApprovalDecision) ApprovalDecision {
+	decision.Reason = strings.TrimSpace(decision.Reason)
+	decision.PromptSummary = strings.TrimSpace(decision.PromptSummary)
+	if decision.Approved && decision.RequireHuman {
+		return ApprovalDecision{Reason: "approval hook returned conflicting allow and human-review decisions"}
+	}
+	if !decision.RequireHuman {
+		decision.PromptSummary = ""
+		decision.TimeoutSeconds = 0
+		return decision
+	}
+	if decision.PromptSummary == "" ||
+		utf8.RuneCountInString(decision.PromptSummary) > interactions.MaxSummaryLength {
+		return ApprovalDecision{Reason: "approval hook returned an invalid human-review summary"}
+	}
+	if decision.TimeoutSeconds == 0 {
+		decision.TimeoutSeconds = int(time.Hour / time.Second)
+	}
+	if decision.TimeoutSeconds < int(time.Minute/time.Second) ||
+		decision.TimeoutSeconds > int((24*time.Hour)/time.Second) {
+		return ApprovalDecision{Reason: "approval hook returned an invalid human-review timeout"}
+	}
+	decision.Approved = false
+	return decision
 }
 
 func (hm *HookManager) rebuildOrdered() {

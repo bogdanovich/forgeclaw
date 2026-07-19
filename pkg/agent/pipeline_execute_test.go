@@ -37,6 +37,13 @@ func (m *fakeToolSuspensionManager) SuspendToolCall(
 	return m.disposition, m.err
 }
 
+func (m *fakeToolSuspensionManager) ConsumeApproval(
+	context.Context,
+	ToolApprovalConsumptionRequest,
+) error {
+	return nil
+}
+
 func TestToolResultContextStatus(t *testing.T) {
 	tests := []struct {
 		name   string

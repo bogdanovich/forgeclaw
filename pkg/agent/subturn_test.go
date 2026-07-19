@@ -371,6 +371,87 @@ func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
 	}
 }
 
+func TestDurableTaskSubTurnWaitsForHumanApproval(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: []providers.ToolCall{{
+			ID: "call-task-approval", Name: "approval_counting",
+			Arguments: map[string]any{"target": "production"},
+			Function: &providers.FunctionCall{
+				Name: "approval_counting", Arguments: `{"target":"production"}`,
+			},
+		}}},
+		{Content: "approved task completed", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	tool := &approvalCountingTool{}
+	agent.Tools.Register(tool)
+	if err := al.MountHook(NamedHook("task-approval", &durableApprovalHook{
+		summary: "Run the production task action?",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	tasks := al.taskRegistryForWorkspace(agent.Workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "subagent-approval", Runtime: taskregistry.RuntimeSubagent,
+		TaskKind: "spawn", Task: "protected deployment", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inbound := &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-approval", SenderID: "user-approval",
+	}
+	parentOpts := processOptions{Dispatch: DispatchRequest{
+		RouteSessionKey: "route-task-approval", SessionKey: "owner-task-approval",
+		InboundContext: inbound,
+	}}
+	parent := newTurnState(
+		agent,
+		parentOpts,
+		al.newTurnEventScope(agent.ID, "owner-task-approval", newTurnContext(inbound, nil, nil)),
+	)
+	parent.ctx = t.Context()
+	parent.pendingResults = make(chan *tools.ToolResult, 4)
+	parent.concurrencySem = make(chan struct{}, defaultMaxConcurrentSubTurns)
+	result, err := spawnSubTurn(t.Context(), al, parent, SubTurnConfig{
+		Model: agent.Model, SystemPrompt: "deploy", TaskID: "subagent-approval", Critical: true,
+	})
+	if err != nil || result == nil || !result.TaskSuspended {
+		t.Fatalf("spawnSubTurn() = (%#v, %v)", result, err)
+	}
+	task, _ := tasks.Get("subagent-approval")
+	if task.Status != taskregistry.StatusWaitingForInput || task.InteractionID == "" || tool.executions != 0 {
+		t.Fatalf("waiting approval task = %#v, executions=%d", task, tool.executions)
+	}
+	select {
+	case <-manager.sent:
+	case <-time.After(time.Second):
+		t.Fatal("task approval prompt was not delivered")
+	}
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, _ := registry.Get(task.InteractionID)
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "allow_once", MessageID: "task-approval-answer", ReceivedAt: time.Now().UnixMilli(),
+	}, interactions.OutcomeAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = al.resumeClaimedInteraction(
+		t.Context(), registry, agent.Workspace, agent, nil, *inbound, record,
+	); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = tasks.Get("subagent-approval")
+	if task.Status != taskregistry.StatusSucceeded ||
+		task.DeliveryStatus != taskregistry.DeliveryDelivered ||
+		tool.executions != 1 {
+		t.Fatalf("completed approval task = %#v, executions=%d", task, tool.executions)
+	}
+}
+
 func TestSpawnSubTurnInheritsSameAgentAdmission(t *testing.T) {
 	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
 	defer cleanup()

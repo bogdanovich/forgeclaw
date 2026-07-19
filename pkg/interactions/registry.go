@@ -2,6 +2,7 @@ package interactions
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -216,9 +217,10 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 
 func canChainInteraction(existing, next Record) bool {
 	return existing.Status == StatusResuming &&
-		strings.TrimSpace(existing.Origin.TaskID) != "" &&
 		existing.Origin.TaskID == next.Origin.TaskID &&
-		existing.Origin.ContinuationSessionKey == next.Origin.ContinuationSessionKey
+		existing.Origin.ContinuationSessionKey != "" &&
+		existing.Origin.ContinuationSessionKey == next.Origin.ContinuationSessionKey &&
+		existing.Route == next.Route
 }
 
 func (r *Registry) MarkWaiting(id string, expectedRevision int64) (Record, error) {
@@ -569,6 +571,35 @@ func (r *Registry) RecordResumeFailure(
 
 func (r *Registry) Resolve(id string, expectedRevision int64) (Record, error) {
 	return r.transition(id, expectedRevision, StatusResolved, EventResolved, "", nil)
+}
+
+// ConsumeApproval atomically spends an allow-once decision before the
+// protected tool executes. A consumed approval is never executable again,
+// including after a crash with an uncertain tool outcome.
+func (r *Registry) ConsumeApproval(
+	id string,
+	expectedRevision int64,
+	toolCallID string,
+	toolName string,
+	argumentHash string,
+) (Record, error) {
+	toolCallID = strings.TrimSpace(toolCallID)
+	toolName = strings.TrimSpace(toolName)
+	argumentHash = strings.TrimSpace(argumentHash)
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Kind != KindApproval || rec.Status != StatusResuming ||
+				rec.Outcome != OutcomeAllowed || rec.ApprovalConsumedAt != 0 ||
+				rec.Origin.ToolCallID != toolCallID || rec.Origin.ToolName != toolName ||
+				rec.Origin.ArgumentHash == "" || rec.Origin.ArgumentHash != argumentHash {
+				return "", "", nil, fmt.Errorf("%w: approval does not match pending tool call", ErrInvalidTransition)
+			}
+			rec.ApprovalConsumedAt = now
+			return EventApprovalConsumed, "allow_once_consumed", nil, nil
+		},
+	)
 }
 
 func (r *Registry) BeginCancellation(
@@ -947,6 +978,9 @@ func (r *Registry) buildRecord(req CreateRequest, now int64) (Record, error) {
 	if err := req.Origin.validate(); err != nil {
 		return Record{}, err
 	}
+	if !validArgumentHashForKind(req.Kind, req.Origin.ArgumentHash) {
+		return Record{}, fmt.Errorf("%w: approval requires a canonical argument hash", ErrInvalidInteraction)
+	}
 	if err := validateQuestions(req.Kind, req.Questions); err != nil {
 		return Record{}, err
 	}
@@ -1124,6 +1158,9 @@ func validateStoredRecord(rec Record) error {
 	if err := rec.Origin.validate(); err != nil {
 		return err
 	}
+	if !validArgumentHashForKind(rec.Kind, rec.Origin.ArgumentHash) {
+		return fmt.Errorf("invalid argument hash for interaction %q", rec.ID)
+	}
 	if err := validateStoredQuestions(rec.Kind, rec.Questions); err != nil {
 		return err
 	}
@@ -1157,6 +1194,11 @@ func validateStoredRecord(rec Record) error {
 	if isTerminal(rec.Status) && (rec.ResolvedAt <= 0 || rec.CleanupAfter <= rec.ResolvedAt) {
 		return fmt.Errorf("invalid terminal interaction %q", rec.ID)
 	}
+	if rec.ApprovalConsumedAt != 0 && (rec.Kind != KindApproval ||
+		rec.Outcome != OutcomeAllowed || rec.Status == StatusCreated ||
+		rec.Status == StatusWaiting || rec.Status == StatusClaimed) {
+		return fmt.Errorf("invalid consumed approval %q", rec.ID)
+	}
 	return nil
 }
 
@@ -1177,6 +1219,15 @@ func validDeliveryState(state DeliveryState) bool {
 	default:
 		return false
 	}
+}
+
+func validArgumentHashForKind(kind Kind, value string) bool {
+	value = strings.TrimSpace(value)
+	if kind != KindApproval {
+		return value == ""
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
 }
 
 func (r *Registry) saveLocked() error {

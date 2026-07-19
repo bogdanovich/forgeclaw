@@ -860,6 +860,52 @@ func (h *denyApprovalHook) ApproveTool(ctx context.Context, req *ToolApprovalReq
 	}, nil
 }
 
+type humanApprovalHook struct {
+	decision ApprovalDecision
+}
+
+func (h *humanApprovalHook) ApproveTool(
+	context.Context,
+	*ToolApprovalRequest,
+) (ApprovalDecision, error) {
+	return h.decision, nil
+}
+
+func TestHookManagerHumanApprovalIsBoundedAndDenyWins(t *testing.T) {
+	hm := NewHookManager(nil)
+	t.Cleanup(hm.Close)
+	if err := hm.Mount(NamedHook("human", &humanApprovalHook{decision: ApprovalDecision{
+		RequireHuman: true, PromptSummary: "Run the protected command?",
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	decision := hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
+	if !decision.RequireHuman || decision.Approved || decision.TimeoutSeconds != 3600 {
+		t.Fatalf("human approval decision = %#v", decision)
+	}
+	if err := hm.Mount(NamedHook("deny", &denyApprovalHook{})); err != nil {
+		t.Fatal(err)
+	}
+	decision = hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
+	if decision.Approved || decision.RequireHuman || decision.Reason != "blocked" {
+		t.Fatalf("deny did not override human review = %#v", decision)
+	}
+}
+
+func TestHookManagerRejectsMalformedHumanApproval(t *testing.T) {
+	hm := NewHookManager(nil)
+	t.Cleanup(hm.Close)
+	if err := hm.Mount(NamedHook("human", &humanApprovalHook{decision: ApprovalDecision{
+		RequireHuman: true,
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	decision := hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
+	if decision.Approved || decision.RequireHuman || !strings.Contains(decision.Reason, "invalid") {
+		t.Fatalf("malformed human approval did not fail closed = %#v", decision)
+	}
+}
+
 func TestAgentLoop_Hooks_ToolApproverCanDeny(t *testing.T) {
 	provider := &toolHookProvider{}
 	al, agent, cleanup := newHookTestLoop(t, provider)

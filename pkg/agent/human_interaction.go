@@ -182,7 +182,8 @@ func runtimeKindForInteractionEvent(event interactions.EventType) runtimeevents.
 		return runtimeevents.KindAgentInteractionWaiting
 	case interactions.EventAnswerClaimed:
 		return runtimeevents.KindAgentInteractionAnswer
-	case interactions.EventResumeStarted, interactions.EventRecoveryObserved, interactions.EventCanceling:
+	case interactions.EventResumeStarted, interactions.EventApprovalConsumed,
+		interactions.EventRecoveryObserved, interactions.EventCanceling:
 		return runtimeevents.KindAgentInteractionResume
 	case interactions.EventResolved, interactions.EventCancelled, interactions.EventFailed:
 		return runtimeevents.KindAgentInteractionEnd
@@ -266,6 +267,27 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 	return disposition, nil
 }
 
+func (runtime *humanInteractionRuntime) ConsumeApproval(
+	_ context.Context,
+	request ToolApprovalConsumptionRequest,
+) error {
+	if runtime == nil || runtime.al == nil {
+		return interactions.ErrStoreUnavailable
+	}
+	registry := runtime.al.interactionRegistryForWorkspace(request.Workspace)
+	if registry == nil {
+		return interactions.ErrStoreUnavailable
+	}
+	_, err := registry.ConsumeApproval(
+		request.InteractionID,
+		request.Revision,
+		request.Origin.ToolCallID,
+		request.Origin.ToolName,
+		request.Origin.ArgumentHash,
+	)
+	return err
+}
+
 func (runtime *humanInteractionRuntime) publishPrompt(
 	ctx context.Context,
 	record interactions.Record,
@@ -312,6 +334,16 @@ func interactionDeliveryKey(interactionID, kind string) string {
 
 func renderInteractionPrompt(record interactions.Record) string {
 	var builder strings.Builder
+	if record.Kind == interactions.KindApproval {
+		fmt.Fprintf(&builder, "Approval needed [%s]\n\n", record.ShortID)
+		builder.WriteString(strings.TrimSpace(record.PromptSummary))
+		fmt.Fprintf(
+			&builder,
+			"\n\nReply `allow_once` to authorize this exact tool call once, or `deny`. You can also use `/answer %s <decision>`.",
+			record.ShortID,
+		)
+		return builder.String()
+	}
 	fmt.Fprintf(&builder, "Input needed [%s]\n", record.ShortID)
 	for index, question := range record.Questions {
 		fmt.Fprintf(&builder, "\n%d. [%s] ", index+1, question.ID)
