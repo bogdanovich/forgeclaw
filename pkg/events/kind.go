@@ -45,6 +45,18 @@ const (
 	KindAgentAsyncCompletion Kind = "agent.async.completion"
 	// KindAgentInterruptReceived is emitted when a turn interrupt is accepted.
 	KindAgentInterruptReceived Kind = "agent.interrupt.received"
+	// KindAgentInteractionCreated is emitted after a durable human interaction is created.
+	KindAgentInteractionCreated Kind = "agent.interaction.created"
+	// KindAgentInteractionDelivery records an interaction prompt delivery attempt.
+	KindAgentInteractionDelivery Kind = "agent.interaction.delivery"
+	// KindAgentInteractionWaiting is emitted when an interaction can accept an answer.
+	KindAgentInteractionWaiting Kind = "agent.interaction.waiting"
+	// KindAgentInteractionAnswer records an accepted or rejected answer claim.
+	KindAgentInteractionAnswer Kind = "agent.interaction.answer"
+	// KindAgentInteractionResume records an interaction continuation attempt.
+	KindAgentInteractionResume Kind = "agent.interaction.resume"
+	// KindAgentInteractionEnd records a terminal interaction outcome.
+	KindAgentInteractionEnd Kind = "agent.interaction.end"
 
 	// KindAgentSubTurnSpawn is emitted when a sub-turn is spawned.
 	KindAgentSubTurnSpawn Kind = "agent.subturn.spawn"
@@ -138,6 +150,12 @@ var knownKinds = []Kind{
 	KindAgentFollowUpQueued,
 	KindAgentAsyncCompletion,
 	KindAgentInterruptReceived,
+	KindAgentInteractionCreated,
+	KindAgentInteractionDelivery,
+	KindAgentInteractionWaiting,
+	KindAgentInteractionAnswer,
+	KindAgentInteractionResume,
+	KindAgentInteractionEnd,
 	KindAgentSubTurnSpawn,
 	KindAgentSubTurnEnd,
 	KindAgentSubTurnResultDelivered,

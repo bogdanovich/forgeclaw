@@ -124,7 +124,7 @@ when enabled, protected full traces under their existing retention policy.
 created -> waiting -> answer_claimed -> resuming -> resolved
     |         |              |             |
     |         |              |             +-> failed
-    |         |              +-> waiting (recoverable failure)
+    |         |              +-> retry recovery (status unchanged)
     |         +-> answer_claimed (timeout outcome)
     +-> failed/cancelled
 ```
@@ -137,6 +137,8 @@ Rules:
 - A duplicate inbound delivery with the same message identity is a no-op.
 - A second answer after `answer_claimed` receives an explanatory response and
   cannot overwrite the first answer.
+- A recoverable commit or resume failure records an attempt without reopening
+  the request; the accepted answer remains immutable while recovery retries.
 - Terminal records are retained for a bounded audit period, then pruned.
 - Lifecycle status and resolution outcome are separate. Timeout never silently
   selects an option or becomes terminal before resumption: it atomically claims
