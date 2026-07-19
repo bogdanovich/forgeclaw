@@ -38,6 +38,13 @@ func (m *interactionChannelManager) SendMessage(_ context.Context, msg bus.Outbo
 	return nil
 }
 
+func (m *interactionChannelManager) SendMessageDefiniteRetryOnly(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return m.SendMessage(ctx, msg)
+}
+
 func TestCorruptHumanInteractionStoreFailsClosed(t *testing.T) {
 	workspace := t.TempDir()
 	storePath := interactions.WorkspaceStorePath(workspace)

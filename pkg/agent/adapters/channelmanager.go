@@ -36,6 +36,13 @@ func (a *channelManagerAdapter) SendMessage(ctx context.Context, msg bus.Outboun
 	return a.inner.SendMessage(ctx, msg)
 }
 
+func (a *channelManagerAdapter) SendMessageDefiniteRetryOnly(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return a.inner.SendMessageDefiniteRetryOnly(ctx, msg)
+}
+
 func (a *channelManagerAdapter) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
 	return a.inner.SendMedia(ctx, msg)
 }

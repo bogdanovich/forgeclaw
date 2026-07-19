@@ -199,7 +199,9 @@ When `request_user_input` or approval suspends execution:
   channel APIs do not provide an idempotency key.
   Interaction delivery uses a conservative channel path that retries only
   definite pre-acceptance rejections; generic message delivery may retain its
-  normal temporary-error retry policy.
+  normal temporary-error retry policy. This conservative operation is required
+  by the agent channel-manager contract so adapters cannot silently downgrade
+  interaction delivery to the generic retry behavior.
 4. The tool loop returns `ToolControlSuspend` without adding a fabricated tool
    result for the suspended call.
 5. Remaining tool calls in the same model response are recorded as deferred and

@@ -23,10 +23,6 @@ type humanInteractionRuntime struct {
 	al *AgentLoop
 }
 
-type definiteRetryMessageSender interface {
-	SendMessageDefiniteRetryOnly(context.Context, bus.OutboundMessage) error
-}
-
 type InteractionEventPayload struct {
 	InteractionID string                 `json:"interaction_id"`
 	ShortID       string                 `json:"short_id,omitempty"`
@@ -243,10 +239,7 @@ func (al *AgentLoop) sendInteractionMessage(ctx context.Context, msg bus.Outboun
 	if al == nil || al.channelManager == nil {
 		return fmt.Errorf("channel manager unavailable")
 	}
-	if sender, ok := al.channelManager.(definiteRetryMessageSender); ok {
-		return sender.SendMessageDefiniteRetryOnly(ctx, msg)
-	}
-	return al.channelManager.SendMessage(ctx, msg)
+	return al.channelManager.SendMessageDefiniteRetryOnly(ctx, msg)
 }
 
 func interactionDeliveryKey(interactionID, kind string) string {
