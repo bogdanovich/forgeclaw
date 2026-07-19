@@ -22,7 +22,10 @@ import (
 const (
 	curatedMemoryTarget        = "memory/MEMORY.md"
 	maxMemoryMutationBytes     = 64 * 1024
+	maxMemoryIdempotencyBytes  = 1024
 	appendDailyMemoryOperation = "append_daily"
+	dailyAppendMarkerPrefix    = "<!-- picoclaw:append_daily:v1:"
+	dailyAppendMarkerSuffix    = " -->"
 )
 
 var curatedMemoryLocks sync.Map
@@ -50,6 +53,7 @@ type MemoryMutationPayload struct {
 	ContentBytes     int    `json:"content_bytes,omitempty"`
 	ReplacementHash  string `json:"replacement_hash,omitempty"`
 	ReplacementBytes int    `json:"replacement_bytes,omitempty"`
+	IdempotencyHash  string `json:"idempotency_hash,omitempty"`
 	MatchCount       int    `json:"match_count,omitempty"`
 	ErrorCode        string `json:"error_code,omitempty"`
 }
@@ -81,7 +85,7 @@ func (t *MemoryTool) Name() string {
 }
 
 func (t *MemoryTool) Description() string {
-	return "Manage workspace memory. Use add, replace, and remove for durable stable facts. Use append_daily for noteworthy transient events, decisions, progress, or unfinished context that may matter over the next few days; do not record routine conversation."
+	return "Manage workspace memory. Use add, replace, and remove for durable stable facts. Use append_daily with a stable event-specific idempotency_key for noteworthy transient events, decisions, progress, or unfinished context that may matter over the next few days; do not record routine conversation."
 }
 
 func (t *MemoryTool) Parameters() map[string]any {
@@ -100,6 +104,10 @@ func (t *MemoryTool) Parameters() map[string]any {
 			"replacement": map[string]any{
 				"type":        "string",
 				"description": "New content. Required only for replace.",
+			},
+			"idempotency_key": map[string]any{
+				"type":        "string",
+				"description": "Stable unique event key. Required for append_daily; reuse it only when retrying the same append.",
 			},
 		},
 		"required": []string{"operation", "content"},
@@ -140,7 +148,21 @@ func (t *MemoryTool) Execute(ctx context.Context, args map[string]any) *ToolResu
 		)
 	}
 	if operation == appendDailyMemoryOperation {
-		return t.appendDaily(ctx, target, dailyDate, content, payload)
+		idempotencyKey, keyErr := requiredStringArg(args, "idempotency_key", "idempotency_key")
+		if keyErr != nil {
+			return t.failure(ctx, operation, "invalid_arguments", payload, keyErr)
+		}
+		if len(idempotencyKey) > maxMemoryIdempotencyBytes {
+			return t.failure(
+				ctx,
+				operation,
+				"idempotency_key_too_large",
+				payload,
+				fmt.Errorf("idempotency_key exceeds %d bytes", maxMemoryIdempotencyBytes),
+			)
+		}
+		payload.IdempotencyHash = curatedMemoryHash(idempotencyKey)
+		return t.appendDaily(ctx, target, dailyDate, content, idempotencyKey, payload)
 	}
 
 	replacement := ""
@@ -229,12 +251,25 @@ func (t *MemoryTool) targetForOperation(operation string) (target, dailyDate str
 
 func (t *MemoryTool) appendDaily(
 	ctx context.Context,
-	target, dailyDate, content string,
+	target, dailyDate, content, idempotencyKey string,
 	payload MemoryMutationPayload,
 ) *ToolResult {
-	lock := curatedMemoryLock(filepath.Join(t.workspace, filepath.FromSlash(target)))
+	lock := curatedMemoryLock(filepath.Join(t.workspace, "memory", ".append_daily"))
 	lock.Lock()
 	defer lock.Unlock()
+
+	marker := dailyAppendMarker(idempotencyKey)
+	existingTarget, found, err := t.findDailyAppendTarget(marker)
+	if err != nil {
+		return t.failure(ctx, appendDailyMemoryOperation, "idempotency_check_failed", payload, err)
+	}
+	if found {
+		payload.Target = existingTarget
+		payload.Outcome = "duplicate"
+		payload.MatchCount = 1
+		t.publish(ctx, payload, runtimeevents.SeverityInfo)
+		return memoryMutationResult(appendDailyMemoryOperation, "duplicate", existingTarget, false)
+	}
 
 	validatedPath, err := validatePathWithAllowPaths(target, t.workspace, true, nil)
 	if err != nil {
@@ -250,13 +285,6 @@ func (t *MemoryTool) appendDaily(
 			fmt.Errorf("read daily memory: %w", err),
 		)
 	}
-	if dailyMemoryContains(string(current), content) {
-		payload.Outcome = "duplicate"
-		payload.MatchCount = 1
-		t.publish(ctx, payload, runtimeevents.SeverityInfo)
-		return memoryMutationResult(appendDailyMemoryOperation, "duplicate", target, false)
-	}
-
 	if mkdirErr := os.MkdirAll(filepath.Dir(validatedPath), 0o755); mkdirErr != nil {
 		return t.failure(ctx, appendDailyMemoryOperation, "directory_create_failed", payload, mkdirErr)
 	}
@@ -266,7 +294,7 @@ func (t *MemoryTool) appendDaily(
 	}
 	if err := fileutil.WriteFileAtomic(
 		validatedPath,
-		[]byte(appendDailyMemory(string(current), dailyDate, content)),
+		[]byte(appendDailyMemory(string(current), dailyDate, marker, content)),
 		0o600,
 	); err != nil {
 		return t.failure(
@@ -291,37 +319,80 @@ func (t *MemoryTool) appendDaily(
 	})
 }
 
-func appendDailyMemory(current, dailyDate, content string) string {
+func appendDailyMemory(current, dailyDate, marker, content string) string {
 	current = strings.TrimRight(current, "\r\n")
 	content = strings.TrimSpace(content)
 	if current == "" {
-		return "# " + dailyDate + "\n\n" + content + "\n"
+		return "# " + dailyDate + "\n\n" + marker + "\n" + content + "\n"
 	}
-	return current + "\n\n" + content + "\n"
+	return current + "\n\n" + marker + "\n" + content + "\n"
 }
 
-func dailyMemoryContains(current, candidate string) bool {
-	current = strings.ReplaceAll(current, "\r\n", "\n")
-	candidate = strings.TrimSpace(strings.ReplaceAll(candidate, "\r\n", "\n"))
-	if candidate == "" {
+func dailyAppendMarker(idempotencyKey string) string {
+	return dailyAppendMarkerPrefix + curatedMemoryHash(idempotencyKey) + dailyAppendMarkerSuffix
+}
+
+func (t *MemoryTool) findDailyAppendTarget(marker string) (string, bool, error) {
+	memoryRoot, err := validatePathWithAllowPaths("memory", t.workspace, true, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("validate memory directory: %w", err)
+	}
+	if _, statErr := os.Stat(memoryRoot); errors.Is(statErr, fs.ErrNotExist) {
+		return "", false, nil
+	} else if statErr != nil {
+		return "", false, fmt.Errorf("inspect memory directory: %w", statErr)
+	}
+
+	var foundTarget string
+	err = filepath.WalkDir(memoryRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		relative, relErr := filepath.Rel(t.workspace, path)
+		if relErr != nil {
+			return relErr
+		}
+		target := filepath.ToSlash(relative)
+		if !isDailyMemoryTarget(target) {
+			return nil
+		}
+		validatedPath, validateErr := validatePathWithAllowPaths(target, t.workspace, true, nil)
+		if validateErr != nil {
+			return validateErr
+		}
+		data, readErr := os.ReadFile(validatedPath)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), marker) {
+			foundTarget = target
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("scan daily memory: %w", err)
+	}
+	return foundTarget, foundTarget != "", nil
+}
+
+func isDailyMemoryTarget(target string) bool {
+	parts := strings.Split(filepath.ToSlash(target), "/")
+	if len(parts) != 3 || parts[0] != "memory" || len(parts[1]) != 6 || len(parts[2]) != 11 ||
+		!strings.HasSuffix(parts[2], ".md") || parts[2][:6] != parts[1] {
 		return false
 	}
-	for offset := 0; offset <= len(current)-len(candidate); {
-		relative := strings.Index(current[offset:], candidate)
-		if relative < 0 {
-			return false
+	for _, value := range []string{parts[1], strings.TrimSuffix(parts[2], ".md")} {
+		for _, char := range value {
+			if char < '0' || char > '9' {
+				return false
+			}
 		}
-		start := offset + relative
-		end := start + len(candidate)
-		startsOnBoundary := start == 0 || strings.HasSuffix(current[:start], "\n\n")
-		endsOnBoundary := end == len(current) || strings.HasPrefix(current[end:], "\n\n") ||
-			strings.HasPrefix(current[end:], "\n") && end+1 == len(current)
-		if startsOnBoundary && endsOnBoundary {
-			return true
-		}
-		offset = start + 1
 	}
-	return false
+	return true
 }
 
 func applyCuratedMemoryMutation(

@@ -526,8 +526,9 @@ func TestMemoryToolAppendDailyVisibleInNextPrompt(t *testing.T) {
 		t.Fatal("memory tool not registered")
 	}
 	result := memoryTool.Execute(t.Context(), map[string]any{
-		"operation": "append_daily",
-		"content":   content,
+		"operation":       "append_daily",
+		"content":         content,
+		"idempotency_key": "prompt-visibility-test",
 	})
 	if result.IsError {
 		t.Fatalf("daily memory append failed: %s", result.ForLLM)
@@ -536,6 +537,9 @@ func TestMemoryToolAppendDailyVisibleInNextPrompt(t *testing.T) {
 	after := agent.ContextBuilder.BuildSystemPromptWithCache()
 	if !strings.Contains(after, "## Recent Daily Notes") || !strings.Contains(after, content) {
 		t.Fatalf("next prompt did not include daily memory: %q", after)
+	}
+	if strings.Contains(after, "picoclaw:append_daily") {
+		t.Fatalf("next prompt exposed daily idempotency metadata: %q", after)
 	}
 }
 

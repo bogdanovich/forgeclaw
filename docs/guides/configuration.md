@@ -97,7 +97,8 @@ are separate from Seahorse history and summary budgets.
 The native `memory` tool is enabled by default through `tools.memory.enabled`. It provides semantic `add`, `replace`,
 and `remove` operations for stable facts in `memory/MEMORY.md`. It also provides `append_daily` for selective episodic
 events, decisions, progress, and unfinished context; the runtime chooses the local current day's
-`memory/YYYYMM/YYYYMMDD.md` path. Duplicate additions and retry appends are no-ops; replacements and removals require
+`memory/YYYYMM/YYYYMMDD.md` path, and each append requires an event-specific `idempotency_key`. Duplicate additions and
+retries with the same key are no-ops; replacements and removals require
 one exact logical line or block match. Successful writes are atomic, invalidate the prompt cache, and emit
 `agent.memory.mutation` audit metadata without raw memory content. Use ordinary filesystem tools for other workspace
 files.

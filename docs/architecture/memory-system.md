@@ -67,7 +67,8 @@ Episodic memory uses one separate operation:
 
 - `append_daily`: append a noteworthy transient event, decision, progress
   update, or unfinished context to the runtime-local current day's
-  `memory/YYYYMM/YYYYMMDD.md` file.
+  `memory/YYYYMM/YYYYMMDD.md` file. It requires a stable event-specific
+  `idempotency_key` that is reused only when retrying the same append.
 
 Mutations are atomic, preserve owner-only file permissions, and reject
 ambiguous replacements or removals. Duplicate additions are deterministic
@@ -77,8 +78,10 @@ hashes or lengths, never raw private content.
 Daily appends use the same atomic-write, owner-only permission, path-safety,
 deduplication, cache-invalidation, and audit-event guarantees. The runtime
 selects the date and path; the model cannot use this operation to target an
-arbitrary file. Retry duplicates are deterministic no-ops. Daily notes are for
-selective episodic continuity, not routine conversation transcripts.
+arbitrary file. A hashed idempotency marker makes retries deterministic no-ops
+even after date rollover, while distinct keys allow identical events. Daily
+notes are for selective episodic continuity, not routine conversation
+transcripts.
 
 Generic filesystem tools remain available for ordinary workspace files. The
 curated-memory tool is the preferred path for durable stable facts because it
