@@ -27,8 +27,8 @@ type interactionChannelManager struct {
 }
 
 type durableApprovalHook struct {
-	summary string
-	revoked bool
+	actionSummary string
+	revoked       bool
 }
 
 func (h *durableApprovalHook) ApproveTool(
@@ -38,7 +38,7 @@ func (h *durableApprovalHook) ApproveTool(
 	if h.revoked {
 		return ApprovalDecision{Reason: "policy revoked human override"}, nil
 	}
-	return ApprovalDecision{RequireHuman: true, PromptSummary: h.summary}, nil
+	return ApprovalDecision{RequireHuman: true, ActionSummary: h.actionSummary}, nil
 }
 
 type approvalCountingTool struct {
@@ -672,7 +672,7 @@ func TestApprovalPromptAndAnswerUseFixedPolicyChoices(t *testing.T) {
 	record := interactions.Record{
 		Kind: interactions.KindApproval, ShortID: "APR123",
 		PromptSummary:  "Run a protected deployment command?",
-		ApprovalAction: "Tool: deploy\nArguments (redacted JSON): {\"token\":\"[REDACTED]\"}",
+		ApprovalAction: "Tool: deploy\nAction: Run a protected deployment command?",
 	}
 	prompt := renderInteractionPrompt(record)
 	if !strings.Contains(prompt, "Approval needed [APR123]") ||
@@ -727,7 +727,7 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 			tool := &approvalCountingTool{}
 			agent.Tools.Register(tool)
 			hook := &durableApprovalHook{
-				summary: "Run the protected test action?",
+				actionSummary: "Run the protected test action",
 			}
 			if err := al.MountHook(NamedHook("durable-approval", hook)); err != nil {
 				t.Fatal(err)
@@ -763,7 +763,7 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 			case prompt := <-manager.sent:
 				if !strings.Contains(prompt.Content, "Approval needed") ||
 					!strings.Contains(prompt.Content, "Tool: approval_counting") ||
-					!strings.Contains(prompt.Content, "[REDACTED]") ||
+					!strings.Contains(prompt.Content, "Action: Run the protected test action") ||
 					strings.Contains(prompt.Content, "secret-value") {
 					t.Fatalf("approval prompt = %#v", prompt)
 				}
@@ -815,16 +815,16 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 	}
 }
 
-func TestHumanApprovalFailsClosedForOpaqueArguments(t *testing.T) {
+func TestHumanApprovalNeverRendersGenericArguments(t *testing.T) {
 	provider := &sequenceProvider{responses: []*providers.LLMResponse{
 		{ToolCalls: []providers.ToolCall{{
 			ID: "call-opaque", Name: "approval_counting",
-			Arguments: map[string]any{"command": "deploy --password hunter2"},
+			Arguments: map[string]any{"source": "-----BEGIN PRIVATE KEY-----\nsecret"},
 			Function: &providers.FunctionCall{
-				Name: "approval_counting", Arguments: `{"command":"deploy --password hunter2"}`,
+				Name: "approval_counting", Arguments: `{"source":"-----BEGIN PRIVATE KEY-----\\nsecret"}`,
 			},
 		}}},
-		{Content: "opaque action denied", FinishReason: "stop"},
+		{Content: "approval flow finished", FinishReason: "stop"},
 	}}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
@@ -833,7 +833,7 @@ func TestHumanApprovalFailsClosedForOpaqueArguments(t *testing.T) {
 	tool := &approvalCountingTool{}
 	agent.Tools.Register(tool)
 	if err := al.MountHook(NamedHook("opaque-approval", &durableApprovalHook{
-		summary: "Approve the opaque action?",
+		actionSummary: "Rotate production signing material",
 	})); err != nil {
 		t.Fatal(err)
 	}
@@ -849,8 +849,8 @@ func TestHumanApprovalFailsClosedForOpaqueArguments(t *testing.T) {
 		},
 		DefaultResponse: defaultResponse, EnableSummary: true, SendResponse: false,
 	})
-	if err != nil || response != "opaque action denied" ||
-		turnStatus != TurnEndStatusCompleted || tool.executions != 0 {
+	if err != nil || response != "" ||
+		turnStatus != TurnEndStatusSuspended || tool.executions != 0 {
 		t.Fatalf(
 			"opaque approval turn = (%q, %q, executions=%d, err=%v)",
 			response,
@@ -859,15 +859,21 @@ func TestHumanApprovalFailsClosedForOpaqueArguments(t *testing.T) {
 			err,
 		)
 	}
-	if _, ok := activeInteractionForSession(
+	record, ok := activeInteractionForSession(
 		al.interactionRegistryForWorkspace(agent.Workspace), "session-opaque",
-	); ok {
-		t.Fatal("opaque arguments created an approval interaction")
+	)
+	if !ok || strings.Contains(record.ApprovalAction, "PRIVATE KEY") ||
+		record.ApprovalAction != "Tool: approval_counting\nAction: Rotate production signing material" {
+		t.Fatalf("approval interaction = %#v", record)
 	}
 	select {
 	case prompt := <-manager.sent:
-		t.Fatalf("opaque arguments produced approval prompt: %#v", prompt)
-	default:
+		if strings.Contains(prompt.Content, "PRIVATE KEY") ||
+			!strings.Contains(prompt.Content, record.ApprovalAction) {
+			t.Fatalf("approval prompt = %#v", prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("approval prompt was not delivered")
 	}
 }
 
@@ -916,8 +922,8 @@ func TestApprovalRecoveryNeverReexecutesConsumedOrTimedOutCall(t *testing.T) {
 						Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
 					},
 				},
-				PromptSummary:  "Run recovery action?",
-				ApprovalAction: "Tool: approval_counting\nArguments (redacted JSON): {\"token\":\"[REDACTED]\"}",
+				PromptSummary:  "Run recovery action",
+				ApprovalAction: "Tool: approval_counting\nAction: Run recovery action",
 				ExpiresAt:      expiresAt,
 			})
 			if err != nil {
@@ -986,7 +992,7 @@ func TestApprovalRecoveryUsesPersistedOriginalExecutionContext(t *testing.T) {
 	tool := &approvalContextTool{}
 	agent.Tools.Register(tool)
 	if err := al.MountHook(NamedHook("context-approval", &durableApprovalHook{
-		summary: "Approve the context-sensitive action?",
+		actionSummary: "Run the context-sensitive action",
 	})); err != nil {
 		t.Fatal(err)
 	}
@@ -1091,8 +1097,8 @@ func TestExpiredAllowOnceNeverExecutesProtectedTool(t *testing.T) {
 			TurnID: "turn-expired", ToolCallID: "call-expired", ToolName: tool.Name(),
 			ArgumentHash: argumentHash, ExecutionContext: inbound,
 		},
-		PromptSummary:  "Approve the protected action?",
-		ApprovalAction: "Tool: approval_counting\nArguments (redacted JSON): {\"target\":\"production\"}",
+		PromptSummary:  "Run the protected action",
+		ApprovalAction: "Tool: approval_counting\nAction: Run the protected action",
 		ExpiresAt:      now.Add(time.Minute),
 	})
 	if err != nil {

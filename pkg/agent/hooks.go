@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
@@ -52,7 +51,7 @@ type ApprovalDecision struct {
 	Approved       bool   `json:"approved"`
 	RequireHuman   bool   `json:"require_human,omitempty"`
 	Reason         string `json:"reason,omitempty"`
-	PromptSummary  string `json:"prompt_summary,omitempty"`
+	ActionSummary  string `json:"action_summary,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
@@ -578,18 +577,21 @@ func (hm *HookManager) ApproveTool(ctx context.Context, req *ToolApprovalRequest
 
 func normalizeApprovalDecision(decision ApprovalDecision) ApprovalDecision {
 	decision.Reason = strings.TrimSpace(decision.Reason)
-	decision.PromptSummary = strings.TrimSpace(decision.PromptSummary)
+	decision.ActionSummary = strings.TrimSpace(decision.ActionSummary)
 	if decision.Approved && decision.RequireHuman {
 		return ApprovalDecision{Reason: "approval hook returned conflicting allow and human-review decisions"}
 	}
 	if !decision.RequireHuman {
-		decision.PromptSummary = ""
+		decision.ActionSummary = ""
 		decision.TimeoutSeconds = 0
 		return decision
 	}
-	if decision.PromptSummary == "" ||
-		utf8.RuneCountInString(decision.PromptSummary) > interactions.MaxSummaryLength {
-		return ApprovalDecision{Reason: "approval hook returned an invalid human-review summary"}
+	if err := validateApprovalDisplayText(
+		"action summary",
+		decision.ActionSummary,
+		interactions.MaxSummaryLength,
+	); err != nil {
+		return ApprovalDecision{Reason: "approval hook returned an invalid human-review action summary"}
 	}
 	if decision.TimeoutSeconds == 0 {
 		decision.TimeoutSeconds = int(time.Hour / time.Second)

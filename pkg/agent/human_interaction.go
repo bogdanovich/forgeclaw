@@ -353,10 +353,6 @@ func renderInteractionPrompt(record interactions.Record) string {
 		fmt.Fprintf(&builder, "Approval needed [%s]\n\n", record.ShortID)
 		builder.WriteString("Requested action:\n")
 		builder.WriteString(strings.TrimSpace(record.ApprovalAction))
-		if summary := strings.TrimSpace(record.PromptSummary); summary != "" {
-			builder.WriteString("\n\nPolicy note:\n")
-			builder.WriteString(summary)
-		}
 		fmt.Fprintf(
 			&builder,
 			"\n\nReply `allow_once` to authorize this exact tool call once, or `deny`. You can also use `/answer %s <decision>`.",

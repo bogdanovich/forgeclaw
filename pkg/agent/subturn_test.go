@@ -389,7 +389,7 @@ func TestDurableTaskSubTurnWaitsForHumanApproval(t *testing.T) {
 	tool := &approvalCountingTool{}
 	agent.Tools.Register(tool)
 	if err := al.MountHook(NamedHook("task-approval", &durableApprovalHook{
-		summary: "Run the production task action?",
+		actionSummary: "Run the production task action",
 	})); err != nil {
 		t.Fatal(err)
 	}

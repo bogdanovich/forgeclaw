@@ -504,7 +504,10 @@ toolLoop:
 			if approval.RequireHuman {
 				argumentHash, hashErr := interactions.HashArguments(interactionWorkspace, toolArgs)
 				if hashErr == nil {
-					approvalAction, displayErr := renderApprovalAction(toolName, toolArgs)
+					approvalAction, displayErr := renderApprovalAction(
+						toolName,
+						approval.ActionSummary,
+					)
 					if displayErr != nil {
 						hashErr = displayErr
 					} else {
@@ -515,7 +518,7 @@ toolLoop:
 							toolName,
 							0,
 							&tools.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
-								Kind: interactions.KindApproval, PromptSummary: approval.PromptSummary,
+								Kind: interactions.KindApproval, PromptSummary: approval.ActionSummary,
 								Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
 							}},
 							argumentHash,

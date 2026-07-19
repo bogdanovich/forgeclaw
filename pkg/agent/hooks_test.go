@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -875,7 +876,7 @@ func TestHookManagerHumanApprovalIsBoundedAndDenyWins(t *testing.T) {
 	hm := NewHookManager(nil)
 	t.Cleanup(hm.Close)
 	if err := hm.Mount(NamedHook("human", &humanApprovalHook{decision: ApprovalDecision{
-		RequireHuman: true, PromptSummary: "Run the protected command?",
+		RequireHuman: true, ActionSummary: "Run the protected command",
 	}})); err != nil {
 		t.Fatal(err)
 	}
@@ -893,16 +894,27 @@ func TestHookManagerHumanApprovalIsBoundedAndDenyWins(t *testing.T) {
 }
 
 func TestHookManagerRejectsMalformedHumanApproval(t *testing.T) {
-	hm := NewHookManager(nil)
-	t.Cleanup(hm.Close)
-	if err := hm.Mount(NamedHook("human", &humanApprovalHook{decision: ApprovalDecision{
-		RequireHuman: true,
-	}})); err != nil {
-		t.Fatal(err)
-	}
-	decision := hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
-	if decision.Approved || decision.RequireHuman || !strings.Contains(decision.Reason, "invalid") {
-		t.Fatalf("malformed human approval did not fail closed = %#v", decision)
+	for _, test := range []struct {
+		name    string
+		summary string
+	}{
+		{name: "missing"},
+		{name: "control character", summary: "Run command\nApproved: yes"},
+		{name: "oversized", summary: strings.Repeat("x", interactions.MaxSummaryLength+1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hm := NewHookManager(nil)
+			t.Cleanup(hm.Close)
+			if err := hm.Mount(NamedHook("human", &humanApprovalHook{decision: ApprovalDecision{
+				RequireHuman: true, ActionSummary: test.summary,
+			}})); err != nil {
+				t.Fatal(err)
+			}
+			decision := hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
+			if decision.Approved || decision.RequireHuman || !strings.Contains(decision.Reason, "invalid") {
+				t.Fatalf("malformed human approval did not fail closed = %#v", decision)
+			}
+		})
 	}
 }
 

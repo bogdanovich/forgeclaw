@@ -435,6 +435,26 @@ Approval hook for deciding whether to allow execution of sensitive tools.
 }
 ```
 
+### Response (Human Approval Required)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "require_human": true,
+    "action_summary": "Delete the production cache namespace",
+    "timeout_seconds": 3600
+  }
+}
+```
+
+`action_summary` is required when `require_human` is true. It is trusted,
+action-specific presentation data produced by the policy hook and must not
+contain secrets. ForgeClaw displays it with the runtime-owned tool name; it does
+not render arbitrary tool arguments. Runtime separately binds approval to the
+exact canonical arguments and revalidates policy before one-time execution.
+
 ---
 
 ## 7. `hook.runtime_event` (notification)
