@@ -49,7 +49,7 @@
       ]
     },
     {
-      "id": "durable-interaction-pass", "evaluator": "durable_interaction.v1", "source": "durable interaction and approval registry tests", "sanitized": true, "why": "An allowed approval must be claimed, resumed, consumed, and resolved exactly once.", "expected": "pass",
+      "id": "durable-interaction-pass", "evaluator": "durable_interaction.v1", "trace_kind": "interaction", "source": "durable interaction and approval registry tests", "sanitized": true, "why": "An allowed approval must be claimed, resumed, consumed, and resolved exactly once.", "expected": "pass",
       "records": [
         {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.created","kind":"approval","status":"created","revision":1,"sequence":1}},
         {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.delivery_attempted","kind":"approval","from":"created","status":"created","revision":2,"sequence":2,"success":true}},
@@ -61,18 +61,19 @@
       ]
     },
     {
-      "id": "durable-interaction-expired-at-consumption-pass", "evaluator": "durable_interaction.v1", "source": "durable approval expiry-at-consumption registry tests", "sanitized": true, "why": "An approval that expires atomically during consumption must fail closed without being consumed.", "expected": "pass",
+      "id": "durable-interaction-expired-at-consumption-pass", "evaluator": "durable_interaction.v1", "trace_kind": "interaction", "source": "durable approval expiry-at-consumption registry tests", "sanitized": true, "why": "An approval that expires atomically during consumption must fail closed without being consumed.", "expected": "pass",
       "records": [
         {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.created","kind":"approval","status":"created","revision":1,"sequence":1}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.waiting","kind":"approval","from":"created","status":"waiting","revision":2,"sequence":2}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.answer_claimed","kind":"approval","from":"waiting","status":"answer_claimed","outcome":"allowed","revision":3,"sequence":3}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resume_started","kind":"approval","from":"answer_claimed","status":"resuming","outcome":"allowed","revision":4,"sequence":4}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.approval_expired","kind":"approval","from":"resuming","status":"resuming","outcome":"timed_out","revision":5,"sequence":5,"code":"timeout_at_approval_consumption"}},
-        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resolved","kind":"approval","from":"resuming","status":"resolved","outcome":"timed_out","revision":6,"sequence":6}}
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.delivery_attempted","kind":"approval","from":"created","status":"created","revision":2,"sequence":2,"success":true}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.waiting","kind":"approval","from":"created","status":"waiting","revision":3,"sequence":3}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.answer_claimed","kind":"approval","from":"waiting","status":"answer_claimed","outcome":"allowed","revision":4,"sequence":4}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resume_started","kind":"approval","from":"answer_claimed","status":"resuming","outcome":"allowed","revision":5,"sequence":5}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.approval_expired","kind":"approval","from":"resuming","status":"resuming","outcome":"timed_out","revision":6,"sequence":6,"code":"timeout_at_approval_consumption"}},
+        {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.resolved","kind":"approval","from":"resuming","status":"resolved","outcome":"timed_out","revision":7,"sequence":7}}
       ]
     },
     {
-      "id": "durable-interaction-fail", "evaluator": "durable_interaction.v1", "source": "durable interaction answer-claim tests", "sanitized": true, "why": "An ordinary answer cannot bypass waiting and be claimed directly from created state.", "expected": "fail",
+      "id": "durable-interaction-fail", "evaluator": "durable_interaction.v1", "trace_kind": "interaction", "source": "durable interaction answer-claim tests", "sanitized": true, "why": "An ordinary answer cannot bypass waiting and be claimed directly from created state.", "expected": "fail",
       "records": [
         {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.created","kind":"approval","status":"created","revision":1,"sequence":1}},
         {"kind":"interaction.transition","interaction_id":"i1","tool_call_id":"call1","data":{"event_type":"interaction.answer_claimed","kind":"approval","from":"created","status":"answer_claimed","outcome":"denied","revision":2,"sequence":2}},

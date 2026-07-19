@@ -27,6 +27,9 @@ func Validate(trace Trace) error {
 	if trace.SchemaVersion != SchemaVersionV1 {
 		return fmt.Errorf("unsupported trace schema %q", trace.SchemaVersion)
 	}
+	if !validTraceKind(trace.Metadata.TraceKind) {
+		return fmt.Errorf("unsupported trace kind %q", trace.Metadata.TraceKind)
+	}
 	if !safeIDPattern.MatchString(trace.TraceID) {
 		return errors.New("trace_id must be a path-safe opaque identifier")
 	}
@@ -132,6 +135,15 @@ func Validate(trace Trace) error {
 		return fmt.Errorf("trace exceeds byte limit: %d > %d", len(data), limits.MaxTraceBytes)
 	}
 	return nil
+}
+
+func validTraceKind(kind TraceKind) bool {
+	switch kind {
+	case "", TraceKindTurn, TraceKindTask, TraceKindInteraction:
+		return true
+	default:
+		return false
+	}
 }
 
 const sha256HexLength = 64

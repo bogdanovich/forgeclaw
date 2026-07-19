@@ -129,6 +129,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		return
 	}
 	current := r.projection.Interactions[id]
+	previousOutcome := current.Outcome
 	if current.Terminal {
 		r.diagnostic(
 			record,
@@ -145,7 +146,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 			"interaction event source status does not match replay state",
 		)
 	}
-	if current.Kind != "" && payload.Kind != "" && payload.Kind != current.Kind {
+	if current.Kind != "" && payload.Kind != current.Kind {
 		r.diagnostic(
 			record,
 			"interaction_kind_changed",
@@ -153,7 +154,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 			"interaction kind changed during its lifecycle",
 		)
 	}
-	if current.TaskID != "" && record.Scope.TaskID != "" && record.Scope.TaskID != current.TaskID {
+	if current.TaskID != "" && record.Scope.TaskID != current.TaskID {
 		r.diagnostic(
 			record,
 			"interaction_task_correlation_changed",
@@ -161,8 +162,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 			"interaction task correlation changed",
 		)
 	}
-	if current.ToolCallID != "" && record.Correlation.ToolCallID != "" &&
-		record.Correlation.ToolCallID != current.ToolCallID {
+	if current.ToolCallID != "" && record.Correlation.ToolCallID != current.ToolCallID {
 		r.diagnostic(
 			record,
 			"interaction_tool_correlation_changed",
@@ -180,12 +180,12 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		)
 	}
 	if payload.Revision <= 0 ||
-		current.LastRevision > 0 && payload.Revision < current.LastRevision {
+		current.LastRevision > 0 && payload.Revision <= current.LastRevision {
 		r.diagnostic(
 			record,
-			"interaction_revision_decreased",
+			"interaction_revision_not_increasing",
 			SeverityError,
-			"interaction revision decreased",
+			"interaction revision did not increase",
 		)
 	}
 	if payload.Status == "" {
@@ -194,6 +194,15 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 			"interaction_status_missing",
 			SeverityError,
 			"interaction event has no resulting status",
+		)
+	}
+	if current.Status != "" && payload.EventType != "interaction.answer_claimed" &&
+		payload.EventType != "interaction.approval_expired" && payload.Outcome != previousOutcome {
+		r.diagnostic(
+			record,
+			"interaction_outcome_changed",
+			SeverityError,
+			"interaction outcome changed outside an allowed transition",
 		)
 	}
 	current.InteractionID = id
@@ -211,7 +220,8 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 	switch payload.EventType {
 	case "interaction.created":
 		current.Created++
-		if current.Created > 1 || payload.From != "" || payload.Status != "created" {
+		if current.Created > 1 || payload.From != "" || payload.Status != "created" ||
+			payload.Outcome != "" || !validInteractionKind(payload.Kind) {
 			r.diagnostic(
 				record,
 				"interaction_duplicate_or_invalid_create",
@@ -224,8 +234,15 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		if payload.Success != nil && *payload.Success {
 			current.PromptSuccesses++
 		}
+		if !validInteractionDeliveryEvent(payload, "created") {
+			r.invalidInteractionTransition(
+				record,
+				"interaction_prompt_delivery_invalid",
+				"prompt delivery transition is invalid",
+			)
+		}
 	case "interaction.waiting":
-		if payload.From != "created" || payload.Status != "waiting" {
+		if payload.From != "created" || payload.Status != "waiting" || current.PromptSuccesses != 1 {
 			r.diagnostic(
 				record,
 				"interaction_waiting_transition_invalid",
@@ -243,7 +260,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 				"interaction answer was claimed more than once",
 			)
 		}
-		if payload.Status != "answer_claimed" || !validInteractionAnswerClaimSource(payload) {
+		if !validInteractionAnswerClaim(payload) {
 			r.diagnostic(
 				record,
 				"interaction_answer_transition_invalid",
@@ -264,7 +281,9 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 	case "interaction.approval_consumed":
 		current.ApprovalConsumptions++
 		if current.ApprovalConsumptions > 1 || current.Kind != "approval" ||
-			current.Outcome != "allowed" {
+			previousOutcome != "allowed" || payload.From != "resuming" ||
+			payload.Status != "resuming" || payload.Outcome != "allowed" ||
+			payload.Code != "allow_once_consumed" {
 			r.diagnostic(
 				record,
 				"interaction_approval_consumption_invalid",
@@ -274,7 +293,8 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		}
 	case "interaction.approval_expired":
 		if current.Kind != "approval" || payload.From != "resuming" ||
-			payload.Status != "resuming" || payload.Outcome != "timed_out" {
+			payload.Status != "resuming" || previousOutcome != "allowed" ||
+			payload.Outcome != "timed_out" || payload.Code != "timeout_at_approval_consumption" {
 			r.diagnostic(
 				record,
 				"interaction_approval_expiry_invalid",
@@ -287,12 +307,29 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		if payload.Success != nil && *payload.Success {
 			current.FinalSuccesses++
 		}
-		if payload.Status != "resuming" {
+		if !validInteractionDeliveryEvent(payload, "resuming") {
 			r.diagnostic(
 				record,
-				"interaction_final_delivery_while_suspended",
+				"interaction_final_delivery_invalid",
 				SeverityError,
-				"final delivery occurred before interaction resumed",
+				"final delivery transition is invalid",
+			)
+		}
+	case "interaction.canceling":
+		if !validInteractionCancellationSource(payload.From) || payload.Status != "canceling" {
+			r.invalidInteractionTransition(
+				record,
+				"interaction_canceling_transition_invalid",
+				"interaction canceling transition is invalid",
+			)
+		}
+	case "interaction.recovery_observed":
+		if (payload.From != "answer_claimed" && payload.From != "resuming") ||
+			payload.Status != payload.From || payload.Code != "resume_failed" {
+			r.invalidInteractionTransition(
+				record,
+				"interaction_recovery_transition_invalid",
+				"interaction recovery observation is invalid",
 			)
 		}
 	case "interaction.resolved":
@@ -300,7 +337,8 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 			r.invalidInteractionTerminalTransition(record)
 		}
 	case "interaction.cancelled":
-		if !validInteractionTerminalSource(payload.From) || payload.Status != "cancel"+"led" {
+		if (!validInteractionCancellationSource(payload.From) && payload.From != "canceling") ||
+			payload.Status != "cancel"+"led" {
 			r.invalidInteractionTerminalTransition(record)
 		}
 	case "interaction.failed":
@@ -308,14 +346,12 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 			r.invalidInteractionTerminalTransition(record)
 		}
 	default:
-		if !knownNonterminalInteractionEvent(payload.EventType) {
-			r.diagnostic(
-				record,
-				"interaction_event_unknown",
-				SeverityError,
-				"interaction event type is unsupported",
-			)
-		}
+		r.diagnostic(
+			record,
+			"interaction_event_unknown",
+			SeverityError,
+			"interaction event type is unsupported",
+		)
 	}
 	if terminalInteractionStatus(current.Status) {
 		current.Terminal = true
@@ -324,12 +360,15 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 }
 
 func (r *reducer) invalidInteractionTerminalTransition(record evaltrace.Record) {
-	r.diagnostic(
+	r.invalidInteractionTransition(
 		record,
 		"interaction_terminal_transition_invalid",
-		SeverityError,
 		"interaction terminal transition is invalid",
 	)
+}
+
+func (r *reducer) invalidInteractionTransition(record evaltrace.Record, code, message string) {
+	r.diagnostic(record, code, SeverityError, message)
 }
 
 func (r *reducer) applyTask(record evaltrace.Record) {
@@ -774,22 +813,52 @@ func terminalInteractionStatus(status string) bool {
 	return status == "resolved" || status == "cancel"+"led" || status == "failed"
 }
 
-func knownNonterminalInteractionEvent(event string) bool {
-	switch event {
-	case "interaction.canceling",
-		"interaction.recovery_observed":
-		return true
+func validInteractionAnswerClaim(payload evaltrace.InteractionPayload) bool {
+	if payload.Status != "answer_claimed" {
+		return false
+	}
+	switch payload.Outcome {
+	case "timed_out":
+		return (payload.From == "created" || payload.From == "waiting") &&
+			(payload.Code == "timeout" || payload.Code == "timeout_at_answer_claim")
+	case "delivery_unknown":
+		return payload.From == "created" && payload.Code == "prompt_delivery_ambiguous"
+	case "answered":
+		return payload.Kind == "question" && payload.From == "waiting" && payload.Code == ""
+	case "allowed", "denied":
+		return payload.Kind == "approval" && payload.From == "waiting" && payload.Code == ""
 	default:
 		return false
 	}
 }
 
-func validInteractionAnswerClaimSource(payload evaltrace.InteractionPayload) bool {
-	if payload.From == "waiting" {
-		return true
+func validInteractionKind(kind string) bool {
+	return kind == "question" || kind == "approval"
+}
+
+func validInteractionDeliveryEvent(payload evaltrace.InteractionPayload, status string) bool {
+	if payload.From != status || payload.Status != status {
+		return false
 	}
-	return payload.From == "created" &&
-		(payload.Code == "timeout" || payload.Code == "prompt_delivery_ambiguous")
+	switch payload.Code {
+	case "":
+		return payload.Success != nil
+	case "delivery_started":
+		return payload.Success == nil
+	case "delivery_completed":
+		return payload.Success != nil
+	default:
+		return false
+	}
+}
+
+func validInteractionCancellationSource(status string) bool {
+	switch status {
+	case "created", "waiting", "answer_claimed", "resuming":
+		return true
+	default:
+		return false
+	}
 }
 
 func validInteractionTerminalSource(status string) bool {

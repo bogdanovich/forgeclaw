@@ -231,6 +231,19 @@ func (durableInteraction) Evaluate(input Input) Finding {
 			"enable trace capture while reproducing the interaction",
 		)
 	}
+	if input.Trace.Metadata.TraceKind != evaltrace.TraceKindInteraction {
+		observed := "trace kind is " + string(input.Trace.Metadata.TraceKind)
+		if input.Trace.Metadata.TraceKind == "" {
+			observed = "trace kind is unspecified"
+		}
+		return finding(
+			StatusNotEvaluable,
+			SeverityInfo,
+			"a dedicated interaction lifecycle trace",
+			observed,
+			"evaluate the correlated dedicated interaction trace",
+		)
+	}
 	if input.Trace.Truncation.Incomplete {
 		return finding(
 			StatusNotEvaluable,
@@ -295,8 +308,11 @@ func (durableInteraction) Evaluate(input Input) Finding {
 			)
 		}
 		if interaction.Kind == "approval" {
+			if interaction.Outcome == "allowed" && interaction.Status != "resolved" {
+				continue
+			}
 			wantConsumptions := 0
-			if interaction.Outcome == "allowed" {
+			if interaction.Outcome == "allowed" && interaction.Status == "resolved" {
 				wantConsumptions = 1
 			}
 			if interaction.ApprovalConsumptions != wantConsumptions {

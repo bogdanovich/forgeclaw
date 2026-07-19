@@ -19,13 +19,14 @@ type FixtureManifest struct {
 }
 
 type Fixture struct {
-	ID        string          `json:"id"`
-	Evaluator string          `json:"evaluator"`
-	Source    string          `json:"source"`
-	Sanitized bool            `json:"sanitized"`
-	Why       string          `json:"why"`
-	Expected  Status          `json:"expected"`
-	Records   []FixtureRecord `json:"records"`
+	ID        string              `json:"id"`
+	Evaluator string              `json:"evaluator"`
+	TraceKind evaltrace.TraceKind `json:"trace_kind,omitempty"`
+	Source    string              `json:"source"`
+	Sanitized bool                `json:"sanitized"`
+	Why       string              `json:"why"`
+	Expected  Status              `json:"expected"`
+	Records   []FixtureRecord     `json:"records"`
 }
 
 type FixtureRecord struct {
@@ -103,6 +104,7 @@ func (fixture Fixture) Trace() (evaltrace.Trace, error) {
 		Source:        evaltrace.Source{FixtureID: fixture.ID, FixtureSource: fixture.Source},
 		Policy:        evaltrace.CapturePolicy{ContentMode: evaltrace.ContentFixture},
 		Limits:        evaltrace.NormalizeLimits(evaltrace.AppliedLimits{}),
+		Metadata:      evaltrace.Metadata{TraceKind: fixture.TraceKind},
 		Records:       records,
 	})
 }

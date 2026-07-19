@@ -436,6 +436,7 @@ func (m *traceCaptureManager) startTurnLocked(
 			},
 			Limits: settings.limits,
 			Metadata: evaltrace.Metadata{
+				TraceKind:  evaltrace.TraceKindTurn,
 				RootTurnID: turnID, SessionHash: safeHash(settings, event.Scope.SessionKey),
 				AgentID: event.Scope.AgentID, RuntimeID: event.Scope.RuntimeID,
 			},
@@ -495,6 +496,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 				},
 				Limits: settings.limits,
 				Metadata: evaltrace.Metadata{
+					TraceKind:   evaltrace.TraceKindTask,
 					SessionHash: safeHash(settings, record.RequesterSessionKey),
 					AgentID:     record.AgentID,
 				},
@@ -570,6 +572,7 @@ func (m *traceCaptureManager) observeInteractionRegistryEvent(
 				},
 				Limits: settings.limits,
 				Metadata: evaltrace.Metadata{
+					TraceKind:   evaltrace.TraceKindInteraction,
 					RootTurnID:  state.Origin.TurnID,
 					SessionHash: safeHash(settings, state.Route.SessionKey),
 					AgentID:     state.Route.AgentID,

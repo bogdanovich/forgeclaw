@@ -262,6 +262,40 @@ func TestReplayRejectsInvalidTraceBeforeProjection(t *testing.T) {
 	}
 }
 
+func TestReplayRejectsInteractionWaitingWithoutSuccessfulPrompt(t *testing.T) {
+	created := replayRecordWithCorrelation(
+		t,
+		1,
+		evaltrace.RecordInteractionTransition,
+		"interaction-created",
+		evaltrace.Correlation{InteractionID: "interaction-1", ToolCallID: "call-1"},
+		evaltrace.InteractionPayload{
+			EventType: "interaction.created", Kind: "question", Status: "created",
+			Revision: 1, Sequence: 1,
+		},
+	)
+	waiting := replayRecordWithCorrelation(
+		t,
+		2,
+		evaltrace.RecordInteractionTransition,
+		"interaction-waiting",
+		evaltrace.Correlation{InteractionID: "interaction-1", ToolCallID: "call-1"},
+		evaltrace.InteractionPayload{
+			EventType: "interaction.waiting", Kind: "question", From: "created", Status: "waiting",
+			Revision: 2, Sequence: 2,
+		},
+	)
+	trace := replayTrace(t, created, waiting)
+	trace.Metadata.TraceKind = evaltrace.TraceKindInteraction
+	result, err := Replay(finalizeReplayTrace(t, trace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasDiagnostic(result.Projection.Diagnostics, "interaction_waiting_transition_invalid") {
+		t.Fatalf("diagnostics = %#v", result.Projection.Diagnostics)
+	}
+}
+
 func replayTrace(t *testing.T, records ...evaltrace.Record) evaltrace.Trace {
 	t.Helper()
 	return evaltrace.Trace{
@@ -326,4 +360,13 @@ func finalizeReplayTrace(t *testing.T, trace evaltrace.Trace) evaltrace.Trace {
 		t.Fatal(err)
 	}
 	return finalized
+}
+
+func hasDiagnostic(diagnostics []Diagnostic, code string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
 }

@@ -11,10 +11,16 @@ const SchemaVersionV1 = "forgeclaw.eval_trace.v1"
 
 type ContentMode string
 
+type TraceKind string
+
 const (
 	ContentMetadataOnly ContentMode = "metadata_only"
 	ContentRedacted     ContentMode = "redacted_content"
 	ContentFixture      ContentMode = "fixture"
+
+	TraceKindTurn        TraceKind = "turn"
+	TraceKindTask        TraceKind = "task"
+	TraceKindInteraction TraceKind = "interaction"
 )
 
 type RecordKind string
@@ -82,10 +88,11 @@ type AppliedLimits struct {
 }
 
 type Metadata struct {
-	RootTurnID  string `json:"root_turn_id,omitempty"`
-	SessionHash string `json:"session_hash,omitempty"`
-	AgentID     string `json:"agent_id,omitempty"`
-	RuntimeID   string `json:"runtime_id,omitempty"`
+	TraceKind   TraceKind `json:"trace_kind,omitempty"`
+	RootTurnID  string    `json:"root_turn_id,omitempty"`
+	SessionHash string    `json:"session_hash,omitempty"`
+	AgentID     string    `json:"agent_id,omitempty"`
+	RuntimeID   string    `json:"runtime_id,omitempty"`
 }
 
 type Record struct {

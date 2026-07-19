@@ -96,6 +96,9 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 	if err := evaltrace.Validate(trace); err != nil {
 		t.Fatalf("validate trace: %v", err)
 	}
+	if trace.Metadata.TraceKind != evaltrace.TraceKindTurn {
+		t.Fatalf("trace kind = %q", trace.Metadata.TraceKind)
+	}
 	if trace.Outcome == nil || trace.Outcome.Status != string(TurnEndStatusCompleted) {
 		t.Fatalf("outcome = %#v", trace.Outcome)
 	}
@@ -294,6 +297,9 @@ func TestTraceCaptureCreatesCanonicalTerminalTaskTrace(t *testing.T) {
 	if trace.Outcome == nil || trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
 		t.Fatalf("outcome = %#v", trace.Outcome)
 	}
+	if trace.Metadata.TraceKind != evaltrace.TraceKindTask {
+		t.Fatalf("trace kind = %q", trace.Metadata.TraceKind)
+	}
 	foundDecision, foundOutcome := false, false
 	for _, record := range trace.Records {
 		foundDecision = foundDecision || record.Kind == evaltrace.RecordDeliveryDecision
@@ -417,6 +423,9 @@ func TestTraceCaptureBackfillsDurableInteractionHistoryAfterRestart(t *testing.T
 	}
 	if err := evaltrace.Validate(trace); err != nil {
 		t.Fatal(err)
+	}
+	if trace.Metadata.TraceKind != evaltrace.TraceKindInteraction {
+		t.Fatalf("trace kind = %q", trace.Metadata.TraceKind)
 	}
 	if trace.Outcome == nil || trace.Outcome.Status != string(interactions.StatusResolved) {
 		t.Fatalf("outcome = %#v", trace.Outcome)

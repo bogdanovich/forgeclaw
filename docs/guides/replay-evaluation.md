@@ -126,7 +126,10 @@ picoclaw eval --evaluator durable_interaction.v1 \
 
 The trace can identify duplicate answer claims, illegal transitions, an
 interaction that never terminalized, duplicate successful prompt/final sends,
-or an allowed approval that was not consumed exactly once. It contains no raw
+or an allowed-and-resolved approval that was not consumed exactly once. Allowed
+approvals that fail or are cancelled before execution may remain unconsumed.
+The evaluator requires `metadata.trace_kind: interaction`; partial interaction
+evidence embedded in turn traces returns `not_evaluable`. It contains no raw
 question, answer, approval summary, route, sender identity, or tool arguments.
 Task/tool pairing spans separately persisted traces and is not evaluated by
 this single-file command.

@@ -451,6 +451,17 @@ func TestRegistryClaimOverdueUsesResumableTimeoutOutcome(t *testing.T) {
 	if claimed[0].ID != created.ID || claimed[1].ID != rec.ID {
 		t.Fatalf("claimed ids = %q, %q", claimed[0].ID, claimed[1].ID)
 	}
+	for id, wantFrom := range map[string]Status{
+		created.ID: StatusCreated,
+		rec.ID:     StatusWaiting,
+	} {
+		events := registry.ListEvents(id)
+		last := events[len(events)-1]
+		if last.Type != EventAnswerClaimed || last.From != wantFrom ||
+			last.To != StatusClaimed || last.Outcome != OutcomeTimedOut {
+			t.Fatalf("timeout event for %s = %+v", id, last)
+		}
+	}
 
 	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
 	got, ok := reloaded.Get(rec.ID)

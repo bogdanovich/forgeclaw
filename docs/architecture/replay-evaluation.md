@@ -158,6 +158,11 @@ and session keys
 remain separate typed correlation fields; they must not be overloaded into one
 generic ID.
 
+`metadata.trace_kind` identifies whether the file is a `turn`, `task`, or
+`interaction` trace. Evaluators that require a complete lifecycle only run on
+the corresponding dedicated trace; correlated observations in another trace
+remain useful debugging evidence but are not treated as complete history.
+
 Records use a closed kind vocabulary. Initial kinds include:
 
 - turn start/end and final outcome;
@@ -375,9 +380,10 @@ Initial evaluators:
 - `restart_recovery.v1`: active work becomes reconciled/lost or resumes by
   policy; completed delivery is not repeated; inbound spool ack/release is
   consistent.
-- `durable_interaction.v1`: interaction transitions are monotonic and terminal,
-  prompt/final delivery and answer acceptance are not duplicated, and an
-  allowed approval is consumed exactly once while other outcomes are not.
+- `durable_interaction.v1`: dedicated interaction traces are monotonic and
+  terminal, prompt/final delivery and answer acceptance are not duplicated,
+  an allowed-and-resolved approval is consumed exactly once, and an approval
+  that fails or is cancelled before execution may remain unconsumed.
 - `compaction_retention.v1`: protected fresh tail, tool-call/result pairing,
   steering, and required goal/context facts survive the recorded compaction
   boundary.

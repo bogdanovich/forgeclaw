@@ -493,12 +493,13 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 			continue
 		}
 		before[id] = rec
+		from := rec.Status
 		rec.Status = StatusClaimed
 		rec.Outcome = OutcomeTimedOut
 		rec.Answer = &Answer{ReceivedAt: nowMillis}
 		rec.Revision++
 		rec.UpdatedAt = nowMillis
-		r.appendEventLocked(&rec, EventAnswerClaimed, "timeout", nil)
+		r.appendEventFromLocked(&rec, EventAnswerClaimed, from, "timeout", nil)
 		r.records[id] = rec
 		emitted = append(emitted, r.events[len(r.events)-1])
 		claimed = append(claimed, cloneRecord(rec))

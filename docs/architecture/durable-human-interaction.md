@@ -387,6 +387,11 @@ ID, and task ID so replay evaluators can detect within one interaction trace:
 - restart recovery failures;
 - final responses emitted while suspended.
 
+The durable interaction evaluator runs only on traces whose
+`metadata.trace_kind` is `interaction`. Turn traces intentionally contain only
+the interaction observations emitted during that turn, so a continuation turn
+is partial evidence rather than a malformed lifecycle.
+
 Task-state mismatch and missing tool-result checks require a future joined-trace
 projection because task, turn, and long-lived interaction traces are persisted
 separately. A per-file evaluator must return `not_evaluable` rather than infer
