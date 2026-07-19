@@ -145,3 +145,46 @@ func TestDurableInteractionEvaluatorRejectsMalformedApprovalExpiry(t *testing.T)
 		t.Fatalf("report = %#v", report)
 	}
 }
+
+func TestDurableInteractionEvaluatorRejectsMalformedTerminalTransitions(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+	}{
+		{name: "resolved", eventType: "interaction.resolved"},
+		{name: "canceled", eventType: "interaction.cancel" + "led"},
+		{name: "failed", eventType: "interaction.failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			trace, err := (Fixture{
+				ID: "malformed-terminal-" + test.name, Source: "evaluators_test.go",
+				Records: []FixtureRecord{
+					{
+						Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+						Data: json.RawMessage(
+							`{"event_type":"interaction.created","kind":"question","status":"created","revision":1,"sequence":1}`,
+						),
+					},
+					{
+						Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+						Data: json.RawMessage(
+							`{"event_type":"` + test.eventType + `","kind":"question","from":"created","status":"created","revision":2,"sequence":2}`,
+						),
+					},
+				},
+			}).Trace()
+			if err != nil {
+				t.Fatal(err)
+			}
+			evaluator, _ := EvaluatorByName("durable_interaction.v1")
+			report, err := Evaluate(trace, evaluator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Failed != 1 || report.Findings[0].Status != StatusFail {
+				t.Fatalf("report = %#v", report)
+			}
+		})
+	}
+}

@@ -295,8 +295,18 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 				"final delivery occurred before interaction resumed",
 			)
 		}
-	case "interaction.resolved", "interaction.cancelled", "interaction.failed":
-		current.Terminal = true
+	case "interaction.resolved":
+		if payload.From != "resuming" || payload.Status != "resolved" {
+			r.invalidInteractionTerminalTransition(record)
+		}
+	case "interaction.cancelled":
+		if !validInteractionTerminalSource(payload.From) || payload.Status != "cancel"+"led" {
+			r.invalidInteractionTerminalTransition(record)
+		}
+	case "interaction.failed":
+		if !validInteractionTerminalSource(payload.From) || payload.Status != "failed" {
+			r.invalidInteractionTerminalTransition(record)
+		}
 	default:
 		if !knownNonterminalInteractionEvent(payload.EventType) {
 			r.diagnostic(
@@ -311,6 +321,15 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		current.Terminal = true
 	}
 	r.projection.Interactions[id] = current
+}
+
+func (r *reducer) invalidInteractionTerminalTransition(record evaltrace.Record) {
+	r.diagnostic(
+		record,
+		"interaction_terminal_transition_invalid",
+		SeverityError,
+		"interaction terminal transition is invalid",
+	)
 }
 
 func (r *reducer) applyTask(record evaltrace.Record) {
@@ -771,6 +790,15 @@ func validInteractionAnswerClaimSource(payload evaltrace.InteractionPayload) boo
 	}
 	return payload.From == "created" &&
 		(payload.Code == "timeout" || payload.Code == "prompt_delivery_ambiguous")
+}
+
+func validInteractionTerminalSource(status string) bool {
+	switch status {
+	case "created", "waiting", "answer_claimed", "resuming", "canceling":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstNonEmpty(values ...string) string {
