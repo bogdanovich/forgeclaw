@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -117,7 +118,7 @@ func runtimeKindForInteractionEvent(event interactions.EventType) runtimeevents.
 		return runtimeevents.KindAgentInteractionWaiting
 	case interactions.EventAnswerClaimed:
 		return runtimeevents.KindAgentInteractionAnswer
-	case interactions.EventResumeStarted, interactions.EventRecoveryObserved:
+	case interactions.EventResumeStarted, interactions.EventRecoveryObserved, interactions.EventCanceling:
 		return runtimeevents.KindAgentInteractionResume
 	case interactions.EventResolved, interactions.EventCancelled, interactions.EventFailed:
 		return runtimeevents.KindAgentInteractionEnd
@@ -171,6 +172,7 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 		record.ID,
 		record.Revision,
 		deliveryErr == nil,
+		deliveryErr != nil && !channels.DeliveryDefinitelyNotSent(deliveryErr),
 		errString(deliveryErr),
 	)
 	if stateErr != nil {

@@ -19,11 +19,12 @@ const (
 type Status string
 
 const (
-	StatusCreated  Status = "created"
-	StatusWaiting  Status = "waiting"
-	StatusClaimed  Status = "answer_claimed"
-	StatusResuming Status = "resuming"
-	StatusResolved Status = "resolved"
+	StatusCreated   Status = "created"
+	StatusWaiting   Status = "waiting"
+	StatusClaimed   Status = "answer_claimed"
+	StatusResuming  Status = "resuming"
+	StatusCanceling Status = "canceling"
+	StatusResolved  Status = "resolved"
 	//nolint:misspell // External interaction status follows the existing task status spelling.
 	StatusCancelled Status = "cancelled"
 	StatusFailed    Status = "failed"
@@ -43,6 +44,7 @@ const (
 type DeliveryState string
 
 const (
+	DeliveryStateNotSent   DeliveryState = "not_sent"
 	DeliveryStateSending   DeliveryState = "sending"
 	DeliveryStateDelivered DeliveryState = "delivered"
 	DeliveryStateAmbiguous DeliveryState = "ambiguous"
@@ -57,6 +59,7 @@ const (
 	EventWaiting          EventType = "interaction.waiting"
 	EventAnswerClaimed    EventType = "interaction.answer_claimed"
 	EventResumeStarted    EventType = "interaction.resume_started"
+	EventCanceling        EventType = "interaction.canceling"
 	EventResolved         EventType = "interaction.resolved"
 	EventCancelled        EventType = "interaction.cancelled"
 	EventFailed           EventType = "interaction.failed"
@@ -361,13 +364,15 @@ func isTerminal(status Status) bool {
 func validTransition(from, to Status) bool {
 	switch from {
 	case StatusCreated:
-		return to == StatusWaiting || to == StatusCancelled || to == StatusFailed
+		return to == StatusWaiting || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
 	case StatusWaiting:
-		return to == StatusClaimed || to == StatusCancelled || to == StatusFailed
+		return to == StatusClaimed || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
 	case StatusClaimed:
-		return to == StatusResuming || to == StatusCancelled || to == StatusFailed
+		return to == StatusResuming || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
 	case StatusResuming:
-		return to == StatusResolved || to == StatusCancelled || to == StatusFailed
+		return to == StatusResolved || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
+	case StatusCanceling:
+		return to == StatusCancelled || to == StatusFailed
 	default:
 		return false
 	}

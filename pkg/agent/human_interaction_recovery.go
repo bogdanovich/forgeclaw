@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -87,12 +88,70 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 				if al.recoverClaimedInteraction(ctx, workspace, record) {
 					recovered++
 				}
+			case interactions.StatusCanceling:
+				if al.recoverCancelingInteraction(ctx, workspace, registry, record) {
+					recovered++
+				}
 			}
 		}
 		_ = registry.Prune(time.Now())
 		return true
 	})
 	return recovered
+}
+
+func (al *AgentLoop) recoverCancelingInteraction(
+	ctx context.Context,
+	workspace string,
+	registry *interactions.Registry,
+	record interactions.Record,
+) bool {
+	agentRegistry := al.GetRegistry()
+	if agentRegistry == nil {
+		return false
+	}
+	agent, ok := agentRegistry.GetAgent(record.Route.AgentID)
+	if !ok || agent == nil || strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace) {
+		return false
+	}
+	routeSessionKey := record.Route.RouteSessionKey
+	if routeSessionKey == "" {
+		routeSessionKey = record.Route.SessionKey
+	}
+	target := &inboundDispatchTarget{
+		Agent:         agent,
+		RouteClaimKey: runtimeRouteClaimKey(routeSessionKey, ""),
+		Allocation: session.Allocation{
+			RouteScopeKey: routeSessionKey,
+			SessionKey:    record.Route.SessionKey,
+		},
+		SessionKey: record.Route.SessionKey,
+	}
+	claim, _, claimed := al.claimRuntimeRouteSession(
+		target,
+		fmt.Sprintf("pending-interaction-cancel-recovery-%s-%d", record.ShortID, al.turnSeq.Add(1)),
+	)
+	if !claimed {
+		return false
+	}
+	defer claim.releaseIfOwned()
+	if err := al.ensureInteractionCancellationToolResult(
+		ctx,
+		agent,
+		record,
+		record.FailureCode,
+	); err != nil {
+		return false
+	}
+	if _, err := registry.CompleteCancellation(record.ID, record.Revision); err != nil {
+		return false
+	}
+	_ = al.drainDeferredInteractionIngress(
+		ctx,
+		record.Route,
+		inboundContextForInteraction(record.Route),
+	)
+	return true
 }
 
 func (al *AgentLoop) retryInteractionPrompt(
@@ -118,6 +177,7 @@ func (al *AgentLoop) retryInteractionPrompt(
 		started.ID,
 		started.Revision,
 		deliveryErr == nil,
+		deliveryErr != nil && !channels.DeliveryDefinitelyNotSent(deliveryErr),
 		errString(deliveryErr),
 	)
 	if err != nil || deliveryErr != nil {

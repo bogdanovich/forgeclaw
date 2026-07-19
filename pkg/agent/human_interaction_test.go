@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -177,6 +178,40 @@ func TestHumanInteractionPromptFailureRemainsAmbiguousAndDoesNotRetry(t *testing
 	}
 }
 
+func TestHumanInteractionDefiniteNotSentPromptRetries(t *testing.T) {
+	manager := newInteractionChannelManager()
+	manager.sendErr = channels.DefiniteNotSentDeliveryError(errors.New("worker unavailable"))
+	al := &AgentLoop{cfg: config.DefaultConfig(), channelManager: manager}
+	workspace := t.TempDir()
+	disposition, err := al.humanInteractionRuntime().SuspendToolCall(
+		t.Context(),
+		testToolSuspensionRequest(workspace),
+	)
+	if err == nil || !disposition.Durable {
+		t.Fatalf("SuspendToolCall() = (%#v, %v), want durable not-sent error", disposition, err)
+	}
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record, _ := registry.Get(disposition.InteractionID)
+	if record.PromptDeliveryState != interactions.DeliveryStateNotSent {
+		t.Fatalf("definite failure state = %#v", record)
+	}
+
+	manager.sendErr = nil
+	if !al.retryInteractionPrompt(t.Context(), registry, record) {
+		t.Fatal("definite not-sent prompt was not retried")
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusWaiting || !record.PromptDelivered ||
+		record.DeliveryTries != 2 {
+		t.Fatalf("record after definite retry = %#v", record)
+	}
+	select {
+	case <-manager.sent:
+	default:
+		t.Fatal("retry did not send the prompt")
+	}
+}
+
 func TestRecoveryDoesNotResendPromptAfterAmbiguousCrashWindow(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
@@ -274,6 +309,64 @@ func TestRecoveryDoesNotResendAmbiguousFinal(t *testing.T) {
 	case duplicate := <-manager.sent:
 		t.Fatalf("recovery resent ambiguous final: %#v", duplicate)
 	default:
+	}
+}
+
+func TestRecoveryRetriesDefinitelyNotSentFinal(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	sessionKey := "session-not-sent-final"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant", ToolCalls: []providers.ToolCall{{ID: "call-question"}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, _ = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "Canary", Values: map[string]string{"deploy_mode": "Canary"},
+	}, interactions.OutcomeAnswered)
+	if ensureErr := al.ensureInteractionToolResult(t.Context(), agent, record); ensureErr != nil {
+		t.Fatal(ensureErr)
+	}
+	record, _ = registry.MarkResuming(record.ID, record.Revision)
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "Final response"})
+	record, _ = registry.BeginFinalDelivery(record.ID, record.Revision)
+	record, err = registry.CompleteFinalDelivery(
+		record.ID,
+		record.Revision,
+		false,
+		false,
+		"worker unavailable",
+	)
+	if err != nil || record.FinalDeliveryState != interactions.DeliveryStateNotSent {
+		t.Fatalf("complete not-sent final = (%#v, %v)", record, err)
+	}
+
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusResolved || !record.FinalDelivered {
+		t.Fatalf("record after not-sent final recovery = %#v", record)
+	}
+	select {
+	case outbound := <-manager.sent:
+		if outbound.Content != "Final response" {
+			t.Fatalf("retried final = %#v", outbound)
+		}
+	default:
+		t.Fatal("definitely not-sent final was not retried")
 	}
 }
 
@@ -500,6 +593,51 @@ func TestStopCancellationPairsSuspendedToolCall(t *testing.T) {
 	result := agent.Sessions.GetHistory(sessionKey)[resultIndex]
 	if !strings.Contains(result.Content, `"outcome":"canceled"`) {
 		t.Fatalf("cancellation tool result = %q", result.Content)
+	}
+}
+
+func TestRecoveryCompletesDurableStopCancellation(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	sessionKey := "session-stop-cancel-recovery"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-question", Name: "request_user_input",
+			Function: &providers.FunctionCall{Name: "request_user_input", Arguments: `{}`},
+		}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, err = registry.BeginCancellation(record.ID, record.Revision, "session_control_stop")
+	if err != nil || record.Status != interactions.StatusCanceling {
+		t.Fatalf("begin cancellation = (%#v, %v)", record, err)
+	}
+
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusCancelled {
+		t.Fatalf("record after cancellation recovery = %#v", record)
+	}
+	_, resultIndex := interactionToolPairIndexes(agent.Sessions.GetHistory(sessionKey), "call-question")
+	if resultIndex < 0 {
+		t.Fatal("cancellation recovery left the tool call unpaired")
+	}
+	result := agent.Sessions.GetHistory(sessionKey)[resultIndex]
+	if !strings.Contains(result.Content, `"outcome":"canceled"`) {
+		t.Fatalf("recovered cancellation result = %q", result.Content)
 	}
 }
 

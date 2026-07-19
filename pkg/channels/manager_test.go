@@ -2222,9 +2222,18 @@ func TestSendWithRetry_FinalReplyBypassesToolFeedbackFinalization(t *testing.T) 
 		},
 	})
 
-	_, sent := m.sendWithRetry(context.Background(), "test", w, msg)
+	messageIDs, sent, ambiguous, sendErr := m.sendWithRetry(context.Background(), "test", w, msg)
 	if !sent {
 		t.Fatal("expected final reply to be sent as a new message")
+	}
+	if sendErr != nil || ambiguous {
+		t.Fatalf(
+			"sendWithRetry() = (%v, %v, %v, %v), want confirmed delivery",
+			messageIDs,
+			sent,
+			ambiguous,
+			sendErr,
+		)
 	}
 	if ch.finalizeCalled {
 		t.Fatal("expected final reply not to call FinalizeToolFeedbackMessage")
@@ -4096,6 +4105,9 @@ func TestSendMessage_NoWorker(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no worker exists")
 	}
+	if !DeliveryDefinitelyNotSent(err) {
+		t.Fatalf("no-worker error was not classified as definitely not sent: %v", err)
+	}
 }
 
 func TestSendMessage_WithRetry(t *testing.T) {
@@ -4150,6 +4162,36 @@ func TestSendMessage_ReturnsErrorAfterDeliveryFailure(t *testing.T) {
 	}))
 	if err == nil {
 		t.Fatal("SendMessage() succeeded after channel delivery failed")
+	}
+	if !DeliveryDefinitelyNotSent(err) {
+		t.Fatalf("permanent channel rejection was not classified as not sent: %v", err)
+	}
+}
+
+func TestSendMessage_PartialChunkFailureIsAmbiguous(t *testing.T) {
+	m := newTestManager()
+	callCount := 0
+	ch := &mockChannelWithLength{
+		mockChannel: mockChannel{sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			callCount++
+			if callCount == 2 {
+				return fmt.Errorf("second chunk rejected: %w", ErrSendFailed)
+			}
+			return nil
+		}},
+		maxLen: 5,
+	}
+	m.channels["test"] = ch
+	m.workers["test"] = &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	err := m.SendMessage(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "123", Content: "hello world",
+	}))
+	if err == nil {
+		t.Fatal("partial chunk delivery unexpectedly succeeded")
+	}
+	if DeliveryDefinitelyNotSent(err) {
+		t.Fatalf("partial chunk delivery was classified as safe to retry: %v", err)
 	}
 }
 

@@ -84,6 +84,7 @@ const (
     InteractionWaiting   InteractionStatus = "waiting"
     InteractionClaimed   InteractionStatus = "answer_claimed"
     InteractionResuming  InteractionStatus = "resuming"
+    InteractionCanceling InteractionStatus = "canceling"
     InteractionResolved  InteractionStatus = "resolved"
     InteractionCancelled InteractionStatus = "cancelled"
     InteractionFailed    InteractionStatus = "failed"
@@ -96,6 +97,7 @@ const (
     OutcomeTimedOut InteractionOutcome = "timed_out"
     OutcomeAllowed  InteractionOutcome = "allowed"
     OutcomeDenied   InteractionOutcome = "denied"
+    OutcomeDeliveryUnknown InteractionOutcome = "delivery_unknown"
 )
 ```
 
@@ -126,7 +128,8 @@ created -> waiting -> answer_claimed -> resuming -> resolved
     |         |              |             +-> failed
     |         |              +-> retry recovery (status unchanged)
     |         +-> answer_claimed (timeout outcome)
-    +-> failed/cancelled
+    +-> canceling -> cancelled
+    +-> failed
 ```
 
 Rules:
@@ -190,8 +193,10 @@ When `request_user_input` or approval suspends execution:
 2. The interaction is persisted before its outbound prompt is published.
 3. Before calling a channel, delivery durably transitions to `sending`. A
    confirmed acknowledgement transitions to `delivered` and then `waiting`.
-   A crash or error after `sending` is `ambiguous` and is never retried
-   automatically because most channel APIs do not provide an idempotency key.
+   Failures known to occur before any channel attempt become `not_sent` and are
+   retryable. A crash, partial delivery, or uncertain channel error after
+   `sending` is `ambiguous` and is never retried automatically because most
+   channel APIs do not provide an idempotency key.
 4. The tool loop returns `ToolControlSuspend` without adding a fabricated tool
    result for the suspended call.
 5. Remaining tool calls in the same model response are recorded as deferred and
@@ -356,6 +361,11 @@ ambiguity resumes the suspended tool with a `delivery_unknown` outcome; final
 ambiguity terminalizes the interaction with a visible failure code. The stable
 interaction delivery key is correlation metadata, not an idempotency claim.
 
+Cancellation uses the same durable ordering. `/stop` first transitions the
+record to `canceling`, then writes the paired canceled tool result, and finally
+terminalizes it. Recovery completes any surviving `canceling` record, so a
+crash cannot leave waiting state in conflict with canceled canonical history.
+
 ## Configuration
 
 The question tool is enabled by default when durable sessions and outbound
@@ -387,7 +397,8 @@ At startup, after sessions, tasks, channels, and the event sink are available:
 
 1. load and validate nonterminal interactions;
 2. claim overdue requests with a timeout outcome;
-3. retry created or incompletely delivered prompts;
+3. retry only prompts whose delivery is known to be `not_sent`, and reconcile
+   ambiguous delivery without resending;
 4. reconcile `answer_claimed` and `resuming` records against canonical history;
 5. restore task `waiting_for_input` projections;
 6. resume eligible interactions with bounded concurrency;

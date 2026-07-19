@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -34,14 +35,37 @@ func (al *AgentLoop) cancelInteractionForControlMessage(
 		return nil
 	}
 	if name == "stop" {
+		claim, _, claimed := al.claimRuntimeRouteSession(
+			target,
+			fmt.Sprintf("pending-interaction-cancel-%s-%d", record.ShortID, al.turnSeq.Add(1)),
+		)
+		if !claimed {
+			return fmt.Errorf("interaction session is busy while canceling")
+		}
+		defer claim.releaseIfOwned()
+		if record.Status != interactions.StatusCanceling {
+			var err error
+			record, err = registry.BeginCancellation(
+				record.ID,
+				record.Revision,
+				"session_control_stop",
+			)
+			if err != nil {
+				return fmt.Errorf("begin stop cancellation: %w", err)
+			}
+		}
 		if err := al.ensureInteractionCancellationToolResult(
 			ctx,
 			target.Agent,
 			record,
-			"session_control_stop",
+			record.FailureCode,
 		); err != nil {
 			return fmt.Errorf("persist stop cancellation result: %w", err)
 		}
+		if _, err := registry.CompleteCancellation(record.ID, record.Revision); err != nil {
+			return fmt.Errorf("complete stop cancellation: %w", err)
+		}
+		return nil
 	}
 	if _, err := registry.Cancel(record.ID, record.Revision, "session_control_"+name); err != nil {
 		logger.WarnCF("agent", "Failed to cancel interaction for session control", map[string]any{
@@ -483,7 +507,11 @@ func (al *AgentLoop) deliverInteractionFinal(
 		SessionKey: record.Route.SessionKey, Content: content,
 	})
 	updated, stateErr := registry.CompleteFinalDelivery(
-		started.ID, started.Revision, deliveryErr == nil, errString(deliveryErr),
+		started.ID,
+		started.Revision,
+		deliveryErr == nil,
+		deliveryErr != nil && !channels.DeliveryDefinitelyNotSent(deliveryErr),
+		errString(deliveryErr),
 	)
 	if stateErr != nil {
 		return fmt.Errorf("record final interaction delivery: %w", stateErr)

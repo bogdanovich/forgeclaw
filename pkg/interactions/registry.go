@@ -255,7 +255,9 @@ func (r *Registry) BeginPromptDelivery(id string, expectedRevision int64) (Recor
 		id,
 		expectedRevision,
 		func(rec *Record, now int64) (EventType, string, *bool, error) {
-			if rec.Status != StatusCreated || rec.PromptDeliveryState != "" || rec.PromptDelivered {
+			if rec.Status != StatusCreated ||
+				(rec.PromptDeliveryState != "" && rec.PromptDeliveryState != DeliveryStateNotSent) ||
+				rec.PromptDelivered {
 				return "", "", nil, fmt.Errorf(
 					"%w: begin prompt delivery from %s/%s",
 					ErrInvalidTransition,
@@ -276,6 +278,7 @@ func (r *Registry) CompletePromptDelivery(
 	id string,
 	expectedRevision int64,
 	success bool,
+	ambiguous bool,
 	detail string,
 ) (Record, error) {
 	return r.update(
@@ -295,8 +298,11 @@ func (r *Registry) CompletePromptDelivery(
 				rec.PromptDelivered = true
 				rec.PromptDeliveryState = DeliveryStateDelivered
 				rec.DeliveryError = ""
-			} else {
+			} else if ambiguous {
 				rec.PromptDeliveryState = DeliveryStateAmbiguous
+				rec.DeliveryError = bounded(detail, MaxSummaryLength)
+			} else {
+				rec.PromptDeliveryState = DeliveryStateNotSent
 				rec.DeliveryError = bounded(detail, MaxSummaryLength)
 			}
 			return EventDeliveryAttempt, "delivery_completed", &success, nil
@@ -338,7 +344,9 @@ func (r *Registry) BeginFinalDelivery(id string, expectedRevision int64) (Record
 		id,
 		expectedRevision,
 		func(rec *Record, now int64) (EventType, string, *bool, error) {
-			if rec.Status != StatusResuming || rec.FinalDeliveryState != "" || rec.FinalDelivered {
+			if rec.Status != StatusResuming ||
+				(rec.FinalDeliveryState != "" && rec.FinalDeliveryState != DeliveryStateNotSent) ||
+				rec.FinalDelivered {
 				return "", "", nil, fmt.Errorf(
 					"%w: begin final delivery from %s/%s",
 					ErrInvalidTransition,
@@ -359,6 +367,7 @@ func (r *Registry) CompleteFinalDelivery(
 	id string,
 	expectedRevision int64,
 	success bool,
+	ambiguous bool,
 	detail string,
 ) (Record, error) {
 	return r.update(
@@ -378,8 +387,11 @@ func (r *Registry) CompleteFinalDelivery(
 				rec.FinalDelivered = true
 				rec.FinalDeliveryState = DeliveryStateDelivered
 				rec.FinalDeliveryError = ""
-			} else {
+			} else if ambiguous {
 				rec.FinalDeliveryState = DeliveryStateAmbiguous
+				rec.FinalDeliveryError = bounded(detail, MaxSummaryLength)
+			} else {
+				rec.FinalDeliveryState = DeliveryStateNotSent
 				rec.FinalDeliveryError = bounded(detail, MaxSummaryLength)
 			}
 			return EventFinalDelivery, "delivery_completed", &success, nil
@@ -530,6 +542,41 @@ func (r *Registry) RecordResumeFailure(
 
 func (r *Registry) Resolve(id string, expectedRevision int64) (Record, error) {
 	return r.transition(id, expectedRevision, StatusResolved, EventResolved, "", nil)
+}
+
+func (r *Registry) BeginCancellation(
+	id string,
+	expectedRevision int64,
+	code string,
+) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, _ int64) (EventType, string, *bool, error) {
+			if !validTransition(rec.Status, StatusCanceling) {
+				return "", "", nil, fmt.Errorf(
+					"%w: %s -> %s",
+					ErrInvalidTransition,
+					rec.Status,
+					StatusCanceling,
+				)
+			}
+			rec.Status = StatusCanceling
+			rec.FailureCode = bounded(code, 128)
+			return EventCanceling, rec.FailureCode, nil, nil
+		},
+	)
+}
+
+func (r *Registry) CompleteCancellation(id string, expectedRevision int64) (Record, error) {
+	return r.transition(
+		id,
+		expectedRevision,
+		StatusCancelled,
+		EventCancelled,
+		"cancellation_completed",
+		nil,
+	)
 }
 
 func (r *Registry) Cancel(id string, expectedRevision int64, code string) (Record, error) {
@@ -1037,6 +1084,7 @@ func validateStoredRecord(rec Record) error {
 		StatusWaiting,
 		StatusClaimed,
 		StatusResuming,
+		StatusCanceling,
 		StatusResolved,
 		StatusCancelled,
 		StatusFailed:
@@ -1097,7 +1145,7 @@ func validStoredOutcome(kind Kind, outcome Outcome) bool {
 
 func validDeliveryState(state DeliveryState) bool {
 	switch state {
-	case "", DeliveryStateSending, DeliveryStateDelivered, DeliveryStateAmbiguous:
+	case "", DeliveryStateNotSent, DeliveryStateSending, DeliveryStateDelivered, DeliveryStateAmbiguous:
 		return true
 	default:
 		return false
