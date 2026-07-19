@@ -292,7 +292,7 @@ func (t *MemoryTool) appendDaily(
 }
 
 func appendDailyMemory(current, dailyDate, content string) string {
-	current = strings.TrimRight(current, " \t\r\n")
+	current = strings.TrimRight(current, "\r\n")
 	content = strings.TrimSpace(content)
 	if current == "" {
 		return "# " + dailyDate + "\n\n" + content + "\n"
@@ -301,9 +301,6 @@ func appendDailyMemory(current, dailyDate, content string) string {
 }
 
 func dailyMemoryContains(current, candidate string) bool {
-	if normalizedMemoryContains(current, candidate) {
-		return true
-	}
 	current = strings.ReplaceAll(current, "\r\n", "\n")
 	candidate = strings.TrimSpace(strings.ReplaceAll(candidate, "\r\n", "\n"))
 	if candidate == "" {

@@ -243,7 +243,7 @@ func TestMemoryToolAppendDailySelectsDateDeduplicatesAndAudits(t *testing.T) {
 	})
 	duplicate := tool.Execute(t.Context(), map[string]any{
 		"operation": appendDailyMemoryOperation,
-		"content":   "  FINISHED   THE PRIVATE DEPLOYMENT  ",
+		"content":   "\r\n" + firstContent + "\r\n",
 	})
 	for _, result := range []*ToolResult{first, second, duplicate} {
 		if result.IsError {
@@ -290,7 +290,7 @@ func TestMemoryToolAppendDailySelectsDateDeduplicatesAndAudits(t *testing.T) {
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
-		for _, raw := range []string{firstContent, secondContent, "FINISHED   THE PRIVATE DEPLOYMENT"} {
+		for _, raw := range []string{firstContent, secondContent} {
 			if strings.Contains(string(encoded), raw) {
 				t.Fatalf("runtime event leaked raw daily content: %s", encoded)
 			}
@@ -366,6 +366,41 @@ func TestMemoryToolAppendDailyDeduplicatesMultiParagraphRetry(t *testing.T) {
 	if strings.Count(string(data), "Finished the rollout") != 1 ||
 		strings.Count(string(data), "verify metrics tomorrow") != 1 {
 		t.Fatalf("multi-paragraph retry was persisted more than once: %q", data)
+	}
+}
+
+func TestMemoryToolAppendDailyPreservesCaseAndExistingWhitespace(t *testing.T) {
+	workspace := t.TempDir()
+	dailyPath := filepath.Join(workspace, "memory", "202607", "20260718.md")
+	if err := os.MkdirAll(filepath.Dir(dailyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := "# 2026-07-18\n\nExisting hard break  \n"
+	if err := os.WriteFile(dailyPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fixedNow := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tool := newMemoryTool(workspace, nil, nil, func() time.Time { return fixedNow })
+	upper := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   "- /Users/Alice/Foo",
+	})
+	lower := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   "- /users/alice/foo",
+	})
+	if upper.IsError || lower.IsError || !strings.Contains(lower.ForLLM, `"status":"appended"`) {
+		t.Fatalf("case-sensitive append results: upper=%#v lower=%#v", upper, lower)
+	}
+
+	data, err := os.ReadFile(dailyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := original + "\n- /Users/Alice/Foo\n\n- /users/alice/foo\n"
+	if string(data) != want {
+		t.Fatalf("daily append changed existing whitespace or suppressed case: got %q, want %q", data, want)
 	}
 }
 
