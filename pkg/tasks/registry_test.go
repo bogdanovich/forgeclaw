@@ -54,6 +54,112 @@ func TestRegistryPersistsAndReloadsRecords(t *testing.T) {
 	}
 }
 
+func TestRegistryProjectsDurableInteractionLifecycle(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "task-1", Status: StatusRunning, DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registry.MarkWaitingForInput(
+		"task-1", "interaction-1", "abc123", strings.Repeat("summary ", 100),
+	); err != nil {
+		t.Fatalf("MarkWaitingForInput() error = %v", err)
+	}
+	rec, _ := registry.Get("task-1")
+	if rec.Status != StatusWaitingForInput || rec.InteractionID != "interaction-1" ||
+		rec.InteractionShortID != "abc123" || len([]rune(rec.InteractionSummary)) != 500 {
+		t.Fatalf("waiting record = %#v", rec)
+	}
+	if err := registry.MarkWaitingForInput(
+		"task-1", "interaction-2", "other", "other prompt",
+	); err == nil {
+		t.Fatal("replaced a task's active interaction")
+	}
+	if err := registry.MarkInteractionRunning("task-1", "interaction-1"); err != nil {
+		t.Fatalf("MarkInteractionRunning() error = %v", err)
+	}
+	rec, _ = registry.Get("task-1")
+	if rec.Status != StatusRunning || rec.InteractionID != "interaction-1" ||
+		rec.InteractionShortID != "" || rec.InteractionSummary != "" {
+		t.Fatalf("resumed record = %#v", rec)
+	}
+	if err := registry.FinishInteraction(
+		"task-1", "interaction-1", StatusTimedOut, "human input timed out",
+	); err != nil {
+		t.Fatalf("FinishInteraction() error = %v", err)
+	}
+	rec, _ = registry.Get("task-1")
+	if rec.Status != StatusTimedOut || rec.Error != "human input timed out" {
+		t.Fatalf("terminal record = %#v", rec)
+	}
+}
+
+func TestWaitingForInputSurvivesReloadAndActiveReconciliation(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "task-waiting", Status: StatusRunning, DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.MarkWaitingForInput(
+		"task-waiting", "interaction-1", "abc123", "Choose a deployment mode",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistry(store)
+	active := reloaded.ListActive()
+	if len(active) != 1 || active[0].Status != StatusWaitingForInput {
+		t.Fatalf("active after reload = %#v", active)
+	}
+	count, err := reloaded.MarkActiveLost("runtime restarted")
+	if err != nil || count != 0 {
+		t.Fatalf("MarkActiveLost() = (%d, %v), want waiting task preserved", count, err)
+	}
+	rec, _ := reloaded.Get("task-waiting")
+	if rec.Status != StatusWaitingForInput || rec.InteractionShortID != "abc123" {
+		t.Fatalf("record after reconciliation = %#v", rec)
+	}
+}
+
+func TestCorrelatedResumingTaskSurvivesRestartAndRepairsLostState(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "task-resuming", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending, InteractionID: "interaction-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	count, err := registry.MarkActiveLost("runtime restarted")
+	if err != nil || count != 0 {
+		t.Fatalf("MarkActiveLost() = (%d, %v)", count, err)
+	}
+	rec, _ := registry.Get("task-resuming")
+	if rec.Status != StatusRunning {
+		t.Fatalf("correlated task status = %q", rec.Status)
+	}
+	if err := registry.Update("task-resuming", func(rec *Record) {
+		rec.Status = StatusLost
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.MarkInteractionRunning("task-resuming", "interaction-1"); err != nil {
+		t.Fatalf("MarkInteractionRunning() repair error = %v", err)
+	}
+	if err := registry.CompleteInteractionTask(
+		"task-resuming", "interaction-1", "done", DeliveryDelivered,
+	); err != nil {
+		t.Fatalf("CompleteInteractionTask() error = %v", err)
+	}
+	rec, _ = registry.Get("task-resuming")
+	if rec.Status != StatusSucceeded || rec.DeliveryStatus != DeliveryDelivered {
+		t.Fatalf("repaired task = %#v", rec)
+	}
+}
+
 func TestRegistryPersistsAndReloadsTaskEvents(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
 	registry := NewRegistry(store)

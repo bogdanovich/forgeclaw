@@ -42,6 +42,7 @@ type SubTurnConfig struct {
 	InitialTokenBudget *atomic.Int64 // Shared token budget for team members; nil if no budget
 	TargetAgentID      string        // If set, run as this agent (its workspace, model, tools)
 	DeliveryMode       AsyncDeliveryMode
+	TaskID             string // Durable task owning this child turn, when one exists.
 }
 
 type SubagentTask struct {
@@ -51,6 +52,7 @@ type SubagentTask struct {
 	AgentID       string
 	OriginChannel string
 	OriginChatID  string
+	DeliveryMode  AsyncDeliveryMode
 	Status        string
 	Result        string
 	Created       int64
@@ -58,6 +60,7 @@ type SubagentTask struct {
 
 type SpawnSubTurnFunc func(
 	ctx context.Context,
+	taskID string,
 	task, label, agentID string,
 	tools *ToolRegistry,
 	maxTokens int,
@@ -174,6 +177,7 @@ func (sm *SubagentManager) RegisterTool(tool Tool) {
 func (sm *SubagentManager) Spawn(
 	ctx context.Context,
 	task, label, agentID, originChannel, originChatID string,
+	deliveryMode AsyncDeliveryMode,
 	callback AsyncCallback,
 ) (string, error) {
 	sm.mu.Lock()
@@ -189,6 +193,7 @@ func (sm *SubagentManager) Spawn(
 		AgentID:       agentID,
 		OriginChannel: originChannel,
 		OriginChatID:  originChatID,
+		DeliveryMode:  deliveryMode,
 		Status:        "running",
 		Created:       time.Now().UnixMilli(),
 	}
@@ -247,6 +252,7 @@ func (sm *SubagentManager) runTask(
 	if spawner != nil {
 		result, err = spawner(
 			ctx,
+			task.ID,
 			task.Task,
 			task.Label,
 			task.AgentID,
@@ -303,6 +309,9 @@ After completing the task, provide a clear summary of what was done.`
 				Async:   false,
 			}
 		}
+	}
+	if result != nil && result.TaskSuspended {
+		return
 	}
 
 	sm.mu.Lock()
@@ -365,6 +374,8 @@ func subagentTaskFromRecord(rec taskregistry.Record) *SubagentTask {
 		status = "canceled"
 	case taskregistry.StatusRunning, taskregistry.StatusQueued:
 		status = "running"
+	case taskregistry.StatusWaitingForInput:
+		status = "waiting_for_input"
 	}
 	return &SubagentTask{
 		ID:            rec.TaskID,
@@ -373,6 +384,7 @@ func subagentTaskFromRecord(rec taskregistry.Record) *SubagentTask {
 		AgentID:       rec.AgentID,
 		OriginChannel: rec.Channel,
 		OriginChatID:  rec.ChatID,
+		DeliveryMode:  AsyncDeliveryMode(rec.DeliveryMode),
 		Status:        status,
 		Result:        rec.TerminalSummary,
 		Created:       rec.CreatedAt,
@@ -401,6 +413,7 @@ func (sm *SubagentManager) recordTask(
 		Status:         status,
 		DeliveryStatus: delivery,
 		NotifyPolicy:   taskregistry.NotifyDoneOnly,
+		DeliveryMode:   string(task.DeliveryMode),
 		CreatedAt:      task.Created,
 		StartedAt:      task.Created,
 		LastEventAt:    now,

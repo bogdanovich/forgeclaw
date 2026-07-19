@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -185,6 +187,7 @@ type SubTurnConfig struct {
 	// delegate/sub-turn flows. Reuses the same enum names as async spawn:
 	// parent_only, user_only, user_and_parent.
 	DeliveryMode tools.AsyncDeliveryMode
+	TaskID       string
 }
 
 // ====================== Context Keys ======================
@@ -244,6 +247,7 @@ func (s *AgentLoopSpawner) SpawnSubTurn(
 		MaxContextRunes:    cfg.MaxContextRunes,
 		TargetAgentID:      cfg.TargetAgentID,
 		DeliveryMode:       cfg.DeliveryMode,
+		TaskID:             cfg.TaskID,
 	}
 
 	return spawnSubTurn(ctx, s.al, parentTS, agentCfg)
@@ -413,9 +417,14 @@ func spawnSubTurn(
 	if err != nil {
 		return nil, err
 	}
+	durableTask := strings.TrimSpace(cfg.TaskID) != ""
 	ephemeralStore := newEphemeralSession(nil)
 	agent := *baseAgent // shallow copy
-	agent.Sessions = ephemeralStore
+	if durableTask {
+		agent.Sessions = baseAgent.Sessions
+	} else {
+		agent.Sessions = ephemeralStore
+	}
 	if modelBinding.WorkspaceAgent == nil {
 		modelBinding.WorkspaceAgent = &agent
 	}
@@ -448,16 +457,22 @@ func spawnSubTurn(
 	// don't pollute the parent's registry.
 	if baseAgent.Tools != nil {
 		agent.Tools = baseAgent.Tools.Clone()
-		removeDurableInteractionTools(agent.Tools)
+		if !durableTask {
+			removeDurableInteractionTools(agent.Tools)
+		}
 		if !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly {
 			removeUserDeliveryTools(agent.Tools)
 		}
 	}
 
 	// Create processOptions for the child turn
+	childSessionKey := childID
+	if durableTask {
+		childSessionKey = durableTaskSessionKey(parentTS.workspace, cfg.TaskID)
+	}
 	dispatch := DispatchRequest{
 		RouteSessionKey: parentTS.opts.Dispatch.RouteSessionKey,
-		SessionKey:      childID,
+		SessionKey:      childSessionKey,
 		SessionAliases:  append([]string(nil), parentTS.opts.Dispatch.SessionAliases...),
 		UserMessage:     cfg.SystemPrompt,
 		Media:           nil,
@@ -466,6 +481,10 @@ func spawnSubTurn(
 		SessionScope:    session.CloneScope(parentTS.opts.Dispatch.SessionScope),
 	}
 	opts := processOptions{
+		TaskID:                  strings.TrimSpace(cfg.TaskID),
+		InteractionWorkspace:    parentTS.workspace,
+		InteractionSessionKey:   parentTS.sessionKey,
+		InteractionRouteKey:     parentTS.opts.Dispatch.RouteSessionKey,
 		ModelBinding:            modelBinding,
 		Dispatch:                dispatch,
 		SenderID:                parentTS.opts.Dispatch.SenderID(),
@@ -479,7 +498,7 @@ func spawnSubTurn(
 			(deliveryMode == tools.AsyncDeliveryUserOnly || deliveryMode == tools.AsyncDeliveryUserAndParent),
 		SuppressToolUserDelivery: !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly,
 		SuppressToolFeedback:     parentTS.opts.SuppressToolFeedback,
-		NoHistory:                true, // SubTurns don't use session history
+		NoHistory:                !durableTask,
 		SkipInitialSteeringPoll:  true,
 	}
 	if !opts.TurnProfile.Enabled {
@@ -504,8 +523,8 @@ func spawnSubTurn(
 	childTS.parentTurnState = parentTS
 	childTS.pendingResults = make(chan *tools.ToolResult, 16)
 	childTS.concurrencySem = make(chan struct{}, rtCfg.maxConcurrent)
-	childTS.al = al                  // back-ref for hard abort cascade
-	childTS.session = ephemeralStore // same store as agent.Sessions
+	childTS.al = al // back-ref for hard abort cascade
+	childTS.session = agent.Sessions
 
 	// Token budget initialization/inheritance
 	// If InitialTokenBudget is explicitly provided (e.g., by team tool), use it.
@@ -615,6 +634,8 @@ func spawnSubTurn(
 			Err:    turnErr,
 			ForLLM: fmt.Sprintf("SubTurn failed: %v", turnErr),
 		}
+	} else if turnRes.status == TurnEndStatusSuspended {
+		result = &tools.ToolResult{TaskSuspended: true}
 	} else {
 		result = &tools.ToolResult{
 			ForLLM:  turnRes.finalContent,
@@ -640,6 +661,11 @@ func spawnSubTurn(
 	}
 
 	return result, err
+}
+
+func durableTaskSessionKey(ownerWorkspace, taskID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(ownerWorkspace)))
+	return "task:" + hex.EncodeToString(sum[:8]) + ":" + strings.TrimSpace(taskID)
 }
 
 func completionMediaRefs(items []tools.CompletionMedia) []string {

@@ -28,11 +28,12 @@ const (
 type Status string
 
 const (
-	StatusQueued    Status = "queued"
-	StatusRunning   Status = "running"
-	StatusSucceeded Status = "succeeded"
-	StatusFailed    Status = "failed"
-	StatusTimedOut  Status = "timed_out"
+	StatusQueued          Status = "queued"
+	StatusRunning         Status = "running"
+	StatusWaitingForInput Status = "waiting_for_input"
+	StatusSucceeded       Status = "succeeded"
+	StatusFailed          Status = "failed"
+	StatusTimedOut        Status = "timed_out"
 	//nolint:misspell // External task status value intentionally uses British spelling for compatibility.
 	StatusCancelled Status = "cancelled"
 	StatusLost      Status = "lost"
@@ -185,6 +186,9 @@ type Record struct {
 	Error               string              `json:"error,omitempty"`
 	ProgressSummary     string              `json:"progress_summary,omitempty"`
 	TerminalSummary     string              `json:"terminal_summary,omitempty"`
+	InteractionID       string              `json:"interaction_id,omitempty"`
+	InteractionShortID  string              `json:"interaction_short_id,omitempty"`
+	InteractionSummary  string              `json:"interaction_summary,omitempty"`
 	Completion          *CompletionPayload  `json:"completion,omitempty"`
 	Deliverable         *DeliverablePayload `json:"deliverable,omitempty"`
 }
@@ -408,6 +412,198 @@ func (r *Registry) Heartbeat(taskID, progress string) error {
 	})
 }
 
+// MarkWaitingForInput projects a durable human interaction onto a running task.
+// Only bounded, user-safe interaction metadata belongs in the task registry.
+func (r *Registry) MarkWaitingForInput(
+	taskID, interactionID, shortID, summary string,
+) error {
+	interactionID = strings.TrimSpace(interactionID)
+	if interactionID == "" {
+		return fmt.Errorf("interaction ID is required")
+	}
+	return r.updateInteractionProjection(taskID, func(rec *Record) (bool, error) {
+		if rec.Status == StatusWaitingForInput && rec.InteractionID != interactionID {
+			return false, fmt.Errorf(
+				"task %q already waits for interaction %q",
+				taskID,
+				rec.InteractionID,
+			)
+		}
+		if rec.Status != StatusQueued && rec.Status != StatusRunning &&
+			rec.Status != StatusWaitingForInput {
+			return false, fmt.Errorf(
+				"task %q cannot wait for input from status %q", taskID, rec.Status,
+			)
+		}
+		rec.Status = StatusWaitingForInput
+		rec.InteractionID = interactionID
+		rec.InteractionShortID = truncateInteractionField(shortID, 64)
+		rec.InteractionSummary = truncateInteractionField(summary, 500)
+		rec.ProgressSummary = "waiting for human input"
+		return true, nil
+	})
+}
+
+// MarkInteractionRunning returns a matching waiting task to running before its
+// suspended continuation starts. The interaction ID is retained for audit and
+// correlation while display-only waiting metadata is cleared.
+func (r *Registry) MarkInteractionRunning(taskID, interactionID string) error {
+	interactionID = strings.TrimSpace(interactionID)
+	if interactionID == "" {
+		return fmt.Errorf("interaction ID is required")
+	}
+	return r.updateInteractionProjection(taskID, func(rec *Record) (bool, error) {
+		if rec.InteractionID != interactionID {
+			return false, fmt.Errorf(
+				"task %q interaction mismatch: have %q, got %q",
+				taskID,
+				rec.InteractionID,
+				interactionID,
+			)
+		}
+		if rec.Status != StatusWaitingForInput && rec.Status != StatusRunning &&
+			rec.Status != StatusLost {
+			return false, fmt.Errorf(
+				"task %q cannot resume from status %q", taskID, rec.Status,
+			)
+		}
+		if rec.Status == StatusLost {
+			rec.EndedAt = 0
+			rec.CleanupAfter = 0
+			rec.Error = ""
+			if rec.DeliveryStatus == DeliveryNotApplicable {
+				rec.DeliveryStatus = DeliveryPending
+			}
+		}
+		rec.Status = StatusRunning
+		rec.InteractionShortID = ""
+		rec.InteractionSummary = ""
+		rec.ProgressSummary = "resuming after human input"
+		return true, nil
+	})
+}
+
+// FinishInteraction projects a terminal interaction failure onto its owning
+// task. Successful answers resume the task and are completed by the task owner.
+func (r *Registry) FinishInteraction(
+	taskID, interactionID string,
+	status Status,
+	summary string,
+) error {
+	switch status {
+	case StatusFailed, StatusTimedOut, StatusCancelled:
+	default:
+		return fmt.Errorf("invalid terminal interaction task status %q", status)
+	}
+	interactionID = strings.TrimSpace(interactionID)
+	if interactionID == "" {
+		return fmt.Errorf("interaction ID is required")
+	}
+	return r.updateInteractionProjection(taskID, func(rec *Record) (bool, error) {
+		if rec.InteractionID != interactionID {
+			return false, fmt.Errorf(
+				"task %q interaction mismatch: have %q, got %q",
+				taskID,
+				rec.InteractionID,
+				interactionID,
+			)
+		}
+		if isTerminalStatus(rec.Status) && rec.Status != StatusLost {
+			return false, nil
+		}
+		if rec.Status == StatusLost {
+			rec.EndedAt = 0
+			rec.CleanupAfter = 0
+		}
+		rec.Status = status
+		rec.InteractionShortID = ""
+		rec.InteractionSummary = ""
+		rec.ProgressSummary = ""
+		rec.Error = truncateInteractionField(summary, 1000)
+		return true, nil
+	})
+}
+
+// CompleteInteractionTask terminalizes a task only after its suspended
+// continuation has produced and delivered the final result.
+func (r *Registry) CompleteInteractionTask(
+	taskID, interactionID, content string,
+	delivery DeliveryStatus,
+) error {
+	interactionID = strings.TrimSpace(interactionID)
+	if interactionID == "" {
+		return fmt.Errorf("interaction ID is required")
+	}
+	if delivery == "" {
+		delivery = DeliveryNotApplicable
+	}
+	return r.updateInteractionProjection(taskID, func(rec *Record) (bool, error) {
+		if rec.InteractionID != interactionID {
+			return false, fmt.Errorf(
+				"task %q interaction mismatch: have %q, got %q",
+				taskID, rec.InteractionID, interactionID,
+			)
+		}
+		if isTerminalStatus(rec.Status) && rec.Status != StatusLost {
+			return false, nil
+		}
+		if rec.Status == StatusLost {
+			rec.EndedAt = 0
+			rec.CleanupAfter = 0
+		}
+		summary := truncateInteractionField(content, 1000)
+		rec.Status = StatusSucceeded
+		rec.DeliveryStatus = delivery
+		rec.InteractionShortID = ""
+		rec.InteractionSummary = ""
+		rec.ProgressSummary = ""
+		rec.TerminalSummary = summary
+		rec.Error = ""
+		if strings.TrimSpace(content) != "" {
+			rec.Completion = &CompletionPayload{Text: content}
+		}
+		if delivery == DeliveryDelivered || delivery == DeliveryNotApplicable {
+			rec.DeliveredAt = time.Now().UnixMilli()
+		}
+		return true, nil
+	})
+}
+
+func (r *Registry) updateInteractionProjection(
+	taskID string,
+	mutate func(*Record) (bool, error),
+) error {
+	if r == nil || strings.TrimSpace(taskID) == "" || mutate == nil {
+		return nil
+	}
+	r.mu.Lock()
+	eventStart := len(r.events)
+	rec, ok := r.records[taskID]
+	if !ok {
+		r.mu.Unlock()
+		return fmt.Errorf("task %q not found", taskID)
+	}
+	before := rec
+	changed, err := mutate(&rec)
+	if err != nil || !changed {
+		r.mu.Unlock()
+		return err
+	}
+	now := time.Now().UnixMilli()
+	rec.LastEventAt = now
+	rec = r.normalizeRecord(rec, now)
+	r.records[taskID] = rec
+	r.appendUpdateEventsLocked(before, rec, now)
+	newEvents := r.eventsSinceLocked(eventStart)
+	r.pruneLocked(now)
+	err = r.saveLocked()
+	r.mu.Unlock()
+	if err == nil {
+		r.notifyEvents(newEvents)
+	}
+	return err
+}
+
 func (r *Registry) Get(taskID string) (Record, bool) {
 	if r == nil {
 		return Record{}, false
@@ -466,7 +662,8 @@ func (r *Registry) ListActive() []Record {
 	records := r.List()
 	out := make([]Record, 0)
 	for _, rec := range records {
-		if rec.Status == StatusQueued || rec.Status == StatusRunning {
+		if rec.Status == StatusQueued || rec.Status == StatusRunning ||
+			rec.Status == StatusWaitingForInput {
 			out = append(out, rec)
 		}
 	}
@@ -489,6 +686,9 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
+			continue
+		}
+		if rec.Status == StatusRunning && strings.TrimSpace(rec.InteractionID) != "" {
 			continue
 		}
 		before := rec
@@ -545,6 +745,9 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
+			continue
+		}
+		if rec.Status == StatusRunning && strings.TrimSpace(rec.InteractionID) != "" {
 			continue
 		}
 		before := rec
@@ -627,7 +830,19 @@ func (r *Registry) normalizeRecord(rec Record, now int64) Record {
 	if rec.Deliverable != nil {
 		rec.Deliverable = normalizeDeliverablePayload(rec.Deliverable, now)
 	}
+	rec.InteractionID = strings.TrimSpace(rec.InteractionID)
+	rec.InteractionShortID = truncateInteractionField(rec.InteractionShortID, 64)
+	rec.InteractionSummary = truncateInteractionField(rec.InteractionSummary, 500)
 	return rec
+}
+
+func truncateInteractionField(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		return string(runes[:maxRunes])
+	}
+	return value
 }
 
 func (r *Registry) pruneLocked(now int64) bool {

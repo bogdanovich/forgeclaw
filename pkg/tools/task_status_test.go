@@ -164,6 +164,30 @@ func TestTaskStatusTool_TaskID(t *testing.T) {
 	}
 }
 
+func TestTaskStatusTool_ShowsBoundedWaitingInteraction(t *testing.T) {
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "task-waiting", Runtime: taskregistry.RuntimeTool, TaskKind: "coding",
+		Task: "deploy the service", Status: taskregistry.StatusWaitingForInput,
+		DeliveryStatus: taskregistry.DeliveryPending, InteractionID: "secret-full-id",
+		InteractionShortID: "abc123", InteractionSummary: "Choose the deployment mode",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := NewTaskStatusTool(registry).Execute(
+		context.Background(), map[string]any{"task_id": "task-waiting"},
+	)
+	if result.IsError || !strings.Contains(
+		result.ForLLM, "Input required: request=abc123 summary=Choose the deployment mode",
+	) {
+		t.Fatalf("waiting task output = %q", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, "secret-full-id") {
+		t.Fatalf("full interaction ID leaked in status output: %q", result.ForLLM)
+	}
+}
+
 func TestTaskStatusTool_TaskIDIncludesCompleteDeliverable(t *testing.T) {
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(t.TempDir()))
 	fullText := strings.Repeat("research finding ", 80)

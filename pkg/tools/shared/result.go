@@ -72,6 +72,10 @@ type ToolResult struct {
 	// when the tool runtime has one, for example "subagent-42".
 	AsyncTaskID string `json:"async_task_id,omitempty"`
 
+	// TaskSuspended tells a durable task owner not to publish completion while
+	// the child turn is owned by a pending human interaction.
+	TaskSuspended bool `json:"-"`
+
 	// Err is the underlying error (not JSON serialized).
 	// Used for internal error handling and logging.
 	Err error `json:"-"`

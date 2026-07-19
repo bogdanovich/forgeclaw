@@ -322,6 +322,7 @@ func registerSharedTools(
 			// Set the spawner that links into AgentLoop's turnState
 			subagentManager.SetSpawner(func(
 				ctx context.Context,
+				taskID string,
 				task, label, targetAgentID string,
 				tls *tools.ToolRegistry,
 				maxTokens int,
@@ -367,6 +368,7 @@ func registerSharedTools(
 
 				// 5. Build SubTurnConfig
 				cfg := SubTurnConfig{
+					TaskID:       taskID,
 					Model:        modelToUse,
 					Tools:        tlSlice,
 					SystemPrompt: systemPrompt,

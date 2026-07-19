@@ -89,6 +89,7 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 						recovered++
 						_ = al.drainDeferredInteractionIngress(
 							ctx,
+							workspace,
 							record.Route,
 							inboundContextForInteraction(record.Route),
 						)
@@ -158,8 +159,8 @@ func (al *AgentLoop) interactionAgentAvailable(
 		return true
 	}
 	agent, ok := registry.GetAgent(record.Route.AgentID)
-	return ok && agent != nil &&
-		strings.TrimSpace(agent.Workspace) == strings.TrimSpace(workspace)
+	return ok && agent != nil && (record.Origin.TaskID != "" ||
+		strings.TrimSpace(agent.Workspace) == strings.TrimSpace(workspace))
 }
 
 func (al *AgentLoop) recoverCancelingInteraction(
@@ -173,7 +174,8 @@ func (al *AgentLoop) recoverCancelingInteraction(
 		return false
 	}
 	agent, ok := agentRegistry.GetAgent(record.Route.AgentID)
-	if !ok || agent == nil || strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace) {
+	if !ok || agent == nil || (record.Origin.TaskID == "" &&
+		strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace)) {
 		return false
 	}
 	routeSessionKey := record.Route.RouteSessionKey
@@ -210,6 +212,7 @@ func (al *AgentLoop) recoverCancelingInteraction(
 	}
 	_ = al.drainDeferredInteractionIngress(
 		ctx,
+		workspace,
 		record.Route,
 		inboundContextForInteraction(record.Route),
 	)
@@ -261,10 +264,11 @@ func (al *AgentLoop) recoverClaimedInteraction(
 		return false
 	}
 	agent, ok := agentRegistry.GetAgent(record.Route.AgentID)
-	if !ok || agent == nil || strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace) {
+	if !ok || agent == nil || (record.Origin.TaskID == "" &&
+		strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace)) {
 		return false
 	}
-	scope := sessionScopeForRecovery(agent.Sessions, record.Route.SessionKey)
+	scope := sessionScopeForRecovery(agent.Sessions, interactionContinuationSessionKey(record))
 	if scope == nil {
 		scope = &session.SessionScope{
 			Version:       1,
@@ -297,6 +301,8 @@ func (al *AgentLoop) recoverClaimedInteraction(
 	defer claim.releaseIfOwned()
 	if err := al.resumeClaimedInteraction(
 		ctx,
+		al.interactionRegistryForWorkspace(workspace),
+		workspace,
 		agent,
 		scope,
 		inboundContextForInteraction(record.Route),
@@ -311,6 +317,7 @@ func (al *AgentLoop) recoverClaimedInteraction(
 	}
 	if err := al.drainDeferredInteractionIngress(
 		ctx,
+		workspace,
 		record.Route,
 		inboundContextForInteraction(record.Route),
 	); err != nil {

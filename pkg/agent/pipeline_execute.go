@@ -1089,10 +1089,22 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	}
 
 	inbound := r.ts.opts.Dispatch.InboundContext
+	interactionSessionKey := strings.TrimSpace(r.ts.opts.InteractionSessionKey)
+	if interactionSessionKey == "" {
+		interactionSessionKey = r.ts.sessionKey
+	}
+	interactionRouteKey := strings.TrimSpace(r.ts.opts.InteractionRouteKey)
+	if interactionRouteKey == "" {
+		interactionRouteKey = r.ts.opts.Dispatch.RouteSessionKey
+	}
+	interactionWorkspace := strings.TrimSpace(r.ts.opts.InteractionWorkspace)
+	if interactionWorkspace == "" {
+		interactionWorkspace = r.ts.workspace
+	}
 	route := interactions.Route{
 		AgentID:         r.ts.agent.ID,
-		SessionKey:      r.ts.sessionKey,
-		RouteSessionKey: r.ts.opts.Dispatch.RouteSessionKey,
+		SessionKey:      interactionSessionKey,
+		RouteSessionKey: interactionRouteKey,
 		Channel:         r.ts.channel,
 		ChatID:          r.ts.chatID,
 		SenderID:        r.ts.opts.Dispatch.SenderID(),
@@ -1105,13 +1117,15 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		route.SpaceType = inbound.SpaceType
 	}
 	disposition, err := r.p.Interaction.Suspension.SuspendToolCall(ctx, ToolSuspensionRequest{
-		Workspace: r.ts.workspace,
+		Workspace: interactionWorkspace,
 		Prompt:    *result.Suspension,
 		Route:     route,
 		Origin: interactions.Origin{
-			TurnID:     r.ts.turnID,
-			ToolCallID: toolCall.ID,
-			ToolName:   toolName,
+			TurnID:                 r.ts.turnID,
+			ToolCallID:             toolCall.ID,
+			ToolName:               toolName,
+			TaskID:                 r.ts.opts.TaskID,
+			ContinuationSessionKey: r.ts.sessionKey,
 		},
 	})
 	if !disposition.Durable {

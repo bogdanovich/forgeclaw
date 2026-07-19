@@ -16,6 +16,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 type interactionChannelManager struct {
@@ -145,6 +147,145 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for interaction prompt")
+	}
+}
+
+func TestInteractionEventsProjectOwningTaskState(t *testing.T) {
+	workspace := t.TempDir()
+	al := &AgentLoop{cfg: config.DefaultConfig()}
+	tasks := al.taskRegistryForWorkspace(workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "task-1", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record := interactions.Record{
+		ID: "interaction-1", ShortID: "abc123", Status: interactions.StatusWaiting,
+		PromptSummary: "Choose a deployment mode",
+		Origin:        interactions.Origin{TaskID: "task-1"},
+	}
+	al.observeInteractionEvent(workspace, interactions.EventObservation{
+		Event: interactions.Event{Type: interactions.EventWaiting}, Record: record,
+	})
+	task, _ := tasks.Get("task-1")
+	if task.Status != taskregistry.StatusWaitingForInput ||
+		task.InteractionShortID != "abc123" {
+		t.Fatalf("waiting task = %#v", task)
+	}
+
+	record.Status = interactions.StatusClaimed
+	al.observeInteractionEvent(workspace, interactions.EventObservation{
+		Event: interactions.Event{Type: interactions.EventAnswerClaimed}, Record: record,
+	})
+	task, _ = tasks.Get("task-1")
+	if task.Status != taskregistry.StatusRunning || task.InteractionShortID != "" {
+		t.Fatalf("resumed task = %#v", task)
+	}
+
+	record.Status = interactions.StatusFailed
+	record.FailureDetail = "continuation failed"
+	al.observeInteractionEvent(workspace, interactions.EventObservation{
+		Event: interactions.Event{Type: interactions.EventFailed}, Record: record,
+	})
+	task, _ = tasks.Get("task-1")
+	if task.Status != taskregistry.StatusFailed || task.Error != "continuation failed" {
+		t.Fatalf("failed task = %#v", task)
+	}
+}
+
+func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	workspace := agent.Workspace
+	tasks := al.taskRegistryForWorkspace(workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "subagent-parent", Runtime: taskregistry.RuntimeSubagent,
+		TaskKind: "spawn", Task: "finish in parent", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+		DeliveryMode:   string(tools.AsyncDeliveryParentOnly),
+		InteractionID:  "interaction-parent",
+		Channel:        "telegram", ChatID: "chat-1", RequesterSessionKey: "owner-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		ID: "interaction-parent", Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: agent.ID, SessionKey: "owner-session", RouteSessionKey: "route-owner",
+			Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-task", ToolCallID: "call-task", ToolName: "request_user_input",
+			TaskID: "subagent-parent", ContinuationSessionKey: "task-session",
+		},
+		Questions: []interactions.Question{{ID: "confirm", Question: "Proceed?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "yes", Values: map[string]string{"confirm": "yes"}, ReceivedAt: time.Now().UnixMilli(),
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbound := bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	if err := al.deliverTaskInteractionFinal(
+		t.Context(), registry, workspace, record, inbound, "raw child final",
+	); err != nil {
+		t.Fatalf("deliverTaskInteractionFinal() error = %v", err)
+	}
+	task, _ := tasks.Get("subagent-parent")
+	if task.Status != taskregistry.StatusSucceeded ||
+		task.DeliveryStatus != taskregistry.DeliverySessionQueued {
+		t.Fatalf("parent-only task = %#v", task)
+	}
+	resolved, _ := registry.Get(record.ID)
+	if resolved.Status != interactions.StatusResolved ||
+		resolved.FinalDeliveryState != interactions.DeliveryStateDelivered {
+		t.Fatalf("interaction after parent handoff = %#v", resolved)
+	}
+	events := registry.ListEvents(record.ID)
+	startedAt, completedAt := -1, -1
+	for i, event := range events {
+		if event.Type != interactions.EventFinalDelivery {
+			continue
+		}
+		switch event.Code {
+		case "delivery_started":
+			startedAt = i
+		case "delivery_completed":
+			completedAt = i
+		}
+	}
+	if startedAt < 0 || completedAt <= startedAt {
+		t.Fatalf("task delivery was not durably started before completion: %#v", events)
+	}
+	msgBus := al.bus.(*bus.MessageBus)
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Content == "raw child final" {
+			t.Fatalf("parent-only delivery leaked raw child final: %#v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parent-only completion was not processed")
 	}
 }
 
@@ -909,7 +1050,9 @@ func TestResumeClaimedInteractionAppendsOneToolResultAndResolves(t *testing.T) {
 		Version: 1, AgentID: agent.ID, Channel: record.Route.Channel,
 		RouteScopeKey: record.Route.RouteSessionKey,
 	}
-	if err := al.resumeClaimedInteraction(t.Context(), agent, scope, inbound, record); err != nil {
+	if err := al.resumeClaimedInteraction(
+		t.Context(), registry, agent.Workspace, agent, scope, inbound, record,
+	); err != nil {
 		t.Fatalf("resumeClaimedInteraction() error = %v", err)
 	}
 	resolved, _ := registry.Get(record.ID)

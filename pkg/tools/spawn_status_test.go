@@ -279,7 +279,9 @@ func TestSpawnStatusTool_StatusCounts(t *testing.T) {
 	manager := NewSubagentManager(provider, "test-model", t.TempDir())
 
 	manager.mu.Lock()
-	for i, status := range []string{"running", "running", "completed", "failed", "canceled"} {
+	for i, status := range []string{
+		"running", "running", "waiting_for_input", "completed", "failed", "canceled",
+	} {
 		id := fmt.Sprintf("subagent-%d", i+1)
 		manager.tasks[id] = &SubagentTask{ID: id, Task: "t", Status: status}
 	}
@@ -292,10 +294,27 @@ func TestSpawnStatusTool_StatusCounts(t *testing.T) {
 		t.Fatalf("Unexpected error: %s", result.ForLLM)
 	}
 	// The summary line should mention all statuses that have counts
-	for _, want := range []string{"Running:", "Completed:", "Failed:", "Canceled:"} {
+	for _, want := range []string{
+		"Running:", "Waiting for input:", "Completed:", "Failed:", "Canceled:",
+	} {
 		if !strings.Contains(result.ForLLM, want) {
 			t.Errorf("Expected %q in summary, got:\n%s", want, result.ForLLM)
 		}
+	}
+}
+
+func TestSpawnStatusTool_RegistryCountsWaitingForInput(t *testing.T) {
+	manager := NewSubagentManager(&MockLLMProvider{}, "test-model", t.TempDir())
+	if err := manager.taskRegistry.Upsert(taskregistry.Record{
+		TaskID: "subagent-waiting", Runtime: taskregistry.RuntimeSubagent,
+		TaskKind: "spawn", Task: "await approval", Status: taskregistry.StatusWaitingForInput,
+		DeliveryStatus: taskregistry.DeliveryPending, InteractionShortID: "abc123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := NewSpawnStatusTool(manager).Execute(context.Background(), map[string]any{})
+	if result.IsError || !strings.Contains(result.ForLLM, "Waiting for input: 1") {
+		t.Fatalf("waiting registry summary = %q", result.ForLLM)
 	}
 }
 

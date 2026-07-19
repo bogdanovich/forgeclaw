@@ -36,6 +36,7 @@ func (t *SpawnTool) SetSpawner(spawner SubTurnSpawner) {
 	if t.manager != nil && spawner != nil {
 		t.manager.SetSpawner(func(
 			ctx context.Context,
+			taskID string,
 			task, label, agentID string,
 			tools *ToolRegistry,
 			maxTokens int,
@@ -43,6 +44,7 @@ func (t *SpawnTool) SetSpawner(spawner SubTurnSpawner) {
 			hasMaxTokens, hasTemperature bool,
 		) (*ToolResult, error) {
 			return spawner.SpawnSubTurn(ctx, SubTurnConfig{
+				TaskID:        taskID,
 				TargetAgentID: strings.TrimSpace(agentID),
 				Model:         t.defaultModel,
 				Tools:         nil,
@@ -163,6 +165,7 @@ func (t *SpawnTool) execute(
 			strings.TrimSpace(agentID),
 			ToolChannel(ctx),
 			ToolChatID(ctx),
+			deliveryMode,
 			wrappedCallback,
 		)
 		if err != nil {

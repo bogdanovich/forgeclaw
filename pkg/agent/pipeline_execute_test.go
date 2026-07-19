@@ -81,7 +81,7 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 	ts := &turnState{
 		agent: agent, agentID: agent.ID, turnID: "turn-suspend", sessionKey: "session-suspend",
 		channel: inbound.Channel, chatID: inbound.ChatID,
-		opts: processOptions{Dispatch: DispatchRequest{
+		opts: processOptions{TaskID: "task-suspend", Dispatch: DispatchRequest{
 			RouteSessionKey: "route-suspend", SessionKey: "session-suspend", InboundContext: &inbound,
 		}},
 	}
@@ -114,6 +114,7 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 	}
 	request := manager.requests[0]
 	if request.Origin.ToolCallID != "call-question" || request.Origin.TurnID != ts.turnID ||
+		request.Origin.TaskID != "task-suspend" ||
 		request.Route.SenderID != "user-1" || request.Route.AccountID != "primary" ||
 		request.Route.TopicID != "topic-1" || request.Route.SpaceID != "space-1" {
 		t.Fatalf("trusted suspension request = %#v", request)

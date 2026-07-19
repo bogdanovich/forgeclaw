@@ -146,6 +146,9 @@ func TestDelegateTool_Execute_RecordsTaskRegistry(t *testing.T) {
 	if !strings.HasPrefix(rec.TaskID, "delegate-") {
 		t.Fatalf("TaskID = %q, want delegate-*", rec.TaskID)
 	}
+	if spawner.lastCfg.TaskID != rec.TaskID {
+		t.Fatalf("subturn TaskID = %q, want %q", spawner.lastCfg.TaskID, rec.TaskID)
+	}
 	if rec.Runtime != taskregistry.RuntimeDelegate {
 		t.Fatalf("Runtime = %q, want %q", rec.Runtime, taskregistry.RuntimeDelegate)
 	}

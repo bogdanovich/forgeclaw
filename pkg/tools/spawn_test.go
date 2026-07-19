@@ -232,6 +232,33 @@ func TestSpawnTool_ExecuteAsync_MarksCallbackResultUserOnly(t *testing.T) {
 	}
 }
 
+func TestSpawnTool_PropagatesDurableTaskIDToSubTurn(t *testing.T) {
+	manager := NewSubagentManager(&MockLLMProvider{}, "test-model", t.TempDir())
+	tool := NewSpawnTool(manager)
+	spawner := &mockSpawner{done: make(chan struct{})}
+	tool.SetSpawner(spawner)
+
+	result := tool.ExecuteAsync(context.Background(), map[string]any{
+		"task":          "wait for deployment mode",
+		"delivery_mode": string(AsyncDeliveryParentOnly),
+	}, nil)
+	if result == nil || !result.Async {
+		t.Fatalf("spawn result = %#v", result)
+	}
+	select {
+	case <-spawner.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for spawned subturn")
+	}
+	if !strings.HasPrefix(spawner.lastConfig.TaskID, "subagent-") {
+		t.Fatalf("subturn TaskID = %q", spawner.lastConfig.TaskID)
+	}
+	rec, ok := manager.taskRegistry.Get(spawner.lastConfig.TaskID)
+	if !ok || rec.DeliveryMode != string(AsyncDeliveryParentOnly) {
+		t.Fatalf("durable spawn task = %#v", rec)
+	}
+}
+
 func TestSpawnTool_ExecuteAsync_RespectsExplicitDeliveryMode(t *testing.T) {
 	provider := &MockLLMProvider{}
 	manager := NewSubagentManager(provider, "test-model", t.TempDir())

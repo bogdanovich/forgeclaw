@@ -160,9 +160,9 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Subagent status report (%d total):\n", len(tasks)))
-	for _, status := range []string{"running", "completed", "failed", "canceled"} {
+	for _, status := range []string{"running", "waiting_for_input", "completed", "failed", "canceled"} {
 		if n := counts[status]; n > 0 {
-			label := strings.ToUpper(status[:1]) + status[1:] + ":"
+			label := spawnStatusSummaryLabel(status)
 			sb.WriteString(fmt.Sprintf("  %-10s %d\n", label, n))
 		}
 	}
@@ -207,9 +207,9 @@ func (t *SpawnStatusTool) executeFromRegistry(taskID, callerChannel, callerChatI
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Subagent status report (%d total):\n", len(filtered)))
-	for _, status := range []string{"running", "completed", "failed", "canceled"} {
+	for _, status := range []string{"running", "waiting_for_input", "completed", "failed", "canceled"} {
 		if n := counts[status]; n > 0 {
-			label := strings.ToUpper(status[:1]) + status[1:] + ":"
+			label := spawnStatusSummaryLabel(status)
 			sb.WriteString(fmt.Sprintf("  %-10s %d\n", label, n))
 		}
 	}
@@ -221,6 +221,13 @@ func (t *SpawnStatusTool) executeFromRegistry(taskID, callerChannel, callerChatI
 	}
 
 	return NewToolResult(strings.TrimRight(sb.String(), "\n")), true
+}
+
+func spawnStatusSummaryLabel(status string) string {
+	if status == "waiting_for_input" {
+		return "Waiting for input:"
+	}
+	return strings.ToUpper(status[:1]) + status[1:] + ":"
 }
 
 func spawnRecordVisibleToCaller(rec taskregistry.Record, channel, chatID string) bool {
@@ -246,6 +253,8 @@ func spawnStatusFromRecord(rec taskregistry.Record) string {
 		return "canceled"
 	case taskregistry.StatusRunning, taskregistry.StatusQueued:
 		return "running"
+	case taskregistry.StatusWaitingForInput:
+		return "waiting_for_input"
 	default:
 		return string(rec.Status)
 	}
@@ -272,6 +281,16 @@ func spawnStatusFormatRecord(rec taskregistry.Record) string {
 	}
 	if rec.DeliveryError != "" {
 		out += fmt.Sprintf("\n  delivery_error: %s", truncateTaskText(rec.DeliveryError, 300))
+	}
+	if rec.Status == taskregistry.StatusWaitingForInput {
+		requestID := strings.TrimSpace(rec.InteractionShortID)
+		if requestID == "" {
+			requestID = "unknown"
+		}
+		out += fmt.Sprintf("\n  input_required: request=%s", requestID)
+		if summary := strings.TrimSpace(rec.InteractionSummary); summary != "" {
+			out += fmt.Sprintf(" summary=%s", truncateTaskText(summary, 240))
+		}
 	}
 	return out
 }

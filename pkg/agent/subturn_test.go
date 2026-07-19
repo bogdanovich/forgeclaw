@@ -14,8 +14,10 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -193,6 +195,182 @@ func TestSpawnSubTurn(t *testing.T) {
 	}
 }
 
+func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: []providers.ToolCall{{
+			ID: "call-task-question", Name: "request_user_input",
+			Arguments: map[string]any{"questions": []any{map[string]any{
+				"id": "mode", "question": "Which deployment mode?",
+			}}},
+			Function: &providers.FunctionCall{
+				Name:      "request_user_input",
+				Arguments: `{"questions":[{"id":"mode","question":"Which deployment mode?"}]}`,
+			},
+		}}},
+		{ToolCalls: []providers.ToolCall{{
+			ID: "call-task-confirm", Name: "request_user_input",
+			Arguments: map[string]any{"questions": []any{map[string]any{
+				"id": "confirm", "question": "Proceed now?",
+			}}},
+			Function: &providers.FunctionCall{
+				Name:      "request_user_input",
+				Arguments: `{"questions":[{"id":"confirm","question":"Proceed now?"}]}`,
+			},
+		}}},
+		{Content: "deployed", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.Tools.Register(requestTool)
+
+	tasks := al.taskRegistryForWorkspace(agent.Workspace)
+	if err = tasks.Upsert(taskregistry.Record{
+		TaskID: "subagent-1", Runtime: taskregistry.RuntimeSubagent,
+		TaskKind: "spawn", Task: "deploy", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inbound := &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	parentOpts := processOptions{Dispatch: DispatchRequest{
+		RouteSessionKey: "route-owner", SessionKey: "owner-session",
+		InboundContext: inbound,
+	}}
+	parent := newTurnState(
+		agent,
+		parentOpts,
+		al.newTurnEventScope(agent.ID, "owner-session", newTurnContext(inbound, nil, nil)),
+	)
+	parent.ctx = t.Context()
+	parent.pendingResults = make(chan *tools.ToolResult, 4)
+	parent.concurrencySem = make(chan struct{}, defaultMaxConcurrentSubTurns)
+
+	result, err := spawnSubTurn(t.Context(), al, parent, SubTurnConfig{
+		Model: agent.Model, SystemPrompt: "deploy", TaskID: "subagent-1", Critical: true,
+	})
+	if err != nil || result == nil || !result.TaskSuspended {
+		t.Fatalf("spawnSubTurn() = (%#v, %v), want suspended durable task", result, err)
+	}
+	rec, _ := tasks.Get("subagent-1")
+	if rec.Status != taskregistry.StatusWaitingForInput || rec.InteractionID == "" {
+		t.Fatalf("task after suspension = %#v", rec)
+	}
+	interaction, ok := al.interactionRegistryForWorkspace(agent.Workspace).Get(rec.InteractionID)
+	if !ok || interaction.Route.SessionKey != "owner-session" ||
+		interaction.Origin.TaskID != "subagent-1" ||
+		interaction.Origin.ContinuationSessionKey != durableTaskSessionKey(
+			agent.Workspace, "subagent-1",
+		) {
+		t.Fatalf("durable interaction = %#v", interaction)
+	}
+	history := agent.Sessions.GetHistory(durableTaskSessionKey(agent.Workspace, "subagent-1"))
+	if len(history) == 0 {
+		t.Fatal("durable task continuation history was not persisted")
+	}
+	select {
+	case <-manager.sent:
+	case <-time.After(time.Second):
+		t.Fatal("interaction prompt was not delivered")
+	}
+	claimed, err := al.interactionRegistryForWorkspace(agent.Workspace).ClaimAnswer(
+		interaction.ID,
+		interaction.Revision,
+		interactions.Answer{
+			Text: "canary", Values: map[string]string{"mode": "canary"},
+			MessageID: "answer-1", ReceivedAt: time.Now().UnixMilli(),
+		},
+		interactions.OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatalf("ClaimAnswer() error = %v", err)
+	}
+	if claimed.Status != interactions.StatusClaimed {
+		t.Fatalf("claimed interaction = %#v", claimed)
+	}
+	if err = al.enqueueSteeringMessageWithSender(
+		"owner-session", agent.ID, "user-1",
+		providers.Message{Role: "user", Content: "deferred during recovery"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	rec, _ = tasks.Get("subagent-1")
+	if rec.Status != taskregistry.StatusWaitingForInput ||
+		rec.InteractionID == interaction.ID {
+		t.Fatalf("task after repeated wait = %#v", rec)
+	}
+	second, ok := al.interactionRegistryForWorkspace(agent.Workspace).Get(rec.InteractionID)
+	if !ok || second.Status != interactions.StatusWaiting ||
+		second.Route.SessionKey != "owner-session" ||
+		second.Origin.ContinuationSessionKey != interaction.Origin.ContinuationSessionKey {
+		t.Fatalf("second interaction = %#v", second)
+	}
+	first, _ := al.interactionRegistryForWorkspace(agent.Workspace).Get(interaction.ID)
+	if first.Status != interactions.StatusResolved {
+		t.Fatalf("first interaction after chaining = %#v", first)
+	}
+	if got := al.pendingSteeringCountForScope("owner-session"); got != 1 {
+		t.Fatalf("deferred queue during chained wait = %d, want 1", got)
+	}
+	for _, message := range agent.Sessions.GetHistory("owner-session") {
+		if strings.Contains(message.Content, "deferred during recovery") {
+			t.Fatalf("deferred input escaped while next interaction was waiting: %#v", message)
+		}
+	}
+	select {
+	case <-manager.sent:
+	case <-time.After(time.Second):
+		t.Fatal("second interaction prompt was not delivered")
+	}
+	secondClaimed, err := al.interactionRegistryForWorkspace(agent.Workspace).ClaimAnswer(
+		second.ID,
+		second.Revision,
+		interactions.Answer{
+			Text: "yes", Values: map[string]string{"confirm": "yes"},
+			MessageID: "answer-2", ReceivedAt: time.Now().UnixMilli(),
+		},
+		interactions.OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatalf("second ClaimAnswer() error = %v", err)
+	}
+	err = al.resumeClaimedInteraction(
+		t.Context(), al.interactionRegistryForWorkspace(agent.Workspace),
+		agent.Workspace, agent, nil, *inbound, secondClaimed,
+	)
+	if err != nil {
+		t.Fatalf("second resumeClaimedInteraction() error = %v", err)
+	}
+	rec, _ = tasks.Get("subagent-1")
+	if rec.Status != taskregistry.StatusSucceeded ||
+		rec.DeliveryStatus != taskregistry.DeliveryDelivered ||
+		rec.TerminalSummary != "deployed" {
+		t.Fatalf("task after resumed completion = %#v", rec)
+	}
+	msgBus, ok := al.bus.(*bus.MessageBus)
+	if !ok {
+		t.Fatalf("message bus = %T", al.bus)
+	}
+	select {
+	case final := <-msgBus.OutboundChan():
+		if final.Content != "deployed" {
+			t.Fatalf("resumed final = %#v", final)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resumed task final was not delivered")
+	}
+}
+
 func TestSpawnSubTurnInheritsSameAgentAdmission(t *testing.T) {
 	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
 	defer cleanup()
@@ -229,6 +407,15 @@ func TestSpawnSubTurnInheritsSameAgentAdmission(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("spawnSubTurn() result is nil")
+	}
+}
+
+func TestDurableTaskSessionKeyIncludesOwnerWorkspace(t *testing.T) {
+	first := durableTaskSessionKey("/workspace/one", "subagent-1")
+	second := durableTaskSessionKey("/workspace/two", "subagent-1")
+	if first == second || !strings.HasSuffix(first, ":subagent-1") ||
+		!strings.HasSuffix(second, ":subagent-1") {
+		t.Fatalf("durable task keys = %q, %q", first, second)
 	}
 }
 

@@ -159,8 +159,26 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 		r.mu.Unlock()
 		return Record{}, fmt.Errorf("%w: max records %d", ErrCapacityExceeded, r.options.MaxRecords)
 	}
-	for _, existing := range r.records {
+	eventsBefore := append([]Event(nil), r.events...)
+	var supersededID string
+	var supersededBefore Record
+	for id, existing := range r.records {
 		if !isTerminal(existing.Status) && existing.Route.SessionKey == rec.Route.SessionKey {
+			if canChainInteraction(existing, rec) {
+				supersededID = id
+				supersededBefore = existing
+				from := existing.Status
+				existing.Status = StatusResolved
+				existing.Revision++
+				existing.UpdatedAt = now
+				existing.ResolvedAt = now
+				existing.CleanupAfter = now + r.options.TerminalRetention.Milliseconds()
+				r.appendEventFromLocked(
+					&existing, EventResolved, from, "continued_with_next_interaction", nil,
+				)
+				r.records[id] = existing
+				continue
+			}
 			releaseStore()
 			r.mu.Unlock()
 			return Record{}, fmt.Errorf("%w: %s", ErrSessionHasActive, existing.ShortID)
@@ -176,13 +194,15 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 		r.mu.Unlock()
 		return Record{}, fmt.Errorf("%w: duplicate id", ErrConflict)
 	}
-	eventsBefore := append([]Event(nil), r.events...)
 	r.appendEventLocked(&rec, EventCreated, "", nil)
 	r.records[rec.ID] = rec
-	event := r.events[len(r.events)-1]
+	events := append([]Event(nil), r.events[len(eventsBefore):]...)
 	r.trimEventsLocked()
 	if err := r.saveLocked(); err != nil {
 		delete(r.records, rec.ID)
+		if supersededID != "" {
+			r.records[supersededID] = supersededBefore
+		}
 		r.events = eventsBefore
 		releaseStore()
 		r.mu.Unlock()
@@ -190,8 +210,15 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 	}
 	releaseStore()
 	r.mu.Unlock()
-	r.notify([]Event{event})
+	r.notify(events)
 	return cloneRecord(rec), nil
+}
+
+func canChainInteraction(existing, next Record) bool {
+	return existing.Status == StatusResuming &&
+		strings.TrimSpace(existing.Origin.TaskID) != "" &&
+		existing.Origin.TaskID == next.Origin.TaskID &&
+		existing.Origin.ContinuationSessionKey == next.Origin.ContinuationSessionKey
 }
 
 func (r *Registry) MarkWaiting(id string, expectedRevision int64) (Record, error) {
@@ -1355,6 +1382,7 @@ func normalizeOrigin(origin Origin) Origin {
 	origin.ToolCallID = strings.TrimSpace(origin.ToolCallID)
 	origin.ToolName = strings.TrimSpace(origin.ToolName)
 	origin.TaskID = strings.TrimSpace(origin.TaskID)
+	origin.ContinuationSessionKey = strings.TrimSpace(origin.ContinuationSessionKey)
 	origin.ArgumentHash = strings.TrimSpace(origin.ArgumentHash)
 	return origin
 }
