@@ -244,6 +244,65 @@ func (durableInteraction) Evaluate(input Input) Finding {
 			"evaluate the correlated dedicated interaction trace",
 		)
 	}
+	for _, diagnostic := range input.Projection.Diagnostics {
+		if conclusiveInteractionDiagnostic(diagnostic.Code) {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"legal, monotonic, exactly-once interaction transitions",
+				diagnostic.Code,
+				"inspect the correlated interaction registry events",
+				diagnostic.Sequence,
+			)
+		}
+	}
+	for _, interaction := range input.Projection.Interactions {
+		if interaction.PromptSuccesses > 1 || interaction.FinalSuccesses > 1 {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"at most one successful prompt and final delivery",
+				fmt.Sprintf(
+					"interaction %s prompt_successes=%d final_successes=%d",
+					interaction.InteractionID,
+					interaction.PromptSuccesses,
+					interaction.FinalSuccesses,
+				),
+				"repair interaction delivery claiming and retry policy",
+			)
+		}
+		if interaction.AnswerClaims > 1 {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"at most one accepted answer",
+				fmt.Sprintf("interaction %s answer_claims=%d", interaction.InteractionID, interaction.AnswerClaims),
+				"repair answer correlation and atomic claiming",
+			)
+		}
+		if interaction.ApprovalConsumptions > 1 {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"at most one approval consumption",
+				fmt.Sprintf(
+					"interaction %s has %d consumptions",
+					interaction.InteractionID,
+					interaction.ApprovalConsumptions,
+				),
+				"repair allow-once consumption",
+			)
+		}
+		if interaction.Kind != "approval" && interaction.ApprovalConsumptions != 0 {
+			return finding(
+				StatusFail,
+				SeverityCritical,
+				"question interactions never consume approvals",
+				"question interaction consumed an approval",
+				"separate question and approval continuation paths",
+			)
+		}
+	}
 	if input.Trace.Truncation.Incomplete {
 		return finding(
 			StatusNotEvaluable,
@@ -284,29 +343,6 @@ func (durableInteraction) Evaluate(input Input) Finding {
 				"run recovery and inspect the last interaction transition",
 			)
 		}
-		if interaction.PromptSuccesses > 1 || interaction.FinalSuccesses > 1 {
-			return finding(
-				StatusFail,
-				SeverityCritical,
-				"at most one successful prompt and final delivery",
-				fmt.Sprintf(
-					"interaction %s prompt_successes=%d final_successes=%d",
-					interaction.InteractionID,
-					interaction.PromptSuccesses,
-					interaction.FinalSuccesses,
-				),
-				"repair interaction delivery claiming and retry policy",
-			)
-		}
-		if interaction.AnswerClaims > 1 {
-			return finding(
-				StatusFail,
-				SeverityCritical,
-				"at most one accepted answer",
-				fmt.Sprintf("interaction %s answer_claims=%d", interaction.InteractionID, interaction.AnswerClaims),
-				"repair answer correlation and atomic claiming",
-			)
-		}
 		if interaction.Kind == "approval" {
 			if interaction.Outcome == "allowed" && interaction.Status != "resolved" {
 				continue
@@ -328,14 +364,6 @@ func (durableInteraction) Evaluate(input Input) Finding {
 					"repair allow-once consumption or fail the approval closed",
 				)
 			}
-		} else if interaction.ApprovalConsumptions != 0 {
-			return finding(
-				StatusFail,
-				SeverityCritical,
-				"question interactions never consume approvals",
-				"question interaction consumed an approval",
-				"separate question and approval continuation paths",
-			)
 		}
 	}
 	return finding(
@@ -345,6 +373,31 @@ func (durableInteraction) Evaluate(input Input) Finding {
 		"all observed interactions satisfy lifecycle and approval invariants",
 		"",
 	)
+}
+
+func conclusiveInteractionDiagnostic(code string) bool {
+	switch code {
+	case "interaction_event_after_terminal",
+		"interaction_kind_changed",
+		"interaction_task_correlation_changed",
+		"interaction_tool_correlation_changed",
+		"interaction_sequence_not_increasing",
+		"interaction_revision_not_increasing",
+		"interaction_status_missing",
+		"interaction_duplicate_or_invalid_create",
+		"interaction_prompt_delivery_invalid",
+		"interaction_duplicate_answer_claim",
+		"interaction_answer_transition_invalid",
+		"interaction_resume_transition_invalid",
+		"interaction_final_delivery_invalid",
+		"interaction_canceling_transition_invalid",
+		"interaction_recovery_transition_invalid",
+		"interaction_terminal_transition_invalid",
+		"interaction_event_unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 func terminalInteractionOutcome(status string) bool {

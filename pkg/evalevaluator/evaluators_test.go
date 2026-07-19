@@ -283,3 +283,81 @@ func TestDurableInteractionEvaluatorAllowsUnconsumedApprovalThatFailsClosed(t *t
 		})
 	}
 }
+
+func TestDurableInteractionEvaluatorFailsOnDuplicateEvidenceInIncompleteTrace(t *testing.T) {
+	trace, err := (Fixture{
+		ID: "incomplete-duplicate-answer", Source: "evaluators_test.go",
+		TraceKind: evaltrace.TraceKindInteraction,
+		Records: []FixtureRecord{
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.created","kind":"question","status":"created","revision":1,"sequence":1}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.delivery_attempted","kind":"question","from":"created","status":"created","revision":2,"sequence":2,"success":true}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.waiting","kind":"question","from":"created","status":"waiting","revision":3,"sequence":3}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.answer_claimed","kind":"question","from":"waiting","status":"answer_claimed","outcome":"answered","revision":4,"sequence":4}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.answer_claimed","kind":"question","from":"waiting","status":"answer_claimed","outcome":"answered","revision":5,"sequence":5}`,
+				),
+			},
+		},
+	}).Trace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace.Truncation.Incomplete = true
+	trace.Truncation.Reasons = []string{"fixture_noncritical_record_dropped"}
+	evaluator, _ := EvaluatorByName("durable_interaction.v1")
+	report, err := Evaluate(trace, evaluator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Failed != 1 || report.Findings[0].Status != StatusFail {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestDurableInteractionEvaluatorSkipsIncompleteTraceWithoutConclusiveViolation(t *testing.T) {
+	trace, err := (Fixture{
+		ID: "incomplete-lifecycle", Source: "evaluators_test.go",
+		TraceKind: evaltrace.TraceKindInteraction,
+		Records: []FixtureRecord{{
+			Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+			Data: json.RawMessage(
+				`{"event_type":"interaction.created","kind":"question","status":"created","revision":1,"sequence":1}`,
+			),
+		}},
+	}).Trace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace.Truncation.Incomplete = true
+	trace.Truncation.Reasons = []string{"fixture_history_missing"}
+	evaluator, _ := EvaluatorByName("durable_interaction.v1")
+	report, err := Evaluate(trace, evaluator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Skipped != 1 || report.Findings[0].Status != StatusNotEvaluable {
+		t.Fatalf("report = %#v", report)
+	}
+}
