@@ -341,6 +341,34 @@ func TestMemoryToolSerializesConcurrentDailyAppends(t *testing.T) {
 	}
 }
 
+func TestMemoryToolAppendDailyDeduplicatesMultiParagraphRetry(t *testing.T) {
+	workspace := t.TempDir()
+	fixedNow := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	tool := newMemoryTool(workspace, nil, nil, func() time.Time { return fixedNow })
+	content := "- Finished the rollout\n\nFollow-up:\n- verify metrics tomorrow"
+
+	first := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   content,
+	})
+	retry := tool.Execute(t.Context(), map[string]any{
+		"operation": appendDailyMemoryOperation,
+		"content":   content,
+	})
+	if first.IsError || retry.IsError || !strings.Contains(retry.ForLLM, `"status":"duplicate"`) {
+		t.Fatalf("multi-paragraph append results: first=%#v retry=%#v", first, retry)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workspace, "memory", "202607", "20260718.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "Finished the rollout") != 1 ||
+		strings.Count(string(data), "verify metrics tomorrow") != 1 {
+		t.Fatalf("multi-paragraph retry was persisted more than once: %q", data)
+	}
+}
+
 func TestMemoryToolAppendDailyRejectsMonthSymlinkEscape(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()

@@ -250,7 +250,7 @@ func (t *MemoryTool) appendDaily(
 			fmt.Errorf("read daily memory: %w", err),
 		)
 	}
-	if normalizedMemoryContains(string(current), content) {
+	if dailyMemoryContains(string(current), content) {
 		payload.Outcome = "duplicate"
 		payload.MatchCount = 1
 		t.publish(ctx, payload, runtimeevents.SeverityInfo)
@@ -298,6 +298,33 @@ func appendDailyMemory(current, dailyDate, content string) string {
 		return "# " + dailyDate + "\n\n" + content + "\n"
 	}
 	return current + "\n\n" + content + "\n"
+}
+
+func dailyMemoryContains(current, candidate string) bool {
+	if normalizedMemoryContains(current, candidate) {
+		return true
+	}
+	current = strings.ReplaceAll(current, "\r\n", "\n")
+	candidate = strings.TrimSpace(strings.ReplaceAll(candidate, "\r\n", "\n"))
+	if candidate == "" {
+		return false
+	}
+	for offset := 0; offset <= len(current)-len(candidate); {
+		relative := strings.Index(current[offset:], candidate)
+		if relative < 0 {
+			return false
+		}
+		start := offset + relative
+		end := start + len(candidate)
+		startsOnBoundary := start == 0 || strings.HasSuffix(current[:start], "\n\n")
+		endsOnBoundary := end == len(current) || strings.HasPrefix(current[end:], "\n\n") ||
+			strings.HasPrefix(current[end:], "\n") && end+1 == len(current)
+		if startsOnBoundary && endsOnBoundary {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
 }
 
 func applyCuratedMemoryMutation(
