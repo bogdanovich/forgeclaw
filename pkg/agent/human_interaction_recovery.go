@@ -55,10 +55,35 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 					if _, err := registry.MarkWaiting(record.ID, record.Revision); err == nil {
 						recovered++
 					}
+				} else if record.PromptDeliveryState == interactions.DeliveryStateSending ||
+					record.PromptDeliveryState == interactions.DeliveryStateAmbiguous {
+					claimed, err := registry.ClaimDeliveryUnknown(record.ID, record.Revision)
+					if err == nil && al.recoverClaimedInteraction(ctx, workspace, claimed) {
+						recovered++
+					}
 				} else if al.retryInteractionPrompt(ctx, registry, record) {
 					recovered++
 				}
-			case interactions.StatusClaimed, interactions.StatusResuming:
+			case interactions.StatusResuming:
+				if record.FinalDeliveryState == interactions.DeliveryStateSending ||
+					record.FinalDeliveryState == interactions.DeliveryStateAmbiguous {
+					if _, err := registry.Fail(
+						record.ID,
+						record.Revision,
+						"final_delivery_ambiguous",
+						"final response delivery could not be confirmed and was not retried",
+					); err == nil {
+						recovered++
+						_ = al.drainDeferredInteractionIngress(
+							ctx,
+							record.Route,
+							inboundContextForInteraction(record.Route),
+						)
+					}
+				} else if al.recoverClaimedInteraction(ctx, workspace, record) {
+					recovered++
+				}
+			case interactions.StatusClaimed:
 				if al.recoverClaimedInteraction(ctx, workspace, record) {
 					recovered++
 				}
@@ -75,10 +100,23 @@ func (al *AgentLoop) retryInteractionPrompt(
 	registry *interactions.Registry,
 	record interactions.Record,
 ) bool {
-	deliveryErr := al.humanInteractionRuntime().publishPrompt(ctx, record)
-	updated, err := registry.RecordDeliveryAttempt(
-		record.ID,
-		record.Revision,
+	if al.channelManager == nil {
+		_, _ = registry.RecordDeliveryAttempt(
+			record.ID,
+			record.Revision,
+			false,
+			"channel manager unavailable",
+		)
+		return false
+	}
+	started, err := registry.BeginPromptDelivery(record.ID, record.Revision)
+	if err != nil {
+		return false
+	}
+	deliveryErr := al.humanInteractionRuntime().publishPrompt(ctx, started)
+	updated, err := registry.CompletePromptDelivery(
+		started.ID,
+		started.Revision,
 		deliveryErr == nil,
 		errString(deliveryErr),
 	)
@@ -96,7 +134,11 @@ func (al *AgentLoop) recoverClaimedInteraction(
 	workspace string,
 	record interactions.Record,
 ) bool {
-	agent, ok := al.GetRegistry().GetAgent(record.Route.AgentID)
+	agentRegistry := al.GetRegistry()
+	if agentRegistry == nil {
+		return false
+	}
+	agent, ok := agentRegistry.GetAgent(record.Route.AgentID)
 	if !ok || agent == nil || strings.TrimSpace(agent.Workspace) != strings.TrimSpace(workspace) {
 		return false
 	}

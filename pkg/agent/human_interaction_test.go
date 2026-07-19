@@ -99,7 +99,7 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 		if !strings.Contains(outbound.Content, "Input needed ["+record.ShortID+"]") ||
 			!strings.Contains(outbound.Content, "Canary") ||
 			outbound.Context.Raw[interactionIDMetadata] != record.ID ||
-			outbound.Context.Raw["idempotency_key"] != interactionDeliveryKey(record.ID, "prompt") ||
+			outbound.Context.Raw["delivery_key"] != interactionDeliveryKey(record.ID, "prompt") ||
 			outbound.Context.Account != "primary" {
 			t.Fatalf("outbound prompt = %#v", outbound)
 		}
@@ -140,7 +140,7 @@ func TestDisabledRequestUserInputStillInitializesRecoveryRegistry(t *testing.T) 
 	}
 }
 
-func TestHumanInteractionPromptFailureRemainsDurableAndRecoveryRetries(t *testing.T) {
+func TestHumanInteractionPromptFailureRemainsAmbiguousAndDoesNotRetry(t *testing.T) {
 	manager := newInteractionChannelManager()
 	manager.sendErr = errors.New("delivery failed")
 	al := &AgentLoop{cfg: config.DefaultConfig(), bus: failingMessageBus{}, channelManager: manager}
@@ -153,22 +153,127 @@ func TestHumanInteractionPromptFailureRemainsDurableAndRecoveryRetries(t *testin
 		t.Fatalf("SuspendToolCall() = (%#v, %v), want durable delivery error", disposition, err)
 	}
 	record, _ := al.interactionRegistryForWorkspace(workspace).Get(disposition.InteractionID)
-	if record.Status != interactions.StatusCreated || record.DeliveryError == "" {
+	if record.Status != interactions.StatusCreated || record.DeliveryError == "" ||
+		record.PromptDeliveryState != interactions.DeliveryStateAmbiguous {
 		t.Fatalf("record after failed delivery = %#v", record)
 	}
 
 	manager.sendErr = nil
+	if al.retryInteractionPrompt(
+		t.Context(),
+		al.interactionRegistryForWorkspace(workspace),
+		record,
+	) {
+		t.Fatal("ambiguous prompt delivery was retried")
+	}
+	record, _ = al.interactionRegistryForWorkspace(workspace).Get(disposition.InteractionID)
+	if record.Status != interactions.StatusCreated || record.DeliveryTries != 1 {
+		t.Fatalf("record after refused retry = %#v", record)
+	}
+	select {
+	case duplicate := <-manager.sent:
+		t.Fatalf("ambiguous prompt was duplicated: %#v", duplicate)
+	default:
+	}
+}
+
+func TestRecoveryDoesNotResendPromptAfterAmbiguousCrashWindow(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	sessionKey := "session-ambiguous-prompt"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Deploy this"})
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-question", Name: "request_user_input",
+			Function: &providers.FunctionCall{Name: "request_user_input", Arguments: `{}`},
+		}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.BeginPromptDelivery(record.ID, record.Revision)
+	if err != nil || record.PromptDeliveryState != interactions.DeliveryStateSending {
+		t.Fatalf("begin prompt delivery = (%#v, %v)", record, err)
+	}
+
 	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
 		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
 	}
-	record, _ = al.interactionRegistryForWorkspace(workspace).Get(disposition.InteractionID)
-	if record.Status != interactions.StatusWaiting || record.DeliveryTries != 2 {
-		t.Fatalf("record after retry = %#v", record)
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusResolved ||
+		record.Outcome != interactions.OutcomeDeliveryUnknown {
+		t.Fatalf("record after ambiguous prompt recovery = %#v", record)
 	}
 	select {
-	case <-manager.sent:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for retried prompt")
+	case outbound := <-manager.sent:
+		if strings.Contains(outbound.Content, "Input needed") {
+			t.Fatalf("recovery resent ambiguous prompt: %#v", outbound)
+		}
+	default:
+		t.Fatal("recovery did not deliver the delivery-unknown continuation")
+	}
+	select {
+	case duplicate := <-manager.sent:
+		t.Fatalf("recovery emitted a duplicate message: %#v", duplicate)
+	default:
+	}
+}
+
+func TestRecoveryDoesNotResendAmbiguousFinal(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	sessionKey := "session-ambiguous-final"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant", ToolCalls: []providers.ToolCall{{ID: "call-question"}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, _ = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "Canary", Values: map[string]string{"deploy_mode": "Canary"},
+	}, interactions.OutcomeAnswered)
+	if ensureErr := al.ensureInteractionToolResult(t.Context(), agent, record); ensureErr != nil {
+		t.Fatal(ensureErr)
+	}
+	record, _ = registry.MarkResuming(record.ID, record.Revision)
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "Final response"})
+	record, err = registry.BeginFinalDelivery(record.ID, record.Revision)
+	if err != nil || record.FinalDeliveryState != interactions.DeliveryStateSending {
+		t.Fatalf("begin final delivery = (%#v, %v)", record, err)
+	}
+
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusFailed || record.FailureCode != "final_delivery_ambiguous" {
+		t.Fatalf("record after ambiguous final recovery = %#v", record)
+	}
+	select {
+	case duplicate := <-manager.sent:
+		t.Fatalf("recovery resent ambiguous final: %#v", duplicate)
+	default:
 	}
 }
 
@@ -225,6 +330,17 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 	}
 	if _, err := parseInteractionAnswer(record, "target: staging", "message-2"); err == nil {
 		t.Fatal("parseInteractionAnswer() accepted incomplete multi-question answer")
+	}
+	prompt := renderInteractionPrompt(record)
+	if !strings.Contains(prompt, "[target]") || !strings.Contains(prompt, "[mode]") {
+		t.Fatalf("multi-question prompt omitted canonical IDs: %q", prompt)
+	}
+	if _, err := parseInteractionAnswer(
+		record,
+		"target: staging\nmode: canary",
+		"message-3",
+	); err != nil {
+		t.Fatalf("rendered question IDs did not round-trip through parser: %v", err)
 	}
 }
 
@@ -602,7 +718,7 @@ func TestRecoverResumingInteractionReplaysPersistedFinalWithoutModelCall(t *test
 	select {
 	case outbound := <-manager.sent:
 		if outbound.Content != "Recovered final" ||
-			outbound.Context.Raw["idempotency_key"] != interactionDeliveryKey(record.ID, "final") {
+			outbound.Context.Raw["delivery_key"] != interactionDeliveryKey(record.ID, "final") {
 			t.Fatalf("outbound = %#v", outbound)
 		}
 	case <-time.After(time.Second):

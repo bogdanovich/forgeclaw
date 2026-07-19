@@ -188,8 +188,10 @@ When `request_user_input` or approval suspends execution:
 1. The assistant tool-call message is already durably persisted by the LLM
    phase. Creation of the interaction verifies that persistence succeeded.
 2. The interaction is persisted before its outbound prompt is published.
-3. Delivery transitions the request from `created` to `waiting`. Failed delivery
-   remains retryable and does not lose the request.
+3. Before calling a channel, delivery durably transitions to `sending`. A
+   confirmed acknowledgement transitions to `delivered` and then `waiting`.
+   A crash or error after `sending` is `ambiguous` and is never retried
+   automatically because most channel APIs do not provide an idempotency key.
 4. The tool loop returns `ToolControlSuspend` without adding a fabricated tool
    result for the suspended call.
 5. Remaining tool calls in the same model response are recorded as deferred and
@@ -223,9 +225,10 @@ When exactly one request is waiting for that authorized route and sender, a
 plain next message may be accepted as its answer. In group conversations,
 sender matching is mandatory. A message routed to a different canonical session
 continues through normal inbound handling. An ambiguous or unauthorized message
-for the suspended canonical session receives a generic waiting response and is
-not appended between the incomplete assistant tool call and its eventual tool
-result. It never reveals protected request details.
+for the suspended canonical session is durably deferred for normal continuation
+after the interaction closes; it is not appended between the incomplete
+assistant tool call and its eventual tool result. It never reveals protected
+request details.
 
 The manager validates option labels but always permits bounded free-form text
 for clarification questions. Approval interactions accept only the fixed
@@ -344,10 +347,14 @@ delivery attempt so replay evaluators can detect:
 - final responses emitted while suspended.
 
 The interaction record, accepted answer, and canonical tool result have
-exactly-once state transitions. Channel publication is at-least-once unless the
-adapter supports an idempotency key: the runtime uses a stable interaction ID
-for correlation and retries, but cannot eliminate the crash window after a
-remote service accepts a message and before the local delivery receipt commits.
+exactly-once state transitions. Channel publication cannot be exactly once when
+the remote API has no idempotency protocol. The runtime therefore records
+`sending` before the external call and records `delivered` only after an
+acknowledgement. Recovery treats a surviving `sending` state or a partial-send
+error as `ambiguous`: it does not resend that prompt or final response. Prompt
+ambiguity resumes the suspended tool with a `delivery_unknown` outcome; final
+ambiguity terminalizes the interaction with a visible failure code. The stable
+interaction delivery key is correlation metadata, not an idempotency claim.
 
 ## Configuration
 

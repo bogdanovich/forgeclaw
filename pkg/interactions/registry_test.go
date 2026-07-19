@@ -475,6 +475,38 @@ func TestRegistryWaitingRequiresSuccessfulDelivery(t *testing.T) {
 	}
 }
 
+func TestRegistryPersistsAmbiguousPromptDeliveryWindow(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	record, err := registry.Create(validCreate(
+		clock,
+		"interaction_14141414aaaaaaaa",
+		"session-ambiguous",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.BeginPromptDelivery(record.ID, record.Revision)
+	if err != nil || record.PromptDeliveryState != DeliveryStateSending || record.DeliveryTries != 1 {
+		t.Fatalf("begin prompt delivery = (%#v, %v)", record, err)
+	}
+	if _, waitErr := registry.MarkWaiting(record.ID, record.Revision); !errors.Is(
+		waitErr,
+		ErrInvalidTransition,
+	) {
+		t.Fatalf("waiting during ambiguous send error = %v", waitErr)
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	record, _ = reloaded.Get(record.ID)
+	if record.PromptDeliveryState != DeliveryStateSending || record.PromptDelivered {
+		t.Fatalf("reloaded ambiguous delivery = %#v", record)
+	}
+	record, err = reloaded.ClaimDeliveryUnknown(record.ID, record.Revision)
+	if err != nil || record.Status != StatusClaimed || record.Outcome != OutcomeDeliveryUnknown {
+		t.Fatalf("claim unknown delivery = (%#v, %v)", record, err)
+	}
+}
+
 func TestRegistryFindWaitingByRouteRequiresExactSenderAndTopic(t *testing.T) {
 	registry, clock, _ := newTestRegistry(t)
 	rec := makeWaiting(t, registry, clock, "interaction_13131313aaaaaaaa", "session-1")

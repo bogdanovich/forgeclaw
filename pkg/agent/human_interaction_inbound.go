@@ -467,19 +467,23 @@ func (al *AgentLoop) deliverInteractionFinal(
 		)
 		return fmt.Errorf("channel manager unavailable")
 	}
+	started, stateErr := registry.BeginFinalDelivery(record.ID, record.Revision)
+	if stateErr != nil {
+		return fmt.Errorf("begin final interaction delivery: %w", stateErr)
+	}
 	if inbound.Raw == nil {
 		inbound.Raw = make(map[string]string)
 	}
 	inbound.Raw[interactionIDMetadata] = record.ID
 	inbound.Raw[interactionShortIDMeta] = record.ShortID
-	inbound.Raw["idempotency_key"] = interactionDeliveryKey(record.ID, "final")
+	inbound.Raw["delivery_key"] = interactionDeliveryKey(record.ID, "final")
 	deliveryErr := al.channelManager.SendMessage(ctx, bus.OutboundMessage{
 		Channel: record.Route.Channel, ChatID: record.Route.ChatID,
 		Context: inbound, AgentID: record.Route.AgentID,
 		SessionKey: record.Route.SessionKey, Content: content,
 	})
-	updated, stateErr := registry.RecordFinalDeliveryAttempt(
-		record.ID, record.Revision, deliveryErr == nil, errString(deliveryErr),
+	updated, stateErr := registry.CompleteFinalDelivery(
+		started.ID, started.Revision, deliveryErr == nil, errString(deliveryErr),
 	)
 	if stateErr != nil {
 		return fmt.Errorf("record final interaction delivery: %w", stateErr)

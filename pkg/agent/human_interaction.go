@@ -149,8 +149,25 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 		return ToolSuspensionDisposition{}, err
 	}
 	disposition := ToolSuspensionDisposition{InteractionID: record.ID, Durable: true}
+	if runtime.al.channelManager == nil {
+		deliveryErr := fmt.Errorf("channel manager unavailable")
+		_, stateErr := registry.RecordDeliveryAttempt(
+			record.ID,
+			record.Revision,
+			false,
+			deliveryErr.Error(),
+		)
+		if stateErr != nil {
+			return disposition, fmt.Errorf("record interaction delivery: %w", stateErr)
+		}
+		return disposition, deliveryErr
+	}
+	record, err = registry.BeginPromptDelivery(record.ID, record.Revision)
+	if err != nil {
+		return disposition, fmt.Errorf("begin interaction delivery: %w", err)
+	}
 	deliveryErr := runtime.publishPrompt(ctx, record)
-	record, stateErr := registry.RecordDeliveryAttempt(
+	record, stateErr := registry.CompletePromptDelivery(
 		record.ID,
 		record.Revision,
 		deliveryErr == nil,
@@ -188,7 +205,7 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 			metadataKeyMessageKind: interactionMessageKind,
 			interactionIDMetadata:  record.ID,
 			interactionShortIDMeta: record.ShortID,
-			"idempotency_key":      interactionDeliveryKey(record.ID, "prompt"),
+			"delivery_key":         interactionDeliveryKey(record.ID, "prompt"),
 		},
 	}
 	return runtime.al.channelManager.SendMessage(ctx, bus.OutboundMessage{
@@ -209,7 +226,7 @@ func renderInteractionPrompt(record interactions.Record) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Input needed [%s]\n", record.ShortID)
 	for index, question := range record.Questions {
-		fmt.Fprintf(&builder, "\n%d. ", index+1)
+		fmt.Fprintf(&builder, "\n%d. [%s] ", index+1, question.ID)
 		if question.Header != "" {
 			fmt.Fprintf(&builder, "%s: ", question.Header)
 		}
