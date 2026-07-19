@@ -48,6 +48,7 @@ func replayCuratedMemoryLifecycle(t *testing.T) curatedMemoryReplay {
 	}
 	const staleFact = "- Home: Oakland"
 	const correctedFact = "- Home: San Mateo"
+	const duplicateInput = "HOME: SAN MATEO"
 	if err := os.WriteFile(memoryPath, []byte("# Stable facts\n\n"+staleFact+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func replayCuratedMemoryLifecycle(t *testing.T) curatedMemoryReplay {
 	}))
 	correctedPrompt := builder.BuildSystemPromptWithCache()
 	results = append(results,
-		tool.Execute(t.Context(), map[string]any{"operation": "add", "content": "HOME: SAN MATEO"}),
+		tool.Execute(t.Context(), map[string]any{"operation": "add", "content": duplicateInput}),
 		tool.Execute(t.Context(), map[string]any{"operation": "remove", "content": correctedFact}),
 	)
 	forgottenPrompt := builder.BuildSystemPromptWithCache()
@@ -105,8 +106,10 @@ func replayCuratedMemoryLifecycle(t *testing.T) curatedMemoryReplay {
 			if marshalErr != nil {
 				t.Fatal(marshalErr)
 			}
-			observation.RawContentInEvent = observation.RawContentInEvent ||
-				strings.Contains(string(encoded), staleFact) || strings.Contains(string(encoded), correctedFact)
+			for _, input := range []string{staleFact, correctedFact, duplicateInput} {
+				observation.RawContentInEvent = observation.RawContentInEvent ||
+					strings.Contains(string(encoded), input)
+			}
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for memory replay event")
 		}
@@ -133,7 +136,10 @@ func TestMemoryReplayBoundsAndDailyRollover(t *testing.T) {
 type promptMemoryReplay struct {
 	StableHeadBefore bool
 	StableTailBefore bool
-	StableTruncated  bool
+	StableCutBefore  bool
+	StableHeadAfter  bool
+	StableTailAfter  bool
+	StableCutAfter   bool
 	DayOneBefore     bool
 	DayTwoBefore     bool
 	DayOneAfter      bool
@@ -163,7 +169,10 @@ func replayBoundedPromptRollover(t *testing.T) promptMemoryReplay {
 	observation := promptMemoryReplay{
 		StableHeadBefore: strings.Contains(before, "STABLE-HEAD"),
 		StableTailBefore: strings.Contains(before, "STABLE-TAIL"),
-		StableTruncated:  strings.Contains(before, "stable memory truncated"),
+		StableCutBefore:  strings.Contains(before, "stable memory truncated"),
+		StableHeadAfter:  strings.Contains(after, "STABLE-HEAD"),
+		StableTailAfter:  strings.Contains(after, "STABLE-TAIL"),
+		StableCutAfter:   strings.Contains(after, "stable memory truncated"),
 		DayOneBefore:     strings.Contains(before, "DAY-ONE-TAIL"),
 		DayTwoBefore:     strings.Contains(before, "DAY-TWO-TAIL"),
 		DayOneAfter:      strings.Contains(after, "DAY-ONE-TAIL"),
@@ -171,7 +180,8 @@ func replayBoundedPromptRollover(t *testing.T) promptMemoryReplay {
 		DailyTruncated: strings.Contains(before, "daily notes truncated") &&
 			strings.Contains(after, "daily notes truncated"),
 	}
-	if !observation.StableHeadBefore || !observation.StableTailBefore || !observation.StableTruncated ||
+	if !observation.StableHeadBefore || !observation.StableTailBefore || !observation.StableCutBefore ||
+		!observation.StableHeadAfter || !observation.StableTailAfter || !observation.StableCutAfter ||
 		!observation.DayOneBefore || observation.DayTwoBefore || observation.DayOneAfter ||
 		!observation.DayTwoAfter || !observation.DailyTruncated {
 		t.Fatalf("unexpected bounded rollover observation: %#v", observation)
