@@ -368,6 +368,36 @@ func TestRegistryRejectsAnswerMessageClaimedByAnotherInteraction(t *testing.T) {
 	}
 }
 
+func TestRegistryAllowsSameAnswerMessageIDOnDifferentRoutes(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	first := makeWaiting(t, registry, clock, "interaction_dddddddd22222222", "session-1")
+	first, err := registry.ClaimAnswer(first.ID, first.Revision, Answer{
+		Text: "Staging", MessageID: "message-1",
+	}, OutcomeAnswered)
+	if err != nil {
+		t.Fatalf("claim first: %v", err)
+	}
+	first, _ = registry.MarkResuming(first.ID, first.Revision)
+	if _, resolveErr := registry.Resolve(first.ID, first.Revision); resolveErr != nil {
+		t.Fatalf("resolve first: %v", resolveErr)
+	}
+
+	request := validCreate(clock, "interaction_eeeeeeee22222222", "session-2")
+	request.Route.ChatID = "chat-2"
+	request.Route.RouteSessionKey = "telegram:default:chat-2"
+	second, err := registry.Create(request)
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	second, _ = registry.RecordDeliveryAttempt(second.ID, second.Revision, true, "")
+	second, _ = registry.MarkWaiting(second.ID, second.Revision)
+	if _, err := registry.ClaimAnswer(second.ID, second.Revision, Answer{
+		Text: "Production", MessageID: "message-1",
+	}, OutcomeAnswered); err != nil {
+		t.Fatalf("same message ID on another route was rejected: %v", err)
+	}
+}
+
 func TestRegistryClaimOverdueUsesResumableTimeoutOutcome(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	rec := makeWaiting(t, registry, clock, "interaction_ffffffff11111111", "session-1")

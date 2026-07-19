@@ -294,6 +294,51 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 	}
 }
 
+func TestInteractionIngressRetainsClaimedAnswerReplayOwnership(t *testing.T) {
+	workspace := t.TempDir()
+	al := &AgentLoop{cfg: config.DefaultConfig()}
+	request := testToolSuspensionRequest(workspace)
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "Canary", Values: map[string]string{"deploy_mode": "Canary"}, MessageID: "answer-1",
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := &inboundDispatchTarget{
+		Agent: &AgentInstance{Workspace: workspace}, SessionKey: request.Route.SessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	msg := bus.InboundMessage{Content: "Canary", Context: inboundContextForInteraction(request.Route)}
+	msg.Context.MessageID = "answer-1"
+	if !al.shouldHandleInteractionInbound(msg, target) {
+		t.Fatal("claimed answer replay escaped interaction dispatch")
+	}
+	if !interactionInboundReplaysAnswer(record, msg.Context) {
+		t.Fatal("persisted answer replay was not recognized")
+	}
+	msg.Context.MessageID = "answer-2"
+	if !al.shouldHandleInteractionInbound(msg, target) {
+		t.Fatal("new authorized message escaped the owned interaction session")
+	}
+	if interactionInboundReplaysAnswer(record, msg.Context) {
+		t.Fatal("different message was recognized as the persisted answer")
+	}
+	msg.Context.SenderID = "user-2"
+	if al.shouldHandleInteractionInbound(msg, target) {
+		t.Fatal("unrelated sender was consumed by the claimed interaction")
+	}
+}
+
 func TestResumeClaimedInteractionAppendsOneToolResultAndResolves(t *testing.T) {
 	provider := &simpleConvProvider{}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)

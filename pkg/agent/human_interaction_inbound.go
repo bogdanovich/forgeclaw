@@ -54,15 +54,19 @@ func (al *AgentLoop) shouldHandleInteractionInbound(
 		return true
 	}
 	record, ok := activeInteractionForSession(registry, target.SessionKey)
-	if !ok || record.Status != interactions.StatusWaiting ||
-		!interactionRouteAuthorizes(record.Route, target, msg.Context) {
+	if !ok || !interactionRouteAuthorizes(record.Route, target, msg.Context) {
 		return false
 	}
 	if commands.HasCommandPrefix(msg.Content) &&
 		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Content)), answerCommand) {
 		return false
 	}
-	return true
+	switch record.Status {
+	case interactions.StatusWaiting, interactions.StatusClaimed, interactions.StatusResuming:
+		return true
+	default:
+		return false
+	}
 }
 
 func (al *AgentLoop) hasNonterminalInteraction(workspace, sessionKey string) bool {
@@ -160,13 +164,25 @@ func (al *AgentLoop) processInteractionInbound(
 	if !ok {
 		return fmt.Errorf("active interaction disappeared for session %q", target.SessionKey)
 	}
-	if record.Status != interactions.StatusWaiting {
+	if record.Status == interactions.StatusClaimed || record.Status == interactions.StatusResuming {
+		if interactionInboundReplaysAnswer(record, msg.Context) {
+			return al.resumeClaimedInteraction(
+				ctx,
+				target.Agent,
+				&target.Allocation.Scope,
+				msg.Context,
+				record,
+			)
+		}
 		return al.publishInteractionNotice(
 			ctx,
 			msg,
 			target.SessionKey,
 			"An answer is already being processed for this session.",
 		)
+	}
+	if record.Status != interactions.StatusWaiting {
+		return fmt.Errorf("interaction %q is not accepting input from status %q", record.ID, record.Status)
 	}
 	if !interactionRouteAuthorizes(record.Route, target, msg.Context) {
 		return al.publishInteractionNotice(
@@ -198,6 +214,11 @@ func (al *AgentLoop) processInteractionInbound(
 		return err
 	}
 	return al.resumeClaimedInteraction(ctx, target.Agent, &target.Allocation.Scope, msg.Context, claimed)
+}
+
+func interactionInboundReplaysAnswer(record interactions.Record, inbound bus.InboundContext) bool {
+	return record.Answer != nil && record.Answer.MessageID != "" &&
+		record.Answer.MessageID == strings.TrimSpace(inbound.MessageID)
 }
 
 func activeInteractionForSession(

@@ -618,8 +618,10 @@ func (r *Registry) claim(
 				}
 			}
 			if answer.MessageID != "" {
+				identity := scopedAnswerMessageIdentity(rec.Route, answer.MessageID)
 				for _, other := range r.records {
-					if other.Answer != nil && other.Answer.MessageID == answer.MessageID {
+					if other.Answer != nil &&
+						scopedAnswerMessageIdentity(other.Route, other.Answer.MessageID) == identity {
 						return "", "", nil, fmt.Errorf(
 							"%w: %s",
 							ErrDuplicateAnswer,
@@ -818,7 +820,7 @@ func (r *Registry) load() error {
 	}
 	activeSessions := make(map[string]string)
 	activeShortIDs := make(map[string]string)
-	answerMessages := make(map[string]string)
+	answerMessages := make(map[answerMessageIdentity]string)
 	for _, rec := range snapshot.Records {
 		if err := validateStoredRecord(rec); err != nil {
 			return err
@@ -837,10 +839,11 @@ func (r *Registry) load() error {
 			activeShortIDs[rec.ShortID] = rec.ID
 		}
 		if rec.Answer != nil && rec.Answer.MessageID != "" {
-			if existing := answerMessages[rec.Answer.MessageID]; existing != "" {
+			identity := scopedAnswerMessageIdentity(rec.Route, rec.Answer.MessageID)
+			if existing := answerMessages[identity]; existing != "" {
 				return fmt.Errorf("interactions %q and %q share answer message", existing, rec.ID)
 			}
-			answerMessages[rec.Answer.MessageID] = rec.ID
+			answerMessages[identity] = rec.ID
 		}
 		r.records[rec.ID] = cloneRecord(rec)
 	}
@@ -865,6 +868,26 @@ func (r *Registry) load() error {
 		r.events = append(r.events, event)
 	}
 	return nil
+}
+
+type answerMessageIdentity struct {
+	Channel   string
+	AccountID string
+	ChatID    string
+	TopicID   string
+	SpaceID   string
+	MessageID string
+}
+
+func scopedAnswerMessageIdentity(route Route, messageID string) answerMessageIdentity {
+	return answerMessageIdentity{
+		Channel:   route.Channel,
+		AccountID: route.AccountID,
+		ChatID:    route.ChatID,
+		TopicID:   route.TopicID,
+		SpaceID:   route.SpaceID,
+		MessageID: strings.TrimSpace(messageID),
+	}
 }
 
 func validateStoredRecord(rec Record) error {
