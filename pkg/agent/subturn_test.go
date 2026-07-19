@@ -2696,6 +2696,21 @@ func TestRemoveUserDeliveryTools(t *testing.T) {
 	}
 }
 
+func TestRemoveDurableInteractionTools(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	registry.Register(&allowlistTestTool{name: "request_user_input"})
+	registry.Register(&allowlistTestTool{name: "read_file"})
+
+	removeDurableInteractionTools(registry)
+
+	if registry.HasRegistered("request_user_input") {
+		t.Fatal("request_user_input remained available to an ephemeral subturn")
+	}
+	if !registry.HasRegistered("read_file") {
+		t.Fatal("unrelated tool was removed")
+	}
+}
+
 func TestSpawnSubTurn_TargetAgentID_EmptyModelAccepted(t *testing.T) {
 	al, cleanup := newMultiAgentLoop(t, &mockProvider{})
 	defer cleanup()
