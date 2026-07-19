@@ -160,9 +160,9 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Subagent status report (%d total):\n", len(tasks)))
-	for _, status := range []string{"running", "completed", "failed", "canceled"} {
+	for _, status := range []string{"running", "waiting_for_input", "completed", "failed", "canceled"} {
 		if n := counts[status]; n > 0 {
-			label := strings.ToUpper(status[:1]) + status[1:] + ":"
+			label := spawnStatusSummaryLabel(status)
 			sb.WriteString(fmt.Sprintf("  %-10s %d\n", label, n))
 		}
 	}
@@ -207,9 +207,9 @@ func (t *SpawnStatusTool) executeFromRegistry(taskID, callerChannel, callerChatI
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Subagent status report (%d total):\n", len(filtered)))
-	for _, status := range []string{"running", "completed", "failed", "canceled"} {
+	for _, status := range []string{"running", "waiting_for_input", "completed", "failed", "canceled"} {
 		if n := counts[status]; n > 0 {
-			label := strings.ToUpper(status[:1]) + status[1:] + ":"
+			label := spawnStatusSummaryLabel(status)
 			sb.WriteString(fmt.Sprintf("  %-10s %d\n", label, n))
 		}
 	}
@@ -221,6 +221,13 @@ func (t *SpawnStatusTool) executeFromRegistry(taskID, callerChannel, callerChatI
 	}
 
 	return NewToolResult(strings.TrimRight(sb.String(), "\n")), true
+}
+
+func spawnStatusSummaryLabel(status string) string {
+	if status == "waiting_for_input" {
+		return "Waiting for input:"
+	}
+	return strings.ToUpper(status[:1]) + status[1:] + ":"
 }
 
 func spawnRecordVisibleToCaller(rec taskregistry.Record, channel, chatID string) bool {

@@ -292,12 +292,17 @@ func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimAnswer() error = %v", err)
 	}
-	err = al.resumeClaimedInteraction(
-		t.Context(), al.interactionRegistryForWorkspace(agent.Workspace),
-		agent.Workspace, agent, nil, *inbound, claimed,
-	)
-	if err != nil {
-		t.Fatalf("resumeClaimedInteraction() error = %v", err)
+	if claimed.Status != interactions.StatusClaimed {
+		t.Fatalf("claimed interaction = %#v", claimed)
+	}
+	if err = al.enqueueSteeringMessageWithSender(
+		"owner-session", agent.ID, "user-1",
+		providers.Message{Role: "user", Content: "deferred during recovery"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
 	}
 	rec, _ = tasks.Get("subagent-1")
 	if rec.Status != taskregistry.StatusWaitingForInput ||
@@ -313,6 +318,14 @@ func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
 	first, _ := al.interactionRegistryForWorkspace(agent.Workspace).Get(interaction.ID)
 	if first.Status != interactions.StatusResolved {
 		t.Fatalf("first interaction after chaining = %#v", first)
+	}
+	if got := al.pendingSteeringCountForScope("owner-session"); got != 1 {
+		t.Fatalf("deferred queue during chained wait = %d, want 1", got)
+	}
+	for _, message := range agent.Sessions.GetHistory("owner-session") {
+		if strings.Contains(message.Content, "deferred during recovery") {
+			t.Fatalf("deferred input escaped while next interaction was waiting: %#v", message)
+		}
 	}
 	select {
 	case <-manager.sent:

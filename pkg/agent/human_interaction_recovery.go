@@ -89,6 +89,7 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 						recovered++
 						_ = al.drainDeferredInteractionIngress(
 							ctx,
+							workspace,
 							record.Route,
 							inboundContextForInteraction(record.Route),
 						)
@@ -211,6 +212,7 @@ func (al *AgentLoop) recoverCancelingInteraction(
 	}
 	_ = al.drainDeferredInteractionIngress(
 		ctx,
+		workspace,
 		record.Route,
 		inboundContextForInteraction(record.Route),
 	)
@@ -315,6 +317,7 @@ func (al *AgentLoop) recoverClaimedInteraction(
 	}
 	if err := al.drainDeferredInteractionIngress(
 		ctx,
+		workspace,
 		record.Route,
 		inboundContextForInteraction(record.Route),
 	); err != nil {

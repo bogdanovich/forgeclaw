@@ -185,7 +185,7 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 	if c.al.hasNonterminalInteraction(target.Agent.Workspace, target.SessionKey) {
 		return
 	}
-	if err := c.al.drainDeferredInteractionIngress(ctx, interactions.Route{
+	if err := c.al.drainDeferredInteractionIngress(ctx, target.Agent.Workspace, interactions.Route{
 		SessionKey: target.SessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
@@ -199,13 +199,18 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 
 func (al *AgentLoop) drainDeferredInteractionIngress(
 	ctx context.Context,
+	workspace string,
 	route interactions.Route,
 	inbound bus.InboundContext,
 ) error {
+	if al.hasNonterminalInteraction(workspace, route.SessionKey) {
+		return nil
+	}
 	continued, err := al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
 		SessionKey: route.SessionKey,
 		Channel:    route.Channel,
 		ChatID:     route.ChatID,
+		Workspace:  workspace,
 	})
 	if err != nil {
 		return err
@@ -630,6 +635,10 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 	); err != nil {
 		return err
 	}
+	started, stateErr := registry.BeginFinalDelivery(record.ID, record.Revision)
+	if stateErr != nil {
+		return fmt.Errorf("begin task interaction delivery: %w", stateErr)
+	}
 	mode := tools.AsyncDeliveryMode(strings.TrimSpace(task.DeliveryMode))
 	switch mode {
 	case tools.AsyncDeliveryParentOnly, tools.AsyncDeliveryUserOnly, tools.AsyncDeliveryUserAndParent:
@@ -671,8 +680,13 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 		task.DeliveryStatus == taskregistry.DeliverySessionQueued ||
 		task.DeliveryStatus == taskregistry.DeliveryNotApplicable
 	detail := task.DeliveryError
-	updated, stateErr := registry.RecordFinalDeliveryAttempt(
-		record.ID, record.Revision, success, detail,
+	ambiguous := !success
+	if task.DeliveryStatus == taskregistry.DeliveryParentMissing &&
+		mode == tools.AsyncDeliveryParentOnly {
+		ambiguous = false
+	}
+	updated, stateErr := registry.CompleteFinalDelivery(
+		started.ID, started.Revision, success, ambiguous, detail,
 	)
 	if stateErr != nil {
 		return fmt.Errorf("record task interaction delivery: %w", stateErr)

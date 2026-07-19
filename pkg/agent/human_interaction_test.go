@@ -258,8 +258,25 @@ func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
 		t.Fatalf("parent-only task = %#v", task)
 	}
 	resolved, _ := registry.Get(record.ID)
-	if resolved.Status != interactions.StatusResolved {
+	if resolved.Status != interactions.StatusResolved ||
+		resolved.FinalDeliveryState != interactions.DeliveryStateDelivered {
 		t.Fatalf("interaction after parent handoff = %#v", resolved)
+	}
+	events := registry.ListEvents(record.ID)
+	startedAt, completedAt := -1, -1
+	for i, event := range events {
+		if event.Type != interactions.EventFinalDelivery {
+			continue
+		}
+		switch event.Code {
+		case "delivery_started":
+			startedAt = i
+		case "delivery_completed":
+			completedAt = i
+		}
+	}
+	if startedAt < 0 || completedAt <= startedAt {
+		t.Fatalf("task delivery was not durably started before completion: %#v", events)
 	}
 	msgBus := al.bus.(*bus.MessageBus)
 	select {
