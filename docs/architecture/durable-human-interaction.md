@@ -221,8 +221,11 @@ Text channels support two correlation forms:
 
 When exactly one request is waiting for that authorized route and sender, a
 plain next message may be accepted as its answer. In group conversations,
-sender matching is mandatory. Ambiguous or unauthorized messages continue
-through normal inbound handling and never reveal protected request details.
+sender matching is mandatory. A message routed to a different canonical session
+continues through normal inbound handling. An ambiguous or unauthorized message
+for the suspended canonical session receives a generic waiting response and is
+not appended between the incomplete assistant tool call and its eventual tool
+result. It never reveals protected request details.
 
 The manager validates option labels but always permits bounded free-form text
 for clarification questions. Approval interactions accept only the fixed
@@ -273,7 +276,7 @@ Schema limits:
 - stable unique question IDs;
 - headers up to 12 characters;
 - bounded question and description lengths;
-- zero to three options per question;
+- zero or two to three options per question;
 - optional timeout from 60 seconds to 24 hours;
 - default timeout supplied by trusted configuration, initially one hour.
 
@@ -339,6 +342,12 @@ delivery attempt so replay evaluators can detect:
 - restart recovery failures;
 - task-state mismatches;
 - final responses emitted while suspended.
+
+The interaction record, accepted answer, and canonical tool result have
+exactly-once state transitions. Channel publication is at-least-once unless the
+adapter supports an idempotency key: the runtime uses a stable interaction ID
+for correlation and retries, but cannot eliminate the crash window after a
+remote service accepts a message and before the local delivery receipt commits.
 
 ## Configuration
 
