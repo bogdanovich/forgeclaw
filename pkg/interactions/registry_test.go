@@ -547,9 +547,12 @@ func TestRegistrySnapshotBudgetFailureRollsBackMemoryAndEvents(t *testing.T) {
 func TestRegistryObserverRunsOutsideLockAndReceivesBoundedEvents(t *testing.T) {
 	registry, clock, _ := newTestRegistry(t)
 	var observed []Event
-	registry.Subscribe(func(event Event) {
-		observed = append(observed, event)
-		registry.Get(event.InteractionID)
+	unsubscribe := registry.Subscribe(func(observation EventObservation) {
+		observed = append(observed, observation.Event)
+		registry.Get(observation.Event.InteractionID)
+		if observation.Record.ID != observation.Event.InteractionID {
+			t.Errorf("observation record = %+v", observation.Record)
+		}
 	})
 	rec := makeWaiting(t, registry, clock, "interaction_abababab11111111", "session-1")
 	if len(observed) != 3 {
@@ -560,6 +563,26 @@ func TestRegistryObserverRunsOutsideLockAndReceivesBoundedEvents(t *testing.T) {
 	}
 	if observed[2].InteractionID != rec.ID {
 		t.Fatalf("observed interaction = %q, want %q", observed[2].InteractionID, rec.ID)
+	}
+	unsubscribe()
+	if _, err := registry.ClaimAnswer(rec.ID, rec.Revision, Answer{Text: "Staging"}, OutcomeAnswered); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 3 {
+		t.Fatalf("observer received event after unsubscribe: %d", len(observed))
+	}
+}
+
+func TestRegistryObserverPanicDoesNotFailDurableWrite(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	registry.Subscribe(func(EventObservation) { panic("observer failed") })
+	rec, err := registry.Create(validCreate(clock, "interaction_bcbcbcbc11111111", "session-1"))
+	if err != nil {
+		t.Fatalf("create after observer panic: %v", err)
+	}
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	if _, ok := reloaded.Get(rec.ID); !ok {
+		t.Fatal("durable record missing after observer panic")
 	}
 }
 

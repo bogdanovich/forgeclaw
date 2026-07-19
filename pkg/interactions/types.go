@@ -168,6 +168,11 @@ type Event struct {
 	Success       *bool     `json:"success,omitempty"`
 }
 
+type EventObservation struct {
+	Event  Event
+	Record Record
+}
+
 type CreateRequest struct {
 	ID            string
 	Kind          Kind

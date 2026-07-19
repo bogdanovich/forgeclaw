@@ -12,10 +12,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 type Options struct {
@@ -32,7 +34,14 @@ type Snapshot struct {
 	Events        []Event  `json:"events,omitempty"`
 }
 
-type Observer func(Event)
+type Observer func(EventObservation)
+
+type observerEntry struct {
+	id       uint64
+	observer Observer
+}
+
+var observerSequence atomic.Uint64
 
 type Registry struct {
 	mu        sync.RWMutex
@@ -40,7 +49,7 @@ type Registry struct {
 	options   Options
 	records   map[string]Record
 	events    []Event
-	observers []Observer
+	observers []observerEntry
 	loadErr   error
 }
 
@@ -99,13 +108,25 @@ func (r *Registry) LastLoadError() error {
 	return r.loadErr
 }
 
-func (r *Registry) Subscribe(observer Observer) {
+func (r *Registry) Subscribe(observer Observer) func() {
 	if r == nil || observer == nil {
-		return
+		return func() {}
 	}
+	entry := observerEntry{id: observerSequence.Add(1), observer: observer}
 	r.mu.Lock()
-	r.observers = append(r.observers, observer)
+	r.observers = append(r.observers, entry)
 	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		for i := range r.observers {
+			if r.observers[i].id != entry.id {
+				continue
+			}
+			r.observers = append(r.observers[:i], r.observers[i+1:]...)
+			break
+		}
+		r.mu.Unlock()
+	}
 }
 
 func (r *Registry) Create(req CreateRequest) (Record, error) {
@@ -944,13 +965,33 @@ func (r *Registry) notify(events []Event) {
 		return
 	}
 	r.mu.RLock()
-	observers := append([]Observer(nil), r.observers...)
+	observers := append([]observerEntry(nil), r.observers...)
+	records := make(map[string]Record, len(events))
+	for _, event := range events {
+		records[event.InteractionID] = cloneRecord(r.records[event.InteractionID])
+	}
 	r.mu.RUnlock()
 	for _, event := range events {
-		for _, observer := range observers {
-			observer(event)
+		observation := EventObservation{Event: event, Record: records[event.InteractionID]}
+		for _, entry := range observers {
+			notifyObserver(entry.observer, observation)
 		}
 	}
+}
+
+func notifyObserver(observer Observer, observation EventObservation) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logger.WarnCF(
+				"interactions",
+				"Recovered interaction event observer panic",
+				map[string]any{
+					"event_id": observation.Event.EventID,
+				},
+			)
+		}
+	}()
+	observer(observation)
 }
 
 func (r *Registry) nowMillis() int64 {
