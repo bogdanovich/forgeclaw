@@ -34,6 +34,27 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		}
 		return
 	}
+	if err := al.cancelInteractionForControlMessage(ctx, msg, target); err != nil {
+		if noticeErr := al.publishInteractionNotice(
+			ctx,
+			msg,
+			target.SessionKey,
+			"The pending interaction could not be canceled; please retry.",
+		); noticeErr != nil {
+			al.releaseInboundMessage(context.Background(), msg, err)
+		} else {
+			al.ackInboundMessage(ctx, msg)
+		}
+		return
+	}
+	if al.shouldHandleInteractionInbound(msg, target) {
+		c.handleInteractionInbound(ctx, msg, target)
+		return
+	}
+	if al.hasNonterminalInteraction(target.Agent.Workspace, target.SessionKey) {
+		c.deferInteractionInbound(ctx, msg, target)
+		return
+	}
 
 	claim, activeTarget, claimed := c.claimSession(target)
 	if !claimed {
@@ -42,6 +63,35 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 	}
 
 	c.startWorker(ctx, msg, target, claim)
+}
+
+func (c *inboundTurnCoordinator) deferInteractionInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) {
+	if err := c.enqueueDeferredInteractionInbound(ctx, msg, target); err != nil {
+		c.al.releaseInboundMessage(context.Background(), msg, err)
+	}
+}
+
+func (c *inboundTurnCoordinator) enqueueDeferredInteractionInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) error {
+	msg = c.al.prepareInboundMessageForAgent(ctx, msg)
+	return c.al.enqueueSteeringMessageWithSender(
+		target.SessionKey,
+		target.Agent.ID,
+		msg.SenderID,
+		providers.Message{
+			Role:           "user",
+			Content:        msg.Content,
+			Media:          append([]string(nil), msg.Media...),
+			InboundSpoolID: msg.SpoolID,
+		},
+	)
 }
 
 func (c *inboundTurnCoordinator) claimSession(

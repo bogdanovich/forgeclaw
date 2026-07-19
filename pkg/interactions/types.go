@@ -19,11 +19,12 @@ const (
 type Status string
 
 const (
-	StatusCreated  Status = "created"
-	StatusWaiting  Status = "waiting"
-	StatusClaimed  Status = "answer_claimed"
-	StatusResuming Status = "resuming"
-	StatusResolved Status = "resolved"
+	StatusCreated   Status = "created"
+	StatusWaiting   Status = "waiting"
+	StatusClaimed   Status = "answer_claimed"
+	StatusResuming  Status = "resuming"
+	StatusCanceling Status = "canceling"
+	StatusResolved  Status = "resolved"
 	//nolint:misspell // External interaction status follows the existing task status spelling.
 	StatusCancelled Status = "cancelled"
 	StatusFailed    Status = "failed"
@@ -32,10 +33,21 @@ const (
 type Outcome string
 
 const (
-	OutcomeAnswered Outcome = "answered"
-	OutcomeTimedOut Outcome = "timed_out"
-	OutcomeAllowed  Outcome = "allowed"
-	OutcomeDenied   Outcome = "denied"
+	OutcomeAnswered        Outcome = "answered"
+	OutcomeTimedOut        Outcome = "timed_out"
+	OutcomeAllowed         Outcome = "allowed"
+	OutcomeDenied          Outcome = "denied"
+	OutcomeCanceled        Outcome = "canceled"
+	OutcomeDeliveryUnknown Outcome = "delivery_unknown"
+)
+
+type DeliveryState string
+
+const (
+	DeliveryStateNotSent   DeliveryState = "not_sent"
+	DeliveryStateSending   DeliveryState = "sending"
+	DeliveryStateDelivered DeliveryState = "delivered"
+	DeliveryStateAmbiguous DeliveryState = "ambiguous"
 )
 
 type EventType string
@@ -43,9 +55,11 @@ type EventType string
 const (
 	EventCreated          EventType = "interaction.created"
 	EventDeliveryAttempt  EventType = "interaction.delivery_attempted"
+	EventFinalDelivery    EventType = "interaction.final_delivery_attempted"
 	EventWaiting          EventType = "interaction.waiting"
 	EventAnswerClaimed    EventType = "interaction.answer_claimed"
 	EventResumeStarted    EventType = "interaction.resume_started"
+	EventCanceling        EventType = "interaction.canceling"
 	EventResolved         EventType = "interaction.resolved"
 	EventCancelled        EventType = "interaction.cancelled"
 	EventFailed           EventType = "interaction.failed"
@@ -116,7 +130,10 @@ type Route struct {
 	Channel         string `json:"channel"`
 	AccountID       string `json:"account_id,omitempty"`
 	ChatID          string `json:"chat_id"`
+	ChatType        string `json:"chat_type,omitempty"`
 	TopicID         string `json:"topic_id,omitempty"`
+	SpaceID         string `json:"space_id,omitempty"`
+	SpaceType       string `json:"space_type,omitempty"`
 	SenderID        string `json:"sender_id"`
 }
 
@@ -136,31 +153,38 @@ type Answer struct {
 }
 
 type Record struct {
-	ID             string     `json:"id"`
-	ShortID        string     `json:"short_id"`
-	Kind           Kind       `json:"kind"`
-	Status         Status     `json:"status"`
-	Outcome        Outcome    `json:"outcome,omitempty"`
-	Revision       int64      `json:"revision"`
-	LastEventSeq   int64      `json:"last_event_sequence"`
-	Route          Route      `json:"route"`
-	Origin         Origin     `json:"origin"`
-	Questions      []Question `json:"questions,omitempty"`
-	PromptSummary  string     `json:"prompt_summary,omitempty"`
-	Answer         *Answer    `json:"answer,omitempty"`
-	CreatedAt      int64      `json:"created_at"`
-	UpdatedAt      int64      `json:"updated_at"`
-	ExpiresAt      int64      `json:"expires_at"`
-	ResolvedAt     int64      `json:"resolved_at,omitempty"`
-	CleanupAfter   int64      `json:"cleanup_after,omitempty"`
-	DeliveryTries  int        `json:"delivery_tries,omitempty"`
-	LastDeliveryAt int64      `json:"last_delivery_at,omitempty"`
-	DeliveryError  string     `json:"delivery_error,omitempty"`
-	ResumeTries    int        `json:"resume_tries,omitempty"`
-	LastResumeAt   int64      `json:"last_resume_at,omitempty"`
-	ResumeError    string     `json:"resume_error,omitempty"`
-	FailureCode    string     `json:"failure_code,omitempty"`
-	FailureDetail  string     `json:"failure_detail,omitempty"`
+	ID                  string        `json:"id"`
+	ShortID             string        `json:"short_id"`
+	Kind                Kind          `json:"kind"`
+	Status              Status        `json:"status"`
+	Outcome             Outcome       `json:"outcome,omitempty"`
+	Revision            int64         `json:"revision"`
+	LastEventSeq        int64         `json:"last_event_sequence"`
+	Route               Route         `json:"route"`
+	Origin              Origin        `json:"origin"`
+	Questions           []Question    `json:"questions,omitempty"`
+	PromptSummary       string        `json:"prompt_summary,omitempty"`
+	Answer              *Answer       `json:"answer,omitempty"`
+	CreatedAt           int64         `json:"created_at"`
+	UpdatedAt           int64         `json:"updated_at"`
+	ExpiresAt           int64         `json:"expires_at"`
+	ResolvedAt          int64         `json:"resolved_at,omitempty"`
+	CleanupAfter        int64         `json:"cleanup_after,omitempty"`
+	DeliveryTries       int           `json:"delivery_tries,omitempty"`
+	LastDeliveryAt      int64         `json:"last_delivery_at,omitempty"`
+	DeliveryError       string        `json:"delivery_error,omitempty"`
+	PromptDelivered     bool          `json:"prompt_delivered,omitempty"`
+	PromptDeliveryState DeliveryState `json:"prompt_delivery_state,omitempty"`
+	FinalDeliveryTries  int           `json:"final_delivery_tries,omitempty"`
+	LastFinalDeliveryAt int64         `json:"last_final_delivery_at,omitempty"`
+	FinalDelivered      bool          `json:"final_delivered,omitempty"`
+	FinalDeliveryError  string        `json:"final_delivery_error,omitempty"`
+	FinalDeliveryState  DeliveryState `json:"final_delivery_state,omitempty"`
+	ResumeTries         int           `json:"resume_tries,omitempty"`
+	LastResumeAt        int64         `json:"last_resume_at,omitempty"`
+	ResumeError         string        `json:"resume_error,omitempty"`
+	FailureCode         string        `json:"failure_code,omitempty"`
+	FailureDetail       string        `json:"failure_detail,omitempty"`
 }
 
 type Event struct {
@@ -340,13 +364,15 @@ func isTerminal(status Status) bool {
 func validTransition(from, to Status) bool {
 	switch from {
 	case StatusCreated:
-		return to == StatusWaiting || to == StatusCancelled || to == StatusFailed
+		return to == StatusWaiting || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
 	case StatusWaiting:
-		return to == StatusClaimed || to == StatusCancelled || to == StatusFailed
+		return to == StatusClaimed || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
 	case StatusClaimed:
-		return to == StatusResuming || to == StatusCancelled || to == StatusFailed
+		return to == StatusResuming || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
 	case StatusResuming:
-		return to == StatusResolved || to == StatusCancelled || to == StatusFailed
+		return to == StatusResolved || to == StatusCanceling || to == StatusCancelled || to == StatusFailed
+	case StatusCanceling:
+		return to == StatusCancelled || to == StatusFailed
 	default:
 		return false
 	}

@@ -1798,7 +1798,7 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 			for _, chunk := range chunks {
 				chunkMsg := msg
 				chunkMsg.Content = chunk
-				m.sendWithRetry(ctx, name, w, chunkMsg)
+				_, _, _, _ = m.sendWithRetry(ctx, name, w, chunkMsg)
 			}
 		case <-ctx.Done():
 			return
@@ -1849,7 +1849,17 @@ func (m *Manager) sendWithRetry(
 	name string,
 	w *channelWorker,
 	msg bus.OutboundMessage,
-) ([]string, bool) {
+) ([]string, bool, bool, error) {
+	return m.sendWithRetryPolicy(ctx, name, w, msg, true)
+}
+
+func (m *Manager) sendWithRetryPolicy(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMessage,
+	retryAmbiguous bool,
+) ([]string, bool, bool, error) {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
@@ -1864,17 +1874,18 @@ func (m *Manager) sendWithRetry(
 				Error:            err.Error(),
 			},
 		)
-		return nil, false
+		return nil, false, false, err
 	}
 
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
 		m.publishOutboundSent(name, msg, msgIDs)
-		return msgIDs, true
+		return msgIDs, true, false, nil
 	}
 
 	var lastErr error
 	var msgIDs []string
+	ambiguous := false
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		attemptStart := time.Now()
 		msgIDs, lastErr = w.ch.Send(ctx, msg)
@@ -1890,7 +1901,13 @@ func (m *Manager) sendWithRetry(
 				})
 			}
 			m.publishOutboundSent(name, msg, msgIDs)
-			return msgIDs, true
+			return msgIDs, true, false, nil
+		}
+		if len(msgIDs) > 0 ||
+			(!errors.Is(lastErr, ErrNotRunning) &&
+				!errors.Is(lastErr, ErrSendFailed) &&
+				!errors.Is(lastErr, ErrRateLimit)) {
+			ambiguous = true
 		}
 
 		classification := classifySendError(lastErr)
@@ -1903,6 +1920,9 @@ func (m *Manager) sendWithRetry(
 			"classification": classification,
 			"error":          lastErr.Error(),
 		})
+		if ambiguous && !retryAmbiguous {
+			break
+		}
 
 		// Permanent failures — don't retry
 		if errors.Is(lastErr, ErrNotRunning) || errors.Is(lastErr, ErrSendFailed) {
@@ -1920,7 +1940,7 @@ func (m *Manager) sendWithRetry(
 			case <-time.After(rateLimitDelay):
 				continue
 			case <-ctx.Done():
-				return nil, false
+				return nil, false, ambiguous, ctx.Err()
 			}
 		}
 
@@ -1929,7 +1949,7 @@ func (m *Manager) sendWithRetry(
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
-			return nil, false
+			return nil, false, ambiguous, ctx.Err()
 		}
 	}
 
@@ -1942,7 +1962,7 @@ func (m *Manager) sendWithRetry(
 	})
 	m.publishOutboundFailed(name, msg, lastErr, false)
 
-	return nil, false
+	return nil, false, ambiguous, lastErr
 }
 
 func classifySendError(err error) string {
@@ -2472,6 +2492,24 @@ func (m *Manager) UnregisterChannel(name string) {
 // delivered (or all retries are exhausted), which preserves ordering when
 // a subsequent operation depends on the message having been sent.
 func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
+	return m.sendMessageWithRetryPolicy(ctx, msg, true)
+}
+
+// SendMessageDefiniteRetryOnly retries only channel rejections known to occur
+// before remote acceptance. It is intended for durable callers that must
+// preserve an ambiguous-delivery outcome rather than risk a duplicate send.
+func (m *Manager) SendMessageDefiniteRetryOnly(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return m.sendMessageWithRetryPolicy(ctx, msg, false)
+}
+
+func (m *Manager) sendMessageWithRetryPolicy(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+	retryAmbiguous bool,
+) error {
 	msg = bus.NormalizeOutboundMessage(msg)
 	channelName := outboundMessageChannel(msg)
 
@@ -2481,7 +2519,7 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 	m.mu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("channel %s not found", channelName)
+		return newDeliveryError(fmt.Errorf("channel %s not found", channelName), false)
 	}
 	var w *channelWorker
 	if owner != nil {
@@ -2489,12 +2527,12 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		var err error
 		w, release, err = owner.borrowWorkerForSend()
 		if err != nil {
-			return err
+			return newDeliveryError(err, false)
 		}
 		defer release()
 	}
 	if w == nil {
-		return fmt.Errorf("channel %s has no active worker", channelName)
+		return newDeliveryError(fmt.Errorf("channel %s has no active worker", channelName), false)
 	}
 
 	maxLen := 0
@@ -2502,16 +2540,32 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		maxLen = mlp.MaxMessageLength()
 	}
 	if chunks := splitOutboundMessageContent(msg, maxLen); len(chunks) > 1 {
+		deliveredChunks := 0
 		for _, chunk := range chunks {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
-			m.sendWithRetry(ctx, channelName, w, chunkMsg)
+			if _, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
+				ctx, channelName, w, chunkMsg, retryAmbiguous,
+			); !delivered {
+				return newDeliveryError(
+					fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),
+					ambiguous || deliveredChunks > 0,
+				)
+			}
+			deliveredChunks++
 		}
 	} else {
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
 		}
-		m.sendWithRetry(ctx, channelName, w, msg)
+		if _, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
+			ctx, channelName, w, msg, retryAmbiguous,
+		); !delivered {
+			return newDeliveryError(
+				fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),
+				ambiguous,
+			)
+		}
 	}
 	return nil
 }

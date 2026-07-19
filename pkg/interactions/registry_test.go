@@ -115,6 +115,9 @@ func TestRegistryLifecyclePersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record successful delivery: %v", err)
 	}
+	if !rec.PromptDelivered {
+		t.Fatal("successful prompt delivery was not persisted")
+	}
 	rec, err = registry.MarkWaiting(rec.ID, rec.Revision)
 	if err != nil {
 		t.Fatalf("mark waiting: %v", err)
@@ -365,21 +368,59 @@ func TestRegistryRejectsAnswerMessageClaimedByAnotherInteraction(t *testing.T) {
 	}
 }
 
+func TestRegistryAllowsSameAnswerMessageIDOnDifferentRoutes(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	first := makeWaiting(t, registry, clock, "interaction_dddddddd22222222", "session-1")
+	first, err := registry.ClaimAnswer(first.ID, first.Revision, Answer{
+		Text: "Staging", MessageID: "message-1",
+	}, OutcomeAnswered)
+	if err != nil {
+		t.Fatalf("claim first: %v", err)
+	}
+	first, _ = registry.MarkResuming(first.ID, first.Revision)
+	if _, resolveErr := registry.Resolve(first.ID, first.Revision); resolveErr != nil {
+		t.Fatalf("resolve first: %v", resolveErr)
+	}
+
+	request := validCreate(clock, "interaction_eeeeeeee22222222", "session-2")
+	request.Route.ChatID = "chat-2"
+	request.Route.RouteSessionKey = "telegram:default:chat-2"
+	second, err := registry.Create(request)
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	second, _ = registry.RecordDeliveryAttempt(second.ID, second.Revision, true, "")
+	second, _ = registry.MarkWaiting(second.ID, second.Revision)
+	if _, err := registry.ClaimAnswer(second.ID, second.Revision, Answer{
+		Text: "Production", MessageID: "message-1",
+	}, OutcomeAnswered); err != nil {
+		t.Fatalf("same message ID on another route was rejected: %v", err)
+	}
+}
+
 func TestRegistryClaimOverdueUsesResumableTimeoutOutcome(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	rec := makeWaiting(t, registry, clock, "interaction_ffffffff11111111", "session-1")
+	created, err := registry.Create(validCreate(clock, "interaction_aaaaaaaa22222222", "session-2"))
+	if err != nil {
+		t.Fatalf("create undelivered interaction: %v", err)
+	}
 	clock.Advance(2 * time.Hour)
 
 	claimed, err := registry.ClaimOverdue(time.Time{})
 	if err != nil {
 		t.Fatalf("claim overdue: %v", err)
 	}
-	if len(claimed) != 1 || claimed[0].Status != StatusClaimed ||
-		claimed[0].Outcome != OutcomeTimedOut || claimed[0].Answer == nil {
+	if len(claimed) != 2 {
 		t.Fatalf("claimed overdue = %+v", claimed)
 	}
-	if claimed[0].ID != rec.ID {
-		t.Fatalf("claimed id = %q, want %q", claimed[0].ID, rec.ID)
+	for _, item := range claimed {
+		if item.Status != StatusClaimed || item.Outcome != OutcomeTimedOut || item.Answer == nil {
+			t.Fatalf("claimed overdue item = %+v", item)
+		}
+	}
+	if claimed[0].ID != created.ID || claimed[1].ID != rec.ID {
+		t.Fatalf("claimed ids = %q, %q", claimed[0].ID, claimed[1].ID)
 	}
 
 	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
@@ -431,6 +472,38 @@ func TestRegistryWaitingRequiresSuccessfulDelivery(t *testing.T) {
 		ErrInvalidTransition,
 	) {
 		t.Fatalf("waiting after failed delivery error = %v", waitErr)
+	}
+}
+
+func TestRegistryPersistsAmbiguousPromptDeliveryWindow(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	record, err := registry.Create(validCreate(
+		clock,
+		"interaction_14141414aaaaaaaa",
+		"session-ambiguous",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.BeginPromptDelivery(record.ID, record.Revision)
+	if err != nil || record.PromptDeliveryState != DeliveryStateSending || record.DeliveryTries != 1 {
+		t.Fatalf("begin prompt delivery = (%#v, %v)", record, err)
+	}
+	if _, waitErr := registry.MarkWaiting(record.ID, record.Revision); !errors.Is(
+		waitErr,
+		ErrInvalidTransition,
+	) {
+		t.Fatalf("waiting during ambiguous send error = %v", waitErr)
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	record, _ = reloaded.Get(record.ID)
+	if record.PromptDeliveryState != DeliveryStateSending || record.PromptDelivered {
+		t.Fatalf("reloaded ambiguous delivery = %#v", record)
+	}
+	record, err = reloaded.ClaimDeliveryUnknown(record.ID, record.Revision)
+	if err != nil || record.Status != StatusClaimed || record.Outcome != OutcomeDeliveryUnknown {
+		t.Fatalf("claim unknown delivery = (%#v, %v)", record, err)
 	}
 }
 

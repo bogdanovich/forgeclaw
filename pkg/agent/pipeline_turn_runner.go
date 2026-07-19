@@ -239,6 +239,13 @@ func (p *Pipeline) runTurnLoop(
 					turnStatus = TurnEndStatusError
 				}
 				return result, turnStatus, finalizeErr
+			case ToolControlSuspend:
+				turnStatus = TurnEndStatusSuspended
+				ts.setPhase(TurnPhaseSuspended)
+				return turnResult{
+					status:                 turnStatus,
+					suspendedInteractionID: exec.suspendedInteractionID,
+				}, turnStatus, nil
 			case ToolControlBreak:
 				// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
 				if exec.abortedByHardAbort {

@@ -84,6 +84,7 @@ const (
     InteractionWaiting   InteractionStatus = "waiting"
     InteractionClaimed   InteractionStatus = "answer_claimed"
     InteractionResuming  InteractionStatus = "resuming"
+    InteractionCanceling InteractionStatus = "canceling"
     InteractionResolved  InteractionStatus = "resolved"
     InteractionCancelled InteractionStatus = "cancelled"
     InteractionFailed    InteractionStatus = "failed"
@@ -96,6 +97,7 @@ const (
     OutcomeTimedOut InteractionOutcome = "timed_out"
     OutcomeAllowed  InteractionOutcome = "allowed"
     OutcomeDenied   InteractionOutcome = "denied"
+    OutcomeDeliveryUnknown InteractionOutcome = "delivery_unknown"
 )
 ```
 
@@ -126,7 +128,8 @@ created -> waiting -> answer_claimed -> resuming -> resolved
     |         |              |             +-> failed
     |         |              +-> retry recovery (status unchanged)
     |         +-> answer_claimed (timeout outcome)
-    +-> failed/cancelled
+    +-> canceling -> cancelled
+    +-> failed
 ```
 
 Rules:
@@ -188,8 +191,17 @@ When `request_user_input` or approval suspends execution:
 1. The assistant tool-call message is already durably persisted by the LLM
    phase. Creation of the interaction verifies that persistence succeeded.
 2. The interaction is persisted before its outbound prompt is published.
-3. Delivery transitions the request from `created` to `waiting`. Failed delivery
-   remains retryable and does not lose the request.
+3. Before calling a channel, delivery durably transitions to `sending`. A
+  confirmed acknowledgement transitions to `delivered` and then `waiting`.
+  Failures known to occur before any channel attempt become `not_sent` and are
+  retryable. A crash, partial delivery, or uncertain channel error after
+  `sending` is `ambiguous` and is never retried automatically because most
+  channel APIs do not provide an idempotency key.
+  Interaction delivery uses a conservative channel path that retries only
+  definite pre-acceptance rejections; generic message delivery may retain its
+  normal temporary-error retry policy. This conservative operation is required
+  by the agent channel-manager contract so adapters cannot silently downgrade
+  interaction delivery to the generic retry behavior.
 4. The tool loop returns `ToolControlSuspend` without adding a fabricated tool
    result for the suspended call.
 5. Remaining tool calls in the same model response are recorded as deferred and
@@ -223,9 +235,10 @@ When exactly one request is waiting for that authorized route and sender, a
 plain next message may be accepted as its answer. In group conversations,
 sender matching is mandatory. A message routed to a different canonical session
 continues through normal inbound handling. An ambiguous or unauthorized message
-for the suspended canonical session receives a generic waiting response and is
-not appended between the incomplete assistant tool call and its eventual tool
-result. It never reveals protected request details.
+for the suspended canonical session is durably deferred for normal continuation
+after the interaction closes; it is not appended between the incomplete
+assistant tool call and its eventual tool result. It never reveals protected
+request details.
 
 The manager validates option labels but always permits bounded free-form text
 for clarification questions. Approval interactions accept only the fixed
@@ -241,6 +254,9 @@ Answer processing is:
 
 1. Compare-and-swap `waiting -> answer_claimed`, storing inbound message identity
    and the bounded answer.
+   At this durable ownership boundary, acknowledge the original inbound spool
+   item. Later continuation failures remain registry-owned recovery work and
+   must never release the accepted answer for ordinary redelivery.
 2. Inspect canonical history for the originating tool call and matching result.
 3. If the result is absent, append exactly one `role=tool` message using the
    original tool call ID. Use an error-aware session writer and ingest it into
@@ -251,6 +267,11 @@ Answer processing is:
    turn and the next LLM call can continue naturally.
 6. On normal completion, transition to `resolved`. On a recoverable process or
    provider failure, retain enough state for reconciliation to retry.
+
+Additional input received while an answer is `claimed` or `resuming` is placed
+in the existing deferred-ingress queue with its spool ID and is drained only
+after the interaction becomes terminal. It is never acknowledged as a busy
+notice and discarded.
 
 The tool-result payload is structured JSON containing request ID, question IDs,
 answers, and resolution reason. It must not contain channel envelope data.
@@ -263,6 +284,15 @@ History reconciliation makes crash windows idempotent:
 - a completed continuation plus a nonterminal interaction: detect the matching
   result and later assistant response, then mark resolved;
 - conflicting history or mismatched hashes: fail closed and emit diagnostics.
+
+Workspace-local interaction stores are registered in a bounded durable catalog
+before an interaction is created. Restart recovery loads cataloged stores in
+addition to stores belonging to currently configured agents. If the originating
+agent was removed, renamed, or moved to another workspace, recovery terminalizes
+the interaction with `agent_unavailable` rather than leaving durable orphaned
+state. Empty stores are removed from the catalog only after a healthy load and
+successful retention prune. Catalog registration and interaction creation are
+serialized against that cleanup so a newly created store cannot lose discovery.
 
 ## `request_user_input` Tool
 
@@ -344,10 +374,19 @@ delivery attempt so replay evaluators can detect:
 - final responses emitted while suspended.
 
 The interaction record, accepted answer, and canonical tool result have
-exactly-once state transitions. Channel publication is at-least-once unless the
-adapter supports an idempotency key: the runtime uses a stable interaction ID
-for correlation and retries, but cannot eliminate the crash window after a
-remote service accepts a message and before the local delivery receipt commits.
+exactly-once state transitions. Channel publication cannot be exactly once when
+the remote API has no idempotency protocol. The runtime therefore records
+`sending` before the external call and records `delivered` only after an
+acknowledgement. Recovery treats a surviving `sending` state or a partial-send
+error as `ambiguous`: it does not resend that prompt or final response. Prompt
+ambiguity resumes the suspended tool with a `delivery_unknown` outcome; final
+ambiguity terminalizes the interaction with a visible failure code. The stable
+interaction delivery key is correlation metadata, not an idempotency claim.
+
+Cancellation uses the same durable ordering. `/stop` first transitions the
+record to `canceling`, then writes the paired canceled tool result, and finally
+terminalizes it. Recovery completes any surviving `canceling` record, so a
+crash cannot leave waiting state in conflict with canceled canonical history.
 
 ## Configuration
 
@@ -380,7 +419,8 @@ At startup, after sessions, tasks, channels, and the event sink are available:
 
 1. load and validate nonterminal interactions;
 2. claim overdue requests with a timeout outcome;
-3. retry created or incompletely delivered prompts;
+3. retry only prompts whose delivery is known to be `not_sent`, and reconcile
+   ambiguous delivery without resending;
 4. reconcile `answer_claimed` and `resuming` records against canonical history;
 5. restore task `waiting_for_input` projections;
 6. resume eligible interactions with bounded concurrency;

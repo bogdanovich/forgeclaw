@@ -22,6 +22,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -48,24 +49,28 @@ type AgentLoop struct {
 	hooks              *HookManager
 
 	// Runtime state
-	running          atomic.Bool
-	contextManager   ContextManager
-	fallback         *providers.FallbackChain
-	modelExecution   *modelExecutionManager
-	channelManager   interfaces.ChannelManager
-	mediaStore       media.MediaStore
-	transcriber      asr.Transcriber
-	cmdRegistry      *commands.Registry
-	mcp              mcpRuntime
-	hookRuntime      hookRuntime
-	steering         *steeringQueue
-	compactionRunner *backgroundCompactionRunner
-	pendingSkills    sync.Map
-	pendingStops     sync.Map
-	asyncCompletions sync.Map
-	taskRegistries   sync.Map
-	runtimeTools     map[string]RuntimeToolFactory
-	mu               sync.RWMutex
+	running                    atomic.Bool
+	contextManager             ContextManager
+	fallback                   *providers.FallbackChain
+	modelExecution             *modelExecutionManager
+	channelManager             interfaces.ChannelManager
+	mediaStore                 media.MediaStore
+	transcriber                asr.Transcriber
+	cmdRegistry                *commands.Registry
+	mcp                        mcpRuntime
+	hookRuntime                hookRuntime
+	steering                   *steeringQueue
+	compactionRunner           *backgroundCompactionRunner
+	pendingSkills              sync.Map
+	pendingStops               sync.Map
+	asyncCompletions           sync.Map
+	taskRegistries             sync.Map
+	interactionRegistries      sync.Map
+	interactionCatalog         *interactions.WorkspaceCatalog
+	interactionCatalogMu       sync.Mutex
+	interactionRecoveryRunning atomic.Bool
+	runtimeTools               map[string]RuntimeToolFactory
+	mu                         sync.RWMutex
 
 	isolatedToolBootstrap  bool
 	isolatedSkillBootstrap bool
@@ -127,6 +132,7 @@ type continuationTarget struct {
 	SessionKey string
 	Channel    string
 	ChatID     string
+	Workspace  string
 }
 
 const (
@@ -171,6 +177,8 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 	ingress := newInboundTurnCoordinator(al)
 	idleTicker := time.NewTicker(100 * time.Millisecond)
 	defer idleTicker.Stop()
+	interactionTicker := time.NewTicker(time.Minute)
+	defer interactionTicker.Stop()
 
 	for {
 		select {
@@ -180,6 +188,8 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			if !al.running.Load() {
 				return nil
 			}
+		case <-interactionTicker.C:
+			al.scheduleHumanInteractionRecovery(ctx)
 		case msg, ok := <-al.bus.InboundChan():
 			if !ok {
 				return nil
@@ -477,6 +487,9 @@ func (al *AgentLoop) runAgentLoop(
 		return "", err
 	}
 	if result.status == TurnEndStatusAborted {
+		return "", nil
+	}
+	if result.status == TurnEndStatusSuspended {
 		return "", nil
 	}
 

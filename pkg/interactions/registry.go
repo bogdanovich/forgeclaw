@@ -207,7 +207,7 @@ func (r *Registry) MarkWaiting(id string, expectedRevision int64) (Record, error
 					StatusWaiting,
 				)
 			}
-			if rec.DeliveryTries == 0 || rec.DeliveryError != "" {
+			if rec.DeliveryTries == 0 || rec.DeliveryError != "" || !rec.PromptDelivered {
 				return "", "", nil, fmt.Errorf(
 					"%w: prompt delivery has not succeeded",
 					ErrInvalidTransition,
@@ -239,11 +239,185 @@ func (r *Registry) RecordDeliveryAttempt(
 			rec.DeliveryTries++
 			rec.LastDeliveryAt = now
 			if success {
+				rec.PromptDelivered = true
+				rec.PromptDeliveryState = DeliveryStateDelivered
 				rec.DeliveryError = ""
 			} else {
 				rec.DeliveryError = bounded(detail, MaxSummaryLength)
 			}
 			return EventDeliveryAttempt, "", &success, nil
+		},
+	)
+}
+
+func (r *Registry) BeginPromptDelivery(id string, expectedRevision int64) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Status != StatusCreated ||
+				(rec.PromptDeliveryState != "" && rec.PromptDeliveryState != DeliveryStateNotSent) ||
+				rec.PromptDelivered {
+				return "", "", nil, fmt.Errorf(
+					"%w: begin prompt delivery from %s/%s",
+					ErrInvalidTransition,
+					rec.Status,
+					rec.PromptDeliveryState,
+				)
+			}
+			rec.DeliveryTries++
+			rec.LastDeliveryAt = now
+			rec.DeliveryError = ""
+			rec.PromptDeliveryState = DeliveryStateSending
+			return EventDeliveryAttempt, "delivery_started", nil, nil
+		},
+	)
+}
+
+func (r *Registry) CompletePromptDelivery(
+	id string,
+	expectedRevision int64,
+	success bool,
+	ambiguous bool,
+	detail string,
+) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Status != StatusCreated || rec.PromptDeliveryState != DeliveryStateSending {
+				return "", "", nil, fmt.Errorf(
+					"%w: complete prompt delivery from %s/%s",
+					ErrInvalidTransition,
+					rec.Status,
+					rec.PromptDeliveryState,
+				)
+			}
+			rec.LastDeliveryAt = now
+			if success {
+				rec.PromptDelivered = true
+				rec.PromptDeliveryState = DeliveryStateDelivered
+				rec.DeliveryError = ""
+			} else if ambiguous {
+				rec.PromptDeliveryState = DeliveryStateAmbiguous
+				rec.DeliveryError = bounded(detail, MaxSummaryLength)
+			} else {
+				rec.PromptDeliveryState = DeliveryStateNotSent
+				rec.DeliveryError = bounded(detail, MaxSummaryLength)
+			}
+			return EventDeliveryAttempt, "delivery_completed", &success, nil
+		},
+	)
+}
+
+func (r *Registry) RecordFinalDeliveryAttempt(
+	id string,
+	expectedRevision int64,
+	success bool,
+	detail string,
+) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Status != StatusResuming {
+				return "", "", nil, fmt.Errorf(
+					"%w: final delivery from %s", ErrInvalidTransition, rec.Status,
+				)
+			}
+			rec.FinalDeliveryTries++
+			rec.LastFinalDeliveryAt = now
+			if success {
+				rec.FinalDelivered = true
+				rec.FinalDeliveryState = DeliveryStateDelivered
+				rec.FinalDeliveryError = ""
+			} else {
+				rec.FinalDeliveryError = bounded(detail, MaxSummaryLength)
+			}
+			return EventFinalDelivery, "", &success, nil
+		},
+	)
+}
+
+func (r *Registry) BeginFinalDelivery(id string, expectedRevision int64) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Status != StatusResuming ||
+				(rec.FinalDeliveryState != "" && rec.FinalDeliveryState != DeliveryStateNotSent) ||
+				rec.FinalDelivered {
+				return "", "", nil, fmt.Errorf(
+					"%w: begin final delivery from %s/%s",
+					ErrInvalidTransition,
+					rec.Status,
+					rec.FinalDeliveryState,
+				)
+			}
+			rec.FinalDeliveryTries++
+			rec.LastFinalDeliveryAt = now
+			rec.FinalDeliveryError = ""
+			rec.FinalDeliveryState = DeliveryStateSending
+			return EventFinalDelivery, "delivery_started", nil, nil
+		},
+	)
+}
+
+func (r *Registry) CompleteFinalDelivery(
+	id string,
+	expectedRevision int64,
+	success bool,
+	ambiguous bool,
+	detail string,
+) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Status != StatusResuming || rec.FinalDeliveryState != DeliveryStateSending {
+				return "", "", nil, fmt.Errorf(
+					"%w: complete final delivery from %s/%s",
+					ErrInvalidTransition,
+					rec.Status,
+					rec.FinalDeliveryState,
+				)
+			}
+			rec.LastFinalDeliveryAt = now
+			if success {
+				rec.FinalDelivered = true
+				rec.FinalDeliveryState = DeliveryStateDelivered
+				rec.FinalDeliveryError = ""
+			} else if ambiguous {
+				rec.FinalDeliveryState = DeliveryStateAmbiguous
+				rec.FinalDeliveryError = bounded(detail, MaxSummaryLength)
+			} else {
+				rec.FinalDeliveryState = DeliveryStateNotSent
+				rec.FinalDeliveryError = bounded(detail, MaxSummaryLength)
+			}
+			return EventFinalDelivery, "delivery_completed", &success, nil
+		},
+	)
+}
+
+func (r *Registry) ClaimDeliveryUnknown(id string, expectedRevision int64) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Status != StatusCreated ||
+				(rec.PromptDeliveryState != DeliveryStateSending &&
+					rec.PromptDeliveryState != DeliveryStateAmbiguous) {
+				return "", "", nil, fmt.Errorf(
+					"%w: claim unknown delivery from %s/%s",
+					ErrInvalidTransition,
+					rec.Status,
+					rec.PromptDeliveryState,
+				)
+			}
+			rec.Status = StatusClaimed
+			rec.Outcome = OutcomeDeliveryUnknown
+			rec.Answer = &Answer{ReceivedAt: now}
+			return EventAnswerClaimed, "prompt_delivery_ambiguous", nil, nil
 		},
 	)
 }
@@ -284,7 +458,8 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 	claimed := make([]Record, 0)
 	emitted := make([]Event, 0)
 	for id, rec := range r.records {
-		if rec.Status != StatusWaiting || rec.ExpiresAt <= 0 || rec.ExpiresAt > nowMillis {
+		if (rec.Status != StatusCreated && rec.Status != StatusWaiting) ||
+			rec.ExpiresAt <= 0 || rec.ExpiresAt > nowMillis {
 			continue
 		}
 		before[id] = rec
@@ -367,6 +542,41 @@ func (r *Registry) RecordResumeFailure(
 
 func (r *Registry) Resolve(id string, expectedRevision int64) (Record, error) {
 	return r.transition(id, expectedRevision, StatusResolved, EventResolved, "", nil)
+}
+
+func (r *Registry) BeginCancellation(
+	id string,
+	expectedRevision int64,
+	code string,
+) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, _ int64) (EventType, string, *bool, error) {
+			if !validTransition(rec.Status, StatusCanceling) {
+				return "", "", nil, fmt.Errorf(
+					"%w: %s -> %s",
+					ErrInvalidTransition,
+					rec.Status,
+					StatusCanceling,
+				)
+			}
+			rec.Status = StatusCanceling
+			rec.FailureCode = bounded(code, 128)
+			return EventCanceling, rec.FailureCode, nil, nil
+		},
+	)
+}
+
+func (r *Registry) CompleteCancellation(id string, expectedRevision int64) (Record, error) {
+	return r.transition(
+		id,
+		expectedRevision,
+		StatusCancelled,
+		EventCancelled,
+		"cancellation_completed",
+		nil,
+	)
 }
 
 func (r *Registry) Cancel(id string, expectedRevision int64, code string) (Record, error) {
@@ -588,8 +798,10 @@ func (r *Registry) claim(
 				}
 			}
 			if answer.MessageID != "" {
+				identity := scopedAnswerMessageIdentity(rec.Route, answer.MessageID)
 				for _, other := range r.records {
-					if other.Answer != nil && other.Answer.MessageID == answer.MessageID {
+					if other.Answer != nil &&
+						scopedAnswerMessageIdentity(other.Route, other.Answer.MessageID) == identity {
 						return "", "", nil, fmt.Errorf(
 							"%w: %s",
 							ErrDuplicateAnswer,
@@ -788,7 +1000,7 @@ func (r *Registry) load() error {
 	}
 	activeSessions := make(map[string]string)
 	activeShortIDs := make(map[string]string)
-	answerMessages := make(map[string]string)
+	answerMessages := make(map[answerMessageIdentity]string)
 	for _, rec := range snapshot.Records {
 		if err := validateStoredRecord(rec); err != nil {
 			return err
@@ -807,10 +1019,11 @@ func (r *Registry) load() error {
 			activeShortIDs[rec.ShortID] = rec.ID
 		}
 		if rec.Answer != nil && rec.Answer.MessageID != "" {
-			if existing := answerMessages[rec.Answer.MessageID]; existing != "" {
+			identity := scopedAnswerMessageIdentity(rec.Route, rec.Answer.MessageID)
+			if existing := answerMessages[identity]; existing != "" {
 				return fmt.Errorf("interactions %q and %q share answer message", existing, rec.ID)
 			}
-			answerMessages[rec.Answer.MessageID] = rec.ID
+			answerMessages[identity] = rec.ID
 		}
 		r.records[rec.ID] = cloneRecord(rec)
 	}
@@ -837,6 +1050,26 @@ func (r *Registry) load() error {
 	return nil
 }
 
+type answerMessageIdentity struct {
+	Channel   string
+	AccountID string
+	ChatID    string
+	TopicID   string
+	SpaceID   string
+	MessageID string
+}
+
+func scopedAnswerMessageIdentity(route Route, messageID string) answerMessageIdentity {
+	return answerMessageIdentity{
+		Channel:   route.Channel,
+		AccountID: route.AccountID,
+		ChatID:    route.ChatID,
+		TopicID:   route.TopicID,
+		SpaceID:   route.SpaceID,
+		MessageID: strings.TrimSpace(messageID),
+	}
+}
+
 func validateStoredRecord(rec Record) error {
 	if strings.TrimSpace(rec.ID) == "" || !regexpID.MatchString(rec.ID) ||
 		rec.ShortID != shortID(rec.ID) || rec.Revision <= 0 || rec.LastEventSeq <= 0 ||
@@ -851,6 +1084,7 @@ func validateStoredRecord(rec Record) error {
 		StatusWaiting,
 		StatusClaimed,
 		StatusResuming,
+		StatusCanceling,
 		StatusResolved,
 		StatusCancelled,
 		StatusFailed:
@@ -866,6 +1100,13 @@ func validateStoredRecord(rec Record) error {
 	if err := validateStoredQuestions(rec.Kind, rec.Questions); err != nil {
 		return err
 	}
+	if !validDeliveryState(rec.PromptDeliveryState) || !validDeliveryState(rec.FinalDeliveryState) ||
+		(rec.PromptDelivered && rec.PromptDeliveryState != "" &&
+			rec.PromptDeliveryState != DeliveryStateDelivered) ||
+		(rec.FinalDelivered && rec.FinalDeliveryState != "" &&
+			rec.FinalDeliveryState != DeliveryStateDelivered) {
+		return fmt.Errorf("invalid delivery state for interaction %q", rec.ID)
+	}
 	switch rec.Status {
 	case StatusCreated:
 		if rec.Answer != nil || rec.Outcome != "" || rec.DeliveryTries < 0 {
@@ -873,6 +1114,7 @@ func validateStoredRecord(rec Record) error {
 		}
 	case StatusWaiting:
 		if rec.Answer != nil || rec.Outcome != "" || rec.DeliveryTries == 0 ||
+			!rec.PromptDelivered ||
 			rec.DeliveryError != "" {
 			return fmt.Errorf("invalid waiting interaction %q", rec.ID)
 		}
@@ -892,13 +1134,22 @@ func validateStoredRecord(rec Record) error {
 }
 
 func validStoredOutcome(kind Kind, outcome Outcome) bool {
-	if outcome == OutcomeTimedOut {
+	if outcome == OutcomeTimedOut || outcome == OutcomeDeliveryUnknown {
 		return true
 	}
 	if kind == KindQuestion {
 		return outcome == OutcomeAnswered
 	}
 	return outcome == OutcomeAllowed || outcome == OutcomeDenied
+}
+
+func validDeliveryState(state DeliveryState) bool {
+	switch state {
+	case "", DeliveryStateNotSent, DeliveryStateSending, DeliveryStateDelivered, DeliveryStateAmbiguous:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Registry) saveLocked() error {

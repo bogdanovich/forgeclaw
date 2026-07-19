@@ -12,6 +12,7 @@ import (
 	"time"
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -644,6 +645,20 @@ toolLoop:
 		if toolResult == nil {
 			toolResult = tools.ErrorResult("hook returned nil tool result")
 		}
+		if toolResult.Suspension != nil {
+			control, suspended, fallback := runner.trySuspendToolCall(
+				ctx,
+				i,
+				tc,
+				toolName,
+				toolDuration,
+				toolResult,
+			)
+			if suspended {
+				return control
+			}
+			toolResult = fallback
+		}
 
 		verifiedWrite := hasVerifiedWriteAudit(toolResult.WriteAudit)
 		toolSummary := strings.TrimSpace(toolResult.ForUser)
@@ -1020,6 +1035,118 @@ func (r *toolLoopRunner) appendSkippedToolMessages(start int, reason string, con
 	for i := start; i < len(r.toolCalls); i++ {
 		r.appendSkippedToolMessage(r.toolCalls[i], reason, content)
 	}
+}
+
+func (r *toolLoopRunner) trySuspendToolCall(
+	ctx context.Context,
+	callIndex int,
+	toolCall providers.ToolCall,
+	toolName string,
+	duration time.Duration,
+	result *tools.ToolResult,
+) (ToolControl, bool, *tools.ToolResult) {
+	if result == nil || result.Suspension == nil {
+		return ToolControlContinue, false, result
+	}
+
+	// A newer user message wins if it arrived before durable suspension. Pair
+	// every call in the current batch and let the next iteration reconcile it.
+	r.captureSteering(false)
+	if len(r.exec.pendingMessages) > 0 {
+		r.appendToolMessage(providers.Message{
+			Role:       "tool",
+			Content:    queuedSteeringDeferredToolResult,
+			ToolCallID: toolCall.ID,
+		}, toolMessagePersistAndIngest)
+		r.appendSkippedToolMessages(
+			callIndex+1,
+			"newer user message arrived before input suspension",
+			queuedSteeringDeferredToolResult,
+		)
+		r.exec.messages = r.messages
+		r.exec.allResponsesHandled = false
+		return ToolControlContinue, true, nil
+	}
+
+	fallback := func(message string) (ToolControl, bool, *tools.ToolResult) {
+		return ToolControlContinue, false, tools.ErrorResult(message)
+	}
+	if r.ts == nil || r.ts.opts.NoHistory {
+		return fallback("request_user_input requires durable session history")
+	}
+	if !r.exec.assistantToolCallsPersisted {
+		message := "cannot suspend because the originating assistant tool call was not persisted"
+		if r.exec.assistantToolCallsWriteErr != nil {
+			message += ": " + r.exec.assistantToolCallsWriteErr.Error()
+		}
+		return fallback(message)
+	}
+	if r.p == nil || r.p.Interaction.Suspension == nil {
+		return fallback("human interaction suspension is unavailable in this runtime")
+	}
+	if err := interactions.ValidateSuspensionRequest(*result.Suspension); err != nil {
+		return fallback(err.Error())
+	}
+
+	inbound := r.ts.opts.Dispatch.InboundContext
+	route := interactions.Route{
+		AgentID:         r.ts.agent.ID,
+		SessionKey:      r.ts.sessionKey,
+		RouteSessionKey: r.ts.opts.Dispatch.RouteSessionKey,
+		Channel:         r.ts.channel,
+		ChatID:          r.ts.chatID,
+		SenderID:        r.ts.opts.Dispatch.SenderID(),
+	}
+	if inbound != nil {
+		route.AccountID = inbound.Account
+		route.ChatType = inbound.ChatType
+		route.TopicID = inbound.TopicID
+		route.SpaceID = inbound.SpaceID
+		route.SpaceType = inbound.SpaceType
+	}
+	disposition, err := r.p.Interaction.Suspension.SuspendToolCall(ctx, ToolSuspensionRequest{
+		Workspace: r.ts.workspace,
+		Prompt:    *result.Suspension,
+		Route:     route,
+		Origin: interactions.Origin{
+			TurnID:     r.ts.turnID,
+			ToolCallID: toolCall.ID,
+			ToolName:   toolName,
+		},
+	})
+	if !disposition.Durable {
+		if err == nil {
+			err = fmt.Errorf("suspension manager returned without durable ownership")
+		}
+		return fallback("failed to suspend for human input: " + err.Error())
+	}
+	if err != nil {
+		logger.WarnCF("agent", "Human interaction persisted with pending delivery recovery", map[string]any{
+			"agent_id":       r.ts.agent.ID,
+			"interaction_id": disposition.InteractionID,
+			"error":          err.Error(),
+		})
+	}
+
+	r.appendSkippedToolMessages(
+		callIndex+1,
+		"tool batch suspended for human input",
+		"Deferred until the pending human input is resolved. Reissue this tool if it is still needed.",
+	)
+	r.exec.messages = r.messages
+	r.exec.suspendedInteractionID = disposition.InteractionID
+	r.p.emitEvent(
+		runtimeevents.KindAgentToolExecEnd,
+		r.ts.eventMeta("runTurn", "turn.tool.suspended"),
+		ToolExecEndPayload{
+			ToolCallID:    toolCall.ID,
+			Tool:          toolName,
+			Duration:      duration,
+			Suspended:     true,
+			InteractionID: disposition.InteractionID,
+		},
+	)
+	return ToolControlSuspend, true, nil
 }
 
 func (r *toolLoopRunner) appendSkippedToolMessage(

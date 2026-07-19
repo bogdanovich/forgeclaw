@@ -8,6 +8,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -66,6 +67,28 @@ type PipelineInteractionServices struct {
 	ToolDelivery     toolDeliveryManager
 	Hooks            hookInterceptor
 	Fallback         fallbackExecutor
+	Suspension       toolSuspensionManager
+}
+
+type ToolSuspensionRequest struct {
+	Workspace string
+	Prompt    interactions.SuspensionRequest
+	Route     interactions.Route
+	Origin    interactions.Origin
+}
+
+// ToolSuspensionDisposition distinguishes a durable handoff from a failure
+// that is still safe to return to the model as an ordinary tool error.
+type ToolSuspensionDisposition struct {
+	InteractionID string
+	Durable       bool
+}
+
+type toolSuspensionManager interface {
+	SuspendToolCall(
+		ctx context.Context,
+		request ToolSuspensionRequest,
+	) (ToolSuspensionDisposition, error)
 }
 
 type runtimeEventEmitter interface {

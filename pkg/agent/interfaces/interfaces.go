@@ -57,6 +57,10 @@ type ChannelManager interface {
 	// SendMessage sends a text message to the specified channel and chat.
 	SendMessage(ctx context.Context, msg bus.OutboundMessage) error
 
+	// SendMessageDefiniteRetryOnly preserves ambiguous delivery failures and
+	// retries only failures known to occur before remote acceptance.
+	SendMessageDefiniteRetryOnly(ctx context.Context, msg bus.OutboundMessage) error
+
 	// SendMedia sends a media message to the specified channel and chat.
 	SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error
 

@@ -127,6 +127,13 @@ func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.Outbo
 	return nil
 }
 
+func (m *recordingChannelManager) SendMessageDefiniteRetryOnly(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return m.SendMessage(ctx, msg)
+}
+
 func (m *recordingChannelManager) SendMedia(
 	ctx context.Context,
 	msg bus.OutboundMediaMessage,

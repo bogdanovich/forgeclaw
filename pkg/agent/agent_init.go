@@ -14,6 +14,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/skills"
@@ -59,6 +60,7 @@ func NewAgentLoop(
 		workerSem:           make(chan struct{}, workerPoolSize),
 		agentTurnAdmissions: newAgentTurnAdmissionController(registry),
 		ownsRuntimeEvents:   true,
+		interactionCatalog:  interactions.NewWorkspaceCatalog(config.GetHome()),
 	}
 	al.compactionRunner = &backgroundCompactionRunner{
 		contextManager: func() ContextManager {
@@ -122,6 +124,20 @@ func registerSharedTools(
 			continue
 		}
 		taskRegistry := al.taskRegistryForWorkspace(agent.Workspace)
+		_ = al.interactionRegistryForWorkspace(agent.Workspace)
+		if cfg.Tools.IsToolEnabled("request_user_input") {
+			requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{
+				DefaultTimeout: cfg.Tools.RequestUserInput.DefaultTimeout(),
+				MaxTimeout:     cfg.Tools.RequestUserInput.MaxTimeout(),
+			})
+			if err != nil {
+				logger.ErrorCF("agent", "Failed to initialize request_user_input tool", map[string]any{
+					"error": err.Error(),
+				})
+			} else {
+				registerToolIfAllowed(agent, requestTool)
+			}
+		}
 		if cfg.Tools.IsToolEnabled("memory") {
 			workspace := agent.Workspace
 			registerToolIfAllowed(
@@ -366,7 +382,9 @@ func registerSharedTools(
 			// Clone the parent's tool registry so subagents can use all tools
 			// registered so far (file, web, etc.) but NOT spawn/spawn_status/task_status
 			// which are added below — preventing recursive subagent spawning.
-			subagentManager.SetTools(agent.Tools.Clone())
+			subagentTools := agent.Tools.Clone()
+			subagentTools.Unregister("request_user_input")
+			subagentManager.SetTools(subagentTools)
 			if spawnEnabled {
 				spawnTool := tools.NewSpawnTool(subagentManager)
 				spawnTool.SetSpawner(NewSubTurnSpawner(al))

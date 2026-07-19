@@ -23,6 +23,20 @@ type pipelineLoopGuardTool struct {
 	executions int
 }
 
+type fakeToolSuspensionManager struct {
+	requests    []ToolSuspensionRequest
+	disposition ToolSuspensionDisposition
+	err         error
+}
+
+func (m *fakeToolSuspensionManager) SuspendToolCall(
+	_ context.Context,
+	request ToolSuspensionRequest,
+) (ToolSuspensionDisposition, error) {
+	m.requests = append(m.requests, request)
+	return m.disposition, m.err
+}
+
 func TestToolResultContextStatus(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -44,6 +58,161 @@ func TestToolResultContextStatus(t *testing.T) {
 				t.Fatalf("status = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatalf("NewRequestUserInputTool() error = %v", err)
+	}
+	deferredTool := &steeringSafetyTestTool{
+		name: "deferred-write", safety: tools.SteeringSafetyCancellable,
+	}
+	registry.Register(requestTool)
+	registry.Register(deferredTool)
+	store := session.NewSessionManager("")
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: store}
+	inbound := bus.InboundContext{
+		Channel: "telegram", Account: "primary", ChatID: "chat-1", ChatType: "group",
+		TopicID: "topic-1", SpaceID: "space-1", SpaceType: "workspace", SenderID: "user-1",
+	}
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, turnID: "turn-suspend", sessionKey: "session-suspend",
+		channel: inbound.Channel, chatID: inbound.ChatID,
+		opts: processOptions{Dispatch: DispatchRequest{
+			RouteSessionKey: "route-suspend", SessionKey: "session-suspend", InboundContext: &inbound,
+		}},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{
+		{ID: "call-question", Name: requestTool.Name(), Arguments: map[string]any{
+			"questions": []any{map[string]any{"id": "mode", "question": "Which mode?"}},
+		}},
+		{ID: "call-deferred", Name: deferredTool.Name()},
+	}
+	exec.assistantToolCallsPersisted = true
+	manager := &fakeToolSuspensionManager{
+		disposition: ToolSuspensionDisposition{InteractionID: "interaction-1", Durable: true},
+	}
+	emitter := &captureRuntimeEmitter{}
+	pipeline := &Pipeline{
+		Runtime:     PipelineRuntimeServices{Events: emitter},
+		Interaction: PipelineInteractionServices{Suspension: manager},
+	}
+
+	control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+	if control != ToolControlSuspend {
+		t.Fatalf("control = %v, want suspend", control)
+	}
+	if deferredTool.executions != 0 {
+		t.Fatalf("deferred tool executions = %d, want 0", deferredTool.executions)
+	}
+	if exec.suspendedInteractionID != "interaction-1" || len(manager.requests) != 1 {
+		t.Fatalf("suspension = %q, requests = %#v", exec.suspendedInteractionID, manager.requests)
+	}
+	request := manager.requests[0]
+	if request.Origin.ToolCallID != "call-question" || request.Origin.TurnID != ts.turnID ||
+		request.Route.SenderID != "user-1" || request.Route.AccountID != "primary" ||
+		request.Route.TopicID != "topic-1" || request.Route.SpaceID != "space-1" {
+		t.Fatalf("trusted suspension request = %#v", request)
+	}
+	if len(exec.messages) != 1 || exec.messages[0].ToolCallID != "call-deferred" {
+		t.Fatalf("messages = %#v, want only deferred sibling result", exec.messages)
+	}
+	for _, message := range exec.messages {
+		if message.ToolCallID == "call-question" {
+			t.Fatalf("pending call received fabricated result: %#v", message)
+		}
+	}
+	foundSuspendedEvent := false
+	for _, event := range emitter.events {
+		payload, ok := event.payload.(ToolExecEndPayload)
+		if event.kind == runtimeevents.KindAgentToolExecEnd && ok && payload.Suspended &&
+			payload.InteractionID == "interaction-1" {
+			foundSuspendedEvent = true
+		}
+	}
+	if !foundSuspendedEvent {
+		t.Fatal("missing suspended tool execution event")
+	}
+}
+
+func TestPipelineSuspensionFailureBecomesPairedToolError(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatalf("NewRequestUserInputTool() error = %v", err)
+	}
+	registry.Register(requestTool)
+	store := session.NewSessionManager("")
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: store}
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, turnID: "turn-no-persist", sessionKey: "session-no-persist",
+		opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-no-persist"}},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{{
+		ID: "call-question", Name: requestTool.Name(), Arguments: map[string]any{
+			"questions": []any{map[string]any{"id": "mode", "question": "Which mode?"}},
+		},
+	}}
+	manager := &fakeToolSuspensionManager{
+		disposition: ToolSuspensionDisposition{InteractionID: "must-not-run", Durable: true},
+	}
+	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
+
+	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control != ToolControlContinue {
+		t.Fatalf("control = %v, want continue with tool error", control)
+	}
+	if len(manager.requests) != 0 {
+		t.Fatal("suspension manager called before assistant persistence")
+	}
+	if len(exec.messages) != 1 || exec.messages[0].ToolCallID != "call-question" ||
+		exec.messages[0].ToolResultStatus != providers.ToolResultStatusError ||
+		!strings.Contains(exec.messages[0].Content, "originating assistant tool call was not persisted") {
+		t.Fatalf("messages = %#v, want paired persistence error", exec.messages)
+	}
+}
+
+func TestPipelineSteeringWinsBeforeSuspensionCommit(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatalf("NewRequestUserInputTool() error = %v", err)
+	}
+	registry.Register(requestTool)
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, turnID: "turn-steer-suspend", sessionKey: "session-steer-suspend",
+		opts: processOptions{Dispatch: DispatchRequest{SessionKey: "session-steer-suspend"}},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{{
+		ID: "call-question", Name: requestTool.Name(), Arguments: map[string]any{
+			"questions": []any{map[string]any{"id": "mode", "question": "Which mode?"}},
+		},
+	}}
+	exec.assistantToolCallsPersisted = true
+	manager := &fakeToolSuspensionManager{
+		disposition: ToolSuspensionDisposition{InteractionID: "must-not-run", Durable: true},
+	}
+	pipeline := &Pipeline{
+		Context: PipelineContextServices{Steering: &delayedSteering{
+			messages: []providers.Message{{Role: "user", Content: "Use canary instead"}},
+		}},
+		Interaction: PipelineInteractionServices{Suspension: manager},
+	}
+
+	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control != ToolControlContinue {
+		t.Fatalf("control = %v, want continue", control)
+	}
+	if len(manager.requests) != 0 || len(exec.pendingMessages) != 1 {
+		t.Fatalf("requests = %d, pending = %#v", len(manager.requests), exec.pendingMessages)
+	}
+	if len(exec.messages) != 1 || exec.messages[0].ToolCallID != "call-question" {
+		t.Fatalf("messages = %#v, want paired deferred result", exec.messages)
 	}
 }
 

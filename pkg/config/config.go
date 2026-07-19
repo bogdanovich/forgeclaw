@@ -979,6 +979,34 @@ type MessageToolsConfig struct {
 	MediaEnabled bool `yaml:"-"                                     json:"media_enabled" env:"PICOCLAW_TOOLS_MESSAGE_MEDIA_ENABLED"`
 }
 
+type RequestUserInputToolsConfig struct {
+	Enabled               bool `json:"enabled" yaml:"-" env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_ENABLED"` //nolint:golines
+	DefaultTimeoutSeconds int  `json:"default_timeout_seconds" env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_DEFAULT_TIMEOUT_SECONDS"`
+	MaxTimeoutSeconds     int  `json:"max_timeout_seconds"     env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_MAX_TIMEOUT_SECONDS"`
+	RetentionHours        int  `json:"retention_hours"         env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_RETENTION_HOURS"`
+}
+
+func (c RequestUserInputToolsConfig) DefaultTimeout() time.Duration {
+	if c.DefaultTimeoutSeconds == 0 {
+		return time.Hour
+	}
+	return time.Duration(c.DefaultTimeoutSeconds) * time.Second
+}
+
+func (c RequestUserInputToolsConfig) MaxTimeout() time.Duration {
+	if c.MaxTimeoutSeconds == 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.MaxTimeoutSeconds) * time.Second
+}
+
+func (c RequestUserInputToolsConfig) Retention() time.Duration {
+	if c.RetentionHours == 0 {
+		return 7 * 24 * time.Hour
+	}
+	return time.Duration(c.RetentionHours) * time.Hour
+}
+
 type ImageGenerateToolsConfig struct {
 	ToolConfig `       yaml:"-" envPrefix:"PICOCLAW_TOOLS_IMAGE_GENERATE_"`
 	Model      string `yaml:"-"                                            json:"model,omitempty"      env:"PICOCLAW_TOOLS_IMAGE_GENERATE_MODEL"`
@@ -1237,37 +1265,38 @@ type ToolsConfig struct {
 	// FilterMinLength is the minimum content length required for filtering.
 	// Content shorter than this will be returned unchanged for performance.
 	// Default: 8
-	FilterMinLength int                      `json:"filter_min_length"          yaml:"-"                env:"PICOCLAW_TOOLS_FILTER_MIN_LENGTH"`
-	LoopDetection   ToolLoopDetectionConfig  `json:"loop_detection"             yaml:"-"`
-	ResultRetention ResultRetentionConfig    `json:"result_retention,omitempty" yaml:"-"`
-	Web             WebToolsConfig           `json:"web"                        yaml:"web,omitempty"`
-	Cron            CronToolsConfig          `json:"cron"                       yaml:"-"`
-	Exec            ExecConfig               `json:"exec"                       yaml:"-"`
-	Skills          SkillsToolsConfig        `json:"skills"                     yaml:"skills,omitempty"`
-	MediaCleanup    MediaCleanupConfig       `json:"media_cleanup"              yaml:"-"`
-	MCP             MCPConfig                `json:"mcp"                        yaml:"-"`
-	AppendFile      ToolConfig               `json:"append_file"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
-	ApplyPatch      ToolConfig               `json:"apply_patch"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_APPLY_PATCH_"`
-	FindSkills      ToolConfig               `json:"find_skills"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
-	I2C             ToolConfig               `json:"i2c"                        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_I2C_"`
-	ImageGenerate   ImageGenerateToolsConfig `json:"image_generate"             yaml:"-"`
-	InstallSkill    ToolConfig               `json:"install_skill"              yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
-	ListDir         ToolConfig               `json:"list_dir"                   yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
-	LoadImage       ToolConfig               `json:"load_image"                 yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
-	Memory          ToolConfig               `json:"memory"                     yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_MEMORY_"`
-	Message         MessageToolsConfig       `json:"message"                    yaml:"-"`
-	ReadFile        ReadFileToolConfig       `json:"read_file"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
-	Serial          ToolConfig               `json:"serial"                     yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
-	SendFile        ToolConfig               `json:"send_file"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
-	SendTTS         ToolConfig               `json:"send_tts"                   yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
-	SearchFiles     ToolConfig               `json:"search_files"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEARCH_FILES_"`
-	Spawn           ToolConfig               `json:"spawn"                      yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
-	SpawnStatus     ToolConfig               `json:"spawn_status"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
-	SPI             ToolConfig               `json:"spi"                        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPI_"`
-	Subagent        ToolConfig               `json:"subagent"                   yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
-	UpdatePlan      ToolConfig               `json:"update_plan"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_UPDATE_PLAN_"`
-	WebFetch        ToolConfig               `json:"web_fetch"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
-	WriteFile       ToolConfig               `json:"write_file"                 yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	FilterMinLength  int                         `json:"filter_min_length"          yaml:"-"                env:"PICOCLAW_TOOLS_FILTER_MIN_LENGTH"`
+	LoopDetection    ToolLoopDetectionConfig     `json:"loop_detection"             yaml:"-"`
+	ResultRetention  ResultRetentionConfig       `json:"result_retention,omitempty" yaml:"-"`
+	Web              WebToolsConfig              `json:"web"                        yaml:"web,omitempty"`
+	Cron             CronToolsConfig             `json:"cron"                       yaml:"-"`
+	Exec             ExecConfig                  `json:"exec"                       yaml:"-"`
+	Skills           SkillsToolsConfig           `json:"skills"                     yaml:"skills,omitempty"`
+	MediaCleanup     MediaCleanupConfig          `json:"media_cleanup"              yaml:"-"`
+	MCP              MCPConfig                   `json:"mcp"                        yaml:"-"`
+	AppendFile       ToolConfig                  `json:"append_file"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
+	ApplyPatch       ToolConfig                  `json:"apply_patch"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_APPLY_PATCH_"`
+	FindSkills       ToolConfig                  `json:"find_skills"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
+	I2C              ToolConfig                  `json:"i2c"                        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_I2C_"`
+	ImageGenerate    ImageGenerateToolsConfig    `json:"image_generate"             yaml:"-"`
+	InstallSkill     ToolConfig                  `json:"install_skill"              yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
+	ListDir          ToolConfig                  `json:"list_dir"                   yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
+	LoadImage        ToolConfig                  `json:"load_image"                 yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
+	Memory           ToolConfig                  `json:"memory"                     yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_MEMORY_"`
+	Message          MessageToolsConfig          `json:"message"                    yaml:"-"`
+	ReadFile         ReadFileToolConfig          `json:"read_file"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
+	RequestUserInput RequestUserInputToolsConfig `json:"request_user_input" yaml:"-"` //nolint:golines
+	Serial           ToolConfig                  `json:"serial"                     yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
+	SendFile         ToolConfig                  `json:"send_file"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
+	SendTTS          ToolConfig                  `json:"send_tts"                   yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
+	SearchFiles      ToolConfig                  `json:"search_files"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEARCH_FILES_"`
+	Spawn            ToolConfig                  `json:"spawn"                      yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
+	SpawnStatus      ToolConfig                  `json:"spawn_status"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
+	SPI              ToolConfig                  `json:"spi"                        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPI_"`
+	Subagent         ToolConfig                  `json:"subagent"                   yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
+	UpdatePlan       ToolConfig                  `json:"update_plan"                yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_UPDATE_PLAN_"`
+	WebFetch         ToolConfig                  `json:"web_fetch"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
+	WriteFile        ToolConfig                  `json:"write_file"                 yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -1668,6 +1697,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateExecConfig(); err != nil {
 		return nil, err
 	}
+	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
+		return nil, err
+	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid tools.result_retention: %w", err)
 	}
@@ -1874,6 +1906,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 		return nil, err
 	}
 	if err = cfg.ValidateExecConfig(); err != nil {
+		return nil, err
+	}
+	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
 		return nil, err
 	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
@@ -2127,6 +2162,30 @@ func (c *Config) ValidateExecConfig() error {
 	}
 }
 
+func (c *Config) ValidateRequestUserInputConfig() error {
+	if c == nil {
+		return nil
+	}
+	cfg := c.Tools.RequestUserInput
+	defaultTimeout := int(cfg.DefaultTimeout() / time.Second)
+	maxTimeout := int(cfg.MaxTimeout() / time.Second)
+	retentionHours := int(cfg.Retention() / time.Hour)
+	if defaultTimeout < 60 || defaultTimeout > 86400 {
+		return fmt.Errorf(
+			"tools.request_user_input.default_timeout_seconds must be between 60 and 86400",
+		)
+	}
+	if maxTimeout < defaultTimeout || maxTimeout > 86400 {
+		return fmt.Errorf(
+			"tools.request_user_input.max_timeout_seconds must be between default timeout and 86400",
+		)
+	}
+	if retentionHours < 1 || retentionHours > 8760 {
+		return fmt.Errorf("tools.request_user_input.retention_hours must be between 1 and 8760")
+	}
+	return nil
+}
+
 func (c *Config) SecurityCopyFrom(path string) error {
 	return loadSecurityConfig(c, securityPath(path))
 }
@@ -2264,6 +2323,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.Message.Enabled
 	case "read_file":
 		return t.ReadFile.Enabled
+	case "request_user_input":
+		return t.RequestUserInput.Enabled
 	case "serial":
 		return t.Serial.Enabled
 	case "search_files":

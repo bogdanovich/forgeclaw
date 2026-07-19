@@ -31,6 +31,7 @@ const (
 	TurnPhaseFinalizing TurnPhase = "finalizing"
 	TurnPhaseCompleted  TurnPhase = "completed"
 	TurnPhaseAborted    TurnPhase = "aborted"
+	TurnPhaseSuspended  TurnPhase = "suspended"
 )
 
 // =============================================================================
@@ -61,6 +62,9 @@ const (
 	// ToolControlFinalize tells the runner that all tool responses were
 	// handled and the turn should finalize without another LLM call.
 	ToolControlFinalize
+	// ToolControlSuspend exits without final rendering after durable ownership
+	// of a pending human interaction has transferred to the runtime.
+	ToolControlSuspend
 )
 
 // LLMPhase indicates which phase the turn is executing in.
@@ -90,6 +94,7 @@ type turnResult struct {
 	followUps              []bus.InboundMessage
 	preferNewOutboundReply bool
 	compactAfterDelivery   bool
+	suspendedInteractionID string
 }
 
 // =============================================================================
@@ -164,6 +169,10 @@ type turnExecution struct {
 	// Abort signaling for the turn runner, set by Pipeline methods.
 	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
 	abortedByHook      bool // true when HookActionAbortTurn triggered
+
+	assistantToolCallsPersisted bool
+	assistantToolCallsWriteErr  error
+	suspendedInteractionID      string
 }
 
 type turnExecutionModel struct {

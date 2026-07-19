@@ -285,6 +285,13 @@ func removeUserDeliveryTools(registry *tools.ToolRegistry) {
 	}
 }
 
+func removeDurableInteractionTools(registry *tools.ToolRegistry) {
+	if registry == nil {
+		return
+	}
+	registry.Unregister("request_user_input")
+}
+
 func isUserDeliveryToolName(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 	switch normalized {
@@ -441,6 +448,7 @@ func spawnSubTurn(
 	// don't pollute the parent's registry.
 	if baseAgent.Tools != nil {
 		agent.Tools = baseAgent.Tools.Clone()
+		removeDurableInteractionTools(agent.Tools)
 		if !cfg.Async && deliveryMode == tools.AsyncDeliveryParentOnly {
 			removeUserDeliveryTools(agent.Tools)
 		}

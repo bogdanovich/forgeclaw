@@ -35,6 +35,7 @@ func NewPipeline(al *AgentLoop) *Pipeline {
 			ToolDelivery:     al.asyncToolCompletionDelivery(),
 			Hooks:            al.hooks,
 			Fallback:         al.fallback,
+			Suspension:       al.humanInteractionRuntime(),
 		},
 	})
 }
