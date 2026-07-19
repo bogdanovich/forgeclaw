@@ -995,6 +995,77 @@ func TestApprovalRecoveryUsesPersistedOriginalExecutionContext(t *testing.T) {
 	}
 }
 
+func TestExpiredAllowOnceNeverExecutesProtectedTool(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	al.channelManager = newInteractionChannelManager()
+	tool := &approvalCountingTool{}
+	agent.Tools.Register(tool)
+	sessionKey := "session-expired-approval"
+	args := map[string]any{"target": "production"}
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant", ToolCalls: []providers.ToolCall{{
+			ID: "call-expired", Name: tool.Name(), Arguments: args,
+			Function: &providers.FunctionCall{
+				Name: tool.Name(), Arguments: `{"target":"production"}`,
+			},
+		}},
+	})
+	argumentHash, err := interactions.HashArguments(agent.Workspace, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	registry := interactions.NewRegistryWithOptions(
+		interactions.WorkspaceStorePath(agent.Workspace),
+		interactions.Options{Now: func() time.Time { return now }},
+	)
+	al.interactionRegistries.Store(agent.Workspace, registry)
+	inbound := &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+		MessageID: "origin-message",
+	}
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: interactions.KindApproval,
+		Route: interactions.Route{
+			AgentID: agent.ID, SessionKey: sessionKey, RouteSessionKey: "route-expired",
+			Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-expired", ToolCallID: "call-expired", ToolName: tool.Name(),
+			ArgumentHash: argumentHash, ExecutionContext: inbound,
+		},
+		PromptSummary:  "Approve the protected action?",
+		ApprovalAction: "Tool: approval_counting\nArguments (redacted JSON): {\"target\":\"production\"}",
+		ExpiresAt:      now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	now = time.UnixMilli(record.ExpiresAt)
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "allow_once", MessageID: "late-allow", ReceivedAt: now.UnixMilli(),
+	}, interactions.OutcomeAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Outcome != interactions.OutcomeTimedOut {
+		t.Fatalf("expired approval outcome = %q, want timed_out", record.Outcome)
+	}
+	if err = al.resumeClaimedInteraction(
+		t.Context(), registry, agent.Workspace, agent, nil, *inbound, record,
+	); err != nil {
+		t.Fatalf("resumeClaimedInteraction() error = %v", err)
+	}
+	resolved, _ := registry.Get(record.ID)
+	if tool.executions != 0 || resolved.ApprovalConsumedAt != 0 ||
+		resolved.Status != interactions.StatusResolved {
+		t.Fatalf("expired approval = %#v, executions=%d", resolved, tool.executions)
+	}
+}
+
 func TestInteractionRouteAuthorizationRequiresTrustedEnvelope(t *testing.T) {
 	route := interactions.Route{
 		SessionKey: "session-1", RouteSessionKey: "route-1", Channel: "telegram",

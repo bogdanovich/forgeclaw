@@ -827,6 +827,12 @@ func (r *Registry) claim(
 			if rec.Status != StatusWaiting {
 				return "", "", nil, fmt.Errorf("%w: status %s", ErrAnswerTooLate, rec.Status)
 			}
+			if rec.ExpiresAt > 0 && now >= rec.ExpiresAt {
+				rec.Status = StatusClaimed
+				rec.Outcome = OutcomeTimedOut
+				rec.Answer = &Answer{MessageID: answer.MessageID, ReceivedAt: now}
+				return EventAnswerClaimed, "timeout_at_answer_claim", nil, nil
+			}
 			if rec.Kind == KindQuestion && outcome != OutcomeAnswered {
 				return "", "", nil, fmt.Errorf(
 					"%w: question outcome %q",

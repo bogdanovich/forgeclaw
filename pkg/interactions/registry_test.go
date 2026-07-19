@@ -459,6 +459,37 @@ func TestRegistryClaimOverdueUsesResumableTimeoutOutcome(t *testing.T) {
 	}
 }
 
+func TestRegistryClaimAnswerEnforcesExpiryAtomically(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	record := makeWaiting(
+		t, registry, clock, "interaction_expired111111", "session-expired",
+	)
+	clock.Advance(time.Hour)
+
+	claimed, err := registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		Answer{
+			Text: "too late", MessageID: "late-answer", ReceivedAt: clock.Now().UnixMilli(),
+		},
+		OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatalf("ClaimAnswer() error = %v", err)
+	}
+	if claimed.Status != StatusClaimed || claimed.Outcome != OutcomeTimedOut ||
+		claimed.Answer == nil || claimed.Answer.Text != "" ||
+		claimed.Answer.MessageID != "late-answer" {
+		t.Fatalf("expired answer claim = %#v", claimed)
+	}
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	stored, ok := reloaded.Get(record.ID)
+	if !ok || stored.Outcome != OutcomeTimedOut || stored.Answer == nil ||
+		stored.Answer.Text != "" {
+		t.Fatalf("reloaded expired claim = %#v, found=%v", stored, ok)
+	}
+}
+
 func TestRegistryRevisionAndTransitionConflictsFailClosed(t *testing.T) {
 	registry, clock, _ := newTestRegistry(t)
 	rec, err := registry.Create(validCreate(clock, "interaction_11111111aaaaaaaa", "session-1"))
