@@ -19,6 +19,14 @@ import (
 
 const answerCommand = "/answer"
 
+type interactionInboundOwnership int
+
+const (
+	interactionInboundCallerOwned interactionInboundOwnership = iota
+	interactionInboundClaimed
+	interactionInboundDeferred
+)
+
 func (al *AgentLoop) cancelInteractionForControlMessage(
 	ctx context.Context,
 	msg bus.InboundMessage,
@@ -127,29 +135,12 @@ func (c *inboundTurnCoordinator) handleInteractionInbound(
 	msg bus.InboundMessage,
 	target *inboundDispatchTarget,
 ) {
-	claim, activeTarget, claimed := c.claimSession(target)
+	claim, _, claimed := c.claimSession(target)
 	if !claimed {
-		c.handleInteractionBusy(ctx, msg, activeTarget.SessionKey)
+		c.deferInteractionInbound(ctx, msg, target)
 		return
 	}
 	go c.runInteractionWorker(ctx, msg, target, claim)
-}
-
-func (c *inboundTurnCoordinator) handleInteractionBusy(
-	ctx context.Context,
-	msg bus.InboundMessage,
-	sessionKey string,
-) {
-	if err := c.al.publishInteractionNotice(
-		ctx,
-		msg,
-		sessionKey,
-		"An answer is already being processed for this session.",
-	); err != nil {
-		c.al.releaseInboundMessage(context.Background(), msg, err)
-		return
-	}
-	c.al.ackInboundMessage(ctx, msg)
 }
 
 func (c *inboundTurnCoordinator) runInteractionWorker(
@@ -172,15 +163,26 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 		defer c.al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
-	if processErr := c.al.processInteractionInbound(ctx, msg, target); processErr != nil {
+	ownership, processErr := c.al.processInteractionInbound(ctx, msg, target)
+	if processErr != nil {
 		logger.WarnCF("agent", "Failed to process human interaction answer", map[string]any{
 			"session_key": target.SessionKey,
 			"error":       processErr.Error(),
 		})
-		c.al.releaseInboundMessage(context.Background(), msg, processErr)
+		if ownership == interactionInboundCallerOwned {
+			c.al.releaseInboundMessage(context.Background(), msg, processErr)
+		}
 		return
 	}
-	c.al.ackInboundMessage(ctx, msg)
+	if ownership == interactionInboundDeferred {
+		return
+	}
+	if ownership == interactionInboundCallerOwned {
+		c.al.ackInboundMessage(ctx, msg)
+	}
+	if c.al.hasNonterminalInteraction(target.Agent.Workspace, target.SessionKey) {
+		return
+	}
 	if err := c.al.drainDeferredInteractionIngress(ctx, interactions.Route{
 		SessionKey: target.SessionKey,
 		Channel:    msg.Channel,
@@ -224,10 +226,10 @@ func (al *AgentLoop) processInteractionInbound(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	target *inboundDispatchTarget,
-) error {
+) (interactionInboundOwnership, error) {
 	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
 	if registry.LastLoadError() != nil {
-		return al.publishInteractionNotice(
+		return interactionInboundCallerOwned, al.publishInteractionNotice(
 			ctx,
 			msg,
 			target.SessionKey,
@@ -236,11 +238,15 @@ func (al *AgentLoop) processInteractionInbound(
 	}
 	record, ok := activeInteractionForSession(registry, target.SessionKey)
 	if !ok {
-		return fmt.Errorf("active interaction disappeared for session %q", target.SessionKey)
+		return interactionInboundCallerOwned, fmt.Errorf(
+			"active interaction disappeared for session %q",
+			target.SessionKey,
+		)
 	}
 	if record.Status == interactions.StatusClaimed || record.Status == interactions.StatusResuming {
 		if interactionInboundReplaysAnswer(record, msg.Context) {
-			return al.resumeClaimedInteraction(
+			al.ackInboundMessage(ctx, msg)
+			return interactionInboundClaimed, al.resumeClaimedInteraction(
 				ctx,
 				target.Agent,
 				&target.Allocation.Scope,
@@ -248,18 +254,24 @@ func (al *AgentLoop) processInteractionInbound(
 				record,
 			)
 		}
-		return al.publishInteractionNotice(
+		if err := newInboundTurnCoordinator(al).enqueueDeferredInteractionInbound(
 			ctx,
 			msg,
-			target.SessionKey,
-			"An answer is already being processed for this session.",
-		)
+			target,
+		); err != nil {
+			return interactionInboundCallerOwned, err
+		}
+		return interactionInboundDeferred, nil
 	}
 	if record.Status != interactions.StatusWaiting {
-		return fmt.Errorf("interaction %q is not accepting input from status %q", record.ID, record.Status)
+		return interactionInboundCallerOwned, fmt.Errorf(
+			"interaction %q is not accepting input from status %q",
+			record.ID,
+			record.Status,
+		)
 	}
 	if !interactionRouteAuthorizes(record.Route, target, msg.Context) {
-		return al.publishInteractionNotice(
+		return interactionInboundCallerOwned, al.publishInteractionNotice(
 			ctx,
 			msg,
 			target.SessionKey,
@@ -268,7 +280,12 @@ func (al *AgentLoop) processInteractionInbound(
 	}
 	answer, err := parseInteractionAnswer(record, msg.Content, msg.Context.MessageID)
 	if err != nil {
-		return al.publishInteractionNotice(ctx, msg, target.SessionKey, "I could not accept that answer: "+err.Error())
+		return interactionInboundCallerOwned, al.publishInteractionNotice(
+			ctx,
+			msg,
+			target.SessionKey,
+			"I could not accept that answer: "+err.Error(),
+		)
 	}
 	claimed, err := registry.ClaimAnswer(
 		record.ID,
@@ -278,16 +295,23 @@ func (al *AgentLoop) processInteractionInbound(
 	)
 	if err != nil {
 		if errors.Is(err, interactions.ErrAnswerTooLate) || errors.Is(err, interactions.ErrDuplicateAnswer) {
-			return al.publishInteractionNotice(
+			return interactionInboundCallerOwned, al.publishInteractionNotice(
 				ctx,
 				msg,
 				target.SessionKey,
 				"An answer is already being processed for this session.",
 			)
 		}
-		return err
+		return interactionInboundCallerOwned, err
 	}
-	return al.resumeClaimedInteraction(ctx, target.Agent, &target.Allocation.Scope, msg.Context, claimed)
+	al.ackInboundMessage(ctx, msg)
+	return interactionInboundClaimed, al.resumeClaimedInteraction(
+		ctx,
+		target.Agent,
+		&target.Allocation.Scope,
+		msg.Context,
+		claimed,
+	)
 }
 
 func interactionInboundReplaysAnswer(record interactions.Record, inbound bus.InboundContext) bool {

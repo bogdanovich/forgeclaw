@@ -254,6 +254,9 @@ Answer processing is:
 
 1. Compare-and-swap `waiting -> answer_claimed`, storing inbound message identity
    and the bounded answer.
+   At this durable ownership boundary, acknowledge the original inbound spool
+   item. Later continuation failures remain registry-owned recovery work and
+   must never release the accepted answer for ordinary redelivery.
 2. Inspect canonical history for the originating tool call and matching result.
 3. If the result is absent, append exactly one `role=tool` message using the
    original tool call ID. Use an error-aware session writer and ingest it into
@@ -264,6 +267,11 @@ Answer processing is:
    turn and the next LLM call can continue naturally.
 6. On normal completion, transition to `resolved`. On a recoverable process or
    provider failure, retain enough state for reconciliation to retry.
+
+Additional input received while an answer is `claimed` or `resuming` is placed
+in the existing deferred-ingress queue with its spool ID and is drained only
+after the interaction becomes terminal. It is never acknowledged as a busy
+notice and discarded.
 
 The tool-result payload is structured JSON containing request ID, question IDs,
 answers, and resolution reason. It must not contain channel envelope data.

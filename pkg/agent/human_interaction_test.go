@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,37 @@ type interactionChannelManager struct {
 	*recordingChannelManager
 	sent    chan bus.OutboundMessage
 	sendErr error
+}
+
+type interactionOwnershipBus struct {
+	*bus.MessageBus
+	mu       sync.Mutex
+	acked    []string
+	released []string
+}
+
+func (b *interactionOwnershipBus) AckInbound(ctx context.Context, msg bus.InboundMessage) error {
+	b.mu.Lock()
+	b.acked = append(b.acked, msg.SpoolID)
+	b.mu.Unlock()
+	return b.MessageBus.AckInbound(ctx, msg)
+}
+
+func (b *interactionOwnershipBus) ReleaseInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	cause error,
+) error {
+	b.mu.Lock()
+	b.released = append(b.released, msg.SpoolID)
+	b.mu.Unlock()
+	return b.MessageBus.ReleaseInbound(ctx, msg, cause)
+}
+
+func (b *interactionOwnershipBus) counts() (int, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.acked), len(b.released)
 }
 
 func newInteractionChannelManager() *interactionChannelManager {
@@ -554,6 +586,104 @@ func TestInteractionIngressRetainsClaimedAnswerReplayOwnership(t *testing.T) {
 	msg.Context.SenderID = "user-2"
 	if al.shouldHandleInteractionInbound(msg, target) {
 		t.Fatal("unrelated sender was consumed by the claimed interaction")
+	}
+}
+
+func TestClaimedAnswerIsNotReleasedAfterResumeFailure(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+	sessionKey := "session-claimed-spool-ownership"
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if _, err = registry.MarkWaiting(record.ID, record.Revision); err != nil {
+		t.Fatal(err)
+	}
+	target := &inboundDispatchTarget{
+		Agent: agent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	msg := bus.InboundMessage{
+		Content: "Canary", SpoolID: "spool-claimed-answer",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	msg.Context.MessageID = "answer-claimed"
+	claim, claimed := al.claimRuntimeSession(sessionKey, "test-claimed-spool")
+	if !claimed {
+		t.Fatal("failed to claim test session")
+	}
+
+	// No originating tool call exists, so continuation fails after ClaimAnswer.
+	newInboundTurnCoordinator(al).runInteractionWorker(t.Context(), msg, target, claim)
+	acked, released := tracker.counts()
+	if acked != 1 || released != 0 {
+		t.Fatalf("spool ownership = acked:%d released:%d, want 1/0", acked, released)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusClaimed {
+		t.Fatalf("record status = %q, want claimed recovery ownership", record.Status)
+	}
+}
+
+func TestAdditionalMessageDuringResumeIsDeferred(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+	sessionKey := "session-resume-additional-input"
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	if _, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "Canary", Values: map[string]string{"deploy_mode": "Canary"}, MessageID: "answer-1",
+	}, interactions.OutcomeAnswered); err != nil {
+		t.Fatal(err)
+	}
+	target := &inboundDispatchTarget{
+		Agent: agent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	msg := bus.InboundMessage{
+		Content: "Use staging instead", SpoolID: "spool-correction",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	msg.Context.MessageID = "answer-2"
+	claim, claimed := al.claimRuntimeSession(sessionKey, "test-active-resume")
+	if !claimed {
+		t.Fatal("failed to claim test session")
+	}
+	defer claim.releaseIfOwned()
+
+	newInboundTurnCoordinator(al).handleInteractionInbound(t.Context(), msg, target)
+	acked, released := tracker.counts()
+	if acked != 0 || released != 0 {
+		t.Fatalf("deferred spool ownership = acked:%d released:%d, want 0/0", acked, released)
+	}
+	if got := al.pendingSteeringCountForScope(sessionKey); got != 1 {
+		t.Fatalf("deferred queue depth = %d, want 1", got)
+	}
+	queued := al.dequeueSteeringMessagesForTurn(sessionKey, request.Route.SenderID)
+	if len(queued) != 1 || queued[0].InboundSpoolID != "spool-correction" {
+		t.Fatalf("deferred message = %#v", queued)
 	}
 }
 

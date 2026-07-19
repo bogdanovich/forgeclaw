@@ -70,8 +70,18 @@ func (c *inboundTurnCoordinator) deferInteractionInbound(
 	msg bus.InboundMessage,
 	target *inboundDispatchTarget,
 ) {
+	if err := c.enqueueDeferredInteractionInbound(ctx, msg, target); err != nil {
+		c.al.releaseInboundMessage(context.Background(), msg, err)
+	}
+}
+
+func (c *inboundTurnCoordinator) enqueueDeferredInteractionInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) error {
 	msg = c.al.prepareInboundMessageForAgent(ctx, msg)
-	err := c.al.enqueueSteeringMessageWithSender(
+	return c.al.enqueueSteeringMessageWithSender(
 		target.SessionKey,
 		target.Agent.ID,
 		msg.SenderID,
@@ -82,9 +92,6 @@ func (c *inboundTurnCoordinator) deferInteractionInbound(
 			InboundSpoolID: msg.SpoolID,
 		},
 	)
-	if err != nil {
-		c.al.releaseInboundMessage(context.Background(), msg, err)
-	}
 }
 
 func (c *inboundTurnCoordinator) claimSession(
