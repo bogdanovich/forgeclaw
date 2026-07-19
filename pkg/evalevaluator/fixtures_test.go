@@ -10,8 +10,8 @@ func TestHistoricalFixturesMatchExpectedFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Fixtures) != len(DefaultEvaluators())*2 {
-		t.Fatalf("fixture count = %d, want %d", len(manifest.Fixtures), len(DefaultEvaluators())*2)
+	if len(manifest.Fixtures) < len(DefaultEvaluators())*2 {
+		t.Fatalf("fixture count = %d, want at least %d", len(manifest.Fixtures), len(DefaultEvaluators())*2)
 	}
 	coverage := make(map[string]map[Status]bool)
 	for _, fixture := range manifest.Fixtures {

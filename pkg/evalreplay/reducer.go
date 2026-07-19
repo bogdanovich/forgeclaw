@@ -272,6 +272,16 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 				"approval consumption is invalid or repeated",
 			)
 		}
+	case "interaction.approval_expired":
+		if current.Kind != "approval" || payload.From != "resuming" ||
+			payload.Status != "resuming" || payload.Outcome != "timed_out" {
+			r.diagnostic(
+				record,
+				"interaction_approval_expiry_invalid",
+				SeverityError,
+				"approval expiry transition is invalid",
+			)
+		}
 	case "interaction.final_delivery_attempted":
 		current.FinalAttempts++
 		if payload.Success != nil && *payload.Success {
@@ -747,8 +757,7 @@ func terminalInteractionStatus(status string) bool {
 
 func knownNonterminalInteractionEvent(event string) bool {
 	switch event {
-	case "interaction.approval_expired",
-		"interaction.canceling",
+	case "interaction.canceling",
 		"interaction.recovery_observed":
 		return true
 	default:

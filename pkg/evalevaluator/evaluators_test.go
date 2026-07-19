@@ -114,3 +114,34 @@ func TestDurableInteractionEvaluatorAcceptsCreatedStateTimeoutClaim(t *testing.T
 		t.Fatalf("report = %#v", report)
 	}
 }
+
+func TestDurableInteractionEvaluatorRejectsMalformedApprovalExpiry(t *testing.T) {
+	trace, err := (Fixture{
+		ID: "malformed-approval-expiry", Source: "evaluators_test.go",
+		Records: []FixtureRecord{
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.created","kind":"approval","status":"created","revision":1,"sequence":1}`,
+				),
+			},
+			{
+				Kind: evaltrace.RecordInteractionTransition, InteractionID: "i1",
+				Data: json.RawMessage(
+					`{"event_type":"interaction.approval_expired","kind":"approval","from":"created","status":"created","outcome":"allowed","revision":2,"sequence":2}`,
+				),
+			},
+		},
+	}).Trace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluator, _ := EvaluatorByName("durable_interaction.v1")
+	report, err := Evaluate(trace, evaluator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Failed != 1 || report.Findings[0].Status != StatusFail {
+		t.Fatalf("report = %#v", report)
+	}
+}
