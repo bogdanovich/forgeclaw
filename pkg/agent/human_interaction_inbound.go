@@ -157,29 +157,43 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 		return
 	}
 	c.al.ackInboundMessage(ctx, msg)
-	continued, err := c.al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
+	if err := c.al.drainDeferredInteractionIngress(ctx, interactions.Route{
 		SessionKey: target.SessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
-	})
-	if err != nil {
+	}, msg.Context); err != nil {
 		logger.WarnCF("agent", "Failed to continue messages deferred by human interaction", map[string]any{
 			"session_key": target.SessionKey,
 			"error":       err.Error(),
 		})
-		return
+	}
+}
+
+func (al *AgentLoop) drainDeferredInteractionIngress(
+	ctx context.Context,
+	route interactions.Route,
+	inbound bus.InboundContext,
+) error {
+	continued, err := al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
+		SessionKey: route.SessionKey,
+		Channel:    route.Channel,
+		ChatID:     route.ChatID,
+	})
+	if err != nil {
+		return err
 	}
 	if strings.TrimSpace(continued) != "" {
-		c.al.publishResponseWithContextIfNeeded(
+		al.publishResponseWithContextIfNeeded(
 			ctx,
-			msg.Channel,
-			msg.ChatID,
-			target.SessionKey,
+			route.Channel,
+			route.ChatID,
+			route.SessionKey,
 			continued,
-			&msg.Context,
+			&inbound,
 			finalResponseAlwaysPublish,
 		)
 	}
+	return nil
 }
 
 func (al *AgentLoop) processInteractionInbound(

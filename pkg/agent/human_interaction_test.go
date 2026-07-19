@@ -519,6 +519,11 @@ func TestRecoverHumanInteractionsResumesDurableClaimAfterRestartWindow(t *testin
 	if record.Status != interactions.StatusClaimed {
 		t.Fatalf("status before recovery = %q", record.Status)
 	}
+	if err := al.enqueueSteeringMessageWithSender(sessionKey, agent.ID, "user-2", providers.Message{
+		Role: "user", Content: "Check the deployment after recovery.",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
 		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
@@ -526,6 +531,19 @@ func TestRecoverHumanInteractionsResumesDurableClaimAfterRestartWindow(t *testin
 	record, _ = registry.Get(record.ID)
 	if record.Status != interactions.StatusResolved || !record.FinalDelivered {
 		t.Fatalf("status after recovery = %q", record.Status)
+	}
+	if got := al.pendingSteeringCountForScope(sessionKey); got != 0 {
+		t.Fatalf("deferred queue depth after recovery = %d, want 0", got)
+	}
+	foundDeferred := false
+	for _, message := range agent.Sessions.GetHistory(sessionKey) {
+		if message.Role == "user" && strings.Contains(message.Content, "Check the deployment") {
+			foundDeferred = true
+			break
+		}
+	}
+	if !foundDeferred {
+		t.Fatal("recovery did not continue the deferred inbound message")
 	}
 	select {
 	case outbound := <-manager.sent:

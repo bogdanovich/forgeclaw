@@ -145,6 +145,17 @@ func (al *AgentLoop) recoverClaimedInteraction(
 		})
 		return false
 	}
+	if err := al.drainDeferredInteractionIngress(
+		ctx,
+		record.Route,
+		inboundContextForInteraction(record.Route),
+	); err != nil {
+		logger.WarnCF("agent", "Failed to continue messages after interaction recovery", map[string]any{
+			"interaction_id": record.ID,
+			"session_key":    record.Route.SessionKey,
+			"error":          err.Error(),
+		})
+	}
 	return true
 }
 
