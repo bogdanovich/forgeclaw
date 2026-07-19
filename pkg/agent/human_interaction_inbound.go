@@ -296,11 +296,19 @@ func (al *AgentLoop) processInteractionInbound(
 			"I could not accept that answer: "+err.Error(),
 		)
 	}
+	outcome := interactions.OutcomeAnswered
+	if record.Kind == interactions.KindApproval {
+		if answer.Text == "allow_once" {
+			outcome = interactions.OutcomeAllowed
+		} else {
+			outcome = interactions.OutcomeDenied
+		}
+	}
 	claimed, err := registry.ClaimAnswer(
 		record.ID,
 		record.Revision,
 		answer,
-		interactions.OutcomeAnswered,
+		outcome,
 	)
 	if err != nil {
 		if errors.Is(err, interactions.ErrAnswerTooLate) || errors.Is(err, interactions.ErrDuplicateAnswer) {
@@ -393,6 +401,18 @@ func parseInteractionAnswer(
 	answer := interactions.Answer{
 		Text: content, MessageID: strings.TrimSpace(messageID), ReceivedAt: time.Now().UnixMilli(),
 	}
+	if record.Kind == interactions.KindApproval {
+		normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(content))
+		switch normalized {
+		case "allow", "allow_once":
+			answer.Text = "allow_once"
+		case "deny":
+			answer.Text = "deny"
+		default:
+			return interactions.Answer{}, fmt.Errorf("reply `allow_once` or `deny`")
+		}
+		return answer, nil
+	}
 	if len(record.Questions) == 1 {
 		answer.Values = map[string]string{record.Questions[0].ID: content}
 		return answer, nil
@@ -464,9 +484,13 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		return fmt.Errorf("interaction continuation runtime is unavailable")
 	}
 	continuationSessionKey := interactionContinuationSessionKey(record)
-	if err := al.ensureInteractionToolResult(ctx, agent, record); err != nil {
-		_, _ = registry.RecordResumeFailure(record.ID, record.Revision, err.Error())
-		return err
+	approvalAllowed := record.Kind == interactions.KindApproval &&
+		record.Outcome == interactions.OutcomeAllowed
+	if !approvalAllowed {
+		if err := al.ensureInteractionToolResult(ctx, agent, record); err != nil {
+			_, _ = registry.RecordResumeFailure(record.ID, record.Revision, err.Error())
+			return err
+		}
 	}
 	resuming := record
 	if record.Status == interactions.StatusClaimed {
@@ -477,6 +501,52 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		}
 	} else if record.Status != interactions.StatusResuming {
 		return fmt.Errorf("cannot resume interaction from status %q", record.Status)
+	}
+	if approvalAllowed {
+		current, ok := registry.Get(resuming.ID)
+		if !ok {
+			return interactions.ErrNotFound
+		}
+		resuming = current
+		if _, resultIndex := interactionToolPairIndexes(
+			agent.Sessions.GetHistory(continuationSessionKey),
+			resuming.Origin.ToolCallID,
+		); resultIndex < 0 {
+			if resuming.ApprovalConsumedAt != 0 {
+				if err := al.persistInteractionToolResult(
+					ctx,
+					agent,
+					resuming,
+					interactionToolResultPayload{
+						InteractionID: resuming.ID,
+						Outcome:       interactions.OutcomeDeliveryUnknown,
+						Text: "The one-time approval was consumed before restart, but tool execution " +
+							"could not be confirmed. The tool was not retried.",
+					},
+				); err != nil {
+					return err
+				}
+			} else {
+				control, err := al.executeApprovedInteractionTool(
+					ctx, registry, interactionWorkspace, agent, scope, resuming,
+				)
+				if err != nil {
+					_, _ = registry.RecordResumeFailure(resuming.ID, resuming.Revision, err.Error())
+					return err
+				}
+				if control == ToolControlSuspend {
+					return nil
+				}
+			}
+		}
+		current, ok = registry.Get(resuming.ID)
+		if !ok {
+			return interactions.ErrNotFound
+		}
+		if current.Status == interactions.StatusResolved {
+			return nil
+		}
+		resuming = current
 	}
 	if finalContent, ok := interactionFinalAfterToolResult(
 		agent.Sessions.GetHistory(continuationSessionKey),
@@ -525,6 +595,104 @@ func (al *AgentLoop) resumeClaimedInteraction(
 	return al.deliverInteractionFinal(
 		ctx, registry, interactionWorkspace, resuming, inbound, finalContent,
 	)
+}
+
+func (al *AgentLoop) executeApprovedInteractionTool(
+	ctx context.Context,
+	registry *interactions.Registry,
+	interactionWorkspace string,
+	agent *AgentInstance,
+	scope *session.SessionScope,
+	record interactions.Record,
+) (ToolControl, error) {
+	history := agent.Sessions.GetHistory(interactionContinuationSessionKey(record))
+	toolCall, ok := interactionOriginToolCall(history, record.Origin.ToolCallID)
+	if !ok {
+		return ToolControlBreak, fmt.Errorf(
+			"originating approval tool call %q is missing",
+			record.Origin.ToolCallID,
+		)
+	}
+	originalInbound := cloneInboundContext(record.Origin.ExecutionContext)
+	if originalInbound == nil {
+		if err := al.persistInteractionToolResult(
+			ctx,
+			agent,
+			record,
+			interactionToolResultPayload{
+				InteractionID: record.ID,
+				Outcome:       interactions.OutcomeDenied,
+				Text: "The protected tool was not executed because its original execution " +
+					"context is unavailable after restart.",
+			},
+		); err != nil {
+			return ToolControlBreak, err
+		}
+		return ToolControlBreak, nil
+	}
+	toolCall = providers.NormalizeToolCall(toolCall)
+	routeSessionKey := record.Route.RouteSessionKey
+	if routeSessionKey == "" {
+		routeSessionKey = record.Route.SessionKey
+	}
+	opts := processOptions{
+		TaskID:                record.Origin.TaskID,
+		InteractionWorkspace:  interactionWorkspace,
+		InteractionSessionKey: record.Route.SessionKey,
+		InteractionRouteKey:   routeSessionKey,
+		ApprovalGrant: &ToolApprovalGrant{
+			InteractionID: record.ID,
+			Revision:      record.Revision,
+		},
+		Dispatch: DispatchRequest{
+			RouteSessionKey: routeSessionKey,
+			BaseSessionKey:  interactionContinuationSessionKey(record),
+			SessionKey:      interactionContinuationSessionKey(record),
+			InboundContext:  originalInbound,
+			SessionScope:    session.CloneScope(scope),
+		},
+		DefaultResponse: defaultResponse,
+		EnableSummary:   true,
+		SendResponse:    false,
+	}
+	var err error
+	opts, err = resolveTurnProfileOptions(al.GetConfig(), opts)
+	if err != nil {
+		return ToolControlBreak, fmt.Errorf("resolve approved tool profile: %w", err)
+	}
+	turnScope := al.newTurnEventScope(
+		agent.ID,
+		opts.Dispatch.SessionKey,
+		newTurnContext(opts.Dispatch.InboundContext, nil, opts.Dispatch.SessionScope),
+	)
+	ts := newTurnState(agent, opts, turnScope)
+	pipeline := NewPipeline(al)
+	exec, err := pipeline.SetupTurn(ctx, ts)
+	if err != nil {
+		return ToolControlBreak, err
+	}
+	if exec.model.cleanup != nil {
+		defer exec.model.cleanup()
+	}
+	exec.response = &providers.LLMResponse{ToolCalls: []providers.ToolCall{toolCall}}
+	exec.normalizedToolCalls = []providers.ToolCall{toolCall}
+	exec.allResponsesHandled = true
+	exec.assistantToolCallsPersisted = true
+	control := pipeline.ExecuteTools(ctx, ctx, ts, exec, 1)
+	if control == ToolControlSuspend {
+		return control, nil
+	}
+	if _, resultIndex := interactionToolPairIndexes(
+		agent.Sessions.GetHistory(interactionContinuationSessionKey(record)),
+		record.Origin.ToolCallID,
+	); resultIndex < 0 {
+		return control, fmt.Errorf("approved tool execution did not persist a matching result")
+	}
+	_, ok = registry.Get(record.ID)
+	if !ok {
+		return control, interactions.ErrNotFound
+	}
+	return control, nil
 }
 
 func (al *AgentLoop) interactionContinuationAgent(
@@ -848,4 +1016,22 @@ func interactionToolPairIndexes(
 		}
 	}
 	return originIndex, resultIndex
+}
+
+func interactionOriginToolCall(
+	history []providers.Message,
+	toolCallID string,
+) (providers.ToolCall, bool) {
+	for index := len(history) - 1; index >= 0; index-- {
+		message := history[index]
+		if message.Role != "assistant" {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if call.ID == toolCallID {
+				return call, true
+			}
+		}
+	}
+	return providers.ToolCall{}, false
 }

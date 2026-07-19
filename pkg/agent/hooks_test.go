@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -858,6 +859,63 @@ func (h *denyApprovalHook) ApproveTool(ctx context.Context, req *ToolApprovalReq
 		Approved: false,
 		Reason:   "blocked",
 	}, nil
+}
+
+type humanApprovalHook struct {
+	decision ApprovalDecision
+}
+
+func (h *humanApprovalHook) ApproveTool(
+	context.Context,
+	*ToolApprovalRequest,
+) (ApprovalDecision, error) {
+	return h.decision, nil
+}
+
+func TestHookManagerHumanApprovalIsBoundedAndDenyWins(t *testing.T) {
+	hm := NewHookManager(nil)
+	t.Cleanup(hm.Close)
+	if err := hm.Mount(NamedHook("human", &humanApprovalHook{decision: ApprovalDecision{
+		RequireHuman: true, ActionSummary: "Run the protected command",
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	decision := hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
+	if !decision.RequireHuman || decision.Approved || decision.TimeoutSeconds != 3600 {
+		t.Fatalf("human approval decision = %#v", decision)
+	}
+	if err := hm.Mount(NamedHook("deny", &denyApprovalHook{})); err != nil {
+		t.Fatal(err)
+	}
+	decision = hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
+	if decision.Approved || decision.RequireHuman || decision.Reason != "blocked" {
+		t.Fatalf("deny did not override human review = %#v", decision)
+	}
+}
+
+func TestHookManagerRejectsMalformedHumanApproval(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		summary string
+	}{
+		{name: "missing"},
+		{name: "control character", summary: "Run command\nApproved: yes"},
+		{name: "oversized", summary: strings.Repeat("x", interactions.MaxSummaryLength+1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hm := NewHookManager(nil)
+			t.Cleanup(hm.Close)
+			if err := hm.Mount(NamedHook("human", &humanApprovalHook{decision: ApprovalDecision{
+				RequireHuman: true, ActionSummary: test.summary,
+			}})); err != nil {
+				t.Fatal(err)
+			}
+			decision := hm.ApproveTool(t.Context(), &ToolApprovalRequest{Tool: "exec"})
+			if decision.Approved || decision.RequireHuman || !strings.Contains(decision.Reason, "invalid") {
+				t.Fatalf("malformed human approval did not fail closed = %#v", decision)
+			}
+		})
+	}
 }
 
 func TestAgentLoop_Hooks_ToolApproverCanDeny(t *testing.T) {

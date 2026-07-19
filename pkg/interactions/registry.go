@@ -2,6 +2,7 @@ package interactions
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
@@ -216,9 +218,10 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 
 func canChainInteraction(existing, next Record) bool {
 	return existing.Status == StatusResuming &&
-		strings.TrimSpace(existing.Origin.TaskID) != "" &&
 		existing.Origin.TaskID == next.Origin.TaskID &&
-		existing.Origin.ContinuationSessionKey == next.Origin.ContinuationSessionKey
+		existing.Origin.ContinuationSessionKey != "" &&
+		existing.Origin.ContinuationSessionKey == next.Origin.ContinuationSessionKey &&
+		existing.Route == next.Route
 }
 
 func (r *Registry) MarkWaiting(id string, expectedRevision int64) (Record, error) {
@@ -571,6 +574,46 @@ func (r *Registry) Resolve(id string, expectedRevision int64) (Record, error) {
 	return r.transition(id, expectedRevision, StatusResolved, EventResolved, "", nil)
 }
 
+// ConsumeApproval atomically spends an allow-once decision before the
+// protected tool executes. A consumed approval is never executable again,
+// including after a crash with an uncertain tool outcome.
+func (r *Registry) ConsumeApproval(
+	id string,
+	expectedRevision int64,
+	toolCallID string,
+	toolName string,
+	argumentHash string,
+) (Record, error) {
+	toolCallID = strings.TrimSpace(toolCallID)
+	toolName = strings.TrimSpace(toolName)
+	argumentHash = strings.TrimSpace(argumentHash)
+	record, err := r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Kind != KindApproval || rec.Status != StatusResuming ||
+				rec.Outcome != OutcomeAllowed || rec.ApprovalConsumedAt != 0 ||
+				rec.Origin.ToolCallID != toolCallID || rec.Origin.ToolName != toolName ||
+				rec.Origin.ArgumentHash == "" || rec.Origin.ArgumentHash != argumentHash {
+				return "", "", nil, fmt.Errorf("%w: approval does not match pending tool call", ErrInvalidTransition)
+			}
+			if rec.ExpiresAt > 0 && now >= rec.ExpiresAt {
+				rec.Outcome = OutcomeTimedOut
+				return EventApprovalExpired, "timeout_at_approval_consumption", nil, nil
+			}
+			rec.ApprovalConsumedAt = now
+			return EventApprovalConsumed, "allow_once_consumed", nil, nil
+		},
+	)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.Outcome == OutcomeTimedOut && record.ApprovalConsumedAt == 0 {
+		return record, ErrApprovalExpired
+	}
+	return record, nil
+}
+
 func (r *Registry) BeginCancellation(
 	id string,
 	expectedRevision int64,
@@ -795,6 +838,12 @@ func (r *Registry) claim(
 			if rec.Status != StatusWaiting {
 				return "", "", nil, fmt.Errorf("%w: status %s", ErrAnswerTooLate, rec.Status)
 			}
+			if rec.ExpiresAt > 0 && now >= rec.ExpiresAt {
+				rec.Status = StatusClaimed
+				rec.Outcome = OutcomeTimedOut
+				rec.Answer = &Answer{MessageID: answer.MessageID, ReceivedAt: now}
+				return EventAnswerClaimed, "timeout_at_answer_claim", nil, nil
+			}
 			if rec.Kind == KindQuestion && outcome != OutcomeAnswered {
 				return "", "", nil, fmt.Errorf(
 					"%w: question outcome %q",
@@ -947,6 +996,12 @@ func (r *Registry) buildRecord(req CreateRequest, now int64) (Record, error) {
 	if err := req.Origin.validate(); err != nil {
 		return Record{}, err
 	}
+	if !validArgumentHashForKind(req.Kind, req.Origin.ArgumentHash) {
+		return Record{}, fmt.Errorf("%w: approval requires a canonical argument hash", ErrInvalidInteraction)
+	}
+	if err := validateApprovalCreateMetadata(req.Kind, req.Origin.ExecutionContext, req.ApprovalAction); err != nil {
+		return Record{}, err
+	}
 	if err := validateQuestions(req.Kind, req.Questions); err != nil {
 		return Record{}, err
 	}
@@ -966,18 +1021,19 @@ func (r *Registry) buildRecord(req CreateRequest, now int64) (Record, error) {
 		return Record{}, fmt.Errorf("%w: expiry must be in the future", ErrInvalidInteraction)
 	}
 	return Record{
-		ID:            id,
-		ShortID:       shortID(id),
-		Kind:          req.Kind,
-		Status:        StatusCreated,
-		Revision:      1,
-		Route:         normalizeRoute(req.Route),
-		Origin:        normalizeOrigin(req.Origin),
-		Questions:     cloneQuestions(req.Questions),
-		PromptSummary: bounded(strings.TrimSpace(req.PromptSummary), MaxSummaryLength),
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		ExpiresAt:     expiresAt,
+		ID:             id,
+		ShortID:        shortID(id),
+		Kind:           req.Kind,
+		Status:         StatusCreated,
+		Revision:       1,
+		Route:          normalizeRoute(req.Route),
+		Origin:         normalizeOrigin(req.Origin),
+		Questions:      cloneQuestions(req.Questions),
+		PromptSummary:  bounded(strings.TrimSpace(req.PromptSummary), MaxSummaryLength),
+		ApprovalAction: bounded(strings.TrimSpace(req.ApprovalAction), MaxApprovalAction),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		ExpiresAt:      expiresAt,
 	}, nil
 }
 
@@ -1124,6 +1180,14 @@ func validateStoredRecord(rec Record) error {
 	if err := rec.Origin.validate(); err != nil {
 		return err
 	}
+	if !validStoredArgumentHashForKind(rec.Kind, rec.Origin.ArgumentHash) {
+		return fmt.Errorf("invalid argument hash for interaction %q", rec.ID)
+	}
+	if err := validateStoredApprovalMetadata(
+		rec.Kind, rec.Origin.ExecutionContext, rec.ApprovalAction,
+	); err != nil {
+		return fmt.Errorf("invalid approval metadata for interaction %q: %w", rec.ID, err)
+	}
 	if err := validateStoredQuestions(rec.Kind, rec.Questions); err != nil {
 		return err
 	}
@@ -1157,6 +1221,11 @@ func validateStoredRecord(rec Record) error {
 	if isTerminal(rec.Status) && (rec.ResolvedAt <= 0 || rec.CleanupAfter <= rec.ResolvedAt) {
 		return fmt.Errorf("invalid terminal interaction %q", rec.ID)
 	}
+	if rec.ApprovalConsumedAt != 0 && (rec.Kind != KindApproval ||
+		rec.Outcome != OutcomeAllowed || rec.Status == StatusCreated ||
+		rec.Status == StatusWaiting || rec.Status == StatusClaimed) {
+		return fmt.Errorf("invalid consumed approval %q", rec.ID)
+	}
 	return nil
 }
 
@@ -1177,6 +1246,24 @@ func validDeliveryState(state DeliveryState) bool {
 	default:
 		return false
 	}
+}
+
+func validArgumentHashForKind(kind Kind, value string) bool {
+	value = strings.TrimSpace(value)
+	if kind != KindApproval {
+		return value == ""
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func validStoredArgumentHashForKind(kind Kind, value string) bool {
+	if kind == KindApproval && strings.TrimSpace(value) == "" {
+		// Obsolete approval records are inert: recovery cannot consume them
+		// without an exact argument hash and immutable execution context.
+		return true
+	}
+	return validArgumentHashForKind(kind, value)
 }
 
 func (r *Registry) saveLocked() error {
@@ -1384,6 +1471,7 @@ func normalizeOrigin(origin Origin) Origin {
 	origin.TaskID = strings.TrimSpace(origin.TaskID)
 	origin.ContinuationSessionKey = strings.TrimSpace(origin.ContinuationSessionKey)
 	origin.ArgumentHash = strings.TrimSpace(origin.ArgumentHash)
+	origin.ExecutionContext = cloneExecutionContext(origin.ExecutionContext)
 	return origin
 }
 
@@ -1399,6 +1487,7 @@ func routesEqual(left, right Route) bool {
 }
 
 func cloneRecord(rec Record) Record {
+	rec.Origin.ExecutionContext = cloneExecutionContext(rec.Origin.ExecutionContext)
 	rec.Questions = cloneQuestions(rec.Questions)
 	if rec.Answer != nil {
 		answer := *rec.Answer
@@ -1406,6 +1495,71 @@ func cloneRecord(rec Record) Record {
 		rec.Answer = &answer
 	}
 	return rec
+}
+
+func cloneExecutionContext(src *bus.InboundContext) *bus.InboundContext {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	cloned.ReplyHandles = cloneStringMap(src.ReplyHandles)
+	cloned.Raw = cloneStringMap(src.Raw)
+	return &cloned
+}
+
+func validateApprovalCreateMetadata(
+	kind Kind,
+	executionContext *bus.InboundContext,
+	action string,
+) error {
+	if kind != KindApproval {
+		if executionContext != nil || strings.TrimSpace(action) != "" {
+			return fmt.Errorf("%w: question interactions cannot carry approval metadata", ErrInvalidInteraction)
+		}
+		return nil
+	}
+	if executionContext == nil {
+		return fmt.Errorf("%w: approval requires the original execution context", ErrInvalidInteraction)
+	}
+	if strings.TrimSpace(action) == "" || !validBoundedString(action, MaxApprovalAction) {
+		return fmt.Errorf("%w: approval requires a bounded action description", ErrInvalidInteraction)
+	}
+	return validateExecutionContext(executionContext)
+}
+
+func validateStoredApprovalMetadata(
+	kind Kind,
+	executionContext *bus.InboundContext,
+	action string,
+) error {
+	if kind != KindApproval {
+		if executionContext != nil || strings.TrimSpace(action) != "" {
+			return fmt.Errorf("question interaction carries approval metadata")
+		}
+		return nil
+	}
+	// Obsolete snapshots can remain readable, but the agent recovery path
+	// refuses to execute approvals without current authority metadata.
+	if executionContext != nil {
+		if err := validateExecutionContext(executionContext); err != nil {
+			return err
+		}
+	}
+	if !validBoundedString(action, MaxApprovalAction) {
+		return fmt.Errorf("approval action exceeds bounds")
+	}
+	return nil
+}
+
+func validateExecutionContext(ctx *bus.InboundContext) error {
+	data, err := json.Marshal(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: encode execution context: %v", ErrInvalidInteraction, err)
+	}
+	if len(data) > MaxExecutionContext {
+		return fmt.Errorf("%w: execution context exceeds %d bytes", ErrInvalidInteraction, MaxExecutionContext)
+	}
+	return nil
 }
 
 func cloneQuestions(questions []Question) []Question {

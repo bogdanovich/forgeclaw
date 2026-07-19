@@ -182,7 +182,9 @@ func runtimeKindForInteractionEvent(event interactions.EventType) runtimeevents.
 		return runtimeevents.KindAgentInteractionWaiting
 	case interactions.EventAnswerClaimed:
 		return runtimeevents.KindAgentInteractionAnswer
-	case interactions.EventResumeStarted, interactions.EventRecoveryObserved, interactions.EventCanceling:
+	case interactions.EventResumeStarted, interactions.EventApprovalConsumed,
+		interactions.EventApprovalExpired,
+		interactions.EventRecoveryObserved, interactions.EventCanceling:
 		return runtimeevents.KindAgentInteractionResume
 	case interactions.EventResolved, interactions.EventCancelled, interactions.EventFailed:
 		return runtimeevents.KindAgentInteractionEnd
@@ -214,13 +216,28 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 			)
 		}
 	}
+	var executionContext *bus.InboundContext
+	approvalAction := ""
+	if request.Prompt.Kind == interactions.KindApproval {
+		executionContext = cloneInboundContext(request.ExecutionContext)
+		approvalAction = request.ApprovalAction
+	}
 	record, err := registry.Create(interactions.CreateRequest{
-		Kind:          request.Prompt.Kind,
-		Route:         request.Route,
-		Origin:        request.Origin,
-		Questions:     request.Prompt.Questions,
-		PromptSummary: request.Prompt.PromptSummary,
-		ExpiresAt:     time.Now().Add(request.Prompt.Timeout),
+		Kind:  request.Prompt.Kind,
+		Route: request.Route,
+		Origin: interactions.Origin{
+			TurnID:                 request.Origin.TurnID,
+			ToolCallID:             request.Origin.ToolCallID,
+			ToolName:               request.Origin.ToolName,
+			TaskID:                 request.Origin.TaskID,
+			ContinuationSessionKey: request.Origin.ContinuationSessionKey,
+			ArgumentHash:           request.Origin.ArgumentHash,
+			ExecutionContext:       executionContext,
+		},
+		Questions:      request.Prompt.Questions,
+		PromptSummary:  request.Prompt.PromptSummary,
+		ApprovalAction: approvalAction,
+		ExpiresAt:      time.Now().Add(request.Prompt.Timeout),
 	})
 	if catalogLocked {
 		runtime.al.interactionCatalogMu.Unlock()
@@ -264,6 +281,27 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 		return disposition, fmt.Errorf("mark interaction waiting: %w", err)
 	}
 	return disposition, nil
+}
+
+func (runtime *humanInteractionRuntime) ConsumeApproval(
+	_ context.Context,
+	request ToolApprovalConsumptionRequest,
+) error {
+	if runtime == nil || runtime.al == nil {
+		return interactions.ErrStoreUnavailable
+	}
+	registry := runtime.al.interactionRegistryForWorkspace(request.Workspace)
+	if registry == nil {
+		return interactions.ErrStoreUnavailable
+	}
+	_, err := registry.ConsumeApproval(
+		request.InteractionID,
+		request.Revision,
+		request.Origin.ToolCallID,
+		request.Origin.ToolName,
+		request.Origin.ArgumentHash,
+	)
+	return err
 }
 
 func (runtime *humanInteractionRuntime) publishPrompt(
@@ -312,6 +350,17 @@ func interactionDeliveryKey(interactionID, kind string) string {
 
 func renderInteractionPrompt(record interactions.Record) string {
 	var builder strings.Builder
+	if record.Kind == interactions.KindApproval {
+		fmt.Fprintf(&builder, "Approval needed [%s]\n\n", record.ShortID)
+		builder.WriteString("Requested action:\n")
+		builder.WriteString(strings.TrimSpace(record.ApprovalAction))
+		fmt.Fprintf(
+			&builder,
+			"\n\nReply `allow_once` to authorize this exact tool call once, or `deny`. You can also use `/answer %s <decision>`.",
+			record.ShortID,
+		)
+		return builder.String()
+	}
 	fmt.Fprintf(&builder, "Input needed [%s]\n", record.ShortID)
 	for index, question := range record.Questions {
 		fmt.Fprintf(&builder, "\n%d. [%s] ", index+1, question.ID)

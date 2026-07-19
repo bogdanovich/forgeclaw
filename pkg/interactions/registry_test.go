@@ -5,10 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 type testClock struct {
@@ -197,6 +200,32 @@ func TestRegistryCreateRejectsSecondActiveSessionAndShortID(t *testing.T) {
 	request = validCreate(clock, "interaction_bbbbbbbb11111111", "session-1")
 	if _, err := registry.Create(request); err != nil {
 		t.Fatalf("create after terminal: %v", err)
+	}
+}
+
+func TestRegistryChainsSequentialForegroundInteractions(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	request := validCreate(clock, "interaction_chain11111111", "session-chain")
+	request.Origin.ContinuationSessionKey = "session-chain"
+	first, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ = registry.RecordDeliveryAttempt(first.ID, first.Revision, true, "")
+	first, _ = registry.MarkWaiting(first.ID, first.Revision)
+	first, _ = registry.ClaimAnswer(
+		first.ID, first.Revision, Answer{Text: "continue"}, OutcomeAnswered,
+	)
+	first, _ = registry.MarkResuming(first.ID, first.Revision)
+	nextRequest := validCreate(clock, "interaction_chain22222222", "session-chain")
+	nextRequest.Origin.ContinuationSessionKey = "session-chain"
+	next, err := registry.Create(nextRequest)
+	if err != nil {
+		t.Fatalf("Create(chained foreground) error = %v", err)
+	}
+	resolved, _ := registry.Get(first.ID)
+	if resolved.Status != StatusResolved || next.Status != StatusCreated {
+		t.Fatalf("chained records = first:%#v next:%#v", resolved, next)
 	}
 }
 
@@ -430,6 +459,37 @@ func TestRegistryClaimOverdueUsesResumableTimeoutOutcome(t *testing.T) {
 	}
 }
 
+func TestRegistryClaimAnswerEnforcesExpiryAtomically(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	record := makeWaiting(
+		t, registry, clock, "interaction_expired111111", "session-expired",
+	)
+	clock.Advance(time.Hour)
+
+	claimed, err := registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		Answer{
+			Text: "too late", MessageID: "late-answer", ReceivedAt: clock.Now().UnixMilli(),
+		},
+		OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatalf("ClaimAnswer() error = %v", err)
+	}
+	if claimed.Status != StatusClaimed || claimed.Outcome != OutcomeTimedOut ||
+		claimed.Answer == nil || claimed.Answer.Text != "" ||
+		claimed.Answer.MessageID != "late-answer" {
+		t.Fatalf("expired answer claim = %#v", claimed)
+	}
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	stored, ok := reloaded.Get(record.ID)
+	if !ok || stored.Outcome != OutcomeTimedOut || stored.Answer == nil ||
+		stored.Answer.Text != "" {
+		t.Fatalf("reloaded expired claim = %#v, found=%v", stored, ok)
+	}
+}
+
 func TestRegistryRevisionAndTransitionConflictsFailClosed(t *testing.T) {
 	registry, clock, _ := newTestRegistry(t)
 	rec, err := registry.Create(validCreate(clock, "interaction_11111111aaaaaaaa", "session-1"))
@@ -644,6 +704,62 @@ func TestRegistryCorruptSnapshotFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRegistryObsoleteApprovalDoesNotDisableCurrentRecords(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	question := makeWaiting(
+		t, registry, clock, "interaction_current111111", "session-current",
+	)
+	request := validCreate(clock, "interaction_obsolete11111", "session-obsolete")
+	request.Kind = KindApproval
+	request.Questions = nil
+	request.PromptSummary = "Approve obsolete action?"
+	request.ApprovalAction = "Tool: protected_test\nArguments (redacted JSON): {}"
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	obsolete, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err = json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for index := range snapshot.Records {
+		if snapshot.Records[index].ID != obsolete.ID {
+			continue
+		}
+		snapshot.Records[index].Origin.ArgumentHash = ""
+		snapshot.Records[index].Origin.ExecutionContext = nil
+		snapshot.Records[index].ApprovalAction = ""
+	}
+	data, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("obsolete approval disabled interaction store: %v", err)
+	}
+	if got, ok := reloaded.Get(question.ID); !ok || got.Status != StatusWaiting {
+		t.Fatalf("current interaction unavailable after reload: (%+v, %v)", got, ok)
+	}
+	if got, ok := reloaded.Get(obsolete.ID); !ok ||
+		got.Origin.ArgumentHash != "" || got.Origin.ExecutionContext != nil {
+		t.Fatalf("obsolete approval reload = (%+v, %v)", got, ok)
+	}
+}
+
 func TestRegistrySnapshotRejectsDuplicateActiveSession(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	first := makeWaiting(t, registry, clock, "interaction_14141414aaaaaaaa", "session-1")
@@ -807,6 +923,14 @@ func TestValidateQuestionsAndApprovalAuthorityBounds(t *testing.T) {
 
 	request.Questions = nil
 	request.PromptSummary = "Policy requests one-time approval."
+	request.ApprovalAction = "Tool: protected_test\nArguments (redacted JSON): {}"
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	if _, err := registry.Create(request); !errors.Is(err, ErrInvalidInteraction) {
+		t.Fatalf("new approval without argument hash error = %v", err)
+	}
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
 	approval, err := registry.Create(request)
 	if err != nil {
 		t.Fatalf("policy approval create: %v", err)
@@ -834,6 +958,120 @@ func TestValidateQuestionsAndApprovalAuthorityBounds(t *testing.T) {
 		OutcomeAllowed,
 	); err != nil {
 		t.Fatalf("approval allow outcome: %v", err)
+	}
+}
+
+func TestRegistryConsumesApprovalExactlyOnceAndMatchesCall(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	request := validCreate(clock, "interaction_approval111111", "session-approval")
+	request.Kind = KindApproval
+	request.Questions = nil
+	request.PromptSummary = "Policy requires approval."
+	request.ApprovalAction = "Tool: protected_test\nArguments (redacted JSON): {}"
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	record, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, err = registry.ClaimAnswer(
+		record.ID, record.Revision,
+		Answer{Text: "allow_once", ReceivedAt: clock.Now().UnixMilli()},
+		OutcomeAllowed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, strings.Repeat("b", 64),
+	); err == nil {
+		t.Fatal("mismatched argument hash consumed approval")
+	}
+	record, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, record.Origin.ArgumentHash,
+	)
+	if err != nil || record.ApprovalConsumedAt == 0 {
+		t.Fatalf("ConsumeApproval() = (%#v, %v)", record, err)
+	}
+	if _, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, record.Origin.ArgumentHash,
+	); err == nil {
+		t.Fatal("approval was consumed twice")
+	}
+	record, err = registry.BeginCancellation(record.ID, record.Revision, "operator_stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.CompleteCancellation(record.ID, record.Revision)
+	if err != nil || record.ApprovalConsumedAt == 0 {
+		t.Fatalf("cancel consumed approval = (%#v, %v)", record, err)
+	}
+	if reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now}); reloaded.LastLoadError() != nil {
+		t.Fatalf("reload consumed canceled approval: %v", reloaded.LastLoadError())
+	}
+}
+
+func TestRegistryConsumeApprovalEnforcesExpiryAtomically(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	request := validCreate(clock, "interaction_expiringapproval", "session-expiring-approval")
+	request.Kind = KindApproval
+	request.Questions = nil
+	request.PromptSummary = "Run the protected action"
+	request.ApprovalAction = "Tool: protected_test\nAction: Run the protected action"
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	request.ExpiresAt = clock.Now().Add(time.Minute)
+	record, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	clock.Advance(time.Minute - time.Millisecond)
+	record, err = registry.ClaimAnswer(
+		record.ID, record.Revision,
+		Answer{Text: "allow_once", ReceivedAt: clock.Now().UnixMilli()},
+		OutcomeAllowed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Millisecond)
+	record, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, record.Origin.ArgumentHash,
+	)
+	if !errors.Is(err, ErrApprovalExpired) || record.Outcome != OutcomeTimedOut ||
+		record.Status != StatusResuming || record.ApprovalConsumedAt != 0 {
+		t.Fatalf("expired ConsumeApproval() = (%#v, %v)", record, err)
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	stored, ok := reloaded.Get(record.ID)
+	if reloaded.LastLoadError() != nil || !ok || stored.Outcome != OutcomeTimedOut ||
+		stored.ApprovalConsumedAt != 0 {
+		t.Fatalf("reloaded expired approval = (%#v, %v)", stored, reloaded.LastLoadError())
+	}
+	events := reloaded.ListEvents(record.ID)
+	if len(events) == 0 || events[len(events)-1].Type != EventApprovalExpired {
+		t.Fatalf("expired approval events = %#v", events)
 	}
 }
 

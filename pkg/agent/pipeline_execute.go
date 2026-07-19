@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -454,13 +455,98 @@ toolLoop:
 			continue
 		}
 
-		if p.Interaction.Hooks != nil {
-			approval := p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
-				Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
-				Context:   cloneTurnContext(ts.turnCtx),
-				Tool:      toolName,
-				Arguments: toolArgs,
-			})
+		if p.Interaction.Hooks != nil || ts.opts.ApprovalGrant != nil {
+			approval := ApprovalDecision{Approved: true}
+			if p.Interaction.Hooks != nil {
+				approval = p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
+					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
+					Context:   cloneTurnContext(ts.turnCtx),
+					Tool:      toolName,
+					Arguments: toolArgs,
+				})
+			} else {
+				approval = ApprovalDecision{Reason: "approval policy is no longer available"}
+			}
+			interactionWorkspace := strings.TrimSpace(ts.opts.InteractionWorkspace)
+			if interactionWorkspace == "" {
+				interactionWorkspace = ts.workspace
+			}
+			if grant := ts.opts.ApprovalGrant; grant != nil {
+				var consumeErr error
+				if !approval.Approved && !approval.RequireHuman {
+					consumeErr = fmt.Errorf("current approval policy denied execution: %s", approval.Reason)
+				} else if p.Interaction.Suspension == nil {
+					consumeErr = fmt.Errorf("human interaction suspension is unavailable in this runtime")
+				} else {
+					argumentHash, hashErr := interactions.HashArguments(interactionWorkspace, toolArgs)
+					if hashErr != nil {
+						consumeErr = hashErr
+					} else {
+						consumeErr = p.Interaction.Suspension.ConsumeApproval(
+							ctx,
+							ToolApprovalConsumptionRequest{
+								Workspace: interactionWorkspace, InteractionID: grant.InteractionID,
+								Revision: grant.Revision,
+								Origin: interactions.Origin{
+									ToolCallID: tc.ID, ToolName: toolName, ArgumentHash: argumentHash,
+								},
+							},
+						)
+					}
+				}
+				if consumeErr != nil {
+					approval = ApprovalDecision{Reason: "one-time human approval was rejected: " + consumeErr.Error()}
+				} else {
+					ts.opts.ApprovalGrant = nil
+					approval = ApprovalDecision{Approved: true}
+				}
+			}
+			if approval.RequireHuman {
+				argumentHash, hashErr := interactions.HashArguments(interactionWorkspace, toolArgs)
+				if hashErr == nil {
+					approvalAction, displayErr := renderApprovalAction(
+						toolName,
+						approval.ActionSummary,
+					)
+					if displayErr != nil {
+						hashErr = displayErr
+					} else {
+						control, suspended, fallback := runner.trySuspendToolCall(
+							ctx,
+							i,
+							tc,
+							toolName,
+							0,
+							&tools.ToolResult{Silent: true, Suspension: &interactions.SuspensionRequest{
+								Kind: interactions.KindApproval, PromptSummary: approval.ActionSummary,
+								Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
+							}},
+							argumentHash,
+							approvalAction,
+						)
+						if suspended {
+							return control
+						}
+						if fallback != nil {
+							hashErr = errors.New(fallback.ContentForLLM())
+						}
+					}
+				}
+				exec.allResponsesHandled = false
+				denyContent := hookDeniedToolContent(
+					"Tool execution denied because human approval could not be requested",
+					errString(hashErr),
+				)
+				p.emitEvent(
+					runtimeevents.KindAgentToolExecSkipped,
+					ts.eventMeta("runTurn", "turn.tool.skipped"),
+					ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: denyContent},
+				)
+				runner.appendToolMessage(providers.Message{
+					Role: "tool", Content: denyContent, ToolCallID: tc.ID,
+				}, toolMessagePersistOnly)
+				continue
+			}
 			if !approval.Approved {
 				exec.allResponsesHandled = false
 				denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
@@ -653,6 +739,8 @@ toolLoop:
 				toolName,
 				toolDuration,
 				toolResult,
+				"",
+				"",
 			)
 			if suspended {
 				return control
@@ -1044,6 +1132,8 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	toolName string,
 	duration time.Duration,
 	result *tools.ToolResult,
+	argumentHash string,
+	approvalAction string,
 ) (ToolControl, bool, *tools.ToolResult) {
 	if result == nil || result.Suspension == nil {
 		return ToolControlContinue, false, result
@@ -1117,15 +1207,18 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		route.SpaceType = inbound.SpaceType
 	}
 	disposition, err := r.p.Interaction.Suspension.SuspendToolCall(ctx, ToolSuspensionRequest{
-		Workspace: interactionWorkspace,
-		Prompt:    *result.Suspension,
-		Route:     route,
+		Workspace:        interactionWorkspace,
+		Prompt:           *result.Suspension,
+		Route:            route,
+		ApprovalAction:   strings.TrimSpace(approvalAction),
+		ExecutionContext: cloneInboundContext(inbound),
 		Origin: interactions.Origin{
 			TurnID:                 r.ts.turnID,
 			ToolCallID:             toolCall.ID,
 			ToolName:               toolName,
 			TaskID:                 r.ts.opts.TaskID,
 			ContinuationSessionKey: r.ts.sessionKey,
+			ArgumentHash:           strings.TrimSpace(argumentHash),
 		},
 	})
 	if !disposition.Durable {

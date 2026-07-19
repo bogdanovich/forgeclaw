@@ -187,6 +187,28 @@ func TestAgentLoop_MountProcessHook_ApprovalDeny(t *testing.T) {
 	}
 }
 
+func TestAgentLoop_MountProcessHook_HumanApprovalSummary(t *testing.T) {
+	al, _, cleanup := newHookTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	if err := al.MountProcessHook(context.Background(), "ipc-human-approval", ProcessHookOptions{
+		Command:     processHookHelperCommand(),
+		Env:         processHookHelperEnv("human", ""),
+		ApproveTool: true,
+	}); err != nil {
+		t.Fatalf("MountProcessHook failed: %v", err)
+	}
+
+	decision := al.hooks.ApproveTool(t.Context(), &ToolApprovalRequest{
+		Tool:      "blocked_tool",
+		Arguments: map[string]any{"secret": "must-not-be-presented"},
+	})
+	if !decision.RequireHuman || decision.Approved ||
+		decision.ActionSummary != "Run the protected IPC action" {
+		t.Fatalf("process human approval decision = %#v", decision)
+	}
+}
+
 func TestAgentLoop_MountProcessHook_IsolationSupportsRelativeDirAndCommand(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("linux-only isolation path handling")
@@ -458,6 +480,12 @@ func handleProcessHookRequest(mode string, msg processHookRPCMessage) (any, *pro
 			return ApprovalDecision{
 				Approved: false,
 				Reason:   "blocked by ipc hook",
+			}, nil
+		}
+		if mode == "human" {
+			return ApprovalDecision{
+				RequireHuman:  true,
+				ActionSummary: "Run the protected IPC action",
 			}, nil
 		}
 		return ApprovalDecision{Approved: true}, nil

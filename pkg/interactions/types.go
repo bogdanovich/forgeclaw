@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 type Kind string
@@ -59,6 +61,8 @@ const (
 	EventWaiting          EventType = "interaction.waiting"
 	EventAnswerClaimed    EventType = "interaction.answer_claimed"
 	EventResumeStarted    EventType = "interaction.resume_started"
+	EventApprovalConsumed EventType = "interaction.approval_consumed"
+	EventApprovalExpired  EventType = "interaction.approval_expired"
 	EventCanceling        EventType = "interaction.canceling"
 	EventResolved         EventType = "interaction.resolved"
 	EventCancelled        EventType = "interaction.cancelled"
@@ -83,6 +87,8 @@ const (
 	MaxDescriptionLength = 500
 	MaxAnswerLength      = 16 * 1024
 	MaxSummaryLength     = 1000
+	MaxApprovalAction    = 2000
+	MaxExecutionContext  = 64 * 1024
 )
 
 var questionIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -95,6 +101,7 @@ var (
 	ErrSessionHasActive   = errors.New("session already has an active interaction")
 	ErrDuplicateAnswer    = errors.New("answer message already claimed")
 	ErrAnswerTooLate      = errors.New("interaction is no longer waiting")
+	ErrApprovalExpired    = errors.New("approval expired before consumption")
 	ErrSnapshotOverBudget = errors.New("interaction snapshot exceeds size budget")
 	ErrInvalidInteraction = errors.New("invalid interaction")
 	ErrCapacityExceeded   = errors.New("interaction registry capacity exceeded")
@@ -138,12 +145,13 @@ type Route struct {
 }
 
 type Origin struct {
-	TurnID                 string `json:"turn_id"`
-	ToolCallID             string `json:"tool_call_id"`
-	ToolName               string `json:"tool_name"`
-	TaskID                 string `json:"task_id,omitempty"`
-	ContinuationSessionKey string `json:"continuation_session_key,omitempty"`
-	ArgumentHash           string `json:"argument_hash,omitempty"`
+	TurnID                 string              `json:"turn_id"`
+	ToolCallID             string              `json:"tool_call_id"`
+	ToolName               string              `json:"tool_name"`
+	TaskID                 string              `json:"task_id,omitempty"`
+	ContinuationSessionKey string              `json:"continuation_session_key,omitempty"`
+	ArgumentHash           string              `json:"argument_hash,omitempty"`
+	ExecutionContext       *bus.InboundContext `json:"execution_context,omitempty"`
 }
 
 type Answer struct {
@@ -165,6 +173,7 @@ type Record struct {
 	Origin              Origin        `json:"origin"`
 	Questions           []Question    `json:"questions,omitempty"`
 	PromptSummary       string        `json:"prompt_summary,omitempty"`
+	ApprovalAction      string        `json:"approval_action,omitempty"`
 	Answer              *Answer       `json:"answer,omitempty"`
 	CreatedAt           int64         `json:"created_at"`
 	UpdatedAt           int64         `json:"updated_at"`
@@ -186,6 +195,7 @@ type Record struct {
 	ResumeError         string        `json:"resume_error,omitempty"`
 	FailureCode         string        `json:"failure_code,omitempty"`
 	FailureDetail       string        `json:"failure_detail,omitempty"`
+	ApprovalConsumedAt  int64         `json:"approval_consumed_at,omitempty"`
 }
 
 type Event struct {
@@ -209,13 +219,14 @@ type EventObservation struct {
 }
 
 type CreateRequest struct {
-	ID            string
-	Kind          Kind
-	Route         Route
-	Origin        Origin
-	Questions     []Question
-	PromptSummary string
-	ExpiresAt     time.Time
+	ID             string
+	Kind           Kind
+	Route          Route
+	Origin         Origin
+	Questions      []Question
+	PromptSummary  string
+	ApprovalAction string
+	ExpiresAt      time.Time
 }
 
 type Stats struct {
