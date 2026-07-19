@@ -763,3 +763,32 @@ func TestValidateQuestionsAndApprovalAuthorityBounds(t *testing.T) {
 		t.Fatalf("approval allow outcome: %v", err)
 	}
 }
+
+func TestStoredV1QuestionsRemainLoadableUnderTighterCreatePolicy(t *testing.T) {
+	legacySingle := []Question{{
+		ID: "legacy_single", Question: "Legacy choice?",
+		Options: []Option{{Label: "Only", Description: "Previously valid."}},
+	}}
+	if err := validateStoredQuestions(KindQuestion, legacySingle); err != nil {
+		t.Fatalf("stored single-option question rejected: %v", err)
+	}
+	if err := validateQuestions(KindQuestion, legacySingle); err == nil {
+		t.Fatal("new single-option question accepted")
+	}
+
+	legacyFour := []Question{{
+		ID: "legacy_four", Question: "Legacy choices?",
+		Options: []Option{
+			{Label: "Same", Description: "First."},
+			{Label: "same", Description: "Duplicate labels were previously valid."},
+			{Label: "Third", Description: "Third."},
+			{Label: "Fourth", Description: "Fourth."},
+		},
+	}}
+	if err := validateStoredQuestions(KindQuestion, legacyFour); err != nil {
+		t.Fatalf("stored four-option question rejected: %v", err)
+	}
+	if err := validateQuestions(KindQuestion, legacyFour); err == nil {
+		t.Fatal("new four-option question accepted")
+	}
+}

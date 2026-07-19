@@ -236,6 +236,22 @@ func (o Origin) validate() error {
 }
 
 func validateQuestions(kind Kind, questions []Question) error {
+	return validateQuestionsWithPolicy(kind, questions, MaxOptions, true)
+}
+
+func validateStoredQuestions(kind Kind, questions []Question) error {
+	// interaction_snapshot.v1 allowed one to four options and did not require
+	// unique labels. Keep load validation tolerant while enforcing the tighter
+	// contract for every new create/suspension request.
+	return validateQuestionsWithPolicy(kind, questions, 4, false)
+}
+
+func validateQuestionsWithPolicy(
+	kind Kind,
+	questions []Question,
+	maxOptions int,
+	strictChoices bool,
+) error {
 	if kind == KindQuestion && (len(questions) == 0 || len(questions) > MaxQuestions) {
 		return fmt.Errorf(
 			"%w: questions must contain 1 to %d entries",
@@ -261,7 +277,7 @@ func validateQuestions(kind Kind, questions []Question) error {
 			!validBoundedString(
 				question.Question,
 				MaxQuestionLength,
-			) || len(question.Options) > MaxOptions || len(question.Options) == 1 {
+			) || len(question.Options) > maxOptions || (strictChoices && len(question.Options) == 1) {
 			return fmt.Errorf("%w: question %q exceeds bounds", ErrInvalidInteraction, question.ID)
 		}
 		optionLabels := make(map[string]struct{}, len(question.Options))
@@ -276,7 +292,7 @@ func validateQuestions(kind Kind, questions []Question) error {
 				)
 			}
 			label := strings.ToLower(strings.TrimSpace(option.Label))
-			if _, ok := optionLabels[label]; ok {
+			if _, ok := optionLabels[label]; ok && strictChoices {
 				return fmt.Errorf(
 					"%w: question %q has duplicate option %q",
 					ErrInvalidInteraction,

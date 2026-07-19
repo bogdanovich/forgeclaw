@@ -863,7 +863,7 @@ func validateStoredRecord(rec Record) error {
 	if err := rec.Origin.validate(); err != nil {
 		return err
 	}
-	if err := validateQuestions(rec.Kind, rec.Questions); err != nil {
+	if err := validateStoredQuestions(rec.Kind, rec.Questions); err != nil {
 		return err
 	}
 	switch rec.Status {
