@@ -458,7 +458,7 @@ func TestGetFileAddsMetadataDeadline(t *testing.T) {
 			t.Fatal("GetFile context has no deadline")
 		}
 		remaining := time.Until(deadline)
-		if remaining <= 0 || remaining > telegramFileMetadataTimeout {
+		if remaining <= 0 || remaining > telegramFileMetadataAttemptTimeout {
 			t.Fatalf("GetFile deadline remaining = %v", remaining)
 		}
 		return nil, context.DeadlineExceeded
@@ -469,6 +469,47 @@ func TestGetFileAddsMetadataDeadline(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("getFile() error = %v, want deadline exceeded", err)
 	}
+}
+
+func TestGetFileRetriesTransientServerError(t *testing.T) {
+	calls := 0
+	caller := &stubCaller{callFn: func(
+		_ context.Context,
+		_ string,
+		_ *ta.RequestData,
+	) (*ta.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, &ta.Error{ErrorCode: http.StatusInternalServerError}
+		}
+		result, err := json.Marshal(&telego.File{FileID: "voice-file", FilePath: "voice.ogg"})
+		require.NoError(t, err)
+		return &ta.Response{Ok: true, Result: result}, nil
+	}}
+	ch := newTestChannel(t, caller)
+
+	file, err := ch.getFile(context.Background(), "voice-file")
+	require.NoError(t, err)
+	require.NotNil(t, file)
+	assert.Equal(t, "voice.ogg", file.FilePath)
+	assert.Equal(t, 2, calls)
+}
+
+func TestGetFileDoesNotRetryPermanentClientError(t *testing.T) {
+	calls := 0
+	caller := &stubCaller{callFn: func(
+		_ context.Context,
+		_ string,
+		_ *ta.RequestData,
+	) (*ta.Response, error) {
+		calls++
+		return nil, &ta.Error{ErrorCode: http.StatusBadRequest}
+	}}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.getFile(context.Background(), "invalid-file")
+	require.Error(t, err)
+	assert.Equal(t, 1, calls)
 }
 
 func TestGetFilePreservesEarlierCallerDeadline(t *testing.T) {
