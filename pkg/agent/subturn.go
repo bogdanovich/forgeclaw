@@ -377,12 +377,6 @@ func spawnSubTurn(
 		timeout = rtCfg.defaultTimeout
 	}
 
-	// 4. Create INDEPENDENT child context (not derived from parent ctx).
-	// This allows the child to continue running after parent finishes gracefully.
-	// The child has its own timeout for self-protection.
-	childCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
 	childID := al.generateSubTurnID()
 
 	// Resolve the agent instance for the child turn.
@@ -405,6 +399,16 @@ func spawnSubTurn(
 	if baseAgent == nil {
 		return nil, errors.New("parent turnState has no agent instance")
 	}
+
+	// Create an independent child context so detached work can outlive the
+	// parent's cancellation. Same-agent children retain the work-tree admission
+	// until they finish; children targeting another agent acquire that agent's
+	// admission in runTurn.
+	detachedCtx, releaseInheritedAdmission := inheritAgentTurnAdmissions(context.Background(), ctx)
+	defer releaseInheritedAdmission()
+	childCtx, cancel := context.WithTimeout(detachedCtx, timeout)
+	defer cancel()
+
 	modelBinding, err := al.buildSubagentChildBinding(parentTS, baseAgent)
 	if err != nil {
 		return nil, err

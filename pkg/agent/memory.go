@@ -18,6 +18,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
+const dailyAppendMarkerPrefix = "<!-- picoclaw:append_daily:v1:"
+
 // MemoryStore manages persistent memory for the agent.
 // - Long-term memory: memory/MEMORY.md
 // - Daily notes: memory/YYYYMM/YYYYMMDD.md
@@ -92,7 +94,7 @@ func (ms *MemoryStore) WriteLongTerm(content string) error {
 func (ms *MemoryStore) ReadToday() string {
 	todayFile := ms.getTodayFile()
 	if data, err := os.ReadFile(todayFile); err == nil {
-		return string(data)
+		return stripDailyAppendMarkers(string(data))
 	}
 	return ""
 }
@@ -160,7 +162,7 @@ func (ms *MemoryStore) getRecentDailyNotes(paths []string) string {
 			if !first {
 				sb.WriteString("\n\n---\n\n")
 			}
-			sb.Write(data)
+			sb.WriteString(stripDailyAppendMarkers(string(data)))
 			first = false
 		}
 	}
@@ -235,10 +237,24 @@ func (ms *MemoryStore) getBoundedRecentDailyNotes(paths []string, maxBytes int) 
 	notes := make([]string, 0, len(paths))
 	for _, path := range paths {
 		if data, err := os.ReadFile(path); err == nil {
-			notes = append(notes, string(data))
+			notes = append(notes, stripDailyAppendMarkers(string(data)))
 		}
 	}
 	return joinDailyNotesWithinBudget(notes, maxBytes)
+}
+
+func stripDailyAppendMarkers(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	var cleaned strings.Builder
+	cleaned.Grow(len(content))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, dailyAppendMarkerPrefix) && strings.HasSuffix(trimmed, " -->") {
+			continue
+		}
+		cleaned.WriteString(line)
+	}
+	return cleaned.String()
 }
 
 func joinDailyNotesWithinBudget(notes []string, maxBytes int) string {

@@ -95,10 +95,13 @@ Zero or omitted values use the defaults shown above. Truncation is UTF-8 safe an
 are separate from Seahorse history and summary budgets.
 
 The native `memory` tool is enabled by default through `tools.memory.enabled`. It provides semantic `add`, `replace`,
-and `remove` operations for `memory/MEMORY.md`. Duplicate additions are no-ops; replacements and removals require one
-exact logical line or block match. Successful writes are atomic, invalidate the prompt cache, and emit
+and `remove` operations for stable facts in `memory/MEMORY.md`. It also provides `append_daily` for selective episodic
+events, decisions, progress, and unfinished context; the runtime chooses the local current day's
+`memory/YYYYMM/YYYYMMDD.md` path, and each append requires an event-specific `idempotency_key`. Duplicate additions and
+retries with the same key are no-ops; replacements and removals require
+one exact logical line or block match. Successful writes are atomic, invalidate the prompt cache, and emit
 `agent.memory.mutation` audit metadata without raw memory content. Use ordinary filesystem tools for other workspace
-files and daily notes.
+files.
 
 ### Tool-Loop Detection
 
@@ -575,6 +578,34 @@ Because routing is strictly ordered, more specific rules should be placed
 earlier and broader fallback rules later.
 
 For more complete routing and model-tier examples, see the [Routing Guide](routing-guide.md).
+
+### Per-Agent Turn Concurrency
+
+`agents.defaults.max_parallel_turns` limits the total number of concurrently
+processed inbound turns. Stateful named agents can define a narrower limit with
+`agents.list[].max_parallel_turns`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "max_parallel_turns": 4
+    },
+    "list": [
+      { "id": "main", "default": true },
+      { "id": "browser", "max_parallel_turns": 1 }
+    ]
+  }
+}
+```
+
+The per-agent limit applies to top-level work across inbound, direct,
+scheduled, delegated, spawned, and recovery execution paths. A value of `1`
+serializes independent work owned by that agent while other agents can continue
+using the global worker capacity. Nested turns in the same work tree inherit
+the admission instead of reacquiring it. Live configuration reloads update the
+limit without forgetting work that is already active. Omit the field or set it
+to `0` to use no additional per-agent limit.
 
 ### Agent Tool Allowlist
 

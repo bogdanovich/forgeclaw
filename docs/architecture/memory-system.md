@@ -55,7 +55,7 @@ External file edits are detected through the same existence and modification
 baseline used for bootstrap files. A date rollover invalidates the cache even
 when no file timestamp changes.
 
-## Curated memory mutations
+## Memory mutations
 
 Stable-memory mutations use a small semantic contract:
 
@@ -63,10 +63,25 @@ Stable-memory mutations use a small semantic contract:
 - `replace`: replace one unambiguous existing entry;
 - `remove`: remove one unambiguous existing entry.
 
+Episodic memory uses one separate operation:
+
+- `append_daily`: append a noteworthy transient event, decision, progress
+  update, or unfinished context to the runtime-local current day's
+  `memory/YYYYMM/YYYYMMDD.md` file. It requires a stable event-specific
+  `idempotency_key` that is reused only when retrying the same append.
+
 Mutations are atomic, preserve owner-only file permissions, and reject
 ambiguous replacements or removals. Duplicate additions are deterministic
 no-ops. Runtime audit events record operation, target, outcome, and content
 hashes or lengths, never raw private content.
+
+Daily appends use the same atomic-write, owner-only permission, path-safety,
+deduplication, cache-invalidation, and audit-event guarantees. The runtime
+selects the date and path; the model cannot use this operation to target an
+arbitrary file. A hashed idempotency marker makes retries deterministic no-ops
+even after date rollover, while distinct keys allow identical events. Daily
+notes are for selective episodic continuity, not routine conversation
+transcripts.
 
 Generic filesystem tools remain available for ordinary workspace files. The
 curated-memory tool is the preferred path for durable stable facts because it
@@ -111,7 +126,7 @@ policy is defense in depth, not a replacement for correct session scope.
 - Unreadable files are omitted and reported without corrupting cache state.
 - An over-budget mandatory prompt fails before provider invocation when the
   outer model context cannot fit.
-- Failed curated-memory writes leave the original file intact and emit a
+- Failed stable or daily-memory writes leave the original file intact and emit a
   failed audit outcome.
 - Seahorse-disabled operation retains Markdown memory and canonical JSONL
   history but has no derived historical retrieval tools.
@@ -149,7 +164,8 @@ Implemented:
 - absolute Seahorse history and summary budgets;
 - tool-result projection and retention policy;
 - bounded Markdown prompt memory and complete daily-note cache dependencies;
-- atomic curated-memory `add`, `replace`, and `remove` mutations with audit events;
+- atomic stable-memory `add`, `replace`, and `remove` mutations plus episodic
+  `append_daily`, with privacy-safe audit events;
 - operator-bounded Seahorse retrieval with a safe `conversation` maximum by default;
 - deterministic memory replay scenarios covering correction, deletion, prompt
   bounds, date rollover, cross-user isolation, and Seahorse-disabled operation.

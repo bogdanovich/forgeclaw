@@ -8,11 +8,33 @@
 package fileutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// CommittedWriteError reports that rename committed the new file, but the
+// parent-directory sync failed, so crash durability could not be confirmed.
+type CommittedWriteError struct {
+	Err error
+}
+
+func (e *CommittedWriteError) Error() string {
+	return fmt.Sprintf("write committed but durability was not confirmed: %v", e.Err)
+}
+
+func (e *CommittedWriteError) Unwrap() error {
+	return e.Err
+}
+
+// IsCommittedWriteError distinguishes post-rename failures from failures that
+// leave the original target unchanged.
+func IsCommittedWriteError(err error) bool {
+	var committedErr *CommittedWriteError
+	return errors.As(err, &committedErr)
+}
 
 // WriteFileAtomic atomically writes data to a file using a temp file + rename pattern.
 //
@@ -25,8 +47,8 @@ import (
 // 2. Writes data to temp file
 // 3. Syncs data to disk (critical for SD cards/flash storage)
 // 4. Sets file permissions
-// 5. Syncs directory metadata (ensures rename is durable)
-// 6. Atomically renames temp file to target path
+// 5. Atomically renames temp file to target path
+// 6. Syncs directory metadata where supported (ensures rename is durable)
 //
 // Safety guarantees:
 // - Original file is NEVER modified until successful rename
@@ -50,6 +72,15 @@ import (
 //	// Public readable file
 //	err := utils.WriteFileAtomic("public.txt", data, 0o644)
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomic(path, data, perm, syncDirectory)
+}
+
+func writeFileAtomic(
+	path string,
+	data []byte,
+	perm os.FileMode,
+	syncDir func(string) error,
+) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
@@ -105,16 +136,16 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
+	// The temp path no longer exists after rename, including when directory
+	// durability cannot be confirmed below.
+	cleanup = false
 
 	// Sync directory to ensure rename is durable
 	// This prevents the renamed file from disappearing after a crash
-	if dirFile, err := os.Open(dir); err == nil {
-		_ = dirFile.Sync()
-		_ = dirFile.Close()
+	if err := syncDir(dir); err != nil {
+		return &CommittedWriteError{Err: fmt.Errorf("failed to sync parent directory: %w", err)}
 	}
 
-	// Success: skip cleanup (file was renamed, no temp to remove)
-	cleanup = false
 	return nil
 }
 
