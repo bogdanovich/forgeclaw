@@ -27,6 +27,7 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 		return 0
 	}
 	defer al.interactionRecoveryRunning.Store(false)
+	al.loadCatalogedInteractionRegistries()
 	recovered := 0
 	al.interactionRegistries.Range(func(key, value any) bool {
 		if ctx.Err() != nil {
@@ -49,6 +50,17 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 		for _, record := range registry.ListNonterminal() {
 			if ctx.Err() != nil {
 				return false
+			}
+			if !al.interactionAgentAvailable(workspace, record) {
+				if _, err := registry.Fail(
+					record.ID,
+					record.Revision,
+					"agent_unavailable",
+					"the originating agent or workspace is no longer configured",
+				); err == nil {
+					recovered++
+				}
+				continue
 			}
 			switch record.Status {
 			case interactions.StatusCreated:
@@ -95,9 +107,45 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 			}
 		}
 		_ = registry.Prune(time.Now())
+		if registry.Stats().RecordCount == 0 && al.interactionCatalog != nil {
+			_ = al.interactionCatalog.Remove(workspace)
+		}
 		return true
 	})
 	return recovered
+}
+
+func (al *AgentLoop) loadCatalogedInteractionRegistries() {
+	if al == nil || al.interactionCatalog == nil {
+		return
+	}
+	workspaces, err := al.interactionCatalog.List()
+	if err != nil {
+		logger.WarnCF("agent", "Interaction workspace catalog has invalid entries", map[string]any{
+			"error": err.Error(),
+		})
+	}
+	for _, workspace := range workspaces {
+		_ = al.interactionRegistryForWorkspace(workspace)
+	}
+}
+
+func (al *AgentLoop) interactionAgentAvailable(
+	workspace string,
+	record interactions.Record,
+) bool {
+	if al == nil {
+		return false
+	}
+	registry := al.GetRegistry()
+	if registry == nil {
+		// Isolated runtimes can reconcile store-only transitions without an
+		// agent registry. Production loops always provide one.
+		return true
+	}
+	agent, ok := registry.GetAgent(record.Route.AgentID)
+	return ok && agent != nil &&
+		strings.TrimSpace(agent.Workspace) == strings.TrimSpace(workspace)
 }
 
 func (al *AgentLoop) recoverCancelingInteraction(

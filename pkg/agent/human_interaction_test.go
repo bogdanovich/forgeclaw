@@ -895,3 +895,49 @@ func TestInteractionPairingIgnoresReusedToolCallIDFromOlderRound(t *testing.T) {
 		t.Fatal("older reused result was treated as current continuation")
 	}
 }
+
+func TestRecoverHumanInteractionsTerminalizesCatalogedOrphanWorkspace(t *testing.T) {
+	provider := &simpleConvProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	catalogRoot := t.TempDir()
+	orphanWorkspace := filepath.Join(catalogRoot, "removed-agent-workspace")
+	catalog := interactions.NewWorkspaceCatalog(catalogRoot)
+	if err := catalog.Register(orphanWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	al.interactionCatalog = catalog
+
+	registry := interactions.NewRegistry(interactions.WorkspaceStorePath(orphanWorkspace))
+	request := testToolSuspensionRequest(orphanWorkspace)
+	request.Route.AgentID = "removed-agent"
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	loaded := al.interactionRegistryForWorkspace(orphanWorkspace)
+	terminal, ok := loaded.Get(record.ID)
+	if !ok || terminal.Status != interactions.StatusFailed ||
+		terminal.FailureCode != "agent_unavailable" {
+		t.Fatalf("orphan record = %#v", terminal)
+	}
+	if current, ok := al.GetRegistry().GetAgent(agent.ID); !ok || current == nil {
+		t.Fatal("active agent was disturbed while recovering orphan workspace")
+	}
+}

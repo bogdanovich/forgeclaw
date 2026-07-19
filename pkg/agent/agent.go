@@ -22,6 +22,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -65,6 +66,7 @@ type AgentLoop struct {
 	asyncCompletions           sync.Map
 	taskRegistries             sync.Map
 	interactionRegistries      sync.Map
+	interactionCatalog         *interactions.WorkspaceCatalog
 	interactionRecoveryRunning atomic.Bool
 	runtimeTools               map[string]RuntimeToolFactory
 	mu                         sync.RWMutex

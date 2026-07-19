@@ -14,6 +14,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/skills"
@@ -59,6 +60,7 @@ func NewAgentLoop(
 		workerSem:           make(chan struct{}, workerPoolSize),
 		agentTurnAdmissions: newAgentTurnAdmissionController(registry),
 		ownsRuntimeEvents:   true,
+		interactionCatalog:  interactions.NewWorkspaceCatalog(config.GetHome()),
 	}
 	al.compactionRunner = &backgroundCompactionRunner{
 		contextManager: func() ContextManager {

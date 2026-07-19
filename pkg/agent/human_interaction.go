@@ -134,6 +134,14 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 	if runtime == nil || runtime.al == nil {
 		return ToolSuspensionDisposition{}, interactions.ErrStoreUnavailable
 	}
+	if runtime.al.interactionCatalog != nil {
+		if err := runtime.al.interactionCatalog.Register(request.Workspace); err != nil {
+			return ToolSuspensionDisposition{}, fmt.Errorf(
+				"register interaction workspace: %w",
+				err,
+			)
+		}
+	}
 	registry := runtime.al.interactionRegistryForWorkspace(request.Workspace)
 	if registry == nil {
 		return ToolSuspensionDisposition{}, interactions.ErrStoreUnavailable

@@ -272,6 +272,13 @@ History reconciliation makes crash windows idempotent:
   result and later assistant response, then mark resolved;
 - conflicting history or mismatched hashes: fail closed and emit diagnostics.
 
+Workspace-local interaction stores are registered in a bounded durable catalog
+before an interaction is created. Restart recovery loads cataloged stores in
+addition to stores belonging to currently configured agents. If the originating
+agent was removed, renamed, or moved to another workspace, recovery terminalizes
+the interaction with `agent_unavailable` rather than leaving durable orphaned
+state. Empty stores are removed from the catalog after retention pruning.
+
 ## `request_user_input` Tool
 
 The built-in tool is available to normal stateful turns and background tasks,
