@@ -132,6 +132,13 @@ Deterministic scenarios cover:
 Scenarios assert rendered prompt content, tool outcomes, retrieval boundaries,
 and audit events. They avoid assertions on private helper structure.
 
+The deterministic matrix lives in `pkg/agent/memory_replay_test.go`. It runs
+each scenario twice in fresh disposable workspaces and compares canonical
+observations. It deliberately exercises production subsystem boundaries rather
+than adding private memory content to evaluation traces: the curated-memory
+tool and events bus, rendered prompt context, Seahorse retrieval tools, and the
+legacy context-manager runtime are the observed surfaces.
+
 ## Implementation status
 
 Implemented:
@@ -143,8 +150,6 @@ Implemented:
 - tool-result projection and retention policy;
 - bounded Markdown prompt memory and complete daily-note cache dependencies;
 - atomic curated-memory `add`, `replace`, and `remove` mutations with audit events;
-- operator-bounded Seahorse retrieval with a safe `conversation` maximum by default.
-
-Planned by the follow-up implementation series:
-
-- deterministic memory-specific evaluation scenarios.
+- operator-bounded Seahorse retrieval with a safe `conversation` maximum by default;
+- deterministic memory replay scenarios covering correction, deletion, prompt
+  bounds, date rollover, cross-user isolation, and Seahorse-disabled operation.
