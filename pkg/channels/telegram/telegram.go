@@ -38,9 +38,10 @@ var (
 )
 
 const (
-	defaultMediaGroupDelay = 500 * time.Millisecond
-	telegramCaptionLimit   = 1024
-	telegramTextLimit      = 4096
+	defaultMediaGroupDelay      = 500 * time.Millisecond
+	telegramFileMetadataTimeout = 30 * time.Second
+	telegramCaptionLimit        = 1024
+	telegramTextLimit           = 4096
 )
 
 var errTelegramMessageTooLong = errors.New("telegram message too long")
@@ -2066,7 +2067,7 @@ func quotedTelegramMediaRefs(
 }
 
 func (c *TelegramChannel) downloadPhoto(ctx context.Context, fileID string) string {
-	file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
+	file, err := c.getFile(ctx, fileID)
 	if err != nil {
 		logger.ErrorCF("telegram", "Failed to get photo file", map[string]any{
 			"error": err.Error(),
@@ -2093,7 +2094,7 @@ func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) st
 }
 
 func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) string {
-	file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
+	file, err := c.getFile(ctx, fileID)
 	if err != nil {
 		logger.ErrorCF("telegram", "Failed to get file", map[string]any{
 			"error": err.Error(),
@@ -2102,6 +2103,12 @@ func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) 
 	}
 
 	return c.downloadFileWithInfo(file, ext)
+}
+
+func (c *TelegramChannel) getFile(ctx context.Context, fileID string) (*telego.File, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, telegramFileMetadataTimeout)
+	defer cancel()
+	return c.bot.GetFile(requestCtx, &telego.GetFileParams{FileID: fileID})
 }
 
 func parseContent(text string, useMarkdownV2 bool) string {
