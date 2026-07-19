@@ -287,7 +287,9 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 	if al.shouldHandleInteractionInbound(msg, target) {
 		t.Fatal("control command was consumed as an interaction answer")
 	}
-	al.cancelInteractionForControlMessage(msg, target)
+	if err := al.cancelInteractionForControlMessage(t.Context(), msg, target); err != nil {
+		t.Fatal(err)
+	}
 	record, _ = registry.Get(record.ID)
 	if record.Status != interactions.StatusCancelled {
 		t.Fatalf("reset did not cancel pending interaction: %#v", record)
@@ -336,6 +338,79 @@ func TestInteractionIngressRetainsClaimedAnswerReplayOwnership(t *testing.T) {
 	msg.Context.SenderID = "user-2"
 	if al.shouldHandleInteractionInbound(msg, target) {
 		t.Fatal("unrelated sender was consumed by the claimed interaction")
+	}
+}
+
+func TestStopCancellationPairsSuspendedToolCall(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	sessionKey := "session-stop-interaction"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Deploy this"})
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-question", Name: "request_user_input",
+			Function: &providers.FunctionCall{Name: "request_user_input", Arguments: `{}`},
+		}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	target := &inboundDispatchTarget{
+		Agent: agent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	msg := bus.InboundMessage{Content: "/stop", Context: inboundContextForInteraction(request.Route)}
+	if err := al.cancelInteractionForControlMessage(t.Context(), msg, target); err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusCancelled {
+		t.Fatalf("record status = %q, want canceled", record.Status)
+	}
+	_, resultIndex := interactionToolPairIndexes(agent.Sessions.GetHistory(sessionKey), "call-question")
+	if resultIndex < 0 {
+		t.Fatal("stop left the suspended tool call unpaired")
+	}
+	result := agent.Sessions.GetHistory(sessionKey)[resultIndex]
+	if !strings.Contains(result.Content, `"outcome":"canceled"`) {
+		t.Fatalf("cancellation tool result = %q", result.Content)
+	}
+}
+
+func TestDeferredInteractionIngressQueuesWithoutChangingHistory(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	sessionKey := "session-deferred-interaction"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "assistant", Content: "existing"})
+	target := &inboundDispatchTarget{Agent: agent, SessionKey: sessionKey}
+	msg := bus.InboundMessage{
+		Content: "unrelated turn", SenderID: "user-2", SpoolID: "spool-2",
+		Context: bus.InboundContext{
+			Channel: "telegram", ChatID: "chat-1", SenderID: "user-2", MessageID: "message-2",
+		},
+	}
+	newInboundTurnCoordinator(al).deferInteractionInbound(t.Context(), msg, target)
+	if got := al.pendingSteeringCountForScope(sessionKey); got != 1 {
+		t.Fatalf("deferred queue depth = %d, want 1", got)
+	}
+	history := agent.Sessions.GetHistory(sessionKey)
+	if len(history) != 1 || history[0].Content != "existing" {
+		t.Fatalf("deferred ingress changed history: %#v", history)
+	}
+	queued := al.dequeueSteeringMessagesForTurn(sessionKey, "user-2")
+	if len(queued) != 1 || queued[0].InboundSpoolID != "spool-2" ||
+		!strings.Contains(queued[0].Content, "unrelated turn") {
+		t.Fatalf("deferred message = %#v", queued)
 	}
 }
 

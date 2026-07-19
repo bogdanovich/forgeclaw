@@ -36,6 +36,7 @@ const (
 	OutcomeTimedOut Outcome = "timed_out"
 	OutcomeAllowed  Outcome = "allowed"
 	OutcomeDenied   Outcome = "denied"
+	OutcomeCanceled Outcome = "canceled"
 )
 
 type EventType string

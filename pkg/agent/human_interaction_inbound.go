@@ -19,24 +19,37 @@ import (
 const answerCommand = "/answer"
 
 func (al *AgentLoop) cancelInteractionForControlMessage(
+	ctx context.Context,
 	msg bus.InboundMessage,
 	target *inboundDispatchTarget,
-) {
+) error {
 	name, ok := commands.CommandName(msg.Content)
 	if !ok || (name != "new" && name != "reset" && name != "clear" && name != "stop") ||
 		al == nil || target == nil || target.Agent == nil {
-		return
+		return nil
 	}
 	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
 	record, found := activeInteractionForSession(registry, target.SessionKey)
 	if !found || !interactionRouteAuthorizes(record.Route, target, msg.Context) {
-		return
+		return nil
+	}
+	if name == "stop" {
+		if err := al.ensureInteractionCancellationToolResult(
+			ctx,
+			target.Agent,
+			record,
+			"session_control_stop",
+		); err != nil {
+			return fmt.Errorf("persist stop cancellation result: %w", err)
+		}
 	}
 	if _, err := registry.Cancel(record.ID, record.Revision, "session_control_"+name); err != nil {
 		logger.WarnCF("agent", "Failed to cancel interaction for session control", map[string]any{
 			"interaction_id": record.ID, "command": name, "error": err.Error(),
 		})
+		return err
 	}
+	return nil
 }
 
 func (al *AgentLoop) shouldHandleInteractionInbound(
@@ -135,15 +148,38 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 		defer c.al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
-	if err := c.al.processInteractionInbound(ctx, msg, target); err != nil {
+	if processErr := c.al.processInteractionInbound(ctx, msg, target); processErr != nil {
 		logger.WarnCF("agent", "Failed to process human interaction answer", map[string]any{
 			"session_key": target.SessionKey,
-			"error":       err.Error(),
+			"error":       processErr.Error(),
 		})
-		c.al.releaseInboundMessage(context.Background(), msg, err)
+		c.al.releaseInboundMessage(context.Background(), msg, processErr)
 		return
 	}
 	c.al.ackInboundMessage(ctx, msg)
+	continued, err := c.al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
+		SessionKey: target.SessionKey,
+		Channel:    msg.Channel,
+		ChatID:     msg.ChatID,
+	})
+	if err != nil {
+		logger.WarnCF("agent", "Failed to continue messages deferred by human interaction", map[string]any{
+			"session_key": target.SessionKey,
+			"error":       err.Error(),
+		})
+		return
+	}
+	if strings.TrimSpace(continued) != "" {
+		c.al.publishResponseWithContextIfNeeded(
+			ctx,
+			msg.Channel,
+			msg.ChatID,
+			target.SessionKey,
+			continued,
+			&msg.Context,
+			finalResponseAlwaysPublish,
+		)
+	}
 }
 
 func (al *AgentLoop) processInteractionInbound(
@@ -471,12 +507,44 @@ func (al *AgentLoop) ensureInteractionToolResult(
 	if resultIndex >= 0 {
 		return nil
 	}
-	payload := interactionToolResultPayload{
+	if record.Answer == nil {
+		return fmt.Errorf("interaction %q has no claimed answer", record.ID)
+	}
+	return al.persistInteractionToolResult(ctx, agent, record, interactionToolResultPayload{
 		InteractionID: record.ID,
 		Outcome:       record.Outcome,
 		Text:          record.Answer.Text,
 		Answers:       record.Answer.Values,
+	})
+}
+
+func (al *AgentLoop) ensureInteractionCancellationToolResult(
+	ctx context.Context,
+	agent *AgentInstance,
+	record interactions.Record,
+	code string,
+) error {
+	history := agent.Sessions.GetHistory(record.Route.SessionKey)
+	originIndex, resultIndex := interactionToolPairIndexes(history, record.Origin.ToolCallID)
+	if originIndex < 0 {
+		return fmt.Errorf("originating tool call %q is missing from session history", record.Origin.ToolCallID)
 	}
+	if resultIndex >= 0 {
+		return nil
+	}
+	return al.persistInteractionToolResult(ctx, agent, record, interactionToolResultPayload{
+		InteractionID: record.ID,
+		Outcome:       interactions.OutcomeCanceled,
+		Text:          code,
+	})
+}
+
+func (al *AgentLoop) persistInteractionToolResult(
+	ctx context.Context,
+	agent *AgentInstance,
+	record interactions.Record,
+	payload interactionToolResultPayload,
+) error {
 	content, err := json.Marshal(payload)
 	if err != nil {
 		return err
