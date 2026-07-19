@@ -459,6 +459,7 @@ func TestTraceCaptureNormalizesInteractionAgainstActiveTurnClock(t *testing.T) {
 		ID: "tool-start", Kind: runtimeevents.KindAgentToolExecStart, Time: now.Add(time.Millisecond),
 		Scope: scope, Payload: ToolExecStartPayload{Tool: "request_user_input"},
 	})
+	waitForActiveTurnRecords(t, manager, "turn-1", 2)
 	now = now.Add(2 * time.Millisecond)
 	if _, err := registry.Create(interactions.CreateRequest{
 		ID:   "interaction-turn-clock",
@@ -475,6 +476,7 @@ func TestTraceCaptureNormalizesInteractionAgainstActiveTurnClock(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	waitForActiveTurnRecords(t, manager, "turn-1", 3)
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
 		ID: "turn-end", Kind: runtimeevents.KindAgentTurnEnd, Time: now.Add(time.Millisecond),
 		Scope: scope, Payload: TurnEndPayload{
@@ -501,6 +503,30 @@ func TestTraceCaptureNormalizesInteractionAgainstActiveTurnClock(t *testing.T) {
 		interactionRecord.OffsetNanos != int64(2*time.Millisecond) {
 		t.Fatalf("interaction record = %#v", interactionRecord)
 	}
+}
+
+func waitForActiveTurnRecords(
+	t *testing.T,
+	manager *traceCaptureManager,
+	turnID string,
+	want int,
+) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		manager.mu.Lock()
+		trace := manager.turns[turnID]
+		got := 0
+		if trace != nil {
+			got = len(trace.trace.Records)
+		}
+		manager.mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d records in turn %s", want, turnID)
 }
 
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
