@@ -397,11 +397,7 @@ func spawnSubTurn(
 	// parent's cancellation. Same-agent children retain the work-tree admission
 	// until they finish; children targeting another agent acquire that agent's
 	// admission in runTurn.
-	detachedCtx, releaseInheritedAdmission := inheritAgentTurnAdmission(
-		context.Background(),
-		ctx,
-		baseAgent.ID,
-	)
+	detachedCtx, releaseInheritedAdmission := inheritAgentTurnAdmissions(context.Background(), ctx)
 	defer releaseInheritedAdmission()
 	childCtx, cancel := context.WithTimeout(detachedCtx, timeout)
 	defer cancel()

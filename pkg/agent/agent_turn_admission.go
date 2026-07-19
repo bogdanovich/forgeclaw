@@ -158,19 +158,29 @@ func (al *AgentLoop) acquireAgentTurn(
 	return admittedCtx, lease.releaseRef, nil
 }
 
-func inheritAgentTurnAdmission(
-	dst context.Context,
-	src context.Context,
-	agentID string,
-) (context.Context, func()) {
-	agentID = routing.NormalizeAgentID(agentID)
+func inheritAgentTurnAdmissions(dst context.Context, src context.Context) (context.Context, func()) {
 	admissions, ok := src.Value(agentTurnAdmissionsKey{}).(map[string]*agentTurnAdmissionLease)
-	if !ok || admissions[agentID] == nil || !admissions[agentID].retain() {
+	if !ok || len(admissions) == 0 {
 		return dst, func() {}
 	}
-	lease := admissions[agentID]
-	inherited := map[string]*agentTurnAdmissionLease{agentID: lease}
-	return context.WithValue(dst, agentTurnAdmissionsKey{}, inherited), lease.releaseRef
+
+	inherited := make(map[string]*agentTurnAdmissionLease, len(admissions))
+	retained := make([]*agentTurnAdmissionLease, 0, len(admissions))
+	for agentID, lease := range admissions {
+		if lease == nil || !lease.retain() {
+			continue
+		}
+		inherited[agentID] = lease
+		retained = append(retained, lease)
+	}
+	if len(inherited) == 0 {
+		return dst, func() {}
+	}
+	return context.WithValue(dst, agentTurnAdmissionsKey{}, inherited), func() {
+		for _, lease := range retained {
+			lease.releaseRef()
+		}
+	}
 }
 
 func cloneAgentTurnAdmissions(ctx context.Context) map[string]*agentTurnAdmissionLease {

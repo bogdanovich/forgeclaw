@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -10,6 +11,58 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
+
+func TestAcquireTurnCapacityDoesNotHoldAdmissionWhileWaitingForWorker(t *testing.T) {
+	al := &AgentLoop{
+		workerSem: make(chan struct{}, 1),
+		agentTurnAdmissions: &agentTurnAdmissionController{
+			limits:  map[string]int{"agent-a": 1},
+			active:  make(map[string]int),
+			changed: make(chan struct{}),
+		},
+	}
+	al.workerSem <- struct{}{}
+	coordinator := newInboundTurnCoordinator(al)
+	al.agentTurnAdmissions.mu.Lock()
+	admissionReleased := al.agentTurnAdmissions.changed
+	al.agentTurnAdmissions.mu.Unlock()
+
+	capacityDone := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		_, release, err := coordinator.acquireTurnCapacity(ctx, "agent-a")
+		if err == nil {
+			release()
+		}
+		capacityDone <- err
+	}()
+	select {
+	case <-admissionReleased:
+	case <-time.After(time.Second):
+		t.Fatal("queued turn retained agent admission while waiting for worker")
+	}
+
+	// The queued inbound turn must release agent-a while the only worker is
+	// occupied, allowing the running worker to delegate to agent-a.
+	delegateCtx, delegateCancel := context.WithTimeout(context.Background(), time.Second)
+	_, releaseDelegate, err := al.acquireAgentTurn(delegateCtx, "agent-a")
+	delegateCancel()
+	if err != nil {
+		t.Fatalf("delegate acquireAgentTurn() error = %v", err)
+	}
+	releaseDelegate()
+
+	<-al.workerSem
+	select {
+	case err = <-capacityDone:
+		if err != nil {
+			t.Fatalf("acquireTurnCapacity() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for capacity acquisition")
+	}
+}
 
 func coordinatorTestTarget(routeScopeKey, sessionKey string) *inboundDispatchTarget {
 	return &inboundDispatchTarget{

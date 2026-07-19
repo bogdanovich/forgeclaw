@@ -119,7 +119,7 @@ func TestReloadProviderAndConfigRefreshesAgentTurnAdmissions(t *testing.T) {
 	}
 }
 
-func TestInheritAgentTurnAdmissionDetachesCancellation(t *testing.T) {
+func TestInheritAgentTurnAdmissionsDetachesCancellation(t *testing.T) {
 	released := false
 	lease := newAgentTurnAdmissionLease(func() { released = true })
 	source, cancel := context.WithCancel(context.WithValue(
@@ -127,7 +127,7 @@ func TestInheritAgentTurnAdmissionDetachesCancellation(t *testing.T) {
 		agentTurnAdmissionsKey{},
 		map[string]*agentTurnAdmissionLease{"browser": lease},
 	))
-	detached, releaseDetached := inheritAgentTurnAdmission(context.Background(), source, "browser")
+	detached, releaseDetached := inheritAgentTurnAdmissions(context.Background(), source)
 	cancel()
 
 	if err := detached.Err(); err != nil {
@@ -148,4 +148,33 @@ func TestInheritAgentTurnAdmissionDetachesCancellation(t *testing.T) {
 	if !released {
 		t.Fatal("detached release did not release controller after root completed")
 	}
+}
+
+func TestInheritedAdmissionsAllowAgentRoundTrip(t *testing.T) {
+	al := &AgentLoop{agentTurnAdmissions: &agentTurnAdmissionController{
+		limits:  map[string]int{"agent-a": 1, "agent-b": 1},
+		active:  make(map[string]int),
+		changed: make(chan struct{}),
+	}}
+	aCtx, releaseA, err := al.acquireAgentTurn(context.Background(), "agent-a")
+	if err != nil {
+		t.Fatalf("acquire agent-a error = %v", err)
+	}
+	defer releaseA()
+
+	bBaseCtx, releaseAncestors := inheritAgentTurnAdmissions(context.Background(), aCtx)
+	defer releaseAncestors()
+	bCtx, releaseB, err := al.acquireAgentTurn(bBaseCtx, "agent-b")
+	if err != nil {
+		t.Fatalf("acquire agent-b error = %v", err)
+	}
+	defer releaseB()
+
+	nestedBaseCtx, releaseNestedAncestors := inheritAgentTurnAdmissions(context.Background(), bCtx)
+	defer releaseNestedAncestors()
+	_, releaseNestedA, err := al.acquireAgentTurn(nestedBaseCtx, "agent-a")
+	if err != nil {
+		t.Fatalf("reacquire inherited agent-a error = %v", err)
+	}
+	releaseNestedA()
 }
