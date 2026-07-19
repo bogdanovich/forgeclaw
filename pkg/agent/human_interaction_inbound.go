@@ -501,7 +501,7 @@ func (al *AgentLoop) deliverInteractionFinal(
 	inbound.Raw[interactionIDMetadata] = record.ID
 	inbound.Raw[interactionShortIDMeta] = record.ShortID
 	inbound.Raw["delivery_key"] = interactionDeliveryKey(record.ID, "final")
-	deliveryErr := al.channelManager.SendMessage(ctx, bus.OutboundMessage{
+	deliveryErr := al.sendInteractionMessage(ctx, bus.OutboundMessage{
 		Channel: record.Route.Channel, ChatID: record.Route.ChatID,
 		Context: inbound, AgentID: record.Route.AgentID,
 		SessionKey: record.Route.SessionKey, Content: content,

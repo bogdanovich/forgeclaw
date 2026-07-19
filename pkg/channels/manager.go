@@ -1850,6 +1850,16 @@ func (m *Manager) sendWithRetry(
 	w *channelWorker,
 	msg bus.OutboundMessage,
 ) ([]string, bool, bool, error) {
+	return m.sendWithRetryPolicy(ctx, name, w, msg, true)
+}
+
+func (m *Manager) sendWithRetryPolicy(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMessage,
+	retryAmbiguous bool,
+) ([]string, bool, bool, error) {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
@@ -1910,6 +1920,9 @@ func (m *Manager) sendWithRetry(
 			"classification": classification,
 			"error":          lastErr.Error(),
 		})
+		if ambiguous && !retryAmbiguous {
+			break
+		}
 
 		// Permanent failures — don't retry
 		if errors.Is(lastErr, ErrNotRunning) || errors.Is(lastErr, ErrSendFailed) {
@@ -2479,6 +2492,24 @@ func (m *Manager) UnregisterChannel(name string) {
 // delivered (or all retries are exhausted), which preserves ordering when
 // a subsequent operation depends on the message having been sent.
 func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
+	return m.sendMessageWithRetryPolicy(ctx, msg, true)
+}
+
+// SendMessageDefiniteRetryOnly retries only channel rejections known to occur
+// before remote acceptance. It is intended for durable callers that must
+// preserve an ambiguous-delivery outcome rather than risk a duplicate send.
+func (m *Manager) SendMessageDefiniteRetryOnly(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return m.sendMessageWithRetryPolicy(ctx, msg, false)
+}
+
+func (m *Manager) sendMessageWithRetryPolicy(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+	retryAmbiguous bool,
+) error {
 	msg = bus.NormalizeOutboundMessage(msg)
 	channelName := outboundMessageChannel(msg)
 
@@ -2513,8 +2544,8 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		for _, chunk := range chunks {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
-			if _, delivered, ambiguous, sendErr := m.sendWithRetry(
-				ctx, channelName, w, chunkMsg,
+			if _, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
+				ctx, channelName, w, chunkMsg, retryAmbiguous,
 			); !delivered {
 				return newDeliveryError(
 					fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),
@@ -2527,8 +2558,8 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
 		}
-		if _, delivered, ambiguous, sendErr := m.sendWithRetry(
-			ctx, channelName, w, msg,
+		if _, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
+			ctx, channelName, w, msg, retryAmbiguous,
 		); !delivered {
 			return newDeliveryError(
 				fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),

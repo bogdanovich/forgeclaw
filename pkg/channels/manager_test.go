@@ -4147,6 +4147,35 @@ func TestSendMessage_WithRetry(t *testing.T) {
 	}
 }
 
+func TestSendMessageDefiniteRetryOnlyStopsAfterAmbiguousFailure(t *testing.T) {
+	m := newTestManager()
+	callCount := 0
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			callCount++
+			if callCount == 1 {
+				return fmt.Errorf("timeout after acceptance is unknown: %w", ErrTemporary)
+			}
+			return nil
+		},
+	}
+	m.channels["test"] = ch
+	m.workers["test"] = &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	err := m.SendMessageDefiniteRetryOnly(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "123", Content: "do not duplicate",
+	}))
+	if err == nil {
+		t.Fatal("ambiguous delivery unexpectedly succeeded after retry")
+	}
+	if DeliveryDefinitelyNotSent(err) {
+		t.Fatalf("temporary failure was classified as definitely not sent: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("Send calls = %d, want 1 after ambiguous failure", callCount)
+	}
+}
+
 func TestSendMessage_ReturnsErrorAfterDeliveryFailure(t *testing.T) {
 	m := newTestManager()
 	ch := &mockChannel{

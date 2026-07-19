@@ -192,11 +192,14 @@ When `request_user_input` or approval suspends execution:
    phase. Creation of the interaction verifies that persistence succeeded.
 2. The interaction is persisted before its outbound prompt is published.
 3. Before calling a channel, delivery durably transitions to `sending`. A
-   confirmed acknowledgement transitions to `delivered` and then `waiting`.
-   Failures known to occur before any channel attempt become `not_sent` and are
-   retryable. A crash, partial delivery, or uncertain channel error after
-   `sending` is `ambiguous` and is never retried automatically because most
-   channel APIs do not provide an idempotency key.
+  confirmed acknowledgement transitions to `delivered` and then `waiting`.
+  Failures known to occur before any channel attempt become `not_sent` and are
+  retryable. A crash, partial delivery, or uncertain channel error after
+  `sending` is `ambiguous` and is never retried automatically because most
+  channel APIs do not provide an idempotency key.
+  Interaction delivery uses a conservative channel path that retries only
+  definite pre-acceptance rejections; generic message delivery may retain its
+  normal temporary-error retry policy.
 4. The tool loop returns `ToolControlSuspend` without adding a fabricated tool
    result for the suspended call.
 5. Remaining tool calls in the same model response are recorded as deferred and
