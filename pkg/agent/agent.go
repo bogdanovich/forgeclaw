@@ -72,6 +72,8 @@ type AgentLoop struct {
 
 	// workerSem limits concurrent turn processing workers.
 	workerSem chan struct{}
+	// agentTurnSems apply optional per-agent limits across every turn entry path.
+	agentTurnSems map[string]chan struct{}
 
 	// activeTurnStates tracks active turns per session to prevent duplicates.
 	activeTurnStates    sync.Map

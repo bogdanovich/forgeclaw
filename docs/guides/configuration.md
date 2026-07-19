@@ -576,6 +576,33 @@ earlier and broader fallback rules later.
 
 For more complete routing and model-tier examples, see the [Routing Guide](routing-guide.md).
 
+### Per-Agent Turn Concurrency
+
+`agents.defaults.max_parallel_turns` limits the total number of concurrently
+processed inbound turns. Stateful named agents can define a narrower limit with
+`agents.list[].max_parallel_turns`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "max_parallel_turns": 4
+    },
+    "list": [
+      { "id": "main", "default": true },
+      { "id": "browser", "max_parallel_turns": 1 }
+    ]
+  }
+}
+```
+
+The per-agent limit applies to complete turns across inbound, direct,
+scheduled, delegated, and spawned execution paths. A value of `1` serializes
+all work owned by that agent while other agents can continue using the global
+worker capacity. Omit the field or set it to `0` to use no additional
+per-agent limit. Nested turns that inherit an admission for the same agent do
+not acquire it again.
+
 ### Agent Tool Allowlist
 
 Per-agent tool declarations live in `AGENT.md` frontmatter, not in `config.json`.

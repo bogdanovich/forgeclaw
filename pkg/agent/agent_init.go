@@ -57,6 +57,7 @@ func NewAgentLoop(
 		steering:          newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
 		activeRequests:    newActiveRequestCounter(),
 		workerSem:         make(chan struct{}, workerPoolSize),
+		agentTurnSems:     buildAgentTurnSemaphores(registry),
 		ownsRuntimeEvents: true,
 	}
 	al.compactionRunner = &backgroundCompactionRunner{

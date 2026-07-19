@@ -19,6 +19,12 @@ func (al *AgentLoop) runTurn(
 	ts *turnState,
 	pipeline *Pipeline,
 ) (result turnResult, err error) {
+	ctx, releaseAdmission, err := al.acquireAgentTurn(ctx, ts.agentID)
+	if err != nil {
+		return turnResult{}, err
+	}
+	defer releaseAdmission()
+
 	host := turnRuntimeHost(al)
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
