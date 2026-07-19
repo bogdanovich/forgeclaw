@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeclaw.dev/schemas/nodes/envelope.v1.json",
+  "title": "ForgeClaw node protocol envelope v1",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/response"},
+    {"$ref": "#/$defs/event"}
+  ],
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "object": {"type": "object"},
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "method", "params"],
+      "properties": {
+        "type": {"const": "request"},
+        "id": {"$ref": "#/$defs/id"},
+        "method": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+        "params": {"$ref": "#/$defs/object"},
+        "idempotency_key": {"$ref": "#/$defs/id"}
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "ok"],
+      "oneOf": [
+        {
+          "properties": {"ok": {"const": true}},
+          "required": ["result"],
+          "not": {"required": ["error"]}
+        },
+        {
+          "properties": {"ok": {"const": false}},
+          "required": ["error"],
+          "not": {"required": ["result"]}
+        }
+      ],
+      "properties": {
+        "type": {"const": "response"},
+        "id": {"$ref": "#/$defs/id"},
+        "ok": {"type": "boolean"},
+        "result": {},
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+            "message": {"type": "string", "minLength": 1},
+            "details": {}
+          }
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "event", "payload"],
+      "properties": {
+        "type": {"const": "event"},
+        "event": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+        "payload": {"$ref": "#/$defs/object"}
+      }
+    }
+  }
+}

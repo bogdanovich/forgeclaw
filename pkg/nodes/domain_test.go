@@ -1,0 +1,92 @@
+package nodes
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestCapabilityCatalogHashIsCanonical(t *testing.T) {
+	first := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("system.exec.v1", `{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}`),
+		descriptor("node.info.v1", `{"type":"object"}`),
+	}}
+	second := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("node.info.v1", `{"type":"object"}`),
+		descriptor("system.exec.v1", `{"properties":{"a":{"type":"string"},"b":{"type":"string"}},"type":"object"}`),
+	}}
+
+	firstHash, err := first.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHash, err := second.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("catalog hashes differ: %s != %s", firstHash, secondHash)
+	}
+}
+
+func TestCapabilityCatalogRejectsInvalidDescriptors(t *testing.T) {
+	invalidRisk := descriptor("system.exec.v1", `{}`)
+	invalidRisk.Risk = Risk("unsafe")
+	tests := []struct {
+		name    string
+		catalog CapabilityCatalog
+	}{
+		{
+			name: "unversioned command",
+			catalog: CapabilityCatalog{
+				Commands: []CommandDescriptor{descriptor("system.exec", `{}`)},
+			},
+		},
+		{name: "invalid risk", catalog: CapabilityCatalog{Commands: []CommandDescriptor{invalidRisk}}},
+		{
+			name: "array schema",
+			catalog: CapabilityCatalog{
+				Commands: []CommandDescriptor{descriptor("system.exec.v1", `[]`)},
+			},
+		},
+		{name: "duplicate", catalog: CapabilityCatalog{Commands: []CommandDescriptor{
+			descriptor("system.exec.v1", `{}`), descriptor("system.exec.v1", `{}`),
+		}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.catalog.Validate(); !errors.Is(err, ErrInvalidCapability) {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSnapshotValidation(t *testing.T) {
+	snapshot := Snapshot{
+		ID:      ID("node_ed25519-example"),
+		Aliases: []Alias{"build-box"},
+		State:   StateConnected,
+		Catalog: CapabilityCatalog{},
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	snapshot.Aliases = append(snapshot.Aliases, "build-box")
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("duplicate aliases error = %v", err)
+	}
+}
+
+func descriptor(name string, input string) CommandDescriptor {
+	return CommandDescriptor{
+		Name:         name,
+		Capability:   strings.Split(name, ".")[0],
+		InputSchema:  json.RawMessage(input),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		Risk:         RiskRead,
+	}
+}
