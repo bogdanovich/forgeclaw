@@ -58,6 +58,25 @@ func (t *approvalCountingTool) Execute(context.Context, map[string]any) *tools.T
 	return tools.NewToolResult("protected action completed")
 }
 
+type approvalContextTool struct {
+	executions int
+	inbound    bus.InboundContext
+}
+
+func (*approvalContextTool) Name() string { return "approval_context" }
+
+func (*approvalContextTool) Description() string { return "Capture protected inbound context" }
+
+func (*approvalContextTool) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+
+func (t *approvalContextTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
+	t.executions++
+	t.inbound = tools.ToolInboundContext(ctx)
+	return tools.NewToolResult("protected context captured")
+}
+
 type interactionOwnershipBus struct {
 	*bus.MessageBus
 	mu       sync.Mutex
@@ -652,11 +671,13 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 func TestApprovalPromptAndAnswerUseFixedPolicyChoices(t *testing.T) {
 	record := interactions.Record{
 		Kind: interactions.KindApproval, ShortID: "APR123",
-		PromptSummary: "Run a protected deployment command?",
+		PromptSummary:  "Run a protected deployment command?",
+		ApprovalAction: "Tool: deploy\nArguments (redacted JSON): {\"token\":\"[REDACTED]\"}",
 	}
 	prompt := renderInteractionPrompt(record)
 	if !strings.Contains(prompt, "Approval needed [APR123]") ||
 		!strings.Contains(prompt, record.PromptSummary) ||
+		!strings.Contains(prompt, record.ApprovalAction) ||
 		!strings.Contains(prompt, "allow_once") || !strings.Contains(prompt, "deny") {
 		t.Fatalf("approval prompt = %q", prompt)
 	}
@@ -741,6 +762,8 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 			select {
 			case prompt := <-manager.sent:
 				if !strings.Contains(prompt.Content, "Approval needed") ||
+					!strings.Contains(prompt.Content, "Tool: approval_counting") ||
+					!strings.Contains(prompt.Content, "[REDACTED]") ||
 					strings.Contains(prompt.Content, "secret-value") {
 					t.Fatalf("approval prompt = %#v", prompt)
 				}
@@ -833,8 +856,13 @@ func TestApprovalRecoveryNeverReexecutesConsumedOrTimedOutCall(t *testing.T) {
 				Origin: interactions.Origin{
 					TurnID: "turn-recovery", ToolCallID: "call-approval-recovery",
 					ToolName: tool.Name(), ArgumentHash: argumentHash,
+					ExecutionContext: &bus.InboundContext{
+						Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+					},
 				},
-				PromptSummary: "Run recovery action?", ExpiresAt: expiresAt,
+				PromptSummary:  "Run recovery action?",
+				ApprovalAction: "Tool: approval_counting\nArguments (redacted JSON): {\"token\":\"[REDACTED]\"}",
+				ExpiresAt:      expiresAt,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -882,6 +910,88 @@ func TestApprovalRecoveryNeverReexecutesConsumedOrTimedOutCall(t *testing.T) {
 				t.Fatalf("recovery tool result = %q", result.Content)
 			}
 		})
+	}
+}
+
+func TestApprovalRecoveryUsesPersistedOriginalExecutionContext(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: []providers.ToolCall{{
+			ID: "call-context", Name: "approval_context",
+			Arguments: map[string]any{"target": "production"},
+			Function: &providers.FunctionCall{
+				Name: "approval_context", Arguments: `{"target":"production"}`,
+			},
+		}}},
+		{Content: "context approval finished", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	al.channelManager = newInteractionChannelManager()
+	tool := &approvalContextTool{}
+	agent.Tools.Register(tool)
+	if err := al.MountHook(NamedHook("context-approval", &durableApprovalHook{
+		summary: "Approve the context-sensitive action?",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	original := &bus.InboundContext{
+		Channel: "telegram", Account: "bot-1", ChatID: "chat-1", ChatType: "group",
+		TopicID: "topic-1", SpaceID: "space-1", SpaceType: "workspace",
+		SenderID: "user-1", ActorID: "actor-1", MessageID: "origin-message",
+		OriginID: "origin-1", OriginType: "forward", SourceRef: "source-1",
+		ReplyToMessageID: "origin-reply", ReplyToSenderID: "reply-user",
+		ReplyHandles: map[string]string{"telegram": "reply-handle"},
+		Raw:          map[string]string{"thread_ts": "original-thread", "transport": "original"},
+	}
+	turnStatus := TurnEndStatusCompleted
+	if response, err := al.runAgentLoop(t.Context(), agent, processOptions{
+		TurnStatus: &turnStatus,
+		Dispatch: DispatchRequest{
+			RouteSessionKey: "route-context", SessionKey: "session-context",
+			UserMessage: "run context action", InboundContext: original,
+		},
+		DefaultResponse: defaultResponse, EnableSummary: true, SendResponse: false,
+	}); err != nil || response != "" || turnStatus != TurnEndStatusSuspended {
+		t.Fatalf("initial approval turn = (%q, %q, %v)", response, turnStatus, err)
+	}
+
+	// Mutate every map supplied by the caller, then force a registry reload to
+	// model process restart before the approval answer arrives.
+	original.ReplyHandles["telegram"] = "mutated"
+	original.Raw["thread_ts"] = "mutated"
+	al.interactionRegistries.Delete(agent.Workspace)
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, ok := activeInteractionForSession(registry, "session-context")
+	if !ok || record.Origin.ExecutionContext == nil {
+		t.Fatalf("reloaded approval interaction = %#v", record)
+	}
+	record, err := registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "allow_once", MessageID: "answer-message", ReceivedAt: time.Now().UnixMilli(),
+	}, interactions.OutcomeAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answerContext := bus.InboundContext{
+		Channel: "telegram", Account: "bot-1", ChatID: "chat-1", ChatType: "group",
+		TopicID: "topic-1", SpaceID: "space-1", SpaceType: "workspace",
+		SenderID: "user-1", MessageID: "answer-message", ReplyToMessageID: "answer-reply",
+		ReplyHandles: map[string]string{"telegram": "answer-handle"},
+		Raw:          map[string]string{"thread_ts": "answer-thread"},
+	}
+	if err = al.resumeClaimedInteraction(
+		t.Context(), registry, agent.Workspace, agent, nil, answerContext, record,
+	); err != nil {
+		t.Fatalf("resumeClaimedInteraction() error = %v", err)
+	}
+	if tool.executions != 1 {
+		t.Fatalf("protected tool executions = %d, want 1", tool.executions)
+	}
+	if tool.inbound.MessageID != "origin-message" ||
+		tool.inbound.ReplyToMessageID != "origin-reply" ||
+		tool.inbound.ReplyHandles["telegram"] != "reply-handle" ||
+		tool.inbound.Raw["thread_ts"] != "original-thread" ||
+		tool.inbound.ActorID != "actor-1" || tool.inbound.SourceRef != "source-1" {
+		t.Fatalf("protected tool inbound context = %#v", tool.inbound)
 	}
 }
 

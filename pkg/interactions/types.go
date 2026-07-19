@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 type Kind string
@@ -84,6 +86,8 @@ const (
 	MaxDescriptionLength = 500
 	MaxAnswerLength      = 16 * 1024
 	MaxSummaryLength     = 1000
+	MaxApprovalAction    = 2000
+	MaxExecutionContext  = 64 * 1024
 )
 
 var questionIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -139,12 +143,13 @@ type Route struct {
 }
 
 type Origin struct {
-	TurnID                 string `json:"turn_id"`
-	ToolCallID             string `json:"tool_call_id"`
-	ToolName               string `json:"tool_name"`
-	TaskID                 string `json:"task_id,omitempty"`
-	ContinuationSessionKey string `json:"continuation_session_key,omitempty"`
-	ArgumentHash           string `json:"argument_hash,omitempty"`
+	TurnID                 string              `json:"turn_id"`
+	ToolCallID             string              `json:"tool_call_id"`
+	ToolName               string              `json:"tool_name"`
+	TaskID                 string              `json:"task_id,omitempty"`
+	ContinuationSessionKey string              `json:"continuation_session_key,omitempty"`
+	ArgumentHash           string              `json:"argument_hash,omitempty"`
+	ExecutionContext       *bus.InboundContext `json:"execution_context,omitempty"`
 }
 
 type Answer struct {
@@ -166,6 +171,7 @@ type Record struct {
 	Origin              Origin        `json:"origin"`
 	Questions           []Question    `json:"questions,omitempty"`
 	PromptSummary       string        `json:"prompt_summary,omitempty"`
+	ApprovalAction      string        `json:"approval_action,omitempty"`
 	Answer              *Answer       `json:"answer,omitempty"`
 	CreatedAt           int64         `json:"created_at"`
 	UpdatedAt           int64         `json:"updated_at"`
@@ -211,13 +217,14 @@ type EventObservation struct {
 }
 
 type CreateRequest struct {
-	ID            string
-	Kind          Kind
-	Route         Route
-	Origin        Origin
-	Questions     []Question
-	PromptSummary string
-	ExpiresAt     time.Time
+	ID             string
+	Kind           Kind
+	Route          Route
+	Origin         Origin
+	Questions      []Question
+	PromptSummary  string
+	ApprovalAction string
+	ExpiresAt      time.Time
 }
 
 type Stats struct {

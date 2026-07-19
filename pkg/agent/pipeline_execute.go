@@ -504,6 +504,7 @@ toolLoop:
 			if approval.RequireHuman {
 				argumentHash, hashErr := interactions.HashArguments(interactionWorkspace, toolArgs)
 				if hashErr == nil {
+					approvalAction := renderApprovalAction(toolName, toolArgs)
 					control, suspended, fallback := runner.trySuspendToolCall(
 						ctx,
 						i,
@@ -515,6 +516,7 @@ toolLoop:
 							Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
 						}},
 						argumentHash,
+						approvalAction,
 					)
 					if suspended {
 						return control
@@ -730,6 +732,7 @@ toolLoop:
 				toolName,
 				toolDuration,
 				toolResult,
+				"",
 				"",
 			)
 			if suspended {
@@ -1123,6 +1126,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 	duration time.Duration,
 	result *tools.ToolResult,
 	argumentHash string,
+	approvalAction string,
 ) (ToolControl, bool, *tools.ToolResult) {
 	if result == nil || result.Suspension == nil {
 		return ToolControlContinue, false, result
@@ -1196,9 +1200,11 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		route.SpaceType = inbound.SpaceType
 	}
 	disposition, err := r.p.Interaction.Suspension.SuspendToolCall(ctx, ToolSuspensionRequest{
-		Workspace: interactionWorkspace,
-		Prompt:    *result.Suspension,
-		Route:     route,
+		Workspace:        interactionWorkspace,
+		Prompt:           *result.Suspension,
+		Route:            route,
+		ApprovalAction:   strings.TrimSpace(approvalAction),
+		ExecutionContext: cloneInboundContext(inbound),
 		Origin: interactions.Origin{
 			TurnID:                 r.ts.turnID,
 			ToolCallID:             toolCall.ID,

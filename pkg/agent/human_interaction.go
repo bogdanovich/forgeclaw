@@ -215,13 +215,28 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 			)
 		}
 	}
+	var executionContext *bus.InboundContext
+	approvalAction := ""
+	if request.Prompt.Kind == interactions.KindApproval {
+		executionContext = cloneInboundContext(request.ExecutionContext)
+		approvalAction = request.ApprovalAction
+	}
 	record, err := registry.Create(interactions.CreateRequest{
-		Kind:          request.Prompt.Kind,
-		Route:         request.Route,
-		Origin:        request.Origin,
-		Questions:     request.Prompt.Questions,
-		PromptSummary: request.Prompt.PromptSummary,
-		ExpiresAt:     time.Now().Add(request.Prompt.Timeout),
+		Kind:  request.Prompt.Kind,
+		Route: request.Route,
+		Origin: interactions.Origin{
+			TurnID:                 request.Origin.TurnID,
+			ToolCallID:             request.Origin.ToolCallID,
+			ToolName:               request.Origin.ToolName,
+			TaskID:                 request.Origin.TaskID,
+			ContinuationSessionKey: request.Origin.ContinuationSessionKey,
+			ArgumentHash:           request.Origin.ArgumentHash,
+			ExecutionContext:       executionContext,
+		},
+		Questions:      request.Prompt.Questions,
+		PromptSummary:  request.Prompt.PromptSummary,
+		ApprovalAction: approvalAction,
+		ExpiresAt:      time.Now().Add(request.Prompt.Timeout),
 	})
 	if catalogLocked {
 		runtime.al.interactionCatalogMu.Unlock()
@@ -336,7 +351,12 @@ func renderInteractionPrompt(record interactions.Record) string {
 	var builder strings.Builder
 	if record.Kind == interactions.KindApproval {
 		fmt.Fprintf(&builder, "Approval needed [%s]\n\n", record.ShortID)
-		builder.WriteString(strings.TrimSpace(record.PromptSummary))
+		builder.WriteString("Requested action:\n")
+		builder.WriteString(strings.TrimSpace(record.ApprovalAction))
+		if summary := strings.TrimSpace(record.PromptSummary); summary != "" {
+			builder.WriteString("\n\nPolicy note:\n")
+			builder.WriteString(summary)
+		}
 		fmt.Fprintf(
 			&builder,
 			"\n\nReply `allow_once` to authorize this exact tool call once, or `deny`. You can also use `/answer %s <decision>`.",

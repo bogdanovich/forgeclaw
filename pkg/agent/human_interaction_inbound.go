@@ -528,7 +528,7 @@ func (al *AgentLoop) resumeClaimedInteraction(
 				}
 			} else {
 				control, err := al.executeApprovedInteractionTool(
-					ctx, registry, interactionWorkspace, agent, scope, inbound, resuming,
+					ctx, registry, interactionWorkspace, agent, scope, resuming,
 				)
 				if err != nil {
 					_, _ = registry.RecordResumeFailure(resuming.ID, resuming.Revision, err.Error())
@@ -603,7 +603,6 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 	interactionWorkspace string,
 	agent *AgentInstance,
 	scope *session.SessionScope,
-	inbound bus.InboundContext,
 	record interactions.Record,
 ) (ToolControl, error) {
 	history := agent.Sessions.GetHistory(interactionContinuationSessionKey(record))
@@ -613,6 +612,23 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 			"originating approval tool call %q is missing",
 			record.Origin.ToolCallID,
 		)
+	}
+	originalInbound := cloneInboundContext(record.Origin.ExecutionContext)
+	if originalInbound == nil {
+		if err := al.persistInteractionToolResult(
+			ctx,
+			agent,
+			record,
+			interactionToolResultPayload{
+				InteractionID: record.ID,
+				Outcome:       interactions.OutcomeDenied,
+				Text: "The protected tool was not executed because its original execution " +
+					"context is unavailable after restart.",
+			},
+		); err != nil {
+			return ToolControlBreak, err
+		}
+		return ToolControlBreak, nil
 	}
 	toolCall = providers.NormalizeToolCall(toolCall)
 	routeSessionKey := record.Route.RouteSessionKey
@@ -632,7 +648,7 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 			RouteSessionKey: routeSessionKey,
 			BaseSessionKey:  interactionContinuationSessionKey(record),
 			SessionKey:      interactionContinuationSessionKey(record),
-			InboundContext:  cloneInboundContext(&inbound),
+			InboundContext:  originalInbound,
 			SessionScope:    session.CloneScope(scope),
 		},
 		DefaultResponse: defaultResponse,

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 type testClock struct {
@@ -834,7 +836,11 @@ func TestValidateQuestionsAndApprovalAuthorityBounds(t *testing.T) {
 
 	request.Questions = nil
 	request.PromptSummary = "Policy requests one-time approval."
+	request.ApprovalAction = "Tool: protected_test\nArguments (redacted JSON): {}"
 	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
 	approval, err := registry.Create(request)
 	if err != nil {
 		t.Fatalf("policy approval create: %v", err)
@@ -871,7 +877,11 @@ func TestRegistryConsumesApprovalExactlyOnceAndMatchesCall(t *testing.T) {
 	request.Kind = KindApproval
 	request.Questions = nil
 	request.PromptSummary = "Policy requires approval."
+	request.ApprovalAction = "Tool: protected_test\nArguments (redacted JSON): {}"
 	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
 	record, err := registry.Create(request)
 	if err != nil {
 		t.Fatal(err)

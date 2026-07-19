@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
@@ -981,6 +982,9 @@ func (r *Registry) buildRecord(req CreateRequest, now int64) (Record, error) {
 	if !validArgumentHashForKind(req.Kind, req.Origin.ArgumentHash) {
 		return Record{}, fmt.Errorf("%w: approval requires a canonical argument hash", ErrInvalidInteraction)
 	}
+	if err := validateApprovalCreateMetadata(req.Kind, req.Origin.ExecutionContext, req.ApprovalAction); err != nil {
+		return Record{}, err
+	}
 	if err := validateQuestions(req.Kind, req.Questions); err != nil {
 		return Record{}, err
 	}
@@ -1000,18 +1004,19 @@ func (r *Registry) buildRecord(req CreateRequest, now int64) (Record, error) {
 		return Record{}, fmt.Errorf("%w: expiry must be in the future", ErrInvalidInteraction)
 	}
 	return Record{
-		ID:            id,
-		ShortID:       shortID(id),
-		Kind:          req.Kind,
-		Status:        StatusCreated,
-		Revision:      1,
-		Route:         normalizeRoute(req.Route),
-		Origin:        normalizeOrigin(req.Origin),
-		Questions:     cloneQuestions(req.Questions),
-		PromptSummary: bounded(strings.TrimSpace(req.PromptSummary), MaxSummaryLength),
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		ExpiresAt:     expiresAt,
+		ID:             id,
+		ShortID:        shortID(id),
+		Kind:           req.Kind,
+		Status:         StatusCreated,
+		Revision:       1,
+		Route:          normalizeRoute(req.Route),
+		Origin:         normalizeOrigin(req.Origin),
+		Questions:      cloneQuestions(req.Questions),
+		PromptSummary:  bounded(strings.TrimSpace(req.PromptSummary), MaxSummaryLength),
+		ApprovalAction: bounded(strings.TrimSpace(req.ApprovalAction), MaxApprovalAction),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		ExpiresAt:      expiresAt,
 	}, nil
 }
 
@@ -1160,6 +1165,11 @@ func validateStoredRecord(rec Record) error {
 	}
 	if !validArgumentHashForKind(rec.Kind, rec.Origin.ArgumentHash) {
 		return fmt.Errorf("invalid argument hash for interaction %q", rec.ID)
+	}
+	if err := validateStoredApprovalMetadata(
+		rec.Kind, rec.Origin.ExecutionContext, rec.ApprovalAction,
+	); err != nil {
+		return fmt.Errorf("invalid approval metadata for interaction %q: %w", rec.ID, err)
 	}
 	if err := validateStoredQuestions(rec.Kind, rec.Questions); err != nil {
 		return err
@@ -1435,6 +1445,7 @@ func normalizeOrigin(origin Origin) Origin {
 	origin.TaskID = strings.TrimSpace(origin.TaskID)
 	origin.ContinuationSessionKey = strings.TrimSpace(origin.ContinuationSessionKey)
 	origin.ArgumentHash = strings.TrimSpace(origin.ArgumentHash)
+	origin.ExecutionContext = cloneExecutionContext(origin.ExecutionContext)
 	return origin
 }
 
@@ -1450,6 +1461,7 @@ func routesEqual(left, right Route) bool {
 }
 
 func cloneRecord(rec Record) Record {
+	rec.Origin.ExecutionContext = cloneExecutionContext(rec.Origin.ExecutionContext)
 	rec.Questions = cloneQuestions(rec.Questions)
 	if rec.Answer != nil {
 		answer := *rec.Answer
@@ -1457,6 +1469,71 @@ func cloneRecord(rec Record) Record {
 		rec.Answer = &answer
 	}
 	return rec
+}
+
+func cloneExecutionContext(src *bus.InboundContext) *bus.InboundContext {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	cloned.ReplyHandles = cloneStringMap(src.ReplyHandles)
+	cloned.Raw = cloneStringMap(src.Raw)
+	return &cloned
+}
+
+func validateApprovalCreateMetadata(
+	kind Kind,
+	executionContext *bus.InboundContext,
+	action string,
+) error {
+	if kind != KindApproval {
+		if executionContext != nil || strings.TrimSpace(action) != "" {
+			return fmt.Errorf("%w: question interactions cannot carry approval metadata", ErrInvalidInteraction)
+		}
+		return nil
+	}
+	if executionContext == nil {
+		return fmt.Errorf("%w: approval requires the original execution context", ErrInvalidInteraction)
+	}
+	if strings.TrimSpace(action) == "" || !validBoundedString(action, MaxApprovalAction) {
+		return fmt.Errorf("%w: approval requires a bounded action description", ErrInvalidInteraction)
+	}
+	return validateExecutionContext(executionContext)
+}
+
+func validateStoredApprovalMetadata(
+	kind Kind,
+	executionContext *bus.InboundContext,
+	action string,
+) error {
+	if kind != KindApproval {
+		if executionContext != nil || strings.TrimSpace(action) != "" {
+			return fmt.Errorf("question interaction carries approval metadata")
+		}
+		return nil
+	}
+	// Legacy snapshots predate durable execution context and action display.
+	// They remain loadable, but the agent recovery path refuses to execute them.
+	if executionContext != nil {
+		if err := validateExecutionContext(executionContext); err != nil {
+			return err
+		}
+	}
+	if !validBoundedString(action, MaxApprovalAction) {
+		return fmt.Errorf("approval action exceeds bounds")
+	}
+	return nil
+}
+
+func validateExecutionContext(ctx *bus.InboundContext) error {
+	data, err := json.Marshal(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: encode execution context: %v", ErrInvalidInteraction, err)
+	}
+	if len(data) > MaxExecutionContext {
+		return fmt.Errorf("%w: execution context exceeds %d bytes", ErrInvalidInteraction, MaxExecutionContext)
+	}
+	return nil
 }
 
 func cloneQuestions(questions []Question) []Question {
