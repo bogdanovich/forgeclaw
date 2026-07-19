@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -16,6 +17,53 @@ import (
 )
 
 const answerCommand = "/answer"
+
+func (al *AgentLoop) cancelInteractionForControlMessage(
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) {
+	name, ok := commands.CommandName(msg.Content)
+	if !ok || (name != "new" && name != "reset" && name != "clear" && name != "stop") ||
+		al == nil || target == nil || target.Agent == nil {
+		return
+	}
+	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
+	record, found := activeInteractionForSession(registry, target.SessionKey)
+	if !found || !interactionRouteAuthorizes(record.Route, target, msg.Context) {
+		return
+	}
+	if _, err := registry.Cancel(record.ID, record.Revision, "session_control_"+name); err != nil {
+		logger.WarnCF("agent", "Failed to cancel interaction for session control", map[string]any{
+			"interaction_id": record.ID, "command": name, "error": err.Error(),
+		})
+	}
+}
+
+func (al *AgentLoop) shouldHandleInteractionInbound(
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) bool {
+	if al == nil || target == nil || target.Agent == nil {
+		return false
+	}
+	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
+	if registry == nil {
+		return false
+	}
+	if registry.LastLoadError() != nil {
+		return true
+	}
+	record, ok := activeInteractionForSession(registry, target.SessionKey)
+	if !ok || record.Status != interactions.StatusWaiting ||
+		!interactionRouteAuthorizes(record.Route, target, msg.Context) {
+		return false
+	}
+	if commands.HasCommandPrefix(msg.Content) &&
+		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Content)), answerCommand) {
+		return false
+	}
+	return true
+}
 
 func (al *AgentLoop) hasNonterminalInteraction(workspace, sessionKey string) bool {
 	registry := al.interactionRegistryForWorkspace(workspace)
@@ -299,17 +347,7 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		agent.Sessions.GetHistory(record.Route.SessionKey),
 		record.Origin.ToolCallID,
 	); ok {
-		al.publishResponseWithContextIfNeeded(
-			ctx,
-			record.Route.Channel,
-			record.Route.ChatID,
-			record.Route.SessionKey,
-			finalContent,
-			&inbound,
-			finalResponseAlwaysPublish,
-		)
-		_, err := registry.Resolve(resuming.ID, resuming.Revision)
-		return err
+		return al.deliverInteractionFinal(ctx, registry, resuming, inbound, finalContent)
 	}
 
 	routeSessionKey := record.Route.RouteSessionKey
@@ -338,18 +376,47 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		_, _ = registry.RecordResumeFailure(resuming.ID, resuming.Revision, runErr.Error())
 		return runErr
 	}
-	if strings.TrimSpace(finalContent) != "" {
-		al.publishResponseWithContextIfNeeded(
-			ctx,
-			record.Route.Channel,
-			record.Route.ChatID,
-			record.Route.SessionKey,
-			finalContent,
-			&inbound,
-			finalResponseAlwaysPublish,
-		)
+	return al.deliverInteractionFinal(ctx, registry, resuming, inbound, finalContent)
+}
+
+func (al *AgentLoop) deliverInteractionFinal(
+	ctx context.Context,
+	registry *interactions.Registry,
+	record interactions.Record,
+	inbound bus.InboundContext,
+	content string,
+) error {
+	if record.FinalDelivered || strings.TrimSpace(content) == "" {
+		_, err := registry.Resolve(record.ID, record.Revision)
+		return err
 	}
-	_, err := registry.Resolve(resuming.ID, resuming.Revision)
+	if al.channelManager == nil {
+		_, _ = registry.RecordFinalDeliveryAttempt(
+			record.ID, record.Revision, false, "channel manager unavailable",
+		)
+		return fmt.Errorf("channel manager unavailable")
+	}
+	if inbound.Raw == nil {
+		inbound.Raw = make(map[string]string)
+	}
+	inbound.Raw[interactionIDMetadata] = record.ID
+	inbound.Raw[interactionShortIDMeta] = record.ShortID
+	inbound.Raw["idempotency_key"] = interactionDeliveryKey(record.ID, "final")
+	deliveryErr := al.channelManager.SendMessage(ctx, bus.OutboundMessage{
+		Channel: record.Route.Channel, ChatID: record.Route.ChatID,
+		Context: inbound, AgentID: record.Route.AgentID,
+		SessionKey: record.Route.SessionKey, Content: content,
+	})
+	updated, stateErr := registry.RecordFinalDeliveryAttempt(
+		record.ID, record.Revision, deliveryErr == nil, errString(deliveryErr),
+	)
+	if stateErr != nil {
+		return fmt.Errorf("record final interaction delivery: %w", stateErr)
+	}
+	if deliveryErr != nil {
+		return deliveryErr
+	}
+	_, err := registry.Resolve(updated.ID, updated.Revision)
 	return err
 }
 

@@ -111,7 +111,7 @@ func runtimeKindForInteractionEvent(event interactions.EventType) runtimeevents.
 	switch event {
 	case interactions.EventCreated:
 		return runtimeevents.KindAgentInteractionCreated
-	case interactions.EventDeliveryAttempt:
+	case interactions.EventDeliveryAttempt, interactions.EventFinalDelivery:
 		return runtimeevents.KindAgentInteractionDelivery
 	case interactions.EventWaiting:
 		return runtimeevents.KindAgentInteractionWaiting
@@ -172,8 +172,8 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 	ctx context.Context,
 	record interactions.Record,
 ) error {
-	if runtime.al.bus == nil {
-		return fmt.Errorf("message bus unavailable")
+	if runtime.al.channelManager == nil {
+		return fmt.Errorf("channel manager unavailable")
 	}
 	content := renderInteractionPrompt(record)
 	outboundContext := bus.InboundContext{
@@ -188,9 +188,10 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 			metadataKeyMessageKind: interactionMessageKind,
 			interactionIDMetadata:  record.ID,
 			interactionShortIDMeta: record.ShortID,
+			"idempotency_key":      interactionDeliveryKey(record.ID, "prompt"),
 		},
 	}
-	return runtime.al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+	return runtime.al.channelManager.SendMessage(ctx, bus.OutboundMessage{
 		Channel:    record.Route.Channel,
 		ChatID:     record.Route.ChatID,
 		Context:    outboundContext,
@@ -198,6 +199,10 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 		SessionKey: record.Route.SessionKey,
 		Content:    content,
 	})
+}
+
+func interactionDeliveryKey(interactionID, kind string) string {
+	return "interaction:" + strings.TrimSpace(interactionID) + ":" + strings.TrimSpace(kind)
 }
 
 func renderInteractionPrompt(record interactions.Record) string {

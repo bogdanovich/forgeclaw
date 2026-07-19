@@ -115,6 +115,9 @@ func TestRegistryLifecyclePersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record successful delivery: %v", err)
 	}
+	if !rec.PromptDelivered {
+		t.Fatal("successful prompt delivery was not persisted")
+	}
 	rec, err = registry.MarkWaiting(rec.ID, rec.Revision)
 	if err != nil {
 		t.Fatalf("mark waiting: %v", err)
@@ -368,18 +371,26 @@ func TestRegistryRejectsAnswerMessageClaimedByAnotherInteraction(t *testing.T) {
 func TestRegistryClaimOverdueUsesResumableTimeoutOutcome(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	rec := makeWaiting(t, registry, clock, "interaction_ffffffff11111111", "session-1")
+	created, err := registry.Create(validCreate(clock, "interaction_aaaaaaaa22222222", "session-2"))
+	if err != nil {
+		t.Fatalf("create undelivered interaction: %v", err)
+	}
 	clock.Advance(2 * time.Hour)
 
 	claimed, err := registry.ClaimOverdue(time.Time{})
 	if err != nil {
 		t.Fatalf("claim overdue: %v", err)
 	}
-	if len(claimed) != 1 || claimed[0].Status != StatusClaimed ||
-		claimed[0].Outcome != OutcomeTimedOut || claimed[0].Answer == nil {
+	if len(claimed) != 2 {
 		t.Fatalf("claimed overdue = %+v", claimed)
 	}
-	if claimed[0].ID != rec.ID {
-		t.Fatalf("claimed id = %q, want %q", claimed[0].ID, rec.ID)
+	for _, item := range claimed {
+		if item.Status != StatusClaimed || item.Outcome != OutcomeTimedOut || item.Answer == nil {
+			t.Fatalf("claimed overdue item = %+v", item)
+		}
+	}
+	if claimed[0].ID != created.ID || claimed[1].ID != rec.ID {
+		t.Fatalf("claimed ids = %q, %q", claimed[0].ID, claimed[1].ID)
 	}
 
 	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})

@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,27 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
+
+type interactionChannelManager struct {
+	*recordingChannelManager
+	sent    chan bus.OutboundMessage
+	sendErr error
+}
+
+func newInteractionChannelManager() *interactionChannelManager {
+	return &interactionChannelManager{
+		recordingChannelManager: &recordingChannelManager{},
+		sent:                    make(chan bus.OutboundMessage, 16),
+	}
+}
+
+func (m *interactionChannelManager) SendMessage(_ context.Context, msg bus.OutboundMessage) error {
+	if m.sendErr != nil {
+		return m.sendErr
+	}
+	m.sent <- msg
+	return nil
+}
 
 func TestCorruptHumanInteractionStoreFailsClosed(t *testing.T) {
 	workspace := t.TempDir()
@@ -56,7 +79,8 @@ func testToolSuspensionRequest(workspace string) ToolSuspensionRequest {
 
 func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.T) {
 	messageBus := bus.NewMessageBus()
-	al := &AgentLoop{cfg: config.DefaultConfig(), bus: messageBus}
+	manager := newInteractionChannelManager()
+	al := &AgentLoop{cfg: config.DefaultConfig(), bus: messageBus, channelManager: manager}
 	workspace := t.TempDir()
 
 	disposition, err := al.humanInteractionRuntime().SuspendToolCall(
@@ -71,10 +95,11 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 		t.Fatalf("record = %#v", record)
 	}
 	select {
-	case outbound := <-messageBus.OutboundChan():
+	case outbound := <-manager.sent:
 		if !strings.Contains(outbound.Content, "Input needed ["+record.ShortID+"]") ||
 			!strings.Contains(outbound.Content, "Canary") ||
 			outbound.Context.Raw[interactionIDMetadata] != record.ID ||
+			outbound.Context.Raw["idempotency_key"] != interactionDeliveryKey(record.ID, "prompt") ||
 			outbound.Context.Account != "primary" {
 			t.Fatalf("outbound prompt = %#v", outbound)
 		}
@@ -116,7 +141,9 @@ func TestDisabledRequestUserInputStillInitializesRecoveryRegistry(t *testing.T) 
 }
 
 func TestHumanInteractionPromptFailureRemainsDurableAndRecoveryRetries(t *testing.T) {
-	al := &AgentLoop{cfg: config.DefaultConfig(), bus: failingMessageBus{}}
+	manager := newInteractionChannelManager()
+	manager.sendErr = errors.New("delivery failed")
+	al := &AgentLoop{cfg: config.DefaultConfig(), bus: failingMessageBus{}, channelManager: manager}
 	workspace := t.TempDir()
 	disposition, err := al.humanInteractionRuntime().SuspendToolCall(
 		t.Context(),
@@ -130,8 +157,7 @@ func TestHumanInteractionPromptFailureRemainsDurableAndRecoveryRetries(t *testin
 		t.Fatalf("record after failed delivery = %#v", record)
 	}
 
-	messageBus := bus.NewMessageBus()
-	al.bus = messageBus
+	manager.sendErr = nil
 	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
 		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
 	}
@@ -140,9 +166,40 @@ func TestHumanInteractionPromptFailureRemainsDurableAndRecoveryRetries(t *testin
 		t.Fatalf("record after retry = %#v", record)
 	}
 	select {
-	case <-messageBus.OutboundChan():
+	case <-manager.sent:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for retried prompt")
+	}
+}
+
+func TestRecoveryCommitsAcknowledgedPromptWithoutDuplicateSend(t *testing.T) {
+	manager := newInteractionChannelManager()
+	al := &AgentLoop{cfg: config.DefaultConfig(), channelManager: manager}
+	workspace := t.TempDir()
+	request := testToolSuspensionRequest(workspace)
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil || !record.PromptDelivered || record.Status != interactions.StatusCreated {
+		t.Fatalf("acknowledged created record = (%#v, %v)", record, err)
+	}
+	if recovered := al.RecoverHumanInteractions(t.Context()); recovered != 1 {
+		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusWaiting || record.DeliveryTries != 1 {
+		t.Fatalf("recovered record = %#v", record)
+	}
+	select {
+	case duplicate := <-manager.sent:
+		t.Fatalf("recovery duplicated acknowledged prompt: %#v", duplicate)
+	default:
 	}
 }
 
@@ -198,14 +255,51 @@ func TestInteractionRouteAuthorizationRequiresTrustedEnvelope(t *testing.T) {
 	}
 }
 
+func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
+	workspace := t.TempDir()
+	al := &AgentLoop{cfg: config.DefaultConfig()}
+	request := testToolSuspensionRequest(workspace)
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	_, _ = registry.MarkWaiting(record.ID, record.Revision)
+	target := &inboundDispatchTarget{
+		Agent: &AgentInstance{Workspace: workspace}, SessionKey: request.Route.SessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	msg := bus.InboundMessage{Content: "Canary", Context: inboundContextForInteraction(request.Route)}
+	if !al.shouldHandleInteractionInbound(msg, target) {
+		t.Fatal("authorized plain answer was not claimed")
+	}
+	msg.Content = "unrelated message"
+	msg.Context.SenderID = "someone-else"
+	if al.shouldHandleInteractionInbound(msg, target) {
+		t.Fatal("unrelated sender message was consumed as an interaction answer")
+	}
+	msg.Content = "/reset"
+	msg.Context.SenderID = request.Route.SenderID
+	if al.shouldHandleInteractionInbound(msg, target) {
+		t.Fatal("control command was consumed as an interaction answer")
+	}
+	al.cancelInteractionForControlMessage(msg, target)
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusCancelled {
+		t.Fatalf("reset did not cancel pending interaction: %#v", record)
+	}
+}
+
 func TestResumeClaimedInteractionAppendsOneToolResultAndResolves(t *testing.T) {
 	provider := &simpleConvProvider{}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
-	messageBus, ok := al.bus.(*bus.MessageBus)
-	if !ok {
-		t.Fatal("expected concrete message bus")
-	}
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
 	workspace := agent.Workspace
 	sessionKey := "session-resume"
 	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Deploy this"})
@@ -243,7 +337,7 @@ func TestResumeClaimedInteractionAppendsOneToolResultAndResolves(t *testing.T) {
 		t.Fatalf("resumeClaimedInteraction() error = %v", err)
 	}
 	resolved, _ := registry.Get(record.ID)
-	if resolved.Status != interactions.StatusResolved {
+	if resolved.Status != interactions.StatusResolved || !resolved.FinalDelivered {
 		t.Fatalf("record status = %q, want resolved", resolved.Status)
 	}
 	history := agent.Sessions.GetHistory(sessionKey)
@@ -260,7 +354,7 @@ func TestResumeClaimedInteractionAppendsOneToolResultAndResolves(t *testing.T) {
 		t.Fatalf("matching tool results = %d, want 1", toolResults)
 	}
 	select {
-	case outbound := <-messageBus.OutboundChan():
+	case outbound := <-manager.sent:
 		if strings.TrimSpace(outbound.Content) == "" {
 			t.Fatalf("final outbound = %#v", outbound)
 		}
@@ -273,7 +367,8 @@ func TestRecoverHumanInteractionsResumesDurableClaimAfterRestartWindow(t *testin
 	provider := &simpleConvProvider{}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
-	messageBus := al.bus.(*bus.MessageBus)
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
 	sessionKey := "session-recover-interaction"
 	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Deploy this"})
 	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
@@ -309,11 +404,11 @@ func TestRecoverHumanInteractionsResumesDurableClaimAfterRestartWindow(t *testin
 		t.Fatalf("RecoverHumanInteractions() = %d, want 1", recovered)
 	}
 	record, _ = registry.Get(record.ID)
-	if record.Status != interactions.StatusResolved {
+	if record.Status != interactions.StatusResolved || !record.FinalDelivered {
 		t.Fatalf("status after recovery = %q", record.Status)
 	}
 	select {
-	case outbound := <-messageBus.OutboundChan():
+	case outbound := <-manager.sent:
 		if strings.TrimSpace(outbound.Content) == "" {
 			t.Fatalf("recovery outbound = %#v", outbound)
 		}
@@ -326,7 +421,8 @@ func TestRecoverResumingInteractionReplaysPersistedFinalWithoutModelCall(t *test
 	provider := &toolCallRespProvider{toolName: "must_not_run", response: "must not run"}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
-	messageBus := al.bus.(*bus.MessageBus)
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
 	sessionKey := "session-recover-final"
 	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
 		Role: "assistant", ToolCalls: []providers.ToolCall{{ID: "call-question"}},
@@ -362,12 +458,13 @@ func TestRecoverResumingInteractionReplaysPersistedFinalWithoutModelCall(t *test
 		t.Fatalf("provider calls = %d, want 0", provider.callCount)
 	}
 	record, _ = registry.Get(record.ID)
-	if record.Status != interactions.StatusResolved {
+	if record.Status != interactions.StatusResolved || !record.FinalDelivered {
 		t.Fatalf("status = %q, want resolved", record.Status)
 	}
 	select {
-	case outbound := <-messageBus.OutboundChan():
-		if outbound.Content != "Recovered final" {
+	case outbound := <-manager.sent:
+		if outbound.Content != "Recovered final" ||
+			outbound.Context.Raw["idempotency_key"] != interactionDeliveryKey(record.ID, "final") {
 			t.Fatalf("outbound = %#v", outbound)
 		}
 	case <-time.After(time.Second):

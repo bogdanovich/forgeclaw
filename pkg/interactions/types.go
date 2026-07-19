@@ -43,6 +43,7 @@ type EventType string
 const (
 	EventCreated          EventType = "interaction.created"
 	EventDeliveryAttempt  EventType = "interaction.delivery_attempted"
+	EventFinalDelivery    EventType = "interaction.final_delivery_attempted"
 	EventWaiting          EventType = "interaction.waiting"
 	EventAnswerClaimed    EventType = "interaction.answer_claimed"
 	EventResumeStarted    EventType = "interaction.resume_started"
@@ -139,31 +140,36 @@ type Answer struct {
 }
 
 type Record struct {
-	ID             string     `json:"id"`
-	ShortID        string     `json:"short_id"`
-	Kind           Kind       `json:"kind"`
-	Status         Status     `json:"status"`
-	Outcome        Outcome    `json:"outcome,omitempty"`
-	Revision       int64      `json:"revision"`
-	LastEventSeq   int64      `json:"last_event_sequence"`
-	Route          Route      `json:"route"`
-	Origin         Origin     `json:"origin"`
-	Questions      []Question `json:"questions,omitempty"`
-	PromptSummary  string     `json:"prompt_summary,omitempty"`
-	Answer         *Answer    `json:"answer,omitempty"`
-	CreatedAt      int64      `json:"created_at"`
-	UpdatedAt      int64      `json:"updated_at"`
-	ExpiresAt      int64      `json:"expires_at"`
-	ResolvedAt     int64      `json:"resolved_at,omitempty"`
-	CleanupAfter   int64      `json:"cleanup_after,omitempty"`
-	DeliveryTries  int        `json:"delivery_tries,omitempty"`
-	LastDeliveryAt int64      `json:"last_delivery_at,omitempty"`
-	DeliveryError  string     `json:"delivery_error,omitempty"`
-	ResumeTries    int        `json:"resume_tries,omitempty"`
-	LastResumeAt   int64      `json:"last_resume_at,omitempty"`
-	ResumeError    string     `json:"resume_error,omitempty"`
-	FailureCode    string     `json:"failure_code,omitempty"`
-	FailureDetail  string     `json:"failure_detail,omitempty"`
+	ID                  string     `json:"id"`
+	ShortID             string     `json:"short_id"`
+	Kind                Kind       `json:"kind"`
+	Status              Status     `json:"status"`
+	Outcome             Outcome    `json:"outcome,omitempty"`
+	Revision            int64      `json:"revision"`
+	LastEventSeq        int64      `json:"last_event_sequence"`
+	Route               Route      `json:"route"`
+	Origin              Origin     `json:"origin"`
+	Questions           []Question `json:"questions,omitempty"`
+	PromptSummary       string     `json:"prompt_summary,omitempty"`
+	Answer              *Answer    `json:"answer,omitempty"`
+	CreatedAt           int64      `json:"created_at"`
+	UpdatedAt           int64      `json:"updated_at"`
+	ExpiresAt           int64      `json:"expires_at"`
+	ResolvedAt          int64      `json:"resolved_at,omitempty"`
+	CleanupAfter        int64      `json:"cleanup_after,omitempty"`
+	DeliveryTries       int        `json:"delivery_tries,omitempty"`
+	LastDeliveryAt      int64      `json:"last_delivery_at,omitempty"`
+	DeliveryError       string     `json:"delivery_error,omitempty"`
+	PromptDelivered     bool       `json:"prompt_delivered,omitempty"`
+	FinalDeliveryTries  int        `json:"final_delivery_tries,omitempty"`
+	LastFinalDeliveryAt int64      `json:"last_final_delivery_at,omitempty"`
+	FinalDelivered      bool       `json:"final_delivered,omitempty"`
+	FinalDeliveryError  string     `json:"final_delivery_error,omitempty"`
+	ResumeTries         int        `json:"resume_tries,omitempty"`
+	LastResumeAt        int64      `json:"last_resume_at,omitempty"`
+	ResumeError         string     `json:"resume_error,omitempty"`
+	FailureCode         string     `json:"failure_code,omitempty"`
+	FailureDetail       string     `json:"failure_detail,omitempty"`
 }
 
 type Event struct {

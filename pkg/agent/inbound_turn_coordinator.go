@@ -34,7 +34,8 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		}
 		return
 	}
-	if al.hasNonterminalInteraction(target.Agent.Workspace, target.SessionKey) {
+	al.cancelInteractionForControlMessage(msg, target)
+	if al.shouldHandleInteractionInbound(msg, target) {
 		c.handleInteractionInbound(ctx, msg, target)
 		return
 	}

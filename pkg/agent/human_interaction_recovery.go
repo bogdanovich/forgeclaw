@@ -51,7 +51,11 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 			}
 			switch record.Status {
 			case interactions.StatusCreated:
-				if al.retryInteractionPrompt(ctx, registry, record) {
+				if record.PromptDelivered {
+					if _, err := registry.MarkWaiting(record.ID, record.Revision); err == nil {
+						recovered++
+					}
+				} else if al.retryInteractionPrompt(ctx, registry, record) {
 					recovered++
 				}
 			case interactions.StatusClaimed, interactions.StatusResuming:

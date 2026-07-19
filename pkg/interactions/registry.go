@@ -239,11 +239,40 @@ func (r *Registry) RecordDeliveryAttempt(
 			rec.DeliveryTries++
 			rec.LastDeliveryAt = now
 			if success {
+				rec.PromptDelivered = true
 				rec.DeliveryError = ""
 			} else {
 				rec.DeliveryError = bounded(detail, MaxSummaryLength)
 			}
 			return EventDeliveryAttempt, "", &success, nil
+		},
+	)
+}
+
+func (r *Registry) RecordFinalDeliveryAttempt(
+	id string,
+	expectedRevision int64,
+	success bool,
+	detail string,
+) (Record, error) {
+	return r.update(
+		id,
+		expectedRevision,
+		func(rec *Record, now int64) (EventType, string, *bool, error) {
+			if rec.Status != StatusResuming {
+				return "", "", nil, fmt.Errorf(
+					"%w: final delivery from %s", ErrInvalidTransition, rec.Status,
+				)
+			}
+			rec.FinalDeliveryTries++
+			rec.LastFinalDeliveryAt = now
+			if success {
+				rec.FinalDelivered = true
+				rec.FinalDeliveryError = ""
+			} else {
+				rec.FinalDeliveryError = bounded(detail, MaxSummaryLength)
+			}
+			return EventFinalDelivery, "", &success, nil
 		},
 	)
 }
@@ -284,7 +313,8 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 	claimed := make([]Record, 0)
 	emitted := make([]Event, 0)
 	for id, rec := range r.records {
-		if rec.Status != StatusWaiting || rec.ExpiresAt <= 0 || rec.ExpiresAt > nowMillis {
+		if (rec.Status != StatusCreated && rec.Status != StatusWaiting) ||
+			rec.ExpiresAt <= 0 || rec.ExpiresAt > nowMillis {
 			continue
 		}
 		before[id] = rec
