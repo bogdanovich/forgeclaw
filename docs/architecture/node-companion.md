@@ -22,7 +22,9 @@ execution code.
 - Machine placement, command execution, and authorization are separate
   concerns.
 - Protocol version 1 uses JSON request, response, and event envelopes over a
-  long-lived WebSocket secured by TLS.
+  long-lived WebSocket. Production and every non-loopback connection require
+  TLS (`wss://`); plaintext is limited to explicit loopback development and
+  tests.
 - The model can reference only paired node identities or operator-defined
   aliases allowed for its agent. It cannot provide an arbitrary hostname or
   credential.
@@ -92,8 +94,8 @@ placement.
 - **Node**: a paired machine or device that advertises and executes bounded
   capabilities.
 - **Companion**: the lightweight first-party process running on a node.
-- **Target**: an operator-defined execution destination such as the gateway or
-  a paired node.
+- **Target**: an operator-defined execution destination such as the gateway, a
+  paired node, or a future static SSH endpoint.
 - **Executor**: the node-local mechanism that runs a command, initially local
   and later optionally Docker.
 - **Capability**: a high-level family such as `system`, `service`, `browser`,
@@ -155,9 +157,18 @@ unless the node's durable invocation ledger can prove a terminal result.
 ## Component Boundaries
 
 The core domain must not depend on WebSocket frame structs or OpenClaw types.
-Illustrative interfaces are:
+A target driver sits above node-specific transport so future static SSH
+execution can reuse plans and policy without pretending to be a connected
+node. Illustrative interfaces are:
 
 ```go
+type TargetDriver interface {
+    Kind() string
+    Describe(ctx context.Context, target TargetRef) (TargetSnapshot, error)
+    Dispatch(ctx context.Context, plan ExecutionPlan) (InvocationResult, error)
+    Cancel(ctx context.Context, target TargetRef, invocationID string) error
+}
+
 type NodeRegistry interface {
     List(filter NodeFilter) []NodeSnapshot
     Resolve(ref string) (NodeSnapshot, error)
@@ -192,6 +203,8 @@ The expected ownership is:
 | Component | Owns |
 | --- | --- |
 | Agent tools | User-facing node listing, target selection, and invocation requests |
+| Target service | Named target resolution and dispatch through an allowed driver |
+| Target driver | Placement-specific dispatch for gateway, paired node, or future SSH |
 | Gateway node service | Registry, pairing, sessions, routing, policy intersection, audit |
 | Transport adapter | Framing, version negotiation, liveness, request correlation |
 | Companion runtime | Node identity, local policy, handlers, invocation ledger |
@@ -223,6 +236,31 @@ a meaningful throughput benefit here.
 
 The transport interface permits a future native gRPC or OpenClaw adapter. Wire
 encoding is therefore a deployment concern, not the node domain model.
+
+### TLS and endpoint trust
+
+The MVP does not send node traffic over an open network in plaintext.
+Production companions accept only `wss://` endpoints. The gateway can terminate
+TLS itself or sit behind an operator-managed TLS reverse proxy. Companion trust
+uses one of:
+
+- a certificate chain rooted in the operating-system trust store;
+- an explicitly configured private CA;
+- a certificate or SPKI fingerprint transferred out of band during enrollment.
+
+There is no production `insecure_skip_verify` fallback. A self-signed endpoint
+must be pinned explicitly. An SSH bootstrap flow may install the expected
+gateway fingerprint alongside the companion configuration.
+
+Application-level Ed25519 identity and challenge signatures remain necessary:
+TLS authenticates the endpoint and encrypts transport, while node signatures
+bind a stable device identity to pairing. Mutual TLS is not required for the
+MVP, but can be added as another transport-auth adapter without replacing node
+identity.
+
+Plain `ws://` is accepted only on loopback under an explicit development or
+test setting. Binding a plaintext listener to a non-loopback address fails
+closed. Integration tests cover both the rejection and a real WSS handshake.
 
 ### Frame envelopes
 
@@ -396,6 +434,20 @@ Descriptors are claims. The gateway intersects them with paired command
 approval, agent policy, and operator configuration. A node cannot gain agent
 visibility merely by advertising a new command.
 
+The same catalog supports capabilities that are not process execution. A
+future node-hosted MCP runtime can publish validated tool descriptors whose
+invocations map to a versioned command such as `mcp.tools.call.v1`. A browser
+adapter can publish typed commands such as `browser.navigate.v1`,
+`browser.snapshot.v1`, and `browser.screenshot.v1`; screenshots use the
+artifact contract rather than embedding bytes in tool JSON. Mobile or appliance
+companions can advertise camera, location, or sensor commands without exposing
+`system.exec.v1` at all.
+
+Dynamic descriptor updates are bounded and authenticated. Adding or broadening
+a command remains subject to gateway command-surface approval and node-local
+policy. Disconnecting a node removes its dynamic commands from new agent tool
+snapshots.
+
 MVP commands:
 
 | Command | Purpose | Default risk |
@@ -468,9 +520,11 @@ reports whether termination was confirmed.
 
 ### Lightweight companion
 
-The companion runtime lives in shared Go packages but is distributed as a slim
-binary whose dependency graph does not import the agent, model-provider,
-channel, or workspace-memory runtimes:
+The companion runtime lives in shared Go packages but is distributed through a
+dedicated `cmd/picoclaw-node` build target. Go therefore links only the node
+runtime and its dependencies, producing a smaller binary than the gateway. Its
+dependency graph does not import the agent, model-provider, channel, MCP-host,
+or workspace-memory runtimes:
 
 ```text
 picoclaw-node run
@@ -479,9 +533,11 @@ picoclaw-node status
 picoclaw-node uninstall
 ```
 
-The full `picoclaw` CLI may expose equivalent convenience commands if doing so
-does not make the companion depend on the gateway runtime. Packaging must not
-require the full gateway binary on a remote node.
+The full `picoclaw` CLI owns gateway-side node administration commands, while
+the remote machine requires only `picoclaw-node`. Shared protocol, identity,
+policy, and capability packages prevent implementation duplication. A CI import
+boundary test protects the slim binary from accidentally acquiring gateway
+dependencies.
 
 It should contain only:
 
@@ -547,22 +603,26 @@ AND OS account or privileged-helper authority
 
 No layer can broaden a stricter layer.
 
-The model cannot submit arbitrary connection details. Agent configuration uses
-named targets:
+The model cannot submit arbitrary connection details. Operator configuration
+defines named execution targets independently of their transport:
 
 ```json
 {
-  "nodes": {
+  "execution": {
     "targets": {
-      "vpn": {"node": "vpn-box"},
-      "build": {"node": "linux-builder", "executor": "docker"}
+      "vpn": {"type": "node", "node": "vpn-box"},
+      "build": {
+        "type": "node",
+        "node": "linux-builder",
+        "executor": "docker"
+      }
     }
   },
   "agents": {
     "list": [
       {
         "id": "main",
-        "node_policy": {
+        "target_policy": {
           "default_target": "build",
           "allowed_targets": ["build", "vpn"]
         }
@@ -575,6 +635,33 @@ named targets:
 Node-local configuration controls working roots, executable paths, service
 units, action classes, timeout ceilings, environment allowlists, executors, and
 whether interactive or shell execution is available.
+
+### Future SSH support
+
+SSH is not part of the node MVP, but it has two useful future roles.
+
+First, an explicit operator command may use SSH to bootstrap a companion on a
+new machine. It verifies the host key, copies the slim `picoclaw-node` binary,
+installs an unprivileged service, and supplies a short-lived enrollment token
+plus the pinned gateway TLS identity. Normal operation then switches to the
+node's outbound WSS connection. SSH credentials remain in an operator-owned
+secret reference or SSH agent and are never exposed to the model or reused as
+node identity.
+
+Second, a static SSH target driver may support hosts where installing a
+companion is impossible. It reuses named-target authorization, canonical
+execution plans, bounded results and artifacts, approval, audit, cancellation,
+and unknown-outcome semantics. The model selects only an allowed target alias;
+it cannot provide a hostname, user, port, host key, or credential. Those values
+are operator configuration with strict host-key verification.
+
+A direct SSH target intentionally has fewer guarantees than a companion. It
+has no live capability advertisement, durable remote invocation ledger, or
+reconnect-based result recovery unless a small remote helper is installed.
+These differences are reported by the target driver rather than hidden behind
+false node presence. This keeps SSH and paired nodes as different transports
+over shared execution contracts instead of creating parallel policy and result
+stacks.
 
 Sensitive actions integrate with ForgeClaw's durable human-interaction system.
 Approval is bound to the canonical plan hash, node identity, policy revision,
@@ -701,6 +788,8 @@ surface before its policy and node-side enforcement exist.
 
 ## Later Work
 
+- SSH bootstrap for installing a companion and a direct static SSH target
+  driver for hosts that cannot run one.
 - Docker execution on a connected node.
 - Bounded artifact upload and download.
 - Durable background jobs and streamed PTY sessions.
@@ -724,6 +813,7 @@ surface before its policy and node-side enforcement exist.
 | Protocol becomes tied to one client | Transport-neutral domain and versioned adapter boundary |
 | Container is mistaken for whole-host safety | Explicit executor boundary and no Docker socket mount |
 | Capability catalog grows without bound | Pairing approval for broadened commands and bounded model projection |
+| SSH becomes a parallel execution stack | Shared target driver, plan, policy, result, artifact, and audit contracts |
 
 ## Open Questions Before Implementation
 
