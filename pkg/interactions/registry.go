@@ -587,7 +587,7 @@ func (r *Registry) ConsumeApproval(
 	toolCallID = strings.TrimSpace(toolCallID)
 	toolName = strings.TrimSpace(toolName)
 	argumentHash = strings.TrimSpace(argumentHash)
-	return r.update(
+	record, err := r.update(
 		id,
 		expectedRevision,
 		func(rec *Record, now int64) (EventType, string, *bool, error) {
@@ -597,10 +597,21 @@ func (r *Registry) ConsumeApproval(
 				rec.Origin.ArgumentHash == "" || rec.Origin.ArgumentHash != argumentHash {
 				return "", "", nil, fmt.Errorf("%w: approval does not match pending tool call", ErrInvalidTransition)
 			}
+			if rec.ExpiresAt > 0 && now >= rec.ExpiresAt {
+				rec.Outcome = OutcomeTimedOut
+				return EventApprovalExpired, "timeout_at_approval_consumption", nil, nil
+			}
 			rec.ApprovalConsumedAt = now
 			return EventApprovalConsumed, "allow_once_consumed", nil, nil
 		},
 	)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.Outcome == OutcomeTimedOut && record.ApprovalConsumedAt == 0 {
+		return record, ErrApprovalExpired
+	}
+	return record, nil
 }
 
 func (r *Registry) BeginCancellation(

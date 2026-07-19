@@ -62,6 +62,7 @@ const (
 	EventAnswerClaimed    EventType = "interaction.answer_claimed"
 	EventResumeStarted    EventType = "interaction.resume_started"
 	EventApprovalConsumed EventType = "interaction.approval_consumed"
+	EventApprovalExpired  EventType = "interaction.approval_expired"
 	EventCanceling        EventType = "interaction.canceling"
 	EventResolved         EventType = "interaction.resolved"
 	EventCancelled        EventType = "interaction.cancelled"
@@ -100,6 +101,7 @@ var (
 	ErrSessionHasActive   = errors.New("session already has an active interaction")
 	ErrDuplicateAnswer    = errors.New("answer message already claimed")
 	ErrAnswerTooLate      = errors.New("interaction is no longer waiting")
+	ErrApprovalExpired    = errors.New("approval expired before consumption")
 	ErrSnapshotOverBudget = errors.New("interaction snapshot exceeds size budget")
 	ErrInvalidInteraction = errors.New("invalid interaction")
 	ErrCapacityExceeded   = errors.New("interaction registry capacity exceeded")

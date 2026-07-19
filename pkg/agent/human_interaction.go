@@ -183,6 +183,7 @@ func runtimeKindForInteractionEvent(event interactions.EventType) runtimeevents.
 	case interactions.EventAnswerClaimed:
 		return runtimeevents.KindAgentInteractionAnswer
 	case interactions.EventResumeStarted, interactions.EventApprovalConsumed,
+		interactions.EventApprovalExpired,
 		interactions.EventRecoveryObserved, interactions.EventCanceling:
 		return runtimeevents.KindAgentInteractionResume
 	case interactions.EventResolved, interactions.EventCancelled, interactions.EventFailed:

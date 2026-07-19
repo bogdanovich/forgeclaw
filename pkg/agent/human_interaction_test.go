@@ -1058,73 +1058,107 @@ func TestApprovalRecoveryUsesPersistedOriginalExecutionContext(t *testing.T) {
 }
 
 func TestExpiredAllowOnceNeverExecutesProtectedTool(t *testing.T) {
-	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
-	defer cleanup()
-	al.channelManager = newInteractionChannelManager()
-	tool := &approvalCountingTool{}
-	agent.Tools.Register(tool)
-	sessionKey := "session-expired-approval"
-	args := map[string]any{"target": "production"}
-	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
-		Role: "assistant", ToolCalls: []providers.ToolCall{{
-			ID: "call-expired", Name: tool.Name(), Arguments: args,
-			Function: &providers.FunctionCall{
-				Name: tool.Name(), Arguments: `{"target":"production"}`,
-			},
-		}},
-	})
-	argumentHash, err := interactions.HashArguments(agent.Workspace, args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Unix(1_800_000_000, 0)
-	registry := interactions.NewRegistryWithOptions(
-		interactions.WorkspaceStorePath(agent.Workspace),
-		interactions.Options{Now: func() time.Time { return now }},
-	)
-	al.interactionRegistries.Store(agent.Workspace, registry)
-	inbound := &bus.InboundContext{
-		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
-		MessageID: "origin-message",
-	}
-	record, err := registry.Create(interactions.CreateRequest{
-		Kind: interactions.KindApproval,
-		Route: interactions.Route{
-			AgentID: agent.ID, SessionKey: sessionKey, RouteSessionKey: "route-expired",
-			Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
-		},
-		Origin: interactions.Origin{
-			TurnID: "turn-expired", ToolCallID: "call-expired", ToolName: tool.Name(),
-			ArgumentHash: argumentHash, ExecutionContext: inbound,
-		},
-		PromptSummary:  "Run the protected action",
-		ApprovalAction: "Tool: approval_counting\nAction: Run the protected action",
-		ExpiresAt:      now.Add(time.Minute),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
-	record, _ = registry.MarkWaiting(record.ID, record.Revision)
-	now = time.UnixMilli(record.ExpiresAt)
-	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
-		Text: "allow_once", MessageID: "late-allow", ReceivedAt: now.UnixMilli(),
-	}, interactions.OutcomeAllowed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Outcome != interactions.OutcomeTimedOut {
-		t.Fatalf("expired approval outcome = %q, want timed_out", record.Outcome)
-	}
-	if err = al.resumeClaimedInteraction(
-		t.Context(), registry, agent.Workspace, agent, nil, *inbound, record,
-	); err != nil {
-		t.Fatalf("resumeClaimedInteraction() error = %v", err)
-	}
-	resolved, _ := registry.Get(record.ID)
-	if tool.executions != 0 || resolved.ApprovalConsumedAt != 0 ||
-		resolved.Status != interactions.StatusResolved {
-		t.Fatalf("expired approval = %#v, executions=%d", resolved, tool.executions)
+	for _, test := range []struct {
+		name              string
+		expireBeforeClaim bool
+		reloadAfterClaim  bool
+	}{
+		{name: "expired when answer is claimed", expireBeforeClaim: true},
+		{name: "expired before consumption after restart", reloadAfterClaim: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &sequenceProvider{responses: []*providers.LLMResponse{{
+				Content: "approval expired", FinishReason: "stop",
+			}}}
+			al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+			defer cleanup()
+			al.channelManager = newInteractionChannelManager()
+			tool := &approvalCountingTool{}
+			agent.Tools.Register(tool)
+			if err := al.MountHook(NamedHook("expiry-approval", &durableApprovalHook{
+				actionSummary: "Run the protected action",
+			})); err != nil {
+				t.Fatal(err)
+			}
+			sessionKey := "session-expired-approval"
+			args := map[string]any{"target": "production"}
+			agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+				Role: "assistant", ToolCalls: []providers.ToolCall{{
+					ID: "call-expired", Name: tool.Name(), Arguments: args,
+					Function: &providers.FunctionCall{
+						Name: tool.Name(), Arguments: `{"target":"production"}`,
+					},
+				}},
+			})
+			argumentHash, err := interactions.HashArguments(agent.Workspace, args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Unix(1_800_000_000, 0)
+			registryPath := interactions.WorkspaceStorePath(agent.Workspace)
+			registry := interactions.NewRegistryWithOptions(
+				registryPath,
+				interactions.Options{Now: func() time.Time { return now }},
+			)
+			al.interactionRegistries.Store(agent.Workspace, registry)
+			inbound := &bus.InboundContext{
+				Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+				MessageID: "origin-message",
+			}
+			record, err := registry.Create(interactions.CreateRequest{
+				Kind: interactions.KindApproval,
+				Route: interactions.Route{
+					AgentID: agent.ID, SessionKey: sessionKey, RouteSessionKey: "route-expired",
+					Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+				},
+				Origin: interactions.Origin{
+					TurnID: "turn-expired", ToolCallID: "call-expired", ToolName: tool.Name(),
+					ArgumentHash: argumentHash, ExecutionContext: inbound,
+				},
+				PromptSummary:  "Run the protected action",
+				ApprovalAction: "Tool: approval_counting\nAction: Run the protected action",
+				ExpiresAt:      now.Add(time.Minute),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+			record, _ = registry.MarkWaiting(record.ID, record.Revision)
+			if test.expireBeforeClaim {
+				now = time.UnixMilli(record.ExpiresAt)
+			} else {
+				now = time.UnixMilli(record.ExpiresAt - 1)
+			}
+			record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+				Text: "allow_once", MessageID: "allow-once", ReceivedAt: now.UnixMilli(),
+			}, interactions.OutcomeAllowed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.reloadAfterClaim {
+				now = time.UnixMilli(record.ExpiresAt)
+				registry = interactions.NewRegistryWithOptions(
+					registryPath,
+					interactions.Options{Now: func() time.Time { return now }},
+				)
+				if registry.LastLoadError() != nil {
+					t.Fatal(registry.LastLoadError())
+				}
+				al.interactionRegistries.Store(agent.Workspace, registry)
+				record, _ = registry.Get(record.ID)
+			}
+			if err = al.resumeClaimedInteraction(
+				t.Context(), registry, agent.Workspace, agent, nil, *inbound, record,
+			); err != nil {
+				t.Fatalf("resumeClaimedInteraction() error = %v", err)
+			}
+			resolved, _ := registry.Get(record.ID)
+			if tool.executions != 0 || resolved.ApprovalConsumedAt != 0 ||
+				resolved.Status != interactions.StatusResolved ||
+				resolved.Outcome != interactions.OutcomeTimedOut {
+				t.Fatalf("expired approval = %#v, executions=%d", resolved, tool.executions)
+			}
+		})
 	}
 }
 

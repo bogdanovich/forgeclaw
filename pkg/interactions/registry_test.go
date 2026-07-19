@@ -1022,6 +1022,59 @@ func TestRegistryConsumesApprovalExactlyOnceAndMatchesCall(t *testing.T) {
 	}
 }
 
+func TestRegistryConsumeApprovalEnforcesExpiryAtomically(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	request := validCreate(clock, "interaction_expiringapproval", "session-expiring-approval")
+	request.Kind = KindApproval
+	request.Questions = nil
+	request.PromptSummary = "Run the protected action"
+	request.ApprovalAction = "Tool: protected_test\nAction: Run the protected action"
+	request.Origin.ArgumentHash = strings.Repeat("a", 64)
+	request.Origin.ExecutionContext = &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	request.ExpiresAt = clock.Now().Add(time.Minute)
+	record, err := registry.Create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	clock.Advance(time.Minute - time.Millisecond)
+	record, err = registry.ClaimAnswer(
+		record.ID, record.Revision,
+		Answer{Text: "allow_once", ReceivedAt: clock.Now().UnixMilli()},
+		OutcomeAllowed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Millisecond)
+	record, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID,
+		record.Origin.ToolName, record.Origin.ArgumentHash,
+	)
+	if !errors.Is(err, ErrApprovalExpired) || record.Outcome != OutcomeTimedOut ||
+		record.Status != StatusResuming || record.ApprovalConsumedAt != 0 {
+		t.Fatalf("expired ConsumeApproval() = (%#v, %v)", record, err)
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	stored, ok := reloaded.Get(record.ID)
+	if reloaded.LastLoadError() != nil || !ok || stored.Outcome != OutcomeTimedOut ||
+		stored.ApprovalConsumedAt != 0 {
+		t.Fatalf("reloaded expired approval = (%#v, %v)", stored, reloaded.LastLoadError())
+	}
+	events := reloaded.ListEvents(record.ID)
+	if len(events) == 0 || events[len(events)-1].Type != EventApprovalExpired {
+		t.Fatalf("expired approval events = %#v", events)
+	}
+}
+
 func TestStoredV1QuestionsRemainLoadableUnderTighterCreatePolicy(t *testing.T) {
 	legacySingle := []Question{{
 		ID: "legacy_single", Question: "Legacy choice?",

@@ -343,6 +343,10 @@ execution:
 - the approval is unexpired and has not been consumed;
 - current policy still permits human override for that classification.
 
+Expiry is checked atomically both when the answer is claimed and immediately
+before the one-time grant is consumed. A grant claimed before its deadline but
+resumed or recovered after it expires is denied and never executes.
+
 The approval is consumed exactly once. `deny` appends a normal denied tool result
 and resumes the model. Persistent allowlists and approve-for-session behavior are
 out of scope until policy and audit evidence justify them.
