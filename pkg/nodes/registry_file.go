@@ -23,13 +23,14 @@ func RegistryPath(workspacePath string) string {
 }
 
 type registryRecord struct {
-	Snapshot        Snapshot `json:"snapshot"`
-	PublicKey       []byte   `json:"public_key,omitempty"`
-	RequestedRole   string   `json:"requested_role,omitempty"`
-	RequestedAt     int64    `json:"requested_at,omitempty"`
-	AllowedCommands []string `json:"allowed_commands,omitempty"`
-	ApprovedAt      int64    `json:"approved_at,omitempty"`
-	RevokedAt       int64    `json:"revoked_at,omitempty"`
+	Snapshot            Snapshot `json:"snapshot"`
+	PublicKey           []byte   `json:"public_key,omitempty"`
+	RequestedRole       string   `json:"requested_role,omitempty"`
+	RequestedAt         int64    `json:"requested_at,omitempty"`
+	AllowedCommands     []string `json:"allowed_commands,omitempty"`
+	ApprovedCatalogHash string   `json:"approved_catalog_hash,omitempty"`
+	ApprovedAt          int64    `json:"approved_at,omitempty"`
+	RevokedAt           int64    `json:"revoked_at,omitempty"`
 }
 
 type registryDocument struct {
@@ -276,8 +277,8 @@ func (registry *FileRegistry) Registration(id ID) (Registration, bool, error) {
 	return cloneRegistration(record), true, nil
 }
 
-// Approve transitions a pending identity to a paired, disconnected node. It
-// records only commands that were present in the signed admission catalog.
+// Approve pairs a pending identity or renews an existing command-surface
+// approval. It records only commands present in the authenticated catalog.
 func (registry *FileRegistry) Approve(id ID, approval PairingApproval) (Registration, error) {
 	if err := id.Validate(); err != nil {
 		return Registration{}, err
@@ -298,11 +299,11 @@ func (registry *FileRegistry) Approve(id ID, approval PairingApproval) (Registra
 	}
 	defer release()
 	record, exists := registry.records[string(id)]
-	if !exists || record.Snapshot.State != StatePendingPairing {
-		return Registration{}, fmt.Errorf("%w: node %q is not pending pairing", ErrInvalidNode, id)
+	if !exists || record.Snapshot.State == StateRevoked {
+		return Registration{}, fmt.Errorf("%w: node %q cannot be approved", ErrInvalidNode, id)
 	}
-	if approval.At < record.RequestedAt {
-		return Registration{}, fmt.Errorf("%w: approval predates pairing request", ErrInvalidNode)
+	if approval.At < record.RequestedAt || approval.At < record.ApprovedAt {
+		return Registration{}, fmt.Errorf("%w: approval predates node lifecycle", ErrInvalidNode)
 	}
 	aliases, err := normalizeAliases(approval.Aliases)
 	if err != nil {
@@ -312,11 +313,14 @@ func (registry *FileRegistry) Approve(id ID, approval PairingApproval) (Registra
 	if err != nil {
 		return Registration{}, err
 	}
-	record.Snapshot.State = StateDisconnected
+	if record.Snapshot.State == StatePendingPairing {
+		record.Snapshot.State = StateDisconnected
+		record.Snapshot.DisconnectReason = "paired; awaiting connection"
+	}
 	record.Snapshot.Aliases = aliases
 	record.Snapshot.DisplayName = displayName
-	record.Snapshot.DisconnectReason = "paired; awaiting connection"
 	record.AllowedCommands = commands
+	record.ApprovedCatalogHash = record.Snapshot.CatalogHash
 	record.ApprovedAt = approval.At
 	record.RevokedAt = 0
 	if err := registry.commitRecordLocked(record); err != nil {
@@ -374,6 +378,7 @@ func (registry *FileRegistry) revoke(
 	record.Snapshot.State = StateRevoked
 	record.Snapshot.DisconnectReason = reason
 	record.AllowedCommands = nil
+	record.ApprovedCatalogHash = ""
 	record.RevokedAt = revocation.At
 	if err := registry.commitRecordLocked(record); err != nil {
 		return Registration{}, err
@@ -540,16 +545,21 @@ func validateRegistrationRecord(record registryRecord) error {
 		if err := validateApprovedCommands(record.AllowedCommands); err != nil {
 			return err
 		}
+		if record.ApprovedCatalogHash != "" && !validSHA256Digest(record.ApprovedCatalogHash) {
+			return fmt.Errorf("%w: malformed approved catalog hash", ErrInvalidNode)
+		}
 	}
 	if record.Snapshot.State == StatePendingPairing &&
-		(record.ApprovedAt != 0 || record.RevokedAt != 0 || len(record.AllowedCommands) != 0) {
+		(record.ApprovedAt != 0 || record.RevokedAt != 0 || len(record.AllowedCommands) != 0 ||
+			record.ApprovedCatalogHash != "") {
 		return fmt.Errorf("%w: pending node contains operator authority", ErrInvalidNode)
 	}
 	if record.Snapshot.State == StatePendingPairing &&
 		(len(record.Snapshot.Aliases) != 0 || strings.TrimSpace(record.Snapshot.DisplayName) != "") {
 		return fmt.Errorf("%w: pending node contains operator metadata", ErrInvalidNode)
 	}
-	if record.Snapshot.State == StateRevoked && len(record.AllowedCommands) != 0 {
+	if record.Snapshot.State == StateRevoked &&
+		(len(record.AllowedCommands) != 0 || record.ApprovedCatalogHash != "") {
 		return fmt.Errorf("%w: revoked node retains command authority", ErrInvalidNode)
 	}
 	return nil
@@ -571,13 +581,14 @@ func validateApprovedCommands(commands []string) error {
 
 func cloneRegistration(record registryRecord) Registration {
 	return Registration{
-		Snapshot:        cloneSnapshot(record.Snapshot),
-		PublicKey:       append([]byte(nil), record.PublicKey...),
-		RequestedRole:   record.RequestedRole,
-		RequestedAt:     record.RequestedAt,
-		AllowedCommands: append([]string(nil), record.AllowedCommands...),
-		ApprovedAt:      record.ApprovedAt,
-		RevokedAt:       record.RevokedAt,
+		Snapshot:            cloneSnapshot(record.Snapshot),
+		PublicKey:           append([]byte(nil), record.PublicKey...),
+		RequestedRole:       record.RequestedRole,
+		RequestedAt:         record.RequestedAt,
+		AllowedCommands:     append([]string(nil), record.AllowedCommands...),
+		ApprovedCatalogHash: record.ApprovedCatalogHash,
+		ApprovedAt:          record.ApprovedAt,
+		RevokedAt:           record.RevokedAt,
 	}
 }
 

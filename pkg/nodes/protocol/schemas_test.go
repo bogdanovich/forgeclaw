@@ -44,6 +44,7 @@ func TestExecutionPlanSchemaMatchesDomain(t *testing.T) {
 		InvocationID:     "inv_test",
 		IdempotencyKey:   "idem_test",
 		NodeID:           nodes.ID("node_test"),
+		CatalogHash:      strings.Repeat("a", 64),
 		Command:          descriptor.Name,
 		Input:            json.RawMessage(`{}`),
 		AgentID:          "main",

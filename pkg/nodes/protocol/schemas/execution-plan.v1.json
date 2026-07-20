@@ -8,6 +8,7 @@
     "invocation_id",
     "idempotency_key",
     "node_id",
+    "catalog_hash",
     "command",
     "input",
     "agent_id",
@@ -26,6 +27,7 @@
     "invocation_id": {"$ref": "#/$defs/identifier"},
     "idempotency_key": {"$ref": "#/$defs/identifier"},
     "node_id": {"$ref": "#/$defs/identifier"},
+    "catalog_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "command": {
       "type": "string",
       "maxLength": 128,

@@ -36,6 +36,7 @@ type InvocationRequest struct {
 	InvocationID     string          `json:"invocation_id"`
 	IdempotencyKey   string          `json:"idempotency_key"`
 	NodeID           ID              `json:"node_id"`
+	CatalogHash      string          `json:"catalog_hash"`
 	Command          string          `json:"command"`
 	Input            json.RawMessage `json:"input"`
 	AgentID          string          `json:"agent_id"`
@@ -55,6 +56,9 @@ func (request InvocationRequest) Validate() error {
 	}
 	if err := request.NodeID.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidInvocation, err)
+	}
+	if !validSHA256Digest(request.CatalogHash) {
+		return fmt.Errorf("%w: malformed catalog hash", ErrInvalidInvocation)
 	}
 	if len(request.Command) == 0 || len(request.Command) > MaxCommandNameLen ||
 		!commandPattern.MatchString(request.Command) {
@@ -197,6 +201,10 @@ func (registration Registration) ApprovedCommand(name string) (CommandDescriptor
 	if !slices.Contains(registration.AllowedCommands, name) {
 		return CommandDescriptor{}, fmt.Errorf("%w: command is not approved", ErrCommandDenied)
 	}
+	if !validSHA256Digest(registration.ApprovedCatalogHash) ||
+		registration.ApprovedCatalogHash != registration.Snapshot.CatalogHash {
+		return CommandDescriptor{}, fmt.Errorf("%w: capability catalog requires reapproval", ErrCommandDenied)
+	}
 	return descriptor, nil
 }
 
@@ -237,6 +245,7 @@ func (policy LocalCommandPolicy) Authorize(
 	descriptor CommandDescriptor,
 	receivingNodeID ID,
 	actualExecutor string,
+	actualCatalogHash string,
 	now time.Time,
 ) error {
 	if err := policy.Validate(); err != nil {
@@ -249,7 +258,8 @@ func (policy LocalCommandPolicy) Authorize(
 		return err
 	}
 	if err := receivingNodeID.Validate(); err != nil || !validInvocationIdentifier(actualExecutor) ||
-		plan.NodeID != receivingNodeID || plan.Executor != actualExecutor {
+		!validSHA256Digest(actualCatalogHash) || plan.NodeID != receivingNodeID ||
+		plan.Executor != actualExecutor || plan.CatalogHash != actualCatalogHash {
 		return fmt.Errorf("%w: plan target does not match local runtime", ErrCommandDenied)
 	}
 	if descriptor.Name != plan.Command || descriptor.Risk != plan.Risk ||
@@ -306,6 +316,9 @@ func canonicalInvocationInputValue(raw json.RawMessage) (json.RawMessage, map[st
 	canonical, err := jsonstrict.Canonical(raw)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: canonicalize input: %v", ErrInvalidInvocation, err)
+	}
+	if len(canonical) > MaxInvocationInputBytes {
+		return nil, nil, fmt.Errorf("%w: canonical input is outside bounds", ErrInvalidInvocation)
 	}
 	return json.RawMessage(canonical), value.(map[string]any), nil
 }
