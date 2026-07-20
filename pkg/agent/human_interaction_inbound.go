@@ -662,6 +662,7 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 	}
 	turnScope := al.newTurnEventScope(
 		agent.ID,
+		agent.Workspace,
 		opts.Dispatch.SessionKey,
 		newTurnContext(opts.Dispatch.InboundContext, nil, opts.Dispatch.SessionScope),
 	)
@@ -831,6 +832,7 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 		}},
 		scope: al.newTurnEventScope(
 			record.Route.AgentID,
+			workspace,
 			record.Route.SessionKey,
 			newTurnContext(&inbound, nil, nil),
 		),

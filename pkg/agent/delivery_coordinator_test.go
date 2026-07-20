@@ -512,7 +512,7 @@ func newDeliveryCoordinatorTestRuntimeWithWorkspace(
 				InboundContext: inbound,
 			},
 		},
-		scope: al.newTurnEventScope(agent.ID, "session-1", &TurnContext{Inbound: inbound}),
+		scope: al.newTurnEventScope(agent.ID, agent.Workspace, "session-1", &TurnContext{Inbound: inbound}),
 	}
 	return al, msgBus, ts, workspace
 }

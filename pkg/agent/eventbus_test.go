@@ -46,6 +46,7 @@ func TestAgentLoop_PublishesRuntimeEvents(t *testing.T) {
 		runtimeevents.KindAgentToolExecStart,
 		HookMeta{
 			AgentID:      "main",
+			Workspace:    "/workspace/main",
 			TurnID:       "turn-1",
 			ParentTurnID: "parent-turn",
 			SessionKey:   "session-1",
@@ -76,6 +77,7 @@ func TestAgentLoop_PublishesRuntimeEvents(t *testing.T) {
 	}
 	if runtimeEvt.Scope.AgentID != "main" ||
 		runtimeEvt.Scope.SessionKey != "session-1" ||
+		runtimeEvt.Scope.Workspace != "/workspace/main" ||
 		runtimeEvt.Scope.TurnID != "turn-1" ||
 		runtimeEvt.Scope.Channel != "cli" ||
 		runtimeEvt.Scope.Account != "default" ||
@@ -99,6 +101,46 @@ func TestAgentLoop_PublishesRuntimeEvents(t *testing.T) {
 	}
 	if payload.Tool != "mock_custom" {
 		t.Fatalf("runtime payload tool = %q, want mock_custom", payload.Tool)
+	}
+}
+
+func TestAgentLoop_RuntimeEventSubscriptionIsolatesWorkspaceTraceScope(t *testing.T) {
+	runtimeBus := runtimeevents.NewBus()
+	al := &AgentLoop{runtimeEvents: runtimeBus}
+	t.Cleanup(func() {
+		if err := runtimeBus.Close(); err != nil {
+			t.Errorf("runtime bus close failed: %v", err)
+		}
+	})
+
+	const turnID = "shared-turn"
+	mainScope := runtimeevents.NewTraceScope("/workspace/main", turnID)
+	otherScope := runtimeevents.NewTraceScope("/workspace/other", turnID)
+	_, mainEvents, err := al.RuntimeEvents().Scope(runtimeevents.ScopeFilter{
+		TraceScope: mainScope,
+	}).SubscribeChan(context.Background(), runtimeevents.SubscribeOptions{Name: "main", Buffer: 1})
+	if err != nil {
+		t.Fatalf("subscribe main scope: %v", err)
+	}
+	_, otherEvents, err := al.RuntimeEvents().Scope(runtimeevents.ScopeFilter{
+		TraceScope: otherScope,
+	}).SubscribeChan(context.Background(), runtimeevents.SubscribeOptions{Name: "other", Buffer: 1})
+	if err != nil {
+		t.Fatalf("subscribe other scope: %v", err)
+	}
+
+	al.emitEvent(runtimeevents.KindAgentTurnStart, HookMeta{
+		AgentID: "main", Workspace: otherScope.Workspace, TurnID: turnID,
+	}, nil)
+	al.emitEvent(runtimeevents.KindAgentTurnStart, HookMeta{
+		AgentID: "main", Workspace: mainScope.Workspace, TurnID: turnID,
+	}, nil)
+
+	if got := receiveRuntimeEvent(t, mainEvents).Scope.TurnTraceScope(); got != mainScope {
+		t.Fatalf("main subscription scope = %+v, want %+v", got, mainScope)
+	}
+	if got := receiveRuntimeEvent(t, otherEvents).Scope.TurnTraceScope(); got != otherScope {
+		t.Fatalf("other subscription scope = %+v, want %+v", got, otherScope)
 	}
 }
 
@@ -245,8 +287,11 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 		t.Fatal("expected runtime events to include turn id")
 	}
 	for i, evt := range events {
-		if evt.Scope.TurnID != turnID {
-			t.Fatalf("event %d has mismatched turn id %q, want %q", i, evt.Scope.TurnID, turnID)
+		traceScope := evt.Scope.TurnTraceScope()
+		if !traceScope.Complete() || traceScope.Workspace != defaultAgent.Workspace ||
+			traceScope.TurnID != turnID {
+			t.Fatalf("event %d has trace scope %+v, want workspace %q and turn %q",
+				i, traceScope, defaultAgent.Workspace, turnID)
 		}
 		if evt.Scope.SessionKey != "session-1" {
 			t.Fatalf("event %d has session key %q, want session-1", i, evt.Scope.SessionKey)

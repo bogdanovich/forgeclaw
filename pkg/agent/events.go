@@ -10,6 +10,7 @@ import (
 // runtime events emitted from turn processing.
 type HookMeta struct {
 	AgentID      string
+	Workspace    string
 	TurnID       string
 	ParentTurnID string
 	SessionKey   string

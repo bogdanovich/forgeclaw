@@ -3,10 +3,12 @@ package agent
 import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 
 func runtimeScopeFromHookMeta(meta HookMeta, eventCtx *TurnContext) runtimeevents.Scope {
+	traceScope := runtimeevents.NewTraceScope(meta.Workspace, meta.TurnID)
 	scope := runtimeevents.Scope{
 		AgentID:    meta.AgentID,
 		SessionKey: meta.SessionKey,
-		TurnID:     meta.TurnID,
+		Workspace:  traceScope.Workspace,
+		TurnID:     traceScope.TurnID,
 	}
 
 	if eventCtx == nil || eventCtx.Inbound == nil {

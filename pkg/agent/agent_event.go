@@ -8,10 +8,14 @@ import (
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
-func (al *AgentLoop) newTurnEventScope(agentID, sessionKey string, turnCtx *TurnContext) turnEventScope {
+func (al *AgentLoop) newTurnEventScope(
+	agentID, workspace, sessionKey string,
+	turnCtx *TurnContext,
+) turnEventScope {
 	seq := al.turnSeq.Add(1)
 	return turnEventScope{
 		agentID:    agentID,
+		workspace:  workspace,
 		sessionKey: sessionKey,
 		turnID:     fmt.Sprintf("%s-turn-%d", agentID, seq),
 		context:    cloneTurnContext(turnCtx),
@@ -21,6 +25,7 @@ func (al *AgentLoop) newTurnEventScope(agentID, sessionKey string, turnCtx *Turn
 func (ts turnEventScope) meta(iteration int, source, tracePath string) HookMeta {
 	return HookMeta{
 		AgentID:     ts.agentID,
+		Workspace:   ts.workspace,
 		TurnID:      ts.turnID,
 		SessionKey:  ts.sessionKey,
 		Iteration:   iteration,

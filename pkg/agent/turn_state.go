@@ -763,6 +763,7 @@ func (ts *turnState) eventMeta(source, tracePath string) HookMeta {
 	snap := ts.snapshot()
 	return HookMeta{
 		AgentID:     snap.AgentID,
+		Workspace:   ts.workspace,
 		TurnID:      snap.TurnID,
 		SessionKey:  snap.SessionKey,
 		Iteration:   snap.Iteration,
