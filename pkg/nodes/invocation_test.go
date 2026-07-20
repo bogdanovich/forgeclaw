@@ -3,6 +3,7 @@ package nodes
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -82,6 +83,28 @@ func TestPrepareExecutionPlanBoundsTrustedLifetime(t *testing.T) {
 		MaxExecutionPlanTTL+time.Second,
 	); !errors.Is(err, ErrInvalidInvocation) {
 		t.Fatalf("overlong plan lifetime error = %v", err)
+	}
+}
+
+func TestExecutionPlanRejectsExtremeTimestampLifetime(t *testing.T) {
+	plan, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"argv":["git","status"]}`)),
+		invocationDescriptor(RiskWrite),
+		"local",
+		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.ExpiresAt = math.MaxInt64
+	plan.PlanHash, err = plan.computeHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Validate(); !errors.Is(err, ErrInvalidInvocation) {
+		t.Fatalf("extreme lifetime Validate() error = %v", err)
 	}
 }
 

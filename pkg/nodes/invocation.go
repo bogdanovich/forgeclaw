@@ -139,7 +139,7 @@ func (plan ExecutionPlan) Validate() error {
 		return fmt.Errorf("%w: malformed execution policy", ErrInvalidInvocation)
 	}
 	if plan.PreparedAt <= 0 || plan.ExpiresAt <= plan.PreparedAt ||
-		time.Duration(plan.ExpiresAt-plan.PreparedAt)*time.Second > MaxExecutionPlanTTL {
+		plan.ExpiresAt-plan.PreparedAt > int64(MaxExecutionPlanTTL/time.Second) {
 		return fmt.Errorf("%w: plan lifetime is outside bounds", ErrInvalidInvocation)
 	}
 	wantHash, err := plan.computeHash()
