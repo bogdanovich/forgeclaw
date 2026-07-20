@@ -1390,7 +1390,17 @@ func TestSendMedia_PropagatesFailure(t *testing.T) {
 }
 
 func TestSendMedia_UnsupportedChannelReturnsError(t *testing.T) {
+	eventBus := runtimeevents.NewBus()
+	t.Cleanup(func() { _ = eventBus.Close() })
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindChannelMessageOutboundFailed,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "unsupported-media", Buffer: 1})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
 	m := newTestManager()
+	m.runtimeEvents = eventBus
 	ch := &mockChannel{
 		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
 			return nil
@@ -1402,17 +1412,28 @@ func TestSendMedia_UnsupportedChannelReturnsError(t *testing.T) {
 	}
 	m.channels["test"] = ch
 	m.workers["test"] = w
+	traceScopes := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+	}
 
-	err := m.SendMedia(context.Background(), testOutboundMediaMessage(bus.OutboundMediaMessage{
-		Channel: "test",
-		ChatID:  "chat1",
-		Parts:   []bus.MediaPart{{Ref: "media://abc"}},
+	err = m.SendMedia(context.Background(), testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel:     "test",
+		ChatID:      "chat1",
+		TraceScopes: traceScopes,
+		Parts:       []bus.MediaPart{{Ref: "media://abc"}},
 	}))
 	if err == nil {
 		t.Fatal("expected SendMedia to return error for unsupported channel")
 	}
 	if !strings.Contains(err.Error(), "does not support media sending") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	failed := receiveChannelRuntimeEvent(t, eventsCh)
+	payload, ok := failed.Payload.(ChannelOutboundPayload)
+	if failed.Kind != runtimeevents.KindChannelMessageOutboundFailed || !ok || !payload.Media ||
+		!strings.Contains(payload.Error, "does not support media sending") ||
+		!slices.Equal(payload.TraceScopes, traceScopes) {
+		t.Fatalf("failed event = %#v", failed)
 	}
 }
 

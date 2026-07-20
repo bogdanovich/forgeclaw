@@ -2156,6 +2156,7 @@ func (m *Manager) sendMediaWithRetry(
 			"channel": name,
 			"error":   err.Error(),
 		})
+		m.publishOutboundMediaFailed(name, msg, err)
 		return nil, err
 	}
 
