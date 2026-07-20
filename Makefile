@@ -1,4 +1,4 @@
-.PHONY: all build install uninstall clean help test integration-test build-all lint-docs
+.PHONY: all build build-node install uninstall clean help test integration-test build-all lint-docs
 
 # Build variables
 BINARY_NAME=picoclaw
@@ -30,6 +30,7 @@ BUILD_TIME=$(if $(BUILD_TIME_RAW),$(BUILD_TIME_RAW),dev)
 GO_VERSION=$(if $(GO_VERSION_RAW),$(firstword $(GO_VERSION_RAW)),unknown)
 CONFIG_PKG=github.com/sipeed/picoclaw/pkg/config
 LDFLAGS=-X $(CONFIG_PKG).Version=$(VERSION) -X $(CONFIG_PKG).GitCommit=$(GIT_COMMIT) -X $(CONFIG_PKG).BuildTime=$(BUILD_TIME) -X $(CONFIG_PKG).GoVersion=$(GO_VERSION) -s -w
+NODE_LDFLAGS=-X main.version=$(VERSION) -s -w
 
 # Go variables
 GO?=go
@@ -214,6 +215,17 @@ else
 	@$(LNCMD) $(BINARY_NAME)-$(PLATFORM)-$(ARCH)$(EXT) $(BUILD_DIR)/$(BINARY_NAME)$(EXT)
 endif
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)$(EXT)"
+
+## build-node: Build the slim picoclaw-node companion for current platform
+build-node:
+ifeq ($(OS),Windows_NT)
+	@$(POWERSHELL) "New-Item -ItemType Directory -Force -Path '$(BUILD_DIR)' | Out-Null"
+	@$(POWERSHELL) "$$env:GOOS='$(PLATFORM)'; $$env:GOARCH='$(ARCH)'; $(GO) build $(GOFLAGS) -ldflags '$(NODE_LDFLAGS)' -o '$(BUILD_DIR)/picoclaw-node$(EXT)' ./cmd/picoclaw-node"
+else
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=$(PLATFORM) GOARCH=$(ARCH) $(GO) build $(GOFLAGS) -ldflags "$(NODE_LDFLAGS)" -o $(BUILD_DIR)/picoclaw-node$(EXT) ./cmd/picoclaw-node
+endif
+	@echo "Build complete: $(BUILD_DIR)/picoclaw-node$(EXT)"
 
 ## build-launcher: Build the picoclaw-launcher (web console) binary
 build-launcher:

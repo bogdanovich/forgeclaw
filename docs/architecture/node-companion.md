@@ -562,6 +562,21 @@ It does not load models, agents, sessions, channels, MCP servers, or workspace
 memory. Linux installs as a systemd user service by default. macOS installs as
 a LaunchAgent. System-level installation is explicit.
 
+The MVP uses one gateway binding per companion process. One machine may run
+multiple named service instances from the same `picoclaw-node` binary, each
+with a separate configuration, state directory, device key, pairing token,
+policy, and invocation ledger. This is the default way for independently
+deployed ForgeClaw workspaces to use the same host without sharing authority.
+
+A future multi-gateway supervisor may host several connection bindings over one
+shared capability runtime. The runtime is therefore instance-scoped rather than
+global, and future policy and ledger keys must include a stable gateway binding
+identity as well as the invocation ID. Shared stateful resources such as a
+browser profile require node-local scheduling and explicit cross-binding policy;
+they must not be shared merely because two gateway URLs appear in configuration.
+This extension changes connection supervision, not the node protocol or command
+handler contracts.
+
 ### Privilege separation
 
 The companion runs as an unprivileged account. Read-only inspection should not
