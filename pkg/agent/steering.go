@@ -522,7 +522,9 @@ func (al *AgentLoop) agentForRuntimeScope(
 		return agent
 	}
 
-	var candidate *AgentInstance
+	var workspaceCandidate *AgentInstance
+	var resolvedCandidate *AgentInstance
+	workspaceAmbiguous := false
 	agentIDs := registry.ListAgentIDs()
 	sort.Strings(agentIDs)
 	for _, candidateID := range agentIDs {
@@ -533,15 +535,25 @@ func (al *AgentLoop) agentForRuntimeScope(
 		if resolvedID := session.ResolveAgentID(agent.Sessions, scope.sessionKey); resolvedID != "" {
 			resolved, ok := registry.GetAgent(resolvedID)
 			if ok && resolved != nil && normalizeRuntimeWorkspace(resolved.Workspace) == scope.workspace {
-				return resolved
+				if resolvedCandidate != nil && resolvedCandidate.ID != resolved.ID {
+					return nil
+				}
+				resolvedCandidate = resolved
 			}
 		}
-		if candidate != nil {
-			return nil
+		if workspaceCandidate != nil && workspaceCandidate.ID != agent.ID {
+			workspaceAmbiguous = true
+		} else {
+			workspaceCandidate = agent
 		}
-		candidate = agent
 	}
-	return candidate
+	if resolvedCandidate != nil {
+		return resolvedCandidate
+	}
+	if workspaceAmbiguous {
+		return nil
+	}
+	return workspaceCandidate
 }
 
 // Continue resumes an idle agent by dequeuing any pending steering messages

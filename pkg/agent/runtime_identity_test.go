@@ -6,6 +6,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -330,5 +331,39 @@ func TestMessageToolSuppressionUsesExplicitSessionOwner(t *testing.T) {
 	}
 	if messageToolSentToSameChat(secondAgent, "shared-session", "test", "same") {
 		t.Fatal("second owner inherited first owner message state")
+	}
+}
+
+func TestAgentForRuntimeScopeFailsClosedOnAmbiguousStoredOwners(t *testing.T) {
+	firstJSONL, err := memory.NewJSONLStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSONL, err := memory.NewJSONLStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstStore := session.NewJSONLBackend(firstJSONL)
+	secondStore := session.NewJSONLBackend(secondJSONL)
+	key := "shared-session"
+	firstStore.EnsureSessionMetadata(key, &session.SessionScope{
+		Version: session.ScopeVersionV1, AgentID: "first",
+	}, nil)
+	secondStore.EnsureSessionMetadata(key, &session.SessionScope{
+		Version: session.ScopeVersionV1, AgentID: "second",
+	}, nil)
+	al := &AgentLoop{registry: &AgentRegistry{agents: map[string]*AgentInstance{
+		"first": {
+			ID: "first", Workspace: "/workspace/shared", Sessions: firstStore,
+		},
+		"second": {
+			ID: "second", Workspace: "/workspace/shared", Sessions: secondStore,
+		},
+	}}}
+
+	if got := al.agentForRuntimeScope(
+		newRuntimeSessionScope("/workspace/shared", key), "",
+	); got != nil {
+		t.Fatalf("ambiguous owner = %q, want nil", got.ID)
 	}
 }

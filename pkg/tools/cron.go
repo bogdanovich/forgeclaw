@@ -32,6 +32,13 @@ type scheduledJobExecutor interface {
 	ProcessScheduledWithChannel(ctx context.Context, content, sessionKey, channel, chatID string) (string, error)
 }
 
+type scheduledIdentityJobExecutor interface {
+	ProcessScheduledWithIdentity(
+		ctx context.Context,
+		content, sessionKey, channel, chatID string,
+	) (response, agentID string, err error)
+}
+
 // CronTool provides scheduling capabilities for the agent
 type CronTool struct {
 	cronService           *cron.CronService
@@ -727,8 +734,17 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	// interactive progress/tool-feedback messages; they should only publish a
 	// final response when the job has something actionable to say.
 	var response string
+	var agentID string
 	var err error
-	if scheduledExecutor, ok := t.executor.(scheduledJobExecutor); ok {
+	if identityExecutor, ok := t.executor.(scheduledIdentityJobExecutor); ok {
+		response, agentID, err = identityExecutor.ProcessScheduledWithIdentity(
+			ctx,
+			job.Payload.Message,
+			sessionKey,
+			channel,
+			chatID,
+		)
+	} else if scheduledExecutor, ok := t.executor.(scheduledJobExecutor); ok {
 		response, err = scheduledExecutor.ProcessScheduledWithChannel(
 			ctx,
 			job.Payload.Message,
@@ -763,7 +779,7 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 			return "ok"
 		}
 		t.executor.PublishResponseIfNeeded(
-			ctx, t.workspace, "", channel, chatID, sessionKey, response,
+			ctx, t.workspace, agentID, channel, chatID, sessionKey, response,
 		)
 		t.finishCronTaskRecord(taskID, taskregistry.StatusSucceeded, taskregistry.DeliveryDelivered, response, nil)
 		return "ok"
