@@ -399,6 +399,13 @@ authenticate the device; TLS authenticates and protects the transport.
 Pairing is not per-command approval. It establishes device identity and the
 maximum command surface that later policy may use.
 
+Gateway admission is opt-in through `nodes.enabled` and is mounted at
+`/nodes/v1/ws`. Plain `ws://` admission remains disabled unless
+`nodes.allow_loopback_plaintext` is explicitly enabled, and that exception is
+accepted only from a loopback peer. Unknown signed identities are persisted as
+bounded `pending_pairing` records; this admission path does not approve a node
+or expose any executable command surface.
+
 ### Liveness
 
 The companion maintains one connection with heartbeat and bounded exponential

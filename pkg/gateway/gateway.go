@@ -49,6 +49,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/netbind"
+	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/pid"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/state"
@@ -71,6 +72,7 @@ type services struct {
 	MediaStore       media.MediaStore
 	ChannelManager   *channels.Manager
 	DeviceService    *devices.Service
+	NodeRegistry     *nodes.FileRegistry
 	HealthServer     *health.Server
 	VoiceAgentCancel context.CancelFunc
 	manualReloadChan chan struct{}
@@ -668,6 +670,10 @@ func setupAndStartServices(
 		listenAddr,
 		runningServices.HealthServer,
 	)
+	runningServices.NodeRegistry, err = setupNodeAdmission(cfg, runningServices.ChannelManager)
+	if err != nil {
+		return nil, fmt.Errorf("error setting up node admission: %w", err)
+	}
 
 	// Capture durable work before channel ingress starts, then replay the exact
 	// snapshot after outbound dispatch is live.

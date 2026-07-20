@@ -49,6 +49,7 @@ type Config struct {
 	Tools      ToolsConfig      `json:"tools"                   yaml:",inline"`
 	Heartbeat  HeartbeatConfig  `json:"heartbeat"               yaml:"-"`
 	Devices    DevicesConfig    `json:"devices"                 yaml:"-"`
+	Nodes      NodesConfig      `json:"nodes,omitempty"         yaml:"-"`
 	Voice      VoiceConfig      `json:"voice"                   yaml:"-"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty" yaml:"-"`
@@ -821,6 +822,12 @@ type HeartbeatConfig struct {
 type DevicesConfig struct {
 	Enabled    bool `json:"enabled"     env:"PICOCLAW_DEVICES_ENABLED"`
 	MonitorUSB bool `json:"monitor_usb" env:"PICOCLAW_DEVICES_MONITOR_USB"`
+}
+
+type NodesConfig struct {
+	Enabled                bool `json:"enabled,omitempty"                  env:"PICOCLAW_NODES_ENABLED"`
+	AllowLoopbackPlaintext bool `json:"allow_loopback_plaintext,omitempty" env:"PICOCLAW_NODES_ALLOW_LOOPBACK_PLAINTEXT"`
+	MaxPendingPairings     int  `json:"max_pending_pairings,omitempty"     env:"PICOCLAW_NODES_MAX_PENDING_PAIRINGS"`
 }
 
 type VoiceConfig struct {

@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -144,6 +145,20 @@ func TestDynamicServeMuxConcurrent(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestDynamicServeMuxTryHandleRejectsCollision(t *testing.T) {
+	dm := newDynamicServeMux()
+	if err := dm.TryHandle("/nodes/v1/ws", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})); err != nil {
+		t.Fatal(err)
+	}
+	err := dm.TryHandle(
+		"/nodes/v1/ws",
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	)
+	if !errors.Is(err, errHTTPHandlerAlreadyRegistered) {
+		t.Fatalf("TryHandle() error = %v", err)
+	}
 }
 
 func TestDynamicServeMuxHandleUsesHandler(t *testing.T) {
