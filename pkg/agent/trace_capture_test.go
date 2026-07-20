@@ -106,6 +106,51 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 	}
 }
 
+func TestTraceCaptureNormalizesTurnEndScope(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := traceTestConfig(workspace)
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(cfg, eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+
+	startedAt := time.Now().UTC()
+	paddedScope := runtimeevents.Scope{
+		TraceScope: runtimeevents.TraceScope{
+			Workspace: "  " + workspace + "  ",
+			TurnID:    "  turn-padded  ",
+		},
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "start-padded", Kind: runtimeevents.KindAgentTurnStart, Time: startedAt,
+		Source: runtimeevents.Source{Component: "agent"}, Scope: paddedScope,
+		Payload: TurnStartPayload{Workspace: workspace},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "end-padded", Kind: runtimeevents.KindAgentTurnEnd, Time: startedAt.Add(time.Millisecond),
+		Source: runtimeevents.Source{Component: "agent"}, Scope: paddedScope,
+		Payload: TurnEndPayload{Status: TurnEndStatusCompleted, Workspace: workspace},
+	})
+
+	tracePath := waitForTraceFile(t, workspace)
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trace evaltrace.Trace
+	if err := json.Unmarshal(data, &trace); err != nil {
+		t.Fatalf("decode trace: %v", err)
+	}
+	if trace.Metadata.RootTurnID != "turn-padded" {
+		t.Fatalf("root turn ID = %q, want normalized value", trace.Metadata.RootTurnID)
+	}
+	if trace.Outcome == nil || trace.Outcome.Status != string(TurnEndStatusCompleted) {
+		t.Fatalf("outcome = %#v", trace.Outcome)
+	}
+}
+
 func TestTraceCaptureDisabledWritesNothing(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := config.DefaultConfig()

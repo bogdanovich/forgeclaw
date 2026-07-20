@@ -313,9 +313,13 @@ func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
 		}
 		return
 	}
-	traceScope := event.Scope.TraceScope
+	if event.Kind != runtimeevents.KindAgentTurnEnd || len(traceScopes) != 1 {
+		m.mu.Unlock()
+		return
+	}
+	traceScope := traceScopes[0]
 	trace := m.turns[traceScope]
-	if event.Kind != runtimeevents.KindAgentTurnEnd || trace == nil {
+	if trace == nil {
 		m.mu.Unlock()
 		return
 	}
