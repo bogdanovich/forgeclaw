@@ -2893,6 +2893,51 @@ func TestDeliverExplicitToolOutbound_NoBusDoesNotReportQueuedText(t *testing.T) 
 	}
 }
 
+func TestDeliverFinalTurnToolTextCarriesTraceSettlement(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result *tools.ToolResult
+	}{
+		{name: "implicit text", result: tools.UserResult("final text")},
+		{name: "explicit text", result: (&tools.ToolResult{}).WithOutboundDelivery(
+			toolshared.OutboundDelivery{Text: "final text"},
+		)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Agents.Defaults.Workspace = t.TempDir()
+			msgBus := bus.NewMessageBus()
+			al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+			defer al.Close()
+			agent := al.registry.GetDefaultAgent()
+			traceScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-final-text")
+			ts := &turnState{
+				agent: agent, agentID: agent.ID,
+				workspace: agent.Workspace, turnID: traceScope.TurnID,
+				channel: "cli", chatID: "chat1", sessionKey: "session-final-text",
+				opts: processOptions{Dispatch: DispatchRequest{InboundContext: &bus.InboundContext{
+					Channel: "cli", ChatID: "chat1", SenderID: "user1",
+				}}},
+			}
+			_, outcome, err := al.deliverToolResultToUser(
+				t.Context(), ts, test.result, "final_turn",
+			)
+			if err != nil || outcome != toolResultDeliveryQueued {
+				t.Fatalf("final text delivery = (%v, %v)", outcome, err)
+			}
+			select {
+			case outbound := <-msgBus.OutboundChan():
+				if outbound.Content != "final text" || !outbound.TraceSettlement ||
+					len(outbound.TraceScopes) != 1 || outbound.TraceScopes[0] != traceScope {
+					t.Fatalf("final text outbound = %#v", outbound)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("final text was not queued")
+			}
+		})
+	}
+}
+
 func TestProcessMessage_HandledToolProcessesQueuedSteeringBeforeReturning(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
