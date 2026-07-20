@@ -544,6 +544,7 @@ func TestTraceCaptureBackfillsDurableInteractionHistoryAfterRestart(t *testing.T
 func TestTraceCaptureRetriesCriticalInteractionPersistence(t *testing.T) {
 	manager := &traceCaptureManager{
 		persistCh:     make(chan tracePersistRequest, 1),
+		persistWake:   make(chan struct{}, 1),
 		retryInterval: 5 * time.Millisecond,
 	}
 	var attempts atomic.Int32
@@ -584,8 +585,10 @@ func TestTraceCaptureRetriesCriticalInteractionPersistence(t *testing.T) {
 	}
 }
 
-func TestTraceCaptureDoesNotDropCriticalInteractionOnBackpressure(t *testing.T) {
-	manager := &traceCaptureManager{persistCh: make(chan tracePersistRequest, 1)}
+func TestTraceCaptureQueuesCriticalInteractionWithoutBlockingOnBackpressure(t *testing.T) {
+	manager := &traceCaptureManager{
+		persistCh: make(chan tracePersistRequest, 1), persistWake: make(chan struct{}, 1),
+	}
 	manager.persistCh <- tracePersistRequest{trace: &activeTraceCapture{workspace: "occupied"}}
 	done := make(chan struct{})
 	go func() {
@@ -601,18 +604,51 @@ func TestTraceCaptureDoesNotDropCriticalInteractionOnBackpressure(t *testing.T) 
 	}()
 	select {
 	case <-done:
-		t.Fatal("critical persistence returned while the queue was full")
-	case <-time.After(20 * time.Millisecond):
-	}
-	<-manager.persistCh
-	select {
-	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("critical persistence did not resume after queue capacity became available")
+		t.Fatal("critical persistence blocked behind the bounded trace channel")
 	}
-	request := <-manager.persistCh
+	manager.persistMu.Lock()
+	queueLen := len(manager.criticalQueue)
+	if queueLen != 1 {
+		manager.persistMu.Unlock()
+		t.Fatalf("critical queue length = %d, want 1", queueLen)
+	}
+	request := manager.criticalQueue["workspace\x00trace-critical-backpressure"]
+	manager.persistMu.Unlock()
 	if !request.critical || request.trace.trace.TraceID != "trace-critical-backpressure" {
 		t.Fatalf("queued request = %#v", request)
+	}
+}
+
+func TestTraceCaptureFlushesRetryableCriticalTraceOnShutdown(t *testing.T) {
+	manager := &traceCaptureManager{
+		persistCh:     make(chan tracePersistRequest, 1),
+		persistWake:   make(chan struct{}, 1),
+		retryInterval: time.Hour,
+	}
+	firstFailed := make(chan struct{})
+	var attempts atomic.Int32
+	manager.persistAttempt = func(traceCaptureSettings, *activeTraceCapture) (bool, bool) {
+		if attempts.Add(1) == 1 {
+			close(firstFailed)
+			return false, true
+		}
+		return true, false
+	}
+	manager.persistWG.Add(1)
+	go manager.runPersistWorker(manager.persistCh)
+	manager.enqueuePersist(traceCaptureSettings{}, &activeTraceCapture{
+		workspace: "workspace",
+		trace: evaltrace.Trace{
+			TraceID:  "trace-critical-shutdown",
+			Metadata: evaltrace.Metadata{TraceKind: evaltrace.TraceKindInteraction},
+			Outcome:  &evaltrace.Outcome{Status: string(interactions.StatusResolved)},
+		},
+	})
+	<-firstFailed
+	manager.close()
+	if attempts.Load() < 2 {
+		t.Fatalf("shutdown persistence attempts = %d, want at least 2", attempts.Load())
 	}
 }
 

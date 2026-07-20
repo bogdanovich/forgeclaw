@@ -8,6 +8,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
+	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -57,12 +58,10 @@ func (al *AgentLoop) interactionRegistryForWorkspace(workspace string) *interact
 	}
 	options := interactions.Options{}
 	if cfg := al.GetConfig(); cfg != nil {
-		options.TerminalRetention = cfg.Tools.RequestUserInput.Retention()
-		if cfg.Evaluation.TraceCapture.Enabled {
-			traceRetention := time.Duration(cfg.Evaluation.TraceCapture.RetentionHours) * time.Hour
-			if traceRetention > options.TerminalRetention {
-				options.TerminalRetention = traceRetention
-			}
+		options.TerminalRetention = requiredInteractionRetention(cfg)
+		if cfg.Evaluation.TraceCapture.Enabled &&
+			cfg.Evaluation.TraceCapture.MaxTraces > interactions.DefaultMaxRecords {
+			options.MaxRecords = cfg.Evaluation.TraceCapture.MaxTraces
 		}
 	}
 	registry := interactions.NewRegistryWithOptions(
@@ -91,6 +90,39 @@ func (al *AgentLoop) interactionRegistryForWorkspace(workspace string) *interact
 		})
 	}
 	return stored
+}
+
+func requiredInteractionRetention(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return interactions.DefaultRetention
+	}
+	retention := cfg.Tools.RequestUserInput.Retention()
+	if cfg.Evaluation.TraceCapture.Enabled {
+		traceRetention := time.Duration(cfg.Evaluation.TraceCapture.RetentionHours) * time.Hour
+		if traceRetention > retention {
+			retention = traceRetention
+		}
+	}
+	return retention
+}
+
+func (al *AgentLoop) ensureInteractionRegistryRetention(cfg *config.Config) {
+	if al == nil {
+		return
+	}
+	retention := requiredInteractionRetention(cfg)
+	al.interactionRegistries.Range(func(key, value any) bool {
+		registry, _ := value.(*interactions.Registry)
+		if registry == nil {
+			return true
+		}
+		if err := registry.EnsureTerminalRetention(retention); err != nil {
+			logger.WarnCF("agent", "Failed to extend human interaction retention", map[string]any{
+				"workspace": key, "retention_hours": int(retention / time.Hour), "error": err.Error(),
+			})
+		}
+		return true
+	})
 }
 
 func (al *AgentLoop) observeInteractionEvent(

@@ -122,6 +122,54 @@ func (r *Registry) LastLoadError() error {
 	return r.loadErr
 }
 
+// EnsureTerminalRetention monotonically raises terminal retention and extends
+// retained terminal cleanup deadlines. It never shortens an existing policy.
+func (r *Registry) EnsureTerminalRetention(retention time.Duration) error {
+	if r == nil || retention <= 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if retention <= r.options.TerminalRetention {
+		return nil
+	}
+	previousRetention := r.options.TerminalRetention
+	r.options.TerminalRetention = retention
+	if err := r.availableLocked(); err != nil {
+		r.options.TerminalRetention = previousRetention
+		return err
+	}
+	releaseStore, err := r.lockAndReloadLocked()
+	if err != nil {
+		r.options.TerminalRetention = previousRetention
+		return err
+	}
+	before := r.snapshotLocked()
+	changed := false
+	for id, record := range r.records {
+		if !isTerminal(record.Status) || record.ResolvedAt <= 0 {
+			continue
+		}
+		cleanupAfter := record.ResolvedAt + retention.Milliseconds()
+		if record.CleanupAfter >= cleanupAfter {
+			continue
+		}
+		record.CleanupAfter = cleanupAfter
+		r.records[id] = record
+		changed = true
+	}
+	if changed {
+		if err := r.saveLocked(); err != nil {
+			r.restoreSnapshotLocked(before)
+			r.options.TerminalRetention = previousRetention
+			releaseStore()
+			return err
+		}
+	}
+	releaseStore()
+	return nil
+}
+
 func (r *Registry) Subscribe(observer Observer) func() {
 	if r == nil || observer == nil {
 		return func() {}

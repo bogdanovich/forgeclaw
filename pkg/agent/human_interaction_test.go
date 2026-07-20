@@ -76,6 +76,45 @@ func TestInteractionRegistryRetentionCoversEvaluationTraceRetention(t *testing.T
 	}
 }
 
+func TestInteractionRegistryRetentionExtendsOnConfigReload(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Tools.RequestUserInput.RetentionHours = 24
+	al := &AgentLoop{cfg: cfg}
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record := createTraceTestInteraction(t, registry, "interaction-retention-reload", "session-1")
+	record, err := registry.Cancel(record.ID, record.Revision, "fixture_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := config.DefaultConfig()
+	updated.Tools.RequestUserInput.RetentionHours = 24
+	updated.Evaluation.TraceCapture.Enabled = true
+	updated.Evaluation.TraceCapture.RetentionHours = 24 * 14
+	al.ensureInteractionRegistryRetention(updated)
+
+	loaded, ok := registry.Get(record.ID)
+	if !ok {
+		t.Fatal("terminal interaction was removed during retention extension")
+	}
+	wantRetention := 14 * 24 * time.Hour
+	if got := registry.Stats().Retention; got != wantRetention {
+		t.Fatalf("interaction retention = %s, want %s", got, wantRetention)
+	}
+	wantCleanup := loaded.ResolvedAt + wantRetention.Milliseconds()
+	if loaded.CleanupAfter != wantCleanup {
+		t.Fatalf("cleanup_after = %d, want %d", loaded.CleanupAfter, wantCleanup)
+	}
+	reloaded := interactions.NewRegistryWithOptions(
+		interactions.WorkspaceStorePath(workspace),
+		interactions.Options{TerminalRetention: wantRetention},
+	)
+	persisted, ok := reloaded.Get(record.ID)
+	if !ok || persisted.CleanupAfter != wantCleanup {
+		t.Fatalf("persisted retention extension = %+v, found=%v", persisted, ok)
+	}
+}
+
 func (*approvalContextTool) Name() string { return "approval_context" }
 
 func (*approvalContextTool) Description() string { return "Capture protected inbound context" }

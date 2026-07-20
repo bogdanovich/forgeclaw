@@ -355,6 +355,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	if al.traceCapture != nil {
 		al.traceCapture.updateConfig(cfg)
 	}
+	al.ensureInteractionRegistryRetention(cfg)
 
 	oldMCPManager := al.mcp.reset()
 	al.hookRuntime.reset(al)

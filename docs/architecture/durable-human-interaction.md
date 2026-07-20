@@ -413,8 +413,11 @@ interaction, and session indexes are scoped by workspace so cloned identifiers
 cannot mix evidence or route an interaction into another workspace's turn.
 When trace capture is enabled, terminal interaction records are retained for at
 least the evaluation trace-retention window. Terminal interaction persistence
-uses a non-dropping queue path and retries transient storage failures while the
-process remains alive; restart reconciliation remains the crash fallback.
+uses a nonblocking manager-owned critical queue and retries transient storage
+failures while the process remains alive. Graceful shutdown drains queued work
+and gives retryable writes a final attempt; restart reconciliation remains the
+crash fallback. Config reloads monotonically extend existing registry cleanup
+deadlines when trace retention increases.
 Replay diagnostics explicitly classify self-contained violations as
 `conclusive` and missing-prerequisite checks as `requires_complete_history`, so
 truncation cannot hide malformed approval consumption or expiry evidence.

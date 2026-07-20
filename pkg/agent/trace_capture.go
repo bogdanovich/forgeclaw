@@ -73,6 +73,8 @@ type traceCaptureManager struct {
 	persistWG       sync.WaitGroup
 	persistMu       sync.RWMutex
 	persistClosed   bool
+	criticalQueue   map[string]tracePersistRequest
+	persistWake     chan struct{}
 	droppedPersists atomic.Uint64
 	persistAttempt  func(traceCaptureSettings, *activeTraceCapture) (bool, bool)
 	retryInterval   time.Duration
@@ -126,6 +128,8 @@ func (m *traceCaptureManager) start() {
 	m.persistMu.Lock()
 	if m.persistCh == nil && !m.persistClosed {
 		m.persistCh = make(chan tracePersistRequest, tracePersistBuffer)
+		m.persistWake = make(chan struct{}, 1)
+		m.criticalQueue = make(map[string]tracePersistRequest)
 		m.persistWG.Add(1)
 		go m.runPersistWorker(m.persistCh)
 	}
@@ -873,18 +877,30 @@ func (m *traceCaptureManager) enqueuePersist(
 	if m == nil || trace == nil {
 		return
 	}
-	m.persistMu.RLock()
-	defer m.persistMu.RUnlock()
-	if m.persistClosed {
-		return
-	}
 	request := tracePersistRequest{
 		settings: settings,
 		trace:    trace,
 		critical: trace.trace.Metadata.TraceKind == evaltrace.TraceKindInteraction && trace.trace.Outcome != nil,
 	}
 	if request.critical {
-		m.persistCh <- request
+		m.persistMu.Lock()
+		defer m.persistMu.Unlock()
+		if m.persistClosed {
+			return
+		}
+		if m.criticalQueue == nil {
+			m.criticalQueue = make(map[string]tracePersistRequest)
+		}
+		m.criticalQueue[persistRequestKey(request)] = request
+		select {
+		case m.persistWake <- struct{}{}:
+		default:
+		}
+		return
+	}
+	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
+	if m.persistClosed {
 		return
 	}
 	select {
@@ -923,15 +939,43 @@ func (m *traceCaptureManager) runPersistWorker(ch <-chan tracePersistRequest) {
 		select {
 		case request, ok := <-ch:
 			if !ok {
+				for _, critical := range m.takeCriticalQueue() {
+					attempt(critical)
+				}
+				for _, critical := range pending {
+					stored, _ := m.attemptPersist(critical.settings, critical.trace)
+					if !stored {
+						logger.ErrorCF(
+							"evaltrace",
+							"Critical evaluation trace remained unpersisted at shutdown",
+							map[string]any{"trace_id": critical.trace.trace.TraceID},
+						)
+					}
+				}
 				return
 			}
 			attempt(request)
+		case <-m.persistWake:
+			for _, critical := range m.takeCriticalQueue() {
+				attempt(critical)
+			}
 		case <-ticker.C:
 			for _, request := range pending {
 				attempt(request)
 			}
 		}
 	}
+}
+
+func (m *traceCaptureManager) takeCriticalQueue() []tracePersistRequest {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+	queued := make([]tracePersistRequest, 0, len(m.criticalQueue))
+	for _, request := range m.criticalQueue {
+		queued = append(queued, request)
+	}
+	clear(m.criticalQueue)
+	return queued
 }
 
 func persistRequestKey(request tracePersistRequest) string {
