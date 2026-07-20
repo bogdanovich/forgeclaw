@@ -454,11 +454,17 @@ func TestNormalizeOutboundTraceScopes(t *testing.T) {
 		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
 	}
 
-	text := NormalizeOutboundMessage(OutboundMessage{TraceScopes: scopes})
+	text, err := NormalizeOutboundMessage(OutboundMessage{TraceScopes: scopes})
+	if err != nil {
+		t.Fatalf("normalize text: %v", err)
+	}
 	if !slices.Equal(text.TraceScopes, want) {
 		t.Fatalf("text trace scopes = %+v, want %+v", text.TraceScopes, want)
 	}
-	media := NormalizeOutboundMediaMessage(OutboundMediaMessage{TraceScopes: scopes})
+	media, err := NormalizeOutboundMediaMessage(OutboundMediaMessage{TraceScopes: scopes})
+	if err != nil {
+		t.Fatalf("normalize media: %v", err)
+	}
 	if !slices.Equal(media.TraceScopes, want) {
 		t.Fatalf("media trace scopes = %+v, want %+v", media.TraceScopes, want)
 	}
@@ -467,8 +473,43 @@ func TestNormalizeOutboundTraceScopes(t *testing.T) {
 		runtimeevents.NewTraceScope("/workspace/a", "turn-1"),
 		runtimeevents.NewTraceScope("/workspace/b", "turn-2"),
 	}
-	if got := NormalizeTraceScopes(crossWorkspace); got != nil {
-		t.Fatalf("cross-workspace trace scopes were accepted: %+v", got)
+	if _, err := NormalizeTraceScopes(crossWorkspace); !errors.Is(err, ErrMixedTraceScopeWorkspaces) {
+		t.Fatalf("cross-workspace trace scopes error = %v", err)
+	}
+}
+
+func TestPublishOutboundRejectsMixedTraceScopeWorkspaces(t *testing.T) {
+	mb := NewMessageBus()
+	defer mb.Close()
+	scopes := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/a", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/b", "turn-2"),
+	}
+
+	err := mb.PublishOutbound(context.Background(), OutboundMessage{
+		Context: NewOutboundContext("telegram", "chat-1", ""),
+		Content: "reply", TraceScopes: scopes,
+	})
+	if !errors.Is(err, ErrMixedTraceScopeWorkspaces) {
+		t.Fatalf("PublishOutbound error = %v", err)
+	}
+	err = mb.PublishOutboundMedia(context.Background(), OutboundMediaMessage{
+		Context: NewOutboundContext("telegram", "chat-1", ""),
+		Parts:   []MediaPart{{Type: "image", Ref: "media://test"}}, TraceScopes: scopes,
+	})
+	if !errors.Is(err, ErrMixedTraceScopeWorkspaces) {
+		t.Fatalf("PublishOutboundMedia error = %v", err)
+	}
+
+	select {
+	case msg := <-mb.OutboundChan():
+		t.Fatalf("invalid text outbound was delivered: %+v", msg)
+	default:
+	}
+	select {
+	case msg := <-mb.OutboundMediaChan():
+		t.Fatalf("invalid media outbound was delivered: %+v", msg)
+	default:
 	}
 }
 

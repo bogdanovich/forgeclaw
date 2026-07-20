@@ -1,10 +1,16 @@
 package bus
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
+
+// ErrMixedTraceScopeWorkspaces rejects one physical outbound that attempts to
+// correlate turns owned by different workspaces.
+var ErrMixedTraceScopeWorkspaces = errors.New("outbound trace scopes span multiple workspaces")
 
 // NewOutboundContext builds the minimal normalized addressing context required
 // to deliver an outbound text message or reply.
@@ -18,7 +24,7 @@ func NewOutboundContext(channel, chatID, replyToMessageID string) InboundContext
 
 // NormalizeOutboundMessage ensures Context is normalized and keeps convenience
 // mirrors in sync for runtime consumers.
-func NormalizeOutboundMessage(msg OutboundMessage) OutboundMessage {
+func NormalizeOutboundMessage(msg OutboundMessage) (OutboundMessage, error) {
 	msg.Channel = strings.TrimSpace(msg.Channel)
 	msg.ChatID = strings.TrimSpace(msg.ChatID)
 	msg.ReplyToMessageID = strings.TrimSpace(msg.ReplyToMessageID)
@@ -45,13 +51,14 @@ func NormalizeOutboundMessage(msg OutboundMessage) OutboundMessage {
 		msg.Context.ReplyToMessageID = msg.ReplyToMessageID
 	}
 	msg.Scope = cloneOutboundScope(msg.Scope)
-	msg.TraceScopes = NormalizeTraceScopes(msg.TraceScopes)
-	return msg
+	var err error
+	msg.TraceScopes, err = NormalizeTraceScopes(msg.TraceScopes)
+	return msg, err
 }
 
 // NormalizeTraceScopes returns complete, distinct scopes for one workspace.
 // A physical outbound cannot correlate turns from different workspaces.
-func NormalizeTraceScopes(scopes []runtimeevents.TraceScope) []runtimeevents.TraceScope {
+func NormalizeTraceScopes(scopes []runtimeevents.TraceScope) ([]runtimeevents.TraceScope, error) {
 	normalized := make([]runtimeevents.TraceScope, 0, len(scopes))
 	workspace := ""
 	for _, scope := range scopes {
@@ -62,7 +69,9 @@ func NormalizeTraceScopes(scopes []runtimeevents.TraceScope) []runtimeevents.Tra
 		if workspace == "" {
 			workspace = scope.Workspace
 		} else if scope.Workspace != workspace {
-			return nil
+			return nil, fmt.Errorf(
+				"%w: %q and %q", ErrMixedTraceScopeWorkspaces, workspace, scope.Workspace,
+			)
 		}
 		duplicate := false
 		for _, existing := range normalized {
@@ -75,28 +84,32 @@ func NormalizeTraceScopes(scopes []runtimeevents.TraceScope) []runtimeevents.Tra
 			normalized = append(normalized, scope)
 		}
 	}
-	return normalized
+	return normalized, nil
 }
 
 // SetOutboundTraceScopes records every turn correlated with one text outbound.
-func SetOutboundTraceScopes(msg *OutboundMessage, scopes []runtimeevents.TraceScope) {
+func SetOutboundTraceScopes(msg *OutboundMessage, scopes []runtimeevents.TraceScope) error {
 	if msg == nil {
-		return
+		return nil
 	}
-	msg.TraceScopes = NormalizeTraceScopes(scopes)
+	var err error
+	msg.TraceScopes, err = NormalizeTraceScopes(scopes)
+	return err
 }
 
 // SetOutboundMediaTraceScopes records every turn correlated with one media outbound.
-func SetOutboundMediaTraceScopes(msg *OutboundMediaMessage, scopes []runtimeevents.TraceScope) {
+func SetOutboundMediaTraceScopes(msg *OutboundMediaMessage, scopes []runtimeevents.TraceScope) error {
 	if msg == nil {
-		return
+		return nil
 	}
-	msg.TraceScopes = NormalizeTraceScopes(scopes)
+	var err error
+	msg.TraceScopes, err = NormalizeTraceScopes(scopes)
+	return err
 }
 
 // NormalizeOutboundMediaMessage ensures media outbound messages also carry a
 // normalized context while keeping convenience mirrors in sync.
-func NormalizeOutboundMediaMessage(msg OutboundMediaMessage) OutboundMediaMessage {
+func NormalizeOutboundMediaMessage(msg OutboundMediaMessage) (OutboundMediaMessage, error) {
 	msg.Channel = strings.TrimSpace(msg.Channel)
 	msg.ChatID = strings.TrimSpace(msg.ChatID)
 	if msg.Context.Channel == "" {
@@ -113,8 +126,9 @@ func NormalizeOutboundMediaMessage(msg OutboundMediaMessage) OutboundMediaMessag
 		msg.ChatID = msg.Context.ChatID
 	}
 	msg.Scope = cloneOutboundScope(msg.Scope)
-	msg.TraceScopes = NormalizeTraceScopes(msg.TraceScopes)
-	return msg
+	var err error
+	msg.TraceScopes, err = NormalizeTraceScopes(msg.TraceScopes)
+	return msg, err
 }
 
 func cloneOutboundScope(scope *OutboundScope) *OutboundScope {

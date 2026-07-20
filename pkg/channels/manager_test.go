@@ -1021,14 +1021,22 @@ func testOutboundMessage(msg bus.OutboundMessage) bus.OutboundMessage {
 	if msg.Context.Channel == "" && msg.Context.ChatID == "" {
 		msg.Context = bus.NewOutboundContext(msg.Channel, msg.ChatID, msg.ReplyToMessageID)
 	}
-	return bus.NormalizeOutboundMessage(msg)
+	normalized, err := bus.NormalizeOutboundMessage(msg)
+	if err != nil {
+		panic(err)
+	}
+	return normalized
 }
 
 func testOutboundMediaMessage(msg bus.OutboundMediaMessage) bus.OutboundMediaMessage {
 	if msg.Context.Channel == "" && msg.Context.ChatID == "" {
 		msg.Context = bus.NewOutboundContext(msg.Channel, msg.ChatID, "")
 	}
-	return bus.NormalizeOutboundMediaMessage(msg)
+	normalized, err := bus.NormalizeOutboundMediaMessage(msg)
+	if err != nil {
+		panic(err)
+	}
+	return normalized
 }
 
 func receiveChannelRuntimeEvent(t *testing.T, ch <-chan runtimeevents.Event) runtimeevents.Event {

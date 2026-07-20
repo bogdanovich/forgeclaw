@@ -87,7 +87,7 @@ func (m *Manager) publishOutboundSent(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
+			TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			ContentLen:       len([]rune(msg.Content)),
 			MessageIDs:       append([]string(nil), messageIDs...),
 			ReplyToMessageID: msg.ReplyToMessageID,
@@ -105,7 +105,7 @@ func (m *Manager) publishOutboundQueued(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
+			TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			ContentLen:       len([]rune(msg.Content)),
 			ReplyToMessageID: msg.ReplyToMessageID,
 		},
@@ -119,7 +119,7 @@ func (m *Manager) publishOutboundFailed(
 	media bool,
 ) {
 	payload := ChannelOutboundPayload{
-		TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
+		TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 		Media:            media,
 		ContentLen:       len([]rune(msg.Content)),
 		ReplyToMessageID: msg.ReplyToMessageID,
@@ -148,7 +148,7 @@ func (m *Manager) publishOutboundMediaSent(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+			TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			Media:       true,
 			MessageIDs:  append([]string(nil), messageIDs...),
 		},
@@ -165,7 +165,7 @@ func (m *Manager) publishOutboundMediaQueued(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+			TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 			Media:       true,
 		},
 	)
@@ -177,7 +177,7 @@ func (m *Manager) publishOutboundMediaFailed(
 	err error,
 ) {
 	payload := ChannelOutboundPayload{
-		TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+		TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 		Media:       true,
 		Retries:     maxRetries,
 	}

@@ -1912,7 +1912,7 @@ func (m *Manager) sendWithRetryPolicy(
 			scopeFromOutboundContext(msg.Context),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
-				TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
+				TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 				ContentLen:       len([]rune(msg.Content)),
 				ReplyToMessageID: msg.ReplyToMessageID,
 				Error:            err.Error(),
@@ -2167,7 +2167,7 @@ func (m *Manager) sendMediaWithRetry(
 			scopeFromOutboundContext(msg.Context),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
-				TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+				TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 				Media:       true,
 				Error:       err.Error(),
 			},
@@ -2555,7 +2555,11 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	msg bus.OutboundMessage,
 	retryAmbiguous bool,
 ) error {
-	msg = bus.NormalizeOutboundMessage(msg)
+	var err error
+	msg, err = bus.NormalizeOutboundMessage(msg)
+	if err != nil {
+		return newDeliveryError(err, false)
+	}
 	channelName := outboundMessageChannel(msg)
 
 	m.mu.RLock()
@@ -2620,7 +2624,11 @@ func (m *Manager) sendMessageWithRetryPolicy(
 // retries are exhausted), which preserves ordering when later agent behavior
 // depends on actual media delivery.
 func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
-	msg = bus.NormalizeOutboundMediaMessage(msg)
+	var err error
+	msg, err = bus.NormalizeOutboundMediaMessage(msg)
+	if err != nil {
+		return err
+	}
 	channelName := outboundMediaChannel(msg)
 
 	m.mu.RLock()
@@ -2645,7 +2653,7 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 		return fmt.Errorf("channel %s has no active worker", channelName)
 	}
 
-	_, err := m.sendMediaWithRetry(ctx, channelName, w, msg)
+	_, err = m.sendMediaWithRetry(ctx, channelName, w, msg)
 	return err
 }
 
@@ -2663,7 +2671,10 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 		Context: bus.NewOutboundContext(channelName, chatID, ""),
 		Content: content,
 	}
-	msg = bus.NormalizeOutboundMessage(msg)
+	msg, err := bus.NormalizeOutboundMessage(msg)
+	if err != nil {
+		return err
+	}
 
 	if owner != nil && owner.Worker() != nil {
 		queued, err := owner.Enqueue(ctx, msg)
@@ -2678,6 +2689,6 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	}
 
 	// Fallback: direct send (should not happen)
-	_, err := channel.Send(ctx, msg)
+	_, err = channel.Send(ctx, msg)
 	return err
 }
