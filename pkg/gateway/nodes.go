@@ -49,14 +49,13 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	}
 
 	registryPath := nodes.RegistryPath(cfg.WorkspacePath())
-	if runtime.mounted && registryPath != runtime.registryPath {
+	if runtime.handler != nil && (!runtime.mounted || registryPath != runtime.registryPath) {
 		ctx, cancel := context.WithTimeout(context.Background(), nodeAdmissionDrainTimeout)
-		if closeErr := runtime.Close(ctx); closeErr != nil {
-			logger.WarnCF("nodes", "Node sessions did not drain before workspace change", map[string]any{
-				"error": closeErr.Error(),
-			})
-		}
+		closeErr := runtime.Close(ctx)
 		cancel()
+		if closeErr != nil {
+			return fmt.Errorf("drain previous node admission runtime: %w", closeErr)
+		}
 	}
 	registry, err := nodes.NewFileRegistry(
 		registryPath,
@@ -104,15 +103,16 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	if runtime.mounted {
 		runtime.routes.UnregisterHTTPHandler(nodews.Path)
+		runtime.mounted = false
 	}
-	var err error
 	if runtime.handler != nil {
-		err = runtime.handler.Close(ctx)
+		if err := runtime.handler.Close(ctx); err != nil {
+			return err
+		}
 	}
 	runtime.registry = nil
 	runtime.registryPath = ""
 	runtime.handler = nil
 	runtime.sessions = nil
-	runtime.mounted = false
-	return err
+	return nil
 }

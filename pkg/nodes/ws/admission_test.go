@@ -128,6 +128,23 @@ func TestAdmissionAllowsExplicitLoopbackDevelopment(t *testing.T) {
 	}
 }
 
+func TestAdmissionCloseDrainsInFlightHandshake(t *testing.T) {
+	_, handler := testAdmissionHandler(t, false)
+	server := httptest.NewTLSServer(handler)
+	defer server.Close()
+	connection := dialTestAdmission(t, server)
+	defer connection.Close()
+	_ = readChallenge(t, connection)
+
+	if err := handler.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := connection.ReadMessage(); err == nil {
+		t.Fatal("in-flight handshake survived admission shutdown")
+	}
+}
+
 func TestAdmissionHeartbeatDisconnectsRevokedLiveSession(t *testing.T) {
 	registry, handler := testAdmissionHandlerWithConfig(t, AdmissionConfig{
 		HeartbeatPeriod: 10 * time.Millisecond,

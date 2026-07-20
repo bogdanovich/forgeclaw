@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/nodes"
 )
 
 type fakeNodeAdmissionRoutes struct {
@@ -47,6 +48,56 @@ func TestNodeAdmissionWorkspaceChangeFailsClosed(t *testing.T) {
 		t.Fatal("failed workspace change retained the previous node authority domain")
 	}
 }
+
+func TestNodeAdmissionWorkspaceChangeWaitsForSuccessfulDrain(t *testing.T) {
+	routes := &fakeNodeAdmissionRoutes{}
+	runtime := &nodeAdmissionRuntime{routes: routes}
+	cfg := config.DefaultConfig()
+	cfg.Nodes.Enabled = true
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	oldRegistryPath := runtime.registryPath
+
+	disconnectCalls := 0
+	release, err := runtime.sessions.Claim(
+		nodes.ID("node_test"),
+		&testNodeConnection{},
+		nil,
+		func() error {
+			disconnectCalls++
+			if disconnectCalls < 3 {
+				return errors.New("registry unavailable")
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := release(); err == nil {
+		t.Fatal("initial disconnect unexpectedly succeeded")
+	}
+
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	if err := runtime.Reconcile(cfg); err == nil {
+		t.Fatal("workspace change ignored failed node drain")
+	}
+	if runtime.handler == nil || runtime.registryPath != oldRegistryPath || runtime.mounted || routes.handler != nil {
+		t.Fatal("failed drain discarded the closing authority runtime")
+	}
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatalf("workspace change did not recover after drain retry: %v", err)
+	}
+	if !runtime.mounted || runtime.registryPath == oldRegistryPath || routes.handler == nil {
+		t.Fatal("successful retry did not mount the replacement authority runtime")
+	}
+}
+
+type testNodeConnection struct{}
+
+func (*testNodeConnection) Close() error { return nil }
 
 func TestServiceShutdownClosesNodeAdmissionOutsideReload(t *testing.T) {
 	routes := &fakeNodeAdmissionRoutes{}

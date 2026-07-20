@@ -91,6 +91,42 @@ func TestSessionHubCloseRejectsNewClaimsAndLetsOwnersRelease(t *testing.T) {
 	}
 }
 
+func TestSessionHubCloseDrainsTrackedHandshake(t *testing.T) {
+	hub := NewSessionHub()
+	connection := &trackingCloser{}
+	release, err := hub.TrackTransport(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- hub.Close(t.Context()) }()
+
+	deadline := time.Now().Add(time.Second)
+	for connection.closed.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if connection.closed.Load() != 1 {
+		t.Fatal("shutdown did not close tracked handshake")
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("Close() returned before handshake release: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	release()
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+
+	late := &trackingCloser{}
+	if _, err := hub.TrackTransport(late); !errors.Is(err, ErrSessionHubClosed) {
+		t.Fatalf("closed hub TrackTransport() error = %v", err)
+	}
+	if late.closed.Load() != 1 {
+		t.Fatal("closed hub did not reject and close late transport")
+	}
+}
+
 func TestSessionHubActivatesReplacementBeforeOldOwnerCanRelease(t *testing.T) {
 	hub := NewSessionHub()
 	first := &trackingCloser{}
@@ -250,5 +286,34 @@ func TestSessionHubCloseReturnsDisconnectError(t *testing.T) {
 	}
 	if err := hub.Close(t.Context()); !errors.Is(err, wantErr) {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestSessionHubCloseRetriesFailedDisconnect(t *testing.T) {
+	hub := NewSessionHub()
+	wantErr := errors.New("registry temporarily unavailable")
+	var calls atomic.Int32
+	release, err := hub.Claim(
+		nodes.ID("node_test"),
+		&trackingCloser{},
+		nil,
+		func() error {
+			if calls.Add(1) == 1 {
+				return wantErr
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := release(); !errors.Is(err, wantErr) {
+		t.Fatalf("release() error = %v", err)
+	}
+	if err := hub.Close(t.Context()); err != nil {
+		t.Fatalf("Close() did not recover transient disconnect: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("disconnect calls = %d", calls.Load())
 	}
 }

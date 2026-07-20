@@ -94,6 +94,11 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		return
 	}
 	defer connection.Close()
+	releaseTransport, trackErr := handler.sessions.TrackTransport(connection)
+	if trackErr != nil {
+		return
+	}
+	defer releaseTransport()
 	connection.SetReadLimit(protocol.MaxFrameSize)
 	deadline := time.Now().Add(handler.handshakeWindow)
 	if deadlineErr := connection.SetReadDeadline(deadline); deadlineErr != nil {
