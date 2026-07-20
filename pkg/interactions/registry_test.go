@@ -871,6 +871,271 @@ func TestRegistryObserverRunsOutsideLockAndReceivesBoundedEvents(t *testing.T) {
 	}
 }
 
+func TestRegistrySubscribeSnapshotReturnsSubscriptionBoundary(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	record := makeWaiting(t, registry, clock, "interaction_acacacac11111111", "session-1")
+	var observed []Event
+	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation.Event)
+	})
+	t.Cleanup(unsubscribe)
+	if len(snapshot.Records) != 1 || snapshot.Records[0].ID != record.ID {
+		t.Fatalf("snapshot records = %+v", snapshot.Records)
+	}
+	if len(snapshot.Events) != 3 || snapshot.Events[2].Type != EventWaiting {
+		t.Fatalf("snapshot events = %+v", snapshot.Events)
+	}
+	if snapshot.Through != snapshot.Events[2].CommitSequence {
+		t.Fatalf("snapshot through = %d, events = %+v", snapshot.Through, snapshot.Events)
+	}
+	if len(observed) != 0 {
+		t.Fatalf("snapshot events were also delivered live: %+v", observed)
+	}
+	if _, err := registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		Answer{Text: "Staging"},
+		OutcomeAnswered,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Type != EventAnswerClaimed {
+		t.Fatalf("observed events = %+v", observed)
+	}
+
+	snapshot.Records[0].Questions[0].Question = "mutated"
+	stored, _ := registry.Get(record.ID)
+	if stored.Questions[0].Question == "mutated" {
+		t.Fatal("snapshot record mutated registry state")
+	}
+	for i := range snapshot.Events {
+		if snapshot.Events[i].Success == nil {
+			continue
+		}
+		original := *snapshot.Events[i].Success
+		*snapshot.Events[i].Success = !original
+		storedEvents := registry.ListEvents(record.ID)
+		if storedEvents[i].Success == nil || *storedEvents[i].Success != original {
+			t.Fatal("snapshot event mutated registry state")
+		}
+		break
+	}
+}
+
+func TestRegistrySubscribeSnapshotExcludesQueuedPreBoundaryCommit(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	registry.Subscribe(func(observation EventObservation) {
+		if observation.Event.CommitSequence == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := registry.Create(validCreate(
+			clock, "interaction_c1c1c1c122222222", "session-1",
+		))
+		firstDone <- err
+	}()
+	<-firstEntered
+	if _, err := registry.Create(validCreate(
+		clock, "interaction_c2c2c2c233333333", "session-2",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+	t.Cleanup(unsubscribe)
+	if snapshot.Through != 2 || len(snapshot.Events) != 2 {
+		t.Fatalf("subscription boundary = %+v", snapshot)
+	}
+	if _, err := registry.Create(validCreate(
+		clock, "interaction_c3c3c3c344444444", "session-3",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.CommitSequence != 3 {
+		t.Fatalf("post-boundary observations = %+v", observed)
+	}
+}
+
+func TestRegistrySerializesCommittedObserverSnapshots(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	id := "interaction_adadadad11111111"
+	createdEntered := make(chan struct{})
+	releaseCreated := make(chan struct{})
+	var observationsMu sync.Mutex
+	observations := make([]EventObservation, 0, 2)
+	registry.Subscribe(func(observation EventObservation) {
+		if observation.Event.InteractionID == id && observation.Event.Sequence == 1 {
+			close(createdEntered)
+			<-releaseCreated
+		}
+		observationsMu.Lock()
+		observations = append(observations, observation)
+		observationsMu.Unlock()
+	})
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := registry.Create(validCreate(clock, id, "session-1"))
+		createDone <- err
+	}()
+	<-createdEntered
+	created, ok := registry.Get(id)
+	if !ok {
+		t.Fatal("durable created record unavailable while observer was blocked")
+	}
+	if _, err := registry.Cancel(created.ID, created.Revision, "fixture_cancel"); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseCreated)
+	if err := <-createDone; err != nil {
+		t.Fatal(err)
+	}
+
+	observationsMu.Lock()
+	defer observationsMu.Unlock()
+	if len(observations) != 2 {
+		t.Fatalf("observations = %+v", observations)
+	}
+	if observations[0].Event.CommitSequence != 1 || observations[0].Record.Status != StatusCreated ||
+		observations[0].Record.Revision != 1 {
+		t.Fatalf("created observation = %+v", observations[0])
+	}
+	if observations[1].Event.CommitSequence != 2 || observations[1].Record.Status != StatusCancelled ||
+		observations[1].Record.Revision != 2 {
+		t.Fatalf("canceled observation = %+v", observations[1])
+	}
+}
+
+func TestRegistryObserverCanReenterWithoutReordering(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	id := "interaction_aeaeaeae11111111"
+	var observations []EventObservation
+	registry.Subscribe(func(observation EventObservation) {
+		observations = append(observations, observation)
+		if observation.Event.Type == EventCreated {
+			if _, err := registry.Cancel(
+				observation.Record.ID,
+				observation.Record.Revision,
+				"observer_cancel",
+			); err != nil {
+				t.Errorf("reentrant cancel: %v", err)
+			}
+		}
+	})
+	if _, err := registry.Create(validCreate(clock, id, "session-1")); err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 2 || observations[0].Event.Type != EventCreated ||
+		observations[1].Event.Type != EventCancelled {
+		t.Fatalf("reentrant observations = %+v", observations)
+	}
+}
+
+func TestRegistryPersistenceFailureQueuesNoObservation(t *testing.T) {
+	_, clock, path := newTestRegistry(t)
+	registry := NewRegistryWithOptions(path, Options{
+		Now: clock.Now, MaxSnapshotBytes: 200,
+	})
+	observed := 0
+	registry.Subscribe(func(EventObservation) { observed++ })
+	_, err := registry.Create(validCreate(clock, "interaction_afafafaf11111111", "session-1"))
+	if !errors.Is(err, ErrSnapshotOverBudget) {
+		t.Fatalf("create error = %v", err)
+	}
+	if observed != 0 || len(registry.notifications) != 0 || registry.notifying ||
+		registry.commitSequence != 0 {
+		t.Fatalf(
+			"failed commit observer state: observed=%d queued=%d notifying=%v sequence=%d",
+			observed,
+			len(registry.notifications),
+			registry.notifying,
+			registry.commitSequence,
+		)
+	}
+}
+
+func TestRegistryUnsubscribePreservesOnlyAlreadyCommittedObservations(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var mu sync.Mutex
+	var observed []string
+	unsubscribe := registry.Subscribe(func(observation EventObservation) {
+		if observation.Event.CommitSequence == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+		mu.Lock()
+		observed = append(observed, observation.Event.InteractionID)
+		mu.Unlock()
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := registry.Create(validCreate(
+			clock, "interaction_b0b0b0b011111111", "session-1",
+		))
+		firstDone <- err
+	}()
+	<-firstEntered
+	if _, err := registry.Create(validCreate(
+		clock, "interaction_b1b1b1b111111111", "session-2",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	unsubscribe()
+	if _, err := registry.Create(validCreate(
+		clock, "interaction_b2b2b2b211111111", "session-3",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != 2 || observed[0] != "interaction_b0b0b0b011111111" ||
+		observed[1] != "interaction_b1b1b1b111111111" {
+		t.Fatalf("observed after unsubscribe = %v", observed)
+	}
+}
+
+func TestRegistryReloadContinuesCommitSequence(t *testing.T) {
+	registry, clock, path := newTestRegistry(t)
+	first, err := registry.Create(validCreate(
+		clock, "interaction_b3b3b3b311111111", "session-1",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Cancel(first.ID, first.Revision, "done"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	var observed EventObservation
+	reloaded.Subscribe(func(observation EventObservation) { observed = observation })
+	if _, err := reloaded.Create(validCreate(
+		clock, "interaction_b4b4b4b411111111", "session-2",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Event.CommitSequence != 3 {
+		t.Fatalf("reloaded commit sequence = %d, want 3", observed.Event.CommitSequence)
+	}
+}
+
 func TestRegistryObserverPanicDoesNotFailDurableWrite(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	registry.Subscribe(func(EventObservation) { panic("observer failed") })

@@ -199,23 +199,32 @@ type Record struct {
 }
 
 type Event struct {
-	SchemaVersion string    `json:"schema_version"`
-	EventID       string    `json:"event_id"`
-	InteractionID string    `json:"interaction_id"`
-	Type          EventType `json:"type"`
-	From          Status    `json:"from,omitempty"`
-	To            Status    `json:"to,omitempty"`
-	Outcome       Outcome   `json:"outcome,omitempty"`
-	Revision      int64     `json:"revision"`
-	Sequence      int64     `json:"sequence"`
-	EmittedAt     int64     `json:"emitted_at"`
-	Code          string    `json:"code,omitempty"`
-	Success       *bool     `json:"success,omitempty"`
+	SchemaVersion  string    `json:"schema_version"`
+	EventID        string    `json:"event_id"`
+	CommitSequence uint64    `json:"commit_sequence,omitempty"`
+	InteractionID  string    `json:"interaction_id"`
+	Type           EventType `json:"type"`
+	From           Status    `json:"from,omitempty"`
+	To             Status    `json:"to,omitempty"`
+	Outcome        Outcome   `json:"outcome,omitempty"`
+	Revision       int64     `json:"revision"`
+	Sequence       int64     `json:"sequence"`
+	EmittedAt      int64     `json:"emitted_at"`
+	Code           string    `json:"code,omitempty"`
+	Success        *bool     `json:"success,omitempty"`
 }
 
 type EventObservation struct {
 	Event  Event
 	Record Record
+}
+
+// ObservationSnapshot is the retained registry view at an atomic subscription
+// boundary. Live observations delivered to that subscriber are strictly newer.
+type ObservationSnapshot struct {
+	Through uint64
+	Records []Record
+	Events  []Event
 }
 
 type CreateRequest struct {
