@@ -240,6 +240,36 @@ type Disconnect struct {
 	At     int64
 }
 
+// PairingApproval is the operator-owned authority granted to a pending node.
+// AllowedCommands must be a subset of the capability catalog presented during
+// admission; an empty list grants no executable command surface.
+type PairingApproval struct {
+	Aliases         []Alias
+	DisplayName     string
+	AllowedCommands []string
+	At              int64
+}
+
+// Revocation records an operator decision that prevents an identity from
+// returning to pending admission on its next connection.
+type Revocation struct {
+	Reason string
+	At     int64
+}
+
+// Registration is the durable operator view of a node identity. PublicKey is
+// intentionally retained here so authentication can bind approval to the
+// exact admitted device rather than to a mutable alias.
+type Registration struct {
+	Snapshot        Snapshot
+	PublicKey       []byte
+	RequestedRole   string
+	RequestedAt     int64
+	AllowedCommands []string
+	ApprovedAt      int64
+	RevokedAt       int64
+}
+
 // Registry is the durable node-state boundary. Connection ownership remains
 // in the gateway transport layer and is represented here only as snapshots.
 type Registry interface {
