@@ -50,6 +50,13 @@ type AdmissionResult struct {
 	State  State `json:"state"`
 }
 
+// CommandApproval binds one command descriptor to the exact capability
+// catalog approved for the connected node.
+type CommandApproval struct {
+	Descriptor  CommandDescriptor
+	CatalogHash string
+}
+
 // Admission is a verified identity decision. Connected decisions become
 // durable only through Connect, after the transport has claimed ownership.
 type Admission struct {
@@ -229,15 +236,22 @@ func (auth *Authenticator) Disconnect(id ID, reason string) error {
 
 // ApprovedCommand resolves the durable operator-approved command surface for
 // a currently connected node.
-func (auth *Authenticator) ApprovedCommand(id ID, command string) (CommandDescriptor, error) {
+func (auth *Authenticator) ApprovedCommand(id ID, command string) (CommandApproval, error) {
 	registration, exists, err := auth.registry.Registration(id)
 	if err != nil {
-		return CommandDescriptor{}, err
+		return CommandApproval{}, err
 	}
 	if !exists {
-		return CommandDescriptor{}, fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
+		return CommandApproval{}, fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
 	}
-	return registration.ApprovedCommand(command)
+	descriptor, err := registration.ApprovedCommand(command)
+	if err != nil {
+		return CommandApproval{}, err
+	}
+	return CommandApproval{
+		Descriptor:  descriptor,
+		CatalogHash: registration.ApprovedCatalogHash,
+	}, nil
 }
 
 func (auth *Authenticator) persistPending(node Snapshot, publicKey []byte, proof IdentityProof, now int64) error {

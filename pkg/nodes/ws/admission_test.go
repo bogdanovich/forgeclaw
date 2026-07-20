@@ -43,6 +43,100 @@ func TestValidateInvocationResultRejectsInvalidCompanionOutput(t *testing.T) {
 	}
 }
 
+func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
+	descriptor := nodes.CommandDescriptor{
+		Name:         "node.info.v1",
+		InputSchema:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		Risk:         nodes.RiskRead,
+	}
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{descriptor}}
+	catalogHash, err := catalog.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeID, err := nodes.DeriveID(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := nodes.NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := nodes.Snapshot{
+		ID:              nodeID,
+		State:           nodes.StatePendingPairing,
+		ProtocolVersion: nodes.ProtocolV1,
+		Platform:        "linux",
+		Architecture:    "amd64",
+		SoftwareVersion: "v0.1.0",
+		CatalogHash:     catalogHash,
+		Catalog:         catalog,
+		LastSeenAt:      1,
+	}
+	if upsertErr := registry.UpsertPending(nodes.PendingPairing{
+		Node:          snapshot,
+		PublicKey:     publicKey,
+		RequestedRole: "companion",
+		RequestedAt:   1,
+	}); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	if _, approveErr := registry.Approve(nodeID, nodes.PairingApproval{
+		AllowedCommands: []string{descriptor.Name},
+		At:              2,
+	}); approveErr != nil {
+		t.Fatal(approveErr)
+	}
+	snapshot.State = nodes.StateConnected
+	snapshot.LastSeenAt = 2
+	if upsertErr := registry.Upsert(snapshot); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	authenticator, err := nodes.NewAuthenticator(registry, nodes.AdmissionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewAdmissionHandler(authenticator, AdmissionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := nodes.InvocationRequest{
+		InvocationID:     "inv_stale_catalog",
+		IdempotencyKey:   "idem_stale_catalog",
+		NodeID:           nodeID,
+		CatalogHash:      strings.Repeat("0", 64),
+		Command:          descriptor.Name,
+		Input:            json.RawMessage(`{}`),
+		AgentID:          "main",
+		SessionID:        "session_test",
+		ActorID:          "user_test",
+		TimeoutSeconds:   30,
+		OutputLimitBytes: 1024,
+	}
+	plan, err := nodes.PrepareExecutionPlan(
+		request,
+		descriptor,
+		"local",
+		"policy-1",
+		time.Unix(10, 0),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.Invoke(t.Context(), nodeID, plan); !errors.Is(
+		err,
+		nodes.ErrCommandDenied,
+	) {
+		t.Fatalf("stale catalog invocation error = %v", err)
+	}
+}
+
 func TestAdmissionPersistsSignedIdentityOverWSS(t *testing.T) {
 	registry, handler := testAdmissionHandler(t, false)
 	server := httptest.NewTLSServer(handler)

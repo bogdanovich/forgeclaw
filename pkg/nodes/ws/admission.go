@@ -306,14 +306,15 @@ func (handler *AdmissionHandler) Invoke(
 	nodeID nodes.ID,
 	plan nodes.ExecutionPlan,
 ) (json.RawMessage, error) {
-	descriptor, err := handler.authenticator.ApprovedCommand(nodeID, plan.Command)
+	approval, err := handler.authenticator.ApprovedCommand(nodeID, plan.Command)
 	if err != nil {
 		return nil, err
 	}
 	if validationErr := plan.Validate(); validationErr != nil {
 		return nil, validationErr
 	}
-	if plan.NodeID != nodeID || plan.Risk != descriptor.Risk {
+	if plan.NodeID != nodeID || plan.Risk != approval.Descriptor.Risk ||
+		plan.CatalogHash != approval.CatalogHash {
 		return nil, fmt.Errorf(
 			"%w: execution plan does not match approved command",
 			nodes.ErrCommandDenied,
@@ -337,7 +338,7 @@ func (handler *AdmissionHandler) Invoke(
 			response.Error.Message,
 		)
 	}
-	return validateInvocationResult(descriptor, plan, response.Result)
+	return validateInvocationResult(approval.Descriptor, plan, response.Result)
 }
 
 func validateInvocationResult(
