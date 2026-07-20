@@ -476,8 +476,9 @@ func publishDeliveryOutcome(eventBus runtimeevents.Bus, outbound bus.OutboundMes
 		Scope:    scope,
 		Severity: runtimeevents.SeverityInfo,
 		Payload: channels.ChannelOutboundPayload{
-			TraceScopes: traceScopes,
-			ContentLen:  len([]rune(outbound.Content)),
+			TraceScopes:     traceScopes,
+			TraceSettlement: outbound.TraceSettlement,
+			ContentLen:      len([]rune(outbound.Content)),
 		},
 	})
 }
