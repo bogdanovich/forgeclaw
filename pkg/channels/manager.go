@@ -2573,10 +2573,10 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	var w *channelWorker
 	if owner != nil {
 		var release func()
-		var err error
-		w, release, err = owner.borrowWorkerForSend()
-		if err != nil {
-			return newDeliveryError(err, false)
+		var borrowErr error
+		w, release, borrowErr = owner.borrowWorkerForSend()
+		if borrowErr != nil {
+			return newDeliveryError(borrowErr, false)
 		}
 		defer release()
 	}
@@ -2642,10 +2642,10 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 	var w *channelWorker
 	if owner != nil {
 		var release func()
-		var err error
-		w, release, err = owner.borrowWorkerForSend()
-		if err != nil {
-			return err
+		var borrowErr error
+		w, release, borrowErr = owner.borrowWorkerForSend()
+		if borrowErr != nil {
+			return borrowErr
 		}
 		defer release()
 	}
@@ -2677,13 +2677,13 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	}
 
 	if owner != nil && owner.Worker() != nil {
-		queued, err := owner.Enqueue(ctx, msg)
+		queued, enqueueErr := owner.Enqueue(ctx, msg)
 		if queued {
 			m.publishOutboundQueued(channelName, msg)
 			return nil
 		}
-		if err != nil {
-			return err
+		if enqueueErr != nil {
+			return enqueueErr
 		}
 		return fmt.Errorf("channel %s has closed delivery", channelName)
 	}
