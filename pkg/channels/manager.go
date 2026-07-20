@@ -1340,6 +1340,48 @@ func (m *Manager) SetupHTTPServerListeners(listeners []net.Listener, addr string
 	m.httpListeners = append([]net.Listener(nil), listeners...)
 }
 
+// RegisterHTTPHandler adds a non-channel route to the shared gateway server.
+// It must be called after SetupHTTPServerListeners and rejects route collisions.
+func (m *Manager) RegisterHTTPHandler(pattern string, handler http.Handler) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mux == nil {
+		return errors.New("shared HTTP server is not configured")
+	}
+	if pattern == "" || handler == nil {
+		return errors.New("HTTP handler pattern and implementation are required")
+	}
+	if err := m.mux.TryHandle(pattern, handler); err != nil {
+		return fmt.Errorf("register HTTP handler %q: %w", pattern, err)
+	}
+	return nil
+}
+
+// ReplaceHTTPHandler atomically replaces an existing non-channel route.
+func (m *Manager) ReplaceHTTPHandler(pattern string, handler http.Handler) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mux == nil {
+		return errors.New("shared HTTP server is not configured")
+	}
+	if pattern == "" || handler == nil {
+		return errors.New("HTTP handler pattern and implementation are required")
+	}
+	if err := m.mux.Replace(pattern, handler); err != nil {
+		return fmt.Errorf("replace HTTP handler %q: %w", pattern, err)
+	}
+	return nil
+}
+
+// UnregisterHTTPHandler removes a non-channel route from the shared gateway server.
+func (m *Manager) UnregisterHTTPHandler(pattern string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mux != nil {
+		m.mux.Unhandle(pattern)
+	}
+}
+
 // registerHTTPHandlersLocked registers webhook and health-check handlers for
 // all channels currently in m.channels. Caller must hold m.mu (or ensure
 // exclusive access).

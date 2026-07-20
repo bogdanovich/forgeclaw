@@ -71,6 +71,7 @@ type services struct {
 	MediaStore       media.MediaStore
 	ChannelManager   *channels.Manager
 	DeviceService    *devices.Service
+	NodeAdmission    *nodeAdmissionRuntime
 	HealthServer     *health.Server
 	VoiceAgentCancel context.CancelFunc
 	manualReloadChan chan struct{}
@@ -668,6 +669,10 @@ func setupAndStartServices(
 		listenAddr,
 		runningServices.HealthServer,
 	)
+	runningServices.NodeAdmission, err = setupNodeAdmission(cfg, runningServices.ChannelManager)
+	if err != nil {
+		return nil, fmt.Errorf("error setting up node admission: %w", err)
+	}
 
 	// Capture durable work before channel ingress starts, then replay the exact
 	// snapshot after outbound dispatch is live.
@@ -891,6 +896,14 @@ func restartServices(
 
 	if err = runningServices.ChannelManager.Reload(context.Background(), cfg); err != nil {
 		return fmt.Errorf("error reload channels: %w", err)
+	}
+	if runningServices.NodeAdmission == nil {
+		runningServices.NodeAdmission, err = setupNodeAdmission(cfg, runningServices.ChannelManager)
+	} else {
+		err = runningServices.NodeAdmission.Reconcile(cfg)
+	}
+	if err != nil {
+		return fmt.Errorf("error reloading node admission: %w", err)
 	}
 	fmt.Println("  ✓ Channels restarted.")
 

@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -144,6 +145,41 @@ func TestDynamicServeMuxConcurrent(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestDynamicServeMuxTryHandleRejectsCollision(t *testing.T) {
+	dm := newDynamicServeMux()
+	if err := dm.TryHandle("/nodes/v1/ws", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})); err != nil {
+		t.Fatal(err)
+	}
+	err := dm.TryHandle(
+		"/nodes/v1/ws",
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	)
+	if !errors.Is(err, errHTTPHandlerAlreadyRegistered) {
+		t.Fatalf("TryHandle() error = %v", err)
+	}
+}
+
+func TestDynamicServeMuxReplaceRequiresExistingRoute(t *testing.T) {
+	dm := newDynamicServeMux()
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	if err := dm.Replace("/nodes/v1/ws", handler); !errors.Is(err, errHTTPHandlerNotRegistered) {
+		t.Fatalf("Replace() missing route error = %v", err)
+	}
+	if err := dm.TryHandle("/nodes/v1/ws", http.NotFoundHandler()); err != nil {
+		t.Fatal(err)
+	}
+	if err := dm.Replace("/nodes/v1/ws", handler); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	dm.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/nodes/v1/ws", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("replacement status = %d", response.Code)
+	}
 }
 
 func TestDynamicServeMuxHandleUsesHandler(t *testing.T) {
