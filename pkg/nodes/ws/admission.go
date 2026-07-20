@@ -29,6 +29,7 @@ type AdmissionConfig struct {
 	HandshakeWindow        time.Duration
 	HeartbeatPeriod        time.Duration
 	LivenessTimeout        time.Duration
+	Sessions               *SessionHub
 }
 
 type AdmissionHandler struct {
@@ -60,13 +61,16 @@ func NewAdmissionHandler(
 	if cfg.LivenessTimeout <= cfg.HeartbeatPeriod {
 		return nil, errors.New("node liveness timeout must exceed heartbeat period")
 	}
+	if cfg.Sessions == nil {
+		cfg.Sessions = NewSessionHub()
+	}
 	return &AdmissionHandler{
 		authenticator:          authenticator,
 		allowLoopbackPlaintext: cfg.AllowLoopbackPlaintext,
 		handshakeWindow:        cfg.HandshakeWindow,
 		heartbeatPeriod:        cfg.HeartbeatPeriod,
 		livenessTimeout:        cfg.LivenessTimeout,
-		sessions:               NewSessionHub(),
+		sessions:               cfg.Sessions,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -158,8 +162,8 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 	handler.serveSession(connection, result.NodeID)
 }
 
-// Close terminates sessions owned by this handler. Their serving goroutines
-// remain responsible for persisting disconnect state as they unwind.
+// Close terminates all generations that share this handler's session hub.
+// Gateway reloads intentionally keep the hub alive; shutdown closes it.
 func (handler *AdmissionHandler) Close() {
 	handler.sessions.Close()
 }

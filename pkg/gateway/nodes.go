@@ -21,6 +21,7 @@ type nodeAdmissionRuntime struct {
 	routes   nodeAdmissionRoutes
 	registry *nodes.FileRegistry
 	handler  *nodews.AdmissionHandler
+	sessions *nodews.SessionHub
 	mounted  bool
 }
 
@@ -45,6 +46,7 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 		}
 		runtime.registry = nil
 		runtime.handler = nil
+		runtime.sessions = nil
 		runtime.mounted = false
 		return nil
 	}
@@ -60,8 +62,13 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("create node authenticator: %w", err)
 	}
+	sessions := runtime.sessions
+	if sessions == nil {
+		sessions = nodews.NewSessionHub()
+	}
 	handler, err := nodews.NewAdmissionHandler(authenticator, nodews.AdmissionConfig{
 		AllowLoopbackPlaintext: cfg.Nodes.AllowLoopbackPlaintext,
+		Sessions:               sessions,
 	})
 	if err != nil {
 		return fmt.Errorf("create node admission handler: %w", err)
@@ -74,13 +81,10 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("mount node admission route: %w", err)
 	}
-	previousHandler := runtime.handler
 	runtime.registry = registry
 	runtime.handler = handler
+	runtime.sessions = sessions
 	runtime.mounted = true
-	if previousHandler != nil {
-		previousHandler.Close()
-	}
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
 		"allow_loopback_plaintext": cfg.Nodes.AllowLoopbackPlaintext,

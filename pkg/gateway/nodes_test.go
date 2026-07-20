@@ -57,6 +57,7 @@ func TestNodeAdmissionRuntimeReconcilesConfigLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstRegistry := runtime.registry
+	firstSessions := runtime.sessions
 	if !runtime.mounted || firstRegistry == nil || routes.registerCount != 1 {
 		t.Fatalf("enabled runtime = %#v, routes = %#v", runtime, routes)
 	}
@@ -69,12 +70,16 @@ func TestNodeAdmissionRuntimeReconcilesConfigLifecycle(t *testing.T) {
 	if runtime.registry == firstRegistry || routes.replaceCount != 1 {
 		t.Fatalf("reloaded runtime = %#v, routes = %#v", runtime, routes)
 	}
+	if runtime.sessions != firstSessions {
+		t.Fatal("config reload replaced shared node session ownership")
+	}
 
 	cfg.Nodes.Enabled = false
 	if err := runtime.Reconcile(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.mounted || runtime.registry != nil || routes.handler != nil || routes.unregisterCount != 1 {
+	if runtime.mounted || runtime.registry != nil || runtime.sessions != nil ||
+		routes.handler != nil || routes.unregisterCount != 1 {
 		t.Fatalf("disabled runtime = %#v, routes = %#v", runtime, routes)
 	}
 }
