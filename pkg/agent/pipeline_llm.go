@@ -442,6 +442,7 @@ func (p *Pipeline) CallLLM(
 			compactCtx, compactCancel := context.WithTimeout(ctx, contextOverflowCompactTimeout)
 			if compactErr := p.Context.Runtime.Compact(compactCtx, &CompactRequest{
 				SessionKey: ts.sessionKey,
+				Workspace:  ts.workspace,
 				Reason:     ContextCompressReasonRetry,
 				Budget:     compactBudget,
 			}); compactErr != nil {

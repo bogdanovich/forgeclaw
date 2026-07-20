@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"strings"
 
+	agentinterfaces "github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/constants"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -36,10 +39,20 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 	err error,
 	policy finalResponseDeliveryPolicy,
 ) bool {
+	return al.maybePublishErrorWithScopes(ctx, channel, chatID, sessionKey, err, policy, nil)
+}
+
+func (al *AgentLoop) maybePublishErrorWithScopes(
+	ctx context.Context,
+	channel, chatID, sessionKey string,
+	err error,
+	policy finalResponseDeliveryPolicy,
+	traceScopes []runtimeevents.TraceScope,
+) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	al.publishResponseWithContextIfNeeded(
+	al.publishResponseWithContextAndScopes(
 		ctx,
 		channel,
 		chatID,
@@ -47,6 +60,7 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 		formatUserFacingAgentError(err),
 		nil,
 		policy,
+		traceScopes,
 	)
 	return true
 }
@@ -137,6 +151,18 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 	inboundCtx *bus.InboundContext,
 	policy finalResponseDeliveryPolicy,
 ) {
+	al.publishResponseWithContextAndScopes(
+		ctx, channel, chatID, sessionKey, response, inboundCtx, policy, nil,
+	)
+}
+
+func (al *AgentLoop) publishResponseWithContextAndScopes(
+	ctx context.Context,
+	channel, chatID, sessionKey, response string,
+	inboundCtx *bus.InboundContext,
+	policy finalResponseDeliveryPolicy,
+	traceScopes []runtimeevents.TraceScope,
+) {
 	if response == "" {
 		return
 	}
@@ -166,6 +192,15 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 		SessionKey: sessionKey,
 		Content:    response,
 	}
+	if err := bus.SetOutboundTraceScopes(&msg, traceScopes); err != nil {
+		logger.ErrorCF("agent", "Rejected aggregated final trace scopes", map[string]any{
+			"channel": channel,
+			"chat_id": chatID,
+			"error":   err.Error(),
+		})
+		return
+	}
+	msg.TraceSettlement = len(msg.TraceScopes) > 0
 	if policy == finalResponseAlwaysPublish && messageToolSentToSameChat {
 		if msg.Context.Raw == nil {
 			msg.Context.Raw = make(map[string]string, 1)
@@ -181,6 +216,7 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 
 func (al *AgentLoop) deliverFinalTurnResult(
 	ctx context.Context,
+	traceScope runtimeevents.TraceScope,
 	agent *AgentInstance,
 	opts processOptions,
 	result turnResult,
@@ -223,6 +259,8 @@ func (al *AgentLoop) deliverFinalTurnResult(
 		ts := &turnState{
 			agent:      agent,
 			agentID:    agent.ID,
+			turnID:     traceScope.TurnID,
+			workspace:  traceScope.Workspace,
 			channel:    opts.Dispatch.Channel(),
 			chatID:     opts.Dispatch.ChatID(),
 			sessionKey: sessionKey,
@@ -237,6 +275,9 @@ func (al *AgentLoop) deliverFinalTurnResult(
 					"chat_id":  opts.Dispatch.ChatID(),
 					"error":    err.Error(),
 				})
+			if !channels.DeliveryDefinitelyNotSent(err) {
+				return
+			}
 		} else if outcome != toolResultDeliveryNone {
 			return
 		}
@@ -245,7 +286,9 @@ func (al *AgentLoop) deliverFinalTurnResult(
 	if result.finalContent == "" {
 		return
 	}
-	al.deliverFinalTurnText(ctx, agent, opts, outboundCtx, agentID, sessionKey, scope, result.finalContent)
+	al.deliverFinalTurnText(
+		ctx, traceScope, agent, opts, outboundCtx, agentID, sessionKey, scope, result.finalContent,
+	)
 }
 
 func (al *AgentLoop) deliverFinalTurnMedia(
@@ -270,6 +313,7 @@ func (al *AgentLoop) deliverFinalTurnMedia(
 
 func (al *AgentLoop) deliverFinalTurnText(
 	ctx context.Context,
+	traceScope runtimeevents.TraceScope,
 	agent *AgentInstance,
 	opts processOptions,
 	outboundCtx bus.InboundContext,
@@ -285,9 +329,22 @@ func (al *AgentLoop) deliverFinalTurnText(
 		Content:      content,
 		ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
 	}
+	if err := bus.SetOutboundTraceScopes(&msg, []runtimeevents.TraceScope{traceScope}); err != nil {
+		logger.ErrorCF("agent", "Rejected final turn trace scope", map[string]any{
+			"agent_id": agent.ID,
+			"error":    err.Error(),
+		})
+		return
+	}
+	msg.TraceSettlement = true
 	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
-		if err := al.channelManager.SendMessage(ctx, msg); err != nil {
+		provisional, ok := al.channelManager.(agentinterfaces.ProvisionalChannelSender)
+		if !ok {
+			al.bus.PublishOutbound(ctx, msg)
+			return
+		}
+		if err := provisional.SendMessageProvisional(ctx, msg); err != nil {
 			logger.WarnCF("agent", "Failed to deliver final turn message synchronously; falling back to bus",
 				map[string]any{
 					"agent_id": agent.ID,
@@ -295,6 +352,9 @@ func (al *AgentLoop) deliverFinalTurnText(
 					"chat_id":  opts.Dispatch.ChatID(),
 					"error":    err.Error(),
 				})
+			if !channels.DeliveryDefinitelyNotSent(err) {
+				return
+			}
 		} else {
 			return
 		}
@@ -334,8 +394,30 @@ func (al *AgentLoop) deliverToolResultToUser(
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      parts,
 		}
+		if toolName == "final_turn" {
+			if err := bus.SetOutboundMediaTraceScopes(&outboundMedia, []runtimeevents.TraceScope{
+				runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+			}); err != nil {
+				return nil, toolResultDeliveryNone, err
+			}
+			outboundMedia.TraceSettlement = true
+		}
 		if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
-			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
+			sendMedia := al.channelManager.SendMedia
+			if toolName == "final_turn" {
+				provisional, ok := al.channelManager.(agentinterfaces.ProvisionalChannelSender)
+				if !ok {
+					if al.bus != nil {
+						if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
+							return nil, toolResultDeliveryNone, err
+						}
+						return nil, toolResultDeliveryQueued, nil
+					}
+					return nil, toolResultDeliveryNone, nil
+				}
+				sendMedia = provisional.SendMediaProvisional
+			}
+			if err := sendMedia(ctx, outboundMedia); err != nil {
 				logger.WarnCF("agent", "Failed to deliver tool result media",
 					map[string]any{
 						"agent_id": ts.agent.ID,

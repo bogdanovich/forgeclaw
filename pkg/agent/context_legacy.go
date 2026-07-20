@@ -43,7 +43,8 @@ func (m *legacyContextManager) Compact(_ context.Context, req *CompactRequest) e
 		if result, ok := m.forceCompression(req.SessionKey); ok {
 			m.al.emitEvent(
 				runtimeevents.KindAgentContextCompress,
-				m.al.newTurnEventScope("", req.SessionKey, nil).meta(0, "forceCompression", "turn.context.compress"),
+				m.al.newTurnEventScope("", req.Workspace, req.SessionKey, nil).
+					meta(0, "forceCompression", "turn.context.compress"),
 				ContextCompressPayload{
 					Reason:            req.Reason,
 					DroppedMessages:   result.DroppedMessages,
@@ -250,7 +251,8 @@ func (m *legacyContextManager) summarizeSession(agent *AgentInstance, sessionKey
 		agent.Sessions.Save(sessionKey)
 		m.al.emitEvent(
 			runtimeevents.KindAgentSessionSummarize,
-			m.al.newTurnEventScope(agent.ID, sessionKey, nil).meta(0, "summarizeSession", "turn.session.summarize"),
+			m.al.newTurnEventScope(agent.ID, agent.Workspace, sessionKey, nil).
+				meta(0, "summarizeSession", "turn.session.summarize"),
 			SessionSummarizePayload{
 				SummarizedMessages: len(validMessages),
 				KeptMessages:       keepCount,

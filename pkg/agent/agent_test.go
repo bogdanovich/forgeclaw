@@ -127,6 +127,13 @@ func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.Outbo
 	return nil
 }
 
+func (m *recordingChannelManager) SendMessageProvisional(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return m.SendMessage(ctx, msg)
+}
+
 func (m *recordingChannelManager) SendMessageDefiniteRetryOnly(
 	ctx context.Context,
 	msg bus.OutboundMessage,
@@ -140,6 +147,13 @@ func (m *recordingChannelManager) SendMedia(
 ) error {
 	m.sentMedia = append(m.sentMedia, msg)
 	return nil
+}
+
+func (m *recordingChannelManager) SendMediaProvisional(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) error {
+	return m.SendMedia(ctx, msg)
 }
 
 func (m *recordingChannelManager) SendPlaceholder(
@@ -2736,29 +2750,38 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 		t.Fatal("expected default agent")
 	}
 	const finalText = "Video saved. Recipe translation is below."
-	al.deliverFinalTurnResult(context.Background(), agent, processOptions{
-		Dispatch: DispatchRequest{
-			SessionKey:  "final-media-session",
-			UserMessage: "save the reel and translate the recipe",
-			InboundContext: &bus.InboundContext{
-				Channel:  "telegram",
-				ChatID:   "chat1",
-				SenderID: "user1",
+	al.deliverFinalTurnResult(
+		context.Background(),
+		runtimeevents.NewTraceScope(agent.Workspace, "turn-final-media"),
+		agent,
+		processOptions{
+			Dispatch: DispatchRequest{
+				SessionKey:  "final-media-session",
+				UserMessage: "save the reel and translate the recipe",
+				InboundContext: &bus.InboundContext{
+					Channel:  "telegram",
+					ChatID:   "chat1",
+					SenderID: "user1",
+				},
 			},
-		},
-		SendResponse: true,
-	}, turnResult{
-		finalContent: finalText,
-		completionMedia: []tools.CompletionMedia{{
-			Ref:         ref,
-			Type:        "video",
-			Filename:    "reel.mp4",
-			ContentType: "video/mp4",
-		}},
-	})
+			SendResponse: true,
+		}, turnResult{
+			finalContent: finalText,
+			completionMedia: []tools.CompletionMedia{{
+				Ref:         ref,
+				Type:        "video",
+				Filename:    "reel.mp4",
+				ContentType: "video/mp4",
+			}},
+		})
 
 	if len(telegramChannel.sentMedia) != 1 {
 		t.Fatalf("expected exactly 1 final media message, got %d", len(telegramChannel.sentMedia))
+	}
+	traceScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-final-media")
+	if got := telegramChannel.sentMedia[0]; !got.TraceSettlement ||
+		len(got.TraceScopes) != 1 || got.TraceScopes[0] != traceScope {
+		t.Fatalf("final media trace identity = %#v", got)
 	}
 	parts := telegramChannel.sentMedia[0].Parts
 	if len(parts) != 1 {
@@ -8294,6 +8317,11 @@ func TestRunAgentLoop_ImmediateMediaDeliveryContinuesToFinalResponse(t *testing.
 	}
 	if len(mediaChannel.sentMessages) != 1 {
 		t.Fatalf("sent message count = %d, want 1", len(mediaChannel.sentMessages))
+	}
+	if got := mediaChannel.sentMessages[0]; !got.TraceSettlement ||
+		len(got.TraceScopes) != 1 || !got.TraceScopes[0].Complete() ||
+		got.TraceScopes[0].Workspace != agent.Workspace {
+		t.Fatalf("final text trace identity = %#v", got)
 	}
 	if mediaChannel.sentMessages[0].Content != "final answer after immediate media" {
 		t.Fatalf(

@@ -71,6 +71,7 @@ type ContextBudgetReport struct {
 // CompactRequest is the input to Compact.
 type CompactRequest struct {
 	SessionKey string                // session identifier
+	Workspace  string                // canonical workspace owner
 	Reason     ContextCompressReason // proactive_budget | llm_retry | summarize
 	Budget     int                   // effective history budget for compact/overflow repair
 }

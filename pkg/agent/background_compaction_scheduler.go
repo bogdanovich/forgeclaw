@@ -53,6 +53,7 @@ func (r *backgroundCompactionRunner) scheduleBackgroundCompaction(
 			compactCtx,
 			&CompactRequest{
 				SessionKey: sessionKey,
+				Workspace:  agent.Workspace,
 				Reason:     reason,
 				Budget:     budget,
 			},

@@ -947,6 +947,7 @@ toolLoop:
 		if !ts.opts.NoHistory && ts.opts.EnableSummary {
 			p.Context.Runtime.Compact(turnCtx, &CompactRequest{
 				SessionKey: ts.sessionKey,
+				Workspace:  ts.workspace,
 				Reason:     ContextCompressReasonSummarize,
 				Budget:     ts.agent.ContextWindow,
 			})

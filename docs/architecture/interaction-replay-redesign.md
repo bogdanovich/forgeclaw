@@ -10,6 +10,10 @@ The durable human-interaction runtime merged before the spike remains the
 production authority. This redesign extends its observability and evaluation
 without making trace capture part of the interaction state machine.
 
+Stages 1 through 3 are merged. Stage 4 adopts the canonical identity in runtime
+producers, final outbound aggregation, and turn capture; later stages remain
+separate pull requests.
+
 ## Why The Spike Is Not The Implementation
 
 The spike established that dedicated interaction traces, deterministic replay,
@@ -58,6 +62,8 @@ type TraceScope struct {
 Both fields are required and normalized at turn creation. `Workspace` is the
 canonical workspace root used internally for routing and storage; persisted
 trace metadata stores only the existing safe workspace identity or hash.
+Runtime event and hook scopes embed this value object rather than maintaining
+independent workspace and turn fields.
 
 Every turn-owned runtime event carries `TraceScope`. Every turn-owned outbound
 text or media message carries the same scope through the bus and channel
@@ -92,6 +98,12 @@ Capture indexes active turns by `(workspace, turn_id)`. There is no fallback by
 session, channel, chat, route, or unique turn ID. An event without a complete
 scope is operationally observable but cannot mutate a turn trace. This is an
 intentional fail-closed break from the current heuristic channel correlation.
+
+A settling terminal delivery may arrive before `agent.turn.end`, for example
+when a response-handling tool delivers final media. Capture retains that fact
+on the exact active scope and persists only after the turn outcome arrives. A
+single aggregated delivery event may settle several scoped steering turns, but
+never turns from different workspaces.
 
 Acceptance tests must create identical turn and session IDs in two workspaces,
 exercise concurrent runtime and delivery events, and prove that no evidence or
