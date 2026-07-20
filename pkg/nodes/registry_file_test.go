@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,6 +96,20 @@ func TestFileRegistryBoundsPendingPairings(t *testing.T) {
 	refreshed, exists, err := registry.Pending(first.Node.ID)
 	if err != nil || !exists || refreshed.RequestedAt != originalRequestedAt {
 		t.Fatalf("refreshed pending pairing = %#v, exists %v, error %v", refreshed, exists, err)
+	}
+}
+
+func TestRegistrationRecordRejectsAuthorityWithoutApproval(t *testing.T) {
+	t.Parallel()
+
+	record := registryRecord{AllowedCommands: []string{"node.info.v1"}}
+	if err := validateRegistrationRecord(record); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("allowed command without approval error = %v", err)
+	}
+	record.AllowedCommands = nil
+	record.ApprovedCatalogHash = strings.Repeat("a", 64)
+	if err := validateRegistrationRecord(record); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("catalog authority without approval error = %v", err)
 	}
 }
 

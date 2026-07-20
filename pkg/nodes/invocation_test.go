@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-const testCatalogHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-
 func TestPrepareExecutionPlanCanonicalHash(t *testing.T) {
 	descriptor := invocationDescriptor(RiskWrite)
 	first, err := PrepareExecutionPlan(
@@ -154,15 +152,20 @@ func TestExecutionPlanRejectsNumericPrecisionBypass(t *testing.T) {
 		"additionalProperties":false
 	}`)
 	request := invocationRequest(json.RawMessage(`{"count":9007199254740993}`))
-	if _, err := PrepareExecutionPlan(
+	restrictiveHash, err := invocationCatalog(restrictive).Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.CatalogHash = restrictiveHash
+	if _, planErr := PrepareExecutionPlan(
 		request,
 		restrictive,
 		"local",
 		"policy-1",
 		time.Unix(1, 0),
 		time.Minute,
-	); !errors.Is(err, ErrInvalidInvocation) {
-		t.Fatalf("large integer PrepareExecutionPlan() error = %v", err)
+	); !errors.Is(planErr, ErrInvalidInvocation) {
+		t.Fatalf("large integer PrepareExecutionPlan() error = %v", planErr)
 	}
 
 	permissive := restrictive
@@ -192,10 +195,9 @@ func TestExecutionPlanRejectsNumericPrecisionBypass(t *testing.T) {
 	}
 	if err := policy.Authorize(
 		plan,
-		restrictive,
+		invocationCatalog(restrictive),
 		plan.NodeID,
 		plan.Executor,
-		plan.CatalogHash,
 		time.Unix(plan.PreparedAt, 0),
 	); !errors.Is(err, ErrInvalidInvocation) {
 		t.Fatalf("large integer Authorize() error = %v", err)
@@ -280,20 +282,18 @@ func TestLocalCommandPolicyRejectsPlanTooFarInFuture(t *testing.T) {
 	}
 	if err := policy.Authorize(
 		plan,
-		descriptor,
+		invocationCatalog(descriptor),
 		plan.NodeID,
 		plan.Executor,
-		plan.CatalogHash,
 		preparedAt.Add(-MaxExecutionPlanSkew),
 	); err != nil {
 		t.Fatalf("Authorize() rejected bounded clock skew: %v", err)
 	}
 	if err := policy.Authorize(
 		plan,
-		descriptor,
+		invocationCatalog(descriptor),
 		plan.NodeID,
 		plan.Executor,
-		plan.CatalogHash,
 		preparedAt.Add(-MaxExecutionPlanSkew-time.Second),
 	); !errors.Is(
 		err,
@@ -305,29 +305,48 @@ func TestLocalCommandPolicyRejectsPlanTooFarInFuture(t *testing.T) {
 
 func TestRegistrationApprovedCommandIntersectsCatalogAndApproval(t *testing.T) {
 	descriptor := invocationDescriptor(RiskWrite)
+	catalog := invocationCatalog(descriptor)
+	catalogHash, hashErr := catalog.Hash()
+	if hashErr != nil {
+		t.Fatal(hashErr)
+	}
 	registration := Registration{
 		Snapshot: Snapshot{
 			ID:          ID("node_test"),
 			State:       StateConnected,
-			CatalogHash: testCatalogHash,
-			Catalog:     CapabilityCatalog{Commands: []CommandDescriptor{descriptor}},
+			CatalogHash: catalogHash,
+			Catalog:     catalog,
 		},
 		AllowedCommands:     []string{descriptor.Name},
-		ApprovedCatalogHash: testCatalogHash,
+		ApprovedCatalogHash: catalogHash,
+		ApprovedAt:          1,
 	}
 	if got, err := registration.ApprovedCommand(descriptor.Name); err != nil || got.Name != descriptor.Name {
 		t.Fatalf("ApprovedCommand() = %#v, %v", got, err)
 	}
+	registration.ApprovedAt = 0
+	if _, err := registration.ApprovedCommand(descriptor.Name); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("missing approval timestamp error = %v", err)
+	}
+	registration.ApprovedAt = 1
 	registration.AllowedCommands = nil
 	if _, err := registration.ApprovedCommand(descriptor.Name); !errors.Is(err, ErrCommandDenied) {
 		t.Fatalf("unapproved command error = %v", err)
 	}
 	registration.AllowedCommands = []string{descriptor.Name}
-	registration.Snapshot.CatalogHash = strings.Repeat("b", 64)
+	changed := descriptor
+	changed.OutputSchema = json.RawMessage(`{"type":"object","properties":{"changed":{"type":"boolean"}}}`)
+	registration.Snapshot.Catalog = invocationCatalog(changed)
+	changedHash, hashErr := registration.Snapshot.Catalog.Hash()
+	if hashErr != nil {
+		t.Fatal(hashErr)
+	}
+	registration.Snapshot.CatalogHash = changedHash
 	if _, err := registration.ApprovedCommand(descriptor.Name); !errors.Is(err, ErrCommandDenied) {
 		t.Fatalf("changed catalog error = %v", err)
 	}
-	registration.Snapshot.CatalogHash = testCatalogHash
+	registration.Snapshot.Catalog = catalog
+	registration.Snapshot.CatalogHash = catalogHash
 	registration.Snapshot.State = StateDisconnected
 	if _, err := registration.ApprovedCommand(descriptor.Name); !errors.Is(err, ErrCommandDenied) {
 		t.Fatalf("disconnected command error = %v", err)
@@ -357,10 +376,9 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 	now := time.Unix(plan.PreparedAt, 0)
 	if err := policy.Authorize(
 		plan,
-		descriptor,
+		invocationCatalog(descriptor),
 		plan.NodeID,
 		plan.Executor,
-		plan.CatalogHash,
 		now,
 	); err != nil {
 		t.Fatal(err)
@@ -382,10 +400,9 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 			test.mutate(&candidate)
 			if err := candidate.Authorize(
 				plan,
-				descriptor,
+				invocationCatalog(descriptor),
 				plan.NodeID,
 				plan.Executor,
-				plan.CatalogHash,
 				now,
 			); !errors.Is(err, ErrCommandDenied) {
 				t.Fatalf("Authorize() error = %v", err)
@@ -394,20 +411,18 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 	}
 	if err := policy.Authorize(
 		plan,
-		descriptor,
+		invocationCatalog(descriptor),
 		plan.NodeID,
 		plan.Executor,
-		plan.CatalogHash,
 		time.Unix(plan.ExpiresAt, 0),
 	); !errors.Is(err, ErrCommandDenied) {
 		t.Fatalf("expired plan Authorize() error = %v", err)
 	}
 	if err := policy.Authorize(
 		plan,
-		descriptor,
+		invocationCatalog(descriptor),
 		ID("node_other"),
 		plan.Executor,
-		plan.CatalogHash,
 		now,
 	); !errors.Is(
 		err,
@@ -417,20 +432,20 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 	}
 	if err := policy.Authorize(
 		plan,
-		descriptor,
+		invocationCatalog(descriptor),
 		plan.NodeID,
 		"docker",
-		plan.CatalogHash,
 		now,
 	); !errors.Is(err, ErrCommandDenied) {
 		t.Fatalf("wrong-executor Authorize() error = %v", err)
 	}
+	changedDescriptor := descriptor
+	changedDescriptor.InputSchema = json.RawMessage(`{"type":"object"}`)
 	if err := policy.Authorize(
 		plan,
-		descriptor,
+		invocationCatalog(changedDescriptor),
 		plan.NodeID,
 		plan.Executor,
-		strings.Repeat("b", 64),
 		now,
 	); !errors.Is(err, ErrCommandDenied) {
 		t.Fatalf("wrong-catalog Authorize() error = %v", err)
@@ -454,12 +469,20 @@ func invocationDescriptor(risk Risk) CommandDescriptor {
 	}
 }
 
+func invocationCatalog(descriptor CommandDescriptor) CapabilityCatalog {
+	return CapabilityCatalog{Commands: []CommandDescriptor{descriptor}}
+}
+
 func invocationRequest(input json.RawMessage) InvocationRequest {
+	catalogHash, err := invocationCatalog(invocationDescriptor(RiskWrite)).Hash()
+	if err != nil {
+		panic(err)
+	}
 	return InvocationRequest{
 		InvocationID:     "inv_test",
 		IdempotencyKey:   "idem_test",
 		NodeID:           ID("node_test"),
-		CatalogHash:      testCatalogHash,
+		CatalogHash:      catalogHash,
 		Command:          "system.exec.v1",
 		Input:            input,
 		AgentID:          "main",

@@ -191,7 +191,10 @@ func (plan ExecutionPlan) computeHash() (string, error) {
 // ApprovedCommand applies the durable pairing command surface. It does not
 // replace agent, approval, or node-local policy checks.
 func (registration Registration) ApprovedCommand(name string) (CommandDescriptor, error) {
-	if registration.Snapshot.State != StateConnected {
+	if err := registration.Snapshot.Validate(); err != nil {
+		return CommandDescriptor{}, fmt.Errorf("%w: invalid registered catalog", ErrCommandDenied)
+	}
+	if registration.Snapshot.State != StateConnected || registration.ApprovedAt <= 0 {
 		return CommandDescriptor{}, fmt.Errorf("%w: node is not connected", ErrCommandDenied)
 	}
 	descriptor, advertised := registration.Snapshot.Catalog.command(name)
@@ -242,10 +245,9 @@ func (policy LocalCommandPolicy) Validate() error {
 
 func (policy LocalCommandPolicy) Authorize(
 	plan ExecutionPlan,
-	descriptor CommandDescriptor,
+	runtimeCatalog CapabilityCatalog,
 	receivingNodeID ID,
 	actualExecutor string,
-	actualCatalogHash string,
 	now time.Time,
 ) error {
 	if err := policy.Validate(); err != nil {
@@ -254,13 +256,21 @@ func (policy LocalCommandPolicy) Authorize(
 	if err := plan.Validate(); err != nil {
 		return err
 	}
-	if err := descriptor.Validate(); err != nil {
+	if err := runtimeCatalog.Validate(); err != nil {
 		return err
 	}
-	if err := receivingNodeID.Validate(); err != nil || !validInvocationIdentifier(actualExecutor) ||
-		!validSHA256Digest(actualCatalogHash) || plan.NodeID != receivingNodeID ||
+	actualCatalogHash, err := runtimeCatalog.Hash()
+	if err != nil {
+		return err
+	}
+	if nodeErr := receivingNodeID.Validate(); nodeErr != nil || !validInvocationIdentifier(actualExecutor) ||
+		plan.NodeID != receivingNodeID ||
 		plan.Executor != actualExecutor || plan.CatalogHash != actualCatalogHash {
 		return fmt.Errorf("%w: plan target does not match local runtime", ErrCommandDenied)
+	}
+	descriptor, advertised := runtimeCatalog.command(plan.Command)
+	if !advertised {
+		return fmt.Errorf("%w: command is not advertised by local runtime", ErrCommandDenied)
 	}
 	if descriptor.Name != plan.Command || descriptor.Risk != plan.Risk ||
 		plan.PolicyRevision != policy.Revision {

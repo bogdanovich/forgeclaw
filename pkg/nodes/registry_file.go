@@ -549,6 +549,10 @@ func validateRegistrationRecord(record registryRecord) error {
 			return fmt.Errorf("%w: malformed approved catalog hash", ErrInvalidNode)
 		}
 	}
+	if record.ApprovedAt == 0 &&
+		(len(record.AllowedCommands) != 0 || record.ApprovedCatalogHash != "") {
+		return fmt.Errorf("%w: command authority has no approval record", ErrInvalidNode)
+	}
 	if record.Snapshot.State == StatePendingPairing &&
 		(record.ApprovedAt != 0 || record.RevokedAt != 0 || len(record.AllowedCommands) != 0 ||
 			record.ApprovedCatalogHash != "") {
