@@ -38,6 +38,29 @@ type stubCall struct {
 	Data *ta.RequestData
 }
 
+type stubMediaStore struct {
+	paths map[string]string
+	errs  map[string]error
+}
+
+func (s *stubMediaStore) Store(string, media.MediaMeta, string) (string, error) {
+	return "", errors.New("not implemented")
+}
+
+func (s *stubMediaStore) Resolve(ref string) (string, error) {
+	if err := s.errs[ref]; err != nil {
+		return "", err
+	}
+	return s.paths[ref], nil
+}
+
+func (s *stubMediaStore) ResolveWithMeta(ref string) (string, media.MediaMeta, error) {
+	path, err := s.Resolve(ref)
+	return path, media.MediaMeta{}, err
+}
+
+func (s *stubMediaStore) ReleaseAll(string) error { return nil }
+
 func (s *stubCaller) Call(
 	ctx context.Context,
 	url string,
@@ -418,6 +441,79 @@ func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
 	assert.Equal(t, len(content), constructor.calls[0].FileSizes["photo"])
 	assert.Equal(t, len(content), constructor.calls[1].FileSizes["document"])
 	assert.Equal(t, "caption", constructor.calls[1].Parameters["caption"])
+}
+
+func TestSendMedia_LocalPartFailureIsNotReportedAsSuccess(t *testing.T) {
+	tests := []struct {
+		name  string
+		store media.MediaStore
+	}{
+		{
+			name: "resolve",
+			store: &stubMediaStore{errs: map[string]error{
+				"media://missing": errors.New("unknown ref"),
+			}},
+		},
+		{
+			name: "open",
+			store: &stubMediaStore{paths: map[string]string{
+				"media://missing": filepath.Join(t.TempDir(), "missing.png"),
+			}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := &stubCaller{callFn: func(
+				context.Context, string, *ta.RequestData,
+			) (*ta.Response, error) {
+				t.Fatal("Telegram API must not be called for unavailable local media")
+				return nil, nil
+			}}
+			ch := newTestChannelWithConstructor(t, caller, &stubConstructor{})
+			ch.SetMediaStore(tc.store)
+
+			messageIDs, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+				ChatID: "12345",
+				Parts:  []bus.MediaPart{{Type: "image", Ref: "media://missing"}},
+			})
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, channels.ErrSendFailed)
+			assert.Empty(t, messageIDs)
+			assert.Empty(t, caller.calls)
+		})
+	}
+}
+
+func TestSendMedia_PreservesSentIDsWhenLaterPartCannotResolve(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "first.png")
+	require.NoError(t, os.WriteFile(localPath, []byte("image"), 0o644))
+	store := &stubMediaStore{
+		paths: map[string]string{"media://first": localPath},
+		errs:  map[string]error{"media://missing": errors.New("unknown ref")},
+	}
+	caller := &stubCaller{callFn: func(
+		_ context.Context, url string, _ *ta.RequestData,
+	) (*ta.Response, error) {
+		assert.Contains(t, url, "sendPhoto")
+		return successResponseWithMessageID(t, 42), nil
+	}}
+	ch := newTestChannelWithConstructor(t, caller, &multipartRecordingConstructor{})
+	ch.SetMediaStore(store)
+
+	messageIDs, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{
+			{Type: "image", Ref: "media://first"},
+			{Type: "audio", Ref: "media://missing"},
+		},
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, channels.ErrSendFailed)
+	assert.Equal(t, []string{"42"}, messageIDs)
+	require.Len(t, caller.calls, 1)
 }
 
 func TestDownloadFileWithInfo_AllowsLocalConfiguredBaseURL(t *testing.T) {

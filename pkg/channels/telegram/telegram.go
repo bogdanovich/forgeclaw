@@ -968,7 +968,7 @@ func (c *TelegramChannel) SendMedia(
 				"count": len(msg.Parts),
 				"error": err.Error(),
 			})
-			return nil, fmt.Errorf("telegram send media group: %w", channels.ErrTemporary)
+			return messageIDs, fmt.Errorf("telegram send media group: %w", channels.ErrTemporary)
 		}
 		if len(groupIDs) > 0 {
 			messageIDs = append(messageIDs, groupIDs...)
@@ -986,7 +986,10 @@ func (c *TelegramChannel) SendMedia(
 				"ref":   part.Ref,
 				"error": err.Error(),
 			})
-			continue
+			return messageIDs, fmt.Errorf(
+				"telegram resolve media ref %q: %v: %w",
+				part.Ref, err, channels.ErrSendFailed,
+			)
 		}
 
 		file, err := os.Open(localPath)
@@ -995,7 +998,10 @@ func (c *TelegramChannel) SendMedia(
 				"path":  localPath,
 				"error": err.Error(),
 			})
-			continue
+			return messageIDs, fmt.Errorf(
+				"telegram open media file %q: %v: %w",
+				localPath, err, channels.ErrSendFailed,
+			)
 		}
 
 		var tgResult *telego.Message
@@ -1177,7 +1183,7 @@ func (c *TelegramChannel) SendMedia(
 				"type":  part.Type,
 				"error": err.Error(),
 			})
-			return nil, fmt.Errorf("telegram send media: %w", channels.ErrTemporary)
+			return messageIDs, fmt.Errorf("telegram send media: %w", channels.ErrTemporary)
 		}
 	}
 

@@ -2114,6 +2114,7 @@ func dispatchLoop[M any](
 	m *Manager,
 	ch <-chan M,
 	getChannel func(M) string,
+	requiresOutcome func(M) bool,
 	enqueue func(context.Context, *deliveryOwner, M) bool,
 	reject func(M, error),
 	startMsg, stopMsg, unknownMsg, noWorkerMsg string,
@@ -2134,8 +2135,13 @@ func dispatchLoop[M any](
 
 			channel := getChannel(msg)
 
-			// Silently skip internal channels
+			// Internal traffic has no external delivery owner. Preserve the
+			// historical silent skip unless this message explicitly promises a
+			// terminal delivery outcome.
 			if constants.IsInternalChannel(channel) {
+				if requiresOutcome(msg) {
+					reject(msg, fmt.Errorf("internal channel %s has no external delivery owner", channel))
+				}
 				continue
 			}
 
@@ -2167,6 +2173,7 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		ctx, m,
 		m.bus.OutboundChan(),
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
+		func(msg bus.OutboundMessage) bool { return msg.TraceSettlement },
 		func(ctx context.Context, owner *deliveryOwner, msg bus.OutboundMessage) bool {
 			queued, err := owner.Enqueue(ctx, msg)
 			if queued {
@@ -2194,6 +2201,7 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		ctx, m,
 		m.bus.OutboundMediaChan(),
 		func(msg bus.OutboundMediaMessage) string { return outboundMediaChannel(msg) },
+		func(msg bus.OutboundMediaMessage) bool { return msg.TraceSettlement },
 		func(ctx context.Context, owner *deliveryOwner, msg bus.OutboundMediaMessage) bool {
 			queued, err := owner.EnqueueMedia(ctx, msg)
 			if queued {
@@ -2334,6 +2342,9 @@ func (m *Manager) sendMediaWithRetryPolicy(
 				!errors.Is(lastErr, ErrSendFailed) &&
 				!errors.Is(lastErr, ErrRateLimit)) {
 			ambiguous = true
+		}
+		if len(msgIDs) > 0 {
+			break
 		}
 
 		// Permanent failures — don't retry

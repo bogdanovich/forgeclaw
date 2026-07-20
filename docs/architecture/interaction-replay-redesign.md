@@ -80,6 +80,14 @@ shutdown, or rejection is therefore a terminal failed outcome even when no
 remote send began. The failure settles capture with explicit loss evidence; a
 capture timeout is not a delivery-recovery mechanism.
 
+Internal channels have no external delivery owner. Their ordinary traffic
+remains outside this protocol, but an internal outbound carrying
+`TraceSettlement` is rejected with a terminal failure instead of being silently
+dropped. Media adapters may omit remote message IDs on success, so the manager
+does not infer failure from an empty ID list; adapters must instead return an
+error for every requested part they did not send and preserve IDs from any
+parts sent before that error.
+
 Capture indexes active turns by `(workspace, turn_id)`. There is no fallback by
 session, channel, chat, route, or unique turn ID. An event without a complete
 scope is operationally observable but cannot mutate a turn trace. This is an

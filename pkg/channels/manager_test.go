@@ -4363,6 +4363,90 @@ func TestDispatcherPublishesTerminalRejection(t *testing.T) {
 	}
 }
 
+func TestDispatcherRejectsOnlySettlingInternalOutbounds(t *testing.T) {
+	for _, mediaMessage := range []bool{false, true} {
+		kind := "text"
+		if mediaMessage {
+			kind = "media"
+		}
+		for _, settlement := range []bool{false, true} {
+			state := "unsettled"
+			if settlement {
+				state = "settling"
+			}
+			t.Run(kind+"/"+state, func(t *testing.T) {
+				eventBus := runtimeevents.NewBus()
+				t.Cleanup(func() { _ = eventBus.Close() })
+				_, eventsCh, err := eventBus.Channel().OfKind(
+					runtimeevents.KindChannelMessageOutboundFailed,
+				).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{
+					Name: "internal-dispatch-reject", Buffer: 1,
+				})
+				if err != nil {
+					t.Fatalf("SubscribeChan failed: %v", err)
+				}
+
+				m := newTestManager()
+				t.Cleanup(m.bus.Close)
+				m.runtimeEvents = eventBus
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					if mediaMessage {
+						m.dispatchOutboundMedia(ctx)
+					} else {
+						m.dispatchOutbound(ctx)
+					}
+				}()
+				t.Cleanup(func() {
+					cancel()
+					<-done
+				})
+
+				traceScopes := []runtimeevents.TraceScope(nil)
+				if settlement {
+					traceScopes = []runtimeevents.TraceScope{
+						runtimeevents.NewTraceScope("/workspace/main", "turn-internal"),
+					}
+				}
+				if mediaMessage {
+					err = m.bus.PublishOutboundMedia(context.Background(), bus.OutboundMediaMessage{
+						Context:     bus.NewOutboundContext("system", "chat-1", ""),
+						Parts:       []bus.MediaPart{{Ref: "media://test"}},
+						TraceScopes: traceScopes, TraceSettlement: settlement,
+					})
+				} else {
+					err = m.bus.PublishOutbound(context.Background(), bus.OutboundMessage{
+						Context: bus.NewOutboundContext("system", "chat-1", ""), Content: "hello",
+						TraceScopes: traceScopes, TraceSettlement: settlement,
+					})
+				}
+				if err != nil {
+					t.Fatalf("publish internal outbound: %v", err)
+				}
+
+				if !settlement {
+					select {
+					case event := <-eventsCh:
+						t.Fatalf("unsettled internal outbound event = %#v", event)
+					case <-time.After(50 * time.Millisecond):
+					}
+					return
+				}
+
+				failed := receiveChannelRuntimeEvent(t, eventsCh)
+				payload, ok := failed.Payload.(ChannelOutboundPayload)
+				if !ok || !payload.TraceSettlement || payload.Media != mediaMessage ||
+					!slices.Equal(payload.TraceScopes, traceScopes) ||
+					!strings.Contains(payload.Error, "no external delivery owner") {
+					t.Fatalf("internal dispatch rejection = %#v", failed)
+				}
+			})
+		}
+	}
+}
+
 func TestDispatcherExitsOnCancel(t *testing.T) {
 	mb := bus.NewMessageBus()
 	defer mb.Close()
@@ -4823,6 +4907,35 @@ func TestSendMessageDefiniteRetryOnlyStopsAfterAmbiguousFailure(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Fatalf("Send calls = %d, want 1 after ambiguous failure", callCount)
+	}
+}
+
+func TestSendMediaDoesNotRetryAfterPartialDelivery(t *testing.T) {
+	m := newTestManager()
+	callCount := 0
+	ch := &mockMediaChannel{sendMediaFn: func(
+		context.Context, bus.OutboundMediaMessage,
+	) ([]string, error) {
+		callCount++
+		return []string{"sent-1"}, fmt.Errorf("second part failed: %w", ErrSendFailed)
+	}}
+	m.channels["test"] = ch
+	m.workers["test"] = &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	err := m.SendMedia(context.Background(), testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel: "test", ChatID: "123", Parts: []bus.MediaPart{
+			{Type: "image", Ref: "media://first"},
+			{Type: "image", Ref: "media://second"},
+		},
+	}))
+	if err == nil {
+		t.Fatal("partial media delivery unexpectedly succeeded")
+	}
+	if DeliveryDefinitelyNotSent(err) {
+		t.Fatalf("partial media delivery was classified as safe to retry: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("SendMedia calls = %d, want 1 after partial delivery", callCount)
 	}
 }
 
