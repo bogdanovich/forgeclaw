@@ -407,7 +407,9 @@ that became durable while capture was disabled. Subscription generations make
 callbacks already copied by the registry inert after replacement, so they
 cannot race the snapshot backfill. Terminal backfill uses the interaction's
 terminal lifecycle time for both age and count limits; reconciliation never
-resurrects a trace that evaluation retention already removed.
+resurrects a trace that evaluation retention already removed. Active task,
+interaction, and session indexes are scoped by workspace so cloned identifiers
+cannot mix evidence or route an interaction into another workspace's turn.
 Replay diagnostics explicitly classify self-contained violations as
 `conclusive` and missing-prerequisite checks as `requires_complete_history`, so
 truncation cannot hide malformed approval consumption or expiry evidence.

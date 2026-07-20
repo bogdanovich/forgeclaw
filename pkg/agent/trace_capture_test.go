@@ -250,7 +250,7 @@ func TestTraceCaptureRejectsStaleInteractionObserverGeneration(t *testing.T) {
 	<-done
 
 	manager.mu.Lock()
-	_, captured := manager.interactions["interaction-stale-observer"]
+	_, captured := manager.interactions[traceScopeKey(workspace, "interaction-stale-observer")]
 	manager.mu.Unlock()
 	manager.close()
 	if captured {
@@ -872,6 +872,83 @@ func TestTraceCaptureUsesTerminalLifecycleTimeForLiveTraceRetention(t *testing.T
 	if !info.ModTime().Equal(want) {
 		t.Fatalf("live trace retention time = %s, want %s", info.ModTime(), want)
 	}
+}
+
+func TestTraceCaptureScopesEqualInteractionIDsByWorkspace(t *testing.T) {
+	workspaceA, workspaceB := t.TempDir(), t.TempDir()
+	manager := newTraceCaptureManager(traceTestConfig(workspaceA), nil)
+	registryA := interactions.NewRegistry(interactions.WorkspaceStorePath(workspaceA))
+	registryB := interactions.NewRegistry(interactions.WorkspaceStorePath(workspaceB))
+	manager.attachInteractionRegistry(workspaceA, registryA)
+	manager.attachInteractionRegistry(workspaceB, registryB)
+
+	const interactionID = "interaction-shared-across-workspaces"
+	recordA := createTraceTestInteraction(t, registryA, interactionID, "session-shared")
+	recordB := createTraceTestInteraction(t, registryB, interactionID, "session-shared")
+	if _, err := registryA.Cancel(recordA.ID, recordA.Revision, "workspace_a_cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registryB.Cancel(recordB.ID, recordB.Revision, "workspace_b_cancel"); err != nil {
+		t.Fatal(err)
+	}
+	manager.close()
+
+	for _, item := range []struct {
+		workspace string
+		record    interactions.Record
+	}{{workspaceA, recordA}, {workspaceB, recordB}} {
+		tracePath := filepath.Join(
+			item.workspace, "state", "evaluation", "traces",
+			opaqueTraceID("interaction", item.record.ID, time.UnixMilli(item.record.CreatedAt))+".json",
+		)
+		trace := loadTraceFile(t, tracePath)
+		if trace.Truncation.Incomplete || len(trace.Records) != 2 || trace.Outcome == nil {
+			t.Fatalf("workspace %s trace = %#v", item.workspace, trace)
+		}
+	}
+}
+
+func TestTraceCaptureScopesSessionFallbackByWorkspace(t *testing.T) {
+	workspaceA, workspaceB := t.TempDir(), t.TempDir()
+	manager := newTraceCaptureManager(traceTestConfig(workspaceA), nil)
+	start := time.Now().UTC()
+	for _, item := range []struct {
+		workspace string
+		turnID    string
+	}{{workspaceA, "turn-workspace-a"}, {workspaceB, "turn-workspace-b"}} {
+		manager.observeRuntimeEvent(runtimeevents.Event{
+			ID: "start-" + item.turnID, Kind: runtimeevents.KindAgentTurnStart, Time: start,
+			Scope:   runtimeevents.Scope{TurnID: item.turnID, SessionKey: "session-shared"},
+			Payload: TurnStartPayload{Workspace: item.workspace},
+		})
+	}
+	registryA := interactions.NewRegistry(interactions.WorkspaceStorePath(workspaceA))
+	registryB := interactions.NewRegistry(interactions.WorkspaceStorePath(workspaceB))
+	manager.attachInteractionRegistry(workspaceA, registryA)
+	manager.attachInteractionRegistry(workspaceB, registryB)
+	recordA := createTraceTestInteraction(t, registryA, "interaction-workspace-a", "session-shared")
+	recordB := createTraceTestInteraction(t, registryB, "interaction-workspace-b", "session-shared")
+
+	manager.mu.Lock()
+	traceA := manager.turns["turn-workspace-a"]
+	traceB := manager.turns["turn-workspace-b"]
+	manager.mu.Unlock()
+	manager.close()
+	assertInteractionIDs := func(trace *activeTraceCapture, want, reject string) {
+		t.Helper()
+		found := false
+		for _, record := range trace.trace.Records {
+			if record.Correlation.InteractionID == reject {
+				t.Fatalf("turn trace contains cross-workspace interaction %s", reject)
+			}
+			found = found || record.Correlation.InteractionID == want
+		}
+		if !found {
+			t.Fatalf("turn trace missing workspace interaction %s", want)
+		}
+	}
+	assertInteractionIDs(traceA, recordA.ID, recordB.ID)
+	assertInteractionIDs(traceB, recordB.ID, recordA.ID)
 }
 
 func TestCompleteTerminalInteractionTraceRequiresFinalSequenceAndRevision(t *testing.T) {

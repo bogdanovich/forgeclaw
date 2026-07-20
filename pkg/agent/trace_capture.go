@@ -56,9 +56,9 @@ type traceCaptureManager struct {
 
 	settings           traceCaptureSettings
 	turns              map[string]*activeTraceCapture
-	tasks              map[string]*activeTraceCapture
-	interactions       map[string]*activeTraceCapture
-	sessions           map[string]string
+	tasks              map[scopedTraceKey]*activeTraceCapture
+	interactions       map[scopedTraceKey]*activeTraceCapture
+	sessions           map[scopedTraceKey]string
 	targets            map[string]map[string]struct{}
 	taskSubs           map[string]func()
 	interactionSubs    map[string]func()
@@ -81,13 +81,18 @@ type tracePersistRequest struct {
 	trace    *activeTraceCapture
 }
 
+type scopedTraceKey struct {
+	workspace string
+	id        string
+}
+
 func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *traceCaptureManager {
 	m := &traceCaptureManager{
 		settings:        traceCaptureSettingsFromConfig(cfg),
 		turns:           make(map[string]*activeTraceCapture),
-		tasks:           make(map[string]*activeTraceCapture),
-		interactions:    make(map[string]*activeTraceCapture),
-		sessions:        make(map[string]string),
+		tasks:           make(map[scopedTraceKey]*activeTraceCapture),
+		interactions:    make(map[scopedTraceKey]*activeTraceCapture),
+		sessions:        make(map[scopedTraceKey]string),
 		targets:         make(map[string]map[string]struct{}),
 		taskSubs:        make(map[string]func()),
 		interactionSubs: make(map[string]func()),
@@ -178,9 +183,9 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 			}
 		}
 		m.turns = make(map[string]*activeTraceCapture)
-		m.tasks = make(map[string]*activeTraceCapture)
-		m.interactions = make(map[string]*activeTraceCapture)
-		m.sessions = make(map[string]string)
+		m.tasks = make(map[scopedTraceKey]*activeTraceCapture)
+		m.interactions = make(map[scopedTraceKey]*activeTraceCapture)
+		m.sessions = make(map[scopedTraceKey]string)
 		m.targets = make(map[string]map[string]struct{})
 	}
 	type registryBootstrap struct {
@@ -472,7 +477,7 @@ func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
 	}
 	trace := m.turns[turnID]
 	if trace == nil && event.Scope.SessionKey != "" {
-		trace = m.turns[m.sessions[event.Scope.SessionKey]]
+		trace = m.uniqueSessionTraceLocked(event.Scope.SessionKey)
 	}
 	if trace == nil && event.Scope.Channel != "" && event.Scope.ChatID != "" {
 		trace = m.uniqueTargetTraceLocked(event.Scope.Channel, event.Scope.ChatID)
@@ -576,7 +581,7 @@ func (m *traceCaptureManager) startTurnLocked(
 	}
 	m.turns[turnID] = trace
 	if event.Scope.SessionKey != "" {
-		m.sessions[event.Scope.SessionKey] = turnID
+		m.sessions[traceScopeKey(workspace, event.Scope.SessionKey)] = turnID
 	}
 	key := targetKey(event.Scope.Channel, event.Scope.ChatID)
 	if key != "" {
@@ -607,7 +612,8 @@ func (m *traceCaptureManager) observeTaskEvent(
 	}
 	event := observation.Event
 	record := observation.Record
-	trace := m.tasks[event.TaskID]
+	taskKey := traceScopeKey(workspace, event.TaskID)
+	trace := m.tasks[taskKey]
 	createdTrace := false
 	if trace == nil {
 		emittedAt := time.UnixMilli(event.EmittedAt)
@@ -634,7 +640,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 				Records: make([]evaltrace.Record, 0, 16),
 			},
 		}
-		m.tasks[event.TaskID] = trace
+		m.tasks[taskKey] = trace
 		createdTrace = true
 	}
 	observations := []taskregistry.EventObservation{observation}
@@ -650,7 +656,8 @@ func (m *traceCaptureManager) observeTaskEvent(
 	for _, item := range observations {
 		taskRecord, critical := normalizedTaskEventRecord(settings, trace, item)
 		appendCaptureRecord(trace, taskRecord, critical)
-		if turn := m.turns[m.sessions[record.RequesterSessionKey]]; turn != nil {
+		turn := m.turns[m.sessions[traceScopeKey(workspace, record.RequesterSessionKey)]]
+		if turn != nil && turn.workspace == workspace {
 			appendCaptureRecord(turn, taskRecord, critical)
 		}
 	}
@@ -658,7 +665,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 		m.mu.Unlock()
 		return
 	}
-	delete(m.tasks, event.TaskID)
+	delete(m.tasks, taskKey)
 	trace.trace.Outcome = &evaltrace.Outcome{
 		Status:    string(record.Status),
 		ErrorCode: taskErrorCode(record),
@@ -690,17 +697,24 @@ func (m *traceCaptureManager) observeInteractionRegistryEventGeneration(
 		return
 	}
 	event, state := observation.Event, observation.Record
-	trace := m.interactions[event.InteractionID]
+	interactionKey := traceScopeKey(workspace, event.InteractionID)
+	trace := m.interactions[interactionKey]
 	if trace == nil {
 		trace = buildInteractionTrace(settings, workspace, state, []interactions.Event{event})
-		m.interactions[event.InteractionID] = trace
+		m.interactions[interactionKey] = trace
 	} else {
 		interactionRecord, critical := normalizedInteractionEventRecord(settings, trace, observation)
 		appendCaptureRecord(trace, interactionRecord, critical)
 	}
 	turn := m.turns[state.Origin.TurnID]
+	if turn != nil && turn.workspace != workspace {
+		turn = nil
+	}
 	if turn == nil {
-		turn = m.turns[m.sessions[state.Route.SessionKey]]
+		turn = m.turns[m.sessions[traceScopeKey(workspace, state.Route.SessionKey)]]
+	}
+	if turn != nil && turn.workspace != workspace {
+		turn = nil
 	}
 	if turn != nil {
 		turnRecord, critical := normalizedInteractionEventRecord(settings, turn, observation)
@@ -710,7 +724,7 @@ func (m *traceCaptureManager) observeInteractionRegistryEventGeneration(
 		m.mu.Unlock()
 		return
 	}
-	delete(m.interactions, event.InteractionID)
+	delete(m.interactions, interactionKey)
 	trace.retainedAt = interactionTraceRetainedAt(state, []interactions.Event{event})
 	trace.trace.Outcome = &evaltrace.Outcome{
 		Status:    string(state.Status),
@@ -734,13 +748,14 @@ func (m *traceCaptureManager) reconcileInteractionSnapshot(
 		return
 	}
 	settings := m.settings
-	if _, exists := m.interactions[state.ID]; exists {
+	interactionKey := traceScopeKey(workspace, state.ID)
+	if _, exists := m.interactions[interactionKey]; exists {
 		m.mu.Unlock()
 		return
 	}
 	trace := buildInteractionTrace(settings, workspace, state, history)
 	if !interactionRecordIsTerminal(state) {
-		m.interactions[state.ID] = trace
+		m.interactions[interactionKey] = trace
 		m.mu.Unlock()
 		return
 	}
@@ -1410,6 +1425,28 @@ func (m *traceCaptureManager) uniqueTargetTraceLocked(channel, chatID string) *a
 		return m.turns[turnID]
 	}
 	return nil
+}
+
+func (m *traceCaptureManager) uniqueSessionTraceLocked(sessionKey string) *activeTraceCapture {
+	var result *activeTraceCapture
+	for key, turnID := range m.sessions {
+		if key.id != sessionKey {
+			continue
+		}
+		trace := m.turns[turnID]
+		if trace == nil {
+			continue
+		}
+		if result != nil && result != trace {
+			return nil
+		}
+		result = trace
+	}
+	return result
+}
+
+func traceScopeKey(workspace, id string) scopedTraceKey {
+	return scopedTraceKey{workspace: strings.TrimSpace(workspace), id: strings.TrimSpace(id)}
 }
 
 func (m *traceCaptureManager) removeTurnLocked(turnID string, trace *activeTraceCapture) {
