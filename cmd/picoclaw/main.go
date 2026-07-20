@@ -28,6 +28,7 @@ import (
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/mcp"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/migrate"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/model"
+	nodescmd "github.com/sipeed/picoclaw/cmd/picoclaw/internal/nodes"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/onboard"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/skills"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/status"
@@ -108,7 +109,7 @@ func machineJSONRequested(args []string) bool {
 	hasJSON := false
 	for _, arg := range args {
 		switch arg {
-		case "doctor", "eval":
+		case "doctor", "eval", "nodes":
 			hasJSONCommand = true
 		case "--json", "--json=true", "--json=1":
 			hasJSON = true
@@ -161,6 +162,7 @@ picoclaw --no-color status`,
 		migrate.NewMigrateCommand(),
 		skills.NewSkillsCommand(),
 		model.NewModelCommand(),
+		nodescmd.NewNodesCommand(),
 		updater.NewUpdateCommand("picoclaw"),
 		version.NewVersionCommand(),
 	)

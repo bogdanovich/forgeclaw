@@ -377,6 +377,58 @@ func TestFileRegistryRegistrationReturnsCopies(t *testing.T) {
 	}
 }
 
+func TestFileRegistrySynchronizesIndependentInstances(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	first, err := NewFileRegistry(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewFileRegistry(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing := testPendingPairing(t, 1)
+	if upsertErr := first.UpsertPending(pairing); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	pending, exists, pendingErr := second.Pending(pairing.Node.ID)
+	if pendingErr != nil || !exists || pending.Node.ID != pairing.Node.ID {
+		t.Fatalf("second Pending() = %#v, exists %v, error %v", pending, exists, pendingErr)
+	}
+	approved, err := second.Approve(pairing.Node.ID, PairingApproval{
+		Aliases: []Alias{"vpn-box"},
+		At:      2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connected := approved.Snapshot
+	connected.State = StateConnected
+	connected.LastSeenAt = 3
+	if upsertErr := first.Upsert(connected); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	observed, exists, err := second.Registration(pairing.Node.ID)
+	if err != nil || !exists {
+		t.Fatalf("second Registration() = exists %v, error %v", exists, err)
+	}
+	if observed.Snapshot.State != StateConnected || observed.ApprovedAt != 2 ||
+		len(observed.Snapshot.Aliases) != 1 || observed.Snapshot.Aliases[0] != "vpn-box" {
+		t.Fatalf("observed registration = %#v", observed)
+	}
+	if _, revokeErr := first.Revoke(pairing.Node.ID, Revocation{Reason: "retired", At: 4}); revokeErr != nil {
+		t.Fatal(revokeErr)
+	}
+	connected.LastSeenAt = 5
+	if upsertErr := second.Upsert(connected); !errors.Is(upsertErr, ErrInvalidNode) {
+		t.Fatalf("stale second instance restored revoked node: %v", upsertErr)
+	}
+	final, _, err := first.Registration(pairing.Node.ID)
+	if err != nil || final.Snapshot.State != StateRevoked {
+		t.Fatalf("final registration = %#v, error %v", final, err)
+	}
+}
+
 func TestFileRegistryRejectsAliasCollision(t *testing.T) {
 	registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
 	if err != nil {
