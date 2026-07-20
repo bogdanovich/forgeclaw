@@ -57,8 +57,12 @@ func Decode(data []byte) (Envelope, error) {
 	if len(data) > MaxFrameSize {
 		return Envelope{}, ErrFrameTooLarge
 	}
-	if _, err := jsonstrict.Decode(data); err != nil {
+	wireValue, err := jsonstrict.Decode(data)
+	if err != nil {
 		return Envelope{}, fmt.Errorf("%w: %v", ErrInvalidFrame, err)
+	}
+	if err := validateWireShape(wireValue); err != nil {
+		return Envelope{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -169,15 +173,79 @@ func validOptionalIdentifier(value string) bool {
 	return value == "" || validIdentifier(value)
 }
 
+func validateWireShape(value any) error {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%w: frame must be an object", ErrInvalidFrame)
+	}
+	frameType, ok := object["type"].(string)
+	if !ok {
+		return fmt.Errorf("%w: frame requires a string type", ErrInvalidFrame)
+	}
+	var allowed, required map[string]struct{}
+	switch FrameType(frameType) {
+	case FrameRequest:
+		allowed = fieldSet("type", "id", "method", "params", "idempotency_key")
+		required = fieldSet("type", "id", "method", "params")
+		if key, present := object["idempotency_key"]; present {
+			if text, isString := key.(string); isString && text == "" {
+				return fmt.Errorf("%w: empty idempotency key", ErrInvalidFrame)
+			}
+		}
+	case FrameResponse:
+		allowed = fieldSet("type", "id", "ok", "result", "error")
+		required = fieldSet("type", "id", "ok")
+		okValue, isBool := object["ok"].(bool)
+		if !isBool {
+			return fmt.Errorf("%w: response requires a boolean ok", ErrInvalidFrame)
+		}
+		_, hasResult := object["result"]
+		_, hasError := object["error"]
+		if okValue && (!hasResult || hasError) {
+			return fmt.Errorf("%w: successful response requires only a result", ErrInvalidFrame)
+		}
+		if !okValue && (hasResult || !hasError) {
+			return fmt.Errorf("%w: failed response requires only an error", ErrInvalidFrame)
+		}
+	case FrameEvent:
+		allowed = fieldSet("type", "event", "payload")
+		required = fieldSet("type", "event", "payload")
+	default:
+		return fmt.Errorf("%w: unsupported frame type %q", ErrInvalidFrame, frameType)
+	}
+	for field := range object {
+		if _, exists := allowed[field]; !exists {
+			return fmt.Errorf("%w: field %q is not valid for %s", ErrInvalidFrame, field, frameType)
+		}
+	}
+	for field := range required {
+		if _, exists := object[field]; !exists {
+			return fmt.Errorf("%w: missing %s", ErrInvalidFrame, field)
+		}
+	}
+	return nil
+}
+
+func fieldSet(fields ...string) map[string]struct{} {
+	result := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		result[field] = struct{}{}
+	}
+	return result
+}
+
 func validateJSONObject(label string, raw json.RawMessage, required bool) error {
-	if err := validateJSONValue(label, raw, !required); err != nil {
-		return err
-	}
 	if len(raw) == 0 {
-		return nil
+		if !required {
+			return nil
+		}
+		return fmt.Errorf("%w: missing %s", ErrInvalidFrame, label)
 	}
-	var object map[string]any
-	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+	value, err := jsonstrict.Decode(raw)
+	if err != nil {
+		return fmt.Errorf("%w: malformed %s: %v", ErrInvalidFrame, label, err)
+	}
+	if _, ok := value.(map[string]any); !ok {
 		return fmt.Errorf("%w: %s must be an object", ErrInvalidFrame, label)
 	}
 	return nil
@@ -190,8 +258,8 @@ func validateJSONValue(label string, raw json.RawMessage, optional bool) error {
 		}
 		return fmt.Errorf("%w: missing %s", ErrInvalidFrame, label)
 	}
-	if !json.Valid(raw) {
-		return fmt.Errorf("%w: malformed %s", ErrInvalidFrame, label)
+	if _, err := jsonstrict.Decode(raw); err != nil {
+		return fmt.Errorf("%w: malformed %s: %v", ErrInvalidFrame, label, err)
 	}
 	return nil
 }

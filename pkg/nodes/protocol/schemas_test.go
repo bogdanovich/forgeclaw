@@ -43,6 +43,24 @@ func TestEnvelopeSchemaMatchesCodecContract(t *testing.T) {
 			t.Fatalf("codec rejected %s: %v", fixture, err)
 		}
 	}
+
+	invalidFixtures := []string{
+		`{"type":"event","event":"node.ready","payload":{},"id":""}`,
+		`{"type":"request","id":"req_1","method":"node.info","params":{},"idempotency_key":""}`,
+		`{"type":"response","id":"req_1","ok":true,"result":{},"error":null}`,
+	}
+	for _, fixture := range invalidFixtures {
+		var instance any
+		if err := json.Unmarshal([]byte(fixture), &instance); err != nil {
+			t.Fatal(err)
+		}
+		if err := resolved.Validate(instance); err == nil {
+			t.Fatalf("schema accepted invalid fixture %s", fixture)
+		}
+		if _, err := Decode([]byte(fixture)); err == nil {
+			t.Fatalf("codec accepted invalid fixture %s", fixture)
+		}
+	}
 }
 
 func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {

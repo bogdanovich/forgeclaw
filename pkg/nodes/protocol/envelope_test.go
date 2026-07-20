@@ -54,6 +54,13 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 				`"error":{"code":"FAILED","message":"no"}}`,
 		},
 		{name: "event array payload", data: `{"type":"event","event":"node.ready","payload":[]}`},
+		{name: "explicit empty foreign field", data: `{"type":"event","event":"node.ready","payload":{},"id":""}`},
+		{
+			name: "empty idempotency key",
+			data: `{"type":"request","id":"req_1","method":"node.info",` +
+				`"params":{},"idempotency_key":""}`,
+		},
+		{name: "null error on success", data: `{"type":"response","id":"req_1","ok":true,"result":{},"error":null}`},
 		{name: "trailing value", data: `{"type":"event","event":"node.ready","payload":{}} {}`},
 	}
 
@@ -63,6 +70,18 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 				t.Fatalf("Decode() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestEncodeRejectsDuplicateRawMessageMembers(t *testing.T) {
+	envelope := Envelope{
+		Type:   FrameRequest,
+		ID:     "req_1",
+		Method: "node.invoke",
+		Params: json.RawMessage(`{"command":"one","command":"two"}`),
+	}
+	if _, err := Encode(envelope); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("Encode() error = %v", err)
 	}
 }
 
