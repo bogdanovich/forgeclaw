@@ -42,6 +42,16 @@ func TestPrepareExecutionPlanCanonicalHash(t *testing.T) {
 	}
 }
 
+func TestInvocationRequestRejectsNonCanonicalCatalogHash(t *testing.T) {
+	t.Parallel()
+
+	request := invocationRequest(json.RawMessage(`{"argv":["git","status"]}`))
+	request.CatalogHash = strings.ToUpper(request.CatalogHash)
+	if err := request.Validate(); !errors.Is(err, ErrInvalidInvocation) {
+		t.Fatalf("uppercase catalog hash error = %v", err)
+	}
+}
+
 func TestExecutionPlanRecomputedMutationDoesNotMatchRetainedHash(t *testing.T) {
 	plan, err := PrepareExecutionPlan(
 		invocationRequest(json.RawMessage(`{"argv":["git","status"]}`)),

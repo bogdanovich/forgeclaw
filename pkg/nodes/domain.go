@@ -273,7 +273,7 @@ type Registration struct {
 
 func validSHA256Digest(value string) bool {
 	decoded, err := hex.DecodeString(value)
-	return err == nil && len(decoded) == sha256.Size
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
 }
 
 // Registry is the durable node-state boundary. Connection ownership remains
