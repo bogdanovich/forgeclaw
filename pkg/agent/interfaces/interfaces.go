@@ -56,6 +56,7 @@ type ChannelManager interface {
 
 	// SendMessage sends a text message to the specified channel and chat.
 	SendMessage(ctx context.Context, msg bus.OutboundMessage) error
+	SendMessageProvisional(ctx context.Context, msg bus.OutboundMessage) error
 
 	// SendMessageDefiniteRetryOnly preserves ambiguous delivery failures and
 	// retries only failures known to occur before remote acceptance.
@@ -63,6 +64,7 @@ type ChannelManager interface {
 
 	// SendMedia sends a media message to the specified channel and chat.
 	SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error
+	SendMediaProvisional(ctx context.Context, msg bus.OutboundMediaMessage) error
 
 	// SendPlaceholder sends a placeholder message (e.g., for audio transcription).
 	SendPlaceholder(ctx context.Context, channel, chatID string) bool

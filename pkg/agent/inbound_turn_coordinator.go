@@ -233,13 +233,14 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	}
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
-		al.maybePublishErrorWithPolicy(
+		al.maybePublishErrorWithScopes(
 			ctx,
 			msg.Channel,
 			msg.ChatID,
 			claim.sessionKey,
 			continueErr,
 			finalResponseAlwaysPublish,
+			traceScopes,
 		)
 		return
 	}

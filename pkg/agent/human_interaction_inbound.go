@@ -207,17 +207,21 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 	if al.hasNonterminalInteraction(workspace, route.SessionKey) {
 		return nil
 	}
+	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	continued, err := al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
 		SessionKey: route.SessionKey,
 		Channel:    route.Channel,
 		ChatID:     route.ChatID,
 		Workspace:  workspace,
+		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
+			traceScopes = appendUniqueTraceScope(traceScopes, scope)
+		},
 	})
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(continued) != "" {
-		al.publishResponseWithContextIfNeeded(
+		al.publishResponseWithContextAndScopes(
 			ctx,
 			route.Channel,
 			route.ChatID,
@@ -225,6 +229,7 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 			continued,
 			&inbound,
 			finalResponseAlwaysPublish,
+			traceScopes,
 		)
 	}
 	return nil

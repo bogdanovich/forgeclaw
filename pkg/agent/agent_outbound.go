@@ -319,7 +319,7 @@ func (al *AgentLoop) deliverFinalTurnText(
 	bus.SetOutboundTraceScopes(&msg, []runtimeevents.TraceScope{traceScope})
 	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
-		if err := al.channelManager.SendMessage(ctx, msg); err != nil {
+		if err := al.channelManager.SendMessageProvisional(ctx, msg); err != nil {
 			logger.WarnCF("agent", "Failed to deliver final turn message synchronously; falling back to bus",
 				map[string]any{
 					"agent_id": agent.ID,
@@ -370,7 +370,13 @@ func (al *AgentLoop) deliverToolResultToUser(
 			Parts: parts,
 		}
 		if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
-			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
+			var err error
+			if toolName == "final_turn" {
+				err = al.channelManager.SendMediaProvisional(ctx, outboundMedia)
+			} else {
+				err = al.channelManager.SendMedia(ctx, outboundMedia)
+			}
+			if err != nil {
 				logger.WarnCF("agent", "Failed to deliver tool result media",
 					map[string]any{
 						"agent_id": ts.agent.ID,

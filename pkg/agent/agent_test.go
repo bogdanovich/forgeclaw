@@ -127,6 +127,10 @@ func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.Outbo
 	return nil
 }
 
+func (m *recordingChannelManager) SendMessageProvisional(ctx context.Context, msg bus.OutboundMessage) error {
+	return m.SendMessage(ctx, msg)
+}
+
 func (m *recordingChannelManager) SendMessageDefiniteRetryOnly(
 	ctx context.Context,
 	msg bus.OutboundMessage,
@@ -140,6 +144,13 @@ func (m *recordingChannelManager) SendMedia(
 ) error {
 	m.sentMedia = append(m.sentMedia, msg)
 	return nil
+}
+
+func (m *recordingChannelManager) SendMediaProvisional(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) error {
+	return m.SendMedia(ctx, msg)
 }
 
 func (m *recordingChannelManager) SendPlaceholder(
