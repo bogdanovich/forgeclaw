@@ -1169,9 +1169,16 @@ func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	textWorker := &channelWorker{ch: &mockChannel{}, limiter: rate.NewLimiter(0, 0)}
-	_, _, _, _ = m.sendWithRetry(canceled, "test", textWorker, text)
+	messageIDs, delivered, ambiguous, sendErr := m.sendWithRetry(canceled, "test", textWorker, text)
+	if sendErr == nil || delivered || ambiguous || len(messageIDs) != 0 {
+		t.Fatalf("canceled text send = ids %v, delivered %v, ambiguous %v, err %v",
+			messageIDs, delivered, ambiguous, sendErr)
+	}
 	mediaWorker := &channelWorker{ch: &mockMediaChannel{}, limiter: rate.NewLimiter(0, 0)}
-	_, _ = m.sendMediaWithRetry(canceled, "test", mediaWorker, media)
+	mediaIDs, mediaErr := m.sendMediaWithRetry(canceled, "test", mediaWorker, media)
+	if mediaErr == nil || len(mediaIDs) != 0 {
+		t.Fatalf("canceled media send = ids %v, err %v", mediaIDs, mediaErr)
+	}
 
 	for i := 0; i < 8; i++ {
 		event := receiveChannelRuntimeEvent(t, eventsCh)
