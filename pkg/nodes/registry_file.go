@@ -70,8 +70,11 @@ func (registry *FileRegistry) List(filter Filter) ([]Snapshot, error) {
 			return nil, err
 		}
 	}
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if err := registry.load(); err != nil {
+		return nil, fmt.Errorf("refresh node registry: %w", err)
+	}
 	states := make(map[State]struct{}, len(filter.States))
 	for _, state := range filter.States {
 		if !state.Valid() {
@@ -96,8 +99,11 @@ func (registry *FileRegistry) List(filter Filter) ([]Snapshot, error) {
 }
 
 func (registry *FileRegistry) Resolve(ref string) (Snapshot, bool, error) {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if err := registry.load(); err != nil {
+		return Snapshot{}, false, fmt.Errorf("refresh node registry: %w", err)
+	}
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return Snapshot{}, false, nil
@@ -133,6 +139,11 @@ func (registry *FileRegistry) Upsert(snapshot Snapshot) error {
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	release, err := registry.lockAndReloadLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	record, exists := registry.records[string(snapshot.ID)]
 	if !exists {
 		return fmt.Errorf("%w: runtime update requires an approved node", ErrInvalidNode)
@@ -160,6 +171,11 @@ func (registry *FileRegistry) MarkDisconnected(id ID, disconnect Disconnect) err
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	release, err := registry.lockAndReloadLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	record, exists := registry.records[string(id)]
 	if !exists {
 		return fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
@@ -195,6 +211,11 @@ func (registry *FileRegistry) UpsertPending(pairing PendingPairing) error {
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	release, err := registry.lockAndReloadLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
 	existing, exists := registry.records[string(pairing.Node.ID)]
 	if exists && len(existing.PublicKey) > 0 && !bytes.Equal(existing.PublicKey, pairing.PublicKey) {
 		return fmt.Errorf("%w: node public key changed", ErrInvalidNode)
@@ -220,8 +241,11 @@ func (registry *FileRegistry) Pending(id ID) (PendingPairing, bool, error) {
 	if err := id.Validate(); err != nil {
 		return PendingPairing{}, false, err
 	}
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if err := registry.load(); err != nil {
+		return PendingPairing{}, false, fmt.Errorf("refresh node registry: %w", err)
+	}
 	record, exists := registry.records[string(id)]
 	if !exists || record.Snapshot.State != StatePendingPairing {
 		return PendingPairing{}, false, nil
@@ -240,8 +264,11 @@ func (registry *FileRegistry) Registration(id ID) (Registration, bool, error) {
 	if err := id.Validate(); err != nil {
 		return Registration{}, false, err
 	}
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if err := registry.load(); err != nil {
+		return Registration{}, false, fmt.Errorf("refresh node registry: %w", err)
+	}
 	record, exists := registry.records[string(id)]
 	if !exists {
 		return Registration{}, false, nil
@@ -265,6 +292,11 @@ func (registry *FileRegistry) Approve(id ID, approval PairingApproval) (Registra
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	release, err := registry.lockAndReloadLocked()
+	if err != nil {
+		return Registration{}, err
+	}
+	defer release()
 	record, exists := registry.records[string(id)]
 	if !exists || record.Snapshot.State != StatePendingPairing {
 		return Registration{}, fmt.Errorf("%w: node %q is not pending pairing", ErrInvalidNode, id)
@@ -321,6 +353,11 @@ func (registry *FileRegistry) revoke(
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	release, err := registry.lockAndReloadLocked()
+	if err != nil {
+		return Registration{}, err
+	}
+	defer release()
 	record, exists := registry.records[string(id)]
 	if !exists {
 		return Registration{}, fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
@@ -392,9 +429,25 @@ func (registry *FileRegistry) save(records map[string]registryRecord) error {
 	return nil
 }
 
+func (registry *FileRegistry) lockAndReloadLocked() (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(registry.path), 0o700); err != nil {
+		return nil, fmt.Errorf("create node registry directory: %w", err)
+	}
+	release, err := acquireRegistryFileLock(registry.path + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	if err := registry.load(); err != nil {
+		release()
+		return nil, fmt.Errorf("reload node registry under lock: %w", err)
+	}
+	return release, nil
+}
+
 func (registry *FileRegistry) load() error {
 	data, err := os.ReadFile(registry.path)
 	if errors.Is(err, os.ErrNotExist) {
+		registry.records = make(map[string]registryRecord)
 		return nil
 	}
 	if err != nil {
