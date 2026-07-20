@@ -291,6 +291,7 @@ func TestSessionHubCloseReturnsDisconnectError(t *testing.T) {
 
 func TestSessionHubCloseRetriesFailedDisconnect(t *testing.T) {
 	hub := NewSessionHub()
+	hub.retries = []time.Duration{time.Millisecond}
 	wantErr := errors.New("registry temporarily unavailable")
 	var calls atomic.Int32
 	release, err := hub.Claim(
@@ -310,10 +311,58 @@ func TestSessionHubCloseRetriesFailedDisconnect(t *testing.T) {
 	if _, err := release(); !errors.Is(err, wantErr) {
 		t.Fatalf("release() error = %v", err)
 	}
-	if err := hub.Close(t.Context()); err != nil {
-		t.Fatalf("Close() did not recover transient disconnect: %v", err)
+	deadline := time.Now().Add(time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if err := hub.deactivationError(); err != nil {
+		t.Fatalf("background retry did not recover transient disconnect: %v", err)
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("disconnect calls = %d", calls.Load())
+	}
+	if err := hub.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionHubSuccessfulClaimCancelsStaleDisconnectRetry(t *testing.T) {
+	hub := NewSessionHub()
+	hub.retries = []time.Duration{time.Hour}
+	wantErr := errors.New("registry temporarily unavailable")
+	var calls atomic.Int32
+	releaseFirst, err := hub.Claim(
+		nodes.ID("node_test"),
+		&trackingCloser{},
+		nil,
+		func() error {
+			calls.Add(1)
+			return wantErr
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, releaseErr := releaseFirst(); !errors.Is(releaseErr, wantErr) {
+		t.Fatalf("release() error = %v", releaseErr)
+	}
+	releaseSecond, err := hub.Claim(nodes.ID("node_test"), &trackingCloser{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	_, pending := hub.pending[nodes.ID("node_test")]
+	hub.mu.Unlock()
+	if pending {
+		t.Fatal("successful replacement retained stale disconnect retry")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("stale disconnect calls = %d", calls.Load())
+	}
+	if _, err := releaseSecond(); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Close(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }

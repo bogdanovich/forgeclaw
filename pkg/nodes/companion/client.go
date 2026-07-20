@@ -22,6 +22,8 @@ import (
 
 var ErrIncompatibleGateway = errors.New("node gateway protocol is incompatible")
 
+const defaultStableSessionWindow = 30 * time.Second
+
 type Client struct {
 	config        Config
 	identity      Identity
@@ -29,6 +31,7 @@ type Client struct {
 	catalog       nodes.CapabilityCatalog
 	logger        *slog.Logger
 	dialer        websocket.Dialer
+	stableWindow  time.Duration
 }
 
 func NewClient(
@@ -71,6 +74,7 @@ func NewClient(
 		clientVersion: clientVersion,
 		catalog:       cloneCatalog(catalog),
 		logger:        logger,
+		stableWindow:  defaultStableSessionWindow,
 		dialer: websocket.Dialer{
 			HandshakeTimeout: DefaultHandshakeTimeout,
 			TLSClientConfig:  tlsConfig,
@@ -102,15 +106,19 @@ func (client *Client) Run(ctx context.Context) error {
 		connection, result, err := client.connectAndAuthenticate(ctx)
 		if err == nil {
 			client.logger.Info("node admission completed", "node_id", result.NodeID, "state", result.State)
-			backoff = client.config.minReconnectDelay
 			if result.State == nodes.StatePendingPairing {
+				backoff = client.config.minReconnectDelay
 				_ = connection.Close()
 				if waitErr := waitForContext(ctx, client.config.pendingRetryDelay); waitErr != nil {
 					return normalizeRunExit(waitErr)
 				}
 				continue
 			}
+			connectedAt := time.Now()
 			err = client.serveConnected(ctx, connection)
+			if time.Since(connectedAt) >= client.stableWindow {
+				backoff = client.config.minReconnectDelay
+			}
 		}
 		if ctx.Err() != nil {
 			return normalizeRunExit(ctx.Err())

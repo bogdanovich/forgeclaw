@@ -97,6 +97,53 @@ func TestClientKeepsApprovedSessionUntilContextCancellation(t *testing.T) {
 	waitForNodeState(t, registry, identity.ID, nodes.StateDisconnected)
 }
 
+func TestDuplicateCompanionsBackOffInsteadOfRapidlyFlapping(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		admission.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+	identity := testIdentity(t)
+	bootstrap := testClientForServer(t, server, identity, ReconnectConfig{})
+	result, err := bootstrap.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Approve(result.NodeID, nodes.PairingApproval{At: time.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+
+	first := testClientForServer(t, server, identity, ReconnectConfig{})
+	second := testClientForServer(t, server, identity, ReconnectConfig{})
+	for _, client := range []*Client{first, second} {
+		client.config.minReconnectDelay = 5 * time.Millisecond
+		client.config.maxReconnectDelay = 80 * time.Millisecond
+		client.stableWindow = time.Second
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 2)
+	go func() { done <- first.Run(ctx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+	go func() { done <- second.Run(ctx) }()
+	time.Sleep(400 * time.Millisecond)
+	cancel()
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	}
+	closeCtx, closeCancel := context.WithTimeout(t.Context(), time.Second)
+	defer closeCancel()
+	if err := admission.Close(closeCtx); err != nil {
+		t.Fatalf("close admission: %v", err)
+	}
+	if count := requests.Load(); count < 4 || count > 30 {
+		t.Fatalf("duplicate companion admission requests = %d", count)
+	}
+}
+
 func TestClientRejectsWrongCertificatePin(t *testing.T) {
 	_, handler := testGatewayAdmission(t)
 	server := httptest.NewTLSServer(handler)

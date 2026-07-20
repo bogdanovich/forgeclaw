@@ -6,9 +6,16 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/nodes"
 )
+
+var defaultDeactivationRetryDelays = []time.Duration{
+	250 * time.Millisecond,
+	time.Second,
+	5 * time.Second,
+}
 
 var (
 	ErrSessionHubClosed  = errors.New("node session hub is closed")
@@ -31,6 +38,9 @@ type sessionSlot struct {
 type pendingDeactivation struct {
 	callback func() error
 	err      error
+	attempt  int
+	timer    *time.Timer
+	running  bool
 }
 
 // SessionHub owns the single live transport connection for each paired node.
@@ -43,6 +53,7 @@ type SessionHub struct {
 	closed   bool
 	active   sync.WaitGroup
 	pending  map[nodes.ID]*pendingDeactivation
+	retries  []time.Duration
 }
 
 func NewSessionHub() *SessionHub {
@@ -50,6 +61,7 @@ func NewSessionHub() *SessionHub {
 		sessions: make(map[nodes.ID]*sessionSlot),
 		tracked:  make(map[*transportEntry]struct{}),
 		pending:  make(map[nodes.ID]*pendingDeactivation),
+		retries:  append([]time.Duration(nil), defaultDeactivationRetryDelays...),
 	}
 }
 
@@ -195,6 +207,12 @@ func (hub *SessionHub) Close(ctx context.Context) error {
 			}
 		}
 	}
+	for id, deactivation := range hub.pending {
+		hub.cancelRetryLocked(deactivation)
+		if deactivation.timer == nil && !deactivation.running {
+			hub.scheduleRetryLocked(id, deactivation, 0, false)
+		}
+	}
 	hub.mu.Unlock()
 	for _, connection := range connections {
 		_ = connection.Close()
@@ -208,18 +226,25 @@ func (hub *SessionHub) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return errors.Join(ctx.Err(), hub.deactivationError())
 	case <-done:
-		return hub.retryDeactivations()
+		return hub.deactivationError()
 	}
 }
 
 func (hub *SessionHub) recordDeactivation(id nodes.ID, callback func() error, err error) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
+	if previous := hub.pending[id]; previous != nil {
+		hub.cancelRetryLocked(previous)
+	}
 	if err == nil {
 		delete(hub.pending, id)
 		return
 	}
-	hub.pending[id] = &pendingDeactivation{callback: callback, err: err}
+	deactivation := &pendingDeactivation{callback: callback, err: err}
+	hub.pending[id] = deactivation
+	if !hub.closed {
+		hub.scheduleNextRetryLocked(id, deactivation)
+	}
 }
 
 func (hub *SessionHub) deactivationError() error {
@@ -228,22 +253,75 @@ func (hub *SessionHub) deactivationError() error {
 	return joinDeactivationErrors(hub.pending)
 }
 
-func (hub *SessionHub) retryDeactivations() error {
-	hub.mu.Lock()
-	pending := make(map[nodes.ID]*pendingDeactivation, len(hub.pending))
-	for id, deactivation := range hub.pending {
-		pending[id] = deactivation
+func (hub *SessionHub) scheduleNextRetryLocked(id nodes.ID, deactivation *pendingDeactivation) {
+	if deactivation.attempt >= len(hub.retries) {
+		return
 	}
+	delay := hub.retries[deactivation.attempt]
+	deactivation.attempt++
+	hub.scheduleRetryLocked(id, deactivation, delay, true)
+}
+
+func (hub *SessionHub) scheduleRetryLocked(
+	id nodes.ID,
+	deactivation *pendingDeactivation,
+	delay time.Duration,
+	continueRetries bool,
+) {
+	hub.active.Add(1)
+	deactivation.timer = time.AfterFunc(delay, func() {
+		hub.runDeactivationRetry(id, deactivation, continueRetries)
+	})
+}
+
+func (hub *SessionHub) runDeactivationRetry(
+	id nodes.ID,
+	deactivation *pendingDeactivation,
+	continueRetries bool,
+) {
+	defer hub.active.Done()
+	hub.mu.Lock()
+	if hub.pending[id] != deactivation {
+		hub.mu.Unlock()
+		return
+	}
+	deactivation.timer = nil
+	deactivation.running = true
+	slot := hub.sessions[id]
 	hub.mu.Unlock()
 
-	for id, deactivation := range pending {
-		if deactivation.callback == nil {
-			continue
-		}
-		err := deactivation.callback()
-		hub.recordDeactivation(id, deactivation.callback, err)
+	if slot != nil {
+		slot.lifecycle.Lock()
+		defer slot.lifecycle.Unlock()
 	}
-	return hub.deactivationError()
+	hub.mu.Lock()
+	if hub.pending[id] != deactivation {
+		hub.mu.Unlock()
+		return
+	}
+	hub.mu.Unlock()
+	err := deactivation.callback()
+
+	hub.mu.Lock()
+	deactivation.running = false
+	if hub.pending[id] == deactivation {
+		if err == nil {
+			delete(hub.pending, id)
+		} else {
+			deactivation.err = err
+			if continueRetries && !hub.closed {
+				hub.scheduleNextRetryLocked(id, deactivation)
+			}
+		}
+	}
+	hub.mu.Unlock()
+}
+
+func (hub *SessionHub) cancelRetryLocked(deactivation *pendingDeactivation) {
+	if deactivation.timer != nil && deactivation.timer.Stop() {
+		deactivation.timer = nil
+		hub.active.Done()
+	}
 }
 
 func joinDeactivationErrors(pending map[nodes.ID]*pendingDeactivation) error {
