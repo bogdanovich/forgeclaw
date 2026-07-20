@@ -56,6 +56,9 @@ func channelEventAttrs(payload any) map[string]any {
 		if len(payload.MessageIDs) > 0 {
 			attrs["message_ids_count"] = len(payload.MessageIDs)
 		}
+		if len(payload.TurnIDs) > 0 {
+			attrs["turn_ids_count"] = len(payload.TurnIDs)
+		}
 		setAttrString(attrs, "reply_to_message_id", payload.ReplyToMessageID)
 		setAttrString(attrs, "error", payload.Error)
 		if payload.Retries > 0 {
@@ -81,9 +84,10 @@ func (m *Manager) publishOutboundSent(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundSent,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMessage(msg),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			TurnIDs:          bus.OutboundTurnIDs(msg),
 			ContentLen:       len([]rune(msg.Content)),
 			MessageIDs:       append([]string(nil), messageIDs...),
 			ReplyToMessageID: msg.ReplyToMessageID,
@@ -98,9 +102,10 @@ func (m *Manager) publishOutboundQueued(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundQueued,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMessage(msg),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			TurnIDs:          bus.OutboundTurnIDs(msg),
 			ContentLen:       len([]rune(msg.Content)),
 			ReplyToMessageID: msg.ReplyToMessageID,
 		},
@@ -114,6 +119,7 @@ func (m *Manager) publishOutboundFailed(
 	media bool,
 ) {
 	payload := ChannelOutboundPayload{
+		TurnIDs:          bus.OutboundTurnIDs(msg),
 		Media:            media,
 		ContentLen:       len([]rune(msg.Content)),
 		ReplyToMessageID: msg.ReplyToMessageID,
@@ -125,7 +131,7 @@ func (m *Manager) publishOutboundFailed(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundFailed,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMessage(msg),
 		runtimeevents.SeverityError,
 		payload,
 	)
@@ -139,10 +145,11 @@ func (m *Manager) publishOutboundMediaSent(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundSent,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMediaMessage(msg),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
 			Media:      true,
+			TurnIDs:    mediaTurnIDs(msg),
 			MessageIDs: append([]string(nil), messageIDs...),
 		},
 	)
@@ -155,9 +162,9 @@ func (m *Manager) publishOutboundMediaQueued(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundQueued,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMediaMessage(msg),
 		runtimeevents.SeverityInfo,
-		ChannelOutboundPayload{Media: true},
+		ChannelOutboundPayload{Media: true, TurnIDs: mediaTurnIDs(msg)},
 	)
 }
 
@@ -167,8 +174,7 @@ func (m *Manager) publishOutboundMediaFailed(
 	err error,
 ) {
 	payload := ChannelOutboundPayload{
-		Media:   true,
-		Retries: maxRetries,
+		Media: true, TurnIDs: mediaTurnIDs(msg), Retries: maxRetries,
 	}
 	if err != nil {
 		payload.Error = err.Error()
@@ -176,7 +182,7 @@ func (m *Manager) publishOutboundMediaFailed(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundFailed,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMediaMessage(msg),
 		runtimeevents.SeverityError,
 		payload,
 	)
@@ -194,4 +200,30 @@ func scopeFromOutboundContext(ctx bus.InboundContext) runtimeevents.Scope {
 		SenderID:  ctx.SenderID,
 		MessageID: ctx.MessageID,
 	}
+}
+
+func scopeFromOutboundMessage(msg bus.OutboundMessage) runtimeevents.Scope {
+	scope := scopeFromOutboundContext(msg.Context)
+	scope.AgentID = msg.AgentID
+	scope.SessionKey = msg.SessionKey
+	turnIDs := bus.OutboundTurnIDs(msg)
+	if len(turnIDs) > 0 {
+		scope.TurnID = turnIDs[0]
+	}
+	return scope
+}
+
+func scopeFromOutboundMediaMessage(msg bus.OutboundMediaMessage) runtimeevents.Scope {
+	scope := scopeFromOutboundContext(msg.Context)
+	scope.AgentID = msg.AgentID
+	scope.SessionKey = msg.SessionKey
+	scope.TurnID = msg.TurnID
+	return scope
+}
+
+func mediaTurnIDs(msg bus.OutboundMediaMessage) []string {
+	if msg.TurnID == "" {
+		return nil
+	}
+	return []string{msg.TurnID}
 }

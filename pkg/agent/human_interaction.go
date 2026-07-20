@@ -106,17 +106,22 @@ func requiredInteractionRetention(cfg *config.Config) time.Duration {
 	return retention
 }
 
-func (al *AgentLoop) ensureInteractionRegistryRetention(cfg *config.Config) {
+func (al *AgentLoop) ensureInteractionRegistryLimits(cfg *config.Config) {
 	if al == nil {
 		return
 	}
 	retention := requiredInteractionRetention(cfg)
+	maxRecords := interactions.DefaultMaxRecords
+	if cfg != nil && cfg.Evaluation.TraceCapture.Enabled &&
+		cfg.Evaluation.TraceCapture.MaxTraces > maxRecords {
+		maxRecords = cfg.Evaluation.TraceCapture.MaxTraces
+	}
 	al.interactionRegistries.Range(func(key, value any) bool {
 		registry, _ := value.(*interactions.Registry)
 		if registry == nil {
 			return true
 		}
-		if err := registry.EnsureTerminalRetention(retention); err != nil {
+		if err := registry.EnsureLimits(retention, maxRecords); err != nil {
 			logger.WarnCF("agent", "Failed to extend human interaction retention", map[string]any{
 				"workspace": key, "retention_hours": int(retention / time.Hour), "error": err.Error(),
 			})

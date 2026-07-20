@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -402,6 +403,8 @@ func TestPublishOutbound_MirrorsContextToLegacyFields(t *testing.T) {
 		},
 		AgentID:    "main",
 		SessionKey: "sk_v1_123",
+		TurnID:     "turn-1",
+		TurnIDs:    []string{"turn-1", " turn-2 ", "turn-1"},
 		Scope: &OutboundScope{
 			Version:    1,
 			AgentID:    "main",
@@ -432,6 +435,9 @@ func TestPublishOutbound_MirrorsContextToLegacyFields(t *testing.T) {
 	}
 	if got.AgentID != "main" || got.SessionKey != "sk_v1_123" {
 		t.Fatalf("unexpected outbound turn metadata: agent=%q session=%q", got.AgentID, got.SessionKey)
+	}
+	if got.TurnID != "turn-1" || !reflect.DeepEqual(got.TurnIDs, []string{"turn-1", "turn-2"}) {
+		t.Fatalf("unexpected outbound turn correlation: primary=%q turns=%v", got.TurnID, got.TurnIDs)
 	}
 	if got.Scope == nil || got.Scope.AgentID != "main" || got.Scope.Values["chat"] != "direct:chat-42" {
 		t.Fatalf("unexpected outbound scope: %+v", got.Scope)

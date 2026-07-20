@@ -81,17 +81,23 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 	ctx context.Context,
 	turn inboundMessageTurn,
 ) bool {
+	turnIDs := make([]string, 0, 2)
+	observeTurn := func(turnID string) {
+		turnIDs = appendUniqueString(turnIDs, turnID)
+	}
+	turn.Options.ObserveFinalDeliveryTurn = observeTurn
 	target := &continuationTarget{
-		SessionKey: turn.SessionKey,
-		Channel:    turn.Message.Channel,
-		ChatID:     turn.Message.ChatID,
+		SessionKey:               turn.SessionKey,
+		Channel:                  turn.Message.Channel,
+		ChatID:                   turn.Message.ChatID,
+		ObserveFinalDeliveryTurn: observeTurn,
 	}
 	if turn.Agent != nil {
 		target.Workspace = turn.Agent.Workspace
 	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
 		return al.processInboundMessageTurn(ctx, turn)
-	}, target)
+	}, target, &turnIDs)
 }
 
 func (al *AgentLoop) runTurnAndDrainSteering(
@@ -99,16 +105,18 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	initialMsg bus.InboundMessage,
 	process func() (string, error),
 	target *continuationTarget,
+	turnIDs *[]string,
 ) bool {
 	response, err := process()
 	if err != nil {
-		if !al.maybePublishErrorWithPolicy(
+		if !al.maybePublishErrorWithTurns(
 			ctx,
 			initialMsg.Channel,
 			initialMsg.ChatID,
 			initialMsg.SessionKey,
 			err,
 			finalResponseAlwaysPublish,
+			*turnIDs,
 		) {
 			return false // context canceled
 		}
@@ -137,7 +145,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	// Publish final response
 	finalResponse := joinSteeringResponses(responses)
 	if finalResponse != "" {
-		al.publishResponseWithContextIfNeeded(
+		al.publishResponseWithContextAndTurns(
 			ctx,
 			target.Channel,
 			target.ChatID,
@@ -157,6 +165,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 				}(),
 			},
 			finalResponseAlwaysPublish,
+			*turnIDs,
 		)
 	}
 	return true
@@ -188,7 +197,13 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
 			})
 
-		continued, continueErr := al.Continue(ctx, target.SessionKey, target.Channel, target.ChatID)
+		continued, continueErr := al.continueWithTurnObserver(
+			ctx,
+			target.SessionKey,
+			target.Channel,
+			target.ChatID,
+			target.ObserveFinalDeliveryTurn,
+		)
 		if continueErr != nil {
 			return joinSteeringResponses(responses), continueErr
 		}
@@ -210,6 +225,19 @@ func appendSteeringResponse(responses []string, response string) []string {
 		return responses
 	}
 	return append(responses, response)
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func joinSteeringResponses(responses []string) string {

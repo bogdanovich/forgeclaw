@@ -2736,7 +2736,7 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 		t.Fatal("expected default agent")
 	}
 	const finalText = "Video saved. Recipe translation is below."
-	al.deliverFinalTurnResult(context.Background(), agent, processOptions{
+	al.deliverFinalTurnResult(context.Background(), "final-media-turn", agent, processOptions{
 		Dispatch: DispatchRequest{
 			SessionKey:  "final-media-session",
 			UserMessage: "save the reel and translate the recipe",

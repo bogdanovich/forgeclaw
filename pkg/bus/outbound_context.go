@@ -41,7 +41,43 @@ func NormalizeOutboundMessage(msg OutboundMessage) OutboundMessage {
 		msg.Context.ReplyToMessageID = msg.ReplyToMessageID
 	}
 	msg.Scope = cloneOutboundScope(msg.Scope)
+	SetOutboundTurnIDs(&msg, append([]string{msg.TurnID}, msg.TurnIDs...))
 	return msg
+}
+
+// SetOutboundTurnIDs records the distinct turns settled by one outbound.
+func SetOutboundTurnIDs(msg *OutboundMessage, turnIDs []string) {
+	if msg == nil {
+		return
+	}
+	msg.TurnID = ""
+	msg.TurnIDs = nil
+	for _, turnID := range turnIDs {
+		turnID = strings.TrimSpace(turnID)
+		if turnID == "" || containsString(msg.TurnIDs, turnID) {
+			continue
+		}
+		msg.TurnIDs = append(msg.TurnIDs, turnID)
+	}
+	if len(msg.TurnIDs) > 0 {
+		msg.TurnID = msg.TurnIDs[0]
+	}
+}
+
+// OutboundTurnIDs returns the distinct turns settled by one outbound.
+func OutboundTurnIDs(msg OutboundMessage) []string {
+	copy := msg
+	SetOutboundTurnIDs(&copy, append([]string{msg.TurnID}, msg.TurnIDs...))
+	return copy.TurnIDs
+}
+
+func containsString(values []string, value string) bool {
+	for _, existing := range values {
+		if existing == value {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeOutboundMediaMessage ensures media outbound messages also carry a

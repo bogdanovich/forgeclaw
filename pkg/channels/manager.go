@@ -143,6 +143,7 @@ type ChannelLifecyclePayload struct {
 // ChannelOutboundPayload describes channel outbound message runtime events.
 type ChannelOutboundPayload struct {
 	Media            bool     `json:"media,omitempty"`
+	TurnIDs          []string `json:"turn_ids,omitempty"`
 	ContentLen       int      `json:"content_len,omitempty"`
 	MessageIDs       []string `json:"message_ids,omitempty"`
 	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
@@ -1866,7 +1867,7 @@ func (m *Manager) sendWithRetryPolicy(
 		m.publishChannelEvent(
 			runtimeevents.KindChannelRateLimited,
 			name,
-			scopeFromOutboundContext(msg.Context),
+			scopeFromOutboundMessage(msg),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
 				ContentLen:       len([]rune(msg.Content)),
@@ -2120,7 +2121,7 @@ func (m *Manager) sendMediaWithRetry(
 		m.publishChannelEvent(
 			runtimeevents.KindChannelRateLimited,
 			name,
-			scopeFromOutboundContext(msg.Context),
+			scopeFromOutboundMediaMessage(msg),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
 				Media: true,

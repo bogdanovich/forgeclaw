@@ -91,7 +91,8 @@ func TestInteractionRegistryRetentionExtendsOnConfigReload(t *testing.T) {
 	updated.Tools.RequestUserInput.RetentionHours = 24
 	updated.Evaluation.TraceCapture.Enabled = true
 	updated.Evaluation.TraceCapture.RetentionHours = 24 * 14
-	al.ensureInteractionRegistryRetention(updated)
+	updated.Evaluation.TraceCapture.MaxTraces = interactions.DefaultMaxRecords + 500
+	al.ensureInteractionRegistryLimits(updated)
 
 	loaded, ok := registry.Get(record.ID)
 	if !ok {
@@ -100,6 +101,9 @@ func TestInteractionRegistryRetentionExtendsOnConfigReload(t *testing.T) {
 	wantRetention := 14 * 24 * time.Hour
 	if got := registry.Stats().Retention; got != wantRetention {
 		t.Fatalf("interaction retention = %s, want %s", got, wantRetention)
+	}
+	if got := registry.Stats().MaxRecords; got != interactions.DefaultMaxRecords+500 {
+		t.Fatalf("interaction max records = %d, want %d", got, interactions.DefaultMaxRecords+500)
 	}
 	wantCleanup := loaded.ResolvedAt + wantRetention.Milliseconds()
 	if loaded.CleanupAfter != wantCleanup {

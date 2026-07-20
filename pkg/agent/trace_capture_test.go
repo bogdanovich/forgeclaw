@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -336,7 +337,7 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 	}
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
 		ID: "sent", Kind: runtimeevents.KindChannelMessageOutboundSent, Time: start.Add(2 * time.Millisecond),
-		Scope:   runtimeevents.Scope{Channel: "telegram", ChatID: "chat-delivery"},
+		Scope:   runtimeevents.Scope{TurnID: "turn-delivery", Channel: "telegram", ChatID: "chat-delivery"},
 		Payload: channels.ChannelOutboundPayload{ContentLen: 4},
 	})
 
@@ -355,6 +356,69 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("trace does not contain delivery outcome: %#v", trace.Records)
+	}
+}
+
+func TestTraceCaptureSettlesAggregatedTurnsFromOneDelivery(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+
+	start := time.Now().UTC()
+	turnIDs := []string{"turn-aggregate-1", "turn-aggregate-2"}
+	for index, turnID := range turnIDs {
+		scope := runtimeevents.Scope{
+			TurnID: turnID, SessionKey: "session-aggregate",
+			Channel: "telegram", ChatID: "chat-aggregate",
+		}
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: fmt.Sprintf("start-%d", index), Kind: runtimeevents.KindAgentTurnStart,
+			Time: start.Add(time.Duration(index*2) * time.Millisecond), Scope: scope,
+			Payload: TurnStartPayload{Workspace: workspace},
+		})
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: fmt.Sprintf("end-%d", index), Kind: runtimeevents.KindAgentTurnEnd,
+			Time: start.Add(time.Duration(index*2+1) * time.Millisecond), Scope: scope,
+			Payload: TurnEndPayload{
+				Workspace: workspace, Status: TurnEndStatusCompleted, DeliveryExpected: true,
+			},
+		})
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "sent-aggregate", Kind: runtimeevents.KindChannelMessageOutboundSent,
+		Time: start.Add(5 * time.Millisecond),
+		Scope: runtimeevents.Scope{
+			TurnID: turnIDs[0], Channel: "telegram", ChatID: "chat-aggregate",
+		},
+		Payload: channels.ChannelOutboundPayload{TurnIDs: turnIDs, ContentLen: 4},
+	})
+
+	root := filepath.Join(workspace, "state", "evaluation", "traces")
+	var paths []string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		paths, _ = filepath.Glob(filepath.Join(root, "*.json"))
+		if len(paths) == len(turnIDs) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(paths) != len(turnIDs) {
+		t.Fatalf("persisted traces = %v, want %d", paths, len(turnIDs))
+	}
+	for _, path := range paths {
+		trace := loadTraceFile(t, path)
+		found := false
+		for _, record := range trace.Records {
+			found = found || record.Kind == evaltrace.RecordDeliveryOutcome
+		}
+		if !found || trace.Truncation.Incomplete {
+			t.Fatalf("aggregated trace = %#v", trace)
+		}
 	}
 }
 
@@ -1061,6 +1125,37 @@ func TestTraceCaptureScopesSessionFallbackByWorkspace(t *testing.T) {
 	}
 	assertInteractionIDs(traceA, recordA.ID, recordB.ID)
 	assertInteractionIDs(traceB, recordB.ID, recordA.ID)
+}
+
+func TestTraceCaptureRejectsUnscopedRuntimeFallbackAcrossWorkspaces(t *testing.T) {
+	workspaceA, workspaceB := t.TempDir(), t.TempDir()
+	manager := newTraceCaptureManager(traceTestConfig(workspaceA), nil)
+	start := time.Now().UTC()
+	for _, item := range []struct {
+		workspace string
+		turnID    string
+	}{{workspaceA, "turn-unscoped-a"}, {workspaceB, "turn-unscoped-b"}} {
+		manager.observeRuntimeEvent(runtimeevents.Event{
+			ID: "start-" + item.turnID, Kind: runtimeevents.KindAgentTurnStart, Time: start,
+			Scope:   runtimeevents.Scope{TurnID: item.turnID, SessionKey: "session-shared"},
+			Payload: TurnStartPayload{Workspace: item.workspace},
+		})
+	}
+	manager.observeRuntimeEvent(runtimeevents.Event{
+		ID: "unscoped-fallback", Kind: runtimeevents.KindAgentLLMFallbackAttempt,
+		Time: start.Add(time.Second), Scope: runtimeevents.Scope{SessionKey: "session-shared"},
+		Payload: LLMFallbackAttemptPayload{
+			Provider: "openai", Model: "fallback", Attempt: 2, Status: "succeeded",
+		},
+	})
+	manager.mu.Lock()
+	recordsA := len(manager.turns["turn-unscoped-a"].trace.Records)
+	recordsB := len(manager.turns["turn-unscoped-b"].trace.Records)
+	manager.mu.Unlock()
+	manager.close()
+	if recordsA != 1 || recordsB != 1 {
+		t.Fatalf("unscoped event was associated across workspaces: a=%d b=%d", recordsA, recordsB)
+	}
 }
 
 func TestCompleteTerminalInteractionTraceRequiresFinalSequenceAndRevision(t *testing.T) {

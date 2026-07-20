@@ -124,6 +124,7 @@ type processOptions struct {
 	EnableSummary            bool                   // Whether to trigger summarization
 	SendResponse             bool                   // Whether to send response via bus
 	ExpectFinalDelivery      bool                   // Whether an outer coordinator will publish the final response
+	ObserveFinalDeliveryTurn func(string)           // Receives turn IDs owned by that outer delivery
 	AllowInterimPicoPublish  bool                   // Whether pico tool-call interim text can be published when SendResponse is false
 	SuppressToolUserDelivery bool                   // Whether direct user-facing delivery from tools is suppressed for this turn
 	SuppressToolFeedback     bool                   // Whether to suppress inline tool feedback messages
@@ -135,10 +136,11 @@ type processOptions struct {
 }
 
 type continuationTarget struct {
-	SessionKey string
-	Channel    string
-	ChatID     string
-	Workspace  string
+	SessionKey               string
+	Channel                  string
+	ChatID                   string
+	Workspace                string
+	ObserveFinalDeliveryTurn func(string)
 }
 
 const (
@@ -355,7 +357,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	if al.traceCapture != nil {
 		al.traceCapture.updateConfig(cfg)
 	}
-	al.ensureInteractionRegistryRetention(cfg)
+	al.ensureInteractionRegistryLimits(cfg)
 
 	oldMCPManager := al.mcp.reset()
 	al.hookRuntime.reset(al)
@@ -487,6 +489,9 @@ func (al *AgentLoop) runAgentLoop(
 			opts.Dispatch.SessionScope,
 		),
 	)
+	if opts.ExpectFinalDelivery && opts.ObserveFinalDeliveryTurn != nil {
+		opts.ObserveFinalDeliveryTurn(turnScope.turnID)
+	}
 	ts := newTurnState(agent, opts, turnScope)
 	pipeline := NewPipeline(al)
 	result, err := al.runTurn(ctx, ts, pipeline)
@@ -513,7 +518,7 @@ func (al *AgentLoop) runAgentLoop(
 		}
 	}
 
-	al.deliverFinalTurnResult(ctx, agent, opts, result)
+	al.deliverFinalTurnResult(ctx, ts.turnID, agent, opts, result)
 
 	if result.finalContent != "" {
 		responsePreview := utils.Truncate(result.finalContent, 120)

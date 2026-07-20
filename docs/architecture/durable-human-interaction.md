@@ -411,6 +411,13 @@ terminal lifecycle time for both age and count limits; reconciliation never
 resurrects a trace that evaluation retention already removed. Active task,
 interaction, and session indexes are scoped by workspace so cloned identifiers
 cannot mix evidence or route an interaction into another workspace's turn.
+Runtime events without a direct turn ID are not associated by global
+session/channel fallback because their workspace ownership cannot be proven.
+Turn-owned outbound text and media carry that ID through the bus and channel
+delivery events so settlement remains explicit instead of inferred. When the
+steering coordinator combines several turns into one final message, the
+outbound carries every contributing turn ID and channels emit one settlement
+event per turn.
 When trace capture is enabled, terminal interaction records are retained for at
 least the evaluation trace-retention window. Terminal interaction persistence
 uses a nonblocking manager-owned critical queue and retries transient storage
@@ -418,6 +425,8 @@ failures while the process remains alive. Graceful shutdown drains queued work
 and gives retryable writes a final attempt; restart reconciliation remains the
 crash fallback. Config reloads monotonically extend existing registry cleanup
 deadlines when trace retention increases.
+Persisted deadlines are normalized to the current retention before startup
+pruning, and reload also raises cached registry record capacity when needed.
 Replay diagnostics explicitly classify self-contained violations as
 `conclusive` and missing-prerequisite checks as `requires_complete_history`, so
 truncation cannot hide malformed approval consumption or expiry evidence.

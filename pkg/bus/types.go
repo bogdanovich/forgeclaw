@@ -112,6 +112,8 @@ type OutboundMessage struct {
 	Context          InboundContext `json:"context"`
 	AgentID          string         `json:"agent_id,omitempty"`
 	SessionKey       string         `json:"session_key,omitempty"`
+	TurnID           string         `json:"turn_id,omitempty"`
+	TurnIDs          []string       `json:"turn_ids,omitempty"`
 	Scope            *OutboundScope `json:"scope,omitempty"`
 	Content          string         `json:"content"`
 	ReplyToMessageID string         `json:"reply_to_message_id,omitempty"`
@@ -134,6 +136,7 @@ type OutboundMediaMessage struct {
 	Context    InboundContext `json:"context"`
 	AgentID    string         `json:"agent_id,omitempty"`
 	SessionKey string         `json:"session_key,omitempty"`
+	TurnID     string         `json:"turn_id,omitempty"`
 	Scope      *OutboundScope `json:"scope,omitempty"`
 	Parts      []MediaPart    `json:"parts"`
 }

@@ -218,10 +218,14 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	claim.releaseIfOwned()
 	al.ackInboundMessage(ctx, msg)
 
+	turnIDs := make([]string, 0, 2)
 	target := &continuationTarget{
 		SessionKey: claim.sessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
+		ObserveFinalDeliveryTurn: func(turnID string) {
+			turnIDs = appendUniqueString(turnIDs, turnID)
+		},
 	}
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
@@ -236,7 +240,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 		return
 	}
 	if continued != "" {
-		al.publishResponseWithContextIfNeeded(
+		al.publishResponseWithContextAndTurns(
 			ctx,
 			target.Channel,
 			target.ChatID,
@@ -244,6 +248,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			continued,
 			&msg.Context,
 			finalResponseAlwaysPublish,
+			turnIDs,
 		)
 	}
 }

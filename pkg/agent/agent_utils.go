@@ -94,6 +94,7 @@ func outboundMessageForTurn(ts *turnState, content string) bus.OutboundMessage {
 		),
 		AgentID:    agentID,
 		SessionKey: sessionKey,
+		TurnID:     ts.turnID,
 		Scope:      scope,
 		Content:    content,
 	}

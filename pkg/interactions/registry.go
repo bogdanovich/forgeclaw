@@ -95,7 +95,11 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 		if err != nil {
 			r.loadErr = err
 		} else {
+			changed := r.extendTerminalDeadlinesLocked(opts.TerminalRetention)
 			if r.pruneLocked(r.nowMillis()) {
+				changed = true
+			}
+			if changed {
 				r.loadErr = r.saveLocked()
 			}
 			release()
@@ -122,29 +126,50 @@ func (r *Registry) LastLoadError() error {
 	return r.loadErr
 }
 
-// EnsureTerminalRetention monotonically raises terminal retention and extends
-// retained terminal cleanup deadlines. It never shortens an existing policy.
-func (r *Registry) EnsureTerminalRetention(retention time.Duration) error {
-	if r == nil || retention <= 0 {
+// EnsureLimits monotonically raises terminal retention and record capacity.
+// Retained terminal cleanup deadlines are extended and persisted.
+func (r *Registry) EnsureLimits(retention time.Duration, maxRecords int) error {
+	if r == nil {
 		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if retention <= r.options.TerminalRetention {
+	retention = max(retention, r.options.TerminalRetention)
+	maxRecords = max(maxRecords, r.options.MaxRecords)
+	if retention == r.options.TerminalRetention && maxRecords == r.options.MaxRecords {
 		return nil
 	}
 	previousRetention := r.options.TerminalRetention
+	previousMaxRecords := r.options.MaxRecords
 	r.options.TerminalRetention = retention
+	r.options.MaxRecords = maxRecords
 	if err := r.availableLocked(); err != nil {
 		r.options.TerminalRetention = previousRetention
+		r.options.MaxRecords = previousMaxRecords
 		return err
 	}
 	releaseStore, err := r.lockAndReloadLocked()
 	if err != nil {
 		r.options.TerminalRetention = previousRetention
+		r.options.MaxRecords = previousMaxRecords
 		return err
 	}
 	before := r.snapshotLocked()
+	changed := r.extendTerminalDeadlinesLocked(retention)
+	if changed {
+		if err := r.saveLocked(); err != nil {
+			r.restoreSnapshotLocked(before)
+			r.options.TerminalRetention = previousRetention
+			r.options.MaxRecords = previousMaxRecords
+			releaseStore()
+			return err
+		}
+	}
+	releaseStore()
+	return nil
+}
+
+func (r *Registry) extendTerminalDeadlinesLocked(retention time.Duration) bool {
 	changed := false
 	for id, record := range r.records {
 		if !isTerminal(record.Status) || record.ResolvedAt <= 0 {
@@ -158,16 +183,7 @@ func (r *Registry) EnsureTerminalRetention(retention time.Duration) error {
 		r.records[id] = record
 		changed = true
 	}
-	if changed {
-		if err := r.saveLocked(); err != nil {
-			r.restoreSnapshotLocked(before)
-			r.options.TerminalRetention = previousRetention
-			releaseStore()
-			return err
-		}
-	}
-	releaseStore()
-	return nil
+	return changed
 }
 
 func (r *Registry) Subscribe(observer Observer) func() {

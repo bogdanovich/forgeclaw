@@ -193,6 +193,12 @@ func run(
 	case <-runCtx.Done():
 		return Observation{}, fmt.Errorf("wait for scenario output: %w", runCtx.Err())
 	}
+	if len(bus.OutboundTurnIDs(outbound)) == 0 {
+		return Observation{}, fmt.Errorf(
+			"scenario outbound is missing turn correlation (agent=%q session=%q content_len=%d metadata=%v)",
+			outbound.AgentID, outbound.SessionKey, len([]rune(outbound.Content)), outbound.Context.Raw,
+		)
+	}
 	publishDeliveryOutcome(loop.RuntimeEventBus(), outbound)
 
 	trace, traceErr := waitForTrace(runCtx, workspace)
@@ -465,12 +471,18 @@ func verifyToolBoundary(loop *agent.AgentLoop, specs []StubTool) error {
 }
 
 func publishDeliveryOutcome(eventBus runtimeevents.Bus, outbound bus.OutboundMessage) {
+	turnIDs := bus.OutboundTurnIDs(outbound)
 	eventBus.PublishNonBlocking(runtimeevents.Event{
-		Kind:     runtimeevents.KindChannelMessageOutboundSent,
-		Source:   runtimeevents.Source{Component: "evalscenario", Name: outbound.Channel},
-		Scope:    runtimeevents.Scope{Channel: outbound.Channel, ChatID: outbound.ChatID},
+		Kind:   runtimeevents.KindChannelMessageOutboundSent,
+		Source: runtimeevents.Source{Component: "evalscenario", Name: outbound.Channel},
+		Scope: runtimeevents.Scope{
+			AgentID: outbound.AgentID, SessionKey: outbound.SessionKey, TurnID: turnIDs[0],
+			Channel: outbound.Channel, ChatID: outbound.ChatID,
+		},
 		Severity: runtimeevents.SeverityInfo,
-		Payload:  channels.ChannelOutboundPayload{ContentLen: len([]rune(outbound.Content))},
+		Payload: channels.ChannelOutboundPayload{
+			TurnIDs: turnIDs, ContentLen: len([]rune(outbound.Content)),
+		},
 	})
 }
 

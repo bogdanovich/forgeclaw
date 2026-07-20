@@ -1097,14 +1097,24 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 		context.Background(),
 		"test",
 		successWorker,
-		testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "chat-1", Content: "hello"}),
+		testOutboundMessage(bus.OutboundMessage{
+			Channel: "test", ChatID: "chat-1", Content: "hello",
+			AgentID: "main", SessionKey: "session-1", TurnID: "turn-1",
+			TurnIDs: []string{"turn-1", "turn-2"},
+		}),
 	)
 	sent := receiveChannelRuntimeEvent(t, eventsCh)
-	if sent.Kind != runtimeevents.KindChannelMessageOutboundSent || sent.Scope.ChatID != "chat-1" {
+	if sent.Kind != runtimeevents.KindChannelMessageOutboundSent || sent.Scope.ChatID != "chat-1" ||
+		sent.Scope.AgentID != "main" || sent.Scope.SessionKey != "session-1" ||
+		sent.Scope.TurnID != "turn-1" {
 		t.Fatalf("sent event = %+v", sent)
 	}
 	if sent.Attrs["content_len"] != 5 {
 		t.Fatalf("sent attrs = %#v, want content_len", sent.Attrs)
+	}
+	sentPayload, ok := sent.Payload.(ChannelOutboundPayload)
+	if !ok || !slices.Equal(sentPayload.TurnIDs, []string{"turn-1", "turn-2"}) {
+		t.Fatalf("sent payload = %#v, want correlated turns", sent.Payload)
 	}
 
 	failWorker := &channelWorker{

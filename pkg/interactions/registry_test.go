@@ -969,6 +969,41 @@ func TestRegistrySerializesCommittedObserverSnapshots(t *testing.T) {
 	}
 }
 
+func TestRegistryExtendsPersistedDeadlineBeforeStartupPrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "interactions.json")
+	oldClock := &testClock{now: time.Now().UTC().Add(-48 * time.Hour)}
+	initial := NewRegistryWithOptions(path, Options{
+		TerminalRetention: 24 * time.Hour,
+		Now:               oldClock.Now,
+	})
+	record, err := initial.Create(validCreate(
+		oldClock,
+		"interaction_retention_startup_1111",
+		"session-1",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = initial.Cancel(record.ID, record.Revision, "fixture_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.CleanupAfter >= time.Now().UnixMilli() {
+		t.Fatal("fixture cleanup deadline did not expire under the original retention")
+	}
+
+	longRetention := 14 * 24 * time.Hour
+	reloaded := NewRegistryWithOptions(path, Options{TerminalRetention: longRetention})
+	preserved, ok := reloaded.Get(record.ID)
+	if !ok {
+		t.Fatal("startup pruning removed a record covered by the new retention")
+	}
+	wantCleanup := preserved.ResolvedAt + longRetention.Milliseconds()
+	if preserved.CleanupAfter != wantCleanup {
+		t.Fatalf("cleanup_after = %d, want %d", preserved.CleanupAfter, wantCleanup)
+	}
+}
+
 func TestRegistryObserverPanicDoesNotFailDurableWrite(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	registry.Subscribe(func(EventObservation) { panic("observer failed") })

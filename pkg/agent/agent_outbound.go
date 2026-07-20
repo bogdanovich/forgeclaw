@@ -36,10 +36,20 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 	err error,
 	policy finalResponseDeliveryPolicy,
 ) bool {
+	return al.maybePublishErrorWithTurns(ctx, channel, chatID, sessionKey, err, policy, nil)
+}
+
+func (al *AgentLoop) maybePublishErrorWithTurns(
+	ctx context.Context,
+	channel, chatID, sessionKey string,
+	err error,
+	policy finalResponseDeliveryPolicy,
+	turnIDs []string,
+) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	al.publishResponseWithContextIfNeeded(
+	al.publishResponseWithContextAndTurns(
 		ctx,
 		channel,
 		chatID,
@@ -47,6 +57,7 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 		formatUserFacingAgentError(err),
 		nil,
 		policy,
+		turnIDs,
 	)
 	return true
 }
@@ -137,6 +148,18 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 	inboundCtx *bus.InboundContext,
 	policy finalResponseDeliveryPolicy,
 ) {
+	al.publishResponseWithContextAndTurns(
+		ctx, channel, chatID, sessionKey, response, inboundCtx, policy, nil,
+	)
+}
+
+func (al *AgentLoop) publishResponseWithContextAndTurns(
+	ctx context.Context,
+	channel, chatID, sessionKey, response string,
+	inboundCtx *bus.InboundContext,
+	policy finalResponseDeliveryPolicy,
+	turnIDs []string,
+) {
 	if response == "" {
 		return
 	}
@@ -166,6 +189,7 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 		SessionKey: sessionKey,
 		Content:    response,
 	}
+	bus.SetOutboundTurnIDs(&msg, turnIDs)
 	if policy == finalResponseAlwaysPublish && messageToolSentToSameChat {
 		if msg.Context.Raw == nil {
 			msg.Context.Raw = make(map[string]string, 1)
@@ -181,6 +205,7 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 
 func (al *AgentLoop) deliverFinalTurnResult(
 	ctx context.Context,
+	turnID string,
 	agent *AgentInstance,
 	opts processOptions,
 	result turnResult,
@@ -223,6 +248,7 @@ func (al *AgentLoop) deliverFinalTurnResult(
 		ts := &turnState{
 			agent:      agent,
 			agentID:    agent.ID,
+			turnID:     turnID,
 			channel:    opts.Dispatch.Channel(),
 			chatID:     opts.Dispatch.ChatID(),
 			sessionKey: sessionKey,
@@ -245,7 +271,9 @@ func (al *AgentLoop) deliverFinalTurnResult(
 	if result.finalContent == "" {
 		return
 	}
-	al.deliverFinalTurnText(ctx, agent, opts, outboundCtx, agentID, sessionKey, scope, result.finalContent)
+	al.deliverFinalTurnText(
+		ctx, turnID, agent, opts, outboundCtx, agentID, sessionKey, scope, result.finalContent,
+	)
 }
 
 func (al *AgentLoop) deliverFinalTurnMedia(
@@ -270,6 +298,7 @@ func (al *AgentLoop) deliverFinalTurnMedia(
 
 func (al *AgentLoop) deliverFinalTurnText(
 	ctx context.Context,
+	turnID string,
 	agent *AgentInstance,
 	opts processOptions,
 	outboundCtx bus.InboundContext,
@@ -281,6 +310,7 @@ func (al *AgentLoop) deliverFinalTurnText(
 		Context:      outboundCtx,
 		AgentID:      agentID,
 		SessionKey:   sessionKey,
+		TurnID:       turnID,
 		Scope:        scope,
 		Content:      content,
 		ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
@@ -331,6 +361,7 @@ func (al *AgentLoop) deliverToolResultToUser(
 			),
 			AgentID:    ts.agent.ID,
 			SessionKey: ts.sessionKey,
+			TurnID:     ts.turnID,
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      parts,
 		}
@@ -407,6 +438,7 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			Context:    outboundCtx,
 			AgentID:    agentID,
 			SessionKey: ts.sessionKey,
+			TurnID:     ts.turnID,
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      append([]bus.MediaPart(nil), out.Media...),
 		}
@@ -441,6 +473,7 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		Context:          outboundCtx,
 		AgentID:          agentID,
 		SessionKey:       ts.sessionKey,
+		TurnID:           ts.turnID,
 		Scope:            outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 		Content:          out.Text,
 		ReplyToMessageID: replyToMessageID,
