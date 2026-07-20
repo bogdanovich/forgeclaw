@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -730,6 +731,144 @@ func TestBroadcastToSession_TargetsOnlyRequestedSession(t *testing.T) {
 	}
 	if !errors.Is(err, channels.ErrSendFailed) {
 		t.Fatalf("expected ErrSendFailed, got %v", err)
+	}
+}
+
+func TestPicoConnWriteJSON_DeadlineInterruptsBlockedSocket(t *testing.T) {
+	pc, cleanup := newBlockedPicoConn(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	err := pc.writeJSON(ctx, map[string]any{
+		"content": strings.Repeat("x", 8<<20),
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writeJSON() error = %v, want context deadline exceeded", err)
+	}
+	if !pc.closed.Load() {
+		t.Fatal("writeJSON() left a timed-out WebSocket connection reusable")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("writeJSON() returned after %v, want bounded socket write", elapsed)
+	}
+}
+
+func TestPicoConnWriteJSON_CancellationInterruptsActiveWrite(t *testing.T) {
+	pc, cleanup := newBlockedPicoConn(t)
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	writeStarted := make(chan struct{})
+	payload := map[string]any{"content": strings.Repeat("x", 8<<20)}
+	go func() {
+		result <- pc.write(ctx, func() error {
+			close(writeStarted)
+			return pc.conn.WriteJSON(payload)
+		})
+	}()
+
+	<-writeStarted
+	select {
+	case err := <-result:
+		t.Fatalf("write() completed before cancellation with %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("writeJSON() error = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("writeJSON() did not stop after context cancellation")
+	}
+	if !pc.closed.Load() {
+		t.Fatal("writeJSON() left a canceled active WebSocket write reusable")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("writeJSON() returned after %v, want prompt cancellation", elapsed)
+	}
+}
+
+func newBlockedPicoConn(t *testing.T) (*picoConn, func()) {
+	t.Helper()
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade() error = %v", err)
+			return
+		}
+		defer conn.Close()
+		close(accepted)
+		<-release
+	}))
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		close(release)
+		server.Close()
+		t.Fatalf("Dial() error = %v", err)
+	}
+	resp.Body.Close()
+	cleanup := func() {
+		conn.Close()
+		close(release)
+		server.Close()
+	}
+	<-accepted
+
+	if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+		if writeBufferErr := tcpConn.SetWriteBuffer(1024); writeBufferErr != nil {
+			cleanup()
+			t.Fatalf("SetWriteBuffer() error = %v", writeBufferErr)
+		}
+	}
+	return &picoConn{conn: conn}, cleanup
+}
+
+func TestPicoConnWriteJSON_DeadlineWaitingForWriterKeepsConnectionOpen(t *testing.T) {
+	pc := &picoConn{}
+	pc.writeOnce.Do(func() {
+		pc.writeLock = make(chan struct{}, 1)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := pc.writeJSON(ctx, map[string]any{"content": "not written"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writeJSON() error = %v, want context deadline exceeded", err)
+	}
+	if pc.closed.Load() {
+		t.Fatal("writeJSON() closed a connection before acquiring the writer")
+	}
+}
+
+func TestPicoConnWrite_SuccessWinsCancellationResult(t *testing.T) {
+	conn, _, cleanup := newTestPicoWebSocket(t)
+	defer cleanup()
+	pc := &picoConn{conn: conn}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err := pc.write(ctx, func() error {
+		cancel()
+		deadline := time.Now().Add(time.Second)
+		for !pc.closed.Load() && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if !pc.closed.Load() {
+			t.Fatal("cancellation did not win the active-write race")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("write() error = %v after successful callback, want nil", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 const (
 	defaultToolFeedbackAnimationInterval        = 3 * time.Second
 	workingSummaryToolFeedbackAnimationInterval = 10 * time.Second
+	defaultToolFeedbackEditTimeout              = 15 * time.Second
 	maxMergedToolFeedbackLines                  = 8
 )
 
@@ -38,8 +39,32 @@ func MaxToolFeedbackAnimationFrameLength() int {
 type toolFeedbackAnimationState struct {
 	messageID   string
 	baseContent string
+	generation  uint64
 	stop        chan struct{}
 	done        chan struct{}
+	stopOnce    sync.Once
+	operationMu sync.Mutex
+}
+
+type toolFeedbackEditPause struct {
+	generation uint64
+	until      time.Time
+}
+
+type toolFeedbackLastEdit struct {
+	generation uint64
+	at         time.Time
+}
+
+// ToolFeedbackSnapshot captures a detached feedback message for conditional
+// restoration after a failed terminal edit.
+type ToolFeedbackSnapshot struct {
+	ChatID    string
+	MessageID string
+	Content   string
+
+	generation uint64
+	revision   uint64
 }
 
 // ToolFeedbackAnimatorConfig controls how often editable progress messages are
@@ -53,23 +78,32 @@ type ToolFeedbackAnimatorConfig struct {
 type ToolFeedbackAnimator struct {
 	mu                sync.Mutex
 	editFn            func(ctx context.Context, chatID, messageID, content string) error
+	deleteFn          func(ctx context.Context, chatID, messageID string) error
 	entries           map[string]*toolFeedbackAnimationState
 	animationInterval time.Duration
 	minEditInterval   time.Duration
-	lastEditAt        map[string]time.Time
-	editPausedTil     map[string]time.Time
+	lastEdits         map[string]toolFeedbackLastEdit
+	editPauses        map[string]toolFeedbackEditPause
+	nextGeneration    uint64
+	revisions         map[string]uint64
 }
 
 func NewToolFeedbackAnimator(
 	editFn func(ctx context.Context, chatID, messageID, content string) error,
+	deleteFns ...func(ctx context.Context, chatID, messageID string) error,
 ) *ToolFeedbackAnimator {
-	return &ToolFeedbackAnimator{
+	animator := &ToolFeedbackAnimator{
 		editFn:            editFn,
 		entries:           make(map[string]*toolFeedbackAnimationState),
 		animationInterval: defaultToolFeedbackAnimationInterval,
-		lastEditAt:        make(map[string]time.Time),
-		editPausedTil:     make(map[string]time.Time),
+		lastEdits:         make(map[string]toolFeedbackLastEdit),
+		editPauses:        make(map[string]toolFeedbackEditPause),
+		revisions:         make(map[string]uint64),
 	}
+	if len(deleteFns) > 0 {
+		animator.deleteFn = deleteFns[0]
+	}
+	return animator
 }
 
 func (a *ToolFeedbackAnimator) Configure(cfg ToolFeedbackAnimatorConfig) {
@@ -134,37 +168,155 @@ func (a *ToolFeedbackAnimator) record(chatID, messageID, content string, edited 
 
 	var previous *toolFeedbackAnimationState
 	a.mu.Lock()
+	a.nextGeneration++
+	entry.generation = a.nextGeneration
 	if old, ok := a.entries[chatID]; ok {
 		previous = old
 	}
 	a.entries[chatID] = entry
+	a.revisions[chatID]++
 	if edited {
-		a.lastEditAt[chatID] = time.Now()
+		a.lastEdits[chatID] = toolFeedbackLastEdit{
+			generation: entry.generation,
+			at:         time.Now(),
+		}
 	}
 	a.mu.Unlock()
 
-	stopToolFeedbackAnimation(previous)
+	stopToolFeedbackOperation(previous)
+	if previous != nil && previous.messageID != entry.messageID {
+		a.deleteDisplaced(chatID, previous.messageID)
+	}
 	go a.run(chatID, entry)
+}
+
+// deleteDisplaced removes a progress message only when Record atomically
+// proved that a newer tracked message replaced it. A detached entry may have
+// been finalized, so delayed cleanup cannot make the same inference safely.
+func (a *ToolFeedbackAnimator) deleteDisplaced(chatID, messageID string) {
+	if a == nil || a.deleteFn == nil || strings.TrimSpace(messageID) == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultToolFeedbackEditTimeout)
+		defer cancel()
+		_ = a.deleteFn(ctx, chatID, messageID)
+	}()
 }
 
 func (a *ToolFeedbackAnimator) Clear(chatID string) {
 	if a == nil || strings.TrimSpace(chatID) == "" {
 		return
 	}
-	entry := a.detach(chatID)
-	stopToolFeedbackAnimation(entry)
+	entry, _ := a.detach(chatID)
+	stopToolFeedbackOperation(entry)
+}
+
+// ClearIfCurrent removes the tracked entry only when it still refers to the
+// expected channel message. It lets delayed cleanup delete an old remote
+// message without detaching a replacement progress message recorded meanwhile.
+func (a *ToolFeedbackAnimator) ClearIfCurrent(chatID, messageID string) bool {
+	if a == nil || strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
+		return false
+	}
+	chatID = strings.TrimSpace(chatID)
+	messageID = strings.TrimSpace(messageID)
+
+	a.mu.Lock()
+	entry := a.entries[chatID]
+	if entry == nil || entry.messageID != messageID {
+		a.mu.Unlock()
+		return false
+	}
+	delete(a.entries, chatID)
+	a.revisions[chatID]++
+	a.mu.Unlock()
+
+	stopToolFeedbackOperation(entry)
+	return true
 }
 
 func (a *ToolFeedbackAnimator) Take(chatID string) (string, string, bool) {
+	snapshot, ok := a.TakeRestorable(chatID)
+	if !ok {
+		return "", "", false
+	}
+	return snapshot.MessageID, snapshot.Content, true
+}
+
+// TakeRestorable detaches a feedback message and returns a snapshot that can
+// only be restored while no later lifecycle mutation has occurred.
+func (a *ToolFeedbackAnimator) TakeRestorable(chatID string) (ToolFeedbackSnapshot, bool) {
 	if a == nil || strings.TrimSpace(chatID) == "" {
-		return "", "", false
+		return ToolFeedbackSnapshot{}, false
 	}
-	entry := a.detach(chatID)
-	if entry == nil || strings.TrimSpace(entry.messageID) == "" {
-		return "", "", false
+	chatID = strings.TrimSpace(chatID)
+	var generation uint64
+	for {
+		entry := a.current(chatID)
+		if entry == nil || strings.TrimSpace(entry.messageID) == "" {
+			return ToolFeedbackSnapshot{}, false
+		}
+		if generation == 0 {
+			generation = entry.generation
+		} else if entry.generation != generation {
+			return ToolFeedbackSnapshot{}, false
+		}
+
+		entry.operationMu.Lock()
+		current := a.current(chatID)
+		if current != entry {
+			entry.operationMu.Unlock()
+			if current == nil || current.generation != generation {
+				return ToolFeedbackSnapshot{}, false
+			}
+			continue
+		}
+
+		stopToolFeedbackAnimation(entry)
+		revision, detached := a.detachIfCurrent(chatID, entry)
+		if !detached {
+			entry.operationMu.Unlock()
+			continue
+		}
+		snapshot := ToolFeedbackSnapshot{
+			ChatID:     chatID,
+			MessageID:  entry.messageID,
+			Content:    entry.baseContent,
+			generation: entry.generation,
+			revision:   revision,
+		}
+		entry.operationMu.Unlock()
+		return snapshot, true
 	}
-	stopToolFeedbackAnimation(entry)
-	return entry.messageID, entry.baseContent, true
+}
+
+// Restore reinstates a detached snapshot only if no Clear, Record, Update, or
+// other lifecycle mutation happened after TakeRestorable.
+func (a *ToolFeedbackAnimator) Restore(snapshot ToolFeedbackSnapshot) bool {
+	if a == nil || strings.TrimSpace(snapshot.ChatID) == "" ||
+		strings.TrimSpace(snapshot.MessageID) == "" || strings.TrimSpace(snapshot.Content) == "" {
+		return false
+	}
+	entry := &toolFeedbackAnimationState{
+		messageID:   snapshot.MessageID,
+		baseContent: snapshot.Content,
+		generation:  snapshot.generation,
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+	}
+
+	a.mu.Lock()
+	if a.entries[snapshot.ChatID] != nil || a.revisions[snapshot.ChatID] != snapshot.revision {
+		a.mu.Unlock()
+		return false
+	}
+	a.entries[snapshot.ChatID] = entry
+	a.revisions[snapshot.ChatID]++
+	a.mu.Unlock()
+
+	go a.run(snapshot.ChatID, entry)
+	return true
 }
 
 // Update edits an existing tracked feedback message. If the edit fails, the
@@ -174,35 +326,106 @@ func (a *ToolFeedbackAnimator) Update(ctx context.Context, chatID, content strin
 	if a == nil || a.editFn == nil {
 		return "", false, nil
 	}
-	msgID, baseContent, ok := a.Take(chatID)
-	if !ok {
-		return "", false, nil
-	}
+	chatID = strings.TrimSpace(chatID)
+	for {
+		entry := a.current(chatID)
+		if entry == nil || strings.TrimSpace(entry.messageID) == "" {
+			return "", false, nil
+		}
 
-	mergedContent := content
-	if isWorkingSummaryToolFeedback(baseContent) || isWorkingSummaryToolFeedback(content) {
-		mergedContent = mergeToolFeedbackContent(baseContent, content)
-	}
-	if a.shouldSkipEdit(chatID) {
-		a.Record(chatID, msgID, mergedContent)
-		return msgID, true, nil
-	}
-	animatedContent := InitialAnimatedToolFeedbackContent(mergedContent)
-	if err := a.editFn(ctx, strings.TrimSpace(chatID), msgID, animatedContent); err != nil {
-		if isMessageNotModifiedError(err) {
-			a.Record(chatID, msgID, mergedContent)
+		entry.operationMu.Lock()
+		current := a.current(chatID)
+		if current != entry {
+			entry.operationMu.Unlock()
+			if current == nil || current.generation != entry.generation {
+				return entry.messageID, true, nil
+			}
+			continue
+		}
+
+		stopToolFeedbackAnimation(entry)
+		msgID := entry.messageID
+		baseContent := entry.baseContent
+		mergedContent := content
+		if isWorkingSummaryToolFeedback(baseContent) || isWorkingSummaryToolFeedback(content) {
+			mergedContent = mergeToolFeedbackContent(baseContent, content)
+		}
+		if a.shouldSkipEdit(chatID, entry.generation) {
+			replaced := a.replaceIfCurrent(chatID, entry, msgID, mergedContent)
+			entry.operationMu.Unlock()
+			current = a.current(chatID)
+			if replaced || current == nil || current.generation != entry.generation {
+				return msgID, true, nil
+			}
+			continue
+		}
+
+		animatedContent := InitialAnimatedToolFeedbackContent(mergedContent)
+		editCtx, cancel := context.WithTimeout(ctx, defaultToolFeedbackEditTimeout)
+		err := a.editFn(editCtx, chatID, msgID, animatedContent)
+		cancel()
+		if err != nil && !isMessageNotModifiedError(err) {
+			if delay, ok := a.retryAfterDelay(err); ok {
+				a.pauseEdits(chatID, entry.generation, delay)
+			}
+			replaced := a.replaceIfCurrent(chatID, entry, msgID, baseContent)
+			entry.operationMu.Unlock()
+			if replaced {
+				return "", true, err
+			}
+			current = a.current(chatID)
+			if current == nil || current.generation != entry.generation {
+				return msgID, true, nil
+			}
+			continue
+		}
+
+		replaced := a.replaceIfCurrent(chatID, entry, msgID, mergedContent)
+		entry.operationMu.Unlock()
+		if replaced {
+			a.markEdit(chatID, entry.generation)
 			return msgID, true, nil
 		}
-		if delay, ok := a.retryAfterDelay(err); ok {
-			a.pauseEdits(chatID, delay)
+		current = a.current(chatID)
+		if current == nil || current.generation != entry.generation {
+			return msgID, true, nil
 		}
-		a.Record(chatID, msgID, baseContent)
-		return "", true, err
+	}
+}
+
+func (a *ToolFeedbackAnimator) current(chatID string) *toolFeedbackAnimationState {
+	if a == nil || strings.TrimSpace(chatID) == "" {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.entries[chatID]
+}
+
+func (a *ToolFeedbackAnimator) replaceIfCurrent(
+	chatID string,
+	expected *toolFeedbackAnimationState,
+	messageID, content string,
+) bool {
+	entry := &toolFeedbackAnimationState{
+		messageID:   messageID,
+		baseContent: content,
+		generation:  expected.generation,
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 
-	a.markEdit(chatID)
-	a.Record(chatID, msgID, mergedContent)
-	return msgID, true, nil
+	a.mu.Lock()
+	if a.entries[chatID] != expected {
+		a.mu.Unlock()
+		return false
+	}
+	a.entries[chatID] = entry
+	a.revisions[chatID]++
+	a.mu.Unlock()
+
+	go a.run(chatID, entry)
+	return true
 }
 
 func (a *ToolFeedbackAnimator) StopAll() {
@@ -214,23 +437,40 @@ func (a *ToolFeedbackAnimator) StopAll() {
 	for chatID, entry := range a.entries {
 		entries = append(entries, entry)
 		delete(a.entries, chatID)
+		a.revisions[chatID]++
 	}
 	a.mu.Unlock()
 
 	for _, entry := range entries {
-		stopToolFeedbackAnimation(entry)
+		stopToolFeedbackOperation(entry)
 	}
 }
 
-func (a *ToolFeedbackAnimator) detach(chatID string) *toolFeedbackAnimationState {
+func (a *ToolFeedbackAnimator) detach(chatID string) (*toolFeedbackAnimationState, uint64) {
 	if a == nil || strings.TrimSpace(chatID) == "" {
-		return nil
+		return nil, 0
 	}
+	chatID = strings.TrimSpace(chatID)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	entry := a.entries[chatID]
 	delete(a.entries, chatID)
-	return entry
+	a.revisions[chatID]++
+	return entry, a.revisions[chatID]
+}
+
+func (a *ToolFeedbackAnimator) detachIfCurrent(
+	chatID string,
+	expected *toolFeedbackAnimationState,
+) (uint64, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.entries[chatID] != expected {
+		return 0, false
+	}
+	delete(a.entries, chatID)
+	a.revisions[chatID]++
+	return a.revisions[chatID], true
 }
 
 func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationState) {
@@ -249,7 +489,7 @@ func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationSt
 			if a.editFn == nil {
 				continue
 			}
-			if a.shouldSkipEdit(chatID) {
+			if a.shouldSkipEdit(chatID, entry.generation) {
 				continue
 			}
 			frame := toolFeedbackAnimationFrames[frameIdx%len(toolFeedbackAnimationFrames)]
@@ -257,10 +497,10 @@ func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationSt
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := a.editFn(ctx, chatID, entry.messageID, content); err != nil {
 				if delay, ok := a.retryAfterDelay(err); ok {
-					a.pauseEdits(chatID, delay)
+					a.pauseEdits(chatID, entry.generation, delay)
 				}
 			} else {
-				a.markEdit(chatID)
+				a.markEdit(chatID, entry.generation)
 			}
 			cancel()
 			frameIdx++
@@ -280,40 +520,55 @@ func (a *ToolFeedbackAnimator) getAnimationInterval(content string) time.Duratio
 	return toolFeedbackAnimationIntervalFor(content)
 }
 
-func (a *ToolFeedbackAnimator) shouldSkipEdit(chatID string) bool {
+func (a *ToolFeedbackAnimator) shouldSkipEdit(chatID string, generation uint64) bool {
 	if a == nil {
 		return true
 	}
 	now := time.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if until := a.editPausedTil[chatID]; until.After(now) {
+	if pause := a.editPauses[chatID]; pause.generation == generation && pause.until.After(now) {
 		return true
 	}
 	if a.minEditInterval <= 0 {
 		return false
 	}
-	if last := a.lastEditAt[chatID]; !last.IsZero() && now.Sub(last) < a.minEditInterval {
+	if last := a.lastEdits[chatID]; last.generation == generation &&
+		!last.at.IsZero() && now.Sub(last.at) < a.minEditInterval {
 		return true
 	}
 	return false
 }
 
-func (a *ToolFeedbackAnimator) markEdit(chatID string) {
+func (a *ToolFeedbackAnimator) markEdit(chatID string, generation uint64) {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
-	a.lastEditAt[chatID] = time.Now()
+	if entry := a.entries[chatID]; entry == nil || entry.generation != generation {
+		a.mu.Unlock()
+		return
+	}
+	a.lastEdits[chatID] = toolFeedbackLastEdit{
+		generation: generation,
+		at:         time.Now(),
+	}
 	a.mu.Unlock()
 }
 
-func (a *ToolFeedbackAnimator) pauseEdits(chatID string, delay time.Duration) {
+func (a *ToolFeedbackAnimator) pauseEdits(chatID string, generation uint64, delay time.Duration) {
 	if a == nil || delay <= 0 {
 		return
 	}
 	a.mu.Lock()
-	a.editPausedTil[chatID] = time.Now().Add(delay)
+	if entry := a.entries[chatID]; entry == nil || entry.generation != generation {
+		a.mu.Unlock()
+		return
+	}
+	a.editPauses[chatID] = toolFeedbackEditPause{
+		generation: generation,
+		until:      time.Now().Add(delay),
+	}
 	a.mu.Unlock()
 }
 
@@ -466,10 +721,15 @@ func stopToolFeedbackAnimation(entry *toolFeedbackAnimationState) {
 	if entry == nil {
 		return
 	}
-	select {
-	case <-entry.stop:
-	default:
-		close(entry.stop)
-	}
+	entry.stopOnce.Do(func() { close(entry.stop) })
 	<-entry.done
+}
+
+func stopToolFeedbackOperation(entry *toolFeedbackAnimationState) {
+	if entry == nil {
+		return
+	}
+	entry.operationMu.Lock()
+	stopToolFeedbackAnimation(entry)
+	entry.operationMu.Unlock()
 }

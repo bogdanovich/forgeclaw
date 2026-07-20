@@ -45,6 +45,7 @@ const (
 	telegramFileMetadataTotalTimeout        = 50 * time.Second
 	telegramFileMetadataMaxAttempts         = 2
 	telegramFileMetadataRetryDelay          = 250 * time.Millisecond
+	telegramMessageEditTimeout              = 15 * time.Second
 	telegramCaptionLimit                    = 1024
 	telegramTextLimit                       = 4096
 )
@@ -153,6 +154,9 @@ func NewTelegramChannel(
 				messageID,
 				content,
 			)
+		},
+		func(ctx context.Context, chatID, messageID string) error {
+			return ch.DeleteMessage(ctx, telegramToolFeedbackDeliveryChatKey(chatID), messageID)
 		},
 	)
 	return ch, nil
@@ -681,6 +685,9 @@ func (c *TelegramChannel) editToolFeedbackMessage(
 	messageID string,
 	content string,
 ) error {
+	ctx, cancel := context.WithTimeout(ctx, telegramMessageEditTimeout)
+	defer cancel()
+
 	return c.editMessageText(ctx, chatID, messageID, content, false)
 }
 
@@ -859,7 +866,9 @@ func (c *TelegramChannel) dismissTrackedToolFeedbackMessage(
 	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
 		return
 	}
-	c.ClearToolFeedbackMessage(chatID)
+	if !c.progress.ClearIfCurrent(chatID, messageID) {
+		return
+	}
 	_ = c.DeleteMessage(ctx, telegramToolFeedbackDeliveryChatKey(chatID), messageID)
 }
 
@@ -869,15 +878,18 @@ func (c *TelegramChannel) finalizeTrackedToolFeedbackMessage(
 	content string,
 	editFn func(context.Context, string, string, string) error,
 ) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
+	if c.progress == nil || editFn == nil {
 		return nil, false
 	}
-	if err := editFn(ctx, telegramToolFeedbackDeliveryChatKey(chatID), msgID, content); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
+	snapshot, ok := c.progress.TakeRestorable(chatID)
+	if !ok {
 		return nil, false
 	}
-	return []string{msgID}, true
+	if err := editFn(ctx, telegramToolFeedbackDeliveryChatKey(chatID), snapshot.MessageID, content); err != nil {
+		c.progress.Restore(snapshot)
+		return nil, false
+	}
+	return []string{snapshot.MessageID}, true
 }
 
 func (c *TelegramChannel) FinalizeToolFeedbackMessage(

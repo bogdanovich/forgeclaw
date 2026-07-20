@@ -1264,6 +1264,37 @@ func TestEditMessage_RichMessagesEnabledUsesRichMarkdown(t *testing.T) {
 	assert.Empty(t, payload["parse_mode"])
 }
 
+func TestEditToolFeedbackMessage_AppliesRequestDeadline(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, _ string, _ *ta.RequestData) (*ta.Response, error) {
+			deadline, ok := ctx.Deadline()
+			require.True(t, ok, "edit request should have a deadline")
+			remaining := time.Until(deadline)
+			require.Greater(t, remaining, 14*time.Second)
+			require.LessOrEqual(t, remaining, telegramMessageEditTimeout)
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	err := ch.editToolFeedbackMessage(context.Background(), "12345", "1", "working")
+	require.NoError(t, err)
+}
+
+func TestEditMessage_DoesNotAddRequestDeadline(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, _ string, _ *ta.RequestData) (*ta.Response, error) {
+			_, ok := ctx.Deadline()
+			require.False(t, ok, "final edit should preserve the caller's delivery context")
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	err := ch.EditMessage(context.Background(), "12345", "1", "done")
+	require.NoError(t, err)
+}
+
 func TestEditMessage_RichFallbackUsesLegacyHTMLParseMode(t *testing.T) {
 	callCount := 0
 	caller := &stubCaller{
@@ -1573,6 +1604,74 @@ func TestFinalizeTrackedToolFeedbackMessage_StopsTrackingBeforeEdit(t *testing.T
 
 	assert.True(t, handled)
 	assert.Equal(t, []string{"1"}, msgIDs)
+}
+
+func TestFinalizeTrackedToolFeedbackMessage_DoesNotRestoreOverReplacement(t *testing.T) {
+	ch := newTestChannel(t, &stubCaller{
+		callFn: func(_ context.Context, url string, _ *ta.RequestData) (*ta.Response, error) {
+			t.Fatalf("ambiguous failed edit deleted message via %s", url)
+			return nil, nil
+		},
+	})
+	ch.RecordToolFeedbackMessage("12345", "1", "Working...\n• tool: `read_file`")
+
+	editStarted := make(chan struct{})
+	releaseEdit := make(chan struct{})
+	type result struct {
+		msgIDs  []string
+		handled bool
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		msgIDs, handled := ch.finalizeTrackedToolFeedbackMessage(
+			context.Background(),
+			"12345",
+			"final reply",
+			func(context.Context, string, string, string) error {
+				close(editStarted)
+				<-releaseEdit
+				return errors.New("edit failed")
+			},
+		)
+		resultCh <- result{msgIDs: msgIDs, handled: handled}
+	}()
+
+	<-editStarted
+	ch.RecordToolFeedbackMessage("12345", "2", "Working...\n• tool: `exec`")
+	close(releaseEdit)
+	got := <-resultCh
+	assert.False(t, got.handled)
+	assert.Empty(t, got.msgIDs)
+
+	ch.dismissTrackedToolFeedbackMessage(context.Background(), "12345", "1")
+	msgID, content, ok := ch.takeToolFeedbackMessage("12345")
+	require.True(t, ok)
+	assert.Equal(t, "2", msgID)
+	assert.Equal(t, "Working...\n• tool: `exec`", content)
+}
+
+func TestDismissTrackedToolFeedbackMessage_DoesNotDeleteFinalizedReply(t *testing.T) {
+	ch := newTestChannel(t, &stubCaller{
+		callFn: func(_ context.Context, url string, _ *ta.RequestData) (*ta.Response, error) {
+			t.Fatalf("stale dismissal deleted finalized reply via %s", url)
+			return nil, nil
+		},
+	})
+	ch.RecordToolFeedbackMessage("12345", "1", "Working...\n• tool: `read_file`")
+
+	msgIDs, handled := ch.finalizeTrackedToolFeedbackMessage(
+		context.Background(),
+		"12345",
+		"final reply",
+		func(context.Context, string, string, string) error {
+			return nil
+		},
+	)
+	require.True(t, handled)
+	assert.Equal(t, []string{"1"}, msgIDs)
+
+	// This message ID may have been captured before finalization detached it.
+	ch.dismissTrackedToolFeedbackMessage(context.Background(), "12345", "1")
 }
 
 func TestSend_ToolFeedbackStaysSingleMessageAfterHTMLExpansion(t *testing.T) {

@@ -100,7 +100,7 @@ func NewDiscordChannel(
 	}
 	ch.playTTSFn = ch.playTTS
 	ch.ttsVoiceFn = ch.voiceConnectionForTTS
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
+	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage, ch.DeleteMessage)
 	return ch, nil
 }
 
@@ -400,13 +400,6 @@ func (c *DiscordChannel) currentToolFeedbackMessage(chatID string) (string, bool
 	return c.progress.Current(chatID)
 }
 
-func (c *DiscordChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
-}
-
 func (c *DiscordChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
 	if c.progress == nil {
 		return
@@ -440,7 +433,9 @@ func (c *DiscordChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, 
 	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
 		return
 	}
-	c.ClearToolFeedbackMessage(chatID)
+	if !c.progress.ClearIfCurrent(chatID, messageID) {
+		return
+	}
 	_ = c.DeleteMessage(ctx, chatID, messageID)
 }
 
@@ -450,15 +445,18 @@ func (c *DiscordChannel) finalizeTrackedToolFeedbackMessage(
 	content string,
 	editFn func(context.Context, string, string, string) error,
 ) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
+	if c.progress == nil || editFn == nil {
 		return nil, false
 	}
-	if err := editFn(ctx, chatID, msgID, content); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
+	snapshot, ok := c.progress.TakeRestorable(chatID)
+	if !ok {
 		return nil, false
 	}
-	return []string{msgID}, true
+	if err := editFn(ctx, chatID, snapshot.MessageID, content); err != nil {
+		c.progress.Restore(snapshot)
+		return nil, false
+	}
+	return []string{snapshot.MessageID}, true
 }
 
 func (c *DiscordChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {

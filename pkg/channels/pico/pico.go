@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,10 +32,13 @@ type picoConn struct {
 	id        string
 	conn      *websocket.Conn
 	sessionID string
-	writeMu   sync.Mutex
+	writeOnce sync.Once
+	writeLock chan struct{}
 	closed    atomic.Bool
 	cancel    context.CancelFunc // cancels per-connection goroutines (e.g. pingLoop)
 }
+
+const picoWriteTimeout = 15 * time.Second
 
 var allowedInlineImageMIMETypes = map[string]struct{}{
 	"image/jpeg": {},
@@ -65,14 +69,83 @@ func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), MessageKindToolCalls)
 }
 
-// writeJSON sends a JSON message to the connection with write locking.
-func (pc *picoConn) writeJSON(v any) error {
+func (pc *picoConn) write(ctx context.Context, writeFn func() error) error {
 	if pc.closed.Load() {
 		return fmt.Errorf("connection closed")
 	}
-	pc.writeMu.Lock()
-	defer pc.writeMu.Unlock()
-	return pc.conn.WriteJSON(v)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, picoWriteTimeout)
+	defer cancel()
+
+	pc.writeOnce.Do(func() {
+		pc.writeLock = make(chan struct{}, 1)
+		pc.writeLock <- struct{}{}
+	})
+	select {
+	case <-writeCtx.Done():
+		return writeCtx.Err()
+	case <-pc.writeLock:
+	}
+	defer func() { pc.writeLock <- struct{}{} }()
+
+	if err := writeCtx.Err(); err != nil {
+		return err
+	}
+	deadline, _ := writeCtx.Deadline()
+	if err := pc.conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	defer pc.conn.SetWriteDeadline(time.Time{})
+
+	var writeState atomic.Uint32
+	writeFinished := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-writeCtx.Done():
+			if writeState.CompareAndSwap(0, 2) {
+				pc.close()
+			}
+		case <-writeFinished:
+		}
+	}()
+
+	err := writeFn()
+	if writeState.CompareAndSwap(0, 1) {
+		close(writeFinished)
+	}
+	<-watcherDone
+	if err != nil {
+		if timeoutErr, ok := err.(net.Error); ok && timeoutErr.Timeout() {
+			pc.close()
+			return context.DeadlineExceeded
+		}
+		if ctxErr := writeCtx.Err(); ctxErr != nil {
+			if ctxErr == context.DeadlineExceeded {
+				pc.close()
+			}
+			return ctxErr
+		}
+		return err
+	}
+	return nil
+}
+
+// writeJSON sends a JSON message with context-aware serialization and a
+// bounded socket deadline. Gorilla permits only one concurrent writer.
+func (pc *picoConn) writeJSON(ctx context.Context, v any) error {
+	return pc.write(ctx, func() error {
+		return pc.conn.WriteJSON(v)
+	})
+}
+
+func (pc *picoConn) writeMessage(ctx context.Context, messageType int, data []byte) error {
+	return pc.write(ctx, func() error {
+		return pc.conn.WriteMessage(messageType, data)
+	})
 }
 
 // close closes the connection.
@@ -141,8 +214,8 @@ func NewPicoChannel(
 		connections:        make(map[string]*picoConn),
 		sessionConnections: make(map[string]map[string]*picoConn),
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
 	ch.deleteMessageFn = ch.DeleteMessage
+	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage, ch.DeleteMessage)
 	return ch, nil
 }
 
@@ -348,7 +421,7 @@ func (c *PicoChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]stri
 	setContextUsagePayload(payload, msg.ContextUsage)
 	outMsg := newMessage(TypeMessageCreate, payload)
 
-	if err := c.broadcastToSession(msg.ChatID, outMsg); err != nil {
+	if err := c.broadcastToSessionContext(ctx, msg.ChatID, outMsg); err != nil {
 		return nil, err
 	}
 	if isToolFeedback {
@@ -378,7 +451,7 @@ func (c *PicoChannel) DeleteMessage(ctx context.Context, chatID string, messageI
 	outMsg := newMessage(TypeMessageDelete, map[string]any{
 		"message_id": messageID,
 	})
-	return c.broadcastToSession(chatID, outMsg)
+	return c.broadcastToSessionContext(ctx, chatID, outMsg)
 }
 
 func (c *PicoChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
@@ -386,13 +459,6 @@ func (c *PicoChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
 		return "", false
 	}
 	return c.progress.Current(chatID)
-}
-
-func (c *PicoChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
 }
 
 func (c *PicoChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
@@ -428,7 +494,9 @@ func (c *PicoChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, cha
 	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
 		return
 	}
-	c.ClearToolFeedbackMessage(chatID)
+	if !c.progress.ClearIfCurrent(chatID, messageID) {
+		return
+	}
 	deleteFn := c.deleteMessageFn
 	if deleteFn == nil {
 		deleteFn = c.DeleteMessage
@@ -444,8 +512,11 @@ func (c *PicoChannel) finalizeTrackedToolFeedbackMessage(
 	payload map[string]any,
 	contextUsage *bus.ContextUsage,
 ) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
+	if c.progress == nil || editFn == nil {
+		return nil, false
+	}
+	snapshot, ok := c.progress.TakeRestorable(chatID)
+	if !ok {
 		return nil, false
 	}
 	if payload == nil {
@@ -456,11 +527,11 @@ func (c *PicoChannel) finalizeTrackedToolFeedbackMessage(
 	if _, ok := payload[PayloadKeyContent]; !ok {
 		payload[PayloadKeyContent] = content
 	}
-	if err := editFn(ctx, chatID, msgID, payload, contextUsage); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
+	if err := editFn(ctx, chatID, snapshot.MessageID, payload, contextUsage); err != nil {
+		c.progress.Restore(snapshot)
 		return nil, false
 	}
-	return []string{msgID}, true
+	return []string{snapshot.MessageID}, true
 }
 
 func (c *PicoChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
@@ -965,13 +1036,17 @@ func (c *PicoChannel) broadcast(chatID string, msg PicoMessage) error {
 
 // broadcastToSession sends a message to all connections with a matching session.
 func (c *PicoChannel) broadcastToSession(chatID string, msg PicoMessage) error {
+	return c.broadcastToSessionContext(context.Background(), chatID, msg)
+}
+
+func (c *PicoChannel) broadcastToSessionContext(ctx context.Context, chatID string, msg PicoMessage) error {
 	// chatID format: "pico:<sessionID>"
 	sessionID := strings.TrimPrefix(chatID, "pico:")
 	msg.SessionID = sessionID
 
 	var sent bool
 	for _, pc := range c.sessionConnectionsSnapshot(sessionID) {
-		if err := pc.writeJSON(msg); err != nil {
+		if err := pc.writeJSON(ctx, msg); err != nil {
 			logger.DebugCF("pico", "Write to connection failed", map[string]any{
 				"conn_id": pc.id,
 				"error":   err.Error(),
@@ -1147,7 +1222,7 @@ func (c *PicoChannel) readLoop(pc *picoConn) {
 		var msg PicoMessage
 		if err := json.Unmarshal(rawMsg, &msg); err != nil {
 			errMsg := newError("invalid_message", "failed to parse message")
-			pc.writeJSON(errMsg)
+			pc.writeJSON(c.ctx, errMsg)
 			continue
 		}
 
@@ -1168,9 +1243,7 @@ func (c *PicoChannel) pingLoop(pc *picoConn, interval time.Duration) {
 			if pc.closed.Load() {
 				return
 			}
-			pc.writeMu.Lock()
-			err := pc.conn.WriteMessage(websocket.PingMessage, nil)
-			pc.writeMu.Unlock()
+			err := pc.writeMessage(c.ctx, websocket.PingMessage, nil)
 			if err != nil {
 				return
 			}
@@ -1184,7 +1257,7 @@ func (c *PicoChannel) handleMessage(pc *picoConn, msg PicoMessage) {
 	case TypePing:
 		pong := newMessage(TypePong, nil)
 		pong.ID = msg.ID
-		pc.writeJSON(pong)
+		pc.writeJSON(c.ctx, pong)
 
 	case TypeMessageSend:
 		c.handleMessageSend(pc, msg)
@@ -1194,7 +1267,7 @@ func (c *PicoChannel) handleMessage(pc *picoConn, msg PicoMessage) {
 
 	default:
 		errMsg := newError("unknown_type", fmt.Sprintf("unknown message type: %s", msg.Type))
-		pc.writeJSON(errMsg)
+		pc.writeJSON(c.ctx, errMsg)
 	}
 }
 
@@ -1206,7 +1279,7 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 		errMsg := newErrorWithPayload("invalid_media", err.Error(), map[string]any{
 			"request_id": msg.ID,
 		})
-		pc.writeJSON(errMsg)
+		pc.writeJSON(c.ctx, errMsg)
 		return
 	}
 
@@ -1214,7 +1287,7 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 		errMsg := newErrorWithPayload("empty_content", "message content is empty", map[string]any{
 			"request_id": msg.ID,
 		})
-		pc.writeJSON(errMsg)
+		pc.writeJSON(c.ctx, errMsg)
 		return
 	}
 
@@ -1493,5 +1566,5 @@ func (c *PicoChannel) editMessagePayload(
 	normalized["message_id"] = messageID
 	setContextUsagePayload(normalized, contextUsage)
 	outMsg := newMessage(TypeMessageUpdate, normalized)
-	return c.broadcastToSession(chatID, outMsg)
+	return c.broadcastToSessionContext(ctx, chatID, outMsg)
 }

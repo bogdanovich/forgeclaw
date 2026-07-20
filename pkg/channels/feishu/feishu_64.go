@@ -82,7 +82,7 @@ func NewFeishuChannel(bc *config.Channel, cfg *config.FeishuSettings, bus *bus.M
 	ch.deleteMessageFn = ch.deleteMessageAPI
 	ch.sendMediaPartFn = ch.sendMediaPart
 	ch.sendTextFn = ch.sendText
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
+	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage, ch.DeleteMessage)
 	ch.SetOwner(ch)
 	return ch, nil
 }
@@ -345,13 +345,6 @@ func (c *FeishuChannel) currentToolFeedbackMessage(chatID string) (string, bool)
 	return c.progress.Current(chatID)
 }
 
-func (c *FeishuChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
-}
-
 func (c *FeishuChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
 	if c.progress == nil {
 		return
@@ -393,7 +386,9 @@ func (c *FeishuChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, c
 	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
 		return
 	}
-	c.ClearToolFeedbackMessage(chatID)
+	if !c.progress.ClearIfCurrent(chatID, messageID) {
+		return
+	}
 	deleteFn := c.deleteMessageFn
 	if deleteFn == nil {
 		deleteFn = c.deleteMessageAPI
@@ -407,15 +402,18 @@ func (c *FeishuChannel) finalizeTrackedToolFeedbackMessage(
 	content string,
 	editFn func(context.Context, string, string, string) error,
 ) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
+	if c.progress == nil || editFn == nil {
 		return nil, false
 	}
-	if err := editFn(ctx, chatID, msgID, content); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
+	snapshot, ok := c.progress.TakeRestorable(chatID)
+	if !ok {
 		return nil, false
 	}
-	return []string{msgID}, true
+	if err := editFn(ctx, chatID, snapshot.MessageID, content); err != nil {
+		c.progress.Restore(snapshot)
+		return nil, false
+	}
+	return []string{snapshot.MessageID}, true
 }
 
 func (c *FeishuChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
