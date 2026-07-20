@@ -1,7 +1,12 @@
 package protocol
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -11,7 +16,7 @@ import (
 )
 
 func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
-	for _, name := range []string{"envelope.v1", "command-descriptor.v1"} {
+	for _, name := range []string{"envelope.v1", "command-descriptor.v1", "node-auth.v1"} {
 		data, err := Schema(name)
 		if err != nil {
 			t.Fatalf("Schema(%q) error = %v", name, err)
@@ -116,6 +121,43 @@ func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
 	}
 }
 
+func TestNodeAuthSchemaMatchesDomainPayloads(t *testing.T) {
+	resolved := resolveSchema(t, "node-auth.v1")
+	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := nodes.NewIdentityProof(
+		privateKey, nonce, nodes.ProtocolV1, nodes.ProtocolV1,
+		"v0.1.0", "linux", "amd64", nodes.CapabilityCatalog{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloads := []any{
+		nodes.Challenge{
+			Nonce: nonce, MinProtocol: nodes.ProtocolV1,
+			MaxProtocol: nodes.ProtocolV1, ExpiresAt: 1000,
+		},
+		proof,
+		map[string]any{"node_id": proof.NodeID, "state": nodes.StatePendingPairing},
+	}
+	for _, payload := range payloads {
+		data, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		var instance any
+		if unmarshalErr := json.Unmarshal(data, &instance); unmarshalErr != nil {
+			t.Fatal(unmarshalErr)
+		}
+		if validationErr := resolved.Validate(instance); validationErr != nil {
+			t.Fatalf("schema rejected %s: %v", data, validationErr)
+		}
+	}
+}
+
 func resolveSchema(t *testing.T, name string) *jsonschema.Resolved {
 	t.Helper()
 	data, err := Schema(name)
@@ -126,7 +168,24 @@ func resolveSchema(t *testing.T, name string) *jsonschema.Resolved {
 	if unmarshalErr := json.Unmarshal(data, &schema); unmarshalErr != nil {
 		t.Fatal(unmarshalErr)
 	}
-	resolved, err := schema.Resolve(nil)
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{
+		Loader: func(uri *url.URL) (*jsonschema.Schema, error) {
+			const prefix = "https://forgeclaw.dev/schemas/nodes/"
+			name, ok := strings.CutPrefix(uri.String(), prefix)
+			if !ok {
+				return nil, fmt.Errorf("unsupported node schema URI %q", uri)
+			}
+			data, loadErr := Schema(strings.TrimSuffix(name, ".json"))
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			var loaded jsonschema.Schema
+			if unmarshalErr := json.Unmarshal(data, &loaded); unmarshalErr != nil {
+				return nil, unmarshalErr
+			}
+			return &loaded, nil
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

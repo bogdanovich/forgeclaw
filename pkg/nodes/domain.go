@@ -142,6 +142,9 @@ func (catalog CapabilityCatalog) Hash() (string, error) {
 		return "", err
 	}
 	commands := append([]CommandDescriptor(nil), catalog.Commands...)
+	if commands == nil {
+		commands = make([]CommandDescriptor, 0)
+	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	for i := range commands {
 		var err error
