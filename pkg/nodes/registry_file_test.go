@@ -125,6 +125,39 @@ func TestFileRegistryRejectsAliasCollision(t *testing.T) {
 	}
 }
 
+func TestFileRegistryRejectsAliasAndNodeIDCollisions(t *testing.T) {
+	tests := []struct {
+		name   string
+		first  Snapshot
+		second Snapshot
+	}{
+		{
+			name:   "alias added after node id",
+			first:  Snapshot{ID: "node_target", State: StateDisconnected},
+			second: Snapshot{ID: "node_other", State: StateDisconnected, Aliases: []Alias{"node_target"}},
+		},
+		{
+			name:   "node id added after alias",
+			first:  Snapshot{ID: "node_other", State: StateDisconnected, Aliases: []Alias{"node_target"}},
+			second: Snapshot{ID: "node_target", State: StateDisconnected},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := registry.Upsert(test.first); err != nil {
+				t.Fatal(err)
+			}
+			if err := registry.Upsert(test.second); !errors.Is(err, ErrInvalidNode) {
+				t.Fatalf("second Upsert() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestFileRegistryRejectsCorruptDocument(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	if err := os.WriteFile(path, []byte(`{"version":1,"records":{"wrong":{}}}`), 0o600); err != nil {

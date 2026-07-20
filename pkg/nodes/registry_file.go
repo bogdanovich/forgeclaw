@@ -208,18 +208,15 @@ func (registry *FileRegistry) Pending(id ID) (PendingPairing, bool, error) {
 }
 
 func (registry *FileRegistry) commitRecordLocked(record registryRecord) error {
-	for _, alias := range record.Snapshot.Aliases {
-		for id, existing := range registry.records {
-			if id != string(record.Snapshot.ID) && snapshotHasAlias(existing.Snapshot, alias) {
-				return fmt.Errorf("%w: alias %q already belongs to node %q", ErrInvalidNode, alias, id)
-			}
-		}
-	}
+	recordID := string(record.Snapshot.ID)
 	next := make(map[string]registryRecord, len(registry.records)+1)
 	for id, existing := range registry.records {
 		next[id] = existing
 	}
-	next[string(record.Snapshot.ID)] = record
+	next[recordID] = record
+	if err := validateRegistryNamespace(next); err != nil {
+		return err
+	}
 	if err := registry.save(next); err != nil {
 		if fileutil.IsCommittedWriteError(err) {
 			registry.records = next
@@ -273,7 +270,6 @@ func (registry *FileRegistry) load() error {
 	if document.Records == nil {
 		document.Records = make(map[string]registryRecord)
 	}
-	aliases := make(map[Alias]string)
 	for id, record := range document.Records {
 		if id != string(record.Snapshot.ID) {
 			return fmt.Errorf("node registry key %q does not match record id %q", id, record.Snapshot.ID)
@@ -292,14 +288,27 @@ func (registry *FileRegistry) load() error {
 				return fmt.Errorf("validate pending node registry record %q: identity mismatch", id)
 			}
 		}
+	}
+	if err := validateRegistryNamespace(document.Records); err != nil {
+		return fmt.Errorf("validate node registry namespace: %w", err)
+	}
+	registry.records = document.Records
+	return nil
+}
+
+func validateRegistryNamespace(records map[string]registryRecord) error {
+	aliases := make(map[Alias]string)
+	for id, record := range records {
 		for _, alias := range record.Snapshot.Aliases {
-			if owner, exists := aliases[alias]; exists {
-				return fmt.Errorf("node registry alias %q belongs to both %q and %q", alias, owner, id)
+			if aliasOwner, exists := aliases[alias]; exists && aliasOwner != id {
+				return fmt.Errorf("%w: alias %q belongs to both %q and %q", ErrInvalidNode, alias, aliasOwner, id)
+			}
+			if _, exists := records[string(alias)]; exists && string(alias) != id {
+				return fmt.Errorf("%w: alias %q conflicts with a node id", ErrInvalidNode, alias)
 			}
 			aliases[alias] = id
 		}
 	}
-	registry.records = document.Records
 	return nil
 }
 
