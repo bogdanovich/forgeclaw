@@ -98,6 +98,48 @@ func TestPrepareExecutionPlanValidatesCommandInput(t *testing.T) {
 	}
 }
 
+func TestPrepareExecutionPlanValidatesNumericCommandInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		schema string
+	}{
+		{
+			name:   "integer",
+			input:  `{"count":1}`,
+			schema: `{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}`,
+		},
+		{
+			name:   "number",
+			input:  `{"ratio":1.5}`,
+			schema: `{"type":"object","properties":{"ratio":{"type":"number"}},"required":["ratio"],"additionalProperties":false}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			descriptor := invocationDescriptor(RiskWrite)
+			descriptor.InputSchema = json.RawMessage(test.schema)
+			request := invocationRequest(json.RawMessage(test.input))
+
+			if _, err := PrepareExecutionPlan(
+				request,
+				descriptor,
+				"local",
+				"policy-1",
+				time.Unix(1_700_000_000, 0),
+				time.Minute,
+			); err != nil {
+				t.Fatalf("PrepareExecutionPlan() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestPrepareExecutionPlanBoundsTrustedLifetime(t *testing.T) {
 	request := invocationRequest(json.RawMessage(`{"argv":["git","status"]}`))
 	if _, err := PrepareExecutionPlan(

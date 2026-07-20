@@ -299,15 +299,21 @@ func canonicalInvocationInputValue(raw json.RawMessage) (json.RawMessage, map[st
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: invalid input: %v", ErrInvalidInvocation, err)
 	}
-	object, ok := value.(map[string]any)
-	if !ok {
+	if _, ok := value.(map[string]any); !ok {
 		return nil, nil, fmt.Errorf("%w: input must be an object", ErrInvalidInvocation)
 	}
 	canonical, err := jsonstrict.Canonical(raw)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: canonicalize input: %v", ErrInvalidInvocation, err)
 	}
-	return json.RawMessage(canonical), object, nil
+	// jsonstrict preserves numeric precision with json.Number, while the schema
+	// validator classifies concrete Go numeric types. Decode the already strict,
+	// canonical object once more only for schema validation.
+	var schemaValue map[string]any
+	if err := json.Unmarshal(canonical, &schemaValue); err != nil {
+		return nil, nil, fmt.Errorf("%w: decode canonical input: %v", ErrInvalidInvocation, err)
+	}
+	return json.RawMessage(canonical), schemaValue, nil
 }
 
 func validateInvocationInput(rawSchema json.RawMessage, input map[string]any) error {
