@@ -333,7 +333,12 @@ func (mb *MessageBus) ObservedChan() <-chan ObservedMessage {
 }
 
 func (mb *MessageBus) PublishOutbound(ctx context.Context, msg OutboundMessage) error {
-	msg = NormalizeOutboundMessage(msg)
+	var err error
+	msg, err = NormalizeOutboundMessage(msg)
+	if err != nil {
+		mb.publishFailure("outbound", runtimeScopeFromInboundContext(msg.Context), err)
+		return err
+	}
 	if msg.Context.isZero() {
 		mb.publishFailure("outbound", runtimeScopeFromInboundContext(msg.Context), ErrMissingOutboundContext)
 		return ErrMissingOutboundContext
@@ -355,7 +360,12 @@ func (mb *MessageBus) OutboundChan() <-chan OutboundMessage {
 }
 
 func (mb *MessageBus) PublishOutboundMedia(ctx context.Context, msg OutboundMediaMessage) error {
-	msg = NormalizeOutboundMediaMessage(msg)
+	var err error
+	msg, err = NormalizeOutboundMediaMessage(msg)
+	if err != nil {
+		mb.publishFailure("outbound_media", runtimeScopeFromInboundContext(msg.Context), err)
+		return err
+	}
 	if msg.Context.isZero() {
 		mb.publishFailure("outbound_media", runtimeScopeFromInboundContext(msg.Context), ErrMissingOutboundMediaContext)
 		return ErrMissingOutboundMediaContext

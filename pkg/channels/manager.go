@@ -142,12 +142,13 @@ type ChannelLifecyclePayload struct {
 
 // ChannelOutboundPayload describes channel outbound message runtime events.
 type ChannelOutboundPayload struct {
-	Media            bool     `json:"media,omitempty"`
-	ContentLen       int      `json:"content_len,omitempty"`
-	MessageIDs       []string `json:"message_ids,omitempty"`
-	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
-	Error            string   `json:"error,omitempty"`
-	Retries          int      `json:"retries,omitempty"`
+	TraceScopes      []runtimeevents.TraceScope `json:"trace_scopes,omitempty"`
+	Media            bool                       `json:"media,omitempty"`
+	ContentLen       int                        `json:"content_len,omitempty"`
+	MessageIDs       []string                   `json:"message_ids,omitempty"`
+	ReplyToMessageID string                     `json:"reply_to_message_id,omitempty"`
+	Error            string                     `json:"error,omitempty"`
+	Retries          int                        `json:"retries,omitempty"`
 }
 
 type toolFeedbackMessageTracker interface {
@@ -1911,6 +1912,7 @@ func (m *Manager) sendWithRetryPolicy(
 			scopeFromOutboundContext(msg.Context),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
+				TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
 				ContentLen:       len([]rune(msg.Content)),
 				ReplyToMessageID: msg.ReplyToMessageID,
 				Error:            err.Error(),
@@ -2154,6 +2156,7 @@ func (m *Manager) sendMediaWithRetry(
 			"channel": name,
 			"error":   err.Error(),
 		})
+		m.publishOutboundMediaFailed(name, msg, err)
 		return nil, err
 	}
 
@@ -2165,8 +2168,9 @@ func (m *Manager) sendMediaWithRetry(
 			scopeFromOutboundContext(msg.Context),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
-				Media: true,
-				Error: err.Error(),
+				TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
+				Media:       true,
+				Error:       err.Error(),
 			},
 		)
 		return nil, err
@@ -2552,7 +2556,11 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	msg bus.OutboundMessage,
 	retryAmbiguous bool,
 ) error {
-	msg = bus.NormalizeOutboundMessage(msg)
+	var err error
+	msg, err = bus.NormalizeOutboundMessage(msg)
+	if err != nil {
+		return newDeliveryError(err, false)
+	}
 	channelName := outboundMessageChannel(msg)
 
 	m.mu.RLock()
@@ -2566,10 +2574,10 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	var w *channelWorker
 	if owner != nil {
 		var release func()
-		var err error
-		w, release, err = owner.borrowWorkerForSend()
-		if err != nil {
-			return newDeliveryError(err, false)
+		var borrowErr error
+		w, release, borrowErr = owner.borrowWorkerForSend()
+		if borrowErr != nil {
+			return newDeliveryError(borrowErr, false)
 		}
 		defer release()
 	}
@@ -2617,7 +2625,11 @@ func (m *Manager) sendMessageWithRetryPolicy(
 // retries are exhausted), which preserves ordering when later agent behavior
 // depends on actual media delivery.
 func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
-	msg = bus.NormalizeOutboundMediaMessage(msg)
+	var err error
+	msg, err = bus.NormalizeOutboundMediaMessage(msg)
+	if err != nil {
+		return err
+	}
 	channelName := outboundMediaChannel(msg)
 
 	m.mu.RLock()
@@ -2631,10 +2643,10 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 	var w *channelWorker
 	if owner != nil {
 		var release func()
-		var err error
-		w, release, err = owner.borrowWorkerForSend()
-		if err != nil {
-			return err
+		var borrowErr error
+		w, release, borrowErr = owner.borrowWorkerForSend()
+		if borrowErr != nil {
+			return borrowErr
 		}
 		defer release()
 	}
@@ -2642,7 +2654,7 @@ func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) e
 		return fmt.Errorf("channel %s has no active worker", channelName)
 	}
 
-	_, err := m.sendMediaWithRetry(ctx, channelName, w, msg)
+	_, err = m.sendMediaWithRetry(ctx, channelName, w, msg)
 	return err
 }
 
@@ -2660,21 +2672,24 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 		Context: bus.NewOutboundContext(channelName, chatID, ""),
 		Content: content,
 	}
-	msg = bus.NormalizeOutboundMessage(msg)
+	msg, err := bus.NormalizeOutboundMessage(msg)
+	if err != nil {
+		return err
+	}
 
 	if owner != nil && owner.Worker() != nil {
-		queued, err := owner.Enqueue(ctx, msg)
+		queued, enqueueErr := owner.Enqueue(ctx, msg)
 		if queued {
 			m.publishOutboundQueued(channelName, msg)
 			return nil
 		}
-		if err != nil {
-			return err
+		if enqueueErr != nil {
+			return enqueueErr
 		}
 		return fmt.Errorf("channel %s has closed delivery", channelName)
 	}
 
 	// Fallback: direct send (should not happen)
-	_, err := channel.Send(ctx, msg)
+	_, err = channel.Send(ctx, msg)
 	return err
 }
