@@ -401,8 +401,10 @@ func (m *traceCaptureManager) startTurnLocked(
 		origins:   make(map[string]struct{}),
 		trace: evaltrace.Trace{
 			SchemaVersion: evaltrace.SchemaVersionV1,
-			TraceID:       opaqueTraceID("turn", traceScope.TurnID, event.Time),
-			CreatedAt:     event.Time.UTC(),
+			TraceID: opaqueTraceID(
+				"turn", traceScope.Workspace, traceScope.TurnID, event.Time,
+			),
+			CreatedAt: event.Time.UTC(),
 			Policy: evaltrace.CapturePolicy{
 				ContentMode: settings.contentMode,
 				Redactor:    captureRedactorVersion(settings.contentMode),
@@ -450,6 +452,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 				SchemaVersion: evaltrace.SchemaVersionV1,
 				TraceID: opaqueTraceID(
 					"task",
+					workspace,
 					event.TaskID,
 					emittedAt,
 				), CreatedAt: emittedAt.UTC(),
@@ -1127,9 +1130,9 @@ func safeJSONHash(settings traceCaptureSettings, value any) string {
 	return safeHash(settings, string(data))
 }
 
-func opaqueTraceID(kind, id string, created time.Time) string {
+func opaqueTraceID(kind, workspace, id string, created time.Time) string {
 	sum := sha256.Sum256(
-		[]byte(kind + "\x00" + id + "\x00" + created.UTC().Format(time.RFC3339Nano)),
+		[]byte(kind + "\x00" + workspace + "\x00" + id + "\x00" + created.UTC().Format(time.RFC3339Nano)),
 	)
 	return "trace-" + kind + "-" + hex.EncodeToString(sum[:12])
 }

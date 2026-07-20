@@ -356,6 +356,42 @@ func TestTraceCaptureScopesDuplicateTurnIDsByWorkspace(t *testing.T) {
 	}
 }
 
+func TestTraceCaptureDurableIDsIncludeWorkspace(t *testing.T) {
+	workspaceA, workspaceB := t.TempDir(), t.TempDir()
+	stateDir := t.TempDir()
+	cfg := traceTestConfig(workspaceA)
+	cfg.Evaluation.TraceCapture.StateDir = stateDir
+	manager := newTraceCaptureManager(cfg, nil)
+	startedAt := time.Now().UTC()
+
+	for index, workspace := range []string{workspaceA, workspaceB} {
+		scope := runtimeevents.Scope{
+			TraceScope: runtimeevents.NewTraceScope(workspace, "turn-shared"),
+		}
+		manager.observeRuntimeEvent(runtimeevents.Event{
+			ID: "start-" + string(rune('a'+index)), Kind: runtimeevents.KindAgentTurnStart,
+			Time: startedAt, Scope: scope, Payload: TurnStartPayload{Workspace: workspace},
+		})
+		manager.observeRuntimeEvent(runtimeevents.Event{
+			ID: "end-" + string(rune('a'+index)), Kind: runtimeevents.KindAgentTurnEnd,
+			Time: startedAt.Add(time.Millisecond), Scope: scope,
+			Payload: TurnEndPayload{Status: TurnEndStatusCompleted, Workspace: workspace},
+		})
+	}
+	manager.close()
+
+	tracePaths, err := filepath.Glob(filepath.Join(stateDir, "traces", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracePaths) != 2 {
+		t.Fatalf("durable traces = %d, want 2: %v", len(tracePaths), tracePaths)
+	}
+	if filepath.Base(tracePaths[0]) == filepath.Base(tracePaths[1]) {
+		t.Fatalf("workspace-scoped traces share a durable ID: %v", tracePaths)
+	}
+}
+
 func TestTraceCaptureSettlesAllScopesFromOneOutbound(t *testing.T) {
 	workspace := t.TempDir()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), nil)
