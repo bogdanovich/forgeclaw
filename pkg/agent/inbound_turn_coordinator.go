@@ -115,7 +115,7 @@ func (c *inboundTurnCoordinator) handleBusySession(
 		return
 	}
 	scope := target.runtimeSessionScope()
-	if al.tryHandleStopCommand(ctx, msg, scope) {
+	if al.tryHandleStopCommand(ctx, msg, scope, target.Agent.ID) {
 		al.ackInboundMessage(ctx, msg)
 		return
 	}

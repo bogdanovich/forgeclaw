@@ -13,6 +13,7 @@ func (al *AgentLoop) tryHandleStopCommand(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	scope runtimeSessionScope,
+	agentID string,
 ) bool {
 	cmdName, ok := commands.CommandName(msg.Content)
 	if !ok || cmdName != "stop" {
@@ -44,7 +45,7 @@ func (al *AgentLoop) tryHandleStopCommand(
 	if al.channelManager != nil {
 		al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
-	al.resetMessageToolRound(scope.sessionKey)
+	al.resetMessageToolRound(scope, agentID)
 	al.PublishResponseIfNeeded(ctx, msg.Channel, msg.ChatID, scope.sessionKey, reply)
 	return true
 }
@@ -103,16 +104,14 @@ func (al *AgentLoop) takePendingStop(scope runtimeSessionScope) bool {
 	return ok
 }
 
-func (al *AgentLoop) resetMessageToolRound(sessionKey string) {
-	if strings.TrimSpace(sessionKey) == "" {
+func (al *AgentLoop) resetMessageToolRound(scope runtimeSessionScope, agentID string) {
+	if !scope.complete() {
 		return
 	}
-	if registry := al.GetRegistry(); registry != nil {
-		if agent := registry.GetDefaultAgent(); agent != nil {
-			if tool, ok := agent.Tools.Get("message"); ok {
-				if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
-					resetter.ResetSentInRound(sessionKey)
-				}
+	if agent := al.agentForRuntimeScope(scope, agentID); agent != nil {
+		if tool, ok := agent.Tools.Get("message"); ok {
+			if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
+				resetter.ResetSentInRound(scope.sessionKey)
 			}
 		}
 	}

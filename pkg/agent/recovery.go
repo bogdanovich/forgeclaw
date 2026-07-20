@@ -40,9 +40,12 @@ func (al *AgentLoop) RecoverUnansweredSessions(ctx context.Context) int {
 			if !sessionNeedsUnansweredRecovery(agent.Sessions.GetHistory(sessionKey)) {
 				continue
 			}
-			if _, blocked := blockedSessions[sessionKey]; blocked {
+			scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+			if _, blocked := blockedSessions[scope]; blocked {
 				logger.DebugCF("agent", "Skipping unanswered recovery for session with unacked inbound spool entry",
-					map[string]any{"agent_id": agent.ID, "session_key": sessionKey})
+					map[string]any{
+						"agent_id": agent.ID, "workspace": scope.workspace, "session_key": sessionKey,
+					})
 				continue
 			}
 			if err := al.recoverUnansweredSession(ctx, agent, sessionKey); err != nil {
@@ -135,8 +138,8 @@ func (al *AgentLoop) recoverUnansweredSession(
 	return err
 }
 
-func (al *AgentLoop) sessionsWithUnackedInbound(ctx context.Context) map[string]struct{} {
-	blocked := make(map[string]struct{})
+func (al *AgentLoop) sessionsWithUnackedInbound(ctx context.Context) map[runtimeSessionScope]struct{} {
+	blocked := make(map[runtimeSessionScope]struct{})
 	if al == nil || al.bus == nil {
 		return blocked
 	}
@@ -147,27 +150,32 @@ func (al *AgentLoop) sessionsWithUnackedInbound(ctx context.Context) map[string]
 		return blocked
 	}
 	for _, msg := range msgs {
-		if sessionKey := al.sessionKeyForInboundRecoveryBlock(msg); sessionKey != "" {
-			blocked[sessionKey] = struct{}{}
+		if scope := al.runtimeScopeForInboundRecoveryBlock(msg); scope.complete() {
+			blocked[scope] = struct{}{}
 		}
 	}
 	return blocked
 }
 
-func (al *AgentLoop) sessionKeyForInboundRecoveryBlock(msg bus.InboundMessage) string {
-	if strings.TrimSpace(msg.SessionKey) != "" {
-		return strings.TrimSpace(msg.SessionKey)
+func (al *AgentLoop) runtimeScopeForInboundRecoveryBlock(
+	msg bus.InboundMessage,
+) runtimeSessionScope {
+	route, agent, err := al.resolveMessageRoute(msg)
+	if err != nil || agent == nil {
+		return runtimeSessionScope{}
 	}
-	route, _, err := al.resolveMessageRoute(msg)
-	if err != nil {
-		return ""
+	if sessionKey := strings.TrimSpace(msg.SessionKey); sessionKey != "" {
+		return newRuntimeSessionScope(agent.Workspace, sessionKey)
 	}
 	allocation := al.allocateRouteSession(route, msg)
 	allocation, err = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
 	if err != nil {
-		return ""
+		return runtimeSessionScope{}
 	}
-	return al.resolveEffectiveSessionKey(allocation.RouteScopeKey, allocation.SessionKey, msg.SessionKey)
+	return newRuntimeSessionScope(
+		agent.Workspace,
+		al.resolveEffectiveSessionKey(allocation.RouteScopeKey, allocation.SessionKey, msg.SessionKey),
+	)
 }
 
 func sessionNeedsUnansweredRecovery(history []providers.Message) bool {

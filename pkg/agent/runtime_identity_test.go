@@ -1,10 +1,32 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
+
+type resetTrackingMessageTool struct {
+	resetSessions []string
+}
+
+func (t *resetTrackingMessageTool) Name() string        { return "message" }
+func (t *resetTrackingMessageTool) Description() string { return "test message tool" }
+func (t *resetTrackingMessageTool) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+
+func (t *resetTrackingMessageTool) Execute(context.Context, map[string]any) *tools.ToolResult {
+	return &tools.ToolResult{}
+}
+
+func (t *resetTrackingMessageTool) ResetSentInRound(sessionKey string) {
+	t.resetSessions = append(t.resetSessions, sessionKey)
+}
 
 func testSessionScope(sessionKey string) runtimeSessionScope {
 	return newRuntimeSessionScope("/test/workspace", sessionKey)
@@ -180,5 +202,64 @@ func TestContinuationConsumesOnlyItsWorkspaceQueue(t *testing.T) {
 	}
 	if got := al.steering.lenScope(second); got != 1 {
 		t.Fatalf("second queue depth = %d, want 1", got)
+	}
+}
+
+func TestMessageToolResetUsesScopedAgent(t *testing.T) {
+	firstTool := &resetTrackingMessageTool{}
+	secondTool := &resetTrackingMessageTool{}
+	firstRegistry := tools.NewToolRegistry()
+	secondRegistry := tools.NewToolRegistry()
+	firstRegistry.Register(firstTool)
+	secondRegistry.Register(secondTool)
+	al := &AgentLoop{registry: &AgentRegistry{agents: map[string]*AgentInstance{
+		"first": {
+			ID: "first", Workspace: "/workspace/first", Tools: firstRegistry,
+		},
+		"second": {
+			ID: "second", Workspace: "/workspace/second", Tools: secondRegistry,
+		},
+	}}}
+
+	al.resetMessageToolRound(
+		newRuntimeSessionScope("/workspace/second", "shared-session"), "second",
+	)
+	if len(firstTool.resetSessions) != 0 {
+		t.Fatalf("default workspace resets = %#v, want none", firstTool.resetSessions)
+	}
+	if len(secondTool.resetSessions) != 1 || secondTool.resetSessions[0] != "shared-session" {
+		t.Fatalf("target workspace resets = %#v", secondTool.resetSessions)
+	}
+}
+
+func TestInboundRecoveryBlockScopeIncludesRoutedWorkspace(t *testing.T) {
+	firstWorkspace := t.TempDir()
+	secondWorkspace := t.TempDir()
+	cfg := &config.Config{Agents: config.AgentsConfig{
+		Defaults: config.AgentDefaults{Workspace: firstWorkspace, ModelName: "test-model"},
+		List: []config.AgentConfig{
+			{ID: "first", Default: true},
+			{ID: "second", Workspace: secondWorkspace},
+		},
+		Dispatch: &config.DispatchConfig{Rules: []config.DispatchRule{{
+			Name: "second-channel", Agent: "second",
+			When: config.DispatchSelector{Channel: "second"},
+		}}},
+	}}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
+	defer al.Close()
+
+	first := al.runtimeScopeForInboundRecoveryBlock(bus.InboundMessage{
+		Context: bus.InboundContext{Channel: "first"}, SessionKey: "shared-session",
+	})
+	second := al.runtimeScopeForInboundRecoveryBlock(bus.InboundMessage{
+		Context: bus.InboundContext{Channel: "second"}, SessionKey: "shared-session",
+	})
+	if first.sessionKey != second.sessionKey || first.workspace == second.workspace {
+		t.Fatalf("recovery scopes = %#v and %#v", first, second)
+	}
+	if first.workspace != normalizeRuntimeWorkspace(firstWorkspace) ||
+		second.workspace != normalizeRuntimeWorkspace(secondWorkspace) {
+		t.Fatalf("recovery workspaces = %q and %q", first.workspace, second.workspace)
 	}
 }
