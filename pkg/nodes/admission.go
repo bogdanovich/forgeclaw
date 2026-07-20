@@ -43,8 +43,8 @@ type PairingRegistry interface {
 }
 
 type AdmissionResult struct {
-	Node  Snapshot `json:"node"`
-	State State    `json:"state"`
+	NodeID ID    `json:"node_id"`
+	State  State `json:"state"`
 }
 
 type AdmissionConfig struct {
@@ -145,7 +145,7 @@ func (auth *Authenticator) Admit(proof IdentityProof) (AdmissionResult, error) {
 	}); err != nil {
 		return AdmissionResult{}, err
 	}
-	return AdmissionResult{Node: node, State: StatePendingPairing}, nil
+	return AdmissionResult{NodeID: node.ID, State: StatePendingPairing}, nil
 }
 
 // DiscardChallenge releases an issued challenge when its connection ends

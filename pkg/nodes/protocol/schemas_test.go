@@ -3,10 +3,10 @@ package protocol
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -123,25 +123,37 @@ func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
 
 func TestNodeAuthSchemaMatchesDomainPayloads(t *testing.T) {
 	resolved := resolveSchema(t, "node-auth.v1")
-	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	registry, err := nodes.NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator, err := nodes.NewAuthenticator(registry, nodes.AdmissionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := authenticator.IssueChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	proof, err := nodes.NewIdentityProof(
-		privateKey, nonce, nodes.ProtocolV1, nodes.ProtocolV1,
+		privateKey, challenge.Nonce, nodes.ProtocolV1, nodes.ProtocolV1,
 		"v0.1.0", "linux", "amd64", nodes.CapabilityCatalog{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	result, err := authenticator.Admit(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
 	payloads := []any{
-		nodes.Challenge{
-			Nonce: nonce, MinProtocol: nodes.ProtocolV1,
-			MaxProtocol: nodes.ProtocolV1, ExpiresAt: 1000,
-		},
+		challenge,
 		proof,
-		map[string]any{"node_id": proof.NodeID, "state": nodes.StatePendingPairing},
+		result,
 	}
 	for _, payload := range payloads {
 		data, marshalErr := json.Marshal(payload)
