@@ -1,7 +1,6 @@
 package nodes
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/sipeed/picoclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const (
@@ -85,7 +86,6 @@ func (risk Risk) Valid() bool {
 
 type CommandDescriptor struct {
 	Name             string          `json:"name"`
-	Capability       string          `json:"capability"`
 	InputSchema      json.RawMessage `json:"input_schema"`
 	OutputSchema     json.RawMessage `json:"output_schema"`
 	Risk             Risk            `json:"risk"`
@@ -98,12 +98,6 @@ func (descriptor CommandDescriptor) Validate() error {
 		!commandPattern.MatchString(descriptor.Name) {
 		return fmt.Errorf("%w: malformed command name", ErrInvalidCapability)
 	}
-	if !capabilityPattern.MatchString(descriptor.Capability) {
-		return fmt.Errorf("%w: malformed capability", ErrInvalidCapability)
-	}
-	if prefix, _, _ := strings.Cut(descriptor.Name, "."); prefix != descriptor.Capability {
-		return fmt.Errorf("%w: command does not belong to capability", ErrInvalidCapability)
-	}
 	if !descriptor.Risk.Valid() {
 		return fmt.Errorf("%w: unsupported risk %q", ErrInvalidCapability, descriptor.Risk)
 	}
@@ -114,6 +108,14 @@ func (descriptor CommandDescriptor) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func (descriptor CommandDescriptor) Capability() string {
+	prefix, _, _ := strings.Cut(descriptor.Name, ".")
+	if !capabilityPattern.MatchString(prefix) {
+		return ""
+	}
+	return prefix
 }
 
 type CapabilityCatalog struct {
@@ -238,18 +240,19 @@ func validateObjectSchema(label string, raw json.RawMessage) error {
 	if len(raw) == 0 || len(raw) > MaxSchemaBytes || !json.Valid(raw) {
 		return fmt.Errorf("%w: invalid %s schema", ErrInvalidCapability, label)
 	}
-	var value map[string]any
-	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+	value, err := jsonstrict.Decode(raw)
+	if err != nil {
+		return fmt.Errorf("%w: invalid %s schema: %v", ErrInvalidCapability, label, err)
+	}
+	if _, ok := value.(map[string]any); !ok {
 		return fmt.Errorf("%w: %s schema must be an object", ErrInvalidCapability, label)
 	}
 	return nil
 }
 
 func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
+	value, err := jsonstrict.Decode(raw)
+	if err != nil {
 		return nil, fmt.Errorf("canonicalize json: %w", err)
 	}
 	data, err := json.Marshal(value)

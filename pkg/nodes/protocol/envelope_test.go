@@ -36,6 +36,12 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 		data string
 	}{
 		{name: "unknown field", data: `{"type":"event","event":"node.heartbeat","payload":{},"extra":true}`},
+		{name: "duplicate type", data: `{"type":"request","type":"event","event":"node.ready","payload":{}}`},
+		{
+			name: "duplicate nested member",
+			data: `{"type":"event","event":"node.ready",` +
+				`"payload":{"state":"one","state":"two"}}`,
+		},
 		{
 			name: "mixed shape",
 			data: `{"type":"request","id":"req_1","method":"node.info",` +

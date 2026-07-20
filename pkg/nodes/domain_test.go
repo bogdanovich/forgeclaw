@@ -51,6 +51,22 @@ func TestCapabilityCatalogHashPreservesLargeIntegers(t *testing.T) {
 	}
 }
 
+func TestCapabilityCatalogRejectsDuplicateSchemaMembers(t *testing.T) {
+	catalog := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("system.exec.v1", `{"type":"object","type":"array"}`),
+	}}
+	if _, err := catalog.Hash(); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("Hash() error = %v", err)
+	}
+}
+
+func TestCommandDescriptorDerivesCapability(t *testing.T) {
+	value := descriptor("system.exec.v1", `{}`)
+	if got := value.Capability(); got != "system" {
+		t.Fatalf("Capability() = %q, want system", got)
+	}
+}
+
 func TestCapabilityCatalogRejectsInvalidDescriptors(t *testing.T) {
 	invalidRisk := descriptor("system.exec.v1", `{}`)
 	invalidRisk.Risk = Risk("unsafe")
@@ -133,7 +149,6 @@ func TestSnapshotValidatesCatalogHash(t *testing.T) {
 func descriptor(name string, input string) CommandDescriptor {
 	return CommandDescriptor{
 		Name:         name,
-		Capability:   strings.Split(name, ".")[0],
 		InputSchema:  json.RawMessage(input),
 		OutputSchema: json.RawMessage(`{"type":"object"}`),
 		Risk:         RiskRead,

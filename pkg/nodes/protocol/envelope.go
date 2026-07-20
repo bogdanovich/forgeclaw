@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+
+	"github.com/sipeed/picoclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const (
@@ -54,6 +56,9 @@ type Envelope struct {
 func Decode(data []byte) (Envelope, error) {
 	if len(data) > MaxFrameSize {
 		return Envelope{}, ErrFrameTooLarge
+	}
+	if _, err := jsonstrict.Decode(data); err != nil {
+		return Envelope{}, fmt.Errorf("%w: %v", ErrInvalidFrame, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

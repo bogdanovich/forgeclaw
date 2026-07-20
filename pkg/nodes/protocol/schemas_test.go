@@ -57,7 +57,6 @@ func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
 			name: "valid",
 			descriptor: nodes.CommandDescriptor{
 				Name:         "system.exec.v1",
-				Capability:   "system",
 				InputSchema:  json.RawMessage(`{"type":"object"}`),
 				OutputSchema: json.RawMessage(`{"type":"object"}`),
 				Risk:         nodes.RiskWrite,
@@ -69,23 +68,10 @@ func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
 			name: "overlong command",
 			descriptor: nodes.CommandDescriptor{
 				Name:         "system." + strings.Repeat("x", 120) + ".v1",
-				Capability:   "system",
 				InputSchema:  json.RawMessage(`{}`),
 				OutputSchema: json.RawMessage(`{}`),
 				Risk:         nodes.RiskRead,
 			},
-		},
-		{
-			name: "cross-field capability mismatch",
-			descriptor: nodes.CommandDescriptor{
-				Name:         "system.exec.v1",
-				Capability:   "node",
-				InputSchema:  json.RawMessage(`{}`),
-				OutputSchema: json.RawMessage(`{}`),
-				Risk:         nodes.RiskRead,
-			},
-			schemaOK: true,
-			domainOK: false,
 		},
 	}
 
