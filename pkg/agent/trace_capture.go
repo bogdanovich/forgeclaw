@@ -48,6 +48,11 @@ type activeTraceCapture struct {
 	settlementTimer *time.Timer
 }
 
+type taskTraceScope struct {
+	workspace string
+	taskID    string
+}
+
 type traceCaptureManager struct {
 	mu      sync.Mutex
 	closed  bool
@@ -55,7 +60,7 @@ type traceCaptureManager struct {
 
 	settings traceCaptureSettings
 	turns    map[runtimeevents.TraceScope]*activeTraceCapture
-	tasks    map[string]*activeTraceCapture
+	tasks    map[taskTraceScope]*activeTraceCapture
 	taskSubs map[string]func()
 	sub      runtimeevents.Subscription
 	eventBus runtimeevents.Bus
@@ -77,7 +82,7 @@ func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *tra
 	m := &traceCaptureManager{
 		settings: traceCaptureSettingsFromConfig(cfg),
 		turns:    make(map[runtimeevents.TraceScope]*activeTraceCapture),
-		tasks:    make(map[string]*activeTraceCapture),
+		tasks:    make(map[taskTraceScope]*activeTraceCapture),
 		taskSubs: make(map[string]func()),
 		eventBus: eventBus,
 	}
@@ -163,7 +168,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 			}
 		}
 		m.turns = make(map[runtimeevents.TraceScope]*activeTraceCapture)
-		m.tasks = make(map[string]*activeTraceCapture)
+		m.tasks = make(map[taskTraceScope]*activeTraceCapture)
 	}
 	m.settings = updated
 	m.mu.Unlock()
@@ -441,7 +446,15 @@ func (m *traceCaptureManager) observeTaskEvent(
 	}
 	event := observation.Event
 	record := observation.Record
-	trace := m.tasks[event.TaskID]
+	taskScope := taskTraceScope{
+		workspace: strings.TrimSpace(workspace),
+		taskID:    strings.TrimSpace(event.TaskID),
+	}
+	if taskScope.workspace == "" || taskScope.taskID == "" {
+		m.mu.Unlock()
+		return
+	}
+	trace := m.tasks[taskScope]
 	createdTrace := false
 	if trace == nil {
 		emittedAt := time.UnixMilli(event.EmittedAt)
@@ -468,7 +481,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 				Records: make([]evaltrace.Record, 0, 16),
 			},
 		}
-		m.tasks[event.TaskID] = trace
+		m.tasks[taskScope] = trace
 		createdTrace = true
 	}
 	observations := []taskregistry.EventObservation{observation}
@@ -489,7 +502,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 		m.mu.Unlock()
 		return
 	}
-	delete(m.tasks, event.TaskID)
+	delete(m.tasks, taskScope)
 	trace.trace.Outcome = &evaltrace.Outcome{
 		Status:    string(record.Status),
 		ErrorCode: taskErrorCode(record),

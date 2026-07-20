@@ -501,6 +501,53 @@ func TestTraceCaptureCreatesCanonicalTerminalTaskTrace(t *testing.T) {
 	_ = eventBus.Close()
 }
 
+func TestTraceCaptureScopesDuplicateTaskIDsByWorkspace(t *testing.T) {
+	workspaceA, workspaceB := t.TempDir(), t.TempDir()
+	stateDir := t.TempDir()
+	cfg := traceTestConfig(workspaceA)
+	cfg.Evaluation.TraceCapture.StateDir = stateDir
+	manager := newTraceCaptureManager(cfg, nil)
+
+	registries := []*taskregistry.Registry{
+		taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspaceA)),
+		taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspaceB)),
+	}
+	for index, registry := range registries {
+		workspace := []string{workspaceA, workspaceB}[index]
+		manager.attachTaskRegistry(workspace, registry)
+		if err := registry.Upsert(taskregistry.Record{
+			TaskID: "subagent-0", Task: "workspace task",
+			Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+		}); err != nil {
+			t.Fatalf("Upsert workspace %d: %v", index, err)
+		}
+	}
+
+	manager.mu.Lock()
+	active := len(manager.tasks)
+	manager.mu.Unlock()
+	if active != 2 {
+		t.Fatalf("active task traces = %d, want 2", active)
+	}
+	for index, registry := range registries {
+		if err := registry.Update("subagent-0", func(record *taskregistry.Record) {
+			record.Status = taskregistry.StatusSucceeded
+			record.DeliveryStatus = taskregistry.DeliveryDelivered
+		}); err != nil {
+			t.Fatalf("Update workspace %d: %v", index, err)
+		}
+	}
+	manager.close()
+
+	tracePaths, err := filepath.Glob(filepath.Join(stateDir, "traces", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracePaths) != 2 {
+		t.Fatalf("durable task traces = %d, want 2: %v", len(tracePaths), tracePaths)
+	}
+}
+
 func TestTraceCaptureBackfillsDurableTaskHistoryOnRestartReconciliation(t *testing.T) {
 	workspace := t.TempDir()
 	initial := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
