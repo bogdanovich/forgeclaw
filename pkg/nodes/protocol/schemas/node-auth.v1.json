@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeclaw.dev/schemas/nodes/node-auth.v1.json",
+  "title": "ForgeClaw node authentication payloads v1",
+  "oneOf": [
+    {"$ref": "#/$defs/challenge"},
+    {"$ref": "#/$defs/identityProof"},
+    {"$ref": "#/$defs/admissionResult"}
+  ],
+  "$defs": {
+    "nodeID": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {"$ref": "https://forgeclaw.dev/schemas/nodes/command-descriptor.v1.json"}
+        }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nonce", "min_protocol", "max_protocol", "expires_at"],
+      "properties": {
+        "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+        "min_protocol": {"type": "integer", "minimum": 1},
+        "max_protocol": {"type": "integer", "minimum": 1},
+        "expires_at": {"type": "integer", "minimum": 1}
+      }
+    },
+    "identityProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nonce", "node_id", "public_key", "signature", "min_protocol",
+        "max_protocol", "client_version", "platform", "architecture",
+        "requested_role", "catalog_hash", "catalog"
+      ],
+      "properties": {
+        "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+        "node_id": {"$ref": "#/$defs/nodeID"},
+        "public_key": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"},
+        "min_protocol": {"type": "integer", "minimum": 1},
+        "max_protocol": {"type": "integer", "minimum": 1},
+        "client_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "platform": {"type": "string", "minLength": 1, "maxLength": 64},
+        "architecture": {"type": "string", "minLength": 1, "maxLength": 64},
+        "requested_role": {"const": "companion"},
+        "catalog_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "catalog": {"$ref": "#/$defs/catalog"}
+      }
+    },
+    "admissionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "state"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/nodeID"},
+        "state": {"const": "pending_pairing"}
+      }
+    }
+  }
+}

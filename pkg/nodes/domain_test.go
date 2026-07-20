@@ -3,6 +3,7 @@ package nodes
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,20 @@ func TestCapabilityCatalogHashIsCanonical(t *testing.T) {
 	}
 	if firstHash != secondHash {
 		t.Fatalf("catalog hashes differ: %s != %s", firstHash, secondHash)
+	}
+}
+
+func TestCapabilityCatalogHashNormalizesEmptyCommandList(t *testing.T) {
+	nilHash, err := (CapabilityCatalog{}).Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyHash, err := (CapabilityCatalog{Commands: []CommandDescriptor{}}).Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nilHash != emptyHash {
+		t.Fatalf("empty catalog hashes differ: %s != %s", nilHash, emptyHash)
 	}
 }
 
@@ -77,6 +92,24 @@ func TestCapabilityCatalogRejectsDuplicateSchemaMembers(t *testing.T) {
 	}}
 	if _, err := catalog.Hash(); !errors.Is(err, ErrInvalidCapability) {
 		t.Fatalf("Hash() error = %v", err)
+	}
+}
+
+func TestCapabilityCatalogRejectsAdmissionResourceAbuse(t *testing.T) {
+	commands := make([]CommandDescriptor, MaxCatalogCommands+1)
+	for index := range commands {
+		commands[index] = descriptor(fmt.Sprintf("system.command%d.v1", index), `{}`)
+	}
+	if err := (CapabilityCatalog{Commands: commands}).Validate(); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("oversized command catalog error = %v", err)
+	}
+	largeSchema := `{"type":"object","description":"` + strings.Repeat("x", 60*1024) + `"}`
+	largeCommands := make([]CommandDescriptor, 9)
+	for index := range largeCommands {
+		largeCommands[index] = descriptor(fmt.Sprintf("system.large%d.v1", index), largeSchema)
+	}
+	if err := (CapabilityCatalog{Commands: largeCommands}).Validate(); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("oversized byte catalog error = %v", err)
 	}
 }
 

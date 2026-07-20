@@ -14,11 +14,13 @@ import (
 )
 
 const (
-	ProtocolV1        = 1
-	MaxIDLength       = 128
-	MaxAliasLength    = 64
-	MaxCommandNameLen = 128
-	MaxSchemaBytes    = 64 * 1024
+	ProtocolV1         = 1
+	MaxIDLength        = 128
+	MaxAliasLength     = 64
+	MaxCommandNameLen  = 128
+	MaxSchemaBytes     = 64 * 1024
+	MaxCatalogCommands = 128
+	MaxCatalogBytes    = 512 * 1024
 )
 
 var (
@@ -123,8 +125,16 @@ type CapabilityCatalog struct {
 }
 
 func (catalog CapabilityCatalog) Validate() error {
+	if len(catalog.Commands) > MaxCatalogCommands {
+		return fmt.Errorf("%w: catalog contains too many commands", ErrInvalidCapability)
+	}
 	seen := make(map[string]struct{}, len(catalog.Commands))
+	totalBytes := 0
 	for _, descriptor := range catalog.Commands {
+		totalBytes += len(descriptor.Name) + len(descriptor.InputSchema) + len(descriptor.OutputSchema)
+		if totalBytes > MaxCatalogBytes {
+			return fmt.Errorf("%w: catalog exceeds size limit", ErrInvalidCapability)
+		}
 		if err := descriptor.Validate(); err != nil {
 			return err
 		}
@@ -142,6 +152,9 @@ func (catalog CapabilityCatalog) Hash() (string, error) {
 		return "", err
 	}
 	commands := append([]CommandDescriptor(nil), catalog.Commands...)
+	if commands == nil {
+		commands = make([]CommandDescriptor, 0)
+	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	for i := range commands {
 		var err error
