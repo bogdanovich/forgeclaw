@@ -151,16 +151,15 @@ owners.
 The interaction registry exposes one atomic subscribe-and-snapshot operation:
 
 ```go
-type Observation struct {
-    Sequence uint64
-    Event    Event
-    Record   Record
+type Event struct {
+    CommitSequence uint64
+    // domain transition fields
 }
 
 type ObservationSnapshot struct {
-    Through      uint64
-    Records      []Record
-    Observations []Observation
+    Through uint64
+    Records []Record
+    Events  []Event
 }
 
 func (r *Registry) SubscribeSnapshot(Observer) (ObservationSnapshot, func())
@@ -173,8 +172,9 @@ never called while the registry lock is held. A single ordered dispatcher
 preserves commit order and permits callbacks to call registry read methods.
 
 Every mutating operation persists the record and event before publishing its
-observation. Persistence failure publishes nothing. Reload reconstructs the
-next sequence from durable data. Tests cover a commit at the subscription
+observation. The persisted global commit sequence is distinct from each
+interaction's local lifecycle sequence. Persistence failure publishes nothing.
+Reload reconstructs the next commit sequence from durable data. Tests cover a commit at the subscription
 boundary, callback re-entry, unsubscribe races, persistence failure, and
 restart ordering.
 

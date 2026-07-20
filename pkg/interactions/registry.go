@@ -31,9 +31,10 @@ type Options struct {
 }
 
 type Snapshot struct {
-	SchemaVersion string   `json:"schema_version"`
-	Records       []Record `json:"records"`
-	Events        []Event  `json:"events,omitempty"`
+	SchemaVersion  string   `json:"schema_version"`
+	CommitSequence uint64   `json:"commit_sequence,omitempty"`
+	Records        []Record `json:"records"`
+	Events         []Event  `json:"events,omitempty"`
 }
 
 type Observer func(EventObservation)
@@ -43,16 +44,24 @@ type observerEntry struct {
 	observer Observer
 }
 
+type queuedObservation struct {
+	observation EventObservation
+	observers   []observerEntry
+}
+
 var observerSequence atomic.Uint64
 
 type Registry struct {
-	mu        sync.RWMutex
-	storePath string
-	options   Options
-	records   map[string]Record
-	events    []Event
-	observers []observerEntry
-	loadErr   error
+	mu             sync.RWMutex
+	storePath      string
+	options        Options
+	records        map[string]Record
+	events         []Event
+	observers      []observerEntry
+	notifications  []queuedObservation
+	notifying      bool
+	commitSequence uint64
+	loadErr        error
 }
 
 var _ Store = (*Registry)(nil)
@@ -123,16 +132,48 @@ func (r *Registry) Subscribe(observer Observer) func() {
 	r.mu.Lock()
 	r.observers = append(r.observers, entry)
 	r.mu.Unlock()
+	return r.unsubscribe(entry.id)
+}
+
+// SubscribeSnapshot atomically installs an observer and captures retained
+// state. Events committed before the boundary appear only in the snapshot;
+// later commits are delivered through the observer in commit order.
+func (r *Registry) SubscribeSnapshot(observer Observer) (ObservationSnapshot, func()) {
+	if r == nil || observer == nil {
+		return ObservationSnapshot{}, func() {}
+	}
+	entry := observerEntry{id: observerSequence.Add(1), observer: observer}
+	r.mu.Lock()
+	r.observers = append(r.observers, entry)
+	snapshot := r.observationSnapshotLocked()
+	r.mu.Unlock()
+	return snapshot, r.unsubscribe(entry.id)
+}
+
+func (r *Registry) unsubscribe(id uint64) func() {
 	return func() {
 		r.mu.Lock()
 		for i := range r.observers {
-			if r.observers[i].id != entry.id {
+			if r.observers[i].id != id {
 				continue
 			}
 			r.observers = append(r.observers[:i], r.observers[i+1:]...)
 			break
 		}
 		r.mu.Unlock()
+	}
+}
+
+func (r *Registry) observationSnapshotLocked() ObservationSnapshot {
+	records := make([]Record, 0, len(r.records))
+	for _, record := range r.records {
+		records = append(records, cloneRecord(record))
+	}
+	sortRecords(records)
+	return ObservationSnapshot{
+		Through: r.commitSequence,
+		Records: records,
+		Events:  cloneEvents(r.events),
 	}
 }
 
@@ -162,6 +203,7 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 		return Record{}, fmt.Errorf("%w: max records %d", ErrCapacityExceeded, r.options.MaxRecords)
 	}
 	eventsBefore := append([]Event(nil), r.events...)
+	commitSequenceBefore := r.commitSequence
 	var supersededID string
 	var supersededBefore Record
 	for id, existing := range r.records {
@@ -206,13 +248,17 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 			r.records[supersededID] = supersededBefore
 		}
 		r.events = eventsBefore
+		r.commitSequence = commitSequenceBefore
 		releaseStore()
 		r.mu.Unlock()
 		return Record{}, err
 	}
+	drainNotifications := r.queueNotificationsLocked(events)
 	releaseStore()
 	r.mu.Unlock()
-	r.notify(events)
+	if drainNotifications {
+		r.drainNotifications()
+	}
 	return cloneRecord(rec), nil
 }
 
@@ -484,6 +530,7 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 		return nil, err
 	}
 	eventsBefore := append([]Event(nil), r.events...)
+	commitSequenceBefore := r.commitSequence
 	before := make(map[string]Record)
 	claimed := make([]Record, 0)
 	emitted := make([]Event, 0)
@@ -514,13 +561,17 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 			r.records[id] = rec
 		}
 		r.events = eventsBefore
+		r.commitSequence = commitSequenceBefore
 		releaseStore()
 		r.mu.Unlock()
 		return nil, err
 	}
+	drainNotifications := r.queueNotificationsLocked(emitted)
 	releaseStore()
 	r.mu.Unlock()
-	r.notify(emitted)
+	if drainNotifications {
+		r.drainNotifications()
+	}
 	sort.Slice(claimed, func(i, j int) bool { return claimed[i].ID < claimed[j].ID })
 	return claimed, nil
 }
@@ -748,7 +799,7 @@ func (r *Registry) ListEvents(id string) []Event {
 	out := make([]Event, 0, len(r.events))
 	for _, event := range r.events {
 		if id == "" || event.InteractionID == id {
-			out = append(out, event)
+			out = append(out, cloneEvent(event))
 		}
 	}
 	return out
@@ -955,6 +1006,7 @@ func (r *Registry) update(
 	}
 	before := rec
 	eventsBefore := append([]Event(nil), r.events...)
+	commitSequenceBefore := r.commitSequence
 	now := r.nowMillis()
 	eventType, code, success, err := mutate(&rec, now)
 	if err != nil {
@@ -976,13 +1028,17 @@ func (r *Registry) update(
 	if err := r.saveLocked(); err != nil {
 		r.records[id] = before
 		r.events = eventsBefore
+		r.commitSequence = commitSequenceBefore
 		releaseStore()
 		r.mu.Unlock()
 		return Record{}, err
 	}
+	drainNotifications := r.queueNotificationsLocked([]Event{event})
 	releaseStore()
 	r.mu.Unlock()
-	r.notify([]Event{event})
+	if drainNotifications {
+		r.drainNotifications()
+	}
 	return cloneRecord(rec), nil
 }
 
@@ -1058,6 +1114,7 @@ func (r *Registry) lockAndReloadLocked() (func(), error) {
 	before := r.snapshotLocked()
 	r.records = make(map[string]Record)
 	r.events = nil
+	r.commitSequence = 0
 	if err := r.load(); err != nil {
 		r.restoreSnapshotLocked(before)
 		release()
@@ -1112,6 +1169,7 @@ func (r *Registry) load() error {
 	}
 	eventSequences := make(map[string]int64)
 	eventSeen := make(map[string]bool)
+	commitSequence := uint64(0)
 	for _, event := range snapshot.Events {
 		if event.SchemaVersion != EventSchemaVersion || event.InteractionID == "" ||
 			event.Type == "" {
@@ -1128,7 +1186,21 @@ func (r *Registry) load() error {
 		}
 		eventSeen[event.InteractionID] = true
 		eventSequences[event.InteractionID] = event.Sequence
+		if event.CommitSequence == 0 {
+			event.CommitSequence = commitSequence + 1
+		}
+		if event.CommitSequence <= commitSequence {
+			return fmt.Errorf("invalid interaction commit sequence %q", event.EventID)
+		}
+		commitSequence = event.CommitSequence
 		r.events = append(r.events, event)
+	}
+	if snapshot.CommitSequence != 0 && snapshot.CommitSequence < commitSequence {
+		return fmt.Errorf("invalid interaction snapshot commit sequence")
+	}
+	r.commitSequence = snapshot.CommitSequence
+	if r.commitSequence == 0 {
+		r.commitSequence = commitSequence
 	}
 	return nil
 }
@@ -1292,9 +1364,10 @@ func (r *Registry) snapshotLocked() Snapshot {
 	}
 	sortRecords(records)
 	return Snapshot{
-		SchemaVersion: SnapshotSchemaVersion,
-		Records:       records,
-		Events:        append([]Event(nil), r.events...),
+		SchemaVersion:  SnapshotSchemaVersion,
+		CommitSequence: r.commitSequence,
+		Records:        records,
+		Events:         cloneEvents(r.events),
 	}
 }
 
@@ -1303,7 +1376,8 @@ func (r *Registry) restoreSnapshotLocked(snapshot Snapshot) {
 	for _, rec := range snapshot.Records {
 		r.records[rec.ID] = cloneRecord(rec)
 	}
-	r.events = append([]Event(nil), snapshot.Events...)
+	r.events = cloneEvents(snapshot.Events)
+	r.commitSequence = snapshot.CommitSequence
 }
 
 func (r *Registry) snapshotSizeLocked() int {
@@ -1373,37 +1447,59 @@ func (r *Registry) appendEventFromLocked(
 ) {
 	rec.LastEventSeq++
 	sequence := rec.LastEventSeq
+	r.commitSequence++
 	r.events = append(r.events, Event{
-		SchemaVersion: EventSchemaVersion,
-		EventID:       fmt.Sprintf("%s:%06d:%s", rec.ID, sequence, eventType),
-		InteractionID: rec.ID,
-		Type:          eventType,
-		From:          from,
-		To:            rec.Status,
-		Outcome:       rec.Outcome,
-		Revision:      rec.Revision,
-		Sequence:      sequence,
-		EmittedAt:     rec.UpdatedAt,
-		Code:          strings.TrimSpace(code),
-		Success:       success,
+		SchemaVersion:  EventSchemaVersion,
+		EventID:        fmt.Sprintf("%s:%06d:%s", rec.ID, sequence, eventType),
+		CommitSequence: r.commitSequence,
+		InteractionID:  rec.ID,
+		Type:           eventType,
+		From:           from,
+		To:             rec.Status,
+		Outcome:        rec.Outcome,
+		Revision:       rec.Revision,
+		Sequence:       sequence,
+		EmittedAt:      rec.UpdatedAt,
+		Code:           strings.TrimSpace(code),
+		Success:        success,
 	})
 }
 
-func (r *Registry) notify(events []Event) {
+func (r *Registry) queueNotificationsLocked(events []Event) bool {
 	if len(events) == 0 {
-		return
+		return false
 	}
-	r.mu.RLock()
 	observers := append([]observerEntry(nil), r.observers...)
-	records := make(map[string]Record, len(events))
 	for _, event := range events {
-		records[event.InteractionID] = cloneRecord(r.records[event.InteractionID])
+		r.notifications = append(r.notifications, queuedObservation{
+			observation: EventObservation{
+				Event:  cloneEvent(event),
+				Record: cloneRecord(r.records[event.InteractionID]),
+			},
+			observers: observers,
+		})
 	}
-	r.mu.RUnlock()
-	for _, event := range events {
-		observation := EventObservation{Event: event, Record: records[event.InteractionID]}
-		for _, entry := range observers {
-			notifyObserver(entry.observer, observation)
+	if r.notifying {
+		return false
+	}
+	r.notifying = true
+	return true
+}
+
+func (r *Registry) drainNotifications() {
+	for {
+		r.mu.Lock()
+		if len(r.notifications) == 0 {
+			r.notifying = false
+			r.mu.Unlock()
+			return
+		}
+		queued := r.notifications[0]
+		r.notifications[0] = queuedObservation{}
+		r.notifications = r.notifications[1:]
+		r.mu.Unlock()
+		for _, entry := range queued.observers {
+			notifyObserver(entry.observer, queued.observation)
 		}
 	}
 }
@@ -1495,6 +1591,22 @@ func cloneRecord(rec Record) Record {
 		rec.Answer = &answer
 	}
 	return rec
+}
+
+func cloneEvent(event Event) Event {
+	if event.Success != nil {
+		success := *event.Success
+		event.Success = &success
+	}
+	return event
+}
+
+func cloneEvents(events []Event) []Event {
+	out := make([]Event, len(events))
+	for i := range events {
+		out[i] = cloneEvent(events[i])
+	}
+	return out
 }
 
 func cloneExecutionContext(src *bus.InboundContext) *bus.InboundContext {
