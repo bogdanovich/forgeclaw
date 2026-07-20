@@ -215,7 +215,9 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 	writeResponse := handler.writeEnvelope
 	if session != nil {
 		writeResponse = func(_ *websocket.Conn, envelope protocol.Envelope) error {
-			return session.writeEnvelope(envelope)
+			writeCtx, cancel := context.WithDeadline(request.Context(), deadline)
+			defer cancel()
+			return session.writeEnvelope(writeCtx, envelope)
 		}
 	}
 	if writeErr := writeResponse(connection, protocol.Envelope{
