@@ -394,6 +394,11 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 	if al == nil || ts == nil || result == nil {
 		return nil, toolResultDeliveryNone, nil
 	}
+	if toolName == "final_turn" {
+		traceScopes = []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+		}
+	}
 
 	if result.Outbound != nil {
 		return al.deliverExplicitToolOutbound(ctx, ts, result, toolName, traceScopes)
@@ -416,11 +421,6 @@ func (al *AgentLoop) deliverToolResultToUserWithScopes(
 			SessionKey: ts.sessionKey,
 			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts:      parts,
-		}
-		if toolName == "final_turn" {
-			traceScopes = []runtimeevents.TraceScope{
-				runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
-			}
 		}
 		if err := bus.SetOutboundMediaTraceScopes(&outboundMedia, traceScopes); err != nil {
 			return nil, toolResultDeliveryNone, err
