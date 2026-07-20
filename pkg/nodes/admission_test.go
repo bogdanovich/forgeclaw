@@ -150,3 +150,124 @@ func TestAuthenticatorDiscardChallengeReleasesCapacity(t *testing.T) {
 		t.Fatalf("IssueChallenge() after discard error = %v", err)
 	}
 }
+
+func TestAuthenticatorReconnectsApprovedIdentityAndTracksLiveness(t *testing.T) {
+	registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0)
+	authenticator, err := NewAuthenticator(registry, AdmissionConfig{
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := admitTestIdentity(t, authenticator, privateKey)
+	if first.State != StatePendingPairing {
+		t.Fatalf("first admission state = %q", first.State)
+	}
+	if _, err := registry.Approve(first.NodeID, PairingApproval{At: now.Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	second := admitTestIdentity(t, authenticator, privateKey)
+	if second.State != StateConnected {
+		t.Fatalf("approved admission state = %q", second.State)
+	}
+
+	now = now.Add(time.Second)
+	if err := authenticator.Heartbeat(second.NodeID); err != nil {
+		t.Fatal(err)
+	}
+	registration, exists, err := registry.Registration(second.NodeID)
+	if err != nil || !exists {
+		t.Fatalf("Registration() = exists %v, error %v", exists, err)
+	}
+	if registration.Snapshot.LastSeenAt != now.Unix() {
+		t.Fatalf("last seen = %d, want %d", registration.Snapshot.LastSeenAt, now.Unix())
+	}
+
+	now = now.Add(time.Second)
+	if err := authenticator.Disconnect(second.NodeID, "test disconnect"); err != nil {
+		t.Fatal(err)
+	}
+	registration, _, err = registry.Registration(second.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registration.Snapshot.State != StateDisconnected ||
+		registration.Snapshot.DisconnectReason != "test disconnect" {
+		t.Fatalf("disconnected registration = %#v", registration)
+	}
+}
+
+func TestAuthenticatorRejectsRevokedIdentityReconnect(t *testing.T) {
+	registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0)
+	authenticator, err := NewAuthenticator(registry, AdmissionConfig{
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := admitTestIdentity(t, authenticator, privateKey)
+	if _, err := registry.Approve(first.NodeID, PairingApproval{At: now.Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Revoke(first.NodeID, Revocation{
+		Reason: "test revocation",
+		At:     now.Add(time.Second).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := authenticator.Heartbeat(first.NodeID); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("revoked Heartbeat() error = %v", err)
+	}
+	if _, err := admitTestIdentityResult(authenticator, privateKey); !errors.Is(err, ErrAdmissionRevoked) {
+		t.Fatalf("revoked Admit() error = %v", err)
+	}
+}
+
+func admitTestIdentity(
+	t *testing.T,
+	authenticator *Authenticator,
+	privateKey ed25519.PrivateKey,
+) AdmissionResult {
+	t.Helper()
+	result, err := admitTestIdentityResult(authenticator, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func admitTestIdentityResult(
+	authenticator *Authenticator,
+	privateKey ed25519.PrivateKey,
+) (AdmissionResult, error) {
+	challenge, err := authenticator.IssueChallenge()
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	proof, err := NewIdentityProof(
+		privateKey, challenge.Nonce, ProtocolV1, ProtocolV1,
+		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+	)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	return authenticator.Admit(proof)
+}

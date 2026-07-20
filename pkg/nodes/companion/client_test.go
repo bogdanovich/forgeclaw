@@ -67,6 +67,36 @@ func TestClientReconnectsAfterPendingAdmission(t *testing.T) {
 	}
 }
 
+func TestClientKeepsApprovedSessionUntilContextCancellation(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	client := testClientForServer(t, server, identity, ReconnectConfig{})
+
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Approve(result.NodeID, nodes.PairingApproval{At: time.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+	select {
+	case err := <-done:
+		t.Fatalf("Run() stopped while approved session was live: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() cancellation error = %v", err)
+	}
+	waitForNodeState(t, registry, identity.ID, nodes.StateDisconnected)
+}
+
 func TestClientRejectsWrongCertificatePin(t *testing.T) {
 	_, handler := testGatewayAdmission(t)
 	server := httptest.NewTLSServer(handler)
@@ -218,4 +248,26 @@ func testConnectProxy(t *testing.T, backendAddress string) (*httptest.Server, *a
 		<-copyDone
 	}))
 	return proxy, requests
+}
+
+func waitForNodeState(
+	t *testing.T,
+	registry *nodes.FileRegistry,
+	id nodes.ID,
+	want nodes.State,
+) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		registration, exists, err := registry.Registration(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exists && registration.Snapshot.State == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	registration, exists, err := registry.Registration(id)
+	t.Fatalf("node state = %#v, exists %v, error %v; want %q", registration, exists, err, want)
 }

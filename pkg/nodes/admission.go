@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -20,6 +21,7 @@ var (
 	ErrChallengeExpired = errors.New("node admission challenge expired")
 	ErrChallengeUnknown = errors.New("node admission challenge is unknown or already used")
 	ErrAdmissionBusy    = errors.New("node admission capacity reached")
+	ErrAdmissionRevoked = errors.New("node identity is revoked")
 )
 
 type Challenge struct {
@@ -40,6 +42,7 @@ type PairingRegistry interface {
 	Registry
 	UpsertPending(PendingPairing) error
 	Pending(ID) (PendingPairing, bool, error)
+	Registration(ID) (Registration, bool, error)
 }
 
 type AdmissionResult struct {
@@ -137,15 +140,65 @@ func (auth *Authenticator) Admit(proof IdentityProof) (AdmissionResult, error) {
 		Catalog:         proof.Catalog,
 		LastSeenAt:      now,
 	}
-	if err := auth.registry.UpsertPending(PendingPairing{
+	registration, exists, err := auth.registry.Registration(node.ID)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	if !exists {
+		if err := auth.persistPending(node, publicKey, proof, now); err != nil {
+			return AdmissionResult{}, err
+		}
+		return AdmissionResult{NodeID: node.ID, State: StatePendingPairing}, nil
+	}
+	if !bytes.Equal(registration.PublicKey, publicKey) {
+		return AdmissionResult{}, fmt.Errorf("%w: node public key changed", ErrInvalidNode)
+	}
+	if registration.Snapshot.State == StateRevoked {
+		return AdmissionResult{}, ErrAdmissionRevoked
+	}
+	if registration.Snapshot.State == StatePendingPairing {
+		if err := auth.persistPending(node, publicKey, proof, now); err != nil {
+			return AdmissionResult{}, err
+		}
+		return AdmissionResult{NodeID: node.ID, State: StatePendingPairing}, nil
+	}
+	if registration.ApprovedAt <= 0 {
+		return AdmissionResult{}, fmt.Errorf("%w: node identity is not approved", ErrInvalidNode)
+	}
+	node.State = StateConnected
+	if err := auth.registry.Upsert(node); err != nil {
+		return AdmissionResult{}, err
+	}
+	return AdmissionResult{NodeID: node.ID, State: StateConnected}, nil
+}
+
+func (auth *Authenticator) Heartbeat(id ID) error {
+	registration, exists, err := auth.registry.Registration(id)
+	if err != nil {
+		return err
+	}
+	if !exists || registration.Snapshot.State != StateConnected {
+		return fmt.Errorf("%w: node %q has no active registration", ErrInvalidNode, id)
+	}
+	snapshot := registration.Snapshot
+	snapshot.LastSeenAt = auth.now().Unix()
+	return auth.registry.Upsert(snapshot)
+}
+
+func (auth *Authenticator) Disconnect(id ID, reason string) error {
+	return auth.registry.MarkDisconnected(id, Disconnect{
+		Reason: reason,
+		At:     auth.now().Unix(),
+	})
+}
+
+func (auth *Authenticator) persistPending(node Snapshot, publicKey []byte, proof IdentityProof, now int64) error {
+	return auth.registry.UpsertPending(PendingPairing{
 		Node:          node,
 		PublicKey:     publicKey,
 		RequestedRole: proof.RequestedRole,
 		RequestedAt:   now,
-	}); err != nil {
-		return AdmissionResult{}, err
-	}
-	return AdmissionResult{NodeID: node.ID, State: StatePendingPairing}, nil
+	})
 }
 
 // DiscardChallenge releases an issued challenge when its connection ends

@@ -20,6 +20,7 @@ const (
 	DefaultMaxReconnectDelay  = 30 * time.Second
 	DefaultPendingRetryDelay  = 30 * time.Second
 	DefaultHandshakeTimeout   = 15 * time.Second
+	DefaultGatewayLiveness    = 90 * time.Second
 	MaxCompanionConfigFileLen = 1024 * 1024
 )
 

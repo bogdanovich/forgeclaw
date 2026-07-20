@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -127,6 +128,49 @@ func TestAdmissionAllowsExplicitLoopbackDevelopment(t *testing.T) {
 	}
 }
 
+func TestAdmissionHeartbeatDisconnectsRevokedLiveSession(t *testing.T) {
+	registry, handler := testAdmissionHandlerWithConfig(t, AdmissionConfig{
+		HeartbeatPeriod: 10 * time.Millisecond,
+		LivenessTimeout: 100 * time.Millisecond,
+	})
+	server := httptest.NewTLSServer(handler)
+	defer server.Close()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pendingConnection := dialTestAdmission(t, server)
+	pending := authenticateTestConnection(t, pendingConnection, privateKey)
+	_ = pendingConnection.Close()
+	if _, err := registry.Approve(pending.NodeID, nodes.PairingApproval{At: time.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+
+	activeConnection := dialTestAdmission(t, server)
+	connected := authenticateTestConnection(t, activeConnection, privateKey)
+	if connected.State != nodes.StateConnected {
+		t.Fatalf("approved admission state = %q", connected.State)
+	}
+	if _, err := registry.Revoke(connected.NodeID, nodes.Revocation{
+		Reason: "test revocation",
+		At:     time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = activeConnection.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := activeConnection.ReadMessage(); err == nil {
+		t.Fatal("revoked live session remained connected after heartbeat")
+	}
+	registration, exists, err := registry.Registration(connected.NodeID)
+	if err != nil || !exists {
+		t.Fatalf("Registration() = exists %v, error %v", exists, err)
+	}
+	if registration.Snapshot.State != nodes.StateRevoked {
+		t.Fatalf("revoked node state = %q", registration.Snapshot.State)
+	}
+}
+
 func TestAdmissionDoesNotTrustForwardedProtoFromRemotePeer(t *testing.T) {
 	_, handler := testAdmissionHandler(t, false)
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/nodes/v1/ws", nil)
@@ -149,6 +193,16 @@ func TestAdmissionDoesNotTrustForwardedProtoFromLoopbackPeer(t *testing.T) {
 
 func testAdmissionHandler(t *testing.T, allowPlaintext bool) (*nodes.FileRegistry, *AdmissionHandler) {
 	t.Helper()
+	return testAdmissionHandlerWithConfig(t, AdmissionConfig{
+		AllowLoopbackPlaintext: allowPlaintext,
+	})
+}
+
+func testAdmissionHandlerWithConfig(
+	t *testing.T,
+	cfg AdmissionConfig,
+) (*nodes.FileRegistry, *AdmissionHandler) {
+	t.Helper()
 	registry, err := nodes.NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
 	if err != nil {
 		t.Fatal(err)
@@ -157,13 +211,79 @@ func testAdmissionHandler(t *testing.T, allowPlaintext bool) (*nodes.FileRegistr
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewAdmissionHandler(authenticator, AdmissionConfig{
-		AllowLoopbackPlaintext: allowPlaintext,
-	})
+	handler, err := NewAdmissionHandler(authenticator, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return registry, handler
+}
+
+func dialTestAdmission(t *testing.T, server *httptest.Server) *websocket.Conn {
+	t.Helper()
+	transport, ok := server.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("test server transport = %T", server.Client().Transport)
+	}
+	dialer := websocket.Dialer{TLSClientConfig: transport.TLSClientConfig.Clone()}
+	connection, response, err := dialer.Dial(
+		"wss"+strings.TrimPrefix(server.URL, "https"),
+		nil,
+	)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+func authenticateTestConnection(
+	t *testing.T,
+	connection *websocket.Conn,
+	privateKey ed25519.PrivateKey,
+) nodes.AdmissionResult {
+	t.Helper()
+	challenge := readChallenge(t, connection)
+	proof, err := nodes.NewIdentityProof(
+		privateKey, challenge.Nonce, nodes.ProtocolV1, nodes.ProtocolV1,
+		"v0.1.0", "linux", "amd64", nodes.CapabilityCatalog{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestData, err := protocol.Encode(protocol.Envelope{
+		Type:   protocol.FrameRequest,
+		ID:     "req_auth",
+		Method: "node.authenticate",
+		Params: params,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.WriteMessage(websocket.TextMessage, requestData); err != nil {
+		t.Fatal(err)
+	}
+	_, responseData, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := protocol.Decode(responseData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.OK == nil || !*response.OK {
+		t.Fatalf("authentication response = %#v", response)
+	}
+	var result nodes.AdmissionResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func readChallenge(t *testing.T, connection *websocket.Conn) nodes.Challenge {
