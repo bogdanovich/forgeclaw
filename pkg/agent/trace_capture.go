@@ -74,11 +74,14 @@ type traceCaptureManager struct {
 	persistMu       sync.RWMutex
 	persistClosed   bool
 	droppedPersists atomic.Uint64
+	persistAttempt  func(traceCaptureSettings, *activeTraceCapture) (bool, bool)
+	retryInterval   time.Duration
 }
 
 type tracePersistRequest struct {
 	settings traceCaptureSettings
 	trace    *activeTraceCapture
+	critical bool
 }
 
 type scopedTraceKey struct {
@@ -99,6 +102,7 @@ func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *tra
 		interactionRegs: make(map[string]*interactions.Registry),
 		interactionGens: make(map[string]uint64),
 		eventBus:        eventBus,
+		retryInterval:   5 * time.Second,
 	}
 	if !m.settings.enabled {
 		return m
@@ -789,7 +793,6 @@ func buildInteractionTrace(
 				TraceKind:   evaltrace.TraceKindInteraction,
 				RootTurnID:  state.Origin.TurnID,
 				SessionHash: safeHash(settings, state.Route.SessionKey),
-				AgentID:     state.Route.AgentID,
 			},
 			Records: make([]evaltrace.Record, 0, min(16, len(history))),
 		},
@@ -875,8 +878,17 @@ func (m *traceCaptureManager) enqueuePersist(
 	if m.persistClosed {
 		return
 	}
+	request := tracePersistRequest{
+		settings: settings,
+		trace:    trace,
+		critical: trace.trace.Metadata.TraceKind == evaltrace.TraceKindInteraction && trace.trace.Outcome != nil,
+	}
+	if request.critical {
+		m.persistCh <- request
+		return
+	}
 	select {
-	case m.persistCh <- tracePersistRequest{settings: settings, trace: trace}:
+	case m.persistCh <- request:
 	default:
 		m.droppedPersists.Add(1)
 		logger.WarnCF(
@@ -891,21 +903,67 @@ func (m *traceCaptureManager) enqueuePersist(
 
 func (m *traceCaptureManager) runPersistWorker(ch <-chan tracePersistRequest) {
 	defer m.persistWG.Done()
-	for request := range ch {
-		m.persistNow(request.settings, request.trace)
+	retryInterval := m.retryInterval
+	if retryInterval <= 0 {
+		retryInterval = 5 * time.Second
+	}
+	ticker := time.NewTicker(retryInterval)
+	defer ticker.Stop()
+	pending := make(map[string]tracePersistRequest)
+	attempt := func(request tracePersistRequest) {
+		stored, retryable := m.attemptPersist(request.settings, request.trace)
+		key := persistRequestKey(request)
+		if stored || !request.critical || !retryable {
+			delete(pending, key)
+			return
+		}
+		pending[key] = request
+	}
+	for {
+		select {
+		case request, ok := <-ch:
+			if !ok {
+				return
+			}
+			attempt(request)
+		case <-ticker.C:
+			for _, request := range pending {
+				attempt(request)
+			}
+		}
 	}
 }
 
-func (m *traceCaptureManager) persistNow(settings traceCaptureSettings, trace *activeTraceCapture) {
+func persistRequestKey(request tracePersistRequest) string {
+	if request.trace == nil {
+		return ""
+	}
+	return request.trace.workspace + "\x00" + request.trace.trace.TraceID
+}
+
+func (m *traceCaptureManager) attemptPersist(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+) (bool, bool) {
+	if m.persistAttempt != nil {
+		return m.persistAttempt(settings, trace)
+	}
+	return m.persistNow(settings, trace)
+}
+
+func (m *traceCaptureManager) persistNow(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+) (bool, bool) {
 	if trace == nil || strings.TrimSpace(trace.workspace) == "" {
-		return
+		return false, false
 	}
 	finalized, err := finalizeCaptureTrace(trace)
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to finalize evaluation trace", map[string]any{
 			"trace_id": trace.trace.TraceID, "error": err.Error(),
 		})
-		return
+		return false, false
 	}
 	store := evaltrace.Store{
 		Root: traceStoreRoot(settings, trace.workspace), Retention: settings.retention,
@@ -915,7 +973,7 @@ func (m *traceCaptureManager) persistNow(settings traceCaptureSettings, trace *a
 		logger.WarnCF("evaltrace", "Failed to store evaluation trace", map[string]any{
 			"trace_id": trace.trace.TraceID, "error": err.Error(),
 		})
-		return
+		return false, true
 	}
 	if _, err := store.Prune(); err != nil {
 		logger.WarnCF(
@@ -924,6 +982,7 @@ func (m *traceCaptureManager) persistNow(settings traceCaptureSettings, trace *a
 			map[string]any{"error": err.Error()},
 		)
 	}
+	return true, false
 }
 
 func (m *traceCaptureManager) markRuntimeDropsLocked() {
@@ -1290,11 +1349,9 @@ func normalizedInteractionEventRecord(
 		Kind:        evaltrace.RecordInteractionTransition,
 		Origin:      evaltrace.Origin{Kind: "interaction_event", ID: event.EventID},
 		Scope: evaltrace.Scope{
-			AgentID:     state.Route.AgentID,
 			SessionHash: safeHash(settings, state.Route.SessionKey),
 			TurnID:      state.Origin.TurnID,
 			TaskID:      state.Origin.TaskID,
-			Channel:     state.Route.Channel,
 			TargetHash: safeHash(
 				settings,
 				targetKey(state.Route.Channel, state.Route.ChatID),

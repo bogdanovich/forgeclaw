@@ -58,6 +58,12 @@ func (al *AgentLoop) interactionRegistryForWorkspace(workspace string) *interact
 	options := interactions.Options{}
 	if cfg := al.GetConfig(); cfg != nil {
 		options.TerminalRetention = cfg.Tools.RequestUserInput.Retention()
+		if cfg.Evaluation.TraceCapture.Enabled {
+			traceRetention := time.Duration(cfg.Evaluation.TraceCapture.RetentionHours) * time.Hour
+			if traceRetention > options.TerminalRetention {
+				options.TerminalRetention = traceRetention
+			}
+		}
 	}
 	registry := interactions.NewRegistryWithOptions(
 		interactions.WorkspaceStorePath(workspace),

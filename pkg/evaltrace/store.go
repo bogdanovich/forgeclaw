@@ -54,13 +54,14 @@ func (s Store) SaveAt(trace Trace, retainedAt time.Time) (string, error) {
 		return "", fmt.Errorf("encode trace: %w", err)
 	}
 	path := filepath.Join(root, trace.TraceID+".json")
-	if err := fileutil.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
-		return "", fmt.Errorf("write trace: %w", err)
-	}
+	write := fileutil.WriteFileAtomic
 	if !retainedAt.IsZero() {
-		if err := os.Chtimes(path, retainedAt, retainedAt); err != nil {
-			return "", fmt.Errorf("set trace retention time: %w", err)
+		write = func(path string, data []byte, perm os.FileMode) error {
+			return fileutil.WriteFileAtomicWithModTime(path, data, perm, retainedAt)
 		}
+	}
+	if err := write(path, append(data, '\n'), 0o600); err != nil {
+		return "", fmt.Errorf("write trace: %w", err)
 	}
 	return path, nil
 }

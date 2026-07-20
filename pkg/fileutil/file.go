@@ -72,7 +72,20 @@ func IsCommittedWriteError(err error) bool {
 //	// Public readable file
 //	err := utils.WriteFileAtomic("public.txt", data, 0o644)
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	return writeFileAtomic(path, data, perm, syncDirectory)
+	return writeFileAtomicPrepared(path, data, perm, syncDirectory, nil)
+}
+
+// WriteFileAtomicWithModTime applies modTime to the temporary file before the
+// atomic rename, so timestamp failure leaves the original target unchanged.
+func WriteFileAtomicWithModTime(
+	path string,
+	data []byte,
+	perm os.FileMode,
+	modTime time.Time,
+) error {
+	return writeFileAtomicPrepared(path, data, perm, syncDirectory, func(tmpPath string) error {
+		return os.Chtimes(tmpPath, modTime, modTime)
+	})
 }
 
 func writeFileAtomic(
@@ -80,6 +93,16 @@ func writeFileAtomic(
 	data []byte,
 	perm os.FileMode,
 	syncDir func(string) error,
+) error {
+	return writeFileAtomicPrepared(path, data, perm, syncDir, nil)
+}
+
+func writeFileAtomicPrepared(
+	path string,
+	data []byte,
+	perm os.FileMode,
+	syncDir func(string) error,
+	prepare func(string) error,
 ) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -123,6 +146,11 @@ func writeFileAtomic(
 	// Set file permissions before closing
 	if err := tmpFile.Chmod(perm); err != nil {
 		return fmt.Errorf("failed to set permissions: %w", err)
+	}
+	if prepare != nil {
+		if err := prepare(tmpPath); err != nil {
+			return fmt.Errorf("failed to prepare temp file: %w", err)
+		}
 	}
 
 	// Close file before rename (required on Windows)

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -455,7 +456,7 @@ func TestTraceCaptureBackfillsDurableInteractionHistoryAfterRestart(t *testing.T
 		ID:   "interaction-restart",
 		Kind: interactions.KindQuestion,
 		Route: interactions.Route{
-			AgentID: "main", SessionKey: "session-secret", Channel: "telegram",
+			AgentID: "agent-" + secret, SessionKey: "session-secret", Channel: "channel-" + secret,
 			ChatID: "chat-secret", SenderID: "sender-secret",
 		},
 		Origin: interactions.Origin{
@@ -537,6 +538,81 @@ func TestTraceCaptureBackfillsDurableInteractionHistoryAfterRestart(t *testing.T
 			item.Correlation.ToolCallID != "call-1" || item.Scope.TaskID != "task-1" {
 			t.Fatalf("interaction correlation = %#v", item)
 		}
+	}
+}
+
+func TestTraceCaptureRetriesCriticalInteractionPersistence(t *testing.T) {
+	manager := &traceCaptureManager{
+		persistCh:     make(chan tracePersistRequest, 1),
+		retryInterval: 5 * time.Millisecond,
+	}
+	var attempts atomic.Int32
+	succeeded := make(chan struct{})
+	manager.persistAttempt = func(traceCaptureSettings, *activeTraceCapture) (bool, bool) {
+		if attempts.Add(1) == 1 {
+			return false, true
+		}
+		select {
+		case <-succeeded:
+		default:
+			close(succeeded)
+		}
+		return true, false
+	}
+	manager.persistWG.Add(1)
+	go manager.runPersistWorker(manager.persistCh)
+	manager.enqueuePersist(traceCaptureSettings{}, &activeTraceCapture{
+		workspace: "workspace",
+		trace: evaltrace.Trace{
+			TraceID:  "trace-critical-retry",
+			Metadata: evaltrace.Metadata{TraceKind: evaltrace.TraceKindInteraction},
+			Outcome:  &evaltrace.Outcome{Status: string(interactions.StatusResolved)},
+		},
+	})
+	select {
+	case <-succeeded:
+	case <-time.After(time.Second):
+		t.Fatal("critical interaction trace was not retried")
+	}
+	manager.persistMu.Lock()
+	manager.persistClosed = true
+	close(manager.persistCh)
+	manager.persistMu.Unlock()
+	manager.persistWG.Wait()
+	if attempts.Load() < 2 {
+		t.Fatalf("persistence attempts = %d, want at least 2", attempts.Load())
+	}
+}
+
+func TestTraceCaptureDoesNotDropCriticalInteractionOnBackpressure(t *testing.T) {
+	manager := &traceCaptureManager{persistCh: make(chan tracePersistRequest, 1)}
+	manager.persistCh <- tracePersistRequest{trace: &activeTraceCapture{workspace: "occupied"}}
+	done := make(chan struct{})
+	go func() {
+		manager.enqueuePersist(traceCaptureSettings{}, &activeTraceCapture{
+			workspace: "workspace",
+			trace: evaltrace.Trace{
+				TraceID:  "trace-critical-backpressure",
+				Metadata: evaltrace.Metadata{TraceKind: evaltrace.TraceKindInteraction},
+				Outcome:  &evaltrace.Outcome{Status: string(interactions.StatusResolved)},
+			},
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("critical persistence returned while the queue was full")
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-manager.persistCh
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("critical persistence did not resume after queue capacity became available")
+	}
+	request := <-manager.persistCh
+	if !request.critical || request.trace.trace.TraceID != "trace-critical-backpressure" {
+		t.Fatalf("queued request = %#v", request)
 	}
 }
 

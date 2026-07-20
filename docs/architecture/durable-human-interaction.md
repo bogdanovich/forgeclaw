@@ -376,7 +376,8 @@ latency, and failure codes. They exclude raw answers, full questions, secrets,
 and tool arguments.
 
 Evaluation traces never capture question text, answers, approval summaries,
-routes, sender identity, or tool arguments, including in redacted-content mode.
+raw routes, route-derived agent/channel labels, sender identity, or tool
+arguments, including in redacted-content mode.
 They capture typed lifecycle state, opaque IDs and hashes, safe policy codes,
 and success markers. Correlation fields link interaction ID, turn ID, tool call
 ID, and task ID so replay evaluators can detect within one interaction trace:
@@ -410,6 +411,10 @@ terminal lifecycle time for both age and count limits; reconciliation never
 resurrects a trace that evaluation retention already removed. Active task,
 interaction, and session indexes are scoped by workspace so cloned identifiers
 cannot mix evidence or route an interaction into another workspace's turn.
+When trace capture is enabled, terminal interaction records are retained for at
+least the evaluation trace-retention window. Terminal interaction persistence
+uses a non-dropping queue path and retries transient storage failures while the
+process remains alive; restart reconciliation remains the crash fallback.
 Replay diagnostics explicitly classify self-contained violations as
 `conclusive` and missing-prerequisite checks as `requires_complete_history`, so
 truncation cannot hide malformed approval consumption or expiry evidence.
@@ -480,8 +485,8 @@ When `evaluation.trace_capture.enabled` is true, terminal interaction traces
 are written automatically under the workspace evaluation trace directory. Run
 `picoclaw eval --evaluator durable_interaction.v1 TRACE.json` to diagnose a
 question or approval lifecycle. Trace retention uses the existing evaluation
-capture limits; it is independent of the interaction registry's terminal
-record retention.
+capture limits. The registry retention is automatically extended when needed
+so canonical evidence cannot expire before the configured trace window.
 
 ## Implementation Sequence
 

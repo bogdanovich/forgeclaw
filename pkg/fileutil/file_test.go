@@ -31,6 +31,28 @@ func TestWriteFileAtomic_PropagatesDirectorySyncFailure(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicPreparedLeavesTargetOnPrepareFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prepared.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("prepare failed")
+	err := writeFileAtomicPrepared(path, []byte("replacement"), 0o600, syncDirectory, func(string) error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "original" {
+		t.Fatalf("target changed after prepare failure: %q", data)
+	}
+}
+
 func TestWriteFileAtomic_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")

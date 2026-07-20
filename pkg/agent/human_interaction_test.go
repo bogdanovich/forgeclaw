@@ -63,6 +63,19 @@ type approvalContextTool struct {
 	inbound    bus.InboundContext
 }
 
+func TestInteractionRegistryRetentionCoversEvaluationTraceRetention(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Tools.RequestUserInput.RetentionHours = 24
+	cfg.Evaluation.TraceCapture.Enabled = true
+	cfg.Evaluation.TraceCapture.RetentionHours = 24 * 14
+	al := &AgentLoop{cfg: cfg}
+	registry := al.interactionRegistryForWorkspace(workspace)
+	if got := registry.Stats().Retention; got != 14*24*time.Hour {
+		t.Fatalf("interaction retention = %s, want %s", got, 14*24*time.Hour)
+	}
+}
+
 func (*approvalContextTool) Name() string { return "approval_context" }
 
 func (*approvalContextTool) Description() string { return "Capture protected inbound context" }

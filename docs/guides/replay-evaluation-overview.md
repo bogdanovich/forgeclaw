@@ -66,8 +66,9 @@ counts, hashes, opaque identifiers, and policy codes rather than raw prompts,
 tool arguments, tool results, steering text, or draft bodies.
 
 Human-interaction traces always remain metadata-only at the content boundary:
-they exclude questions, answers, approval summaries, routes, sender identity,
-and tool arguments even when the global mode is `redacted_content`.
+they exclude questions, answers, approval summaries, raw routes, route-derived
+agent/channel labels, sender identity, and tool arguments even when the global
+mode is `redacted_content`.
 
 ## How to use a captured trace
 
