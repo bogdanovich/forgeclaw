@@ -3,6 +3,7 @@ package gateway
 import (
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,6 +16,36 @@ type fakeNodeAdmissionRoutes struct {
 	registerCount   int
 	replaceCount    int
 	unregisterCount int
+}
+
+func TestNodeAdmissionWorkspaceChangeFailsClosed(t *testing.T) {
+	routes := &fakeNodeAdmissionRoutes{}
+	runtime := &nodeAdmissionRuntime{routes: routes}
+	cfg := config.DefaultConfig()
+	cfg.Nodes.Enabled = true
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	badWorkspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(badWorkspace, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(badWorkspace, "state", "nodes"),
+		[]byte("not a directory"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Agents.Defaults.Workspace = badWorkspace
+	if err := runtime.Reconcile(cfg); err == nil {
+		t.Fatal("workspace change accepted an unreadable replacement registry")
+	}
+	if runtime.mounted || runtime.registry != nil || runtime.sessions != nil || routes.handler != nil {
+		t.Fatal("failed workspace change retained the previous node authority domain")
+	}
 }
 
 func TestServiceShutdownClosesNodeAdmissionOutsideReload(t *testing.T) {
@@ -101,8 +132,11 @@ func TestNodeAdmissionRuntimeReconcilesConfigLifecycle(t *testing.T) {
 	if runtime.sessions == firstSessions {
 		t.Fatal("workspace change retained node session ownership across registries")
 	}
-	if routes.replaceCount != 2 {
+	if routes.replaceCount != 1 {
 		t.Fatalf("route replacement count = %d", routes.replaceCount)
+	}
+	if routes.registerCount != 2 || routes.unregisterCount != 1 {
+		t.Fatalf("workspace rotation route counts = %#v", routes)
 	}
 
 	cfg.Nodes.Enabled = false
@@ -110,7 +144,7 @@ func TestNodeAdmissionRuntimeReconcilesConfigLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if runtime.mounted || runtime.registry != nil || runtime.registryPath != "" || runtime.sessions != nil ||
-		routes.handler != nil || routes.unregisterCount != 1 {
+		routes.handler != nil || routes.unregisterCount != 2 {
 		t.Fatalf("disabled runtime = %#v, routes = %#v", runtime, routes)
 	}
 }

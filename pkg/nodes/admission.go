@@ -202,10 +202,29 @@ func (auth *Authenticator) Heartbeat(id ID) error {
 }
 
 func (auth *Authenticator) Disconnect(id ID, reason string) error {
-	return auth.registry.MarkDisconnected(id, Disconnect{
+	registration, exists, err := auth.registry.Registration(id)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
+	}
+	if registration.Snapshot.State == StateDisconnected || registration.Snapshot.State == StateRevoked {
+		return nil
+	}
+	err = auth.registry.MarkDisconnected(id, Disconnect{
 		Reason: reason,
 		At:     auth.now().Unix(),
 	})
+	if err == nil {
+		return nil
+	}
+	registration, exists, reloadErr := auth.registry.Registration(id)
+	if reloadErr == nil && exists &&
+		(registration.Snapshot.State == StateDisconnected || registration.Snapshot.State == StateRevoked) {
+		return nil
+	}
+	return err
 }
 
 func (auth *Authenticator) persistPending(node Snapshot, publicKey []byte, proof IdentityProof, now int64) error {

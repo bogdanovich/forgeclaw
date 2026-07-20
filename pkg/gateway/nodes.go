@@ -49,6 +49,15 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	}
 
 	registryPath := nodes.RegistryPath(cfg.WorkspacePath())
+	if runtime.mounted && registryPath != runtime.registryPath {
+		ctx, cancel := context.WithTimeout(context.Background(), nodeAdmissionDrainTimeout)
+		if closeErr := runtime.Close(ctx); closeErr != nil {
+			logger.WarnCF("nodes", "Node sessions did not drain before workspace change", map[string]any{
+				"error": closeErr.Error(),
+			})
+		}
+		cancel()
+	}
 	registry, err := nodes.NewFileRegistry(
 		registryPath,
 		cfg.Nodes.MaxPendingPairings,
@@ -72,9 +81,7 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("create node admission handler: %w", err)
 	}
-	wasMounted := runtime.mounted
-	previousHandler := runtime.handler
-	if wasMounted {
+	if runtime.mounted {
 		err = runtime.routes.ReplaceHTTPHandler(nodews.Path, handler)
 	} else {
 		err = runtime.routes.RegisterHTTPHandler(nodews.Path, handler)
@@ -87,15 +94,6 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	runtime.handler = handler
 	runtime.sessions = sessions
 	runtime.mounted = true
-	if wasMounted && !sameRegistry && previousHandler != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), nodeAdmissionDrainTimeout)
-		if closeErr := previousHandler.Close(ctx); closeErr != nil {
-			logger.WarnCF("nodes", "Node sessions did not drain after workspace change", map[string]any{
-				"error": closeErr.Error(),
-			})
-		}
-		cancel()
-	}
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
 		"allow_loopback_plaintext": cfg.Nodes.AllowLoopbackPlaintext,

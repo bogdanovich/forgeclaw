@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -165,7 +166,7 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 	}
 	responseData, err := json.Marshal(result)
 	if err != nil {
-		handler.releaseSession(release)
+		handler.releaseSession(result.NodeID, release)
 		return
 	}
 	ok := true
@@ -176,7 +177,7 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		Result: responseData,
 	}); writeErr != nil || result.State != nodes.StateConnected {
 		if writeErr != nil {
-			handler.releaseSession(release)
+			handler.releaseSession(result.NodeID, release)
 		}
 		return
 	}
@@ -210,7 +211,7 @@ func (handler *AdmissionHandler) serveSession(
 	done := make(chan struct{})
 	go handler.sendHeartbeats(connection, done)
 	defer close(done)
-	defer handler.releaseSession(release)
+	defer handler.releaseSession(nodeID, release)
 
 	for {
 		messageType, _, err := connection.ReadMessage()
@@ -224,9 +225,14 @@ func (handler *AdmissionHandler) serveSession(
 	}
 }
 
-func (handler *AdmissionHandler) releaseSession(release func() (bool, error)) {
+func (handler *AdmissionHandler) releaseSession(
+	nodeID nodes.ID,
+	release func() (bool, error),
+) {
 	if release != nil {
-		_, _ = release()
+		if _, err := release(); err != nil {
+			slog.Warn("persist node disconnect", "node_id", nodeID, "error", err)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -136,7 +137,7 @@ func TestSessionHubActivatesReplacementBeforeOldOwnerCanRelease(t *testing.T) {
 	}
 }
 
-func TestSessionHubRollsBackFailedActivation(t *testing.T) {
+func TestSessionHubFailedActivationClosesPreviousOwner(t *testing.T) {
 	hub := NewSessionHub()
 	first := &trackingCloser{}
 	releaseFirst, err := hub.Claim(nodes.ID("node_test"), first, nil, nil)
@@ -150,11 +151,11 @@ func TestSessionHubRollsBackFailedActivation(t *testing.T) {
 	); !errors.Is(err, wantErr) {
 		t.Fatalf("replacement Claim() error = %v", err)
 	}
-	if first.closed.Load() != 0 {
-		t.Fatal("failed replacement closed the previous connection")
+	if first.closed.Load() != 1 {
+		t.Fatal("failed replacement did not close the previous connection")
 	}
-	if owned, _ := releaseFirst(); !owned {
-		t.Fatal("failed replacement displaced the previous owner")
+	if owned, _ := releaseFirst(); owned {
+		t.Fatal("failed replacement left the previous owner current")
 	}
 }
 
@@ -194,5 +195,60 @@ func TestSessionHubCloseWaitsForDurableDeactivation(t *testing.T) {
 	}
 	if err := <-closed; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionHubCloseHonorsDeadlineDuringBlockedDeactivation(t *testing.T) {
+	hub := NewSessionHub()
+	deactivationStarted := make(chan struct{})
+	allowDeactivation := make(chan struct{})
+	release, err := hub.Claim(
+		nodes.ID("node_test"),
+		&trackingCloser{},
+		nil,
+		func() error {
+			close(deactivationStarted)
+			<-allowDeactivation
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		_, _ = release()
+		close(released)
+	}()
+	<-deactivationStarted
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	if err := hub.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close() error = %v", err)
+	}
+	close(allowDeactivation)
+	<-released
+	if err := hub.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionHubCloseReturnsDisconnectError(t *testing.T) {
+	hub := NewSessionHub()
+	wantErr := errors.New("registry unavailable")
+	release, err := hub.Claim(
+		nodes.ID("node_test"),
+		&trackingCloser{},
+		nil,
+		func() error { return wantErr },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := release(); !errors.Is(err, wantErr) {
+		t.Fatalf("release() error = %v", err)
+	}
+	if err := hub.Close(t.Context()); !errors.Is(err, wantErr) {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
