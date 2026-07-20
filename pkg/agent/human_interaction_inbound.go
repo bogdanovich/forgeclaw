@@ -574,6 +574,15 @@ func (al *AgentLoop) resumeClaimedInteraction(
 	defer modelBinding.Cleanup()
 	turnStatus := TurnEndStatusCompleted
 	traceScopes := make([]runtimeevents.TraceScope, 0, 1)
+	expectFinalDelivery := al.interactionContinuationExpectsUserDelivery(
+		interactionWorkspace, record,
+	)
+	var observeFinalDeliveryTurn func(runtimeevents.TraceScope)
+	if expectFinalDelivery {
+		observeFinalDeliveryTurn = func(scope runtimeevents.TraceScope) {
+			traceScopes = appendUniqueTraceScope(traceScopes, scope)
+		}
+	}
 	finalContent, runErr := al.runAgentLoop(ctx, agent, processOptions{
 		ModelBinding:          modelBinding,
 		TaskID:                record.Origin.TaskID,
@@ -588,15 +597,13 @@ func (al *AgentLoop) resumeClaimedInteraction(
 			InboundContext:  cloneInboundContext(&inbound),
 			SessionScope:    session.CloneScope(scope),
 		},
-		DefaultResponse:     defaultResponse,
-		EnableSummary:       true,
-		SendResponse:        false,
-		ExpectFinalDelivery: true,
-		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
-			traceScopes = appendUniqueTraceScope(traceScopes, scope)
-		},
-		AllowInterimPicoPublish: true,
-		SkipInitialSteeringPoll: true,
+		DefaultResponse:          defaultResponse,
+		EnableSummary:            true,
+		SendResponse:             false,
+		ExpectFinalDelivery:      expectFinalDelivery,
+		ObserveFinalDeliveryTurn: observeFinalDeliveryTurn,
+		AllowInterimPicoPublish:  true,
+		SkipInitialSteeringPoll:  true,
 	})
 	if runErr != nil {
 		_, _ = registry.RecordResumeFailure(resuming.ID, resuming.Revision, runErr.Error())
@@ -741,7 +748,7 @@ func (al *AgentLoop) deliverInteractionFinal(
 ) error {
 	if strings.TrimSpace(record.Origin.TaskID) != "" {
 		return al.deliverTaskInteractionFinal(
-			ctx, registry, interactionWorkspace, record, inbound, content,
+			ctx, registry, interactionWorkspace, record, inbound, content, traceScopes,
 		)
 	}
 	if record.FinalDelivered || strings.TrimSpace(content) == "" {
@@ -808,6 +815,7 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 	record interactions.Record,
 	inbound bus.InboundContext,
 	content string,
+	traceScopes []runtimeevents.TraceScope,
 ) error {
 	taskRegistry := al.taskRegistryForWorkspace(workspace)
 	taskID := strings.TrimSpace(record.Origin.TaskID)
@@ -863,6 +871,7 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 		CompletionID: completionID,
 		Result:       result,
 		Decision:     decideAsyncToolResultDelivery(result),
+		TraceScopes:  traceScopes,
 	})
 	task, _ = taskRegistry.Get(taskID)
 	success := task.DeliveryStatus == taskregistry.DeliveryDelivered ||
@@ -888,6 +897,25 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 	}
 	_, err := registry.Resolve(updated.ID, updated.Revision)
 	return err
+}
+
+func (al *AgentLoop) interactionContinuationExpectsUserDelivery(
+	workspace string,
+	record interactions.Record,
+) bool {
+	taskID := strings.TrimSpace(record.Origin.TaskID)
+	if taskID == "" {
+		return true
+	}
+	registry := al.taskRegistryForWorkspace(workspace)
+	if registry == nil {
+		return true
+	}
+	task, ok := registry.Get(taskID)
+	if !ok {
+		return true
+	}
+	return tools.AsyncDeliveryMode(strings.TrimSpace(task.DeliveryMode)) != tools.AsyncDeliveryParentOnly
 }
 
 func (al *AgentLoop) completeInteractionTask(

@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -277,6 +278,9 @@ func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if al.interactionContinuationExpectsUserDelivery(workspace, record) {
+		t.Fatal("parent-only interaction must not wait for user delivery settlement")
+	}
 	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +303,7 @@ func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
 		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
 	}
 	if err := al.deliverTaskInteractionFinal(
-		t.Context(), registry, workspace, record, inbound, "raw child final",
+		t.Context(), registry, workspace, record, inbound, "raw child final", nil,
 	); err != nil {
 		t.Fatalf("deliverTaskInteractionFinal() error = %v", err)
 	}
@@ -337,6 +341,77 @@ func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("parent-only completion was not processed")
+	}
+}
+
+func TestTaskInteractionFinalCarriesResumeScopeToUserDelivery(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	workspace := agent.Workspace
+	tasks := al.taskRegistryForWorkspace(workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "subagent-user", Runtime: taskregistry.RuntimeSubagent,
+		TaskKind: "spawn", Task: "finish for user", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+		DeliveryMode:   string(tools.AsyncDeliveryUserOnly),
+		InteractionID:  "interaction-user",
+		Channel:        "telegram", ChatID: "chat-1", RequesterSessionKey: "owner-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		ID: "interaction-user", Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: agent.ID, SessionKey: "owner-session", RouteSessionKey: "route-owner",
+			Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-task", ToolCallID: "call-task", ToolName: "request_user_input",
+			TaskID: "subagent-user", ContinuationSessionKey: "task-session",
+		},
+		Questions: []interactions.Question{{ID: "confirm", Question: "Proceed?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "yes", Values: map[string]string{"confirm": "yes"}, ReceivedAt: time.Now().UnixMilli(),
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !al.interactionContinuationExpectsUserDelivery(workspace, record) {
+		t.Fatal("user-only interaction must wait for user delivery settlement")
+	}
+	traceScope := runtimeevents.NewTraceScope(workspace, "resume-turn")
+	if err := al.deliverTaskInteractionFinal(
+		t.Context(), registry, workspace, record,
+		bus.InboundContext{Channel: "telegram", ChatID: "chat-1", SenderID: "user-1"},
+		"raw child final", []runtimeevents.TraceScope{traceScope},
+	); err != nil {
+		t.Fatalf("deliverTaskInteractionFinal() error = %v", err)
+	}
+	select {
+	case outbound := <-al.bus.(*bus.MessageBus).OutboundChan():
+		if outbound.Content != "raw child final" || !outbound.TraceSettlement ||
+			len(outbound.TraceScopes) != 1 || outbound.TraceScopes[0] != traceScope {
+			t.Fatalf("task user delivery = %#v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("user-only task completion was not queued")
+	}
+	resolved, _ := registry.Get(record.ID)
+	if resolved.Status != interactions.StatusResolved ||
+		resolved.FinalDeliveryState != interactions.DeliveryStateDelivered {
+		t.Fatalf("interaction after user delivery = %#v", resolved)
 	}
 }
 

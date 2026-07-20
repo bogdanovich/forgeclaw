@@ -40,13 +40,14 @@ type AsyncDeliveryRequest struct {
 	CompletionID string
 	Result       *tools.ToolResult
 	Decision     AsyncDeliveryDecision
+	TraceScopes  []runtimeevents.TraceScope
 }
 
 type asyncToolCompletionDelivery struct {
 	bus                             interfaces.MessageBus
 	currentConfig                   func() *config.Config
 	events                          runtimeEventEmitter
-	deliverToUser                   func(context.Context, *turnState, *tools.ToolResult, string) ([]providers.Attachment, toolResultDeliveryOutcome, error)
+	deliverToUser                   func(context.Context, *turnState, *tools.ToolResult, string, []runtimeevents.TraceScope) ([]providers.Attachment, toolResultDeliveryOutcome, error)
 	processCompletion               func(context.Context, AsyncCompletionInput) (string, error)
 	asyncTaskDeliveryAlreadyHandled func(workspace, taskID, completionID string) bool
 	recordAsyncTaskDeliveryDecision func(workspace string, decision AsyncDeliveryDecision, completionID, sourceTool string)
@@ -61,7 +62,7 @@ func (al *AgentLoop) asyncToolCompletionDelivery() *asyncToolCompletionDelivery 
 		bus:                             al.bus,
 		currentConfig:                   al.GetConfig,
 		events:                          al.runtimeEventEmitter(),
-		deliverToUser:                   al.deliverToolResultToUser,
+		deliverToUser:                   al.deliverToolResultToUserWithScopes,
 		processCompletion:               al.processAsyncCompletion,
 		asyncTaskDeliveryAlreadyHandled: al.asyncTaskDeliveryAlreadyHandled,
 		recordAsyncTaskDeliveryDecision: al.recordAsyncTaskDeliveryDecision,
@@ -108,7 +109,10 @@ func (d *asyncToolCompletionDelivery) deliverAsyncToolCompletion(req AsyncDelive
 		if content != "" && !result.Silent {
 			outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer outCancel()
-			if err := d.publishOutbound(outCtx, outboundMessageForTurn(ts, content)); err != nil {
+			msg, err := outboundMessageForTraceSettlement(ts, content, req.TraceScopes)
+			if err != nil {
+				deliveryErr = err.Error()
+			} else if err := d.publishOutbound(outCtx, msg); err != nil {
 				deliveryErr = err.Error()
 			} else {
 				delivered = true
@@ -147,7 +151,9 @@ func (d *asyncToolCompletionDelivery) deliverAsyncToolCompletion(req AsyncDelive
 		defer outCancel()
 		userDelivered := false
 		userDeliveryErr := ""
-		if _, outcome, err := d.deliverToUserResult(outCtx, ts, result, asyncToolName); err != nil {
+		if _, outcome, err := d.deliverToUserResult(
+			outCtx, ts, result, asyncToolName, req.TraceScopes,
+		); err != nil {
 			userDeliveryErr = err.Error()
 			logger.WarnCF("agent", "Failed to deliver async tool result to user",
 				map[string]any{
@@ -159,7 +165,10 @@ func (d *asyncToolCompletionDelivery) deliverAsyncToolCompletion(req AsyncDelive
 		} else if outcome == toolResultDeliveryQueued {
 			userDelivered = true
 		} else if outcome == toolResultDeliveryNone && strings.TrimSpace(result.ForUser) != "" && !result.Silent {
-			if err := d.publishOutbound(outCtx, outboundMessageForTurn(ts, result.ForUser)); err != nil {
+			msg, err := outboundMessageForTraceSettlement(ts, result.ForUser, req.TraceScopes)
+			if err != nil {
+				userDeliveryErr = err.Error()
+			} else if err := d.publishOutbound(outCtx, msg); err != nil {
 				userDeliveryErr = err.Error()
 			} else {
 				userDelivered = true
@@ -309,11 +318,25 @@ func (d *asyncToolCompletionDelivery) deliverToUserResult(
 	ts *turnState,
 	result *tools.ToolResult,
 	toolName string,
+	traceScopes []runtimeevents.TraceScope,
 ) ([]providers.Attachment, toolResultDeliveryOutcome, error) {
 	if d == nil || d.deliverToUser == nil {
 		return nil, toolResultDeliveryNone, fmt.Errorf("tool result delivery is not initialized")
 	}
-	return d.deliverToUser(ctx, ts, result, toolName)
+	return d.deliverToUser(ctx, ts, result, toolName, traceScopes)
+}
+
+func outboundMessageForTraceSettlement(
+	ts *turnState,
+	content string,
+	traceScopes []runtimeevents.TraceScope,
+) (bus.OutboundMessage, error) {
+	msg := outboundMessageForTurn(ts, content)
+	if err := bus.SetOutboundTraceScopes(&msg, traceScopes); err != nil {
+		return bus.OutboundMessage{}, err
+	}
+	msg.TraceSettlement = len(msg.TraceScopes) > 0
+	return msg, nil
 }
 
 func (d *asyncToolCompletionDelivery) processAsyncCompletion(
