@@ -50,6 +50,7 @@ func TestEnvelopeSchemaMatchesCodecContract(t *testing.T) {
 		`{"type":"request","id":"req_1","method":"node.info","params":{},"idempotency_key":""}`,
 		`{"type":"request","id":"req_1","method":"node.info","params":{},"idempotency_key":null}`,
 		`{"type":"response","id":"req_1","ok":true,"result":{},"error":null}`,
+		`{"type":"response","id":"req_1","ok":false,"error":{"code":"FAILED","message":"failed","details":null}}`,
 	}
 	for _, fixture := range invalidFixtures {
 		var instance any

@@ -65,6 +65,11 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 				`"params":{},"idempotency_key":null}`,
 		},
 		{name: "null error on success", data: `{"type":"response","id":"req_1","ok":true,"result":{},"error":null}`},
+		{
+			name: "null optional error details",
+			data: `{"type":"response","id":"req_1","ok":false,` +
+				`"error":{"code":"FAILED","message":"failed","details":null}}`,
+		},
 		{name: "trailing value", data: `{"type":"event","event":"node.ready","payload":{}} {}`},
 	}
 
@@ -74,6 +79,13 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 				t.Fatalf("Decode() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestDecodeAllowsNullRequiredResult(t *testing.T) {
+	data := []byte(`{"type":"response","id":"req_1","ok":true,"result":null}`)
+	if _, err := Decode(data); err != nil {
+		t.Fatalf("Decode() error = %v", err)
 	}
 }
 

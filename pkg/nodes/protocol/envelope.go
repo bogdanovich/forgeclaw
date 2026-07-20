@@ -258,6 +258,9 @@ func validateJSONValue(label string, raw json.RawMessage, optional bool) error {
 		}
 		return fmt.Errorf("%w: missing %s", ErrInvalidFrame, label)
 	}
+	if optional && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: %s must be omitted instead of null", ErrInvalidFrame, label)
+	}
 	if _, err := jsonstrict.Decode(raw); err != nil {
 		return fmt.Errorf("%w: malformed %s: %v", ErrInvalidFrame, label, err)
 	}

@@ -68,7 +68,7 @@
           "properties": {
             "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
             "message": {"type": "string", "minLength": 1},
-            "details": {}
+            "details": {"not": {"type": "null"}}
           }
         }
       }
