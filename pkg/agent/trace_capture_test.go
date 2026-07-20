@@ -290,7 +290,8 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 			TraceScopes: []runtimeevents.TraceScope{scope.TraceScope}, ContentLen: 9,
 		},
 	})
-	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(matches) != 0 {
+	tracePattern := filepath.Join(workspace, "state", "evaluation", "traces", "*.json")
+	if matches, _ := filepath.Glob(tracePattern); len(matches) != 0 {
 		t.Fatalf("non-final delivery settled trace: %v", matches)
 	}
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
