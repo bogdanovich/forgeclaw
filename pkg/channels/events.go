@@ -53,6 +53,9 @@ func channelEventAttrs(payload any) map[string]any {
 		if payload.Media {
 			attrs["media"] = payload.Media
 		}
+		if payload.TraceSettlement {
+			attrs["trace_settlement"] = true
+		}
 		if payload.ContentLen > 0 {
 			attrs["content_len"] = payload.ContentLen
 		}
@@ -88,6 +91,7 @@ func (m *Manager) publishOutboundSent(
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
 			TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
+			TraceSettlement:  msg.TraceSettlement,
 			ContentLen:       len([]rune(msg.Content)),
 			MessageIDs:       append([]string(nil), messageIDs...),
 			ReplyToMessageID: msg.ReplyToMessageID,
@@ -106,6 +110,7 @@ func (m *Manager) publishOutboundQueued(
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
 			TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
+			TraceSettlement:  msg.TraceSettlement,
 			ContentLen:       len([]rune(msg.Content)),
 			ReplyToMessageID: msg.ReplyToMessageID,
 		},
@@ -120,6 +125,7 @@ func (m *Manager) publishOutboundFailed(
 ) {
 	payload := ChannelOutboundPayload{
 		TraceScopes:      append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
+		TraceSettlement:  msg.TraceSettlement,
 		Media:            media,
 		ContentLen:       len([]rune(msg.Content)),
 		ReplyToMessageID: msg.ReplyToMessageID,
@@ -148,9 +154,10 @@ func (m *Manager) publishOutboundMediaSent(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
-			Media:       true,
-			MessageIDs:  append([]string(nil), messageIDs...),
+			TraceScopes:     append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
+			TraceSettlement: msg.TraceSettlement,
+			Media:           true,
+			MessageIDs:      append([]string(nil), messageIDs...),
 		},
 	)
 }
@@ -165,8 +172,9 @@ func (m *Manager) publishOutboundMediaQueued(
 		scopeFromOutboundContext(msg.Context),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
-			Media:       true,
+			TraceScopes:     append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
+			TraceSettlement: msg.TraceSettlement,
+			Media:           true,
 		},
 	)
 }
@@ -177,9 +185,10 @@ func (m *Manager) publishOutboundMediaFailed(
 	err error,
 ) {
 	payload := ChannelOutboundPayload{
-		TraceScopes: append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
-		Media:       true,
-		Retries:     maxRetries,
+		TraceScopes:     append([]runtimeevents.TraceScope(nil), msg.TraceScopes...),
+		TraceSettlement: msg.TraceSettlement,
+		Media:           true,
+		Retries:         maxRetries,
 	}
 	if err != nil {
 		payload.Error = err.Error()

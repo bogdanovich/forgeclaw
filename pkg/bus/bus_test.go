@@ -478,6 +478,34 @@ func TestNormalizeOutboundTraceScopes(t *testing.T) {
 	}
 }
 
+func TestNormalizeOutboundTraceSettlementRequiresCompleteScope(t *testing.T) {
+	valid := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+	}
+
+	text, err := NormalizeOutboundMessage(OutboundMessage{
+		TraceScopes: valid, TraceSettlement: true,
+	})
+	if err != nil || !text.TraceSettlement {
+		t.Fatalf("valid text settlement = (%v, %v), want true and nil", text.TraceSettlement, err)
+	}
+	media, err := NormalizeOutboundMediaMessage(OutboundMediaMessage{
+		TraceScopes: valid, TraceSettlement: true,
+	})
+	if err != nil || !media.TraceSettlement {
+		t.Fatalf("valid media settlement = (%v, %v), want true and nil", media.TraceSettlement, err)
+	}
+
+	text, err = NormalizeOutboundMessage(OutboundMessage{TraceSettlement: true})
+	if err != nil || text.TraceSettlement {
+		t.Fatalf("unscoped text settlement = (%v, %v), want false and nil", text.TraceSettlement, err)
+	}
+	media, err = NormalizeOutboundMediaMessage(OutboundMediaMessage{TraceSettlement: true})
+	if err != nil || media.TraceSettlement {
+		t.Fatalf("unscoped media settlement = (%v, %v), want false and nil", media.TraceSettlement, err)
+	}
+}
+
 func TestPublishOutboundRejectsMixedTraceScopeWorkspaces(t *testing.T) {
 	mb := NewMessageBus()
 	defer mb.Close()
