@@ -7,6 +7,11 @@ ForgeClaw replay and evaluation. It is based on the runtime at `origin/main`
 after PR #206. Implementation may revise package names or boundaries when code
 evidence requires it, but must update this document in the same pull request.
 
+The interaction-specific extension and the capture decomposition required
+before implementing it are defined in
+[Interaction Replay Redesign](interaction-replay-redesign.md). That document
+supersedes the interaction-evaluation approach preserved in draft PR #272.
+
 ## Problem
 
 ForgeClaw has regression tests for delivery, steering, restart recovery,
