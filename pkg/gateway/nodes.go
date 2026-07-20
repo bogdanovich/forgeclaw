@@ -3,7 +3,6 @@ package gateway
 import (
 	"fmt"
 	"net/http"
-	"path/filepath"
 
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -46,7 +45,7 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	}
 
 	registry, err := nodes.NewFileRegistry(
-		filepath.Join(cfg.WorkspacePath(), "state", "nodes", "registry.json"),
+		nodes.RegistryPath(cfg.WorkspacePath()),
 		cfg.Nodes.MaxPendingPairings,
 	)
 	if err != nil {

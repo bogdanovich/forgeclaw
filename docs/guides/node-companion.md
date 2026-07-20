@@ -78,3 +78,29 @@ Each instance is paired and authorized independently. Do not point multiple
 instances at the same state directory. A future multi-gateway supervisor may
 share a capability runtime with explicit resource scheduling, but gateway trust,
 policy, tokens, and invocation ledgers will remain isolated per binding.
+
+## Pairing Administration
+
+After an unknown companion connects, inspect and approve its durable identity
+from the gateway host:
+
+```bash
+picoclaw nodes list --state pending_pairing
+picoclaw nodes describe node_<fingerprint>
+picoclaw nodes approve node_<fingerprint> \
+  --alias vpn-box \
+  --display-name "VPN box" \
+  --allow-command node.info.v1
+```
+
+Approval grants no commands unless each advertised command is named explicitly
+with `--allow-command`. Deny an untrusted pending identity or revoke a paired
+one with a recorded reason:
+
+```bash
+picoclaw nodes deny node_<fingerprint> --reason "unknown device"
+picoclaw nodes revoke vpn-box --reason "device retired"
+```
+
+All read and mutation commands accept `--json`. The CLI prints only a public-key
+fingerprint, never the stored raw public key.

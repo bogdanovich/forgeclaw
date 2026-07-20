@@ -17,6 +17,11 @@ import (
 
 const registryFileVersion = 1
 
+// RegistryPath returns the canonical per-workspace node registry location.
+func RegistryPath(workspacePath string) string {
+	return filepath.Join(workspacePath, "state", "nodes", "registry.json")
+}
+
 type registryRecord struct {
 	Snapshot        Snapshot `json:"snapshot"`
 	PublicKey       []byte   `json:"public_key,omitempty"`

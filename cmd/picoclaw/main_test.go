@@ -47,6 +47,7 @@ func TestNewPicoclawCommand(t *testing.T) {
 		"mcp",
 		"migrate",
 		"model",
+		"nodes",
 		"onboard",
 		"skills",
 		"status",
@@ -76,6 +77,7 @@ func TestMachineJSONRequested(t *testing.T) {
 		{name: "json numeric true", args: []string{"doctor", "--json=1"}, want: true},
 		{name: "human doctor", args: []string{"doctor"}, want: false},
 		{name: "eval json", args: []string{"eval", "--json"}, want: true},
+		{name: "nodes json", args: []string{"nodes", "list", "--json"}, want: true},
 		{name: "other json command", args: []string{"status", "--json"}, want: false},
 		{name: "explicit false", args: []string{"doctor", "--json=false"}, want: false},
 	}
