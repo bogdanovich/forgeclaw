@@ -177,6 +177,9 @@ func (registry *FileRegistry) UpsertPending(pairing PendingPairing) error {
 	if err := pairing.Node.Validate(); err != nil {
 		return err
 	}
+	if len(pairing.Node.Aliases) != 0 || strings.TrimSpace(pairing.Node.DisplayName) != "" {
+		return fmt.Errorf("%w: pending node contains operator metadata", ErrInvalidNode)
+	}
 	if len(pairing.PublicKey) != ed25519.PublicKeySize ||
 		pairing.RequestedRole != "companion" || pairing.RequestedAt <= 0 {
 		return fmt.Errorf("%w: malformed pending pairing", ErrInvalidNode)
@@ -483,6 +486,10 @@ func validateRegistrationRecord(record registryRecord) error {
 	if record.Snapshot.State == StatePendingPairing &&
 		(record.ApprovedAt != 0 || record.RevokedAt != 0 || len(record.AllowedCommands) != 0) {
 		return fmt.Errorf("%w: pending node contains operator authority", ErrInvalidNode)
+	}
+	if record.Snapshot.State == StatePendingPairing &&
+		(len(record.Snapshot.Aliases) != 0 || strings.TrimSpace(record.Snapshot.DisplayName) != "") {
+		return fmt.Errorf("%w: pending node contains operator metadata", ErrInvalidNode)
 	}
 	if record.Snapshot.State == StateRevoked && len(record.AllowedCommands) != 0 {
 		return fmt.Errorf("%w: revoked node retains command authority", ErrInvalidNode)

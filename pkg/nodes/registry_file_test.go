@@ -111,6 +111,25 @@ func TestFileRegistryRejectsPendingIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestFileRegistryRejectsOperatorMetadataOnPendingAdmission(t *testing.T) {
+	registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing := testPendingPairing(t, 1)
+	pairing.Node.Aliases = []Alias{"reserved"}
+	pairing.Node.DisplayName = "Trusted-looking node"
+	if upsertErr := registry.UpsertPending(pairing); !errors.Is(upsertErr, ErrInvalidNode) {
+		t.Fatalf("UpsertPending(operator metadata) error = %v", upsertErr)
+	}
+	if _, exists, resolveErr := registry.Resolve("reserved"); resolveErr != nil || exists {
+		t.Fatalf("pending alias Resolve() = exists %v, error %v", exists, resolveErr)
+	}
+	if nodes, listErr := registry.List(Filter{}); listErr != nil || len(nodes) != 0 {
+		t.Fatalf("List() = %#v, error %v", nodes, listErr)
+	}
+}
+
 func TestFileRegistryApprovesOnlyAdvertisedCommands(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	registry, err := NewFileRegistry(path, 4)
