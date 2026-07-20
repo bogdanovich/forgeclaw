@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	agentinterfaces "github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -17,6 +18,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
+
+const finalDeliveryFallbackTimeout = 5 * time.Second
 
 type finalResponseDeliveryPolicy uint8
 
@@ -354,7 +357,7 @@ func (al *AgentLoop) deliverFinalTurnText(
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
 		provisional, ok := al.channelManager.(agentinterfaces.ProvisionalChannelSender)
 		if !ok {
-			al.bus.PublishOutbound(ctx, msg)
+			al.publishFinalDeliveryFallback(msg)
 			return
 		}
 		if err := provisional.SendMessageProvisional(ctx, msg); err != nil {
@@ -372,7 +375,25 @@ func (al *AgentLoop) deliverFinalTurnText(
 			return
 		}
 	}
-	al.bus.PublishOutbound(ctx, msg)
+	al.publishFinalDeliveryFallback(msg)
+}
+
+func (al *AgentLoop) publishFinalDeliveryFallback(msg bus.OutboundMessage) {
+	if al == nil || al.bus == nil {
+		logger.ErrorCF("agent", "Failed to queue final turn fallback", map[string]any{
+			"error": "message bus is unavailable",
+		})
+		return
+	}
+	deliveryCtx, cancel := context.WithTimeout(context.Background(), finalDeliveryFallbackTimeout)
+	defer cancel()
+	if err := al.bus.PublishOutbound(deliveryCtx, msg); err != nil {
+		logger.ErrorCF("agent", "Failed to queue final turn fallback", map[string]any{
+			"channel": msg.Channel,
+			"chat_id": msg.ChatID,
+			"error":   err.Error(),
+		})
+	}
 }
 
 func (al *AgentLoop) deliverToolResultToUser(

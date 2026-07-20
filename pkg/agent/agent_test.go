@@ -113,6 +113,17 @@ type recordingChannelManager struct {
 	sentMedia         []bus.OutboundMediaMessage
 }
 
+type definitelyRejectedChannelManager struct {
+	*recordingChannelManager
+}
+
+func (m *definitelyRejectedChannelManager) SendMessageProvisional(
+	ctx context.Context,
+	_ bus.OutboundMessage,
+) error {
+	return channels.DefiniteNotSentDeliveryError(ctx.Err())
+}
+
 func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
 	return nil, false
 }
@@ -2805,6 +2816,42 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 	}
 	if len(telegramChannel.sentMessages) != 0 {
 		t.Fatalf("expected no separate final text message, got %+v", telegramChannel.sentMessages)
+	}
+}
+
+func TestDeliverFinalTurnTextQueuesFallbackAfterTurnCancellation(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	defer al.Close()
+	al.channelManager = &definitelyRejectedChannelManager{
+		recordingChannelManager: &recordingChannelManager{},
+	}
+	agent := al.registry.GetDefaultAgent()
+	traceScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-canceled-fallback")
+	turnCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	al.deliverFinalTurnText(
+		turnCtx,
+		traceScope,
+		agent,
+		processOptions{Dispatch: DispatchRequest{SessionKey: "fallback-session"}},
+		bus.InboundContext{Channel: "telegram", ChatID: "chat1", SenderID: "user1"},
+		agent.ID,
+		"fallback-session",
+		nil,
+		"final after cancellation",
+	)
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Content != "final after cancellation" || !outbound.TraceSettlement ||
+			len(outbound.TraceScopes) != 1 || outbound.TraceScopes[0] != traceScope {
+			t.Fatalf("fallback outbound = %#v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled turn did not queue final fallback")
 	}
 }
 
