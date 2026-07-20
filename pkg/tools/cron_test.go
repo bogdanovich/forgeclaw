@@ -55,7 +55,7 @@ func (s *stubJobExecutor) ProcessScheduledWithChannel(
 
 func (s *stubJobExecutor) PublishResponseIfNeeded(
 	_ context.Context,
-	channel, chatID, sessionKey, response string,
+	_, _, channel, chatID, sessionKey, response string,
 ) {
 	if s.alreadySent {
 		return
