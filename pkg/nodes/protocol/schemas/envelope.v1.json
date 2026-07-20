@@ -12,8 +12,17 @@
     "object": {"type": "object"},
     "request": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["type", "id", "method", "params"],
+      "not": {
+        "anyOf": [
+          {"required": ["ok"]},
+          {"required": ["result"]},
+          {"required": ["error"]},
+          {"required": ["event"]},
+          {"required": ["payload"]}
+        ]
+      },
       "properties": {
         "type": {"const": "request"},
         "id": {"$ref": "#/$defs/id"},
@@ -24,8 +33,17 @@
     },
     "response": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["type", "id", "ok"],
+      "not": {
+        "anyOf": [
+          {"required": ["method"]},
+          {"required": ["params"]},
+          {"required": ["idempotency_key"]},
+          {"required": ["event"]},
+          {"required": ["payload"]}
+        ]
+      },
       "oneOf": [
         {
           "properties": {"ok": {"const": true}},
@@ -45,7 +63,7 @@
         "result": {},
         "error": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": ["code", "message"],
           "properties": {
             "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
@@ -57,8 +75,19 @@
     },
     "event": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["type", "event", "payload"],
+      "not": {
+        "anyOf": [
+          {"required": ["id"]},
+          {"required": ["method"]},
+          {"required": ["params"]},
+          {"required": ["idempotency_key"]},
+          {"required": ["ok"]},
+          {"required": ["result"]},
+          {"required": ["error"]}
+        ]
+      },
       "properties": {
         "type": {"const": "event"},
         "event": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},

@@ -30,6 +30,7 @@ func TestEnvelopeSchemaMatchesCodecContract(t *testing.T) {
 		`{"type":"response","id":"req_1","ok":true,"result":{}}`,
 		`{"type":"response","id":"req_1","ok":false,"error":{"code":"FAILED","message":"failed"}}`,
 		`{"type":"event","event":"node.ready","payload":{}}`,
+		`{"type":"event","event":"node.ready","payload":{},"future_optional":{"enabled":true}}`,
 	}
 	for _, fixture := range fixtures {
 		var instance any

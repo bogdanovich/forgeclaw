@@ -65,7 +65,6 @@ func Decode(data []byte) (Envelope, error) {
 		return Envelope{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	var envelope Envelope
 	if err := decoder.Decode(&envelope); err != nil {
 		return Envelope{}, fmt.Errorf("%w: %v", ErrInvalidFrame, err)
@@ -182,11 +181,11 @@ func validateWireShape(value any) error {
 	if !ok {
 		return fmt.Errorf("%w: frame requires a string type", ErrInvalidFrame)
 	}
-	var allowed, required map[string]struct{}
+	var required, foreign map[string]struct{}
 	switch FrameType(frameType) {
 	case FrameRequest:
-		allowed = fieldSet("type", "id", "method", "params", "idempotency_key")
 		required = fieldSet("type", "id", "method", "params")
+		foreign = fieldSet("ok", "result", "error", "event", "payload")
 		if key, present := object["idempotency_key"]; present {
 			text, isString := key.(string)
 			if !isString || text == "" {
@@ -194,8 +193,8 @@ func validateWireShape(value any) error {
 			}
 		}
 	case FrameResponse:
-		allowed = fieldSet("type", "id", "ok", "result", "error")
 		required = fieldSet("type", "id", "ok")
+		foreign = fieldSet("method", "params", "idempotency_key", "event", "payload")
 		okValue, isBool := object["ok"].(bool)
 		if !isBool {
 			return fmt.Errorf("%w: response requires a boolean ok", ErrInvalidFrame)
@@ -209,13 +208,13 @@ func validateWireShape(value any) error {
 			return fmt.Errorf("%w: failed response requires only an error", ErrInvalidFrame)
 		}
 	case FrameEvent:
-		allowed = fieldSet("type", "event", "payload")
 		required = fieldSet("type", "event", "payload")
+		foreign = fieldSet("id", "method", "params", "idempotency_key", "ok", "result", "error")
 	default:
 		return fmt.Errorf("%w: unsupported frame type %q", ErrInvalidFrame, frameType)
 	}
-	for field := range object {
-		if _, exists := allowed[field]; !exists {
+	for field := range foreign {
+		if _, exists := object[field]; exists {
 			return fmt.Errorf("%w: field %q is not valid for %s", ErrInvalidFrame, field, frameType)
 		}
 	}

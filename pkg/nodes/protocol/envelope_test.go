@@ -35,7 +35,6 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 		name string
 		data string
 	}{
-		{name: "unknown field", data: `{"type":"event","event":"node.heartbeat","payload":{},"extra":true}`},
 		{name: "duplicate type", data: `{"type":"request","type":"event","event":"node.ready","payload":{}}`},
 		{
 			name: "duplicate nested member",
@@ -75,6 +74,23 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 				t.Fatalf("Decode() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestDecodeAllowsAdditiveOptionalFields(t *testing.T) {
+	data := []byte(`{
+		"type":"response",
+		"id":"req_1",
+		"ok":false,
+		"error":{"code":"FAILED","message":"failed","retry_after_ms":1000},
+		"trace_context":{"trace_id":"trace_1"}
+	}`)
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if decoded.Error == nil || decoded.Error.Code != "FAILED" {
+		t.Fatalf("Decode() error payload = %#v", decoded.Error)
 	}
 }
 
