@@ -195,6 +195,8 @@ func (handler *AdmissionHandler) serveSession(
 	nodeID nodes.ID,
 	release func() (bool, error),
 ) {
+	defer handler.releaseSession(nodeID, release)
+
 	if err := connection.SetReadDeadline(time.Now().Add(handler.livenessTimeout)); err != nil {
 		return
 	}
@@ -211,7 +213,6 @@ func (handler *AdmissionHandler) serveSession(
 	done := make(chan struct{})
 	go handler.sendHeartbeats(connection, done)
 	defer close(done)
-	defer handler.releaseSession(nodeID, release)
 
 	for {
 		messageType, _, err := connection.ReadMessage()
