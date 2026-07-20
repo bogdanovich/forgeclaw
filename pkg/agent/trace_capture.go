@@ -203,11 +203,52 @@ func (m *traceCaptureManager) attachInteractionRegistry(
 		m.mu.Unlock()
 		return
 	}
-	unsubscribe := registry.Subscribe(func(observation interactions.EventObservation) {
-		m.observeInteractionRegistryEvent(workspace, registry, observation)
+	ready := make(chan struct{})
+	reconciledThrough := make(map[string]int64)
+	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation interactions.EventObservation) {
+		<-ready
+		if observation.Event.Sequence <= reconciledThrough[observation.Event.InteractionID] {
+			return
+		}
+		m.observeInteractionRegistryEvent(workspace, observation)
 	})
 	m.interactionSubs[workspace] = unsubscribe
+	settings := m.settings
 	m.mu.Unlock()
+	defer close(ready)
+	if !settings.enabled {
+		return
+	}
+	eventsByInteraction := make(map[string][]interactions.Event)
+	for _, event := range snapshot.Events {
+		eventsByInteraction[event.InteractionID] = append(
+			eventsByInteraction[event.InteractionID],
+			event,
+		)
+		reconciledThrough[event.InteractionID] = max(
+			reconciledThrough[event.InteractionID],
+			event.Sequence,
+		)
+	}
+	for _, state := range snapshot.Records {
+		history := eventsByInteraction[state.ID]
+		if len(history) == 0 {
+			continue
+		}
+		if interactionRecordIsTerminal(state) {
+			startedAt := time.UnixMilli(history[0].EmittedAt)
+			traceID := opaqueTraceID("interaction", state.ID, startedAt)
+			store := evaltrace.Store{
+				Root: traceStoreRoot(settings, workspace), Retention: settings.retention,
+				MaxTraces: settings.maxTraces,
+			}
+			if existing, err := store.Load(traceID); err == nil &&
+				existing.Metadata.TraceKind == evaltrace.TraceKindInteraction {
+				continue
+			}
+		}
+		m.reconcileInteractionSnapshot(workspace, state, history)
+	}
 }
 
 func (m *traceCaptureManager) enabled() bool {
@@ -538,7 +579,6 @@ func (m *traceCaptureManager) observeTaskEvent(
 
 func (m *traceCaptureManager) observeInteractionRegistryEvent(
 	workspace string,
-	registry *interactions.Registry,
 	observation interactions.EventObservation,
 ) {
 	if m == nil {
@@ -556,52 +596,11 @@ func (m *traceCaptureManager) observeInteractionRegistryEvent(
 	}
 	event, state := observation.Event, observation.Record
 	trace := m.interactions[event.InteractionID]
-	createdTrace := false
 	if trace == nil {
-		emittedAt := time.UnixMilli(event.EmittedAt)
-		trace = &activeTraceCapture{
-			workspace: workspace, startedAt: emittedAt,
-			critical: make(map[uint64]bool), origins: make(map[string]struct{}),
-			trace: evaltrace.Trace{
-				SchemaVersion: evaltrace.SchemaVersionV1,
-				TraceID:       opaqueTraceID("interaction", event.InteractionID, emittedAt),
-				CreatedAt:     emittedAt.UTC(),
-				Policy: evaltrace.CapturePolicy{
-					ContentMode: settings.contentMode,
-					Redactor:    captureRedactorVersion(settings.contentMode),
-				},
-				Limits: settings.limits,
-				Metadata: evaltrace.Metadata{
-					TraceKind:   evaltrace.TraceKindInteraction,
-					RootTurnID:  state.Origin.TurnID,
-					SessionHash: safeHash(settings, state.Route.SessionKey),
-					AgentID:     state.Route.AgentID,
-				},
-				Records: make([]evaltrace.Record, 0, 16),
-			},
-		}
+		trace = buildInteractionTrace(settings, workspace, state, []interactions.Event{event})
 		m.interactions[event.InteractionID] = trace
-		createdTrace = true
-	}
-	observations := []interactions.EventObservation{observation}
-	if createdTrace && registry != nil {
-		history := registry.ListEvents(event.InteractionID)
-		if len(history) > 0 && history[0].Sequence > 1 {
-			trace.trace.Truncation.Incomplete = true
-			trace.trace.Truncation.Reasons = appendUnique(
-				trace.trace.Truncation.Reasons,
-				"interaction_event_history_incomplete",
-			)
-		}
-		observations = make([]interactions.EventObservation, 0, len(history))
-		for _, historical := range history {
-			observations = append(observations, interactions.EventObservation{
-				Event: historical, Record: state,
-			})
-		}
-	}
-	for _, item := range observations {
-		interactionRecord, critical := normalizedInteractionEventRecord(settings, trace, item)
+	} else {
+		interactionRecord, critical := normalizedInteractionEventRecord(settings, trace, observation)
 		appendCaptureRecord(trace, interactionRecord, critical)
 	}
 	turn := m.turns[state.Origin.TurnID]
@@ -623,6 +622,80 @@ func (m *traceCaptureManager) observeInteractionRegistryEvent(
 	}
 	m.mu.Unlock()
 	m.enqueuePersist(settings, trace)
+}
+
+func (m *traceCaptureManager) reconcileInteractionSnapshot(
+	workspace string,
+	state interactions.Record,
+	history []interactions.Event,
+) {
+	if m == nil || len(history) == 0 {
+		return
+	}
+	m.mu.Lock()
+	if m.closed || !m.settings.enabled {
+		m.mu.Unlock()
+		return
+	}
+	settings := m.settings
+	if _, exists := m.interactions[state.ID]; exists {
+		m.mu.Unlock()
+		return
+	}
+	trace := buildInteractionTrace(settings, workspace, state, history)
+	if !interactionRecordIsTerminal(state) {
+		m.interactions[state.ID] = trace
+		m.mu.Unlock()
+		return
+	}
+	trace.trace.Outcome = &evaltrace.Outcome{
+		Status: string(state.Status), ErrorCode: interactionErrorCode(state),
+	}
+	m.mu.Unlock()
+	m.enqueuePersist(settings, trace)
+}
+
+func buildInteractionTrace(
+	settings traceCaptureSettings,
+	workspace string,
+	state interactions.Record,
+	history []interactions.Event,
+) *activeTraceCapture {
+	startedAt := time.UnixMilli(history[0].EmittedAt)
+	trace := &activeTraceCapture{
+		workspace: workspace, startedAt: startedAt,
+		critical: make(map[uint64]bool), origins: make(map[string]struct{}),
+		trace: evaltrace.Trace{
+			SchemaVersion: evaltrace.SchemaVersionV1,
+			TraceID:       opaqueTraceID("interaction", state.ID, startedAt),
+			CreatedAt:     startedAt.UTC(),
+			Policy: evaltrace.CapturePolicy{
+				ContentMode: settings.contentMode,
+				Redactor:    captureRedactorVersion(settings.contentMode),
+			},
+			Limits: settings.limits,
+			Metadata: evaltrace.Metadata{
+				TraceKind:   evaltrace.TraceKindInteraction,
+				RootTurnID:  state.Origin.TurnID,
+				SessionHash: safeHash(settings, state.Route.SessionKey),
+				AgentID:     state.Route.AgentID,
+			},
+			Records: make([]evaltrace.Record, 0, min(16, len(history))),
+		},
+	}
+	if history[0].Sequence > 1 {
+		trace.trace.Truncation.Incomplete = true
+		trace.trace.Truncation.Reasons = appendUnique(
+			trace.trace.Truncation.Reasons,
+			"interaction_event_history_incomplete",
+		)
+	}
+	for _, event := range history {
+		observation := interactions.EventObservation{Event: event, Record: state}
+		record, critical := normalizedInteractionEventRecord(settings, trace, observation)
+		appendCaptureRecord(trace, record, critical)
+	}
+	return trace
 }
 
 func (m *traceCaptureManager) enqueuePersist(
@@ -1119,7 +1192,12 @@ func appendCaptureRecord(trace *activeTraceCapture, record evaltrace.Record, cri
 			dropped := trace.trace.Records[i]
 			trace.trace.Records = append(trace.trace.Records[:i], trace.trace.Records[i+1:]...)
 			delete(trace.critical, dropped.Sequence)
+			trace.trace.Truncation.Incomplete = true
 			trace.trace.Truncation.DroppedRecords++
+			trace.trace.Truncation.Reasons = appendUnique(
+				trace.trace.Truncation.Reasons,
+				"record_count_limit",
+			)
 			trace.trace.Truncation.DroppedByKind = incrementDropped(
 				trace.trace.Truncation.DroppedByKind,
 				dropped.Kind,
@@ -1127,6 +1205,16 @@ func appendCaptureRecord(trace *activeTraceCapture, record evaltrace.Record, cri
 			break
 		}
 		if len(trace.trace.Records) >= limits.MaxRecords {
+			trace.trace.Truncation.Incomplete = true
+			trace.trace.Truncation.DroppedRecords++
+			trace.trace.Truncation.Reasons = appendUnique(
+				trace.trace.Truncation.Reasons,
+				"record_count_limit",
+			)
+			trace.trace.Truncation.DroppedByKind = incrementDropped(
+				trace.trace.Truncation.DroppedByKind,
+				record.Kind,
+			)
 			return
 		}
 	}

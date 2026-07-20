@@ -149,7 +149,13 @@ func TestReplayProjectsToolSteeringDecision(t *testing.T) {
 				Tool: "write_file", Action: "skip", Classification: "cancellable", Cause: "queued_user_steering",
 			},
 		),
-		replayRecord(t, 3, evaltrace.RecordTurnEnd, "turn-end", evaltrace.TurnPayload{Status: "completed"}),
+		replayRecord(
+			t,
+			3,
+			evaltrace.RecordTurnEnd,
+			"turn-end",
+			evaltrace.TurnPayload{Status: "completed"},
+		),
 	)
 	trace.Outcome = &evaltrace.Outcome{Status: "completed"}
 	trace = finalizeReplayTrace(t, trace)
@@ -291,8 +297,372 @@ func TestReplayRejectsInteractionWaitingWithoutSuccessfulPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasDiagnostic(result.Projection.Diagnostics, "interaction_waiting_transition_invalid") {
+	if !hasDiagnostic(
+		result.Projection.Diagnostics,
+		"interaction_waiting_without_prompt_evidence",
+	) {
 		t.Fatalf("diagnostics = %#v", result.Projection.Diagnostics)
+	}
+	diagnostic := findDiagnostic(
+		result.Projection.Diagnostics,
+		"interaction_waiting_without_prompt_evidence",
+	)
+	if diagnostic.Evidence != EvidenceRequiresCompleteHistory {
+		t.Fatalf("diagnostic evidence = %q", diagnostic.Evidence)
+	}
+}
+
+func TestReplayInteractionProtocolRejectsMalformedEventShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		data evaltrace.InteractionPayload
+	}{
+		{
+			name: "created", want: "interaction_duplicate_or_invalid_create",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.created", Kind: "invalid", From: "waiting",
+				Status: "created", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "prompt delivery", want: "interaction_prompt_delivery_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.delivery_attempted", Kind: "question", From: "waiting",
+				Status: "waiting", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "waiting", want: "interaction_waiting_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.waiting", Kind: "question", From: "waiting",
+				Status: "created", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "answer", want: "interaction_answer_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.answer_claimed", Kind: "question", From: "created",
+				Status: "waiting", Outcome: "allowed", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "resume", want: "interaction_resume_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.resume_started", Kind: "question", From: "waiting",
+				Status: "waiting", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "approval consumption", want: "interaction_approval_consumption_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.approval_consumed", Kind: "question", From: "created",
+				Status: "created", Outcome: "denied", Code: "wrong", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "approval expiry", want: "interaction_approval_expiry_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.approval_expired", Kind: "question", From: "created",
+				Status: "created", Outcome: "allowed", Code: "wrong", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "final delivery", want: "interaction_final_delivery_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.final_delivery_attempted", Kind: "question", From: "waiting",
+				Status: "waiting", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "canceling", want: "interaction_canceling_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.canceling", Kind: "question", From: "resolved",
+				Status: "waiting", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "recovery", want: "interaction_recovery_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.recovery_observed", Kind: "question", From: "waiting",
+				Status: "waiting", Code: "wrong", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "resolved", want: "interaction_terminal_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.resolved", Kind: "question", From: "created",
+				Status: "created", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "canceled", want: "interaction_terminal_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.cancelled", Kind: "question", From: "resolved",
+				Status: "resolved", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "failed", want: "interaction_terminal_transition_invalid",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.failed", Kind: "question", From: "resolved",
+				Status: "resolved", Revision: 1, Sequence: 1,
+			},
+		},
+		{
+			name: "unknown", want: "interaction_event_unknown",
+			data: evaltrace.InteractionPayload{
+				EventType: "interaction.unknown", Kind: "question", Status: "created",
+				Revision: 1, Sequence: 1,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := replayRecordWithCorrelation(
+				t,
+				1,
+				evaltrace.RecordInteractionTransition,
+				"interaction-event",
+				evaltrace.Correlation{InteractionID: "interaction-1", ToolCallID: "call-1"},
+				test.data,
+			)
+			trace := replayTrace(t, record)
+			trace.Metadata.TraceKind = evaltrace.TraceKindInteraction
+			result, err := Replay(finalizeReplayTrace(t, trace))
+			if err != nil {
+				t.Fatal(err)
+			}
+			diagnostic := findDiagnostic(result.Projection.Diagnostics, test.want)
+			if diagnostic.Code == "" {
+				t.Fatalf("diagnostics = %#v", result.Projection.Diagnostics)
+			}
+			if diagnostic.Evidence != EvidenceConclusive {
+				t.Fatalf("diagnostic = %#v", diagnostic)
+			}
+		})
+	}
+}
+
+func TestReplayInteractionProtocolAcceptsValidLifecycleMatrix(t *testing.T) {
+	success := true
+	tests := []struct {
+		name   string
+		events []evaltrace.InteractionPayload
+	}{
+		{
+			name: "answered question with final delivery",
+			events: []evaltrace.InteractionPayload{
+				{EventType: "interaction.created", Kind: "question", Status: "created"},
+				{
+					EventType: "interaction.delivery_attempted", Kind: "question", From: "created",
+					Status: "created", Success: &success,
+				},
+				{
+					EventType: "interaction.waiting",
+					Kind:      "question",
+					From:      "created",
+					Status:    "waiting",
+				},
+				{
+					EventType: "interaction.answer_claimed",
+					Kind:      "question",
+					From:      "waiting",
+					Status:    "answer_claimed",
+					Outcome:   "answered",
+				},
+				{
+					EventType: "interaction.resume_started",
+					Kind:      "question",
+					From:      "answer_claimed",
+					Status:    "resuming",
+					Outcome:   "answered",
+				},
+				{
+					EventType: "interaction.final_delivery_attempted",
+					Kind:      "question",
+					From:      "resuming",
+					Status:    "resuming",
+					Outcome:   "answered",
+					Success:   &success,
+				},
+				{
+					EventType: "interaction.resolved",
+					Kind:      "question",
+					From:      "resuming",
+					Status:    "resolved",
+					Outcome:   "answered",
+				},
+			},
+		},
+		{
+			name: "allowed approval consumed once",
+			events: []evaltrace.InteractionPayload{
+				{EventType: "interaction.created", Kind: "approval", Status: "created"},
+				{
+					EventType: "interaction.delivery_attempted",
+					Kind:      "approval",
+					From:      "created",
+					Status:    "created",
+					Success:   &success,
+				},
+				{
+					EventType: "interaction.waiting",
+					Kind:      "approval",
+					From:      "created",
+					Status:    "waiting",
+				},
+				{
+					EventType: "interaction.answer_claimed",
+					Kind:      "approval",
+					From:      "waiting",
+					Status:    "answer_claimed",
+					Outcome:   "allowed",
+				},
+				{
+					EventType: "interaction.resume_started",
+					Kind:      "approval",
+					From:      "answer_claimed",
+					Status:    "resuming",
+					Outcome:   "allowed",
+				},
+				{
+					EventType: "interaction.approval_consumed",
+					Kind:      "approval",
+					From:      "resuming",
+					Status:    "resuming",
+					Outcome:   "allowed",
+					Code:      "allow_once_consumed",
+				},
+				{
+					EventType: "interaction.resolved",
+					Kind:      "approval",
+					From:      "resuming",
+					Status:    "resolved",
+					Outcome:   "allowed",
+				},
+			},
+		},
+		{
+			name: "allowed approval expires before consumption",
+			events: []evaltrace.InteractionPayload{
+				{EventType: "interaction.created", Kind: "approval", Status: "created"},
+				{
+					EventType: "interaction.delivery_attempted",
+					Kind:      "approval",
+					From:      "created",
+					Status:    "created",
+					Success:   &success,
+				},
+				{
+					EventType: "interaction.waiting",
+					Kind:      "approval",
+					From:      "created",
+					Status:    "waiting",
+				},
+				{
+					EventType: "interaction.answer_claimed",
+					Kind:      "approval",
+					From:      "waiting",
+					Status:    "answer_claimed",
+					Outcome:   "allowed",
+				},
+				{
+					EventType: "interaction.resume_started",
+					Kind:      "approval",
+					From:      "answer_claimed",
+					Status:    "resuming",
+					Outcome:   "allowed",
+				},
+				{
+					EventType: "interaction.approval_expired",
+					Kind:      "approval",
+					From:      "resuming",
+					Status:    "resuming",
+					Outcome:   "timed_out",
+					Code:      "timeout_at_approval_consumption",
+				},
+				{
+					EventType: "interaction.failed",
+					Kind:      "approval",
+					From:      "resuming",
+					Status:    "failed",
+					Outcome:   "timed_out",
+				},
+			},
+		},
+		{
+			name: "canceled before delivery",
+			events: []evaltrace.InteractionPayload{
+				{EventType: "interaction.created", Kind: "question", Status: "created"},
+				{
+					EventType: "interaction.canceling",
+					Kind:      "question",
+					From:      "created",
+					Status:    "canceling",
+				},
+				{
+					EventType: "interaction.cancel" + "led", Kind: "question", From: "canceling",
+					Status: "cancel" + "led",
+				},
+			},
+		},
+		{
+			name: "recovery observation then failure",
+			events: []evaltrace.InteractionPayload{
+				{EventType: "interaction.created", Kind: "question", Status: "created"},
+				{
+					EventType: "interaction.answer_claimed",
+					Kind:      "question",
+					From:      "created",
+					Status:    "answer_claimed",
+					Outcome:   "timed_out",
+					Code:      "timeout",
+				},
+				{
+					EventType: "interaction.recovery_observed",
+					Kind:      "question",
+					From:      "answer_claimed",
+					Status:    "answer_claimed",
+					Outcome:   "timed_out",
+					Code:      "resume_failed",
+				},
+				{
+					EventType: "interaction.failed",
+					Kind:      "question",
+					From:      "answer_claimed",
+					Status:    "failed",
+					Outcome:   "timed_out",
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			records := make([]evaltrace.Record, 0, len(test.events))
+			for index, payload := range test.events {
+				sequence := index + 1
+				payload.Revision = int64(sequence)
+				payload.Sequence = int64(sequence)
+				records = append(records, replayRecordWithCorrelation(
+					t,
+					uint64(sequence),
+					evaltrace.RecordInteractionTransition,
+					"interaction-event-"+payload.EventType,
+					evaltrace.Correlation{InteractionID: "interaction-1", ToolCallID: "call-1"},
+					payload,
+				))
+			}
+			trace := replayTrace(t, records...)
+			trace.Metadata.TraceKind = evaltrace.TraceKindInteraction
+			result, err := Replay(finalizeReplayTrace(t, trace))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Projection.Diagnostics) != 0 {
+				t.Fatalf("diagnostics = %#v", result.Projection.Diagnostics)
+			}
+		})
 	}
 }
 
@@ -369,4 +739,13 @@ func hasDiagnostic(diagnostics []Diagnostic, code string) bool {
 		}
 	}
 	return false
+}
+
+func findDiagnostic(diagnostics []Diagnostic, code string) Diagnostic {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			return diagnostic
+		}
+	}
+	return Diagnostic{}
 }

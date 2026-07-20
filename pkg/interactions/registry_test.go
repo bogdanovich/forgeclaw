@@ -882,6 +882,43 @@ func TestRegistryObserverRunsOutsideLockAndReceivesBoundedEvents(t *testing.T) {
 	}
 }
 
+func TestRegistrySubscribeSnapshotReturnsSubscriptionBoundary(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	record := makeWaiting(t, registry, clock, "interaction_acacacac11111111", "session-1")
+	var observed []Event
+	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation.Event)
+	})
+	t.Cleanup(unsubscribe)
+	if len(snapshot.Records) != 1 || snapshot.Records[0].ID != record.ID {
+		t.Fatalf("snapshot records = %+v", snapshot.Records)
+	}
+	if len(snapshot.Events) != 3 || snapshot.Events[2].Type != EventWaiting {
+		t.Fatalf("snapshot events = %+v", snapshot.Events)
+	}
+	if len(observed) != 0 {
+		t.Fatalf("snapshot events were also delivered live: %+v", observed)
+	}
+	if _, err := registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		Answer{Text: "Staging"},
+		OutcomeAnswered,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Type != EventAnswerClaimed {
+		t.Fatalf("observed events = %+v", observed)
+	}
+
+	// Returned state is defensive and cannot mutate the registry.
+	snapshot.Records[0].Questions[0].Question = "mutated"
+	stored, _ := registry.Get(record.ID)
+	if stored.Questions[0].Question == "mutated" {
+		t.Fatal("snapshot record mutated registry state")
+	}
+}
+
 func TestRegistryObserverPanicDoesNotFailDurableWrite(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	registry.Subscribe(func(EventObservation) { panic("observer failed") })

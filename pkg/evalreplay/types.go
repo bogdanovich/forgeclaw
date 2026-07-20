@@ -12,18 +12,24 @@ const ReducerVersionV1 = "forgeclaw.eval_replay.reducer.v1"
 
 type Severity string
 
+type EvidenceClass string
+
 const (
 	SeverityInfo  Severity = "info"
 	SeverityWarn  Severity = "warn"
 	SeverityError Severity = "error"
+
+	EvidenceConclusive              EvidenceClass = "conclusive"
+	EvidenceRequiresCompleteHistory EvidenceClass = "requires_complete_history"
 )
 
 type Diagnostic struct {
-	Code       string   `json:"code"`
-	Severity   Severity `json:"severity"`
-	Sequence   uint64   `json:"sequence,omitempty"`
-	RecordKind string   `json:"record_kind,omitempty"`
-	Message    string   `json:"message"`
+	Code       string        `json:"code"`
+	Severity   Severity      `json:"severity"`
+	Evidence   EvidenceClass `json:"evidence"`
+	Sequence   uint64        `json:"sequence,omitempty"`
+	RecordKind string        `json:"record_kind,omitempty"`
+	Message    string        `json:"message"`
 }
 
 type Projection struct {

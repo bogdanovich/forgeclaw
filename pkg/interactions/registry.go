@@ -123,16 +123,46 @@ func (r *Registry) Subscribe(observer Observer) func() {
 	r.mu.Lock()
 	r.observers = append(r.observers, entry)
 	r.mu.Unlock()
+	return r.unsubscribe(entry.id)
+}
+
+// SubscribeSnapshot atomically installs observer and returns the retained
+// registry state at that subscription boundary.
+func (r *Registry) SubscribeSnapshot(observer Observer) (ObservationSnapshot, func()) {
+	if r == nil || observer == nil {
+		return ObservationSnapshot{}, func() {}
+	}
+	entry := observerEntry{id: observerSequence.Add(1), observer: observer}
+	r.mu.Lock()
+	r.observers = append(r.observers, entry)
+	snapshot := r.observationSnapshotLocked()
+	r.mu.Unlock()
+	return snapshot, r.unsubscribe(entry.id)
+}
+
+func (r *Registry) unsubscribe(id uint64) func() {
 	return func() {
 		r.mu.Lock()
 		for i := range r.observers {
-			if r.observers[i].id != entry.id {
+			if r.observers[i].id != id {
 				continue
 			}
 			r.observers = append(r.observers[:i], r.observers[i+1:]...)
 			break
 		}
 		r.mu.Unlock()
+	}
+}
+
+func (r *Registry) observationSnapshotLocked() ObservationSnapshot {
+	records := make([]Record, 0, len(r.records))
+	for _, record := range r.records {
+		records = append(records, cloneRecord(record))
+	}
+	sortRecords(records)
+	return ObservationSnapshot{
+		Records: records,
+		Events:  append([]Event(nil), r.events...),
 	}
 }
 

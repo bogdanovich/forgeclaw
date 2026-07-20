@@ -139,7 +139,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		)
 	}
 	if current.Status != "" && payload.From != current.Status {
-		r.diagnostic(
+		r.historyDiagnostic(
 			record,
 			"interaction_from_status_mismatch",
 			SeverityError,
@@ -198,7 +198,7 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 	}
 	if current.Status != "" && payload.EventType != "interaction.answer_claimed" &&
 		payload.EventType != "interaction.approval_expired" && payload.Outcome != previousOutcome {
-		r.diagnostic(
+		r.historyDiagnostic(
 			record,
 			"interaction_outcome_changed",
 			SeverityError,
@@ -242,12 +242,20 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 			)
 		}
 	case "interaction.waiting":
-		if payload.From != "created" || payload.Status != "waiting" || current.PromptSuccesses != 1 {
+		if payload.From != "created" || payload.Status != "waiting" {
 			r.diagnostic(
 				record,
 				"interaction_waiting_transition_invalid",
 				SeverityError,
 				"interaction waiting transition is invalid",
+			)
+		}
+		if current.PromptSuccesses != 1 {
+			r.historyDiagnostic(
+				record,
+				"interaction_waiting_without_prompt_evidence",
+				SeverityError,
+				"interaction waiting transition has no single successful prompt delivery",
 			)
 		}
 	case "interaction.answer_claimed":
@@ -280,8 +288,8 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 		}
 	case "interaction.approval_consumed":
 		current.ApprovalConsumptions++
-		if current.ApprovalConsumptions > 1 || current.Kind != "approval" ||
-			previousOutcome != "allowed" || payload.From != "resuming" ||
+		if current.ApprovalConsumptions > 1 || payload.Kind != "approval" ||
+			payload.From != "resuming" ||
 			payload.Status != "resuming" || payload.Outcome != "allowed" ||
 			payload.Code != "allow_once_consumed" {
 			r.diagnostic(
@@ -291,15 +299,31 @@ func (r *reducer) applyInteraction(record evaltrace.Record) {
 				"approval consumption is invalid or repeated",
 			)
 		}
+		if previousOutcome != "allowed" {
+			r.historyDiagnostic(
+				record,
+				"interaction_approval_consumption_without_allow",
+				SeverityError,
+				"approval consumption has no preceding allowed outcome",
+			)
+		}
 	case "interaction.approval_expired":
-		if current.Kind != "approval" || payload.From != "resuming" ||
-			payload.Status != "resuming" || previousOutcome != "allowed" ||
+		if payload.Kind != "approval" || payload.From != "resuming" ||
+			payload.Status != "resuming" ||
 			payload.Outcome != "timed_out" || payload.Code != "timeout_at_approval_consumption" {
 			r.diagnostic(
 				record,
 				"interaction_approval_expiry_invalid",
 				SeverityError,
 				"approval expiry transition is invalid",
+			)
+		}
+		if previousOutcome != "allowed" {
+			r.historyDiagnostic(
+				record,
+				"interaction_approval_expiry_without_allow",
+				SeverityError,
+				"approval expiry has no preceding allowed outcome",
 			)
 		}
 	case "interaction.final_delivery_attempted":
@@ -682,6 +706,7 @@ func (r *reducer) finish(trace evaltrace.Trace) {
 			Diagnostic{
 				Code:     "turn_not_terminal",
 				Severity: SeverityError,
+				Evidence: EvidenceRequiresCompleteHistory,
 				Message:  "trace ended with an active turn",
 			},
 		)
@@ -693,6 +718,7 @@ func (r *reducer) finish(trace evaltrace.Trace) {
 				Diagnostic{
 					Code:     "tool_call_unresolved",
 					Severity: SeverityError,
+					Evidence: EvidenceRequiresCompleteHistory,
 					Message:  "tool call " + callID + " has no result or skipped record",
 				},
 			)
@@ -702,7 +728,8 @@ func (r *reducer) finish(trace evaltrace.Trace) {
 		if interaction.Created != 1 {
 			r.projection.Diagnostics = append(r.projection.Diagnostics, Diagnostic{
 				Code: "interaction_create_missing", Severity: SeverityError,
-				Message: "interaction " + id + " does not have exactly one create event",
+				Evidence: EvidenceRequiresCompleteHistory,
+				Message:  "interaction " + id + " does not have exactly one create event",
 			})
 		}
 	}
@@ -744,6 +771,26 @@ func (r *reducer) diagnostic(
 		Diagnostic{
 			Code:       code,
 			Severity:   severity,
+			Evidence:   EvidenceConclusive,
+			Sequence:   record.Sequence,
+			RecordKind: string(record.Kind),
+			Message:    message,
+		},
+	)
+}
+
+func (r *reducer) historyDiagnostic(
+	record evaltrace.Record,
+	code string,
+	severity Severity,
+	message string,
+) {
+	r.projection.Diagnostics = append(
+		r.projection.Diagnostics,
+		Diagnostic{
+			Code:       code,
+			Severity:   severity,
+			Evidence:   EvidenceRequiresCompleteHistory,
 			Sequence:   record.Sequence,
 			RecordKind: string(record.Kind),
 			Message:    message,

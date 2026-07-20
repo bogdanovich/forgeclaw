@@ -392,6 +392,13 @@ The durable interaction evaluator runs only on traces whose
 the interaction observations emitted during that turn, so a continuation turn
 is partial evidence rather than a malformed lifecycle.
 
+Registry attachment atomically subscribes the recorder and returns retained
+records plus event history. Startup rebuilds missing terminal traces from that
+snapshot, while a deterministic trace builder is shared with live capture.
+Replay diagnostics explicitly classify self-contained violations as
+`conclusive` and missing-prerequisite checks as `requires_complete_history`, so
+truncation cannot hide malformed approval consumption or expiry evidence.
+
 Task-state mismatch and missing tool-result checks require a future joined-trace
 projection because task, turn, and long-lived interaction traces are persisted
 separately. A per-file evaluator must return `not_evaluable` rather than infer

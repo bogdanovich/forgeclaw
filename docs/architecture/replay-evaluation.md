@@ -255,10 +255,12 @@ changes delivery status, or truncates history.
 
 The capture implementation subscribes to typed runtime events and observes task
 events only after the durable registry has persisted them. Root turns,
-long-lived tasks, and human interactions are stored as separate traces. When a
-task or interaction is first observed, its existing durable event history is
-imported before the new event, which preserves restart-reconciliation evidence
-without replacing the registry.
+long-lived tasks, and human interactions are stored as separate traces. The
+interaction registry installs its observer and returns a consistent retained
+snapshot in one atomic operation. One deterministic builder consumes that
+snapshot during startup and the same event contract during live capture. This
+closes the crash window between a persisted terminal transition and asynchronous
+trace persistence without making the trace store authoritative.
 
 Captured runtime evidence includes turn outcomes; model request/response hashes
 and fallback attempts; tool call/result hashes and call IDs; steering acceptance
@@ -270,10 +272,12 @@ Interaction records exclude question text, answers, approval summaries, routes,
 sender identity, and tool arguments in every content mode.
 
 Capture persistence runs on a bounded worker. Event and record limits never
-block the agent. Runtime-event subscriber drops mark active turn traces
-incomplete; persistence-queue overflow drops the finalized trace and emits a
-safe operational warning. Disabling capture during reload discards unfinished
-in-memory traces immediately.
+block the agent. Every dropped or evicted record, including a critical record
+that cannot displace another critical record, marks the trace incomplete and
+increments typed truncation counters. Runtime-event subscriber drops likewise
+mark active turn traces incomplete; persistence-queue overflow drops the
+finalized trace and emits a safe operational warning. Disabling capture during
+reload discards unfinished in-memory traces immediately.
 
 Current capture limitations are explicit:
 
@@ -319,8 +323,11 @@ The implemented `pkg/evalreplay` reducer accepts only traces that pass the
 versioned `evaltrace.Validate` contract. It decodes each record into its exact
 typed payload, produces a canonical JSON projection, and emits stable
 diagnostics for illegal transitions, missing correlations, unresolved tool
-calls, duplicate terminal outcomes, and incomplete turns. It does not repair or
-reinterpret malformed evidence.
+calls, duplicate terminal outcomes, and incomplete turns. Each diagnostic
+declares whether its retained evidence is `conclusive` or
+`requires_complete_history`; evaluators use this type instead of diagnostic-code
+allowlists when a trace is incomplete. Replay does not repair or reinterpret
+malformed evidence.
 
 Replay safety primitives include a virtual clock, sequential ID source,
 deep-copy isolated session/task checkpoints, a deny-only external

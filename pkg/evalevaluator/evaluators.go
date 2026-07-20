@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/evalreplay"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 )
 
@@ -245,7 +246,8 @@ func (durableInteraction) Evaluate(input Input) Finding {
 		)
 	}
 	for _, diagnostic := range input.Projection.Diagnostics {
-		if conclusiveInteractionDiagnostic(diagnostic.Code) {
+		if diagnostic.Evidence == evalreplay.EvidenceConclusive &&
+			strings.HasPrefix(diagnostic.Code, "interaction_") {
 			return finding(
 				StatusFail,
 				SeverityCritical,
@@ -373,31 +375,6 @@ func (durableInteraction) Evaluate(input Input) Finding {
 		"all observed interactions satisfy lifecycle and approval invariants",
 		"",
 	)
-}
-
-func conclusiveInteractionDiagnostic(code string) bool {
-	switch code {
-	case "interaction_event_after_terminal",
-		"interaction_kind_changed",
-		"interaction_task_correlation_changed",
-		"interaction_tool_correlation_changed",
-		"interaction_sequence_not_increasing",
-		"interaction_revision_not_increasing",
-		"interaction_status_missing",
-		"interaction_duplicate_or_invalid_create",
-		"interaction_prompt_delivery_invalid",
-		"interaction_duplicate_answer_claim",
-		"interaction_answer_transition_invalid",
-		"interaction_resume_transition_invalid",
-		"interaction_final_delivery_invalid",
-		"interaction_canceling_transition_invalid",
-		"interaction_recovery_transition_invalid",
-		"interaction_terminal_transition_invalid",
-		"interaction_event_unknown":
-		return true
-	default:
-		return false
-	}
 }
 
 func terminalInteractionOutcome(status string) bool {

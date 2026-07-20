@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -442,6 +443,96 @@ func TestTraceCaptureBackfillsDurableInteractionHistoryAfterRestart(t *testing.T
 	}
 }
 
+func TestTraceCaptureReconcilesTerminalInteractionOnRegistryAttachment(t *testing.T) {
+	workspace := t.TempDir()
+	registry := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	record, err := registry.Create(interactions.CreateRequest{
+		ID:   "interaction-terminal-reconcile",
+		Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-1", Channel: "telegram",
+			ChatID: "chat-1", SenderID: "sender-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-1", ToolCallID: "call-1", ToolName: "request_user_input",
+		},
+		Questions: []interactions.Question{{ID: "environment", Question: "Which environment?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		interactions.Answer{Text: "staging"},
+		interactions.OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.Resolve(record.ID, record.Revision); err != nil {
+		t.Fatal(err)
+	}
+	history := registry.ListEvents(record.ID)
+	wantTraceID := opaqueTraceID("interaction", record.ID, time.UnixMilli(history[0].EmittedAt))
+
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	manager.attachInteractionRegistry(workspace, registry)
+	tracePath := waitForTraceFile(t, workspace)
+	manager.close()
+	_ = eventBus.Close()
+	if filepath.Base(tracePath) != wantTraceID+".json" {
+		t.Fatalf("trace path = %s, want %s.json", tracePath, wantTraceID)
+	}
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trace evaltrace.Trace
+	if err = json.Unmarshal(data, &trace); err != nil {
+		t.Fatal(err)
+	}
+	if err = evaltrace.Validate(trace); err != nil {
+		t.Fatal(err)
+	}
+	if trace.Outcome == nil || trace.Outcome.Status != string(interactions.StatusResolved) ||
+		len(trace.Records) != len(history) {
+		t.Fatalf("reconciled trace = %#v", trace)
+	}
+
+	oldModTime := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err = os.Chtimes(tracePath, oldModTime, oldModTime); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	secondBus := runtimeevents.NewBus()
+	secondManager := newTraceCaptureManager(traceTestConfig(workspace), secondBus)
+	secondManager.attachInteractionRegistry(workspace, reloaded)
+	secondManager.close()
+	_ = secondBus.Close()
+	info, err := os.Stat(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(oldModTime) {
+		t.Fatalf("existing trace was rewritten: modtime = %s", info.ModTime())
+	}
+}
+
 func TestTraceCaptureNormalizesInteractionAgainstActiveTurnClock(t *testing.T) {
 	workspace := t.TempDir()
 	eventBus := runtimeevents.NewBus()
@@ -544,6 +635,64 @@ func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
 	want := filepath.Join(workspace, "state", "evaluation", "traces")
 	if got := traceStoreRoot(settings, workspace); got != want {
 		t.Fatalf("traceStoreRoot = %q, want %q", got, want)
+	}
+}
+
+func TestAppendCaptureRecordReportsCriticalDropAtRecordLimit(t *testing.T) {
+	trace := &activeTraceCapture{
+		critical: make(map[uint64]bool),
+		origins:  make(map[string]struct{}),
+		trace: evaltrace.Trace{
+			Limits: evaltrace.AppliedLimits{MaxRecords: 1, MaxRecordBytes: 1024},
+		},
+	}
+	appendCaptureRecord(trace, evaltrace.Record{
+		Kind:   evaltrace.RecordInteractionTransition,
+		Origin: evaltrace.Origin{Kind: "interaction_event", ID: "event-1"},
+	}, true)
+	appendCaptureRecord(trace, evaltrace.Record{
+		Kind:   evaltrace.RecordInteractionTransition,
+		Origin: evaltrace.Origin{Kind: "interaction_event", ID: "event-2"},
+	}, true)
+	if len(trace.trace.Records) != 1 {
+		t.Fatalf("records = %d, want 1", len(trace.trace.Records))
+	}
+	if !trace.trace.Truncation.Incomplete || trace.trace.Truncation.DroppedRecords != 1 {
+		t.Fatalf("truncation = %+v", trace.trace.Truncation)
+	}
+	if got := trace.trace.Truncation.DroppedByKind[evaltrace.RecordInteractionTransition]; got != 1 {
+		t.Fatalf("dropped interaction records = %d, want 1", got)
+	}
+	if !slices.Contains(trace.trace.Truncation.Reasons, "record_count_limit") {
+		t.Fatalf("truncation reasons = %v", trace.trace.Truncation.Reasons)
+	}
+}
+
+func TestAppendCaptureRecordReportsEvictedNoncriticalRecord(t *testing.T) {
+	trace := &activeTraceCapture{
+		critical: make(map[uint64]bool),
+		origins:  make(map[string]struct{}),
+		trace: evaltrace.Trace{
+			Limits: evaltrace.AppliedLimits{MaxRecords: 1, MaxRecordBytes: 1024},
+		},
+	}
+	appendCaptureRecord(trace, evaltrace.Record{
+		Kind:   evaltrace.RecordModelRequest,
+		Origin: evaltrace.Origin{Kind: "runtime_event", ID: "event-1"},
+	}, false)
+	appendCaptureRecord(trace, evaltrace.Record{
+		Kind:   evaltrace.RecordInteractionTransition,
+		Origin: evaltrace.Origin{Kind: "interaction_event", ID: "event-2"},
+	}, true)
+	if len(trace.trace.Records) != 1 ||
+		trace.trace.Records[0].Kind != evaltrace.RecordInteractionTransition {
+		t.Fatalf("records = %+v", trace.trace.Records)
+	}
+	if !trace.trace.Truncation.Incomplete || trace.trace.Truncation.DroppedRecords != 1 {
+		t.Fatalf("truncation = %+v", trace.trace.Truncation)
+	}
+	if got := trace.trace.Truncation.DroppedByKind[evaltrace.RecordModelRequest]; got != 1 {
+		t.Fatalf("dropped model requests = %d, want 1", got)
 	}
 }
 

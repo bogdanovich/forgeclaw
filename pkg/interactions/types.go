@@ -218,6 +218,14 @@ type EventObservation struct {
 	Record Record
 }
 
+// ObservationSnapshot is a consistent registry view returned when an observer
+// is installed. Callers can reconcile retained state before processing events
+// delivered after the subscription boundary.
+type ObservationSnapshot struct {
+	Records []Record
+	Events  []Event
+}
+
 type CreateRequest struct {
 	ID             string
 	Kind           Kind
