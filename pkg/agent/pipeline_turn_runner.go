@@ -55,8 +55,8 @@ func (p *Pipeline) runTurnLoop(
 			exec.pendingMessages = nil
 		}
 		if iteration == 1 && !ts.opts.SkipInitialSteeringPoll {
-			if steerMsgs := host.dequeueSteeringMessagesForTurnWithFallback(
-				ts.sessionKey,
+			if steerMsgs := host.dequeueSteeringMessagesForTurn(
+				ts.runtimeSessionScope(),
 				ts.opts.Dispatch.SenderID(),
 			); len(steerMsgs) > 0 {
 				exec.markSteeringObserved()
@@ -213,7 +213,9 @@ func (p *Pipeline) runTurnLoop(
 					messages = exec.messages
 					continue
 				}
-				if steerMsgs := host.dequeueSteeringMessagesForTurn(ts.sessionKey, ts.opts.Dispatch.SenderID()); len(
+				if steerMsgs := host.dequeueSteeringMessagesForTurn(
+					ts.runtimeSessionScope(), ts.opts.Dispatch.SenderID(),
+				); len(
 					steerMsgs,
 				) > 0 {
 					exec.markSteeringObserved()

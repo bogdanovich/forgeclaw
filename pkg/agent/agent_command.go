@@ -95,7 +95,7 @@ func (al *AgentLoop) applyExplicitSkillCommand(
 	arg := strings.TrimSpace(parts[1])
 	if strings.EqualFold(arg, "clear") || strings.EqualFold(arg, "off") {
 		if opts != nil {
-			al.clearPendingSkills(opts.Dispatch.SessionKey)
+			al.clearPendingSkills(newRuntimeSessionScope(agent.Workspace, opts.Dispatch.SessionKey))
 		}
 		return true, true, "Cleared pending skill override."
 	}
@@ -109,7 +109,9 @@ func (al *AgentLoop) applyExplicitSkillCommand(
 		if opts == nil || strings.TrimSpace(opts.Dispatch.SessionKey) == "" {
 			return true, true, commandsUnavailableSkillMessage()
 		}
-		al.setPendingSkills(opts.Dispatch.SessionKey, []string{skillName})
+		al.setPendingSkills(
+			newRuntimeSessionScope(agent.Workspace, opts.Dispatch.SessionKey), []string{skillName},
+		)
 		return true, true, fmt.Sprintf(
 			"Skill %q is armed for your next message. Send your next prompt normally, or use /use clear to cancel.",
 			skillName,
@@ -286,7 +288,12 @@ func (al *AgentLoop) buildCommandsRuntime(
 		if opts == nil {
 			return commands.StopResult{}, fmt.Errorf("process options not available")
 		}
-		return al.stopActiveTurnForSession(opts.Dispatch.SessionKey)
+		if workspaceAgent == nil {
+			return commands.StopResult{}, fmt.Errorf("workspace agent not available")
+		}
+		return al.stopActiveTurnForScope(newRuntimeSessionScope(
+			workspaceAgent.Workspace, opts.Dispatch.SessionKey,
+		))
 	}
 	if al.state != nil && opts != nil {
 		routeSessionKey := strings.TrimSpace(opts.Dispatch.RouteSessionKey)
@@ -785,9 +792,8 @@ func normalizeMCPSchema(schema any) map[string]any {
 	return result
 }
 
-func (al *AgentLoop) setPendingSkills(sessionKey string, skillNames []string) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" || len(skillNames) == 0 {
+func (al *AgentLoop) setPendingSkills(scope runtimeSessionScope, skillNames []string) {
+	if !scope.complete() || len(skillNames) == 0 {
 		return
 	}
 
@@ -802,16 +808,15 @@ func (al *AgentLoop) setPendingSkills(sessionKey string, skillNames []string) {
 		return
 	}
 
-	al.pendingSkills.Store(sessionKey, filtered)
+	al.pendingSkills.Store(scope, filtered)
 }
 
-func (al *AgentLoop) takePendingSkills(sessionKey string) []string {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
+func (al *AgentLoop) takePendingSkills(scope runtimeSessionScope) []string {
+	if !scope.complete() {
 		return nil
 	}
 
-	value, ok := al.pendingSkills.LoadAndDelete(sessionKey)
+	value, ok := al.pendingSkills.LoadAndDelete(scope)
 	if !ok {
 		return nil
 	}
@@ -824,10 +829,9 @@ func (al *AgentLoop) takePendingSkills(sessionKey string) []string {
 	return append([]string(nil), skills...)
 }
 
-func (al *AgentLoop) clearPendingSkills(sessionKey string) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
+func (al *AgentLoop) clearPendingSkills(scope runtimeSessionScope) {
+	if !scope.complete() {
 		return
 	}
-	al.pendingSkills.Delete(sessionKey)
+	al.pendingSkills.Delete(scope)
 }

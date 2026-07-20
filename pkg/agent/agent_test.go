@@ -2078,7 +2078,7 @@ func TestApplyExplicitSkillCommand_ArmsSkillForNextMessage(t *testing.T) {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
 
-	pending := al.takePendingSkills(opts.SessionKey)
+	pending := al.takePendingSkills(newRuntimeSessionScope(agent.Workspace, opts.SessionKey))
 	if len(pending) != 1 || pending[0] != "finance-news" {
 		t.Fatalf("pending skills = %#v, want [finance-news]", pending)
 	}
@@ -4264,7 +4264,14 @@ func (m *handledMediaWithSteeringTool) Execute(
 	ctx context.Context,
 	args map[string]any,
 ) *tools.ToolResult {
-	if err := m.loop.Steer(providers.Message{Role: "user", Content: "what about this instead?"}); err != nil {
+	ts := turnStateFromContext(ctx)
+	if ts == nil {
+		return tools.ErrorResult("turn state is unavailable")
+	}
+	if err := m.loop.Steer(
+		ts.workspace, ts.sessionKey, ts.agentID,
+		providers.Message{Role: "user", Content: "what about this instead?"},
+	); err != nil {
 		return tools.ErrorResult(err.Error()).WithError(err)
 	}
 

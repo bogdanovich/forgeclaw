@@ -296,7 +296,7 @@ func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
 		t.Fatalf("claimed interaction = %#v", claimed)
 	}
 	if err = al.enqueueSteeringMessageWithSender(
-		"owner-session", agent.ID, "user-1",
+		newRuntimeSessionScope(agent.Workspace, "owner-session"), agent.ID, "user-1",
 		providers.Message{Role: "user", Content: "deferred during recovery"},
 	); err != nil {
 		t.Fatal(err)
@@ -319,7 +319,9 @@ func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
 	if first.Status != interactions.StatusResolved {
 		t.Fatalf("first interaction after chaining = %#v", first)
 	}
-	if got := al.pendingSteeringCountForScope("owner-session"); got != 1 {
+	if got := al.pendingSteeringCountForScope(
+		newRuntimeSessionScope(agent.Workspace, "owner-session"),
+	); got != 1 {
 		t.Fatalf("deferred queue during chained wait = %d, want 1", got)
 	}
 	for _, message := range agent.Sessions.GetHistory("owner-session") {
@@ -758,12 +760,15 @@ func TestDequeuePendingSubTurnResults(t *testing.T) {
 	ts := &turnState{
 		ctx:            context.Background(),
 		turnID:         sessionKey,
+		workspace:      "/test/workspace",
+		sessionKey:     sessionKey,
 		depth:          0,
 		session:        &ephemeralSessionStore{},
 		pendingResults: make(chan *tools.ToolResult, 4),
 	}
-	al.activeTurnStates.Store(sessionKey, ts)
-	defer al.activeTurnStates.Delete(sessionKey)
+	scope := ts.runtimeSessionScope()
+	al.activeTurnStates.Store(scope, ts)
+	defer al.activeTurnStates.Delete(scope)
 
 	// Put 3 results in
 	ts.pendingResults <- &tools.ToolResult{ForLLM: "result-1"}
@@ -784,7 +789,7 @@ func TestDequeuePendingSubTurnResults(t *testing.T) {
 	}
 
 	// After removing from activeTurnStates, returns nil
-	al.activeTurnStates.Delete(sessionKey)
+	al.activeTurnStates.Delete(scope)
 	if results := al.dequeuePendingSubTurnResults(sessionKey); results != nil {
 		t.Error("expected nil for unregistered session")
 	}
@@ -834,7 +839,7 @@ func TestSubTurnConcurrencySemaphore(t *testing.T) {
 
 // ====================== Extra Independent Test: Hard Abort Cascading ======================
 func TestHardAbortCascading(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
+	al, cfg, _, provider, cleanup := newTestAgentLoop(t)
 	_ = provider
 	defer cleanup()
 
@@ -846,14 +851,17 @@ func TestHardAbortCascading(t *testing.T) {
 		ctx:            rootCtx,
 		cancelFunc:     rootCancel,
 		turnID:         sessionKey,
+		workspace:      cfg.Agents.Defaults.Workspace,
+		sessionKey:     sessionKey,
 		depth:          0,
 		session:        &ephemeralSessionStore{},
 		pendingResults: make(chan *tools.ToolResult, 16),
 		concurrencySem: make(chan struct{}, 5),
 		al:             al,
 	}
-	al.activeTurnStates.Store(sessionKey, rootTS)
-	defer al.activeTurnStates.Delete(sessionKey)
+	rootScope := rootTS.runtimeSessionScope()
+	al.activeTurnStates.Store(rootScope, rootTS)
+	defer al.activeTurnStates.Delete(rootScope)
 
 	// Child turn with an INDEPENDENT context (simulates spawnSubTurn behavior:
 	// context.WithTimeout(context.Background(), ...) — NOT derived from parent).
@@ -864,11 +872,13 @@ func TestHardAbortCascading(t *testing.T) {
 		ctx:            childCtx,
 		cancelFunc:     childCancel,
 		turnID:         childID,
+		workspace:      cfg.Agents.Defaults.Workspace,
 		pendingResults: make(chan *tools.ToolResult, 4),
 		al:             al,
 	}
-	al.activeTurnStates.Store(childID, childTS)
-	defer al.activeTurnStates.Delete(childID)
+	childScope := newRuntimeSubTurnScope(childTS.workspace, childID)
+	al.activeTurnStates.Store(childScope, childTS)
+	defer al.activeTurnStates.Delete(childScope)
 
 	// Wire child into root's childTurnIDs (as spawnSubTurn would do)
 	rootTS.childTurnIDs = append(rootTS.childTurnIDs, childID)
@@ -914,7 +924,7 @@ func TestHardAbortCascading(t *testing.T) {
 // TestHardAbortSessionRollback verifies that HardAbort rolls back session history
 // to the state before the turn started, discarding all messages added during the turn.
 func TestHardAbortSessionRollback(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
+	al, cfg, _, provider, cleanup := newTestAgentLoop(t)
 	_ = provider
 	defer cleanup()
 
@@ -930,6 +940,8 @@ func TestHardAbortSessionRollback(t *testing.T) {
 	rootTS := &turnState{
 		ctx:                  context.Background(),
 		turnID:               "test-session",
+		workspace:            cfg.Agents.Defaults.Workspace,
+		sessionKey:           "test-session",
 		depth:                0,
 		session:              sess,
 		initialHistoryLength: 2, // Snapshot: 2 messages
@@ -938,7 +950,7 @@ func TestHardAbortSessionRollback(t *testing.T) {
 	}
 
 	// Register the turn state
-	al.activeTurnStates.Store("test-session", rootTS)
+	al.activeTurnStates.Store(rootTS.runtimeSessionScope(), rootTS)
 
 	// Simulate adding messages during the turn (e.g., user input + assistant response)
 	sess.AddMessage("", "user", "new user message")
@@ -1104,7 +1116,7 @@ func TestDeliverSubTurnResultNoDeadlock(t *testing.T) {
 // rolling back session history, minimizing the race window where new messages
 // could be added after rollback.
 func TestHardAbortOrderOfOperations(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
+	al, cfg, _, provider, cleanup := newTestAgentLoop(t)
 	_ = provider
 	defer cleanup()
 
@@ -1123,6 +1135,8 @@ func TestHardAbortOrderOfOperations(t *testing.T) {
 		ctx:                  ctx,
 		cancelFunc:           cancel,
 		turnID:               "test-session-order",
+		workspace:            cfg.Agents.Defaults.Workspace,
+		sessionKey:           "test-session-order",
 		depth:                0,
 		session:              sess,
 		initialHistoryLength: 1, // Snapshot: 1 message
@@ -1130,7 +1144,7 @@ func TestHardAbortOrderOfOperations(t *testing.T) {
 		concurrencySem:       make(chan struct{}, 5),
 	}
 
-	al.activeTurnStates.Store("test-session-order", rootTS)
+	al.activeTurnStates.Store(rootTS.runtimeSessionScope(), rootTS)
 
 	// Trigger HardAbort
 	err := al.HardAbort("test-session-order")
@@ -1208,7 +1222,7 @@ func TestFinishedChannelClosedState(t *testing.T) {
 // TestFinalPollCapturesLateResults verifies that the final poll before Finish()
 // captures results that arrive after the last iteration poll.
 func TestFinalPollCapturesLateResults(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
+	al, cfg, _, provider, cleanup := newTestAgentLoop(t)
 	_ = provider
 	defer cleanup()
 
@@ -1218,12 +1232,15 @@ func TestFinalPollCapturesLateResults(t *testing.T) {
 	ts := &turnState{
 		ctx:            context.Background(),
 		turnID:         sessionKey,
+		workspace:      cfg.Agents.Defaults.Workspace,
+		sessionKey:     sessionKey,
 		depth:          0,
 		session:        &ephemeralSessionStore{},
 		pendingResults: make(chan *tools.ToolResult, 4),
 	}
-	al.activeTurnStates.Store(sessionKey, ts)
-	defer al.activeTurnStates.Delete(sessionKey)
+	scope := ts.runtimeSessionScope()
+	al.activeTurnStates.Store(scope, ts)
+	defer al.activeTurnStates.Delete(scope)
 
 	// Simulate results arriving after last iteration poll
 	ts.pendingResults <- &tools.ToolResult{ForLLM: "result 1"}
@@ -1414,6 +1431,7 @@ func TestGetActiveTurn(t *testing.T) {
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
+				Workspace: t.TempDir(),
 				ModelName: "gpt-4o-mini",
 				Provider:  "mock",
 			},
@@ -1426,6 +1444,7 @@ func TestGetActiveTurn(t *testing.T) {
 	rootTS := &turnState{
 		ctx:            rootCtx,
 		turnID:         "root-turn",
+		workspace:      "/test/workspace",
 		parentTurnID:   "",
 		depth:          0,
 		childTurnIDs:   []string{},
@@ -1435,8 +1454,10 @@ func TestGetActiveTurn(t *testing.T) {
 	}
 
 	sessionKey := "test-session"
-	al.activeTurnStates.Store(sessionKey, rootTS)
-	defer al.activeTurnStates.Delete(sessionKey)
+	rootTS.sessionKey = sessionKey
+	scope := rootTS.runtimeSessionScope()
+	al.activeTurnStates.Store(scope, rootTS)
+	defer al.activeTurnStates.Delete(scope)
 
 	// Test: GetActiveTurn should return turn info
 	info := al.GetActiveTurnBySession(sessionKey)
@@ -1472,6 +1493,7 @@ func TestGetActiveTurn_WithChildren(t *testing.T) {
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
+				Workspace: t.TempDir(),
 				ModelName: "gpt-4o-mini",
 				Provider:  "mock",
 			},
@@ -1483,6 +1505,7 @@ func TestGetActiveTurn_WithChildren(t *testing.T) {
 	rootTS := &turnState{
 		ctx:            rootCtx,
 		turnID:         "root-turn",
+		workspace:      "/test/workspace",
 		parentTurnID:   "",
 		depth:          0,
 		childTurnIDs:   []string{"child-1", "child-2"},
@@ -1492,8 +1515,10 @@ func TestGetActiveTurn_WithChildren(t *testing.T) {
 	}
 
 	sessionKey := "test-session-with-children"
-	al.activeTurnStates.Store(sessionKey, rootTS)
-	defer al.activeTurnStates.Delete(sessionKey)
+	rootTS.sessionKey = sessionKey
+	scope := rootTS.runtimeSessionScope()
+	al.activeTurnStates.Store(scope, rootTS)
+	defer al.activeTurnStates.Delete(scope)
 
 	info := al.GetActiveTurnBySession(sessionKey)
 	if info == nil {
@@ -1553,6 +1578,7 @@ func TestInjectFollowUp(t *testing.T) {
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
+				Workspace: t.TempDir(),
 				ModelName: "gpt-4o-mini",
 				Provider:  "mock",
 			},
@@ -1560,13 +1586,14 @@ func TestInjectFollowUp(t *testing.T) {
 	}
 
 	al := NewAgentLoop(cfg, nil, &simpleMockProviderAPI{response: "ok"})
+	agent := al.GetRegistry().GetDefaultAgent()
 
 	msg := providers.Message{
 		Role:    "user",
 		Content: "Follow-up task",
 	}
 
-	err := al.InjectFollowUp(msg)
+	err := al.InjectFollowUp(agent.Workspace, "follow-up-session", agent.ID, msg)
 	if err != nil {
 		t.Fatalf("InjectFollowUp failed: %v", err)
 	}
@@ -1582,6 +1609,7 @@ func TestAPIAliases(t *testing.T) {
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
+				Workspace: t.TempDir(),
 				ModelName: "gpt-4o-mini",
 				Provider:  "mock",
 			},
@@ -1589,6 +1617,7 @@ func TestAPIAliases(t *testing.T) {
 	}
 
 	al := NewAgentLoop(cfg, nil, &simpleMockProviderAPI{response: "ok"})
+	agent := al.GetRegistry().GetDefaultAgent()
 
 	msg := providers.Message{
 		Role:    "user",
@@ -1599,13 +1628,13 @@ func TestAPIAliases(t *testing.T) {
 	_ = al.InterruptGraceful(msg.Content)
 
 	// Test InjectSteering (enqueues a steering message)
-	err := al.InjectSteering(msg)
+	err := al.InjectSteering(agent.Workspace, "api-session", agent.ID, msg)
 	if err != nil {
 		t.Errorf("InjectSteering failed: %v", err)
 	}
 
 	// Also enqueue via Steer to verify second message
-	err = al.Steer(msg)
+	err = al.Steer(agent.Workspace, "api-session", agent.ID, msg)
 	if err != nil {
 		t.Errorf("Steer failed: %v", err)
 	}
@@ -1632,6 +1661,7 @@ func TestInterruptHard_Alias(t *testing.T) {
 	rootTS := &turnState{
 		ctx:                  rootCtx,
 		turnID:               "test-turn",
+		workspace:            "/test/workspace",
 		depth:                0,
 		session:              newEphemeralSession(nil),
 		initialHistoryLength: 0,
@@ -1640,7 +1670,8 @@ func TestInterruptHard_Alias(t *testing.T) {
 	}
 
 	sessionKey := "test-session-interrupt"
-	al.activeTurnStates.Store(sessionKey, rootTS)
+	rootTS.sessionKey = sessionKey
+	al.activeTurnStates.Store(rootTS.runtimeSessionScope(), rootTS)
 
 	// Test InterruptHard (alias for HardAbort)
 	err := al.InterruptHard()
@@ -2369,7 +2400,7 @@ func TestAsyncSubTurn_ChannelDelivery(t *testing.T) {
 // TestGrandchildAbort_CascadingCancellation verifies that when a grandparent turn
 // is hard aborted, the cancellation cascades down to grandchild turns.
 func TestGrandchildAbort_CascadingCancellation(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
+	al, cfg, _, provider, cleanup := newTestAgentLoop(t)
 	_ = provider
 	defer cleanup()
 
@@ -2383,12 +2414,14 @@ func TestGrandchildAbort_CascadingCancellation(t *testing.T) {
 		ctx:        childCtx,
 		cancelFunc: childCancel,
 		turnID:     "grandchild",
+		workspace:  cfg.Agents.Defaults.Workspace,
 		al:         al,
 	}
 	parentTS := &turnState{
 		ctx:          parentCtx,
 		cancelFunc:   parentCancel,
 		turnID:       "parent",
+		workspace:    cfg.Agents.Defaults.Workspace,
 		childTurnIDs: []string{"grandchild"},
 		al:           al,
 	}
@@ -2396,6 +2429,8 @@ func TestGrandchildAbort_CascadingCancellation(t *testing.T) {
 		ctx:            gpCtx,
 		cancelFunc:     gpCancel,
 		turnID:         "grandparent",
+		workspace:      cfg.Agents.Defaults.Workspace,
+		sessionKey:     "grandparent",
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
@@ -2404,12 +2439,15 @@ func TestGrandchildAbort_CascadingCancellation(t *testing.T) {
 		al:             al,
 	}
 
-	al.activeTurnStates.Store("grandparent", grandparentTS)
-	al.activeTurnStates.Store("parent", parentTS)
-	al.activeTurnStates.Store("grandchild", childTS)
-	defer al.activeTurnStates.Delete("grandparent")
-	defer al.activeTurnStates.Delete("parent")
-	defer al.activeTurnStates.Delete("grandchild")
+	grandparentScope := grandparentTS.runtimeSessionScope()
+	parentScope := newRuntimeSubTurnScope(parentTS.workspace, parentTS.turnID)
+	childScope := newRuntimeSubTurnScope(childTS.workspace, childTS.turnID)
+	al.activeTurnStates.Store(grandparentScope, grandparentTS)
+	al.activeTurnStates.Store(parentScope, parentTS)
+	al.activeTurnStates.Store(childScope, childTS)
+	defer al.activeTurnStates.Delete(grandparentScope)
+	defer al.activeTurnStates.Delete(parentScope)
+	defer al.activeTurnStates.Delete(childScope)
 
 	// All contexts must be active before the abort
 	for _, ctx := range []context.Context{gpCtx, parentCtx, childCtx} {

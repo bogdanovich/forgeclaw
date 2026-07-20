@@ -12,14 +12,14 @@ import (
 func (al *AgentLoop) tryHandleStopCommand(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	sessionKey string,
+	scope runtimeSessionScope,
 ) bool {
 	cmdName, ok := commands.CommandName(msg.Content)
 	if !ok || cmdName != "stop" {
 		return false
 	}
 
-	result, err := al.stopActiveTurnForSession(sessionKey)
+	result, err := al.stopActiveTurnForScope(scope)
 
 	// This function is only called when loaded=true (another turn already
 	// claimed this session). If stopActiveTurnForSession found a pending
@@ -27,10 +27,10 @@ func (al *AgentLoop) tryHandleStopCommand(
 	// message's worker which hasn't started yet — arm a pending stop so the
 	// worker will bail when it checks before running.
 	if err == nil && !result.Stopped {
-		if ts := al.getActiveTurnState(sessionKey); ts != nil {
+		if ts := al.getActiveTurnState(scope); ts != nil {
 			snap := ts.snapshot()
 			if strings.HasPrefix(snap.TurnID, pendingTurnPrefix) {
-				al.markPendingStop(sessionKey)
+				al.markPendingStop(scope)
 				result.Stopped = true
 			}
 		}
@@ -44,22 +44,21 @@ func (al *AgentLoop) tryHandleStopCommand(
 	if al.channelManager != nil {
 		al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
-	al.resetMessageToolRound(sessionKey)
-	al.PublishResponseIfNeeded(ctx, msg.Channel, msg.ChatID, sessionKey, reply)
+	al.resetMessageToolRound(scope.sessionKey)
+	al.PublishResponseIfNeeded(ctx, msg.Channel, msg.ChatID, scope.sessionKey, reply)
 	return true
 }
 
-func (al *AgentLoop) stopActiveTurnForSession(sessionKey string) (commands.StopResult, error) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return commands.StopResult{}, fmt.Errorf("session key is required")
+func (al *AgentLoop) stopActiveTurnForScope(scope runtimeSessionScope) (commands.StopResult, error) {
+	if !scope.complete() {
+		return commands.StopResult{}, fmt.Errorf("workspace and session key are required")
 	}
 
 	result := commands.StopResult{}
-	cleared := al.clearSteeringMessagesForScope(sessionKey)
-	al.clearPendingSkills(sessionKey)
+	cleared := al.clearSteeringMessagesForScope(scope)
+	al.clearPendingSkills(scope)
 
-	ts := al.getActiveTurnState(sessionKey)
+	ts := al.getActiveTurnState(scope)
 	if ts == nil {
 		result.Stopped = cleared > 0
 		return result, nil
@@ -77,8 +76,8 @@ func (al *AgentLoop) stopActiveTurnForSession(sessionKey string) (commands.StopR
 		return result, nil
 	}
 
-	if err := al.HardAbort(sessionKey); err != nil {
-		if al.getActiveTurnState(sessionKey) == nil {
+	if err := al.hardAbortScope(scope); err != nil {
+		if al.getActiveTurnState(scope) == nil {
 			result.Stopped = cleared > 0
 			return result, nil
 		}
@@ -89,20 +88,18 @@ func (al *AgentLoop) stopActiveTurnForSession(sessionKey string) (commands.StopR
 	return result, nil
 }
 
-func (al *AgentLoop) markPendingStop(sessionKey string) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
+func (al *AgentLoop) markPendingStop(scope runtimeSessionScope) {
+	if !scope.complete() {
 		return
 	}
-	al.pendingStops.Store(sessionKey, struct{}{})
+	al.pendingStops.Store(scope, struct{}{})
 }
 
-func (al *AgentLoop) takePendingStop(sessionKey string) bool {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
+func (al *AgentLoop) takePendingStop(scope runtimeSessionScope) bool {
+	if !scope.complete() {
 		return false
 	}
-	_, ok := al.pendingStops.LoadAndDelete(sessionKey)
+	_, ok := al.pendingStops.LoadAndDelete(scope)
 	return ok
 }
 

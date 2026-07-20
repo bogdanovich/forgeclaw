@@ -547,8 +547,9 @@ func spawnSubTurn(
 	childTS.ctx = childCtx
 
 	// Register child turn state so GetAllActiveTurns/Subagents can find it
-	al.activeTurnStates.Store(childID, childTS)
-	defer al.activeTurnStates.Delete(childID)
+	childScope := newRuntimeSubTurnScope(childTS.workspace, childID)
+	al.activeTurnStates.Store(childScope, childTS)
+	defer al.activeTurnStates.Delete(childScope)
 
 	// 5. Establish parent-child relationship (thread-safe)
 	parentTS.mu.Lock()

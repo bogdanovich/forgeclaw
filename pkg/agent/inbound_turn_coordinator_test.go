@@ -66,7 +66,7 @@ func TestAcquireTurnCapacityDoesNotHoldAdmissionWhileWaitingForWorker(t *testing
 
 func coordinatorTestTarget(routeScopeKey, sessionKey string) *inboundDispatchTarget {
 	return &inboundDispatchTarget{
-		Agent:         &AgentInstance{ID: "main"},
+		Agent:         &AgentInstance{ID: "main", Workspace: "/test/main"},
 		RouteClaimKey: runtimeRouteClaimKey(routeScopeKey, ""),
 		Allocation: session.Allocation{
 			RouteScopeKey: routeScopeKey,
@@ -87,13 +87,13 @@ func TestInboundTurnCoordinatorClaimSessionSerializesSession(t *testing.T) {
 	if claim == nil || claim.placeholder == nil {
 		t.Fatal("expected claim with placeholder")
 	}
-	if claim.sessionKey != "session-1" {
-		t.Fatalf("claim session key = %q, want session-1", claim.sessionKey)
+	if claim.scope.sessionKey != "session-1" {
+		t.Fatalf("claim session key = %q, want session-1", claim.scope.sessionKey)
 	}
 	if !isPendingTurnState(claim.placeholder) {
 		t.Fatalf("placeholder turn id = %q, want pending turn", claim.placeholder.turnID)
 	}
-	if got := al.getActiveTurnState("session-1"); got != claim.placeholder {
+	if got := al.getActiveTurnState(firstTarget.runtimeSessionScope()); got != claim.placeholder {
 		t.Fatalf("active turn = %p, want placeholder %p", got, claim.placeholder)
 	}
 
@@ -107,7 +107,7 @@ func TestInboundTurnCoordinatorClaimSessionSerializesSession(t *testing.T) {
 	if activeTarget != firstTarget {
 		t.Fatal("route claim did not retain the original dispatch target")
 	}
-	if got := al.getActiveTurnState("session-1"); got != claim.placeholder {
+	if got := al.getActiveTurnState(firstTarget.runtimeSessionScope()); got != claim.placeholder {
 		t.Fatalf("active turn changed after rejected claim: got %p, want %p", got, claim.placeholder)
 	}
 }
@@ -122,23 +122,25 @@ func TestInboundTurnCoordinatorCleanupOnlyClearsOwnedPlaceholder(t *testing.T) {
 	}
 
 	replacement := &turnState{
-		turnID: makePendingTurnID("session-1", al.turnSeq.Add(1)),
-		phase:  TurnPhaseSetup,
+		turnID:     makePendingTurnID("session-1", al.turnSeq.Add(1)),
+		workspace:  first.scope.workspace,
+		sessionKey: first.scope.sessionKey,
+		phase:      TurnPhaseSetup,
 	}
-	al.activeTurnStates.Store("session-1", replacement)
+	al.activeTurnStates.Store(first.scope, replacement)
 
 	first.releaseIfOwned()
-	if got := al.getActiveTurnState("session-1"); got != replacement {
+	if got := al.getActiveTurnState(first.scope); got != replacement {
 		t.Fatalf("cleanup removed unowned placeholder: got %p, want replacement %p", got, replacement)
 	}
 
 	replacementClaim := &runtimeSessionClaim{
 		al:          al,
-		sessionKey:  "session-1",
+		scope:       first.scope,
 		placeholder: replacement,
 	}
 	replacementClaim.releaseIfOwned()
-	if got := al.getActiveTurnState("session-1"); got != nil {
+	if got := al.getActiveTurnState(first.scope); got != nil {
 		t.Fatalf("cleanup left owned placeholder active: got %p", got)
 	}
 }

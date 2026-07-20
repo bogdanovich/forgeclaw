@@ -98,7 +98,9 @@ func (al *AgentLoop) recoverUnansweredSession(
 		}
 		claim, _, claimed = al.claimRuntimeRouteSession(target, turnID)
 	} else {
-		claim, claimed = al.claimRuntimeSession(sessionKey, turnID)
+		claim, claimed = al.claimRuntimeSession(
+			newRuntimeSessionScope(agent.Workspace, sessionKey), turnID,
+		)
 	}
 	if !claimed {
 		return nil

@@ -12,8 +12,7 @@ type turnRuntimeHost interface {
 	ackAcceptedSteeringMessages(ctx context.Context, msgs []providers.Message)
 	releaseSteeringMessages(ctx context.Context, msgs []providers.Message, cause error)
 	abortTurn(ts *turnState) (turnResult, error)
-	dequeueSteeringMessagesForTurnWithFallback(scope, senderID string) []providers.Message
-	dequeueSteeringMessagesForTurn(scope, senderID string) []providers.Message
+	dequeueSteeringMessagesForTurn(scope runtimeSessionScope, senderID string) []providers.Message
 	filterSensitiveData(content string) string
 	renderFinalTurnReply(ctx context.Context, ts *turnState, exec *turnExecution, fallback string) string
 	tryRenderFinalTurnReply(ctx context.Context, ts *turnState, exec *turnExecution, fallback string) (string, bool)

@@ -203,7 +203,7 @@ type modelExecutionResolver interface {
 }
 
 type steeringDequeuer interface {
-	dequeueSteeringMessagesForTurn(scope, senderID string) []providers.Message
+	dequeueSteeringMessagesForTurn(scope runtimeSessionScope, senderID string) []providers.Message
 }
 
 type reasoningPublisher interface {

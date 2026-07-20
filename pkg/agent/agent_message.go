@@ -269,7 +269,9 @@ func (al *AgentLoop) processInboundMessageTurn(
 		return response, nil
 	}
 
-	if pending := al.takePendingSkills(opts.Dispatch.SessionKey); len(pending) > 0 {
+	if pending := al.takePendingSkills(
+		newRuntimeSessionScope(turn.Agent.Workspace, opts.Dispatch.SessionKey),
+	); len(pending) > 0 {
 		opts.ForcedSkills = append(opts.ForcedSkills, pending...)
 		logger.InfoCF("agent", "Applying pending skill override",
 			map[string]any{

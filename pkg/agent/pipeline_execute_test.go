@@ -301,7 +301,7 @@ type delayedSteering struct {
 	messages []providers.Message
 }
 
-func (s *delayedSteering) dequeueSteeringMessagesForTurn(string, string) []providers.Message {
+func (s *delayedSteering) dequeueSteeringMessagesForTurn(runtimeSessionScope, string) []providers.Message {
 	s.polls++
 	if s.polls < 2 {
 		return nil
@@ -311,7 +311,7 @@ func (s *delayedSteering) dequeueSteeringMessagesForTurn(string, string) []provi
 	return messages
 }
 
-func (s *oneShotLoopGuardSteering) dequeueSteeringMessagesForTurn(string, string) []providers.Message {
+func (s *oneShotLoopGuardSteering) dequeueSteeringMessagesForTurn(runtimeSessionScope, string) []providers.Message {
 	messages := s.messages
 	s.messages = nil
 	return messages

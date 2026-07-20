@@ -381,15 +381,15 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 }
 
 func (al *AgentLoop) registerActiveTurn(ts *turnState) {
-	al.activeTurnStates.Store(ts.sessionKey, ts)
+	al.activeTurnStates.Store(ts.runtimeSessionScope(), ts)
 }
 
 func (al *AgentLoop) clearActiveTurn(ts *turnState) {
-	al.activeTurnStates.Delete(ts.sessionKey)
+	al.activeTurnStates.Delete(ts.runtimeSessionScope())
 }
 
-func (al *AgentLoop) getActiveTurnState(sessionKey string) *turnState {
-	if val, ok := al.activeTurnStates.Load(sessionKey); ok {
+func (al *AgentLoop) getActiveTurnState(scope runtimeSessionScope) *turnState {
+	if val, ok := al.activeTurnStates.Load(scope); ok {
 		if ts, ok := val.(*turnState); ok {
 			return ts
 		}
@@ -397,6 +397,29 @@ func (al *AgentLoop) getActiveTurnState(sessionKey string) *turnState {
 		// panics. This should not happen under normal operation.
 	}
 	return nil
+}
+
+func (al *AgentLoop) uniqueActiveTurnForSession(sessionKey string) (*turnState, bool) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	var found *turnState
+	ambiguous := false
+	al.activeTurnStates.Range(func(key, value any) bool {
+		scope, isRoot := key.(runtimeSessionScope)
+		if !isRoot || scope.sessionKey != sessionKey {
+			return true
+		}
+		ts, ok := value.(*turnState)
+		if !ok {
+			return true
+		}
+		if found != nil {
+			ambiguous = true
+			return false
+		}
+		found = ts
+		return true
+	})
+	return found, ambiguous
 }
 
 // getAnyActiveTurnState returns any active turn state (for backward compatibility)
@@ -445,7 +468,16 @@ func (al *AgentLoop) ActiveTurnCount() int {
 }
 
 func (al *AgentLoop) GetActiveTurnBySession(sessionKey string) *ActiveTurnInfo {
-	ts := al.getActiveTurnState(sessionKey)
+	ts, ambiguous := al.uniqueActiveTurnForSession(sessionKey)
+	if ts == nil || ambiguous {
+		return nil
+	}
+	info := ts.snapshot()
+	return &info
+}
+
+func (al *AgentLoop) GetActiveTurnByScope(workspace, sessionKey string) *ActiveTurnInfo {
+	ts := al.getActiveTurnState(newRuntimeSessionScope(workspace, sessionKey))
 	if ts == nil {
 		return nil
 	}
@@ -954,7 +986,9 @@ func (ts *turnState) Finish(isHardAbort bool) {
 		children := append([]string(nil), ts.childTurnIDs...)
 		ts.mu.RUnlock()
 		for _, childID := range children {
-			if val, ok := ts.al.activeTurnStates.Load(childID); ok {
+			if val, ok := ts.al.activeTurnStates.Load(
+				newRuntimeSubTurnScope(ts.workspace, childID),
+			); ok {
 				if child, ok := val.(*turnState); ok {
 					child.Finish(true)
 				}

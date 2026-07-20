@@ -1621,7 +1621,11 @@ func TestAgentLoop_HookRespond_SteeringSkipsRemaining(t *testing.T) {
 			if !ok || payload.Tool != "tool_one" {
 				continue
 			}
-			al.Steer(providers.Message{Role: "user", Content: "change direction"})
+			if err := steerActiveForTest(
+				al, providers.Message{Role: "user", Content: "change direction"},
+			); err != nil {
+				t.Fatal(err)
+			}
 			steered = true
 		case <-deadline:
 			t.Fatal("timeout waiting for tool_one to finish before steering")

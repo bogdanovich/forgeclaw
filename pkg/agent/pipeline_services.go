@@ -84,7 +84,7 @@ func (p *Pipeline) dequeueSteeringMessagesForTurn(ts *turnState) []providers.Mes
 		return nil
 	}
 	return p.Context.Steering.dequeueSteeringMessagesForTurn(
-		ts.sessionKey,
+		ts.runtimeSessionScope(),
 		ts.opts.Dispatch.SenderID(),
 	)
 }
