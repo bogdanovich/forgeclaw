@@ -146,10 +146,11 @@ func TestNodeAuthSchemaMatchesDomainPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := authenticator.Admit(proof)
+	admission, err := authenticator.Authenticate(proof)
 	if err != nil {
 		t.Fatal(err)
 	}
+	result := admission.Result
 	payloads := []any{
 		challenge,
 		proof,

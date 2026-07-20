@@ -718,9 +718,29 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 
-	// reload should not stop channel manager
-	if !isReload && runningServices.ChannelManager != nil {
-		runningServices.ChannelManager.StopAll(shutdownCtx)
+	// Reload should not stop channels or node admission. Full shutdown drains
+	// both concurrently so either side retains the complete bounded budget.
+	if !isReload {
+		var drains sync.WaitGroup
+		if runningServices.NodeAdmission != nil {
+			drains.Add(1)
+			go func() {
+				defer drains.Done()
+				if err := runningServices.NodeAdmission.Close(shutdownCtx); err != nil {
+					logger.WarnCF("nodes", "Node sessions did not drain during gateway shutdown", map[string]any{
+						"error": err.Error(),
+					})
+				}
+			}()
+		}
+		if runningServices.ChannelManager != nil {
+			drains.Add(1)
+			go func() {
+				defer drains.Done()
+				runningServices.ChannelManager.StopAll(shutdownCtx)
+			}()
+		}
+		drains.Wait()
 	}
 	if runningServices.VoiceAgentCancel != nil {
 		runningServices.VoiceAgentCancel()

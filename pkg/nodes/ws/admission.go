@@ -2,10 +2,12 @@ package ws
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -20,17 +22,25 @@ import (
 const (
 	Path                   = "/nodes/v1/ws"
 	DefaultHandshakeWindow = 15 * time.Second
+	DefaultHeartbeatPeriod = 20 * time.Second
+	DefaultLivenessTimeout = 60 * time.Second
 )
 
 type AdmissionConfig struct {
 	AllowLoopbackPlaintext bool
 	HandshakeWindow        time.Duration
+	HeartbeatPeriod        time.Duration
+	LivenessTimeout        time.Duration
+	Sessions               *SessionHub
 }
 
 type AdmissionHandler struct {
 	authenticator          *nodes.Authenticator
 	allowLoopbackPlaintext bool
 	handshakeWindow        time.Duration
+	heartbeatPeriod        time.Duration
+	livenessTimeout        time.Duration
+	sessions               *SessionHub
 	upgrader               websocket.Upgrader
 }
 
@@ -44,10 +54,25 @@ func NewAdmissionHandler(
 	if cfg.HandshakeWindow <= 0 {
 		cfg.HandshakeWindow = DefaultHandshakeWindow
 	}
+	if cfg.HeartbeatPeriod <= 0 {
+		cfg.HeartbeatPeriod = DefaultHeartbeatPeriod
+	}
+	if cfg.LivenessTimeout <= 0 {
+		cfg.LivenessTimeout = DefaultLivenessTimeout
+	}
+	if cfg.LivenessTimeout <= cfg.HeartbeatPeriod {
+		return nil, errors.New("node liveness timeout must exceed heartbeat period")
+	}
+	if cfg.Sessions == nil {
+		cfg.Sessions = NewSessionHub()
+	}
 	return &AdmissionHandler{
 		authenticator:          authenticator,
 		allowLoopbackPlaintext: cfg.AllowLoopbackPlaintext,
 		handshakeWindow:        cfg.HandshakeWindow,
+		heartbeatPeriod:        cfg.HeartbeatPeriod,
+		livenessTimeout:        cfg.LivenessTimeout,
+		sessions:               cfg.Sessions,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -69,6 +94,11 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		return
 	}
 	defer connection.Close()
+	releaseTransport, trackErr := handler.sessions.TrackTransport(connection)
+	if trackErr != nil {
+		return
+	}
+	defer releaseTransport()
 	connection.SetReadLimit(protocol.MaxFrameSize)
 	deadline := time.Now().Add(handler.handshakeWindow)
 	if deadlineErr := connection.SetReadDeadline(deadline); deadlineErr != nil {
@@ -118,22 +148,118 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		handler.writeAdmissionError(connection, envelope.ID, "AUTH_INVALID", "challenge mismatch")
 		return
 	}
-	result, err := handler.authenticator.Admit(proof)
+	admission, err := handler.authenticator.Authenticate(proof)
 	if err != nil {
 		handler.writeAdmissionError(connection, envelope.ID, "AUTH_FAILED", "identity verification failed")
 		return
 	}
+	result := admission.Result
+	var release func() (bool, error)
+	if result.State == nodes.StateConnected {
+		release, err = handler.sessions.Claim(
+			result.NodeID,
+			connection,
+			func() error { return handler.authenticator.Connect(admission) },
+			func() error {
+				return handler.authenticator.Disconnect(result.NodeID, "transport connection closed")
+			},
+		)
+		if err != nil {
+			handler.writeAdmissionError(connection, envelope.ID, "SESSION_UNAVAILABLE", "node session unavailable")
+			return
+		}
+	}
 	responseData, err := json.Marshal(result)
 	if err != nil {
+		handler.releaseSession(result.NodeID, release)
 		return
 	}
 	ok := true
-	_ = handler.writeEnvelope(connection, protocol.Envelope{
+	if writeErr := handler.writeEnvelope(connection, protocol.Envelope{
 		Type:   protocol.FrameResponse,
 		ID:     envelope.ID,
 		OK:     &ok,
 		Result: responseData,
+	}); writeErr != nil || result.State != nodes.StateConnected {
+		if writeErr != nil {
+			handler.releaseSession(result.NodeID, release)
+		}
+		return
+	}
+	handler.serveSession(connection, result.NodeID, release)
+}
+
+// Close terminates all generations that share this handler's session hub.
+// Gateway reloads intentionally keep the hub alive; shutdown closes it.
+func (handler *AdmissionHandler) Close(ctx context.Context) error {
+	return handler.sessions.Close(ctx)
+}
+
+func (handler *AdmissionHandler) serveSession(
+	connection *websocket.Conn,
+	nodeID nodes.ID,
+	release func() (bool, error),
+) {
+	defer handler.releaseSession(nodeID, release)
+
+	if err := connection.SetReadDeadline(time.Now().Add(handler.livenessTimeout)); err != nil {
+		return
+	}
+	if err := connection.SetWriteDeadline(time.Time{}); err != nil {
+		return
+	}
+	connection.SetPongHandler(func(string) error {
+		if err := handler.authenticator.Heartbeat(nodeID); err != nil {
+			return err
+		}
+		return connection.SetReadDeadline(time.Now().Add(handler.livenessTimeout))
 	})
+
+	done := make(chan struct{})
+	go handler.sendHeartbeats(connection, done)
+	defer close(done)
+
+	for {
+		messageType, _, err := connection.ReadMessage()
+		if err != nil {
+			return
+		}
+		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+			handler.closeWithError(connection, websocket.ClosePolicyViolation, "command protocol is not enabled")
+			return
+		}
+	}
+}
+
+func (handler *AdmissionHandler) releaseSession(
+	nodeID nodes.ID,
+	release func() (bool, error),
+) {
+	if release != nil {
+		if _, err := release(); err != nil {
+			slog.Warn("persist node disconnect", "node_id", nodeID, "error", err)
+		}
+	}
+}
+
+func (handler *AdmissionHandler) sendHeartbeats(connection *websocket.Conn, done <-chan struct{}) {
+	ticker := time.NewTicker(handler.heartbeatPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case now := <-ticker.C:
+			if err := connection.WriteControl(
+				websocket.PingMessage,
+				[]byte(now.UTC().Format(time.RFC3339Nano)),
+				now.Add(handler.heartbeatPeriod),
+			); err != nil {
+				_ = connection.Close()
+				return
+			}
+		}
+	}
 }
 
 func (handler *AdmissionHandler) secureRequest(request *http.Request) bool {

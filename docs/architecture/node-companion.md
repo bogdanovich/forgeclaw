@@ -391,10 +391,18 @@ authenticate the device; TLS authenticates and protects the transport.
 2. Companion sends signed identity and capability claims.
 3. Unknown identity becomes `pending_pairing` and cannot execute work.
 4. An authorized operator approves or denies the node.
-5. The gateway issues a revocable token bound to the node public key.
-6. The companion reconnects with the token and a fresh challenge signature.
+5. The companion reconnects and signs a fresh challenge with the approved key.
+6. The gateway verifies that the exact key remains approved and non-revoked,
+   then establishes the connected session.
 7. Capability changes that broaden authority require renewed command-surface
    approval; narrowing can take effect immediately.
+
+The MVP does not add a gateway bearer token beside the device key. A token
+stored with that same key would not be an independent authentication factor,
+but would add credential delivery and crash-recovery state. Revocation is the
+durable registry decision checked on each reconnect and heartbeat. A future
+deployment may add mTLS or a separately protected operator credential when it
+provides an independent trust boundary.
 
 Pairing is not per-command approval. It establishes device identity and the
 maximum command surface that later policy may use.
@@ -564,7 +572,7 @@ a LaunchAgent. System-level installation is explicit.
 
 The MVP uses one gateway binding per companion process. One machine may run
 multiple named service instances from the same `picoclaw-node` binary, each
-with a separate configuration, state directory, device key, pairing token,
+with a separate configuration, state directory, device key, gateway binding,
 policy, and invocation ledger. This is the default way for independently
 deployed ForgeClaw workspaces to use the same host without sharing authority.
 

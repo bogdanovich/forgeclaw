@@ -22,6 +22,8 @@ import (
 
 var ErrIncompatibleGateway = errors.New("node gateway protocol is incompatible")
 
+const defaultStableSessionWindow = 30 * time.Second
+
 type Client struct {
 	config        Config
 	identity      Identity
@@ -29,6 +31,7 @@ type Client struct {
 	catalog       nodes.CapabilityCatalog
 	logger        *slog.Logger
 	dialer        websocket.Dialer
+	stableWindow  time.Duration
 }
 
 func NewClient(
@@ -71,6 +74,7 @@ func NewClient(
 		clientVersion: clientVersion,
 		catalog:       cloneCatalog(catalog),
 		logger:        logger,
+		stableWindow:  defaultStableSessionWindow,
 		dialer: websocket.Dialer{
 			HandshakeTimeout: DefaultHandshakeTimeout,
 			TLSClientConfig:  tlsConfig,
@@ -99,14 +103,22 @@ func cloneCatalog(catalog nodes.CapabilityCatalog) nodes.CapabilityCatalog {
 func (client *Client) Run(ctx context.Context) error {
 	backoff := client.config.minReconnectDelay
 	for {
-		result, err := client.Authenticate(ctx)
+		connection, result, err := client.connectAndAuthenticate(ctx)
 		if err == nil {
 			client.logger.Info("node admission completed", "node_id", result.NodeID, "state", result.State)
-			backoff = client.config.minReconnectDelay
-			if waitErr := waitForContext(ctx, client.config.pendingRetryDelay); waitErr != nil {
-				return normalizeRunExit(waitErr)
+			if result.State == nodes.StatePendingPairing {
+				backoff = client.config.minReconnectDelay
+				_ = connection.Close()
+				if waitErr := waitForContext(ctx, client.config.pendingRetryDelay); waitErr != nil {
+					return normalizeRunExit(waitErr)
+				}
+				continue
 			}
-			continue
+			connectedAt := time.Now()
+			err = client.serveConnected(ctx, connection)
+			if time.Since(connectedAt) >= client.stableWindow {
+				backoff = client.config.minReconnectDelay
+			}
 		}
 		if ctx.Err() != nil {
 			return normalizeRunExit(ctx.Err())
@@ -120,29 +132,49 @@ func (client *Client) Run(ctx context.Context) error {
 }
 
 func (client *Client) Authenticate(ctx context.Context) (nodes.AdmissionResult, error) {
+	connection, result, err := client.connectAndAuthenticate(ctx)
+	if connection != nil {
+		_ = connection.Close()
+	}
+	return result, err
+}
+
+func (client *Client) connectAndAuthenticate(
+	ctx context.Context,
+) (*websocket.Conn, nodes.AdmissionResult, error) {
 	connection, response, err := client.dialer.DialContext(ctx, client.config.GatewayURL, nil)
 	closeResponse(response)
 	if err != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("connect to node gateway: %w", err)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("connect to node gateway: %w", err)
 	}
-	defer connection.Close()
+	connected := false
+	defer func() {
+		if !connected {
+			_ = connection.Close()
+		}
+	}()
 	stopContextClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
-	defer stopContextClose()
+	defer func() {
+		if stopContextClose() {
+			return
+		}
+		_ = connection.Close()
+	}()
 	connection.SetReadLimit(protocol.MaxFrameSize)
 	deadline := time.Now().Add(DefaultHandshakeTimeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline
 	}
 	if deadlineErr := connection.SetReadDeadline(deadline); deadlineErr != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("set node handshake deadline: %w", deadlineErr)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("set node handshake deadline: %w", deadlineErr)
 	}
 	if deadlineErr := connection.SetWriteDeadline(deadline); deadlineErr != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("set node handshake deadline: %w", deadlineErr)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("set node handshake deadline: %w", deadlineErr)
 	}
 
 	challenge, err := readChallenge(connection)
 	if err != nil {
-		return nodes.AdmissionResult{}, err
+		return nil, nodes.AdmissionResult{}, err
 	}
 	proof, err := nodes.NewIdentityProof(
 		client.identity.PrivateKey,
@@ -155,15 +187,15 @@ func (client *Client) Authenticate(ctx context.Context) (nodes.AdmissionResult, 
 		client.catalog,
 	)
 	if err != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("create node identity proof: %w", err)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("create node identity proof: %w", err)
 	}
 	params, err := json.Marshal(proof)
 	if err != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("encode node identity proof: %w", err)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("encode node identity proof: %w", err)
 	}
 	requestID, err := randomRequestID()
 	if err != nil {
-		return nodes.AdmissionResult{}, err
+		return nil, nodes.AdmissionResult{}, err
 	}
 	requestData, err := protocol.Encode(protocol.Envelope{
 		Type:   protocol.FrameRequest,
@@ -172,31 +204,31 @@ func (client *Client) Authenticate(ctx context.Context) (nodes.AdmissionResult, 
 		Params: params,
 	})
 	if err != nil {
-		return nodes.AdmissionResult{}, err
+		return nil, nodes.AdmissionResult{}, err
 	}
 	if writeErr := connection.WriteMessage(websocket.TextMessage, requestData); writeErr != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("send node identity proof: %w", writeErr)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("send node identity proof: %w", writeErr)
 	}
 
 	messageType, responseData, err := connection.ReadMessage()
 	if err != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("read node admission result: %w", err)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("read node admission result: %w", err)
 	}
 	if messageType != websocket.TextMessage {
-		return nodes.AdmissionResult{}, errors.New("node gateway returned a non-text admission frame")
+		return nil, nodes.AdmissionResult{}, errors.New("node gateway returned a non-text admission frame")
 	}
 	envelope, err := protocol.Decode(responseData)
 	if err != nil {
-		return nodes.AdmissionResult{}, err
+		return nil, nodes.AdmissionResult{}, err
 	}
 	if envelope.Type != protocol.FrameResponse || envelope.ID != requestID {
-		return nodes.AdmissionResult{}, errors.New("node gateway returned an unrelated admission response")
+		return nil, nodes.AdmissionResult{}, errors.New("node gateway returned an unrelated admission response")
 	}
 	if envelope.OK == nil || !*envelope.OK {
 		if envelope.Error == nil {
-			return nodes.AdmissionResult{}, errors.New("node gateway rejected admission")
+			return nil, nodes.AdmissionResult{}, errors.New("node gateway rejected admission")
 		}
-		return nodes.AdmissionResult{}, fmt.Errorf(
+		return nil, nodes.AdmissionResult{}, fmt.Errorf(
 			"node gateway rejected admission (%s): %s",
 			envelope.Error.Code,
 			envelope.Error.Message,
@@ -204,12 +236,45 @@ func (client *Client) Authenticate(ctx context.Context) (nodes.AdmissionResult, 
 	}
 	var result nodes.AdmissionResult
 	if err := decodeStrictJSON(envelope.Result, &result); err != nil {
-		return nodes.AdmissionResult{}, fmt.Errorf("decode node admission result: %w", err)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf("decode node admission result: %w", err)
 	}
-	if result.NodeID != client.identity.ID || result.State != nodes.StatePendingPairing {
-		return nodes.AdmissionResult{}, errors.New("node gateway returned an invalid admission identity or state")
+	if result.NodeID != client.identity.ID ||
+		(result.State != nodes.StatePendingPairing && result.State != nodes.StateConnected) {
+		return nil, nodes.AdmissionResult{}, errors.New("node gateway returned an invalid admission identity or state")
 	}
-	return result, nil
+	connected = true
+	return connection, result, nil
+}
+
+func (client *Client) serveConnected(ctx context.Context, connection *websocket.Conn) error {
+	defer connection.Close()
+	stopContextClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopContextClose()
+	if err := connection.SetWriteDeadline(time.Time{}); err != nil {
+		return err
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(DefaultGatewayLiveness)); err != nil {
+		return err
+	}
+	connection.SetPingHandler(func(message string) error {
+		if err := connection.SetReadDeadline(time.Now().Add(DefaultGatewayLiveness)); err != nil {
+			return err
+		}
+		return connection.WriteControl(
+			websocket.PongMessage,
+			[]byte(message),
+			time.Now().Add(DefaultHandshakeTimeout),
+		)
+	})
+	for {
+		messageType, _, err := connection.ReadMessage()
+		if err != nil {
+			return fmt.Errorf("node gateway session ended: %w", err)
+		}
+		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+			return errors.New("node gateway sent application data before command protocol was enabled")
+		}
+	}
 }
 
 func readChallenge(connection *websocket.Conn) (nodes.Challenge, error) {

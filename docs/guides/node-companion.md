@@ -77,7 +77,7 @@ the same binary with distinct config and state directories:
 Each instance is paired and authorized independently. Do not point multiple
 instances at the same state directory. A future multi-gateway supervisor may
 share a capability runtime with explicit resource scheduling, but gateway trust,
-policy, tokens, and invocation ledgers will remain isolated per binding.
+policy, identity, and invocation ledgers will remain isolated per binding.
 
 ## Pairing Administration
 
