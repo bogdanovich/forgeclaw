@@ -227,6 +227,19 @@ func (auth *Authenticator) Disconnect(id ID, reason string) error {
 	return err
 }
 
+// ApprovedCommand resolves the durable operator-approved command surface for
+// a currently connected node.
+func (auth *Authenticator) ApprovedCommand(id ID, command string) (CommandDescriptor, error) {
+	registration, exists, err := auth.registry.Registration(id)
+	if err != nil {
+		return CommandDescriptor{}, err
+	}
+	if !exists {
+		return CommandDescriptor{}, fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
+	}
+	return registration.ApprovedCommand(command)
+}
+
 func (auth *Authenticator) persistPending(node Snapshot, publicKey []byte, proof IdentityProof, now int64) error {
 	return auth.registry.UpsertPending(PendingPairing{
 		Node:          node,

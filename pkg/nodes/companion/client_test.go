@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -44,12 +45,19 @@ func TestClientAuthenticatesPinnedWSSIdentity(t *testing.T) {
 func TestClientReconnectsAfterPendingAdmission(t *testing.T) {
 	_, admission := testGatewayAdmission(t)
 	var requests atomic.Int32
-	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		requests.Add(1)
-		admission.ServeHTTP(writer, request)
-	}))
+	server := httptest.NewTLSServer(
+		http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			requests.Add(1)
+			admission.ServeHTTP(writer, request)
+		}),
+	)
 	defer server.Close()
-	client := testClientForServer(t, server, testIdentity(t), ReconnectConfig{PendingDelaySeconds: 1})
+	client := testClientForServer(
+		t,
+		server,
+		testIdentity(t),
+		ReconnectConfig{PendingDelaySeconds: 1},
+	)
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -97,13 +105,84 @@ func TestClientKeepsApprovedSessionUntilContextCancellation(t *testing.T) {
 	waitForNodeState(t, registry, identity.ID, nodes.StateDisconnected)
 }
 
+func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	policy := testRuntimePolicy([]string{"node.info.v1"})
+	commandRuntime, err := NewRuntime(identity.ID, "test", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := testRuntimeClientForServer(t, server, identity, commandRuntime)
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, approveErr := registry.Approve(result.NodeID, nodes.PairingApproval{
+		AllowedCommands: []string{"node.info.v1"},
+		At:              time.Now().Unix(),
+	}); approveErr != nil {
+		t.Fatal(approveErr)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	registration, exists, err := registry.Registration(identity.ID)
+	if err != nil || !exists {
+		t.Fatalf("Registration() = exists %v, error %v", exists, err)
+	}
+	descriptor, err := registration.ApprovedCommand("node.info.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
+		InvocationID:     "inv_transport",
+		IdempotencyKey:   "idem_transport",
+		NodeID:           identity.ID,
+		CatalogHash:      registration.Snapshot.CatalogHash,
+		Command:          descriptor.Name,
+		Input:            json.RawMessage(`{}`),
+		AgentID:          "agent_test",
+		SessionID:        "session_test",
+		ActorID:          "actor_test",
+		TimeoutSeconds:   5,
+		OutputLimitBytes: 4096,
+	}, descriptor, LocalExecutor, policy.Revision, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := admission.Invoke(t.Context(), identity.ID, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info struct {
+		NodeID nodes.ID `json:"node_id"`
+	}
+	if decodeErr := json.Unmarshal(output, &info); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if info.NodeID != identity.ID {
+		t.Fatalf("node.info node_id = %q", info.NodeID)
+	}
+	cancel()
+	if runErr := <-done; runErr != nil {
+		t.Fatal(runErr)
+	}
+}
+
 func TestDuplicateCompanionsBackOffInsteadOfRapidlyFlapping(t *testing.T) {
 	registry, admission := testGatewayAdmission(t)
 	var requests atomic.Int32
-	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		requests.Add(1)
-		admission.ServeHTTP(writer, request)
-	}))
+	server := httptest.NewTLSServer(
+		http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			requests.Add(1)
+			admission.ServeHTTP(writer, request)
+		}),
+	)
 	defer server.Close()
 	identity := testIdentity(t)
 	bootstrap := testClientForServer(t, server, identity, ReconnectConfig{})
@@ -251,49 +330,81 @@ func testClientForServer(
 	return client
 }
 
+func testRuntimeClientForServer(
+	t *testing.T,
+	server *httptest.Server,
+	identity Identity,
+	runtime *Runtime,
+) *Client {
+	t.Helper()
+	fingerprint := sha256.Sum256(server.Certificate().Raw)
+	cfg, err := (Config{
+		GatewayURL: strings.Replace(server.URL, "https://", "wss://", 1) + GatewayPath,
+		StateDir:   filepath.Join(t.TempDir(), "state"),
+		TLS:        TLSConfig{CertificateSHA256: hex.EncodeToString(fingerprint[:])},
+		Policy:     runtime.policy,
+	}).Normalize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClientWithRuntime(
+		cfg,
+		identity,
+		"test",
+		runtime,
+		slog.New(slog.DiscardHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
 func testConnectProxy(t *testing.T, backendAddress string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	requests := &atomic.Int32{}
-	proxy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodConnect {
-			http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
-			return
-		}
-		backend, err := net.Dial("tcp", backendAddress)
-		if err != nil {
-			http.Error(writer, "backend unavailable", http.StatusBadGateway)
-			return
-		}
-		hijacker, ok := writer.(http.Hijacker)
-		if !ok {
-			backend.Close()
-			http.Error(writer, "hijacking unavailable", http.StatusInternalServerError)
-			return
-		}
-		client, _, err := hijacker.Hijack()
-		if err != nil {
-			backend.Close()
-			return
-		}
-		requests.Add(1)
-		if _, err := fmt.Fprint(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-			client.Close()
-			backend.Close()
-			return
-		}
-		defer client.Close()
-		defer backend.Close()
-		copyDone := make(chan struct{})
-		go func() {
-			_, _ = io.Copy(backend, client)
-			if connection, ok := backend.(*net.TCPConn); ok {
-				_ = connection.CloseWrite()
+	proxy := httptest.NewServer(
+		http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method != http.MethodConnect {
+				http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
+				return
 			}
-			close(copyDone)
-		}()
-		_, _ = io.Copy(client, backend)
-		<-copyDone
-	}))
+			backend, err := net.Dial("tcp", backendAddress)
+			if err != nil {
+				http.Error(writer, "backend unavailable", http.StatusBadGateway)
+				return
+			}
+			hijacker, ok := writer.(http.Hijacker)
+			if !ok {
+				backend.Close()
+				http.Error(writer, "hijacking unavailable", http.StatusInternalServerError)
+				return
+			}
+			client, _, err := hijacker.Hijack()
+			if err != nil {
+				backend.Close()
+				return
+			}
+			requests.Add(1)
+			if _, err := fmt.Fprint(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+				client.Close()
+				backend.Close()
+				return
+			}
+			defer client.Close()
+			defer backend.Close()
+			copyDone := make(chan struct{})
+			go func() {
+				_, _ = io.Copy(backend, client)
+				if connection, ok := backend.(*net.TCPConn); ok {
+					_ = connection.CloseWrite()
+				}
+				close(copyDone)
+			}()
+			_, _ = io.Copy(client, backend)
+			<-copyDone
+		}),
+	)
 	return proxy, requests
 }
 

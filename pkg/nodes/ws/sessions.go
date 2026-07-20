@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/sipeed/picoclaw/pkg/nodes/protocol"
 )
 
 var defaultDeactivationRetryDelays = []time.Duration{
@@ -24,6 +26,7 @@ var (
 
 type sessionEntry struct {
 	connection io.Closer
+	peer       *peer
 }
 
 type transportEntry struct {
@@ -99,6 +102,9 @@ func (hub *SessionHub) Claim(
 	deactivate func() error,
 ) (func() (bool, error), error) {
 	entry := &sessionEntry{connection: connection}
+	if livePeer, ok := connection.(*peer); ok {
+		entry.peer = livePeer
+	}
 	hub.mu.Lock()
 	if hub.closed {
 		hub.mu.Unlock()
@@ -190,6 +196,24 @@ func (hub *SessionHub) Connected(id nodes.ID) bool {
 	defer hub.mu.Unlock()
 	slot := hub.sessions[id]
 	return slot != nil && slot.current != nil
+}
+
+// Request sends one correlated request to the current authenticated generation.
+func (hub *SessionHub) Request(
+	ctx context.Context,
+	id nodes.ID,
+	method string,
+	params json.RawMessage,
+) (protocol.Envelope, error) {
+	hub.mu.Lock()
+	slot := hub.sessions[id]
+	if hub.closed || slot == nil || slot.current == nil || slot.current.peer == nil {
+		hub.mu.Unlock()
+		return protocol.Envelope{}, ErrNodeDisconnected
+	}
+	session := slot.current.peer
+	hub.mu.Unlock()
+	return session.request(ctx, method, params)
 }
 
 func (hub *SessionHub) Close(ctx context.Context) error {

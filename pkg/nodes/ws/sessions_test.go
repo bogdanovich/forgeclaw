@@ -49,6 +49,27 @@ func TestSessionHubNewestClaimOwnsDisconnect(t *testing.T) {
 	}
 }
 
+func TestSessionHubRequestRequiresDispatchCapableLiveSession(t *testing.T) {
+	hub := NewSessionHub()
+	if _, err := hub.Request(t.Context(), nodes.ID("node_missing"), "node.invoke", []byte(`{}`)); !errors.Is(
+		err,
+		ErrNodeDisconnected,
+	) {
+		t.Fatalf("Request() error = %v", err)
+	}
+	release, err := hub.Claim(nodes.ID("node_legacy"), &trackingCloser{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := hub.Request(t.Context(), nodes.ID("node_legacy"), "node.invoke", []byte(`{}`)); !errors.Is(
+		err,
+		ErrNodeDisconnected,
+	) {
+		t.Fatalf("legacy Request() error = %v", err)
+	}
+}
+
 func TestSessionHubCloseRejectsNewClaimsAndLetsOwnersRelease(t *testing.T) {
 	hub := NewSessionHub()
 	active := &trackingCloser{}
@@ -73,7 +94,10 @@ func TestSessionHubCloseRejectsNewClaimsAndLetsOwnersRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	late := &trackingCloser{}
-	if _, err := hub.Claim(nodes.ID("node_late"), late, nil, nil); !errors.Is(err, ErrSessionHubClosed) {
+	if _, err := hub.Claim(nodes.ID("node_late"), late, nil, nil); !errors.Is(
+		err,
+		ErrSessionHubClosed,
+	) {
 		t.Fatalf("closed hub Claim() error = %v", err)
 	}
 	if hub.Connected(nodes.ID("node_late")) {

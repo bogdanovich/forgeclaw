@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/nodes"
 )
 
 func TestConfigNormalizesSecureEndpointAndPaths(t *testing.T) {
@@ -32,6 +34,27 @@ func TestConfigNormalizesSecureEndpointAndPaths(t *testing.T) {
 			cfg.maxReconnectDelay,
 			cfg.pendingRetryDelay,
 		)
+	}
+	if cfg.Policy.Revision != "default-deny" ||
+		cfg.Policy.MaximumRisk != "read" ||
+		len(cfg.Policy.AllowedCommands) != 0 {
+		t.Fatalf("default policy = %+v", cfg.Policy)
+	}
+}
+
+func TestConfigRejectsInvalidLocalPolicy(t *testing.T) {
+	cfg := Config{
+		GatewayURL: "wss://gateway.example",
+		Policy: nodes.LocalCommandPolicy{
+			Revision:          "policy-test",
+			AllowedCommands:   []string{"system.exec.v1"},
+			MaximumRisk:       nodes.RiskRead,
+			MaxTimeoutSeconds: 30,
+			MaxOutputBytes:    nodes.MaxInvocationOutput + 1,
+		},
+	}
+	if _, err := cfg.Normalize(t.TempDir()); err == nil {
+		t.Fatal("Normalize() accepted invalid local policy")
 	}
 }
 

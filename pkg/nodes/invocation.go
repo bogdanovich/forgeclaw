@@ -104,14 +104,20 @@ func PrepareExecutionPlan(
 		return ExecutionPlan{}, err
 	}
 	if descriptor.Name != request.Command {
-		return ExecutionPlan{}, fmt.Errorf("%w: descriptor does not match command", ErrInvalidInvocation)
+		return ExecutionPlan{}, fmt.Errorf(
+			"%w: descriptor does not match command",
+			ErrInvalidInvocation,
+		)
 	}
 	if !validInvocationIdentifier(executor) || len(policyRevision) == 0 ||
 		len(policyRevision) > MaxPolicyRevisionLength || !idPattern.MatchString(policyRevision) {
 		return ExecutionPlan{}, fmt.Errorf("%w: malformed execution policy", ErrInvalidInvocation)
 	}
 	if preparedAt.Unix() <= 0 || ttl < time.Second || ttl > MaxExecutionPlanTTL {
-		return ExecutionPlan{}, fmt.Errorf("%w: plan lifetime is outside bounds", ErrInvalidInvocation)
+		return ExecutionPlan{}, fmt.Errorf(
+			"%w: plan lifetime is outside bounds",
+			ErrInvalidInvocation,
+		)
 	}
 	input, value, err := canonicalInvocationInputValue(request.Input)
 	if err != nil {
@@ -206,7 +212,10 @@ func (registration Registration) ApprovedCommand(name string) (CommandDescriptor
 	}
 	if !validSHA256Digest(registration.ApprovedCatalogHash) ||
 		registration.ApprovedCatalogHash != registration.Snapshot.CatalogHash {
-		return CommandDescriptor{}, fmt.Errorf("%w: capability catalog requires reapproval", ErrCommandDenied)
+		return CommandDescriptor{}, fmt.Errorf(
+			"%w: capability catalog requires reapproval",
+			ErrCommandDenied,
+		)
 	}
 	return descriptor, nil
 }
@@ -265,7 +274,8 @@ func (policy LocalCommandPolicy) Authorize(
 	}
 	if nodeErr := receivingNodeID.Validate(); nodeErr != nil || !validInvocationIdentifier(actualExecutor) ||
 		plan.NodeID != receivingNodeID ||
-		plan.Executor != actualExecutor || plan.CatalogHash != actualCatalogHash {
+		plan.Executor != actualExecutor ||
+		plan.CatalogHash != actualCatalogHash {
 		return fmt.Errorf("%w: plan target does not match local runtime", ErrCommandDenied)
 	}
 	descriptor, advertised := runtimeCatalog.command(plan.Command)
@@ -334,22 +344,60 @@ func canonicalInvocationInputValue(raw json.RawMessage) (json.RawMessage, map[st
 }
 
 func validateInvocationInput(rawSchema json.RawMessage, input map[string]any) error {
+	return validateInvocationValue(rawSchema, input, "input")
+}
+
+// ValidateInvocationOutput validates and canonicalizes a command result before
+// it crosses the node transport boundary.
+func ValidateInvocationOutput(
+	descriptor CommandDescriptor,
+	raw json.RawMessage,
+	limit int,
+) (json.RawMessage, error) {
+	if err := descriptor.Validate(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > MaxInvocationOutput || len(raw) == 0 || len(raw) > limit {
+		return nil, fmt.Errorf("%w: output is outside bounds", ErrInvalidInvocation)
+	}
+	value, err := jsonstrict.Decode(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid output: %v", ErrInvalidInvocation, err)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: output must be an object", ErrInvalidInvocation)
+	}
+	if validationErr := validateInvocationValue(descriptor.OutputSchema, object, "output"); validationErr != nil {
+		return nil, validationErr
+	}
+	canonical, err := jsonstrict.Canonical(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: canonicalize output: %v", ErrInvalidInvocation, err)
+	}
+	if len(canonical) > limit {
+		return nil, fmt.Errorf("%w: canonical output is outside bounds", ErrInvalidInvocation)
+	}
+	return json.RawMessage(canonical), nil
+}
+
+func validateInvocationValue(rawSchema json.RawMessage, value map[string]any, label string) error {
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
-	const schemaURL = "urn:forgeclaw:node-command-input"
+	schemaURL := "urn:forgeclaw:node-command-" + label
 	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(rawSchema))
 	if err != nil {
-		return fmt.Errorf("%w: decode input schema: %v", ErrInvalidInvocation, err)
+		return fmt.Errorf("%w: decode %s schema: %v", ErrInvalidInvocation, label, err)
 	}
 	if err = compiler.AddResource(schemaURL, document); err != nil {
-		return fmt.Errorf("%w: register input schema: %v", ErrInvalidInvocation, err)
+		return fmt.Errorf("%w: register %s schema: %v", ErrInvalidInvocation, label, err)
 	}
 	resolved, err := compiler.Compile(schemaURL)
 	if err != nil {
-		return fmt.Errorf("%w: resolve input schema: %v", ErrInvalidInvocation, err)
+		return fmt.Errorf("%w: resolve %s schema: %v", ErrInvalidInvocation, label, err)
 	}
-	if err := resolved.Validate(input); err != nil {
-		return fmt.Errorf("%w: input violates command schema: %v", ErrInvalidInvocation, err)
+	if err := resolved.Validate(value); err != nil {
+		return fmt.Errorf("%w: %s violates command schema: %v", ErrInvalidInvocation, label, err)
 	}
 	return nil
 }
