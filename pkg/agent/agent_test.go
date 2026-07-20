@@ -110,7 +110,9 @@ func newBlockingMediaChannel() *blockingMediaChannel {
 type recordingChannelManager struct {
 	dismissed         []string
 	dismissedSessions []string
+	sentMessages      []bus.OutboundMessage
 	sentMedia         []bus.OutboundMediaMessage
+	messageErr        error
 }
 
 func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
@@ -124,7 +126,8 @@ func (m *recordingChannelManager) GetEnabledChannels() []string {
 func (m *recordingChannelManager) InvokeTypingStop(channel, chatID string) {}
 
 func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
-	return nil
+	m.sentMessages = append(m.sentMessages, msg)
+	return m.messageErr
 }
 
 func (m *recordingChannelManager) SendMessageProvisional(ctx context.Context, msg bus.OutboundMessage) error {
@@ -2793,6 +2796,86 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 	}
 	if len(telegramChannel.sentMessages) != 0 {
 		t.Fatalf("expected no separate final text message, got %+v", telegramChannel.sentMessages)
+	}
+}
+
+func TestDeliverFinalTurnResult_MarksFinalTextSettlement(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		deliveryErr error
+		wantQueued  bool
+	}{
+		{name: "synchronous success"},
+		{name: "bus fallback", deliveryErr: errors.New("delivery failed"), wantQueued: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Agents: config.AgentsConfig{
+					Defaults: config.AgentDefaults{
+						Workspace: t.TempDir(),
+						ModelName: "test-model",
+						MaxTokens: 4096,
+					},
+				},
+			}
+			msgBus := bus.NewMessageBus()
+			al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+			channelManager := &recordingChannelManager{messageErr: tc.deliveryErr}
+			al.channelManager = channelManager
+			agent := al.registry.GetDefaultAgent()
+			if agent == nil {
+				t.Fatal("expected default agent")
+			}
+			traceScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-final-text")
+
+			al.deliverFinalTurnResult(
+				context.Background(),
+				traceScope,
+				agent,
+				processOptions{
+					Dispatch: DispatchRequest{
+						SessionKey: "final-text-session",
+						InboundContext: &bus.InboundContext{
+							Channel: "telegram",
+							ChatID:  "chat1",
+						},
+					},
+					SendResponse: true,
+				},
+				turnResult{finalContent: "Final response"},
+			)
+
+			if len(channelManager.sentMessages) != 1 {
+				t.Fatalf("synchronous delivery attempts = %d, want 1", len(channelManager.sentMessages))
+			}
+			assertFinalTextSettlement(t, channelManager.sentMessages[0], traceScope)
+
+			select {
+			case queued := <-msgBus.OutboundChan():
+				if !tc.wantQueued {
+					t.Fatalf("unexpected bus fallback: %+v", queued)
+				}
+				assertFinalTextSettlement(t, queued, traceScope)
+			default:
+				if tc.wantQueued {
+					t.Fatal("expected bus fallback")
+				}
+			}
+		})
+	}
+}
+
+func assertFinalTextSettlement(
+	t *testing.T,
+	msg bus.OutboundMessage,
+	wantScope runtimeevents.TraceScope,
+) {
+	t.Helper()
+	if !msg.TraceSettlement {
+		t.Fatal("final text delivery is not marked as trace settlement")
+	}
+	if got := msg.TraceScopes; !slices.Equal(got, []runtimeevents.TraceScope{wantScope}) {
+		t.Fatalf("trace scopes = %+v, want %+v", got, []runtimeevents.TraceScope{wantScope})
 	}
 }
 

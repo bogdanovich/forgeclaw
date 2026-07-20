@@ -322,6 +322,7 @@ func (al *AgentLoop) deliverFinalTurnText(
 		ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
 	}
 	bus.SetOutboundTraceScopes(&msg, []runtimeevents.TraceScope{traceScope})
+	markFinalOutbound(&msg)
 	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
 		sender, ok := al.channelManager.(provisionalChannelManager)
