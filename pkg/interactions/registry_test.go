@@ -919,6 +919,56 @@ func TestRegistrySubscribeSnapshotReturnsSubscriptionBoundary(t *testing.T) {
 	}
 }
 
+func TestRegistrySerializesCommittedObserverSnapshots(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	id := "interaction_adadadad11111111"
+	createdEntered := make(chan struct{})
+	releaseCreated := make(chan struct{})
+	var observationsMu sync.Mutex
+	observations := make([]EventObservation, 0, 2)
+	registry.Subscribe(func(observation EventObservation) {
+		if observation.Event.InteractionID == id && observation.Event.Sequence == 1 {
+			close(createdEntered)
+			<-releaseCreated
+		}
+		observationsMu.Lock()
+		observations = append(observations, observation)
+		observationsMu.Unlock()
+	})
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := registry.Create(validCreate(clock, id, "session-1"))
+		createDone <- err
+	}()
+	<-createdEntered
+	created, ok := registry.Get(id)
+	if !ok {
+		t.Fatal("durable created record unavailable while observer was blocked")
+	}
+	if _, err := registry.Cancel(created.ID, created.Revision, "fixture_cancel"); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseCreated)
+	if err := <-createDone; err != nil {
+		t.Fatal(err)
+	}
+
+	observationsMu.Lock()
+	defer observationsMu.Unlock()
+	if len(observations) != 2 {
+		t.Fatalf("observations = %+v", observations)
+	}
+	if observations[0].Event.Sequence != 1 || observations[0].Record.Status != StatusCreated ||
+		observations[0].Record.Revision != 1 {
+		t.Fatalf("created observation = %+v", observations[0])
+	}
+	if observations[1].Event.Sequence != 2 || observations[1].Record.Status != StatusCancelled ||
+		observations[1].Record.Revision != 2 {
+		t.Fatalf("canceled observation = %+v", observations[1])
+	}
+}
+
 func TestRegistryObserverPanicDoesNotFailDurableWrite(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	registry.Subscribe(func(EventObservation) { panic("observer failed") })

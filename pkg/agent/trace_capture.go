@@ -711,6 +711,7 @@ func (m *traceCaptureManager) observeInteractionRegistryEventGeneration(
 		return
 	}
 	delete(m.interactions, event.InteractionID)
+	trace.retainedAt = interactionTraceRetainedAt(state, []interactions.Event{event})
 	trace.trace.Outcome = &evaltrace.Outcome{
 		Status:    string(state.Status),
 		ErrorCode: interactionErrorCode(state),
@@ -826,11 +827,25 @@ func completeTraceMatchesTerminalInteraction(
 	trace evaltrace.Trace,
 	state interactions.Record,
 ) bool {
-	return trace.Metadata.TraceKind == evaltrace.TraceKindInteraction &&
-		!trace.Truncation.Incomplete &&
-		trace.Outcome != nil &&
-		trace.Outcome.Status == string(state.Status) &&
-		trace.Outcome.ErrorCode == interactionErrorCode(state)
+	if trace.Metadata.TraceKind != evaltrace.TraceKindInteraction ||
+		trace.Truncation.Incomplete || trace.Outcome == nil ||
+		trace.Outcome.Status != string(state.Status) ||
+		trace.Outcome.ErrorCode != interactionErrorCode(state) {
+		return false
+	}
+	for i := len(trace.Records) - 1; i >= 0; i-- {
+		if trace.Records[i].Kind != evaltrace.RecordInteractionTransition {
+			continue
+		}
+		var payload evaltrace.InteractionPayload
+		if err := json.Unmarshal(trace.Records[i].Data, &payload); err != nil {
+			return false
+		}
+		return payload.Sequence == state.LastEventSeq &&
+			payload.Revision == state.Revision &&
+			payload.Status == string(state.Status)
+	}
+	return false
 }
 
 func (m *traceCaptureManager) enqueuePersist(

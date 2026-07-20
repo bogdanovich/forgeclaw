@@ -43,16 +43,23 @@ type observerEntry struct {
 	observer Observer
 }
 
+type queuedObservation struct {
+	observation EventObservation
+	observers   []observerEntry
+}
+
 var observerSequence atomic.Uint64
 
 type Registry struct {
-	mu        sync.RWMutex
-	storePath string
-	options   Options
-	records   map[string]Record
-	events    []Event
-	observers []observerEntry
-	loadErr   error
+	mu            sync.RWMutex
+	storePath     string
+	options       Options
+	records       map[string]Record
+	events        []Event
+	observers     []observerEntry
+	notifications []queuedObservation
+	notifying     bool
+	loadErr       error
 }
 
 var _ Store = (*Registry)(nil)
@@ -240,9 +247,12 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 		r.mu.Unlock()
 		return Record{}, err
 	}
+	drainNotifications := r.queueNotificationsLocked(events)
 	releaseStore()
 	r.mu.Unlock()
-	r.notify(events)
+	if drainNotifications {
+		r.drainNotifications()
+	}
 	return cloneRecord(rec), nil
 }
 
@@ -549,9 +559,12 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 		r.mu.Unlock()
 		return nil, err
 	}
+	drainNotifications := r.queueNotificationsLocked(emitted)
 	releaseStore()
 	r.mu.Unlock()
-	r.notify(emitted)
+	if drainNotifications {
+		r.drainNotifications()
+	}
 	sort.Slice(claimed, func(i, j int) bool { return claimed[i].ID < claimed[j].ID })
 	return claimed, nil
 }
@@ -1011,9 +1024,12 @@ func (r *Registry) update(
 		r.mu.Unlock()
 		return Record{}, err
 	}
+	drainNotifications := r.queueNotificationsLocked([]Event{event})
 	releaseStore()
 	r.mu.Unlock()
-	r.notify([]Event{event})
+	if drainNotifications {
+		r.drainNotifications()
+	}
 	return cloneRecord(rec), nil
 }
 
@@ -1420,21 +1436,41 @@ func (r *Registry) appendEventFromLocked(
 	})
 }
 
-func (r *Registry) notify(events []Event) {
+func (r *Registry) queueNotificationsLocked(events []Event) bool {
 	if len(events) == 0 {
-		return
+		return false
 	}
-	r.mu.RLock()
 	observers := append([]observerEntry(nil), r.observers...)
-	records := make(map[string]Record, len(events))
 	for _, event := range events {
-		records[event.InteractionID] = cloneRecord(r.records[event.InteractionID])
+		r.notifications = append(r.notifications, queuedObservation{
+			observation: EventObservation{
+				Event:  event,
+				Record: cloneRecord(r.records[event.InteractionID]),
+			},
+			observers: observers,
+		})
 	}
-	r.mu.RUnlock()
-	for _, event := range events {
-		observation := EventObservation{Event: event, Record: records[event.InteractionID]}
-		for _, entry := range observers {
-			notifyObserver(entry.observer, observation)
+	if r.notifying {
+		return false
+	}
+	r.notifying = true
+	return true
+}
+
+func (r *Registry) drainNotifications() {
+	for {
+		r.mu.Lock()
+		if len(r.notifications) == 0 {
+			r.notifying = false
+			r.mu.Unlock()
+			return
+		}
+		queued := r.notifications[0]
+		r.notifications[0] = queuedObservation{}
+		r.notifications = r.notifications[1:]
+		r.mu.Unlock()
+		for _, entry := range queued.observers {
+			notifyObserver(entry.observer, queued.observation)
 		}
 	}
 }

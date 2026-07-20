@@ -395,6 +395,10 @@ is partial evidence rather than a malformed lifecycle.
 Registry attachment atomically subscribes the recorder and returns retained
 records plus event history. Startup rebuilds missing terminal traces from that
 snapshot, while a deterministic trace builder is shared with live capture.
+After each successful durable mutation, the registry queues the event, its
+exact committed record snapshot, and the subscribers present at that boundary.
+A single outside-lock drainer preserves commit order without preventing
+observers from calling back into the registry.
 Stable record creation time identifies the trace across history eviction, and
 terminal reconciliation replaces stale incomplete files. Missing retained event
 history is represented by an explicit incomplete trace. Re-enabling capture

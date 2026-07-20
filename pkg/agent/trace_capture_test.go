@@ -844,6 +844,59 @@ func TestTraceCaptureDoesNotResurrectTerminalTracePrunedByCount(t *testing.T) {
 	}
 }
 
+func TestTraceCaptureUsesTerminalLifecycleTimeForLiveTraceRetention(t *testing.T) {
+	workspace := t.TempDir()
+	terminalTime := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Millisecond)
+	registry := interactions.NewRegistryWithOptions(
+		interactions.WorkspaceStorePath(workspace),
+		interactions.Options{Now: func() time.Time { return terminalTime }},
+	)
+	manager := newTraceCaptureManager(traceTestConfig(workspace), nil)
+	manager.attachInteractionRegistry(workspace, registry)
+	record := createTraceTestInteraction(t, registry, "interaction-live-retention", "session-1")
+	record, err := registry.Cancel(record.ID, record.Revision, "fixture_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(
+		workspace, "state", "evaluation", "traces",
+		opaqueTraceID("interaction", record.ID, time.UnixMilli(record.CreatedAt))+".json",
+	)
+	waitForTracePath(t, tracePath)
+	manager.close()
+	info, err := os.Stat(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.UnixMilli(record.ResolvedAt)
+	if !info.ModTime().Equal(want) {
+		t.Fatalf("live trace retention time = %s, want %s", info.ModTime(), want)
+	}
+}
+
+func TestCompleteTerminalInteractionTraceRequiresFinalSequenceAndRevision(t *testing.T) {
+	workspace := t.TempDir()
+	registry := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	record := createTraceTestInteraction(t, registry, "interaction-terminal-envelope", "session-1")
+	record, err := registry.Cancel(record.ID, record.Revision, "fixture_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := registry.ListEvents(record.ID)
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	partial := buildInteractionTrace(settings, workspace, record, history[:len(history)-1])
+	partial.trace.Truncation = evaltrace.Truncation{}
+	partial.trace.Outcome = &evaltrace.Outcome{Status: string(record.Status)}
+	if completeTraceMatchesTerminalInteraction(partial.trace, record) {
+		t.Fatal("terminal envelope accepted a trace without its final transition")
+	}
+	complete := buildInteractionTrace(settings, workspace, record, history)
+	complete.trace.Outcome = &evaltrace.Outcome{Status: string(record.Status)}
+	if !completeTraceMatchesTerminalInteraction(complete.trace, record) {
+		t.Fatal("complete terminal lifecycle was rejected")
+	}
+}
+
 func TestBuildInteractionTraceKeepsIdentityWhenHistoryPrefixIsEvicted(t *testing.T) {
 	workspace := t.TempDir()
 	createdAt := time.Date(2026, 7, 19, 18, 0, 0, 0, time.UTC)
