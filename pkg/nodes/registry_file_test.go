@@ -277,6 +277,49 @@ func TestFileRegistryKeepsApprovalWhenAdvertisedCatalogNarrows(t *testing.T) {
 	}
 }
 
+func TestFileRegistryRuntimeUpsertPreservesOperatorMetadata(t *testing.T) {
+	registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing := testPendingPairing(t, 1)
+	if upsertErr := registry.UpsertPending(pairing); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	approved, err := registry.Approve(pairing.Node.ID, PairingApproval{
+		Aliases:     []Alias{"vpn-box"},
+		DisplayName: "VPN box",
+		At:          2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeSnapshot := approved.Snapshot
+	runtimeSnapshot.State = StateConnected
+	runtimeSnapshot.Aliases = []Alias{"runtime-alias"}
+	runtimeSnapshot.DisplayName = "runtime name"
+	runtimeSnapshot.SoftwareVersion = "v0.2.0"
+	if upsertErr := registry.Upsert(runtimeSnapshot); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	registration, _, err := registry.Registration(pairing.Node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registration.Snapshot.DisplayName != "VPN box" ||
+		len(registration.Snapshot.Aliases) != 1 || registration.Snapshot.Aliases[0] != "vpn-box" {
+		t.Fatalf("operator metadata overwritten: %#v", registration.Snapshot)
+	}
+	if registration.Snapshot.SoftwareVersion != "v0.2.0" || registration.Snapshot.State != StateConnected {
+		t.Fatalf("runtime metadata not updated: %#v", registration.Snapshot)
+	}
+
+	runtimeSnapshot.State = StateRevoked
+	if upsertErr := registry.Upsert(runtimeSnapshot); !errors.Is(upsertErr, ErrInvalidNode) {
+		t.Fatalf("runtime Upsert changed operator-owned lifecycle: %v", upsertErr)
+	}
+}
+
 func TestFileRegistryRegistrationReturnsCopies(t *testing.T) {
 	registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
 	if err != nil {

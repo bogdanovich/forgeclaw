@@ -123,8 +123,8 @@ func (registry *FileRegistry) Upsert(snapshot Snapshot) error {
 	if err := snapshot.Validate(); err != nil {
 		return err
 	}
-	if snapshot.State == StatePendingPairing {
-		return fmt.Errorf("%w: pending nodes require pairing identity", ErrInvalidNode)
+	if !runtimeNodeState(snapshot.State) {
+		return fmt.Errorf("%w: state %q is not runtime-owned", ErrInvalidNode, snapshot.State)
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -132,14 +132,21 @@ func (registry *FileRegistry) Upsert(snapshot Snapshot) error {
 	if !exists {
 		return fmt.Errorf("%w: runtime update requires an approved node", ErrInvalidNode)
 	}
-	if exists && record.Snapshot.State == StatePendingPairing {
+	if record.Snapshot.State == StatePendingPairing {
 		return fmt.Errorf("%w: pending nodes require explicit approval", ErrInvalidNode)
 	}
-	if exists && record.Snapshot.State == StateRevoked && snapshot.State != StateRevoked {
+	if record.Snapshot.State == StateRevoked {
 		return fmt.Errorf("%w: revoked node cannot be restored through runtime state", ErrInvalidNode)
 	}
+	snapshot.Aliases = append([]Alias(nil), record.Snapshot.Aliases...)
+	snapshot.DisplayName = record.Snapshot.DisplayName
 	record.Snapshot = cloneSnapshot(snapshot)
 	return registry.commitRecordLocked(record)
+}
+
+func runtimeNodeState(state State) bool {
+	return state == StateConnected || state == StateDisconnected ||
+		state == StateDegraded || state == StateIncompatible
 }
 
 func (registry *FileRegistry) MarkDisconnected(id ID, disconnect Disconnect) error {
