@@ -260,7 +260,6 @@ func (al *AgentLoop) Close() {
 
 type turnEventScope struct {
 	agentID    string
-	workspace  string
 	sessionKey string
 	turnID     string
 	context    *TurnContext
@@ -480,7 +479,6 @@ func (al *AgentLoop) runAgentLoop(
 
 	turnScope := al.newTurnEventScope(
 		agent.ID,
-		agent.Workspace,
 		opts.Dispatch.SessionKey,
 		newTurnContext(
 			opts.Dispatch.InboundContext,

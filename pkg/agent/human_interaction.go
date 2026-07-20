@@ -99,7 +99,6 @@ func (al *AgentLoop) observeInteractionEvent(
 	record := observation.Record
 	al.runtimeEventEmitter().emitEvent(kind, HookMeta{
 		AgentID:    record.Route.AgentID,
-		Workspace:  workspace,
 		SessionKey: record.Route.SessionKey,
 		TurnID:     record.Origin.TurnID,
 		Source:     "interaction_registry",

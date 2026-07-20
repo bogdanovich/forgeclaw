@@ -508,7 +508,6 @@ func spawnSubTurn(
 	// Create event scope for the child turn
 	scope := al.newTurnEventScope(
 		agent.ID,
-		agent.Workspace,
 		childID,
 		newTurnContext(opts.Dispatch.InboundContext, opts.Dispatch.RouteResult, opts.Dispatch.SessionScope),
 	)
