@@ -29,9 +29,9 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 	secret := "sk-secret-that-must-not-appear"
 	start := time.Now().UTC()
 	scope := runtimeevents.Scope{
+		TraceScope: runtimeevents.NewTraceScope(workspace, "turn-1"),
 		AgentID:    "main",
 		SessionKey: "session:" + secret,
-		TurnID:     "turn-1",
 		Channel:    "telegram",
 		ChatID:     "chat-1",
 	}
@@ -115,7 +115,9 @@ func TestTraceCaptureDisabledWritesNothing(t *testing.T) {
 		t.Fatal("disabled capture started background workers")
 	}
 	start := time.Now().UTC()
-	scope := runtimeevents.Scope{TurnID: "turn-disabled"}
+	scope := runtimeevents.Scope{
+		TraceScope: runtimeevents.NewTraceScope(workspace, "turn-disabled"),
+	}
 	eventBus.Publish(
 		context.Background(),
 		runtimeevents.Event{
@@ -156,7 +158,9 @@ func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
 		t.Fatal("enabling capture did not start workers")
 	}
 	start := time.Now().UTC()
-	scope := runtimeevents.Scope{TurnID: "turn-enabled"}
+	scope := runtimeevents.Scope{
+		TraceScope: runtimeevents.NewTraceScope(workspace, "turn-enabled"),
+	}
 	publishCaptureEvent(
 		t,
 		eventBus,
@@ -195,7 +199,7 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 
 	start := time.Now().UTC()
 	scope := runtimeevents.Scope{
-		TurnID:     "turn-delivery",
+		TraceScope: runtimeevents.NewTraceScope(workspace, "turn-delivery"),
 		SessionKey: "session-delivery",
 		Channel:    "telegram",
 		ChatID:     "chat-delivery",
@@ -232,9 +236,23 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 		t.Fatalf("trace persisted before delivery outcome: %v", matches)
 	}
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
-		ID: "sent", Kind: runtimeevents.KindChannelMessageOutboundSent, Time: start.Add(2 * time.Millisecond),
-		Scope:   runtimeevents.Scope{Channel: "telegram", ChatID: "chat-delivery"},
-		Payload: channels.ChannelOutboundPayload{ContentLen: 4},
+		ID: "observed", Kind: runtimeevents.KindChannelMessageOutboundSent, Time: start.Add(2 * time.Millisecond),
+		Scope: runtimeevents.Scope{Channel: "telegram", ChatID: "chat-delivery"},
+		Payload: channels.ChannelOutboundPayload{
+			TraceScopes: []runtimeevents.TraceScope{scope.TraceScope}, ContentLen: 4,
+		},
+	})
+	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(
+		matches,
+	) != 0 {
+		t.Fatalf("non-settling delivery event persisted trace: %v", matches)
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "sent", Kind: runtimeevents.KindChannelMessageOutboundSent, Time: start.Add(3 * time.Millisecond),
+		Scope: runtimeevents.Scope{Channel: "telegram", ChatID: "chat-delivery"},
+		Payload: channels.ChannelOutboundPayload{
+			TraceScopes: []runtimeevents.TraceScope{scope.TraceScope}, TraceSettlement: true, ContentLen: 4,
+		},
 	})
 
 	tracePath := waitForTraceFile(t, workspace)
@@ -252,6 +270,145 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("trace does not contain delivery outcome: %#v", trace.Records)
+	}
+}
+
+func TestTraceCaptureSeparatesIdenticalTurnIDsAcrossWorkspaces(t *testing.T) {
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspaceA), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+
+	startedAt := time.Now().UTC()
+	for index, item := range []struct {
+		workspace string
+		tool      string
+	}{
+		{workspace: workspaceA, tool: "tool-a"},
+		{workspace: workspaceB, tool: "tool-b"},
+	} {
+		scope := runtimeevents.Scope{
+			TraceScope: runtimeevents.NewTraceScope(item.workspace, "shared-turn"),
+			SessionKey: "shared-session", Channel: "telegram", ChatID: "shared-chat",
+		}
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: "start-" + item.tool, Kind: runtimeevents.KindAgentTurnStart,
+			Time: startedAt.Add(time.Duration(index) * time.Millisecond), Scope: scope,
+			Payload: TurnStartPayload{Workspace: item.workspace},
+		})
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: "tool-" + item.tool, Kind: runtimeevents.KindAgentToolExecStart,
+			Time: startedAt.Add(time.Duration(index+2) * time.Millisecond), Scope: scope,
+			Payload: ToolExecStartPayload{Tool: item.tool},
+		})
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: "end-" + item.tool, Kind: runtimeevents.KindAgentTurnEnd,
+			Time: startedAt.Add(time.Duration(index+4) * time.Millisecond), Scope: scope,
+			Payload: TurnEndPayload{Workspace: item.workspace, Status: TurnEndStatusCompleted},
+		})
+	}
+
+	traceA := readCapturedTrace(t, waitForTraceFile(t, workspaceA))
+	traceB := readCapturedTrace(t, waitForTraceFile(t, workspaceB))
+	if traceA.TraceID == traceB.TraceID {
+		t.Fatalf("workspace-colliding turns share trace ID %q", traceA.TraceID)
+	}
+	assertCapturedTools(t, traceA, "tool-a")
+	assertCapturedTools(t, traceB, "tool-b")
+}
+
+func TestTraceCaptureSettlesEveryScopeOnAggregatedDelivery(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+
+	startedAt := time.Now().UTC()
+	traceScopes := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope(workspace, "turn-1"),
+		runtimeevents.NewTraceScope(workspace, "turn-2"),
+	}
+	for index, traceScope := range traceScopes {
+		scope := runtimeevents.Scope{TraceScope: traceScope}
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: "start-" + traceScope.TurnID, Kind: runtimeevents.KindAgentTurnStart,
+			Time: startedAt.Add(time.Duration(index) * time.Millisecond), Scope: scope,
+			Payload: TurnStartPayload{Workspace: workspace},
+		})
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: "end-" + traceScope.TurnID, Kind: runtimeevents.KindAgentTurnEnd,
+			Time: startedAt.Add(time.Duration(index+2) * time.Millisecond), Scope: scope,
+			Payload: TurnEndPayload{
+				Workspace: workspace, Status: TurnEndStatusCompleted, DeliveryExpected: true,
+			},
+		})
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "aggregated-sent", Kind: runtimeevents.KindChannelMessageOutboundSent,
+		Time: startedAt.Add(5 * time.Millisecond),
+		Payload: channels.ChannelOutboundPayload{
+			TraceScopes: traceScopes, TraceSettlement: true, ContentLen: 8,
+		},
+	})
+
+	for _, path := range waitForTraceFiles(t, workspace, 2) {
+		trace := readCapturedTrace(t, path)
+		found := false
+		for _, record := range trace.Records {
+			found = found || record.Kind == evaltrace.RecordDeliveryOutcome
+		}
+		if !found {
+			t.Fatalf("aggregated trace %s lacks delivery outcome", trace.Metadata.RootTurnID)
+		}
+	}
+}
+
+func TestTraceCaptureRetainsEarlyTerminalDeliveryUntilTurnEnd(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+
+	startedAt := time.Now().UTC()
+	traceScope := runtimeevents.NewTraceScope(workspace, "turn-early-delivery")
+	scope := runtimeevents.Scope{TraceScope: traceScope}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "start", Kind: runtimeevents.KindAgentTurnStart, Time: startedAt, Scope: scope,
+		Payload: TurnStartPayload{Workspace: workspace},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "sent", Kind: runtimeevents.KindChannelMessageOutboundSent,
+		Time: startedAt.Add(time.Millisecond),
+		Payload: channels.ChannelOutboundPayload{
+			TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+		},
+	})
+	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(
+		matches,
+	) != 0 {
+		t.Fatalf("trace persisted before turn end: %v", matches)
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "end", Kind: runtimeevents.KindAgentTurnEnd,
+		Time: startedAt.Add(2 * time.Millisecond), Scope: scope,
+		Payload: TurnEndPayload{
+			Workspace: workspace, Status: TurnEndStatusCompleted, DeliveryExpected: true,
+		},
+	})
+
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if len(trace.Records) != 3 {
+		t.Fatalf("early-settled trace records = %d, want 3", len(trace.Records))
 	}
 }
 
@@ -369,17 +526,53 @@ func publishCaptureEvent(t *testing.T, eventBus runtimeevents.Bus, event runtime
 
 func waitForTraceFile(t *testing.T, workspace string) string {
 	t.Helper()
+	return waitForTraceFiles(t, workspace, 1)[0]
+}
+
+func waitForTraceFiles(t *testing.T, workspace string, count int) []string {
+	t.Helper()
 	pattern := filepath.Join(workspace, "state", "evaluation", "traces", "*.json")
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		matches, _ := filepath.Glob(pattern)
-		if len(matches) > 0 {
-			return matches[0]
+		if len(matches) >= count {
+			return matches
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for trace at %s", pattern)
-	return ""
+	t.Fatalf("timed out waiting for %d trace(s) at %s", count, pattern)
+	return nil
+}
+
+func readCapturedTrace(t *testing.T, path string) evaltrace.Trace {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trace evaltrace.Trace
+	if err := json.Unmarshal(data, &trace); err != nil {
+		t.Fatal(err)
+	}
+	return trace
+}
+
+func assertCapturedTools(t *testing.T, trace evaltrace.Trace, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(want))
+	for _, record := range trace.Records {
+		if record.Kind != evaltrace.RecordToolCall {
+			continue
+		}
+		var payload evaltrace.ToolPayload
+		if err := json.Unmarshal(record.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, payload.Tool)
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("captured tools = %v, want %v", got, want)
+	}
 }
 
 func fileModeForTraceTest(t *testing.T, path string) os.FileMode {

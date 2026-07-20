@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -71,10 +72,12 @@ type ContextBudgetReport struct {
 
 // CompactRequest is the input to Compact.
 type CompactRequest struct {
-	Agent      *AgentInstance        // exact owner of the session
-	SessionKey string                // session identifier
-	Reason     ContextCompressReason // proactive_budget | llm_retry | summarize
-	Budget     int                   // effective history budget for compact/overflow repair
+	Agent      *AgentInstance           // exact owner of the session
+	SessionKey string                   // session identifier
+	Workspace  string                   // canonical workspace owner
+	TraceScope runtimeevents.TraceScope // exact owner for synchronous turn work; zero for background work
+	Reason     ContextCompressReason    // proactive_budget | llm_retry | summarize
+	Budget     int                      // effective history budget for compact/overflow repair
 }
 
 // IngestRequest is the input to Ingest.

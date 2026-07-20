@@ -113,6 +113,17 @@ type recordingChannelManager struct {
 	sentMedia         []bus.OutboundMediaMessage
 }
 
+type definitelyRejectedChannelManager struct {
+	*recordingChannelManager
+}
+
+func (m *definitelyRejectedChannelManager) SendMessageProvisional(
+	ctx context.Context,
+	_ bus.OutboundMessage,
+) error {
+	return channels.DefiniteNotSentDeliveryError(ctx.Err())
+}
+
 func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
 	return nil, false
 }
@@ -125,6 +136,13 @@ func (m *recordingChannelManager) InvokeTypingStop(channel, chatID string) {}
 
 func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
 	return nil
+}
+
+func (m *recordingChannelManager) SendMessageProvisional(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return m.SendMessage(ctx, msg)
 }
 
 func (m *recordingChannelManager) SendMessageDefiniteRetryOnly(
@@ -140,6 +158,13 @@ func (m *recordingChannelManager) SendMedia(
 ) error {
 	m.sentMedia = append(m.sentMedia, msg)
 	return nil
+}
+
+func (m *recordingChannelManager) SendMediaProvisional(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) error {
+	return m.SendMedia(ctx, msg)
 }
 
 func (m *recordingChannelManager) SendPlaceholder(
@@ -2746,29 +2771,38 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 		t.Fatal("expected default agent")
 	}
 	const finalText = "Video saved. Recipe translation is below."
-	al.deliverFinalTurnResult(context.Background(), agent, processOptions{
-		Dispatch: DispatchRequest{
-			SessionKey:  "final-media-session",
-			UserMessage: "save the reel and translate the recipe",
-			InboundContext: &bus.InboundContext{
-				Channel:  "telegram",
-				ChatID:   "chat1",
-				SenderID: "user1",
+	al.deliverFinalTurnResult(
+		context.Background(),
+		runtimeevents.NewTraceScope(agent.Workspace, "turn-final-media"),
+		agent,
+		processOptions{
+			Dispatch: DispatchRequest{
+				SessionKey:  "final-media-session",
+				UserMessage: "save the reel and translate the recipe",
+				InboundContext: &bus.InboundContext{
+					Channel:  "telegram",
+					ChatID:   "chat1",
+					SenderID: "user1",
+				},
 			},
-		},
-		SendResponse: true,
-	}, turnResult{
-		finalContent: finalText,
-		completionMedia: []tools.CompletionMedia{{
-			Ref:         ref,
-			Type:        "video",
-			Filename:    "reel.mp4",
-			ContentType: "video/mp4",
-		}},
-	})
+			SendResponse: true,
+		}, turnResult{
+			finalContent: finalText,
+			completionMedia: []tools.CompletionMedia{{
+				Ref:         ref,
+				Type:        "video",
+				Filename:    "reel.mp4",
+				ContentType: "video/mp4",
+			}},
+		})
 
 	if len(telegramChannel.sentMedia) != 1 {
 		t.Fatalf("expected exactly 1 final media message, got %d", len(telegramChannel.sentMedia))
+	}
+	traceScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-final-media")
+	if got := telegramChannel.sentMedia[0]; !got.TraceSettlement ||
+		len(got.TraceScopes) != 1 || got.TraceScopes[0] != traceScope {
+		t.Fatalf("final media trace identity = %#v", got)
 	}
 	parts := telegramChannel.sentMedia[0].Parts
 	if len(parts) != 1 {
@@ -2782,6 +2816,42 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 	}
 	if len(telegramChannel.sentMessages) != 0 {
 		t.Fatalf("expected no separate final text message, got %+v", telegramChannel.sentMessages)
+	}
+}
+
+func TestDeliverFinalTurnTextQueuesFallbackAfterTurnCancellation(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	defer al.Close()
+	al.channelManager = &definitelyRejectedChannelManager{
+		recordingChannelManager: &recordingChannelManager{},
+	}
+	agent := al.registry.GetDefaultAgent()
+	traceScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-canceled-fallback")
+	turnCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	al.deliverFinalTurnText(
+		turnCtx,
+		traceScope,
+		agent,
+		processOptions{Dispatch: DispatchRequest{SessionKey: "fallback-session"}},
+		bus.InboundContext{Channel: "telegram", ChatID: "chat1", SenderID: "user1"},
+		agent.ID,
+		"fallback-session",
+		nil,
+		"final after cancellation",
+	)
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Content != "final after cancellation" || !outbound.TraceSettlement ||
+			len(outbound.TraceScopes) != 1 || outbound.TraceScopes[0] != traceScope {
+			t.Fatalf("fallback outbound = %#v", outbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled turn did not queue final fallback")
 	}
 }
 
@@ -2877,6 +2947,51 @@ func TestDeliverExplicitToolOutbound_NoBusDoesNotReportQueuedText(t *testing.T) 
 	}
 	if outcome != toolResultDeliveryNone {
 		t.Fatalf("delivery outcome = %v, want none", outcome)
+	}
+}
+
+func TestDeliverFinalTurnToolTextCarriesTraceSettlement(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result *tools.ToolResult
+	}{
+		{name: "implicit text", result: tools.UserResult("final text")},
+		{name: "explicit text", result: (&tools.ToolResult{}).WithOutboundDelivery(
+			toolshared.OutboundDelivery{Text: "final text"},
+		)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Agents.Defaults.Workspace = t.TempDir()
+			msgBus := bus.NewMessageBus()
+			al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+			defer al.Close()
+			agent := al.registry.GetDefaultAgent()
+			traceScope := runtimeevents.NewTraceScope(agent.Workspace, "turn-final-text")
+			ts := &turnState{
+				agent: agent, agentID: agent.ID,
+				workspace: agent.Workspace, turnID: traceScope.TurnID,
+				channel: "cli", chatID: "chat1", sessionKey: "session-final-text",
+				opts: processOptions{Dispatch: DispatchRequest{InboundContext: &bus.InboundContext{
+					Channel: "cli", ChatID: "chat1", SenderID: "user1",
+				}}},
+			}
+			_, outcome, err := al.deliverToolResultToUser(
+				t.Context(), ts, test.result, "final_turn",
+			)
+			if err != nil || outcome != toolResultDeliveryQueued {
+				t.Fatalf("final text delivery = (%v, %v)", outcome, err)
+			}
+			select {
+			case outbound := <-msgBus.OutboundChan():
+				if outbound.Content != "final text" || !outbound.TraceSettlement ||
+					len(outbound.TraceScopes) != 1 || outbound.TraceScopes[0] != traceScope {
+					t.Fatalf("final text outbound = %#v", outbound)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("final text was not queued")
+			}
+		})
 	}
 }
 
@@ -8311,6 +8426,11 @@ func TestRunAgentLoop_ImmediateMediaDeliveryContinuesToFinalResponse(t *testing.
 	}
 	if len(mediaChannel.sentMessages) != 1 {
 		t.Fatalf("sent message count = %d, want 1", len(mediaChannel.sentMessages))
+	}
+	if got := mediaChannel.sentMessages[0]; !got.TraceSettlement ||
+		len(got.TraceScopes) != 1 || !got.TraceScopes[0].Complete() ||
+		got.TraceScopes[0].Workspace != agent.Workspace {
+		t.Fatalf("final text trace identity = %#v", got)
 	}
 	if mediaChannel.sentMessages[0].Content != "final answer after immediate media" {
 		t.Fatalf(

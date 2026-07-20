@@ -82,9 +82,9 @@ func TestRuntimeEventLogFieldsSummarizeAgentPayload(t *testing.T) {
 			Name:      "main",
 		},
 		Scope: runtimeevents.Scope{
+			TraceScope: runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
 			AgentID:    "main",
 			SessionKey: "session-1",
-			TurnID:     "turn-1",
 		},
 		Payload: ToolExecStartPayload{
 			Tool: "exec",

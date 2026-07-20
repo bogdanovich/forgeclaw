@@ -9,8 +9,8 @@ import (
 // HookMeta contains correlation fields shared by agent hook requests and
 // runtime events emitted from turn processing.
 type HookMeta struct {
+	runtimeevents.TraceScope
 	AgentID      string
-	TurnID       string
 	ParentTurnID string
 	SessionKey   string
 	Iteration    int

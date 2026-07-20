@@ -476,6 +476,7 @@ func (al *AgentLoop) continueWithSteeringMessages(
 	senderID string,
 	modelBinding effectiveModelBinding,
 	steeringMsgs []providers.Message,
+	observeTurn func(runtimeevents.TraceScope),
 ) (string, error) {
 	routeSessionKey := sessionKey
 	if scope != nil && strings.TrimSpace(scope.RouteScopeKey) != "" {
@@ -496,13 +497,15 @@ func (al *AgentLoop) continueWithSteeringMessages(
 		}
 	}
 	return al.runAgentLoop(ctx, agent, processOptions{
-		ModelBinding:            modelBinding,
-		Dispatch:                dispatch,
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           true,
-		SendResponse:            false,
-		InitialSteeringMessages: steeringMsgs,
-		SkipInitialSteeringPoll: true,
+		ModelBinding:             modelBinding,
+		Dispatch:                 dispatch,
+		DefaultResponse:          defaultResponse,
+		EnableSummary:            true,
+		SendResponse:             false,
+		ExpectFinalDelivery:      observeTurn != nil,
+		ObserveFinalDeliveryTurn: observeTurn,
+		InitialSteeringMessages:  steeringMsgs,
+		SkipInitialSteeringPoll:  true,
 	})
 }
 
@@ -639,6 +642,7 @@ func (al *AgentLoop) continueRuntimeSession(
 		steeringBatch.senderID,
 		modelBinding,
 		steeringMsgs,
+		target.ObserveFinalDeliveryTurn,
 	)
 	if err != nil {
 		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)

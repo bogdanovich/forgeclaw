@@ -41,8 +41,8 @@ func TestSubscribeEventsFiltersRuntimeBusToLegacyAgentEvents(t *testing.T) {
 		Kind:   runtimeevents.KindAgentTurnStart,
 		Source: runtimeevents.Source{Component: "agent", Name: "main"},
 		Scope: runtimeevents.Scope{
+			TraceScope: runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
 			AgentID:    "main",
-			TurnID:     "turn-1",
 			SessionKey: "session-1",
 			Channel:    "telegram",
 			Account:    "bot-1",

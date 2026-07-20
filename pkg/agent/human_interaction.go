@@ -98,9 +98,9 @@ func (al *AgentLoop) observeInteractionEvent(
 	}
 	record := observation.Record
 	al.runtimeEventEmitter().emitEvent(kind, HookMeta{
+		TraceScope: runtimeevents.NewTraceScope(workspace, record.Origin.TurnID),
 		AgentID:    record.Route.AgentID,
 		SessionKey: record.Route.SessionKey,
-		TurnID:     record.Origin.TurnID,
 		Source:     "interaction_registry",
 	}, InteractionEventPayload{
 		InteractionID: record.ID,

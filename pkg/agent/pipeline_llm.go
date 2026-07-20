@@ -443,6 +443,8 @@ func (p *Pipeline) CallLLM(
 			if compactErr := p.Context.Runtime.Compact(compactCtx, &CompactRequest{
 				Agent:      ts.agent,
 				SessionKey: ts.sessionKey,
+				Workspace:  ts.workspace,
+				TraceScope: ts.scope.traceScope(),
 				Reason:     ContextCompressReasonRetry,
 				Budget:     compactBudget,
 			}); compactErr != nil {
