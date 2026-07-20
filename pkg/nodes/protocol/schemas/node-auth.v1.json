@@ -21,6 +21,7 @@
       "properties": {
         "commands": {
           "type": "array",
+          "maxItems": 128,
           "items": {"$ref": "https://forgeclaw.dev/schemas/nodes/command-descriptor.v1.json"}
         }
       }

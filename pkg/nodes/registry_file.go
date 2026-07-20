@@ -221,6 +221,9 @@ func (registry *FileRegistry) commitRecordLocked(record registryRecord) error {
 	}
 	next[string(record.Snapshot.ID)] = record
 	if err := registry.save(next); err != nil {
+		if fileutil.IsCommittedWriteError(err) {
+			registry.records = next
+		}
 		return err
 	}
 	registry.records = next
