@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -10,7 +11,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/google/jsonschema-go/jsonschema"
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/sipeed/picoclaw/pkg/nodes/internal/jsonstrict"
 )
@@ -306,22 +307,21 @@ func canonicalInvocationInputValue(raw json.RawMessage) (json.RawMessage, map[st
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: canonicalize input: %v", ErrInvalidInvocation, err)
 	}
-	// jsonstrict preserves numeric precision with json.Number, while the schema
-	// validator classifies concrete Go numeric types. Decode the already strict,
-	// canonical object once more only for schema validation.
-	var schemaValue map[string]any
-	if err := json.Unmarshal(canonical, &schemaValue); err != nil {
-		return nil, nil, fmt.Errorf("%w: decode canonical input: %v", ErrInvalidInvocation, err)
-	}
-	return json.RawMessage(canonical), schemaValue, nil
+	return json.RawMessage(canonical), value.(map[string]any), nil
 }
 
 func validateInvocationInput(rawSchema json.RawMessage, input map[string]any) error {
-	var schema jsonschema.Schema
-	if err := json.Unmarshal(rawSchema, &schema); err != nil {
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	const schemaURL = "urn:forgeclaw:node-command-input"
+	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(rawSchema))
+	if err != nil {
 		return fmt.Errorf("%w: decode input schema: %v", ErrInvalidInvocation, err)
 	}
-	resolved, err := schema.Resolve(nil)
+	if err = compiler.AddResource(schemaURL, document); err != nil {
+		return fmt.Errorf("%w: register input schema: %v", ErrInvalidInvocation, err)
+	}
+	resolved, err := compiler.Compile(schemaURL)
 	if err != nil {
 		return fmt.Errorf("%w: resolve input schema: %v", ErrInvalidInvocation, err)
 	}

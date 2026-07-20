@@ -113,7 +113,7 @@ func TestPrepareExecutionPlanValidatesNumericCommandInput(t *testing.T) {
 		},
 		{
 			name:   "number",
-			input:  `{"ratio":1.5}`,
+			input:  `{"ratio":0.1}`,
 			schema: `{"type":"object","properties":{"ratio":{"type":"number"}},"required":["ratio"],"additionalProperties":false}`,
 		},
 	}
@@ -137,6 +137,64 @@ func TestPrepareExecutionPlanValidatesNumericCommandInput(t *testing.T) {
 				t.Fatalf("PrepareExecutionPlan() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestExecutionPlanRejectsNumericPrecisionBypass(t *testing.T) {
+	t.Parallel()
+
+	restrictive := invocationDescriptor(RiskWrite)
+	restrictive.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"count":{"type":"integer","maximum":9007199254740992}},
+		"required":["count"],
+		"additionalProperties":false
+	}`)
+	request := invocationRequest(json.RawMessage(`{"count":9007199254740993}`))
+	if _, err := PrepareExecutionPlan(
+		request,
+		restrictive,
+		"local",
+		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
+	); !errors.Is(err, ErrInvalidInvocation) {
+		t.Fatalf("large integer PrepareExecutionPlan() error = %v", err)
+	}
+
+	permissive := restrictive
+	permissive.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"count":{"type":"integer"}},
+		"required":["count"],
+		"additionalProperties":false
+	}`)
+	plan, err := PrepareExecutionPlan(
+		request,
+		permissive,
+		"local",
+		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := LocalCommandPolicy{
+		Revision:          "policy-1",
+		AllowedCommands:   []string{plan.Command},
+		MaximumRisk:       RiskWrite,
+		MaxTimeoutSeconds: 60,
+		MaxOutputBytes:    1024,
+	}
+	if err := policy.Authorize(
+		plan,
+		restrictive,
+		plan.NodeID,
+		plan.Executor,
+		time.Unix(plan.PreparedAt, 0),
+	); !errors.Is(err, ErrInvalidInvocation) {
+		t.Fatalf("large integer Authorize() error = %v", err)
 	}
 }
 
