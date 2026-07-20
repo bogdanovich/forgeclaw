@@ -335,7 +335,15 @@ func (handler *AdmissionHandler) Invoke(
 			response.Error.Message,
 		)
 	}
-	return response.Result, nil
+	return validateInvocationResult(descriptor, plan, response.Result)
+}
+
+func validateInvocationResult(
+	descriptor nodes.CommandDescriptor,
+	plan nodes.ExecutionPlan,
+	result json.RawMessage,
+) (json.RawMessage, error) {
+	return nodes.ValidateInvocationOutput(descriptor, result, plan.OutputLimitBytes)
 }
 
 func (handler *AdmissionHandler) releaseSession(

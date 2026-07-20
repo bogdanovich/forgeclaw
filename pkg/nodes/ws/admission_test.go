@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +18,31 @@ import (
 	"github.com/sipeed/picoclaw/pkg/nodes/protocol"
 )
 
+func TestValidateInvocationResultRejectsInvalidCompanionOutput(t *testing.T) {
+	descriptor := nodes.CommandDescriptor{
+		Name:        "node.info.v1",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(
+			`{"type":"object","required":["node_id"],"properties":{"node_id":{"type":"string"}},"additionalProperties":false}`,
+		),
+		Risk: nodes.RiskRead,
+	}
+	plan := nodes.ExecutionPlan{InvocationRequest: nodes.InvocationRequest{OutputLimitBytes: 128}}
+	if _, err := validateInvocationResult(descriptor, plan, json.RawMessage(`{"unexpected":true}`)); !errors.Is(
+		err,
+		nodes.ErrInvalidInvocation,
+	) {
+		t.Fatalf("schema-invalid result error = %v", err)
+	}
+	oversized := json.RawMessage(`{"node_id":"` + strings.Repeat("x", 128) + `"}`)
+	if _, err := validateInvocationResult(descriptor, plan, oversized); !errors.Is(
+		err,
+		nodes.ErrInvalidInvocation,
+	) {
+		t.Fatalf("oversized result error = %v", err)
+	}
+}
+
 func TestAdmissionPersistsSignedIdentityOverWSS(t *testing.T) {
 	registry, handler := testAdmissionHandler(t, false)
 	server := httptest.NewTLSServer(handler)
@@ -26,7 +52,10 @@ func TestAdmissionPersistsSignedIdentityOverWSS(t *testing.T) {
 		t.Fatalf("test server transport = %T", server.Client().Transport)
 	}
 	dialer := websocket.Dialer{TLSClientConfig: transport.TLSClientConfig.Clone()}
-	connection, handshakeResponse, err := dialer.Dial("wss"+strings.TrimPrefix(server.URL, "https"), nil)
+	connection, handshakeResponse, err := dialer.Dial(
+		"wss"+strings.TrimPrefix(server.URL, "https"),
+		nil,
+	)
 	if handshakeResponse != nil && handshakeResponse.Body != nil {
 		defer handshakeResponse.Body.Close()
 	}
@@ -211,7 +240,10 @@ func TestAdmissionDoesNotTrustForwardedProtoFromLoopbackPeer(t *testing.T) {
 	}
 }
 
-func testAdmissionHandler(t *testing.T, allowPlaintext bool) (*nodes.FileRegistry, *AdmissionHandler) {
+func testAdmissionHandler(
+	t *testing.T,
+	allowPlaintext bool,
+) (*nodes.FileRegistry, *AdmissionHandler) {
 	t.Helper()
 	return testAdmissionHandlerWithConfig(t, AdmissionConfig{
 		AllowLoopbackPlaintext: allowPlaintext,

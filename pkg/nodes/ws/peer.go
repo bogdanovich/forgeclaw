@@ -19,6 +19,8 @@ var (
 	ErrUnexpectedResponse = errors.New("node returned an unexpected response")
 )
 
+const maxAbandonedRequests = 1024
+
 type responseResult struct {
 	envelope protocol.Envelope
 	err      error
@@ -27,15 +29,17 @@ type responseResult struct {
 // peer owns all application writes and response correlation for one
 // authenticated WebSocket generation.
 type peer struct {
-	connection *websocket.Conn
-	ready      chan struct{}
-	closed     chan struct{}
-	readyOnce  sync.Once
-	closeOnce  sync.Once
-	writeMu    sync.Mutex
-	pendingMu  sync.Mutex
-	pending    map[string]chan responseResult
-	sequence   atomic.Uint64
+	connection     *websocket.Conn
+	ready          chan struct{}
+	closed         chan struct{}
+	readyOnce      sync.Once
+	closeOnce      sync.Once
+	writeMu        sync.Mutex
+	pendingMu      sync.Mutex
+	pending        map[string]chan responseResult
+	abandoned      map[string]struct{}
+	abandonedOrder []string
+	sequence       atomic.Uint64
 }
 
 func newPeer(connection *websocket.Conn) *peer {
@@ -44,6 +48,7 @@ func newPeer(connection *websocket.Conn) *peer {
 		ready:      make(chan struct{}),
 		closed:     make(chan struct{}),
 		pending:    make(map[string]chan responseResult),
+		abandoned:  make(map[string]struct{}),
 	}
 }
 
@@ -59,6 +64,8 @@ func (session *peer) Close() error {
 		session.pendingMu.Lock()
 		pending := session.pending
 		session.pending = make(map[string]chan responseResult)
+		session.abandoned = make(map[string]struct{})
+		session.abandonedOrder = nil
 		session.pendingMu.Unlock()
 		for _, result := range pending {
 			result <- responseResult{err: ErrNodeDisconnected}
@@ -91,20 +98,21 @@ func (session *peer) request(
 		session.pending[id] = result
 	}
 	session.pendingMu.Unlock()
-	defer session.removePending(id)
-
 	if err := session.writeEnvelope(protocol.Envelope{
 		Type:   protocol.FrameRequest,
 		ID:     id,
 		Method: method,
 		Params: params,
 	}); err != nil {
+		session.abandon(id)
 		return protocol.Envelope{}, err
 	}
 	select {
 	case <-ctx.Done():
+		session.abandon(id)
 		return protocol.Envelope{}, ctx.Err()
 	case <-session.closed:
+		session.removePending(id)
 		return protocol.Envelope{}, ErrNodeDisconnected
 	case response := <-result:
 		return response.envelope, response.err
@@ -117,12 +125,36 @@ func (session *peer) handleResponse(envelope protocol.Envelope) error {
 	if result != nil {
 		delete(session.pending, envelope.ID)
 	}
+	_, abandoned := session.abandoned[envelope.ID]
+	if abandoned {
+		delete(session.abandoned, envelope.ID)
+	}
 	session.pendingMu.Unlock()
+	if abandoned {
+		return nil
+	}
 	if result == nil {
 		return ErrUnexpectedResponse
 	}
 	result <- responseResult{envelope: envelope}
 	return nil
+}
+
+func (session *peer) abandon(id string) {
+	session.pendingMu.Lock()
+	if _, exists := session.pending[id]; !exists {
+		session.pendingMu.Unlock()
+		return
+	}
+	delete(session.pending, id)
+	session.abandoned[id] = struct{}{}
+	session.abandonedOrder = append(session.abandonedOrder, id)
+	if len(session.abandonedOrder) > maxAbandonedRequests {
+		oldest := session.abandonedOrder[0]
+		session.abandonedOrder = session.abandonedOrder[1:]
+		delete(session.abandoned, oldest)
+	}
+	session.pendingMu.Unlock()
 }
 
 func (session *peer) removePending(id string) {
