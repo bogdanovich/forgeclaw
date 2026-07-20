@@ -229,6 +229,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 		},
 	}
 	if agent := al.agentForSession(claim.sessionKey); agent != nil {
+		target.AgentID = agent.ID
 		target.Workspace = agent.Workspace
 	}
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)

@@ -209,6 +209,7 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 	}
 	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	continued, err := al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
+		AgentID:    route.AgentID,
 		SessionKey: route.SessionKey,
 		Channel:    route.Channel,
 		ChatID:     route.ChatID,

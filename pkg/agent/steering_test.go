@@ -2155,6 +2155,46 @@ func TestAgentLoop_AgentForSession_UsesStoredScopeMetadata(t *testing.T) {
 	}
 }
 
+func TestAgentForContinuationConstrainsDuplicateSessionToWorkspace(t *testing.T) {
+	workspaceA := filepath.Join(t.TempDir(), "workspace-a")
+	workspaceB := filepath.Join(t.TempDir(), "workspace-b")
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				ModelName: "test-model", MaxTokens: 4096, MaxToolIterations: 10,
+			},
+			List: []config.AgentConfig{
+				{ID: "agent-a", Default: true, Workspace: workspaceA},
+				{ID: "agent-b", Workspace: workspaceB},
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	defer al.Close()
+	const sessionKey = "duplicate-session"
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		agent, ok := al.registry.GetAgent(agentID)
+		if !ok || agent == nil {
+			t.Fatalf("missing %s", agentID)
+		}
+		metaStore, ok := agent.Sessions.(session.MetadataAwareSessionStore)
+		if !ok {
+			t.Fatalf("%s session store has no metadata", agentID)
+		}
+		metaStore.EnsureSessionMetadata(sessionKey, &session.SessionScope{
+			Version: session.ScopeVersionV1, AgentID: agentID,
+		}, nil)
+	}
+
+	got := al.agentForContinuation(sessionKey, "", workspaceB)
+	if got == nil || got.ID != "agent-b" {
+		t.Fatalf("workspace-b continuation agent = %#v", got)
+	}
+	if got := al.agentForContinuation(sessionKey, "agent-a", workspaceB); got != nil {
+		t.Fatalf("mismatched explicit owner resolved to %#v", got)
+	}
+}
+
 func TestAgentLoop_Continue_PreservesSteeringMedia(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {

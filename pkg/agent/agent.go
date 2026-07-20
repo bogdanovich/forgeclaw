@@ -136,6 +136,7 @@ type processOptions struct {
 }
 
 type continuationTarget struct {
+	AgentID                  string
 	SessionKey               string
 	Channel                  string
 	ChatID                   string

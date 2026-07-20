@@ -559,6 +559,17 @@ func (al *AgentLoop) continueWithTurnObserver(
 	sessionKey, channel, chatID string,
 	observeTurn func(runtimeevents.TraceScope),
 ) (string, error) {
+	return al.continueWithTurnOwner(
+		ctx, "", "", sessionKey, channel, chatID, observeTurn,
+	)
+}
+
+func (al *AgentLoop) continueWithTurnOwner(
+	ctx context.Context,
+	agentID, workspace string,
+	sessionKey, channel, chatID string,
+	observeTurn func(runtimeevents.TraceScope),
+) (string, error) {
 	// Claim the session with a unique placeholder to prevent a TOCTOU race where two
 	// concurrent Continue calls for the same session both pass the active-turn
 	// check and create parallel turns. The placeholder is replaced by the real
@@ -595,7 +606,7 @@ func (al *AgentLoop) continueWithTurnObserver(
 	}
 	steeringMsgs := entryMessages(steeringBatch.entries)
 
-	agent := al.agentForSession(sessionKey)
+	agent := al.agentForContinuation(sessionKey, agentID, workspace)
 	if agent == nil {
 		al.activeTurnStates.Delete(sessionKey)
 		err := fmt.Errorf("no agent available for session %q", sessionKey)
@@ -638,6 +649,46 @@ func (al *AgentLoop) continueWithTurnObserver(
 	}
 	al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
 	return response, err
+}
+
+func (al *AgentLoop) agentForContinuation(sessionKey, agentID, workspace string) *AgentInstance {
+	registry := al.GetRegistry()
+	if registry == nil {
+		return nil
+	}
+	workspace = strings.TrimSpace(workspace)
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		agent, ok := registry.GetAgent(agentID)
+		if !ok || agent == nil || workspace != "" && strings.TrimSpace(agent.Workspace) != workspace {
+			return nil
+		}
+		return agent
+	}
+	if workspace == "" {
+		return al.agentForSession(sessionKey)
+	}
+
+	var candidate *AgentInstance
+	agentIDs := registry.ListAgentIDs()
+	sort.Strings(agentIDs)
+	for _, candidateID := range agentIDs {
+		agent, ok := registry.GetAgent(candidateID)
+		if !ok || agent == nil || strings.TrimSpace(agent.Workspace) != workspace {
+			continue
+		}
+		if resolvedID := session.ResolveAgentID(agent.Sessions, sessionKey); resolvedID != "" {
+			resolved, ok := registry.GetAgent(resolvedID)
+			if ok && resolved != nil && strings.TrimSpace(resolved.Workspace) == workspace {
+				return resolved
+			}
+		}
+		if candidate != nil {
+			candidate = nil
+			break
+		}
+		candidate = agent
+	}
+	return candidate
 }
 
 func (al *AgentLoop) InterruptGraceful(hint string) error {

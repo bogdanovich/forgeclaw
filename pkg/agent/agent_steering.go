@@ -95,6 +95,7 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 		ObserveFinalDeliveryTurn: observeTurn,
 	}
 	if turn.Agent != nil {
+		target.AgentID = turn.Agent.ID
 		target.Workspace = turn.Agent.Workspace
 	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
@@ -199,8 +200,14 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
 			})
 
-		continued, continueErr := al.continueWithTurnObserver(
-			ctx, target.SessionKey, target.Channel, target.ChatID, target.ObserveFinalDeliveryTurn,
+		continued, continueErr := al.continueWithTurnOwner(
+			ctx,
+			target.AgentID,
+			target.Workspace,
+			target.SessionKey,
+			target.Channel,
+			target.ChatID,
+			target.ObserveFinalDeliveryTurn,
 		)
 		if continueErr != nil {
 			return joinSteeringResponses(responses), continueErr
