@@ -148,9 +148,6 @@ func (handler *AdmissionHandler) secureRequest(request *http.Request) bool {
 	if remoteIP == nil || !remoteIP.IsLoopback() {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(request.Header.Get("X-Forwarded-Proto")), "https") {
-		return true
-	}
 	return handler.allowLoopbackPlaintext
 }
 

@@ -137,6 +137,16 @@ func TestAdmissionDoesNotTrustForwardedProtoFromRemotePeer(t *testing.T) {
 	}
 }
 
+func TestAdmissionDoesNotTrustForwardedProtoFromLoopbackPeer(t *testing.T) {
+	_, handler := testAdmissionHandler(t, false)
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/nodes/v1/ws", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	request.Header.Set("X-Forwarded-Proto", "https")
+	if handler.secureRequest(request) {
+		t.Fatal("loopback peer spoofed secure transport with X-Forwarded-Proto")
+	}
+}
+
 func testAdmissionHandler(t *testing.T, allowPlaintext bool) (*nodes.FileRegistry, *AdmissionHandler) {
 	t.Helper()
 	registry, err := nodes.NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)

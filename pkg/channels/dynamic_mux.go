@@ -7,7 +7,10 @@ import (
 	"sync"
 )
 
-var errHTTPHandlerAlreadyRegistered = errors.New("HTTP handler already registered")
+var (
+	errHTTPHandlerAlreadyRegistered = errors.New("HTTP handler already registered")
+	errHTTPHandlerNotRegistered     = errors.New("HTTP handler is not registered")
+)
 
 // dynamicServeMux is an http.Handler that supports dynamic registration
 // and unregistration of handlers without recreating the server.
@@ -34,6 +37,16 @@ func (dm *dynamicServeMux) TryHandle(pattern string, handler http.Handler) error
 	defer dm.mu.Unlock()
 	if _, exists := dm.handlers[pattern]; exists {
 		return errHTTPHandlerAlreadyRegistered
+	}
+	dm.handlers[pattern] = handler
+	return nil
+}
+
+func (dm *dynamicServeMux) Replace(pattern string, handler http.Handler) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	if _, exists := dm.handlers[pattern]; !exists {
+		return errHTTPHandlerNotRegistered
 	}
 	dm.handlers[pattern] = handler
 	return nil
