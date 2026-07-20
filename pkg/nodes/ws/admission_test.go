@@ -143,8 +143,11 @@ func TestAdmissionHeartbeatDisconnectsRevokedLiveSession(t *testing.T) {
 	pendingConnection := dialTestAdmission(t, server)
 	pending := authenticateTestConnection(t, pendingConnection, privateKey)
 	_ = pendingConnection.Close()
-	if _, err := registry.Approve(pending.NodeID, nodes.PairingApproval{At: time.Now().Unix()}); err != nil {
-		t.Fatal(err)
+	if _, approveErr := registry.Approve(
+		pending.NodeID,
+		nodes.PairingApproval{At: time.Now().Unix()},
+	); approveErr != nil {
+		t.Fatal(approveErr)
 	}
 
 	activeConnection := dialTestAdmission(t, server)
@@ -152,14 +155,14 @@ func TestAdmissionHeartbeatDisconnectsRevokedLiveSession(t *testing.T) {
 	if connected.State != nodes.StateConnected {
 		t.Fatalf("approved admission state = %q", connected.State)
 	}
-	if _, err := registry.Revoke(connected.NodeID, nodes.Revocation{
+	if _, revokeErr := registry.Revoke(connected.NodeID, nodes.Revocation{
 		Reason: "test revocation",
 		At:     time.Now().Unix(),
-	}); err != nil {
-		t.Fatal(err)
+	}); revokeErr != nil {
+		t.Fatal(revokeErr)
 	}
 	_ = activeConnection.SetReadDeadline(time.Now().Add(time.Second))
-	if _, _, err := activeConnection.ReadMessage(); err == nil {
+	if _, _, readErr := activeConnection.ReadMessage(); readErr == nil {
 		t.Fatal("revoked live session remained connected after heartbeat")
 	}
 	registration, exists, err := registry.Registration(connected.NodeID)
@@ -265,8 +268,8 @@ func authenticateTestConnection(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := connection.WriteMessage(websocket.TextMessage, requestData); err != nil {
-		t.Fatal(err)
+	if writeErr := connection.WriteMessage(websocket.TextMessage, requestData); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	_, responseData, err := connection.ReadMessage()
 	if err != nil {

@@ -172,8 +172,8 @@ func TestAuthenticatorReconnectsApprovedIdentityAndTracksLiveness(t *testing.T) 
 	if first.State != StatePendingPairing {
 		t.Fatalf("first admission state = %q", first.State)
 	}
-	if _, err := registry.Approve(first.NodeID, PairingApproval{At: now.Unix()}); err != nil {
-		t.Fatal(err)
+	if _, approveErr := registry.Approve(first.NodeID, PairingApproval{At: now.Unix()}); approveErr != nil {
+		t.Fatal(approveErr)
 	}
 	now = now.Add(time.Second)
 	second := admitTestIdentity(t, authenticator, privateKey)
@@ -182,8 +182,8 @@ func TestAuthenticatorReconnectsApprovedIdentityAndTracksLiveness(t *testing.T) 
 	}
 
 	now = now.Add(time.Second)
-	if err := authenticator.Heartbeat(second.NodeID); err != nil {
-		t.Fatal(err)
+	if heartbeatErr := authenticator.Heartbeat(second.NodeID); heartbeatErr != nil {
+		t.Fatal(heartbeatErr)
 	}
 	registration, exists, err := registry.Registration(second.NodeID)
 	if err != nil || !exists {
@@ -194,8 +194,8 @@ func TestAuthenticatorReconnectsApprovedIdentityAndTracksLiveness(t *testing.T) 
 	}
 
 	now = now.Add(time.Second)
-	if err := authenticator.Disconnect(second.NodeID, "test disconnect"); err != nil {
-		t.Fatal(err)
+	if disconnectErr := authenticator.Disconnect(second.NodeID, "test disconnect"); disconnectErr != nil {
+		t.Fatal(disconnectErr)
 	}
 	registration, _, err = registry.Registration(second.NodeID)
 	if err != nil {
