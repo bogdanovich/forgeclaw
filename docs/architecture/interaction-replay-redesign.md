@@ -65,6 +65,15 @@ delivery boundary. A physical outbound message produced from several steering
 turns carries one workspace and a deduplicated ordered list of turn IDs. Mixing
 turns from different workspaces in one outbound is invalid.
 
+Correlation and settlement are separate. `TraceScopes` state which turns an
+outbound belongs to; `TraceSettlement` states that a terminal channel outcome
+may settle those turns. The channel manager publishes one terminal outcome for
+one logical outbound, even when transport splits it into chunks. A preliminary
+direct or media attempt that has a fallback uses success-only outcome
+publication: success and ambiguous failure are terminal, while a failure proven
+not sent is left to the fallback. A settlement marker without a complete scope
+is cleared during normalization.
+
 Capture indexes active turns by `(workspace, turn_id)`. There is no fallback by
 session, channel, chat, route, or unique turn ID. An event without a complete
 scope is operationally observable but cannot mutate a turn trace. This is an
@@ -225,18 +234,24 @@ tests use isolated workspaces and never execute trace-provided tools.
 
 Each item is a separate focused PR based on the merged predecessor:
 
-1. **Scoped identity:** add mandatory `TraceScope`, propagate it through runtime
-   events, bus, outbound aggregation, and channel outcomes, remove heuristic
-   turn-delivery correlation, and add workspace-collision tests.
-2. **Ordered observation:** add the registry subscribe-and-snapshot contract
+1. **Identity value:** define the canonical mandatory `TraceScope` value.
+2. **Passive transport:** carry validated scope lists through the bus and
+   channel event payloads without changing capture behavior.
+3. **Delivery protocol:** separate correlation from settlement, publish one
+   terminal outcome per logical outbound, and support success-only preliminary
+   attempts before fallback.
+4. **Exact adoption:** propagate scopes from runtime producers and outbound
+   aggregation, remove heuristic turn-delivery correlation, and add workspace-
+   collision tests.
+5. **Ordered observation:** add the registry subscribe-and-snapshot contract
    with ordering, re-entry, persistence-failure, and restart tests.
-3. **Durable writer:** extract queueing, retry, retention, atomic persistence,
+6. **Durable writer:** extract queueing, retry, retention, atomic persistence,
    and explicit loss accounting from the agent capture manager.
-4. **Projectors:** split turn/task capture and add the dedicated interaction
+7. **Projectors:** split turn/task capture and add the dedicated interaction
    projector with deterministic live/startup construction.
-5. **Protocol contract:** extract declarative interaction transitions and use
+8. **Protocol contract:** extract declarative interaction transitions and use
    them from both registry validation and replay reduction.
-6. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
+9. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
    reporting, operator docs, and only the spike tests relevant to these final
    boundaries.
 

@@ -1149,7 +1149,7 @@ func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
 		runtimeevents.KindChannelMessageOutboundQueued,
 		runtimeevents.KindChannelMessageOutboundSent,
 		runtimeevents.KindChannelMessageOutboundFailed,
-	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "trace-transport", Buffer: 8})
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "trace-transport", Buffer: 12})
 	if err != nil {
 		t.Fatalf("SubscribeChan failed: %v", err)
 	}
@@ -1162,9 +1162,10 @@ func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
 	}
 	text := testOutboundMessage(bus.OutboundMessage{
 		Channel: "test", ChatID: "chat-1", Content: "hello", TraceScopes: traceScopes,
+		TraceSettlement: true,
 	})
 	media := testOutboundMediaMessage(bus.OutboundMediaMessage{
-		Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes,
+		Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes, TraceSettlement: true,
 	})
 
 	m.publishOutboundQueued("test", text)
@@ -1188,15 +1189,257 @@ func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
 		t.Fatalf("canceled media send = ids %v, err %v", mediaIDs, mediaErr)
 	}
 
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 10; i++ {
 		event := receiveChannelRuntimeEvent(t, eventsCh)
 		payload, ok := event.Payload.(ChannelOutboundPayload)
-		if !ok || !slices.Equal(payload.TraceScopes, traceScopes) {
+		if !ok || !payload.TraceSettlement || !slices.Equal(payload.TraceScopes, traceScopes) {
 			t.Fatalf("event %d payload = %#v, want trace scopes %+v", i, event.Payload, traceScopes)
 		}
 		if event.Attrs["trace_scopes_count"] != 2 {
 			t.Fatalf("event %d attrs = %#v, want trace_scopes_count=2", i, event.Attrs)
 		}
+	}
+}
+
+func TestProvisionalSendPublishesSuccessButSuppressesFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send func(context.Context, *Manager) error
+	}{
+		{
+			name: "text",
+			send: func(ctx context.Context, m *Manager) error {
+				return m.SendMessageProvisional(ctx, testOutboundMessage(bus.OutboundMessage{
+					Channel: "test", ChatID: "chat-1", Content: "hello",
+				}))
+			},
+		},
+		{
+			name: "media",
+			send: func(ctx context.Context, m *Manager) error {
+				return m.SendMediaProvisional(ctx, testOutboundMediaMessage(bus.OutboundMediaMessage{
+					Channel: "test", ChatID: "chat-1",
+				}))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, fail := range []bool{false, true} {
+				name := "success"
+				if fail {
+					name = "failure"
+				}
+				t.Run(name, func(t *testing.T) {
+					eventBus := runtimeevents.NewBus()
+					t.Cleanup(func() { _ = eventBus.Close() })
+					_, eventsCh, err := eventBus.Channel().OfKind(
+						runtimeevents.KindChannelMessageOutboundSent,
+						runtimeevents.KindChannelMessageOutboundFailed,
+					).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{
+						Name: "provisional", Buffer: 1,
+					})
+					if err != nil {
+						t.Fatalf("SubscribeChan failed: %v", err)
+					}
+
+					sendErr := error(nil)
+					if fail {
+						sendErr = ErrSendFailed
+					}
+					channel := &mockMediaChannel{
+						mockChannel: mockChannel{sendFn: func(context.Context, bus.OutboundMessage) error {
+							return sendErr
+						}},
+						sendMediaFn: func(context.Context, bus.OutboundMediaMessage) ([]string, error) {
+							return nil, sendErr
+						},
+					}
+					m := newTestManager()
+					m.runtimeEvents = eventBus
+					m.channels["test"] = channel
+					m.workers["test"] = &channelWorker{
+						ch: channel, limiter: rate.NewLimiter(rate.Inf, 1),
+					}
+
+					err = tc.send(context.Background(), m)
+					if (err != nil) != fail {
+						t.Fatalf("provisional send error = %v, fail = %v", err, fail)
+					}
+					if fail {
+						select {
+						case event := <-eventsCh:
+							t.Fatalf("provisional failure emitted terminal event: %#v", event)
+						case <-time.After(25 * time.Millisecond):
+						}
+						return
+					}
+					event := receiveChannelRuntimeEvent(t, eventsCh)
+					if event.Kind != runtimeevents.KindChannelMessageOutboundSent {
+						t.Fatalf("provisional success event = %#v", event)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestProvisionalAmbiguousFailureRemainsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send func(context.Context, *Manager) error
+	}{
+		{
+			name: "text",
+			send: func(ctx context.Context, m *Manager) error {
+				return m.SendMessageProvisional(ctx, testOutboundMessage(bus.OutboundMessage{
+					Channel: "test", ChatID: "chat-1", Content: "hello",
+				}))
+			},
+		},
+		{
+			name: "media",
+			send: func(ctx context.Context, m *Manager) error {
+				return m.SendMediaProvisional(ctx, testOutboundMediaMessage(bus.OutboundMediaMessage{
+					Channel: "test", ChatID: "chat-1",
+				}))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eventBus := runtimeevents.NewBus()
+			t.Cleanup(func() { _ = eventBus.Close() })
+			_, eventsCh, err := eventBus.Channel().OfKind(
+				runtimeevents.KindChannelMessageOutboundFailed,
+			).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "ambiguous", Buffer: 1})
+			if err != nil {
+				t.Fatalf("SubscribeChan failed: %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			channel := &mockMediaChannel{
+				mockChannel: mockChannel{sendFn: func(context.Context, bus.OutboundMessage) error {
+					cancel()
+					return ErrTemporary
+				}},
+				sendMediaFn: func(context.Context, bus.OutboundMediaMessage) ([]string, error) {
+					cancel()
+					return nil, ErrTemporary
+				},
+			}
+			m := newTestManager()
+			m.runtimeEvents = eventBus
+			m.channels["test"] = channel
+			m.workers["test"] = &channelWorker{ch: channel, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+			err = tc.send(ctx, m)
+			if err == nil || DeliveryDefinitelyNotSent(err) {
+				t.Fatalf("ambiguous provisional error = %v", err)
+			}
+			event := receiveChannelRuntimeEvent(t, eventsCh)
+			if event.Kind != runtimeevents.KindChannelMessageOutboundFailed {
+				t.Fatalf("ambiguous provisional event = %#v", event)
+			}
+		})
+	}
+}
+
+func TestSendMessagePublishesOneLogicalChunkOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failChunk int
+		wantKind  runtimeevents.Kind
+		wantErr   bool
+	}{
+		{name: "success", wantKind: runtimeevents.KindChannelMessageOutboundSent},
+		{name: "partial_failure", failChunk: 2, wantKind: runtimeevents.KindChannelMessageOutboundFailed, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eventBus := runtimeevents.NewBus()
+			t.Cleanup(func() { _ = eventBus.Close() })
+			_, eventsCh, err := eventBus.Channel().OfKind(
+				runtimeevents.KindChannelMessageOutboundSent,
+				runtimeevents.KindChannelMessageOutboundFailed,
+			).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "chunk-outcome", Buffer: 4})
+			if err != nil {
+				t.Fatalf("SubscribeChan failed: %v", err)
+			}
+
+			calls := 0
+			channel := &mockChannelWithLength{
+				mockChannel: mockChannel{sendFn: func(context.Context, bus.OutboundMessage) error {
+					calls++
+					if calls == tc.failChunk {
+						return fmt.Errorf("chunk rejected: %w", ErrSendFailed)
+					}
+					return nil
+				}},
+				maxLen: 5,
+			}
+			m := newTestManager()
+			m.runtimeEvents = eventBus
+			m.channels["test"] = channel
+			m.workers["test"] = &channelWorker{ch: channel, limiter: rate.NewLimiter(rate.Inf, 1)}
+			traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+			msg := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "hello world",
+				TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+			})
+
+			err = m.SendMessage(context.Background(), msg)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("SendMessage error = %v, wantErr %v", err, tc.wantErr)
+			}
+			outcome := receiveChannelRuntimeEvent(t, eventsCh)
+			payload, ok := outcome.Payload.(ChannelOutboundPayload)
+			if outcome.Kind != tc.wantKind || !ok || !payload.TraceSettlement ||
+				!slices.Equal(payload.TraceScopes, []runtimeevents.TraceScope{traceScope}) {
+				t.Fatalf("outcome = %#v, want kind %q and settlement", outcome, tc.wantKind)
+			}
+			select {
+			case extra := <-eventsCh:
+				t.Fatalf("unexpected per-chunk terminal event: %#v", extra)
+			case <-time.After(25 * time.Millisecond):
+			}
+		})
+	}
+}
+
+func TestRetryCancellationPublishesTerminalFailure(t *testing.T) {
+	for _, sendErr := range []error{ErrRateLimit, ErrTemporary} {
+		t.Run(classifySendError(sendErr), func(t *testing.T) {
+			eventBus := runtimeevents.NewBus()
+			t.Cleanup(func() { _ = eventBus.Close() })
+			_, eventsCh, err := eventBus.Channel().OfKind(
+				runtimeevents.KindChannelMessageOutboundFailed,
+			).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "retry-cancel", Buffer: 1})
+			if err != nil {
+				t.Fatalf("SubscribeChan failed: %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			worker := &channelWorker{
+				ch: &mockChannel{sendFn: func(context.Context, bus.OutboundMessage) error {
+					cancel()
+					return sendErr
+				}},
+				limiter: rate.NewLimiter(rate.Inf, 1),
+			}
+			m := newTestManager()
+			m.runtimeEvents = eventBus
+			traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+			_, _, _, _ = m.sendWithRetry(ctx, "test", worker, testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "hello",
+				TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+			}))
+
+			failed := receiveChannelRuntimeEvent(t, eventsCh)
+			payload, ok := failed.Payload.(ChannelOutboundPayload)
+			if failed.Kind != runtimeevents.KindChannelMessageOutboundFailed || !ok ||
+				!payload.TraceSettlement ||
+				!slices.Equal(payload.TraceScopes, []runtimeevents.TraceScope{traceScope}) {
+				t.Fatalf("failed event = %#v", failed)
+			}
+		})
 	}
 }
 
@@ -1637,6 +1880,16 @@ func TestNewChannelWorker_ConfiguredRate(t *testing.T) {
 
 func TestRunWorker_MessageSplitting(t *testing.T) {
 	m := newTestManager()
+	eventBus := runtimeevents.NewBus()
+	t.Cleanup(func() { _ = eventBus.Close() })
+	m.runtimeEvents = eventBus
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindChannelMessageOutboundSent,
+		runtimeevents.KindChannelMessageOutboundFailed,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "worker-chunk-outcome", Buffer: 4})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
 
 	var mu sync.Mutex
 	var received []string
@@ -1675,6 +1928,14 @@ func TestRunWorker_MessageSplitting(t *testing.T) {
 
 	if count < 2 {
 		t.Fatalf("expected message to be split into at least 2 chunks, got %d", count)
+	}
+	if event := receiveChannelRuntimeEvent(t, eventsCh); event.Kind != runtimeevents.KindChannelMessageOutboundSent {
+		t.Fatalf("logical worker outcome = %#v", event)
+	}
+	select {
+	case extra := <-eventsCh:
+		t.Fatalf("unexpected per-chunk worker outcome: %#v", extra)
+	case <-time.After(25 * time.Millisecond):
 	}
 }
 
@@ -3800,6 +4061,77 @@ func TestSendWithRetry_PreSendEditsPlaceholder(t *testing.T) {
 }
 
 // --- Dispatcher exit tests (Step 1) ---
+
+func TestDispatcherPublishesTerminalRejection(t *testing.T) {
+	for _, media := range []bool{false, true} {
+		kind := "text"
+		if media {
+			kind = "media"
+		}
+		for _, registered := range []bool{false, true} {
+			state := "unknown"
+			if registered {
+				state = "no_worker"
+			}
+			t.Run(kind+"/"+state, func(t *testing.T) {
+				eventBus := runtimeevents.NewBus()
+				t.Cleanup(func() { _ = eventBus.Close() })
+				_, eventsCh, err := eventBus.Channel().OfKind(
+					runtimeevents.KindChannelMessageOutboundFailed,
+				).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "dispatch-reject", Buffer: 1})
+				if err != nil {
+					t.Fatalf("SubscribeChan failed: %v", err)
+				}
+
+				m := newTestManager()
+				t.Cleanup(m.bus.Close)
+				m.runtimeEvents = eventBus
+				if registered {
+					m.channels["test"] = &mockMediaChannel{}
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					if media {
+						m.dispatchOutboundMedia(ctx)
+					} else {
+						m.dispatchOutbound(ctx)
+					}
+				}()
+				t.Cleanup(func() {
+					cancel()
+					<-done
+				})
+
+				traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+				if media {
+					err = m.bus.PublishOutboundMedia(context.Background(), bus.OutboundMediaMessage{
+						Context:     bus.NewOutboundContext("test", "chat-1", ""),
+						Parts:       []bus.MediaPart{{Ref: "media://test"}},
+						TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+					})
+				} else {
+					err = m.bus.PublishOutbound(context.Background(), bus.OutboundMessage{
+						Context: bus.NewOutboundContext("test", "chat-1", ""), Content: "hello",
+						TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+					})
+				}
+				if err != nil {
+					t.Fatalf("publish outbound: %v", err)
+				}
+
+				failed := receiveChannelRuntimeEvent(t, eventsCh)
+				payload, ok := failed.Payload.(ChannelOutboundPayload)
+				if !ok || !payload.TraceSettlement ||
+					!slices.Equal(payload.TraceScopes, []runtimeevents.TraceScope{traceScope}) ||
+					payload.Error == "" {
+					t.Fatalf("dispatch rejection = %#v", failed)
+				}
+			})
+		}
+	}
+}
 
 func TestDispatcherExitsOnCancel(t *testing.T) {
 	mb := bus.NewMessageBus()

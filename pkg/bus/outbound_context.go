@@ -53,6 +53,9 @@ func NormalizeOutboundMessage(msg OutboundMessage) (OutboundMessage, error) {
 	msg.Scope = cloneOutboundScope(msg.Scope)
 	var err error
 	msg.TraceScopes, err = NormalizeTraceScopes(msg.TraceScopes)
+	if len(msg.TraceScopes) == 0 {
+		msg.TraceSettlement = false
+	}
 	return msg, err
 }
 
@@ -128,6 +131,9 @@ func NormalizeOutboundMediaMessage(msg OutboundMediaMessage) (OutboundMediaMessa
 	msg.Scope = cloneOutboundScope(msg.Scope)
 	var err error
 	msg.TraceScopes, err = NormalizeTraceScopes(msg.TraceScopes)
+	if len(msg.TraceScopes) == 0 {
+		msg.TraceSettlement = false
+	}
 	return msg, err
 }
 

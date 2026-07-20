@@ -117,6 +117,7 @@ type OutboundMessage struct {
 	AgentID          string                     `json:"agent_id,omitempty"`
 	SessionKey       string                     `json:"session_key,omitempty"`
 	TraceScopes      []runtimeevents.TraceScope `json:"trace_scopes,omitempty"`
+	TraceSettlement  bool                       `json:"trace_settlement,omitempty"`
 	Scope            *OutboundScope             `json:"scope,omitempty"`
 	Content          string                     `json:"content"`
 	ReplyToMessageID string                     `json:"reply_to_message_id,omitempty"`
@@ -134,14 +135,15 @@ type MediaPart struct {
 
 // OutboundMediaMessage carries media attachments from Agent to channels via the bus.
 type OutboundMediaMessage struct {
-	Channel     string                     `json:"channel"`
-	ChatID      string                     `json:"chat_id"`
-	Context     InboundContext             `json:"context"`
-	AgentID     string                     `json:"agent_id,omitempty"`
-	SessionKey  string                     `json:"session_key,omitempty"`
-	TraceScopes []runtimeevents.TraceScope `json:"trace_scopes,omitempty"`
-	Scope       *OutboundScope             `json:"scope,omitempty"`
-	Parts       []MediaPart                `json:"parts"`
+	Channel         string                     `json:"channel"`
+	ChatID          string                     `json:"chat_id"`
+	Context         InboundContext             `json:"context"`
+	AgentID         string                     `json:"agent_id,omitempty"`
+	SessionKey      string                     `json:"session_key,omitempty"`
+	TraceScopes     []runtimeevents.TraceScope `json:"trace_scopes,omitempty"`
+	TraceSettlement bool                       `json:"trace_settlement,omitempty"`
+	Scope           *OutboundScope             `json:"scope,omitempty"`
+	Parts           []MediaPart                `json:"parts"`
 }
 
 // AudioChunk represents a chunk of streaming voice data.
