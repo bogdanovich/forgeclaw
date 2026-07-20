@@ -141,13 +141,25 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		handler.writeAdmissionError(connection, envelope.ID, "AUTH_INVALID", "challenge mismatch")
 		return
 	}
-	result, err := handler.authenticator.Admit(proof)
+	admission, err := handler.authenticator.Authenticate(proof)
 	if err != nil {
 		handler.writeAdmissionError(connection, envelope.ID, "AUTH_FAILED", "identity verification failed")
 		return
 	}
+	result := admission.Result
+	var release func() bool
+	if result.State == nodes.StateConnected {
+		release, err = handler.sessions.Claim(result.NodeID, connection, func() error {
+			return handler.authenticator.Connect(admission)
+		})
+		if err != nil {
+			handler.writeAdmissionError(connection, envelope.ID, "SESSION_UNAVAILABLE", "node session unavailable")
+			return
+		}
+	}
 	responseData, err := json.Marshal(result)
 	if err != nil {
+		handler.releaseSession(result.NodeID, release, "encode admission response failed")
 		return
 	}
 	ok := true
@@ -157,9 +169,12 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		OK:     &ok,
 		Result: responseData,
 	}); writeErr != nil || result.State != nodes.StateConnected {
+		if writeErr != nil {
+			handler.releaseSession(result.NodeID, release, "send admission response failed")
+		}
 		return
 	}
-	handler.serveSession(connection, result.NodeID)
+	handler.serveSession(connection, result.NodeID, release)
 }
 
 // Close terminates all generations that share this handler's session hub.
@@ -168,7 +183,11 @@ func (handler *AdmissionHandler) Close() {
 	handler.sessions.Close()
 }
 
-func (handler *AdmissionHandler) serveSession(connection *websocket.Conn, nodeID nodes.ID) {
+func (handler *AdmissionHandler) serveSession(
+	connection *websocket.Conn,
+	nodeID nodes.ID,
+	release func() bool,
+) {
 	if err := connection.SetReadDeadline(time.Now().Add(handler.livenessTimeout)); err != nil {
 		return
 	}
@@ -182,15 +201,10 @@ func (handler *AdmissionHandler) serveSession(connection *websocket.Conn, nodeID
 		return connection.SetReadDeadline(time.Now().Add(handler.livenessTimeout))
 	})
 
-	release := handler.sessions.Claim(nodeID, connection)
 	done := make(chan struct{})
 	go handler.sendHeartbeats(connection, done)
 	defer close(done)
-	defer func() {
-		if release() {
-			_ = handler.authenticator.Disconnect(nodeID, "transport connection closed")
-		}
-	}()
+	defer handler.releaseSession(nodeID, release, "transport connection closed")
 
 	for {
 		messageType, _, err := connection.ReadMessage()
@@ -201,6 +215,16 @@ func (handler *AdmissionHandler) serveSession(connection *websocket.Conn, nodeID
 			handler.closeWithError(connection, websocket.ClosePolicyViolation, "command protocol is not enabled")
 			return
 		}
+	}
+}
+
+func (handler *AdmissionHandler) releaseSession(
+	nodeID nodes.ID,
+	release func() bool,
+	reason string,
+) {
+	if release != nil && release() {
+		_ = handler.authenticator.Disconnect(nodeID, reason)
 	}
 }
 

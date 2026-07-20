@@ -719,6 +719,9 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 	defer shutdownCancel()
 
 	// reload should not stop channel manager
+	if !isReload && runningServices.NodeAdmission != nil {
+		runningServices.NodeAdmission.Close()
+	}
 	if !isReload && runningServices.ChannelManager != nil {
 		runningServices.ChannelManager.StopAll(shutdownCtx)
 	}

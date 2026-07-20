@@ -38,10 +38,11 @@ func TestAuthenticatorPersistsPendingPairingAndRejectsReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := authenticator.Admit(proof)
+	admission, err := authenticator.Authenticate(proof)
 	if err != nil {
 		t.Fatal(err)
 	}
+	result := admission.Result
 	if result.State != StatePendingPairing {
 		t.Fatalf("state = %q", result.State)
 	}
@@ -52,7 +53,7 @@ func TestAuthenticatorPersistsPendingPairingAndRejectsReplay(t *testing.T) {
 	if !bytes.Equal(pending.PublicKey, privateKey.Public().(ed25519.PublicKey)) {
 		t.Fatal("pending public key does not match signer")
 	}
-	if _, err := authenticator.Admit(proof); !errors.Is(err, ErrChallengeUnknown) {
+	if _, err := authenticator.Authenticate(proof); !errors.Is(err, ErrChallengeUnknown) {
 		t.Fatalf("replayed Admit() error = %v", err)
 	}
 }
@@ -82,10 +83,10 @@ func TestAuthenticatorConsumesInvalidProofChallenge(t *testing.T) {
 		t.Fatal(err)
 	}
 	proof.Signature = "invalid"
-	if _, err := authenticator.Admit(proof); !errors.Is(err, ErrInvalidIdentityProof) {
+	if _, err := authenticator.Authenticate(proof); !errors.Is(err, ErrInvalidIdentityProof) {
 		t.Fatalf("Admit() error = %v", err)
 	}
-	if _, err := authenticator.Admit(proof); !errors.Is(err, ErrChallengeUnknown) {
+	if _, err := authenticator.Authenticate(proof); !errors.Is(err, ErrChallengeUnknown) {
 		t.Fatalf("second Admit() error = %v", err)
 	}
 }
@@ -124,7 +125,7 @@ func TestAuthenticatorExpiresAndBoundsChallenges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := authenticator.Admit(proof); !errors.Is(err, ErrChallengeExpired) {
+	if _, err := authenticator.Authenticate(proof); !errors.Is(err, ErrChallengeExpired) {
 		t.Fatalf("expired Admit() error = %v", err)
 	}
 	if _, err := authenticator.IssueChallenge(); err != nil {
@@ -269,5 +270,14 @@ func admitTestIdentityResult(
 	if err != nil {
 		return AdmissionResult{}, err
 	}
-	return authenticator.Admit(proof)
+	admission, err := authenticator.Authenticate(proof)
+	if err != nil {
+		return AdmissionResult{}, err
+	}
+	if admission.Result.State == StateConnected {
+		if err := authenticator.Connect(admission); err != nil {
+			return AdmissionResult{}, err
+		}
+	}
+	return admission.Result, nil
 }

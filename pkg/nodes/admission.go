@@ -50,6 +50,13 @@ type AdmissionResult struct {
 	State  State `json:"state"`
 }
 
+// Admission is a verified identity decision. Connected decisions become
+// durable only through Connect, after the transport has claimed ownership.
+type Admission struct {
+	Result   AdmissionResult
+	snapshot Snapshot
+}
+
 type AdmissionConfig struct {
 	ChallengeTTL  time.Duration
 	MaxChallenges int
@@ -120,13 +127,13 @@ func (auth *Authenticator) IssueChallenge() (Challenge, error) {
 	}, nil
 }
 
-func (auth *Authenticator) Admit(proof IdentityProof) (AdmissionResult, error) {
+func (auth *Authenticator) Authenticate(proof IdentityProof) (Admission, error) {
 	if err := auth.consumeChallenge(proof.Nonce); err != nil {
-		return AdmissionResult{}, err
+		return Admission{}, err
 	}
 	publicKey, err := proof.Verify()
 	if err != nil {
-		return AdmissionResult{}, err
+		return Admission{}, err
 	}
 	now := auth.now().Unix()
 	node := Snapshot{
@@ -142,34 +149,43 @@ func (auth *Authenticator) Admit(proof IdentityProof) (AdmissionResult, error) {
 	}
 	registration, exists, err := auth.registry.Registration(node.ID)
 	if err != nil {
-		return AdmissionResult{}, err
+		return Admission{}, err
 	}
 	if !exists {
 		if err := auth.persistPending(node, publicKey, proof, now); err != nil {
-			return AdmissionResult{}, err
+			return Admission{}, err
 		}
-		return AdmissionResult{NodeID: node.ID, State: StatePendingPairing}, nil
+		return Admission{Result: AdmissionResult{NodeID: node.ID, State: StatePendingPairing}}, nil
 	}
 	if !bytes.Equal(registration.PublicKey, publicKey) {
-		return AdmissionResult{}, fmt.Errorf("%w: node public key changed", ErrInvalidNode)
+		return Admission{}, fmt.Errorf("%w: node public key changed", ErrInvalidNode)
 	}
 	if registration.Snapshot.State == StateRevoked {
-		return AdmissionResult{}, ErrAdmissionRevoked
+		return Admission{}, ErrAdmissionRevoked
 	}
 	if registration.Snapshot.State == StatePendingPairing {
 		if err := auth.persistPending(node, publicKey, proof, now); err != nil {
-			return AdmissionResult{}, err
+			return Admission{}, err
 		}
-		return AdmissionResult{NodeID: node.ID, State: StatePendingPairing}, nil
+		return Admission{Result: AdmissionResult{NodeID: node.ID, State: StatePendingPairing}}, nil
 	}
 	if registration.ApprovedAt <= 0 {
-		return AdmissionResult{}, fmt.Errorf("%w: node identity is not approved", ErrInvalidNode)
+		return Admission{}, fmt.Errorf("%w: node identity is not approved", ErrInvalidNode)
 	}
 	node.State = StateConnected
-	if err := auth.registry.Upsert(node); err != nil {
-		return AdmissionResult{}, err
+	return Admission{
+		Result:   AdmissionResult{NodeID: node.ID, State: StateConnected},
+		snapshot: node,
+	}, nil
+}
+
+func (auth *Authenticator) Connect(admission Admission) error {
+	if admission.Result.State != StateConnected ||
+		admission.snapshot.State != StateConnected ||
+		admission.Result.NodeID != admission.snapshot.ID {
+		return fmt.Errorf("%w: admission is not connectable", ErrInvalidNode)
 	}
-	return AdmissionResult{NodeID: node.ID, State: StateConnected}, nil
+	return auth.registry.Upsert(admission.snapshot)
 }
 
 func (auth *Authenticator) Heartbeat(id ID) error {

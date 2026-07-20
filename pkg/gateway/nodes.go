@@ -18,11 +18,12 @@ type nodeAdmissionRoutes interface {
 }
 
 type nodeAdmissionRuntime struct {
-	routes   nodeAdmissionRoutes
-	registry *nodes.FileRegistry
-	handler  *nodews.AdmissionHandler
-	sessions *nodews.SessionHub
-	mounted  bool
+	routes       nodeAdmissionRoutes
+	registry     *nodes.FileRegistry
+	registryPath string
+	handler      *nodews.AdmissionHandler
+	sessions     *nodews.SessionHub
+	mounted      bool
 }
 
 func setupNodeAdmission(
@@ -45,14 +46,16 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 			runtime.handler.Close()
 		}
 		runtime.registry = nil
+		runtime.registryPath = ""
 		runtime.handler = nil
 		runtime.sessions = nil
 		runtime.mounted = false
 		return nil
 	}
 
+	registryPath := nodes.RegistryPath(cfg.WorkspacePath())
 	registry, err := nodes.NewFileRegistry(
-		nodes.RegistryPath(cfg.WorkspacePath()),
+		registryPath,
 		cfg.Nodes.MaxPendingPairings,
 	)
 	if err != nil {
@@ -62,8 +65,9 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("create node authenticator: %w", err)
 	}
+	sameRegistry := runtime.mounted && registryPath == runtime.registryPath
 	sessions := runtime.sessions
-	if sessions == nil {
+	if sessions == nil || !sameRegistry {
 		sessions = nodews.NewSessionHub()
 	}
 	handler, err := nodews.NewAdmissionHandler(authenticator, nodews.AdmissionConfig{
@@ -73,7 +77,9 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("create node admission handler: %w", err)
 	}
-	if runtime.mounted {
+	wasMounted := runtime.mounted
+	previousHandler := runtime.handler
+	if wasMounted {
 		err = runtime.routes.ReplaceHTTPHandler(nodews.Path, handler)
 	} else {
 		err = runtime.routes.RegisterHTTPHandler(nodews.Path, handler)
@@ -82,12 +88,20 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 		return fmt.Errorf("mount node admission route: %w", err)
 	}
 	runtime.registry = registry
+	runtime.registryPath = registryPath
 	runtime.handler = handler
 	runtime.sessions = sessions
 	runtime.mounted = true
+	if wasMounted && !sameRegistry && previousHandler != nil {
+		previousHandler.Close()
+	}
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
 		"allow_loopback_plaintext": cfg.Nodes.AllowLoopbackPlaintext,
 	})
 	return nil
+}
+
+func (runtime *nodeAdmissionRuntime) Close() {
+	_ = runtime.Reconcile(nil)
 }

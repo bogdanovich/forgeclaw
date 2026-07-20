@@ -1,11 +1,14 @@
 package ws
 
 import (
+	"errors"
 	"io"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/nodes"
 )
+
+var ErrSessionHubClosed = errors.New("node session hub is closed")
 
 type sessionEntry struct {
 	connection io.Closer
@@ -26,16 +29,31 @@ func NewSessionHub() *SessionHub {
 
 // Claim returns a release function that reports whether this claim still
 // owned the node when released. Only the current owner may persist disconnect.
-func (hub *SessionHub) Claim(id nodes.ID, connection io.Closer) func() bool {
+func (hub *SessionHub) Claim(
+	id nodes.ID,
+	connection io.Closer,
+	activate func() error,
+) (func() bool, error) {
 	entry := &sessionEntry{connection: connection}
 	hub.mu.Lock()
 	if hub.closed {
 		hub.mu.Unlock()
 		_ = connection.Close()
-		return func() bool { return false }
+		return nil, ErrSessionHubClosed
 	}
 	previous := hub.sessions[id]
 	hub.sessions[id] = entry
+	if activate != nil {
+		if err := activate(); err != nil {
+			if previous == nil {
+				delete(hub.sessions, id)
+			} else {
+				hub.sessions[id] = previous
+			}
+			hub.mu.Unlock()
+			return nil, err
+		}
+	}
 	hub.mu.Unlock()
 	if previous != nil {
 		_ = previous.connection.Close()
@@ -48,7 +66,7 @@ func (hub *SessionHub) Claim(id nodes.ID, connection io.Closer) func() bool {
 		}
 		delete(hub.sessions, id)
 		return true
-	}
+	}, nil
 }
 
 func (hub *SessionHub) Connected(id nodes.ID) bool {
