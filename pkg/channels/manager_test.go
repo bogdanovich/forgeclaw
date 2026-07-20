@@ -1133,6 +1133,58 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 	}
 }
 
+func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
+	eventBus := runtimeevents.NewBus()
+	t.Cleanup(func() { _ = eventBus.Close() })
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindChannelRateLimited,
+		runtimeevents.KindChannelMessageOutboundQueued,
+		runtimeevents.KindChannelMessageOutboundSent,
+		runtimeevents.KindChannelMessageOutboundFailed,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "trace-transport", Buffer: 8})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	m := newTestManager()
+	m.runtimeEvents = eventBus
+	traceScopes := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	}
+	text := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", Content: "hello", TraceScopes: traceScopes,
+	})
+	media := testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes,
+	})
+
+	m.publishOutboundQueued("test", text)
+	m.publishOutboundSent("test", text, []string{"text-1"})
+	m.publishOutboundFailed("test", text, errors.New("text failed"), false)
+	m.publishOutboundMediaQueued("test", media)
+	m.publishOutboundMediaSent("test", media, []string{"media-1"})
+	m.publishOutboundMediaFailed("test", media, errors.New("media failed"))
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	textWorker := &channelWorker{ch: &mockChannel{}, limiter: rate.NewLimiter(0, 0)}
+	_, _, _, _ = m.sendWithRetry(canceled, "test", textWorker, text)
+	mediaWorker := &channelWorker{ch: &mockMediaChannel{}, limiter: rate.NewLimiter(0, 0)}
+	_, _ = m.sendMediaWithRetry(canceled, "test", mediaWorker, media)
+
+	for i := 0; i < 8; i++ {
+		event := receiveChannelRuntimeEvent(t, eventsCh)
+		payload, ok := event.Payload.(ChannelOutboundPayload)
+		if !ok || !slices.Equal(payload.TraceScopes, traceScopes) {
+			t.Fatalf("event %d payload = %#v, want trace scopes %+v", i, event.Payload, traceScopes)
+		}
+		if event.Attrs["trace_scopes_count"] != 2 {
+			t.Fatalf("event %d attrs = %#v, want trace_scopes_count=2", i, event.Attrs)
+		}
+	}
+}
+
 func TestSendWithRetry_TemporaryThenSuccess(t *testing.T) {
 	m := newTestManager()
 	var callCount int

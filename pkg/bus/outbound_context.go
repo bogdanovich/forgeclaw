@@ -1,6 +1,10 @@
 package bus
 
-import "strings"
+import (
+	"strings"
+
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+)
 
 // NewOutboundContext builds the minimal normalized addressing context required
 // to deliver an outbound text message or reply.
@@ -41,7 +45,53 @@ func NormalizeOutboundMessage(msg OutboundMessage) OutboundMessage {
 		msg.Context.ReplyToMessageID = msg.ReplyToMessageID
 	}
 	msg.Scope = cloneOutboundScope(msg.Scope)
+	msg.TraceScopes = NormalizeTraceScopes(msg.TraceScopes)
 	return msg
+}
+
+// NormalizeTraceScopes returns complete, distinct scopes for one workspace.
+// A physical outbound cannot correlate turns from different workspaces.
+func NormalizeTraceScopes(scopes []runtimeevents.TraceScope) []runtimeevents.TraceScope {
+	normalized := make([]runtimeevents.TraceScope, 0, len(scopes))
+	workspace := ""
+	for _, scope := range scopes {
+		scope = runtimeevents.NewTraceScope(scope.Workspace, scope.TurnID)
+		if !scope.Complete() {
+			continue
+		}
+		if workspace == "" {
+			workspace = scope.Workspace
+		} else if scope.Workspace != workspace {
+			return nil
+		}
+		duplicate := false
+		for _, existing := range normalized {
+			if existing == scope {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			normalized = append(normalized, scope)
+		}
+	}
+	return normalized
+}
+
+// SetOutboundTraceScopes records every turn correlated with one text outbound.
+func SetOutboundTraceScopes(msg *OutboundMessage, scopes []runtimeevents.TraceScope) {
+	if msg == nil {
+		return
+	}
+	msg.TraceScopes = NormalizeTraceScopes(scopes)
+}
+
+// SetOutboundMediaTraceScopes records every turn correlated with one media outbound.
+func SetOutboundMediaTraceScopes(msg *OutboundMediaMessage, scopes []runtimeevents.TraceScope) {
+	if msg == nil {
+		return
+	}
+	msg.TraceScopes = NormalizeTraceScopes(scopes)
 }
 
 // NormalizeOutboundMediaMessage ensures media outbound messages also carry a
@@ -63,6 +113,7 @@ func NormalizeOutboundMediaMessage(msg OutboundMediaMessage) OutboundMediaMessag
 		msg.ChatID = msg.Context.ChatID
 	}
 	msg.Scope = cloneOutboundScope(msg.Scope)
+	msg.TraceScopes = NormalizeTraceScopes(msg.TraceScopes)
 	return msg
 }
 

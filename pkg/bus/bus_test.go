@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -438,6 +439,36 @@ func TestPublishOutbound_MirrorsContextToLegacyFields(t *testing.T) {
 	}
 	if got.Context.Channel != "telegram" || got.Context.ChatID != "chat-42" {
 		t.Fatalf("unexpected outbound context: %+v", got.Context)
+	}
+}
+
+func TestNormalizeOutboundTraceScopes(t *testing.T) {
+	scopes := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		{Workspace: " /workspace/main ", TurnID: " turn-2 "},
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		{Workspace: "/workspace/main"},
+	}
+	want := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	}
+
+	text := NormalizeOutboundMessage(OutboundMessage{TraceScopes: scopes})
+	if !slices.Equal(text.TraceScopes, want) {
+		t.Fatalf("text trace scopes = %+v, want %+v", text.TraceScopes, want)
+	}
+	media := NormalizeOutboundMediaMessage(OutboundMediaMessage{TraceScopes: scopes})
+	if !slices.Equal(media.TraceScopes, want) {
+		t.Fatalf("media trace scopes = %+v, want %+v", media.TraceScopes, want)
+	}
+
+	crossWorkspace := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/a", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/b", "turn-2"),
+	}
+	if got := NormalizeTraceScopes(crossWorkspace); got != nil {
+		t.Fatalf("cross-workspace trace scopes were accepted: %+v", got)
 	}
 }
 

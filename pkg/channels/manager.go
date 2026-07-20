@@ -142,12 +142,13 @@ type ChannelLifecyclePayload struct {
 
 // ChannelOutboundPayload describes channel outbound message runtime events.
 type ChannelOutboundPayload struct {
-	Media            bool     `json:"media,omitempty"`
-	ContentLen       int      `json:"content_len,omitempty"`
-	MessageIDs       []string `json:"message_ids,omitempty"`
-	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
-	Error            string   `json:"error,omitempty"`
-	Retries          int      `json:"retries,omitempty"`
+	TraceScopes      []runtimeevents.TraceScope `json:"trace_scopes,omitempty"`
+	Media            bool                       `json:"media,omitempty"`
+	ContentLen       int                        `json:"content_len,omitempty"`
+	MessageIDs       []string                   `json:"message_ids,omitempty"`
+	ReplyToMessageID string                     `json:"reply_to_message_id,omitempty"`
+	Error            string                     `json:"error,omitempty"`
+	Retries          int                        `json:"retries,omitempty"`
 }
 
 type toolFeedbackMessageTracker interface {
@@ -1911,6 +1912,7 @@ func (m *Manager) sendWithRetryPolicy(
 			scopeFromOutboundContext(msg.Context),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
+				TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
 				ContentLen:       len([]rune(msg.Content)),
 				ReplyToMessageID: msg.ReplyToMessageID,
 				Error:            err.Error(),
@@ -2165,8 +2167,9 @@ func (m *Manager) sendMediaWithRetry(
 			scopeFromOutboundContext(msg.Context),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
-				Media: true,
-				Error: err.Error(),
+				TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+				Media:       true,
+				Error:       err.Error(),
 			},
 		)
 		return nil, err
