@@ -506,31 +506,6 @@ func (al *AgentLoop) continueWithSteeringMessages(
 	})
 }
 
-func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
-	registry := al.GetRegistry()
-	if registry == nil {
-		return nil
-	}
-
-	agentIDs := registry.ListAgentIDs()
-	sort.Strings(agentIDs)
-	for _, agentID := range agentIDs {
-		agent, ok := registry.GetAgent(agentID)
-		if !ok || agent == nil {
-			continue
-		}
-		resolvedAgentID := session.ResolveAgentID(agent.Sessions, sessionKey)
-		if resolvedAgentID == "" {
-			continue
-		}
-		if scopedAgent, ok := registry.GetAgent(resolvedAgentID); ok {
-			return scopedAgent
-		}
-	}
-
-	return registry.GetDefaultAgent()
-}
-
 func (al *AgentLoop) agentForRuntimeScope(
 	scope runtimeSessionScope,
 	agentID string,

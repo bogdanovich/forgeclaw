@@ -587,6 +587,8 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	}
 	al.PublishResponseIfNeeded(
 		context.Background(),
+		defaultAgent.Workspace,
+		defaultAgent.ID,
 		"telegram",
 		"-100123",
 		"session-1",
@@ -632,6 +634,8 @@ func TestPublishResponseAlwaysPublishMarksFinalReplyAfterMessageTool(t *testing.
 
 	al.publishResponseWithContextIfNeeded(
 		context.Background(),
+		defaultAgent.Workspace,
+		defaultAgent.ID,
 		"telegram",
 		"-100123",
 		"session-1",
@@ -685,9 +689,15 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 	_ = provider
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
 
 	al.PublishResponseIfNeeded(
 		context.Background(),
+		defaultAgent.Workspace,
+		defaultAgent.ID,
 		"pico",
 		"pico:session-1",
 		"session-1",

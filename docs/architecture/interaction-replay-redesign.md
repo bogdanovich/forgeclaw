@@ -118,6 +118,22 @@ Acceptance tests must claim, steer, continue, stop, and release identical
 session and route IDs concurrently in separate workspaces without blocking or
 consuming the other workspace's state.
 
+### Exact Runtime Session Ownership
+
+Session keys do not identify an agent or workspace. Outbound delivery and
+context management must consume the owner already selected by routing or turn
+setup; they must not scan session stores to rediscover an owner from a bare
+session key. Context requests carry the exact `AgentInstance`, while outbound
+publication carries workspace, agent ID, and session key and resolves them as
+one fail-closed scope. Message-tool suppression examines only that owner.
+
+The same ownership applies to legacy compaction, Seahorse reconciliation,
+history clearing, background reconciliation, and interaction-answer ingest.
+Session-only runtime inspection remains diagnostic and returns no result when
+ambiguous. Acceptance tests use identical session keys in different workspaces
+and prove that outbound suppression and canonical context reads cannot cross
+owners.
+
 ## 2. Ordered Registry Observation
 
 The interaction registry exposes one atomic subscribe-and-snapshot operation:
@@ -278,18 +294,20 @@ Each item is a separate focused PR based on the merged predecessor:
 4. **Runtime session identity:** key root-turn and route claims, steering,
    continuation, pending stop state, and pending skill selection by workspace
    plus session; keep subturn identity in a distinct key namespace.
-5. **Exact adoption:** propagate scopes from runtime producers and outbound
+5. **Exact runtime ownership:** pass the routed owner through outbound and
+   context-manager boundaries; remove session-only owner rediscovery.
+6. **Exact adoption:** propagate scopes from runtime producers and outbound
    aggregation, remove heuristic turn-delivery correlation, and add workspace-
    collision tests.
-6. **Ordered observation:** add the registry subscribe-and-snapshot contract
+7. **Ordered observation:** add the registry subscribe-and-snapshot contract
    with ordering, re-entry, persistence-failure, and restart tests.
-7. **Durable writer:** extract queueing, retry, retention, atomic persistence,
+8. **Durable writer:** extract queueing, retry, retention, atomic persistence,
    and explicit loss accounting from the agent capture manager.
-8. **Projectors:** split turn/task capture and add the dedicated interaction
+9. **Projectors:** split turn/task capture and add the dedicated interaction
    projector with deterministic live/startup construction.
-9. **Protocol contract:** extract declarative interaction transitions and use
+10. **Protocol contract:** extract declarative interaction transitions and use
    them from both registry validation and replay reduction.
-10. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
+11. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
    reporting, operator docs, and only the spike tests relevant to these final
    boundaries.
 

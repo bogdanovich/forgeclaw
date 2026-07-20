@@ -52,6 +52,7 @@ func (r *backgroundCompactionRunner) scheduleBackgroundCompaction(
 		if err := contextManager.Compact(
 			compactCtx,
 			&CompactRequest{
+				Agent:      agent,
 				SessionKey: sessionKey,
 				Reason:     reason,
 				Budget:     budget,

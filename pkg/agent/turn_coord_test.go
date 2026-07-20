@@ -399,7 +399,11 @@ func (m *blockingCompactContextManager) Ingest(_ context.Context, _ *IngestReque
 	return nil
 }
 
-func (m *blockingCompactContextManager) Clear(_ context.Context, _ string) error {
+func (m *blockingCompactContextManager) Clear(
+	_ context.Context,
+	_ *AgentInstance,
+	_ string,
+) error {
 	return nil
 }
 

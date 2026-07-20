@@ -28,15 +28,16 @@ type ContextManager interface {
 
 	// Clear removes all stored context for a session (messages, summaries, etc.).
 	// Called when the user issues /clear or /reset.
-	Clear(ctx context.Context, sessionKey string) error
+	Clear(ctx context.Context, agent *AgentInstance, sessionKey string) error
 }
 
 // AssembleRequest is the input to Assemble.
 type AssembleRequest struct {
-	SessionKey    string // session identifier
-	Budget        int    // context window in tokens
-	MaxTokens     int    // max response tokens
-	ReserveTokens int    // non-history prompt/tool tokens reserved outside context manager
+	Agent         *AgentInstance // exact owner of the session
+	SessionKey    string         // session identifier
+	Budget        int            // context window in tokens
+	MaxTokens     int            // max response tokens
+	ReserveTokens int            // non-history prompt/tool tokens reserved outside context manager
 }
 
 // AssembleResponse is the output of Assemble.
@@ -70,6 +71,7 @@ type ContextBudgetReport struct {
 
 // CompactRequest is the input to Compact.
 type CompactRequest struct {
+	Agent      *AgentInstance        // exact owner of the session
 	SessionKey string                // session identifier
 	Reason     ContextCompressReason // proactive_budget | llm_retry | summarize
 	Budget     int                   // effective history budget for compact/overflow repair
@@ -77,6 +79,7 @@ type CompactRequest struct {
 
 // IngestRequest is the input to Ingest.
 type IngestRequest struct {
+	Agent             *AgentInstance    // exact owner of the session
 	SessionKey        string            // session identifier
 	Message           providers.Message // the message submitted to canonical history
 	CanonicalWriteErr error             // non-nil when canonical persistence failed

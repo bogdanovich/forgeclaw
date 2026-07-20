@@ -361,6 +361,7 @@ func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage
 	}
 	if al.contextManager != nil {
 		if err := al.contextManager.Ingest(ctx, &IngestRequest{
+			Agent:             agent,
 			SessionKey:        sessionKey,
 			Message:           record,
 			CanonicalWriteErr: writeErr,

@@ -7,6 +7,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -42,8 +43,22 @@ func testRuntimeSessionScope(al *AgentLoop, sessionKey string) runtimeSessionSco
 				return scope
 			}
 		}
-		if agent := al.agentForSession(sessionKey); agent != nil {
-			return newRuntimeSessionScope(agent.Workspace, sessionKey)
+		if registry := al.GetRegistry(); registry != nil {
+			var found runtimeSessionScope
+			for _, agentID := range registry.ListAgentIDs() {
+				agent, ok := registry.GetAgent(agentID)
+				if !ok || session.ResolveAgentID(agent.Sessions, sessionKey) == "" {
+					continue
+				}
+				candidate := newRuntimeSessionScope(agent.Workspace, sessionKey)
+				if found.complete() && found != candidate {
+					return runtimeSessionScope{sessionKey: sessionKey}
+				}
+				found = candidate
+			}
+			if found.complete() {
+				return found
+			}
 		}
 	}
 	return runtimeSessionScope{sessionKey: sessionKey}
@@ -261,5 +276,59 @@ func TestInboundRecoveryBlockScopeIncludesRoutedWorkspace(t *testing.T) {
 	if first.workspace != normalizeRuntimeWorkspace(firstWorkspace) ||
 		second.workspace != normalizeRuntimeWorkspace(secondWorkspace) {
 		t.Fatalf("recovery workspaces = %q and %q", first.workspace, second.workspace)
+	}
+}
+
+func TestLegacyContextManagerUsesExplicitSessionOwner(t *testing.T) {
+	firstStore := session.NewSessionManager("")
+	secondStore := session.NewSessionManager("")
+	firstStore.GetOrCreate("shared-session")
+	secondStore.GetOrCreate("shared-session")
+	firstStore.SetHistory("shared-session", []providers.Message{{Role: "user", Content: "first"}})
+	secondStore.SetHistory("shared-session", []providers.Message{{Role: "user", Content: "second"}})
+	first := &AgentInstance{ID: "first", Workspace: "/workspace/first", Sessions: firstStore}
+	second := &AgentInstance{ID: "second", Workspace: "/workspace/second", Sessions: secondStore}
+	mgr := &legacyContextManager{al: &AgentLoop{registry: &AgentRegistry{agents: map[string]*AgentInstance{
+		"first": first, "second": second,
+	}}}}
+
+	resp, err := mgr.Assemble(context.Background(), &AssembleRequest{
+		Agent: second, SessionKey: "shared-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.History) != 1 || resp.History[0].Content != "second" {
+		t.Fatalf("history = %#v, want second workspace history", resp.History)
+	}
+}
+
+func TestMessageToolSuppressionUsesExplicitSessionOwner(t *testing.T) {
+	first := tools.NewMessageTool()
+	second := tools.NewMessageTool()
+	first.SetSendCallback(func(
+		context.Context, string, string, string, string, []bus.MediaPart,
+	) error {
+		return nil
+	})
+	result := first.Execute(
+		tools.WithToolSessionContext(context.Background(), "first", "shared-session", nil),
+		map[string]any{"content": "sent", "channel": "test", "chat_id": "same"},
+	)
+	if result == nil || result.IsError {
+		t.Fatalf("message execute = %#v", result)
+	}
+	firstRegistry := tools.NewToolRegistry()
+	secondRegistry := tools.NewToolRegistry()
+	firstRegistry.Register(first)
+	secondRegistry.Register(second)
+	firstAgent := &AgentInstance{ID: "first", Tools: firstRegistry}
+	secondAgent := &AgentInstance{ID: "second", Tools: secondRegistry}
+
+	if !messageToolSentToSameChat(firstAgent, "shared-session", "test", "same") {
+		t.Fatal("first owner should report its sent message")
+	}
+	if messageToolSentToSameChat(secondAgent, "shared-session", "test", "same") {
+		t.Fatal("second owner inherited first owner message state")
 	}
 }

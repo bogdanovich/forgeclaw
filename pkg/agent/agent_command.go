@@ -480,7 +480,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 				opts.Dispatch.SessionScope,
 				opts.Dispatch.SessionAliases,
 			)
-			return al.contextManager.Clear(ctx, opts.SessionKey)
+			return al.contextManager.Clear(ctx, agent, opts.SessionKey)
 		}
 
 		rt.ResetSession = func(clearOverride bool) (string, error) {
