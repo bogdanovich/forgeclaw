@@ -318,6 +318,8 @@ func TestLegacyCompact_Overflow(t *testing.T) {
 	err := al.contextManager.Compact(context.Background(), &CompactRequest{
 		Agent:      defaultAgent,
 		SessionKey: "session-overflow",
+		Workspace:  defaultAgent.Workspace,
+		TraceScope: runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-overflow"),
 		Reason:     ContextCompressReasonRetry,
 	})
 	if err != nil {
@@ -348,6 +350,10 @@ func TestLegacyCompact_Overflow(t *testing.T) {
 	}
 	if payload.Reason != ContextCompressReasonRetry {
 		t.Fatalf("expected retry reason, got %q", payload.Reason)
+	}
+	wantScope := runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-overflow")
+	if got := compressEvt.Scope.TurnTraceScope(); got != wantScope {
+		t.Fatalf("compression trace scope = %#v", got)
 	}
 }
 
@@ -380,6 +386,8 @@ func TestLegacyCompact_Overflow_ProactiveReason(t *testing.T) {
 	err := al.contextManager.Compact(context.Background(), &CompactRequest{
 		Agent:      defaultAgent,
 		SessionKey: "session-proactive",
+		Workspace:  defaultAgent.Workspace,
+		TraceScope: runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-proactive"),
 		Reason:     ContextCompressReasonProactive,
 	})
 	if err != nil {
@@ -397,6 +405,10 @@ func TestLegacyCompact_Overflow_ProactiveReason(t *testing.T) {
 	}
 	if payload.Reason != ContextCompressReasonProactive {
 		t.Fatalf("expected proactive reason, got %q", payload.Reason)
+	}
+	wantScope := runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-proactive")
+	if got := compressEvt.Scope.TurnTraceScope(); got != wantScope {
+		t.Fatalf("compression trace scope = %#v", got)
 	}
 }
 
@@ -516,9 +528,12 @@ func TestLegacyCompact_PostTurn_ExceedsMessageThreshold(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	waitForRuntimeEvent(t, runtimeCh, 5*time.Second, func(evt runtimeevents.Event) bool {
+	summaryEvent := waitForRuntimeEvent(t, runtimeCh, 5*time.Second, func(evt runtimeevents.Event) bool {
 		return evt.Kind == runtimeevents.KindAgentSessionSummarize
 	})
+	if summaryEvent.Scope.TurnTraceScope().Complete() {
+		t.Fatalf("background summary has fabricated trace scope: %#v", summaryEvent.Scope)
+	}
 
 	newHistory := defaultAgent.Sessions.GetHistory("session-threshold")
 	if len(newHistory) >= len(history) {

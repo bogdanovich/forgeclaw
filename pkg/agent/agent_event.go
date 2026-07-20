@@ -24,7 +24,7 @@ func (al *AgentLoop) newTurnEventScope(
 
 func (ts turnEventScope) meta(iteration int, source, tracePath string) HookMeta {
 	return HookMeta{
-		TraceScope:  runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+		TraceScope:  ts.traceScope(),
 		AgentID:     ts.agentID,
 		SessionKey:  ts.sessionKey,
 		Iteration:   iteration,
@@ -32,6 +32,10 @@ func (ts turnEventScope) meta(iteration int, source, tracePath string) HookMeta 
 		TracePath:   tracePath,
 		turnContext: cloneTurnContext(ts.context),
 	}
+}
+
+func (ts turnEventScope) traceScope() runtimeevents.TraceScope {
+	return runtimeevents.NewTraceScope(ts.workspace, ts.turnID)
 }
 
 func (al *AgentLoop) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any) {

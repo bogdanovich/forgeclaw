@@ -444,6 +444,7 @@ func (p *Pipeline) CallLLM(
 				Agent:      ts.agent,
 				SessionKey: ts.sessionKey,
 				Workspace:  ts.workspace,
+				TraceScope: ts.scope.traceScope(),
 				Reason:     ContextCompressReasonRetry,
 				Budget:     compactBudget,
 			}); compactErr != nil {

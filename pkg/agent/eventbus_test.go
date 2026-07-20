@@ -620,6 +620,9 @@ func TestAgentLoop_EmitsSessionSummarizeEvent(t *testing.T) {
 	if payload.SummaryLen == 0 {
 		t.Fatal("expected non-empty summary length")
 	}
+	if summaryEvt.Scope.TurnTraceScope().Complete() {
+		t.Fatalf("background summary has fabricated trace scope: %#v", summaryEvt.Scope)
+	}
 }
 
 func TestAgentLoop_EmitsFollowUpQueuedEvent(t *testing.T) {
