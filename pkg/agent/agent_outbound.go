@@ -379,6 +379,7 @@ func (al *AgentLoop) deliverToolResultToUser(
 			Scope: outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 			Parts: parts,
 		}
+		outboundMedia.TraceSettlement = toolName == "final_turn"
 		if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 			var err error
 			if sender, ok := al.channelManager.(provisionalChannelManager); toolName == "final_turn" && ok {

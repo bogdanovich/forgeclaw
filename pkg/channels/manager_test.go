@@ -1099,6 +1099,7 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 		successWorker,
 		testOutboundMessage(bus.OutboundMessage{
 			Channel: "test", ChatID: "chat-1", Content: "hello",
+			TraceSettlement: true,
 			TraceScopes: []runtimeevents.TraceScope{
 				runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
 				runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
@@ -1111,7 +1112,7 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 		t.Fatalf("sent event = %+v", sent)
 	}
 	sentPayload, ok := sent.Payload.(ChannelOutboundPayload)
-	if !ok || !slices.Equal(sentPayload.TraceScopes, []runtimeevents.TraceScope{
+	if !ok || !sentPayload.TraceSettlement || !slices.Equal(sentPayload.TraceScopes, []runtimeevents.TraceScope{
 		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
 		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
 	}) {
@@ -1162,6 +1163,7 @@ func TestRateLimitCancellationPublishesScopedTerminalFailure(t *testing.T) {
 			send: func(ctx context.Context, m *Manager, worker *channelWorker) {
 				_, _, _, _ = m.sendWithRetry(ctx, "test", worker, testOutboundMessage(bus.OutboundMessage{
 					Channel: "test", ChatID: "chat-1", Content: "hello", TraceScopes: traceScopes,
+					TraceSettlement: true,
 				}))
 			},
 		},
@@ -1169,7 +1171,7 @@ func TestRateLimitCancellationPublishesScopedTerminalFailure(t *testing.T) {
 			name: "media",
 			send: func(ctx context.Context, m *Manager, worker *channelWorker) {
 				_, _ = m.sendMediaWithRetry(ctx, "test", worker, testOutboundMediaMessage(bus.OutboundMediaMessage{
-					Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes,
+					Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes, TraceSettlement: true,
 				}))
 			},
 		},
@@ -1208,7 +1210,7 @@ func TestRateLimitCancellationPublishesScopedTerminalFailure(t *testing.T) {
 					t.Fatalf("event scope = %#v, want %#v", event.Scope.TraceScope, traceScopes[0])
 				}
 				payload, ok := event.Payload.(ChannelOutboundPayload)
-				if !ok || !slices.Equal(payload.TraceScopes, traceScopes) {
+				if !ok || !payload.TraceSettlement || !slices.Equal(payload.TraceScopes, traceScopes) {
 					t.Fatalf("event payload = %#v, want correlated trace scopes", event.Payload)
 				}
 			}

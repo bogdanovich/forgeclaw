@@ -143,6 +143,7 @@ type ChannelLifecyclePayload struct {
 // ChannelOutboundPayload describes channel outbound message runtime events.
 type ChannelOutboundPayload struct {
 	TraceScopes      []runtimeevents.TraceScope `json:"trace_scopes,omitempty"`
+	TraceSettlement  bool                       `json:"trace_settlement,omitempty"`
 	Media            bool                       `json:"media,omitempty"`
 	ContentLen       int                        `json:"content_len,omitempty"`
 	MessageIDs       []string                   `json:"message_ids,omitempty"`
@@ -1928,6 +1929,7 @@ func (m *Manager) sendWithRetryPolicy(
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
 				TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
+				TraceSettlement:  msg.TraceSettlement,
 				ContentLen:       len([]rune(msg.Content)),
 				ReplyToMessageID: msg.ReplyToMessageID,
 				Error:            err.Error(),
@@ -2207,9 +2209,10 @@ func (m *Manager) sendMediaWithRetryPolicy(
 			scopeFromOutboundMediaMessage(msg),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
-				TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
-				Media:       true,
-				Error:       err.Error(),
+				TraceScopes:     bus.NormalizeTraceScopes(msg.TraceScopes),
+				TraceSettlement: msg.TraceSettlement,
+				Media:           true,
+				Error:           err.Error(),
 			},
 		)
 		if publishFailure {

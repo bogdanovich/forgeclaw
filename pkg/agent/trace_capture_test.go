@@ -281,12 +281,26 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 		t.Fatalf("trace persisted before delivery outcome: %v", matches)
 	}
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
-		ID: "sent", Kind: runtimeevents.KindChannelMessageOutboundSent, Time: start.Add(2 * time.Millisecond),
+		ID: "reasoning-sent", Kind: runtimeevents.KindChannelMessageOutboundSent,
+		Time: start.Add(2 * time.Millisecond),
+		Scope: runtimeevents.Scope{
+			TraceScope: scope.TraceScope, Channel: "telegram", ChatID: "chat-delivery",
+		},
+		Payload: channels.ChannelOutboundPayload{
+			TraceScopes: []runtimeevents.TraceScope{scope.TraceScope}, ContentLen: 9,
+		},
+	})
+	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(matches) != 0 {
+		t.Fatalf("non-final delivery settled trace: %v", matches)
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "sent", Kind: runtimeevents.KindChannelMessageOutboundSent, Time: start.Add(3 * time.Millisecond),
 		Scope: runtimeevents.Scope{
 			TraceScope: scope.TraceScope, Channel: "telegram", ChatID: "chat-delivery",
 		},
 		Payload: channels.ChannelOutboundPayload{
 			TraceScopes: []runtimeevents.TraceScope{scope.TraceScope}, ContentLen: 4,
+			TraceSettlement: true,
 		},
 	})
 
@@ -420,7 +434,7 @@ func TestTraceCaptureSettlesAllScopesFromOneOutbound(t *testing.T) {
 		Time:  start.Add(5 * time.Millisecond),
 		Scope: runtimeevents.Scope{TraceScope: traceScopes[0]},
 		Payload: channels.ChannelOutboundPayload{
-			TraceScopes: traceScopes, ContentLen: 4,
+			TraceScopes: traceScopes, ContentLen: 4, TraceSettlement: true,
 		},
 	})
 	manager.close()

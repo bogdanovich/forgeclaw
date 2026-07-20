@@ -304,7 +304,7 @@ func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
 		if record, critical, ok := runtimeEventRecord(settings, trace, correlatedEvent); ok {
 			appendCaptureRecord(trace, record, critical)
 		}
-		if isTerminalChannelDeliveryEvent(event.Kind) && trace.settlementTimer != nil {
+		if isTraceSettlementEvent(event) && trace.settlementTimer != nil {
 			m.removeTurnLocked(traceScope, trace)
 			trace.settlementTimer.Stop()
 			trace.settlementTimer = nil
@@ -373,6 +373,11 @@ func (m *traceCaptureManager) expireTurnSettlement(
 func isTerminalChannelDeliveryEvent(kind runtimeevents.Kind) bool {
 	return kind == runtimeevents.KindChannelMessageOutboundSent ||
 		kind == runtimeevents.KindChannelMessageOutboundFailed
+}
+
+func isTraceSettlementEvent(event runtimeevents.Event) bool {
+	payload, ok := event.Payload.(channels.ChannelOutboundPayload)
+	return ok && payload.TraceSettlement && isTerminalChannelDeliveryEvent(event.Kind)
 }
 
 func runtimeEventTraceScopes(event runtimeevents.Event) []runtimeevents.TraceScope {

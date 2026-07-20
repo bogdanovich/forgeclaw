@@ -107,6 +107,7 @@ func markFinalOutbound(msg *bus.OutboundMessage) {
 	if msg == nil {
 		return
 	}
+	msg.TraceSettlement = true
 	if msg.Context.Raw == nil {
 		msg.Context.Raw = make(map[string]string, 1)
 	}

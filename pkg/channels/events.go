@@ -88,6 +88,7 @@ func (m *Manager) publishOutboundSent(
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
 			TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
+			TraceSettlement:  msg.TraceSettlement,
 			ContentLen:       len([]rune(msg.Content)),
 			MessageIDs:       append([]string(nil), messageIDs...),
 			ReplyToMessageID: msg.ReplyToMessageID,
@@ -120,6 +121,7 @@ func (m *Manager) publishOutboundFailed(
 ) {
 	payload := ChannelOutboundPayload{
 		TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
+		TraceSettlement:  msg.TraceSettlement,
 		Media:            media,
 		ContentLen:       len([]rune(msg.Content)),
 		ReplyToMessageID: msg.ReplyToMessageID,
@@ -148,9 +150,9 @@ func (m *Manager) publishOutboundMediaSent(
 		scopeFromOutboundMediaMessage(msg),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
-			Media:       true,
-			MessageIDs:  append([]string(nil), messageIDs...),
+			TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes), TraceSettlement: msg.TraceSettlement,
+			Media:      true,
+			MessageIDs: append([]string(nil), messageIDs...),
 		},
 	)
 }
@@ -176,9 +178,10 @@ func (m *Manager) publishOutboundMediaFailed(
 	err error,
 ) {
 	payload := ChannelOutboundPayload{
-		TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
-		Media:       true,
-		Retries:     maxRetries,
+		TraceScopes:     bus.NormalizeTraceScopes(msg.TraceScopes),
+		TraceSettlement: msg.TraceSettlement,
+		Media:           true,
+		Retries:         maxRetries,
 	}
 	if err != nil {
 		payload.Error = err.Error()
