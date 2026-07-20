@@ -587,6 +587,8 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	}
 	al.PublishResponseIfNeeded(
 		context.Background(),
+		defaultAgent.Workspace,
+		defaultAgent.ID,
 		"telegram",
 		"-100123",
 		"session-1",
@@ -632,6 +634,8 @@ func TestPublishResponseAlwaysPublishMarksFinalReplyAfterMessageTool(t *testing.
 
 	al.publishResponseWithContextIfNeeded(
 		context.Background(),
+		defaultAgent.Workspace,
+		defaultAgent.ID,
 		"telegram",
 		"-100123",
 		"session-1",
@@ -685,9 +689,15 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 	_ = provider
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
 
 	al.PublishResponseIfNeeded(
 		context.Background(),
+		defaultAgent.Workspace,
+		defaultAgent.ID,
 		"pico",
 		"pico:session-1",
 		"session-1",
@@ -2078,7 +2088,7 @@ func TestApplyExplicitSkillCommand_ArmsSkillForNextMessage(t *testing.T) {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
 
-	pending := al.takePendingSkills(opts.SessionKey)
+	pending := al.takePendingSkills(newRuntimeSessionScope(agent.Workspace, opts.SessionKey))
 	if len(pending) != 1 || pending[0] != "finance-news" {
 		t.Fatalf("pending skills = %#v, want [finance-news]", pending)
 	}
@@ -4264,7 +4274,14 @@ func (m *handledMediaWithSteeringTool) Execute(
 	ctx context.Context,
 	args map[string]any,
 ) *tools.ToolResult {
-	if err := m.loop.Steer(providers.Message{Role: "user", Content: "what about this instead?"}); err != nil {
+	ts := turnStateFromContext(ctx)
+	if ts == nil {
+		return tools.ErrorResult("turn state is unavailable")
+	}
+	if err := m.loop.Steer(
+		ts.workspace, ts.sessionKey, ts.agentID,
+		providers.Message{Role: "user", Content: "what about this instead?"},
+	); err != nil {
 		return tools.ErrorResult(err.Error()).WithError(err)
 	}
 

@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -15,10 +16,17 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
+	_, routedAgent, _ := al.resolveMessageRoute(msg)
+	workspace, agentID := "", ""
+	if routedAgent != nil {
+		workspace, agentID = routedAgent.Workspace, routedAgent.ID
+	}
 	response, err := al.processMessage(ctx, msg)
 	if err != nil {
 		if !al.maybePublishErrorWithPolicy(
 			ctx,
+			workspace,
+			agentID,
 			msg.Channel,
 			msg.ChatID,
 			msg.SessionKey,
@@ -31,6 +39,8 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 	al.publishResponseWithContextIfNeeded(
 		ctx,
+		workspace,
+		agentID,
 		msg.Channel,
 		msg.ChatID,
 		msg.SessionKey,
@@ -87,6 +97,7 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 		ChatID:     turn.Message.ChatID,
 	}
 	if turn.Agent != nil {
+		target.AgentID = turn.Agent.ID
 		target.Workspace = turn.Agent.Workspace
 	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
@@ -104,6 +115,8 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	if err != nil {
 		if !al.maybePublishErrorWithPolicy(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			initialMsg.Channel,
 			initialMsg.ChatID,
 			initialMsg.SessionKey,
@@ -139,6 +152,8 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	if finalResponse != "" {
 		al.publishResponseWithContextIfNeeded(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			target.Channel,
 			target.ChatID,
 			target.SessionKey,
@@ -170,8 +185,12 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 		return "", nil
 	}
 
+	scope := newRuntimeSessionScope(target.Workspace, target.SessionKey)
+	if !scope.complete() {
+		return "", fmt.Errorf("continuation workspace and session are required")
+	}
 	responses := make([]string, 0, 2)
-	for al.pendingSteeringCountForScope(target.SessionKey) > 0 {
+	for al.pendingSteeringCountForScope(scope) > 0 {
 		if err := ctx.Err(); err != nil {
 			return joinSteeringResponses(responses), err
 		}
@@ -185,10 +204,10 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"channel":     target.Channel,
 				"chat_id":     target.ChatID,
 				"session_key": target.SessionKey,
-				"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
+				"queue_depth": al.pendingSteeringCountForScope(scope),
 			})
 
-		continued, continueErr := al.Continue(ctx, target.SessionKey, target.Channel, target.ChatID)
+		continued, continueErr := al.continueRuntimeSession(ctx, target)
 		if continueErr != nil {
 			return joinSteeringResponses(responses), continueErr
 		}
@@ -230,7 +249,8 @@ func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (*inboundDisp
 	}
 	allocation := al.allocateRouteSession(route, msg)
 	routeClaimKey := runtimeRouteClaimKey(allocation.RouteScopeKey, msg.SessionKey)
-	if activeTarget, ok := al.activeRouteSessions.Load(routeClaimKey); ok {
+	routeScope := newRuntimeRouteScope(agent.Workspace, routeClaimKey)
+	if activeTarget, ok := al.activeRouteSessions.Load(routeScope); ok {
 		target, targetOK := activeTarget.(*inboundDispatchTarget)
 		if targetOK {
 			al.touchActiveSessionLifecycle(target)

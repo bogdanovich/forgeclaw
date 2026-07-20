@@ -58,7 +58,7 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 
 	claim, activeTarget, claimed := c.claimSession(target)
 	if !claimed {
-		c.handleBusySession(ctx, msg, activeTarget.SessionKey, activeTarget.Agent.ID)
+		c.handleBusySession(ctx, msg, activeTarget)
 		return
 	}
 
@@ -82,7 +82,7 @@ func (c *inboundTurnCoordinator) enqueueDeferredInteractionInbound(
 ) error {
 	msg = c.al.prepareInboundMessageForAgent(ctx, msg)
 	return c.al.enqueueSteeringMessageWithSender(
-		target.SessionKey,
+		target.runtimeSessionScope(),
 		target.Agent.ID,
 		msg.SenderID,
 		providers.Message{
@@ -107,17 +107,21 @@ func (c *inboundTurnCoordinator) claimSession(
 func (c *inboundTurnCoordinator) handleBusySession(
 	ctx context.Context,
 	msg bus.InboundMessage,
-	sessionKey string,
-	agentID string,
+	target *inboundDispatchTarget,
 ) {
 	al := c.al
-	if al.tryHandleStopCommand(ctx, msg, sessionKey) {
+	if target == nil || target.Agent == nil {
+		al.releaseInboundMessage(ctx, msg, fmt.Errorf("active session target is unavailable"))
+		return
+	}
+	scope := target.runtimeSessionScope()
+	if al.tryHandleStopCommand(ctx, msg, scope, target.Agent.ID) {
 		al.ackInboundMessage(ctx, msg)
 		return
 	}
 
 	msg = al.prepareInboundMessageForAgent(ctx, msg)
-	if err := al.enqueueSteeringMessageWithSender(sessionKey, agentID, msg.SenderID, providers.Message{
+	if err := al.enqueueSteeringMessageWithSender(scope, target.Agent.ID, msg.SenderID, providers.Message{
 		Role:           "user",
 		Content:        msg.Content,
 		Media:          append([]string(nil), msg.Media...),
@@ -128,7 +132,7 @@ func (c *inboundTurnCoordinator) handleBusySession(
 				"error":       err.Error(),
 				"channel":     msg.Channel,
 				"chat_id":     msg.ChatID,
-				"session_key": sessionKey,
+				"session_key": scope.sessionKey,
 			})
 		al.releaseInboundMessage(ctx, msg, err)
 	}
@@ -160,14 +164,14 @@ func (c *inboundTurnCoordinator) runWorker(
 	ctx = admittedCtx
 
 	defer claim.releaseIfOwned()
-	defer c.recoverWorkerPanic(claim.sessionKey, msg)
+	defer c.recoverWorkerPanic(claim.scope.sessionKey, msg)
 
 	if al.channelManager != nil {
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
-	if al.takePendingStop(claim.sessionKey) {
-		c.handlePendingStop(ctx, msg, claim)
+	if al.takePendingStop(claim.scope) {
+		c.handlePendingStop(ctx, msg, claim, target)
 		return
 	}
 
@@ -213,23 +217,30 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	claim *runtimeSessionClaim,
+	dispatchTarget *inboundDispatchTarget,
 ) {
 	al := c.al
 	claim.releaseIfOwned()
 	al.ackInboundMessage(ctx, msg)
 
 	target := &continuationTarget{
-		SessionKey: claim.sessionKey,
+		SessionKey: claim.scope.sessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
+		Workspace:  claim.scope.workspace,
+	}
+	if dispatchTarget != nil && dispatchTarget.Agent != nil {
+		target.AgentID = dispatchTarget.Agent.ID
 	}
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
 		al.maybePublishErrorWithPolicy(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			msg.Channel,
 			msg.ChatID,
-			claim.sessionKey,
+			claim.scope.sessionKey,
 			continueErr,
 			finalResponseAlwaysPublish,
 		)
@@ -238,6 +249,8 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	if continued != "" {
 		al.publishResponseWithContextIfNeeded(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			target.Channel,
 			target.ChatID,
 			target.SessionKey,

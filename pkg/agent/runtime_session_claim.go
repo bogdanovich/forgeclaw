@@ -3,45 +3,53 @@
 package agent
 
 type runtimeSessionClaim struct {
-	al            *AgentLoop
-	sessionKey    string
-	routeClaimKey string
-	placeholder   *turnState
+	al          *AgentLoop
+	scope       runtimeSessionScope
+	routeScope  runtimeRouteScope
+	placeholder *turnState
 }
 
 func (al *AgentLoop) claimRuntimeRouteSession(
 	target *inboundDispatchTarget,
 	turnID string,
 ) (*runtimeSessionClaim, *inboundDispatchTarget, bool) {
-	routeClaimKey := target.RouteClaimKey
-	if existing, loaded := al.activeRouteSessions.LoadOrStore(routeClaimKey, target); loaded {
+	routeScope := target.runtimeRouteScope()
+	if routeScope.workspace == "" || routeScope.claimKey == "" {
+		return nil, target, false
+	}
+	if existing, loaded := al.activeRouteSessions.LoadOrStore(routeScope, target); loaded {
 		activeTarget, ok := existing.(*inboundDispatchTarget)
 		if !ok {
-			al.activeRouteSessions.CompareAndDelete(routeClaimKey, existing)
+			al.activeRouteSessions.CompareAndDelete(routeScope, existing)
 			return nil, target, false
 		}
 		return nil, activeTarget, false
 	}
-	claim, claimed := al.claimRuntimeSession(target.SessionKey, turnID)
+	claim, claimed := al.claimRuntimeSession(target.runtimeSessionScope(), turnID)
 	if !claimed {
-		al.activeRouteSessions.CompareAndDelete(routeClaimKey, target)
+		al.activeRouteSessions.CompareAndDelete(routeScope, target)
 		return nil, target, false
 	}
-	claim.routeClaimKey = routeClaimKey
+	claim.routeScope = routeScope
 	return claim, target, true
 }
 
-func (al *AgentLoop) claimRuntimeSession(sessionKey, turnID string) (*runtimeSessionClaim, bool) {
-	placeholder := &turnState{
-		turnID: turnID,
-		phase:  TurnPhaseSetup,
+func (al *AgentLoop) claimRuntimeSession(scope runtimeSessionScope, turnID string) (*runtimeSessionClaim, bool) {
+	if !scope.complete() {
+		return nil, false
 	}
-	if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
+	placeholder := &turnState{
+		turnID:     turnID,
+		workspace:  scope.workspace,
+		sessionKey: scope.sessionKey,
+		phase:      TurnPhaseSetup,
+	}
+	if _, loaded := al.activeTurnStates.LoadOrStore(scope, placeholder); loaded {
 		return nil, false
 	}
 	return &runtimeSessionClaim{
 		al:          al,
-		sessionKey:  sessionKey,
+		scope:       scope,
 		placeholder: placeholder,
 	}, true
 }
@@ -50,14 +58,14 @@ func (claim *runtimeSessionClaim) releaseIfOwned() {
 	if claim == nil || claim.placeholder == nil || claim.al == nil {
 		return
 	}
-	if actual, ok := claim.al.activeTurnStates.Load(claim.sessionKey); ok && actual == claim.placeholder {
-		claim.al.activeTurnStates.Delete(claim.sessionKey)
+	if actual, ok := claim.al.activeTurnStates.Load(claim.scope); ok && actual == claim.placeholder {
+		claim.al.activeTurnStates.Delete(claim.scope)
 	}
-	if claim.routeClaimKey != "" {
-		if target, ok := claim.al.activeRouteSessions.Load(claim.routeClaimKey); ok {
+	if claim.routeScope.claimKey != "" {
+		if target, ok := claim.al.activeRouteSessions.Load(claim.routeScope); ok {
 			activeTarget, targetOK := target.(*inboundDispatchTarget)
-			if targetOK && activeTarget.SessionKey == claim.sessionKey {
-				claim.al.activeRouteSessions.CompareAndDelete(claim.routeClaimKey, target)
+			if targetOK && activeTarget.runtimeSessionScope() == claim.scope {
+				claim.al.activeRouteSessions.CompareAndDelete(claim.routeScope, target)
 			}
 		}
 	}

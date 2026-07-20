@@ -32,6 +32,7 @@ const (
 
 func (al *AgentLoop) maybePublishErrorWithPolicy(
 	ctx context.Context,
+	workspace, agentID string,
 	channel, chatID, sessionKey string,
 	err error,
 	policy finalResponseDeliveryPolicy,
@@ -41,6 +42,8 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 	}
 	al.publishResponseWithContextIfNeeded(
 		ctx,
+		workspace,
+		agentID,
 		channel,
 		chatID,
 		sessionKey,
@@ -119,9 +122,14 @@ func formatUserFacingAgentError(err error) string {
 	return base
 }
 
-func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) {
+func (al *AgentLoop) PublishResponseIfNeeded(
+	ctx context.Context,
+	workspace, agentID, channel, chatID, sessionKey, response string,
+) {
 	al.publishResponseWithContextIfNeeded(
 		ctx,
+		workspace,
+		agentID,
 		channel,
 		chatID,
 		sessionKey,
@@ -133,6 +141,7 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 
 func (al *AgentLoop) publishResponseWithContextIfNeeded(
 	ctx context.Context,
+	workspace, agentID string,
 	channel, chatID, sessionKey, response string,
 	inboundCtx *bus.InboundContext,
 	policy finalResponseDeliveryPolicy,
@@ -141,7 +150,8 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 		return
 	}
 
-	messageToolSentToSameChat := al.messageToolSentToSameChat(sessionKey, channel, chatID)
+	agent := al.agentForRuntimeScope(newRuntimeSessionScope(workspace, sessionKey), agentID)
+	messageToolSentToSameChat := messageToolSentToSameChat(agent, sessionKey, channel, chatID)
 
 	if policy == finalResponseSuppressIfMessageToolSent && messageToolSentToSameChat {
 		al.dismissToolFeedbackForSession(ctx, channel, chatID, inboundCtx, sessionKey)
@@ -153,16 +163,15 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 		return
 	}
 
-	agent := al.agentForSession(sessionKey)
-	agentID := ""
+	resolvedAgentID := ""
 	if agent != nil {
-		agentID = agent.ID
+		resolvedAgentID = agent.ID
 	}
 	msg := bus.OutboundMessage{
 		Channel:    channel,
 		ChatID:     chatID,
 		Context:    outboundContextFromInbound(inboundCtx, channel, chatID, ""),
-		AgentID:    agentID,
+		AgentID:    resolvedAgentID,
 		SessionKey: sessionKey,
 		Content:    response,
 	}
@@ -557,31 +566,22 @@ func (al *AgentLoop) mediaPartsFromRefs(
 	return parts
 }
 
-func (al *AgentLoop) messageToolSentToSameChat(sessionKey, channel, chatID string) bool {
+func messageToolSentToSameChat(
+	agent *AgentInstance,
+	sessionKey, channel, chatID string,
+) bool {
 	if strings.TrimSpace(sessionKey) == "" {
 		return false
 	}
-	agents := make([]*AgentInstance, 0, 2)
-	if agent := al.agentForSession(sessionKey); agent != nil {
-		agents = append(agents, agent)
+	if agent == nil || agent.Tools == nil {
+		return false
 	}
-	if defaultAgent := al.GetRegistry().GetDefaultAgent(); defaultAgent != nil {
-		agents = append(agents, defaultAgent)
+	tool, ok := agent.Tools.Get("message")
+	if !ok {
+		return false
 	}
-	for _, agent := range agents {
-		if agent == nil || agent.Tools == nil {
-			continue
-		}
-		tool, ok := agent.Tools.Get("message")
-		if !ok {
-			continue
-		}
-		mt, ok := tool.(*tools.MessageTool)
-		if ok && mt.HasSentTo(sessionKey, channel, chatID) {
-			return true
-		}
-	}
-	return false
+	mt, ok := tool.(*tools.MessageTool)
+	return ok && mt.HasSentTo(sessionKey, channel, chatID)
 }
 
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {

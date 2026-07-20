@@ -179,6 +179,7 @@ func computeAssembledContextUsage(
 	}
 
 	resp, err := cm.Assemble(ctx, &AssembleRequest{
+		Agent:         agent,
 		SessionKey:    sessionKey,
 		Budget:        contextWindow,
 		MaxTokens:     agent.MaxTokens,

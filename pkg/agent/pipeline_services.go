@@ -49,6 +49,7 @@ func (p *Pipeline) ingestMessage(
 		})
 	}
 	if err := p.Context.Runtime.Ingest(ctx, &IngestRequest{
+		Agent:             ts.agent,
 		SessionKey:        ts.sessionKey,
 		Message:           msg,
 		CanonicalWriteErr: canonicalWriteErr,
@@ -84,7 +85,7 @@ func (p *Pipeline) dequeueSteeringMessagesForTurn(ts *turnState) []providers.Mes
 		return nil
 	}
 	return p.Context.Steering.dequeueSteeringMessagesForTurn(
-		ts.sessionKey,
+		ts.runtimeSessionScope(),
 		ts.opts.Dispatch.SenderID(),
 	)
 }

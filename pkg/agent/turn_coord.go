@@ -38,7 +38,7 @@ func (al *AgentLoop) runTurn(
 	defer al.clearActiveTurn(ts)
 	defer ts.Finish(false)
 
-	if al.takePendingStop(ts.sessionKey) {
+	if al.takePendingStop(ts.runtimeSessionScope()) {
 		_ = ts.requestHardAbort()
 	}
 
@@ -198,6 +198,7 @@ func (al *AgentLoop) askSideQuestion(
 			"",
 		)
 		resp, err := al.contextManager.Assemble(ctx, &AssembleRequest{
+			Agent:         agent,
 			SessionKey:    opts.SessionKey,
 			Budget:        agent.ContextWindow,
 			MaxTokens:     agent.MaxTokens,

@@ -160,7 +160,7 @@ func (c *inboundTurnCoordinator) runInteractionWorker(
 	defer releaseCapacity()
 	ctx = admittedCtx
 	defer claim.releaseIfOwned()
-	defer c.recoverWorkerPanic(claim.sessionKey, msg)
+	defer c.recoverWorkerPanic(claim.scope.sessionKey, msg)
 	if c.al.channelManager != nil {
 		defer c.al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
@@ -207,6 +207,7 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 		return nil
 	}
 	continued, err := al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
+		AgentID:    route.AgentID,
 		SessionKey: route.SessionKey,
 		Channel:    route.Channel,
 		ChatID:     route.ChatID,
@@ -218,6 +219,8 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 	if strings.TrimSpace(continued) != "" {
 		al.publishResponseWithContextIfNeeded(
 			ctx,
+			workspace,
+			route.AgentID,
 			route.Channel,
 			route.ChatID,
 			route.SessionKey,
@@ -976,6 +979,7 @@ func (al *AgentLoop) persistInteractionToolResult(
 	}
 	if al.contextManager != nil {
 		if err := al.contextManager.Ingest(ctx, &IngestRequest{
+			Agent:      agent,
 			SessionKey: continuationSessionKey,
 			Message:    message,
 		}); err != nil {

@@ -399,7 +399,11 @@ func (m *blockingCompactContextManager) Ingest(_ context.Context, _ *IngestReque
 	return nil
 }
 
-func (m *blockingCompactContextManager) Clear(_ context.Context, _ string) error {
+func (m *blockingCompactContextManager) Clear(
+	_ context.Context,
+	_ *AgentInstance,
+	_ string,
+) error {
 	return nil
 }
 
@@ -1686,6 +1690,7 @@ func TestRunTurn_SteeringMessageInjection(t *testing.T) {
 
 	pipeline := NewPipeline(al)
 	opts := makeTestProcessOpts("test-session-steering")
+	opts.Dispatch.SessionKey = "test-session-steering"
 
 	ts := newTurnState(agent, opts, turnEventScope{
 		turnID:  "turn-steering",
@@ -1697,7 +1702,9 @@ func TestRunTurn_SteeringMessageInjection(t *testing.T) {
 		Role:    "user",
 		Content: "Steering message",
 	}
-	al.Steer(steeringMsg)
+	if err := al.Steer(ts.workspace, ts.sessionKey, ts.agentID, steeringMsg); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := al.runTurn(context.Background(), ts, pipeline)
 	if err != nil {
@@ -1744,12 +1751,13 @@ func TestRunTurn_SteeringToolMediaUsesPipelineMediaLimit(t *testing.T) {
 	pipeline := NewPipeline(al)
 	pipeline.Config.MediaLimits = &testMediaLimitsProvider{size: 1}
 	opts := makeTestProcessOpts("test-session-steering-media")
+	opts.Dispatch.SessionKey = "test-session-steering-media"
 	ts := newTurnState(agent, opts, turnEventScope{
 		turnID:  "turn-steering-media",
 		context: newTurnContext(nil, nil, nil),
 	})
 
-	if steerErr := al.Steer(providers.Message{
+	if steerErr := al.Steer(ts.workspace, ts.sessionKey, ts.agentID, providers.Message{
 		Role:       "tool",
 		Content:    "[image]",
 		ToolCallID: "call_1",

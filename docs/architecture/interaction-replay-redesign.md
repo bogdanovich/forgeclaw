@@ -97,6 +97,43 @@ Acceptance tests must create identical turn and session IDs in two workspaces,
 exercise concurrent runtime and delivery events, and prove that no evidence or
 settlement crosses the workspace boundary.
 
+### Workspace-Scoped Runtime Sessions
+
+Exact trace ownership depends on the runtime authorities using the same
+workspace boundary before a turn exists. Root-turn claims, route claims,
+steering queues, continuation dequeue, pending stop markers, and pending skill
+selection therefore use a comparable `(workspace, session_key)` value rather
+than a process-wide session string. Subturn lookup uses a distinct
+`(workspace, turn_id)` key so
+the active-turn map never mixes session and turn identifiers in one string
+namespace.
+
+Every routed ingress and continuation supplies the workspace resolved from its
+agent. Public steering and continuation entry points require workspace and
+session explicitly. They do not select an arbitrary active turn or fall back
+to an unowned process-wide queue. Session-only inspection helpers fail closed
+when the same session is active in more than one workspace.
+
+Acceptance tests must claim, steer, continue, stop, and release identical
+session and route IDs concurrently in separate workspaces without blocking or
+consuming the other workspace's state.
+
+### Exact Runtime Session Ownership
+
+Session keys do not identify an agent or workspace. Outbound delivery and
+context management must consume the owner already selected by routing or turn
+setup; they must not scan session stores to rediscover an owner from a bare
+session key. Context requests carry the exact `AgentInstance`, while outbound
+publication carries workspace, agent ID, and session key and resolves them as
+one fail-closed scope. Message-tool suppression examines only that owner.
+
+The same ownership applies to legacy compaction, Seahorse reconciliation,
+history clearing, background reconciliation, and interaction-answer ingest.
+Session-only runtime inspection remains diagnostic and returns no result when
+ambiguous. Acceptance tests use identical session keys in different workspaces
+and prove that outbound suppression and canonical context reads cannot cross
+owners.
+
 ## 2. Ordered Registry Observation
 
 The interaction registry exposes one atomic subscribe-and-snapshot operation:
@@ -254,18 +291,23 @@ Each item is a separate focused PR based on the merged predecessor:
 3. **Delivery protocol:** separate correlation from settlement, publish one
    terminal outcome per logical outbound, and support success-only preliminary
    attempts before fallback.
-4. **Exact adoption:** propagate scopes from runtime producers and outbound
+4. **Runtime session identity:** key root-turn and route claims, steering,
+   continuation, pending stop state, and pending skill selection by workspace
+   plus session; keep subturn identity in a distinct key namespace.
+5. **Exact runtime ownership:** pass the routed owner through outbound and
+   context-manager boundaries; remove session-only owner rediscovery.
+6. **Exact adoption:** propagate scopes from runtime producers and outbound
    aggregation, remove heuristic turn-delivery correlation, and add workspace-
    collision tests.
-5. **Ordered observation:** add the registry subscribe-and-snapshot contract
+7. **Ordered observation:** add the registry subscribe-and-snapshot contract
    with ordering, re-entry, persistence-failure, and restart tests.
-6. **Durable writer:** extract queueing, retry, retention, atomic persistence,
+8. **Durable writer:** extract queueing, retry, retention, atomic persistence,
    and explicit loss accounting from the agent capture manager.
-7. **Projectors:** split turn/task capture and add the dedicated interaction
+9. **Projectors:** split turn/task capture and add the dedicated interaction
    projector with deterministic live/startup construction.
-8. **Protocol contract:** extract declarative interaction transitions and use
+10. **Protocol contract:** extract declarative interaction transitions and use
    them from both registry validation and replay reduction.
-9. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
+11. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
    reporting, operator docs, and only the spike tests relevant to these final
    boundaries.
 

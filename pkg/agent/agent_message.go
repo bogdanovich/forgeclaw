@@ -50,15 +50,26 @@ func (al *AgentLoop) ProcessScheduledWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
 ) (string, error) {
-	return al.processDirectWithChannel(
-		ctx,
-		content,
-		sessionKey,
-		channel,
-		chatID,
-		true,
-		DirectTurnOptions{Stateless: true},
-	)
+	response, _, err := al.ProcessScheduledWithIdentity(ctx, content, sessionKey, channel, chatID)
+	return response, err
+}
+
+func (al *AgentLoop) ProcessScheduledWithIdentity(
+	ctx context.Context,
+	content, sessionKey, channel, chatID string,
+) (string, string, error) {
+	if err := al.ensureHooksInitialized(ctx); err != nil {
+		return "", "", err
+	}
+	if err := al.ensureMCPInitialized(ctx); err != nil {
+		return "", "", err
+	}
+	return al.processScheduledMessage(ctx, bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel: channel, ChatID: chatID, ChatType: "direct", SenderID: "cron",
+		},
+		Content: content, SessionKey: sessionKey,
+	})
 }
 
 func (al *AgentLoop) processDirectWithChannel(
@@ -85,7 +96,8 @@ func (al *AgentLoop) processDirectWithChannel(
 		SessionKey: sessionKey,
 	}
 	if scheduled {
-		return al.processScheduledMessage(ctx, msg)
+		response, _, err := al.processScheduledMessage(ctx, msg)
+		return response, err
 	}
 
 	turn, err := al.buildInboundMessageTurn(ctx, msg)
@@ -99,16 +111,19 @@ func (al *AgentLoop) processDirectWithChannel(
 	return al.processInboundMessageTurn(ctx, turn)
 }
 
-func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+func (al *AgentLoop) processScheduledMessage(
+	ctx context.Context,
+	msg bus.InboundMessage,
+) (string, string, error) {
 	msg = al.prepareInboundMessageForAgent(ctx, msg)
 	route, agent, routeErr := al.resolveMessageRoute(msg)
 	if routeErr != nil {
-		return "", routeErr
+		return "", "", routeErr
 	}
 	allocation := al.allocateRouteSession(route, msg)
 	allocation, routeErr = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
 	if routeErr != nil {
-		return "", routeErr
+		return "", "", routeErr
 	}
 	sessionKey := al.resolveEffectiveSessionKey(
 		allocation.RouteScopeKey,
@@ -124,7 +139,7 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 		}
 	}
 
-	return al.runAgentLoop(ctx, agent, processOptions{
+	response, err := al.runAgentLoop(ctx, agent, processOptions{
 		Dispatch: DispatchRequest{
 			RouteSessionKey: allocation.RouteScopeKey,
 			BaseSessionKey:  allocation.SessionKey,
@@ -145,6 +160,7 @@ func (al *AgentLoop) processScheduledMessage(ctx context.Context, msg bus.Inboun
 		SuppressToolFeedback: true,
 		NoHistory:            true,
 	})
+	return response, agent.ID, err
 }
 
 func (al *AgentLoop) ProcessHeartbeat(
@@ -269,7 +285,9 @@ func (al *AgentLoop) processInboundMessageTurn(
 		return response, nil
 	}
 
-	if pending := al.takePendingSkills(opts.Dispatch.SessionKey); len(pending) > 0 {
+	if pending := al.takePendingSkills(
+		newRuntimeSessionScope(turn.Agent.Workspace, opts.Dispatch.SessionKey),
+	); len(pending) > 0 {
 		opts.ForcedSkills = append(opts.ForcedSkills, pending...)
 		logger.InfoCF("agent", "Applying pending skill override",
 			map[string]any{
@@ -359,6 +377,7 @@ func (al *AgentLoop) observeMessage(ctx context.Context, msg bus.ObservedMessage
 	}
 	if al.contextManager != nil {
 		if err := al.contextManager.Ingest(ctx, &IngestRequest{
+			Agent:             agent,
 			SessionKey:        sessionKey,
 			Message:           record,
 			CanonicalWriteErr: writeErr,

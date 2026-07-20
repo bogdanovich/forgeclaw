@@ -235,21 +235,22 @@ func TestAgentLoopRecoverUnansweredSessionsSkipsUnackedInboundSpool(t *testing.T
 func TestRuntimeSessionClaimReleaseDoesNotDeleteNewerTurn(t *testing.T) {
 	al := &AgentLoop{}
 	sessionKey := "agent:main:telegram:private:123"
-	claim, claimed := al.claimRuntimeSession(sessionKey, "pending-recovery")
+	scope := newRuntimeSessionScope("/workspace/main", sessionKey)
+	claim, claimed := al.claimRuntimeSession(scope, "pending-recovery")
 	if !claimed {
 		t.Fatal("expected runtime session claim")
 	}
 	newer := &turnState{turnID: "newer-turn"}
 
-	al.activeTurnStates.Store(sessionKey, newer)
+	al.activeTurnStates.Store(scope, newer)
 	claim.releaseIfOwned()
-	if current, ok := al.activeTurnStates.Load(sessionKey); !ok || current != newer {
+	if current, ok := al.activeTurnStates.Load(scope); !ok || current != newer {
 		t.Fatalf("active turn = %v, %t; want newer turn preserved", current, ok)
 	}
 
-	al.activeTurnStates.Store(sessionKey, claim.placeholder)
+	al.activeTurnStates.Store(scope, claim.placeholder)
 	claim.releaseIfOwned()
-	if current, ok := al.activeTurnStates.Load(sessionKey); ok {
+	if current, ok := al.activeTurnStates.Load(scope); ok {
 		t.Fatalf("active turn = %v, want cleared placeholder", current)
 	}
 }

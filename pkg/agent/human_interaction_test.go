@@ -1297,14 +1297,16 @@ func TestClaimedAnswerIsNotReleasedAfterResumeFailure(t *testing.T) {
 	}
 	target := &inboundDispatchTarget{
 		Agent: agent, SessionKey: sessionKey,
-		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+		RouteClaimKey: runtimeRouteClaimKey(request.Route.RouteSessionKey, ""),
+		Allocation:    session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
 	}
 	msg := bus.InboundMessage{
 		Content: "Canary", SpoolID: "spool-claimed-answer",
 		Context: inboundContextForInteraction(request.Route),
 	}
 	msg.Context.MessageID = "answer-claimed"
-	claim, claimed := al.claimRuntimeSession(sessionKey, "test-claimed-spool")
+	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+	claim, claimed := al.claimRuntimeSession(scope, "test-claimed-spool")
 	if !claimed {
 		t.Fatal("failed to claim test session")
 	}
@@ -1353,7 +1355,8 @@ func TestAdditionalMessageDuringResumeIsDeferred(t *testing.T) {
 		Context: inboundContextForInteraction(request.Route),
 	}
 	msg.Context.MessageID = "answer-2"
-	claim, claimed := al.claimRuntimeSession(sessionKey, "test-active-resume")
+	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+	claim, claimed := al.claimRuntimeSession(scope, "test-active-resume")
 	if !claimed {
 		t.Fatal("failed to claim test session")
 	}
@@ -1364,10 +1367,10 @@ func TestAdditionalMessageDuringResumeIsDeferred(t *testing.T) {
 	if acked != 0 || released != 0 {
 		t.Fatalf("deferred spool ownership = acked:%d released:%d, want 0/0", acked, released)
 	}
-	if got := al.pendingSteeringCountForScope(sessionKey); got != 1 {
+	if got := al.pendingSteeringCountForScope(scope); got != 1 {
 		t.Fatalf("deferred queue depth = %d, want 1", got)
 	}
-	queued := al.dequeueSteeringMessagesForTurn(sessionKey, request.Route.SenderID)
+	queued := al.dequeueSteeringMessagesForTurn(scope, request.Route.SenderID)
 	if len(queued) != 1 || queued[0].InboundSpoolID != "spool-correction" {
 		t.Fatalf("deferred message = %#v", queued)
 	}
@@ -1463,8 +1466,10 @@ func TestStopCancellationPairsSuspendedToolCall(t *testing.T) {
 	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
 	record, _ = registry.MarkWaiting(record.ID, record.Revision)
 	target := &inboundDispatchTarget{
-		Agent: agent, SessionKey: sessionKey,
-		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+		Agent:         agent,
+		SessionKey:    sessionKey,
+		RouteClaimKey: runtimeRouteClaimKey(request.Route.RouteSessionKey, ""),
+		Allocation:    session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
 	}
 	msg := bus.InboundMessage{Content: "/stop", Context: inboundContextForInteraction(request.Route)}
 	if err := al.cancelInteractionForControlMessage(t.Context(), msg, target); err != nil {
@@ -1542,14 +1547,15 @@ func TestDeferredInteractionIngressQueuesWithoutChangingHistory(t *testing.T) {
 		},
 	}
 	newInboundTurnCoordinator(al).deferInteractionInbound(t.Context(), msg, target)
-	if got := al.pendingSteeringCountForScope(sessionKey); got != 1 {
+	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+	if got := al.pendingSteeringCountForScope(scope); got != 1 {
 		t.Fatalf("deferred queue depth = %d, want 1", got)
 	}
 	history := agent.Sessions.GetHistory(sessionKey)
 	if len(history) != 1 || history[0].Content != "existing" {
 		t.Fatalf("deferred ingress changed history: %#v", history)
 	}
-	queued := al.dequeueSteeringMessagesForTurn(sessionKey, "user-2")
+	queued := al.dequeueSteeringMessagesForTurn(scope, "user-2")
 	if len(queued) != 1 || queued[0].InboundSpoolID != "spool-2" ||
 		!strings.Contains(queued[0].Content, "unrelated turn") {
 		t.Fatalf("deferred message = %#v", queued)
@@ -1663,7 +1669,8 @@ func TestRecoverHumanInteractionsResumesDurableClaimAfterRestartWindow(t *testin
 	if record.Status != interactions.StatusClaimed {
 		t.Fatalf("status before recovery = %q", record.Status)
 	}
-	if err := al.enqueueSteeringMessageWithSender(sessionKey, agent.ID, "user-2", providers.Message{
+	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+	if err := al.enqueueSteeringMessageWithSender(scope, agent.ID, "user-2", providers.Message{
 		Role: "user", Content: "Check the deployment after recovery.",
 	}); err != nil {
 		t.Fatal(err)
@@ -1676,7 +1683,7 @@ func TestRecoverHumanInteractionsResumesDurableClaimAfterRestartWindow(t *testin
 	if record.Status != interactions.StatusResolved || !record.FinalDelivered {
 		t.Fatalf("status after recovery = %q", record.Status)
 	}
-	if got := al.pendingSteeringCountForScope(sessionKey); got != 0 {
+	if got := al.pendingSteeringCountForScope(scope); got != 0 {
 		t.Fatalf("deferred queue depth after recovery = %d, want 0", got)
 	}
 	foundDeferred := false
@@ -1854,13 +1861,15 @@ func TestDrainQueuedSteeringStopsWhileInteractionIsNonterminal(t *testing.T) {
 	if _, err = registry.MarkWaiting(record.ID, record.Revision); err != nil {
 		t.Fatal(err)
 	}
-	if err = al.enqueueSteeringMessageWithSender(sessionKey, agent.ID, "user-2", providers.Message{
+	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+	if err = al.enqueueSteeringMessageWithSender(scope, agent.ID, "user-2", providers.Message{
 		Role: "user", Content: "message that arrived during suspension",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	continued, err := al.drainQueuedSteeringContinuations(t.Context(), &continuationTarget{
+		AgentID:    agent.ID,
 		SessionKey: sessionKey,
 		Channel:    "telegram",
 		ChatID:     "chat-1",
@@ -1869,7 +1878,7 @@ func TestDrainQueuedSteeringStopsWhileInteractionIsNonterminal(t *testing.T) {
 	if err != nil || continued != "" {
 		t.Fatalf("drain = (%q, %v), want empty success", continued, err)
 	}
-	if got := al.pendingSteeringCountForScope(sessionKey); got != 1 {
+	if got := al.pendingSteeringCountForScope(scope); got != 1 {
 		t.Fatalf("deferred queue depth = %d, want 1", got)
 	}
 }
