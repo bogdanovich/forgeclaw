@@ -74,6 +74,12 @@ publication: success and ambiguous failure are terminal, while a failure proven
 not sent is left to the fallback. A settlement marker without a complete scope
 is cleared during normalization.
 
+Async admission has no caller available to perform that fallback. Once a bus
+outbound is accepted by the channel delivery owner, worker cancellation,
+shutdown, or rejection is therefore a terminal failed outcome even when no
+remote send began. The failure settles capture with explicit loss evidence; a
+capture timeout is not a delivery-recovery mechanism.
+
 Capture indexes active turns by `(workspace, turn_id)`. There is no fallback by
 session, channel, chat, route, or unique turn ID. An event without a complete
 scope is operationally observable but cannot mutate a turn trace. This is an

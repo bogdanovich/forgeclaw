@@ -2022,6 +2022,61 @@ func TestRunWorker_MessageSplitting(t *testing.T) {
 	}
 }
 
+func TestRunWorkerCancellationBeforeFirstSendPublishesTerminalFailure(t *testing.T) {
+	eventBus := runtimeevents.NewBus()
+	t.Cleanup(func() { _ = eventBus.Close() })
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindChannelMessageOutboundFailed,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "worker-cancel", Buffer: 1})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	limiter := rate.NewLimiter(rate.Every(time.Hour), 1)
+	if !limiter.Allow() {
+		t.Fatal("failed to consume initial rate-limit token")
+	}
+	sendCalls := 0
+	worker := &channelWorker{
+		ch: &mockChannel{sendFn: func(context.Context, bus.OutboundMessage) error {
+			sendCalls++
+			return nil
+		}},
+		queue:   make(chan bus.OutboundMessage, 1),
+		done:    make(chan struct{}),
+		limiter: limiter,
+	}
+	m := newTestManager()
+	m.runtimeEvents = eventBus
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.runWorker(ctx, "test", worker)
+
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	worker.queue <- testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", Content: "hello",
+		TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+	})
+	deadline := time.Now().Add(time.Second)
+	for len(worker.queue) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(worker.queue) != 0 {
+		t.Fatal("worker did not accept queued message")
+	}
+	cancel()
+	<-worker.done
+
+	failed := receiveChannelRuntimeEvent(t, eventsCh)
+	payload, ok := failed.Payload.(ChannelOutboundPayload)
+	if !ok || !payload.TraceSettlement || payload.Error != context.Canceled.Error() ||
+		!slices.Equal(payload.TraceScopes, []runtimeevents.TraceScope{traceScope}) {
+		t.Fatalf("canceled worker outcome = %#v", failed)
+	}
+	if sendCalls != 0 {
+		t.Fatalf("remote send calls = %d, want 0", sendCalls)
+	}
+}
+
 // mockChannelWithLength implements MessageLengthProvider.
 type mockChannelWithLength struct {
 	mockChannel
