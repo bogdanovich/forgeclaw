@@ -7,9 +7,9 @@ type Filter func(Event) bool
 
 // ScopeFilter matches selected non-empty fields against Event.Scope.
 type ScopeFilter struct {
+	TraceScope TraceScope
 	AgentID    string
 	SessionKey string
-	TurnID     string
 	Channel    string
 	ChatID     string
 	MessageID  string
@@ -72,13 +72,24 @@ func MatchScope(scope ScopeFilter) Filter {
 	}
 
 	return func(evt Event) bool {
-		return matchesString(scope.AgentID, evt.Scope.AgentID) &&
+		return matchesTraceScope(scope.TraceScope, evt.Scope.TurnTraceScope()) &&
+			matchesString(scope.AgentID, evt.Scope.AgentID) &&
 			matchesString(scope.SessionKey, evt.Scope.SessionKey) &&
-			matchesString(scope.TurnID, evt.Scope.TurnID) &&
 			matchesString(scope.Channel, evt.Scope.Channel) &&
 			matchesString(scope.ChatID, evt.Scope.ChatID) &&
 			matchesString(scope.MessageID, evt.Scope.MessageID)
 	}
+}
+
+func matchesTraceScope(want, got TraceScope) bool {
+	if want == (TraceScope{}) {
+		return true
+	}
+	want = NewTraceScope(want.Workspace, want.TurnID)
+	if !want.Complete() {
+		return false
+	}
+	return want == NewTraceScope(got.Workspace, got.TurnID)
 }
 
 // And combines filters and short-circuits on the first non-match.
