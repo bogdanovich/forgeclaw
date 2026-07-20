@@ -1216,6 +1216,102 @@ func TestRateLimitCancellationPublishesScopedTerminalFailure(t *testing.T) {
 	}
 }
 
+func TestRetryBackoffCancellationPublishesScopedTerminalFailure(t *testing.T) {
+	for _, sendErr := range []error{ErrRateLimit, ErrTemporary} {
+		t.Run(classifySendError(sendErr), func(t *testing.T) {
+			eventBus := runtimeevents.NewBus()
+			t.Cleanup(func() { _ = eventBus.Close() })
+			_, eventsCh, err := eventBus.Channel().OfKind(
+				runtimeevents.KindChannelMessageOutboundFailed,
+			).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "backoff-cancel", Buffer: 1})
+			if err != nil {
+				t.Fatalf("SubscribeChan failed: %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			worker := &channelWorker{
+				ch: &mockChannel{sendFn: func(context.Context, bus.OutboundMessage) error {
+					cancel()
+					return sendErr
+				}},
+				limiter: rate.NewLimiter(rate.Inf, 1),
+			}
+			m := newTestManager()
+			m.runtimeEvents = eventBus
+			traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+			_, _, _, _ = m.sendWithRetry(ctx, "test", worker, testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "hello",
+				TraceScopes: []runtimeevents.TraceScope{traceScope},
+			}))
+
+			failed := receiveChannelRuntimeEvent(t, eventsCh)
+			if failed.Kind != runtimeevents.KindChannelMessageOutboundFailed ||
+				failed.Scope.TraceScope != traceScope {
+				t.Fatalf("failed event = %#v", failed)
+			}
+		})
+	}
+}
+
+func TestSendMessagePublishesOneLogicalChunkOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failChunk int
+		wantKind  runtimeevents.Kind
+		wantErr   bool
+	}{
+		{name: "success", wantKind: runtimeevents.KindChannelMessageOutboundSent},
+		{name: "partial_failure", failChunk: 2, wantKind: runtimeevents.KindChannelMessageOutboundFailed, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eventBus := runtimeevents.NewBus()
+			t.Cleanup(func() { _ = eventBus.Close() })
+			_, eventsCh, err := eventBus.Channel().OfKind(
+				runtimeevents.KindChannelMessageOutboundSent,
+				runtimeevents.KindChannelMessageOutboundFailed,
+			).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "chunk-outcome", Buffer: 4})
+			if err != nil {
+				t.Fatalf("SubscribeChan failed: %v", err)
+			}
+
+			calls := 0
+			channel := &mockChannelWithLength{
+				mockChannel: mockChannel{sendFn: func(context.Context, bus.OutboundMessage) error {
+					calls++
+					if calls == tc.failChunk {
+						return fmt.Errorf("chunk rejected: %w", ErrSendFailed)
+					}
+					return nil
+				}},
+				maxLen: 5,
+			}
+			m := newTestManager()
+			m.runtimeEvents = eventBus
+			m.channels["test"] = channel
+			m.workers["test"] = &channelWorker{ch: channel, limiter: rate.NewLimiter(rate.Inf, 1)}
+			traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+			msg := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "hello world",
+				TraceScopes: []runtimeevents.TraceScope{traceScope},
+			})
+
+			err = m.SendMessage(context.Background(), msg)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("SendMessage error = %v, wantErr %v", err, tc.wantErr)
+			}
+			outcome := receiveChannelRuntimeEvent(t, eventsCh)
+			if outcome.Kind != tc.wantKind || outcome.Scope.TraceScope != traceScope {
+				t.Fatalf("outcome = %#v, want kind %q", outcome, tc.wantKind)
+			}
+			select {
+			case extra := <-eventsCh:
+				t.Fatalf("unexpected per-chunk terminal event: %#v", extra)
+			case <-time.After(25 * time.Millisecond):
+			}
+		})
+	}
+}
+
 func TestSendWithRetry_TemporaryThenSuccess(t *testing.T) {
 	m := newTestManager()
 	var callCount int

@@ -1837,11 +1837,24 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 				chunks = splitOutboundMessageContent(msg, maxLen)
 			}
 
-			// Step 3: Send all chunks
+			// Step 3: Send all chunks and publish one outcome for the logical message.
+			var messageIDs []string
+			delivered := true
 			for _, chunk := range chunks {
 				chunkMsg := msg
 				chunkMsg.Content = chunk
-				_, _, _, _ = m.sendWithRetry(ctx, name, w, chunkMsg)
+				chunkIDs, chunkDelivered, _, sendErr := m.sendWithRetryPolicy(
+					ctx, name, w, chunkMsg, true, false,
+				)
+				if !chunkDelivered {
+					m.publishOutboundFailed(name, msg, sendErr, false)
+					delivered = false
+					break
+				}
+				messageIDs = append(messageIDs, chunkIDs...)
+			}
+			if delivered {
+				m.publishOutboundSent(name, msg, messageIDs)
 			}
 		case <-ctx.Done():
 			return
@@ -1893,7 +1906,7 @@ func (m *Manager) sendWithRetry(
 	w *channelWorker,
 	msg bus.OutboundMessage,
 ) ([]string, bool, bool, error) {
-	return m.sendWithRetryPolicy(ctx, name, w, msg, true)
+	return m.sendWithRetryPolicy(ctx, name, w, msg, true, true)
 }
 
 func (m *Manager) sendWithRetryPolicy(
@@ -1902,6 +1915,7 @@ func (m *Manager) sendWithRetryPolicy(
 	w *channelWorker,
 	msg bus.OutboundMessage,
 	retryAmbiguous bool,
+	publishOutcome bool,
 ) ([]string, bool, bool, error) {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
@@ -1918,13 +1932,17 @@ func (m *Manager) sendWithRetryPolicy(
 				Error:            err.Error(),
 			},
 		)
-		m.publishOutboundFailed(name, msg, err, false)
+		if publishOutcome {
+			m.publishOutboundFailed(name, msg, err, false)
+		}
 		return nil, false, false, err
 	}
 
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
-		m.publishOutboundSent(name, msg, msgIDs)
+		if publishOutcome {
+			m.publishOutboundSent(name, msg, msgIDs)
+		}
 		return msgIDs, true, false, nil
 	}
 
@@ -1945,7 +1963,9 @@ func (m *Manager) sendWithRetryPolicy(
 					"classification": "success_after_retry",
 				})
 			}
-			m.publishOutboundSent(name, msg, msgIDs)
+			if publishOutcome {
+				m.publishOutboundSent(name, msg, msgIDs)
+			}
 			return msgIDs, true, false, nil
 		}
 		if len(msgIDs) > 0 ||
@@ -1985,6 +2005,9 @@ func (m *Manager) sendWithRetryPolicy(
 			case <-time.After(rateLimitDelay):
 				continue
 			case <-ctx.Done():
+				if publishOutcome {
+					m.publishOutboundFailed(name, msg, ctx.Err(), false)
+				}
 				return nil, false, ambiguous, ctx.Err()
 			}
 		}
@@ -1994,6 +2017,9 @@ func (m *Manager) sendWithRetryPolicy(
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
+			if publishOutcome {
+				m.publishOutboundFailed(name, msg, ctx.Err(), false)
+			}
 			return nil, false, ambiguous, ctx.Err()
 		}
 	}
@@ -2005,7 +2031,9 @@ func (m *Manager) sendWithRetryPolicy(
 		"error":   lastErr.Error(),
 		"retries": maxRetries,
 	})
-	m.publishOutboundFailed(name, msg, lastErr, false)
+	if publishOutcome {
+		m.publishOutboundFailed(name, msg, lastErr, false)
+	}
 
 	return nil, false, ambiguous, lastErr
 }
@@ -2588,25 +2616,30 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	}
 	if chunks := splitOutboundMessageContent(msg, maxLen); len(chunks) > 1 {
 		deliveredChunks := 0
+		var messageIDs []string
 		for _, chunk := range chunks {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
-			if _, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
-				ctx, channelName, w, chunkMsg, retryAmbiguous,
+			if chunkIDs, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
+				ctx, channelName, w, chunkMsg, retryAmbiguous, false,
 			); !delivered {
+				m.publishOutboundFailed(channelName, msg, sendErr, false)
 				return newDeliveryError(
 					fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),
 					ambiguous || deliveredChunks > 0,
 				)
+			} else {
+				messageIDs = append(messageIDs, chunkIDs...)
 			}
 			deliveredChunks++
 		}
+		m.publishOutboundSent(channelName, msg, messageIDs)
 	} else {
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
 		}
 		if _, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
-			ctx, channelName, w, msg, retryAmbiguous,
+			ctx, channelName, w, msg, retryAmbiguous, true,
 		); !delivered {
 			return newDeliveryError(
 				fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),
