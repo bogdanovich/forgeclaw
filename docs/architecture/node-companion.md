@@ -421,7 +421,6 @@ Each node advertises descriptors such as:
 ```json
 {
   "name": "service.status.v1",
-  "capability": "service",
   "input_schema": {"type":"object"},
   "output_schema": {"type":"object"},
   "risk": "read",
@@ -429,6 +428,10 @@ Each node advertises descriptors such as:
   "supports_cancel": false
 }
 ```
+
+The capability family is derived from the first segment of the command name;
+it is not repeated as independently writable descriptor data. For example,
+`service.status.v1` belongs to the `service` capability.
 
 Descriptors are claims. The gateway intersects them with paired command
 approval, agent policy, and operator configuration. A node cannot gain agent
