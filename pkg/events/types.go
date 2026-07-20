@@ -62,7 +62,6 @@ type Scope struct {
 
 	AgentID    string `json:"agent_id,omitempty"`
 	SessionKey string `json:"session_key,omitempty"`
-	Workspace  string `json:"workspace,omitempty"`
 	TurnID     string `json:"turn_id,omitempty"`
 
 	Channel string `json:"channel,omitempty"`
@@ -76,11 +75,6 @@ type Scope struct {
 
 	SenderID  string `json:"sender_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
-}
-
-// TurnTraceScope returns the normalized trace identity carried by the scope.
-func (s Scope) TurnTraceScope() TraceScope {
-	return NewTraceScope(s.Workspace, s.TurnID)
 }
 
 // Correlation carries cross-event tracing fields.
