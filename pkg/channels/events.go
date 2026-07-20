@@ -47,6 +47,9 @@ func channelEventAttrs(payload any) map[string]any {
 		return attrs
 	case ChannelOutboundPayload:
 		attrs := map[string]any{}
+		if len(payload.TraceScopes) > 0 {
+			attrs["trace_scopes_count"] = len(payload.TraceScopes)
+		}
 		if payload.Media {
 			attrs["media"] = payload.Media
 		}
@@ -81,9 +84,10 @@ func (m *Manager) publishOutboundSent(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundSent,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMessage(msg),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
 			ContentLen:       len([]rune(msg.Content)),
 			MessageIDs:       append([]string(nil), messageIDs...),
 			ReplyToMessageID: msg.ReplyToMessageID,
@@ -98,9 +102,10 @@ func (m *Manager) publishOutboundQueued(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundQueued,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMessage(msg),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
+			TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
 			ContentLen:       len([]rune(msg.Content)),
 			ReplyToMessageID: msg.ReplyToMessageID,
 		},
@@ -114,6 +119,7 @@ func (m *Manager) publishOutboundFailed(
 	media bool,
 ) {
 	payload := ChannelOutboundPayload{
+		TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
 		Media:            media,
 		ContentLen:       len([]rune(msg.Content)),
 		ReplyToMessageID: msg.ReplyToMessageID,
@@ -125,7 +131,7 @@ func (m *Manager) publishOutboundFailed(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundFailed,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMessage(msg),
 		runtimeevents.SeverityError,
 		payload,
 	)
@@ -139,11 +145,12 @@ func (m *Manager) publishOutboundMediaSent(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundSent,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMediaMessage(msg),
 		runtimeevents.SeverityInfo,
 		ChannelOutboundPayload{
-			Media:      true,
-			MessageIDs: append([]string(nil), messageIDs...),
+			TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+			Media:       true,
+			MessageIDs:  append([]string(nil), messageIDs...),
 		},
 	)
 }
@@ -155,9 +162,11 @@ func (m *Manager) publishOutboundMediaQueued(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundQueued,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMediaMessage(msg),
 		runtimeevents.SeverityInfo,
-		ChannelOutboundPayload{Media: true},
+		ChannelOutboundPayload{
+			TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes), Media: true,
+		},
 	)
 }
 
@@ -167,8 +176,9 @@ func (m *Manager) publishOutboundMediaFailed(
 	err error,
 ) {
 	payload := ChannelOutboundPayload{
-		Media:   true,
-		Retries: maxRetries,
+		TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+		Media:       true,
+		Retries:     maxRetries,
 	}
 	if err != nil {
 		payload.Error = err.Error()
@@ -176,7 +186,7 @@ func (m *Manager) publishOutboundMediaFailed(
 	m.publishChannelEvent(
 		runtimeevents.KindChannelMessageOutboundFailed,
 		channelName,
-		scopeFromOutboundContext(msg.Context),
+		scopeFromOutboundMediaMessage(msg),
 		runtimeevents.SeverityError,
 		payload,
 	)
@@ -194,4 +204,26 @@ func scopeFromOutboundContext(ctx bus.InboundContext) runtimeevents.Scope {
 		SenderID:  ctx.SenderID,
 		MessageID: ctx.MessageID,
 	}
+}
+
+func scopeFromOutboundMessage(msg bus.OutboundMessage) runtimeevents.Scope {
+	scope := scopeFromOutboundContext(msg.Context)
+	scope.AgentID = msg.AgentID
+	scope.SessionKey = msg.SessionKey
+	traceScopes := bus.NormalizeTraceScopes(msg.TraceScopes)
+	if len(traceScopes) > 0 {
+		scope.TraceScope = traceScopes[0]
+	}
+	return scope
+}
+
+func scopeFromOutboundMediaMessage(msg bus.OutboundMediaMessage) runtimeevents.Scope {
+	scope := scopeFromOutboundContext(msg.Context)
+	scope.AgentID = msg.AgentID
+	scope.SessionKey = msg.SessionKey
+	traceScopes := bus.NormalizeTraceScopes(msg.TraceScopes)
+	if len(traceScopes) > 0 {
+		scope.TraceScope = traceScopes[0]
+	}
+	return scope
 }

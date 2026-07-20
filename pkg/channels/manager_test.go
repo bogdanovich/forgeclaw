@@ -1097,11 +1097,25 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 		context.Background(),
 		"test",
 		successWorker,
-		testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "chat-1", Content: "hello"}),
+		testOutboundMessage(bus.OutboundMessage{
+			Channel: "test", ChatID: "chat-1", Content: "hello",
+			TraceScopes: []runtimeevents.TraceScope{
+				runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+				runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+			},
+		}),
 	)
 	sent := receiveChannelRuntimeEvent(t, eventsCh)
-	if sent.Kind != runtimeevents.KindChannelMessageOutboundSent || sent.Scope.ChatID != "chat-1" {
+	if sent.Kind != runtimeevents.KindChannelMessageOutboundSent || sent.Scope.ChatID != "chat-1" ||
+		sent.Scope.TraceScope != runtimeevents.NewTraceScope("/workspace/main", "turn-1") {
 		t.Fatalf("sent event = %+v", sent)
+	}
+	sentPayload, ok := sent.Payload.(ChannelOutboundPayload)
+	if !ok || !slices.Equal(sentPayload.TraceScopes, []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	}) {
+		t.Fatalf("sent payload = %#v, want correlated trace scopes", sent.Payload)
 	}
 	if sent.Attrs["content_len"] != 5 {
 		t.Fatalf("sent attrs = %#v, want content_len", sent.Attrs)

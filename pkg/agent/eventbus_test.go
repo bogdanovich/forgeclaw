@@ -45,8 +45,8 @@ func TestAgentLoop_PublishesRuntimeEvents(t *testing.T) {
 	al.emitEvent(
 		runtimeevents.KindAgentToolExecStart,
 		HookMeta{
+			TraceScope:   runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
 			AgentID:      "main",
-			TurnID:       "turn-1",
 			ParentTurnID: "parent-turn",
 			SessionKey:   "session-1",
 			Iteration:    2,
@@ -244,8 +244,13 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 	if turnID == "" {
 		t.Fatal("expected runtime events to include turn id")
 	}
+	workspace := events[0].Scope.Workspace
+	if workspace == "" {
+		t.Fatal("expected runtime events to include workspace")
+	}
 	for i, evt := range events {
-		if evt.Scope.TurnID != turnID {
+		if !evt.Scope.TraceScope.Complete() || evt.Scope.TurnID != turnID ||
+			evt.Scope.Workspace != workspace {
 			t.Fatalf("event %d has mismatched turn id %q, want %q", i, evt.Scope.TurnID, turnID)
 		}
 		if evt.Scope.SessionKey != "session-1" {

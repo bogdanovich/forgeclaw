@@ -122,16 +122,16 @@ func (p *Pipeline) targetReasoningChannelID(channelName string) string {
 
 func (p *Pipeline) publishPicoReasoning(
 	ctx context.Context,
-	reasoningContent, chatID, sessionKey, modelName string,
+	ts *turnState,
+	reasoningContent, modelName string,
 ) {
 	if p == nil || p.Interaction.Reasoning == nil {
 		return
 	}
 	p.Interaction.Reasoning.publishPicoReasoning(
 		ctx,
+		ts,
 		reasoningContent,
-		chatID,
-		sessionKey,
 		modelName,
 	)
 }
@@ -166,12 +166,13 @@ func (p *Pipeline) shouldPublishToolFeedback(ts *turnState) bool {
 
 func (p *Pipeline) handleReasoning(
 	ctx context.Context,
+	ts *turnState,
 	reasoningContent, channelName, channelID string,
 ) {
 	if p == nil || p.Interaction.Reasoning == nil {
 		return
 	}
-	p.Interaction.Reasoning.handleReasoning(ctx, reasoningContent, channelName, channelID)
+	p.Interaction.Reasoning.handleReasoning(ctx, ts, reasoningContent, channelName, channelID)
 }
 
 func (p *Pipeline) publishToolFeedbackForCall(

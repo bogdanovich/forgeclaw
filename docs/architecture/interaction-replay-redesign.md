@@ -240,6 +240,11 @@ Each item is a separate focused PR based on the merged predecessor:
    reporting, operator docs, and only the spike tests relevant to these final
    boundaries.
 
+The scoped-identity implementation removes the previous session and
+channel/chat correlation fallbacks immediately. This is not deferred to the
+projector split: later projectors consume the same explicit `TraceScope`
+contract and may not restore those heuristics.
+
 No PR should recreate the full spike as an intermediate state. A PR must leave
 main useful, internally consistent, and fully tested on its own. Dependent PRs
 wait for merge unless explicitly published as a short-lived stack.

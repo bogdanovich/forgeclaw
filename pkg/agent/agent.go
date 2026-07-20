@@ -116,29 +116,31 @@ type processOptions struct {
 	UserMessage              string             // User message content (may include prefix)
 	ForcedSkills             []string           // Skills explicitly requested for this message
 	TurnProfile              config.EffectiveTurnProfile
-	SystemPromptOverride     string                 // Override the default system prompt (Used by SubTurns)
-	Media                    []string               // media:// refs from inbound message
-	InitialSteeringMessages  []providers.Message    // Steering messages from refactor/agent
-	ActiveGoal               string                 // Dynamic session goal reminder for normal LLM turns
-	DefaultResponse          string                 // Response when LLM returns empty
-	EnableSummary            bool                   // Whether to trigger summarization
-	SendResponse             bool                   // Whether to send response via bus
-	ExpectFinalDelivery      bool                   // Whether an outer coordinator will publish the final response
-	AllowInterimPicoPublish  bool                   // Whether pico tool-call interim text can be published when SendResponse is false
-	SuppressToolUserDelivery bool                   // Whether direct user-facing delivery from tools is suppressed for this turn
-	SuppressToolFeedback     bool                   // Whether to suppress inline tool feedback messages
-	NoHistory                bool                   // If true, don't load session history (for heartbeat)
-	SkipInitialSteeringPoll  bool                   // If true, skip the steering poll at loop start (used by Continue)
-	InboundContext           *bus.InboundContext    // Normalized inbound facts for events/hooks
-	RouteResult              *routing.ResolvedRoute // Route decision snapshot for events/hooks
-	SessionScope             *session.SessionScope  // Session scope snapshot for events/hooks
+	SystemPromptOverride     string                         // Override the default system prompt (Used by SubTurns)
+	Media                    []string                       // media:// refs from inbound message
+	InitialSteeringMessages  []providers.Message            // Steering messages from refactor/agent
+	ActiveGoal               string                         // Dynamic session goal reminder for normal LLM turns
+	DefaultResponse          string                         // Response when LLM returns empty
+	EnableSummary            bool                           // Whether to trigger summarization
+	SendResponse             bool                           // Whether to send response via bus
+	ExpectFinalDelivery      bool                           // Whether an outer coordinator will publish the final response
+	ObserveFinalDeliveryTurn func(runtimeevents.TraceScope) // Records turns settled by an outer final response
+	AllowInterimPicoPublish  bool                           // Whether pico tool-call interim text can be published when SendResponse is false
+	SuppressToolUserDelivery bool                           // Whether direct user-facing delivery from tools is suppressed for this turn
+	SuppressToolFeedback     bool                           // Whether to suppress inline tool feedback messages
+	NoHistory                bool                           // If true, don't load session history (for heartbeat)
+	SkipInitialSteeringPoll  bool                           // If true, skip the steering poll at loop start (used by Continue)
+	InboundContext           *bus.InboundContext            // Normalized inbound facts for events/hooks
+	RouteResult              *routing.ResolvedRoute         // Route decision snapshot for events/hooks
+	SessionScope             *session.SessionScope          // Session scope snapshot for events/hooks
 }
 
 type continuationTarget struct {
-	SessionKey string
-	Channel    string
-	ChatID     string
-	Workspace  string
+	SessionKey               string
+	Channel                  string
+	ChatID                   string
+	Workspace                string
+	ObserveFinalDeliveryTurn func(runtimeevents.TraceScope)
 }
 
 const (
@@ -259,9 +261,9 @@ func (al *AgentLoop) Close() {
 // UnmountHook removes a previously registered in-process hook.
 
 type turnEventScope struct {
+	runtimeevents.TraceScope
 	agentID    string
 	sessionKey string
-	turnID     string
 	context    *TurnContext
 }
 
@@ -479,6 +481,7 @@ func (al *AgentLoop) runAgentLoop(
 
 	turnScope := al.newTurnEventScope(
 		agent.ID,
+		agent.Workspace,
 		opts.Dispatch.SessionKey,
 		newTurnContext(
 			opts.Dispatch.InboundContext,
@@ -487,6 +490,9 @@ func (al *AgentLoop) runAgentLoop(
 		),
 	)
 	ts := newTurnState(agent, opts, turnScope)
+	if opts.ObserveFinalDeliveryTurn != nil {
+		opts.ObserveFinalDeliveryTurn(turnScope.TraceScope)
+	}
 	pipeline := NewPipeline(al)
 	result, err := al.runTurn(ctx, ts, pipeline)
 	if err != nil {
@@ -512,7 +518,7 @@ func (al *AgentLoop) runAgentLoop(
 		}
 	}
 
-	al.deliverFinalTurnResult(ctx, agent, opts, result)
+	al.deliverFinalTurnResult(ctx, turnScope.TraceScope, agent, opts, result)
 
 	if result.finalContent != "" {
 		responsePreview := utils.Truncate(result.finalContent, 120)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/commands"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -94,8 +95,11 @@ func outboundMessageForTurn(ts *turnState, content string) bus.OutboundMessage {
 		),
 		AgentID:    agentID,
 		SessionKey: sessionKey,
-		Scope:      scope,
-		Content:    content,
+		TraceScopes: []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+		},
+		Scope:   scope,
+		Content: content,
 	}
 }
 

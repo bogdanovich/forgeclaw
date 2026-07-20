@@ -11,6 +11,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
@@ -601,7 +602,7 @@ func TestTurnProfile_SubTurnInheritsParentToolProfile(t *testing.T) {
 		TurnProfile: profile,
 	}
 	parentTS := newTurnState(agent, parentOpts, turnEventScope{
-		turnID: "parent-turn-profile",
+		TraceScope: runtimeevents.NewTraceScope(agent.Workspace, "parent-turn-profile"),
 	})
 
 	_, err = spawnSubTurn(context.Background(), al, parentTS, SubTurnConfig{

@@ -465,12 +465,20 @@ func verifyToolBoundary(loop *agent.AgentLoop, specs []StubTool) error {
 }
 
 func publishDeliveryOutcome(eventBus runtimeevents.Bus, outbound bus.OutboundMessage) {
+	traceScopes := bus.NormalizeTraceScopes(outbound.TraceScopes)
+	scope := runtimeevents.Scope{Channel: outbound.Channel, ChatID: outbound.ChatID}
+	if len(traceScopes) > 0 {
+		scope.TraceScope = traceScopes[0]
+	}
 	eventBus.PublishNonBlocking(runtimeevents.Event{
 		Kind:     runtimeevents.KindChannelMessageOutboundSent,
 		Source:   runtimeevents.Source{Component: "evalscenario", Name: outbound.Channel},
-		Scope:    runtimeevents.Scope{Channel: outbound.Channel, ChatID: outbound.ChatID},
+		Scope:    scope,
 		Severity: runtimeevents.SeverityInfo,
-		Payload:  channels.ChannelOutboundPayload{ContentLen: len([]rune(outbound.Content))},
+		Payload: channels.ChannelOutboundPayload{
+			TraceScopes: traceScopes,
+			ContentLen:  len([]rune(outbound.Content)),
+		},
 	})
 }
 

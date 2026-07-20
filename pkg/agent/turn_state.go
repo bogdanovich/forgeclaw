@@ -12,6 +12,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -354,7 +355,7 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 		model:        binding,
 		profile:      opts.TurnProfile,
 		scope:        scope,
-		turnID:       scope.turnID,
+		turnID:       scope.TurnID,
 		agentID:      agent.ID,
 		sessionKey:   opts.Dispatch.SessionKey,
 		activeSkills: activeSkillNames(agent, opts),
@@ -762,8 +763,8 @@ func (ts *turnState) hardAbortRequested() bool {
 func (ts *turnState) eventMeta(source, tracePath string) HookMeta {
 	snap := ts.snapshot()
 	return HookMeta{
+		TraceScope:  runtimeevents.NewTraceScope(ts.workspace, snap.TurnID),
 		AgentID:     snap.AgentID,
-		TurnID:      snap.TurnID,
 		SessionKey:  snap.SessionKey,
 		Iteration:   snap.Iteration,
 		Source:      source,

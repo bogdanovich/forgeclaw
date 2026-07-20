@@ -1117,6 +1117,17 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	if got := strings.TrimSpace(out1.Context.Raw[metadataKeyMessageKind]); got != messageKindFinalReply {
 		t.Fatalf("expected continued response to be marked %q, got %q", messageKindFinalReply, got)
 	}
+	if len(out1.TraceScopes) < 1 || len(out1.TraceScopes) > 2 {
+		t.Fatalf("continued response trace scopes = %+v, want one or two turns", out1.TraceScopes)
+	}
+	for index, scope := range out1.TraceScopes {
+		if !scope.Complete() || scope.Workspace != out1.TraceScopes[0].Workspace {
+			t.Fatalf("continued response trace scopes = %+v, want one workspace", out1.TraceScopes)
+		}
+		if index > 0 && scope.TurnID == out1.TraceScopes[index-1].TurnID {
+			t.Fatalf("continued response trace scopes contain a duplicate: %+v", out1.TraceScopes)
+		}
+	}
 
 	noExtraCtx, cancelNoExtra := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancelNoExtra()

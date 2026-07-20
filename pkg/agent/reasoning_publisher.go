@@ -10,6 +10,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -44,8 +45,13 @@ func (rp *reasoningPublisherComponent) targetReasoningChannelID(channelName stri
 
 func (rp *reasoningPublisherComponent) publishPicoReasoning(
 	ctx context.Context,
-	reasoningContent, chatID, sessionKey, modelName string,
+	ts *turnState,
+	reasoningContent, modelName string,
 ) {
+	if ts == nil {
+		return
+	}
+	chatID, sessionKey := ts.chatID, ts.sessionKey
 	if rp == nil || rp.bus == nil || reasoningContent == "" || chatID == "" {
 		return
 	}
@@ -62,7 +68,7 @@ func (rp *reasoningPublisherComponent) publishPicoReasoning(
 		raw["model_name"] = trimmedModelName
 	}
 
-	if err := rp.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
+	message := bus.OutboundMessage{
 		Context: bus.InboundContext{
 			Channel: "pico",
 			ChatID:  chatID,
@@ -70,7 +76,11 @@ func (rp *reasoningPublisherComponent) publishPicoReasoning(
 		},
 		SessionKey: sessionKey,
 		Content:    reasoningContent,
-	}); err != nil {
+	}
+	message.TraceScopes = []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+	}
+	if err := rp.bus.PublishOutbound(pubCtx, message); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
 			errors.Is(err, bus.ErrBusClosed) {
 			logger.DebugCF("agent", "Pico reasoning publish skipped (timeout/cancel)", map[string]any{
@@ -193,9 +203,11 @@ func (rp *reasoningPublisherComponent) publishPicoToolCallInterim(
 
 func (rp *reasoningPublisherComponent) handleReasoning(
 	ctx context.Context,
+	ts *turnState,
 	reasoningContent, channelName, channelID string,
 ) {
-	if rp == nil || rp.bus == nil || reasoningContent == "" || channelName == "" || channelID == "" {
+	if rp == nil || rp.bus == nil || ts == nil || reasoningContent == "" ||
+		channelName == "" || channelID == "" {
 		return
 	}
 
@@ -208,6 +220,9 @@ func (rp *reasoningPublisherComponent) handleReasoning(
 
 	if err := rp.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
 		Context: bus.NewOutboundContext(channelName, channelID, ""),
+		TraceScopes: []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+		},
 		Content: reasoningContent,
 	}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||

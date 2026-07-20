@@ -10,6 +10,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/constants"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -36,10 +37,20 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 	err error,
 	policy finalResponseDeliveryPolicy,
 ) bool {
+	return al.maybePublishErrorWithScopes(ctx, channel, chatID, sessionKey, err, policy, nil)
+}
+
+func (al *AgentLoop) maybePublishErrorWithScopes(
+	ctx context.Context,
+	channel, chatID, sessionKey string,
+	err error,
+	policy finalResponseDeliveryPolicy,
+	traceScopes []runtimeevents.TraceScope,
+) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	al.publishResponseWithContextIfNeeded(
+	al.publishResponseWithContextAndScopes(
 		ctx,
 		channel,
 		chatID,
@@ -47,6 +58,7 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 		formatUserFacingAgentError(err),
 		nil,
 		policy,
+		traceScopes,
 	)
 	return true
 }
@@ -137,6 +149,18 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 	inboundCtx *bus.InboundContext,
 	policy finalResponseDeliveryPolicy,
 ) {
+	al.publishResponseWithContextAndScopes(
+		ctx, channel, chatID, sessionKey, response, inboundCtx, policy, nil,
+	)
+}
+
+func (al *AgentLoop) publishResponseWithContextAndScopes(
+	ctx context.Context,
+	channel, chatID, sessionKey, response string,
+	inboundCtx *bus.InboundContext,
+	policy finalResponseDeliveryPolicy,
+	traceScopes []runtimeevents.TraceScope,
+) {
 	if response == "" {
 		return
 	}
@@ -166,6 +190,7 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 		SessionKey: sessionKey,
 		Content:    response,
 	}
+	bus.SetOutboundTraceScopes(&msg, traceScopes)
 	if policy == finalResponseAlwaysPublish && messageToolSentToSameChat {
 		if msg.Context.Raw == nil {
 			msg.Context.Raw = make(map[string]string, 1)
@@ -181,6 +206,7 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 
 func (al *AgentLoop) deliverFinalTurnResult(
 	ctx context.Context,
+	traceScope runtimeevents.TraceScope,
 	agent *AgentInstance,
 	opts processOptions,
 	result turnResult,
@@ -223,6 +249,8 @@ func (al *AgentLoop) deliverFinalTurnResult(
 		ts := &turnState{
 			agent:      agent,
 			agentID:    agent.ID,
+			turnID:     traceScope.TurnID,
+			workspace:  traceScope.Workspace,
 			channel:    opts.Dispatch.Channel(),
 			chatID:     opts.Dispatch.ChatID(),
 			sessionKey: sessionKey,
@@ -245,7 +273,9 @@ func (al *AgentLoop) deliverFinalTurnResult(
 	if result.finalContent == "" {
 		return
 	}
-	al.deliverFinalTurnText(ctx, agent, opts, outboundCtx, agentID, sessionKey, scope, result.finalContent)
+	al.deliverFinalTurnText(
+		ctx, traceScope, agent, opts, outboundCtx, agentID, sessionKey, scope, result.finalContent,
+	)
 }
 
 func (al *AgentLoop) deliverFinalTurnMedia(
@@ -270,6 +300,7 @@ func (al *AgentLoop) deliverFinalTurnMedia(
 
 func (al *AgentLoop) deliverFinalTurnText(
 	ctx context.Context,
+	traceScope runtimeevents.TraceScope,
 	agent *AgentInstance,
 	opts processOptions,
 	outboundCtx bus.InboundContext,
@@ -285,6 +316,7 @@ func (al *AgentLoop) deliverFinalTurnText(
 		Content:      content,
 		ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
 	}
+	bus.SetOutboundTraceScopes(&msg, []runtimeevents.TraceScope{traceScope})
 	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
 		if err := al.channelManager.SendMessage(ctx, msg); err != nil {
@@ -331,8 +363,11 @@ func (al *AgentLoop) deliverToolResultToUser(
 			),
 			AgentID:    ts.agent.ID,
 			SessionKey: ts.sessionKey,
-			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
-			Parts:      parts,
+			TraceScopes: []runtimeevents.TraceScope{
+				runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+			},
+			Scope: outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
+			Parts: parts,
 		}
 		if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
@@ -407,8 +442,11 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 			Context:    outboundCtx,
 			AgentID:    agentID,
 			SessionKey: ts.sessionKey,
-			Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
-			Parts:      append([]bus.MediaPart(nil), out.Media...),
+			TraceScopes: []runtimeevents.TraceScope{
+				runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+			},
+			Scope: outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
+			Parts: append([]bus.MediaPart(nil), out.Media...),
 		}
 		if al.channelManager != nil && channel != "" && !constants.IsInternalChannel(channel) {
 			if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
@@ -436,11 +474,14 @@ func (al *AgentLoop) deliverExplicitToolOutbound(
 		return nil, toolResultDeliveryNone, nil
 	}
 	outboundMessage := bus.OutboundMessage{
-		Channel:          channel,
-		ChatID:           chatID,
-		Context:          outboundCtx,
-		AgentID:          agentID,
-		SessionKey:       ts.sessionKey,
+		Channel:    channel,
+		ChatID:     chatID,
+		Context:    outboundCtx,
+		AgentID:    agentID,
+		SessionKey: ts.sessionKey,
+		TraceScopes: []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+		},
 		Scope:            outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 		Content:          out.Text,
 		ReplyToMessageID: replyToMessageID,
@@ -590,9 +631,10 @@ func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string
 
 func (al *AgentLoop) publishPicoReasoning(
 	ctx context.Context,
-	reasoningContent, chatID, sessionKey, modelName string,
+	ts *turnState,
+	reasoningContent, modelName string,
 ) {
-	al.reasoningPublisher().publishPicoReasoning(ctx, reasoningContent, chatID, sessionKey, modelName)
+	al.reasoningPublisher().publishPicoReasoning(ctx, ts, reasoningContent, modelName)
 }
 
 func (al *AgentLoop) publishPicoToolCallInterim(
@@ -608,7 +650,8 @@ func (al *AgentLoop) publishPicoToolCallInterim(
 
 func (al *AgentLoop) handleReasoning(
 	ctx context.Context,
+	ts *turnState,
 	reasoningContent, channelName, channelID string,
 ) {
-	al.reasoningPublisher().handleReasoning(ctx, reasoningContent, channelName, channelID)
+	al.reasoningPublisher().handleReasoning(ctx, ts, reasoningContent, channelName, channelID)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -193,7 +195,10 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 			!strings.Contains(outbound.Content, "Canary") ||
 			outbound.Context.Raw[interactionIDMetadata] != record.ID ||
 			outbound.Context.Raw["delivery_key"] != interactionDeliveryKey(record.ID, "prompt") ||
-			outbound.Context.Account != "primary" {
+			outbound.Context.Account != "primary" ||
+			!slices.Equal(outbound.TraceScopes, []runtimeevents.TraceScope{
+				runtimeevents.NewTraceScope(workspace, "turn-1"),
+			}) {
 			t.Fatalf("outbound prompt = %#v", outbound)
 		}
 	case <-time.After(time.Second):
@@ -394,6 +399,7 @@ func TestHumanInteractionPromptFailureRemainsAmbiguousAndDoesNotRetry(t *testing
 	if al.retryInteractionPrompt(
 		t.Context(),
 		al.interactionRegistryForWorkspace(workspace),
+		workspace,
 		record,
 	) {
 		t.Fatal("ambiguous prompt delivery was retried")
@@ -428,7 +434,7 @@ func TestHumanInteractionDefiniteNotSentPromptRetries(t *testing.T) {
 	}
 
 	manager.sendErr = nil
-	if !al.retryInteractionPrompt(t.Context(), registry, record) {
+	if !al.retryInteractionPrompt(t.Context(), registry, workspace, record) {
 		t.Fatal("definite not-sent prompt was not retried")
 	}
 	record, _ = registry.Get(record.ID)

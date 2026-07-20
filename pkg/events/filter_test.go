@@ -47,9 +47,9 @@ func TestFilterScope(t *testing.T) {
 
 	evt := Event{
 		Scope: Scope{
+			TraceScope: NewTraceScope("/workspace/main", "turn-1"),
 			AgentID:    "agent-a",
 			SessionKey: "session-1",
-			TurnID:     "turn-1",
 			Channel:    "telegram",
 			ChatID:     "chat-1",
 			MessageID:  "msg-1",

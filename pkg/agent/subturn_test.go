@@ -247,7 +247,7 @@ func TestDurableTaskSubTurnSuspendsIntoWaitingTask(t *testing.T) {
 	parent := newTurnState(
 		agent,
 		parentOpts,
-		al.newTurnEventScope(agent.ID, "owner-session", newTurnContext(inbound, nil, nil)),
+		al.newTurnEventScope(agent.ID, agent.Workspace, "owner-session", newTurnContext(inbound, nil, nil)),
 	)
 	parent.ctx = t.Context()
 	parent.pendingResults = make(chan *tools.ToolResult, 4)
@@ -411,7 +411,9 @@ func TestDurableTaskSubTurnWaitsForHumanApproval(t *testing.T) {
 	parent := newTurnState(
 		agent,
 		parentOpts,
-		al.newTurnEventScope(agent.ID, "owner-task-approval", newTurnContext(inbound, nil, nil)),
+		al.newTurnEventScope(
+			agent.ID, agent.Workspace, "owner-task-approval", newTurnContext(inbound, nil, nil),
+		),
 	)
 	parent.ctx = t.Context()
 	parent.pendingResults = make(chan *tools.ToolResult, 4)

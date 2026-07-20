@@ -623,11 +623,12 @@ func (p *Pipeline) CallLLM(
 			// Publish pico thoughts before the turn context is canceled at return time.
 			// The async variant can race with turn teardown and intermittently drop the
 			// thought message in CI even though the LLM produced reasoning content.
-			p.publishPicoReasoning(turnCtx, reasoningContent, ts.chatID, ts.sessionKey, exec.model.llmModelName)
+			p.publishPicoReasoning(turnCtx, ts, reasoningContent, exec.model.llmModelName)
 		}
 	} else {
 		go p.handleReasoning(
 			turnCtx,
+			ts,
 			reasoningContent,
 			ts.channel,
 			p.targetReasoningChannelID(ts.channel),

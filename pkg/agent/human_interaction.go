@@ -98,9 +98,9 @@ func (al *AgentLoop) observeInteractionEvent(
 	}
 	record := observation.Record
 	al.runtimeEventEmitter().emitEvent(kind, HookMeta{
+		TraceScope: runtimeevents.NewTraceScope(workspace, record.Origin.TurnID),
 		AgentID:    record.Route.AgentID,
 		SessionKey: record.Route.SessionKey,
-		TurnID:     record.Origin.TurnID,
 		Source:     "interaction_registry",
 	}, InteractionEventPayload{
 		InteractionID: record.ID,
@@ -263,7 +263,7 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 	if err != nil {
 		return disposition, fmt.Errorf("begin interaction delivery: %w", err)
 	}
-	deliveryErr := runtime.publishPrompt(ctx, record)
+	deliveryErr := runtime.publishPrompt(ctx, request.Workspace, record)
 	record, stateErr := registry.CompletePromptDelivery(
 		record.ID,
 		record.Revision,
@@ -306,6 +306,7 @@ func (runtime *humanInteractionRuntime) ConsumeApproval(
 
 func (runtime *humanInteractionRuntime) publishPrompt(
 	ctx context.Context,
+	workspace string,
 	record interactions.Record,
 ) error {
 	if runtime.al.channelManager == nil {
@@ -327,14 +328,18 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 			"delivery_key":         interactionDeliveryKey(record.ID, "prompt"),
 		},
 	}
-	return runtime.al.sendInteractionMessage(ctx, bus.OutboundMessage{
+	message := bus.OutboundMessage{
 		Channel:    record.Route.Channel,
 		ChatID:     record.Route.ChatID,
 		Context:    outboundContext,
 		AgentID:    record.Route.AgentID,
 		SessionKey: record.Route.SessionKey,
 		Content:    content,
+	}
+	bus.SetOutboundTraceScopes(&message, []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope(workspace, record.Origin.TurnID),
 	})
+	return runtime.al.sendInteractionMessage(ctx, message)
 }
 
 func (al *AgentLoop) sendInteractionMessage(ctx context.Context, msg bus.OutboundMessage) error {

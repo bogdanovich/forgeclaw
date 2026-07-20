@@ -483,6 +483,7 @@ func (al *AgentLoop) continueWithSteeringMessages(
 	senderID string,
 	modelBinding effectiveModelBinding,
 	steeringMsgs []providers.Message,
+	observeTurn func(runtimeevents.TraceScope),
 ) (string, error) {
 	routeSessionKey := sessionKey
 	if scope != nil && strings.TrimSpace(scope.RouteScopeKey) != "" {
@@ -503,13 +504,15 @@ func (al *AgentLoop) continueWithSteeringMessages(
 		}
 	}
 	return al.runAgentLoop(ctx, agent, processOptions{
-		ModelBinding:            modelBinding,
-		Dispatch:                dispatch,
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           true,
-		SendResponse:            false,
-		InitialSteeringMessages: steeringMsgs,
-		SkipInitialSteeringPoll: true,
+		ModelBinding:             modelBinding,
+		Dispatch:                 dispatch,
+		DefaultResponse:          defaultResponse,
+		EnableSummary:            true,
+		SendResponse:             false,
+		ExpectFinalDelivery:      observeTurn != nil,
+		ObserveFinalDeliveryTurn: observeTurn,
+		InitialSteeringMessages:  steeringMsgs,
+		SkipInitialSteeringPoll:  true,
 	})
 }
 
@@ -547,6 +550,14 @@ func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
 func (al *AgentLoop) Continue(
 	ctx context.Context,
 	sessionKey, channel, chatID string,
+) (string, error) {
+	return al.continueWithTurnObserver(ctx, sessionKey, channel, chatID, nil)
+}
+
+func (al *AgentLoop) continueWithTurnObserver(
+	ctx context.Context,
+	sessionKey, channel, chatID string,
+	observeTurn func(runtimeevents.TraceScope),
 ) (string, error) {
 	// Claim the session with a unique placeholder to prevent a TOCTOU race where two
 	// concurrent Continue calls for the same session both pass the active-turn
@@ -619,6 +630,7 @@ func (al *AgentLoop) Continue(
 		steeringBatch.senderID,
 		modelBinding,
 		steeringMsgs,
+		observeTurn,
 	)
 	if err != nil {
 		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)

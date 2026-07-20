@@ -210,7 +210,8 @@ type reasoningPublisher interface {
 	targetReasoningChannelID(channelName string) string
 	publishPicoReasoning(
 		ctx context.Context,
-		reasoningContent, chatID, sessionKey, modelName string,
+		ts *turnState,
+		reasoningContent, modelName string,
 	)
 	publishPicoToolCallInterim(
 		ctx context.Context,
@@ -220,7 +221,11 @@ type reasoningPublisher interface {
 		content string,
 		toolCalls []providers.ToolCall,
 	)
-	handleReasoning(ctx context.Context, reasoningContent, channelName, channelID string)
+	handleReasoning(
+		ctx context.Context,
+		ts *turnState,
+		reasoningContent, channelName, channelID string,
+	)
 }
 
 type toolDeliveryManager interface {

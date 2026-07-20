@@ -74,7 +74,7 @@ func (al *AgentLoop) RecoverHumanInteractions(ctx context.Context) int {
 					if err == nil && al.recoverClaimedInteraction(ctx, workspace, claimed) {
 						recovered++
 					}
-				} else if al.retryInteractionPrompt(ctx, registry, record) {
+				} else if al.retryInteractionPrompt(ctx, registry, workspace, record) {
 					recovered++
 				}
 			case interactions.StatusResuming:
@@ -222,6 +222,7 @@ func (al *AgentLoop) recoverCancelingInteraction(
 func (al *AgentLoop) retryInteractionPrompt(
 	ctx context.Context,
 	registry *interactions.Registry,
+	workspace string,
 	record interactions.Record,
 ) bool {
 	if al.channelManager == nil {
@@ -237,7 +238,7 @@ func (al *AgentLoop) retryInteractionPrompt(
 	if err != nil {
 		return false
 	}
-	deliveryErr := al.humanInteractionRuntime().publishPrompt(ctx, started)
+	deliveryErr := al.humanInteractionRuntime().publishPrompt(ctx, workspace, started)
 	updated, err := registry.CompletePromptDelivery(
 		started.ID,
 		started.Revision,

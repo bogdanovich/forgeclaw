@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
@@ -53,10 +54,8 @@ type traceCaptureManager struct {
 	startMu sync.Mutex
 
 	settings traceCaptureSettings
-	turns    map[string]*activeTraceCapture
+	turns    map[runtimeevents.TraceScope]*activeTraceCapture
 	tasks    map[string]*activeTraceCapture
-	sessions map[string]string
-	targets  map[string]map[string]struct{}
 	taskSubs map[string]func()
 	sub      runtimeevents.Subscription
 	eventBus runtimeevents.Bus
@@ -77,10 +76,8 @@ type tracePersistRequest struct {
 func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *traceCaptureManager {
 	m := &traceCaptureManager{
 		settings: traceCaptureSettingsFromConfig(cfg),
-		turns:    make(map[string]*activeTraceCapture),
+		turns:    make(map[runtimeevents.TraceScope]*activeTraceCapture),
 		tasks:    make(map[string]*activeTraceCapture),
-		sessions: make(map[string]string),
-		targets:  make(map[string]map[string]struct{}),
 		taskSubs: make(map[string]func()),
 		eventBus: eventBus,
 	}
@@ -165,10 +162,8 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 				trace.settlementTimer.Stop()
 			}
 		}
-		m.turns = make(map[string]*activeTraceCapture)
+		m.turns = make(map[runtimeevents.TraceScope]*activeTraceCapture)
 		m.tasks = make(map[string]*activeTraceCapture)
-		m.sessions = make(map[string]string)
-		m.targets = make(map[string]map[string]struct{})
 	}
 	m.settings = updated
 	m.mu.Unlock()
@@ -289,37 +284,43 @@ func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
 	if event.Time.IsZero() {
 		event.Time = time.Now()
 	}
-	turnID := strings.TrimSpace(event.Scope.TurnID)
-	if event.Kind == runtimeevents.KindAgentTurnStart && turnID != "" {
+	traceScopes := runtimeEventTraceScopes(event)
+	if event.Kind == runtimeevents.KindAgentTurnStart && event.Scope.TraceScope.Complete() {
 		m.startTurnLocked(settings, event)
 	}
-	trace := m.turns[turnID]
-	if trace == nil && event.Scope.SessionKey != "" {
-		trace = m.turns[m.sessions[event.Scope.SessionKey]]
-	}
-	if trace == nil && event.Scope.Channel != "" && event.Scope.ChatID != "" {
-		trace = m.uniqueTargetTraceLocked(event.Scope.Channel, event.Scope.ChatID)
-	}
-	if trace != nil {
-		if record, critical, ok := runtimeEventRecord(settings, trace, event); ok {
+	settled := make([]*activeTraceCapture, 0, len(traceScopes))
+	for _, traceScope := range traceScopes {
+		trace := m.turns[traceScope]
+		if trace == nil {
+			continue
+		}
+		correlatedEvent := event
+		correlatedEvent.Scope.TraceScope = traceScope
+		if record, critical, ok := runtimeEventRecord(settings, trace, correlatedEvent); ok {
 			appendCaptureRecord(trace, record, critical)
 		}
+		if isTerminalChannelDeliveryEvent(event.Kind) && trace.settlementTimer != nil {
+			m.removeTurnLocked(traceScope, trace)
+			trace.settlementTimer.Stop()
+			trace.settlementTimer = nil
+			settled = append(settled, trace)
+		}
 	}
-	if trace != nil && isTerminalChannelDeliveryEvent(event.Kind) && trace.settlementTimer != nil {
-		m.removeTurnLocked(trace.turnID, trace)
-		trace.settlementTimer.Stop()
-		trace.settlementTimer = nil
+	if len(settled) > 0 {
 		m.mu.Unlock()
-		m.enqueuePersist(settings, trace)
+		for _, trace := range settled {
+			m.enqueuePersist(settings, trace)
+		}
 		return
 	}
+	traceScope := event.Scope.TraceScope
+	trace := m.turns[traceScope]
 	if event.Kind != runtimeevents.KindAgentTurnEnd || trace == nil {
 		m.mu.Unlock()
 		return
 	}
 	deliveryExpected := false
 	if payload, ok := event.Payload.(TurnEndPayload); ok {
-		trace.workspace = strings.TrimSpace(payload.Workspace)
 		deliveryExpected = payload.DeliveryExpected
 		trace.trace.Outcome = &evaltrace.Outcome{
 			Status: string(payload.Status), ContentHash: safeHash(settings, payload.FinalContent),
@@ -327,21 +328,24 @@ func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
 		}
 	}
 	if deliveryExpected {
-		settlementTurnID := turnID
+		settlementScope := traceScope
 		trace.settlementTimer = time.AfterFunc(traceDeliverySettlementTimeout, func() {
-			m.expireTurnSettlement(settlementTurnID, trace)
+			m.expireTurnSettlement(settlementScope, trace)
 		})
 		m.mu.Unlock()
 		return
 	}
-	m.removeTurnLocked(turnID, trace)
+	m.removeTurnLocked(traceScope, trace)
 	m.mu.Unlock()
 	m.enqueuePersist(settings, trace)
 }
 
-func (m *traceCaptureManager) expireTurnSettlement(turnID string, trace *activeTraceCapture) {
+func (m *traceCaptureManager) expireTurnSettlement(
+	traceScope runtimeevents.TraceScope,
+	trace *activeTraceCapture,
+) {
 	m.mu.Lock()
-	if m.closed || m.turns[turnID] != trace || trace.settlementTimer == nil {
+	if m.closed || m.turns[traceScope] != trace || trace.settlementTimer == nil {
 		m.mu.Unlock()
 		return
 	}
@@ -352,7 +356,7 @@ func (m *traceCaptureManager) expireTurnSettlement(turnID string, trace *activeT
 		trace.trace.Truncation.Reasons,
 		"delivery_settlement_timeout",
 	)
-	m.removeTurnLocked(turnID, trace)
+	m.removeTurnLocked(traceScope, trace)
 	m.mu.Unlock()
 	m.enqueuePersist(settings, trace)
 }
@@ -362,27 +366,38 @@ func isTerminalChannelDeliveryEvent(kind runtimeevents.Kind) bool {
 		kind == runtimeevents.KindChannelMessageOutboundFailed
 }
 
+func runtimeEventTraceScopes(event runtimeevents.Event) []runtimeevents.TraceScope {
+	if payload, ok := event.Payload.(channels.ChannelOutboundPayload); ok {
+		return bus.NormalizeTraceScopes(payload.TraceScopes)
+	}
+	if event.Scope.TraceScope.Complete() {
+		return []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope(event.Scope.Workspace, event.Scope.TurnID),
+		}
+	}
+	return nil
+}
+
 func (m *traceCaptureManager) startTurnLocked(
 	settings traceCaptureSettings,
 	event runtimeevents.Event,
 ) {
-	turnID := strings.TrimSpace(event.Scope.TurnID)
-	if _, exists := m.turns[turnID]; exists {
+	traceScope := runtimeevents.NewTraceScope(event.Scope.Workspace, event.Scope.TurnID)
+	if !traceScope.Complete() {
 		return
 	}
-	workspace := ""
-	if payload, ok := event.Payload.(TurnStartPayload); ok {
-		workspace = strings.TrimSpace(payload.Workspace)
+	if _, exists := m.turns[traceScope]; exists {
+		return
 	}
 	trace := &activeTraceCapture{
-		turnID:    turnID,
-		workspace: workspace,
+		turnID:    traceScope.TurnID,
+		workspace: traceScope.Workspace,
 		startedAt: event.Time,
 		critical:  make(map[uint64]bool),
 		origins:   make(map[string]struct{}),
 		trace: evaltrace.Trace{
 			SchemaVersion: evaltrace.SchemaVersionV1,
-			TraceID:       opaqueTraceID("turn", turnID, event.Time),
+			TraceID:       opaqueTraceID("turn", traceScope.TurnID, event.Time),
 			CreatedAt:     event.Time.UTC(),
 			Policy: evaltrace.CapturePolicy{
 				ContentMode: settings.contentMode,
@@ -390,23 +405,14 @@ func (m *traceCaptureManager) startTurnLocked(
 			},
 			Limits: settings.limits,
 			Metadata: evaltrace.Metadata{
-				RootTurnID: turnID, SessionHash: safeHash(settings, event.Scope.SessionKey),
-				AgentID: event.Scope.AgentID, RuntimeID: event.Scope.RuntimeID,
+				RootTurnID:  traceScope.TurnID,
+				SessionHash: safeHash(settings, event.Scope.SessionKey),
+				AgentID:     event.Scope.AgentID, RuntimeID: event.Scope.RuntimeID,
 			},
 			Records: make([]evaltrace.Record, 0, 32),
 		},
 	}
-	m.turns[turnID] = trace
-	if event.Scope.SessionKey != "" {
-		m.sessions[event.Scope.SessionKey] = turnID
-	}
-	key := targetKey(event.Scope.Channel, event.Scope.ChatID)
-	if key != "" {
-		if m.targets[key] == nil {
-			m.targets[key] = make(map[string]struct{})
-		}
-		m.targets[key][turnID] = struct{}{}
-	}
+	m.turns[traceScope] = trace
 }
 
 func (m *traceCaptureManager) observeTaskEvent(
@@ -471,9 +477,6 @@ func (m *traceCaptureManager) observeTaskEvent(
 	for _, item := range observations {
 		taskRecord, critical := normalizedTaskEventRecord(settings, trace, item)
 		appendCaptureRecord(trace, taskRecord, critical)
-		if turn := m.turns[m.sessions[record.RequesterSessionKey]]; turn != nil {
-			appendCaptureRecord(turn, taskRecord, critical)
-		}
 	}
 	if !observation.FinalForTask || !taskRecordIsTerminal(record) {
 		m.mu.Unlock()
@@ -984,29 +987,12 @@ func finalizeCaptureTrace(trace *activeTraceCapture) (evaltrace.Trace, error) {
 	}
 }
 
-func (m *traceCaptureManager) uniqueTargetTraceLocked(channel, chatID string) *activeTraceCapture {
-	turnIDs := m.targets[targetKey(channel, chatID)]
-	if len(turnIDs) != 1 {
-		return nil
-	}
-	for turnID := range turnIDs {
-		return m.turns[turnID]
-	}
-	return nil
-}
-
-func (m *traceCaptureManager) removeTurnLocked(turnID string, trace *activeTraceCapture) {
-	delete(m.turns, turnID)
-	for session, id := range m.sessions {
-		if id == turnID {
-			delete(m.sessions, session)
-		}
-	}
-	for key, ids := range m.targets {
-		delete(ids, turnID)
-		if len(ids) == 0 {
-			delete(m.targets, key)
-		}
+func (m *traceCaptureManager) removeTurnLocked(
+	traceScope runtimeevents.TraceScope,
+	trace *activeTraceCapture,
+) {
+	if m.turns[traceScope] == trace {
+		delete(m.turns, traceScope)
 	}
 }
 

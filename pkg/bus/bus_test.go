@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -402,6 +403,11 @@ func TestPublishOutbound_MirrorsContextToLegacyFields(t *testing.T) {
 		},
 		AgentID:    "main",
 		SessionKey: "sk_v1_123",
+		TraceScopes: []runtimeevents.TraceScope{
+			runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+			runtimeevents.NewTraceScope(" /workspace/main ", " turn-2 "),
+			runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		},
 		Scope: &OutboundScope{
 			Version:    1,
 			AgentID:    "main",
@@ -433,11 +439,27 @@ func TestPublishOutbound_MirrorsContextToLegacyFields(t *testing.T) {
 	if got.AgentID != "main" || got.SessionKey != "sk_v1_123" {
 		t.Fatalf("unexpected outbound turn metadata: agent=%q session=%q", got.AgentID, got.SessionKey)
 	}
+	if !reflect.DeepEqual(got.TraceScopes, []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	}) {
+		t.Fatalf("unexpected outbound trace scopes: %+v", got.TraceScopes)
+	}
 	if got.Scope == nil || got.Scope.AgentID != "main" || got.Scope.Values["chat"] != "direct:chat-42" {
 		t.Fatalf("unexpected outbound scope: %+v", got.Scope)
 	}
 	if got.Context.Channel != "telegram" || got.Context.ChatID != "chat-42" {
 		t.Fatalf("unexpected outbound context: %+v", got.Context)
+	}
+}
+
+func TestNormalizeTraceScopesRejectsCrossWorkspaceOutbound(t *testing.T) {
+	got := NormalizeTraceScopes([]runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/a", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/b", "turn-2"),
+	})
+	if got != nil {
+		t.Fatalf("cross-workspace trace scopes were accepted: %+v", got)
 	}
 }
 

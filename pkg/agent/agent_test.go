@@ -718,8 +718,13 @@ func TestPublishPicoReasoningIncludesSessionKey(t *testing.T) {
 	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 	_ = provider
+	agent := al.registry.GetDefaultAgent()
+	ts := &turnState{
+		workspace: agent.Workspace, turnID: "turn-reasoning",
+		chatID: "pico-chat", sessionKey: "session-1",
+	}
 
-	al.publishPicoReasoning(context.Background(), "reasoning", "pico-chat", "session-1", "")
+	al.publishPicoReasoning(context.Background(), ts, "reasoning", "")
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
@@ -1151,8 +1156,8 @@ func TestApplyBeforeLLMModelRewrite_RebuildsExecutionProviders(t *testing.T) {
 
 	pipeline := NewPipeline(al)
 	ts := newTurnState(agent, makeTestProcessOpts("rewrite-session"), turnEventScope{
-		turnID:  "turn-rewrite-provider",
-		context: newTurnContext(nil, nil, nil),
+		TraceScope: runtimeevents.NewTraceScope(agent.Workspace, "turn-rewrite-provider"),
+		context:    newTurnContext(nil, nil, nil),
 	})
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
 	if err != nil {
@@ -1390,8 +1395,8 @@ func TestPipeline_CallLLM_BeforeLLMRewriteDoesNotMutateStickyAutoFallbackSelecti
 		agent,
 		normalizeProcessOptions(makeTestProcessOpts("rewrite-session")),
 		turnEventScope{
-			turnID:  "turn-rewrite-sticky-selection",
-			context: newTurnContext(nil, nil, nil),
+			TraceScope: runtimeevents.NewTraceScope(agent.Workspace, "turn-rewrite-sticky-selection"),
+			context:    newTurnContext(nil, nil, nil),
 		},
 	)
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
@@ -2736,26 +2741,31 @@ func TestDeliverFinalTurnResult_SendsCompletionMediaWithFinalTextCaption(t *test
 		t.Fatal("expected default agent")
 	}
 	const finalText = "Video saved. Recipe translation is below."
-	al.deliverFinalTurnResult(context.Background(), agent, processOptions{
-		Dispatch: DispatchRequest{
-			SessionKey:  "final-media-session",
-			UserMessage: "save the reel and translate the recipe",
-			InboundContext: &bus.InboundContext{
-				Channel:  "telegram",
-				ChatID:   "chat1",
-				SenderID: "user1",
+	al.deliverFinalTurnResult(
+		context.Background(),
+		runtimeevents.NewTraceScope(agent.Workspace, "turn-final-media"),
+		agent,
+		processOptions{
+			Dispatch: DispatchRequest{
+				SessionKey:  "final-media-session",
+				UserMessage: "save the reel and translate the recipe",
+				InboundContext: &bus.InboundContext{
+					Channel:  "telegram",
+					ChatID:   "chat1",
+					SenderID: "user1",
+				},
 			},
+			SendResponse: true,
+		}, turnResult{
+			finalContent: finalText,
+			completionMedia: []tools.CompletionMedia{{
+				Ref:         ref,
+				Type:        "video",
+				Filename:    "reel.mp4",
+				ContentType: "video/mp4",
+			}},
 		},
-		SendResponse: true,
-	}, turnResult{
-		finalContent: finalText,
-		completionMedia: []tools.CompletionMedia{{
-			Ref:         ref,
-			Type:        "video",
-			Filename:    "reel.mp4",
-			ContentType: "video/mp4",
-		}},
-	})
+	)
 
 	if len(telegramChannel.sentMedia) != 1 {
 		t.Fatalf("expected exactly 1 final media message, got %d", len(telegramChannel.sentMedia))
@@ -7239,6 +7249,13 @@ func TestTargetReasoningChannelID_AllChannels(t *testing.T) {
 	}
 }
 
+func testReasoningTurn(al *AgentLoop) *turnState {
+	agent := al.registry.GetDefaultAgent()
+	return &turnState{
+		workspace: agent.Workspace, turnID: "turn-reasoning", sessionKey: "session-reasoning",
+	}
+}
+
 func TestHandleReasoning(t *testing.T) {
 	newLoop := func(t *testing.T) (*AgentLoop, *bus.MessageBus) {
 		t.Helper()
@@ -7263,7 +7280,7 @@ func TestHandleReasoning(t *testing.T) {
 
 	t.Run("skips when any required field is empty", func(t *testing.T) {
 		al, msgBus := newLoop(t)
-		al.handleReasoning(context.Background(), "reasoning", "telegram", "")
+		al.handleReasoning(context.Background(), testReasoningTurn(al), "reasoning", "telegram", "")
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -7289,7 +7306,9 @@ func TestHandleReasoning(t *testing.T) {
 
 	t.Run("publishes one message for non telegram", func(t *testing.T) {
 		al, msgBus := newLoop(t)
-		al.handleReasoning(context.Background(), "hello reasoning", "slack", "channel-1")
+		al.handleReasoning(
+			context.Background(), testReasoningTurn(al), "hello reasoning", "slack", "channel-1",
+		)
 
 		msg, ok := <-msgBus.OutboundChan()
 		if !ok {
@@ -7303,7 +7322,9 @@ func TestHandleReasoning(t *testing.T) {
 	t.Run("publishes one message for telegram", func(t *testing.T) {
 		al, msgBus := newLoop(t)
 		reasoning := "hello telegram reasoning"
-		al.handleReasoning(context.Background(), reasoning, "telegram", "tg-chat")
+		al.handleReasoning(
+			context.Background(), testReasoningTurn(al), reasoning, "telegram", "tg-chat",
+		)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -7334,7 +7355,9 @@ func TestHandleReasoning(t *testing.T) {
 		al, msgBus := newLoop(t)
 		reasoning := "hello telegram reasoning"
 
-		al.handleReasoning(context.Background(), reasoning, "telegram", "tg-chat")
+		al.handleReasoning(
+			context.Background(), testReasoningTurn(al), reasoning, "telegram", "tg-chat",
+		)
 
 		consumeCtx, consumeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer consumeCancel()
@@ -7378,7 +7401,7 @@ func TestHandleReasoning(t *testing.T) {
 		defer cancel()
 
 		start := time.Now()
-		al.handleReasoning(ctx, "should timeout", "slack", "channel-full")
+		al.handleReasoning(ctx, testReasoningTurn(al), "should timeout", "slack", "channel-full")
 		elapsed := time.Since(start)
 
 		// handleReasoning uses a 5s internal timeout, but the parent ctx

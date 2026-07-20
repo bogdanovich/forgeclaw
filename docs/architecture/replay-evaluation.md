@@ -272,8 +272,10 @@ in-memory traces immediately.
 
 Current capture limitations are explicit:
 
-- channel events do not carry a turn ID or session key, so they are associated
-  only when channel/chat identifies one active or delivery-settling turn;
+- turn-owned outbound messages carry a mandatory workspace and turn ID through
+  the bus into channel events. One physical steering-combined outbound may
+  settle several turns from the same workspace. Capture does not infer turn
+  ownership from session, channel, chat, timing, or process-wide ID uniqueness;
   expected delivery has a bounded settlement timeout, and durable task delivery
   remains authoritative for async work;
 - context content is represented by filtered hashes, counts, goal presence,

@@ -1,6 +1,9 @@
 package events
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Kind identifies a runtime event category.
 type Kind string
@@ -29,17 +32,37 @@ type Source struct {
 	Name      string `json:"name,omitempty"`
 }
 
+// TraceScope is the complete identity of one turn inside one workspace.
+// Turn IDs are not assumed to be unique across workspaces.
+type TraceScope struct {
+	Workspace string `json:"workspace,omitempty"`
+	TurnID    string `json:"turn_id,omitempty"`
+}
+
+// NewTraceScope returns a normalized turn identity.
+func NewTraceScope(workspace, turnID string) TraceScope {
+	return TraceScope{
+		Workspace: strings.TrimSpace(workspace),
+		TurnID:    strings.TrimSpace(turnID),
+	}
+}
+
+// Complete reports whether the scope can safely identify a trace.
+func (s TraceScope) Complete() bool {
+	return strings.TrimSpace(s.Workspace) != "" && strings.TrimSpace(s.TurnID) != ""
+}
+
 // Scope identifies the runtime ownership of an event.
 //
 // Scope is intentionally limited to agent, session, turn, channel, chat,
 // message, and sender identity. Tool, provider, model, and MCP details belong
 // in Source, Payload, or Attrs.
 type Scope struct {
+	TraceScope
 	RuntimeID string `json:"runtime_id,omitempty"`
 
 	AgentID    string `json:"agent_id,omitempty"`
 	SessionKey string `json:"session_key,omitempty"`
-	TurnID     string `json:"turn_id,omitempty"`
 
 	Channel string `json:"channel,omitempty"`
 	Account string `json:"account,omitempty"`

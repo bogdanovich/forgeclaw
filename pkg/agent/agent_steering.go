@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
@@ -81,17 +82,23 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 	ctx context.Context,
 	turn inboundMessageTurn,
 ) bool {
+	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
+	observeTurn := func(scope runtimeevents.TraceScope) {
+		traceScopes = appendUniqueTraceScope(traceScopes, scope)
+	}
+	turn.Options.ObserveFinalDeliveryTurn = observeTurn
 	target := &continuationTarget{
-		SessionKey: turn.SessionKey,
-		Channel:    turn.Message.Channel,
-		ChatID:     turn.Message.ChatID,
+		SessionKey:               turn.SessionKey,
+		Channel:                  turn.Message.Channel,
+		ChatID:                   turn.Message.ChatID,
+		ObserveFinalDeliveryTurn: observeTurn,
 	}
 	if turn.Agent != nil {
 		target.Workspace = turn.Agent.Workspace
 	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
 		return al.processInboundMessageTurn(ctx, turn)
-	}, target)
+	}, target, &traceScopes)
 }
 
 func (al *AgentLoop) runTurnAndDrainSteering(
@@ -99,16 +106,18 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	initialMsg bus.InboundMessage,
 	process func() (string, error),
 	target *continuationTarget,
+	traceScopes *[]runtimeevents.TraceScope,
 ) bool {
 	response, err := process()
 	if err != nil {
-		if !al.maybePublishErrorWithPolicy(
+		if !al.maybePublishErrorWithScopes(
 			ctx,
 			initialMsg.Channel,
 			initialMsg.ChatID,
 			initialMsg.SessionKey,
 			err,
 			finalResponseAlwaysPublish,
+			*traceScopes,
 		) {
 			return false // context canceled
 		}
@@ -137,7 +146,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	// Publish final response
 	finalResponse := joinSteeringResponses(responses)
 	if finalResponse != "" {
-		al.publishResponseWithContextIfNeeded(
+		al.publishResponseWithContextAndScopes(
 			ctx,
 			target.Channel,
 			target.ChatID,
@@ -157,6 +166,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 				}(),
 			},
 			finalResponseAlwaysPublish,
+			*traceScopes,
 		)
 	}
 	return true
@@ -188,7 +198,13 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
 			})
 
-		continued, continueErr := al.Continue(ctx, target.SessionKey, target.Channel, target.ChatID)
+		continued, continueErr := al.continueWithTurnObserver(
+			ctx,
+			target.SessionKey,
+			target.Channel,
+			target.ChatID,
+			target.ObserveFinalDeliveryTurn,
+		)
 		if continueErr != nil {
 			return joinSteeringResponses(responses), continueErr
 		}
@@ -210,6 +226,22 @@ func appendSteeringResponse(responses []string, response string) []string {
 		return responses
 	}
 	return append(responses, response)
+}
+
+func appendUniqueTraceScope(
+	values []runtimeevents.TraceScope,
+	value runtimeevents.TraceScope,
+) []runtimeevents.TraceScope {
+	value = runtimeevents.NewTraceScope(value.Workspace, value.TurnID)
+	if !value.Complete() {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func joinSteeringResponses(responses []string) string {
