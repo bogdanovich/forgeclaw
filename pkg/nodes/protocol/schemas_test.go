@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -16,7 +17,12 @@ import (
 )
 
 func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
-	for _, name := range []string{"envelope.v1", "command-descriptor.v1", "node-auth.v1"} {
+	for _, name := range []string{
+		"envelope.v1",
+		"command-descriptor.v1",
+		"execution-plan.v1",
+		"node-auth.v1",
+	} {
 		data, err := Schema(name)
 		if err != nil {
 			t.Fatalf("Schema(%q) error = %v", name, err)
@@ -24,6 +30,57 @@ func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
 		if !json.Valid(data) {
 			t.Fatalf("Schema(%q) is invalid JSON", name)
 		}
+	}
+}
+
+func TestExecutionPlanSchemaMatchesDomain(t *testing.T) {
+	descriptor := nodes.CommandDescriptor{
+		Name:         "node.info.v1",
+		InputSchema:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		Risk:         nodes.RiskRead,
+	}
+	plan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
+		InvocationID:     "inv_test",
+		IdempotencyKey:   "idem_test",
+		NodeID:           nodes.ID("node_test"),
+		CatalogHash:      strings.Repeat("a", 64),
+		Command:          descriptor.Name,
+		Input:            json.RawMessage(`{}`),
+		AgentID:          "main",
+		SessionID:        "telegram:chat-1",
+		ActorID:          "user-1",
+		TimeoutSeconds:   30,
+		OutputLimitBytes: 4096,
+	}, descriptor, "local", "policy-1", time.Unix(1, 0), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var instance any
+	if unmarshalErr := json.Unmarshal(data, &instance); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if validationErr := resolveSchema(t, "execution-plan.v1").Validate(instance); validationErr != nil {
+		t.Fatalf("schema rejected execution plan %s: %v", data, validationErr)
+	}
+
+	plan.Command = "system." + strings.Repeat("x", 120) + ".v1"
+	data, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unmarshalErr := json.Unmarshal(data, &instance); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if validationErr := resolveSchema(t, "execution-plan.v1").Validate(instance); validationErr == nil {
+		t.Fatal("schema accepted an overlong command")
+	}
+	if err := plan.Validate(); err == nil {
+		t.Fatal("domain accepted an overlong command")
 	}
 }
 

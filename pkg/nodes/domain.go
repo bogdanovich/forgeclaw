@@ -216,8 +216,7 @@ func (snapshot Snapshot) Validate() error {
 	if snapshot.CatalogHash == "" {
 		return nil
 	}
-	decodedHash, err := hex.DecodeString(snapshot.CatalogHash)
-	if err != nil || len(decodedHash) != sha256.Size {
+	if !validSHA256Digest(snapshot.CatalogHash) {
 		return fmt.Errorf("%w: malformed catalog hash", ErrInvalidNode)
 	}
 	catalogHash, err := snapshot.Catalog.Hash()
@@ -240,7 +239,8 @@ type Disconnect struct {
 	At     int64
 }
 
-// PairingApproval is the operator-owned authority granted to a pending node.
+// PairingApproval is the operator-owned authority granted to a pending or
+// already paired node.
 // AllowedCommands must be a subset of the capability catalog presented during
 // admission; an empty list grants no executable command surface.
 type PairingApproval struct {
@@ -261,13 +261,19 @@ type Revocation struct {
 // intentionally retained here so authentication can bind approval to the
 // exact admitted device rather than to a mutable alias.
 type Registration struct {
-	Snapshot        Snapshot
-	PublicKey       []byte
-	RequestedRole   string
-	RequestedAt     int64
-	AllowedCommands []string
-	ApprovedAt      int64
-	RevokedAt       int64
+	Snapshot            Snapshot
+	PublicKey           []byte
+	RequestedRole       string
+	RequestedAt         int64
+	AllowedCommands     []string
+	ApprovedCatalogHash string
+	ApprovedAt          int64
+	RevokedAt           int64
+}
+
+func validSHA256Digest(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
 }
 
 // Registry is the durable node-state boundary. Connection ownership remains

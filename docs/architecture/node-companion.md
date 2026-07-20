@@ -394,8 +394,10 @@ authenticate the device; TLS authenticates and protects the transport.
 5. The companion reconnects and signs a fresh challenge with the approved key.
 6. The gateway verifies that the exact key remains approved and non-revoked,
    then establishes the connected session.
-7. Capability changes that broaden authority require renewed command-surface
-   approval; narrowing can take effect immediately.
+7. The MVP binds command-surface approval to the authenticated catalog hash.
+   Any catalog change suspends command execution until renewed approval; a
+   future descriptor-level approval model may allow verified narrowing without
+   reapproving unrelated commands.
 
 The MVP does not add a gateway bearer token beside the device key. A token
 stored with that same key would not be an independent authentication factor,
@@ -498,7 +500,7 @@ The gateway prepares a canonical execution plan before approval or dispatch.
 The plan binds:
 
 - invocation ID and idempotency key;
-- node ID and command version;
+- node ID, approved catalog hash, and command version;
 - normalized command input;
 - agent, session, and requesting actor identity;
 - executor selection;
@@ -509,6 +511,14 @@ The plan binds:
 
 The node recomputes and validates relevant fields. It does not trust a human-
 readable summary as executable authority.
+
+The plan hash is a canonical binding digest, not an origin signature. The
+gateway keeps the expected digest in the approval or invocation record outside
+the mutable plan and compares it again before dispatch. Pinned WSS authenticates
+the gateway transport. If a future external broker or offline plan format
+crosses a separate trust boundary, that format requires a distinct signed
+approval envelope; re-labeling this digest as a signature would not provide
+that protection.
 
 States are:
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,20 @@ func TestFileRegistryBoundsPendingPairings(t *testing.T) {
 	}
 }
 
+func TestRegistrationRecordRejectsAuthorityWithoutApproval(t *testing.T) {
+	t.Parallel()
+
+	record := registryRecord{AllowedCommands: []string{"node.info.v1"}}
+	if err := validateRegistrationRecord(record); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("allowed command without approval error = %v", err)
+	}
+	record.AllowedCommands = nil
+	record.ApprovedCatalogHash = strings.Repeat("a", 64)
+	if err := validateRegistrationRecord(record); !errors.Is(err, ErrInvalidNode) {
+		t.Fatalf("catalog authority without approval error = %v", err)
+	}
+}
+
 func TestFileRegistryRejectsPendingIdentityMismatch(t *testing.T) {
 	registry, err := NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
 	if err != nil {
@@ -173,6 +188,9 @@ func TestFileRegistryApprovesOnlyAdvertisedCommands(t *testing.T) {
 	if approved.ApprovedAt != 3 || approved.RequestedAt != pairing.RequestedAt {
 		t.Fatalf("approved registration = %#v", approved)
 	}
+	if approved.ApprovedCatalogHash != pairing.Node.CatalogHash {
+		t.Fatalf("approved catalog hash = %q", approved.ApprovedCatalogHash)
+	}
 
 	reloaded, err := NewFileRegistry(path, 4)
 	if err != nil {
@@ -182,7 +200,8 @@ func TestFileRegistryApprovesOnlyAdvertisedCommands(t *testing.T) {
 	if err != nil || !exists {
 		t.Fatalf("Registration() = exists %v, error %v", exists, err)
 	}
-	if persisted.ApprovedAt != 3 || len(persisted.AllowedCommands) != 2 {
+	if persisted.ApprovedAt != 3 || len(persisted.AllowedCommands) != 2 ||
+		persisted.ApprovedCatalogHash != pairing.Node.CatalogHash {
 		t.Fatalf("persisted registration = %#v", persisted)
 	}
 }
@@ -221,7 +240,7 @@ func TestFileRegistryDenyAndRevokeFailClosed(t *testing.T) {
 	if revoked.Snapshot.State != StateRevoked || revoked.Snapshot.DisconnectReason != "device retired" {
 		t.Fatalf("revoked registration = %#v", revoked)
 	}
-	if len(revoked.AllowedCommands) != 0 || revoked.RevokedAt != 5 {
+	if len(revoked.AllowedCommands) != 0 || revoked.ApprovedCatalogHash != "" || revoked.RevokedAt != 5 {
 		t.Fatalf("revoked authority = %#v", revoked)
 	}
 	if _, err := registry.Revoke(paired.Node.ID, Revocation{Reason: "again", At: 6}); !errors.Is(err, ErrInvalidNode) {
@@ -293,6 +312,23 @@ func TestFileRegistryKeepsApprovalWhenAdvertisedCatalogNarrows(t *testing.T) {
 	}
 	if len(registration.AllowedCommands) != 2 || len(registration.Snapshot.Catalog.Commands) != 1 {
 		t.Fatalf("narrowed registration = %#v", registration)
+	}
+	if registration.ApprovedCatalogHash == registration.Snapshot.CatalogHash {
+		t.Fatal("catalog change retained executable approval identity")
+	}
+	renewed, err := registry.Approve(pairing.Node.ID, PairingApproval{
+		AllowedCommands: []string{"node.info.v1"},
+		At:              3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.Snapshot.State != StateConnected ||
+		renewed.ApprovedCatalogHash != renewed.Snapshot.CatalogHash {
+		t.Fatalf("renewed registration = %#v", renewed)
+	}
+	if _, err := renewed.ApprovedCommand("node.info.v1"); err != nil {
+		t.Fatalf("renewed ApprovedCommand() error = %v", err)
 	}
 }
 

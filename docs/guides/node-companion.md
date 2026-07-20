@@ -94,8 +94,10 @@ picoclaw nodes approve node_<fingerprint> \
 ```
 
 Approval grants no commands unless each advertised command is named explicitly
-with `--allow-command`. Deny an untrusted pending identity or revoke a paired
-one with a recorded reason:
+with `--allow-command`. If the authenticated catalog changes, execution is
+suspended until `nodes approve` is run again with the complete aliases,
+display name, and allowed-command set to retain. Deny an untrusted pending
+identity or revoke a paired one with a recorded reason:
 
 ```bash
 picoclaw nodes deny node_<fingerprint> --reason "unknown device"

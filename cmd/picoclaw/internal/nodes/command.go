@@ -23,13 +23,14 @@ type commandDeps struct {
 }
 
 type registrationView struct {
-	Node            nodepkg.Snapshot `json:"node"`
-	PublicKeySHA256 string           `json:"public_key_sha256,omitempty"`
-	RequestedRole   string           `json:"requested_role,omitempty"`
-	RequestedAt     int64            `json:"requested_at,omitempty"`
-	AllowedCommands []string         `json:"allowed_commands"`
-	ApprovedAt      int64            `json:"approved_at,omitempty"`
-	RevokedAt       int64            `json:"revoked_at,omitempty"`
+	Node                nodepkg.Snapshot `json:"node"`
+	PublicKeySHA256     string           `json:"public_key_sha256,omitempty"`
+	RequestedRole       string           `json:"requested_role,omitempty"`
+	RequestedAt         int64            `json:"requested_at,omitempty"`
+	AllowedCommands     []string         `json:"allowed_commands"`
+	ApprovedCatalogHash string           `json:"approved_catalog_hash,omitempty"`
+	ApprovedAt          int64            `json:"approved_at,omitempty"`
+	RevokedAt           int64            `json:"revoked_at,omitempty"`
 }
 
 func NewNodesCommand() *cobra.Command {
@@ -158,7 +159,7 @@ func newApproveCommand(
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "approve <node-id>",
-		Short: "Approve one pending node identity",
+		Short: "Approve a pending node or renew its command surface",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			registry, err := open()
@@ -308,6 +309,7 @@ func writeRegistration(writer io.Writer, registration nodepkg.Registration, json
 	fmt.Fprintf(writer, "Approved at: %s\n", formatTimestamp(view.ApprovedAt))
 	fmt.Fprintf(writer, "Revoked at: %s\n", formatTimestamp(view.RevokedAt))
 	fmt.Fprintf(writer, "Allowed commands: %s\n", listOrNone(view.AllowedCommands))
+	fmt.Fprintf(writer, "Approved catalog: %s\n", valueOrDash(view.ApprovedCatalogHash))
 	return nil
 }
 
@@ -322,13 +324,14 @@ func registrationToView(registration nodepkg.Registration) registrationView {
 		commands = make([]string, 0)
 	}
 	return registrationView{
-		Node:            registration.Snapshot,
-		PublicKeySHA256: fingerprint,
-		RequestedRole:   registration.RequestedRole,
-		RequestedAt:     registration.RequestedAt,
-		AllowedCommands: commands,
-		ApprovedAt:      registration.ApprovedAt,
-		RevokedAt:       registration.RevokedAt,
+		Node:                registration.Snapshot,
+		PublicKeySHA256:     fingerprint,
+		RequestedRole:       registration.RequestedRole,
+		RequestedAt:         registration.RequestedAt,
+		AllowedCommands:     commands,
+		ApprovedCatalogHash: registration.ApprovedCatalogHash,
+		ApprovedAt:          registration.ApprovedAt,
+		RevokedAt:           registration.RevokedAt,
 	}
 }
 
