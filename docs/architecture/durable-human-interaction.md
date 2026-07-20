@@ -395,6 +395,11 @@ is partial evidence rather than a malformed lifecycle.
 Registry attachment atomically subscribes the recorder and returns retained
 records plus event history. Startup rebuilds missing terminal traces from that
 snapshot, while a deterministic trace builder is shared with live capture.
+Stable record creation time identifies the trace across history eviction, and
+terminal reconciliation replaces stale incomplete files. Missing retained event
+history is represented by an explicit incomplete trace. Re-enabling capture
+atomically replaces existing registry subscriptions and reconciles everything
+that became durable while capture was disabled.
 Replay diagnostics explicitly classify self-contained violations as
 `conclusive` and missing-prerequisite checks as `requires_complete_history`, so
 truncation cannot hide malformed approval consumption or expiry evidence.

@@ -260,7 +260,12 @@ interaction registry installs its observer and returns a consistent retained
 snapshot in one atomic operation. One deterministic builder consumes that
 snapshot during startup and the same event contract during live capture. This
 closes the crash window between a persisted terminal transition and asynchronous
-trace persistence without making the trace store authoritative.
+trace persistence without making the trace store authoritative. Interaction
+trace identity and clock origin come from the durable record's immutable
+creation time, so event-history eviction cannot change the trace ID. Startup
+replaces incomplete or nonterminal files when terminal registry evidence is
+available; a retained terminal record with no events still produces an explicit
+incomplete trace instead of disappearing.
 
 Captured runtime evidence includes turn outcomes; model request/response hashes
 and fallback attempts; tool call/result hashes and call IDs; steering acceptance

@@ -189,6 +189,67 @@ func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
 	_ = eventBus.Close()
 }
 
+func TestTraceCaptureReconcilesAttachedRegistryAfterConfigEnable(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(config.DefaultConfig(), eventBus)
+	registry := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	manager.attachInteractionRegistry(workspace, registry)
+	record := createTraceTestInteraction(t, registry, "interaction-enable-reconcile", "session-1")
+	record, err := registry.Cancel(record.ID, record.Revision, "fixture_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches, _ := filepath.Glob(
+		filepath.Join(workspace, "state", "evaluation", "traces", "*.json"),
+	); len(matches) != 0 {
+		t.Fatalf("disabled capture wrote traces: %v", matches)
+	}
+	manager.updateConfig(traceTestConfig(workspace))
+	tracePath := filepath.Join(
+		workspace,
+		"state",
+		"evaluation",
+		"traces",
+		opaqueTraceID("interaction", record.ID, time.UnixMilli(record.CreatedAt))+".json",
+	)
+	waitForTracePath(t, tracePath)
+	manager.close()
+	_ = eventBus.Close()
+	trace := loadTraceFile(t, tracePath)
+	if trace.Truncation.Incomplete || trace.Outcome == nil || len(trace.Records) != 2 {
+		t.Fatalf("trace = %#v", trace)
+	}
+}
+
+func TestTraceCapturePreservesActiveInteractionAcrossEnabledConfigReload(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	registry := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	manager.attachInteractionRegistry(workspace, registry)
+	record := createTraceTestInteraction(t, registry, "interaction-enabled-reload", "session-1")
+	manager.updateConfig(traceTestConfig(workspace))
+	record, err := registry.Cancel(record.ID, record.Revision, "fixture_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(
+		workspace,
+		"state",
+		"evaluation",
+		"traces",
+		opaqueTraceID("interaction", record.ID, time.UnixMilli(record.CreatedAt))+".json",
+	)
+	waitForTracePath(t, tracePath)
+	manager.close()
+	_ = eventBus.Close()
+	trace := loadTraceFile(t, tracePath)
+	if trace.Truncation.Incomplete || trace.Outcome == nil || len(trace.Records) != 2 {
+		t.Fatalf("trace = %#v", trace)
+	}
+}
+
 func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 	workspace := t.TempDir()
 	eventBus := runtimeevents.NewBus()
@@ -487,7 +548,7 @@ func TestTraceCaptureReconcilesTerminalInteractionOnRegistryAttachment(t *testin
 		t.Fatal(err)
 	}
 	history := registry.ListEvents(record.ID)
-	wantTraceID := opaqueTraceID("interaction", record.ID, time.UnixMilli(history[0].EmittedAt))
+	wantTraceID := opaqueTraceID("interaction", record.ID, time.UnixMilli(record.CreatedAt))
 
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
@@ -530,6 +591,187 @@ func TestTraceCaptureReconcilesTerminalInteractionOnRegistryAttachment(t *testin
 	}
 	if !info.ModTime().Equal(oldModTime) {
 		t.Fatalf("existing trace was rewritten: modtime = %s", info.ModTime())
+	}
+}
+
+func TestTraceCaptureReplacesIncompleteTraceDuringTerminalReconciliation(t *testing.T) {
+	workspace := t.TempDir()
+	registry := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	firstBus := runtimeevents.NewBus()
+	firstManager := newTraceCaptureManager(traceTestConfig(workspace), firstBus)
+	firstManager.attachInteractionRegistry(workspace, registry)
+	record, err := registry.Create(interactions.CreateRequest{
+		ID:   "interaction-replace-incomplete",
+		Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-1", Channel: "telegram",
+			ChatID: "chat-1", SenderID: "sender-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-1", ToolCallID: "call-1", ToolName: "request_user_input",
+		},
+		Questions: []interactions.Question{{ID: "environment", Question: "Which environment?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstManager.close()
+	_ = firstBus.Close()
+	traceID := opaqueTraceID("interaction", record.ID, time.UnixMilli(record.CreatedAt))
+	tracePath := filepath.Join(
+		workspace,
+		"state",
+		"evaluation",
+		"traces",
+		traceID+".json",
+	)
+	oldTrace := loadTraceFile(t, tracePath)
+	if !oldTrace.Truncation.Incomplete || oldTrace.Outcome != nil {
+		t.Fatalf("initial trace = %#v", oldTrace)
+	}
+
+	record, err = registry.ClaimAnswer(
+		record.ID,
+		record.Revision,
+		interactions.Answer{Text: "staging"},
+		interactions.OutcomeAnswered,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.Resolve(record.ID, record.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := interactions.NewRegistry(interactions.WorkspaceStorePath(workspace))
+	secondBus := runtimeevents.NewBus()
+	secondManager := newTraceCaptureManager(traceTestConfig(workspace), secondBus)
+	secondManager.attachInteractionRegistry(workspace, reloaded)
+	secondManager.close()
+	_ = secondBus.Close()
+	recovered := loadTraceFile(t, tracePath)
+	if recovered.Truncation.Incomplete || recovered.Outcome == nil ||
+		recovered.Outcome.Status != string(interactions.StatusResolved) {
+		t.Fatalf("recovered trace = %#v", recovered)
+	}
+}
+
+func TestTraceCapturePersistsIncompleteTerminalTraceWithoutRetainedEvents(t *testing.T) {
+	workspace := t.TempDir()
+	registry := interactions.NewRegistryWithOptions(
+		interactions.WorkspaceStorePath(workspace),
+		interactions.Options{MaxEvents: 1},
+	)
+	record, err := registry.Create(interactions.CreateRequest{
+		ID:   "interaction-without-events",
+		Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-1", Channel: "telegram",
+			ChatID: "chat-1", SenderID: "sender-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-1", ToolCallID: "call-1", ToolName: "request_user_input",
+		},
+		Questions: []interactions.Question{{ID: "environment", Question: "Which environment?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.Cancel(record.ID, record.Revision, "fixture_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.Create(interactions.CreateRequest{
+		ID:   "interaction-evicts-events",
+		Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-2", Channel: "telegram",
+			ChatID: "chat-2", SenderID: "sender-2",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-2", ToolCallID: "call-2", ToolName: "request_user_input",
+		},
+		Questions: []interactions.Question{{ID: "environment", Question: "Which environment?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if history := registry.ListEvents(record.ID); len(history) != 0 {
+		t.Fatalf("retained history = %+v", history)
+	}
+
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	manager.attachInteractionRegistry(workspace, registry)
+	manager.close()
+	_ = eventBus.Close()
+	traceID := opaqueTraceID("interaction", record.ID, time.UnixMilli(record.CreatedAt))
+	trace := loadTraceFile(t, filepath.Join(
+		workspace,
+		"state",
+		"evaluation",
+		"traces",
+		traceID+".json",
+	))
+	if !trace.Truncation.Incomplete || len(trace.Records) != 0 || trace.Outcome == nil {
+		t.Fatalf("trace = %#v", trace)
+	}
+	if !slices.Contains(trace.Truncation.Reasons, "interaction_event_history_missing") {
+		t.Fatalf("truncation reasons = %v", trace.Truncation.Reasons)
+	}
+}
+
+func TestBuildInteractionTraceKeepsIdentityWhenHistoryPrefixIsEvicted(t *testing.T) {
+	workspace := t.TempDir()
+	createdAt := time.Date(2026, 7, 19, 18, 0, 0, 0, time.UTC)
+	state := interactions.Record{
+		ID: "interaction-stable-trace-id", Kind: interactions.KindQuestion,
+		Status: interactions.StatusWaiting, CreatedAt: createdAt.UnixMilli(),
+		Route:  interactions.Route{AgentID: "main", SessionKey: "session-1"},
+		Origin: interactions.Origin{TurnID: "turn-1", ToolCallID: "call-1"},
+	}
+	history := []interactions.Event{
+		{
+			EventID: "event-1", InteractionID: state.ID, Type: interactions.EventCreated,
+			To: interactions.StatusCreated, Revision: 1, Sequence: 1,
+			EmittedAt: createdAt.UnixMilli(),
+		},
+		{
+			EventID: "event-2", InteractionID: state.ID, Type: interactions.EventWaiting,
+			From: interactions.StatusCreated, To: interactions.StatusWaiting,
+			Revision: 2, Sequence: 2, EmittedAt: createdAt.Add(time.Minute).UnixMilli(),
+		},
+	}
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	full := buildInteractionTrace(settings, workspace, state, history)
+	truncated := buildInteractionTrace(settings, workspace, state, history[1:])
+	if full.trace.TraceID != truncated.trace.TraceID ||
+		!full.startedAt.Equal(truncated.startedAt) || !full.startedAt.Equal(createdAt) {
+		t.Fatalf(
+			"trace identities differ: full=%s/%s truncated=%s/%s",
+			full.trace.TraceID,
+			full.startedAt,
+			truncated.trace.TraceID,
+			truncated.startedAt,
+		)
+	}
+	if !truncated.trace.Truncation.Incomplete ||
+		truncated.trace.Records[0].OffsetNanos != time.Minute.Nanoseconds() {
+		t.Fatalf("truncated trace = %#v", truncated.trace)
 	}
 }
 
@@ -725,6 +967,59 @@ func waitForTraceFile(t *testing.T, workspace string) string {
 	}
 	t.Fatalf("timed out waiting for trace at %s", pattern)
 	return ""
+}
+
+func waitForTracePath(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for trace at %s", path)
+}
+
+func createTraceTestInteraction(
+	t *testing.T,
+	registry *interactions.Registry,
+	id string,
+	sessionKey string,
+) interactions.Record {
+	t.Helper()
+	record, err := registry.Create(interactions.CreateRequest{
+		ID: id, Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: sessionKey, Channel: "telegram",
+			ChatID: "chat-1", SenderID: "sender-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-1", ToolCallID: "call-1", ToolName: "request_user_input",
+		},
+		Questions: []interactions.Question{{ID: "environment", Question: "Which environment?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+func loadTraceFile(t *testing.T, path string) evaltrace.Trace {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trace evaltrace.Trace
+	if err = json.Unmarshal(data, &trace); err != nil {
+		t.Fatal(err)
+	}
+	if err = evaltrace.Validate(trace); err != nil {
+		t.Fatal(err)
+	}
+	return trace
 }
 
 func fileModeForTraceTest(t *testing.T, path string) os.FileMode {

@@ -328,15 +328,6 @@ func (durableInteraction) Evaluate(input Input) Finding {
 	}
 	for _, interaction := range input.Projection.Interactions {
 		if !interaction.Terminal {
-			if input.Trace.Outcome == nil || !terminalInteractionOutcome(input.Trace.Outcome.Status) {
-				return finding(
-					StatusNotEvaluable,
-					SeverityInfo,
-					"a complete durable interaction lifecycle",
-					"interaction "+interaction.InteractionID+" continues in its lifecycle trace",
-					"evaluate the terminal interaction trace",
-				)
-			}
 			return finding(
 				StatusFail,
 				SeverityCritical,
@@ -375,10 +366,6 @@ func (durableInteraction) Evaluate(input Input) Finding {
 		"all observed interactions satisfy lifecycle and approval invariants",
 		"",
 	)
-}
-
-func terminalInteractionOutcome(status string) bool {
-	return status == "resolved" || status == "cancel"+"led" || status == "failed"
 }
 
 func (compactionRetention) Evaluate(input Input) Finding {
