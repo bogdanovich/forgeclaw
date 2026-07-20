@@ -221,6 +221,11 @@ func TestFileRegistryRuntimeUpsertCannotBypassPairingOrRevocation(t *testing.T) 
 	}
 	runtimeSnapshot := pairing.Node
 	runtimeSnapshot.State = StateConnected
+	unknown := testPendingPairing(t, 2).Node
+	unknown.State = StateConnected
+	if upsertErr := registry.Upsert(unknown); !errors.Is(upsertErr, ErrInvalidNode) {
+		t.Fatalf("Upsert() created unknown runtime identity: %v", upsertErr)
+	}
 	if upsertErr := registry.Upsert(runtimeSnapshot); !errors.Is(upsertErr, ErrInvalidNode) {
 		t.Fatalf("Upsert() bypassed pending approval: %v", upsertErr)
 	}
@@ -315,31 +320,45 @@ func TestFileRegistryRejectsAliasCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := Snapshot{ID: "node_first", State: StateDisconnected, Aliases: []Alias{"vpn-box"}}
-	second := Snapshot{ID: "node_second", State: StateDisconnected, Aliases: []Alias{"vpn-box"}}
-	if err := registry.Upsert(first); err != nil {
-		t.Fatal(err)
+	first := testPendingPairing(t, 1)
+	second := testPendingPairing(t, 2)
+	if upsertErr := registry.UpsertPending(first); upsertErr != nil {
+		t.Fatal(upsertErr)
 	}
-	if err := registry.Upsert(second); !errors.Is(err, ErrInvalidNode) {
-		t.Fatalf("second Upsert() error = %v", err)
+	_, approveErr := registry.Approve(
+		first.Node.ID,
+		PairingApproval{Aliases: []Alias{"vpn-box"}, At: 1},
+	)
+	if approveErr != nil {
+		t.Fatal(approveErr)
+	}
+	if upsertErr := registry.UpsertPending(second); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	_, approveErr = registry.Approve(
+		second.Node.ID,
+		PairingApproval{Aliases: []Alias{"vpn-box"}, At: 2},
+	)
+	if !errors.Is(approveErr, ErrInvalidNode) {
+		t.Fatalf("second Approve() error = %v", approveErr)
 	}
 }
 
 func TestFileRegistryRejectsAliasAndNodeIDCollisions(t *testing.T) {
 	tests := []struct {
-		name   string
-		first  Snapshot
-		second Snapshot
+		name              string
+		aliasOnFirst      bool
+		aliasOnSecond     bool
+		collisionOnUpsert bool
 	}{
 		{
-			name:   "alias added after node id",
-			first:  Snapshot{ID: "node_target", State: StateDisconnected},
-			second: Snapshot{ID: "node_other", State: StateDisconnected, Aliases: []Alias{"node_target"}},
+			name:          "alias added after node id",
+			aliasOnSecond: true,
 		},
 		{
-			name:   "node id added after alias",
-			first:  Snapshot{ID: "node_other", State: StateDisconnected, Aliases: []Alias{"node_target"}},
-			second: Snapshot{ID: "node_target", State: StateDisconnected},
+			name:              "node id added after alias",
+			aliasOnFirst:      true,
+			collisionOnUpsert: true,
 		},
 	}
 	for _, test := range tests {
@@ -348,11 +367,42 @@ func TestFileRegistryRejectsAliasAndNodeIDCollisions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := registry.Upsert(test.first); err != nil {
-				t.Fatal(err)
+			first := testPendingPairing(t, 1)
+			second := testPendingPairing(t, 2)
+			firstAliases := []Alias(nil)
+			secondAliases := []Alias(nil)
+			if test.aliasOnFirst {
+				firstAliases = []Alias{Alias(second.Node.ID)}
 			}
-			if err := registry.Upsert(test.second); !errors.Is(err, ErrInvalidNode) {
-				t.Fatalf("second Upsert() error = %v", err)
+			if test.aliasOnSecond {
+				secondAliases = []Alias{Alias(first.Node.ID)}
+			}
+			if upsertErr := registry.UpsertPending(first); upsertErr != nil {
+				t.Fatal(upsertErr)
+			}
+			_, approveErr := registry.Approve(
+				first.Node.ID,
+				PairingApproval{Aliases: firstAliases, At: 1},
+			)
+			if approveErr != nil {
+				t.Fatal(approveErr)
+			}
+			upsertErr := registry.UpsertPending(second)
+			if test.collisionOnUpsert {
+				if !errors.Is(upsertErr, ErrInvalidNode) {
+					t.Fatalf("second UpsertPending() error = %v", upsertErr)
+				}
+				return
+			}
+			if upsertErr != nil {
+				t.Fatal(upsertErr)
+			}
+			_, approveErr = registry.Approve(
+				second.Node.ID,
+				PairingApproval{Aliases: secondAliases, At: 2},
+			)
+			if !errors.Is(approveErr, ErrInvalidNode) {
+				t.Fatalf("second Approve() error = %v", approveErr)
 			}
 		})
 	}

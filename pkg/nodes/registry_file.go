@@ -129,6 +129,9 @@ func (registry *FileRegistry) Upsert(snapshot Snapshot) error {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	record, exists := registry.records[string(snapshot.ID)]
+	if !exists {
+		return fmt.Errorf("%w: runtime update requires an approved node", ErrInvalidNode)
+	}
 	if exists && record.Snapshot.State == StatePendingPairing {
 		return fmt.Errorf("%w: pending nodes require explicit approval", ErrInvalidNode)
 	}
