@@ -11,6 +11,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/commands"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -206,18 +207,22 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 	if al.hasNonterminalInteraction(workspace, route.SessionKey) {
 		return nil
 	}
+	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	continued, err := al.drainQueuedSteeringContinuations(ctx, &continuationTarget{
 		AgentID:    route.AgentID,
 		SessionKey: route.SessionKey,
 		Channel:    route.Channel,
 		ChatID:     route.ChatID,
 		Workspace:  workspace,
+		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
+			traceScopes = appendUniqueTraceScope(traceScopes, scope)
+		},
 	})
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(continued) != "" {
-		al.publishResponseWithContextIfNeeded(
+		al.publishResponseWithContextAndScopes(
 			ctx,
 			workspace,
 			route.AgentID,
@@ -227,6 +232,7 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 			continued,
 			&inbound,
 			finalResponseAlwaysPublish,
+			traceScopes,
 		)
 	}
 	return nil
@@ -556,7 +562,7 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		record.Origin.ToolCallID,
 	); ok {
 		return al.deliverInteractionFinal(
-			ctx, registry, interactionWorkspace, resuming, inbound, finalContent,
+			ctx, registry, interactionWorkspace, resuming, inbound, finalContent, nil,
 		)
 	}
 
@@ -567,6 +573,7 @@ func (al *AgentLoop) resumeClaimedInteraction(
 	modelBinding := al.bindEffectiveModel(routeSessionKey, agent)
 	defer modelBinding.Cleanup()
 	turnStatus := TurnEndStatusCompleted
+	traceScopes := make([]runtimeevents.TraceScope, 0, 1)
 	finalContent, runErr := al.runAgentLoop(ctx, agent, processOptions{
 		ModelBinding:          modelBinding,
 		TaskID:                record.Origin.TaskID,
@@ -581,10 +588,13 @@ func (al *AgentLoop) resumeClaimedInteraction(
 			InboundContext:  cloneInboundContext(&inbound),
 			SessionScope:    session.CloneScope(scope),
 		},
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           true,
-		SendResponse:            false,
-		ExpectFinalDelivery:     true,
+		DefaultResponse:     defaultResponse,
+		EnableSummary:       true,
+		SendResponse:        false,
+		ExpectFinalDelivery: true,
+		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
+			traceScopes = appendUniqueTraceScope(traceScopes, scope)
+		},
 		AllowInterimPicoPublish: true,
 		SkipInitialSteeringPoll: true,
 	})
@@ -596,7 +606,7 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		return nil
 	}
 	return al.deliverInteractionFinal(
-		ctx, registry, interactionWorkspace, resuming, inbound, finalContent,
+		ctx, registry, interactionWorkspace, resuming, inbound, finalContent, traceScopes,
 	)
 }
 
@@ -665,6 +675,7 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 	}
 	turnScope := al.newTurnEventScope(
 		agent.ID,
+		agent.Workspace,
 		opts.Dispatch.SessionKey,
 		newTurnContext(opts.Dispatch.InboundContext, nil, opts.Dispatch.SessionScope),
 	)
@@ -726,6 +737,7 @@ func (al *AgentLoop) deliverInteractionFinal(
 	record interactions.Record,
 	inbound bus.InboundContext,
 	content string,
+	traceScopes []runtimeevents.TraceScope,
 ) error {
 	if strings.TrimSpace(record.Origin.TaskID) != "" {
 		return al.deliverTaskInteractionFinal(
@@ -757,11 +769,16 @@ func (al *AgentLoop) deliverInteractionFinal(
 	inbound.Raw[interactionIDMetadata] = record.ID
 	inbound.Raw[interactionShortIDMeta] = record.ShortID
 	inbound.Raw["delivery_key"] = interactionDeliveryKey(record.ID, "final")
-	deliveryErr := al.sendInteractionMessage(ctx, bus.OutboundMessage{
+	message := bus.OutboundMessage{
 		Channel: record.Route.Channel, ChatID: record.Route.ChatID,
 		Context: inbound, AgentID: record.Route.AgentID,
 		SessionKey: record.Route.SessionKey, Content: content,
-	})
+	}
+	if err := bus.SetOutboundTraceScopes(&message, traceScopes); err != nil {
+		return err
+	}
+	message.TraceSettlement = len(message.TraceScopes) > 0
+	deliveryErr := al.sendInteractionMessage(ctx, message)
 	updated, stateErr := registry.CompleteFinalDelivery(
 		started.ID,
 		started.Revision,
@@ -834,6 +851,7 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 		}},
 		scope: al.newTurnEventScope(
 			record.Route.AgentID,
+			workspace,
 			record.Route.SessionKey,
 			newTurnContext(&inbound, nil, nil),
 		),

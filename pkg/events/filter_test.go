@@ -47,9 +47,9 @@ func TestFilterScope(t *testing.T) {
 
 	evt := Event{
 		Scope: Scope{
+			TraceScope: NewTraceScope("/workspace/main", "turn-1"),
 			AgentID:    "agent-a",
 			SessionKey: "session-1",
-			TurnID:     "turn-1",
 			Channel:    "telegram",
 			ChatID:     "chat-1",
 			MessageID:  "msg-1",
@@ -69,10 +69,21 @@ func TestFilterScope(t *testing.T) {
 		{
 			name: "matches selected fields",
 			scope: ScopeFilter{
-				AgentID: "agent-a",
-				ChatID:  "chat-1",
+				TraceScope: NewTraceScope("/workspace/main", "turn-1"),
+				AgentID:    "agent-a",
+				ChatID:     "chat-1",
 			},
 			want: true,
+		},
+		{
+			name:  "rejects same turn in another workspace",
+			scope: ScopeFilter{TraceScope: NewTraceScope("/workspace/other", "turn-1")},
+			want:  false,
+		},
+		{
+			name:  "rejects incomplete trace identity",
+			scope: ScopeFilter{TraceScope: NewTraceScope("", "turn-1")},
+			want:  false,
 		},
 		{
 			name: "rejects mismatched field",

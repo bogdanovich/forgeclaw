@@ -948,6 +948,7 @@ toolLoop:
 			p.Context.Runtime.Compact(turnCtx, &CompactRequest{
 				Agent:      ts.agent,
 				SessionKey: ts.sessionKey,
+				Workspace:  ts.workspace,
 				Reason:     ContextCompressReasonSummarize,
 				Budget:     ts.agent.ContextWindow,
 			})

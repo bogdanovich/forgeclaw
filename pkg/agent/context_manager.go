@@ -73,6 +73,7 @@ type ContextBudgetReport struct {
 type CompactRequest struct {
 	Agent      *AgentInstance        // exact owner of the session
 	SessionKey string                // session identifier
+	Workspace  string                // canonical workspace owner
 	Reason     ContextCompressReason // proactive_budget | llm_retry | summarize
 	Budget     int                   // effective history budget for compact/overflow repair
 }

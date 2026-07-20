@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -223,18 +224,22 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	claim.releaseIfOwned()
 	al.ackInboundMessage(ctx, msg)
 
+	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	target := &continuationTarget{
 		SessionKey: claim.scope.sessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
 		Workspace:  claim.scope.workspace,
+		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
+			traceScopes = appendUniqueTraceScope(traceScopes, scope)
+		},
 	}
 	if dispatchTarget != nil && dispatchTarget.Agent != nil {
 		target.AgentID = dispatchTarget.Agent.ID
 	}
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
-		al.maybePublishErrorWithPolicy(
+		al.maybePublishErrorWithScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -243,11 +248,12 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			claim.scope.sessionKey,
 			continueErr,
 			finalResponseAlwaysPublish,
+			traceScopes,
 		)
 		return
 	}
 	if continued != "" {
-		al.publishResponseWithContextIfNeeded(
+		al.publishResponseWithContextAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -257,6 +263,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			continued,
 			&msg.Context,
 			finalResponseAlwaysPublish,
+			traceScopes,
 		)
 	}
 }

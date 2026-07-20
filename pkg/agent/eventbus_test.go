@@ -45,8 +45,8 @@ func TestAgentLoop_PublishesRuntimeEvents(t *testing.T) {
 	al.emitEvent(
 		runtimeevents.KindAgentToolExecStart,
 		HookMeta{
+			TraceScope:   runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
 			AgentID:      "main",
-			TurnID:       "turn-1",
 			ParentTurnID: "parent-turn",
 			SessionKey:   "session-1",
 			Iteration:    2,

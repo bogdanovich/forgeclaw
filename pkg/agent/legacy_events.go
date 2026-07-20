@@ -117,8 +117,8 @@ func legacyEventFromRuntimeEvent(evt runtimeevents.Event) Event {
 
 func hookMetaFromRuntimeEvent(evt runtimeevents.Event) HookMeta {
 	meta := HookMeta{
+		TraceScope:   evt.Scope.TurnTraceScope(),
 		AgentID:      evt.Scope.AgentID,
-		TurnID:       evt.Scope.TurnID,
 		ParentTurnID: evt.Correlation.ParentTurnID,
 		SessionKey:   evt.Scope.SessionKey,
 		TracePath:    evt.Correlation.TraceID,

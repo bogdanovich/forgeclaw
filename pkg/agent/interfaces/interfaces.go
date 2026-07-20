@@ -86,3 +86,11 @@ type ChannelManager interface {
 		sessionKey string,
 	)
 }
+
+// ProvisionalChannelSender exposes sends whose definitely-not-sent failures
+// may transfer ownership to a fallback path without publishing a terminal
+// delivery event.
+type ProvisionalChannelSender interface {
+	SendMessageProvisional(ctx context.Context, msg bus.OutboundMessage) error
+	SendMediaProvisional(ctx context.Context, msg bus.OutboundMediaMessage) error
+}

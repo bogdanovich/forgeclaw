@@ -4,9 +4,9 @@ import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 
 func runtimeScopeFromHookMeta(meta HookMeta, eventCtx *TurnContext) runtimeevents.Scope {
 	scope := runtimeevents.Scope{
+		TraceScope: meta.TraceScope,
 		AgentID:    meta.AgentID,
 		SessionKey: meta.SessionKey,
-		TurnID:     meta.TurnID,
 	}
 
 	if eventCtx == nil || eventCtx.Inbound == nil {

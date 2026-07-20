@@ -36,6 +36,13 @@ func (a *channelManagerAdapter) SendMessage(ctx context.Context, msg bus.Outboun
 	return a.inner.SendMessage(ctx, msg)
 }
 
+func (a *channelManagerAdapter) SendMessageProvisional(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	return a.inner.SendMessageProvisional(ctx, msg)
+}
+
 func (a *channelManagerAdapter) SendMessageDefiniteRetryOnly(
 	ctx context.Context,
 	msg bus.OutboundMessage,
@@ -45,6 +52,13 @@ func (a *channelManagerAdapter) SendMessageDefiniteRetryOnly(
 
 func (a *channelManagerAdapter) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
 	return a.inner.SendMedia(ctx, msg)
+}
+
+func (a *channelManagerAdapter) SendMediaProvisional(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) error {
+	return a.inner.SendMediaProvisional(ctx, msg)
 }
 
 func (a *channelManagerAdapter) SendPlaceholder(ctx context.Context, channel, chatID string) bool {

@@ -470,7 +470,11 @@ func publishDeliveryOutcome(eventBus runtimeevents.Bus, outbound bus.OutboundMes
 		Source:   runtimeevents.Source{Component: "evalscenario", Name: outbound.Channel},
 		Scope:    runtimeevents.Scope{Channel: outbound.Channel, ChatID: outbound.ChatID},
 		Severity: runtimeevents.SeverityInfo,
-		Payload:  channels.ChannelOutboundPayload{ContentLen: len([]rune(outbound.Content))},
+		Payload: channels.ChannelOutboundPayload{
+			TraceScopes:     append([]runtimeevents.TraceScope(nil), outbound.TraceScopes...),
+			TraceSettlement: outbound.TraceSettlement,
+			ContentLen:      len([]rune(outbound.Content)),
+		},
 	})
 }
 

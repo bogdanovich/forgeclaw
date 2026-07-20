@@ -54,6 +54,7 @@ func (r *backgroundCompactionRunner) scheduleBackgroundCompaction(
 			&CompactRequest{
 				Agent:      agent,
 				SessionKey: sessionKey,
+				Workspace:  agent.Workspace,
 				Reason:     reason,
 				Budget:     budget,
 			},
