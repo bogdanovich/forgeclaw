@@ -19,6 +19,7 @@ const (
 	MaxInvocationTimeout    = 60 * 60
 	MaxInvocationOutput     = 16 * 1024 * 1024
 	MaxPolicyRevisionLength = 128
+	MaxExecutionPlanTTL     = 5 * time.Minute
 )
 
 var (
@@ -39,7 +40,6 @@ type InvocationRequest struct {
 	ActorID          string          `json:"actor_id"`
 	TimeoutSeconds   int             `json:"timeout_seconds"`
 	OutputLimitBytes int             `json:"output_limit_bytes"`
-	ExpiresAt        int64           `json:"expires_at"`
 }
 
 func (request InvocationRequest) Validate() error {
@@ -53,7 +53,8 @@ func (request InvocationRequest) Validate() error {
 	if err := request.NodeID.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidInvocation, err)
 	}
-	if !commandPattern.MatchString(request.Command) {
+	if len(request.Command) == 0 || len(request.Command) > MaxCommandNameLen ||
+		!commandPattern.MatchString(request.Command) {
 		return fmt.Errorf("%w: malformed command", ErrInvalidInvocation)
 	}
 	if request.TimeoutSeconds <= 0 || request.TimeoutSeconds > MaxInvocationTimeout {
@@ -61,9 +62,6 @@ func (request InvocationRequest) Validate() error {
 	}
 	if request.OutputLimitBytes <= 0 || request.OutputLimitBytes > MaxInvocationOutput {
 		return fmt.Errorf("%w: output limit is outside bounds", ErrInvalidInvocation)
-	}
-	if request.ExpiresAt <= 0 {
-		return fmt.Errorf("%w: expiry is required", ErrInvalidInvocation)
 	}
 	if _, err := canonicalInvocationInput(request.Input); err != nil {
 		return err
@@ -78,6 +76,8 @@ type ExecutionPlan struct {
 	Risk           Risk   `json:"risk"`
 	Executor       string `json:"executor"`
 	PolicyRevision string `json:"policy_revision"`
+	PreparedAt     int64  `json:"prepared_at"`
+	ExpiresAt      int64  `json:"expires_at"`
 	PlanHash       string `json:"plan_hash"`
 }
 
@@ -86,6 +86,8 @@ func PrepareExecutionPlan(
 	descriptor CommandDescriptor,
 	executor string,
 	policyRevision string,
+	preparedAt time.Time,
+	ttl time.Duration,
 ) (ExecutionPlan, error) {
 	if err := request.Validate(); err != nil {
 		return ExecutionPlan{}, err
@@ -100,6 +102,9 @@ func PrepareExecutionPlan(
 		len(policyRevision) > MaxPolicyRevisionLength || !idPattern.MatchString(policyRevision) {
 		return ExecutionPlan{}, fmt.Errorf("%w: malformed execution policy", ErrInvalidInvocation)
 	}
+	if preparedAt.Unix() <= 0 || ttl < time.Second || ttl > MaxExecutionPlanTTL {
+		return ExecutionPlan{}, fmt.Errorf("%w: plan lifetime is outside bounds", ErrInvalidInvocation)
+	}
 	input, value, err := canonicalInvocationInputValue(request.Input)
 	if err != nil {
 		return ExecutionPlan{}, err
@@ -113,6 +118,8 @@ func PrepareExecutionPlan(
 		Risk:              descriptor.Risk,
 		Executor:          executor,
 		PolicyRevision:    policyRevision,
+		PreparedAt:        preparedAt.Unix(),
+		ExpiresAt:         preparedAt.Add(ttl).Unix(),
 	}
 	hash, err := plan.computeHash()
 	if err != nil {
@@ -130,6 +137,10 @@ func (plan ExecutionPlan) Validate() error {
 		len(plan.PolicyRevision) == 0 || len(plan.PolicyRevision) > MaxPolicyRevisionLength ||
 		!idPattern.MatchString(plan.PolicyRevision) {
 		return fmt.Errorf("%w: malformed execution policy", ErrInvalidInvocation)
+	}
+	if plan.PreparedAt <= 0 || plan.ExpiresAt <= plan.PreparedAt ||
+		time.Duration(plan.ExpiresAt-plan.PreparedAt)*time.Second > MaxExecutionPlanTTL {
+		return fmt.Errorf("%w: plan lifetime is outside bounds", ErrInvalidInvocation)
 	}
 	wantHash, err := plan.computeHash()
 	if err != nil {

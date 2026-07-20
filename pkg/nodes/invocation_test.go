@@ -14,6 +14,8 @@ func TestPrepareExecutionPlanCanonicalHash(t *testing.T) {
 		descriptor,
 		"local",
 		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -23,6 +25,8 @@ func TestPrepareExecutionPlanCanonicalHash(t *testing.T) {
 		descriptor,
 		"local",
 		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +47,8 @@ func TestPrepareExecutionPlanValidatesCommandInput(t *testing.T) {
 		invocationDescriptor(RiskWrite),
 		"local",
 		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
 	); !errors.Is(
 		err,
 		ErrInvalidInvocation,
@@ -55,11 +61,27 @@ func TestPrepareExecutionPlanValidatesCommandInput(t *testing.T) {
 		invocationDescriptor(RiskWrite),
 		"local",
 		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
 	); !errors.Is(
 		err,
 		ErrInvalidInvocation,
 	) {
 		t.Fatalf("duplicate input member error = %v", err)
+	}
+}
+
+func TestPrepareExecutionPlanBoundsTrustedLifetime(t *testing.T) {
+	request := invocationRequest(json.RawMessage(`{"argv":["git","status"]}`))
+	if _, err := PrepareExecutionPlan(
+		request,
+		invocationDescriptor(RiskWrite),
+		"local",
+		"policy-1",
+		time.Unix(1, 0),
+		MaxExecutionPlanTTL+time.Second,
+	); !errors.Is(err, ErrInvalidInvocation) {
+		t.Fatalf("overlong plan lifetime error = %v", err)
 	}
 }
 
@@ -94,6 +116,8 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 		descriptor,
 		"local",
 		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +129,7 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 		MaxTimeoutSeconds: 60,
 		MaxOutputBytes:    1024,
 	}
-	now := time.Unix(0, 0)
+	now := time.Unix(plan.PreparedAt, 0)
 	if err := policy.Authorize(plan, descriptor, now); err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +187,5 @@ func invocationRequest(input json.RawMessage) InvocationRequest {
 		ActorID:          "user_test",
 		TimeoutSeconds:   30,
 		OutputLimitBytes: 1024,
-		ExpiresAt:        1,
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -50,8 +51,7 @@ func TestExecutionPlanSchemaMatchesDomain(t *testing.T) {
 		ActorID:          "user-1",
 		TimeoutSeconds:   30,
 		OutputLimitBytes: 4096,
-		ExpiresAt:        1,
-	}, descriptor, "local", "policy-1")
+	}, descriptor, "local", "policy-1", time.Unix(1, 0), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,11 +60,26 @@ func TestExecutionPlanSchemaMatchesDomain(t *testing.T) {
 		t.Fatal(err)
 	}
 	var instance any
-	if err := json.Unmarshal(data, &instance); err != nil {
+	if unmarshalErr := json.Unmarshal(data, &instance); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if validationErr := resolveSchema(t, "execution-plan.v1").Validate(instance); validationErr != nil {
+		t.Fatalf("schema rejected execution plan %s: %v", data, validationErr)
+	}
+
+	plan.Command = "system." + strings.Repeat("x", 120) + ".v1"
+	data, err = json.Marshal(plan)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := resolveSchema(t, "execution-plan.v1").Validate(instance); err != nil {
-		t.Fatalf("schema rejected execution plan %s: %v", data, err)
+	if unmarshalErr := json.Unmarshal(data, &instance); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if validationErr := resolveSchema(t, "execution-plan.v1").Validate(instance); validationErr == nil {
+		t.Fatal("schema accepted an overlong command")
+	}
+	if err := plan.Validate(); err == nil {
+		t.Fatal("domain accepted an overlong command")
 	}
 }
 
