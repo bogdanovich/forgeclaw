@@ -1909,14 +1909,16 @@ func (m *Manager) sendWithRetryPolicy(
 		m.publishChannelEvent(
 			runtimeevents.KindChannelRateLimited,
 			name,
-			scopeFromOutboundContext(msg.Context),
+			scopeFromOutboundMessage(msg),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
+				TraceScopes:      bus.NormalizeTraceScopes(msg.TraceScopes),
 				ContentLen:       len([]rune(msg.Content)),
 				ReplyToMessageID: msg.ReplyToMessageID,
 				Error:            err.Error(),
 			},
 		)
+		m.publishOutboundFailed(name, msg, err, false)
 		return nil, false, false, err
 	}
 
@@ -2163,13 +2165,15 @@ func (m *Manager) sendMediaWithRetry(
 		m.publishChannelEvent(
 			runtimeevents.KindChannelRateLimited,
 			name,
-			scopeFromOutboundContext(msg.Context),
+			scopeFromOutboundMediaMessage(msg),
 			runtimeevents.SeverityWarn,
 			ChannelOutboundPayload{
-				Media: true,
-				Error: err.Error(),
+				TraceScopes: bus.NormalizeTraceScopes(msg.TraceScopes),
+				Media:       true,
+				Error:       err.Error(),
 			},
 		)
+		m.publishOutboundMediaFailed(name, msg, err)
 		return nil, err
 	}
 

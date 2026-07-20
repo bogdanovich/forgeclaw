@@ -1147,6 +1147,75 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 	}
 }
 
+func TestRateLimitCancellationPublishesScopedTerminalFailure(t *testing.T) {
+	traceScopes := []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	}
+
+	for _, tc := range []struct {
+		name string
+		send func(context.Context, *Manager, *channelWorker)
+	}{
+		{
+			name: "text",
+			send: func(ctx context.Context, m *Manager, worker *channelWorker) {
+				_, _, _, _ = m.sendWithRetry(ctx, "test", worker, testOutboundMessage(bus.OutboundMessage{
+					Channel: "test", ChatID: "chat-1", Content: "hello", TraceScopes: traceScopes,
+				}))
+			},
+		},
+		{
+			name: "media",
+			send: func(ctx context.Context, m *Manager, worker *channelWorker) {
+				_, _ = m.sendMediaWithRetry(ctx, "test", worker, testOutboundMediaMessage(bus.OutboundMediaMessage{
+					Channel: "test", ChatID: "chat-1", TraceScopes: traceScopes,
+				}))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eventBus := runtimeevents.NewBus()
+			t.Cleanup(func() { _ = eventBus.Close() })
+			_, eventsCh, err := eventBus.Channel().OfKind(
+				runtimeevents.KindChannelRateLimited,
+				runtimeevents.KindChannelMessageOutboundFailed,
+			).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "rate-limit-cancel", Buffer: 2})
+			if err != nil {
+				t.Fatalf("SubscribeChan failed: %v", err)
+			}
+
+			limiter := rate.NewLimiter(rate.Every(time.Hour), 1)
+			if !limiter.Allow() {
+				t.Fatal("failed to consume initial rate-limit token")
+			}
+			worker := &channelWorker{ch: &mockMediaChannel{}, limiter: limiter}
+			m := newTestManager()
+			m.runtimeEvents = eventBus
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			tc.send(ctx, m, worker)
+
+			for _, wantKind := range []runtimeevents.Kind{
+				runtimeevents.KindChannelRateLimited,
+				runtimeevents.KindChannelMessageOutboundFailed,
+			} {
+				event := receiveChannelRuntimeEvent(t, eventsCh)
+				if event.Kind != wantKind {
+					t.Fatalf("event kind = %q, want %q", event.Kind, wantKind)
+				}
+				if event.Scope.TraceScope != traceScopes[0] {
+					t.Fatalf("event scope = %#v, want %#v", event.Scope.TraceScope, traceScopes[0])
+				}
+				payload, ok := event.Payload.(ChannelOutboundPayload)
+				if !ok || !slices.Equal(payload.TraceScopes, traceScopes) {
+					t.Fatalf("event payload = %#v, want correlated trace scopes", event.Payload)
+				}
+			}
+		})
+	}
+}
+
 func TestSendWithRetry_TemporaryThenSuccess(t *testing.T) {
 	m := newTestManager()
 	var callCount int
