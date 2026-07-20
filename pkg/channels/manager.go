@@ -2669,7 +2669,9 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	m.mu.RUnlock()
 
 	if !exists {
-		return newDeliveryError(fmt.Errorf("channel %s not found", channelName), false)
+		return m.rejectMessageBeforeSend(
+			outcome, channelName, msg, fmt.Errorf("channel %s not found", channelName),
+		)
 	}
 	var w *channelWorker
 	if owner != nil {
@@ -2677,12 +2679,14 @@ func (m *Manager) sendMessageWithRetryPolicy(
 		var borrowErr error
 		w, release, borrowErr = owner.borrowWorkerForSend()
 		if borrowErr != nil {
-			return newDeliveryError(borrowErr, false)
+			return m.rejectMessageBeforeSend(outcome, channelName, msg, borrowErr)
 		}
 		defer release()
 	}
 	if w == nil {
-		return newDeliveryError(fmt.Errorf("channel %s has no active worker", channelName), false)
+		return m.rejectMessageBeforeSend(
+			outcome, channelName, msg, fmt.Errorf("channel %s has no active worker", channelName),
+		)
 	}
 
 	maxLen := 0
@@ -2730,6 +2734,18 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	return nil
 }
 
+func (m *Manager) rejectMessageBeforeSend(
+	outcome outcomePublication,
+	channelName string,
+	msg bus.OutboundMessage,
+	err error,
+) error {
+	if outcome.failure(false) {
+		m.publishOutboundFailed(channelName, msg, err, false)
+	}
+	return newDeliveryError(err, false)
+}
+
 // SendMedia sends outbound media synchronously through the channel worker's
 // rate limiter and retry logic. It blocks until the media is delivered (or all
 // retries are exhausted), which preserves ordering when later agent behavior
@@ -2763,7 +2779,9 @@ func (m *Manager) sendMedia(
 	m.mu.RUnlock()
 
 	if !exists {
-		return newDeliveryError(fmt.Errorf("channel %s not found", channelName), false)
+		return m.rejectMediaBeforeSend(
+			outcome, channelName, msg, fmt.Errorf("channel %s not found", channelName),
+		)
 	}
 	var w *channelWorker
 	if owner != nil {
@@ -2771,12 +2789,14 @@ func (m *Manager) sendMedia(
 		var borrowErr error
 		w, release, borrowErr = owner.borrowWorkerForSend()
 		if borrowErr != nil {
-			return newDeliveryError(borrowErr, false)
+			return m.rejectMediaBeforeSend(outcome, channelName, msg, borrowErr)
 		}
 		defer release()
 	}
 	if w == nil {
-		return newDeliveryError(fmt.Errorf("channel %s has no active worker", channelName), false)
+		return m.rejectMediaBeforeSend(
+			outcome, channelName, msg, fmt.Errorf("channel %s has no active worker", channelName),
+		)
 	}
 
 	_, ambiguous, err := m.sendMediaWithRetryPolicy(ctx, channelName, w, msg, outcome)
@@ -2784,6 +2804,18 @@ func (m *Manager) sendMedia(
 		return newDeliveryError(err, ambiguous)
 	}
 	return nil
+}
+
+func (m *Manager) rejectMediaBeforeSend(
+	outcome outcomePublication,
+	channelName string,
+	msg bus.OutboundMediaMessage,
+	err error,
+) error {
+	if outcome.failure(false) {
+		m.publishOutboundMediaFailed(channelName, msg, err)
+	}
+	return newDeliveryError(err, false)
 }
 
 func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, content string) error {

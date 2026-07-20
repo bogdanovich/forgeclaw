@@ -1343,6 +1343,89 @@ func TestProvisionalAmbiguousFailureRemainsTerminal(t *testing.T) {
 	}
 }
 
+func TestSynchronousPreWorkerRejectionPublishesOnlyDefinitiveOutcome(t *testing.T) {
+	for _, media := range []bool{false, true} {
+		kind := "text"
+		if media {
+			kind = "media"
+		}
+		for _, condition := range []string{"unknown", "no_worker", "closed"} {
+			for _, provisional := range []bool{false, true} {
+				mode := "definitive"
+				if provisional {
+					mode = "provisional"
+				}
+				t.Run(kind+"/"+condition+"/"+mode, func(t *testing.T) {
+					eventBus := runtimeevents.NewBus()
+					t.Cleanup(func() { _ = eventBus.Close() })
+					_, eventsCh, err := eventBus.Channel().OfKind(
+						runtimeevents.KindChannelMessageOutboundFailed,
+					).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{
+						Name: "pre-worker-rejection", Buffer: 1,
+					})
+					if err != nil {
+						t.Fatalf("SubscribeChan failed: %v", err)
+					}
+
+					m := newTestManager()
+					m.runtimeEvents = eventBus
+					channel := &mockMediaChannel{}
+					if condition != "unknown" {
+						m.channels["test"] = channel
+					}
+					if condition == "closed" {
+						owner := newDeliveryOwner("test", channel, "test")
+						owner.closed = true
+						m.workers["test"] = owner.Worker()
+						m.deliveryOwners["test"] = owner
+					}
+
+					traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+					if media {
+						msg := testOutboundMediaMessage(bus.OutboundMediaMessage{
+							Channel: "test", ChatID: "chat-1",
+							TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+						})
+						if provisional {
+							err = m.SendMediaProvisional(context.Background(), msg)
+						} else {
+							err = m.SendMedia(context.Background(), msg)
+						}
+					} else {
+						msg := testOutboundMessage(bus.OutboundMessage{
+							Channel: "test", ChatID: "chat-1", Content: "hello",
+							TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+						})
+						if provisional {
+							err = m.SendMessageProvisional(context.Background(), msg)
+						} else {
+							err = m.SendMessage(context.Background(), msg)
+						}
+					}
+					if err == nil || !DeliveryDefinitelyNotSent(err) {
+						t.Fatalf("pre-worker error = %v", err)
+					}
+
+					if provisional {
+						select {
+						case event := <-eventsCh:
+							t.Fatalf("provisional rejection emitted terminal event: %#v", event)
+						case <-time.After(25 * time.Millisecond):
+						}
+						return
+					}
+					failed := receiveChannelRuntimeEvent(t, eventsCh)
+					payload, ok := failed.Payload.(ChannelOutboundPayload)
+					if !ok || !payload.TraceSettlement ||
+						!slices.Equal(payload.TraceScopes, []runtimeevents.TraceScope{traceScope}) {
+						t.Fatalf("definitive rejection event = %#v", failed)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestSendMessagePublishesOneLogicalChunkOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
