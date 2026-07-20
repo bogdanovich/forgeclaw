@@ -47,6 +47,7 @@ func TestEnvelopeSchemaMatchesCodecContract(t *testing.T) {
 	invalidFixtures := []string{
 		`{"type":"event","event":"node.ready","payload":{},"id":""}`,
 		`{"type":"request","id":"req_1","method":"node.info","params":{},"idempotency_key":""}`,
+		`{"type":"request","id":"req_1","method":"node.info","params":{},"idempotency_key":null}`,
 		`{"type":"response","id":"req_1","ok":true,"result":{},"error":null}`,
 	}
 	for _, fixture := range invalidFixtures {

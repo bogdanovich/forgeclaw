@@ -188,8 +188,9 @@ func validateWireShape(value any) error {
 		allowed = fieldSet("type", "id", "method", "params", "idempotency_key")
 		required = fieldSet("type", "id", "method", "params")
 		if key, present := object["idempotency_key"]; present {
-			if text, isString := key.(string); isString && text == "" {
-				return fmt.Errorf("%w: empty idempotency key", ErrInvalidFrame)
+			text, isString := key.(string)
+			if !isString || text == "" {
+				return fmt.Errorf("%w: idempotency key must be a non-empty string", ErrInvalidFrame)
 			}
 		}
 	case FrameResponse:

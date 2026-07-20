@@ -60,6 +60,11 @@ func TestDecodeRejectsMalformedFrames(t *testing.T) {
 			data: `{"type":"request","id":"req_1","method":"node.info",` +
 				`"params":{},"idempotency_key":""}`,
 		},
+		{
+			name: "null idempotency key",
+			data: `{"type":"request","id":"req_1","method":"node.info",` +
+				`"params":{},"idempotency_key":null}`,
+		},
 		{name: "null error on success", data: `{"type":"response","id":"req_1","ok":true,"result":{},"error":null}`},
 		{name: "trailing value", data: `{"type":"event","event":"node.ready","payload":{}} {}`},
 	}

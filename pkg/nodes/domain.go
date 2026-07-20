@@ -247,15 +247,14 @@ func validateObjectSchema(label string, raw json.RawMessage) error {
 	if _, ok := value.(map[string]any); !ok {
 		return fmt.Errorf("%w: %s schema must be an object", ErrInvalidCapability, label)
 	}
+	if err := validateJSONSchema(raw); err != nil {
+		return fmt.Errorf("%w: invalid %s schema: %v", ErrInvalidCapability, label, err)
+	}
 	return nil
 }
 
 func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
-	value, err := jsonstrict.Decode(raw)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize json: %w", err)
-	}
-	data, err := json.Marshal(value)
+	data, err := jsonstrict.Canonical(raw)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize json: %w", err)
 	}

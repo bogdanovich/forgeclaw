@@ -51,12 +51,41 @@ func TestCapabilityCatalogHashPreservesLargeIntegers(t *testing.T) {
 	}
 }
 
+func TestCapabilityCatalogHashNormalizesEquivalentNumbers(t *testing.T) {
+	first := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("system.exec.v1", `{"type":"number","multipleOf":1.0}`),
+	}}
+	second := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("system.exec.v1", `{"multipleOf":1e0,"type":"number"}`),
+	}}
+	firstHash, err := first.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHash, err := second.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("equivalent numbers produced different hashes: %s != %s", firstHash, secondHash)
+	}
+}
+
 func TestCapabilityCatalogRejectsDuplicateSchemaMembers(t *testing.T) {
 	catalog := CapabilityCatalog{Commands: []CommandDescriptor{
 		descriptor("system.exec.v1", `{"type":"object","type":"array"}`),
 	}}
 	if _, err := catalog.Hash(); !errors.Is(err, ErrInvalidCapability) {
 		t.Fatalf("Hash() error = %v", err)
+	}
+}
+
+func TestCapabilityCatalogRejectsInvalidJSONSchema(t *testing.T) {
+	catalog := CapabilityCatalog{Commands: []CommandDescriptor{
+		descriptor("system.exec.v1", `{"type":"not-a-json-schema-type"}`),
+	}}
+	if err := catalog.Validate(); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
