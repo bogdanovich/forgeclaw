@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeclaw.dev/schemas/nodes/execution-plan.v1.json",
+  "title": "ForgeClaw node execution plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation_id",
+    "idempotency_key",
+    "node_id",
+    "command",
+    "input",
+    "agent_id",
+    "session_id",
+    "actor_id",
+    "timeout_seconds",
+    "output_limit_bytes",
+    "expires_at",
+    "risk",
+    "executor",
+    "policy_revision",
+    "plan_hash"
+  ],
+  "properties": {
+    "invocation_id": {"$ref": "#/$defs/identifier"},
+    "idempotency_key": {"$ref": "#/$defs/identifier"},
+    "node_id": {"$ref": "#/$defs/identifier"},
+    "command": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)*\\.v[1-9][0-9]*$"
+    },
+    "input": {"type": "object"},
+    "agent_id": {"$ref": "#/$defs/identifier"},
+    "session_id": {"$ref": "#/$defs/identifier"},
+    "actor_id": {"$ref": "#/$defs/identifier"},
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+    "output_limit_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+    "expires_at": {"type": "integer", "minimum": 1},
+    "risk": {"enum": ["read", "write", "privileged"]},
+    "executor": {"$ref": "#/$defs/identifier"},
+    "policy_revision": {"$ref": "#/$defs/identifier"},
+    "plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    }
+  }
+}

@@ -16,7 +16,12 @@ import (
 )
 
 func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
-	for _, name := range []string{"envelope.v1", "command-descriptor.v1", "node-auth.v1"} {
+	for _, name := range []string{
+		"envelope.v1",
+		"command-descriptor.v1",
+		"execution-plan.v1",
+		"node-auth.v1",
+	} {
 		data, err := Schema(name)
 		if err != nil {
 			t.Fatalf("Schema(%q) error = %v", name, err)
@@ -24,6 +29,42 @@ func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
 		if !json.Valid(data) {
 			t.Fatalf("Schema(%q) is invalid JSON", name)
 		}
+	}
+}
+
+func TestExecutionPlanSchemaMatchesDomain(t *testing.T) {
+	descriptor := nodes.CommandDescriptor{
+		Name:         "node.info.v1",
+		InputSchema:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		Risk:         nodes.RiskRead,
+	}
+	plan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
+		InvocationID:     "inv_test",
+		IdempotencyKey:   "idem_test",
+		NodeID:           nodes.ID("node_test"),
+		Command:          descriptor.Name,
+		Input:            json.RawMessage(`{}`),
+		AgentID:          "main",
+		SessionID:        "telegram:chat-1",
+		ActorID:          "user-1",
+		TimeoutSeconds:   30,
+		OutputLimitBytes: 4096,
+		ExpiresAt:        1,
+	}, descriptor, "local", "policy-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var instance any
+	if err := json.Unmarshal(data, &instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveSchema(t, "execution-plan.v1").Validate(instance); err != nil {
+		t.Fatalf("schema rejected execution plan %s: %v", data, err)
 	}
 }
 

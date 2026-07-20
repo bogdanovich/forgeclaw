@@ -1,0 +1,168 @@
+package nodes
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+)
+
+func TestPrepareExecutionPlanCanonicalHash(t *testing.T) {
+	descriptor := invocationDescriptor(RiskWrite)
+	first, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"cwd":"/srv/app","argv":["git","status"]}`)),
+		descriptor,
+		"local",
+		"policy-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"argv":["git","status"],"cwd":"/srv/app"}`)),
+		descriptor,
+		"local",
+		"policy-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PlanHash != second.PlanHash {
+		t.Fatalf("equivalent plans have different hashes: %q != %q", first.PlanHash, second.PlanHash)
+	}
+	second.TimeoutSeconds++
+	if err := second.Validate(); !errors.Is(err, ErrInvalidInvocation) {
+		t.Fatalf("tampered plan Validate() error = %v", err)
+	}
+}
+
+func TestPrepareExecutionPlanValidatesCommandInput(t *testing.T) {
+	request := invocationRequest(json.RawMessage(`{"cwd":"/srv/app"}`))
+	if _, err := PrepareExecutionPlan(
+		request,
+		invocationDescriptor(RiskWrite),
+		"local",
+		"policy-1",
+	); !errors.Is(
+		err,
+		ErrInvalidInvocation,
+	) {
+		t.Fatalf("invalid input error = %v", err)
+	}
+	request.Input = json.RawMessage(`{"argv":["git"],"argv":["status"]}`)
+	if _, err := PrepareExecutionPlan(
+		request,
+		invocationDescriptor(RiskWrite),
+		"local",
+		"policy-1",
+	); !errors.Is(
+		err,
+		ErrInvalidInvocation,
+	) {
+		t.Fatalf("duplicate input member error = %v", err)
+	}
+}
+
+func TestRegistrationApprovedCommandIntersectsCatalogAndApproval(t *testing.T) {
+	descriptor := invocationDescriptor(RiskWrite)
+	registration := Registration{
+		Snapshot: Snapshot{
+			ID:      ID("node_test"),
+			State:   StateConnected,
+			Catalog: CapabilityCatalog{Commands: []CommandDescriptor{descriptor}},
+		},
+		AllowedCommands: []string{descriptor.Name},
+	}
+	if got, err := registration.ApprovedCommand(descriptor.Name); err != nil || got.Name != descriptor.Name {
+		t.Fatalf("ApprovedCommand() = %#v, %v", got, err)
+	}
+	registration.AllowedCommands = nil
+	if _, err := registration.ApprovedCommand(descriptor.Name); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("unapproved command error = %v", err)
+	}
+	registration.AllowedCommands = []string{descriptor.Name}
+	registration.Snapshot.State = StateDisconnected
+	if _, err := registration.ApprovedCommand(descriptor.Name); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("disconnected command error = %v", err)
+	}
+}
+
+func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
+	descriptor := invocationDescriptor(RiskWrite)
+	plan, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"argv":["git","status"]}`)),
+		descriptor,
+		"local",
+		"policy-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := LocalCommandPolicy{
+		Revision:          "policy-1",
+		AllowedCommands:   []string{descriptor.Name},
+		MaximumRisk:       RiskWrite,
+		MaxTimeoutSeconds: 60,
+		MaxOutputBytes:    1024,
+	}
+	now := time.Unix(0, 0)
+	if err := policy.Authorize(plan, descriptor, now); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*LocalCommandPolicy)
+	}{
+		{name: "command denied", mutate: func(value *LocalCommandPolicy) { value.AllowedCommands = nil }},
+		{name: "risk denied", mutate: func(value *LocalCommandPolicy) { value.MaximumRisk = RiskRead }},
+		{name: "timeout denied", mutate: func(value *LocalCommandPolicy) { value.MaxTimeoutSeconds = 10 }},
+		{name: "output denied", mutate: func(value *LocalCommandPolicy) { value.MaxOutputBytes = 512 }},
+		{name: "revision denied", mutate: func(value *LocalCommandPolicy) { value.Revision = "policy-2" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := policy
+			test.mutate(&candidate)
+			if err := candidate.Authorize(plan, descriptor, now); !errors.Is(err, ErrCommandDenied) {
+				t.Fatalf("Authorize() error = %v", err)
+			}
+		})
+	}
+	if err := policy.Authorize(plan, descriptor, time.Unix(plan.ExpiresAt, 0)); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("expired plan Authorize() error = %v", err)
+	}
+}
+
+func invocationDescriptor(risk Risk) CommandDescriptor {
+	return CommandDescriptor{
+		Name: "system.exec.v1",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"argv":{"type":"array","items":{"type":"string"},"minItems":1},
+				"cwd":{"type":"string"}
+			},
+			"required":["argv"],
+			"additionalProperties":false
+		}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		Risk:         risk,
+	}
+}
+
+func invocationRequest(input json.RawMessage) InvocationRequest {
+	return InvocationRequest{
+		InvocationID:     "inv_test",
+		IdempotencyKey:   "idem_test",
+		NodeID:           ID("node_test"),
+		Command:          "system.exec.v1",
+		Input:            input,
+		AgentID:          "main",
+		SessionID:        "session_test",
+		ActorID:          "user_test",
+		TimeoutSeconds:   30,
+		OutputLimitBytes: 1024,
+		ExpiresAt:        1,
+	}
+}
