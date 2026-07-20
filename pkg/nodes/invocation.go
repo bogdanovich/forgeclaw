@@ -234,6 +234,8 @@ func (policy LocalCommandPolicy) Validate() error {
 func (policy LocalCommandPolicy) Authorize(
 	plan ExecutionPlan,
 	descriptor CommandDescriptor,
+	receivingNodeID ID,
+	actualExecutor string,
 	now time.Time,
 ) error {
 	if err := policy.Validate(); err != nil {
@@ -244,6 +246,10 @@ func (policy LocalCommandPolicy) Authorize(
 	}
 	if err := descriptor.Validate(); err != nil {
 		return err
+	}
+	if err := receivingNodeID.Validate(); err != nil || !validInvocationIdentifier(actualExecutor) ||
+		plan.NodeID != receivingNodeID || plan.Executor != actualExecutor {
+		return fmt.Errorf("%w: plan target does not match local runtime", ErrCommandDenied)
 	}
 	if descriptor.Name != plan.Command || descriptor.Risk != plan.Risk ||
 		plan.PolicyRevision != policy.Revision {

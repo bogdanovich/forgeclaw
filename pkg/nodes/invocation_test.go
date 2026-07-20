@@ -155,12 +155,20 @@ func TestLocalCommandPolicyRejectsPlanTooFarInFuture(t *testing.T) {
 		MaxTimeoutSeconds: 60,
 		MaxOutputBytes:    1024,
 	}
-	if err := policy.Authorize(plan, descriptor, preparedAt.Add(-MaxExecutionPlanSkew)); err != nil {
+	if err := policy.Authorize(
+		plan,
+		descriptor,
+		plan.NodeID,
+		plan.Executor,
+		preparedAt.Add(-MaxExecutionPlanSkew),
+	); err != nil {
 		t.Fatalf("Authorize() rejected bounded clock skew: %v", err)
 	}
 	if err := policy.Authorize(
 		plan,
 		descriptor,
+		plan.NodeID,
+		plan.Executor,
 		preparedAt.Add(-MaxExecutionPlanSkew-time.Second),
 	); !errors.Is(
 		err,
@@ -215,7 +223,7 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 		MaxOutputBytes:    1024,
 	}
 	now := time.Unix(plan.PreparedAt, 0)
-	if err := policy.Authorize(plan, descriptor, now); err != nil {
+	if err := policy.Authorize(plan, descriptor, plan.NodeID, plan.Executor, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -233,13 +241,40 @@ func TestLocalCommandPolicyCannotBeBroadenedByPlan(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := policy
 			test.mutate(&candidate)
-			if err := candidate.Authorize(plan, descriptor, now); !errors.Is(err, ErrCommandDenied) {
+			if err := candidate.Authorize(
+				plan,
+				descriptor,
+				plan.NodeID,
+				plan.Executor,
+				now,
+			); !errors.Is(err, ErrCommandDenied) {
 				t.Fatalf("Authorize() error = %v", err)
 			}
 		})
 	}
-	if err := policy.Authorize(plan, descriptor, time.Unix(plan.ExpiresAt, 0)); !errors.Is(err, ErrCommandDenied) {
+	if err := policy.Authorize(
+		plan,
+		descriptor,
+		plan.NodeID,
+		plan.Executor,
+		time.Unix(plan.ExpiresAt, 0),
+	); !errors.Is(err, ErrCommandDenied) {
 		t.Fatalf("expired plan Authorize() error = %v", err)
+	}
+	if err := policy.Authorize(
+		plan,
+		descriptor,
+		ID("node_other"),
+		plan.Executor,
+		now,
+	); !errors.Is(
+		err,
+		ErrCommandDenied,
+	) {
+		t.Fatalf("wrong-node Authorize() error = %v", err)
+	}
+	if err := policy.Authorize(plan, descriptor, plan.NodeID, "docker", now); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("wrong-executor Authorize() error = %v", err)
 	}
 }
 
