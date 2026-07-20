@@ -222,6 +222,42 @@ func TestTraceCaptureReconcilesAttachedRegistryAfterConfigEnable(t *testing.T) {
 	}
 }
 
+func TestTraceCaptureRejectsStaleInteractionObserverGeneration(t *testing.T) {
+	workspace := t.TempDir()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), nil)
+	manager.mu.Lock()
+	manager.interactionGens[workspace] = 1
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		manager.observeInteractionRegistryEventGeneration(workspace, 1, interactions.EventObservation{
+			Event: interactions.Event{
+				InteractionID: "interaction-stale-observer",
+				Type:          interactions.EventCreated, To: interactions.StatusCreated,
+				Sequence: 1, Revision: 1, EmittedAt: time.Now().UnixMilli(),
+			},
+			Record: interactions.Record{
+				ID: "interaction-stale-observer", Status: interactions.StatusCreated,
+				CreatedAt: time.Now().UnixMilli(),
+			},
+		})
+		close(done)
+	}()
+	<-started
+	manager.interactionGens[workspace] = 2
+	manager.mu.Unlock()
+	<-done
+
+	manager.mu.Lock()
+	_, captured := manager.interactions["interaction-stale-observer"]
+	manager.mu.Unlock()
+	manager.close()
+	if captured {
+		t.Fatal("stale observer generation captured an interaction event")
+	}
+}
+
 func TestTraceCapturePreservesActiveInteractionAcrossEnabledConfigReload(t *testing.T) {
 	workspace := t.TempDir()
 	eventBus := runtimeevents.NewBus()
@@ -575,7 +611,7 @@ func TestTraceCaptureReconcilesTerminalInteractionOnRegistryAttachment(t *testin
 		t.Fatalf("reconciled trace = %#v", trace)
 	}
 
-	oldModTime := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	oldModTime := time.Now().Add(-time.Minute).Truncate(time.Second)
 	if err = os.Chtimes(tracePath, oldModTime, oldModTime); err != nil {
 		t.Fatal(err)
 	}
@@ -732,6 +768,79 @@ func TestTraceCapturePersistsIncompleteTerminalTraceWithoutRetainedEvents(t *tes
 	}
 	if !slices.Contains(trace.Truncation.Reasons, "interaction_event_history_missing") {
 		t.Fatalf("truncation reasons = %v", trace.Truncation.Reasons)
+	}
+}
+
+func TestTraceCaptureDoesNotResurrectTerminalTraceExpiredByRetention(t *testing.T) {
+	workspace := t.TempDir()
+	now := time.Now().UTC()
+	registry := interactions.NewRegistryWithOptions(
+		interactions.WorkspaceStorePath(workspace),
+		interactions.Options{Now: func() time.Time { return now.Add(-2 * time.Hour) }},
+	)
+	record := createTraceTestInteraction(t, registry, "interaction-expired-trace", "session-1")
+	if _, err := registry.Cancel(record.ID, record.Revision, "fixture_cancel"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := traceTestConfig(workspace)
+	cfg.Evaluation.TraceCapture.RetentionHours = 1
+	manager := newTraceCaptureManager(cfg, nil)
+	manager.attachInteractionRegistry(workspace, registry)
+	manager.close()
+
+	traceID := opaqueTraceID("interaction", record.ID, time.UnixMilli(record.CreatedAt))
+	tracePath := filepath.Join(workspace, "state", "evaluation", "traces", traceID+".json")
+	if _, err := os.Stat(tracePath); !os.IsNotExist(err) {
+		t.Fatalf("expired terminal trace was recreated: %v", err)
+	}
+}
+
+func TestTraceCaptureDoesNotResurrectTerminalTracePrunedByCount(t *testing.T) {
+	workspace := t.TempDir()
+	now := time.Now().UTC()
+	clock := now.Add(-time.Hour)
+	registry := interactions.NewRegistryWithOptions(
+		interactions.WorkspaceStorePath(workspace),
+		interactions.Options{Now: func() time.Time { return clock }},
+	)
+	older := createTraceTestInteraction(t, registry, "interaction-count-older", "session-1")
+	if _, err := registry.Cancel(older.ID, older.Revision, "fixture_cancel"); err != nil {
+		t.Fatal(err)
+	}
+	clock = now
+	newer := createTraceTestInteraction(t, registry, "interaction-count-newer", "session-2")
+	if _, err := registry.Cancel(newer.ID, newer.Revision, "fixture_cancel"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := traceTestConfig(workspace)
+	cfg.Evaluation.TraceCapture.MaxTraces = 1
+
+	first := newTraceCaptureManager(cfg, nil)
+	first.attachInteractionRegistry(workspace, registry)
+	first.close()
+	olderPath := filepath.Join(
+		workspace, "state", "evaluation", "traces",
+		opaqueTraceID("interaction", older.ID, time.UnixMilli(older.CreatedAt))+".json",
+	)
+	newerPath := filepath.Join(
+		workspace, "state", "evaluation", "traces",
+		opaqueTraceID("interaction", newer.ID, time.UnixMilli(newer.CreatedAt))+".json",
+	)
+	if _, err := os.Stat(olderPath); !os.IsNotExist(err) {
+		t.Fatalf("older trace survived count pruning: %v", err)
+	}
+	if _, err := os.Stat(newerPath); err != nil {
+		t.Fatalf("newer trace missing after count pruning: %v", err)
+	}
+
+	second := newTraceCaptureManager(cfg, nil)
+	second.attachInteractionRegistry(workspace, registry)
+	second.close()
+	if _, err := os.Stat(olderPath); !os.IsNotExist(err) {
+		t.Fatalf("count-pruned trace was resurrected: %v", err)
+	}
+	if _, err := os.Stat(newerPath); err != nil {
+		t.Fatalf("newer trace displaced during reconciliation: %v", err)
 	}
 }
 

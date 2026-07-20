@@ -225,6 +225,36 @@ func TestStoreRoundTripPermissionsPruneAndSymlinkDenial(t *testing.T) {
 	}
 }
 
+func TestStoreBackfillUsesLifecycleRetentionClock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "traces")
+	now := time.Now().UTC()
+	store := Store{Root: root, Retention: time.Hour, MaxTraces: 1, Now: func() time.Time { return now }}
+	trace, err := Finalize(baseTrace(now.Add(-30 * time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.SaveAt(trace, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(now.Add(-30 * time.Minute)) {
+		t.Fatalf("retention time = %s", info.ModTime())
+	}
+	if allowed, allowErr := store.AllowsBackfill("trace-expired", now.Add(-2*time.Hour)); allowErr != nil || allowed {
+		t.Fatalf("expired AllowsBackfill = %v, %v", allowed, allowErr)
+	}
+	if allowed, allowErr := store.AllowsBackfill("trace-older", now.Add(-45*time.Minute)); allowErr != nil || allowed {
+		t.Fatalf("count-limited AllowsBackfill = %v, %v", allowed, allowErr)
+	}
+	if allowed, allowErr := store.AllowsBackfill(trace.TraceID, now.Add(-45*time.Minute)); allowErr != nil || !allowed {
+		t.Fatalf("existing AllowsBackfill = %v, %v", allowed, allowErr)
+	}
+}
+
 func baseTrace(created time.Time) Trace {
 	return Trace{
 		SchemaVersion: SchemaVersionV1,

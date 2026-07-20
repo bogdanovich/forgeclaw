@@ -27,6 +27,12 @@ type Store struct {
 }
 
 func (s Store) Save(trace Trace) (string, error) {
+	return s.SaveAt(trace, time.Time{})
+}
+
+// SaveAt persists a trace using retainedAt as its retention clock. A zero
+// retainedAt keeps the normal filesystem write time.
+func (s Store) SaveAt(trace Trace, retainedAt time.Time) (string, error) {
 	if err := Validate(trace); err != nil {
 		return "", err
 	}
@@ -51,7 +57,62 @@ func (s Store) Save(trace Trace) (string, error) {
 	if err := fileutil.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
 		return "", fmt.Errorf("write trace: %w", err)
 	}
+	if !retainedAt.IsZero() {
+		if err := os.Chtimes(path, retainedAt, retainedAt); err != nil {
+			return "", fmt.Errorf("set trace retention time: %w", err)
+		}
+	}
 	return path, nil
+}
+
+// AllowsBackfill reports whether a missing trace with retainedAt would survive
+// the store's current age and count limits. Existing traceID is always allowed
+// so callers can repair an incomplete trace in place.
+func (s Store) AllowsBackfill(traceID string, retainedAt time.Time) (bool, error) {
+	if !safeIDPattern.MatchString(traceID) {
+		return false, fmt.Errorf("invalid trace id")
+	}
+	root, err := s.safeRoot()
+	if err != nil {
+		return false, err
+	}
+	if symlinkErr := rejectSymlinkPath(root); symlinkErr != nil {
+		return false, symlinkErr
+	}
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		entries = nil
+	} else if err != nil {
+		return false, err
+	}
+	now := time.Now()
+	if s.Now != nil {
+		now = s.Now()
+	}
+	retention, maxTraces := s.effectiveLimits()
+	if retainedAt.IsZero() {
+		retainedAt = now
+	}
+	if now.Sub(retainedAt) > retention {
+		return false, nil
+	}
+	newerOrEqual := 0
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		if strings.TrimSuffix(entry.Name(), ".json") == traceID {
+			return true, nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return false, infoErr
+		}
+		if !info.ModTime().Before(retainedAt) {
+			newerOrEqual++
+		}
+	}
+	return newerOrEqual < maxTraces, nil
 }
 
 func (s Store) Load(traceID string) (Trace, error) {
@@ -107,14 +168,7 @@ func (s Store) Prune() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	retention := s.Retention
-	if retention <= 0 {
-		retention = DefaultRetention
-	}
-	maxTraces := s.MaxTraces
-	if maxTraces <= 0 {
-		maxTraces = DefaultMaxTraces
-	}
+	retention, maxTraces := s.effectiveLimits()
 	now := time.Now()
 	if s.Now != nil {
 		now = s.Now()
@@ -143,6 +197,18 @@ func (s Store) Prune() (int, error) {
 		removed++
 	}
 	return removed, nil
+}
+
+func (s Store) effectiveLimits() (time.Duration, int) {
+	retention := s.Retention
+	if retention <= 0 {
+		retention = DefaultRetention
+	}
+	maxTraces := s.MaxTraces
+	if maxTraces <= 0 {
+		maxTraces = DefaultMaxTraces
+	}
+	return retention, maxTraces
 }
 
 func (s Store) safeRoot() (string, error) {

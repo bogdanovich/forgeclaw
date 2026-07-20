@@ -43,6 +43,7 @@ type activeTraceCapture struct {
 	turnID          string
 	workspace       string
 	startedAt       time.Time
+	retainedAt      time.Time
 	critical        map[uint64]bool
 	origins         map[string]struct{}
 	settlementTimer *time.Timer
@@ -53,17 +54,19 @@ type traceCaptureManager struct {
 	closed  bool
 	startMu sync.Mutex
 
-	settings        traceCaptureSettings
-	turns           map[string]*activeTraceCapture
-	tasks           map[string]*activeTraceCapture
-	interactions    map[string]*activeTraceCapture
-	sessions        map[string]string
-	targets         map[string]map[string]struct{}
-	taskSubs        map[string]func()
-	interactionSubs map[string]func()
-	interactionRegs map[string]*interactions.Registry
-	sub             runtimeevents.Subscription
-	eventBus        runtimeevents.Bus
+	settings           traceCaptureSettings
+	turns              map[string]*activeTraceCapture
+	tasks              map[string]*activeTraceCapture
+	interactions       map[string]*activeTraceCapture
+	sessions           map[string]string
+	targets            map[string]map[string]struct{}
+	taskSubs           map[string]func()
+	interactionSubs    map[string]func()
+	interactionRegs    map[string]*interactions.Registry
+	interactionGens    map[string]uint64
+	nextInteractionGen uint64
+	sub                runtimeevents.Subscription
+	eventBus           runtimeevents.Bus
 
 	lastDropped     uint64
 	persistCh       chan tracePersistRequest
@@ -89,6 +92,7 @@ func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *tra
 		taskSubs:        make(map[string]func()),
 		interactionSubs: make(map[string]func()),
 		interactionRegs: make(map[string]*interactions.Registry),
+		interactionGens: make(map[string]uint64),
 		eventBus:        eventBus,
 	}
 	if !m.settings.enabled {
@@ -190,6 +194,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 	if !wasEnabled && updated.enabled {
 		bootstraps = make([]registryBootstrap, 0, len(m.interactionRegs))
 		for workspace, registry := range m.interactionRegs {
+			generation := m.nextInteractionGenerationLocked(workspace)
 			reconciledThrough := make(map[string]int64)
 			ready := make(chan struct{})
 			snapshot, unsubscribe := registry.SubscribeSnapshot(
@@ -199,7 +204,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 						reconciledThrough[observation.Event.InteractionID] {
 						return
 					}
-					m.observeInteractionRegistryEvent(workspace, observation)
+					m.observeInteractionRegistryEventGeneration(workspace, generation, observation)
 				},
 			)
 			bootstraps = append(bootstraps, registryBootstrap{
@@ -250,13 +255,14 @@ func (m *traceCaptureManager) attachInteractionRegistry(
 		return
 	}
 	ready := make(chan struct{})
+	generation := m.nextInteractionGenerationLocked(workspace)
 	reconciledThrough := make(map[string]int64)
 	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation interactions.EventObservation) {
 		<-ready
 		if observation.Event.Sequence <= reconciledThrough[observation.Event.InteractionID] {
 			return
 		}
-		m.observeInteractionRegistryEvent(workspace, observation)
+		m.observeInteractionRegistryEventGeneration(workspace, generation, observation)
 	})
 	m.interactionSubs[workspace] = unsubscribe
 	m.interactionRegs[workspace] = registry
@@ -280,6 +286,15 @@ func (m *traceCaptureManager) reconcileInteractionObservationSnapshot(
 	snapshot interactions.ObservationSnapshot,
 	reconciledThrough map[string]int64,
 ) {
+	store := evaltrace.Store{
+		Root: traceStoreRoot(settings, workspace), Retention: settings.retention,
+		MaxTraces: settings.maxTraces,
+	}
+	if _, err := store.Prune(); err != nil {
+		logger.WarnCF("evaltrace", "Failed to prune evaluation traces before reconciliation", map[string]any{
+			"error": err.Error(),
+		})
+	}
 	eventsByInteraction := make(map[string][]interactions.Event)
 	for _, event := range snapshot.Events {
 		eventsByInteraction[event.InteractionID] = append(
@@ -298,17 +313,30 @@ func (m *traceCaptureManager) reconcileInteractionObservationSnapshot(
 		if interactionRecordIsTerminal(state) {
 			startedAt := interactionTraceStartedAt(state, history)
 			traceID := opaqueTraceID("interaction", state.ID, startedAt)
-			store := evaltrace.Store{
-				Root: traceStoreRoot(settings, workspace), Retention: settings.retention,
-				MaxTraces: settings.maxTraces,
-			}
 			if existing, err := store.Load(traceID); err == nil &&
 				completeTraceMatchesTerminalInteraction(existing, state) {
+				continue
+			}
+			retainedAt := interactionTraceRetainedAt(state, history)
+			allowed, err := store.AllowsBackfill(traceID, retainedAt)
+			if err != nil {
+				logger.WarnCF("evaltrace", "Failed to evaluate interaction trace retention", map[string]any{
+					"trace_id": traceID, "error": err.Error(),
+				})
+				continue
+			}
+			if !allowed {
 				continue
 			}
 		}
 		m.reconcileInteractionSnapshot(workspace, state, history)
 	}
+}
+
+func (m *traceCaptureManager) nextInteractionGenerationLocked(workspace string) uint64 {
+	m.nextInteractionGen++
+	m.interactionGens[workspace] = m.nextInteractionGen
+	return m.nextInteractionGen
 }
 
 func (m *traceCaptureManager) enabled() bool {
@@ -373,6 +401,7 @@ func (m *traceCaptureManager) close() {
 	m.taskSubs = nil
 	m.interactionSubs = nil
 	m.interactionRegs = nil
+	m.interactionGens = nil
 	settings := m.settings
 	traces := make([]*activeTraceCapture, 0, len(m.turns)+len(m.tasks)+len(m.interactions))
 	for _, trace := range m.turns {
@@ -638,8 +667,9 @@ func (m *traceCaptureManager) observeTaskEvent(
 	m.enqueuePersist(settings, trace)
 }
 
-func (m *traceCaptureManager) observeInteractionRegistryEvent(
+func (m *traceCaptureManager) observeInteractionRegistryEventGeneration(
 	workspace string,
+	generation uint64,
 	observation interactions.EventObservation,
 ) {
 	if m == nil {
@@ -647,6 +677,10 @@ func (m *traceCaptureManager) observeInteractionRegistryEvent(
 	}
 	m.mu.Lock()
 	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if generation != 0 && m.interactionGens[workspace] != generation {
 		m.mu.Unlock()
 		return
 	}
@@ -744,6 +778,9 @@ func buildInteractionTrace(
 			Records: make([]evaltrace.Record, 0, min(16, len(history))),
 		},
 	}
+	if interactionRecordIsTerminal(state) {
+		trace.retainedAt = interactionTraceRetainedAt(state, history)
+	}
 	if len(history) == 0 {
 		trace.trace.Truncation.Incomplete = true
 		trace.trace.Truncation.Reasons = appendUnique(
@@ -773,6 +810,16 @@ func interactionTraceStartedAt(state interactions.Record, history []interactions
 		return time.UnixMilli(history[0].EmittedAt)
 	}
 	return time.UnixMilli(0)
+}
+
+func interactionTraceRetainedAt(state interactions.Record, history []interactions.Event) time.Time {
+	if state.ResolvedAt > 0 {
+		return time.UnixMilli(state.ResolvedAt)
+	}
+	if len(history) > 0 {
+		return time.UnixMilli(history[len(history)-1].EmittedAt)
+	}
+	return interactionTraceStartedAt(state, history)
 }
 
 func completeTraceMatchesTerminalInteraction(
@@ -834,7 +881,7 @@ func (m *traceCaptureManager) persistNow(settings traceCaptureSettings, trace *a
 		Root: traceStoreRoot(settings, trace.workspace), Retention: settings.retention,
 		MaxTraces: settings.maxTraces,
 	}
-	if _, err := store.Save(finalized); err != nil {
+	if _, err := store.SaveAt(finalized, trace.retainedAt); err != nil {
 		logger.WarnCF("evaltrace", "Failed to store evaluation trace", map[string]any{
 			"trace_id": trace.trace.TraceID, "error": err.Error(),
 		})

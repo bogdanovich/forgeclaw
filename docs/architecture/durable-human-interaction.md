@@ -399,7 +399,11 @@ Stable record creation time identifies the trace across history eviction, and
 terminal reconciliation replaces stale incomplete files. Missing retained event
 history is represented by an explicit incomplete trace. Re-enabling capture
 atomically replaces existing registry subscriptions and reconciles everything
-that became durable while capture was disabled.
+that became durable while capture was disabled. Subscription generations make
+callbacks already copied by the registry inert after replacement, so they
+cannot race the snapshot backfill. Terminal backfill uses the interaction's
+terminal lifecycle time for both age and count limits; reconciliation never
+resurrects a trace that evaluation retention already removed.
 Replay diagnostics explicitly classify self-contained violations as
 `conclusive` and missing-prerequisite checks as `requires_complete_history`, so
 truncation cannot hide malformed approval consumption or expiry evidence.
