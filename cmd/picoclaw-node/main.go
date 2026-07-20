@@ -11,7 +11,6 @@ import (
 	"runtime/debug"
 	"syscall"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/nodes/companion"
 )
 
@@ -56,11 +55,15 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := companion.NewClient(
+	commandRuntime, err := companion.NewRuntime(identity.ID, clientVersion(), cfg.Policy)
+	if err != nil {
+		return err
+	}
+	client, err := companion.NewClientWithRuntime(
 		cfg,
 		identity,
 		clientVersion(),
-		nodes.CapabilityCatalog{},
+		commandRuntime,
 		slog.Default(),
 	)
 	if err != nil {

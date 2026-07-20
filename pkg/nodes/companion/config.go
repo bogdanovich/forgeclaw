@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/nodes"
 )
 
 const (
@@ -36,11 +38,12 @@ type ReconnectConfig struct {
 }
 
 type Config struct {
-	GatewayURL             string          `json:"gateway_url"`
-	StateDir               string          `json:"state_dir,omitempty"`
-	AllowLoopbackPlaintext bool            `json:"allow_loopback_plaintext,omitempty"`
-	TLS                    TLSConfig       `json:"tls,omitempty"`
-	Reconnect              ReconnectConfig `json:"reconnect,omitempty"`
+	GatewayURL             string                   `json:"gateway_url"`
+	StateDir               string                   `json:"state_dir,omitempty"`
+	AllowLoopbackPlaintext bool                     `json:"allow_loopback_plaintext,omitempty"`
+	TLS                    TLSConfig                `json:"tls,omitempty"`
+	Reconnect              ReconnectConfig          `json:"reconnect,omitempty"`
+	Policy                 nodes.LocalCommandPolicy `json:"policy,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -129,6 +132,24 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 	}
 	if cfg.maxReconnectDelay < cfg.minReconnectDelay {
 		return Config{}, errors.New("maximum reconnect delay must not be shorter than minimum reconnect delay")
+	}
+	if cfg.Policy.Revision == "" {
+		cfg.Policy.Revision = "default-deny"
+	}
+	if cfg.Policy.MaximumRisk == "" {
+		cfg.Policy.MaximumRisk = nodes.RiskRead
+	}
+	if cfg.Policy.MaxTimeoutSeconds == 0 {
+		cfg.Policy.MaxTimeoutSeconds = 30
+	}
+	if cfg.Policy.MaxOutputBytes == 0 {
+		cfg.Policy.MaxOutputBytes = 64 * 1024
+	}
+	if cfg.Policy.AllowedCommands == nil {
+		cfg.Policy.AllowedCommands = make([]string, 0)
+	}
+	if err := cfg.Policy.Validate(); err != nil {
+		return Config{}, fmt.Errorf("validate node policy: %w", err)
 	}
 	return cfg, nil
 }

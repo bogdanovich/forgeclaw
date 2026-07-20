@@ -29,6 +29,7 @@ type Client struct {
 	identity      Identity
 	clientVersion string
 	catalog       nodes.CapabilityCatalog
+	runtime       *Runtime
 	logger        *slog.Logger
 	dialer        websocket.Dialer
 	stableWindow  time.Duration
@@ -39,6 +40,33 @@ func NewClient(
 	identity Identity,
 	clientVersion string,
 	catalog nodes.CapabilityCatalog,
+	logger *slog.Logger,
+) (*Client, error) {
+	return newClient(cfg, identity, clientVersion, catalog, nil, logger)
+}
+
+func NewClientWithRuntime(
+	cfg Config,
+	identity Identity,
+	clientVersion string,
+	runtime *Runtime,
+	logger *slog.Logger,
+) (*Client, error) {
+	if runtime == nil {
+		return nil, errors.New("node command runtime is required")
+	}
+	if runtime.nodeID != identity.ID {
+		return nil, errors.New("node command runtime identity does not match client identity")
+	}
+	return newClient(cfg, identity, clientVersion, runtime.Catalog(), runtime, logger)
+}
+
+func newClient(
+	cfg Config,
+	identity Identity,
+	clientVersion string,
+	catalog nodes.CapabilityCatalog,
+	commandRuntime *Runtime,
 	logger *slog.Logger,
 ) (*Client, error) {
 	if cfg.minReconnectDelay <= 0 || cfg.maxReconnectDelay < cfg.minReconnectDelay ||
@@ -73,6 +101,7 @@ func NewClient(
 		},
 		clientVersion: clientVersion,
 		catalog:       cloneCatalog(catalog),
+		runtime:       commandRuntime,
 		logger:        logger,
 		stableWindow:  defaultStableSessionWindow,
 		dialer: websocket.Dialer{
@@ -105,7 +134,13 @@ func (client *Client) Run(ctx context.Context) error {
 	for {
 		connection, result, err := client.connectAndAuthenticate(ctx)
 		if err == nil {
-			client.logger.Info("node admission completed", "node_id", result.NodeID, "state", result.State)
+			client.logger.Info(
+				"node admission completed",
+				"node_id",
+				result.NodeID,
+				"state",
+				result.State,
+			)
 			if result.State == nodes.StatePendingPairing {
 				backoff = client.config.minReconnectDelay
 				_ = connection.Close()
@@ -166,10 +201,16 @@ func (client *Client) connectAndAuthenticate(
 		deadline = contextDeadline
 	}
 	if deadlineErr := connection.SetReadDeadline(deadline); deadlineErr != nil {
-		return nil, nodes.AdmissionResult{}, fmt.Errorf("set node handshake deadline: %w", deadlineErr)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf(
+			"set node handshake deadline: %w",
+			deadlineErr,
+		)
 	}
 	if deadlineErr := connection.SetWriteDeadline(deadline); deadlineErr != nil {
-		return nil, nodes.AdmissionResult{}, fmt.Errorf("set node handshake deadline: %w", deadlineErr)
+		return nil, nodes.AdmissionResult{}, fmt.Errorf(
+			"set node handshake deadline: %w",
+			deadlineErr,
+		)
 	}
 
 	challenge, err := readChallenge(connection)
@@ -215,14 +256,18 @@ func (client *Client) connectAndAuthenticate(
 		return nil, nodes.AdmissionResult{}, fmt.Errorf("read node admission result: %w", err)
 	}
 	if messageType != websocket.TextMessage {
-		return nil, nodes.AdmissionResult{}, errors.New("node gateway returned a non-text admission frame")
+		return nil, nodes.AdmissionResult{}, errors.New(
+			"node gateway returned a non-text admission frame",
+		)
 	}
 	envelope, err := protocol.Decode(responseData)
 	if err != nil {
 		return nil, nodes.AdmissionResult{}, err
 	}
 	if envelope.Type != protocol.FrameResponse || envelope.ID != requestID {
-		return nil, nodes.AdmissionResult{}, errors.New("node gateway returned an unrelated admission response")
+		return nil, nodes.AdmissionResult{}, errors.New(
+			"node gateway returned an unrelated admission response",
+		)
 	}
 	if envelope.OK == nil || !*envelope.OK {
 		if envelope.Error == nil {
@@ -240,7 +285,9 @@ func (client *Client) connectAndAuthenticate(
 	}
 	if result.NodeID != client.identity.ID ||
 		(result.State != nodes.StatePendingPairing && result.State != nodes.StateConnected) {
-		return nil, nodes.AdmissionResult{}, errors.New("node gateway returned an invalid admission identity or state")
+		return nil, nodes.AdmissionResult{}, errors.New(
+			"node gateway returned an invalid admission identity or state",
+		)
 	}
 	connected = true
 	return connection, result, nil
@@ -267,14 +314,96 @@ func (client *Client) serveConnected(ctx context.Context, connection *websocket.
 		)
 	})
 	for {
-		messageType, _, err := connection.ReadMessage()
+		messageType, data, err := connection.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("node gateway session ended: %w", err)
 		}
-		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
-			return errors.New("node gateway sent application data before command protocol was enabled")
+		if messageType == websocket.BinaryMessage {
+			return errors.New("node gateway sent a non-text command frame")
+		}
+		if messageType == websocket.TextMessage {
+			if requestErr := client.handleRequest(ctx, connection, data); requestErr != nil {
+				return requestErr
+			}
 		}
 	}
+}
+
+func (client *Client) handleRequest(
+	ctx context.Context,
+	connection *websocket.Conn,
+	data []byte,
+) error {
+	envelope, decodeErr := protocol.Decode(data)
+	if decodeErr != nil || envelope.Type != protocol.FrameRequest {
+		return errors.New("node gateway sent an invalid command request")
+	}
+	if envelope.Method != "node.invoke" {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"METHOD_NOT_FOUND",
+			"unsupported node method",
+		)
+	}
+	if client.runtime == nil {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"COMMAND_UNAVAILABLE",
+			"node command runtime is disabled",
+		)
+	}
+	var plan nodes.ExecutionPlan
+	if planErr := decodeStrictJSON(envelope.Params, &plan); planErr != nil {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"INVALID_PLAN",
+			"invalid execution plan",
+		)
+	}
+	result, err := client.runtime.Invoke(ctx, plan)
+	if err != nil {
+		code := "EXECUTION_FAILED"
+		message := "node command failed"
+		if errors.Is(err, nodes.ErrCommandDenied) || errors.Is(err, nodes.ErrInvalidInvocation) {
+			code = "COMMAND_DENIED"
+			message = "node command denied"
+		}
+		return client.writeCommandError(connection, envelope.ID, code, message)
+	}
+	ok := true
+	return writeEnvelope(connection, protocol.Envelope{
+		Type:   protocol.FrameResponse,
+		ID:     envelope.ID,
+		OK:     &ok,
+		Result: result,
+	})
+}
+
+func (client *Client) writeCommandError(
+	connection *websocket.Conn,
+	requestID, code, message string,
+) error {
+	ok := false
+	return writeEnvelope(connection, protocol.Envelope{
+		Type: protocol.FrameResponse,
+		ID:   requestID,
+		OK:   &ok,
+		Error: &protocol.Error{
+			Code:    code,
+			Message: message,
+		},
+	})
+}
+
+func writeEnvelope(connection *websocket.Conn, envelope protocol.Envelope) error {
+	data, err := protocol.Encode(envelope)
+	if err != nil {
+		return err
+	}
+	return connection.WriteMessage(websocket.TextMessage, data)
 }
 
 func readChallenge(connection *websocket.Conn) (nodes.Challenge, error) {

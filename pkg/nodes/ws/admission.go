@@ -125,23 +125,42 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 
 	messageType, data, err := connection.ReadMessage()
 	if err != nil || messageType != websocket.TextMessage {
-		handler.closeWithError(connection, websocket.CloseUnsupportedData, "text authentication frame required")
+		handler.closeWithError(
+			connection,
+			websocket.CloseUnsupportedData,
+			"text authentication frame required",
+		)
 		return
 	}
 	envelope, err := protocol.Decode(data)
-	if err != nil || envelope.Type != protocol.FrameRequest || envelope.Method != "node.authenticate" {
-		handler.closeWithError(connection, websocket.ClosePolicyViolation, "invalid authentication request")
+	if err != nil || envelope.Type != protocol.FrameRequest ||
+		envelope.Method != "node.authenticate" {
+		handler.closeWithError(
+			connection,
+			websocket.ClosePolicyViolation,
+			"invalid authentication request",
+		)
 		return
 	}
 	var proof nodes.IdentityProof
 	decoder := json.NewDecoder(bytes.NewReader(envelope.Params))
 	decoder.DisallowUnknownFields()
 	if decodeErr := decoder.Decode(&proof); decodeErr != nil {
-		handler.writeAdmissionError(connection, envelope.ID, "AUTH_INVALID", "invalid identity proof")
+		handler.writeAdmissionError(
+			connection,
+			envelope.ID,
+			"AUTH_INVALID",
+			"invalid identity proof",
+		)
 		return
 	}
 	if trailingErr := decoder.Decode(new(any)); !errors.Is(trailingErr, io.EOF) {
-		handler.writeAdmissionError(connection, envelope.ID, "AUTH_INVALID", "invalid identity proof")
+		handler.writeAdmissionError(
+			connection,
+			envelope.ID,
+			"AUTH_INVALID",
+			"invalid identity proof",
+		)
 		return
 	}
 	if proof.Nonce != challenge.Nonce {
@@ -150,24 +169,42 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 	}
 	admission, err := handler.authenticator.Authenticate(proof)
 	if err != nil {
-		handler.writeAdmissionError(connection, envelope.ID, "AUTH_FAILED", "identity verification failed")
+		handler.writeAdmissionError(
+			connection,
+			envelope.ID,
+			"AUTH_FAILED",
+			"identity verification failed",
+		)
 		return
 	}
 	result := admission.Result
 	var release func() (bool, error)
+	var session *peer
 	if result.State == nodes.StateConnected {
+		session = newPeer(connection)
 		release, err = handler.sessions.Claim(
 			result.NodeID,
-			connection,
+			session,
 			func() error { return handler.authenticator.Connect(admission) },
 			func() error {
-				return handler.authenticator.Disconnect(result.NodeID, "transport connection closed")
+				return handler.authenticator.Disconnect(
+					result.NodeID,
+					"transport connection closed",
+				)
 			},
 		)
 		if err != nil {
-			handler.writeAdmissionError(connection, envelope.ID, "SESSION_UNAVAILABLE", "node session unavailable")
+			handler.writeAdmissionError(
+				connection,
+				envelope.ID,
+				"SESSION_UNAVAILABLE",
+				"node session unavailable",
+			)
 			return
 		}
+	}
+	if session != nil {
+		defer session.Close()
 	}
 	responseData, err := json.Marshal(result)
 	if err != nil {
@@ -175,7 +212,15 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		return
 	}
 	ok := true
-	if writeErr := handler.writeEnvelope(connection, protocol.Envelope{
+	writeResponse := handler.writeEnvelope
+	if session != nil {
+		writeResponse = func(_ *websocket.Conn, envelope protocol.Envelope) error {
+			writeCtx, cancel := context.WithDeadline(request.Context(), deadline)
+			defer cancel()
+			return session.writeEnvelope(writeCtx, envelope)
+		}
+	}
+	if writeErr := writeResponse(connection, protocol.Envelope{
 		Type:   protocol.FrameResponse,
 		ID:     envelope.ID,
 		OK:     &ok,
@@ -186,7 +231,12 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		}
 		return
 	}
-	handler.serveSession(connection, result.NodeID, release)
+	if err := handler.prepareSession(session, result.NodeID); err != nil {
+		handler.releaseSession(result.NodeID, release)
+		return
+	}
+	session.markReady()
+	handler.serveSession(session, result.NodeID, release)
 }
 
 // Close terminates all generations that share this handler's session hub.
@@ -196,17 +246,48 @@ func (handler *AdmissionHandler) Close(ctx context.Context) error {
 }
 
 func (handler *AdmissionHandler) serveSession(
-	connection *websocket.Conn,
+	session *peer,
 	nodeID nodes.ID,
 	release func() (bool, error),
 ) {
 	defer handler.releaseSession(nodeID, release)
+	connection := session.connection
 
+	done := make(chan struct{})
+	go handler.sendHeartbeats(session, done)
+	defer close(done)
+
+	for {
+		messageType, data, err := connection.ReadMessage()
+		if err != nil {
+			return
+		}
+		if messageType == websocket.BinaryMessage {
+			_ = session.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(
+				websocket.CloseUnsupportedData, "node admission: text command frame required",
+			), time.Now().Add(time.Second))
+			return
+		}
+		if messageType == websocket.TextMessage {
+			envelope, decodeErr := protocol.Decode(data)
+			if decodeErr != nil || envelope.Type != protocol.FrameResponse ||
+				session.handleResponse(envelope) != nil {
+				_ = session.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(
+					websocket.ClosePolicyViolation, "node admission: unexpected command response",
+				), time.Now().Add(time.Second))
+				return
+			}
+		}
+	}
+}
+
+func (handler *AdmissionHandler) prepareSession(session *peer, nodeID nodes.ID) error {
+	connection := session.connection
 	if err := connection.SetReadDeadline(time.Now().Add(handler.livenessTimeout)); err != nil {
-		return
+		return err
 	}
 	if err := connection.SetWriteDeadline(time.Time{}); err != nil {
-		return
+		return err
 	}
 	connection.SetPongHandler(func(string) error {
 		if err := handler.authenticator.Heartbeat(nodeID); err != nil {
@@ -214,21 +295,58 @@ func (handler *AdmissionHandler) serveSession(
 		}
 		return connection.SetReadDeadline(time.Now().Add(handler.livenessTimeout))
 	})
+	return nil
+}
 
-	done := make(chan struct{})
-	go handler.sendHeartbeats(connection, done)
-	defer close(done)
-
-	for {
-		messageType, _, err := connection.ReadMessage()
-		if err != nil {
-			return
-		}
-		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
-			handler.closeWithError(connection, websocket.ClosePolicyViolation, "command protocol is not enabled")
-			return
-		}
+// Invoke checks the durable pairing command surface and dispatches a prepared
+// plan. Agent approval and durable invocation records are added before this
+// transport boundary is exposed to tools.
+func (handler *AdmissionHandler) Invoke(
+	ctx context.Context,
+	nodeID nodes.ID,
+	plan nodes.ExecutionPlan,
+) (json.RawMessage, error) {
+	approval, err := handler.authenticator.ApprovedCommand(nodeID, plan.Command)
+	if err != nil {
+		return nil, err
 	}
+	if validationErr := plan.Validate(); validationErr != nil {
+		return nil, validationErr
+	}
+	if plan.NodeID != nodeID || plan.Risk != approval.Descriptor.Risk ||
+		plan.CatalogHash != approval.CatalogHash {
+		return nil, fmt.Errorf(
+			"%w: execution plan does not match approved command",
+			nodes.ErrCommandDenied,
+		)
+	}
+	params, err := json.Marshal(plan)
+	if err != nil {
+		return nil, fmt.Errorf("encode node execution plan: %w", err)
+	}
+	response, err := handler.sessions.Request(ctx, nodeID, "node.invoke", params)
+	if err != nil {
+		return nil, err
+	}
+	if response.OK == nil {
+		return nil, errors.New("node returned a malformed invocation response")
+	}
+	if !*response.OK {
+		return nil, fmt.Errorf(
+			"node invocation failed (%s): %s",
+			response.Error.Code,
+			response.Error.Message,
+		)
+	}
+	return validateInvocationResult(approval.Descriptor, plan, response.Result)
+}
+
+func validateInvocationResult(
+	descriptor nodes.CommandDescriptor,
+	plan nodes.ExecutionPlan,
+	result json.RawMessage,
+) (json.RawMessage, error) {
+	return nodes.ValidateInvocationOutput(descriptor, result, plan.OutputLimitBytes)
 }
 
 func (handler *AdmissionHandler) releaseSession(
@@ -242,7 +360,7 @@ func (handler *AdmissionHandler) releaseSession(
 	}
 }
 
-func (handler *AdmissionHandler) sendHeartbeats(connection *websocket.Conn, done <-chan struct{}) {
+func (handler *AdmissionHandler) sendHeartbeats(session *peer, done <-chan struct{}) {
 	ticker := time.NewTicker(handler.heartbeatPeriod)
 	defer ticker.Stop()
 	for {
@@ -250,12 +368,12 @@ func (handler *AdmissionHandler) sendHeartbeats(connection *websocket.Conn, done
 		case <-done:
 			return
 		case now := <-ticker.C:
-			if err := connection.WriteControl(
+			if err := session.writeControl(
 				websocket.PingMessage,
 				[]byte(now.UTC().Format(time.RFC3339Nano)),
 				now.Add(handler.heartbeatPeriod),
 			); err != nil {
-				_ = connection.Close()
+				_ = session.Close()
 				return
 			}
 		}
