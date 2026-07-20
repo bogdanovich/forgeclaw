@@ -41,6 +41,32 @@ func TestPrepareExecutionPlanCanonicalHash(t *testing.T) {
 	}
 }
 
+func TestExecutionPlanRecomputedMutationDoesNotMatchRetainedHash(t *testing.T) {
+	plan, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"argv":["git","status"]}`)),
+		invocationDescriptor(RiskWrite),
+		"local",
+		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedHash := plan.PlanHash
+	plan.TimeoutSeconds++
+	plan.PlanHash, err = plan.computeHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("recomputed plan is not self-consistent: %v", err)
+	}
+	if err := plan.ValidateAgainstHash(retainedHash); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("modified plan retained-hash error = %v", err)
+	}
+}
+
 func TestPrepareExecutionPlanValidatesCommandInput(t *testing.T) {
 	request := invocationRequest(json.RawMessage(`{"cwd":"/srv/app"}`))
 	if _, err := PrepareExecutionPlan(

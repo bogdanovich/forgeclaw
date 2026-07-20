@@ -510,6 +510,14 @@ The plan binds:
 The node recomputes and validates relevant fields. It does not trust a human-
 readable summary as executable authority.
 
+The plan hash is a canonical binding digest, not an origin signature. The
+gateway keeps the expected digest in the approval or invocation record outside
+the mutable plan and compares it again before dispatch. Pinned WSS authenticates
+the gateway transport. If a future external broker or offline plan format
+crosses a separate trust boundary, that format requires a distinct signed
+approval envelope; re-labeling this digest as a signature would not provide
+that protection.
+
 States are:
 
 ```text

@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -71,7 +72,8 @@ func (request InvocationRequest) Validate() error {
 }
 
 // ExecutionPlan is the canonical authority reviewed before dispatch. PlanHash
-// covers every executable and attribution field except itself.
+// is a binding digest, not proof of origin; approval and ledger records retain
+// the expected digest independently and compare it before dispatch.
 type ExecutionPlan struct {
 	InvocationRequest
 	Risk           Risk   `json:"risk"`
@@ -149,6 +151,20 @@ func (plan ExecutionPlan) Validate() error {
 	}
 	if plan.PlanHash != wantHash {
 		return fmt.Errorf("%w: plan hash mismatch", ErrInvalidInvocation)
+	}
+	return nil
+}
+
+// ValidateAgainstHash verifies both plan self-consistency and the binding to a
+// digest retained outside the mutable plan, such as an approval record.
+func (plan ExecutionPlan) ValidateAgainstHash(expected string) error {
+	if err := plan.Validate(); err != nil {
+		return err
+	}
+	decoded, err := hex.DecodeString(expected)
+	if err != nil || len(decoded) != sha256.Size ||
+		subtle.ConstantTimeCompare([]byte(plan.PlanHash), []byte(expected)) != 1 {
+		return fmt.Errorf("%w: plan does not match retained hash", ErrCommandDenied)
 	}
 	return nil
 }
