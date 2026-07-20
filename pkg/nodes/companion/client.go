@@ -74,6 +74,7 @@ func NewClient(
 		dialer: websocket.Dialer{
 			HandshakeTimeout: DefaultHandshakeTimeout,
 			TLSClientConfig:  tlsConfig,
+			Proxy:            http.ProxyFromEnvironment,
 		},
 	}, nil
 }

@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -58,31 +59,52 @@ func LoadOrCreateIdentity(stateDir string) (Identity, error) {
 		return Identity{}, fmt.Errorf("encode node identity: %w", err)
 	}
 	data = append(data, '\n')
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
+	if err := publishIdentityFile(path, data, os.Link); errors.Is(err, os.ErrExist) {
 		return loadIdentity(path)
+	} else if err != nil {
+		return Identity{}, err
 	}
-	if err != nil {
-		return Identity{}, fmt.Errorf("create node identity: %w", err)
-	}
-	removeOnFailure := true
-	defer func() {
-		if removeOnFailure {
-			_ = file.Close()
-			_ = os.Remove(path)
-		}
-	}()
-	if _, err := file.Write(data); err != nil {
-		return Identity{}, fmt.Errorf("write node identity: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		return Identity{}, fmt.Errorf("sync node identity: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return Identity{}, fmt.Errorf("close node identity: %w", err)
-	}
-	removeOnFailure = false
 	return identity, nil
+}
+
+func publishIdentityFile(
+	path string,
+	data []byte,
+	link func(string, string) error,
+) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".identity-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary node identity: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if chmodErr := temporary.Chmod(0o600); chmodErr != nil {
+		temporary.Close()
+		return fmt.Errorf("secure temporary node identity: %w", chmodErr)
+	}
+	if _, copyErr := io.Copy(temporary, bytes.NewReader(data)); copyErr != nil {
+		temporary.Close()
+		return fmt.Errorf("write temporary node identity: %w", copyErr)
+	}
+	if syncErr := temporary.Sync(); syncErr != nil {
+		temporary.Close()
+		return fmt.Errorf("sync temporary node identity: %w", syncErr)
+	}
+	if closeErr := temporary.Close(); closeErr != nil {
+		return fmt.Errorf("close temporary node identity: %w", closeErr)
+	}
+	if linkErr := link(temporaryPath, path); linkErr != nil {
+		return fmt.Errorf("publish node identity: %w", linkErr)
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open node state directory for sync: %w", err)
+	}
+	defer directory.Close()
+	if syncErr := directory.Sync(); syncErr != nil {
+		return fmt.Errorf("sync node state directory: %w", syncErr)
+	}
+	return nil
 }
 
 func loadIdentity(path string) (Identity, error) {

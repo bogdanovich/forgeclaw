@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -91,6 +95,29 @@ func TestClientRejectsWrongCertificatePin(t *testing.T) {
 	}
 }
 
+func TestClientAuthenticatesThroughHTTPConnectProxy(t *testing.T) {
+	_, handler := testGatewayAdmission(t)
+	backend := httptest.NewTLSServer(handler)
+	defer backend.Close()
+	proxy, requests := testConnectProxy(t, backend.Listener.Addr().String())
+	defer proxy.Close()
+	client := testClientForServer(t, backend, testIdentity(t), ReconnectConfig{})
+	if client.dialer.Proxy == nil {
+		t.Fatal("node WebSocket dialer does not preserve environment proxy support")
+	}
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.dialer.Proxy = http.ProxyURL(proxyURL)
+	if _, err := client.Authenticate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("CONNECT proxy requests = %d", requests.Load())
+	}
+}
+
 func testGatewayAdmission(t *testing.T) (*nodes.FileRegistry, *nodews.AdmissionHandler) {
 	t.Helper()
 	registry, err := nodes.NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 8)
@@ -145,4 +172,50 @@ func testClientForServer(
 		t.Fatal(err)
 	}
 	return client
+}
+
+func testConnectProxy(t *testing.T, backendAddress string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	requests := &atomic.Int32{}
+	proxy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodConnect {
+			http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		backend, err := net.Dial("tcp", backendAddress)
+		if err != nil {
+			http.Error(writer, "backend unavailable", http.StatusBadGateway)
+			return
+		}
+		hijacker, ok := writer.(http.Hijacker)
+		if !ok {
+			backend.Close()
+			http.Error(writer, "hijacking unavailable", http.StatusInternalServerError)
+			return
+		}
+		client, _, err := hijacker.Hijack()
+		if err != nil {
+			backend.Close()
+			return
+		}
+		requests.Add(1)
+		if _, err := fmt.Fprint(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+			client.Close()
+			backend.Close()
+			return
+		}
+		defer client.Close()
+		defer backend.Close()
+		copyDone := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(backend, client)
+			if connection, ok := backend.(*net.TCPConn); ok {
+				_ = connection.CloseWrite()
+			}
+			close(copyDone)
+		}()
+		_, _ = io.Copy(client, backend)
+		<-copyDone
+	}))
+	return proxy, requests
 }
