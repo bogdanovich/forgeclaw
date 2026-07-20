@@ -745,6 +745,98 @@ func TestDeliveryOwner_CloseDeliveryAndWaitIsWaitIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeliveryOwnerCancellationFailsEveryAcceptedMessage(t *testing.T) {
+	for _, media := range []bool{false, true} {
+		kind := "text"
+		if media {
+			kind = "media"
+		}
+		t.Run(kind, func(t *testing.T) {
+			eventBus := runtimeevents.NewBus()
+			t.Cleanup(func() { _ = eventBus.Close() })
+			_, eventsCh, err := eventBus.Channel().OfKind(
+				runtimeevents.KindChannelMessageOutboundFailed,
+			).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "cancel-drain", Buffer: 4})
+			if err != nil {
+				t.Fatalf("SubscribeChan failed: %v", err)
+			}
+
+			started := make(chan struct{})
+			var startedOnce sync.Once
+			channel := &mockMediaChannel{
+				mockChannel: mockChannel{sendFn: func(ctx context.Context, _ bus.OutboundMessage) error {
+					startedOnce.Do(func() { close(started) })
+					<-ctx.Done()
+					return ErrTemporary
+				}},
+				sendMediaFn: func(ctx context.Context, _ bus.OutboundMediaMessage) ([]string, error) {
+					startedOnce.Do(func() { close(started) })
+					<-ctx.Done()
+					return nil, ErrTemporary
+				},
+			}
+			m := newTestManager()
+			m.runtimeEvents = eventBus
+			owner := newDeliveryOwner("test", channel, "test")
+			ctx, cancel := context.WithCancel(context.Background())
+			owner.StartDelivery(ctx, m)
+
+			wantScopes := []runtimeevents.TraceScope{
+				runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+				runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+			}
+			for _, traceScope := range wantScopes {
+				if media {
+					queued, enqueueErr := owner.EnqueueMedia(context.Background(), bus.OutboundMediaMessage{
+						Context:     bus.NewOutboundContext("test", "chat-1", ""),
+						TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+					})
+					if !queued || enqueueErr != nil {
+						t.Fatalf("EnqueueMedia = (%v, %v)", queued, enqueueErr)
+					}
+					continue
+				}
+				queued, enqueueErr := owner.Enqueue(context.Background(), bus.OutboundMessage{
+					Context: bus.NewOutboundContext("test", "chat-1", ""), Content: "hello",
+					TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
+				})
+				if !queued || enqueueErr != nil {
+					t.Fatalf("Enqueue = (%v, %v)", queued, enqueueErr)
+				}
+			}
+			<-started
+			cancel()
+
+			drained := make(chan struct{})
+			go func() {
+				owner.CloseDeliveryAndWait()
+				close(drained)
+			}()
+			select {
+			case <-drained:
+			case <-time.After(2 * time.Second):
+				t.Fatal("canceled delivery owner did not drain")
+			}
+
+			seen := make(map[runtimeevents.TraceScope]bool, len(wantScopes))
+			for range wantScopes {
+				failed := receiveChannelRuntimeEvent(t, eventsCh)
+				payload, ok := failed.Payload.(ChannelOutboundPayload)
+				if !ok || !payload.TraceSettlement || payload.Media != media ||
+					len(payload.TraceScopes) != 1 {
+					t.Fatalf("canceled delivery outcome = %#v", failed)
+				}
+				seen[payload.TraceScopes[0]] = true
+			}
+			for _, traceScope := range wantScopes {
+				if !seen[traceScope] {
+					t.Fatalf("missing failed outcome for %+v", traceScope)
+				}
+			}
+		})
+	}
+}
+
 func TestDispatchOutbound_ClosedOwnerPublishesFailureAndContinues(t *testing.T) {
 	eventBus := runtimeevents.NewBus()
 	defer func() {

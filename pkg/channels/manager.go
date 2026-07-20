@@ -1752,8 +1752,8 @@ func (o *deliveryOwner) StartDelivery(ctx context.Context, m *Manager) {
 	if o == nil || o.worker == nil {
 		return
 	}
-	go m.runWorker(ctx, o.name, o.worker)
-	go m.runMediaWorker(ctx, o.name, o.worker)
+	go m.runWorkerOwned(ctx, o.name, o.worker, o.closeAdmission)
+	go m.runMediaWorkerOwned(ctx, o.name, o.worker, o.closeAdmission)
 }
 
 func (o *deliveryOwner) Enqueue(ctx context.Context, msg bus.OutboundMessage) (bool, error) {
@@ -1797,20 +1797,24 @@ func (o *deliveryOwner) CloseDeliveryAndWait() {
 	if o == nil || o.worker == nil {
 		return
 	}
+	o.closeAdmission()
+	<-o.worker.done
+	<-o.worker.mediaDone
+}
+
+func (o *deliveryOwner) closeAdmission() {
+	if o == nil || o.worker == nil {
+		return
+	}
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
-		<-o.worker.done
-		<-o.worker.mediaDone
 		return
 	}
 	o.closed = true
 	close(o.worker.queue)
 	close(o.worker.mediaQueue)
 	o.mu.Unlock()
-
-	<-o.worker.done
-	<-o.worker.mediaDone
 }
 
 // runWorker processes outbound messages for a single channel.
@@ -1818,6 +1822,15 @@ func (o *deliveryOwner) CloseDeliveryAndWait() {
 //  1. SplitByMarker (if enabled in config) - LLM semantic marker-based splitting
 //  2. SplitMessage - channel-specific length-based splitting (MaxMessageLength)
 func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) {
+	m.runWorkerOwned(ctx, name, w, nil)
+}
+
+func (m *Manager) runWorkerOwned(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	closeAdmission func(),
+) {
 	defer close(w.done)
 	for {
 		select {
@@ -1874,6 +1887,29 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 				m.publishOutboundSent(name, msg, messageIDs)
 			}
 		case <-ctx.Done():
+			m.failPendingOutbound(name, w.queue, ctx.Err())
+			if closeAdmission != nil {
+				closeAdmission()
+			}
+			m.failPendingOutbound(name, w.queue, ctx.Err())
+			return
+		}
+	}
+}
+
+func (m *Manager) failPendingOutbound(
+	name string,
+	queue <-chan bus.OutboundMessage,
+	err error,
+) {
+	for {
+		select {
+		case msg, ok := <-queue:
+			if !ok {
+				return
+			}
+			m.publishOutboundFailed(name, msg, err, false)
+		default:
 			return
 		}
 	}
@@ -2181,7 +2217,12 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 }
 
 // runMediaWorker processes outbound media messages for a single channel.
-func (m *Manager) runMediaWorker(ctx context.Context, name string, w *channelWorker) {
+func (m *Manager) runMediaWorkerOwned(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	closeAdmission func(),
+) {
 	defer close(w.mediaDone)
 	for {
 		select {
@@ -2191,6 +2232,29 @@ func (m *Manager) runMediaWorker(ctx context.Context, name string, w *channelWor
 			}
 			_, _ = m.sendMediaWithRetry(ctx, name, w, msg)
 		case <-ctx.Done():
+			m.failPendingOutboundMedia(name, w.mediaQueue, ctx.Err())
+			if closeAdmission != nil {
+				closeAdmission()
+			}
+			m.failPendingOutboundMedia(name, w.mediaQueue, ctx.Err())
+			return
+		}
+	}
+}
+
+func (m *Manager) failPendingOutboundMedia(
+	name string,
+	queue <-chan bus.OutboundMediaMessage,
+	err error,
+) {
+	for {
+		select {
+		case msg, ok := <-queue:
+			if !ok {
+				return
+			}
+			m.publishOutboundMediaFailed(name, msg, err)
+		default:
 			return
 		}
 	}
