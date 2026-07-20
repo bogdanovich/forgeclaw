@@ -123,10 +123,7 @@ func (handler *AdmissionHandler) ServeHTTP(writer http.ResponseWriter, request *
 		handler.writeAdmissionError(connection, envelope.ID, "AUTH_FAILED", "identity verification failed")
 		return
 	}
-	responseData, err := json.Marshal(struct {
-		NodeID nodes.ID    `json:"node_id"`
-		State  nodes.State `json:"state"`
-	}{NodeID: result.Node.ID, State: result.State})
+	responseData, err := json.Marshal(result)
 	if err != nil {
 		return
 	}

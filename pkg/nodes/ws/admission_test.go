@@ -73,6 +73,13 @@ func TestAdmissionPersistsSignedIdentityOverWSS(t *testing.T) {
 	if response.OK == nil || !*response.OK {
 		t.Fatalf("authentication response = %#v", response)
 	}
+	var result nodes.AdmissionResult
+	if unmarshalErr := json.Unmarshal(response.Result, &result); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if result.NodeID != proof.NodeID || result.State != nodes.StatePendingPairing {
+		t.Fatalf("authentication result = %#v", result)
+	}
 	pending, exists, err := registry.Pending(proof.NodeID)
 	if err != nil || !exists || pending.Node.State != nodes.StatePendingPairing {
 		t.Fatalf("Pending() = %#v, exists %v, error %v", pending, exists, err)
