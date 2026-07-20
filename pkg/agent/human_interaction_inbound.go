@@ -219,6 +219,8 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 	if strings.TrimSpace(continued) != "" {
 		al.publishResponseWithContextIfNeeded(
 			ctx,
+			workspace,
+			route.AgentID,
 			route.Channel,
 			route.ChatID,
 			route.SessionKey,
@@ -977,6 +979,7 @@ func (al *AgentLoop) persistInteractionToolResult(
 	}
 	if al.contextManager != nil {
 		if err := al.contextManager.Ingest(ctx, &IngestRequest{
+			Agent:      agent,
 			SessionKey: continuationSessionKey,
 			Message:    message,
 		}); err != nil {

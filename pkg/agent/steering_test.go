@@ -2146,7 +2146,7 @@ func TestAgentLoop_Steering_DirectResponseInjectsQueuedMessageOnce(t *testing.T)
 	}
 }
 
-func TestAgentLoop_AgentForSession_UsesStoredScopeMetadata(t *testing.T) {
+func TestAgentLoop_AgentForRuntimeScope_UsesStoredScopeMetadata(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -2193,12 +2193,12 @@ func TestAgentLoop_AgentForSession_UsesStoredScopeMetadata(t *testing.T) {
 	}
 	metaStore.EnsureSessionMetadata(key, scope, []string{alias})
 
-	got := al.agentForSession(key)
+	got := al.agentForRuntimeScope(newRuntimeSessionScope(support.Workspace, key), "")
 	if got == nil {
-		t.Fatal("agentForSession() returned nil")
+		t.Fatal("agentForRuntimeScope() returned nil")
 	}
 	if got.ID != "support" {
-		t.Fatalf("agentForSession() = %q, want %q", got.ID, "support")
+		t.Fatalf("agentForRuntimeScope() = %q, want %q", got.ID, "support")
 	}
 }
 

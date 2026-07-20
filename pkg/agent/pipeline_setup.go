@@ -30,6 +30,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	var budgetReport *ContextBudgetReport
 	if !ts.opts.NoHistory {
 		resp, err := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
+			Agent:         ts.agent,
 			SessionKey:    ts.sessionKey,
 			Budget:        ts.agent.ContextWindow,
 			MaxTokens:     ts.agent.MaxTokens,

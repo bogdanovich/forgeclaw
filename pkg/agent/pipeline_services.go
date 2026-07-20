@@ -49,6 +49,7 @@ func (p *Pipeline) ingestMessage(
 		})
 	}
 	if err := p.Context.Runtime.Ingest(ctx, &IngestRequest{
+		Agent:             ts.agent,
 		SessionKey:        ts.sessionKey,
 		Message:           msg,
 		CanonicalWriteErr: canonicalWriteErr,

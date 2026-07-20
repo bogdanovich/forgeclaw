@@ -121,10 +121,10 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 	}
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
-	if err := m.ensureConversationProvenance(ctx, req.SessionKey); err != nil {
+	if err := m.ensureConversationProvenance(ctx, req.Agent, req.SessionKey); err != nil {
 		return nil, err
 	}
-	if err := m.ensureReconciled(ctx, req.SessionKey, m.sessionStore(req.SessionKey)); err != nil {
+	if err := m.ensureReconciled(ctx, req.SessionKey, m.sessionStore(req.Agent)); err != nil {
 		return nil, err
 	}
 
@@ -204,10 +204,10 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 	}
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
-	if err := m.ensureConversationProvenance(ctx, req.SessionKey); err != nil {
+	if err := m.ensureConversationProvenance(ctx, req.Agent, req.SessionKey); err != nil {
 		return err
 	}
-	if err := m.ensureReconciled(ctx, req.SessionKey, m.sessionStore(req.SessionKey)); err != nil {
+	if err := m.ensureReconciled(ctx, req.SessionKey, m.sessionStore(req.Agent)); err != nil {
 		return err
 	}
 
@@ -237,11 +237,11 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 	}
 	unlock := m.lockSession(req.SessionKey)
 	defer unlock()
-	if err := m.ensureConversationProvenance(ctx, req.SessionKey); err != nil {
+	if err := m.ensureConversationProvenance(ctx, req.Agent, req.SessionKey); err != nil {
 		return err
 	}
 	if req.CanonicalWriteErr != nil {
-		store := m.sessionStore(req.SessionKey)
+		store := m.sessionStore(req.Agent)
 		if canonicalHistoryContains(store, req.SessionKey, req.Message) {
 			return m.ensureReconciled(ctx, req.SessionKey, store)
 		}
@@ -251,7 +251,7 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 		_, err := m.engine.Ingest(ctx, req.SessionKey, []seahorse.Message{msg})
 		return err
 	}
-	store := m.sessionStore(req.SessionKey)
+	store := m.sessionStore(req.Agent)
 	if store == nil {
 		msg := providerToSeahorseMessage(req.Message)
 		_, err := m.engine.Ingest(ctx, req.SessionKey, []seahorse.Message{msg})
@@ -278,8 +278,12 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 	return m.ensureReconciled(ctx, req.SessionKey, store)
 }
 
-func (m *seahorseContextManager) ensureConversationProvenance(ctx context.Context, sessionKey string) error {
-	store := m.sessionStore(sessionKey)
+func (m *seahorseContextManager) ensureConversationProvenance(
+	ctx context.Context,
+	agent *AgentInstance,
+	sessionKey string,
+) error {
+	store := m.sessionStore(agent)
 	metadataStore, ok := store.(session.MetadataAwareSessionStore)
 	if !ok {
 		return nil
@@ -320,7 +324,11 @@ func canonicalHistoryContains(store session.SessionStore, key string, target pro
 }
 
 // Clear removes all stored context for a session (seahorse DB + JSONL).
-func (m *seahorseContextManager) Clear(ctx context.Context, sessionKey string) error {
+func (m *seahorseContextManager) Clear(
+	ctx context.Context,
+	agent *AgentInstance,
+	sessionKey string,
+) error {
 	unlock := m.lockSession(sessionKey)
 	defer unlock()
 	if err := m.engine.ClearSession(ctx, sessionKey); err != nil {
@@ -329,10 +337,8 @@ func (m *seahorseContextManager) Clear(ctx context.Context, sessionKey string) e
 	// The session may belong to a routed (non-default) agent whose JSONL
 	// store differs from the bootstrap store, so clear the owner's store.
 	sessions := m.sessions
-	if m.al != nil {
-		if agent := m.al.agentForSession(sessionKey); agent != nil && agent.Sessions != nil {
-			sessions = agent.Sessions
-		}
+	if agent != nil && agent.Sessions != nil {
+		sessions = agent.Sessions
 	}
 	if sessions != nil {
 		sessions.SetHistory(sessionKey, []providers.Message{})
@@ -432,11 +438,9 @@ func historyRevision(store session.SessionStore, key string) (memory.HistoryRevi
 	return provider.GetHistoryRevision(key)
 }
 
-func (m *seahorseContextManager) sessionStore(key string) session.SessionStore {
-	if m.al != nil {
-		if agent := m.al.agentForSession(key); agent != nil && agent.Sessions != nil {
-			return agent.Sessions
-		}
+func (m *seahorseContextManager) sessionStore(agent *AgentInstance) session.SessionStore {
+	if agent != nil && agent.Sessions != nil {
+		return agent.Sessions
 	}
 	return m.sessions
 }
@@ -462,10 +466,6 @@ func (m *seahorseContextManager) StartBackgroundReconciliation(ctx context.Conte
 				continue
 			}
 			for _, key := range agent.Sessions.ListSessions() {
-				owner := m.al.agentForSession(key)
-				if owner != nil && owner.ID != agent.ID {
-					continue
-				}
 				unlock := m.lockSession(key)
 				err := m.ensureReconciled(ctx, key, agent.Sessions)
 				unlock()

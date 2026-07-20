@@ -316,6 +316,7 @@ func TestLegacyCompact_Overflow(t *testing.T) {
 	defer closeRuntimeEvents()
 
 	err := al.contextManager.Compact(context.Background(), &CompactRequest{
+		Agent:      defaultAgent,
 		SessionKey: "session-overflow",
 		Reason:     ContextCompressReasonRetry,
 	})
@@ -377,6 +378,7 @@ func TestLegacyCompact_Overflow_ProactiveReason(t *testing.T) {
 	defer closeRuntimeEvents()
 
 	err := al.contextManager.Compact(context.Background(), &CompactRequest{
+		Agent:      defaultAgent,
 		SessionKey: "session-proactive",
 		Reason:     ContextCompressReasonProactive,
 	})
@@ -413,6 +415,7 @@ func TestLegacyCompact_Overflow_TooShortToCompress(t *testing.T) {
 	defaultAgent.Sessions.SetHistory("session-tiny", history)
 
 	err := al.contextManager.Compact(context.Background(), &CompactRequest{
+		Agent:      defaultAgent,
 		SessionKey: "session-tiny",
 		Reason:     ContextCompressReasonRetry,
 	})
@@ -448,6 +451,7 @@ func TestLegacyCompact_PostTurn_BelowThreshold(t *testing.T) {
 	defaultAgent.Sessions.SetHistory("session-small", history)
 
 	err := al.contextManager.Compact(context.Background(), &CompactRequest{
+		Agent:      defaultAgent,
 		SessionKey: "session-small",
 		Reason:     ContextCompressReasonSummarize,
 	})
@@ -504,6 +508,7 @@ func TestLegacyCompact_PostTurn_ExceedsMessageThreshold(t *testing.T) {
 	defer closeRuntimeEvents()
 
 	err := al.contextManager.Compact(context.Background(), &CompactRequest{
+		Agent:      defaultAgent,
 		SessionKey: "session-threshold",
 		Reason:     ContextCompressReasonSummarize,
 	})
@@ -791,7 +796,9 @@ func (m *noopContextManager) Assemble(_ context.Context, req *AssembleRequest) (
 }
 func (m *noopContextManager) Compact(_ context.Context, _ *CompactRequest) error { return nil }
 func (m *noopContextManager) Ingest(_ context.Context, _ *IngestRequest) error   { return nil }
-func (m *noopContextManager) Clear(_ context.Context, _ string) error            { return nil }
+func (m *noopContextManager) Clear(_ context.Context, _ *AgentInstance, _ string) error {
+	return nil
+}
 
 // trackingContextManager tracks call counts for each method.
 type trackingContextManager struct {
@@ -830,7 +837,11 @@ func (m *trackingContextManager) Ingest(_ context.Context, req *IngestRequest) e
 	return nil
 }
 
-func (m *trackingContextManager) Clear(_ context.Context, sessionKey string) error {
+func (m *trackingContextManager) Clear(
+	_ context.Context,
+	_ *AgentInstance,
+	sessionKey string,
+) error {
 	m.clearCalls.Add(1)
 	m.mu.Lock()
 	m.lastClearKey = sessionKey

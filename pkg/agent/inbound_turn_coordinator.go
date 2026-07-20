@@ -236,6 +236,8 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	if continueErr != nil {
 		al.maybePublishErrorWithPolicy(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			msg.Channel,
 			msg.ChatID,
 			claim.scope.sessionKey,
@@ -247,6 +249,8 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	if continued != "" {
 		al.publishResponseWithContextIfNeeded(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			target.Channel,
 			target.ChatID,
 			target.SessionKey,

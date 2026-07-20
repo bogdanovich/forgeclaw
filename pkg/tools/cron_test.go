@@ -28,6 +28,7 @@ type stubJobExecutor struct {
 	publishedChan   string
 	publishedChatID string
 	publishedKey    string
+	publishedAgent  string
 }
 
 func (s *stubJobExecutor) ProcessDirectWithChannel(
@@ -53,9 +54,17 @@ func (s *stubJobExecutor) ProcessScheduledWithChannel(
 	return s.response, s.err
 }
 
+func (s *stubJobExecutor) ProcessScheduledWithIdentity(
+	ctx context.Context,
+	content, sessionKey, channel, chatID string,
+) (string, string, error) {
+	response, err := s.ProcessScheduledWithChannel(ctx, content, sessionKey, channel, chatID)
+	return response, "scheduled-agent", err
+}
+
 func (s *stubJobExecutor) PublishResponseIfNeeded(
 	_ context.Context,
-	channel, chatID, sessionKey, response string,
+	_, agentID, channel, chatID, sessionKey, response string,
 ) {
 	if s.alreadySent {
 		return
@@ -64,6 +73,7 @@ func (s *stubJobExecutor) PublishResponseIfNeeded(
 	s.publishedChan = channel
 	s.publishedChatID = chatID
 	s.publishedKey = sessionKey
+	s.publishedAgent = agentID
 }
 
 func newTestCronToolWithExecutorAndConfig(t *testing.T, executor JobExecutor, cfg *config.Config) *CronTool {
@@ -1284,6 +1294,9 @@ func TestCronTool_ExecuteJobPublishesAgentResponse(t *testing.T) {
 	}
 	if executor.publishedKey != executor.lastKey {
 		t.Fatalf("published sessionKey = %q, want %q", executor.publishedKey, executor.lastKey)
+	}
+	if executor.publishedAgent != "scheduled-agent" {
+		t.Fatalf("published agent = %q, want scheduled-agent", executor.publishedAgent)
 	}
 	if executor.publishedChan != "telegram" || executor.publishedChatID != "chat-1" {
 		t.Fatalf("published target = %s/%s, want telegram/chat-1", executor.publishedChan, executor.publishedChatID)

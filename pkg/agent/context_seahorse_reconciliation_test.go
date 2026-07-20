@@ -295,13 +295,14 @@ func TestSeahorseReconciliationUsesRoutedSessionOwner(t *testing.T) {
 	key := "agent:support:direct:42"
 	supportStore.AddMessage(key, "user", "owned by support")
 	mgr.sessions = mainStore
+	supportAgent := &AgentInstance{ID: "support", Sessions: supportStore}
 	mgr.al = &AgentLoop{registry: &AgentRegistry{
 		agents: map[string]*AgentInstance{
 			"main":    {ID: "main", Sessions: mainStore},
-			"support": {ID: "support", Sessions: supportStore},
+			"support": supportAgent,
 		},
 	}}
-	if err := mgr.ensureReconciled(context.Background(), key, mgr.sessionStore(key)); err != nil {
+	if err := mgr.ensureReconciled(context.Background(), key, mgr.sessionStore(supportAgent)); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := mgr.engine.GetRetrieval().Store().GetConversationBySessionKey(context.Background(), key)

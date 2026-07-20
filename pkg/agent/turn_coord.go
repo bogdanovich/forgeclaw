@@ -198,6 +198,7 @@ func (al *AgentLoop) askSideQuestion(
 			"",
 		)
 		resp, err := al.contextManager.Assemble(ctx, &AssembleRequest{
+			Agent:         agent,
 			SessionKey:    opts.SessionKey,
 			Budget:        agent.ContextWindow,
 			MaxTokens:     agent.MaxTokens,

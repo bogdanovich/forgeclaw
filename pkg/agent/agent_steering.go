@@ -16,10 +16,17 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
+	_, routedAgent, _ := al.resolveMessageRoute(msg)
+	workspace, agentID := "", ""
+	if routedAgent != nil {
+		workspace, agentID = routedAgent.Workspace, routedAgent.ID
+	}
 	response, err := al.processMessage(ctx, msg)
 	if err != nil {
 		if !al.maybePublishErrorWithPolicy(
 			ctx,
+			workspace,
+			agentID,
 			msg.Channel,
 			msg.ChatID,
 			msg.SessionKey,
@@ -32,6 +39,8 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 	al.publishResponseWithContextIfNeeded(
 		ctx,
+		workspace,
+		agentID,
 		msg.Channel,
 		msg.ChatID,
 		msg.SessionKey,
@@ -106,6 +115,8 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	if err != nil {
 		if !al.maybePublishErrorWithPolicy(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			initialMsg.Channel,
 			initialMsg.ChatID,
 			initialMsg.SessionKey,
@@ -141,6 +152,8 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	if finalResponse != "" {
 		al.publishResponseWithContextIfNeeded(
 			ctx,
+			target.Workspace,
+			target.AgentID,
 			target.Channel,
 			target.ChatID,
 			target.SessionKey,
