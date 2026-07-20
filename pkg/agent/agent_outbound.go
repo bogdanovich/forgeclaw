@@ -31,6 +31,11 @@ const (
 	toolResultDeliveryQueued
 )
 
+type provisionalChannelManager interface {
+	SendMessageProvisional(context.Context, bus.OutboundMessage) error
+	SendMediaProvisional(context.Context, bus.OutboundMediaMessage) error
+}
+
 func (al *AgentLoop) maybePublishErrorWithPolicy(
 	ctx context.Context,
 	channel, chatID, sessionKey string,
@@ -319,7 +324,12 @@ func (al *AgentLoop) deliverFinalTurnText(
 	bus.SetOutboundTraceScopes(&msg, []runtimeevents.TraceScope{traceScope})
 	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
-		if err := al.channelManager.SendMessageProvisional(ctx, msg); err != nil {
+		sender, ok := al.channelManager.(provisionalChannelManager)
+		if !ok {
+			al.bus.PublishOutbound(ctx, msg)
+			return
+		}
+		if err := sender.SendMessageProvisional(ctx, msg); err != nil {
 			logger.WarnCF("agent", "Failed to deliver final turn message synchronously; falling back to bus",
 				map[string]any{
 					"agent_id": agent.ID,
@@ -371,8 +381,8 @@ func (al *AgentLoop) deliverToolResultToUser(
 		}
 		if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 			var err error
-			if toolName == "final_turn" {
-				err = al.channelManager.SendMediaProvisional(ctx, outboundMedia)
+			if sender, ok := al.channelManager.(provisionalChannelManager); toolName == "final_turn" && ok {
+				err = sender.SendMediaProvisional(ctx, outboundMedia)
 			} else {
 				err = al.channelManager.SendMedia(ctx, outboundMedia)
 			}
