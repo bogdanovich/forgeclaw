@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync"
@@ -21,6 +22,7 @@ type SessionHub struct {
 	mu       sync.Mutex
 	sessions map[nodes.ID]*sessionEntry
 	closed   bool
+	active   sync.WaitGroup
 }
 
 func NewSessionHub() *SessionHub {
@@ -33,7 +35,8 @@ func (hub *SessionHub) Claim(
 	id nodes.ID,
 	connection io.Closer,
 	activate func() error,
-) (func() bool, error) {
+	deactivate func() error,
+) (func() (bool, error), error) {
 	entry := &sessionEntry{connection: connection}
 	hub.mu.Lock()
 	if hub.closed {
@@ -54,18 +57,28 @@ func (hub *SessionHub) Claim(
 			return nil, err
 		}
 	}
+	hub.active.Add(1)
 	hub.mu.Unlock()
 	if previous != nil {
 		_ = previous.connection.Close()
 	}
-	return func() bool {
-		hub.mu.Lock()
-		defer hub.mu.Unlock()
-		if hub.sessions[id] != entry {
-			return false
-		}
-		delete(hub.sessions, id)
-		return true
+	var once sync.Once
+	var owned bool
+	var deactivateErr error
+	return func() (bool, error) {
+		once.Do(func() {
+			hub.mu.Lock()
+			if hub.sessions[id] == entry {
+				owned = true
+				if deactivate != nil {
+					deactivateErr = deactivate()
+				}
+				delete(hub.sessions, id)
+			}
+			hub.mu.Unlock()
+			hub.active.Done()
+		})
+		return owned, deactivateErr
 	}, nil
 }
 
@@ -76,19 +89,29 @@ func (hub *SessionHub) Connected(id nodes.ID) bool {
 	return exists
 }
 
-func (hub *SessionHub) Close() {
+func (hub *SessionHub) Close(ctx context.Context) error {
 	hub.mu.Lock()
-	if hub.closed {
-		hub.mu.Unlock()
-		return
-	}
-	hub.closed = true
-	entries := make([]*sessionEntry, 0, len(hub.sessions))
-	for _, entry := range hub.sessions {
-		entries = append(entries, entry)
+	entries := make([]*sessionEntry, 0)
+	if !hub.closed {
+		hub.closed = true
+		entries = make([]*sessionEntry, 0, len(hub.sessions))
+		for _, entry := range hub.sessions {
+			entries = append(entries, entry)
+		}
 	}
 	hub.mu.Unlock()
 	for _, entry := range entries {
 		_ = entry.connection.Close()
+	}
+	done := make(chan struct{})
+	go func() {
+		hub.active.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
 	}
 }

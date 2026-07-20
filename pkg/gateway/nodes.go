@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -10,6 +12,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/nodes"
 	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
 )
+
+const nodeAdmissionDrainTimeout = 5 * time.Second
 
 type nodeAdmissionRoutes interface {
 	RegisterHTTPHandler(string, http.Handler) error
@@ -39,18 +43,9 @@ func setupNodeAdmission(
 
 func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	if cfg == nil || !cfg.Nodes.Enabled {
-		if runtime.mounted {
-			runtime.routes.UnregisterHTTPHandler(nodews.Path)
-		}
-		if runtime.handler != nil {
-			runtime.handler.Close()
-		}
-		runtime.registry = nil
-		runtime.registryPath = ""
-		runtime.handler = nil
-		runtime.sessions = nil
-		runtime.mounted = false
-		return nil
+		ctx, cancel := context.WithTimeout(context.Background(), nodeAdmissionDrainTimeout)
+		defer cancel()
+		return runtime.Close(ctx)
 	}
 
 	registryPath := nodes.RegistryPath(cfg.WorkspacePath())
@@ -93,7 +88,13 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	runtime.sessions = sessions
 	runtime.mounted = true
 	if wasMounted && !sameRegistry && previousHandler != nil {
-		previousHandler.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), nodeAdmissionDrainTimeout)
+		if closeErr := previousHandler.Close(ctx); closeErr != nil {
+			logger.WarnCF("nodes", "Node sessions did not drain after workspace change", map[string]any{
+				"error": closeErr.Error(),
+			})
+		}
+		cancel()
 	}
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
@@ -102,6 +103,18 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	return nil
 }
 
-func (runtime *nodeAdmissionRuntime) Close() {
-	_ = runtime.Reconcile(nil)
+func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
+	if runtime.mounted {
+		runtime.routes.UnregisterHTTPHandler(nodews.Path)
+	}
+	var err error
+	if runtime.handler != nil {
+		err = runtime.handler.Close(ctx)
+	}
+	runtime.registry = nil
+	runtime.registryPath = ""
+	runtime.handler = nil
+	runtime.sessions = nil
+	runtime.mounted = false
+	return err
 }

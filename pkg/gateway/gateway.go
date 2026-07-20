@@ -720,7 +720,11 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 
 	// reload should not stop channel manager
 	if !isReload && runningServices.NodeAdmission != nil {
-		runningServices.NodeAdmission.Close()
+		if err := runningServices.NodeAdmission.Close(shutdownCtx); err != nil {
+			logger.WarnCF("nodes", "Node sessions did not drain during gateway shutdown", map[string]any{
+				"error": err.Error(),
+			})
+		}
 	}
 	if !isReload && runningServices.ChannelManager != nil {
 		runningServices.ChannelManager.StopAll(shutdownCtx)
