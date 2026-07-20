@@ -108,6 +108,42 @@ func TestExecutionPlanRejectsExtremeTimestampLifetime(t *testing.T) {
 	}
 }
 
+func TestLocalCommandPolicyRejectsPlanTooFarInFuture(t *testing.T) {
+	descriptor := invocationDescriptor(RiskWrite)
+	preparedAt := time.Unix(1000, 0)
+	plan, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"argv":["git","status"]}`)),
+		descriptor,
+		"local",
+		"policy-1",
+		preparedAt,
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := LocalCommandPolicy{
+		Revision:          "policy-1",
+		AllowedCommands:   []string{descriptor.Name},
+		MaximumRisk:       RiskWrite,
+		MaxTimeoutSeconds: 60,
+		MaxOutputBytes:    1024,
+	}
+	if err := policy.Authorize(plan, descriptor, preparedAt.Add(-MaxExecutionPlanSkew)); err != nil {
+		t.Fatalf("Authorize() rejected bounded clock skew: %v", err)
+	}
+	if err := policy.Authorize(
+		plan,
+		descriptor,
+		preparedAt.Add(-MaxExecutionPlanSkew-time.Second),
+	); !errors.Is(
+		err,
+		ErrCommandDenied,
+	) {
+		t.Fatalf("future plan Authorize() error = %v", err)
+	}
+}
+
 func TestRegistrationApprovedCommandIntersectsCatalogAndApproval(t *testing.T) {
 	descriptor := invocationDescriptor(RiskWrite)
 	registration := Registration{

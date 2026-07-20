@@ -20,6 +20,7 @@ const (
 	MaxInvocationOutput     = 16 * 1024 * 1024
 	MaxPolicyRevisionLength = 128
 	MaxExecutionPlanTTL     = 5 * time.Minute
+	MaxExecutionPlanSkew    = 30 * time.Second
 )
 
 var (
@@ -232,8 +233,11 @@ func (policy LocalCommandPolicy) Authorize(
 		plan.PolicyRevision != policy.Revision {
 		return fmt.Errorf("%w: plan does not match current policy or descriptor", ErrCommandDenied)
 	}
-	if !now.Before(time.Unix(plan.ExpiresAt, 0)) {
-		return fmt.Errorf("%w: plan expired", ErrCommandDenied)
+	nowUnix := now.Unix()
+	if nowUnix <= 0 ||
+		(plan.PreparedAt > nowUnix && plan.PreparedAt-nowUnix > int64(MaxExecutionPlanSkew/time.Second)) ||
+		nowUnix >= plan.ExpiresAt {
+		return fmt.Errorf("%w: plan is not currently valid", ErrCommandDenied)
 	}
 	_, input, err := canonicalInvocationInputValue(plan.Input)
 	if err != nil {
