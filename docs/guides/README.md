@@ -11,4 +11,5 @@ Task-oriented guides for setup, configuration, and common PicoClaw workflows.
 - [Providers & Model Configuration](providers.md): `model_list`, providers, and model routing.
 - [Spawn & Async Tasks](spawn-tasks.md): background work, long-running tasks, and sub-agent orchestration.
 - [PicoClaw Hardware Compatibility List](hardware-compatibility.md): tested boards and platform notes.
+- [Node Companion](node-companion.md): build and run the slim Linux/macOS remote node process.
 - [Using Antigravity Provider in PicoClaw](ANTIGRAVITY_USAGE.md): Google Cloud Code Assist setup and usage.
