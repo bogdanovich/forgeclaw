@@ -26,7 +26,28 @@ var ErrInvocationCanceled = errors.New("node invocation canceled")
 var errCancellationRequested = errors.New("node invocation cancellation requested")
 
 type activeInvocation struct {
-	cancel context.CancelCauseFunc
+	mu                    sync.Mutex
+	cancel                context.CancelCauseFunc
+	handlerFinished       bool
+	cancellationDelivered bool
+}
+
+func (invocation *activeInvocation) signalCancellation() bool {
+	invocation.mu.Lock()
+	defer invocation.mu.Unlock()
+	if invocation.handlerFinished {
+		return false
+	}
+	invocation.cancellationDelivered = true
+	invocation.cancel(errCancellationRequested)
+	return true
+}
+
+func (invocation *activeInvocation) finishHandler() bool {
+	invocation.mu.Lock()
+	defer invocation.mu.Unlock()
+	invocation.handlerFinished = true
+	return invocation.cancellationDelivered
 }
 
 type recordedInvocationError struct {
@@ -195,8 +216,9 @@ func (runtime *Runtime) executeAccepted(
 		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
 	}
 	result, executeErr := handler.execute(invokeCtx, plan.Input)
+	cancellationDelivered := invocation.finishHandler()
 	if executeErr != nil {
-		if errors.Is(context.Cause(invokeCtx), errCancellationRequested) {
+		if cancellationDelivered {
 			if _, err := runtime.ledger.CompleteCancellation(plan.InvocationID); err != nil {
 				return nil, fmt.Errorf(
 					"%w: persist canceled result: %v",
@@ -283,7 +305,16 @@ func (runtime *Runtime) Cancel(
 		}
 		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
 	}
-	invocation.cancel(errCancellationRequested)
+	if !invocation.signalCancellation() {
+		current, currentFound, lookupErr := runtime.ledger.Lookup(request.InvocationID)
+		if lookupErr != nil {
+			return nodes.InvocationRecord{}, lookupErr
+		}
+		if currentFound && current.State.Terminal() {
+			return current, nil
+		}
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
 	return record, nil
 }
 

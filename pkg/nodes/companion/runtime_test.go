@@ -360,6 +360,50 @@ func TestRuntimeCancellationDoesNotRewriteSuccessfulResult(t *testing.T) {
 	}
 }
 
+func TestRuntimeLateCancellationDoesNotRewriteHandlerFailure(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	commandRuntime, err := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"test.fail.v1"}),
+		ledger,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := runtimeFailingHandler{}
+	descriptor := handler.descriptor()
+	commandRuntime.handlers[descriptor.Name] = handler
+	commandRuntime.catalog.Commands = append(commandRuntime.catalog.Commands, descriptor)
+	plan := testTransportPlan(t, commandRuntime, descriptor, "late-cancel-failure")
+	barrier := &failureTransitionBarrier{
+		invocationStore: ledger,
+		entered:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	commandRuntime.ledger = barrier
+
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, invokeErr := commandRuntime.Invoke(t.Context(), plan)
+		invokeDone <- invokeErr
+	}()
+	<-barrier.entered
+	if _, cancelErr := commandRuntime.Cancel(nodes.InvocationCancelRequest{
+		InvocationID: plan.InvocationID,
+	}); !errors.Is(cancelErr, ErrInvocationOutcomeUnknown) {
+		t.Fatalf("late Cancel() error = %v", cancelErr)
+	}
+	close(barrier.release)
+	if invokeErr := <-invokeDone; !errors.Is(invokeErr, errRuntimeHandlerFailure) {
+		t.Fatalf("Invoke() error = %v", invokeErr)
+	}
+	record, found, err := commandRuntime.Invocation(plan.InvocationID)
+	if err != nil || !found || record.State != nodes.InvocationFailed || record.Cancellation != nil {
+		t.Fatalf("failed late-cancel record = %#v, found %v, error %v", record, found, err)
+	}
+}
+
 func TestRuntimeRejectsUnsupportedCancellationWithoutMutation(t *testing.T) {
 	ledger := newMemoryInvocationLedger()
 	commandRuntime, err := NewRuntime(
@@ -427,6 +471,39 @@ type cancellationTransitionBarrier struct {
 	invocationStore
 	entered chan struct{}
 	release chan struct{}
+}
+
+type failureTransitionBarrier struct {
+	invocationStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (barrier *failureTransitionBarrier) CompleteFailure(
+	invocationID string,
+	failure nodes.InvocationFailure,
+) (nodes.InvocationRecord, error) {
+	close(barrier.entered)
+	<-barrier.release
+	return barrier.invocationStore.CompleteFailure(invocationID, failure)
+}
+
+var errRuntimeHandlerFailure = errors.New("runtime handler failed")
+
+type runtimeFailingHandler struct{}
+
+func (runtimeFailingHandler) descriptor() nodes.CommandDescriptor {
+	return nodes.CommandDescriptor{
+		Name:           "test.fail.v1",
+		InputSchema:    json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema:   json.RawMessage(`{"type":"object"}`),
+		Risk:           nodes.RiskRead,
+		SupportsCancel: true,
+	}
+}
+
+func (runtimeFailingHandler) execute(context.Context, json.RawMessage) (any, error) {
+	return nil, errRuntimeHandlerFailure
 }
 
 func (barrier *cancellationTransitionBarrier) RequestCancellation(
