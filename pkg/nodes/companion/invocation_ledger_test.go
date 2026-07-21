@@ -202,7 +202,7 @@ func TestInvocationLedgerCancellationDoesNotRewriteSuccess(t *testing.T) {
 	if _, err := ledger.MarkRunning(plan.InvocationID); err != nil {
 		t.Fatal(err)
 	}
-	requested, err := ledger.RequestCancellation(plan.InvocationID)
+	_, err := ledger.RequestCancellation(plan.InvocationID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,9 +211,7 @@ func TestInvocationLedgerCancellationDoesNotRewriteSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completed.State != nodes.InvocationSucceeded || completed.Cancellation == nil ||
-		completed.Cancellation.RequestedAt != requested.Cancellation.RequestedAt ||
-		completed.Cancellation.TerminationConfirmed {
+	if completed.State != nodes.InvocationSucceeded || completed.Cancellation != nil {
 		t.Fatalf("successful cancellation race = %#v", completed)
 	}
 	terminal, err := ledger.RequestCancellation(plan.InvocationID)

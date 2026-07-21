@@ -279,6 +279,73 @@ func TestClientDispatchesInvocationsConcurrentlyAndServesQueries(t *testing.T) {
 	}
 }
 
+func TestClientCancelsInvocationOverAuthenticatedSession(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	policy := testRuntimePolicy([]string{"test.block.v1"})
+	commandRuntime, err := NewRuntime(identity.ID, "test", policy, newMemoryInvocationLedger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newBlockingHandler()
+	descriptor := handler.descriptor()
+	commandRuntime.handlers[descriptor.Name] = handler
+	commandRuntime.catalog.Commands = append(commandRuntime.catalog.Commands, descriptor)
+	client := testRuntimeClientForServer(t, server, identity, commandRuntime)
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, approveErr := registry.Approve(result.NodeID, nodes.PairingApproval{
+		AllowedCommands: []string{descriptor.Name},
+		At:              time.Now().Unix(),
+	}); approveErr != nil {
+		t.Fatal(approveErr)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	plan := testTransportPlan(t, commandRuntime, descriptor, "cancel")
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, invokeErr := admission.Invoke(t.Context(), identity.ID, plan)
+		invokeDone <- invokeErr
+	}()
+	select {
+	case <-handler.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("invocation did not start")
+	}
+	record, err := admission.CancelInvocation(t.Context(), identity.ID, plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationRunning || record.Cancellation == nil ||
+		record.Cancellation.TerminationConfirmed {
+		t.Fatalf("cancellation acknowledgement = %#v", record)
+	}
+	if invokeErr := <-invokeDone; invokeErr == nil ||
+		!strings.Contains(invokeErr.Error(), "INVOCATION_CANCELED") {
+		t.Fatalf("canceled Invoke() error = %v", invokeErr)
+	}
+	record, err = admission.Invocation(t.Context(), identity.ID, plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationCanceled || record.Cancellation == nil ||
+		!record.Cancellation.TerminationConfirmed {
+		t.Fatalf("terminal cancellation record = %#v", record)
+	}
+	cancel()
+	if runErr := <-done; runErr != nil {
+		t.Fatal(runErr)
+	}
+}
+
 func TestRuntimeConcurrentDuplicateExecutesOnce(t *testing.T) {
 	commandRuntime, err := NewRuntime(
 		nodes.ID("node_test"),
@@ -353,7 +420,8 @@ func (*blockingHandler) descriptor() nodes.CommandDescriptor {
 		OutputSchema: json.RawMessage(
 			`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}},"additionalProperties":false}`,
 		),
-		Risk: nodes.RiskRead,
+		Risk:           nodes.RiskRead,
+		SupportsCancel: true,
 	}
 }
 

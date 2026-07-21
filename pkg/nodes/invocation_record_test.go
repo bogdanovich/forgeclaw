@@ -67,6 +67,21 @@ func TestInvocationRecordValidatesCancellationMetadata(t *testing.T) {
 	if err := record.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	record.Cancellation = nil
+	if err := record.Validate(); err == nil {
+		t.Fatal("explicit cancellation validated without termination proof")
+	}
+	record.Failure = &InvocationFailure{Code: "PLAN_EXPIRED", Message: "expired"}
+	if err := record.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	record.State = InvocationSucceeded
+	record.Result = json.RawMessage(`{"ok":true}`)
+	record.Failure = nil
+	record.Cancellation = &InvocationCancellation{RequestedAt: 2}
+	if err := record.Validate(); err == nil {
+		t.Fatal("successful invocation retained cancellation metadata")
+	}
 }
 
 func TestInvocationCancelRequestValidation(t *testing.T) {

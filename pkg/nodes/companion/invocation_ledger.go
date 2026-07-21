@@ -241,6 +241,7 @@ func (ledger *InvocationLedger) CompleteSuccess(
 		record.UpdatedAt = now
 		record.CompletedAt = now
 		record.Result = append(json.RawMessage(nil), result...)
+		record.Cancellation = nil
 		return nil
 	})
 }
@@ -257,6 +258,7 @@ func (ledger *InvocationLedger) CompleteFailure(
 		record.UpdatedAt = now
 		record.CompletedAt = now
 		record.Failure = &nodes.InvocationFailure{Code: failure.Code, Message: failure.Message}
+		record.Cancellation = nil
 		return nil
 	})
 }

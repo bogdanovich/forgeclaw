@@ -131,19 +131,36 @@ func (record InvocationRecord) Validate() error {
 	case InvocationSucceeded:
 		if record.CompletedAt != record.UpdatedAt || len(record.Result) == 0 ||
 			len(record.Result) > MaxInvocationOutput || !json.Valid(record.Result) ||
-			record.Failure != nil {
+			record.Failure != nil || record.Cancellation != nil {
 			return fmt.Errorf("%w: malformed successful result", ErrInvalidInvocationRecord)
 		}
-	case InvocationFailed, InvocationCanceled:
+	case InvocationFailed:
 		if record.CompletedAt != record.UpdatedAt || len(record.Result) != 0 ||
-			record.Failure == nil {
+			record.Failure == nil || record.Cancellation != nil {
 			return fmt.Errorf("%w: malformed terminal failure", ErrInvalidInvocationRecord)
 		}
 		if err := record.Failure.Validate(); err != nil {
 			return err
 		}
+	case InvocationCanceled:
+		if record.CompletedAt != record.UpdatedAt || len(record.Result) != 0 ||
+			record.Failure == nil {
+			return fmt.Errorf("%w: malformed terminal cancellation", ErrInvalidInvocationRecord)
+		}
+		if err := record.Failure.Validate(); err != nil {
+			return err
+		}
+		if record.Cancellation == nil {
+			if record.Failure.Code != "PLAN_EXPIRED" {
+				return fmt.Errorf("%w: unproven terminal cancellation", ErrInvalidInvocationRecord)
+			}
+		} else if record.Failure.Code != "CANCELED" ||
+			!record.Cancellation.TerminationConfirmed {
+			return fmt.Errorf("%w: unconfirmed terminal cancellation", ErrInvalidInvocationRecord)
+		}
 	default:
-		if record.CompletedAt != 0 || len(record.Result) != 0 || record.Failure != nil {
+		if record.CompletedAt != 0 || len(record.Result) != 0 || record.Failure != nil ||
+			(record.State == InvocationAccepted && record.Cancellation != nil) {
 			return fmt.Errorf("%w: nonterminal record contains a result", ErrInvalidInvocationRecord)
 		}
 	}
