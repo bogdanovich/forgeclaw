@@ -4,7 +4,9 @@ package companion
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -46,6 +48,11 @@ func startSystemExecProcess(command *exec.Cmd) (systemExecProcess, error) {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	// User code cannot spawn before the process belongs to the job.
+	command.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
 	if err = command.Start(); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, err
@@ -59,22 +66,30 @@ func startSystemExecProcess(command *exec.Cmd) (systemExecProcess, error) {
 		uint32(command.Process.Pid),
 	)
 	if err != nil {
-		return nil, cleanupUncontainedWindowsSystemExec(command, job, 0, err)
+		return nil, cleanupWindowsSystemExecStart(command, job, 0, false, err)
 	}
 	if err = windows.AssignProcessToJobObject(job, handle); err != nil {
-		return nil, cleanupUncontainedWindowsSystemExec(command, job, handle, err)
+		return nil, cleanupWindowsSystemExecStart(command, job, handle, false, err)
+	}
+	if err = resumeWindowsSystemExecProcess(uint32(command.Process.Pid)); err != nil {
+		return nil, cleanupWindowsSystemExecStart(command, job, handle, true, err)
 	}
 	return &windowsSystemExecProcess{command: command, job: job, handle: handle}, nil
 }
 
-func cleanupUncontainedWindowsSystemExec(
+func cleanupWindowsSystemExecStart(
 	command *exec.Cmd,
 	job windows.Handle,
 	handle windows.Handle,
+	contained bool,
 	cause error,
 ) error {
-	if command != nil && command.Process != nil {
+	if contained {
+		_ = windows.TerminateJobObject(job, 1)
+	} else if command != nil && command.Process != nil {
 		_ = command.Process.Kill()
+	}
+	if command != nil && command.Process != nil {
 		_ = command.Wait()
 	}
 	if handle != 0 {
@@ -82,6 +97,46 @@ func cleanupUncontainedWindowsSystemExec(
 	}
 	_ = windows.CloseHandle(job)
 	return cause
+}
+
+func resumeWindowsSystemExecProcess(pid uint32) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return fmt.Errorf("snapshot system.exec process threads: %w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	if err = windows.Thread32First(snapshot, &entry); err != nil {
+		return fmt.Errorf("enumerate system.exec process threads: %w", err)
+	}
+	for {
+		if entry.OwnerProcessID == pid {
+			thread, openErr := windows.OpenThread(
+				windows.THREAD_SUSPEND_RESUME,
+				false,
+				entry.ThreadID,
+			)
+			if openErr != nil {
+				return fmt.Errorf("open system.exec initial thread: %w", openErr)
+			}
+			previousCount, resumeErr := windows.ResumeThread(thread)
+			_ = windows.CloseHandle(thread)
+			if resumeErr != nil {
+				return fmt.Errorf("resume system.exec initial thread: %w", resumeErr)
+			}
+			if previousCount != 1 {
+				return fmt.Errorf(
+					"system.exec initial thread had unexpected suspend count %d",
+					previousCount,
+				)
+			}
+			return nil
+		}
+		if err = windows.Thread32Next(snapshot, &entry); err != nil {
+			break
+		}
+	}
+	return errors.New("system.exec initial thread was not found")
 }
 
 func (process *windowsSystemExecProcess) wait() error {
