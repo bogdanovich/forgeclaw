@@ -135,9 +135,7 @@ func (c *ToolFeedbackCoordinator) deliver(
 		return nil, ErrNotRunning
 	}
 	defer entry.opMu.Unlock()
-	if err := c.retryPendingCleanup(ctx, entry); err != nil {
-		return nil, err
-	}
+	c.retryPendingCleanup(ctx, entry)
 
 	entry.mu.Lock()
 	if entry.terminal {
@@ -294,16 +292,15 @@ func (c *ToolFeedbackCoordinator) replaceTrackedMessage(
 func (c *ToolFeedbackCoordinator) retryPendingCleanup(
 	ctx context.Context,
 	entry *toolFeedbackEntry,
-) error {
+) {
 	entry.mu.Lock()
 	pending := append([]pendingToolFeedbackCleanup(nil), entry.pendingCleanup...)
 	entry.pendingCleanup = nil
 	entry.mu.Unlock()
 	if len(pending) == 0 {
-		return nil
+		return
 	}
 	remaining := make([]pendingToolFeedbackCleanup, 0, len(pending))
-	var firstErr error
 	for _, cleanup := range pending {
 		if !time.Now().Before(cleanup.expiresAt) {
 			continue
@@ -317,15 +314,11 @@ func (c *ToolFeedbackCoordinator) retryPendingCleanup(
 				continue
 			}
 			remaining = append(remaining, cleanup)
-			if firstErr == nil {
-				firstErr = err
-			}
 		}
 	}
 	entry.mu.Lock()
 	entry.pendingCleanup = append(remaining, entry.pendingCleanup...)
 	entry.mu.Unlock()
-	return firstErr
 }
 
 func newPendingToolFeedbackCleanup(message trackedToolFeedbackMessage) pendingToolFeedbackCleanup {
@@ -392,7 +385,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	separate := c.separateMessages()
 	entry := terminal.entry
 	entry.opMu.Lock()
-	_ = c.retryPendingCleanup(ctx, entry)
+	c.retryPendingCleanup(ctx, entry)
 	entry.mu.Lock()
 	if terminal.completed || terminal.absorbed || entry.retired || !entry.terminal ||
 		entry.terminalGeneration != terminal.generation {
@@ -439,7 +432,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	}
 	entry.mu.Unlock()
 	c.animator.Clear(terminal.key)
-	_ = c.retryPendingCleanup(ctx, entry)
+	c.retryPendingCleanup(ctx, entry)
 	entry.mu.Lock()
 	pendingCleanup := len(entry.pendingCleanup) != 0
 	if !pendingCleanup && !terminal.retain {
@@ -742,7 +735,7 @@ func (c *ToolFeedbackCoordinator) maintainTerminal(terminal *toolFeedbackTermina
 		return
 	}
 	entry.mu.Unlock()
-	_ = c.retryPendingCleanup(context.Background(), entry)
+	c.retryPendingCleanup(context.Background(), entry)
 	entry.mu.Lock()
 	if len(entry.pendingCleanup) != 0 {
 		entry.mu.Unlock()

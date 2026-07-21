@@ -538,6 +538,25 @@ func (m *Manager) completeToolFeedbackTerminals(
 	}
 }
 
+func (m *Manager) beginOutboundToolFeedbackTerminals(
+	channelName string,
+	ch Channel,
+	msg bus.OutboundMessage,
+) []*toolFeedbackTerminal {
+	if m == nil || m.toolFeedback == nil || outboundMessageIsToolFeedback(msg) ||
+		!OutboundMessageDismissesTrackedToolFeedback(msg) {
+		return nil
+	}
+	return m.beginToolFeedbackTerminals(
+		channelName,
+		ch,
+		outboundMessageChatID(msg),
+		&msg.Context,
+		msg.SessionKey,
+		msg.TraceScopes,
+	)
+}
+
 func (m *Manager) deliverToolFeedback(
 	ctx context.Context,
 	channelName string,
@@ -2030,6 +2049,7 @@ func (m *Manager) runWorkerOwned(
 			}
 
 			// Step 3: Send all chunks and publish one outcome for the logical message.
+			terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
 			var messageIDs []string
 			delivered := true
 			for _, chunk := range chunks {
@@ -2045,6 +2065,7 @@ func (m *Manager) runWorkerOwned(
 				}
 				messageIDs = append(messageIDs, chunkIDs...)
 			}
+			m.completeToolFeedbackTerminals(ctx, terminals, delivered)
 			if delivered {
 				m.publishOutboundSent(name, msg, messageIDs)
 			}
@@ -2123,7 +2144,12 @@ func (m *Manager) sendWithRetry(
 	w *channelWorker,
 	msg bus.OutboundMessage,
 ) ([]string, bool, bool, error) {
-	return m.sendWithRetryPolicy(ctx, name, w, msg, true, publishDefinitiveOutcome)
+	terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
+	messageIDs, delivered, ambiguous, err := m.sendWithRetryPolicy(
+		ctx, name, w, msg, true, publishDefinitiveOutcome,
+	)
+	m.completeToolFeedbackTerminals(ctx, terminals, delivered)
+	return messageIDs, delivered, ambiguous, err
 }
 
 func (m *Manager) sendWithRetryPolicy(
@@ -2157,25 +2183,9 @@ func (m *Manager) sendWithRetryPolicy(
 	}
 
 	isToolFeedback := outboundMessageIsToolFeedback(msg)
-	terminalSucceeded := false
-	var terminals []*toolFeedbackTerminal
-	if m.toolFeedback != nil && !isToolFeedback && OutboundMessageDismissesTrackedToolFeedback(msg) {
-		terminals = m.beginToolFeedbackTerminals(
-			name,
-			w.ch,
-			outboundMessageChatID(msg),
-			&msg.Context,
-			msg.SessionKey,
-			msg.TraceScopes,
-		)
-		defer func() {
-			m.completeToolFeedbackTerminals(ctx, terminals, terminalSucceeded)
-		}()
-	}
 
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
-		terminalSucceeded = true
 		if outcome.success() {
 			m.publishOutboundSent(name, msg, msgIDs)
 		}
@@ -2193,7 +2203,6 @@ func (m *Manager) sendWithRetryPolicy(
 			msgIDs, lastErr = w.ch.Send(ctx, msg)
 		}
 		if lastErr == nil {
-			terminalSucceeded = true
 			if attempt > 0 {
 				logger.InfoCF("channels", "Outbound send recovered after retry", map[string]any{
 					"channel":        name,
@@ -2982,6 +2991,11 @@ func (m *Manager) sendMessageWithRetryPolicy(
 			outcome, channelName, msg, fmt.Errorf("channel %s has no active worker", channelName),
 		)
 	}
+	terminals := m.beginOutboundToolFeedbackTerminals(channelName, w.ch, msg)
+	terminalSucceeded := false
+	defer func() {
+		m.completeToolFeedbackTerminals(ctx, terminals, terminalSucceeded)
+	}()
 
 	maxLen := 0
 	if mlp, ok := w.ch.(MessageLengthProvider); ok {
@@ -3012,6 +3026,7 @@ func (m *Manager) sendMessageWithRetryPolicy(
 		if outcome.success() {
 			m.publishOutboundSent(channelName, msg, messageIDs)
 		}
+		terminalSucceeded = true
 	} else {
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
@@ -3024,6 +3039,7 @@ func (m *Manager) sendMessageWithRetryPolicy(
 				ambiguous,
 			)
 		}
+		terminalSucceeded = true
 	}
 	return nil
 }

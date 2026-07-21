@@ -210,6 +210,53 @@ func TestToolFeedbackCoordinator_CleanupFailureIsRetried(t *testing.T) {
 	}
 }
 
+func TestToolFeedbackCoordinator_CleanupFailureDoesNotBlockCurrentDelivery(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteAttempts := 0
+	var editedMessageID string
+	operations := toolFeedbackOperations{
+		edit: func(_ context.Context, _, messageID, _ string) error {
+			if messageID == "progress-1" {
+				return ErrSendFailed
+			}
+			editedMessageID = messageID
+			return nil
+		},
+		delete: func(context.Context, string, string) error {
+			deleteAttempts++
+			return ErrTemporary
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	ids, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-2"}, nil },
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) {
+		t.Fatalf("replacement = (%v, %v), want [progress-2], nil", ids, err)
+	}
+	ids, err = coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "third", operations,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("cleanup failure unexpectedly forced another replacement")
+			return nil, nil
+		},
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) ||
+		editedMessageID != "progress-2" || deleteAttempts != 2 {
+		t.Fatalf(
+			"current update = (%v, %v), edited=%q deletes=%d; want [progress-2], nil, progress-2, 2",
+			ids, err, editedMessageID, deleteAttempts,
+		)
+	}
+}
+
 func TestToolFeedbackCoordinator_ReplacementTerminalDeletesBothMessages(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()

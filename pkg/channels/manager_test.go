@@ -226,6 +226,9 @@ type toolFeedbackTestChannel struct {
 	mockChannel
 	mu          sync.Mutex
 	nextID      int
+	sendCalls   int
+	failSendAt  int
+	maxLen      int
 	sendErr     error
 	operations  []string
 	edited      []string
@@ -258,12 +261,20 @@ func (c *toolFeedbackStreamingTestChannel) BeginStream(context.Context, string) 
 func (c *toolFeedbackTestChannel) Send(_ context.Context, msg bus.OutboundMessage) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sendCalls++
 	c.operations = append(c.operations, "send:"+msg.Content)
+	if c.failSendAt > 0 && c.sendCalls == c.failSendAt {
+		return nil, ErrSendFailed
+	}
 	if c.sendErr != nil {
 		return nil, c.sendErr
 	}
 	c.nextID++
 	return []string{fmt.Sprintf("msg-%d", c.nextID)}, nil
+}
+
+func (c *toolFeedbackTestChannel) MaxMessageLength() int {
+	return c.maxLen
 }
 
 func (c *toolFeedbackTestChannel) SendMedia(
@@ -2590,6 +2601,69 @@ func TestSendWithRetry_FailedFinalKeepsProgressEditable(t *testing.T) {
 	defer ch.mu.Unlock()
 	if len(ch.deleted) != 0 || ch.operations[len(ch.operations)-1] != "edit:msg-1" {
 		t.Fatalf("operations = %v deleted = %v, want retained progress edit", ch.operations, ch.deleted)
+	}
+}
+
+func TestLogicalSplitFailureKeepsProgressEditable(t *testing.T) {
+	for _, mode := range []string{"synchronous", "worker"} {
+		t.Run(mode, func(t *testing.T) {
+			m := newTestManager()
+			enableTestToolFeedbackCoordinator(t, m, false)
+			ch := &toolFeedbackTestChannel{maxLen: 5}
+			w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+			m.channels["test"] = ch
+			m.workers["test"] = w
+			traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+			feedback := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "work",
+				TraceScopes: []runtimeevents.TraceScope{traceScope},
+				Context: bus.InboundContext{
+					Channel: "test", ChatID: "chat-1",
+					Raw: map[string]string{"message_kind": "tool_feedback"},
+				},
+			})
+			if _, sent, _, err := m.sendWithRetry(
+				context.Background(), "test", w, feedback,
+			); err != nil || !sent {
+				t.Fatalf("feedback send = (%v, %v)", sent, err)
+			}
+			ch.mu.Lock()
+			ch.failSendAt = 3
+			ch.mu.Unlock()
+			final := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "hello world",
+				TraceScopes: []runtimeevents.TraceScope{traceScope},
+				Context: bus.InboundContext{
+					Channel: "test", ChatID: "chat-1",
+					Raw: map[string]string{"message_kind": "final_reply", "outbound_kind": "final"},
+				},
+			})
+			if mode == "synchronous" {
+				if err := m.SendMessage(context.Background(), final); err == nil {
+					t.Fatal("partial split delivery unexpectedly succeeded")
+				}
+			} else {
+				w.queue = make(chan bus.OutboundMessage, 1)
+				w.done = make(chan struct{})
+				w.queue <- final
+				close(w.queue)
+				m.runWorker(context.Background(), "test", w)
+			}
+
+			feedback.Content = "retry"
+			ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+			if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+				t.Fatalf("resumed feedback = (%v, %v, %v), want msg-1 edit", ids, sent, err)
+			}
+			if count := m.toolFeedback.ActiveCount(); count != 1 {
+				t.Fatalf("ActiveCount() = %d, want retained progress", count)
+			}
+			ch.mu.Lock()
+			defer ch.mu.Unlock()
+			if len(ch.deleted) != 0 || ch.operations[len(ch.operations)-1] != "edit:msg-1" {
+				t.Fatalf("operations = %v deleted = %v, want retained progress edit", ch.operations, ch.deleted)
+			}
+		})
 	}
 }
 
