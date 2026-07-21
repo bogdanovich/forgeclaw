@@ -19,7 +19,9 @@ import (
 const (
 	MaxInvocationInputBytes = 512 * 1024
 	MaxInvocationTimeout    = 60 * 60
-	MaxInvocationOutput     = 16 * 1024 * 1024
+	// MaxInvocationOutput leaves room for protocol envelope and recovery-record
+	// metadata inside the 1 MiB WebSocket frame. Larger data uses artifacts.
+	MaxInvocationOutput     = 512 * 1024
 	MaxPolicyRevisionLength = 128
 	MaxExecutionPlanTTL     = 5 * time.Minute
 	MaxExecutionPlanSkew    = 30 * time.Second
@@ -259,6 +261,35 @@ func (policy LocalCommandPolicy) Authorize(
 	actualExecutor string,
 	now time.Time,
 ) error {
+	return policy.authorize(plan, runtimeCatalog, receivingNodeID, actualExecutor, now, true)
+}
+
+// AuthorizeReplay verifies current local authority for returning a recorded
+// invocation without requiring the original execution window to remain live.
+func (policy LocalCommandPolicy) AuthorizeReplay(
+	plan ExecutionPlan,
+	runtimeCatalog CapabilityCatalog,
+	receivingNodeID ID,
+	actualExecutor string,
+) error {
+	return policy.authorize(
+		plan,
+		runtimeCatalog,
+		receivingNodeID,
+		actualExecutor,
+		time.Time{},
+		false,
+	)
+}
+
+func (policy LocalCommandPolicy) authorize(
+	plan ExecutionPlan,
+	runtimeCatalog CapabilityCatalog,
+	receivingNodeID ID,
+	actualExecutor string,
+	now time.Time,
+	requireLiveWindow bool,
+) error {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
@@ -286,11 +317,13 @@ func (policy LocalCommandPolicy) Authorize(
 		plan.PolicyRevision != policy.Revision {
 		return fmt.Errorf("%w: plan does not match current policy or descriptor", ErrCommandDenied)
 	}
-	nowUnix := now.Unix()
-	if nowUnix <= 0 ||
-		(plan.PreparedAt > nowUnix && plan.PreparedAt-nowUnix > int64(MaxExecutionPlanSkew/time.Second)) ||
-		nowUnix >= plan.ExpiresAt {
-		return fmt.Errorf("%w: plan is not currently valid", ErrCommandDenied)
+	if requireLiveWindow {
+		nowUnix := now.Unix()
+		if nowUnix <= 0 ||
+			(plan.PreparedAt > nowUnix && plan.PreparedAt-nowUnix > int64(MaxExecutionPlanSkew/time.Second)) ||
+			nowUnix >= plan.ExpiresAt {
+			return fmt.Errorf("%w: plan is not currently valid", ErrCommandDenied)
+		}
 	}
 	_, input, err := canonicalInvocationInputValue(plan.Input)
 	if err != nil {

@@ -55,7 +55,15 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	commandRuntime, err := companion.NewRuntime(identity.ID, clientVersion(), cfg.Policy)
+	ledger, err := companion.NewFileInvocationLedger(
+		companion.InvocationLedgerPath(cfg.StateDir),
+		companion.DefaultInvocationLedgerLimit,
+		companion.DefaultInvocationLedgerBytes,
+	)
+	if err != nil {
+		return err
+	}
+	commandRuntime, err := companion.NewRuntime(identity.ID, clientVersion(), cfg.Policy, ledger)
 	if err != nil {
 		return err
 	}

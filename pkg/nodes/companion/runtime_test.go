@@ -1,8 +1,10 @@
 package companion
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,7 +13,7 @@ import (
 
 func TestRuntimeRequiresLocalCommandApproval(t *testing.T) {
 	policy := testRuntimePolicy(nil)
-	runtime, err := NewRuntime(nodes.ID("node_test"), "test", policy)
+	runtime, err := NewRuntime(nodes.ID("node_test"), "test", policy, newMemoryInvocationLedger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,9 +25,14 @@ func TestRuntimeRequiresLocalCommandApproval(t *testing.T) {
 
 func TestRuntimeExecutesReadOnlyBuiltins(t *testing.T) {
 	policy := testRuntimePolicy([]string{"node.info.v1", "system.which.v1"})
-	runtime, err := NewRuntime(nodes.ID("node_test"), "v-test", policy)
-	if err != nil {
-		t.Fatal(err)
+	runtime, newErr := NewRuntime(
+		nodes.ID("node_test"),
+		"v-test",
+		policy,
+		newMemoryInvocationLedger(),
+	)
+	if newErr != nil {
+		t.Fatal(newErr)
 	}
 
 	info, err := runtime.Invoke(
@@ -67,6 +74,159 @@ func TestRuntimeExecutesReadOnlyBuiltins(t *testing.T) {
 	}
 }
 
+func TestRuntimeReturnsRecordedResultAfterPlanExpires(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	runtime, newErr := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"node.info.v1"}),
+		ledger,
+	)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	plan := testRuntimePlanAt(
+		t,
+		runtime,
+		"node.info.v1",
+		json.RawMessage(`{}`),
+		time.Unix(100, 0),
+		time.Second,
+	)
+	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
+		t.Fatal(acceptErr)
+	}
+	if _, markErr := ledger.MarkRunning(plan.InvocationID); markErr != nil {
+		t.Fatal(markErr)
+	}
+	want := json.RawMessage(
+		`{"node_id":"node_test","platform":"linux","architecture":"amd64","version":"test"}`,
+	)
+	if _, completeErr := ledger.CompleteSuccess(plan.InvocationID, want); completeErr != nil {
+		t.Fatal(completeErr)
+	}
+	got, err := runtime.Invoke(t.Context(), plan)
+	if err != nil {
+		t.Fatalf("expired duplicate Invoke() error = %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("expired duplicate result = %s", got)
+	}
+}
+
+func TestRuntimeDoesNotReplayUnfinishedInvocation(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	runtime, newErr := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"node.info.v1"}),
+		ledger,
+	)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	plan := testRuntimePlan(t, runtime, "node.info.v1", json.RawMessage(`{}`))
+	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
+		t.Fatal(acceptErr)
+	}
+	if _, markErr := ledger.MarkRunning(plan.InvocationID); markErr != nil {
+		t.Fatal(markErr)
+	}
+	if _, err := runtime.Invoke(t.Context(), plan); !errors.Is(
+		err,
+		ErrInvocationOutcomeUnknown,
+	) {
+		t.Fatalf("unfinished duplicate Invoke() error = %v", err)
+	}
+}
+
+func TestRuntimeReturnsRecordedResultWithoutExecutingAgain(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	runtime, newErr := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"test.count.v1"}),
+		ledger,
+	)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	handler := &countingHandler{}
+	descriptor := handler.descriptor()
+	runtime.handlers[descriptor.Name] = handler
+	runtime.catalog.Commands = append(runtime.catalog.Commands, descriptor)
+	plan := testRuntimePlan(t, runtime, descriptor.Name, json.RawMessage(`{}`))
+
+	first, firstErr := runtime.Invoke(t.Context(), plan)
+	second, secondErr := runtime.Invoke(t.Context(), plan)
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("Invoke() errors = %v, %v", firstErr, secondErr)
+	}
+	if string(first) != string(second) || handler.executions != 1 {
+		t.Fatalf("results = %s, %s; executions = %d", first, second, handler.executions)
+	}
+}
+
+type countingHandler struct {
+	executions int
+}
+
+func (*countingHandler) descriptor() nodes.CommandDescriptor {
+	return nodes.CommandDescriptor{
+		Name:         "test.count.v1",
+		InputSchema:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		Risk:         nodes.RiskRead,
+	}
+}
+
+func (handler *countingHandler) execute(context.Context, json.RawMessage) (any, error) {
+	handler.executions++
+	return map[string]int{"executions": handler.executions}, nil
+}
+
+func TestRuntimePersistsOutputEncodingFailure(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	runtime, newErr := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"test.invalid-output.v1"}),
+		ledger,
+	)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	handler := invalidOutputHandler{}
+	descriptor := handler.descriptor()
+	runtime.handlers[descriptor.Name] = handler
+	runtime.catalog.Commands = append(runtime.catalog.Commands, descriptor)
+	plan := testRuntimePlan(t, runtime, descriptor.Name, json.RawMessage(`{}`))
+
+	if _, err := runtime.Invoke(t.Context(), plan); err == nil {
+		t.Fatal("Invoke() accepted an unencodable command result")
+	}
+	record, found := ledger.Get(plan.InvocationID)
+	if !found || record.State != nodes.InvocationFailed || record.Failure == nil ||
+		record.Failure.Code != "INVALID_OUTPUT" {
+		t.Fatalf("encoding failure record = %#v, found %v", record, found)
+	}
+}
+
+type invalidOutputHandler struct{}
+
+func (invalidOutputHandler) descriptor() nodes.CommandDescriptor {
+	return nodes.CommandDescriptor{
+		Name:         "test.invalid-output.v1",
+		InputSchema:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+		Risk:         nodes.RiskRead,
+	}
+}
+
+func (invalidOutputHandler) execute(context.Context, json.RawMessage) (any, error) {
+	return make(chan int), nil
+}
+
 func testRuntimePolicy(commands []string) nodes.LocalCommandPolicy {
 	return nodes.LocalCommandPolicy{
 		Revision:          "policy-test",
@@ -83,6 +243,17 @@ func testRuntimePlan(
 	command string,
 	input json.RawMessage,
 ) nodes.ExecutionPlan {
+	return testRuntimePlanAt(t, runtime, command, input, time.Now(), time.Minute)
+}
+
+func testRuntimePlanAt(
+	t *testing.T,
+	runtime *Runtime,
+	command string,
+	input json.RawMessage,
+	preparedAt time.Time,
+	ttl time.Duration,
+) nodes.ExecutionPlan {
 	t.Helper()
 	catalog := runtime.Catalog()
 	catalogHash, err := catalog.Hash()
@@ -97,8 +268,8 @@ func testRuntimePlan(
 		}
 	}
 	plan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
-		InvocationID:     "inv_test",
-		IdempotencyKey:   "idem_test",
+		InvocationID:     "inv_" + strings.ReplaceAll(command, ".", "_"),
+		IdempotencyKey:   "idem_" + strings.ReplaceAll(command, ".", "_"),
 		NodeID:           runtime.nodeID,
 		CatalogHash:      catalogHash,
 		Command:          command,
@@ -108,7 +279,7 @@ func testRuntimePlan(
 		ActorID:          "actor_test",
 		TimeoutSeconds:   5,
 		OutputLimitBytes: 4096,
-	}, descriptor, LocalExecutor, runtime.policy.Revision, time.Now(), time.Minute)
+	}, descriptor, LocalExecutor, runtime.policy.Revision, preparedAt, ttl)
 	if err != nil {
 		t.Fatal(err)
 	}

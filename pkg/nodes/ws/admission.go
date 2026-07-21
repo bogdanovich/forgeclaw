@@ -324,7 +324,13 @@ func (handler *AdmissionHandler) Invoke(
 	if err != nil {
 		return nil, fmt.Errorf("encode node execution plan: %w", err)
 	}
-	response, err := handler.sessions.Request(ctx, nodeID, "node.invoke", params)
+	response, err := handler.sessions.RequestWithIdempotencyKey(
+		ctx,
+		nodeID,
+		"node.invoke",
+		params,
+		plan.IdempotencyKey,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +345,53 @@ func (handler *AdmissionHandler) Invoke(
 		)
 	}
 	return validateInvocationResult(approval.Descriptor, plan, response.Result)
+}
+
+// Invocation returns the companion's durable record for reconnect recovery.
+// It never retries or replays the command.
+func (handler *AdmissionHandler) Invocation(
+	ctx context.Context,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	query := nodes.InvocationQuery{InvocationID: invocationID}
+	if err := query.Validate(); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	params, err := json.Marshal(query)
+	if err != nil {
+		return nodes.InvocationRecord{}, fmt.Errorf("encode invocation query: %w", err)
+	}
+	response, err := handler.sessions.Request(ctx, nodeID, "node.invoke.get", params)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if response.OK == nil {
+		return nodes.InvocationRecord{}, errors.New("node returned a malformed invocation query response")
+	}
+	if !*response.OK {
+		return nodes.InvocationRecord{}, fmt.Errorf(
+			"node invocation query failed (%s): %s",
+			response.Error.Code,
+			response.Error.Message,
+		)
+	}
+	var record nodes.InvocationRecord
+	decoder := json.NewDecoder(bytes.NewReader(response.Result))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
+		return nodes.InvocationRecord{}, fmt.Errorf("decode invocation query result: %w", err)
+	}
+	if trailingErr := decoder.Decode(new(any)); !errors.Is(trailingErr, io.EOF) {
+		return nodes.InvocationRecord{}, errors.New("decode invocation query result: trailing data")
+	}
+	if err := record.Validate(); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if record.NodeID != nodeID || record.InvocationID != invocationID {
+		return nodes.InvocationRecord{}, errors.New("node returned an unrelated invocation record")
+	}
+	return record, nil
 }
 
 func validateInvocationResult(

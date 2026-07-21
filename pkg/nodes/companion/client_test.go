@@ -111,7 +111,12 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 	defer server.Close()
 	identity := testIdentity(t)
 	policy := testRuntimePolicy([]string{"node.info.v1"})
-	commandRuntime, err := NewRuntime(identity.ID, "test", policy)
+	ledgerPath := filepath.Join(t.TempDir(), "invocations.json")
+	ledger, err := NewFileInvocationLedger(ledgerPath, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandRuntime, err := NewRuntime(identity.ID, "test", policy, ledger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +175,34 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 	}
 	cancel()
 	if runErr := <-done; runErr != nil {
+		t.Fatal(runErr)
+	}
+	waitForNodeState(t, registry, identity.ID, nodes.StateDisconnected)
+
+	reloadedLedger, err := NewFileInvocationLedger(ledgerPath, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedRuntime, err := NewRuntime(identity.ID, "test", policy, reloadedLedger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectedClient := testRuntimeClientForServer(t, server, identity, reloadedRuntime)
+	reconnectCtx, reconnectCancel := context.WithCancel(t.Context())
+	reconnectDone := make(chan error, 1)
+	go func() { reconnectDone <- reconnectedClient.Run(reconnectCtx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	record, err := admission.Invocation(t.Context(), identity.ID, plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationSucceeded || record.PlanHash != plan.PlanHash ||
+		string(record.Result) != string(output) {
+		t.Fatalf("durable invocation record = %#v", record)
+	}
+	reconnectCancel()
+	if runErr := <-reconnectDone; runErr != nil {
 		t.Fatal(runErr)
 	}
 }

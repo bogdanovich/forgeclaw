@@ -16,6 +16,16 @@ const LocalExecutor = "local"
 
 var ErrCommandUnavailable = errors.New("node command is unavailable")
 
+var ErrInvocationOutcomeUnknown = errors.New("node invocation outcome is unknown")
+
+type recordedInvocationError struct {
+	failure nodes.InvocationFailure
+}
+
+func (err *recordedInvocationError) Error() string {
+	return err.failure.Message
+}
+
 type commandHandler interface {
 	descriptor() nodes.CommandDescriptor
 	execute(context.Context, json.RawMessage) (any, error)
@@ -28,12 +38,14 @@ type Runtime struct {
 	policy   nodes.LocalCommandPolicy
 	catalog  nodes.CapabilityCatalog
 	handlers map[string]commandHandler
+	ledger   *InvocationLedger
 }
 
 func NewRuntime(
 	nodeID nodes.ID,
 	version string,
 	policy nodes.LocalCommandPolicy,
+	ledger *InvocationLedger,
 ) (*Runtime, error) {
 	handlers := []commandHandler{
 		nodeInfoHandler{nodeID: nodeID, version: version},
@@ -55,7 +67,16 @@ func NewRuntime(
 	if err := catalog.Validate(); err != nil {
 		return nil, err
 	}
-	return &Runtime{nodeID: nodeID, policy: policy, catalog: catalog, handlers: byName}, nil
+	if ledger == nil {
+		return nil, errors.New("node invocation ledger is required")
+	}
+	return &Runtime{
+		nodeID:   nodeID,
+		policy:   policy,
+		catalog:  catalog,
+		handlers: byName,
+		ledger:   ledger,
+	}, nil
 }
 
 func (runtime *Runtime) Catalog() nodes.CapabilityCatalog {
@@ -69,6 +90,21 @@ func (runtime *Runtime) Invoke(
 	if runtime == nil {
 		return nil, ErrCommandUnavailable
 	}
+	record, existing, existingErr := runtime.ledger.Existing(plan)
+	if existingErr != nil {
+		return nil, existingErr
+	}
+	if existing {
+		if err := runtime.policy.AuthorizeReplay(
+			plan,
+			runtime.catalog,
+			runtime.nodeID,
+			LocalExecutor,
+		); err != nil {
+			return nil, err
+		}
+		return invocationRecordResult(record)
+	}
 	if err := runtime.policy.Authorize(plan, runtime.catalog, runtime.nodeID, LocalExecutor, time.Now()); err != nil {
 		return nil, err
 	}
@@ -76,21 +112,82 @@ func (runtime *Runtime) Invoke(
 	if handler == nil {
 		return nil, ErrCommandUnavailable
 	}
+	record, existing, acceptErr := runtime.ledger.Accept(plan)
+	if acceptErr != nil {
+		return nil, acceptErr
+	}
+	if existing {
+		return invocationRecordResult(record)
+	}
+	if _, err := runtime.ledger.MarkRunning(plan.InvocationID); err != nil {
+		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
+	}
 	deadline := time.Now().Add(time.Duration(plan.TimeoutSeconds) * time.Second)
 	if expires := time.Unix(plan.ExpiresAt, 0); expires.Before(deadline) {
 		deadline = expires
 	}
 	invokeCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	result, err := handler.execute(invokeCtx, plan.Input)
-	if err != nil {
-		return nil, err
+	result, executeErr := handler.execute(invokeCtx, plan.Input)
+	if executeErr != nil {
+		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+			Code:    "EXECUTION_FAILED",
+			Message: "node command failed",
+		}, executeErr)
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
-		return nil, fmt.Errorf("encode command output: %w", err)
+		encodeErr := fmt.Errorf("encode command output: %w", err)
+		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+			Code:    "INVALID_OUTPUT",
+			Message: "node command returned invalid output",
+		}, encodeErr)
 	}
-	return nodes.ValidateInvocationOutput(handler.descriptor(), raw, plan.OutputLimitBytes)
+	raw, err = nodes.ValidateInvocationOutput(handler.descriptor(), raw, plan.OutputLimitBytes)
+	if err != nil {
+		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+			Code:    "INVALID_OUTPUT",
+			Message: "node command returned invalid output",
+		}, err)
+	}
+	if _, err := runtime.ledger.CompleteSuccess(plan.InvocationID, raw); err != nil {
+		return nil, fmt.Errorf("%w: persist successful result: %v", ErrInvocationOutcomeUnknown, err)
+	}
+	return raw, nil
+}
+
+func (runtime *Runtime) completeInvocationFailure(
+	invocationID string,
+	failure nodes.InvocationFailure,
+	cause error,
+) error {
+	if _, err := runtime.ledger.CompleteFailure(invocationID, failure); err != nil {
+		return fmt.Errorf("%w: persist failed result: %v", ErrInvocationOutcomeUnknown, err)
+	}
+	return cause
+}
+
+func (runtime *Runtime) Invocation(
+	invocationID string,
+) (nodes.InvocationRecord, bool) {
+	if runtime == nil || runtime.ledger == nil {
+		return nodes.InvocationRecord{}, false
+	}
+	return runtime.ledger.Get(invocationID)
+}
+
+func invocationRecordResult(record nodes.InvocationRecord) (json.RawMessage, error) {
+	switch record.State {
+	case nodes.InvocationSucceeded:
+		return append(json.RawMessage(nil), record.Result...), nil
+	case nodes.InvocationFailed, nodes.InvocationCanceled:
+		if record.Failure == nil {
+			return nil, ErrInvocationOutcomeUnknown
+		}
+		return nil, &recordedInvocationError{failure: *record.Failure}
+	default:
+		return nil, ErrInvocationOutcomeUnknown
+	}
 }
 
 type nodeInfoHandler struct {

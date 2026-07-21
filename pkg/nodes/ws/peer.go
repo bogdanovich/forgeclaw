@@ -93,6 +93,7 @@ func (session *peer) request(
 	ctx context.Context,
 	method string,
 	params json.RawMessage,
+	idempotencyKey string,
 ) (protocol.Envelope, error) {
 	select {
 	case <-ctx.Done():
@@ -118,10 +119,11 @@ func (session *peer) request(
 	}
 	session.pendingMu.Unlock()
 	if err := session.writeEnvelope(ctx, protocol.Envelope{
-		Type:   protocol.FrameRequest,
-		ID:     id,
-		Method: method,
-		Params: params,
+		Type:           protocol.FrameRequest,
+		ID:             id,
+		Method:         method,
+		Params:         params,
+		IdempotencyKey: idempotencyKey,
 	}); err != nil {
 		session.removePending(id)
 		return protocol.Envelope{}, err

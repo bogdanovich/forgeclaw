@@ -338,7 +338,12 @@ func (client *Client) handleRequest(
 	if decodeErr != nil || envelope.Type != protocol.FrameRequest {
 		return errors.New("node gateway sent an invalid command request")
 	}
-	if envelope.Method != "node.invoke" {
+	switch envelope.Method {
+	case "node.invoke":
+		return client.handleInvoke(ctx, connection, envelope)
+	case "node.invoke.get":
+		return client.handleInvocationQuery(connection, envelope)
+	default:
 		return client.writeCommandError(
 			connection,
 			envelope.ID,
@@ -346,6 +351,13 @@ func (client *Client) handleRequest(
 			"unsupported node method",
 		)
 	}
+}
+
+func (client *Client) handleInvoke(
+	ctx context.Context,
+	connection *websocket.Conn,
+	envelope protocol.Envelope,
+) error {
 	if client.runtime == nil {
 		return client.writeCommandError(
 			connection,
@@ -363,15 +375,81 @@ func (client *Client) handleRequest(
 			"invalid execution plan",
 		)
 	}
+	if envelope.IdempotencyKey == "" || envelope.IdempotencyKey != plan.IdempotencyKey {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"INVALID_PLAN",
+			"invocation idempotency key mismatch",
+		)
+	}
 	result, err := client.runtime.Invoke(ctx, plan)
 	if err != nil {
 		code := "EXECUTION_FAILED"
 		message := "node command failed"
-		if errors.Is(err, nodes.ErrCommandDenied) || errors.Is(err, nodes.ErrInvalidInvocation) {
+		switch {
+		case errors.Is(err, nodes.ErrCommandDenied), errors.Is(err, nodes.ErrInvalidInvocation):
 			code = "COMMAND_DENIED"
 			message = "node command denied"
+		case errors.Is(err, ErrInvocationConflict):
+			code = "IDEMPOTENCY_CONFLICT"
+			message = "invocation idempotency conflict"
+		case errors.Is(err, ErrInvocationOutcomeUnknown):
+			code = "INVOCATION_UNKNOWN"
+			message = "invocation outcome is unknown"
 		}
 		return client.writeCommandError(connection, envelope.ID, code, message)
+	}
+	ok := true
+	return writeEnvelope(connection, protocol.Envelope{
+		Type:   protocol.FrameResponse,
+		ID:     envelope.ID,
+		OK:     &ok,
+		Result: result,
+	})
+}
+
+func (client *Client) handleInvocationQuery(
+	connection *websocket.Conn,
+	envelope protocol.Envelope,
+) error {
+	if client.runtime == nil {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"COMMAND_UNAVAILABLE",
+			"node command runtime is disabled",
+		)
+	}
+	if envelope.IdempotencyKey != "" {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"INVALID_QUERY",
+			"invocation query cannot carry an idempotency key",
+		)
+	}
+	var query nodes.InvocationQuery
+	if err := decodeStrictJSON(envelope.Params, &query); err != nil || query.Validate() != nil {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"INVALID_QUERY",
+			"invalid invocation query",
+		)
+	}
+	record, found := client.runtime.Invocation(query.InvocationID)
+	if !found {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"INVOCATION_NOT_FOUND",
+			"invocation record not found",
+		)
+	}
+	result, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("encode invocation query result: %w", err)
 	}
 	ok := true
 	return writeEnvelope(connection, protocol.Envelope{
