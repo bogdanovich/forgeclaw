@@ -162,6 +162,7 @@ type TaskEvent struct {
 type Record struct {
 	TaskID              string              `json:"task_id"`
 	GenerationID        string              `json:"generation_id"`
+	LastEventSeq        int64               `json:"last_event_sequence"`
 	Runtime             Runtime             `json:"runtime"`
 	TaskKind            string              `json:"task_kind,omitempty"`
 	ParentTaskID        string              `json:"parent_task_id,omitempty"`
@@ -333,6 +334,7 @@ func (r *Registry) Upsert(rec Record) error {
 	}
 	rec = r.normalizeRecord(rec, now)
 	rec.GenerationID = uuid.NewString()
+	rec.LastEventSeq = 0
 
 	r.mu.Lock()
 	eventStart := len(r.events)
@@ -365,6 +367,7 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	before := rec
 	mutate(&rec)
 	rec.GenerationID = before.GenerationID
+	rec.LastEventSeq = before.LastEventSeq
 	now := time.Now().UnixMilli()
 	if rec.LastEventAt == 0 || recordChanged(before, rec) {
 		rec.LastEventAt = now
@@ -596,6 +599,7 @@ func (r *Registry) updateInteractionProjection(
 		return err
 	}
 	rec.GenerationID = before.GenerationID
+	rec.LastEventSeq = before.LastEventSeq
 	now := time.Now().UnixMilli()
 	rec.LastEventAt = now
 	rec = r.normalizeRecord(rec, now)
@@ -1008,6 +1012,8 @@ func (r *Registry) load() error {
 		return err
 	}
 	now := time.Now().UnixMilli()
+	records := make(map[string]Record, len(snap.Tasks))
+	events := make([]TaskEvent, 0, len(snap.Events))
 	for _, rec := range snap.Tasks {
 		if strings.TrimSpace(rec.TaskID) == "" {
 			continue
@@ -1015,7 +1021,10 @@ func (r *Registry) load() error {
 		if strings.TrimSpace(rec.GenerationID) == "" {
 			return fmt.Errorf("task %q is missing generation_id", rec.TaskID)
 		}
-		r.records[rec.TaskID] = r.normalizeRecord(rec, now)
+		if rec.LastEventSeq <= 0 {
+			return fmt.Errorf("task %q has invalid last_event_sequence", rec.TaskID)
+		}
+		records[rec.TaskID] = r.normalizeRecord(rec, now)
 	}
 	for _, evt := range snap.Events {
 		if strings.TrimSpace(evt.TaskID) == "" || evt.Type == "" {
@@ -1030,8 +1039,14 @@ func (r *Registry) load() error {
 				evt.EventID, evt.SchemaVersion, TaskEventSchemaVersion,
 			)
 		}
-		r.events = append(r.events, evt)
+		if rec, ok := records[evt.TaskID]; ok && rec.GenerationID == evt.GenerationID &&
+			(evt.Seq <= 0 || evt.Seq > rec.LastEventSeq) {
+			return fmt.Errorf("task event %q has invalid generation sequence", evt.EventID)
+		}
+		events = append(events, evt)
 	}
+	r.records = records
+	r.events = events
 	return nil
 }
 
@@ -1111,7 +1126,13 @@ func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt 
 	if emittedAt == 0 {
 		emittedAt = time.Now().UnixMilli()
 	}
-	seq := r.nextEventSeqLocked(rec.TaskID, rec.GenerationID)
+	stored, ok := r.records[rec.TaskID]
+	if !ok || stored.GenerationID != rec.GenerationID {
+		return
+	}
+	stored.LastEventSeq++
+	r.records[rec.TaskID] = stored
+	seq := stored.LastEventSeq
 	evt := TaskEvent{
 		SchemaVersion:  TaskEventSchemaVersion,
 		TaskID:         rec.TaskID,
@@ -1132,21 +1153,12 @@ func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt 
 	r.events = append(r.events, evt)
 }
 
-func (r *Registry) nextEventSeqLocked(taskID, generationID string) int64 {
-	var maxSeq int64
-	for _, evt := range r.events {
-		if evt.TaskID == taskID && evt.GenerationID == generationID && evt.Seq > maxSeq {
-			maxSeq = evt.Seq
-		}
-	}
-	return maxSeq + 1
-}
-
 func taskEventFingerprint(evt TaskEvent) string {
 	payload, _ := json.Marshal(evt.Payload)
 	parts := []string{
 		evt.TaskID,
 		evt.GenerationID,
+		strconv.FormatInt(evt.Seq, 10),
 		string(evt.Type),
 		string(evt.Status),
 		string(evt.DeliveryStatus),
