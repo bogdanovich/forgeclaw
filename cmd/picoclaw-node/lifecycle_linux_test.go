@@ -121,7 +121,7 @@ func TestSystemdLifecycleStatus(t *testing.T) {
 	}
 }
 
-func TestSystemdLifecycleInstallRestoresPreviousUnitOnEnableFailure(t *testing.T) {
+func TestSystemdLifecycleInstallRestoresPreviousUnitOnRestartFailure(t *testing.T) {
 	unitDir := t.TempDir()
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	previous := []byte("previous unit\n")
@@ -129,7 +129,7 @@ func TestSystemdLifecycleInstallRestoresPreviousUnitOnEnableFailure(t *testing.T
 		t.Fatal(err)
 	}
 	var calls []systemdCall
-	enableAttempts := 0
+	restartAttempts := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
@@ -140,10 +140,10 @@ func TestSystemdLifecycleInstallRestoresPreviousUnitOnEnableFailure(t *testing.T
 			if reflect.DeepEqual(args, []string{"is-enabled", "picoclaw-node-main.service"}) {
 				return systemdRunResult{Output: "enabled"}, nil
 			}
-			if reflect.DeepEqual(args, []string{"enable", "--now", "picoclaw-node-main.service"}) {
-				enableAttempts++
-				if enableAttempts == 1 {
-					return systemdRunResult{Output: "enable failed", ExitCode: 1}, nil
+			if reflect.DeepEqual(args, []string{"restart", "picoclaw-node-main.service"}) {
+				restartAttempts++
+				if restartAttempts == 1 {
+					return systemdRunResult{Output: "restart failed", ExitCode: 1}, nil
 				}
 			}
 			return systemdRunResult{}, nil
@@ -154,7 +154,7 @@ func TestSystemdLifecycleInstallRestoresPreviousUnitOnEnableFailure(t *testing.T
 		ConfigPath:     "/home/test/config.json",
 		ExecutablePath: "/home/test/picoclaw-node",
 	})
-	if err == nil || !strings.Contains(err.Error(), "enable failed") {
+	if err == nil || !strings.Contains(err.Error(), "restart failed") {
 		t.Fatalf("Install() error = %v", err)
 	}
 	got, readErr := os.ReadFile(unitPath)
@@ -175,10 +175,55 @@ func TestSystemdLifecycleInstallRestoresPreviousUnitOnEnableFailure(t *testing.T
 		{args: []string{"is-active", "picoclaw-node-main.service"}},
 		{args: []string{"is-enabled", "picoclaw-node-main.service"}},
 		{args: []string{"daemon-reload"}},
-		{args: []string{"enable", "--now", "picoclaw-node-main.service"}},
+		{args: []string{"enable", "picoclaw-node-main.service"}},
+		{args: []string{"restart", "picoclaw-node-main.service"}},
 		{args: []string{"disable", "--now", "picoclaw-node-main.service"}},
 		{args: []string{"daemon-reload"}},
 		{args: []string{"enable", "--now", "picoclaw-node-main.service"}},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("install calls = %#v, want %#v", calls, wantCalls)
+	}
+}
+
+func TestSystemdLifecycleReinstallRestartsActiveService(t *testing.T) {
+	unitDir := t.TempDir()
+	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
+	if err := os.WriteFile(unitPath, []byte("previous unit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls []systemdCall
+	lifecycle := &systemdLifecycle{
+		unitDir: unitDir,
+		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
+			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
+			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
+				return systemdRunResult{Output: "active"}, nil
+			}
+			if reflect.DeepEqual(args, []string{"is-enabled", "picoclaw-node-main.service"}) {
+				return systemdRunResult{Output: "enabled"}, nil
+			}
+			return systemdRunResult{}, nil
+		},
+	}
+	status, err := lifecycle.Install(t.Context(), lifecycleRequest{
+		Instance:       "main",
+		ConfigPath:     "/home/test/config.json",
+		ExecutablePath: "/home/test/picoclaw-node",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Active {
+		t.Fatalf("install status = %#v", status)
+	}
+	wantCalls := []systemdCall{
+		{args: []string{"is-active", "picoclaw-node-main.service"}},
+		{args: []string{"is-enabled", "picoclaw-node-main.service"}},
+		{args: []string{"daemon-reload"}},
+		{args: []string{"enable", "picoclaw-node-main.service"}},
+		{args: []string{"restart", "picoclaw-node-main.service"}},
+		{args: []string{"is-active", "picoclaw-node-main.service"}},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("install calls = %#v, want %#v", calls, wantCalls)

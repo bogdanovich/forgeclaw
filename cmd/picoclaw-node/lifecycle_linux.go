@@ -77,7 +77,14 @@ func (lifecycle *systemdLifecycle) Install(
 	if err = lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
 		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, false, err)
 	}
-	if err = lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
+	if backup.active {
+		if err = lifecycle.requireSuccess(ctx, "enable", status.Service); err != nil {
+			return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, false, err)
+		}
+		if err = lifecycle.requireSuccess(ctx, "restart", status.Service); err != nil {
+			return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, err)
+		}
+	} else if err = lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
 		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, err)
 	}
 	current, err := lifecycle.Status(ctx, request)
