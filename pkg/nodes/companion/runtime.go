@@ -71,7 +71,34 @@ type commandHandler interface {
 	descriptor() nodes.CommandDescriptor
 	// A cancel-capable handler wraps errCommandCancellationConfirmed only after
 	// it has honored the signal and stopped the underlying operation.
-	execute(context.Context, json.RawMessage) (any, error)
+	execute(context.Context, commandInvocation) (any, error)
+}
+
+type commandAuthorizer interface {
+	authorize(nodes.ExecutionPlan) error
+}
+
+type commandInvocation struct {
+	Input            json.RawMessage
+	TimeoutSeconds   int
+	OutputLimitBytes int
+}
+
+type runtimeOptions struct {
+	systemExec *SystemExecPolicy
+}
+
+type RuntimeOption func(*runtimeOptions) error
+
+func WithSystemExec(policy SystemExecPolicy) RuntimeOption {
+	return func(options *runtimeOptions) error {
+		cloned, err := cloneReadySystemExecPolicy(policy)
+		if err != nil {
+			return err
+		}
+		options.systemExec = &cloned
+		return nil
+	}
 }
 
 type invocationStore interface {
@@ -102,10 +129,23 @@ func NewRuntime(
 	version string,
 	policy nodes.LocalCommandPolicy,
 	ledger *InvocationLedger,
+	options ...RuntimeOption,
 ) (*Runtime, error) {
+	settings := runtimeOptions{}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("nil node runtime option")
+		}
+		if err := option(&settings); err != nil {
+			return nil, fmt.Errorf("configure node runtime: %w", err)
+		}
+	}
 	handlers := []commandHandler{
 		nodeInfoHandler{nodeID: nodeID, version: version},
 		systemWhichHandler{},
+	}
+	if settings.systemExec != nil {
+		handlers = append(handlers, newSystemExecHandler(*settings.systemExec))
 	}
 	catalog := nodes.CapabilityCatalog{Commands: make([]nodes.CommandDescriptor, 0, len(handlers))}
 	byName := make(map[string]commandHandler, len(handlers))
@@ -181,6 +221,9 @@ func (runtime *Runtime) Invoke(
 	if handler == nil {
 		return nil, ErrCommandUnavailable
 	}
+	if err := runtime.authorizeHandler(plan); err != nil {
+		return nil, err
+	}
 	record, existing, acceptErr := runtime.ledger.Accept(plan)
 	if acceptErr != nil {
 		return nil, acceptErr
@@ -201,6 +244,12 @@ func (runtime *Runtime) executeAccepted(
 	handler := runtime.handlers[plan.Command]
 	if handler == nil {
 		return nil, ErrCommandUnavailable
+	}
+	// Recheck input-derived authority after durable acceptance and immediately
+	// before execution. Filesystem-backed policy may have changed since the
+	// pre-accept check.
+	if err := runtime.authorizeHandler(plan); err != nil {
+		return nil, err
 	}
 	deadline := time.Now().Add(time.Duration(plan.TimeoutSeconds) * time.Second)
 	if expires := time.Unix(plan.ExpiresAt, 0); expires.Before(deadline) {
@@ -226,7 +275,11 @@ func (runtime *Runtime) executeAccepted(
 		}
 		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
 	}
-	result, executeErr := handler.execute(invokeCtx, plan.Input)
+	result, executeErr := handler.execute(invokeCtx, commandInvocation{
+		Input:            plan.Input,
+		TimeoutSeconds:   plan.TimeoutSeconds,
+		OutputLimitBytes: plan.OutputLimitBytes,
+	})
 	cancellationDelivered := invocation.finishHandler()
 	if executeErr != nil {
 		if cancellationDelivered && errors.Is(executeErr, errCommandCancellationConfirmed) {
@@ -239,10 +292,15 @@ func (runtime *Runtime) executeAccepted(
 			}
 			return nil, fmt.Errorf("%w: %v", ErrInvocationCanceled, executeErr)
 		}
-		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+		failure := nodes.InvocationFailure{
 			Code:    "EXECUTION_FAILED",
 			Message: "node command failed",
-		}, executeErr)
+		}
+		var commandFailure *commandFailureError
+		if errors.As(executeErr, &commandFailure) {
+			failure = commandFailure.failure
+		}
+		return nil, runtime.completeInvocationFailure(plan.InvocationID, failure, executeErr)
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
@@ -364,6 +422,21 @@ func (runtime *Runtime) completeInvocationFailure(
 	return cause
 }
 
+func (runtime *Runtime) authorizeHandler(plan nodes.ExecutionPlan) error {
+	handler := runtime.handlers[plan.Command]
+	if handler == nil {
+		return ErrCommandUnavailable
+	}
+	authorizer, ok := handler.(commandAuthorizer)
+	if !ok {
+		return nil
+	}
+	if err := authorizer.authorize(plan); err != nil {
+		return fmt.Errorf("%w: command-specific policy rejected input", nodes.ErrCommandDenied)
+	}
+	return nil
+}
+
 func (runtime *Runtime) Invocation(
 	invocationID string,
 ) (nodes.InvocationRecord, bool, error) {
@@ -408,7 +481,7 @@ func (handler nodeInfoHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (handler nodeInfoHandler) execute(context.Context, json.RawMessage) (any, error) {
+func (handler nodeInfoHandler) execute(context.Context, commandInvocation) (any, error) {
 	return struct {
 		NodeID       nodes.ID `json:"node_id"`
 		Platform     string   `json:"platform"`
@@ -432,11 +505,11 @@ func (systemWhichHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (systemWhichHandler) execute(ctx context.Context, raw json.RawMessage) (any, error) {
+func (systemWhichHandler) execute(ctx context.Context, invocation commandInvocation) (any, error) {
 	var input struct {
 		Name string `json:"name"`
 	}
-	if err := decodeStrictJSON(raw, &input); err != nil {
+	if err := decodeStrictJSON(invocation.Input, &input); err != nil {
 		return nil, fmt.Errorf("decode system.which input: %w", err)
 	}
 	if err := ctx.Err(); err != nil {

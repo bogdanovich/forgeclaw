@@ -581,7 +581,7 @@ func (runtimeFailingHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (runtimeFailingHandler) execute(context.Context, json.RawMessage) (any, error) {
+func (runtimeFailingHandler) execute(context.Context, commandInvocation) (any, error) {
 	return nil, errRuntimeHandlerFailure
 }
 
@@ -615,7 +615,7 @@ func (*parentCancellationHandler) descriptor() nodes.CommandDescriptor {
 
 func (handler *parentCancellationHandler) execute(
 	ctx context.Context,
-	_ json.RawMessage,
+	_ commandInvocation,
 ) (any, error) {
 	close(handler.started)
 	<-ctx.Done()
@@ -640,7 +640,7 @@ func (*cancelThenFailHandler) descriptor() nodes.CommandDescriptor {
 
 func (handler *cancelThenFailHandler) execute(
 	ctx context.Context,
-	_ json.RawMessage,
+	_ commandInvocation,
 ) (any, error) {
 	close(handler.started)
 	<-ctx.Done()
@@ -671,7 +671,7 @@ func (*runtimeBlockingHandler) descriptor() nodes.CommandDescriptor {
 
 func (handler *runtimeBlockingHandler) execute(
 	ctx context.Context,
-	_ json.RawMessage,
+	_ commandInvocation,
 ) (any, error) {
 	handler.started <- struct{}{}
 	<-ctx.Done()
@@ -702,7 +702,7 @@ func (*ignoringCancellationHandler) descriptor() nodes.CommandDescriptor {
 
 func (handler *ignoringCancellationHandler) execute(
 	context.Context,
-	json.RawMessage,
+	commandInvocation,
 ) (any, error) {
 	close(handler.started)
 	<-handler.release
@@ -722,7 +722,7 @@ func (*countingHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (handler *countingHandler) execute(context.Context, json.RawMessage) (any, error) {
+func (handler *countingHandler) execute(context.Context, commandInvocation) (any, error) {
 	handler.executions++
 	return map[string]int{"executions": handler.executions}, nil
 }
@@ -765,7 +765,7 @@ func (invalidOutputHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (invalidOutputHandler) execute(context.Context, json.RawMessage) (any, error) {
+func (invalidOutputHandler) execute(context.Context, commandInvocation) (any, error) {
 	return make(chan int), nil
 }
 
