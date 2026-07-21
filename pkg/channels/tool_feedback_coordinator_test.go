@@ -16,6 +16,106 @@ func newTestToolFeedbackCoordinator(separate bool) *ToolFeedbackCoordinator {
 	}, separate)
 }
 
+func TestToolFeedbackCoordinator_PermanentEditFailureSendsReplacement(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	var events []string
+	operations := toolFeedbackOperations{
+		edit: func(_ context.Context, _, messageID, _ string) error {
+			events = append(events, "edit:"+messageID)
+			if messageID == "progress-1" {
+				return fmt.Errorf("card cannot be patched: %w", ErrSendFailed)
+			}
+			return nil
+		},
+		delete: func(_ context.Context, _, messageID string) error {
+			events = append(events, "delete:"+messageID)
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) {
+			events = append(events, "send:progress-1")
+			return []string{"progress-1"}, nil
+		},
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	ids, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+		func(context.Context, string) ([]string, error) {
+			events = append(events, "send:progress-2")
+			return []string{"progress-2"}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("replacement Deliver() error = %v", err)
+	}
+	if !slices.Equal(ids, []string{"progress-2"}) {
+		t.Fatalf("replacement IDs = %v, want [progress-2]", ids)
+	}
+	want := []string{
+		"send:progress-1", "edit:progress-1", "delete:progress-1", "send:progress-2",
+	}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestToolFeedbackCoordinator_TransientEditFailureRetainsEntry(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "temporary", err: ErrTemporary},
+		{name: "rate limit", err: ErrRateLimit},
+		{name: "timeout", err: context.DeadlineExceeded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			coordinator := newTestToolFeedbackCoordinator(false)
+			defer coordinator.StopAll()
+			deletes := 0
+			sends := 0
+			operations := toolFeedbackOperations{
+				edit: func(context.Context, string, string, string) error { return tt.err },
+				delete: func(context.Context, string, string) error {
+					deletes++
+					return nil
+				},
+			}
+			if _, err := coordinator.Deliver(
+				context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+				func(context.Context, string) ([]string, error) {
+					sends++
+					return []string{"progress-1"}, nil
+				},
+			); err != nil {
+				t.Fatalf("initial Deliver() error = %v", err)
+			}
+			_, err := coordinator.Deliver(
+				context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+				func(context.Context, string) ([]string, error) {
+					sends++
+					return []string{"progress-2"}, nil
+				},
+			)
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("update error = %v, want %v", err, tt.err)
+			}
+			if sends != 1 || deletes != 0 || coordinator.ActiveCount() != 1 {
+				t.Fatalf(
+					"sends=%d deletes=%d active=%d, want 1/0/1",
+					sends,
+					deletes,
+					coordinator.ActiveCount(),
+				)
+			}
+		})
+	}
+}
+
 func TestToolFeedbackCoordinator_PendingSendTerminalDeletesLateMessage(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()

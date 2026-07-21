@@ -15,6 +15,30 @@ import (
 	"github.com/sipeed/picoclaw/pkg/media"
 )
 
+func TestClassifyFeishuEditFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		code       int
+		want       error
+	}{
+		{name: "rate limit", statusCode: 429, want: channels.ErrRateLimit},
+		{name: "server error", statusCode: 503, want: channels.ErrTemporary},
+		{
+			name: "expired token", statusCode: 400,
+			code: errCodeTenantTokenInvalid, want: channels.ErrTemporary,
+		},
+		{name: "business rejection", statusCode: 400, code: 230001, want: channels.ErrSendFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyFeishuEditFailure(tt.statusCode, tt.code); !errors.Is(got, tt.want) {
+				t.Fatalf("classification = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractContent(t *testing.T) {
 	tests := []struct {
 		name        string

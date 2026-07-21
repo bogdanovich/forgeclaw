@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -162,6 +163,8 @@ func (c *ToolFeedbackCoordinator) deliver(
 	}
 	if entry.messageID != "" {
 		messageID := entry.messageID
+		trackedChatID := entry.chatID
+		trackedDelete := entry.operations.delete
 		mergedContent := content
 		if isWorkingSummaryToolFeedback(entry.content) || isWorkingSummaryToolFeedback(content) {
 			mergedContent = mergeToolFeedbackContent(entry.content, content)
@@ -177,17 +180,35 @@ func (c *ToolFeedbackCoordinator) deliver(
 		}
 		terminal := entry.terminal
 		retired := entry.retired
+		replace := handled && errors.Is(err, ErrSendFailed) && !terminal && !retired &&
+			entry.messageID == messageID
+		if replace {
+			entry.messageID = ""
+			entry.editable = false
+			entry.content = ""
+			entry.operations = toolFeedbackOperations{}
+		}
 		entry.mu.Unlock()
 		if terminal || retired {
 			c.animator.Clear(key)
 		}
-		if !handled {
-			return []string{messageID}, nil
+		if replace {
+			c.animator.Clear(key)
+			deleteToolFeedbackMessage(ctx, trackedDelete, trackedChatID, messageID)
+			entry.mu.Lock()
+			if entry.terminal || entry.retired {
+				entry.mu.Unlock()
+				return nil, nil
+			}
+		} else {
+			if !handled {
+				return []string{messageID}, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			return []string{updatedID}, nil
 		}
-		if err != nil {
-			return nil, err
-		}
-		return []string{updatedID}, nil
 	}
 
 	entry.sending = true

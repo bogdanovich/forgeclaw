@@ -226,7 +226,7 @@ func (c *FeishuChannel) sendMessage(ctx context.Context, msg bus.OutboundMessage
 func (c *FeishuChannel) EditMessage(ctx context.Context, chatID, messageID, content string) error {
 	cardContent, err := buildMarkdownCard(content)
 	if err != nil {
-		return fmt.Errorf("feishu edit: card build failed: %w", err)
+		return fmt.Errorf("feishu edit: card build failed: %v: %w", err, channels.ErrSendFailed)
 	}
 
 	req := larkim.NewPatchMessageReqBuilder().
@@ -236,13 +236,28 @@ func (c *FeishuChannel) EditMessage(ctx context.Context, chatID, messageID, cont
 
 	resp, err := c.client.Im.V1.Message.Patch(ctx, req)
 	if err != nil {
-		return fmt.Errorf("feishu edit: %w", err)
+		return fmt.Errorf("feishu edit: %v: %w", err, channels.ErrTemporary)
 	}
 	if !resp.Success() {
 		c.invalidateTokenOnAuthError(resp.Code)
-		return fmt.Errorf("feishu edit api error (code=%d msg=%s)", resp.Code, resp.Msg)
+		return fmt.Errorf(
+			"feishu edit api error (code=%d msg=%s): %w",
+			resp.Code,
+			resp.Msg,
+			classifyFeishuEditFailure(resp.StatusCode, resp.Code),
+		)
 	}
 	return nil
+}
+
+func classifyFeishuEditFailure(statusCode, code int) error {
+	if statusCode == 429 {
+		return channels.ErrRateLimit
+	}
+	if statusCode >= 500 || code == errCodeTenantTokenInvalid {
+		return channels.ErrTemporary
+	}
+	return channels.ErrSendFailed
 }
 
 // DeleteMessage implements channels.MessageDeleter.
