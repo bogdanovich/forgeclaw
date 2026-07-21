@@ -28,6 +28,12 @@ type systemdLifecycle struct {
 	run     systemdRunner
 }
 
+type systemdUnitBackup struct {
+	exists bool
+	data   []byte
+	mode   os.FileMode
+}
+
 func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
 	unitDir := "/etc/systemd/system"
 	if !system {
@@ -45,6 +51,10 @@ func (lifecycle *systemdLifecycle) Install(
 	request lifecycleRequest,
 ) (lifecycleStatus, error) {
 	status := lifecycle.baseStatus(request.Instance)
+	backup, err := captureSystemdUnit(status.UnitPath)
+	if err != nil {
+		return lifecycleStatus{}, err
+	}
 	unit, err := renderSystemdUnit(request, lifecycle.system)
 	if err != nil {
 		return lifecycleStatus{}, err
@@ -53,12 +63,20 @@ func (lifecycle *systemdLifecycle) Install(
 		return lifecycleStatus{}, fmt.Errorf("write systemd unit: %w", err)
 	}
 	if err = lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
-		return lifecycleStatus{}, err
+		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, err)
 	}
 	if err = lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
-		return lifecycleStatus{}, err
+		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, err)
 	}
-	return lifecycle.Status(ctx, request)
+	current, err := lifecycle.Status(ctx, request)
+	if err != nil {
+		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, err)
+	}
+	if !current.Active {
+		stateErr := fmt.Errorf("systemd service %s entered state %q", status.Service, current.State)
+		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, stateErr)
+	}
+	return current, nil
 }
 
 func (lifecycle *systemdLifecycle) Status(
@@ -78,7 +96,8 @@ func (lifecycle *systemdLifecycle) Status(
 	}
 	status.State = strings.TrimSpace(result.Output)
 	if result.ExitCode == 0 {
-		status.Active = status.State == "active" || status.State == "reloading"
+		status.Active = status.State == "active" || status.State == "reloading" ||
+			status.State == "activating"
 		return status, nil
 	}
 	if result.ExitCode == 3 && status.State != "" {
@@ -137,6 +156,56 @@ func (lifecycle *systemdLifecycle) requireSuccess(ctx context.Context, args ...s
 	}
 	if result.ExitCode != 0 {
 		return systemdCommandError(result, args...)
+	}
+	return nil
+}
+
+func (lifecycle *systemdLifecycle) rollbackInstall(
+	ctx context.Context,
+	status lifecycleStatus,
+	backup systemdUnitBackup,
+	cause error,
+) error {
+	errorsSeen := []error{cause}
+	if err := lifecycle.requireSuccess(ctx, "disable", "--now", status.Service); err != nil {
+		errorsSeen = append(errorsSeen, fmt.Errorf("rollback service disable: %w", err))
+	}
+	if err := restoreSystemdUnit(status.UnitPath, backup); err != nil {
+		errorsSeen = append(errorsSeen, err)
+	}
+	if err := lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
+		errorsSeen = append(errorsSeen, fmt.Errorf("rollback daemon reload: %w", err))
+	}
+	return errors.Join(errorsSeen...)
+}
+
+func captureSystemdUnit(path string) (systemdUnitBackup, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return systemdUnitBackup{}, nil
+	}
+	if err != nil {
+		return systemdUnitBackup{}, fmt.Errorf("inspect existing systemd unit: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1024*1024 {
+		return systemdUnitBackup{}, errors.New("existing systemd unit is not a bounded regular file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return systemdUnitBackup{}, fmt.Errorf("read existing systemd unit: %w", err)
+	}
+	return systemdUnitBackup{exists: true, data: data, mode: info.Mode().Perm()}, nil
+}
+
+func restoreSystemdUnit(path string, backup systemdUnitBackup) error {
+	if backup.exists {
+		if err := fileutil.WriteFileAtomic(path, backup.data, backup.mode); err != nil {
+			return fmt.Errorf("restore previous systemd unit: %w", err)
+		}
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove failed systemd unit: %w", err)
 	}
 	return nil
 }
@@ -212,6 +281,7 @@ func quoteSystemdArgument(value string) (string, error) {
 		return "", errors.New("argument is empty or contains control characters")
 	}
 	value = strings.ReplaceAll(value, "%", "%%")
+	value = strings.ReplaceAll(value, "$", "$$")
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	return `"` + value + `"`, nil

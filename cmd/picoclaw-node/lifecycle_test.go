@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os/user"
 	"strings"
 	"testing"
 )
@@ -32,6 +34,29 @@ func TestSystemInstallRequiresExplicitServiceUser(t *testing.T) {
 		"--service-user", "root", "--config", "missing.json",
 	}); err == nil || !strings.Contains(err.Error(), "requires --system") {
 		t.Fatalf("user install error = %v", err)
+	}
+}
+
+func TestResolveServiceAccountRejectsUIDZero(t *testing.T) {
+	for _, name := range []string{"root", "root-alias"} {
+		_, err := resolveServiceAccount(name, func(string) (*user.User, error) {
+			return &user.User{Uid: "0", Username: name}, nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "unprivileged") {
+			t.Fatalf("resolveServiceAccount(%q) error = %v", name, err)
+		}
+	}
+	got, err := resolveServiceAccount("forgeclaw", func(string) (*user.User, error) {
+		return &user.User{Uid: "1001", Username: "forgeclaw"}, nil
+	})
+	if err != nil || got != "forgeclaw" {
+		t.Fatalf("resolveServiceAccount() = %q, %v", got, err)
+	}
+	lookupErr := errors.New("lookup failed")
+	if _, err := resolveServiceAccount("missing", func(string) (*user.User, error) {
+		return nil, lookupErr
+	}); !errors.Is(err, lookupErr) {
+		t.Fatalf("resolveServiceAccount() error = %v", err)
 	}
 }
 

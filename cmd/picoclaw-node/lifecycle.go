@@ -84,14 +84,11 @@ func runServiceLifecycle(action string, args []string) error {
 	}
 	if action == "install" {
 		if request.System {
-			if !serviceAccountPattern.MatchString(requestedUser) {
-				return errors.New("system installation requires a valid --service-user")
+			var userErr error
+			request.ServiceUser, userErr = resolveServiceAccount(requestedUser, user.Lookup)
+			if userErr != nil {
+				return userErr
 			}
-			account, lookupErr := user.Lookup(requestedUser)
-			if lookupErr != nil {
-				return fmt.Errorf("resolve system service user %q: %w", requestedUser, lookupErr)
-			}
-			request.ServiceUser = account.Username
 		}
 		resolved, err := resolveLifecyclePath(configPath)
 		if err != nil {
@@ -127,6 +124,23 @@ func runServiceLifecycle(action string, args []string) error {
 		return err
 	}
 	return writeLifecycleStatus(os.Stdout, status, *jsonOutput)
+}
+
+func resolveServiceAccount(
+	name string,
+	lookup func(string) (*user.User, error),
+) (string, error) {
+	if !serviceAccountPattern.MatchString(name) {
+		return "", errors.New("system installation requires a valid --service-user")
+	}
+	account, err := lookup(name)
+	if err != nil {
+		return "", fmt.Errorf("resolve system service user %q: %w", name, err)
+	}
+	if account == nil || account.Uid == "0" || !serviceAccountPattern.MatchString(account.Username) {
+		return "", fmt.Errorf("system service user %q must resolve to an unprivileged account", name)
+	}
+	return account.Username, nil
 }
 
 func currentExecutablePath() (string, error) {
