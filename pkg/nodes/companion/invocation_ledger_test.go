@@ -126,6 +126,103 @@ func TestInvocationLedgerCancelsAcceptedInvocationAfterExpiry(t *testing.T) {
 	}
 }
 
+func TestInvocationLedgerPersistsCancellationLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invocations.json")
+	ledger, err := NewFileInvocationLedger(path, 4, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ledger.Close)
+	plan := testLedgerPlan(t, "cancel-running")
+	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
+		t.Fatal(acceptErr)
+	}
+	if _, markErr := ledger.MarkRunning(plan.InvocationID); markErr != nil {
+		t.Fatal(markErr)
+	}
+	requested, err := ledger.RequestCancellation(plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requested.State != nodes.InvocationRunning || requested.Cancellation == nil ||
+		requested.Cancellation.TerminationConfirmed {
+		t.Fatalf("requested cancellation = %#v", requested)
+	}
+	repeated, err := ledger.RequestCancellation(plan.InvocationID)
+	if err != nil || repeated.Cancellation == nil ||
+		repeated.Cancellation.RequestedAt != requested.Cancellation.RequestedAt {
+		t.Fatalf("repeated cancellation = %#v, error %v", repeated, err)
+	}
+	completed, err := ledger.CompleteCancellation(plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.State != nodes.InvocationCanceled || completed.Cancellation == nil ||
+		!completed.Cancellation.TerminationConfirmed || completed.Failure == nil ||
+		completed.Failure.Code != "CANCELED" {
+		t.Fatalf("completed cancellation = %#v", completed)
+	}
+
+	ledger.Close()
+	reloaded, err := NewFileInvocationLedger(path, 4, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reloaded.Close)
+	record, found := reloaded.Get(plan.InvocationID)
+	if !found || record.State != nodes.InvocationCanceled || record.Cancellation == nil ||
+		!record.Cancellation.TerminationConfirmed {
+		t.Fatalf("reloaded cancellation = %#v, found %v", record, found)
+	}
+}
+
+func TestInvocationLedgerCancelsAcceptedInvocationBeforeExecution(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	plan := testLedgerPlan(t, "cancel-accepted")
+	if _, _, err := ledger.Accept(plan); err != nil {
+		t.Fatal(err)
+	}
+	record, err := ledger.RequestCancellation(plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationCanceled || record.Cancellation == nil ||
+		!record.Cancellation.TerminationConfirmed || record.Failure == nil ||
+		record.Failure.Code != "CANCELED" {
+		t.Fatalf("accepted cancellation = %#v", record)
+	}
+}
+
+func TestInvocationLedgerCancellationDoesNotRewriteSuccess(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	plan := testLedgerPlan(t, "cancel-race-success")
+	if _, _, err := ledger.Accept(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.MarkRunning(plan.InvocationID); err != nil {
+		t.Fatal(err)
+	}
+	requested, err := ledger.RequestCancellation(plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := json.RawMessage(`{"ok":true}`)
+	completed, err := ledger.CompleteSuccess(plan.InvocationID, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.State != nodes.InvocationSucceeded || completed.Cancellation == nil ||
+		completed.Cancellation.RequestedAt != requested.Cancellation.RequestedAt ||
+		completed.Cancellation.TerminationConfirmed {
+		t.Fatalf("successful cancellation race = %#v", completed)
+	}
+	terminal, err := ledger.RequestCancellation(plan.InvocationID)
+	if err != nil || terminal.State != nodes.InvocationSucceeded ||
+		string(terminal.Result) != string(result) {
+		t.Fatalf("terminal cancellation request = %#v, error %v", terminal, err)
+	}
+}
+
 func TestInvocationLedgerExpiresAcceptedDuringNormalOperation(t *testing.T) {
 	clock := time.Now()
 	path := filepath.Join(t.TempDir(), "invocations.json")
