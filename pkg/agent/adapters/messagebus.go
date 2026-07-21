@@ -7,6 +7,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
 // messageBusAdapter wraps *bus.MessageBus to implement interfaces.MessageBus.
@@ -47,8 +48,12 @@ func (a *messageBusAdapter) PublishOutboundMedia(ctx context.Context, msg bus.Ou
 	return a.inner.PublishOutboundMedia(ctx, msg)
 }
 
-func (a *messageBusAdapter) GetStreamer(ctx context.Context, channel, chatID, sessionKey string) (bus.Streamer, bool) {
-	return a.inner.GetStreamer(ctx, channel, chatID, sessionKey)
+func (a *messageBusAdapter) GetStreamer(
+	ctx context.Context,
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) (bus.Streamer, bool) {
+	return a.inner.GetStreamer(ctx, channel, chatID, sessionKey, traceScope)
 }
 
 func (a *messageBusAdapter) InboundChan() <-chan bus.InboundMessage {

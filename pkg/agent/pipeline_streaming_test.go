@@ -11,6 +11,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -137,13 +138,18 @@ func (p *configuredStreamingChatOnlyProvider) GetDefaultModel() string {
 }
 
 type configuredStreamingDelegate struct {
-	streamer bus.Streamer
+	streamer   bus.Streamer
+	traceScope *runtimeevents.TraceScope
 }
 
 func (d configuredStreamingDelegate) GetStreamer(
 	ctx context.Context,
 	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
 ) (bus.Streamer, bool) {
+	if d.traceScope != nil {
+		*d.traceScope = traceScope
+	}
 	if d.streamer == nil {
 		return nil, false
 	}
@@ -1131,8 +1137,9 @@ func TestConfiguredStreamingPostChunkEOFDoesNotRetryOrCancelVisibleOutput(t *tes
 func TestConfiguredStreamingFinalizesAfterAfterLLMHookMutation(t *testing.T) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	streamer := &recordingStreamer{}
+	var traceScope runtimeevents.TraceScope
 	msgBus := bus.NewMessageBus()
-	msgBus.SetStreamDelegate(configuredStreamingDelegate{streamer: streamer})
+	msgBus.SetStreamDelegate(configuredStreamingDelegate{streamer: streamer, traceScope: &traceScope})
 	provider := &configuredStreamingProvider{
 		streamPlan: []configuredStreamingCall{{
 			chunks:   []string{"partial"},
@@ -1153,6 +1160,9 @@ func TestConfiguredStreamingFinalizesAfterAfterLLMHookMutation(t *testing.T) {
 	}
 	if len(streamer.finalized) != 1 || streamer.finalized[0] != "hooked final response" {
 		t.Fatalf("stream finalized = %v, want [hooked final response]", streamer.finalized)
+	}
+	if !traceScope.Complete() {
+		t.Fatalf("stream trace scope = %+v, want complete turn identity", traceScope)
 	}
 }
 

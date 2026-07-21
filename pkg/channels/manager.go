@@ -457,7 +457,10 @@ func clearTrackedToolFeedbackMessage(
 // outboundCtx carries topic/thread info for channels that use scoped tracker
 // keys (e.g., Telegram forum topics); may be nil for non-topic channels.
 func (m *Manager) DismissToolFeedback(
-	ctx context.Context, channelName, chatID string, outboundCtx *bus.InboundContext,
+	ctx context.Context,
+	channelName, chatID string,
+	outboundCtx *bus.InboundContext,
+	_ []runtimeevents.TraceScope,
 ) {
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
@@ -467,7 +470,11 @@ func (m *Manager) DismissToolFeedback(
 }
 
 func (m *Manager) DismissToolFeedbackForSession(
-	ctx context.Context, channelName, chatID string, outboundCtx *bus.InboundContext, sessionKey string,
+	ctx context.Context,
+	channelName, chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+	_ []runtimeevents.TraceScope,
 ) {
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
@@ -801,7 +808,11 @@ func closeWorkerAndWait(w *channelWorker) {
 
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
-func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
+func (m *Manager) GetStreamer(
+	ctx context.Context,
+	channelName, chatID, sessionKey string,
+	_ runtimeevents.TraceScope,
+) (bus.Streamer, bool) {
 	m.mu.RLock()
 	ch, exists := m.channels[channelName]
 	m.mu.RUnlock()

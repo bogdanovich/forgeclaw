@@ -9,6 +9,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
@@ -601,7 +602,13 @@ func (failingMessageBus) PublishOutboundMedia(context.Context, bus.OutboundMedia
 	return errors.New("publish failed")
 }
 
-func (failingMessageBus) GetStreamer(context.Context, string, string, string) (bus.Streamer, bool) {
+func (failingMessageBus) GetStreamer(
+	context.Context,
+	string,
+	string,
+	string,
+	runtimeevents.TraceScope,
+) (bus.Streamer, bool) {
 	return nil, false
 }
 

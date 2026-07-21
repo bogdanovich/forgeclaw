@@ -110,6 +110,7 @@ func newBlockingMediaChannel() *blockingMediaChannel {
 type recordingChannelManager struct {
 	dismissed         []string
 	dismissedSessions []string
+	dismissedScopes   [][]runtimeevents.TraceScope
 	sentMedia         []bus.OutboundMediaMessage
 }
 
@@ -175,9 +176,13 @@ func (m *recordingChannelManager) SendPlaceholder(
 }
 
 func (m *recordingChannelManager) DismissToolFeedback(
-	ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext,
+	ctx context.Context,
+	channel, chatID string,
+	outboundCtx *bus.InboundContext,
+	traceScopes []runtimeevents.TraceScope,
 ) {
 	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s", channel, chatID))
+	m.dismissedScopes = append(m.dismissedScopes, append([]runtimeevents.TraceScope(nil), traceScopes...))
 }
 
 func (m *recordingChannelManager) DismissToolFeedbackForSession(
@@ -185,6 +190,7 @@ func (m *recordingChannelManager) DismissToolFeedbackForSession(
 	channel, chatID string,
 	outboundCtx *bus.InboundContext,
 	sessionKey string,
+	traceScopes []runtimeevents.TraceScope,
 ) {
 	m.dismissedSessions = append(
 		m.dismissedSessions,
@@ -2646,6 +2652,17 @@ func TestProcessMessage_HandledMediaDismissesToolFeedbackWithoutFinalText(t *tes
 				got,
 				messageKindToolFeedback,
 				outbound,
+			)
+		}
+		if len(outbound.TraceScopes) != 1 || !outbound.TraceScopes[0].Complete() {
+			t.Fatalf("tool feedback trace scopes = %+v, want one complete scope", outbound.TraceScopes)
+		}
+		if len(channelManager.dismissedScopes) != 1 ||
+			!slices.Equal(channelManager.dismissedScopes[0], outbound.TraceScopes) {
+			t.Fatalf(
+				"dismiss scopes = %+v, want feedback scopes %+v",
+				channelManager.dismissedScopes,
+				outbound.TraceScopes,
 			)
 		}
 	case <-time.After(2 * time.Second):
