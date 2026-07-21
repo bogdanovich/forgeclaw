@@ -160,6 +160,9 @@ func (p *taskTraceProjector) observe(
 	segment, known := p.segments[identity]
 	if !known || taskEventStartsSegment(boundary) &&
 		boundary.EventID != segment.key.segment && boundary.Seq > segment.startSeq {
+		if known {
+			delete(p.completed, segment.key)
+		}
 		segment = candidate
 	}
 	key := segment.key
@@ -195,7 +198,7 @@ func (p *taskTraceProjector) observe(
 	}
 	delete(p.traces, key)
 	p.completed[key] = completedTaskTrace{terminalSeq: event.Seq}
-	p.pruneCompletedLocked(workspace, registry)
+	p.pruneTaskStateLocked(workspace, registry)
 }
 
 func taskHistoryThrough(
@@ -253,23 +256,20 @@ func taskObservationsFrom(
 	return observations[start:]
 }
 
-func (p *taskTraceProjector) pruneCompletedLocked(
+func (p *taskTraceProjector) pruneTaskStateLocked(
 	workspace string,
 	registry *taskregistry.Registry,
 ) {
 	if registry == nil {
 		return
 	}
-	retainedEvents := make(map[string]struct{})
-	for _, event := range registry.ListEvents("") {
-		retainedEvents[event.EventID] = struct{}{}
-	}
-	for key := range p.completed {
-		if key.workspace != workspace {
+	for identity, segment := range p.segments {
+		if identity.workspace != workspace {
 			continue
 		}
-		if _, exists := retainedEvents[key.segment]; !exists {
-			delete(p.completed, key)
+		if _, exists := registry.Get(identity.taskID); !exists {
+			delete(p.segments, identity)
+			delete(p.completed, segment.key)
 		}
 	}
 }

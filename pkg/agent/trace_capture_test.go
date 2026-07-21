@@ -868,6 +868,12 @@ func TestTaskTraceProjectorSegmentsRecoveredLostTask(t *testing.T) {
 	if !foundFinalDelivery {
 		t.Fatalf("recovered trace lacks final delivery evidence: %#v", traces[1].Records)
 	}
+	if len(projector.segments) != 1 || len(projector.completed) != 1 {
+		t.Fatalf(
+			"recovery state was not replaced: segments=%d completed=%d",
+			len(projector.segments), len(projector.completed),
+		)
+	}
 }
 
 func TestTaskTraceProjectorKeepsActiveSegmentAcrossEventRetention(t *testing.T) {
@@ -934,8 +940,12 @@ func TestTaskTraceProjectorKeepsActiveSegmentAcrossEventRetention(t *testing.T) 
 	projector.observe(workspace, registry, taskregistry.EventObservation{
 		Event: upsertEvent, Record: record, FinalForTask: true,
 	})
+	if len(projector.traces) != 0 {
+		t.Fatalf("delayed evicted callback reopened %d traces", len(projector.traces))
+	}
+	projector.close()
 	if len(traces) != 1 {
-		t.Fatalf("delayed evicted callback persisted %d traces, want 1", len(traces))
+		t.Fatalf("shutdown persisted %d traces, want 1", len(traces))
 	}
 }
 
