@@ -430,7 +430,7 @@ func (handler *blockingHandler) execute(ctx context.Context, _ json.RawMessage) 
 	handler.started <- struct{}{}
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, fmt.Errorf("%w: %v", errCommandCancellationConfirmed, ctx.Err())
 	case <-handler.release:
 		return map[string]bool{"ok": true}, nil
 	}

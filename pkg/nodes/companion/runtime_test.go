@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -404,6 +405,43 @@ func TestRuntimeLateCancellationDoesNotRewriteHandlerFailure(t *testing.T) {
 	}
 }
 
+func TestRuntimeCancellationDoesNotRewritePostSignalFailure(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	commandRuntime, err := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"test.cancel-then-fail.v1"}),
+		ledger,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newCancelThenFailHandler()
+	descriptor := handler.descriptor()
+	commandRuntime.handlers[descriptor.Name] = handler
+	commandRuntime.catalog.Commands = append(commandRuntime.catalog.Commands, descriptor)
+	plan := testTransportPlan(t, commandRuntime, descriptor, "cancel-then-fail")
+
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, invokeErr := commandRuntime.Invoke(t.Context(), plan)
+		invokeDone <- invokeErr
+	}()
+	<-handler.started
+	if _, cancelErr := commandRuntime.Cancel(nodes.InvocationCancelRequest{
+		InvocationID: plan.InvocationID,
+	}); cancelErr != nil {
+		t.Fatal(cancelErr)
+	}
+	if invokeErr := <-invokeDone; !errors.Is(invokeErr, errRuntimeHandlerFailure) {
+		t.Fatalf("Invoke() error = %v", invokeErr)
+	}
+	record, found, err := commandRuntime.Invocation(plan.InvocationID)
+	if err != nil || !found || record.State != nodes.InvocationFailed || record.Cancellation != nil {
+		t.Fatalf("post-signal failure record = %#v, found %v, error %v", record, found, err)
+	}
+}
+
 func TestRuntimeRejectsUnsupportedCancellationWithoutMutation(t *testing.T) {
 	ledger := newMemoryInvocationLedger()
 	commandRuntime, err := NewRuntime(
@@ -506,6 +544,33 @@ func (runtimeFailingHandler) execute(context.Context, json.RawMessage) (any, err
 	return nil, errRuntimeHandlerFailure
 }
 
+type cancelThenFailHandler struct {
+	started chan struct{}
+}
+
+func newCancelThenFailHandler() *cancelThenFailHandler {
+	return &cancelThenFailHandler{started: make(chan struct{})}
+}
+
+func (*cancelThenFailHandler) descriptor() nodes.CommandDescriptor {
+	return nodes.CommandDescriptor{
+		Name:           "test.cancel-then-fail.v1",
+		InputSchema:    json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema:   json.RawMessage(`{"type":"object"}`),
+		Risk:           nodes.RiskRead,
+		SupportsCancel: true,
+	}
+}
+
+func (handler *cancelThenFailHandler) execute(
+	ctx context.Context,
+	_ json.RawMessage,
+) (any, error) {
+	close(handler.started)
+	<-ctx.Done()
+	return nil, errRuntimeHandlerFailure
+}
+
 func (barrier *cancellationTransitionBarrier) RequestCancellation(
 	invocationID string,
 ) (nodes.InvocationRecord, error) {
@@ -534,7 +599,7 @@ func (handler *runtimeBlockingHandler) execute(
 ) (any, error) {
 	handler.started <- struct{}{}
 	<-ctx.Done()
-	return nil, ctx.Err()
+	return nil, fmt.Errorf("%w: %v", errCommandCancellationConfirmed, ctx.Err())
 }
 
 type ignoringCancellationHandler struct {

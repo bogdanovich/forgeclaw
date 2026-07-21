@@ -25,6 +25,8 @@ var ErrInvocationCanceled = errors.New("node invocation canceled")
 
 var errCancellationRequested = errors.New("node invocation cancellation requested")
 
+var errCommandCancellationConfirmed = errors.New("node command cancellation confirmed")
+
 type activeInvocation struct {
 	mu                    sync.Mutex
 	cancel                context.CancelCauseFunc
@@ -60,6 +62,8 @@ func (err *recordedInvocationError) Error() string {
 
 type commandHandler interface {
 	descriptor() nodes.CommandDescriptor
+	// A cancel-capable handler wraps errCommandCancellationConfirmed only after
+	// it has honored the signal and stopped the underlying operation.
 	execute(context.Context, json.RawMessage) (any, error)
 }
 
@@ -218,7 +222,7 @@ func (runtime *Runtime) executeAccepted(
 	result, executeErr := handler.execute(invokeCtx, plan.Input)
 	cancellationDelivered := invocation.finishHandler()
 	if executeErr != nil {
-		if cancellationDelivered {
+		if cancellationDelivered && errors.Is(executeErr, errCommandCancellationConfirmed) {
 			if _, err := runtime.ledger.CompleteCancellation(plan.InvocationID); err != nil {
 				return nil, fmt.Errorf(
 					"%w: persist canceled result: %v",
