@@ -23,7 +23,6 @@ var systemExecEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}
 var forbiddenSystemExecShells = map[string]struct{}{
 	"bash":       {},
 	"cmd":        {},
-	"cmd.exe":    {},
 	"csh":        {},
 	"dash":       {},
 	"fish":       {},
@@ -263,6 +262,8 @@ func systemExecEnvKey(name string) string {
 }
 
 func isForbiddenSystemExecShell(path string) bool {
-	_, forbidden := forbiddenSystemExecShells[strings.ToLower(filepath.Base(path))]
+	name := strings.ToLower(filepath.Base(path))
+	name = strings.TrimSuffix(name, ".exe")
+	_, forbidden := forbiddenSystemExecShells[name]
 	return forbidden
 }

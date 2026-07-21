@@ -64,6 +64,23 @@ func TestSystemExecIsOptIn(t *testing.T) {
 	}
 }
 
+func TestSystemExecRejectsShellExecutableNames(t *testing.T) {
+	for _, name := range []string{
+		"bash.exe",
+		"cmd.exe",
+		"powershell.exe",
+		"PWSH.EXE",
+		"sh.exe",
+	} {
+		if !isForbiddenSystemExecShell(filepath.Join("allowed", name)) {
+			t.Errorf("shell executable %q was allowed", name)
+		}
+	}
+	if isForbiddenSystemExecShell(filepath.Join("allowed", "git.exe")) {
+		t.Fatal("non-shell executable git.exe was rejected")
+	}
+}
+
 func TestSystemExecCapturesEnvironmentAndNonzeroExit(t *testing.T) {
 	t.Setenv(systemExecVisibleEnv, "parent")
 	t.Setenv(systemExecHiddenEnv, "secret")
