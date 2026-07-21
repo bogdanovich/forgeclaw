@@ -425,7 +425,7 @@ func (*blockingHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (handler *blockingHandler) execute(ctx context.Context, _ json.RawMessage) (any, error) {
+func (handler *blockingHandler) execute(ctx context.Context, _ commandInvocation) (any, error) {
 	handler.executions.Add(1)
 	handler.started <- struct{}{}
 	select {

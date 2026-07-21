@@ -58,6 +58,51 @@ func TestConfigRejectsInvalidLocalPolicy(t *testing.T) {
 	}
 }
 
+func TestConfigNormalizesSystemExecPolicy(t *testing.T) {
+	root := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := (Config{
+		GatewayURL: "wss://gateway.example",
+		SystemExec: &SystemExecPolicy{
+			WorkingRoots: []string{root},
+			Executables:  []string{executable},
+			Environment:  []string{"HOME"},
+		},
+	}).Normalize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SystemExec == nil || len(cfg.SystemExec.rootSet) != 1 ||
+		len(cfg.SystemExec.executableSet) != 1 || len(cfg.SystemExec.environmentSet) != 1 {
+		t.Fatalf("normalized system_exec policy = %+v", cfg.SystemExec)
+	}
+}
+
+func TestConfigRejectsUnsafeSystemExecPolicy(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []SystemExecPolicy{
+		{Executables: []string{executable}},
+		{WorkingRoots: []string{t.TempDir()}},
+		{
+			WorkingRoots: []string{t.TempDir()},
+			Executables:  []string{executable},
+			Environment:  []string{"INVALID=NAME"},
+		},
+	}
+	for _, policy := range tests {
+		cfg := Config{GatewayURL: "wss://gateway.example", SystemExec: &policy}
+		if _, err := cfg.Normalize(t.TempDir()); err == nil {
+			t.Fatalf("Normalize() accepted unsafe system_exec policy: %+v", policy)
+		}
+	}
+}
+
 func TestConfigRejectsUnsafePlaintextEndpoints(t *testing.T) {
 	tests := []Config{
 		{GatewayURL: "ws://gateway.example"},

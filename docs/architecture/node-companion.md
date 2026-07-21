@@ -544,6 +544,13 @@ Cancellation is best effort. It never rewrites a completed result, and timeout
 does not imply that a remote child was successfully killed. Result metadata
 reports whether termination was confirmed.
 
+`system.exec.v1` does not advertise explicit cancellation in the lightweight
+executor because it cannot prove portable process-tree containment. Its timeout
+still bounds and terminates the direct OS process, but descendants may outlive
+it. Operators should allowlist commands that do not daemonize; workloads
+requiring descendant containment belong in a container or another executor
+with an explicit containment guarantee.
+
 ## Execution and Service Management
 
 ### Lightweight companion
