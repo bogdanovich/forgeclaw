@@ -2795,6 +2795,97 @@ func TestGetStreamer_FinalizedStateIsTurnScoped(t *testing.T) {
 	}
 }
 
+func TestGetStreamer_UnscopedFallbackMatchesSingleScopedStreamWithoutSession(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	transport := &toolFeedbackTestChannel{}
+	ch := &toolFeedbackStreamingTestChannel{
+		toolFeedbackTestChannel: transport,
+		streamer:                &mockStreamer{},
+	}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "chat-1", "", traceScope)
+	if !ok {
+		t.Fatal("GetStreamer() unavailable")
+	}
+	if err := streamer.Finalize(context.Background(), "streamed"); err != nil {
+		t.Fatalf("stream Finalize() error = %v", err)
+	}
+	message := func(kind, content string) bus.OutboundMessage {
+		return testOutboundMessage(bus.OutboundMessage{
+			Channel: "test", ChatID: "chat-1", Content: content,
+			Context: bus.InboundContext{
+				Channel: "test", ChatID: "chat-1",
+				Raw: map[string]string{"message_kind": kind},
+			},
+		})
+	}
+	if ids, sent, _, err := m.sendWithRetry(
+		context.Background(), "test", w, message("tool_feedback", "late feedback"),
+	); err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("pre-final auxiliary = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	final := message("final_reply", "queued duplicate")
+	final.Context.Raw["outbound_kind"] = "final"
+	if ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil ||
+		!sent || len(ids) != 0 {
+		t.Fatalf("unscoped final = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	if ids, sent, _, err := m.sendWithRetry(
+		context.Background(), "test", w, message("thought", "late thought"),
+	); err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("post-final auxiliary = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.operations) != 0 {
+		t.Fatalf("transport operations = %v, want none", transport.operations)
+	}
+}
+
+func TestStreamActiveKey_UnscopedFallbackRejectsAmbiguousTurns(t *testing.T) {
+	m := newTestManager()
+	base := streamSuppressionBaseKey("test", "chat-1", "")
+	first, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+	)
+	second, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	)
+	m.streamActive.Store(first, true)
+	m.streamActive.Store(second, true)
+
+	if key, ok := m.streamActiveKey("test", "chat-1", "", runtimeevents.TraceScope{}); ok {
+		t.Fatalf("streamActiveKey() = %q, want no ambiguous legacy match", key)
+	}
+}
+
+func TestStreamAuxiliaryTombstone_UnscopedFallbackIgnoresExpiredScope(t *testing.T) {
+	m := newTestManager()
+	base := streamSuppressionBaseKey("test", "chat-1", "")
+	expired, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-expired"),
+	)
+	active, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-active"),
+	)
+	m.streamAuxiliaryTombstones.Store(expired, time.Now().Add(-2*streamAuxiliaryTombstoneTTL))
+	m.streamAuxiliaryTombstones.Store(active, time.Now())
+
+	if !m.streamAuxiliaryTombstoneActiveForMessage(
+		"test", "chat-1", "", runtimeevents.TraceScope{},
+	) {
+		t.Fatal("expected the single non-expired scoped tombstone to match")
+	}
+	if _, ok := m.streamAuxiliaryTombstones.Load(expired); ok {
+		t.Fatal("expected expired scoped tombstone to be pruned")
+	}
+}
+
 func TestSendMediaWithRetry_FailureReleasesSameTurnFeedback(t *testing.T) {
 	m := newTestManager()
 	enableTestToolFeedbackCoordinator(t, m, false)

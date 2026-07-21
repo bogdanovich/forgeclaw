@@ -308,12 +308,59 @@ func streamSuppressionKey(
 	channel, chatID, sessionKey string,
 	traceScope runtimeevents.TraceScope,
 ) string {
+	key := streamSuppressionBaseKey(channel, chatID, sessionKey)
+	key, _ = traceScopedDeliveryKey(key, traceScope)
+	return key
+}
+
+func streamSuppressionBaseKey(channel, chatID, sessionKey string) string {
 	key := channel + ":" + chatID
 	if strings.TrimSpace(sessionKey) != "" {
 		key += ":" + sessionKey
 	}
-	key, _ = traceScopedDeliveryKey(key, traceScope)
 	return key
+}
+
+func singleScopedStreamStateKey(
+	state *sync.Map,
+	baseKey string,
+	valid func(string, any) bool,
+) (string, bool) {
+	prefix := baseKey + "\x00turn\x00"
+	matched := ""
+	ambiguous := false
+	state.Range(func(key, value any) bool {
+		keyString, ok := key.(string)
+		if !ok || !strings.HasPrefix(keyString, prefix) {
+			return true
+		}
+		if valid != nil && !valid(keyString, value) {
+			return true
+		}
+		if matched != "" {
+			ambiguous = true
+			return false
+		}
+		matched = keyString
+		return true
+	})
+	return matched, matched != "" && !ambiguous
+}
+
+func (m *Manager) streamActiveKey(
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) (string, bool) {
+	key := streamSuppressionKey(channel, chatID, sessionKey, traceScope)
+	if _, active := m.streamActive.Load(key); active {
+		return key, true
+	}
+	if traceScope.Complete() {
+		return "", false
+	}
+	return singleScopedStreamStateKey(
+		&m.streamActive, streamSuppressionBaseKey(channel, chatID, sessionKey), nil,
+	)
 }
 
 func trackedToolFeedbackMessageChatID(ch Channel, chatID string, outboundCtx *bus.InboundContext) string {
@@ -668,6 +715,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	key := name + ":" + chatID
 	traceScope := primaryTraceScope(msg.TraceScopes)
 	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey, traceScope)
+	activeStreamKey, streamActive := m.streamActiveKey(name, chatID, msg.SessionKey, traceScope)
 
 	m.cleanupDeliveryState(ctx, name, chatID, &msg.Context, ch, deliveryCleanupOptions{
 		StopTyping:   true,
@@ -686,10 +734,12 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	// Tool calls must reach the UI, and the queued final must consume the active
 	// marker after the streamed copy has already been delivered.
 	if isAuxiliaryMessage && !isToolCalls && !isFinalMessage {
-		if _, loaded := m.streamActive.Load(streamKey); loaded {
+		if streamActive {
 			return nil, true
 		}
-		if m.streamAuxiliaryTombstoneActive(streamKey) {
+		if m.streamAuxiliaryTombstoneActiveForMessage(
+			name, chatID, msg.SessionKey, traceScope,
+		) {
 			return nil, true
 		}
 	}
@@ -697,42 +747,46 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	// 4. If a stream already finalized this turn, skip only the duplicate final
 	// outbound. Earlier queued visible messages must still be delivered.
 	if isFinalMessage {
-		if _, loaded := m.streamActive.LoadAndDelete(streamKey); loaded {
-			if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
-				if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
-					// Prefer deleting the placeholder (cleaner UX than editing to same content)
-					if deleter, ok := ch.(MessageDeleter); ok {
-						deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
-					} else if editor, ok := ch.(MessageEditor); ok {
-						if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
-							_ = payloadEditor.EditMessageWithPayload(
-								ctx,
-								chatID,
-								entry.id,
-								outboundMessageEditPayload(msg, msg.Content),
-							)
-						} else {
-							editor.EditMessage(ctx, chatID, entry.id, msg.Content) // fallback
+		if streamActive {
+			if _, loaded := m.streamActive.LoadAndDelete(activeStreamKey); !loaded {
+				streamActive = false
+			} else {
+				if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
+					if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+						// Prefer deleting the placeholder (cleaner UX than editing to same content)
+						if deleter, ok := ch.(MessageDeleter); ok {
+							deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+						} else if editor, ok := ch.(MessageEditor); ok {
+							if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
+								_ = payloadEditor.EditMessageWithPayload(
+									ctx,
+									chatID,
+									entry.id,
+									outboundMessageEditPayload(msg, msg.Content),
+								)
+							} else {
+								editor.EditMessage(ctx, chatID, entry.id, msg.Content) // fallback
+							}
 						}
 					}
 				}
-			}
-			if m.toolFeedback != nil {
-				keys, _ := toolFeedbackTargets(
-					name, ch, chatID, &msg.Context, msg.SessionKey, msg.TraceScopes,
-				)
-				for _, key := range keys {
-					m.toolFeedback.ReleaseTerminal(key)
+				if m.toolFeedback != nil {
+					keys, _ := toolFeedbackTargets(
+						name, ch, chatID, &msg.Context, msg.SessionKey, msg.TraceScopes,
+					)
+					for _, key := range keys {
+						m.toolFeedback.ReleaseTerminal(key)
+					}
 				}
+				return nil, true
 			}
-			return nil, true
 		}
 	}
 
-	if _, loaded := m.streamActive.Load(streamKey); loaded {
+	if streamActive {
 		return nil, false
 	}
-	if !traceScope.Complete() && m.streamActiveForChat(name, chatID) {
+	if m.streamActiveForChat(name, chatID) {
 		return nil, false
 	}
 
@@ -1177,15 +1231,42 @@ func (m *Manager) streamAuxiliaryTombstoneActive(key string) bool {
 	return true
 }
 
+func (m *Manager) streamAuxiliaryTombstoneActiveForMessage(
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) bool {
+	key := streamSuppressionKey(channel, chatID, sessionKey, traceScope)
+	if m.streamAuxiliaryTombstoneActive(key) {
+		return true
+	}
+	if traceScope.Complete() {
+		return false
+	}
+	key, ok := singleScopedStreamStateKey(
+		&m.streamAuxiliaryTombstones,
+		streamSuppressionBaseKey(channel, chatID, sessionKey),
+		func(key string, value any) bool {
+			createdAt, ok := value.(time.Time)
+			if !ok || time.Since(createdAt) > streamAuxiliaryTombstoneTTL {
+				m.streamAuxiliaryTombstones.Delete(key)
+				return false
+			}
+			return true
+		},
+	)
+	return ok && m.streamAuxiliaryTombstoneActive(key)
+}
+
 func (m *Manager) streamActiveForChat(channel, chatID string) bool {
-	chatKey := streamSuppressionKey(channel, chatID, "", runtimeevents.TraceScope{})
+	chatKey := streamSuppressionBaseKey(channel, chatID, "")
 	found := false
 	m.streamActive.Range(func(key, _ any) bool {
 		keyString, ok := key.(string)
 		if !ok {
 			return true
 		}
-		if keyString == chatKey || strings.HasPrefix(keyString, chatKey+":") {
+		if keyString == chatKey || strings.HasPrefix(keyString, chatKey+":") ||
+			strings.HasPrefix(keyString, chatKey+"\x00turn\x00") {
 			found = true
 			return false
 		}
@@ -2004,9 +2085,9 @@ func (m *Manager) finalizedStreamActiveForMessage(channelName string, msg bus.Ou
 	if strings.TrimSpace(channelName) == "" || strings.TrimSpace(chatID) == "" {
 		return false
 	}
-	_, active := m.streamActive.Load(streamSuppressionKey(
+	_, active := m.streamActiveKey(
 		channelName, chatID, msg.SessionKey, primaryTraceScope(msg.TraceScopes),
-	))
+	)
 	return active
 }
 
