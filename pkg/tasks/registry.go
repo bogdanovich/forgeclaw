@@ -337,6 +337,10 @@ func (r *Registry) Upsert(rec Record) error {
 	rec.LastEventSeq = 0
 
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	r.records[rec.TaskID] = rec
 	r.appendEventLocked(rec, EventTaskUpserted, now, map[string]string{
@@ -358,6 +362,10 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 		return nil
 	}
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -390,6 +398,10 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 		return nil
 	}
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -586,6 +598,10 @@ func (r *Registry) updateInteractionProjection(
 		return nil
 	}
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -694,6 +710,10 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	changed := 0
 
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return 0, err
+	}
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
@@ -753,6 +773,10 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	changed := 0
 
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return 0, err
+	}
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
@@ -1051,6 +1075,9 @@ func (r *Registry) load() error {
 }
 
 func (r *Registry) saveLocked() error {
+	if err := r.writableErrorLocked(); err != nil {
+		return err
+	}
 	if r.store == "" {
 		return nil
 	}
@@ -1059,6 +1086,13 @@ func (r *Registry) saveLocked() error {
 		return err
 	}
 	return fileutil.WriteFileAtomic(r.store, data, 0o600)
+}
+
+func (r *Registry) writableErrorLocked() error {
+	if r.lastLoad == nil {
+		return nil
+	}
+	return fmt.Errorf("task registry is read-only after load failure: %w", r.lastLoad)
 }
 
 func (r *Registry) snapshotSizeLocked() int {

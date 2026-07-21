@@ -168,6 +168,10 @@ func TestRegistryRejectsSnapshotTransactionally(t *testing.T) {
 	if records := registry.List(); len(records) != 0 {
 		t.Fatalf("partially published records = %#v", records)
 	}
+	if upsertErr := registry.Upsert(Record{TaskID: "must-not-overwrite", Task: "test"}); upsertErr == nil ||
+		!strings.Contains(upsertErr.Error(), "read-only after load failure") {
+		t.Fatalf("Upsert error = %v, want read-only load failure", upsertErr)
+	}
 	after, err := os.ReadFile(store)
 	if err != nil {
 		t.Fatal(err)
