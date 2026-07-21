@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -87,7 +86,7 @@ func (*systemExecHandler) descriptor() nodes.CommandDescriptor {
 			`{"type":"object","required":["exit_code","stdout","stderr","truncated"],"properties":{"exit_code":{"type":"integer"},"stdout":{"type":"string"},"stderr":{"type":"string"},"truncated":{"type":"boolean"}},"additionalProperties":false}`,
 		),
 		Risk:           nodes.RiskWrite,
-		SupportsCancel: true,
+		SupportsCancel: false,
 	}
 }
 
@@ -131,10 +130,6 @@ func (handler *systemExecHandler) execute(
 	}
 	waitErr, terminated := waitSystemExecProcess(execCtx, command)
 	if terminated {
-		cause := context.Cause(execCtx)
-		if errors.Is(cause, errCancellationRequested) {
-			return nil, fmt.Errorf("%w: process terminated", errCommandCancellationConfirmed)
-		}
 		return nil, systemExecContextFailure(execCtx, waitErr)
 	}
 

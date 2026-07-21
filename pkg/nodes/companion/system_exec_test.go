@@ -1,7 +1,6 @@
 package companion
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 const (
 	systemExecHelperEnabled = "PICOCLAW_SYSTEM_EXEC_HELPER"
 	systemExecHelperAction  = "PICOCLAW_SYSTEM_EXEC_ACTION"
-	systemExecHelperMarker  = "PICOCLAW_SYSTEM_EXEC_MARKER"
 	systemExecVisibleEnv    = "PICOCLAW_SYSTEM_EXEC_VISIBLE"
 	systemExecHiddenEnv     = "PICOCLAW_SYSTEM_EXEC_HIDDEN"
 )
@@ -43,9 +41,6 @@ func TestSystemExecHelperProcess(t *testing.T) {
 	case "large":
 		_, _ = os.Stdout.WriteString(strings.Repeat("x", 16*1024))
 	case "sleep":
-		if marker := os.Getenv(systemExecHelperMarker); marker != "" {
-			_ = os.WriteFile(marker, []byte("started"), 0o600)
-		}
 		time.Sleep(30 * time.Second)
 	default:
 		os.Exit(64)
@@ -73,6 +68,11 @@ func TestSystemExecCapturesEnvironmentAndNonzeroExit(t *testing.T) {
 	t.Setenv(systemExecVisibleEnv, "parent")
 	t.Setenv(systemExecHiddenEnv, "secret")
 	runtime, _, root, executable := newSystemExecRuntime(t)
+	for _, descriptor := range runtime.Catalog().Commands {
+		if descriptor.Name == "system.exec.v1" && descriptor.SupportsCancel {
+			t.Fatal("system.exec.v1 advertises unprovable process-tree cancellation")
+		}
+	}
 
 	result := invokeSystemExec(t, runtime, systemExecInput{
 		Argv: []string{executable, "-test.run=^TestSystemExecHelperProcess$"},
@@ -213,45 +213,6 @@ func TestSystemExecTimeoutIsDurableFailure(t *testing.T) {
 	}
 }
 
-func TestSystemExecCancellationConfirmsTermination(t *testing.T) {
-	runtime, ledger, root, executable := newSystemExecRuntime(t)
-	marker := filepath.Join(root, "started")
-	plan := prepareSystemExecPlan(t, runtime, systemExecInput{
-		Argv: []string{executable, "-test.run=^TestSystemExecHelperProcess$"},
-		CWD:  root,
-		Env: map[string]string{
-			systemExecHelperEnabled: "1",
-			systemExecHelperAction:  "sleep",
-			systemExecHelperMarker:  marker,
-		},
-		TimeoutSeconds: 10,
-	}, 15, 4096)
-	result := make(chan error, 1)
-	go func() {
-		_, err := runtime.Invoke(context.Background(), plan)
-		result <- err
-	}()
-	waitForSystemExecMarker(t, marker, result)
-	if _, err := runtime.Cancel(nodes.InvocationCancelRequest{
-		InvocationID: plan.InvocationID,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-result:
-		if !errors.Is(err, ErrInvocationCanceled) {
-			t.Fatalf("Invoke() error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("canceled process did not terminate")
-	}
-	record, found := ledger.Get(plan.InvocationID)
-	if !found || record.State != nodes.InvocationCanceled || record.Cancellation == nil ||
-		!record.Cancellation.TerminationConfirmed {
-		t.Fatalf("cancellation record = %+v, found = %v", record, found)
-	}
-}
-
 func TestSystemExecPostAcceptPolicyRejectionIsTerminal(t *testing.T) {
 	runtime, ledger, root, executable := newSystemExecRuntime(t)
 	runtime.ledger = &systemExecAcceptHookStore{
@@ -308,7 +269,6 @@ func newSystemExecRuntime(
 		Environment: []string{
 			systemExecHelperEnabled,
 			systemExecHelperAction,
-			systemExecHelperMarker,
 			systemExecVisibleEnv,
 		},
 	}, "")
@@ -399,21 +359,4 @@ func prepareSystemExecPlan(
 		t.Fatal(err)
 	}
 	return plan
-}
-
-func waitForSystemExecMarker(t *testing.T, marker string, result <-chan error) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(marker); err == nil {
-			return
-		}
-		select {
-		case err := <-result:
-			t.Fatalf("system.exec helper exited before marker: %v", err)
-		default:
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("system.exec helper did not start")
 }
