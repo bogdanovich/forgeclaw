@@ -14,9 +14,9 @@ import (
 )
 
 type taskTraceKey struct {
-	workspace  string
-	taskID     string
-	generation string
+	workspace string
+	taskID    string
+	segment   string
 }
 
 type completedTaskTrace struct {
@@ -134,9 +134,9 @@ func (p *taskTraceProjector) observe(
 		observations = taskHistoryThrough(registry.ListEvents(event.TaskID), observation)
 	}
 	key := taskTraceKey{
-		workspace:  workspace,
-		taskID:     strings.TrimSpace(event.TaskID),
-		generation: observations[0].Event.EventID,
+		workspace: workspace,
+		taskID:    strings.TrimSpace(event.TaskID),
+		segment:   observations[0].Event.EventID,
 	}
 	if terminal, completed := p.completed[key]; completed {
 		if event.Seq > terminal.terminalSeq {
@@ -190,13 +190,19 @@ func taskHistoryThrough(
 		}
 		return bounded[i].EventID < bounded[j].EventID
 	})
-	generationStart := 0
+	segmentStart := 0
 	for i, event := range bounded {
 		if event.Type == taskregistry.EventTaskUpserted {
-			generationStart = i
+			segmentStart = i
+			continue
+		}
+		if i > segmentStart && event.Status != taskregistry.StatusLost &&
+			taskEventIsTerminal(bounded[i-1]) &&
+			bounded[i-1].Status == taskregistry.StatusLost {
+			segmentStart = i
 		}
 	}
-	bounded = bounded[generationStart:]
+	bounded = bounded[segmentStart:]
 	observations := make([]taskregistry.EventObservation, 0, len(bounded))
 	for i, event := range bounded {
 		observations = append(observations, taskregistry.EventObservation{
@@ -221,7 +227,7 @@ func (p *taskTraceProjector) pruneCompletedLocked(
 		if key.workspace != workspace {
 			continue
 		}
-		if _, exists := retainedEvents[key.generation]; !exists {
+		if _, exists := retainedEvents[key.segment]; !exists {
 			delete(p.completed, key)
 		}
 	}

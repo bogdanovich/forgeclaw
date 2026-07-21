@@ -798,6 +798,77 @@ func TestTaskTraceProjectorRetriesTerminalTraceAfterAdmissionRejection(t *testin
 	}
 }
 
+func TestTaskTraceProjectorSegmentsRecoveredLostTask(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	var traces []evaltrace.Trace
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, active *activeTraceCapture) bool {
+			trace, err := active.builder.Finalize()
+			if err != nil {
+				t.Fatalf("Finalize: %v", err)
+			}
+			traces = append(traces, trace)
+			return true
+		},
+	)
+	projector.attach(workspace, registry)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "recovered", Task: "test", RequesterSessionKey: "session-recovered",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := registry.MarkWaitingForInput(
+		"recovered", "interaction-1", "short-1", "approval required",
+	); err != nil {
+		t.Fatalf("MarkWaitingForInput: %v", err)
+	}
+	if err := registry.Update("recovered", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusLost
+		record.DeliveryStatus = taskregistry.DeliveryNotApplicable
+		record.Error = "runtime restarted"
+	}); err != nil {
+		t.Fatalf("mark lost: %v", err)
+	}
+	if err := registry.MarkInteractionRunning("recovered", "interaction-1"); err != nil {
+		t.Fatalf("MarkInteractionRunning: %v", err)
+	}
+	if err := registry.CompleteInteractionTask(
+		"recovered", "interaction-1", "approved result", taskregistry.DeliveryDelivered,
+	); err != nil {
+		t.Fatalf("CompleteInteractionTask: %v", err)
+	}
+
+	if len(traces) != 2 {
+		t.Fatalf("persisted %d traces, want lost and recovered segments", len(traces))
+	}
+	if traces[0].Outcome == nil || traces[0].Outcome.Status != string(taskregistry.StatusLost) {
+		t.Fatalf("lost outcome = %#v", traces[0].Outcome)
+	}
+	if traces[1].Outcome == nil || traces[1].Outcome.Status != string(taskregistry.StatusSucceeded) {
+		t.Fatalf("recovered outcome = %#v", traces[1].Outcome)
+	}
+	if traces[0].TraceID == traces[1].TraceID {
+		t.Fatalf("lost and recovered segments share trace id %q", traces[0].TraceID)
+	}
+	firstOrigins := make(map[string]struct{}, len(traces[0].Records))
+	for _, record := range traces[0].Records {
+		firstOrigins[record.Origin.ID] = struct{}{}
+	}
+	foundFinalDelivery := false
+	for _, record := range traces[1].Records {
+		if _, duplicate := firstOrigins[record.Origin.ID]; duplicate {
+			t.Fatalf("recovered trace reused lost event %q", record.Origin.ID)
+		}
+		foundFinalDelivery = foundFinalDelivery || record.Kind == evaltrace.RecordDeliveryOutcome
+	}
+	if !foundFinalDelivery {
+		t.Fatalf("recovered trace lacks final delivery evidence: %#v", traces[1].Records)
+	}
+}
+
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
 	workspace := t.TempDir()
 	settings := traceCaptureSettings{stateDir: "../../outside"}
