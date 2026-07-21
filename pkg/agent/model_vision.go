@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -134,4 +137,128 @@ func (al *AgentLoop) maybeApplyVisionExecutionState(
 		return false, nil
 	}
 	return manager.maybeApplyVisionExecutionState(baseAgent, exec)
+}
+
+func (p *Pipeline) callFallbackCandidateWithCapabilities(
+	ctx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	candidate providers.FallbackCandidate,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+) (*providers.LLMResponse, error) {
+	candidateConfig := p.activeModelConfig(
+		ts.agent.Workspace,
+		[]providers.FallbackCandidate{candidate},
+		candidate.Model,
+	)
+	visionModel, visionFallbacks, useVision := resolveVisionOverrideModel(candidateConfig)
+	if !hasMediaRefs(messages) || !useVision {
+		return p.callResolvedFallbackCandidate(
+			ctx,
+			ts,
+			exec,
+			candidate,
+			exec.model.candidateProviders,
+			exec.model.activeProvider,
+			messages,
+			toolDefs,
+		)
+	}
+	if p.Context.ModelExecution == nil {
+		return nil, fmt.Errorf("vision override %q cannot be resolved", visionModel)
+	}
+
+	visionExecution, cleanup, err := p.Context.ModelExecution.buildExecutionStateForModel(
+		ts.agent,
+		visionModel,
+		visionFallbacks,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	logger.InfoCF("agent", "Routed fallback candidate through vision override", map[string]any{
+		"agent_id":     ts.agent.ID,
+		"source_model": candidate.Model,
+		"vision_model": visionExecution.Model,
+	})
+
+	callVisionCandidate := func(
+		callCtx context.Context,
+		visionCandidate providers.FallbackCandidate,
+	) (*providers.LLMResponse, error) {
+		return p.callResolvedFallbackCandidate(
+			callCtx,
+			ts,
+			exec,
+			visionCandidate,
+			visionExecution.CandidateProviders,
+			visionExecution.Provider,
+			messages,
+			toolDefs,
+		)
+	}
+	if len(visionExecution.Candidates) > 1 && p.Interaction.Fallback != nil {
+		result, fallbackErr := p.Interaction.Fallback.ExecuteCandidate(
+			ctx,
+			visionExecution.Candidates,
+			callVisionCandidate,
+		)
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+		return result.Response, nil
+	}
+	if len(visionExecution.Candidates) == 0 {
+		return nil, fmt.Errorf("vision override %q resolved no candidates", visionModel)
+	}
+	return callVisionCandidate(ctx, visionExecution.Candidates[0])
+}
+
+func (p *Pipeline) callResolvedFallbackCandidate(
+	ctx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	candidate providers.FallbackCandidate,
+	candidateProviders map[string]providers.LLMProvider,
+	activeProvider providers.LLMProvider,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+) (*providers.LLMResponse, error) {
+	candidateProvider, err := providerForFallbackCandidate(
+		candidateProviders,
+		activeProvider,
+		candidate.Provider,
+		candidate.Model,
+	)
+	if err != nil {
+		return nil, err
+	}
+	callOpts := shallowCloneLLMOptions(exec.llmOpts)
+	delete(callOpts, "thinking_level")
+	candidateConfig := p.activeModelConfig(
+		ts.agent.Workspace,
+		[]providers.FallbackCandidate{candidate},
+		candidate.Model,
+	)
+	candidateThinking := thinkingSettingsFromModelConfig(candidateConfig)
+	applyThinkingOption(
+		callOpts,
+		candidateProvider,
+		candidateThinking,
+		true,
+		ts.agent.ID,
+	)
+	exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
+	return candidateProvider.Chat(
+		ctx,
+		messages,
+		toolDefs,
+		candidate.Model,
+		callOpts,
+	)
 }
