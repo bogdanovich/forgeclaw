@@ -73,8 +73,9 @@ func TestInvocationLedgerRecoversUnfinishedInvocationAsUnknown(t *testing.T) {
 	}
 }
 
-func TestInvocationLedgerPrunesOnlyTerminalRecords(t *testing.T) {
-	ledger := newInvocationLedger("", 2, 1024*1024, time.Now)
+func TestInvocationLedgerRetainsExecutableIdempotencyProof(t *testing.T) {
+	clock := time.Now()
+	ledger := newInvocationLedger("", 2, 1024*1024, func() time.Time { return clock })
 	first := testLedgerPlan(t, "first")
 	second := testLedgerPlan(t, "second")
 	third := testLedgerPlan(t, "third")
@@ -88,16 +89,28 @@ func TestInvocationLedgerPrunesOnlyTerminalRecords(t *testing.T) {
 		if _, err := ledger.CompleteSuccess(plan.InvocationID, json.RawMessage(`{}`)); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(time.Millisecond)
 	}
-	if _, _, err := ledger.Accept(third); err != nil {
+	if _, _, err := ledger.Accept(third); !errors.Is(err, ErrInvocationLedgerFull) {
+		t.Fatalf("unexpired capacity error = %v", err)
+	}
+	if duplicate, existing, err := ledger.Accept(first); err != nil || !existing ||
+		duplicate.State != nodes.InvocationSucceeded {
+		t.Fatalf("retained duplicate = %#v, existing %v, error %v", duplicate, existing, err)
+	}
+
+	clock = clock.Add(2 * time.Minute)
+	fresh := testLedgerPlanAt(t, "fresh", clock)
+	if _, _, err := ledger.Accept(fresh); err != nil {
 		t.Fatal(err)
 	}
 	if _, found := ledger.Get(first.InvocationID); found {
-		t.Fatal("oldest terminal record was not pruned")
+		t.Fatal("oldest expired terminal record was not pruned")
 	}
 	if _, found := ledger.Get(second.InvocationID); !found {
-		t.Fatal("newer terminal record was pruned")
+		t.Fatal("second expired terminal record was pruned instead of the oldest")
+	}
+	if _, _, err := ledger.Accept(first); !errors.Is(err, nodes.ErrInvalidInvocation) {
+		t.Fatalf("pruned expired plan became executable: %v", err)
 	}
 
 	protected := newInvocationLedger("", 1, 1024*1024, time.Now)
@@ -106,6 +119,43 @@ func TestInvocationLedgerPrunesOnlyTerminalRecords(t *testing.T) {
 	}
 	if _, _, err := protected.Accept(second); !errors.Is(err, ErrInvocationLedgerFull) {
 		t.Fatalf("nonterminal capacity error = %v", err)
+	}
+}
+
+func TestInvocationLedgerRetainsExecutableProofUnderBytePressure(t *testing.T) {
+	clock := time.Now()
+	ledger := newInvocationLedger(
+		filepath.Join(t.TempDir(), "invocations.json"),
+		4,
+		1024*1024,
+		func() time.Time { return clock },
+	)
+	first := testLedgerPlan(t, "byte-first")
+	if _, _, err := ledger.Accept(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.MarkRunning(first.InvocationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.CompleteSuccess(first.InvocationID, json.RawMessage(`{"ok":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	current, err := json.Marshal(invocationLedgerDocument{
+		Version: invocationLedgerVersion,
+		Records: ledger.records,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger.maxBytes = len(current) + 1
+
+	second := testLedgerPlan(t, "byte-second")
+	if _, _, err := ledger.Accept(second); !errors.Is(err, ErrInvocationLedgerFull) {
+		t.Fatalf("byte capacity error = %v", err)
+	}
+	if duplicate, existing, err := ledger.Accept(first); err != nil || !existing ||
+		duplicate.State != nodes.InvocationSucceeded {
+		t.Fatalf("retained duplicate = %#v, existing %v, error %v", duplicate, existing, err)
 	}
 }
 
@@ -168,13 +218,35 @@ func TestInvocationLedgerFileIsPrivateAndVersioned(t *testing.T) {
 }
 
 func testLedgerPlan(t *testing.T, suffix string) nodes.ExecutionPlan {
-	return testLedgerPlanIdentity(t, "inv_"+suffix, "idem_"+suffix)
+	return testLedgerPlanAt(t, suffix, time.Now())
+}
+
+func testLedgerPlanAt(
+	t *testing.T,
+	suffix string,
+	preparedAt time.Time,
+) nodes.ExecutionPlan {
+	return testLedgerPlanIdentityAt(
+		t,
+		"inv_"+suffix,
+		"idem_"+suffix,
+		preparedAt,
+	)
 }
 
 func testLedgerPlanIdentity(
 	t *testing.T,
 	invocationID string,
 	idempotencyKey string,
+) nodes.ExecutionPlan {
+	return testLedgerPlanIdentityAt(t, invocationID, idempotencyKey, time.Now())
+}
+
+func testLedgerPlanIdentityAt(
+	t *testing.T,
+	invocationID string,
+	idempotencyKey string,
+	preparedAt time.Time,
 ) nodes.ExecutionPlan {
 	t.Helper()
 	descriptor := nodes.CommandDescriptor{
@@ -200,7 +272,7 @@ func testLedgerPlanIdentity(
 		ActorID:          "actor_test",
 		TimeoutSeconds:   5,
 		OutputLimitBytes: 4096,
-	}, descriptor, LocalExecutor, "policy-test", time.Now(), time.Minute)
+	}, descriptor, LocalExecutor, "policy-test", preparedAt, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

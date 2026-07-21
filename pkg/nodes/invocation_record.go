@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
 const MaxInvocationFailureMessage = 512
@@ -77,6 +78,7 @@ type InvocationRecord struct {
 	State          InvocationState    `json:"state"`
 	AcceptedAt     int64              `json:"accepted_at"`
 	UpdatedAt      int64              `json:"updated_at"`
+	ExpiresAt      int64              `json:"expires_at"`
 	CompletedAt    int64              `json:"completed_at,omitempty"`
 	Result         json.RawMessage    `json:"result,omitempty"`
 	Failure        *InvocationFailure `json:"failure,omitempty"`
@@ -94,7 +96,8 @@ func (record InvocationRecord) Validate() error {
 	if err := record.NodeID.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidInvocationRecord, err)
 	}
-	if record.AcceptedAt <= 0 || record.UpdatedAt < record.AcceptedAt {
+	if record.AcceptedAt <= 0 || record.UpdatedAt < record.AcceptedAt ||
+		record.ExpiresAt <= record.AcceptedAt/int64(time.Second) {
 		return fmt.Errorf("%w: malformed timestamps", ErrInvalidInvocationRecord)
 	}
 	switch record.State {

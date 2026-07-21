@@ -75,7 +75,13 @@ func TestRuntimeExecutesReadOnlyBuiltins(t *testing.T) {
 }
 
 func TestRuntimeReturnsRecordedResultAfterPlanExpires(t *testing.T) {
-	ledger := newMemoryInvocationLedger()
+	clock := time.Unix(100, 0)
+	ledger := newInvocationLedger(
+		"",
+		DefaultInvocationLedgerLimit,
+		DefaultInvocationLedgerBytes,
+		func() time.Time { return clock },
+	)
 	runtime, newErr := NewRuntime(
 		nodes.ID("node_test"),
 		"test",
@@ -90,7 +96,7 @@ func TestRuntimeReturnsRecordedResultAfterPlanExpires(t *testing.T) {
 		runtime,
 		"node.info.v1",
 		json.RawMessage(`{}`),
-		time.Unix(100, 0),
+		clock,
 		time.Second,
 	)
 	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
@@ -105,6 +111,7 @@ func TestRuntimeReturnsRecordedResultAfterPlanExpires(t *testing.T) {
 	if _, completeErr := ledger.CompleteSuccess(plan.InvocationID, want); completeErr != nil {
 		t.Fatal(completeErr)
 	}
+	clock = clock.Add(2 * time.Second)
 	got, err := runtime.Invoke(t.Context(), plan)
 	if err != nil {
 		t.Fatalf("expired duplicate Invoke() error = %v", err)

@@ -115,9 +115,15 @@ func (ledger *InvocationLedger) Accept(
 	if existing, found, err := ledger.existingLocked(plan); found || err != nil {
 		return existing, found, err
 	}
+	if ledger.now().Unix() >= plan.ExpiresAt {
+		return nodes.InvocationRecord{}, false, fmt.Errorf(
+			"%w: execution plan expired",
+			nodes.ErrInvalidInvocation,
+		)
+	}
 	previous := cloneInvocationRecords(ledger.records)
 	for len(ledger.records) >= ledger.maxRecords {
-		if !ledger.pruneOldestTerminalLocked("") {
+		if !ledger.pruneOldestExpiredLocked("") {
 			return nodes.InvocationRecord{}, false, ErrInvocationLedgerFull
 		}
 	}
@@ -133,6 +139,7 @@ func (ledger *InvocationLedger) Accept(
 		State:          nodes.InvocationAccepted,
 		AcceptedAt:     now,
 		UpdatedAt:      now,
+		ExpiresAt:      plan.ExpiresAt,
 	}
 	if err := record.Validate(); err != nil {
 		ledger.records = previous
@@ -346,23 +353,28 @@ func (ledger *InvocationLedger) persistLocked(protectedID string) error {
 			}
 			return nil
 		}
-		if !ledger.pruneOldestTerminalLocked(protectedID) {
+		if !ledger.pruneOldestExpiredLocked(protectedID) {
 			return ErrInvocationLedgerFull
 		}
 	}
 }
 
-func (ledger *InvocationLedger) pruneOldestTerminalLocked(protectedID string) bool {
+// pruneOldestExpiredLocked never removes an identity while its original plan
+// could still pass authorization. Capacity pressure therefore fails closed
+// instead of turning a previously accepted plan into executable work again.
+func (ledger *InvocationLedger) pruneOldestExpiredLocked(protectedID string) bool {
 	oldestID := ""
 	var oldestAt int64
+	now := ledger.now().Unix()
 	for id, record := range ledger.records {
-		if id == protectedID || !record.State.Terminal() {
+		if id == protectedID || record.ExpiresAt > now ||
+			(!record.State.Terminal() && record.State != nodes.InvocationUnknown) {
 			continue
 		}
-		if oldestID == "" || record.CompletedAt < oldestAt ||
-			(record.CompletedAt == oldestAt && id < oldestID) {
+		if oldestID == "" || record.UpdatedAt < oldestAt ||
+			(record.UpdatedAt == oldestAt && id < oldestID) {
 			oldestID = id
-			oldestAt = record.CompletedAt
+			oldestAt = record.UpdatedAt
 		}
 	}
 	if oldestID == "" {

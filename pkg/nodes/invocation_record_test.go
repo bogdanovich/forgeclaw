@@ -61,5 +61,6 @@ func validInvocationRecord() InvocationRecord {
 		State:          InvocationAccepted,
 		AcceptedAt:     1,
 		UpdatedAt:      1,
+		ExpiresAt:      2,
 	}
 }
