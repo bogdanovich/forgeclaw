@@ -241,6 +241,7 @@ func (ledger *InvocationLedger) CompleteSuccess(
 		record.UpdatedAt = now
 		record.CompletedAt = now
 		record.Result = append(json.RawMessage(nil), result...)
+		record.Cancellation = nil
 		return nil
 	})
 }
@@ -257,6 +258,66 @@ func (ledger *InvocationLedger) CompleteFailure(
 		record.UpdatedAt = now
 		record.CompletedAt = now
 		record.Failure = &nodes.InvocationFailure{Code: failure.Code, Message: failure.Message}
+		record.Cancellation = nil
+		return nil
+	})
+}
+
+func (ledger *InvocationLedger) RequestCancellation(
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	return ledger.transitionIf(
+		invocationID,
+		func(record *nodes.InvocationRecord, now int64) (bool, error) {
+			switch record.State {
+			case nodes.InvocationAccepted:
+				record.State = nodes.InvocationCanceled
+				record.UpdatedAt = now
+				record.CompletedAt = now
+				record.Failure = &nodes.InvocationFailure{
+					Code:    "CANCELED",
+					Message: "node command canceled before execution",
+				}
+				record.Cancellation = &nodes.InvocationCancellation{
+					RequestedAt:          now,
+					TerminationConfirmed: true,
+				}
+				return true, nil
+			case nodes.InvocationRunning:
+				if record.Cancellation != nil {
+					return false, nil
+				}
+				record.UpdatedAt = now
+				record.Cancellation = &nodes.InvocationCancellation{RequestedAt: now}
+				return true, nil
+			case nodes.InvocationSucceeded, nodes.InvocationFailed, nodes.InvocationCanceled:
+				return false, nil
+			default:
+				return false, fmt.Errorf(
+					"%w: invocation is %s",
+					nodes.ErrInvalidInvocationRecord,
+					record.State,
+				)
+			}
+		},
+	)
+}
+
+func (ledger *InvocationLedger) CompleteCancellation(
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	return ledger.transition(invocationID, func(record *nodes.InvocationRecord, now int64) error {
+		if record.State != nodes.InvocationRunning || record.Cancellation == nil {
+			return fmt.Errorf("%w: invocation is %s", nodes.ErrInvalidInvocationRecord, record.State)
+		}
+		record.State = nodes.InvocationCanceled
+		record.UpdatedAt = now
+		record.CompletedAt = now
+		record.Failure = &nodes.InvocationFailure{
+			Code:    "CANCELED",
+			Message: "node command canceled",
+		}
+		record.Cancellation.TerminationConfirmed = true
 		return nil
 	})
 }
@@ -286,15 +347,35 @@ func (ledger *InvocationLedger) transition(
 	invocationID string,
 	update func(*nodes.InvocationRecord, int64) error,
 ) (nodes.InvocationRecord, error) {
+	return ledger.transitionIf(
+		invocationID,
+		func(record *nodes.InvocationRecord, now int64) (bool, error) {
+			if err := update(record, now); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+	)
+}
+
+func (ledger *InvocationLedger) transitionIf(
+	invocationID string,
+	update func(*nodes.InvocationRecord, int64) (bool, error),
+) (nodes.InvocationRecord, error) {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 	record, found := ledger.records[invocationID]
 	if !found {
 		return nodes.InvocationRecord{}, ErrInvocationNotFound
 	}
+	record = cloneInvocationRecord(record)
 	previous := cloneInvocationRecords(ledger.records)
-	if err := update(&record, ledger.now().UnixNano()); err != nil {
+	changed, err := update(&record, ledger.now().UnixNano())
+	if err != nil {
 		return nodes.InvocationRecord{}, err
+	}
+	if !changed {
+		return cloneInvocationRecord(record), nil
 	}
 	if err := record.Validate(); err != nil {
 		return nodes.InvocationRecord{}, err
@@ -501,6 +582,10 @@ func cloneInvocationRecord(record nodes.InvocationRecord) nodes.InvocationRecord
 	if record.Failure != nil {
 		failure := *record.Failure
 		record.Failure = &failure
+	}
+	if record.Cancellation != nil {
+		cancellation := *record.Cancellation
+		record.Cancellation = &cancellation
 	}
 	return record
 }
