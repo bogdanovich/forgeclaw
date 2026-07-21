@@ -263,16 +263,25 @@ func waitSystemExecProcess(ctx context.Context, process systemExecProcess) (erro
 	}()
 	select {
 	case err := <-done:
+		if finishErr := process.finish(); finishErr != nil {
+			return finishErr, false
+		}
 		return err, false
 	case <-ctx.Done():
 		select {
 		case err := <-done:
+			if finishErr := process.finish(); finishErr != nil {
+				return finishErr, false
+			}
 			return err, false
 		default:
 		}
 		terminateErr := process.terminate()
 		waitErr := <-done
-		return waitErr, terminateErr == nil && process.terminationConfirmed()
+		if finishErr := process.finish(); finishErr != nil {
+			return finishErr, false
+		}
+		return waitErr, terminateErr == nil
 	}
 }
 

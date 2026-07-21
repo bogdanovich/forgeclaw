@@ -4,6 +4,8 @@ package companion
 type systemExecProcess interface {
 	wait() error
 	terminate() error
-	terminationConfirmed() bool
+	// finish runs after the direct child has been reaped and guarantees that no
+	// owned descendant remains before a result crosses the node boundary.
+	finish() error
 	close()
 }

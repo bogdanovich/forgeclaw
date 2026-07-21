@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -150,22 +151,47 @@ func (process *windowsSystemExecProcess) terminate() error {
 	return windows.TerminateJobObject(process.job, 1)
 }
 
-func (process *windowsSystemExecProcess) terminationConfirmed() bool {
+func (process *windowsSystemExecProcess) finish() error {
 	if process == nil || process.job == 0 {
-		return false
+		return errors.New("system.exec job is unavailable")
 	}
+	active, err := activeWindowsSystemExecProcesses(process.job)
+	if err != nil {
+		return err
+	}
+	if active == 0 {
+		return nil
+	}
+	if err = windows.TerminateJobObject(process.job, 1); err != nil {
+		return fmt.Errorf("terminate system.exec descendants: %w", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		active, err = activeWindowsSystemExecProcesses(process.job)
+		if err != nil {
+			return err
+		}
+		if active == 0 {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return errors.New("system.exec descendants did not terminate")
+}
+
+func activeWindowsSystemExecProcesses(job windows.Handle) (uint32, error) {
 	accounting := windowsJobAccounting{}
 	var returned uint32
 	if err := windows.QueryInformationJobObject(
-		process.job,
+		job,
 		windows.JobObjectBasicAccountingInformation,
 		uintptr(unsafe.Pointer(&accounting)),
 		uint32(unsafe.Sizeof(accounting)),
 		&returned,
 	); err != nil {
-		return false
+		return 0, fmt.Errorf("confirm system.exec descendants: %w", err)
 	}
-	return accounting.ActiveProcesses == 0
+	return accounting.ActiveProcesses, nil
 }
 
 func (process *windowsSystemExecProcess) close() {

@@ -245,12 +245,6 @@ func (runtime *Runtime) executeAccepted(
 	if handler == nil {
 		return nil, ErrCommandUnavailable
 	}
-	// Recheck input-derived authority after durable acceptance and immediately
-	// before execution. Filesystem-backed policy may have changed since the
-	// pre-accept check.
-	if err := runtime.authorizeHandler(plan); err != nil {
-		return nil, err
-	}
 	deadline := time.Now().Add(time.Duration(plan.TimeoutSeconds) * time.Second)
 	if expires := time.Unix(plan.ExpiresAt, 0); expires.Before(deadline) {
 		deadline = expires

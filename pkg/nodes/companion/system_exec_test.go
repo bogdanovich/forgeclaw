@@ -62,6 +62,18 @@ func TestSystemExecHelperProcess(t *testing.T) {
 			_ = os.WriteFile(marker, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
 		}
 		time.Sleep(30 * time.Second)
+	case "tree-parent-exit":
+		child := exec.Command(os.Args[0], "-test.run=^TestSystemExecHelperProcess$")
+		child.Env = []string{
+			systemExecHelperEnabled + "=1",
+			systemExecHelperAction + "=tree-child",
+		}
+		if err := child.Start(); err != nil {
+			os.Exit(70)
+		}
+		if marker := os.Getenv(systemExecHelperMarker); marker != "" {
+			_ = os.WriteFile(marker, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+		}
 	case "tree-child":
 		time.Sleep(30 * time.Second)
 	default:
@@ -304,6 +316,67 @@ func TestSystemExecCancellationTerminatesProcessTree(t *testing.T) {
 	waitForSystemExecProcessExit(t, childPID)
 }
 
+func TestSystemExecSuccessTerminatesRemainingDescendants(t *testing.T) {
+	runtime, _, root, executable := newSystemExecRuntime(t)
+	marker := filepath.Join(root, "child-pid")
+	result := invokeSystemExec(t, runtime, systemExecInput{
+		Argv: []string{executable, "-test.run=^TestSystemExecHelperProcess$"},
+		CWD:  root,
+		Env: map[string]string{
+			systemExecHelperEnabled: "1",
+			systemExecHelperAction:  "tree-parent-exit",
+			systemExecHelperMarker:  marker,
+		},
+		TimeoutSeconds: 10,
+	}, 15, 4096)
+	if result.ExitCode != 0 {
+		t.Fatalf("system.exec result = %+v", result)
+	}
+	childPID := readSystemExecChildPID(t, marker)
+	waitForSystemExecProcessExit(t, childPID)
+}
+
+func TestSystemExecPostAcceptPolicyRejectionIsTerminal(t *testing.T) {
+	runtime, ledger, root, executable := newSystemExecRuntime(t)
+	runtime.ledger = &systemExecAcceptHookStore{
+		invocationStore: ledger,
+		hook: func() {
+			if err := os.Remove(root); err != nil {
+				t.Errorf("remove working root after accept: %v", err)
+			}
+		},
+	}
+	plan := prepareSystemExecPlan(t, runtime, systemExecInput{
+		Argv:           []string{executable, "-test.run=^TestSystemExecHelperProcess$"},
+		CWD:            root,
+		Env:            map[string]string{},
+		TimeoutSeconds: 2,
+	}, 3, 4096)
+	if _, err := runtime.Invoke(t.Context(), plan); err == nil {
+		t.Fatal("post-accept policy rejection succeeded")
+	}
+	record, found := ledger.Get(plan.InvocationID)
+	if !found || record.State != nodes.InvocationFailed || record.Failure == nil ||
+		record.Failure.Code != "COMMAND_DENIED" {
+		t.Fatalf("post-accept rejection record = %+v, found = %v", record, found)
+	}
+}
+
+type systemExecAcceptHookStore struct {
+	invocationStore
+	hook func()
+}
+
+func (store *systemExecAcceptHookStore) Accept(
+	plan nodes.ExecutionPlan,
+) (nodes.InvocationRecord, bool, error) {
+	record, existing, err := store.invocationStore.Accept(plan)
+	if err == nil && !existing && store.hook != nil {
+		store.hook()
+	}
+	return record, existing, err
+}
+
 func newSystemExecRuntime(
 	t *testing.T,
 ) (*Runtime, *InvocationLedger, string, string) {
@@ -450,6 +523,19 @@ func waitForSystemExecChildPID(t *testing.T, marker string, result <-chan error)
 	}
 	t.Fatal("system.exec tree helper did not start")
 	return 0
+}
+
+func readSystemExecChildPID(t *testing.T, marker string) int {
+	t.Helper()
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid helper child PID %q", data)
+	}
+	return pid
 }
 
 func waitForSystemExecProcessExit(t *testing.T, pid int) {
