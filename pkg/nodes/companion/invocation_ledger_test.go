@@ -126,6 +126,42 @@ func TestInvocationLedgerCancelsAcceptedInvocationAfterExpiry(t *testing.T) {
 	}
 }
 
+func TestInvocationLedgerExpiresAcceptedDuringNormalOperation(t *testing.T) {
+	clock := time.Now()
+	path := filepath.Join(t.TempDir(), "invocations.json")
+	ledger := newInvocationLedger(path, 1, 1024*1024, func() time.Time { return clock })
+	plan := testLedgerPlanAt(t, "abandoned-accepted", clock)
+	if _, _, err := ledger.Accept(plan); err != nil {
+		t.Fatal(err)
+	}
+
+	clock = clock.Add(2 * time.Minute)
+	record, found, err := ledger.Lookup(plan.InvocationID)
+	if err != nil || !found || record.State != nodes.InvocationCanceled || record.Failure == nil ||
+		record.Failure.Code != "PLAN_EXPIRED" {
+		t.Fatalf("expired lookup = %#v, found %v, error %v", record, found, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := decodeLedgerDocument(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Records[plan.InvocationID].State != nodes.InvocationCanceled {
+		t.Fatalf("persisted expired record = %#v", document.Records[plan.InvocationID])
+	}
+
+	fresh := testLedgerPlanAt(t, "after-abandoned", clock)
+	if _, _, err := ledger.Accept(fresh); err != nil {
+		t.Fatalf("expired accepted record blocked capacity: %v", err)
+	}
+	if _, found := ledger.Get(plan.InvocationID); found {
+		t.Fatal("expired accepted record was not pruned for fresh capacity")
+	}
+}
+
 func TestInvocationLedgerRetainsExecutableIdempotencyProof(t *testing.T) {
 	clock := time.Now()
 	ledger := newInvocationLedger("", 2, 1024*1024, func() time.Time { return clock })

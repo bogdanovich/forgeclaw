@@ -139,6 +139,9 @@ func (ledger *InvocationLedger) Accept(
 	}
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
+	if err := ledger.sweepExpiredAcceptedLocked(); err != nil {
+		return nodes.InvocationRecord{}, false, err
+	}
 	if existing, found, err := ledger.existingLocked(plan); found || err != nil {
 		return existing, found, err
 	}
@@ -190,6 +193,9 @@ func (ledger *InvocationLedger) Existing(
 	}
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
+	if err := ledger.sweepExpiredAcceptedLocked(); err != nil {
+		return nodes.InvocationRecord{}, false, err
+	}
 	return ledger.existingLocked(plan)
 }
 
@@ -262,6 +268,20 @@ func (ledger *InvocationLedger) Get(invocationID string) (nodes.InvocationRecord
 	return cloneInvocationRecord(record), found
 }
 
+// Lookup returns the durable externally visible state after applying lazy
+// time-based transitions. Get remains an internal raw-state inspection helper.
+func (ledger *InvocationLedger) Lookup(
+	invocationID string,
+) (nodes.InvocationRecord, bool, error) {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if err := ledger.sweepExpiredAcceptedLocked(); err != nil {
+		return nodes.InvocationRecord{}, false, err
+	}
+	record, found := ledger.records[invocationID]
+	return cloneInvocationRecord(record), found, nil
+}
+
 func (ledger *InvocationLedger) transition(
 	invocationID string,
 	update func(*nodes.InvocationRecord, int64) error,
@@ -291,22 +311,14 @@ func (ledger *InvocationLedger) recoverUnfinished() error {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 	previous := cloneInvocationRecords(ledger.records)
-	changed := false
 	nowTime := ledger.now()
 	now := nowTime.UnixNano()
+	changed := ledger.expireAcceptedLocked(nowTime)
 	for id, record := range ledger.records {
 		switch {
 		case record.State == nodes.InvocationRunning:
 			record.State = nodes.InvocationUnknown
 			record.UpdatedAt = now
-		case record.State == nodes.InvocationAccepted && nowTime.Unix() >= record.ExpiresAt:
-			record.State = nodes.InvocationCanceled
-			record.UpdatedAt = now
-			record.CompletedAt = now
-			record.Failure = &nodes.InvocationFailure{
-				Code:    "PLAN_EXPIRED",
-				Message: "accepted invocation expired before execution",
-			}
 		default:
 			continue
 		}
@@ -321,6 +333,38 @@ func (ledger *InvocationLedger) recoverUnfinished() error {
 		return fmt.Errorf("persist recovered invocation ledger: %w", err)
 	}
 	return nil
+}
+
+func (ledger *InvocationLedger) sweepExpiredAcceptedLocked() error {
+	previous := cloneInvocationRecords(ledger.records)
+	if !ledger.expireAcceptedLocked(ledger.now()) {
+		return nil
+	}
+	if err := ledger.persistLocked(""); err != nil {
+		ledger.rollbackIfUncommittedLocked(previous, err)
+		return fmt.Errorf("persist expired accepted invocations: %w", err)
+	}
+	return nil
+}
+
+func (ledger *InvocationLedger) expireAcceptedLocked(nowTime time.Time) bool {
+	changed := false
+	now := nowTime.UnixNano()
+	for id, record := range ledger.records {
+		if record.State != nodes.InvocationAccepted || nowTime.Unix() < record.ExpiresAt {
+			continue
+		}
+		record.State = nodes.InvocationCanceled
+		record.UpdatedAt = now
+		record.CompletedAt = now
+		record.Failure = &nodes.InvocationFailure{
+			Code:    "PLAN_EXPIRED",
+			Message: "accepted invocation expired before execution",
+		}
+		ledger.records[id] = record
+		changed = true
+	}
+	return changed
 }
 
 func (ledger *InvocationLedger) load() error {

@@ -146,7 +146,8 @@ func (runtime *Runtime) executeAccepted(
 		return nil, ErrCommandUnavailable
 	}
 	if _, err := runtime.ledger.MarkRunning(plan.InvocationID); err != nil {
-		if record, found := runtime.ledger.Get(plan.InvocationID); found && record.State.Terminal() {
+		record, found, lookupErr := runtime.ledger.Lookup(plan.InvocationID)
+		if lookupErr == nil && found && record.State.Terminal() {
 			return invocationRecordResult(record)
 		}
 		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
@@ -198,11 +199,11 @@ func (runtime *Runtime) completeInvocationFailure(
 
 func (runtime *Runtime) Invocation(
 	invocationID string,
-) (nodes.InvocationRecord, bool) {
+) (nodes.InvocationRecord, bool, error) {
 	if runtime == nil || runtime.ledger == nil {
-		return nodes.InvocationRecord{}, false
+		return nodes.InvocationRecord{}, false, nil
 	}
-	return runtime.ledger.Get(invocationID)
+	return runtime.ledger.Lookup(invocationID)
 }
 
 func invocationRecordResult(record nodes.InvocationRecord) (json.RawMessage, error) {

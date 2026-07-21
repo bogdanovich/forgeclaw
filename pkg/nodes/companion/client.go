@@ -438,7 +438,15 @@ func (client *Client) handleInvocationQuery(
 			"invalid invocation query",
 		)
 	}
-	record, found := client.runtime.Invocation(query.InvocationID)
+	record, found, lookupErr := client.runtime.Invocation(query.InvocationID)
+	if lookupErr != nil {
+		return client.writeCommandError(
+			connection,
+			envelope.ID,
+			"LEDGER_UNAVAILABLE",
+			"invocation ledger is unavailable",
+		)
+	}
 	if !found {
 		return client.writeCommandError(
 			connection,
