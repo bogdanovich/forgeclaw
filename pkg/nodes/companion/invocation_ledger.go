@@ -368,6 +368,7 @@ func (ledger *InvocationLedger) transitionIf(
 	if !found {
 		return nodes.InvocationRecord{}, ErrInvocationNotFound
 	}
+	record = cloneInvocationRecord(record)
 	previous := cloneInvocationRecords(ledger.records)
 	changed, err := update(&record, ledger.now().UnixNano())
 	if err != nil {

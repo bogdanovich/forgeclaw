@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -173,6 +174,39 @@ func TestInvocationLedgerPersistsCancellationLifecycle(t *testing.T) {
 	if !found || record.State != nodes.InvocationCanceled || record.Cancellation == nil ||
 		!record.Cancellation.TerminationConfirmed {
 		t.Fatalf("reloaded cancellation = %#v, found %v", record, found)
+	}
+}
+
+func TestInvocationLedgerFailedCancellationDoesNotMutateStoredRecord(t *testing.T) {
+	clock := time.Now()
+	ledger := newInvocationLedger("", 4, 1024*1024, func() time.Time { return clock })
+	plan := testLedgerPlanAt(t, "cancel-transition-failure", clock)
+	if _, _, err := ledger.Accept(plan); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(time.Second)
+	if _, err := ledger.MarkRunning(plan.InvocationID); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(time.Second)
+	before, err := ledger.RequestCancellation(plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clock = clock.Add(-time.Hour)
+	if _, err := ledger.CompleteCancellation(plan.InvocationID); err == nil {
+		t.Fatal("CompleteCancellation() succeeded with a backward clock")
+	}
+	after, found := ledger.Get(plan.InvocationID)
+	if !found {
+		t.Fatal("failed cancellation removed the invocation")
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("failed transition mutated record:\nbefore: %#v\nafter:  %#v", before, after)
+	}
+	if err := after.Validate(); err != nil {
+		t.Fatalf("stored record became invalid: %v", err)
 	}
 }
 

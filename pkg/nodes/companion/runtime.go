@@ -42,6 +42,17 @@ type commandHandler interface {
 	execute(context.Context, json.RawMessage) (any, error)
 }
 
+type invocationStore interface {
+	Existing(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
+	Accept(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
+	MarkRunning(string) (nodes.InvocationRecord, error)
+	RequestCancellation(string) (nodes.InvocationRecord, error)
+	CompleteCancellation(string) (nodes.InvocationRecord, error)
+	CompleteSuccess(string, json.RawMessage) (nodes.InvocationRecord, error)
+	CompleteFailure(string, nodes.InvocationFailure) (nodes.InvocationRecord, error)
+	Lookup(string) (nodes.InvocationRecord, bool, error)
+}
+
 // Runtime is the instance-scoped capability boundary. It owns no gateway
 // connection and can therefore be reused by a future multi-binding supervisor.
 type Runtime struct {
@@ -49,7 +60,7 @@ type Runtime struct {
 	policy   nodes.LocalCommandPolicy
 	catalog  nodes.CapabilityCatalog
 	handlers map[string]commandHandler
-	ledger   *InvocationLedger
+	ledger   invocationStore
 	activeMu sync.Mutex
 	active   map[string]*activeInvocation
 }
@@ -255,9 +266,24 @@ func (runtime *Runtime) Cancel(
 	if err != nil {
 		return nodes.InvocationRecord{}, err
 	}
-	if invocation != nil {
-		invocation.cancel(errCancellationRequested)
+	if record.State.Terminal() {
+		return record, nil
 	}
+	// The accepted invocation may have acquired an owner while the durable
+	// cancellation transition was in progress. Always refresh the owner before
+	// signaling so an acknowledged running cancellation reaches its handler.
+	invocation = runtime.activeInvocation(request.InvocationID)
+	if invocation == nil {
+		current, currentFound, lookupErr := runtime.ledger.Lookup(request.InvocationID)
+		if lookupErr != nil {
+			return nodes.InvocationRecord{}, lookupErr
+		}
+		if currentFound && current.State.Terminal() {
+			return current, nil
+		}
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	invocation.cancel(errCancellationRequested)
 	return record, nil
 }
 

@@ -268,6 +268,61 @@ func TestRuntimeCancelsActiveInvocation(t *testing.T) {
 	}
 }
 
+func TestRuntimeCancellationReacquiresOwnerAfterDurableTransition(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	commandRuntime, err := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"test.block.v1"}),
+		ledger,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newRuntimeBlockingHandler()
+	descriptor := handler.descriptor()
+	commandRuntime.handlers[descriptor.Name] = handler
+	commandRuntime.catalog.Commands = append(commandRuntime.catalog.Commands, descriptor)
+	plan := testTransportPlan(t, commandRuntime, descriptor, "cancel-owner-handoff")
+	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
+		t.Fatal(acceptErr)
+	}
+
+	barrier := &cancellationTransitionBarrier{
+		invocationStore: ledger,
+		entered:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	commandRuntime.ledger = barrier
+	cancelDone := make(chan error, 1)
+	go func() {
+		_, cancelErr := commandRuntime.Cancel(nodes.InvocationCancelRequest{
+			InvocationID: plan.InvocationID,
+		})
+		cancelDone <- cancelErr
+	}()
+	<-barrier.entered
+
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, invokeErr := commandRuntime.executeAccepted(t.Context(), plan)
+		invokeDone <- invokeErr
+	}()
+	<-handler.started
+	close(barrier.release)
+	if cancelErr := <-cancelDone; cancelErr != nil {
+		t.Fatal(cancelErr)
+	}
+	if invokeErr := <-invokeDone; !errors.Is(invokeErr, ErrInvocationCanceled) {
+		t.Fatalf("Invoke() error = %v", invokeErr)
+	}
+	record, found, err := commandRuntime.Invocation(plan.InvocationID)
+	if err != nil || !found || record.State != nodes.InvocationCanceled ||
+		record.Cancellation == nil || !record.Cancellation.TerminationConfirmed {
+		t.Fatalf("canceled owner-handoff record = %#v, found %v, error %v", record, found, err)
+	}
+}
+
 func TestRuntimeCancellationDoesNotRewriteSuccessfulResult(t *testing.T) {
 	commandRuntime, err := NewRuntime(
 		nodes.ID("node_test"),
@@ -366,6 +421,20 @@ func TestRuntimeDoesNotClaimCancellationWithoutActiveOwner(t *testing.T) {
 
 type runtimeBlockingHandler struct {
 	started chan struct{}
+}
+
+type cancellationTransitionBarrier struct {
+	invocationStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (barrier *cancellationTransitionBarrier) RequestCancellation(
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	close(barrier.entered)
+	<-barrier.release
+	return barrier.invocationStore.RequestCancellation(invocationID)
 }
 
 func newRuntimeBlockingHandler() *runtimeBlockingHandler {
