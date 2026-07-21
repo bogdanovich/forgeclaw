@@ -67,7 +67,7 @@ func TestPeerDiscardsResponseAfterRequestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	requestDone := make(chan error, 1)
 	go func() {
-		_, requestErr := session.request(ctx, "node.invoke", []byte(`{}`))
+		_, requestErr := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
 		requestDone <- requestErr
 	}()
 	<-requestSeen
@@ -128,7 +128,7 @@ func TestPeerRequestCancellationWhileWaitingForWriter(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	requestDone := make(chan error, 1)
 	go func() {
-		_, err := session.request(ctx, "node.invoke", []byte(`{}`))
+		_, err := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
 		requestDone <- err
 	}()
 	waitForPeerPending(t, session, 1)
@@ -149,7 +149,7 @@ func TestPeerRequestCancellationInterruptsBlockedWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	requestDone := make(chan error, 1)
 	go func() {
-		_, err := session.request(ctx, "node.invoke", []byte(`{}`))
+		_, err := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
 		requestDone <- err
 	}()
 	<-connection.writeStarted
@@ -243,7 +243,7 @@ func TestPeerCancellationBurstPreservesLateResponses(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		requestDone := make(chan error, 1)
 		go func() {
-			_, requestErr := session.request(ctx, "node.invoke", []byte(`{}`))
+			_, requestErr := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
 			requestDone <- requestErr
 		}()
 		<-requestsSeen
@@ -252,7 +252,7 @@ func TestPeerCancellationBurstPreservesLateResponses(t *testing.T) {
 			t.Fatalf("canceled request error = %v", requestErr)
 		}
 	}
-	if _, overflowErr := session.request(t.Context(), "node.invoke", []byte(`{}`)); !errors.Is(
+	if _, overflowErr := session.request(t.Context(), "node.invoke", []byte(`{}`), "idem_test"); !errors.Is(
 		overflowErr,
 		ErrRequestLimit,
 	) {
@@ -274,7 +274,7 @@ func TestPeerCancellationBurstPreservesLateResponses(t *testing.T) {
 	}
 	finalDone := make(chan error, 1)
 	go func() {
-		_, requestErr := session.request(t.Context(), "node.invoke", []byte(`{}`))
+		_, requestErr := session.request(t.Context(), "node.invoke", []byte(`{}`), "idem_test")
 		finalDone <- requestErr
 	}()
 	<-finalRequestSeen

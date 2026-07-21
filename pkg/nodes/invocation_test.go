@@ -313,6 +313,45 @@ func TestLocalCommandPolicyRejectsPlanTooFarInFuture(t *testing.T) {
 	}
 }
 
+func TestLocalCommandPolicyAuthorizesExpiredReplayWithoutBroadeningAuthority(t *testing.T) {
+	descriptor := invocationDescriptor(RiskWrite)
+	plan, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"argv":["git","status"]}`)),
+		descriptor,
+		"local",
+		"policy-1",
+		time.Unix(100, 0),
+		time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := LocalCommandPolicy{
+		Revision:          "policy-1",
+		AllowedCommands:   []string{descriptor.Name},
+		MaximumRisk:       RiskWrite,
+		MaxTimeoutSeconds: 60,
+		MaxOutputBytes:    4096,
+	}
+	if err := policy.AuthorizeReplay(
+		plan,
+		invocationCatalog(descriptor),
+		plan.NodeID,
+		plan.Executor,
+	); err != nil {
+		t.Fatalf("AuthorizeReplay() rejected expired recorded plan: %v", err)
+	}
+	policy.AllowedCommands = nil
+	if err := policy.AuthorizeReplay(
+		plan,
+		invocationCatalog(descriptor),
+		plan.NodeID,
+		plan.Executor,
+	); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("revoked replay authority error = %v", err)
+	}
+}
+
 func TestRegistrationApprovedCommandIntersectsCatalogAndApproval(t *testing.T) {
 	descriptor := invocationDescriptor(RiskWrite)
 	catalog := invocationCatalog(descriptor)
