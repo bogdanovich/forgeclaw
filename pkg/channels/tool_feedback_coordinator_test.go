@@ -192,8 +192,8 @@ func TestToolFeedbackCoordinator_CleanupFailureIsRetried(t *testing.T) {
 		context.Background(), "feishu:chat-1", "chat-1", "second", operations,
 		func(context.Context, string) ([]string, error) { return []string{"progress-2"}, nil },
 	)
-	if !errors.Is(err, ErrTemporary) || !slices.Equal(ids, []string{"progress-2"}) {
-		t.Fatalf("replacement = (%v, %v), want [progress-2], ErrTemporary", ids, err)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) {
+		t.Fatalf("replacement = (%v, %v), want [progress-2], nil", ids, err)
 	}
 	ids, err = coordinator.Deliver(
 		context.Background(), "feishu:chat-1", "chat-1", "third", operations,
@@ -289,8 +289,8 @@ func TestToolFeedbackCoordinator_TerminalRetainsFailedCleanupUntilRetry(t *testi
 		context.Background(), "feishu:chat-1", "chat-1", "second", operations,
 		func(context.Context, string) ([]string, error) { return []string{"progress-2"}, nil },
 	)
-	if !errors.Is(err, ErrTemporary) || !slices.Equal(ids, []string{"progress-2"}) {
-		t.Fatalf("replacement = (%v, %v), want [progress-2], ErrTemporary", ids, err)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) {
+		t.Fatalf("replacement = (%v, %v), want [progress-2], nil", ids, err)
 	}
 	terminal := coordinator.BeginTransientTerminal("feishu:chat-1")
 	coordinator.CompleteTerminal(context.Background(), terminal, true)

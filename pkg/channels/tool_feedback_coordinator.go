@@ -286,7 +286,7 @@ func (c *ToolFeedbackCoordinator) replaceTrackedMessage(
 		entry.mu.Lock()
 		entry.pendingCleanup = append(entry.pendingCleanup, newPendingToolFeedbackCleanup(current))
 		entry.mu.Unlock()
-		return messageIDs, cleanupErr
+		return messageIDs, sendErr
 	}
 	return messageIDs, sendErr
 }
