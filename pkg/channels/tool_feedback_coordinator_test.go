@@ -259,6 +259,65 @@ func TestToolFeedbackCoordinator_ReplacementTerminalDeletesBothMessages(t *testi
 	}
 }
 
+func TestToolFeedbackCoordinator_TerminalRetainsFailedCleanupUntilRetry(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	allowCleanup := false
+	var cleaned []string
+	operations := toolFeedbackOperations{
+		edit: func(_ context.Context, _, messageID, _ string) error {
+			if messageID == "progress-1" {
+				return ErrSendFailed
+			}
+			return nil
+		},
+		delete: func(_ context.Context, _, messageID string) error {
+			if !allowCleanup {
+				return ErrTemporary
+			}
+			cleaned = append(cleaned, messageID)
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	ids, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-2"}, nil },
+	)
+	if !errors.Is(err, ErrTemporary) || !slices.Equal(ids, []string{"progress-2"}) {
+		t.Fatalf("replacement = (%v, %v), want [progress-2], ErrTemporary", ids, err)
+	}
+	terminal := coordinator.BeginTransientTerminal("feishu:chat-1")
+	coordinator.CompleteTerminal(context.Background(), terminal, true)
+	if count := coordinator.ActiveCount(); count != 1 {
+		t.Fatalf("ActiveCount() after failed terminal cleanup = %d, want 1", count)
+	}
+	entry := coordinator.findEntry("feishu:chat-1")
+	if entry == nil {
+		t.Fatal("terminal entry removed with pending cleanup")
+	}
+	entry.mu.Lock()
+	pending := len(entry.pendingCleanup)
+	entry.mu.Unlock()
+	if pending != 2 {
+		t.Fatalf("pending cleanup = %d, want old and current messages", pending)
+	}
+
+	allowCleanup = true
+	coordinator.maintainTerminal(terminal)
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() after cleanup retry = %d, want 0", count)
+	}
+	if want := []string{"progress-1", "progress-2"}; !slices.Equal(cleaned, want) {
+		t.Fatalf("cleaned = %v, want %v", cleaned, want)
+	}
+}
+
 func TestToolFeedbackCoordinator_PendingSendTerminalDeletesLateMessage(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()
