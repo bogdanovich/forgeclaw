@@ -10,8 +10,8 @@ The durable human-interaction runtime merged before the spike remains the
 production authority. This redesign extends its observability and evaluation
 without making trace capture part of the interaction state machine.
 
-Stages 1 through 7 are merged. Stage 8 extracts durable trace persistence from
-the agent capture manager; later stages remain separate pull requests.
+Stages 1 through 8 are merged. Stage 9 extracts bounded trace assembly before
+source projectors are split; later stages remain separate pull requests.
 
 ## Why The Spike Is Not The Implementation
 
@@ -314,11 +314,13 @@ Each item is a separate focused PR based on the merged predecessor:
    with ordering, re-entry, persistence-failure, and restart tests.
 8. **Durable writer:** extract queueing, retry, retention, atomic persistence,
    and explicit loss accounting from the agent capture manager.
-9. **Projectors:** split turn/task capture and add the dedicated interaction
+9. **Bounded assembly:** centralize record sequencing, deduplication, critical
+   evidence priority, truncation accounting, and finalization outside projectors.
+10. **Projectors:** split turn/task capture and add the dedicated interaction
    projector with deterministic live/startup construction.
-10. **Protocol contract:** extract declarative interaction transitions and use
+11. **Protocol contract:** extract declarative interaction transitions and use
    them from both registry validation and replay reduction.
-11. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
+12. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
    reporting, operator docs, and only the spike tests relevant to these final
    boundaries.
 

@@ -39,12 +39,10 @@ type traceCaptureSettings struct {
 }
 
 type activeTraceCapture struct {
-	trace           evaltrace.Trace
+	builder         *evalcapture.TraceBuilder
 	turnID          string
 	workspace       string
 	startedAt       time.Time
-	critical        map[uint64]bool
-	origins         map[string]struct{}
 	deliverySettled bool
 	settlementTimer *time.Timer
 }
@@ -234,19 +232,11 @@ func (m *traceCaptureManager) close() {
 			trace.settlementTimer.Stop()
 			trace.settlementTimer = nil
 		}
-		trace.trace.Truncation.Incomplete = true
-		trace.trace.Truncation.Reasons = append(
-			trace.trace.Truncation.Reasons,
-			"runtime_closed_before_terminal_outcome",
-		)
+		trace.builder.MarkIncomplete("runtime_closed_before_terminal_outcome", 0)
 		traces = append(traces, trace)
 	}
 	for _, trace := range m.tasks {
-		trace.trace.Truncation.Incomplete = true
-		trace.trace.Truncation.Reasons = append(
-			trace.trace.Truncation.Reasons,
-			"runtime_closed_before_terminal_task_delivery",
-		)
+		trace.builder.MarkIncomplete("runtime_closed_before_terminal_task_delivery", 0)
 		traces = append(traces, trace)
 	}
 	m.turns = nil
@@ -330,10 +320,10 @@ func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
 	deliveryExpected := false
 	if payload, ok := event.Payload.(TurnEndPayload); ok {
 		deliveryExpected = payload.DeliveryExpected
-		trace.trace.Outcome = &evaltrace.Outcome{
+		trace.builder.SetOutcome(evaltrace.Outcome{
 			Status: string(payload.Status), ContentHash: safeHash(settings, payload.FinalContent),
 			ContentLen: payload.FinalContentLen,
-		}
+		})
 	}
 	if deliveryExpected {
 		if trace.deliverySettled {
@@ -365,11 +355,7 @@ func (m *traceCaptureManager) expireTurnSettlement(
 	}
 	settings := m.settings
 	trace.settlementTimer = nil
-	trace.trace.Truncation.Incomplete = true
-	trace.trace.Truncation.Reasons = appendUnique(
-		trace.trace.Truncation.Reasons,
-		"delivery_settlement_timeout",
-	)
+	trace.builder.MarkIncomplete("delivery_settlement_timeout", 0)
 	m.removeTurnLocked(traceScope, trace)
 	m.mu.Unlock()
 	m.enqueuePersist(settings, trace)
@@ -395,9 +381,7 @@ func (m *traceCaptureManager) startTurnLocked(
 		turnID:    traceScope.TurnID,
 		workspace: traceScope.Workspace,
 		startedAt: event.Time,
-		critical:  make(map[uint64]bool),
-		origins:   make(map[string]struct{}),
-		trace: evaltrace.Trace{
+		builder: evalcapture.NewTraceBuilder(evaltrace.Trace{
 			SchemaVersion: evaltrace.SchemaVersionV1,
 			TraceID: opaqueTraceID(
 				"turn", traceScope.Workspace+"\x00"+traceScope.TurnID, event.Time,
@@ -413,7 +397,7 @@ func (m *traceCaptureManager) startTurnLocked(
 				AgentID: event.Scope.AgentID, RuntimeID: event.Scope.RuntimeID,
 			},
 			Records: make([]evaltrace.Record, 0, 32),
-		},
+		}),
 	}
 	m.turns[traceScope] = trace
 }
@@ -481,8 +465,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 		emittedAt := time.UnixMilli(event.EmittedAt)
 		trace = &activeTraceCapture{
 			workspace: workspace, startedAt: emittedAt,
-			critical: make(map[uint64]bool), origins: make(map[string]struct{}),
-			trace: evaltrace.Trace{
+			builder: evalcapture.NewTraceBuilder(evaltrace.Trace{
 				SchemaVersion: evaltrace.SchemaVersionV1,
 				TraceID: opaqueTraceID(
 					"task",
@@ -499,7 +482,7 @@ func (m *traceCaptureManager) observeTaskEvent(
 					AgentID:     record.AgentID,
 				},
 				Records: make([]evaltrace.Record, 0, 16),
-			},
+			}),
 		}
 		m.tasks[key] = trace
 		createdTrace = true
@@ -523,10 +506,10 @@ func (m *traceCaptureManager) observeTaskEvent(
 		return
 	}
 	delete(m.tasks, key)
-	trace.trace.Outcome = &evaltrace.Outcome{
+	trace.builder.SetOutcome(evaltrace.Outcome{
 		Status:    string(record.Status),
 		ErrorCode: taskErrorCode(record),
-	}
+	})
 	m.mu.Unlock()
 	m.enqueuePersist(settings, trace)
 }
@@ -538,10 +521,10 @@ func (m *traceCaptureManager) enqueuePersist(
 	if m == nil || trace == nil || strings.TrimSpace(trace.workspace) == "" {
 		return
 	}
-	finalized, err := finalizeCaptureTrace(trace)
+	finalized, err := trace.builder.Finalize()
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to finalize evaluation trace", map[string]any{
-			"trace_id": trace.trace.TraceID, "error": err.Error(),
+			"trace_id": trace.builder.TraceID(), "error": err.Error(),
 		})
 		return
 	}
@@ -558,7 +541,7 @@ func (m *traceCaptureManager) enqueuePersist(
 	}, finalized, evalcapture.ClassCritical)
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
-			"trace_id": trace.trace.TraceID, "error": err.Error(),
+			"trace_id": trace.builder.TraceID(), "error": err.Error(),
 		})
 	}
 }
@@ -594,12 +577,7 @@ func (m *traceCaptureManager) markRuntimeDropsLocked() {
 	delta := int(dropped - m.lastDropped)
 	m.lastDropped = dropped
 	for _, trace := range m.turns {
-		trace.trace.Truncation.Incomplete = true
-		trace.trace.Truncation.DroppedRecords += delta
-		trace.trace.Truncation.Reasons = appendUnique(
-			trace.trace.Truncation.Reasons,
-			"runtime_event_backpressure",
-		)
+		trace.builder.MarkIncomplete("runtime_event_backpressure", delta)
 	}
 }
 
@@ -925,95 +903,14 @@ func normalizedTaskEventRecord(
 }
 
 func appendCaptureRecord(trace *activeTraceCapture, record evaltrace.Record, critical bool) {
-	if trace == nil {
+	if trace == nil || trace.builder == nil {
 		return
 	}
-	if trace.origins == nil {
-		trace.origins = make(map[string]struct{})
+	class := evalcapture.RecordOrdinary
+	if critical {
+		class = evalcapture.RecordCritical
 	}
-	originKey := record.Origin.Kind + "\x00" + record.Origin.ID
-	if record.Origin.ID != "" {
-		if _, exists := trace.origins[originKey]; exists {
-			return
-		}
-	}
-	limits := trace.trace.Limits
-	if len(record.Data) > limits.MaxRecordBytes {
-		trace.trace.Truncation.Incomplete = true
-		trace.trace.Truncation.DroppedRecords++
-		trace.trace.Truncation.Reasons = appendUnique(
-			trace.trace.Truncation.Reasons,
-			"record_size_limit",
-		)
-		trace.trace.Truncation.DroppedByKind = incrementDropped(
-			trace.trace.Truncation.DroppedByKind,
-			record.Kind,
-		)
-		return
-	}
-	if len(trace.trace.Records) >= limits.MaxRecords {
-		if !critical {
-			trace.trace.Truncation.Incomplete = true
-			trace.trace.Truncation.DroppedRecords++
-			trace.trace.Truncation.Reasons = appendUnique(
-				trace.trace.Truncation.Reasons,
-				"record_count_limit",
-			)
-			trace.trace.Truncation.DroppedByKind = incrementDropped(
-				trace.trace.Truncation.DroppedByKind,
-				record.Kind,
-			)
-			return
-		}
-		for i := len(trace.trace.Records) - 1; i >= 0; i-- {
-			if trace.critical[trace.trace.Records[i].Sequence] {
-				continue
-			}
-			dropped := trace.trace.Records[i]
-			trace.trace.Records = append(trace.trace.Records[:i], trace.trace.Records[i+1:]...)
-			delete(trace.critical, dropped.Sequence)
-			trace.trace.Truncation.DroppedRecords++
-			trace.trace.Truncation.DroppedByKind = incrementDropped(
-				trace.trace.Truncation.DroppedByKind,
-				dropped.Kind,
-			)
-			break
-		}
-		if len(trace.trace.Records) >= limits.MaxRecords {
-			return
-		}
-	}
-	record.Sequence = nextCaptureSequence(trace.trace.Records)
-	trace.trace.Records = append(trace.trace.Records, record)
-	trace.critical[record.Sequence] = critical
-	if record.Origin.ID != "" {
-		trace.origins[originKey] = struct{}{}
-	}
-}
-
-func finalizeCaptureTrace(trace *activeTraceCapture) (evaltrace.Trace, error) {
-	for {
-		finalized, err := evaltrace.Finalize(trace.trace)
-		if err == nil {
-			return finalized, nil
-		}
-		if !strings.Contains(err.Error(), "trace exceeds byte limit") ||
-			len(trace.trace.Records) == 0 {
-			return evaltrace.Trace{}, err
-		}
-		dropped := trace.trace.Records[len(trace.trace.Records)-1]
-		trace.trace.Records = trace.trace.Records[:len(trace.trace.Records)-1]
-		trace.trace.Truncation.Incomplete = true
-		trace.trace.Truncation.DroppedRecords++
-		trace.trace.Truncation.Reasons = appendUnique(
-			trace.trace.Truncation.Reasons,
-			"trace_size_limit",
-		)
-		trace.trace.Truncation.DroppedByKind = incrementDropped(
-			trace.trace.Truncation.DroppedByKind,
-			dropped.Kind,
-		)
-	}
+	trace.builder.Append(record, class)
 }
 
 func (m *traceCaptureManager) removeTurnLocked(
@@ -1172,33 +1069,6 @@ func captureRedactorVersion(mode evaltrace.ContentMode) string {
 		return "forgeclaw.config_filter.v1"
 	}
 	return ""
-}
-
-func nextCaptureSequence(records []evaltrace.Record) uint64 {
-	if len(records) == 0 {
-		return 1
-	}
-	return records[len(records)-1].Sequence + 1
-}
-
-func incrementDropped(
-	values map[evaltrace.RecordKind]int,
-	kind evaltrace.RecordKind,
-) map[evaltrace.RecordKind]int {
-	if values == nil {
-		values = make(map[evaltrace.RecordKind]int)
-	}
-	values[kind]++
-	return values
-}
-
-func appendUnique(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
 }
 
 func parseBool(value string) bool {
