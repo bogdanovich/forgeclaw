@@ -8,6 +8,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
 // channelManagerAdapter wraps *channels.Manager to implement interfaces.ChannelManager.
@@ -66,9 +67,12 @@ func (a *channelManagerAdapter) SendPlaceholder(ctx context.Context, channel, ch
 }
 
 func (a *channelManagerAdapter) DismissToolFeedback(
-	ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext,
+	ctx context.Context,
+	channel, chatID string,
+	outboundCtx *bus.InboundContext,
+	traceScopes []runtimeevents.TraceScope,
 ) {
-	a.inner.DismissToolFeedback(ctx, channel, chatID, outboundCtx)
+	a.inner.DismissToolFeedback(ctx, channel, chatID, outboundCtx, traceScopes)
 }
 
 func (a *channelManagerAdapter) DismissToolFeedbackForSession(
@@ -76,6 +80,7 @@ func (a *channelManagerAdapter) DismissToolFeedbackForSession(
 	channel, chatID string,
 	outboundCtx *bus.InboundContext,
 	sessionKey string,
+	traceScopes []runtimeevents.TraceScope,
 ) {
-	a.inner.DismissToolFeedbackForSession(ctx, channel, chatID, outboundCtx, sessionKey)
+	a.inner.DismissToolFeedbackForSession(ctx, channel, chatID, outboundCtx, sessionKey, traceScopes)
 }

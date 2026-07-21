@@ -10,6 +10,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -37,7 +38,13 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 		return nil, false, nil
 	}
 
-	streamer, ok := p.Runtime.Bus.GetStreamer(ctx, ts.channel, ts.chatID, ts.sessionKey)
+	streamer, ok := p.Runtime.Bus.GetStreamer(
+		ctx,
+		ts.channel,
+		ts.chatID,
+		ts.sessionKey,
+		runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+	)
 	if !ok || streamer == nil {
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"agent_id": ts.agent.ID,

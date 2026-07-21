@@ -7,6 +7,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
 // MessageBus publishes inbound and outbound messages.
@@ -34,7 +35,11 @@ type MessageBus interface {
 	PublishOutboundMedia(ctx context.Context, msg bus.OutboundMediaMessage) error
 
 	// GetStreamer returns a channel streamer when the active channel supports streaming.
-	GetStreamer(ctx context.Context, channel, chatID, sessionKey string) (bus.Streamer, bool)
+	GetStreamer(
+		ctx context.Context,
+		channel, chatID, sessionKey string,
+		traceScope runtimeevents.TraceScope,
+	) (bus.Streamer, bool)
 
 	// InboundChan returns the channel for receiving inbound messages.
 	InboundChan() <-chan bus.InboundMessage
@@ -72,7 +77,12 @@ type ChannelManager interface {
 	// (e.g., ResponseHandled tools) to avoid orphaned animation goroutines.
 	// outboundCtx carries topic/thread info needed for channels that use
 	// scoped tracker keys (e.g., Telegram forum topics); may be nil.
-	DismissToolFeedback(ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext)
+	DismissToolFeedback(
+		ctx context.Context,
+		channel, chatID string,
+		outboundCtx *bus.InboundContext,
+		traceScopes []runtimeevents.TraceScope,
+	)
 
 	// DismissToolFeedbackForSession clears a session-scoped tool feedback
 	// message. This is used for background sub-turns whose progress messages
@@ -84,6 +94,7 @@ type ChannelManager interface {
 		channel, chatID string,
 		outboundCtx *bus.InboundContext,
 		sessionKey string,
+		traceScopes []runtimeevents.TraceScope,
 	)
 }
 

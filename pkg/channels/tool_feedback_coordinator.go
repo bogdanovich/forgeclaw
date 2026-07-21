@@ -12,7 +12,6 @@ const toolFeedbackTerminalTombstoneTTL = 30 * time.Second
 type toolFeedbackOperations struct {
 	edit   func(context.Context, string, string, string) error
 	delete func(context.Context, string, string) error
-	turnID string
 }
 
 type toolFeedbackSendResult struct {
@@ -27,7 +26,6 @@ type toolFeedbackEntry struct {
 	terminalGeneration uint64
 	terminal           bool
 	terminalUntil      time.Time
-	terminalTurnID     string
 	terminalPending    int
 	terminalSucceeded  bool
 	retired            bool
@@ -43,6 +41,7 @@ type toolFeedbackTerminal struct {
 	key        string
 	entry      *toolFeedbackEntry
 	generation uint64
+	retain     bool
 	absorbed   bool
 	completed  bool
 }
@@ -115,7 +114,6 @@ func (c *ToolFeedbackCoordinator) deliver(
 	}
 	key = strings.TrimSpace(key)
 	content = strings.TrimSpace(content)
-	turnID := strings.TrimSpace(operations.turnID)
 	separate := c.separateMessages()
 	entry := c.lockEntry(key)
 	if entry == nil {
@@ -125,14 +123,12 @@ func (c *ToolFeedbackCoordinator) deliver(
 
 	entry.mu.Lock()
 	if entry.terminal {
-		sameOrUnknownTurn := entry.terminalTurnID == "" || turnID == "" || entry.terminalTurnID == turnID
-		if sameOrUnknownTurn && (entry.terminalUntil.IsZero() || time.Now().Before(entry.terminalUntil)) {
+		if entry.terminalUntil.IsZero() || time.Now().Before(entry.terminalUntil) {
 			entry.mu.Unlock()
 			return nil, nil
 		}
 		entry.terminal = false
 		entry.terminalUntil = time.Time{}
-		entry.terminalTurnID = ""
 		entry.terminalPending = 0
 		entry.terminalSucceeded = false
 		entry.terminalGeneration++
@@ -229,15 +225,18 @@ func (c *ToolFeedbackCoordinator) deliver(
 }
 
 func (c *ToolFeedbackCoordinator) BeginTerminal(key string) *toolFeedbackTerminal {
-	return c.BeginTerminalForTurn(key, "")
+	return c.beginTerminal(key, true)
 }
 
-func (c *ToolFeedbackCoordinator) BeginTerminalForTurn(key, turnID string) *toolFeedbackTerminal {
+func (c *ToolFeedbackCoordinator) BeginTransientTerminal(key string) *toolFeedbackTerminal {
+	return c.beginTerminal(key, false)
+}
+
+func (c *ToolFeedbackCoordinator) beginTerminal(key string, retain bool) *toolFeedbackTerminal {
 	if c == nil || strings.TrimSpace(key) == "" {
 		return nil
 	}
 	key = strings.TrimSpace(key)
-	turnID = strings.TrimSpace(turnID)
 	for {
 		entry := c.getOrCreateEntry(key)
 		if entry == nil {
@@ -249,30 +248,25 @@ func (c *ToolFeedbackCoordinator) BeginTerminalForTurn(key, turnID string) *tool
 			c.removeEntry(key, entry)
 			continue
 		}
-		sameOrUnknownTurn := entry.terminalTurnID == "" || turnID == "" || entry.terminalTurnID == turnID
-		if entry.terminal && entry.terminalSucceeded && sameOrUnknownTurn {
+		if entry.terminal && entry.terminalSucceeded {
 			generation := entry.terminalGeneration
 			entry.mu.Unlock()
 			return &toolFeedbackTerminal{
-				key: key, entry: entry, generation: generation, absorbed: true,
+				key: key, entry: entry, generation: generation, retain: retain, absorbed: true,
 			}
 		}
-		if !entry.terminal || !sameOrUnknownTurn {
+		if !entry.terminal {
 			entry.terminalGeneration++
 			entry.terminalPending = 0
 			entry.terminalSucceeded = false
-			entry.terminalTurnID = turnID
 		}
 		entry.terminal = true
 		entry.terminalUntil = time.Time{}
-		if entry.terminalPending > 0 && entry.terminalTurnID != turnID {
-			entry.terminalTurnID = ""
-		}
 		entry.terminalPending++
 		generation := entry.terminalGeneration
 		entry.mu.Unlock()
 
-		return &toolFeedbackTerminal{key: key, entry: entry, generation: generation}
+		return &toolFeedbackTerminal{key: key, entry: entry, generation: generation, retain: retain}
 	}
 }
 
@@ -305,7 +299,6 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		}
 		entry.terminal = false
 		entry.terminalUntil = time.Time{}
-		entry.terminalTurnID = ""
 		messageID := entry.messageID
 		editable := entry.editable
 		content := entry.content
@@ -332,7 +325,11 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	entry.editable = false
 	entry.content = ""
 	entry.operations = toolFeedbackOperations{}
-	entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
+	if terminal.retain {
+		entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
+	} else {
+		entry.retired = true
+	}
 	entry.mu.Unlock()
 	c.animator.Clear(terminal.key)
 	entry.opMu.Unlock()
@@ -340,15 +337,20 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	if !c.separateMessages() && messageID != "" && deleteFn != nil {
 		deleteToolFeedbackMessage(ctx, deleteFn, chatID, messageID)
 	}
-	c.expireTerminal(terminal)
+	if terminal.retain {
+		c.expireTerminal(terminal)
+	} else {
+		c.removeEntry(terminal.key, entry)
+	}
 }
 
 func (c *ToolFeedbackCoordinator) Dismiss(ctx context.Context, key string) {
-	c.DismissForTurn(ctx, key, "")
+	terminal := c.BeginTerminal(key)
+	c.CompleteTerminal(ctx, terminal, true)
 }
 
-func (c *ToolFeedbackCoordinator) DismissForTurn(ctx context.Context, key, turnID string) {
-	terminal := c.BeginTerminalForTurn(key, turnID)
+func (c *ToolFeedbackCoordinator) DismissTransient(ctx context.Context, key string) {
+	terminal := c.BeginTransientTerminal(key)
 	c.CompleteTerminal(ctx, terminal, true)
 }
 
@@ -374,26 +376,51 @@ func (c *ToolFeedbackCoordinator) ReleaseTerminal(key string) {
 	c.removeEntry(key, entry)
 }
 
-func (c *ToolFeedbackCoordinator) RetireChannel(channelName string) {
+func (c *ToolFeedbackCoordinator) RetireChannel(ctx context.Context, channelName string) {
 	if c == nil || strings.TrimSpace(channelName) == "" {
 		return
 	}
 	prefix := strings.TrimSpace(channelName) + ":"
+	type retiredFeedback struct {
+		key       string
+		chatID    string
+		messageID string
+		delete    func(context.Context, string, string) error
+	}
+	var retired []retiredFeedback
+	type keyedEntry struct {
+		key   string
+		entry *toolFeedbackEntry
+	}
+	var entries []keyedEntry
 	c.mu.Lock()
-	var retiredKeys []string
 	for key, entry := range c.entries {
 		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		entry.mu.Lock()
-		entry.retired = true
-		entry.mu.Unlock()
-		retiredKeys = append(retiredKeys, key)
-		delete(c.entries, key)
+		entries = append(entries, keyedEntry{key: key, entry: entry})
 	}
 	c.mu.Unlock()
-	for _, key := range retiredKeys {
-		c.animator.Clear(key)
+	for _, candidate := range entries {
+		key, entry := candidate.key, candidate.entry
+		entry.opMu.Lock()
+		entry.mu.Lock()
+		entry.retired = true
+		feedback := retiredFeedback{
+			key: key, chatID: entry.chatID, messageID: entry.messageID, delete: entry.operations.delete,
+		}
+		entry.messageID = ""
+		entry.editable = false
+		entry.content = ""
+		entry.operations = toolFeedbackOperations{}
+		entry.mu.Unlock()
+		entry.opMu.Unlock()
+		retired = append(retired, feedback)
+		c.removeEntry(key, entry)
+	}
+	for _, feedback := range retired {
+		c.animator.Clear(feedback.key)
+		deleteToolFeedbackMessage(ctx, feedback.delete, feedback.chatID, feedback.messageID)
 	}
 }
 

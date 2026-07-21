@@ -187,7 +187,7 @@ func (al *AgentLoop) publishResponseWithContextAndScopes(
 	messageToolSentToSameChat := messageToolSentToSameChat(agent, sessionKey, channel, chatID)
 
 	if policy == finalResponseSuppressIfMessageToolSent && messageToolSentToSameChat {
-		al.dismissToolFeedbackForSession(ctx, channel, chatID, inboundCtx, sessionKey)
+		al.dismissToolFeedbackForSession(ctx, channel, chatID, inboundCtx, sessionKey, traceScopes)
 		logger.DebugCF(
 			"agent",
 			"Skipped outbound (message tool already sent to same chat)",
