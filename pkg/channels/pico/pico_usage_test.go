@@ -43,7 +43,7 @@ func TestSetTurnUsagePayload(t *testing.T) {
 func newCaptureStreamer() (*picoStreamer, *map[string]any) {
 	var last map[string]any
 	ch := &PicoChannel{}
-	ch.broadcastFn = func(chatID string, msg PicoMessage) error {
+	ch.broadcastFn = func(_ context.Context, chatID string, msg PicoMessage) error {
 		last = msg.Payload
 		return nil
 	}
