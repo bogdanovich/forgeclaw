@@ -318,6 +318,75 @@ func TestToolFeedbackCoordinator_TerminalRetainsFailedCleanupUntilRetry(t *testi
 	}
 }
 
+func TestToolFeedbackCoordinator_TerminalDropsPermanentCleanupFailure(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteCalls := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			return ErrSendFailed
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "working", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("Deliver() error = %v", err)
+	}
+	terminal := coordinator.BeginTransientTerminal("telegram:chat-1")
+	coordinator.CompleteTerminal(context.Background(), terminal, true)
+	if deleteCalls != 1 {
+		t.Fatalf("delete calls = %d, want 1", deleteCalls)
+	}
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() after permanent cleanup failure = %d, want 0", count)
+	}
+}
+
+func TestToolFeedbackCoordinator_TerminalExpiresUnknownCleanupFailure(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteCalls := 0
+	deleteErr := errors.New("unclassified delete failure")
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(context.Context, string, string) error {
+			deleteCalls++
+			return deleteErr
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "working", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("Deliver() error = %v", err)
+	}
+	terminal := coordinator.BeginTransientTerminal("telegram:chat-1")
+	coordinator.CompleteTerminal(context.Background(), terminal, true)
+	entry := coordinator.findEntry("telegram:chat-1")
+	if entry == nil {
+		t.Fatal("terminal entry removed before cleanup retention expired")
+	}
+	entry.mu.Lock()
+	pending := len(entry.pendingCleanup)
+	if pending != 1 {
+		entry.mu.Unlock()
+		t.Fatalf("pending cleanup = %d, want 1", pending)
+	}
+	entry.pendingCleanup[0].expiresAt = time.Now().Add(-time.Second)
+	entry.mu.Unlock()
+
+	coordinator.maintainTerminal(terminal)
+	if deleteCalls != 1 {
+		t.Fatalf("delete calls after expiry = %d, want 1", deleteCalls)
+	}
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() after cleanup expiry = %d, want 0", count)
+	}
+}
+
 func TestToolFeedbackCoordinator_PendingSendTerminalDeletesLateMessage(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()

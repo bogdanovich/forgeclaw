@@ -11,6 +11,7 @@ import (
 const (
 	toolFeedbackTerminalTombstoneTTL = 30 * time.Second
 	toolFeedbackCleanupRetryDelay    = 5 * time.Second
+	toolFeedbackCleanupRetention     = 30 * time.Second
 )
 
 type toolFeedbackOperations struct {
@@ -31,6 +32,11 @@ type trackedToolFeedbackMessage struct {
 	operations toolFeedbackOperations
 }
 
+type pendingToolFeedbackCleanup struct {
+	message   trackedToolFeedbackMessage
+	expiresAt time.Time
+}
+
 type toolFeedbackEntry struct {
 	opMu sync.Mutex
 	mu   sync.Mutex
@@ -43,7 +49,7 @@ type toolFeedbackEntry struct {
 	retired            bool
 	sending            bool
 	current            trackedToolFeedbackMessage
-	pendingCleanup     []trackedToolFeedbackMessage
+	pendingCleanup     []pendingToolFeedbackCleanup
 }
 
 type toolFeedbackTerminal struct {
@@ -278,7 +284,7 @@ func (c *ToolFeedbackCoordinator) replaceTrackedMessage(
 		ctx, current.operations.delete, current.chatID, current.messageID,
 	); cleanupErr != nil {
 		entry.mu.Lock()
-		entry.pendingCleanup = append(entry.pendingCleanup, current)
+		entry.pendingCleanup = append(entry.pendingCleanup, newPendingToolFeedbackCleanup(current))
 		entry.mu.Unlock()
 		return messageIDs, cleanupErr
 	}
@@ -290,19 +296,27 @@ func (c *ToolFeedbackCoordinator) retryPendingCleanup(
 	entry *toolFeedbackEntry,
 ) error {
 	entry.mu.Lock()
-	pending := append([]trackedToolFeedbackMessage(nil), entry.pendingCleanup...)
+	pending := append([]pendingToolFeedbackCleanup(nil), entry.pendingCleanup...)
 	entry.pendingCleanup = nil
 	entry.mu.Unlock()
 	if len(pending) == 0 {
 		return nil
 	}
-	remaining := make([]trackedToolFeedbackMessage, 0, len(pending))
+	remaining := make([]pendingToolFeedbackCleanup, 0, len(pending))
 	var firstErr error
-	for _, message := range pending {
+	for _, cleanup := range pending {
+		if !time.Now().Before(cleanup.expiresAt) {
+			continue
+		}
+		message := cleanup.message
 		if err := tryDeleteToolFeedbackMessage(
 			ctx, message.operations.delete, message.chatID, message.messageID,
 		); err != nil {
-			remaining = append(remaining, message)
+			if errors.Is(err, ErrSendFailed) || errors.Is(err, ErrNotRunning) ||
+				!time.Now().Before(cleanup.expiresAt) {
+				continue
+			}
+			remaining = append(remaining, cleanup)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -312,6 +326,13 @@ func (c *ToolFeedbackCoordinator) retryPendingCleanup(
 	entry.pendingCleanup = append(remaining, entry.pendingCleanup...)
 	entry.mu.Unlock()
 	return firstErr
+}
+
+func newPendingToolFeedbackCleanup(message trackedToolFeedbackMessage) pendingToolFeedbackCleanup {
+	return pendingToolFeedbackCleanup{
+		message:   message,
+		expiresAt: time.Now().Add(toolFeedbackCleanupRetention),
+	}
 }
 
 func (c *ToolFeedbackCoordinator) BeginTerminal(key string) *toolFeedbackTerminal {
@@ -411,7 +432,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	current := entry.current
 	entry.current = trackedToolFeedbackMessage{}
 	if !separate && current.messageID != "" && current.operations.delete != nil {
-		entry.pendingCleanup = append(entry.pendingCleanup, current)
+		entry.pendingCleanup = append(entry.pendingCleanup, newPendingToolFeedbackCleanup(current))
 	}
 	if terminal.retain {
 		entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
@@ -499,7 +520,11 @@ func (c *ToolFeedbackCoordinator) RetireChannel(ctx context.Context, channelName
 		entry.opMu.Lock()
 		entry.mu.Lock()
 		entry.retired = true
-		messages := append([]trackedToolFeedbackMessage(nil), entry.pendingCleanup...)
+		pending := append([]pendingToolFeedbackCleanup(nil), entry.pendingCleanup...)
+		messages := make([]trackedToolFeedbackMessage, 0, len(pending)+1)
+		for _, cleanup := range pending {
+			messages = append(messages, cleanup.message)
+		}
 		messages = append(messages, entry.current)
 		entry.current = trackedToolFeedbackMessage{}
 		entry.pendingCleanup = nil
