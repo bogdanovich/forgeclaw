@@ -265,13 +265,24 @@ func (ledger *InvocationLedger) recoverUnfinished() error {
 	defer ledger.mu.Unlock()
 	previous := cloneInvocationRecords(ledger.records)
 	changed := false
-	now := ledger.now().UnixNano()
+	nowTime := ledger.now()
+	now := nowTime.UnixNano()
 	for id, record := range ledger.records {
-		if record.State != nodes.InvocationAccepted && record.State != nodes.InvocationRunning {
+		switch {
+		case record.State == nodes.InvocationRunning:
+			record.State = nodes.InvocationUnknown
+			record.UpdatedAt = now
+		case record.State == nodes.InvocationAccepted && nowTime.Unix() >= record.ExpiresAt:
+			record.State = nodes.InvocationCanceled
+			record.UpdatedAt = now
+			record.CompletedAt = now
+			record.Failure = &nodes.InvocationFailure{
+				Code:    "PLAN_EXPIRED",
+				Message: "accepted invocation expired before execution",
+			}
+		default:
 			continue
 		}
-		record.State = nodes.InvocationUnknown
-		record.UpdatedAt = now
 		ledger.records[id] = record
 		changed = true
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,39 @@ func TestRuntimeDoesNotReplayUnfinishedInvocation(t *testing.T) {
 		ErrInvocationOutcomeUnknown,
 	) {
 		t.Fatalf("unfinished duplicate Invoke() error = %v", err)
+	}
+}
+
+func TestRuntimeResumesDurableAcceptedInvocationAfterRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invocations.json")
+	ledger, newErr := NewFileInvocationLedger(path, 4, 1024*1024)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	policy := testRuntimePolicy([]string{"node.info.v1"})
+	beforeRestart, newErr := NewRuntime(nodes.ID("node_test"), "test", policy, ledger)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	plan := testRuntimePlan(t, beforeRestart, "node.info.v1", json.RawMessage(`{}`))
+	if _, _, err := ledger.Accept(plan); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, reloadErr := NewFileInvocationLedger(path, 4, 1024*1024)
+	if reloadErr != nil {
+		t.Fatal(reloadErr)
+	}
+	afterRestart, newErr := NewRuntime(nodes.ID("node_test"), "test", policy, reloaded)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	if _, err := afterRestart.Invoke(t.Context(), plan); err != nil {
+		t.Fatalf("Invoke() accepted resume error = %v", err)
+	}
+	record, found := reloaded.Get(plan.InvocationID)
+	if !found || record.State != nodes.InvocationSucceeded {
+		t.Fatalf("resumed record = %#v, found %v", record, found)
 	}
 }
 

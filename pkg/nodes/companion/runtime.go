@@ -95,6 +95,18 @@ func (runtime *Runtime) Invoke(
 		return nil, existingErr
 	}
 	if existing {
+		if record.State == nodes.InvocationAccepted {
+			if err := runtime.policy.Authorize(
+				plan,
+				runtime.catalog,
+				runtime.nodeID,
+				LocalExecutor,
+				time.Now(),
+			); err != nil {
+				return nil, err
+			}
+			return runtime.executeAccepted(ctx, plan)
+		}
 		if err := runtime.policy.AuthorizeReplay(
 			plan,
 			runtime.catalog,
@@ -117,9 +129,26 @@ func (runtime *Runtime) Invoke(
 		return nil, acceptErr
 	}
 	if existing {
+		if record.State == nodes.InvocationAccepted {
+			return runtime.executeAccepted(ctx, plan)
+		}
 		return invocationRecordResult(record)
 	}
+	return runtime.executeAccepted(ctx, plan)
+}
+
+func (runtime *Runtime) executeAccepted(
+	ctx context.Context,
+	plan nodes.ExecutionPlan,
+) (json.RawMessage, error) {
+	handler := runtime.handlers[plan.Command]
+	if handler == nil {
+		return nil, ErrCommandUnavailable
+	}
 	if _, err := runtime.ledger.MarkRunning(plan.InvocationID); err != nil {
+		if record, found := runtime.ledger.Get(plan.InvocationID); found && record.State.Terminal() {
+			return invocationRecordResult(record)
+		}
 		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
 	}
 	deadline := time.Now().Add(time.Duration(plan.TimeoutSeconds) * time.Second)

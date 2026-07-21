@@ -46,7 +46,7 @@ func TestInvocationLedgerPersistsTerminalResultAndDeduplicates(t *testing.T) {
 	}
 }
 
-func TestInvocationLedgerRecoversUnfinishedInvocationAsUnknown(t *testing.T) {
+func TestInvocationLedgerRecoversRunningInvocationAsUnknown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invocations.json")
 	ledger, newErr := NewFileInvocationLedger(path, 4, 1024*1024)
 	if newErr != nil {
@@ -70,6 +70,45 @@ func TestInvocationLedgerRecoversUnfinishedInvocationAsUnknown(t *testing.T) {
 	}
 	if _, existing, err := recovered.Accept(plan); !existing || err != nil {
 		t.Fatalf("unknown duplicate existing = %v, error = %v", existing, err)
+	}
+}
+
+func TestInvocationLedgerPreservesAcceptedInvocationForResume(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invocations.json")
+	ledger, newErr := NewFileInvocationLedger(path, 4, 1024*1024)
+	if newErr != nil {
+		t.Fatal(newErr)
+	}
+	plan := testLedgerPlan(t, "accepted")
+	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
+		t.Fatal(acceptErr)
+	}
+
+	recovered, err := NewFileInvocationLedger(path, 4, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, found := recovered.Get(plan.InvocationID)
+	if !found || record.State != nodes.InvocationAccepted {
+		t.Fatalf("recovered accepted record = %#v, found %v", record, found)
+	}
+}
+
+func TestInvocationLedgerCancelsAcceptedInvocationAfterExpiry(t *testing.T) {
+	clock := time.Now()
+	ledger := newInvocationLedger("", 4, 1024*1024, func() time.Time { return clock })
+	plan := testLedgerPlanAt(t, "expired-accepted", clock)
+	if _, _, err := ledger.Accept(plan); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(2 * time.Minute)
+	if err := ledger.recoverUnfinished(); err != nil {
+		t.Fatal(err)
+	}
+	record, found := ledger.Get(plan.InvocationID)
+	if !found || record.State != nodes.InvocationCanceled || record.Failure == nil ||
+		record.Failure.Code != "PLAN_EXPIRED" {
+		t.Fatalf("expired accepted record = %#v, found %v", record, found)
 	}
 }
 
