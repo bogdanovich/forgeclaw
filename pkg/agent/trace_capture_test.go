@@ -600,6 +600,62 @@ func TestTaskTraceProjectorPersistsIncompleteTraceOnClose(t *testing.T) {
 	_ = eventBus.Close()
 }
 
+func TestTaskTraceProjectorProjectsEachEventOnceAcrossCallbackOrder(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "task-race", Task: "test", RequesterSessionKey: "session-race",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := registry.Update("task-race", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	history := registry.ListEvents("task-race")
+	if len(history) < 2 {
+		t.Fatalf("history has %d events, want at least 2", len(history))
+	}
+	record, ok := registry.Get("task-race")
+	if !ok {
+		t.Fatal("terminal task record not found")
+	}
+
+	orders := map[string][]int{
+		"terminal callback first": {len(history) - 1, 0},
+		"early callback first":    {0, len(history) - 1},
+	}
+	for name, order := range orders {
+		t.Run(name, func(t *testing.T) {
+			var traces []evaltrace.Trace
+			projector := newTaskTraceProjector(
+				traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+				func(_ traceCaptureSettings, active *activeTraceCapture) {
+					trace, err := active.builder.Finalize()
+					if err != nil {
+						t.Fatalf("Finalize: %v", err)
+					}
+					traces = append(traces, trace)
+				},
+			)
+			for _, index := range order {
+				projector.observe(workspace, registry, taskregistry.EventObservation{
+					Event: history[index], Record: record, FinalForTask: true,
+				})
+			}
+			if len(traces) != 1 {
+				t.Fatalf("persisted %d traces, want 1", len(traces))
+			}
+			if len(traces[0].Records) != len(history) {
+				t.Fatalf("trace has %d records, want %d", len(traces[0].Records), len(history))
+			}
+		})
+	}
+}
+
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
 	workspace := t.TempDir()
 	settings := traceCaptureSettings{stateDir: "../../outside"}

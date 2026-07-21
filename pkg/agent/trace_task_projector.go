@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,13 +18,19 @@ type taskTraceKey struct {
 	taskID    string
 }
 
+type completedTaskTrace struct {
+	terminalSeq int64
+	createdAt   int64
+}
+
 type taskTraceProjector struct {
-	mu       sync.Mutex
-	closed   bool
-	settings traceCaptureSettings
-	traces   map[taskTraceKey]*activeTraceCapture
-	subs     map[string]func()
-	submit   func(traceCaptureSettings, *activeTraceCapture)
+	mu        sync.Mutex
+	closed    bool
+	settings  traceCaptureSettings
+	traces    map[taskTraceKey]*activeTraceCapture
+	completed map[taskTraceKey]completedTaskTrace
+	subs      map[string]func()
+	submit    func(traceCaptureSettings, *activeTraceCapture)
 }
 
 func newTaskTraceProjector(
@@ -31,10 +38,11 @@ func newTaskTraceProjector(
 	submit func(traceCaptureSettings, *activeTraceCapture),
 ) *taskTraceProjector {
 	return &taskTraceProjector{
-		settings: settings,
-		traces:   make(map[taskTraceKey]*activeTraceCapture),
-		subs:     make(map[string]func()),
-		submit:   submit,
+		settings:  settings,
+		traces:    make(map[taskTraceKey]*activeTraceCapture),
+		completed: make(map[taskTraceKey]completedTaskTrace),
+		subs:      make(map[string]func()),
+		submit:    submit,
 	}
 }
 
@@ -54,6 +62,7 @@ func (p *taskTraceProjector) updateSettings(settings traceCaptureSettings) {
 	p.mu.Lock()
 	if !p.closed && p.settings.enabled && !settings.enabled {
 		p.traces = make(map[taskTraceKey]*activeTraceCapture)
+		p.completed = make(map[taskTraceKey]completedTaskTrace)
 	}
 	p.settings = settings
 	p.mu.Unlock()
@@ -96,6 +105,7 @@ func (p *taskTraceProjector) close() {
 		p.submitTraceLocked(settings, trace)
 	}
 	p.traces = nil
+	p.completed = nil
 	subs := p.subs
 	p.subs = nil
 	p.mu.Unlock()
@@ -120,35 +130,91 @@ func (p *taskTraceProjector) observe(
 	settings := p.settings
 	event, record := observation.Event, observation.Record
 	key := taskTraceKey{workspace: workspace, taskID: strings.TrimSpace(event.TaskID)}
+	if terminal, completed := p.completed[key]; completed {
+		if terminal.createdAt == 0 || record.CreatedAt == 0 || terminal.createdAt == record.CreatedAt {
+			if event.Seq > terminal.terminalSeq {
+				terminal.terminalSeq = event.Seq
+				p.completed[key] = terminal
+			}
+			return
+		}
+		delete(p.completed, key)
+	}
 	trace := p.traces[key]
-	createdTrace := false
 	if trace == nil {
 		trace = newTaskTrace(settings, workspace, event, record)
 		p.traces[key] = trace
-		createdTrace = true
 	}
 	observations := []taskregistry.EventObservation{observation}
-	if createdTrace && registry != nil {
-		history := registry.ListEvents(event.TaskID)
-		observations = make([]taskregistry.EventObservation, 0, len(history))
-		for i, historical := range history {
-			observations = append(observations, taskregistry.EventObservation{
-				Event: historical, Record: record, FinalForTask: i == len(history)-1,
-			})
-		}
+	if registry != nil {
+		observations = taskHistoryThrough(registry.ListEvents(event.TaskID), observation)
 	}
 	for _, item := range observations {
 		taskRecord, critical := normalizedTaskEventRecord(settings, trace, item)
 		appendCaptureRecord(trace, taskRecord, critical)
 	}
-	if !observation.FinalForTask || !taskRecordIsTerminal(record) {
+	if !observation.FinalForTask || !taskEventIsTerminal(event) {
 		return
 	}
 	delete(p.traces, key)
+	p.completed[key] = completedTaskTrace{terminalSeq: event.Seq, createdAt: record.CreatedAt}
+	p.pruneCompletedLocked(workspace, registry)
 	trace.builder.SetOutcome(evaltrace.Outcome{
-		Status: string(record.Status), ErrorCode: taskErrorCode(record),
+		Status: string(event.Status), ErrorCode: taskEventErrorCode(event),
 	})
 	p.submitTraceLocked(settings, trace)
+}
+
+func taskHistoryThrough(
+	history []taskregistry.TaskEvent,
+	trigger taskregistry.EventObservation,
+) []taskregistry.EventObservation {
+	bounded := make([]taskregistry.TaskEvent, 0, len(history)+1)
+	foundTrigger := false
+	for _, event := range history {
+		if event.Seq > trigger.Event.Seq {
+			continue
+		}
+		bounded = append(bounded, event)
+		foundTrigger = foundTrigger || event.EventID == trigger.Event.EventID
+	}
+	if !foundTrigger {
+		bounded = append(bounded, trigger.Event)
+	}
+	sort.Slice(bounded, func(i, j int) bool {
+		if bounded[i].Seq != bounded[j].Seq {
+			return bounded[i].Seq < bounded[j].Seq
+		}
+		return bounded[i].EventID < bounded[j].EventID
+	})
+	observations := make([]taskregistry.EventObservation, 0, len(bounded))
+	for i, event := range bounded {
+		observations = append(observations, taskregistry.EventObservation{
+			Event: event, Record: trigger.Record, FinalForTask: i == len(bounded)-1,
+		})
+	}
+	return observations
+}
+
+func (p *taskTraceProjector) pruneCompletedLocked(
+	workspace string,
+	registry *taskregistry.Registry,
+) {
+	if registry == nil {
+		return
+	}
+	live := make(map[string]struct{})
+	for _, record := range registry.List() {
+		live[record.TaskID] = struct{}{}
+	}
+	for key := range p.completed {
+		if key.workspace != workspace {
+			continue
+		}
+		if _, exists := live[key.taskID]; !exists {
+			delete(p.completed, key)
+		}
+	}
 }
 
 func (p *taskTraceProjector) submitTraceLocked(
@@ -234,18 +300,24 @@ func normalizedTaskEventRecord(
 	}, critical
 }
 
-func taskRecordIsTerminal(record taskregistry.Record) bool {
-	statusTerminal := record.Status == taskregistry.StatusSucceeded ||
-		record.Status == taskregistry.StatusFailed ||
-		record.Status == taskregistry.StatusTimedOut ||
-		record.Status == taskregistry.StatusCancelled ||
-		record.Status == taskregistry.StatusLost
-	deliveryTerminal := record.DeliveryStatus == taskregistry.DeliveryDelivered ||
-		record.DeliveryStatus == taskregistry.DeliverySessionQueued ||
-		record.DeliveryStatus == taskregistry.DeliveryFailed ||
-		record.DeliveryStatus == taskregistry.DeliveryParentMissing ||
-		record.DeliveryStatus == taskregistry.DeliveryNotApplicable
+func taskEventIsTerminal(event taskregistry.TaskEvent) bool {
+	statusTerminal := event.Status == taskregistry.StatusSucceeded ||
+		event.Status == taskregistry.StatusFailed ||
+		event.Status == taskregistry.StatusTimedOut ||
+		event.Status == taskregistry.StatusCancelled ||
+		event.Status == taskregistry.StatusLost
+	deliveryTerminal := event.DeliveryStatus == taskregistry.DeliveryDelivered ||
+		event.DeliveryStatus == taskregistry.DeliverySessionQueued ||
+		event.DeliveryStatus == taskregistry.DeliveryFailed ||
+		event.DeliveryStatus == taskregistry.DeliveryParentMissing ||
+		event.DeliveryStatus == taskregistry.DeliveryNotApplicable
 	return statusTerminal && deliveryTerminal
+}
+
+func taskEventErrorCode(event taskregistry.TaskEvent) string {
+	return taskErrorCode(taskregistry.Record{
+		Status: event.Status, DeliveryStatus: event.DeliveryStatus,
+	})
 }
 
 func taskErrorCode(record taskregistry.Record) string {
