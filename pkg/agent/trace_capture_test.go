@@ -689,7 +689,7 @@ func TestTaskTraceProjectorSeparatesReusedTaskIDGenerations(t *testing.T) {
 	}
 	firstRecord := finish(1_000)
 	firstEnd := len(registry.ListEvents("reused")) - 1
-	secondRecord := finish(2_000)
+	secondRecord := finish(1_000)
 	history := registry.ListEvents("reused")
 	secondStart := slices.IndexFunc(history, func(event taskregistry.TaskEvent) bool {
 		return event.Type == taskregistry.EventTaskUpserted && event.Seq > history[firstEnd].Seq

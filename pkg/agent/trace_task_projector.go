@@ -14,13 +14,13 @@ import (
 )
 
 type taskTraceKey struct {
-	workspace string
-	taskID    string
+	workspace  string
+	taskID     string
+	generation string
 }
 
 type completedTaskTrace struct {
 	terminalSeq int64
-	createdAt   int64
 }
 
 type taskTraceProjector struct {
@@ -129,20 +129,21 @@ func (p *taskTraceProjector) observe(
 	}
 	settings := p.settings
 	event, record := observation.Event, observation.Record
-	key := taskTraceKey{workspace: workspace, taskID: strings.TrimSpace(event.TaskID)}
-	if terminal, completed := p.completed[key]; completed {
-		if terminal.createdAt == 0 || record.CreatedAt == 0 || terminal.createdAt == record.CreatedAt {
-			if event.Seq > terminal.terminalSeq {
-				terminal.terminalSeq = event.Seq
-				p.completed[key] = terminal
-			}
-			return
-		}
-		delete(p.completed, key)
-	}
 	observations := []taskregistry.EventObservation{observation}
 	if registry != nil {
 		observations = taskHistoryThrough(registry.ListEvents(event.TaskID), observation)
+	}
+	key := taskTraceKey{
+		workspace:  workspace,
+		taskID:     strings.TrimSpace(event.TaskID),
+		generation: observations[0].Event.EventID,
+	}
+	if terminal, completed := p.completed[key]; completed {
+		if event.Seq > terminal.terminalSeq {
+			terminal.terminalSeq = event.Seq
+			p.completed[key] = terminal
+		}
+		return
 	}
 	trace := p.traces[key]
 	if trace == nil {
@@ -157,7 +158,7 @@ func (p *taskTraceProjector) observe(
 		return
 	}
 	delete(p.traces, key)
-	p.completed[key] = completedTaskTrace{terminalSeq: event.Seq, createdAt: record.CreatedAt}
+	p.completed[key] = completedTaskTrace{terminalSeq: event.Seq}
 	p.pruneCompletedLocked(workspace, registry)
 	trace.builder.SetOutcome(evaltrace.Outcome{
 		Status: string(event.Status), ErrorCode: taskEventErrorCode(event),
@@ -210,15 +211,15 @@ func (p *taskTraceProjector) pruneCompletedLocked(
 	if registry == nil {
 		return
 	}
-	live := make(map[string]struct{})
-	for _, record := range registry.List() {
-		live[record.TaskID] = struct{}{}
+	retainedEvents := make(map[string]struct{})
+	for _, event := range registry.ListEvents("") {
+		retainedEvents[event.EventID] = struct{}{}
 	}
 	for key := range p.completed {
 		if key.workspace != workspace {
 			continue
 		}
-		if _, exists := live[key.taskID]; !exists {
+		if _, exists := retainedEvents[key.generation]; !exists {
 			delete(p.completed, key)
 		}
 	}
