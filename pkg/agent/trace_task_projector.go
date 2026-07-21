@@ -140,14 +140,14 @@ func (p *taskTraceProjector) observe(
 		}
 		delete(p.completed, key)
 	}
-	trace := p.traces[key]
-	if trace == nil {
-		trace = newTaskTrace(settings, workspace, event, record)
-		p.traces[key] = trace
-	}
 	observations := []taskregistry.EventObservation{observation}
 	if registry != nil {
 		observations = taskHistoryThrough(registry.ListEvents(event.TaskID), observation)
+	}
+	trace := p.traces[key]
+	if trace == nil {
+		trace = newTaskTrace(settings, workspace, observations[0].Event, record)
+		p.traces[key] = trace
 	}
 	for _, item := range observations {
 		taskRecord, critical := normalizedTaskEventRecord(settings, trace, item)
@@ -187,6 +187,13 @@ func taskHistoryThrough(
 		}
 		return bounded[i].EventID < bounded[j].EventID
 	})
+	generationStart := 0
+	for i, event := range bounded {
+		if event.Type == taskregistry.EventTaskUpserted {
+			generationStart = i
+		}
+	}
+	bounded = bounded[generationStart:]
 	observations := make([]taskregistry.EventObservation, 0, len(bounded))
 	for i, event := range bounded {
 		observations = append(observations, taskregistry.EventObservation{
@@ -238,8 +245,10 @@ func newTaskTrace(
 		startedAt: emittedAt,
 		builder: evalcapture.NewTraceBuilder(evaltrace.Trace{
 			SchemaVersion: evaltrace.SchemaVersionV1,
-			TraceID:       opaqueTraceID("task", workspace+"\x00"+event.TaskID, emittedAt),
-			CreatedAt:     emittedAt.UTC(),
+			TraceID: opaqueTraceID(
+				"task", workspace+"\x00"+event.TaskID+"\x00"+event.EventID, emittedAt,
+			),
+			CreatedAt: emittedAt.UTC(),
 			Policy: evaltrace.CapturePolicy{
 				ContentMode: settings.contentMode,
 				Redactor:    captureRedactorVersion(settings.contentMode),

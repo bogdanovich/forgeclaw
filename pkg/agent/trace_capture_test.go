@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -628,6 +629,7 @@ func TestTaskTraceProjectorProjectsEachEventOnceAcrossCallbackOrder(t *testing.T
 		"terminal callback first": {len(history) - 1, 0},
 		"early callback first":    {0, len(history) - 1},
 	}
+	var want evaltrace.Trace
 	for name, order := range orders {
 		t.Run(name, func(t *testing.T) {
 			var traces []evaltrace.Trace
@@ -652,7 +654,85 @@ func TestTaskTraceProjectorProjectsEachEventOnceAcrossCallbackOrder(t *testing.T
 			if len(traces[0].Records) != len(history) {
 				t.Fatalf("trace has %d records, want %d", len(traces[0].Records), len(history))
 			}
+			if want.Records == nil {
+				want = traces[0]
+			} else if !reflect.DeepEqual(traces[0], want) {
+				t.Fatalf("trace differs by callback order\ngot:  %#v\nwant: %#v", traces[0], want)
+			}
 		})
+	}
+}
+
+func TestTaskTraceProjectorSeparatesReusedTaskIDGenerations(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	finish := func(createdAt int64) taskregistry.Record {
+		t.Helper()
+		if err := registry.Upsert(taskregistry.Record{
+			TaskID: "reused", Task: "test", RequesterSessionKey: "session-reused",
+			CreatedAt: createdAt, Status: taskregistry.StatusRunning,
+			DeliveryStatus: taskregistry.DeliveryPending,
+		}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := registry.Update("reused", func(record *taskregistry.Record) {
+			record.Status = taskregistry.StatusSucceeded
+			record.DeliveryStatus = taskregistry.DeliveryDelivered
+		}); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		record, ok := registry.Get("reused")
+		if !ok {
+			t.Fatal("terminal task record not found")
+		}
+		return record
+	}
+	firstRecord := finish(1_000)
+	firstEnd := len(registry.ListEvents("reused")) - 1
+	secondRecord := finish(2_000)
+	history := registry.ListEvents("reused")
+	secondStart := slices.IndexFunc(history, func(event taskregistry.TaskEvent) bool {
+		return event.Type == taskregistry.EventTaskUpserted && event.Seq > history[firstEnd].Seq
+	})
+	if secondStart < 0 {
+		t.Fatal("second task generation boundary not found")
+	}
+
+	var traces []evaltrace.Trace
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, active *activeTraceCapture) {
+			trace, err := active.builder.Finalize()
+			if err != nil {
+				t.Fatalf("Finalize: %v", err)
+			}
+			traces = append(traces, trace)
+		},
+	)
+	projector.observe(workspace, registry, taskregistry.EventObservation{
+		Event: history[firstEnd], Record: firstRecord, FinalForTask: true,
+	})
+	projector.observe(workspace, registry, taskregistry.EventObservation{
+		Event: history[len(history)-1], Record: secondRecord, FinalForTask: true,
+	})
+
+	if len(traces) != 2 {
+		t.Fatalf("persisted %d traces, want 2", len(traces))
+	}
+	if traces[0].TraceID == traces[1].TraceID {
+		t.Fatalf("task generations share trace id %q", traces[0].TraceID)
+	}
+	if got, want := len(traces[1].Records), len(history)-secondStart; got != want {
+		t.Fatalf("second trace has %d records, want %d", got, want)
+	}
+	firstOrigins := make(map[string]struct{}, len(traces[0].Records))
+	for _, record := range traces[0].Records {
+		firstOrigins[record.Origin.ID] = struct{}{}
+	}
+	for _, record := range traces[1].Records {
+		if _, duplicate := firstOrigins[record.Origin.ID]; duplicate {
+			t.Fatalf("second trace reused first-generation event %q", record.Origin.ID)
+		}
 	}
 }
 
