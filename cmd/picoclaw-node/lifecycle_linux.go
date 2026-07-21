@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
+
+const managedSystemdUnitMarker = "# Managed by ForgeClaw picoclaw-node lifecycle v1"
 
 type systemdRunResult struct {
 	Output   string
@@ -32,6 +35,7 @@ type systemdUnitBackup struct {
 	exists  bool
 	data    []byte
 	mode    os.FileMode
+	managed bool
 	enabled bool
 	active  bool
 }
@@ -56,6 +60,9 @@ func (lifecycle *systemdLifecycle) Install(
 	backup, err := captureSystemdUnit(status.UnitPath)
 	if err != nil {
 		return lifecycleStatus{}, err
+	}
+	if backup.exists && !backup.managed {
+		return lifecycleStatus{}, unownedSystemdUnitError(status.UnitPath)
 	}
 	if backup.exists {
 		backup.active, err = lifecycle.isActive(ctx, status.Service)
@@ -103,10 +110,15 @@ func (lifecycle *systemdLifecycle) Status(
 	request lifecycleRequest,
 ) (lifecycleStatus, error) {
 	status := lifecycle.baseStatus(request.Instance)
-	if _, err := os.Stat(status.UnitPath); errors.Is(err, os.ErrNotExist) {
+	unit, err := captureSystemdUnit(status.UnitPath)
+	if err != nil {
+		return lifecycleStatus{}, err
+	}
+	if !unit.exists {
 		return status, nil
-	} else if err != nil {
-		return lifecycleStatus{}, fmt.Errorf("inspect systemd unit: %w", err)
+	}
+	if !unit.managed {
+		return lifecycleStatus{}, unownedSystemdUnitError(status.UnitPath)
 	}
 	status.Installed = true
 	result, err := lifecycle.run(ctx, lifecycle.system, "is-active", status.Service)
@@ -130,14 +142,19 @@ func (lifecycle *systemdLifecycle) Uninstall(
 	request lifecycleRequest,
 ) (lifecycleStatus, error) {
 	status := lifecycle.baseStatus(request.Instance)
-	if _, err := os.Stat(status.UnitPath); errors.Is(err, os.ErrNotExist) {
+	unit, err := captureSystemdUnit(status.UnitPath)
+	if err != nil {
+		return lifecycleStatus{}, err
+	}
+	if !unit.exists {
 		if reloadErr := lifecycle.requireSuccess(ctx, "daemon-reload"); reloadErr != nil {
 			return lifecycleStatus{}, reloadErr
 		}
 		status.State = "not-installed"
 		return status, nil
-	} else if err != nil {
-		return lifecycleStatus{}, fmt.Errorf("inspect systemd unit: %w", err)
+	}
+	if !unit.managed {
+		return lifecycleStatus{}, unownedSystemdUnitError(status.UnitPath)
 	}
 	if err := lifecycle.requireSuccess(ctx, "disable", "--now", status.Service); err != nil {
 		return lifecycleStatus{}, err
@@ -262,7 +279,25 @@ func captureSystemdUnit(path string) (systemdUnitBackup, error) {
 	if err != nil {
 		return systemdUnitBackup{}, fmt.Errorf("read existing systemd unit: %w", err)
 	}
-	return systemdUnitBackup{exists: true, data: data, mode: info.Mode().Perm()}, nil
+	return systemdUnitBackup{
+		exists:  true,
+		data:    data,
+		mode:    info.Mode().Perm(),
+		managed: hasSystemdUnitMarker(data),
+	}, nil
+}
+
+func hasSystemdUnitMarker(data []byte) bool {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if string(line) == managedSystemdUnitMarker {
+			return true
+		}
+	}
+	return false
+}
+
+func unownedSystemdUnitError(path string) error {
+	return fmt.Errorf("refusing to manage unowned systemd unit %s", path)
 }
 
 func restoreSystemdUnit(path string, backup systemdUnitBackup) error {
@@ -327,7 +362,8 @@ func renderSystemdUnit(request lifecycleRequest, system bool) (string, error) {
 		target = "multi-user.target"
 		serviceUser = "User=" + request.ServiceUser + "\n"
 	}
-	return fmt.Sprintf(`[Unit]
+	return fmt.Sprintf(`%s
+[Unit]
 Description=ForgeClaw node companion (%s)
 Wants=network-online.target
 After=network-online.target
@@ -341,7 +377,7 @@ NoNewPrivileges=true
 
 [Install]
 WantedBy=%s
-`, request.Instance, serviceUser, executable, configPath, target), nil
+`, managedSystemdUnitMarker, request.Instance, serviceUser, executable, configPath, target), nil
 }
 
 func quoteSystemdArgument(value string) (string, error) {

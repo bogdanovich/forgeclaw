@@ -84,7 +84,7 @@ func TestSystemdLifecycleInstallAndUninstall(t *testing.T) {
 func TestSystemdLifecycleStatus(t *testing.T) {
 	unitDir := t.TempDir()
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	if err := os.WriteFile(unitPath, []byte("test"), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, managedSystemdUnitData("test"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -124,7 +124,7 @@ func TestSystemdLifecycleStatus(t *testing.T) {
 func TestSystemdLifecycleInstallRestoresPreviousUnitOnRestartFailure(t *testing.T) {
 	unitDir := t.TempDir()
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	previous := []byte("previous unit\n")
+	previous := managedSystemdUnitData("previous unit")
 	if err := os.WriteFile(unitPath, previous, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestSystemdLifecycleInstallRestoresPreviousUnitOnRestartFailure(t *testing.
 func TestSystemdLifecycleReinstallRestartsActiveService(t *testing.T) {
 	unitDir := t.TempDir()
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	if err := os.WriteFile(unitPath, []byte("previous unit\n"), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, managedSystemdUnitData("previous unit"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var calls []systemdCall
@@ -305,6 +305,50 @@ func TestSystemdLifecycleInstallRejectsUnitSymlink(t *testing.T) {
 	}
 }
 
+func TestSystemdLifecycleRefusesUnownedUnit(t *testing.T) {
+	for _, action := range []string{"install", "status", "uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			unitDir := t.TempDir()
+			unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
+			unowned := []byte("[Unit]\nDescription=administrator managed\n")
+			if err := os.WriteFile(unitPath, unowned, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			lifecycle := &systemdLifecycle{
+				unitDir: unitDir,
+				run: func(context.Context, bool, ...string) (systemdRunResult, error) {
+					t.Fatal("systemctl should not run for an unowned unit")
+					return systemdRunResult{}, nil
+				},
+			}
+			request := lifecycleRequest{
+				Instance:       "main",
+				ConfigPath:     "/home/test/config.json",
+				ExecutablePath: "/home/test/picoclaw-node",
+			}
+			var err error
+			switch action {
+			case "install":
+				_, err = lifecycle.Install(t.Context(), request)
+			case "status":
+				_, err = lifecycle.Status(t.Context(), request)
+			case "uninstall":
+				_, err = lifecycle.Uninstall(t.Context(), request)
+			}
+			if err == nil || !strings.Contains(err.Error(), "unowned systemd unit") {
+				t.Fatalf("%s error = %v", action, err)
+			}
+			got, readErr := os.ReadFile(unitPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != string(unowned) {
+				t.Fatalf("%s changed unowned unit: %q", action, got)
+			}
+		})
+	}
+}
+
 func TestSystemdLifecycleInstallRemovesNewUnitWhenServiceIsInactive(t *testing.T) {
 	unitDir := t.TempDir()
 	var calls []systemdCall
@@ -391,4 +435,8 @@ func TestRenderSystemdSystemUnit(t *testing.T) {
 	}, true); err == nil {
 		t.Fatal("systemd system unit accepted an empty service user")
 	}
+}
+
+func managedSystemdUnitData(body string) []byte {
+	return []byte(managedSystemdUnitMarker + "\n" + body + "\n")
 }
