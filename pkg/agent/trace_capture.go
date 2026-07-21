@@ -19,7 +19,6 @@ import (
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 const (
@@ -47,11 +46,6 @@ type activeTraceCapture struct {
 	settlementTimer *time.Timer
 }
 
-type taskTraceKey struct {
-	workspace string
-	taskID    string
-}
-
 type traceCaptureManager struct {
 	mu      sync.Mutex
 	closed  bool
@@ -59,8 +53,7 @@ type traceCaptureManager struct {
 
 	settings traceCaptureSettings
 	turns    map[runtimeevents.TraceScope]*activeTraceCapture
-	tasks    map[taskTraceKey]*activeTraceCapture
-	taskSubs map[string]func()
+	tasks    *taskTraceProjector
 	sub      runtimeevents.Subscription
 	eventBus runtimeevents.Bus
 
@@ -72,10 +65,9 @@ func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *tra
 	m := &traceCaptureManager{
 		settings: traceCaptureSettingsFromConfig(cfg),
 		turns:    make(map[runtimeevents.TraceScope]*activeTraceCapture),
-		tasks:    make(map[taskTraceKey]*activeTraceCapture),
-		taskSubs: make(map[string]func()),
 		eventBus: eventBus,
 	}
+	m.tasks = newTaskTraceProjector(m.settings, m.enqueuePersist)
 	if !m.settings.enabled {
 		return m
 	}
@@ -159,13 +151,13 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 			}
 		}
 		m.turns = make(map[runtimeevents.TraceScope]*activeTraceCapture)
-		m.tasks = make(map[taskTraceKey]*activeTraceCapture)
 	}
 	m.settings = updated
 	m.mu.Unlock()
 	if updated.enabled {
 		m.start()
 	}
+	m.tasks.updateSettings(updated)
 }
 
 func (m *traceCaptureManager) enabled() bool {
@@ -175,33 +167,6 @@ func (m *traceCaptureManager) enabled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return !m.closed && m.settings.enabled
-}
-
-func (m *traceCaptureManager) attachTaskRegistry(
-	workspace string,
-	registry *taskregistry.Registry,
-) {
-	if m == nil || registry == nil {
-		return
-	}
-	workspace = strings.TrimSpace(workspace)
-	if workspace == "" {
-		return
-	}
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return
-	}
-	if _, exists := m.taskSubs[workspace]; exists {
-		m.mu.Unlock()
-		return
-	}
-	unsubscribe := registry.SubscribeEvents(func(observation taskregistry.EventObservation) {
-		m.observeTaskEvent(workspace, registry, observation)
-	})
-	m.taskSubs[workspace] = unsubscribe
-	m.mu.Unlock()
 }
 
 func (m *traceCaptureManager) close() {
@@ -221,12 +186,8 @@ func (m *traceCaptureManager) close() {
 	}
 	m.closed = true
 	m.markRuntimeDropsLocked()
-	for _, unsubscribe := range m.taskSubs {
-		unsubscribe()
-	}
-	m.taskSubs = nil
 	settings := m.settings
-	traces := make([]*activeTraceCapture, 0, len(m.turns)+len(m.tasks))
+	traces := make([]*activeTraceCapture, 0, len(m.turns))
 	for _, trace := range m.turns {
 		if trace.settlementTimer != nil {
 			trace.settlementTimer.Stop()
@@ -235,16 +196,12 @@ func (m *traceCaptureManager) close() {
 		trace.builder.MarkIncomplete("runtime_closed_before_terminal_outcome", 0)
 		traces = append(traces, trace)
 	}
-	for _, trace := range m.tasks {
-		trace.builder.MarkIncomplete("runtime_closed_before_terminal_task_delivery", 0)
-		traces = append(traces, trace)
-	}
 	m.turns = nil
-	m.tasks = nil
 	m.mu.Unlock()
 	for _, trace := range traces {
 		m.enqueuePersist(settings, trace)
 	}
+	m.tasks.close()
 	m.mu.Lock()
 	writer := m.writer
 	m.writer = nil
@@ -436,82 +393,6 @@ func normalizedRuntimeTraceScopes(scopes []runtimeevents.TraceScope) []runtimeev
 		}
 	}
 	return normalized
-}
-
-func (m *traceCaptureManager) observeTaskEvent(
-	workspace string,
-	registry *taskregistry.Registry,
-	observation taskregistry.EventObservation,
-) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return
-	}
-	settings := m.settings
-	if !settings.enabled {
-		m.mu.Unlock()
-		return
-	}
-	event := observation.Event
-	record := observation.Record
-	key := taskTraceKey{workspace: workspace, taskID: strings.TrimSpace(event.TaskID)}
-	trace := m.tasks[key]
-	createdTrace := false
-	if trace == nil {
-		emittedAt := time.UnixMilli(event.EmittedAt)
-		trace = &activeTraceCapture{
-			workspace: workspace, startedAt: emittedAt,
-			builder: evalcapture.NewTraceBuilder(evaltrace.Trace{
-				SchemaVersion: evaltrace.SchemaVersionV1,
-				TraceID: opaqueTraceID(
-					"task",
-					workspace+"\x00"+event.TaskID,
-					emittedAt,
-				), CreatedAt: emittedAt.UTC(),
-				Policy: evaltrace.CapturePolicy{
-					ContentMode: settings.contentMode,
-					Redactor:    captureRedactorVersion(settings.contentMode),
-				},
-				Limits: settings.limits,
-				Metadata: evaltrace.Metadata{
-					SessionHash: safeHash(settings, record.RequesterSessionKey),
-					AgentID:     record.AgentID,
-				},
-				Records: make([]evaltrace.Record, 0, 16),
-			}),
-		}
-		m.tasks[key] = trace
-		createdTrace = true
-	}
-	observations := []taskregistry.EventObservation{observation}
-	if createdTrace && registry != nil {
-		history := registry.ListEvents(event.TaskID)
-		observations = make([]taskregistry.EventObservation, 0, len(history))
-		for i, historical := range history {
-			observations = append(observations, taskregistry.EventObservation{
-				Event: historical, Record: record, FinalForTask: i == len(history)-1,
-			})
-		}
-	}
-	for _, item := range observations {
-		taskRecord, critical := normalizedTaskEventRecord(settings, trace, item)
-		appendCaptureRecord(trace, taskRecord, critical)
-	}
-	if !observation.FinalForTask || !taskRecordIsTerminal(record) {
-		m.mu.Unlock()
-		return
-	}
-	delete(m.tasks, key)
-	trace.builder.SetOutcome(evaltrace.Outcome{
-		Status:    string(record.Status),
-		ErrorCode: taskErrorCode(record),
-	})
-	m.mu.Unlock()
-	m.enqueuePersist(settings, trace)
 }
 
 func (m *traceCaptureManager) enqueuePersist(
@@ -852,56 +733,6 @@ func runtimeEventRecord(
 	}, critical, true
 }
 
-func normalizedTaskEventRecord(
-	settings traceCaptureSettings,
-	trace *activeTraceCapture,
-	observation taskregistry.EventObservation,
-) (evaltrace.Record, bool) {
-	event, state := observation.Event, observation.Record
-	kind := evaltrace.RecordTaskTransition
-	critical := false
-	if event.Type == taskregistry.EventTaskDeliveryDecision {
-		kind = evaltrace.RecordDeliveryDecision
-	} else if event.Type == taskregistry.EventTaskDeliveryChanged {
-		kind, critical = evaltrace.RecordDeliveryOutcome, true
-	}
-	var payload any
-	if kind == evaltrace.RecordTaskTransition {
-		payload = evaltrace.TaskPayload{
-			EventType:      string(event.Type),
-			Runtime:        string(event.Runtime),
-			Status:         string(event.Status),
-			DeliveryStatus: string(event.DeliveryStatus),
-			Sequence:       event.Seq,
-			Fingerprint:    event.Fingerprint,
-			Producer:       event.Producer,
-		}
-	} else {
-		payload = evaltrace.DeliveryPayload{
-			Mode: event.Payload["mode"], Status: string(event.DeliveryStatus),
-			WillUser: parseBool(event.Payload["will_user"]), WillParent: parseBool(event.Payload["will_parent"]),
-			ContentLen: parseInt(event.Payload["content_len"]), ErrorCode: taskErrorCode(state),
-		}
-	}
-	data, _ := json.Marshal(payload)
-	return evaltrace.Record{
-		OffsetNanos: max(0, time.UnixMilli(event.EmittedAt).Sub(trace.startedAt).Nanoseconds()),
-		Kind:        kind, Origin: evaltrace.Origin{Kind: "task_event", ID: event.EventID},
-		Scope: evaltrace.Scope{
-			AgentID:     state.AgentID,
-			SessionHash: safeHash(settings, state.RequesterSessionKey),
-			TaskID:      event.TaskID,
-			Channel:     state.Channel,
-			TargetHash:  safeHash(settings, targetKey(state.Channel, state.ChatID)),
-		},
-		Correlation: evaltrace.Correlation{
-			CompletionID: firstNonEmpty(event.Payload["completion_id"], state.LastCompletionID),
-			EventID:      event.EventID,
-		},
-		Data: data,
-	}, critical
-}
-
 func appendCaptureRecord(trace *activeTraceCapture, record evaltrace.Record, critical bool) {
 	if trace == nil || trace.builder == nil {
 		return
@@ -934,33 +765,6 @@ func traceStoreRoot(settings traceCaptureSettings, workspace string) string {
 		return filepath.Join(workspace, "state", "evaluation", "traces")
 	}
 	return filepath.Join(workspace, clean, "traces")
-}
-
-func taskRecordIsTerminal(record taskregistry.Record) bool {
-	statusTerminal := record.Status == taskregistry.StatusSucceeded ||
-		record.Status == taskregistry.StatusFailed ||
-		record.Status == taskregistry.StatusTimedOut ||
-		record.Status == taskregistry.StatusCancelled ||
-		record.Status == taskregistry.StatusLost
-	deliveryTerminal := record.DeliveryStatus == taskregistry.DeliveryDelivered ||
-		record.DeliveryStatus == taskregistry.DeliverySessionQueued ||
-		record.DeliveryStatus == taskregistry.DeliveryFailed ||
-		record.DeliveryStatus == taskregistry.DeliveryParentMissing ||
-		record.DeliveryStatus == taskregistry.DeliveryNotApplicable
-	return statusTerminal && deliveryTerminal
-}
-
-func taskErrorCode(record taskregistry.Record) string {
-	if record.DeliveryStatus == taskregistry.DeliveryFailed {
-		return "delivery_failed"
-	}
-	if record.Status == taskregistry.StatusLost {
-		return "task_lost"
-	}
-	if record.Status == taskregistry.StatusFailed {
-		return "task_failed"
-	}
-	return ""
 }
 
 func deliveryErrorCode(value string) string {
@@ -1069,16 +873,6 @@ func captureRedactorVersion(mode evaltrace.ContentMode) string {
 		return "forgeclaw.config_filter.v1"
 	}
 	return ""
-}
-
-func parseBool(value string) bool {
-	parsed, _ := strconv.ParseBool(value)
-	return parsed
-}
-
-func parseInt(value string) int {
-	parsed, _ := strconv.Atoi(value)
-	return parsed
 }
 
 func primaryCandidateProvider(candidates []providers.FallbackCandidate) string {

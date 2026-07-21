@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -496,6 +497,106 @@ func TestTraceCaptureBackfillsDurableTaskHistoryOnRestartReconciliation(t *testi
 		t.Fatalf("first historical record = %#v", trace.Records[0])
 	}
 	manager.close()
+	_ = eventBus.Close()
+}
+
+func TestTaskTraceProjectorSeparatesIdenticalIDsAcrossWorkspaces(t *testing.T) {
+	workspaceA, workspaceB := t.TempDir(), t.TempDir()
+	cfg := traceTestConfig(workspaceA)
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(cfg, eventBus)
+	registryA := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspaceA))
+	registryB := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspaceB))
+	manager.attachTaskRegistry(workspaceA, registryA)
+	manager.attachTaskRegistry(workspaceB, registryB)
+
+	finish := func(registry *taskregistry.Registry, session string) {
+		t.Helper()
+		if err := registry.Upsert(taskregistry.Record{
+			TaskID: "shared-task", Task: "test", RequesterSessionKey: session,
+			Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+		}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := registry.Update("shared-task", func(record *taskregistry.Record) {
+			record.Status = taskregistry.StatusSucceeded
+			record.DeliveryStatus = taskregistry.DeliveryDelivered
+		}); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	}
+	finish(registryA, "session-a")
+	finish(registryB, "session-b")
+
+	traceA := readCapturedTrace(t, waitForTraceFile(t, workspaceA))
+	traceB := readCapturedTrace(t, waitForTraceFile(t, workspaceB))
+	if traceA.TraceID == traceB.TraceID {
+		t.Fatalf("workspace traces share id %q", traceA.TraceID)
+	}
+	if traceA.Metadata.SessionHash == traceB.Metadata.SessionHash {
+		t.Fatalf("workspace traces share session hash %q", traceA.Metadata.SessionHash)
+	}
+	for _, trace := range []evaltrace.Trace{traceA, traceB} {
+		if trace.Outcome == nil || trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
+			t.Fatalf("outcome = %#v", trace.Outcome)
+		}
+		for _, record := range trace.Records {
+			if record.Scope.TaskID != "shared-task" {
+				t.Fatalf("record task id = %q", record.Scope.TaskID)
+			}
+		}
+	}
+	manager.close()
+	_ = eventBus.Close()
+}
+
+func TestTaskTraceProjectorEnablesAfterRegistryAttachment(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(cfg, eventBus)
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	manager.attachTaskRegistry(workspace, registry)
+	manager.updateConfig(traceTestConfig(workspace))
+
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "task-enabled", Task: "test", RequesterSessionKey: "session-enabled",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := registry.Update("task-enabled", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if trace.Outcome == nil || trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
+		t.Fatalf("outcome = %#v", trace.Outcome)
+	}
+	manager.close()
+	_ = eventBus.Close()
+}
+
+func TestTaskTraceProjectorPersistsIncompleteTraceOnClose(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	manager.attachTaskRegistry(workspace, registry)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "task-active", Task: "test", RequesterSessionKey: "session-active",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	manager.close()
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if !trace.Truncation.Incomplete ||
+		!slices.Contains(trace.Truncation.Reasons, "runtime_closed_before_terminal_task_delivery") {
+		t.Fatalf("truncation = %+v", trace.Truncation)
+	}
 	_ = eventBus.Close()
 }
 

@@ -10,8 +10,9 @@ The durable human-interaction runtime merged before the spike remains the
 production authority. This redesign extends its observability and evaluation
 without making trace capture part of the interaction state machine.
 
-Stages 1 through 8 are merged. Stage 9 extracts bounded trace assembly before
-source projectors are split; later stages remain separate pull requests.
+Stages 1 through 9 are merged. Stage 10 splits source ownership in separate
+task, turn, and interaction projector pull requests; later stages remain
+separate pull requests.
 
 ## Why The Spike Is Not The Implementation
 
@@ -234,6 +235,12 @@ Projectors may add typed links between traces. They do not copy one domain's
 state machine into another projector or append interaction transitions directly
 to a turn buffer through session heuristics.
 
+The projector split is incremental. The task projector first takes exclusive
+ownership of workspace-scoped task buffers, registry subscriptions, config
+transitions, and shutdown terminalization. The turn projector then takes the
+runtime subscription and delivery-settlement state. Only after both existing
+sources are independent does the interaction projector add new trace behavior.
+
 ## 5. Shared Interaction Protocol
 
 Extract a pure, storage-free protocol package from the interaction registry.
@@ -316,8 +323,9 @@ Each item is a separate focused PR based on the merged predecessor:
    and explicit loss accounting from the agent capture manager.
 9. **Bounded assembly:** centralize record sequencing, deduplication, critical
    evidence priority, truncation accounting, and finalization outside projectors.
-10. **Projectors:** split turn/task capture and add the dedicated interaction
-   projector with deterministic live/startup construction.
+10. **Projectors:** split source ownership without combining their state models:
+    task registry projection, turn runtime projection, then the dedicated
+    interaction projector with deterministic live/startup construction.
 11. **Protocol contract:** extract declarative interaction transitions and use
    them from both registry validation and replay reduction.
 12. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
