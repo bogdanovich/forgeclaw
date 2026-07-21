@@ -46,8 +46,7 @@ type DiscordChannel struct {
 	cancel     context.CancelFunc
 	typingMu   sync.Mutex
 	typingStop map[string]chan struct{} // chatID → stop signal
-	progress   *channels.ToolFeedbackAnimator
-	botUserID  string // stored for mention checking
+	botUserID  string                   // stored for mention checking
 	bus        *bus.MessageBus
 	tts        tts.TTSProvider
 	playTTSFn  func(context.Context, *discordgo.VoiceConnection, string, uint64)
@@ -100,7 +99,6 @@ func NewDiscordChannel(
 	}
 	ch.playTTSFn = ch.playTTS
 	ch.ttsVoiceFn = ch.voiceConnectionForTTS
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
 	return ch, nil
 }
 
@@ -134,12 +132,6 @@ func (c *DiscordChannel) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *DiscordChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
-	if c.progress != nil {
-		c.progress.Configure(cfg)
-	}
-}
-
 func (c *DiscordChannel) Stop(ctx context.Context) error {
 	logger.InfoC("discord", "Stopping Discord bot")
 	c.SetRunning(false)
@@ -156,10 +148,6 @@ func (c *DiscordChannel) Stop(ctx context.Context) error {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	if c.progress != nil {
-		c.progress.StopAll()
-	}
-
 	if err := c.session.Close(); err != nil {
 		return fmt.Errorf("failed to close discord session: %w", err)
 	}
@@ -182,34 +170,10 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]s
 	}
 
 	isToolFeedback := outboundMessageIsToolFeedback(msg)
-	if isToolFeedback {
-		if msgID, handled, err := c.progress.Update(ctx, channelID, msg.Content); handled {
-			if err != nil {
-				return nil, err
-			}
-			return []string{msgID}, nil
-		}
-	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(channelID)
 	c.maybeStartTTS(channelID, msg.Content, isToolFeedback)
-	if channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
-		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
-			return msgIDs, nil
-		}
-	}
-
-	content := msg.Content
-	if isToolFeedback {
-		content = channels.InitialAnimatedToolFeedbackContent(msg.Content)
-	}
-	msgID, err := c.sendChunk(ctx, channelID, content, msg.ReplyToMessageID)
+	msgID, err := c.sendChunk(ctx, channelID, msg.Content, msg.ReplyToMessageID)
 	if err != nil {
 		return nil, err
-	}
-	if isToolFeedback {
-		c.RecordEditedToolFeedbackMessage(channelID, msgID, msg.Content)
-	} else if hasTrackedMsg && channels.OutboundMessageDismissesTrackedToolFeedback(msg) {
-		c.dismissTrackedToolFeedbackMessage(ctx, channelID, trackedMsgID)
 	}
 	return []string{msgID}, nil
 }
@@ -273,8 +237,6 @@ func (c *DiscordChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMes
 	if channelID == "" {
 		return nil, fmt.Errorf("channel ID is empty")
 	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(channelID)
-
 	store := c.GetMediaStore()
 	if store == nil {
 		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
@@ -338,9 +300,6 @@ func (c *DiscordChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMes
 		}
 		return nil, fmt.Errorf("discord send media: %w", channels.ErrTemporary)
 	}
-	if hasTrackedMsg {
-		c.dismissTrackedToolFeedbackMessage(ctx, channelID, trackedMsgID)
-	}
 	return []string{sentMsg.ID}, nil
 }
 
@@ -391,81 +350,6 @@ func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
-}
-
-func (c *DiscordChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
-	if c.progress == nil {
-		return "", false
-	}
-	return c.progress.Current(chatID)
-}
-
-func (c *DiscordChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
-}
-
-func (c *DiscordChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Record(chatID, messageID, content)
-}
-
-func (c *DiscordChannel) RecordEditedToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.RecordEdited(chatID, messageID, content)
-}
-
-func (c *DiscordChannel) ClearToolFeedbackMessage(chatID string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Clear(chatID)
-}
-
-func (c *DiscordChannel) DismissToolFeedbackMessage(ctx context.Context, chatID string) {
-	msgID, ok := c.currentToolFeedbackMessage(chatID)
-	if !ok {
-		return
-	}
-	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
-}
-
-func (c *DiscordChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
-	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
-		return
-	}
-	c.ClearToolFeedbackMessage(chatID)
-	_ = c.DeleteMessage(ctx, chatID, messageID)
-}
-
-func (c *DiscordChannel) finalizeTrackedToolFeedbackMessage(
-	ctx context.Context,
-	chatID string,
-	content string,
-	editFn func(context.Context, string, string, string) error,
-) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
-		return nil, false
-	}
-	if err := editFn(ctx, chatID, msgID, content); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
-		return nil, false
-	}
-	return []string{msgID}, true
-}
-
-func (c *DiscordChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
-	if !channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
-		return nil, false
-	}
-	return c.finalizeTrackedToolFeedbackMessage(ctx, msg.ChatID, msg.Content, c.EditMessage)
 }
 
 func (c *DiscordChannel) sendChunk(ctx context.Context, channelID, content, replyToID string) (string, error) {

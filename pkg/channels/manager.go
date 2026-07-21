@@ -111,11 +111,12 @@ type Manager struct {
 	httpServer                *http.Server
 	httpListeners             []net.Listener
 	mu                        sync.RWMutex
-	placeholders              sync.Map          // "channel:chatID" → placeholderID (string)
-	typingStops               sync.Map          // "channel:chatID" → func()
-	reactionUndos             sync.Map          // "channel:chatID" → reactionEntry
-	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
-	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
+	placeholders              sync.Map // "channel:chatID" → placeholderID (string)
+	typingStops               sync.Map // "channel:chatID" → func()
+	reactionUndos             sync.Map // "channel:chatID" → reactionEntry
+	streamActive              sync.Map // streamSuppressionKey → true (set when streamer.Finalize sent the message)
+	streamAuxiliaryTombstones sync.Map // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
+	toolFeedback              *ToolFeedbackCoordinator
 	channelHashes             map[string]string // channel name → config hash
 	channelRestartRequired    map[string]string // channel name → desired config hash that needs process restart
 }
@@ -168,19 +169,6 @@ func (mode outcomePublication) failure(ambiguous bool) bool {
 	return mode == publishDefinitiveOutcome || (mode == publishSuccessOnly && ambiguous)
 }
 
-type toolFeedbackMessageTracker interface {
-	RecordToolFeedbackMessage(chatID, messageID, content string)
-	ClearToolFeedbackMessage(chatID string)
-}
-
-type toolFeedbackMessageEditTracker interface {
-	RecordEditedToolFeedbackMessage(chatID, messageID, content string)
-}
-
-type toolFeedbackMessageCleaner interface {
-	DismissToolFeedbackMessage(ctx context.Context, chatID string)
-}
-
 type outboundTargetResolver interface {
 	ResolveOutboundChatID(chatID string, outboundCtx *bus.InboundContext) string
 }
@@ -193,8 +181,8 @@ type toolFeedbackMessageContentPreparer interface {
 	PrepareToolFeedbackMessageContent(content string) string
 }
 
-type toolFeedbackAnimatorConfigurer interface {
-	ConfigureToolFeedbackAnimator(config ToolFeedbackAnimatorConfig)
+type toolFeedbackMessageEditor interface {
+	EditToolFeedbackMessage(ctx context.Context, chatID, messageID, content string) error
 }
 
 type asyncTask struct {
@@ -351,8 +339,10 @@ func (m *Manager) cleanupDeliveryState(
 	}
 
 	if opts.DismissToolFeedback {
-		dismissTrackedToolFeedbackMessage(ctx, ch, chatID, outboundCtx)
-		dismissTrackedToolFeedbackMessageForSession(ctx, ch, chatID, outboundCtx, opts.SessionKey)
+		if m.toolFeedback != nil {
+			key, _ := toolFeedbackTarget(name, ch, chatID, outboundCtx, opts.SessionKey)
+			m.toolFeedback.Dismiss(ctx, key)
+		}
 	}
 
 	if opts.DeletePlaceholder {
@@ -368,15 +358,6 @@ func (m *Manager) cleanupDeliveryState(
 	}
 }
 
-func candidateToolFeedbackMessageChatIDs(raw, resolved string) []string {
-	raw = strings.TrimSpace(raw)
-	resolved = strings.TrimSpace(resolved)
-	if raw == "" || raw == resolved {
-		return []string{resolved}
-	}
-	return []string{resolved, raw}
-}
-
 func sessionScopedToolFeedbackMessageChatID(chatID, sessionKey string) string {
 	chatID = strings.TrimSpace(chatID)
 	sessionKey = strings.TrimSpace(sessionKey)
@@ -386,69 +367,81 @@ func sessionScopedToolFeedbackMessageChatID(chatID, sessionKey string) string {
 	return chatID + "#session:" + sessionKey
 }
 
-func dismissTrackedToolFeedbackMessage(
-	ctx context.Context,
-	ch Channel,
-	chatID string,
-	outboundCtx *bus.InboundContext,
-) {
-	trackedChatID := resolveOutboundChatID(ch, chatID, outboundCtx)
-	if trackedChatID == "" {
-		return
+func toolFeedbackCoordinatorKey(channelName, trackedChatID string) string {
+	channelName = strings.TrimSpace(channelName)
+	trackedChatID = strings.TrimSpace(trackedChatID)
+	if channelName == "" || trackedChatID == "" {
+		return ""
 	}
-	if cleaner, ok := ch.(toolFeedbackMessageCleaner); ok {
-		cleaner.DismissToolFeedbackMessage(ctx, trackedChatID)
-		return
-	}
-	if tracker, ok := ch.(toolFeedbackMessageTracker); ok {
-		tracker.ClearToolFeedbackMessage(trackedChatID)
-	}
+	return channelName + ":" + trackedChatID
 }
 
-func dismissTrackedToolFeedbackMessageForSession(
-	ctx context.Context,
+func toolFeedbackTarget(
+	channelName string,
 	ch Channel,
 	chatID string,
 	outboundCtx *bus.InboundContext,
 	sessionKey string,
-) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		dismissTrackedToolFeedbackMessage(ctx, ch, chatID, outboundCtx)
-		return
-	}
-	resolvedChatID := resolveOutboundChatID(ch, chatID, outboundCtx)
-	if cleaner, ok := ch.(toolFeedbackMessageCleaner); ok {
-		for _, candidate := range candidateToolFeedbackMessageChatIDs(chatID, resolvedChatID) {
-			if candidate == "" {
-				continue
-			}
-			cleaner.DismissToolFeedbackMessage(ctx, candidate+"#session:"+sessionKey)
-		}
-		return
-	}
-	if tracker, ok := ch.(toolFeedbackMessageTracker); ok {
-		for _, candidate := range candidateToolFeedbackMessageChatIDs(chatID, resolvedChatID) {
-			if candidate == "" {
-				continue
-			}
-			tracker.ClearToolFeedbackMessage(candidate + "#session:" + sessionKey)
-		}
-	}
+) (string, string) {
+	deliveryChatID := trackedToolFeedbackMessageChatID(ch, chatID, outboundCtx)
+	trackedChatID := sessionScopedToolFeedbackMessageChatID(deliveryChatID, sessionKey)
+	return toolFeedbackCoordinatorKey(channelName, trackedChatID), deliveryChatID
 }
 
-func clearTrackedToolFeedbackMessage(
+func toolFeedbackOperationsFor(ch Channel) toolFeedbackOperations {
+	operations := toolFeedbackOperations{}
+	if editor, ok := ch.(toolFeedbackMessageEditor); ok {
+		operations.edit = editor.EditToolFeedbackMessage
+	} else if editor, ok := ch.(MessageEditor); ok {
+		operations.edit = editor.EditMessage
+	}
+	if deleter, ok := ch.(MessageDeleter); ok {
+		operations.delete = deleter.DeleteMessage
+	}
+	return operations
+}
+
+func (m *Manager) beginToolFeedbackTerminal(
+	channelName string,
 	ch Channel,
 	chatID string,
 	outboundCtx *bus.InboundContext,
-) {
-	trackedChatID := resolveOutboundChatID(ch, chatID, outboundCtx)
-	if trackedChatID == "" {
-		return
+	sessionKey string,
+) *toolFeedbackTerminal {
+	if m == nil || m.toolFeedback == nil {
+		return nil
 	}
-	if tracker, ok := ch.(toolFeedbackMessageTracker); ok {
-		tracker.ClearToolFeedbackMessage(trackedChatID)
-	}
+	key, _ := toolFeedbackTarget(channelName, ch, chatID, outboundCtx, sessionKey)
+	return m.toolFeedback.BeginTerminal(key)
+}
+
+func (m *Manager) deliverToolFeedback(
+	ctx context.Context,
+	channelName string,
+	ch Channel,
+	msg bus.OutboundMessage,
+	send func(context.Context, bus.OutboundMessage) ([]string, error),
+) ([]string, error) {
+	key, deliveryChatID := toolFeedbackTarget(
+		channelName,
+		ch,
+		outboundMessageChatID(msg),
+		&msg.Context,
+		msg.SessionKey,
+	)
+	content := prepareToolFeedbackMessageContent(ch, msg.Content)
+	return m.toolFeedback.Deliver(
+		ctx,
+		key,
+		deliveryChatID,
+		content,
+		toolFeedbackOperationsFor(ch),
+		func(sendCtx context.Context, prepared string) ([]string, error) {
+			sendMsg := msg
+			sendMsg.Content = prepared
+			return send(sendCtx, sendMsg)
+		},
+	)
 }
 
 // DismissToolFeedback clears any tracked tool feedback animation for the
@@ -459,21 +452,29 @@ func clearTrackedToolFeedbackMessage(
 func (m *Manager) DismissToolFeedback(
 	ctx context.Context, channelName, chatID string, outboundCtx *bus.InboundContext,
 ) {
+	if m == nil || m.toolFeedback == nil {
+		return
+	}
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
 		return
 	}
-	dismissTrackedToolFeedbackMessage(ctx, ch, chatID, outboundCtx)
+	key, _ := toolFeedbackTarget(channelName, ch, chatID, outboundCtx, "")
+	m.toolFeedback.Dismiss(ctx, key)
 }
 
 func (m *Manager) DismissToolFeedbackForSession(
 	ctx context.Context, channelName, chatID string, outboundCtx *bus.InboundContext, sessionKey string,
 ) {
+	if m == nil || m.toolFeedback == nil {
+		return
+	}
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
 		return
 	}
-	dismissTrackedToolFeedbackMessageForSession(ctx, ch, chatID, outboundCtx, sessionKey)
+	key, _ := toolFeedbackTarget(channelName, ch, chatID, outboundCtx, sessionKey)
+	m.toolFeedback.Dismiss(ctx, key)
 }
 
 func prepareToolFeedbackMessageContent(ch Channel, content string) string {
@@ -487,13 +488,6 @@ func prepareToolFeedbackMessageContent(ch Channel, content string) string {
 		}
 	}
 	return prepared
-}
-
-func (m *Manager) toolFeedbackSeparateMessagesEnabled() bool {
-	if m == nil || m.config == nil {
-		return false
-	}
-	return m.config.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled()
 }
 
 // RecordPlaceholder registers a placeholder message for later editing.
@@ -572,8 +566,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	isToolCalls := outboundMessageIsToolCalls(msg)
 	isAuxiliaryMessage := outboundMessageHasAuxiliaryKind(msg)
 	isFinalMessage := outboundMessageIsFinal(msg)
-	separateToolFeedbackMessages := m.toolFeedbackSeparateMessagesEnabled()
-
 	// 3. If a stream already finalized this chat, stale auxiliary messages must
 	// be dropped without consuming the final-response marker. Streaming
 	// finalization bypasses the worker queue, so older queued feedback/thoughts
@@ -613,13 +605,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					}
 				}
 			}
-			if !isToolFeedback {
-				if separateToolFeedbackMessages {
-					clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
-				} else {
-					dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
-				}
-			}
 			return nil, true
 		}
 	}
@@ -635,10 +620,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 		m.streamAuxiliaryTombstones.Delete(streamKey)
 	}
 
-	if separateToolFeedbackMessages {
-		clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
-	}
-
 	// 5. Try editing placeholder
 	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
 		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
@@ -651,7 +632,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					"is_tool_feedback": isToolFeedback,
 					"bypass":           outboundMessageBypassesPlaceholderEdit(msg),
 				})
-			if isToolFeedback && separateToolFeedbackMessages {
+			if isToolFeedback {
 				if deleter, ok := ch.(MessageDeleter); ok {
 					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
 				}
@@ -661,18 +642,10 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 				if deleter, ok := ch.(MessageDeleter); ok {
 					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
 				}
-				if strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "final_reply") {
-					dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
-				}
 				return nil, false
 			}
 			if editor, ok := ch.(MessageEditor); ok {
 				content := msg.Content
-				trackedContent := msg.Content
-				if isToolFeedback {
-					trackedContent = prepareToolFeedbackMessageContent(ch, msg.Content)
-					content = InitialAnimatedToolFeedbackContent(trackedContent)
-				}
 				err := func() error {
 					if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
 						return payloadEditor.EditMessageWithPayload(
@@ -685,19 +658,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					return editor.EditMessage(ctx, chatID, entry.id, content)
 				}()
 				if err == nil {
-					trackedChatID := trackedToolFeedbackMessageChatID(ch, chatID, &msg.Context)
-					if isToolFeedback {
-						trackedChatID = sessionScopedToolFeedbackMessageChatID(trackedChatID, msg.SessionKey)
-					}
-					if tracker, ok := ch.(toolFeedbackMessageTracker); ok && isToolFeedback {
-						if editTracker, ok := ch.(toolFeedbackMessageEditTracker); ok {
-							editTracker.RecordEditedToolFeedbackMessage(trackedChatID, entry.id, trackedContent)
-						} else {
-							tracker.RecordToolFeedbackMessage(trackedChatID, entry.id, trackedContent)
-						}
-					} else if !isToolFeedback {
-						dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
-					}
 					return []string{entry.id}, true
 				}
 				// edit failed → fall through to normal Send
@@ -716,12 +676,11 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 	chatID := outboundMediaChatID(msg)
 
 	m.cleanupDeliveryState(ctx, name, chatID, &msg.Context, ch, deliveryCleanupOptions{
-		StopTyping:          true,
-		UndoReaction:        true,
-		ClearStreamActive:   true,
-		DismissToolFeedback: true,
-		DeletePlaceholder:   true,
-		SessionKey:          msg.SessionKey,
+		StopTyping:        true,
+		UndoReaction:      true,
+		ClearStreamActive: true,
+		DeletePlaceholder: true,
+		SessionKey:        msg.SessionKey,
 	})
 }
 
@@ -740,6 +699,15 @@ func NewManager(
 		mediaStore:             store,
 		channelHashes:          make(map[string]string),
 		channelRestartRequired: make(map[string]string),
+	}
+	if cfg != nil {
+		m.toolFeedback = NewToolFeedbackCoordinator(
+			ToolFeedbackAnimatorConfig{
+				AnimationInterval: cfg.Agents.Defaults.GetToolFeedbackAnimationInterval(),
+				MinEditInterval:   cfg.Agents.Defaults.GetToolFeedbackEditMinInterval(),
+			},
+			cfg.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled(),
+		)
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -832,25 +800,15 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 		m.streamActive.Delete(streamKey)
 	}
 	onFinalize := func(finalizeCtx context.Context, finalContent string) {
-		if m.toolFeedbackSeparateMessagesEnabled() {
-			clearTrackedToolFeedbackMessage(
+		if m.toolFeedback != nil {
+			key, _ := toolFeedbackTarget(
+				channelName,
 				ch,
 				chatID,
-				&bus.InboundContext{
-					Channel: channelName,
-					ChatID:  chatID,
-				},
+				&bus.InboundContext{Channel: channelName, ChatID: chatID},
+				sessionKey,
 			)
-		} else {
-			dismissTrackedToolFeedbackMessage(
-				finalizeCtx,
-				ch,
-				chatID,
-				&bus.InboundContext{
-					Channel: channelName,
-					ChatID:  chatID,
-				},
-			)
+			m.toolFeedback.Dismiss(finalizeCtx, key)
 		}
 		if v, loaded := m.placeholders.LoadAndDelete(placeholderKey); loaded {
 			if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
@@ -1208,12 +1166,6 @@ func (m *Manager) initChannel(typeName, channelName string) {
 		// Inject owner reference so BaseChannel.HandleMessage can auto-trigger typing/reaction
 		if setter, ok := ch.(interface{ SetOwner(ch Channel) }); ok {
 			setter.SetOwner(ch)
-		}
-		if setter, ok := ch.(toolFeedbackAnimatorConfigurer); ok && m.config != nil {
-			setter.ConfigureToolFeedbackAnimator(ToolFeedbackAnimatorConfig{
-				AnimationInterval: m.config.Agents.Defaults.GetToolFeedbackAnimationInterval(),
-				MinEditInterval:   m.config.Agents.Defaults.GetToolFeedbackEditMinInterval(),
-			})
 		}
 		m.channels[channelName] = ch
 		m.publishChannelEvent(
@@ -1669,6 +1621,9 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		}
 		closeWorkerAndWait(delivery.worker)
 	}
+	if m.toolFeedback != nil {
+		m.toolFeedback.StopAll()
+	}
 
 	// Stop all channels
 	for _, target := range channels {
@@ -1992,8 +1947,25 @@ func (m *Manager) sendWithRetryPolicy(
 		return nil, false, false, err
 	}
 
+	isToolFeedback := outboundMessageIsToolFeedback(msg)
+	terminalSucceeded := false
+	var terminal *toolFeedbackTerminal
+	if m.toolFeedback != nil && !isToolFeedback && OutboundMessageDismissesTrackedToolFeedback(msg) {
+		terminal = m.beginToolFeedbackTerminal(
+			name,
+			w.ch,
+			outboundMessageChatID(msg),
+			&msg.Context,
+			msg.SessionKey,
+		)
+		defer func() {
+			m.toolFeedback.CompleteTerminal(ctx, terminal, terminalSucceeded)
+		}()
+	}
+
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
+		terminalSucceeded = true
 		if outcome.success() {
 			m.publishOutboundSent(name, msg, msgIDs)
 		}
@@ -2005,8 +1977,13 @@ func (m *Manager) sendWithRetryPolicy(
 	ambiguous := false
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		attemptStart := time.Now()
-		msgIDs, lastErr = w.ch.Send(ctx, msg)
+		if isToolFeedback && m.toolFeedback != nil {
+			msgIDs, lastErr = m.deliverToolFeedback(ctx, name, w.ch, msg, w.ch.Send)
+		} else {
+			msgIDs, lastErr = w.ch.Send(ctx, msg)
+		}
 		if lastErr == nil {
+			terminalSucceeded = true
 			if attempt > 0 {
 				logger.InfoCF("channels", "Outbound send recovered after retry", map[string]any{
 					"channel":        name,
@@ -2323,6 +2300,21 @@ func (m *Manager) sendMediaWithRetryPolicy(
 		return nil, false, err
 	}
 
+	terminalSucceeded := false
+	var terminal *toolFeedbackTerminal
+	if m.toolFeedback != nil {
+		terminal = m.beginToolFeedbackTerminal(
+			name,
+			w.ch,
+			outboundMediaChatID(msg),
+			&msg.Context,
+			msg.SessionKey,
+		)
+		defer func() {
+			m.toolFeedback.CompleteTerminal(ctx, terminal, terminalSucceeded)
+		}()
+	}
+
 	// Pre-send: stop typing and clean up any placeholder before sending media.
 	m.preSendMedia(ctx, name, msg, w.ch)
 
@@ -2332,6 +2324,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msgIDs, lastErr = ms.SendMedia(ctx, msg)
 		if lastErr == nil {
+			terminalSucceeded = true
 			if outcome.success() {
 				m.publishOutboundMediaSent(name, msg, msgIDs)
 			}
@@ -2641,6 +2634,15 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 
 	// Commit hashes only on full success.
 	m.channelHashes = list
+	if m.toolFeedback != nil && cfg != nil {
+		m.toolFeedback.Configure(
+			ToolFeedbackAnimatorConfig{
+				AnimationInterval: cfg.Agents.Defaults.GetToolFeedbackAnimationInterval(),
+				MinEditInterval:   cfg.Agents.Defaults.GetToolFeedbackEditMinInterval(),
+			},
+			cfg.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled(),
+		)
+	}
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {

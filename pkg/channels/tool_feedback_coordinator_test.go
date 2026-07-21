@@ -1,0 +1,314 @@
+package channels
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+)
+
+func newTestToolFeedbackCoordinator(separate bool) *ToolFeedbackCoordinator {
+	return NewToolFeedbackCoordinator(ToolFeedbackAnimatorConfig{
+		AnimationInterval: time.Hour,
+	}, separate)
+}
+
+func TestToolFeedbackCoordinator_PendingSendTerminalDeletesLateMessage(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	deleted := make(chan string, 1)
+	result := make(chan []string, 1)
+
+	go func() {
+		ids, err := coordinator.Deliver(
+			context.Background(),
+			"telegram:chat-1",
+			"chat-1",
+			"Working...\n- tool: exec",
+			toolFeedbackOperations{delete: func(_ context.Context, _, messageID string) error {
+				deleted <- messageID
+				return nil
+			}},
+			func(context.Context, string) ([]string, error) {
+				close(sendStarted)
+				<-releaseSend
+				return []string{"progress-1"}, nil
+			},
+		)
+		if err != nil {
+			t.Errorf("Deliver() error = %v", err)
+		}
+		result <- ids
+	}()
+	<-sendStarted
+
+	started := time.Now()
+	terminal := coordinator.BeginTerminal("telegram:chat-1")
+	if terminal == nil {
+		t.Fatal("BeginTerminal() = nil, want pending state")
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("BeginTerminal() blocked for %v", elapsed)
+	}
+	completed := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(context.Background(), terminal, true)
+		close(completed)
+	}()
+
+	select {
+	case <-completed:
+		t.Fatal("terminal cleanup completed before pending send settled")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseSend)
+	if ids := <-result; len(ids) != 0 {
+		t.Fatalf("superseded Deliver() IDs = %v, want none", ids)
+	}
+	select {
+	case messageID := <-deleted:
+		if messageID != "progress-1" {
+			t.Fatalf("deleted message = %q, want progress-1", messageID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late progress message was not deleted")
+	}
+	<-completed
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
+
+func TestToolFeedbackCoordinator_UpdateTerminalSerializesCleanup(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	editStarted := make(chan struct{})
+	releaseEdit := make(chan struct{})
+	var deleted []string
+	var mu sync.Mutex
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error {
+			close(editStarted)
+			<-releaseEdit
+			return nil
+		},
+		delete: func(_ context.Context, _, messageID string) error {
+			mu.Lock()
+			deleted = append(deleted, messageID)
+			mu.Unlock()
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "slack:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := coordinator.Deliver(
+			context.Background(), "slack:chat-1", "chat-1", "second", operations,
+			func(context.Context, string) ([]string, error) {
+				t.Error("active update unexpectedly sent a new message")
+				return nil, nil
+			},
+		)
+		updateDone <- err
+	}()
+	<-editStarted
+	terminal := coordinator.BeginTerminal("slack:chat-1")
+	completed := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(context.Background(), terminal, true)
+		close(completed)
+	}()
+	select {
+	case <-completed:
+		t.Fatal("terminal cleanup overtook active edit")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseEdit)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("update Deliver() error = %v", err)
+	}
+	<-completed
+	mu.Lock()
+	defer mu.Unlock()
+	if len(deleted) != 1 || deleted[0] != "progress-1" {
+		t.Fatalf("deleted messages = %v, want [progress-1]", deleted)
+	}
+}
+
+func TestToolFeedbackCoordinator_FailedTerminalResumesActiveMessage(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	var edits []string
+	operations := toolFeedbackOperations{edit: func(_ context.Context, _, _ string, content string) error {
+		edits = append(edits, content)
+		return nil
+	}}
+	if _, err := coordinator.Deliver(
+		context.Background(), "discord:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	terminal := coordinator.BeginTerminal("discord:chat-1")
+	coordinator.CompleteTerminal(context.Background(), terminal, false)
+	ids, err := coordinator.Deliver(
+		context.Background(), "discord:chat-1", "chat-1", "second", operations,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("failed terminal should resume the active message")
+			return nil, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumed Deliver() error = %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "progress-1" || len(edits) != 1 {
+		t.Fatalf("resumed update = ids %v, edits %v", ids, edits)
+	}
+}
+
+func TestToolFeedbackCoordinator_SendFailureRemovesIdleState(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	sendErr := errors.New("send failed")
+	_, err := coordinator.Deliver(
+		context.Background(), "matrix:chat-1", "chat-1", "feedback", toolFeedbackOperations{},
+		func(context.Context, string) ([]string, error) { return nil, sendErr },
+	)
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("Deliver() error = %v, want send failure", err)
+	}
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
+
+func TestToolFeedbackCoordinator_PartialSendRemainsTracked(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	partialErr := errors.New("second chunk failed")
+	var edits []string
+	operations := toolFeedbackOperations{edit: func(_ context.Context, _, messageID, _ string) error {
+		edits = append(edits, messageID)
+		return nil
+	}}
+	ids, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, partialErr },
+	)
+	if !errors.Is(err, partialErr) || len(ids) != 1 || ids[0] != "progress-1" {
+		t.Fatalf("partial Deliver() = (%v, %v), want progress-1 and partial error", ids, err)
+	}
+	ids, err = coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "second", operations,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("tracked partial send should be edited")
+			return nil, nil
+		},
+	)
+	if err != nil || len(ids) != 1 || ids[0] != "progress-1" || !slices.Equal(edits, []string{"progress-1"}) {
+		t.Fatalf("tracked update = (%v, %v, %v)", ids, err, edits)
+	}
+}
+
+func TestToolFeedbackCoordinator_SeparateMessagesDoesNotEditOrDelete(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(true)
+	defer coordinator.StopAll()
+	var sends, edits, deletes int
+	operations := toolFeedbackOperations{
+		edit:   func(context.Context, string, string, string) error { edits++; return nil },
+		delete: func(context.Context, string, string) error { deletes++; return nil },
+	}
+	for _, id := range []string{"progress-1", "progress-2"} {
+		if _, err := coordinator.Deliver(
+			context.Background(), "pico:chat-1", "chat-1", id, operations,
+			func(context.Context, string) ([]string, error) { sends++; return []string{id}, nil },
+		); err != nil {
+			t.Fatalf("Deliver(%s) error = %v", id, err)
+		}
+	}
+	terminal := coordinator.BeginTerminal("pico:chat-1")
+	coordinator.CompleteTerminal(context.Background(), terminal, true)
+	if sends != 2 || edits != 0 || deletes != 0 {
+		t.Fatalf("separate operations = sends %d edits %d deletes %d", sends, edits, deletes)
+	}
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
+
+func TestToolFeedbackCoordinator_NonEditableTransportSendsEachUpdate(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	var sends int
+	for _, content := range []string{"first", "second"} {
+		if _, err := coordinator.Deliver(
+			context.Background(), "irc:chat-1", "chat-1", content, toolFeedbackOperations{},
+			func(context.Context, string) ([]string, error) {
+				sends++
+				return []string{fmt.Sprintf("message-%d", sends)}, nil
+			},
+		); err != nil {
+			t.Fatalf("Deliver(%q) error = %v", content, err)
+		}
+	}
+	if sends != 2 {
+		t.Fatalf("sends = %d, want 2", sends)
+	}
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
+
+func TestToolFeedbackCoordinator_StopDeletesLateInitialSend(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	deleted := make(chan string, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := coordinator.Deliver(
+			context.Background(),
+			"telegram:chat-1",
+			"chat-1",
+			"Working...",
+			toolFeedbackOperations{delete: func(_ context.Context, _, messageID string) error {
+				deleted <- messageID
+				return nil
+			}},
+			func(context.Context, string) ([]string, error) {
+				close(sendStarted)
+				<-releaseSend
+				return []string{"progress-1"}, nil
+			},
+		)
+		done <- err
+	}()
+	<-sendStarted
+	coordinator.StopAll()
+	close(releaseSend)
+	if err := <-done; err != nil {
+		t.Fatalf("Deliver() error = %v", err)
+	}
+	select {
+	case messageID := <-deleted:
+		if messageID != "progress-1" {
+			t.Fatalf("deleted message = %q, want progress-1", messageID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late progress message was not deleted after StopAll")
+	}
+	if count := coordinator.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
