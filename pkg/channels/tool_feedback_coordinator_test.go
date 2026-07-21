@@ -84,6 +84,118 @@ func TestToolFeedbackCoordinator_PendingSendTerminalDeletesLateMessage(t *testin
 	}
 }
 
+func TestToolFeedbackCoordinator_AbsentTerminalBlocksLateDelivery(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	terminal := coordinator.BeginTerminal("telegram:chat-1")
+	if terminal == nil {
+		t.Fatal("BeginTerminal() = nil, want absent-entry barrier")
+	}
+	coordinator.CompleteTerminal(context.Background(), terminal, true)
+
+	sends := 0
+	ids, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "stale", toolFeedbackOperations{},
+		func(context.Context, string) ([]string, error) {
+			sends++
+			return []string{"progress-1"}, nil
+		},
+	)
+	if err != nil || len(ids) != 0 || sends != 0 {
+		t.Fatalf("blocked Deliver() = (%v, %v), sends %d", ids, err, sends)
+	}
+	coordinator.ReleaseTerminal("telegram:chat-1")
+	ids, err = coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "next turn", toolFeedbackOperations{},
+		func(context.Context, string) ([]string, error) {
+			sends++
+			return []string{"progress-2"}, nil
+		},
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) || sends != 1 {
+		t.Fatalf("released Deliver() = (%v, %v), sends %d", ids, err, sends)
+	}
+}
+
+func TestToolFeedbackCoordinator_FailedAbsentTerminalReleasesBarrier(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	terminal := coordinator.BeginTerminal("telegram:chat-1")
+	coordinator.CompleteTerminal(context.Background(), terminal, false)
+
+	sends := 0
+	ids, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "feedback", toolFeedbackOperations{},
+		func(context.Context, string) ([]string, error) {
+			sends++
+			return []string{"progress-1"}, nil
+		},
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-1"}) || sends != 1 {
+		t.Fatalf("Deliver() = (%v, %v), sends %d", ids, err, sends)
+	}
+}
+
+func TestToolFeedbackCoordinator_NewTurnSupersedesTerminalTombstone(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	terminal := coordinator.BeginTerminalForTurn("telegram:chat-1", "turn-1")
+	coordinator.CompleteTerminal(context.Background(), terminal, true)
+
+	sends := 0
+	send := func(context.Context, string) ([]string, error) {
+		sends++
+		return []string{fmt.Sprintf("progress-%d", sends)}, nil
+	}
+	ids, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "stale",
+		toolFeedbackOperations{turnID: "turn-1"}, send,
+	)
+	if err != nil || len(ids) != 0 || sends != 0 {
+		t.Fatalf("same-turn Deliver() = (%v, %v), sends %d", ids, err, sends)
+	}
+	ids, err = coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "next turn",
+		toolFeedbackOperations{turnID: "turn-2"}, send,
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-1"}) || sends != 1 {
+		t.Fatalf("next-turn Deliver() = (%v, %v), sends %d", ids, err, sends)
+	}
+}
+
+func TestToolFeedbackCoordinator_SeparateDeliveryAndStopDoNotDeadlock(t *testing.T) {
+	for range 100 {
+		coordinator := newTestToolFeedbackCoordinator(true)
+		if _, err := coordinator.Deliver(
+			context.Background(), "telegram:chat-1", "chat-1", "first",
+			toolFeedbackOperations{edit: func(context.Context, string, string, string) error { return nil }},
+			func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+		); err != nil {
+			t.Fatalf("initial Deliver() error = %v", err)
+		}
+		done := make(chan struct{}, 2)
+		go func() {
+			_, _ = coordinator.Deliver(
+				context.Background(), "telegram:chat-1", "chat-1", "second",
+				toolFeedbackOperations{edit: func(context.Context, string, string, string) error { return nil }},
+				func(context.Context, string) ([]string, error) { return []string{"progress-2"}, nil },
+			)
+			done <- struct{}{}
+		}()
+		go func() {
+			coordinator.StopAll()
+			done <- struct{}{}
+		}()
+		for range 2 {
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("Deliver and StopAll deadlocked")
+			}
+		}
+	}
+}
+
 func TestToolFeedbackCoordinator_UpdateTerminalSerializesCleanup(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()

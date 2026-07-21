@@ -341,7 +341,11 @@ func (m *Manager) cleanupDeliveryState(
 	if opts.DismissToolFeedback {
 		if m.toolFeedback != nil {
 			key, _ := toolFeedbackTarget(name, ch, chatID, outboundCtx, opts.SessionKey)
-			m.toolFeedback.Dismiss(ctx, key)
+			turnID := ""
+			if outboundCtx != nil {
+				turnID = outboundCtx.MessageID
+			}
+			m.toolFeedback.DismissForTurn(ctx, key, turnID)
 		}
 	}
 
@@ -388,6 +392,18 @@ func toolFeedbackTarget(
 	return toolFeedbackCoordinatorKey(channelName, trackedChatID), deliveryChatID
 }
 
+func toolFeedbackSessionTarget(
+	channelName string,
+	ch Channel,
+	chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+) string {
+	deliveryChatID := trackedToolFeedbackMessageChatID(ch, chatID, outboundCtx)
+	trackedChatID := sessionScopedToolFeedbackMessageChatID(deliveryChatID, sessionKey)
+	return toolFeedbackCoordinatorKey(channelName, trackedChatID)
+}
+
 func toolFeedbackOperationsFor(ch Channel) toolFeedbackOperations {
 	operations := toolFeedbackOperations{}
 	if editor, ok := ch.(toolFeedbackMessageEditor); ok {
@@ -412,7 +428,11 @@ func (m *Manager) beginToolFeedbackTerminal(
 		return nil
 	}
 	key, _ := toolFeedbackTarget(channelName, ch, chatID, outboundCtx, sessionKey)
-	return m.toolFeedback.BeginTerminal(key)
+	turnID := ""
+	if outboundCtx != nil {
+		turnID = outboundCtx.MessageID
+	}
+	return m.toolFeedback.BeginTerminalForTurn(key, turnID)
 }
 
 func (m *Manager) deliverToolFeedback(
@@ -430,12 +450,14 @@ func (m *Manager) deliverToolFeedback(
 		msg.SessionKey,
 	)
 	content := prepareToolFeedbackMessageContent(ch, msg.Content)
+	operations := toolFeedbackOperationsFor(ch)
+	operations.turnID = msg.Context.MessageID
 	return m.toolFeedback.Deliver(
 		ctx,
 		key,
 		deliveryChatID,
 		content,
-		toolFeedbackOperationsFor(ch),
+		operations,
 		func(sendCtx context.Context, prepared string) ([]string, error) {
 			sendMsg := msg
 			sendMsg.Content = prepared
@@ -460,7 +482,11 @@ func (m *Manager) DismissToolFeedback(
 		return
 	}
 	key, _ := toolFeedbackTarget(channelName, ch, chatID, outboundCtx, "")
-	m.toolFeedback.Dismiss(ctx, key)
+	turnID := ""
+	if outboundCtx != nil {
+		turnID = outboundCtx.MessageID
+	}
+	m.toolFeedback.DismissForTurn(ctx, key, turnID)
 }
 
 func (m *Manager) DismissToolFeedbackForSession(
@@ -474,7 +500,11 @@ func (m *Manager) DismissToolFeedbackForSession(
 		return
 	}
 	key, _ := toolFeedbackTarget(channelName, ch, chatID, outboundCtx, sessionKey)
-	m.toolFeedback.Dismiss(ctx, key)
+	turnID := ""
+	if outboundCtx != nil {
+		turnID = outboundCtx.MessageID
+	}
+	m.toolFeedback.DismissForTurn(ctx, key, turnID)
 }
 
 func prepareToolFeedbackMessageContent(ch Channel, content string) string {
@@ -571,9 +601,9 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	// finalization bypasses the worker queue, so older queued feedback/thoughts
 	// can arrive before the normal final outbound message that cleans up the
 	// marker and placeholder.
-	// Note: tool_calls messages must NOT be dropped as they represent new tool
-	// invocations for the current turn that must be delivered to the UI.
-	if isAuxiliaryMessage && !isToolCalls {
+	// Tool calls must reach the UI, and the queued final must consume the active
+	// marker after the streamed copy has already been delivered.
+	if isAuxiliaryMessage && !isToolCalls && !isFinalMessage {
 		if _, loaded := m.streamActive.Load(streamKey); loaded {
 			return nil, true
 		}
@@ -604,6 +634,11 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 						}
 					}
 				}
+			}
+			if m.toolFeedback != nil {
+				m.toolFeedback.ReleaseTerminal(toolFeedbackSessionTarget(
+					name, ch, chatID, &msg.Context, msg.SessionKey,
+				))
 			}
 			return nil, true
 		}
@@ -801,7 +836,7 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 	}
 	onFinalize := func(finalizeCtx context.Context, finalContent string) {
 		if m.toolFeedback != nil {
-			key, _ := toolFeedbackTarget(
+			key := toolFeedbackSessionTarget(
 				channelName,
 				ch,
 				chatID,

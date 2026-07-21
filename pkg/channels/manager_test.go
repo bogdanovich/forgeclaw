@@ -234,10 +234,32 @@ type toolFeedbackTestChannel struct {
 	preparedTag string
 }
 
+type toolFeedbackStreamingTestChannel struct {
+	*toolFeedbackTestChannel
+	streamer Streamer
+}
+
+func (c *toolFeedbackStreamingTestChannel) BeginStream(context.Context, string) (Streamer, error) {
+	return c.streamer, nil
+}
+
 func (c *toolFeedbackTestChannel) Send(_ context.Context, msg bus.OutboundMessage) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.operations = append(c.operations, "send:"+msg.Content)
+	if c.sendErr != nil {
+		return nil, c.sendErr
+	}
+	c.nextID++
+	return []string{fmt.Sprintf("msg-%d", c.nextID)}, nil
+}
+
+func (c *toolFeedbackTestChannel) SendMedia(
+	_ context.Context, msg bus.OutboundMediaMessage,
+) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.operations = append(c.operations, "send-media:"+msg.Context.MessageID)
 	if c.sendErr != nil {
 		return nil, c.sendErr
 	}
@@ -2504,6 +2526,148 @@ func TestSendWithRetry_FailedFinalKeepsProgressEditable(t *testing.T) {
 	defer ch.mu.Unlock()
 	if len(ch.deleted) != 0 || ch.operations[len(ch.operations)-1] != "edit:msg-1" {
 		t.Fatalf("operations = %v deleted = %v, want retained progress edit", ch.operations, ch.deleted)
+	}
+}
+
+func TestSendMediaWithRetry_BlocksSameTurnLateFeedback(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	mediaMessage := testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Context: bus.InboundContext{Channel: "test", ChatID: "chat-1", MessageID: "turn-1"},
+	})
+	if _, err := m.sendMediaWithRetry(context.Background(), "test", w, mediaMessage); err != nil {
+		t.Fatalf("media send error = %v", err)
+	}
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "Working...",
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw:       map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("late same-turn feedback = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	feedback.Context.MessageID = "turn-2"
+	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-2"}) {
+		t.Fatalf("next-turn feedback = (%v, %v, %v), want msg-2", ids, sent, err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	want := []string{
+		"send-media:turn-1",
+		"send:Working...",
+	}
+	if !slices.Equal(ch.operations, want) {
+		t.Fatalf("operations = %v, want %v", ch.operations, want)
+	}
+}
+
+func TestSendMediaWithRetry_FailureReleasesSameTurnFeedback(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{sendErr: ErrSendFailed}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	mediaMessage := testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Context: bus.InboundContext{Channel: "test", ChatID: "chat-1", MessageID: "turn-1"},
+	})
+	if _, err := m.sendMediaWithRetry(context.Background(), "test", w, mediaMessage); !errors.Is(err, ErrSendFailed) {
+		t.Fatalf("media send error = %v, want ErrSendFailed", err)
+	}
+
+	ch.mu.Lock()
+	ch.sendErr = nil
+	ch.mu.Unlock()
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "Working...",
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw:       map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+		t.Fatalf("same-turn feedback = (%v, %v, %v), want msg-1", ids, sent, err)
+	}
+}
+
+func TestGetStreamer_FinalizeBlocksLateFeedbackUntilQueuedFinal(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	transport := &toolFeedbackTestChannel{}
+	ch := &toolFeedbackStreamingTestChannel{
+		toolFeedbackTestChannel: transport,
+		streamer:                &mockStreamer{},
+	}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "chat-1", "session-1")
+	if !ok {
+		t.Fatal("GetStreamer() unavailable")
+	}
+	if err := streamer.Finalize(context.Background(), "done"); err != nil {
+		t.Fatalf("stream Finalize() error = %v", err)
+	}
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel:    "test",
+		ChatID:     "chat-1",
+		SessionKey: "session-1",
+		Content:    "stale feedback",
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw:       map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("late feedback = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	final := testOutboundMessage(bus.OutboundMessage{
+		Channel:    "test",
+		ChatID:     "chat-1",
+		SessionKey: "session-1",
+		Content:    "done",
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw: map[string]string{
+				"message_kind":  "final_reply",
+				"outbound_kind": "final",
+			},
+		},
+	})
+	_, sent, _, err = m.sendWithRetry(context.Background(), "test", w, final)
+	if err != nil || !sent {
+		t.Fatalf("queued final = (%v, %v), want handled", sent, err)
+	}
+	m.streamAuxiliaryTombstones.Delete(streamSuppressionKey("test", "chat-1", "session-1"))
+	feedback.Context.MessageID = "turn-2"
+	feedback.Content = "next turn"
+	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+		t.Fatalf("next-turn feedback = (%v, %v, %v), want msg-1", ids, sent, err)
 	}
 }
 
