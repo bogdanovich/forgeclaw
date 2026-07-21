@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -128,12 +129,22 @@ func TestSystemdLifecycleInstallRestoresPreviousUnitOnEnableFailure(t *testing.T
 		t.Fatal(err)
 	}
 	var calls []systemdCall
+	enableAttempts := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
 			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
+			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
+				return systemdRunResult{Output: "active"}, nil
+			}
+			if reflect.DeepEqual(args, []string{"is-enabled", "picoclaw-node-main.service"}) {
+				return systemdRunResult{Output: "enabled"}, nil
+			}
 			if reflect.DeepEqual(args, []string{"enable", "--now", "picoclaw-node-main.service"}) {
-				return systemdRunResult{Output: "enable failed", ExitCode: 1}, nil
+				enableAttempts++
+				if enableAttempts == 1 {
+					return systemdRunResult{Output: "enable failed", ExitCode: 1}, nil
+				}
 			}
 			return systemdRunResult{}, nil
 		},
@@ -161,13 +172,91 @@ func TestSystemdLifecycleInstallRestoresPreviousUnitOnEnableFailure(t *testing.T
 		t.Fatalf("restored unit mode = %o, want 600", info.Mode().Perm())
 	}
 	wantCalls := []systemdCall{
+		{args: []string{"is-active", "picoclaw-node-main.service"}},
+		{args: []string{"is-enabled", "picoclaw-node-main.service"}},
 		{args: []string{"daemon-reload"}},
 		{args: []string{"enable", "--now", "picoclaw-node-main.service"}},
 		{args: []string{"disable", "--now", "picoclaw-node-main.service"}},
 		{args: []string{"daemon-reload"}},
+		{args: []string{"enable", "--now", "picoclaw-node-main.service"}},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("install calls = %#v, want %#v", calls, wantCalls)
+	}
+}
+
+func TestSystemdLifecycleInstallRollbackUsesFreshContext(t *testing.T) {
+	unitDir := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	daemonReloads := 0
+	lifecycle := &systemdLifecycle{
+		unitDir: unitDir,
+		run: func(callCtx context.Context, _ bool, args ...string) (systemdRunResult, error) {
+			if !reflect.DeepEqual(args, []string{"daemon-reload"}) {
+				t.Fatalf("unexpected systemctl call: %v", args)
+			}
+			daemonReloads++
+			if daemonReloads == 1 {
+				if callCtx.Err() == nil {
+					t.Fatal("install context was not canceled")
+				}
+				return systemdRunResult{}, callCtx.Err()
+			}
+			if callCtx.Err() != nil {
+				t.Fatalf("rollback reused canceled context: %v", callCtx.Err())
+			}
+			return systemdRunResult{}, nil
+		},
+	}
+	_, err := lifecycle.Install(ctx, lifecycleRequest{
+		Instance:       "main",
+		ConfigPath:     "/home/test/config.json",
+		ExecutablePath: "/home/test/picoclaw-node",
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Install() error = %v, want context canceled", err)
+	}
+	if daemonReloads != 2 {
+		t.Fatalf("daemon reload calls = %d, want 2", daemonReloads)
+	}
+	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
+	if _, statErr := os.Stat(unitPath); !os.IsNotExist(statErr) {
+		t.Fatalf("failed unit still exists: %v", statErr)
+	}
+}
+
+func TestSystemdLifecycleInstallRejectsUnitSymlink(t *testing.T) {
+	unitDir := t.TempDir()
+	target := filepath.Join(unitDir, "managed-elsewhere.service")
+	if err := os.WriteFile(target, []byte("administrator unit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
+	if err := os.Symlink(target, unitPath); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &systemdLifecycle{
+		unitDir: unitDir,
+		run: func(context.Context, bool, ...string) (systemdRunResult, error) {
+			t.Fatal("systemctl should not run for a symlinked unit")
+			return systemdRunResult{}, nil
+		},
+	}
+	_, err := lifecycle.Install(t.Context(), lifecycleRequest{
+		Instance:       "main",
+		ConfigPath:     "/home/test/config.json",
+		ExecutablePath: "/home/test/picoclaw-node",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not a bounded regular file") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	info, statErr := os.Lstat(unitPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("unit symlink was replaced")
 	}
 }
 

@@ -29,9 +29,11 @@ type systemdLifecycle struct {
 }
 
 type systemdUnitBackup struct {
-	exists bool
-	data   []byte
-	mode   os.FileMode
+	exists  bool
+	data    []byte
+	mode    os.FileMode
+	enabled bool
+	active  bool
 }
 
 func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
@@ -55,6 +57,16 @@ func (lifecycle *systemdLifecycle) Install(
 	if err != nil {
 		return lifecycleStatus{}, err
 	}
+	if backup.exists {
+		backup.active, err = lifecycle.isActive(ctx, status.Service)
+		if err != nil {
+			return lifecycleStatus{}, fmt.Errorf("inspect existing service activity: %w", err)
+		}
+		backup.enabled, err = lifecycle.isEnabled(ctx, status.Service)
+		if err != nil {
+			return lifecycleStatus{}, fmt.Errorf("inspect existing service enablement: %w", err)
+		}
+	}
 	unit, err := renderSystemdUnit(request, lifecycle.system)
 	if err != nil {
 		return lifecycleStatus{}, err
@@ -63,18 +75,18 @@ func (lifecycle *systemdLifecycle) Install(
 		return lifecycleStatus{}, fmt.Errorf("write systemd unit: %w", err)
 	}
 	if err = lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
-		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, err)
+		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, false, err)
 	}
 	if err = lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
-		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, err)
+		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, err)
 	}
 	current, err := lifecycle.Status(ctx, request)
 	if err != nil {
-		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, err)
+		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, err)
 	}
 	if !current.Active {
 		stateErr := fmt.Errorf("systemd service %s entered state %q", status.Service, current.State)
-		return lifecycleStatus{}, lifecycle.rollbackInstall(ctx, status, backup, stateErr)
+		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, stateErr)
 	}
 	return current, nil
 }
@@ -160,27 +172,76 @@ func (lifecycle *systemdLifecycle) requireSuccess(ctx context.Context, args ...s
 	return nil
 }
 
+func (lifecycle *systemdLifecycle) isActive(ctx context.Context, service string) (bool, error) {
+	result, err := lifecycle.run(ctx, lifecycle.system, "is-active", service)
+	if err != nil {
+		return false, err
+	}
+	state := strings.TrimSpace(result.Output)
+	if result.ExitCode == 0 {
+		return state == "active" || state == "reloading" || state == "activating", nil
+	}
+	if result.ExitCode == 3 && state != "" {
+		return false, nil
+	}
+	return false, systemdCommandError(result, "is-active", service)
+}
+
+func (lifecycle *systemdLifecycle) isEnabled(ctx context.Context, service string) (bool, error) {
+	result, err := lifecycle.run(ctx, lifecycle.system, "is-enabled", service)
+	if err != nil {
+		return false, err
+	}
+	if result.ExitCode == 0 {
+		return true, nil
+	}
+	switch strings.TrimSpace(result.Output) {
+	case "disabled", "static", "indirect", "masked", "masked-runtime":
+		return false, nil
+	default:
+		return false, systemdCommandError(result, "is-enabled", service)
+	}
+}
+
 func (lifecycle *systemdLifecycle) rollbackInstall(
-	ctx context.Context,
 	status lifecycleStatus,
 	backup systemdUnitBackup,
+	startAttempted bool,
 	cause error,
 ) error {
+	ctx, cancel := context.WithTimeout(context.Background(), serviceCommandTimeout)
+	defer cancel()
 	errorsSeen := []error{cause}
-	if err := lifecycle.requireSuccess(ctx, "disable", "--now", status.Service); err != nil {
-		errorsSeen = append(errorsSeen, fmt.Errorf("rollback service disable: %w", err))
+	if startAttempted {
+		if err := lifecycle.requireSuccess(ctx, "disable", "--now", status.Service); err != nil {
+			errorsSeen = append(errorsSeen, fmt.Errorf("rollback service disable: %w", err))
+		}
 	}
 	if err := restoreSystemdUnit(status.UnitPath, backup); err != nil {
 		errorsSeen = append(errorsSeen, err)
 	}
 	if err := lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
 		errorsSeen = append(errorsSeen, fmt.Errorf("rollback daemon reload: %w", err))
+		return errors.Join(errorsSeen...)
+	}
+	if backup.enabled && backup.active {
+		if err := lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
+			errorsSeen = append(errorsSeen, fmt.Errorf("restore enabled active service: %w", err))
+		}
+	} else if backup.enabled {
+		if err := lifecycle.requireSuccess(ctx, "enable", status.Service); err != nil {
+			errorsSeen = append(errorsSeen, fmt.Errorf("restore enabled service: %w", err))
+		}
+	} else if backup.active {
+		if err := lifecycle.requireSuccess(ctx, "start", status.Service); err != nil {
+			errorsSeen = append(errorsSeen, fmt.Errorf("restore active service: %w", err))
+		}
 	}
 	return errors.Join(errorsSeen...)
 }
 
 func captureSystemdUnit(path string) (systemdUnitBackup, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return systemdUnitBackup{}, nil
 	}
