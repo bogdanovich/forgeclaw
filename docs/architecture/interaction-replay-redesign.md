@@ -10,9 +10,8 @@ The durable human-interaction runtime merged before the spike remains the
 production authority. This redesign extends its observability and evaluation
 without making trace capture part of the interaction state machine.
 
-Stages 1 through 3 are merged. Stage 4 adopts the canonical identity in runtime
-producers, final outbound aggregation, and turn capture; later stages remain
-separate pull requests.
+Stages 1 through 7 are merged. Stage 8 extracts durable trace persistence from
+the agent capture manager; later stages remain separate pull requests.
 
 ## Why The Spike Is Not The Implementation
 

@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/evalcapture"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -66,17 +66,8 @@ type traceCaptureManager struct {
 	sub      runtimeevents.Subscription
 	eventBus runtimeevents.Bus
 
-	lastDropped     uint64
-	persistCh       chan tracePersistRequest
-	persistWG       sync.WaitGroup
-	persistMu       sync.RWMutex
-	persistClosed   bool
-	droppedPersists atomic.Uint64
-}
-
-type tracePersistRequest struct {
-	settings traceCaptureSettings
-	trace    *activeTraceCapture
+	lastDropped uint64
+	writer      *evalcapture.Writer
 }
 
 func newTraceCaptureManager(cfg *config.Config, eventBus runtimeevents.Bus) *traceCaptureManager {
@@ -106,13 +97,14 @@ func (m *traceCaptureManager) start() {
 	if closed {
 		return
 	}
-	m.persistMu.Lock()
-	if m.persistCh == nil && !m.persistClosed {
-		m.persistCh = make(chan tracePersistRequest, tracePersistBuffer)
-		m.persistWG.Add(1)
-		go m.runPersistWorker(m.persistCh)
+	m.mu.Lock()
+	if m.writer == nil {
+		m.writer = evalcapture.NewWriter(evalcapture.Options{
+			Capacity:  tracePersistBuffer,
+			EventSink: logTraceWriterEvent,
+		})
 	}
-	m.persistMu.Unlock()
+	m.mu.Unlock()
 	if m.sub != nil || m.eventBus == nil {
 		return
 	}
@@ -263,13 +255,13 @@ func (m *traceCaptureManager) close() {
 	for _, trace := range traces {
 		m.enqueuePersist(settings, trace)
 	}
-	m.persistMu.Lock()
-	m.persistClosed = true
-	if m.persistCh != nil {
-		close(m.persistCh)
+	m.mu.Lock()
+	writer := m.writer
+	m.writer = nil
+	m.mu.Unlock()
+	if writer != nil {
+		_ = writer.Close(context.Background())
 	}
-	m.persistMu.Unlock()
-	m.persistWG.Wait()
 }
 
 func (m *traceCaptureManager) observeRuntimeEvent(event runtimeevents.Event) {
@@ -543,37 +535,7 @@ func (m *traceCaptureManager) enqueuePersist(
 	settings traceCaptureSettings,
 	trace *activeTraceCapture,
 ) {
-	if m == nil || trace == nil {
-		return
-	}
-	m.persistMu.RLock()
-	defer m.persistMu.RUnlock()
-	if m.persistClosed {
-		return
-	}
-	select {
-	case m.persistCh <- tracePersistRequest{settings: settings, trace: trace}:
-	default:
-		m.droppedPersists.Add(1)
-		logger.WarnCF(
-			"evaltrace",
-			"Dropped finalized evaluation trace due to persistence backpressure",
-			map[string]any{
-				"trace_id": trace.trace.TraceID,
-			},
-		)
-	}
-}
-
-func (m *traceCaptureManager) runPersistWorker(ch <-chan tracePersistRequest) {
-	defer m.persistWG.Done()
-	for request := range ch {
-		m.persistNow(request.settings, request.trace)
-	}
-}
-
-func (m *traceCaptureManager) persistNow(settings traceCaptureSettings, trace *activeTraceCapture) {
-	if trace == nil || strings.TrimSpace(trace.workspace) == "" {
+	if m == nil || trace == nil || strings.TrimSpace(trace.workspace) == "" {
 		return
 	}
 	finalized, err := finalizeCaptureTrace(trace)
@@ -583,23 +545,42 @@ func (m *traceCaptureManager) persistNow(settings traceCaptureSettings, trace *a
 		})
 		return
 	}
-	store := evaltrace.Store{
-		Root: traceStoreRoot(settings, trace.workspace), Retention: settings.retention,
-		MaxTraces: settings.maxTraces,
-	}
-	if _, err := store.Save(finalized); err != nil {
-		logger.WarnCF("evaltrace", "Failed to store evaluation trace", map[string]any{
-			"trace_id": trace.trace.TraceID, "error": err.Error(),
-		})
+	m.mu.Lock()
+	writer := m.writer
+	m.mu.Unlock()
+	if writer == nil {
 		return
 	}
-	if _, err := store.Prune(); err != nil {
-		logger.WarnCF(
-			"evaltrace",
-			"Failed to prune evaluation traces",
-			map[string]any{"error": err.Error()},
-		)
+	err = writer.Submit(evalcapture.Policy{
+		Root:      traceStoreRoot(settings, trace.workspace),
+		Retention: settings.retention,
+		MaxTraces: settings.maxTraces,
+	}, finalized, evalcapture.ClassCritical)
+	if err != nil {
+		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
+			"trace_id": trace.trace.TraceID, "error": err.Error(),
+		})
 	}
+}
+
+func logTraceWriterEvent(event evalcapture.Event) {
+	fields := map[string]any{
+		"event": string(event.Kind), "reason": string(event.Reason),
+		"trace_id": event.TraceID, "class": string(event.Class),
+	}
+	if event.Attempt > 0 {
+		fields["attempt"] = event.Attempt
+	}
+	if event.Removed > 0 {
+		fields["removed"] = event.Removed
+	}
+	if event.Dropped > 0 {
+		fields["dropped"] = event.Dropped
+	}
+	if event.Err != nil {
+		fields["error"] = event.Err.Error()
+	}
+	logger.WarnCF("evaltrace", "Evaluation trace writer event", fields)
 }
 
 func (m *traceCaptureManager) markRuntimeDropsLocked() {
