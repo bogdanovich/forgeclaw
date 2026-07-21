@@ -2632,7 +2632,7 @@ func TestSendWithRetry_UneditableToolFeedbackSendsReplacement(t *testing.T) {
 
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
-	want := []string{"send:first", "delete:msg-1", "send:second", "send:done", "delete:msg-2"}
+	want := []string{"send:first", "send:second", "delete:msg-1", "send:done", "delete:msg-2"}
 	if !slices.Equal(transport.operations, want) {
 		t.Fatalf("operations = %v, want %v", transport.operations, want)
 	}
@@ -2829,6 +2829,73 @@ func TestDismissToolFeedback_UnscopedFallbackRequiresSingleActiveTurn(t *testing
 				Context: bus.InboundContext{Channel: "test", ChatID: "chat-1"},
 			})
 
+			if count := m.toolFeedback.ActiveCount(); count != tt.wantActive {
+				t.Fatalf("ActiveCount() = %d, want %d", count, tt.wantActive)
+			}
+			ch.mu.Lock()
+			defer ch.mu.Unlock()
+			if !slices.Equal(ch.operations, tt.wantOps) {
+				t.Fatalf("operations = %v, want %v", ch.operations, tt.wantOps)
+			}
+		})
+	}
+}
+
+func TestToolFeedbackTerminal_UnscopedFallbackRequiresSingleActiveTurn(t *testing.T) {
+	tests := []struct {
+		name       string
+		turnIDs    []string
+		wantActive int
+		wantOps    []string
+	}{
+		{
+			name:    "single",
+			turnIDs: []string{"turn-1"},
+			wantOps: []string{"send:turn-1", "send:done", "delete:msg-1"},
+		},
+		{
+			name:       "ambiguous",
+			turnIDs:    []string{"turn-1", "turn-2"},
+			wantActive: 2,
+			wantOps:    []string{"send:turn-1", "send:turn-2", "send:done"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager()
+			enableTestToolFeedbackCoordinator(t, m, false)
+			ch := &toolFeedbackTestChannel{}
+			m.channels["test"] = ch
+			w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+			for _, turnID := range tt.turnIDs {
+				feedback := testOutboundMessage(bus.OutboundMessage{
+					Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: turnID,
+					TraceScopes: []runtimeevents.TraceScope{
+						runtimeevents.NewTraceScope("/workspace/main", turnID),
+					},
+					Context: bus.InboundContext{
+						Channel: "test", ChatID: "chat-1",
+						Raw: map[string]string{"message_kind": "tool_feedback"},
+					},
+				})
+				if _, _, _, err := m.sendWithRetry(
+					context.Background(), "test", w, feedback,
+				); err != nil {
+					t.Fatalf("feedback %s error = %v", turnID, err)
+				}
+			}
+			final := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: "done",
+				Context: bus.InboundContext{
+					Channel: "test", ChatID: "chat-1",
+					Raw: map[string]string{"outbound_kind": "final"},
+				},
+			})
+			if _, _, _, err := m.sendWithRetry(
+				context.Background(), "test", w, final,
+			); err != nil {
+				t.Fatalf("final error = %v", err)
+			}
 			if count := m.toolFeedback.ActiveCount(); count != tt.wantActive {
 				t.Fatalf("ActiveCount() = %d, want %d", count, tt.wantActive)
 			}

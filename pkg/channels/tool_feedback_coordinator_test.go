@@ -56,7 +56,7 @@ func TestToolFeedbackCoordinator_PermanentEditFailureSendsReplacement(t *testing
 		t.Fatalf("replacement IDs = %v, want [progress-2]", ids)
 	}
 	want := []string{
-		"send:progress-1", "edit:progress-1", "delete:progress-1", "send:progress-2",
+		"send:progress-1", "edit:progress-1", "send:progress-2", "delete:progress-1",
 	}
 	if !slices.Equal(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
@@ -113,6 +113,149 @@ func TestToolFeedbackCoordinator_TransientEditFailureRetainsEntry(t *testing.T) 
 				)
 			}
 		})
+	}
+}
+
+func TestToolFeedbackCoordinator_ReplacementSendFailureRetainsCurrent(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	failEdit := true
+	deletes := 0
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error {
+			if failEdit {
+				return ErrSendFailed
+			}
+			return nil
+		},
+		delete: func(context.Context, string, string) error {
+			deletes++
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	_, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+		func(context.Context, string) ([]string, error) { return nil, ErrTemporary },
+	)
+	if !errors.Is(err, ErrTemporary) {
+		t.Fatalf("replacement error = %v, want ErrTemporary", err)
+	}
+	if deletes != 0 || coordinator.ActiveCount() != 1 {
+		t.Fatalf("deletes=%d active=%d, want 0/1", deletes, coordinator.ActiveCount())
+	}
+
+	failEdit = false
+	ids, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "third", operations,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("retained current message unexpectedly sent a replacement")
+			return nil, nil
+		},
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-1"}) {
+		t.Fatalf("retained update = (%v, %v), want [progress-1], nil", ids, err)
+	}
+}
+
+func TestToolFeedbackCoordinator_CleanupFailureIsRetried(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	deleteAttempts := 0
+	operations := toolFeedbackOperations{
+		edit: func(_ context.Context, _, messageID, _ string) error {
+			if messageID == "progress-1" {
+				return ErrSendFailed
+			}
+			return nil
+		},
+		delete: func(context.Context, string, string) error {
+			deleteAttempts++
+			if deleteAttempts == 1 {
+				return ErrTemporary
+			}
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	ids, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-2"}, nil },
+	)
+	if !errors.Is(err, ErrTemporary) || !slices.Equal(ids, []string{"progress-2"}) {
+		t.Fatalf("replacement = (%v, %v), want [progress-2], ErrTemporary", ids, err)
+	}
+	ids, err = coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "third", operations,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("cleanup retry unexpectedly sent another replacement")
+			return nil, nil
+		},
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-2"}) || deleteAttempts != 2 {
+		t.Fatalf(
+			"cleanup retry = (%v, %v), attempts=%d; want [progress-2], nil, 2",
+			ids, err, deleteAttempts,
+		)
+	}
+}
+
+func TestToolFeedbackCoordinator_ReplacementTerminalDeletesBothMessages(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	replacementStarted := make(chan struct{})
+	releaseReplacement := make(chan struct{})
+	deleted := make(chan string, 2)
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return ErrSendFailed },
+		delete: func(_ context.Context, _, messageID string) error {
+			deleted <- messageID
+			return nil
+		},
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "feishu:chat-1", "chat-1", "first", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("initial Deliver() error = %v", err)
+	}
+	deliverDone := make(chan []string, 1)
+	go func() {
+		ids, _ := coordinator.Deliver(
+			context.Background(), "feishu:chat-1", "chat-1", "second", operations,
+			func(context.Context, string) ([]string, error) {
+				close(replacementStarted)
+				<-releaseReplacement
+				return []string{"progress-2"}, nil
+			},
+		)
+		deliverDone <- ids
+	}()
+	<-replacementStarted
+	terminal := coordinator.BeginTerminal("feishu:chat-1")
+	terminalDone := make(chan struct{})
+	go func() {
+		coordinator.CompleteTerminal(context.Background(), terminal, true)
+		close(terminalDone)
+	}()
+	close(releaseReplacement)
+	if ids := <-deliverDone; len(ids) != 0 {
+		t.Fatalf("replacement IDs = %v, want none after terminal", ids)
+	}
+	<-terminalDone
+	got := []string{<-deleted, <-deleted}
+	if want := []string{"progress-2", "progress-1"}; !slices.Equal(got, want) {
+		t.Fatalf("deleted = %v, want %v", got, want)
 	}
 }
 

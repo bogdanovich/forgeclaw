@@ -20,6 +20,14 @@ type toolFeedbackSendResult struct {
 	editable   bool
 }
 
+type trackedToolFeedbackMessage struct {
+	chatID     string
+	messageID  string
+	editable   bool
+	content    string
+	operations toolFeedbackOperations
+}
+
 type toolFeedbackEntry struct {
 	opMu sync.Mutex
 	mu   sync.Mutex
@@ -31,11 +39,8 @@ type toolFeedbackEntry struct {
 	terminalSucceeded  bool
 	retired            bool
 	sending            bool
-	chatID             string
-	messageID          string
-	editable           bool
-	content            string
-	operations         toolFeedbackOperations
+	current            trackedToolFeedbackMessage
+	pendingCleanup     []trackedToolFeedbackMessage
 }
 
 type toolFeedbackTerminal struct {
@@ -121,6 +126,9 @@ func (c *ToolFeedbackCoordinator) deliver(
 		return nil, ErrNotRunning
 	}
 	defer entry.opMu.Unlock()
+	if err := c.retryPendingCleanup(ctx, entry); err != nil {
+		return nil, err
+	}
 
 	entry.mu.Lock()
 	if entry.terminal {
@@ -134,10 +142,8 @@ func (c *ToolFeedbackCoordinator) deliver(
 		entry.terminalSucceeded = false
 		entry.terminalGeneration++
 	}
-	if separate && entry.messageID != "" {
-		entry.messageID = ""
-		entry.editable = false
-		entry.content = ""
+	if separate && entry.current.messageID != "" {
+		entry.current = trackedToolFeedbackMessage{}
 		entry.mu.Unlock()
 		c.animator.Clear(key)
 		entry.mu.Lock()
@@ -146,75 +152,46 @@ func (c *ToolFeedbackCoordinator) deliver(
 			return nil, nil
 		}
 	}
-	if entry.messageID != "" && !entry.editable {
-		messageID := entry.messageID
-		trackedChatID := entry.chatID
-		deleteFn := entry.operations.delete
-		entry.messageID = ""
-		entry.content = ""
-		entry.operations = toolFeedbackOperations{}
-		entry.mu.Unlock()
-		deleteToolFeedbackMessage(ctx, deleteFn, trackedChatID, messageID)
-		entry.mu.Lock()
-		if entry.terminal {
+	if entry.current.messageID != "" {
+		current := entry.current
+		if !current.editable {
 			entry.mu.Unlock()
-			return nil, nil
+			return c.replaceTrackedMessage(ctx, key, entry, current, chatID, content, operations, send)
 		}
-	}
-	if entry.messageID != "" {
-		messageID := entry.messageID
-		trackedChatID := entry.chatID
-		trackedDelete := entry.operations.delete
 		mergedContent := content
-		if isWorkingSummaryToolFeedback(entry.content) || isWorkingSummaryToolFeedback(content) {
-			mergedContent = mergeToolFeedbackContent(entry.content, content)
+		if isWorkingSummaryToolFeedback(current.content) || isWorkingSummaryToolFeedback(content) {
+			mergedContent = mergeToolFeedbackContent(current.content, content)
 		}
-		entry.chatID = chatID
-		entry.operations = operations
 		entry.mu.Unlock()
 
 		updatedID, handled, err := c.animator.Update(ctx, key, content)
 		entry.mu.Lock()
-		if err == nil && handled {
-			entry.content = mergedContent
-		}
 		terminal := entry.terminal
 		retired := entry.retired
-		replace := handled && errors.Is(err, ErrSendFailed) && !terminal && !retired &&
-			entry.messageID == messageID
-		if replace {
-			entry.messageID = ""
-			entry.editable = false
-			entry.content = ""
-			entry.operations = toolFeedbackOperations{}
+		unchanged := entry.current.messageID == current.messageID
+		if err == nil && handled && unchanged && !terminal && !retired {
+			entry.current.chatID = chatID
+			entry.current.content = mergedContent
+			entry.current.operations = operations
 		}
 		entry.mu.Unlock()
 		if terminal || retired {
 			c.animator.Clear(key)
 		}
-		if replace {
-			c.animator.Clear(key)
-			deleteToolFeedbackMessage(ctx, trackedDelete, trackedChatID, messageID)
-			entry.mu.Lock()
-			if entry.terminal || entry.retired {
-				entry.mu.Unlock()
-				return nil, nil
-			}
-		} else {
-			if !handled {
-				return []string{messageID}, nil
-			}
-			if err != nil {
-				return nil, err
-			}
+		if !handled {
+			return []string{current.messageID}, nil
+		}
+		if err == nil {
 			return []string{updatedID}, nil
 		}
+		if !errors.Is(err, ErrSendFailed) || current.operations.delete == nil ||
+			terminal || retired || !unchanged {
+			return nil, err
+		}
+		return c.replaceTrackedMessage(ctx, key, entry, current, chatID, content, operations, send)
 	}
 
 	entry.sending = true
-	entry.chatID = chatID
-	entry.content = content
-	entry.operations = operations
 	entry.mu.Unlock()
 
 	result, err := send(ctx, InitialAnimatedToolFeedbackContent(content))
@@ -225,8 +202,11 @@ func (c *ToolFeedbackCoordinator) deliver(
 	retired := entry.retired
 	trackable := (result.editable && operations.edit != nil) || operations.delete != nil
 	if len(messageIDs) > 0 && trackable && !terminal && !retired {
-		entry.messageID = messageIDs[0]
-		entry.editable = result.editable && operations.edit != nil
+		entry.current = trackedToolFeedbackMessage{
+			chatID: chatID, messageID: messageIDs[0],
+			editable: result.editable && operations.edit != nil,
+			content:  content, operations: operations,
+		}
 		entry.mu.Unlock()
 		if result.editable && operations.edit != nil {
 			c.animator.RecordEdited(key, messageIDs[0], content)
@@ -243,6 +223,92 @@ func (c *ToolFeedbackCoordinator) deliver(
 		c.retireIdleEntryLocked(key, entry)
 	}
 	return messageIDs, err
+}
+
+func (c *ToolFeedbackCoordinator) replaceTrackedMessage(
+	ctx context.Context,
+	key string,
+	entry *toolFeedbackEntry,
+	current trackedToolFeedbackMessage,
+	chatID string,
+	content string,
+	operations toolFeedbackOperations,
+	send func(context.Context, string) (toolFeedbackSendResult, error),
+) ([]string, error) {
+	entry.mu.Lock()
+	if entry.terminal || entry.retired || entry.current.messageID != current.messageID {
+		entry.mu.Unlock()
+		return nil, nil
+	}
+	entry.sending = true
+	entry.mu.Unlock()
+
+	result, sendErr := send(ctx, InitialAnimatedToolFeedbackContent(content))
+	messageIDs := result.messageIDs
+	trackable := (result.editable && operations.edit != nil) || operations.delete != nil
+	entry.mu.Lock()
+	entry.sending = false
+	terminal := entry.terminal
+	retired := entry.retired
+	unchanged := entry.current.messageID == current.messageID
+	if len(messageIDs) == 0 || !trackable || terminal || retired || !unchanged {
+		entry.mu.Unlock()
+		if len(messageIDs) > 0 && (terminal || retired || !unchanged) {
+			deleteToolFeedbackMessage(ctx, operations.delete, chatID, messageIDs[0])
+			messageIDs = nil
+		}
+		return messageIDs, sendErr
+	}
+	replacement := trackedToolFeedbackMessage{
+		chatID: chatID, messageID: messageIDs[0],
+		editable: result.editable && operations.edit != nil,
+		content:  content, operations: operations,
+	}
+	entry.current = replacement
+	entry.mu.Unlock()
+
+	c.animator.Clear(key)
+	if replacement.editable {
+		c.animator.RecordEdited(key, replacement.messageID, replacement.content)
+	}
+	if cleanupErr := tryDeleteToolFeedbackMessage(
+		ctx, current.operations.delete, current.chatID, current.messageID,
+	); cleanupErr != nil {
+		entry.mu.Lock()
+		entry.pendingCleanup = append(entry.pendingCleanup, current)
+		entry.mu.Unlock()
+		return messageIDs, cleanupErr
+	}
+	return messageIDs, sendErr
+}
+
+func (c *ToolFeedbackCoordinator) retryPendingCleanup(
+	ctx context.Context,
+	entry *toolFeedbackEntry,
+) error {
+	entry.mu.Lock()
+	pending := append([]trackedToolFeedbackMessage(nil), entry.pendingCleanup...)
+	entry.pendingCleanup = nil
+	entry.mu.Unlock()
+	if len(pending) == 0 {
+		return nil
+	}
+	remaining := make([]trackedToolFeedbackMessage, 0, len(pending))
+	var firstErr error
+	for _, message := range pending {
+		if err := tryDeleteToolFeedbackMessage(
+			ctx, message.operations.delete, message.chatID, message.messageID,
+		); err != nil {
+			remaining = append(remaining, message)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	entry.mu.Lock()
+	entry.pendingCleanup = append(remaining, entry.pendingCleanup...)
+	entry.mu.Unlock()
+	return firstErr
 }
 
 func (c *ToolFeedbackCoordinator) BeginTerminal(key string) *toolFeedbackTerminal {
@@ -301,6 +367,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	}
 	entry := terminal.entry
 	entry.opMu.Lock()
+	_ = c.retryPendingCleanup(ctx, entry)
 	entry.mu.Lock()
 	if terminal.completed || terminal.absorbed || entry.retired || !entry.terminal ||
 		entry.terminalGeneration != terminal.generation {
@@ -320,13 +387,11 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		}
 		entry.terminal = false
 		entry.terminalUntil = time.Time{}
-		messageID := entry.messageID
-		editable := entry.editable
-		content := entry.content
+		current := entry.current
 		entry.mu.Unlock()
-		if messageID != "" && editable {
-			c.animator.Record(terminal.key, messageID, content)
-		} else if messageID == "" {
+		if current.messageID != "" && current.editable {
+			c.animator.Record(terminal.key, current.messageID, current.content)
+		} else if current.messageID == "" {
 			c.retireIdleEntryLocked(terminal.key, entry)
 		}
 		entry.opMu.Unlock()
@@ -339,13 +404,8 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	}
 
 	entry.terminalSucceeded = true
-	messageID := entry.messageID
-	chatID := entry.chatID
-	deleteFn := entry.operations.delete
-	entry.messageID = ""
-	entry.editable = false
-	entry.content = ""
-	entry.operations = toolFeedbackOperations{}
+	current := entry.current
+	entry.current = trackedToolFeedbackMessage{}
 	if terminal.retain {
 		entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
 	} else {
@@ -355,8 +415,10 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	c.animator.Clear(terminal.key)
 	entry.opMu.Unlock()
 
-	if !c.separateMessages() && messageID != "" && deleteFn != nil {
-		deleteToolFeedbackMessage(ctx, deleteFn, chatID, messageID)
+	if !c.separateMessages() && current.messageID != "" && current.operations.delete != nil {
+		deleteToolFeedbackMessage(
+			ctx, current.operations.delete, current.chatID, current.messageID,
+		)
 	}
 	if terminal.retain {
 		c.expireTerminal(terminal)
@@ -386,7 +448,8 @@ func (c *ToolFeedbackCoordinator) ReleaseTerminal(key string) {
 	}
 	entry.opMu.Lock()
 	entry.mu.Lock()
-	if entry.retired || !entry.terminal || entry.messageID != "" || entry.sending {
+	if entry.retired || !entry.terminal || entry.current.messageID != "" ||
+		entry.sending || len(entry.pendingCleanup) != 0 {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		return
@@ -427,16 +490,18 @@ func (c *ToolFeedbackCoordinator) RetireChannel(ctx context.Context, channelName
 		entry.opMu.Lock()
 		entry.mu.Lock()
 		entry.retired = true
-		feedback := retiredFeedback{
-			key: key, chatID: entry.chatID, messageID: entry.messageID, delete: entry.operations.delete,
-		}
-		entry.messageID = ""
-		entry.editable = false
-		entry.content = ""
-		entry.operations = toolFeedbackOperations{}
+		messages := append([]trackedToolFeedbackMessage(nil), entry.pendingCleanup...)
+		messages = append(messages, entry.current)
+		entry.current = trackedToolFeedbackMessage{}
+		entry.pendingCleanup = nil
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
-		retired = append(retired, feedback)
+		for _, message := range messages {
+			retired = append(retired, retiredFeedback{
+				key: key, chatID: message.chatID, messageID: message.messageID,
+				delete: message.operations.delete,
+			})
+		}
 		c.removeEntry(key, entry)
 	}
 	for _, feedback := range retired {
@@ -470,7 +535,8 @@ func (c *ToolFeedbackCoordinator) ActiveCount() int {
 	count := 0
 	for _, entry := range c.entries {
 		entry.mu.Lock()
-		if !entry.retired && (entry.sending || entry.messageID != "") {
+		if !entry.retired && (entry.sending || entry.current.messageID != "" ||
+			len(entry.pendingCleanup) != 0) {
 			count++
 		}
 		entry.mu.Unlock()
@@ -493,7 +559,8 @@ func (c *ToolFeedbackCoordinator) singleActiveScopedKey(baseKey string) (string,
 			continue
 		}
 		entry.mu.Lock()
-		active := !entry.retired && (entry.sending || entry.messageID != "")
+		active := !entry.retired && (entry.sending || entry.current.messageID != "" ||
+			len(entry.pendingCleanup) != 0)
 		entry.mu.Unlock()
 		if !active {
 			continue
@@ -517,12 +584,12 @@ func (c *ToolFeedbackCoordinator) editAnimated(
 		return nil
 	}
 	entry.mu.Lock()
-	if entry.retired || entry.terminal || entry.messageID != messageID {
+	if entry.retired || entry.terminal || entry.current.messageID != messageID {
 		entry.mu.Unlock()
 		return nil
 	}
-	chatID := entry.chatID
-	editFn := entry.operations.edit
+	chatID := entry.current.chatID
+	editFn := entry.current.operations.edit
 	entry.mu.Unlock()
 	if editFn == nil {
 		return nil
@@ -576,7 +643,8 @@ func (c *ToolFeedbackCoordinator) findEntry(key string) *toolFeedbackEntry {
 
 func (c *ToolFeedbackCoordinator) retireIdleEntryLocked(key string, entry *toolFeedbackEntry) {
 	entry.mu.Lock()
-	if entry.terminal || entry.sending || entry.messageID != "" {
+	if entry.terminal || entry.sending || entry.current.messageID != "" ||
+		len(entry.pendingCleanup) != 0 {
 		entry.mu.Unlock()
 		return
 	}
@@ -591,12 +659,21 @@ func deleteToolFeedbackMessage(
 	chatID string,
 	messageID string,
 ) {
+	_ = tryDeleteToolFeedbackMessage(ctx, deleteFn, chatID, messageID)
+}
+
+func tryDeleteToolFeedbackMessage(
+	ctx context.Context,
+	deleteFn func(context.Context, string, string) error,
+	chatID string,
+	messageID string,
+) error {
 	if deleteFn == nil || strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
-		return
+		return nil
 	}
 	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	_ = deleteFn(deleteCtx, chatID, messageID)
+	return deleteFn(deleteCtx, chatID, messageID)
 }
 
 func (c *ToolFeedbackCoordinator) removeEntry(key string, entry *toolFeedbackEntry) {

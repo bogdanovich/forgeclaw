@@ -514,7 +514,7 @@ func (m *Manager) beginToolFeedbackTerminals(
 	if m == nil || m.toolFeedback == nil {
 		return nil
 	}
-	keys, scoped := toolFeedbackTargets(
+	keys, scoped := m.resolveToolFeedbackTargets(
 		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
 	)
 	terminals := make([]*toolFeedbackTerminal, 0, len(keys))
@@ -604,15 +604,9 @@ func (m *Manager) dismissToolFeedbackTargets(
 	sessionKey string,
 	traceScopes []runtimeevents.TraceScope,
 ) {
-	keys, scoped := toolFeedbackTargets(
+	keys, scoped := m.resolveToolFeedbackTargets(
 		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
 	)
-	if !scoped && len(keys) == 1 {
-		if key, ok := m.toolFeedback.singleActiveScopedKey(keys[0]); ok {
-			keys = []string{key}
-			scoped = true
-		}
-	}
 	for _, key := range keys {
 		if scoped {
 			m.toolFeedback.Dismiss(ctx, key)
@@ -620,6 +614,25 @@ func (m *Manager) dismissToolFeedbackTargets(
 			m.toolFeedback.DismissTransient(ctx, key)
 		}
 	}
+}
+
+func (m *Manager) resolveToolFeedbackTargets(
+	channelName string,
+	ch Channel,
+	chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+	traceScopes []runtimeevents.TraceScope,
+) ([]string, bool) {
+	keys, scoped := toolFeedbackTargets(
+		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
+	)
+	if !scoped && len(keys) == 1 {
+		if key, ok := m.toolFeedback.singleActiveScopedKey(keys[0]); ok {
+			return []string{key}, true
+		}
+	}
+	return keys, scoped
 }
 
 func prepareToolFeedbackMessageContent(ch Channel, content string) string {
