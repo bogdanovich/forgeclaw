@@ -15,6 +15,11 @@ type toolFeedbackOperations struct {
 	turnID string
 }
 
+type toolFeedbackSendResult struct {
+	messageIDs []string
+	editable   bool
+}
+
 type toolFeedbackEntry struct {
 	opMu sync.Mutex
 	mu   sync.Mutex
@@ -23,6 +28,8 @@ type toolFeedbackEntry struct {
 	terminal           bool
 	terminalUntil      time.Time
 	terminalTurnID     string
+	terminalPending    int
+	terminalSucceeded  bool
 	retired            bool
 	sending            bool
 	chatID             string
@@ -35,6 +42,8 @@ type toolFeedbackTerminal struct {
 	key        string
 	entry      *toolFeedbackEntry
 	generation uint64
+	absorbed   bool
+	completed  bool
 }
 
 // ToolFeedbackCoordinator is the single owner of editable tool-feedback
@@ -79,8 +88,29 @@ func (c *ToolFeedbackCoordinator) Deliver(
 	if send == nil {
 		return nil, ErrSendFailed
 	}
+	return c.deliver(ctx, key, chatID, content, operations, func(
+		sendCtx context.Context,
+		prepared string,
+	) (toolFeedbackSendResult, error) {
+		messageIDs, err := send(sendCtx, prepared)
+		return toolFeedbackSendResult{messageIDs: messageIDs, editable: operations.edit != nil}, err
+	})
+}
+
+func (c *ToolFeedbackCoordinator) deliver(
+	ctx context.Context,
+	key string,
+	chatID string,
+	content string,
+	operations toolFeedbackOperations,
+	send func(context.Context, string) (toolFeedbackSendResult, error),
+) ([]string, error) {
+	if send == nil {
+		return nil, ErrSendFailed
+	}
 	if c == nil || strings.TrimSpace(key) == "" {
-		return send(ctx, content)
+		result, err := send(ctx, content)
+		return result.messageIDs, err
 	}
 	key = strings.TrimSpace(key)
 	content = strings.TrimSpace(content)
@@ -102,6 +132,9 @@ func (c *ToolFeedbackCoordinator) Deliver(
 		entry.terminal = false
 		entry.terminalUntil = time.Time{}
 		entry.terminalTurnID = ""
+		entry.terminalPending = 0
+		entry.terminalSucceeded = false
+		entry.terminalGeneration++
 	}
 	if separate && entry.messageID != "" {
 		entry.messageID = ""
@@ -150,12 +183,13 @@ func (c *ToolFeedbackCoordinator) Deliver(
 	entry.operations = operations
 	entry.mu.Unlock()
 
-	messageIDs, err := send(ctx, InitialAnimatedToolFeedbackContent(content))
+	result, err := send(ctx, InitialAnimatedToolFeedbackContent(content))
+	messageIDs := result.messageIDs
 	entry.mu.Lock()
 	entry.sending = false
 	terminal := entry.terminal
 	retired := entry.retired
-	if len(messageIDs) > 0 && operations.edit != nil && !terminal && !retired {
+	if len(messageIDs) > 0 && result.editable && operations.edit != nil && !terminal && !retired {
 		entry.messageID = messageIDs[0]
 		entry.mu.Unlock()
 		c.animator.RecordEdited(key, messageIDs[0], content)
@@ -194,10 +228,26 @@ func (c *ToolFeedbackCoordinator) BeginTerminalForTurn(key, turnID string) *tool
 			c.removeEntry(key, entry)
 			continue
 		}
+		sameOrUnknownTurn := entry.terminalTurnID == "" || turnID == "" || entry.terminalTurnID == turnID
+		if entry.terminal && entry.terminalSucceeded && sameOrUnknownTurn {
+			generation := entry.terminalGeneration
+			entry.mu.Unlock()
+			return &toolFeedbackTerminal{
+				key: key, entry: entry, generation: generation, absorbed: true,
+			}
+		}
+		if !entry.terminal || !sameOrUnknownTurn {
+			entry.terminalGeneration++
+			entry.terminalPending = 0
+			entry.terminalSucceeded = false
+			entry.terminalTurnID = turnID
+		}
 		entry.terminal = true
 		entry.terminalUntil = time.Time{}
-		entry.terminalTurnID = turnID
-		entry.terminalGeneration++
+		if entry.terminalPending > 0 && entry.terminalTurnID != turnID {
+			entry.terminalTurnID = ""
+		}
+		entry.terminalPending++
 		generation := entry.terminalGeneration
 		entry.mu.Unlock()
 
@@ -215,14 +265,23 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	}
 	entry := terminal.entry
 	entry.opMu.Lock()
-	c.animator.Clear(terminal.key)
 	entry.mu.Lock()
-	if entry.retired || !entry.terminal || entry.terminalGeneration != terminal.generation {
+	if terminal.completed || terminal.absorbed || entry.retired || !entry.terminal ||
+		entry.terminalGeneration != terminal.generation {
 		entry.mu.Unlock()
 		entry.opMu.Unlock()
 		return
 	}
+	terminal.completed = true
+	if entry.terminalPending > 0 {
+		entry.terminalPending--
+	}
 	if !success {
+		if entry.terminalSucceeded || entry.terminalPending > 0 {
+			entry.mu.Unlock()
+			entry.opMu.Unlock()
+			return
+		}
 		entry.terminal = false
 		entry.terminalUntil = time.Time{}
 		entry.terminalTurnID = ""
@@ -237,7 +296,13 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		entry.opMu.Unlock()
 		return
 	}
+	if entry.terminalSucceeded {
+		entry.mu.Unlock()
+		entry.opMu.Unlock()
+		return
+	}
 
+	entry.terminalSucceeded = true
 	messageID := entry.messageID
 	chatID := entry.chatID
 	deleteFn := entry.operations.delete
@@ -246,6 +311,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	entry.operations = toolFeedbackOperations{}
 	entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
 	entry.mu.Unlock()
+	c.animator.Clear(terminal.key)
 	entry.opMu.Unlock()
 
 	if !c.separateMessages() && messageID != "" && deleteFn != nil {
@@ -283,6 +349,29 @@ func (c *ToolFeedbackCoordinator) ReleaseTerminal(key string) {
 	entry.mu.Unlock()
 	entry.opMu.Unlock()
 	c.removeEntry(key, entry)
+}
+
+func (c *ToolFeedbackCoordinator) RetireChannel(channelName string) {
+	if c == nil || strings.TrimSpace(channelName) == "" {
+		return
+	}
+	prefix := strings.TrimSpace(channelName) + ":"
+	c.mu.Lock()
+	var retiredKeys []string
+	for key, entry := range c.entries {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry.mu.Lock()
+		entry.retired = true
+		entry.mu.Unlock()
+		retiredKeys = append(retiredKeys, key)
+		delete(c.entries, key)
+	}
+	c.mu.Unlock()
+	for _, key := range retiredKeys {
+		c.animator.Clear(key)
+	}
 }
 
 func (c *ToolFeedbackCoordinator) StopAll() {

@@ -136,6 +136,86 @@ func TestToolFeedbackCoordinator_FailedAbsentTerminalReleasesBarrier(t *testing.
 	}
 }
 
+func TestToolFeedbackCoordinator_ConcurrentTerminalSuccessWins(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	var deleted []string
+	operations := toolFeedbackOperations{
+		edit: func(context.Context, string, string, string) error { return nil },
+		delete: func(_ context.Context, _, messageID string) error {
+			deleted = append(deleted, messageID)
+			return nil
+		},
+		turnID: "turn-1",
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "working", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("Deliver() error = %v", err)
+	}
+
+	first := coordinator.BeginTerminalForTurn("telegram:chat-1", "turn-1")
+	second := coordinator.BeginTerminalForTurn("telegram:chat-1", "turn-1")
+	coordinator.CompleteTerminal(context.Background(), first, true)
+	coordinator.CompleteTerminal(context.Background(), second, false)
+
+	sends := 0
+	ids, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "stale", operations,
+		func(context.Context, string) ([]string, error) {
+			sends++
+			return []string{"progress-2"}, nil
+		},
+	)
+	if err != nil || len(ids) != 0 || sends != 0 {
+		t.Fatalf("late Deliver() = (%v, %v), sends %d, want suppressed", ids, err, sends)
+	}
+	if !slices.Equal(deleted, []string{"progress-1"}) {
+		t.Fatalf("deleted = %v, want [progress-1]", deleted)
+	}
+}
+
+func TestToolFeedbackCoordinator_ConcurrentTerminalWaitsForAllFailures(t *testing.T) {
+	coordinator := newTestToolFeedbackCoordinator(false)
+	defer coordinator.StopAll()
+	operations := toolFeedbackOperations{
+		edit:   func(context.Context, string, string, string) error { return nil },
+		turnID: "turn-1",
+	}
+	if _, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "working", operations,
+		func(context.Context, string) ([]string, error) { return []string{"progress-1"}, nil },
+	); err != nil {
+		t.Fatalf("Deliver() error = %v", err)
+	}
+
+	first := coordinator.BeginTerminalForTurn("telegram:chat-1", "turn-1")
+	second := coordinator.BeginTerminalForTurn("telegram:chat-1", "turn-1")
+	coordinator.CompleteTerminal(context.Background(), first, false)
+	if ids, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "blocked", operations,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("feedback sent while another terminal attempt was pending")
+			return nil, nil
+		},
+	); err != nil || len(ids) != 0 {
+		t.Fatalf("blocked Deliver() = (%v, %v)", ids, err)
+	}
+	coordinator.CompleteTerminal(context.Background(), second, false)
+
+	ids, err := coordinator.Deliver(
+		context.Background(), "telegram:chat-1", "chat-1", "resumed", operations,
+		func(context.Context, string) ([]string, error) {
+			t.Fatal("failed terminals should resume the tracked message")
+			return nil, nil
+		},
+	)
+	if err != nil || !slices.Equal(ids, []string{"progress-1"}) {
+		t.Fatalf("resumed Deliver() = (%v, %v), want progress-1", ids, err)
+	}
+}
+
 func TestToolFeedbackCoordinator_NewTurnSupersedesTerminalTombstone(t *testing.T) {
 	coordinator := newTestToolFeedbackCoordinator(false)
 	defer coordinator.StopAll()

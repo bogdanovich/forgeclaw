@@ -4,6 +4,8 @@ package feishu
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -325,5 +327,31 @@ func TestSendMedia_SendsCaptionFallbackAfterMedia(t *testing.T) {
 	}
 	if len(textCalls) != 1 || textCalls[0] != "oc_123|shared caption" {
 		t.Fatalf("textCalls = %v, want [oc_123|shared caption]", textCalls)
+	}
+}
+
+func TestSendToolFeedbackMessage_ReportsPlainTextFallbackAsUneditable(t *testing.T) {
+	ch := &FeishuChannel{
+		BaseChannel: channels.NewBaseChannel("feishu", nil, nil, nil),
+		sendCardFn: func(context.Context, string, string) (string, error) {
+			return "", errors.New("feishu card error 11310")
+		},
+		sendTextFn: func(context.Context, string, string) (string, error) {
+			return "text-1", nil
+		},
+	}
+	ch.SetRunning(true)
+	messageIDs, editable, err := ch.SendToolFeedbackMessage(context.Background(), bus.OutboundMessage{
+		ChatID:  "chat-1",
+		Content: "working",
+	})
+	if err != nil {
+		t.Fatalf("SendToolFeedbackMessage() error = %v", err)
+	}
+	if editable {
+		t.Fatal("plain-text fallback reported editable")
+	}
+	if !slices.Equal(messageIDs, []string{"text-1"}) {
+		t.Fatalf("message IDs = %v, want [text-1]", messageIDs)
 	}
 }

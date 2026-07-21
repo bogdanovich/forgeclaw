@@ -52,6 +52,7 @@ type FeishuChannel struct {
 
 	deleteMessageFn func(context.Context, string, string) error
 	sendMediaPartFn func(context.Context, string, bus.MediaPart, media.MediaStore) error
+	sendCardFn      func(context.Context, string, string) (string, error)
 	sendTextFn      func(context.Context, string, string) (string, error)
 }
 
@@ -80,6 +81,7 @@ func NewFeishuChannel(bc *config.Channel, cfg *config.FeishuSettings, bus *bus.M
 	}
 	ch.deleteMessageFn = ch.deleteMessageAPI
 	ch.sendMediaPartFn = ch.sendMediaPart
+	ch.sendCardFn = ch.sendCard
 	ch.sendTextFn = ch.sendText
 	ch.SetOwner(ch)
 	return ch, nil
@@ -147,12 +149,34 @@ func (c *FeishuChannel) Stop(ctx context.Context) error {
 // Send sends a message using Interactive Card format for markdown rendering.
 // Falls back to plain text message if card sending fails (e.g., table limit exceeded).
 func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
+	messageIDs, _, err := c.sendMessage(ctx, msg)
+	return messageIDs, err
+}
+
+// SendToolFeedbackMessage reports whether the delivered message supports the
+// interactive-card edit API used for subsequent progress updates.
+func (c *FeishuChannel) SendToolFeedbackMessage(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) ([]string, bool, error) {
+	return c.sendMessage(ctx, msg)
+}
+
+func (c *FeishuChannel) sendMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool, error) {
 	if !c.IsRunning() {
-		return nil, channels.ErrNotRunning
+		return nil, false, channels.ErrNotRunning
 	}
 
 	if msg.ChatID == "" {
-		return nil, fmt.Errorf("chat ID is empty: %w", channels.ErrSendFailed)
+		return nil, false, fmt.Errorf("chat ID is empty: %w", channels.ErrSendFailed)
+	}
+	sendText := c.sendTextFn
+	if sendText == nil {
+		sendText = c.sendText
+	}
+	sendCard := c.sendCardFn
+	if sendCard == nil {
+		sendCard = c.sendCard
 	}
 
 	// Build interactive card with markdown content
@@ -160,17 +184,17 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 	cardContent, err := buildMarkdownCard(sendContent)
 	if err != nil {
 		// If card build fails, fall back to plain text
-		msgID, sendErr := c.sendText(ctx, msg.ChatID, sendContent)
+		msgID, sendErr := sendText(ctx, msg.ChatID, sendContent)
 		if sendErr != nil {
-			return nil, sendErr
+			return nil, false, sendErr
 		}
-		return []string{msgID}, nil
+		return []string{msgID}, false, nil
 	}
 
 	// First attempt: try sending as interactive card
-	msgID, err := c.sendCard(ctx, msg.ChatID, cardContent)
+	msgID, err := sendCard(ctx, msg.ChatID, cardContent)
 	if err == nil {
-		return []string{msgID}, nil
+		return []string{msgID}, true, nil
 	}
 
 	// Check if error is due to card table limit (error code 11310)
@@ -185,16 +209,16 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		})
 
 		// Second attempt: fall back to plain text message
-		msgID, textErr := c.sendText(ctx, msg.ChatID, sendContent)
+		msgID, textErr := sendText(ctx, msg.ChatID, sendContent)
 		if textErr == nil {
-			return []string{msgID}, nil
+			return []string{msgID}, false, nil
 		}
 		// If text also fails, return the text error
-		return nil, textErr
+		return nil, false, textErr
 	}
 
 	// For other errors, return the original card error
-	return nil, err
+	return nil, false, err
 }
 
 // EditMessage implements channels.MessageEditor.

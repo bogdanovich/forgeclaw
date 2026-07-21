@@ -239,6 +239,18 @@ type toolFeedbackStreamingTestChannel struct {
 	streamer Streamer
 }
 
+type uneditableToolFeedbackTestChannel struct {
+	*toolFeedbackTestChannel
+}
+
+func (c *uneditableToolFeedbackTestChannel) SendToolFeedbackMessage(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) ([]string, bool, error) {
+	messageIDs, err := c.Send(ctx, msg)
+	return messageIDs, false, err
+}
+
 func (c *toolFeedbackStreamingTestChannel) BeginStream(context.Context, string) (Streamer, error) {
 	return c.streamer, nil
 }
@@ -1058,6 +1070,57 @@ func TestUnregisterChannel_DrainsDeliveryOutsideManagerLock(t *testing.T) {
 			workerExists,
 			channelExists,
 		)
+	}
+}
+
+func TestUnregisterChannel_RetiresToolFeedbackBeforeReplacement(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	oldChannel := &toolFeedbackTestChannel{}
+	owner := newDeliveryOwner("test", oldChannel, "test")
+	m.channels["test"] = oldChannel
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+	owner.StartDelivery(context.Background(), m)
+
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "working",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", owner.Worker(), feedback); err != nil {
+		t.Fatalf("initial feedback error = %v", err)
+	}
+	if count := m.toolFeedback.ActiveCount(); count != 1 {
+		t.Fatalf("ActiveCount() before unregister = %d, want 1", count)
+	}
+
+	m.UnregisterChannel("test")
+	if count := m.toolFeedback.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() after unregister = %d, want 0", count)
+	}
+	replacement := &toolFeedbackTestChannel{}
+	replacementWorker := &channelWorker{ch: replacement, limiter: rate.NewLimiter(rate.Inf, 1)}
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", replacementWorker, feedback); err != nil {
+		t.Fatalf("replacement feedback error = %v", err)
+	}
+
+	oldChannel.mu.Lock()
+	oldOperations := slices.Clone(oldChannel.operations)
+	oldChannel.mu.Unlock()
+	replacement.mu.Lock()
+	replacementOperations := slices.Clone(replacement.operations)
+	replacement.mu.Unlock()
+	if !slices.Equal(oldOperations, []string{"send:working"}) {
+		t.Fatalf("old channel operations = %v, want one send", oldOperations)
+	}
+	if !slices.Equal(replacementOperations, []string{"send:working"}) {
+		t.Fatalf("replacement operations = %v, want one send", replacementOperations)
 	}
 }
 
@@ -2526,6 +2589,40 @@ func TestSendWithRetry_FailedFinalKeepsProgressEditable(t *testing.T) {
 	defer ch.mu.Unlock()
 	if len(ch.deleted) != 0 || ch.operations[len(ch.operations)-1] != "edit:msg-1" {
 		t.Fatalf("operations = %v deleted = %v, want retained progress edit", ch.operations, ch.deleted)
+	}
+}
+
+func TestSendWithRetry_UneditableToolFeedbackSendsReplacement(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	transport := &toolFeedbackTestChannel{}
+	ch := &uneditableToolFeedbackTestChannel{toolFeedbackTestChannel: transport}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "first",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+		t.Fatalf("first feedback error = %v", err)
+	}
+	feedback.Content = "second"
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+		t.Fatalf("second feedback error = %v", err)
+	}
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if !slices.Equal(transport.operations, []string{"send:first", "send:second"}) {
+		t.Fatalf("operations = %v, want replacement sends", transport.operations)
+	}
+	if count := m.toolFeedback.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
 	}
 }
 

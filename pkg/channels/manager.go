@@ -185,6 +185,10 @@ type toolFeedbackMessageEditor interface {
 	EditToolFeedbackMessage(ctx context.Context, chatID, messageID, content string) error
 }
 
+type toolFeedbackMessageSender interface {
+	SendToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool, error)
+}
+
 type asyncTask struct {
 	cancel context.CancelFunc
 }
@@ -452,16 +456,21 @@ func (m *Manager) deliverToolFeedback(
 	content := prepareToolFeedbackMessageContent(ch, msg.Content)
 	operations := toolFeedbackOperationsFor(ch)
 	operations.turnID = msg.Context.MessageID
-	return m.toolFeedback.Deliver(
+	return m.toolFeedback.deliver(
 		ctx,
 		key,
 		deliveryChatID,
 		content,
 		operations,
-		func(sendCtx context.Context, prepared string) ([]string, error) {
+		func(sendCtx context.Context, prepared string) (toolFeedbackSendResult, error) {
 			sendMsg := msg
 			sendMsg.Content = prepared
-			return send(sendCtx, sendMsg)
+			if sender, ok := ch.(toolFeedbackMessageSender); ok {
+				messageIDs, editable, err := sender.SendToolFeedbackMessage(sendCtx, sendMsg)
+				return toolFeedbackSendResult{messageIDs: messageIDs, editable: editable}, err
+			}
+			messageIDs, err := send(sendCtx, sendMsg)
+			return toolFeedbackSendResult{messageIDs: messageIDs, editable: operations.edit != nil}, err
 		},
 	)
 }
@@ -2621,6 +2630,9 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			cancel()
 			return err
 		}
+		if m.toolFeedback != nil {
+			m.toolFeedback.RetireChannel(name)
+		}
 		if err := oldChannel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping inactive changed channel", map[string]any{
 				"channel": name,
@@ -2722,6 +2734,9 @@ func (m *Manager) UnregisterChannel(name string) {
 		owner.CloseDeliveryAndWait()
 	} else {
 		closeWorkerAndWait(w)
+	}
+	if m.toolFeedback != nil {
+		m.toolFeedback.RetireChannel(name)
 	}
 
 	m.mu.Lock()
