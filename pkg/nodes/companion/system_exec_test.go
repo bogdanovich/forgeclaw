@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,6 +48,21 @@ func TestSystemExecHelperProcess(t *testing.T) {
 		if marker := os.Getenv(systemExecHelperMarker); marker != "" {
 			_ = os.WriteFile(marker, []byte("started"), 0o600)
 		}
+		time.Sleep(30 * time.Second)
+	case "tree-parent":
+		child := exec.Command(os.Args[0], "-test.run=^TestSystemExecHelperProcess$")
+		child.Env = []string{
+			systemExecHelperEnabled + "=1",
+			systemExecHelperAction + "=tree-child",
+		}
+		if err := child.Start(); err != nil {
+			os.Exit(70)
+		}
+		if marker := os.Getenv(systemExecHelperMarker); marker != "" {
+			_ = os.WriteFile(marker, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+		}
+		time.Sleep(30 * time.Second)
+	case "tree-child":
 		time.Sleep(30 * time.Second)
 	default:
 		os.Exit(64)
@@ -252,6 +269,41 @@ func TestSystemExecCancellationConfirmsTermination(t *testing.T) {
 	}
 }
 
+func TestSystemExecCancellationTerminatesProcessTree(t *testing.T) {
+	runtime, _, root, executable := newSystemExecRuntime(t)
+	marker := filepath.Join(root, "child-pid")
+	plan := prepareSystemExecPlan(t, runtime, systemExecInput{
+		Argv: []string{executable, "-test.run=^TestSystemExecHelperProcess$"},
+		CWD:  root,
+		Env: map[string]string{
+			systemExecHelperEnabled: "1",
+			systemExecHelperAction:  "tree-parent",
+			systemExecHelperMarker:  marker,
+		},
+		TimeoutSeconds: 10,
+	}, 15, 4096)
+	result := make(chan error, 1)
+	go func() {
+		_, err := runtime.Invoke(context.Background(), plan)
+		result <- err
+	}()
+	childPID := waitForSystemExecChildPID(t, marker, result)
+	if _, err := runtime.Cancel(nodes.InvocationCancelRequest{
+		InvocationID: plan.InvocationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrInvocationCanceled) {
+			t.Fatalf("Invoke() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled process tree did not terminate")
+	}
+	waitForSystemExecProcessExit(t, childPID)
+}
+
 func newSystemExecRuntime(
 	t *testing.T,
 ) (*Runtime, *InvocationLedger, string, string) {
@@ -375,4 +427,39 @@ func waitForSystemExecMarker(t *testing.T, marker string, result <-chan error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("system.exec helper did not start")
+}
+
+func waitForSystemExecChildPID(t *testing.T, marker string, result <-chan error) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			pid, parseErr := strconv.Atoi(string(data))
+			if parseErr != nil || pid <= 0 {
+				t.Fatalf("invalid helper child PID %q", data)
+			}
+			return pid
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("system.exec tree helper exited before marker: %v", err)
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("system.exec tree helper did not start")
+	return 0
+}
+
+func waitForSystemExecProcessExit(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !systemExecTestProcessAlive(pid) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("system.exec descendant %d remained alive", pid)
 }

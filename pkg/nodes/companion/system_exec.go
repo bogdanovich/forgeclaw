@@ -113,8 +113,8 @@ func (handler *systemExecHandler) execute(
 		)
 	}
 	defer deadlineCancel()
-	if err := execCtx.Err(); err != nil {
-		return nil, systemExecContextFailure(execCtx, err)
+	if contextErr := execCtx.Err(); contextErr != nil {
+		return nil, systemExecContextFailure(execCtx, contextErr)
 	}
 
 	output := newBoundedSystemExecOutput(invocation.OutputLimitBytes)
@@ -123,11 +123,12 @@ func (handler *systemExecHandler) execute(
 	command.Env = prepared.env
 	command.Stdout = output.stdoutWriter()
 	command.Stderr = output.stderrWriter()
-	prepareSystemExecProcess(command)
-	if err := command.Start(); err != nil {
+	process, err := startSystemExecProcess(command)
+	if err != nil {
 		return nil, newCommandFailure("START_FAILED", "system.exec failed to start", err)
 	}
-	waitErr, terminated := waitSystemExecProcess(execCtx, command)
+	defer process.close()
+	waitErr, terminated := waitSystemExecProcess(execCtx, process)
 	if terminated {
 		cause := context.Cause(execCtx)
 		if errors.Is(cause, errCancellationRequested) {
@@ -255,10 +256,10 @@ func systemExecContextFailure(ctx context.Context, fallback error) error {
 	return newCommandFailure("EXECUTION_CANCELED", "system.exec context canceled", cause)
 }
 
-func waitSystemExecProcess(ctx context.Context, command *exec.Cmd) (error, bool) {
+func waitSystemExecProcess(ctx context.Context, process systemExecProcess) (error, bool) {
 	done := make(chan error, 1)
 	go func() {
-		done <- command.Wait()
+		done <- process.wait()
 	}()
 	select {
 	case err := <-done:
@@ -269,8 +270,9 @@ func waitSystemExecProcess(ctx context.Context, command *exec.Cmd) (error, bool)
 			return err, false
 		default:
 		}
-		terminated := terminateSystemExecProcess(command)
-		return <-done, terminated
+		terminateErr := process.terminate()
+		waitErr := <-done
+		return waitErr, terminateErr == nil && process.terminationConfirmed()
 	}
 }
 
