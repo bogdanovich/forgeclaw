@@ -154,6 +154,7 @@ func TestRuntimeResumesDurableAcceptedInvocationAfterRestart(t *testing.T) {
 	if newErr != nil {
 		t.Fatal(newErr)
 	}
+	t.Cleanup(ledger.Close)
 	policy := testRuntimePolicy([]string{"node.info.v1"})
 	beforeRestart, newErr := NewRuntime(nodes.ID("node_test"), "test", policy, ledger)
 	if newErr != nil {
@@ -164,10 +165,12 @@ func TestRuntimeResumesDurableAcceptedInvocationAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	ledger.Close()
 	reloaded, reloadErr := NewFileInvocationLedger(path, 4, 1024*1024)
 	if reloadErr != nil {
 		t.Fatal(reloadErr)
 	}
+	t.Cleanup(reloaded.Close)
 	afterRestart, newErr := NewRuntime(nodes.ID("node_test"), "test", policy, reloaded)
 	if newErr != nil {
 		t.Fatal(newErr)

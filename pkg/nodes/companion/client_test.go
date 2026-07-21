@@ -116,6 +116,7 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(ledger.Close)
 	commandRuntime, err := NewRuntime(identity.ID, "test", policy, ledger)
 	if err != nil {
 		t.Fatal(err)
@@ -179,10 +180,12 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 	}
 	waitForNodeState(t, registry, identity.ID, nodes.StateDisconnected)
 
+	ledger.Close()
 	reloadedLedger, err := NewFileInvocationLedger(ledgerPath, 8, 1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(reloadedLedger.Close)
 	reloadedRuntime, err := NewRuntime(identity.ID, "test", policy, reloadedLedger)
 	if err != nil {
 		t.Fatal(err)

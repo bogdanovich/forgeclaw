@@ -63,6 +63,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer ledger.Close()
 	commandRuntime, err := companion.NewRuntime(identity.ID, clientVersion(), cfg.Policy, ledger)
 	if err != nil {
 		return err

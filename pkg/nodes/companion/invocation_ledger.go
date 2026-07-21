@@ -22,9 +22,10 @@ const (
 )
 
 var (
-	ErrInvocationConflict   = errors.New("node invocation idempotency conflict")
-	ErrInvocationNotFound   = errors.New("node invocation not found")
-	ErrInvocationLedgerFull = errors.New("node invocation ledger is full")
+	ErrInvocationConflict    = errors.New("node invocation idempotency conflict")
+	ErrInvocationNotFound    = errors.New("node invocation not found")
+	ErrInvocationLedgerFull  = errors.New("node invocation ledger is full")
+	ErrInvocationLedgerOwned = errors.New("node invocation ledger is owned by another process")
 )
 
 type invocationLedgerDocument struct {
@@ -35,11 +36,12 @@ type invocationLedgerDocument struct {
 // InvocationLedger owns the bounded, instance-local proof that an invocation
 // was accepted before execution. A nil path is used only by unit tests.
 type InvocationLedger struct {
-	path       string
-	maxRecords int
-	maxBytes   int
-	now        func() time.Time
-	writeFile  func(string, []byte, os.FileMode) error
+	path        string
+	maxRecords  int
+	maxBytes    int
+	now         func() time.Time
+	writeFile   func(string, []byte, os.FileMode) error
+	releaseLock func()
 
 	mu          sync.Mutex
 	records     map[string]nodes.InvocationRecord
@@ -59,14 +61,39 @@ func NewFileInvocationLedger(
 	if path == "." || path == string(filepath.Separator) {
 		return nil, errors.New("node invocation ledger path is required")
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create node invocation ledger directory: %w", err)
+	}
+	release, err := acquireInvocationLedgerLock(path + ".lock")
+	if err != nil {
+		return nil, err
+	}
 	ledger := newInvocationLedger(path, maxRecords, maxBytes, time.Now)
+	ledger.releaseLock = release
 	if err := ledger.load(); err != nil {
+		ledger.Close()
 		return nil, err
 	}
 	if err := ledger.recoverUnfinished(); err != nil {
+		ledger.Close()
 		return nil, err
 	}
 	return ledger, nil
+}
+
+// Close releases this process's exclusive ownership of the ledger. The lock
+// file remains in place so a successor cannot race a newly created inode.
+func (ledger *InvocationLedger) Close() {
+	if ledger == nil {
+		return
+	}
+	ledger.mu.Lock()
+	release := ledger.releaseLock
+	ledger.releaseLock = nil
+	ledger.mu.Unlock()
+	if release != nil {
+		release()
+	}
 }
 
 func newMemoryInvocationLedger() *InvocationLedger {

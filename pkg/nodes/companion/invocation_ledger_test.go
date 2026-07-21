@@ -1,9 +1,14 @@
 package companion
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,6 +23,7 @@ func TestInvocationLedgerPersistsTerminalResultAndDeduplicates(t *testing.T) {
 	if newErr != nil {
 		t.Fatal(newErr)
 	}
+	t.Cleanup(ledger.Close)
 	plan := testLedgerPlan(t, "one")
 	record, existing, err := ledger.Accept(plan)
 	if err != nil || existing || record.State != nodes.InvocationAccepted {
@@ -31,10 +37,12 @@ func TestInvocationLedgerPersistsTerminalResultAndDeduplicates(t *testing.T) {
 		t.Fatal(completeErr)
 	}
 
+	ledger.Close()
 	reloaded, err := NewFileInvocationLedger(path, 4, 1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(reloaded.Close)
 	duplicate, existing, err := reloaded.Accept(plan)
 	if err != nil || !existing || duplicate.State != nodes.InvocationSucceeded ||
 		string(duplicate.Result) != string(result) {
@@ -52,6 +60,7 @@ func TestInvocationLedgerRecoversRunningInvocationAsUnknown(t *testing.T) {
 	if newErr != nil {
 		t.Fatal(newErr)
 	}
+	t.Cleanup(ledger.Close)
 	plan := testLedgerPlan(t, "unfinished")
 	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
 		t.Fatal(acceptErr)
@@ -60,10 +69,12 @@ func TestInvocationLedgerRecoversRunningInvocationAsUnknown(t *testing.T) {
 		t.Fatal(markErr)
 	}
 
+	ledger.Close()
 	recovered, err := NewFileInvocationLedger(path, 4, 1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(recovered.Close)
 	record, found := recovered.Get(plan.InvocationID)
 	if !found || record.State != nodes.InvocationUnknown || record.CompletedAt != 0 {
 		t.Fatalf("recovered record = %#v, found %v", record, found)
@@ -79,15 +90,18 @@ func TestInvocationLedgerPreservesAcceptedInvocationForResume(t *testing.T) {
 	if newErr != nil {
 		t.Fatal(newErr)
 	}
+	t.Cleanup(ledger.Close)
 	plan := testLedgerPlan(t, "accepted")
 	if _, _, acceptErr := ledger.Accept(plan); acceptErr != nil {
 		t.Fatal(acceptErr)
 	}
 
+	ledger.Close()
 	recovered, err := NewFileInvocationLedger(path, 4, 1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(recovered.Close)
 	record, found := recovered.Get(plan.InvocationID)
 	if !found || record.State != nodes.InvocationAccepted {
 		t.Fatalf("recovered accepted record = %#v, found %v", record, found)
@@ -233,6 +247,7 @@ func TestInvocationLedgerFileIsPrivateAndVersioned(t *testing.T) {
 	if newErr != nil {
 		t.Fatal(newErr)
 	}
+	t.Cleanup(ledger.Close)
 	if _, _, acceptErr := ledger.Accept(testLedgerPlan(t, "private")); acceptErr != nil {
 		t.Fatal(acceptErr)
 	}
@@ -254,6 +269,73 @@ func TestInvocationLedgerFileIsPrivateAndVersioned(t *testing.T) {
 	if document.Version != invocationLedgerVersion || len(document.Records) != 1 {
 		t.Fatalf("ledger document = %#v", document)
 	}
+}
+
+func TestInvocationLedgerRejectsConcurrentProcessOwner(t *testing.T) {
+	const helperPathEnv = "PICOCLAW_TEST_INVOCATION_LEDGER_LOCK"
+	if path := os.Getenv(helperPathEnv); path != "" {
+		ledger, err := NewFileInvocationLedger(path, 4, 1024*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ledger.Close()
+		_, _ = fmt.Fprintln(os.Stdout, "locked")
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		return
+	}
+
+	path := filepath.Join(t.TempDir(), "invocations.json")
+	command := exec.Command(os.Args[0], "-test.run=^TestInvocationLedgerRejectsConcurrentProcessOwner$")
+	command.Env = append(os.Environ(), helperPathEnv+"="+path)
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if startErr := command.Start(); startErr != nil {
+		t.Fatal(startErr)
+	}
+	finished := false
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		if !finished {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	})
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "locked" {
+		_ = stdin.Close()
+		_ = command.Wait()
+		finished = true
+		t.Fatalf("helper did not acquire ledger lock: %s", stderr.String())
+	}
+
+	second, secondErr := NewFileInvocationLedger(path, 4, 1024*1024)
+	if second != nil {
+		second.Close()
+	}
+	if !errors.Is(secondErr, ErrInvocationLedgerOwned) {
+		t.Fatalf("second process ownership error = %v", secondErr)
+	}
+	if closeErr := stdin.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if waitErr := command.Wait(); waitErr != nil {
+		t.Fatalf("ledger owner helper failed: %v: %s", waitErr, stderr.String())
+	}
+	finished = true
+
+	successor, err := NewFileInvocationLedger(path, 4, 1024*1024)
+	if err != nil {
+		t.Fatalf("successor did not acquire released ledger: %v", err)
+	}
+	successor.Close()
 }
 
 func testLedgerPlan(t *testing.T, suffix string) nodes.ExecutionPlan {
