@@ -635,12 +635,13 @@ func TestTaskTraceProjectorProjectsEachEventOnceAcrossCallbackOrder(t *testing.T
 			var traces []evaltrace.Trace
 			projector := newTaskTraceProjector(
 				traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-				func(_ traceCaptureSettings, active *activeTraceCapture) {
+				func(_ traceCaptureSettings, active *activeTraceCapture) bool {
 					trace, err := active.builder.Finalize()
 					if err != nil {
 						t.Fatalf("Finalize: %v", err)
 					}
 					traces = append(traces, trace)
+					return true
 				},
 			)
 			for _, index := range order {
@@ -701,12 +702,13 @@ func TestTaskTraceProjectorSeparatesReusedTaskIDGenerations(t *testing.T) {
 	var traces []evaltrace.Trace
 	projector := newTaskTraceProjector(
 		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) {
+		func(_ traceCaptureSettings, active *activeTraceCapture) bool {
 			trace, err := active.builder.Finalize()
 			if err != nil {
 				t.Fatalf("Finalize: %v", err)
 			}
 			traces = append(traces, trace)
+			return true
 		},
 	)
 	projector.observe(workspace, registry, taskregistry.EventObservation{
@@ -733,6 +735,66 @@ func TestTaskTraceProjectorSeparatesReusedTaskIDGenerations(t *testing.T) {
 		if _, duplicate := firstOrigins[record.Origin.ID]; duplicate {
 			t.Fatalf("second trace reused first-generation event %q", record.Origin.ID)
 		}
+	}
+}
+
+func TestTaskTraceProjectorRetriesTerminalTraceAfterAdmissionRejection(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "retry", Task: "test", RequesterSessionKey: "session-retry",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := registry.Update("retry", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	history := registry.ListEvents("retry")
+	record, ok := registry.Get("retry")
+	if !ok {
+		t.Fatal("terminal task record not found")
+	}
+	terminal := taskregistry.EventObservation{
+		Event: history[len(history)-1], Record: record, FinalForTask: true,
+	}
+
+	attempts := 0
+	var admitted evaltrace.Trace
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, active *activeTraceCapture) bool {
+			attempts++
+			if attempts == 1 {
+				return false
+			}
+			trace, err := active.builder.Finalize()
+			if err != nil {
+				t.Fatalf("Finalize: %v", err)
+			}
+			admitted = trace
+			return true
+		},
+	)
+	projector.observe(workspace, registry, terminal)
+	if len(projector.traces) != 1 || len(projector.completed) != 0 {
+		t.Fatalf("after rejection: traces=%d completed=%d", len(projector.traces), len(projector.completed))
+	}
+	projector.observe(workspace, registry, terminal)
+	if attempts != 2 {
+		t.Fatalf("admission attempts = %d, want 2", attempts)
+	}
+	if len(projector.traces) != 0 || len(projector.completed) != 1 {
+		t.Fatalf("after admission: traces=%d completed=%d", len(projector.traces), len(projector.completed))
+	}
+	if admitted.Outcome == nil || admitted.Outcome.Status != string(taskregistry.StatusSucceeded) {
+		t.Fatalf("admitted outcome = %#v", admitted.Outcome)
+	}
+	if len(admitted.Records) != len(history) {
+		t.Fatalf("admitted records = %d, want %d", len(admitted.Records), len(history))
 	}
 }
 

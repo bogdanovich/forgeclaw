@@ -398,22 +398,22 @@ func normalizedRuntimeTraceScopes(scopes []runtimeevents.TraceScope) []runtimeev
 func (m *traceCaptureManager) enqueuePersist(
 	settings traceCaptureSettings,
 	trace *activeTraceCapture,
-) {
+) bool {
 	if m == nil || trace == nil || strings.TrimSpace(trace.workspace) == "" {
-		return
+		return false
 	}
 	finalized, err := trace.builder.Finalize()
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to finalize evaluation trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
 		})
-		return
+		return false
 	}
 	m.mu.Lock()
 	writer := m.writer
 	m.mu.Unlock()
 	if writer == nil {
-		return
+		return false
 	}
 	err = writer.Submit(evalcapture.Policy{
 		Root:      traceStoreRoot(settings, trace.workspace),
@@ -424,7 +424,9 @@ func (m *traceCaptureManager) enqueuePersist(
 		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
 		})
+		return false
 	}
+	return true
 }
 
 func logTraceWriterEvent(event evalcapture.Event) {

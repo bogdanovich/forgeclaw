@@ -30,12 +30,12 @@ type taskTraceProjector struct {
 	traces    map[taskTraceKey]*activeTraceCapture
 	completed map[taskTraceKey]completedTaskTrace
 	subs      map[string]func()
-	submit    func(traceCaptureSettings, *activeTraceCapture)
+	submit    func(traceCaptureSettings, *activeTraceCapture) bool
 }
 
 func newTaskTraceProjector(
 	settings traceCaptureSettings,
-	submit func(traceCaptureSettings, *activeTraceCapture),
+	submit func(traceCaptureSettings, *activeTraceCapture) bool,
 ) *taskTraceProjector {
 	return &taskTraceProjector{
 		settings:  settings,
@@ -157,13 +157,15 @@ func (p *taskTraceProjector) observe(
 	if !observation.FinalForTask || !taskEventIsTerminal(event) {
 		return
 	}
-	delete(p.traces, key)
-	p.completed[key] = completedTaskTrace{terminalSeq: event.Seq}
-	p.pruneCompletedLocked(workspace, registry)
 	trace.builder.SetOutcome(evaltrace.Outcome{
 		Status: string(event.Status), ErrorCode: taskEventErrorCode(event),
 	})
-	p.submitTraceLocked(settings, trace)
+	if !p.submitTraceLocked(settings, trace) {
+		return
+	}
+	delete(p.traces, key)
+	p.completed[key] = completedTaskTrace{terminalSeq: event.Seq}
+	p.pruneCompletedLocked(workspace, registry)
 }
 
 func taskHistoryThrough(
@@ -228,10 +230,11 @@ func (p *taskTraceProjector) pruneCompletedLocked(
 func (p *taskTraceProjector) submitTraceLocked(
 	settings traceCaptureSettings,
 	trace *activeTraceCapture,
-) {
+) bool {
 	if p.submit != nil {
-		p.submit(settings, trace)
+		return p.submit(settings, trace)
 	}
+	return false
 }
 
 func newTaskTrace(
