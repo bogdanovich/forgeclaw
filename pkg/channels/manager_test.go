@@ -2615,11 +2615,25 @@ func TestSendWithRetry_UneditableToolFeedbackSendsReplacement(t *testing.T) {
 	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
 		t.Fatalf("second feedback error = %v", err)
 	}
+	final := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "done",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "final_reply"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil {
+		t.Fatalf("final error = %v", err)
+	}
 
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
-	if !slices.Equal(transport.operations, []string{"send:first", "send:second"}) {
-		t.Fatalf("operations = %v, want replacement sends", transport.operations)
+	want := []string{"send:first", "delete:msg-1", "send:second", "send:done", "delete:msg-2"}
+	if !slices.Equal(transport.operations, want) {
+		t.Fatalf("operations = %v, want %v", transport.operations, want)
 	}
 	if count := m.toolFeedback.ActiveCount(); count != 0 {
 		t.Fatalf("ActiveCount() = %d, want 0", count)

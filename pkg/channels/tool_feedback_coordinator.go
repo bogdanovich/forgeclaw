@@ -34,6 +34,7 @@ type toolFeedbackEntry struct {
 	sending            bool
 	chatID             string
 	messageID          string
+	editable           bool
 	content            string
 	operations         toolFeedbackOperations
 }
@@ -138,9 +139,25 @@ func (c *ToolFeedbackCoordinator) deliver(
 	}
 	if separate && entry.messageID != "" {
 		entry.messageID = ""
+		entry.editable = false
 		entry.content = ""
 		entry.mu.Unlock()
 		c.animator.Clear(key)
+		entry.mu.Lock()
+		if entry.terminal {
+			entry.mu.Unlock()
+			return nil, nil
+		}
+	}
+	if entry.messageID != "" && !entry.editable {
+		messageID := entry.messageID
+		trackedChatID := entry.chatID
+		deleteFn := entry.operations.delete
+		entry.messageID = ""
+		entry.content = ""
+		entry.operations = toolFeedbackOperations{}
+		entry.mu.Unlock()
+		deleteToolFeedbackMessage(ctx, deleteFn, trackedChatID, messageID)
 		entry.mu.Lock()
 		if entry.terminal {
 			entry.mu.Unlock()
@@ -189,10 +206,14 @@ func (c *ToolFeedbackCoordinator) deliver(
 	entry.sending = false
 	terminal := entry.terminal
 	retired := entry.retired
-	if len(messageIDs) > 0 && result.editable && operations.edit != nil && !terminal && !retired {
+	trackable := (result.editable && operations.edit != nil) || operations.delete != nil
+	if len(messageIDs) > 0 && trackable && !terminal && !retired {
 		entry.messageID = messageIDs[0]
+		entry.editable = result.editable && operations.edit != nil
 		entry.mu.Unlock()
-		c.animator.RecordEdited(key, messageIDs[0], content)
+		if result.editable && operations.edit != nil {
+			c.animator.RecordEdited(key, messageIDs[0], content)
+		}
 		return messageIDs, err
 	}
 	entry.mu.Unlock()
@@ -286,11 +307,12 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 		entry.terminalUntil = time.Time{}
 		entry.terminalTurnID = ""
 		messageID := entry.messageID
+		editable := entry.editable
 		content := entry.content
 		entry.mu.Unlock()
-		if messageID != "" {
+		if messageID != "" && editable {
 			c.animator.Record(terminal.key, messageID, content)
-		} else {
+		} else if messageID == "" {
 			c.retireIdleEntryLocked(terminal.key, entry)
 		}
 		entry.opMu.Unlock()
@@ -307,6 +329,7 @@ func (c *ToolFeedbackCoordinator) CompleteTerminal(
 	chatID := entry.chatID
 	deleteFn := entry.operations.delete
 	entry.messageID = ""
+	entry.editable = false
 	entry.content = ""
 	entry.operations = toolFeedbackOperations{}
 	entry.terminalUntil = time.Now().Add(toolFeedbackTerminalTombstoneTTL)
