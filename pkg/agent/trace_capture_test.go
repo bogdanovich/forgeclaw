@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -866,6 +867,75 @@ func TestTaskTraceProjectorSegmentsRecoveredLostTask(t *testing.T) {
 	}
 	if !foundFinalDelivery {
 		t.Fatalf("recovered trace lacks final delivery evidence: %#v", traces[1].Records)
+	}
+}
+
+func TestTaskTraceProjectorKeepsActiveSegmentAcrossEventRetention(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistryWithOptions(
+		taskregistry.WorkspaceStorePath(workspace),
+		taskregistry.Options{MaxEvents: 2},
+	)
+	var traces []evaltrace.Trace
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, active *activeTraceCapture) bool {
+			trace, err := active.builder.Finalize()
+			if err != nil {
+				t.Fatalf("Finalize: %v", err)
+			}
+			traces = append(traces, trace)
+			return true
+		},
+	)
+	projector.attach(workspace, registry)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "retained", Task: "test", RequesterSessionKey: "session-retained",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	upsertEvent := registry.ListEvents("retained")[0]
+	for i := range 5 {
+		if err := registry.Update("retained", func(record *taskregistry.Record) {
+			record.ProgressSummary = fmt.Sprintf("step %d", i)
+		}); err != nil {
+			t.Fatalf("progress %d: %v", i, err)
+		}
+	}
+	for _, event := range registry.ListEvents("retained") {
+		if event.Type == taskregistry.EventTaskUpserted {
+			t.Fatal("task upsert boundary was not evicted")
+		}
+	}
+	if err := registry.Update("retained", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if len(traces) != 1 {
+		t.Fatalf("persisted %d traces, want one stable active segment", len(traces))
+	}
+	foundUpsert := false
+	for _, record := range traces[0].Records {
+		foundUpsert = foundUpsert || strings.HasSuffix(
+			record.Origin.ID, ":"+string(taskregistry.EventTaskUpserted),
+		)
+	}
+	if !foundUpsert {
+		t.Fatalf("terminal trace lost its evicted prefix: %#v", traces[0].Records)
+	}
+	if traces[0].Outcome == nil || traces[0].Outcome.Status != string(taskregistry.StatusSucceeded) {
+		t.Fatalf("outcome = %#v", traces[0].Outcome)
+	}
+	record, _ := registry.Get("retained")
+	projector.observe(workspace, registry, taskregistry.EventObservation{
+		Event: upsertEvent, Record: record, FinalForTask: true,
+	})
+	if len(traces) != 1 {
+		t.Fatalf("delayed evicted callback persisted %d traces, want 1", len(traces))
 	}
 }
 

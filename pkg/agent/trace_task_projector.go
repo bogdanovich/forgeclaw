@@ -19,6 +19,16 @@ type taskTraceKey struct {
 	segment   string
 }
 
+type taskTraceIdentity struct {
+	workspace string
+	taskID    string
+}
+
+type taskTraceSegment struct {
+	key      taskTraceKey
+	startSeq int64
+}
+
 type completedTaskTrace struct {
 	terminalSeq int64
 }
@@ -28,6 +38,7 @@ type taskTraceProjector struct {
 	closed    bool
 	settings  traceCaptureSettings
 	traces    map[taskTraceKey]*activeTraceCapture
+	segments  map[taskTraceIdentity]taskTraceSegment
 	completed map[taskTraceKey]completedTaskTrace
 	subs      map[string]func()
 	submit    func(traceCaptureSettings, *activeTraceCapture) bool
@@ -40,6 +51,7 @@ func newTaskTraceProjector(
 	return &taskTraceProjector{
 		settings:  settings,
 		traces:    make(map[taskTraceKey]*activeTraceCapture),
+		segments:  make(map[taskTraceIdentity]taskTraceSegment),
 		completed: make(map[taskTraceKey]completedTaskTrace),
 		subs:      make(map[string]func()),
 		submit:    submit,
@@ -62,6 +74,7 @@ func (p *taskTraceProjector) updateSettings(settings traceCaptureSettings) {
 	p.mu.Lock()
 	if !p.closed && p.settings.enabled && !settings.enabled {
 		p.traces = make(map[taskTraceKey]*activeTraceCapture)
+		p.segments = make(map[taskTraceIdentity]taskTraceSegment)
 		p.completed = make(map[taskTraceKey]completedTaskTrace)
 	}
 	p.settings = settings
@@ -105,6 +118,7 @@ func (p *taskTraceProjector) close() {
 		p.submitTraceLocked(settings, trace)
 	}
 	p.traces = nil
+	p.segments = nil
 	p.completed = nil
 	subs := p.subs
 	p.subs = nil
@@ -133,10 +147,25 @@ func (p *taskTraceProjector) observe(
 	if registry != nil {
 		observations = taskHistoryThrough(registry.ListEvents(event.TaskID), observation)
 	}
-	key := taskTraceKey{
+	identity := taskTraceIdentity{
 		workspace: workspace,
 		taskID:    strings.TrimSpace(event.TaskID),
-		segment:   observations[0].Event.EventID,
+	}
+	boundary := observations[0].Event
+	candidate := taskTraceSegment{key: taskTraceKey{
+		workspace: workspace,
+		taskID:    identity.taskID,
+		segment:   boundary.EventID,
+	}, startSeq: boundary.Seq}
+	segment, known := p.segments[identity]
+	if !known || taskEventStartsSegment(boundary) &&
+		boundary.EventID != segment.key.segment && boundary.Seq > segment.startSeq {
+		segment = candidate
+	}
+	key := segment.key
+	observations = taskObservationsFrom(observations, segment.startSeq)
+	if len(observations) == 0 {
+		return
 	}
 	if terminal, completed := p.completed[key]; completed {
 		if event.Seq > terminal.terminalSeq {
@@ -145,6 +174,7 @@ func (p *taskTraceProjector) observe(
 		}
 		return
 	}
+	p.segments[identity] = segment
 	trace := p.traces[key]
 	if trace == nil {
 		trace = newTaskTrace(settings, workspace, observations[0].Event, record)
@@ -192,13 +222,7 @@ func taskHistoryThrough(
 	})
 	segmentStart := 0
 	for i, event := range bounded {
-		if event.Type == taskregistry.EventTaskUpserted {
-			segmentStart = i
-			continue
-		}
-		if i > segmentStart && event.Status != taskregistry.StatusLost &&
-			taskEventIsTerminal(bounded[i-1]) &&
-			bounded[i-1].Status == taskregistry.StatusLost {
+		if taskEventStartsSegment(event) {
 			segmentStart = i
 		}
 	}
@@ -210,6 +234,23 @@ func taskHistoryThrough(
 		})
 	}
 	return observations
+}
+
+func taskEventStartsSegment(event taskregistry.TaskEvent) bool {
+	return event.Type == taskregistry.EventTaskUpserted ||
+		event.Type == taskregistry.EventTaskStatusChanged &&
+			event.Payload["from"] == string(taskregistry.StatusLost) &&
+			event.Status != taskregistry.StatusLost
+}
+
+func taskObservationsFrom(
+	observations []taskregistry.EventObservation,
+	startSeq int64,
+) []taskregistry.EventObservation {
+	start := sort.Search(len(observations), func(i int) bool {
+		return observations[i].Event.Seq >= startSeq
+	})
+	return observations[start:]
 }
 
 func (p *taskTraceProjector) pruneCompletedLocked(
