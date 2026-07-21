@@ -49,6 +49,50 @@ func TestInvocationStateTerminal(t *testing.T) {
 	}
 }
 
+func TestInvocationRecordValidatesCancellationMetadata(t *testing.T) {
+	record := validInvocationRecord()
+	record.State = InvocationRunning
+	record.UpdatedAt = 2
+	record.Cancellation = &InvocationCancellation{RequestedAt: 2}
+	if err := record.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	record.Cancellation.TerminationConfirmed = true
+	if err := record.Validate(); err == nil {
+		t.Fatal("running invocation confirmed termination")
+	}
+	record.State = InvocationCanceled
+	record.CompletedAt = 2
+	record.Failure = &InvocationFailure{Code: "CANCELED", Message: "canceled"}
+	if err := record.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	record.Cancellation = nil
+	if err := record.Validate(); err == nil {
+		t.Fatal("explicit cancellation validated without termination proof")
+	}
+	record.Failure = &InvocationFailure{Code: "PLAN_EXPIRED", Message: "expired"}
+	if err := record.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	record.State = InvocationSucceeded
+	record.Result = json.RawMessage(`{"ok":true}`)
+	record.Failure = nil
+	record.Cancellation = &InvocationCancellation{RequestedAt: 2}
+	if err := record.Validate(); err == nil {
+		t.Fatal("successful invocation retained cancellation metadata")
+	}
+}
+
+func TestInvocationCancelRequestValidation(t *testing.T) {
+	if err := (InvocationCancelRequest{InvocationID: "inv_test"}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (InvocationCancelRequest{}).Validate(); err == nil {
+		t.Fatal("empty cancellation request validated")
+	}
+}
+
 func validInvocationRecord() InvocationRecord {
 	return InvocationRecord{
 		InvocationID:   "inv_test",
