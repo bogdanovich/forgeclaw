@@ -54,6 +54,99 @@ func TestRegistryPersistsAndReloadsRecords(t *testing.T) {
 	}
 }
 
+func TestRegistryOwnsDurableGenerationIdentity(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "task-generation", GenerationID: "caller-controlled", Task: "test",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	record, ok := registry.Get("task-generation")
+	if !ok || record.GenerationID == "" || record.GenerationID == "caller-controlled" {
+		t.Fatalf("runtime-owned generation = %#v", record)
+	}
+	generationID := record.GenerationID
+	events := registry.ListEvents("task-generation")
+	if len(events) != 1 || events[0].GenerationID != generationID {
+		t.Fatalf("initial events = %#v", events)
+	}
+	if !strings.Contains(events[0].EventID, generationID) {
+		t.Fatalf("event ID %q does not bind generation %q", events[0].EventID, generationID)
+	}
+	if err := registry.Update("task-generation", func(record *Record) {
+		record.GenerationID = "mutated"
+		record.ProgressSummary = "working"
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	record, _ = registry.Get("task-generation")
+	if record.GenerationID != generationID {
+		t.Fatalf("generation after mutation = %q, want %q", record.GenerationID, generationID)
+	}
+	reloaded := NewRegistry(store)
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	record, _ = reloaded.Get("task-generation")
+	if record.GenerationID != generationID {
+		t.Fatalf("reloaded generation = %q, want %q", record.GenerationID, generationID)
+	}
+	for _, event := range reloaded.ListEvents("task-generation") {
+		if event.GenerationID != generationID {
+			t.Fatalf("event generation = %q, want %q", event.GenerationID, generationID)
+		}
+	}
+}
+
+func TestRegistrySeparatesReusedTaskGenerationsAfterEventRetention(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxEvents: 1})
+	upsert := func() (Record, TaskEvent) {
+		t.Helper()
+		if err := registry.Upsert(Record{
+			TaskID: "reused", CreatedAt: 1_000, Task: "test",
+		}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		record, _ := registry.Get("reused")
+		events := registry.ListEvents("reused")
+		return record, events[len(events)-1]
+	}
+	firstRecord, firstUpsert := upsert()
+	if err := registry.AppendEvent("reused", EventTaskProgress, nil); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	secondRecord, secondUpsert := upsert()
+
+	if firstRecord.GenerationID == secondRecord.GenerationID {
+		t.Fatalf("reused task generations share ID %q", firstRecord.GenerationID)
+	}
+	if firstUpsert.EventID == secondUpsert.EventID {
+		t.Fatalf("reused task upserts share event ID %q", firstUpsert.EventID)
+	}
+	if firstUpsert.Seq != 1 || secondUpsert.Seq != 1 {
+		t.Fatalf("generation-local sequences = %d, %d; want 1, 1", firstUpsert.Seq, secondUpsert.Seq)
+	}
+	if secondUpsert.GenerationID != secondRecord.GenerationID {
+		t.Fatalf("second upsert generation = %q, want %q", secondUpsert.GenerationID, secondRecord.GenerationID)
+	}
+}
+
+func TestRegistryRejectsSnapshotsWithoutGenerationIdentity(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "task_registry.json")
+	data, err := json.Marshal(Snapshot{Tasks: []Record{{TaskID: "legacy"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(store)
+	if err := registry.LastLoadError(); err == nil || !strings.Contains(err.Error(), "generation_id") {
+		t.Fatalf("LastLoadError = %v, want missing generation_id", err)
+	}
+}
+
 func TestRegistryProjectsDurableInteractionLifecycle(t *testing.T) {
 	registry := NewRegistry("")
 	if err := registry.Upsert(Record{
@@ -623,6 +716,7 @@ func TestRegistryPrunesOrphanEventsWhenSnapshotHasNoTasks(t *testing.T) {
 		EventID:       "event-orphan",
 		SchemaVersion: TaskEventSchemaVersion,
 		TaskID:        "deleted-task",
+		GenerationID:  "generation-orphan",
 		Type:          EventTaskUpdated,
 		EmittedAt:     time.Now().UnixMilli(),
 	}}}

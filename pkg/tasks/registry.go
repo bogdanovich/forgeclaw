@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
@@ -63,7 +65,7 @@ const (
 	DefaultMaxRecords        = 1000
 	DefaultMaxEvents         = 5000
 	DefaultMaxSnapshotBytes  = 2 * 1024 * 1024
-	TaskEventSchemaVersion   = "task_event.v1"
+	TaskEventSchemaVersion   = "task_event.v2"
 	DeliverableReportV1      = "deliverable_report.v1"
 )
 
@@ -143,6 +145,7 @@ type TaskEvent struct {
 	SchemaVersion  string            `json:"schema_version"`
 	EventID        string            `json:"event_id"`
 	TaskID         string            `json:"task_id"`
+	GenerationID   string            `json:"generation_id"`
 	Runtime        Runtime           `json:"runtime,omitempty"`
 	ParentTaskID   string            `json:"parent_task_id,omitempty"`
 	Type           EventType         `json:"type"`
@@ -158,6 +161,7 @@ type TaskEvent struct {
 
 type Record struct {
 	TaskID              string              `json:"task_id"`
+	GenerationID        string              `json:"generation_id"`
 	Runtime             Runtime             `json:"runtime"`
 	TaskKind            string              `json:"task_kind,omitempty"`
 	ParentTaskID        string              `json:"parent_task_id,omitempty"`
@@ -328,6 +332,7 @@ func (r *Registry) Upsert(rec Record) error {
 		rec.Runtime = RuntimeTool
 	}
 	rec = r.normalizeRecord(rec, now)
+	rec.GenerationID = uuid.NewString()
 
 	r.mu.Lock()
 	eventStart := len(r.events)
@@ -359,6 +364,7 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	}
 	before := rec
 	mutate(&rec)
+	rec.GenerationID = before.GenerationID
 	now := time.Now().UnixMilli()
 	if rec.LastEventAt == 0 || recordChanged(before, rec) {
 		rec.LastEventAt = now
@@ -589,6 +595,7 @@ func (r *Registry) updateInteractionProjection(
 		r.mu.Unlock()
 		return err
 	}
+	rec.GenerationID = before.GenerationID
 	now := time.Now().UnixMilli()
 	rec.LastEventAt = now
 	rec = r.normalizeRecord(rec, now)
@@ -1005,14 +1012,23 @@ func (r *Registry) load() error {
 		if strings.TrimSpace(rec.TaskID) == "" {
 			continue
 		}
+		if strings.TrimSpace(rec.GenerationID) == "" {
+			return fmt.Errorf("task %q is missing generation_id", rec.TaskID)
+		}
 		r.records[rec.TaskID] = r.normalizeRecord(rec, now)
 	}
 	for _, evt := range snap.Events {
 		if strings.TrimSpace(evt.TaskID) == "" || evt.Type == "" {
 			continue
 		}
-		if evt.SchemaVersion == "" {
-			evt.SchemaVersion = TaskEventSchemaVersion
+		if strings.TrimSpace(evt.GenerationID) == "" {
+			return fmt.Errorf("task event %q is missing generation_id", evt.EventID)
+		}
+		if evt.SchemaVersion != TaskEventSchemaVersion {
+			return fmt.Errorf(
+				"task event %q has schema %q, want %q",
+				evt.EventID, evt.SchemaVersion, TaskEventSchemaVersion,
+			)
 		}
 		r.events = append(r.events, evt)
 	}
@@ -1095,10 +1111,11 @@ func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt 
 	if emittedAt == 0 {
 		emittedAt = time.Now().UnixMilli()
 	}
-	seq := r.nextEventSeqLocked(rec.TaskID)
+	seq := r.nextEventSeqLocked(rec.TaskID, rec.GenerationID)
 	evt := TaskEvent{
 		SchemaVersion:  TaskEventSchemaVersion,
 		TaskID:         rec.TaskID,
+		GenerationID:   rec.GenerationID,
 		Runtime:        rec.Runtime,
 		ParentTaskID:   rec.ParentTaskID,
 		Type:           eventType,
@@ -1110,15 +1127,15 @@ func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt 
 		Producer:       firstNonEmpty(rec.AgentID, string(rec.Runtime)),
 		Payload:        cleanPayload(payload),
 	}
-	evt.EventID = fmt.Sprintf("%s:%06d:%s", rec.TaskID, seq, eventType)
+	evt.EventID = fmt.Sprintf("%s:%s:%06d:%s", rec.TaskID, rec.GenerationID, seq, eventType)
 	evt.Fingerprint = taskEventFingerprint(evt)
 	r.events = append(r.events, evt)
 }
 
-func (r *Registry) nextEventSeqLocked(taskID string) int64 {
+func (r *Registry) nextEventSeqLocked(taskID, generationID string) int64 {
 	var maxSeq int64
 	for _, evt := range r.events {
-		if evt.TaskID == taskID && evt.Seq > maxSeq {
+		if evt.TaskID == taskID && evt.GenerationID == generationID && evt.Seq > maxSeq {
 			maxSeq = evt.Seq
 		}
 	}
@@ -1129,6 +1146,7 @@ func taskEventFingerprint(evt TaskEvent) string {
 	payload, _ := json.Marshal(evt.Payload)
 	parts := []string{
 		evt.TaskID,
+		evt.GenerationID,
 		string(evt.Type),
 		string(evt.Status),
 		string(evt.DeliveryStatus),
