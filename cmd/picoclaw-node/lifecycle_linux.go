@@ -1,0 +1,218 @@
+//go:build linux
+
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"unicode"
+
+	"github.com/sipeed/picoclaw/pkg/fileutil"
+)
+
+type systemdRunResult struct {
+	Output   string
+	ExitCode int
+}
+
+type systemdRunner func(context.Context, bool, ...string) (systemdRunResult, error)
+
+type systemdLifecycle struct {
+	system  bool
+	unitDir string
+	run     systemdRunner
+}
+
+func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
+	unitDir := "/etc/systemd/system"
+	if !system {
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve user config directory: %w", err)
+		}
+		unitDir = filepath.Join(configDir, "systemd", "user")
+	}
+	return &systemdLifecycle{system: system, unitDir: unitDir, run: runSystemctl}, nil
+}
+
+func (lifecycle *systemdLifecycle) Install(
+	ctx context.Context,
+	request lifecycleRequest,
+) (lifecycleStatus, error) {
+	status := lifecycle.baseStatus(request.Instance)
+	unit, err := renderSystemdUnit(request, lifecycle.system)
+	if err != nil {
+		return lifecycleStatus{}, err
+	}
+	if err = fileutil.WriteFileAtomic(status.UnitPath, []byte(unit), 0o644); err != nil {
+		return lifecycleStatus{}, fmt.Errorf("write systemd unit: %w", err)
+	}
+	if err = lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
+		return lifecycleStatus{}, err
+	}
+	if err = lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
+		return lifecycleStatus{}, err
+	}
+	return lifecycle.Status(ctx, request)
+}
+
+func (lifecycle *systemdLifecycle) Status(
+	ctx context.Context,
+	request lifecycleRequest,
+) (lifecycleStatus, error) {
+	status := lifecycle.baseStatus(request.Instance)
+	if _, err := os.Stat(status.UnitPath); errors.Is(err, os.ErrNotExist) {
+		return status, nil
+	} else if err != nil {
+		return lifecycleStatus{}, fmt.Errorf("inspect systemd unit: %w", err)
+	}
+	status.Installed = true
+	result, err := lifecycle.run(ctx, lifecycle.system, "is-active", status.Service)
+	if err != nil {
+		return lifecycleStatus{}, err
+	}
+	status.State = strings.TrimSpace(result.Output)
+	if result.ExitCode == 0 {
+		status.Active = status.State == "active" || status.State == "reloading"
+		return status, nil
+	}
+	if result.ExitCode == 3 && status.State != "" {
+		return status, nil
+	}
+	return lifecycleStatus{}, systemdCommandError(result, "is-active", status.Service)
+}
+
+func (lifecycle *systemdLifecycle) Uninstall(
+	ctx context.Context,
+	request lifecycleRequest,
+) (lifecycleStatus, error) {
+	status := lifecycle.baseStatus(request.Instance)
+	if _, err := os.Stat(status.UnitPath); errors.Is(err, os.ErrNotExist) {
+		if reloadErr := lifecycle.requireSuccess(ctx, "daemon-reload"); reloadErr != nil {
+			return lifecycleStatus{}, reloadErr
+		}
+		status.State = "not-installed"
+		return status, nil
+	} else if err != nil {
+		return lifecycleStatus{}, fmt.Errorf("inspect systemd unit: %w", err)
+	}
+	if err := lifecycle.requireSuccess(ctx, "disable", "--now", status.Service); err != nil {
+		return lifecycleStatus{}, err
+	}
+	if err := os.Remove(status.UnitPath); err != nil {
+		return lifecycleStatus{}, fmt.Errorf("remove systemd unit: %w", err)
+	}
+	if err := lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
+		return lifecycleStatus{}, err
+	}
+	status.State = "removed"
+	return status, nil
+}
+
+func (lifecycle *systemdLifecycle) baseStatus(instance string) lifecycleStatus {
+	service := "picoclaw-node-" + instance + ".service"
+	scope := "user"
+	if lifecycle.system {
+		scope = "system"
+	}
+	return lifecycleStatus{
+		Instance: instance,
+		Manager:  "systemd",
+		Scope:    scope,
+		Service:  service,
+		UnitPath: filepath.Join(lifecycle.unitDir, service),
+		State:    "not-installed",
+	}
+}
+
+func (lifecycle *systemdLifecycle) requireSuccess(ctx context.Context, args ...string) error {
+	result, err := lifecycle.run(ctx, lifecycle.system, args...)
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return systemdCommandError(result, args...)
+	}
+	return nil
+}
+
+func runSystemctl(ctx context.Context, system bool, args ...string) (systemdRunResult, error) {
+	commandArgs := make([]string, 0, len(args)+1)
+	if !system {
+		commandArgs = append(commandArgs, "--user")
+	}
+	commandArgs = append(commandArgs, args...)
+	command := exec.CommandContext(ctx, "systemctl", commandArgs...)
+	output, err := command.CombinedOutput()
+	result := systemdRunResult{Output: strings.TrimSpace(string(output))}
+	if err == nil {
+		return result, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.ExitCode = exitErr.ExitCode()
+		return result, nil
+	}
+	return systemdRunResult{}, fmt.Errorf("run systemctl: %w", err)
+}
+
+func systemdCommandError(result systemdRunResult, args ...string) error {
+	detail := strings.TrimSpace(result.Output)
+	if detail == "" {
+		detail = "no output"
+	}
+	return fmt.Errorf("systemctl %s failed with exit code %d: %s", strings.Join(args, " "), result.ExitCode, detail)
+}
+
+func renderSystemdUnit(request lifecycleRequest, system bool) (string, error) {
+	if !filepath.IsAbs(request.ExecutablePath) || !filepath.IsAbs(request.ConfigPath) {
+		return "", errors.New("systemd executable and config paths must be absolute")
+	}
+	executable, err := quoteSystemdArgument(request.ExecutablePath)
+	if err != nil {
+		return "", fmt.Errorf("quote executable path: %w", err)
+	}
+	configPath, err := quoteSystemdArgument(request.ConfigPath)
+	if err != nil {
+		return "", fmt.Errorf("quote config path: %w", err)
+	}
+	target := "default.target"
+	serviceUser := ""
+	if system {
+		if !serviceAccountPattern.MatchString(request.ServiceUser) {
+			return "", errors.New("systemd system unit requires a valid service user")
+		}
+		target = "multi-user.target"
+		serviceUser = "User=" + request.ServiceUser + "\n"
+	}
+	return fmt.Sprintf(`[Unit]
+Description=ForgeClaw node companion (%s)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+%sExecStart=%s run --config %s
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=%s
+`, request.Instance, serviceUser, executable, configPath, target), nil
+}
+
+func quoteSystemdArgument(value string) (string, error) {
+	if value == "" || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return "", errors.New("argument is empty or contains control characters")
+	}
+	value = strings.ReplaceAll(value, "%", "%%")
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return `"` + value + `"`, nil
+}

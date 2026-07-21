@@ -62,6 +62,48 @@ The first successful handshake creates
 `<state_dir>/identity.json` with owner-only permissions. Back up that file as a
 secret: replacing it creates a different node identity.
 
+## Install On Linux
+
+Install a named systemd user service after validating the node configuration:
+
+```bash
+picoclaw-node install \
+  --instance main \
+  --config ~/.picoclaw-node/main/config.json
+picoclaw-node status --instance main
+```
+
+The installer writes
+`~/.config/systemd/user/picoclaw-node-main.service`, reloads the user manager,
+and enables and starts the service. It uses direct `systemctl` arguments and
+records absolute executable and configuration paths in the unit.
+
+System-wide installation is explicit and normally requires root:
+
+```bash
+sudo picoclaw-node install \
+  --system \
+  --instance vpn \
+  --service-user forgeclaw-node \
+  --config /etc/forgeclaw/node-vpn.json
+sudo picoclaw-node status --system --instance vpn
+```
+
+Remove the matching service with the same scope and instance:
+
+```bash
+picoclaw-node uninstall --instance main
+sudo picoclaw-node uninstall --system --instance vpn
+```
+
+Use `--json` with any lifecycle command for stable machine-readable status.
+System installation deliberately requires an existing unprivileged account;
+the generated unit never runs the companion as root. For a user service that
+must remain active after logout, enable systemd lingering for that account with
+the operator-controlled `loginctl enable-linger <user>` command.
+macOS LaunchAgent lifecycle support follows separately; `run` remains available
+on every supported platform.
+
 ## Multiple Workspaces
 
 The MVP uses one gateway binding per process. Run named service instances from
