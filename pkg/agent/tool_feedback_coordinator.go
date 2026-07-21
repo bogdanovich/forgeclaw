@@ -8,6 +8,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -79,37 +80,36 @@ func (tf *toolFeedbackPublisher) dismissToolFeedbackForTurn(ctx context.Context,
 	if tf == nil || tf.channelManager == nil || ts == nil || ts.channel == "" {
 		return
 	}
-	tf.channelManager.DismissToolFeedback(ctx, ts.channel, ts.chatID, ts.opts.InboundContext)
+	target := outboundMessageForTurn(ts, "")
+	tf.dismissToolFeedback(ctx, target)
 }
 
-func (al *AgentLoop) dismissToolFeedbackForSession(
-	ctx context.Context,
+func toolFeedbackTargetForSession(
 	channel string,
 	chatID string,
 	inboundCtx *bus.InboundContext,
 	sessionKey string,
-) {
-	al.toolFeedbackPublisher().dismissToolFeedbackForSession(ctx, channel, chatID, inboundCtx, sessionKey)
+	traceScopes []runtimeevents.TraceScope,
+) bus.OutboundMessage {
+	target := bus.OutboundMessage{
+		Channel:    channel,
+		ChatID:     chatID,
+		Context:    outboundContextFromInbound(inboundCtx, channel, chatID, ""),
+		SessionKey: sessionKey,
+	}
+	_ = bus.SetOutboundTraceScopes(&target, traceScopes)
+	return target
 }
 
-func (tf *toolFeedbackPublisher) dismissToolFeedbackForSession(
+func (tf *toolFeedbackPublisher) dismissToolFeedback(
 	ctx context.Context,
-	channel string,
-	chatID string,
-	inboundCtx *bus.InboundContext,
-	sessionKey string,
+	target bus.OutboundMessage,
 ) {
-	if tf == nil || tf.channelManager == nil || channel == "" || chatID == "" {
+	if tf == nil || tf.channelManager == nil || target.Channel == "" || target.ChatID == "" {
 		return
 	}
 	dismissCtx, dismissCancel := context.WithTimeout(ctx, 5*time.Second)
-	tf.channelManager.DismissToolFeedbackForSession(
-		dismissCtx,
-		channel,
-		chatID,
-		inboundCtx,
-		sessionKey,
-	)
+	tf.channelManager.DismissToolFeedback(dismissCtx, target)
 	dismissCancel()
 }
 

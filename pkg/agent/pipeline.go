@@ -112,7 +112,11 @@ type runtimeEventEmitter interface {
 
 type pipelineBus interface {
 	PublishOutbound(ctx context.Context, msg bus.OutboundMessage) error
-	GetStreamer(ctx context.Context, channel, chatID, sessionKey string) (bus.Streamer, bool)
+	GetStreamer(
+		ctx context.Context,
+		channel, chatID, sessionKey string,
+		traceScope runtimeevents.TraceScope,
+	) (bus.Streamer, bool)
 }
 
 type channelStreamingConfigProvider interface {

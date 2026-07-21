@@ -71,69 +71,7 @@ func TestHandleMessageSend_ForwardsMessageMetadata(t *testing.T) {
 	}
 }
 
-func TestFinalizeTrackedToolFeedbackMessage_StopsTrackingBeforeEdit(t *testing.T) {
-	ch := &PicoChannel{
-		progress: channels.NewToolFeedbackAnimator(nil),
-	}
-	ch.RecordToolFeedbackMessage("pico:chat-1", "msg-1", "🔧 `read_file`")
-
-	msgIDs, handled := ch.finalizeTrackedToolFeedbackMessage(
-		context.Background(),
-		"pico:chat-1",
-		"final reply",
-		func(_ context.Context, chatID, messageID string, payload map[string]any, contextUsage *bus.ContextUsage) error {
-			if _, ok := ch.currentToolFeedbackMessage(chatID); ok {
-				t.Fatal("expected tracked tool feedback to be stopped before edit")
-			}
-			if chatID != "pico:chat-1" || messageID != "msg-1" {
-				t.Fatalf("unexpected edit args: %s %s", chatID, messageID)
-			}
-			if got := payload[PayloadKeyContent]; got != "final reply" {
-				t.Fatalf("unexpected content payload: %#v", got)
-			}
-			if contextUsage != nil {
-				t.Fatalf("unexpected context usage: %+v", contextUsage)
-			}
-			return nil
-		},
-		nil,
-		nil,
-	)
-	if !handled {
-		t.Fatal("expected finalizeTrackedToolFeedbackMessage to handle tracked message")
-	}
-	if len(msgIDs) != 1 || msgIDs[0] != "msg-1" {
-		t.Fatalf("finalizeTrackedToolFeedbackMessage() ids = %v, want [msg-1]", msgIDs)
-	}
-}
-
-func TestDismissTrackedToolFeedbackMessage_DeletesProgressMessage(t *testing.T) {
-	ch := &PicoChannel{
-		progress: channels.NewToolFeedbackAnimator(nil),
-	}
-	ch.RecordToolFeedbackMessage("pico:chat-1", "msg-1", "🔧 `read_file`")
-
-	var deleted struct {
-		chatID    string
-		messageID string
-	}
-	ch.deleteMessageFn = func(_ context.Context, chatID string, messageID string) error {
-		deleted.chatID = chatID
-		deleted.messageID = messageID
-		return nil
-	}
-
-	ch.DismissToolFeedbackMessage(context.Background(), "pico:chat-1")
-
-	if deleted.chatID != "pico:chat-1" || deleted.messageID != "msg-1" {
-		t.Fatalf("unexpected delete target: %+v", deleted)
-	}
-	if _, ok := ch.currentToolFeedbackMessage("pico:chat-1"); ok {
-		t.Fatal("expected tracked tool feedback to be cleared after dismissal")
-	}
-}
-
-func TestSend_ThoughtMessageDoesNotFinalizeTrackedToolFeedback(t *testing.T) {
+func TestSend_ThoughtMessageIncludesMetadata(t *testing.T) {
 	ch := newTestPicoChannel(t)
 
 	if err := ch.Start(context.Background()); err != nil {
@@ -144,8 +82,6 @@ func TestSend_ThoughtMessageDoesNotFinalizeTrackedToolFeedback(t *testing.T) {
 	clientConn, received, cleanup := newTestPicoWebSocket(t)
 	defer cleanup()
 	ch.addConnForTest(&picoConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
-
-	ch.RecordToolFeedbackMessage("pico:sess-1", "msg-progress", "🔧 `read_file`\nReading config")
 
 	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "pico:sess-1",
@@ -177,68 +113,11 @@ func TestSend_ThoughtMessageDoesNotFinalizeTrackedToolFeedback(t *testing.T) {
 		if got := payload[PayloadKeyModelName]; got != "gpt-5.4-mini" {
 			t.Fatalf("thought model_name = %#v, want %q", got, "gpt-5.4-mini")
 		}
-		if got := payload["message_id"]; got == "msg-progress" || got == nil || got == "" {
-			t.Fatalf("thought message_id = %#v, want new non-progress id", got)
+		if got := payload["message_id"]; got == nil || got == "" {
+			t.Fatalf("thought message_id = %#v, want non-empty id", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected thought message to be delivered")
-	}
-
-	if msgID, ok := ch.currentToolFeedbackMessage("pico:sess-1"); !ok || msgID != "msg-progress" {
-		t.Fatalf("tracked tool feedback = (%q, %v), want (msg-progress, true)", msgID, ok)
-	}
-
-	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "pico:sess-1",
-		Content: "final reply",
-		Context: bus.InboundContext{
-			Channel: "pico",
-			ChatID:  "pico:sess-1",
-			Raw: map[string]string{
-				PayloadKeyModelName: "gpt-5.4",
-			},
-		},
-		ContextUsage: &bus.ContextUsage{
-			UsedTokens:       321,
-			TotalTokens:      4096,
-			CompressAtTokens: 3072,
-			UsedPercent:      8,
-		},
-	}); err != nil {
-		t.Fatalf("Send(final) error = %v", err)
-	}
-
-	select {
-	case msg := <-received:
-		if msg.Type != TypeMessageUpdate {
-			t.Fatalf("final message type = %q, want %q", msg.Type, TypeMessageUpdate)
-		}
-		payload := msg.Payload
-		if got := payload["message_id"]; got != "msg-progress" {
-			t.Fatalf("final message_id = %#v, want %q", got, "msg-progress")
-		}
-		if got := payload[PayloadKeyContent]; got != "final reply" {
-			t.Fatalf("final content = %#v, want %q", got, "final reply")
-		}
-		if got := payload[PayloadKeyModelName]; got != "gpt-5.4" {
-			t.Fatalf("final model_name = %#v, want %q", got, "gpt-5.4")
-		}
-		rawUsage, ok := payload["context_usage"].(map[string]any)
-		if !ok {
-			t.Fatalf("final context_usage = %#v, want map payload", payload["context_usage"])
-		}
-		if got, ok := rawUsage["used_tokens"].(float64); !ok || got != 321 {
-			t.Fatalf("used_tokens = %#v, want 321", rawUsage["used_tokens"])
-		}
-		if got, ok := rawUsage["total_tokens"].(float64); !ok || got != 4096 {
-			t.Fatalf("total_tokens = %#v, want 4096", rawUsage["total_tokens"])
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected final reply to finalize tracked tool feedback")
-	}
-
-	if _, ok := ch.currentToolFeedbackMessage("pico:sess-1"); ok {
-		t.Fatal("expected tracked tool feedback to be cleared after final reply")
 	}
 }
 
@@ -1329,75 +1208,6 @@ func TestPicoStreamerFailedCreateRetriesAsCreate(t *testing.T) {
 				t.Fatal("stored ID after successful retry is empty")
 			}
 		})
-	}
-}
-
-func TestSendMedia_DismissesTrackedToolFeedbackMessage(t *testing.T) {
-	ch := newTestPicoChannel(t)
-	store := media.NewFileMediaStore()
-	ch.SetMediaStore(store)
-
-	if err := ch.Start(context.Background()); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer ch.Stop(context.Background())
-
-	clientConn, received, cleanup := newTestPicoWebSocket(t)
-	defer cleanup()
-	ch.addConnForTest(&picoConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
-
-	localPath := filepath.Join(t.TempDir(), "report.txt")
-	if err := os.WriteFile(localPath, []byte("attachment body"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	ref, err := store.Store(localPath, media.MediaMeta{
-		Filename:    "report.txt",
-		ContentType: "text/plain",
-	}, "test-scope")
-	if err != nil {
-		t.Fatalf("Store() error = %v", err)
-	}
-
-	ch.RecordToolFeedbackMessage("pico:sess-1", "msg-progress", "🔧 `read_file`")
-
-	var deleted struct {
-		chatID    string
-		messageID string
-	}
-	ch.deleteMessageFn = func(_ context.Context, chatID string, messageID string) error {
-		deleted.chatID = chatID
-		deleted.messageID = messageID
-		return nil
-	}
-
-	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
-		ChatID: "pico:sess-1",
-		Parts: []bus.MediaPart{{
-			Ref:         ref,
-			Type:        "file",
-			Filename:    "report.txt",
-			ContentType: "text/plain",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("SendMedia() error = %v", err)
-	}
-
-	select {
-	case msg := <-received:
-		if msg.Type != TypeMessageCreate {
-			t.Fatalf("message type = %q, want %q", msg.Type, TypeMessageCreate)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected media message to be delivered")
-	}
-
-	if deleted.chatID != "pico:sess-1" || deleted.messageID != "msg-progress" {
-		t.Fatalf("unexpected delete target: %+v", deleted)
-	}
-	if _, ok := ch.currentToolFeedbackMessage("pico:sess-1"); ok {
-		t.Fatal("expected tracked tool feedback to be cleared after media delivery")
 	}
 }
 

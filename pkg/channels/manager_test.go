@@ -222,6 +222,113 @@ func newTestManager() *Manager {
 	}
 }
 
+type toolFeedbackTestChannel struct {
+	mockChannel
+	mu          sync.Mutex
+	nextID      int
+	sendCalls   int
+	failSendAt  int
+	maxLen      int
+	sendErr     error
+	operations  []string
+	edited      []string
+	deleted     []string
+	resolvedID  string
+	preparedTag string
+}
+
+type toolFeedbackStreamingTestChannel struct {
+	*toolFeedbackTestChannel
+	streamer Streamer
+}
+
+type uneditableToolFeedbackTestChannel struct {
+	*toolFeedbackTestChannel
+}
+
+func (c *uneditableToolFeedbackTestChannel) SendToolFeedbackMessage(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) ([]string, bool, error) {
+	messageIDs, err := c.Send(ctx, msg)
+	return messageIDs, false, err
+}
+
+func (c *toolFeedbackStreamingTestChannel) BeginStream(context.Context, string) (Streamer, error) {
+	return c.streamer, nil
+}
+
+func (c *toolFeedbackTestChannel) Send(_ context.Context, msg bus.OutboundMessage) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sendCalls++
+	c.operations = append(c.operations, "send:"+msg.Content)
+	if c.failSendAt > 0 && c.sendCalls == c.failSendAt {
+		return nil, ErrSendFailed
+	}
+	if c.sendErr != nil {
+		return nil, c.sendErr
+	}
+	c.nextID++
+	return []string{fmt.Sprintf("msg-%d", c.nextID)}, nil
+}
+
+func (c *toolFeedbackTestChannel) MaxMessageLength() int {
+	return c.maxLen
+}
+
+func (c *toolFeedbackTestChannel) SendMedia(
+	_ context.Context, msg bus.OutboundMediaMessage,
+) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.operations = append(c.operations, "send-media:"+msg.Context.MessageID)
+	if c.sendErr != nil {
+		return nil, c.sendErr
+	}
+	c.nextID++
+	return []string{fmt.Sprintf("msg-%d", c.nextID)}, nil
+}
+
+func (c *toolFeedbackTestChannel) EditMessage(
+	_ context.Context, chatID, messageID, content string,
+) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.operations = append(c.operations, "edit:"+messageID)
+	c.edited = append(c.edited, chatID+"|"+messageID+"|"+content)
+	return nil
+}
+
+func (c *toolFeedbackTestChannel) DeleteMessage(_ context.Context, chatID, messageID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.operations = append(c.operations, "delete:"+messageID)
+	c.deleted = append(c.deleted, chatID+"|"+messageID)
+	return nil
+}
+
+func (c *toolFeedbackTestChannel) ToolFeedbackMessageChatID(
+	chatID string, _ *bus.InboundContext,
+) string {
+	if c.resolvedID != "" {
+		return c.resolvedID
+	}
+	return chatID
+}
+
+func (c *toolFeedbackTestChannel) PrepareToolFeedbackMessageContent(content string) string {
+	return c.preparedTag + content
+}
+
+func enableTestToolFeedbackCoordinator(t *testing.T, m *Manager, separate bool) {
+	t.Helper()
+	m.toolFeedback = NewToolFeedbackCoordinator(ToolFeedbackAnimatorConfig{
+		AnimationInterval: time.Hour,
+	}, separate)
+	t.Cleanup(m.toolFeedback.StopAll)
+}
+
 func TestSetMediaStorePropagatesToExistingChannels(t *testing.T) {
 	oldStore := media.NewFileMediaStore()
 	newStore := media.NewFileMediaStore()
@@ -974,6 +1081,57 @@ func TestUnregisterChannel_DrainsDeliveryOutsideManagerLock(t *testing.T) {
 			workerExists,
 			channelExists,
 		)
+	}
+}
+
+func TestUnregisterChannel_RetiresToolFeedbackBeforeReplacement(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	oldChannel := &toolFeedbackTestChannel{}
+	owner := newDeliveryOwner("test", oldChannel, "test")
+	m.channels["test"] = oldChannel
+	m.workers["test"] = owner.Worker()
+	m.deliveryOwners["test"] = owner
+	owner.StartDelivery(context.Background(), m)
+
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "working",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", owner.Worker(), feedback); err != nil {
+		t.Fatalf("initial feedback error = %v", err)
+	}
+	if count := m.toolFeedback.ActiveCount(); count != 1 {
+		t.Fatalf("ActiveCount() before unregister = %d, want 1", count)
+	}
+
+	m.UnregisterChannel("test")
+	if count := m.toolFeedback.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() after unregister = %d, want 0", count)
+	}
+	replacement := &toolFeedbackTestChannel{}
+	replacementWorker := &channelWorker{ch: replacement, limiter: rate.NewLimiter(rate.Inf, 1)}
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", replacementWorker, feedback); err != nil {
+		t.Fatalf("replacement feedback error = %v", err)
+	}
+
+	oldChannel.mu.Lock()
+	oldOperations := slices.Clone(oldChannel.operations)
+	oldChannel.mu.Unlock()
+	replacement.mu.Lock()
+	replacementOperations := slices.Clone(replacement.operations)
+	replacement.mu.Unlock()
+	if !slices.Equal(oldOperations, []string{"send:working", "delete:msg-1"}) {
+		t.Fatalf("old channel operations = %v, want send followed by retirement cleanup", oldOperations)
+	}
+	if !slices.Equal(replacementOperations, []string{"send:working"}) {
+		t.Fatalf("replacement operations = %v, want one send", replacementOperations)
 	}
 }
 
@@ -2290,8 +2448,7 @@ func (m *mockResolvedToolFeedbackEditor) ResolveOutboundChatID(
 	return chatID
 }
 
-func TestDismissToolFeedbackForSession_UsesResolvedTopicScopedKey(t *testing.T) {
-	m := newTestManager()
+func TestToolFeedbackTarget_UsesResolvedTopicScopedKey(t *testing.T) {
 	ch := &mockResolvedToolFeedbackEditor{
 		resolveChatIDFn: func(chatID string, outboundCtx *bus.InboundContext) string {
 			if chatID != "-100123" {
@@ -2303,18 +2460,770 @@ func TestDismissToolFeedbackForSession_UsesResolvedTopicScopedKey(t *testing.T) 
 			return "-100123/6"
 		},
 	}
-	m.channels["telegram"] = ch
-
-	m.DismissToolFeedbackForSession(
-		context.Background(),
+	key, deliveryChatID := toolFeedbackTarget(
 		"telegram",
+		ch,
 		"-100123",
 		&bus.InboundContext{Channel: "telegram", ChatID: "-100123", TopicID: "6"},
 		"subturn-1",
+		runtimeevents.TraceScope{},
 	)
+	if deliveryChatID != "-100123/6" || key != "telegram:-100123/6#session:subturn-1" {
+		t.Fatalf("target = %q/%q, want resolved topic/session key", deliveryChatID, key)
+	}
+}
 
-	if len(ch.dismissedChatIDs) == 0 || ch.dismissedChatIDs[0] != "-100123/6#session:subturn-1" {
-		t.Fatalf("dismissed chatIDs = %v, want topic-scoped session key first", ch.dismissedChatIDs)
+func TestSendWithRetry_ToolFeedbackLifecycleOwnedByManager(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{resolvedID: "topic-42", preparedTag: "prepared:"}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "Working...\n- tool: exec",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+		t.Fatalf("initial feedback = (%v, %v, %v), want msg-1 sent", ids, sent, err)
+	}
+
+	feedback.Content = "Working...\n- tool: read_file"
+	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+		t.Fatalf("feedback update = (%v, %v, %v), want edit of msg-1", ids, sent, err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if len(ch.operations) != 2 || !strings.HasPrefix(ch.operations[0], "send:") || ch.operations[1] != "edit:msg-1" {
+		t.Fatalf("operations = %v, want one send followed by one edit", ch.operations)
+	}
+	if len(ch.edited) != 1 || !strings.HasPrefix(ch.edited[0], "topic-42|msg-1|prepared:") {
+		t.Fatalf("edits = %v, want resolved/prepared feedback edit", ch.edited)
+	}
+}
+
+func TestSendWithRetry_FinalSendsBeforeProgressDelete(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "Working...",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil || !sent {
+		t.Fatalf("feedback send = (%v, %v)", sent, err)
+	}
+	final := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "done",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "final_reply"},
+		},
+	})
+	if _, sent, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil || !sent {
+		t.Fatalf("final send = (%v, %v)", sent, err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if len(ch.operations) != 3 || ch.operations[1] != "send:done" || ch.operations[2] != "delete:msg-1" {
+		t.Fatalf("operations = %v, want final send before progress delete", ch.operations)
+	}
+	if m.toolFeedback.ActiveCount() != 0 {
+		t.Fatalf("active coordinator entries = %d, want 0", m.toolFeedback.ActiveCount())
+	}
+}
+
+func TestSendWithRetry_FailedFinalKeepsProgressEditable(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "Working...",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+		t.Fatalf("feedback send error = %v", err)
+	}
+	ch.mu.Lock()
+	ch.sendErr = ErrSendFailed
+	ch.mu.Unlock()
+	final := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "done",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "final_reply"},
+		},
+	})
+	if _, sent, _, err := m.sendWithRetry(context.Background(), "test", w, final); err == nil || sent {
+		t.Fatalf("failed final = (%v, %v), want failure", sent, err)
+	}
+	ch.mu.Lock()
+	ch.sendErr = nil
+	ch.mu.Unlock()
+	feedback.Content = "Working...\n- tool: retry"
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+		t.Fatalf("resumed feedback = (%v, %v, %v), want msg-1 edit", ids, sent, err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if len(ch.deleted) != 0 || ch.operations[len(ch.operations)-1] != "edit:msg-1" {
+		t.Fatalf("operations = %v deleted = %v, want retained progress edit", ch.operations, ch.deleted)
+	}
+}
+
+func TestLogicalSplitFailureKeepsProgressEditable(t *testing.T) {
+	for _, mode := range []string{"synchronous", "worker"} {
+		t.Run(mode, func(t *testing.T) {
+			m := newTestManager()
+			enableTestToolFeedbackCoordinator(t, m, false)
+			ch := &toolFeedbackTestChannel{maxLen: 5}
+			w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+			m.channels["test"] = ch
+			m.workers["test"] = w
+			traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+			feedback := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "work",
+				TraceScopes: []runtimeevents.TraceScope{traceScope},
+				Context: bus.InboundContext{
+					Channel: "test", ChatID: "chat-1",
+					Raw: map[string]string{"message_kind": "tool_feedback"},
+				},
+			})
+			if _, sent, _, err := m.sendWithRetry(
+				context.Background(), "test", w, feedback,
+			); err != nil || !sent {
+				t.Fatalf("feedback send = (%v, %v)", sent, err)
+			}
+			ch.mu.Lock()
+			ch.failSendAt = 3
+			ch.mu.Unlock()
+			final := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", Content: "hello world",
+				TraceScopes: []runtimeevents.TraceScope{traceScope},
+				Context: bus.InboundContext{
+					Channel: "test", ChatID: "chat-1",
+					Raw: map[string]string{"message_kind": "final_reply", "outbound_kind": "final"},
+				},
+			})
+			if mode == "synchronous" {
+				if err := m.SendMessage(context.Background(), final); err == nil {
+					t.Fatal("partial split delivery unexpectedly succeeded")
+				}
+			} else {
+				w.queue = make(chan bus.OutboundMessage, 1)
+				w.done = make(chan struct{})
+				w.queue <- final
+				close(w.queue)
+				m.runWorker(context.Background(), "test", w)
+			}
+
+			feedback.Content = "retry"
+			ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+			if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+				t.Fatalf("resumed feedback = (%v, %v, %v), want msg-1 edit", ids, sent, err)
+			}
+			if count := m.toolFeedback.ActiveCount(); count != 1 {
+				t.Fatalf("ActiveCount() = %d, want retained progress", count)
+			}
+			ch.mu.Lock()
+			defer ch.mu.Unlock()
+			if len(ch.deleted) != 0 || ch.operations[len(ch.operations)-1] != "edit:msg-1" {
+				t.Fatalf("operations = %v deleted = %v, want retained progress edit", ch.operations, ch.deleted)
+			}
+		})
+	}
+}
+
+func TestSendWithRetry_UneditableToolFeedbackSendsReplacement(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	transport := &toolFeedbackTestChannel{}
+	ch := &uneditableToolFeedbackTestChannel{toolFeedbackTestChannel: transport}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "first",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+		t.Fatalf("first feedback error = %v", err)
+	}
+	feedback.Content = "second"
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+		t.Fatalf("second feedback error = %v", err)
+	}
+	final := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "done",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "chat-1",
+			Raw:     map[string]string{"message_kind": "final_reply"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil {
+		t.Fatalf("final error = %v", err)
+	}
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	want := []string{"send:first", "send:second", "delete:msg-1", "send:done", "delete:msg-2"}
+	if !slices.Equal(transport.operations, want) {
+		t.Fatalf("operations = %v, want %v", transport.operations, want)
+	}
+	if count := m.toolFeedback.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+}
+
+func TestSendMediaWithRetry_BlocksSameTurnLateFeedback(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	turnOneScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	mediaMessage := testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel:     "test",
+		ChatID:      "chat-1",
+		Context:     bus.InboundContext{Channel: "test", ChatID: "chat-1", MessageID: "turn-1"},
+		TraceScopes: []runtimeevents.TraceScope{turnOneScope},
+	})
+	if _, err := m.sendMediaWithRetry(context.Background(), "test", w, mediaMessage); err != nil {
+		t.Fatalf("media send error = %v", err)
+	}
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel:     "test",
+		ChatID:      "chat-1",
+		Content:     "Working...",
+		TraceScopes: []runtimeevents.TraceScope{turnOneScope},
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw:       map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("late same-turn feedback = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	feedback.Context.MessageID = "turn-2"
+	feedback.TraceScopes = []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	}
+	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-2"}) {
+		t.Fatalf("next-turn feedback = (%v, %v, %v), want msg-2", ids, sent, err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	want := []string{
+		"send-media:turn-1",
+		"send:Working...",
+	}
+	if !slices.Equal(ch.operations, want) {
+		t.Fatalf("operations = %v, want %v", ch.operations, want)
+	}
+}
+
+func TestToolFeedbackLifecycle_IsolatedByTurnScope(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	turnOne := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	turnTwo := runtimeevents.NewTraceScope("/workspace/main", "turn-2")
+
+	feedback := func(scope runtimeevents.TraceScope, content string) bus.OutboundMessage {
+		return testOutboundMessage(bus.OutboundMessage{
+			Channel: "test", ChatID: "chat-1", Content: content,
+			TraceScopes: []runtimeevents.TraceScope{scope},
+			Context: bus.InboundContext{
+				Channel: "test", ChatID: "chat-1",
+				Raw: map[string]string{"message_kind": "tool_feedback"},
+			},
+		})
+	}
+	if _, _, _, err := m.sendWithRetry(
+		context.Background(), "test", w, feedback(turnOne, "one"),
+	); err != nil {
+		t.Fatalf("turn one feedback error = %v", err)
+	}
+	if _, _, _, err := m.sendWithRetry(
+		context.Background(), "test", w, feedback(turnTwo, "two"),
+	); err != nil {
+		t.Fatalf("turn two feedback error = %v", err)
+	}
+
+	m.DismissToolFeedback(context.Background(), bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1",
+		Context:     bus.InboundContext{Channel: "test", ChatID: "chat-1"},
+		TraceScopes: []runtimeevents.TraceScope{turnOne},
+	})
+	if count := m.toolFeedback.ActiveCount(); count != 1 {
+		t.Fatalf("ActiveCount() after turn one dismissal = %d, want 1", count)
+	}
+	if _, _, _, err := m.sendWithRetry(
+		context.Background(), "test", w, feedback(turnTwo, "two updated"),
+	); err != nil {
+		t.Fatalf("turn two update error = %v", err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	want := []string{"send:one", "send:two", "delete:msg-1", "edit:msg-2"}
+	if !slices.Equal(ch.operations, want) {
+		t.Fatalf("operations = %v, want %v", ch.operations, want)
+	}
+}
+
+func TestDismissToolFeedback_PreservesSessionAndTurnIdentity(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: "working",
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+		Context: bus.InboundContext{
+			Channel: "test", ChatID: "chat-1",
+			Raw: map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+		t.Fatalf("feedback error = %v", err)
+	}
+
+	m.DismissToolFeedback(context.Background(), bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1",
+		Context:     bus.InboundContext{Channel: "test", ChatID: "chat-1"},
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+	})
+
+	if count := m.toolFeedback.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if want := []string{"send:working", "delete:msg-1"}; !slices.Equal(ch.operations, want) {
+		t.Fatalf("operations = %v, want %v", ch.operations, want)
+	}
+}
+
+func TestDismissToolFeedback_UnscopedFallbackRequiresSingleActiveTurn(t *testing.T) {
+	tests := []struct {
+		name       string
+		turnIDs    []string
+		wantActive int
+		wantOps    []string
+	}{
+		{
+			name:    "single",
+			turnIDs: []string{"turn-1"},
+			wantOps: []string{"send:turn-1", "delete:msg-1"},
+		},
+		{
+			name:       "ambiguous",
+			turnIDs:    []string{"turn-1", "turn-2"},
+			wantActive: 2,
+			wantOps:    []string{"send:turn-1", "send:turn-2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager()
+			enableTestToolFeedbackCoordinator(t, m, false)
+			ch := &toolFeedbackTestChannel{}
+			m.channels["test"] = ch
+			w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+			for _, turnID := range tt.turnIDs {
+				feedback := testOutboundMessage(bus.OutboundMessage{
+					Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: turnID,
+					TraceScopes: []runtimeevents.TraceScope{
+						runtimeevents.NewTraceScope("/workspace/main", turnID),
+					},
+					Context: bus.InboundContext{
+						Channel: "test", ChatID: "chat-1",
+						Raw: map[string]string{"message_kind": "tool_feedback"},
+					},
+				})
+				if _, _, _, err := m.sendWithRetry(
+					context.Background(), "test", w, feedback,
+				); err != nil {
+					t.Fatalf("feedback %s error = %v", turnID, err)
+				}
+			}
+
+			m.DismissToolFeedback(context.Background(), bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", SessionKey: "session-1",
+				Context: bus.InboundContext{Channel: "test", ChatID: "chat-1"},
+			})
+
+			if count := m.toolFeedback.ActiveCount(); count != tt.wantActive {
+				t.Fatalf("ActiveCount() = %d, want %d", count, tt.wantActive)
+			}
+			ch.mu.Lock()
+			defer ch.mu.Unlock()
+			if !slices.Equal(ch.operations, tt.wantOps) {
+				t.Fatalf("operations = %v, want %v", ch.operations, tt.wantOps)
+			}
+		})
+	}
+}
+
+func TestToolFeedbackTerminal_UnscopedFallbackRequiresSingleActiveTurn(t *testing.T) {
+	tests := []struct {
+		name       string
+		turnIDs    []string
+		wantActive int
+		wantOps    []string
+	}{
+		{
+			name:    "single",
+			turnIDs: []string{"turn-1"},
+			wantOps: []string{"send:turn-1", "send:done", "delete:msg-1"},
+		},
+		{
+			name:       "ambiguous",
+			turnIDs:    []string{"turn-1", "turn-2"},
+			wantActive: 2,
+			wantOps:    []string{"send:turn-1", "send:turn-2", "send:done"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager()
+			enableTestToolFeedbackCoordinator(t, m, false)
+			ch := &toolFeedbackTestChannel{}
+			m.channels["test"] = ch
+			w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+			for _, turnID := range tt.turnIDs {
+				feedback := testOutboundMessage(bus.OutboundMessage{
+					Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: turnID,
+					TraceScopes: []runtimeevents.TraceScope{
+						runtimeevents.NewTraceScope("/workspace/main", turnID),
+					},
+					Context: bus.InboundContext{
+						Channel: "test", ChatID: "chat-1",
+						Raw: map[string]string{"message_kind": "tool_feedback"},
+					},
+				})
+				if _, _, _, err := m.sendWithRetry(
+					context.Background(), "test", w, feedback,
+				); err != nil {
+					t.Fatalf("feedback %s error = %v", turnID, err)
+				}
+			}
+			final := testOutboundMessage(bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: "done",
+				Context: bus.InboundContext{
+					Channel: "test", ChatID: "chat-1",
+					Raw: map[string]string{"outbound_kind": "final"},
+				},
+			})
+			if _, _, _, err := m.sendWithRetry(
+				context.Background(), "test", w, final,
+			); err != nil {
+				t.Fatalf("final error = %v", err)
+			}
+			if count := m.toolFeedback.ActiveCount(); count != tt.wantActive {
+				t.Fatalf("ActiveCount() = %d, want %d", count, tt.wantActive)
+			}
+			ch.mu.Lock()
+			defer ch.mu.Unlock()
+			if !slices.Equal(ch.operations, tt.wantOps) {
+				t.Fatalf("operations = %v, want %v", ch.operations, tt.wantOps)
+			}
+		})
+	}
+}
+
+func TestGetStreamer_FinalizedStateIsTurnScoped(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	transport := &toolFeedbackTestChannel{}
+	ch := &toolFeedbackStreamingTestChannel{
+		toolFeedbackTestChannel: transport,
+		streamer:                &mockStreamer{},
+	}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	turnOne := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	turnTwo := runtimeevents.NewTraceScope("/workspace/main", "turn-2")
+
+	streamer, ok := m.GetStreamer(
+		context.Background(), "test", "chat-1", "session-1", turnOne,
+	)
+	if !ok {
+		t.Fatal("GetStreamer() unavailable")
+	}
+	if err := streamer.Finalize(context.Background(), "turn one streamed"); err != nil {
+		t.Fatalf("stream Finalize() error = %v", err)
+	}
+	final := func(scope runtimeevents.TraceScope, content string) bus.OutboundMessage {
+		return testOutboundMessage(bus.OutboundMessage{
+			Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: content,
+			TraceScopes: []runtimeevents.TraceScope{scope},
+			Context: bus.InboundContext{
+				Channel: "test", ChatID: "chat-1",
+				Raw: map[string]string{"message_kind": "final_reply", "outbound_kind": "final"},
+			},
+		})
+	}
+	if _, sent, _, err := m.sendWithRetry(
+		context.Background(), "test", w, final(turnTwo, "turn two final"),
+	); err != nil || !sent {
+		t.Fatalf("turn two final = (%v, %v), want delivered", sent, err)
+	}
+	if ids, sent, _, err := m.sendWithRetry(
+		context.Background(), "test", w, final(turnOne, "turn one queued duplicate"),
+	); err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("turn one duplicate = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if !slices.Equal(transport.operations, []string{"send:turn two final"}) {
+		t.Fatalf("operations = %v, want only turn two final", transport.operations)
+	}
+}
+
+func TestGetStreamer_UnscopedFallbackMatchesSingleScopedStreamWithoutSession(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	transport := &toolFeedbackTestChannel{}
+	ch := &toolFeedbackStreamingTestChannel{
+		toolFeedbackTestChannel: transport,
+		streamer:                &mockStreamer{},
+	}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "chat-1", "", traceScope)
+	if !ok {
+		t.Fatal("GetStreamer() unavailable")
+	}
+	if err := streamer.Finalize(context.Background(), "streamed"); err != nil {
+		t.Fatalf("stream Finalize() error = %v", err)
+	}
+	message := func(kind, content string) bus.OutboundMessage {
+		return testOutboundMessage(bus.OutboundMessage{
+			Channel: "test", ChatID: "chat-1", Content: content,
+			Context: bus.InboundContext{
+				Channel: "test", ChatID: "chat-1",
+				Raw: map[string]string{"message_kind": kind},
+			},
+		})
+	}
+	if ids, sent, _, err := m.sendWithRetry(
+		context.Background(), "test", w, message("tool_feedback", "late feedback"),
+	); err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("pre-final auxiliary = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	final := message("final_reply", "queued duplicate")
+	final.Context.Raw["outbound_kind"] = "final"
+	if ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil ||
+		!sent || len(ids) != 0 {
+		t.Fatalf("unscoped final = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	if ids, sent, _, err := m.sendWithRetry(
+		context.Background(), "test", w, message("thought", "late thought"),
+	); err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("post-final auxiliary = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.operations) != 0 {
+		t.Fatalf("transport operations = %v, want none", transport.operations)
+	}
+}
+
+func TestStreamActiveKey_UnscopedFallbackRejectsAmbiguousTurns(t *testing.T) {
+	m := newTestManager()
+	base := streamSuppressionBaseKey("test", "chat-1", "")
+	first, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-1"),
+	)
+	second, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	)
+	m.streamActive.Store(first, true)
+	m.streamActive.Store(second, true)
+
+	if key, ok := m.streamActiveKey("test", "chat-1", "", runtimeevents.TraceScope{}); ok {
+		t.Fatalf("streamActiveKey() = %q, want no ambiguous legacy match", key)
+	}
+}
+
+func TestStreamAuxiliaryTombstone_UnscopedFallbackIgnoresExpiredScope(t *testing.T) {
+	m := newTestManager()
+	base := streamSuppressionBaseKey("test", "chat-1", "")
+	expired, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-expired"),
+	)
+	active, _ := traceScopedDeliveryKey(
+		base, runtimeevents.NewTraceScope("/workspace/main", "turn-active"),
+	)
+	m.streamAuxiliaryTombstones.Store(expired, time.Now().Add(-2*streamAuxiliaryTombstoneTTL))
+	m.streamAuxiliaryTombstones.Store(active, time.Now())
+
+	if !m.streamAuxiliaryTombstoneActiveForMessage(
+		"test", "chat-1", "", runtimeevents.TraceScope{},
+	) {
+		t.Fatal("expected the single non-expired scoped tombstone to match")
+	}
+	if _, ok := m.streamAuxiliaryTombstones.Load(expired); ok {
+		t.Fatal("expected expired scoped tombstone to be pruned")
+	}
+}
+
+func TestSendMediaWithRetry_FailureReleasesSameTurnFeedback(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{sendErr: ErrSendFailed}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	mediaMessage := testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Context: bus.InboundContext{Channel: "test", ChatID: "chat-1", MessageID: "turn-1"},
+	})
+	if _, err := m.sendMediaWithRetry(context.Background(), "test", w, mediaMessage); !errors.Is(err, ErrSendFailed) {
+		t.Fatalf("media send error = %v, want ErrSendFailed", err)
+	}
+
+	ch.mu.Lock()
+	ch.sendErr = nil
+	ch.mu.Unlock()
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "chat-1",
+		Content: "Working...",
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw:       map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+		t.Fatalf("same-turn feedback = (%v, %v, %v), want msg-1", ids, sent, err)
+	}
+}
+
+func TestGetStreamer_FinalizeBlocksLateFeedbackUntilQueuedFinal(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	transport := &toolFeedbackTestChannel{}
+	ch := &toolFeedbackStreamingTestChannel{
+		toolFeedbackTestChannel: transport,
+		streamer:                &mockStreamer{},
+	}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	streamer, ok := m.GetStreamer(
+		context.Background(), "test", "chat-1", "session-1", traceScope,
+	)
+	if !ok {
+		t.Fatal("GetStreamer() unavailable")
+	}
+	if err := streamer.Finalize(context.Background(), "done"); err != nil {
+		t.Fatalf("stream Finalize() error = %v", err)
+	}
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel:     "test",
+		ChatID:      "chat-1",
+		SessionKey:  "session-1",
+		Content:     "stale feedback",
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw:       map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || len(ids) != 0 {
+		t.Fatalf("late feedback = (%v, %v, %v), want suppressed", ids, sent, err)
+	}
+	final := testOutboundMessage(bus.OutboundMessage{
+		Channel:     "test",
+		ChatID:      "chat-1",
+		SessionKey:  "session-1",
+		Content:     "done",
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+		Context: bus.InboundContext{
+			Channel:   "test",
+			ChatID:    "chat-1",
+			MessageID: "turn-1",
+			Raw: map[string]string{
+				"message_kind":  "final_reply",
+				"outbound_kind": "final",
+			},
+		},
+	})
+	_, sent, _, err = m.sendWithRetry(context.Background(), "test", w, final)
+	if err != nil || !sent {
+		t.Fatalf("queued final = (%v, %v), want handled", sent, err)
+	}
+	m.streamAuxiliaryTombstones.Delete(streamSuppressionKey("test", "chat-1", "session-1", traceScope))
+	feedback.Context.MessageID = "turn-2"
+	feedback.Content = "next turn"
+	feedback.TraceScopes = []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
+	}
+	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
+		t.Fatalf("next-turn feedback = (%v, %v, %v), want msg-1", ids, sent, err)
 	}
 }
 
@@ -2374,7 +3283,7 @@ func TestPreSend_PlaceholderEditSuccess(t *testing.T) {
 	}
 }
 
-func TestPreSend_ToolFeedbackPlaceholderEditRecordsTrackedMessage(t *testing.T) {
+func TestPreSend_ToolFeedbackBypassesPlaceholderEdit(t *testing.T) {
 	m := newTestManager()
 
 	ch := &mockMessageEditor{
@@ -2400,16 +3309,16 @@ func TestPreSend_ToolFeedbackPlaceholderEditRecordsTrackedMessage(t *testing.T) 
 			},
 		},
 	})
-	_, edited := m.preSend(context.Background(), "test", msg, ch)
-	if !edited {
-		t.Fatal("expected preSend to edit placeholder")
+	_, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatal("expected tool feedback to bypass placeholder editing")
 	}
-	if ch.recordedChatID != "123" || ch.recordedMessageID != "456" {
-		t.Fatalf("expected tracked message 123/456, got %q/%q", ch.recordedChatID, ch.recordedMessageID)
+	if ch.recordedMessageID != "" {
+		t.Fatalf("expected coordinator-owned tracking, got adapter record %q", ch.recordedMessageID)
 	}
 }
 
-func TestPreSend_ToolFeedbackPlaceholderEditUsesResolvedTrackedChatID(t *testing.T) {
+func TestPreSend_ToolFeedbackBypassesPlaceholderEditWithResolvedChannel(t *testing.T) {
 	m := newTestManager()
 
 	ch := &mockResolvedToolFeedbackEditor{
@@ -2447,17 +3356,16 @@ func TestPreSend_ToolFeedbackPlaceholderEditUsesResolvedTrackedChatID(t *testing
 			},
 		},
 	})
-	_, edited := m.preSend(context.Background(), "test", msg, ch)
-	if !edited {
-		t.Fatal("expected preSend to edit placeholder")
+	_, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatal("expected tool feedback to bypass placeholder editing")
 	}
-	if ch.recordedChatID != "-100123/42" || ch.recordedMessageID != "456" {
-		t.Fatalf("expected resolved tracked message -100123/42/456, got %q/%q",
-			ch.recordedChatID, ch.recordedMessageID)
+	if ch.recordedMessageID != "" {
+		t.Fatalf("expected coordinator-owned tracking, got adapter record %q", ch.recordedMessageID)
 	}
 }
 
-func TestPreSend_ToolFeedbackPlaceholderEditRecordsSessionScopedKey(t *testing.T) {
+func TestPreSend_ToolFeedbackBypassesPlaceholderEditWithSession(t *testing.T) {
 	m := newTestManager()
 
 	ch := &mockResolvedToolFeedbackEditor{
@@ -2493,17 +3401,16 @@ func TestPreSend_ToolFeedbackPlaceholderEditRecordsSessionScopedKey(t *testing.T
 			},
 		},
 	})
-	_, edited := m.preSend(context.Background(), "test", msg, ch)
-	if !edited {
-		t.Fatal("expected preSend to edit placeholder")
+	_, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatal("expected tool feedback to bypass placeholder editing")
 	}
-	if ch.recordedChatID != "-100123/42#session:subturn-9" || ch.recordedMessageID != "456" {
-		t.Fatalf("expected session-scoped tracked message, got %q/%q",
-			ch.recordedChatID, ch.recordedMessageID)
+	if ch.recordedMessageID != "" {
+		t.Fatalf("expected coordinator-owned tracking, got adapter record %q", ch.recordedMessageID)
 	}
 }
 
-func TestPreSend_ToolFeedbackPlaceholderEditUsesPreparedContent(t *testing.T) {
+func TestPreSend_ToolFeedbackDefersContentPreparationToCoordinator(t *testing.T) {
 	m := newTestManager()
 
 	const rawContent = "🔧 `read_file`\n" + "<raw>"
@@ -2544,12 +3451,12 @@ func TestPreSend_ToolFeedbackPlaceholderEditUsesPreparedContent(t *testing.T) {
 		},
 	})
 
-	_, edited := m.preSend(context.Background(), "test", msg, ch)
-	if !edited {
-		t.Fatal("expected preSend to edit placeholder")
+	_, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatal("expected tool feedback to bypass placeholder editing")
 	}
-	if ch.recordedContent != preparedContent {
-		t.Fatalf("expected tracked content %q, got %q", preparedContent, ch.recordedContent)
+	if ch.recordedContent != "" {
+		t.Fatalf("expected coordinator-owned tracking, got adapter content %q", ch.recordedContent)
 	}
 }
 
@@ -2612,18 +3519,8 @@ func TestPreSend_NonToolFeedbackDefersTrackedMessageFinalizationToChannelSend(t 
 	}
 }
 
-func TestPreSend_ToolFeedbackSeparateMessagesDeletesPlaceholderAndSkipsEdit(t *testing.T) {
+func TestPreSend_ToolFeedbackDeletesPlaceholderAndSkipsEdit(t *testing.T) {
 	m := newTestManager()
-	m.config = &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				ToolFeedback: config.ToolFeedbackConfig{
-					Enabled:          true,
-					SeparateMessages: true,
-				},
-			},
-		},
-	}
 
 	ch := &mockDeletingMessageEditor{
 		mockMessageEditor: mockMessageEditor{
@@ -2662,8 +3559,8 @@ func TestPreSend_ToolFeedbackSeparateMessagesDeletesPlaceholderAndSkipsEdit(t *t
 	if ch.recordedMessageID != "" {
 		t.Fatalf("expected no tracked placeholder record, got %q", ch.recordedMessageID)
 	}
-	if ch.clearedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback state to be cleared before sending, got %q", ch.clearedChatID)
+	if ch.clearedChatID != "" {
+		t.Fatalf("expected no adapter-owned state cleanup, got %q", ch.clearedChatID)
 	}
 }
 
@@ -2712,7 +3609,7 @@ func TestPreSend_ThoughtPlaceholderDeleteAndSkipsEdit(t *testing.T) {
 	}
 }
 
-func TestPreSend_FinalReplyPlaceholderDeleteAndDismissesTrackedFeedback(t *testing.T) {
+func TestPreSend_FinalReplyDeletesPlaceholderWithoutAdapterLifecycle(t *testing.T) {
 	m := newTestManager()
 
 	ch := &mockDeletingMessageEditor{
@@ -2749,8 +3646,8 @@ func TestPreSend_FinalReplyPlaceholderDeleteAndDismissesTrackedFeedback(t *testi
 	if ch.deletedChatID != "123" || ch.deletedMessageID != "456" {
 		t.Fatalf("unexpected placeholder deletion target: %s/%s", ch.deletedChatID, ch.deletedMessageID)
 	}
-	if ch.dismissedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback dismissal, got %q", ch.dismissedChatID)
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected no adapter-owned lifecycle call, got %q", ch.dismissedChatID)
 	}
 }
 
@@ -2820,8 +3717,8 @@ func TestSendWithRetry_FinalReplyBypassesToolFeedbackFinalization(t *testing.T) 
 	if ch.deleteCalls != 1 {
 		t.Fatalf("expected placeholder deletion, got %d", ch.deleteCalls)
 	}
-	if ch.dismissedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback dismissal, got %q", ch.dismissedChatID)
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected no adapter-owned lifecycle call, got %q", ch.dismissedChatID)
 	}
 	if len(ch.sentMessages) != 1 {
 		t.Fatalf("expected one sent final reply, got %d", len(ch.sentMessages))
@@ -2884,18 +3781,8 @@ func TestSendWithRetry_ToolCallsPlaceholderDeleteAndFallsThroughToSend(t *testin
 	}
 }
 
-func TestPreSend_NonToolFeedbackSeparateMessagesClearsTrackedMessageWithoutDismiss(t *testing.T) {
+func TestPreSend_NonToolFeedbackDoesNotInvokeAdapterLifecycle(t *testing.T) {
 	m := newTestManager()
-	m.config = &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				ToolFeedback: config.ToolFeedbackConfig{
-					Enabled:          true,
-					SeparateMessages: true,
-				},
-			},
-		},
-	}
 
 	ch := &mockMessageEditor{}
 
@@ -2913,8 +3800,8 @@ func TestPreSend_NonToolFeedbackSeparateMessagesClearsTrackedMessageWithoutDismi
 	if handled {
 		t.Fatal("expected preSend to leave final delivery to the channel")
 	}
-	if ch.clearedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback state to be cleared, got %q", ch.clearedChatID)
+	if ch.clearedChatID != "" {
+		t.Fatalf("expected no adapter-owned state cleanup, got %q", ch.clearedChatID)
 	}
 	if ch.dismissedChatID != "" {
 		t.Fatalf("expected tracked tool feedback message to be preserved, got dismissal for %q", ch.dismissedChatID)
@@ -3198,7 +4085,7 @@ func TestPreSend_StreamActiveDoesNotConsumeOtherSessionFinal(t *testing.T) {
 	}
 }
 
-func TestPreSendMedia_DismissesTrackedMessageBeforeChannelSend(t *testing.T) {
+func TestPreSendMedia_DoesNotInvokeAdapterLifecycle(t *testing.T) {
 	m := newTestManager()
 	ch := &mockDeletingMediaChannel{}
 
@@ -3210,15 +4097,12 @@ func TestPreSendMedia_DismissesTrackedMessageBeforeChannelSend(t *testing.T) {
 		},
 	}, ch)
 
-	if ch.dismissedChatID != "123" {
-		t.Fatalf(
-			"expected tracked tool feedback message to be dismissed before media delivery, got %q",
-			ch.dismissedChatID,
-		)
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected no adapter-owned lifecycle call, got %q", ch.dismissedChatID)
 	}
 }
 
-func TestPreSendMedia_SeparateMessagesDismissesTrackedMessage(t *testing.T) {
+func TestPreSendMedia_WithConfigDoesNotInvokeAdapterLifecycle(t *testing.T) {
 	m := newTestManager()
 	m.config = &config.Config{
 		Agents: config.AgentsConfig{
@@ -3241,18 +4125,15 @@ func TestPreSendMedia_SeparateMessagesDismissesTrackedMessage(t *testing.T) {
 		},
 	}, ch)
 
-	if ch.dismissedChatID != "123" {
-		t.Fatalf(
-			"expected tracked tool feedback message to be dismissed before media delivery, got %q",
-			ch.dismissedChatID,
-		)
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected no adapter-owned lifecycle call, got %q", ch.dismissedChatID)
 	}
 	if ch.clearedChatID != "" {
 		t.Fatalf("expected dismissal to handle tracked state cleanup, got clear for %q", ch.clearedChatID)
 	}
 }
 
-func TestPreSendMedia_DismissesSessionScopedTrackedMessage(t *testing.T) {
+func TestPreSendMedia_DoesNotUseLegacySessionCleanup(t *testing.T) {
 	m := newTestManager()
 	ch := &mockResolvedToolFeedbackEditor{
 		resolveChatIDFn: func(chatID string, outboundCtx *bus.InboundContext) string {
@@ -3273,9 +4154,8 @@ func TestPreSendMedia_DismissesSessionScopedTrackedMessage(t *testing.T) {
 		},
 	}, ch)
 
-	want := []string{"123/42", "123/42#session:subturn-1", "123#session:subturn-1"}
-	if !slices.Equal(ch.dismissedChatIDs, want) {
-		t.Fatalf("dismissed chatIDs = %v, want %v", ch.dismissedChatIDs, want)
+	if len(ch.dismissedChatIDs) != 0 {
+		t.Fatalf("unexpected adapter lifecycle calls: %v", ch.dismissedChatIDs)
 	}
 }
 
@@ -3343,15 +4223,15 @@ func TestGetStreamer_FinalizeDismissesTrackedToolFeedback(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
 	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
-	if ch.dismissedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback to be dismissed for chat 123, got %q", ch.dismissedChatID)
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected coordinator-owned cleanup, got adapter call %q", ch.dismissedChatID)
 	}
 	if _, ok := m.streamActive.Load("test:123"); !ok {
 		t.Fatal("expected streamActive marker to be recorded after finalize")
@@ -3378,7 +4258,7 @@ func TestGetStreamer_FinalizeCleansPlaceholderImmediately(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3463,7 +4343,7 @@ func TestGetStreamer_FinalizeCleansPlaceholderWithSessionKey(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3494,7 +4374,7 @@ func TestGetStreamer_PreservesContextUsageStreamer(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3522,7 +4402,7 @@ func TestGetStreamer_PreservesReasoningStreamer(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3552,7 +4432,7 @@ func TestGetStreamer_PreservesModelNameSetter(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3600,7 +4480,7 @@ func TestGetStreamer_SplitOnMarkerStreamsSeparateSegments(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3674,7 +4554,7 @@ func TestGetStreamer_SplitOnMarkerKeepsReasoningOnInitialStreamer(t *testing.T) 
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3724,7 +4604,7 @@ func TestGetStreamer_SplitOnMarkerPreservesModelNameSetter(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -3752,7 +4632,7 @@ func TestGetStreamer_SplitOnMarkerPreservesModelNameSetter(t *testing.T) {
 	}
 }
 
-func TestGetStreamer_FinalizeSeparateMessagesClearsTrackedToolFeedback(t *testing.T) {
+func TestGetStreamer_FinalizeWithConfigDoesNotInvokeAdapterLifecycle(t *testing.T) {
 	m := newTestManager()
 	m.config = &config.Config{
 		Agents: config.AgentsConfig{
@@ -3777,15 +4657,15 @@ func TestGetStreamer_FinalizeSeparateMessagesClearsTrackedToolFeedback(t *testin
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
 	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
-	if ch.clearedChatID != "123" {
-		t.Fatalf("expected tracked tool feedback to be cleared for chat 123, got %q", ch.clearedChatID)
+	if ch.clearedChatID != "" {
+		t.Fatalf("expected coordinator-owned cleanup, got adapter clear %q", ch.clearedChatID)
 	}
 	if ch.dismissedChatID != "" {
 		t.Fatalf("expected tracked tool feedback message to be preserved, got dismissal for %q", ch.dismissedChatID)
@@ -3819,15 +4699,15 @@ func TestGetStreamer_FinalizeDismissesResolvedTrackedToolFeedback(t *testing.T) 
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "-100123/42", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "-100123/42", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
 	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
-	if ch.dismissedChatID != "-100123/42" {
-		t.Fatalf("expected resolved tracked tool feedback dismissal, got %q", ch.dismissedChatID)
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected coordinator-owned cleanup, got adapter call %q", ch.dismissedChatID)
 	}
 	if _, ok := m.streamActive.Load("test:-100123/42"); !ok {
 		t.Fatal("expected streamActive marker to be recorded after finalize")
@@ -3871,8 +4751,8 @@ func TestPreSend_PlaceholderEditSuccessDismissesResolvedTrackedToolFeedback(t *t
 	if !edited {
 		t.Fatal("expected preSend to edit placeholder")
 	}
-	if ch.dismissedChatID != "-100123/42" {
-		t.Fatalf("expected resolved tracked dismissal, got %q", ch.dismissedChatID)
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected no adapter-owned lifecycle call, got %q", ch.dismissedChatID)
 	}
 }
 
@@ -3888,7 +4768,7 @@ func TestGetStreamer_FinalizeFailureDoesNotDismissTrackedToolFeedback(t *testing
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -4000,7 +4880,7 @@ func TestRunWorker_FinalizedStreamSuppressesMarkerSplitBeforeSending(t *testing.
 	defer cancel()
 	go m.runWorker(ctx, "test", w)
 
-	streamKey := streamSuppressionKey("test", "123", "session-1")
+	streamKey := streamSuppressionKey("test", "123", "session-1", runtimeevents.TraceScope{})
 	m.streamActive.Store(streamKey, true)
 	w.queue <- testOutboundMessage(bus.OutboundMessage{
 		Channel:    "test",

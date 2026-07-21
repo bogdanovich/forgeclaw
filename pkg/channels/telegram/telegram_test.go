@@ -150,24 +150,6 @@ func successMediaGroupResponse(t *testing.T, messageIDs ...int) *ta.Response {
 	return &ta.Response{Ok: true, Result: b}
 }
 
-func TestTelegramChannel_ConfigureToolFeedbackAnimator(t *testing.T) {
-	bc := &config.Channel{Type: config.ChannelTelegram, Enabled: true}
-	tgCfg := &config.TelegramSettings{Token: *config.NewSecureString(testToken)}
-	ch, err := NewTelegramChannel(bc, tgCfg, bus.NewMessageBus())
-	if err != nil {
-		t.Fatalf("NewTelegramChannel() error = %v", err)
-	}
-
-	ch.ConfigureToolFeedbackAnimator(channels.ToolFeedbackAnimatorConfig{
-		AnimationInterval: 7 * time.Second,
-		MinEditInterval:   11 * time.Second,
-	})
-
-	if ch.progress == nil {
-		t.Fatal("expected tool feedback animator")
-	}
-}
-
 func TestTelegramBotHandlerFailureMarksChannelStopped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -275,7 +257,6 @@ func TestTelegramBotHandlerExitCleansBackgroundWork(t *testing.T) {
 		commandRegCancel:  func() { commandRegCanceled = true },
 		startBotHandlerFn: func() error { return errors.New("handler failed") },
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(nil)
 	ch.SetRunning(true)
 	runID := ch.handlerRun.Add(1)
 
@@ -292,52 +273,6 @@ func TestTelegramBotHandlerExitCleansBackgroundWork(t *testing.T) {
 	default:
 		t.Fatal("expected handler exit to cancel channel context")
 	}
-}
-
-func TestSend_ToolFeedbackMinEditIntervalAppliesAfterFirstSend(t *testing.T) {
-	nextMessageID := 0
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			nextMessageID++
-			return successResponseWithMessageID(t, nextMessageID), nil
-		},
-	}
-	ch := newTestChannel(t, caller)
-	ch.ConfigureToolFeedbackAnimator(channels.ToolFeedbackAnimatorConfig{
-		MinEditInterval: time.Hour,
-	})
-
-	first := bus.OutboundMessage{
-		ChatID:  "12345",
-		Content: "Working...\n• tool: `read_file`",
-		Context: bus.InboundContext{
-			Channel: "telegram",
-			ChatID:  "12345",
-			Raw:     map[string]string{"message_kind": "tool_feedback"},
-		},
-	}
-	second := first
-	second.Content = "Working...\n• tool: `write_file`"
-
-	ids, err := ch.Send(context.Background(), first)
-	require.NoError(t, err)
-	require.Len(t, ids, 1)
-	firstProgressID := ids[0]
-	require.Len(t, caller.calls, 1)
-
-	ids, err = ch.Send(context.Background(), second)
-	require.NoError(t, err)
-	require.Equal(t, []string{firstProgressID}, ids)
-	require.Len(
-		t,
-		caller.calls,
-		1,
-		"second feedback update should be debounced, not edited or sent",
-	)
-
-	_, baseContent, ok := ch.takeToolFeedbackMessage("12345")
-	require.True(t, ok)
-	assert.Equal(t, "Working...\n• tool: `read_file`\n• tool: `write_file`", baseContent)
 }
 
 func successUserResponse(t *testing.T, user *telego.User) *ta.Response {
@@ -378,16 +313,6 @@ func newTestChannelWithConstructor(
 		bc:          &config.Channel{Type: config.ChannelTelegram, Enabled: true},
 		tgCfg:       &config.TelegramSettings{},
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(
-		func(ctx context.Context, chatID, messageID, content string) error {
-			return ch.editToolFeedbackMessage(
-				ctx,
-				telegramToolFeedbackDeliveryChatKey(chatID),
-				messageID,
-				content,
-			)
-		},
-	)
 	return ch
 }
 
@@ -1302,40 +1227,6 @@ func TestSend_ShortMessage_SingleCall(t *testing.T) {
 	assert.Len(t, caller.calls, 1, "short message should result in exactly one SendMessage call")
 }
 
-func TestSend_NonToolFeedbackDeletesTrackedProgressMessage(t *testing.T) {
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			switch {
-			case strings.Contains(url, "editMessageText"):
-				return successResponseWithMessageID(t, 1), nil
-			default:
-				t.Fatalf("unexpected API call: %s", url)
-				return nil, nil
-			}
-		},
-	}
-	ch := newTestChannel(t, caller)
-	ch.tgCfg.RichMessages.Enabled = true
-	ch.RecordToolFeedbackMessage("12345", "1", "🔧 `read_file`")
-
-	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "12345",
-		Content: "final **reply**\n- item",
-	})
-
-	assert.NoError(t, err)
-	assert.Equal(t, []string{"1"}, ids)
-	require.Len(t, caller.calls, 1)
-	assert.Contains(t, caller.calls[0].URL, "editMessageText")
-	var payload map[string]any
-	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
-	assert.Nil(t, payload["rich_message"])
-	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
-	assert.Equal(t, "final <b>reply</b>\n- item", payload["text"])
-	_, ok := ch.currentToolFeedbackMessage("12345")
-	assert.False(t, ok, "tracked tool feedback should be cleared after final reply")
-}
-
 func TestEditMessage_RichMessagesEnabledUsesRichMarkdown(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
@@ -1415,42 +1306,27 @@ func TestEditMessage_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T
 	assert.Empty(t, payload["parse_mode"])
 }
 
-func TestSend_ToolFeedbackUpdateUsesLegacyTextWhenRichMessagesEnabled(t *testing.T) {
-	nextMessageID := 0
+func TestEditToolFeedbackMessageUsesLegacyTextWhenRichMessagesEnabled(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			nextMessageID++
-			return successResponseWithMessageID(t, nextMessageID), nil
+			return successResponseWithMessageID(t, 1), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.RichMessages.Enabled = true
 
-	first := bus.OutboundMessage{
-		ChatID:  "12345",
-		Content: "Working...\n• tool: `read_file`",
-		Context: bus.InboundContext{
-			Channel: "telegram",
-			ChatID:  "12345",
-			Raw:     map[string]string{"message_kind": "tool_feedback"},
-		},
-	}
-	second := first
-	second.Content = "Working...\n• tool: `write_file`"
-
-	ids, err := ch.Send(context.Background(), first)
+	err := ch.EditToolFeedbackMessage(
+		context.Background(),
+		"12345",
+		"1",
+		"Working...\n• tool: `read_file`\n• tool: `write_file`",
+	)
 	require.NoError(t, err)
-	require.Equal(t, []string{"1"}, ids)
-
-	ids, err = ch.Send(context.Background(), second)
-	require.NoError(t, err)
-	require.Equal(t, []string{"1"}, ids)
-	require.Len(t, caller.calls, 2)
-	assert.Contains(t, caller.calls[0].URL, "sendMessage")
-	assert.Contains(t, caller.calls[1].URL, "editMessageText")
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "editMessageText")
 
 	var payload map[string]any
-	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
 	assert.Nil(t, payload["rich_message"])
 	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
 	text, ok := payload["text"].(string)
@@ -1485,22 +1361,13 @@ func TestEditMessage_LegacyHTMLUsesHTMLParseMode(t *testing.T) {
 	assert.Empty(t, payload["rich_message"])
 }
 
-func TestSend_FinalReplyDoesNotEditTrackedProgressMessage(t *testing.T) {
+func TestSend_FinalReplyUsesTransportSend(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			switch {
-			case strings.Contains(url, "sendMessage"):
-				return successResponseWithMessageID(t, 2), nil
-			case strings.Contains(url, "deleteMessage"):
-				return successResponse(t), nil
-			default:
-				t.Fatalf("unexpected API call: %s", url)
-				return nil, nil
-			}
+			return successResponseWithMessageID(t, 2), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
-	ch.RecordToolFeedbackMessage("12345", "1", "Working...\n• tool: delegate")
 
 	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -1512,163 +1379,9 @@ func TestSend_FinalReplyDoesNotEditTrackedProgressMessage(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"2"}, ids)
-	require.Len(t, caller.calls, 2)
+	require.Len(t, caller.calls, 1)
 	assert.Contains(t, caller.calls[0].URL, "sendMessage")
 	assert.NotContains(t, caller.calls[0].URL, "editMessageText")
-	assert.Contains(t, caller.calls[1].URL, "deleteMessage")
-	_, ok := ch.currentToolFeedbackMessage("12345")
-	assert.False(t, ok, "tracked tool feedback should be cleared after final reply")
-}
-
-func TestSend_ToolFeedbackTrackingIsTopicScoped(t *testing.T) {
-	nextMessageID := 0
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			nextMessageID++
-			return successResponseWithMessageID(t, nextMessageID), nil
-		},
-	}
-	ch := newTestChannel(t, caller)
-
-	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "-1001234567890",
-		Content: "🔧 `read_file`",
-		Context: bus.InboundContext{
-			Channel: "telegram",
-			ChatID:  "-1001234567890",
-			TopicID: "42",
-			Raw: map[string]string{
-				"message_kind": "tool_feedback",
-			},
-		},
-	})
-	require.NoError(t, err)
-
-	_, ok := ch.currentToolFeedbackMessage("-1001234567890")
-	assert.False(t, ok, "base chat should not track topic-specific tool feedback")
-
-	msgID, ok := ch.currentToolFeedbackMessage("-1001234567890/42")
-	require.True(t, ok, "topic chat should track tool feedback")
-	assert.Equal(t, "1", msgID)
-}
-
-func TestSend_ToolFeedbackTrackingIsSessionScoped(t *testing.T) {
-	nextMessageID := 0
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			nextMessageID++
-			return successResponseWithMessageID(t, nextMessageID), nil
-		},
-	}
-	ch := newTestChannel(t, caller)
-
-	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:     "-1001234567890",
-		SessionKey: "subturn-9",
-		Content:    "Apartment Search working...\n• tool: `read_file`",
-		Context: bus.InboundContext{
-			Channel: "telegram",
-			ChatID:  "-1001234567890",
-			TopicID: "42",
-			Raw: map[string]string{
-				"message_kind": "tool_feedback",
-			},
-		},
-	})
-	require.NoError(t, err)
-
-	_, ok := ch.currentToolFeedbackMessage("-1001234567890/42")
-	assert.False(t, ok, "session-scoped tool feedback should not be tracked on the topic key")
-
-	msgID, ok := ch.currentToolFeedbackMessage("-1001234567890/42#session:subturn-9")
-	require.True(t, ok, "subturn tool feedback should be tracked by session key")
-	assert.Equal(t, "1", msgID)
-
-	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:     "-1001234567890",
-		SessionKey: "subturn-9",
-		Content:    "done",
-		Context: bus.InboundContext{
-			Channel: "telegram",
-			ChatID:  "-1001234567890",
-			TopicID: "42",
-		},
-	})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"1"}, ids)
-
-	_, ok = ch.currentToolFeedbackMessage("-1001234567890/42#session:subturn-9")
-	assert.False(t, ok, "final reply should clear session-scoped tool feedback")
-}
-
-func TestSend_TopicReplyDoesNotFinalizeDifferentTopicToolFeedback(t *testing.T) {
-	nextMessageID := 0
-	caller := &stubCaller{
-		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			nextMessageID++
-			return successResponseWithMessageID(t, nextMessageID), nil
-		},
-	}
-	ch := newTestChannel(t, caller)
-
-	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "-1001234567890",
-		Content: "🔧 `read_file`",
-		Context: bus.InboundContext{
-			Channel: "telegram",
-			ChatID:  "-1001234567890",
-			TopicID: "42",
-			Raw: map[string]string{
-				"message_kind": "tool_feedback",
-			},
-		},
-	})
-	require.NoError(t, err)
-
-	ids, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "-1001234567890",
-		Content: "final reply in another topic",
-		Context: bus.InboundContext{
-			Channel: "telegram",
-			ChatID:  "-1001234567890",
-			TopicID: "43",
-		},
-	})
-	require.NoError(t, err)
-	require.Len(t, caller.calls, 2)
-	assert.Equal(t, []string{"2"}, ids)
-	assert.Contains(t, caller.calls[1].URL, "sendMessage")
-	assert.NotContains(t, caller.calls[1].URL, "editMessageText")
-
-	_, ok := ch.currentToolFeedbackMessage("-1001234567890/42")
-	assert.True(t, ok, "tool feedback in the original topic should remain tracked")
-}
-
-func TestFinalizeTrackedToolFeedbackMessage_StopsTrackingBeforeEdit(t *testing.T) {
-	ch := newTestChannel(t, &stubCaller{
-		callFn: func(context.Context, string, *ta.RequestData) (*ta.Response, error) {
-			t.Fatal("unexpected API call")
-			return nil, nil
-		},
-	})
-	ch.RecordToolFeedbackMessage("12345", "1", "🔧 `read_file`")
-
-	msgIDs, handled := ch.finalizeTrackedToolFeedbackMessage(
-		context.Background(),
-		"12345",
-		"final reply",
-		func(_ context.Context, chatID, messageID, content string) error {
-			_, ok := ch.currentToolFeedbackMessage(chatID)
-			assert.False(t, ok, "tracked tool feedback should be stopped before edit")
-			assert.Equal(t, "12345", chatID)
-			assert.Equal(t, "1", messageID)
-			assert.Equal(t, "final reply", content)
-			return nil
-		},
-	)
-
-	assert.True(t, handled)
-	assert.Equal(t, []string{"1"}, msgIDs)
 }
 
 func TestSend_ToolFeedbackStaysSingleMessageAfterHTMLExpansion(t *testing.T) {
