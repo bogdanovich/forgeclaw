@@ -115,6 +115,16 @@ func (lifecycle *systemdLifecycle) Status(
 		return lifecycleStatus{}, err
 	}
 	if !unit.exists {
+		active, activeErr := lifecycle.isActive(ctx, status.Service)
+		if activeErr != nil {
+			return lifecycleStatus{}, activeErr
+		}
+		if active {
+			return lifecycleStatus{}, fmt.Errorf(
+				"systemd service %s is active without its managed unit file",
+				status.Service,
+			)
+		}
 		return status, nil
 	}
 	if !unit.managed {
@@ -135,38 +145,6 @@ func (lifecycle *systemdLifecycle) Status(
 		return status, nil
 	}
 	return lifecycleStatus{}, systemdCommandError(result, "is-active", status.Service)
-}
-
-func (lifecycle *systemdLifecycle) Uninstall(
-	ctx context.Context,
-	request lifecycleRequest,
-) (lifecycleStatus, error) {
-	status := lifecycle.baseStatus(request.Instance)
-	unit, err := captureSystemdUnit(status.UnitPath)
-	if err != nil {
-		return lifecycleStatus{}, err
-	}
-	if !unit.exists {
-		if reloadErr := lifecycle.requireSuccess(ctx, "daemon-reload"); reloadErr != nil {
-			return lifecycleStatus{}, reloadErr
-		}
-		status.State = "not-installed"
-		return status, nil
-	}
-	if !unit.managed {
-		return lifecycleStatus{}, unownedSystemdUnitError(status.UnitPath)
-	}
-	if err := lifecycle.requireSuccess(ctx, "disable", "--now", status.Service); err != nil {
-		return lifecycleStatus{}, err
-	}
-	if err := os.Remove(status.UnitPath); err != nil {
-		return lifecycleStatus{}, fmt.Errorf("remove systemd unit: %w", err)
-	}
-	if err := lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
-		return lifecycleStatus{}, err
-	}
-	status.State = "removed"
-	return status, nil
 }
 
 func (lifecycle *systemdLifecycle) baseStatus(instance string) lifecycleStatus {
@@ -243,6 +221,7 @@ func (lifecycle *systemdLifecycle) rollbackInstall(
 	}
 	if err := restoreSystemdUnit(status.UnitPath, backup); err != nil {
 		errorsSeen = append(errorsSeen, err)
+		return errors.Join(errorsSeen...)
 	}
 	if err := lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
 		errorsSeen = append(errorsSeen, fmt.Errorf("rollback daemon reload: %w", err))

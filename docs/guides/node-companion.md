@@ -89,13 +89,6 @@ sudo picoclaw-node install \
 sudo picoclaw-node status --system --instance vpn
 ```
 
-Remove the matching service with the same scope and instance:
-
-```bash
-picoclaw-node uninstall --instance main
-sudo picoclaw-node uninstall --system --instance vpn
-```
-
 Use `--json` with any lifecycle command for stable machine-readable status.
 System installation deliberately requires an existing unprivileged account;
 the generated unit never runs the companion as root. For a user service that

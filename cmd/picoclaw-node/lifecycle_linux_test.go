@@ -17,7 +17,7 @@ type systemdCall struct {
 	args   []string
 }
 
-func TestSystemdLifecycleInstallAndUninstall(t *testing.T) {
+func TestSystemdLifecycleInstall(t *testing.T) {
 	var calls []systemdCall
 	lifecycle := &systemdLifecycle{
 		unitDir: t.TempDir(),
@@ -60,25 +60,6 @@ func TestSystemdLifecycleInstallAndUninstall(t *testing.T) {
 	if !reflect.DeepEqual(calls, wantInstallCalls) {
 		t.Fatalf("install calls = %#v, want %#v", calls, wantInstallCalls)
 	}
-
-	calls = nil
-	status, err = lifecycle.Uninstall(t.Context(), lifecycleRequest{Instance: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Installed || status.Active || status.State != "removed" {
-		t.Fatalf("uninstall status = %#v", status)
-	}
-	if _, err := os.Stat(status.UnitPath); !os.IsNotExist(err) {
-		t.Fatalf("unit still exists: %v", err)
-	}
-	wantUninstallCalls := []systemdCall{
-		{args: []string{"disable", "--now", "picoclaw-node-main.service"}},
-		{args: []string{"daemon-reload"}},
-	}
-	if !reflect.DeepEqual(calls, wantUninstallCalls) {
-		t.Fatalf("uninstall calls = %#v, want %#v", calls, wantUninstallCalls)
-	}
 }
 
 func TestSystemdLifecycleStatus(t *testing.T) {
@@ -115,6 +96,39 @@ func TestSystemdLifecycleStatus(t *testing.T) {
 			unexpectedStatus := !status.Installed || status.Active != test.active ||
 				status.State != test.result.Output
 			if !test.wantErr && unexpectedStatus {
+				t.Fatalf("status = %#v", status)
+			}
+		})
+	}
+}
+
+func TestSystemdLifecycleStatusDetectsOrphanedActiveService(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		result  systemdRunResult
+		wantErr bool
+	}{
+		{name: "inactive", result: systemdRunResult{Output: "inactive", ExitCode: 3}},
+		{name: "active", result: systemdRunResult{Output: "active"}, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lifecycle := &systemdLifecycle{
+				unitDir: t.TempDir(),
+				run: func(_ context.Context, _ bool, args ...string) (systemdRunResult, error) {
+					if !reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
+						t.Fatalf("status call = %v", args)
+					}
+					return test.result, nil
+				},
+			}
+			status, err := lifecycle.Status(t.Context(), lifecycleRequest{Instance: "main"})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Status() error = %v", err)
+			}
+			if test.wantErr && !strings.Contains(err.Error(), "active without its managed unit") {
+				t.Fatalf("Status() error = %v", err)
+			}
+			if !test.wantErr && (status.Installed || status.Active) {
 				t.Fatalf("status = %#v", status)
 			}
 		})
@@ -271,6 +285,56 @@ func TestSystemdLifecycleInstallRollbackUsesFreshContext(t *testing.T) {
 	}
 }
 
+func TestSystemdLifecycleInstallDoesNotRestartAfterUnitRestoreFailure(t *testing.T) {
+	unitDir := t.TempDir()
+	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
+	if err := os.WriteFile(unitPath, managedSystemdUnitData("previous unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls []systemdCall
+	lifecycle := &systemdLifecycle{
+		unitDir: unitDir,
+		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
+			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
+			switch {
+			case reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}):
+				return systemdRunResult{Output: "active"}, nil
+			case reflect.DeepEqual(args, []string{"is-enabled", "picoclaw-node-main.service"}):
+				return systemdRunResult{Output: "enabled"}, nil
+			case reflect.DeepEqual(args, []string{"restart", "picoclaw-node-main.service"}):
+				if err := os.Remove(unitPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(unitPath, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return systemdRunResult{Output: "restart failed", ExitCode: 1}, nil
+			default:
+				return systemdRunResult{}, nil
+			}
+		},
+	}
+	_, err := lifecycle.Install(t.Context(), lifecycleRequest{
+		Instance:       "main",
+		ConfigPath:     "/home/test/config.json",
+		ExecutablePath: "/home/test/picoclaw-node",
+	})
+	if err == nil || !strings.Contains(err.Error(), "restore previous systemd unit") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	wantCalls := []systemdCall{
+		{args: []string{"is-active", "picoclaw-node-main.service"}},
+		{args: []string{"is-enabled", "picoclaw-node-main.service"}},
+		{args: []string{"daemon-reload"}},
+		{args: []string{"enable", "picoclaw-node-main.service"}},
+		{args: []string{"restart", "picoclaw-node-main.service"}},
+		{args: []string{"disable", "--now", "picoclaw-node-main.service"}},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("install calls = %#v, want %#v", calls, wantCalls)
+	}
+}
+
 func TestSystemdLifecycleInstallRejectsUnitSymlink(t *testing.T) {
 	unitDir := t.TempDir()
 	target := filepath.Join(unitDir, "managed-elsewhere.service")
@@ -306,7 +370,7 @@ func TestSystemdLifecycleInstallRejectsUnitSymlink(t *testing.T) {
 }
 
 func TestSystemdLifecycleRefusesUnownedUnit(t *testing.T) {
-	for _, action := range []string{"install", "status", "uninstall"} {
+	for _, action := range []string{"install", "status"} {
 		t.Run(action, func(t *testing.T) {
 			unitDir := t.TempDir()
 			unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
@@ -332,8 +396,6 @@ func TestSystemdLifecycleRefusesUnownedUnit(t *testing.T) {
 				_, err = lifecycle.Install(t.Context(), request)
 			case "status":
 				_, err = lifecycle.Status(t.Context(), request)
-			case "uninstall":
-				_, err = lifecycle.Uninstall(t.Context(), request)
 			}
 			if err == nil || !strings.Contains(err.Error(), "unowned systemd unit") {
 				t.Fatalf("%s error = %v", action, err)
@@ -383,28 +445,6 @@ func TestSystemdLifecycleInstallRemovesNewUnitWhenServiceIsInactive(t *testing.T
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("install calls = %#v, want %#v", calls, wantCalls)
-	}
-}
-
-func TestSystemdLifecycleUninstallMissingUnitReloadsManager(t *testing.T) {
-	var calls []systemdCall
-	lifecycle := &systemdLifecycle{
-		unitDir: t.TempDir(),
-		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
-			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
-			return systemdRunResult{}, nil
-		},
-	}
-	status, err := lifecycle.Uninstall(t.Context(), lifecycleRequest{Instance: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Installed || status.State != "not-installed" {
-		t.Fatalf("uninstall status = %#v", status)
-	}
-	want := []systemdCall{{args: []string{"daemon-reload"}}}
-	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("uninstall calls = %#v, want %#v", calls, want)
 	}
 }
 
