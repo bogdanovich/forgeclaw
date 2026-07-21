@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,7 +23,10 @@ import (
 
 var ErrIncompatibleGateway = errors.New("node gateway protocol is incompatible")
 
-const defaultStableSessionWindow = 30 * time.Second
+const (
+	defaultStableSessionWindow = 30 * time.Second
+	maxConcurrentInvocations   = 16
+)
 
 type Client struct {
 	config        Config
@@ -33,6 +37,8 @@ type Client struct {
 	logger        *slog.Logger
 	dialer        websocket.Dialer
 	stableWindow  time.Duration
+	invokeSlots   chan struct{}
+	workers       sync.WaitGroup
 }
 
 func NewClient(
@@ -104,6 +110,7 @@ func newClient(
 		runtime:       commandRuntime,
 		logger:        logger,
 		stableWindow:  defaultStableSessionWindow,
+		invokeSlots:   make(chan struct{}, maxConcurrentInvocations),
 		dialer: websocket.Dialer{
 			HandshakeTimeout: DefaultHandshakeTimeout,
 			TLSClientConfig:  tlsConfig,
@@ -130,6 +137,7 @@ func cloneCatalog(catalog nodes.CapabilityCatalog) nodes.CapabilityCatalog {
 }
 
 func (client *Client) Run(ctx context.Context) error {
+	defer client.workers.Wait()
 	backoff := client.config.minReconnectDelay
 	for {
 		connection, result, err := client.connectAndAuthenticate(ctx)
@@ -313,39 +321,93 @@ func (client *Client) serveConnected(ctx context.Context, connection *websocket.
 			time.Now().Add(DefaultHandshakeTimeout),
 		)
 	})
+	writer := &connectedWriter{connection: connection}
+	workerFailure := make(chan error, 1)
 	for {
 		messageType, data, err := connection.ReadMessage()
 		if err != nil {
+			select {
+			case workerErr := <-workerFailure:
+				return workerErr
+			default:
+			}
 			return fmt.Errorf("node gateway session ended: %w", err)
 		}
 		if messageType == websocket.BinaryMessage {
 			return errors.New("node gateway sent a non-text command frame")
 		}
 		if messageType == websocket.TextMessage {
-			if requestErr := client.handleRequest(ctx, connection, data); requestErr != nil {
+			envelope, decodeErr := decodeCommandRequest(data)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if requestErr := client.dispatchRequest(
+				ctx,
+				writer,
+				envelope,
+				workerFailure,
+			); requestErr != nil {
 				return requestErr
 			}
 		}
 	}
 }
 
-func (client *Client) handleRequest(
-	ctx context.Context,
-	connection *websocket.Conn,
-	data []byte,
-) error {
+func decodeCommandRequest(data []byte) (protocol.Envelope, error) {
 	envelope, decodeErr := protocol.Decode(data)
 	if decodeErr != nil || envelope.Type != protocol.FrameRequest {
-		return errors.New("node gateway sent an invalid command request")
+		return protocol.Envelope{}, errors.New("node gateway sent an invalid command request")
 	}
-	switch envelope.Method {
-	case "node.invoke":
-		return client.handleInvoke(ctx, connection, envelope)
-	case "node.invoke.get":
-		return client.handleInvocationQuery(connection, envelope)
+	return envelope, nil
+}
+
+func (client *Client) dispatchRequest(
+	ctx context.Context,
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+	workerFailure chan<- error,
+) error {
+	if envelope.Method != "node.invoke" {
+		return client.handleRequest(ctx, writer, envelope)
+	}
+	select {
+	case client.invokeSlots <- struct{}{}:
 	default:
 		return client.writeCommandError(
-			connection,
+			writer,
+			envelope.ID,
+			"NODE_BUSY",
+			"node invocation concurrency limit reached",
+		)
+	}
+	client.workers.Add(1)
+	go func() {
+		defer client.workers.Done()
+		defer func() { <-client.invokeSlots }()
+		if err := client.handleRequest(ctx, writer, envelope); err != nil {
+			select {
+			case workerFailure <- err:
+			default:
+			}
+			_ = writer.connection.Close()
+		}
+	}()
+	return nil
+}
+
+func (client *Client) handleRequest(
+	ctx context.Context,
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+) error {
+	switch envelope.Method {
+	case "node.invoke":
+		return client.handleInvoke(ctx, writer, envelope)
+	case "node.invoke.get":
+		return client.handleInvocationQuery(writer, envelope)
+	default:
+		return client.writeCommandError(
+			writer,
 			envelope.ID,
 			"METHOD_NOT_FOUND",
 			"unsupported node method",
@@ -355,12 +417,12 @@ func (client *Client) handleRequest(
 
 func (client *Client) handleInvoke(
 	ctx context.Context,
-	connection *websocket.Conn,
+	writer *connectedWriter,
 	envelope protocol.Envelope,
 ) error {
 	if client.runtime == nil {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"COMMAND_UNAVAILABLE",
 			"node command runtime is disabled",
@@ -369,7 +431,7 @@ func (client *Client) handleInvoke(
 	var plan nodes.ExecutionPlan
 	if planErr := decodeStrictJSON(envelope.Params, &plan); planErr != nil {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"INVALID_PLAN",
 			"invalid execution plan",
@@ -377,7 +439,7 @@ func (client *Client) handleInvoke(
 	}
 	if envelope.IdempotencyKey == "" || envelope.IdempotencyKey != plan.IdempotencyKey {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"INVALID_PLAN",
 			"invocation idempotency key mismatch",
@@ -398,10 +460,10 @@ func (client *Client) handleInvoke(
 			code = "INVOCATION_UNKNOWN"
 			message = "invocation outcome is unknown"
 		}
-		return client.writeCommandError(connection, envelope.ID, code, message)
+		return client.writeCommandError(writer, envelope.ID, code, message)
 	}
 	ok := true
-	return writeEnvelope(connection, protocol.Envelope{
+	return writer.writeEnvelope(protocol.Envelope{
 		Type:   protocol.FrameResponse,
 		ID:     envelope.ID,
 		OK:     &ok,
@@ -410,12 +472,12 @@ func (client *Client) handleInvoke(
 }
 
 func (client *Client) handleInvocationQuery(
-	connection *websocket.Conn,
+	writer *connectedWriter,
 	envelope protocol.Envelope,
 ) error {
 	if client.runtime == nil {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"COMMAND_UNAVAILABLE",
 			"node command runtime is disabled",
@@ -423,7 +485,7 @@ func (client *Client) handleInvocationQuery(
 	}
 	if envelope.IdempotencyKey != "" {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"INVALID_QUERY",
 			"invocation query cannot carry an idempotency key",
@@ -432,7 +494,7 @@ func (client *Client) handleInvocationQuery(
 	var query nodes.InvocationQuery
 	if err := decodeStrictJSON(envelope.Params, &query); err != nil || query.Validate() != nil {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"INVALID_QUERY",
 			"invalid invocation query",
@@ -441,7 +503,7 @@ func (client *Client) handleInvocationQuery(
 	record, found, lookupErr := client.runtime.Invocation(query.InvocationID)
 	if lookupErr != nil {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"LEDGER_UNAVAILABLE",
 			"invocation ledger is unavailable",
@@ -449,7 +511,7 @@ func (client *Client) handleInvocationQuery(
 	}
 	if !found {
 		return client.writeCommandError(
-			connection,
+			writer,
 			envelope.ID,
 			"INVOCATION_NOT_FOUND",
 			"invocation record not found",
@@ -460,7 +522,7 @@ func (client *Client) handleInvocationQuery(
 		return fmt.Errorf("encode invocation query result: %w", err)
 	}
 	ok := true
-	return writeEnvelope(connection, protocol.Envelope{
+	return writer.writeEnvelope(protocol.Envelope{
 		Type:   protocol.FrameResponse,
 		ID:     envelope.ID,
 		OK:     &ok,
@@ -469,11 +531,11 @@ func (client *Client) handleInvocationQuery(
 }
 
 func (client *Client) writeCommandError(
-	connection *websocket.Conn,
+	writer *connectedWriter,
 	requestID, code, message string,
 ) error {
 	ok := false
-	return writeEnvelope(connection, protocol.Envelope{
+	return writer.writeEnvelope(protocol.Envelope{
 		Type: protocol.FrameResponse,
 		ID:   requestID,
 		OK:   &ok,
@@ -484,12 +546,22 @@ func (client *Client) writeCommandError(
 	})
 }
 
-func writeEnvelope(connection *websocket.Conn, envelope protocol.Envelope) error {
+type connectedWriter struct {
+	connection *websocket.Conn
+	mu         sync.Mutex
+}
+
+func (writer *connectedWriter) writeEnvelope(envelope protocol.Envelope) error {
 	data, err := protocol.Encode(envelope)
 	if err != nil {
 		return err
 	}
-	return connection.WriteMessage(websocket.TextMessage, data)
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if err := writer.connection.SetWriteDeadline(time.Now().Add(DefaultHandshakeTimeout)); err != nil {
+		return err
+	}
+	return writer.connection.WriteMessage(websocket.TextMessage, data)
 }
 
 func readChallenge(connection *websocket.Conn) (nodes.Challenge, error) {
