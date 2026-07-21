@@ -405,6 +405,8 @@ func (client *Client) handleRequest(
 		return client.handleInvoke(ctx, writer, envelope)
 	case "node.invoke.get":
 		return client.handleInvocationQuery(writer, envelope)
+	case "node.invoke.cancel":
+		return client.handleInvocationCancel(writer, envelope)
 	default:
 		return client.writeCommandError(
 			writer,
@@ -459,6 +461,9 @@ func (client *Client) handleInvoke(
 		case errors.Is(err, ErrInvocationOutcomeUnknown):
 			code = "INVOCATION_UNKNOWN"
 			message = "invocation outcome is unknown"
+		case errors.Is(err, ErrInvocationCanceled):
+			code = "INVOCATION_CANCELED"
+			message = "node command canceled"
 		}
 		return client.writeCommandError(writer, envelope.ID, code, message)
 	}
@@ -517,14 +522,71 @@ func (client *Client) handleInvocationQuery(
 			"invocation record not found",
 		)
 	}
+	return writeInvocationRecord(writer, envelope.ID, record)
+}
+
+func (client *Client) handleInvocationCancel(
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+) error {
+	if client.runtime == nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"COMMAND_UNAVAILABLE",
+			"node command runtime is disabled",
+		)
+	}
+	if envelope.IdempotencyKey != "" {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_CANCEL",
+			"invocation cancellation cannot carry an idempotency key",
+		)
+	}
+	var request nodes.InvocationCancelRequest
+	if err := decodeStrictJSON(envelope.Params, &request); err != nil || request.Validate() != nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_CANCEL",
+			"invalid invocation cancellation request",
+		)
+	}
+	record, err := client.runtime.Cancel(request)
+	if err != nil {
+		code := "CANCELLATION_FAILED"
+		message := "invocation cancellation failed"
+		switch {
+		case errors.Is(err, ErrInvocationNotFound):
+			code = "INVOCATION_NOT_FOUND"
+			message = "invocation record not found"
+		case errors.Is(err, ErrCancellationUnsupported):
+			code = "CANCELLATION_UNSUPPORTED"
+			message = "node command does not support cancellation"
+		case errors.Is(err, ErrInvocationOutcomeUnknown):
+			code = "INVOCATION_UNKNOWN"
+			message = "invocation outcome is unknown"
+		}
+		return client.writeCommandError(writer, envelope.ID, code, message)
+	}
+	return writeInvocationRecord(writer, envelope.ID, record)
+}
+
+func writeInvocationRecord(
+	writer *connectedWriter,
+	requestID string,
+	record nodes.InvocationRecord,
+) error {
 	result, err := json.Marshal(record)
 	if err != nil {
-		return fmt.Errorf("encode invocation query result: %w", err)
+		return fmt.Errorf("encode invocation record: %w", err)
 	}
 	ok := true
 	return writer.writeEnvelope(protocol.Envelope{
 		Type:   protocol.FrameResponse,
-		ID:     envelope.ID,
+		ID:     requestID,
 		OK:     &ok,
 		Result: result,
 	})

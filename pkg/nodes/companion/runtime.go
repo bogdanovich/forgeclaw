@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/nodes"
@@ -18,6 +19,46 @@ var ErrCommandUnavailable = errors.New("node command is unavailable")
 
 var ErrInvocationOutcomeUnknown = errors.New("node invocation outcome is unknown")
 
+var ErrCancellationUnsupported = errors.New("node command does not support cancellation")
+
+var ErrInvocationCanceled = errors.New("node invocation canceled")
+
+var errCancellationRequested = errors.New("node invocation cancellation requested")
+
+var errCommandCancellationConfirmed = errors.New("node command cancellation confirmed")
+
+type activeInvocation struct {
+	mu                    sync.Mutex
+	ctx                   context.Context
+	cancel                context.CancelCauseFunc
+	handlerFinished       bool
+	cancellationDelivered bool
+}
+
+func (invocation *activeInvocation) signalCancellation() bool {
+	invocation.mu.Lock()
+	defer invocation.mu.Unlock()
+	if invocation.handlerFinished {
+		return false
+	}
+	if cause := context.Cause(invocation.ctx); cause != nil {
+		return errors.Is(cause, errCancellationRequested) && invocation.cancellationDelivered
+	}
+	invocation.cancel(errCancellationRequested)
+	invocation.cancellationDelivered = errors.Is(
+		context.Cause(invocation.ctx),
+		errCancellationRequested,
+	)
+	return invocation.cancellationDelivered
+}
+
+func (invocation *activeInvocation) finishHandler() bool {
+	invocation.mu.Lock()
+	defer invocation.mu.Unlock()
+	invocation.handlerFinished = true
+	return invocation.cancellationDelivered
+}
+
 type recordedInvocationError struct {
 	failure nodes.InvocationFailure
 }
@@ -28,7 +69,20 @@ func (err *recordedInvocationError) Error() string {
 
 type commandHandler interface {
 	descriptor() nodes.CommandDescriptor
+	// A cancel-capable handler wraps errCommandCancellationConfirmed only after
+	// it has honored the signal and stopped the underlying operation.
 	execute(context.Context, json.RawMessage) (any, error)
+}
+
+type invocationStore interface {
+	Existing(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
+	Accept(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
+	MarkRunning(string) (nodes.InvocationRecord, error)
+	RequestCancellation(string) (nodes.InvocationRecord, error)
+	CompleteCancellation(string) (nodes.InvocationRecord, error)
+	CompleteSuccess(string, json.RawMessage) (nodes.InvocationRecord, error)
+	CompleteFailure(string, nodes.InvocationFailure) (nodes.InvocationRecord, error)
+	Lookup(string) (nodes.InvocationRecord, bool, error)
 }
 
 // Runtime is the instance-scoped capability boundary. It owns no gateway
@@ -38,7 +92,9 @@ type Runtime struct {
 	policy   nodes.LocalCommandPolicy
 	catalog  nodes.CapabilityCatalog
 	handlers map[string]commandHandler
-	ledger   *InvocationLedger
+	ledger   invocationStore
+	activeMu sync.Mutex
+	active   map[string]*activeInvocation
 }
 
 func NewRuntime(
@@ -76,6 +132,7 @@ func NewRuntime(
 		catalog:  catalog,
 		handlers: byName,
 		ledger:   ledger,
+		active:   make(map[string]*activeInvocation),
 	}, nil
 }
 
@@ -145,6 +202,23 @@ func (runtime *Runtime) executeAccepted(
 	if handler == nil {
 		return nil, ErrCommandUnavailable
 	}
+	deadline := time.Now().Add(time.Duration(plan.TimeoutSeconds) * time.Second)
+	if expires := time.Unix(plan.ExpiresAt, 0); expires.Before(deadline) {
+		deadline = expires
+	}
+	deadlineCtx, deadlineCancel := context.WithDeadline(ctx, deadline)
+	defer deadlineCancel()
+	invokeCtx, cancel := context.WithCancelCause(deadlineCtx)
+	invocation := &activeInvocation{ctx: invokeCtx, cancel: cancel}
+	if !runtime.registerActive(plan.InvocationID, invocation) {
+		record, found, lookupErr := runtime.ledger.Lookup(plan.InvocationID)
+		if lookupErr == nil && found {
+			return invocationRecordResult(record)
+		}
+		return nil, ErrInvocationOutcomeUnknown
+	}
+	defer runtime.releaseActive(plan.InvocationID, invocation)
+	defer cancel(nil)
 	if _, err := runtime.ledger.MarkRunning(plan.InvocationID); err != nil {
 		record, found, lookupErr := runtime.ledger.Lookup(plan.InvocationID)
 		if lookupErr == nil && found && record.State.Terminal() {
@@ -152,14 +226,19 @@ func (runtime *Runtime) executeAccepted(
 		}
 		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
 	}
-	deadline := time.Now().Add(time.Duration(plan.TimeoutSeconds) * time.Second)
-	if expires := time.Unix(plan.ExpiresAt, 0); expires.Before(deadline) {
-		deadline = expires
-	}
-	invokeCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
 	result, executeErr := handler.execute(invokeCtx, plan.Input)
+	cancellationDelivered := invocation.finishHandler()
 	if executeErr != nil {
+		if cancellationDelivered && errors.Is(executeErr, errCommandCancellationConfirmed) {
+			if _, err := runtime.ledger.CompleteCancellation(plan.InvocationID); err != nil {
+				return nil, fmt.Errorf(
+					"%w: persist canceled result: %v",
+					ErrInvocationOutcomeUnknown,
+					err,
+				)
+			}
+			return nil, fmt.Errorf("%w: %v", ErrInvocationCanceled, executeErr)
+		}
 		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
 			Code:    "EXECUTION_FAILED",
 			Message: "node command failed",
@@ -186,6 +265,94 @@ func (runtime *Runtime) executeAccepted(
 	return raw, nil
 }
 
+func (runtime *Runtime) Cancel(
+	request nodes.InvocationCancelRequest,
+) (nodes.InvocationRecord, error) {
+	if runtime == nil {
+		return nodes.InvocationRecord{}, ErrCommandUnavailable
+	}
+	if err := request.Validate(); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	record, found, err := runtime.ledger.Lookup(request.InvocationID)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if !found {
+		return nodes.InvocationRecord{}, ErrInvocationNotFound
+	}
+	if record.State.Terminal() {
+		return record, nil
+	}
+	if record.State == nodes.InvocationUnknown {
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	handler := runtime.handlers[record.Command]
+	if handler == nil || !handler.descriptor().SupportsCancel {
+		return nodes.InvocationRecord{}, ErrCancellationUnsupported
+	}
+	invocation := runtime.activeInvocation(request.InvocationID)
+	if record.State == nodes.InvocationRunning && invocation == nil {
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	record, err = runtime.ledger.RequestCancellation(request.InvocationID)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if record.State.Terminal() {
+		return record, nil
+	}
+	// The accepted invocation may have acquired an owner while the durable
+	// cancellation transition was in progress. Always refresh the owner before
+	// signaling so an acknowledged running cancellation reaches its handler.
+	invocation = runtime.activeInvocation(request.InvocationID)
+	if invocation == nil {
+		current, currentFound, lookupErr := runtime.ledger.Lookup(request.InvocationID)
+		if lookupErr != nil {
+			return nodes.InvocationRecord{}, lookupErr
+		}
+		if currentFound && current.State.Terminal() {
+			return current, nil
+		}
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	if !invocation.signalCancellation() {
+		current, currentFound, lookupErr := runtime.ledger.Lookup(request.InvocationID)
+		if lookupErr != nil {
+			return nodes.InvocationRecord{}, lookupErr
+		}
+		if currentFound && current.State.Terminal() {
+			return current, nil
+		}
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	return record, nil
+}
+
+func (runtime *Runtime) registerActive(id string, invocation *activeInvocation) bool {
+	runtime.activeMu.Lock()
+	defer runtime.activeMu.Unlock()
+	if runtime.active[id] != nil {
+		return false
+	}
+	runtime.active[id] = invocation
+	return true
+}
+
+func (runtime *Runtime) activeInvocation(id string) *activeInvocation {
+	runtime.activeMu.Lock()
+	defer runtime.activeMu.Unlock()
+	return runtime.active[id]
+}
+
+func (runtime *Runtime) releaseActive(id string, invocation *activeInvocation) {
+	runtime.activeMu.Lock()
+	defer runtime.activeMu.Unlock()
+	if runtime.active[id] == invocation {
+		delete(runtime.active, id)
+	}
+}
+
 func (runtime *Runtime) completeInvocationFailure(
 	invocationID string,
 	failure nodes.InvocationFailure,
@@ -210,11 +377,16 @@ func invocationRecordResult(record nodes.InvocationRecord) (json.RawMessage, err
 	switch record.State {
 	case nodes.InvocationSucceeded:
 		return append(json.RawMessage(nil), record.Result...), nil
-	case nodes.InvocationFailed, nodes.InvocationCanceled:
+	case nodes.InvocationFailed:
 		if record.Failure == nil {
 			return nil, ErrInvocationOutcomeUnknown
 		}
 		return nil, &recordedInvocationError{failure: *record.Failure}
+	case nodes.InvocationCanceled:
+		if record.Failure == nil {
+			return nil, ErrInvocationOutcomeUnknown
+		}
+		return nil, fmt.Errorf("%w: %s", ErrInvocationCanceled, record.Failure.Message)
 	default:
 		return nil, ErrInvocationOutcomeUnknown
 	}
