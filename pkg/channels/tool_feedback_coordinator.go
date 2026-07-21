@@ -457,6 +457,34 @@ func (c *ToolFeedbackCoordinator) ActiveCount() int {
 	return count
 }
 
+// singleActiveScopedKey resolves a scope-less compatibility target only when
+// exactly one visible or in-flight turn exists below that target.
+func (c *ToolFeedbackCoordinator) singleActiveScopedKey(baseKey string) (string, bool) {
+	if c == nil || strings.TrimSpace(baseKey) == "" {
+		return "", false
+	}
+	prefix := strings.TrimSpace(baseKey) + "\x00turn\x00"
+	matched := ""
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.entries {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry.mu.Lock()
+		active := !entry.retired && (entry.sending || entry.messageID != "")
+		entry.mu.Unlock()
+		if !active {
+			continue
+		}
+		if matched != "" {
+			return "", false
+		}
+		matched = key
+	}
+	return matched, matched != ""
+}
+
 func (c *ToolFeedbackCoordinator) editAnimated(
 	ctx context.Context,
 	key string,

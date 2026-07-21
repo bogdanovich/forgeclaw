@@ -586,14 +586,13 @@ func spawnSubTurn(
 		// parent and should not leave an orphaned animator behind.
 		if al != nil && al.channelManager != nil && childTS.channel != "" {
 			dismissCtx, dismissCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			al.channelManager.DismissToolFeedbackForSession(
-				dismissCtx,
+			al.channelManager.DismissToolFeedback(dismissCtx, toolFeedbackTargetForSession(
 				childTS.channel,
 				childTS.chatID,
 				childTS.opts.Dispatch.InboundContext,
 				childID,
 				[]runtimeevents.TraceScope{runtimeevents.NewTraceScope(childTS.workspace, childTS.turnID)},
-			)
+			))
 			dismissCancel()
 		}
 

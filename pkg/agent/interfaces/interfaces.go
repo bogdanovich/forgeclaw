@@ -72,30 +72,10 @@ type ChannelManager interface {
 	// SendPlaceholder sends a placeholder message (e.g., for audio transcription).
 	SendPlaceholder(ctx context.Context, channel, chatID string) bool
 
-	// DismissToolFeedback clears any tracked tool feedback animation for the
-	// given channel/chat. Call this when a turn ends without a final response
-	// (e.g., ResponseHandled tools) to avoid orphaned animation goroutines.
-	// outboundCtx carries topic/thread info needed for channels that use
-	// scoped tracker keys (e.g., Telegram forum topics); may be nil.
-	DismissToolFeedback(
-		ctx context.Context,
-		channel, chatID string,
-		outboundCtx *bus.InboundContext,
-		traceScopes []runtimeevents.TraceScope,
-	)
-
-	// DismissToolFeedbackForSession clears a session-scoped tool feedback
-	// message. This is used for background sub-turns whose progress messages
-	// are visible in the originating chat, but whose final result is delivered
-	// asynchronously through the parent turn instead of as a direct channel
-	// response.
-	DismissToolFeedbackForSession(
-		ctx context.Context,
-		channel, chatID string,
-		outboundCtx *bus.InboundContext,
-		sessionKey string,
-		traceScopes []runtimeevents.TraceScope,
-	)
+	// DismissToolFeedback clears tracked progress for the exact outbound
+	// target. The message envelope keeps route, session, and turn identity
+	// together; content and settlement fields are ignored.
+	DismissToolFeedback(ctx context.Context, target bus.OutboundMessage)
 }
 
 // ProvisionalChannelSender exposes sends whose definitely-not-sent failures

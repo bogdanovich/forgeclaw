@@ -111,6 +111,7 @@ type recordingChannelManager struct {
 	dismissed         []string
 	dismissedSessions []string
 	dismissedScopes   [][]runtimeevents.TraceScope
+	dismissedTargets  []bus.OutboundMessage
 	sentMedia         []bus.OutboundMediaMessage
 }
 
@@ -176,25 +177,18 @@ func (m *recordingChannelManager) SendPlaceholder(
 }
 
 func (m *recordingChannelManager) DismissToolFeedback(
-	ctx context.Context,
-	channel, chatID string,
-	outboundCtx *bus.InboundContext,
-	traceScopes []runtimeevents.TraceScope,
+	_ context.Context,
+	target bus.OutboundMessage,
 ) {
-	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s", channel, chatID))
-	m.dismissedScopes = append(m.dismissedScopes, append([]runtimeevents.TraceScope(nil), traceScopes...))
-}
-
-func (m *recordingChannelManager) DismissToolFeedbackForSession(
-	ctx context.Context,
-	channel, chatID string,
-	outboundCtx *bus.InboundContext,
-	sessionKey string,
-	traceScopes []runtimeevents.TraceScope,
-) {
+	m.dismissedTargets = append(m.dismissedTargets, target)
+	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s", target.Channel, target.ChatID))
 	m.dismissedSessions = append(
 		m.dismissedSessions,
-		fmt.Sprintf("%s:%s:%s", channel, chatID, sessionKey),
+		fmt.Sprintf("%s:%s:%s", target.Channel, target.ChatID, target.SessionKey),
+	)
+	m.dismissedScopes = append(
+		m.dismissedScopes,
+		append([]runtimeevents.TraceScope(nil), target.TraceScopes...),
 	)
 }
 
@@ -2493,10 +2487,11 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	})
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel:  "telegram",
-		ChatID:   "chat1",
-		SenderID: "user1",
-		Content:  "take a screenshot of the screen and send it to me",
+		Channel:    "telegram",
+		ChatID:     "chat1",
+		SenderID:   "user1",
+		SessionKey: "session-1",
+		Content:    "take a screenshot of the screen and send it to me",
 	}))
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
@@ -2643,7 +2638,6 @@ func TestProcessMessage_HandledMediaDismissesToolFeedbackWithoutFinalText(t *tes
 			channelManager.dismissed,
 		)
 	}
-
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		if got := strings.TrimSpace(outbound.Context.Raw[metadataKeyMessageKind]); got != messageKindToolFeedback {
@@ -2663,6 +2657,17 @@ func TestProcessMessage_HandledMediaDismissesToolFeedbackWithoutFinalText(t *tes
 				"dismiss scopes = %+v, want feedback scopes %+v",
 				channelManager.dismissedScopes,
 				outbound.TraceScopes,
+			)
+		}
+		if len(channelManager.dismissedTargets) != 1 {
+			t.Fatalf("dismiss targets = %d, want 1", len(channelManager.dismissedTargets))
+		}
+		dismissedTarget := channelManager.dismissedTargets[0]
+		if dismissedTarget.SessionKey == "" || dismissedTarget.SessionKey != outbound.SessionKey {
+			t.Fatalf(
+				"dismiss target session = %q, want feedback session %q",
+				dismissedTarget.SessionKey,
+				outbound.SessionKey,
 			)
 		}
 	case <-time.After(2 * time.Second):

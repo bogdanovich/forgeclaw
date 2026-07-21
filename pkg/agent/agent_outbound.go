@@ -185,17 +185,6 @@ func (al *AgentLoop) publishResponseWithContextAndScopes(
 
 	agent := al.agentForRuntimeScope(newRuntimeSessionScope(workspace, sessionKey), agentID)
 	messageToolSentToSameChat := messageToolSentToSameChat(agent, sessionKey, channel, chatID)
-
-	if policy == finalResponseSuppressIfMessageToolSent && messageToolSentToSameChat {
-		al.dismissToolFeedbackForSession(ctx, channel, chatID, inboundCtx, sessionKey, traceScopes)
-		logger.DebugCF(
-			"agent",
-			"Skipped outbound (message tool already sent to same chat)",
-			map[string]any{"channel": channel, "chat_id": chatID},
-		)
-		return
-	}
-
 	resolvedAgentID := ""
 	if agent != nil {
 		resolvedAgentID = agent.ID
@@ -216,6 +205,17 @@ func (al *AgentLoop) publishResponseWithContextAndScopes(
 		})
 		return
 	}
+
+	if policy == finalResponseSuppressIfMessageToolSent && messageToolSentToSameChat {
+		al.toolFeedbackPublisher().dismissToolFeedback(ctx, msg)
+		logger.DebugCF(
+			"agent",
+			"Skipped outbound (message tool already sent to same chat)",
+			map[string]any{"channel": channel, "chat_id": chatID},
+		)
+		return
+	}
+
 	msg.TraceSettlement = len(msg.TraceScopes) > 0
 	if policy == finalResponseAlwaysPublish && messageToolSentToSameChat {
 		if msg.Context.Raw == nil {

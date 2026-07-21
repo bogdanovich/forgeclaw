@@ -2723,11 +2723,11 @@ func TestToolFeedbackLifecycle_IsolatedByTurnScope(t *testing.T) {
 		t.Fatalf("turn two feedback error = %v", err)
 	}
 
-	m.DismissToolFeedback(
-		context.Background(), "test", "chat-1",
-		&bus.InboundContext{Channel: "test", ChatID: "chat-1"},
-		[]runtimeevents.TraceScope{turnOne},
-	)
+	m.DismissToolFeedback(context.Background(), bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1",
+		Context:     bus.InboundContext{Channel: "test", ChatID: "chat-1"},
+		TraceScopes: []runtimeevents.TraceScope{turnOne},
+	})
 	if count := m.toolFeedback.ActiveCount(); count != 1 {
 		t.Fatalf("ActiveCount() after turn one dismissal = %d, want 1", count)
 	}
@@ -2742,6 +2742,102 @@ func TestToolFeedbackLifecycle_IsolatedByTurnScope(t *testing.T) {
 	want := []string{"send:one", "send:two", "delete:msg-1", "edit:msg-2"}
 	if !slices.Equal(ch.operations, want) {
 		t.Fatalf("operations = %v, want %v", ch.operations, want)
+	}
+}
+
+func TestDismissToolFeedback_PreservesSessionAndTurnIdentity(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	m.channels["test"] = ch
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: "working",
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+		Context: bus.InboundContext{
+			Channel: "test", ChatID: "chat-1",
+			Raw: map[string]string{"message_kind": "tool_feedback"},
+		},
+	})
+	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+		t.Fatalf("feedback error = %v", err)
+	}
+
+	m.DismissToolFeedback(context.Background(), bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1",
+		Context:     bus.InboundContext{Channel: "test", ChatID: "chat-1"},
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+	})
+
+	if count := m.toolFeedback.ActiveCount(); count != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", count)
+	}
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if want := []string{"send:working", "delete:msg-1"}; !slices.Equal(ch.operations, want) {
+		t.Fatalf("operations = %v, want %v", ch.operations, want)
+	}
+}
+
+func TestDismissToolFeedback_UnscopedFallbackRequiresSingleActiveTurn(t *testing.T) {
+	tests := []struct {
+		name       string
+		turnIDs    []string
+		wantActive int
+		wantOps    []string
+	}{
+		{
+			name:    "single",
+			turnIDs: []string{"turn-1"},
+			wantOps: []string{"send:turn-1", "delete:msg-1"},
+		},
+		{
+			name:       "ambiguous",
+			turnIDs:    []string{"turn-1", "turn-2"},
+			wantActive: 2,
+			wantOps:    []string{"send:turn-1", "send:turn-2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager()
+			enableTestToolFeedbackCoordinator(t, m, false)
+			ch := &toolFeedbackTestChannel{}
+			m.channels["test"] = ch
+			w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+			for _, turnID := range tt.turnIDs {
+				feedback := testOutboundMessage(bus.OutboundMessage{
+					Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: turnID,
+					TraceScopes: []runtimeevents.TraceScope{
+						runtimeevents.NewTraceScope("/workspace/main", turnID),
+					},
+					Context: bus.InboundContext{
+						Channel: "test", ChatID: "chat-1",
+						Raw: map[string]string{"message_kind": "tool_feedback"},
+					},
+				})
+				if _, _, _, err := m.sendWithRetry(
+					context.Background(), "test", w, feedback,
+				); err != nil {
+					t.Fatalf("feedback %s error = %v", turnID, err)
+				}
+			}
+
+			m.DismissToolFeedback(context.Background(), bus.OutboundMessage{
+				Channel: "test", ChatID: "chat-1", SessionKey: "session-1",
+				Context: bus.InboundContext{Channel: "test", ChatID: "chat-1"},
+			})
+
+			if count := m.toolFeedback.ActiveCount(); count != tt.wantActive {
+				t.Fatalf("ActiveCount() = %d, want %d", count, tt.wantActive)
+			}
+			ch.mu.Lock()
+			defer ch.mu.Unlock()
+			if !slices.Equal(ch.operations, tt.wantOps) {
+				t.Fatalf("operations = %v, want %v", ch.operations, tt.wantOps)
+			}
+		})
 	}
 }
 

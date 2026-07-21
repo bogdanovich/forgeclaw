@@ -574,43 +574,24 @@ func (m *Manager) deliverToolFeedback(
 	)
 }
 
-// DismissToolFeedback clears any tracked tool feedback animation for the
-// given channel/chat. This is called when a turn ends without a final
-// response (e.g., ResponseHandled tools) to stop orphaned animation goroutines.
-// outboundCtx carries topic/thread info for channels that use scoped tracker
-// keys (e.g., Telegram forum topics); may be nil for non-topic channels.
-func (m *Manager) DismissToolFeedback(
-	ctx context.Context,
-	channelName, chatID string,
-	outboundCtx *bus.InboundContext,
-	traceScopes []runtimeevents.TraceScope,
-) {
+// DismissToolFeedback clears tracked progress for one outbound identity.
+func (m *Manager) DismissToolFeedback(ctx context.Context, target bus.OutboundMessage) {
 	if m == nil || m.toolFeedback == nil {
 		return
 	}
-	ch, ok := m.GetChannel(channelName)
-	if !ok {
-		return
-	}
-	m.dismissToolFeedbackTargets(ctx, channelName, ch, chatID, outboundCtx, "", traceScopes)
-}
-
-func (m *Manager) DismissToolFeedbackForSession(
-	ctx context.Context,
-	channelName, chatID string,
-	outboundCtx *bus.InboundContext,
-	sessionKey string,
-	traceScopes []runtimeevents.TraceScope,
-) {
-	if m == nil || m.toolFeedback == nil {
-		return
-	}
+	channelName := outboundMessageChannel(target)
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
 		return
 	}
 	m.dismissToolFeedbackTargets(
-		ctx, channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
+		ctx,
+		channelName,
+		ch,
+		outboundMessageChatID(target),
+		&target.Context,
+		target.SessionKey,
+		target.TraceScopes,
 	)
 }
 
@@ -626,6 +607,12 @@ func (m *Manager) dismissToolFeedbackTargets(
 	keys, scoped := toolFeedbackTargets(
 		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
 	)
+	if !scoped && len(keys) == 1 {
+		if key, ok := m.toolFeedback.singleActiveScopedKey(keys[0]); ok {
+			keys = []string{key}
+			scoped = true
+		}
+	}
 	for _, key := range keys {
 		if scoped {
 			m.toolFeedback.Dismiss(ctx, key)
