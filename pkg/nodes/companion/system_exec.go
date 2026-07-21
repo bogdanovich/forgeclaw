@@ -123,12 +123,13 @@ func (handler *systemExecHandler) execute(
 	command.Env = prepared.env
 	command.Stdout = output.stdoutWriter()
 	command.Stderr = output.stderrWriter()
-	process, err := startSystemExecProcess(command)
-	if err != nil {
+	// Bound Wait when an allowed command leaves descendants holding inherited
+	// output descriptors. system.exec owns only the direct process.
+	command.WaitDelay = time.Second
+	if err := command.Start(); err != nil {
 		return nil, newCommandFailure("START_FAILED", "system.exec failed to start", err)
 	}
-	defer process.close()
-	waitErr, terminated := waitSystemExecProcess(execCtx, process)
+	waitErr, terminated := waitSystemExecProcess(execCtx, command)
 	if terminated {
 		cause := context.Cause(execCtx)
 		if errors.Is(cause, errCancellationRequested) {
@@ -256,32 +257,23 @@ func systemExecContextFailure(ctx context.Context, fallback error) error {
 	return newCommandFailure("EXECUTION_CANCELED", "system.exec context canceled", cause)
 }
 
-func waitSystemExecProcess(ctx context.Context, process systemExecProcess) (error, bool) {
+func waitSystemExecProcess(ctx context.Context, command *exec.Cmd) (error, bool) {
 	done := make(chan error, 1)
 	go func() {
-		done <- process.wait()
+		done <- command.Wait()
 	}()
 	select {
 	case err := <-done:
-		if finishErr := process.finish(); finishErr != nil {
-			return finishErr, false
-		}
 		return err, false
 	case <-ctx.Done():
 		select {
 		case err := <-done:
-			if finishErr := process.finish(); finishErr != nil {
-				return finishErr, false
-			}
 			return err, false
 		default:
 		}
-		terminateErr := process.terminate()
+		terminateErr := command.Process.Kill()
 		waitErr := <-done
-		if finishErr := process.finish(); finishErr != nil {
-			return finishErr, false
-		}
-		return waitErr, terminateErr == nil
+		return waitErr, terminateErr == nil && command.ProcessState != nil
 	}
 }
 
