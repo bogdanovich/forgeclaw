@@ -206,15 +206,13 @@ type Options struct {
 }
 
 type Registry struct {
-	mu            sync.RWMutex
-	store         string
-	options       Options
-	records       map[string]Record
-	events        []TaskEvent
-	observers     []observerEntry
-	notifications []queuedObservation
-	notifying     bool
-	lastLoad      error
+	mu        sync.RWMutex
+	store     string
+	options   Options
+	records   map[string]Record
+	events    []TaskEvent
+	observers []observerEntry
+	lastLoad  error
 }
 
 type Snapshot struct {
@@ -361,11 +359,9 @@ func (r *Registry) Upsert(rec Record) error {
 	if err != nil {
 		r.restoreStateLocked(rollbackState)
 	}
-	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
+	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
-	if drainNotifications {
-		r.drainNotifications()
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -402,11 +398,9 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	if err != nil {
 		r.restoreStateLocked(rollbackState)
 	}
-	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
+	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
-	if drainNotifications {
-		r.drainNotifications()
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -434,11 +428,9 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	if err != nil {
 		r.restoreStateLocked(rollbackState)
 	}
-	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
+	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
-	if drainNotifications {
-		r.drainNotifications()
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -650,11 +642,9 @@ func (r *Registry) updateInteractionProjection(
 	if err != nil {
 		r.restoreStateLocked(rollbackState)
 	}
-	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
+	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
-	if drainNotifications {
-		r.drainNotifications()
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -786,11 +776,9 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 			changed = 0
 		}
 	}
-	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
+	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
-	if drainNotifications {
-		r.drainNotifications()
-	}
+	drainEventObservers(deliveries)
 	return changed, err
 }
 
@@ -845,11 +833,9 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 			changed = 0
 		}
 	}
-	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
+	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
-	if drainNotifications {
-		r.drainNotifications()
-	}
+	drainEventObservers(deliveries)
 	return changed, err
 }
 
@@ -1154,15 +1140,6 @@ func (r *Registry) snapshotLocked() Snapshot {
 		return tasks[i].TaskID < tasks[j].TaskID
 	})
 	events := append([]TaskEvent(nil), r.events...)
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].EmittedAt != events[j].EmittedAt {
-			return events[i].EmittedAt < events[j].EmittedAt
-		}
-		if events[i].Seq != events[j].Seq {
-			return events[i].Seq < events[j].Seq
-		}
-		return events[i].EventID < events[j].EventID
-	})
 	return Snapshot{Tasks: tasks, Events: events}
 }
 

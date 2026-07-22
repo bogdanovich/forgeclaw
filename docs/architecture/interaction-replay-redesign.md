@@ -181,7 +181,10 @@ This contract is general registry infrastructure. It does not mention traces.
 The task registry uses the same atomic subscription boundary and serialized
 dispatcher. Its projector orders events only within the durable
 `(task_id, generation_id)` stream by task event sequence; unrelated tasks do
-not need a second global lifecycle sequence.
+not need a second global lifecycle sequence. Task snapshot subscriptions stay
+gated until the caller has applied the returned snapshot and explicitly
+activates live delivery, so a concurrent post-boundary commit cannot overtake
+startup reconciliation.
 
 ## 3. Durable Trace Writer
 

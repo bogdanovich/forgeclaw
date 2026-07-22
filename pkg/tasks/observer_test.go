@@ -3,6 +3,7 @@ package tasks
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 )
@@ -51,19 +52,13 @@ func TestRegistryDoesNotNotifyObserverWhenPersistenceFails(t *testing.T) {
 	if called {
 		t.Fatal("observer called for failed append")
 	}
-	if len(registry.notifications) != 0 || registry.notifying {
-		t.Fatalf(
-			"failed commit observer state: queued=%d notifying=%v",
-			len(registry.notifications), registry.notifying,
-		)
-	}
 	if records := registry.List(); len(records) != 0 {
 		t.Fatalf("failed write left records in memory: %#v", records)
 	}
 	if events := registry.ListEvents(""); len(events) != 0 {
 		t.Fatalf("failed write left events in memory: %#v", events)
 	}
-	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
 		if observation.Event.TaskID == "task-1" {
 			t.Error("failed write became a live observation")
 		}
@@ -72,6 +67,7 @@ func TestRegistryDoesNotNotifyObserverWhenPersistenceFails(t *testing.T) {
 	if len(snapshot.Records) != 0 || len(snapshot.Events) != 0 {
 		t.Fatalf("failed write leaked through snapshot: %#v", snapshot)
 	}
+	activate()
 	registry.store = filepath.Join(t.TempDir(), "recovered", "tasks.json")
 	if err := registry.Upsert(Record{TaskID: "task-2", Task: "test"}); err != nil {
 		t.Fatal(err)
@@ -130,7 +126,7 @@ func TestRegistrySubscribeSnapshotCreatesAtomicBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	var observed []EventObservation
-	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
 		observed = append(observed, observation)
 	})
 	t.Cleanup(unsubscribe)
@@ -141,6 +137,7 @@ func TestRegistrySubscribeSnapshotCreatesAtomicBoundary(t *testing.T) {
 	if len(observed) != 0 {
 		t.Fatalf("snapshot event was also delivered live: %#v", observed)
 	}
+	activate()
 
 	snapshot.Records[0].Deliverable.Metadata["source"] = "mutated"
 	snapshot.Events[0].Payload["task_kind"] = "mutated"
@@ -178,7 +175,7 @@ func TestRegistrySubscribeSnapshotExcludesQueuedPreBoundaryEvents(t *testing.T) 
 		t.Fatal(err)
 	}
 	var observed []string
-	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
 		observed = append(observed, observation.Event.TaskID)
 	})
 	t.Cleanup(unsubscribe)
@@ -192,8 +189,85 @@ func TestRegistrySubscribeSnapshotExcludesQueuedPreBoundaryEvents(t *testing.T) 
 	if err := <-firstDone; err != nil {
 		t.Fatal(err)
 	}
+	if len(observed) != 0 {
+		t.Fatalf("pre-activation observations = %#v", observed)
+	}
+	activate()
 	if len(observed) != 1 || observed[0] != "third" {
 		t.Fatalf("post-boundary observations = %#v", observed)
+	}
+}
+
+func TestRegistrySubscribeSnapshotPreservesGenerationSequenceAcrossClockRollback(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{TaskID: "clock", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.AppendEvent("clock", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	registry.mu.Lock()
+	registry.events[0].EmittedAt = 200
+	registry.events[1].EmittedAt = 100
+	registry.mu.Unlock()
+
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(EventObservation) {})
+	t.Cleanup(unsubscribe)
+	activate()
+	if len(snapshot.Events) != 2 || snapshot.Events[0].Seq != 1 || snapshot.Events[1].Seq != 2 {
+		t.Fatalf("snapshot events = %#v", snapshot.Events)
+	}
+}
+
+func TestRegistrySubscribeSnapshotActivationSerializesConcurrentCommits(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{TaskID: "concurrent", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var observed []int64
+	_, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		mu.Lock()
+		observed = append(observed, observation.Event.Seq)
+		mu.Unlock()
+	})
+	t.Cleanup(unsubscribe)
+
+	const commits = 32
+	start := make(chan struct{})
+	errors := make(chan error, commits)
+	var writers sync.WaitGroup
+	for range commits {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			errors <- registry.AppendEvent("concurrent", EventTaskProgress, nil)
+		}()
+	}
+	close(start)
+	activate()
+	writers.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != commits {
+		t.Fatalf("observed %d commits, want %d: %v", len(observed), commits, observed)
+	}
+	if !sort.SliceIsSorted(observed, func(i, j int) bool { return observed[i] < observed[j] }) {
+		t.Fatalf("observations reordered across activation: %v", observed)
+	}
+	for i, sequence := range observed {
+		if want := int64(i + 2); sequence != want {
+			t.Fatalf("observation %d sequence = %d, want %d: %v", i, sequence, want, observed)
+		}
 	}
 }
 

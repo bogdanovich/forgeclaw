@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -24,15 +25,19 @@ type ObservationSnapshot struct {
 
 type observerEntry struct {
 	id       uint64
-	observer EventObserver
-}
-
-type queuedObservation struct {
-	observation EventObservation
-	observers   []observerEntry
+	delivery *eventObserverDelivery
 }
 
 var taskObserverSequence atomic.Uint64
+
+type eventObserverDelivery struct {
+	mu        sync.Mutex
+	observer  EventObserver
+	active    bool
+	closed    bool
+	notifying bool
+	pending   []EventObservation
+}
 
 // SubscribeEvents observes newly persisted task events. The callback runs
 // after the registry lock is released and must not be used as task authority.
@@ -40,41 +45,47 @@ func (r *Registry) SubscribeEvents(observer EventObserver) func() {
 	if r == nil || observer == nil {
 		return func() {}
 	}
-	entry := observerEntry{id: taskObserverSequence.Add(1), observer: observer}
+	entry := observerEntry{
+		id: taskObserverSequence.Add(1), delivery: newEventObserverDelivery(observer, true),
+	}
 	r.mu.Lock()
 	r.observers = append(r.observers, entry)
 	r.mu.Unlock()
-	return r.unsubscribeEventObserver(entry.id)
+	return r.unsubscribeEventObserver(entry)
 }
 
-// SubscribeSnapshot atomically installs an observer and captures retained
+// SubscribeSnapshot atomically installs a gated observer and captures retained
 // state. Events committed before the boundary appear only in the snapshot;
-// later commits are delivered through the observer in commit order.
+// later commits are buffered in order until the caller applies the snapshot
+// and invokes the returned activate function.
 func (r *Registry) SubscribeSnapshot(
 	observer EventObserver,
-) (ObservationSnapshot, func()) {
+) (ObservationSnapshot, func(), func()) {
 	if r == nil || observer == nil {
-		return ObservationSnapshot{}, func() {}
+		return ObservationSnapshot{}, func() {}, func() {}
 	}
-	entry := observerEntry{id: taskObserverSequence.Add(1), observer: observer}
+	entry := observerEntry{
+		id: taskObserverSequence.Add(1), delivery: newEventObserverDelivery(observer, false),
+	}
 	r.mu.Lock()
 	r.observers = append(r.observers, entry)
 	snapshot := r.observationSnapshotLocked()
 	r.mu.Unlock()
-	return snapshot, r.unsubscribeEventObserver(entry.id)
+	return snapshot, entry.delivery.activate, r.unsubscribeEventObserver(entry)
 }
 
-func (r *Registry) unsubscribeEventObserver(id uint64) func() {
+func (r *Registry) unsubscribeEventObserver(entry observerEntry) func() {
 	return func() {
 		r.mu.Lock()
 		for i := range r.observers {
-			if r.observers[i].id != id {
+			if r.observers[i].id != entry.id {
 				continue
 			}
 			r.observers = append(r.observers[:i], r.observers[i+1:]...)
 			break
 		}
 		r.mu.Unlock()
+		entry.delivery.close()
 	}
 }
 
@@ -98,9 +109,12 @@ func (r *Registry) eventsSinceLocked(start int) []TaskEvent {
 	return append([]TaskEvent(nil), r.events[start:]...)
 }
 
-func (r *Registry) queueNotificationsLocked(events []TaskEvent) bool {
-	if r == nil || len(events) == 0 {
-		return false
+func (r *Registry) queueNotificationsAfterCommitLocked(
+	commitErr error,
+	events []TaskEvent,
+) []*eventObserverDelivery {
+	if r == nil || commitErr != nil || len(events) == 0 {
+		return nil
 	}
 	observers := append([]observerEntry(nil), r.observers...)
 	records := make(map[string]Record, len(events))
@@ -111,37 +125,95 @@ func (r *Registry) queueNotificationsLocked(events []TaskEvent) bool {
 	for i, event := range events {
 		lastByTask[event.TaskID] = i
 	}
+	var deliveries []*eventObserverDelivery
 	for i, event := range events {
-		r.notifications = append(r.notifications, queuedObservation{
-			observation: EventObservation{
-				Event: cloneTaskEvent(event), Record: records[event.TaskID],
-				FinalForTask: lastByTask[event.TaskID] == i,
-			},
-			observers: observers,
-		})
+		observation := EventObservation{
+			Event: cloneTaskEvent(event), Record: records[event.TaskID],
+			FinalForTask: lastByTask[event.TaskID] == i,
+		}
+		for _, entry := range observers {
+			if entry.delivery.queue(observation) {
+				deliveries = append(deliveries, entry.delivery)
+			}
+		}
 	}
-	if r.notifying {
-		return false
-	}
-	r.notifying = true
-	return true
+	return deliveries
 }
 
-func (r *Registry) drainNotifications() {
+func drainEventObservers(deliveries []*eventObserverDelivery) {
+	for _, delivery := range deliveries {
+		delivery.drain()
+	}
+}
+
+func newEventObserverDelivery(
+	observer EventObserver,
+	active bool,
+) *eventObserverDelivery {
+	return &eventObserverDelivery{observer: observer, active: active}
+}
+
+func (d *eventObserverDelivery) queue(observation EventObservation) bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return false
+	}
+	d.pending = append(d.pending, observation)
+	drain := d.active && !d.notifying
+	if drain {
+		d.notifying = true
+	}
+	return drain
+}
+
+func (d *eventObserverDelivery) activate() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.closed || d.active {
+		d.mu.Unlock()
+		return
+	}
+	d.active = true
+	drain := len(d.pending) > 0 && !d.notifying
+	if drain {
+		d.notifying = true
+	}
+	d.mu.Unlock()
+	if drain {
+		d.drain()
+	}
+}
+
+func (d *eventObserverDelivery) close() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.closed = true
+	d.pending = nil
+	d.mu.Unlock()
+}
+
+func (d *eventObserverDelivery) drain() {
 	for {
-		r.mu.Lock()
-		if len(r.notifications) == 0 {
-			r.notifying = false
-			r.mu.Unlock()
+		d.mu.Lock()
+		if d.closed || !d.active || len(d.pending) == 0 {
+			d.notifying = false
+			d.mu.Unlock()
 			return
 		}
-		queued := r.notifications[0]
-		r.notifications[0] = queuedObservation{}
-		r.notifications = r.notifications[1:]
-		r.mu.Unlock()
-		for _, entry := range queued.observers {
-			notifyObserver(entry.observer, queued.observation)
-		}
+		observation := d.pending[0]
+		d.pending[0] = EventObservation{}
+		d.pending = d.pending[1:]
+		observer := d.observer
+		d.mu.Unlock()
+		notifyObserver(observer, observation)
 	}
 }
 
