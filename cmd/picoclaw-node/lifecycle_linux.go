@@ -45,6 +45,12 @@ type systemdUnitState struct {
 	managed bool
 }
 
+type systemdUnitProperties struct {
+	loadState    string
+	activeState  string
+	fragmentPath string
+}
+
 func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
 	unitDir := "/etc/systemd/system"
 	if !system {
@@ -118,33 +124,30 @@ func (lifecycle *systemdLifecycle) Status(
 		return lifecycleStatus{}, err
 	}
 	if !unit.exists {
-		active, activeErr := lifecycle.isActive(ctx, status.Service)
-		if activeErr != nil {
-			return lifecycleStatus{}, activeErr
+		properties, queryErr := lifecycle.queryUnitProperties(ctx, status.Service)
+		if queryErr != nil {
+			return lifecycleStatus{}, queryErr
 		}
-		if active {
-			return lifecycleStatus{}, orphanedSystemdServiceError(status.Service)
+		if !properties.missing() {
+			return lifecycleStatus{}, resolvedSystemdServiceError(status.Service, properties)
 		}
 		return status, nil
 	}
 	if !unit.managed {
 		return lifecycleStatus{}, unownedSystemdUnitError(status.UnitPath)
 	}
-	status.Installed = true
-	result, err := lifecycle.run(ctx, lifecycle.system, "is-active", status.Service)
+	properties, err := lifecycle.queryUnitProperties(ctx, status.Service)
 	if err != nil {
 		return lifecycleStatus{}, err
 	}
-	status.State = strings.TrimSpace(result.Output)
-	if result.ExitCode == 0 {
-		status.Active = status.State == "active" || status.State == "reloading" ||
-			status.State == "activating"
-		return status, nil
+	if !properties.missing() && !properties.resolvesTo(status.UnitPath) {
+		return lifecycleStatus{}, resolvedSystemdServiceError(status.Service, properties)
 	}
-	if isSystemdInactive(result) {
-		return status, nil
-	}
-	return lifecycleStatus{}, systemdCommandError(result, "is-active", status.Service)
+	status.Installed = true
+	status.State = properties.activeState
+	status.Active = status.State == "active" || status.State == "reloading" ||
+		status.State == "activating"
+	return status, nil
 }
 
 func (lifecycle *systemdLifecycle) baseStatus(instance string) lifecycleStatus {
@@ -178,39 +181,55 @@ func (lifecycle *systemdLifecycle) requireUnitNameAvailable(
 	ctx context.Context,
 	service string,
 ) error {
-	args := []string{"show", service, "--property=LoadState", "--property=FragmentPath"}
-	result, err := lifecycle.run(ctx, lifecycle.system, args...)
+	properties, err := lifecycle.queryUnitProperties(ctx, service)
 	if err != nil {
 		return err
 	}
-	if result.ExitCode != 0 {
-		return systemdCommandError(result, args...)
+	if properties.missing() {
+		return nil
 	}
-	properties := make(map[string]string, 2)
+	return resolvedSystemdServiceError(service, properties)
+}
+
+func (lifecycle *systemdLifecycle) queryUnitProperties(
+	ctx context.Context,
+	service string,
+) (systemdUnitProperties, error) {
+	args := []string{
+		"show", service,
+		"--property=LoadState",
+		"--property=ActiveState",
+		"--property=FragmentPath",
+	}
+	result, err := lifecycle.run(ctx, lifecycle.system, args...)
+	if err != nil {
+		return systemdUnitProperties{}, err
+	}
+	if result.ExitCode != 0 {
+		return systemdUnitProperties{}, systemdCommandError(result, args...)
+	}
+	properties := make(map[string]string, 3)
 	for _, line := range strings.Split(result.Output, "\n") {
 		key, value, found := strings.Cut(line, "=")
-		if !found || (key != "LoadState" && key != "FragmentPath") {
+		if !found || (key != "LoadState" && key != "ActiveState" && key != "FragmentPath") {
 			continue
 		}
 		if _, duplicate := properties[key]; duplicate {
-			return fmt.Errorf("systemctl show returned duplicate %s", key)
+			return systemdUnitProperties{}, fmt.Errorf("systemctl show returned duplicate %s", key)
 		}
 		properties[key] = value
 	}
 	loadState, hasLoadState := properties["LoadState"]
+	activeState, hasActiveState := properties["ActiveState"]
 	fragmentPath, hasFragmentPath := properties["FragmentPath"]
-	if !hasLoadState || !hasFragmentPath {
-		return errors.New("systemctl show omitted LoadState or FragmentPath")
+	if !hasLoadState || !hasActiveState || !hasFragmentPath {
+		return systemdUnitProperties{}, errors.New(
+			"systemctl show omitted LoadState, ActiveState, or FragmentPath",
+		)
 	}
-	if loadState == "not-found" && fragmentPath == "" {
-		return nil
-	}
-	return fmt.Errorf(
-		"refusing to shadow existing systemd unit %s (load state %q, fragment %q)",
-		service,
-		loadState,
-		fragmentPath,
-	)
+	return systemdUnitProperties{
+		loadState: loadState, activeState: activeState, fragmentPath: fragmentPath,
+	}, nil
 }
 
 func (lifecycle *systemdLifecycle) writeUnit(path string, data []byte, mode os.FileMode) error {
@@ -218,26 +237,6 @@ func (lifecycle *systemdLifecycle) writeUnit(path string, data []byte, mode os.F
 		return lifecycle.writeFile(path, data, mode)
 	}
 	return fileutil.WriteFileAtomic(path, data, mode)
-}
-
-func (lifecycle *systemdLifecycle) isActive(ctx context.Context, service string) (bool, error) {
-	result, err := lifecycle.run(ctx, lifecycle.system, "is-active", service)
-	if err != nil {
-		return false, err
-	}
-	state := strings.TrimSpace(result.Output)
-	if result.ExitCode == 0 {
-		return state == "active" || state == "reloading" || state == "activating", nil
-	}
-	if isSystemdInactive(result) {
-		return false, nil
-	}
-	return false, systemdCommandError(result, "is-active", service)
-}
-
-func isSystemdInactive(result systemdRunResult) bool {
-	return (result.ExitCode == 3 || result.ExitCode == 4) &&
-		strings.TrimSpace(result.Output) == "inactive"
 }
 
 func (lifecycle *systemdLifecycle) waitForActive(
@@ -351,8 +350,25 @@ func unownedSystemdUnitError(path string) error {
 	return fmt.Errorf("refusing to manage unowned systemd unit %s", path)
 }
 
-func orphanedSystemdServiceError(service string) error {
-	return fmt.Errorf("systemd service %s is active without its managed unit file", service)
+func (properties systemdUnitProperties) missing() bool {
+	return properties.loadState == "not-found" && properties.activeState == "inactive" &&
+		properties.fragmentPath == ""
+}
+
+func (properties systemdUnitProperties) resolvesTo(path string) bool {
+	return properties.loadState == "loaded" && properties.fragmentPath != "" &&
+		filepath.Clean(properties.fragmentPath) == filepath.Clean(path)
+}
+
+func resolvedSystemdServiceError(service string, properties systemdUnitProperties) error {
+	return fmt.Errorf(
+		"refusing systemd service %s resolved outside its managed unit "+
+			"(load state %q, active state %q, fragment %q)",
+		service,
+		properties.loadState,
+		properties.activeState,
+		properties.fragmentPath,
+	)
 }
 
 func runSystemctl(ctx context.Context, system bool, args ...string) (systemdRunResult, error) {
