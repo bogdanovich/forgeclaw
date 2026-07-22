@@ -103,7 +103,7 @@ func TestSystemdLifecycleStatusRejectsManagedUnitWithDropIn(t *testing.T) {
 			return systemdRunResult{
 				Output: "LoadState=loaded\nActiveState=active\nFragmentPath=" + unitPath +
 					"\nDropInPaths=/etc/systemd/user/picoclaw-node-main.service.d/override.conf" +
-					"\nNeedDaemonReload=no",
+					"\nNeedDaemonReload=no\nUnitFileState=enabled",
 			}, nil
 		},
 	}
@@ -124,7 +124,7 @@ func TestSystemdLifecycleStatusRejectsPendingDaemonReload(t *testing.T) {
 		run: func(context.Context, bool, ...string) (systemdRunResult, error) {
 			return systemdRunResult{
 				Output: "LoadState=loaded\nActiveState=active\nFragmentPath=" + unitPath +
-					"\nDropInPaths=\nNeedDaemonReload=yes",
+					"\nDropInPaths=\nNeedDaemonReload=yes\nUnitFileState=enabled",
 			}, nil
 		},
 	}
@@ -147,14 +147,14 @@ func TestSystemdLifecycleUnitPropertiesFailClosed(t *testing.T) {
 			name: "duplicate property",
 			result: systemdRunResult{
 				Output: "LoadState=not-found\nLoadState=loaded\nActiveState=inactive\n" +
-					"FragmentPath=\nDropInPaths=\nNeedDaemonReload=no",
+					"FragmentPath=\nDropInPaths=\nNeedDaemonReload=no\nUnitFileState=",
 			},
 		},
 		{
 			name: "invalid reload state",
 			result: systemdRunResult{
 				Output: "LoadState=not-found\nActiveState=inactive\nFragmentPath=\n" +
-					"DropInPaths=\nNeedDaemonReload=unknown",
+					"DropInPaths=\nNeedDaemonReload=unknown\nUnitFileState=",
 			},
 		},
 		{
@@ -253,19 +253,20 @@ func systemdUnitShowArgs(service string) []string {
 		"--property=FragmentPath",
 		"--property=DropInPaths",
 		"--property=NeedDaemonReload",
+		"--property=UnitFileState",
 	}
 }
 
 func missingSystemdUnitResult() systemdRunResult {
 	return systemdRunResult{
 		Output: "LoadState=not-found\nActiveState=inactive\nFragmentPath=\n" +
-			"DropInPaths=\nNeedDaemonReload=no",
+			"DropInPaths=\nNeedDaemonReload=no\nUnitFileState=",
 	}
 }
 
 func loadedSystemdUnitResult(path, activeState string) systemdRunResult {
 	return systemdRunResult{
 		Output: "LoadState=loaded\nActiveState=" + activeState +
-			"\nFragmentPath=" + path + "\nDropInPaths=\nNeedDaemonReload=no",
+			"\nFragmentPath=" + path + "\nDropInPaths=\nNeedDaemonReload=no\nUnitFileState=disabled",
 	}
 }
