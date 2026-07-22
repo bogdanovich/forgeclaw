@@ -91,9 +91,11 @@ sudo picoclaw-node status --system --instance vpn
 
 Use `--json` with any lifecycle command for stable machine-readable status.
 System installation deliberately requires an existing unprivileged account;
-the generated unit never runs the companion as root. For a user service that
-must remain active after logout, enable systemd lingering for that account with
-the operator-controlled `loginctl enable-linger <user>` command.
+the generated unit never runs the companion as root. It also requires an
+explicit absolute `--config` path so an invocation through `sudo` cannot bind
+the service account to the invoking account's home directory. For a user
+service that must remain active after logout, enable systemd lingering for that
+account with the operator-controlled `loginctl enable-linger <user>` command.
 macOS LaunchAgent lifecycle support follows separately; `run` remains available
 on every supported platform.
 

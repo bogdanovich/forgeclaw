@@ -26,7 +26,7 @@ func TestNodeServiceInstanceValidation(t *testing.T) {
 }
 
 func TestSystemInstallRequiresExplicitServiceUser(t *testing.T) {
-	if err := runServiceLifecycle("install", []string{"--system", "--config", "missing.json"}); err == nil ||
+	if err := runServiceLifecycle("install", []string{"--system", "--config", "/missing.json"}); err == nil ||
 		!strings.Contains(err.Error(), "--service-user") {
 		t.Fatalf("system install error = %v", err)
 	}
@@ -34,6 +34,41 @@ func TestSystemInstallRequiresExplicitServiceUser(t *testing.T) {
 		"--service-user", "root", "--config", "missing.json",
 	}); err == nil || !strings.Contains(err.Error(), "requires --system") {
 		t.Fatalf("user install error = %v", err)
+	}
+}
+
+func TestSystemInstallRequiresExplicitAbsoluteConfig(t *testing.T) {
+	if err := runServiceLifecycle("install", []string{"--system"}); err == nil ||
+		!strings.Contains(err.Error(), "explicit --config") {
+		t.Fatalf("implicit system config error = %v", err)
+	}
+	if err := runServiceLifecycle("install", []string{
+		"--system", "--service-user", "not-looked-up", "--config", "config.json",
+	}); err == nil || !strings.Contains(err.Error(), "absolute --config") {
+		t.Fatalf("relative system config error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name     string
+		value    string
+		explicit bool
+		want     string
+	}{
+		{name: "implicit default", value: defaultNodeConfigPath, want: "explicit --config"},
+		{name: "relative", value: "config.json", explicit: true, want: "absolute --config"},
+		{name: "home relative", value: "~/.picoclaw-node/config.json", explicit: true, want: "absolute --config"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := resolveLifecycleConfigPath(test.value, true, test.explicit)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("resolveLifecycleConfigPath() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	got, err := resolveLifecycleConfigPath("/etc/forgeclaw/node.json", true, true)
+	if err != nil || got != "/etc/forgeclaw/node.json" {
+		t.Fatalf("resolveLifecycleConfigPath() = %q, %v", got, err)
 	}
 }
 

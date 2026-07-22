@@ -67,6 +67,12 @@ func runServiceLifecycle(action string, args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	configExplicit := false
+	flags.Visit(func(visited *flag.Flag) {
+		if visited.Name == "config" {
+			configExplicit = true
+		}
+	})
 	if flags.NArg() != 0 {
 		return fmt.Errorf("%s accepts no positional arguments", action)
 	}
@@ -82,16 +88,16 @@ func runServiceLifecycle(action string, args []string) error {
 		return errors.New("--service-user requires --system")
 	}
 	if action == "install" {
+		resolved, err := resolveLifecycleConfigPath(configPath, request.System, configExplicit)
+		if err != nil {
+			return fmt.Errorf("resolve node config: %w", err)
+		}
 		if request.System {
 			var userErr error
 			request.ServiceUser, userErr = resolveServiceAccount(requestedUser, user.Lookup)
 			if userErr != nil {
 				return userErr
 			}
-		}
-		resolved, err := resolveLifecyclePath(configPath)
-		if err != nil {
-			return fmt.Errorf("resolve node config: %w", err)
 		}
 		if _, err = companion.LoadConfig(resolved); err != nil {
 			return fmt.Errorf("validate node config: %w", err)
@@ -121,6 +127,18 @@ func runServiceLifecycle(action string, args []string) error {
 		return err
 	}
 	return writeLifecycleStatus(os.Stdout, status, *jsonOutput)
+}
+
+func resolveLifecycleConfigPath(value string, system, explicit bool) (string, error) {
+	if system {
+		if !explicit {
+			return "", errors.New("system installation requires an explicit --config")
+		}
+		if !filepath.IsAbs(strings.TrimSpace(value)) {
+			return "", errors.New("system installation requires an absolute --config")
+		}
+	}
+	return resolveLifecyclePath(value)
 }
 
 func resolveServiceAccount(
