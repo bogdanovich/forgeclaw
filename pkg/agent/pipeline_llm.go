@@ -197,37 +197,13 @@ func (p *Pipeline) CallLLM(
 				providerCtx,
 				exec.model.activeCandidates,
 				func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {
-					candidateProvider, err := providerForFallbackCandidate(
-						exec.model.candidateProviders,
-						exec.model.activeProvider,
-						candidate.Provider,
-						candidate.Model,
-					)
-					if err != nil {
-						return nil, err
-					}
-					callOpts := shallowCloneLLMOptions(exec.llmOpts)
-					delete(callOpts, "thinking_level")
-					candidateCfg := p.activeModelConfig(
-						ts.agent.Workspace,
-						[]providers.FallbackCandidate{candidate},
-						candidate.Model,
-					)
-					candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
-					applyThinkingOption(
-						callOpts,
-						candidateProvider,
-						candidateThinking,
-						true,
-						ts.agent.ID,
-					)
-					exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
-					return candidateProvider.Chat(
+					return p.callFallbackCandidateWithCapabilities(
 						ctx,
+						ts,
+						exec,
+						candidate,
 						messagesForCall,
 						toolDefsForCall,
-						candidate.Model,
-						callOpts,
 					)
 				},
 				func(attempt providers.FallbackAttempt) {
@@ -323,7 +299,10 @@ func (p *Pipeline) CallLLM(
 		}
 
 		// Retry without media if vision is unsupported
-		if hasMediaRefs(exec.callMessages) && isVisionUnsupportedError(err) && retry < maxRetries {
+		if hasMediaRefs(exec.callMessages) &&
+			isVisionUnsupportedError(err) &&
+			retry < maxRetries &&
+			!turnIntroducedMedia(ts) {
 			p.emitEvent(
 				runtimeevents.KindAgentLLMRetry,
 				ts.eventMeta("runTurn", "turn.llm.retry"),
@@ -792,6 +771,16 @@ func (p *Pipeline) CallLLM(
 	}
 
 	return ControlToolLoop, nil
+}
+
+func turnIntroducedMedia(ts *turnState) bool {
+	if ts == nil {
+		return false
+	}
+	if len(ts.media) > 0 {
+		return true
+	}
+	return hasMediaRefs(ts.persistedMessagesSnapshot())
 }
 
 func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution) {

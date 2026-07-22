@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -250,6 +251,24 @@ func (fc *FallbackChain) ExecuteCandidateObserved(
 			return nil, context.Canceled
 		}
 
+		// A nested fallback chain already accounted for the health of the
+		// candidates it actually called. Record its exhaustion against this
+		// route, but do not put the outer wrapper candidate into cooldown.
+		var nestedExhausted *FallbackExhaustedError
+		if errors.As(err, &nestedExhausted) {
+			recordAttempt(FallbackAttempt{
+				Provider: candidate.Provider,
+				Model:    candidate.Model,
+				Error:    err,
+				Reason:   nestedExhausted.lastReason(),
+				Duration: elapsed,
+			})
+			if i == len(candidates)-1 {
+				return nil, &FallbackExhaustedError{Attempts: result.Attempts}
+			}
+			continue
+		}
+
 		// Classify the error.
 		failErr := ClassifyError(err, candidate.Provider, candidate.Model)
 
@@ -436,4 +455,13 @@ func (e *FallbackExhaustedError) Error() string {
 		}
 	}
 	return sb.String()
+}
+
+func (e *FallbackExhaustedError) lastReason() FailoverReason {
+	for i := len(e.Attempts) - 1; i >= 0; i-- {
+		if e.Attempts[i].Reason != "" {
+			return e.Attempts[i].Reason
+		}
+	}
+	return ""
 }

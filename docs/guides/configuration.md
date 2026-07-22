@@ -1075,6 +1075,16 @@ Semantics:
 - No `capabilities.vision`: `load_image` uses the same active model as the turn.
 - `capabilities.vision.model` set: image turns use that model instead.
 - `capabilities.vision.fallbacks`: only apply to the vision route.
+- The override also applies when its model entry is reached through chat-model
+  failover. For example, if a rate-limited primary falls back to DeepSeek,
+  DeepSeek's configured vision model receives the image instead of DeepSeek
+  receiving or silently dropping unsupported media.
+- A successful vision override does not replace the sticky text-model
+  selection. Later text-only turns continue to use the selected chat fallback
+  until its pin expires or clears.
+- Media introduced by the current turn is never removed to manufacture a
+  text-only retry. If no configured route accepts it, the turn fails visibly
+  instead of producing an answer without the image.
 - `tools.image_generate.model` remains separate and only controls image generation.
 
 #### 🔒 Security Configuration (Recommended)

@@ -6209,6 +6209,169 @@ func TestProcessMessage_FallbackUsesPerCandidateProvider(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_FallbackUsesNestedCandidateVisionOverrides(t *testing.T) {
+	workspace := t.TempDir()
+
+	primaryCalls := 0
+	primaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			primaryCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "rate limit exceeded",
+					"type":    "rate_limit_error",
+				},
+			})
+		}),
+	)
+	defer primaryServer.Close()
+
+	textFallbackCalls := 0
+	textFallbackServer := newStrictChatCompletionTestServer(
+		t,
+		"text fallback",
+		"deepseek-chat",
+		"hallucinated text-only reply",
+		&textFallbackCalls,
+	)
+	defer textFallbackServer.Close()
+
+	visionPrimaryCalls := 0
+	visionPrimaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			visionPrimaryCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "vision rate limit exceeded",
+					"type":    "rate_limit_error",
+				},
+			})
+		}),
+	)
+	defer visionPrimaryServer.Close()
+
+	visionTextFallbackCalls := 0
+	visionTextFallbackServer := newStrictChatCompletionTestServer(
+		t,
+		"vision text fallback",
+		"vision-text-fallback",
+		"nested hallucinated text-only reply",
+		&visionTextFallbackCalls,
+	)
+	defer visionTextFallbackServer.Close()
+
+	finalVisionCalls := 0
+	finalVisionServer := newStrictChatCompletionTestServer(
+		t,
+		"final vision override",
+		"final-vision",
+		"beet",
+		&finalVisionCalls,
+	)
+	defer finalVisionServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "primary",
+				ModelFallbacks:    []string{"deepseek"},
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "primary",
+				Model:     "openrouter/primary-model",
+				APIBase:   primaryServer.URL,
+				APIKeys:   config.SimpleSecureStrings("primary-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "deepseek",
+				Model:     "openrouter/deepseek-chat",
+				APIBase:   textFallbackServer.URL,
+				APIKeys:   config.SimpleSecureStrings("fallback-key"),
+				Workspace: workspace,
+				Enabled:   true,
+				Capabilities: &config.ModelCapabilities{
+					Vision: &config.ModelCapabilityOverride{
+						Model:     "vision-primary",
+						Fallbacks: []string{"vision-text-fallback"},
+					},
+				},
+			},
+			{
+				ModelName: "vision-primary",
+				Model:     "openrouter/vision-primary",
+				APIBase:   visionPrimaryServer.URL,
+				APIKeys:   config.SimpleSecureStrings("vision-primary-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "vision-text-fallback",
+				Model:     "openrouter/vision-text-fallback",
+				APIBase:   visionTextFallbackServer.URL,
+				APIKeys:   config.SimpleSecureStrings("vision-text-key"),
+				Workspace: workspace,
+				Enabled:   true,
+				Capabilities: &config.ModelCapabilities{
+					Vision: &config.ModelCapabilityOverride{Model: "final-vision"},
+				},
+			},
+			{
+				ModelName: "final-vision",
+				Model:     "openrouter/final-vision",
+				APIBase:   finalVisionServer.URL,
+				APIKeys:   config.SimpleSecureStrings("final-vision-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+		},
+	}
+
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	helper := testHelper{al: al}
+
+	resp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "what is this?",
+		Media:    []string{"data:image/png;base64,abc123"},
+	})
+
+	if resp != "beet" {
+		t.Fatalf("response = %q, want vision response", resp)
+	}
+	if primaryCalls == 0 {
+		t.Fatal("primary server was never called")
+	}
+	if textFallbackCalls != 0 {
+		t.Fatalf("text fallback calls = %d, want 0", textFallbackCalls)
+	}
+	if visionPrimaryCalls == 0 {
+		t.Fatal("vision primary server was never called")
+	}
+	if visionTextFallbackCalls != 0 {
+		t.Fatalf("vision text fallback calls = %d, want 0", visionTextFallbackCalls)
+	}
+	if finalVisionCalls != 1 {
+		t.Fatalf("final vision override calls = %d, want 1", finalVisionCalls)
+	}
+}
+
 func TestProcessMessage_FallbackReceivesExplicitThinkingOff(t *testing.T) {
 	workspace := t.TempDir()
 
@@ -7079,7 +7242,7 @@ func TestProcessMessage_SwitchesToVisionOverrideAfterLoadImageTool(t *testing.T)
 	}
 }
 
-func TestAgentLoop_VisionUnsupportedErrorStripsSessionMedia(t *testing.T) {
+func TestAgentLoop_VisionUnsupportedErrorPreservesCurrentTurnMedia(t *testing.T) {
 	workspace := t.TempDir()
 
 	cfg := &config.Config{
@@ -7102,7 +7265,7 @@ func TestAgentLoop_VisionUnsupportedErrorStripsSessionMedia(t *testing.T) {
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
 	defer cancel()
 
-	resp, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
+	_, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
 		Context: bus.InboundContext{
 			Channel:   "telegram",
 			ChatID:    "chat1",
@@ -7114,21 +7277,14 @@ func TestAgentLoop_VisionUnsupportedErrorStripsSessionMedia(t *testing.T) {
 		Media:      []string{"data:image/png;base64,abc123"},
 		SessionKey: sessionKey,
 	}))
-	if err != nil {
-		t.Fatalf("processMessage() error = %v", err)
+	if err == nil || !isVisionUnsupportedError(err) {
+		t.Fatalf("processMessage() error = %v, want vision unsupported", err)
 	}
-	if resp != "ok" {
-		t.Fatalf("response = %q, want %q", resp, "ok")
+	if provider.calls != 1 {
+		t.Fatalf("calls = %d, want 1", provider.calls)
 	}
-	if provider.calls != 2 {
-		t.Fatalf(
-			"calls = %d, want %d (fail with media, then retry without media)",
-			provider.calls,
-			2,
-		)
-	}
-	if !slices.Equal(provider.mediaSeen, []bool{true, false}) {
-		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{true, false})
+	if !slices.Equal(provider.mediaSeen, []bool{true}) {
+		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{true})
 	}
 
 	agent := al.registry.GetDefaultAgent()
@@ -7136,10 +7292,8 @@ func TestAgentLoop_VisionUnsupportedErrorStripsSessionMedia(t *testing.T) {
 		t.Fatal("expected default agent")
 	}
 	history := agent.Sessions.GetHistory(sessionKey)
-	for i, msg := range history {
-		if len(msg.Media) > 0 {
-			t.Fatalf("history[%d].Media = %v, want no media after stripping", i, msg.Media)
-		}
+	if !hasMediaRefs(history) {
+		t.Fatal("current-turn media was removed from history after vision failure")
 	}
 
 	timeoutCtx2, cancel2 := context.WithTimeout(context.Background(), responseTimeout)
@@ -7165,8 +7319,8 @@ func TestAgentLoop_VisionUnsupportedErrorStripsSessionMedia(t *testing.T) {
 	if provider.calls != 3 {
 		t.Fatalf("calls after second turn = %d, want %d", provider.calls, 3)
 	}
-	if !slices.Equal(provider.mediaSeen, []bool{true, false, false}) {
-		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{true, false, false})
+	if !slices.Equal(provider.mediaSeen, []bool{true, true, false}) {
+		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{true, true, false})
 	}
 }
 
