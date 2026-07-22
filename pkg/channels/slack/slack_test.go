@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -414,7 +415,7 @@ func TestSendMedia_SendsCaptionFallbackAfterUploads(t *testing.T) {
 	}
 }
 
-func TestSlackChannelSend_ToolFeedbackUpdatesTrackedMessage(t *testing.T) {
+func TestSlackChannelSend_ToolFeedbackUsesTransportSend(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	cfg := &config.SlackSettings{}
 	cfg.BotToken = *config.NewSecureString("xoxb-test")
@@ -428,14 +429,9 @@ func TestSlackChannelSend_ToolFeedbackUpdatesTrackedMessage(t *testing.T) {
 	ch.SetRunning(true)
 
 	var posted []string
-	var edited []string
 	ch.postMessageFn = func(_ context.Context, channelID, threadTS, text string) (string, error) {
 		posted = append(posted, channelID+"|"+threadTS+"|"+text)
-		return "msg-1", nil
-	}
-	ch.editMessageFn = func(_ context.Context, channelID, messageID, text string) error {
-		edited = append(edited, channelID+"|"+messageID+"|"+text)
-		return nil
+		return fmt.Sprintf("msg-%d", len(posted)), nil
 	}
 
 	toolFeedback := bus.OutboundMessage{
@@ -456,69 +452,16 @@ func TestSlackChannelSend_ToolFeedbackUpdatesTrackedMessage(t *testing.T) {
 	if len(posted) != 1 {
 		t.Fatalf("posted = %v, want 1 message", posted)
 	}
-	if len(edited) != 0 {
-		t.Fatalf("edited = %v, want no edits on first send", edited)
-	}
-
 	toolFeedback.Content = "Media working...\n• tool: `delegate`"
 	msgIDs, err = ch.Send(context.Background(), toolFeedback)
 	if err != nil {
 		t.Fatalf("second Send() error = %v", err)
 	}
-	if !reflect.DeepEqual(msgIDs, []string{"msg-1"}) {
-		t.Fatalf("second Send() ids = %v, want [msg-1]", msgIDs)
+	if !reflect.DeepEqual(msgIDs, []string{"msg-2"}) {
+		t.Fatalf("second Send() ids = %v, want [msg-2]", msgIDs)
 	}
-	if len(posted) != 1 {
-		t.Fatalf("posted after update = %v, want still 1 message", posted)
-	}
-	if !reflect.DeepEqual(
-		edited,
-		[]string{
-			"C123456|msg-1|Media working...\n• tool: `read_file` — `README.md`\n• tool: `delegate`",
-		},
-	) {
-		t.Fatalf("edited = %v, want merged tracked message edit", edited)
-	}
-}
-
-func TestSlackChannelFinalizeToolFeedbackMessage_EditsTrackedMessage(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	cfg := &config.SlackSettings{}
-	cfg.BotToken = *config.NewSecureString("xoxb-test")
-	cfg.AppToken = *config.NewSecureString("xapp-test")
-	bc := &config.Channel{Type: "slack", Enabled: true}
-
-	ch, err := NewSlackChannel(bc, cfg, msgBus)
-	if err != nil {
-		t.Fatalf("NewSlackChannel() error = %v", err)
-	}
-
-	ch.RecordToolFeedbackMessage(
-		"C123456/1234567890.123456#session:s1",
-		"msg-progress",
-		"Working...",
-	)
-
-	var edited []string
-	ch.editMessageFn = func(_ context.Context, channelID, messageID, text string) error {
-		edited = append(edited, channelID+"|"+messageID+"|"+text)
-		return nil
-	}
-
-	msgIDs, handled := ch.FinalizeToolFeedbackMessage(context.Background(), bus.OutboundMessage{
-		ChatID:     "C123456",
-		Content:    "Final answer",
-		SessionKey: "s1",
-		Context:    bus.InboundContext{ChatID: "C123456", TopicID: "1234567890.123456"},
-	})
-	if !handled {
-		t.Fatal("FinalizeToolFeedbackMessage() handled = false, want true")
-	}
-	if !reflect.DeepEqual(msgIDs, []string{"msg-progress"}) {
-		t.Fatalf("FinalizeToolFeedbackMessage() ids = %v, want [msg-progress]", msgIDs)
-	}
-	if !reflect.DeepEqual(edited, []string{"C123456|msg-progress|Final answer"}) {
-		t.Fatalf("edited = %v, want final edit on tracked message", edited)
+	if len(posted) != 2 {
+		t.Fatalf("posted after second send = %v, want 2 messages", posted)
 	}
 }
 

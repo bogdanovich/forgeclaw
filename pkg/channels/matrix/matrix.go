@@ -46,13 +46,6 @@ const (
 
 var matrixMentionHrefRegexp = regexp.MustCompile(`(?i)<a[^>]+href=["']([^"']+)["']`)
 
-func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
-}
-
 type roomKindCacheEntry struct {
 	isGroup   bool
 	expiresAt time.Time
@@ -199,7 +192,6 @@ type MatrixChannel struct {
 
 	cryptoHelper *cryptohelper.CryptoHelper
 	cryptoDbPath string
-	progress     *channels.ToolFeedbackAnimator
 }
 
 func NewMatrixChannel(
@@ -257,7 +249,6 @@ func NewMatrixChannel(
 		typingMu:          sync.Mutex{},
 		cryptoDbPath:      cryptoDatabasePath,
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
 	return ch, nil
 }
 
@@ -299,12 +290,6 @@ func (c *MatrixChannel) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *MatrixChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
-	if c.progress != nil {
-		c.progress.Configure(cfg)
-	}
-}
-
 func (c *MatrixChannel) Stop(ctx context.Context) error {
 	logger.InfoC("matrix", "Stopping Matrix channel")
 	c.SetRunning(false)
@@ -313,10 +298,6 @@ func (c *MatrixChannel) Stop(ctx context.Context) error {
 		c.cancel()
 	}
 	c.stopTypingSessions(ctx)
-	if c.progress != nil {
-		c.progress.StopAll()
-	}
-
 	// Close crypto helper if initialized
 	if c.cryptoHelper != nil {
 		c.cryptoHelper.Close()
@@ -417,36 +398,11 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		return nil, nil
 	}
 
-	isToolFeedback := outboundMessageIsToolFeedback(msg)
-	if isToolFeedback {
-		if msgID, handled, err := c.progress.Update(ctx, msg.ChatID, content); handled {
-			if err != nil {
-				return nil, err
-			}
-			return []string{msgID}, nil
-		}
-	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
-	if !isToolFeedback {
-		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
-			return msgIDs, nil
-		}
-	}
-	if isToolFeedback {
-		content = channels.InitialAnimatedToolFeedbackContent(content)
-	}
-
 	resp, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, c.messageContent(content))
 	if err != nil {
 		return nil, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 	}
-	msgID := resp.EventID.String()
-	if isToolFeedback {
-		c.RecordEditedToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-	} else if hasTrackedMsg {
-		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
-	}
-	return []string{msgID}, nil
+	return []string{resp.EventID.String()}, nil
 }
 
 func (c *MatrixChannel) messageContent(text string) *event.MessageEventContent {
@@ -463,8 +419,6 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
-
 	sendCtx := ctx
 	if sendCtx == nil {
 		sendCtx = context.Background()
@@ -575,10 +529,6 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 		}
 	}
 
-	if hasTrackedMsg {
-		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
-	}
-
 	return eventIDs, nil
 }
 
@@ -675,81 +625,6 @@ func (c *MatrixChannel) DeleteMessage(ctx context.Context, chatID string, messag
 
 	_, err := c.client.RedactEvent(ctx, roomID, eventID)
 	return err
-}
-
-func (c *MatrixChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
-	if c.progress == nil {
-		return "", false
-	}
-	return c.progress.Current(chatID)
-}
-
-func (c *MatrixChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
-}
-
-func (c *MatrixChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Record(chatID, messageID, content)
-}
-
-func (c *MatrixChannel) RecordEditedToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.RecordEdited(chatID, messageID, content)
-}
-
-func (c *MatrixChannel) ClearToolFeedbackMessage(chatID string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Clear(chatID)
-}
-
-func (c *MatrixChannel) DismissToolFeedbackMessage(ctx context.Context, chatID string) {
-	msgID, ok := c.currentToolFeedbackMessage(chatID)
-	if !ok {
-		return
-	}
-	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
-}
-
-func (c *MatrixChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
-	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
-		return
-	}
-	c.ClearToolFeedbackMessage(chatID)
-	_ = c.DeleteMessage(ctx, chatID, messageID)
-}
-
-func (c *MatrixChannel) finalizeTrackedToolFeedbackMessage(
-	ctx context.Context,
-	chatID string,
-	content string,
-	editFn func(context.Context, string, string, string) error,
-) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
-		return nil, false
-	}
-	if err := editFn(ctx, chatID, msgID, content); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
-		return nil, false
-	}
-	return []string{msgID}, true
-}
-
-func (c *MatrixChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
-	if outboundMessageIsToolFeedback(msg) {
-		return nil, false
-	}
-	return c.finalizeTrackedToolFeedbackMessage(ctx, msg.ChatID, msg.Content, c.EditMessage)
 }
 
 func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event) {

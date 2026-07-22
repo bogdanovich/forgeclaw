@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,69 +71,7 @@ func TestHandleMessageSend_ForwardsMessageMetadata(t *testing.T) {
 	}
 }
 
-func TestFinalizeTrackedToolFeedbackMessage_StopsTrackingBeforeEdit(t *testing.T) {
-	ch := &PicoChannel{
-		progress: channels.NewToolFeedbackAnimator(nil),
-	}
-	ch.RecordToolFeedbackMessage("pico:chat-1", "msg-1", "🔧 `read_file`")
-
-	msgIDs, handled := ch.finalizeTrackedToolFeedbackMessage(
-		context.Background(),
-		"pico:chat-1",
-		"final reply",
-		func(_ context.Context, chatID, messageID string, payload map[string]any, contextUsage *bus.ContextUsage) error {
-			if _, ok := ch.currentToolFeedbackMessage(chatID); ok {
-				t.Fatal("expected tracked tool feedback to be stopped before edit")
-			}
-			if chatID != "pico:chat-1" || messageID != "msg-1" {
-				t.Fatalf("unexpected edit args: %s %s", chatID, messageID)
-			}
-			if got := payload[PayloadKeyContent]; got != "final reply" {
-				t.Fatalf("unexpected content payload: %#v", got)
-			}
-			if contextUsage != nil {
-				t.Fatalf("unexpected context usage: %+v", contextUsage)
-			}
-			return nil
-		},
-		nil,
-		nil,
-	)
-	if !handled {
-		t.Fatal("expected finalizeTrackedToolFeedbackMessage to handle tracked message")
-	}
-	if len(msgIDs) != 1 || msgIDs[0] != "msg-1" {
-		t.Fatalf("finalizeTrackedToolFeedbackMessage() ids = %v, want [msg-1]", msgIDs)
-	}
-}
-
-func TestDismissTrackedToolFeedbackMessage_DeletesProgressMessage(t *testing.T) {
-	ch := &PicoChannel{
-		progress: channels.NewToolFeedbackAnimator(nil),
-	}
-	ch.RecordToolFeedbackMessage("pico:chat-1", "msg-1", "🔧 `read_file`")
-
-	var deleted struct {
-		chatID    string
-		messageID string
-	}
-	ch.deleteMessageFn = func(_ context.Context, chatID string, messageID string) error {
-		deleted.chatID = chatID
-		deleted.messageID = messageID
-		return nil
-	}
-
-	ch.DismissToolFeedbackMessage(context.Background(), "pico:chat-1")
-
-	if deleted.chatID != "pico:chat-1" || deleted.messageID != "msg-1" {
-		t.Fatalf("unexpected delete target: %+v", deleted)
-	}
-	if _, ok := ch.currentToolFeedbackMessage("pico:chat-1"); ok {
-		t.Fatal("expected tracked tool feedback to be cleared after dismissal")
-	}
-}
-
-func TestSend_ThoughtMessageDoesNotFinalizeTrackedToolFeedback(t *testing.T) {
+func TestSend_ThoughtMessageIncludesMetadata(t *testing.T) {
 	ch := newTestPicoChannel(t)
 
 	if err := ch.Start(context.Background()); err != nil {
@@ -142,8 +82,6 @@ func TestSend_ThoughtMessageDoesNotFinalizeTrackedToolFeedback(t *testing.T) {
 	clientConn, received, cleanup := newTestPicoWebSocket(t)
 	defer cleanup()
 	ch.addConnForTest(&picoConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
-
-	ch.RecordToolFeedbackMessage("pico:sess-1", "msg-progress", "🔧 `read_file`\nReading config")
 
 	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "pico:sess-1",
@@ -175,68 +113,11 @@ func TestSend_ThoughtMessageDoesNotFinalizeTrackedToolFeedback(t *testing.T) {
 		if got := payload[PayloadKeyModelName]; got != "gpt-5.4-mini" {
 			t.Fatalf("thought model_name = %#v, want %q", got, "gpt-5.4-mini")
 		}
-		if got := payload["message_id"]; got == "msg-progress" || got == nil || got == "" {
-			t.Fatalf("thought message_id = %#v, want new non-progress id", got)
+		if got := payload["message_id"]; got == nil || got == "" {
+			t.Fatalf("thought message_id = %#v, want non-empty id", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected thought message to be delivered")
-	}
-
-	if msgID, ok := ch.currentToolFeedbackMessage("pico:sess-1"); !ok || msgID != "msg-progress" {
-		t.Fatalf("tracked tool feedback = (%q, %v), want (msg-progress, true)", msgID, ok)
-	}
-
-	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "pico:sess-1",
-		Content: "final reply",
-		Context: bus.InboundContext{
-			Channel: "pico",
-			ChatID:  "pico:sess-1",
-			Raw: map[string]string{
-				PayloadKeyModelName: "gpt-5.4",
-			},
-		},
-		ContextUsage: &bus.ContextUsage{
-			UsedTokens:       321,
-			TotalTokens:      4096,
-			CompressAtTokens: 3072,
-			UsedPercent:      8,
-		},
-	}); err != nil {
-		t.Fatalf("Send(final) error = %v", err)
-	}
-
-	select {
-	case msg := <-received:
-		if msg.Type != TypeMessageUpdate {
-			t.Fatalf("final message type = %q, want %q", msg.Type, TypeMessageUpdate)
-		}
-		payload := msg.Payload
-		if got := payload["message_id"]; got != "msg-progress" {
-			t.Fatalf("final message_id = %#v, want %q", got, "msg-progress")
-		}
-		if got := payload[PayloadKeyContent]; got != "final reply" {
-			t.Fatalf("final content = %#v, want %q", got, "final reply")
-		}
-		if got := payload[PayloadKeyModelName]; got != "gpt-5.4" {
-			t.Fatalf("final model_name = %#v, want %q", got, "gpt-5.4")
-		}
-		rawUsage, ok := payload["context_usage"].(map[string]any)
-		if !ok {
-			t.Fatalf("final context_usage = %#v, want map payload", payload["context_usage"])
-		}
-		if got, ok := rawUsage["used_tokens"].(float64); !ok || got != 321 {
-			t.Fatalf("used_tokens = %#v, want 321", rawUsage["used_tokens"])
-		}
-		if got, ok := rawUsage["total_tokens"].(float64); !ok || got != 4096 {
-			t.Fatalf("total_tokens = %#v, want 4096", rawUsage["total_tokens"])
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected final reply to finalize tracked tool feedback")
-	}
-
-	if _, ok := ch.currentToolFeedbackMessage("pico:sess-1"); ok {
-		t.Fatal("expected tracked tool feedback to be cleared after final reply")
 	}
 }
 
@@ -733,6 +614,437 @@ func TestBroadcastToSession_TargetsOnlyRequestedSession(t *testing.T) {
 	}
 }
 
+func TestBroadcastToConnections_StalledPeerDoesNotStarveHealthyPeer(t *testing.T) {
+	ch := newTestPicoChannel(t)
+	healthyConn, received, cleanup := newTestPicoWebSocket(t)
+	defer cleanup()
+	healthy := &picoConn{id: "healthy", conn: healthyConn, sessionID: "sess-1"}
+	stalled := &picoConn{id: "stalled", sessionID: "sess-1"}
+	stalled.writeOnce.Do(func() {
+		stalled.writeLock = make(chan struct{}, 1)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	err := ch.broadcastToConnectionsContext(
+		ctx,
+		"sess-1",
+		newMessage(TypeMessageCreate, map[string]any{"content": "hello"}),
+		[]*picoConn{stalled, healthy},
+	)
+	if err != nil {
+		t.Fatalf("broadcastToConnectionsContext() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("broadcast returned after %v, want first-success completion", elapsed)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("caller context expired before successful broadcast returned: %v", err)
+	}
+	select {
+	case msg := <-received:
+		if msg.SessionID != "sess-1" || msg.Payload["content"] != "hello" {
+			t.Fatalf("received message = %+v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("healthy peer did not receive broadcast")
+	}
+}
+
+func TestBroadcastToConnections_PreservesContextFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		context func(*testing.T) context.Context
+		wantErr error
+	}{
+		{
+			name: "canceled",
+			context: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "deadline",
+			context: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+				t.Cleanup(cancel)
+				return ctx
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stalled := &picoConn{id: "stalled", sessionID: "sess-1"}
+			stalled.writeOnce.Do(func() {
+				stalled.writeLock = make(chan struct{}, 1)
+			})
+
+			err := newTestPicoChannel(t).broadcastToConnectionsContext(
+				tt.context(t),
+				"sess-1",
+				newMessage(TypeMessageCreate, map[string]any{"content": "hello"}),
+				[]*picoConn{stalled},
+			)
+			if !errors.Is(err, channels.ErrSendFailed) {
+				t.Fatalf("error = %v, want ErrSendFailed", err)
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPicoConnEnqueueWrite_PreservesSubmissionOrder(t *testing.T) {
+	conn, _, cleanup := newTestPicoWebSocket(t)
+	defer cleanup()
+	pc := &picoConn{conn: conn}
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+
+	first := pc.enqueueWrite(context.Background(), func() error {
+		close(firstStarted)
+		<-releaseFirst
+		mu.Lock()
+		order = append(order, "create")
+		mu.Unlock()
+		return nil
+	})
+	<-firstStarted
+	second := pc.enqueueWrite(context.Background(), func() error {
+		mu.Lock()
+		order = append(order, "update")
+		mu.Unlock()
+		return nil
+	})
+
+	select {
+	case err := <-second:
+		t.Fatalf("second write completed before first: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-first; err != nil {
+		t.Fatalf("first write error = %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("second write error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(order, ","); got != "create,update" {
+		t.Fatalf("write order = %q, want create,update", got)
+	}
+}
+
+func TestPicoConnEnqueueWrite_QueueFullClosesConnection(t *testing.T) {
+	conn, _, cleanup := newTestPicoWebSocket(t)
+	defer cleanup()
+	pc := &picoConn{conn: conn}
+	blockerStarted := make(chan struct{})
+	releaseBlocker := make(chan struct{})
+	blocker := pc.enqueueWrite(context.Background(), func() error {
+		close(blockerStarted)
+		<-releaseBlocker
+		return nil
+	})
+	<-blockerStarted
+
+	pending := make([]<-chan error, 0, picoWriteQueueSize)
+	for range picoWriteQueueSize {
+		pending = append(pending, pc.enqueueWrite(context.Background(), func() error { return nil }))
+	}
+	overflow := pc.enqueueWrite(context.Background(), func() error { return nil })
+	if err := <-overflow; !errors.Is(err, errPicoWriteQueueFull) {
+		t.Fatalf("overflow error = %v, want queue full", err)
+	}
+	if !pc.closed.Load() {
+		t.Fatal("queue overflow left connection open")
+	}
+
+	close(releaseBlocker)
+	if err := <-blocker; err != nil {
+		t.Fatalf("blocker error = %v", err)
+	}
+	for i, result := range pending {
+		if err := <-result; err == nil {
+			t.Fatalf("pending write %d succeeded after queue overflow", i)
+		}
+	}
+}
+
+func TestBroadcastToConnections_FirstSuccessPreservesSlowPeerOrder(t *testing.T) {
+	fastConn, _, fastCleanup := newTestPicoWebSocket(t)
+	defer fastCleanup()
+	slowConn, slowReceived, slowCleanup := newTestPicoWebSocket(t)
+	defer slowCleanup()
+	fast := &picoConn{id: "fast", conn: fastConn, sessionID: "sess-1"}
+	slow := &picoConn{id: "slow", conn: slowConn, sessionID: "sess-1"}
+
+	blockerStarted := make(chan struct{})
+	releaseBlocker := make(chan struct{})
+	blocker := slow.enqueueWrite(context.Background(), func() error {
+		close(blockerStarted)
+		<-releaseBlocker
+		return nil
+	})
+	<-blockerStarted
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connections := []*picoConn{slow, fast}
+	if err := newTestPicoChannel(t).broadcastToConnectionsContext(
+		ctx,
+		"sess-1",
+		newMessage(TypeMessageCreate, map[string]any{"content": "first"}),
+		connections,
+	); err != nil {
+		t.Fatalf("create broadcast error = %v", err)
+	}
+	if err := newTestPicoChannel(t).broadcastToConnectionsContext(
+		ctx,
+		"sess-1",
+		newMessage(TypeMessageUpdate, map[string]any{"content": "second"}),
+		connections,
+	); err != nil {
+		t.Fatalf("update broadcast error = %v", err)
+	}
+
+	close(releaseBlocker)
+	if err := <-blocker; err != nil {
+		t.Fatalf("slow-peer blocker error = %v", err)
+	}
+	first := mustReceivePicoMessage(t, slowReceived)
+	second := mustReceivePicoMessage(t, slowReceived)
+	if first.Type != TypeMessageCreate || second.Type != TypeMessageUpdate {
+		t.Fatalf("slow peer frame order = [%q, %q], want create then update", first.Type, second.Type)
+	}
+}
+
+func TestBroadcastToConnections_CanceledQueuedCreateClosesSlowPeer(t *testing.T) {
+	fastConn, _, fastCleanup := newTestPicoWebSocket(t)
+	defer fastCleanup()
+	slowConn, slowReceived, slowCleanup := newTestPicoWebSocket(t)
+	defer slowCleanup()
+	fast := &picoConn{id: "fast", conn: fastConn, sessionID: "sess-1"}
+	slow := &picoConn{id: "slow", conn: slowConn, sessionID: "sess-1"}
+
+	blockerStarted := make(chan struct{})
+	releaseBlocker := make(chan struct{})
+	blocker := slow.enqueueWrite(context.Background(), func() error {
+		close(blockerStarted)
+		<-releaseBlocker
+		return nil
+	})
+	<-blockerStarted
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := newTestPicoChannel(t).broadcastToConnectionsContext(
+		ctx,
+		"sess-1",
+		newMessage(TypeMessageCreate, map[string]any{"content": "first"}),
+		[]*picoConn{slow, fast},
+	); err != nil {
+		t.Fatalf("create broadcast error = %v", err)
+	}
+	cancel()
+	close(releaseBlocker)
+	if err := <-blocker; err != nil {
+		t.Fatalf("slow-peer blocker error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !slow.closed.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !slow.closed.Load() {
+		t.Fatal("canceled queued create left slow peer open")
+	}
+
+	err := newTestPicoChannel(t).broadcastToConnectionsContext(
+		context.Background(),
+		"sess-1",
+		newMessage(TypeMessageUpdate, map[string]any{"content": "second"}),
+		[]*picoConn{slow},
+	)
+	if !errors.Is(err, channels.ErrSendFailed) {
+		t.Fatalf("update broadcast error = %v, want ErrSendFailed", err)
+	}
+	assertNoPicoMessage(t, slowReceived)
+}
+
+func TestPicoConnWriteJSON_DeadlineInterruptsBlockedSocket(t *testing.T) {
+	pc, cleanup := newBlockedPicoConn(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	err := pc.writeJSON(ctx, map[string]any{
+		"content": strings.Repeat("x", 8<<20),
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writeJSON() error = %v, want context deadline exceeded", err)
+	}
+	if !pc.closed.Load() {
+		t.Fatal("writeJSON() left a timed-out WebSocket connection reusable")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("writeJSON() returned after %v, want bounded socket write", elapsed)
+	}
+}
+
+func TestPicoConnWriteJSON_CancellationInterruptsActiveWrite(t *testing.T) {
+	pc, cleanup := newBlockedPicoConn(t)
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	writeStarted := make(chan struct{})
+	payload := map[string]any{"content": strings.Repeat("x", 8<<20)}
+	go func() {
+		result <- pc.write(ctx, func() error {
+			close(writeStarted)
+			return pc.conn.WriteJSON(payload)
+		})
+	}()
+
+	<-writeStarted
+	select {
+	case err := <-result:
+		t.Fatalf("write() completed before cancellation with %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("writeJSON() error = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("writeJSON() did not stop after context cancellation")
+	}
+	if !pc.closed.Load() {
+		t.Fatal("writeJSON() left a canceled active WebSocket write reusable")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("writeJSON() returned after %v, want prompt cancellation", elapsed)
+	}
+}
+
+func newBlockedPicoConn(t *testing.T) (*picoConn, func()) {
+	t.Helper()
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade() error = %v", err)
+			return
+		}
+		defer conn.Close()
+		close(accepted)
+		<-release
+	}))
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		close(release)
+		server.Close()
+		t.Fatalf("Dial() error = %v", err)
+	}
+	resp.Body.Close()
+	cleanup := func() {
+		conn.Close()
+		close(release)
+		server.Close()
+	}
+	<-accepted
+
+	if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+		if writeBufferErr := tcpConn.SetWriteBuffer(1024); writeBufferErr != nil {
+			cleanup()
+			t.Fatalf("SetWriteBuffer() error = %v", writeBufferErr)
+		}
+	}
+	return &picoConn{conn: conn}, cleanup
+}
+
+func TestPicoConnWriteJSON_DeadlineWaitingForWriterKeepsConnectionOpen(t *testing.T) {
+	pc := &picoConn{}
+	pc.writeOnce.Do(func() {
+		pc.writeLock = make(chan struct{}, 1)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := pc.writeJSON(ctx, map[string]any{"content": "not written"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writeJSON() error = %v, want context deadline exceeded", err)
+	}
+	if pc.closed.Load() {
+		t.Fatal("writeJSON() closed a connection before acquiring the writer")
+	}
+}
+
+func TestPicoConnWrite_RejectsConnectionClosedWhileWaitingForWriter(t *testing.T) {
+	pc := &picoConn{}
+	pc.writeOnce.Do(func() {
+		pc.writeLock = make(chan struct{}, 1)
+	})
+	called := atomic.Bool{}
+	result := make(chan error, 1)
+	go func() {
+		result <- pc.write(context.Background(), func() error {
+			called.Store(true)
+			return nil
+		})
+	}()
+
+	pc.closed.Store(true)
+	pc.writeLock <- struct{}{}
+	err := <-result
+	if err == nil || !strings.Contains(err.Error(), "connection closed") {
+		t.Fatalf("write() error = %v, want connection closed", err)
+	}
+	if called.Load() {
+		t.Fatal("write() invoked callback after connection closed while waiting")
+	}
+}
+
+func TestPicoConnWrite_SuccessWinsCancellationResult(t *testing.T) {
+	conn, _, cleanup := newTestPicoWebSocket(t)
+	defer cleanup()
+	pc := &picoConn{conn: conn}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err := pc.write(ctx, func() error {
+		cancel()
+		deadline := time.Now().Add(time.Second)
+		for !pc.closed.Load() && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if !pc.closed.Load() {
+			t.Fatal("cancellation did not win the active-write race")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("write() error = %v after successful callback, want nil", err)
+	}
+}
+
 func TestSendMedia_ResolvesMediaBeforeDelivery(t *testing.T) {
 	ch := newTestPicoChannel(t)
 	store := media.NewFileMediaStore()
@@ -744,8 +1056,8 @@ func TestSendMedia_ResolvesMediaBeforeDelivery(t *testing.T) {
 	defer ch.Stop(context.Background())
 
 	localPath := filepath.Join(t.TempDir(), "report.txt")
-	if err := os.WriteFile(localPath, []byte("attachment body"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	if writeErr := os.WriteFile(localPath, []byte("attachment body"), 0o600); writeErr != nil {
+		t.Fatalf("WriteFile() error = %v", writeErr)
 	}
 
 	ref, err := store.Store(localPath, media.MediaMeta{
@@ -774,25 +1086,50 @@ func TestSendMedia_ResolvesMediaBeforeDelivery(t *testing.T) {
 	}
 }
 
-func TestSendMedia_DismissesTrackedToolFeedbackMessage(t *testing.T) {
+func TestContextBearingBroadcastsPropagateCallerContext(t *testing.T) {
+	type contextKey struct{}
+	marker := &struct{}{}
+	ctx := context.WithValue(context.Background(), contextKey{}, marker)
 	ch := newTestPicoChannel(t)
+	ch.SetRunning(true)
+	ch.bc.Placeholder.Enabled = true
+
+	var calls int
+	ch.broadcastFn = func(gotCtx context.Context, _ string, _ PicoMessage) error {
+		calls++
+		if gotCtx == nil || gotCtx.Value(contextKey{}) != marker {
+			t.Fatal("broadcast did not receive the caller context")
+		}
+		return nil
+	}
+
+	if _, err := ch.StartTyping(ctx, "pico:sess-1"); err != nil {
+		t.Fatalf("StartTyping() error = %v", err)
+	}
+	if _, err := ch.SendPlaceholder(ctx, "pico:sess-1"); err != nil {
+		t.Fatalf("SendPlaceholder() error = %v", err)
+	}
+
+	streamer := &picoStreamer{channel: ch, chatID: "pico:sess-1"}
+	streamer.mu.Lock()
+	err := streamer.sendLocked(ctx, "answer", nil)
+	streamer.mu.Unlock()
+	if err != nil {
+		t.Fatalf("sendLocked() error = %v", err)
+	}
+	streamer.mu.Lock()
+	err = streamer.sendReasoningLocked(ctx, "reasoning")
+	streamer.mu.Unlock()
+	if err != nil {
+		t.Fatalf("sendReasoningLocked() error = %v", err)
+	}
+
 	store := media.NewFileMediaStore()
 	ch.SetMediaStore(store)
-
-	if err := ch.Start(context.Background()); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer ch.Stop(context.Background())
-
-	clientConn, received, cleanup := newTestPicoWebSocket(t)
-	defer cleanup()
-	ch.addConnForTest(&picoConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
-
 	localPath := filepath.Join(t.TempDir(), "report.txt")
-	if err := os.WriteFile(localPath, []byte("attachment body"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	if writeErr := os.WriteFile(localPath, []byte("attachment body"), 0o600); writeErr != nil {
+		t.Fatalf("WriteFile() error = %v", writeErr)
 	}
-
 	ref, err := store.Store(localPath, media.MediaMeta{
 		Filename:    "report.txt",
 		ContentType: "text/plain",
@@ -800,20 +1137,7 @@ func TestSendMedia_DismissesTrackedToolFeedbackMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Store() error = %v", err)
 	}
-
-	ch.RecordToolFeedbackMessage("pico:sess-1", "msg-progress", "🔧 `read_file`")
-
-	var deleted struct {
-		chatID    string
-		messageID string
-	}
-	ch.deleteMessageFn = func(_ context.Context, chatID string, messageID string) error {
-		deleted.chatID = chatID
-		deleted.messageID = messageID
-		return nil
-	}
-
-	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+	if _, err := ch.SendMedia(ctx, bus.OutboundMediaMessage{
 		ChatID: "pico:sess-1",
 		Parts: []bus.MediaPart{{
 			Ref:         ref,
@@ -821,25 +1145,69 @@ func TestSendMedia_DismissesTrackedToolFeedbackMessage(t *testing.T) {
 			Filename:    "report.txt",
 			ContentType: "text/plain",
 		}},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("SendMedia() error = %v", err)
 	}
 
-	select {
-	case msg := <-received:
-		if msg.Type != TypeMessageCreate {
-			t.Fatalf("message type = %q, want %q", msg.Type, TypeMessageCreate)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected media message to be delivered")
+	if calls != 5 {
+		t.Fatalf("broadcast calls = %d, want 5", calls)
+	}
+}
+
+func TestPicoStreamerFailedCreateRetriesAsCreate(t *testing.T) {
+	tests := []struct {
+		name       string
+		storedID   func(*picoStreamer) string
+		sendLocked func(*picoStreamer, context.Context, string) error
+	}{
+		{
+			name:     "answer",
+			storedID: func(s *picoStreamer) string { return s.messageID },
+			sendLocked: func(s *picoStreamer, ctx context.Context, content string) error {
+				return s.sendLocked(ctx, content, nil)
+			},
+		},
+		{
+			name:     "reasoning",
+			storedID: func(s *picoStreamer) string { return s.reasoningID },
+			sendLocked: func(s *picoStreamer, ctx context.Context, content string) error {
+				return s.sendReasoningLocked(ctx, content)
+			},
+		},
 	}
 
-	if deleted.chatID != "pico:sess-1" || deleted.messageID != "msg-progress" {
-		t.Fatalf("unexpected delete target: %+v", deleted)
-	}
-	if _, ok := ch.currentToolFeedbackMessage("pico:sess-1"); ok {
-		t.Fatal("expected tracked tool feedback to be cleared after media delivery")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := newTestPicoChannel(t)
+			var broadcasts []PicoMessage
+			ch.broadcastFn = func(_ context.Context, _ string, msg PicoMessage) error {
+				broadcasts = append(broadcasts, msg)
+				if len(broadcasts) == 1 {
+					return context.Canceled
+				}
+				return nil
+			}
+			streamer := &picoStreamer{channel: ch, chatID: "pico:sess-1"}
+
+			if err := tt.sendLocked(streamer, context.Background(), "first"); !errors.Is(err, context.Canceled) {
+				t.Fatalf("first send error = %v, want context canceled", err)
+			}
+			if got := tt.storedID(streamer); got != "" {
+				t.Fatalf("stored ID after failed create = %q, want empty", got)
+			}
+			if err := tt.sendLocked(streamer, context.Background(), "retry"); err != nil {
+				t.Fatalf("retry send error = %v", err)
+			}
+			if len(broadcasts) != 2 {
+				t.Fatalf("broadcast count = %d, want 2", len(broadcasts))
+			}
+			if broadcasts[0].Type != TypeMessageCreate || broadcasts[1].Type != TypeMessageCreate {
+				t.Fatalf("broadcast types = [%q, %q], want two creates", broadcasts[0].Type, broadcasts[1].Type)
+			}
+			if got := tt.storedID(streamer); got == "" {
+				t.Fatal("stored ID after successful retry is empty")
+			}
+		})
 	}
 }
 

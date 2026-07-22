@@ -66,16 +66,8 @@ func (a *channelManagerAdapter) SendPlaceholder(ctx context.Context, channel, ch
 }
 
 func (a *channelManagerAdapter) DismissToolFeedback(
-	ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext,
-) {
-	a.inner.DismissToolFeedback(ctx, channel, chatID, outboundCtx)
-}
-
-func (a *channelManagerAdapter) DismissToolFeedbackForSession(
 	ctx context.Context,
-	channel, chatID string,
-	outboundCtx *bus.InboundContext,
-	sessionKey string,
+	target bus.OutboundMessage,
 ) {
-	a.inner.DismissToolFeedbackForSession(ctx, channel, chatID, outboundCtx, sessionKey)
+	a.inner.DismissToolFeedback(ctx, target)
 }

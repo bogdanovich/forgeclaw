@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/nodes"
@@ -16,9 +17,99 @@ const LocalExecutor = "local"
 
 var ErrCommandUnavailable = errors.New("node command is unavailable")
 
+var ErrInvocationOutcomeUnknown = errors.New("node invocation outcome is unknown")
+
+var ErrCancellationUnsupported = errors.New("node command does not support cancellation")
+
+var ErrInvocationCanceled = errors.New("node invocation canceled")
+
+var errCancellationRequested = errors.New("node invocation cancellation requested")
+
+var errCommandCancellationConfirmed = errors.New("node command cancellation confirmed")
+
+type activeInvocation struct {
+	mu                    sync.Mutex
+	ctx                   context.Context
+	cancel                context.CancelCauseFunc
+	handlerFinished       bool
+	cancellationDelivered bool
+}
+
+func (invocation *activeInvocation) signalCancellation() bool {
+	invocation.mu.Lock()
+	defer invocation.mu.Unlock()
+	if invocation.handlerFinished {
+		return false
+	}
+	if cause := context.Cause(invocation.ctx); cause != nil {
+		return errors.Is(cause, errCancellationRequested) && invocation.cancellationDelivered
+	}
+	invocation.cancel(errCancellationRequested)
+	invocation.cancellationDelivered = errors.Is(
+		context.Cause(invocation.ctx),
+		errCancellationRequested,
+	)
+	return invocation.cancellationDelivered
+}
+
+func (invocation *activeInvocation) finishHandler() bool {
+	invocation.mu.Lock()
+	defer invocation.mu.Unlock()
+	invocation.handlerFinished = true
+	return invocation.cancellationDelivered
+}
+
+type recordedInvocationError struct {
+	failure nodes.InvocationFailure
+}
+
+func (err *recordedInvocationError) Error() string {
+	return err.failure.Message
+}
+
 type commandHandler interface {
 	descriptor() nodes.CommandDescriptor
-	execute(context.Context, json.RawMessage) (any, error)
+	// A cancel-capable handler wraps errCommandCancellationConfirmed only after
+	// it has honored the signal and stopped the underlying operation.
+	execute(context.Context, commandInvocation) (any, error)
+}
+
+type commandAuthorizer interface {
+	authorize(nodes.ExecutionPlan) error
+}
+
+type commandInvocation struct {
+	Input            json.RawMessage
+	TimeoutSeconds   int
+	OutputLimitBytes int
+}
+
+type runtimeOptions struct {
+	systemExec *SystemExecPolicy
+}
+
+type RuntimeOption func(*runtimeOptions) error
+
+func WithSystemExec(policy SystemExecPolicy) RuntimeOption {
+	return func(options *runtimeOptions) error {
+		cloned, err := cloneReadySystemExecPolicy(policy)
+		if err != nil {
+			return err
+		}
+		options.systemExec = &cloned
+		return nil
+	}
+}
+
+type invocationStore interface {
+	Existing(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
+	Accept(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
+	MarkRunning(string) (nodes.InvocationRecord, error)
+	RequestCancellation(string) (nodes.InvocationRecord, error)
+	CompleteCancellation(string) (nodes.InvocationRecord, error)
+	CompleteSuccess(string, json.RawMessage) (nodes.InvocationRecord, error)
+	CompleteFailure(string, nodes.InvocationFailure) (nodes.InvocationRecord, error)
+	Lookup(string) (nodes.InvocationRecord, bool, error)
 }
 
 // Runtime is the instance-scoped capability boundary. It owns no gateway
@@ -28,16 +119,33 @@ type Runtime struct {
 	policy   nodes.LocalCommandPolicy
 	catalog  nodes.CapabilityCatalog
 	handlers map[string]commandHandler
+	ledger   invocationStore
+	activeMu sync.Mutex
+	active   map[string]*activeInvocation
 }
 
 func NewRuntime(
 	nodeID nodes.ID,
 	version string,
 	policy nodes.LocalCommandPolicy,
+	ledger *InvocationLedger,
+	options ...RuntimeOption,
 ) (*Runtime, error) {
+	settings := runtimeOptions{}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("nil node runtime option")
+		}
+		if err := option(&settings); err != nil {
+			return nil, fmt.Errorf("configure node runtime: %w", err)
+		}
+	}
 	handlers := []commandHandler{
 		nodeInfoHandler{nodeID: nodeID, version: version},
 		systemWhichHandler{},
+	}
+	if settings.systemExec != nil {
+		handlers = append(handlers, newSystemExecHandler(*settings.systemExec))
 	}
 	catalog := nodes.CapabilityCatalog{Commands: make([]nodes.CommandDescriptor, 0, len(handlers))}
 	byName := make(map[string]commandHandler, len(handlers))
@@ -55,7 +163,17 @@ func NewRuntime(
 	if err := catalog.Validate(); err != nil {
 		return nil, err
 	}
-	return &Runtime{nodeID: nodeID, policy: policy, catalog: catalog, handlers: byName}, nil
+	if ledger == nil {
+		return nil, errors.New("node invocation ledger is required")
+	}
+	return &Runtime{
+		nodeID:   nodeID,
+		policy:   policy,
+		catalog:  catalog,
+		handlers: byName,
+		ledger:   ledger,
+		active:   make(map[string]*activeInvocation),
+	}, nil
 }
 
 func (runtime *Runtime) Catalog() nodes.CapabilityCatalog {
@@ -69,9 +187,60 @@ func (runtime *Runtime) Invoke(
 	if runtime == nil {
 		return nil, ErrCommandUnavailable
 	}
+	record, existing, existingErr := runtime.ledger.Existing(plan)
+	if existingErr != nil {
+		return nil, existingErr
+	}
+	if existing {
+		if record.State == nodes.InvocationAccepted {
+			if err := runtime.policy.Authorize(
+				plan,
+				runtime.catalog,
+				runtime.nodeID,
+				LocalExecutor,
+				time.Now(),
+			); err != nil {
+				return nil, err
+			}
+			return runtime.executeAccepted(ctx, plan)
+		}
+		if err := runtime.policy.AuthorizeReplay(
+			plan,
+			runtime.catalog,
+			runtime.nodeID,
+			LocalExecutor,
+		); err != nil {
+			return nil, err
+		}
+		return invocationRecordResult(record)
+	}
 	if err := runtime.policy.Authorize(plan, runtime.catalog, runtime.nodeID, LocalExecutor, time.Now()); err != nil {
 		return nil, err
 	}
+	handler := runtime.handlers[plan.Command]
+	if handler == nil {
+		return nil, ErrCommandUnavailable
+	}
+	if err := runtime.authorizeHandler(plan); err != nil {
+		return nil, err
+	}
+	record, existing, acceptErr := runtime.ledger.Accept(plan)
+	if acceptErr != nil {
+		return nil, acceptErr
+	}
+	if existing {
+		if record.State == nodes.InvocationAccepted {
+			return runtime.executeAccepted(ctx, plan)
+		}
+		return invocationRecordResult(record)
+	}
+	return runtime.executeAccepted(ctx, plan)
+}
+
+func (runtime *Runtime) executeAccepted(
+	ctx context.Context,
+	plan nodes.ExecutionPlan,
+) (json.RawMessage, error) {
 	handler := runtime.handlers[plan.Command]
 	if handler == nil {
 		return nil, ErrCommandUnavailable
@@ -80,17 +249,214 @@ func (runtime *Runtime) Invoke(
 	if expires := time.Unix(plan.ExpiresAt, 0); expires.Before(deadline) {
 		deadline = expires
 	}
-	invokeCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	result, err := handler.execute(invokeCtx, plan.Input)
-	if err != nil {
-		return nil, err
+	deadlineCtx, deadlineCancel := context.WithDeadline(ctx, deadline)
+	defer deadlineCancel()
+	invokeCtx, cancel := context.WithCancelCause(deadlineCtx)
+	invocation := &activeInvocation{ctx: invokeCtx, cancel: cancel}
+	if !runtime.registerActive(plan.InvocationID, invocation) {
+		record, found, lookupErr := runtime.ledger.Lookup(plan.InvocationID)
+		if lookupErr == nil && found {
+			return invocationRecordResult(record)
+		}
+		return nil, ErrInvocationOutcomeUnknown
+	}
+	defer runtime.releaseActive(plan.InvocationID, invocation)
+	defer cancel(nil)
+	if _, err := runtime.ledger.MarkRunning(plan.InvocationID); err != nil {
+		record, found, lookupErr := runtime.ledger.Lookup(plan.InvocationID)
+		if lookupErr == nil && found && record.State.Terminal() {
+			return invocationRecordResult(record)
+		}
+		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
+	}
+	result, executeErr := handler.execute(invokeCtx, commandInvocation{
+		Input:            plan.Input,
+		TimeoutSeconds:   plan.TimeoutSeconds,
+		OutputLimitBytes: plan.OutputLimitBytes,
+	})
+	cancellationDelivered := invocation.finishHandler()
+	if executeErr != nil {
+		if cancellationDelivered && errors.Is(executeErr, errCommandCancellationConfirmed) {
+			if _, err := runtime.ledger.CompleteCancellation(plan.InvocationID); err != nil {
+				return nil, fmt.Errorf(
+					"%w: persist canceled result: %v",
+					ErrInvocationOutcomeUnknown,
+					err,
+				)
+			}
+			return nil, fmt.Errorf("%w: %v", ErrInvocationCanceled, executeErr)
+		}
+		failure := nodes.InvocationFailure{
+			Code:    "EXECUTION_FAILED",
+			Message: "node command failed",
+		}
+		var commandFailure *commandFailureError
+		if errors.As(executeErr, &commandFailure) {
+			failure = commandFailure.failure
+		}
+		return nil, runtime.completeInvocationFailure(plan.InvocationID, failure, executeErr)
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
-		return nil, fmt.Errorf("encode command output: %w", err)
+		encodeErr := fmt.Errorf("encode command output: %w", err)
+		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+			Code:    "INVALID_OUTPUT",
+			Message: "node command returned invalid output",
+		}, encodeErr)
 	}
-	return nodes.ValidateInvocationOutput(handler.descriptor(), raw, plan.OutputLimitBytes)
+	raw, err = nodes.ValidateInvocationOutput(handler.descriptor(), raw, plan.OutputLimitBytes)
+	if err != nil {
+		return nil, runtime.completeInvocationFailure(plan.InvocationID, nodes.InvocationFailure{
+			Code:    "INVALID_OUTPUT",
+			Message: "node command returned invalid output",
+		}, err)
+	}
+	if _, err := runtime.ledger.CompleteSuccess(plan.InvocationID, raw); err != nil {
+		return nil, fmt.Errorf("%w: persist successful result: %v", ErrInvocationOutcomeUnknown, err)
+	}
+	return raw, nil
+}
+
+func (runtime *Runtime) Cancel(
+	request nodes.InvocationCancelRequest,
+) (nodes.InvocationRecord, error) {
+	if runtime == nil {
+		return nodes.InvocationRecord{}, ErrCommandUnavailable
+	}
+	if err := request.Validate(); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	record, found, err := runtime.ledger.Lookup(request.InvocationID)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if !found {
+		return nodes.InvocationRecord{}, ErrInvocationNotFound
+	}
+	if record.State.Terminal() {
+		return record, nil
+	}
+	if record.State == nodes.InvocationUnknown {
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	handler := runtime.handlers[record.Command]
+	if handler == nil || !handler.descriptor().SupportsCancel {
+		return nodes.InvocationRecord{}, ErrCancellationUnsupported
+	}
+	invocation := runtime.activeInvocation(request.InvocationID)
+	if record.State == nodes.InvocationRunning && invocation == nil {
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	record, err = runtime.ledger.RequestCancellation(request.InvocationID)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if record.State.Terminal() {
+		return record, nil
+	}
+	// The accepted invocation may have acquired an owner while the durable
+	// cancellation transition was in progress. Always refresh the owner before
+	// signaling so an acknowledged running cancellation reaches its handler.
+	invocation = runtime.activeInvocation(request.InvocationID)
+	if invocation == nil {
+		current, currentFound, lookupErr := runtime.ledger.Lookup(request.InvocationID)
+		if lookupErr != nil {
+			return nodes.InvocationRecord{}, lookupErr
+		}
+		if currentFound && current.State.Terminal() {
+			return current, nil
+		}
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	if !invocation.signalCancellation() {
+		current, currentFound, lookupErr := runtime.ledger.Lookup(request.InvocationID)
+		if lookupErr != nil {
+			return nodes.InvocationRecord{}, lookupErr
+		}
+		if currentFound && current.State.Terminal() {
+			return current, nil
+		}
+		return nodes.InvocationRecord{}, ErrInvocationOutcomeUnknown
+	}
+	return record, nil
+}
+
+func (runtime *Runtime) registerActive(id string, invocation *activeInvocation) bool {
+	runtime.activeMu.Lock()
+	defer runtime.activeMu.Unlock()
+	if runtime.active[id] != nil {
+		return false
+	}
+	runtime.active[id] = invocation
+	return true
+}
+
+func (runtime *Runtime) activeInvocation(id string) *activeInvocation {
+	runtime.activeMu.Lock()
+	defer runtime.activeMu.Unlock()
+	return runtime.active[id]
+}
+
+func (runtime *Runtime) releaseActive(id string, invocation *activeInvocation) {
+	runtime.activeMu.Lock()
+	defer runtime.activeMu.Unlock()
+	if runtime.active[id] == invocation {
+		delete(runtime.active, id)
+	}
+}
+
+func (runtime *Runtime) completeInvocationFailure(
+	invocationID string,
+	failure nodes.InvocationFailure,
+	cause error,
+) error {
+	if _, err := runtime.ledger.CompleteFailure(invocationID, failure); err != nil {
+		return fmt.Errorf("%w: persist failed result: %v", ErrInvocationOutcomeUnknown, err)
+	}
+	return cause
+}
+
+func (runtime *Runtime) authorizeHandler(plan nodes.ExecutionPlan) error {
+	handler := runtime.handlers[plan.Command]
+	if handler == nil {
+		return ErrCommandUnavailable
+	}
+	authorizer, ok := handler.(commandAuthorizer)
+	if !ok {
+		return nil
+	}
+	if err := authorizer.authorize(plan); err != nil {
+		return fmt.Errorf("%w: command-specific policy rejected input", nodes.ErrCommandDenied)
+	}
+	return nil
+}
+
+func (runtime *Runtime) Invocation(
+	invocationID string,
+) (nodes.InvocationRecord, bool, error) {
+	if runtime == nil || runtime.ledger == nil {
+		return nodes.InvocationRecord{}, false, nil
+	}
+	return runtime.ledger.Lookup(invocationID)
+}
+
+func invocationRecordResult(record nodes.InvocationRecord) (json.RawMessage, error) {
+	switch record.State {
+	case nodes.InvocationSucceeded:
+		return append(json.RawMessage(nil), record.Result...), nil
+	case nodes.InvocationFailed:
+		if record.Failure == nil {
+			return nil, ErrInvocationOutcomeUnknown
+		}
+		return nil, &recordedInvocationError{failure: *record.Failure}
+	case nodes.InvocationCanceled:
+		if record.Failure == nil {
+			return nil, ErrInvocationOutcomeUnknown
+		}
+		return nil, fmt.Errorf("%w: %s", ErrInvocationCanceled, record.Failure.Message)
+	default:
+		return nil, ErrInvocationOutcomeUnknown
+	}
 }
 
 type nodeInfoHandler struct {
@@ -109,7 +475,7 @@ func (handler nodeInfoHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (handler nodeInfoHandler) execute(context.Context, json.RawMessage) (any, error) {
+func (handler nodeInfoHandler) execute(context.Context, commandInvocation) (any, error) {
 	return struct {
 		NodeID       nodes.ID `json:"node_id"`
 		Platform     string   `json:"platform"`
@@ -133,11 +499,11 @@ func (systemWhichHandler) descriptor() nodes.CommandDescriptor {
 	}
 }
 
-func (systemWhichHandler) execute(ctx context.Context, raw json.RawMessage) (any, error) {
+func (systemWhichHandler) execute(ctx context.Context, invocation commandInvocation) (any, error) {
 	var input struct {
 		Name string `json:"name"`
 	}
-	if err := decodeStrictJSON(raw, &input); err != nil {
+	if err := decodeStrictJSON(invocation.Input, &input); err != nil {
 		return nil, fmt.Errorf("decode system.which input: %w", err)
 	}
 	if err := ctx.Err(); err != nil {

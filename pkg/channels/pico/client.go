@@ -214,9 +214,7 @@ func (c *PicoClientChannel) pingLoop(connCtx context.Context, pc *picoConn, inte
 			if pc.closed.Load() {
 				return
 			}
-			pc.writeMu.Lock()
-			err := pc.conn.WriteMessage(websocket.PingMessage, nil)
-			pc.writeMu.Unlock()
+			err := pc.writeMessage(connCtx, websocket.PingMessage, nil)
 			if err != nil {
 				return
 			}
@@ -312,7 +310,7 @@ func (c *PicoClientChannel) Send(ctx context.Context, msg bus.OutboundMessage) (
 		PayloadKeyContent: msg.Content,
 	})
 	outMsg.SessionID = strings.TrimPrefix(msg.ChatID, "pico_client:")
-	return nil, pc.writeJSON(outMsg)
+	return nil, pc.writeJSON(ctx, outMsg)
 }
 
 // StartTyping implements channels.TypingCapable.
@@ -326,7 +324,7 @@ func (c *PicoClientChannel) StartTyping(ctx context.Context, chatID string) (fun
 
 	startMsg := newMessage(TypeTypingStart, nil)
 	startMsg.SessionID = strings.TrimPrefix(chatID, "pico_client:")
-	if err := pc.writeJSON(startMsg); err != nil {
+	if err := pc.writeJSON(ctx, startMsg); err != nil {
 		return func() {}, err
 	}
 	return func() {
@@ -338,6 +336,6 @@ func (c *PicoClientChannel) StartTyping(ctx context.Context, chatID string) (fun
 		}
 		stopMsg := newMessage(TypeTypingStop, nil)
 		stopMsg.SessionID = strings.TrimPrefix(chatID, "pico_client:")
-		currentPC.writeJSON(stopMsg)
+		currentPC.writeJSON(c.ctx, stopMsg)
 	}, nil
 }

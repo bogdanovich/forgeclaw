@@ -38,7 +38,6 @@ type SlackChannel struct {
 	cancel          context.CancelFunc
 	pendingAcks     sync.Map
 	inboundDedup    *channels.DedupStore
-	progress        *channels.ToolFeedbackAnimator
 	postMessageFn   func(context.Context, string, string, string) (string, error)
 	editMessageFn   func(context.Context, string, string, string) error
 	deleteMessageFn func(context.Context, string, string) error
@@ -117,9 +116,6 @@ func NewSlackChannel(
 		_, _, err := api.PostMessageContext(ctx, channelID, opts...)
 		return err
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(func(ctx context.Context, chatID, messageID, content string) error {
-		return ch.EditMessage(ctx, slackToolFeedbackDeliveryChatKey(chatID), messageID, content)
-	})
 	return ch, nil
 }
 
@@ -189,10 +185,6 @@ func (c *SlackChannel) Stop(ctx context.Context) error {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	if c.progress != nil {
-		c.progress.StopAll()
-	}
-
 	c.SetRunning(false)
 	logger.InfoC("slack", "Slack channel stopped")
 	return nil
@@ -273,43 +265,15 @@ func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]str
 		return nil, nil
 	}
 
-	isToolFeedback := outboundMessageIsToolFeedback(msg)
-	trackedChatID := slackToolFeedbackMessageKey(msg.ChatID, &msg.Context, msg.SessionKey)
-	if isToolFeedback {
-		if msgID, handled, err := c.progress.Update(ctx, trackedChatID, msg.Content); handled {
-			if err != nil {
-				return nil, err
-			}
-			return []string{msgID}, nil
-		}
-	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(trackedChatID)
-	if channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
-		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
-			return msgIDs, nil
-		}
-	}
-
-	content := msg.Content
-	if isToolFeedback {
-		content = channels.InitialAnimatedToolFeedbackContent(msg.Content)
-	}
-
 	if msg.ReplyToMessageID != "" && threadTS == "" {
 		// Answer to the message by creating a Thread under it
 		threadTS = msg.ReplyToMessageID
 	}
 
-	ts, err := c.postMessageFn(ctx, channelID, threadTS, content)
+	ts, err := c.postMessageFn(ctx, channelID, threadTS, msg.Content)
 	if err != nil {
 		return nil, fmt.Errorf("slack send: %w", channels.ErrTemporary)
 	}
-	if isToolFeedback {
-		c.RecordEditedToolFeedbackMessage(trackedChatID, ts, msg.Content)
-	} else if hasTrackedMsg && channels.OutboundMessageDismissesTrackedToolFeedback(msg) {
-		c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
-	}
-
 	if ref, ok := c.pendingAcks.LoadAndDelete(deliveryChatID); ok {
 		msgRef, ok := ref.(slackMessageRef)
 		if !ok {
@@ -396,12 +360,6 @@ func (c *SlackChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessa
 	return nil, nil
 }
 
-func (c *SlackChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
-	if c.progress != nil {
-		c.progress.Configure(cfg)
-	}
-}
-
 func (c *SlackChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
 	channelID, _ := parseSlackChatID(slackToolFeedbackDeliveryChatKey(chatID))
 	if channelID == "" {
@@ -430,88 +388,6 @@ func (c *SlackChannel) SendPlaceholder(ctx context.Context, chatID string) (stri
 		return "", nil
 	}
 	return c.postMessageFn(ctx, channelID, threadTS, c.bc.Placeholder.GetRandomText())
-}
-
-func (c *SlackChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
-	if c.progress == nil {
-		return "", false
-	}
-	return c.progress.Current(chatID)
-}
-
-func (c *SlackChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
-}
-
-func (c *SlackChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Record(chatID, messageID, content)
-}
-
-func (c *SlackChannel) RecordEditedToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.RecordEdited(chatID, messageID, content)
-}
-
-func (c *SlackChannel) ClearToolFeedbackMessage(chatID string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Clear(chatID)
-}
-
-func (c *SlackChannel) DismissToolFeedbackMessage(ctx context.Context, chatID string) {
-	msgID, ok := c.currentToolFeedbackMessage(chatID)
-	if !ok {
-		return
-	}
-	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
-}
-
-func (c *SlackChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
-	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
-		return
-	}
-	c.ClearToolFeedbackMessage(chatID)
-	_ = c.DeleteMessage(ctx, chatID, messageID)
-}
-
-func (c *SlackChannel) finalizeTrackedToolFeedbackMessage(
-	ctx context.Context,
-	chatID string,
-	content string,
-	editFn func(context.Context, string, string, string) error,
-) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
-		return nil, false
-	}
-	if err := editFn(ctx, chatID, msgID, content); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
-		return nil, false
-	}
-	return []string{msgID}, true
-}
-
-func (c *SlackChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
-	if !channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
-		return nil, false
-	}
-	return c.finalizeTrackedToolFeedbackMessage(
-		ctx,
-		slackToolFeedbackMessageKey(msg.ChatID, &msg.Context, msg.SessionKey),
-		msg.Content,
-		func(ctx context.Context, chatID, messageID, content string) error {
-			return c.EditMessage(ctx, slackToolFeedbackDeliveryChatKey(chatID), messageID, content)
-		},
-	)
 }
 
 func slackUploadFileSize(path string) int {
@@ -989,26 +865,10 @@ func slackToolFeedbackChatKey(chatID string, outboundCtx *bus.InboundContext) st
 	return strings.TrimSpace(deliveryChatID)
 }
 
-func slackToolFeedbackMessageKey(chatID string, outboundCtx *bus.InboundContext, sessionKey string) string {
-	key := slackToolFeedbackChatKey(chatID, outboundCtx)
-	sessionKey = strings.TrimSpace(sessionKey)
-	if key == "" || sessionKey == "" {
-		return key
-	}
-	return key + "#session:" + sessionKey
-}
-
 func slackToolFeedbackDeliveryChatKey(chatID string) string {
 	chatID = strings.TrimSpace(chatID)
 	if idx := strings.Index(chatID, "#session:"); idx >= 0 {
 		return strings.TrimSpace(chatID[:idx])
 	}
 	return chatID
-}
-
-func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
 }

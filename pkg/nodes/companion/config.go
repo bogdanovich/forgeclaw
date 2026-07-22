@@ -44,6 +44,7 @@ type Config struct {
 	TLS                    TLSConfig                `json:"tls,omitempty"`
 	Reconnect              ReconnectConfig          `json:"reconnect,omitempty"`
 	Policy                 nodes.LocalCommandPolicy `json:"policy,omitempty"`
+	SystemExec             *SystemExecPolicy        `json:"system_exec,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -150,6 +151,13 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 	}
 	if err := cfg.Policy.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate node policy: %w", err)
+	}
+	if cfg.SystemExec != nil {
+		normalized, normalizeErr := normalizeSystemExecPolicy(*cfg.SystemExec, baseDir)
+		if normalizeErr != nil {
+			return Config{}, fmt.Errorf("validate system_exec policy: %w", normalizeErr)
+		}
+		cfg.SystemExec = &normalized
 	}
 	return cfg, nil
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -111,7 +112,13 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 	defer server.Close()
 	identity := testIdentity(t)
 	policy := testRuntimePolicy([]string{"node.info.v1"})
-	commandRuntime, err := NewRuntime(identity.ID, "test", policy)
+	ledgerPath := filepath.Join(t.TempDir(), "invocations.json")
+	ledger, err := NewFileInvocationLedger(ledgerPath, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ledger.Close)
+	commandRuntime, err := NewRuntime(identity.ID, "test", policy, ledger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +179,291 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 	if runErr := <-done; runErr != nil {
 		t.Fatal(runErr)
 	}
+	waitForNodeState(t, registry, identity.ID, nodes.StateDisconnected)
+
+	ledger.Close()
+	reloadedLedger, err := NewFileInvocationLedger(ledgerPath, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reloadedLedger.Close)
+	reloadedRuntime, err := NewRuntime(identity.ID, "test", policy, reloadedLedger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectedClient := testRuntimeClientForServer(t, server, identity, reloadedRuntime)
+	reconnectCtx, reconnectCancel := context.WithCancel(t.Context())
+	reconnectDone := make(chan error, 1)
+	go func() { reconnectDone <- reconnectedClient.Run(reconnectCtx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	record, err := admission.Invocation(t.Context(), identity.ID, plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationSucceeded || record.PlanHash != plan.PlanHash ||
+		string(record.Result) != string(output) {
+		t.Fatalf("durable invocation record = %#v", record)
+	}
+	reconnectCancel()
+	if runErr := <-reconnectDone; runErr != nil {
+		t.Fatal(runErr)
+	}
+}
+
+func TestClientDispatchesInvocationsConcurrentlyAndServesQueries(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	policy := testRuntimePolicy([]string{"test.block.v1"})
+	commandRuntime, err := NewRuntime(identity.ID, "test", policy, newMemoryInvocationLedger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newBlockingHandler()
+	descriptor := handler.descriptor()
+	commandRuntime.handlers[descriptor.Name] = handler
+	commandRuntime.catalog.Commands = append(commandRuntime.catalog.Commands, descriptor)
+	client := testRuntimeClientForServer(t, server, identity, commandRuntime)
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, approveErr := registry.Approve(result.NodeID, nodes.PairingApproval{
+		AllowedCommands: []string{descriptor.Name},
+		At:              time.Now().Unix(),
+	}); approveErr != nil {
+		t.Fatal(approveErr)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	first := testTransportPlan(t, commandRuntime, descriptor, "first")
+	second := testTransportPlan(t, commandRuntime, descriptor, "second")
+	results := make(chan error, 2)
+	for _, plan := range []nodes.ExecutionPlan{first, second} {
+		go func() {
+			_, invokeErr := admission.Invoke(t.Context(), identity.ID, plan)
+			results <- invokeErr
+		}()
+	}
+	for range 2 {
+		select {
+		case <-handler.started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("concurrent invocation did not start")
+		}
+	}
+
+	queryCtx, queryCancel := context.WithTimeout(t.Context(), time.Second)
+	record, err := admission.Invocation(queryCtx, identity.ID, first.InvocationID)
+	queryCancel()
+	if err != nil {
+		t.Fatalf("query running invocation: %v", err)
+	}
+	if record.State != nodes.InvocationRunning {
+		t.Fatalf("running invocation state = %q", record.State)
+	}
+	close(handler.release)
+	for range 2 {
+		if invokeErr := <-results; invokeErr != nil {
+			t.Fatalf("Invoke() error = %v", invokeErr)
+		}
+	}
+	cancel()
+	if runErr := <-done; runErr != nil {
+		t.Fatal(runErr)
+	}
+}
+
+func TestClientCancelsInvocationOverAuthenticatedSession(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	policy := testRuntimePolicy([]string{"test.block.v1"})
+	commandRuntime, err := NewRuntime(identity.ID, "test", policy, newMemoryInvocationLedger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newBlockingHandler()
+	descriptor := handler.descriptor()
+	commandRuntime.handlers[descriptor.Name] = handler
+	commandRuntime.catalog.Commands = append(commandRuntime.catalog.Commands, descriptor)
+	client := testRuntimeClientForServer(t, server, identity, commandRuntime)
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, approveErr := registry.Approve(result.NodeID, nodes.PairingApproval{
+		AllowedCommands: []string{descriptor.Name},
+		At:              time.Now().Unix(),
+	}); approveErr != nil {
+		t.Fatal(approveErr)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	plan := testTransportPlan(t, commandRuntime, descriptor, "cancel")
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, invokeErr := admission.Invoke(t.Context(), identity.ID, plan)
+		invokeDone <- invokeErr
+	}()
+	select {
+	case <-handler.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("invocation did not start")
+	}
+	record, err := admission.CancelInvocation(t.Context(), identity.ID, plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationRunning || record.Cancellation == nil ||
+		record.Cancellation.TerminationConfirmed {
+		t.Fatalf("cancellation acknowledgement = %#v", record)
+	}
+	if invokeErr := <-invokeDone; invokeErr == nil ||
+		!strings.Contains(invokeErr.Error(), "INVOCATION_CANCELED") {
+		t.Fatalf("canceled Invoke() error = %v", invokeErr)
+	}
+	record, err = admission.Invocation(t.Context(), identity.ID, plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationCanceled || record.Cancellation == nil ||
+		!record.Cancellation.TerminationConfirmed {
+		t.Fatalf("terminal cancellation record = %#v", record)
+	}
+	cancel()
+	if runErr := <-done; runErr != nil {
+		t.Fatal(runErr)
+	}
+}
+
+func TestRuntimeConcurrentDuplicateExecutesOnce(t *testing.T) {
+	commandRuntime, err := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		testRuntimePolicy([]string{"test.block.v1"}),
+		newMemoryInvocationLedger(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newBlockingHandler()
+	descriptor := handler.descriptor()
+	commandRuntime.handlers[descriptor.Name] = handler
+	commandRuntime.catalog.Commands = append(commandRuntime.catalog.Commands, descriptor)
+	plan := testTransportPlan(t, commandRuntime, descriptor, "duplicate")
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, invokeErr := commandRuntime.Invoke(t.Context(), plan)
+			results <- invokeErr
+		}()
+	}
+	select {
+	case <-handler.started:
+	case <-time.After(time.Second):
+		t.Fatal("invocation did not start")
+	}
+	select {
+	case <-handler.started:
+		t.Fatal("duplicate invocation executed concurrently")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(handler.release)
+	var successes, unknown int
+	for range 2 {
+		switch invokeErr := <-results; {
+		case invokeErr == nil:
+			successes++
+		case errors.Is(invokeErr, ErrInvocationOutcomeUnknown):
+			unknown++
+		default:
+			t.Fatalf("duplicate Invoke() error = %v", invokeErr)
+		}
+	}
+	if successes != 1 || unknown != 1 || handler.executions.Load() != 1 {
+		t.Fatalf(
+			"duplicate results: successes=%d unknown=%d executions=%d",
+			successes,
+			unknown,
+			handler.executions.Load(),
+		)
+	}
+}
+
+type blockingHandler struct {
+	started    chan struct{}
+	release    chan struct{}
+	executions atomic.Int32
+}
+
+func newBlockingHandler() *blockingHandler {
+	return &blockingHandler{
+		started: make(chan struct{}, maxConcurrentInvocations),
+		release: make(chan struct{}),
+	}
+}
+
+func (*blockingHandler) descriptor() nodes.CommandDescriptor {
+	return nodes.CommandDescriptor{
+		Name:        "test.block.v1",
+		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema: json.RawMessage(
+			`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}},"additionalProperties":false}`,
+		),
+		Risk:           nodes.RiskRead,
+		SupportsCancel: true,
+	}
+}
+
+func (handler *blockingHandler) execute(ctx context.Context, _ commandInvocation) (any, error) {
+	handler.executions.Add(1)
+	handler.started <- struct{}{}
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %v", errCommandCancellationConfirmed, ctx.Err())
+	case <-handler.release:
+		return map[string]bool{"ok": true}, nil
+	}
+}
+
+func testTransportPlan(
+	t *testing.T,
+	commandRuntime *Runtime,
+	descriptor nodes.CommandDescriptor,
+	suffix string,
+) nodes.ExecutionPlan {
+	t.Helper()
+	catalogHash, err := commandRuntime.Catalog().Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := nodes.PrepareExecutionPlan(nodes.InvocationRequest{
+		InvocationID:     "inv_" + suffix,
+		IdempotencyKey:   "idem_" + suffix,
+		NodeID:           commandRuntime.nodeID,
+		CatalogHash:      catalogHash,
+		Command:          descriptor.Name,
+		Input:            json.RawMessage(`{}`),
+		AgentID:          "agent_test",
+		SessionID:        "session_test",
+		ActorID:          "actor_test",
+		TimeoutSeconds:   5,
+		OutputLimitBytes: 4096,
+	}, descriptor, LocalExecutor, commandRuntime.policy.Revision, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
 }
 
 func TestDuplicateCompanionsBackOffInsteadOfRapidlyFlapping(t *testing.T) {

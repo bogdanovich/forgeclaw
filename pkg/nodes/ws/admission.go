@@ -324,7 +324,13 @@ func (handler *AdmissionHandler) Invoke(
 	if err != nil {
 		return nil, fmt.Errorf("encode node execution plan: %w", err)
 	}
-	response, err := handler.sessions.Request(ctx, nodeID, "node.invoke", params)
+	response, err := handler.sessions.RequestWithIdempotencyKey(
+		ctx,
+		nodeID,
+		"node.invoke",
+		params,
+		plan.IdempotencyKey,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +345,86 @@ func (handler *AdmissionHandler) Invoke(
 		)
 	}
 	return validateInvocationResult(approval.Descriptor, plan, response.Result)
+}
+
+// Invocation returns the companion's durable record for reconnect recovery.
+// It never retries or replays the command.
+func (handler *AdmissionHandler) Invocation(
+	ctx context.Context,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	query := nodes.InvocationQuery{InvocationID: invocationID}
+	if err := query.Validate(); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	return handler.requestInvocationRecord(ctx, nodeID, invocationID, "node.invoke.get", query)
+}
+
+// CancelInvocation requests best-effort cancellation. The returned record
+// confirms durable receipt, not necessarily termination; callers inspect its
+// cancellation metadata or query again for a terminal state.
+func (handler *AdmissionHandler) CancelInvocation(
+	ctx context.Context,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	request := nodes.InvocationCancelRequest{InvocationID: invocationID}
+	if err := request.Validate(); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	return handler.requestInvocationRecord(ctx, nodeID, invocationID, "node.invoke.cancel", request)
+}
+
+func (handler *AdmissionHandler) requestInvocationRecord(
+	ctx context.Context,
+	nodeID nodes.ID,
+	invocationID string,
+	method string,
+	request any,
+) (nodes.InvocationRecord, error) {
+	params, err := json.Marshal(request)
+	if err != nil {
+		return nodes.InvocationRecord{}, fmt.Errorf("encode invocation record request: %w", err)
+	}
+	response, err := handler.sessions.Request(ctx, nodeID, method, params)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if response.OK == nil {
+		return nodes.InvocationRecord{}, errors.New("node returned a malformed invocation record response")
+	}
+	if !*response.OK {
+		return nodes.InvocationRecord{}, fmt.Errorf(
+			"node invocation record request failed (%s): %s",
+			response.Error.Code,
+			response.Error.Message,
+		)
+	}
+	return decodeInvocationRecord(response.Result, nodeID, invocationID)
+}
+
+func decodeInvocationRecord(
+	data json.RawMessage,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	var record nodes.InvocationRecord
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
+		return nodes.InvocationRecord{}, fmt.Errorf("decode invocation result: %w", err)
+	}
+	if trailingErr := decoder.Decode(new(any)); !errors.Is(trailingErr, io.EOF) {
+		return nodes.InvocationRecord{}, errors.New("decode invocation result: trailing data")
+	}
+	if err := record.Validate(); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if record.NodeID != nodeID || record.InvocationID != invocationID {
+		return nodes.InvocationRecord{}, errors.New("node returned an unrelated invocation record")
+	}
+	return record, nil
 }
 
 func validateInvocationResult(

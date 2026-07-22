@@ -205,6 +205,18 @@ func (hub *SessionHub) Request(
 	method string,
 	params json.RawMessage,
 ) (protocol.Envelope, error) {
+	return hub.RequestWithIdempotencyKey(ctx, id, method, params, "")
+}
+
+// RequestWithIdempotencyKey sends one correlated logical invocation to the
+// current authenticated generation.
+func (hub *SessionHub) RequestWithIdempotencyKey(
+	ctx context.Context,
+	id nodes.ID,
+	method string,
+	params json.RawMessage,
+	idempotencyKey string,
+) (protocol.Envelope, error) {
 	hub.mu.Lock()
 	slot := hub.sessions[id]
 	if hub.closed || slot == nil || slot.current == nil || slot.current.peer == nil {
@@ -213,7 +225,7 @@ func (hub *SessionHub) Request(
 	}
 	session := slot.current.peer
 	hub.mu.Unlock()
-	return session.request(ctx, method, params)
+	return session.request(ctx, method, params, idempotencyKey)
 }
 
 func (hub *SessionHub) Close(ctx context.Context) error {
