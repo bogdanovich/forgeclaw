@@ -50,9 +50,9 @@ type FeishuChannel struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc
 
-	progress        *channels.ToolFeedbackAnimator
 	deleteMessageFn func(context.Context, string, string) error
 	sendMediaPartFn func(context.Context, string, bus.MediaPart, media.MediaStore) error
+	sendCardFn      func(context.Context, string, string) (string, error)
 	sendTextFn      func(context.Context, string, string) (string, error)
 }
 
@@ -81,8 +81,8 @@ func NewFeishuChannel(bc *config.Channel, cfg *config.FeishuSettings, bus *bus.M
 	}
 	ch.deleteMessageFn = ch.deleteMessageAPI
 	ch.sendMediaPartFn = ch.sendMediaPart
+	ch.sendCardFn = ch.sendCard
 	ch.sendTextFn = ch.sendText
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
 	ch.SetOwner(ch)
 	return ch, nil
 }
@@ -141,10 +141,6 @@ func (c *FeishuChannel) Stop(ctx context.Context) error {
 	}
 	c.wsClient = nil
 	c.mu.Unlock()
-	if c.progress != nil {
-		c.progress.StopAll()
-	}
-
 	c.SetRunning(false)
 	logger.InfoC("feishu", "Feishu channel stopped")
 	return nil
@@ -153,63 +149,52 @@ func (c *FeishuChannel) Stop(ctx context.Context) error {
 // Send sends a message using Interactive Card format for markdown rendering.
 // Falls back to plain text message if card sending fails (e.g., table limit exceeded).
 func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
+	messageIDs, _, err := c.sendMessage(ctx, msg)
+	return messageIDs, err
+}
+
+// SendToolFeedbackMessage reports whether the delivered message supports the
+// interactive-card edit API used for subsequent progress updates.
+func (c *FeishuChannel) SendToolFeedbackMessage(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) ([]string, bool, error) {
+	return c.sendMessage(ctx, msg)
+}
+
+func (c *FeishuChannel) sendMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool, error) {
 	if !c.IsRunning() {
-		return nil, channels.ErrNotRunning
+		return nil, false, channels.ErrNotRunning
 	}
 
 	if msg.ChatID == "" {
-		return nil, fmt.Errorf("chat ID is empty: %w", channels.ErrSendFailed)
+		return nil, false, fmt.Errorf("chat ID is empty: %w", channels.ErrSendFailed)
 	}
-
-	isToolFeedback := outboundMessageIsToolFeedback(msg)
-	if isToolFeedback {
-		if msgID, handled, err := c.progress.Update(ctx, msg.ChatID, msg.Content); handled {
-			if err != nil {
-				// Feishu can fall back to plain text for a previous progress
-				// message, and those messages cannot be patched through the card
-				// edit API. Drop the stale tracker and recreate the progress
-				// message so later tool feedback is not blocked.
-				c.resetTrackedToolFeedbackAfterEditFailure(ctx, msg.ChatID)
-			} else {
-				return []string{msgID}, nil
-			}
-		}
-	} else {
-		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
-			return msgIDs, nil
-		}
+	sendText := c.sendTextFn
+	if sendText == nil {
+		sendText = c.sendText
 	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
+	sendCard := c.sendCardFn
+	if sendCard == nil {
+		sendCard = c.sendCard
+	}
 
 	// Build interactive card with markdown content
 	sendContent := msg.Content
-	if isToolFeedback {
-		sendContent = channels.InitialAnimatedToolFeedbackContent(msg.Content)
-	}
 	cardContent, err := buildMarkdownCard(sendContent)
 	if err != nil {
 		// If card build fails, fall back to plain text
-		msgID, sendErr := c.sendText(ctx, msg.ChatID, sendContent)
+		msgID, sendErr := sendText(ctx, msg.ChatID, sendContent)
 		if sendErr != nil {
-			return nil, sendErr
+			return nil, false, sendErr
 		}
-		if isToolFeedback {
-			c.RecordEditedToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-		} else if hasTrackedMsg {
-			c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
-		}
-		return []string{msgID}, nil
+		return []string{msgID}, false, nil
 	}
 
 	// First attempt: try sending as interactive card
-	msgID, err := c.sendCard(ctx, msg.ChatID, cardContent)
+	msgID, err := sendCard(ctx, msg.ChatID, cardContent)
 	if err == nil {
-		if isToolFeedback {
-			c.RecordEditedToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-		} else if hasTrackedMsg {
-			c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
-		}
-		return []string{msgID}, nil
+		return []string{msgID}, true, nil
 	}
 
 	// Check if error is due to card table limit (error code 11310)
@@ -224,21 +209,16 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		})
 
 		// Second attempt: fall back to plain text message
-		msgID, textErr := c.sendText(ctx, msg.ChatID, sendContent)
+		msgID, textErr := sendText(ctx, msg.ChatID, sendContent)
 		if textErr == nil {
-			if isToolFeedback {
-				c.RecordEditedToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-			} else if hasTrackedMsg {
-				c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
-			}
-			return []string{msgID}, nil
+			return []string{msgID}, false, nil
 		}
 		// If text also fails, return the text error
-		return nil, textErr
+		return nil, false, textErr
 	}
 
 	// For other errors, return the original card error
-	return nil, err
+	return nil, false, err
 }
 
 // EditMessage implements channels.MessageEditor.
@@ -246,7 +226,7 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 func (c *FeishuChannel) EditMessage(ctx context.Context, chatID, messageID, content string) error {
 	cardContent, err := buildMarkdownCard(content)
 	if err != nil {
-		return fmt.Errorf("feishu edit: card build failed: %w", err)
+		return fmt.Errorf("feishu edit: card build failed: %v: %w", err, channels.ErrSendFailed)
 	}
 
 	req := larkim.NewPatchMessageReqBuilder().
@@ -256,13 +236,28 @@ func (c *FeishuChannel) EditMessage(ctx context.Context, chatID, messageID, cont
 
 	resp, err := c.client.Im.V1.Message.Patch(ctx, req)
 	if err != nil {
-		return fmt.Errorf("feishu edit: %w", err)
+		return fmt.Errorf("feishu edit: %v: %w", err, channels.ErrTemporary)
 	}
 	if !resp.Success() {
 		c.invalidateTokenOnAuthError(resp.Code)
-		return fmt.Errorf("feishu edit api error (code=%d msg=%s)", resp.Code, resp.Msg)
+		return fmt.Errorf(
+			"feishu edit api error (code=%d msg=%s): %w",
+			resp.Code,
+			resp.Msg,
+			classifyFeishuEditFailure(resp.StatusCode, resp.Code),
+		)
 	}
 	return nil
+}
+
+func classifyFeishuEditFailure(statusCode, code int) error {
+	if statusCode == 429 {
+		return channels.ErrRateLimit
+	}
+	if statusCode >= 500 || code == errCodeTenantTokenInvalid {
+		return channels.ErrTemporary
+	}
+	return channels.ErrSendFailed
 }
 
 // DeleteMessage implements channels.MessageDeleter.
@@ -329,100 +324,6 @@ func (c *FeishuChannel) SendPlaceholder(ctx context.Context, chatID string) (str
 		return *resp.Data.MessageId, nil
 	}
 	return "", nil
-}
-
-func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
-}
-
-func (c *FeishuChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
-	if c.progress == nil {
-		return "", false
-	}
-	return c.progress.Current(chatID)
-}
-
-func (c *FeishuChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
-}
-
-func (c *FeishuChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Record(chatID, messageID, content)
-}
-
-func (c *FeishuChannel) RecordEditedToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.RecordEdited(chatID, messageID, content)
-}
-
-func (c *FeishuChannel) ClearToolFeedbackMessage(chatID string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Clear(chatID)
-}
-
-func (c *FeishuChannel) DismissToolFeedbackMessage(ctx context.Context, chatID string) {
-	msgID, ok := c.currentToolFeedbackMessage(chatID)
-	if !ok {
-		return
-	}
-	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
-}
-
-func (c *FeishuChannel) resetTrackedToolFeedbackAfterEditFailure(ctx context.Context, chatID string) {
-	msgID, ok := c.currentToolFeedbackMessage(chatID)
-	if !ok {
-		return
-	}
-	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
-}
-
-func (c *FeishuChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
-	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
-		return
-	}
-	c.ClearToolFeedbackMessage(chatID)
-	deleteFn := c.deleteMessageFn
-	if deleteFn == nil {
-		deleteFn = c.deleteMessageAPI
-	}
-	_ = deleteFn(ctx, chatID, messageID)
-}
-
-func (c *FeishuChannel) finalizeTrackedToolFeedbackMessage(
-	ctx context.Context,
-	chatID string,
-	content string,
-	editFn func(context.Context, string, string, string) error,
-) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
-		return nil, false
-	}
-	if err := editFn(ctx, chatID, msgID, content); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
-		return nil, false
-	}
-	return []string{msgID}, true
-}
-
-func (c *FeishuChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
-	if outboundMessageIsToolFeedback(msg) {
-		return nil, false
-	}
-	return c.finalizeTrackedToolFeedbackMessage(ctx, msg.ChatID, msg.Content, c.EditMessage)
 }
 
 // ReactToMessage implements channels.ReactionCapable.
@@ -497,8 +398,6 @@ func (c *FeishuChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
-
 	if msg.ChatID == "" {
 		return nil, fmt.Errorf("chat ID is empty: %w", channels.ErrSendFailed)
 	}
@@ -520,10 +419,6 @@ func (c *FeishuChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 		if _, err := c.sendTextFn(ctx, msg.ChatID, caption); err != nil {
 			return nil, err
 		}
-	}
-
-	if hasTrackedMsg {
-		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
 	}
 
 	return nil, nil

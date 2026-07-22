@@ -111,11 +111,12 @@ type Manager struct {
 	httpServer                *http.Server
 	httpListeners             []net.Listener
 	mu                        sync.RWMutex
-	placeholders              sync.Map          // "channel:chatID" → placeholderID (string)
-	typingStops               sync.Map          // "channel:chatID" → func()
-	reactionUndos             sync.Map          // "channel:chatID" → reactionEntry
-	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
-	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
+	placeholders              sync.Map // "channel:chatID" → placeholderID (string)
+	typingStops               sync.Map // "channel:chatID" → func()
+	reactionUndos             sync.Map // "channel:chatID" → reactionEntry
+	streamActive              sync.Map // streamSuppressionKey → true (set when streamer.Finalize sent the message)
+	streamAuxiliaryTombstones sync.Map // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
+	toolFeedback              *ToolFeedbackCoordinator
 	channelHashes             map[string]string // channel name → config hash
 	channelRestartRequired    map[string]string // channel name → desired config hash that needs process restart
 }
@@ -168,19 +169,6 @@ func (mode outcomePublication) failure(ambiguous bool) bool {
 	return mode == publishDefinitiveOutcome || (mode == publishSuccessOnly && ambiguous)
 }
 
-type toolFeedbackMessageTracker interface {
-	RecordToolFeedbackMessage(chatID, messageID, content string)
-	ClearToolFeedbackMessage(chatID string)
-}
-
-type toolFeedbackMessageEditTracker interface {
-	RecordEditedToolFeedbackMessage(chatID, messageID, content string)
-}
-
-type toolFeedbackMessageCleaner interface {
-	DismissToolFeedbackMessage(ctx context.Context, chatID string)
-}
-
 type outboundTargetResolver interface {
 	ResolveOutboundChatID(chatID string, outboundCtx *bus.InboundContext) string
 }
@@ -193,8 +181,12 @@ type toolFeedbackMessageContentPreparer interface {
 	PrepareToolFeedbackMessageContent(content string) string
 }
 
-type toolFeedbackAnimatorConfigurer interface {
-	ConfigureToolFeedbackAnimator(config ToolFeedbackAnimatorConfig)
+type toolFeedbackMessageEditor interface {
+	EditToolFeedbackMessage(ctx context.Context, chatID, messageID, content string) error
+}
+
+type toolFeedbackMessageSender interface {
+	SendToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool, error)
 }
 
 type asyncTask struct {
@@ -208,6 +200,7 @@ type deliveryCleanupOptions struct {
 	DismissToolFeedback bool
 	DeletePlaceholder   bool
 	SessionKey          string
+	TraceScopes         []runtimeevents.TraceScope
 }
 
 func outboundMessageChannel(msg bus.OutboundMessage) string {
@@ -295,12 +288,79 @@ func resolveOutboundChatID(ch Channel, chatID string, outboundCtx *bus.InboundCo
 	return strings.TrimSpace(chatID)
 }
 
-func streamSuppressionKey(channel, chatID, sessionKey string) string {
-	key := channel + ":" + chatID
-	if strings.TrimSpace(sessionKey) == "" {
-		return key
+func traceScopedDeliveryKey(base string, traceScope runtimeevents.TraceScope) (string, bool) {
+	traceScope = runtimeevents.NewTraceScope(traceScope.Workspace, traceScope.TurnID)
+	if !traceScope.Complete() {
+		return base, false
 	}
-	return key + ":" + sessionKey
+	return base + "\x00turn\x00" + traceScope.Workspace + "\x00" + traceScope.TurnID, true
+}
+
+func primaryTraceScope(scopes []runtimeevents.TraceScope) runtimeevents.TraceScope {
+	normalized, err := bus.NormalizeTraceScopes(scopes)
+	if err != nil || len(normalized) == 0 {
+		return runtimeevents.TraceScope{}
+	}
+	return normalized[0]
+}
+
+func streamSuppressionKey(
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) string {
+	key := streamSuppressionBaseKey(channel, chatID, sessionKey)
+	key, _ = traceScopedDeliveryKey(key, traceScope)
+	return key
+}
+
+func streamSuppressionBaseKey(channel, chatID, sessionKey string) string {
+	key := channel + ":" + chatID
+	if strings.TrimSpace(sessionKey) != "" {
+		key += ":" + sessionKey
+	}
+	return key
+}
+
+func singleScopedStreamStateKey(
+	state *sync.Map,
+	baseKey string,
+	valid func(string, any) bool,
+) (string, bool) {
+	prefix := baseKey + "\x00turn\x00"
+	matched := ""
+	ambiguous := false
+	state.Range(func(key, value any) bool {
+		keyString, ok := key.(string)
+		if !ok || !strings.HasPrefix(keyString, prefix) {
+			return true
+		}
+		if valid != nil && !valid(keyString, value) {
+			return true
+		}
+		if matched != "" {
+			ambiguous = true
+			return false
+		}
+		matched = keyString
+		return true
+	})
+	return matched, matched != "" && !ambiguous
+}
+
+func (m *Manager) streamActiveKey(
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) (string, bool) {
+	key := streamSuppressionKey(channel, chatID, sessionKey, traceScope)
+	if _, active := m.streamActive.Load(key); active {
+		return key, true
+	}
+	if traceScope.Complete() {
+		return "", false
+	}
+	return singleScopedStreamStateKey(
+		&m.streamActive, streamSuppressionBaseKey(channel, chatID, sessionKey), nil,
+	)
 }
 
 func trackedToolFeedbackMessageChatID(ch Channel, chatID string, outboundCtx *bus.InboundContext) string {
@@ -344,15 +404,20 @@ func (m *Manager) cleanupDeliveryState(
 
 	if opts.ClearStreamActive {
 		for _, cleanupChatID := range cleanupChatIDs {
-			streamKey := streamSuppressionKey(name, cleanupChatID, opts.SessionKey)
+			streamKey := streamSuppressionKey(
+				name, cleanupChatID, opts.SessionKey, primaryTraceScope(opts.TraceScopes),
+			)
 			m.streamActive.LoadAndDelete(streamKey)
 			m.streamAuxiliaryTombstones.Delete(streamKey)
 		}
 	}
 
 	if opts.DismissToolFeedback {
-		dismissTrackedToolFeedbackMessage(ctx, ch, chatID, outboundCtx)
-		dismissTrackedToolFeedbackMessageForSession(ctx, ch, chatID, outboundCtx, opts.SessionKey)
+		if m.toolFeedback != nil {
+			m.dismissToolFeedbackTargets(
+				ctx, name, ch, chatID, outboundCtx, opts.SessionKey, opts.TraceScopes,
+			)
+		}
 	}
 
 	if opts.DeletePlaceholder {
@@ -368,15 +433,6 @@ func (m *Manager) cleanupDeliveryState(
 	}
 }
 
-func candidateToolFeedbackMessageChatIDs(raw, resolved string) []string {
-	raw = strings.TrimSpace(raw)
-	resolved = strings.TrimSpace(resolved)
-	if raw == "" || raw == resolved {
-		return []string{resolved}
-	}
-	return []string{resolved, raw}
-}
-
 func sessionScopedToolFeedbackMessageChatID(chatID, sessionKey string) string {
 	chatID = strings.TrimSpace(chatID)
 	sessionKey = strings.TrimSpace(sessionKey)
@@ -386,94 +442,216 @@ func sessionScopedToolFeedbackMessageChatID(chatID, sessionKey string) string {
 	return chatID + "#session:" + sessionKey
 }
 
-func dismissTrackedToolFeedbackMessage(
-	ctx context.Context,
-	ch Channel,
-	chatID string,
-	outboundCtx *bus.InboundContext,
-) {
-	trackedChatID := resolveOutboundChatID(ch, chatID, outboundCtx)
-	if trackedChatID == "" {
-		return
+func toolFeedbackCoordinatorKey(channelName, trackedChatID string) string {
+	channelName = strings.TrimSpace(channelName)
+	trackedChatID = strings.TrimSpace(trackedChatID)
+	if channelName == "" || trackedChatID == "" {
+		return ""
 	}
-	if cleaner, ok := ch.(toolFeedbackMessageCleaner); ok {
-		cleaner.DismissToolFeedbackMessage(ctx, trackedChatID)
-		return
-	}
-	if tracker, ok := ch.(toolFeedbackMessageTracker); ok {
-		tracker.ClearToolFeedbackMessage(trackedChatID)
-	}
+	return channelName + ":" + trackedChatID
 }
 
-func dismissTrackedToolFeedbackMessageForSession(
-	ctx context.Context,
+func toolFeedbackTarget(
+	channelName string,
 	ch Channel,
 	chatID string,
 	outboundCtx *bus.InboundContext,
 	sessionKey string,
-) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		dismissTrackedToolFeedbackMessage(ctx, ch, chatID, outboundCtx)
-		return
-	}
-	resolvedChatID := resolveOutboundChatID(ch, chatID, outboundCtx)
-	if cleaner, ok := ch.(toolFeedbackMessageCleaner); ok {
-		for _, candidate := range candidateToolFeedbackMessageChatIDs(chatID, resolvedChatID) {
-			if candidate == "" {
-				continue
-			}
-			cleaner.DismissToolFeedbackMessage(ctx, candidate+"#session:"+sessionKey)
-		}
-		return
-	}
-	if tracker, ok := ch.(toolFeedbackMessageTracker); ok {
-		for _, candidate := range candidateToolFeedbackMessageChatIDs(chatID, resolvedChatID) {
-			if candidate == "" {
-				continue
-			}
-			tracker.ClearToolFeedbackMessage(candidate + "#session:" + sessionKey)
-		}
-	}
+	traceScope runtimeevents.TraceScope,
+) (string, string) {
+	deliveryChatID := trackedToolFeedbackMessageChatID(ch, chatID, outboundCtx)
+	trackedChatID := sessionScopedToolFeedbackMessageChatID(deliveryChatID, sessionKey)
+	key, _ := traceScopedDeliveryKey(
+		toolFeedbackCoordinatorKey(channelName, trackedChatID), traceScope,
+	)
+	return key, deliveryChatID
 }
 
-func clearTrackedToolFeedbackMessage(
+func toolFeedbackTargets(
+	channelName string,
 	ch Channel,
 	chatID string,
 	outboundCtx *bus.InboundContext,
-) {
-	trackedChatID := resolveOutboundChatID(ch, chatID, outboundCtx)
-	if trackedChatID == "" {
-		return
+	sessionKey string,
+	traceScopes []runtimeevents.TraceScope,
+) ([]string, bool) {
+	base, _ := toolFeedbackTarget(
+		channelName, ch, chatID, outboundCtx, sessionKey, runtimeevents.TraceScope{},
+	)
+	normalized, err := bus.NormalizeTraceScopes(traceScopes)
+	if err != nil || len(normalized) == 0 {
+		return []string{base}, false
 	}
-	if tracker, ok := ch.(toolFeedbackMessageTracker); ok {
-		tracker.ClearToolFeedbackMessage(trackedChatID)
+	keys := make([]string, 0, len(normalized))
+	for _, traceScope := range normalized {
+		key, _ := traceScopedDeliveryKey(base, traceScope)
+		keys = append(keys, key)
+	}
+	return keys, true
+}
+
+func toolFeedbackOperationsFor(ch Channel) toolFeedbackOperations {
+	operations := toolFeedbackOperations{}
+	if editor, ok := ch.(toolFeedbackMessageEditor); ok {
+		operations.edit = editor.EditToolFeedbackMessage
+	} else if editor, ok := ch.(MessageEditor); ok {
+		operations.edit = editor.EditMessage
+	}
+	if deleter, ok := ch.(MessageDeleter); ok {
+		operations.delete = deleter.DeleteMessage
+	}
+	return operations
+}
+
+func (m *Manager) beginToolFeedbackTerminals(
+	channelName string,
+	ch Channel,
+	chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+	traceScopes []runtimeevents.TraceScope,
+) []*toolFeedbackTerminal {
+	if m == nil || m.toolFeedback == nil {
+		return nil
+	}
+	keys, scoped := m.resolveToolFeedbackTargets(
+		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
+	)
+	terminals := make([]*toolFeedbackTerminal, 0, len(keys))
+	for _, key := range keys {
+		if scoped {
+			terminals = append(terminals, m.toolFeedback.BeginTerminal(key))
+		} else {
+			terminals = append(terminals, m.toolFeedback.BeginTransientTerminal(key))
+		}
+	}
+	return terminals
+}
+
+func (m *Manager) completeToolFeedbackTerminals(
+	ctx context.Context,
+	terminals []*toolFeedbackTerminal,
+	success bool,
+) {
+	for _, terminal := range terminals {
+		m.toolFeedback.CompleteTerminal(ctx, terminal, success)
 	}
 }
 
-// DismissToolFeedback clears any tracked tool feedback animation for the
-// given channel/chat. This is called when a turn ends without a final
-// response (e.g., ResponseHandled tools) to stop orphaned animation goroutines.
-// outboundCtx carries topic/thread info for channels that use scoped tracker
-// keys (e.g., Telegram forum topics); may be nil for non-topic channels.
-func (m *Manager) DismissToolFeedback(
-	ctx context.Context, channelName, chatID string, outboundCtx *bus.InboundContext,
-) {
+func (m *Manager) beginOutboundToolFeedbackTerminals(
+	channelName string,
+	ch Channel,
+	msg bus.OutboundMessage,
+) []*toolFeedbackTerminal {
+	if m == nil || m.toolFeedback == nil || outboundMessageIsToolFeedback(msg) ||
+		!OutboundMessageDismissesTrackedToolFeedback(msg) {
+		return nil
+	}
+	return m.beginToolFeedbackTerminals(
+		channelName,
+		ch,
+		outboundMessageChatID(msg),
+		&msg.Context,
+		msg.SessionKey,
+		msg.TraceScopes,
+	)
+}
+
+func (m *Manager) deliverToolFeedback(
+	ctx context.Context,
+	channelName string,
+	ch Channel,
+	msg bus.OutboundMessage,
+	send func(context.Context, bus.OutboundMessage) ([]string, error),
+) ([]string, error) {
+	key, deliveryChatID := toolFeedbackTarget(
+		channelName,
+		ch,
+		outboundMessageChatID(msg),
+		&msg.Context,
+		msg.SessionKey,
+		primaryTraceScope(msg.TraceScopes),
+	)
+	content := prepareToolFeedbackMessageContent(ch, msg.Content)
+	operations := toolFeedbackOperationsFor(ch)
+	return m.toolFeedback.deliver(
+		ctx,
+		key,
+		deliveryChatID,
+		content,
+		operations,
+		func(sendCtx context.Context, prepared string) (toolFeedbackSendResult, error) {
+			sendMsg := msg
+			sendMsg.Content = prepared
+			if sender, ok := ch.(toolFeedbackMessageSender); ok {
+				messageIDs, editable, err := sender.SendToolFeedbackMessage(sendCtx, sendMsg)
+				return toolFeedbackSendResult{messageIDs: messageIDs, editable: editable}, err
+			}
+			messageIDs, err := send(sendCtx, sendMsg)
+			return toolFeedbackSendResult{messageIDs: messageIDs, editable: operations.edit != nil}, err
+		},
+	)
+}
+
+// DismissToolFeedback clears tracked progress for one outbound identity.
+func (m *Manager) DismissToolFeedback(ctx context.Context, target bus.OutboundMessage) {
+	if m == nil || m.toolFeedback == nil {
+		return
+	}
+	channelName := outboundMessageChannel(target)
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
 		return
 	}
-	dismissTrackedToolFeedbackMessage(ctx, ch, chatID, outboundCtx)
+	m.dismissToolFeedbackTargets(
+		ctx,
+		channelName,
+		ch,
+		outboundMessageChatID(target),
+		&target.Context,
+		target.SessionKey,
+		target.TraceScopes,
+	)
 }
 
-func (m *Manager) DismissToolFeedbackForSession(
-	ctx context.Context, channelName, chatID string, outboundCtx *bus.InboundContext, sessionKey string,
+func (m *Manager) dismissToolFeedbackTargets(
+	ctx context.Context,
+	channelName string,
+	ch Channel,
+	chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+	traceScopes []runtimeevents.TraceScope,
 ) {
-	ch, ok := m.GetChannel(channelName)
-	if !ok {
-		return
+	keys, scoped := m.resolveToolFeedbackTargets(
+		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
+	)
+	for _, key := range keys {
+		if scoped {
+			m.toolFeedback.Dismiss(ctx, key)
+		} else {
+			m.toolFeedback.DismissTransient(ctx, key)
+		}
 	}
-	dismissTrackedToolFeedbackMessageForSession(ctx, ch, chatID, outboundCtx, sessionKey)
+}
+
+func (m *Manager) resolveToolFeedbackTargets(
+	channelName string,
+	ch Channel,
+	chatID string,
+	outboundCtx *bus.InboundContext,
+	sessionKey string,
+	traceScopes []runtimeevents.TraceScope,
+) ([]string, bool) {
+	keys, scoped := toolFeedbackTargets(
+		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
+	)
+	if !scoped && len(keys) == 1 {
+		if key, ok := m.toolFeedback.singleActiveScopedKey(keys[0]); ok {
+			return []string{key}, true
+		}
+	}
+	return keys, scoped
 }
 
 func prepareToolFeedbackMessageContent(ch Channel, content string) string {
@@ -487,13 +665,6 @@ func prepareToolFeedbackMessageContent(ch Channel, content string) string {
 		}
 	}
 	return prepared
-}
-
-func (m *Manager) toolFeedbackSeparateMessagesEnabled() bool {
-	if m == nil || m.config == nil {
-		return false
-	}
-	return m.config.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled()
 }
 
 // RecordPlaceholder registers a placeholder message for later editing.
@@ -561,7 +732,9 @@ func (m *Manager) RecordReactionUndo(channel, chatID string, undo func()) {
 func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMessage, ch Channel) ([]string, bool) {
 	chatID := outboundMessageChatID(msg)
 	key := name + ":" + chatID
-	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey)
+	traceScope := primaryTraceScope(msg.TraceScopes)
+	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey, traceScope)
+	activeStreamKey, streamActive := m.streamActiveKey(name, chatID, msg.SessionKey, traceScope)
 
 	m.cleanupDeliveryState(ctx, name, chatID, &msg.Context, ch, deliveryCleanupOptions{
 		StopTyping:   true,
@@ -572,20 +745,20 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	isToolCalls := outboundMessageIsToolCalls(msg)
 	isAuxiliaryMessage := outboundMessageHasAuxiliaryKind(msg)
 	isFinalMessage := outboundMessageIsFinal(msg)
-	separateToolFeedbackMessages := m.toolFeedbackSeparateMessagesEnabled()
-
 	// 3. If a stream already finalized this chat, stale auxiliary messages must
 	// be dropped without consuming the final-response marker. Streaming
 	// finalization bypasses the worker queue, so older queued feedback/thoughts
 	// can arrive before the normal final outbound message that cleans up the
 	// marker and placeholder.
-	// Note: tool_calls messages must NOT be dropped as they represent new tool
-	// invocations for the current turn that must be delivered to the UI.
-	if isAuxiliaryMessage && !isToolCalls {
-		if _, loaded := m.streamActive.Load(streamKey); loaded {
+	// Tool calls must reach the UI, and the queued final must consume the active
+	// marker after the streamed copy has already been delivered.
+	if isAuxiliaryMessage && !isToolCalls && !isFinalMessage {
+		if streamActive {
 			return nil, true
 		}
-		if m.streamAuxiliaryTombstoneActive(streamKey) {
+		if m.streamAuxiliaryTombstoneActiveForMessage(
+			name, chatID, msg.SessionKey, traceScope,
+		) {
 			return nil, true
 		}
 	}
@@ -593,38 +766,43 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	// 4. If a stream already finalized this turn, skip only the duplicate final
 	// outbound. Earlier queued visible messages must still be delivered.
 	if isFinalMessage {
-		if _, loaded := m.streamActive.LoadAndDelete(streamKey); loaded {
-			if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
-				if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
-					// Prefer deleting the placeholder (cleaner UX than editing to same content)
-					if deleter, ok := ch.(MessageDeleter); ok {
-						deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
-					} else if editor, ok := ch.(MessageEditor); ok {
-						if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
-							_ = payloadEditor.EditMessageWithPayload(
-								ctx,
-								chatID,
-								entry.id,
-								outboundMessageEditPayload(msg, msg.Content),
-							)
-						} else {
-							editor.EditMessage(ctx, chatID, entry.id, msg.Content) // fallback
+		if streamActive {
+			if _, loaded := m.streamActive.LoadAndDelete(activeStreamKey); !loaded {
+				streamActive = false
+			} else {
+				if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
+					if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+						// Prefer deleting the placeholder (cleaner UX than editing to same content)
+						if deleter, ok := ch.(MessageDeleter); ok {
+							deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+						} else if editor, ok := ch.(MessageEditor); ok {
+							if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
+								_ = payloadEditor.EditMessageWithPayload(
+									ctx,
+									chatID,
+									entry.id,
+									outboundMessageEditPayload(msg, msg.Content),
+								)
+							} else {
+								editor.EditMessage(ctx, chatID, entry.id, msg.Content) // fallback
+							}
 						}
 					}
 				}
-			}
-			if !isToolFeedback {
-				if separateToolFeedbackMessages {
-					clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
-				} else {
-					dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
+				if m.toolFeedback != nil {
+					keys, _ := toolFeedbackTargets(
+						name, ch, chatID, &msg.Context, msg.SessionKey, msg.TraceScopes,
+					)
+					for _, key := range keys {
+						m.toolFeedback.ReleaseTerminal(key)
+					}
 				}
+				return nil, true
 			}
-			return nil, true
 		}
 	}
 
-	if _, loaded := m.streamActive.Load(streamKey); loaded {
+	if streamActive {
 		return nil, false
 	}
 	if m.streamActiveForChat(name, chatID) {
@@ -633,10 +811,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 
 	if !isAuxiliaryMessage {
 		m.streamAuxiliaryTombstones.Delete(streamKey)
-	}
-
-	if separateToolFeedbackMessages {
-		clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
 	}
 
 	// 5. Try editing placeholder
@@ -651,7 +825,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					"is_tool_feedback": isToolFeedback,
 					"bypass":           outboundMessageBypassesPlaceholderEdit(msg),
 				})
-			if isToolFeedback && separateToolFeedbackMessages {
+			if isToolFeedback {
 				if deleter, ok := ch.(MessageDeleter); ok {
 					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
 				}
@@ -661,18 +835,10 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 				if deleter, ok := ch.(MessageDeleter); ok {
 					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
 				}
-				if strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "final_reply") {
-					dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
-				}
 				return nil, false
 			}
 			if editor, ok := ch.(MessageEditor); ok {
 				content := msg.Content
-				trackedContent := msg.Content
-				if isToolFeedback {
-					trackedContent = prepareToolFeedbackMessageContent(ch, msg.Content)
-					content = InitialAnimatedToolFeedbackContent(trackedContent)
-				}
 				err := func() error {
 					if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
 						return payloadEditor.EditMessageWithPayload(
@@ -685,19 +851,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					return editor.EditMessage(ctx, chatID, entry.id, content)
 				}()
 				if err == nil {
-					trackedChatID := trackedToolFeedbackMessageChatID(ch, chatID, &msg.Context)
-					if isToolFeedback {
-						trackedChatID = sessionScopedToolFeedbackMessageChatID(trackedChatID, msg.SessionKey)
-					}
-					if tracker, ok := ch.(toolFeedbackMessageTracker); ok && isToolFeedback {
-						if editTracker, ok := ch.(toolFeedbackMessageEditTracker); ok {
-							editTracker.RecordEditedToolFeedbackMessage(trackedChatID, entry.id, trackedContent)
-						} else {
-							tracker.RecordToolFeedbackMessage(trackedChatID, entry.id, trackedContent)
-						}
-					} else if !isToolFeedback {
-						dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
-					}
 					return []string{entry.id}, true
 				}
 				// edit failed → fall through to normal Send
@@ -716,12 +869,12 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 	chatID := outboundMediaChatID(msg)
 
 	m.cleanupDeliveryState(ctx, name, chatID, &msg.Context, ch, deliveryCleanupOptions{
-		StopTyping:          true,
-		UndoReaction:        true,
-		ClearStreamActive:   true,
-		DismissToolFeedback: true,
-		DeletePlaceholder:   true,
-		SessionKey:          msg.SessionKey,
+		StopTyping:        true,
+		UndoReaction:      true,
+		ClearStreamActive: true,
+		DeletePlaceholder: true,
+		SessionKey:        msg.SessionKey,
+		TraceScopes:       msg.TraceScopes,
 	})
 }
 
@@ -740,6 +893,15 @@ func NewManager(
 		mediaStore:             store,
 		channelHashes:          make(map[string]string),
 		channelRestartRequired: make(map[string]string),
+	}
+	if cfg != nil {
+		m.toolFeedback = NewToolFeedbackCoordinator(
+			ToolFeedbackAnimatorConfig{
+				AnimationInterval: cfg.Agents.Defaults.GetToolFeedbackAnimationInterval(),
+				MinEditInterval:   cfg.Agents.Defaults.GetToolFeedbackEditMinInterval(),
+			},
+			cfg.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled(),
+		)
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -801,7 +963,11 @@ func closeWorkerAndWait(w *channelWorker) {
 
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
-func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
+func (m *Manager) GetStreamer(
+	ctx context.Context,
+	channelName, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) (bus.Streamer, bool) {
 	m.mu.RLock()
 	ch, exists := m.channels[channelName]
 	m.mu.RUnlock()
@@ -826,30 +992,21 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 
 	// Mark streamActive on Finalize so preSend knows to clean up the placeholder
 	// and late auxiliary messages cannot leak after streaming produced a final.
-	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
+	streamKey := streamSuppressionKey(channelName, chatID, sessionKey, traceScope)
 	placeholderKey := channelName + ":" + chatID
 	clearMarker := func() {
 		m.streamActive.Delete(streamKey)
 	}
 	onFinalize := func(finalizeCtx context.Context, finalContent string) {
-		if m.toolFeedbackSeparateMessagesEnabled() {
-			clearTrackedToolFeedbackMessage(
-				ch,
-				chatID,
-				&bus.InboundContext{
-					Channel: channelName,
-					ChatID:  chatID,
-				},
-			)
-		} else {
-			dismissTrackedToolFeedbackMessage(
+		if m.toolFeedback != nil {
+			m.dismissToolFeedbackTargets(
 				finalizeCtx,
+				channelName,
 				ch,
 				chatID,
-				&bus.InboundContext{
-					Channel: channelName,
-					ChatID:  chatID,
-				},
+				&bus.InboundContext{Channel: channelName, ChatID: chatID},
+				sessionKey,
+				[]runtimeevents.TraceScope{traceScope},
 			)
 		}
 		if v, loaded := m.placeholders.LoadAndDelete(placeholderKey); loaded {
@@ -1093,15 +1250,42 @@ func (m *Manager) streamAuxiliaryTombstoneActive(key string) bool {
 	return true
 }
 
+func (m *Manager) streamAuxiliaryTombstoneActiveForMessage(
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) bool {
+	key := streamSuppressionKey(channel, chatID, sessionKey, traceScope)
+	if m.streamAuxiliaryTombstoneActive(key) {
+		return true
+	}
+	if traceScope.Complete() {
+		return false
+	}
+	key, ok := singleScopedStreamStateKey(
+		&m.streamAuxiliaryTombstones,
+		streamSuppressionBaseKey(channel, chatID, sessionKey),
+		func(key string, value any) bool {
+			createdAt, ok := value.(time.Time)
+			if !ok || time.Since(createdAt) > streamAuxiliaryTombstoneTTL {
+				m.streamAuxiliaryTombstones.Delete(key)
+				return false
+			}
+			return true
+		},
+	)
+	return ok && m.streamAuxiliaryTombstoneActive(key)
+}
+
 func (m *Manager) streamActiveForChat(channel, chatID string) bool {
-	chatKey := streamSuppressionKey(channel, chatID, "")
+	chatKey := streamSuppressionBaseKey(channel, chatID, "")
 	found := false
 	m.streamActive.Range(func(key, _ any) bool {
 		keyString, ok := key.(string)
 		if !ok {
 			return true
 		}
-		if keyString == chatKey || strings.HasPrefix(keyString, chatKey+":") {
+		if keyString == chatKey || strings.HasPrefix(keyString, chatKey+":") ||
+			strings.HasPrefix(keyString, chatKey+"\x00turn\x00") {
 			found = true
 			return false
 		}
@@ -1208,12 +1392,6 @@ func (m *Manager) initChannel(typeName, channelName string) {
 		// Inject owner reference so BaseChannel.HandleMessage can auto-trigger typing/reaction
 		if setter, ok := ch.(interface{ SetOwner(ch Channel) }); ok {
 			setter.SetOwner(ch)
-		}
-		if setter, ok := ch.(toolFeedbackAnimatorConfigurer); ok && m.config != nil {
-			setter.ConfigureToolFeedbackAnimator(ToolFeedbackAnimatorConfig{
-				AnimationInterval: m.config.Agents.Defaults.GetToolFeedbackAnimationInterval(),
-				MinEditInterval:   m.config.Agents.Defaults.GetToolFeedbackEditMinInterval(),
-			})
 		}
 		m.channels[channelName] = ch
 		m.publishChannelEvent(
@@ -1669,6 +1847,9 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		}
 		closeWorkerAndWait(delivery.worker)
 	}
+	if m.toolFeedback != nil {
+		m.toolFeedback.StopAll()
+	}
 
 	// Stop all channels
 	for _, target := range channels {
@@ -1868,6 +2049,7 @@ func (m *Manager) runWorkerOwned(
 			}
 
 			// Step 3: Send all chunks and publish one outcome for the logical message.
+			terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
 			var messageIDs []string
 			delivered := true
 			for _, chunk := range chunks {
@@ -1883,6 +2065,7 @@ func (m *Manager) runWorkerOwned(
 				}
 				messageIDs = append(messageIDs, chunkIDs...)
 			}
+			m.completeToolFeedbackTerminals(ctx, terminals, delivered)
 			if delivered {
 				m.publishOutboundSent(name, msg, messageIDs)
 			}
@@ -1923,7 +2106,9 @@ func (m *Manager) finalizedStreamActiveForMessage(channelName string, msg bus.Ou
 	if strings.TrimSpace(channelName) == "" || strings.TrimSpace(chatID) == "" {
 		return false
 	}
-	_, active := m.streamActive.Load(streamSuppressionKey(channelName, chatID, msg.SessionKey))
+	_, active := m.streamActiveKey(
+		channelName, chatID, msg.SessionKey, primaryTraceScope(msg.TraceScopes),
+	)
 	return active
 }
 
@@ -1959,7 +2144,12 @@ func (m *Manager) sendWithRetry(
 	w *channelWorker,
 	msg bus.OutboundMessage,
 ) ([]string, bool, bool, error) {
-	return m.sendWithRetryPolicy(ctx, name, w, msg, true, publishDefinitiveOutcome)
+	terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
+	messageIDs, delivered, ambiguous, err := m.sendWithRetryPolicy(
+		ctx, name, w, msg, true, publishDefinitiveOutcome,
+	)
+	m.completeToolFeedbackTerminals(ctx, terminals, delivered)
+	return messageIDs, delivered, ambiguous, err
 }
 
 func (m *Manager) sendWithRetryPolicy(
@@ -1992,6 +2182,8 @@ func (m *Manager) sendWithRetryPolicy(
 		return nil, false, false, err
 	}
 
+	isToolFeedback := outboundMessageIsToolFeedback(msg)
+
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
 		if outcome.success() {
@@ -2005,7 +2197,11 @@ func (m *Manager) sendWithRetryPolicy(
 	ambiguous := false
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		attemptStart := time.Now()
-		msgIDs, lastErr = w.ch.Send(ctx, msg)
+		if isToolFeedback && m.toolFeedback != nil {
+			msgIDs, lastErr = m.deliverToolFeedback(ctx, name, w.ch, msg, w.ch.Send)
+		} else {
+			msgIDs, lastErr = w.ch.Send(ctx, msg)
+		}
 		if lastErr == nil {
 			if attempt > 0 {
 				logger.InfoCF("channels", "Outbound send recovered after retry", map[string]any{
@@ -2323,6 +2519,22 @@ func (m *Manager) sendMediaWithRetryPolicy(
 		return nil, false, err
 	}
 
+	terminalSucceeded := false
+	var terminals []*toolFeedbackTerminal
+	if m.toolFeedback != nil {
+		terminals = m.beginToolFeedbackTerminals(
+			name,
+			w.ch,
+			outboundMediaChatID(msg),
+			&msg.Context,
+			msg.SessionKey,
+			msg.TraceScopes,
+		)
+		defer func() {
+			m.completeToolFeedbackTerminals(ctx, terminals, terminalSucceeded)
+		}()
+	}
+
 	// Pre-send: stop typing and clean up any placeholder before sending media.
 	m.preSendMedia(ctx, name, msg, w.ch)
 
@@ -2332,6 +2544,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msgIDs, lastErr = ms.SendMedia(ctx, msg)
 		if lastErr == nil {
+			terminalSucceeded = true
 			if outcome.success() {
 				m.publishOutboundMediaSent(name, msg, msgIDs)
 			}
@@ -2593,6 +2806,9 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			cancel()
 			return err
 		}
+		if m.toolFeedback != nil {
+			m.toolFeedback.RetireChannel(ctx, name)
+		}
 		if err := oldChannel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping inactive changed channel", map[string]any{
 				"channel": name,
@@ -2641,6 +2857,15 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 
 	// Commit hashes only on full success.
 	m.channelHashes = list
+	if m.toolFeedback != nil && cfg != nil {
+		m.toolFeedback.Configure(
+			ToolFeedbackAnimatorConfig{
+				AnimationInterval: cfg.Agents.Defaults.GetToolFeedbackAnimationInterval(),
+				MinEditInterval:   cfg.Agents.Defaults.GetToolFeedbackEditMinInterval(),
+			},
+			cfg.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled(),
+		)
+	}
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -2685,6 +2910,9 @@ func (m *Manager) UnregisterChannel(name string) {
 		owner.CloseDeliveryAndWait()
 	} else {
 		closeWorkerAndWait(w)
+	}
+	if m.toolFeedback != nil {
+		m.toolFeedback.RetireChannel(context.Background(), name)
 	}
 
 	m.mu.Lock()
@@ -2763,6 +2991,11 @@ func (m *Manager) sendMessageWithRetryPolicy(
 			outcome, channelName, msg, fmt.Errorf("channel %s has no active worker", channelName),
 		)
 	}
+	terminals := m.beginOutboundToolFeedbackTerminals(channelName, w.ch, msg)
+	terminalSucceeded := false
+	defer func() {
+		m.completeToolFeedbackTerminals(ctx, terminals, terminalSucceeded)
+	}()
 
 	maxLen := 0
 	if mlp, ok := w.ch.(MessageLengthProvider); ok {
@@ -2793,6 +3026,7 @@ func (m *Manager) sendMessageWithRetryPolicy(
 		if outcome.success() {
 			m.publishOutboundSent(channelName, msg, messageIDs)
 		}
+		terminalSucceeded = true
 	} else {
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
@@ -2805,6 +3039,7 @@ func (m *Manager) sendMessageWithRetryPolicy(
 				ambiguous,
 			)
 		}
+		terminalSucceeded = true
 	}
 	return nil
 }

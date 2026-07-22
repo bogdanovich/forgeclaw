@@ -71,13 +71,6 @@ func outboundMessageIsThought(msg bus.OutboundMessage) bool {
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), MessageKindThought)
 }
 
-func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
-}
-
 func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
 	if len(msg.Context.Raw) == 0 {
 		return false
@@ -282,8 +275,6 @@ type PicoChannel struct {
 	connsMu            sync.RWMutex
 	ctx                context.Context
 	cancel             context.CancelFunc
-	progress           *channels.ToolFeedbackAnimator
-	deleteMessageFn    func(context.Context, string, string) error
 	// broadcastFn lets tests intercept outbound broadcasts. nil routes to active connections.
 	broadcastFn func(ctx context.Context, chatID string, msg PicoMessage) error
 }
@@ -326,8 +317,6 @@ func NewPicoChannel(
 		connections:        make(map[string]*picoConn),
 		sessionConnections: make(map[string]map[string]*picoConn),
 	}
-	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
-	ch.deleteMessageFn = ch.DeleteMessage
 	return ch, nil
 }
 
@@ -433,12 +422,6 @@ func (c *PicoChannel) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *PicoChannel) ConfigureToolFeedbackAnimator(cfg channels.ToolFeedbackAnimatorConfig) {
-	if c.progress != nil {
-		c.progress.Configure(cfg)
-	}
-}
-
 // Stop implements Channel.
 func (c *PicoChannel) Stop(ctx context.Context) error {
 	logger.InfoC("pico", "Stopping Pico Protocol channel")
@@ -452,10 +435,6 @@ func (c *PicoChannel) Stop(ctx context.Context) error {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	if c.progress != nil {
-		c.progress.StopAll()
-	}
-
 	logger.InfoC("pico", "Pico Protocol channel stopped")
 	return nil
 }
@@ -485,31 +464,11 @@ func (c *PicoChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]stri
 		return nil, channels.ErrNotRunning
 	}
 	isThought := outboundMessageIsThought(msg)
-	isToolFeedback := outboundMessageIsToolFeedback(msg)
 	isToolCalls := outboundMessageIsToolCalls(msg)
-	if isToolFeedback {
-		if msgID, handled, err := c.progress.Update(ctx, msg.ChatID, msg.Content); handled {
-			if err != nil {
-				return nil, err
-			}
-			return []string{msgID}, nil
-		}
-	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
-	if channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
-		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
-			return msgIDs, nil
-		}
-	}
-
-	content := msg.Content
-	if isToolFeedback {
-		content = channels.InitialAnimatedToolFeedbackContent(msg.Content)
-	}
 	msgID := uuid.New().String()
 
 	payload := map[string]any{
-		PayloadKeyContent: content,
+		PayloadKeyContent: msg.Content,
 		"message_id":      msgID,
 	}
 	if modelName := strings.TrimSpace(msg.Context.Raw[PayloadKeyModelName]); modelName != "" {
@@ -536,11 +495,6 @@ func (c *PicoChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]stri
 	if err := c.broadcastToSessionContext(ctx, msg.ChatID, outMsg); err != nil {
 		return nil, err
 	}
-	if isToolFeedback {
-		c.RecordEditedToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-	} else if hasTrackedMsg && channels.OutboundMessageDismissesTrackedToolFeedback(msg) {
-		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
-	}
 	return []string{msgID}, nil
 }
 
@@ -564,108 +518,6 @@ func (c *PicoChannel) DeleteMessage(ctx context.Context, chatID string, messageI
 		"message_id": messageID,
 	})
 	return c.broadcastToSessionContext(ctx, chatID, outMsg)
-}
-
-func (c *PicoChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
-	if c.progress == nil {
-		return "", false
-	}
-	return c.progress.Current(chatID)
-}
-
-func (c *PicoChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
-	if c.progress == nil {
-		return "", "", false
-	}
-	return c.progress.Take(chatID)
-}
-
-func (c *PicoChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Record(chatID, messageID, content)
-}
-
-func (c *PicoChannel) RecordEditedToolFeedbackMessage(chatID, messageID, content string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.RecordEdited(chatID, messageID, content)
-}
-
-func (c *PicoChannel) ClearToolFeedbackMessage(chatID string) {
-	if c.progress == nil {
-		return
-	}
-	c.progress.Clear(chatID)
-}
-
-func (c *PicoChannel) DismissToolFeedbackMessage(ctx context.Context, chatID string) {
-	msgID, ok := c.currentToolFeedbackMessage(chatID)
-	if !ok {
-		return
-	}
-	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
-}
-
-func (c *PicoChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
-	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
-		return
-	}
-	c.ClearToolFeedbackMessage(chatID)
-	deleteFn := c.deleteMessageFn
-	if deleteFn == nil {
-		deleteFn = c.DeleteMessage
-	}
-	_ = deleteFn(ctx, chatID, messageID)
-}
-
-func (c *PicoChannel) finalizeTrackedToolFeedbackMessage(
-	ctx context.Context,
-	chatID string,
-	content string,
-	editFn func(context.Context, string, string, map[string]any, *bus.ContextUsage) error,
-	payload map[string]any,
-	contextUsage *bus.ContextUsage,
-) ([]string, bool) {
-	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
-	if !ok || editFn == nil {
-		return nil, false
-	}
-	if payload == nil {
-		payload = map[string]any{
-			PayloadKeyContent: content,
-		}
-	}
-	if _, ok := payload[PayloadKeyContent]; !ok {
-		payload[PayloadKeyContent] = content
-	}
-	if err := editFn(ctx, chatID, msgID, payload, contextUsage); err != nil {
-		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
-		return nil, false
-	}
-	return []string{msgID}, true
-}
-
-func (c *PicoChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
-	if !channels.OutboundMessageFinalizesTrackedToolFeedback(msg) {
-		return nil, false
-	}
-	payload := map[string]any{
-		PayloadKeyContent: msg.Content,
-	}
-	if modelName := strings.TrimSpace(msg.Context.Raw[PayloadKeyModelName]); modelName != "" {
-		payload[PayloadKeyModelName] = modelName
-	}
-	return c.finalizeTrackedToolFeedbackMessage(
-		ctx,
-		msg.ChatID,
-		msg.Content,
-		c.editMessagePayload,
-		payload,
-		msg.ContextUsage,
-	)
 }
 
 // StartTyping implements channels.TypingCapable.
@@ -943,8 +795,6 @@ func (c *PicoChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessag
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
-	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
-
 	store := c.GetMediaStore()
 	if store == nil {
 		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
@@ -1021,10 +871,6 @@ func (c *PicoChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessag
 	if err := c.broadcast(ctx, msg.ChatID, outMsg); err != nil {
 		return nil, err
 	}
-	if hasTrackedMsg {
-		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
-	}
-
 	return []string{msgID}, nil
 }
 

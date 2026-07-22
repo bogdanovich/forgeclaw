@@ -12,6 +12,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/commands"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -83,7 +84,7 @@ func outboundTurnMetadata(
 
 func outboundMessageForTurn(ts *turnState, content string) bus.OutboundMessage {
 	agentID, sessionKey, scope := outboundTurnMetadata(ts.agent.ID, ts.sessionKey, ts.opts.Dispatch.SessionScope)
-	return bus.OutboundMessage{
+	msg := bus.OutboundMessage{
 		Channel: ts.channel,
 		ChatID:  ts.chatID,
 		Context: outboundContextFromInbound(
@@ -97,6 +98,10 @@ func outboundMessageForTurn(ts *turnState, content string) bus.OutboundMessage {
 		Scope:      scope,
 		Content:    content,
 	}
+	_ = bus.SetOutboundTraceScopes(&msg, []runtimeevents.TraceScope{
+		runtimeevents.NewTraceScope(ts.workspace, ts.turnID),
+	})
+	return msg
 }
 
 func markFinalOutbound(msg *bus.OutboundMessage) {
