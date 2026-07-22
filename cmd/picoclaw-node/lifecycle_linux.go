@@ -113,6 +113,7 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 		"--property=ActiveState",
 		"--property=FragmentPath",
 		"--property=DropInPaths",
+		"--property=NeedDaemonReload",
 	}
 	result, err := lifecycle.run(ctx, lifecycle.system, args...)
 	if err != nil {
@@ -121,11 +122,11 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 	if result.ExitCode != 0 {
 		return systemdUnitProperties{}, systemdCommandError(result, args...)
 	}
-	properties := make(map[string]string, 4)
+	properties := make(map[string]string, 5)
 	for _, line := range strings.Split(result.Output, "\n") {
 		key, value, found := strings.Cut(line, "=")
 		if !found || (key != "LoadState" && key != "ActiveState" &&
-			key != "FragmentPath" && key != "DropInPaths") {
+			key != "FragmentPath" && key != "DropInPaths" && key != "NeedDaemonReload") {
 			continue
 		}
 		if _, duplicate := properties[key]; duplicate {
@@ -137,9 +138,22 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 	activeState, hasActiveState := properties["ActiveState"]
 	fragmentPath, hasFragmentPath := properties["FragmentPath"]
 	dropInPaths, hasDropInPaths := properties["DropInPaths"]
-	if !hasLoadState || !hasActiveState || !hasFragmentPath || !hasDropInPaths {
+	needDaemonReload, hasNeedDaemonReload := properties["NeedDaemonReload"]
+	if !hasLoadState || !hasActiveState || !hasFragmentPath || !hasDropInPaths || !hasNeedDaemonReload {
 		return systemdUnitProperties{}, errors.New(
-			"systemctl show omitted LoadState, ActiveState, FragmentPath, or DropInPaths",
+			"systemctl show omitted LoadState, ActiveState, FragmentPath, DropInPaths, or NeedDaemonReload",
+		)
+	}
+	if needDaemonReload != "yes" && needDaemonReload != "no" {
+		return systemdUnitProperties{}, fmt.Errorf(
+			"systemctl show returned invalid NeedDaemonReload %q",
+			needDaemonReload,
+		)
+	}
+	if needDaemonReload == "yes" {
+		return systemdUnitProperties{}, fmt.Errorf(
+			"refusing systemd service %s while daemon reload is pending",
+			service,
 		)
 	}
 	return systemdUnitProperties{
