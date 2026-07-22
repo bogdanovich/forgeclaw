@@ -14,10 +14,7 @@ import (
 
 func TestSystemdLifecycleUninstall(t *testing.T) {
 	unitDir := trustedSystemdTempDir(t)
-	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	if err := os.WriteFile(unitPath, managedUninstallUnitData("installed unit"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	unitPath, _ := writeManagedUninstallUnit(t, unitDir, "installed unit")
 	var calls []systemdCall
 	showChecks := 0
 	lifecycle := &systemdLifecycle{
@@ -101,10 +98,7 @@ func TestSystemdLifecycleUninstallRejectsUnmanagedUnit(t *testing.T) {
 
 func TestSystemdLifecycleUninstallRefusesReplacementDuringDisable(t *testing.T) {
 	unitDir := trustedSystemdTempDir(t)
-	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	if err := os.WriteFile(unitPath, managedUninstallUnitData("installed unit"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	unitPath, _ := writeManagedUninstallUnit(t, unitDir, "installed unit")
 	foreign := []byte("administrator replacement\n")
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
@@ -137,11 +131,7 @@ func TestSystemdLifecycleUninstallRefusesReplacementDuringDisable(t *testing.T) 
 
 func TestSystemdLifecycleUninstallRollsBackReloadFailure(t *testing.T) {
 	unitDir := trustedSystemdTempDir(t)
-	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	original := managedUninstallUnitData("installed unit")
-	if err := os.WriteFile(unitPath, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	unitPath, original := writeManagedUninstallUnit(t, unitDir, "installed unit")
 	var calls []systemdCall
 	daemonReloads := 0
 	lifecycle := &systemdLifecycle{
@@ -181,10 +171,7 @@ func TestSystemdLifecycleUninstallRollsBackReloadFailure(t *testing.T) {
 
 func TestSystemdLifecycleUninstallCompensatesFailedDisable(t *testing.T) {
 	unitDir := trustedSystemdTempDir(t)
-	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	if err := os.WriteFile(unitPath, managedUninstallUnitData("installed unit"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	unitPath, _ := writeManagedUninstallUnit(t, unitDir, "installed unit")
 	enabled := true
 	active := true
 	lifecycle := &systemdLifecycle{
@@ -221,11 +208,7 @@ func TestSystemdLifecycleUninstallCompensatesFailedDisable(t *testing.T) {
 
 func TestSystemdLifecycleUninstallRollsBackPreRemovalFailure(t *testing.T) {
 	unitDir := trustedSystemdTempDir(t)
-	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	original := managedUninstallUnitData("installed unit")
-	if err := os.WriteFile(unitPath, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	unitPath, original := writeManagedUninstallUnit(t, unitDir, "installed unit")
 	showChecks := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
@@ -255,10 +238,7 @@ func TestSystemdLifecycleUninstallRollsBackPreRemovalFailure(t *testing.T) {
 
 func TestSystemdLifecycleUninstallDoesNotRollbackCommittedRemoval(t *testing.T) {
 	unitDir := trustedSystemdTempDir(t)
-	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	if err := os.WriteFile(unitPath, managedUninstallUnitData("installed unit"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	unitPath, _ := writeManagedUninstallUnit(t, unitDir, "installed unit")
 	showChecks := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
@@ -303,11 +283,32 @@ func TestCaptureSystemdUninstallStateRejectsNonRestorableStates(t *testing.T) {
 			}
 		})
 	}
-	runtimeEnabled, err := captureSystemdUninstallState(systemdUnitProperties{
+	_, err := captureSystemdUninstallState(systemdUnitProperties{
 		activeState: "inactive", unitFileState: "enabled-runtime",
 	})
-	if err != nil || !reflect.DeepEqual(runtimeEnabled.enableArguments, []string{"enable", "--runtime"}) {
-		t.Fatalf("runtime enablement state = %#v, %v", runtimeEnabled, err)
+	if err == nil || !strings.Contains(err.Error(), "UnitFileState") {
+		t.Fatalf("runtime enablement error = %v", err)
+	}
+}
+
+func TestSystemdLifecycleUninstallRejectsUnexpectedEnablementLinks(t *testing.T) {
+	unitDir := trustedSystemdTempDir(t)
+	unitPath, _ := writeManagedUninstallUnit(t, unitDir, "installed unit")
+	if err := os.Symlink(filepath.Base(unitPath), filepath.Join(unitDir, "extra-alias.service")); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &systemdLifecycle{
+		unitDir: unitDir,
+		run: func(_ context.Context, _ bool, args ...string) (systemdRunResult, error) {
+			if !reflect.DeepEqual(args, systemdUnitShowArgs("picoclaw-node-main.service")) {
+				t.Fatalf("unexpected destructive systemctl call: %v", args)
+			}
+			return enabledSystemdUnitResult(unitPath, "active"), nil
+		},
+	}
+	_, err := lifecycle.Uninstall(t.Context(), lifecycleRequest{Instance: "main"})
+	if err == nil || !strings.Contains(err.Error(), "unexpected enablement topology") {
+		t.Fatalf("Uninstall() error = %v", err)
 	}
 }
 
@@ -342,4 +343,22 @@ func enabledSystemdUnitResult(path, activeState string) systemdRunResult {
 
 func managedUninstallUnitData(body string) []byte {
 	return []byte(managedSystemdUnitMarker + "\n" + body + "\n[Install]\nWantedBy=default.target\n")
+}
+
+func writeManagedUninstallUnit(t *testing.T, unitDir, body string) (string, []byte) {
+	t.Helper()
+	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
+	data := managedUninstallUnitData(body)
+	if err := os.WriteFile(unitPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantsDir := filepath.Join(unitDir, "default.target.wants")
+	if err := os.Mkdir(wantsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(wantsDir, filepath.Base(unitPath))
+	if err := os.Symlink(filepath.Join("..", filepath.Base(unitPath)), linkPath); err != nil {
+		t.Fatal(err)
+	}
+	return unitPath, data
 }

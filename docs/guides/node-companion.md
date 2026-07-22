@@ -105,9 +105,10 @@ sudo picoclaw-node uninstall --system --instance vpn
 
 Uninstall is idempotent when both the managed unit and its systemd registration
 are absent. It refuses administrator units, units resolved from another path,
-drop-ins, and unsupported enablement states. The command disables and stops the
-verified service before removing it. If removal cannot be committed, it restores
-the exact unit and its prior persistent enablement and active state when safe.
+drop-ins, unexpected enablement links, and unsupported service states. The
+command disables and stops the verified service before removing it. If removal
+cannot be committed, it restores the exact unit and its prior persistent
+enablement and active state when safe.
 
 Inspect a named systemd user service:
 

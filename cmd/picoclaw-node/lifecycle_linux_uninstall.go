@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -59,6 +61,9 @@ func (lifecycle *systemdLifecycle) Uninstall(
 	}
 	if !properties.resolvesTo(status.UnitPath) {
 		return lifecycleStatus{}, resolvedSystemdServiceError(status.Service, properties)
+	}
+	if err = lifecycle.requireExpectedEnablementTopology(status, properties); err != nil {
+		return lifecycleStatus{}, err
 	}
 	previous, err := captureSystemdUninstallState(properties)
 	if err != nil {
@@ -127,8 +132,6 @@ func captureSystemdUninstallState(properties systemdUnitProperties) (systemdUnin
 	switch properties.unitFileState {
 	case "enabled":
 		state.enableArguments = []string{"enable"}
-	case "enabled-runtime":
-		state.enableArguments = []string{"enable", "--runtime"}
 	case "disabled":
 	case "":
 		return systemdUninstallState{}, errors.New("systemd managed unit omitted UnitFileState")
@@ -139,6 +142,73 @@ func captureSystemdUninstallState(properties systemdUnitProperties) (systemdUnin
 		)
 	}
 	return state, nil
+}
+
+func (lifecycle *systemdLifecycle) requireExpectedEnablementTopology(
+	status lifecycleStatus,
+	properties systemdUnitProperties,
+) error {
+	target := "default.target"
+	if lifecycle.system {
+		target = "multi-user.target"
+	}
+	expectedLink := filepath.Join(target+".wants", status.Service)
+	links, err := findSystemdUnitLinks(lifecycle.unitDir, status.UnitPath)
+	if err != nil {
+		return err
+	}
+	switch properties.unitFileState {
+	case "enabled":
+		if len(links) == 1 && links[0] == expectedLink {
+			return nil
+		}
+	case "disabled":
+		if len(links) == 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"refusing systemd managed unit with unexpected enablement topology: state %q, links %q",
+		properties.unitFileState,
+		links,
+	)
+}
+
+func findSystemdUnitLinks(root, unitPath string) ([]string, error) {
+	unitInfo, err := os.Stat(unitPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect managed systemd unit identity: %w", err)
+	}
+	var links []string
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		targetInfo, targetErr := os.Stat(path)
+		if errors.Is(targetErr, os.ErrNotExist) {
+			return nil
+		}
+		if targetErr != nil {
+			return targetErr
+		}
+		if !os.SameFile(unitInfo, targetInfo) {
+			return nil
+		}
+		relative, relativeErr := filepath.Rel(root, path)
+		if relativeErr != nil {
+			return relativeErr
+		}
+		links = append(links, relative)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inspect systemd enablement links: %w", err)
+	}
+	slices.Sort(links)
+	return links, nil
 }
 
 func validateManagedSystemdInstallSection(data []byte, system bool) error {
