@@ -83,8 +83,7 @@ func (lifecycle *systemdLifecycle) Status(
 	}
 	status.Installed = true
 	status.State = properties.activeState
-	status.Active = status.State == "active" || status.State == "reloading" ||
-		status.State == "activating"
+	status.Active = status.State == "active"
 	return status, nil
 }
 

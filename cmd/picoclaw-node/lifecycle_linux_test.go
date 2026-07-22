@@ -24,8 +24,8 @@ func TestSystemdLifecycleStatus(t *testing.T) {
 		active bool
 	}{
 		{state: "active", active: true},
-		{state: "activating", active: true},
-		{state: "reloading", active: true},
+		{state: "activating"},
+		{state: "reloading"},
 		{state: "inactive"},
 		{state: "deactivating"},
 		{state: "failed"},
