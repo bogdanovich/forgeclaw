@@ -178,6 +178,10 @@ boundary, callback re-entry, unsubscribe races, persistence failure, and
 restart ordering.
 
 This contract is general registry infrastructure. It does not mention traces.
+The task registry uses the same atomic subscription boundary and serialized
+dispatcher. Its projector orders events only within the durable
+`(task_id, generation_id)` stream by task event sequence; unrelated tasks do
+not need a second global lifecycle sequence.
 
 ## 3. Durable Trace Writer
 

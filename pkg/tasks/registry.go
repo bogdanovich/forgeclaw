@@ -206,13 +206,15 @@ type Options struct {
 }
 
 type Registry struct {
-	mu        sync.RWMutex
-	store     string
-	options   Options
-	records   map[string]Record
-	events    []TaskEvent
-	observers []observerEntry
-	lastLoad  error
+	mu            sync.RWMutex
+	store         string
+	options       Options
+	records       map[string]Record
+	events        []TaskEvent
+	observers     []observerEntry
+	notifications []queuedObservation
+	notifying     bool
+	lastLoad      error
 }
 
 type Snapshot struct {
@@ -350,9 +352,10 @@ func (r *Registry) Upsert(rec Record) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
+	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
+	if drainNotifications {
+		r.drainNotifications()
 	}
 	return err
 }
@@ -386,9 +389,10 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(rec.LastEventAt)
 	err := r.saveLocked()
+	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
+	if drainNotifications {
+		r.drainNotifications()
 	}
 	return err
 }
@@ -413,9 +417,10 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
+	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
+	if drainNotifications {
+		r.drainNotifications()
 	}
 	return err
 }
@@ -624,9 +629,10 @@ func (r *Registry) updateInteractionProjection(
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err = r.saveLocked()
+	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
+	if drainNotifications {
+		r.drainNotifications()
 	}
 	return err
 }
@@ -754,9 +760,10 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 		r.pruneLocked(now)
 		err = r.saveLocked()
 	}
+	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
+	if drainNotifications {
+		r.drainNotifications()
 	}
 	return changed, err
 }
@@ -807,9 +814,10 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 		r.pruneLocked(now)
 		err = r.saveLocked()
 	}
+	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
+	if drainNotifications {
+		r.drainNotifications()
 	}
 	return changed, err
 }
