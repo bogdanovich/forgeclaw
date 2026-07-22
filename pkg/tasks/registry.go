@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
@@ -63,7 +65,7 @@ const (
 	DefaultMaxRecords        = 1000
 	DefaultMaxEvents         = 5000
 	DefaultMaxSnapshotBytes  = 2 * 1024 * 1024
-	TaskEventSchemaVersion   = "task_event.v1"
+	TaskEventSchemaVersion   = "task_event.v2"
 	DeliverableReportV1      = "deliverable_report.v1"
 )
 
@@ -143,6 +145,7 @@ type TaskEvent struct {
 	SchemaVersion  string            `json:"schema_version"`
 	EventID        string            `json:"event_id"`
 	TaskID         string            `json:"task_id"`
+	GenerationID   string            `json:"generation_id"`
 	Runtime        Runtime           `json:"runtime,omitempty"`
 	ParentTaskID   string            `json:"parent_task_id,omitempty"`
 	Type           EventType         `json:"type"`
@@ -158,6 +161,8 @@ type TaskEvent struct {
 
 type Record struct {
 	TaskID              string              `json:"task_id"`
+	GenerationID        string              `json:"generation_id"`
+	LastEventSeq        int64               `json:"last_event_sequence"`
 	Runtime             Runtime             `json:"runtime"`
 	TaskKind            string              `json:"task_kind,omitempty"`
 	ParentTaskID        string              `json:"parent_task_id,omitempty"`
@@ -328,8 +333,14 @@ func (r *Registry) Upsert(rec Record) error {
 		rec.Runtime = RuntimeTool
 	}
 	rec = r.normalizeRecord(rec, now)
+	rec.GenerationID = uuid.NewString()
+	rec.LastEventSeq = 0
 
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	r.records[rec.TaskID] = rec
 	r.appendEventLocked(rec, EventTaskUpserted, now, map[string]string{
@@ -351,6 +362,10 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 		return nil
 	}
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -359,6 +374,8 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	}
 	before := rec
 	mutate(&rec)
+	rec.GenerationID = before.GenerationID
+	rec.LastEventSeq = before.LastEventSeq
 	now := time.Now().UnixMilli()
 	if rec.LastEventAt == 0 || recordChanged(before, rec) {
 		rec.LastEventAt = now
@@ -381,6 +398,10 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 		return nil
 	}
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -577,6 +598,10 @@ func (r *Registry) updateInteractionProjection(
 		return nil
 	}
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -589,6 +614,8 @@ func (r *Registry) updateInteractionProjection(
 		r.mu.Unlock()
 		return err
 	}
+	rec.GenerationID = before.GenerationID
+	rec.LastEventSeq = before.LastEventSeq
 	now := time.Now().UnixMilli()
 	rec.LastEventAt = now
 	rec = r.normalizeRecord(rec, now)
@@ -683,6 +710,10 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	changed := 0
 
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return 0, err
+	}
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
@@ -742,6 +773,10 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	changed := 0
 
 	r.mu.Lock()
+	if err := r.writableErrorLocked(); err != nil {
+		r.mu.Unlock()
+		return 0, err
+	}
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
@@ -1001,25 +1036,48 @@ func (r *Registry) load() error {
 		return err
 	}
 	now := time.Now().UnixMilli()
+	records := make(map[string]Record, len(snap.Tasks))
+	events := make([]TaskEvent, 0, len(snap.Events))
 	for _, rec := range snap.Tasks {
 		if strings.TrimSpace(rec.TaskID) == "" {
 			continue
 		}
-		r.records[rec.TaskID] = r.normalizeRecord(rec, now)
+		if strings.TrimSpace(rec.GenerationID) == "" {
+			return fmt.Errorf("task %q is missing generation_id", rec.TaskID)
+		}
+		if rec.LastEventSeq <= 0 {
+			return fmt.Errorf("task %q has invalid last_event_sequence", rec.TaskID)
+		}
+		records[rec.TaskID] = r.normalizeRecord(rec, now)
 	}
 	for _, evt := range snap.Events {
 		if strings.TrimSpace(evt.TaskID) == "" || evt.Type == "" {
 			continue
 		}
-		if evt.SchemaVersion == "" {
-			evt.SchemaVersion = TaskEventSchemaVersion
+		if strings.TrimSpace(evt.GenerationID) == "" {
+			return fmt.Errorf("task event %q is missing generation_id", evt.EventID)
 		}
-		r.events = append(r.events, evt)
+		if evt.SchemaVersion != TaskEventSchemaVersion {
+			return fmt.Errorf(
+				"task event %q has schema %q, want %q",
+				evt.EventID, evt.SchemaVersion, TaskEventSchemaVersion,
+			)
+		}
+		if rec, ok := records[evt.TaskID]; ok && rec.GenerationID == evt.GenerationID &&
+			(evt.Seq <= 0 || evt.Seq > rec.LastEventSeq) {
+			return fmt.Errorf("task event %q has invalid generation sequence", evt.EventID)
+		}
+		events = append(events, evt)
 	}
+	r.records = records
+	r.events = events
 	return nil
 }
 
 func (r *Registry) saveLocked() error {
+	if err := r.writableErrorLocked(); err != nil {
+		return err
+	}
 	if r.store == "" {
 		return nil
 	}
@@ -1028,6 +1086,13 @@ func (r *Registry) saveLocked() error {
 		return err
 	}
 	return fileutil.WriteFileAtomic(r.store, data, 0o600)
+}
+
+func (r *Registry) writableErrorLocked() error {
+	if r.lastLoad == nil {
+		return nil
+	}
+	return fmt.Errorf("task registry is read-only after load failure: %w", r.lastLoad)
 }
 
 func (r *Registry) snapshotSizeLocked() int {
@@ -1095,10 +1160,17 @@ func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt 
 	if emittedAt == 0 {
 		emittedAt = time.Now().UnixMilli()
 	}
-	seq := r.nextEventSeqLocked(rec.TaskID)
+	stored, ok := r.records[rec.TaskID]
+	if !ok || stored.GenerationID != rec.GenerationID {
+		return
+	}
+	stored.LastEventSeq++
+	r.records[rec.TaskID] = stored
+	seq := stored.LastEventSeq
 	evt := TaskEvent{
 		SchemaVersion:  TaskEventSchemaVersion,
 		TaskID:         rec.TaskID,
+		GenerationID:   rec.GenerationID,
 		Runtime:        rec.Runtime,
 		ParentTaskID:   rec.ParentTaskID,
 		Type:           eventType,
@@ -1110,25 +1182,17 @@ func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt 
 		Producer:       firstNonEmpty(rec.AgentID, string(rec.Runtime)),
 		Payload:        cleanPayload(payload),
 	}
-	evt.EventID = fmt.Sprintf("%s:%06d:%s", rec.TaskID, seq, eventType)
+	evt.EventID = fmt.Sprintf("%s:%s:%06d:%s", rec.TaskID, rec.GenerationID, seq, eventType)
 	evt.Fingerprint = taskEventFingerprint(evt)
 	r.events = append(r.events, evt)
-}
-
-func (r *Registry) nextEventSeqLocked(taskID string) int64 {
-	var maxSeq int64
-	for _, evt := range r.events {
-		if evt.TaskID == taskID && evt.Seq > maxSeq {
-			maxSeq = evt.Seq
-		}
-	}
-	return maxSeq + 1
 }
 
 func taskEventFingerprint(evt TaskEvent) string {
 	payload, _ := json.Marshal(evt.Payload)
 	parts := []string{
 		evt.TaskID,
+		evt.GenerationID,
+		strconv.FormatInt(evt.Seq, 10),
 		string(evt.Type),
 		string(evt.Status),
 		string(evt.DeliveryStatus),
