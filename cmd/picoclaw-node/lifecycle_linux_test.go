@@ -157,6 +157,27 @@ func TestSystemdLifecycleStatusRejectsResolvedServiceWithoutManagedUnit(t *testi
 	}
 }
 
+func TestSystemdLifecycleStatusRejectsManagedUnitWithDropIn(t *testing.T) {
+	unitDir := t.TempDir()
+	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
+	if err := os.WriteFile(unitPath, managedSystemdUnitData("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &systemdLifecycle{
+		unitDir: unitDir,
+		run: func(context.Context, bool, ...string) (systemdRunResult, error) {
+			return systemdRunResult{
+				Output: "LoadState=loaded\nActiveState=active\nFragmentPath=" + unitPath +
+					"\nDropInPaths=/etc/systemd/user/picoclaw-node-main.service.d/override.conf",
+			}, nil
+		},
+	}
+	_, err := lifecycle.Status(t.Context(), lifecycleRequest{Instance: "main"})
+	if err == nil || !strings.Contains(err.Error(), "drop-ins") {
+		t.Fatalf("Status() error = %v", err)
+	}
+}
+
 func TestSystemdLifecycleUnitPropertiesFailClosed(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -217,6 +238,10 @@ func TestSystemdLifecycleInstallRejectsResolvedUnitFromAnotherPath(t *testing.T)
 	for _, result := range []systemdRunResult{
 		loadedSystemdUnitResult("/usr/lib/systemd/user/picoclaw-node-main.service", "inactive"),
 		loadedSystemdUnitResult("", "active"),
+		{
+			Output: "LoadState=not-found\nActiveState=inactive\nFragmentPath=\n" +
+				"DropInPaths=/etc/systemd/user/picoclaw-node-main.service.d/override.conf",
+		},
 	} {
 		lifecycle := &systemdLifecycle{
 			unitDir: t.TempDir(),
@@ -514,13 +539,19 @@ func missingSystemdUnitShowArgs(service string) []string {
 		"--property=LoadState",
 		"--property=ActiveState",
 		"--property=FragmentPath",
+		"--property=DropInPaths",
 	}
 }
 
 func missingSystemdUnitResult() systemdRunResult {
-	return systemdRunResult{Output: "LoadState=not-found\nActiveState=inactive\nFragmentPath="}
+	return systemdRunResult{
+		Output: "LoadState=not-found\nActiveState=inactive\nFragmentPath=\nDropInPaths=",
+	}
 }
 
 func loadedSystemdUnitResult(path, activeState string) systemdRunResult {
-	return systemdRunResult{Output: "LoadState=loaded\nActiveState=" + activeState + "\nFragmentPath=" + path}
+	return systemdRunResult{
+		Output: "LoadState=loaded\nActiveState=" + activeState +
+			"\nFragmentPath=" + path + "\nDropInPaths=",
+	}
 }

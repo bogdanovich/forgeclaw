@@ -49,6 +49,7 @@ type systemdUnitProperties struct {
 	loadState    string
 	activeState  string
 	fragmentPath string
+	dropInPaths  string
 }
 
 func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
@@ -200,6 +201,7 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 		"--property=LoadState",
 		"--property=ActiveState",
 		"--property=FragmentPath",
+		"--property=DropInPaths",
 	}
 	result, err := lifecycle.run(ctx, lifecycle.system, args...)
 	if err != nil {
@@ -208,10 +210,11 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 	if result.ExitCode != 0 {
 		return systemdUnitProperties{}, systemdCommandError(result, args...)
 	}
-	properties := make(map[string]string, 3)
+	properties := make(map[string]string, 4)
 	for _, line := range strings.Split(result.Output, "\n") {
 		key, value, found := strings.Cut(line, "=")
-		if !found || (key != "LoadState" && key != "ActiveState" && key != "FragmentPath") {
+		if !found || (key != "LoadState" && key != "ActiveState" &&
+			key != "FragmentPath" && key != "DropInPaths") {
 			continue
 		}
 		if _, duplicate := properties[key]; duplicate {
@@ -222,13 +225,15 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 	loadState, hasLoadState := properties["LoadState"]
 	activeState, hasActiveState := properties["ActiveState"]
 	fragmentPath, hasFragmentPath := properties["FragmentPath"]
-	if !hasLoadState || !hasActiveState || !hasFragmentPath {
+	dropInPaths, hasDropInPaths := properties["DropInPaths"]
+	if !hasLoadState || !hasActiveState || !hasFragmentPath || !hasDropInPaths {
 		return systemdUnitProperties{}, errors.New(
-			"systemctl show omitted LoadState, ActiveState, or FragmentPath",
+			"systemctl show omitted LoadState, ActiveState, FragmentPath, or DropInPaths",
 		)
 	}
 	return systemdUnitProperties{
-		loadState: loadState, activeState: activeState, fragmentPath: fragmentPath,
+		loadState: loadState, activeState: activeState,
+		fragmentPath: fragmentPath, dropInPaths: dropInPaths,
 	}, nil
 }
 
@@ -352,22 +357,24 @@ func unownedSystemdUnitError(path string) error {
 
 func (properties systemdUnitProperties) missing() bool {
 	return properties.loadState == "not-found" && properties.activeState == "inactive" &&
-		properties.fragmentPath == ""
+		properties.fragmentPath == "" && properties.dropInPaths == ""
 }
 
 func (properties systemdUnitProperties) resolvesTo(path string) bool {
 	return properties.loadState == "loaded" && properties.fragmentPath != "" &&
-		filepath.Clean(properties.fragmentPath) == filepath.Clean(path)
+		filepath.Clean(properties.fragmentPath) == filepath.Clean(path) &&
+		properties.dropInPaths == ""
 }
 
 func resolvedSystemdServiceError(service string, properties systemdUnitProperties) error {
 	return fmt.Errorf(
 		"refusing systemd service %s resolved outside its managed unit "+
-			"(load state %q, active state %q, fragment %q)",
+			"(load state %q, active state %q, fragment %q, drop-ins %q)",
 		service,
 		properties.loadState,
 		properties.activeState,
 		properties.fragmentPath,
+		properties.dropInPaths,
 	)
 }
 
