@@ -514,8 +514,12 @@ func TestSystemdInstallLockRejectsSymlink(t *testing.T) {
 
 func TestSystemdUnitDirectoryTrust(t *testing.T) {
 	trusted := unix.Stat_t{Mode: unix.S_IFDIR | 0o755, Uid: 1000}
-	if err := validateSystemdUnitDirectory(trusted, 1000); err != nil {
+	if err := validateSystemdUnitDirectory(trusted, 1000, false); err != nil {
 		t.Fatalf("trusted directory rejected: %v", err)
+	}
+	rootOwned := unix.Stat_t{Mode: unix.S_IFDIR | 0o755, Uid: 0}
+	if err := validateSystemdUnitDirectory(rootOwned, 1000, true); err != nil {
+		t.Fatalf("trusted root-owned ancestor rejected: %v", err)
 	}
 	for _, test := range []struct {
 		name string
@@ -526,10 +530,26 @@ func TestSystemdUnitDirectoryTrust(t *testing.T) {
 		{name: "world writable", stat: unix.Stat_t{Mode: unix.S_IFDIR | 0o757, Uid: 1000}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := validateSystemdUnitDirectory(test.stat, 1000); err == nil {
+			if err := validateSystemdUnitDirectory(test.stat, 1000, false); err == nil {
 				t.Fatal("untrusted directory accepted")
 			}
 		})
+	}
+}
+
+func TestSystemdUnitDirectoryRejectsWritableAncestor(t *testing.T) {
+	root := trustedSystemdTempDir(t)
+	untrustedParent := filepath.Join(root, "writable-parent")
+	unitDir := filepath.Join(untrustedParent, "systemd-user")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(untrustedParent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSystemdUnitDirectory(unitDir, false); err == nil ||
+		!strings.Contains(err.Error(), "writable-parent") {
+		t.Fatalf("openSystemdUnitDirectory() error = %v, want untrusted ancestor", err)
 	}
 }
 
@@ -563,7 +583,15 @@ func TestSystemdUnitDirectoryDetectsPathReplacement(t *testing.T) {
 
 func trustedSystemdTempDir(t *testing.T) string {
 	t.Helper()
-	path := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := os.MkdirTemp(home, ".picoclaw-node-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatal(err)
 	}

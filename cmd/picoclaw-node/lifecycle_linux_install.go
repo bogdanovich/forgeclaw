@@ -258,36 +258,96 @@ func (lifecycle *systemdLifecycle) rollbackInstall(
 }
 
 func openSystemdUnitDirectory(path string, system bool) (*systemdUnitDirectory, error) {
-	_, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) && !system {
-		if err = os.MkdirAll(path, 0o755); err != nil {
-			return nil, fmt.Errorf("create systemd user unit directory: %w", err)
-		}
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) || cleanPath == string(filepath.Separator) {
+		return nil, errors.New("systemd unit directory must be an absolute non-root path")
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	expectedUID := uint32(os.Geteuid())
+	fd, err := unix.Open(
+		string(filepath.Separator),
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("open systemd unit directory: %w", err)
+		return nil, fmt.Errorf("open systemd unit directory root: %w", err)
 	}
-	file := os.NewFile(uintptr(fd), path)
-	var stat unix.Stat_t
-	if err = unix.Fstat(fd, &stat); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("inspect systemd unit directory: %w", err)
-	}
-	if err = validateSystemdUnitDirectory(stat, uint32(os.Geteuid())); err != nil {
-		_ = file.Close()
+	ownedFD := fd
+	defer func() {
+		if ownedFD >= 0 {
+			_ = unix.Close(ownedFD)
+		}
+	}()
+	if err = validateSystemdDirectoryFD(fd, string(filepath.Separator), expectedUID, true); err != nil {
 		return nil, err
 	}
+
+	currentPath := string(filepath.Separator)
+	components := strings.Split(strings.TrimPrefix(cleanPath, string(filepath.Separator)), string(filepath.Separator))
+	for index, component := range components {
+		nextPath := filepath.Join(currentPath, component)
+		nextFD, openErr := unix.Openat(
+			fd,
+			component,
+			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+			0,
+		)
+		if errors.Is(openErr, unix.ENOENT) && !system {
+			if mkdirErr := unix.Mkdirat(fd, component, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
+				return nil, fmt.Errorf("create systemd user unit directory component %s: %w", nextPath, mkdirErr)
+			}
+			nextFD, openErr = unix.Openat(
+				fd,
+				component,
+				unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+				0,
+			)
+		}
+		if openErr != nil {
+			return nil, fmt.Errorf("open systemd unit directory component %s: %w", nextPath, openErr)
+		}
+		isAncestor := index+1 < len(components)
+		if err = validateSystemdDirectoryFD(nextFD, nextPath, expectedUID, isAncestor); err != nil {
+			_ = unix.Close(nextFD)
+			return nil, err
+		}
+		_ = unix.Close(fd)
+		fd = nextFD
+		ownedFD = fd
+		currentPath = nextPath
+	}
+
+	var stat unix.Stat_t
+	if err = unix.Fstat(fd, &stat); err != nil {
+		return nil, fmt.Errorf("inspect systemd unit directory %s: %w", cleanPath, err)
+	}
+	file := os.NewFile(uintptr(fd), cleanPath)
+	ownedFD = -1
 	return &systemdUnitDirectory{
-		file: file, path: path, device: stat.Dev, inode: stat.Ino,
+		file: file, path: cleanPath, device: stat.Dev, inode: stat.Ino,
 	}, nil
 }
 
-func validateSystemdUnitDirectory(stat unix.Stat_t, expectedUID uint32) error {
+func validateSystemdDirectoryFD(
+	fd int,
+	path string,
+	expectedUID uint32,
+	allowRootOwner bool,
+) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fmt.Errorf("inspect systemd unit directory component %s: %w", path, err)
+	}
+	if err := validateSystemdUnitDirectory(stat, expectedUID, allowRootOwner); err != nil {
+		return fmt.Errorf("untrusted systemd unit directory component %s: %w", path, err)
+	}
+	return nil
+}
+
+func validateSystemdUnitDirectory(stat unix.Stat_t, expectedUID uint32, allowRootOwner bool) error {
 	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return fmt.Errorf("systemd unit directory has file type mode %#o, want directory", stat.Mode&unix.S_IFMT)
 	}
-	if stat.Uid != expectedUID {
+	if stat.Uid != expectedUID && !(allowRootOwner && stat.Uid == 0) {
 		return fmt.Errorf("systemd unit directory is owned by uid %d, want uid %d", stat.Uid, expectedUID)
 	}
 	if stat.Mode&0o022 != 0 {
