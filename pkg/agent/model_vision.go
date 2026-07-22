@@ -147,6 +147,37 @@ func (p *Pipeline) callFallbackCandidateWithCapabilities(
 	messages []providers.Message,
 	toolDefs []providers.ToolDefinition,
 ) (*providers.LLMResponse, error) {
+	return p.callCandidateWithCapabilities(
+		ctx,
+		ts,
+		exec,
+		candidate,
+		exec.model.candidateProviders,
+		exec.model.activeProvider,
+		messages,
+		toolDefs,
+		nil,
+	)
+}
+
+func (p *Pipeline) callCandidateWithCapabilities(
+	ctx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	candidate providers.FallbackCandidate,
+	candidateProviders map[string]providers.LLMProvider,
+	activeProvider providers.LLMProvider,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+	routePath map[string]struct{},
+) (*providers.LLMResponse, error) {
+	candidateKey := candidate.StableKey()
+	if _, found := routePath[candidateKey]; found {
+		return nil, fmt.Errorf("vision capability route cycle at %q", candidateKey)
+	}
+	nextPath := cloneVisionRoutePath(routePath)
+	nextPath[candidateKey] = struct{}{}
+
 	candidateConfig := p.activeModelConfig(
 		ts.agent.Workspace,
 		[]providers.FallbackCandidate{candidate},
@@ -159,8 +190,8 @@ func (p *Pipeline) callFallbackCandidateWithCapabilities(
 			ts,
 			exec,
 			candidate,
-			exec.model.candidateProviders,
-			exec.model.activeProvider,
+			candidateProviders,
+			activeProvider,
 			messages,
 			toolDefs,
 		)
@@ -191,7 +222,7 @@ func (p *Pipeline) callFallbackCandidateWithCapabilities(
 		callCtx context.Context,
 		visionCandidate providers.FallbackCandidate,
 	) (*providers.LLMResponse, error) {
-		return p.callResolvedFallbackCandidate(
+		return p.callCandidateWithCapabilities(
 			callCtx,
 			ts,
 			exec,
@@ -200,6 +231,7 @@ func (p *Pipeline) callFallbackCandidateWithCapabilities(
 			visionExecution.Provider,
 			messages,
 			toolDefs,
+			nextPath,
 		)
 	}
 	if len(visionExecution.Candidates) > 1 && p.Interaction.Fallback != nil {
@@ -217,6 +249,14 @@ func (p *Pipeline) callFallbackCandidateWithCapabilities(
 		return nil, fmt.Errorf("vision override %q resolved no candidates", visionModel)
 	}
 	return callVisionCandidate(ctx, visionExecution.Candidates[0])
+}
+
+func cloneVisionRoutePath(routePath map[string]struct{}) map[string]struct{} {
+	result := make(map[string]struct{}, len(routePath)+1)
+	for key := range routePath {
+		result[key] = struct{}{}
+	}
+	return result
 }
 
 func (p *Pipeline) callResolvedFallbackCandidate(

@@ -6187,7 +6187,7 @@ func TestProcessMessage_FallbackUsesPerCandidateProvider(t *testing.T) {
 	}
 }
 
-func TestProcessMessage_FallbackUsesCandidateVisionOverride(t *testing.T) {
+func TestProcessMessage_FallbackUsesNestedCandidateVisionOverrides(t *testing.T) {
 	workspace := t.TempDir()
 
 	primaryCalls := 0
@@ -6216,15 +6216,41 @@ func TestProcessMessage_FallbackUsesCandidateVisionOverride(t *testing.T) {
 	)
 	defer textFallbackServer.Close()
 
-	visionCalls := 0
-	visionServer := newStrictChatCompletionTestServer(
-		t,
-		"vision override",
-		"gemini-vision",
-		"beet",
-		&visionCalls,
+	visionPrimaryCalls := 0
+	visionPrimaryServer := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			visionPrimaryCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "vision rate limit exceeded",
+					"type":    "rate_limit_error",
+				},
+			})
+		}),
 	)
-	defer visionServer.Close()
+	defer visionPrimaryServer.Close()
+
+	visionTextFallbackCalls := 0
+	visionTextFallbackServer := newStrictChatCompletionTestServer(
+		t,
+		"vision text fallback",
+		"vision-text-fallback",
+		"nested hallucinated text-only reply",
+		&visionTextFallbackCalls,
+	)
+	defer visionTextFallbackServer.Close()
+
+	finalVisionCalls := 0
+	finalVisionServer := newStrictChatCompletionTestServer(
+		t,
+		"final vision override",
+		"final-vision",
+		"beet",
+		&finalVisionCalls,
+	)
+	defer finalVisionServer.Close()
 
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
@@ -6253,14 +6279,36 @@ func TestProcessMessage_FallbackUsesCandidateVisionOverride(t *testing.T) {
 				Workspace: workspace,
 				Enabled:   true,
 				Capabilities: &config.ModelCapabilities{
-					Vision: &config.ModelCapabilityOverride{Model: "vision-model"},
+					Vision: &config.ModelCapabilityOverride{
+						Model:     "vision-primary",
+						Fallbacks: []string{"vision-text-fallback"},
+					},
 				},
 			},
 			{
-				ModelName: "vision-model",
-				Model:     "openrouter/gemini-vision",
-				APIBase:   visionServer.URL,
-				APIKeys:   config.SimpleSecureStrings("vision-key"),
+				ModelName: "vision-primary",
+				Model:     "openrouter/vision-primary",
+				APIBase:   visionPrimaryServer.URL,
+				APIKeys:   config.SimpleSecureStrings("vision-primary-key"),
+				Workspace: workspace,
+				Enabled:   true,
+			},
+			{
+				ModelName: "vision-text-fallback",
+				Model:     "openrouter/vision-text-fallback",
+				APIBase:   visionTextFallbackServer.URL,
+				APIKeys:   config.SimpleSecureStrings("vision-text-key"),
+				Workspace: workspace,
+				Enabled:   true,
+				Capabilities: &config.ModelCapabilities{
+					Vision: &config.ModelCapabilityOverride{Model: "final-vision"},
+				},
+			},
+			{
+				ModelName: "final-vision",
+				Model:     "openrouter/final-vision",
+				APIBase:   finalVisionServer.URL,
+				APIKeys:   config.SimpleSecureStrings("final-vision-key"),
 				Workspace: workspace,
 				Enabled:   true,
 			},
@@ -6291,8 +6339,14 @@ func TestProcessMessage_FallbackUsesCandidateVisionOverride(t *testing.T) {
 	if textFallbackCalls != 0 {
 		t.Fatalf("text fallback calls = %d, want 0", textFallbackCalls)
 	}
-	if visionCalls != 1 {
-		t.Fatalf("vision override calls = %d, want 1", visionCalls)
+	if visionPrimaryCalls == 0 {
+		t.Fatal("vision primary server was never called")
+	}
+	if visionTextFallbackCalls != 0 {
+		t.Fatalf("vision text fallback calls = %d, want 0", visionTextFallbackCalls)
+	}
+	if finalVisionCalls != 1 {
+		t.Fatalf("final vision override calls = %d, want 1", finalVisionCalls)
 	}
 }
 
