@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const managedSystemdUnitMarker = "# Managed by ForgeClaw picoclaw-node lifecycle v1"
@@ -23,9 +24,11 @@ type systemdRunResult struct {
 type systemdRunner func(context.Context, bool, ...string) (systemdRunResult, error)
 
 type systemdLifecycle struct {
-	system  bool
-	unitDir string
-	run     systemdRunner
+	system            bool
+	unitDir           string
+	run               systemdRunner
+	publish           systemdPublisher
+	readinessInterval time.Duration
 }
 
 type systemdUnitState struct {
@@ -34,10 +37,11 @@ type systemdUnitState struct {
 }
 
 type systemdUnitProperties struct {
-	loadState    string
-	activeState  string
-	fragmentPath string
-	dropInPaths  string
+	loadState     string
+	activeState   string
+	fragmentPath  string
+	dropInPaths   string
+	unitFileState string
 }
 
 func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
@@ -49,7 +53,13 @@ func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
 		}
 		unitDir = filepath.Join(configDir, "systemd", "user")
 	}
-	return &systemdLifecycle{system: system, unitDir: unitDir, run: runSystemctl}, nil
+	return &systemdLifecycle{
+		system:            system,
+		unitDir:           unitDir,
+		run:               runSystemctl,
+		publish:           publishSystemdUnit,
+		readinessInterval: defaultReadinessInterval,
+	}, nil
 }
 
 func (lifecycle *systemdLifecycle) Status(
@@ -114,6 +124,7 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 		"--property=FragmentPath",
 		"--property=DropInPaths",
 		"--property=NeedDaemonReload",
+		"--property=UnitFileState",
 	}
 	result, err := lifecycle.run(ctx, lifecycle.system, args...)
 	if err != nil {
@@ -122,11 +133,12 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 	if result.ExitCode != 0 {
 		return systemdUnitProperties{}, systemdCommandError(result, args...)
 	}
-	properties := make(map[string]string, 5)
+	properties := make(map[string]string, 6)
 	for _, line := range strings.Split(result.Output, "\n") {
 		key, value, found := strings.Cut(line, "=")
 		if !found || (key != "LoadState" && key != "ActiveState" &&
-			key != "FragmentPath" && key != "DropInPaths" && key != "NeedDaemonReload") {
+			key != "FragmentPath" && key != "DropInPaths" && key != "NeedDaemonReload" &&
+			key != "UnitFileState") {
 			continue
 		}
 		if _, duplicate := properties[key]; duplicate {
@@ -139,9 +151,11 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 	fragmentPath, hasFragmentPath := properties["FragmentPath"]
 	dropInPaths, hasDropInPaths := properties["DropInPaths"]
 	needDaemonReload, hasNeedDaemonReload := properties["NeedDaemonReload"]
-	if !hasLoadState || !hasActiveState || !hasFragmentPath || !hasDropInPaths || !hasNeedDaemonReload {
+	unitFileState, hasUnitFileState := properties["UnitFileState"]
+	if !hasLoadState || !hasActiveState || !hasFragmentPath || !hasDropInPaths ||
+		!hasNeedDaemonReload || !hasUnitFileState {
 		return systemdUnitProperties{}, errors.New(
-			"systemctl show omitted LoadState, ActiveState, FragmentPath, DropInPaths, or NeedDaemonReload",
+			"systemctl show omitted a required unit property",
 		)
 	}
 	if needDaemonReload != "yes" && needDaemonReload != "no" {
@@ -158,7 +172,7 @@ func (lifecycle *systemdLifecycle) queryUnitProperties(
 	}
 	return systemdUnitProperties{
 		loadState: loadState, activeState: activeState,
-		fragmentPath: fragmentPath, dropInPaths: dropInPaths,
+		fragmentPath: fragmentPath, dropInPaths: dropInPaths, unitFileState: unitFileState,
 	}, nil
 }
 
@@ -198,7 +212,8 @@ func unownedSystemdUnitError(path string) error {
 
 func (properties systemdUnitProperties) missing() bool {
 	return properties.loadState == "not-found" && properties.activeState == "inactive" &&
-		properties.fragmentPath == "" && properties.dropInPaths == ""
+		properties.fragmentPath == "" && properties.dropInPaths == "" &&
+		(properties.unitFileState == "" || properties.unitFileState == "disabled")
 }
 
 func (properties systemdUnitProperties) resolvesTo(path string) bool {
@@ -210,10 +225,11 @@ func (properties systemdUnitProperties) resolvesTo(path string) bool {
 func resolvedSystemdServiceError(service string, properties systemdUnitProperties) error {
 	return fmt.Errorf(
 		"refusing systemd service %s resolved outside its managed unit "+
-			"(load state %q, active state %q, fragment %q, drop-ins %q)",
+			"(load state %q, active state %q, unit file state %q, fragment %q, drop-ins %q)",
 		service,
 		properties.loadState,
 		properties.activeState,
+		properties.unitFileState,
 		properties.fragmentPath,
 		properties.dropInPaths,
 	)

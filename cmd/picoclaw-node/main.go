@@ -25,12 +25,12 @@ func main() {
 
 func execute(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: picoclaw-node <run|status|version>")
+		return errors.New("usage: picoclaw-node <run|install|status|version>")
 	}
 	switch args[0] {
 	case "run":
 		return run(args[1:])
-	case "status":
+	case "install", "status":
 		return runServiceLifecycle(args[0], args[1:])
 	case "version":
 		fmt.Println(clientVersion())

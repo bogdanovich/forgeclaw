@@ -62,7 +62,34 @@ The first successful handshake creates
 `<state_dir>/identity.json` with owner-only permissions. Back up that file as a
 secret: replacing it creates a different node identity.
 
-## Service Status On Linux
+## Systemd Services On Linux
+
+Install a named systemd user service after creating its configuration:
+
+```bash
+picoclaw-node install \
+  --instance main \
+  --config ~/.picoclaw-node/main/config.json
+```
+
+System installation requires an absolute configuration path and an explicit
+unprivileged account:
+
+```bash
+sudo picoclaw-node install \
+  --system \
+  --instance vpn \
+  --config /etc/forgeclaw/vpn-node.json \
+  --service-user forgeclaw-node
+```
+
+Installation is create-only. It refuses an existing managed or administrator
+unit rather than replacing it. The installer serializes work per service,
+publishes the unit without replacement, starts it, and waits for a stable
+`active` state. A failed install removes only the exact unit created by that
+transaction. Reinstall, upgrade, and uninstall are separate lifecycle actions.
+The per-service lock coordinates ForgeClaw lifecycle commands; administrators
+must not edit or reload the same unit concurrently with an install transaction.
 
 Inspect a named systemd user service:
 
@@ -78,9 +105,9 @@ sudo picoclaw-node status --system --instance vpn
 
 Use `--json` for stable machine-readable output. Status is read-only and
 fail-closed: it refuses symlinked or unowned unit files, units resolved from a
-different systemd search path, and units modified by drop-ins. Create-only
-installation and removal are separate lifecycle transactions that follow in
-later releases. `run` remains available on every supported platform.
+different systemd search path, units modified by drop-ins, and stale systemd
+state awaiting `daemon-reload`. `run` remains available on every supported
+platform.
 
 ## Multiple Workspaces
 
