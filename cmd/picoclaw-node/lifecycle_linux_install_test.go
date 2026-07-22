@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type systemdCall struct {
@@ -28,7 +30,7 @@ func TestSystemdReadinessWindowExceedsRestartDelay(t *testing.T) {
 func TestSystemdLifecycleInstall(t *testing.T) {
 	var calls []systemdCall
 	showChecks := 0
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
@@ -85,7 +87,7 @@ func TestSystemdLifecycleInstall(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallRejectsShadowedPublishedUnit(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	showChecks := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
@@ -111,7 +113,7 @@ func TestSystemdLifecycleInstallRejectsShadowedPublishedUnit(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallIsCreateOnly(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	if err := os.WriteFile(unitPath, managedSystemdUnitData("previous unit"), 0o644); err != nil {
 		t.Fatal(err)
@@ -130,7 +132,7 @@ func TestSystemdLifecycleInstallIsCreateOnly(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallRejectsPreexistingEnablement(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(_ context.Context, _ bool, args ...string) (systemdRunResult, error) {
@@ -150,7 +152,7 @@ func TestSystemdLifecycleInstallRejectsPreexistingEnablement(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallPublicationDoesNotReplaceRacer(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	foreign := []byte("administrator unit\n")
 	lifecycle := &systemdLifecycle{
@@ -161,11 +163,17 @@ func TestSystemdLifecycleInstallPublicationDoesNotReplaceRacer(t *testing.T) {
 			}
 			return missingSystemdUnitResult(), nil
 		},
-		publish: func(path string, data []byte, mode os.FileMode) (publishedSystemdUnit, error) {
+		publish: func(
+			directory *systemdUnitDirectory,
+			name string,
+			data []byte,
+			mode os.FileMode,
+		) (publishedSystemdUnit, error) {
+			path := filepath.Join(directory.path, name)
 			if err := os.WriteFile(path, foreign, 0o640); err != nil {
 				t.Fatal(err)
 			}
-			return publishSystemdUnit(path, data, mode)
+			return publishSystemdUnit(directory, name, data, mode)
 		},
 	}
 	_, err := lifecycle.Install(t.Context(), installTestRequest())
@@ -179,7 +187,7 @@ func TestSystemdLifecycleInstallPublicationDoesNotReplaceRacer(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallRejectsUnitModifiedDuringReload(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	modified := []byte("modified during daemon reload\n")
 	lifecycle := &systemdLifecycle{
@@ -209,7 +217,7 @@ func TestSystemdLifecycleInstallRejectsUnitModifiedDuringReload(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallRollbackUsesFreshContext(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	daemonReloads := 0
 	lifecycle := &systemdLifecycle{
@@ -246,7 +254,7 @@ func TestSystemdLifecycleInstallRollbackUsesFreshContext(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallRollbackRefusesReplacement(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	replacement := []byte("administrator replacement\n")
 	daemonReloads := 0
@@ -259,11 +267,17 @@ func TestSystemdLifecycleInstallRollbackRefusesReplacement(t *testing.T) {
 			daemonReloads++
 			return systemdRunResult{Output: "reload failed", ExitCode: 1}, nil
 		},
-		publish: func(path string, data []byte, mode os.FileMode) (publishedSystemdUnit, error) {
-			publication, err := publishSystemdUnit(path, data, mode)
+		publish: func(
+			directory *systemdUnitDirectory,
+			name string,
+			data []byte,
+			mode os.FileMode,
+		) (publishedSystemdUnit, error) {
+			publication, err := publishSystemdUnit(directory, name, data, mode)
 			if err != nil {
 				return publication, err
 			}
+			path := filepath.Join(directory.path, name)
 			if err = os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
@@ -287,7 +301,7 @@ func TestSystemdLifecycleInstallRollbackRefusesReplacement(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallRollbackRefusesModifiedUnit(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	modified := []byte("modified in place\n")
 	lifecycle := &systemdLifecycle{
@@ -298,11 +312,17 @@ func TestSystemdLifecycleInstallRollbackRefusesModifiedUnit(t *testing.T) {
 			}
 			return systemdRunResult{Output: "reload failed", ExitCode: 1}, nil
 		},
-		publish: func(path string, data []byte, mode os.FileMode) (publishedSystemdUnit, error) {
-			publication, err := publishSystemdUnit(path, data, mode)
+		publish: func(
+			directory *systemdUnitDirectory,
+			name string,
+			data []byte,
+			mode os.FileMode,
+		) (publishedSystemdUnit, error) {
+			publication, err := publishSystemdUnit(directory, name, data, mode)
 			if err != nil {
 				return publication, err
 			}
+			path := filepath.Join(directory.path, name)
 			if err = os.WriteFile(path, modified, mode); err != nil {
 				t.Fatal(err)
 			}
@@ -320,7 +340,7 @@ func TestSystemdLifecycleInstallRollbackRefusesModifiedUnit(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallCleansCommittedPublicationFailure(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	daemonReloads := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
@@ -331,8 +351,13 @@ func TestSystemdLifecycleInstallCleansCommittedPublicationFailure(t *testing.T) 
 			daemonReloads++
 			return systemdRunResult{}, nil
 		},
-		publish: func(path string, data []byte, mode os.FileMode) (publishedSystemdUnit, error) {
-			publication, err := publishSystemdUnit(path, data, mode)
+		publish: func(
+			directory *systemdUnitDirectory,
+			name string,
+			data []byte,
+			mode os.FileMode,
+		) (publishedSystemdUnit, error) {
+			publication, err := publishSystemdUnit(directory, name, data, mode)
 			if err != nil {
 				return publication, err
 			}
@@ -353,7 +378,7 @@ func TestSystemdLifecycleInstallCleansCommittedPublicationFailure(t *testing.T) 
 }
 
 func TestSystemdLifecycleInstallRollsBackInactiveService(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	var calls []systemdCall
 	showChecks := 0
@@ -390,7 +415,7 @@ func TestSystemdLifecycleInstallRollsBackInactiveService(t *testing.T) {
 }
 
 func TestSystemdLifecycleInstallRollsBackFailedEnable(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	var calls []systemdCall
 	enabled := false
@@ -448,33 +473,101 @@ func TestSystemdLifecycleInstallRollsBackFailedEnable(t *testing.T) {
 }
 
 func TestSystemdInstallLockHonorsContext(t *testing.T) {
-	unitDir := t.TempDir()
-	lock, err := acquireSystemdUnitLock(t.Context(), unitDir, "picoclaw-node-main.service")
+	unitDir := trustedSystemdTempDir(t)
+	directory, err := openSystemdUnitDirectory(unitDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	lock, err := acquireSystemdUnitLock(t.Context(), directory, "picoclaw-node-main.service")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer lock.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 75*time.Millisecond)
 	defer cancel()
-	_, err = acquireSystemdUnitLock(ctx, unitDir, "picoclaw-node-main.service")
+	_, err = acquireSystemdUnitLock(ctx, directory, "picoclaw-node-main.service")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second lock error = %v", err)
 	}
 }
 
 func TestSystemdInstallLockRejectsSymlink(t *testing.T) {
-	unitDir := t.TempDir()
+	unitDir := trustedSystemdTempDir(t)
+	directory, err := openSystemdUnitDirectory(unitDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
 	target := filepath.Join(unitDir, "target")
-	if err := os.WriteFile(target, nil, 0o600); err != nil {
+	if err = os.WriteFile(target, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(unitDir, ".picoclaw-node-main.service.install.lock")
-	if err := os.Symlink(target, lockPath); err != nil {
+	if err = os.Symlink(target, lockPath); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := acquireSystemdUnitLock(t.Context(), unitDir, "picoclaw-node-main.service"); err == nil {
+	if _, err = acquireSystemdUnitLock(t.Context(), directory, "picoclaw-node-main.service"); err == nil {
 		t.Fatal("acquireSystemdUnitLock() accepted a symlink")
 	}
+}
+
+func TestSystemdUnitDirectoryTrust(t *testing.T) {
+	trusted := unix.Stat_t{Mode: unix.S_IFDIR | 0o755, Uid: 1000}
+	if err := validateSystemdUnitDirectory(trusted, 1000); err != nil {
+		t.Fatalf("trusted directory rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name string
+		stat unix.Stat_t
+	}{
+		{name: "foreign owner", stat: unix.Stat_t{Mode: unix.S_IFDIR | 0o755, Uid: 1001}},
+		{name: "group writable", stat: unix.Stat_t{Mode: unix.S_IFDIR | 0o775, Uid: 1000}},
+		{name: "world writable", stat: unix.Stat_t{Mode: unix.S_IFDIR | 0o757, Uid: 1000}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateSystemdUnitDirectory(test.stat, 1000); err == nil {
+				t.Fatal("untrusted directory accepted")
+			}
+		})
+	}
+}
+
+func TestSystemdUnitDirectoryDetectsPathReplacement(t *testing.T) {
+	root := trustedSystemdTempDir(t)
+	unitDir := filepath.Join(root, "systemd-user")
+	if err := os.Mkdir(unitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := openSystemdUnitDirectory(unitDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+
+	moved := filepath.Join(root, "systemd-user-original")
+	if err = os.Rename(unitDir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(unitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := directory.matchesPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches {
+		t.Fatal("pinned systemd directory accepted a replacement at its original path")
+	}
+}
+
+func trustedSystemdTempDir(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir()
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestRenderSystemdSystemUnit(t *testing.T) {

@@ -30,13 +30,21 @@ const (
 )
 
 type publishedSystemdUnit struct {
+	directory *systemdUnitDirectory
+	name      string
+	data      []byte
+	device    uint64
+	inode     uint64
+}
+
+type systemdPublisher func(*systemdUnitDirectory, string, []byte, os.FileMode) (publishedSystemdUnit, error)
+
+type systemdUnitDirectory struct {
+	file   *os.File
 	path   string
-	data   []byte
 	device uint64
 	inode  uint64
 }
-
-type systemdPublisher func(string, []byte, os.FileMode) (publishedSystemdUnit, error)
 
 type systemdUnitLock struct {
 	file *os.File
@@ -47,16 +55,18 @@ func (lifecycle *systemdLifecycle) Install(
 	request lifecycleRequest,
 ) (lifecycleStatus, error) {
 	status := lifecycle.baseStatus(request.Instance)
-	if err := ensureSystemdUnitDirectory(lifecycle.unitDir, lifecycle.system); err != nil {
+	directory, err := openSystemdUnitDirectory(lifecycle.unitDir, lifecycle.system)
+	if err != nil {
 		return lifecycleStatus{}, err
 	}
-	lock, err := acquireSystemdUnitLock(ctx, lifecycle.unitDir, status.Service)
+	defer directory.Close()
+	lock, err := acquireSystemdUnitLock(ctx, directory, status.Service)
 	if err != nil {
 		return lifecycleStatus{}, err
 	}
 	defer func() { _ = lock.Close() }()
 
-	unitState, err := captureSystemdUnit(status.UnitPath)
+	unitState, err := captureSystemdUnitAt(directory, status.Service)
 	if err != nil {
 		return lifecycleStatus{}, err
 	}
@@ -85,10 +95,10 @@ func (lifecycle *systemdLifecycle) Install(
 	if publish == nil {
 		publish = publishSystemdUnit
 	}
-	publication, err := publish(status.UnitPath, []byte(unit), 0o644)
+	publication, err := publish(directory, status.Service, []byte(unit), 0o644)
 	if err != nil {
 		cause := fmt.Errorf("publish systemd unit: %w", err)
-		if publication.path != "" {
+		if publication.name != "" {
 			return lifecycleStatus{}, lifecycle.rollbackInstall(publication, status, false, false, cause)
 		}
 		return lifecycleStatus{}, cause
@@ -247,34 +257,116 @@ func (lifecycle *systemdLifecycle) rollbackInstall(
 	return errors.Join(errorsSeen...)
 }
 
-func ensureSystemdUnitDirectory(path string, system bool) error {
-	info, err := os.Lstat(path)
+func openSystemdUnitDirectory(path string, system bool) (*systemdUnitDirectory, error) {
+	_, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) && !system {
 		if err = os.MkdirAll(path, 0o755); err != nil {
-			return fmt.Errorf("create systemd user unit directory: %w", err)
+			return nil, fmt.Errorf("create systemd user unit directory: %w", err)
 		}
-		info, err = os.Lstat(path)
 	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return fmt.Errorf("inspect systemd unit directory: %w", err)
+		return nil, fmt.Errorf("open systemd unit directory: %w", err)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("systemd unit directory is not a real directory")
+	file := os.NewFile(uintptr(fd), path)
+	var stat unix.Stat_t
+	if err = unix.Fstat(fd, &stat); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("inspect systemd unit directory: %w", err)
+	}
+	if err = validateSystemdUnitDirectory(stat, uint32(os.Geteuid())); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &systemdUnitDirectory{
+		file: file, path: path, device: stat.Dev, inode: stat.Ino,
+	}, nil
+}
+
+func validateSystemdUnitDirectory(stat unix.Stat_t, expectedUID uint32) error {
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return fmt.Errorf("systemd unit directory has file type mode %#o, want directory", stat.Mode&unix.S_IFMT)
+	}
+	if stat.Uid != expectedUID {
+		return fmt.Errorf("systemd unit directory is owned by uid %d, want uid %d", stat.Uid, expectedUID)
+	}
+	if stat.Mode&0o022 != 0 {
+		return fmt.Errorf("systemd unit directory mode %#o is group/world writable", stat.Mode&0o7777)
 	}
 	return nil
 }
 
+func (directory *systemdUnitDirectory) Close() error {
+	if directory == nil || directory.file == nil {
+		return nil
+	}
+	return directory.file.Close()
+}
+
+func (directory *systemdUnitDirectory) fd() int {
+	return int(directory.file.Fd())
+}
+
+func (directory *systemdUnitDirectory) matchesPath() (bool, error) {
+	fd, err := unix.Open(
+		directory.path,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
+	if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ELOOP) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err = unix.Fstat(fd, &stat); err != nil {
+		return false, err
+	}
+	return stat.Dev == directory.device && stat.Ino == directory.inode, nil
+}
+
+func captureSystemdUnitAt(directory *systemdUnitDirectory, name string) (systemdUnitState, error) {
+	fd, err := unix.Openat(directory.fd(), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return systemdUnitState{}, nil
+	}
+	if err != nil {
+		return systemdUnitState{}, fmt.Errorf("inspect existing systemd unit: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(directory.path, name))
+	defer file.Close()
+	var stat unix.Stat_t
+	if err = unix.Fstat(fd, &stat); err != nil {
+		return systemdUnitState{}, fmt.Errorf("inspect existing systemd unit: %w", err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size > maximumManagedUnitSize {
+		return systemdUnitState{}, errors.New("existing systemd unit is not a bounded regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maximumManagedUnitSize+1))
+	if err != nil {
+		return systemdUnitState{}, fmt.Errorf("read existing systemd unit: %w", err)
+	}
+	return systemdUnitState{exists: true, managed: hasSystemdUnitMarker(data)}, nil
+}
+
 func acquireSystemdUnitLock(
 	ctx context.Context,
-	unitDir string,
+	directory *systemdUnitDirectory,
 	service string,
 ) (*systemdUnitLock, error) {
-	path := filepath.Join(unitDir, "."+service+".install.lock")
-	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	name := "." + service + ".install.lock"
+	fd, err := unix.Openat(
+		directory.fd(),
+		name,
+		unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0o600,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("open systemd install lock: %w", err)
 	}
-	file := os.NewFile(uintptr(fd), path)
+	file := os.NewFile(uintptr(fd), filepath.Join(directory.path, name))
 	var stat unix.Stat_t
 	if err = unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
 		_ = file.Close()
@@ -322,17 +414,29 @@ func waitContext(ctx context.Context, delay time.Duration) error {
 }
 
 func publishSystemdUnit(
-	path string,
+	directory *systemdUnitDirectory,
+	name string,
 	data []byte,
 	mode os.FileMode,
 ) (publication publishedSystemdUnit, retErr error) {
-	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	id, err := newInstallTransactionID()
 	if err != nil {
 		return publication, err
 	}
-	tempPath := temp.Name()
+	tempName := "." + name + ".tmp-" + id
+	fd, err := unix.Openat(
+		directory.fd(),
+		tempName,
+		unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0o600,
+	)
+	if err != nil {
+		return publication, err
+	}
+	temp := os.NewFile(uintptr(fd), filepath.Join(directory.path, tempName))
 	defer func() {
-		if cleanupErr := os.Remove(tempPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+		cleanupErr := unix.Unlinkat(directory.fd(), tempName, 0)
+		if cleanupErr != nil && !errors.Is(cleanupErr, unix.ENOENT) {
 			retErr = errors.Join(retErr, fmt.Errorf("remove temporary unit: %w", cleanupErr))
 		}
 	}()
@@ -344,7 +448,7 @@ func publishSystemdUnit(
 	}
 	var stat unix.Stat_t
 	if err == nil {
-		err = unix.Fstat(int(temp.Fd()), &stat)
+		err = unix.Fstat(fd, &stat)
 	}
 	closeErr := temp.Close()
 	if err == nil {
@@ -353,34 +457,46 @@ func publishSystemdUnit(
 	if err != nil {
 		return publication, err
 	}
-	if err = os.Link(tempPath, path); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return publication, fmt.Errorf("systemd unit %s appeared during install", path)
+	if err = unix.Linkat(directory.fd(), tempName, directory.fd(), name, 0); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return publication, fmt.Errorf(
+				"systemd unit %s appeared during install",
+				filepath.Join(directory.path, name),
+			)
 		}
 		return publication, err
 	}
 	publication = publishedSystemdUnit{
-		path: path, data: append([]byte(nil), data...),
+		directory: directory, name: name, data: append([]byte(nil), data...),
 		device: stat.Dev, inode: stat.Ino,
 	}
-	if err = os.Remove(tempPath); err != nil {
+	if err = unix.Unlinkat(directory.fd(), tempName, 0); err != nil {
 		return publication, err
 	}
-	if err = syncDirectory(filepath.Dir(path)); err != nil {
+	if err = unix.Fsync(directory.fd()); err != nil {
 		return publication, err
 	}
 	return publication, nil
 }
 
 func publishedSystemdUnitMatches(publication publishedSystemdUnit) (bool, error) {
-	fd, err := unix.Open(publication.path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	directoryMatches, err := publication.directory.matchesPath()
+	if err != nil || !directoryMatches {
+		return false, err
+	}
+	fd, err := unix.Openat(
+		publication.directory.fd(),
+		publication.name,
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
 	if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ELOOP) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	file := os.NewFile(uintptr(fd), publication.path)
+	file := os.NewFile(uintptr(fd), filepath.Join(publication.directory.path, publication.name))
 	defer file.Close()
 	var stat unix.Stat_t
 	if err = unix.Fstat(fd, &stat); err != nil {
@@ -413,27 +529,27 @@ func quarantinePublishedSystemdUnit(publication publishedSystemdUnit) (published
 	if err != nil {
 		return publishedSystemdUnit{}, err
 	}
-	quarantinePath := publication.path + ".rollback-" + id
+	quarantineName := publication.name + ".rollback-" + id
 	if err = unix.Renameat2(
-		unix.AT_FDCWD,
-		publication.path,
-		unix.AT_FDCWD,
-		quarantinePath,
+		publication.directory.fd(),
+		publication.name,
+		publication.directory.fd(),
+		quarantineName,
 		unix.RENAME_NOREPLACE,
 	); err != nil {
 		return publishedSystemdUnit{}, fmt.Errorf("quarantine failed systemd unit: %w", err)
 	}
 	quarantined := publication
-	quarantined.path = quarantinePath
+	quarantined.name = quarantineName
 	owned, verifyErr := publishedSystemdUnitMatches(quarantined)
 	if verifyErr == nil && owned {
 		return quarantined, nil
 	}
 	restoreErr := unix.Renameat2(
-		unix.AT_FDCWD,
-		quarantinePath,
-		unix.AT_FDCWD,
-		publication.path,
+		publication.directory.fd(),
+		quarantineName,
+		publication.directory.fd(),
+		publication.name,
 		unix.RENAME_NOREPLACE,
 	)
 	ownershipErr := errors.New("rollback refused: systemd unit is no longer the installed transaction")
@@ -443,7 +559,11 @@ func quarantinePublishedSystemdUnit(publication publishedSystemdUnit) (published
 	if restoreErr != nil {
 		ownershipErr = errors.Join(
 			ownershipErr,
-			fmt.Errorf("restore foreign systemd unit from %s: %w", quarantinePath, restoreErr),
+			fmt.Errorf(
+				"restore foreign systemd unit from %s: %w",
+				filepath.Join(publication.directory.path, quarantineName),
+				restoreErr,
+			),
 		)
 	}
 	return publishedSystemdUnit{}, ownershipErr
@@ -457,19 +577,10 @@ func removeQuarantinedSystemdUnit(publication publishedSystemdUnit) error {
 	if !owned {
 		return errors.New("rollback refused: quarantined unit no longer matches the installed transaction")
 	}
-	if err = os.Remove(publication.path); err != nil {
+	if err = unix.Unlinkat(publication.directory.fd(), publication.name, 0); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(publication.path))
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return unix.Fsync(publication.directory.fd())
 }
 
 func newInstallTransactionID() (string, error) {
