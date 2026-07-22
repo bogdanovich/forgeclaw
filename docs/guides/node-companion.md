@@ -62,6 +62,26 @@ The first successful handshake creates
 `<state_dir>/identity.json` with owner-only permissions. Back up that file as a
 secret: replacing it creates a different node identity.
 
+## Service Status On Linux
+
+Inspect a named systemd user service:
+
+```bash
+picoclaw-node status --instance main
+```
+
+System-service status is explicit:
+
+```bash
+sudo picoclaw-node status --system --instance vpn
+```
+
+Use `--json` for stable machine-readable output. Status is read-only and
+fail-closed: it refuses symlinked or unowned unit files, units resolved from a
+different systemd search path, and units modified by drop-ins. Create-only
+installation and removal are separate lifecycle transactions that follow in
+later releases. `run` remains available on every supported platform.
+
 ## Multiple Workspaces
 
 The MVP uses one gateway binding per process. Run named service instances from
