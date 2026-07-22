@@ -89,7 +89,25 @@ publishes the unit without replacement, starts it, and waits for a stable
 `active` state. A failed install removes only the exact unit created by that
 transaction. Reinstall, upgrade, and uninstall are separate lifecycle actions.
 The per-service lock coordinates ForgeClaw lifecycle commands; administrators
-must not edit or reload the same unit concurrently with an install transaction.
+must not edit or reload the same unit concurrently with a lifecycle transaction.
+
+Remove a managed user service:
+
+```bash
+picoclaw-node uninstall --instance main
+```
+
+System-service removal is explicit:
+
+```bash
+sudo picoclaw-node uninstall --system --instance vpn
+```
+
+Uninstall is idempotent when both the managed unit and its systemd registration
+are absent. It refuses administrator units, units resolved from another path,
+drop-ins, and unsupported enablement states. The command disables and stops the
+verified service before removing it. If removal cannot be committed, it restores
+the exact unit and its prior persistent enablement and active state when safe.
 
 Inspect a named systemd user service:
 
@@ -103,7 +121,8 @@ System-service status is explicit:
 sudo picoclaw-node status --system --instance vpn
 ```
 
-Use `--json` for stable machine-readable output. Status is read-only and
+Use `--json` for stable machine-readable output from install, uninstall, and
+status. Status is read-only and
 fail-closed: it refuses symlinked or unowned unit files, units resolved from a
 different systemd search path, units modified by drop-ins, and stale systemd
 state awaiting `daemon-reload`. `run` remains available on every supported

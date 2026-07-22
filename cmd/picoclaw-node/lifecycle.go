@@ -52,11 +52,12 @@ type lifecycleStatus struct {
 
 type serviceLifecycle interface {
 	Install(context.Context, lifecycleRequest) (lifecycleStatus, error)
+	Uninstall(context.Context, lifecycleRequest) (lifecycleStatus, error)
 	Status(context.Context, lifecycleRequest) (lifecycleStatus, error)
 }
 
 func runServiceLifecycle(action string, args []string) error {
-	if action != "install" && action != "status" {
+	if action != "install" && action != "uninstall" && action != "status" {
 		return fmt.Errorf("unsupported service action %q", action)
 	}
 	flags := flag.NewFlagSet(action, flag.ContinueOnError)
@@ -126,6 +127,8 @@ func runServiceLifecycle(action string, args []string) error {
 	switch action {
 	case "install":
 		status, err = lifecycle.Install(ctx, request)
+	case "uninstall":
+		status, err = lifecycle.Uninstall(ctx, request)
 	case "status":
 		status, err = lifecycle.Status(ctx, request)
 	}

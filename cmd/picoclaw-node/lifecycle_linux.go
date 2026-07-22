@@ -28,12 +28,14 @@ type systemdLifecycle struct {
 	unitDir           string
 	run               systemdRunner
 	publish           systemdPublisher
+	remove            systemdRemover
 	readinessInterval time.Duration
 }
 
 type systemdUnitState struct {
-	exists  bool
-	managed bool
+	exists      bool
+	managed     bool
+	publication publishedSystemdUnit
 }
 
 type systemdUnitProperties struct {

@@ -23,6 +23,9 @@ func TestNodeServiceInstanceValidation(t *testing.T) {
 	if err := runServiceLifecycle("status", []string{"--instance", "../main"}); err == nil {
 		t.Fatal("status accepted an unsafe instance")
 	}
+	if err := runServiceLifecycle("uninstall", []string{"--instance", "../main"}); err == nil {
+		t.Fatal("uninstall accepted an unsafe instance")
+	}
 }
 
 func TestSystemInstallRequiresExplicitConfigurationAndUser(t *testing.T) {
