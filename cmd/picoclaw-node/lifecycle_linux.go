@@ -218,6 +218,9 @@ func runSystemctl(ctx context.Context, system bool, args ...string) (systemdRunR
 	if err == nil {
 		return result, nil
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return systemdRunResult{}, fmt.Errorf("run systemctl: %w", ctxErr)
+	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()

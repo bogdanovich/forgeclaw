@@ -4,11 +4,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSystemdLifecycleStatus(t *testing.T) {
@@ -190,6 +192,22 @@ func TestSystemdLifecycleStatusRefusesUnownedUnit(t *testing.T) {
 	}
 	if string(got) != string(unowned) {
 		t.Fatalf("status changed unowned unit: %q", got)
+	}
+}
+
+func TestRunSystemctlPreservesContextDeadline(t *testing.T) {
+	binDir := t.TempDir()
+	systemctlPath := filepath.Join(binDir, "systemctl")
+	if err := os.WriteFile(systemctlPath, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := runSystemctl(ctx, false, "show", "test.service")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runSystemctl() error = %v, want context deadline", err)
 	}
 }
 
