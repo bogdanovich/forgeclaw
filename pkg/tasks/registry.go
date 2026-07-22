@@ -222,6 +222,11 @@ type Snapshot struct {
 	Events []TaskEvent `json:"events,omitempty"`
 }
 
+type registryState struct {
+	records map[string]Record
+	events  []TaskEvent
+}
+
 // Stats describes the current durable registry state and the retention limits
 // that apply to it. Protected records are active, non-terminal, or have not
 // reached a final delivery state, so retention never removes them.
@@ -343,6 +348,7 @@ func (r *Registry) Upsert(rec Record) error {
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	r.records[rec.TaskID] = rec
 	r.appendEventLocked(rec, EventTaskUpserted, now, map[string]string{
@@ -352,6 +358,9 @@ func (r *Registry) Upsert(rec Record) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
+	if err != nil {
+		r.restoreStateLocked(rollbackState)
+	}
 	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
 	if drainNotifications {
@@ -369,6 +378,7 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -389,6 +399,9 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(rec.LastEventAt)
 	err := r.saveLocked()
+	if err != nil {
+		r.restoreStateLocked(rollbackState)
+	}
 	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
 	if drainNotifications {
@@ -406,6 +419,7 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -417,6 +431,9 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
+	if err != nil {
+		r.restoreStateLocked(rollbackState)
+	}
 	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
 	if drainNotifications {
@@ -607,6 +624,7 @@ func (r *Registry) updateInteractionProjection(
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -629,6 +647,9 @@ func (r *Registry) updateInteractionProjection(
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err = r.saveLocked()
+	if err != nil {
+		r.restoreStateLocked(rollbackState)
+	}
 	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
 	if drainNotifications {
@@ -720,6 +741,7 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 		r.mu.Unlock()
 		return 0, err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
@@ -759,6 +781,10 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	if changed > 0 {
 		r.pruneLocked(now)
 		err = r.saveLocked()
+		if err != nil {
+			r.restoreStateLocked(rollbackState)
+			changed = 0
+		}
 	}
 	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
@@ -784,6 +810,7 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 		r.mu.Unlock()
 		return 0, err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	for id, rec := range r.records {
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
@@ -813,6 +840,10 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	if changed > 0 {
 		r.pruneLocked(now)
 		err = r.saveLocked()
+		if err != nil {
+			r.restoreStateLocked(rollbackState)
+			changed = 0
+		}
 	}
 	drainNotifications := err == nil && r.queueNotificationsLocked(newEvents)
 	r.mu.Unlock()
@@ -1133,6 +1164,23 @@ func (r *Registry) snapshotLocked() Snapshot {
 		return events[i].EventID < events[j].EventID
 	})
 	return Snapshot{Tasks: tasks, Events: events}
+}
+
+func (r *Registry) captureStateLocked() registryState {
+	records := make(map[string]Record, len(r.records))
+	for id, record := range r.records {
+		records[id] = cloneTaskRecord(record)
+	}
+	events := make([]TaskEvent, len(r.events))
+	for i := range r.events {
+		events[i] = cloneTaskEvent(r.events[i])
+	}
+	return registryState{records: records, events: events}
+}
+
+func (r *Registry) restoreStateLocked(state registryState) {
+	r.records = state.records
+	r.events = state.events
 }
 
 func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int64) {

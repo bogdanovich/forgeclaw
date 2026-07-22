@@ -37,11 +37,12 @@ func TestRegistryEventObserverRunsAfterDurableWriteAndCanUnsubscribe(t *testing.
 }
 
 func TestRegistryDoesNotNotifyObserverWhenPersistenceFails(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "initial", "tasks.json"))
 	badParent := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(badParent, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewRegistry(filepath.Join(badParent, "tasks.json"))
+	registry.store = filepath.Join(badParent, "tasks.json")
 	called := false
 	registry.SubscribeEvents(func(EventObservation) { called = true })
 	if err := registry.Upsert(Record{TaskID: "task-1", Task: "test"}); err == nil {
@@ -55,6 +56,56 @@ func TestRegistryDoesNotNotifyObserverWhenPersistenceFails(t *testing.T) {
 			"failed commit observer state: queued=%d notifying=%v",
 			len(registry.notifications), registry.notifying,
 		)
+	}
+	if records := registry.List(); len(records) != 0 {
+		t.Fatalf("failed write left records in memory: %#v", records)
+	}
+	if events := registry.ListEvents(""); len(events) != 0 {
+		t.Fatalf("failed write left events in memory: %#v", events)
+	}
+	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		if observation.Event.TaskID == "task-1" {
+			t.Error("failed write became a live observation")
+		}
+	})
+	t.Cleanup(unsubscribe)
+	if len(snapshot.Records) != 0 || len(snapshot.Events) != 0 {
+		t.Fatalf("failed write leaked through snapshot: %#v", snapshot)
+	}
+	registry.store = filepath.Join(t.TempDir(), "recovered", "tasks.json")
+	if err := registry.Upsert(Record{TaskID: "task-2", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := registry.Get("task-1"); exists {
+		t.Fatal("failed task became durable after later successful write")
+	}
+}
+
+func TestRegistryRollsBackNestedUpdateAfterPersistenceFailure(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "existing", Task: "test", Status: StatusRunning,
+		Deliverable: &DeliverablePayload{Metadata: map[string]string{"state": "original"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	badParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(badParent, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry.store = filepath.Join(badParent, "tasks.json")
+	if err := registry.Update("existing", func(record *Record) {
+		record.Status = StatusSucceeded
+		record.Deliverable.Metadata["state"] = "speculative"
+	}); err == nil {
+		t.Fatal("expected persistence error")
+	}
+	record, _ := registry.Get("existing")
+	events := registry.ListEvents("existing")
+	if record.Status != StatusRunning || record.Deliverable.Metadata["state"] != "original" ||
+		len(events) != 1 || events[0].Type != EventTaskUpserted {
+		t.Fatalf("state after rollback: record=%#v events=%#v", record, events)
 	}
 }
 
