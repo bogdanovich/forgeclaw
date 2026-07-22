@@ -217,6 +217,14 @@ Replace the generic agent capture manager with small source owners:
 - a coordinator owns configuration reload, projector lifetime, and the shared
   writer, but no domain correlation maps.
 
+Task records and events carry a runtime-owned opaque generation ID assigned on
+every task upsert. The ID is durable, immutable through task updates, and
+independent of timestamps, task IDs, retained event sequence, and event
+retention. Task event sequence is local to `(task_id, generation_id)`, and event
+identity includes both values. A task projector keys a trace segment by
+workspace and generation ID; it never reconstructs task incarnation from the
+first retained event or from `CreatedAt`.
+
 The interaction projector has one deterministic builder:
 
 ```go

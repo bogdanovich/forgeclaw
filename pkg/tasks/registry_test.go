@@ -54,6 +54,170 @@ func TestRegistryPersistsAndReloadsRecords(t *testing.T) {
 	}
 }
 
+func TestRegistryOwnsDurableGenerationIdentity(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "task-generation", GenerationID: "caller-controlled", Task: "test",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	record, ok := registry.Get("task-generation")
+	if !ok || record.GenerationID == "" || record.GenerationID == "caller-controlled" {
+		t.Fatalf("runtime-owned generation = %#v", record)
+	}
+	generationID := record.GenerationID
+	events := registry.ListEvents("task-generation")
+	if len(events) != 1 || events[0].GenerationID != generationID {
+		t.Fatalf("initial events = %#v", events)
+	}
+	if !strings.Contains(events[0].EventID, generationID) {
+		t.Fatalf("event ID %q does not bind generation %q", events[0].EventID, generationID)
+	}
+	if err := registry.Update("task-generation", func(record *Record) {
+		record.GenerationID = "mutated"
+		record.ProgressSummary = "working"
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	record, _ = registry.Get("task-generation")
+	if record.GenerationID != generationID {
+		t.Fatalf("generation after mutation = %q, want %q", record.GenerationID, generationID)
+	}
+	reloaded := NewRegistry(store)
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	record, _ = reloaded.Get("task-generation")
+	if record.GenerationID != generationID {
+		t.Fatalf("reloaded generation = %q, want %q", record.GenerationID, generationID)
+	}
+	for _, event := range reloaded.ListEvents("task-generation") {
+		if event.GenerationID != generationID {
+			t.Fatalf("event generation = %q, want %q", event.GenerationID, generationID)
+		}
+	}
+}
+
+func TestRegistrySeparatesReusedTaskGenerationsAfterEventRetention(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxEvents: 1})
+	upsert := func() (Record, TaskEvent) {
+		t.Helper()
+		if err := registry.Upsert(Record{
+			TaskID: "reused", CreatedAt: 1_000, Task: "test",
+		}); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		record, _ := registry.Get("reused")
+		events := registry.ListEvents("reused")
+		return record, events[len(events)-1]
+	}
+	firstRecord, firstUpsert := upsert()
+	if err := registry.AppendEvent("reused", EventTaskProgress, nil); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	secondRecord, secondUpsert := upsert()
+
+	if firstRecord.GenerationID == secondRecord.GenerationID {
+		t.Fatalf("reused task generations share ID %q", firstRecord.GenerationID)
+	}
+	if firstUpsert.EventID == secondUpsert.EventID {
+		t.Fatalf("reused task upserts share event ID %q", firstUpsert.EventID)
+	}
+	if firstUpsert.Seq != 1 || secondUpsert.Seq != 1 {
+		t.Fatalf("generation-local sequences = %d, %d; want 1, 1", firstUpsert.Seq, secondUpsert.Seq)
+	}
+	if secondUpsert.GenerationID != secondRecord.GenerationID {
+		t.Fatalf("second upsert generation = %q, want %q", secondUpsert.GenerationID, secondRecord.GenerationID)
+	}
+}
+
+func TestRegistryRejectsSnapshotsWithoutGenerationIdentity(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "task_registry.json")
+	data, err := json.Marshal(Snapshot{Tasks: []Record{{TaskID: "legacy"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(store)
+	if err := registry.LastLoadError(); err == nil || !strings.Contains(err.Error(), "generation_id") {
+		t.Fatalf("LastLoadError = %v, want missing generation_id", err)
+	}
+}
+
+func TestRegistryRejectsSnapshotTransactionally(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "task_registry.json")
+	snapshot := Snapshot{Tasks: []Record{
+		{TaskID: "valid-prefix", GenerationID: "generation-valid", LastEventSeq: 1},
+		{TaskID: "invalid-suffix"},
+	}}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writeErr := os.WriteFile(store, data, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	registry := NewRegistry(store)
+	if loadErr := registry.LastLoadError(); loadErr == nil {
+		t.Fatal("LastLoadError = nil, want invalid snapshot")
+	}
+	if records := registry.List(); len(records) != 0 {
+		t.Fatalf("partially published records = %#v", records)
+	}
+	if upsertErr := registry.Upsert(Record{TaskID: "must-not-overwrite", Task: "test"}); upsertErr == nil ||
+		!strings.Contains(upsertErr.Error(), "read-only after load failure") {
+		t.Fatalf("Upsert error = %v, want read-only load failure", upsertErr)
+	}
+	after, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(data) {
+		t.Fatal("invalid snapshot was rewritten after partial load")
+	}
+}
+
+func TestRegistrySequenceSurvivesEventRetentionAndReload(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{MaxEvents: 1})
+	if err := registry.Upsert(Record{TaskID: "retained-generation", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.AppendEvent("retained-generation", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	before := registry.ListEvents("retained-generation")
+	if len(before) != 1 || before[0].Seq != 2 {
+		t.Fatalf("events before reload = %#v, want retained sequence 2", before)
+	}
+
+	reloaded := NewRegistryWithOptions(store, Options{MaxEvents: 1})
+	if err := reloaded.LastLoadError(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if err := reloaded.AppendEvent("retained-generation", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	after := reloaded.ListEvents("retained-generation")
+	if len(after) != 1 || after[0].Seq != 3 {
+		t.Fatalf("events after reload = %#v, want retained sequence 3", after)
+	}
+	if after[0].EventID == before[0].EventID {
+		t.Fatalf("event ID reused after retention: %q", after[0].EventID)
+	}
+	if after[0].Fingerprint == before[0].Fingerprint {
+		t.Fatalf("fingerprint reused after retention: %q", after[0].Fingerprint)
+	}
+	record, _ := reloaded.Get("retained-generation")
+	if record.LastEventSeq != 3 {
+		t.Fatalf("LastEventSeq = %d, want 3", record.LastEventSeq)
+	}
+}
+
 func TestRegistryProjectsDurableInteractionLifecycle(t *testing.T) {
 	registry := NewRegistry("")
 	if err := registry.Upsert(Record{
@@ -623,6 +787,7 @@ func TestRegistryPrunesOrphanEventsWhenSnapshotHasNoTasks(t *testing.T) {
 		EventID:       "event-orphan",
 		SchemaVersion: TaskEventSchemaVersion,
 		TaskID:        "deleted-task",
+		GenerationID:  "generation-orphan",
 		Type:          EventTaskUpdated,
 		EmittedAt:     time.Now().UnixMilli(),
 	}}}
