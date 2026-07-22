@@ -220,18 +220,23 @@ func (lifecycle *systemdLifecycle) rollbackInstall(
 			return errors.Join(cause, fmt.Errorf("rollback service ownership: %w", err))
 		}
 	}
-	quarantined, err := quarantinePublishedSystemdUnit(publication)
-	if err != nil {
-		return errors.Join(cause, err)
-	}
 	if enableAttempted {
 		if err := lifecycle.requireSuccess(ctx, "disable", "--now", status.Service); err != nil {
-			errorsSeen = append(errorsSeen, fmt.Errorf("rollback service disable: %w", err))
+			return errors.Join(cause, fmt.Errorf("rollback service disable: %w", err))
 		}
 	} else if startAttempted {
 		if err := lifecycle.requireSuccess(ctx, "stop", status.Service); err != nil {
-			errorsSeen = append(errorsSeen, fmt.Errorf("rollback service stop: %w", err))
+			return errors.Join(cause, fmt.Errorf("rollback service stop: %w", err))
 		}
+	}
+	if startAttempted {
+		if err := requirePublishedSystemdUnit(publication); err != nil {
+			return errors.Join(cause, fmt.Errorf("rollback service ownership after stop: %w", err))
+		}
+	}
+	quarantined, err := quarantinePublishedSystemdUnit(publication)
+	if err != nil {
+		return errors.Join(cause, err)
 	}
 	if err := removeQuarantinedSystemdUnit(quarantined); err != nil {
 		errorsSeen = append(errorsSeen, fmt.Errorf("remove failed systemd unit: %w", err))

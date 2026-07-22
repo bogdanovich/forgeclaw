@@ -392,21 +392,32 @@ func TestSystemdLifecycleInstallRollsBackInactiveService(t *testing.T) {
 func TestSystemdLifecycleInstallRollsBackFailedEnable(t *testing.T) {
 	unitDir := t.TempDir()
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
-	showChecks := 0
 	var calls []systemdCall
+	enabled := false
+	failedOnce := false
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
 			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
 			if reflect.DeepEqual(args, systemdUnitShowArgs("picoclaw-node-main.service")) {
-				showChecks++
-				if showChecks == 1 {
-					return missingSystemdUnitResult(), nil
+				if _, statErr := os.Stat(unitPath); errors.Is(statErr, os.ErrNotExist) {
+					result := missingSystemdUnitResult()
+					if enabled {
+						result.Output = strings.Replace(result.Output, "UnitFileState=", "UnitFileState=enabled", 1)
+					}
+					return result, nil
 				}
 				return loadedSystemdUnitResult(unitPath, "active"), nil
 			}
 			if reflect.DeepEqual(args, []string{"enable", "picoclaw-node-main.service"}) {
-				return systemdRunResult{Output: "enable failed", ExitCode: 1}, nil
+				enabled = true
+				if !failedOnce {
+					failedOnce = true
+					return systemdRunResult{Output: "enable failed", ExitCode: 1}, nil
+				}
+			}
+			if reflect.DeepEqual(args, []string{"disable", "--now", "picoclaw-node-main.service"}) {
+				enabled = false
 			}
 			return systemdRunResult{}, nil
 		},
@@ -419,6 +430,9 @@ func TestSystemdLifecycleInstallRollsBackFailedEnable(t *testing.T) {
 	if _, statErr := os.Stat(unitPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("failed unit still exists: %v", statErr)
 	}
+	if enabled {
+		t.Fatal("failed install left stale enablement")
+	}
 	wantTail := []systemdCall{
 		{args: systemdUnitShowArgs("picoclaw-node-main.service")},
 		{args: []string{"disable", "--now", "picoclaw-node-main.service"}},
@@ -426,6 +440,10 @@ func TestSystemdLifecycleInstallRollsBackFailedEnable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls[len(calls)-3:], wantTail) {
 		t.Fatalf("rollback calls = %#v", calls)
+	}
+	status, err := lifecycle.Install(t.Context(), installTestRequest())
+	if err != nil || !status.Active || !enabled {
+		t.Fatalf("retry install status = %#v, enabled = %t, error = %v", status, enabled, err)
 	}
 }
 
