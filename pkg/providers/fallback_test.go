@@ -128,6 +128,55 @@ func TestFallback_AllFail(t *testing.T) {
 	}
 }
 
+func TestFallback_NestedExhaustionDoesNotCooldownOuterCandidate(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct, nil)
+	outerCandidates := []FallbackCandidate{
+		{Provider: "openrouter", Model: "deepseek", IdentityKey: "text-wrapper"},
+		{Provider: "openrouter", Model: "healthy", IdentityKey: "healthy-text"},
+	}
+	innerCandidate := FallbackCandidate{
+		Provider: "openrouter", Model: "vision", IdentityKey: "vision-candidate",
+	}
+
+	result, err := fc.ExecuteCandidate(
+		context.Background(),
+		outerCandidates,
+		func(ctx context.Context, candidate FallbackCandidate) (*LLMResponse, error) {
+			if candidate.IdentityKey == "healthy-text" {
+				return &LLMResponse{Content: "healthy fallback"}, nil
+			}
+			_, nestedErr := fc.ExecuteCandidate(
+				ctx,
+				[]FallbackCandidate{innerCandidate},
+				func(context.Context, FallbackCandidate) (*LLMResponse, error) {
+					return nil, errors.New("rate limit exceeded")
+				},
+			)
+			return nil, nestedErr
+		},
+	)
+	if err != nil {
+		t.Fatalf("ExecuteCandidate() error = %v", err)
+	}
+	if result.IdentityKey != "healthy-text" {
+		t.Fatalf("result identity = %q, want healthy-text", result.IdentityKey)
+	}
+	if !ct.IsAvailable("text-wrapper") || ct.ErrorCount("text-wrapper") != 0 {
+		t.Fatal("outer text wrapper entered cooldown for nested route exhaustion")
+	}
+	if ct.IsAvailable("vision-candidate") || ct.ErrorCount("vision-candidate") != 1 {
+		t.Fatal("failed nested vision candidate was not put into cooldown")
+	}
+	if len(result.Attempts) != 1 || result.Attempts[0].Reason != FailoverRateLimit {
+		t.Fatalf("outer attempts = %#v, want recorded nested rate-limit exhaustion", result.Attempts)
+	}
+	var nestedExhausted *FallbackExhaustedError
+	if !errors.As(result.Attempts[0].Error, &nestedExhausted) {
+		t.Fatalf("outer attempt error = %T, want FallbackExhaustedError", result.Attempts[0].Error)
+	}
+}
+
 func TestFallback_ContextCanceled(t *testing.T) {
 	ct := NewCooldownTracker()
 	fc := NewFallbackChain(ct, nil)
