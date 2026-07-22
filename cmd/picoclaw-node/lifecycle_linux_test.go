@@ -29,7 +29,7 @@ func TestSystemdLifecycleInstall(t *testing.T) {
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
 				activeChecks++
 				if activeChecks == 1 {
-					return systemdRunResult{Output: "inactive", ExitCode: 3}, nil
+					return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
 				}
 				return systemdRunResult{Output: "active"}, nil
 			}
@@ -87,6 +87,7 @@ func TestSystemdLifecycleStatus(t *testing.T) {
 		{name: "active", result: systemdRunResult{Output: "active"}, active: true},
 		{name: "activating", result: systemdRunResult{Output: "activating"}, active: true},
 		{name: "inactive", result: systemdRunResult{Output: "inactive", ExitCode: 3}},
+		{name: "missing", result: systemdRunResult{Output: "inactive", ExitCode: 4}},
 		{name: "unexpected", result: systemdRunResult{Output: "unknown", ExitCode: 4}, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -119,6 +120,7 @@ func TestSystemdLifecycleStatusDetectsOrphanedActiveService(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "inactive", result: systemdRunResult{Output: "inactive", ExitCode: 3}},
+		{name: "missing", result: systemdRunResult{Output: "inactive", ExitCode: 4}},
 		{name: "active", result: systemdRunResult{Output: "active"}, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -201,7 +203,7 @@ func TestSystemdLifecycleInstallRollbackUsesFreshContext(t *testing.T) {
 		unitDir: unitDir,
 		run: func(callCtx context.Context, _ bool, args ...string) (systemdRunResult, error) {
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
-				return systemdRunResult{Output: "inactive", ExitCode: 3}, nil
+				return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
 			}
 			if !reflect.DeepEqual(args, []string{"daemon-reload"}) {
 				t.Fatalf("unexpected systemctl call: %v", args)
@@ -248,7 +250,7 @@ func TestSystemdLifecycleInstallCleansUpCommittedWriteFailure(t *testing.T) {
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
 			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
-				return systemdRunResult{Output: "inactive", ExitCode: 3}, nil
+				return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
 			}
 			return systemdRunResult{}, nil
 		},
@@ -283,7 +285,7 @@ func TestSystemdLifecycleInstallRejectsUnstableActivation(t *testing.T) {
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
 				activeChecks++
 				if activeChecks == 1 {
-					return systemdRunResult{Output: "inactive", ExitCode: 3}, nil
+					return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
 				}
 				return systemdRunResult{Output: "activating"}, nil
 			}
@@ -386,11 +388,16 @@ func TestSystemdLifecycleRefusesUnownedUnit(t *testing.T) {
 func TestSystemdLifecycleInstallRemovesNewUnitWhenServiceIsInactive(t *testing.T) {
 	unitDir := t.TempDir()
 	var calls []systemdCall
+	activeChecks := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
 			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
+				activeChecks++
+				if activeChecks == 1 {
+					return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
+				}
 				return systemdRunResult{Output: "inactive", ExitCode: 3}, nil
 			}
 			return systemdRunResult{}, nil

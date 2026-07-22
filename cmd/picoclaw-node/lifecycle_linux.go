@@ -145,7 +145,7 @@ func (lifecycle *systemdLifecycle) Status(
 			status.State == "activating"
 		return status, nil
 	}
-	if result.ExitCode == 3 && status.State != "" {
+	if isSystemdInactive(result) {
 		return status, nil
 	}
 	return lifecycleStatus{}, systemdCommandError(result, "is-active", status.Service)
@@ -194,10 +194,15 @@ func (lifecycle *systemdLifecycle) isActive(ctx context.Context, service string)
 	if result.ExitCode == 0 {
 		return state == "active" || state == "reloading" || state == "activating", nil
 	}
-	if result.ExitCode == 3 && state != "" {
+	if isSystemdInactive(result) {
 		return false, nil
 	}
 	return false, systemdCommandError(result, "is-active", service)
+}
+
+func isSystemdInactive(result systemdRunResult) bool {
+	return (result.ExitCode == 3 || result.ExitCode == 4) &&
+		strings.TrimSpace(result.Output) == "inactive"
 }
 
 func (lifecycle *systemdLifecycle) waitForActive(
