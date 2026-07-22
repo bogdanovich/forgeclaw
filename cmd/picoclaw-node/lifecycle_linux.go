@@ -81,12 +81,8 @@ func (lifecycle *systemdLifecycle) Install(
 			status.UnitPath,
 		)
 	}
-	active, err := lifecycle.isActive(ctx, status.Service)
-	if err != nil {
-		return lifecycleStatus{}, fmt.Errorf("inspect existing service activity: %w", err)
-	}
-	if active {
-		return lifecycleStatus{}, orphanedSystemdServiceError(status.Service)
+	if err = lifecycle.requireUnitNameAvailable(ctx, status.Service); err != nil {
+		return lifecycleStatus{}, err
 	}
 	unit, err := renderSystemdUnit(request, lifecycle.system)
 	if err != nil {
@@ -176,6 +172,45 @@ func (lifecycle *systemdLifecycle) requireSuccess(ctx context.Context, args ...s
 		return systemdCommandError(result, args...)
 	}
 	return nil
+}
+
+func (lifecycle *systemdLifecycle) requireUnitNameAvailable(
+	ctx context.Context,
+	service string,
+) error {
+	args := []string{"show", service, "--property=LoadState", "--property=FragmentPath"}
+	result, err := lifecycle.run(ctx, lifecycle.system, args...)
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return systemdCommandError(result, args...)
+	}
+	properties := make(map[string]string, 2)
+	for _, line := range strings.Split(result.Output, "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if !found || (key != "LoadState" && key != "FragmentPath") {
+			continue
+		}
+		if _, duplicate := properties[key]; duplicate {
+			return fmt.Errorf("systemctl show returned duplicate %s", key)
+		}
+		properties[key] = value
+	}
+	loadState, hasLoadState := properties["LoadState"]
+	fragmentPath, hasFragmentPath := properties["FragmentPath"]
+	if !hasLoadState || !hasFragmentPath {
+		return errors.New("systemctl show omitted LoadState or FragmentPath")
+	}
+	if loadState == "not-found" && fragmentPath == "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to shadow existing systemd unit %s (load state %q, fragment %q)",
+		service,
+		loadState,
+		fragmentPath,
+	)
 }
 
 func (lifecycle *systemdLifecycle) writeUnit(path string, data []byte, mode os.FileMode) error {

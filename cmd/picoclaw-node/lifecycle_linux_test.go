@@ -26,11 +26,11 @@ func TestSystemdLifecycleInstall(t *testing.T) {
 		unitDir: t.TempDir(),
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
 			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
+			if reflect.DeepEqual(args, missingSystemdUnitShowArgs("picoclaw-node-main.service")) {
+				return missingSystemdUnitResult(), nil
+			}
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
 				activeChecks++
-				if activeChecks == 1 {
-					return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
-				}
 				return systemdRunResult{Output: "active"}, nil
 			}
 			return systemdRunResult{}, nil
@@ -60,7 +60,7 @@ func TestSystemdLifecycleInstall(t *testing.T) {
 		t.Fatalf("unexpected systemd unit:\n%s", unit)
 	}
 	wantInstallCalls := []systemdCall{
-		{args: []string{"is-active", "picoclaw-node-main.service"}},
+		{args: missingSystemdUnitShowArgs("picoclaw-node-main.service")},
 		{args: []string{"daemon-reload"}},
 		{args: []string{"enable", "--now", "picoclaw-node-main.service"}},
 		{args: []string{"is-active", "picoclaw-node-main.service"}},
@@ -170,28 +170,32 @@ func TestSystemdLifecycleInstallRejectsExistingManagedUnit(t *testing.T) {
 	}
 }
 
-func TestSystemdLifecycleInstallRejectsOrphanedActiveService(t *testing.T) {
-	unitDir := t.TempDir()
-	lifecycle := &systemdLifecycle{
-		unitDir: unitDir,
-		writeFile: func(string, []byte, os.FileMode) error {
-			t.Fatal("unit should not be written for an active orphan")
-			return nil
-		},
-		run: func(_ context.Context, _ bool, args ...string) (systemdRunResult, error) {
-			if !reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
-				t.Fatalf("unexpected systemctl call: %v", args)
-			}
-			return systemdRunResult{Output: "active"}, nil
-		},
-	}
-	_, err := lifecycle.Install(t.Context(), lifecycleRequest{
-		Instance:       "main",
-		ConfigPath:     "/home/test/config.json",
-		ExecutablePath: "/home/test/picoclaw-node",
-	})
-	if err == nil || !strings.Contains(err.Error(), "active without its managed unit") {
-		t.Fatalf("Install() error = %v", err)
+func TestSystemdLifecycleInstallRejectsResolvedUnitFromAnotherPath(t *testing.T) {
+	for _, result := range []systemdRunResult{
+		{Output: "LoadState=loaded\nFragmentPath=/usr/lib/systemd/user/picoclaw-node-main.service"},
+		{Output: "LoadState=loaded\nFragmentPath="},
+	} {
+		lifecycle := &systemdLifecycle{
+			unitDir: t.TempDir(),
+			writeFile: func(string, []byte, os.FileMode) error {
+				t.Fatal("unit should not be written when the service name is already resolved")
+				return nil
+			},
+			run: func(_ context.Context, _ bool, args ...string) (systemdRunResult, error) {
+				if !reflect.DeepEqual(args, missingSystemdUnitShowArgs("picoclaw-node-main.service")) {
+					t.Fatalf("unexpected systemctl call: %v", args)
+				}
+				return result, nil
+			},
+		}
+		_, err := lifecycle.Install(t.Context(), lifecycleRequest{
+			Instance:       "main",
+			ConfigPath:     "/home/test/config.json",
+			ExecutablePath: "/home/test/picoclaw-node",
+		})
+		if err == nil || !strings.Contains(err.Error(), "refusing to shadow") {
+			t.Fatalf("Install() error = %v", err)
+		}
 	}
 }
 
@@ -202,8 +206,8 @@ func TestSystemdLifecycleInstallRollbackUsesFreshContext(t *testing.T) {
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(callCtx context.Context, _ bool, args ...string) (systemdRunResult, error) {
-			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
-				return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
+			if reflect.DeepEqual(args, missingSystemdUnitShowArgs("picoclaw-node-main.service")) {
+				return missingSystemdUnitResult(), nil
 			}
 			if !reflect.DeepEqual(args, []string{"daemon-reload"}) {
 				t.Fatalf("unexpected systemctl call: %v", args)
@@ -249,8 +253,8 @@ func TestSystemdLifecycleInstallCleansUpCommittedWriteFailure(t *testing.T) {
 		},
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
 			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
-			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
-				return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
+			if reflect.DeepEqual(args, missingSystemdUnitShowArgs("picoclaw-node-main.service")) {
+				return missingSystemdUnitResult(), nil
 			}
 			return systemdRunResult{}, nil
 		},
@@ -268,7 +272,7 @@ func TestSystemdLifecycleInstallCleansUpCommittedWriteFailure(t *testing.T) {
 		t.Fatalf("committed unit still exists: %v", statErr)
 	}
 	wantCalls := []systemdCall{
-		{args: []string{"is-active", "picoclaw-node-main.service"}},
+		{args: missingSystemdUnitShowArgs("picoclaw-node-main.service")},
 		{args: []string{"daemon-reload"}},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
@@ -282,11 +286,11 @@ func TestSystemdLifecycleInstallRejectsUnstableActivation(t *testing.T) {
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(_ context.Context, _ bool, args ...string) (systemdRunResult, error) {
+			if reflect.DeepEqual(args, missingSystemdUnitShowArgs("picoclaw-node-main.service")) {
+				return missingSystemdUnitResult(), nil
+			}
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
 				activeChecks++
-				if activeChecks == 1 {
-					return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
-				}
 				return systemdRunResult{Output: "activating"}, nil
 			}
 			return systemdRunResult{}, nil
@@ -300,8 +304,8 @@ func TestSystemdLifecycleInstallRejectsUnstableActivation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "did not stabilize") {
 		t.Fatalf("Install() error = %v", err)
 	}
-	if activeChecks != systemdReadinessAttempts+1 {
-		t.Fatalf("is-active calls = %d, want %d", activeChecks, systemdReadinessAttempts+1)
+	if activeChecks != systemdReadinessAttempts {
+		t.Fatalf("is-active calls = %d, want %d", activeChecks, systemdReadinessAttempts)
 	}
 	unitPath := filepath.Join(unitDir, "picoclaw-node-main.service")
 	if _, statErr := os.Stat(unitPath); !os.IsNotExist(statErr) {
@@ -388,16 +392,14 @@ func TestSystemdLifecycleRefusesUnownedUnit(t *testing.T) {
 func TestSystemdLifecycleInstallRemovesNewUnitWhenServiceIsInactive(t *testing.T) {
 	unitDir := t.TempDir()
 	var calls []systemdCall
-	activeChecks := 0
 	lifecycle := &systemdLifecycle{
 		unitDir: unitDir,
 		run: func(_ context.Context, system bool, args ...string) (systemdRunResult, error) {
 			calls = append(calls, systemdCall{system: system, args: append([]string(nil), args...)})
+			if reflect.DeepEqual(args, missingSystemdUnitShowArgs("picoclaw-node-main.service")) {
+				return missingSystemdUnitResult(), nil
+			}
 			if reflect.DeepEqual(args, []string{"is-active", "picoclaw-node-main.service"}) {
-				activeChecks++
-				if activeChecks == 1 {
-					return systemdRunResult{Output: "inactive", ExitCode: 4}, nil
-				}
 				return systemdRunResult{Output: "inactive", ExitCode: 3}, nil
 			}
 			return systemdRunResult{}, nil
@@ -416,7 +418,7 @@ func TestSystemdLifecycleInstallRemovesNewUnitWhenServiceIsInactive(t *testing.T
 		t.Fatalf("failed unit still exists: %v", statErr)
 	}
 	wantCalls := []systemdCall{
-		{args: []string{"is-active", "picoclaw-node-main.service"}},
+		{args: missingSystemdUnitShowArgs("picoclaw-node-main.service")},
 		{args: []string{"daemon-reload"}},
 		{args: []string{"enable", "--now", "picoclaw-node-main.service"}},
 		{args: []string{"is-active", "picoclaw-node-main.service"}},
@@ -459,4 +461,12 @@ func TestRenderSystemdSystemUnit(t *testing.T) {
 
 func managedSystemdUnitData(body string) []byte {
 	return []byte(managedSystemdUnitMarker + "\n" + body + "\n")
+}
+
+func missingSystemdUnitShowArgs(service string) []string {
+	return []string{"show", service, "--property=LoadState", "--property=FragmentPath"}
+}
+
+func missingSystemdUnitResult() systemdRunResult {
+	return systemdRunResult{Output: "LoadState=not-found\nFragmentPath="}
 }
