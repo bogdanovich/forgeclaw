@@ -232,6 +232,12 @@ identity includes both values. A task projector keys a trace segment by
 workspace and generation ID; it never reconstructs task incarnation from the
 first retained event or from `CreatedAt`.
 
+The generation schema has no v1 migration or compatibility loader. An upgrade
+must stop every profile and remove its legacy task registry before first start
+on the new schema; active legacy tasks are not carried across that boundary.
+Strict loading remains fail-closed rather than synthesizing identity for old
+records.
+
 The interaction projector has one deterministic builder:
 
 ```go
