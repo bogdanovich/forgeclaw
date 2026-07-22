@@ -76,7 +76,9 @@ picoclaw-node status --instance main
 The installer writes
 `~/.config/systemd/user/picoclaw-node-main.service`, reloads the user manager,
 and enables and starts the service. It uses direct `systemctl` arguments and
-records absolute executable and configuration paths in the unit.
+records absolute executable and configuration paths in the unit. Installation
+is create-only and refuses to replace an existing unit; upgrades and
+reinstallation are intentionally separate lifecycle operations.
 
 System-wide installation is explicit and normally requires root:
 

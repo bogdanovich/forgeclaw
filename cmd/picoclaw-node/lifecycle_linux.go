@@ -11,12 +11,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
 const managedSystemdUnitMarker = "# Managed by ForgeClaw picoclaw-node lifecycle v1"
+
+const (
+	systemdReadinessAttempts    = 8
+	systemdReadinessConsecutive = 3
+	defaultReadinessInterval    = 250 * time.Millisecond
+)
 
 type systemdRunResult struct {
 	Output   string
@@ -26,18 +33,16 @@ type systemdRunResult struct {
 type systemdRunner func(context.Context, bool, ...string) (systemdRunResult, error)
 
 type systemdLifecycle struct {
-	system  bool
-	unitDir string
-	run     systemdRunner
+	system            bool
+	unitDir           string
+	run               systemdRunner
+	writeFile         func(string, []byte, os.FileMode) error
+	readinessInterval time.Duration
 }
 
-type systemdUnitBackup struct {
+type systemdUnitState struct {
 	exists  bool
-	data    []byte
-	mode    os.FileMode
 	managed bool
-	enabled bool
-	active  bool
 }
 
 func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
@@ -49,7 +54,13 @@ func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
 		}
 		unitDir = filepath.Join(configDir, "systemd", "user")
 	}
-	return &systemdLifecycle{system: system, unitDir: unitDir, run: runSystemctl}, nil
+	return &systemdLifecycle{
+		system:            system,
+		unitDir:           unitDir,
+		run:               runSystemctl,
+		writeFile:         fileutil.WriteFileAtomic,
+		readinessInterval: defaultReadinessInterval,
+	}, nil
 }
 
 func (lifecycle *systemdLifecycle) Install(
@@ -57,50 +68,46 @@ func (lifecycle *systemdLifecycle) Install(
 	request lifecycleRequest,
 ) (lifecycleStatus, error) {
 	status := lifecycle.baseStatus(request.Instance)
-	backup, err := captureSystemdUnit(status.UnitPath)
+	unitState, err := captureSystemdUnit(status.UnitPath)
 	if err != nil {
 		return lifecycleStatus{}, err
 	}
-	if backup.exists && !backup.managed {
-		return lifecycleStatus{}, unownedSystemdUnitError(status.UnitPath)
+	if unitState.exists {
+		if !unitState.managed {
+			return lifecycleStatus{}, unownedSystemdUnitError(status.UnitPath)
+		}
+		return lifecycleStatus{}, fmt.Errorf(
+			"managed systemd unit %s already exists; install is create-only",
+			status.UnitPath,
+		)
 	}
-	if backup.exists {
-		backup.active, err = lifecycle.isActive(ctx, status.Service)
-		if err != nil {
-			return lifecycleStatus{}, fmt.Errorf("inspect existing service activity: %w", err)
-		}
-		backup.enabled, err = lifecycle.isEnabled(ctx, status.Service)
-		if err != nil {
-			return lifecycleStatus{}, fmt.Errorf("inspect existing service enablement: %w", err)
-		}
+	active, err := lifecycle.isActive(ctx, status.Service)
+	if err != nil {
+		return lifecycleStatus{}, fmt.Errorf("inspect existing service activity: %w", err)
+	}
+	if active {
+		return lifecycleStatus{}, orphanedSystemdServiceError(status.Service)
 	}
 	unit, err := renderSystemdUnit(request, lifecycle.system)
 	if err != nil {
 		return lifecycleStatus{}, err
 	}
-	if err = fileutil.WriteFileAtomic(status.UnitPath, []byte(unit), 0o644); err != nil {
-		return lifecycleStatus{}, fmt.Errorf("write systemd unit: %w", err)
+	if err = lifecycle.writeUnit(status.UnitPath, []byte(unit), 0o644); err != nil {
+		writeErr := fmt.Errorf("write systemd unit: %w", err)
+		if fileutil.IsCommittedWriteError(err) {
+			return lifecycleStatus{}, lifecycle.rollbackCreatedUnit(status, false, writeErr)
+		}
+		return lifecycleStatus{}, writeErr
 	}
 	if err = lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
-		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, false, err)
+		return lifecycleStatus{}, lifecycle.rollbackCreatedUnit(status, false, err)
 	}
-	if backup.active {
-		if err = lifecycle.requireSuccess(ctx, "enable", status.Service); err != nil {
-			return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, false, err)
-		}
-		if err = lifecycle.requireSuccess(ctx, "restart", status.Service); err != nil {
-			return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, err)
-		}
-	} else if err = lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
-		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, err)
+	if err = lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
+		return lifecycleStatus{}, lifecycle.rollbackCreatedUnit(status, true, err)
 	}
-	current, err := lifecycle.Status(ctx, request)
+	current, err := lifecycle.waitForActive(ctx, request)
 	if err != nil {
-		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, err)
-	}
-	if !current.Active {
-		stateErr := fmt.Errorf("systemd service %s entered state %q", status.Service, current.State)
-		return lifecycleStatus{}, lifecycle.rollbackInstall(status, backup, true, stateErr)
+		return lifecycleStatus{}, lifecycle.rollbackCreatedUnit(status, true, err)
 	}
 	return current, nil
 }
@@ -120,10 +127,7 @@ func (lifecycle *systemdLifecycle) Status(
 			return lifecycleStatus{}, activeErr
 		}
 		if active {
-			return lifecycleStatus{}, fmt.Errorf(
-				"systemd service %s is active without its managed unit file",
-				status.Service,
-			)
+			return lifecycleStatus{}, orphanedSystemdServiceError(status.Service)
 		}
 		return status, nil
 	}
@@ -174,6 +178,13 @@ func (lifecycle *systemdLifecycle) requireSuccess(ctx context.Context, args ...s
 	return nil
 }
 
+func (lifecycle *systemdLifecycle) writeUnit(path string, data []byte, mode os.FileMode) error {
+	if lifecycle.writeFile != nil {
+		return lifecycle.writeFile(path, data, mode)
+	}
+	return fileutil.WriteFileAtomic(path, data, mode)
+}
+
 func (lifecycle *systemdLifecycle) isActive(ctx context.Context, service string) (bool, error) {
 	result, err := lifecycle.run(ctx, lifecycle.system, "is-active", service)
 	if err != nil {
@@ -189,25 +200,63 @@ func (lifecycle *systemdLifecycle) isActive(ctx context.Context, service string)
 	return false, systemdCommandError(result, "is-active", service)
 }
 
-func (lifecycle *systemdLifecycle) isEnabled(ctx context.Context, service string) (bool, error) {
-	result, err := lifecycle.run(ctx, lifecycle.system, "is-enabled", service)
-	if err != nil {
-		return false, err
+func (lifecycle *systemdLifecycle) waitForActive(
+	ctx context.Context,
+	request lifecycleRequest,
+) (lifecycleStatus, error) {
+	consecutive := 0
+	lastState := "unknown"
+	for attempt := 0; attempt < systemdReadinessAttempts; attempt++ {
+		status, err := lifecycle.Status(ctx, request)
+		if err != nil {
+			return lifecycleStatus{}, err
+		}
+		lastState = status.State
+		if status.State == "active" {
+			consecutive++
+			if consecutive == systemdReadinessConsecutive {
+				return status, nil
+			}
+		} else {
+			consecutive = 0
+			if status.State != "activating" && status.State != "reloading" {
+				return lifecycleStatus{}, fmt.Errorf(
+					"systemd service %s entered state %q",
+					status.Service,
+					status.State,
+				)
+			}
+		}
+		if attempt+1 < systemdReadinessAttempts {
+			err = lifecycle.waitReadinessInterval(ctx)
+		}
+		if err != nil {
+			return lifecycleStatus{}, err
+		}
 	}
-	if result.ExitCode == 0 {
-		return true, nil
+	return lifecycleStatus{}, fmt.Errorf(
+		"systemd service %s did not stabilize in active state; last state %q",
+		lifecycle.baseStatus(request.Instance).Service,
+		lastState,
+	)
+}
+
+func (lifecycle *systemdLifecycle) waitReadinessInterval(ctx context.Context) error {
+	if lifecycle.readinessInterval <= 0 {
+		return nil
 	}
-	switch strings.TrimSpace(result.Output) {
-	case "disabled", "static", "indirect", "masked", "masked-runtime":
-		return false, nil
-	default:
-		return false, systemdCommandError(result, "is-enabled", service)
+	timer := time.NewTimer(lifecycle.readinessInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
-func (lifecycle *systemdLifecycle) rollbackInstall(
+func (lifecycle *systemdLifecycle) rollbackCreatedUnit(
 	status lifecycleStatus,
-	backup systemdUnitBackup,
 	startAttempted bool,
 	cause error,
 ) error {
@@ -219,49 +268,32 @@ func (lifecycle *systemdLifecycle) rollbackInstall(
 			errorsSeen = append(errorsSeen, fmt.Errorf("rollback service disable: %w", err))
 		}
 	}
-	if err := restoreSystemdUnit(status.UnitPath, backup); err != nil {
-		errorsSeen = append(errorsSeen, err)
-		return errors.Join(errorsSeen...)
+	if err := os.Remove(status.UnitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errorsSeen = append(errorsSeen, fmt.Errorf("remove failed systemd unit: %w", err))
 	}
 	if err := lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
 		errorsSeen = append(errorsSeen, fmt.Errorf("rollback daemon reload: %w", err))
-		return errors.Join(errorsSeen...)
-	}
-	if backup.enabled && backup.active {
-		if err := lifecycle.requireSuccess(ctx, "enable", "--now", status.Service); err != nil {
-			errorsSeen = append(errorsSeen, fmt.Errorf("restore enabled active service: %w", err))
-		}
-	} else if backup.enabled {
-		if err := lifecycle.requireSuccess(ctx, "enable", status.Service); err != nil {
-			errorsSeen = append(errorsSeen, fmt.Errorf("restore enabled service: %w", err))
-		}
-	} else if backup.active {
-		if err := lifecycle.requireSuccess(ctx, "start", status.Service); err != nil {
-			errorsSeen = append(errorsSeen, fmt.Errorf("restore active service: %w", err))
-		}
 	}
 	return errors.Join(errorsSeen...)
 }
 
-func captureSystemdUnit(path string) (systemdUnitBackup, error) {
+func captureSystemdUnit(path string) (systemdUnitState, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return systemdUnitBackup{}, nil
+		return systemdUnitState{}, nil
 	}
 	if err != nil {
-		return systemdUnitBackup{}, fmt.Errorf("inspect existing systemd unit: %w", err)
+		return systemdUnitState{}, fmt.Errorf("inspect existing systemd unit: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Size() > 1024*1024 {
-		return systemdUnitBackup{}, errors.New("existing systemd unit is not a bounded regular file")
+		return systemdUnitState{}, errors.New("existing systemd unit is not a bounded regular file")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return systemdUnitBackup{}, fmt.Errorf("read existing systemd unit: %w", err)
+		return systemdUnitState{}, fmt.Errorf("read existing systemd unit: %w", err)
 	}
-	return systemdUnitBackup{
+	return systemdUnitState{
 		exists:  true,
-		data:    data,
-		mode:    info.Mode().Perm(),
 		managed: hasSystemdUnitMarker(data),
 	}, nil
 }
@@ -279,17 +311,8 @@ func unownedSystemdUnitError(path string) error {
 	return fmt.Errorf("refusing to manage unowned systemd unit %s", path)
 }
 
-func restoreSystemdUnit(path string, backup systemdUnitBackup) error {
-	if backup.exists {
-		if err := fileutil.WriteFileAtomic(path, backup.data, backup.mode); err != nil {
-			return fmt.Errorf("restore previous systemd unit: %w", err)
-		}
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove failed systemd unit: %w", err)
-	}
-	return nil
+func orphanedSystemdServiceError(service string) error {
+	return fmt.Errorf("systemd service %s is active without its managed unit file", service)
 }
 
 func runSystemctl(ctx context.Context, system bool, args ...string) (systemdRunResult, error) {
