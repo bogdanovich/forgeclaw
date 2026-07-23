@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +30,7 @@ type launchdLifecycle struct {
 type launchdPlistState struct {
 	exists  bool
 	managed bool
+	label   string
 }
 
 type launchdJobState struct {
@@ -63,6 +65,14 @@ func (lifecycle *launchdLifecycle) Status(
 		return lifecycleStatus{}, fmt.Errorf(
 			"refusing to manage unowned launchd plist %s",
 			status.UnitPath,
+		)
+	}
+	if plist.exists && plist.label != status.Service {
+		return lifecycleStatus{}, fmt.Errorf(
+			"refusing launchd plist %s with label %q, want %q",
+			status.UnitPath,
+			plist.label,
+			status.Service,
 		)
 	}
 
@@ -246,10 +256,18 @@ func captureLaunchdPlist(path string) (launchdPlistState, error) {
 	if err != nil {
 		return launchdPlistState{}, fmt.Errorf("read existing launchd plist: %w", err)
 	}
-	return launchdPlistState{
+	state := launchdPlistState{
 		exists:  true,
 		managed: hasLaunchdPlistMarker(data),
-	}, nil
+	}
+	if !state.managed {
+		return state, nil
+	}
+	state.label, err = parseLaunchdPlistLabel(data)
+	if err != nil {
+		return launchdPlistState{}, fmt.Errorf("parse managed launchd plist: %w", err)
+	}
+	return state, nil
 }
 
 func hasLaunchdPlistMarker(data []byte) bool {
@@ -259,4 +277,47 @@ func hasLaunchdPlistMarker(data []byte) bool {
 		}
 	}
 	return false
+}
+
+type launchdPlistNode struct {
+	XMLName xml.Name
+	Text    string             `xml:",chardata"`
+	Nodes   []launchdPlistNode `xml:",any"`
+}
+
+func parseLaunchdPlistLabel(data []byte) (string, error) {
+	var root launchdPlistNode
+	if err := xml.Unmarshal(data, &root); err != nil {
+		return "", err
+	}
+	if root.XMLName.Local != "plist" || len(root.Nodes) != 1 ||
+		root.Nodes[0].XMLName.Local != "dict" {
+		return "", errors.New("plist must contain one top-level dictionary")
+	}
+	entries := root.Nodes[0].Nodes
+	if len(entries)%2 != 0 {
+		return "", errors.New("plist dictionary contains an unmatched key")
+	}
+	label := ""
+	for index := 0; index < len(entries); index += 2 {
+		key := entries[index]
+		value := entries[index+1]
+		if key.XMLName.Local != "key" {
+			return "", errors.New("plist dictionary contains a non-key entry")
+		}
+		if key.Text != "Label" {
+			continue
+		}
+		if label != "" {
+			return "", errors.New("plist contains duplicate Label keys")
+		}
+		if value.XMLName.Local != "string" || len(value.Nodes) != 0 || value.Text == "" {
+			return "", errors.New("plist Label must be a non-empty string")
+		}
+		label = value.Text
+	}
+	if label == "" {
+		return "", errors.New("plist omits Label")
+	}
+	return label, nil
 }

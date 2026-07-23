@@ -82,6 +82,68 @@ func TestLaunchdStatusRejectsUnownedPlist(t *testing.T) {
 	}
 }
 
+func TestLaunchdStatusRejectsInvalidManagedPlistIdentity(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "malformed XML",
+			body: "<plist><dict>",
+			want: "parse managed launchd plist",
+		},
+		{
+			name: "missing Label",
+			body: "<plist><dict><key>Program</key><string>/bin/true</string></dict></plist>",
+			want: "omits Label",
+		},
+		{
+			name: "mismatched Label",
+			body: "<plist><dict><key>Label</key><string>com.example.other</string></dict></plist>",
+			want: "with label",
+		},
+		{
+			name: "duplicate Label",
+			body: "<plist><dict><key>Label</key><string>com.forgeclaw.picoclaw-node.default</string>" +
+				"<key>Label</key><string>com.forgeclaw.picoclaw-node.default</string></dict></plist>",
+			want: "duplicate Label",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "com.forgeclaw.picoclaw-node.default.plist")
+			data := managedLaunchdPlistMarker + "\n" + test.body + "\n"
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			lifecycle := &launchdLifecycle{
+				plistDir: dir,
+				domains:  []string{"user/501"},
+				run: func(context.Context, ...string) (launchdRunResult, error) {
+					called = true
+					return launchdRunResult{}, nil
+				},
+			}
+
+			_, err := lifecycle.Status(
+				context.Background(),
+				lifecycleRequest{Instance: "default"},
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q error, got %v", test.want, err)
+			}
+			if called {
+				t.Fatal("queried launchd before validating plist identity")
+			}
+		})
+	}
+}
+
 func TestLaunchdStatusRejectsLoadedJobWithoutManagedPlist(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -347,8 +409,11 @@ func missingLaunchdLifecycle(dir string) *launchdLifecycle {
 
 func writeManagedLaunchdPlist(t *testing.T, dir, instance string) {
 	t.Helper()
-	path := filepath.Join(dir, "com.forgeclaw.picoclaw-node."+instance+".plist")
-	data := managedLaunchdPlistMarker + "\n<plist version=\"1.0\"></plist>\n"
+	label := "com.forgeclaw.picoclaw-node." + instance
+	path := filepath.Join(dir, label+".plist")
+	data := managedLaunchdPlistMarker + "\n" +
+		"<plist version=\"1.0\"><dict><key>Label</key><string>" + label +
+		"</string></dict></plist>\n"
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
