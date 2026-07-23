@@ -208,6 +208,57 @@ func TestLaunchdStatusAllowsUnavailableGUIWhenUserDomainIsInspected(t *testing.T
 	}
 }
 
+func TestLaunchdStatusAllowsMissingGUIWhenUserDomainIsLoaded(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	lifecycle := &launchdLifecycle{
+		plistDir: dir,
+		domains:  []string{"gui/501", "user/501"},
+		run: func(_ context.Context, args ...string) (launchdRunResult, error) {
+			if strings.HasPrefix(args[1], "gui/") {
+				return launchdRunResult{
+					Output:   "Could not find domain for user gui: 501",
+					ExitCode: 113,
+				}, nil
+			}
+			return launchdRunResult{
+				Output: launchdPrintOutput(args[1], filepath.Join(
+					dir,
+					"com.forgeclaw.picoclaw-node.default.plist",
+				), "running"),
+			}, nil
+		},
+	}
+	writeManagedLaunchdPlist(t, dir, "default")
+
+	status, err := lifecycle.Status(context.Background(), lifecycleRequest{Instance: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed || !status.Active || status.State != "running" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestLaunchdStatusRejectsMissingRequiredDomain(t *testing.T) {
+	t.Parallel()
+	lifecycle := &launchdLifecycle{
+		plistDir: t.TempDir(),
+		domains:  []string{"user/501"},
+		run: func(context.Context, ...string) (launchdRunResult, error) {
+			return launchdRunResult{
+				Output:   "Could not find domain for user user: 501",
+				ExitCode: 113,
+			}, nil
+		},
+	}
+
+	_, err := lifecycle.Status(context.Background(), lifecycleRequest{Instance: "default"})
+	if err == nil || !strings.Contains(err.Error(), "launchctl print") {
+		t.Fatalf("expected required-domain error, got %v", err)
+	}
+}
+
 func TestLaunchdStatusPropagatesRunnerError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("runner failed")

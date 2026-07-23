@@ -129,7 +129,7 @@ func (lifecycle *launchdLifecycle) queryJob(
 				inspected = true
 				continue
 			}
-			if launchdDomainUnavailable(result) {
+			if launchdDomainUnavailable(result) || launchdOptionalDomainMissing(domain, result) {
 				continue
 			}
 			return launchdJobState{}, false, fmt.Errorf(
@@ -226,6 +226,12 @@ func launchdJobMissing(result launchdRunResult) bool {
 func launchdDomainUnavailable(result launchdRunResult) bool {
 	return (result.ExitCode == 5 || result.ExitCode == 125) &&
 		strings.Contains(result.Output, "Domain does not support specified action")
+}
+
+func launchdOptionalDomainMissing(domain string, result launchdRunResult) bool {
+	uid, optional := strings.CutPrefix(domain, "gui/")
+	return optional && result.ExitCode != 0 &&
+		strings.Contains(result.Output, "Could not find domain for user gui: "+uid)
 }
 
 func captureLaunchdPlist(path string) (launchdPlistState, error) {
