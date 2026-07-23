@@ -4,10 +4,37 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestResolveLaunchdUserHomeUsesUIDAccountInsteadOfEnvironment(t *testing.T) {
+	t.Setenv("HOME", "/tmp/wrong-home")
+	calledWith := ""
+
+	home, err := resolveLaunchdUserHome(501, func(uid string) (*user.User, error) {
+		calledWith = uid
+		return &user.User{Uid: "501", HomeDir: "/Users/forgeclaw"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calledWith != "501" || home != "/Users/forgeclaw" {
+		t.Fatalf("resolved uid %q home %q", calledWith, home)
+	}
+}
+
+func TestResolveLaunchdUserHomeRejectsMismatchedIdentity(t *testing.T) {
+	t.Parallel()
+	_, err := resolveLaunchdUserHome(501, func(string) (*user.User, error) {
+		return &user.User{Uid: "502", HomeDir: "/Users/other"}, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid identity") {
+		t.Fatalf("expected identity error, got %v", err)
+	}
+}
 
 func TestLaunchdStatusReportsManagedJob(t *testing.T) {
 	t.Parallel()

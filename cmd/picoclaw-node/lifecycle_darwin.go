@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -16,12 +17,12 @@ func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
 	plistDir := "/Library/LaunchDaemons"
 	domains := []string{"system"}
 	if !system {
-		home, err := os.UserHomeDir()
+		uid := os.Getuid()
+		home, err := resolveLaunchdUserHome(uid, user.LookupId)
 		if err != nil {
-			return nil, fmt.Errorf("resolve user home directory: %w", err)
+			return nil, err
 		}
 		plistDir = filepath.Join(home, "Library", "LaunchAgents")
-		uid := os.Getuid()
 		domains = []string{fmt.Sprintf("gui/%d", uid), fmt.Sprintf("user/%d", uid)}
 	}
 	return &launchdLifecycle{

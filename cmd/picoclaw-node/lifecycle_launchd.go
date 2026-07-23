@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -36,6 +38,21 @@ type launchdPlistState struct {
 type launchdJobState struct {
 	path  string
 	state string
+}
+
+func resolveLaunchdUserHome(
+	uid int,
+	lookup func(string) (*user.User, error),
+) (string, error) {
+	uidText := strconv.Itoa(uid)
+	account, err := lookup(uidText)
+	if err != nil {
+		return "", fmt.Errorf("resolve launchd account for uid %s: %w", uidText, err)
+	}
+	if account == nil || account.Uid != uidText || !filepath.IsAbs(account.HomeDir) {
+		return "", fmt.Errorf("launchd account for uid %s has invalid identity or home directory", uidText)
+	}
+	return filepath.Clean(account.HomeDir), nil
 }
 
 func (lifecycle *launchdLifecycle) Install(
