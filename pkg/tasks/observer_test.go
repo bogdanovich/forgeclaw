@@ -169,6 +169,34 @@ func TestRegistryPublishesOnlyPostPruneEvents(t *testing.T) {
 	}
 }
 
+func TestRegistryRetainsMutationBoundaryOverSnapshotBudget(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxSnapshotBytes: 1})
+	if err := registry.Upsert(Record{TaskID: "oversized", Task: "protected"}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+	t.Cleanup(unsubscribe)
+	activate()
+	if len(snapshot.Records) != 1 || len(snapshot.Events) != 1 {
+		t.Fatalf("initial oversized snapshot = %#v", snapshot)
+	}
+
+	if err := registry.AppendEvent("oversized", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.Type != EventTaskProgress ||
+		observed[0].Record.LastEventSeq != 2 {
+		t.Fatalf("post-boundary observations = %#v", observed)
+	}
+	events := registry.ListEvents("oversized")
+	if len(events) != 1 || events[0].EventID != observed[0].Event.EventID {
+		t.Fatalf("durable events = %#v, observation = %#v", events, observed[0])
+	}
+}
+
 func TestRegistryReconciliationBatchUsesDeterministicTaskOrder(t *testing.T) {
 	registry := NewRegistry("")
 	for _, taskID := range []string{"z-task", "a-task", "m-task"} {
@@ -196,6 +224,34 @@ func TestRegistryReconciliationBatchUsesDeterministicTaskOrder(t *testing.T) {
 	for i := range want {
 		if observed[i] != want[i] {
 			t.Fatalf("observed task order = %v, want %v", observed, want)
+		}
+	}
+}
+
+func TestRegistryRetainsBoundaryPerReconciledTask(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxEvents: 1})
+	for _, taskID := range []string{"z-task", "a-task", "m-task"} {
+		if err := registry.Upsert(Record{TaskID: taskID, Task: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var observed []TaskEvent
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation.Event)
+	})
+
+	changed, err := registry.MarkActiveLost("restart")
+	if err != nil || changed != 3 {
+		t.Fatalf("MarkActiveLost = %d, %v", changed, err)
+	}
+	events := registry.ListEvents("")
+	if len(observed) != 3 || len(events) != 3 {
+		t.Fatalf("observed=%#v durable=%#v", observed, events)
+	}
+	for i, taskID := range []string{"a-task", "m-task", "z-task"} {
+		if observed[i].TaskID != taskID || observed[i].Type != EventTaskReconciled ||
+			events[i].EventID != observed[i].EventID {
+			t.Fatalf("event %d: observed=%#v durable=%#v", i, observed[i], events[i])
 		}
 	}
 }

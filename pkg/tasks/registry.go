@@ -356,7 +356,7 @@ func (r *Registry) Upsert(rec Record) error {
 		"label":     rec.Label,
 	})
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(now)
+	r.pruneMutationLocked(now, newEvents)
 	err := r.saveLocked()
 	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
@@ -392,7 +392,7 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	r.records[taskID] = rec
 	r.appendUpdateEventsLocked(before, rec, rec.LastEventAt)
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(rec.LastEventAt)
+	r.pruneMutationLocked(rec.LastEventAt, newEvents)
 	err := r.saveLocked()
 	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
@@ -419,7 +419,7 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	now := time.Now().UnixMilli()
 	r.appendEventLocked(rec, eventType, now, payload)
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(now)
+	r.pruneMutationLocked(now, newEvents)
 	err := r.saveLocked()
 	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
@@ -630,7 +630,7 @@ func (r *Registry) updateInteractionProjection(
 	r.records[taskID] = rec
 	r.appendUpdateEventsLocked(before, rec, now)
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(now)
+	r.pruneMutationLocked(now, newEvents)
 	err = r.saveLocked()
 	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
@@ -761,7 +761,7 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	newEvents := r.eventsSinceLocked(eventStart)
 	var deliveries []*eventObserverDelivery
 	if changed > 0 {
-		r.pruneLocked(now)
+		r.pruneMutationLocked(now, newEvents)
 		err = r.saveLocked()
 		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
 		deliveries = queued
@@ -820,7 +820,7 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	newEvents := r.eventsSinceLocked(eventStart)
 	var deliveries []*eventObserverDelivery
 	if changed > 0 {
-		r.pruneLocked(now)
+		r.pruneMutationLocked(now, newEvents)
 		err = r.saveLocked()
 		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
 		deliveries = queued
@@ -934,6 +934,53 @@ func (r *Registry) pruneLocked(now int64) bool {
 		changed = true
 	}
 	return changed
+}
+
+func (r *Registry) pruneMutationLocked(now int64, candidates []TaskEvent) {
+	r.pruneLocked(now)
+	if len(candidates) == 0 {
+		return
+	}
+	type streamKey struct {
+		taskID       string
+		generationID string
+	}
+	retainedStreams := make(map[streamKey]struct{}, len(candidates))
+	candidateIDs := make(map[string]struct{}, len(candidates))
+	for _, event := range candidates {
+		candidateIDs[event.EventID] = struct{}{}
+	}
+	retainedCandidates := make(map[string]struct{}, len(candidates))
+	nonCandidates := make([]TaskEvent, 0, len(r.events))
+	for _, event := range r.events {
+		if _, candidate := candidateIDs[event.EventID]; candidate {
+			retainedCandidates[event.EventID] = struct{}{}
+			retainedStreams[streamKey{event.TaskID, event.GenerationID}] = struct{}{}
+		} else {
+			nonCandidates = append(nonCandidates, event)
+		}
+	}
+	floorByStream := make(map[streamKey]TaskEvent)
+	for _, event := range candidates {
+		key := streamKey{event.TaskID, event.GenerationID}
+		if _, retained := retainedStreams[key]; retained {
+			continue
+		}
+		record, exists := r.records[event.TaskID]
+		if exists && record.GenerationID == event.GenerationID {
+			floorByStream[key] = event
+		}
+	}
+	mutationEvents := make([]TaskEvent, 0, len(candidates))
+	for _, event := range candidates {
+		key := streamKey{event.TaskID, event.GenerationID}
+		floor, isFloor := floorByStream[key]
+		_, retained := retainedCandidates[event.EventID]
+		if retained || isFloor && floor.EventID == event.EventID {
+			mutationEvents = append(mutationEvents, event)
+		}
+	}
+	r.events = append(nonCandidates, mutationEvents...)
 }
 
 func (r *Registry) pruneSnapshotBytesLocked() bool {
