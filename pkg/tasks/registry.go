@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1116,6 +1117,13 @@ func (r *Registry) load() error {
 	decoder.UseNumber()
 	if err := decoder.Decode(&snap); err != nil {
 		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("task registry contains a trailing JSON value")
+		}
+		return fmt.Errorf("task registry contains trailing data: %w", err)
 	}
 	now := time.Now().UnixMilli()
 	records := make(map[string]Record, len(snap.Tasks))

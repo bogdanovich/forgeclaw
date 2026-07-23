@@ -211,6 +211,35 @@ func TestRegistryRejectsSnapshotsWithoutGenerationIdentity(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsTrailingSnapshotData(t *testing.T) {
+	for name, data := range map[string][]byte{
+		"second value": []byte(`{} {}`),
+		"garbage":      []byte(`{} trailing`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := filepath.Join(t.TempDir(), "task_registry.json")
+			if err := os.WriteFile(store, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			registry := NewRegistry(store)
+			if err := registry.LastLoadError(); err == nil ||
+				!strings.Contains(err.Error(), "trailing") {
+				t.Fatalf("LastLoadError = %v, want trailing-data error", err)
+			}
+			if err := registry.Upsert(Record{TaskID: "must-not-overwrite", Task: "test"}); err == nil {
+				t.Fatal("trailing-data registry accepted mutation")
+			}
+			after, err := os.ReadFile(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(data) {
+				t.Fatal("trailing-data registry was overwritten")
+			}
+		})
+	}
+}
+
 func TestRegistryRejectsSnapshotTransactionally(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "task_registry.json")
 	snapshot := Snapshot{Tasks: []Record{
