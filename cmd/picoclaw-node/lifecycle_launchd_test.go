@@ -47,7 +47,7 @@ func TestLaunchdStatusReportsManagedJob(t *testing.T) {
 			if strings.HasPrefix(target, "gui/") {
 				return launchdRunResult{Output: launchdMissingOutput, ExitCode: 113}, nil
 			}
-			return launchdRunResult{Output: launchdPrintOutput(target, filepath.Join(
+			return launchdRunResult{Output: launchdPrintOutput(defaultLaunchdLabel, filepath.Join(
 				dir,
 				"com.forgeclaw.picoclaw-node.default.plist",
 			), "running")}, nil
@@ -177,10 +177,9 @@ func TestLaunchdStatusRejectsLoadedJobWithoutManagedPlist(t *testing.T) {
 	lifecycle := &launchdLifecycle{
 		plistDir: dir,
 		domains:  []string{"gui/501"},
-		run: func(_ context.Context, args ...string) (launchdRunResult, error) {
-			target := args[1]
+		run: func(context.Context, ...string) (launchdRunResult, error) {
 			return launchdRunResult{
-				Output: launchdPrintOutput(target, filepath.Join(
+				Output: launchdPrintOutput(defaultLaunchdLabel, filepath.Join(
 					dir,
 					"com.forgeclaw.picoclaw-node.default.plist",
 				), "running"),
@@ -202,7 +201,7 @@ func TestLaunchdStatusRejectsDifferentLoadedPath(t *testing.T) {
 		domains:  []string{"gui/501"},
 		run: func(_ context.Context, args ...string) (launchdRunResult, error) {
 			return launchdRunResult{
-				Output: launchdPrintOutput(args[1], "/tmp/other.plist", "running"),
+				Output: launchdPrintOutput(defaultLaunchdLabel, "/tmp/other.plist", "running"),
 			}, nil
 		},
 	}
@@ -222,7 +221,7 @@ func TestLaunchdStatusRejectsMultipleLoadedDomains(t *testing.T) {
 		domains:  []string{"gui/501", "user/501"},
 		run: func(_ context.Context, args ...string) (launchdRunResult, error) {
 			return launchdRunResult{
-				Output: launchdPrintOutput(args[1], filepath.Join(
+				Output: launchdPrintOutput(defaultLaunchdLabel, filepath.Join(
 					dir,
 					"com.forgeclaw.picoclaw-node.default.plist",
 				), "running"),
@@ -273,7 +272,7 @@ func TestLaunchdStatusRejectsUnavailableGUIWithoutTrustingUserDomain(t *testing.
 					}
 					if userLoaded {
 						return launchdRunResult{
-							Output: launchdPrintOutput(args[1], filepath.Join(
+							Output: launchdPrintOutput(defaultLaunchdLabel, filepath.Join(
 								dir,
 								"com.forgeclaw.picoclaw-node.default.plist",
 							), "running"),
@@ -334,7 +333,7 @@ func TestLaunchdStatusAllowsMissingGUIWhenUserDomainIsLoaded(t *testing.T) {
 				}, nil
 			}
 			return launchdRunResult{
-				Output: launchdPrintOutput(args[1], filepath.Join(
+				Output: launchdPrintOutput(defaultLaunchdLabel, filepath.Join(
 					dir,
 					"com.forgeclaw.picoclaw-node.default.plist",
 				), "running"),
@@ -393,12 +392,13 @@ func TestParseLaunchdJobRejectsMalformedOutput(t *testing.T) {
 	target := "gui/501/com.forgeclaw.picoclaw-node.default"
 	tests := []string{
 		"wrong = {\n\tpath = /tmp/test.plist\n\tstate = running\n}",
-		target + " = {\n\tstate = running\n}",
-		target + " = {\n\tpath = /tmp/test.plist\n}",
-		target + " = {\n\tpath = /tmp/test.plist\n\tpath = /tmp/other.plist\n\tstate = running\n}",
+		target + " = {\n\tpath = /tmp/test.plist\n\tstate = running\n}",
+		defaultLaunchdLabel + " = {\n\tstate = running\n}",
+		defaultLaunchdLabel + " = {\n\tpath = /tmp/test.plist\n}",
+		defaultLaunchdLabel + " = {\n\tpath = /tmp/test.plist\n\tpath = /tmp/other.plist\n\tstate = running\n}",
 	}
 	for _, output := range tests {
-		if _, err := parseLaunchdJob(target, output); err == nil {
+		if _, err := parseLaunchdJob(target, defaultLaunchdLabel, output); err == nil {
 			t.Fatalf("expected malformed output to fail:\n%s", output)
 		}
 	}
@@ -407,7 +407,7 @@ func TestParseLaunchdJobRejectsMalformedOutput(t *testing.T) {
 func TestParseLaunchdJobIgnoresNestedState(t *testing.T) {
 	t.Parallel()
 	target := "gui/501/com.forgeclaw.picoclaw-node.default"
-	output := target + ` = {
+	output := defaultLaunchdLabel + ` = {
 	path = /tmp/test.plist
 	state = running
 	properties = {
@@ -415,7 +415,7 @@ func TestParseLaunchdJobIgnoresNestedState(t *testing.T) {
 	}
 }`
 
-	job, err := parseLaunchdJob(target, output)
+	job, err := parseLaunchdJob(target, defaultLaunchdLabel, output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,8 +446,11 @@ func writeManagedLaunchdPlist(t *testing.T, dir, instance string) {
 	}
 }
 
-func launchdPrintOutput(target, path, state string) string {
-	return target + " = {\n\tpath = " + path + "\n\tstate = " + state + "\n}"
+func launchdPrintOutput(label, path, state string) string {
+	return label + " = {\n\tpath = " + path + "\n\tstate = " + state + "\n}"
 }
 
-const launchdMissingOutput = "Could not find service"
+const (
+	defaultLaunchdLabel  = "com.forgeclaw.picoclaw-node.default"
+	launchdMissingOutput = "Could not find service"
+)

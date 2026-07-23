@@ -166,7 +166,7 @@ func (lifecycle *launchdLifecycle) queryJob(
 				result.Output,
 			)
 		}
-		job, err := parseLaunchdJob(target, result.Output)
+		job, err := parseLaunchdJob(target, service, result.Output)
 		if err != nil {
 			return launchdJobState{}, false, err
 		}
@@ -191,9 +191,9 @@ func (lifecycle *launchdLifecycle) queryJob(
 	return loaded[0], true, nil
 }
 
-func parseLaunchdJob(target, output string) (launchdJobState, error) {
+func parseLaunchdJob(target, service, output string) (launchdJobState, error) {
 	lines := strings.Split(output, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != target+" = {" {
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != service+" = {" {
 		return launchdJobState{}, fmt.Errorf(
 			"launchctl print %s returned an unexpected service identity",
 			target,
