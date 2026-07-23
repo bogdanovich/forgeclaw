@@ -55,7 +55,7 @@ func (lifecycle *systemdLifecycle) Install(
 	request lifecycleRequest,
 ) (lifecycleStatus, error) {
 	status := lifecycle.baseStatus(request.Instance)
-	directory, err := openSystemdUnitDirectory(lifecycle.unitDir, lifecycle.system)
+	directory, err := openSystemdUnitDirectory(lifecycle.unitDir, !lifecycle.system)
 	if err != nil {
 		return lifecycleStatus{}, err
 	}
@@ -248,7 +248,7 @@ func (lifecycle *systemdLifecycle) rollbackInstall(
 	if err != nil {
 		return errors.Join(cause, err)
 	}
-	if err := removeQuarantinedSystemdUnit(quarantined); err != nil {
+	if _, err := removeQuarantinedSystemdUnit(quarantined); err != nil {
 		errorsSeen = append(errorsSeen, fmt.Errorf("remove failed systemd unit: %w", err))
 	}
 	if err := lifecycle.requireSuccess(ctx, "daemon-reload"); err != nil {
@@ -257,7 +257,7 @@ func (lifecycle *systemdLifecycle) rollbackInstall(
 	return errors.Join(errorsSeen...)
 }
 
-func openSystemdUnitDirectory(path string, system bool) (*systemdUnitDirectory, error) {
+func openSystemdUnitDirectory(path string, createMissing bool) (*systemdUnitDirectory, error) {
 	cleanPath := filepath.Clean(path)
 	if !filepath.IsAbs(cleanPath) || cleanPath == string(filepath.Separator) {
 		return nil, errors.New("systemd unit directory must be an absolute non-root path")
@@ -291,7 +291,7 @@ func openSystemdUnitDirectory(path string, system bool) (*systemdUnitDirectory, 
 			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
 			0,
 		)
-		if errors.Is(openErr, unix.ENOENT) && !system {
+		if errors.Is(openErr, unix.ENOENT) && createMissing {
 			if mkdirErr := unix.Mkdirat(fd, component, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
 				return nil, fmt.Errorf("create systemd user unit directory component %s: %w", nextPath, mkdirErr)
 			}
@@ -408,7 +408,17 @@ func captureSystemdUnitAt(directory *systemdUnitDirectory, name string) (systemd
 	if err != nil {
 		return systemdUnitState{}, fmt.Errorf("read existing systemd unit: %w", err)
 	}
-	return systemdUnitState{exists: true, managed: hasSystemdUnitMarker(data)}, nil
+	return systemdUnitState{
+		exists:  true,
+		managed: hasSystemdUnitMarker(data),
+		publication: publishedSystemdUnit{
+			directory: directory,
+			name:      name,
+			data:      append([]byte(nil), data...),
+			device:    stat.Dev,
+			inode:     stat.Ino,
+		},
+	}, nil
 }
 
 func acquireSystemdUnitLock(
@@ -590,13 +600,7 @@ func quarantinePublishedSystemdUnit(publication publishedSystemdUnit) (published
 		return publishedSystemdUnit{}, err
 	}
 	quarantineName := publication.name + ".rollback-" + id
-	if err = unix.Renameat2(
-		publication.directory.fd(),
-		publication.name,
-		publication.directory.fd(),
-		quarantineName,
-		unix.RENAME_NOREPLACE,
-	); err != nil {
+	if err = renamePublishedSystemdUnit(publication, quarantineName); err != nil {
 		return publishedSystemdUnit{}, fmt.Errorf("quarantine failed systemd unit: %w", err)
 	}
 	quarantined := publication
@@ -629,18 +633,28 @@ func quarantinePublishedSystemdUnit(publication publishedSystemdUnit) (published
 	return publishedSystemdUnit{}, ownershipErr
 }
 
-func removeQuarantinedSystemdUnit(publication publishedSystemdUnit) error {
+func renamePublishedSystemdUnit(publication publishedSystemdUnit, newName string) error {
+	return unix.Renameat2(
+		publication.directory.fd(),
+		publication.name,
+		publication.directory.fd(),
+		newName,
+		unix.RENAME_NOREPLACE,
+	)
+}
+
+func removeQuarantinedSystemdUnit(publication publishedSystemdUnit) (bool, error) {
 	owned, err := publishedSystemdUnitMatches(publication)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !owned {
-		return errors.New("rollback refused: quarantined unit no longer matches the installed transaction")
+		return false, errors.New("rollback refused: quarantined unit no longer matches the installed transaction")
 	}
 	if err = unix.Unlinkat(publication.directory.fd(), publication.name, 0); err != nil {
-		return err
+		return false, err
 	}
-	return unix.Fsync(publication.directory.fd())
+	return true, unix.Fsync(publication.directory.fd())
 }
 
 func newInstallTransactionID() (string, error) {
