@@ -723,7 +723,8 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	}
 	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
-	for id, rec := range r.records {
+	for _, id := range r.sortedRecordIDsLocked() {
+		rec := r.records[id]
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
 		}
@@ -791,7 +792,8 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	}
 	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
-	for id, rec := range r.records {
+	for _, id := range r.sortedRecordIDsLocked() {
+		rec := r.records[id]
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
 		}
@@ -1164,8 +1166,36 @@ func (r *Registry) completeMutationLocked(
 	committed := saveErr == nil || fileutil.IsCommittedWriteError(saveErr)
 	if !committed {
 		r.restoreStateLocked(rollback)
+	} else {
+		events = r.retainedEventsLocked(events)
 	}
 	return committed, r.queueCommittedNotificationsLocked(committed, events)
+}
+
+func (r *Registry) retainedEventsLocked(candidates []TaskEvent) []TaskEvent {
+	if len(candidates) == 0 || len(r.events) == 0 {
+		return nil
+	}
+	retainedIDs := make(map[string]struct{}, len(r.events))
+	for _, event := range r.events {
+		retainedIDs[event.EventID] = struct{}{}
+	}
+	retained := make([]TaskEvent, 0, len(candidates))
+	for _, event := range candidates {
+		if _, ok := retainedIDs[event.EventID]; ok {
+			retained = append(retained, event)
+		}
+	}
+	return retained
+}
+
+func (r *Registry) sortedRecordIDsLocked() []string {
+	ids := make([]string, 0, len(r.records))
+	for id := range r.records {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int64) {

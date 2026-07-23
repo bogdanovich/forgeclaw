@@ -126,6 +126,63 @@ func TestRegistryKeepsAndNotifiesPostRenameCommit(t *testing.T) {
 	}
 }
 
+func TestRegistryPublishesOnlyPostPruneEvents(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxEvents: 1})
+	if err := registry.Upsert(Record{TaskID: "bounded", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+
+	if err := registry.Update("bounded", func(record *Record) {
+		record.Status = StatusSucceeded
+		record.DeliveryStatus = DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.Type != EventTaskDeliveryChanged ||
+		observed[0].Event.Seq != 3 || !observed[0].FinalForTask {
+		t.Fatalf("post-prune observations = %#v", observed)
+	}
+	events := registry.ListEvents("bounded")
+	if len(events) != 1 || events[0].EventID != observed[0].Event.EventID {
+		t.Fatalf("durable events = %#v, observation = %#v", events, observed[0])
+	}
+}
+
+func TestRegistryReconciliationBatchUsesDeterministicTaskOrder(t *testing.T) {
+	registry := NewRegistry("")
+	for _, taskID := range []string{"z-task", "a-task", "m-task"} {
+		if err := registry.Upsert(Record{TaskID: taskID, Task: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var observed []string
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation.Event.TaskID)
+	})
+
+	changed, err := registry.MarkActiveLost("restart")
+	if err != nil || changed != 3 {
+		t.Fatalf("MarkActiveLost = %d, %v", changed, err)
+	}
+	want := []string{
+		"a-task", "a-task", "a-task",
+		"m-task", "m-task", "m-task",
+		"z-task", "z-task", "z-task",
+	}
+	if len(observed) != len(want) {
+		t.Fatalf("observed task order = %v, want %v", observed, want)
+	}
+	for i := range want {
+		if observed[i] != want[i] {
+			t.Fatalf("observed task order = %v, want %v", observed, want)
+		}
+	}
+}
+
 func TestRegistryRollsBackNestedUpdateAfterPersistenceFailure(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "tasks.json")
 	registry := NewRegistry(store)
