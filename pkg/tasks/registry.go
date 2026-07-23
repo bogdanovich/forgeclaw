@@ -380,7 +380,8 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 		r.mu.Unlock()
 		return fmt.Errorf("task %q not found", taskID)
 	}
-	before := rec
+	before := cloneTaskRecord(rec)
+	rec = cloneTaskRecord(rec)
 	mutate(&rec)
 	rec.GenerationID = before.GenerationID
 	rec.LastEventSeq = before.LastEventSeq

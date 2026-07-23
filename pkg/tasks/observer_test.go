@@ -284,6 +284,34 @@ func TestRegistryRollsBackNestedUpdateAfterPersistenceFailure(t *testing.T) {
 	}
 }
 
+func TestRegistryPublishesSuccessfulNestedOnlyUpdate(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "nested-success", Task: "test", Status: StatusRunning,
+		Deliverable: &DeliverablePayload{Metadata: map[string]string{"state": "original"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+
+	if err := registry.Update("nested-success", func(record *Record) {
+		record.Deliverable.Metadata["state"] = "updated"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.Type != EventTaskUpdated ||
+		observed[0].Record.Deliverable.Metadata["state"] != "updated" {
+		t.Fatalf("nested update observations = %#v", observed)
+	}
+	events := registry.ListEvents("nested-success")
+	if len(events) != 2 || events[1].EventID != observed[0].Event.EventID {
+		t.Fatalf("durable events = %#v, observation = %#v", events, observed[0])
+	}
+}
+
 func TestRegistryRollsBackTypedExtraAfterPersistenceFailure(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "tasks.json")
 	registry := NewRegistry(store)
