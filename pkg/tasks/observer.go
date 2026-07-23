@@ -36,6 +36,7 @@ type eventObserverDelivery struct {
 	active    bool
 	closed    bool
 	notifying bool
+	inFlight  bool
 	pending   []EventObservation
 }
 
@@ -197,24 +198,54 @@ func (d *eventObserverDelivery) close() {
 	d.mu.Lock()
 	d.closed = true
 	d.pending = nil
+	if !d.inFlight {
+		d.notifying = false
+	}
 	d.mu.Unlock()
 }
 
 func (d *eventObserverDelivery) drain() {
 	for {
-		d.mu.Lock()
-		if d.closed || !d.active || len(d.pending) == 0 {
-			d.notifying = false
-			d.mu.Unlock()
+		observation, observer, ok := d.claimNext()
+		if !ok {
 			return
 		}
-		observation := d.pending[0]
-		d.pending[0] = EventObservation{}
-		d.pending = d.pending[1:]
-		observer := d.observer
-		d.mu.Unlock()
+		if !d.beginCallback() {
+			return
+		}
 		notifyObserver(observer, observation)
+		d.finishCallback()
 	}
+}
+
+func (d *eventObserverDelivery) claimNext() (EventObservation, EventObserver, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || !d.active || len(d.pending) == 0 {
+		d.notifying = false
+		return EventObservation{}, nil, false
+	}
+	observation := d.pending[0]
+	d.pending[0] = EventObservation{}
+	d.pending = d.pending[1:]
+	return observation, d.observer, true
+}
+
+func (d *eventObserverDelivery) beginCallback() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		d.notifying = false
+		return false
+	}
+	d.inFlight = true
+	return true
+}
+
+func (d *eventObserverDelivery) finishCallback() {
+	d.mu.Lock()
+	d.inFlight = false
+	d.mu.Unlock()
 }
 
 func cloneTaskRecord(record Record) Record {

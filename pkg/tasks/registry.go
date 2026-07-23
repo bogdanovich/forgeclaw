@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -267,8 +268,8 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 	}
 	if r.store != "" {
 		r.lastLoad = r.load()
-		if r.lastLoad == nil && r.pruneLocked(time.Now().UnixMilli()) {
-			_ = r.saveLocked()
+		if r.lastLoad == nil {
+			r.pruneLoadedState(time.Now().UnixMilli())
 		}
 	}
 	return r
@@ -320,6 +321,7 @@ func (r *Registry) Upsert(rec Record) error {
 	if r == nil || strings.TrimSpace(rec.TaskID) == "" {
 		return nil
 	}
+	rec = cloneTaskRecord(rec)
 	now := time.Now().UnixMilli()
 	if rec.CreatedAt == 0 {
 		rec.CreatedAt = now
@@ -937,6 +939,17 @@ func (r *Registry) pruneLocked(now int64) bool {
 	return changed
 }
 
+func (r *Registry) pruneLoadedState(now int64) {
+	rollback := r.captureStateLocked()
+	if !r.pruneLocked(now) {
+		return
+	}
+	if err := r.saveLocked(); err != nil && !fileutil.IsCommittedWriteError(err) {
+		r.restoreStateLocked(rollback)
+		r.lastLoad = fmt.Errorf("persist pruned task registry: %w", err)
+	}
+}
+
 func (r *Registry) pruneMutationLocked(now int64, candidates []TaskEvent) {
 	r.pruneLocked(now)
 	if len(candidates) == 0 {
@@ -1099,7 +1112,9 @@ func (r *Registry) load() error {
 		return err
 	}
 	var snap Snapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&snap); err != nil {
 		return err
 	}
 	now := time.Now().UnixMilli()
@@ -1468,7 +1483,9 @@ func copyAnyMap(in map[string]any) map[string]any {
 	data, err := json.Marshal(in)
 	if err == nil {
 		var out map[string]any
-		if json.Unmarshal(data, &out) == nil {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if decoder.Decode(&out) == nil {
 			return out
 		}
 	}

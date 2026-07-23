@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -54,6 +55,46 @@ func TestRegistryEventObserverRunsAfterDurableWriteAndCanUnsubscribe(t *testing.
 	case observation := <-observations:
 		t.Fatalf("observer ran after unsubscribe: %#v", observation)
 	default:
+	}
+}
+
+func TestObserverCloseCancelsClaimedCallback(t *testing.T) {
+	called := false
+	delivery := newEventObserverDelivery(func(EventObservation) {
+		called = true
+	}, true)
+	if !delivery.queue(EventObservation{}) {
+		t.Fatal("active observer did not request drain")
+	}
+	observation, observer, ok := delivery.claimNext()
+	if !ok {
+		t.Fatal("queued callback was not claimed")
+	}
+	delivery.close()
+	if delivery.beginCallback() {
+		notifyObserver(observer, observation)
+	}
+	if called {
+		t.Fatal("claimed callback began after close")
+	}
+}
+
+func TestRegistryObserverCanUnsubscribeItself(t *testing.T) {
+	registry := NewRegistry("")
+	var unsubscribe func()
+	called := 0
+	unsubscribe = registry.SubscribeEvents(func(EventObservation) {
+		called++
+		unsubscribe()
+	})
+	if err := registry.Upsert(Record{TaskID: "self-unsubscribe", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.AppendEvent("self-unsubscribe", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Fatalf("self-unsubscribing observer called %d times", called)
 	}
 }
 
@@ -453,6 +494,49 @@ func TestRegistryPublicReadsAreIsolated(t *testing.T) {
 		nested["state"] != "original" ||
 		freshEvents[0].Payload["task_kind"] != "fixture" {
 		t.Fatalf("public read mutated registry: record=%#v events=%#v", fresh, freshEvents)
+	}
+}
+
+func TestRegistryUpsertDetachesCallerCompletion(t *testing.T) {
+	registry := NewRegistry("")
+	completion := &CompletionPayload{
+		Text:  "original",
+		Media: []CompletionMedia{{Ref: "original-ref"}},
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "completion-owner", Task: "test", Completion: completion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	completion.Text = "mutated"
+	completion.Media[0].Ref = "mutated-ref"
+
+	stored, _ := registry.Get("completion-owner")
+	if stored.Completion.Text != "original" || stored.Completion.Media[0].Ref != "original-ref" {
+		t.Fatalf("caller mutation changed registry completion: %#v", stored.Completion)
+	}
+}
+
+func TestRegistryPreservesLargeIntegersInReportExtra(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	const large = int64(9007199254740993)
+	if err := registry.Upsert(Record{
+		TaskID: "large-number", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra:         map[string]any{"large": large},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []*Registry{registry, NewRegistry(store)} {
+		record, _ := source.Get("large-number")
+		number, ok := record.Deliverable.Report.Extra["large"].(json.Number)
+		if !ok || number.String() != "9007199254740993" {
+			t.Fatalf("large Extra number = %#v (%T)", record.Deliverable.Report.Extra["large"],
+				record.Deliverable.Report.Extra["large"])
+		}
 	}
 }
 

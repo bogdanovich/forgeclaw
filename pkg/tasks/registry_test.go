@@ -2,12 +2,76 @@ package tasks
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRegistryRestoresLoadedStateWhenStartupPruneWriteFails(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	initial := NewRegistry(store)
+	if err := initial.Upsert(Record{
+		TaskID: "expired", Task: "test", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryDelivered,
+		EndedAt:        time.Now().Add(-time.Hour).UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted Snapshot
+	if err = json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	persisted.Tasks[0].CleanupAfter = time.Now().Add(-time.Minute).UnixMilli()
+	data, err = json.MarshalIndent(persisted, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := &Registry{
+		store: store,
+		options: Options{
+			TerminalRetention: time.Millisecond,
+			MaxRecords:        DefaultMaxRecords,
+			MaxEvents:         DefaultMaxEvents,
+			MaxSnapshotBytes:  DefaultMaxSnapshotBytes,
+		},
+		records: make(map[string]Record),
+		events:  make([]TaskEvent, 0),
+		writeAtomic: func(string, []byte, os.FileMode) error {
+			return errors.New("pre-rename failure")
+		},
+	}
+	if err = registry.load(); err != nil {
+		t.Fatal(err)
+	}
+	registry.pruneLoadedState(time.Now().UnixMilli())
+	if registry.LastLoadError() == nil {
+		t.Fatal("startup prune persistence failure was not surfaced")
+	}
+	if _, ok := registry.Get("expired"); !ok {
+		t.Fatal("failed startup prune removed in-memory record")
+	}
+	data, err = os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Tasks) != 1 || snapshot.Tasks[0].TaskID != "expired" {
+		t.Fatal("failed startup prune changed durable record")
+	}
+}
 
 func TestRegistryPersistsAndReloadsRecords(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
