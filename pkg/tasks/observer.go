@@ -132,7 +132,7 @@ func (r *Registry) queueCommittedNotificationsLocked(
 			FinalForTask: lastByTask[event.TaskID] == i,
 		}
 		for _, entry := range observers {
-			if entry.delivery.queue(observation) {
+			if entry.delivery.queue(cloneEventObservation(observation)) {
 				deliveries = append(deliveries, entry.delivery)
 			}
 		}
@@ -238,6 +238,14 @@ func cloneTaskEvent(event TaskEvent) TaskEvent {
 	cloned := event
 	cloned.Payload = copyStringMap(event.Payload)
 	return cloned
+}
+
+func cloneEventObservation(observation EventObservation) EventObservation {
+	return EventObservation{
+		Event:        cloneTaskEvent(observation.Event),
+		Record:       cloneTaskRecord(observation.Record),
+		FinalForTask: observation.FinalForTask,
+	}
 }
 
 func notifyObserver(observer EventObserver, observation EventObservation) {

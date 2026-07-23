@@ -211,6 +211,66 @@ func TestRegistryRollsBackNestedUpdateAfterPersistenceFailure(t *testing.T) {
 	}
 }
 
+func TestRegistryRollsBackTypedExtraAfterPersistenceFailure(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "typed-extra", Task: "test", Status: StatusRunning,
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"typed": map[string]string{"state": "original"},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	badParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(badParent, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry.store = filepath.Join(badParent, "tasks.json")
+	if err := registry.Update("typed-extra", func(record *Record) {
+		record.Deliverable.Report.Extra["typed"].(map[string]string)["state"] = "speculative"
+	}); err == nil {
+		t.Fatal("expected persistence error")
+	}
+	record, _ := registry.Get("typed-extra")
+	typed := record.Deliverable.Report.Extra["typed"].(map[string]string)
+	if typed["state"] != "original" {
+		t.Fatalf("typed Extra after rollback = %#v", typed)
+	}
+}
+
+func TestRegistryObserversReceiveIsolatedObservations(t *testing.T) {
+	registry := NewRegistry("")
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observation.Event.Payload["task_kind"] = "mutated"
+		typed := observation.Record.Deliverable.Report.Extra["typed"].(map[string]string)
+		typed["state"] = "mutated"
+	})
+	var observed EventObservation
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = observation
+	})
+
+	if err := registry.Upsert(Record{
+		TaskID: "isolated", Task: "test", TaskKind: "fixture",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"typed": map[string]string{"state": "original"},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	typed := observed.Record.Deliverable.Report.Extra["typed"].(map[string]string)
+	if observed.Event.Payload["task_kind"] != "fixture" || typed["state"] != "original" {
+		t.Fatalf("second observer received mutated data: %#v", observed)
+	}
+}
+
 func TestRegistryObserverPanicDoesNotFailDurableUpdate(t *testing.T) {
 	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
 	registry.SubscribeEvents(func(EventObservation) { panic("observer failed") })
