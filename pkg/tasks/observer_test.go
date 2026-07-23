@@ -11,6 +11,15 @@ import (
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
+type cyclicExtra struct {
+	State string
+	Next  *cyclicExtra
+}
+
+func (*cyclicExtra) MarshalJSON() ([]byte, error) {
+	return []byte(`{"state":"serializable"}`), nil
+}
+
 func TestRegistryEventObserverRunsAfterDurableWriteAndCanUnsubscribe(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "tasks.json")
 	registry := NewRegistry(store)
@@ -268,6 +277,29 @@ func TestRegistryObserversReceiveIsolatedObservations(t *testing.T) {
 	typed := observed.Record.Deliverable.Report.Extra["typed"].(map[string]string)
 	if observed.Event.Payload["task_kind"] != "fixture" || typed["state"] != "original" {
 		t.Fatalf("second observer received mutated data: %#v", observed)
+	}
+}
+
+func TestRegistryClonesCyclicJSONMarshalerExtra(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	extra := &cyclicExtra{State: "original"}
+	extra.Next = extra
+	if err := registry.Upsert(Record{
+		TaskID: "cyclic-extra", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra:         map[string]any{"cyclic": extra},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(EventObservation) {})
+	t.Cleanup(unsubscribe)
+	activate()
+	cloned := snapshot.Records[0].Deliverable.Report.Extra["cyclic"].(*cyclicExtra)
+	if cloned == extra || cloned.Next != cloned || cloned.State != "original" {
+		t.Fatalf("cyclic Extra clone = %#v, original = %#v", cloned, extra)
 	}
 }
 

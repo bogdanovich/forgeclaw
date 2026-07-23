@@ -1429,11 +1429,20 @@ func copyAnyValue(value any) any {
 	if value == nil {
 		return nil
 	}
-	return copyJSONValue(reflect.ValueOf(value)).Interface()
+	return copyJSONValue(reflect.ValueOf(value), make(map[copyVisit]reflect.Value)).Interface()
 }
 
-// Extra values must be JSON-marshalable, so their reference graph is acyclic.
-func copyJSONValue(value reflect.Value) reflect.Value {
+type copyVisit struct {
+	typ      reflect.Type
+	pointer  uintptr
+	length   int
+	capacity int
+}
+
+func copyJSONValue(
+	value reflect.Value,
+	visited map[copyVisit]reflect.Value,
+) reflect.Value {
 	if !value.IsValid() {
 		return value
 	}
@@ -1442,7 +1451,7 @@ func copyJSONValue(value reflect.Value) reflect.Value {
 		if value.IsNil() {
 			return reflect.Zero(value.Type())
 		}
-		cloned := copyJSONValue(value.Elem())
+		cloned := copyJSONValue(value.Elem(), visited)
 		out := reflect.New(value.Type()).Elem()
 		out.Set(cloned)
 		return out
@@ -1450,40 +1459,58 @@ func copyJSONValue(value reflect.Value) reflect.Value {
 		if value.IsNil() {
 			return reflect.Zero(value.Type())
 		}
+		visit := copyVisit{typ: value.Type(), pointer: value.Pointer()}
+		if cloned, ok := visited[visit]; ok {
+			return cloned
+		}
 		out := reflect.MakeMapWithSize(value.Type(), value.Len())
+		visited[visit] = out
 		iter := value.MapRange()
 		for iter.Next() {
-			out.SetMapIndex(iter.Key(), copyJSONValue(iter.Value()))
+			out.SetMapIndex(iter.Key(), copyJSONValue(iter.Value(), visited))
 		}
 		return out
 	case reflect.Slice:
 		if value.IsNil() {
 			return reflect.Zero(value.Type())
 		}
+		visit := copyVisit{
+			typ: value.Type(), pointer: value.Pointer(),
+			length: value.Len(), capacity: value.Cap(),
+		}
+		if cloned, ok := visited[visit]; ok {
+			return cloned
+		}
 		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		visited[visit] = out
 		for i := 0; i < value.Len(); i++ {
-			out.Index(i).Set(copyJSONValue(value.Index(i)))
+			out.Index(i).Set(copyJSONValue(value.Index(i), visited))
 		}
 		return out
 	case reflect.Array:
 		out := reflect.New(value.Type()).Elem()
 		for i := 0; i < value.Len(); i++ {
-			out.Index(i).Set(copyJSONValue(value.Index(i)))
+			out.Index(i).Set(copyJSONValue(value.Index(i), visited))
 		}
 		return out
 	case reflect.Pointer:
 		if value.IsNil() {
 			return reflect.Zero(value.Type())
 		}
+		visit := copyVisit{typ: value.Type(), pointer: value.Pointer()}
+		if cloned, ok := visited[visit]; ok {
+			return cloned
+		}
 		out := reflect.New(value.Type().Elem())
-		out.Elem().Set(copyJSONValue(value.Elem()))
+		visited[visit] = out
+		out.Elem().Set(copyJSONValue(value.Elem(), visited))
 		return out
 	case reflect.Struct:
 		out := reflect.New(value.Type()).Elem()
 		out.Set(value)
 		for i := 0; i < value.NumField(); i++ {
 			if out.Field(i).CanSet() {
-				out.Field(i).Set(copyJSONValue(value.Field(i)))
+				out.Field(i).Set(copyJSONValue(value.Field(i), visited))
 			}
 		}
 		return out
