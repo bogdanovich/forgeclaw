@@ -109,11 +109,11 @@ func (r *Registry) eventsSinceLocked(start int) []TaskEvent {
 	return append([]TaskEvent(nil), r.events[start:]...)
 }
 
-func (r *Registry) queueNotificationsAfterCommitLocked(
-	commitErr error,
+func (r *Registry) queueCommittedNotificationsLocked(
+	committed bool,
 	events []TaskEvent,
 ) []*eventObserverDelivery {
-	if r == nil || commitErr != nil || len(events) == 0 {
+	if r == nil || !committed || len(events) == 0 {
 		return nil
 	}
 	observers := append([]observerEntry(nil), r.observers...)

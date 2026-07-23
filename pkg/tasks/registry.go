@@ -206,13 +206,14 @@ type Options struct {
 }
 
 type Registry struct {
-	mu        sync.RWMutex
-	store     string
-	options   Options
-	records   map[string]Record
-	events    []TaskEvent
-	observers []observerEntry
-	lastLoad  error
+	mu          sync.RWMutex
+	store       string
+	options     Options
+	records     map[string]Record
+	events      []TaskEvent
+	observers   []observerEntry
+	lastLoad    error
+	writeAtomic func(string, []byte, os.FileMode) error
 }
 
 type Snapshot struct {
@@ -258,10 +259,11 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 		opts.MaxSnapshotBytes = DefaultMaxSnapshotBytes
 	}
 	r := &Registry{
-		store:   strings.TrimSpace(storePath),
-		options: opts,
-		records: make(map[string]Record),
-		events:  make([]TaskEvent, 0),
+		store:       strings.TrimSpace(storePath),
+		options:     opts,
+		records:     make(map[string]Record),
+		events:      make([]TaskEvent, 0),
+		writeAtomic: fileutil.WriteFileAtomic,
 	}
 	if r.store != "" {
 		r.lastLoad = r.load()
@@ -356,10 +358,7 @@ func (r *Registry) Upsert(rec Record) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
-	if err != nil {
-		r.restoreStateLocked(rollbackState)
-	}
-	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return err
@@ -395,10 +394,7 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(rec.LastEventAt)
 	err := r.saveLocked()
-	if err != nil {
-		r.restoreStateLocked(rollbackState)
-	}
-	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return err
@@ -425,10 +421,7 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err := r.saveLocked()
-	if err != nil {
-		r.restoreStateLocked(rollbackState)
-	}
-	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return err
@@ -639,10 +632,7 @@ func (r *Registry) updateInteractionProjection(
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneLocked(now)
 	err = r.saveLocked()
-	if err != nil {
-		r.restoreStateLocked(rollbackState)
-	}
-	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return err
@@ -768,15 +758,16 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	}
 	err := error(nil)
 	newEvents := r.eventsSinceLocked(eventStart)
+	var deliveries []*eventObserverDelivery
 	if changed > 0 {
 		r.pruneLocked(now)
 		err = r.saveLocked()
-		if err != nil {
-			r.restoreStateLocked(rollbackState)
+		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
+		deliveries = queued
+		if !committed {
 			changed = 0
 		}
 	}
-	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return changed, err
@@ -825,15 +816,16 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	}
 	err := error(nil)
 	newEvents := r.eventsSinceLocked(eventStart)
+	var deliveries []*eventObserverDelivery
 	if changed > 0 {
 		r.pruneLocked(now)
 		err = r.saveLocked()
-		if err != nil {
-			r.restoreStateLocked(rollbackState)
+		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
+		deliveries = queued
+		if !committed {
 			changed = 0
 		}
 	}
-	deliveries := r.queueNotificationsAfterCommitLocked(err, newEvents)
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return changed, err
@@ -1110,7 +1102,11 @@ func (r *Registry) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return fileutil.WriteFileAtomic(r.store, data, 0o600)
+	writeAtomic := r.writeAtomic
+	if writeAtomic == nil {
+		writeAtomic = fileutil.WriteFileAtomic
+	}
+	return writeAtomic(r.store, data, 0o600)
 }
 
 func (r *Registry) writableErrorLocked() error {
@@ -1158,6 +1154,18 @@ func (r *Registry) captureStateLocked() registryState {
 func (r *Registry) restoreStateLocked(state registryState) {
 	r.records = state.records
 	r.events = state.events
+}
+
+func (r *Registry) completeMutationLocked(
+	saveErr error,
+	rollback registryState,
+	events []TaskEvent,
+) (bool, []*eventObserverDelivery) {
+	committed := saveErr == nil || fileutil.IsCommittedWriteError(saveErr)
+	if !committed {
+		r.restoreStateLocked(rollback)
+	}
+	return committed, r.queueCommittedNotificationsLocked(committed, events)
 }
 
 func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int64) {

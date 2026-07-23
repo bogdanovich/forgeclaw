@@ -1,11 +1,14 @@
 package tasks
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
 func TestRegistryEventObserverRunsAfterDurableWriteAndCanUnsubscribe(t *testing.T) {
@@ -74,6 +77,52 @@ func TestRegistryDoesNotNotifyObserverWhenPersistenceFails(t *testing.T) {
 	}
 	if _, exists := registry.Get("task-1"); exists {
 		t.Fatal("failed task became durable after later successful write")
+	}
+}
+
+func TestRegistryKeepsAndNotifiesPostRenameCommit(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	observations := make(chan EventObservation, 2)
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observations <- observation
+	})
+	registry.writeAtomic = func(path string, data []byte, perm os.FileMode) error {
+		if err := os.WriteFile(path, data, perm); err != nil {
+			return err
+		}
+		return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+	}
+
+	err := registry.Upsert(Record{TaskID: "committed", Task: "test"})
+	if !fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("Upsert error = %v, want committed write error", err)
+	}
+	if record, ok := registry.Get("committed"); !ok || record.LastEventSeq != 1 {
+		t.Fatalf("committed record missing from memory: %#v, %v", record, ok)
+	}
+	select {
+	case observation := <-observations:
+		if observation.Event.TaskID != "committed" || observation.Event.Seq != 1 {
+			t.Fatalf("observation = %#v", observation)
+		}
+	default:
+		t.Fatal("committed write did not publish its observation")
+	}
+	if record, ok := NewRegistry(store).Get("committed"); !ok || record.LastEventSeq != 1 {
+		t.Fatalf("committed record missing from disk: %#v, %v", record, ok)
+	}
+
+	registry.writeAtomic = fileutil.WriteFileAtomic
+	if err := registry.Update("committed", func(record *Record) {
+		record.Status = StatusSucceeded
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := NewRegistry(store)
+	events := reloaded.ListEvents("committed")
+	if len(events) != 2 || events[0].Seq != 1 || events[1].Seq != 2 {
+		t.Fatalf("later save erased committed mutation: %#v", events)
 	}
 }
 
