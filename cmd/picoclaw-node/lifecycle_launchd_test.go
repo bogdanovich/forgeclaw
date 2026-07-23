@@ -164,11 +164,59 @@ func TestLaunchdStatusFailsClosedOnUnexpectedLaunchctlError(t *testing.T) {
 	}
 }
 
-func TestLaunchdStatusFailsWhenEveryDomainIsUnavailable(t *testing.T) {
+func TestLaunchdStatusRejectsUnavailableGUIWithoutTrustingUserDomain(t *testing.T) {
+	t.Parallel()
+	for _, userLoaded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing user job", true: "loaded user job"}[userLoaded], func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			calls := 0
+			lifecycle := &launchdLifecycle{
+				plistDir: dir,
+				domains:  []string{"gui/501", "user/501"},
+				run: func(_ context.Context, args ...string) (launchdRunResult, error) {
+					calls++
+					if strings.HasPrefix(args[1], "gui/") {
+						return launchdRunResult{
+							Output:   "Domain does not support specified action",
+							ExitCode: 125,
+						}, nil
+					}
+					if userLoaded {
+						return launchdRunResult{
+							Output: launchdPrintOutput(args[1], filepath.Join(
+								dir,
+								"com.forgeclaw.picoclaw-node.default.plist",
+							), "running"),
+						}, nil
+					}
+					return launchdRunResult{Output: launchdMissingOutput, ExitCode: 113}, nil
+				},
+			}
+			if userLoaded {
+				writeManagedLaunchdPlist(t, dir, "default")
+			}
+
+			_, err := lifecycle.Status(
+				context.Background(),
+				lifecycleRequest{Instance: "default"},
+			)
+			if err == nil || !strings.Contains(err.Error(), "Domain does not support") {
+				t.Fatalf("expected unavailable-domain error, got %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("queried %d domains after inconclusive GUI result, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestLaunchdStatusFailsWhenSystemDomainIsUnavailable(t *testing.T) {
 	t.Parallel()
 	lifecycle := &launchdLifecycle{
+		system:   true,
 		plistDir: t.TempDir(),
-		domains:  []string{"gui/501", "user/501"},
+		domains:  []string{"system"},
 		run: func(context.Context, ...string) (launchdRunResult, error) {
 			return launchdRunResult{
 				Output:   "Domain does not support specified action",
@@ -178,33 +226,8 @@ func TestLaunchdStatusFailsWhenEveryDomainIsUnavailable(t *testing.T) {
 	}
 
 	_, err := lifecycle.Status(context.Background(), lifecycleRequest{Instance: "default"})
-	if err == nil || !strings.Contains(err.Error(), "could not be inspected") {
+	if err == nil || !strings.Contains(err.Error(), "Domain does not support") {
 		t.Fatalf("expected unavailable-domain error, got %v", err)
-	}
-}
-
-func TestLaunchdStatusAllowsUnavailableGUIWhenUserDomainIsInspected(t *testing.T) {
-	t.Parallel()
-	lifecycle := &launchdLifecycle{
-		plistDir: t.TempDir(),
-		domains:  []string{"gui/501", "user/501"},
-		run: func(_ context.Context, args ...string) (launchdRunResult, error) {
-			if strings.HasPrefix(args[1], "gui/") {
-				return launchdRunResult{
-					Output:   "Domain does not support specified action",
-					ExitCode: 125,
-				}, nil
-			}
-			return launchdRunResult{Output: launchdMissingOutput, ExitCode: 113}, nil
-		},
-	}
-
-	status, err := lifecycle.Status(context.Background(), lifecycleRequest{Instance: "default"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Installed || status.State != "not-installed" {
-		t.Fatalf("unexpected status: %+v", status)
 	}
 }
 

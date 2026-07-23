@@ -129,7 +129,7 @@ func (lifecycle *launchdLifecycle) queryJob(
 				inspected = true
 				continue
 			}
-			if launchdDomainUnavailable(result) || launchdOptionalDomainMissing(domain, result) {
+			if launchdOptionalDomainMissing(domain, result) {
 				continue
 			}
 			return launchdJobState{}, false, fmt.Errorf(
@@ -221,11 +221,6 @@ func parseLaunchdJob(target, output string) (launchdJobState, error) {
 func launchdJobMissing(result launchdRunResult) bool {
 	return (result.ExitCode == 3 || result.ExitCode == 113) &&
 		strings.Contains(result.Output, "Could not find service")
-}
-
-func launchdDomainUnavailable(result launchdRunResult) bool {
-	return (result.ExitCode == 5 || result.ExitCode == 125) &&
-		strings.Contains(result.Output, "Domain does not support specified action")
 }
 
 func launchdOptionalDomainMissing(domain string, result launchdRunResult) bool {
