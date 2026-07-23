@@ -20,6 +20,14 @@ func (*cyclicExtra) MarshalJSON() ([]byte, error) {
 	return []byte(`{"state":"serializable"}`), nil
 }
 
+type mutableTextKey struct {
+	State *string
+}
+
+func (key mutableTextKey) MarshalText() ([]byte, error) {
+	return []byte(*key.State), nil
+}
+
 func TestRegistryEventObserverRunsAfterDurableWriteAndCanUnsubscribe(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "tasks.json")
 	registry := NewRegistry(store)
@@ -240,12 +248,12 @@ func TestRegistryRollsBackTypedExtraAfterPersistenceFailure(t *testing.T) {
 	}
 	registry.store = filepath.Join(badParent, "tasks.json")
 	if err := registry.Update("typed-extra", func(record *Record) {
-		record.Deliverable.Report.Extra["typed"].(map[string]string)["state"] = "speculative"
+		record.Deliverable.Report.Extra["typed"].(map[string]any)["state"] = "speculative"
 	}); err == nil {
 		t.Fatal("expected persistence error")
 	}
 	record, _ := registry.Get("typed-extra")
-	typed := record.Deliverable.Report.Extra["typed"].(map[string]string)
+	typed := record.Deliverable.Report.Extra["typed"].(map[string]any)
 	if typed["state"] != "original" {
 		t.Fatalf("typed Extra after rollback = %#v", typed)
 	}
@@ -255,7 +263,7 @@ func TestRegistryObserversReceiveIsolatedObservations(t *testing.T) {
 	registry := NewRegistry("")
 	registry.SubscribeEvents(func(observation EventObservation) {
 		observation.Event.Payload["task_kind"] = "mutated"
-		typed := observation.Record.Deliverable.Report.Extra["typed"].(map[string]string)
+		typed := observation.Record.Deliverable.Report.Extra["typed"].(map[string]any)
 		typed["state"] = "mutated"
 	})
 	var observed EventObservation
@@ -274,13 +282,13 @@ func TestRegistryObserversReceiveIsolatedObservations(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	typed := observed.Record.Deliverable.Report.Extra["typed"].(map[string]string)
+	typed := observed.Record.Deliverable.Report.Extra["typed"].(map[string]any)
 	if observed.Event.Payload["task_kind"] != "fixture" || typed["state"] != "original" {
 		t.Fatalf("second observer received mutated data: %#v", observed)
 	}
 }
 
-func TestRegistryClonesCyclicJSONMarshalerExtra(t *testing.T) {
+func TestRegistryCanonicalizesCyclicJSONMarshalerExtra(t *testing.T) {
 	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
 	extra := &cyclicExtra{State: "original"}
 	extra.Next = extra
@@ -297,9 +305,36 @@ func TestRegistryClonesCyclicJSONMarshalerExtra(t *testing.T) {
 	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(EventObservation) {})
 	t.Cleanup(unsubscribe)
 	activate()
-	cloned := snapshot.Records[0].Deliverable.Report.Extra["cyclic"].(*cyclicExtra)
-	if cloned == extra || cloned.Next != cloned || cloned.State != "original" {
-		t.Fatalf("cyclic Extra clone = %#v, original = %#v", cloned, extra)
+	cloned := snapshot.Records[0].Deliverable.Report.Extra["cyclic"].(map[string]any)
+	if cloned["state"] != "serializable" {
+		t.Fatalf("canonical cyclic Extra = %#v", cloned)
+	}
+}
+
+func TestRegistryCanonicalizesMutableTextMarshalerMapKey(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	state := "original"
+	if err := registry.Upsert(Record{
+		TaskID: "mutable-key", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"keyed": map[mutableTextKey]string{
+					{State: &state}: "value",
+				},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state = "mutated"
+
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(EventObservation) {})
+	t.Cleanup(unsubscribe)
+	activate()
+	keyed := snapshot.Records[0].Deliverable.Report.Extra["keyed"].(map[string]any)
+	if keyed["original"] != "value" {
+		t.Fatalf("canonical mutable-key Extra = %#v", keyed)
 	}
 }
 
