@@ -645,7 +645,7 @@ func (r *Registry) Get(taskID string) (Record, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	rec, ok := r.records[taskID]
-	return rec, ok
+	return cloneTaskRecord(rec), ok
 }
 
 func (r *Registry) List() []Record {
@@ -656,7 +656,7 @@ func (r *Registry) List() []Record {
 	defer r.mu.RUnlock()
 	out := make([]Record, 0, len(r.records))
 	for _, rec := range r.records {
-		out = append(out, rec)
+		out = append(out, cloneTaskRecord(rec))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt != out[j].CreatedAt {
@@ -677,7 +677,7 @@ func (r *Registry) ListEvents(taskID string) []TaskEvent {
 	out := make([]TaskEvent, 0, len(r.events))
 	for _, evt := range r.events {
 		if taskID == "" || evt.TaskID == taskID {
-			out = append(out, evt)
+			out = append(out, cloneTaskEvent(evt))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

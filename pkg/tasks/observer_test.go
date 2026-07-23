@@ -338,6 +338,40 @@ func TestRegistryCanonicalizesMutableTextMarshalerMapKey(t *testing.T) {
 	}
 }
 
+func TestRegistryPublicReadsAreIsolated(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "public-read", Task: "test", TaskKind: "fixture",
+		Deliverable: &DeliverablePayload{
+			Metadata: map[string]string{"source": "original"},
+			Report: &DeliverableReport{
+				SchemaVersion: "v1",
+				Extra: map[string]any{
+					"nested": map[string]any{"state": "original"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := registry.Get("public-read")
+	got.Deliverable.Metadata["source"] = "get-mutated"
+	listed := registry.List()
+	listed[0].Deliverable.Report.Extra["nested"].(map[string]any)["state"] = "list-mutated"
+	events := registry.ListEvents("public-read")
+	events[0].Payload["task_kind"] = "event-mutated"
+
+	fresh, _ := registry.Get("public-read")
+	freshEvents := registry.ListEvents("public-read")
+	nested := fresh.Deliverable.Report.Extra["nested"].(map[string]any)
+	if fresh.Deliverable.Metadata["source"] != "original" ||
+		nested["state"] != "original" ||
+		freshEvents[0].Payload["task_kind"] != "fixture" {
+		t.Fatalf("public read mutated registry: record=%#v events=%#v", fresh, freshEvents)
+	}
+}
+
 func TestRegistryObserverPanicDoesNotFailDurableUpdate(t *testing.T) {
 	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
 	registry.SubscribeEvents(func(EventObservation) { panic("observer failed") })
