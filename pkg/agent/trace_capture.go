@@ -18,10 +18,11 @@ type traceCaptureManager struct {
 	closed  bool
 	startMu sync.Mutex
 
-	settings traceCaptureSettings
-	turns    *turnTraceProjector
-	tasks    *taskTraceProjector
-	writer   *evalcapture.Writer
+	settings     traceCaptureSettings
+	turns        *turnTraceProjector
+	tasks        *taskTraceProjector
+	interactions *interactionTraceProjector
+	writer       *evalcapture.Writer
 }
 
 func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptureManager {
@@ -29,6 +30,7 @@ func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptu
 	manager := &traceCaptureManager{settings: settings}
 	manager.turns = newTurnTraceProjector(settings, eventBus, manager.enqueuePersist)
 	manager.tasks = newTaskTraceProjector(settings, manager.enqueuePersist)
+	manager.interactions = newInteractionTraceProjector(settings, manager.enqueuePersist)
 	if settings.enabled {
 		manager.start()
 	}
@@ -70,7 +72,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 		return
 	}
 	m.settings = updated
-	turns, tasks := m.turns, m.tasks
+	turns, tasks, interactions := m.turns, m.tasks, m.interactions
 	m.mu.Unlock()
 
 	if updated.enabled {
@@ -78,6 +80,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 	}
 	turns.updateSettings(updated)
 	tasks.updateSettings(updated)
+	interactions.updateSettings(updated)
 }
 
 func (m *traceCaptureManager) enabled() bool {
@@ -102,11 +105,12 @@ func (m *traceCaptureManager) close() {
 		return
 	}
 	m.closed = true
-	turns, tasks := m.turns, m.tasks
+	turns, tasks, interactions := m.turns, m.tasks, m.interactions
 	m.mu.Unlock()
 
 	turns.close()
 	tasks.close()
+	interactions.close()
 
 	m.mu.Lock()
 	writer := m.writer

@@ -17,7 +17,8 @@ var supportedKinds = map[RecordKind]struct{}{
 	RecordToolCall: {}, RecordToolResult: {}, RecordToolSkipped: {}, RecordToolLoopDecision: {},
 	RecordToolSteeringDecision: {},
 	RecordSteeringEnqueued:     {}, RecordSteeringInjected: {}, RecordInterrupt: {},
-	RecordTaskTransition: {}, RecordDeliveryDecision: {}, RecordDeliveryAttempt: {}, RecordDeliveryOutcome: {},
+	RecordTaskTransition: {}, RecordInteractionTransition: {},
+	RecordDeliveryDecision: {}, RecordDeliveryAttempt: {}, RecordDeliveryOutcome: {},
 	RecordContextCompaction: {}, RecordContextReconciliation: {}, RecordContextSnapshot: {},
 	RecordRestartBoundary: {}, RecordInboundSpoolTransition: {}, RecordUserCorrection: {},
 }
@@ -36,6 +37,11 @@ func Validate(trace Trace) error {
 	case ContentMetadataOnly, ContentRedacted, ContentFixture:
 	default:
 		return fmt.Errorf("unsupported content mode %q", trace.Policy.ContentMode)
+	}
+	switch trace.Metadata.TraceKind {
+	case "", TraceKindTurn, TraceKindTask, TraceKindInteraction:
+	default:
+		return fmt.Errorf("unsupported trace kind %q", trace.Metadata.TraceKind)
 	}
 	if trace.Policy.ContentMode == ContentRedacted && trace.Policy.Redactor == "" {
 		return errors.New("redacted_content traces require a redactor version")

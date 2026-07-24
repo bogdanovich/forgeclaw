@@ -502,6 +502,7 @@ func newTaskTraceState(
 			},
 			Limits: settings.limits,
 			Metadata: evaltrace.Metadata{
+				TraceKind:   evaltrace.TraceKindTask,
 				SessionHash: safeHash(settings, record.RequesterSessionKey),
 				AgentID:     record.AgentID,
 			},
