@@ -336,6 +336,7 @@ func (p *turnTraceProjector) startTurnLocked(
 			},
 			Limits: settings.limits,
 			Metadata: evaltrace.Metadata{
+				TraceKind:  evaltrace.TraceKindTurn,
 				RootTurnID: traceScope.TurnID, SessionHash: safeHash(settings, event.Scope.SessionKey),
 				AgentID: event.Scope.AgentID, RuntimeID: event.Scope.RuntimeID,
 			},

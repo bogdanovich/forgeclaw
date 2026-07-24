@@ -382,6 +382,11 @@ func isTerminal(status Status) bool {
 	}
 }
 
+// IsTerminalStatus reports whether no later lifecycle transition is permitted.
+func IsTerminalStatus(status Status) bool {
+	return isTerminal(status)
+}
+
 func validTransition(from, to Status) bool {
 	switch from {
 	case StatusCreated:

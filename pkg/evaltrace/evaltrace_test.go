@@ -65,6 +65,7 @@ func TestValidateRejectsSchemaOrderingDuplicateAndTampering(t *testing.T) {
 	}{
 		{"schema", func(v *Trace) { v.SchemaVersion = "forgeclaw.eval_trace.v2" }},
 		{"unsafe id", func(v *Trace) { v.TraceID = "../escape" }},
+		{"unknown trace kind", func(v *Trace) { v.Metadata.TraceKind = "future" }},
 		{"unknown kind", func(v *Trace) { v.Records[0].Kind = "future.kind" }},
 		{"tampered data", func(v *Trace) { v.Records[0].Data = json.RawMessage(`{"status":"changed"}`) }},
 		{"array data", func(v *Trace) { v.Records[0].Data = json.RawMessage(`[]`) }},

@@ -10,9 +10,8 @@ The durable human-interaction runtime merged before the spike remains the
 production authority. This redesign extends its observability and evaluation
 without making trace capture part of the interaction state machine.
 
-Stages 1 through 9 are merged. Stage 10 now has separate turn and task
-projectors; the interaction projector and later stages remain separate pull
-requests.
+Stages 1 through 10 are implemented as focused foundations. The shared
+interaction protocol and evaluation stages remain separate pull requests.
 
 ## Why The Spike Is Not The Implementation
 
@@ -272,6 +271,11 @@ accepted by the writer. Reconciliation scans retained terminal records and
 rebuilds a missing, incomplete, or stale trace from durable history. If history
 was pruned, the builder emits an explicitly incomplete trace rather than
 inventing transitions.
+
+Interaction traces are metadata-only regardless of the configured turn/task
+content mode. Event codes are represented by hashes rather than copied as
+arbitrary text. Questions, answers, approval summaries, routes, senders, tool
+arguments, and execution context never enter the interaction trace.
 
 Projectors may add typed links between traces. They do not copy one domain's
 state machine into another projector or append interaction transitions directly
