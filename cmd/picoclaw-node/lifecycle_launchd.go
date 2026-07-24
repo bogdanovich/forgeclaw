@@ -31,17 +31,20 @@ type launchdLifecycle struct {
 	readinessInterval time.Duration
 	readinessAttempts int
 	readinessStable   int
+	remove            launchdRemover
 }
 
 type launchdPlistState struct {
-	exists  bool
-	managed bool
-	label   string
+	exists      bool
+	managed     bool
+	label       string
+	publication publishedLaunchdPlist
 }
 
 type launchdJobState struct {
-	path  string
-	state string
+	domain string
+	path   string
+	state  string
 }
 
 func resolveLaunchdUserHome(
@@ -57,13 +60,6 @@ func resolveLaunchdUserHome(
 		return "", fmt.Errorf("launchd account for uid %s has invalid identity or home directory", uidText)
 	}
 	return filepath.Clean(account.HomeDir), nil
-}
-
-func (lifecycle *launchdLifecycle) Uninstall(
-	context.Context,
-	lifecycleRequest,
-) (lifecycleStatus, error) {
-	return lifecycleStatus{}, errors.New("launchd uninstallation is not implemented yet")
 }
 
 func (lifecycle *launchdLifecycle) Status(
@@ -168,6 +164,7 @@ func (lifecycle *launchdLifecycle) queryJob(
 			return launchdJobState{}, false, err
 		}
 		inspected = true
+		job.domain = domain
 		loaded = append(loaded, job)
 	}
 	if len(loaded) > 1 {

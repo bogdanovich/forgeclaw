@@ -274,11 +274,23 @@ func (lifecycle *launchdLifecycle) rollbackInstall(
 }
 
 func openLaunchdPlistDirectory(path string, system bool) (*launchdPlistDirectory, error) {
+	return openLaunchdPlistDirectoryMode(path, system, true)
+}
+
+func openExistingLaunchdPlistDirectory(path string, system bool) (*launchdPlistDirectory, error) {
+	return openLaunchdPlistDirectoryMode(path, system, false)
+}
+
+func openLaunchdPlistDirectoryMode(
+	path string,
+	system bool,
+	createUserDirectory bool,
+) (*launchdPlistDirectory, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("launchd plist directory must be absolute")
 	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ENOENT) && !system {
+	if errors.Is(err, unix.ENOENT) && !system && createUserDirectory {
 		if err = createLaunchdUserPlistDirectory(path); err != nil {
 			return nil, err
 		}
@@ -422,7 +434,20 @@ func captureLaunchdPlistAt(
 	if err != nil {
 		return launchdPlistState{}, fmt.Errorf("read existing launchd plist: %w", err)
 	}
-	state := launchdPlistState{exists: true, managed: hasLaunchdPlistMarker(data)}
+	identity, err := file.Stat()
+	if err != nil {
+		return launchdPlistState{}, fmt.Errorf("capture existing launchd plist identity: %w", err)
+	}
+	state := launchdPlistState{
+		exists:  true,
+		managed: hasLaunchdPlistMarker(data),
+		publication: publishedLaunchdPlist{
+			directory: directory,
+			name:      name,
+			data:      append([]byte(nil), data...),
+			identity:  identity,
+		},
+	}
 	if state.managed {
 		state.label, err = parseLaunchdPlistLabel(data)
 	}
@@ -543,9 +568,20 @@ func requirePublishedLaunchdPlist(publication publishedLaunchdPlist) error {
 }
 
 func removePublishedLaunchdPlist(publication publishedLaunchdPlist) error {
-	id, err := newLaunchdTransactionID()
+	quarantined, err := quarantinePublishedLaunchdPlist(publication)
 	if err != nil {
 		return err
+	}
+	_, err = removeQuarantinedLaunchdPlist(quarantined)
+	return err
+}
+
+func quarantinePublishedLaunchdPlist(
+	publication publishedLaunchdPlist,
+) (publishedLaunchdPlist, error) {
+	id, err := newLaunchdTransactionID()
+	if err != nil {
+		return publishedLaunchdPlist{}, err
 	}
 	quarantineName := publication.name + ".rollback-" + id
 	if err = renameLaunchdNoReplace(
@@ -553,7 +589,7 @@ func removePublishedLaunchdPlist(publication publishedLaunchdPlist) error {
 		publication.name,
 		quarantineName,
 	); err != nil {
-		return fmt.Errorf("quarantine failed launchd plist: %w", err)
+		return publishedLaunchdPlist{}, fmt.Errorf("quarantine failed launchd plist: %w", err)
 	}
 	quarantined := publication
 	quarantined.name = quarantineName
@@ -568,12 +604,43 @@ func removePublishedLaunchdPlist(publication publishedLaunchdPlist) error {
 		if verifyErr != nil {
 			ownershipErr = fmt.Errorf("verify quarantined launchd plist: %w", verifyErr)
 		}
-		return errors.Join(ownershipErr, restoreErr)
+		return publishedLaunchdPlist{}, errors.Join(ownershipErr, restoreErr)
 	}
-	if err = unix.Unlinkat(publication.directory.fd(), quarantineName, 0); err != nil {
-		return err
+	return quarantined, nil
+}
+
+func restoreQuarantinedLaunchdPlist(
+	quarantined publishedLaunchdPlist,
+	originalName string,
+) (publishedLaunchdPlist, error) {
+	if err := requirePublishedLaunchdPlist(quarantined); err != nil {
+		return publishedLaunchdPlist{}, err
 	}
-	return unix.Fsync(publication.directory.fd())
+	if err := renameLaunchdNoReplace(
+		quarantined.directory.fd(),
+		quarantined.name,
+		originalName,
+	); err != nil {
+		return publishedLaunchdPlist{}, err
+	}
+	restored := quarantined
+	restored.name = originalName
+	if err := requirePublishedLaunchdPlist(restored); err != nil {
+		return publishedLaunchdPlist{}, err
+	}
+	return restored, unix.Fsync(restored.directory.fd())
+}
+
+type launchdRemover func(publishedLaunchdPlist) (bool, error)
+
+func removeQuarantinedLaunchdPlist(publication publishedLaunchdPlist) (bool, error) {
+	if err := requirePublishedLaunchdPlist(publication); err != nil {
+		return false, err
+	}
+	if err := unix.Unlinkat(publication.directory.fd(), publication.name, 0); err != nil {
+		return false, err
+	}
+	return true, unix.Fsync(publication.directory.fd())
 }
 
 func renderLaunchdPlist(
