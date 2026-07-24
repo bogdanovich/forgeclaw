@@ -4,11 +4,12 @@
 machine to a ForgeClaw gateway. It does not include models, agents, channels,
 sessions, MCP hosting, or workspace memory.
 
-The current implementation performs outbound admission only: it creates a
-durable device identity, authenticates it with a signed challenge over WSS, and
-keeps retrying while the gateway records the node as `pending_pairing`. Operator
-approval and command execution are added in later node milestones; no executable
-command surface is exposed by this stage.
+The companion creates a durable device identity, authenticates it with a signed
+challenge over WSS, and keeps retrying while the gateway records an unknown
+node as `pending_pairing`. After explicit operator approval, the gateway can
+invoke only the commands allowed by both gateway policy and the node-local
+policy. The current command surface includes `node.info.v1`,
+`system.which.v1`, and optional synchronous `system.exec.v1`.
 
 ## Build
 
@@ -128,6 +129,63 @@ fail-closed: it refuses symlinked or unowned unit files, units resolved from a
 different systemd search path, units modified by drop-ins, and stale systemd
 state awaiting `daemon-reload`. `run` remains available on every supported
 platform.
+
+## Launchd Services On macOS
+
+Install a named per-user LaunchAgent:
+
+```bash
+picoclaw-node install \
+  --instance main \
+  --config ~/.picoclaw-node/main/config.json
+```
+
+This writes
+`~/Library/LaunchAgents/com.forgeclaw.picoclaw-node.main.plist`, bootstraps it
+into the current user's launchd domain, and waits for a stable running state.
+Installation is create-only and refuses an existing or foreign plist or an
+already loaded job.
+
+Inspect or remove that instance with:
+
+```bash
+picoclaw-node status --instance main
+picoclaw-node uninstall --instance main
+```
+
+A system LaunchDaemon requires root, an absolute configuration path, and an
+explicit unprivileged service account:
+
+```bash
+sudo picoclaw-node install \
+  --system \
+  --instance vpn \
+  --config /etc/forgeclaw/vpn-node.json \
+  --service-user forgeclaw-node
+sudo picoclaw-node status --system --instance vpn
+sudo picoclaw-node uninstall --system --instance vpn
+```
+
+The LaunchAgent and LaunchDaemon lifecycle is transactional and fail-closed.
+Status and removal verify the managed plist identity and the exact launchd
+domain and plist path. Uninstall first unloads the verified job, quarantines
+the exact plist, and restores the previous plist and loaded state when removal
+cannot be committed safely. As on Linux, `--json` provides stable
+machine-readable output.
+
+## Lifecycle Compatibility
+
+| Platform | User service | System service | Install | Status | Uninstall |
+| --- | --- | --- | --- | --- | --- |
+| Linux | systemd user unit | systemd system unit | Supported | Supported | Supported |
+| macOS | LaunchAgent | LaunchDaemon | Supported | Supported | Supported |
+| Other | None | None | Not supported | Not supported | Not supported |
+
+Lifecycle tests exercise both managers' rendering, identity checks,
+create-only publication, state inspection, rollback, and removal behavior.
+Darwin command tests are cross-compiled on non-macOS development hosts; final
+release qualification should still run the lifecycle suite on the listed
+native operating systems.
 
 ## Multiple Workspaces
 
