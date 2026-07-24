@@ -14,6 +14,19 @@ import (
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
+// CorruptTraceError identifies stored trace content that cannot be decoded or
+// validated. Callers may replace this file with a separately validated trace.
+type CorruptTraceError struct {
+	TraceID string
+	Err     error
+}
+
+func (e *CorruptTraceError) Error() string {
+	return fmt.Sprintf("stored trace %s is corrupt: %v", e.TraceID, e.Err)
+}
+
+func (e *CorruptTraceError) Unwrap() error { return e.Err }
+
 const (
 	DefaultRetention = 24 * time.Hour
 	DefaultMaxTraces = 100
@@ -74,20 +87,29 @@ func (s Store) Load(traceID string) (Trace, error) {
 		return Trace{}, err
 	}
 	if len(data) > HardMaxTraceBytes {
-		return Trace{}, fmt.Errorf("trace exceeds hard byte limit")
+		return Trace{}, &CorruptTraceError{
+			TraceID: traceID,
+			Err:     fmt.Errorf("trace exceeds hard byte limit"),
+		}
 	}
 	var trace Trace
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&trace); err != nil {
-		return Trace{}, fmt.Errorf("decode trace: %w", err)
+		return Trace{}, &CorruptTraceError{
+			TraceID: traceID,
+			Err:     fmt.Errorf("decode trace: %w", err),
+		}
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return Trace{}, fmt.Errorf("decode trace: trailing JSON data")
+		return Trace{}, &CorruptTraceError{
+			TraceID: traceID,
+			Err:     fmt.Errorf("decode trace: trailing JSON data"),
+		}
 	}
 	if err := Validate(trace); err != nil {
-		return Trace{}, err
+		return Trace{}, &CorruptTraceError{TraceID: traceID, Err: err}
 	}
 	return trace, nil
 }

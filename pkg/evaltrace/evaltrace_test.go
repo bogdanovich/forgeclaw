@@ -2,6 +2,7 @@ package evaltrace
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,6 +222,19 @@ func TestStoreRoundTripPermissionsPruneAndSymlinkDenial(t *testing.T) {
 	}
 	if _, err := (Store{Root: linkRoot}).Save(first); err == nil {
 		t.Fatal("expected symlink store rejection")
+	}
+}
+
+func TestStoreLoadClassifiesInvalidStoredContentAsCorrupt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "corrupt-trace.json")
+	if err := os.WriteFile(path, []byte(`{"truncated":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (Store{Root: root}).Load("corrupt-trace")
+	var corrupt *CorruptTraceError
+	if !errors.As(err, &corrupt) || corrupt.TraceID != "corrupt-trace" {
+		t.Fatalf("Load error = %v, want CorruptTraceError", err)
 	}
 }
 

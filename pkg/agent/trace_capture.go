@@ -192,6 +192,14 @@ func reconcileStoredTaskTrace(
 	if errors.Is(err, os.ErrNotExist) {
 		return candidate, true, nil
 	}
+	var corrupt *evaltrace.CorruptTraceError
+	if errors.As(err, &corrupt) {
+		logger.WarnCF("evaltrace", "Replacing corrupt stored task trace", map[string]any{
+			"trace_id": candidate.TraceID,
+			"error":    corrupt.Error(),
+		})
+		return candidate, true, nil
+	}
 	if err != nil {
 		return evaltrace.Trace{}, false, err
 	}

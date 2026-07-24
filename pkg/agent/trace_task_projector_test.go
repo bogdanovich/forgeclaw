@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
@@ -94,6 +96,42 @@ func TestTaskTraceProjectorDoesNotDowngradeCompleteTraceOnStartup(t *testing.T) 
 	}
 	if len(after.Records) != len(complete.Records) {
 		t.Fatalf("records after restart = %d, want %d", len(after.Records), len(complete.Records))
+	}
+}
+
+func TestTaskTraceProjectorReplacesCorruptStoredTrace(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	record := finishTaskForTrace(t, registry, "corrupt", "session", 0)
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	state := newTaskTraceState(
+		settings,
+		workspace,
+		record,
+		firstTaskEvent(registry.ListEvents("corrupt")),
+	)
+	root := traceStoreRoot(settings, workspace)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, state.trace.builder.TraceID()+".json")
+	if err := os.WriteFile(path, []byte(`{"truncated":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	manager.attachTaskRegistry(workspace, registry)
+	manager.close()
+	t.Cleanup(func() { _ = eventBus.Close() })
+
+	recovered := readCapturedTrace(t, path)
+	if recovered.TraceID != state.trace.builder.TraceID() ||
+		recovered.Truncation.Incomplete {
+		t.Fatalf("recovered trace = %#v", recovered)
+	}
+	if len(recovered.Records) != int(record.LastEventSeq) {
+		t.Fatalf("recovered records = %d, want %d", len(recovered.Records), record.LastEventSeq)
 	}
 }
 
