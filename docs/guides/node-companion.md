@@ -204,6 +204,58 @@ instances at the same state directory. A future multi-gateway supervisor may
 share a capability runtime with explicit resource scheduling, but gateway trust,
 policy, identity, and invocation ledgers will remain isolated per binding.
 
+## Configure Named Targets
+
+Operators bind stable target names to paired node IDs or aliases, then grant
+each agent only the names it may select:
+
+```json
+{
+  "nodes": {
+    "enabled": true
+  },
+  "execution": {
+    "targets": {
+      "vpn": {
+        "type": "node",
+        "node": "vpn-box"
+      },
+      "build": {
+        "type": "node",
+        "node": "linux-builder",
+        "executor": "local"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "target_policy": {
+        "default_target": "build",
+        "allowed_targets": ["build"]
+      }
+    },
+    "list": [
+      {
+        "id": "ops",
+        "target_policy": {
+          "allowed_targets": ["vpn", "build"]
+        }
+      }
+    ]
+  }
+}
+```
+
+An agent-specific `target_policy` replaces the defaults policy for that agent.
+An explicit empty `allowed_targets` list grants no targets. Target names and
+their node references are operator configuration; a model cannot provide a
+hostname, WebSocket URL, credential, or arbitrary node ID in place of a target
+name.
+
+Target visibility is only one authorization layer. It does not grant commands
+that were not approved during pairing, bypass durable human approval, or
+broaden the node-local command policy.
+
 ## Pairing Administration
 
 After an unknown companion connects, inspect and approve its durable identity

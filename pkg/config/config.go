@@ -41,6 +41,7 @@ type Config struct {
 	Session    SessionConfig    `json:"session,omitempty"       yaml:"-"`
 	Evaluation EvaluationConfig `json:"evaluation,omitempty"    yaml:"-"`
 	Tasks      TaskConfig       `json:"task_registry,omitempty" yaml:"-"`
+	Execution  ExecutionConfig  `json:"execution,omitempty"     yaml:"-"`
 	Channels   ChannelsConfig   `json:"channel_list"            yaml:"channel_list"`
 	ModelList  SecureModelList  `json:"model_list"              yaml:"model_list"` // New model-centric provider configuration
 	Gateway    GatewayConfig    `json:"gateway"                 yaml:"-"`
@@ -203,6 +204,7 @@ type AgentConfig struct {
 	Model            *AgentModelConfig `json:"model,omitempty"`
 	Skills           []string          `json:"skills,omitempty"`
 	Subagents        *SubagentsConfig  `json:"subagents,omitempty"`
+	TargetPolicy     *TargetPolicy     `json:"target_policy,omitempty"`
 	MaxParallelTurns int               `json:"max_parallel_turns,omitempty"`
 }
 
@@ -445,6 +447,7 @@ type AgentDefaults struct {
 	MaxLLMRetries             int                `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
 	Subagents                 *SubagentsConfig   `json:"subagents,omitempty"`
+	TargetPolicy              *TargetPolicy      `json:"target_policy,omitempty"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB
@@ -1707,6 +1710,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
 		return nil, err
 	}
+	if err = cfg.ValidateExecutionTargets(); err != nil {
+		return nil, err
+	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid tools.result_retention: %w", err)
 	}
@@ -1916,6 +1922,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 		return nil, err
 	}
 	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
+		return nil, err
+	}
+	if err = cfg.ValidateExecutionTargets(); err != nil {
 		return nil, err
 	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
