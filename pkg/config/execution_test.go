@@ -171,7 +171,8 @@ func TestLegacyLoadersPreserveExecutionTargetPolicy(t *testing.T) {
 					"targets": {
 						"build": {"type": "node", "node": "linux-builder"}
 					}
-				}
+				},
+				"nodes": {"enabled": true}
 			}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -187,6 +188,9 @@ func TestLegacyLoadersPreserveExecutionTargetPolicy(t *testing.T) {
 			if policy == nil || policy.DefaultTarget != "build" ||
 				len(policy.AllowedTargets) != 1 || policy.AllowedTargets[0] != "build" {
 				t.Fatalf("target policy = %#v", policy)
+			}
+			if !cfg.Nodes.Enabled {
+				t.Fatal("nodes.enabled was not preserved")
 			}
 		})
 	}
