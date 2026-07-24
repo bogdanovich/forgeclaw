@@ -148,3 +148,46 @@ func TestLoadConfigRejectsUnknownExecutionTargetReference(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 }
+
+func TestLegacyLoadersPreserveExecutionTargetPolicy(t *testing.T) {
+	loaders := map[string]func(string) (*Config, error){
+		"migrating": LoadConfig,
+		"read-only": LoadConfigReadOnly,
+	}
+	for name, load := range loaders {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(`{
+				"version": 2,
+				"agents": {
+					"defaults": {
+						"target_policy": {
+							"default_target": "build",
+							"allowed_targets": ["build"]
+						}
+					}
+				},
+				"execution": {
+					"targets": {
+						"build": {"type": "node", "node": "linux-builder"}
+					}
+				}
+			}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, exists := cfg.Execution.Targets["build"]
+			if !exists || target.Type != "node" || target.Node != "linux-builder" {
+				t.Fatalf("execution target = %#v, exists %v", target, exists)
+			}
+			policy := cfg.Agents.Defaults.TargetPolicy
+			if policy == nil || policy.DefaultTarget != "build" ||
+				len(policy.AllowedTargets) != 1 || policy.AllowedTargets[0] != "build" {
+				t.Fatalf("target policy = %#v", policy)
+			}
+		})
+	}
+}
