@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -61,6 +62,91 @@ func TestTaskTraceProjectorReconcilesTerminalSnapshotWithoutNewEvent(t *testing.
 	}
 	if len(trace.Records) != int(registryRecord(t, registry, "terminal-before-attach").LastEventSeq) {
 		t.Fatalf("snapshot trace records = %d", len(trace.Records))
+	}
+}
+
+func TestTaskTraceProjectorDoesNotDowngradeCompleteTraceOnStartup(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	manager.attachTaskRegistry(workspace, registry)
+	record := finishTaskForTrace(t, registry, "durable", "session", 0)
+	path := waitForTraceFile(t, workspace)
+	complete := readCapturedTrace(t, path)
+	manager.close()
+
+	pruned := taskregistry.NewRegistryWithOptions(
+		taskregistry.WorkspaceStorePath(workspace),
+		taskregistry.Options{MaxEvents: 1},
+	)
+	if got := registryRecord(t, pruned, "durable"); got.GenerationID != record.GenerationID {
+		t.Fatalf("reloaded generation = %q, want %q", got.GenerationID, record.GenerationID)
+	}
+	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	restarted.attachTaskRegistry(workspace, pruned)
+	restarted.close()
+	t.Cleanup(func() { _ = eventBus.Close() })
+
+	after := readCapturedTrace(t, path)
+	if after.Truncation.Incomplete {
+		t.Fatalf("complete trace was downgraded: %+v", after.Truncation)
+	}
+	if len(after.Records) != len(complete.Records) {
+		t.Fatalf("records after restart = %d, want %d", len(after.Records), len(complete.Records))
+	}
+}
+
+func TestTaskTraceReconciliationExtendsPersistedFailureAfterPrunedRestart(t *testing.T) {
+	workspace := t.TempDir()
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	record := taskregistry.Record{
+		TaskID: "recovery", GenerationID: "generation", CreatedAt: 1,
+		Status:         taskregistry.StatusSucceeded,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}
+	firstTraces, firstSubmit := collectTaskTraces(t)
+	first := newTaskTraceProjector(settings, firstSubmit)
+	first.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 1, 1, taskregistry.EventTaskUpserted),
+		Record:       record,
+		FinalForTask: true,
+	})
+	record.DeliveryStatus = taskregistry.DeliveryFailed
+	first.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
+		Record:       record,
+		FinalForTask: true,
+	})
+	existing := firstTraces()[0]
+	first.close()
+
+	candidateTraces, candidateSubmit := collectTaskTraces(t)
+	restarted := newTaskTraceProjector(settings, candidateSubmit)
+	record.InteractionID = "interaction-1"
+	restarted.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
+		Record:       record,
+		FinalForTask: true,
+	})
+	record.DeliveryStatus = taskregistry.DeliveryDelivered
+	restarted.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 3, 3, taskregistry.EventTaskDeliveryChanged),
+		Record:       record,
+		FinalForTask: true,
+	})
+	candidate := candidateTraces()[0]
+	restarted.close()
+
+	merged, persist := reconcileTaskTraceCandidate(existing, candidate)
+	if !persist {
+		t.Fatal("delivery recovery did not extend persisted trace")
+	}
+	if merged.Truncation.Incomplete || len(merged.Records) != 3 {
+		t.Fatalf("merged trace = records:%d truncation:%+v", len(merged.Records), merged.Truncation)
+	}
+	if merged.Outcome == nil || merged.Outcome.ErrorCode != "" {
+		t.Fatalf("merged outcome = %#v", merged.Outcome)
 	}
 }
 
@@ -337,6 +423,66 @@ func TestTaskTraceProjectorKeepsRecoverableLostTransitionInGeneration(t *testing
 	}
 }
 
+func TestTaskTraceProjectorExtendsFailedInteractionDeliveryThroughRecovery(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	traces, submit := collectTaskTraces(t)
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		submit,
+	)
+	t.Cleanup(projector.close)
+	projector.attach(workspace, registry)
+
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "delivery-recovery", Task: "test", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.MarkWaitingForInput(
+		"delivery-recovery", "interaction-1", "short-1", "approval required",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.MarkInteractionRunning("delivery-recovery", "interaction-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.CompleteInteractionTask(
+		"delivery-recovery", "interaction-1", "approved", taskregistry.DeliveryPending,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("delivery-recovery", func(record *taskregistry.Record) {
+		record.DeliveryStatus = taskregistry.DeliveryFailed
+		record.DeliveryError = "definitely not sent"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := traces(); len(got) != 0 {
+		t.Fatalf("failed retryable delivery persisted %d traces", len(got))
+	}
+	if err := registry.Update("delivery-recovery", func(record *taskregistry.Record) {
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+		record.DeliveryError = ""
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := traces()
+	if len(got) != 1 {
+		t.Fatalf("recovered delivery persisted %d traces, want 1", len(got))
+	}
+	statuses := taskDeliveryStatuses(t, got[0])
+	if !slices.Contains(statuses, string(taskregistry.DeliveryFailed)) ||
+		!slices.Contains(statuses, string(taskregistry.DeliveryDelivered)) {
+		t.Fatalf("delivery statuses = %v", statuses)
+	}
+	if got[0].Outcome == nil || got[0].Outcome.ErrorCode != "" {
+		t.Fatalf("recovered outcome = %#v", got[0].Outcome)
+	}
+}
+
 func TestTaskTraceProjectorRetriesCapacityRejectionWithoutNewEvent(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
@@ -374,6 +520,98 @@ func TestTaskTraceProjectorRetriesCapacityRejectionWithoutNewEvent(t *testing.T)
 	}
 	if attempts.Load() < 2 {
 		t.Fatalf("admission attempts = %d", attempts.Load())
+	}
+}
+
+func TestTaskTraceProjectorBoundsCapacityRejectedTerminalSpool(t *testing.T) {
+	workspace := t.TempDir()
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(traceCaptureSettings, *activeTraceCapture) error {
+			return &evalcapture.AdmissionError{
+				Reason: evalcapture.ReasonCapacity,
+				Class:  evalcapture.ClassCritical,
+			}
+		},
+	)
+	t.Cleanup(projector.close)
+	for i := range maxPendingTaskTraceAdmissions + 17 {
+		record := taskregistry.Record{
+			TaskID:         fmt.Sprintf("capacity-%03d", i),
+			GenerationID:   fmt.Sprintf("generation-%03d", i),
+			CreatedAt:      int64(i + 1),
+			Status:         taskregistry.StatusSucceeded,
+			DeliveryStatus: taskregistry.DeliveryDelivered,
+		}
+		projector.observe(workspace, taskregistry.EventObservation{
+			Event: taskEventFixture(
+				record, 1, record.CreatedAt, taskregistry.EventTaskUpserted,
+			),
+			Record:       record,
+			FinalForTask: true,
+		})
+	}
+
+	stats := projector.stats()
+	if stats.PendingAdmissions != maxPendingTaskTraceAdmissions {
+		t.Fatalf("pending admissions = %d, want %d", stats.PendingAdmissions, maxPendingTaskTraceAdmissions)
+	}
+	if stats.OverflowDrops != 17 {
+		t.Fatalf("overflow drops = %d, want 17", stats.OverflowDrops)
+	}
+	projector.mu.Lock()
+	retained := len(projector.traces)
+	projector.mu.Unlock()
+	if retained != maxPendingTaskTraceAdmissions {
+		t.Fatalf("retained terminal traces = %d, want %d", retained, maxPendingTaskTraceAdmissions)
+	}
+}
+
+func TestTaskTraceProjectorCloseWaitsForPendingAdmission(t *testing.T) {
+	workspace := t.TempDir()
+	release := make(chan struct{})
+	waitStarted := make(chan struct{})
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(traceCaptureSettings, *activeTraceCapture) error {
+			return &evalcapture.AdmissionError{
+				Reason: evalcapture.ReasonCapacity,
+				Class:  evalcapture.ClassCritical,
+			}
+		},
+		func(context.Context, traceCaptureSettings, *activeTraceCapture) error {
+			close(waitStarted)
+			<-release
+			return nil
+		},
+	)
+	record := taskregistry.Record{
+		TaskID: "shutdown", GenerationID: "shutdown-generation", CreatedAt: 1,
+		Status:         taskregistry.StatusSucceeded,
+		DeliveryStatus: taskregistry.DeliveryDelivered,
+	}
+	projector.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 1, 1, taskregistry.EventTaskUpserted),
+		Record:       record,
+		FinalForTask: true,
+	})
+
+	closed := make(chan struct{})
+	go func() {
+		projector.close()
+		close(closed)
+	}()
+	<-waitStarted
+	select {
+	case <-closed:
+		t.Fatal("close returned before pending trace admission")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("close did not finish after pending trace admission")
 	}
 }
 
@@ -553,6 +791,22 @@ func taskTransitionStatuses(t *testing.T, trace evaltrace.Trace) []string {
 		if payload.Status != "" {
 			statuses = append(statuses, payload.Status)
 		}
+	}
+	return statuses
+}
+
+func taskDeliveryStatuses(t *testing.T, trace evaltrace.Trace) []string {
+	t.Helper()
+	var statuses []string
+	for _, record := range trace.Records {
+		if record.Kind != evaltrace.RecordDeliveryOutcome {
+			continue
+		}
+		var payload evaltrace.DeliveryPayload
+		if err := json.Unmarshal(record.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		statuses = append(statuses, payload.Status)
 	}
 	return statuses
 }

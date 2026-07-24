@@ -156,6 +156,50 @@ func TestWriterRejectsWhenQueueContainsOnlyCriticalTraces(t *testing.T) {
 	}
 }
 
+func TestWriterSubmitWaitAdmitsAfterQueueSpaceIsAvailable(t *testing.T) {
+	store := newBlockingStorage()
+	writer := NewWriter(Options{
+		Capacity: 1, RetryDelay: -1,
+		StorageFactory: func(Policy) Storage { return store },
+	})
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-active"), ClassCritical); err != nil {
+		t.Fatal(err)
+	}
+	<-store.started
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-queued"), ClassCritical); err != nil {
+		t.Fatal(err)
+	}
+
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- writer.SubmitWait(
+			context.Background(),
+			testPolicy(),
+			testTrace(t, "trace-shutdown"),
+			ClassCritical,
+		)
+	}()
+	select {
+	case err := <-admitted:
+		t.Fatalf("SubmitWait returned before capacity was available: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(store.release)
+	if err := <-admitted; err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.savedIDs(); !equalStrings(
+		got,
+		[]string{"trace-active", "trace-queued", "trace-shutdown"},
+	) {
+		t.Fatalf("saved = %v", got)
+	}
+}
+
 func TestWriterSnapshotsTraceAndDrainsAfterClose(t *testing.T) {
 	store := newBlockingStorage()
 	writer := NewWriter(Options{Capacity: 2, RetryDelay: -1, StorageFactory: func(Policy) Storage { return store }})

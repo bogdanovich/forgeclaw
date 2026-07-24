@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evalcapture"
+	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	"github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
@@ -28,7 +31,11 @@ func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptu
 	settings := traceCaptureSettingsFromConfig(cfg)
 	manager := &traceCaptureManager{settings: settings}
 	manager.turns = newTurnTraceProjector(settings, eventBus, manager.enqueuePersist)
-	manager.tasks = newTaskTraceProjector(settings, manager.enqueuePersist)
+	manager.tasks = newTaskTraceProjector(
+		settings,
+		manager.enqueueTaskPersist,
+		manager.enqueueTaskPersistWait,
+	)
 	if settings.enabled {
 		manager.start()
 	}
@@ -121,8 +128,83 @@ func (m *traceCaptureManager) enqueuePersist(
 	settings traceCaptureSettings,
 	trace *activeTraceCapture,
 ) error {
+	finalized, policy, writer, err := m.preparePersist(settings, trace)
+	if err != nil {
+		return err
+	}
+	err = writer.Submit(policy, finalized, evalcapture.ClassCritical)
+	if err != nil {
+		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
+			"trace_id": trace.builder.TraceID(), "error": err.Error(),
+		})
+	}
+	return err
+}
+
+func (m *traceCaptureManager) enqueueTaskPersist(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+) error {
+	finalized, policy, writer, err := m.preparePersist(settings, trace)
+	if err != nil {
+		return err
+	}
+	finalized, persist, err := reconcileStoredTaskTrace(policy, finalized)
+	if err != nil || !persist {
+		return err
+	}
+	err = writer.Submit(policy, finalized, evalcapture.ClassCritical)
+	if err != nil {
+		logger.WarnCF("evaltrace", "Failed to admit finalized task trace", map[string]any{
+			"trace_id": trace.builder.TraceID(), "error": err.Error(),
+		})
+	}
+	return err
+}
+
+func (m *traceCaptureManager) enqueueTaskPersistWait(
+	ctx context.Context,
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+) error {
+	finalized, policy, writer, err := m.preparePersist(settings, trace)
+	if err != nil {
+		return err
+	}
+	finalized, persist, err := reconcileStoredTaskTrace(policy, finalized)
+	if err != nil || !persist {
+		return err
+	}
+	err = writer.SubmitWait(ctx, policy, finalized, evalcapture.ClassCritical)
+	if err != nil {
+		logger.WarnCF("evaltrace", "Failed to admit finalized task trace during shutdown", map[string]any{
+			"trace_id": trace.builder.TraceID(), "error": err.Error(),
+		})
+	}
+	return err
+}
+
+func reconcileStoredTaskTrace(
+	policy evalcapture.Policy,
+	candidate evaltrace.Trace,
+) (evaltrace.Trace, bool, error) {
+	existing, err := (evaltrace.Store{Root: policy.Root}).Load(candidate.TraceID)
+	if errors.Is(err, os.ErrNotExist) {
+		return candidate, true, nil
+	}
+	if err != nil {
+		return evaltrace.Trace{}, false, err
+	}
+	selected, persist := reconcileTaskTraceCandidate(existing, candidate)
+	return selected, persist, nil
+}
+
+func (m *traceCaptureManager) preparePersist(
+	settings traceCaptureSettings,
+	trace *activeTraceCapture,
+) (evaltrace.Trace, evalcapture.Policy, *evalcapture.Writer, error) {
 	if m == nil || trace == nil || strings.TrimSpace(trace.workspace) == "" {
-		return &evalcapture.AdmissionError{
+		return evaltrace.Trace{}, evalcapture.Policy{}, nil, &evalcapture.AdmissionError{
 			Reason: evalcapture.ReasonInvalidTrace,
 			Class:  evalcapture.ClassCritical,
 		}
@@ -132,30 +214,24 @@ func (m *traceCaptureManager) enqueuePersist(
 		logger.WarnCF("evaltrace", "Failed to finalize evaluation trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
 		})
-		return err
+		return evaltrace.Trace{}, evalcapture.Policy{}, nil, err
 	}
 	m.mu.Lock()
 	writer := m.writer
 	m.mu.Unlock()
 	if writer == nil {
-		return &evalcapture.AdmissionError{
+		return evaltrace.Trace{}, evalcapture.Policy{}, nil, &evalcapture.AdmissionError{
 			Reason:  evalcapture.ReasonClosed,
 			TraceID: trace.builder.TraceID(),
 			Class:   evalcapture.ClassCritical,
 		}
 	}
-	err = writer.Submit(evalcapture.Policy{
+	policy := evalcapture.Policy{
 		Root:      traceStoreRoot(settings, trace.workspace),
 		Retention: settings.retention,
 		MaxTraces: settings.maxTraces,
-	}, finalized, evalcapture.ClassCritical)
-	if err != nil {
-		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
-			"trace_id": trace.builder.TraceID(), "error": err.Error(),
-		})
-		return err
 	}
-	return nil
+	return finalized, policy, writer, nil
 }
 
 func logTraceWriterEvent(event evalcapture.Event) {

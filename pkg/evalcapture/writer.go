@@ -127,6 +127,7 @@ type Writer struct {
 	closed   bool
 	capacity int
 	wake     chan struct{}
+	space    chan struct{}
 	done     chan struct{}
 
 	maxAttempts int
@@ -192,7 +193,8 @@ func NewWriter(options Options) *Writer {
 	w := &Writer{
 		capacity: capacity, maxAttempts: maxAttempts, retryDelay: retryDelay,
 		eventSink: options.EventSink, storage: storage,
-		wake: make(chan struct{}, 1), done: make(chan struct{}),
+		wake: make(chan struct{}, 1), space: make(chan struct{}, 1),
+		done:  make(chan struct{}),
 		queue: make([]submission, 0, capacity),
 	}
 	go w.run()
@@ -201,63 +203,124 @@ func NewWriter(options Options) *Writer {
 
 // Submit snapshots and admits a finalized trace without waiting for persistence.
 func (w *Writer) Submit(policy Policy, trace evaltrace.Trace, class Class) error {
+	item, err := w.prepareSubmission(policy, trace, class)
+	if err != nil {
+		return err
+	}
+	accepted, evicted, reason := w.tryAdmit(item)
+	if !accepted {
+		return w.reject(trace.TraceID, class, reason, nil)
+	}
+	w.recordAdmission(item, evicted)
+	return nil
+}
+
+// SubmitWait waits for bounded queue admission or context cancellation. It is
+// intended for shutdown paths that must not discard a finalized critical trace.
+func (w *Writer) SubmitWait(
+	ctx context.Context,
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+) error {
+	item, err := w.prepareSubmission(policy, trace, class)
+	if err != nil {
+		return err
+	}
+	for {
+		accepted, evicted, reason := w.tryAdmit(item)
+		if accepted {
+			w.recordAdmission(item, evicted)
+			return nil
+		}
+		if reason != ReasonCapacity {
+			w.signalSpace()
+			return w.reject(trace.TraceID, class, reason, nil)
+		}
+		select {
+		case <-ctx.Done():
+			w.signalSpace()
+			return w.reject(trace.TraceID, class, ReasonCapacity, ctx.Err())
+		case <-w.space:
+		}
+	}
+}
+
+func (w *Writer) prepareSubmission(
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+) (submission, error) {
 	if w == nil {
-		return &AdmissionError{Reason: ReasonClosed, TraceID: trace.TraceID, Class: class}
+		return submission{}, &AdmissionError{
+			Reason: ReasonClosed, TraceID: trace.TraceID, Class: class,
+		}
 	}
 	if class != ClassOrdinary && class != ClassCritical {
-		return w.reject(trace.TraceID, class, ReasonInvalidClass, nil)
+		return submission{}, w.reject(trace.TraceID, class, ReasonInvalidClass, nil)
 	}
 	if strings.TrimSpace(policy.Root) == "" {
-		return w.reject(trace.TraceID, class, ReasonInvalidPolicy, errors.New("store root is required"))
+		return submission{}, w.reject(
+			trace.TraceID, class, ReasonInvalidPolicy,
+			errors.New("store root is required"),
+		)
 	}
 	if err := evaltrace.Validate(trace); err != nil {
-		return w.reject(trace.TraceID, class, ReasonInvalidTrace, err)
+		return submission{}, w.reject(trace.TraceID, class, ReasonInvalidTrace, err)
 	}
+	return submission{policy: policy, trace: cloneTrace(trace), class: class}, nil
+}
 
+func (w *Writer) tryAdmit(item submission) (bool, *submission, Reason) {
+	if w == nil {
+		return false, nil, ReasonClosed
+	}
 	var evicted *submission
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.closed {
-		w.mu.Unlock()
-		return w.reject(trace.TraceID, class, ReasonClosed, nil)
+		return false, nil, ReasonClosed
 	}
-	if len(w.queue) >= w.capacity {
-		if class == ClassCritical {
-			for i := range w.queue {
-				if w.queue[i].class == ClassOrdinary {
-					item := w.queue[i]
-					evicted = &item
-					copy(w.queue[i:], w.queue[i+1:])
-					w.queue = w.queue[:len(w.queue)-1]
-					break
-				}
+	if len(w.queue) >= w.capacity && item.class == ClassCritical {
+		for i := range w.queue {
+			if w.queue[i].class == ClassOrdinary {
+				candidate := w.queue[i]
+				evicted = &candidate
+				copy(w.queue[i:], w.queue[i+1:])
+				w.queue = w.queue[:len(w.queue)-1]
+				break
 			}
 		}
-		if len(w.queue) >= w.capacity {
-			w.mu.Unlock()
-			return w.reject(trace.TraceID, class, ReasonCapacity, nil)
-		}
 	}
-	w.queue = append(w.queue, submission{policy: policy, trace: cloneTrace(trace), class: class})
-	w.mu.Unlock()
+	if len(w.queue) >= w.capacity {
+		return false, nil, ReasonCapacity
+	}
+	w.queue = append(w.queue, item)
+	return true, evicted, ""
+}
 
-	if class == ClassCritical {
+func (w *Writer) recordAdmission(item submission, evicted *submission) {
+	if item.class == ClassCritical {
 		w.stats.acceptedCritical.Add(1)
 	} else {
 		w.stats.acceptedOrdinary.Add(1)
 	}
 	if evicted != nil {
 		w.stats.evictedOrdinary.Add(1)
-		w.emit(Event{Kind: EventEvicted, Reason: ReasonCapacity, TraceID: evicted.trace.TraceID, Class: evicted.class})
+		w.emit(Event{
+			Kind: EventEvicted, Reason: ReasonCapacity,
+			TraceID: evicted.trace.TraceID, Class: evicted.class,
+		})
 	}
-	if trace.Truncation.Incomplete || trace.Truncation.DroppedRecords > 0 {
+	if item.trace.Truncation.Incomplete || item.trace.Truncation.DroppedRecords > 0 {
 		w.stats.truncated.Add(1)
 		w.emit(Event{
 			Kind: EventTruncated, Reason: ReasonTraceIncomplete,
-			TraceID: trace.TraceID, Class: class, Dropped: trace.Truncation.DroppedRecords,
+			TraceID: item.trace.TraceID, Class: item.class,
+			Dropped: item.trace.Truncation.DroppedRecords,
 		})
 	}
 	w.signal()
-	return nil
 }
 
 func (w *Writer) reject(traceID string, class Class, reason Reason, err error) error {
@@ -280,6 +343,7 @@ func (w *Writer) Close(ctx context.Context) error {
 	w.closed = true
 	w.mu.Unlock()
 	w.signal()
+	w.signalSpace()
 	select {
 	case <-w.done:
 		return nil
@@ -313,6 +377,13 @@ func (w *Writer) signal() {
 	}
 }
 
+func (w *Writer) signalSpace() {
+	select {
+	case w.space <- struct{}{}:
+	default:
+	}
+}
+
 func (w *Writer) run() {
 	defer close(w.done)
 	for {
@@ -332,6 +403,7 @@ func (w *Writer) next() (submission, bool) {
 			copy(w.queue, w.queue[1:])
 			w.queue = w.queue[:len(w.queue)-1]
 			w.mu.Unlock()
+			w.signalSpace()
 			return item, true
 		}
 		closed := w.closed

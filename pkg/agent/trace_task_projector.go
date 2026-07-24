@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -11,12 +12,14 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/evalcapture"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 const (
-	taskTraceAdmissionRetryDelay = 100 * time.Millisecond
-	maxCompletedTaskTraces       = 4096
+	taskTraceAdmissionRetryDelay  = 100 * time.Millisecond
+	maxCompletedTaskTraces        = 4096
+	maxPendingTaskTraceAdmissions = 128
 )
 
 type taskTraceKey struct {
@@ -51,12 +54,22 @@ type taskTraceProjector struct {
 	order      []taskTraceKey
 	retryTimer *time.Timer
 	submit     func(traceCaptureSettings, *activeTraceCapture) error
+	submitWait func(context.Context, traceCaptureSettings, *activeTraceCapture) error
+
+	pendingAdmissions int
+	overflowDrops     uint64
+	permanentDrops    uint64
 }
 
 func newTaskTraceProjector(
 	settings traceCaptureSettings,
 	submit func(traceCaptureSettings, *activeTraceCapture) error,
+	waiters ...func(context.Context, traceCaptureSettings, *activeTraceCapture) error,
 ) *taskTraceProjector {
+	var submitWait func(context.Context, traceCaptureSettings, *activeTraceCapture) error
+	if len(waiters) > 0 {
+		submitWait = waiters[0]
+	}
 	return &taskTraceProjector{
 		settings:   settings,
 		registries: make(map[string]*taskregistry.Registry),
@@ -64,6 +77,7 @@ func newTaskTraceProjector(
 		traces:     make(map[taskTraceKey]*taskTraceState),
 		completed:  make(map[taskTraceKey]struct{}),
 		submit:     submit,
+		submitWait: submitWait,
 	}
 }
 
@@ -304,14 +318,48 @@ func (p *taskTraceProjector) trySubmitLocked(
 	}
 	err := p.submit(state.settings, state.trace)
 	if err == nil {
+		if state.retryable {
+			p.pendingAdmissions--
+		}
 		delete(p.traces, key)
 		p.recordCompletedLocked(key)
 		return
 	}
-	state.retryable = taskTraceAdmissionCanRetry(err)
-	if state.retryable {
+	if taskTraceAdmissionCanRetry(err) {
+		if !state.retryable {
+			if p.pendingAdmissions >= maxPendingTaskTraceAdmissions {
+				delete(p.traces, key)
+				p.recordCompletedLocked(key)
+				p.overflowDrops++
+				logger.WarnCF("evaltrace", "Dropped task trace after pending admission spool overflow", map[string]any{
+					"workspace":      key.workspace,
+					"task_id":        key.taskID,
+					"generation_id":  key.generationID,
+					"pending":        p.pendingAdmissions,
+					"pending_limit":  maxPendingTaskTraceAdmissions,
+					"overflow_drops": p.overflowDrops,
+				})
+				return
+			}
+			state.retryable = true
+			p.pendingAdmissions++
+		}
 		p.scheduleRetryLocked()
+		return
 	}
+	if state.retryable {
+		p.pendingAdmissions--
+	}
+	delete(p.traces, key)
+	p.recordCompletedLocked(key)
+	p.permanentDrops++
+	logger.WarnCF("evaltrace", "Dropped task trace after permanent admission failure", map[string]any{
+		"workspace":       key.workspace,
+		"task_id":         key.taskID,
+		"generation_id":   key.generationID,
+		"permanent_drops": p.permanentDrops,
+		"error":           err.Error(),
+	})
 }
 
 func taskTraceAdmissionCanRetry(err error) bool {
@@ -386,9 +434,30 @@ func (p *taskTraceProjector) close() {
 
 	unsubscribeTaskRegistries(subs)
 	for _, state := range states {
-		if p.submit != nil {
+		if p.submitWait != nil {
+			_ = p.submitWait(context.Background(), state.settings, state.trace)
+		} else if p.submit != nil {
 			_ = p.submit(state.settings, state.trace)
 		}
+	}
+}
+
+type taskTraceProjectorStats struct {
+	PendingAdmissions int
+	OverflowDrops     uint64
+	PermanentDrops    uint64
+}
+
+func (p *taskTraceProjector) stats() taskTraceProjectorStats {
+	if p == nil {
+		return taskTraceProjectorStats{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return taskTraceProjectorStats{
+		PendingAdmissions: p.pendingAdmissions,
+		OverflowDrops:     p.overflowDrops,
+		PermanentDrops:    p.permanentDrops,
 	}
 }
 
@@ -410,6 +479,9 @@ func (p *taskTraceProjector) recordCompletedLocked(key taskTraceKey) {
 func (p *taskTraceProjector) clearWorkspaceLocked(workspace string) {
 	for key := range p.traces {
 		if key.workspace == workspace {
+			if p.traces[key].retryable {
+				p.pendingAdmissions--
+			}
 			delete(p.traces, key)
 		}
 	}
@@ -435,6 +507,7 @@ func (p *taskTraceProjector) clearCaptureStateLocked() {
 	p.traces = make(map[taskTraceKey]*taskTraceState)
 	p.completed = make(map[taskTraceKey]struct{})
 	p.order = nil
+	p.pendingAdmissions = 0
 }
 
 func (p *taskTraceProjector) takeSubscriptionsLocked() []taskRegistrySubscription {
@@ -577,10 +650,116 @@ func taskRecordIsCaptureTerminal(record taskregistry.Record) bool {
 			strings.TrimSpace(record.InteractionID) == ""
 	deliveryTerminal := record.DeliveryStatus == taskregistry.DeliveryDelivered ||
 		record.DeliveryStatus == taskregistry.DeliverySessionQueued ||
-		record.DeliveryStatus == taskregistry.DeliveryFailed ||
 		record.DeliveryStatus == taskregistry.DeliveryParentMissing ||
 		record.DeliveryStatus == taskregistry.DeliveryNotApplicable
+	if record.DeliveryStatus == taskregistry.DeliveryFailed {
+		deliveryTerminal = strings.TrimSpace(record.InteractionID) == ""
+	}
 	return statusTerminal && deliveryTerminal
+}
+
+func reconcileTaskTraceCandidate(
+	existing, candidate evaltrace.Trace,
+) (evaltrace.Trace, bool) {
+	if existing.TraceID != candidate.TraceID {
+		return candidate, true
+	}
+	if !existing.Truncation.Incomplete && candidate.Truncation.Incomplete {
+		if merged, ok := mergeCompleteTaskTrace(existing, candidate); ok {
+			return merged, true
+		}
+		return existing, false
+	}
+	if traceRecordsExtend(existing.Records, candidate.Records) {
+		improves := len(candidate.Records) > len(existing.Records) ||
+			existing.Truncation.Incomplete != candidate.Truncation.Incomplete ||
+			existing.Truncation.DroppedRecords != candidate.Truncation.DroppedRecords
+		return candidate, improves
+	}
+	if existing.Truncation.Incomplete && !candidate.Truncation.Incomplete {
+		return candidate, true
+	}
+	return existing, false
+}
+
+func traceRecordsExtend(existing, candidate []evaltrace.Record) bool {
+	if len(candidate) < len(existing) {
+		return false
+	}
+	for i := range existing {
+		if existing[i].Origin != candidate[i].Origin ||
+			existing[i].Digest != candidate[i].Digest {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeCompleteTaskTrace(
+	existing, candidate evaltrace.Trace,
+) (evaltrace.Trace, bool) {
+	if len(existing.Records) >= candidate.Limits.MaxRecords {
+		return evaltrace.Trace{}, false
+	}
+	records := append([]evaltrace.Record(nil), existing.Records...)
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		seen[record.Origin.Kind+"\x00"+record.Origin.ID] = struct{}{}
+	}
+	for _, record := range candidate.Records {
+		key := record.Origin.Kind + "\x00" + record.Origin.ID
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		records = append(records, record)
+		seen[key] = struct{}{}
+	}
+	if len(records) <= len(existing.Records) ||
+		len(records) > candidate.Limits.MaxRecords {
+		return evaltrace.Trace{}, false
+	}
+	sort.Slice(records, func(i, j int) bool {
+		left, leftOK := taskTraceEventSequence(records[i])
+		right, rightOK := taskTraceEventSequence(records[j])
+		if leftOK && rightOK && left != right {
+			return left < right
+		}
+		return records[i].Origin.ID < records[j].Origin.ID
+	})
+	for i := range records {
+		sequence, ok := taskTraceEventSequence(records[i])
+		if !ok || sequence != int64(i+1) {
+			return evaltrace.Trace{}, false
+		}
+		records[i].Sequence = uint64(i + 1)
+		if i > 0 && records[i].OffsetNanos < records[i-1].OffsetNanos {
+			records[i].OffsetNanos = records[i-1].OffsetNanos
+		}
+	}
+	candidate.Records = records
+	candidate.Truncation = evaltrace.Truncation{}
+	merged, err := evaltrace.Finalize(candidate)
+	if err != nil {
+		return evaltrace.Trace{}, false
+	}
+	return merged, true
+}
+
+func taskTraceEventSequence(record evaltrace.Record) (int64, bool) {
+	if record.Origin.Kind != "task_event" {
+		return 0, false
+	}
+	eventID := record.Origin.ID
+	eventType := strings.LastIndexByte(eventID, ':')
+	if eventType <= 0 {
+		return 0, false
+	}
+	sequence := strings.LastIndexByte(eventID[:eventType], ':')
+	if sequence < 0 {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(eventID[sequence+1:eventType], 10, 64)
+	return value, err == nil && value > 0
 }
 
 func taskErrorCode(record taskregistry.Record) string {
