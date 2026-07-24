@@ -42,6 +42,7 @@ const (
 	EventRejected          EventKind = "rejected"
 	EventEvicted           EventKind = "evicted"
 	EventRetrying          EventKind = "retrying"
+	EventPersisted         EventKind = "persisted"
 	EventPermanentlyFailed EventKind = "permanently_failed"
 	EventPruneFailed       EventKind = "prune_failed"
 	EventPruned            EventKind = "pruned"
@@ -430,6 +431,12 @@ func (w *Writer) persist(item submission) {
 		_, err := store.Save(item.trace)
 		if err == nil {
 			w.stats.persisted.Add(1)
+			w.emit(Event{
+				Kind:    EventPersisted,
+				TraceID: item.trace.TraceID,
+				Class:   item.class,
+				Attempt: attempt,
+			})
 			w.prune(store, item)
 			return
 		}

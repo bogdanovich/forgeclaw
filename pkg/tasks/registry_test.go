@@ -732,6 +732,39 @@ func TestRegistryPrunesExpiredTerminalTasks(t *testing.T) {
 	}
 }
 
+func TestRegistryTraceCapturePendingProtectsExpiredTerminalTask(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{TerminalRetention: time.Millisecond})
+	if err := registry.Upsert(Record{
+		TaskID: "trace-pending", Runtime: RuntimeSubagent, Task: "done",
+		Status: StatusSucceeded, DeliveryStatus: DeliveryDelivered,
+		EndedAt:             time.Now().Add(-time.Hour).UnixMilli(),
+		TraceCapturePending: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := registry.Get("trace-pending")
+	if !ok {
+		t.Fatal("trace-pending task was pruned while protected")
+	}
+	if err := registry.SetTraceCapturePending(
+		record.TaskID,
+		record.GenerationID,
+		false,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "trigger", Runtime: RuntimeSubagent, Task: "active",
+		Status: StatusRunning, DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.Get("trace-pending"); ok {
+		t.Fatal("released trace-pending task was not pruned")
+	}
+}
+
 func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
 	registry := NewRegistryWithOptions("", Options{
 		TerminalRetention: 24 * time.Hour,

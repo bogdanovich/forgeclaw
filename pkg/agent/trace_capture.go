@@ -40,6 +40,7 @@ func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptu
 		manager.enqueueTaskPersist,
 		manager.enqueueTaskPersistWait,
 	)
+	manager.tasks.awaitPersistence = true
 	if settings.enabled {
 		manager.start()
 	}
@@ -61,7 +62,7 @@ func (m *traceCaptureManager) start() {
 	if m.writer == nil {
 		m.writer = evalcapture.NewWriter(evalcapture.Options{
 			Capacity:  tracePersistBuffer,
-			EventSink: logTraceWriterEvent,
+			EventSink: m.handleTraceWriterEvent,
 		})
 	}
 	turns := m.turns
@@ -139,6 +140,7 @@ func (m *traceCaptureManager) close() {
 			})
 		}
 	}
+	tasks.finishClose()
 }
 
 func (m *traceCaptureManager) enqueuePersist(
@@ -168,6 +170,9 @@ func (m *traceCaptureManager) enqueueTaskPersist(
 	}
 	finalized, persist, err := reconcileStoredTaskTrace(policy, finalized)
 	if err != nil || !persist {
+		if err == nil {
+			return errTaskTraceAlreadyDurable
+		}
 		return err
 	}
 	err = writer.Submit(policy, finalized, evalcapture.ClassCritical)
@@ -190,6 +195,9 @@ func (m *traceCaptureManager) enqueueTaskPersistWait(
 	}
 	finalized, persist, err := reconcileStoredTaskTrace(policy, finalized)
 	if err != nil || !persist {
+		if err == nil {
+			return errTaskTraceAlreadyDurable
+		}
 		return err
 	}
 	err = writer.SubmitWait(ctx, policy, finalized, evalcapture.ClassCritical)
@@ -260,6 +268,9 @@ func (m *traceCaptureManager) preparePersist(
 }
 
 func logTraceWriterEvent(event evalcapture.Event) {
+	if event.Kind == evalcapture.EventPersisted {
+		return
+	}
 	fields := map[string]any{
 		"event": string(event.Kind), "reason": string(event.Reason),
 		"trace_id": event.TraceID, "class": string(event.Class),
@@ -277,4 +288,11 @@ func logTraceWriterEvent(event evalcapture.Event) {
 		fields["error"] = event.Err.Error()
 	}
 	logger.WarnCF("evaltrace", "Evaluation trace writer event", fields)
+}
+
+func (m *traceCaptureManager) handleTraceWriterEvent(event evalcapture.Event) {
+	logTraceWriterEvent(event)
+	if m != nil && m.tasks != nil {
+		m.tasks.observeWriterEvent(event)
+	}
 }

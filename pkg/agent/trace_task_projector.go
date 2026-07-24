@@ -22,6 +22,8 @@ const (
 	maxPendingTaskTraceAdmissions = 128
 )
 
+var errTaskTraceAlreadyDurable = errors.New("task trace is already durable")
+
 type taskTraceKey struct {
 	workspace    string
 	taskID       string
@@ -35,6 +37,8 @@ type taskTraceState struct {
 	lastOffset int64
 	terminal   bool
 	retryable  bool
+	admitted   bool
+	dirty      bool
 }
 
 type taskRegistrySubscription struct {
@@ -47,14 +51,16 @@ type taskTraceProjector struct {
 	closed   bool
 	settings traceCaptureSettings
 
-	registries map[string]*taskregistry.Registry
-	subs       map[string]taskRegistrySubscription
-	traces     map[taskTraceKey]*taskTraceState
-	completed  map[taskTraceKey]struct{}
-	order      []taskTraceKey
-	retryTimer *time.Timer
-	submit     func(traceCaptureSettings, *activeTraceCapture) error
-	submitWait func(context.Context, traceCaptureSettings, *activeTraceCapture) error
+	registries       map[string]*taskregistry.Registry
+	subs             map[string]taskRegistrySubscription
+	traces           map[taskTraceKey]*taskTraceState
+	completed        map[taskTraceKey]struct{}
+	order            []taskTraceKey
+	retryTimer       *time.Timer
+	submit           func(traceCaptureSettings, *activeTraceCapture) error
+	submitWait       func(context.Context, traceCaptureSettings, *activeTraceCapture) error
+	awaitPersistence bool
+	inflight         map[string]taskTraceKey
 
 	pendingAdmissions int
 	overflowDeferrals uint64
@@ -77,6 +83,7 @@ func newTaskTraceProjector(
 		subs:       make(map[string]taskRegistrySubscription),
 		traces:     make(map[taskTraceKey]*taskTraceState),
 		completed:  make(map[taskTraceKey]struct{}),
+		inflight:   make(map[string]taskTraceKey),
 		submit:     submit,
 		submitWait: submitWait,
 	}
@@ -271,7 +278,13 @@ func (p *taskTraceProjector) observe(
 		return
 	}
 	state.terminal = false
-	state.retryable = false
+	if state.retryable {
+		p.pendingAdmissions--
+		state.retryable = false
+	}
+	if state.admitted {
+		state.dirty = true
+	}
 	p.appendEventLocked(state, event, record)
 	if observation.FinalForTask && taskRecordIsCaptureTerminal(record) {
 		p.terminalizeLocked(key, state, record)
@@ -328,8 +341,34 @@ func (p *taskTraceProjector) trySubmitLocked(
 	if p.submit == nil || state == nil || state.trace == nil {
 		return
 	}
+	if state.admitted {
+		return
+	}
+	traceID := state.trace.builder.TraceID()
+	if p.awaitPersistence {
+		if err := p.setTracePendingLocked(key, true); err != nil {
+			logger.WarnCF("evaltrace", "Failed to protect task trace retry marker", map[string]any{
+				"workspace":     key.workspace,
+				"task_id":       key.taskID,
+				"generation_id": key.generationID,
+				"error":         err.Error(),
+			})
+			if !state.retryable {
+				p.retryOrDeferLocked(key, state)
+			}
+			return
+		}
+		p.inflight[traceID] = key
+	}
 	err := p.submit(state.settings, state.trace)
-	if err == nil {
+	if errors.Is(err, errTaskTraceAlreadyDurable) {
+		delete(p.inflight, traceID)
+		if markerErr := p.clearTracePendingLocked(key); markerErr != nil {
+			if !state.retryable {
+				p.retryOrDeferLocked(key, state)
+			}
+			return
+		}
 		if state.retryable {
 			p.pendingAdmissions--
 		}
@@ -337,31 +376,24 @@ func (p *taskTraceProjector) trySubmitLocked(
 		p.recordCompletedLocked(key)
 		return
 	}
+	if err == nil {
+		if state.retryable {
+			p.pendingAdmissions--
+			state.retryable = false
+		}
+		if p.awaitPersistence {
+			state.admitted = true
+			return
+		}
+		delete(p.traces, key)
+		p.recordCompletedLocked(key)
+		return
+	}
+	delete(p.inflight, traceID)
 	if taskTraceAdmissionCanRetry(err) {
 		if !state.retryable {
-			if p.pendingAdmissions >= maxPendingTaskTraceAdmissions {
-				delete(p.traces, key)
-				p.deferred = true
-				p.overflowDeferrals++
-				logger.WarnCF(
-					"evaltrace",
-					"Deferred task trace to durable registry after admission spool saturation",
-					map[string]any{
-						"workspace":          key.workspace,
-						"task_id":            key.taskID,
-						"generation_id":      key.generationID,
-						"pending":            p.pendingAdmissions,
-						"pending_limit":      maxPendingTaskTraceAdmissions,
-						"overflow_deferrals": p.overflowDeferrals,
-					},
-				)
-				p.scheduleRetryLocked()
-				return
-			}
-			state.retryable = true
-			p.pendingAdmissions++
+			p.retryOrDeferLocked(key, state)
 		}
-		p.scheduleRetryLocked()
 		return
 	}
 	if state.retryable {
@@ -377,6 +409,101 @@ func (p *taskTraceProjector) trySubmitLocked(
 		"permanent_drops": p.permanentDrops,
 		"error":           err.Error(),
 	})
+}
+
+func (p *taskTraceProjector) retryOrDeferLocked(
+	key taskTraceKey,
+	state *taskTraceState,
+) {
+	if p.pendingAdmissions < maxPendingTaskTraceAdmissions {
+		state.retryable = true
+		p.pendingAdmissions++
+		p.scheduleRetryLocked()
+		return
+	}
+	delete(p.traces, key)
+	p.deferred = true
+	p.overflowDeferrals++
+	logger.WarnCF(
+		"evaltrace",
+		"Deferred task trace to durable registry after admission spool saturation",
+		map[string]any{
+			"workspace":          key.workspace,
+			"task_id":            key.taskID,
+			"generation_id":      key.generationID,
+			"pending":            p.pendingAdmissions,
+			"pending_limit":      maxPendingTaskTraceAdmissions,
+			"overflow_deferrals": p.overflowDeferrals,
+		},
+	)
+	p.scheduleRetryLocked()
+}
+
+func (p *taskTraceProjector) observeWriterEvent(event evalcapture.Event) {
+	if p == nil ||
+		(event.Kind != evalcapture.EventPersisted &&
+			event.Kind != evalcapture.EventPermanentlyFailed) {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key, tracked := p.inflight[event.TraceID]
+	if !tracked {
+		return
+	}
+	delete(p.inflight, event.TraceID)
+	state := p.traces[key]
+	if state == nil {
+		return
+	}
+	state.admitted = false
+	switch event.Kind {
+	case evalcapture.EventPersisted:
+		if state.dirty {
+			state.dirty = false
+			if state.terminal {
+				p.trySubmitLocked(key, state)
+			}
+			return
+		}
+		if err := p.clearTracePendingLocked(key); err != nil {
+			p.retryOrDeferLocked(key, state)
+			return
+		}
+		delete(p.traces, key)
+		p.recordCompletedLocked(key)
+	case evalcapture.EventPermanentlyFailed:
+		state.dirty = false
+		p.retryOrDeferLocked(key, state)
+	}
+}
+
+func (p *taskTraceProjector) setTracePendingLocked(
+	key taskTraceKey,
+	pending bool,
+) error {
+	registry := p.registries[key.workspace]
+	if registry == nil {
+		return nil
+	}
+	return registry.SetTraceCapturePending(
+		key.taskID,
+		key.generationID,
+		pending,
+	)
+}
+
+func (p *taskTraceProjector) clearTracePendingLocked(key taskTraceKey) error {
+	if err := p.setTracePendingLocked(key, false); err != nil {
+		logger.WarnCF("evaltrace", "Failed to release task trace retry marker", map[string]any{
+			"workspace":     key.workspace,
+			"task_id":       key.taskID,
+			"generation_id": key.generationID,
+			"error":         err.Error(),
+		})
+		return err
+	}
+	return nil
 }
 
 func taskTraceAdmissionCanRetry(err error) bool {
@@ -462,6 +589,7 @@ func (p *taskTraceProjector) close() {
 	ctx, cancel := context.WithTimeout(context.Background(), traceShutdownAdmissionTimeout)
 	defer cancel()
 	_ = p.closeWithContext(ctx)
+	p.finishClose()
 }
 
 func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
@@ -484,39 +612,90 @@ func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
 		keys = append(keys, key)
 	}
 	sortTaskTraceKeys(keys)
-	states := make([]*taskTraceState, 0, len(keys))
+	type pendingClose struct {
+		key   taskTraceKey
+		state *taskTraceState
+	}
+	states := make([]pendingClose, 0, len(keys))
 	for _, key := range keys {
 		state := p.traces[key]
+		if state.admitted && !state.dirty {
+			continue
+		}
 		if !state.terminal {
 			state.trace.builder.MarkIncomplete(
 				"runtime_closed_before_terminal_task_delivery",
 				0,
 			)
 		}
-		states = append(states, state)
+		states = append(states, pendingClose{key: key, state: state})
 	}
-	p.traces = nil
-	p.completed = nil
-	p.order = nil
-	p.registries = nil
 	p.mu.Unlock()
 
 	unsubscribeTaskRegistries(subs)
 	var firstErr error
-	for _, state := range states {
-		if p.submitWait != nil {
-			if err := p.submitWait(ctx, state.settings, state.trace); err != nil &&
-				firstErr == nil {
-				firstErr = err
-			}
-		} else if p.submit != nil {
-			if err := p.submit(state.settings, state.trace); err != nil &&
-				firstErr == nil {
-				firstErr = err
+	for _, pending := range states {
+		state := pending.state
+		traceID := state.trace.builder.TraceID()
+		if p.awaitPersistence {
+			p.mu.Lock()
+			markerErr := p.setTracePendingLocked(pending.key, true)
+			p.inflight[traceID] = pending.key
+			p.mu.Unlock()
+			if markerErr != nil {
+				p.mu.Lock()
+				delete(p.inflight, traceID)
+				p.mu.Unlock()
+				if firstErr == nil {
+					firstErr = markerErr
+				}
+				continue
 			}
 		}
+		var err error
+		if p.submitWait != nil {
+			err = p.submitWait(ctx, state.settings, state.trace)
+		} else if p.submit != nil {
+			err = p.submit(state.settings, state.trace)
+		}
+		p.mu.Lock()
+		switch {
+		case errors.Is(err, errTaskTraceAlreadyDurable):
+			delete(p.inflight, traceID)
+			if markerErr := p.clearTracePendingLocked(pending.key); markerErr != nil {
+				if firstErr == nil {
+					firstErr = markerErr
+				}
+			} else {
+				delete(p.traces, pending.key)
+				p.recordCompletedLocked(pending.key)
+			}
+		case err != nil:
+			delete(p.inflight, traceID)
+			state.admitted = false
+			if firstErr == nil {
+				firstErr = err
+			}
+		default:
+			state.admitted = p.awaitPersistence
+			state.dirty = false
+		}
+		p.mu.Unlock()
 	}
 	return firstErr
+}
+
+func (p *taskTraceProjector) finishClose() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.traces = nil
+	p.completed = nil
+	p.inflight = nil
+	p.order = nil
+	p.registries = nil
 }
 
 type taskTraceProjectorStats struct {
@@ -554,6 +733,11 @@ func (p *taskTraceProjector) recordCompletedLocked(key taskTraceKey) {
 }
 
 func (p *taskTraceProjector) clearWorkspaceLocked(workspace string) {
+	for traceID, key := range p.inflight {
+		if key.workspace == workspace {
+			delete(p.inflight, traceID)
+		}
+	}
 	for key := range p.traces {
 		if key.workspace == workspace {
 			if p.traces[key].retryable {
@@ -583,6 +767,7 @@ func (p *taskTraceProjector) clearCaptureStateLocked() {
 	}
 	p.traces = make(map[taskTraceKey]*taskTraceState)
 	p.completed = make(map[taskTraceKey]struct{})
+	p.inflight = make(map[string]taskTraceKey)
 	p.order = nil
 	p.pendingAdmissions = 0
 	p.deferred = false

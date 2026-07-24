@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -127,7 +128,10 @@ func TestCriticalAdmissionEvictsOnlyQueuedOrdinaryTrace(t *testing.T) {
 	}
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
-	if len(events) != 1 || events[0].Kind != EventEvicted || events[0].TraceID != "trace-evicted" {
+	if countEvents(events, EventEvicted) != 1 ||
+		!slices.ContainsFunc(events, func(event Event) bool {
+			return event.Kind == EventEvicted && event.TraceID == "trace-evicted"
+		}) {
 		t.Fatalf("events = %+v", events)
 	}
 }
@@ -258,7 +262,11 @@ func TestWriterReportsPruneFailure(t *testing.T) {
 	var got Event
 	writer := NewWriter(Options{
 		RetryDelay: -1, StorageFactory: func(Policy) Storage { return store },
-		EventSink: func(event Event) { got = event },
+		EventSink: func(event Event) {
+			if event.Kind == EventPruneFailed {
+				got = event
+			}
+		},
 	})
 	if err := writer.Submit(testPolicy(), testTrace(t, "trace-prune"), ClassOrdinary); err != nil {
 		t.Fatal(err)
@@ -276,7 +284,11 @@ func TestWriterReportsTruncatedSubmission(t *testing.T) {
 	var got Event
 	writer := NewWriter(Options{
 		RetryDelay: -1, StorageFactory: func(Policy) Storage { return store },
-		EventSink: func(event Event) { got = event },
+		EventSink: func(event Event) {
+			if event.Kind == EventTruncated {
+				got = event
+			}
+		},
 	})
 	trace := testTrace(t, "trace-truncated")
 	trace.Truncation = evaltrace.Truncation{

@@ -625,6 +625,120 @@ func TestTaskTraceProjectorRetriesCapacityRejectionWithoutNewEvent(t *testing.T)
 	}
 }
 
+func TestTaskTraceProjectorReopenReleasesRetrySlot(t *testing.T) {
+	workspace := t.TempDir()
+	var attempts atomic.Int32
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, trace *activeTraceCapture) error {
+			if attempts.Add(1) == 1 {
+				return &evalcapture.AdmissionError{
+					Reason: evalcapture.ReasonCapacity,
+					Class:  evalcapture.ClassCritical,
+				}
+			}
+			_, err := trace.builder.Finalize()
+			return err
+		},
+	)
+	t.Cleanup(projector.close)
+	record := taskregistry.Record{
+		TaskID: "reopen", GenerationID: "generation", CreatedAt: 1,
+		Status:         taskregistry.StatusSucceeded,
+		DeliveryStatus: taskregistry.DeliveryFailed,
+	}
+	projector.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 1, 1, taskregistry.EventTaskDeliveryChanged),
+		Record:       record,
+		FinalForTask: true,
+	})
+	if got := projector.stats().PendingAdmissions; got != 1 {
+		t.Fatalf("pending admissions after rejection = %d, want 1", got)
+	}
+
+	record.InteractionID = "interaction-1"
+	record.DeliveryStatus = taskregistry.DeliveryPending
+	projector.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
+		Record:       record,
+		FinalForTask: true,
+	})
+	if got := projector.stats().PendingAdmissions; got != 0 {
+		t.Fatalf("pending admissions after reopen = %d, want 0", got)
+	}
+	record.DeliveryStatus = taskregistry.DeliveryDelivered
+	projector.observe(workspace, taskregistry.EventObservation{
+		Event:        taskEventFixture(record, 3, 3, taskregistry.EventTaskDeliveryChanged),
+		Record:       record,
+		FinalForTask: true,
+	})
+	if got := projector.stats().PendingAdmissions; got != 0 {
+		t.Fatalf("pending admissions after recovery = %d, want 0", got)
+	}
+}
+
+func TestTaskTraceProjectorRetriesPermanentWriterFailure(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	var attempts atomic.Int32
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, trace *activeTraceCapture) error {
+			attempts.Add(1)
+			_, err := trace.builder.Finalize()
+			return err
+		},
+	)
+	projector.awaitPersistence = true
+	t.Cleanup(projector.close)
+	projector.attach(workspace, registry)
+	record := finishTaskForTrace(t, registry, "storage-retry", "session", 1)
+	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
+	projector.mu.Lock()
+	traceID := projector.traces[key].trace.builder.TraceID()
+	projector.mu.Unlock()
+	projector.observeWriterEvent(evalcapture.Event{
+		Kind:    evalcapture.EventPermanentlyFailed,
+		Reason:  evalcapture.ReasonStorageFailure,
+		TraceID: traceID,
+		Class:   evalcapture.ClassCritical,
+	})
+	if got := projector.stats().PendingAdmissions; got != 1 {
+		t.Fatalf("pending admissions after storage failure = %d, want 1", got)
+	}
+	if current := registryRecord(t, registry, record.TaskID); !current.TraceCapturePending {
+		t.Fatal("storage failure released durable trace retry marker")
+	}
+	projector.mu.Lock()
+	if projector.retryTimer != nil {
+		projector.retryTimer.Stop()
+		projector.retryTimer = nil
+	}
+	projector.mu.Unlock()
+	projector.retryPending()
+	projector.observeWriterEvent(evalcapture.Event{
+		Kind:    evalcapture.EventPersisted,
+		TraceID: traceID,
+		Class:   evalcapture.ClassCritical,
+	})
+
+	if attempts.Load() != 2 {
+		t.Fatalf("submission attempts = %d, want 2", attempts.Load())
+	}
+	if got := projector.stats().PendingAdmissions; got != 0 {
+		t.Fatalf("pending admissions after persistence = %d, want 0", got)
+	}
+	if current := registryRecord(t, registry, record.TaskID); current.TraceCapturePending {
+		t.Fatal("successful persistence retained trace retry marker")
+	}
+	projector.mu.Lock()
+	remaining := len(projector.traces)
+	projector.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("remaining traces = %d, want 0", remaining)
+	}
+}
+
 func TestTaskTraceProjectorRecoversDeferredCapacityOverflowFromRegistry(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
@@ -646,6 +760,7 @@ func TestTaskTraceProjectorRecoversDeferredCapacityOverflowFromRegistry(t *testi
 			return nil
 		},
 	)
+	projector.awaitPersistence = true
 	t.Cleanup(projector.close)
 	projector.attach(workspace, registry)
 	for i := range maxPendingTaskTraceAdmissions + 17 {
@@ -670,6 +785,11 @@ func TestTaskTraceProjectorRecoversDeferredCapacityOverflowFromRegistry(t *testi
 	projector.mu.Unlock()
 	if retained != maxPendingTaskTraceAdmissions {
 		t.Fatalf("retained terminal traces = %d, want %d", retained, maxPendingTaskTraceAdmissions)
+	}
+	for _, record := range registry.List() {
+		if !record.TraceCapturePending {
+			t.Fatalf("task %q lacks durable trace retry marker", record.TaskID)
+		}
 	}
 
 	accepting.Store(true)

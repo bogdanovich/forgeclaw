@@ -185,6 +185,7 @@ type Record struct {
 	LastCompletionID    string              `json:"last_completion_id,omitempty"`
 	DeliveredAt         int64               `json:"delivered_at,omitempty"`
 	DeliveryError       string              `json:"delivery_error,omitempty"`
+	TraceCapturePending bool                `json:"trace_capture_pending,omitempty"`
 	CreatedAt           int64               `json:"created_at"`
 	StartedAt           int64               `json:"started_at,omitempty"`
 	EndedAt             int64               `json:"ended_at,omitempty"`
@@ -436,6 +437,41 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return err
+}
+
+// SetTraceCapturePending durably protects a terminal task while its canonical
+// evaluation trace is awaiting persistence. This projection is operational
+// metadata and intentionally does not append a task lifecycle event.
+func (r *Registry) SetTraceCapturePending(
+	taskID, generationID string,
+	pending bool,
+) error {
+	if r == nil || strings.TrimSpace(taskID) == "" ||
+		strings.TrimSpace(generationID) == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.writableErrorLocked(); err != nil {
+		return err
+	}
+	record, ok := r.records[taskID]
+	if !ok || record.GenerationID != generationID {
+		return fmt.Errorf("task %q generation %q not found", taskID, generationID)
+	}
+	if record.TraceCapturePending == pending {
+		return nil
+	}
+	rollback := r.captureStateLocked()
+	record.TraceCapturePending = pending
+	r.records[taskID] = record
+	if err := r.saveLocked(); err != nil {
+		if !fileutil.IsCommittedWriteError(err) {
+			r.restoreStateLocked(rollback)
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Registry) Heartbeat(taskID, progress string) error {
@@ -1081,7 +1117,9 @@ func shouldPruneExpired(rec Record, now int64) bool {
 }
 
 func canPruneRecord(rec Record) bool {
-	return isTerminalStatus(rec.Status) && isFinalDeliveryStatus(rec.DeliveryStatus)
+	return !rec.TraceCapturePending &&
+		isTerminalStatus(rec.Status) &&
+		isFinalDeliveryStatus(rec.DeliveryStatus)
 }
 
 func isTerminalStatus(status Status) bool {
