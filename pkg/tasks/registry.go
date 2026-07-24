@@ -476,9 +476,10 @@ func (r *Registry) SetTraceCapturePending(
 	return nil
 }
 
-// SetTraceCaptureProtection controls atomic retention protection for task
-// transitions observed by evaluation trace capture. Enabling also protects
-// retained terminal records before the caller takes its startup snapshot.
+// SetTraceCaptureProtection controls atomic retention protection for new task
+// transitions. Disabling preserves existing pending markers for restart
+// recovery; enabling also protects retained terminal records before the caller
+// takes its startup snapshot.
 func (r *Registry) SetTraceCaptureProtection(enabled bool) error {
 	if r == nil {
 		return nil
@@ -495,16 +496,16 @@ func (r *Registry) SetTraceCaptureProtection(enabled bool) error {
 	previous := r.traceCaptureProtection
 	r.traceCaptureProtection = enabled
 	changed := false
+	if !enabled {
+		return nil
+	}
 	for taskID, record := range r.records {
-		pending := enabled && taskRecordIsRetentionTerminal(record)
-		if record.TraceCapturePending == pending {
+		if !taskRecordIsRetentionTerminal(record) ||
+			record.TraceCapturePending {
 			continue
 		}
-		record.TraceCapturePending = pending
+		record.TraceCapturePending = true
 		r.records[taskID] = record
-		changed = true
-	}
-	if !enabled && r.pruneLocked(time.Now().UnixMilli()) {
 		changed = true
 	}
 	if !changed {
@@ -1093,9 +1094,6 @@ func (r *Registry) protectTraceCandidatesLocked(candidates []TaskEvent) {
 		return
 	}
 	for _, event := range candidates {
-		if !taskEventCanFinalizeTrace(event) {
-			continue
-		}
 		record, ok := r.records[event.TaskID]
 		if !ok || record.GenerationID != event.GenerationID ||
 			!taskRecordIsRetentionTerminal(record) ||
@@ -1104,19 +1102,6 @@ func (r *Registry) protectTraceCandidatesLocked(candidates []TaskEvent) {
 		}
 		record.TraceCapturePending = true
 		r.records[event.TaskID] = record
-	}
-}
-
-func taskEventCanFinalizeTrace(event TaskEvent) bool {
-	switch event.Type {
-	case EventTaskUpserted:
-		return true
-	case EventTaskStatusChanged:
-		return isTerminalStatus(event.Status)
-	case EventTaskDeliveryChanged:
-		return isFinalDeliveryStatus(event.DeliveryStatus)
-	default:
-		return false
 	}
 }
 

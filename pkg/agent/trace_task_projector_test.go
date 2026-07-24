@@ -620,6 +620,84 @@ func TestTaskTraceProjectorExtendsFailedInteractionDeliveryThroughRecovery(t *te
 	}
 }
 
+func TestTaskTraceProjectorReopensAfterPersistedDeliveryFailure(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	var submitted []evaltrace.Trace
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, active *activeTraceCapture) error {
+			trace, err := active.builder.Finalize()
+			if err != nil {
+				return err
+			}
+			submitted = append(submitted, trace)
+			return nil
+		},
+	)
+	projector.awaitPersistence = true
+	t.Cleanup(projector.close)
+	projector.attach(workspace, registry)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "acknowledged-recovery", Task: "test",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("acknowledged-recovery", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryFailed
+		record.DeliveryError = "not sent"
+		record.LastCompletionID = "completion-1"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(submitted) != 1 {
+		t.Fatalf("initial submissions = %d, want 1", len(submitted))
+	}
+	traceID := submitted[0].TraceID
+	projector.observeWriterEvent(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: traceID,
+		Class: evalcapture.ClassCritical,
+	})
+	if registryRecord(t, registry, "acknowledged-recovery").TraceCapturePending {
+		t.Fatal("persistence acknowledgement retained pending marker")
+	}
+
+	if err := registry.Update("acknowledged-recovery", func(record *taskregistry.Record) {
+		record.DeliveryStatus = taskregistry.DeliveryPending
+		record.DeliveryError = ""
+		record.LastCompletionID = "completion-2"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("acknowledged-recovery", func(record *taskregistry.Record) {
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(submitted) != 2 {
+		t.Fatalf("recovery submissions = %d, want 2", len(submitted))
+	}
+	statuses := taskDeliveryStatuses(t, submitted[1])
+	for _, want := range []string{
+		string(taskregistry.DeliveryFailed),
+		string(taskregistry.DeliveryPending),
+		string(taskregistry.DeliveryDelivered),
+	} {
+		if !slices.Contains(statuses, want) {
+			t.Fatalf("recovered delivery statuses = %v, missing %q", statuses, want)
+		}
+	}
+	projector.observeWriterEvent(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: traceID,
+		Class: evalcapture.ClassCritical,
+	})
+	if registryRecord(t, registry, "acknowledged-recovery").TraceCapturePending {
+		t.Fatal("recovered trace retained pending marker")
+	}
+}
+
 func TestTaskTraceProjectorRetriesCapacityRejectionWithoutNewEvent(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))

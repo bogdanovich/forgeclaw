@@ -54,7 +54,7 @@ type taskTraceProjector struct {
 	registries       map[string]*taskregistry.Registry
 	subs             map[string]taskRegistrySubscription
 	traces           map[taskTraceKey]*taskTraceState
-	completed        map[taskTraceKey]struct{}
+	completed        map[taskTraceKey]int64
 	order            []taskTraceKey
 	retryTimer       *time.Timer
 	submit           func(traceCaptureSettings, *activeTraceCapture) error
@@ -82,7 +82,7 @@ func newTaskTraceProjector(
 		registries: make(map[string]*taskregistry.Registry),
 		subs:       make(map[string]taskRegistrySubscription),
 		traces:     make(map[taskTraceKey]*taskTraceState),
-		completed:  make(map[taskTraceKey]struct{}),
+		completed:  make(map[taskTraceKey]int64),
 		inflight:   make(map[string]taskTraceKey),
 		submit:     submit,
 		submitWait: submitWait,
@@ -276,8 +276,23 @@ func (p *taskTraceProjector) observe(
 		record.TaskID != event.TaskID || record.GenerationID != event.GenerationID {
 		return
 	}
-	if _, done := p.completed[key]; done {
-		return
+	if completedSeq, done := p.completed[key]; done {
+		if event.Seq <= completedSeq {
+			return
+		}
+		p.removeCompletedLocked(key)
+		if registry := p.registries[workspace]; registry != nil {
+			state := p.restoreStateLocked(
+				workspace,
+				record,
+				registry.ListEvents(record.TaskID),
+			)
+			p.traces[key] = state
+			if observation.FinalForTask && taskRecordIsCaptureTerminal(record) {
+				p.terminalizeLocked(key, state, record)
+			}
+			return
+		}
 	}
 	state := p.traces[key]
 	if state == nil {
@@ -386,7 +401,7 @@ func (p *taskTraceProjector) trySubmitLocked(
 			p.pendingAdmissions--
 		}
 		delete(p.traces, key)
-		p.recordCompletedLocked(key)
+		p.recordCompletedLocked(key, state.lastSeq)
 		return
 	}
 	if err == nil {
@@ -399,7 +414,7 @@ func (p *taskTraceProjector) trySubmitLocked(
 			return
 		}
 		delete(p.traces, key)
-		p.recordCompletedLocked(key)
+		p.recordCompletedLocked(key, state.lastSeq)
 		return
 	}
 	delete(p.inflight, traceID)
@@ -413,7 +428,7 @@ func (p *taskTraceProjector) trySubmitLocked(
 		p.pendingAdmissions--
 	}
 	delete(p.traces, key)
-	p.recordCompletedLocked(key)
+	p.recordCompletedLocked(key, state.lastSeq)
 	p.permanentDrops++
 	logger.WarnCF("evaltrace", "Dropped task trace after permanent admission failure", map[string]any{
 		"workspace":       key.workspace,
@@ -484,7 +499,7 @@ func (p *taskTraceProjector) observeWriterEvent(event evalcapture.Event) {
 			return
 		}
 		delete(p.traces, key)
-		p.recordCompletedLocked(key)
+		p.recordCompletedLocked(key, state.lastSeq)
 	case evalcapture.EventPermanentlyFailed:
 		state.dirty = false
 		p.retryOrDeferLocked(key, state)
@@ -580,8 +595,13 @@ func (p *taskTraceProjector) recoverDeferredLocked() {
 				continue
 			}
 			key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-			if _, done := p.completed[key]; done || p.traces[key] != nil {
+			completedSeq, done := p.completed[key]
+			if (done && record.LastEventSeq <= completedSeq) ||
+				p.traces[key] != nil {
 				continue
+			}
+			if done {
+				p.removeCompletedLocked(key)
 			}
 			if p.pendingAdmissions >= maxPendingTaskTraceAdmissions {
 				p.deferred = true
@@ -681,7 +701,7 @@ func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
 				}
 			} else {
 				delete(p.traces, pending.key)
-				p.recordCompletedLocked(pending.key)
+				p.recordCompletedLocked(pending.key, state.lastSeq)
 			}
 		case err != nil:
 			delete(p.inflight, traceID)
@@ -730,11 +750,15 @@ func (p *taskTraceProjector) stats() taskTraceProjectorStats {
 	}
 }
 
-func (p *taskTraceProjector) recordCompletedLocked(key taskTraceKey) {
+func (p *taskTraceProjector) recordCompletedLocked(
+	key taskTraceKey,
+	lastSeq int64,
+) {
 	if _, exists := p.completed[key]; exists {
+		p.completed[key] = max(p.completed[key], lastSeq)
 		return
 	}
-	p.completed[key] = struct{}{}
+	p.completed[key] = lastSeq
 	p.order = append(p.order, key)
 	if len(p.order) <= maxCompletedTaskTraces {
 		return
@@ -743,6 +767,19 @@ func (p *taskTraceProjector) recordCompletedLocked(key taskTraceKey) {
 	p.order[0] = taskTraceKey{}
 	p.order = p.order[1:]
 	delete(p.completed, oldest)
+}
+
+func (p *taskTraceProjector) removeCompletedLocked(key taskTraceKey) {
+	delete(p.completed, key)
+	for i, ordered := range p.order {
+		if ordered != key {
+			continue
+		}
+		copy(p.order[i:], p.order[i+1:])
+		p.order[len(p.order)-1] = taskTraceKey{}
+		p.order = p.order[:len(p.order)-1]
+		return
+	}
 }
 
 func (p *taskTraceProjector) clearWorkspaceLocked(workspace string) {
@@ -779,7 +816,7 @@ func (p *taskTraceProjector) clearCaptureStateLocked() {
 		p.retryTimer = nil
 	}
 	p.traces = make(map[taskTraceKey]*taskTraceState)
-	p.completed = make(map[taskTraceKey]struct{})
+	p.completed = make(map[taskTraceKey]int64)
 	p.inflight = make(map[string]taskTraceKey)
 	p.order = nil
 	p.pendingAdmissions = 0

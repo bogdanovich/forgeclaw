@@ -797,6 +797,13 @@ func TestRegistryTraceProtectionPrecedesTerminalMutationPruning(t *testing.T) {
 	if got := registry.Stats().TaskCount; got != 2 {
 		t.Fatalf("protected task count = %d, want 2", got)
 	}
+	if err := registry.SetTraceCaptureProtection(false); err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok = registry.Get("candidate")
+	if !ok || !candidate.TraceCapturePending {
+		t.Fatal("disabling capture released pending trace protection")
+	}
 }
 
 func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
