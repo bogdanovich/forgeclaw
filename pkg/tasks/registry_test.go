@@ -433,6 +433,7 @@ func TestRegistryPersistsAndReloadsTaskEvents(t *testing.T) {
 	if err := registry.Update("subagent-7", func(rec *Record) {
 		rec.Status = StatusSucceeded
 		rec.DeliveryStatus = DeliveryDelivered
+		rec.LastCompletionID = "completion-7"
 		rec.ProgressSummary = "done"
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -467,7 +468,8 @@ func TestRegistryPersistsAndReloadsTaskEvents(t *testing.T) {
 		t.Fatalf("status event payload = %+v", events[1].Payload)
 	}
 	if events[2].Payload["from"] != string(DeliveryPending) ||
-		events[2].Payload["to"] != string(DeliveryDelivered) {
+		events[2].Payload["to"] != string(DeliveryDelivered) ||
+		events[2].Payload["completion_id"] != "completion-7" {
 		t.Fatalf("delivery event payload = %+v", events[2].Payload)
 	}
 	if events[3].Payload["summary"] != "done" {

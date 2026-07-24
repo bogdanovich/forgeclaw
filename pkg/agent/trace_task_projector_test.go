@@ -189,6 +189,69 @@ func TestTaskTraceReconciliationExtendsPersistedFailureAfterPrunedRestart(t *tes
 	}
 }
 
+func TestTaskTraceProjectorExtendsCompleteTraceAfterCompletionIDChanges(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	manager.attachTaskRegistry(workspace, registry)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "completion-recovery", Task: "test",
+		Status:         taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("completion-recovery", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryFailed
+		record.LastCompletionID = "completion-1"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := waitForTraceFile(t, workspace)
+	failed := readCapturedTrace(t, path)
+	manager.close()
+
+	if err := registry.Update("completion-recovery", func(record *taskregistry.Record) {
+		record.InteractionID = "interaction-1"
+		record.LastCompletionID = "completion-2"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	restarted.attachTaskRegistry(workspace, registry)
+	if err := registry.Update("completion-recovery", func(record *taskregistry.Record) {
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+		record.DeliveryError = ""
+		record.LastCompletionID = "completion-2"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var recovered evaltrace.Trace
+	for {
+		recovered = readCapturedTrace(t, path)
+		if len(recovered.Records) > len(failed.Records) &&
+			recovered.Outcome != nil &&
+			recovered.Outcome.ErrorCode == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("canonical trace was not extended: %#v", recovered)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	restarted.close()
+	t.Cleanup(func() { _ = eventBus.Close() })
+
+	completions := taskDeliveryCompletionIDs(recovered)
+	if !slices.Equal(completions, []string{"completion-1", "completion-2"}) {
+		t.Fatalf("delivery completion IDs = %v", completions)
+	}
+}
+
 func TestTaskTraceProjectorEnablesAfterRegistryAttachment(t *testing.T) {
 	workspace := t.TempDir()
 	eventBus := runtimeevents.NewBus()
@@ -907,6 +970,16 @@ func taskDeliveryStatuses(t *testing.T, trace evaltrace.Trace) []string {
 		statuses = append(statuses, payload.Status)
 	}
 	return statuses
+}
+
+func taskDeliveryCompletionIDs(trace evaltrace.Trace) []string {
+	var completionIDs []string
+	for _, record := range trace.Records {
+		if record.Kind == evaltrace.RecordDeliveryOutcome {
+			completionIDs = append(completionIDs, record.Correlation.CompletionID)
+		}
+	}
+	return completionIDs
 }
 
 func taskEventFixture(

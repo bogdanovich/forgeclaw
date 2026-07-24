@@ -1284,10 +1284,14 @@ func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int6
 		})
 	}
 	if before.DeliveryStatus != after.DeliveryStatus {
-		r.appendEventLocked(after, EventTaskDeliveryChanged, emittedAt, map[string]string{
+		payload := map[string]string{
 			"from": string(before.DeliveryStatus),
 			"to":   string(after.DeliveryStatus),
-		})
+		}
+		if completionID := strings.TrimSpace(after.LastCompletionID); completionID != "" {
+			payload["completion_id"] = completionID
+		}
+		r.appendEventLocked(after, EventTaskDeliveryChanged, emittedAt, payload)
 	}
 	if before.ProgressSummary != after.ProgressSummary && strings.TrimSpace(after.ProgressSummary) != "" {
 		r.appendEventLocked(after, EventTaskProgress, emittedAt, map[string]string{

@@ -712,7 +712,7 @@ func normalizedTaskEventRecord(
 			TargetHash: safeHash(settings, targetKey(state.Channel, state.ChatID)),
 		},
 		Correlation: evaltrace.Correlation{
-			CompletionID: firstNonEmpty(event.Payload["completion_id"], state.LastCompletionID),
+			CompletionID: event.Payload["completion_id"],
 			EventID:      event.EventID,
 		},
 		Data: data,

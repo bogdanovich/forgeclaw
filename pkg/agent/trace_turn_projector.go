@@ -815,12 +815,3 @@ func primaryCandidateProvider(candidates []providers.FallbackCandidate) string {
 	}
 	return candidates[0].Provider
 }
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
