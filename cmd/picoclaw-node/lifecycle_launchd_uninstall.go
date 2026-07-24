@@ -84,6 +84,28 @@ func (lifecycle *launchdLifecycle) Uninstall(
 	if err != nil {
 		return lifecycleStatus{}, lifecycle.rollbackLaunchdLoadedState(plist.publication, status, job, err)
 	}
+	concurrentJob, concurrentlyLoaded, err := lifecycle.queryJob(ctx, status.Service)
+	if err != nil {
+		return lifecycleStatus{}, lifecycle.rollbackLaunchdUninstall(
+			quarantined,
+			status,
+			job,
+			fmt.Errorf("inspect launchd service after plist quarantine: %w", err),
+		)
+	}
+	if concurrentlyLoaded {
+		return lifecycleStatus{}, lifecycle.rollbackLaunchdUninstall(
+			quarantined,
+			status,
+			launchdJobState{},
+			fmt.Errorf(
+				"launchd service %s became loaded during uninstall (domain %s, path %q)",
+				status.Service,
+				concurrentJob.domain,
+				concurrentJob.path,
+			),
+		)
+	}
 	remove := lifecycle.remove
 	if remove == nil {
 		remove = removeQuarantinedLaunchdPlist
