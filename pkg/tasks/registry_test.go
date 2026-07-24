@@ -765,6 +765,40 @@ func TestRegistryTraceCapturePendingProtectsExpiredTerminalTask(t *testing.T) {
 	}
 }
 
+func TestRegistryTraceProtectionPrecedesTerminalMutationPruning(t *testing.T) {
+	registry := NewRegistryWithOptions(
+		filepath.Join(t.TempDir(), "state", "task_registry.json"),
+		Options{MaxRecords: 1},
+	)
+	if err := registry.SetTraceCaptureProtection(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, taskID := range []string{"active-blocker", "candidate"} {
+		if err := registry.Upsert(Record{
+			TaskID: taskID, Runtime: RuntimeSubagent,
+			Status: StatusRunning, DeliveryStatus: DeliveryPending,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := registry.Update("candidate", func(record *Record) {
+		record.Status = StatusSucceeded
+		record.DeliveryStatus = DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok := registry.Get("candidate")
+	if !ok {
+		t.Fatal("terminal candidate was pruned before trace protection")
+	}
+	if !candidate.TraceCapturePending {
+		t.Fatal("terminal candidate lacks atomic trace protection")
+	}
+	if got := registry.Stats().TaskCount; got != 2 {
+		t.Fatalf("protected task count = %d, want 2", got)
+	}
+}
+
 func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
 	registry := NewRegistryWithOptions("", Options{
 		TerminalRetention: 24 * time.Hour,

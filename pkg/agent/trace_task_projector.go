@@ -137,9 +137,13 @@ func (p *taskTraceProjector) updateSettings(settings traceCaptureSettings) {
 	p.settings = settings
 	if wasEnabled && !settings.enabled {
 		subs := p.takeSubscriptionsLocked()
+		registries := cloneTaskRegistries(p.registries)
 		p.clearCaptureStateLocked()
 		p.mu.Unlock()
 		unsubscribeTaskRegistries(subs)
+		if p.awaitPersistence {
+			setTaskRegistryTraceProtection(registries, false)
+		}
 		return
 	}
 	if wasEnabled || !settings.enabled {
@@ -157,6 +161,15 @@ func (p *taskTraceProjector) subscribe(
 	workspace string,
 	registry *taskregistry.Registry,
 ) {
+	if p.awaitPersistence {
+		if err := registry.SetTraceCaptureProtection(true); err != nil {
+			logger.WarnCF("evaltrace", "Failed to protect task trace snapshot", map[string]any{
+				"workspace": workspace,
+				"error":     err.Error(),
+			})
+			return
+		}
+	}
 	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(
 		func(observation taskregistry.EventObservation) {
 			p.observe(workspace, observation)
@@ -786,6 +799,21 @@ func unsubscribeTaskRegistries(subs []taskRegistrySubscription) {
 	for _, sub := range subs {
 		if sub.unsubscribe != nil {
 			sub.unsubscribe()
+		}
+	}
+}
+
+func setTaskRegistryTraceProtection(
+	registries map[string]*taskregistry.Registry,
+	enabled bool,
+) {
+	for workspace, registry := range registries {
+		if err := registry.SetTraceCaptureProtection(enabled); err != nil {
+			logger.WarnCF("evaltrace", "Failed to update task trace retention protection", map[string]any{
+				"workspace": workspace,
+				"enabled":   enabled,
+				"error":     err.Error(),
+			})
 		}
 	}
 }

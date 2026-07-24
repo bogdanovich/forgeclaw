@@ -68,6 +68,41 @@ func TestTaskTraceProjectorReconcilesTerminalSnapshotWithoutNewEvent(t *testing.
 	}
 }
 
+func TestTaskTraceProjectorProtectsTerminalMutationBeforeRegistryPruning(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistryWithOptions(
+		taskregistry.WorkspaceStorePath(workspace),
+		taskregistry.Options{MaxRecords: 1},
+	)
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+	manager.attachTaskRegistry(workspace, registry)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "active-blocker", Runtime: taskregistry.RuntimeSubagent,
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	finishTaskForTrace(t, registry, "terminal-at-capacity", "session", 0)
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if len(trace.Records) == 0 ||
+		trace.Records[0].Scope.TaskID != "terminal-at-capacity" {
+		t.Fatalf("captured records = %#v", trace.Records)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for registryRecord(t, registry, "terminal-at-capacity").TraceCapturePending {
+		if time.Now().After(deadline) {
+			t.Fatal("persisted task retained trace capture protection")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestTaskTraceProjectorDoesNotDowngradeCompleteTraceOnStartup(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
