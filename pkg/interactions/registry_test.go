@@ -875,7 +875,7 @@ func TestRegistrySubscribeSnapshotReturnsSubscriptionBoundary(t *testing.T) {
 	registry, clock, _ := newTestRegistry(t)
 	record := makeWaiting(t, registry, clock, "interaction_acacacac11111111", "session-1")
 	var observed []Event
-	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
 		observed = append(observed, observation.Event)
 	})
 	t.Cleanup(unsubscribe)
@@ -891,6 +891,7 @@ func TestRegistrySubscribeSnapshotReturnsSubscriptionBoundary(t *testing.T) {
 	if len(observed) != 0 {
 		t.Fatalf("snapshot events were also delivered live: %+v", observed)
 	}
+	activate()
 	if _, err := registry.ClaimAnswer(
 		record.ID,
 		record.Revision,
@@ -946,7 +947,7 @@ func TestRegistrySubscribeSnapshotExcludesQueuedPreBoundaryCommit(t *testing.T) 
 		t.Fatal(err)
 	}
 	var observed []EventObservation
-	snapshot, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
 		observed = append(observed, observation)
 	})
 	t.Cleanup(unsubscribe)
@@ -962,8 +963,51 @@ func TestRegistrySubscribeSnapshotExcludesQueuedPreBoundaryCommit(t *testing.T) 
 	if err := <-firstDone; err != nil {
 		t.Fatal(err)
 	}
+	if len(observed) != 0 {
+		t.Fatalf("post-boundary observation escaped before activation: %+v", observed)
+	}
+	activate()
 	if len(observed) != 1 || observed[0].Event.CommitSequence != 3 {
 		t.Fatalf("post-boundary observations = %+v", observed)
+	}
+}
+
+func TestRegistrySubscribeSnapshotUnsubscribeDropsBufferedCommit(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	var observed []EventObservation
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+	if snapshot.Through != 0 {
+		t.Fatalf("snapshot through = %d, want 0", snapshot.Through)
+	}
+	if _, err := registry.Create(validCreate(
+		clock, "interaction_c4c4c4c455555555", "session-1",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	unsubscribe()
+	activate()
+	if len(observed) != 0 {
+		t.Fatalf("closed gated observer received buffered commit: %+v", observed)
+	}
+}
+
+func TestRegistryObserverSnapshotsAreIsolated(t *testing.T) {
+	registry, clock, _ := newTestRegistry(t)
+	registry.Subscribe(func(observation EventObservation) {
+		observation.Record.Questions[0].Question = "mutated"
+	})
+	var observed string
+	registry.Subscribe(func(observation EventObservation) {
+		observed = observation.Record.Questions[0].Question
+	})
+	request := validCreate(clock, "interaction_c5c5c5c566666666", "session-1")
+	if _, err := registry.Create(request); err != nil {
+		t.Fatal(err)
+	}
+	if observed != request.Questions[0].Question {
+		t.Fatalf("second observer saw mutation %q, want %q", observed, request.Questions[0].Question)
 	}
 }
 
