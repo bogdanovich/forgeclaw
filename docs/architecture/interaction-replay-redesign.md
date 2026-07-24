@@ -162,13 +162,17 @@ type ObservationSnapshot struct {
     Events  []Event
 }
 
-func (r *Registry) SubscribeSnapshot(Observer) (ObservationSnapshot, func())
+func (r *Registry) SubscribeSnapshot(
+    Observer,
+) (ObservationSnapshot, activate func(), unsubscribe func())
 ```
 
 While holding the registry lock, subscription installation and snapshot
 creation share one boundary. The snapshot contains all committed observations
-through `Through`; the subscriber receives only later sequences. Observers are
-never called while the registry lock is held. A single ordered dispatcher
+through `Through`; the subscriber receives only later sequences. Those later
+sequences are buffered until the caller applies the snapshot and invokes
+`activate`, so live delivery cannot overtake startup reconciliation. Observers
+are never called while the registry lock is held. A single ordered dispatcher
 preserves commit order and permits callbacks to call registry read methods.
 
 Every mutating operation persists the record and event before publishing its
