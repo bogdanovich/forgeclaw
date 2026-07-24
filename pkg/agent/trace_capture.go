@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evalcapture"
@@ -14,7 +15,10 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
-const tracePersistBuffer = 128
+const (
+	tracePersistBuffer            = 128
+	traceShutdownAdmissionTimeout = 5 * time.Second
+)
 
 type traceCaptureManager struct {
 	mu      sync.Mutex
@@ -113,14 +117,27 @@ func (m *traceCaptureManager) close() {
 	m.mu.Unlock()
 
 	turns.close()
-	tasks.close()
+	shutdownCtx, shutdownCancel := context.WithTimeout(
+		context.Background(),
+		traceShutdownAdmissionTimeout,
+	)
+	defer shutdownCancel()
+	if err := tasks.closeWithContext(shutdownCtx); err != nil {
+		logger.WarnCF("evaltrace", "Deferred task trace persistence to registry during shutdown", map[string]any{
+			"error": err.Error(),
+		})
+	}
 
 	m.mu.Lock()
 	writer := m.writer
 	m.writer = nil
 	m.mu.Unlock()
 	if writer != nil {
-		_ = writer.Close(context.Background())
+		if err := writer.Close(shutdownCtx); err != nil {
+			logger.WarnCF("evaltrace", "Trace writer did not drain before shutdown deadline", map[string]any{
+				"error": err.Error(),
+			})
+		}
 	}
 }
 

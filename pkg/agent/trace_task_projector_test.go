@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -561,47 +562,64 @@ func TestTaskTraceProjectorRetriesCapacityRejectionWithoutNewEvent(t *testing.T)
 	}
 }
 
-func TestTaskTraceProjectorBoundsCapacityRejectedTerminalSpool(t *testing.T) {
+func TestTaskTraceProjectorRecoversDeferredCapacityOverflowFromRegistry(t *testing.T) {
 	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	var accepting atomic.Bool
+	var admitted atomic.Int32
 	projector := newTaskTraceProjector(
 		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(traceCaptureSettings, *activeTraceCapture) error {
-			return &evalcapture.AdmissionError{
-				Reason: evalcapture.ReasonCapacity,
-				Class:  evalcapture.ClassCritical,
+		func(_ traceCaptureSettings, trace *activeTraceCapture) error {
+			if !accepting.Load() {
+				return &evalcapture.AdmissionError{
+					Reason: evalcapture.ReasonCapacity,
+					Class:  evalcapture.ClassCritical,
+				}
 			}
+			if _, err := trace.builder.Finalize(); err != nil {
+				return err
+			}
+			admitted.Add(1)
+			return nil
 		},
 	)
 	t.Cleanup(projector.close)
+	projector.attach(workspace, registry)
 	for i := range maxPendingTaskTraceAdmissions + 17 {
-		record := taskregistry.Record{
-			TaskID:         fmt.Sprintf("capacity-%03d", i),
-			GenerationID:   fmt.Sprintf("generation-%03d", i),
-			CreatedAt:      int64(i + 1),
-			Status:         taskregistry.StatusSucceeded,
-			DeliveryStatus: taskregistry.DeliveryDelivered,
-		}
-		projector.observe(workspace, taskregistry.EventObservation{
-			Event: taskEventFixture(
-				record, 1, record.CreatedAt, taskregistry.EventTaskUpserted,
-			),
-			Record:       record,
-			FinalForTask: true,
-		})
+		finishTaskForTrace(
+			t,
+			registry,
+			fmt.Sprintf("capacity-%03d", i),
+			"session",
+			int64(i+1),
+		)
 	}
 
 	stats := projector.stats()
 	if stats.PendingAdmissions != maxPendingTaskTraceAdmissions {
 		t.Fatalf("pending admissions = %d, want %d", stats.PendingAdmissions, maxPendingTaskTraceAdmissions)
 	}
-	if stats.OverflowDrops != 17 {
-		t.Fatalf("overflow drops = %d, want 17", stats.OverflowDrops)
+	if stats.OverflowDeferrals != 17 {
+		t.Fatalf("overflow deferrals = %d, want 17", stats.OverflowDeferrals)
 	}
 	projector.mu.Lock()
 	retained := len(projector.traces)
 	projector.mu.Unlock()
 	if retained != maxPendingTaskTraceAdmissions {
 		t.Fatalf("retained terminal traces = %d, want %d", retained, maxPendingTaskTraceAdmissions)
+	}
+
+	accepting.Store(true)
+	deadline := time.Now().Add(3 * time.Second)
+	want := int32(maxPendingTaskTraceAdmissions + 17)
+	for admitted.Load() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("admitted traces = %d, want %d", admitted.Load(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if stats := projector.stats(); stats.PendingAdmissions != 0 {
+		t.Fatalf("pending admissions after recovery = %d", stats.PendingAdmissions)
 	}
 }
 
@@ -650,6 +668,48 @@ func TestTaskTraceProjectorCloseWaitsForPendingAdmission(t *testing.T) {
 	case <-closed:
 	case <-time.After(time.Second):
 		t.Fatal("close did not finish after pending trace admission")
+	}
+}
+
+func TestTaskTraceProjectorShutdownDeadlineLeavesRegistryRecoverable(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(traceCaptureSettings, *activeTraceCapture) error {
+			return &evalcapture.AdmissionError{
+				Reason: evalcapture.ReasonCapacity,
+				Class:  evalcapture.ClassCritical,
+			}
+		},
+		func(
+			ctx context.Context,
+			_ traceCaptureSettings,
+			_ *activeTraceCapture,
+		) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	)
+	projector.attach(workspace, registry)
+	finishTaskForTrace(t, registry, "shutdown-timeout", "session", 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := projector.closeWithContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("closeWithContext error = %v", err)
+	}
+
+	traces, submit := collectTaskTraces(t)
+	reloaded := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	restarted := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		submit,
+	)
+	t.Cleanup(restarted.close)
+	restarted.attach(workspace, reloaded)
+	if got := traces(); len(got) != 1 {
+		t.Fatalf("reconciled traces after shutdown timeout = %d, want 1", len(got))
 	}
 }
 
