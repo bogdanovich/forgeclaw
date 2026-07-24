@@ -232,6 +232,15 @@ identity includes both values. A task projector keys a trace segment by
 workspace and generation ID; it never reconstructs task incarnation from the
 first retained event or from `CreatedAt`.
 
+The task projector consumes the registry's gated `SubscribeSnapshot` boundary,
+filters retained and live events by exact generation ID, and uses one
+deterministic trace ID for the complete generation. A `lost` task that still
+owns a resumable interaction is not terminal for capture: its explicit
+`lost -> running` transition remains in the same generation trace. This avoids
+inventing a second recovery identity that the task registry does not persist.
+Writer capacity rejection keeps the terminal trace pending and retries
+admission without requiring another task event.
+
 The generation schema has no v1 migration or compatibility loader. An upgrade
 must stop every profile and remove its legacy task registry before first start
 on the new schema; active legacy tasks are not carried across that boundary.
