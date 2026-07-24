@@ -25,6 +25,122 @@
       ]
     },
     {
+      "pattern": "pkg/nodes/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check node admission, authenticated transport identity, command schema validation, and workspace ownership.",
+        "Treat remote execution policy, cancellation, idempotency, and invocation-ledger durability as security boundaries."
+      ]
+    },
+    {
+      "pattern": "cmd/picoclaw-node/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check companion startup and service lifecycle behavior across systemd and launchd.",
+        "Verify install, status, and uninstall operations fail closed on ambiguous identity, path, user, or ownership state."
+      ]
+    },
+    {
+      "pattern": "pkg/interactions/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check durable human-interaction state transitions, argument binding, replay, expiry, and exactly-once resolution.",
+        "Verify persistence failures, file locking, and restart recovery cannot approve the wrong pending action."
+      ]
+    },
+    {
+      "pattern": "pkg/evalcapture/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check trace identity, atomic writes, bounded payloads, redaction, and concurrent capture ordering.",
+        "Verify captured evidence is sufficient for replay without leaking credentials or unrelated workspace data."
+      ]
+    },
+    {
+      "pattern": "pkg/evaltrace/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check trace schema validation, canonicalization, redaction, storage permissions, retention, and path safety.",
+        "Reject changes that make evaluator evidence ambiguous, mutable, oversized, or secret-bearing."
+      ]
+    },
+    {
+      "pattern": "pkg/eval*/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check deterministic replay, reducer ordering, fixture fidelity, and whether evaluator results follow from canonical trace evidence."
+      ]
+    },
+    {
+      "pattern": "pkg/events/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check event ordering, subscription lifecycle, backpressure, filtering, and concurrent unsubscribe behavior.",
+        "Verify runtime events preserve scope identity and do not silently lose or duplicate lifecycle evidence."
+      ]
+    },
+    {
+      "pattern": "pkg/media/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check durable media reference resolution, index recovery, cleanup races, path safety, and workspace isolation.",
+        "Verify restart and retention behavior cannot resolve a reference to the wrong or deleted file."
+      ]
+    },
+    {
+      "pattern": "pkg/memory/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check session-history durability, revision ordering, migration behavior, truncation, and concurrent writes.",
+        "Verify corrupted or stale state fails safely without cross-session or cross-workspace leakage."
+      ]
+    },
+    {
+      "pattern": "pkg/isolation/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check filesystem exposure, redirected environment paths, platform parity, and child-process escape boundaries.",
+        "Treat symlink handling and read-only versus read-write path policy as security-sensitive."
+      ]
+    },
+    {
+      "pattern": "pkg/updater/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check release selection, checksum verification, archive extraction safety, executable replacement, and rollback behavior.",
+        "Treat redirects, path traversal, partial downloads, and interrupted updates as supply-chain risks."
+      ]
+    },
+    {
+      "pattern": "pkg/fileutil/**",
+      "risk": "high",
+      "codex": "required",
+      "guidance": [
+        "Check atomic-write durability, fsync and rename semantics, permissions, symlink handling, and cross-platform parity.",
+        "Assume shared file helpers can affect every durable registry and trace store."
+      ]
+    },
+    {
+      "pattern": "pkg/doctor/**",
+      "risk": "elevated",
+      "codex": "auto",
+      "guidance": [
+        "Check that audits are read-only, bounded, deterministic, and accurate for multi-workspace operational state.",
+        "Verify malformed or inaccessible state produces useful findings without mutating runtime data."
+      ]
+    },
+    {
       "pattern": "pkg/agent/**",
       "risk": "high",
       "codex": "required",

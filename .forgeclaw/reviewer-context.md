@@ -49,10 +49,33 @@ These changes deserve extra skepticism even when tests are green:
   - durable state
   - queue/replay semantics
   - event/report contracts
+- `pkg/interactions/**`
+  - durable approval and clarification state
+  - argument binding and exactly-once resolution
+  - expiry, replay, and restart recovery
+- `pkg/nodes/**`, `cmd/picoclaw-node/**`
+  - remote node identity and admission
+  - authenticated command transport and schema validation
+  - execution policy, cancellation, and durable invocation identity
+  - systemd/launchd install, status, and uninstall ownership
+- `pkg/evalcapture/**`, `pkg/evaltrace/**`, `pkg/eval*/**`
+  - canonical trace identity and bounded evidence
+  - secret redaction and workspace isolation
+  - deterministic replay, reduction, and evaluator fidelity
+- `pkg/events/**`
+  - event ordering and scope identity
+  - subscription lifecycle, backpressure, and concurrent delivery
+- `pkg/media/**`, `pkg/memory/**`
+  - durable reference and history recovery
+  - retention, cleanup, migration, and corruption behavior
 - `pkg/tools/**`, `pkg/mcp/**`
   - delivery contract shape
   - tool visibility / allowlist behavior
   - side effects that cross parent/child boundaries
+- `pkg/isolation/**`, `pkg/updater/**`, `pkg/fileutil/**`
+  - filesystem and child-process isolation
+  - update supply-chain and archive extraction safety
+  - atomic-write, permission, symlink, and cross-platform semantics
 - `pkg/providers/**`, `pkg/auth/**`, `pkg/credential/**`
   - OAuth/session lifecycle
   - provider fallback
@@ -94,6 +117,18 @@ Review against these invariants explicitly:
    - Avoid gratuitous renames or abstractions that make future upstream syncs
      harder unless the local payoff is clear.
 
+7. **Remote execution must be identity-bound and fail closed**
+   - A node command must remain bound to the authenticated node, invocation,
+     schema, workspace, and policy that authorized it.
+   - Retry, reconnect, cancellation, or service restart must not execute a
+     command twice or under a broader policy.
+
+8. **Evaluation evidence must be canonical and private**
+   - Capture, replay, and evaluation should derive from immutable scoped traces,
+     not reconstructed prose or mutable runtime state.
+   - Trace persistence must remain bounded, redacted, and isolated to the
+     originating workspace and turn.
+
 ## Review Philosophy
 
 - Prefer concrete correctness and operational-risk findings over style.
@@ -112,5 +147,7 @@ When changes touch runtime plumbing, ask:
 - Can restart/replay duplicate or lose work?
 - Does this create another delivery path instead of reusing the current one?
 - Does this change cross workspace/profile boundaries?
+- Can a reconnect, retry, or restart repeat a remote or human-approved action?
+- Does trace or replay output preserve identity, ordering, redaction, and scope?
 - Does this make upstream merges harder than necessary?
 - Is the user-visible chat/Telegram behavior still deterministic?
