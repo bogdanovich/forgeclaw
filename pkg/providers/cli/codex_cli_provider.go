@@ -164,7 +164,7 @@ type codexEventErr struct {
 
 // parseJSONLEvents processes the JSONL output from codex exec --json.
 func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error) {
-	var contentParts []string
+	var lastAgentMessage string
 	var usage *UsageInfo
 	var lastError string
 
@@ -183,7 +183,7 @@ func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error)
 		switch event.Type {
 		case "item.completed":
 			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.Text != "" {
-				contentParts = append(contentParts, event.Item.Text)
+				lastAgentMessage = event.Item.Text
 			}
 		case "turn.completed":
 			if event.Usage != nil {
@@ -203,11 +203,11 @@ func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error)
 		}
 	}
 
-	if lastError != "" && len(contentParts) == 0 {
+	if lastError != "" && lastAgentMessage == "" {
 		return nil, fmt.Errorf("codex cli: %s", lastError)
 	}
 
-	content := strings.Join(contentParts, "\n")
+	content := lastAgentMessage
 
 	// Extract tool calls from response text (same pattern as ClaudeCliProvider)
 	toolCalls := extractToolCallsFromText(content)
