@@ -61,6 +61,7 @@ type TaskPayload struct {
 	Runtime        string `json:"runtime,omitempty"`
 	Status         string `json:"status,omitempty"`
 	DeliveryStatus string `json:"delivery_status,omitempty"`
+	GenerationID   string `json:"generation_id,omitempty"`
 	Sequence       int64  `json:"sequence,omitempty"`
 	Fingerprint    string `json:"fingerprint,omitempty"`
 	Producer       string `json:"producer,omitempty"`
