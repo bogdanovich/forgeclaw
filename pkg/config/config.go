@@ -41,6 +41,7 @@ type Config struct {
 	Session    SessionConfig    `json:"session,omitempty"       yaml:"-"`
 	Evaluation EvaluationConfig `json:"evaluation,omitempty"    yaml:"-"`
 	Tasks      TaskConfig       `json:"task_registry,omitempty" yaml:"-"`
+	Execution  ExecutionConfig  `json:"execution,omitempty"     yaml:"-"`
 	Channels   ChannelsConfig   `json:"channel_list"            yaml:"channel_list"`
 	ModelList  SecureModelList  `json:"model_list"              yaml:"model_list"` // New model-centric provider configuration
 	Gateway    GatewayConfig    `json:"gateway"                 yaml:"-"`
@@ -203,6 +204,7 @@ type AgentConfig struct {
 	Model            *AgentModelConfig `json:"model,omitempty"`
 	Skills           []string          `json:"skills,omitempty"`
 	Subagents        *SubagentsConfig  `json:"subagents,omitempty"`
+	TargetPolicy     *TargetPolicy     `json:"target_policy,omitempty"`
 	MaxParallelTurns int               `json:"max_parallel_turns,omitempty"`
 }
 
@@ -445,6 +447,7 @@ type AgentDefaults struct {
 	MaxLLMRetries             int                `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
 	Subagents                 *SubagentsConfig   `json:"subagents,omitempty"`
+	TargetPolicy              *TargetPolicy      `json:"target_policy,omitempty"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB
@@ -1496,8 +1499,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Load config based on detected version
 	var cfg *Config
+	migrationFrom := -1
 	switch versionInfo.Version {
 	case 0:
+		migrationFrom = versionInfo.Version
 		logger.InfoF(
 			"config migrate start",
 			map[string]any{"from": versionInfo.Version, "to": CurrentVersion},
@@ -1546,15 +1551,8 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 
-		err = MakeBackup(path)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func(cfg *Config) {
-			_ = SaveConfig(path, cfg)
-		}(cfg)
 	case 1:
+		migrationFrom = versionInfo.Version
 		// V1→V3 migration: rename channels→channel_list, infer Enabled, migrate channel configs
 		logger.InfoF(
 			"config migrate start",
@@ -1600,19 +1598,8 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 
-		err = MakeBackup(path)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func(cfg *Config) {
-			_ = SaveConfig(path, cfg)
-		}(cfg)
-		logger.InfoF(
-			"config migrate success",
-			map[string]any{"from": versionInfo.Version, "to": CurrentVersion},
-		)
 	case 2:
+		migrationFrom = versionInfo.Version
 		// V2→V3 migration: rename channels→channel_list, convert flat→nested
 		logger.InfoF(
 			"config migrate start",
@@ -1652,18 +1639,6 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 
-		err = MakeBackup(path)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func(cfg *Config) {
-			_ = SaveConfig(path, cfg)
-		}(cfg)
-		logger.InfoF(
-			"config migrate success",
-			map[string]any{"from": versionInfo.Version, "to": CurrentVersion},
-		)
 	case CurrentVersion:
 		// Current version
 		cfg, err = loadConfig(data)
@@ -1707,6 +1682,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
 		return nil, err
 	}
+	if err = cfg.ValidateExecutionTargets(); err != nil {
+		return nil, err
+	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid tools.result_retention: %w", err)
 	}
@@ -1739,6 +1717,17 @@ func LoadConfig(path string) (*Config, error) {
 
 	cfg.Session.ApplyDmScope()
 	cfg.Session.DeriveDmScope()
+
+	if migrationFrom >= 0 {
+		if err = MakeBackup(path); err != nil {
+			return nil, err
+		}
+		_ = SaveConfig(path, cfg)
+		logger.InfoF(
+			"config migrate success",
+			map[string]any{"from": migrationFrom, "to": CurrentVersion},
+		)
+	}
 
 	return cfg, nil
 }
@@ -1916,6 +1905,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 		return nil, err
 	}
 	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
+		return nil, err
+	}
+	if err = cfg.ValidateExecutionTargets(); err != nil {
 		return nil, err
 	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {

@@ -32,6 +32,7 @@ type legacyDiagnosticConfig struct {
 	Isolation   IsolationConfig        `json:"isolation,omitempty"`
 	Agents      legacyDiagnosticAgents `json:"agents,omitempty"`
 	Session     SessionConfig          `json:"session,omitempty"`
+	Execution   ExecutionConfig        `json:"execution,omitempty"`
 	Channels    map[string]any         `json:"channels,omitempty"`
 	ChannelList ChannelsConfig         `json:"channel_list,omitempty"`
 	ModelList   []map[string]any       `json:"model_list,omitempty"`
@@ -40,6 +41,7 @@ type legacyDiagnosticConfig struct {
 	Tools       ToolsConfig            `json:"tools,omitempty"`
 	Heartbeat   HeartbeatConfig        `json:"heartbeat,omitempty"`
 	Devices     DevicesConfig          `json:"devices,omitempty"`
+	Nodes       NodesConfig            `json:"nodes,omitempty"`
 	Voice       VoiceConfig            `json:"voice,omitempty"`
 	Bindings    json.RawMessage        `json:"bindings,omitempty"`
 	Providers   json.RawMessage        `json:"providers,omitempty"`
