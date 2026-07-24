@@ -463,6 +463,63 @@ func TestRegistryCanonicalizesMutableTextMarshalerMapKey(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsNonJSONExtraWithoutRetainingAliases(t *testing.T) {
+	registry := NewRegistry("")
+	nested := map[string]any{"state": "original"}
+	err := registry.Upsert(Record{
+		TaskID: "invalid-extra", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"nested":      nested,
+				"unsupported": make(chan struct{}),
+			},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected non-JSON Extra to be rejected")
+	}
+	nested["state"] = "mutated"
+	if _, exists := registry.Get("invalid-extra"); exists {
+		t.Fatal("registry retained rejected task")
+	}
+	if len(registry.ListEvents("invalid-extra")) != 0 {
+		t.Fatal("registry retained event for rejected task")
+	}
+}
+
+func TestRegistryRejectsNonJSONExtraUpdateWithoutMutatingState(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "invalid-update", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"nested": map[string]any{"state": "original"},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := registry.Update("invalid-update", func(record *Record) {
+		record.Deliverable.Report.Extra["nested"].(map[string]any)["state"] = "speculative"
+		record.Deliverable.Report.Extra["unsupported"] = make(chan struct{})
+	})
+	if err == nil {
+		t.Fatal("expected non-JSON Extra update to be rejected")
+	}
+	record, _ := registry.Get("invalid-update")
+	nested := record.Deliverable.Report.Extra["nested"].(map[string]any)
+	if nested["state"] != "original" {
+		t.Fatalf("rejected update mutated registry: %#v", nested)
+	}
+	events := registry.ListEvents("invalid-update")
+	if len(events) != 1 || events[0].Type != EventTaskUpserted {
+		t.Fatalf("events after rejected update = %#v", events)
+	}
+}
+
 func TestRegistryPublicReadsAreIsolated(t *testing.T) {
 	registry := NewRegistry("")
 	if err := registry.Upsert(Record{

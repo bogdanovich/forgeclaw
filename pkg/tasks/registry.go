@@ -323,6 +323,9 @@ func (r *Registry) Upsert(rec Record) error {
 		return nil
 	}
 	rec = cloneTaskRecord(rec)
+	if err := canonicalizeRecordExtra(&rec); err != nil {
+		return fmt.Errorf("canonicalize task %q report extra: %w", rec.TaskID, err)
+	}
 	now := time.Now().UnixMilli()
 	if rec.CreatedAt == 0 {
 		rec.CreatedAt = now
@@ -386,6 +389,10 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	before := cloneTaskRecord(rec)
 	rec = cloneTaskRecord(rec)
 	mutate(&rec)
+	if err := canonicalizeRecordExtra(&rec); err != nil {
+		r.mu.Unlock()
+		return fmt.Errorf("canonicalize task %q report extra: %w", taskID, err)
+	}
 	rec.GenerationID = before.GenerationID
 	rec.LastEventSeq = before.LastEventSeq
 	now := time.Now().UnixMilli()
@@ -1488,20 +1495,44 @@ func copyAnyMap(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
 	}
-	data, err := json.Marshal(in)
+	out, err := canonicalAnyMap(in)
 	if err == nil {
-		var out map[string]any
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.UseNumber()
-		if decoder.Decode(&out) == nil {
-			return out
-		}
+		return out
 	}
-	// Invalid values will fail the enclosing durable write. Keep a detached
-	// outer map so rollback can still restore the prior canonical state.
-	out := make(map[string]any, len(in))
+	// Public mutations reject invalid Extra values before accepting state.
+	// Keep the outer map detached while the invalid candidate is validated.
+	out = make(map[string]any, len(in))
 	for key, value := range in {
 		out[key] = value
 	}
 	return out
+}
+
+func canonicalizeRecordExtra(record *Record) error {
+	if record == nil || record.Deliverable == nil || record.Deliverable.Report == nil {
+		return nil
+	}
+	extra, err := canonicalAnyMap(record.Deliverable.Report.Extra)
+	if err != nil {
+		return err
+	}
+	record.Deliverable.Report.Extra = extra
+	return nil
+}
+
+func canonicalAnyMap(in map[string]any) (map[string]any, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
