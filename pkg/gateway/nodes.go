@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -22,6 +23,7 @@ type nodeAdmissionRoutes interface {
 }
 
 type nodeAdmissionRuntime struct {
+	registryMu   sync.RWMutex
 	routes       nodeAdmissionRoutes
 	registry     *nodes.FileRegistry
 	registryPath string
@@ -88,7 +90,9 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("mount node admission route: %w", err)
 	}
+	runtime.registryMu.Lock()
 	runtime.registry = registry
+	runtime.registryMu.Unlock()
 	runtime.registryPath = registryPath
 	runtime.handler = handler
 	runtime.sessions = sessions
@@ -98,6 +102,28 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 		"allow_loopback_plaintext": cfg.Nodes.AllowLoopbackPlaintext,
 	})
 	return nil
+}
+
+func (runtime *nodeAdmissionRuntime) Resolve(ref string) (nodes.Snapshot, bool, error) {
+	registry := runtime.currentRegistry()
+	if registry == nil {
+		return nodes.Snapshot{}, false, nil
+	}
+	return registry.Resolve(ref)
+}
+
+func (runtime *nodeAdmissionRuntime) Registration(id nodes.ID) (nodes.Registration, bool, error) {
+	registry := runtime.currentRegistry()
+	if registry == nil {
+		return nodes.Registration{}, false, nil
+	}
+	return registry.Registration(id)
+}
+
+func (runtime *nodeAdmissionRuntime) currentRegistry() *nodes.FileRegistry {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	return runtime.registry
 }
 
 func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
@@ -110,7 +136,9 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 			return err
 		}
 	}
+	runtime.registryMu.Lock()
 	runtime.registry = nil
+	runtime.registryMu.Unlock()
 	runtime.registryPath = ""
 	runtime.handler = nil
 	runtime.sessions = nil

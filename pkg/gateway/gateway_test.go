@@ -201,6 +201,36 @@ func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 	}
 }
 
+func TestNodeDiscoveryToolTracksNodeEnablementAcrossReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Nodes.Enabled = true
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	runtime := &nodeAdmissionRuntime{}
+	if err := setupNodeDiscoveryTool(cfg, al, runtime); err != nil {
+		t.Fatalf("setupNodeDiscoveryTool() error = %v", err)
+	}
+	toolsList := al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
+	if !slices.Contains(toolsList, "nodes") {
+		t.Fatalf("registered tools = %#v, want nodes", toolsList)
+	}
+
+	reloadCfg := config.DefaultConfig()
+	reloadCfg.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	if err := al.ReloadProviderAndConfig(
+		context.Background(),
+		&startupBlockedProvider{reason: "not used"},
+		reloadCfg,
+	); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+	toolsList = al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
+	if slices.Contains(toolsList, "nodes") {
+		t.Fatalf("registered tools = %#v, nodes should be disabled", toolsList)
+	}
+}
+
 func TestReplayGatewayInboundSnapshotReplaysCapturedMessages(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	spool, err := bus.NewInboundSpool(t.TempDir())
