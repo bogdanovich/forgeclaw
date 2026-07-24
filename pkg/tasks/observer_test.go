@@ -1,10 +1,33 @@
 package tasks
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
+
+type cyclicExtra struct {
+	State string
+	Next  *cyclicExtra
+}
+
+func (*cyclicExtra) MarshalJSON() ([]byte, error) {
+	return []byte(`{"state":"serializable"}`), nil
+}
+
+type mutableTextKey struct {
+	State *string
+}
+
+func (key mutableTextKey) MarshalText() ([]byte, error) {
+	return []byte(*key.State), nil
+}
 
 func TestRegistryEventObserverRunsAfterDurableWriteAndCanUnsubscribe(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "tasks.json")
@@ -35,12 +58,53 @@ func TestRegistryEventObserverRunsAfterDurableWriteAndCanUnsubscribe(t *testing.
 	}
 }
 
+func TestObserverCloseCancelsClaimedCallback(t *testing.T) {
+	called := false
+	delivery := newEventObserverDelivery(func(EventObservation) {
+		called = true
+	}, true)
+	if !delivery.queue(EventObservation{}) {
+		t.Fatal("active observer did not request drain")
+	}
+	observation, observer, ok := delivery.claimNext()
+	if !ok {
+		t.Fatal("queued callback was not claimed")
+	}
+	delivery.close()
+	if delivery.beginCallback() {
+		notifyObserver(observer, observation)
+	}
+	if called {
+		t.Fatal("claimed callback began after close")
+	}
+}
+
+func TestRegistryObserverCanUnsubscribeItself(t *testing.T) {
+	registry := NewRegistry("")
+	var unsubscribe func()
+	called := 0
+	unsubscribe = registry.SubscribeEvents(func(EventObservation) {
+		called++
+		unsubscribe()
+	})
+	if err := registry.Upsert(Record{TaskID: "self-unsubscribe", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.AppendEvent("self-unsubscribe", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Fatalf("self-unsubscribing observer called %d times", called)
+	}
+}
+
 func TestRegistryDoesNotNotifyObserverWhenPersistenceFails(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "initial", "tasks.json"))
 	badParent := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(badParent, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewRegistry(filepath.Join(badParent, "tasks.json"))
+	registry.store = filepath.Join(badParent, "tasks.json")
 	called := false
 	registry.SubscribeEvents(func(EventObservation) { called = true })
 	if err := registry.Upsert(Record{TaskID: "task-1", Task: "test"}); err == nil {
@@ -48,6 +112,488 @@ func TestRegistryDoesNotNotifyObserverWhenPersistenceFails(t *testing.T) {
 	}
 	if called {
 		t.Fatal("observer called for failed append")
+	}
+	if records := registry.List(); len(records) != 0 {
+		t.Fatalf("failed write left records in memory: %#v", records)
+	}
+	if events := registry.ListEvents(""); len(events) != 0 {
+		t.Fatalf("failed write left events in memory: %#v", events)
+	}
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		if observation.Event.TaskID == "task-1" {
+			t.Error("failed write became a live observation")
+		}
+	})
+	t.Cleanup(unsubscribe)
+	if len(snapshot.Records) != 0 || len(snapshot.Events) != 0 {
+		t.Fatalf("failed write leaked through snapshot: %#v", snapshot)
+	}
+	activate()
+	registry.store = filepath.Join(t.TempDir(), "recovered", "tasks.json")
+	if err := registry.Upsert(Record{TaskID: "task-2", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := registry.Get("task-1"); exists {
+		t.Fatal("failed task became durable after later successful write")
+	}
+}
+
+func TestRegistryKeepsAndNotifiesPostRenameCommit(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	observations := make(chan EventObservation, 2)
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observations <- observation
+	})
+	registry.writeAtomic = func(path string, data []byte, perm os.FileMode) error {
+		if err := os.WriteFile(path, data, perm); err != nil {
+			return err
+		}
+		return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+	}
+
+	err := registry.Upsert(Record{TaskID: "committed", Task: "test"})
+	if !fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("Upsert error = %v, want committed write error", err)
+	}
+	if record, ok := registry.Get("committed"); !ok || record.LastEventSeq != 1 {
+		t.Fatalf("committed record missing from memory: %#v, %v", record, ok)
+	}
+	select {
+	case observation := <-observations:
+		if observation.Event.TaskID != "committed" || observation.Event.Seq != 1 {
+			t.Fatalf("observation = %#v", observation)
+		}
+	default:
+		t.Fatal("committed write did not publish its observation")
+	}
+	if record, ok := NewRegistry(store).Get("committed"); !ok || record.LastEventSeq != 1 {
+		t.Fatalf("committed record missing from disk: %#v, %v", record, ok)
+	}
+
+	registry.writeAtomic = fileutil.WriteFileAtomic
+	if err := registry.Update("committed", func(record *Record) {
+		record.Status = StatusSucceeded
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := NewRegistry(store)
+	events := reloaded.ListEvents("committed")
+	if len(events) != 2 || events[0].Seq != 1 || events[1].Seq != 2 {
+		t.Fatalf("later save erased committed mutation: %#v", events)
+	}
+}
+
+func TestRegistryPublishesOnlyPostPruneEvents(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxEvents: 1})
+	if err := registry.Upsert(Record{TaskID: "bounded", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+
+	if err := registry.Update("bounded", func(record *Record) {
+		record.Status = StatusSucceeded
+		record.DeliveryStatus = DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.Type != EventTaskDeliveryChanged ||
+		observed[0].Event.Seq != 3 || !observed[0].FinalForTask {
+		t.Fatalf("post-prune observations = %#v", observed)
+	}
+	events := registry.ListEvents("bounded")
+	if len(events) != 1 || events[0].EventID != observed[0].Event.EventID {
+		t.Fatalf("durable events = %#v, observation = %#v", events, observed[0])
+	}
+}
+
+func TestRegistryRetainsMutationBoundaryOverSnapshotBudget(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxSnapshotBytes: 1})
+	if err := registry.Upsert(Record{TaskID: "oversized", Task: "protected"}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+	t.Cleanup(unsubscribe)
+	activate()
+	if len(snapshot.Records) != 1 || len(snapshot.Events) != 1 {
+		t.Fatalf("initial oversized snapshot = %#v", snapshot)
+	}
+
+	if err := registry.AppendEvent("oversized", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.Type != EventTaskProgress ||
+		observed[0].Record.LastEventSeq != 2 {
+		t.Fatalf("post-boundary observations = %#v", observed)
+	}
+	events := registry.ListEvents("oversized")
+	if len(events) != 1 || events[0].EventID != observed[0].Event.EventID {
+		t.Fatalf("durable events = %#v, observation = %#v", events, observed[0])
+	}
+}
+
+func TestRegistryReconciliationBatchUsesDeterministicTaskOrder(t *testing.T) {
+	registry := NewRegistry("")
+	for _, taskID := range []string{"z-task", "a-task", "m-task"} {
+		if err := registry.Upsert(Record{TaskID: taskID, Task: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var observed []string
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation.Event.TaskID)
+	})
+
+	changed, err := registry.MarkActiveLost("restart")
+	if err != nil || changed != 3 {
+		t.Fatalf("MarkActiveLost = %d, %v", changed, err)
+	}
+	want := []string{
+		"a-task", "a-task", "a-task",
+		"m-task", "m-task", "m-task",
+		"z-task", "z-task", "z-task",
+	}
+	if len(observed) != len(want) {
+		t.Fatalf("observed task order = %v, want %v", observed, want)
+	}
+	for i := range want {
+		if observed[i] != want[i] {
+			t.Fatalf("observed task order = %v, want %v", observed, want)
+		}
+	}
+}
+
+func TestRegistryRetainsBoundaryPerReconciledTask(t *testing.T) {
+	registry := NewRegistryWithOptions("", Options{MaxEvents: 1})
+	for _, taskID := range []string{"z-task", "a-task", "m-task"} {
+		if err := registry.Upsert(Record{TaskID: taskID, Task: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var observed []TaskEvent
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation.Event)
+	})
+
+	changed, err := registry.MarkActiveLost("restart")
+	if err != nil || changed != 3 {
+		t.Fatalf("MarkActiveLost = %d, %v", changed, err)
+	}
+	events := registry.ListEvents("")
+	if len(observed) != 3 || len(events) != 3 {
+		t.Fatalf("observed=%#v durable=%#v", observed, events)
+	}
+	for i, taskID := range []string{"a-task", "m-task", "z-task"} {
+		if observed[i].TaskID != taskID || observed[i].Type != EventTaskReconciled ||
+			events[i].EventID != observed[i].EventID {
+			t.Fatalf("event %d: observed=%#v durable=%#v", i, observed[i], events[i])
+		}
+	}
+}
+
+func TestRegistryRollsBackNestedUpdateAfterPersistenceFailure(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "existing", Task: "test", Status: StatusRunning,
+		Deliverable: &DeliverablePayload{Metadata: map[string]string{"state": "original"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	badParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(badParent, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry.store = filepath.Join(badParent, "tasks.json")
+	if err := registry.Update("existing", func(record *Record) {
+		record.Status = StatusSucceeded
+		record.Deliverable.Metadata["state"] = "speculative"
+	}); err == nil {
+		t.Fatal("expected persistence error")
+	}
+	record, _ := registry.Get("existing")
+	events := registry.ListEvents("existing")
+	if record.Status != StatusRunning || record.Deliverable.Metadata["state"] != "original" ||
+		len(events) != 1 || events[0].Type != EventTaskUpserted {
+		t.Fatalf("state after rollback: record=%#v events=%#v", record, events)
+	}
+}
+
+func TestRegistryPublishesSuccessfulNestedOnlyUpdate(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "nested-success", Task: "test", Status: StatusRunning,
+		Deliverable: &DeliverablePayload{Metadata: map[string]string{"state": "original"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+
+	if err := registry.Update("nested-success", func(record *Record) {
+		record.Deliverable.Metadata["state"] = "updated"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.Type != EventTaskUpdated ||
+		observed[0].Record.Deliverable.Metadata["state"] != "updated" {
+		t.Fatalf("nested update observations = %#v", observed)
+	}
+	events := registry.ListEvents("nested-success")
+	if len(events) != 2 || events[1].EventID != observed[0].Event.EventID {
+		t.Fatalf("durable events = %#v, observation = %#v", events, observed[0])
+	}
+}
+
+func TestRegistryRollsBackTypedExtraAfterPersistenceFailure(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "typed-extra", Task: "test", Status: StatusRunning,
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"typed": map[string]string{"state": "original"},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	badParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(badParent, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry.store = filepath.Join(badParent, "tasks.json")
+	if err := registry.Update("typed-extra", func(record *Record) {
+		record.Deliverable.Report.Extra["typed"].(map[string]any)["state"] = "speculative"
+	}); err == nil {
+		t.Fatal("expected persistence error")
+	}
+	record, _ := registry.Get("typed-extra")
+	typed := record.Deliverable.Report.Extra["typed"].(map[string]any)
+	if typed["state"] != "original" {
+		t.Fatalf("typed Extra after rollback = %#v", typed)
+	}
+}
+
+func TestRegistryObserversReceiveIsolatedObservations(t *testing.T) {
+	registry := NewRegistry("")
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observation.Event.Payload["task_kind"] = "mutated"
+		typed := observation.Record.Deliverable.Report.Extra["typed"].(map[string]any)
+		typed["state"] = "mutated"
+	})
+	var observed EventObservation
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = observation
+	})
+
+	if err := registry.Upsert(Record{
+		TaskID: "isolated", Task: "test", TaskKind: "fixture",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"typed": map[string]string{"state": "original"},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	typed := observed.Record.Deliverable.Report.Extra["typed"].(map[string]any)
+	if observed.Event.Payload["task_kind"] != "fixture" || typed["state"] != "original" {
+		t.Fatalf("second observer received mutated data: %#v", observed)
+	}
+}
+
+func TestRegistryCanonicalizesCyclicJSONMarshalerExtra(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	extra := &cyclicExtra{State: "original"}
+	extra.Next = extra
+	if err := registry.Upsert(Record{
+		TaskID: "cyclic-extra", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra:         map[string]any{"cyclic": extra},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(EventObservation) {})
+	t.Cleanup(unsubscribe)
+	activate()
+	cloned := snapshot.Records[0].Deliverable.Report.Extra["cyclic"].(map[string]any)
+	if cloned["state"] != "serializable" {
+		t.Fatalf("canonical cyclic Extra = %#v", cloned)
+	}
+}
+
+func TestRegistryCanonicalizesMutableTextMarshalerMapKey(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	state := "original"
+	if err := registry.Upsert(Record{
+		TaskID: "mutable-key", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"keyed": map[mutableTextKey]string{
+					{State: &state}: "value",
+				},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state = "mutated"
+
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(EventObservation) {})
+	t.Cleanup(unsubscribe)
+	activate()
+	keyed := snapshot.Records[0].Deliverable.Report.Extra["keyed"].(map[string]any)
+	if keyed["original"] != "value" {
+		t.Fatalf("canonical mutable-key Extra = %#v", keyed)
+	}
+}
+
+func TestRegistryRejectsNonJSONExtraWithoutRetainingAliases(t *testing.T) {
+	registry := NewRegistry("")
+	nested := map[string]any{"state": "original"}
+	err := registry.Upsert(Record{
+		TaskID: "invalid-extra", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"nested":      nested,
+				"unsupported": make(chan struct{}),
+			},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected non-JSON Extra to be rejected")
+	}
+	nested["state"] = "mutated"
+	if _, exists := registry.Get("invalid-extra"); exists {
+		t.Fatal("registry retained rejected task")
+	}
+	if len(registry.ListEvents("invalid-extra")) != 0 {
+		t.Fatal("registry retained event for rejected task")
+	}
+}
+
+func TestRegistryRejectsNonJSONExtraUpdateWithoutMutatingState(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "invalid-update", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra: map[string]any{
+				"nested": map[string]any{"state": "original"},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := registry.Update("invalid-update", func(record *Record) {
+		record.Deliverable.Report.Extra["nested"].(map[string]any)["state"] = "speculative"
+		record.Deliverable.Report.Extra["unsupported"] = make(chan struct{})
+	})
+	if err == nil {
+		t.Fatal("expected non-JSON Extra update to be rejected")
+	}
+	record, _ := registry.Get("invalid-update")
+	nested := record.Deliverable.Report.Extra["nested"].(map[string]any)
+	if nested["state"] != "original" {
+		t.Fatalf("rejected update mutated registry: %#v", nested)
+	}
+	events := registry.ListEvents("invalid-update")
+	if len(events) != 1 || events[0].Type != EventTaskUpserted {
+		t.Fatalf("events after rejected update = %#v", events)
+	}
+}
+
+func TestRegistryPublicReadsAreIsolated(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{
+		TaskID: "public-read", Task: "test", TaskKind: "fixture",
+		Deliverable: &DeliverablePayload{
+			Metadata: map[string]string{"source": "original"},
+			Report: &DeliverableReport{
+				SchemaVersion: "v1",
+				Extra: map[string]any{
+					"nested": map[string]any{"state": "original"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := registry.Get("public-read")
+	got.Deliverable.Metadata["source"] = "get-mutated"
+	listed := registry.List()
+	listed[0].Deliverable.Report.Extra["nested"].(map[string]any)["state"] = "list-mutated"
+	events := registry.ListEvents("public-read")
+	events[0].Payload["task_kind"] = "event-mutated"
+
+	fresh, _ := registry.Get("public-read")
+	freshEvents := registry.ListEvents("public-read")
+	nested := fresh.Deliverable.Report.Extra["nested"].(map[string]any)
+	if fresh.Deliverable.Metadata["source"] != "original" ||
+		nested["state"] != "original" ||
+		freshEvents[0].Payload["task_kind"] != "fixture" {
+		t.Fatalf("public read mutated registry: record=%#v events=%#v", fresh, freshEvents)
+	}
+}
+
+func TestRegistryUpsertDetachesCallerCompletion(t *testing.T) {
+	registry := NewRegistry("")
+	completion := &CompletionPayload{
+		Text:  "original",
+		Media: []CompletionMedia{{Ref: "original-ref"}},
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "completion-owner", Task: "test", Completion: completion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	completion.Text = "mutated"
+	completion.Media[0].Ref = "mutated-ref"
+
+	stored, _ := registry.Get("completion-owner")
+	if stored.Completion.Text != "original" || stored.Completion.Media[0].Ref != "original-ref" {
+		t.Fatalf("caller mutation changed registry completion: %#v", stored.Completion)
+	}
+}
+
+func TestRegistryPreservesLargeIntegersInReportExtra(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	const large = int64(9007199254740993)
+	if err := registry.Upsert(Record{
+		TaskID: "large-number", Task: "test",
+		Deliverable: &DeliverablePayload{Report: &DeliverableReport{
+			SchemaVersion: "v1",
+			Extra:         map[string]any{"large": large},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []*Registry{registry, NewRegistry(store)} {
+		record, _ := source.Get("large-number")
+		number, ok := record.Deliverable.Report.Extra["large"].(json.Number)
+		if !ok || number.String() != "9007199254740993" {
+			t.Fatalf("large Extra number = %#v (%T)", record.Deliverable.Report.Extra["large"],
+				record.Deliverable.Report.Extra["large"])
+		}
 	}
 }
 
@@ -60,5 +606,226 @@ func TestRegistryObserverPanicDoesNotFailDurableUpdate(t *testing.T) {
 	reloaded := NewRegistry(registry.store)
 	if _, ok := reloaded.Get("task-1"); !ok {
 		t.Fatal("durable update was lost after observer panic")
+	}
+}
+
+func TestRegistrySubscribeSnapshotCreatesAtomicBoundary(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	if err := registry.Upsert(Record{
+		TaskID: "before", Task: "test", TaskKind: "fixture",
+		Deliverable: &DeliverablePayload{Metadata: map[string]string{"source": "original"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []EventObservation
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation)
+	})
+	t.Cleanup(unsubscribe)
+	if len(snapshot.Records) != 1 || snapshot.Records[0].TaskID != "before" ||
+		len(snapshot.Events) != 1 || snapshot.Events[0].Type != EventTaskUpserted {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if len(observed) != 0 {
+		t.Fatalf("snapshot event was also delivered live: %#v", observed)
+	}
+	activate()
+
+	snapshot.Records[0].Deliverable.Metadata["source"] = "mutated"
+	snapshot.Events[0].Payload["task_kind"] = "mutated"
+	stored, _ := registry.Get("before")
+	storedEvents := registry.ListEvents("before")
+	if stored.Deliverable.Metadata["source"] != "original" ||
+		storedEvents[0].Payload["task_kind"] == "mutated" {
+		t.Fatal("snapshot mutation changed registry state")
+	}
+
+	if err := registry.AppendEvent("before", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 1 || observed[0].Event.Type != EventTaskProgress {
+		t.Fatalf("post-boundary observations = %#v", observed)
+	}
+}
+
+func TestRegistrySubscribeSnapshotExcludesQueuedPreBoundaryEvents(t *testing.T) {
+	registry := NewRegistry("")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	registry.SubscribeEvents(func(observation EventObservation) {
+		if observation.Event.TaskID == "first" {
+			close(firstEntered)
+			<-releaseFirst
+		}
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- registry.Upsert(Record{TaskID: "first", Task: "test"})
+	}()
+	<-firstEntered
+	if err := registry.Upsert(Record{TaskID: "second", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	var observed []string
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		observed = append(observed, observation.Event.TaskID)
+	})
+	t.Cleanup(unsubscribe)
+	if len(snapshot.Records) != 2 || len(snapshot.Events) != 2 {
+		t.Fatalf("snapshot boundary = %#v", snapshot)
+	}
+	if err := registry.Upsert(Record{TaskID: "third", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 0 {
+		t.Fatalf("pre-activation observations = %#v", observed)
+	}
+	activate()
+	if len(observed) != 1 || observed[0] != "third" {
+		t.Fatalf("post-boundary observations = %#v", observed)
+	}
+}
+
+func TestRegistrySubscribeSnapshotPreservesGenerationSequenceAcrossClockRollback(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{TaskID: "clock", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.AppendEvent("clock", EventTaskProgress, nil); err != nil {
+		t.Fatal(err)
+	}
+	registry.mu.Lock()
+	registry.events[0].EmittedAt = 200
+	registry.events[1].EmittedAt = 100
+	registry.mu.Unlock()
+
+	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(func(EventObservation) {})
+	t.Cleanup(unsubscribe)
+	activate()
+	if len(snapshot.Events) != 2 || snapshot.Events[0].Seq != 1 || snapshot.Events[1].Seq != 2 {
+		t.Fatalf("snapshot events = %#v", snapshot.Events)
+	}
+}
+
+func TestRegistrySubscribeSnapshotActivationSerializesConcurrentCommits(t *testing.T) {
+	registry := NewRegistry("")
+	if err := registry.Upsert(Record{TaskID: "concurrent", Task: "test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var observed []int64
+	_, activate, unsubscribe := registry.SubscribeSnapshot(func(observation EventObservation) {
+		mu.Lock()
+		observed = append(observed, observation.Event.Seq)
+		mu.Unlock()
+	})
+	t.Cleanup(unsubscribe)
+
+	const commits = 32
+	start := make(chan struct{})
+	errors := make(chan error, commits)
+	var writers sync.WaitGroup
+	for range commits {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			errors <- registry.AppendEvent("concurrent", EventTaskProgress, nil)
+		}()
+	}
+	close(start)
+	activate()
+	writers.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != commits {
+		t.Fatalf("observed %d commits, want %d: %v", len(observed), commits, observed)
+	}
+	if !sort.SliceIsSorted(observed, func(i, j int) bool { return observed[i] < observed[j] }) {
+		t.Fatalf("observations reordered across activation: %v", observed)
+	}
+	for i, sequence := range observed {
+		if want := int64(i + 2); sequence != want {
+			t.Fatalf("observation %d sequence = %d, want %d: %v", i, sequence, want, observed)
+		}
+	}
+}
+
+func TestRegistrySerializesCommittedObservationSnapshots(t *testing.T) {
+	registry := NewRegistry("")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var mu sync.Mutex
+	var observed []EventObservation
+	registry.SubscribeEvents(func(observation EventObservation) {
+		if observation.Event.Seq == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+		mu.Lock()
+		observed = append(observed, observation)
+		mu.Unlock()
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- registry.Upsert(Record{
+			TaskID: "ordered", Task: "test", Status: StatusRunning,
+		})
+	}()
+	<-firstEntered
+	if err := registry.Update("ordered", func(record *Record) {
+		record.Status = StatusSucceeded
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != 2 {
+		t.Fatalf("observations = %#v", observed)
+	}
+	if observed[0].Event.Seq != 1 || observed[0].Record.Status != StatusRunning ||
+		observed[1].Event.Seq != 2 || observed[1].Record.Status != StatusSucceeded {
+		t.Fatalf("ordered snapshots = %#v", observed)
+	}
+}
+
+func TestRegistryObserverCanReenterWithoutReordering(t *testing.T) {
+	registry := NewRegistry("")
+	var observed []TaskEvent
+	registry.SubscribeEvents(func(observation EventObservation) {
+		observed = append(observed, observation.Event)
+		if observation.Event.Type == EventTaskUpserted {
+			if err := registry.Update(observation.Event.TaskID, func(record *Record) {
+				record.Status = StatusSucceeded
+			}); err != nil {
+				t.Errorf("reentrant Update: %v", err)
+			}
+		}
+	})
+	if err := registry.Upsert(Record{
+		TaskID: "reentrant", Task: "test", Status: StatusRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 2 || observed[0].Seq != 1 || observed[0].Type != EventTaskUpserted ||
+		observed[1].Seq != 2 || observed[1].Type != EventTaskStatusChanged {
+		t.Fatalf("reentrant observations = %#v", observed)
 	}
 }

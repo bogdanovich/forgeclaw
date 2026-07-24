@@ -178,6 +178,13 @@ boundary, callback re-entry, unsubscribe races, persistence failure, and
 restart ordering.
 
 This contract is general registry infrastructure. It does not mention traces.
+The task registry uses the same atomic subscription boundary and serialized
+dispatcher. Its projector orders events only within the durable
+`(task_id, generation_id)` stream by task event sequence; unrelated tasks do
+not need a second global lifecycle sequence. Task snapshot subscriptions stay
+gated until the caller has applied the returned snapshot and explicitly
+activates live delivery, so a concurrent post-boundary commit cannot overtake
+startup reconciliation.
 
 ## 3. Durable Trace Writer
 
@@ -224,6 +231,12 @@ retention. Task event sequence is local to `(task_id, generation_id)`, and event
 identity includes both values. A task projector keys a trace segment by
 workspace and generation ID; it never reconstructs task incarnation from the
 first retained event or from `CreatedAt`.
+
+The generation schema has no v1 migration or compatibility loader. An upgrade
+must stop every profile and remove its legacy task registry before first start
+on the new schema; active legacy tasks are not carried across that boundary.
+Strict loading remains fail-closed rather than synthesizing identity for old
+records.
 
 The interaction projector has one deterministic builder:
 

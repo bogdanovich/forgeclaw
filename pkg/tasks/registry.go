@@ -1,10 +1,12 @@
 package tasks
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -206,18 +208,24 @@ type Options struct {
 }
 
 type Registry struct {
-	mu        sync.RWMutex
-	store     string
-	options   Options
-	records   map[string]Record
-	events    []TaskEvent
-	observers []observerEntry
-	lastLoad  error
+	mu          sync.RWMutex
+	store       string
+	options     Options
+	records     map[string]Record
+	events      []TaskEvent
+	observers   []observerEntry
+	lastLoad    error
+	writeAtomic func(string, []byte, os.FileMode) error
 }
 
 type Snapshot struct {
 	Tasks  []Record    `json:"tasks"`
 	Events []TaskEvent `json:"events,omitempty"`
+}
+
+type registryState struct {
+	records map[string]Record
+	events  []TaskEvent
 }
 
 // Stats describes the current durable registry state and the retention limits
@@ -253,15 +261,16 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 		opts.MaxSnapshotBytes = DefaultMaxSnapshotBytes
 	}
 	r := &Registry{
-		store:   strings.TrimSpace(storePath),
-		options: opts,
-		records: make(map[string]Record),
-		events:  make([]TaskEvent, 0),
+		store:       strings.TrimSpace(storePath),
+		options:     opts,
+		records:     make(map[string]Record),
+		events:      make([]TaskEvent, 0),
+		writeAtomic: fileutil.WriteFileAtomic,
 	}
 	if r.store != "" {
 		r.lastLoad = r.load()
-		if r.lastLoad == nil && r.pruneLocked(time.Now().UnixMilli()) {
-			_ = r.saveLocked()
+		if r.lastLoad == nil {
+			r.pruneLoadedState(time.Now().UnixMilli())
 		}
 	}
 	return r
@@ -313,6 +322,10 @@ func (r *Registry) Upsert(rec Record) error {
 	if r == nil || strings.TrimSpace(rec.TaskID) == "" {
 		return nil
 	}
+	rec = cloneTaskRecord(rec)
+	if err := canonicalizeRecordExtra(&rec); err != nil {
+		return fmt.Errorf("canonicalize task %q report extra: %w", rec.TaskID, err)
+	}
 	now := time.Now().UnixMilli()
 	if rec.CreatedAt == 0 {
 		rec.CreatedAt = now
@@ -341,6 +354,7 @@ func (r *Registry) Upsert(rec Record) error {
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	r.records[rec.TaskID] = rec
 	r.appendEventLocked(rec, EventTaskUpserted, now, map[string]string{
@@ -348,12 +362,11 @@ func (r *Registry) Upsert(rec Record) error {
 		"label":     rec.Label,
 	})
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(now)
+	r.pruneMutationLocked(now, newEvents)
 	err := r.saveLocked()
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -366,14 +379,20 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
 		r.mu.Unlock()
 		return fmt.Errorf("task %q not found", taskID)
 	}
-	before := rec
+	before := cloneTaskRecord(rec)
+	rec = cloneTaskRecord(rec)
 	mutate(&rec)
+	if err := canonicalizeRecordExtra(&rec); err != nil {
+		r.mu.Unlock()
+		return fmt.Errorf("canonicalize task %q report extra: %w", taskID, err)
+	}
 	rec.GenerationID = before.GenerationID
 	rec.LastEventSeq = before.LastEventSeq
 	now := time.Now().UnixMilli()
@@ -384,12 +403,11 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	r.records[taskID] = rec
 	r.appendUpdateEventsLocked(before, rec, rec.LastEventAt)
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(rec.LastEventAt)
+	r.pruneMutationLocked(rec.LastEventAt, newEvents)
 	err := r.saveLocked()
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -402,6 +420,7 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -411,12 +430,11 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	now := time.Now().UnixMilli()
 	r.appendEventLocked(rec, eventType, now, payload)
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(now)
+	r.pruneMutationLocked(now, newEvents)
 	err := r.saveLocked()
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -602,6 +620,7 @@ func (r *Registry) updateInteractionProjection(
 		r.mu.Unlock()
 		return err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	rec, ok := r.records[taskID]
 	if !ok {
@@ -622,12 +641,11 @@ func (r *Registry) updateInteractionProjection(
 	r.records[taskID] = rec
 	r.appendUpdateEventsLocked(before, rec, now)
 	newEvents := r.eventsSinceLocked(eventStart)
-	r.pruneLocked(now)
+	r.pruneMutationLocked(now, newEvents)
 	err = r.saveLocked()
+	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
-	}
+	drainEventObservers(deliveries)
 	return err
 }
 
@@ -638,7 +656,7 @@ func (r *Registry) Get(taskID string) (Record, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	rec, ok := r.records[taskID]
-	return rec, ok
+	return cloneTaskRecord(rec), ok
 }
 
 func (r *Registry) List() []Record {
@@ -649,7 +667,7 @@ func (r *Registry) List() []Record {
 	defer r.mu.RUnlock()
 	out := make([]Record, 0, len(r.records))
 	for _, rec := range r.records {
-		out = append(out, rec)
+		out = append(out, cloneTaskRecord(rec))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt != out[j].CreatedAt {
@@ -670,7 +688,7 @@ func (r *Registry) ListEvents(taskID string) []TaskEvent {
 	out := make([]TaskEvent, 0, len(r.events))
 	for _, evt := range r.events {
 		if taskID == "" || evt.TaskID == taskID {
-			out = append(out, evt)
+			out = append(out, cloneTaskEvent(evt))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -714,8 +732,10 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 		r.mu.Unlock()
 		return 0, err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
-	for id, rec := range r.records {
+	for _, id := range r.sortedRecordIDsLocked() {
+		rec := r.records[id]
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
 		}
@@ -750,14 +770,18 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	}
 	err := error(nil)
 	newEvents := r.eventsSinceLocked(eventStart)
+	var deliveries []*eventObserverDelivery
 	if changed > 0 {
-		r.pruneLocked(now)
+		r.pruneMutationLocked(now, newEvents)
 		err = r.saveLocked()
+		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
+		deliveries = queued
+		if !committed {
+			changed = 0
+		}
 	}
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
-	}
+	drainEventObservers(deliveries)
 	return changed, err
 }
 
@@ -777,8 +801,10 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 		r.mu.Unlock()
 		return 0, err
 	}
+	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
-	for id, rec := range r.records {
+	for _, id := range r.sortedRecordIDsLocked() {
+		rec := r.records[id]
 		if rec.Status != StatusQueued && rec.Status != StatusRunning {
 			continue
 		}
@@ -803,14 +829,18 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	}
 	err := error(nil)
 	newEvents := r.eventsSinceLocked(eventStart)
+	var deliveries []*eventObserverDelivery
 	if changed > 0 {
-		r.pruneLocked(now)
+		r.pruneMutationLocked(now, newEvents)
 		err = r.saveLocked()
+		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
+		deliveries = queued
+		if !committed {
+			changed = 0
+		}
 	}
 	r.mu.Unlock()
-	if err == nil {
-		r.notifyEvents(newEvents)
-	}
+	drainEventObservers(deliveries)
 	return changed, err
 }
 
@@ -915,6 +945,64 @@ func (r *Registry) pruneLocked(now int64) bool {
 		changed = true
 	}
 	return changed
+}
+
+func (r *Registry) pruneLoadedState(now int64) {
+	rollback := r.captureStateLocked()
+	if !r.pruneLocked(now) {
+		return
+	}
+	if err := r.saveLocked(); err != nil && !fileutil.IsCommittedWriteError(err) {
+		r.restoreStateLocked(rollback)
+		r.lastLoad = fmt.Errorf("persist pruned task registry: %w", err)
+	}
+}
+
+func (r *Registry) pruneMutationLocked(now int64, candidates []TaskEvent) {
+	r.pruneLocked(now)
+	if len(candidates) == 0 {
+		return
+	}
+	type streamKey struct {
+		taskID       string
+		generationID string
+	}
+	retainedStreams := make(map[streamKey]struct{}, len(candidates))
+	candidateIDs := make(map[string]struct{}, len(candidates))
+	for _, event := range candidates {
+		candidateIDs[event.EventID] = struct{}{}
+	}
+	retainedCandidates := make(map[string]struct{}, len(candidates))
+	nonCandidates := make([]TaskEvent, 0, len(r.events))
+	for _, event := range r.events {
+		if _, candidate := candidateIDs[event.EventID]; candidate {
+			retainedCandidates[event.EventID] = struct{}{}
+			retainedStreams[streamKey{event.TaskID, event.GenerationID}] = struct{}{}
+		} else {
+			nonCandidates = append(nonCandidates, event)
+		}
+	}
+	floorByStream := make(map[streamKey]TaskEvent)
+	for _, event := range candidates {
+		key := streamKey{event.TaskID, event.GenerationID}
+		if _, retained := retainedStreams[key]; retained {
+			continue
+		}
+		record, exists := r.records[event.TaskID]
+		if exists && record.GenerationID == event.GenerationID {
+			floorByStream[key] = event
+		}
+	}
+	mutationEvents := make([]TaskEvent, 0, len(candidates))
+	for _, event := range candidates {
+		key := streamKey{event.TaskID, event.GenerationID}
+		floor, isFloor := floorByStream[key]
+		_, retained := retainedCandidates[event.EventID]
+		if retained || isFloor && floor.EventID == event.EventID {
+			mutationEvents = append(mutationEvents, event)
+		}
+	}
+	r.events = append(nonCandidates, mutationEvents...)
 }
 
 func (r *Registry) pruneSnapshotBytesLocked() bool {
@@ -1032,8 +1120,17 @@ func (r *Registry) load() error {
 		return err
 	}
 	var snap Snapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&snap); err != nil {
 		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("task registry contains a trailing JSON value")
+		}
+		return fmt.Errorf("task registry contains trailing data: %w", err)
 	}
 	now := time.Now().UnixMilli()
 	records := make(map[string]Record, len(snap.Tasks))
@@ -1085,7 +1182,11 @@ func (r *Registry) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return fileutil.WriteFileAtomic(r.store, data, 0o600)
+	writeAtomic := r.writeAtomic
+	if writeAtomic == nil {
+		writeAtomic = fileutil.WriteFileAtomic
+	}
+	return writeAtomic(r.store, data, 0o600)
 }
 
 func (r *Registry) writableErrorLocked() error {
@@ -1115,16 +1216,64 @@ func (r *Registry) snapshotLocked() Snapshot {
 		return tasks[i].TaskID < tasks[j].TaskID
 	})
 	events := append([]TaskEvent(nil), r.events...)
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].EmittedAt != events[j].EmittedAt {
-			return events[i].EmittedAt < events[j].EmittedAt
-		}
-		if events[i].Seq != events[j].Seq {
-			return events[i].Seq < events[j].Seq
-		}
-		return events[i].EventID < events[j].EventID
-	})
 	return Snapshot{Tasks: tasks, Events: events}
+}
+
+func (r *Registry) captureStateLocked() registryState {
+	records := make(map[string]Record, len(r.records))
+	for id, record := range r.records {
+		records[id] = cloneTaskRecord(record)
+	}
+	events := make([]TaskEvent, len(r.events))
+	for i := range r.events {
+		events[i] = cloneTaskEvent(r.events[i])
+	}
+	return registryState{records: records, events: events}
+}
+
+func (r *Registry) restoreStateLocked(state registryState) {
+	r.records = state.records
+	r.events = state.events
+}
+
+func (r *Registry) completeMutationLocked(
+	saveErr error,
+	rollback registryState,
+	events []TaskEvent,
+) (bool, []*eventObserverDelivery) {
+	committed := saveErr == nil || fileutil.IsCommittedWriteError(saveErr)
+	if !committed {
+		r.restoreStateLocked(rollback)
+	} else {
+		events = r.retainedEventsLocked(events)
+	}
+	return committed, r.queueCommittedNotificationsLocked(committed, events)
+}
+
+func (r *Registry) retainedEventsLocked(candidates []TaskEvent) []TaskEvent {
+	if len(candidates) == 0 || len(r.events) == 0 {
+		return nil
+	}
+	retainedIDs := make(map[string]struct{}, len(r.events))
+	for _, event := range r.events {
+		retainedIDs[event.EventID] = struct{}{}
+	}
+	retained := make([]TaskEvent, 0, len(candidates))
+	for _, event := range candidates {
+		if _, ok := retainedIDs[event.EventID]; ok {
+			retained = append(retained, event)
+		}
+	}
+	return retained
+}
+
+func (r *Registry) sortedRecordIDsLocked() []string {
+	ids := make([]string, 0, len(r.records))
+	for id := range r.records {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int64) {
@@ -1346,24 +1495,44 @@ func copyAnyMap(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]any, len(in))
+	out, err := canonicalAnyMap(in)
+	if err == nil {
+		return out
+	}
+	// Public mutations reject invalid Extra values before accepting state.
+	// Keep the outer map detached while the invalid candidate is validated.
+	out = make(map[string]any, len(in))
 	for key, value := range in {
-		out[key] = copyAnyValue(value)
+		out[key] = value
 	}
 	return out
 }
 
-func copyAnyValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return copyAnyMap(typed)
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = copyAnyValue(item)
-		}
-		return out
-	default:
-		return typed
+func canonicalizeRecordExtra(record *Record) error {
+	if record == nil || record.Deliverable == nil || record.Deliverable.Report == nil {
+		return nil
 	}
+	extra, err := canonicalAnyMap(record.Deliverable.Report.Extra)
+	if err != nil {
+		return err
+	}
+	record.Deliverable.Report.Extra = extra
+	return nil
+}
+
+func canonicalAnyMap(in map[string]any) (map[string]any, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
