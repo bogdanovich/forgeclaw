@@ -32,6 +32,7 @@ type launchdLifecycle struct {
 	readinessAttempts int
 	readinessStable   int
 	remove            launchdRemover
+	restore           launchdRestorer
 }
 
 type launchdPlistState struct {

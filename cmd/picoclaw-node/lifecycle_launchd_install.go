@@ -256,7 +256,8 @@ func (lifecycle *launchdLifecycle) rollbackInstall(
 			if err = lifecycle.requireSuccess(
 				rollbackCtx,
 				"bootout",
-				domain+"/"+status.Service,
+				domain,
+				status.UnitPath,
 			); err != nil {
 				return errors.Join(cause, fmt.Errorf("bootout failed launchd service: %w", err))
 			}
@@ -632,6 +633,8 @@ func restoreQuarantinedLaunchdPlist(
 }
 
 type launchdRemover func(publishedLaunchdPlist) (bool, error)
+
+type launchdRestorer func(publishedLaunchdPlist, string) (publishedLaunchdPlist, error)
 
 func removeQuarantinedLaunchdPlist(publication publishedLaunchdPlist) (bool, error) {
 	if err := requirePublishedLaunchdPlist(publication); err != nil {

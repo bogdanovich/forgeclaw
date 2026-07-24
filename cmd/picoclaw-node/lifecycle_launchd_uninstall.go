@@ -63,7 +63,7 @@ func (lifecycle *launchdLifecycle) Uninstall(
 		return lifecycleStatus{}, err
 	}
 	if loaded {
-		if err = lifecycle.requireSuccess(ctx, "bootout", job.domain+"/"+status.Service); err != nil {
+		if err = lifecycle.requireSuccess(ctx, "bootout", job.domain, status.UnitPath); err != nil {
 			return lifecycleStatus{}, lifecycle.rollbackFailedBootout(plist.publication, status, job, err)
 		}
 		if _, stillLoaded, verifyErr := lifecycle.queryJob(ctx, status.Service); verifyErr != nil {
@@ -157,9 +157,16 @@ func (lifecycle *launchdLifecycle) rollbackLaunchdUninstall(
 	previous launchdJobState,
 	cause error,
 ) error {
-	restored, err := restoreQuarantinedLaunchdPlist(quarantined, filepath.Base(status.UnitPath))
+	restore := lifecycle.restore
+	if restore == nil {
+		restore = restoreQuarantinedLaunchdPlist
+	}
+	restored, err := restore(quarantined, filepath.Base(status.UnitPath))
 	if err != nil {
-		return errors.Join(cause, fmt.Errorf("restore launchd plist: %w", err))
+		if restored.name == "" {
+			return errors.Join(cause, fmt.Errorf("restore launchd plist: %w", err))
+		}
+		cause = errors.Join(cause, fmt.Errorf("commit restored launchd plist: %w", err))
 	}
 	return lifecycle.rollbackLaunchdLoadedState(restored, status, previous, cause)
 }
