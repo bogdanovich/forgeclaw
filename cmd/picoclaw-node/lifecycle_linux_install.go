@@ -46,9 +46,7 @@ type systemdUnitDirectory struct {
 	inode  uint64
 }
 
-type systemdUnitLock struct {
-	file *os.File
-}
+type systemdUnitLock = unixLifecycleLock
 
 func (lifecycle *systemdLifecycle) Install(
 	ctx context.Context,
@@ -427,46 +425,14 @@ func acquireSystemdUnitLock(
 	service string,
 ) (*systemdUnitLock, error) {
 	name := "." + service + ".install.lock"
-	fd, err := unix.Openat(
+	return acquireUnixLifecycleLock(
+		ctx,
 		directory.fd(),
+		directory.path,
 		name,
-		unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW,
-		0o600,
+		"systemd",
+		defaultLockRetryInterval,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("open systemd install lock: %w", err)
-	}
-	file := os.NewFile(uintptr(fd), filepath.Join(directory.path, name))
-	var stat unix.Stat_t
-	if err = unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		_ = file.Close()
-		if err != nil {
-			return nil, fmt.Errorf("inspect systemd install lock: %w", err)
-		}
-		return nil, errors.New("systemd install lock is not a regular file")
-	}
-	for {
-		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			return &systemdUnitLock{file: file}, nil
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			_ = file.Close()
-			return nil, fmt.Errorf("lock systemd service: %w", err)
-		}
-		if err = waitContext(ctx, defaultLockRetryInterval); err != nil {
-			_ = file.Close()
-			return nil, fmt.Errorf("wait for systemd install lock: %w", err)
-		}
-	}
-}
-
-func (lock *systemdUnitLock) Close() error {
-	if lock == nil || lock.file == nil {
-		return nil
-	}
-	err := unix.Flock(int(lock.file.Fd()), unix.LOCK_UN)
-	return errors.Join(err, lock.file.Close())
 }
 
 func waitContext(ctx context.Context, delay time.Duration) error {

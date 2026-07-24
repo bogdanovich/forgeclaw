@@ -392,7 +392,6 @@ func TestParseLaunchdJobRejectsMalformedOutput(t *testing.T) {
 	target := "gui/501/com.forgeclaw.picoclaw-node.default"
 	tests := []string{
 		"wrong = {\n\tpath = /tmp/test.plist\n\tstate = running\n}",
-		target + " = {\n\tpath = /tmp/test.plist\n\tstate = running\n}",
 		defaultLaunchdLabel + " = {\n\tstate = running\n}",
 		defaultLaunchdLabel + " = {\n\tpath = /tmp/test.plist\n}",
 		defaultLaunchdLabel + " = {\n\tpath = /tmp/test.plist\n\tpath = /tmp/other.plist\n\tstate = running\n}",
@@ -400,6 +399,21 @@ func TestParseLaunchdJobRejectsMalformedOutput(t *testing.T) {
 	for _, output := range tests {
 		if _, err := parseLaunchdJob(target, defaultLaunchdLabel, output); err == nil {
 			t.Fatalf("expected malformed output to fail:\n%s", output)
+		}
+	}
+}
+
+func TestParseLaunchdJobAcceptsBareAndTargetQualifiedIdentity(t *testing.T) {
+	t.Parallel()
+	target := "gui/501/" + defaultLaunchdLabel
+	for _, header := range []string{defaultLaunchdLabel, target} {
+		output := launchdPrintOutput(header, "/tmp/test.plist", "running")
+		job, err := parseLaunchdJob(target, defaultLaunchdLabel, output)
+		if err != nil {
+			t.Fatalf("header %q: %v", header, err)
+		}
+		if job.path != "/tmp/test.plist" || job.state != "running" {
+			t.Fatalf("header %q parsed as %+v", header, job)
 		}
 	}
 }
