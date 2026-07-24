@@ -201,6 +201,53 @@ func TestLaunchdUninstallRestoresPlistAndServiceAfterRemovalFailure(t *testing.T
 	}
 }
 
+func TestLaunchdUninstallDoesNotBootstrapAlreadyRestoredService(t *testing.T) {
+	t.Parallel()
+	dir := trustedLaunchdTempDir(t)
+	path := filepath.Join(dir, defaultLaunchdLabel+".plist")
+	writeManagedLaunchdPlist(t, dir, "default")
+	printCalls := 0
+	bootstrapCalls := 0
+	lifecycle := &launchdLifecycle{
+		plistDir: dir,
+		domains:  []string{"user/501"},
+		run: func(_ context.Context, args ...string) (launchdRunResult, error) {
+			switch args[0] {
+			case "print":
+				printCalls++
+				if printCalls == 1 || printCalls >= 4 {
+					return launchdRunResult{
+						Output: launchdPrintOutput(args[1], path, "running"),
+					}, nil
+				}
+				return launchdRunResult{Output: launchdMissingOutput, ExitCode: 113}, nil
+			case "bootout":
+				return launchdRunResult{}, nil
+			case "bootstrap":
+				bootstrapCalls++
+				return launchdRunResult{}, nil
+			default:
+				t.Fatalf("unexpected launchctl call: %v", args)
+				return launchdRunResult{}, nil
+			}
+		},
+		remove: func(publishedLaunchdPlist) (bool, error) {
+			return false, errors.New("remove failed")
+		},
+	}
+
+	_, err := lifecycle.Uninstall(t.Context(), lifecycleRequest{Instance: "default"})
+	if err == nil || !strings.Contains(err.Error(), "remove failed") {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if bootstrapCalls != 0 {
+		t.Fatalf("rollback bootstrap calls = %d, want 0", bootstrapCalls)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("restored plist missing: %v", statErr)
+	}
+}
+
 func TestLaunchdUninstallRestoresPlistWhenJobLoadsAfterQuarantine(t *testing.T) {
 	t.Parallel()
 	dir := trustedLaunchdTempDir(t)

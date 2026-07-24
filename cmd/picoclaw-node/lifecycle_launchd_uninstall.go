@@ -203,7 +203,25 @@ func (lifecycle *launchdLifecycle) restoreLaunchdLoadedState(
 	if err := requirePublishedLaunchdPlist(publication); err != nil {
 		return errors.Join(cause, fmt.Errorf("verify launchd plist during rollback: %w", err))
 	}
-	if err := lifecycle.requireSuccess(ctx, "bootstrap", previous.domain, status.UnitPath); err != nil {
+	current, loaded, err := lifecycle.queryJob(ctx, status.Service)
+	if err != nil {
+		return errors.Join(cause, fmt.Errorf("inspect launchd service before rollback bootstrap: %w", err))
+	}
+	if loaded {
+		if current.domain == previous.domain &&
+			filepath.Clean(current.path) == filepath.Clean(status.UnitPath) {
+			return cause
+		}
+		return errors.Join(
+			cause,
+			fmt.Errorf(
+				"refusing rollback bootstrap while launchd service is loaded in domain %s from %q",
+				current.domain,
+				current.path,
+			),
+		)
+	}
+	if err = lifecycle.requireSuccess(ctx, "bootstrap", previous.domain, status.UnitPath); err != nil {
 		return errors.Join(cause, fmt.Errorf("restore launchd service: %w", err))
 	}
 	job, loaded, err := lifecycle.queryJob(ctx, status.Service)
