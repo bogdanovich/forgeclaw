@@ -489,6 +489,47 @@ func (r *Registry) SetTraceCapturePending(
 	return nil
 }
 
+// ConfirmTraceCapturePersisted atomically clears trace protection only when the
+// acknowledged generation and event sequence are still current.
+func (r *Registry) ConfirmTraceCapturePersisted(
+	taskID, generationID string,
+	expectedLastEventSeq int64,
+) (Record, bool, error) {
+	if r == nil || strings.TrimSpace(taskID) == "" ||
+		strings.TrimSpace(generationID) == "" {
+		return Record{}, false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.writableErrorLocked(); err != nil {
+		return Record{}, false, err
+	}
+	record, ok := r.records[taskID]
+	if !ok || record.GenerationID != generationID {
+		return Record{}, false, fmt.Errorf(
+			"task %q generation %q not found",
+			taskID,
+			generationID,
+		)
+	}
+	if record.LastEventSeq != expectedLastEventSeq {
+		return cloneTaskRecord(record), false, nil
+	}
+	if !record.TraceCapturePending {
+		return cloneTaskRecord(record), true, nil
+	}
+	rollback := r.captureStateLocked()
+	record.TraceCapturePending = false
+	r.records[taskID] = record
+	if err := r.saveLocked(); err != nil {
+		if !fileutil.IsCommittedWriteError(err) {
+			r.restoreStateLocked(rollback)
+		}
+		return cloneTaskRecord(r.records[taskID]), false, err
+	}
+	return cloneTaskRecord(record), true, nil
+}
+
 // SetTraceCaptureProtection controls atomic retention protection for new task
 // transitions. Disabling preserves existing pending markers for restart
 // recovery; enabling also protects retained terminal records before the caller

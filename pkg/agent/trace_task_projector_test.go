@@ -320,6 +320,7 @@ func TestTaskTraceProjectorSeparatesReusedTaskIDGenerations(t *testing.T) {
 	const createdAt = int64(1_000)
 	first := finishTaskForTrace(t, registry, "reused", "session", createdAt)
 	waitForTraceFiles(t, workspace, 1)
+	waitForTraceMarkerCleared(t, registry, first.TaskID, first.GenerationID)
 	second := finishTaskForTrace(t, registry, "reused", "session", createdAt)
 	paths := waitForTraceFiles(t, workspace, 2)
 
@@ -1380,6 +1381,33 @@ func taskTraceReceipt(
 		t.Fatalf("task trace %v has no active persistence receipt", key)
 	}
 	return state.receipt
+}
+
+func waitForTraceMarkerCleared(
+	t *testing.T,
+	registry *taskregistry.Registry,
+	taskID, generationID string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		record := registryRecord(t, registry, taskID)
+		if record.GenerationID != generationID {
+			t.Fatalf(
+				"task %q generation = %q, want %q",
+				taskID,
+				record.GenerationID,
+				generationID,
+			)
+		}
+		if !record.TraceCapturePending {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task %q trace marker was not cleared", taskID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func collectTaskTraces(

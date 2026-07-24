@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -396,10 +397,14 @@ func (p *taskTraceProjector) trySubmitLocked(
 	err := p.submit(state.settings, state.trace)
 	if errors.Is(err, errTaskTraceAlreadyDurable) {
 		delete(p.inflight, submissionID)
-		if markerErr := p.clearTracePendingLocked(key); markerErr != nil {
+		confirmed, markerErr := p.confirmTracePersistedLocked(key, state)
+		if markerErr != nil {
 			if !state.retryable {
 				p.retryOrDeferLocked(key, state)
 			}
+			return
+		}
+		if !confirmed {
 			return
 		}
 		if state.retryable {
@@ -501,9 +506,6 @@ func (p *taskTraceProjector) observeWriterEventLocked(event evalcapture.Event) {
 	state.receipt = ""
 	switch event.Kind {
 	case evalcapture.EventPersisted:
-		if p.rebuildCommittedRevisionLocked(key, state) {
-			return
-		}
 		if state.dirty {
 			state.dirty = false
 			if state.terminal {
@@ -511,8 +513,12 @@ func (p *taskTraceProjector) observeWriterEventLocked(event evalcapture.Event) {
 			}
 			return
 		}
-		if err := p.clearTracePendingLocked(key); err != nil {
+		confirmed, err := p.confirmTracePersistedLocked(key, state)
+		if err != nil {
 			p.retryOrDeferLocked(key, state)
+			return
+		}
+		if !confirmed {
 			return
 		}
 		delete(p.traces, key)
@@ -523,18 +529,42 @@ func (p *taskTraceProjector) observeWriterEventLocked(event evalcapture.Event) {
 	}
 }
 
-func (p *taskTraceProjector) rebuildCommittedRevisionLocked(
+func (p *taskTraceProjector) confirmTracePersistedLocked(
 	key taskTraceKey,
 	state *taskTraceState,
-) bool {
+) (bool, error) {
 	registry := p.registries[key.workspace]
 	if registry == nil {
-		return false
+		return true, nil
 	}
-	record, ok := registry.Get(key.taskID)
-	if !ok || record.GenerationID != key.generationID ||
-		record.LastEventSeq <= state.lastSeq {
-		return false
+	record, confirmed, err := registry.ConfirmTraceCapturePersisted(
+		key.taskID,
+		key.generationID,
+		state.lastSeq,
+	)
+	if err != nil {
+		logger.WarnCF("evaltrace", "Failed to confirm task trace persistence", map[string]any{
+			"workspace":      key.workspace,
+			"task_id":        key.taskID,
+			"generation_id":  key.generationID,
+			"last_event_seq": state.lastSeq,
+			"error":          err.Error(),
+		})
+		return false, err
+	}
+	if confirmed {
+		return true, nil
+	}
+	if record.LastEventSeq <= state.lastSeq {
+		return false, fmt.Errorf(
+			"task %q trace revision moved backward from %d to %d",
+			key.taskID,
+			state.lastSeq,
+			record.LastEventSeq,
+		)
+	}
+	if state.retryable {
+		p.pendingAdmissions--
 	}
 	rebuilt := p.restoreStateLocked(
 		key.workspace,
@@ -545,7 +575,7 @@ func (p *taskTraceProjector) rebuildCommittedRevisionLocked(
 	if taskRecordIsCaptureTerminal(record) {
 		p.terminalizeLocked(key, rebuilt, record)
 	}
-	return true
+	return false, nil
 }
 
 func (p *taskTraceProjector) setTracePendingLocked(
@@ -561,19 +591,6 @@ func (p *taskTraceProjector) setTracePendingLocked(
 		key.generationID,
 		pending,
 	)
-}
-
-func (p *taskTraceProjector) clearTracePendingLocked(key taskTraceKey) error {
-	if err := p.setTracePendingLocked(key, false); err != nil {
-		logger.WarnCF("evaltrace", "Failed to release task trace retry marker", map[string]any{
-			"workspace":     key.workspace,
-			"task_id":       key.taskID,
-			"generation_id": key.generationID,
-			"error":         err.Error(),
-		})
-		return err
-	}
-	return nil
 }
 
 func taskTraceAdmissionCanRetry(err error) bool {
@@ -745,11 +762,15 @@ func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
 		switch {
 		case errors.Is(err, errTaskTraceAlreadyDurable):
 			p.clearInflightForKeyLocked(pending.key)
-			if markerErr := p.clearTracePendingLocked(pending.key); markerErr != nil {
+			confirmed, markerErr := p.confirmTracePersistedLocked(
+				pending.key,
+				state,
+			)
+			if markerErr != nil {
 				if firstErr == nil {
 					firstErr = markerErr
 				}
-			} else {
+			} else if confirmed {
 				delete(p.traces, pending.key)
 				p.recordCompletedLocked(pending.key, state.lastSeq)
 			}

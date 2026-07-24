@@ -816,6 +816,45 @@ func TestRegistryTraceProtectionPrecedesTerminalMutationPruning(t *testing.T) {
 	}
 }
 
+func TestRegistryTraceConfirmationRequiresCurrentRevision(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "state", "task_registry.json"))
+	if err := registry.SetTraceCaptureProtection(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "confirm", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryDelivered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := registry.Get("confirm")
+	if !ok || !record.TraceCapturePending {
+		t.Fatalf("pending record = %#v, exists = %v", record, ok)
+	}
+	current, confirmed, err := registry.ConfirmTraceCapturePersisted(
+		record.TaskID,
+		record.GenerationID,
+		record.LastEventSeq-1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmed || !current.TraceCapturePending {
+		t.Fatalf("stale confirmation = %v, record = %#v", confirmed, current)
+	}
+	current, confirmed, err = registry.ConfirmTraceCapturePersisted(
+		record.TaskID,
+		record.GenerationID,
+		record.LastEventSeq,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed || current.TraceCapturePending {
+		t.Fatalf("current confirmation = %v, record = %#v", confirmed, current)
+	}
+}
+
 func TestRegistryPrunesOldestTerminalTasksAboveMaxRecords(t *testing.T) {
 	registry := NewRegistryWithOptions("", Options{
 		TerminalRetention: 24 * time.Hour,
