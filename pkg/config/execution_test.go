@@ -195,3 +195,42 @@ func TestLegacyLoadersPreserveExecutionTargetPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyInvalidTargetPolicyDoesNotRewriteConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{
+		"version": 2,
+		"agents": {
+			"defaults": {
+				"target_policy": {"allowed_targets": ["missing"]}
+			}
+		},
+		"execution": {
+			"targets": {
+				"build": {"type": "node", "node": "linux-builder"}
+			}
+		},
+		"nodes": {"enabled": true}
+	}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil ||
+		!strings.Contains(err.Error(), `references unknown target "missing"`) {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("failed migration rewrote config:\n%s", after)
+	}
+	backups, err := filepath.Glob(path + ".*.bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("failed migration created backups: %v", backups)
+	}
+}

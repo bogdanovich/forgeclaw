@@ -1499,8 +1499,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Load config based on detected version
 	var cfg *Config
+	migrationFrom := -1
 	switch versionInfo.Version {
 	case 0:
+		migrationFrom = versionInfo.Version
 		logger.InfoF(
 			"config migrate start",
 			map[string]any{"from": versionInfo.Version, "to": CurrentVersion},
@@ -1549,15 +1551,8 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 
-		err = MakeBackup(path)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func(cfg *Config) {
-			_ = SaveConfig(path, cfg)
-		}(cfg)
 	case 1:
+		migrationFrom = versionInfo.Version
 		// V1→V3 migration: rename channels→channel_list, infer Enabled, migrate channel configs
 		logger.InfoF(
 			"config migrate start",
@@ -1603,19 +1598,8 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 
-		err = MakeBackup(path)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func(cfg *Config) {
-			_ = SaveConfig(path, cfg)
-		}(cfg)
-		logger.InfoF(
-			"config migrate success",
-			map[string]any{"from": versionInfo.Version, "to": CurrentVersion},
-		)
 	case 2:
+		migrationFrom = versionInfo.Version
 		// V2→V3 migration: rename channels→channel_list, convert flat→nested
 		logger.InfoF(
 			"config migrate start",
@@ -1655,18 +1639,6 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 
-		err = MakeBackup(path)
-		if err != nil {
-			return nil, err
-		}
-
-		defer func(cfg *Config) {
-			_ = SaveConfig(path, cfg)
-		}(cfg)
-		logger.InfoF(
-			"config migrate success",
-			map[string]any{"from": versionInfo.Version, "to": CurrentVersion},
-		)
 	case CurrentVersion:
 		// Current version
 		cfg, err = loadConfig(data)
@@ -1745,6 +1717,17 @@ func LoadConfig(path string) (*Config, error) {
 
 	cfg.Session.ApplyDmScope()
 	cfg.Session.DeriveDmScope()
+
+	if migrationFrom >= 0 {
+		if err = MakeBackup(path); err != nil {
+			return nil, err
+		}
+		_ = SaveConfig(path, cfg)
+		logger.InfoF(
+			"config migrate success",
+			map[string]any{"from": migrationFrom, "to": CurrentVersion},
+		)
+	}
 
 	return cfg, nil
 }
