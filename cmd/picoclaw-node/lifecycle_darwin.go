@@ -34,7 +34,7 @@ func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
 }
 
 func validatePlatformServiceAction(action string) error {
-	if action == "status" {
+	if action == "status" || action == "install" {
 		return nil
 	}
 	return fmt.Errorf("launchd %s is not implemented yet", action)

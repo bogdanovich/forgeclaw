@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const managedLaunchdPlistMarker = "<!-- Managed by ForgeClaw picoclaw-node lifecycle v1 -->"
@@ -23,10 +24,13 @@ type launchdRunResult struct {
 type launchdRunner func(context.Context, ...string) (launchdRunResult, error)
 
 type launchdLifecycle struct {
-	system   bool
-	plistDir string
-	domains  []string
-	run      launchdRunner
+	system            bool
+	plistDir          string
+	domains           []string
+	run               launchdRunner
+	readinessInterval time.Duration
+	readinessAttempts int
+	readinessStable   int
 }
 
 type launchdPlistState struct {
@@ -53,13 +57,6 @@ func resolveLaunchdUserHome(
 		return "", fmt.Errorf("launchd account for uid %s has invalid identity or home directory", uidText)
 	}
 	return filepath.Clean(account.HomeDir), nil
-}
-
-func (lifecycle *launchdLifecycle) Install(
-	context.Context,
-	lifecycleRequest,
-) (lifecycleStatus, error) {
-	return lifecycleStatus{}, errors.New("launchd installation is not implemented yet")
 }
 
 func (lifecycle *launchdLifecycle) Uninstall(

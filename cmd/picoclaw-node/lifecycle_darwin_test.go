@@ -7,12 +7,17 @@ import (
 	"testing"
 )
 
-func TestDarwinLifecycleRejectsMutationBeforeConfigValidation(t *testing.T) {
+func TestDarwinLifecycleRejectsUninstallBeforeConfigValidation(t *testing.T) {
 	t.Parallel()
-	for _, action := range []string{"install", "uninstall"} {
-		err := runServiceLifecycle(action, nil)
-		if err == nil || !strings.Contains(err.Error(), "launchd "+action+" is not implemented") {
-			t.Fatalf("%s returned unexpected error: %v", action, err)
-		}
+	err := runServiceLifecycle("uninstall", nil)
+	if err == nil || !strings.Contains(err.Error(), "launchd uninstall is not implemented") {
+		t.Fatalf("uninstall returned unexpected error: %v", err)
+	}
+}
+
+func TestDarwinLifecycleAllowsInstall(t *testing.T) {
+	t.Parallel()
+	if err := validatePlatformServiceAction("install"); err != nil {
+		t.Fatalf("install validation failed: %v", err)
 	}
 }
