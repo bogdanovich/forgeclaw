@@ -114,20 +114,20 @@ func TestParseJSONLEvents_MultipleToolCalls(t *testing.T) {
 	}
 }
 
-func TestParseJSONLEvents_MultipleMessages(t *testing.T) {
+func TestParseJSONLEvents_UsesFinalAgentMessage(t *testing.T) {
 	p := &CodexCliProvider{}
 	events := `{"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"First part."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Progress update."}}
 {"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"ls","status":"completed"}}
-{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Second part."}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Final result."}}
 {"type":"turn.completed"}`
 
 	resp, err := p.parseJSONLEvents(events)
 	if err != nil {
 		t.Fatalf("parseJSONLEvents() error: %v", err)
 	}
-	if resp.Content != "First part.\nSecond part." {
-		t.Errorf("Content = %q, want %q", resp.Content, "First part.\nSecond part.")
+	if resp.Content != "Final result." {
+		t.Errorf("Content = %q, want %q", resp.Content, "Final result.")
 	}
 }
 
