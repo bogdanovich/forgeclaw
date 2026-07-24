@@ -190,7 +190,14 @@ func (lifecycle *launchdLifecycle) queryJob(
 
 func parseLaunchdJob(target, service, output string) (launchdJobState, error) {
 	lines := strings.Split(output, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != service+" = {" {
+	if len(lines) == 0 {
+		return launchdJobState{}, fmt.Errorf(
+			"launchctl print %s returned an unexpected service identity",
+			target,
+		)
+	}
+	header := strings.TrimSpace(lines[0])
+	if header != service+" = {" && header != target+" = {" {
 		return launchdJobState{}, fmt.Errorf(
 			"launchctl print %s returned an unexpected service identity",
 			target,

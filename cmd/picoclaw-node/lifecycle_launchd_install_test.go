@@ -36,7 +36,7 @@ func TestLaunchdInstallBootstrapsGUIAndWaitsForStableRunning(t *testing.T) {
 			if bootstrapped && strings.HasPrefix(args[1], "gui/") {
 				runningObservations++
 				return launchdRunResult{
-					Output: launchdPrintOutput(defaultLaunchdLabel, path, "running"),
+					Output: launchdPrintOutput(args[1], path, "running"),
 				}, nil
 			}
 			return launchdRunResult{Output: launchdMissingOutput, ExitCode: 113}, nil
@@ -261,7 +261,7 @@ func TestLaunchdInstallBootsOutAndRemovesUnreadyService(t *testing.T) {
 			case "print":
 				if loaded {
 					return launchdRunResult{
-						Output: launchdPrintOutput(defaultLaunchdLabel, path, "waiting"),
+						Output: launchdPrintOutput(args[1], path, "waiting"),
 					}, nil
 				}
 				return launchdRunResult{Output: launchdMissingOutput, ExitCode: 113}, nil
