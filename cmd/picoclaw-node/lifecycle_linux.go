@@ -64,6 +64,10 @@ func newPlatformServiceLifecycle(system bool) (serviceLifecycle, error) {
 	}, nil
 }
 
+func validatePlatformServiceAction(string) error {
+	return nil
+}
+
 func (lifecycle *systemdLifecycle) Status(
 	ctx context.Context,
 	request lifecycleRequest,

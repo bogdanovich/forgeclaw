@@ -93,6 +93,9 @@ func runServiceLifecycle(action string, args []string) error {
 	if !request.System && requestedUser != "" {
 		return errors.New("--service-user requires --system")
 	}
+	if err := validatePlatformServiceAction(action); err != nil {
+		return err
+	}
 	if action == "install" {
 		resolved, err := resolveLifecycleConfigPath(configPath, request.System, configExplicit)
 		if err != nil {
