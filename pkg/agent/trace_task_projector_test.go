@@ -773,6 +773,80 @@ func TestTaskTraceProjectorIgnoresStaleReceiptDuringShutdownSnapshot(t *testing.
 	}
 }
 
+func TestTaskTraceProjectorRebuildsCommitAheadOfObserver(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	var submitted []evaltrace.Trace
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, active *activeTraceCapture) error {
+			trace, err := active.builder.Finalize()
+			if err != nil {
+				return err
+			}
+			submitted = append(submitted, trace)
+			return nil
+		},
+	)
+	projector.awaitPersistence = true
+	t.Cleanup(projector.close)
+	projector.attach(workspace, registry)
+	record := finishTaskForTrace(t, registry, "commit-ahead", "session", 0)
+	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
+
+	projector.mu.Lock()
+	state := projector.traces[key]
+	firstReceipt := state.receipt
+	firstSeq := state.lastSeq
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- registry.Update(record.TaskID, func(current *taskregistry.Record) {
+			current.DeliveryStatus = taskregistry.DeliverySessionQueued
+		})
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		current := registryRecord(t, registry, record.TaskID)
+		if current.LastEventSeq > firstSeq {
+			break
+		}
+		if time.Now().After(deadline) {
+			projector.mu.Unlock()
+			t.Fatal("newer registry revision did not commit behind observer barrier")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	projector.observeWriterEventLocked(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: submitted[0].TraceID,
+		SubmissionID: firstReceipt, Class: evalcapture.ClassCritical,
+	})
+	rebuilt := projector.traces[key]
+	if rebuilt == nil || rebuilt.lastSeq <= firstSeq ||
+		rebuilt.receipt == "" || rebuilt.receipt == firstReceipt {
+		projector.mu.Unlock()
+		t.Fatalf("rebuilt state = %#v, first sequence = %d", rebuilt, firstSeq)
+	}
+	secondReceipt := rebuilt.receipt
+	projector.mu.Unlock()
+	if err := <-updateDone; err != nil {
+		t.Fatal(err)
+	}
+	if !registryRecord(t, registry, record.TaskID).TraceCapturePending {
+		t.Fatal("older acknowledgement released commit-ahead marker")
+	}
+	if len(submitted) != 2 {
+		t.Fatalf("submitted revisions = %d, want 2", len(submitted))
+	}
+
+	projector.observeWriterEvent(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: submitted[1].TraceID,
+		SubmissionID: secondReceipt, Class: evalcapture.ClassCritical,
+	})
+	if registryRecord(t, registry, record.TaskID).TraceCapturePending {
+		t.Fatal("newest committed revision retained pending marker")
+	}
+}
+
 func TestTaskTraceProjectorRetriesCapacityRejectionWithoutNewEvent(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))

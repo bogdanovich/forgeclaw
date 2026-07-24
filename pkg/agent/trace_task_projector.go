@@ -481,6 +481,10 @@ func (p *taskTraceProjector) observeWriterEvent(event evalcapture.Event) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.observeWriterEventLocked(event)
+}
+
+func (p *taskTraceProjector) observeWriterEventLocked(event evalcapture.Event) {
 	if strings.TrimSpace(event.SubmissionID) == "" {
 		return
 	}
@@ -497,6 +501,9 @@ func (p *taskTraceProjector) observeWriterEvent(event evalcapture.Event) {
 	state.receipt = ""
 	switch event.Kind {
 	case evalcapture.EventPersisted:
+		if p.rebuildCommittedRevisionLocked(key, state) {
+			return
+		}
 		if state.dirty {
 			state.dirty = false
 			if state.terminal {
@@ -514,6 +521,31 @@ func (p *taskTraceProjector) observeWriterEvent(event evalcapture.Event) {
 		state.dirty = false
 		p.retryOrDeferLocked(key, state)
 	}
+}
+
+func (p *taskTraceProjector) rebuildCommittedRevisionLocked(
+	key taskTraceKey,
+	state *taskTraceState,
+) bool {
+	registry := p.registries[key.workspace]
+	if registry == nil {
+		return false
+	}
+	record, ok := registry.Get(key.taskID)
+	if !ok || record.GenerationID != key.generationID ||
+		record.LastEventSeq <= state.lastSeq {
+		return false
+	}
+	rebuilt := p.restoreStateLocked(
+		key.workspace,
+		record,
+		registry.ListEvents(record.TaskID),
+	)
+	p.traces[key] = rebuilt
+	if taskRecordIsCaptureTerminal(record) {
+		p.terminalizeLocked(key, rebuilt, record)
+	}
+	return true
 }
 
 func (p *taskTraceProjector) setTracePendingLocked(
