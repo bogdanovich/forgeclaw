@@ -111,7 +111,7 @@ func TestTraceCaptureDisabledWritesNothing(t *testing.T) {
 	cfg := config.DefaultConfig()
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(cfg, eventBus)
-	if manager.sub != nil || manager.writer != nil {
+	if manager.turns.sub != nil || manager.writer != nil {
 		t.Fatal("disabled capture started background workers")
 	}
 	start := time.Now().UTC()
@@ -154,7 +154,7 @@ func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
 	manager := newTraceCaptureManager(cfg, eventBus)
 	enabled := traceTestConfig(workspace)
 	manager.updateConfig(enabled)
-	if manager.sub == nil || manager.writer == nil {
+	if manager.turns.sub == nil || manager.writer == nil {
 		t.Fatal("enabling capture did not start workers")
 	}
 	start := time.Now().UTC()

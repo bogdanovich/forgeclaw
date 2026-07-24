@@ -10,8 +10,9 @@ The durable human-interaction runtime merged before the spike remains the
 production authority. This redesign extends its observability and evaluation
 without making trace capture part of the interaction state machine.
 
-Stages 1 through 8 are merged. Stage 9 extracts bounded trace assembly before
-source projectors are split; later stages remain separate pull requests.
+Stages 1 through 9 are merged. Stage 10 now has separate turn and task
+projectors; the interaction projector and later stages remain separate pull
+requests.
 
 ## Why The Spike Is Not The Implementation
 
@@ -223,6 +224,14 @@ Replace the generic agent capture manager with small source owners:
   and performs startup reconciliation;
 - a coordinator owns configuration reload, projector lifetime, and the shared
   writer, but no domain correlation maps.
+
+The turn projector is the sole owner of the runtime-event subscription, active
+turn buffers, delivery-settlement timers, and runtime backpressure accounting.
+It keys every active buffer by exact `TraceScope` and submits only immutable
+finalized turns through the coordinator-owned writer callback. Disabling
+capture discards process-local partial turn buffers without affecting durable
+task or interaction authorities; shutdown marks unfinished turns incomplete
+before the writer drains.
 
 Task records and events carry a runtime-owned opaque generation ID assigned on
 every task upsert. The ID is durable, immutable through task updates, and
