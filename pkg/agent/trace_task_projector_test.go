@@ -656,9 +656,12 @@ func TestTaskTraceProjectorReopensAfterPersistedDeliveryFailure(t *testing.T) {
 		t.Fatalf("initial submissions = %d, want 1", len(submitted))
 	}
 	traceID := submitted[0].TraceID
+	record := registryRecord(t, registry, "acknowledged-recovery")
+	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
 	projector.observeWriterEvent(evalcapture.Event{
 		Kind: evalcapture.EventPersisted, TraceID: traceID,
-		Class: evalcapture.ClassCritical,
+		SubmissionID: taskTraceReceipt(t, projector, key),
+		Class:        evalcapture.ClassCritical,
 	})
 	if registryRecord(t, registry, "acknowledged-recovery").TraceCapturePending {
 		t.Fatal("persistence acknowledgement retained pending marker")
@@ -691,10 +694,82 @@ func TestTaskTraceProjectorReopensAfterPersistedDeliveryFailure(t *testing.T) {
 	}
 	projector.observeWriterEvent(evalcapture.Event{
 		Kind: evalcapture.EventPersisted, TraceID: traceID,
-		Class: evalcapture.ClassCritical,
+		SubmissionID: taskTraceReceipt(t, projector, key),
+		Class:        evalcapture.ClassCritical,
 	})
 	if registryRecord(t, registry, "acknowledged-recovery").TraceCapturePending {
 		t.Fatal("recovered trace retained pending marker")
+	}
+}
+
+func TestTaskTraceProjectorIgnoresStaleReceiptDuringShutdownSnapshot(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	var submitted []evaltrace.Trace
+	capture := func(_ traceCaptureSettings, active *activeTraceCapture) error {
+		trace, err := active.builder.Finalize()
+		if err != nil {
+			return err
+		}
+		submitted = append(submitted, trace)
+		return nil
+	}
+	projector := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		capture,
+		func(_ context.Context, settings traceCaptureSettings, active *activeTraceCapture) error {
+			return capture(settings, active)
+		},
+	)
+	projector.awaitPersistence = true
+	t.Cleanup(projector.close)
+	projector.attach(workspace, registry)
+	record := finishTaskForTrace(t, registry, "shutdown-revision", "session", 0)
+	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
+	firstReceipt := taskTraceReceipt(t, projector, key)
+	if err := registry.Update(record.TaskID, func(current *taskregistry.Record) {
+		current.DeliveryStatus = taskregistry.DeliveryPending
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := projector.closeWithContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(submitted) != 2 {
+		t.Fatalf("submitted revisions = %d, want 2", len(submitted))
+	}
+	secondReceipt := taskTraceReceipt(t, projector, key)
+	if firstReceipt == secondReceipt {
+		t.Fatalf("submission receipts were reused: %q", firstReceipt)
+	}
+
+	projector.observeWriterEvent(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: submitted[0].TraceID,
+		SubmissionID: firstReceipt, Class: evalcapture.ClassCritical,
+	})
+	if !registryRecord(t, registry, record.TaskID).TraceCapturePending {
+		t.Fatal("stale receipt released the newer shutdown snapshot marker")
+	}
+	if got := taskTraceReceipt(t, projector, key); got != secondReceipt {
+		t.Fatalf("current receipt = %q, want %q", got, secondReceipt)
+	}
+
+	merged, persist := reconcileTaskTraceCandidate(submitted[0], submitted[1])
+	if !persist ||
+		!slices.Contains(
+			merged.Truncation.Reasons,
+			"runtime_closed_before_terminal_task_delivery",
+		) {
+		t.Fatalf("merged shutdown truncation = %+v, persist = %v", merged.Truncation, persist)
+	}
+	projector.observeWriterEvent(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: submitted[1].TraceID,
+		SubmissionID: secondReceipt, Class: evalcapture.ClassCritical,
+	})
+	if registryRecord(t, registry, record.TaskID).TraceCapturePending {
+		t.Fatal("current shutdown receipt retained pending marker")
 	}
 }
 
@@ -809,12 +884,14 @@ func TestTaskTraceProjectorRetriesPermanentWriterFailure(t *testing.T) {
 	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
 	projector.mu.Lock()
 	traceID := projector.traces[key].trace.builder.TraceID()
+	submissionID := projector.traces[key].receipt
 	projector.mu.Unlock()
 	projector.observeWriterEvent(evalcapture.Event{
-		Kind:    evalcapture.EventPermanentlyFailed,
-		Reason:  evalcapture.ReasonStorageFailure,
-		TraceID: traceID,
-		Class:   evalcapture.ClassCritical,
+		Kind:         evalcapture.EventPermanentlyFailed,
+		Reason:       evalcapture.ReasonStorageFailure,
+		TraceID:      traceID,
+		SubmissionID: submissionID,
+		Class:        evalcapture.ClassCritical,
 	})
 	if got := projector.stats().PendingAdmissions; got != 1 {
 		t.Fatalf("pending admissions after storage failure = %d, want 1", got)
@@ -830,9 +907,10 @@ func TestTaskTraceProjectorRetriesPermanentWriterFailure(t *testing.T) {
 	projector.mu.Unlock()
 	projector.retryPending()
 	projector.observeWriterEvent(evalcapture.Event{
-		Kind:    evalcapture.EventPersisted,
-		TraceID: traceID,
-		Class:   evalcapture.ClassCritical,
+		Kind:         evalcapture.EventPersisted,
+		TraceID:      traceID,
+		SubmissionID: taskTraceReceipt(t, projector, key),
+		Class:        evalcapture.ClassCritical,
 	})
 
 	if attempts.Load() != 2 {
@@ -1129,6 +1207,21 @@ func registryRecord(
 		t.Fatalf("task %q not found", taskID)
 	}
 	return record
+}
+
+func taskTraceReceipt(
+	t *testing.T,
+	projector *taskTraceProjector,
+	key taskTraceKey,
+) string {
+	t.Helper()
+	projector.mu.Lock()
+	defer projector.mu.Unlock()
+	state := projector.traces[key]
+	if state == nil || state.receipt == "" {
+		t.Fatalf("task trace %v has no active persistence receipt", key)
+	}
+	return state.receipt
 }
 
 func collectTaskTraces(

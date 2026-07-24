@@ -66,14 +66,15 @@ const (
 // Event reports an operational condition without exposing trace content.
 // EventSink implementations must return promptly and must not call Close.
 type Event struct {
-	Kind    EventKind
-	Reason  Reason
-	TraceID string
-	Class   Class
-	Attempt int
-	Removed int
-	Dropped int
-	Err     error
+	Kind         EventKind
+	Reason       Reason
+	TraceID      string
+	SubmissionID string
+	Class        Class
+	Attempt      int
+	Removed      int
+	Dropped      int
+	Err          error
 }
 
 // EventSink receives typed operational events. Admission errors are also
@@ -116,9 +117,10 @@ type Options struct {
 }
 
 type submission struct {
-	policy Policy
-	trace  evaltrace.Trace
-	class  Class
+	policy       Policy
+	trace        evaltrace.Trace
+	class        Class
+	submissionID string
 }
 
 // Writer accepts finalized traces without waiting for filesystem I/O.
@@ -204,7 +206,17 @@ func NewWriter(options Options) *Writer {
 
 // Submit snapshots and admits a finalized trace without waiting for persistence.
 func (w *Writer) Submit(policy Policy, trace evaltrace.Trace, class Class) error {
-	item, err := w.prepareSubmission(policy, trace, class)
+	return w.SubmitTracked(policy, trace, class, "")
+}
+
+// SubmitTracked admits a trace with an opaque caller-owned persistence receipt.
+func (w *Writer) SubmitTracked(
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+	submissionID string,
+) error {
+	item, err := w.prepareSubmission(policy, trace, class, submissionID)
 	if err != nil {
 		return err
 	}
@@ -224,7 +236,18 @@ func (w *Writer) SubmitWait(
 	trace evaltrace.Trace,
 	class Class,
 ) error {
-	item, err := w.prepareSubmission(policy, trace, class)
+	return w.SubmitWaitTracked(ctx, policy, trace, class, "")
+}
+
+// SubmitWaitTracked waits for admission and preserves the caller's receipt.
+func (w *Writer) SubmitWaitTracked(
+	ctx context.Context,
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+	submissionID string,
+) error {
+	item, err := w.prepareSubmission(policy, trace, class, submissionID)
 	if err != nil {
 		return err
 	}
@@ -251,6 +274,7 @@ func (w *Writer) prepareSubmission(
 	policy Policy,
 	trace evaltrace.Trace,
 	class Class,
+	submissionID string,
 ) (submission, error) {
 	if w == nil {
 		return submission{}, &AdmissionError{
@@ -269,7 +293,10 @@ func (w *Writer) prepareSubmission(
 	if err := evaltrace.Validate(trace); err != nil {
 		return submission{}, w.reject(trace.TraceID, class, ReasonInvalidTrace, err)
 	}
-	return submission{policy: policy, trace: cloneTrace(trace), class: class}, nil
+	return submission{
+		policy: policy, trace: cloneTrace(trace), class: class,
+		submissionID: strings.TrimSpace(submissionID),
+	}, nil
 }
 
 func (w *Writer) tryAdmit(item submission) (bool, *submission, Reason) {
@@ -310,14 +337,16 @@ func (w *Writer) recordAdmission(item submission, evicted *submission) {
 		w.stats.evictedOrdinary.Add(1)
 		w.emit(Event{
 			Kind: EventEvicted, Reason: ReasonCapacity,
-			TraceID: evicted.trace.TraceID, Class: evicted.class,
+			TraceID: evicted.trace.TraceID, SubmissionID: evicted.submissionID,
+			Class: evicted.class,
 		})
 	}
 	if item.trace.Truncation.Incomplete || item.trace.Truncation.DroppedRecords > 0 {
 		w.stats.truncated.Add(1)
 		w.emit(Event{
 			Kind: EventTruncated, Reason: ReasonTraceIncomplete,
-			TraceID: item.trace.TraceID, Class: item.class,
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class:   item.class,
 			Dropped: item.trace.Truncation.DroppedRecords,
 		})
 	}
@@ -422,8 +451,9 @@ func (w *Writer) persist(item submission) {
 		w.stats.permanentFailures.Add(1)
 		w.emit(Event{
 			Kind: EventPermanentlyFailed, Reason: ReasonStorageFailure,
-			TraceID: item.trace.TraceID, Class: item.class,
-			Err: errors.New("storage factory returned nil"),
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class: item.class,
+			Err:   errors.New("storage factory returned nil"),
 		})
 		return
 	}
@@ -432,10 +462,11 @@ func (w *Writer) persist(item submission) {
 		if err == nil {
 			w.stats.persisted.Add(1)
 			w.emit(Event{
-				Kind:    EventPersisted,
-				TraceID: item.trace.TraceID,
-				Class:   item.class,
-				Attempt: attempt,
+				Kind:         EventPersisted,
+				TraceID:      item.trace.TraceID,
+				SubmissionID: item.submissionID,
+				Class:        item.class,
+				Attempt:      attempt,
 			})
 			w.prune(store, item)
 			return
@@ -444,14 +475,16 @@ func (w *Writer) persist(item submission) {
 			w.stats.permanentFailures.Add(1)
 			w.emit(Event{
 				Kind: EventPermanentlyFailed, Reason: ReasonStorageFailure,
-				TraceID: item.trace.TraceID, Class: item.class, Attempt: attempt, Err: err,
+				TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+				Class: item.class, Attempt: attempt, Err: err,
 			})
 			return
 		}
 		w.stats.retries.Add(1)
 		w.emit(Event{
 			Kind: EventRetrying, Reason: ReasonStorageFailure,
-			TraceID: item.trace.TraceID, Class: item.class, Attempt: attempt, Err: err,
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class: item.class, Attempt: attempt, Err: err,
 		})
 		if w.retryDelay > 0 {
 			time.Sleep(w.retryDelay)
@@ -465,13 +498,17 @@ func (w *Writer) prune(store Storage, item submission) {
 		w.stats.pruneFailures.Add(1)
 		w.emit(Event{
 			Kind: EventPruneFailed, Reason: ReasonRetentionFailed,
-			TraceID: item.trace.TraceID, Class: item.class, Err: err,
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class: item.class, Err: err,
 		})
 		return
 	}
 	if removed > 0 {
 		w.stats.pruned.Add(uint64(removed))
-		w.emit(Event{Kind: EventPruned, TraceID: item.trace.TraceID, Class: item.class, Removed: removed})
+		w.emit(Event{
+			Kind: EventPruned, TraceID: item.trace.TraceID,
+			SubmissionID: item.submissionID, Class: item.class, Removed: removed,
+		})
 	}
 }
 

@@ -39,6 +39,7 @@ type taskTraceState struct {
 	retryable  bool
 	admitted   bool
 	dirty      bool
+	receipt    string
 }
 
 type taskRegistrySubscription struct {
@@ -61,6 +62,7 @@ type taskTraceProjector struct {
 	submitWait       func(context.Context, traceCaptureSettings, *activeTraceCapture) error
 	awaitPersistence bool
 	inflight         map[string]taskTraceKey
+	nextSubmission   uint64
 
 	pendingAdmissions int
 	overflowDeferrals uint64
@@ -373,6 +375,7 @@ func (p *taskTraceProjector) trySubmitLocked(
 		return
 	}
 	traceID := state.trace.builder.TraceID()
+	submissionID := ""
 	if p.awaitPersistence {
 		if err := p.setTracePendingLocked(key, true); err != nil {
 			logger.WarnCF("evaltrace", "Failed to protect task trace retry marker", map[string]any{
@@ -386,11 +389,13 @@ func (p *taskTraceProjector) trySubmitLocked(
 			}
 			return
 		}
-		p.inflight[traceID] = key
+		submissionID = p.nextSubmissionIDLocked(traceID)
+		state.trace.submissionID = submissionID
+		p.inflight[submissionID] = key
 	}
 	err := p.submit(state.settings, state.trace)
 	if errors.Is(err, errTaskTraceAlreadyDurable) {
-		delete(p.inflight, traceID)
+		delete(p.inflight, submissionID)
 		if markerErr := p.clearTracePendingLocked(key); markerErr != nil {
 			if !state.retryable {
 				p.retryOrDeferLocked(key, state)
@@ -411,13 +416,14 @@ func (p *taskTraceProjector) trySubmitLocked(
 		}
 		if p.awaitPersistence {
 			state.admitted = true
+			state.receipt = submissionID
 			return
 		}
 		delete(p.traces, key)
 		p.recordCompletedLocked(key, state.lastSeq)
 		return
 	}
-	delete(p.inflight, traceID)
+	delete(p.inflight, submissionID)
 	if taskTraceAdmissionCanRetry(err) {
 		if !state.retryable {
 			p.retryOrDeferLocked(key, state)
@@ -475,16 +481,20 @@ func (p *taskTraceProjector) observeWriterEvent(event evalcapture.Event) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	key, tracked := p.inflight[event.TraceID]
+	if strings.TrimSpace(event.SubmissionID) == "" {
+		return
+	}
+	key, tracked := p.inflight[event.SubmissionID]
 	if !tracked {
 		return
 	}
-	delete(p.inflight, event.TraceID)
+	delete(p.inflight, event.SubmissionID)
 	state := p.traces[key]
-	if state == nil {
+	if state == nil || state.receipt != event.SubmissionID {
 		return
 	}
 	state.admitted = false
+	state.receipt = ""
 	switch event.Kind {
 	case evalcapture.EventPersisted:
 		if state.dirty {
@@ -670,15 +680,19 @@ func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
 	for _, pending := range states {
 		state := pending.state
 		traceID := state.trace.builder.TraceID()
+		submissionID := ""
 		if p.awaitPersistence {
 			p.mu.Lock()
 			markerErr := p.setTracePendingLocked(pending.key, true)
-			p.inflight[traceID] = pending.key
+			if markerErr == nil {
+				submissionID = p.nextSubmissionIDLocked(traceID)
+				state.trace.submissionID = submissionID
+				p.inflight[submissionID] = pending.key
+				state.receipt = submissionID
+				state.admitted = true
+			}
 			p.mu.Unlock()
 			if markerErr != nil {
-				p.mu.Lock()
-				delete(p.inflight, traceID)
-				p.mu.Unlock()
 				if firstErr == nil {
 					firstErr = markerErr
 				}
@@ -692,9 +706,13 @@ func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
 			err = p.submit(state.settings, state.trace)
 		}
 		p.mu.Lock()
+		if p.traces[pending.key] != state {
+			p.mu.Unlock()
+			continue
+		}
 		switch {
 		case errors.Is(err, errTaskTraceAlreadyDurable):
-			delete(p.inflight, traceID)
+			p.clearInflightForKeyLocked(pending.key)
 			if markerErr := p.clearTracePendingLocked(pending.key); markerErr != nil {
 				if firstErr == nil {
 					firstErr = markerErr
@@ -704,8 +722,11 @@ func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
 				p.recordCompletedLocked(pending.key, state.lastSeq)
 			}
 		case err != nil:
-			delete(p.inflight, traceID)
-			state.admitted = false
+			delete(p.inflight, submissionID)
+			if state.receipt == submissionID {
+				state.admitted = false
+				state.receipt = ""
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -779,6 +800,19 @@ func (p *taskTraceProjector) removeCompletedLocked(key taskTraceKey) {
 		p.order[len(p.order)-1] = taskTraceKey{}
 		p.order = p.order[:len(p.order)-1]
 		return
+	}
+}
+
+func (p *taskTraceProjector) nextSubmissionIDLocked(traceID string) string {
+	p.nextSubmission++
+	return traceID + ":" + strconv.FormatUint(p.nextSubmission, 10)
+}
+
+func (p *taskTraceProjector) clearInflightForKeyLocked(key taskTraceKey) {
+	for submissionID, inflightKey := range p.inflight {
+		if inflightKey == key {
+			delete(p.inflight, submissionID)
+		}
 	}
 }
 
@@ -1065,12 +1099,39 @@ func mergeCompleteTaskTrace(
 		}
 	}
 	candidate.Records = records
-	candidate.Truncation = evaltrace.Truncation{}
+	candidate.Truncation = repairTaskHistoryTruncation(candidate.Truncation)
 	merged, err := evaltrace.Finalize(candidate)
 	if err != nil {
 		return evaltrace.Trace{}, false
 	}
 	return merged, true
+}
+
+func repairTaskHistoryTruncation(
+	truncation evaltrace.Truncation,
+) evaltrace.Truncation {
+	reasons := truncation.Reasons[:0]
+	for _, reason := range truncation.Reasons {
+		if reason == "task_history_missing_at_startup" ||
+			reason == "task_event_sequence_gap" {
+			continue
+		}
+		reasons = append(reasons, reason)
+	}
+	truncation.Reasons = reasons
+	if len(reasons) == 0 {
+		truncation.DroppedRecords = 0
+		for _, dropped := range truncation.DroppedByKind {
+			truncation.DroppedRecords += dropped
+		}
+	}
+	truncation.Incomplete = len(truncation.Reasons) > 0 ||
+		truncation.DroppedRecords > 0 ||
+		len(truncation.DroppedByKind) > 0
+	if !truncation.Incomplete {
+		return evaltrace.Truncation{}
+	}
+	return truncation
 }
 
 func taskTraceEventSequence(record evaltrace.Record) (int64, bool) {

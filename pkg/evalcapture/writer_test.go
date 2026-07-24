@@ -60,7 +60,12 @@ func TestWriterRetriesAndReportsPermanentFailure(t *testing.T) {
 		StorageFactory: func(Policy) Storage { return store },
 		EventSink:      func(event Event) { events = append(events, event) },
 	})
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-retry"), ClassCritical); err != nil {
+	if err := writer.SubmitTracked(
+		testPolicy(),
+		testTrace(t, "trace-retry"),
+		ClassCritical,
+		"receipt-retry",
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(context.Background()); err != nil {
@@ -71,6 +76,12 @@ func TestWriterRetriesAndReportsPermanentFailure(t *testing.T) {
 	}
 	if countEvents(events, EventRetrying) != 2 {
 		t.Fatalf("events = %+v", events)
+	}
+	if !slices.ContainsFunc(events, func(event Event) bool {
+		return event.Kind == EventPersisted &&
+			event.SubmissionID == "receipt-retry"
+	}) {
+		t.Fatalf("persistence receipt events = %+v", events)
 	}
 
 	store = &fakeStorage{saveFailures: 4}

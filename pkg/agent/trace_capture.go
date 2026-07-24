@@ -175,7 +175,12 @@ func (m *traceCaptureManager) enqueueTaskPersist(
 		}
 		return err
 	}
-	err = writer.Submit(policy, finalized, evalcapture.ClassCritical)
+	err = writer.SubmitTracked(
+		policy,
+		finalized,
+		evalcapture.ClassCritical,
+		trace.submissionID,
+	)
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to admit finalized task trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
@@ -200,7 +205,13 @@ func (m *traceCaptureManager) enqueueTaskPersistWait(
 		}
 		return err
 	}
-	err = writer.SubmitWait(ctx, policy, finalized, evalcapture.ClassCritical)
+	err = writer.SubmitWaitTracked(
+		ctx,
+		policy,
+		finalized,
+		evalcapture.ClassCritical,
+		trace.submissionID,
+	)
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to admit finalized task trace during shutdown", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
