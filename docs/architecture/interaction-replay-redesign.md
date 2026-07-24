@@ -10,9 +10,9 @@ The durable human-interaction runtime merged before the spike remains the
 production authority. This redesign extends its observability and evaluation
 without making trace capture part of the interaction state machine.
 
-Stages 1 through 9 are merged. Stage 10 now has separate turn and task
-projectors; the interaction projector and later stages remain separate pull
-requests.
+Stages 1 through 9 are merged. Stage 10 now has separate turn, task, and
+interaction projectors over the shared durable projection coordinator. Later
+evaluation stages remain separate pull requests.
 
 ## Why The Spike Is Not The Implementation
 
@@ -312,9 +312,21 @@ or retained terminal records and rebuilds a missing, incomplete, or stale trace
 from durable history. If history was pruned, the builder emits an explicitly
 incomplete trace rather than inventing transitions.
 
+The interaction registry snapshot owns the durable capture mode, journal
+limit, per-record pending marker, and bounded event journal. Every registry
+instance loading the same store therefore applies the same protection before
+committing a lifecycle event. Process-local desired-state tracking exists only
+to finish a failed enable or disable write; it cannot become a second history
+authority. Graceful runtime shutdown leaves the configured durable mode intact.
+
 Projectors may add typed links between traces. They do not copy one domain's
 state machine into another projector or append interaction transitions directly
 to a turn buffer through session heuristics.
+
+Interaction traces are metadata-only regardless of the configured turn/task
+content mode. Event codes are represented by hashes rather than copied as
+arbitrary text. Questions, answers, approval summaries, routes, senders, tool
+arguments, and execution context never enter the interaction trace.
 
 ## 5. Shared Interaction Protocol
 

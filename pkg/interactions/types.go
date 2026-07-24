@@ -196,11 +196,15 @@ type Record struct {
 	FailureCode         string        `json:"failure_code,omitempty"`
 	FailureDetail       string        `json:"failure_detail,omitempty"`
 	ApprovalConsumedAt  int64         `json:"approval_consumed_at,omitempty"`
+	TraceCapturePending bool          `json:"trace_capture_pending,omitempty"`
+	TraceCaptureEvents  []Event       `json:"trace_capture_events,omitempty"`
+	TraceCaptureDropped int           `json:"trace_capture_dropped,omitempty"`
 }
 
 type Event struct {
 	SchemaVersion  string    `json:"schema_version"`
 	EventID        string    `json:"event_id"`
+	Fingerprint    string    `json:"fingerprint,omitempty"`
 	CommitSequence uint64    `json:"commit_sequence,omitempty"`
 	InteractionID  string    `json:"interaction_id"`
 	Type           EventType `json:"type"`
@@ -380,6 +384,11 @@ func isTerminal(status Status) bool {
 	default:
 		return false
 	}
+}
+
+// IsTerminalStatus reports whether no later lifecycle transition is permitted.
+func IsTerminalStatus(status Status) bool {
+	return isTerminal(status)
 }
 
 func validTransition(from, to Status) bool {

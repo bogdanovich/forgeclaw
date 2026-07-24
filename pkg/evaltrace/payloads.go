@@ -67,6 +67,22 @@ type TaskPayload struct {
 	Producer       string `json:"producer,omitempty"`
 }
 
+// InteractionPayload contains only normalized lifecycle evidence. Raw prompt,
+// answer, route, sender, approval, tool argument, and diagnostic text is never
+// part of an interaction trace.
+type InteractionPayload struct {
+	EventType      string `json:"event_type"`
+	Kind           string `json:"kind,omitempty"`
+	From           string `json:"from,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	Revision       int64  `json:"revision,omitempty"`
+	Sequence       int64  `json:"sequence,omitempty"`
+	CommitSequence uint64 `json:"commit_sequence,omitempty"`
+	CodeHash       string `json:"code_hash,omitempty"`
+	Success        *bool  `json:"success,omitempty"`
+}
+
 type DeliveryPayload struct {
 	Mode        string `json:"mode,omitempty"`
 	Status      string `json:"status,omitempty"`

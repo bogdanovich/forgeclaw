@@ -182,57 +182,52 @@ func (p *taskTraceProjector) updateSettings(settings traceCaptureSettings) {
 	}
 }
 
+//nolint:dupl // Typed registry hooks mirror interaction installation; lifecycle is shared.
 func (p *taskTraceProjector) install(
 	workspace string,
 	registry *taskregistry.Registry,
 ) {
 	p.mu.Lock()
-	if p.closed || !p.settings.enabled ||
-		p.registries[workspace] != registry || p.sources[workspace] != nil ||
-		p.coordinator == nil {
-		p.mu.Unlock()
-		return
-	}
-	if err := registry.SetTraceCaptureProtection(
-		true,
-		p.settings.limits.MaxRecords,
-	); err != nil {
-		p.scheduleRetryLocked()
-		p.mu.Unlock()
-		logger.WarnCF("evaltrace", "Failed to protect task trace snapshot", map[string]any{
-			"workspace": workspace,
-			"error":     err.Error(),
-		})
-		return
-	}
-
 	source := &taskTraceSource{
 		workspace: workspace,
 		registry:  registry,
 		settings:  p.settings,
 	}
 	sourceID := taskTraceSourceID(workspace)
-	if err := p.coordinator.RegisterSource(sourceID, source); err != nil {
-		p.scheduleRetryLocked()
-		p.mu.Unlock()
-		logger.WarnCF("evaltrace", "Failed to register task trace source", map[string]any{
-			"workspace": workspace,
-			"error":     err.Error(),
-		})
-		return
-	}
-	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(
-		func(observation taskregistry.EventObservation) {
-			p.observe(workspace, sourceID, observation)
+	activate := bindDurableProjectionSource(
+		!p.closed && p.settings.enabled &&
+			p.registries[workspace] == registry &&
+			p.sources[workspace] == nil &&
+			p.coordinator != nil,
+		"task",
+		workspace,
+		p.coordinator,
+		sourceID,
+		source,
+		p.settings.limits.MaxRecords,
+		func(maxEvents int) error {
+			return registry.SetTraceCaptureProtection(true, maxEvents)
 		},
+		func() (taskregistry.ObservationSnapshot, func(), func()) {
+			return registry.SubscribeSnapshot(
+				func(observation taskregistry.EventObservation) {
+					p.observe(workspace, sourceID, observation)
+				},
+			)
+		},
+		func(source *taskTraceSource, unsubscribe func()) {
+			p.sources[workspace] = source
+			p.subs[workspace] = taskRegistrySubscription{
+				registry: registry, unsubscribe: unsubscribe,
+			}
+		},
+		p.requestSnapshotLocked,
+		p.scheduleRetryLocked,
 	)
-	p.sources[workspace] = source
-	p.subs[workspace] = taskRegistrySubscription{
-		registry: registry, unsubscribe: unsubscribe,
-	}
-	p.requestSnapshotLocked(sourceID, snapshot)
 	p.mu.Unlock()
-	activate()
+	if activate != nil {
+		activate()
+	}
 }
 
 func (p *taskTraceProjector) requestSnapshotLocked(
@@ -704,6 +699,7 @@ func newTaskTraceState(
 			},
 			Limits: settings.limits,
 			Metadata: evaltrace.Metadata{
+				TraceKind:          evaltrace.TraceKindTask,
 				SessionHash:        safeHash(settings, record.RequesterSessionKey),
 				AgentID:            record.AgentID,
 				ProjectionRevision: uint64(max(0, record.LastEventSeq)),

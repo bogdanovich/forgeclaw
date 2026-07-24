@@ -11,10 +11,16 @@ const SchemaVersionV1 = "forgeclaw.eval_trace.v1"
 
 type ContentMode string
 
+type TraceKind string
+
 const (
 	ContentMetadataOnly ContentMode = "metadata_only"
 	ContentRedacted     ContentMode = "redacted_content"
 	ContentFixture      ContentMode = "fixture"
+
+	TraceKindTurn        TraceKind = "turn"
+	TraceKindTask        TraceKind = "task"
+	TraceKindInteraction TraceKind = "interaction"
 )
 
 type RecordKind string
@@ -36,6 +42,7 @@ const (
 	RecordSteeringInjected       RecordKind = "steering.injected"
 	RecordInterrupt              RecordKind = "steering.interrupt"
 	RecordTaskTransition         RecordKind = "task.transition"
+	RecordInteractionTransition  RecordKind = "interaction.transition"
 	RecordDeliveryDecision       RecordKind = "delivery.decision"
 	RecordDeliveryAttempt        RecordKind = "delivery.attempt"
 	RecordDeliveryOutcome        RecordKind = "delivery.outcome"
@@ -81,11 +88,12 @@ type AppliedLimits struct {
 }
 
 type Metadata struct {
-	RootTurnID         string `json:"root_turn_id,omitempty"`
-	SessionHash        string `json:"session_hash,omitempty"`
-	AgentID            string `json:"agent_id,omitempty"`
-	RuntimeID          string `json:"runtime_id,omitempty"`
-	ProjectionRevision uint64 `json:"projection_revision,omitempty"`
+	RootTurnID         string    `json:"root_turn_id,omitempty"`
+	SessionHash        string    `json:"session_hash,omitempty"`
+	AgentID            string    `json:"agent_id,omitempty"`
+	RuntimeID          string    `json:"runtime_id,omitempty"`
+	TraceKind          TraceKind `json:"trace_kind,omitempty"`
+	ProjectionRevision uint64    `json:"projection_revision,omitempty"`
 }
 
 type Record struct {
@@ -114,11 +122,12 @@ type Scope struct {
 }
 
 type Correlation struct {
-	ParentTurnID string `json:"parent_turn_id,omitempty"`
-	RequestID    string `json:"request_id,omitempty"`
-	ToolCallID   string `json:"tool_call_id,omitempty"`
-	CompletionID string `json:"completion_id,omitempty"`
-	EventID      string `json:"event_id,omitempty"`
+	ParentTurnID  string `json:"parent_turn_id,omitempty"`
+	RequestID     string `json:"request_id,omitempty"`
+	InteractionID string `json:"interaction_id,omitempty"`
+	ToolCallID    string `json:"tool_call_id,omitempty"`
+	CompletionID  string `json:"completion_id,omitempty"`
+	EventID       string `json:"event_id,omitempty"`
 }
 
 type Outcome struct {

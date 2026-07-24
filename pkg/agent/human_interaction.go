@@ -72,6 +72,9 @@ func (al *AgentLoop) interactionRegistryForWorkspace(workspace string) *interact
 		stored.Subscribe(func(observation interactions.EventObservation) {
 			al.observeInteractionEvent(workspace, observation)
 		})
+		if al.traceCapture != nil {
+			al.traceCapture.attachInteractionRegistry(workspace, stored)
+		}
 		stats := stored.Stats()
 		logger.InfoCF("agent", "Loaded human interaction registry", map[string]any{
 			"workspace":       workspace,

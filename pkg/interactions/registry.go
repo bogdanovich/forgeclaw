@@ -1,6 +1,7 @@
 package interactions
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -31,10 +32,12 @@ type Options struct {
 }
 
 type Snapshot struct {
-	SchemaVersion  string   `json:"schema_version"`
-	CommitSequence uint64   `json:"commit_sequence,omitempty"`
-	Records        []Record `json:"records"`
-	Events         []Event  `json:"events,omitempty"`
+	SchemaVersion         string   `json:"schema_version"`
+	CommitSequence        uint64   `json:"commit_sequence,omitempty"`
+	TraceCaptureEnabled   bool     `json:"trace_capture_enabled,omitempty"`
+	TraceCaptureMaxEvents int      `json:"trace_capture_max_events,omitempty"`
+	Records               []Record `json:"records"`
+	Events                []Event  `json:"events,omitempty"`
 }
 
 type Observer func(EventObservation)
@@ -52,16 +55,22 @@ type queuedObservation struct {
 var observerSequence atomic.Uint64
 
 type Registry struct {
-	mu             sync.RWMutex
-	storePath      string
-	options        Options
-	records        map[string]Record
-	events         []Event
-	observers      []observerEntry
-	notifications  []queuedObservation
-	notifying      bool
-	commitSequence uint64
-	loadErr        error
+	mu                            sync.RWMutex
+	storePath                     string
+	options                       Options
+	records                       map[string]Record
+	events                        []Event
+	observers                     []observerEntry
+	notifications                 []queuedObservation
+	notifying                     bool
+	commitSequence                uint64
+	loadErr                       error
+	traceCaptureProtection        bool
+	traceCaptureProtectionPending bool
+	traceCaptureProtectionDesired bool
+	traceCaptureMaxEvents         int
+	unsyncedWrite                 bool
+	writeAtomic                   func(string, []byte, os.FileMode) error
 }
 
 var _ Store = (*Registry)(nil)
@@ -87,9 +96,11 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 		opts.Now = time.Now
 	}
 	r := &Registry{
-		storePath: strings.TrimSpace(storePath),
-		options:   opts,
-		records:   make(map[string]Record),
+		storePath:             strings.TrimSpace(storePath),
+		options:               opts,
+		records:               make(map[string]Record),
+		traceCaptureMaxEvents: opts.MaxEvents,
+		writeAtomic:           fileutil.WriteFileAtomic,
 	}
 	if r.storePath != "" {
 		r.mu.Lock()
@@ -250,16 +261,26 @@ func (r *Registry) Create(req CreateRequest) (Record, error) {
 	r.records[rec.ID] = rec
 	events := append([]Event(nil), r.events[len(eventsBefore):]...)
 	r.trimEventsLocked()
-	if err := r.saveLocked(); err != nil {
-		delete(r.records, rec.ID)
-		if supersededID != "" {
-			r.records[supersededID] = supersededBefore
+	if saveErr := r.saveLocked(); saveErr != nil {
+		committed := fileutil.IsCommittedWriteError(saveErr)
+		if !committed {
+			delete(r.records, rec.ID)
+			if supersededID != "" {
+				r.records[supersededID] = supersededBefore
+			}
+			r.events = eventsBefore
+			r.commitSequence = commitSequenceBefore
 		}
-		r.events = eventsBefore
-		r.commitSequence = commitSequenceBefore
+		drainNotifications := committed && r.queueNotificationsLocked(events)
 		releaseStore()
 		r.mu.Unlock()
-		return Record{}, err
+		if drainNotifications {
+			r.drainNotifications()
+		}
+		if committed {
+			return cloneRecord(rec), saveErr
+		}
+		return Record{}, saveErr
 	}
 	drainNotifications := r.queueNotificationsLocked(events)
 	releaseStore()
@@ -564,15 +585,25 @@ func (r *Registry) ClaimOverdue(now time.Time) ([]Record, error) {
 		return nil, nil
 	}
 	r.trimEventsLocked()
-	if err := r.saveLocked(); err != nil {
-		for id, rec := range before {
-			r.records[id] = rec
+	if saveErr := r.saveLocked(); saveErr != nil {
+		committed := fileutil.IsCommittedWriteError(saveErr)
+		if !committed {
+			for id, rec := range before {
+				r.records[id] = rec
+			}
+			r.events = eventsBefore
+			r.commitSequence = commitSequenceBefore
 		}
-		r.events = eventsBefore
-		r.commitSequence = commitSequenceBefore
+		drainNotifications := committed && r.queueNotificationsLocked(emitted)
 		releaseStore()
 		r.mu.Unlock()
-		return nil, err
+		if drainNotifications {
+			r.drainNotifications()
+		}
+		if committed {
+			return claimed, saveErr
+		}
+		return nil, saveErr
 	}
 	drainNotifications := r.queueNotificationsLocked(emitted)
 	releaseStore()
@@ -748,6 +779,201 @@ func (r *Registry) Get(id string) (Record, bool) {
 	return cloneRecord(rec), ok
 }
 
+// GetTraceCapture atomically returns the current interaction record and its
+// registry-owned lifecycle journal.
+func (r *Registry) GetTraceCapture(
+	interactionID string,
+) (Record, []Event, bool) {
+	if r == nil || strings.TrimSpace(interactionID) == "" {
+		return Record{}, nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	record, ok := r.records[interactionID]
+	if !ok {
+		return Record{}, nil, false
+	}
+	return cloneRecord(record), cloneEvents(record.TraceCaptureEvents), true
+}
+
+// LoadTraceCapture reloads the durable registry snapshot before returning an
+// interaction and its registry-owned lifecycle journal.
+func (r *Registry) LoadTraceCapture(
+	ctx context.Context,
+	interactionID string,
+) (Record, []Event, bool, error) {
+	if r == nil || strings.TrimSpace(interactionID) == "" {
+		return Record{}, nil, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return Record{}, nil, false, err
+	}
+	if err := r.lockContext(ctx); err != nil {
+		return Record{}, nil, false, err
+	}
+	defer r.mu.Unlock()
+	if err := r.availableLocked(); err != nil {
+		return Record{}, nil, false, err
+	}
+	releaseStore, err := r.lockAndReloadContextLocked(ctx)
+	if err != nil {
+		return Record{}, nil, false, err
+	}
+	defer releaseStore()
+	record, ok := r.records[interactionID]
+	if !ok {
+		return Record{}, nil, false, nil
+	}
+	return cloneRecord(record), cloneEvents(record.TraceCaptureEvents), true, nil
+}
+
+// ListPendingTraceCaptures reloads the durable registry snapshot and returns
+// terminal interactions whose canonical traces still require confirmation.
+func (r *Registry) ListPendingTraceCaptures(
+	ctx context.Context,
+	limit int,
+) ([]Record, error) {
+	if r == nil || limit <= 0 {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := r.lockContext(ctx); err != nil {
+		return nil, err
+	}
+	defer r.mu.Unlock()
+	if err := r.availableLocked(); err != nil {
+		return nil, err
+	}
+	releaseStore, err := r.lockAndReloadContextLocked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseStore()
+	records := make([]Record, 0, min(limit, len(r.records)))
+	for _, record := range r.records {
+		if record.TraceCapturePending && isTerminal(record.Status) {
+			records = append(records, cloneRecord(record))
+		}
+	}
+	sortRecords(records)
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	return records, nil
+}
+
+// ConfirmTraceCapturePersisted clears trace protection only when the
+// acknowledged lifecycle sequence is still current.
+func (r *Registry) ConfirmTraceCapturePersisted(
+	ctx context.Context,
+	interactionID string,
+	expectedLastEventSeq int64,
+) (Record, bool, error) {
+	if r == nil || strings.TrimSpace(interactionID) == "" {
+		return Record{}, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return Record{}, false, err
+	}
+	if err := r.lockContext(ctx); err != nil {
+		return Record{}, false, err
+	}
+	defer r.mu.Unlock()
+	if err := r.availableLocked(); err != nil {
+		return Record{}, false, err
+	}
+	releaseStore, err := r.lockAndReloadContextLocked(ctx)
+	if err != nil {
+		return Record{}, false, err
+	}
+	defer releaseStore()
+	record, ok := r.records[interactionID]
+	if !ok {
+		return Record{}, false, fmt.Errorf("%w: %s", ErrNotFound, interactionID)
+	}
+	if record.LastEventSeq != expectedLastEventSeq {
+		return cloneRecord(record), false, nil
+	}
+	if !record.TraceCapturePending {
+		if r.unsyncedWrite {
+			if err := r.saveLocked(); err != nil {
+				return cloneRecord(record), false, err
+			}
+		}
+		return cloneRecord(record), true, nil
+	}
+	before := r.snapshotLocked()
+	record.TraceCapturePending = false
+	record.TraceCaptureEvents = nil
+	record.TraceCaptureDropped = 0
+	r.records[interactionID] = record
+	if err := r.saveLocked(); err != nil {
+		r.restoreSnapshotLocked(before)
+		return cloneRecord(r.records[interactionID]), false, err
+	}
+	record = r.records[interactionID]
+	if record.TraceCapturePending {
+		return cloneRecord(record), false, nil
+	}
+	return cloneRecord(record), true, nil
+}
+
+// SetTraceCaptureProtection controls registry-owned lifecycle journaling.
+// Disabling stops future active journaling but preserves retained journals.
+// A later mutation clears a nonpending journal; pending terminal journals
+// remain until their canonical traces are acknowledged.
+func (r *Registry) SetTraceCaptureProtection(
+	enabled bool,
+	maxEvents int,
+) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.availableLocked(); err != nil {
+		return err
+	}
+	releaseStore, err := r.lockAndReloadLocked()
+	if err != nil {
+		return err
+	}
+	defer releaseStore()
+	before := r.snapshotLocked()
+	previousProtection := r.traceCaptureProtection
+	previousMaxEvents := r.traceCaptureMaxEvents
+	if enabled && maxEvents <= 0 {
+		maxEvents = DefaultMaxEvents
+	}
+	r.traceCaptureProtection = enabled
+	r.traceCaptureProtectionDesired = enabled
+	if maxEvents > 0 {
+		r.traceCaptureMaxEvents = maxEvents
+	}
+	changed := false
+	if enabled {
+		changed = r.reconcileTraceCaptureLocked(true)
+	}
+	if !changed && previousProtection == enabled &&
+		previousMaxEvents == r.traceCaptureMaxEvents &&
+		!r.traceCaptureProtectionPending &&
+		!r.unsyncedWrite {
+		return nil
+	}
+	if err := r.saveLocked(); err != nil {
+		if !fileutil.IsCommittedWriteError(err) {
+			r.restoreSnapshotLocked(before)
+		}
+		r.traceCaptureProtectionDesired = enabled
+		r.traceCaptureProtectionPending = true
+		return err
+	}
+	r.traceCaptureProtectionPending = false
+	return nil
+}
+
 func (r *Registry) List() []Record {
 	if r == nil {
 		return nil
@@ -837,11 +1063,13 @@ func (r *Registry) Prune(now time.Time) error {
 		r.mu.Unlock()
 		return nil
 	}
-	if err := r.saveLocked(); err != nil {
-		r.restoreSnapshotLocked(before)
+	if saveErr := r.saveLocked(); saveErr != nil {
+		if !fileutil.IsCommittedWriteError(saveErr) {
+			r.restoreSnapshotLocked(before)
+		}
 		releaseStore()
 		r.mu.Unlock()
-		return err
+		return saveErr
 	}
 	releaseStore()
 	r.mu.Unlock()
@@ -1033,13 +1261,24 @@ func (r *Registry) update(
 	r.records[id] = rec
 	event := r.events[len(r.events)-1]
 	r.trimEventsLocked()
-	if err := r.saveLocked(); err != nil {
-		r.records[id] = before
-		r.events = eventsBefore
-		r.commitSequence = commitSequenceBefore
+	if saveErr := r.saveLocked(); saveErr != nil {
+		committed := fileutil.IsCommittedWriteError(saveErr)
+		if !committed {
+			r.records[id] = before
+			r.events = eventsBefore
+			r.commitSequence = commitSequenceBefore
+		}
+		drainNotifications := committed &&
+			r.queueNotificationsLocked([]Event{event})
 		releaseStore()
 		r.mu.Unlock()
-		return Record{}, err
+		if drainNotifications {
+			r.drainNotifications()
+		}
+		if committed {
+			return cloneRecord(rec), saveErr
+		}
+		return Record{}, saveErr
 	}
 	drainNotifications := r.queueNotificationsLocked([]Event{event})
 	releaseStore()
@@ -1108,14 +1347,37 @@ func (r *Registry) availableLocked() error {
 	return nil
 }
 
+func (r *Registry) lockContext(ctx context.Context) error {
+	for {
+		if r.mu.TryLock() {
+			return nil
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (r *Registry) lockAndReloadLocked() (func(), error) {
+	return r.lockAndReloadContextLocked(context.Background())
+}
+
+func (r *Registry) lockAndReloadContextLocked(
+	ctx context.Context,
+) (func(), error) {
 	if r.storePath == "" {
 		return func() {}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(r.storePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create interaction store directory: %w", err)
 	}
-	release, err := acquireStoreFileLock(r.storePath + ".lock")
+	release, err := acquireStoreFileLockContext(ctx, r.storePath+".lock")
 	if err != nil {
 		return nil, err
 	}
@@ -1127,6 +1389,9 @@ func (r *Registry) lockAndReloadLocked() (func(), error) {
 		r.restoreSnapshotLocked(before)
 		release()
 		return nil, fmt.Errorf("%w: reload under lock: %v", ErrStoreUnavailable, err)
+	}
+	if r.traceCaptureProtectionPending {
+		r.traceCaptureProtection = r.traceCaptureProtectionDesired
 	}
 	return release, nil
 }
@@ -1145,6 +1410,13 @@ func (r *Registry) load() error {
 	}
 	if snapshot.SchemaVersion != SnapshotSchemaVersion {
 		return fmt.Errorf("unsupported interaction snapshot schema %q", snapshot.SchemaVersion)
+	}
+	r.traceCaptureProtection = snapshot.TraceCaptureEnabled
+	if !r.traceCaptureProtectionPending {
+		r.traceCaptureProtectionDesired = snapshot.TraceCaptureEnabled
+	}
+	if snapshot.TraceCaptureMaxEvents > 0 {
+		r.traceCaptureMaxEvents = snapshot.TraceCaptureMaxEvents
 	}
 	activeSessions := make(map[string]string)
 	activeShortIDs := make(map[string]string)
@@ -1185,7 +1457,8 @@ func (r *Registry) load() error {
 		}
 		rec, exists := r.records[event.InteractionID]
 		if !exists || event.Sequence <= 0 || event.Sequence > rec.LastEventSeq ||
-			event.Revision <= 0 || event.Revision > rec.Revision {
+			event.Revision <= 0 || event.Revision > rec.Revision ||
+			event.Revision != event.Sequence {
 			return fmt.Errorf("invalid interaction event sequence %q", event.EventID)
 		}
 		if eventSeen[event.InteractionID] &&
@@ -1236,6 +1509,7 @@ func scopedAnswerMessageIdentity(route Route, messageID string) answerMessageIde
 func validateStoredRecord(rec Record) error {
 	if strings.TrimSpace(rec.ID) == "" || !regexpID.MatchString(rec.ID) ||
 		rec.ShortID != shortID(rec.ID) || rec.Revision <= 0 || rec.LastEventSeq <= 0 ||
+		rec.Revision != rec.LastEventSeq ||
 		rec.CreatedAt <= 0 || rec.UpdatedAt < rec.CreatedAt || rec.ExpiresAt <= rec.CreatedAt {
 		return fmt.Errorf("invalid interaction record %q", rec.ID)
 	}
@@ -1306,6 +1580,9 @@ func validateStoredRecord(rec Record) error {
 		rec.Status == StatusWaiting || rec.Status == StatusClaimed) {
 		return fmt.Errorf("invalid consumed approval %q", rec.ID)
 	}
+	if err := validateTraceCaptureJournal(rec); err != nil {
+		return fmt.Errorf("interaction %q trace capture journal: %w", rec.ID, err)
+	}
 	return nil
 }
 
@@ -1347,7 +1624,15 @@ func validStoredArgumentHashForKind(kind Kind, value string) bool {
 }
 
 func (r *Registry) saveLocked() error {
+	if r.traceCaptureProtectionPending {
+		r.traceCaptureProtection = r.traceCaptureProtectionDesired
+		if r.traceCaptureProtectionDesired {
+			r.reconcileTraceCaptureLocked(true)
+		}
+	}
 	if r.storePath == "" {
+		r.unsyncedWrite = false
+		r.traceCaptureProtectionPending = false
 		return nil
 	}
 	data, err := json.MarshalIndent(r.snapshotLocked(), "", "  ")
@@ -1362,7 +1647,19 @@ func (r *Registry) saveLocked() error {
 			r.options.MaxSnapshotBytes,
 		)
 	}
-	return fileutil.WriteFileAtomic(r.storePath, data, 0o600)
+	writeAtomic := r.writeAtomic
+	if writeAtomic == nil {
+		writeAtomic = fileutil.WriteFileAtomic
+	}
+	if err := writeAtomic(r.storePath, data, 0o600); err != nil {
+		if fileutil.IsCommittedWriteError(err) {
+			r.unsyncedWrite = true
+		}
+		return err
+	}
+	r.unsyncedWrite = false
+	r.traceCaptureProtectionPending = false
+	return nil
 }
 
 func (r *Registry) snapshotLocked() Snapshot {
@@ -1372,10 +1669,12 @@ func (r *Registry) snapshotLocked() Snapshot {
 	}
 	sortRecords(records)
 	return Snapshot{
-		SchemaVersion:  SnapshotSchemaVersion,
-		CommitSequence: r.commitSequence,
-		Records:        records,
-		Events:         cloneEvents(r.events),
+		SchemaVersion:         SnapshotSchemaVersion,
+		CommitSequence:        r.commitSequence,
+		TraceCaptureEnabled:   r.traceCaptureProtection,
+		TraceCaptureMaxEvents: r.traceCaptureMaxEvents,
+		Records:               records,
+		Events:                cloneEvents(r.events),
 	}
 }
 
@@ -1386,6 +1685,13 @@ func (r *Registry) restoreSnapshotLocked(snapshot Snapshot) {
 	}
 	r.events = cloneEvents(snapshot.Events)
 	r.commitSequence = snapshot.CommitSequence
+	r.traceCaptureProtection = snapshot.TraceCaptureEnabled
+	if !r.traceCaptureProtectionPending {
+		r.traceCaptureProtectionDesired = snapshot.TraceCaptureEnabled
+	}
+	if snapshot.TraceCaptureMaxEvents > 0 {
+		r.traceCaptureMaxEvents = snapshot.TraceCaptureMaxEvents
+	}
 }
 
 func (r *Registry) snapshotSizeLocked() int {
@@ -1396,7 +1702,8 @@ func (r *Registry) snapshotSizeLocked() int {
 func (r *Registry) pruneLocked(now int64) bool {
 	changed := false
 	for id, rec := range r.records {
-		if isTerminal(rec.Status) && rec.CleanupAfter > 0 && now >= rec.CleanupAfter {
+		if r.canPruneTraceRecordLocked(rec) &&
+			rec.CleanupAfter > 0 && now >= rec.CleanupAfter {
 			delete(r.records, id)
 			changed = true
 		}
@@ -1404,7 +1711,7 @@ func (r *Registry) pruneLocked(now int64) bool {
 	if len(r.records) > r.options.MaxRecords {
 		terminal := make([]Record, 0)
 		for _, rec := range r.records {
-			if isTerminal(rec.Status) {
+			if r.canPruneTraceRecordLocked(rec) {
 				terminal = append(terminal, rec)
 			}
 		}
@@ -1422,6 +1729,98 @@ func (r *Registry) pruneLocked(now int64) bool {
 		changed = true
 	}
 	return changed
+}
+
+func (r *Registry) canPruneTraceRecordLocked(rec Record) bool {
+	return !r.traceCaptureProtectionPending &&
+		!rec.TraceCapturePending &&
+		isTerminal(rec.Status)
+}
+
+func (r *Registry) reconcileTraceCaptureLocked(enabled bool) bool {
+	changed := false
+	for id, record := range r.records {
+		events, dropped := r.traceCaptureJournalLocked(record)
+		pending := record.TraceCapturePending
+		if enabled && isTerminal(record.Status) {
+			pending = true
+		}
+		if !enabled && !(pending && isTerminal(record.Status)) {
+			pending = false
+			events = nil
+			dropped = 0
+		}
+		if record.TraceCapturePending == pending &&
+			record.TraceCaptureDropped == dropped &&
+			interactionEventsEqual(record.TraceCaptureEvents, events) {
+			continue
+		}
+		record.TraceCapturePending = pending
+		record.TraceCaptureEvents = events
+		record.TraceCaptureDropped = dropped
+		r.records[id] = record
+		changed = true
+	}
+	return changed
+}
+
+func (r *Registry) traceCaptureJournalLocked(record Record) ([]Event, int) {
+	events := make([]Event, 0, len(record.TraceCaptureEvents))
+	seen := make(map[string]struct{}, len(record.TraceCaptureEvents))
+	for _, event := range record.TraceCaptureEvents {
+		if event.InteractionID != record.ID ||
+			event.Sequence > record.LastEventSeq ||
+			!interactionEventFingerprintValid(event) {
+			continue
+		}
+		events = append(events, cloneEvent(event))
+		seen[event.EventID] = struct{}{}
+	}
+	for _, event := range r.events {
+		if event.InteractionID != record.ID ||
+			event.Sequence > record.LastEventSeq ||
+			!interactionEventFingerprintValid(event) {
+			continue
+		}
+		if _, exists := seen[event.EventID]; exists {
+			continue
+		}
+		events = append(events, cloneEvent(event))
+		seen[event.EventID] = struct{}{}
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Sequence != events[j].Sequence {
+			return events[i].Sequence < events[j].Sequence
+		}
+		return events[i].EventID < events[j].EventID
+	})
+	if len(events) == 0 ||
+		events[len(events)-1].Sequence != record.LastEventSeq {
+		return nil, 0
+	}
+	start := len(events) - 1
+	for start > 0 &&
+		events[start-1].Sequence+1 == events[start].Sequence {
+		start--
+	}
+	events = append([]Event(nil), events[start:]...)
+	if limit := r.traceCaptureMaxEvents; limit > 0 && len(events) > limit {
+		events = append([]Event(nil), events[len(events)-limit:]...)
+	}
+	return events, max(0, int(events[0].Sequence-1))
+}
+
+func interactionEventsEqual(left, right []Event) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].EventID != right[i].EventID ||
+			left[i].Fingerprint != right[i].Fingerprint {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Registry) trimEventsLocked() bool {
@@ -1456,7 +1855,7 @@ func (r *Registry) appendEventFromLocked(
 	rec.LastEventSeq++
 	sequence := rec.LastEventSeq
 	r.commitSequence++
-	r.events = append(r.events, Event{
+	event := Event{
 		SchemaVersion:  EventSchemaVersion,
 		EventID:        fmt.Sprintf("%s:%06d:%s", rec.ID, sequence, eventType),
 		CommitSequence: r.commitSequence,
@@ -1470,7 +1869,18 @@ func (r *Registry) appendEventFromLocked(
 		EmittedAt:      rec.UpdatedAt,
 		Code:           strings.TrimSpace(code),
 		Success:        success,
-	})
+	}
+	event.Fingerprint = interactionEventFingerprint(event)
+	r.events = append(r.events, event)
+	if r.traceCaptureProtection || rec.TraceCapturePending {
+		rec.TraceCaptureEvents, rec.TraceCaptureDropped = r.traceCaptureJournalLocked(*rec)
+		if r.traceCaptureProtection && isTerminal(rec.Status) {
+			rec.TraceCapturePending = true
+		}
+		return
+	}
+	rec.TraceCaptureEvents = nil
+	rec.TraceCaptureDropped = 0
 }
 
 func (r *Registry) queueNotificationsLocked(events []Event) bool {
@@ -1599,12 +2009,111 @@ func routesEqual(left, right Route) bool {
 func cloneRecord(rec Record) Record {
 	rec.Origin.ExecutionContext = cloneExecutionContext(rec.Origin.ExecutionContext)
 	rec.Questions = cloneQuestions(rec.Questions)
+	rec.TraceCaptureEvents = cloneEvents(rec.TraceCaptureEvents)
 	if rec.Answer != nil {
 		answer := *rec.Answer
 		answer.Values = cloneStringMap(rec.Answer.Values)
 		rec.Answer = &answer
 	}
 	return rec
+}
+
+func validateTraceCaptureJournal(record Record) error {
+	if record.TraceCaptureDropped < 0 {
+		return errors.New("negative dropped event count")
+	}
+	if record.TraceCapturePending && !isTerminal(record.Status) {
+		return errors.New("nonterminal record has pending trace capture")
+	}
+	if len(record.TraceCaptureEvents) == 0 {
+		if record.TraceCaptureDropped != 0 {
+			return errors.New("dropped event count without retained events")
+		}
+		return nil
+	}
+	var previousSequence int64
+	for index, event := range record.TraceCaptureEvents {
+		if event.InteractionID != record.ID {
+			return fmt.Errorf("event %d belongs to another interaction", index)
+		}
+		if event.SchemaVersion != EventSchemaVersion {
+			return fmt.Errorf(
+				"event %q has schema %q, want %q",
+				event.EventID,
+				event.SchemaVersion,
+				EventSchemaVersion,
+			)
+		}
+		if event.Type == "" || event.Sequence <= previousSequence ||
+			event.Sequence > record.LastEventSeq ||
+			event.Revision != event.Sequence {
+			return fmt.Errorf("event %q has invalid interaction sequence", event.EventID)
+		}
+		if index > 0 && event.Sequence != previousSequence+1 {
+			return fmt.Errorf("event %q is not contiguous", event.EventID)
+		}
+		expectedID := fmt.Sprintf(
+			"%s:%06d:%s",
+			event.InteractionID,
+			event.Sequence,
+			event.Type,
+		)
+		if event.EventID != expectedID {
+			return fmt.Errorf("event %q has invalid identity", event.EventID)
+		}
+		if !interactionEventFingerprintValid(event) {
+			return fmt.Errorf("event %q has invalid fingerprint", event.EventID)
+		}
+		previousSequence = event.Sequence
+	}
+	firstSequence := record.TraceCaptureEvents[0].Sequence
+	if record.TraceCaptureDropped != int(firstSequence-1) {
+		return fmt.Errorf(
+			"dropped event count %d does not match first retained sequence %d",
+			record.TraceCaptureDropped,
+			firstSequence,
+		)
+	}
+	if previousSequence != record.LastEventSeq {
+		return fmt.Errorf(
+			"journal ends at sequence %d, want %d",
+			previousSequence,
+			record.LastEventSeq,
+		)
+	}
+	return nil
+}
+
+func interactionEventFingerprint(event Event) string {
+	type immutableEvent struct {
+		SchemaVersion  string    `json:"schema_version"`
+		EventID        string    `json:"event_id"`
+		CommitSequence uint64    `json:"commit_sequence"`
+		InteractionID  string    `json:"interaction_id"`
+		Type           EventType `json:"type"`
+		From           Status    `json:"from"`
+		To             Status    `json:"to"`
+		Outcome        Outcome   `json:"outcome"`
+		Revision       int64     `json:"revision"`
+		Sequence       int64     `json:"sequence"`
+		EmittedAt      int64     `json:"emitted_at"`
+		Code           string    `json:"code"`
+		Success        *bool     `json:"success"`
+	}
+	payload, _ := json.Marshal(immutableEvent{
+		SchemaVersion: event.SchemaVersion, EventID: event.EventID,
+		CommitSequence: event.CommitSequence, InteractionID: event.InteractionID,
+		Type: event.Type, From: event.From, To: event.To, Outcome: event.Outcome,
+		Revision: event.Revision, Sequence: event.Sequence,
+		EmittedAt: event.EmittedAt, Code: event.Code, Success: event.Success,
+	})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func interactionEventFingerprintValid(event Event) bool {
+	return event.Fingerprint != "" &&
+		event.Fingerprint == interactionEventFingerprint(event)
 }
 
 func cloneEvent(event Event) Event {

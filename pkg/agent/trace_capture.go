@@ -24,10 +24,11 @@ type traceCaptureManager struct {
 	closed  bool
 	startMu sync.Mutex
 
-	settings    traceCaptureSettings
-	turns       *turnTraceProjector
-	tasks       *taskTraceProjector
-	coordinator *evalcapture.Coordinator
+	settings     traceCaptureSettings
+	turns        *turnTraceProjector
+	tasks        *taskTraceProjector
+	interactions *interactionTraceProjector
+	coordinator  *evalcapture.Coordinator
 }
 
 func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptureManager {
@@ -35,6 +36,7 @@ func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptu
 	manager := &traceCaptureManager{settings: settings}
 	manager.turns = newTurnTraceProjector(settings, eventBus, manager.enqueuePersist)
 	manager.tasks = newTaskTraceProjector(settings, manager.coordinator)
+	manager.interactions = newInteractionTraceProjector(settings, manager.coordinator)
 	if settings.enabled {
 		manager.start()
 	}
@@ -62,6 +64,7 @@ func (m *traceCaptureManager) start() {
 			},
 		})
 		m.tasks.setCoordinator(m.coordinator)
+		m.interactions.setCoordinator(m.coordinator)
 	}
 	turns := m.turns
 	m.mu.Unlock()
@@ -80,7 +83,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 		return
 	}
 	m.settings = updated
-	turns, tasks := m.turns, m.tasks
+	turns, tasks, interactions := m.turns, m.tasks, m.interactions
 	m.mu.Unlock()
 
 	if updated.enabled {
@@ -88,6 +91,7 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 	}
 	turns.updateSettings(updated)
 	tasks.updateSettings(updated)
+	interactions.updateSettings(updated)
 }
 
 func (m *traceCaptureManager) enabled() bool {
@@ -121,11 +125,12 @@ func (m *traceCaptureManager) closeWithTimeouts(
 		return
 	}
 	m.closed = true
-	turns, tasks, coordinator := m.turns, m.tasks, m.coordinator
+	turns, tasks, interactions, coordinator := m.turns, m.tasks, m.interactions, m.coordinator
 	m.mu.Unlock()
 
 	turns.close()
 	tasks.stop()
+	interactions.stop()
 	admissionCtx, admissionCancel := context.WithTimeout(
 		context.Background(),
 		admissionTimeout,
@@ -141,6 +146,7 @@ func (m *traceCaptureManager) closeWithTimeouts(
 	}
 	admissionCancel()
 	tasks.finish()
+	interactions.finish()
 }
 
 func (m *traceCaptureManager) enqueuePersist(
