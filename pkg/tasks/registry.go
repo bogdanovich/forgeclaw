@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,6 +29,8 @@ const (
 	RuntimeTool     Runtime = "tool"
 	RuntimeCron     Runtime = "cron"
 )
+
+var ErrTraceCapturePending = errors.New("task trace capture is pending")
 
 type Status string
 
@@ -356,6 +359,16 @@ func (r *Registry) Upsert(rec Record) error {
 	if err := r.writableErrorLocked(); err != nil {
 		r.mu.Unlock()
 		return err
+	}
+	if existing, ok := r.records[rec.TaskID]; ok &&
+		existing.TraceCapturePending {
+		r.mu.Unlock()
+		return fmt.Errorf(
+			"task %q generation %q: %w",
+			rec.TaskID,
+			existing.GenerationID,
+			ErrTraceCapturePending,
+		)
 	}
 	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)

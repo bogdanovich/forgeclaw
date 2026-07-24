@@ -794,6 +794,16 @@ func TestRegistryTraceProtectionPrecedesTerminalMutationPruning(t *testing.T) {
 	if !candidate.TraceCapturePending {
 		t.Fatal("terminal candidate lacks atomic trace protection")
 	}
+	if err := registry.Upsert(Record{
+		TaskID: "candidate", Runtime: RuntimeSubagent,
+		Status: StatusRunning, DeliveryStatus: DeliveryPending,
+	}); !errors.Is(err, ErrTraceCapturePending) {
+		t.Fatalf("pending generation reuse error = %v", err)
+	}
+	if current, exists := registry.Get("candidate"); !exists ||
+		current.GenerationID != candidate.GenerationID {
+		t.Fatal("rejected reuse replaced the pending generation")
+	}
 	if got := registry.Stats().TaskCount; got != 2 {
 		t.Fatalf("protected task count = %d, want 2", got)
 	}

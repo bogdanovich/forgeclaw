@@ -1071,6 +1071,90 @@ func TestTaskTraceProjectorRecoversDeferredCapacityOverflowFromRegistry(t *testi
 	}
 }
 
+func TestTaskTraceProjectorPreservesPendingGenerationAcrossReuseAndRestart(t *testing.T) {
+	workspace := t.TempDir()
+	store := taskregistry.WorkspaceStorePath(workspace)
+	registry := taskregistry.NewRegistry(store)
+	rejecting := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(traceCaptureSettings, *activeTraceCapture) error {
+			return &evalcapture.AdmissionError{
+				Reason: evalcapture.ReasonCapacity,
+				Class:  evalcapture.ClassCritical,
+			}
+		},
+	)
+	rejecting.awaitPersistence = true
+	rejecting.attach(workspace, registry)
+	first := finishTaskForTrace(t, registry, "reused", "session-1", 0)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "reused", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); !errors.Is(err, taskregistry.ErrTraceCapturePending) {
+		t.Fatalf("pending generation reuse error = %v", err)
+	}
+	rejecting.close()
+
+	reloaded := taskregistry.NewRegistry(store)
+	if current := registryRecord(t, reloaded, first.TaskID); current.GenerationID != first.GenerationID ||
+		!current.TraceCapturePending {
+		t.Fatalf("reloaded pending generation = %#v", current)
+	}
+	var submitted []evaltrace.Trace
+	restarted := newTaskTraceProjector(
+		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
+		func(_ traceCaptureSettings, active *activeTraceCapture) error {
+			trace, err := active.builder.Finalize()
+			if err != nil {
+				return err
+			}
+			submitted = append(submitted, trace)
+			return nil
+		},
+	)
+	restarted.awaitPersistence = true
+	t.Cleanup(restarted.close)
+	restarted.attach(workspace, reloaded)
+	if len(submitted) != 1 {
+		t.Fatalf("restart submissions = %d, want 1", len(submitted))
+	}
+	firstKey := newTaskTraceKey(workspace, first.TaskID, first.GenerationID)
+	restarted.observeWriterEvent(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: submitted[0].TraceID,
+		SubmissionID: taskTraceReceipt(t, restarted, firstKey),
+		Class:        evalcapture.ClassCritical,
+	})
+
+	if err := reloaded.Upsert(taskregistry.Record{
+		TaskID: "reused", RequesterSessionKey: "session-2",
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := registryRecord(t, reloaded, "reused")
+	if second.GenerationID == first.GenerationID {
+		t.Fatal("task ID reuse did not create a new generation")
+	}
+	if err := reloaded.Update("reused", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(submitted) != 2 {
+		t.Fatalf("recovered generation traces = %d, want 2", len(submitted))
+	}
+	if submitted[0].TraceID == submitted[1].TraceID {
+		t.Fatalf("reused generations share trace ID %q", submitted[0].TraceID)
+	}
+	secondKey := newTaskTraceKey(workspace, second.TaskID, second.GenerationID)
+	restarted.observeWriterEvent(evalcapture.Event{
+		Kind: evalcapture.EventPersisted, TraceID: submitted[1].TraceID,
+		SubmissionID: taskTraceReceipt(t, restarted, secondKey),
+		Class:        evalcapture.ClassCritical,
+	})
+}
+
 func TestTaskTraceProjectorCloseWaitsForPendingAdmission(t *testing.T) {
 	workspace := t.TempDir()
 	release := make(chan struct{})
