@@ -111,6 +111,57 @@ func TestLaunchdInstallFallsBackToHeadlessUserDomain(t *testing.T) {
 	}
 }
 
+func TestLaunchdInstallCreatesMissingUserLaunchAgentsDirectory(t *testing.T) {
+	t.Parallel()
+	parent := trustedLaunchdTempDir(t)
+	dir := filepath.Join(parent, "LaunchAgents")
+	path := filepath.Join(dir, defaultLaunchdLabel+".plist")
+	loaded := false
+	lifecycle := &launchdLifecycle{
+		plistDir:          dir,
+		domains:           []string{"user/501"},
+		readinessInterval: time.Nanosecond,
+		readinessAttempts: 1,
+		readinessStable:   1,
+		run: func(_ context.Context, args ...string) (launchdRunResult, error) {
+			if args[0] == "bootstrap" {
+				loaded = true
+				return launchdRunResult{}, nil
+			}
+			if loaded {
+				return launchdRunResult{
+					Output: launchdPrintOutput(defaultLaunchdLabel, path, "running"),
+				}, nil
+			}
+			return launchdRunResult{Output: launchdMissingOutput, ExitCode: 113}, nil
+		},
+	}
+
+	if _, err := lifecycle.Install(t.Context(), launchdInstallRequest()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("created LaunchAgents mode = %v", info.Mode())
+	}
+}
+
+func TestOpenLaunchdPlistDirectoryDoesNotCreateSystemDirectory(t *testing.T) {
+	t.Parallel()
+	parent := trustedLaunchdTempDir(t)
+	path := filepath.Join(parent, "LaunchDaemons")
+	_, err := openLaunchdPlistDirectory(path, true)
+	if err == nil || !strings.Contains(err.Error(), "open launchd plist directory") {
+		t.Fatalf("open system directory error = %v", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("system directory was created: %v", statErr)
+	}
+}
+
 func TestLaunchdInstallIsCreateOnly(t *testing.T) {
 	t.Parallel()
 	dir := trustedLaunchdTempDir(t)

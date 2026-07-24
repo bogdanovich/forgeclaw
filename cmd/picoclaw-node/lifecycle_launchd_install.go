@@ -278,6 +278,12 @@ func openLaunchdPlistDirectory(path string, system bool) (*launchdPlistDirectory
 		return nil, errors.New("launchd plist directory must be absolute")
 	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) && !system {
+		if err = createLaunchdUserPlistDirectory(path); err != nil {
+			return nil, err
+		}
+		fd, err = unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open launchd plist directory: %w", err)
 	}
@@ -308,6 +314,40 @@ func openLaunchdPlistDirectory(path string, system bool) (*launchdPlistDirectory
 	return &launchdPlistDirectory{
 		file: file, path: path, identity: identity,
 	}, nil
+}
+
+func createLaunchdUserPlistDirectory(path string) error {
+	parentPath := filepath.Dir(path)
+	name := filepath.Base(path)
+	parentFD, err := unix.Open(
+		parentPath,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("open launchd plist parent directory: %w", err)
+	}
+	defer unix.Close(parentFD)
+	var stat unix.Stat_t
+	if err = unix.Fstat(parentFD, &stat); err != nil {
+		return fmt.Errorf("inspect launchd plist parent directory: %w", err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Geteuid()) ||
+		stat.Mode&0o022 != 0 {
+		return fmt.Errorf(
+			"untrusted launchd plist parent directory %s: owner=%d mode=%#o",
+			parentPath,
+			stat.Uid,
+			stat.Mode&0o7777,
+		)
+	}
+	if err = unix.Mkdirat(parentFD, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("create launchd plist directory: %w", err)
+	}
+	if err = unix.Fsync(parentFD); err != nil {
+		return fmt.Errorf("commit launchd plist directory: %w", err)
+	}
+	return nil
 }
 
 func (directory *launchdPlistDirectory) Close() error {
