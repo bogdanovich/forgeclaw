@@ -1308,10 +1308,13 @@ func (s *splitMarkerStreamer) ClearFinalizedStreamMarker() {
 func (s *splitMarkerStreamer) updateLocked(ctx context.Context, content string) error {
 	parts := strings.Split(content, MessageSplitMarker)
 	completedLimit := len(parts) - 1
-	if err := s.finalizeCompletedPartsLocked(ctx, parts, completedLimit, nil); err != nil {
+	active := strings.TrimSpace(parts[len(parts)-1])
+	if active == "" && completedLimit > 0 {
+		completedLimit--
+	}
+	if err := s.finalizeCompletedPartsLocked(ctx, parts, completedLimit, nil, false); err != nil {
 		return err
 	}
-	active := strings.TrimSpace(parts[len(parts)-1])
 	if active == "" {
 		return nil
 	}
@@ -1323,7 +1326,7 @@ func (s *splitMarkerStreamer) updateLocked(ctx context.Context, content string) 
 
 func (s *splitMarkerStreamer) finalizeLocked(ctx context.Context, content string, usage *bus.ContextUsage) error {
 	parts := strings.Split(content, MessageSplitMarker)
-	return s.finalizeCompletedPartsLocked(ctx, parts, len(parts), usage)
+	return s.finalizeCompletedPartsLocked(ctx, parts, len(parts), usage, true)
 }
 
 func (s *splitMarkerStreamer) finalizeCompletedPartsLocked(
@@ -1331,18 +1334,27 @@ func (s *splitMarkerStreamer) finalizeCompletedPartsLocked(
 	parts []string,
 	limit int,
 	usage *bus.ContextUsage,
+	decorateFinal bool,
 ) error {
+	finalPart := -1
+	if decorateFinal {
+		for idx := s.completedParts; idx < limit; idx++ {
+			if strings.TrimSpace(parts[idx]) != "" {
+				finalPart = idx
+			}
+		}
+	}
 	for s.completedParts < limit {
 		content := strings.TrimSpace(parts[s.completedParts])
-		isLast := s.completedParts == limit-1
+		isFinalPart := s.completedParts == finalPart
 		if content != "" {
 			if err := s.ensureCurrentLocked(ctx); err != nil {
 				return err
 			}
-			if isLast {
+			if isFinalPart {
 				content = s.footer.decorate(content)
 			}
-			if isLast && usage != nil {
+			if isFinalPart && usage != nil {
 				if contextStreamer, ok := s.current.(bus.ContextUsageStreamer); ok {
 					if err := contextStreamer.FinalizeWithContext(ctx, content, usage); err != nil {
 						return err
