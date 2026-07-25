@@ -9772,6 +9772,8 @@ func TestParallelMessageProcessing_DifferentSessionsProcessedConcurrently(t *tes
 	maxConcurrent := 0
 	turnCounter := 0
 	var wg sync.WaitGroup
+	var releaseConcurrentCalls sync.Once
+	concurrentCallsStarted := make(chan struct{})
 	wg.Add(3) // Wait for 3 turns to complete
 
 	cfg := &config.Config{
@@ -9782,6 +9784,7 @@ func TestParallelMessageProcessing_DifferentSessionsProcessedConcurrently(t *tes
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 				MaxParallelTurns:  3, // Allow up to 3 concurrent turns
+				ContextManager:    "none",
 			},
 		},
 		Session: config.SessionConfig{
@@ -9805,8 +9808,16 @@ func TestParallelMessageProcessing_DifferentSessionsProcessedConcurrently(t *tes
 			}
 			mu.Unlock()
 
-			// Simulate some processing time
-			time.Sleep(100 * time.Millisecond)
+			if currentActive >= 2 {
+				releaseConcurrentCalls.Do(func() {
+					close(concurrentCallsStarted)
+				})
+			}
+
+			select {
+			case <-concurrentCallsStarted:
+			case <-time.After(5 * time.Second):
+			}
 
 			mu.Lock()
 			delete(activeTurns, turnID)
