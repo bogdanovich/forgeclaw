@@ -1113,6 +1113,10 @@ func reconcileTaskTraceCandidate(
 	if existing.Truncation.Incomplete && !candidate.Truncation.Incomplete {
 		return candidate, true
 	}
+	if maxTaskTraceEventSequence(candidate.Records) >
+		maxTaskTraceEventSequence(existing.Records) {
+		return candidate, true
+	}
 	return existing, false
 }
 

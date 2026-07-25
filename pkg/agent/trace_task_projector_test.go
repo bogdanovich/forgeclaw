@@ -192,6 +192,83 @@ func TestTaskTraceReconciliationPersistsNewerIncompleteRevisionAtRecordLimit(t *
 	}
 }
 
+func TestTaskTraceProjectorPersistsNewerNonPrefixIncompleteRevision(t *testing.T) {
+	workspace := t.TempDir()
+	storePath := taskregistry.WorkspaceStorePath(workspace)
+	registry := taskregistry.NewRegistryWithOptions(
+		storePath,
+		taskregistry.Options{MaxEvents: 1},
+	)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "pruned-revision", Task: "test",
+		Status:         taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("pruned-revision", func(record *taskregistry.Record) {
+		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryFailed
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	eventBus := runtimeevents.NewBus()
+	first := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	first.attachTaskRegistry(workspace, registry)
+	path := waitForTraceFile(t, workspace)
+	firstRecord := registryRecord(t, registry, "pruned-revision")
+	waitForTraceMarkerCleared(
+		t, registry, firstRecord.TaskID, firstRecord.GenerationID,
+	)
+	firstTrace := readCapturedTrace(t, path)
+	first.close()
+	if !firstTrace.Truncation.Incomplete {
+		t.Fatal("first pruned trace is unexpectedly complete")
+	}
+	firstSequence := maxTaskTraceEventSequence(firstTrace.Records)
+
+	if err := registry.SetTraceCaptureProtection(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("pruned-revision", func(record *taskregistry.Record) {
+		record.InteractionID = "interaction-1"
+		record.DeliveryStatus = taskregistry.DeliveryPending
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("pruned-revision", func(record *taskregistry.Record) {
+		record.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := registryRecord(t, registry, "pruned-revision")
+	if !current.TraceCapturePending {
+		t.Fatal("newer terminal revision lacks trace protection")
+	}
+
+	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	restarted.attachTaskRegistry(workspace, registry)
+	waitForTraceMarkerCleared(t, registry, current.TaskID, current.GenerationID)
+	restarted.close()
+	t.Cleanup(func() { _ = eventBus.Close() })
+
+	updated := readCapturedTrace(t, path)
+	if !updated.Truncation.Incomplete {
+		t.Fatal("newer pruned trace lost incomplete evidence")
+	}
+	if got := maxTaskTraceEventSequence(updated.Records); got <= firstSequence {
+		t.Fatalf(
+			"canonical task sequence = %d, want newer than %d",
+			got,
+			firstSequence,
+		)
+	}
+	if updated.Outcome == nil || updated.Outcome.ErrorCode != "" {
+		t.Fatalf("updated outcome = %#v", updated.Outcome)
+	}
+}
+
 func TestTaskTraceProjectorReplacesCorruptStoredTrace(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
