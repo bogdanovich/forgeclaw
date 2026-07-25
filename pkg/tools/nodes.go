@@ -27,15 +27,13 @@ type NodeDiscoveryTool struct {
 }
 
 type nodeListEntry struct {
-	Target          string      `json:"target"`
-	Default         bool        `json:"default,omitempty"`
-	State           nodes.State `json:"state,omitempty"`
-	Available       bool        `json:"available"`
-	DisplayName     string      `json:"display_name,omitempty"`
-	Platform        string      `json:"platform,omitempty"`
-	Architecture    string      `json:"architecture,omitempty"`
-	SoftwareVersion string      `json:"software_version,omitempty"`
-	CommandCount    int         `json:"command_count,omitempty"`
+	Target             string      `json:"target"`
+	Default            bool        `json:"default,omitempty"`
+	State              nodes.State `json:"state,omitempty"`
+	Available          bool        `json:"available"`
+	DisplayName        string      `json:"display_name,omitempty"`
+	RequiresReapproval bool        `json:"requires_reapproval,omitempty"`
+	CommandCount       int         `json:"command_count,omitempty"`
 }
 
 type nodeCommandSummary struct {
@@ -187,13 +185,21 @@ func (tool *NodeDiscoveryTool) resolve(
 	if err != nil {
 		return entry, nil, nil, errors.New("node registration lookup failed")
 	}
+	if registered {
+		snapshot = registration.Snapshot
+	}
 	entry.State = snapshot.State
 	entry.Available = snapshot.State == nodes.StateConnected
 	entry.DisplayName = snapshot.DisplayName
-	entry.Platform = snapshot.Platform
-	entry.Architecture = snapshot.Architecture
-	entry.SoftwareVersion = snapshot.SoftwareVersion
 	if registered {
+		currentCatalogHash := catalogHash(snapshot.Catalog)
+		if registration.ApprovedAt > 0 &&
+			(registration.ApprovedCatalogHash == "" ||
+				currentCatalogHash == "" ||
+				registration.ApprovedCatalogHash != currentCatalogHash) {
+			entry.RequiresReapproval = true
+			return entry, &snapshot, &registration, nil
+		}
 		entry.CommandCount = len(visibleNodeCommands(snapshot.Catalog, &registration))
 		return entry, &snapshot, &registration, nil
 	}
@@ -220,6 +226,11 @@ func visibleNodeCommands(
 	if registration == nil || len(registration.AllowedCommands) == 0 {
 		return []nodeCommandSummary{}
 	}
+	if registration.ApprovedAt <= 0 ||
+		registration.ApprovedCatalogHash == "" ||
+		registration.ApprovedCatalogHash != catalogHash(catalog) {
+		return []nodeCommandSummary{}
+	}
 	allowed := make(map[string]struct{}, len(registration.AllowedCommands))
 	for _, name := range registration.AllowedCommands {
 		allowed[name] = struct{}{}
@@ -238,6 +249,14 @@ func visibleNodeCommands(
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	return commands
+}
+
+func catalogHash(catalog nodes.CapabilityCatalog) string {
+	hash, err := catalog.Hash()
+	if err != nil {
+		return ""
+	}
+	return hash
 }
 
 func cloneTargetPolicy(policy *config.TargetPolicy) *config.TargetPolicy {
