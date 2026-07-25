@@ -129,7 +129,7 @@ func (auth *Authenticator) IssueChallenge() (Challenge, error) {
 	return Challenge{
 		Nonce:       nonce,
 		MinProtocol: ProtocolV1,
-		MaxProtocol: ProtocolV1,
+		MaxProtocol: CurrentProtocol,
 		ExpiresAt:   expiresAt.Unix(),
 	}, nil
 }
@@ -143,15 +143,18 @@ func (auth *Authenticator) Authenticate(proof IdentityProof) (Admission, error) 
 		return Admission{}, err
 	}
 	now := auth.now().Unix()
+	selectedProtocol := min(proof.MaxProtocol, CurrentProtocol)
 	node := Snapshot{
 		ID:              proof.NodeID,
 		State:           StatePendingPairing,
-		ProtocolVersion: ProtocolV1,
+		ProtocolVersion: selectedProtocol,
 		Platform:        proof.Platform,
 		Architecture:    proof.Architecture,
 		SoftwareVersion: proof.ClientVersion,
 		CatalogHash:     proof.CatalogHash,
 		Catalog:         proof.Catalog,
+		Executor:        proof.Executor,
+		PolicyRevision:  proof.PolicyRevision,
 		LastSeenAt:      now,
 	}
 	registration, exists, err := auth.registry.Registration(node.ID)

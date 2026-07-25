@@ -43,6 +43,60 @@ func TestClientAuthenticatesPinnedWSSIdentity(t *testing.T) {
 	}
 }
 
+func TestRuntimeClientNegotiatesLegacyAndExecutionProfileProofs(t *testing.T) {
+	identity := testIdentity(t)
+	policy := testRuntimePolicy([]string{"node.info.v1"})
+	commandRuntime, err := NewRuntime(
+		identity.ID,
+		"test",
+		policy,
+		newMemoryInvocationLedger(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{
+		identity:      identity,
+		clientVersion: "test",
+		catalog:       commandRuntime.Catalog(),
+		runtime:       commandRuntime,
+	}
+
+	legacy, err := client.identityProof(nodes.Challenge{
+		Nonce:       "legacy",
+		MinProtocol: nodes.ProtocolV1,
+		MaxProtocol: nodes.ProtocolV1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.MinProtocol != nodes.ProtocolV1 ||
+		legacy.Executor != "" ||
+		legacy.PolicyRevision != "" {
+		t.Fatalf("legacy proof = %#v", legacy)
+	}
+	if _, verifyErr := legacy.Verify(); verifyErr != nil {
+		t.Fatalf("legacy Verify() error = %v", verifyErr)
+	}
+
+	current, err := client.identityProof(nodes.Challenge{
+		Nonce:       "current",
+		MinProtocol: nodes.ProtocolV1,
+		MaxProtocol: nodes.CurrentProtocol,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.MinProtocol != nodes.ProtocolV2 ||
+		current.Executor != LocalExecutor ||
+		current.PolicyRevision != policy.Revision {
+		t.Fatalf("current proof = %#v", current)
+	}
+	if _, verifyErr := current.Verify(); verifyErr != nil {
+		t.Fatalf("current Verify() error = %v", verifyErr)
+	}
+}
+
 func TestClientReconnectsAfterPendingAdmission(t *testing.T) {
 	_, admission := testGatewayAdmission(t)
 	var requests atomic.Int32
@@ -158,7 +212,13 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 		ActorID:          "actor_test",
 		TimeoutSeconds:   5,
 		OutputLimitBytes: 4096,
-	}, descriptor, LocalExecutor, policy.Revision, time.Now(), time.Minute)
+	},
+		descriptor,
+		registration.Snapshot.Executor,
+		registration.Snapshot.PolicyRevision,
+		time.Now(),
+		time.Minute,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

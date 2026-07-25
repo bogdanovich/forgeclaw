@@ -180,6 +180,16 @@ func (runtime *Runtime) Catalog() nodes.CapabilityCatalog {
 	return cloneCatalog(runtime.catalog)
 }
 
+func (runtime *Runtime) ExecutionProfile() nodes.ExecutionProfile {
+	if runtime == nil {
+		return nodes.ExecutionProfile{}
+	}
+	return nodes.ExecutionProfile{
+		Executor:       LocalExecutor,
+		PolicyRevision: runtime.policy.Revision,
+	}
+}
+
 func (runtime *Runtime) Invoke(
 	ctx context.Context,
 	plan nodes.ExecutionPlan,

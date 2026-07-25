@@ -13,6 +13,18 @@ import (
 	"github.com/sipeed/picoclaw/pkg/nodes"
 )
 
+func TestRuntimeExposesExecutionProfile(t *testing.T) {
+	policy := testRuntimePolicy([]string{"node.info.v1"})
+	runtime, err := NewRuntime(nodes.ID("node_test"), "test", policy, newMemoryInvocationLedger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := runtime.ExecutionProfile()
+	if profile.Executor != LocalExecutor || profile.PolicyRevision != policy.Revision {
+		t.Fatalf("ExecutionProfile() = %#v", profile)
+	}
+}
+
 func TestRuntimeRequiresLocalCommandApproval(t *testing.T) {
 	policy := testRuntimePolicy(nil)
 	runtime, err := NewRuntime(nodes.ID("node_test"), "test", policy, newMemoryInvocationLedger())

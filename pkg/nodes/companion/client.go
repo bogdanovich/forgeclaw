@@ -225,16 +225,7 @@ func (client *Client) connectAndAuthenticate(
 	if err != nil {
 		return nil, nodes.AdmissionResult{}, err
 	}
-	proof, err := nodes.NewIdentityProof(
-		client.identity.PrivateKey,
-		challenge.Nonce,
-		nodes.ProtocolV1,
-		nodes.ProtocolV1,
-		client.clientVersion,
-		runtime.GOOS,
-		runtime.GOARCH,
-		client.catalog,
-	)
+	proof, err := client.identityProof(challenge)
 	if err != nil {
 		return nil, nodes.AdmissionResult{}, fmt.Errorf("create node identity proof: %w", err)
 	}
@@ -299,6 +290,36 @@ func (client *Client) connectAndAuthenticate(
 	}
 	connected = true
 	return connection, result, nil
+}
+
+func (client *Client) identityProof(challenge nodes.Challenge) (nodes.IdentityProof, error) {
+	selectedProtocol := min(challenge.MaxProtocol, nodes.CurrentProtocol)
+	if selectedProtocol < challenge.MinProtocol {
+		return nodes.IdentityProof{}, ErrIncompatibleGateway
+	}
+	if client.runtime == nil || selectedProtocol < nodes.ProtocolV2 {
+		return nodes.NewIdentityProof(
+			client.identity.PrivateKey,
+			challenge.Nonce,
+			selectedProtocol,
+			selectedProtocol,
+			client.clientVersion,
+			runtime.GOOS,
+			runtime.GOARCH,
+			client.catalog,
+		)
+	}
+	return nodes.NewIdentityProofWithExecutionProfile(
+		client.identity.PrivateKey,
+		challenge.Nonce,
+		selectedProtocol,
+		selectedProtocol,
+		client.clientVersion,
+		runtime.GOOS,
+		runtime.GOARCH,
+		client.catalog,
+		client.runtime.ExecutionProfile(),
+	)
 }
 
 func (client *Client) serveConnected(ctx context.Context, connection *websocket.Conn) error {

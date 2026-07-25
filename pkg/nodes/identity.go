@@ -21,18 +21,20 @@ const (
 var ErrInvalidIdentityProof = errors.New("invalid node identity proof")
 
 type IdentityProof struct {
-	Nonce         string            `json:"nonce"`
-	NodeID        ID                `json:"node_id"`
-	PublicKey     string            `json:"public_key"`
-	Signature     string            `json:"signature"`
-	MinProtocol   int               `json:"min_protocol"`
-	MaxProtocol   int               `json:"max_protocol"`
-	ClientVersion string            `json:"client_version"`
-	Platform      string            `json:"platform"`
-	Architecture  string            `json:"architecture"`
-	RequestedRole string            `json:"requested_role"`
-	CatalogHash   string            `json:"catalog_hash"`
-	Catalog       CapabilityCatalog `json:"catalog"`
+	Nonce          string            `json:"nonce"`
+	NodeID         ID                `json:"node_id"`
+	PublicKey      string            `json:"public_key"`
+	Signature      string            `json:"signature"`
+	MinProtocol    int               `json:"min_protocol"`
+	MaxProtocol    int               `json:"max_protocol"`
+	ClientVersion  string            `json:"client_version"`
+	Platform       string            `json:"platform"`
+	Architecture   string            `json:"architecture"`
+	RequestedRole  string            `json:"requested_role"`
+	CatalogHash    string            `json:"catalog_hash"`
+	Catalog        CapabilityCatalog `json:"catalog"`
+	Executor       string            `json:"executor,omitempty"`
+	PolicyRevision string            `json:"policy_revision,omitempty"`
 }
 
 type identityTranscript struct {
@@ -46,6 +48,12 @@ type identityTranscript struct {
 	Architecture  string `json:"architecture"`
 	RequestedRole string `json:"requested_role"`
 	CatalogHash   string `json:"catalog_hash"`
+}
+
+type identityExecutionTranscript struct {
+	identityTranscript
+	Executor       string `json:"executor"`
+	PolicyRevision string `json:"policy_revision"`
 }
 
 func DeriveID(publicKey ed25519.PublicKey) (ID, error) {
@@ -64,8 +72,62 @@ func NewIdentityProof(
 	clientVersion, platform, architecture string,
 	catalog CapabilityCatalog,
 ) (IdentityProof, error) {
+	return newIdentityProof(
+		privateKey,
+		nonce,
+		minProtocol,
+		maxProtocol,
+		clientVersion,
+		platform,
+		architecture,
+		catalog,
+		ExecutionProfile{},
+	)
+}
+
+// NewIdentityProofWithExecutionProfile binds the command runtime authority to
+// the authenticated node session. Legacy discovery-only clients can continue
+// to use NewIdentityProof without advertising an invocable execution profile.
+func NewIdentityProofWithExecutionProfile(
+	privateKey ed25519.PrivateKey,
+	nonce string,
+	minProtocol, maxProtocol int,
+	clientVersion, platform, architecture string,
+	catalog CapabilityCatalog,
+	profile ExecutionProfile,
+) (IdentityProof, error) {
+	return newIdentityProof(
+		privateKey,
+		nonce,
+		minProtocol,
+		maxProtocol,
+		clientVersion,
+		platform,
+		architecture,
+		catalog,
+		profile,
+	)
+}
+
+func newIdentityProof(
+	privateKey ed25519.PrivateKey,
+	nonce string,
+	minProtocol, maxProtocol int,
+	clientVersion, platform, architecture string,
+	catalog CapabilityCatalog,
+	profile ExecutionProfile,
+) (IdentityProof, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return IdentityProof{}, fmt.Errorf("%w: malformed private key", ErrInvalidIdentityProof)
+	}
+	if err := profile.ValidateOptional(); err != nil {
+		return IdentityProof{}, err
+	}
+	if profile.Executor != "" && minProtocol < ProtocolV2 {
+		return IdentityProof{}, fmt.Errorf(
+			"%w: execution profile requires protocol v2",
+			ErrInvalidIdentityProof,
+		)
 	}
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 	nodeID, err := DeriveID(publicKey)
@@ -80,17 +142,19 @@ func NewIdentityProof(
 		catalog.Commands = make([]CommandDescriptor, 0)
 	}
 	proof := IdentityProof{
-		Nonce:         nonce,
-		NodeID:        nodeID,
-		PublicKey:     base64.RawURLEncoding.EncodeToString(publicKey),
-		MinProtocol:   minProtocol,
-		MaxProtocol:   maxProtocol,
-		ClientVersion: clientVersion,
-		Platform:      platform,
-		Architecture:  architecture,
-		RequestedRole: "companion",
-		CatalogHash:   catalogHash,
-		Catalog:       catalog,
+		Nonce:          nonce,
+		NodeID:         nodeID,
+		PublicKey:      base64.RawURLEncoding.EncodeToString(publicKey),
+		MinProtocol:    minProtocol,
+		MaxProtocol:    maxProtocol,
+		ClientVersion:  clientVersion,
+		Platform:       platform,
+		Architecture:   architecture,
+		RequestedRole:  "companion",
+		CatalogHash:    catalogHash,
+		Catalog:        catalog,
+		Executor:       profile.Executor,
+		PolicyRevision: profile.PolicyRevision,
 	}
 	transcript, err := proof.transcript()
 	if err != nil {
@@ -134,7 +198,7 @@ func (proof IdentityProof) validateClaims() error {
 		return fmt.Errorf("%w: %v", ErrInvalidIdentityProof, err)
 	}
 	if proof.MinProtocol <= 0 || proof.MaxProtocol < proof.MinProtocol ||
-		proof.MinProtocol > ProtocolV1 || proof.MaxProtocol < ProtocolV1 {
+		proof.MinProtocol > CurrentProtocol || proof.MaxProtocol < ProtocolV1 {
 		return fmt.Errorf("%w: incompatible protocol range", ErrInvalidIdentityProof)
 	}
 	if len(proof.ClientVersion) == 0 || len(proof.ClientVersion) > MaxClientVersionLength ||
@@ -150,11 +214,20 @@ func (proof IdentityProof) validateClaims() error {
 	if err != nil || catalogHash != proof.CatalogHash {
 		return fmt.Errorf("%w: catalog hash does not match catalog", ErrInvalidIdentityProof)
 	}
+	if err := (ExecutionProfile{
+		Executor:       proof.Executor,
+		PolicyRevision: proof.PolicyRevision,
+	}).ValidateOptional(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidIdentityProof, err)
+	}
+	if proof.Executor != "" && proof.MinProtocol < ProtocolV2 {
+		return fmt.Errorf("%w: execution profile requires protocol v2", ErrInvalidIdentityProof)
+	}
 	return nil
 }
 
 func (proof IdentityProof) transcript() ([]byte, error) {
-	data, err := json.Marshal(identityTranscript{
+	legacy := identityTranscript{
 		Nonce:         proof.Nonce,
 		NodeID:        proof.NodeID,
 		PublicKey:     proof.PublicKey,
@@ -165,9 +238,21 @@ func (proof IdentityProof) transcript() ([]byte, error) {
 		Architecture:  proof.Architecture,
 		RequestedRole: proof.RequestedRole,
 		CatalogHash:   proof.CatalogHash,
+	}
+	if proof.Executor == "" && proof.PolicyRevision == "" {
+		data, err := json.Marshal(legacy)
+		if err != nil {
+			return nil, fmt.Errorf("%w: encode signature transcript: %v", ErrInvalidIdentityProof, err)
+		}
+		return append([]byte("forgeclaw-node-auth-v1\x00"), data...), nil
+	}
+	data, err := json.Marshal(identityExecutionTranscript{
+		identityTranscript: legacy,
+		Executor:           proof.Executor,
+		PolicyRevision:     proof.PolicyRevision,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode signature transcript: %v", ErrInvalidIdentityProof, err)
 	}
-	return append([]byte("forgeclaw-node-auth-v1\x00"), data...), nil
+	return append([]byte("forgeclaw-node-auth-v1-execution\x00"), data...), nil
 }

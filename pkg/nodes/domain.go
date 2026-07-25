@@ -15,6 +15,8 @@ import (
 
 const (
 	ProtocolV1         = 1
+	ProtocolV2         = 2
+	CurrentProtocol    = ProtocolV2
 	MaxIDLength        = 128
 	MaxAliasLength     = 64
 	MaxCommandNameLen  = 128
@@ -186,6 +188,8 @@ type Snapshot struct {
 	SoftwareVersion  string            `json:"software_version,omitempty"`
 	CatalogHash      string            `json:"catalog_hash,omitempty"`
 	Catalog          CapabilityCatalog `json:"catalog,omitempty"`
+	Executor         string            `json:"executor,omitempty"`
+	PolicyRevision   string            `json:"policy_revision,omitempty"`
 	LastSeenAt       int64             `json:"last_seen_at,omitempty"`
 	DisconnectReason string            `json:"disconnect_reason,omitempty"`
 }
@@ -211,6 +215,12 @@ func (snapshot Snapshot) Validate() error {
 		return fmt.Errorf("%w: negative protocol version", ErrInvalidNode)
 	}
 	if err := snapshot.Catalog.Validate(); err != nil {
+		return err
+	}
+	if err := (ExecutionProfile{
+		Executor:       snapshot.Executor,
+		PolicyRevision: snapshot.PolicyRevision,
+	}).ValidateOptional(); err != nil {
 		return err
 	}
 	if snapshot.CatalogHash == "" {

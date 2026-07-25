@@ -53,8 +53,72 @@ func TestAuthenticatorPersistsPendingPairingAndRejectsReplay(t *testing.T) {
 	if !bytes.Equal(pending.PublicKey, privateKey.Public().(ed25519.PublicKey)) {
 		t.Fatal("pending public key does not match signer")
 	}
+	if pending.Node.ProtocolVersion != ProtocolV1 ||
+		pending.Node.Executor != "" ||
+		pending.Node.PolicyRevision != "" {
+		t.Fatalf("legacy pending node = %#v", pending.Node)
+	}
 	if _, err := authenticator.Authenticate(proof); !errors.Is(err, ErrChallengeUnknown) {
 		t.Fatalf("replayed Admit() error = %v", err)
+	}
+}
+
+func TestAuthenticatorPersistsAuthenticatedExecutionProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	registry, err := NewFileRegistry(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator, err := NewAuthenticator(registry, AdmissionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := authenticator.IssueChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := NewIdentityProofWithExecutionProfile(
+		privateKey,
+		challenge.Nonce,
+		ProtocolV2,
+		ProtocolV2,
+		"v0.1.0",
+		"linux",
+		"amd64",
+		CapabilityCatalog{},
+		ExecutionProfile{Executor: "local", PolicyRevision: "policy-1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, authenticateErr := authenticator.Authenticate(proof); authenticateErr != nil {
+		t.Fatal(authenticateErr)
+	}
+	pending, found, err := registry.Pending(proof.NodeID)
+	if err != nil || !found {
+		t.Fatalf("Pending() = found %v, error %v", found, err)
+	}
+	if pending.Node.Executor != "local" || pending.Node.PolicyRevision != "policy-1" {
+		t.Fatalf("pending execution profile = %#v", pending.Node)
+	}
+	if pending.Node.ProtocolVersion != ProtocolV2 {
+		t.Fatalf("pending protocol = %d, want %d", pending.Node.ProtocolVersion, ProtocolV2)
+	}
+
+	reloaded, err := NewFileRegistry(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, found, err = reloaded.Pending(proof.NodeID)
+	if err != nil || !found {
+		t.Fatalf("reloaded Pending() = found %v, error %v", found, err)
+	}
+	if pending.Node.Executor != "local" || pending.Node.PolicyRevision != "policy-1" {
+		t.Fatalf("reloaded execution profile = %#v", pending.Node)
 	}
 }
 
