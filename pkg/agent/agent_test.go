@@ -199,9 +199,27 @@ func newStartedTestChannelManager(
 	name string,
 	ch channels.Channel,
 ) *channels.Manager {
+	return newStartedTestChannelManagerWithConfig(
+		t,
+		&config.Config{},
+		msgBus,
+		store,
+		name,
+		ch,
+	)
+}
+
+func newStartedTestChannelManagerWithConfig(
+	t *testing.T,
+	cfg *config.Config,
+	msgBus *bus.MessageBus,
+	store media.MediaStore,
+	name string,
+	ch channels.Channel,
+) *channels.Manager {
 	t.Helper()
 
-	cm, err := channels.NewManager(&config.Config{}, msgBus, store)
+	cm, err := channels.NewManager(cfg, msgBus, store)
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
@@ -786,6 +804,9 @@ func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		raw := outbound.Context.Raw
+		if raw[metadataKeyOutboundKind] != outboundKindFinal {
+			t.Fatalf("outbound kind = %q, want %q", raw[metadataKeyOutboundKind], outboundKindFinal)
+		}
 		if raw[metadataKeyModelName] != "fallback-model" {
 			t.Fatalf("model metadata = %q, want fallback-model", raw[metadataKeyModelName])
 		}
@@ -802,6 +823,67 @@ func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected final outbound")
+	}
+}
+
+func TestDeliverFinalTurnResult_DirectTelegramDeliveryIncludesResponseFooter(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ModelName = "primary-model"
+
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
+	al.SetChannelManager(
+		newStartedTestChannelManagerWithConfig(
+			t,
+			cfg,
+			msgBus,
+			media.NewFileMediaStore(),
+			"telegram",
+			telegramChannel,
+		),
+	)
+
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	al.deliverFinalTurnResult(
+		context.Background(),
+		runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-1"),
+		defaultAgent,
+		processOptions{
+			SendResponse: true,
+			Dispatch: DispatchRequest{
+				SessionKey: "session-1",
+				InboundContext: &bus.InboundContext{
+					Channel: "telegram",
+					ChatID:  "-100123",
+				},
+			},
+		},
+		turnResult{
+			finalContent:      "final reply",
+			modelName:         "fallback-model",
+			defaultModelName:  "primary-model",
+			usageInputTokens:  123,
+			usageOutputTokens: 45,
+			usageTotalTokens:  168,
+		},
+	)
+
+	messages := telegramChannel.messagesSnapshot()
+	if len(messages) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(messages))
+	}
+	want := "final reply\n\nmodel: fallback-model · tokens: in 123, out 45"
+	if got := messages[0].Content; got != want {
+		t.Fatalf("sent content = %q, want %q", got, want)
+	}
+	if got := bus.OutboundMetadataFromMessage(messages[0]).OutboundKind; got != bus.OutboundKindFinal {
+		t.Fatalf("sent outbound kind = %q, want %q", got, bus.OutboundKindFinal)
 	}
 }
 

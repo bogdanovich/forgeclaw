@@ -265,6 +265,7 @@ func (al *AgentLoop) deliverFinalTurnResult(
 		)
 	}
 	bus.OutboundMetadata{
+		OutboundKind:      bus.OutboundKindFinal,
 		ModelName:         result.modelName,
 		DefaultModelName:  result.defaultModelName,
 		UsageInputTokens:  result.usageInputTokens,
