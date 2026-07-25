@@ -1,4 +1,4 @@
-.PHONY: all build build-node install uninstall clean help test integration-test build-all lint-docs
+.PHONY: all build build-node install uninstall clean help test integration-test build-all fmt fmt-check lint lint-docs fix
 
 # Build variables
 BINARY_NAME=picoclaw
@@ -82,6 +82,12 @@ PTY_PATCH_LOONG64=pty_dir=$$(go env GOMODCACHE)/github.com/creack/pty@v1.1.9; \
 
 # Golangci-lint
 GOLANGCI_LINT?=golangci-lint
+GOLANGCI_LINT_CONCURRENCY?=4
+ifeq ($(shell uname -s),Darwin)
+GOLANGCI_LINT_CGO_ENABLED?=0
+else
+GOLANGCI_LINT_CGO_ENABLED?=1
+endif
 
 # Installation
 INSTALL_PREFIX?=$(HOME)/.local
@@ -397,7 +403,11 @@ integration-test:
 
 ## fmt: Format Go code
 fmt:
-	@$(GOLANGCI_LINT) fmt
+	@$(GOLANGCI_LINT) fmt --config .golangci-format.yaml
+
+## fmt-check: Check Go formatting without changing files
+fmt-check:
+	@$(GOLANGCI_LINT) fmt --config .golangci-format.yaml --diff
 
 ## lint-docs: Check common documentation layout and naming conventions
 lint-docs:
@@ -405,12 +415,14 @@ lint-docs:
 
 ## lint: Run linters
 lint:
-	@$(GOLANGCI_LINT) run --build-tags $(GO_BUILD_TAGS)
+	@CGO_ENABLED=$(GOLANGCI_LINT_CGO_ENABLED) $(GOLANGCI_LINT) run --tests=false \
+		--concurrency $(GOLANGCI_LINT_CONCURRENCY) --build-tags $(GO_BUILD_TAGS)
 	@./scripts/lint-docs.sh
 
 ## fix: Fix linting issues
-fix:
-	@$(GOLANGCI_LINT) run --fix --build-tags $(GO_BUILD_TAGS)
+fix: fmt
+	@CGO_ENABLED=$(GOLANGCI_LINT_CGO_ENABLED) $(GOLANGCI_LINT) run --fix --tests=false \
+		--concurrency $(GOLANGCI_LINT_CONCURRENCY) --build-tags $(GO_BUILD_TAGS)
 
 ## deps: Download dependencies
 deps:

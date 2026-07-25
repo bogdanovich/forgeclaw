@@ -15,7 +15,14 @@ func acquireStoreFileLock(path string) (func(), error) {
 		return nil, fmt.Errorf("open interaction store lock: %w", err)
 	}
 	overlapped := &windows.Overlapped{}
-	if err := windows.LockFileEx(windows.Handle(lock.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, overlapped); err != nil {
+	if err := windows.LockFileEx(
+		windows.Handle(lock.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK,
+		0,
+		1,
+		0,
+		overlapped,
+	); err != nil {
 		_ = lock.Close()
 		return nil, fmt.Errorf("lock interaction store: %w", err)
 	}
