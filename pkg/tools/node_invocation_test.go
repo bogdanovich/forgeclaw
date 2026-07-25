@@ -32,9 +32,10 @@ func (source *fakeNodeInvocationSource) PrepareInvocation(
 	target string,
 	toolCallID string,
 	plan nodes.ExecutionPlan,
+	descriptor nodes.CommandDescriptor,
 ) (nodes.GatewayInvocationRecord, error) {
 	source.prepareCalls++
-	return source.store.Prepare(target, toolCallID, plan)
+	return source.store.Prepare(target, toolCallID, plan, descriptor)
 }
 
 func (source *fakeNodeInvocationSource) LookupInvocationByToolCall(
@@ -173,6 +174,67 @@ func TestNodeInvokeToolReusesApprovalPlanAndDispatches(t *testing.T) {
 	}
 }
 
+func TestNodeInvokeToolNamespacesProviderCallByTurnAndWorkspace(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	args := nodeInvocationTestArgs()
+	firstCtx := nodeInvocationTestContext("actor-1", "reused-call")
+	first, err := tool.ApprovalArguments(firstCtx, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nextTurnCtx := WithToolExecutionIdentity(
+		nodeInvocationTestContext("actor-1", "reused-call"),
+		"/workspace/main",
+		"turn-2",
+	)
+	nextTurn, err := tool.ApprovalArguments(nextTurnCtx, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherWorkspaceCtx := WithToolExecutionIdentity(
+		nodeInvocationTestContext("actor-1", "reused-call"),
+		"/workspace/other",
+		"turn-1",
+	)
+	otherWorkspace, err := tool.ApprovalArguments(otherWorkspaceCtx, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first["invocation_id"] == nextTurn["invocation_id"] ||
+		first["invocation_id"] == otherWorkspace["invocation_id"] ||
+		nextTurn["invocation_id"] == otherWorkspace["invocation_id"] {
+		t.Fatalf(
+			"execution namespaces collided: first=%v next=%v workspace=%v",
+			first["invocation_id"],
+			nextTurn["invocation_id"],
+			otherWorkspace["invocation_id"],
+		)
+	}
+}
+
+func TestNodeInvokeToolApprovalResumeRetainsOriginExecutionIdentity(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	first, err := tool.ApprovalArguments(ctx, nodeInvocationTestArgs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedCtx := WithToolApprovalContinuation(
+		WithToolExecutionIdentity(ctx, "/workspace/main", "turn-1"),
+		true,
+	)
+	resumed, err := tool.ApprovalArguments(resumedCtx, nodeInvocationTestArgs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed["invocation_id"] != first["invocation_id"] || source.prepareCalls != 1 {
+		t.Fatalf("approval resume changed authority: first=%#v resumed=%#v", first, resumed)
+	}
+}
+
 func TestNodeInvokeToolRejectsChangedArgumentsAfterPreparation(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
@@ -274,8 +336,9 @@ func TestNodeInvokeToolDistinguishesPreDispatchRejection(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	source.preDispatchErr = errors.New("durable authority unavailable")
 	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
 	result := tool.Execute(
-		nodeInvocationTestContext("actor-1", "call-1"),
+		ctx,
 		nodeInvocationTestArgs(),
 	)
 	if !result.IsError ||
@@ -283,16 +346,20 @@ func TestNodeInvokeToolDistinguishesPreDispatchRejection(t *testing.T) {
 		strings.Contains(result.ForLLM, "nodes_status") {
 		t.Fatalf("pre-dispatch rejection = %#v", result)
 	}
+	_, executionCallID, err := nodeInvocationIdentity(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	record := mustFakeGatewayInvocation(
 		t,
 		source,
-		nodeInvocationTestContext("actor-1", "call-1"),
+		ctx,
 		stableNodeInvocationID(
 			"inv",
 			stableNodeInvocationID("agent", "main"),
 			stableNodeInvocationID("session", "route-session"),
 			stableNodeInvocationID("actor", "actor-1"),
-			"call-1",
+			executionCallID,
 		),
 	)
 	if record.State != nodes.GatewayInvocationPrepared {
@@ -424,6 +491,7 @@ func newFakeNodeInvocationSource(t *testing.T) *fakeNodeInvocationSource {
 func nodeInvocationTestContext(actorID string, toolCallID string) context.Context {
 	ctx := WithToolSessionContext(context.Background(), "main", "history-session", nil)
 	ctx = WithToolRouteSessionKey(ctx, "route-session")
+	ctx = WithToolExecutionIdentity(ctx, "/workspace/main", "turn-1")
 	ctx = WithToolInboundMetadata(ctx, bus.InboundContext{
 		Channel: "telegram", ChatID: "chat-1", SenderID: actorID, ActorID: actorID,
 	})

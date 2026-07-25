@@ -663,6 +663,7 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 		ApprovalGrant: &ToolApprovalGrant{
 			InteractionID: record.ID,
 			Revision:      record.Revision,
+			OriginTurnID:  record.Origin.TurnID,
 		},
 		Dispatch: DispatchRequest{
 			RouteSessionKey: routeSessionKey,

@@ -48,6 +48,7 @@ type GatewayInvocationRecord struct {
 	Target           string                 `json:"target"`
 	ToolCallID       string                 `json:"tool_call_id"`
 	Plan             ExecutionPlan          `json:"plan"`
+	Descriptor       CommandDescriptor      `json:"descriptor"`
 	ExpectedPlanHash string                 `json:"expected_plan_hash"`
 	State            GatewayInvocationState `json:"state"`
 	CreatedAt        int64                  `json:"created_at"`
@@ -156,12 +157,14 @@ func (store *GatewayInvocationStore) Prepare(
 	target string,
 	toolCallID string,
 	plan ExecutionPlan,
+	descriptor CommandDescriptor,
 ) (GatewayInvocationRecord, error) {
 	now := store.now()
 	record := GatewayInvocationRecord{
 		Target:           strings.TrimSpace(target),
 		ToolCallID:       strings.TrimSpace(toolCallID),
 		Plan:             cloneExecutionPlan(plan),
+		Descriptor:       cloneCommandDescriptor(descriptor),
 		ExpectedPlanHash: plan.PlanHash,
 		State:            GatewayInvocationPrepared,
 		CreatedAt:        now.UnixNano(),
@@ -577,6 +580,13 @@ func (record GatewayInvocationRecord) validate() error {
 	if err := record.Plan.ValidateAgainstHash(record.ExpectedPlanHash); err != nil {
 		return err
 	}
+	if err := record.Descriptor.Validate(); err != nil {
+		return err
+	}
+	if record.Descriptor.Name != record.Plan.Command ||
+		record.Descriptor.Risk != record.Plan.Risk {
+		return fmt.Errorf("%w: descriptor does not match plan", ErrInvalidInvocation)
+	}
 	switch record.State {
 	case GatewayInvocationPrepared:
 		if record.DispatchedAt != 0 || record.Rejection != nil {
@@ -627,6 +637,7 @@ func sameGatewayInvocationBinding(
 	return left.Target == right.Target &&
 		left.ToolCallID == right.ToolCallID &&
 		left.ExpectedPlanHash == right.ExpectedPlanHash &&
+		sameCommandDescriptor(left.Descriptor, right.Descriptor) &&
 		left.Plan.AgentID == right.Plan.AgentID &&
 		left.Plan.SessionID == right.Plan.SessionID &&
 		left.Plan.ActorID == right.Plan.ActorID
@@ -664,11 +675,24 @@ func cloneGatewayInvocationRecords(
 
 func cloneGatewayInvocationRecord(record GatewayInvocationRecord) GatewayInvocationRecord {
 	record.Plan = cloneExecutionPlan(record.Plan)
+	record.Descriptor = cloneCommandDescriptor(record.Descriptor)
 	if record.Rejection != nil {
 		rejection := *record.Rejection
 		record.Rejection = &rejection
 	}
 	return record
+}
+
+func cloneCommandDescriptor(descriptor CommandDescriptor) CommandDescriptor {
+	descriptor.InputSchema = bytes.Clone(descriptor.InputSchema)
+	descriptor.OutputSchema = bytes.Clone(descriptor.OutputSchema)
+	return descriptor
+}
+
+func sameCommandDescriptor(left, right CommandDescriptor) bool {
+	leftHash, leftErr := (CapabilityCatalog{Commands: []CommandDescriptor{left}}).Hash()
+	rightHash, rightErr := (CapabilityCatalog{Commands: []CommandDescriptor{right}}).Hash()
+	return leftErr == nil && rightErr == nil && leftHash == rightHash
 }
 
 func cloneExecutionPlan(plan ExecutionPlan) ExecutionPlan {

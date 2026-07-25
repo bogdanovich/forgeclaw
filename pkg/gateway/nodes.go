@@ -229,6 +229,7 @@ func (source *nodeInvocationSource) PrepareInvocation(
 	target string,
 	toolCallID string,
 	plan nodes.ExecutionPlan,
+	descriptor nodes.CommandDescriptor,
 ) (nodes.GatewayInvocationRecord, error) {
 	if source == nil || source.store == nil || source.runtime == nil {
 		return nodes.GatewayInvocationRecord{}, errNodeDiscoveryAuthorityUnavailable
@@ -239,7 +240,7 @@ func (source *nodeInvocationSource) PrepareInvocation(
 		source.generation,
 		func(*nodews.AdmissionHandler) error {
 			var prepareErr error
-			record, prepareErr = source.store.Prepare(target, toolCallID, plan)
+			record, prepareErr = source.store.Prepare(target, toolCallID, plan, descriptor)
 			return prepareErr
 		},
 	)
@@ -450,7 +451,7 @@ func (source *nodeInvocationSource) QueryInvocation(
 	if err != nil {
 		return nodes.InvocationRecord{}, err
 	}
-	if err := verifyRemoteInvocation(record, remote); err != nil {
+	if err := verifyRemoteInvocation(record, &remote); err != nil {
 		return nodes.InvocationRecord{}, err
 	}
 	return remote, nil
@@ -458,9 +459,10 @@ func (source *nodeInvocationSource) QueryInvocation(
 
 func verifyRemoteInvocation(
 	gateway nodes.GatewayInvocationRecord,
-	remote nodes.InvocationRecord,
+	remote *nodes.InvocationRecord,
 ) error {
-	if remote.InvocationID != gateway.Plan.InvocationID ||
+	if remote == nil ||
+		remote.InvocationID != gateway.Plan.InvocationID ||
 		remote.IdempotencyKey != gateway.Plan.IdempotencyKey ||
 		remote.PlanHash != gateway.ExpectedPlanHash ||
 		remote.NodeID != gateway.Plan.NodeID ||
@@ -468,6 +470,17 @@ func verifyRemoteInvocation(
 		remote.Command != gateway.Plan.Command ||
 		remote.Risk != gateway.Plan.Risk {
 		return nodes.ErrGatewayInvocationConflict
+	}
+	if remote.State == nodes.InvocationSucceeded {
+		result, err := nodes.ValidateInvocationOutput(
+			gateway.Descriptor,
+			remote.Result,
+			gateway.Plan.OutputLimitBytes,
+		)
+		if err != nil {
+			return nodes.ErrGatewayInvocationConflict
+		}
+		remote.Result = result
 	}
 	return nil
 }

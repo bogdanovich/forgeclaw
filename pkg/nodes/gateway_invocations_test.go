@@ -19,7 +19,7 @@ func TestGatewayInvocationStorePersistsPreparedBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := gatewayTestPlan(t, "inv_persist", "idem_persist", time.Now())
-	record, err := store.Prepare("vpn_box", "call-1", plan)
+	record, err := store.Prepare("vpn_box", "call-1", plan, gatewayTestDescriptor(plan))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,8 @@ func TestGatewayInvocationStorePersistsPreparedBinding(t *testing.T) {
 	}
 	got, found, err := reloaded.ByToolCall(gatewayTestPrincipal(plan), "call-1")
 	if err != nil || !found || got.ExpectedPlanHash != plan.PlanHash ||
-		got.Plan.InvocationID != plan.InvocationID {
+		got.Plan.InvocationID != plan.InvocationID ||
+		!sameCommandDescriptor(got.Descriptor, gatewayTestDescriptor(plan)) {
 		t.Fatalf("reloaded record = (%#v, %v, %v)", got, found, err)
 	}
 	info, err := os.Stat(path)
@@ -57,11 +58,11 @@ func TestGatewayInvocationStoreReloadsAcrossInstancesBeforeMutation(t *testing.T
 		t.Fatal(err)
 	}
 	firstPlan := gatewayTestPlan(t, "inv_first", "idem_first", time.Now())
-	if _, err = first.Prepare("vpn", "call-1", firstPlan); err != nil {
+	if _, err = first.Prepare("vpn", "call-1", firstPlan, gatewayTestDescriptor(firstPlan)); err != nil {
 		t.Fatal(err)
 	}
 	secondPlan := gatewayTestPlan(t, "inv_second", "idem_second", time.Now())
-	if _, err = second.Prepare("vpn", "call-2", secondPlan); err != nil {
+	if _, err = second.Prepare("vpn", "call-2", secondPlan, gatewayTestDescriptor(secondPlan)); err != nil {
 		t.Fatal(err)
 	}
 	for _, plan := range []ExecutionPlan{firstPlan, secondPlan} {
@@ -73,7 +74,7 @@ func TestGatewayInvocationStoreReloadsAcrossInstancesBeforeMutation(t *testing.T
 		}
 	}
 	conflict := gatewayTestPlan(t, "inv_conflict", firstPlan.IdempotencyKey, time.Now())
-	if _, err = second.Prepare("vpn", "call-3", conflict); !errors.Is(
+	if _, err = second.Prepare("vpn", "call-3", conflict, gatewayTestDescriptor(conflict)); !errors.Is(
 		err,
 		ErrGatewayInvocationConflict,
 	) {
@@ -84,24 +85,24 @@ func TestGatewayInvocationStoreReloadsAcrossInstancesBeforeMutation(t *testing.T
 func TestGatewayInvocationStoreRejectsToolCallRebinding(t *testing.T) {
 	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
 	first := gatewayTestPlan(t, "inv_first", "idem_first", time.Now())
-	if _, err := store.Prepare("vpn", "call-1", first); err != nil {
+	if _, err := store.Prepare("vpn", "call-1", first, gatewayTestDescriptor(first)); err != nil {
 		t.Fatal(err)
 	}
 	second := gatewayTestPlan(t, "inv_second", "idem_second", time.Now())
-	if _, err := store.Prepare("vpn", "call-1", second); !errors.Is(
+	if _, err := store.Prepare("vpn", "call-1", second, gatewayTestDescriptor(second)); !errors.Is(
 		err,
 		ErrGatewayInvocationConflict,
 	) {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	if _, err := store.Prepare("other", "call-2", first); !errors.Is(
+	if _, err := store.Prepare("other", "call-2", first, gatewayTestDescriptor(first)); !errors.Is(
 		err,
 		ErrGatewayInvocationConflict,
 	) {
 		t.Fatalf("invocation retry error = %v", err)
 	}
 	reusedKey := gatewayTestPlan(t, "inv_other", first.IdempotencyKey, time.Now())
-	if _, err := store.Prepare("vpn", "call-2", reusedKey); !errors.Is(
+	if _, err := store.Prepare("vpn", "call-2", reusedKey, gatewayTestDescriptor(reusedKey)); !errors.Is(
 		err,
 		ErrGatewayInvocationConflict,
 	) {
@@ -112,7 +113,7 @@ func TestGatewayInvocationStoreRejectsToolCallRebinding(t *testing.T) {
 func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
 	plan := gatewayTestPlan(t, "inv_dispatch", "idem_dispatch", time.Now())
-	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
+	if _, err := store.Prepare("vpn", "call-1", plan, gatewayTestDescriptor(plan)); err != nil {
 		t.Fatal(err)
 	}
 	owner := GatewayInvocationOwner{
@@ -180,7 +181,7 @@ func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 func TestGatewayInvocationStoreAllowsOneConcurrentDispatchWinner(t *testing.T) {
 	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
 	plan := gatewayTestPlan(t, "inv_concurrent", "idem_concurrent", time.Now())
-	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
+	if _, err := store.Prepare("vpn", "call-1", plan, gatewayTestDescriptor(plan)); err != nil {
 		t.Fatal(err)
 	}
 	owner := GatewayInvocationOwner{
@@ -226,7 +227,7 @@ func TestGatewayInvocationStoreRejectsExpiredPreparedAuthority(t *testing.T) {
 	now := time.Now()
 	store := newGatewayInvocationStore("", 8, 1024*1024, func() time.Time { return now })
 	plan := gatewayTestPlan(t, "inv_expired", "idem_expired", now)
-	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
+	if _, err := store.Prepare("vpn", "call-1", plan, gatewayTestDescriptor(plan)); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(2 * time.Minute)
@@ -259,7 +260,7 @@ func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
 		return &fileutil.CommittedWriteError{Err: errors.New("sync directory")}
 	}
 	plan := gatewayTestPlan(t, "inv_committed", "idem_committed", time.Now())
-	if _, err := store.Prepare("vpn", "call-1", plan); err == nil ||
+	if _, err := store.Prepare("vpn", "call-1", plan, gatewayTestDescriptor(plan)); err == nil ||
 		!fileutil.IsCommittedWriteError(err) {
 		t.Fatalf("Prepare() error = %v", err)
 	}
@@ -288,7 +289,7 @@ func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
 func TestGatewayInvocationStorePersistsDefinitiveRejection(t *testing.T) {
 	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
 	plan := gatewayTestPlan(t, "inv_rejected", "idem_rejected", time.Now())
-	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
+	if _, err := store.Prepare("vpn", "call-1", plan, gatewayTestDescriptor(plan)); err != nil {
 		t.Fatal(err)
 	}
 	owner := GatewayInvocationOwner{
@@ -332,7 +333,7 @@ func TestGatewayInvocationStoreReloadsAfterBackwardClockTransitions(t *testing.T
 		return now
 	})
 	plan := gatewayTestPlan(t, "inv_clock", "idem_clock", now)
-	prepared, err := store.Prepare("vpn", "call-1", plan)
+	prepared, err := store.Prepare("vpn", "call-1", plan, gatewayTestDescriptor(plan))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,6 +380,7 @@ func TestGatewayInvocationStoreLoadRejectsMutatedPlan(t *testing.T) {
 		Target:           "vpn",
 		ToolCallID:       "call-1",
 		Plan:             plan,
+		Descriptor:       gatewayTestDescriptor(plan),
 		ExpectedPlanHash: plan.PlanHash,
 		State:            GatewayInvocationPrepared,
 		CreatedAt:        time.Now().UnixNano(),
@@ -400,6 +402,35 @@ func TestGatewayInvocationStoreLoadRejectsMutatedPlan(t *testing.T) {
 	}
 }
 
+func TestGatewayInvocationStoreLoadRejectsDescriptorOutsidePlan(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node_invocations.json")
+	plan := gatewayTestPlan(t, "inv_descriptor", "idem_descriptor", time.Now())
+	record := GatewayInvocationRecord{
+		Target:           "vpn",
+		ToolCallID:       "call-1",
+		Plan:             plan,
+		Descriptor:       gatewayTestDescriptor(plan),
+		ExpectedPlanHash: plan.PlanHash,
+		State:            GatewayInvocationPrepared,
+		CreatedAt:        time.Now().UnixNano(),
+		UpdatedAt:        time.Now().UnixNano(),
+	}
+	record.Descriptor.Name = "system.other.v1"
+	data, err := json.Marshal(gatewayInvocationDocument{
+		Version: gatewayInvocationStoreVersion,
+		Records: map[string]GatewayInvocationRecord{plan.InvocationID: record},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if _, loadErr := NewGatewayInvocationStore(path, 8, 1024*1024); loadErr == nil {
+		t.Fatal("descriptor outside the approved plan was accepted")
+	}
+}
+
 func TestGatewayInvocationStoreLoadPrunesExpiredPreparedAuthority(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node_invocations.json")
 	preparedAt := time.Now().Add(-2 * time.Minute)
@@ -411,6 +442,7 @@ func TestGatewayInvocationStoreLoadPrunesExpiredPreparedAuthority(t *testing.T) 
 			Target:           "vpn",
 			ToolCallID:       "call-1",
 			Plan:             plan,
+			Descriptor:       gatewayTestDescriptor(plan),
 			ExpectedPlanHash: plan.PlanHash,
 			State:            GatewayInvocationPrepared,
 			CreatedAt:        now,
@@ -474,4 +506,8 @@ func gatewayTestPrincipal(plan ExecutionPlan) GatewayInvocationPrincipal {
 		SessionID: plan.SessionID,
 		ActorID:   plan.ActorID,
 	}
+}
+
+func gatewayTestDescriptor(plan ExecutionPlan) CommandDescriptor {
+	return invocationDescriptor(plan.Risk)
 }

@@ -79,6 +79,8 @@ var (
 	ctxKeyRouteSessionKey  = &toolCtxKey{"routeSessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
 	ctxKeyToolCallID       = &toolCtxKey{"toolCallID"}
+	ctxKeyExecutionID      = &toolCtxKey{"executionID"}
+	ctxKeyWorkspace        = &toolCtxKey{"workspace"}
 	ctxKeyApprovalResume   = &toolCtxKey{"approvalResume"}
 )
 
@@ -148,6 +150,13 @@ func WithToolRouteSessionKey(ctx context.Context, routeSessionKey string) contex
 // human-approval restart.
 func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
 	return context.WithValue(ctx, ctxKeyToolCallID, toolCallID)
+}
+
+// WithToolExecutionIdentity carries the stable logical turn identity and
+// workspace namespace for durable tool operations.
+func WithToolExecutionIdentity(ctx context.Context, workspace, executionID string) context.Context {
+	ctx = context.WithValue(ctx, ctxKeyWorkspace, workspace)
+	return context.WithValue(ctx, ctxKeyExecutionID, executionID)
 }
 
 // WithToolApprovalContinuation marks execution resumed from a one-time human
@@ -273,6 +282,24 @@ func ToolSessionKey(ctx context.Context) string {
 // ToolCallID extracts the active provider tool-call identity from ctx.
 func ToolCallID(ctx context.Context) string {
 	v, ok := ctx.Value(ctxKeyToolCallID).(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
+
+// ToolExecutionID extracts the stable logical turn identity from ctx.
+func ToolExecutionID(ctx context.Context) string {
+	v, ok := ctx.Value(ctxKeyExecutionID).(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
+
+// ToolWorkspace extracts the workspace namespace from ctx.
+func ToolWorkspace(ctx context.Context) string {
+	v, ok := ctx.Value(ctxKeyWorkspace).(string)
 	if !ok {
 		return ""
 	}

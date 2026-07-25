@@ -495,6 +495,12 @@ toolLoop:
 		)
 		execCtx = tools.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
 		execCtx = tools.WithToolCallID(execCtx, tc.ID)
+		executionID := ts.turnID
+		if grant := ts.opts.ApprovalGrant; grant != nil &&
+			strings.TrimSpace(grant.OriginTurnID) != "" {
+			executionID = grant.OriginTurnID
+		}
+		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
 		execCtx = tools.WithToolApprovalContinuation(execCtx, ts.opts.ApprovalGrant != nil)
 
 		if p.Interaction.Hooks != nil || ts.opts.ApprovalGrant != nil {

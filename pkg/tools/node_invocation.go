@@ -26,6 +26,7 @@ type NodeInvocationSource interface {
 		target string,
 		toolCallID string,
 		plan nodes.ExecutionPlan,
+		descriptor nodes.CommandDescriptor,
 	) (nodes.GatewayInvocationRecord, error)
 	LookupInvocationByToolCall(
 		principal nodes.GatewayInvocationPrincipal,
@@ -400,7 +401,7 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 	if err != nil {
 		return nodes.GatewayInvocationRecord{}, err
 	}
-	principal, toolCallID, err := nodeInvocationIdentity(ctx)
+	principal, executionCallID, err := nodeInvocationIdentity(ctx)
 	if err != nil {
 		return nodes.GatewayInvocationRecord{}, err
 	}
@@ -409,9 +410,9 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		principal.AgentID,
 		principal.SessionID,
 		principal.ActorID,
-		toolCallID,
+		executionCallID,
 	)
-	storedToolCallID := stableNodeInvocationID("call", toolCallID)
+	storedToolCallID := stableNodeInvocationID("call", executionCallID)
 	request := nodes.InvocationRequest{
 		InvocationID:     invocationID,
 		IdempotencyKey:   stableNodeInvocationID("idem", invocationID),
@@ -464,6 +465,7 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		target,
 		storedToolCallID,
 		plan,
+		descriptor,
 	)
 }
 
@@ -579,12 +581,19 @@ func nodeInvocationIdentity(
 		return nodes.GatewayInvocationPrincipal{}, "", err
 	}
 	toolCallID := strings.TrimSpace(ToolCallID(ctx))
-	if toolCallID == "" {
+	executionID := strings.TrimSpace(ToolExecutionID(ctx))
+	workspace := strings.TrimSpace(ToolWorkspace(ctx))
+	if toolCallID == "" || executionID == "" || workspace == "" {
 		return nodes.GatewayInvocationPrincipal{}, "", errors.New(
-			"node invocation requires a provider tool-call identity",
+			"node invocation requires workspace, turn, and provider tool-call identity",
 		)
 	}
-	return principal, toolCallID, nil
+	return principal, stableNodeInvocationID(
+		"execution",
+		workspace,
+		executionID,
+		toolCallID,
+	), nil
 }
 
 func nodeInvocationIdentityWithoutCall(

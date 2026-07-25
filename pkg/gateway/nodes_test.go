@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +177,7 @@ func TestNodeInvocationSourceRejectsStaleRuntimeGeneration(t *testing.T) {
 		"build",
 		"call_1",
 		nodes.ExecutionPlan{},
+		nodes.CommandDescriptor{},
 	); !errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
 		t.Fatalf("stale prepare error = %v", err)
 	}
@@ -210,6 +213,7 @@ func TestNodeInvocationSourceRejectsExplicitlyInvalidatedGeneration(t *testing.T
 		"build",
 		"call_1",
 		nodes.ExecutionPlan{},
+		nodes.CommandDescriptor{},
 	); !errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
 		t.Fatalf("invalidated prepare error = %v", err)
 	}
@@ -218,6 +222,12 @@ func TestNodeInvocationSourceRejectsExplicitlyInvalidatedGeneration(t *testing.T
 func TestVerifyRemoteInvocationRejectsAuthorityMismatch(t *testing.T) {
 	gateway := nodes.GatewayInvocationRecord{
 		ExpectedPlanHash: "plan-1",
+		Descriptor: nodes.CommandDescriptor{
+			Name:         "system.exec.v1",
+			InputSchema:  json.RawMessage(`{"type":"object"}`),
+			OutputSchema: json.RawMessage(`{"type":"object"}`),
+			Risk:         nodes.RiskWrite,
+		},
 		Plan: nodes.ExecutionPlan{
 			InvocationRequest: nodes.InvocationRequest{
 				InvocationID: "inv-1", IdempotencyKey: "idem-1",
@@ -232,15 +242,61 @@ func TestVerifyRemoteInvocationRejectsAuthorityMismatch(t *testing.T) {
 		PlanHash: "plan-1", NodeID: "node-1", CatalogHash: "catalog-1",
 		Command: "system.exec.v1", Risk: nodes.RiskWrite,
 	}
-	if err := verifyRemoteInvocation(gateway, remote); err != nil {
+	if err := verifyRemoteInvocation(gateway, &remote); err != nil {
 		t.Fatalf("matching remote invocation = %v", err)
 	}
 	remote.PlanHash = "different-plan"
-	if err := verifyRemoteInvocation(gateway, remote); !errors.Is(
+	if err := verifyRemoteInvocation(gateway, &remote); !errors.Is(
 		err,
 		nodes.ErrGatewayInvocationConflict,
 	) {
 		t.Fatalf("mismatched remote invocation error = %v", err)
+	}
+}
+
+func TestVerifyRemoteInvocationValidatesRecoveredOutput(t *testing.T) {
+	gateway := nodes.GatewayInvocationRecord{
+		ExpectedPlanHash: "plan-1",
+		Descriptor: nodes.CommandDescriptor{
+			Name:        "system.exec.v1",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			OutputSchema: json.RawMessage(
+				`{"type":"object","properties":{"stdout":{"type":"string"}},"required":["stdout"],"additionalProperties":false}`,
+			),
+			Risk: nodes.RiskWrite,
+		},
+		Plan: nodes.ExecutionPlan{
+			InvocationRequest: nodes.InvocationRequest{
+				InvocationID: "inv-1", IdempotencyKey: "idem-1",
+				NodeID: "node-1", CatalogHash: "catalog-1",
+				Command: "system.exec.v1", OutputLimitBytes: 64,
+			},
+			Risk: nodes.RiskWrite,
+		},
+	}
+	remote := nodes.InvocationRecord{
+		InvocationID: "inv-1", IdempotencyKey: "idem-1",
+		PlanHash: "plan-1", NodeID: "node-1", CatalogHash: "catalog-1",
+		Command: "system.exec.v1", Risk: nodes.RiskWrite,
+		State: nodes.InvocationSucceeded, Result: json.RawMessage(`{"stdout":"ok"}`),
+	}
+	if err := verifyRemoteInvocation(gateway, &remote); err != nil {
+		t.Fatalf("valid recovered output = %v", err)
+	}
+
+	remote.Result = json.RawMessage(`{"unexpected":true}`)
+	if err := verifyRemoteInvocation(gateway, &remote); !errors.Is(
+		err,
+		nodes.ErrGatewayInvocationConflict,
+	) {
+		t.Fatalf("invalid recovered schema error = %v", err)
+	}
+	remote.Result = json.RawMessage(`{"stdout":"` + strings.Repeat("x", 80) + `"}`)
+	if err := verifyRemoteInvocation(gateway, &remote); !errors.Is(
+		err,
+		nodes.ErrGatewayInvocationConflict,
+	) {
+		t.Fatalf("oversized recovered output error = %v", err)
 	}
 }
 

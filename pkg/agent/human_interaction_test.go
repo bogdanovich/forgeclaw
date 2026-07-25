@@ -63,6 +63,8 @@ type approvalBindingTool struct {
 	executions           int
 	bindingCalls         []string
 	bindingContinuations []bool
+	executionIDs         []string
+	workspaces           []string
 }
 
 func (*approvalBindingTool) Name() string { return "approval_binding" }
@@ -86,6 +88,8 @@ func (t *approvalBindingTool) ApprovalArguments(
 		t.bindingContinuations,
 		tools.ToolApprovalContinuation(ctx),
 	)
+	t.executionIDs = append(t.executionIDs, tools.ToolExecutionID(ctx))
+	t.workspaces = append(t.workspaces, tools.ToolWorkspace(ctx))
 	return map[string]any{"plan_hash": "prepared-plan-hash"}, nil
 }
 
@@ -1001,6 +1005,20 @@ func TestDurableHumanApprovalBindsTrustedPreparedArguments(t *testing.T) {
 		tool.bindingContinuations[0] ||
 		!tool.bindingContinuations[1] {
 		t.Fatalf("approval continuation markers = %#v", tool.bindingContinuations)
+	}
+	if len(tool.executionIDs) != 2 ||
+		tool.executionIDs[0] != record.Origin.TurnID ||
+		tool.executionIDs[1] != record.Origin.TurnID {
+		t.Fatalf(
+			"approval execution identities = %#v, origin = %q",
+			tool.executionIDs,
+			record.Origin.TurnID,
+		)
+	}
+	if len(tool.workspaces) != 2 ||
+		tool.workspaces[0] != agent.Workspace ||
+		tool.workspaces[1] != agent.Workspace {
+		t.Fatalf("approval workspaces = %#v", tool.workspaces)
 	}
 }
 
