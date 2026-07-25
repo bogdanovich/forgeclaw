@@ -391,11 +391,16 @@ func (handler *AdmissionHandler) validateInvocationPreflight(
 	if err != nil {
 		return nodes.CommandApproval{}, err
 	}
-	if err := plan.Validate(); err != nil {
+	if planErr := plan.Validate(); planErr != nil {
+		return nodes.CommandApproval{}, planErr
+	}
+	descriptorHash, err := approval.Descriptor.Hash()
+	if err != nil {
 		return nodes.CommandApproval{}, err
 	}
 	if plan.NodeID != nodeID ||
 		plan.Risk != approval.Descriptor.Risk ||
+		plan.DescriptorHash != descriptorHash ||
 		plan.CatalogHash != approval.CatalogHash {
 		return nodes.CommandApproval{}, fmt.Errorf(
 			"%w: execution plan does not match approved command",

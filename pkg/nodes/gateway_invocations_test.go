@@ -373,61 +373,46 @@ func TestGatewayInvocationStoreReloadsAfterBackwardClockTransitions(t *testing.T
 	}
 }
 
-func TestGatewayInvocationStoreLoadRejectsMutatedPlan(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "node_invocations.json")
-	plan := gatewayTestPlan(t, "inv_mutated", "idem_mutated", time.Now())
-	record := GatewayInvocationRecord{
-		Target:           "vpn",
-		ToolCallID:       "call-1",
-		Plan:             plan,
-		Descriptor:       gatewayTestDescriptor(plan),
-		ExpectedPlanHash: plan.PlanHash,
-		State:            GatewayInvocationPrepared,
-		CreatedAt:        time.Now().UnixNano(),
-		UpdatedAt:        time.Now().UnixNano(),
+func TestGatewayInvocationStoreLoadRejectsMutatedAuthority(t *testing.T) {
+	tests := map[string]func(*GatewayInvocationRecord){
+		"plan input": func(record *GatewayInvocationRecord) {
+			record.Plan.Input = json.RawMessage(`{"argv":["different"]}`)
+		},
+		"descriptor output schema": func(record *GatewayInvocationRecord) {
+			record.Descriptor.OutputSchema = json.RawMessage(
+				`{"type":"object","properties":{"unexpected":{"type":"boolean"}}}`,
+			)
+		},
 	}
-	record.Plan.Input = json.RawMessage(`{"argv":["different"]}`)
-	data, err := json.Marshal(gatewayInvocationDocument{
-		Version: gatewayInvocationStoreVersion,
-		Records: map[string]GatewayInvocationRecord{plan.InvocationID: record},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-	if _, loadErr := NewGatewayInvocationStore(path, 8, 1024*1024); loadErr == nil {
-		t.Fatal("mutated persisted plan was accepted")
-	}
-}
-
-func TestGatewayInvocationStoreLoadRejectsDescriptorOutsidePlan(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "node_invocations.json")
-	plan := gatewayTestPlan(t, "inv_descriptor", "idem_descriptor", time.Now())
-	record := GatewayInvocationRecord{
-		Target:           "vpn",
-		ToolCallID:       "call-1",
-		Plan:             plan,
-		Descriptor:       gatewayTestDescriptor(plan),
-		ExpectedPlanHash: plan.PlanHash,
-		State:            GatewayInvocationPrepared,
-		CreatedAt:        time.Now().UnixNano(),
-		UpdatedAt:        time.Now().UnixNano(),
-	}
-	record.Descriptor.Name = "system.other.v1"
-	data, err := json.Marshal(gatewayInvocationDocument{
-		Version: gatewayInvocationStoreVersion,
-		Records: map[string]GatewayInvocationRecord{plan.InvocationID: record},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-	if _, loadErr := NewGatewayInvocationStore(path, 8, 1024*1024); loadErr == nil {
-		t.Fatal("descriptor outside the approved plan was accepted")
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "node_invocations.json")
+			plan := gatewayTestPlan(t, "inv_mutated", "idem_mutated", time.Now())
+			record := GatewayInvocationRecord{
+				Target:           "vpn",
+				ToolCallID:       "call-1",
+				Plan:             plan,
+				Descriptor:       gatewayTestDescriptor(plan),
+				ExpectedPlanHash: plan.PlanHash,
+				State:            GatewayInvocationPrepared,
+				CreatedAt:        time.Now().UnixNano(),
+				UpdatedAt:        time.Now().UnixNano(),
+			}
+			mutate(&record)
+			data, err := json.Marshal(gatewayInvocationDocument{
+				Version: gatewayInvocationStoreVersion,
+				Records: map[string]GatewayInvocationRecord{plan.InvocationID: record},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			if _, loadErr := NewGatewayInvocationStore(path, 8, 1024*1024); loadErr == nil {
+				t.Fatal("mutated persisted authority was accepted")
+			}
+		})
 	}
 }
 

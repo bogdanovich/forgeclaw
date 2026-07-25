@@ -583,8 +583,13 @@ func (record GatewayInvocationRecord) validate() error {
 	if err := record.Descriptor.Validate(); err != nil {
 		return err
 	}
+	descriptorHash, err := record.Descriptor.Hash()
+	if err != nil {
+		return err
+	}
 	if record.Descriptor.Name != record.Plan.Command ||
-		record.Descriptor.Risk != record.Plan.Risk {
+		record.Descriptor.Risk != record.Plan.Risk ||
+		descriptorHash != record.Plan.DescriptorHash {
 		return fmt.Errorf("%w: descriptor does not match plan", ErrInvalidInvocation)
 	}
 	switch record.State {
@@ -690,8 +695,8 @@ func cloneCommandDescriptor(descriptor CommandDescriptor) CommandDescriptor {
 }
 
 func sameCommandDescriptor(left, right CommandDescriptor) bool {
-	leftHash, leftErr := (CapabilityCatalog{Commands: []CommandDescriptor{left}}).Hash()
-	rightHash, rightErr := (CapabilityCatalog{Commands: []CommandDescriptor{right}}).Hash()
+	leftHash, leftErr := left.Hash()
+	rightHash, rightErr := right.Hash()
 	return leftErr == nil && rightErr == nil && leftHash == rightHash
 }
 

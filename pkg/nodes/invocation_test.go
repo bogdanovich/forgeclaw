@@ -209,8 +209,8 @@ func TestExecutionPlanRejectsNumericPrecisionBypass(t *testing.T) {
 		plan.NodeID,
 		plan.Executor,
 		time.Unix(plan.PreparedAt, 0),
-	); !errors.Is(err, ErrInvalidInvocation) {
-		t.Fatalf("large integer Authorize() error = %v", err)
+	); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("mismatched descriptor Authorize() error = %v", err)
 	}
 }
 
