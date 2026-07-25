@@ -284,6 +284,38 @@ func TestCoordinatorFailingSourceDoesNotStarveRecovery(t *testing.T) {
 	coordinator.UnregisterSource("a-failing")
 }
 
+func TestCoordinatorSuccessfulScanContinuesToNextSource(t *testing.T) {
+	empty := newGatedEmptyCoordinatorSource()
+	healthy := newCoordinatorSource()
+	healthy.set("task", 13)
+	coordinator := NewCoordinator(CoordinatorOptions{
+		PendingCapacity: 4,
+		RetryDelay:      time.Millisecond,
+		Writer: Options{
+			StorageFactory: func(Policy) Storage {
+				return &coordinatorStorage{}
+			},
+		},
+	})
+	if err := coordinator.RegisterSource("a-empty", empty); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-empty.entered:
+	case <-time.After(time.Second):
+		t.Fatal("empty source was not scanned")
+	}
+	if err := coordinator.RegisterSource("b-healthy", healthy); err != nil {
+		t.Fatal(err)
+	}
+	close(empty.release)
+	t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
+
+	waitCoordinator(t, func() bool {
+		return healthy.confirmedRevision("task") == 13
+	})
+}
+
 func TestCoordinatorNegativeRetryDelayDoesNotSpin(t *testing.T) {
 	source := &failingLoadSource{}
 	coordinator := NewCoordinator(CoordinatorOptions{
@@ -641,6 +673,34 @@ func (s *blockingCoordinatorSource) block(ctx context.Context) error {
 	s.once.Do(func() { close(s.entered) })
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+type gatedEmptyCoordinatorSource struct {
+	*coordinatorSource
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newGatedEmptyCoordinatorSource() *gatedEmptyCoordinatorSource {
+	return &gatedEmptyCoordinatorSource{
+		coordinatorSource: newCoordinatorSource(),
+		entered:           make(chan struct{}),
+		release:           make(chan struct{}),
+	}
+}
+
+func (s *gatedEmptyCoordinatorSource) Pending(
+	ctx context.Context,
+	_ int,
+) ([]string, error) {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 type failingPendingSource struct {

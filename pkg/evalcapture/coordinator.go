@@ -421,6 +421,7 @@ func (c *Coordinator) scanSource(sourceID string) {
 	defer func() {
 		c.mu.Lock()
 		c.scans--
+		c.signalLocked()
 		c.notifyIdleLocked()
 		c.mu.Unlock()
 	}()
