@@ -23,4 +23,5 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Shellguard](shellguard.md): reusable shell command validation, command classification, permission modes, and path-scope limits.
 - [Tool-Loop Stagnation Protection](tool-loop-stagnation.md): warning-first repeated failure and read-only no-progress detection with hash-safe state and events.
 - [Replay And Evaluation](replay-evaluation.md): bounded redacted traces, side-effect-free deterministic replay, regression fixtures, and reliability evaluators.
+- [Current Refactoring Audit](current-refactoring-audit.md): near-term architecture risks around metadata, delivery, turn state, context manager migration, and provider contracts.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
