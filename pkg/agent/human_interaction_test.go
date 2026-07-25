@@ -990,6 +990,69 @@ func TestDurableHumanApprovalBindsTrustedPreparedArguments(t *testing.T) {
 	}
 }
 
+func TestDurableHumanApprovalDoesNotPrepareAfterPolicyRevocation(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{
+		{ToolCalls: []providers.ToolCall{{
+			ID: "call-revoked", Name: "approval_binding",
+			Arguments: map[string]any{"mutable": "model-value"},
+			Function: &providers.FunctionCall{
+				Name: "approval_binding", Arguments: `{"mutable":"model-value"}`,
+			},
+		}}},
+		{Content: "approval denied", FinishReason: "stop"},
+	}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	al.channelManager = newInteractionChannelManager()
+	tool := &approvalBindingTool{}
+	agent.Tools.Register(tool)
+	hook := &durableApprovalHook{actionSummary: "Run the prepared protected action"}
+	if err := al.MountHook(NamedHook("revoked-prepared-approval", hook)); err != nil {
+		t.Fatal(err)
+	}
+	inbound := &bus.InboundContext{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+	}
+	turnStatus := TurnEndStatusCompleted
+	if _, err := al.runAgentLoop(t.Context(), agent, processOptions{
+		TurnStatus: &turnStatus,
+		Dispatch: DispatchRequest{
+			RouteSessionKey: "route-revoked", SessionKey: "session-revoked",
+			UserMessage: "run prepared action", InboundContext: inbound,
+		},
+		DefaultResponse: defaultResponse, EnableSummary: true, SendResponse: false,
+	}); err != nil || turnStatus != TurnEndStatusSuspended {
+		t.Fatalf("initial approval turn = (%q, %v)", turnStatus, err)
+	}
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, ok := activeInteractionForSession(registry, "session-revoked")
+	if !ok || len(tool.bindingCalls) != 1 {
+		t.Fatalf("initial approval = (%#v, binding calls=%#v)", record, tool.bindingCalls)
+	}
+	hook.revoked = true
+	record, err := registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "allow_once", MessageID: "approval-answer", ReceivedAt: time.Now().UnixMilli(),
+	}, interactions.OutcomeAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = al.resumeClaimedInteraction(
+		t.Context(), registry, agent.Workspace, agent, nil, *inbound, record,
+	); err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := registry.Get(record.ID)
+	if resolved.ApprovalConsumedAt != 0 || tool.executions != 0 ||
+		len(tool.bindingCalls) != 1 {
+		t.Fatalf(
+			"revoked approval = (%#v, executions=%d, binding calls=%#v)",
+			resolved,
+			tool.executions,
+			tool.bindingCalls,
+		)
+	}
+}
+
 func TestHumanApprovalNeverRendersGenericArguments(t *testing.T) {
 	provider := &sequenceProvider{responses: []*providers.LLMResponse{
 		{ToolCalls: []providers.ToolCall{{

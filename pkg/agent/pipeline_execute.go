@@ -454,6 +454,9 @@ toolLoop:
 		if p.Interaction.Hooks != nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
 			continue
 		}
+		if denyByTurnProfile() {
+			continue
+		}
 
 		execCtx := tools.WithToolInboundContext(
 			turnCtx,
@@ -493,7 +496,8 @@ toolLoop:
 			}
 			approvalArgs := toolArgs
 			var approvalArgsErr error
-			if ts.opts.ApprovalGrant != nil || approval.RequireHuman {
+			approvalCanProceed := approval.Approved || approval.RequireHuman
+			if (ts.opts.ApprovalGrant != nil || approval.RequireHuman) && approvalCanProceed {
 				approvalArgs, approvalArgsErr = ts.agent.Tools.ApprovalArguments(
 					execCtx,
 					toolName,
@@ -608,10 +612,6 @@ toolLoop:
 				runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
 				continue
 			}
-		}
-
-		if denyByTurnProfile() {
-			continue
 		}
 
 		loopDecision, toolSemantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)

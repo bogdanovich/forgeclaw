@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
 func TestGatewayInvocationStorePersistsPreparedBinding(t *testing.T) {
@@ -29,10 +31,10 @@ func TestGatewayInvocationStorePersistsPreparedBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, found := reloaded.ByToolCall(plan.AgentID, plan.SessionID, "call-1")
-	if !found || got.ExpectedPlanHash != plan.PlanHash ||
+	got, found, err := reloaded.ByToolCall(plan.AgentID, plan.SessionID, "call-1")
+	if err != nil || !found || got.ExpectedPlanHash != plan.PlanHash ||
 		got.Plan.InvocationID != plan.InvocationID {
-		t.Fatalf("reloaded record = (%#v, %v)", got, found)
+		t.Fatalf("reloaded record = (%#v, %v, %v)", got, found, err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -56,6 +58,19 @@ func TestGatewayInvocationStoreRejectsToolCallRebinding(t *testing.T) {
 	) {
 		t.Fatalf("Prepare() error = %v", err)
 	}
+	if _, err := store.Prepare("other", "call-2", first); !errors.Is(
+		err,
+		ErrGatewayInvocationConflict,
+	) {
+		t.Fatalf("invocation retry error = %v", err)
+	}
+	reusedKey := gatewayTestPlan(t, "inv_other", first.IdempotencyKey, time.Now())
+	if _, err := store.Prepare("vpn", "call-2", reusedKey); !errors.Is(
+		err,
+		ErrGatewayInvocationConflict,
+	) {
+		t.Fatalf("idempotency retry error = %v", err)
+	}
 }
 
 func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
@@ -64,27 +79,101 @@ func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.MarkDispatched(plan.InvocationID, "wrong"); !errors.Is(
+	owner := GatewayInvocationOwner{
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID, ToolCallID: "call-1",
+	}
+	wrongOwner := owner
+	wrongOwner.ToolCallID = "call-other"
+	if _, err := store.MarkDispatched(
+		wrongOwner,
+		plan.InvocationID,
+		plan.PlanHash,
+	); !errors.Is(err, ErrGatewayInvocationConflict) {
+		t.Fatalf("wrong owner error = %v", err)
+	}
+	if _, err := store.MarkDispatched(owner, plan.InvocationID, "wrong"); !errors.Is(
 		err,
 		ErrGatewayInvocationConflict,
 	) {
 		t.Fatalf("wrong hash error = %v", err)
 	}
-	dispatched, err := store.MarkDispatched(plan.InvocationID, plan.PlanHash)
+	dispatched, err := store.MarkDispatched(owner, plan.InvocationID, plan.PlanHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if dispatched.State != GatewayInvocationDispatched || dispatched.DispatchedAt == 0 {
 		t.Fatalf("dispatched record = %#v", dispatched)
 	}
-	if _, found := store.Lookup("other", plan.SessionID, plan.InvocationID); found {
+	if _, found, err := store.Lookup("other", plan.SessionID, plan.InvocationID); err != nil || found {
 		t.Fatal("different agent accessed invocation")
 	}
-	if _, found := store.Lookup(plan.AgentID, "other", plan.InvocationID); found {
+	if _, found, err := store.Lookup(plan.AgentID, "other", plan.InvocationID); err != nil || found {
 		t.Fatal("different session accessed invocation")
 	}
-	if _, found := store.Lookup(plan.AgentID, plan.SessionID, plan.InvocationID); !found {
+	if _, found, err := store.Lookup(
+		plan.AgentID,
+		plan.SessionID,
+		plan.InvocationID,
+	); err != nil || !found {
 		t.Fatal("invocation owner could not access record")
+	}
+}
+
+func TestGatewayInvocationStoreRejectsExpiredPreparedAuthority(t *testing.T) {
+	now := time.Now()
+	store := newGatewayInvocationStore("", 8, 1024*1024, func() time.Time { return now })
+	plan := gatewayTestPlan(t, "inv_expired", "idem_expired", now)
+	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	if _, found, err := store.ByToolCall(
+		plan.AgentID,
+		plan.SessionID,
+		"call-1",
+	); err != nil || found {
+		t.Fatalf("expired ByToolCall() = (%v, %v)", found, err)
+	}
+	owner := GatewayInvocationOwner{
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID, ToolCallID: "call-1",
+	}
+	if _, err := store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	); !errors.Is(err, ErrGatewayInvocationNotFound) {
+		t.Fatalf("expired MarkDispatched() error = %v", err)
+	}
+}
+
+func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
+	store := newGatewayInvocationStore("virtual", 8, 1024*1024, time.Now)
+	store.writeFile = func(string, []byte, os.FileMode) error {
+		return &fileutil.CommittedWriteError{Err: errors.New("sync directory")}
+	}
+	plan := gatewayTestPlan(t, "inv_committed", "idem_committed", time.Now())
+	if _, err := store.Prepare("vpn", "call-1", plan); err == nil ||
+		!fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	got, found, err := store.ByToolCall(plan.AgentID, plan.SessionID, "call-1")
+	if err != nil || !found || got.Plan.InvocationID != plan.InvocationID {
+		t.Fatalf("committed record = (%#v, %v, %v)", got, found, err)
+	}
+	owner := GatewayInvocationOwner{
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID, ToolCallID: "call-1",
+	}
+	_, dispatchErr := store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	)
+	if dispatchErr == nil || !fileutil.IsCommittedWriteError(dispatchErr) {
+		t.Fatalf("MarkDispatched() error = %v", dispatchErr)
+	}
+	got, found, err = store.Lookup(plan.AgentID, plan.SessionID, plan.InvocationID)
+	if err != nil || !found || got.State != GatewayInvocationDispatched {
+		t.Fatalf("committed dispatch = (%#v, %v, %v)", got, found, err)
 	}
 }
 
@@ -108,11 +197,55 @@ func TestGatewayInvocationStoreLoadRejectsMutatedPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if _, loadErr := NewGatewayInvocationStore(path, 8, 1024*1024); loadErr == nil {
+		t.Fatal("mutated persisted plan was accepted")
+	}
+}
+
+func TestGatewayInvocationStoreLoadPrunesExpiredPreparedAuthority(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node_invocations.json")
+	preparedAt := time.Now().Add(-2 * time.Minute)
+	plan := gatewayTestPlan(t, "inv_stale", "idem_stale", preparedAt)
+	now := time.Now().UnixNano()
+	data, err := json.Marshal(gatewayInvocationDocument{
+		Version: gatewayInvocationStoreVersion,
+		Records: map[string]GatewayInvocationRecord{plan.InvocationID: {
+			Target:           "vpn",
+			ToolCallID:       "call-1",
+			Plan:             plan,
+			ExpectedPlanHash: plan.PlanHash,
+			State:            GatewayInvocationPrepared,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewGatewayInvocationStore(path, 8, 1024*1024); err == nil {
-		t.Fatal("mutated persisted plan was accepted")
+	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	store, err := NewGatewayInvocationStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, found, lookupErr := store.ByToolCall(plan.AgentID, plan.SessionID, "call-1")
+	if lookupErr != nil || found {
+		t.Fatalf("expired loaded record = (%v, %v)", found, lookupErr)
+	}
+	var document gatewayInvocationDocument
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decodeErr := json.Unmarshal(persisted, &document); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if len(document.Records) != 0 {
+		t.Fatalf("persisted stale records = %#v", document.Records)
 	}
 }
 
