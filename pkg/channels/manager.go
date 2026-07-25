@@ -2198,15 +2198,15 @@ func (m *Manager) runWorkerOwned(
 			for _, chunk := range chunks {
 				chunkMsg := msg
 				chunkMsg.Content = chunk
-				chunkIDs, chunkDelivered, _, sendErr := m.sendWithRetryPolicy(
+				result := m.sendWithRetryPolicy(
 					ctx, name, w, chunkMsg, true, publishNoOutcome,
 				)
-				if !chunkDelivered {
-					m.publishOutboundFailed(name, msg, sendErr, false)
+				if !result.Delivered() {
+					m.publishOutboundFailed(name, msg, result.Err, false)
 					delivered = false
 					break
 				}
-				messageIDs = append(messageIDs, chunkIDs...)
+				messageIDs = append(messageIDs, result.MessageIDs...)
 			}
 			m.completeToolFeedbackTerminals(ctx, terminals, delivered)
 			if delivered {
@@ -2286,13 +2286,13 @@ func (m *Manager) sendWithRetry(
 	name string,
 	w *channelWorker,
 	msg bus.OutboundMessage,
-) ([]string, bool, bool, error) {
+) DeliveryResult[bus.OutboundMessage] {
 	terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
-	messageIDs, delivered, ambiguous, err := m.sendWithRetryPolicy(
+	result := m.sendWithRetryPolicy(
 		ctx, name, w, msg, true, publishDefinitiveOutcome,
 	)
-	m.completeToolFeedbackTerminals(ctx, terminals, delivered)
-	return messageIDs, delivered, ambiguous, err
+	m.completeToolFeedbackTerminals(ctx, terminals, result.Delivered())
+	return result
 }
 
 func (m *Manager) sendWithRetryPolicy(
@@ -2302,7 +2302,7 @@ func (m *Manager) sendWithRetryPolicy(
 	msg bus.OutboundMessage,
 	retryAmbiguous bool,
 	outcome outcomePublication,
-) ([]string, bool, bool, error) {
+) DeliveryResult[bus.OutboundMessage] {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
@@ -2322,7 +2322,7 @@ func (m *Manager) sendWithRetryPolicy(
 		if outcome.failure(false) {
 			m.publishOutboundFailed(name, msg, err, false)
 		}
-		return nil, false, false, err
+		return RejectedDelivery[bus.OutboundMessage](err)
 	}
 
 	isToolFeedback := outboundMessageIsToolFeedback(msg)
@@ -2332,103 +2332,83 @@ func (m *Manager) sendWithRetryPolicy(
 		if outcome.success() {
 			m.publishOutboundSent(name, msg, msgIDs)
 		}
-		return msgIDs, true, false, nil
+		return SuccessfulDelivery[bus.OutboundMessage](msgIDs)
 	}
 
-	var lastErr error
-	var msgIDs []string
-	ambiguous := false
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		attemptStart := time.Now()
-		if isToolFeedback && m.toolFeedback != nil {
-			msgIDs, lastErr = m.deliverToolFeedback(ctx, name, w.ch, msg, w.ch.Send)
-		} else {
-			msgIDs, lastErr = w.ch.Send(ctx, msg)
-		}
-		if lastErr == nil {
-			if attempt > 0 {
-				logger.InfoCF("channels", "Outbound send recovered after retry", map[string]any{
-					"channel":        name,
-					"chat_id":        outboundMessageChatID(msg),
-					"attempt":        attempt + 1,
-					"max_attempts":   maxRetries + 1,
-					"duration_ms":    time.Since(attemptStart).Milliseconds(),
-					"classification": "success_after_retry",
-				})
+	result := DeliverWithRetry(
+		ctx,
+		[]bus.OutboundMessage{msg},
+		DeliveryRetryPolicy{
+			MaxRetries:     maxRetries,
+			RetryAmbiguous: retryAmbiguous,
+			RateLimitDelay: rateLimitDelay,
+			BaseBackoff:    baseBackoff,
+			MaxBackoff:     maxBackoff,
+		},
+		func(ctx context.Context, pending []bus.OutboundMessage) DeliveryResult[bus.OutboundMessage] {
+			attemptMsg := pending[0]
+			var msgIDs []string
+			var err error
+			if isToolFeedback && m.toolFeedback != nil {
+				msgIDs, err = m.deliverToolFeedback(ctx, name, w.ch, attemptMsg, w.ch.Send)
+			} else {
+				msgIDs, err = w.ch.Send(ctx, attemptMsg)
 			}
-			if outcome.success() {
-				m.publishOutboundSent(name, msg, msgIDs)
+			if err == nil {
+				return SuccessfulDelivery[bus.OutboundMessage](msgIDs)
 			}
-			return msgIDs, true, false, nil
-		}
-		if len(msgIDs) > 0 ||
-			(!errors.Is(lastErr, ErrNotRunning) &&
-				!errors.Is(lastErr, ErrSendFailed) &&
-				!errors.Is(lastErr, ErrRateLimit)) {
-			ambiguous = true
-		}
-
-		classification := classifySendError(lastErr)
-		logger.WarnCF("channels", "Outbound send attempt failed", map[string]any{
-			"channel":        name,
-			"chat_id":        outboundMessageChatID(msg),
-			"attempt":        attempt + 1,
-			"max_attempts":   maxRetries + 1,
-			"duration_ms":    time.Since(attemptStart).Milliseconds(),
-			"classification": classification,
-			"error":          lastErr.Error(),
-		})
-		if ambiguous && !retryAmbiguous {
-			break
-		}
-
-		// Permanent failures — don't retry
-		if errors.Is(lastErr, ErrNotRunning) || errors.Is(lastErr, ErrSendFailed) {
-			break
-		}
-
-		// Last attempt exhausted — don't sleep
-		if attempt == maxRetries {
-			break
-		}
-
-		// Rate limit error — fixed delay
-		if errors.Is(lastErr, ErrRateLimit) {
-			select {
-			case <-time.After(rateLimitDelay):
-				continue
-			case <-ctx.Done():
-				if outcome.failure(ambiguous) {
-					m.publishOutboundFailed(name, msg, ctx.Err(), false)
+			return FailedDelivery[bus.OutboundMessage](msgIDs, nil, 0, err)
+		},
+		func(attempt DeliveryAttempt) {
+			if attempt.Err == nil {
+				if attempt.Number > 1 {
+					logger.InfoCF("channels", "Outbound send recovered after retry", map[string]any{
+						"channel":        name,
+						"chat_id":        outboundMessageChatID(msg),
+						"attempt":        attempt.Number,
+						"max_attempts":   maxRetries + 1,
+						"duration_ms":    attempt.Duration.Milliseconds(),
+						"classification": "success_after_retry",
+					})
 				}
-				return nil, false, ambiguous, ctx.Err()
+				return
 			}
+			logger.WarnCF("channels", "Outbound send attempt failed", map[string]any{
+				"channel":        name,
+				"chat_id":        outboundMessageChatID(msg),
+				"attempt":        attempt.Number,
+				"max_attempts":   maxRetries + 1,
+				"duration_ms":    attempt.Duration.Milliseconds(),
+				"classification": classifySendError(attempt.Err),
+				"error":          attempt.Err.Error(),
+			})
+		},
+	)
+	if result.Delivered() {
+		if outcome.success() {
+			m.publishOutboundSent(name, msg, result.MessageIDs)
 		}
-
-		// ErrTemporary or unknown error — exponential backoff
-		backoff := min(time.Duration(float64(baseBackoff)*math.Pow(2, float64(attempt))), maxBackoff)
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			if outcome.failure(ambiguous) {
-				m.publishOutboundFailed(name, msg, ctx.Err(), false)
-			}
-			return nil, false, ambiguous, ctx.Err()
-		}
+		return result
 	}
 
-	// All retries exhausted or permanent failure
+	lastErr := result.Err
+	if lastErr == nil {
+		lastErr = fmt.Errorf("channel delivery failed")
+		result.Err = lastErr
+	}
+
+	// All retries exhausted or permanent failure.
 	logger.ErrorCF("channels", "Send failed", map[string]any{
 		"channel": name,
 		"chat_id": outboundMessageChatID(msg),
 		"error":   lastErr.Error(),
-		"retries": maxRetries,
+		"retries": max(0, result.Attempts-1),
 	})
-	if outcome.failure(ambiguous) {
+	if outcome.failure(result.MayHaveDelivered()) {
 		m.publishOutboundFailed(name, msg, lastErr, false)
 	}
 
-	return nil, false, ambiguous, lastErr
+	return result
 }
 
 func classifySendError(err error) string {
@@ -2577,7 +2557,7 @@ func (m *Manager) runMediaWorkerOwned(
 			if !ok {
 				return
 			}
-			_, _ = m.sendMediaWithRetry(ctx, name, w, msg)
+			_ = m.sendMediaWithRetry(ctx, name, w, msg)
 		case <-ctx.Done():
 			m.failPendingOutboundMedia(name, w.mediaQueue, ctx.Err())
 			if closeAdmission != nil {
@@ -2615,11 +2595,10 @@ func (m *Manager) sendMediaWithRetry(
 	name string,
 	w *channelWorker,
 	msg bus.OutboundMediaMessage,
-) ([]string, error) {
-	messageIDs, _, err := m.sendMediaWithRetryPolicy(
+) DeliveryResult[bus.OutboundMediaMessage] {
+	return m.sendMediaWithRetryPolicy(
 		ctx, name, w, msg, publishDefinitiveOutcome,
 	)
-	return messageIDs, err
 }
 
 func (m *Manager) sendMediaWithRetryPolicy(
@@ -2628,7 +2607,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 	w *channelWorker,
 	msg bus.OutboundMediaMessage,
 	outcome outcomePublication,
-) ([]string, bool, error) {
+) DeliveryResult[bus.OutboundMediaMessage] {
 	ms, ok := w.ch.(MediaSender)
 	if !ok {
 		err := fmt.Errorf("channel %q does not support media sending", name)
@@ -2639,7 +2618,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 		if outcome.failure(false) {
 			m.publishOutboundMediaFailed(name, msg, err)
 		}
-		return nil, false, err
+		return RejectedDelivery[bus.OutboundMediaMessage](err)
 	}
 
 	// Rate limit: wait for token
@@ -2659,7 +2638,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 		if outcome.failure(false) {
 			m.publishOutboundMediaFailed(name, msg, err)
 		}
-		return nil, false, err
+		return RejectedDelivery[bus.OutboundMediaMessage](err)
 	}
 
 	terminalSucceeded := false
@@ -2681,61 +2660,34 @@ func (m *Manager) sendMediaWithRetryPolicy(
 	// Pre-send: stop typing and clean up any placeholder before sending media.
 	m.preSendMedia(ctx, name, msg, w.ch)
 
-	var lastErr error
-	var msgIDs []string
-	ambiguous := false
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		msgIDs, lastErr = ms.SendMedia(ctx, msg)
-		if lastErr == nil {
-			terminalSucceeded = true
-			if outcome.success() {
-				m.publishOutboundMediaSent(name, msg, msgIDs)
-			}
-			return msgIDs, false, nil
+	result := DeliverWithRetry(
+		ctx,
+		[]bus.OutboundMediaMessage{msg},
+		DeliveryRetryPolicy{
+			MaxRetries:     maxRetries,
+			RetryAmbiguous: true,
+			RateLimitDelay: rateLimitDelay,
+			BaseBackoff:    baseBackoff,
+			MaxBackoff:     maxBackoff,
+		},
+		func(ctx context.Context, pending []bus.OutboundMediaMessage) DeliveryResult[bus.OutboundMediaMessage] {
+			msgIDs, err := ms.SendMedia(ctx, pending[0])
+			return FailedDelivery[bus.OutboundMediaMessage](msgIDs, nil, 0, err)
+		},
+		nil,
+	)
+	if result.Delivered() {
+		terminalSucceeded = true
+		if outcome.success() {
+			m.publishOutboundMediaSent(name, msg, result.MessageIDs)
 		}
-		if len(msgIDs) > 0 ||
-			(!errors.Is(lastErr, ErrNotRunning) &&
-				!errors.Is(lastErr, ErrSendFailed) &&
-				!errors.Is(lastErr, ErrRateLimit)) {
-			ambiguous = true
-		}
-		if len(msgIDs) > 0 {
-			break
-		}
+		return result
+	}
 
-		// Permanent failures — don't retry
-		if errors.Is(lastErr, ErrNotRunning) || errors.Is(lastErr, ErrSendFailed) {
-			break
-		}
-
-		// Last attempt exhausted — don't sleep
-		if attempt == maxRetries {
-			break
-		}
-
-		// Rate limit error — fixed delay
-		if errors.Is(lastErr, ErrRateLimit) {
-			select {
-			case <-time.After(rateLimitDelay):
-				continue
-			case <-ctx.Done():
-				if outcome.failure(ambiguous) {
-					m.publishOutboundMediaFailed(name, msg, ctx.Err())
-				}
-				return nil, ambiguous, ctx.Err()
-			}
-		}
-
-		// ErrTemporary or unknown error — exponential backoff
-		backoff := min(time.Duration(float64(baseBackoff)*math.Pow(2, float64(attempt))), maxBackoff)
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			if outcome.failure(ambiguous) {
-				m.publishOutboundMediaFailed(name, msg, ctx.Err())
-			}
-			return nil, ambiguous, ctx.Err()
-		}
+	lastErr := result.Err
+	if lastErr == nil {
+		lastErr = fmt.Errorf("channel media delivery failed")
+		result.Err = lastErr
 	}
 
 	// All retries exhausted or permanent failure
@@ -2743,12 +2695,12 @@ func (m *Manager) sendMediaWithRetryPolicy(
 		"channel": name,
 		"chat_id": outboundMediaChatID(msg),
 		"error":   lastErr.Error(),
-		"retries": maxRetries,
+		"retries": max(0, result.Attempts-1),
 	})
-	if outcome.failure(ambiguous) {
+	if outcome.failure(result.MayHaveDelivered()) {
 		m.publishOutboundMediaFailed(name, msg, lastErr)
 	}
-	return nil, ambiguous, lastErr
+	return result
 }
 
 // runTTLJanitor periodically scans the typingStops, placeholders, and stream
@@ -3151,20 +3103,20 @@ func (m *Manager) sendMessageWithRetryPolicy(
 		for _, chunk := range chunks {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
-			if chunkIDs, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
+			result := m.sendWithRetryPolicy(
 				ctx, channelName, w, chunkMsg, retryAmbiguous, publishNoOutcome,
-			); !delivered {
-				logicalAmbiguous := ambiguous || deliveredChunks > 0
+			)
+			if !result.Delivered() {
+				logicalAmbiguous := result.MayHaveDelivered() || deliveredChunks > 0
 				if outcome.failure(logicalAmbiguous) {
-					m.publishOutboundFailed(channelName, msg, sendErr, false)
+					m.publishOutboundFailed(channelName, msg, result.Err, false)
 				}
 				return newDeliveryError(
-					fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),
+					fmt.Errorf("channel %s failed to deliver message: %w", channelName, result.Err),
 					logicalAmbiguous,
 				)
-			} else {
-				messageIDs = append(messageIDs, chunkIDs...)
 			}
+			messageIDs = append(messageIDs, result.MessageIDs...)
 			deliveredChunks++
 		}
 		if outcome.success() {
@@ -3175,12 +3127,13 @@ func (m *Manager) sendMessageWithRetryPolicy(
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
 		}
-		if _, delivered, ambiguous, sendErr := m.sendWithRetryPolicy(
+		result := m.sendWithRetryPolicy(
 			ctx, channelName, w, msg, retryAmbiguous, outcome,
-		); !delivered {
+		)
+		if !result.Delivered() {
 			return newDeliveryError(
-				fmt.Errorf("channel %s failed to deliver message: %w", channelName, sendErr),
-				ambiguous,
+				fmt.Errorf("channel %s failed to deliver message: %w", channelName, result.Err),
+				result.MayHaveDelivered(),
 			)
 		}
 		terminalSucceeded = true
@@ -3253,9 +3206,9 @@ func (m *Manager) sendMedia(
 		)
 	}
 
-	_, ambiguous, err := m.sendMediaWithRetryPolicy(ctx, channelName, w, msg, outcome)
-	if err != nil {
-		return newDeliveryError(err, ambiguous)
+	result := m.sendMediaWithRetryPolicy(ctx, channelName, w, msg, outcome)
+	if !result.Delivered() {
+		return newDeliveryError(result.Err, result.MayHaveDelivered())
 	}
 	return nil
 }

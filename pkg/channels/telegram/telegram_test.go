@@ -1789,6 +1789,29 @@ func TestSend_LongMessage_MarkdownV2Fallback_StopsOnError(t *testing.T) {
 	)
 }
 
+func TestSend_LongMessagePreservesIDsBeforeChunkFailure(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(_ context.Context, _ string, _ *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 2 {
+				return nil, errors.New("second chunk failed")
+			}
+			return successResponseWithMessageID(t, 101), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	messageIDs, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: strings.Repeat("x", telegramTextLimit+10),
+	})
+
+	require.Error(t, err)
+	assert.Equal(t, []string{"101"}, messageIDs)
+	assert.Equal(t, 2, callCount)
+}
+
 func TestSend_MarkdownShortButHTMLEscapingWouldBeLong_SplitsLegacyHTML(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
