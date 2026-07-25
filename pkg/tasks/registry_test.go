@@ -999,6 +999,15 @@ func TestRegistryTraceConfirmationRetriesCommittedWrite(t *testing.T) {
 	); confirmed || !fileutil.IsCommittedWriteError(err) {
 		t.Fatalf("first confirmation = %v, error = %v", confirmed, err)
 	}
+	if current, _ := registry.Get(record.TaskID); !current.TraceCapturePending {
+		t.Fatal("unconfirmed committed write cleared the in-memory marker")
+	}
+	if err := registry.Upsert(Record{
+		TaskID: record.TaskID, Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); !errors.Is(err, ErrTraceCapturePending) {
+		t.Fatalf("reuse after unconfirmed marker clear error = %v", err)
+	}
 	current, confirmed, err := registry.ConfirmTraceCapturePersisted(
 		record.TaskID,
 		record.GenerationID,
@@ -1011,8 +1020,14 @@ func TestRegistryTraceConfirmationRetriesCommittedWrite(t *testing.T) {
 		t.Fatalf("writes = %d, unsynced = %v", writes, registry.unsyncedWrite)
 	}
 	reloaded := NewRegistry(store)
-	if record, ok := reloaded.Get("terminal"); !ok || record.TraceCapturePending {
-		t.Fatalf("reloaded confirmation = %#v, exists = %v", record, ok)
+	if reloadedRecord, ok := reloaded.Get("terminal"); !ok || reloadedRecord.TraceCapturePending {
+		t.Fatalf("reloaded confirmation = %#v, exists = %v", reloadedRecord, ok)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: record.TaskID, Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatalf("reuse after confirmed marker clear: %v", err)
 	}
 }
 

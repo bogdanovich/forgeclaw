@@ -532,9 +532,10 @@ func (r *Registry) ConfirmTraceCapturePersisted(
 	record.TraceCapturePending = false
 	r.records[taskID] = record
 	if err := r.saveLocked(); err != nil {
-		if !fileutil.IsCommittedWriteError(err) {
-			r.restoreStateLocked(rollback)
-		}
+		// A visible post-rename snapshot is not a durability acknowledgement.
+		// Keep the in-memory marker until a later save confirms directory sync,
+		// so task ID reuse cannot replace the generation being acknowledged.
+		r.restoreStateLocked(rollback)
 		return cloneTaskRecord(r.records[taskID]), false, err
 	}
 	return cloneTaskRecord(record), true, nil
