@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/nodes/protocol"
 )
@@ -131,6 +132,40 @@ func TestAdmissionRevocationWaitsForDispatchWrite(t *testing.T) {
 			result.dispatched,
 			result.err,
 		)
+	}
+}
+
+func TestAdmissionWritesAfterCommittedDispatchError(t *testing.T) {
+	_, handler, nodeID, plan := testInvocationAdmission(t, "")
+	connection := newStubPeerConnection()
+	session := newPeer(connection)
+	session.markReady()
+	releaseSession, err := handler.sessions.Claim(nodeID, session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseSession()
+	commitErr := &fileutil.CommittedWriteError{Err: errors.New("sync invocation directory")}
+
+	_, dispatched, err := handler.Invoke(
+		t.Context(),
+		nodeID,
+		plan,
+		func() error { return commitErr },
+	)
+	if !dispatched || !errors.Is(err, commitErr) {
+		t.Fatalf("Invoke() = (dispatched %v, error %v)", dispatched, err)
+	}
+	select {
+	case <-connection.writeStarted:
+	default:
+		t.Fatal("committed dispatch error prevented frame write")
+	}
+	session.pendingMu.Lock()
+	_, abandoned := session.abandoned["req_1"]
+	session.pendingMu.Unlock()
+	if !abandoned {
+		t.Fatal("post-write commit warning did not retain late-response correlation")
 	}
 }
 

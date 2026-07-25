@@ -127,7 +127,11 @@ func (session *peer) request(
 		IdempotencyKey: idempotencyKey,
 	}, dispatch)
 	if err != nil {
-		session.removePending(id)
+		if dispatched {
+			session.abandon(id)
+		} else {
+			session.removePending(id)
+		}
 		return protocol.Envelope{}, dispatched, err
 	}
 	select {

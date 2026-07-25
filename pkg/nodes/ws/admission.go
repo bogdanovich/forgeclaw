@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/nodes/protocol"
 )
@@ -335,7 +336,10 @@ func (handler *AdmissionHandler) Invoke(
 					}
 					if commit != nil {
 						if commitErr := commit(); commitErr != nil {
-							return commitErr
+							if !fileutil.IsCommittedWriteError(commitErr) {
+								return commitErr
+							}
+							return errors.Join(commitErr, write())
 						}
 					}
 					return write()
