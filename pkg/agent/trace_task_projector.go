@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	taskTraceAdmissionRetryDelay  = 100 * time.Millisecond
-	maxCompletedTaskTraces        = 4096
-	maxPendingTaskTraceAdmissions = 128
+	taskTraceAdmissionRetryDelay    = 100 * time.Millisecond
+	taskTraceSubscriptionRetryDelay = time.Second
+	maxCompletedTaskTraces          = 4096
+	maxPendingTaskTraceAdmissions   = 128
 )
 
 var errTaskTraceAlreadyDurable = errors.New("task trace is already durable")
@@ -65,17 +66,18 @@ type taskTraceProjector struct {
 	closed   bool
 	settings traceCaptureSettings
 
-	registries       map[string]*taskregistry.Registry
-	subs             map[string]taskRegistrySubscription
-	traces           map[taskTraceKey]*taskTraceState
-	completed        map[taskTraceKey]int64
-	order            []taskTraceKey
-	retryTimer       *time.Timer
-	submit           func(traceCaptureSettings, *activeTraceCapture) error
-	submitWait       func(context.Context, traceCaptureSettings, *activeTraceCapture) error
-	awaitPersistence bool
-	inflight         map[string]taskTraceKey
-	nextSubmission   uint64
+	registries             map[string]*taskregistry.Registry
+	subs                   map[string]taskRegistrySubscription
+	traces                 map[taskTraceKey]*taskTraceState
+	completed              map[taskTraceKey]int64
+	order                  []taskTraceKey
+	retryTimer             *time.Timer
+	subscriptionRetryTimer *time.Timer
+	submit                 func(traceCaptureSettings, *activeTraceCapture) error
+	submitWait             func(context.Context, traceCaptureSettings, *activeTraceCapture) error
+	awaitPersistence       bool
+	inflight               map[string]taskTraceKey
+	nextSubmission         uint64
 
 	pendingAdmissions int
 	overflowDeferrals uint64
@@ -127,8 +129,15 @@ func (p *taskTraceProjector) attach(workspace string, registry *taskregistry.Reg
 		p.mu.Unlock()
 		return
 	}
-	if _, exists := p.registries[workspace]; exists {
+	if existing, exists := p.registries[workspace]; exists {
+		retry := existing == registry && p.settings.enabled
+		if _, subscribed := p.subs[workspace]; subscribed {
+			retry = false
+		}
 		p.mu.Unlock()
+		if retry {
+			p.subscribe(workspace, registry)
+		}
 		return
 	}
 	p.registries[workspace] = registry
@@ -187,6 +196,7 @@ func (p *taskTraceProjector) subscribe(
 	}
 	if p.awaitPersistence {
 		if err := registry.SetTraceCaptureProtection(true); err != nil {
+			p.scheduleSubscriptionRetryLocked()
 			p.mu.Unlock()
 			logger.WarnCF("evaltrace", "Failed to protect task trace snapshot", map[string]any{
 				"workspace": workspace,
@@ -621,6 +631,35 @@ func (p *taskTraceProjector) scheduleRetryLocked() {
 	p.retryTimer = time.AfterFunc(taskTraceAdmissionRetryDelay, p.retryPending)
 }
 
+func (p *taskTraceProjector) scheduleSubscriptionRetryLocked() {
+	if p.subscriptionRetryTimer != nil || p.closed || !p.settings.enabled {
+		return
+	}
+	p.subscriptionRetryTimer = time.AfterFunc(
+		taskTraceSubscriptionRetryDelay,
+		p.retrySubscriptions,
+	)
+}
+
+func (p *taskTraceProjector) retrySubscriptions() {
+	p.mu.Lock()
+	p.subscriptionRetryTimer = nil
+	if p.closed || !p.settings.enabled {
+		p.mu.Unlock()
+		return
+	}
+	registries := make(map[string]*taskregistry.Registry)
+	for workspace, registry := range p.registries {
+		if _, subscribed := p.subs[workspace]; !subscribed {
+			registries[workspace] = registry
+		}
+	}
+	p.mu.Unlock()
+	for workspace, registry := range registries {
+		p.subscribe(workspace, registry)
+	}
+}
+
 func (p *taskTraceProjector) retryPending() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -713,6 +752,10 @@ func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
 	if p.retryTimer != nil {
 		p.retryTimer.Stop()
 		p.retryTimer = nil
+	}
+	if p.subscriptionRetryTimer != nil {
+		p.subscriptionRetryTimer.Stop()
+		p.subscriptionRetryTimer = nil
 	}
 	subs := p.takeSubscriptionsLocked()
 	keys := make([]taskTraceKey, 0, len(p.traces))
@@ -917,6 +960,10 @@ func (p *taskTraceProjector) clearCaptureStateLocked() {
 	if p.retryTimer != nil {
 		p.retryTimer.Stop()
 		p.retryTimer = nil
+	}
+	if p.subscriptionRetryTimer != nil {
+		p.subscriptionRetryTimer.Stop()
+		p.subscriptionRetryTimer = nil
 	}
 	p.traces = make(map[taskTraceKey]*taskTraceState)
 	p.completed = make(map[taskTraceKey]int64)

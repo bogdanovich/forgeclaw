@@ -1086,6 +1086,51 @@ func TestTaskTraceProjectorRejectedSubscribeDoesNotEnableProtection(t *testing.T
 	}
 }
 
+func TestTaskTraceProjectorRetriesFailedProtectionInstallation(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	record := finishTaskForTrace(t, registry, "protection-retry", "session", 0)
+	stateDir := filepath.Dir(taskregistry.WorkspaceStorePath(workspace))
+	if err := os.Chmod(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+	manager.attachTaskRegistry(workspace, registry)
+	manager.tasks.mu.Lock()
+	_, subscribed := manager.tasks.subs[workspace]
+	retryScheduled := manager.tasks.subscriptionRetryTimer != nil
+	manager.tasks.mu.Unlock()
+	if subscribed || !retryScheduled {
+		t.Fatalf(
+			"failed installation subscribed = %v, retry scheduled = %v",
+			subscribed,
+			retryScheduled,
+		)
+	}
+	if registryRecord(t, registry, record.TaskID).TraceCapturePending {
+		t.Fatal("failed protection installation retained an unowned marker")
+	}
+
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	waitForTraceFile(t, workspace)
+	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
+	manager.tasks.mu.Lock()
+	_, subscribed = manager.tasks.subs[workspace]
+	manager.tasks.mu.Unlock()
+	if !subscribed {
+		t.Fatal("recovered protection installation did not subscribe")
+	}
+}
+
 func TestTaskTraceProjectorReopenReleasesRetrySlot(t *testing.T) {
 	workspace := t.TempDir()
 	var attempts atomic.Int32
