@@ -36,8 +36,15 @@ type Snapshot struct {
 	CommitSequence        uint64   `json:"commit_sequence,omitempty"`
 	TraceCaptureEnabled   bool     `json:"trace_capture_enabled,omitempty"`
 	TraceCaptureMaxEvents int      `json:"trace_capture_max_events,omitempty"`
+	TraceCaptureIntentID  string   `json:"trace_capture_intent_id,omitempty"`
 	Records               []Record `json:"records"`
 	Events                []Event  `json:"events,omitempty"`
+}
+
+type traceCaptureIntent struct {
+	SchemaVersion string `json:"schema_version"`
+	ID            string `json:"id"`
+	MaxEvents     int    `json:"max_events"`
 }
 
 type Observer func(EventObservation)
@@ -69,6 +76,7 @@ type Registry struct {
 	traceCaptureProtectionPending bool
 	traceCaptureProtectionDesired bool
 	traceCaptureMaxEvents         int
+	traceCaptureIntentID          string
 	unsyncedWrite                 bool
 	writeAtomic                   func(string, []byte, os.FileMode) error
 }
@@ -947,6 +955,18 @@ func (r *Registry) SetTraceCaptureProtection(
 	if enabled && maxEvents <= 0 {
 		maxEvents = DefaultMaxEvents
 	}
+	intentID := r.traceCaptureIntentID
+	if enabled && !r.traceCaptureProtection &&
+		!(r.traceCaptureProtectionPending &&
+			r.traceCaptureProtectionDesired) {
+		intentID, err = r.persistTraceCaptureEnableIntentLocked(maxEvents)
+		if err != nil {
+			return err
+		}
+		r.traceCaptureIntentID = intentID
+		r.traceCaptureProtectionPending = true
+		r.traceCaptureProtectionDesired = true
+	}
 	r.traceCaptureProtection = enabled
 	r.traceCaptureProtectionDesired = enabled
 	if maxEvents > 0 {
@@ -965,6 +985,9 @@ func (r *Registry) SetTraceCaptureProtection(
 	if err := r.saveLocked(); err != nil {
 		if !fileutil.IsCommittedWriteError(err) {
 			r.restoreSnapshotLocked(before)
+		}
+		if enabled && intentID != "" {
+			r.traceCaptureIntentID = intentID
 		}
 		r.traceCaptureProtectionDesired = enabled
 		r.traceCaptureProtectionPending = true
@@ -1397,26 +1420,40 @@ func (r *Registry) lockAndReloadContextLocked(
 }
 
 func (r *Registry) load() error {
+	pendingBefore := r.traceCaptureProtectionPending
+	desiredBefore := r.traceCaptureProtectionDesired
+	intentBefore := r.traceCaptureIntentID
 	data, err := os.ReadFile(r.storePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	var snapshot Snapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return err
-	}
-	if snapshot.SchemaVersion != SnapshotSchemaVersion {
-		return fmt.Errorf("unsupported interaction snapshot schema %q", snapshot.SchemaVersion)
-	}
-	r.traceCaptureProtection = snapshot.TraceCaptureEnabled
-	if !r.traceCaptureProtectionPending {
-		r.traceCaptureProtectionDesired = snapshot.TraceCaptureEnabled
-	}
-	if snapshot.TraceCaptureMaxEvents > 0 {
-		r.traceCaptureMaxEvents = snapshot.TraceCaptureMaxEvents
+	if err == nil {
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return err
+		}
+		if snapshot.SchemaVersion != SnapshotSchemaVersion {
+			return fmt.Errorf(
+				"unsupported interaction snapshot schema %q",
+				snapshot.SchemaVersion,
+			)
+		}
+		r.traceCaptureProtection = snapshot.TraceCaptureEnabled
+		acknowledgesPendingEnable := pendingBefore && desiredBefore &&
+			intentBefore != "" &&
+			snapshot.TraceCaptureIntentID == intentBefore
+		if !pendingBefore || acknowledgesPendingEnable {
+			r.traceCaptureProtectionPending = false
+			r.traceCaptureProtectionDesired = snapshot.TraceCaptureEnabled
+			r.traceCaptureIntentID = snapshot.TraceCaptureIntentID
+		} else {
+			r.traceCaptureProtectionPending = pendingBefore
+			r.traceCaptureProtectionDesired = desiredBefore
+			r.traceCaptureIntentID = intentBefore
+		}
+		if snapshot.TraceCaptureMaxEvents > 0 {
+			r.traceCaptureMaxEvents = snapshot.TraceCaptureMaxEvents
+		}
 	}
 	activeSessions := make(map[string]string)
 	activeShortIDs := make(map[string]string)
@@ -1483,7 +1520,7 @@ func (r *Registry) load() error {
 	if r.commitSequence == 0 {
 		r.commitSequence = commitSequence
 	}
-	return nil
+	return r.loadTraceCaptureIntentLocked(snapshot.TraceCaptureIntentID)
 }
 
 type answerMessageIdentity struct {
@@ -1673,6 +1710,7 @@ func (r *Registry) snapshotLocked() Snapshot {
 		CommitSequence:        r.commitSequence,
 		TraceCaptureEnabled:   r.traceCaptureProtection,
 		TraceCaptureMaxEvents: r.traceCaptureMaxEvents,
+		TraceCaptureIntentID:  r.traceCaptureIntentID,
 		Records:               records,
 		Events:                cloneEvents(r.events),
 	}
@@ -1686,12 +1724,78 @@ func (r *Registry) restoreSnapshotLocked(snapshot Snapshot) {
 	r.events = cloneEvents(snapshot.Events)
 	r.commitSequence = snapshot.CommitSequence
 	r.traceCaptureProtection = snapshot.TraceCaptureEnabled
+	r.traceCaptureIntentID = snapshot.TraceCaptureIntentID
 	if !r.traceCaptureProtectionPending {
 		r.traceCaptureProtectionDesired = snapshot.TraceCaptureEnabled
 	}
 	if snapshot.TraceCaptureMaxEvents > 0 {
 		r.traceCaptureMaxEvents = snapshot.TraceCaptureMaxEvents
 	}
+}
+
+func (r *Registry) persistTraceCaptureEnableIntentLocked(
+	maxEvents int,
+) (string, error) {
+	if r.storePath == "" {
+		return "", nil
+	}
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate trace capture intent: %w", err)
+	}
+	intent := traceCaptureIntent{
+		SchemaVersion: "interaction_trace_capture_intent.v1",
+		ID:            hex.EncodeToString(raw),
+		MaxEvents:     maxEvents,
+	}
+	data, err := json.Marshal(intent)
+	if err != nil {
+		return "", err
+	}
+	if err := fileutil.WriteFileAtomic(
+		r.traceCaptureIntentPath(),
+		data,
+		0o600,
+	); err != nil {
+		return "", fmt.Errorf("persist trace capture enable intent: %w", err)
+	}
+	return intent.ID, nil
+}
+
+func (r *Registry) loadTraceCaptureIntentLocked(
+	acknowledgedID string,
+) error {
+	if r.storePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(r.traceCaptureIntentPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read trace capture intent: %w", err)
+	}
+	var intent traceCaptureIntent
+	if err := json.Unmarshal(data, &intent); err != nil {
+		return fmt.Errorf("decode trace capture intent: %w", err)
+	}
+	decoded, decodeErr := hex.DecodeString(intent.ID)
+	if intent.SchemaVersion != "interaction_trace_capture_intent.v1" ||
+		decodeErr != nil || len(decoded) != 16 || intent.MaxEvents <= 0 {
+		return errors.New("invalid trace capture enable intent")
+	}
+	if intent.ID == acknowledgedID {
+		return nil
+	}
+	r.traceCaptureIntentID = intent.ID
+	r.traceCaptureProtectionPending = true
+	r.traceCaptureProtectionDesired = true
+	r.traceCaptureMaxEvents = intent.MaxEvents
+	return nil
+}
+
+func (r *Registry) traceCaptureIntentPath() string {
+	return r.storePath + ".trace-capture-intent.json"
 }
 
 func (r *Registry) snapshotSizeLocked() int {

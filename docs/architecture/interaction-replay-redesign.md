@@ -315,9 +315,12 @@ incomplete trace rather than inventing transitions.
 The interaction registry snapshot owns the durable capture mode, journal
 limit, per-record pending marker, and bounded event journal. Every registry
 instance loading the same store therefore applies the same protection before
-committing a lifecycle event. Process-local desired-state tracking exists only
-to finish a failed enable or disable write; it cannot become a second history
-authority. Graceful runtime shutdown leaves the configured durable mode intact.
+committing a lifecycle event. Enabling capture first persists an intent ID and
+then acknowledges that ID in the registry snapshot. An unacknowledged intent
+makes every registry instance fail closed on pruning until a snapshot commits
+the requested protection. Process-local desired-state tracking only drives the
+retry; it cannot become a second history authority. Graceful runtime shutdown
+leaves the configured durable mode intact.
 
 Projectors may add typed links between traces. They do not copy one domain's
 state machine into another projector or append interaction transitions directly

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -761,13 +762,61 @@ func reconcileStoredInteractionTrace(
 	if existing.Truncation.Incomplete && !candidate.Truncation.Incomplete {
 		return candidate, true, nil
 	}
-	if traceRecordsExtend(existing.Records, candidate.Records) {
+	if traceRecordsContain(candidate.Records, existing.Records) {
 		improves := len(candidate.Records) > len(existing.Records) ||
-			existing.Truncation.Incomplete != candidate.Truncation.Incomplete ||
-			existing.Truncation.DroppedRecords != candidate.Truncation.DroppedRecords
-		return candidate, improves, nil
+			candidate.Truncation.DroppedRecords <
+				existing.Truncation.DroppedRecords
+		if improves {
+			return candidate, true, nil
+		}
 	}
 	return existing, false, nil
+}
+
+func traceRecordsContain(records, subset []evaltrace.Record) bool {
+	if len(subset) > len(records) {
+		return false
+	}
+	if len(subset) == 0 {
+		return true
+	}
+	for offset := 0; offset <= len(records)-len(subset); offset++ {
+		matches := true
+		for index := range subset {
+			if !interactionTraceRecordsEquivalent(
+				records[offset+index],
+				subset[index],
+			) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
+}
+
+func interactionTraceRecordsEquivalent(
+	left, right evaltrace.Record,
+) bool {
+	return left.OffsetNanos == right.OffsetNanos &&
+		left.Kind == right.Kind &&
+		left.Origin == right.Origin &&
+		left.Scope == right.Scope &&
+		left.Correlation == right.Correlation &&
+		compactJSONEqual(left.Data, right.Data)
+}
+
+func compactJSONEqual(left, right []byte) bool {
+	var compactLeft bytes.Buffer
+	var compactRight bytes.Buffer
+	if json.Compact(&compactLeft, left) != nil ||
+		json.Compact(&compactRight, right) != nil {
+		return false
+	}
+	return bytes.Equal(compactLeft.Bytes(), compactRight.Bytes())
 }
 
 func interactionErrorCode(record interactions.Record) string {

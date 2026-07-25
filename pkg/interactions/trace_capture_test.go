@@ -359,6 +359,106 @@ func TestTraceCaptureProtectionInstallationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestTraceCaptureFailedEnableIntentProtectsAcrossRegistryInstances(
+	t *testing.T,
+) {
+	registry, clock, path := newTestRegistry(t)
+	record := resolveInteraction(
+		t,
+		registry,
+		makeWaiting(
+			t,
+			registry,
+			clock,
+			"cross_instance_enable_failure",
+			"trace-cross-instance-enable",
+		),
+	)
+	realWrite := registry.writeAtomic
+	registry.writeAtomic = func(string, []byte, os.FileMode) error {
+		return errors.New("injected snapshot write failure")
+	}
+	if err := registry.SetTraceCaptureProtection(true, 20); err == nil {
+		t.Fatal("trace protection installation succeeded during injected failure")
+	}
+
+	other := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	if err := other.LastLoadError(); err != nil {
+		t.Fatal(err)
+	}
+	if !other.traceCaptureProtectionPending ||
+		!other.traceCaptureProtectionDesired {
+		t.Fatal("durable enable intent was not loaded by another instance")
+	}
+	clock.Advance(DefaultRetention + time.Hour)
+	if err := other.Prune(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := other.Get(record.ID); !ok {
+		t.Fatal("another instance pruned while enable intent was unresolved")
+	}
+
+	registry.writeAtomic = realWrite
+	if err := registry.SetTraceCaptureProtection(true, 20); err != nil {
+		t.Fatalf("retry trace protection: %v", err)
+	}
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	stored, ok := reloaded.Get(record.ID)
+	if err := reloaded.LastLoadError(); err != nil || !ok ||
+		!reloaded.traceCaptureProtection || !stored.TraceCapturePending {
+		t.Fatalf("durable protection retry = (%#v, %v, %v)", stored, ok, err)
+	}
+}
+
+func TestTraceCaptureAcknowledgedDisableSupersedesStaleEnableIntent(
+	t *testing.T,
+) {
+	registry, clock, path := newTestRegistry(t)
+	active := makeWaiting(
+		t,
+		registry,
+		clock,
+		"stale_enable_active",
+		"trace-stale-enable-active",
+	)
+	realWrite := registry.writeAtomic
+	registry.writeAtomic = func(string, []byte, os.FileMode) error {
+		return errors.New("injected snapshot write failure")
+	}
+	if err := registry.SetTraceCaptureProtection(true, 20); err == nil {
+		t.Fatal("trace protection installation succeeded during injected failure")
+	}
+
+	other := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	if err := other.SetTraceCaptureProtection(false, 0); err != nil {
+		t.Fatalf("disable from another instance: %v", err)
+	}
+	registry.writeAtomic = realWrite
+	if _, err := registry.ClaimAnswer(
+		active.ID,
+		active.Revision,
+		Answer{Text: "Staging"},
+		OutcomeAnswered,
+	); err != nil {
+		t.Fatalf("mutation through stale instance: %v", err)
+	}
+
+	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
+	stored, journal, ok := reloaded.GetTraceCapture(active.ID)
+	if err := reloaded.LastLoadError(); err != nil || !ok ||
+		reloaded.traceCaptureProtection ||
+		reloaded.traceCaptureProtectionPending ||
+		stored.TraceCapturePending || len(journal) != 0 {
+		t.Fatalf(
+			"acknowledged disable was resurrected = (%#v, %#v, %v, %v)",
+			stored,
+			journal,
+			ok,
+			err,
+		)
+	}
+}
+
 func TestTraceCaptureDisableFailureRetainsDesiredDisabledState(t *testing.T) {
 	registry, clock, path := newTestRegistry(t)
 	if err := registry.SetTraceCaptureProtection(true, 20); err != nil {

@@ -347,6 +347,51 @@ func TestReconcileInteractionTraceDoesNotDowngradeSameRevision(t *testing.T) {
 	}
 }
 
+func TestReconcileInteractionTracePreservesPrependedSameRevisionEvidence(
+	t *testing.T,
+) {
+	workspace := t.TempDir()
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	startedAt := time.Now().UTC()
+	record := interactionTraceRecord(
+		"interaction-prepended", "session-prepended", startedAt,
+	)
+	record.Status = interactions.StatusCancelled
+	record.Revision = 5
+	record.LastEventSeq = 5
+	record.Outcome = interactions.OutcomeCanceled
+	events := []interactions.Event{
+		interactionTraceEvent(record, 2, 2, interactions.EventWaiting),
+		interactionTraceEvent(record, 3, 3, interactions.EventAnswerClaimed),
+		interactionTraceEvent(record, 4, 4, interactions.EventResumeStarted),
+		interactionTraceEvent(record, 5, 5, interactions.EventCancelled),
+	}
+	short, _ := buildInteractionTrace(settings, workspace, record, events[2:])
+	shortTrace := finalizeInteractionTrace(t, short)
+	policy := evalcapture.Policy{
+		Root: traceStoreRoot(settings, workspace),
+	}
+	if _, err := (evaltrace.Store{Root: policy.Root}).Save(shortTrace); err != nil {
+		t.Fatal(err)
+	}
+	richer, _ := buildInteractionTrace(settings, workspace, record, events)
+	richerTrace := finalizeInteractionTrace(t, richer)
+	selected, persist, err := reconcileStoredInteractionTrace(
+		policy,
+		richerTrace,
+	)
+	if err != nil || !persist ||
+		len(selected.Records) != len(richerTrace.Records) ||
+		selected.Records[0].Origin != richerTrace.Records[0].Origin {
+		t.Fatalf(
+			"prepended evidence reconciliation = (%#v, %v, %v)",
+			selected,
+			persist,
+			err,
+		)
+	}
+}
+
 func waitForInteractionTraceMarkerCleared(
 	t *testing.T,
 	registry *interactions.Registry,
