@@ -800,6 +800,13 @@ func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
 				raw[metadataKeyUsageTotal],
 			)
 		}
+		if raw[metadataKeyOutboundKind] != outboundKindFinal {
+			t.Fatalf(
+				"outbound kind = %q, want %q",
+				raw[metadataKeyOutboundKind],
+				outboundKindFinal,
+			)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("expected final outbound")
 	}

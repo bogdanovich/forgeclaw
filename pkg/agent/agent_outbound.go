@@ -353,6 +353,7 @@ func (al *AgentLoop) deliverFinalTurnText(
 		})
 		return
 	}
+	markFinalOutbound(&msg)
 	msg.TraceSettlement = true
 	if al.channelManager != nil && opts.Dispatch.Channel() != "" &&
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
