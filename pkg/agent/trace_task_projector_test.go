@@ -17,6 +17,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/evalcapture"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
@@ -1202,6 +1203,101 @@ func TestTaskTraceProjectorRetriesPermanentWriterFailure(t *testing.T) {
 	}
 }
 
+func TestTaskTraceProjectorRequiresSuccessfulSaveAfterCommittedWriteFailure(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	store := &committedFailureTraceStorage{
+		store: evaltrace.Store{
+			Root:      traceStoreRoot(settings, workspace),
+			Retention: settings.retention,
+			MaxTraces: settings.maxTraces,
+		},
+		failures: 3,
+	}
+	replacement := evalcapture.NewWriter(evalcapture.Options{
+		MaxAttempts: 2,
+		RetryDelay:  -1,
+		EventSink:   manager.handleTraceWriterEvent,
+		StorageFactory: func(evalcapture.Policy) evalcapture.Storage {
+			return store
+		},
+	})
+	manager.mu.Lock()
+	original := manager.writer
+	manager.writer = replacement
+	manager.mu.Unlock()
+	if original != nil {
+		if err := original.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+
+	manager.attachTaskRegistry(workspace, registry)
+	record := finishTaskForTrace(t, registry, "committed-write", "session", 0)
+	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
+	if got := store.calls.Load(); got != 4 {
+		t.Fatalf("save calls = %d, want 4", got)
+	}
+}
+
+func TestTaskTraceProjectorRestartsPendingVisibleTraceThroughSave(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	eventBus := runtimeevents.NewBus()
+	first := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	first.attachTaskRegistry(workspace, registry)
+	record := finishTaskForTrace(t, registry, "restart-committed-write", "session", 0)
+	waitForTraceFile(t, workspace)
+	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
+	first.close()
+
+	if err := registry.SetTraceCapturePending(record.TaskID, record.GenerationID, true); err != nil {
+		t.Fatal(err)
+	}
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	store := &committedFailureTraceStorage{
+		store: evaltrace.Store{
+			Root:      traceStoreRoot(settings, workspace),
+			Retention: settings.retention,
+			MaxTraces: settings.maxTraces,
+		},
+	}
+	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	replacement := evalcapture.NewWriter(evalcapture.Options{
+		RetryDelay: -1,
+		EventSink:  restarted.handleTraceWriterEvent,
+		StorageFactory: func(evalcapture.Policy) evalcapture.Storage {
+			return store
+		},
+	})
+	restarted.mu.Lock()
+	original := restarted.writer
+	restarted.writer = replacement
+	restarted.mu.Unlock()
+	if original != nil {
+		if err := original.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		restarted.close()
+		_ = eventBus.Close()
+	})
+
+	restarted.attachTaskRegistry(workspace, registry)
+	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
+	if got := store.calls.Load(); got != 1 {
+		t.Fatalf("restart save calls = %d, want 1", got)
+	}
+}
+
 func TestTaskTraceProjectorRecoversDeferredCapacityOverflowFromRegistry(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
@@ -1704,6 +1800,29 @@ func taskDeliveryCompletionIDs(trace evaltrace.Trace) []string {
 		}
 	}
 	return completionIDs
+}
+
+type committedFailureTraceStorage struct {
+	store    evaltrace.Store
+	failures int32
+	calls    atomic.Int32
+}
+
+func (s *committedFailureTraceStorage) Save(trace evaltrace.Trace) (string, error) {
+	path, err := s.store.Save(trace)
+	if err != nil {
+		return path, err
+	}
+	if s.calls.Add(1) <= s.failures {
+		return path, &fileutil.CommittedWriteError{
+			Err: errors.New("injected parent directory sync failure"),
+		}
+	}
+	return path, nil
+}
+
+func (s *committedFailureTraceStorage) Prune() (int, error) {
+	return s.store.Prune()
 }
 
 func taskEventFixture(

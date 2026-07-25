@@ -535,6 +535,7 @@ func (p *taskTraceProjector) observeWriterEventLocked(event evalcapture.Event) {
 		p.recordCompletedLocked(key, state.lastSeq)
 	case evalcapture.EventPermanentlyFailed:
 		state.dirty = false
+		state.trace.forcePersist = true
 		p.retryOrDeferLocked(key, state)
 	}
 }
@@ -989,8 +990,9 @@ func newTaskTraceState(
 		startedAt = time.UnixMilli(1)
 	}
 	trace := &activeTraceCapture{
-		workspace: workspace,
-		startedAt: startedAt,
+		workspace:    workspace,
+		startedAt:    startedAt,
+		forcePersist: record.TraceCapturePending,
 		builder: evalcapture.NewTraceBuilder(evaltrace.Trace{
 			SchemaVersion: evaltrace.SchemaVersionV1,
 			TraceID: opaqueTraceID(

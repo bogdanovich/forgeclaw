@@ -169,6 +169,9 @@ func (m *traceCaptureManager) enqueueTaskPersist(
 		return err
 	}
 	finalized, persist, err := reconcileStoredTaskTrace(policy, finalized)
+	if err == nil && !persist && trace.forcePersist {
+		persist = true
+	}
 	if err != nil || !persist {
 		if err == nil {
 			return errTaskTraceAlreadyDurable
@@ -199,6 +202,9 @@ func (m *traceCaptureManager) enqueueTaskPersistWait(
 		return err
 	}
 	finalized, persist, err := reconcileStoredTaskTrace(policy, finalized)
+	if err == nil && !persist && trace.forcePersist {
+		persist = true
+	}
 	if err != nil || !persist {
 		if err == nil {
 			return errTaskTraceAlreadyDurable
