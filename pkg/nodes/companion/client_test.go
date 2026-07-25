@@ -43,6 +43,43 @@ func TestClientAuthenticatesPinnedWSSIdentity(t *testing.T) {
 	}
 }
 
+func TestRuntimeClientAuthenticatesExecutionProfile(t *testing.T) {
+	identity := testIdentity(t)
+	policy := testRuntimePolicy([]string{"node.info.v1"})
+	commandRuntime, err := NewRuntime(
+		identity.ID,
+		"test",
+		policy,
+		newMemoryInvocationLedger(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{
+		identity:      identity,
+		clientVersion: "test",
+		catalog:       commandRuntime.Catalog(),
+		runtime:       commandRuntime,
+	}
+
+	proof, err := client.identityProof(nodes.Challenge{
+		Nonce:       "challenge",
+		MinProtocol: nodes.ProtocolV1,
+		MaxProtocol: nodes.ProtocolV1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.MinProtocol != nodes.ProtocolV1 ||
+		proof.Executor != LocalExecutor ||
+		proof.PolicyRevision != policy.Revision {
+		t.Fatalf("runtime proof = %#v", proof)
+	}
+	if _, verifyErr := proof.Verify(); verifyErr != nil {
+		t.Fatalf("Verify() error = %v", verifyErr)
+	}
+}
+
 func TestClientReconnectsAfterPendingAdmission(t *testing.T) {
 	_, admission := testGatewayAdmission(t)
 	var requests atomic.Int32
@@ -158,7 +195,13 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 		ActorID:          "actor_test",
 		TimeoutSeconds:   5,
 		OutputLimitBytes: 4096,
-	}, descriptor, LocalExecutor, policy.Revision, time.Now(), time.Minute)
+	},
+		descriptor,
+		registration.Snapshot.Executor,
+		registration.Snapshot.PolicyRevision,
+		time.Now(),
+		time.Minute,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

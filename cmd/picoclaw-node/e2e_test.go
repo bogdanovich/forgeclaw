@@ -78,6 +78,10 @@ func TestCompanionProcessAuthenticatesAndInvokesOverWSS(t *testing.T) {
 	if err != nil || !exists {
 		t.Fatalf("Registration() = exists %v, error %v", exists, err)
 	}
+	if registration.Snapshot.Executor != companion.LocalExecutor ||
+		registration.Snapshot.PolicyRevision != policy.Revision {
+		t.Fatalf("authenticated execution profile = %#v", registration.Snapshot)
+	}
 	descriptor, err := registration.ApprovedCommand("node.info.v1")
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +98,13 @@ func TestCompanionProcessAuthenticatesAndInvokesOverWSS(t *testing.T) {
 		ActorID:          "actor_e2e",
 		TimeoutSeconds:   5,
 		OutputLimitBytes: 4096,
-	}, descriptor, companion.LocalExecutor, policy.Revision, time.Now(), time.Minute)
+	},
+		descriptor,
+		registration.Snapshot.Executor,
+		registration.Snapshot.PolicyRevision,
+		time.Now(),
+		time.Minute,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

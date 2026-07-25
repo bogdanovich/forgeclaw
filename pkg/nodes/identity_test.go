@@ -15,6 +15,7 @@ func TestIdentityProofRoundTripAndTamperDetection(t *testing.T) {
 	proof, err := NewIdentityProof(
 		privateKey, "challenge", ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -30,6 +31,55 @@ func TestIdentityProofRoundTripAndTamperDetection(t *testing.T) {
 	proof.Platform = "darwin"
 	if _, err := proof.Verify(); !errors.Is(err, ErrInvalidIdentityProof) {
 		t.Fatalf("tampered Verify() error = %v", err)
+	}
+}
+
+func TestIdentityProofExecutionProfileRoundTripAndTamperDetection(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := NewIdentityProof(
+		privateKey,
+		"challenge",
+		ProtocolV1,
+		ProtocolV1,
+		"v0.1.0",
+		"linux",
+		"amd64",
+		CapabilityCatalog{},
+		ExecutionProfile{Executor: "local", PolicyRevision: "policy-1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := proof.Verify(); err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+
+	proof.PolicyRevision = "policy-2"
+	if _, err := proof.Verify(); !errors.Is(err, ErrInvalidIdentityProof) {
+		t.Fatalf("tampered execution profile Verify() error = %v", err)
+	}
+}
+
+func TestIdentityProofRejectsIncompleteExecutionProfile(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewIdentityProof(
+		privateKey,
+		"challenge",
+		ProtocolV1,
+		ProtocolV1,
+		"v0.1.0",
+		"linux",
+		"amd64",
+		CapabilityCatalog{},
+		ExecutionProfile{Executor: "local"},
+	); !errors.Is(err, ErrInvalidInvocation) {
+		t.Fatalf("incomplete execution profile error = %v", err)
 	}
 }
 
@@ -67,6 +117,7 @@ func TestIdentityProofRejectsCatalogHashMismatch(t *testing.T) {
 	proof, err := NewIdentityProof(
 		privateKey, "challenge", ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)

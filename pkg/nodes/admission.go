@@ -152,6 +152,8 @@ func (auth *Authenticator) Authenticate(proof IdentityProof) (Admission, error) 
 		SoftwareVersion: proof.ClientVersion,
 		CatalogHash:     proof.CatalogHash,
 		Catalog:         proof.Catalog,
+		Executor:        proof.Executor,
+		PolicyRevision:  proof.PolicyRevision,
 		LastSeenAt:      now,
 	}
 	registration, exists, err := auth.registry.Registration(node.ID)

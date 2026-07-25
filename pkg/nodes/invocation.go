@@ -32,6 +32,33 @@ var (
 	ErrCommandDenied     = errors.New("node command denied")
 )
 
+// ExecutionProfile is the node-authenticated authority required to prepare an
+// execution plan. Both fields are absent for legacy discovery-only sessions.
+type ExecutionProfile struct {
+	Executor       string `json:"executor,omitempty"`
+	PolicyRevision string `json:"policy_revision,omitempty"`
+}
+
+func (profile ExecutionProfile) ValidateOptional() error {
+	if profile.Executor == "" && profile.PolicyRevision == "" {
+		return nil
+	}
+	if !validInvocationIdentifier(profile.Executor) ||
+		len(profile.PolicyRevision) == 0 ||
+		len(profile.PolicyRevision) > MaxPolicyRevisionLength ||
+		!idPattern.MatchString(profile.PolicyRevision) {
+		return fmt.Errorf("%w: malformed execution profile", ErrInvalidInvocation)
+	}
+	return nil
+}
+
+func (profile ExecutionProfile) Validate() error {
+	if profile.Executor == "" || profile.PolicyRevision == "" {
+		return fmt.Errorf("%w: incomplete execution profile", ErrInvalidInvocation)
+	}
+	return profile.ValidateOptional()
+}
+
 // InvocationRequest is the transport-neutral command request prepared by the
 // gateway. It contains no connection details or shell-specific authority.
 type InvocationRequest struct {
