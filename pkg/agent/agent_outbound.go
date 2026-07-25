@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -268,7 +269,27 @@ func (al *AgentLoop) deliverFinalTurnResult(
 		if outboundCtx.Raw == nil {
 			outboundCtx.Raw = make(map[string]string, 1)
 		}
-		outboundCtx.Raw["model_name"] = modelName
+		outboundCtx.Raw[metadataKeyModelName] = modelName
+	}
+	if defaultModelName := strings.TrimSpace(result.defaultModelName); defaultModelName != "" {
+		if outboundCtx.Raw == nil {
+			outboundCtx.Raw = make(map[string]string, 1)
+		}
+		outboundCtx.Raw[metadataKeyDefaultModel] = defaultModelName
+	}
+	if result.usageInputTokens > 0 || result.usageOutputTokens > 0 || result.usageTotalTokens > 0 {
+		if outboundCtx.Raw == nil {
+			outboundCtx.Raw = make(map[string]string, 3)
+		}
+		if result.usageInputTokens > 0 {
+			outboundCtx.Raw[metadataKeyUsageInput] = strconv.Itoa(result.usageInputTokens)
+		}
+		if result.usageOutputTokens > 0 {
+			outboundCtx.Raw[metadataKeyUsageOutput] = strconv.Itoa(result.usageOutputTokens)
+		}
+		if result.usageTotalTokens > 0 {
+			outboundCtx.Raw[metadataKeyUsageTotal] = strconv.Itoa(result.usageTotalTokens)
+		}
 	}
 
 	if len(result.completionMedia) > 0 {

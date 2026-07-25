@@ -146,7 +146,7 @@ func outboundMessageForTurnWithOptions(
 		msg.Context.Raw[metadataKeyMessageKind] = trimmedKind
 	}
 	if trimmedModelName != "" {
-		msg.Context.Raw["model_name"] = trimmedModelName
+		msg.Context.Raw[metadataKeyModelName] = trimmedModelName
 	}
 	for key, value := range opts.raw {
 		if strings.TrimSpace(key) == "" {

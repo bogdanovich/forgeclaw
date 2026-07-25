@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -260,6 +261,82 @@ func outboundMessageEditPayload(msg bus.OutboundMessage, content string) map[str
 		payload["model_name"] = modelName
 	}
 	return payload
+}
+
+func (m *Manager) decorateOutboundResponseFooter(msg bus.OutboundMessage) bus.OutboundMessage {
+	if m == nil || m.config == nil || !m.config.Agents.Defaults.IsResponseFooterEnabled() {
+		return msg
+	}
+	if !outboundMessageIsFinal(msg) || outboundMessageIsToolFeedback(msg) || outboundMessageIsToolCalls(msg) {
+		return msg
+	}
+	footer := outboundResponseFooter(msg)
+	if footer == "" {
+		return msg
+	}
+	trimmed := strings.TrimRight(msg.Content, " \t\r\n")
+	if trimmed == "" || strings.HasSuffix(trimmed, footer) {
+		return msg
+	}
+	msg.Content = trimmed + "\n\n" + footer
+	return msg
+}
+
+func outboundResponseFooter(msg bus.OutboundMessage) string {
+	if len(msg.Context.Raw) == 0 {
+		return ""
+	}
+	var parts []string
+	modelName := strings.TrimSpace(msg.Context.Raw["model_name"])
+	defaultModelName := strings.TrimSpace(msg.Context.Raw["default_model_name"])
+	if modelName != "" && defaultModelName != "" && modelName != defaultModelName {
+		parts = append(parts, "model: "+modelName)
+	}
+
+	inputTokens := parseOutboundFooterInt(msg.Context.Raw["usage_input_tokens"])
+	outputTokens := parseOutboundFooterInt(msg.Context.Raw["usage_output_tokens"])
+	totalTokens := parseOutboundFooterInt(msg.Context.Raw["usage_total_tokens"])
+	if inputTokens > 0 || outputTokens > 0 {
+		parts = append(
+			parts,
+			fmt.Sprintf(
+				"tokens: in %s, out %s",
+				formatFooterTokenCount(inputTokens),
+				formatFooterTokenCount(outputTokens),
+			),
+		)
+	} else if totalTokens > 0 {
+		parts = append(parts, fmt.Sprintf("tokens: total %s", formatFooterTokenCount(totalTokens)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " · ")
+}
+
+func parseOutboundFooterInt(raw string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+func formatFooterTokenCount(tokens int) string {
+	if tokens < 1000 {
+		return strconv.Itoa(tokens)
+	}
+	if tokens < 1_000_000 {
+		return formatFooterTokenDecimal(float64(tokens)/1000, "k")
+	}
+	return formatFooterTokenDecimal(float64(tokens)/1_000_000, "m")
+}
+
+func formatFooterTokenDecimal(value float64, suffix string) string {
+	truncated := math.Trunc(value*10) / 10
+	formatted := strconv.FormatFloat(truncated, 'f', 1, 64)
+	formatted = strings.TrimSuffix(formatted, ".0")
+	return formatted + suffix
 }
 
 func outboundMediaChannel(msg bus.OutboundMediaMessage) string {
@@ -2019,6 +2096,7 @@ func (m *Manager) runWorkerOwned(
 			if !ok {
 				return
 			}
+			msg = m.decorateOutboundResponseFooter(msg)
 			maxLen := 0
 			if mlp, ok := w.ch.(MessageLengthProvider); ok {
 				maxLen = mlp.MaxMessageLength()
@@ -2964,6 +3042,7 @@ func (m *Manager) sendMessageWithRetryPolicy(
 	if err != nil {
 		return newDeliveryError(err, false)
 	}
+	msg = m.decorateOutboundResponseFooter(msg)
 	channelName := outboundMessageChannel(msg)
 
 	m.mu.RLock()

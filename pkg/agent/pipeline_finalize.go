@@ -22,6 +22,11 @@ func (p *Pipeline) Finalize(
 	turnStatus TurnEndStatus,
 	finalContent string,
 ) (turnResult, error) {
+	lastUsage := ts.GetLastUsage()
+	usageInputTokens := usagePromptTokens(lastUsage)
+	usageOutputTokens := usageCompletionTokens(lastUsage)
+	usageTotalTokens := usageTotalTokens(lastUsage)
+
 	// When allResponsesHandled=true, ExecuteTools already finalized
 	// (added handledToolResponseSummary, saved session, set phase to Completed).
 	// But still check for hard abort - if requested, abort the turn.
@@ -33,6 +38,10 @@ func (p *Pipeline) Finalize(
 		return turnResult{
 			finalContent:           finalContent,
 			modelName:              exec.model.llmModelName,
+			defaultModelName:       exec.model.defaultModelName,
+			usageInputTokens:       usageInputTokens,
+			usageOutputTokens:      usageOutputTokens,
+			usageTotalTokens:       usageTotalTokens,
 			completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
 			status:                 turnStatus,
 			followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
@@ -87,6 +96,10 @@ func (p *Pipeline) Finalize(
 		return turnResult{
 			finalContent:           finalContent,
 			modelName:              exec.model.llmModelName,
+			defaultModelName:       exec.model.defaultModelName,
+			usageInputTokens:       usageInputTokens,
+			usageOutputTokens:      usageOutputTokens,
+			usageTotalTokens:       usageTotalTokens,
 			completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
 			status:                 TurnEndStatusError,
 			followUps:              append([]bus.InboundMessage(nil), ts.followUps...),
@@ -98,6 +111,10 @@ func (p *Pipeline) Finalize(
 	return turnResult{
 		finalContent:           finalContent,
 		modelName:              exec.model.llmModelName,
+		defaultModelName:       exec.model.defaultModelName,
+		usageInputTokens:       usageInputTokens,
+		usageOutputTokens:      usageOutputTokens,
+		usageTotalTokens:       usageTotalTokens,
 		completionMedia:        append([]tools.CompletionMedia(nil), exec.completionMedia...),
 		status:                 turnStatus,
 		followUps:              append([]bus.InboundMessage(nil), ts.followUps...),

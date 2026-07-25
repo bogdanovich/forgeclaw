@@ -27,6 +27,9 @@
         "animation_interval_secs": 3,
         "edit_min_interval_seconds": 0,
         "style": "raw"
+      },
+      "response_footer": {
+        "enabled": true
       }
     },
     "list": [

@@ -749,6 +749,62 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 	}
 }
 
+func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
+	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	_ = provider
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	traceScope := runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-1")
+	al.deliverFinalTurnResult(
+		context.Background(),
+		traceScope,
+		defaultAgent,
+		processOptions{
+			SendResponse: true,
+			Dispatch: DispatchRequest{
+				SessionKey: "session-1",
+				InboundContext: &bus.InboundContext{
+					Channel: "telegram",
+					ChatID:  "-100123",
+				},
+			},
+		},
+		turnResult{
+			finalContent:      "final reply",
+			modelName:         "fallback-model",
+			defaultModelName:  "primary-model",
+			usageInputTokens:  123,
+			usageOutputTokens: 45,
+			usageTotalTokens:  168,
+		},
+	)
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		raw := outbound.Context.Raw
+		if raw[metadataKeyModelName] != "fallback-model" {
+			t.Fatalf("model metadata = %q, want fallback-model", raw[metadataKeyModelName])
+		}
+		if raw[metadataKeyDefaultModel] != "primary-model" {
+			t.Fatalf("default model metadata = %q, want primary-model", raw[metadataKeyDefaultModel])
+		}
+		if raw[metadataKeyUsageInput] != "123" || raw[metadataKeyUsageOutput] != "45" ||
+			raw[metadataKeyUsageTotal] != "168" {
+			t.Fatalf("usage metadata = (%q,%q,%q), want (123,45,168)",
+				raw[metadataKeyUsageInput],
+				raw[metadataKeyUsageOutput],
+				raw[metadataKeyUsageTotal],
+			)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected final outbound")
+	}
+}
+
 func TestPublishPicoReasoningIncludesSessionKey(t *testing.T) {
 	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
