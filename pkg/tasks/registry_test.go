@@ -772,7 +772,7 @@ func TestRegistryTraceProtectionPrecedesTerminalMutationPruning(t *testing.T) {
 		filepath.Join(t.TempDir(), "state", "task_registry.json"),
 		Options{MaxRecords: 1},
 	)
-	if err := registry.SetTraceCaptureProtection(true); err != nil {
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
 		t.Fatal(err)
 	}
 	for _, taskID := range []string{"active-blocker", "candidate"} {
@@ -809,7 +809,7 @@ func TestRegistryTraceProtectionPrecedesTerminalMutationPruning(t *testing.T) {
 	if got := registry.Stats().TaskCount; got != 2 {
 		t.Fatalf("protected task count = %d, want 2", got)
 	}
-	if err := registry.SetTraceCaptureProtection(false); err != nil {
+	if err := registry.SetTraceCaptureProtection(false, 0); err != nil {
 		t.Fatal(err)
 	}
 	candidate, ok = registry.Get("candidate")
@@ -845,7 +845,7 @@ func TestRegistryTraceProtectionFailureKeepsPruningFailClosed(t *testing.T) {
 		}
 		return realWrite(path, data, mode)
 	}
-	if err := registry.SetTraceCaptureProtection(true); err == nil {
+	if err := registry.SetTraceCaptureProtection(true, 2000); err == nil {
 		t.Fatal("SetTraceCaptureProtection succeeded during injected failure")
 	}
 
@@ -899,13 +899,16 @@ func TestRegistryTraceProtectionRetriesCommittedWrite(t *testing.T) {
 		}
 		return nil
 	}
-	if err := registry.SetTraceCaptureProtection(true); !fileutil.IsCommittedWriteError(err) {
+	if err := registry.SetTraceCaptureProtection(
+		true,
+		2000,
+	); !fileutil.IsCommittedWriteError(err) {
 		t.Fatalf("SetTraceCaptureProtection error = %v", err)
 	}
 	if !registry.unsyncedWrite || !registry.traceCaptureProtectionPending {
 		t.Fatal("committed write failure was not retained for retry")
 	}
-	if err := registry.SetTraceCaptureProtection(true); err != nil {
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
 		t.Fatal(err)
 	}
 	if writes != 2 {
@@ -967,7 +970,7 @@ func TestRegistryTracePendingEqualityRetriesCommittedWrite(t *testing.T) {
 func TestRegistryTraceConfirmationRetriesCommittedWrite(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
 	registry := NewRegistry(store)
-	if err := registry.SetTraceCaptureProtection(true); err != nil {
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.Upsert(Record{
@@ -1033,7 +1036,7 @@ func TestRegistryTraceConfirmationRetriesCommittedWrite(t *testing.T) {
 
 func TestRegistryTraceConfirmationRequiresCurrentRevision(t *testing.T) {
 	registry := NewRegistry(filepath.Join(t.TempDir(), "state", "task_registry.json"))
-	if err := registry.SetTraceCaptureProtection(true); err != nil {
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.Upsert(Record{
@@ -1067,6 +1070,430 @@ func TestRegistryTraceConfirmationRequiresCurrentRevision(t *testing.T) {
 	}
 	if !confirmed || current.TraceCapturePending {
 		t.Fatalf("current confirmation = %v, record = %#v", confirmed, current)
+	}
+}
+
+func TestRegistryTraceJournalIsBoundedAndDurable(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.SetTraceCaptureProtection(true, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "bounded", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, progress := range []string{"one", "two", "three"} {
+		if err := registry.Update("bounded", func(record *Record) {
+			record.ProgressSummary = progress
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	record, ok := registry.Get("bounded")
+	if !ok {
+		t.Fatal("bounded task not found")
+	}
+	if record.TraceCapturePending {
+		t.Fatal("running task unexpectedly awaits terminal trace persistence")
+	}
+	if got := len(record.TraceCaptureEvents); got != 2 {
+		t.Fatalf("journal events = %d, want 2", got)
+	}
+	if got, want := record.TraceCaptureDropped,
+		int(record.LastEventSeq)-len(record.TraceCaptureEvents); got != want {
+		t.Fatalf("journal dropped = %d, want %d", got, want)
+	}
+
+	reloaded := NewRegistry(store)
+	if persisted, exists := reloaded.Get(record.TaskID); !exists ||
+		len(persisted.TraceCaptureEvents) != 2 {
+		t.Fatalf("persisted journal = %#v, exists = %v", persisted, exists)
+	}
+	if err := reloaded.SetTraceCaptureProtection(true, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.Update(record.TaskID, func(current *Record) {
+		current.Status = StatusSucceeded
+		current.DeliveryStatus = DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloadedRecord, events, ok := reloaded.GetGeneration(
+		record.TaskID,
+		record.GenerationID,
+	)
+	if !ok {
+		t.Fatal("reloaded generation not found")
+	}
+	if got := len(events); got != 2 {
+		t.Fatalf("reloaded journal events = %d, want 2", got)
+	}
+	if got, want := reloadedRecord.TraceCaptureDropped,
+		int(reloadedRecord.LastEventSeq)-len(events); got != want {
+		t.Fatalf(
+			"reloaded journal dropped = %d, want %d",
+			got,
+			want,
+		)
+	}
+}
+
+func TestRegistryTraceProtectionDisablePreservesJournalUntilNextMutation(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.SetTraceCaptureProtection(true, 10); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []Record{
+		{
+			TaskID: "active", Status: StatusRunning,
+			DeliveryStatus: DeliveryPending,
+		},
+		{
+			TaskID: "terminal", Status: StatusSucceeded,
+			DeliveryStatus: DeliveryDelivered,
+		},
+	} {
+		if err := registry.Upsert(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := registry.SetTraceCaptureProtection(false, 0); err != nil {
+		t.Fatal(err)
+	}
+	active, ok := registry.Get("active")
+	if !ok || active.TraceCapturePending ||
+		len(active.TraceCaptureEvents) == 0 {
+		t.Fatalf("disabled active journal = %#v, exists = %v", active, ok)
+	}
+	terminal, ok := registry.Get("terminal")
+	if !ok || !terminal.TraceCapturePending ||
+		len(terminal.TraceCaptureEvents) == 0 {
+		t.Fatalf("disabled terminal journal = %#v, exists = %v", terminal, ok)
+	}
+
+	if err := registry.Update("active", func(record *Record) {
+		record.ProgressSummary = "capture disabled"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("terminal", func(record *Record) {
+		record.DeliveryStatus = DeliveryFailed
+	}); err != nil {
+		t.Fatal(err)
+	}
+	active, _ = registry.Get("active")
+	terminal, _ = registry.Get("terminal")
+	if len(active.TraceCaptureEvents) != 0 ||
+		active.TraceCaptureDropped != 0 {
+		t.Fatalf("mutated inactive journal = %#v", active)
+	}
+	if got := terminal.TraceCaptureEvents[len(terminal.TraceCaptureEvents)-1].Seq; got != terminal.LastEventSeq {
+		t.Fatalf("pending terminal journal tail = %d, want %d", got, terminal.LastEventSeq)
+	}
+
+	reloaded := NewRegistry(store)
+	active, _ = reloaded.Get("active")
+	terminal, _ = reloaded.Get("terminal")
+	if len(active.TraceCaptureEvents) != 0 ||
+		!terminal.TraceCapturePending ||
+		len(terminal.TraceCaptureEvents) == 0 {
+		t.Fatalf(
+			"reloaded journals: active=%#v terminal=%#v",
+			active,
+			terminal,
+		)
+	}
+}
+
+func TestRegistryTraceConfirmationClearsExactJournal(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.SetTraceCaptureProtection(true, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "confirmed", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := registry.Get("confirmed")
+	if !ok || len(record.TraceCaptureEvents) == 0 {
+		t.Fatalf("pending record = %#v, exists = %v", record, ok)
+	}
+	if err := registry.Update("confirmed", func(current *Record) {
+		current.ProgressSummary = "new revision"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("confirmed", func(current *Record) {
+		current.Status = StatusSucceeded
+		current.DeliveryStatus = DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	current, confirmed, err := registry.ConfirmTraceCapturePersisted(
+		record.TaskID,
+		record.GenerationID,
+		record.LastEventSeq,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmed || !current.TraceCapturePending ||
+		len(current.TraceCaptureEvents) < 2 {
+		t.Fatalf("stale confirmation = %v, record = %#v", confirmed, current)
+	}
+	current, confirmed, err = registry.ConfirmTraceCapturePersisted(
+		current.TaskID,
+		current.GenerationID,
+		current.LastEventSeq,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed || current.TraceCapturePending ||
+		len(current.TraceCaptureEvents) != 0 ||
+		current.TraceCaptureDropped != 0 {
+		t.Fatalf("exact confirmation = %v, record = %#v", confirmed, current)
+	}
+	reloaded, ok := NewRegistry(store).Get("confirmed")
+	if !ok || reloaded.TraceCapturePending ||
+		len(reloaded.TraceCaptureEvents) != 0 ||
+		reloaded.TraceCaptureDropped != 0 {
+		t.Fatalf("reloaded confirmed record = %#v, exists = %v", reloaded, ok)
+	}
+}
+
+func TestRegistryTraceJournalReopensFromRetainedHistory(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{MaxEvents: 100})
+	if err := registry.SetTraceCaptureProtection(true, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "reopened", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := registry.Get("reopened")
+	if !ok {
+		t.Fatal("reopened task not found")
+	}
+	if _, confirmed, err := registry.ConfirmTraceCapturePersisted(
+		record.TaskID,
+		record.GenerationID,
+		record.LastEventSeq,
+	); err != nil || !confirmed {
+		t.Fatalf("initial confirmation = %v, error = %v", confirmed, err)
+	}
+	if err := registry.Update(record.TaskID, func(current *Record) {
+		current.DeliveryStatus = DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	current, events, ok := registry.GetGeneration(
+		record.TaskID,
+		record.GenerationID,
+	)
+	if !ok || !current.TraceCapturePending {
+		t.Fatalf("reopened record = %#v, exists = %v", current, ok)
+	}
+	if len(events) != int(current.LastEventSeq) {
+		t.Fatalf(
+			"reopened journal events = %d, want %d",
+			len(events),
+			current.LastEventSeq,
+		)
+	}
+	for i, event := range events {
+		if event.Seq != int64(i+1) {
+			t.Fatalf("event %d sequence = %d, want %d", i, event.Seq, i+1)
+		}
+	}
+}
+
+func TestRegistryPendingTraceJournalRemainsBoundedAfterDisabledReload(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{MaxEvents: 2})
+	if err := registry.SetTraceCaptureProtection(true, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "disabled-reload", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetTraceCaptureProtection(false, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistryWithOptions(store, Options{MaxEvents: 2})
+	for i := 0; i < 6; i++ {
+		status := DeliveryFailed
+		if i%2 == 0 {
+			status = DeliveryDelivered
+		}
+		if err := reloaded.Update("disabled-reload", func(record *Record) {
+			record.DeliveryStatus = status
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record, ok := reloaded.Get("disabled-reload")
+	if !ok || !record.TraceCapturePending {
+		t.Fatalf("pending record = %#v, exists = %v", record, ok)
+	}
+	if got := len(record.TraceCaptureEvents); got != 2 {
+		t.Fatalf("journal events after disabled reload = %d, want 2", got)
+	}
+	if got, want := record.TraceCaptureDropped,
+		int(record.TraceCaptureEvents[0].Seq-1); got != want {
+		t.Fatalf("journal dropped after disabled reload = %d, want %d", got, want)
+	}
+}
+
+func TestRegistryRejectsCorruptTraceJournalOnReload(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.SetTraceCaptureProtection(true, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "corrupt-journal", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err = json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Tasks[0].TraceCaptureEvents[0].EmittedAt++
+	data, err = json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistry(store)
+	if err = reloaded.LastLoadError(); err == nil ||
+		!strings.Contains(err.Error(), "invalid fingerprint") {
+		t.Fatalf("load error = %v, want invalid journal fingerprint", err)
+	}
+	if err = reloaded.Upsert(Record{
+		TaskID: "must-fail", Status: StatusRunning,
+	}); err == nil || !strings.Contains(err.Error(), "read-only after load failure") {
+		t.Fatalf("write after load failure = %v", err)
+	}
+}
+
+func TestRegistryRejectsStaleTraceJournalTailOnReload(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.SetTraceCaptureProtection(true, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "stale-journal", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("stale-journal", func(record *Record) {
+		record.ProgressSummary = "latest"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err = json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	journal := snapshot.Tasks[0].TraceCaptureEvents
+	snapshot.Tasks[0].TraceCaptureEvents = journal[:len(journal)-1]
+	data, err = json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistry(store)
+	if err = reloaded.LastLoadError(); err == nil ||
+		!strings.Contains(err.Error(), "journal ends at sequence") {
+		t.Fatalf("load error = %v, want stale journal tail", err)
+	}
+}
+
+func TestRegistryDoesNotPromoteLegacyGlobalFingerprintIntoJournal(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "legacy-global", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot Snapshot
+	if err = json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Events[0].Fingerprint = "legacy-fingerprint"
+	data, err = json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(store, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewRegistry(store)
+	if err = reloaded.LastLoadError(); err != nil {
+		t.Fatal(err)
+	}
+	if err = reloaded.SetTraceCaptureProtection(true, 10); err != nil {
+		t.Fatal(err)
+	}
+	if record, _ := reloaded.Get("legacy-global"); len(record.TraceCaptureEvents) != 0 {
+		t.Fatalf("legacy event was promoted into journal: %#v", record.TraceCaptureEvents)
+	}
+	if err = reloaded.Update("legacy-global", func(record *Record) {
+		record.ProgressSummary = "new evidence"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := reloaded.Get("legacy-global")
+	if !ok || len(record.TraceCaptureEvents) != 1 ||
+		record.TraceCaptureDropped != 1 ||
+		record.TraceCaptureEvents[0].Seq != 2 {
+		t.Fatalf("journal after legacy boundary = %#v, exists = %v", record, ok)
+	}
+	if err = NewRegistry(store).LastLoadError(); err != nil {
+		t.Fatalf("reload after legacy boundary: %v", err)
 	}
 }
 
@@ -1477,5 +1904,60 @@ func TestRegistryMarkActiveLostEmitsTransitionEvents(t *testing.T) {
 	}
 	if events[3].Payload["reason"] != "runtime restarted" {
 		t.Fatalf("reconciled payload = %+v", events[3].Payload)
+	}
+}
+
+func TestRegistryGetGenerationReturnsAtomicExactStream(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	if err := registry.Upsert(Record{
+		TaskID: "task", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, ok := registry.Get("task")
+	if !ok {
+		t.Fatal("first generation not found")
+	}
+	if err := registry.Update("task", func(record *Record) {
+		record.Status = StatusSucceeded
+		record.DeliveryStatus = DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, events, ok := registry.GetGeneration("task", first.GenerationID)
+	if !ok || record.GenerationID != first.GenerationID || len(events) == 0 {
+		t.Fatalf(
+			"first generation snapshot = (%q, %d, %v)",
+			record.GenerationID,
+			len(events),
+			ok,
+		)
+	}
+	if record.LastEventSeq != events[len(events)-1].Seq {
+		t.Fatalf(
+			"record revision = %d, last event = %d",
+			record.LastEventSeq,
+			events[len(events)-1].Seq,
+		)
+	}
+
+	if err := registry.Upsert(Record{
+		TaskID: "task", Status: StatusRunning,
+		DeliveryStatus: DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, ok := registry.Get("task")
+	if !ok || second.GenerationID == first.GenerationID {
+		t.Fatalf("second generation = %q", second.GenerationID)
+	}
+	if _, _, found := registry.GetGeneration("task", first.GenerationID); found {
+		t.Fatal("replaced generation remained addressable")
+	}
+	_, events, ok = registry.GetGeneration("task", second.GenerationID)
+	if !ok || len(events) != 1 ||
+		events[0].GenerationID != second.GenerationID {
+		t.Fatalf("second generation events = %+v, ok=%v", events, ok)
 	}
 }

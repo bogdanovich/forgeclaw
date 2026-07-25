@@ -43,7 +43,7 @@ func TestCoordinatorRejectsDuplicateSourceRegistration(t *testing.T) {
 	}
 }
 
-func TestCoordinatorRecoveryScanConfirmsAlreadyDurableRevision(t *testing.T) {
+func TestCoordinatorRecoveryScanRevalidatesAlreadyVisibleRevision(t *testing.T) {
 	source := newCoordinatorSource()
 	source.set("task", 5)
 	source.setAlreadyDurable("task")
@@ -54,8 +54,34 @@ func TestCoordinatorRecoveryScanConfirmsAlreadyDurableRevision(t *testing.T) {
 		return source.confirmedRevision("task") == 5 &&
 			coordinator.Stats().Pending == 0
 	})
+	if got := storage.savedRevisions(); len(got) != 1 || got[0] != 5 {
+		t.Fatalf("revalidated revisions = %v, want [5]", got)
+	}
+}
+
+func TestCoordinatorDirectRequestConfirmsAlreadyDurableRevision(t *testing.T) {
+	source := newCoordinatorSource()
+	storage := &coordinatorStorage{}
+	coordinator := newTestCoordinator(t, 4, source, storage)
+	waitCoordinator(t, func() bool {
+		coordinator.mu.Lock()
+		_, recoveryScheduled := coordinator.recoverAt["tasks"]
+		scanning := coordinator.scans != 0
+		coordinator.mu.Unlock()
+		return source.pendingCallCount() >= 1 &&
+			!recoveryScheduled && !scanning
+	})
+	source.set("task", 5)
+	source.setAlreadyDurable("task")
+	if err := coordinator.Request("tasks", "task"); err != nil {
+		t.Fatal(err)
+	}
+	waitCoordinator(t, func() bool {
+		return source.confirmedRevision("task") == 5 &&
+			coordinator.Stats().Pending == 0
+	})
 	if got := storage.savedRevisions(); len(got) != 0 {
-		t.Fatalf("already-durable revision was rewritten: %v", got)
+		t.Fatalf("already-durable direct request was rewritten: %v", got)
 	}
 }
 
@@ -196,6 +222,7 @@ func TestCoordinatorRecoveryWindowIncludesTrackedKeys(t *testing.T) {
 func TestCoordinatorRetriesPermanentWriterFailure(t *testing.T) {
 	source := newCoordinatorSource()
 	source.set("task", 9)
+	source.setAlreadyDurableAfterFirstLoad("task")
 	storage := &coordinatorStorage{saveFailures: 1}
 	coordinator := newTestCoordinator(t, 4, source, storage)
 
@@ -233,12 +260,7 @@ func TestCoordinatorCloseLeavesUnfinishedSourceRecoverable(t *testing.T) {
 		20*time.Millisecond,
 	)
 	defer cancelAdmission()
-	drainCtx, cancelDrain := context.WithTimeout(
-		context.Background(),
-		40*time.Millisecond,
-	)
-	defer cancelDrain()
-	if err := coordinator.Close(admissionCtx, drainCtx); err == nil {
+	if err := coordinator.Close(admissionCtx, 40*time.Millisecond); err == nil {
 		t.Fatal("Close succeeded while storage was blocked")
 	}
 	if keys, err := source.Pending(context.Background(), 1); err != nil ||
@@ -246,6 +268,58 @@ func TestCoordinatorCloseLeavesUnfinishedSourceRecoverable(t *testing.T) {
 		t.Fatalf("recoverable keys = %v, error = %v", keys, err)
 	}
 	close(storage.release)
+}
+
+func TestCoordinatorCloseReservesDrainWindowAfterAdmission(t *testing.T) {
+	source := newBlockingCoordinatorSource("pending")
+	storage := newBlockingCoordinatorStorage()
+	coordinator := NewCoordinator(CoordinatorOptions{
+		PendingCapacity: 4,
+		RetryDelay:      time.Millisecond,
+		Writer: Options{
+			Capacity:    4,
+			MaxAttempts: 1,
+			RetryDelay:  -1,
+			StorageFactory: func(Policy) Storage {
+				return storage
+			},
+		},
+	})
+	if err := coordinator.RegisterSource("tasks", source); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-source.entered:
+	case <-time.After(time.Second):
+		t.Fatal("source recovery did not block")
+	}
+	if err := coordinator.Submit(
+		testPolicy(),
+		testTraceForRevision("turn", 1),
+		ClassCritical,
+	); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-storage.started:
+	case <-time.After(time.Second):
+		t.Fatal("turn trace did not reach storage")
+	}
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		close(storage.release)
+	}()
+	admissionCtx, cancelAdmission := context.WithTimeout(
+		context.Background(),
+		50*time.Millisecond,
+	)
+	defer cancelAdmission()
+	if err := coordinator.Close(admissionCtx, 40*time.Millisecond); err == nil {
+		t.Fatal("Close succeeded despite admission timeout")
+	}
+	if got := storage.savedRevisions(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("drained revisions = %v, want [1]", got)
+	}
 }
 
 func TestCoordinatorCloseCancelsBlockingSourceOperations(t *testing.T) {
@@ -276,12 +350,7 @@ func TestCoordinatorCloseCancelsBlockingSourceOperations(t *testing.T) {
 				20*time.Millisecond,
 			)
 			defer cancelAdmission()
-			drainCtx, cancelDrain := context.WithTimeout(
-				context.Background(),
-				50*time.Millisecond,
-			)
-			defer cancelDrain()
-			if err := coordinator.Close(admissionCtx, drainCtx); err == nil {
+			if err := coordinator.Close(admissionCtx, 50*time.Millisecond); err == nil {
 				t.Fatalf("Close succeeded with blocked %s", operation)
 			}
 			if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
@@ -478,12 +547,7 @@ func TestCoordinatorNegativeRetryDelayDoesNotSpin(t *testing.T) {
 		20*time.Millisecond,
 	)
 	defer cancelAdmission()
-	drainCtx, cancelDrain := context.WithTimeout(
-		context.Background(),
-		50*time.Millisecond,
-	)
-	defer cancelDrain()
-	if err := coordinator.Close(admissionCtx, drainCtx); err == nil {
+	if err := coordinator.Close(admissionCtx, 50*time.Millisecond); err == nil {
 		t.Fatal("Close succeeded with permanently failing source")
 	}
 }
@@ -507,9 +571,7 @@ func closeTestCoordinator(t *testing.T, coordinator *Coordinator) {
 		time.Second,
 	)
 	defer cancelAdmission()
-	drainCtx, cancelDrain := context.WithTimeout(context.Background(), time.Second)
-	defer cancelDrain()
-	if err := coordinator.Close(admissionCtx, drainCtx); err != nil {
+	if err := coordinator.Close(admissionCtx, time.Second); err != nil {
 		t.Errorf("Close: %v", err)
 	}
 }
@@ -557,22 +619,24 @@ type coordinatorSourceRecord struct {
 }
 
 type coordinatorSource struct {
-	mu              sync.Mutex
-	records         map[string]coordinatorSourceRecord
-	confirmFailures map[string]int
-	loadFailures    map[string]int
-	loadCalls       map[string]int
-	alwaysStale     map[string]bool
-	pendingCalls    int
+	mu               sync.Mutex
+	records          map[string]coordinatorSourceRecord
+	confirmFailures  map[string]int
+	loadFailures     map[string]int
+	loadCalls        map[string]int
+	alwaysStale      map[string]bool
+	durableAfterLoad map[string]bool
+	pendingCalls     int
 }
 
 func newCoordinatorSource() *coordinatorSource {
 	return &coordinatorSource{
-		records:         make(map[string]coordinatorSourceRecord),
-		confirmFailures: make(map[string]int),
-		loadFailures:    make(map[string]int),
-		loadCalls:       make(map[string]int),
-		alwaysStale:     make(map[string]bool),
+		records:          make(map[string]coordinatorSourceRecord),
+		confirmFailures:  make(map[string]int),
+		loadFailures:     make(map[string]int),
+		loadCalls:        make(map[string]int),
+		alwaysStale:      make(map[string]bool),
+		durableAfterLoad: make(map[string]bool),
 	}
 }
 
@@ -590,6 +654,12 @@ func (s *coordinatorSource) setAlreadyDurable(key string) {
 	record := s.records[key]
 	record.persist = false
 	s.records[key] = record
+	s.mu.Unlock()
+}
+
+func (s *coordinatorSource) setAlreadyDurableAfterFirstLoad(key string) {
+	s.mu.Lock()
+	s.durableAfterLoad[key] = true
 	s.mu.Unlock()
 }
 
@@ -649,12 +719,17 @@ func (s *coordinatorSource) LoadLatest(
 	if !ok || record.confirmed >= record.revision {
 		return DurableCandidate{}, false, nil
 	}
+	persist := record.persist
+	if s.durableAfterLoad[key] && s.loadCalls[key] == 1 {
+		record.persist = false
+		s.records[key] = record
+	}
 	trace := testTraceForRevision(key, record.revision)
 	return DurableCandidate{
 		Revision: record.revision,
 		Policy:   testPolicy(),
 		Trace:    trace,
-		Persist:  record.persist,
+		Persist:  persist,
 	}, true, nil
 }
 
