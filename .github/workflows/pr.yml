@@ -22,11 +22,17 @@ jobs:
       - name: Run go generate
         run: go generate ./...
 
-      - name: Golangci Lint
+      - name: Install GolangCI Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.10.1
-          args: --build-tags=goolm,stdjson
+          version-file: .golangci-lint-version
+          install-only: true
+
+      - name: Check Go formatting
+        run: golangci-lint fmt --config=.golangci-format.yaml --diff
+
+      - name: Run GolangCI Lint
+        run: golangci-lint run --tests=false --concurrency=4 --build-tags=goolm,stdjson
 
   vuln_check:
     name: Security Check
