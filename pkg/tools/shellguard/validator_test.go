@@ -109,6 +109,44 @@ func TestValidator_BlocksSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestValidator_CanonicalizesWorkspaceAlias(t *testing.T) {
+	workspace := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(workspace, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "existing.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	validator := New(Config{RestrictToWorkspace: true})
+	for _, command := range []string{
+		"cat " + filepath.Join(alias, "existing.txt"),
+		"cat " + filepath.Join(alias, "future", "file.txt"),
+		"cat nested/file.txt",
+	} {
+		decision := validator.Validate(command, alias)
+		if !decision.Allowed {
+			t.Fatalf("expected workspace alias command %q to be allowed: %s", command, decision.Reason)
+		}
+	}
+}
+
+func TestValidator_BlocksNonexistentPathThroughEscapingSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(workspace, "outside-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	validator := New(Config{RestrictToWorkspace: true})
+	decision := validator.Validate("cat "+filepath.Join(link, "future.txt"), workspace)
+	if decision.Allowed {
+		t.Fatal("expected nonexistent path through escaping symlink to be blocked")
+	}
+}
+
 func TestValidator_AllowsConfiguredExternalPath(t *testing.T) {
 	root := t.TempDir()
 	allowed := t.TempDir()

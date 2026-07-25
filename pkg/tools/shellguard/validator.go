@@ -554,6 +554,9 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 	if err != nil {
 		return Decision{Allowed: true, Reason: "allowed", Category: "allowed", CommandClass: ClassifyCommand(command)}
 	}
+	if resolved, resolveErr := resolvePathAgainstExistingAncestor(cwdPath); resolveErr == nil {
+		cwdPath = resolved
+	}
 
 	if runtime.GOOS == "windows" {
 		command = ExpandPowerShellEnvVars(command)
@@ -580,7 +583,11 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 			}
 		}
 
-		resolved, resolveErr := filepath.EvalSymlinks(p)
+		if safePaths[p] || isAllowedPath(p, v.config.AllowedPathPatterns) {
+			continue
+		}
+
+		resolved, resolveErr := resolvePathAgainstExistingAncestor(p)
 		if resolveErr == nil {
 			p = resolved
 		}
@@ -605,6 +612,29 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 	}
 
 	return Decision{Allowed: true, Reason: "allowed", Category: "allowed", CommandClass: ClassifyCommand(command)}
+}
+
+func resolvePathAgainstExistingAncestor(path string) (string, error) {
+	cleaned := filepath.Clean(path)
+	for current := cleaned; ; current = filepath.Dir(current) {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			suffix, relErr := filepath.Rel(current, cleaned)
+			if relErr != nil {
+				return "", relErr
+			}
+			if suffix == "." {
+				return filepath.Clean(resolved), nil
+			}
+			return filepath.Clean(filepath.Join(resolved, suffix)), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		if filepath.Dir(current) == current {
+			return "", os.ErrNotExist
+		}
+	}
 }
 
 func commandPathAbs(pathText, cwdPath string) (string, error) {
