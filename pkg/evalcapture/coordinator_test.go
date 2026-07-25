@@ -211,6 +211,114 @@ func TestCoordinatorCloseLeavesUnfinishedSourceRecoverable(t *testing.T) {
 	close(storage.release)
 }
 
+func TestCoordinatorCloseCancelsBlockingSourceOperations(t *testing.T) {
+	for _, operation := range []string{"pending", "load", "confirm"} {
+		t.Run(operation, func(t *testing.T) {
+			source := newBlockingCoordinatorSource(operation)
+			coordinator := NewCoordinator(CoordinatorOptions{
+				PendingCapacity: 4,
+				RetryDelay:      time.Millisecond,
+				Writer: Options{
+					StorageFactory: func(Policy) Storage {
+						return &coordinatorStorage{}
+					},
+				},
+			})
+			if err := coordinator.RegisterSource("tasks", source); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-source.entered:
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not block", operation)
+			}
+
+			started := time.Now()
+			admissionCtx, cancelAdmission := context.WithTimeout(
+				context.Background(),
+				20*time.Millisecond,
+			)
+			defer cancelAdmission()
+			drainCtx, cancelDrain := context.WithTimeout(
+				context.Background(),
+				50*time.Millisecond,
+			)
+			defer cancelDrain()
+			if err := coordinator.Close(admissionCtx, drainCtx); err == nil {
+				t.Fatalf("Close succeeded with blocked %s", operation)
+			}
+			if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+				t.Fatalf("Close with blocked %s took %s", operation, elapsed)
+			}
+		})
+	}
+}
+
+func TestCoordinatorFailingSourceDoesNotStarveRecovery(t *testing.T) {
+	failing := &failingPendingSource{}
+	healthy := newCoordinatorSource()
+	healthy.set("task", 12)
+	coordinator := NewCoordinator(CoordinatorOptions{
+		PendingCapacity: 4,
+		RetryDelay:      20 * time.Millisecond,
+		Writer: Options{
+			StorageFactory: func(Policy) Storage {
+				return &coordinatorStorage{}
+			},
+		},
+	})
+	if err := coordinator.RegisterSource("a-failing", failing); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RegisterSource("b-healthy", healthy); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
+
+	waitCoordinator(t, func() bool {
+		return healthy.confirmedRevision("task") == 12
+	})
+	if failing.calls() == 0 {
+		t.Fatal("failing source was not scanned")
+	}
+	coordinator.UnregisterSource("a-failing")
+}
+
+func TestCoordinatorNegativeRetryDelayDoesNotSpin(t *testing.T) {
+	source := &failingLoadSource{}
+	coordinator := NewCoordinator(CoordinatorOptions{
+		PendingCapacity: 4,
+		RetryDelay:      -1,
+		Writer: Options{
+			StorageFactory: func(Policy) Storage {
+				return &coordinatorStorage{}
+			},
+		},
+	})
+	if err := coordinator.RegisterSource("tasks", source); err != nil {
+		t.Fatal(err)
+	}
+	waitCoordinator(t, func() bool { return source.calls() >= 2 })
+	time.Sleep(20 * time.Millisecond)
+	if calls := source.calls(); calls > 40 {
+		t.Fatalf("negative retry delay spun %d times", calls)
+	}
+
+	admissionCtx, cancelAdmission := context.WithTimeout(
+		context.Background(),
+		20*time.Millisecond,
+	)
+	defer cancelAdmission()
+	drainCtx, cancelDrain := context.WithTimeout(
+		context.Background(),
+		50*time.Millisecond,
+	)
+	defer cancelDrain()
+	if err := coordinator.Close(admissionCtx, drainCtx); err == nil {
+		t.Fatal("Close succeeded with permanently failing source")
+	}
+}
+
 func newTestCoordinator(
 	t *testing.T,
 	capacity int,
@@ -219,19 +327,22 @@ func newTestCoordinator(
 ) *Coordinator {
 	t.Helper()
 	coordinator := newTestCoordinatorWithoutCleanup(t, capacity, source, storage)
-	t.Cleanup(func() {
-		admissionCtx, cancelAdmission := context.WithTimeout(
-			context.Background(),
-			time.Second,
-		)
-		defer cancelAdmission()
-		drainCtx, cancelDrain := context.WithTimeout(context.Background(), time.Second)
-		defer cancelDrain()
-		if err := coordinator.Close(admissionCtx, drainCtx); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
+	t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
 	return coordinator
+}
+
+func closeTestCoordinator(t *testing.T, coordinator *Coordinator) {
+	t.Helper()
+	admissionCtx, cancelAdmission := context.WithTimeout(
+		context.Background(),
+		time.Second,
+	)
+	defer cancelAdmission()
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), time.Second)
+	defer cancelDrain()
+	if err := coordinator.Close(admissionCtx, drainCtx); err != nil {
+		t.Errorf("Close: %v", err)
+	}
 }
 
 func newTestCoordinatorWithoutCleanup(
@@ -475,4 +586,125 @@ func equalUint64s(left, right []uint64) bool {
 		}
 	}
 	return true
+}
+
+type blockingCoordinatorSource struct {
+	operation string
+	entered   chan struct{}
+	once      sync.Once
+}
+
+func newBlockingCoordinatorSource(operation string) *blockingCoordinatorSource {
+	return &blockingCoordinatorSource{
+		operation: operation,
+		entered:   make(chan struct{}),
+	}
+}
+
+func (s *blockingCoordinatorSource) Pending(
+	ctx context.Context,
+	_ int,
+) ([]string, error) {
+	if s.operation == "pending" {
+		return nil, s.block(ctx)
+	}
+	return []string{"task"}, nil
+}
+
+func (s *blockingCoordinatorSource) LoadLatest(
+	ctx context.Context,
+	_ string,
+) (DurableCandidate, bool, error) {
+	if s.operation == "load" {
+		return DurableCandidate{}, false, s.block(ctx)
+	}
+	return DurableCandidate{
+		Revision: 1,
+		Policy:   testPolicy(),
+		Trace:    testTraceForRevision("task", 1),
+		Persist:  s.operation != "confirm",
+	}, true, nil
+}
+
+func (s *blockingCoordinatorSource) Confirm(
+	ctx context.Context,
+	_ string,
+	_ uint64,
+) (Confirmation, error) {
+	if s.operation == "confirm" {
+		return "", s.block(ctx)
+	}
+	return ConfirmationCurrent, nil
+}
+
+func (s *blockingCoordinatorSource) block(ctx context.Context) error {
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type failingPendingSource struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (s *failingPendingSource) Pending(context.Context, int) ([]string, error) {
+	s.mu.Lock()
+	s.count++
+	s.mu.Unlock()
+	return nil, errors.New("injected pending failure")
+}
+
+func (s *failingPendingSource) LoadLatest(
+	context.Context,
+	string,
+) (DurableCandidate, bool, error) {
+	return DurableCandidate{}, false, nil
+}
+
+func (s *failingPendingSource) Confirm(
+	context.Context,
+	string,
+	uint64,
+) (Confirmation, error) {
+	return ConfirmationGone, nil
+}
+
+func (s *failingPendingSource) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.count
+}
+
+type failingLoadSource struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (s *failingLoadSource) Pending(context.Context, int) ([]string, error) {
+	return []string{"task"}, nil
+}
+
+func (s *failingLoadSource) LoadLatest(
+	context.Context,
+	string,
+) (DurableCandidate, bool, error) {
+	s.mu.Lock()
+	s.count++
+	s.mu.Unlock()
+	return DurableCandidate{}, false, errors.New("injected load failure")
+}
+
+func (s *failingLoadSource) Confirm(
+	context.Context,
+	string,
+	uint64,
+) (Confirmation, error) {
+	return ConfirmationGone, nil
+}
+
+func (s *failingLoadSource) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.count
 }

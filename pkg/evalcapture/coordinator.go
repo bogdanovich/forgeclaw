@@ -15,6 +15,7 @@ import (
 const (
 	defaultProjectionCapacity   = 128
 	defaultProjectionRetryDelay = 100 * time.Millisecond
+	minimumProjectionRetryDelay = time.Millisecond
 )
 
 // Confirmation describes the result of atomically acknowledging one source
@@ -93,7 +94,7 @@ type Coordinator struct {
 	capacity   int
 	retryDelay time.Duration
 	sources    map[string]DurableSource
-	recover    map[string]bool
+	recoverAt  map[string]time.Time
 	states     map[projectionID]*projectionState
 	receipts   map[string]projectionID
 	next       uint64
@@ -104,6 +105,8 @@ type Coordinator struct {
 	confirmFailures   uint64
 
 	writer *Writer
+	opCtx  context.Context
+	cancel context.CancelFunc
 	wake   chan struct{}
 	done   chan struct{}
 	idle   chan struct{}
@@ -116,20 +119,23 @@ func NewCoordinator(options CoordinatorOptions) *Coordinator {
 		capacity = defaultProjectionCapacity
 	}
 	retryDelay := options.RetryDelay
-	if retryDelay < 0 {
-		retryDelay = 0
-	} else if retryDelay == 0 {
+	if retryDelay == 0 {
 		retryDelay = defaultProjectionRetryDelay
+	} else if retryDelay < minimumProjectionRetryDelay {
+		retryDelay = minimumProjectionRetryDelay
 	}
+	opCtx, cancel := context.WithCancel(context.Background())
 	c := &Coordinator{
 		capacity: capacity, retryDelay: retryDelay,
-		sources:  make(map[string]DurableSource),
-		recover:  make(map[string]bool),
-		states:   make(map[projectionID]*projectionState),
-		receipts: make(map[string]projectionID),
-		wake:     make(chan struct{}, 1),
-		done:     make(chan struct{}),
-		idle:     make(chan struct{}, 1),
+		sources:   make(map[string]DurableSource),
+		recoverAt: make(map[string]time.Time),
+		states:    make(map[projectionID]*projectionState),
+		receipts:  make(map[string]projectionID),
+		opCtx:     opCtx,
+		cancel:    cancel,
+		wake:      make(chan struct{}, 1),
+		done:      make(chan struct{}),
+		idle:      make(chan struct{}, 1),
 	}
 	writerOptions := options.Writer
 	externalSink := writerOptions.EventSink
@@ -165,7 +171,7 @@ func (c *Coordinator) RegisterSource(sourceID string, source DurableSource) erro
 		return fmt.Errorf("durable projection source %q is already registered", sourceID)
 	}
 	c.sources[sourceID] = source
-	c.recover[sourceID] = true
+	c.recoverAt[sourceID] = time.Time{}
 	c.signalLocked()
 	return nil
 }
@@ -179,7 +185,7 @@ func (c *Coordinator) UnregisterSource(sourceID string) {
 	sourceID = strings.TrimSpace(sourceID)
 	c.mu.Lock()
 	delete(c.sources, sourceID)
-	delete(c.recover, sourceID)
+	delete(c.recoverAt, sourceID)
 	c.removeSourceStatesLocked(sourceID)
 	c.notifyIdleLocked()
 	c.mu.Unlock()
@@ -211,7 +217,7 @@ func (c *Coordinator) Request(sourceID, key string) error {
 	}
 	if len(c.states) >= c.capacity {
 		c.overflowDeferrals++
-		c.recover[sourceID] = true
+		c.recoverAt[sourceID] = time.Time{}
 		c.signalLocked()
 		return &AdmissionError{
 			Reason: ReasonCapacity, TraceID: "durable_projection",
@@ -272,22 +278,37 @@ func (c *Coordinator) Close(admissionCtx, drainCtx context.Context) error {
 	}
 	c.stopping = true
 	for sourceID := range c.sources {
-		c.recover[sourceID] = true
+		c.recoverAt[sourceID] = time.Time{}
 	}
 	c.signalLocked()
 	c.mu.Unlock()
 
+	cancelAtDrainDeadline := make(chan struct{})
+	go func() {
+		select {
+		case <-drainCtx.Done():
+			c.cancel()
+		case <-cancelAtDrainDeadline:
+		}
+	}()
 	admissionErr := c.waitIdle(admissionCtx)
 	writerErr := c.writer.Close(drainCtx)
 	c.signal()
 	confirmErr := c.waitIdle(drainCtx)
+	close(cancelAtDrainDeadline)
+	c.cancel()
 
 	c.mu.Lock()
 	c.closed = true
 	c.signalLocked()
 	c.mu.Unlock()
-	<-c.done
-	return errors.Join(admissionErr, writerErr, confirmErr)
+	var workerErr error
+	select {
+	case <-c.done:
+	case <-drainCtx.Done():
+		workerErr = drainCtx.Err()
+	}
+	return errors.Join(admissionErr, writerErr, confirmErr, workerErr)
 }
 
 func (c *Coordinator) run() {
@@ -370,16 +391,21 @@ func (c *Coordinator) nextWork() (
 		return id, *state, source, true, 0
 	}
 	if len(c.states) < c.capacity && c.scans == 0 {
-		sourceIDs := make([]string, 0, len(c.recover))
-		for sourceID, needed := range c.recover {
-			if needed && c.sources[sourceID] != nil {
+		sourceIDs := make([]string, 0, len(c.recoverAt))
+		for sourceID, retryAt := range c.recoverAt {
+			if c.sources[sourceID] == nil {
+				continue
+			}
+			if retryAt.IsZero() || !retryAt.After(now) {
 				sourceIDs = append(sourceIDs, sourceID)
+			} else if earliest.IsZero() || retryAt.Before(earliest) {
+				earliest = retryAt
 			}
 		}
 		sort.Strings(sourceIDs)
 		if len(sourceIDs) > 0 {
 			sourceID := sourceIDs[0]
-			delete(c.recover, sourceID)
+			delete(c.recoverAt, sourceID)
 			c.scans++
 			go c.scanSource(sourceID)
 		}
@@ -406,7 +432,7 @@ func (c *Coordinator) scanSource(sourceID string) {
 	if source == nil || limit <= 0 {
 		return
 	}
-	keys, err := source.Pending(context.Background(), limit)
+	keys, err := source.Pending(c.opCtx, limit)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.sources[sourceID] != source {
@@ -414,8 +440,8 @@ func (c *Coordinator) scanSource(sourceID string) {
 	}
 	if err != nil {
 		c.loadFailures++
-		c.recover[sourceID] = true
-		c.scheduleRecoveryLocked()
+		c.recoverAt[sourceID] = time.Now().Add(c.retryDelay)
+		c.signalLocked()
 		return
 	}
 	for _, key := range keys {
@@ -429,13 +455,13 @@ func (c *Coordinator) scanSource(sourceID string) {
 		}
 		if len(c.states) >= c.capacity {
 			c.overflowDeferrals++
-			c.recover[sourceID] = true
+			c.recoverAt[sourceID] = time.Time{}
 			break
 		}
 		c.states[id] = &projectionState{phase: projectionNeedsLoad, generation: 1}
 	}
 	if len(keys) >= limit && !stopping {
-		c.recover[sourceID] = true
+		c.recoverAt[sourceID] = time.Time{}
 	}
 	c.signalLocked()
 }
@@ -445,7 +471,7 @@ func (c *Coordinator) processLoad(
 	snapshot projectionState,
 	source DurableSource,
 ) {
-	candidate, exists, err := source.LoadLatest(context.Background(), id.key)
+	candidate, exists, err := source.LoadLatest(c.opCtx, id.key)
 	c.mu.Lock()
 	state := c.states[id]
 	if state == nil || state.generation != snapshot.generation ||
@@ -461,7 +487,7 @@ func (c *Coordinator) processLoad(
 	}
 	if !exists {
 		delete(c.states, id)
-		c.recover[id.source] = true
+		c.recoverAt[id.source] = time.Time{}
 		c.notifyIdleLocked()
 		c.mu.Unlock()
 		return
@@ -505,7 +531,7 @@ func (c *Coordinator) processConfirm(
 	snapshot projectionState,
 	source DurableSource,
 ) {
-	result, err := source.Confirm(context.Background(), id.key, snapshot.revision)
+	result, err := source.Confirm(c.opCtx, id.key, snapshot.revision)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state := c.states[id]
@@ -521,7 +547,7 @@ func (c *Coordinator) processConfirm(
 	switch result {
 	case ConfirmationCurrent, ConfirmationGone:
 		delete(c.states, id)
-		c.recover[id.source] = true
+		c.recoverAt[id.source] = time.Time{}
 		c.notifyIdleLocked()
 	case ConfirmationStale:
 		state.phase = projectionNeedsLoad
@@ -580,10 +606,6 @@ func (c *Coordinator) waitIdle(ctx context.Context) error {
 	}
 }
 
-func (c *Coordinator) scheduleRecoveryLocked() {
-	time.AfterFunc(c.retryDelay, c.signal)
-}
-
 func (c *Coordinator) signal() {
 	if c == nil {
 		return
@@ -612,8 +634,8 @@ func (c *Coordinator) notifyIdleLocked() {
 }
 
 func (c *Coordinator) recoveryPendingLocked() bool {
-	for sourceID, needed := range c.recover {
-		if needed && c.sources[sourceID] != nil {
+	for sourceID := range c.recoverAt {
+		if c.sources[sourceID] != nil {
 			return true
 		}
 	}
