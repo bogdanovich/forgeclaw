@@ -250,6 +250,45 @@ func TestNodeDiscoveryToolDoesNotTrustPersistedConnectedStateAfterRestart(t *tes
 	}
 }
 
+func TestNodeDiscoveryToolDoesNotSuggestReapprovalForRevokedNode(t *testing.T) {
+	cfg := nodeDiscoveryTestConfig()
+	snapshot := nodes.Snapshot{
+		ID:      "revoked-node",
+		State:   nodes.StateRevoked,
+		Catalog: nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{}},
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef: map[string]nodes.Snapshot{"builder-node": snapshot},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				ApprovedAt: 1,
+				RevokedAt:  2,
+			},
+		},
+	}
+	tool := NewNodeDiscoveryTool(cfg, source)
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+
+	for _, action := range []map[string]any{
+		{"action": "list"},
+		{"action": "describe", "target": "build"},
+	} {
+		payload := decodeNodeResult(t, tool.Execute(ctx, action))
+		if action["action"] == "list" {
+			payload = payload["targets"].([]any)[0].(map[string]any)
+		}
+		if payload["state"] != string(nodes.StateRevoked) || payload["available"] != false {
+			t.Fatalf("%v result = %#v, want revoked and unavailable", action, payload)
+		}
+		if _, exists := payload["requires_reapproval"]; exists {
+			t.Fatalf("%v result = %#v, revoked node cannot be reapproved", action, payload)
+		}
+		if commands, exists := payload["commands"]; exists && len(commands.([]any)) != 0 {
+			t.Fatalf("%v commands = %#v, want none", action, commands)
+		}
+	}
+}
+
 func TestNodeDiscoveryToolOmitsUntrustedNodeClaims(t *testing.T) {
 	cfg := nodeDiscoveryTestConfig()
 	rawID := "node_identity_must_not_leak"

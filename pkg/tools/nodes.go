@@ -193,7 +193,9 @@ func (tool *NodeDiscoveryTool) resolve(
 	entry.DisplayName = snapshot.DisplayName
 	if registration != nil {
 		currentCatalogHash := catalogHash(snapshot.Catalog)
-		if registration.ApprovedAt > 0 &&
+		if registration.RevokedAt == 0 &&
+			snapshot.State != nodes.StateRevoked &&
+			registration.ApprovedAt > 0 &&
 			(registration.ApprovedCatalogHash == "" ||
 				currentCatalogHash == "" ||
 				registration.ApprovedCatalogHash != currentCatalogHash) {
