@@ -160,6 +160,7 @@ func DeliverWithRetry[T any](
 	}
 	var confirmedIDs []string
 	var result DeliveryResult[T]
+	acceptanceUnknown := false
 	maxRetries := max(policy.MaxRetries, 0)
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -168,6 +169,7 @@ func DeliverWithRetry[T any](
 		if !result.Delivered() && result.Err == nil {
 			result.Err = errors.New("incomplete delivery result has no error")
 		}
+		acceptanceUnknown = acceptanceUnknown || result.Ambiguous()
 		result.Attempts = attempt + 1
 		confirmedIDs = append(confirmedIDs, result.MessageIDs...)
 		if observe != nil {
@@ -207,6 +209,9 @@ func DeliverWithRetry[T any](
 	result.Attempts = max(result.Attempts, 1)
 	if len(confirmedIDs) > 0 {
 		result.Status = DeliveryPartial
+	}
+	if acceptanceUnknown {
+		result.Acceptance = DeliveryAcceptanceUnknown
 	}
 	return result
 }

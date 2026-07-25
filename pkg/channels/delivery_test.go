@@ -109,6 +109,32 @@ func TestDeliverWithRetryHonorsAmbiguousPolicy(t *testing.T) {
 	}
 }
 
+func TestDeliverWithRetryPreservesAmbiguityBeforeDefiniteRejection(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	result := DeliverWithRetry(
+		t.Context(),
+		[]string{"payload"},
+		DeliveryRetryPolicy{MaxRetries: 1, RetryAmbiguous: true},
+		func(_ context.Context, _ []string) DeliveryResult[string] {
+			calls++
+			if calls == 1 {
+				return FailedDelivery[string](nil, nil, 0, ErrTemporary)
+			}
+			return FailedDelivery[string](nil, nil, 0, ErrSendFailed)
+		},
+		nil,
+	)
+
+	if calls != 2 {
+		t.Fatalf("delivery calls = %d, want 2", calls)
+	}
+	if !result.Ambiguous() || result.DefinitelyNotSent() {
+		t.Fatalf("result = %#v, want sticky ambiguous failure", result)
+	}
+}
+
 func TestDeliverWithRetryHonorsRetryAfterAndCancellation(t *testing.T) {
 	t.Parallel()
 

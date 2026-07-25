@@ -6123,6 +6123,32 @@ func TestSendMessageDefiniteRetryOnlyStopsAfterAmbiguousFailure(t *testing.T) {
 	}
 }
 
+func TestSendMessagePreservesAmbiguityBeforeDefiniteRejection(t *testing.T) {
+	m := newTestManager()
+	callCount := 0
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			callCount++
+			if callCount == 1 {
+				return fmt.Errorf("acceptance unknown: %w", ErrTemporary)
+			}
+			return fmt.Errorf("definitely rejected: %w", ErrSendFailed)
+		},
+	}
+	m.channels["test"] = ch
+	m.workers["test"] = &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	err := m.SendMessage(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "123", Content: "do not fallback",
+	}))
+	if err == nil || DeliveryDefinitelyNotSent(err) {
+		t.Fatalf("SendMessage() error = %v, want sticky ambiguous delivery", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("Send calls = %d, want 2", callCount)
+	}
+}
+
 func TestSendMediaDoesNotRetryAfterPartialDelivery(t *testing.T) {
 	m := newTestManager()
 	callCount := 0
