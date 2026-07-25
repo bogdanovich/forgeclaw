@@ -217,6 +217,42 @@ apparently complete malformed trace.
 The writer does not reconstruct domain state after restart. Durable projectors
 rebuild missing finalized traces from their authoritative registries.
 
+### Durable Projection Acknowledgement
+
+Queue admission is not a durability acknowledgement. This distinction is
+mandatory for task and interaction traces because their source registries may
+prune terminal records after capture completes.
+
+Ordinary turn traces may use bounded best-effort admission because an active
+turn buffer is process-local by definition. Durable task and interaction
+projections use a shared projection coordinator with a stricter contract:
+
+1. The source registry durably marks the exact domain generation and revision
+   as capture-pending before that revision can be pruned or replaced.
+2. The source-specific projector builds an immutable candidate and hands it to
+   the coordinator.
+3. The coordinator owns bounded pending admission, retry, writer receipts,
+   shutdown drain, and observable overflow accounting.
+4. A writer receipt acknowledges the exact candidate identity only after
+   `Store.Save` has completed successfully.
+5. The coordinator asks the source registry to clear capture-pending with one
+   atomic compare-and-set over domain identity and revision.
+6. A stale receipt never clears a newer revision. The coordinator rebuilds or
+   resubmits the latest durable source revision instead.
+
+The coordinator keeps no authoritative domain history. If its bounded
+process-local pending set overflows or the process exits, the registry marker
+and retained source record remain the recovery authority. Startup
+reconciliation scans those markers and missing canonical traces. Disabling new
+capture does not clear existing markers; acknowledged or recoverable work is
+drained or left for restart reconciliation.
+
+This lifecycle is implemented once. Task and interaction projectors must not
+each own independent receipt maps, retry timers, completed tombstones,
+capacity-spool policy, or shutdown persistence loops. The coordinator accepts
+source callbacks for deterministic rebuild and revision confirmation, while
+all domain transition interpretation remains in the source-specific projector.
+
 ## 4. Source-Specific Projectors
 
 Replace the generic agent capture manager with small source owners:
@@ -251,8 +287,10 @@ deterministic trace ID for the complete generation. A `lost` task that still
 owns a resumable interaction is not terminal for capture: its explicit
 `lost -> running` transition remains in the same generation trace. This avoids
 inventing a second recovery identity that the task registry does not persist.
-Writer capacity rejection keeps the terminal trace pending and retries
-admission without requiring another task event.
+The projector marks the exact terminal revision capture-pending and delegates
+all persistence lifecycle work to the shared projection coordinator. Writer
+capacity rejection leaves the registry marker intact and does not require
+another task event.
 
 The generation schema has no v1 migration or compatibility loader. An upgrade
 must stop every profile and remove its legacy task registry before first start
@@ -267,11 +305,12 @@ BuildInteractionTrace(record Record, events []Event) (evaltrace.Trace, Evidence)
 ```
 
 Both live terminalization and startup reconciliation call this function. A
-terminal registry record is not considered captured until its trace has been
-accepted by the writer. Reconciliation scans retained terminal records and
-rebuilds a missing, incomplete, or stale trace from durable history. If history
-was pruned, the builder emits an explicitly incomplete trace rather than
-inventing transitions.
+terminal registry record is not considered captured until the writer has
+persisted the exact projected revision and the registry compare-and-set has
+confirmed that no newer revision exists. Reconciliation scans capture-pending
+or retained terminal records and rebuilds a missing, incomplete, or stale trace
+from durable history. If history was pruned, the builder emits an explicitly
+incomplete trace rather than inventing transitions.
 
 Projectors may add typed links between traces. They do not copy one domain's
 state machine into another projector or append interaction transitions directly
@@ -359,11 +398,14 @@ Each item is a separate focused PR based on the merged predecessor:
    and explicit loss accounting from the agent capture manager.
 9. **Bounded assembly:** centralize record sequencing, deduplication, critical
    evidence priority, truncation accounting, and finalization outside projectors.
-10. **Projectors:** split turn/task capture and add the dedicated interaction
-   projector with deterministic live/startup construction.
-11. **Protocol contract:** extract declarative interaction transitions and use
+10. **Durable projection coordinator:** centralize persisted receipts, source
+    revision confirmation, bounded pending work, retry, and shutdown drain;
+    migrate the task projector before adding another durable source.
+11. **Projectors:** simplify turn/task capture and add the dedicated
+    interaction projector with deterministic live/startup construction.
+12. **Protocol contract:** extract declarative interaction transitions and use
    them from both registry validation and replay reduction.
-12. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
+13. **Evaluation:** add the interaction trace schema, evaluator, fixtures, CLI
    reporting, operator docs, and only the spike tests relevant to these final
    boundaries.
 
