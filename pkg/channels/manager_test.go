@@ -4787,6 +4787,50 @@ func TestGetStreamer_SplitOnMarkerTerminalMarkerFooterAfterUsage(t *testing.T) {
 	}
 }
 
+func TestGetStreamer_SplitOnMarkerConsecutiveTerminalMarkersFooterAfterUsage(t *testing.T) {
+	m := newTestManager()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.SplitOnMarker = true
+	m.config = cfg
+
+	var segments []*recordingStreamSegment
+	ch := &mockStreamingChannel{
+		beginStreamFn: func(context.Context, string) (Streamer, error) {
+			segment := &recordingStreamSegment{}
+			segments = append(segments, segment)
+			return segment, nil
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1", runtimeevents.TraceScope{})
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	streamer.(interface{ SetModelName(modelName string) }).SetModelName("fallback-model")
+	streamer.(interface{ SetDefaultModelName(defaultModelName string) }).SetDefaultModelName("primary-model")
+
+	finalContent := "only final segment<|[SPLIT]|><|[SPLIT]|>"
+	if err := streamer.Update(context.Background(), finalContent); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(segments) != 1 || len(segments[0].finals) != 0 {
+		t.Fatalf("consecutive terminal marker update finalized segments = %+v, want deferred finalization", segments)
+	}
+
+	streamer.(interface {
+		SetTurnUsage(inputTokens, outputTokens int)
+	}).SetTurnUsage(10252, 4500)
+	if err := streamer.Finalize(context.Background(), finalContent); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+
+	wantFinal := "only final segment\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	if got := segments[0].finals; len(got) != 1 || got[0] != wantFinal {
+		t.Fatalf("segment finals = %v, want [%q]", got, wantFinal)
+	}
+}
+
 func TestGetStreamer_SplitOnMarkerKeepsReasoningOnInitialStreamer(t *testing.T) {
 	m := newTestManager()
 	m.config = &config.Config{

@@ -1309,7 +1309,7 @@ func (s *splitMarkerStreamer) updateLocked(ctx context.Context, content string) 
 	parts := strings.Split(content, MessageSplitMarker)
 	completedLimit := len(parts) - 1
 	active := strings.TrimSpace(parts[len(parts)-1])
-	if active == "" && completedLimit > 0 {
+	for active == "" && completedLimit > 0 && strings.TrimSpace(parts[completedLimit]) == "" {
 		completedLimit--
 	}
 	if err := s.finalizeCompletedPartsLocked(ctx, parts, completedLimit, nil, false); err != nil {
