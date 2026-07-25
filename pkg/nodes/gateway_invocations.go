@@ -335,7 +335,7 @@ func (store *GatewayInvocationStore) MarkDispatched(
 		return cloneGatewayInvocationRecord(record), false, nil
 	}
 	previous := cloneGatewayInvocationRecords(store.records)
-	now := store.now().UnixNano()
+	now := gatewayInvocationTransitionTime(record, store.now())
 	record.State = GatewayInvocationDispatched
 	record.DispatchedAt = now
 	record.UpdatedAt = now
@@ -388,7 +388,7 @@ func (store *GatewayInvocationStore) MarkRejected(
 		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 	}
 	previous := cloneGatewayInvocationRecords(store.records)
-	now := store.now().UnixNano()
+	now := gatewayInvocationTransitionTime(record, store.now())
 	record.State = GatewayInvocationRejected
 	record.UpdatedAt = now
 	record.Rejection = &InvocationFailure{Code: rejection.Code, Message: rejection.Message}
@@ -398,6 +398,13 @@ func (store *GatewayInvocationStore) MarkRejected(
 			fmt.Errorf("persist rejected node invocation: %w", err)
 	}
 	return cloneGatewayInvocationRecord(record), true, nil
+}
+
+func gatewayInvocationTransitionTime(
+	record GatewayInvocationRecord,
+	at time.Time,
+) int64 {
+	return max(record.UpdatedAt, at.UnixNano())
 }
 
 func (store *GatewayInvocationStore) lockAndReloadLocked() (func(), error) {

@@ -325,6 +325,53 @@ func TestGatewayInvocationStorePersistsDefinitiveRejection(t *testing.T) {
 	}
 }
 
+func TestGatewayInvocationStoreReloadsAfterBackwardClockTransitions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "node_invocations.json")
+	now := time.Now()
+	store := newGatewayInvocationStore(path, 8, 1024*1024, func() time.Time {
+		return now
+	})
+	plan := gatewayTestPlan(t, "inv_clock", "idem_clock", now)
+	prepared, err := store.Prepare("vpn", "call-1", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := GatewayInvocationOwner{
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
+		ActorID: plan.ActorID, ToolCallID: "call-1",
+	}
+
+	now = now.Add(-time.Hour)
+	dispatched, transitioned, err := store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	)
+	if err != nil || !transitioned ||
+		dispatched.UpdatedAt != prepared.UpdatedAt ||
+		dispatched.DispatchedAt != prepared.UpdatedAt {
+		t.Fatalf("backward-clock dispatch = (%#v, %v, %v)", dispatched, transitioned, err)
+	}
+	rejected, transitioned, err := store.MarkRejected(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+		InvocationFailure{Code: "NODE_BUSY", Message: "node is busy"},
+	)
+	if err != nil || !transitioned || rejected.UpdatedAt != dispatched.UpdatedAt {
+		t.Fatalf("backward-clock rejection = (%#v, %v, %v)", rejected, transitioned, err)
+	}
+
+	reloaded, err := NewGatewayInvocationStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatalf("reload backward-clock transitions: %v", err)
+	}
+	got, found, err := reloaded.Lookup(gatewayTestPrincipal(plan), plan.InvocationID)
+	if err != nil || !found || got.State != GatewayInvocationRejected {
+		t.Fatalf("reloaded invocation = (%#v, %v, %v)", got, found, err)
+	}
+}
+
 func TestGatewayInvocationStoreLoadRejectsMutatedPlan(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node_invocations.json")
 	plan := gatewayTestPlan(t, "inv_mutated", "idem_mutated", time.Now())
