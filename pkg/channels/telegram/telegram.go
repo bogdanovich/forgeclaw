@@ -321,7 +321,24 @@ func (c *TelegramChannel) sendTextChunks(
 	useRich bool,
 	isToolFeedback bool,
 ) ([]string, error) {
-	queue := []string{text}
+	result := c.sendTextChunkQueue(ctx, []string{text}, baseParams, useRich, isToolFeedback)
+	return result.messageIDs, result.err
+}
+
+type sendTextChunkResult struct {
+	messageIDs []string
+	remaining  []string
+	nextParams sendChunkParams
+	err        error
+}
+
+func (c *TelegramChannel) sendTextChunkQueue(
+	ctx context.Context,
+	queue []string,
+	baseParams sendChunkParams,
+	useRich bool,
+	isToolFeedback bool,
+) sendTextChunkResult {
 	var messageIDs []string
 	for len(queue) > 0 {
 		chunk := queue[0]
@@ -358,7 +375,12 @@ func (c *TelegramChannel) sendTextChunks(
 					useMarkdownV2: baseParams.useMarkdownV2,
 				})
 				if err != nil {
-					return nil, err
+					return sendTextChunkResult{
+						messageIDs: messageIDs,
+						remaining:  append([]string{chunk}, queue...),
+						nextParams: baseParams,
+						err:        err,
+					}
 				}
 				messageIDs = append(messageIDs, msgID)
 				baseParams.replyToID = ""
@@ -409,7 +431,12 @@ func (c *TelegramChannel) sendTextChunks(
 			if useRich && errors.Is(err, errTelegramMessageTooLong) {
 				runeChunk := []rune(chunk)
 				if len(runeChunk) <= 1 {
-					return nil, err
+					return sendTextChunkResult{
+						messageIDs: messageIDs,
+						remaining:  append([]string{chunk}, queue...),
+						nextParams: baseParams,
+						err:        err,
+					}
 				}
 				smallerLen := len(runeChunk) / 2
 				subChunks := channels.SplitMessage(chunk, smallerLen)
@@ -428,13 +455,21 @@ func (c *TelegramChannel) sendTextChunks(
 				queue = append(nonEmpty, queue...)
 				continue
 			}
-			return nil, err
+			return sendTextChunkResult{
+				messageIDs: messageIDs,
+				remaining:  append([]string{chunk}, queue...),
+				nextParams: baseParams,
+				err:        err,
+			}
 		}
 		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
 		baseParams.replyToID = ""
 	}
-	return messageIDs, nil
+	return sendTextChunkResult{
+		messageIDs: messageIDs,
+		nextParams: baseParams,
+	}
 }
 
 func (c *TelegramChannel) richMessagesEnabled(useMarkdownV2 bool) bool {
@@ -2486,17 +2521,17 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 	var err error
 	if s.richMessages {
-		_, err = s.channel.sendTextChunks(ctx, content, sendChunkParams{
+		_, err = s.finalizeTextChunks(ctx, content, sendChunkParams{
 			chatID:        s.chatID,
 			threadID:      s.threadID,
 			useMarkdownV2: false,
-		}, true, false)
+		}, true)
 	} else {
-		_, err = s.channel.sendTextChunks(ctx, content, sendChunkParams{
+		_, err = s.finalizeTextChunks(ctx, content, sendChunkParams{
 			chatID:        s.chatID,
 			threadID:      s.threadID,
 			useMarkdownV2: false,
-		}, false, false)
+		}, false)
 	}
 
 	if err != nil {
@@ -2509,6 +2544,32 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 	}
 	s.Cancel(ctx)
 	return nil
+}
+
+func (s *telegramStreamer) finalizeTextChunks(
+	ctx context.Context,
+	content string,
+	baseParams sendChunkParams,
+	useRich bool,
+) ([]string, error) {
+	const maxAttempts = 2
+	queue := []string{content}
+	var messageIDs []string
+	var err error
+	for attempt := 0; attempt <= maxAttempts; attempt++ {
+		result := s.channel.sendTextChunkQueue(ctx, queue, baseParams, useRich, false)
+		messageIDs = append(messageIDs, result.messageIDs...)
+		if result.err == nil {
+			return messageIDs, nil
+		}
+		err = result.err
+		queue = result.remaining
+		baseParams = result.nextParams
+		if len(queue) == 0 {
+			break
+		}
+	}
+	return messageIDs, err
 }
 
 func (s *telegramStreamer) Cancel(ctx context.Context) {

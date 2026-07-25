@@ -2333,6 +2333,47 @@ func TestBeginStream_FinalizeChunksLegacyContentOverLimitAfterFooter(t *testing.
 	assert.Equal(t, finalContent, delivered.String())
 }
 
+func TestBeginStream_FinalizeRetriesUnsentLegacyChunkAfterPartialFailure(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "sendMessage")
+			assert.NotContains(t, url, "Draft")
+			if callCount == 2 {
+				return nil, errors.New("second chunk failed")
+			}
+			return successResponseWithMessageID(t, callCount), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+
+	visibleContent := strings.Repeat("a", telegramTextLimit-4)
+	footer := "\n\nmodel: fallback"
+	finalContent := visibleContent + footer
+	require.Greater(t, len([]rune(finalContent)), telegramTextLimit)
+	require.NoError(t, streamer.Finalize(context.Background(), finalContent))
+
+	require.Len(t, caller.calls, 3)
+	var delivered strings.Builder
+	for idx, call := range caller.calls {
+		if idx == 1 {
+			continue
+		}
+		var params struct {
+			Text string `json:"text"`
+		}
+		require.NoError(t, json.Unmarshal(call.Data.BodyRaw, &params))
+		assert.LessOrEqual(t, len([]rune(params.Text)), telegramTextLimit)
+		delivered.WriteString(params.Text)
+	}
+	assert.Equal(t, finalContent, delivered.String())
+}
+
 func TestBeginStream_RichMessagesUsesRichDraftAndFinalize(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
