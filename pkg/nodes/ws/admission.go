@@ -34,6 +34,16 @@ type AdmissionConfig struct {
 	Sessions               *SessionHub
 }
 
+type InvocationResponseError struct {
+	Code        string
+	Message     string
+	NotAccepted bool
+}
+
+func (err *InvocationResponseError) Error() string {
+	return fmt.Sprintf("node invocation failed (%s): %s", err.Code, err.Message)
+}
+
 type AdmissionHandler struct {
 	authenticator          *nodes.Authenticator
 	allowLoopbackPlaintext bool
@@ -353,14 +363,24 @@ func (handler *AdmissionHandler) InvokeWithDispatchCommit(
 		return nil, true, errors.New("node returned a malformed invocation response")
 	}
 	if !*response.OK {
-		return nil, true, fmt.Errorf(
-			"node invocation failed (%s): %s",
-			response.Error.Code,
-			response.Error.Message,
-		)
+		return nil, true, &InvocationResponseError{
+			Code:        response.Error.Code,
+			Message:     response.Error.Message,
+			NotAccepted: invocationResponseGuaranteesNoAcceptance(response.Error.Code),
+		}
 	}
 	result, err := validateInvocationResult(approval.Descriptor, plan, response.Result)
 	return result, true, err
+}
+
+func invocationResponseGuaranteesNoAcceptance(code string) bool {
+	switch code {
+	case "NODE_BUSY", "COMMAND_UNAVAILABLE", "INVALID_PLAN",
+		"COMMAND_DENIED", "IDEMPOTENCY_CONFLICT":
+		return true
+	default:
+		return false
+	}
 }
 
 func (handler *AdmissionHandler) validateInvocationPreflight(

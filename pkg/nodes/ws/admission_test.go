@@ -43,6 +43,30 @@ func TestValidateInvocationResultRejectsInvalidCompanionOutput(t *testing.T) {
 	}
 }
 
+func TestInvocationResponseAcceptanceClassification(t *testing.T) {
+	for _, code := range []string{
+		"NODE_BUSY",
+		"COMMAND_UNAVAILABLE",
+		"INVALID_PLAN",
+		"COMMAND_DENIED",
+		"IDEMPOTENCY_CONFLICT",
+	} {
+		if !invocationResponseGuaranteesNoAcceptance(code) {
+			t.Errorf("%s should guarantee non-acceptance", code)
+		}
+	}
+	for _, code := range []string{
+		"EXECUTION_FAILED",
+		"INVOCATION_UNKNOWN",
+		"INVOCATION_CANCELED",
+		"INTERNAL_ERROR",
+	} {
+		if invocationResponseGuaranteesNoAcceptance(code) {
+			t.Errorf("%s must retain recoverable dispatch state", code)
+		}
+	}
+}
+
 func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
 	descriptor := nodes.CommandDescriptor{
 		Name:         "node.info.v1",

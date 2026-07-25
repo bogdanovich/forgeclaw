@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,25 +121,38 @@ func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 	}
 	wrongOwner := owner
 	wrongOwner.ToolCallID = "call-other"
-	if _, err := store.MarkDispatched(
+	if _, _, err := store.MarkDispatched(
 		wrongOwner,
 		plan.InvocationID,
 		plan.PlanHash,
 	); !errors.Is(err, ErrGatewayInvocationConflict) {
 		t.Fatalf("wrong owner error = %v", err)
 	}
-	if _, err := store.MarkDispatched(owner, plan.InvocationID, "wrong"); !errors.Is(
+	if _, _, err := store.MarkDispatched(owner, plan.InvocationID, "wrong"); !errors.Is(
 		err,
 		ErrGatewayInvocationConflict,
 	) {
 		t.Fatalf("wrong hash error = %v", err)
 	}
-	dispatched, err := store.MarkDispatched(owner, plan.InvocationID, plan.PlanHash)
+	dispatched, transitioned, err := store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dispatched.State != GatewayInvocationDispatched || dispatched.DispatchedAt == 0 {
+	if !transitioned ||
+		dispatched.State != GatewayInvocationDispatched ||
+		dispatched.DispatchedAt == 0 {
 		t.Fatalf("dispatched record = %#v", dispatched)
+	}
+	if _, transitioned, err := store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	); err != nil || transitioned {
+		t.Fatalf("second dispatch transition = (%v, %v)", transitioned, err)
 	}
 	principal := gatewayTestPrincipal(plan)
 	principal.AgentID = "other"
@@ -163,6 +177,51 @@ func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 	}
 }
 
+func TestGatewayInvocationStoreAllowsOneConcurrentDispatchWinner(t *testing.T) {
+	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
+	plan := gatewayTestPlan(t, "inv_concurrent", "idem_concurrent", time.Now())
+	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
+		t.Fatal(err)
+	}
+	owner := GatewayInvocationOwner{
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
+		ActorID: plan.ActorID, ToolCallID: "call-1",
+	}
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	errs := make(chan error, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for range 2 {
+		go func() {
+			ready.Done()
+			<-start
+			_, transitioned, err := store.MarkDispatched(
+				owner,
+				plan.InvocationID,
+				plan.PlanHash,
+			)
+			results <- transitioned
+			errs <- err
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	winners := 0
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		if <-results {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("dispatch winners = %d, want 1", winners)
+	}
+}
+
 func TestGatewayInvocationStoreRejectsExpiredPreparedAuthority(t *testing.T) {
 	now := time.Now()
 	store := newGatewayInvocationStore("", 8, 1024*1024, func() time.Time { return now })
@@ -181,7 +240,7 @@ func TestGatewayInvocationStoreRejectsExpiredPreparedAuthority(t *testing.T) {
 		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
 		ActorID: plan.ActorID, ToolCallID: "call-1",
 	}
-	if _, err := store.MarkDispatched(
+	if _, _, err := store.MarkDispatched(
 		owner,
 		plan.InvocationID,
 		plan.PlanHash,
@@ -212,17 +271,57 @@ func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
 		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
 		ActorID: plan.ActorID, ToolCallID: "call-1",
 	}
-	_, dispatchErr := store.MarkDispatched(
+	_, transitioned, dispatchErr := store.MarkDispatched(
 		owner,
 		plan.InvocationID,
 		plan.PlanHash,
 	)
-	if dispatchErr == nil || !fileutil.IsCommittedWriteError(dispatchErr) {
-		t.Fatalf("MarkDispatched() error = %v", dispatchErr)
+	if !transitioned || dispatchErr == nil || !fileutil.IsCommittedWriteError(dispatchErr) {
+		t.Fatalf("MarkDispatched() = (transitioned %v, error %v)", transitioned, dispatchErr)
 	}
 	got, found, err = store.Lookup(gatewayTestPrincipal(plan), plan.InvocationID)
 	if err != nil || !found || got.State != GatewayInvocationDispatched {
 		t.Fatalf("committed dispatch = (%#v, %v, %v)", got, found, err)
+	}
+}
+
+func TestGatewayInvocationStorePersistsDefinitiveRejection(t *testing.T) {
+	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
+	plan := gatewayTestPlan(t, "inv_rejected", "idem_rejected", time.Now())
+	if _, err := store.Prepare("vpn", "call-1", plan); err != nil {
+		t.Fatal(err)
+	}
+	owner := GatewayInvocationOwner{
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
+		ActorID: plan.ActorID, ToolCallID: "call-1",
+	}
+	if _, transitioned, err := store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	); err != nil || !transitioned {
+		t.Fatalf("dispatch transition = (%v, %v)", transitioned, err)
+	}
+	rejection := InvocationFailure{Code: "NODE_BUSY", Message: "node is busy"}
+	record, transitioned, err := store.MarkRejected(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+		rejection,
+	)
+	if err != nil || !transitioned ||
+		record.State != GatewayInvocationRejected ||
+		record.Rejection == nil ||
+		*record.Rejection != rejection {
+		t.Fatalf("rejection transition = (%#v, %v, %v)", record, transitioned, err)
+	}
+	if _, transitioned, err := store.MarkRejected(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+		rejection,
+	); err != nil || transitioned {
+		t.Fatalf("second rejection transition = (%v, %v)", transitioned, err)
 	}
 }
 

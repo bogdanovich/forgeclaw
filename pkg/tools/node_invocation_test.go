@@ -19,11 +19,13 @@ type fakeNodeInvocationSource struct {
 	store          *nodes.GatewayInvocationStore
 	preDispatchErr error
 	dispatchErr    error
+	rejection      *nodes.InvocationFailure
 	queryErr       error
 	remote         nodes.InvocationRecord
 	lookupMiss     bool
 	prepareCalls   int
 	dispatchCalls  int
+	queryCalls     int
 }
 
 func (source *fakeNodeInvocationSource) PrepareInvocation(
@@ -71,10 +73,35 @@ func (source *fakeNodeInvocationSource) DispatchInvocation(
 	if record.State == nodes.GatewayInvocationDispatched {
 		return nil, true, nodes.ErrGatewayInvocationDispatched
 	}
-	if _, err := source.store.MarkDispatched(owner, invocationID, expectedPlanHash); err != nil {
+	if record.State == nodes.GatewayInvocationRejected && record.Rejection != nil {
+		return nil, true, &nodes.GatewayInvocationRejectedError{
+			Failure: *record.Rejection,
+		}
+	}
+	if _, transitioned, err := source.store.MarkDispatched(
+		owner,
+		invocationID,
+		expectedPlanHash,
+	); err != nil {
 		return nil, false, err
+	} else if !transitioned {
+		return nil, true, nodes.ErrGatewayInvocationDispatched
 	}
 	source.dispatchCalls++
+	if source.rejection != nil {
+		rejection := *source.rejection
+		if _, _, err := source.store.MarkRejected(
+			owner,
+			invocationID,
+			expectedPlanHash,
+			rejection,
+		); err != nil {
+			return nil, true, err
+		}
+		return nil, true, &nodes.GatewayInvocationRejectedError{
+			Failure: rejection,
+		}
+	}
 	if source.dispatchErr != nil {
 		return nil, true, source.dispatchErr
 	}
@@ -88,6 +115,7 @@ func (source *fakeNodeInvocationSource) QueryInvocation(
 	nodeID nodes.ID,
 	invocationID string,
 ) (nodes.InvocationRecord, error) {
+	source.queryCalls++
 	record, found, err := source.store.Lookup(principal, invocationID)
 	if err != nil {
 		return nodes.InvocationRecord{}, err
@@ -194,6 +222,51 @@ func TestNodeInvokeToolReportsDispatchUncertaintyWithoutReplay(t *testing.T) {
 		!strings.Contains(result.ForLLM, "DISPATCH_UNCERTAIN") ||
 		!strings.Contains(result.ForLLM, "nodes_status") {
 		t.Fatalf("uncertain dispatch = %#v", result)
+	}
+}
+
+func TestNodeInvokeToolPersistsDefinitiveRejectionWithoutStatusQuery(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	source.rejection = &nodes.InvocationFailure{
+		Code:    "NODE_BUSY",
+		Message: "node invocation ledger is full",
+	}
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	result := tool.Execute(ctx, nodeInvocationTestArgs())
+	if !result.IsError ||
+		!strings.Contains(result.ForLLM, "NOT_ACCEPTED") ||
+		strings.Contains(result.ForLLM, "nodes_status") {
+		t.Fatalf("definitive rejection = %#v", result)
+	}
+	var errorPayload struct {
+		Invocation nodeInvokeResult `json:"invocation"`
+	}
+	if err := json.Unmarshal([]byte(result.ForLLM), &errorPayload); err != nil {
+		t.Fatalf("decode rejection %q: %v", result.ForLLM, err)
+	}
+	invocationID := errorPayload.Invocation.InvocationID
+	if errorPayload.Invocation.State != "rejected" ||
+		errorPayload.Invocation.GatewayState != nodes.GatewayInvocationRejected {
+		t.Fatalf("rejection payload = %#v", errorPayload)
+	}
+
+	status := NewNodeStatusTool(nodeDiscoveryTestConfig(), source)
+	statusPayload := decodeNodeResult(
+		t,
+		status.Execute(ctx, map[string]any{"invocation_id": invocationID}),
+	)
+	if statusPayload["state"] != "rejected" ||
+		statusPayload["gateway_state"] != string(nodes.GatewayInvocationRejected) ||
+		source.queryCalls != 0 {
+		t.Fatalf("rejected status = %#v, query calls = %d", statusPayload, source.queryCalls)
+	}
+
+	repeated := tool.Execute(ctx, nodeInvocationTestArgs())
+	if !repeated.IsError ||
+		!strings.Contains(repeated.ForLLM, "NOT_ACCEPTED") ||
+		source.dispatchCalls != 1 {
+		t.Fatalf("repeated rejection = %#v, dispatch calls = %d", repeated, source.dispatchCalls)
 	}
 }
 

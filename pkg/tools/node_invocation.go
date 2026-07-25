@@ -79,6 +79,7 @@ type nodeInvokeResult struct {
 	GatewayState   nodes.GatewayInvocationState `json:"gateway_state"`
 	State          string                       `json:"state"`
 	Result         json.RawMessage              `json:"result,omitempty"`
+	Failure        *nodes.InvocationFailure     `json:"failure,omitempty"`
 	ErrorCode      string                       `json:"error_code,omitempty"`
 	RecoveryAction string                       `json:"recovery_action,omitempty"`
 }
@@ -195,6 +196,26 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 		record.ExpectedPlanHash,
 	)
 	if err != nil {
+		var rejection *nodes.GatewayInvocationRejectedError
+		if dispatched && errors.As(err, &rejection) {
+			view := nodeInvokeResult{
+				InvocationID: record.Plan.InvocationID,
+				Target:       record.Target,
+				Command:      record.Plan.Command,
+				Risk:         record.Plan.Risk,
+				GatewayState: nodes.GatewayInvocationRejected,
+				State:        "rejected",
+				Failure: &nodes.InvocationFailure{
+					Code: rejection.Failure.Code, Message: rejection.Failure.Message,
+				},
+				ErrorCode: "NOT_ACCEPTED",
+			}
+			return nodeInvocationError(
+				"NOT_ACCEPTED",
+				"the node definitively did not accept the invocation",
+				&view,
+			)
+		}
 		if !dispatched {
 			view := nodeInvokeResult{
 				InvocationID: record.Plan.InvocationID,
@@ -275,6 +296,10 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 	view := gatewayStatusResult(record, available)
 	if record.State == nodes.GatewayInvocationPrepared {
 		view.State = "prepared"
+		return nodeJSONResult(view)
+	}
+	if record.State == nodes.GatewayInvocationRejected {
+		view.State = "rejected"
 		return nodeJSONResult(view)
 	}
 	if !available {
@@ -658,6 +683,7 @@ func gatewayStatusResult(
 		Risk:          record.Plan.Risk,
 		GatewayState:  record.State,
 		NodeAvailable: available,
+		Failure:       record.Rejection,
 	}
 }
 

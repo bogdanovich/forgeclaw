@@ -464,6 +464,12 @@ func (client *Client) handleInvoke(
 		code := "EXECUTION_FAILED"
 		message := "node command failed"
 		switch {
+		case errors.Is(err, ErrCommandUnavailable):
+			code = "COMMAND_UNAVAILABLE"
+			message = "node command runtime is unavailable"
+		case errors.Is(err, ErrInvocationLedgerFull):
+			code = "NODE_BUSY"
+			message = "node invocation ledger is full"
 		case errors.Is(err, nodes.ErrCommandDenied), errors.Is(err, nodes.ErrInvalidInvocation):
 			code = "COMMAND_DENIED"
 			message = "node command denied"

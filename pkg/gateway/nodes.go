@@ -11,6 +11,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/nodes"
 	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
@@ -173,6 +174,15 @@ func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
 	return runtime.generation
 }
 
+func (runtime *nodeAdmissionRuntime) invalidateInvocationAuthority() {
+	if runtime == nil {
+		return
+	}
+	runtime.registryMu.Lock()
+	runtime.generation++
+	runtime.registryMu.Unlock()
+}
+
 // withInvocationHandler keeps a short local authority operation atomic with
 // generation validation. Callers must not perform network I/O in fn.
 func (runtime *nodeAdmissionRuntime) withInvocationHandler(
@@ -316,10 +326,19 @@ func (source *nodeInvocationSource) DispatchInvocation(
 		record.ExpectedPlanHash != expectedPlanHash {
 		return nil, false, nodes.ErrGatewayInvocationConflict
 	}
+	if record.State == nodes.GatewayInvocationRejected && record.Rejection != nil {
+		return nil, true, &nodes.GatewayInvocationRejectedError{
+			Failure: *record.Rejection,
+		}
+	}
 	if record.State == nodes.GatewayInvocationDispatched {
 		return nil, true, nodes.ErrGatewayInvocationDispatched
 	}
-	return handler.InvokeWithDispatchCommit(
+	var (
+		dispatchDurabilityErr error
+		alreadyDispatched     bool
+	)
+	result, dispatched, invokeErr := handler.InvokeWithDispatchCommit(
 		ctx,
 		record.Plan.NodeID,
 		record.Plan,
@@ -331,16 +350,53 @@ func (source *nodeInvocationSource) DispatchInvocation(
 					if current != handler {
 						return errNodeDiscoveryAuthorityUnavailable
 					}
-					_, markErr := source.store.MarkDispatched(
+					_, transitioned, markErr := source.store.MarkDispatched(
 						owner,
 						invocationID,
 						expectedPlanHash,
 					)
+					if !transitioned && markErr == nil {
+						alreadyDispatched = true
+						return nodes.ErrGatewayInvocationDispatched
+					}
+					if transitioned && fileutil.IsCommittedWriteError(markErr) {
+						dispatchDurabilityErr = markErr
+						return nil
+					}
 					return markErr
 				},
 			)
 		},
 	)
+	if alreadyDispatched {
+		return nil, true, nodes.ErrGatewayInvocationDispatched
+	}
+	var responseErr *nodews.InvocationResponseError
+	if dispatched && errors.As(invokeErr, &responseErr) && responseErr.NotAccepted {
+		rejection := nodes.InvocationFailure{
+			Code: responseErr.Code, Message: responseErr.Message,
+		}
+		_, _, rejectErr := source.store.MarkRejected(
+			owner,
+			invocationID,
+			expectedPlanHash,
+			rejection,
+		)
+		if rejectErr != nil && !fileutil.IsCommittedWriteError(rejectErr) {
+			return nil, true, fmt.Errorf(
+				"persist definitive node rejection: %w",
+				rejectErr,
+			)
+		}
+		return nil, true, &nodes.GatewayInvocationRejectedError{Failure: rejection}
+	}
+	if invokeErr != nil {
+		return nil, dispatched, invokeErr
+	}
+	if dispatchDurabilityErr != nil {
+		return nil, true, dispatchDurabilityErr
+	}
+	return result, dispatched, nil
 }
 
 func gatewayInvocationMatchesOwner(

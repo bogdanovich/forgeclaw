@@ -38,6 +38,7 @@ type GatewayInvocationState string
 const (
 	GatewayInvocationPrepared   GatewayInvocationState = "prepared"
 	GatewayInvocationDispatched GatewayInvocationState = "dispatched"
+	GatewayInvocationRejected   GatewayInvocationState = "rejected"
 )
 
 // GatewayInvocationRecord is the gateway-owned authority that links one model
@@ -52,6 +53,7 @@ type GatewayInvocationRecord struct {
 	CreatedAt        int64                  `json:"created_at"`
 	UpdatedAt        int64                  `json:"updated_at"`
 	DispatchedAt     int64                  `json:"dispatched_at,omitempty"`
+	Rejection        *InvocationFailure     `json:"rejection,omitempty"`
 }
 
 type GatewayInvocationOwner struct {
@@ -66,6 +68,14 @@ type GatewayInvocationPrincipal struct {
 	AgentID   string
 	SessionID string
 	ActorID   string
+}
+
+type GatewayInvocationRejectedError struct {
+	Failure InvocationFailure
+}
+
+func (err *GatewayInvocationRejectedError) Error() string {
+	return fmt.Sprintf("node did not accept invocation (%s): %s", err.Failure.Code, err.Failure.Message)
 }
 
 type gatewayInvocationDocument struct {
@@ -296,33 +306,33 @@ func (store *GatewayInvocationStore) MarkDispatched(
 	owner GatewayInvocationOwner,
 	invocationID string,
 	expectedPlanHash string,
-) (GatewayInvocationRecord, error) {
+) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if err := owner.validate(); err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	release, err := store.lockAndReloadLocked()
 	if err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	defer release()
 	if err := store.pruneAndPersistLocked(store.now()); err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	record, found := store.records[invocationID]
 	if !found {
-		return GatewayInvocationRecord{}, ErrGatewayInvocationNotFound
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationNotFound
 	}
 	if !owner.matches(record) {
-		return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 	}
 	if err := record.Plan.ValidateAgainstHash(expectedPlanHash); err != nil ||
 		record.ExpectedPlanHash != expectedPlanHash {
-		return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 	}
-	if record.State == GatewayInvocationDispatched {
-		return cloneGatewayInvocationRecord(record), nil
+	if record.State != GatewayInvocationPrepared {
+		return cloneGatewayInvocationRecord(record), false, nil
 	}
 	previous := cloneGatewayInvocationRecords(store.records)
 	now := store.now().UnixNano()
@@ -331,9 +341,63 @@ func (store *GatewayInvocationStore) MarkDispatched(
 	record.UpdatedAt = now
 	store.records[invocationID] = record
 	if err := store.persistMutationLocked(previous); err != nil {
-		return GatewayInvocationRecord{}, fmt.Errorf("persist dispatched node invocation: %w", err)
+		return cloneGatewayInvocationRecord(record), true,
+			fmt.Errorf("persist dispatched node invocation: %w", err)
 	}
-	return cloneGatewayInvocationRecord(record), nil
+	return cloneGatewayInvocationRecord(record), true, nil
+}
+
+func (store *GatewayInvocationStore) MarkRejected(
+	owner GatewayInvocationOwner,
+	invocationID string,
+	expectedPlanHash string,
+	rejection InvocationFailure,
+) (GatewayInvocationRecord, bool, error) {
+	if err := rejection.Validate(); err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := owner.validate(); err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	defer release()
+	if err := store.pruneAndPersistLocked(store.now()); err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	record, found := store.records[invocationID]
+	if !found {
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationNotFound
+	}
+	if !owner.matches(record) ||
+		record.ExpectedPlanHash != expectedPlanHash ||
+		record.Plan.ValidateAgainstHash(expectedPlanHash) != nil {
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
+	}
+	if record.State == GatewayInvocationRejected {
+		if record.Rejection != nil && *record.Rejection == rejection {
+			return cloneGatewayInvocationRecord(record), false, nil
+		}
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
+	}
+	if record.State != GatewayInvocationDispatched {
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
+	}
+	previous := cloneGatewayInvocationRecords(store.records)
+	now := store.now().UnixNano()
+	record.State = GatewayInvocationRejected
+	record.UpdatedAt = now
+	record.Rejection = &InvocationFailure{Code: rejection.Code, Message: rejection.Message}
+	store.records[invocationID] = record
+	if err := store.persistMutationLocked(previous); err != nil {
+		return cloneGatewayInvocationRecord(record), true,
+			fmt.Errorf("persist rejected node invocation: %w", err)
+	}
+	return cloneGatewayInvocationRecord(record), true, nil
 }
 
 func (store *GatewayInvocationStore) lockAndReloadLocked() (func(), error) {
@@ -468,7 +532,9 @@ func (store *GatewayInvocationStore) pruneLocked(now time.Time) {
 			delete(store.records, invocationID)
 			continue
 		}
-		if record.State == GatewayInvocationDispatched && record.UpdatedAt < retentionBefore {
+		if (record.State == GatewayInvocationDispatched ||
+			record.State == GatewayInvocationRejected) &&
+			record.UpdatedAt < retentionBefore {
 			delete(store.records, invocationID)
 		}
 	}
@@ -506,12 +572,17 @@ func (record GatewayInvocationRecord) validate() error {
 	}
 	switch record.State {
 	case GatewayInvocationPrepared:
-		if record.DispatchedAt != 0 {
+		if record.DispatchedAt != 0 || record.Rejection != nil {
 			return fmt.Errorf("%w: prepared invocation has dispatch time", ErrInvalidInvocation)
 		}
 	case GatewayInvocationDispatched:
-		if record.DispatchedAt <= 0 {
+		if record.DispatchedAt <= 0 || record.Rejection != nil {
 			return fmt.Errorf("%w: dispatched invocation lacks dispatch time", ErrInvalidInvocation)
+		}
+	case GatewayInvocationRejected:
+		if record.DispatchedAt <= 0 || record.Rejection == nil ||
+			record.Rejection.Validate() != nil {
+			return fmt.Errorf("%w: rejected invocation lacks rejection", ErrInvalidInvocation)
 		}
 	default:
 		return fmt.Errorf("%w: invalid gateway invocation state", ErrInvalidInvocation)
@@ -586,6 +657,10 @@ func cloneGatewayInvocationRecords(
 
 func cloneGatewayInvocationRecord(record GatewayInvocationRecord) GatewayInvocationRecord {
 	record.Plan = cloneExecutionPlan(record.Plan)
+	if record.Rejection != nil {
+		rejection := *record.Rejection
+		record.Rejection = &rejection
+	}
 	return record
 }
 

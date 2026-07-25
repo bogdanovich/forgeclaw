@@ -933,6 +933,11 @@ func restartServices(
 	runningServices *services,
 	msgBus *bus.MessageBus,
 ) error {
+	if runningServices.NodeAdmission != nil {
+		// Agent config is already published. Fail closed before any restart
+		// step can return and leave old target authority usable.
+		runningServices.NodeAdmission.invalidateInvocationAuthority()
+	}
 	cfg := al.GetConfig()
 
 	execTimeout := time.Duration(cfg.Tools.Cron.ExecTimeoutMinutes) * time.Minute

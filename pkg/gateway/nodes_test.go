@@ -188,6 +188,33 @@ func TestNodeInvocationSourceRejectsStaleRuntimeGeneration(t *testing.T) {
 	}
 }
 
+func TestNodeInvocationSourceRejectsExplicitlyInvalidatedGeneration(t *testing.T) {
+	routes := &fakeNodeAdmissionRoutes{}
+	runtime := &nodeAdmissionRuntime{routes: routes}
+	cfg := config.DefaultConfig()
+	cfg.Nodes.Enabled = true
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	source := &nodeInvocationSource{
+		nodeDiscoverySource: nodeDiscoverySource{
+			runtime: runtime, registryPath: runtime.registryPath,
+		},
+		generation: runtime.invocationGeneration(),
+	}
+
+	runtime.invalidateInvocationAuthority()
+
+	if _, err := source.PrepareInvocation(
+		"build",
+		"call_1",
+		nodes.ExecutionPlan{},
+	); !errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
+		t.Fatalf("invalidated prepare error = %v", err)
+	}
+}
+
 func TestVerifyRemoteInvocationRejectsAuthorityMismatch(t *testing.T) {
 	gateway := nodes.GatewayInvocationRecord{
 		ExpectedPlanHash: "plan-1",
