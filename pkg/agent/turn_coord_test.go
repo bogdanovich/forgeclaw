@@ -289,6 +289,7 @@ func newTurnCoordTestLoop(
 				ModelName:         "test-model",
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
+				ContextManager:    "none",
 			},
 		},
 	}

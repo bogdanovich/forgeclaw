@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,6 +143,7 @@ func runtimeEventLoggerStateForTest(
 func TestReloadProviderAndConfigRefreshesRuntimeEventLogger(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 	cfg.Events.Logging.Include = []string{"agent.*"}
 
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
@@ -160,6 +162,7 @@ func TestReloadProviderAndConfigRefreshesRuntimeEventLogger(t *testing.T) {
 
 	reloaded := config.DefaultConfig()
 	reloaded.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloaded.Agents.Defaults.ContextManager = "none"
 	reloaded.Events.Logging.Include = []string{"gateway.*"}
 	if err := al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, reloaded); err != nil {
 		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
@@ -184,6 +187,7 @@ func TestReloadProviderAndConfigRefreshesRuntimeEventLogger(t *testing.T) {
 
 	disabled := config.DefaultConfig()
 	disabled.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	disabled.Agents.Defaults.ContextManager = "none"
 	disabled.Events.Logging.Enabled = false
 	if err := al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, disabled); err != nil {
 		t.Fatalf("ReloadProviderAndConfig() with disabled logging error = %v", err)
@@ -197,6 +201,7 @@ func TestReloadProviderAndConfigRefreshesRuntimeEventLogger(t *testing.T) {
 func TestReloadProviderAndConfigRefreshesModelExecutionConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 	cfg.ModelList = config.SecureModelList{{
 		ModelName: "initial-model",
 		Provider:  "openai",
@@ -221,6 +226,7 @@ func TestReloadProviderAndConfigRefreshesModelExecutionConfig(t *testing.T) {
 
 	reloaded := config.DefaultConfig()
 	reloaded.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloaded.Agents.Defaults.ContextManager = "none"
 	reloaded.Agents.Defaults.ModelName = "reloaded-model"
 	reloaded.Agents.Defaults.Provider = "openai"
 	reloaded.ModelList = config.SecureModelList{{
@@ -289,6 +295,7 @@ func (p *reloadBlockingProvider) Close() {
 func TestReloadProviderAndConfigWaitsForInFlightRequestsBeforeClosingOldProvider(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 
 	oldProvider := &reloadBlockingProvider{
 		chatStarted: make(chan struct{}),
@@ -321,6 +328,7 @@ func TestReloadProviderAndConfigWaitsForInFlightRequestsBeforeClosingOldProvider
 	go func() {
 		reloaded := config.DefaultConfig()
 		reloaded.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+		reloaded.Agents.Defaults.ContextManager = "none"
 		reloadDone <- al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, reloaded)
 	}()
 
@@ -375,6 +383,7 @@ func TestWaitForActiveRequestsHonorsContextCancellation(t *testing.T) {
 func TestReloadProviderAndConfigReturnsCanceledErrorWhenRegistryCreationPanics(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = tempDirWithRetryCleanup(t)
+	cfg.Agents.Defaults.ContextManager = "none"
 
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
 	defer al.Close()
@@ -385,6 +394,22 @@ func TestReloadProviderAndConfigReturnsCanceledErrorWhenRegistryCreationPanics(t
 	err := al.ReloadProviderAndConfig(ctx, &panicProviderForReloadTest{}, cfg)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReloadProviderAndConfig() error = %v, want context canceled", err)
+	}
+}
+
+func TestReloadProviderAndConfigRequiresRestartForSeahorse(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	defer al.Close()
+
+	originalRegistry := al.GetRegistry()
+	err := al.ReloadProviderAndConfig(t.Context(), &mockProvider{}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "require restart") {
+		t.Fatalf("ReloadProviderAndConfig() error = %v, want restart requirement", err)
+	}
+	if al.GetRegistry() != originalRegistry {
+		t.Fatal("reload changed registry before rejecting Seahorse")
 	}
 }
 

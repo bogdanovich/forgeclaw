@@ -426,6 +426,49 @@ func TestLoadConfigRejectsMalformedContextManagerConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigUsesSeahorseContextManager(t *testing.T) {
+	if got := DefaultConfig().Agents.Defaults.ContextManager; got != "seahorse" {
+		t.Fatalf("default context manager = %q, want seahorse", got)
+	}
+}
+
+func TestLoadConfigRejectsLegacyContextManager(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 3,
+		"agents": {"defaults": {"context_manager": "legacy"}}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	_, err := LoadConfigReadOnly(configPath)
+	if err == nil || !strings.Contains(err.Error(), `use "seahorse" or "none"`) {
+		t.Fatalf("LoadConfigReadOnly() error = %v", err)
+	}
+}
+
+func TestLoadConfigAcceptsDisabledContextManager(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 3,
+		"agents": {"defaults": {"context_manager": "none"}}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	cfg, err := LoadConfigReadOnly(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfigReadOnly() error = %v", err)
+	}
+	if got := cfg.Agents.Defaults.ContextManager; got != "none" {
+		t.Fatalf("context manager = %q, want none", got)
+	}
+}
+
 func TestImageGenerateToolsConfig_EffectiveModel(t *testing.T) {
 	defaults := AgentDefaults{}
 

@@ -217,7 +217,11 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if spoolErr := configureGatewayInboundSpool(cfg, msgBus); spoolErr != nil {
 		return fmt.Errorf("configure inbound spool: %w", spoolErr)
 	}
-	agentLoop := agent.NewAgentLoop(cfg, msgBus, provider)
+	agentLoop, err := agent.NewAgentLoopChecked(cfg, msgBus, provider)
+	if err != nil {
+		msgBus.Close()
+		return fmt.Errorf("initialize agent: %w", err)
+	}
 	msgBus.SetEventPublisher(agentLoop.RuntimeEventBus())
 	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayStart, startedAt, nil)
 

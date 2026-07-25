@@ -226,6 +226,7 @@ func TestReportDeployHandoffWaitsForWorkerLock(t *testing.T) {
 func TestGatewayHandoffStatusToolSurvivesAgentRegistryReload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 	cfg.Gateway.Deploy = config.GatewayDeployConfig{Enabled: true}
 	messageBus := bus.NewMessageBus()
 	loop := agent.NewAgentLoop(cfg, messageBus, &startupBlockedProvider{reason: "not used"})

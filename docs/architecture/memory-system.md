@@ -152,7 +152,7 @@ each scenario twice in fresh disposable workspaces and compares canonical
 observations. It deliberately exercises production subsystem boundaries rather
 than adding private memory content to evaluation traces: the curated-memory
 tool and events bus, rendered prompt context, Seahorse retrieval tools, and the
-legacy context-manager runtime are the observed surfaces.
+explicit stateless context-manager runtime are the observed surfaces.
 
 ## Implementation status
 

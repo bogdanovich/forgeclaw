@@ -199,9 +199,27 @@ func newStartedTestChannelManager(
 	name string,
 	ch channels.Channel,
 ) *channels.Manager {
+	return newStartedTestChannelManagerWithConfig(
+		t,
+		&config.Config{},
+		msgBus,
+		store,
+		name,
+		ch,
+	)
+}
+
+func newStartedTestChannelManagerWithConfig(
+	t *testing.T,
+	cfg *config.Config,
+	msgBus *bus.MessageBus,
+	store media.MediaStore,
+	name string,
+	ch channels.Channel,
+) *channels.Manager {
 	t.Helper()
 
-	cm, err := channels.NewManager(&config.Config{}, msgBus, store)
+	cm, err := channels.NewManager(cfg, msgBus, store)
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
@@ -403,6 +421,7 @@ func newTestAgentLoop(
 				ModelName:         "test-model",
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
+				ContextManager:    "none",
 			},
 		},
 	}
@@ -786,6 +805,9 @@ func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		raw := outbound.Context.Raw
+		if raw[metadataKeyOutboundKind] != outboundKindFinal {
+			t.Fatalf("outbound kind = %q, want %q", raw[metadataKeyOutboundKind], outboundKindFinal)
+		}
 		if raw[metadataKeyModelName] != "fallback-model" {
 			t.Fatalf("model metadata = %q, want fallback-model", raw[metadataKeyModelName])
 		}
@@ -802,6 +824,67 @@ func TestDeliverFinalTurnResult_AttachesResponseFooterMetadata(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected final outbound")
+	}
+}
+
+func TestDeliverFinalTurnResult_DirectTelegramDeliveryIncludesResponseFooter(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ModelName = "primary-model"
+
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
+	al.SetChannelManager(
+		newStartedTestChannelManagerWithConfig(
+			t,
+			cfg,
+			msgBus,
+			media.NewFileMediaStore(),
+			"telegram",
+			telegramChannel,
+		),
+	)
+
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	al.deliverFinalTurnResult(
+		context.Background(),
+		runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-1"),
+		defaultAgent,
+		processOptions{
+			SendResponse: true,
+			Dispatch: DispatchRequest{
+				SessionKey: "session-1",
+				InboundContext: &bus.InboundContext{
+					Channel: "telegram",
+					ChatID:  "-100123",
+				},
+			},
+		},
+		turnResult{
+			finalContent:      "final reply",
+			modelName:         "fallback-model",
+			defaultModelName:  "primary-model",
+			usageInputTokens:  123,
+			usageOutputTokens: 45,
+			usageTotalTokens:  168,
+		},
+	)
+
+	messages := telegramChannel.messagesSnapshot()
+	if len(messages) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(messages))
+	}
+	want := "final reply\n\nmodel: fallback-model · tokens: in 123, out 45"
+	if got := messages[0].Content; got != want {
+		t.Fatalf("sent content = %q, want %q", got, want)
+	}
+	if got := bus.OutboundMetadataFromMessage(messages[0]).OutboundKind; got != bus.OutboundKindFinal {
+		t.Fatalf("sent outbound kind = %q, want %q", got, bus.OutboundKindFinal)
 	}
 }
 
@@ -1693,8 +1776,12 @@ func TestProcessMessage_BtwCommandRunsWithoutPersistingHistory(t *testing.T) {
 		)
 	}
 
-	if !reflect.DeepEqual(provider.lastMessages[1:3], initialHistory) {
-		t.Fatalf("provider history = %#v, want %#v", provider.lastMessages[1:3], initialHistory)
+	expectedProviderHistory := append([]providers.Message(nil), initialHistory...)
+	for i := range expectedProviderHistory {
+		expectedProviderHistory[i].CreatedAt = nil
+	}
+	if !reflect.DeepEqual(provider.lastMessages[1:3], expectedProviderHistory) {
+		t.Fatalf("provider history = %#v, want %#v", provider.lastMessages[1:3], expectedProviderHistory)
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
@@ -9713,6 +9800,86 @@ func TestProcessMessage_ContextOverflowRecovery(t *testing.T) {
 	if provider.calls != 2 {
 		t.Fatalf("expected 2 calls, got %d", provider.calls)
 	}
+	if !messageContentPresent(provider.lastMessages, "trigger recovery") {
+		t.Fatalf("retry messages dropped active user turn: %#v", provider.lastMessages)
+	}
+}
+
+type toolOverflowProvider struct {
+	calls         int
+	retryMessages []providers.Message
+}
+
+func (p *toolOverflowProvider) Chat(
+	_ context.Context,
+	messages []providers.Message,
+	_ []providers.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	switch p.calls {
+	case 1:
+		return &providers.LLMResponse{ToolCalls: []providers.ToolCall{{
+			ID:        "call_retry",
+			Type:      "function",
+			Name:      "mock_custom",
+			Arguments: map[string]any{},
+		}}}, nil
+	case 2:
+		return nil, errors.New("context_window_exceeded")
+	default:
+		p.retryMessages = append([]providers.Message(nil), messages...)
+		return &providers.LLMResponse{Content: "Recovered after tool"}, nil
+	}
+}
+
+func (p *toolOverflowProvider) GetDefaultModel() string {
+	return "test-model"
+}
+
+func TestProcessMessage_NoneContextOverflowPreservesActiveToolTurn(t *testing.T) {
+	al, _, _, originalProvider, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	defer al.Close()
+	_ = originalProvider
+
+	provider := &toolOverflowProvider{}
+	al.registry = NewAgentRegistry(al.cfg, provider)
+	al.RegisterTool(&mockCustomTool{})
+
+	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+		Channel: "test",
+		ChatID:  "chat1",
+		Content: "use the tool",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response != "Recovered after tool" {
+		t.Fatalf("response = %q, want recovered response", response)
+	}
+	if !messageContentPresent(provider.retryMessages, "use the tool") {
+		t.Fatalf("retry messages dropped active user message: %#v", provider.retryMessages)
+	}
+
+	var hasToolCall, hasToolResult bool
+	for _, message := range provider.retryMessages {
+		hasToolCall = hasToolCall || len(message.ToolCalls) > 0
+		hasToolResult = hasToolResult || message.Role == "tool"
+	}
+	if !hasToolCall || !hasToolResult {
+		t.Fatalf("retry messages dropped active tool exchange: %#v", provider.retryMessages)
+	}
+}
+
+func messageContentPresent(messages []providers.Message, content string) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content, content) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProcessMessage_ContextOverflow_AnthropicStyle(t *testing.T) {
@@ -9768,6 +9935,8 @@ func TestParallelMessageProcessing_DifferentSessionsProcessedConcurrently(t *tes
 	maxConcurrent := 0
 	turnCounter := 0
 	var wg sync.WaitGroup
+	var releaseConcurrentCalls sync.Once
+	concurrentCallsStarted := make(chan struct{})
 	wg.Add(3) // Wait for 3 turns to complete
 
 	cfg := &config.Config{
@@ -9778,6 +9947,7 @@ func TestParallelMessageProcessing_DifferentSessionsProcessedConcurrently(t *tes
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 				MaxParallelTurns:  3, // Allow up to 3 concurrent turns
+				ContextManager:    "none",
 			},
 		},
 		Session: config.SessionConfig{
@@ -9801,8 +9971,16 @@ func TestParallelMessageProcessing_DifferentSessionsProcessedConcurrently(t *tes
 			}
 			mu.Unlock()
 
-			// Simulate some processing time
-			time.Sleep(100 * time.Millisecond)
+			if currentActive >= 2 {
+				releaseConcurrentCalls.Do(func() {
+					close(concurrentCallsStarted)
+				})
+			}
+
+			select {
+			case <-concurrentCallsStarted:
+			case <-time.After(5 * time.Second):
+			}
 
 			mu.Lock()
 			delete(activeTurns, turnID)

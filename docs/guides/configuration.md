@@ -358,6 +358,34 @@ For step-by-step recipes and isolation patterns, see the [Session Guide](session
 Idle and max-age checkpoints persist across process restarts. See the Session Guide for complete examples and boundary
 semantics.
 
+### Context Manager
+
+Seahorse is the default context manager. Existing configurations may omit
+`agents.defaults.context_manager`; the effective value remains `seahorse`.
+
+To disable stored conversation context assembly and Seahorse retrieval
+explicitly, select the stateless mode:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "context_manager": "none"
+    }
+  }
+}
+```
+
+`none` keeps canonical session persistence available for audit and `/clear`,
+but does not include stored history or summaries in model prompts. The removed
+`legacy` value is a configuration error. Unknown managers and Seahorse
+initialization failures also stop startup instead of silently changing context
+semantics.
+
+Live provider/config reload is supported only while remaining in `none` mode.
+Restart a process using Seahorse so its engine, retrieval tools, provider, and
+model are replaced together.
+
 ### Absolute Seahorse Context Budgets
 
 Seahorse can enforce predictable prompt budgets independently of the model's full context window:

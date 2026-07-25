@@ -120,6 +120,11 @@ func (descriptor CommandDescriptor) Capability() string {
 	return prefix
 }
 
+// Hash returns the canonical identity of one command contract.
+func (descriptor CommandDescriptor) Hash() (string, error) {
+	return (CapabilityCatalog{Commands: []CommandDescriptor{descriptor}}).Hash()
+}
+
 type CapabilityCatalog struct {
 	Commands []CommandDescriptor `json:"commands"`
 }

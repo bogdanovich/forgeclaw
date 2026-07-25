@@ -313,7 +313,12 @@ func (handler *AdmissionHandler) Invoke(
 	if validationErr := plan.Validate(); validationErr != nil {
 		return nil, validationErr
 	}
+	descriptorHash, err := approval.Descriptor.Hash()
+	if err != nil {
+		return nil, err
+	}
 	if plan.NodeID != nodeID || plan.Risk != approval.Descriptor.Risk ||
+		plan.DescriptorHash != descriptorHash ||
 		plan.CatalogHash != approval.CatalogHash {
 		return nil, fmt.Errorf(
 			"%w: execution plan does not match approved command",

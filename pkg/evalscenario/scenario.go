@@ -145,13 +145,17 @@ func run(
 
 	messageBus := bus.NewMessageBus()
 	cfg := scenarioConfig(workspace, scenario)
-	loop := agent.NewAgentLoop(
+	loop, loopInitErr := agent.NewAgentLoopChecked(
 		cfg,
 		messageBus,
 		provider,
 		agent.WithIsolatedToolBootstrap(),
 		agent.WithIsolatedSkillBootstrap(),
 	)
+	if loopInitErr != nil {
+		messageBus.Close()
+		return Observation{}, fmt.Errorf("initialize agent: %w", loopInitErr)
+	}
 	messageBus.SetEventPublisher(loop.RuntimeEventBus())
 
 	stubs, registerErr := registerScenarioTools(loop, scenario.Tools)
