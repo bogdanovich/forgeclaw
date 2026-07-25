@@ -277,6 +277,40 @@ func (registry *FileRegistry) Registration(id ID) (Registration, bool, error) {
 	return cloneRegistration(record), true, nil
 }
 
+// withCommandApproval keeps approval and revocation mutations serialized while
+// operation commits and dispatches one command under the current authority.
+func (registry *FileRegistry) withCommandApproval(
+	id ID,
+	command string,
+	operation func(CommandApproval) error,
+) (CommandApproval, error) {
+	if err := id.Validate(); err != nil {
+		return CommandApproval{}, err
+	}
+	if operation == nil {
+		return CommandApproval{}, errors.New("command approval operation is required")
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	release, err := registry.lockAndReloadLocked()
+	if err != nil {
+		return CommandApproval{}, err
+	}
+	defer release()
+	record, exists := registry.records[string(id)]
+	if !exists {
+		return CommandApproval{}, fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
+	}
+	approval, err := commandApproval(cloneRegistration(record), command)
+	if err != nil {
+		return CommandApproval{}, err
+	}
+	if err := operation(approval); err != nil {
+		return CommandApproval{}, err
+	}
+	return approval, nil
+}
+
 // Approve pairs a pending identity or renews an existing command-surface
 // approval. It records only commands present in the authenticated catalog.
 func (registry *FileRegistry) Approve(id ID, approval PairingApproval) (Registration, error) {

@@ -67,7 +67,9 @@ func TestPeerDiscardsResponseAfterRequestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	requestDone := make(chan error, 1)
 	go func() {
-		_, requestErr := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
+		_, _, requestErr := session.request(
+			ctx, "node.invoke", []byte(`{}`), "idem_test", nil,
+		)
 		requestDone <- requestErr
 	}()
 	<-requestSeen
@@ -128,7 +130,7 @@ func TestPeerRequestCancellationWhileWaitingForWriter(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	requestDone := make(chan error, 1)
 	go func() {
-		_, err := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
+		_, _, err := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test", nil)
 		requestDone <- err
 	}()
 	waitForPeerPending(t, session, 1)
@@ -141,26 +143,73 @@ func TestPeerRequestCancellationWhileWaitingForWriter(t *testing.T) {
 	}
 }
 
+func TestPeerDispatchCommitFailurePreventsWrite(t *testing.T) {
+	connection := newStubPeerConnection()
+	session := newPeer(connection)
+	session.markReady()
+	commitErr := errors.New("persist dispatch")
+
+	_, dispatched, err := session.request(
+		t.Context(),
+		"node.invoke",
+		[]byte(`{}`),
+		"idem_test",
+		func(func() error) error { return commitErr },
+	)
+	if !errors.Is(err, commitErr) || dispatched {
+		t.Fatalf("request = (dispatched %v, error %v)", dispatched, err)
+	}
+	select {
+	case <-connection.writeStarted:
+		t.Fatal("failed dispatch commit wrote to the transport")
+	default:
+	}
+	if len(session.pending) != 0 || len(session.requestSlots) != 0 {
+		t.Fatal("failed dispatch commit leaked request state")
+	}
+}
+
 func TestPeerRequestCancellationInterruptsBlockedWrite(t *testing.T) {
 	connection := newStubPeerConnection()
 	connection.blockWrites = true
 	session := newPeer(connection)
 	session.markReady()
 	ctx, cancel := context.WithCancel(t.Context())
-	requestDone := make(chan error, 1)
+	type requestResult struct {
+		dispatched bool
+		err        error
+	}
+	requestDone := make(chan requestResult, 1)
+	commitCalls := 0
 	go func() {
-		_, err := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
-		requestDone <- err
+		_, dispatched, err := session.request(
+			ctx,
+			"node.invoke",
+			[]byte(`{}`),
+			"idem_test",
+			func(write func() error) error {
+				commitCalls++
+				return write()
+			},
+		)
+		requestDone <- requestResult{dispatched: dispatched, err: err}
 	}()
 	<-connection.writeStarted
 	cancel()
 	select {
-	case err := <-requestDone:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("request error = %v", err)
+	case result := <-requestDone:
+		if !errors.Is(result.err, context.Canceled) || !result.dispatched {
+			t.Fatalf(
+				"request = (dispatched %v, error %v)",
+				result.dispatched,
+				result.err,
+			)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("blocked write did not observe request cancellation")
+	}
+	if commitCalls != 1 {
+		t.Fatalf("dispatch commit calls = %d", commitCalls)
 	}
 	select {
 	case <-session.closed:
@@ -243,7 +292,9 @@ func TestPeerCancellationBurstPreservesLateResponses(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		requestDone := make(chan error, 1)
 		go func() {
-			_, requestErr := session.request(ctx, "node.invoke", []byte(`{}`), "idem_test")
+			_, _, requestErr := session.request(
+				ctx, "node.invoke", []byte(`{}`), "idem_test", nil,
+			)
 			requestDone <- requestErr
 		}()
 		<-requestsSeen
@@ -252,7 +303,9 @@ func TestPeerCancellationBurstPreservesLateResponses(t *testing.T) {
 			t.Fatalf("canceled request error = %v", requestErr)
 		}
 	}
-	if _, overflowErr := session.request(t.Context(), "node.invoke", []byte(`{}`), "idem_test"); !errors.Is(
+	if _, _, overflowErr := session.request(
+		t.Context(), "node.invoke", []byte(`{}`), "idem_test", nil,
+	); !errors.Is(
 		overflowErr,
 		ErrRequestLimit,
 	) {
@@ -274,7 +327,9 @@ func TestPeerCancellationBurstPreservesLateResponses(t *testing.T) {
 	}
 	finalDone := make(chan error, 1)
 	go func() {
-		_, requestErr := session.request(t.Context(), "node.invoke", []byte(`{}`), "idem_test")
+		_, _, requestErr := session.request(
+			t.Context(), "node.invoke", []byte(`{}`), "idem_test", nil,
+		)
 		finalDone <- requestErr
 	}()
 	<-finalRequestSeen

@@ -205,7 +205,7 @@ func TestClientExecutesCorrelatedInvocationOverAuthenticatedSession(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := admission.Invoke(t.Context(), identity.ID, plan)
+	output, _, err := admission.Invoke(t.Context(), identity.ID, plan, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestClientDispatchesInvocationsConcurrentlyAndServesQueries(t *testing.T) {
 	results := make(chan error, 2)
 	for _, plan := range []nodes.ExecutionPlan{first, second} {
 		go func() {
-			_, invokeErr := admission.Invoke(t.Context(), identity.ID, plan)
+			_, _, invokeErr := admission.Invoke(t.Context(), identity.ID, plan, nil)
 			results <- invokeErr
 		}()
 	}
@@ -355,7 +355,7 @@ func TestClientCancelsInvocationOverAuthenticatedSession(t *testing.T) {
 	plan := testTransportPlan(t, commandRuntime, descriptor, "cancel")
 	invokeDone := make(chan error, 1)
 	go func() {
-		_, invokeErr := admission.Invoke(t.Context(), identity.ID, plan)
+		_, _, invokeErr := admission.Invoke(t.Context(), identity.ID, plan, nil)
 		invokeDone <- invokeErr
 	}()
 	select {

@@ -43,6 +43,7 @@ type PairingRegistry interface {
 	UpsertPending(PendingPairing) error
 	Pending(ID) (PendingPairing, bool, error)
 	Registration(ID) (Registration, bool, error)
+	withCommandApproval(ID, string, func(CommandApproval) error) (CommandApproval, error)
 }
 
 type AdmissionResult struct {
@@ -246,6 +247,20 @@ func (auth *Authenticator) ApprovedCommand(id ID, command string) (CommandApprov
 	if !exists {
 		return CommandApproval{}, fmt.Errorf("%w: unknown node %q", ErrInvalidNode, id)
 	}
+	return commandApproval(registration, command)
+}
+
+// WithApprovedCommand keeps the durable command authority unchanged while
+// operation commits and writes one invocation.
+func (auth *Authenticator) WithApprovedCommand(
+	id ID,
+	command string,
+	operation func(CommandApproval) error,
+) (CommandApproval, error) {
+	return auth.registry.withCommandApproval(id, command, operation)
+}
+
+func commandApproval(registration Registration, command string) (CommandApproval, error) {
 	descriptor, err := registration.ApprovedCommand(command)
 	if err != nil {
 		return CommandApproval{}, err
