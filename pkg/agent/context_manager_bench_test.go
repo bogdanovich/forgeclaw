@@ -18,16 +18,16 @@ func BenchmarkContextManagerAssemble(b *testing.B) {
 	for _, messageCount := range []int{100, 500, 1000} {
 		b.Run(fmt.Sprintf("messages=%d", messageCount), func(b *testing.B) {
 			history := benchHistory(messageCount)
-			b.Run("legacy/assemble", func(b *testing.B) {
-				al := newBenchContextAgentLoop(b, "", history)
+			b.Run("none/assemble", func(b *testing.B) {
+				al := newBenchContextAgentLoop(b, "none", history)
 				benchAssembleOnly(b, al.contextManager)
 			})
 			b.Run("seahorse/assemble", func(b *testing.B) {
 				al := newBenchContextAgentLoop(b, "seahorse", history)
 				benchAssembleOnly(b, al.contextManager)
 			})
-			b.Run("legacy/assemble_build_messages", func(b *testing.B) {
-				al := newBenchContextAgentLoop(b, "", history)
+			b.Run("none/assemble_build_messages", func(b *testing.B) {
+				al := newBenchContextAgentLoop(b, "none", history)
 				agent := al.registry.GetDefaultAgent()
 				benchAssembleAndBuildMessages(b, al.contextManager, agent)
 			})

@@ -435,6 +435,8 @@ func (p *Pipeline) CallLLM(
 			}
 			compactCancel()
 			ts.refreshRestorePointFromSession(ts.agent)
+			persistedTurn := ts.persistedMessagesSnapshot()
+			protectedTurnTail := append([]providers.Message(nil), persistedTurn...)
 			asmResp, asmErr := p.Context.Runtime.Assemble(ctx, &AssembleRequest{
 				Agent:         ts.agent,
 				SessionKey:    ts.sessionKey,
@@ -451,9 +453,16 @@ func (p *Pipeline) CallLLM(
 				exec.summary = asmResp.Summary
 			}
 			ts.recordSkillContextSnapshot(skillContextTriggerContextRetryRebuild, contextualSkills)
-			stableHistory, protectedTurnTail := splitHistoryForActiveTurn(
+			stableHistory, assembledTurnTail := splitHistoryForActiveTurn(
 				exec.history,
-				ts.persistedMessagesSnapshot(),
+				persistedTurn,
+			)
+			if len(protectedTurnTail) == 0 {
+				protectedTurnTail = assembledTurnTail
+			}
+			exec.history = append(
+				append([]providers.Message(nil), stableHistory...),
+				protectedTurnTail...,
 			)
 			buildMessages := func(trimmedHistory []providers.Message) []providers.Message {
 				fullHistory := append(

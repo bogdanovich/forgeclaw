@@ -3,15 +3,19 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
+	"github.com/sipeed/picoclaw/pkg/session"
 	toolpolicy "github.com/sipeed/picoclaw/pkg/tools/policy"
 )
 
@@ -35,6 +39,27 @@ func (m *seahorseTestProvider) Chat(
 
 func (m *seahorseTestProvider) GetDefaultModel() string {
 	return "mock-model"
+}
+
+func newSingleRuntimeTestManager(
+	engine *seahorse.Engine,
+	sessions session.SessionStore,
+) *seahorseContextManager {
+	const agentID = "test"
+	return &seahorseContextManager{
+		runtimes: map[string]*seahorseAgentRuntime{
+			agentID: {
+				engine:   engine,
+				sessions: sessions,
+				agentID:  agentID,
+			},
+		},
+		defaultAgentID: agentID,
+	}
+}
+
+func singleTestRuntime(manager *seahorseContextManager) *seahorseAgentRuntime {
+	return manager.runtimes[manager.defaultAgentID]
 }
 
 func TestSeahorseCMRegistration(t *testing.T) {
@@ -535,7 +560,7 @@ func TestSeahorseAdapterAssembleSubtractsMaxTokens(t *testing.T) {
 	defer engine.Close()
 
 	ctx := context.Background()
-	mgr := &seahorseContextManager{engine: engine}
+	mgr := newSingleRuntimeTestManager(engine, nil)
 
 	// Ingest lots of large messages (~35 tokens each, 120 total = ~4200 tokens)
 	for i := 0; i < 60; i++ {
@@ -592,7 +617,7 @@ func TestSeahorseAdapterReportsAbsoluteBudgetPressureBelowContextWindow(t *testi
 		t.Fatal(err)
 	}
 	defer engine.Close()
-	mgr := &seahorseContextManager{engine: engine}
+	mgr := newSingleRuntimeTestManager(engine, nil)
 	ctx := context.Background()
 	for turn := 0; turn < 3; turn++ {
 		for _, message := range []providers.Message{
@@ -635,7 +660,7 @@ func TestSeahorseAdapterFailsClosedWhenMandatoryPromptCannotFit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Close()
-	mgr := &seahorseContextManager{engine: engine}
+	mgr := newSingleRuntimeTestManager(engine, nil)
 	_, err = mgr.Assemble(context.Background(), &AssembleRequest{
 		SessionKey:    "mandatory-overflow",
 		Budget:        1_000,
@@ -663,7 +688,7 @@ func TestSeahorseCompactRetryUsesCompactUntilUnder(t *testing.T) {
 	_ = compactCalled // track via adapter behavior
 	_ = compactUntilCalled
 
-	mgr := &seahorseContextManager{engine: engine}
+	mgr := newSingleRuntimeTestManager(engine, nil)
 
 	ctx := context.Background()
 
@@ -716,7 +741,7 @@ func TestSeahorseCompactProactiveDoesNotForceCompactUntilUnder(t *testing.T) {
 	}
 	defer engine.Close()
 
-	mgr := &seahorseContextManager{engine: engine}
+	mgr := newSingleRuntimeTestManager(engine, nil)
 	ctx := context.Background()
 
 	// Keep all source messages within the default protected fresh tail. A
@@ -749,6 +774,319 @@ func TestSeahorseCompactProactiveDoesNotForceCompactUntilUnder(t *testing.T) {
 	}
 	if strings.Contains(result.Summary, "compact summary") {
 		t.Fatalf("proactive compact should not force fresh-tail summarization, got summary %q", result.Summary)
+	}
+}
+
+func TestCompactResultHasProgress(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *seahorse.CompactResult
+		want   bool
+	}{
+		{name: "nil", result: nil, want: false},
+		{name: "no-op", result: &seahorse.CompactResult{}, want: false},
+		{name: "tokens", result: &seahorse.CompactResult{TokensSaved: 1}, want: true},
+		{name: "leaf", result: &seahorse.CompactResult{LeafSummaries: 1}, want: true},
+		{name: "condensed", result: &seahorse.CompactResult{CondensedSummaries: 1}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := compactResultHasProgress(tt.result); got != tt.want {
+				t.Fatalf("compactResultHasProgress() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentLoopCloseClosesSeahorseEngine(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+
+	manager, ok := al.contextManager.(*seahorseContextManager)
+	if !ok {
+		t.Fatalf("context manager = %T, want Seahorse", al.contextManager)
+	}
+	runtime, err := manager.runtimeFor(al.registry.GetDefaultAgent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	al.Close()
+	if _, err := runtime.engine.Assemble(
+		t.Context(),
+		"closed-session",
+		seahorse.AssembleInput{Budget: 100},
+	); err == nil {
+		t.Fatal("Seahorse engine remained usable after AgentLoop.Close")
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("second manager Close() error = %v", err)
+	}
+}
+
+func TestSeahorseContextManagerIsolatesAgentRuntimes(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.ContextManager = "seahorse"
+	sharedWorkspace := t.TempDir()
+	cfg.Agents.List = []config.AgentConfig{
+		{
+			ID:        "main",
+			Default:   true,
+			Workspace: sharedWorkspace,
+			Model:     &config.AgentModelConfig{Primary: "model-main"},
+		},
+		{
+			ID:        "support",
+			Workspace: sharedWorkspace,
+			Model:     &config.AgentModelConfig{Primary: "model-support"},
+		},
+	}
+
+	var mainModels, supportModels []string
+	mainProvider := &seahorseTestProvider{
+		chatFn: func(
+			_ context.Context,
+			_ []providers.Message,
+			_ []providers.ToolDefinition,
+			model string,
+			_ map[string]any,
+		) (*providers.LLMResponse, error) {
+			mainModels = append(mainModels, model)
+			return &providers.LLMResponse{Content: "main summary"}, nil
+		},
+	}
+	supportProvider := &seahorseTestProvider{
+		chatFn: func(
+			_ context.Context,
+			_ []providers.Message,
+			_ []providers.ToolDefinition,
+			model string,
+			_ map[string]any,
+		) (*providers.LLMResponse, error) {
+			supportModels = append(supportModels, model)
+			return &providers.LLMResponse{Content: "support summary"}, nil
+		},
+	}
+	mainAgent := NewAgentInstance(&cfg.Agents.List[0], &cfg.Agents.Defaults, cfg, mainProvider)
+	supportAgent := NewAgentInstance(&cfg.Agents.List[1], &cfg.Agents.Defaults, cfg, supportProvider)
+	mainAgent.Sessions = session.NewSessionManager("")
+	supportAgent.Sessions = session.NewSessionManager("")
+	registry := &AgentRegistry{
+		cfg: cfg,
+		agents: map[string]*AgentInstance{
+			mainAgent.ID:    mainAgent,
+			supportAgent.ID: supportAgent,
+		},
+	}
+	mainDBPath := seahorseAgentDBPath(mainAgent, mainAgent.ID)
+	if mainDBPath != filepath.Join(sharedWorkspace, "sessions", "seahorse.db") {
+		t.Fatalf("main DB path = %q", mainDBPath)
+	}
+	supportDBPath := seahorseAgentDBPath(supportAgent, mainAgent.ID)
+	if supportDBPath != filepath.Join(sharedWorkspace, "sessions", "seahorse-support.db") {
+		t.Fatalf("support DB path = %q", supportDBPath)
+	}
+	al := &AgentLoop{cfg: cfg, registry: registry}
+	managerValue, managerErr := newSeahorseContextManager(nil, al)
+	if managerErr != nil {
+		t.Fatal(managerErr)
+	}
+	manager := managerValue.(*seahorseContextManager)
+	t.Cleanup(func() { _ = manager.Close() })
+
+	const sessionKey = "shared-session-key"
+	mainHistory := []providers.Message{{Role: "user", Content: "main-only context"}}
+	supportHistory := []providers.Message{{Role: "user", Content: "support-only context"}}
+	mainAgent.Sessions.AddFullMessage(sessionKey, mainHistory[0])
+	supportAgent.Sessions.AddFullMessage(sessionKey, supportHistory[0])
+	if err := mainAgent.Sessions.Save(sessionKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := supportAgent.Sessions.Save(sessionKey); err != nil {
+		t.Fatal(err)
+	}
+
+	mainContext, err := manager.Assemble(t.Context(), &AssembleRequest{
+		Agent:      mainAgent,
+		SessionKey: sessionKey,
+		Budget:     2_000,
+		MaxTokens:  100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportContext, err := manager.Assemble(t.Context(), &AssembleRequest{
+		Agent:      supportAgent,
+		SessionKey: sessionKey,
+		Budget:     2_000,
+		MaxTokens:  100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mainContext.History) != 1 || mainContext.History[0].Content != "main-only context" {
+		t.Fatalf("main context = %#v", mainContext.History)
+	}
+	if len(supportContext.History) != 1 || supportContext.History[0].Content != "support-only context" {
+		t.Fatalf("support context = %#v", supportContext.History)
+	}
+	mainContext, err = manager.Assemble(t.Context(), &AssembleRequest{
+		Agent:      mainAgent,
+		SessionKey: sessionKey,
+		Budget:     2_000,
+		MaxTokens:  100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mainContext.History) != 1 || mainContext.History[0].Content != "main-only context" {
+		t.Fatalf("main context after support reconciliation = %#v", mainContext.History)
+	}
+
+	for _, agent := range []*AgentInstance{mainAgent, supportAgent} {
+		history := make([]providers.Message, seahorse.LeafMinFanout)
+		for i := range history {
+			history[i] = providers.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("%s compaction message %d", agent.ID, i),
+			}
+		}
+		agent.Sessions.SetHistory(sessionKey, history)
+		if saveErr := agent.Sessions.Save(sessionKey); saveErr != nil {
+			t.Fatal(saveErr)
+		}
+		if compactErr := manager.Compact(t.Context(), &CompactRequest{
+			Agent:      agent,
+			SessionKey: sessionKey,
+			Reason:     ContextCompressReasonRetry,
+			Budget:     20,
+		}); compactErr != nil {
+			t.Fatal(compactErr)
+		}
+	}
+	if len(mainModels) == 0 || mainModels[0] != "model-main" {
+		t.Fatalf("main compaction models = %v", mainModels)
+	}
+	if len(supportModels) == 0 || supportModels[0] != "model-support" {
+		t.Fatalf("support compaction models = %v", supportModels)
+	}
+
+	mainRuntime, err := manager.runtimeFor(mainAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportRuntime, err := manager.runtimeFor(supportAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainRuntime.engine.GetRetrieval().Store() == supportRuntime.engine.GetRetrieval().Store() {
+		t.Fatal("agents share a Seahorse retrieval store")
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for agentID, runtime := range manager.runtimes {
+		if _, err := runtime.engine.Assemble(
+			t.Context(),
+			sessionKey,
+			seahorse.AssembleInput{Budget: 100},
+		); err == nil {
+			t.Fatalf("Seahorse runtime for %s remained usable after Close", agentID)
+		}
+	}
+}
+
+func TestSeahorseAgentDBPathSeparatesWorkspaceAliases(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := t.TempDir()
+	symlinkWorkspace := filepath.Join(linkRoot, "workspace")
+	if err := os.Symlink(workspace, symlinkWorkspace); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeWorkspace, err := filepath.Rel(workingDir, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	agents := []*AgentInstance{
+		{ID: "main", Workspace: workspace},
+		{ID: "support", Workspace: symlinkWorkspace},
+		{ID: "relative", Workspace: relativeWorkspace},
+	}
+	wantFilenames := []string{"seahorse.db", "seahorse-support.db", "seahorse-relative.db"}
+	resolvedSessionsDir := ""
+	for i, agent := range agents {
+		dbPath := seahorseAgentDBPath(agent, "main")
+		if filepath.Base(dbPath) != wantFilenames[i] {
+			t.Fatalf("DB filename for %s = %q", agent.ID, filepath.Base(dbPath))
+		}
+		absoluteDir, err := filepath.Abs(filepath.Dir(dbPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolvedDir, err := filepath.EvalSymlinks(absoluteDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolvedSessionsDir == "" {
+			resolvedSessionsDir = resolvedDir
+		} else if resolvedDir != resolvedSessionsDir {
+			t.Fatalf("workspace alias for %s resolved to %q, want %q", agent.ID, resolvedDir, resolvedSessionsDir)
+		}
+	}
+}
+
+func TestSeahorseCompactEventBackfillsOwnership(t *testing.T) {
+	runtimeBus := runtimeevents.NewBus()
+	t.Cleanup(func() { _ = runtimeBus.Close() })
+	subscription, events, err := runtimeBus.Channel().
+		OfKind(runtimeevents.KindAgentContextCompress).
+		SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "compression", Buffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = subscription.Close() })
+
+	agent := &AgentInstance{ID: "support", Workspace: t.TempDir()}
+	manager := &seahorseContextManager{
+		al: &AgentLoop{runtimeEvents: runtimeBus},
+	}
+	for _, test := range []struct {
+		name      string
+		workspace string
+	}{
+		{name: "background", workspace: agent.Workspace},
+		{name: "handled tool", workspace: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sessionKey := strings.ReplaceAll(test.name, " ", "-") + "-session"
+			manager.emitCompactEvent(
+				&CompactRequest{
+					Agent:      agent,
+					SessionKey: sessionKey,
+					Workspace:  test.workspace,
+					Reason:     ContextCompressReasonProactive,
+				},
+				&seahorse.CompactResult{TokensSaved: 10},
+			)
+
+			event := receiveRuntimeEvent(t, events)
+			if event.Scope.AgentID != agent.ID ||
+				event.Scope.Workspace != agent.Workspace ||
+				event.Scope.SessionKey != sessionKey {
+				t.Fatalf("compression event ownership = %+v", event.Scope)
+			}
+			if event.Source.Name != agent.ID {
+				t.Fatalf("compression event source = %+v", event.Source)
+			}
+		})
 	}
 }
 
@@ -802,7 +1140,11 @@ func TestSeahorseRealLoopNoDuplicateMessages(t *testing.T) {
 	}
 
 	// Check DB for messages via RetrievalEngine.Store()
-	store := seahorseCM.engine.GetRetrieval().Store()
+	runtime, err := seahorseCM.runtimeFor(defaultAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := runtime.engine.GetRetrieval().Store()
 	conv, err := store.GetOrCreateConversation(ctx, sessionKey)
 	if err != nil {
 		t.Fatalf("GetOrCreateConversation: %v", err)
@@ -854,7 +1196,7 @@ func TestSeahorseAssembleReturnsAllSummaries(t *testing.T) {
 	defer engine.Close()
 
 	ctx := context.Background()
-	mgr := &seahorseContextManager{engine: engine}
+	mgr := newSingleRuntimeTestManager(engine, nil)
 	sessionKey := "test-multi-summary"
 
 	// Get the store to directly create summaries
@@ -1042,7 +1384,7 @@ func TestSeahorseAssembleSummaryNotInMessages(t *testing.T) {
 	defer engine.Close()
 
 	ctx := context.Background()
-	mgr := &seahorseContextManager{engine: engine}
+	mgr := newSingleRuntimeTestManager(engine, nil)
 	sessionKey := "test-no-dup-summary"
 
 	// Get the store to directly create a summary
@@ -1177,7 +1519,11 @@ func TestSeahorseSteeringMessageIngested(t *testing.T) {
 	}
 
 	// Check DB for steering message
-	store := seahorseCM.engine.GetRetrieval().Store()
+	runtime, err := seahorseCM.runtimeFor(defaultAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := runtime.engine.GetRetrieval().Store()
 	conv, err := store.GetOrCreateConversation(ctx, sessionKey)
 	if err != nil {
 		t.Fatalf("GetOrCreateConversation: %v", err)
@@ -1244,7 +1590,11 @@ func TestSeahorseSummarizeSkipsCondensedWhenBelowThreshold(t *testing.T) {
 	if !ok {
 		t.Fatal("expected seahorseContextManager")
 	}
-	store := seahorseCM.engine.GetRetrieval().Store()
+	runtime, err := seahorseCM.runtimeFor(defaultAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := runtime.engine.GetRetrieval().Store()
 
 	conv, err := store.GetOrCreateConversation(ctx, sessionKey)
 	if err != nil {

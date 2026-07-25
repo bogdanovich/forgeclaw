@@ -319,19 +319,19 @@ func TestMemoryReplayWithoutSeahorse(t *testing.T) {
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("Seahorse-disabled replay is not deterministic:\nfirst:  %#v\nsecond: %#v", first, second)
 	}
-	if !first.LegacyContext || !first.MemoryTool || first.GrepTool || first.ExpandTool ||
+	if !first.ContextDisabled || !first.MemoryTool || first.GrepTool || first.ExpandTool ||
 		!first.FactVisible || first.SeahorseDB {
 		t.Fatalf("unexpected Seahorse-disabled observation: %#v", first)
 	}
 }
 
 type disabledSeahorseReplay struct {
-	LegacyContext bool
-	MemoryTool    bool
-	GrepTool      bool
-	ExpandTool    bool
-	FactVisible   bool
-	SeahorseDB    bool
+	ContextDisabled bool
+	MemoryTool      bool
+	GrepTool        bool
+	ExpandTool      bool
+	FactVisible     bool
+	SeahorseDB      bool
 }
 
 func replayWithoutSeahorse(t *testing.T) disabledSeahorseReplay {
@@ -339,6 +339,7 @@ func replayWithoutSeahorse(t *testing.T) disabledSeahorseReplay {
 	workspace := t.TempDir()
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = workspace
+	cfg.Agents.Defaults.ContextManager = "none"
 	messageBus := bus.NewMessageBus()
 	loop := NewAgentLoop(cfg, messageBus, &mockProvider{})
 	defer func() {
@@ -363,11 +364,11 @@ func replayWithoutSeahorse(t *testing.T) disabledSeahorseReplay {
 	}
 	_, dbErr := os.Stat(filepath.Join(workspace, "sessions", "seahorse.db"))
 	return disabledSeahorseReplay{
-		LegacyContext: func() bool { _, ok := loop.contextManager.(*legacyContextManager); return ok }(),
-		MemoryTool:    hasMemory,
-		GrepTool:      hasGrep,
-		ExpandTool:    hasExpand,
-		FactVisible:   strings.Contains(instance.ContextBuilder.BuildSystemPromptWithCache(), "offline-stable-fact"),
-		SeahorseDB:    dbErr == nil,
+		ContextDisabled: func() bool { _, ok := loop.contextManager.(*noneContextManager); return ok }(),
+		MemoryTool:      hasMemory,
+		GrepTool:        hasGrep,
+		ExpandTool:      hasExpand,
+		FactVisible:     strings.Contains(instance.ContextBuilder.BuildSystemPromptWithCache(), "offline-stable-fact"),
+		SeahorseDB:      dbErr == nil,
 	}
 }

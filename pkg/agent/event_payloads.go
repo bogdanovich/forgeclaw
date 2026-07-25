@@ -148,6 +148,10 @@ type ContextCompressPayload struct {
 	RecentTailDegraded       bool
 	Truncated                bool
 	PressureReasons          []string
+	TokensSaved              int
+	SummariesCreated         int
+	LeafSummaries            int
+	CondensedSummaries       int
 }
 
 type ContextSnapshotPayload struct {

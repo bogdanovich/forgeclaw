@@ -297,6 +297,10 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 		fields["reason"] = payload.Reason
 		fields["dropped_messages"] = payload.DroppedMessages
 		fields["remaining_messages"] = payload.RemainingMessages
+		fields["tokens_saved"] = payload.TokensSaved
+		fields["summaries_created"] = payload.SummariesCreated
+		fields["leaf_summaries"] = payload.LeafSummaries
+		fields["condensed_summaries"] = payload.CondensedSummaries
 	case ContextSnapshotPayload:
 		fields["message_count"] = payload.MessageCount
 		fields["snapshot_hash"] = payload.SnapshotHash

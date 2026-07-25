@@ -27,9 +27,7 @@ func newReconciliationTestManager(t *testing.T) (*seahorseContextManager, *memor
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.Close() })
-	return &seahorseContextManager{
-		engine: engine, sessions: session.NewJSONLBackend(canonical),
-	}, canonical
+	return newSingleRuntimeTestManager(engine, session.NewJSONLBackend(canonical)), canonical
 }
 
 func TestSeahorseReconciliationCleanRevisionSkipsDeepComparison(t *testing.T) {
@@ -39,11 +37,11 @@ func TestSeahorseReconciliationCleanRevisionSkipsDeepComparison(t *testing.T) {
 	if err := canonical.AddMessage(ctx, key, "user", "canonical"); err != nil {
 		t.Fatal(err)
 	}
-	if reconcileErr := mgr.ensureReconciled(ctx, key, mgr.sessions); reconcileErr != nil {
+	if reconcileErr := mgr.ensureReconciled(ctx, key, singleTestRuntime(mgr).sessions); reconcileErr != nil {
 		t.Fatal(reconcileErr)
 	}
 	before := mgr.reconciliations.Load()
-	if err := mgr.ensureReconciled(ctx, key, mgr.sessions); err != nil {
+	if err := mgr.ensureReconciled(ctx, key, singleTestRuntime(mgr).sessions); err != nil {
 		t.Fatal(err)
 	}
 	if got := mgr.reconciliations.Load(); got != before {
@@ -55,7 +53,7 @@ func TestSeahorseContextManagerPersistsTrustedConversationProvenance(t *testing.
 	mgr, _ := newReconciliationTestManager(t)
 	ctx := context.Background()
 	key := "epoch:daily"
-	metadataStore := mgr.sessions.(session.MetadataAwareSessionStore)
+	metadataStore := singleTestRuntime(mgr).sessions.(session.MetadataAwareSessionStore)
 	metadataStore.EnsureSessionMetadata(key, &session.SessionScope{
 		Version:       session.ScopeVersionV2,
 		AgentID:       "nutrition",
@@ -68,7 +66,7 @@ func TestSeahorseContextManagerPersistsTrustedConversationProvenance(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := mgr.engine.GetRetrieval().Store().GetConversationBySessionKey(ctx, key)
+	conversation, err := singleTestRuntime(mgr).engine.GetRetrieval().Store().GetConversationBySessionKey(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +92,7 @@ func TestSeahorseReconciliationCleanRestartUsesDurableWatermark(t *testing.T) {
 	if engineErr != nil {
 		t.Fatal(engineErr)
 	}
-	mgr1 := &seahorseContextManager{engine: engine1, sessions: backend}
+	mgr1 := newSingleRuntimeTestManager(engine1, backend)
 	if err := mgr1.ensureReconciled(ctx, key, backend); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +104,7 @@ func TestSeahorseReconciliationCleanRestartUsesDurableWatermark(t *testing.T) {
 		t.Fatal(reopenErr)
 	}
 	defer engine2.Close()
-	mgr2 := &seahorseContextManager{engine: engine2, sessions: backend}
+	mgr2 := newSingleRuntimeTestManager(engine2, backend)
 	if err := mgr2.ensureReconciled(ctx, key, backend); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +121,7 @@ func TestSeahorseReconciliationAppendAndReplace(t *testing.T) {
 	if err := canonical.AddFullMessage(ctx, key, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.ensureReconciled(ctx, key, mgr.sessions); err != nil {
+	if err := mgr.ensureReconciled(ctx, key, singleTestRuntime(mgr).sessions); err != nil {
 		t.Fatal(err)
 	}
 	second := providers.Message{Role: "assistant", Content: "two"}
@@ -136,11 +134,12 @@ func TestSeahorseReconciliationAppendAndReplace(t *testing.T) {
 	if err := canonical.SetHistory(ctx, key, []providers.Message{{Role: "user", Content: "replacement"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.ensureReconciled(ctx, key, mgr.sessions); err != nil {
+	if err := mgr.ensureReconciled(ctx, key, singleTestRuntime(mgr).sessions); err != nil {
 		t.Fatal(err)
 	}
-	conv, _ := mgr.engine.GetRetrieval().Store().GetConversationBySessionKey(ctx, key)
-	messages, _ := mgr.engine.GetRetrieval().Store().GetMessages(ctx, conv.ConversationID, 0, 0)
+	engine := singleTestRuntime(mgr).engine
+	conv, _ := engine.GetRetrieval().Store().GetConversationBySessionKey(ctx, key)
+	messages, _ := engine.GetRetrieval().Store().GetMessages(ctx, conv.ConversationID, 0, 0)
 	if len(messages) != 1 || messages[0].Content != "replacement" {
 		t.Fatalf("reconciled messages = %#v", messages)
 	}
@@ -154,15 +153,15 @@ func TestSeahorseReconciliationGenerationAndFailureRetry(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := mgr.ensureReconciled(canceled, key, mgr.sessions); err == nil {
+	if err := mgr.ensureReconciled(canceled, key, singleTestRuntime(mgr).sessions); err == nil {
 		t.Fatal("expected canceled reconciliation to fail")
 	}
-	store := mgr.engine.GetRetrieval().Store()
+	store := singleTestRuntime(mgr).engine.GetRetrieval().Store()
 	state, _ := store.GetReconciliationState(context.Background(), key)
 	if state != nil {
 		t.Fatal("failed reconciliation advanced watermark")
 	}
-	if err := mgr.ensureReconciled(context.Background(), key, mgr.sessions); err != nil {
+	if err := mgr.ensureReconciled(context.Background(), key, singleTestRuntime(mgr).sessions); err != nil {
 		t.Fatal(err)
 	}
 	state, _ = store.GetReconciliationState(context.Background(), key)
@@ -171,7 +170,7 @@ func TestSeahorseReconciliationGenerationAndFailureRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := mgr.reconciliations.Load()
-	if err := mgr.ensureReconciled(context.Background(), key, mgr.sessions); err != nil {
+	if err := mgr.ensureReconciled(context.Background(), key, singleTestRuntime(mgr).sessions); err != nil {
 		t.Fatal(err)
 	}
 	if mgr.reconciliations.Load() != before+1 {
@@ -196,7 +195,7 @@ func TestSeahorseIngestKeepsLiveMessageAfterCanonicalWriteFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	store := mgr.engine.GetRetrieval().Store()
+	store := singleTestRuntime(mgr).engine.GetRetrieval().Store()
 	conv, err := store.GetConversationBySessionKey(ctx, key)
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +215,7 @@ func TestSeahorseIngestKeepsLiveMessageAfterCanonicalWriteFailure(t *testing.T) 
 		t.Fatalf("failed canonical write advanced watermark: %+v", state)
 	}
 
-	if reconcileErr := mgr.ensureReconciled(ctx, key, mgr.sessions); reconcileErr != nil {
+	if reconcileErr := mgr.ensureReconciled(ctx, key, singleTestRuntime(mgr).sessions); reconcileErr != nil {
 		t.Fatal(reconcileErr)
 	}
 	stored, err = store.GetMessages(ctx, conv.ConversationID, 0, 0)
@@ -244,7 +243,7 @@ func TestSeahorseWriteErrorAfterDurableAppendDoesNotDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := mgr.engine.GetRetrieval().Store()
+	store := singleTestRuntime(mgr).engine.GetRetrieval().Store()
 	conv, err := store.GetConversationBySessionKey(ctx, key)
 	if err != nil {
 		t.Fatal(err)
@@ -281,8 +280,9 @@ func TestSeahorseConcurrentLiveIngestDoesNotDuplicate(t *testing.T) {
 		}(messages[i])
 	}
 	wg.Wait()
-	conv, _ := mgr.engine.GetRetrieval().Store().GetConversationBySessionKey(ctx, key)
-	stored, _ := mgr.engine.GetRetrieval().Store().GetMessages(ctx, conv.ConversationID, 0, 0)
+	engine := singleTestRuntime(mgr).engine
+	conv, _ := engine.GetRetrieval().Store().GetConversationBySessionKey(ctx, key)
+	stored, _ := engine.GetRetrieval().Store().GetMessages(ctx, conv.ConversationID, 0, 0)
 	if len(stored) != count {
 		t.Fatalf("stored %d messages, want %d", len(stored), count)
 	}
@@ -294,7 +294,7 @@ func TestSeahorseReconciliationUsesRoutedSessionOwner(t *testing.T) {
 	supportStore := session.NewSessionManager("")
 	key := "agent:support:direct:42"
 	supportStore.AddMessage(key, "user", "owned by support")
-	mgr.sessions = mainStore
+	singleTestRuntime(mgr).sessions = mainStore
 	supportAgent := &AgentInstance{ID: "support", Sessions: supportStore}
 	mgr.al = &AgentLoop{registry: &AgentRegistry{
 		agents: map[string]*AgentInstance{
@@ -302,11 +302,12 @@ func TestSeahorseReconciliationUsesRoutedSessionOwner(t *testing.T) {
 			"support": supportAgent,
 		},
 	}}
-	if err := mgr.ensureReconciled(context.Background(), key, mgr.sessionStore(supportAgent)); err != nil {
+	if err := mgr.ensureReconciled(context.Background(), key, supportAgent.Sessions); err != nil {
 		t.Fatal(err)
 	}
-	conv, _ := mgr.engine.GetRetrieval().Store().GetConversationBySessionKey(context.Background(), key)
-	stored, _ := mgr.engine.GetRetrieval().Store().GetMessages(context.Background(), conv.ConversationID, 0, 0)
+	engine := singleTestRuntime(mgr).engine
+	conv, _ := engine.GetRetrieval().Store().GetConversationBySessionKey(context.Background(), key)
+	stored, _ := engine.GetRetrieval().Store().GetMessages(context.Background(), conv.ConversationID, 0, 0)
 	if len(stored) != 1 || stored[0].Content != "owned by support" {
 		t.Fatalf("routed messages = %#v", stored)
 	}
@@ -318,7 +319,7 @@ func BenchmarkSeahorseCleanRevisionCheck(b *testing.B) {
 	backend := session.NewJSONLBackend(canonical)
 	engine, _ := seahorse.NewEngine(seahorse.Config{DBPath: dir + "/seahorse.db"}, nil)
 	defer engine.Close()
-	mgr := &seahorseContextManager{engine: engine, sessions: backend}
+	mgr := newSingleRuntimeTestManager(engine, backend)
 	ctx := context.Background()
 	_ = canonical.AddMessage(ctx, "bench", "user", "hello")
 	_ = mgr.ensureReconciled(ctx, "bench", backend)
@@ -336,7 +337,7 @@ func BenchmarkSeahorseForcedReconciliation100Messages(b *testing.B) {
 	backend := session.NewJSONLBackend(canonical)
 	engine, _ := seahorse.NewEngine(seahorse.Config{DBPath: dir + "/seahorse.db"}, nil)
 	defer engine.Close()
-	mgr := &seahorseContextManager{engine: engine, sessions: backend}
+	mgr := newSingleRuntimeTestManager(engine, backend)
 	ctx := context.Background()
 	for i := 0; i < 100; i++ {
 		_ = canonical.AddMessage(ctx, "bench-full", "user", fmt.Sprintf("message-%d", i))
