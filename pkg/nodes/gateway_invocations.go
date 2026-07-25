@@ -66,8 +66,8 @@ type gatewayInvocationDocument struct {
 }
 
 // GatewayInvocationStore persists prepared plan ownership across gateway
-// restarts. The gateway service is the single writer; atomic replacement keeps
-// crash recovery from observing a partially written snapshot.
+// restarts. A cross-instance file lock keeps the snapshot canonical while
+// atomic replacement prevents crash recovery from observing a partial write.
 type GatewayInvocationStore struct {
 	path       string
 	maxRecords int
@@ -97,9 +97,14 @@ func NewGatewayInvocationStore(
 		return nil, fmt.Errorf("create gateway node invocation store directory: %w", err)
 	}
 	store := newGatewayInvocationStore(path, maxRecords, maxBytes, time.Now)
-	if err := store.load(); err != nil {
+	store.mu.Lock()
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		store.mu.Unlock()
 		return nil, err
 	}
+	release()
+	store.mu.Unlock()
 	return store, nil
 }
 
@@ -156,6 +161,20 @@ func (store *GatewayInvocationStore) Prepare(
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return GatewayInvocationRecord{}, err
+	}
+	defer release()
+	now = store.now()
+	if now.Unix() >= plan.ExpiresAt {
+		return GatewayInvocationRecord{}, fmt.Errorf(
+			"%w: execution plan expired before persistence",
+			ErrInvalidInvocation,
+		)
+	}
+	record.CreatedAt = now.UnixNano()
+	record.UpdatedAt = record.CreatedAt
 	previous := cloneGatewayInvocationRecords(store.records)
 	store.pruneLocked(now)
 	pruned := len(previous) != len(store.records)
@@ -214,6 +233,11 @@ func (store *GatewayInvocationStore) ByToolCall(
 ) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	defer release()
 	if err := store.pruneAndPersistLocked(store.now()); err != nil {
 		return GatewayInvocationRecord{}, false, err
 	}
@@ -232,6 +256,11 @@ func (store *GatewayInvocationStore) Lookup(
 ) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	defer release()
 	if err := store.pruneAndPersistLocked(store.now()); err != nil {
 		return GatewayInvocationRecord{}, false, err
 	}
@@ -252,6 +281,11 @@ func (store *GatewayInvocationStore) MarkDispatched(
 	if err := owner.validate(); err != nil {
 		return GatewayInvocationRecord{}, err
 	}
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return GatewayInvocationRecord{}, err
+	}
+	defer release()
 	if err := store.pruneAndPersistLocked(store.now()); err != nil {
 		return GatewayInvocationRecord{}, err
 	}
@@ -281,9 +315,28 @@ func (store *GatewayInvocationStore) MarkDispatched(
 	return cloneGatewayInvocationRecord(record), nil
 }
 
-func (store *GatewayInvocationStore) load() error {
+func (store *GatewayInvocationStore) lockAndReloadLocked() (func(), error) {
+	if store.path == "" {
+		return func() {}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(store.path), 0o700); err != nil {
+		return nil, fmt.Errorf("create gateway node invocation store directory: %w", err)
+	}
+	release, err := acquireRegistryFileLock(store.path + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	if err := store.loadLocked(); err != nil {
+		release()
+		return nil, fmt.Errorf("reload gateway node invocation store under lock: %w", err)
+	}
+	return release, nil
+}
+
+func (store *GatewayInvocationStore) loadLocked() error {
 	info, err := os.Stat(store.path)
 	if errors.Is(err, os.ErrNotExist) {
+		store.records = make(map[string]GatewayInvocationRecord)
 		return nil
 	}
 	if err != nil {

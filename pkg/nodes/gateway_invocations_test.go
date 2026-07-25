@@ -45,6 +45,42 @@ func TestGatewayInvocationStorePersistsPreparedBinding(t *testing.T) {
 	}
 }
 
+func TestGatewayInvocationStoreReloadsAcrossInstancesBeforeMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "node_invocations.json")
+	first, err := NewGatewayInvocationStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewGatewayInvocationStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPlan := gatewayTestPlan(t, "inv_first", "idem_first", time.Now())
+	if _, err = first.Prepare("vpn", "call-1", firstPlan); err != nil {
+		t.Fatal(err)
+	}
+	secondPlan := gatewayTestPlan(t, "inv_second", "idem_second", time.Now())
+	if _, err = second.Prepare("vpn", "call-2", secondPlan); err != nil {
+		t.Fatal(err)
+	}
+	for _, plan := range []ExecutionPlan{firstPlan, secondPlan} {
+		if _, found, lookupErr := first.Lookup(
+			plan.AgentID,
+			plan.SessionID,
+			plan.InvocationID,
+		); lookupErr != nil || !found {
+			t.Fatalf("canonical record %q = (%v, %v)", plan.InvocationID, found, lookupErr)
+		}
+	}
+	conflict := gatewayTestPlan(t, "inv_conflict", firstPlan.IdempotencyKey, time.Now())
+	if _, err = second.Prepare("vpn", "call-3", conflict); !errors.Is(
+		err,
+		ErrGatewayInvocationConflict,
+	) {
+		t.Fatalf("cross-instance idempotency conflict = %v", err)
+	}
+}
+
 func TestGatewayInvocationStoreRejectsToolCallRebinding(t *testing.T) {
 	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
 	first := gatewayTestPlan(t, "inv_first", "idem_first", time.Now())
@@ -147,8 +183,12 @@ func TestGatewayInvocationStoreRejectsExpiredPreparedAuthority(t *testing.T) {
 }
 
 func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
-	store := newGatewayInvocationStore("virtual", 8, 1024*1024, time.Now)
-	store.writeFile = func(string, []byte, os.FileMode) error {
+	path := filepath.Join(t.TempDir(), "node_invocations.json")
+	store := newGatewayInvocationStore(path, 8, 1024*1024, time.Now)
+	store.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if err := os.WriteFile(path, data, mode); err != nil {
+			return err
+		}
 		return &fileutil.CommittedWriteError{Err: errors.New("sync directory")}
 	}
 	plan := gatewayTestPlan(t, "inv_committed", "idem_committed", time.Now())

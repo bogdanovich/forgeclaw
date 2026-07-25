@@ -69,7 +69,11 @@ func (*approvalBindingTool) Name() string { return "approval_binding" }
 func (*approvalBindingTool) Description() string { return "Run a prepared protected action" }
 
 func (*approvalBindingTool) Parameters() map[string]any {
-	return map[string]any{"type": "object"}
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"mutable": map[string]any{"type": "string"}},
+		"required":   []any{"mutable"},
+	}
 }
 
 func (t *approvalBindingTool) ApprovalArguments(

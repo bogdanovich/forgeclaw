@@ -329,6 +329,20 @@ func (r *ToolRegistry) ApprovalArguments(
 	return bound, nil
 }
 
+// ValidateArguments checks model-supplied arguments without executing the
+// tool. Approval flows use it before creating durable authority.
+func (r *ToolRegistry) ValidateArguments(name string, args map[string]any) error {
+	tool, ok := r.Get(name)
+	if !ok {
+		return fmt.Errorf("tool %q not found", name)
+	}
+	return validateRegisteredToolArguments(tool, args)
+}
+
+func validateRegisteredToolArguments(tool Tool, args map[string]any) error {
+	return validateToolArgs(tool.Parameters(), args)
+}
+
 func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string]any) *ToolResult {
 	return r.ExecuteWithContext(ctx, name, args, "", "", nil)
 }
@@ -362,7 +376,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	}
 
 	// Validate arguments against the tool's declared schema.
-	if err := validateToolArgs(tool.Parameters(), args); err != nil {
+	if err := validateRegisteredToolArguments(tool, args); err != nil {
 		logger.WarnCF("tool", "Tool argument validation failed",
 			map[string]any{"tool": name, "error": err.Error()})
 		return ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).

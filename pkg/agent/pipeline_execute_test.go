@@ -546,16 +546,32 @@ func TestPipelineLoopGuardDoesNotCountPolicyDenials(t *testing.T) {
 
 func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		grant *ToolApprovalGrant
+		name        string
+		grant       *ToolApprovalGrant
+		blockLoop   bool
+		wantContent string
 	}{
-		{name: "request"},
+		{name: "loop request", blockLoop: true, wantContent: "repeated_exact_failure_block"},
 		{
-			name: "resume",
+			name:      "loop resume",
+			blockLoop: true,
 			grant: &ToolApprovalGrant{
 				InteractionID: "approval-1",
 				Revision:      2,
 			},
+			wantContent: "repeated_exact_failure_block",
+		},
+		{
+			name:        "invalid request",
+			wantContent: `missing required property "mutable"`,
+		},
+		{
+			name: "invalid resume",
+			grant: &ToolApprovalGrant{
+				InteractionID: "approval-1",
+				Revision:      2,
+			},
+			wantContent: `missing required property "mutable"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -585,10 +601,13 @@ func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
 				},
 			}
 			exec := newTurnExecution(agent, ts.opts, nil, "", nil)
-			args := map[string]any{"value": "same"}
-			exec.loopGuard.After(loopguard.Observation{
-				Tool: tool.Name(), Args: args, Failed: true,
-			})
+			args := map[string]any{}
+			if test.blockLoop {
+				args["mutable"] = "same"
+				exec.loopGuard.After(loopguard.Observation{
+					Tool: tool.Name(), Args: args, Failed: true,
+				})
+			}
 			exec.normalizedToolCalls = []providers.ToolCall{{
 				ID: "call-blocked-approval", Name: tool.Name(), Arguments: args,
 			}}
@@ -633,7 +652,7 @@ func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
 				)
 			}
 			if len(exec.messages) != 1 ||
-				!strings.Contains(exec.messages[0].Content, "repeated_exact_failure_block") {
+				!strings.Contains(exec.messages[0].Content, test.wantContent) {
 				t.Fatalf("blocked result = %#v", exec.messages)
 			}
 		})

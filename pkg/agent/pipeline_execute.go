@@ -516,11 +516,14 @@ toolLoop:
 			var approvalArgsErr error
 			approvalCanProceed := approval.Approved || approval.RequireHuman
 			if (ts.opts.ApprovalGrant != nil || approval.RequireHuman) && approvalCanProceed {
-				approvalArgs, approvalArgsErr = ts.agent.Tools.ApprovalArguments(
-					execCtx,
-					toolName,
-					toolArgs,
-				)
+				approvalArgsErr = ts.agent.Tools.ValidateArguments(toolName, toolArgs)
+				if approvalArgsErr == nil {
+					approvalArgs, approvalArgsErr = ts.agent.Tools.ApprovalArguments(
+						execCtx,
+						toolName,
+						toolArgs,
+					)
+				}
 			}
 			if grant := ts.opts.ApprovalGrant; grant != nil {
 				var consumeErr error
