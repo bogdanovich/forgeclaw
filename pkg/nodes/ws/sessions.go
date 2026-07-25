@@ -217,15 +217,36 @@ func (hub *SessionHub) RequestWithIdempotencyKey(
 	params json.RawMessage,
 	idempotencyKey string,
 ) (protocol.Envelope, error) {
+	response, _, err := hub.RequestWithDispatchCommit(
+		ctx,
+		id,
+		method,
+		params,
+		idempotencyKey,
+		nil,
+	)
+	return response, err
+}
+
+// RequestWithDispatchCommit invokes commit only after a live peer has admitted
+// the request and immediately before the first transport write.
+func (hub *SessionHub) RequestWithDispatchCommit(
+	ctx context.Context,
+	id nodes.ID,
+	method string,
+	params json.RawMessage,
+	idempotencyKey string,
+	commit func() error,
+) (protocol.Envelope, bool, error) {
 	hub.mu.Lock()
 	slot := hub.sessions[id]
 	if hub.closed || slot == nil || slot.current == nil || slot.current.peer == nil {
 		hub.mu.Unlock()
-		return protocol.Envelope{}, ErrNodeDisconnected
+		return protocol.Envelope{}, false, ErrNodeDisconnected
 	}
 	session := slot.current.peer
 	hub.mu.Unlock()
-	return session.request(ctx, method, params, idempotencyKey)
+	return session.requestWithDispatchCommit(ctx, method, params, idempotencyKey, commit)
 }
 
 func (hub *SessionHub) Close(ctx context.Context) error {

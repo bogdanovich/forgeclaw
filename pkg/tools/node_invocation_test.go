@@ -23,6 +23,7 @@ type fakeNodeInvocationSource struct {
 	remote         nodes.InvocationRecord
 	lookupMiss     bool
 	prepareCalls   int
+	dispatchCalls  int
 }
 
 func (source *fakeNodeInvocationSource) PrepareInvocation(
@@ -60,9 +61,20 @@ func (source *fakeNodeInvocationSource) DispatchInvocation(
 	if source.preDispatchErr != nil {
 		return nil, false, source.preDispatchErr
 	}
+	principal := nodes.GatewayInvocationPrincipal{
+		AgentID: owner.AgentID, SessionID: owner.SessionID, ActorID: owner.ActorID,
+	}
+	record, found, err := source.store.Lookup(principal, invocationID)
+	if err != nil || !found {
+		return nil, false, nodes.ErrGatewayInvocationConflict
+	}
+	if record.State == nodes.GatewayInvocationDispatched {
+		return nil, true, nodes.ErrGatewayInvocationDispatched
+	}
 	if _, err := source.store.MarkDispatched(owner, invocationID, expectedPlanHash); err != nil {
 		return nil, false, err
 	}
+	source.dispatchCalls++
 	if source.dispatchErr != nil {
 		return nil, true, source.dispatchErr
 	}
@@ -197,6 +209,39 @@ func TestNodeInvokeToolDistinguishesPreDispatchRejection(t *testing.T) {
 		!strings.Contains(result.ForLLM, "DISPATCH_DENIED") ||
 		strings.Contains(result.ForLLM, "nodes_status") {
 		t.Fatalf("pre-dispatch rejection = %#v", result)
+	}
+	record := mustFakeGatewayInvocation(
+		t,
+		source,
+		nodeInvocationTestContext("actor-1", "call-1"),
+		stableNodeInvocationID(
+			"inv",
+			stableNodeInvocationID("agent", "main"),
+			stableNodeInvocationID("session", "route-session"),
+			stableNodeInvocationID("actor", "actor-1"),
+			"call-1",
+		),
+	)
+	if record.State != nodes.GatewayInvocationPrepared {
+		t.Fatalf("pre-dispatch rejection state = %q", record.State)
+	}
+}
+
+func TestNodeInvokeToolDoesNotReplayDispatchedInvocation(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	if result := tool.Execute(ctx, nodeInvocationTestArgs()); result.IsError {
+		t.Fatalf("first invoke = %#v", result)
+	}
+	result := tool.Execute(ctx, nodeInvocationTestArgs())
+	if !result.IsError ||
+		!strings.Contains(result.ForLLM, "DISPATCH_UNCERTAIN") ||
+		!strings.Contains(result.ForLLM, "nodes_status") {
+		t.Fatalf("repeated invoke = %#v", result)
+	}
+	if source.dispatchCalls != 1 {
+		t.Fatalf("dispatch calls = %d", source.dispatchCalls)
 	}
 }
 

@@ -291,31 +291,67 @@ func (source *nodeInvocationSource) DispatchInvocation(
 	if source == nil || source.store == nil || source.runtime == nil {
 		return nil, false, errNodeDiscoveryAuthorityUnavailable
 	}
-	var (
-		handler *nodews.AdmissionHandler
-		record  nodes.GatewayInvocationRecord
-	)
+	var handler *nodews.AdmissionHandler
 	err := source.runtime.withInvocationHandler(
 		source.registryPath,
 		source.generation,
 		func(current *nodews.AdmissionHandler) error {
-			var dispatchErr error
-			record, dispatchErr = source.store.MarkDispatched(
-				owner,
-				invocationID,
-				expectedPlanHash,
-			)
-			if dispatchErr == nil {
-				handler = current
-			}
-			return dispatchErr
+			handler = current
+			return nil
 		},
 	)
 	if err != nil {
 		return nil, false, err
 	}
-	result, err := handler.Invoke(ctx, record.Plan.NodeID, record.Plan)
-	return result, true, err
+	record, found, err := source.store.Lookup(
+		nodes.GatewayInvocationPrincipal{
+			AgentID: owner.AgentID, SessionID: owner.SessionID, ActorID: owner.ActorID,
+		},
+		invocationID,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found || !gatewayInvocationMatchesOwner(record, owner) ||
+		record.ExpectedPlanHash != expectedPlanHash {
+		return nil, false, nodes.ErrGatewayInvocationConflict
+	}
+	if record.State == nodes.GatewayInvocationDispatched {
+		return nil, true, nodes.ErrGatewayInvocationDispatched
+	}
+	return handler.InvokeWithDispatchCommit(
+		ctx,
+		record.Plan.NodeID,
+		record.Plan,
+		func() error {
+			return source.runtime.withInvocationHandler(
+				source.registryPath,
+				source.generation,
+				func(current *nodews.AdmissionHandler) error {
+					if current != handler {
+						return errNodeDiscoveryAuthorityUnavailable
+					}
+					_, markErr := source.store.MarkDispatched(
+						owner,
+						invocationID,
+						expectedPlanHash,
+					)
+					return markErr
+				},
+			)
+		},
+	)
+}
+
+func gatewayInvocationMatchesOwner(
+	record nodes.GatewayInvocationRecord,
+	owner nodes.GatewayInvocationOwner,
+) bool {
+	return record.Target == owner.Target &&
+		record.Plan.AgentID == owner.AgentID &&
+		record.Plan.SessionID == owner.SessionID &&
+		record.Plan.ActorID == owner.ActorID &&
+		record.ToolCallID == owner.ToolCallID
 }
 
 func (source *nodeInvocationSource) QueryInvocation(

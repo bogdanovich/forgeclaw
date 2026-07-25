@@ -57,6 +57,23 @@ func TestSessionHubRequestRequiresDispatchCapableLiveSession(t *testing.T) {
 	) {
 		t.Fatalf("Request() error = %v", err)
 	}
+	commitCalls := 0
+	if _, dispatched, err := hub.RequestWithDispatchCommit(
+		t.Context(),
+		nodes.ID("node_missing"),
+		"node.invoke",
+		[]byte(`{}`),
+		"idem_test",
+		func() error {
+			commitCalls++
+			return nil
+		},
+	); !errors.Is(err, ErrNodeDisconnected) || dispatched {
+		t.Fatalf("missing-node dispatch = (dispatched %v, error %v)", dispatched, err)
+	}
+	if commitCalls != 0 {
+		t.Fatalf("missing-node dispatch commit calls = %d", commitCalls)
+	}
 	release, err := hub.Claim(nodes.ID("node_legacy"), &trackingCloser{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)

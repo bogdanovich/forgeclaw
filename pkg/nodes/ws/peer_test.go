@@ -141,6 +141,31 @@ func TestPeerRequestCancellationWhileWaitingForWriter(t *testing.T) {
 	}
 }
 
+func TestPeerDispatchCommitFailurePreventsWrite(t *testing.T) {
+	connection := newStubPeerConnection()
+	session := newPeer(connection)
+	session.markReady()
+	commitErr := errors.New("persist dispatch")
+	_, dispatched, err := session.requestWithDispatchCommit(
+		t.Context(),
+		"node.invoke",
+		[]byte(`{}`),
+		"idem_test",
+		func() error { return commitErr },
+	)
+	if !errors.Is(err, commitErr) || dispatched {
+		t.Fatalf("request = (dispatched %v, error %v)", dispatched, err)
+	}
+	select {
+	case <-connection.writeStarted:
+		t.Fatal("failed dispatch commit wrote to the transport")
+	default:
+	}
+	if len(session.pending) != 0 || len(session.requestSlots) != 0 {
+		t.Fatal("failed dispatch commit leaked request state")
+	}
+}
+
 func TestPeerRequestCancellationInterruptsBlockedWrite(t *testing.T) {
 	connection := newStubPeerConnection()
 	connection.blockWrites = true
