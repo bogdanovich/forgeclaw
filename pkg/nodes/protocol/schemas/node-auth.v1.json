@@ -40,6 +40,10 @@
     "identityProof": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "executor": ["policy_revision"],
+        "policy_revision": ["executor"]
+      },
       "required": [
         "nonce", "node_id", "public_key", "signature", "min_protocol",
         "max_protocol", "client_version", "platform", "architecture",
@@ -57,7 +61,19 @@
         "architecture": {"type": "string", "minLength": 1, "maxLength": 64},
         "requested_role": {"const": "companion"},
         "catalog_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "catalog": {"$ref": "#/$defs/catalog"}
+        "catalog": {"$ref": "#/$defs/catalog"},
+        "executor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "policy_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        }
       }
     },
     "admissionResult": {

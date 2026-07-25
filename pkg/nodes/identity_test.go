@@ -15,6 +15,7 @@ func TestIdentityProofRoundTripAndTamperDetection(t *testing.T) {
 	proof, err := NewIdentityProof(
 		privateKey, "challenge", ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -38,11 +39,11 @@ func TestIdentityProofExecutionProfileRoundTripAndTamperDetection(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := NewIdentityProofWithExecutionProfile(
+	proof, err := NewIdentityProof(
 		privateKey,
 		"challenge",
-		ProtocolV2,
-		ProtocolV2,
+		ProtocolV1,
+		ProtocolV1,
 		"v0.1.0",
 		"linux",
 		"amd64",
@@ -67,11 +68,11 @@ func TestIdentityProofRejectsIncompleteExecutionProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewIdentityProofWithExecutionProfile(
+	if _, err := NewIdentityProof(
 		privateKey,
 		"challenge",
-		ProtocolV2,
-		ProtocolV2,
+		ProtocolV1,
+		ProtocolV1,
 		"v0.1.0",
 		"linux",
 		"amd64",
@@ -116,6 +117,7 @@ func TestIdentityProofRejectsCatalogHashMismatch(t *testing.T) {
 	proof, err := NewIdentityProof(
 		privateKey, "challenge", ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)

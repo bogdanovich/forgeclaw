@@ -199,6 +199,7 @@ func TestNodeAuthSchemaMatchesDomainPayloads(t *testing.T) {
 	proof, err := nodes.NewIdentityProof(
 		privateKey, challenge.Nonce, nodes.ProtocolV1, nodes.ProtocolV1,
 		"v0.1.0", "linux", "amd64", nodes.CapabilityCatalog{},
+		nodes.ExecutionProfile{Executor: "local", PolicyRevision: "policy-1"},
 	)
 	if err != nil {
 		t.Fatal(err)

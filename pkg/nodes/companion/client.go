@@ -293,32 +293,23 @@ func (client *Client) connectAndAuthenticate(
 }
 
 func (client *Client) identityProof(challenge nodes.Challenge) (nodes.IdentityProof, error) {
-	selectedProtocol := min(challenge.MaxProtocol, nodes.CurrentProtocol)
-	if selectedProtocol < challenge.MinProtocol {
+	if challenge.MinProtocol > nodes.ProtocolV1 || challenge.MaxProtocol < nodes.ProtocolV1 {
 		return nodes.IdentityProof{}, ErrIncompatibleGateway
 	}
-	if client.runtime == nil || selectedProtocol < nodes.ProtocolV2 {
-		return nodes.NewIdentityProof(
-			client.identity.PrivateKey,
-			challenge.Nonce,
-			selectedProtocol,
-			selectedProtocol,
-			client.clientVersion,
-			runtime.GOOS,
-			runtime.GOARCH,
-			client.catalog,
-		)
+	profile := nodes.ExecutionProfile{}
+	if client.runtime != nil {
+		profile = client.runtime.ExecutionProfile()
 	}
-	return nodes.NewIdentityProofWithExecutionProfile(
+	return nodes.NewIdentityProof(
 		client.identity.PrivateKey,
 		challenge.Nonce,
-		selectedProtocol,
-		selectedProtocol,
+		nodes.ProtocolV1,
+		nodes.ProtocolV1,
 		client.clientVersion,
 		runtime.GOOS,
 		runtime.GOARCH,
 		client.catalog,
-		client.runtime.ExecutionProfile(),
+		profile,
 	)
 }
 

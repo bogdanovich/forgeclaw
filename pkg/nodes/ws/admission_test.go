@@ -166,6 +166,7 @@ func TestAdmissionPersistsSignedIdentityOverWSS(t *testing.T) {
 	proof, err := nodes.NewIdentityProof(
 		privateKey, challenge.Nonce, nodes.ProtocolV1, nodes.ProtocolV1,
 		"v0.1.0", "linux", "amd64", nodes.CapabilityCatalog{},
+		nodes.ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -394,6 +395,7 @@ func authenticateTestConnection(
 	proof, err := nodes.NewIdentityProof(
 		privateKey, challenge.Nonce, nodes.ProtocolV1, nodes.ProtocolV1,
 		"v0.1.0", "linux", "amd64", nodes.CapabilityCatalog{},
+		nodes.ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)

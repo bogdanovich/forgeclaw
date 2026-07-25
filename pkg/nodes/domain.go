@@ -15,8 +15,6 @@ import (
 
 const (
 	ProtocolV1         = 1
-	ProtocolV2         = 2
-	CurrentProtocol    = ProtocolV2
 	MaxIDLength        = 128
 	MaxAliasLength     = 64
 	MaxCommandNameLen  = 128

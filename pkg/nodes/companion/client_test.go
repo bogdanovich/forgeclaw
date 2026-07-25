@@ -43,7 +43,7 @@ func TestClientAuthenticatesPinnedWSSIdentity(t *testing.T) {
 	}
 }
 
-func TestRuntimeClientNegotiatesLegacyAndExecutionProfileProofs(t *testing.T) {
+func TestRuntimeClientAuthenticatesExecutionProfile(t *testing.T) {
 	identity := testIdentity(t)
 	policy := testRuntimePolicy([]string{"node.info.v1"})
 	commandRuntime, err := NewRuntime(
@@ -62,38 +62,21 @@ func TestRuntimeClientNegotiatesLegacyAndExecutionProfileProofs(t *testing.T) {
 		runtime:       commandRuntime,
 	}
 
-	legacy, err := client.identityProof(nodes.Challenge{
-		Nonce:       "legacy",
+	proof, err := client.identityProof(nodes.Challenge{
+		Nonce:       "challenge",
 		MinProtocol: nodes.ProtocolV1,
 		MaxProtocol: nodes.ProtocolV1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if legacy.MinProtocol != nodes.ProtocolV1 ||
-		legacy.Executor != "" ||
-		legacy.PolicyRevision != "" {
-		t.Fatalf("legacy proof = %#v", legacy)
+	if proof.MinProtocol != nodes.ProtocolV1 ||
+		proof.Executor != LocalExecutor ||
+		proof.PolicyRevision != policy.Revision {
+		t.Fatalf("runtime proof = %#v", proof)
 	}
-	if _, verifyErr := legacy.Verify(); verifyErr != nil {
-		t.Fatalf("legacy Verify() error = %v", verifyErr)
-	}
-
-	current, err := client.identityProof(nodes.Challenge{
-		Nonce:       "current",
-		MinProtocol: nodes.ProtocolV1,
-		MaxProtocol: nodes.CurrentProtocol,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.MinProtocol != nodes.ProtocolV2 ||
-		current.Executor != LocalExecutor ||
-		current.PolicyRevision != policy.Revision {
-		t.Fatalf("current proof = %#v", current)
-	}
-	if _, verifyErr := current.Verify(); verifyErr != nil {
-		t.Fatalf("current Verify() error = %v", verifyErr)
+	if _, verifyErr := proof.Verify(); verifyErr != nil {
+		t.Fatalf("Verify() error = %v", verifyErr)
 	}
 }
 

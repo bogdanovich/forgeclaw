@@ -34,6 +34,7 @@ func TestAuthenticatorPersistsPendingPairingAndRejectsReplay(t *testing.T) {
 	proof, err := NewIdentityProof(
 		privateKey, challenge.Nonce, ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -81,11 +82,11 @@ func TestAuthenticatorPersistsAuthenticatedExecutionProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := NewIdentityProofWithExecutionProfile(
+	proof, err := NewIdentityProof(
 		privateKey,
 		challenge.Nonce,
-		ProtocolV2,
-		ProtocolV2,
+		ProtocolV1,
+		ProtocolV1,
 		"v0.1.0",
 		"linux",
 		"amd64",
@@ -105,8 +106,8 @@ func TestAuthenticatorPersistsAuthenticatedExecutionProfile(t *testing.T) {
 	if pending.Node.Executor != "local" || pending.Node.PolicyRevision != "policy-1" {
 		t.Fatalf("pending execution profile = %#v", pending.Node)
 	}
-	if pending.Node.ProtocolVersion != ProtocolV2 {
-		t.Fatalf("pending protocol = %d, want %d", pending.Node.ProtocolVersion, ProtocolV2)
+	if pending.Node.ProtocolVersion != ProtocolV1 {
+		t.Fatalf("pending protocol = %d, want %d", pending.Node.ProtocolVersion, ProtocolV1)
 	}
 
 	reloaded, err := NewFileRegistry(path, 4)
@@ -142,6 +143,7 @@ func TestAuthenticatorConsumesInvalidProofChallenge(t *testing.T) {
 	proof, err := NewIdentityProof(
 		privateKey, challenge.Nonce, ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -185,6 +187,7 @@ func TestAuthenticatorExpiresAndBoundsChallenges(t *testing.T) {
 	proof, err := NewIdentityProof(
 		privateKey, challenge.Nonce, ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -330,6 +333,7 @@ func admitTestIdentityResult(
 	proof, err := NewIdentityProof(
 		privateKey, challenge.Nonce, ProtocolV1, ProtocolV1,
 		"v0.1.0", "linux", "amd64", CapabilityCatalog{},
+		ExecutionProfile{},
 	)
 	if err != nil {
 		return AdmissionResult{}, err
