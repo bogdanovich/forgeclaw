@@ -144,8 +144,10 @@ func NewCoordinator(options CoordinatorOptions) *Coordinator {
 	return c
 }
 
-// RegisterSource installs or replaces an opaque durable source and schedules a
-// recovery scan. Source IDs are process-local and are never persisted.
+// RegisterSource installs an opaque durable source and schedules a recovery
+// scan. Source IDs are process-local and are never persisted. Reconfiguration
+// must explicitly unregister first so an in-flight receipt is never silently
+// rebound to another authority.
 func (c *Coordinator) RegisterSource(sourceID string, source DurableSource) error {
 	if c == nil || source == nil {
 		return errors.New("durable projection source is required")
@@ -160,7 +162,7 @@ func (c *Coordinator) RegisterSource(sourceID string, source DurableSource) erro
 		return errors.New("durable projection coordinator is closed")
 	}
 	if c.sources[sourceID] != nil {
-		c.removeSourceStatesLocked(sourceID)
+		return fmt.Errorf("durable projection source %q is already registered", sourceID)
 	}
 	c.sources[sourceID] = source
 	c.recover[sourceID] = true

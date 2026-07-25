@@ -29,6 +29,20 @@ func TestCoordinatorPersistsAndConfirmsExactRevision(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRejectsDuplicateSourceRegistration(t *testing.T) {
+	first := newCoordinatorSource()
+	second := newCoordinatorSource()
+	coordinator := newTestCoordinator(
+		t,
+		4,
+		first,
+		&coordinatorStorage{},
+	)
+	if err := coordinator.RegisterSource("tasks", second); err == nil {
+		t.Fatal("duplicate source registration succeeded")
+	}
+}
+
 func TestCoordinatorRecoveryScanConfirmsAlreadyDurableRevision(t *testing.T) {
 	source := newCoordinatorSource()
 	source.set("task", 5)
