@@ -458,6 +458,24 @@ toolLoop:
 			continue
 		}
 
+		loopDecision, toolSemantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
+		if !loopDecision.AllowsExecution() {
+			p.emitToolLoopDecision(ts, loopDecision)
+			blockedResult := blockedToolLoopResult(loopDecision)
+			blockedContent := p.filterToolContentForLLM(blockedResult.ContentForLLM())
+			p.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: loopDecision.Code},
+			)
+			runner.appendToolMessage(providers.Message{
+				Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
+			}, toolMessagePersistAndIngest)
+			exec.allResponsesHandled = false
+			runner.captureAfterToolSteering(false)
+			continue
+		}
+
 		execCtx := tools.WithToolInboundContext(
 			turnCtx,
 			ts.channel,
@@ -612,24 +630,6 @@ toolLoop:
 				runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
 				continue
 			}
-		}
-
-		loopDecision, toolSemantics := p.beforeToolLoopDecision(ts, exec, toolName, toolArgs)
-		if !loopDecision.AllowsExecution() {
-			p.emitToolLoopDecision(ts, loopDecision)
-			blockedResult := blockedToolLoopResult(loopDecision)
-			blockedContent := p.filterToolContentForLLM(blockedResult.ContentForLLM())
-			p.emitEvent(
-				runtimeevents.KindAgentToolExecSkipped,
-				ts.eventMeta("runTurn", "turn.tool.skipped"),
-				ToolExecSkippedPayload{ToolCallID: tc.ID, Tool: toolName, Reason: loopDecision.Code},
-			)
-			runner.appendToolMessage(providers.Message{
-				Role: "tool", Content: blockedContent, ToolCallID: tc.ID,
-			}, toolMessagePersistAndIngest)
-			exec.allResponsesHandled = false
-			runner.captureAfterToolSteering(false)
-			continue
 		}
 
 		argsJSON, _ := json.Marshal(toolArgs)

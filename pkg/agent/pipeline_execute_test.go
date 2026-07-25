@@ -24,9 +24,10 @@ type pipelineLoopGuardTool struct {
 }
 
 type fakeToolSuspensionManager struct {
-	requests    []ToolSuspensionRequest
-	disposition ToolSuspensionDisposition
-	err         error
+	requests     []ToolSuspensionRequest
+	consumptions []ToolApprovalConsumptionRequest
+	disposition  ToolSuspensionDisposition
+	err          error
 }
 
 func (m *fakeToolSuspensionManager) SuspendToolCall(
@@ -38,9 +39,10 @@ func (m *fakeToolSuspensionManager) SuspendToolCall(
 }
 
 func (m *fakeToolSuspensionManager) ConsumeApproval(
-	context.Context,
-	ToolApprovalConsumptionRequest,
+	_ context.Context,
+	request ToolApprovalConsumptionRequest,
 ) error {
+	m.consumptions = append(m.consumptions, request)
 	return nil
 }
 
@@ -539,6 +541,102 @@ func TestPipelineLoopGuardDoesNotCountPolicyDenials(t *testing.T) {
 	}
 	if strings.Contains(exec.messages[1].Content, "_block") {
 		t.Fatalf("first executed failure was incorrectly blocked: %q", exec.messages[1].Content)
+	}
+}
+
+func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		grant *ToolApprovalGrant
+	}{
+		{name: "request"},
+		{
+			name: "resume",
+			grant: &ToolApprovalGrant{
+				InteractionID: "approval-1",
+				Revision:      2,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			registry := tools.NewToolRegistry()
+			tool := &approvalBindingTool{}
+			registry.Register(tool)
+			config := loopguard.DefaultConfig()
+			config.HardStopsEnabled = true
+			config.ExactFailureWarn = 1
+			config.ExactFailureBlock = 1
+			config.SameToolFailureHalt = 99
+			agent := &AgentInstance{
+				ID:                "main",
+				Tools:             registry,
+				Sessions:          session.NewSessionManager(""),
+				ToolLoopDetection: config,
+			}
+			ts := &turnState{
+				agent: agent, agentID: "main", turnID: "turn-approval-loop",
+				sessionKey: "approval-loop", workspace: t.TempDir(),
+				opts: processOptions{
+					NoHistory:     true,
+					ApprovalGrant: test.grant,
+					Dispatch: DispatchRequest{
+						SessionKey: "approval-loop",
+					},
+				},
+			}
+			exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+			args := map[string]any{"value": "same"}
+			exec.loopGuard.After(loopguard.Observation{
+				Tool: tool.Name(), Args: args, Failed: true,
+			})
+			exec.normalizedToolCalls = []providers.ToolCall{{
+				ID: "call-blocked-approval", Name: tool.Name(), Arguments: args,
+			}}
+			exec.assistantToolCallsPersisted = true
+			hooks := NewHookManager(nil)
+			defer hooks.Close()
+			if err := hooks.Mount(NamedHook("approval", &durableApprovalHook{
+				actionSummary: "Run protected action",
+			})); err != nil {
+				t.Fatal(err)
+			}
+			manager := &fakeToolSuspensionManager{
+				disposition: ToolSuspensionDisposition{
+					InteractionID: "must-not-run",
+					Durable:       true,
+				},
+			}
+			pipeline := &Pipeline{
+				Interaction: PipelineInteractionServices{
+					Hooks:      hooks,
+					Suspension: manager,
+				},
+			}
+
+			if control := pipeline.ExecuteTools(
+				t.Context(),
+				t.Context(),
+				ts,
+				exec,
+				1,
+			); control != ToolControlContinue {
+				t.Fatalf("control = %v, want continue", control)
+			}
+			if len(tool.bindingCalls) != 0 || len(manager.requests) != 0 ||
+				len(manager.consumptions) != 0 || tool.executions != 0 {
+				t.Fatalf(
+					"blocked approval side effects = bindings:%#v requests:%#v consumptions:%#v executions:%d",
+					tool.bindingCalls,
+					manager.requests,
+					manager.consumptions,
+					tool.executions,
+				)
+			}
+			if len(exec.messages) != 1 ||
+				!strings.Contains(exec.messages[0].Content, "repeated_exact_failure_block") {
+				t.Fatalf("blocked result = %#v", exec.messages)
+			}
+		})
 	}
 }
 
