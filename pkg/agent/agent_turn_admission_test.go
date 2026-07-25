@@ -89,6 +89,7 @@ func TestAgentTurnAdmissionReloadPreservesActiveTurns(t *testing.T) {
 func TestReloadProviderAndConfigRefreshesAgentTurnAdmissions(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 	cfg.Agents.List = []config.AgentConfig{{ID: "browser", Default: true}}
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
 	defer al.Close()
@@ -101,6 +102,7 @@ func TestReloadProviderAndConfigRefreshesAgentTurnAdmissions(t *testing.T) {
 
 	reloaded := config.DefaultConfig()
 	reloaded.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloaded.Agents.Defaults.ContextManager = "none"
 	reloaded.Agents.List = []config.AgentConfig{{
 		ID:               "browser",
 		Default:          true,

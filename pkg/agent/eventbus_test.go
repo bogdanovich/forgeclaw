@@ -464,7 +464,7 @@ func TestAgentLoop_EmitsSteeringAndSkippedToolEvents(t *testing.T) {
 	}
 }
 
-func TestAgentLoop_EmitsContextCompressEventOnRetry(t *testing.T) {
+func TestAgentLoop_DoesNotEmitContextCompressEventForNoOpRetry(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-eventbus-compress-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -544,19 +544,8 @@ func TestAgentLoop_EmitsContextCompressEventOnRetry(t *testing.T) {
 		t.Fatalf("expected retry attempt 1, got %d", retryPayload.Attempt)
 	}
 
-	compressEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentContextCompress)
-	if !ok {
-		t.Fatal("expected context compress event")
-	}
-	payload, ok := compressEvt.Payload.(ContextCompressPayload)
-	if !ok {
-		t.Fatalf("expected ContextCompressPayload, got %T", compressEvt.Payload)
-	}
-	if payload.Reason != ContextCompressReasonRetry {
-		t.Fatalf("expected retry compress reason, got %q", payload.Reason)
-	}
-	if payload.HistoryBudget <= 0 {
-		t.Fatalf("expected history budget to be recorded, got %d", payload.HistoryBudget)
+	if compressEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentContextCompress); ok {
+		t.Fatalf("unexpected context compress event for no-op compaction: %#v", compressEvt.Payload)
 	}
 }
 

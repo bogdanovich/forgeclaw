@@ -51,3 +51,8 @@ tools or run context compaction.
 Unknown manager names, legacy selection, invalid Seahorse configuration, and
 Seahorse initialization failures now stop startup with an actionable error.
 They no longer fall back to a different context strategy.
+
+Live provider/config reload remains available when both the running and new
+configuration use `context_manager: "none"`. A process using Seahorse must be
+restarted so its engine, retrieval tools, provider, and model are replaced as
+one lifecycle unit.

@@ -85,6 +85,7 @@ type ContextPayload struct {
 	AfterMessages     int      `json:"after_messages,omitempty"`
 	BeforeTokens      int      `json:"before_tokens,omitempty"`
 	AfterTokens       int      `json:"after_tokens,omitempty"`
+	TokensSaved       int      `json:"tokens_saved,omitempty"`
 	Revision          int64    `json:"revision,omitempty"`
 	SnapshotHash      string   `json:"snapshot_hash,omitempty"`
 	ProtectedFactRefs []string `json:"protected_fact_refs,omitempty"`

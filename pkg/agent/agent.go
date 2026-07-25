@@ -248,6 +248,11 @@ func (al *AgentLoop) Close() {
 				})
 		}
 	}
+	if err := closeContextManager(al.contextManager); err != nil {
+		logger.ErrorCF("agent", "Failed to close context manager", map[string]any{
+			"error": err.Error(),
+		})
+	}
 	al.GetRegistry().Close()
 	if al.hooks != nil {
 		al.hooks.Close()
@@ -292,6 +297,10 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	}
 	if cfg == nil {
 		return fmt.Errorf("config cannot be nil")
+	}
+	if _, stateless := al.contextManager.(*noneContextManager); !stateless ||
+		contextManagerConfigName(cfg) != "none" {
+		return fmt.Errorf("context manager changes require restart; hot reload is supported only for none")
 	}
 
 	// Create new registry with updated config and provider

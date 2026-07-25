@@ -752,6 +752,49 @@ func TestSeahorseCompactProactiveDoesNotForceCompactUntilUnder(t *testing.T) {
 	}
 }
 
+func TestCompactResultHasProgress(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *seahorse.CompactResult
+		want   bool
+	}{
+		{name: "nil", result: nil, want: false},
+		{name: "no-op", result: &seahorse.CompactResult{}, want: false},
+		{name: "tokens", result: &seahorse.CompactResult{TokensSaved: 1}, want: true},
+		{name: "leaf", result: &seahorse.CompactResult{LeafSummaries: 1}, want: true},
+		{name: "condensed", result: &seahorse.CompactResult{CondensedSummaries: 1}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := compactResultHasProgress(tt.result); got != tt.want {
+				t.Fatalf("compactResultHasProgress() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentLoopCloseClosesSeahorseEngine(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+
+	manager, ok := al.contextManager.(*seahorseContextManager)
+	if !ok {
+		t.Fatalf("context manager = %T, want Seahorse", al.contextManager)
+	}
+	al.Close()
+	if _, err := manager.engine.Assemble(
+		t.Context(),
+		"closed-session",
+		seahorse.AssembleInput{Budget: 100},
+	); err == nil {
+		t.Fatal("Seahorse engine remained usable after AgentLoop.Close")
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("second manager Close() error = %v", err)
+	}
+}
+
 // TestSeahorseRealLoopNoDuplicateMessages tests the real-world scenario:
 // 1. Start AgentLoop with seahorse context manager
 // 2. Run a turn (user message -> LLM response)

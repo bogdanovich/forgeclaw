@@ -29,6 +29,8 @@ type seahorseContextManager struct {
 	al              *AgentLoop // for resolving the agent that owns a session
 	locks           [64]sync.Mutex
 	reconciliations atomic.Uint64
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 const seahorseReconciliationGeneration = 1
@@ -220,30 +222,31 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 	if (req.Reason == ContextCompressReasonRetry ||
 		(req.Reason == ContextCompressReasonProactive && m.engine.AbsoluteBudgetsEnabled())) &&
 		req.Budget > 0 {
-		_, err := m.engine.CompactUntilUnder(ctx, req.SessionKey, req.Budget)
-		if err == nil {
-			m.emitCompactEvent(req)
+		result, err := m.engine.CompactUntilUnder(ctx, req.SessionKey, req.Budget)
+		if err == nil && compactResultHasProgress(result) {
+			m.emitCompactEvent(req, result)
 		}
 		return err
 	}
 
-	_, err := m.engine.Compact(ctx, req.SessionKey, seahorse.CompactInput{
+	result, err := m.engine.Compact(ctx, req.SessionKey, seahorse.CompactInput{
 		Force:  req.Reason == ContextCompressReasonRetry,
 		Budget: &req.Budget,
 	})
-	if err == nil {
-		m.emitCompactEvent(req)
+	if err == nil && compactResultHasProgress(result) {
+		m.emitCompactEvent(req, result)
 	}
 	return err
 }
 
-func (m *seahorseContextManager) emitCompactEvent(req *CompactRequest) {
+func compactResultHasProgress(result *seahorse.CompactResult) bool {
+	return result != nil &&
+		(result.TokensSaved > 0 || result.LeafSummaries > 0 || result.CondensedSummaries > 0)
+}
+
+func (m *seahorseContextManager) emitCompactEvent(req *CompactRequest, result *seahorse.CompactResult) {
 	if m.al == nil || req == nil {
 		return
-	}
-	remainingMessages := 0
-	if store := m.sessionStore(req.Agent); store != nil {
-		remainingMessages = len(store.GetHistory(req.SessionKey))
 	}
 	m.al.emitEvent(
 		runtimeevents.KindAgentContextCompress,
@@ -254,11 +257,23 @@ func (m *seahorseContextManager) emitCompactEvent(req *CompactRequest) {
 			TracePath:  "turn.context.compress",
 		},
 		ContextCompressPayload{
-			Reason:            req.Reason,
-			RemainingMessages: remainingMessages,
-			HistoryBudget:     req.Budget,
+			Reason:             req.Reason,
+			HistoryBudget:      req.Budget,
+			TokensSaved:        result.TokensSaved,
+			SummariesCreated:   len(result.SummariesCreated),
+			LeafSummaries:      result.LeafSummaries,
+			CondensedSummaries: result.CondensedSummaries,
 		},
 	)
+}
+
+func (m *seahorseContextManager) Close() error {
+	m.closeOnce.Do(func() {
+		if m.engine != nil {
+			m.closeErr = m.engine.Close()
+		}
+	})
+	return m.closeErr
 }
 
 // Ingest records a message after the canonical store has already appended it.

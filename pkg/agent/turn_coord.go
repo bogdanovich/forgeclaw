@@ -124,10 +124,7 @@ func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {
 }
 
 func (al *AgentLoop) resolveContextManager() (ContextManager, error) {
-	name := strings.ToLower(strings.TrimSpace(al.cfg.Agents.Defaults.ContextManager))
-	if name == "" {
-		name = "seahorse"
-	}
+	name := contextManagerConfigName(al.cfg)
 	if name == "none" {
 		return &noneContextManager{}, nil
 	}
@@ -142,6 +139,17 @@ func (al *AgentLoop) resolveContextManager() (ContextManager, error) {
 		return &failedContextManager{err: wrapped}, wrapped
 	}
 	return cm, nil
+}
+
+func contextManagerConfigName(cfg *config.Config) string {
+	if cfg == nil {
+		return "seahorse"
+	}
+	name := strings.ToLower(strings.TrimSpace(cfg.Agents.Defaults.ContextManager))
+	if name == "" {
+		name = "seahorse"
+	}
+	return name
 }
 
 func (al *AgentLoop) askSideQuestion(

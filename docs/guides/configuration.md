@@ -382,6 +382,10 @@ but does not include stored history or summaries in model prompts. The removed
 initialization failures also stop startup instead of silently changing context
 semantics.
 
+Live provider/config reload is supported only while remaining in `none` mode.
+Restart a process using Seahorse so its engine, retrieval tools, provider, and
+model are replaced together.
+
 ### Absolute Seahorse Context Budgets
 
 Seahorse can enforce predictable prompt budgets independently of the model's full context window:

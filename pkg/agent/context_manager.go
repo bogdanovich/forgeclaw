@@ -32,6 +32,17 @@ type ContextManager interface {
 	Clear(ctx context.Context, agent *AgentInstance, sessionKey string) error
 }
 
+type contextManagerCloser interface {
+	Close() error
+}
+
+func closeContextManager(cm ContextManager) error {
+	if closer, ok := cm.(contextManagerCloser); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // AssembleRequest is the input to Assemble.
 type AssembleRequest struct {
 	Agent         *AgentInstance // exact owner of the session
