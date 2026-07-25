@@ -455,6 +455,26 @@ toolLoop:
 			continue
 		}
 
+		execCtx := tools.WithToolInboundContext(
+			turnCtx,
+			ts.channel,
+			ts.chatID,
+			ts.opts.Dispatch.MessageID(),
+			ts.opts.Dispatch.ReplyToMessageID(),
+		)
+		if ts.opts.Dispatch.InboundContext != nil {
+			execCtx = tools.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
+		}
+		execCtx = tools.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
+		execCtx = tools.WithToolSessionContext(
+			execCtx,
+			ts.agent.ID,
+			ts.sessionKey,
+			ts.opts.Dispatch.SessionScope,
+		)
+		execCtx = tools.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
+		execCtx = tools.WithToolCallID(execCtx, tc.ID)
+
 		if p.Interaction.Hooks != nil || ts.opts.ApprovalGrant != nil {
 			approval := ApprovalDecision{Approved: true}
 			if p.Interaction.Hooks != nil {
@@ -471,14 +491,28 @@ toolLoop:
 			if interactionWorkspace == "" {
 				interactionWorkspace = ts.workspace
 			}
+			approvalArgs := toolArgs
+			var approvalArgsErr error
+			if ts.opts.ApprovalGrant != nil || approval.RequireHuman {
+				approvalArgs, approvalArgsErr = ts.agent.Tools.ApprovalArguments(
+					execCtx,
+					toolName,
+					toolArgs,
+				)
+			}
 			if grant := ts.opts.ApprovalGrant; grant != nil {
 				var consumeErr error
 				if !approval.Approved && !approval.RequireHuman {
 					consumeErr = fmt.Errorf("current approval policy denied execution: %s", approval.Reason)
 				} else if p.Interaction.Suspension == nil {
 					consumeErr = fmt.Errorf("human interaction suspension is unavailable in this runtime")
+				} else if approvalArgsErr != nil {
+					consumeErr = approvalArgsErr
 				} else {
-					argumentHash, hashErr := interactions.HashArguments(interactionWorkspace, toolArgs)
+					argumentHash, hashErr := interactions.HashArguments(
+						interactionWorkspace,
+						approvalArgs,
+					)
 					if hashErr != nil {
 						consumeErr = hashErr
 					} else {
@@ -502,7 +536,14 @@ toolLoop:
 				}
 			}
 			if approval.RequireHuman {
-				argumentHash, hashErr := interactions.HashArguments(interactionWorkspace, toolArgs)
+				hashErr := approvalArgsErr
+				argumentHash := ""
+				if hashErr == nil {
+					argumentHash, hashErr = interactions.HashArguments(
+						interactionWorkspace,
+						approvalArgs,
+					)
+				}
 				if hashErr == nil {
 					approvalAction, displayErr := renderApprovalAction(
 						toolName,
@@ -663,24 +704,6 @@ toolLoop:
 		}
 
 		toolStart := time.Now()
-		execCtx := tools.WithToolInboundContext(
-			turnCtx,
-			ts.channel,
-			ts.chatID,
-			ts.opts.Dispatch.MessageID(),
-			ts.opts.Dispatch.ReplyToMessageID(),
-		)
-		if ts.opts.Dispatch.InboundContext != nil {
-			execCtx = tools.WithToolInboundMetadata(execCtx, *ts.opts.Dispatch.InboundContext)
-		}
-		execCtx = tools.WithToolTopicID(execCtx, originTopicID(ts.opts.Dispatch.InboundContext))
-		execCtx = tools.WithToolSessionContext(
-			execCtx,
-			ts.agent.ID,
-			ts.sessionKey,
-			ts.opts.Dispatch.SessionScope,
-		)
-		execCtx = tools.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,
