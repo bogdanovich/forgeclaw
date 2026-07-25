@@ -58,7 +58,7 @@ func TestSessionHubRequestRequiresDispatchCapableLiveSession(t *testing.T) {
 		"node.invoke",
 		[]byte(`{}`),
 		"idem_test",
-		func() error {
+		func(func() error) error {
 			commitCalls++
 			return nil
 		},

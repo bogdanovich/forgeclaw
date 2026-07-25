@@ -154,7 +154,7 @@ func TestPeerDispatchCommitFailurePreventsWrite(t *testing.T) {
 		"node.invoke",
 		[]byte(`{}`),
 		"idem_test",
-		func() error { return commitErr },
+		func(func() error) error { return commitErr },
 	)
 	if !errors.Is(err, commitErr) || dispatched {
 		t.Fatalf("request = (dispatched %v, error %v)", dispatched, err)
@@ -187,9 +187,9 @@ func TestPeerRequestCancellationInterruptsBlockedWrite(t *testing.T) {
 			"node.invoke",
 			[]byte(`{}`),
 			"idem_test",
-			func() error {
+			func(write func() error) error {
 				commitCalls++
-				return nil
+				return write()
 			},
 		)
 		requestDone <- requestResult{dispatched: dispatched, err: err}

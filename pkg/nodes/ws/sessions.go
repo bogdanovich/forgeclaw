@@ -199,14 +199,14 @@ func (hub *SessionHub) Connected(id nodes.ID) bool {
 }
 
 // Request sends one correlated request to the current authenticated generation.
-// commit runs after local admission and immediately before the first frame write.
+// dispatch wraps the first frame write after local request and writer admission.
 func (hub *SessionHub) Request(
 	ctx context.Context,
 	id nodes.ID,
 	method string,
 	params json.RawMessage,
 	idempotencyKey string,
-	commit func() error,
+	dispatch func(func() error) error,
 ) (protocol.Envelope, bool, error) {
 	hub.mu.Lock()
 	slot := hub.sessions[id]
@@ -216,7 +216,7 @@ func (hub *SessionHub) Request(
 	}
 	session := slot.current.peer
 	hub.mu.Unlock()
-	return session.request(ctx, method, params, idempotencyKey, commit)
+	return session.request(ctx, method, params, idempotencyKey, dispatch)
 }
 
 func (hub *SessionHub) Close(ctx context.Context) error {

@@ -94,7 +94,7 @@ func (session *peer) request(
 	method string,
 	params json.RawMessage,
 	idempotencyKey string,
-	commit func() error,
+	dispatch func(func() error) error,
 ) (protocol.Envelope, bool, error) {
 	select {
 	case <-ctx.Done():
@@ -125,7 +125,7 @@ func (session *peer) request(
 		Method:         method,
 		Params:         params,
 		IdempotencyKey: idempotencyKey,
-	}, commit)
+	}, dispatch)
 	if err != nil {
 		session.removePending(id)
 		return protocol.Envelope{}, dispatched, err
@@ -216,7 +216,7 @@ func (session *peer) writeEnvelope(ctx context.Context, envelope protocol.Envelo
 func (session *peer) writeEnvelopeAtDispatch(
 	ctx context.Context,
 	envelope protocol.Envelope,
-	commit func() error,
+	dispatch func(func() error) error,
 ) (bool, error) {
 	data, err := protocol.Encode(envelope)
 	if err != nil {
@@ -244,27 +244,40 @@ func (session *peer) writeEnvelopeAtDispatch(
 		_ = session.Close()
 		return false, err
 	}
-	if commit != nil {
-		if err := commit(); err != nil {
-			return false, err
+	dispatched := false
+	var transportErr error
+	write := func() error {
+		if dispatched {
+			return errors.New("node request frame write called more than once")
+		}
+		dispatched = true
+		cancelDone := make(chan struct{})
+		stopCancel := context.AfterFunc(writeCtx, func() {
+			_ = session.connection.SetWriteDeadline(time.Now())
+			close(cancelDone)
+		})
+		transportErr = session.connection.WriteMessage(websocket.TextMessage, data)
+		if !stopCancel() {
+			<-cancelDone
+		}
+		return transportErr
+	}
+	var writeErr error
+	if dispatch == nil {
+		writeErr = write()
+	} else {
+		writeErr = dispatch(write)
+		if writeErr == nil && !dispatched {
+			writeErr = errors.New("node dispatch completed without writing request frame")
 		}
 	}
-	cancelDone := make(chan struct{})
-	stopCancel := context.AfterFunc(writeCtx, func() {
-		_ = session.connection.SetWriteDeadline(time.Now())
-		close(cancelDone)
-	})
-	writeErr := session.connection.WriteMessage(websocket.TextMessage, data)
-	if !stopCancel() {
-		<-cancelDone
-	}
-	if writeErr != nil {
+	if transportErr != nil {
 		_ = session.Close()
 		if ctx.Err() != nil {
-			return true, ctx.Err()
+			return dispatched, ctx.Err()
 		}
 	}
-	return true, writeErr
+	return dispatched, writeErr
 }
 
 func (session *peer) writeControl(messageType int, data []byte, deadline time.Time) error {

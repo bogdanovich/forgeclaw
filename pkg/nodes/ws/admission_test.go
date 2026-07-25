@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -44,6 +45,100 @@ func TestValidateInvocationResultRejectsInvalidCompanionOutput(t *testing.T) {
 }
 
 func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
+	_, handler, nodeID, plan := testInvocationAdmission(
+		t,
+		strings.Repeat("0", 64),
+	)
+	commitCalls := 0
+	if _, dispatched, err := handler.Invoke(
+		t.Context(),
+		nodeID,
+		plan,
+		func() error {
+			commitCalls++
+			return nil
+		},
+	); !errors.Is(
+		err,
+		nodes.ErrCommandDenied,
+	) || dispatched {
+		t.Fatalf("stale catalog invocation error = %v", err)
+	}
+	if commitCalls != 0 {
+		t.Fatalf("stale catalog dispatch commit calls = %d", commitCalls)
+	}
+}
+
+func TestAdmissionRevocationWaitsForDispatchWrite(t *testing.T) {
+	registry, handler, nodeID, plan := testInvocationAdmission(t, "")
+	connection := newStubPeerConnection()
+	session := newPeer(connection)
+	session.markReady()
+	releaseSession, err := handler.sessions.Claim(nodeID, session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseSession()
+
+	commitStarted := make(chan struct{})
+	allowCommit := make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	type invokeResult struct {
+		dispatched bool
+		err        error
+	}
+	invoked := make(chan invokeResult, 1)
+	go func() {
+		_, dispatched, invokeErr := handler.Invoke(ctx, nodeID, plan, func() error {
+			close(commitStarted)
+			<-allowCommit
+			return nil
+		})
+		invoked <- invokeResult{dispatched: dispatched, err: invokeErr}
+	}()
+	<-commitStarted
+
+	revoked := make(chan error, 1)
+	go func() {
+		_, revokeErr := registry.Revoke(nodeID, nodes.Revocation{
+			Reason: "test revocation",
+			At:     time.Now().Unix(),
+		})
+		revoked <- revokeErr
+	}()
+	select {
+	case revokeErr := <-revoked:
+		t.Fatalf("revocation completed before dispatch write: %v", revokeErr)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(allowCommit)
+	<-connection.writeStarted
+	select {
+	case revokeErr := <-revoked:
+		if revokeErr != nil {
+			t.Fatal(revokeErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("revocation remained blocked after dispatch write")
+	}
+	cancel()
+	result := <-invoked
+	if !result.dispatched || !errors.Is(result.err, context.Canceled) {
+		t.Fatalf(
+			"Invoke() = (dispatched %v, error %v)",
+			result.dispatched,
+			result.err,
+		)
+	}
+}
+
+func testInvocationAdmission(
+	t *testing.T,
+	requestCatalogHash string,
+) (*nodes.FileRegistry, *AdmissionHandler, nodes.ID, nodes.ExecutionPlan) {
+	t.Helper()
 	descriptor := nodes.CommandDescriptor{
 		Name:         "node.info.v1",
 		InputSchema:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
@@ -54,6 +149,9 @@ func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
 	catalogHash, err := catalog.Hash()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if requestCatalogHash == "" {
+		requestCatalogHash = catalogHash
 	}
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -106,10 +204,10 @@ func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := nodes.InvocationRequest{
-		InvocationID:     "inv_stale_catalog",
-		IdempotencyKey:   "idem_stale_catalog",
+		InvocationID:     "inv_test",
+		IdempotencyKey:   "idem_test",
 		NodeID:           nodeID,
-		CatalogHash:      strings.Repeat("0", 64),
+		CatalogHash:      requestCatalogHash,
 		Command:          descriptor.Name,
 		Input:            json.RawMessage(`{}`),
 		AgentID:          "main",
@@ -129,24 +227,7 @@ func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commitCalls := 0
-	if _, dispatched, err := handler.Invoke(
-		t.Context(),
-		nodeID,
-		plan,
-		func() error {
-			commitCalls++
-			return nil
-		},
-	); !errors.Is(
-		err,
-		nodes.ErrCommandDenied,
-	) || dispatched {
-		t.Fatalf("stale catalog invocation error = %v", err)
-	}
-	if commitCalls != 0 {
-		t.Fatalf("stale catalog dispatch commit calls = %d", commitCalls)
-	}
+	return registry, handler, nodeID, plan
 }
 
 func TestAdmissionPersistsSignedIdentityOverWSS(t *testing.T) {

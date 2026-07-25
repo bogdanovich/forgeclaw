@@ -321,17 +321,27 @@ func (handler *AdmissionHandler) Invoke(
 		"node.invoke",
 		params,
 		plan.IdempotencyKey,
-		func() error {
-			if _, preflightErr := handler.validateInvocationPreflight(
+		func(write func() error) error {
+			_, leaseErr := handler.authenticator.WithApprovedCommand(
 				nodeID,
-				plan,
-			); preflightErr != nil {
-				return preflightErr
-			}
-			if commit != nil {
-				return commit()
-			}
-			return nil
+				plan.Command,
+				func(current nodes.CommandApproval) error {
+					if validationErr := validateInvocationApproval(
+						current,
+						nodeID,
+						plan,
+					); validationErr != nil {
+						return validationErr
+					}
+					if commit != nil {
+						if commitErr := commit(); commitErr != nil {
+							return commitErr
+						}
+					}
+					return write()
+				},
+			)
+			return leaseErr
 		},
 	)
 	if err != nil {
@@ -362,19 +372,30 @@ func (handler *AdmissionHandler) validateInvocationPreflight(
 	if validationErr := plan.Validate(); validationErr != nil {
 		return nodes.CommandApproval{}, validationErr
 	}
+	if validationErr := validateInvocationApproval(approval, nodeID, plan); validationErr != nil {
+		return nodes.CommandApproval{}, validationErr
+	}
+	return approval, nil
+}
+
+func validateInvocationApproval(
+	approval nodes.CommandApproval,
+	nodeID nodes.ID,
+	plan nodes.ExecutionPlan,
+) error {
 	descriptorHash, err := approval.Descriptor.Hash()
 	if err != nil {
-		return nodes.CommandApproval{}, err
+		return err
 	}
 	if plan.NodeID != nodeID || plan.Risk != approval.Descriptor.Risk ||
 		plan.DescriptorHash != descriptorHash ||
 		plan.CatalogHash != approval.CatalogHash {
-		return nodes.CommandApproval{}, fmt.Errorf(
+		return fmt.Errorf(
 			"%w: execution plan does not match approved command",
 			nodes.ErrCommandDenied,
 		)
 	}
-	return approval, nil
+	return nil
 }
 
 // Invocation returns the companion's durable record for reconnect recovery.
