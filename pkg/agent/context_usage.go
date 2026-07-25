@@ -229,8 +229,10 @@ func computeAssembledContextUsage(
 
 func contextManagerDisplayName(cm ContextManager) string {
 	switch cm.(type) {
-	case *legacyContextManager:
-		return "legacy"
+	case *noneContextManager:
+		return "none"
+	case *failedContextManager:
+		return "unavailable"
 	}
 	typeName := fmt.Sprintf("%T", cm)
 	if strings.Contains(typeName, "seahorseContextManager") {

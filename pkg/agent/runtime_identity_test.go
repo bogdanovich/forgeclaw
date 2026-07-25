@@ -280,30 +280,6 @@ func TestInboundRecoveryBlockScopeIncludesRoutedWorkspace(t *testing.T) {
 	}
 }
 
-func TestLegacyContextManagerUsesExplicitSessionOwner(t *testing.T) {
-	firstStore := session.NewSessionManager("")
-	secondStore := session.NewSessionManager("")
-	firstStore.GetOrCreate("shared-session")
-	secondStore.GetOrCreate("shared-session")
-	firstStore.SetHistory("shared-session", []providers.Message{{Role: "user", Content: "first"}})
-	secondStore.SetHistory("shared-session", []providers.Message{{Role: "user", Content: "second"}})
-	first := &AgentInstance{ID: "first", Workspace: "/workspace/first", Sessions: firstStore}
-	second := &AgentInstance{ID: "second", Workspace: "/workspace/second", Sessions: secondStore}
-	mgr := &legacyContextManager{al: &AgentLoop{registry: &AgentRegistry{agents: map[string]*AgentInstance{
-		"first": first, "second": second,
-	}}}}
-
-	resp, err := mgr.Assemble(context.Background(), &AssembleRequest{
-		Agent: second, SessionKey: "shared-session",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.History) != 1 || resp.History[0].Content != "second" {
-		t.Fatalf("history = %#v, want second workspace history", resp.History)
-	}
-}
-
 func TestMessageToolSuppressionUsesExplicitSessionOwner(t *testing.T) {
 	first := tools.NewMessageTool()
 	second := tools.NewMessageTool()

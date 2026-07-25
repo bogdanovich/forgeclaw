@@ -51,6 +51,7 @@ type AgentLoop struct {
 	// Runtime state
 	running                    atomic.Bool
 	contextManager             ContextManager
+	contextManagerInitErr      error
 	fallback                   *providers.FallbackChain
 	modelExecution             *modelExecutionManager
 	channelManager             interfaces.ChannelManager
@@ -174,6 +175,9 @@ const (
 // registerSharedTools registers tools that are shared across all agents (web, message, spawn).
 
 func (al *AgentLoop) Run(ctx context.Context) error {
+	if al.contextManagerInitErr != nil {
+		return al.contextManagerInitErr
+	}
 	al.running.Store(true)
 
 	if err := al.ensureHooksInitialized(ctx); err != nil {

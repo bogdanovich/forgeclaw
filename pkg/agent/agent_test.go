@@ -1693,8 +1693,12 @@ func TestProcessMessage_BtwCommandRunsWithoutPersistingHistory(t *testing.T) {
 		)
 	}
 
-	if !reflect.DeepEqual(provider.lastMessages[1:3], initialHistory) {
-		t.Fatalf("provider history = %#v, want %#v", provider.lastMessages[1:3], initialHistory)
+	expectedProviderHistory := append([]providers.Message(nil), initialHistory...)
+	for i := range expectedProviderHistory {
+		expectedProviderHistory[i].CreatedAt = nil
+	}
+	if !reflect.DeepEqual(provider.lastMessages[1:3], expectedProviderHistory) {
+		t.Fatalf("provider history = %#v, want %#v", provider.lastMessages[1:3], expectedProviderHistory)
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]

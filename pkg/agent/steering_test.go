@@ -1531,6 +1531,7 @@ func TestAgentLoop_Run_ReleasesInjectedSteeringSpoolOnContinuationSaveFailure(t 
 				ModelName:         "test-model",
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
+				ContextManager:    "none",
 			},
 		},
 	}
@@ -2598,6 +2599,12 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 	}
 
 	finalHistory := defaultAgent.Sessions.GetHistory(sessionKey)
+	for i := range finalHistory {
+		finalHistory[i].CreatedAt = nil
+	}
+	for i := range originalHistory {
+		originalHistory[i].CreatedAt = nil
+	}
 	if !reflect.DeepEqual(finalHistory, originalHistory) {
 		t.Fatalf("expected history rollback after hard abort, got %#v", finalHistory)
 	}

@@ -50,7 +50,7 @@ func TestFormatContextStats_ShowsStoredAndAssembledSections(t *testing.T) {
 
 func TestFormatContextStats_MarksAssembledEstimateOverBudget(t *testing.T) {
 	stats := &ContextStats{
-		ContextManager:         "legacy",
+		ContextManager:         "none",
 		TotalTokens:            1000,
 		CompressAtTokens:       900,
 		SummarizeAtTokens:      700,
@@ -68,5 +68,8 @@ func TestFormatContextStats_MarksAssembledEstimateOverBudget(t *testing.T) {
 	got := formatContextStats(stats)
 	if !strings.Contains(got, "Assembled prompt estimate (pre-repair over budget)") {
 		t.Fatalf("formatContextStats missing over-budget label in:\n%s", got)
+	}
+	if !strings.Contains(got, "- Summarize at: disabled") {
+		t.Fatalf("formatContextStats missing disabled threshold in:\n%s", got)
 	}
 }

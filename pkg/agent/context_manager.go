@@ -12,7 +12,7 @@ import (
 
 // ContextManager manages conversation context via a pluggable strategy.
 // Exactly ONE ContextManager is active per AgentLoop, selected by config.
-// The default ("legacy") preserves current summarization behavior.
+// Seahorse is the default; "none" explicitly disables stored context assembly.
 type ContextManager interface {
 	// Assemble builds budget-aware context from the ContextManager's own storage.
 	// Called before BuildMessages. Returns assembled messages ready for LLM.

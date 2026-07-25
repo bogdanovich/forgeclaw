@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -220,6 +221,9 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 		(req.Reason == ContextCompressReasonProactive && m.engine.AbsoluteBudgetsEnabled())) &&
 		req.Budget > 0 {
 		_, err := m.engine.CompactUntilUnder(ctx, req.SessionKey, req.Budget)
+		if err == nil {
+			m.emitCompactEvent(req)
+		}
 		return err
 	}
 
@@ -227,7 +231,34 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 		Force:  req.Reason == ContextCompressReasonRetry,
 		Budget: &req.Budget,
 	})
+	if err == nil {
+		m.emitCompactEvent(req)
+	}
 	return err
+}
+
+func (m *seahorseContextManager) emitCompactEvent(req *CompactRequest) {
+	if m.al == nil || req == nil {
+		return
+	}
+	remainingMessages := 0
+	if store := m.sessionStore(req.Agent); store != nil {
+		remainingMessages = len(store.GetHistory(req.SessionKey))
+	}
+	m.al.emitEvent(
+		runtimeevents.KindAgentContextCompress,
+		HookMeta{
+			TraceScope: req.TraceScope,
+			SessionKey: req.SessionKey,
+			Source:     "seahorse",
+			TracePath:  "turn.context.compress",
+		},
+		ContextCompressPayload{
+			Reason:            req.Reason,
+			RemainingMessages: remainingMessages,
+			HistoryBudget:     req.Budget,
+		},
+	)
 }
 
 // Ingest records a message after the canonical store has already appended it.
@@ -492,10 +523,20 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 
 	// Convert ToolCalls → MessageParts
 	for _, tc := range msg.ToolCalls {
+		name := tc.Name
+		arguments := ""
+		if tc.Function != nil {
+			name = tc.Function.Name
+			arguments = tc.Function.Arguments
+		} else if len(tc.Arguments) > 0 {
+			if encoded, err := json.Marshal(tc.Arguments); err == nil {
+				arguments = string(encoded)
+			}
+		}
 		part := seahorse.MessagePart{
 			Type:       "tool_use",
-			Name:       tc.Function.Name,
-			Arguments:  tc.Function.Arguments,
+			Name:       name,
+			Arguments:  arguments,
 			ToolCallID: tc.ID,
 		}
 		result.Parts = append(result.Parts, part)

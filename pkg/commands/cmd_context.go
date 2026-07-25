@@ -103,8 +103,8 @@ func formatSummarizeThreshold(s *ContextStats) string {
 			summaryPrefixTokens,
 		)
 	}
-	if s.ContextManager == "legacy" && s.SummarizeMessageThreshold > 0 {
-		return fmt.Sprintf("%d history tokens or %d messages", s.SummarizeAtTokens, s.SummarizeMessageThreshold)
+	if s.ContextManager == "none" {
+		return "disabled"
 	}
 	return fmt.Sprintf("%d history tokens", s.SummarizeAtTokens)
 }

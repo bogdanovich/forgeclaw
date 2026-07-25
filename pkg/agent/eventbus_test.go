@@ -555,73 +555,8 @@ func TestAgentLoop_EmitsContextCompressEventOnRetry(t *testing.T) {
 	if payload.Reason != ContextCompressReasonRetry {
 		t.Fatalf("expected retry compress reason, got %q", payload.Reason)
 	}
-	if payload.DroppedMessages == 0 {
-		t.Fatal("expected dropped messages to be recorded")
-	}
-}
-
-func TestAgentLoop_EmitsSessionSummarizeEvent(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-eventbus-summary-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:                 tmpDir,
-				ModelName:                 "test-model",
-				MaxTokens:                 4096,
-				MaxToolIterations:         10,
-				ContextWindow:             8000,
-				SummarizeMessageThreshold: 2,
-				SummarizeTokenPercent:     75,
-			},
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	al := NewAgentLoop(cfg, msgBus, &simpleMockProvider{response: "summary text"})
-	defaultAgent := al.registry.GetDefaultAgent()
-	if defaultAgent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	defaultAgent.Sessions.SetHistory("session-1", []providers.Message{
-		{Role: "user", Content: "Question one"},
-		{Role: "assistant", Content: "Answer one"},
-		{Role: "user", Content: "Question two"},
-		{Role: "assistant", Content: "Answer two"},
-		{Role: "user", Content: "Question three"},
-		{Role: "assistant", Content: "Answer three"},
-	})
-
-	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
-		t,
-		al,
-		16,
-		runtimeevents.KindAgentSessionSummarize,
-	)
-	defer closeRuntimeEvents()
-
-	lcm := &legacyContextManager{al: al}
-	lcm.summarizeSession(defaultAgent, "session-1")
-
-	events := collectRuntimeEventStream(runtimeCh)
-	summaryEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentSessionSummarize)
-	if !ok {
-		t.Fatal("expected session summarize event")
-	}
-	payload, ok := summaryEvt.Payload.(SessionSummarizePayload)
-	if !ok {
-		t.Fatalf("expected SessionSummarizePayload, got %T", summaryEvt.Payload)
-	}
-	if payload.SummaryLen == 0 {
-		t.Fatal("expected non-empty summary length")
-	}
-	if summaryEvt.Scope.TurnTraceScope().Complete() {
-		t.Fatalf("background summary has fabricated trace scope: %#v", summaryEvt.Scope)
+	if payload.HistoryBudget <= 0 {
+		t.Fatalf("expected history budget to be recorded, got %d", payload.HistoryBudget)
 	}
 }
 
