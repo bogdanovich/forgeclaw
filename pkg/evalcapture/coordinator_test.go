@@ -254,6 +254,43 @@ func TestCoordinatorCloseCancelsBlockingSourceOperations(t *testing.T) {
 	}
 }
 
+func TestCoordinatorUnregisterCancelsBlockingSourceOperations(t *testing.T) {
+	for _, operation := range []string{"pending", "load", "confirm"} {
+		t.Run(operation, func(t *testing.T) {
+			blocking := newBlockingCoordinatorSource(operation)
+			healthy := newCoordinatorSource()
+			healthy.set("task", 14)
+			coordinator := NewCoordinator(CoordinatorOptions{
+				PendingCapacity: 4,
+				RetryDelay:      time.Millisecond,
+				Writer: Options{
+					StorageFactory: func(Policy) Storage {
+						return &coordinatorStorage{}
+					},
+				},
+			})
+			if err := coordinator.RegisterSource("blocked", blocking); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-blocking.entered:
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not block", operation)
+			}
+
+			coordinator.UnregisterSource("blocked")
+			if err := coordinator.RegisterSource("blocked", healthy); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
+
+			waitCoordinator(t, func() bool {
+				return healthy.confirmedRevision("task") == 14
+			})
+		})
+	}
+}
+
 func TestCoordinatorFailingSourceDoesNotStarveRecovery(t *testing.T) {
 	failing := &failingPendingSource{}
 	healthy := newCoordinatorSource()

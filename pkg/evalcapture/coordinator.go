@@ -40,7 +40,8 @@ type DurableCandidate struct {
 
 // DurableSource remains the authority for domain identity, revision, recovery,
 // and compare-and-set confirmation. Implementations must return opaque keys
-// from Pending and must not include secrets in errors.
+// from Pending, return promptly when ctx is canceled, and must not include
+// secrets in errors.
 type DurableSource interface {
 	Pending(ctx context.Context, limit int) ([]string, error)
 	LoadLatest(ctx context.Context, key string) (DurableCandidate, bool, error)
@@ -84,6 +85,12 @@ type projectionState struct {
 	generation uint64
 }
 
+type sourceRegistration struct {
+	source DurableSource
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
 // Coordinator owns the writer and every persistence lifecycle concern shared
 // by durable task and interaction projections. It stores no domain history.
 type Coordinator struct {
@@ -93,7 +100,7 @@ type Coordinator struct {
 
 	capacity   int
 	retryDelay time.Duration
-	sources    map[string]DurableSource
+	sources    map[string]*sourceRegistration
 	recoverAt  map[string]time.Time
 	states     map[projectionID]*projectionState
 	receipts   map[string]projectionID
@@ -127,7 +134,7 @@ func NewCoordinator(options CoordinatorOptions) *Coordinator {
 	opCtx, cancel := context.WithCancel(context.Background())
 	c := &Coordinator{
 		capacity: capacity, retryDelay: retryDelay,
-		sources:   make(map[string]DurableSource),
+		sources:   make(map[string]*sourceRegistration),
 		recoverAt: make(map[string]time.Time),
 		states:    make(map[projectionID]*projectionState),
 		receipts:  make(map[string]projectionID),
@@ -170,23 +177,34 @@ func (c *Coordinator) RegisterSource(sourceID string, source DurableSource) erro
 	if c.sources[sourceID] != nil {
 		return fmt.Errorf("durable projection source %q is already registered", sourceID)
 	}
-	c.sources[sourceID] = source
+	ctx, cancel := context.WithCancel(c.opCtx)
+	c.sources[sourceID] = &sourceRegistration{
+		source: source,
+		ctx:    ctx,
+		cancel: cancel,
+	}
 	c.recoverAt[sourceID] = time.Time{}
 	c.signalLocked()
 	return nil
 }
 
-// UnregisterSource stops new loading from a source. Existing in-flight writer
-// receipts remain harmless; their source marker is left for later recovery.
+// UnregisterSource cancels source operations and stops new loading. Existing
+// in-flight writer receipts remain harmless; their source marker is left for
+// later recovery.
 func (c *Coordinator) UnregisterSource(sourceID string) {
 	if c == nil {
 		return
 	}
 	sourceID = strings.TrimSpace(sourceID)
 	c.mu.Lock()
+	registration := c.sources[sourceID]
 	delete(c.sources, sourceID)
 	delete(c.recoverAt, sourceID)
 	c.removeSourceStatesLocked(sourceID)
+	if registration != nil {
+		registration.cancel()
+	}
+	c.signalLocked()
 	c.notifyIdleLocked()
 	c.mu.Unlock()
 }
@@ -338,15 +356,15 @@ func (c *Coordinator) run() {
 
 func (c *Coordinator) processAvailable() time.Duration {
 	for {
-		id, state, source, ok, next := c.nextWork()
+		id, state, registration, ok, next := c.nextWork()
 		if !ok {
 			return next
 		}
 		switch state.phase {
 		case projectionNeedsLoad:
-			c.processLoad(id, state, source)
+			c.processLoad(id, state, registration)
 		case projectionNeedsConfirm:
-			c.processConfirm(id, state, source)
+			c.processConfirm(id, state, registration)
 		}
 	}
 }
@@ -354,7 +372,7 @@ func (c *Coordinator) processAvailable() time.Duration {
 func (c *Coordinator) nextWork() (
 	projectionID,
 	projectionState,
-	DurableSource,
+	*sourceRegistration,
 	bool,
 	time.Duration,
 ) {
@@ -383,12 +401,12 @@ func (c *Coordinator) nextWork() (
 			}
 			continue
 		}
-		source := c.sources[id.source]
-		if source == nil {
+		registration := c.sources[id.source]
+		if registration == nil {
 			delete(c.states, id)
 			continue
 		}
-		return id, *state, source, true, 0
+		return id, *state, registration, true, 0
 	}
 	if len(c.states) < c.capacity && c.scans == 0 {
 		sourceIDs := make([]string, 0, len(c.recoverAt))
@@ -405,9 +423,10 @@ func (c *Coordinator) nextWork() (
 		sort.Strings(sourceIDs)
 		if len(sourceIDs) > 0 {
 			sourceID := sourceIDs[0]
+			registration := c.sources[sourceID]
 			delete(c.recoverAt, sourceID)
 			c.scans++
-			go c.scanSource(sourceID)
+			go c.scanSource(sourceID, registration)
 		}
 	}
 	c.notifyIdleLocked()
@@ -417,7 +436,10 @@ func (c *Coordinator) nextWork() (
 	return projectionID{}, projectionState{}, nil, false, time.Until(earliest)
 }
 
-func (c *Coordinator) scanSource(sourceID string) {
+func (c *Coordinator) scanSource(
+	sourceID string,
+	registration *sourceRegistration,
+) {
 	defer func() {
 		c.mu.Lock()
 		c.scans--
@@ -426,17 +448,17 @@ func (c *Coordinator) scanSource(sourceID string) {
 		c.mu.Unlock()
 	}()
 	c.mu.Lock()
-	source := c.sources[sourceID]
 	limit := c.capacity - len(c.states)
 	stopping := c.stopping
+	current := c.sources[sourceID] == registration
 	c.mu.Unlock()
-	if source == nil || limit <= 0 {
+	if !current || limit <= 0 {
 		return
 	}
-	keys, err := source.Pending(c.opCtx, limit)
+	keys, err := registration.source.Pending(registration.ctx, limit)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.sources[sourceID] != source {
+	if c.closed || c.sources[sourceID] != registration {
 		return
 	}
 	if err != nil {
@@ -470,13 +492,16 @@ func (c *Coordinator) scanSource(sourceID string) {
 func (c *Coordinator) processLoad(
 	id projectionID,
 	snapshot projectionState,
-	source DurableSource,
+	registration *sourceRegistration,
 ) {
-	candidate, exists, err := source.LoadLatest(c.opCtx, id.key)
+	candidate, exists, err := registration.source.LoadLatest(
+		registration.ctx,
+		id.key,
+	)
 	c.mu.Lock()
 	state := c.states[id]
 	if state == nil || state.generation != snapshot.generation ||
-		c.sources[id.source] != source {
+		c.sources[id.source] != registration {
 		c.mu.Unlock()
 		return
 	}
@@ -530,14 +555,18 @@ func (c *Coordinator) processLoad(
 func (c *Coordinator) processConfirm(
 	id projectionID,
 	snapshot projectionState,
-	source DurableSource,
+	registration *sourceRegistration,
 ) {
-	result, err := source.Confirm(c.opCtx, id.key, snapshot.revision)
+	result, err := registration.source.Confirm(
+		registration.ctx,
+		id.key,
+		snapshot.revision,
+	)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state := c.states[id]
 	if state == nil || state.generation != snapshot.generation ||
-		c.sources[id.source] != source {
+		c.sources[id.source] != registration {
 		return
 	}
 	if err != nil {
