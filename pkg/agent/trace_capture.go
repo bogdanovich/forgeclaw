@@ -18,6 +18,7 @@ import (
 const (
 	tracePersistBuffer            = 128
 	traceShutdownAdmissionTimeout = 5 * time.Second
+	traceShutdownDrainTimeout     = 5 * time.Second
 )
 
 type traceCaptureManager struct {
@@ -102,6 +103,15 @@ func (m *traceCaptureManager) enabled() bool {
 }
 
 func (m *traceCaptureManager) close() {
+	m.closeWithTimeouts(
+		traceShutdownAdmissionTimeout,
+		traceShutdownDrainTimeout,
+	)
+}
+
+func (m *traceCaptureManager) closeWithTimeouts(
+	admissionTimeout, drainTimeout time.Duration,
+) {
 	if m == nil {
 		return
 	}
@@ -118,27 +128,32 @@ func (m *traceCaptureManager) close() {
 	m.mu.Unlock()
 
 	turns.close()
-	shutdownCtx, shutdownCancel := context.WithTimeout(
+	admissionCtx, admissionCancel := context.WithTimeout(
 		context.Background(),
-		traceShutdownAdmissionTimeout,
+		admissionTimeout,
 	)
-	defer shutdownCancel()
-	if err := tasks.closeWithContext(shutdownCtx); err != nil {
+	if err := tasks.closeWithContext(admissionCtx); err != nil {
 		logger.WarnCF("evaltrace", "Deferred task trace persistence to registry during shutdown", map[string]any{
 			"error": err.Error(),
 		})
 	}
+	admissionCancel()
 
 	m.mu.Lock()
 	writer := m.writer
 	m.writer = nil
 	m.mu.Unlock()
 	if writer != nil {
-		if err := writer.Close(shutdownCtx); err != nil {
+		drainCtx, drainCancel := context.WithTimeout(
+			context.Background(),
+			drainTimeout,
+		)
+		if err := writer.Close(drainCtx); err != nil {
 			logger.WarnCF("evaltrace", "Trace writer did not drain before shutdown deadline", map[string]any{
 				"error": err.Error(),
 			})
 		}
+		drainCancel()
 	}
 	tasks.finishClose()
 }

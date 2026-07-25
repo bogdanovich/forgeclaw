@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
 func TestRegistryRestoresLoadedStateWhenStartupPruneWriteFails(t *testing.T) {
@@ -813,6 +815,204 @@ func TestRegistryTraceProtectionPrecedesTerminalMutationPruning(t *testing.T) {
 	candidate, ok = registry.Get("candidate")
 	if !ok || !candidate.TraceCapturePending {
 		t.Fatal("disabling capture released pending trace protection")
+	}
+}
+
+func TestRegistryTraceProtectionFailureKeepsPruningFailClosed(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistryWithOptions(store, Options{MaxRecords: 2})
+	for _, record := range []Record{
+		{
+			TaskID: "active-blocker", Status: StatusRunning,
+			DeliveryStatus: DeliveryPending,
+		},
+		{
+			TaskID: "existing-terminal", Status: StatusSucceeded,
+			DeliveryStatus: DeliveryDelivered,
+		},
+	} {
+		if err := registry.Upsert(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	realWrite := registry.writeAtomic
+	failOnce := true
+	registry.writeAtomic = func(path string, data []byte, mode os.FileMode) error {
+		if failOnce {
+			failOnce = false
+			return errors.New("injected pre-commit failure")
+		}
+		return realWrite(path, data, mode)
+	}
+	if err := registry.SetTraceCaptureProtection(true); err == nil {
+		t.Fatal("SetTraceCaptureProtection succeeded during injected failure")
+	}
+
+	if err := registry.Upsert(Record{
+		TaskID: "new-terminal", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryDelivered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, taskID := range []string{"existing-terminal", "new-terminal"} {
+		record, ok := registry.Get(taskID)
+		if !ok {
+			t.Fatalf("%s was pruned while protection installation was pending", taskID)
+		}
+		if !record.TraceCapturePending {
+			t.Fatalf("%s was not durably protected by the recovery mutation", taskID)
+		}
+	}
+	if registry.traceCaptureProtectionPending {
+		t.Fatal("successful recovery mutation left protection installation pending")
+	}
+	reloaded := NewRegistry(store)
+	for _, taskID := range []string{"existing-terminal", "new-terminal"} {
+		if record, ok := reloaded.Get(taskID); !ok || !record.TraceCapturePending {
+			t.Fatalf("reloaded %s = %#v, exists = %v", taskID, record, ok)
+		}
+	}
+}
+
+func TestRegistryTraceProtectionRetriesCommittedWrite(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "terminal", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryDelivered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	realWrite := registry.writeAtomic
+	writes := 0
+	registry.writeAtomic = func(path string, data []byte, mode os.FileMode) error {
+		writes++
+		if err := realWrite(path, data, mode); err != nil {
+			return err
+		}
+		if writes == 1 {
+			return &fileutil.CommittedWriteError{
+				Err: errors.New("injected directory sync failure"),
+			}
+		}
+		return nil
+	}
+	if err := registry.SetTraceCaptureProtection(true); !fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("SetTraceCaptureProtection error = %v", err)
+	}
+	if !registry.unsyncedWrite || !registry.traceCaptureProtectionPending {
+		t.Fatal("committed write failure was not retained for retry")
+	}
+	if err := registry.SetTraceCaptureProtection(true); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 2 {
+		t.Fatalf("write calls = %d, want 2", writes)
+	}
+	if registry.unsyncedWrite || registry.traceCaptureProtectionPending {
+		t.Fatal("successful retry did not confirm registry durability")
+	}
+	reloaded := NewRegistry(store)
+	if record, ok := reloaded.Get("terminal"); !ok || !record.TraceCapturePending {
+		t.Fatalf("durable protected record = %#v, exists = %v", record, ok)
+	}
+}
+
+func TestRegistryTracePendingEqualityRetriesCommittedWrite(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.Upsert(Record{
+		TaskID: "terminal", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryDelivered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := registry.Get("terminal")
+
+	realWrite := registry.writeAtomic
+	writes := 0
+	registry.writeAtomic = func(path string, data []byte, mode os.FileMode) error {
+		writes++
+		if err := realWrite(path, data, mode); err != nil {
+			return err
+		}
+		if writes == 1 {
+			return &fileutil.CommittedWriteError{
+				Err: errors.New("injected directory sync failure"),
+			}
+		}
+		return nil
+	}
+	if err := registry.SetTraceCapturePending(
+		record.TaskID,
+		record.GenerationID,
+		true,
+	); !fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("SetTraceCapturePending error = %v", err)
+	}
+	if err := registry.SetTraceCapturePending(
+		record.TaskID,
+		record.GenerationID,
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 2 || registry.unsyncedWrite {
+		t.Fatalf("writes = %d, unsynced = %v", writes, registry.unsyncedWrite)
+	}
+}
+
+func TestRegistryTraceConfirmationRetriesCommittedWrite(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
+	registry := NewRegistry(store)
+	if err := registry.SetTraceCaptureProtection(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Upsert(Record{
+		TaskID: "terminal", Status: StatusSucceeded,
+		DeliveryStatus: DeliveryDelivered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := registry.Get("terminal")
+
+	realWrite := registry.writeAtomic
+	writes := 0
+	registry.writeAtomic = func(path string, data []byte, mode os.FileMode) error {
+		writes++
+		if err := realWrite(path, data, mode); err != nil {
+			return err
+		}
+		if writes == 1 {
+			return &fileutil.CommittedWriteError{
+				Err: errors.New("injected directory sync failure"),
+			}
+		}
+		return nil
+	}
+	if _, confirmed, err := registry.ConfirmTraceCapturePersisted(
+		record.TaskID,
+		record.GenerationID,
+		record.LastEventSeq,
+	); confirmed || !fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("first confirmation = %v, error = %v", confirmed, err)
+	}
+	current, confirmed, err := registry.ConfirmTraceCapturePersisted(
+		record.TaskID,
+		record.GenerationID,
+		record.LastEventSeq,
+	)
+	if err != nil || !confirmed || current.TraceCapturePending {
+		t.Fatalf("retry confirmation = %v, record = %#v, error = %v", confirmed, current, err)
+	}
+	if writes != 2 || registry.unsyncedWrite {
+		t.Fatalf("writes = %d, unsynced = %v", writes, registry.unsyncedWrite)
+	}
+	reloaded := NewRegistry(store)
+	if record, ok := reloaded.Get("terminal"); !ok || record.TraceCapturePending {
+		t.Fatalf("reloaded confirmation = %#v, exists = %v", record, ok)
 	}
 }
 
