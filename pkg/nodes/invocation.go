@@ -111,6 +111,7 @@ func (request InvocationRequest) Validate() error {
 type ExecutionPlan struct {
 	InvocationRequest
 	Risk           Risk   `json:"risk"`
+	DescriptorHash string `json:"descriptor_hash"`
 	Executor       string `json:"executor"`
 	PolicyRevision string `json:"policy_revision"`
 	PreparedAt     int64  `json:"prepared_at"`
@@ -138,6 +139,10 @@ func PrepareExecutionPlan(
 			ErrInvalidInvocation,
 		)
 	}
+	descriptorHash, err := descriptor.Hash()
+	if err != nil {
+		return ExecutionPlan{}, err
+	}
 	if !validInvocationIdentifier(executor) || len(policyRevision) == 0 ||
 		len(policyRevision) > MaxPolicyRevisionLength || !idPattern.MatchString(policyRevision) {
 		return ExecutionPlan{}, fmt.Errorf("%w: malformed execution policy", ErrInvalidInvocation)
@@ -159,6 +164,7 @@ func PrepareExecutionPlan(
 	plan := ExecutionPlan{
 		InvocationRequest: request,
 		Risk:              descriptor.Risk,
+		DescriptorHash:    descriptorHash,
 		Executor:          executor,
 		PolicyRevision:    policyRevision,
 		PreparedAt:        preparedAt.Unix(),
@@ -176,7 +182,8 @@ func (plan ExecutionPlan) Validate() error {
 	if err := plan.InvocationRequest.Validate(); err != nil {
 		return err
 	}
-	if !plan.Risk.Valid() || !validInvocationIdentifier(plan.Executor) ||
+	if !plan.Risk.Valid() || !validSHA256Digest(plan.DescriptorHash) ||
+		!validInvocationIdentifier(plan.Executor) ||
 		len(plan.PolicyRevision) == 0 || len(plan.PolicyRevision) > MaxPolicyRevisionLength ||
 		!idPattern.MatchString(plan.PolicyRevision) {
 		return fmt.Errorf("%w: malformed execution policy", ErrInvalidInvocation)
@@ -340,7 +347,10 @@ func (policy LocalCommandPolicy) authorize(
 	if !advertised {
 		return fmt.Errorf("%w: command is not advertised by local runtime", ErrCommandDenied)
 	}
-	if descriptor.Name != plan.Command || descriptor.Risk != plan.Risk ||
+	descriptorHash, hashErr := descriptor.Hash()
+	if hashErr != nil ||
+		descriptor.Name != plan.Command || descriptor.Risk != plan.Risk ||
+		descriptorHash != plan.DescriptorHash ||
 		plan.PolicyRevision != policy.Revision {
 		return fmt.Errorf("%w: plan does not match current policy or descriptor", ErrCommandDenied)
 	}

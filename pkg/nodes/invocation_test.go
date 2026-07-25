@@ -42,6 +42,40 @@ func TestPrepareExecutionPlanCanonicalHash(t *testing.T) {
 	}
 }
 
+func TestExecutionPlanBindsCanonicalDescriptor(t *testing.T) {
+	descriptor := invocationDescriptor(RiskWrite)
+	plan, err := PrepareExecutionPlan(
+		invocationRequest(json.RawMessage(`{"argv":["git","status"]}`)),
+		descriptor,
+		"local",
+		"policy-1",
+		time.Unix(1, 0),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash, err := descriptor.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.DescriptorHash != wantHash {
+		t.Fatalf("descriptor hash = %q, want %q", plan.DescriptorHash, wantHash)
+	}
+
+	mutated := descriptor
+	mutated.OutputSchema = json.RawMessage(
+		`{"type":"object","properties":{"unexpected":{"type":"boolean"}}}`,
+	)
+	mutatedHash, err := mutated.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutatedHash == plan.DescriptorHash {
+		t.Fatal("valid descriptor schema mutation retained the approved hash")
+	}
+}
+
 func TestInvocationRequestRejectsNonCanonicalCatalogHash(t *testing.T) {
 	t.Parallel()
 
@@ -209,8 +243,8 @@ func TestExecutionPlanRejectsNumericPrecisionBypass(t *testing.T) {
 		plan.NodeID,
 		plan.Executor,
 		time.Unix(plan.PreparedAt, 0),
-	); !errors.Is(err, ErrInvalidInvocation) {
-		t.Fatalf("large integer Authorize() error = %v", err)
+	); !errors.Is(err, ErrCommandDenied) {
+		t.Fatalf("mismatched descriptor Authorize() error = %v", err)
 	}
 }
 
