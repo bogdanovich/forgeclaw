@@ -2296,6 +2296,43 @@ func TestBeginStream_FinalizeUsesForumThreadID(t *testing.T) {
 	assert.Equal(t, telego.ModeHTML, params.ParseMode)
 }
 
+func TestBeginStream_FinalizeChunksLegacyContentOverLimitAfterFooter(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			assert.Contains(t, url, "sendMessage")
+			assert.NotContains(t, url, "Draft")
+			return successResponseWithMessageID(t, callCount), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+
+	visibleContent := strings.Repeat("a", telegramTextLimit-4)
+	footer := "\n\nmodel: fallback"
+	finalContent := visibleContent + footer
+	require.Greater(t, len([]rune(finalContent)), telegramTextLimit)
+	require.NoError(t, streamer.Finalize(context.Background(), finalContent))
+
+	require.Greater(t, len(caller.calls), 1)
+	var delivered strings.Builder
+	for _, call := range caller.calls {
+		var params struct {
+			Text      string `json:"text"`
+			ParseMode string `json:"parse_mode"`
+		}
+		require.NoError(t, json.Unmarshal(call.Data.BodyRaw, &params))
+		assert.LessOrEqual(t, len([]rune(params.Text)), telegramTextLimit)
+		assert.Equal(t, telego.ModeHTML, params.ParseMode)
+		delivered.WriteString(params.Text)
+	}
+	assert.Equal(t, finalContent, delivered.String())
+}
+
 func TestBeginStream_RichMessagesUsesRichDraftAndFinalize(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {

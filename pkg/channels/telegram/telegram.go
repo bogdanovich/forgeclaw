@@ -2492,15 +2492,11 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 			useMarkdownV2: false,
 		}, true, false)
 	} else {
-		tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
-		tgMsg.MessageThreadID = s.threadID
-		tgMsg.ParseMode = telego.ModeHTML
-		_, err = s.bot.SendMessage(ctx, tgMsg)
-		if err != nil && shouldFallbackToPlainText(err) {
-			tgMsg.Text = content
-			tgMsg.ParseMode = ""
-			_, err = s.bot.SendMessage(ctx, tgMsg)
-		}
+		_, err = s.channel.sendTextChunks(ctx, content, sendChunkParams{
+			chatID:        s.chatID,
+			threadID:      s.threadID,
+			useMarkdownV2: false,
+		}, false, false)
 	}
 
 	if err != nil {
