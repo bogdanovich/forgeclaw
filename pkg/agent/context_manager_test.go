@@ -3,17 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -106,6 +105,13 @@ func TestResolveContextManager_Default(t *testing.T) {
 	cleanup := resetCMRegistry()
 	defer cleanup()
 
+	factory := func(_ json.RawMessage, _ *AgentLoop) (ContextManager, error) {
+		return &noopContextManager{}, nil
+	}
+	if err := RegisterContextManager("seahorse", factory); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
@@ -113,22 +119,21 @@ func TestResolveContextManager_Default(t *testing.T) {
 				ModelName:         "test-model",
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
-				ContextManager:    "", // default → legacy
+				ContextManager:    "",
 			},
 		},
 	}
 	al := newCMTestAgentLoop(cfg)
 
-	cm := al.contextManager
-	if cm == nil {
-		t.Fatal("expected non-nil context manager")
+	if al.contextManagerInitErr != nil {
+		t.Fatalf("default context manager failed: %v", al.contextManagerInitErr)
 	}
-	if _, ok := cm.(*legacyContextManager); !ok {
-		t.Fatalf("expected *legacyContextManager, got %T", cm)
+	if _, ok := al.contextManager.(*noopContextManager); !ok {
+		t.Fatalf("expected registered Seahorse manager, got %T", al.contextManager)
 	}
 }
 
-func TestResolveContextManager_ExplicitLegacy(t *testing.T) {
+func TestResolveContextManager_None(t *testing.T) {
 	cleanup := resetCMRegistry()
 	defer cleanup()
 
@@ -139,18 +144,21 @@ func TestResolveContextManager_ExplicitLegacy(t *testing.T) {
 				ModelName:         "test-model",
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
-				ContextManager:    "legacy",
+				ContextManager:    "none",
 			},
 		},
 	}
 	al := newCMTestAgentLoop(cfg)
 
-	if _, ok := al.contextManager.(*legacyContextManager); !ok {
-		t.Fatalf("expected *legacyContextManager, got %T", al.contextManager)
+	if al.contextManagerInitErr != nil {
+		t.Fatalf("none context manager failed: %v", al.contextManagerInitErr)
+	}
+	if _, ok := al.contextManager.(*noneContextManager); !ok {
+		t.Fatalf("expected *noneContextManager, got %T", al.contextManager)
 	}
 }
 
-func TestResolveContextManager_UnknownFallsBackToLegacy(t *testing.T) {
+func TestResolveContextManager_UnknownFailsClosed(t *testing.T) {
 	cleanup := resetCMRegistry()
 	defer cleanup()
 
@@ -167,8 +175,11 @@ func TestResolveContextManager_UnknownFallsBackToLegacy(t *testing.T) {
 	}
 	al := newCMTestAgentLoop(cfg)
 
-	if _, ok := al.contextManager.(*legacyContextManager); !ok {
-		t.Fatalf("expected fallback to *legacyContextManager, got %T", al.contextManager)
+	if al.contextManagerInitErr == nil {
+		t.Fatal("expected unknown context manager error")
+	}
+	if _, ok := al.contextManager.(*failedContextManager); !ok {
+		t.Fatalf("expected *failedContextManager, got %T", al.contextManager)
 	}
 }
 
@@ -225,9 +236,51 @@ func TestResolveContextManager_FactoryError(t *testing.T) {
 	}
 	al := newCMTestAgentLoop(cfg)
 
-	// Should fall back to legacy when factory returns error
-	if _, ok := al.contextManager.(*legacyContextManager); !ok {
-		t.Fatalf("expected fallback to *legacyContextManager on factory error, got %T", al.contextManager)
+	if !errors.Is(al.contextManagerInitErr, os.ErrPermission) {
+		t.Fatalf("context manager error = %v, want permission error", al.contextManagerInitErr)
+	}
+	if _, ok := al.contextManager.(*failedContextManager); !ok {
+		t.Fatalf("expected *failedContextManager, got %T", al.contextManager)
+	}
+}
+
+func TestNewAgentLoopCheckedReturnsContextManagerError(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Agents.Defaults.ContextManager = "missing"
+
+	al, err := NewAgentLoopChecked(cfg, bus.NewMessageBus(), &simpleMockProvider{response: "test"})
+	if err == nil || !strings.Contains(err.Error(), `unknown context manager "missing"`) {
+		t.Fatalf("NewAgentLoopChecked() error = %v", err)
+	}
+	if al != nil {
+		t.Fatalf("NewAgentLoopChecked() loop = %T, want nil", al)
+	}
+}
+
+func TestNoneContextManagerIsStatelessAndClearable(t *testing.T) {
+	cfg := testConfig(t)
+	al := newCMTestAgentLoop(cfg)
+	agent := al.registry.GetDefaultAgent()
+	agent.Sessions.SetHistory("session", []providers.Message{{Role: "user", Content: "stored"}})
+	agent.Sessions.SetSummary("session", "summary")
+
+	resp, err := al.contextManager.Assemble(t.Context(), &AssembleRequest{
+		Agent: agent, SessionKey: "session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.History) != 0 || resp.Summary != "" {
+		t.Fatalf("none Assemble() = %#v, want empty context", resp)
+	}
+	if err := al.contextManager.Clear(t.Context(), agent, "session"); err != nil {
+		t.Fatal(err)
+	}
+	if history := agent.Sessions.GetHistory("session"); len(history) != 0 {
+		t.Fatalf("history after Clear() = %#v", history)
+	}
+	if summary := agent.Sessions.GetSummary("session"); summary != "" {
+		t.Fatalf("summary after Clear() = %q", summary)
 	}
 }
 
@@ -235,328 +288,17 @@ func TestResolveContextManager_FactoryError(t *testing.T) {
 // Legacy Assemble tests
 // ---------------------------------------------------------------------------
 
-func TestLegacyAssemble_Passthrough(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	agent := al.registry.GetDefaultAgent()
-	if agent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	history := []providers.Message{
-		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "hi there"},
-	}
-	agent.Sessions.SetHistory("test-session", history)
-
-	resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
-		SessionKey: "test-session",
-		Budget:     8000,
-		MaxTokens:  4096,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.History) != len(history) {
-		t.Fatalf("expected %d messages, got %d", len(history), len(resp.History))
-	}
-	for i, msg := range resp.History {
-		if msg.Content != history[i].Content || msg.Role != history[i].Role {
-			t.Fatalf("message %d mismatch: want %+v, got %+v", i, history[i], msg)
-		}
-	}
-}
-
-func TestLegacyAssemble_EmptyHistory(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
-		SessionKey: "test-session",
-		Budget:     8000,
-		MaxTokens:  4096,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.History) != 0 {
-		t.Fatalf("expected empty messages, got %d", len(resp.History))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Legacy Compact overflow tests
 // ---------------------------------------------------------------------------
-
-func TestLegacyCompact_Overflow(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	defaultAgent := al.registry.GetDefaultAgent()
-	if defaultAgent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	history := []providers.Message{
-		{Role: "user", Content: "msg 1"},
-		{Role: "assistant", Content: "resp 1"},
-		{Role: "user", Content: "msg 2"},
-		{Role: "assistant", Content: "resp 2"},
-		{Role: "user", Content: "msg 3"},
-	}
-	defaultAgent.Sessions.SetHistory("session-overflow", history)
-
-	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
-		t,
-		al,
-		16,
-		runtimeevents.KindAgentContextCompress,
-	)
-	defer closeRuntimeEvents()
-
-	err := al.contextManager.Compact(context.Background(), &CompactRequest{
-		Agent:      defaultAgent,
-		SessionKey: "session-overflow",
-		Workspace:  defaultAgent.Workspace,
-		TraceScope: runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-overflow"),
-		Reason:     ContextCompressReasonRetry,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// After overflow compression, history should be shorter
-	newHistory := defaultAgent.Sessions.GetHistory("session-overflow")
-	if len(newHistory) >= len(history) {
-		t.Fatalf("expected compressed history, got %d messages (was %d)", len(newHistory), len(history))
-	}
-
-	// Summary should contain compression note
-	summary := defaultAgent.Sessions.GetSummary("session-overflow")
-	if !strings.Contains(summary, "Emergency compression") {
-		t.Fatalf("expected compression note in summary, got %q", summary)
-	}
-
-	// Event should carry the proactive reason
-	events := collectRuntimeEventStream(runtimeCh)
-	compressEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentContextCompress)
-	if !ok {
-		t.Fatal("expected context compress event")
-	}
-	payload, ok := compressEvt.Payload.(ContextCompressPayload)
-	if !ok {
-		t.Fatalf("expected ContextCompressPayload, got %T", compressEvt.Payload)
-	}
-	if payload.Reason != ContextCompressReasonRetry {
-		t.Fatalf("expected retry reason, got %q", payload.Reason)
-	}
-	wantScope := runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-overflow")
-	if got := compressEvt.Scope.TurnTraceScope(); got != wantScope {
-		t.Fatalf("compression trace scope = %#v", got)
-	}
-}
-
-func TestLegacyCompact_Overflow_ProactiveReason(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	defaultAgent := al.registry.GetDefaultAgent()
-	if defaultAgent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	history := []providers.Message{
-		{Role: "user", Content: "msg 1"},
-		{Role: "assistant", Content: "resp 1"},
-		{Role: "user", Content: "msg 2"},
-		{Role: "assistant", Content: "resp 2"},
-		{Role: "user", Content: "msg 3"},
-	}
-	defaultAgent.Sessions.SetHistory("session-proactive", history)
-
-	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
-		t,
-		al,
-		16,
-		runtimeevents.KindAgentContextCompress,
-	)
-	defer closeRuntimeEvents()
-
-	err := al.contextManager.Compact(context.Background(), &CompactRequest{
-		Agent:      defaultAgent,
-		SessionKey: "session-proactive",
-		Workspace:  defaultAgent.Workspace,
-		TraceScope: runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-proactive"),
-		Reason:     ContextCompressReasonProactive,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	events := collectRuntimeEventStream(runtimeCh)
-	compressEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentContextCompress)
-	if !ok {
-		t.Fatal("expected context compress event")
-	}
-	payload, ok := compressEvt.Payload.(ContextCompressPayload)
-	if !ok {
-		t.Fatalf("expected ContextCompressPayload, got %T", compressEvt.Payload)
-	}
-	if payload.Reason != ContextCompressReasonProactive {
-		t.Fatalf("expected proactive reason, got %q", payload.Reason)
-	}
-	wantScope := runtimeevents.NewTraceScope(defaultAgent.Workspace, "turn-proactive")
-	if got := compressEvt.Scope.TurnTraceScope(); got != wantScope {
-		t.Fatalf("compression trace scope = %#v", got)
-	}
-}
-
-func TestLegacyCompact_Overflow_TooShortToCompress(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	defaultAgent := al.registry.GetDefaultAgent()
-	if defaultAgent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	history := []providers.Message{
-		{Role: "user", Content: "only one"},
-	}
-	defaultAgent.Sessions.SetHistory("session-tiny", history)
-
-	err := al.contextManager.Compact(context.Background(), &CompactRequest{
-		Agent:      defaultAgent,
-		SessionKey: "session-tiny",
-		Reason:     ContextCompressReasonRetry,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// History should be unchanged (too short to compress)
-	newHistory := defaultAgent.Sessions.GetHistory("session-tiny")
-	if len(newHistory) != len(history) {
-		t.Fatalf("expected history unchanged, got %d messages (was %d)", len(newHistory), len(history))
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Legacy Compact post-turn tests
 // ---------------------------------------------------------------------------
 
-func TestLegacyCompact_PostTurn_BelowThreshold(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	defaultAgent := al.registry.GetDefaultAgent()
-	if defaultAgent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	// Small history, below summarization thresholds
-	history := []providers.Message{
-		{Role: "user", Content: "hi"},
-		{Role: "assistant", Content: "hello"},
-	}
-	defaultAgent.Sessions.SetHistory("session-small", history)
-
-	err := al.contextManager.Compact(context.Background(), &CompactRequest{
-		Agent:      defaultAgent,
-		SessionKey: "session-small",
-		Reason:     ContextCompressReasonSummarize,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// History should remain unchanged
-	newHistory := defaultAgent.Sessions.GetHistory("session-small")
-	if len(newHistory) != len(history) {
-		t.Fatalf("expected unchanged history, got %d messages (was %d)", len(newHistory), len(history))
-	}
-}
-
-func TestLegacyCompact_PostTurn_ExceedsMessageThreshold(t *testing.T) {
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:                 t.TempDir(),
-				ModelName:                 "test-model",
-				MaxTokens:                 4096,
-				MaxToolIterations:         10,
-				ContextWindow:             8000,
-				SummarizeMessageThreshold: 2,
-				SummarizeTokenPercent:     75,
-			},
-		},
-	}
-	msgBus := bus.NewMessageBus()
-	al := NewAgentLoop(cfg, msgBus, &simpleMockProvider{response: "summary"})
-
-	defaultAgent := al.registry.GetDefaultAgent()
-	if defaultAgent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	// 6 messages > threshold of 2
-	history := []providers.Message{
-		{Role: "user", Content: "q1"},
-		{Role: "assistant", Content: "a1"},
-		{Role: "user", Content: "q2"},
-		{Role: "assistant", Content: "a2"},
-		{Role: "user", Content: "q3"},
-		{Role: "assistant", Content: "a3"},
-	}
-	defaultAgent.Sessions.SetHistory("session-threshold", history)
-
-	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
-		t,
-		al,
-		16,
-		runtimeevents.KindAgentSessionSummarize,
-	)
-	defer closeRuntimeEvents()
-
-	err := al.contextManager.Compact(context.Background(), &CompactRequest{
-		Agent:      defaultAgent,
-		SessionKey: "session-threshold",
-		Reason:     ContextCompressReasonSummarize,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	summaryEvent := waitForRuntimeEvent(t, runtimeCh, 5*time.Second, func(evt runtimeevents.Event) bool {
-		return evt.Kind == runtimeevents.KindAgentSessionSummarize
-	})
-	if summaryEvent.Scope.TurnTraceScope().Complete() {
-		t.Fatalf("background summary has fabricated trace scope: %#v", summaryEvent.Scope)
-	}
-
-	newHistory := defaultAgent.Sessions.GetHistory("session-threshold")
-	if len(newHistory) >= len(history) {
-		t.Fatalf("expected summarization to reduce history from %d messages, got %d", len(history), len(newHistory))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Legacy Ingest tests
 // ---------------------------------------------------------------------------
-
-func TestLegacyIngest_NoOp(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	err := al.contextManager.Ingest(context.Background(), &IngestRequest{
-		SessionKey: "session-ingest",
-		Message:    providers.Message{Role: "user", Content: "test"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Mock ContextManager — verifies dispatch through AgentLoop
@@ -765,41 +507,6 @@ func TestClearCommandRoutedAgentCallsContextManagerClear(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// forceCompression edge cases (via legacy Compact)
-// ---------------------------------------------------------------------------
-
-func TestLegacyCompact_Overflow_SingleTurnKeepsLastUserMessage(t *testing.T) {
-	cfg := testConfig(t)
-	al := newCMTestAgentLoop(cfg)
-
-	defaultAgent := al.registry.GetDefaultAgent()
-	if defaultAgent == nil {
-		t.Fatal("expected default agent")
-	}
-
-	// History with only 2 messages — forceCompression should still handle it
-	history := []providers.Message{
-		{Role: "user", Content: "first question"},
-		{Role: "assistant", Content: "first answer"},
-	}
-	defaultAgent.Sessions.SetHistory("session-2msg", history)
-
-	err := al.contextManager.Compact(context.Background(), &CompactRequest{
-		SessionKey: "session-2msg",
-		Reason:     ContextCompressReasonRetry,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	newHistory := defaultAgent.Sessions.GetHistory("session-2msg")
-	// With 2 messages, forceCompression returns false (len <= 2), so no compression
-	if len(newHistory) != len(history) {
-		t.Fatalf("expected no compression for 2-message history, got %d", len(newHistory))
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -812,6 +519,29 @@ func (m *noopContextManager) Assemble(_ context.Context, req *AssembleRequest) (
 func (m *noopContextManager) Compact(_ context.Context, _ *CompactRequest) error { return nil }
 func (m *noopContextManager) Ingest(_ context.Context, _ *IngestRequest) error   { return nil }
 func (m *noopContextManager) Clear(_ context.Context, _ *AgentInstance, _ string) error {
+	return nil
+}
+
+type staticContextManager struct {
+	response *AssembleResponse
+}
+
+func (m *staticContextManager) Assemble(
+	_ context.Context,
+	_ *AssembleRequest,
+) (*AssembleResponse, error) {
+	return m.response, nil
+}
+
+func (m *staticContextManager) Compact(_ context.Context, _ *CompactRequest) error {
+	return nil
+}
+
+func (m *staticContextManager) Ingest(_ context.Context, _ *IngestRequest) error {
+	return nil
+}
+
+func (m *staticContextManager) Clear(_ context.Context, _ *AgentInstance, _ string) error {
 	return nil
 }
 
@@ -891,6 +621,7 @@ func testConfig(t *testing.T) *config.Config {
 				ModelName:         "test-model",
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
+				ContextManager:    "none",
 			},
 		},
 	}
@@ -1042,6 +773,9 @@ func TestComputeAssembledContextUsage_AllowsNilTools(t *testing.T) {
 		Role:    "user",
 		Content: "hello",
 	})
+	al.contextManager = &staticContextManager{response: &AssembleResponse{
+		History: agent.Sessions.GetHistory("ctx-nil-tools"),
+	}}
 
 	got, gotCount, fitsBudget := computeAssembledContextUsage(
 		context.Background(),

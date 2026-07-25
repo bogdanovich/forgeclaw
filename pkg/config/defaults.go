@@ -51,6 +51,7 @@ func DefaultConfig() *Config {
 				},
 				FinalTurnRenderMode: "",
 				SplitOnMarker:       false,
+				ContextManager:      "seahorse",
 				MaxLLMRetries:       2,
 				LLMRetryBackoffSecs: 2,
 			},

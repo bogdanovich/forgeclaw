@@ -143,6 +143,7 @@ func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
 func TestSetupSafeRestartToolDisabledDoesNotAffectReload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 	msgBus := bus.NewMessageBus()
 	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
 
@@ -168,6 +169,7 @@ func TestSetupSafeRestartToolDisabledDoesNotAffectReload(t *testing.T) {
 func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
 		Enabled:             true,
 		ServiceManager:      "systemd-user",
@@ -183,6 +185,7 @@ func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 
 	reloadCfg := config.DefaultConfig()
 	reloadCfg.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloadCfg.Agents.Defaults.ContextManager = "none"
 	reloadCfg.Gateway.SafeRestart = cfg.Gateway.SafeRestart
 	err := al.ReloadProviderAndConfig(
 		context.Background(),
@@ -204,6 +207,7 @@ func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 func TestNodeDiscoveryToolTracksNodeEnablementAcrossReload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
 	cfg.Nodes.Enabled = true
 	msgBus := bus.NewMessageBus()
 	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
@@ -218,6 +222,7 @@ func TestNodeDiscoveryToolTracksNodeEnablementAcrossReload(t *testing.T) {
 
 	reloadCfg := config.DefaultConfig()
 	reloadCfg.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+	reloadCfg.Agents.Defaults.ContextManager = "none"
 	if err := al.ReloadProviderAndConfig(
 		context.Background(),
 		&startupBlockedProvider{reason: "not used"},

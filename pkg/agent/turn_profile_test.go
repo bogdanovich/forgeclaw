@@ -112,6 +112,10 @@ func TestTurnProfile_DisabledPreservesDefaultHistoryAndPrompt(t *testing.T) {
 	}
 	agent.Sessions.SetHistory(sessionKey, initialHistory)
 	agent.Sessions.SetSummary(sessionKey, "old summary")
+	al.contextManager = &staticContextManager{response: &AssembleResponse{
+		History: initialHistory,
+		Summary: "old summary",
+	}}
 
 	got, err := al.runAgentLoop(context.Background(), agent, processOptions{
 		SessionKey:      sessionKey,

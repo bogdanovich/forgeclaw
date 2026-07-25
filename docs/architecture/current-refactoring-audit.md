@@ -69,24 +69,13 @@ Recommended direction:
 
 ### Context Manager Migration
 
-The runtime currently defaults to the legacy context manager when
-`agents.defaults.context_manager` is empty or set to `legacy`, and also falls
-back to legacy when a configured manager is unknown or fails to initialize.
-Seahorse is separately registered and has its own reconciliation path.
+Resolved in the follow-up refactor:
 
-If production/local usage no longer depends on legacy, removing it is reasonable,
-but it is a migration rather than a cleanup. The important product decision is
-what happens when Seahorse is disabled or unavailable.
-
-Recommended direction:
-
-- Make Seahorse the explicit default.
-- Replace fallback-to-legacy with fail-closed configuration errors, or provide a
-  deliberately named `none`/`stateless` mode if disabling context management is
-  required.
-- Remove `legacy` from config examples and tests after the fallback policy is
-  changed.
-- Add migration notes for existing configs that omit `context_manager`.
+- Seahorse is the explicit default.
+- `none` is the deliberately stateless mode.
+- The legacy implementation and fallback behavior are removed.
+- Unknown managers and initialization failures stop startup.
+- Migration guidance documents the prompt and persistence semantics.
 
 ### Session Persistence Error Handling
 
@@ -118,9 +107,8 @@ Recommended direction:
 
 1. Type outbound metadata and add channel-independent footer/usage contract
    tests.
-2. Migrate context manager defaults away from legacy, deciding whether disabled
-   context means fail-closed or a named stateless mode.
+2. Migrate context manager defaults away from legacy. Completed with Seahorse
+   as the default and `none` as the named stateless mode.
 3. Unify delivery retry results across text, media, and Telegram chunks.
 4. Split the largest channel manager responsibilities.
 5. Replace `turnExecution` phase mutation with typed phase outcomes.
-

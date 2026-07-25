@@ -484,6 +484,25 @@ func (d *AgentDefaults) validateResultRetentionOwnership() error {
 	return nil
 }
 
+func (d *AgentDefaults) validateContextManagerSelection() error {
+	if strings.EqualFold(strings.TrimSpace(d.ContextManager), "legacy") {
+		return fmt.Errorf(
+			"agents.defaults.context_manager %q is no longer supported; use %q or %q",
+			d.ContextManager,
+			"seahorse",
+			"none",
+		)
+	}
+	if strings.EqualFold(strings.TrimSpace(d.ContextManager), "none") &&
+		len(d.ContextManagerConfig) > 0 {
+		return fmt.Errorf(
+			"agents.defaults.context_manager_config requires context_manager %q",
+			"seahorse",
+		)
+	}
+	return nil
+}
+
 // GetToolFeedbackMaxArgsLength returns the max visible text length for tool argument previews.
 func (d *AgentDefaults) GetToolFeedbackMaxArgsLength() int {
 	if d.ToolFeedback.MaxArgsLength > 0 {
@@ -1697,6 +1716,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid tools.result_retention: %w", err)
 	}
+	if err = cfg.Agents.Defaults.validateContextManagerSelection(); err != nil {
+		return nil, err
+	}
 	if err = cfg.Agents.Defaults.validateResultRetentionOwnership(); err != nil {
 		return nil, err
 	}
@@ -1921,6 +1943,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid tools.result_retention: %w", err)
+	}
+	if err = cfg.Agents.Defaults.validateContextManagerSelection(); err != nil {
+		return nil, err
 	}
 	if err = cfg.Agents.Defaults.validateResultRetentionOwnership(); err != nil {
 		return nil, err

@@ -51,6 +51,7 @@ type AgentLoop struct {
 	// Runtime state
 	running                    atomic.Bool
 	contextManager             ContextManager
+	contextManagerInitErr      error
 	fallback                   *providers.FallbackChain
 	modelExecution             *modelExecutionManager
 	channelManager             interfaces.ChannelManager
@@ -174,6 +175,9 @@ const (
 // registerSharedTools registers tools that are shared across all agents (web, message, spawn).
 
 func (al *AgentLoop) Run(ctx context.Context) error {
+	if al.contextManagerInitErr != nil {
+		return al.contextManagerInitErr
+	}
 	al.running.Store(true)
 
 	if err := al.ensureHooksInitialized(ctx); err != nil {
@@ -244,6 +248,11 @@ func (al *AgentLoop) Close() {
 				})
 		}
 	}
+	if err := closeContextManager(al.contextManager); err != nil {
+		logger.ErrorCF("agent", "Failed to close context manager", map[string]any{
+			"error": err.Error(),
+		})
+	}
 	al.GetRegistry().Close()
 	if al.hooks != nil {
 		al.hooks.Close()
@@ -288,6 +297,10 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	}
 	if cfg == nil {
 		return fmt.Errorf("config cannot be nil")
+	}
+	if _, stateless := al.contextManager.(*noneContextManager); !stateless ||
+		contextManagerConfigName(cfg) != "none" {
+		return fmt.Errorf("context manager changes require restart; hot reload is supported only for none")
 	}
 
 	// Create new registry with updated config and provider

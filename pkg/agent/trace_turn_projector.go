@@ -579,6 +579,7 @@ func runtimeEventRecord(
 				Reason:         string(value.Reason),
 				BeforeMessages: value.DroppedMessages + value.RemainingMessages,
 				AfterMessages:  value.RemainingMessages,
+				TokensSaved:    value.TokensSaved,
 			}
 		case SessionSummarizePayload:
 			payload = evaltrace.ContextPayload{

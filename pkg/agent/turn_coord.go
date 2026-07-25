@@ -10,7 +10,6 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -124,31 +123,33 @@ func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {
 	return al.turnAbortController().abortTurn(ts)
 }
 
-func (al *AgentLoop) resolveContextManager() ContextManager {
-	name := al.cfg.Agents.Defaults.ContextManager
-	if name == "" || name == "legacy" {
-		return &legacyContextManager{al: al}
+func (al *AgentLoop) resolveContextManager() (ContextManager, error) {
+	name := contextManagerConfigName(al.cfg)
+	if name == "none" {
+		return &noneContextManager{}, nil
 	}
 	factory, ok := lookupContextManager(name)
 	if !ok {
-		logger.WarnCF("agent", "Unknown context manager, falling back to legacy", map[string]any{
-			"name": name,
-		})
-		return &legacyContextManager{al: al}
+		err := fmt.Errorf("unknown context manager %q", name)
+		return &failedContextManager{err: err}, err
 	}
 	cm, err := factory(al.cfg.Agents.Defaults.ContextManagerConfig, al)
 	if err != nil {
-		logger.WarnCF(
-			"agent",
-			"Failed to create context manager, falling back to legacy",
-			map[string]any{
-				"name":  name,
-				"error": err.Error(),
-			},
-		)
-		return &legacyContextManager{al: al}
+		wrapped := fmt.Errorf("create context manager %q: %w", name, err)
+		return &failedContextManager{err: wrapped}, wrapped
 	}
-	return cm
+	return cm, nil
+}
+
+func contextManagerConfigName(cfg *config.Config) string {
+	if cfg == nil {
+		return "seahorse"
+	}
+	name := strings.ToLower(strings.TrimSpace(cfg.Agents.Defaults.ContextManager))
+	if name == "" {
+		name = "seahorse"
+	}
+	return name
 }
 
 func (al *AgentLoop) askSideQuestion(

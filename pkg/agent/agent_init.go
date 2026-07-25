@@ -93,7 +93,7 @@ func NewAgentLoop(
 	}
 	al.hooks = NewHookManager(al.runtimeEvents.Channel())
 	configureHookManagerFromConfig(al.hooks, cfg)
-	al.contextManager = al.resolveContextManager()
+	al.contextManager, al.contextManagerInitErr = al.resolveContextManager()
 
 	// Register shared tools to all agents (now that al is created)
 	if !al.isolatedToolBootstrap {
@@ -101,6 +101,22 @@ func NewAgentLoop(
 	}
 
 	return al
+}
+
+// NewAgentLoopChecked constructs an AgentLoop and returns context-manager
+// initialization failures to startup callers.
+func NewAgentLoopChecked(
+	cfg *config.Config,
+	msgBus *bus.MessageBus,
+	provider providers.LLMProvider,
+	opts ...AgentLoopOption,
+) (*AgentLoop, error) {
+	al := NewAgentLoop(cfg, msgBus, provider, opts...)
+	if al.contextManagerInitErr != nil {
+		al.Close()
+		return nil, al.contextManagerInitErr
+	}
+	return al, nil
 }
 
 func registerSharedTools(

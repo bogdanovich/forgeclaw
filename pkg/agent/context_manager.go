@@ -12,7 +12,7 @@ import (
 
 // ContextManager manages conversation context via a pluggable strategy.
 // Exactly ONE ContextManager is active per AgentLoop, selected by config.
-// The default ("legacy") preserves current summarization behavior.
+// Seahorse is the default; "none" explicitly disables stored context assembly.
 type ContextManager interface {
 	// Assemble builds budget-aware context from the ContextManager's own storage.
 	// Called before BuildMessages. Returns assembled messages ready for LLM.
@@ -30,6 +30,17 @@ type ContextManager interface {
 	// Clear removes all stored context for a session (messages, summaries, etc.).
 	// Called when the user issues /clear or /reset.
 	Clear(ctx context.Context, agent *AgentInstance, sessionKey string) error
+}
+
+type contextManagerCloser interface {
+	Close() error
+}
+
+func closeContextManager(cm ContextManager) error {
+	if closer, ok := cm.(contextManagerCloser); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // AssembleRequest is the input to Assemble.
