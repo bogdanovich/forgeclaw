@@ -329,6 +329,7 @@ type sendTextChunkResult struct {
 	messageIDs []string
 	remaining  []string
 	nextParams sendChunkParams
+	retryAfter time.Duration
 	err        error
 }
 
@@ -379,6 +380,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 						messageIDs: messageIDs,
 						remaining:  append([]string{chunk}, queue...),
 						nextParams: baseParams,
+						retryAfter: telegramRetryDelayFor(err),
 						err:        err,
 					}
 				}
@@ -435,6 +437,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 						messageIDs: messageIDs,
 						remaining:  append([]string{chunk}, queue...),
 						nextParams: baseParams,
+						retryAfter: telegramRetryDelayFor(err),
 						err:        err,
 					}
 				}
@@ -459,6 +462,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 				messageIDs: messageIDs,
 				remaining:  append([]string{chunk}, queue...),
 				nextParams: baseParams,
+				retryAfter: telegramRetryDelayFor(err),
 				err:        err,
 			}
 		}
@@ -551,7 +555,7 @@ func (c *TelegramChannel) sendRichChunk(
 			"reply_to":  fallbackParams.replyToID,
 			"error":     err.Error(),
 		})
-		return "", fmt.Errorf("telegram send rich message: %w", channels.ErrTemporary)
+		return "", fmt.Errorf("telegram send rich message: %w: %w", channels.ErrTemporary, err)
 	}
 
 	return strconv.Itoa(pMsg.MessageID), nil
@@ -588,7 +592,7 @@ func (c *TelegramChannel) sendChunk(
 			tgMsg.ParseMode = ""
 			pMsg, err = c.bot.SendMessage(ctx, tgMsg)
 			if err != nil {
-				return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+				return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
 			}
 		} else {
 			logger.WarnCF("telegram", "sendMessage failed", map[string]any{
@@ -598,7 +602,7 @@ func (c *TelegramChannel) sendChunk(
 				"parse_mode": telegramParseModeName(params.useMarkdownV2),
 				"error":      err.Error(),
 			})
-			return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+			return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
 		}
 	}
 
@@ -2045,6 +2049,15 @@ func telegramFileMetadataRetryDelayFor(err error) time.Duration {
 	return telegramFileMetadataRetryDelay
 }
 
+func telegramRetryDelayFor(err error) time.Duration {
+	var apiErr *ta.Error
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == http.StatusTooManyRequests && apiErr.Parameters != nil &&
+		apiErr.Parameters.RetryAfter > 0 {
+		return time.Duration(apiErr.Parameters.RetryAfter) * time.Second
+	}
+	return 0
+}
+
 func parseContent(text string, useMarkdownV2 bool) string {
 	if useMarkdownV2 {
 		return markdownToTelegramMarkdownV2(text)
@@ -2567,6 +2580,20 @@ func (s *telegramStreamer) finalizeTextChunks(
 		baseParams = result.nextParams
 		if len(queue) == 0 {
 			break
+		}
+		if result.retryAfter > 0 {
+			timer := time.NewTimer(result.retryAfter)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return messageIDs, errors.Join(err, ctx.Err())
+			}
 		}
 	}
 	return messageIDs, err
