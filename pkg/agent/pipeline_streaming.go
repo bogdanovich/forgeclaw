@@ -358,7 +358,7 @@ func streamingConfigFromDecodedSettings(decoded any) (config.StreamingConfig, bo
 	if !value.IsValid() {
 		return config.StreamingConfig{}, false
 	}
-	if value.Kind() == reflect.Ptr {
+	if value.Kind() == reflect.Pointer {
 		if value.IsNil() {
 			return config.StreamingConfig{}, false
 		}

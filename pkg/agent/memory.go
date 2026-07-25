@@ -149,7 +149,8 @@ func (ms *MemoryStore) recentDailyPaths(days int) []string {
 }
 
 func (ms *MemoryStore) promptSourcePaths() []string {
-	paths := []string{ms.memoryFile}
+	paths := make([]string, 1, 1+ms.prompt.EffectiveRecentDays())
+	paths[0] = ms.memoryFile
 	return append(paths, ms.recentDailyPaths(ms.prompt.EffectiveRecentDays())...)
 }
 

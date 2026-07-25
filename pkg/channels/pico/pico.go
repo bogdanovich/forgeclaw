@@ -65,17 +65,11 @@ var allowedInlineImageMIMETypes = map[string]struct{}{
 }
 
 func outboundMessageIsThought(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), MessageKindThought)
+	return bus.OutboundMetadataFromMessage(msg).IsThought()
 }
 
 func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), MessageKindToolCalls)
+	return bus.OutboundMetadataFromMessage(msg).IsToolCalls()
 }
 
 func (pc *picoConn) write(ctx context.Context, writeFn func() error) error {
