@@ -59,6 +59,7 @@ func TestNodeAdmissionWorkspaceChangeWaitsForSuccessfulDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldRegistryPath := runtime.registryPath
+	oldSource := &nodeDiscoverySource{runtime: runtime, registryPath: oldRegistryPath}
 
 	disconnectCalls := 0
 	release, err := runtime.sessions.Claim(
@@ -87,6 +88,12 @@ func TestNodeAdmissionWorkspaceChangeWaitsForSuccessfulDrain(t *testing.T) {
 	if runtime.handler == nil || runtime.registryPath != oldRegistryPath || runtime.mounted || routes.handler != nil {
 		t.Fatal("failed drain discarded the closing authority runtime")
 	}
+	if _, _, lookupErr := oldSource.Lookup("node_test"); !errors.Is(
+		lookupErr,
+		errNodeDiscoveryAuthorityUnavailable,
+	) {
+		t.Fatalf("failed drain left old discovery authority readable: %v", lookupErr)
+	}
 	if err := runtime.Reconcile(cfg); err != nil {
 		t.Fatalf("workspace change did not recover after drain retry: %v", err)
 	}
@@ -98,6 +105,44 @@ func TestNodeAdmissionWorkspaceChangeWaitsForSuccessfulDrain(t *testing.T) {
 type testNodeConnection struct{}
 
 func (*testNodeConnection) Close() error { return nil }
+
+func TestNodeDiscoverySourceBindsWorkspaceAuthority(t *testing.T) {
+	oldPath := filepath.Join(t.TempDir(), "old", "registry.json")
+	registry, err := nodes.NewFileRegistry(oldPath, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &nodeAdmissionRuntime{
+		registry:     registry,
+		registryPath: oldPath,
+		mounted:      true,
+	}
+	oldSource := &nodeDiscoverySource{runtime: runtime, registryPath: oldPath}
+	if _, found, lookupErr := oldSource.Lookup("missing"); lookupErr != nil || found {
+		t.Fatalf("active authority lookup = found %v, error %v", found, lookupErr)
+	}
+
+	newSource := &nodeDiscoverySource{
+		runtime:      runtime,
+		registryPath: filepath.Join(t.TempDir(), "new", "registry.json"),
+	}
+	if _, _, lookupErr := newSource.Lookup("missing"); !errors.Is(
+		lookupErr,
+		errNodeDiscoveryAuthorityUnavailable,
+	) {
+		t.Fatalf("cross-workspace lookup error = %v", lookupErr)
+	}
+
+	runtime.registryMu.Lock()
+	runtime.mounted = false
+	runtime.registryMu.Unlock()
+	if _, _, lookupErr := oldSource.Lookup("missing"); !errors.Is(
+		lookupErr,
+		errNodeDiscoveryAuthorityUnavailable,
+	) {
+		t.Fatalf("inactive authority lookup error = %v", lookupErr)
+	}
+}
 
 func TestServiceShutdownClosesNodeAdmissionOutsideReload(t *testing.T) {
 	routes := &fakeNodeAdmissionRoutes{}

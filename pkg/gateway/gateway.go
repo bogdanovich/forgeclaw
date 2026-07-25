@@ -49,6 +49,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/netbind"
+	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/pid"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/state"
@@ -504,6 +505,25 @@ func setupDeployTool(cfg *config.Config, agentLoop *agent.AgentLoop) error {
 	})
 }
 
+func setupNodeDiscoveryTool(
+	cfg *config.Config,
+	agentLoop *agent.AgentLoop,
+	runtime *nodeAdmissionRuntime,
+) error {
+	if runtime == nil {
+		return nil
+	}
+	return agentLoop.RegisterRuntimeTool("nodes", func(reloadCfg *config.Config) (tools.Tool, error) {
+		if reloadCfg == nil || !reloadCfg.Nodes.Enabled {
+			return nil, nil
+		}
+		return tools.NewNodeDiscoveryTool(reloadCfg, &nodeDiscoverySource{
+			runtime:      runtime,
+			registryPath: nodes.RegistryPath(reloadCfg.WorkspacePath()),
+		}), nil
+	})
+}
+
 func newGatewayRestartToolFromConfig(
 	cfg *config.Config,
 	msgBus *bus.MessageBus,
@@ -672,6 +692,9 @@ func setupAndStartServices(
 	runningServices.NodeAdmission, err = setupNodeAdmission(cfg, runningServices.ChannelManager)
 	if err != nil {
 		return nil, fmt.Errorf("error setting up node admission: %w", err)
+	}
+	if err = setupNodeDiscoveryTool(cfg, agentLoop, runningServices.NodeAdmission); err != nil {
+		return nil, fmt.Errorf("error setting up node discovery tool: %w", err)
 	}
 
 	// Capture durable work before channel ingress starts, then replay the exact
@@ -924,6 +947,9 @@ func restartServices(
 	}
 	if err != nil {
 		return fmt.Errorf("error reloading node admission: %w", err)
+	}
+	if err = setupNodeDiscoveryTool(cfg, al, runningServices.NodeAdmission); err != nil {
+		return fmt.Errorf("error reloading node discovery tool: %w", err)
 	}
 	fmt.Println("  ✓ Channels restarted.")
 
