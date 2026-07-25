@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -825,16 +826,17 @@ func TestAgentLoopCloseClosesSeahorseEngine(t *testing.T) {
 func TestSeahorseContextManagerIsolatesAgentRuntimes(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.ContextManager = "seahorse"
+	sharedWorkspace := t.TempDir()
 	cfg.Agents.List = []config.AgentConfig{
 		{
 			ID:        "main",
 			Default:   true,
-			Workspace: t.TempDir(),
+			Workspace: sharedWorkspace,
 			Model:     &config.AgentModelConfig{Primary: "model-main"},
 		},
 		{
 			ID:        "support",
-			Workspace: t.TempDir(),
+			Workspace: sharedWorkspace,
 			Model:     &config.AgentModelConfig{Primary: "model-support"},
 		},
 	}
@@ -866,12 +868,21 @@ func TestSeahorseContextManagerIsolatesAgentRuntimes(t *testing.T) {
 	}
 	mainAgent := NewAgentInstance(&cfg.Agents.List[0], &cfg.Agents.Defaults, cfg, mainProvider)
 	supportAgent := NewAgentInstance(&cfg.Agents.List[1], &cfg.Agents.Defaults, cfg, supportProvider)
+	mainAgent.Sessions = session.NewSessionManager("")
+	supportAgent.Sessions = session.NewSessionManager("")
 	registry := &AgentRegistry{
 		cfg: cfg,
 		agents: map[string]*AgentInstance{
 			mainAgent.ID:    mainAgent,
 			supportAgent.ID: supportAgent,
 		},
+	}
+	dbPaths := seahorseAgentDBPaths(registry, mainAgent.ID)
+	if dbPaths[mainAgent.ID] != filepath.Join(sharedWorkspace, "sessions", "seahorse.db") {
+		t.Fatalf("main DB path = %q", dbPaths[mainAgent.ID])
+	}
+	if dbPaths[supportAgent.ID] != filepath.Join(sharedWorkspace, "sessions", "seahorse-support.db") {
+		t.Fatalf("support DB path = %q", dbPaths[supportAgent.ID])
 	}
 	al := &AgentLoop{cfg: cfg, registry: registry}
 	managerValue, managerErr := newSeahorseContextManager(nil, al)
@@ -884,8 +895,8 @@ func TestSeahorseContextManagerIsolatesAgentRuntimes(t *testing.T) {
 	const sessionKey = "shared-session-key"
 	mainHistory := []providers.Message{{Role: "user", Content: "main-only context"}}
 	supportHistory := []providers.Message{{Role: "user", Content: "support-only context"}}
-	mainAgent.Sessions.SetHistory(sessionKey, mainHistory)
-	supportAgent.Sessions.SetHistory(sessionKey, supportHistory)
+	mainAgent.Sessions.AddFullMessage(sessionKey, mainHistory[0])
+	supportAgent.Sessions.AddFullMessage(sessionKey, supportHistory[0])
 	if err := mainAgent.Sessions.Save(sessionKey); err != nil {
 		t.Fatal(err)
 	}
@@ -916,6 +927,18 @@ func TestSeahorseContextManagerIsolatesAgentRuntimes(t *testing.T) {
 	}
 	if len(supportContext.History) != 1 || supportContext.History[0].Content != "support-only context" {
 		t.Fatalf("support context = %#v", supportContext.History)
+	}
+	mainContext, err = manager.Assemble(t.Context(), &AssembleRequest{
+		Agent:      mainAgent,
+		SessionKey: sessionKey,
+		Budget:     2_000,
+		MaxTokens:  100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mainContext.History) != 1 || mainContext.History[0].Content != "main-only context" {
+		t.Fatalf("main context after support reconciliation = %#v", mainContext.History)
 	}
 
 	for _, agent := range []*AgentInstance{mainAgent, supportAgent} {
