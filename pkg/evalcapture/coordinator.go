@@ -78,11 +78,12 @@ type projectionID struct {
 }
 
 type projectionState struct {
-	phase      projectionPhase
-	revision   uint64
-	receipt    string
-	retryAt    time.Time
-	generation uint64
+	phase       projectionPhase
+	revision    uint64
+	receipt     string
+	retryAt     time.Time
+	generation  uint64
+	mustPersist bool
 }
 
 type sourceRegistration struct {
@@ -242,7 +243,9 @@ func (c *Coordinator) Request(sourceID, key string) error {
 			Class: ClassCritical,
 		}
 	}
-	c.states[id] = &projectionState{phase: projectionNeedsLoad, generation: 1}
+	c.states[id] = &projectionState{
+		phase: projectionNeedsLoad, generation: 1,
+	}
 	c.signalLocked()
 	return nil
 }
@@ -285,9 +288,15 @@ func (c *Coordinator) Stats() CoordinatorStats {
 // Close stops new work, gives durable sources a bounded opportunity to reach
 // writer admission and confirmation, drains the shared writer with a separate
 // deadline, then leaves any unfinished source markers for restart recovery.
-func (c *Coordinator) Close(admissionCtx, drainCtx context.Context) error {
+func (c *Coordinator) Close(
+	admissionCtx context.Context,
+	drainTimeout time.Duration,
+) error {
 	if c == nil {
 		return nil
+	}
+	if drainTimeout <= 0 {
+		drainTimeout = defaultProjectionRetryDelay
 	}
 	c.mu.Lock()
 	if c.closed {
@@ -301,6 +310,12 @@ func (c *Coordinator) Close(admissionCtx, drainCtx context.Context) error {
 	c.signalLocked()
 	c.mu.Unlock()
 
+	admissionErr := c.waitIdle(admissionCtx)
+	drainCtx, cancelDrain := context.WithTimeout(
+		context.Background(),
+		drainTimeout,
+	)
+	defer cancelDrain()
 	cancelAtDrainDeadline := make(chan struct{})
 	go func() {
 		select {
@@ -309,7 +324,6 @@ func (c *Coordinator) Close(admissionCtx, drainCtx context.Context) error {
 		case <-cancelAtDrainDeadline:
 		}
 	}()
-	admissionErr := c.waitIdle(admissionCtx)
 	writerErr := c.writer.Close(drainCtx)
 	c.signal()
 	confirmErr := c.waitIdle(drainCtx)
@@ -485,7 +499,9 @@ func (c *Coordinator) scanSource(
 			c.recoverAt[sourceID] = time.Time{}
 			break
 		}
-		c.states[id] = &projectionState{phase: projectionNeedsLoad, generation: 1}
+		c.states[id] = &projectionState{
+			phase: projectionNeedsLoad, generation: 1, mustPersist: true,
+		}
 	}
 	if len(keys) >= limit && !stopping {
 		c.recoverAt[sourceID] = time.Now().Add(c.retryDelay)
@@ -524,7 +540,7 @@ func (c *Coordinator) processLoad(
 	}
 	state.revision = candidate.Revision
 	state.retryAt = time.Time{}
-	if !candidate.Persist {
+	if !candidate.Persist && !state.mustPersist {
 		state.phase = projectionNeedsConfirm
 		state.generation++
 		c.signalLocked()
@@ -619,9 +635,11 @@ func (c *Coordinator) observeWriterEvent(event Event) {
 	if event.Kind == EventPersisted {
 		state.phase = projectionNeedsConfirm
 		state.retryAt = time.Time{}
+		state.mustPersist = false
 	} else {
 		state.phase = projectionNeedsLoad
 		state.retryAt = time.Now().Add(c.retryDelay)
+		state.mustPersist = true
 	}
 	c.signalLocked()
 }

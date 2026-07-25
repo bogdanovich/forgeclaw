@@ -38,8 +38,6 @@ type traceCaptureSettings struct {
 
 type activeTraceCapture struct {
 	builder         *evalcapture.TraceBuilder
-	submissionID    string
-	forcePersist    bool
 	turnID          string
 	workspace       string
 	startedAt       time.Time

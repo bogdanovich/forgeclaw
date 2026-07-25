@@ -3,1093 +3,381 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/evalcapture"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/fileutil"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
-func TestTaskTraceProjectorSeparatesIdenticalIDsAcrossWorkspaces(t *testing.T) {
-	workspaceA, workspaceB := t.TempDir(), t.TempDir()
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(traceTestConfig(workspaceA), eventBus)
-	t.Cleanup(func() {
-		manager.close()
-		_ = eventBus.Close()
-	})
-	registryA := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspaceA))
-	registryB := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspaceB))
-	manager.attachTaskRegistry(workspaceA, registryA)
-	manager.attachTaskRegistry(workspaceB, registryB)
-
-	finishTaskForTrace(t, registryA, "shared-task", "session-a", 0)
-	finishTaskForTrace(t, registryB, "shared-task", "session-b", 0)
-
-	traceA := readCapturedTrace(t, waitForTraceFile(t, workspaceA))
-	traceB := readCapturedTrace(t, waitForTraceFile(t, workspaceB))
-	if traceA.TraceID == traceB.TraceID {
-		t.Fatalf("workspace traces share id %q", traceA.TraceID)
+func TestTaskTraceProjectionKeyRoundTrip(t *testing.T) {
+	taskID := "task.with spaces/and:punctuation"
+	generationID := "generation.with spaces/and:punctuation"
+	key := encodeTaskTraceProjectionKey(taskID, generationID)
+	gotTask, gotGeneration, err := decodeTaskTraceProjectionKey(key)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if traceA.Metadata.SessionHash == traceB.Metadata.SessionHash {
-		t.Fatalf("workspace traces share session hash %q", traceA.Metadata.SessionHash)
+	if gotTask != taskID || gotGeneration != generationID {
+		t.Fatalf("decoded key = (%q, %q)", gotTask, gotGeneration)
+	}
+	for _, invalid := range []string{"", "one-part", ".missing", "missing."} {
+		if _, _, err := decodeTaskTraceProjectionKey(invalid); err == nil {
+			t.Fatalf("decodeTaskTraceProjectionKey(%q) succeeded", invalid)
+		}
 	}
 }
 
-func TestTaskTraceProjectorReconcilesTerminalSnapshotWithoutNewEvent(t *testing.T) {
+func TestTaskTraceSourcePendingIsBoundedAndTerminalOnly(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	finishTaskForTrace(t, registry, "terminal-before-attach", "session", 0)
-
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	t.Cleanup(func() {
-		manager.close()
-		_ = eventBus.Close()
-	})
-	manager.attachTaskRegistry(workspace, registry)
-
-	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
-	if trace.Outcome == nil || trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
-		t.Fatalf("snapshot outcome = %#v", trace.Outcome)
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
+		t.Fatal(err)
 	}
-	if len(trace.Records) != int(registryRecord(t, registry, "terminal-before-attach").LastEventSeq) {
-		t.Fatalf("snapshot trace records = %d", len(trace.Records))
-	}
-}
-
-func TestTaskTraceProjectorProtectsTerminalMutationBeforeRegistryPruning(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistryWithOptions(
-		taskregistry.WorkspaceStorePath(workspace),
-		taskregistry.Options{MaxRecords: 1},
-	)
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	t.Cleanup(func() {
-		manager.close()
-		_ = eventBus.Close()
-	})
-	manager.attachTaskRegistry(workspace, registry)
+	first := finishTaskForTrace(t, registry, "a", "session", 1)
+	_ = finishTaskForTrace(t, registry, "b", "session", 2)
 	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "active-blocker", Runtime: taskregistry.RuntimeSubagent,
-		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+		TaskID: "active", Task: "test", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	finishTaskForTrace(t, registry, "terminal-at-capacity", "session", 0)
-	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
-	if len(trace.Records) == 0 ||
-		trace.Records[0].Scope.TaskID != "terminal-at-capacity" {
-		t.Fatalf("captured records = %#v", trace.Records)
+	source := &taskTraceSource{workspace: workspace, registry: registry}
+	keys, err := source.Pending(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for registryRecord(t, registry, "terminal-at-capacity").TraceCapturePending {
-		if time.Now().After(deadline) {
-			t.Fatal("persisted task retained trace capture protection")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if len(keys) != 1 {
+		t.Fatalf("pending keys = %d, want 1", len(keys))
+	}
+	taskID, generationID, err := decodeTaskTraceProjectionKey(keys[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskID != first.TaskID || generationID != first.GenerationID {
+		t.Fatalf("first pending key = (%q, %q)", taskID, generationID)
 	}
 }
 
-func TestTaskTraceProjectorDoesNotDowngradeCompleteTraceOnStartup(t *testing.T) {
+func TestTaskTraceSourceSharesInteractionTerminalPredicateWithRegistry(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	manager.attachTaskRegistry(workspace, registry)
-	record := finishTaskForTrace(t, registry, "durable", "session", 0)
-	path := waitForTraceFile(t, workspace)
-	complete := readCapturedTrace(t, path)
-	manager.close()
-
-	pruned := taskregistry.NewRegistryWithOptions(
-		taskregistry.WorkspaceStorePath(workspace),
-		taskregistry.Options{MaxEvents: 1},
-	)
-	if got := registryRecord(t, pruned, "durable"); got.GenerationID != record.GenerationID {
-		t.Fatalf("reloaded generation = %q, want %q", got.GenerationID, record.GenerationID)
+	if err := registry.SetTraceCaptureProtection(true, 100); err != nil {
+		t.Fatal(err)
 	}
-	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	restarted.attachTaskRegistry(workspace, pruned)
-	restarted.close()
-	t.Cleanup(func() { _ = eventBus.Close() })
-
-	after := readCapturedTrace(t, path)
-	if after.Truncation.Incomplete {
-		t.Fatalf("complete trace was downgraded: %+v", after.Truncation)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "interaction-delivery", InteractionID: "interaction-1",
+		Status:         taskregistry.StatusSucceeded,
+		DeliveryStatus: taskregistry.DeliveryFailed,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if len(after.Records) != len(complete.Records) {
-		t.Fatalf("records after restart = %d, want %d", len(after.Records), len(complete.Records))
+	source := &taskTraceSource{workspace: workspace, registry: registry}
+	keys, err := source.Pending(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := registryRecord(t, registry, "interaction-delivery")
+	if record.TraceCapturePending || len(keys) != 0 {
+		t.Fatalf("retryable interaction record=%#v pending keys=%v", record, keys)
+	}
+
+	if err = registry.Update(record.TaskID, func(current *taskregistry.Record) {
+		current.DeliveryStatus = taskregistry.DeliveryDelivered
+	}); err != nil {
+		t.Fatal(err)
+	}
+	keys, err = source.Pending(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record = registryRecord(t, registry, record.TaskID)
+	if !record.TraceCapturePending || len(keys) != 1 {
+		t.Fatalf("terminal interaction record=%#v pending keys=%v", record, keys)
 	}
 }
 
-func TestTaskTraceReconciliationPersistsNewerIncompleteRevisionAtRecordLimit(t *testing.T) {
+func TestTaskTraceSourceConfirmationIsRevisionBound(t *testing.T) {
 	workspace := t.TempDir()
 	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
-	settings.limits.MaxRecords = 2
-	record := taskregistry.Record{
-		TaskID: "bounded-recovery", GenerationID: "generation", CreatedAt: 1,
-		Status:         taskregistry.StatusSucceeded,
-		DeliveryStatus: taskregistry.DeliveryPending,
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
+		t.Fatal(err)
 	}
-	existingTraces, existingSubmit := collectTaskTraces(t)
-	existingProjector := newTaskTraceProjector(settings, existingSubmit)
-	existingProjector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 1, 1, taskregistry.EventTaskUpserted),
-		Record:       record,
-		FinalForTask: true,
-	})
-	record.DeliveryStatus = taskregistry.DeliveryFailed
-	existingProjector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	existing := existingTraces()[0]
-	existingProjector.close()
-
-	candidateTraces, candidateSubmit := collectTaskTraces(t)
-	candidateProjector := newTaskTraceProjector(settings, candidateSubmit)
-	record.InteractionID = "interaction-1"
-	candidateProjector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	record.DeliveryStatus = taskregistry.DeliveryDelivered
-	candidateProjector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 3, 3, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	candidate := candidateTraces()[0]
-	candidateProjector.close()
-
-	selected, persist := reconcileTaskTraceCandidate(existing, candidate)
-	if !persist {
-		t.Fatal("newer incomplete revision was treated as already durable")
+	record := finishTaskForTrace(t, registry, "task", "session", 1)
+	source := &taskTraceSource{
+		workspace: workspace, registry: registry, settings: settings,
 	}
-	if !selected.Truncation.Incomplete {
-		t.Fatal("bounded newer revision lost explicit incomplete evidence")
+	key := encodeTaskTraceProjectionKey(record.TaskID, record.GenerationID)
+	candidate, found, err := source.LoadLatest(context.Background(), key)
+	if err != nil || !found {
+		t.Fatalf("LoadLatest found=%v err=%v", found, err)
 	}
-	if got := maxTaskTraceEventSequence(selected.Records); got != 3 {
-		t.Fatalf("selected revision sequence = %d, want 3", got)
+	if !candidate.Persist {
+		t.Fatal("pending task trace did not require a writer receipt")
 	}
-	if selected.Outcome == nil || selected.Outcome.ErrorCode != "" {
-		t.Fatalf("selected outcome = %#v", selected.Outcome)
+	if updateErr := registry.Update(record.TaskID, func(current *taskregistry.Record) {
+		current.DeliveryStatus = taskregistry.DeliveryFailed
+	}); updateErr != nil {
+		t.Fatal(updateErr)
 	}
-}
-
-func TestTaskTraceProjectorPersistsNewerNonPrefixIncompleteRevision(t *testing.T) {
-	workspace := t.TempDir()
-	storePath := taskregistry.WorkspaceStorePath(workspace)
-	registry := taskregistry.NewRegistryWithOptions(
-		storePath,
-		taskregistry.Options{MaxEvents: 1},
+	confirmation, err := source.Confirm(
+		context.Background(),
+		key,
+		candidate.Revision,
 	)
-	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "pruned-revision", Task: "test",
-		Status:         taskregistry.StatusRunning,
-		DeliveryStatus: taskregistry.DeliveryPending,
-	}); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Update("pruned-revision", func(record *taskregistry.Record) {
-		record.Status = taskregistry.StatusSucceeded
-		record.DeliveryStatus = taskregistry.DeliveryFailed
-	}); err != nil {
-		t.Fatal(err)
+	if confirmation != evalcapture.ConfirmationStale {
+		t.Fatalf("confirmation = %q, want stale", confirmation)
 	}
-
-	eventBus := runtimeevents.NewBus()
-	first := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	first.attachTaskRegistry(workspace, registry)
-	path := waitForTraceFile(t, workspace)
-	firstRecord := registryRecord(t, registry, "pruned-revision")
-	waitForTraceMarkerCleared(
-		t, registry, firstRecord.TaskID, firstRecord.GenerationID,
-	)
-	firstTrace := readCapturedTrace(t, path)
-	first.close()
-	if !firstTrace.Truncation.Incomplete {
-		t.Fatal("first pruned trace is unexpectedly complete")
-	}
-	firstSequence := maxTaskTraceEventSequence(firstTrace.Records)
-
-	if err := registry.SetTraceCaptureProtection(true); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Update("pruned-revision", func(record *taskregistry.Record) {
-		record.InteractionID = "interaction-1"
-		record.DeliveryStatus = taskregistry.DeliveryPending
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Update("pruned-revision", func(record *taskregistry.Record) {
-		record.DeliveryStatus = taskregistry.DeliveryDelivered
-	}); err != nil {
-		t.Fatal(err)
-	}
-	current := registryRecord(t, registry, "pruned-revision")
+	current := registryRecord(t, registry, record.TaskID)
 	if !current.TraceCapturePending {
-		t.Fatal("newer terminal revision lacks trace protection")
-	}
-
-	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	restarted.attachTaskRegistry(workspace, registry)
-	waitForTraceMarkerCleared(t, registry, current.TaskID, current.GenerationID)
-	restarted.close()
-	t.Cleanup(func() { _ = eventBus.Close() })
-
-	updated := readCapturedTrace(t, path)
-	if !updated.Truncation.Incomplete {
-		t.Fatal("newer pruned trace lost incomplete evidence")
-	}
-	if got := maxTaskTraceEventSequence(updated.Records); got <= firstSequence {
-		t.Fatalf(
-			"canonical task sequence = %d, want newer than %d",
-			got,
-			firstSequence,
-		)
-	}
-	if updated.Outcome == nil || updated.Outcome.ErrorCode != "" {
-		t.Fatalf("updated outcome = %#v", updated.Outcome)
+		t.Fatal("stale confirmation cleared the pending marker")
 	}
 }
 
-func TestTaskTraceProjectorReplacesCorruptStoredTrace(t *testing.T) {
+func TestTaskTraceProjectorCapturesLiveTerminalTask(t *testing.T) {
 	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	record := finishTaskForTrace(t, registry, "corrupt", "session", 0)
-	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
-	state := newTaskTraceState(
-		settings,
-		workspace,
-		record,
-		firstTaskEvent(registry.ListEvents("corrupt")),
+	manager, eventBus, registry := newTaskTraceTestRuntime(t, workspace)
+	record := finishTaskForTrace(t, registry, "live", "session", 1)
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		record.TaskID,
+		record.GenerationID,
 	)
-	root := traceStoreRoot(settings, workspace)
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatal(err)
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if trace.Outcome == nil ||
+		trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
+		t.Fatalf("outcome = %#v", trace.Outcome)
 	}
-	path := filepath.Join(root, state.trace.builder.TraceID()+".json")
-	if err := os.WriteFile(path, []byte(`{"truncated":`), 0o600); err != nil {
-		t.Fatal(err)
+	if generations := taskTraceGenerations(t, trace); !slices.Equal(
+		generations,
+		[]string{record.GenerationID},
+	) {
+		t.Fatalf("trace generations = %v", generations)
 	}
-
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	manager.attachTaskRegistry(workspace, registry)
 	manager.close()
-	t.Cleanup(func() { _ = eventBus.Close() })
-
-	recovered := readCapturedTrace(t, path)
-	if recovered.TraceID != state.trace.builder.TraceID() ||
-		recovered.Truncation.Incomplete {
-		t.Fatalf("recovered trace = %#v", recovered)
-	}
-	if len(recovered.Records) != int(record.LastEventSeq) {
-		t.Fatalf("recovered records = %d, want %d", len(recovered.Records), record.LastEventSeq)
-	}
+	_ = eventBus.Close()
 }
 
-func TestTaskTraceReconciliationExtendsPersistedFailureAfterPrunedRestart(t *testing.T) {
+func TestTaskTraceProjectorPreservesHistoryAcrossRegistryPruning(t *testing.T) {
 	workspace := t.TempDir()
-	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
-	record := taskregistry.Record{
-		TaskID: "recovery", GenerationID: "generation", CreatedAt: 1,
-		Status:         taskregistry.StatusSucceeded,
-		DeliveryStatus: taskregistry.DeliveryPending,
-	}
-	firstTraces, firstSubmit := collectTaskTraces(t)
-	first := newTaskTraceProjector(settings, firstSubmit)
-	first.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 1, 1, taskregistry.EventTaskUpserted),
-		Record:       record,
-		FinalForTask: true,
-	})
-	record.DeliveryStatus = taskregistry.DeliveryFailed
-	first.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	existing := firstTraces()[0]
-	first.close()
-
-	candidateTraces, candidateSubmit := collectTaskTraces(t)
-	restarted := newTaskTraceProjector(settings, candidateSubmit)
-	record.InteractionID = "interaction-1"
-	restarted.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	record.DeliveryStatus = taskregistry.DeliveryDelivered
-	restarted.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 3, 3, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	candidate := candidateTraces()[0]
-	restarted.close()
-
-	merged, persist := reconcileTaskTraceCandidate(existing, candidate)
-	if !persist {
-		t.Fatal("delivery recovery did not extend persisted trace")
-	}
-	if merged.Truncation.Incomplete || len(merged.Records) != 3 {
-		t.Fatalf("merged trace = records:%d truncation:%+v", len(merged.Records), merged.Truncation)
-	}
-	if merged.Outcome == nil || merged.Outcome.ErrorCode != "" {
-		t.Fatalf("merged outcome = %#v", merged.Outcome)
-	}
-}
-
-func TestTaskTraceProjectorExtendsCompleteTraceAfterCompletionIDChanges(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	registry := taskregistry.NewRegistryWithOptions(
+		taskregistry.WorkspaceStorePath(workspace),
+		taskregistry.Options{
+			MaxRecords: 10, MaxEvents: 2, MaxSnapshotBytes: 2 * 1024 * 1024,
+		},
+	)
 	manager.attachTaskRegistry(workspace, registry)
 	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "completion-recovery", Task: "test",
+		TaskID: "retention", Task: "test", CreatedAt: 1,
 		Status:         taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Update("completion-recovery", func(record *taskregistry.Record) {
-		record.Status = taskregistry.StatusSucceeded
-		record.DeliveryStatus = taskregistry.DeliveryFailed
-		record.LastCompletionID = "completion-1"
-	}); err != nil {
-		t.Fatal(err)
-	}
-	path := waitForTraceFile(t, workspace)
-	failed := readCapturedTrace(t, path)
-	manager.close()
-
-	if err := registry.Update("completion-recovery", func(record *taskregistry.Record) {
-		record.InteractionID = "interaction-1"
-		record.LastCompletionID = "completion-2"
-	}); err != nil {
-		t.Fatal(err)
-	}
-	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	restarted.attachTaskRegistry(workspace, registry)
-	if err := registry.Update("completion-recovery", func(record *taskregistry.Record) {
-		record.DeliveryStatus = taskregistry.DeliveryDelivered
-		record.DeliveryError = ""
-		record.LastCompletionID = "completion-2"
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	var recovered evaltrace.Trace
-	for {
-		recovered = readCapturedTrace(t, path)
-		if len(recovered.Records) > len(failed.Records) &&
-			recovered.Outcome != nil &&
-			recovered.Outcome.ErrorCode == "" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("canonical trace was not extended: %#v", recovered)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	restarted.close()
-	t.Cleanup(func() { _ = eventBus.Close() })
-
-	completions := taskDeliveryCompletionIDs(recovered)
-	if !slices.Equal(completions, []string{"completion-1", "completion-2"}) {
-		t.Fatalf("delivery completion IDs = %v", completions)
-	}
-}
-
-func TestTaskTraceProjectorEnablesAfterRegistryAttachment(t *testing.T) {
-	workspace := t.TempDir()
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(nil, eventBus)
-	t.Cleanup(func() {
-		manager.close()
-		_ = eventBus.Close()
-	})
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	manager.attachTaskRegistry(workspace, registry)
-	finishTaskForTrace(t, registry, "while-disabled", "session-disabled", 0)
-
-	manager.updateConfig(traceTestConfig(workspace))
-	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
-	if trace.Outcome == nil || trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
-		t.Fatalf("enabled snapshot outcome = %#v", trace.Outcome)
-	}
-}
-
-func TestTaskTraceProjectorSeparatesReusedTaskIDGenerations(t *testing.T) {
-	workspace := t.TempDir()
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	t.Cleanup(func() {
-		manager.close()
-		_ = eventBus.Close()
-	})
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	manager.attachTaskRegistry(workspace, registry)
-
-	const createdAt = int64(1_000)
-	first := finishTaskForTrace(t, registry, "reused", "session", createdAt)
-	waitForTraceFiles(t, workspace, 1)
-	waitForTraceMarkerCleared(t, registry, first.TaskID, first.GenerationID)
-	second := finishTaskForTrace(t, registry, "reused", "session", createdAt)
-	paths := waitForTraceFiles(t, workspace, 2)
-
-	if first.GenerationID == second.GenerationID {
-		t.Fatalf("reused task generations share id %q", first.GenerationID)
-	}
-	firstTrace := readCapturedTrace(t, paths[0])
-	secondTrace := readCapturedTrace(t, paths[1])
-	if firstTrace.TraceID == secondTrace.TraceID {
-		t.Fatalf("reused task generations share trace id %q", firstTrace.TraceID)
-	}
-	for _, trace := range []evaltrace.Trace{firstTrace, secondTrace} {
-		generations := taskTraceGenerations(t, trace)
-		if len(generations) != 1 {
-			t.Fatalf("trace mixes generations: %v", generations)
-		}
-	}
-}
-
-func TestTaskTraceProjectorFiltersStartupHistoryToCurrentGeneration(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	first := finishTaskForTrace(t, registry, "reused-snapshot", "session", 1_000)
-	second := finishTaskForTrace(t, registry, "reused-snapshot", "session", 1_000)
-	if first.GenerationID == second.GenerationID {
-		t.Fatal("task reuse did not create a generation")
-	}
-
-	traces, submit := collectTaskTraces(t)
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		submit,
-	)
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-
-	got := traces()
-	if len(got) != 1 {
-		t.Fatalf("startup reconciled %d traces, want current generation only", len(got))
-	}
-	if generations := taskTraceGenerations(t, got[0]); !slices.Equal(
-		generations,
-		[]string{second.GenerationID},
-	) {
-		t.Fatalf("startup trace generations = %v", generations)
-	}
-}
-
-func TestTaskTraceProjectorBuffersCommitsAcrossSnapshotApplication(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	finishTaskForTrace(t, registry, "snapshot", "session", 0)
-
-	snapshotSubmit := make(chan struct{})
-	releaseSnapshot := make(chan struct{})
-	var mu sync.Mutex
-	var traces []evaltrace.Trace
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			if trace.Records[0].Scope.TaskID == "snapshot" {
-				select {
-				case <-snapshotSubmit:
-				default:
-					close(snapshotSubmit)
-					<-releaseSnapshot
-				}
-			}
-			mu.Lock()
-			traces = append(traces, trace)
-			mu.Unlock()
-			return nil
-		},
-	)
-	t.Cleanup(projector.close)
-	attached := make(chan struct{})
-	go func() {
-		projector.attach(workspace, registry)
-		close(attached)
-	}()
-	<-snapshotSubmit
-	finishTaskForTrace(t, registry, "post-boundary", "session", 0)
-	close(releaseSnapshot)
-	<-attached
-
-	deadline := time.Now().Add(time.Second)
-	for {
-		mu.Lock()
-		count := len(traces)
-		mu.Unlock()
-		if count == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("persisted %d traces, want snapshot and post-boundary", count)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	taskIDs := []string{
-		traces[0].Records[0].Scope.TaskID,
-		traces[1].Records[0].Scope.TaskID,
-	}
-	sort.Strings(taskIDs)
-	if !slices.Equal(taskIDs, []string{"post-boundary", "snapshot"}) {
-		t.Fatalf("trace task IDs = %v", taskIDs)
-	}
-}
-
-func TestTaskTraceProjectorKeepsLiveHistoryAcrossRetention(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistryWithOptions(
-		taskregistry.WorkspaceStorePath(workspace),
-		taskregistry.Options{MaxEvents: 2},
-	)
-	var traces []evaltrace.Trace
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			traces = append(traces, trace)
-			return nil
-		},
-	)
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-
-	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "retained", Task: "test", Status: taskregistry.StatusRunning,
-		DeliveryStatus: taskregistry.DeliveryPending,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	upsert := registry.ListEvents("retained")[0]
-	for i := range 5 {
-		if err := registry.Update("retained", func(record *taskregistry.Record) {
-			record.ProgressSummary = fmt.Sprintf("step %d", i)
+	for _, progress := range []string{"one", "two", "three", "four"} {
+		if err := registry.Update("retention", func(record *taskregistry.Record) {
+			record.ProgressSummary = progress
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if slices.ContainsFunc(registry.ListEvents("retained"), func(event taskregistry.TaskEvent) bool {
-		return event.EventID == upsert.EventID
-	}) {
-		t.Fatal("upsert event was not evicted from registry retention")
-	}
-	if err := registry.Update("retained", func(record *taskregistry.Record) {
+	if err := registry.Update("retention", func(record *taskregistry.Record) {
 		record.Status = taskregistry.StatusSucceeded
 		record.DeliveryStatus = taskregistry.DeliveryDelivered
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	if len(traces) != 1 {
-		t.Fatalf("persisted %d traces, want 1", len(traces))
+	record := registryRecord(t, registry, "retention")
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		record.TaskID,
+		record.GenerationID,
+	)
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if trace.Truncation.Incomplete {
+		t.Fatalf("trace unexpectedly incomplete: %+v", trace.Truncation)
 	}
-	if !slices.ContainsFunc(traces[0].Records, func(record evaltrace.Record) bool {
-		return record.Origin.ID == upsert.EventID
-	}) {
-		t.Fatalf("terminal trace lost retained prefix: %#v", traces[0].Records)
+	if got := maxTaskTraceEventSequence(trace.Records); got != record.LastEventSeq {
+		t.Fatalf("trace revision = %d, want %d", got, record.LastEventSeq)
 	}
-	record := registryRecord(t, registry, "retained")
-	projector.observe(workspace, taskregistry.EventObservation{
-		Event: upsert, Record: record, FinalForTask: true,
-	})
-	if len(traces) != 1 {
-		t.Fatalf("stale observation created duplicate trace: %d", len(traces))
+	if len(trace.Records) != int(record.LastEventSeq) {
+		t.Fatalf(
+			"trace records = %d, want %d",
+			len(trace.Records),
+			record.LastEventSeq,
+		)
 	}
+	if global := registry.ListEvents(record.TaskID); len(global) > 2 {
+		t.Fatalf("global retained events = %d, want at most 2", len(global))
+	}
+	manager.close()
+	_ = eventBus.Close()
 }
 
-func TestTaskTraceProjectorKeepsRecoverableLostTransitionInGeneration(t *testing.T) {
+func TestTaskTraceProjectorPreservesActiveJournalAcrossShutdown(t *testing.T) {
 	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var traces []evaltrace.Trace
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			traces = append(traces, trace)
-			return nil
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	registry := taskregistry.NewRegistryWithOptions(
+		taskregistry.WorkspaceStorePath(workspace),
+		taskregistry.Options{
+			MaxRecords: 10, MaxEvents: 2, MaxSnapshotBytes: 2 * 1024 * 1024,
 		},
 	)
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
+	manager.attachTaskRegistry(workspace, registry)
 	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "recovered", Task: "test", Status: taskregistry.StatusRunning,
+		TaskID: "shutdown-active", Task: "test",
+		Status:         taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.MarkWaitingForInput(
-		"recovered", "interaction-1", "short-1", "approval required",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Update("recovered", func(record *taskregistry.Record) {
-		record.Status = taskregistry.StatusLost
-		record.DeliveryStatus = taskregistry.DeliveryNotApplicable
-		record.Error = "runtime restarted"
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(traces) != 0 {
-		t.Fatalf("recoverable lost state prematurely persisted %d traces", len(traces))
-	}
-	if err := registry.MarkInteractionRunning("recovered", "interaction-1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.CompleteInteractionTask(
-		"recovered", "interaction-1", "approved", taskregistry.DeliveryDelivered,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(traces) != 1 {
-		t.Fatalf("persisted %d traces, want one generation trace", len(traces))
-	}
-	statuses := taskTransitionStatuses(t, traces[0])
-	for _, want := range []string{
-		string(taskregistry.StatusLost),
-		string(taskregistry.StatusRunning),
-		string(taskregistry.StatusSucceeded),
-	} {
-		if !slices.Contains(statuses, want) {
-			t.Fatalf("trace statuses = %v, missing %q", statuses, want)
+	for _, progress := range []string{"one", "two", "three", "four"} {
+		if err := registry.Update("shutdown-active", func(record *taskregistry.Record) {
+			record.ProgressSummary = progress
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
+	before := registryRecord(t, registry, "shutdown-active")
+	manager.close()
+	_ = eventBus.Close()
 
-func TestTaskTraceProjectorExtendsFailedInteractionDeliveryThroughRecovery(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	traces, submit := collectTaskTraces(t)
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		submit,
-	)
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-
-	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "delivery-recovery", Task: "test", Status: taskregistry.StatusRunning,
-		DeliveryStatus: taskregistry.DeliveryPending,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.MarkWaitingForInput(
-		"delivery-recovery", "interaction-1", "short-1", "approval required",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.MarkInteractionRunning("delivery-recovery", "interaction-1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.CompleteInteractionTask(
-		"delivery-recovery", "interaction-1", "approved", taskregistry.DeliveryPending,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Update("delivery-recovery", func(record *taskregistry.Record) {
-		record.DeliveryStatus = taskregistry.DeliveryFailed
-		record.DeliveryError = "definitely not sent"
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if got := traces(); len(got) != 0 {
-		t.Fatalf("failed retryable delivery persisted %d traces", len(got))
-	}
-	if err := registry.Update("delivery-recovery", func(record *taskregistry.Record) {
-		record.DeliveryStatus = taskregistry.DeliveryDelivered
-		record.DeliveryError = ""
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	got := traces()
-	if len(got) != 1 {
-		t.Fatalf("recovered delivery persisted %d traces, want 1", len(got))
-	}
-	statuses := taskDeliveryStatuses(t, got[0])
-	if !slices.Contains(statuses, string(taskregistry.DeliveryFailed)) ||
-		!slices.Contains(statuses, string(taskregistry.DeliveryDelivered)) {
-		t.Fatalf("delivery statuses = %v", statuses)
-	}
-	if got[0].Outcome == nil || got[0].Outcome.ErrorCode != "" {
-		t.Fatalf("recovered outcome = %#v", got[0].Outcome)
-	}
-}
-
-func TestTaskTraceProjectorReopensAfterPersistedDeliveryFailure(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var submitted []evaltrace.Trace
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			submitted = append(submitted, trace)
-			return nil
+	reloaded := taskregistry.NewRegistryWithOptions(
+		taskregistry.WorkspaceStorePath(workspace),
+		taskregistry.Options{
+			MaxRecords: 10, MaxEvents: 2, MaxSnapshotBytes: 2 * 1024 * 1024,
 		},
 	)
-	projector.awaitPersistence = true
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "acknowledged-recovery", Task: "test",
-		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
-	}); err != nil {
-		t.Fatal(err)
+	active := registryRecord(t, reloaded, before.TaskID)
+	if active.TraceCapturePending {
+		t.Fatal("active task unexpectedly awaits terminal trace persistence")
 	}
-	if err := registry.Update("acknowledged-recovery", func(record *taskregistry.Record) {
+	if len(active.TraceCaptureEvents) != int(active.LastEventSeq) {
+		t.Fatalf(
+			"reloaded active journal events = %d, want %d",
+			len(active.TraceCaptureEvents),
+			active.LastEventSeq,
+		)
+	}
+
+	restartBus := runtimeevents.NewBus()
+	restarted := newTraceCaptureManager(traceTestConfig(workspace), restartBus)
+	restarted.attachTaskRegistry(workspace, reloaded)
+	if err := reloaded.Update(active.TaskID, func(record *taskregistry.Record) {
 		record.Status = taskregistry.StatusSucceeded
-		record.DeliveryStatus = taskregistry.DeliveryFailed
-		record.DeliveryError = "not sent"
-		record.LastCompletionID = "completion-1"
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(submitted) != 1 {
-		t.Fatalf("initial submissions = %d, want 1", len(submitted))
-	}
-	traceID := submitted[0].TraceID
-	record := registryRecord(t, registry, "acknowledged-recovery")
-	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: traceID,
-		SubmissionID: taskTraceReceipt(t, projector, key),
-		Class:        evalcapture.ClassCritical,
-	})
-	if registryRecord(t, registry, "acknowledged-recovery").TraceCapturePending {
-		t.Fatal("persistence acknowledgement retained pending marker")
-	}
-
-	if err := registry.Update("acknowledged-recovery", func(record *taskregistry.Record) {
-		record.DeliveryStatus = taskregistry.DeliveryPending
-		record.DeliveryError = ""
-		record.LastCompletionID = "completion-2"
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Update("acknowledged-recovery", func(record *taskregistry.Record) {
 		record.DeliveryStatus = taskregistry.DeliveryDelivered
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(submitted) != 2 {
-		t.Fatalf("recovery submissions = %d, want 2", len(submitted))
+	terminal := registryRecord(t, reloaded, active.TaskID)
+	waitForTraceMarkerCleared(
+		t,
+		reloaded,
+		terminal.TaskID,
+		terminal.GenerationID,
+	)
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if trace.Truncation.Incomplete ||
+		maxTaskTraceEventSequence(trace.Records) != terminal.LastEventSeq {
+		t.Fatalf(
+			"restarted trace revision=%d truncation=%+v, want revision=%d",
+			maxTaskTraceEventSequence(trace.Records),
+			trace.Truncation,
+			terminal.LastEventSeq,
+		)
 	}
-	statuses := taskDeliveryStatuses(t, submitted[1])
-	for _, want := range []string{
-		string(taskregistry.DeliveryFailed),
-		string(taskregistry.DeliveryPending),
-		string(taskregistry.DeliveryDelivered),
-	} {
-		if !slices.Contains(statuses, want) {
-			t.Fatalf("recovered delivery statuses = %v, missing %q", statuses, want)
-		}
-	}
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: traceID,
-		SubmissionID: taskTraceReceipt(t, projector, key),
-		Class:        evalcapture.ClassCritical,
-	})
-	if registryRecord(t, registry, "acknowledged-recovery").TraceCapturePending {
-		t.Fatal("recovered trace retained pending marker")
-	}
+	restarted.close()
+	_ = restartBus.Close()
 }
 
-func TestTaskTraceProjectorIgnoresStaleReceiptDuringShutdownSnapshot(t *testing.T) {
+func TestTaskTraceProjectorAppliesUpdatedJournalLimit(t *testing.T) {
 	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	cfg := traceTestConfig(workspace)
+	manager := newTraceCaptureManager(cfg, eventBus)
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var submitted []evaltrace.Trace
-	capture := func(_ traceCaptureSettings, active *activeTraceCapture) error {
-		trace, err := active.builder.Finalize()
-		if err != nil {
-			return err
-		}
-		submitted = append(submitted, trace)
-		return nil
-	}
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		capture,
-		func(_ context.Context, settings traceCaptureSettings, active *activeTraceCapture) error {
-			return capture(settings, active)
-		},
-	)
-	projector.awaitPersistence = true
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	record := finishTaskForTrace(t, registry, "shutdown-revision", "session", 0)
-	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-	firstReceipt := taskTraceReceipt(t, projector, key)
-	if err := registry.Update(record.TaskID, func(current *taskregistry.Record) {
-		current.DeliveryStatus = taskregistry.DeliveryPending
+	manager.attachTaskRegistry(workspace, registry)
+	if err := registry.Upsert(taskregistry.Record{
+		TaskID: "limit-update", Task: "test",
+		Status:         taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := projector.closeWithContext(ctx); err != nil {
+	for _, progress := range []string{"one", "two", "three", "four"} {
+		if err := registry.Update("limit-update", func(record *taskregistry.Record) {
+			record.ProgressSummary = progress
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(registryRecord(t, registry, "limit-update").TraceCaptureEvents); got < 4 {
+		t.Fatalf("initial journal events = %d, want at least 4", got)
+	}
+
+	updated := *cfg
+	updated.Evaluation.TraceCapture.MaxRecords = 2
+	manager.updateConfig(&updated)
+	record := registryRecord(t, registry, "limit-update")
+	if got := len(record.TraceCaptureEvents); got != 2 {
+		t.Fatalf("updated journal events = %d, want 2", got)
+	}
+	if got, want := record.TraceCaptureDropped,
+		int(record.TraceCaptureEvents[0].Seq-1); got != want {
+		t.Fatalf("updated journal dropped = %d, want %d", got, want)
+	}
+	manager.close()
+	_ = eventBus.Close()
+}
+
+func TestTaskTraceProjectorRecoversPendingTaskAfterRestart(t *testing.T) {
+	workspace := t.TempDir()
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
 		t.Fatal(err)
 	}
-	if len(submitted) != 2 {
-		t.Fatalf("submitted revisions = %d, want 2", len(submitted))
-	}
-	secondReceipt := taskTraceReceipt(t, projector, key)
-	if firstReceipt == secondReceipt {
-		t.Fatalf("submission receipts were reused: %q", firstReceipt)
+	record := finishTaskForTrace(t, registry, "restart", "session", 1)
+	if !record.TraceCapturePending {
+		t.Fatal("terminal record is not protected")
 	}
 
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: submitted[0].TraceID,
-		SubmissionID: firstReceipt, Class: evalcapture.ClassCritical,
-	})
-	if !registryRecord(t, registry, record.TaskID).TraceCapturePending {
-		t.Fatal("stale receipt released the newer shutdown snapshot marker")
-	}
-	if got := taskTraceReceipt(t, projector, key); got != secondReceipt {
-		t.Fatalf("current receipt = %q, want %q", got, secondReceipt)
-	}
-
-	merged, persist := reconcileTaskTraceCandidate(submitted[0], submitted[1])
-	if !persist ||
-		!slices.Contains(
-			merged.Truncation.Reasons,
-			"runtime_closed_before_terminal_task_delivery",
-		) {
-		t.Fatalf("merged shutdown truncation = %+v, persist = %v", merged.Truncation, persist)
-	}
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: submitted[1].TraceID,
-		SubmissionID: secondReceipt, Class: evalcapture.ClassCritical,
-	})
-	if registryRecord(t, registry, record.TaskID).TraceCapturePending {
-		t.Fatal("current shutdown receipt retained pending marker")
-	}
-}
-
-func TestTaskTraceProjectorRebuildsCommitAheadOfObserver(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var submitted []evaltrace.Trace
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			submitted = append(submitted, trace)
-			return nil
-		},
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	manager.attachTaskRegistry(workspace, registry)
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		record.TaskID,
+		record.GenerationID,
 	)
-	projector.awaitPersistence = true
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	record := finishTaskForTrace(t, registry, "commit-ahead", "session", 0)
-	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-
-	projector.mu.Lock()
-	state := projector.traces[key]
-	firstReceipt := state.receipt
-	firstSeq := state.lastSeq
-	updateDone := make(chan error, 1)
-	go func() {
-		updateDone <- registry.Update(record.TaskID, func(current *taskregistry.Record) {
-			current.DeliveryStatus = taskregistry.DeliverySessionQueued
-		})
-	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		current := registryRecord(t, registry, record.TaskID)
-		if current.LastEventSeq > firstSeq {
-			break
-		}
-		if time.Now().After(deadline) {
-			projector.mu.Unlock()
-			t.Fatal("newer registry revision did not commit behind observer barrier")
-		}
-		time.Sleep(time.Millisecond)
+	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
+	if highest := maxTaskTraceEventSequence(trace.Records); highest != record.LastEventSeq {
+		t.Fatalf("highest sequence = %d, want %d", highest, record.LastEventSeq)
 	}
-	projector.observeWriterEventLocked(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: submitted[0].TraceID,
-		SubmissionID: firstReceipt, Class: evalcapture.ClassCritical,
-	})
-	rebuilt := projector.traces[key]
-	if rebuilt == nil || rebuilt.lastSeq <= firstSeq ||
-		rebuilt.receipt == "" || rebuilt.receipt == firstReceipt {
-		projector.mu.Unlock()
-		t.Fatalf("rebuilt state = %#v, first sequence = %d", rebuilt, firstSeq)
-	}
-	secondReceipt := rebuilt.receipt
-	projector.mu.Unlock()
-	if err := <-updateDone; err != nil {
-		t.Fatal(err)
-	}
-	if !registryRecord(t, registry, record.TaskID).TraceCapturePending {
-		t.Fatal("older acknowledgement released commit-ahead marker")
-	}
-	if len(submitted) != 2 {
-		t.Fatalf("submitted revisions = %d, want 2", len(submitted))
-	}
-
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: submitted[1].TraceID,
-		SubmissionID: secondReceipt, Class: evalcapture.ClassCritical,
-	})
-	if registryRecord(t, registry, record.TaskID).TraceCapturePending {
-		t.Fatal("newest committed revision retained pending marker")
-	}
-}
-
-func TestTaskTraceProjectorRetriesCapacityRejectionWithoutNewEvent(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var attempts atomic.Int32
-	admitted := make(chan evaltrace.Trace, 1)
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			if attempts.Add(1) == 1 {
-				return &evalcapture.AdmissionError{
-					Reason: evalcapture.ReasonCapacity,
-					Class:  evalcapture.ClassCritical,
-				}
-			}
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			admitted <- trace
-			return nil
-		},
-	)
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	finishTaskForTrace(t, registry, "retry", "session", 0)
-
-	select {
-	case trace := <-admitted:
-		if trace.Outcome == nil ||
-			trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
-			t.Fatalf("admitted outcome = %#v", trace.Outcome)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("capacity rejection was not retried")
-	}
-	if attempts.Load() < 2 {
-		t.Fatalf("admission attempts = %d", attempts.Load())
-	}
-}
-
-func TestTaskTraceProjectorRetriesPreAdmissionStorageFailure(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var attempts atomic.Int32
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			if attempts.Add(1) == 1 {
-				return &taskTraceStorageError{err: os.ErrPermission}
-			}
-			_, err := active.builder.Finalize()
-			return err
-		},
-	)
-	projector.awaitPersistence = true
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	record := finishTaskForTrace(t, registry, "load-retry", "session", 0)
-	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for attempts.Load() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("submission attempts = %d, want at least 2", attempts.Load())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !registryRecord(t, registry, record.TaskID).TraceCapturePending {
-		t.Fatal("storage failure released durable trace marker")
-	}
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind:         evalcapture.EventPersisted,
-		TraceID:      taskTraceID(t, projector, key),
-		SubmissionID: taskTraceReceipt(t, projector, key),
-		Class:        evalcapture.ClassCritical,
-	})
-	if registryRecord(t, registry, record.TaskID).TraceCapturePending {
-		t.Fatal("successful retry retained durable trace marker")
-	}
-}
-
-func TestTaskTraceProjectorRejectedSubscribeDoesNotEnableProtection(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
-	settings.enabled = false
-	projector := newTaskTraceProjector(
-		settings,
-		func(traceCaptureSettings, *activeTraceCapture) error { return nil },
-	)
-	projector.awaitPersistence = true
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-
-	// This models an enable-driven subscribe that reaches installation after
-	// capture has already been disabled.
-	projector.subscribe(workspace, registry)
-	finishTaskForTrace(t, registry, "disabled-subscribe", "session", 0)
-	if registryRecord(t, registry, "disabled-subscribe").TraceCapturePending {
-		t.Fatal("rejected subscription enabled trace protection")
-	}
+	manager.close()
+	_ = eventBus.Close()
 }
 
 func TestTaskTraceProjectorRetriesFailedProtectionInstallation(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	record := finishTaskForTrace(t, registry, "protection-retry", "session", 0)
+	record := finishTaskForTrace(t, registry, "protection-retry", "session", 1)
 	stateDir := filepath.Dir(taskregistry.WorkspaceStorePath(workspace))
 	if err := os.Chmod(stateDir, 0o500); err != nil {
 		t.Fatal(err)
@@ -1098,576 +386,343 @@ func TestTaskTraceProjectorRetriesFailedProtectionInstallation(t *testing.T) {
 
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	t.Cleanup(func() {
-		manager.close()
-		_ = eventBus.Close()
-	})
 	manager.attachTaskRegistry(workspace, registry)
 	manager.tasks.mu.Lock()
 	_, subscribed := manager.tasks.subs[workspace]
-	retryScheduled := manager.tasks.subscriptionRetryTimer != nil
+	retryScheduled := manager.tasks.retryTimer != nil
 	manager.tasks.mu.Unlock()
 	if subscribed || !retryScheduled {
 		t.Fatalf(
-			"failed installation subscribed = %v, retry scheduled = %v",
+			"failed installation subscribed=%v retry=%v",
 			subscribed,
 			retryScheduled,
 		)
 	}
 	if registryRecord(t, registry, record.TaskID).TraceCapturePending {
-		t.Fatal("failed protection installation retained an unowned marker")
+		t.Fatal("failed installation retained an unowned marker")
 	}
 
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	waitForTraceFile(t, workspace)
-	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
-	manager.tasks.mu.Lock()
-	_, subscribed = manager.tasks.subs[workspace]
-	manager.tasks.mu.Unlock()
-	if !subscribed {
-		t.Fatal("recovered protection installation did not subscribe")
-	}
-}
-
-func TestTaskTraceProjectorReopenReleasesRetrySlot(t *testing.T) {
-	workspace := t.TempDir()
-	var attempts atomic.Int32
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, trace *activeTraceCapture) error {
-			if attempts.Add(1) == 1 {
-				return &evalcapture.AdmissionError{
-					Reason: evalcapture.ReasonCapacity,
-					Class:  evalcapture.ClassCritical,
-				}
-			}
-			_, err := trace.builder.Finalize()
-			return err
-		},
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		record.TaskID,
+		record.GenerationID,
 	)
-	t.Cleanup(projector.close)
-	record := taskregistry.Record{
-		TaskID: "reopen", GenerationID: "generation", CreatedAt: 1,
-		Status:         taskregistry.StatusSucceeded,
-		DeliveryStatus: taskregistry.DeliveryFailed,
-	}
-	projector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 1, 1, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	if got := projector.stats().PendingAdmissions; got != 1 {
-		t.Fatalf("pending admissions after rejection = %d, want 1", got)
-	}
-
-	record.InteractionID = "interaction-1"
-	record.DeliveryStatus = taskregistry.DeliveryPending
-	projector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 2, 2, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	if got := projector.stats().PendingAdmissions; got != 0 {
-		t.Fatalf("pending admissions after reopen = %d, want 0", got)
-	}
-	record.DeliveryStatus = taskregistry.DeliveryDelivered
-	projector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 3, 3, taskregistry.EventTaskDeliveryChanged),
-		Record:       record,
-		FinalForTask: true,
-	})
-	if got := projector.stats().PendingAdmissions; got != 0 {
-		t.Fatalf("pending admissions after recovery = %d, want 0", got)
-	}
+	_ = waitForTraceFile(t, workspace)
+	manager.close()
+	_ = eventBus.Close()
 }
 
-func TestTaskTraceProjectorRetriesPermanentWriterFailure(t *testing.T) {
+func TestTaskTraceProjectorExtendsCanonicalTraceAfterDeliveryRecovery(
+	t *testing.T,
+) {
 	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var attempts atomic.Int32
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, trace *activeTraceCapture) error {
-			attempts.Add(1)
-			_, err := trace.builder.Finalize()
-			return err
-		},
-	)
-	projector.awaitPersistence = true
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	record := finishTaskForTrace(t, registry, "storage-retry", "session", 1)
-	key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-	projector.mu.Lock()
-	traceID := projector.traces[key].trace.builder.TraceID()
-	submissionID := projector.traces[key].receipt
-	projector.mu.Unlock()
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind:         evalcapture.EventPermanentlyFailed,
-		Reason:       evalcapture.ReasonStorageFailure,
-		TraceID:      traceID,
-		SubmissionID: submissionID,
-		Class:        evalcapture.ClassCritical,
-	})
-	if got := projector.stats().PendingAdmissions; got != 1 {
-		t.Fatalf("pending admissions after storage failure = %d, want 1", got)
-	}
-	if current := registryRecord(t, registry, record.TaskID); !current.TraceCapturePending {
-		t.Fatal("storage failure released durable trace retry marker")
-	}
-	projector.mu.Lock()
-	if projector.retryTimer != nil {
-		projector.retryTimer.Stop()
-		projector.retryTimer = nil
-	}
-	projector.mu.Unlock()
-	projector.retryPending()
-	projector.observeWriterEvent(evalcapture.Event{
-		Kind:         evalcapture.EventPersisted,
-		TraceID:      traceID,
-		SubmissionID: taskTraceReceipt(t, projector, key),
-		Class:        evalcapture.ClassCritical,
-	})
-
-	if attempts.Load() != 2 {
-		t.Fatalf("submission attempts = %d, want 2", attempts.Load())
-	}
-	if got := projector.stats().PendingAdmissions; got != 0 {
-		t.Fatalf("pending admissions after persistence = %d, want 0", got)
-	}
-	if current := registryRecord(t, registry, record.TaskID); current.TraceCapturePending {
-		t.Fatal("successful persistence retained trace retry marker")
-	}
-	projector.mu.Lock()
-	remaining := len(projector.traces)
-	projector.mu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("remaining traces = %d, want 0", remaining)
-	}
-}
-
-func TestTaskTraceProjectorRequiresSuccessfulSaveAfterCommittedWriteFailure(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
-	store := &committedFailureTraceStorage{
-		store: evaltrace.Store{
-			Root:      traceStoreRoot(settings, workspace),
-			Retention: settings.retention,
-			MaxTraces: settings.maxTraces,
-		},
-		failures: 3,
-	}
-	replacement := evalcapture.NewWriter(evalcapture.Options{
-		MaxAttempts: 2,
-		RetryDelay:  -1,
-		EventSink:   manager.handleTraceWriterEvent,
-		StorageFactory: func(evalcapture.Policy) evalcapture.Storage {
-			return store
-		},
-	})
-	manager.mu.Lock()
-	original := manager.writer
-	manager.writer = replacement
-	manager.mu.Unlock()
-	if original != nil {
-		if err := original.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() {
-		manager.close()
-		_ = eventBus.Close()
-	})
-
-	manager.attachTaskRegistry(workspace, registry)
-	record := finishTaskForTrace(t, registry, "committed-write", "session", 0)
-	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
-	if got := store.calls.Load(); got != 4 {
-		t.Fatalf("save calls = %d, want 4", got)
-	}
-}
-
-func TestTaskTraceProjectorRestartsPendingVisibleTraceThroughSave(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	eventBus := runtimeevents.NewBus()
-	first := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	first.attachTaskRegistry(workspace, registry)
-	record := finishTaskForTrace(t, registry, "restart-committed-write", "session", 0)
-	waitForTraceFile(t, workspace)
-	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
-	first.close()
-
-	if err := registry.SetTraceCapturePending(record.TaskID, record.GenerationID, true); err != nil {
-		t.Fatal(err)
-	}
-	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
-	store := &committedFailureTraceStorage{
-		store: evaltrace.Store{
-			Root:      traceStoreRoot(settings, workspace),
-			Retention: settings.retention,
-			MaxTraces: settings.maxTraces,
-		},
-	}
-	restarted := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
-	replacement := evalcapture.NewWriter(evalcapture.Options{
-		RetryDelay: -1,
-		EventSink:  restarted.handleTraceWriterEvent,
-		StorageFactory: func(evalcapture.Policy) evalcapture.Storage {
-			return store
-		},
-	})
-	restarted.mu.Lock()
-	original := restarted.writer
-	restarted.writer = replacement
-	restarted.mu.Unlock()
-	if original != nil {
-		if err := original.Close(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() {
-		restarted.close()
-		_ = eventBus.Close()
-	})
-
-	restarted.attachTaskRegistry(workspace, registry)
-	waitForTraceMarkerCleared(t, registry, record.TaskID, record.GenerationID)
-	if got := store.calls.Load(); got != 1 {
-		t.Fatalf("restart save calls = %d, want 1", got)
-	}
-}
-
-func TestTaskTraceProjectorRecoversDeferredCapacityOverflowFromRegistry(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	var accepting atomic.Bool
-	var admitted atomic.Int32
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, trace *activeTraceCapture) error {
-			if !accepting.Load() {
-				return &evalcapture.AdmissionError{
-					Reason: evalcapture.ReasonCapacity,
-					Class:  evalcapture.ClassCritical,
-				}
-			}
-			if _, err := trace.builder.Finalize(); err != nil {
-				return err
-			}
-			admitted.Add(1)
-			return nil
-		},
-	)
-	projector.awaitPersistence = true
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	for i := range maxPendingTaskTraceAdmissions + 17 {
-		finishTaskForTrace(
-			t,
-			registry,
-			fmt.Sprintf("capacity-%03d", i),
-			"session",
-			int64(i+1),
-		)
-	}
-
-	stats := projector.stats()
-	if stats.PendingAdmissions != maxPendingTaskTraceAdmissions {
-		t.Fatalf("pending admissions = %d, want %d", stats.PendingAdmissions, maxPendingTaskTraceAdmissions)
-	}
-	if stats.OverflowDeferrals != 17 {
-		t.Fatalf("overflow deferrals = %d, want 17", stats.OverflowDeferrals)
-	}
-	projector.mu.Lock()
-	retained := len(projector.traces)
-	projector.mu.Unlock()
-	if retained != maxPendingTaskTraceAdmissions {
-		t.Fatalf("retained terminal traces = %d, want %d", retained, maxPendingTaskTraceAdmissions)
-	}
-	for _, record := range registry.List() {
-		if !record.TraceCapturePending {
-			t.Fatalf("task %q lacks durable trace retry marker", record.TaskID)
-		}
-	}
-
-	accepting.Store(true)
-	deadline := time.Now().Add(3 * time.Second)
-	want := int32(maxPendingTaskTraceAdmissions + 17)
-	for admitted.Load() != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("admitted traces = %d, want %d", admitted.Load(), want)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if stats := projector.stats(); stats.PendingAdmissions != 0 {
-		t.Fatalf("pending admissions after recovery = %d", stats.PendingAdmissions)
-	}
-}
-
-func TestTaskTraceProjectorPreservesPendingGenerationAcrossReuseAndRestart(t *testing.T) {
-	workspace := t.TempDir()
-	store := taskregistry.WorkspaceStorePath(workspace)
-	registry := taskregistry.NewRegistry(store)
-	rejecting := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(traceCaptureSettings, *activeTraceCapture) error {
-			return &evalcapture.AdmissionError{
-				Reason: evalcapture.ReasonCapacity,
-				Class:  evalcapture.ClassCritical,
-			}
-		},
-	)
-	rejecting.awaitPersistence = true
-	rejecting.attach(workspace, registry)
-	first := finishTaskForTrace(t, registry, "reused", "session-1", 0)
+	manager, eventBus, registry := newTaskTraceTestRuntime(t, workspace)
 	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "reused", Status: taskregistry.StatusRunning,
+		TaskID: "delivery", Task: "test", CreatedAt: 1,
+		Status:         taskregistry.StatusRunning,
 		DeliveryStatus: taskregistry.DeliveryPending,
-	}); !errors.Is(err, taskregistry.ErrTraceCapturePending) {
-		t.Fatalf("pending generation reuse error = %v", err)
-	}
-	rejecting.close()
-
-	reloaded := taskregistry.NewRegistry(store)
-	if current := registryRecord(t, reloaded, first.TaskID); current.GenerationID != first.GenerationID ||
-		!current.TraceCapturePending {
-		t.Fatalf("reloaded pending generation = %#v", current)
-	}
-	var submitted []evaltrace.Trace
-	restarted := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			submitted = append(submitted, trace)
-			return nil
-		},
-	)
-	restarted.awaitPersistence = true
-	t.Cleanup(restarted.close)
-	restarted.attach(workspace, reloaded)
-	if len(submitted) != 1 {
-		t.Fatalf("restart submissions = %d, want 1", len(submitted))
-	}
-	firstKey := newTaskTraceKey(workspace, first.TaskID, first.GenerationID)
-	restarted.observeWriterEvent(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: submitted[0].TraceID,
-		SubmissionID: taskTraceReceipt(t, restarted, firstKey),
-		Class:        evalcapture.ClassCritical,
-	})
-
-	if err := reloaded.Upsert(taskregistry.Record{
-		TaskID: "reused", RequesterSessionKey: "session-2",
-		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	second := registryRecord(t, reloaded, "reused")
-	if second.GenerationID == first.GenerationID {
-		t.Fatal("task ID reuse did not create a new generation")
-	}
-	if err := reloaded.Update("reused", func(record *taskregistry.Record) {
+	if err := registry.Update("delivery", func(record *taskregistry.Record) {
 		record.Status = taskregistry.StatusSucceeded
+		record.DeliveryStatus = taskregistry.DeliveryFailed
+		record.LastCompletionID = "completion-1"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed := registryRecord(t, registry, "delivery")
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		failed.TaskID,
+		failed.GenerationID,
+	)
+	firstPath := waitForTraceFile(t, workspace)
+	first := readCapturedTrace(t, firstPath)
+
+	if err := registry.Update("delivery", func(record *taskregistry.Record) {
+		record.DeliveryStatus = taskregistry.DeliveryPending
+		record.LastCompletionID = "completion-2"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Update("delivery", func(record *taskregistry.Record) {
 		record.DeliveryStatus = taskregistry.DeliveryDelivered
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(submitted) != 2 {
-		t.Fatalf("recovered generation traces = %d, want 2", len(submitted))
+	delivered := registryRecord(t, registry, "delivery")
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		delivered.TaskID,
+		delivered.GenerationID,
+	)
+	second := waitForTraceRevision(t, firstPath, delivered.LastEventSeq)
+	if len(second.Records) <= len(first.Records) {
+		t.Fatalf(
+			"recovered records = %d, want more than %d",
+			len(second.Records),
+			len(first.Records),
+		)
 	}
-	if submitted[0].TraceID == submitted[1].TraceID {
-		t.Fatalf("reused generations share trace ID %q", submitted[0].TraceID)
+	if got := deliveryStatuses(t, second); !slices.Contains(got, "failed") ||
+		!slices.Contains(got, "delivered") {
+		t.Fatalf("delivery statuses = %v", got)
 	}
-	secondKey := newTaskTraceKey(workspace, second.TaskID, second.GenerationID)
-	restarted.observeWriterEvent(evalcapture.Event{
-		Kind: evalcapture.EventPersisted, TraceID: submitted[1].TraceID,
-		SubmissionID: taskTraceReceipt(t, restarted, secondKey),
-		Class:        evalcapture.ClassCritical,
-	})
+	manager.close()
+	_ = eventBus.Close()
 }
 
-func TestTaskTraceProjectorCloseWaitsForPendingAdmission(t *testing.T) {
+func TestTaskTraceProjectorRepairsCorruptCanonicalTrace(t *testing.T) {
 	workspace := t.TempDir()
-	release := make(chan struct{})
-	waitStarted := make(chan struct{})
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(traceCaptureSettings, *activeTraceCapture) error {
-			return &evalcapture.AdmissionError{
-				Reason: evalcapture.ReasonCapacity,
-				Class:  evalcapture.ClassCritical,
-			}
-		},
-		func(context.Context, traceCaptureSettings, *activeTraceCapture) error {
-			close(waitStarted)
-			<-release
-			return nil
-		},
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	if err := registry.SetTraceCaptureProtection(true, 2000); err != nil {
+		t.Fatal(err)
+	}
+	record := finishTaskForTrace(t, registry, "corrupt", "session", 1)
+	active := buildTaskTrace(
+		settings,
+		workspace,
+		record,
+		registry.ListEvents(record.TaskID),
 	)
+	trace, policy, err := prepareTrace(settings, active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(policy.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(policy.Root, trace.TraceID+".json")
+	if err := os.WriteFile(path, []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+	manager.attachTaskRegistry(workspace, registry)
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		record.TaskID,
+		record.GenerationID,
+	)
+	repaired := readCapturedTrace(t, path)
+	if repaired.TraceID != trace.TraceID {
+		t.Fatalf("repaired trace ID = %q, want %q", repaired.TraceID, trace.TraceID)
+	}
+	manager.close()
+	_ = eventBus.Close()
+}
+
+func TestTaskTraceProjectorDisablePreservesInflightMarker(t *testing.T) {
+	workspace := t.TempDir()
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	storage := newBlockingTaskTraceStorage()
+	coordinator := evalcapture.NewCoordinator(evalcapture.CoordinatorOptions{
+		PendingCapacity: 4,
+		RetryDelay:      time.Millisecond,
+		Writer: evalcapture.Options{
+			Capacity:    4,
+			MaxAttempts: 1,
+			RetryDelay:  -1,
+			StorageFactory: func(policy evalcapture.Policy) evalcapture.Storage {
+				storage.setPolicy(policy)
+				return storage
+			},
+		},
+	})
+	projector := newTaskTraceProjector(settings, coordinator)
+	projector.attach(workspace, registry)
+	record := finishTaskForTrace(t, registry, "disabled", "session", 1)
+	select {
+	case <-storage.started:
+	case <-time.After(time.Second):
+		t.Fatal("task trace did not reach storage")
+	}
+	disabled := settings
+	disabled.enabled = false
+	projector.updateSettings(disabled)
+	current := registryRecord(t, registry, record.TaskID)
+	if !current.TraceCapturePending {
+		t.Fatal("disable cleared an in-flight durable marker")
+	}
+	close(storage.release)
+	closeCoordinatorForTaskTraceTest(t, coordinator)
+	projector.stop()
+	projector.finish()
+}
+
+func TestTaskTraceProjectorShutdownDrainsRegisteredSource(t *testing.T) {
+	workspace := t.TempDir()
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	storage := newBlockingTaskTraceStorage()
+	coordinator := evalcapture.NewCoordinator(evalcapture.CoordinatorOptions{
+		PendingCapacity: 4,
+		RetryDelay:      time.Millisecond,
+		Writer: evalcapture.Options{
+			Capacity:    4,
+			MaxAttempts: 1,
+			RetryDelay:  -1,
+			StorageFactory: func(policy evalcapture.Policy) evalcapture.Storage {
+				storage.setPolicy(policy)
+				return storage
+			},
+		},
+	})
+	projector := newTaskTraceProjector(settings, coordinator)
+	projector.attach(workspace, registry)
+	record := finishTaskForTrace(t, registry, "shutdown", "session", 1)
+	select {
+	case <-storage.started:
+	case <-time.After(time.Second):
+		t.Fatal("task trace did not reach storage")
+	}
+	projector.stop()
+	closed := make(chan error, 1)
+	go func() {
+		admissionCtx, cancelAdmission := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancelAdmission()
+		closed <- coordinator.Close(admissionCtx, time.Second)
+	}()
+	close(storage.release)
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	waitForTraceMarkerCleared(
+		t,
+		registry,
+		record.TaskID,
+		record.GenerationID,
+	)
+	projector.finish()
+}
+
+func TestTaskTraceReconciliationDoesNotDowngradeCompleteTrace(t *testing.T) {
+	workspace := t.TempDir()
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
 	record := taskregistry.Record{
-		TaskID: "shutdown", GenerationID: "shutdown-generation", CreatedAt: 1,
+		TaskID: "task", GenerationID: "generation", CreatedAt: 1,
 		Status:         taskregistry.StatusSucceeded,
 		DeliveryStatus: taskregistry.DeliveryDelivered,
+		LastEventSeq:   2,
 	}
-	projector.observe(workspace, taskregistry.EventObservation{
-		Event:        taskEventFixture(record, 1, 1, taskregistry.EventTaskUpserted),
-		Record:       record,
-		FinalForTask: true,
+	complete := buildTaskTrace(settings, workspace, record, []taskregistry.TaskEvent{
+		taskTraceTestEvent(record, 1, taskregistry.EventTaskUpserted),
+		taskTraceTestEvent(record, 2, taskregistry.EventTaskStatusChanged),
 	})
-
-	closed := make(chan struct{})
-	go func() {
-		projector.close()
-		close(closed)
-	}()
-	<-waitStarted
-	select {
-	case <-closed:
-		t.Fatal("close returned before pending trace admission")
-	case <-time.After(20 * time.Millisecond):
+	existing, _, err := prepareTrace(settings, complete)
+	if err != nil {
+		t.Fatal(err)
 	}
-	close(release)
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("close did not finish after pending trace admission")
+	incomplete := buildTaskTrace(settings, workspace, record, []taskregistry.TaskEvent{
+		taskTraceTestEvent(record, 2, taskregistry.EventTaskStatusChanged),
+	})
+	candidate, _, err := prepareTrace(settings, incomplete)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestTaskTraceProjectorShutdownDeadlineLeavesRegistryRecoverable(t *testing.T) {
-	workspace := t.TempDir()
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		func(traceCaptureSettings, *activeTraceCapture) error {
-			return &evalcapture.AdmissionError{
-				Reason: evalcapture.ReasonCapacity,
-				Class:  evalcapture.ClassCritical,
-			}
-		},
-		func(
-			ctx context.Context,
-			_ traceCaptureSettings,
-			_ *activeTraceCapture,
-		) error {
-			<-ctx.Done()
-			return ctx.Err()
-		},
-	)
-	projector.attach(workspace, registry)
-	finishTaskForTrace(t, registry, "shutdown-timeout", "session", 1)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if err := projector.closeWithContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("closeWithContext error = %v", err)
+	selected, persist := reconcileTaskTraceCandidate(existing, candidate)
+	if persist {
+		t.Fatal("incomplete reconstruction replaced complete canonical trace")
 	}
-
-	traces, submit := collectTaskTraces(t)
-	reloaded := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	restarted := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		submit,
-	)
-	t.Cleanup(restarted.close)
-	restarted.attach(workspace, reloaded)
-	if got := traces(); len(got) != 1 {
-		t.Fatalf("reconciled traces after shutdown timeout = %d, want 1", len(got))
+	if selected.TraceID != existing.TraceID ||
+		len(selected.Records) != len(existing.Records) ||
+		selected.Truncation.Incomplete {
+		t.Fatalf("selected trace was downgraded: %+v", selected.Truncation)
 	}
 }
 
-func TestTaskTraceProjectorMarksPrunedStartupHistoryIncomplete(t *testing.T) {
+func TestTaskTraceJournalTruncationCountsMissingPrefixOnce(t *testing.T) {
 	workspace := t.TempDir()
-	registry := taskregistry.NewRegistryWithOptions(
-		taskregistry.WorkspaceStorePath(workspace),
-		taskregistry.Options{MaxEvents: 1},
-	)
-	record := finishTaskForTrace(t, registry, "pruned", "session", 0)
-	if events := registry.ListEvents("pruned"); len(events) != 1 || events[0].Seq <= 1 {
-		t.Fatalf("retained events = %#v", events)
-	}
-
-	traces, submit := collectTaskTraces(t)
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		submit,
-	)
-	t.Cleanup(projector.close)
-	projector.attach(workspace, registry)
-	got := traces()
-	if len(got) != 1 {
-		t.Fatalf("reconciled %d traces, want 1", len(got))
-	}
-	if !got[0].Truncation.Incomplete ||
-		!slices.Contains(got[0].Truncation.Reasons, "task_event_sequence_gap") ||
-		got[0].Truncation.DroppedRecords != int(record.LastEventSeq-1) {
-		t.Fatalf("truncation = %+v", got[0].Truncation)
-	}
-}
-
-func TestTaskTraceProjectorClampsClockRollbackOffsets(t *testing.T) {
-	workspace := t.TempDir()
-	traces, submit := collectTaskTraces(t)
-	projector := newTaskTraceProjector(
-		traceCaptureSettingsFromConfig(traceTestConfig(workspace)),
-		submit,
-	)
-	t.Cleanup(projector.close)
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
 	record := taskregistry.Record{
-		TaskID: "clock", GenerationID: "generation-clock", CreatedAt: 100,
-		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+		TaskID: "task", GenerationID: "generation", CreatedAt: 1,
+		Status: taskregistry.StatusSucceeded, LastEventSeq: 4,
+		DeliveryStatus:      taskregistry.DeliveryDelivered,
+		TraceCaptureDropped: 2,
 	}
-	projector.observe(workspace, taskregistry.EventObservation{
-		Event:  taskEventFixture(record, 1, 200, taskregistry.EventTaskUpserted),
-		Record: record, FinalForTask: true,
-	})
-	record.Status = taskregistry.StatusSucceeded
-	record.DeliveryStatus = taskregistry.DeliveryDelivered
-	projector.observe(workspace, taskregistry.EventObservation{
-		Event:  taskEventFixture(record, 2, 150, taskregistry.EventTaskStatusChanged),
-		Record: record, FinalForTask: true,
-	})
-
-	got := traces()
-	if len(got) != 1 {
-		t.Fatalf("persisted %d traces, want 1", len(got))
+	trace, _, err := prepareTrace(
+		settings,
+		buildTaskTrace(settings, workspace, record, []taskregistry.TaskEvent{
+			taskTraceTestEvent(record, 3, taskregistry.EventTaskProgress),
+			taskTraceTestEvent(record, 4, taskregistry.EventTaskStatusChanged),
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got[0].Records[1].OffsetNanos < got[0].Records[0].OffsetNanos {
-		t.Fatalf("offsets moved backward: %#v", got[0].Records)
+	if !trace.Truncation.Incomplete ||
+		trace.Truncation.DroppedRecords != 2 {
+		t.Fatalf("truncation = %+v, want exactly 2 dropped records", trace.Truncation)
 	}
 }
 
-func TestTaskTraceProjectorPersistsIncompleteTraceOnClose(t *testing.T) {
+func TestTaskTraceReconciliationPersistsNewerRevisionWithoutHistory(
+	t *testing.T,
+) {
 	workspace := t.TempDir()
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	record := taskregistry.Record{
+		TaskID: "task", GenerationID: "generation", CreatedAt: 1,
+		Status:         taskregistry.StatusSucceeded,
+		DeliveryStatus: taskregistry.DeliveryDelivered,
+		LastEventSeq:   2,
+	}
+	existing, _, err := prepareTrace(
+		settings,
+		buildTaskTrace(settings, workspace, record, []taskregistry.TaskEvent{
+			taskTraceTestEvent(record, 1, taskregistry.EventTaskUpserted),
+			taskTraceTestEvent(record, 2, taskregistry.EventTaskStatusChanged),
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.LastEventSeq = 5
+	candidate, _, err := prepareTrace(
+		settings,
+		buildTaskTrace(settings, workspace, record, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, persist := reconcileTaskTraceCandidate(existing, candidate)
+	if !persist {
+		t.Fatal("newer projection revision was treated as already durable")
+	}
+	if selected.Metadata.ProjectionRevision != 5 ||
+		!selected.Truncation.Incomplete {
+		t.Fatalf(
+			"selected revision=%d truncation=%+v",
+			selected.Metadata.ProjectionRevision,
+			selected.Truncation,
+		)
+	}
+}
+
+func newTaskTraceTestRuntime(
+	t *testing.T,
+	workspace string,
+) (*traceCaptureManager, *runtimeevents.EventBus, *taskregistry.Registry) {
+	t.Helper()
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
 	manager.attachTaskRegistry(workspace, registry)
-	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "active", Task: "test", Status: taskregistry.StatusRunning,
-		DeliveryStatus: taskregistry.DeliveryPending,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	manager.close()
-	t.Cleanup(func() { _ = eventBus.Close() })
-
-	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
-	if !trace.Truncation.Incomplete ||
-		!slices.Contains(
-			trace.Truncation.Reasons,
-			"runtime_closed_before_terminal_task_delivery",
-		) {
-		t.Fatalf("truncation = %+v", trace.Truncation)
-	}
+	return manager, eventBus, registry
 }
 
 func finishTaskForTrace(
@@ -1706,36 +761,6 @@ func registryRecord(
 	return record
 }
 
-func taskTraceReceipt(
-	t *testing.T,
-	projector *taskTraceProjector,
-	key taskTraceKey,
-) string {
-	t.Helper()
-	projector.mu.Lock()
-	defer projector.mu.Unlock()
-	state := projector.traces[key]
-	if state == nil || state.receipt == "" {
-		t.Fatalf("task trace %v has no active persistence receipt", key)
-	}
-	return state.receipt
-}
-
-func taskTraceID(
-	t *testing.T,
-	projector *taskTraceProjector,
-	key taskTraceKey,
-) string {
-	t.Helper()
-	projector.mu.Lock()
-	defer projector.mu.Unlock()
-	state := projector.traces[key]
-	if state == nil || state.trace == nil {
-		t.Fatalf("task trace %v has no active capture", key)
-	}
-	return state.trace.builder.TraceID()
-}
-
 func waitForTraceMarkerCleared(
 	t *testing.T,
 	registry *taskregistry.Registry,
@@ -1763,26 +788,27 @@ func waitForTraceMarkerCleared(
 	}
 }
 
-func collectTaskTraces(
+func waitForTraceRevision(
 	t *testing.T,
-) (func() []evaltrace.Trace, func(traceCaptureSettings, *activeTraceCapture) error) {
+	path string,
+	revision int64,
+) evaltrace.Trace {
 	t.Helper()
-	var mu sync.Mutex
-	var traces []evaltrace.Trace
-	return func() []evaltrace.Trace {
-			mu.Lock()
-			defer mu.Unlock()
-			return append([]evaltrace.Trace(nil), traces...)
-		}, func(_ traceCaptureSettings, active *activeTraceCapture) error {
-			trace, err := active.builder.Finalize()
-			if err != nil {
-				return err
-			}
-			mu.Lock()
-			traces = append(traces, trace)
-			mu.Unlock()
-			return nil
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		trace := readCapturedTrace(t, path)
+		if maxTaskTraceEventSequence(trace.Records) >= revision {
+			return trace
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"trace revision = %d, want at least %d",
+				maxTaskTraceEventSequence(trace.Records),
+				revision,
+			)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func taskTraceGenerations(t *testing.T, trace evaltrace.Trace) []string {
@@ -1796,32 +822,15 @@ func taskTraceGenerations(t *testing.T, trace evaltrace.Trace) []string {
 		if err := json.Unmarshal(record.Data, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.GenerationID != "" && !slices.Contains(generations, payload.GenerationID) {
+		if payload.GenerationID != "" &&
+			!slices.Contains(generations, payload.GenerationID) {
 			generations = append(generations, payload.GenerationID)
 		}
 	}
 	return generations
 }
 
-func taskTransitionStatuses(t *testing.T, trace evaltrace.Trace) []string {
-	t.Helper()
-	var statuses []string
-	for _, record := range trace.Records {
-		if record.Kind != evaltrace.RecordTaskTransition {
-			continue
-		}
-		var payload evaltrace.TaskPayload
-		if err := json.Unmarshal(record.Data, &payload); err != nil {
-			t.Fatal(err)
-		}
-		if payload.Status != "" {
-			statuses = append(statuses, payload.Status)
-		}
-	}
-	return statuses
-}
-
-func taskDeliveryStatuses(t *testing.T, trace evaltrace.Trace) []string {
+func deliveryStatuses(t *testing.T, trace evaltrace.Trace) []string {
 	t.Helper()
 	var statuses []string
 	for _, record := range trace.Records {
@@ -1837,46 +846,12 @@ func taskDeliveryStatuses(t *testing.T, trace evaltrace.Trace) []string {
 	return statuses
 }
 
-func taskDeliveryCompletionIDs(trace evaltrace.Trace) []string {
-	var completionIDs []string
-	for _, record := range trace.Records {
-		if record.Kind == evaltrace.RecordDeliveryOutcome {
-			completionIDs = append(completionIDs, record.Correlation.CompletionID)
-		}
-	}
-	return completionIDs
-}
-
-type committedFailureTraceStorage struct {
-	store    evaltrace.Store
-	failures int32
-	calls    atomic.Int32
-}
-
-func (s *committedFailureTraceStorage) Save(trace evaltrace.Trace) (string, error) {
-	path, err := s.store.Save(trace)
-	if err != nil {
-		return path, err
-	}
-	if s.calls.Add(1) <= s.failures {
-		return path, &fileutil.CommittedWriteError{
-			Err: errors.New("injected parent directory sync failure"),
-		}
-	}
-	return path, nil
-}
-
-func (s *committedFailureTraceStorage) Prune() (int, error) {
-	return s.store.Prune()
-}
-
-func taskEventFixture(
+func taskTraceTestEvent(
 	record taskregistry.Record,
-	sequence, emittedAt int64,
+	sequence int64,
 	eventType taskregistry.EventType,
 ) taskregistry.TaskEvent {
 	return taskregistry.TaskEvent{
-		SchemaVersion: taskregistry.TaskEventSchemaVersion,
 		EventID: fmt.Sprintf(
 			"%s:%s:%06d:%s",
 			record.TaskID,
@@ -1885,7 +860,63 @@ func taskEventFixture(
 			eventType,
 		),
 		TaskID: record.TaskID, GenerationID: record.GenerationID,
-		Type: eventType, Status: record.Status, DeliveryStatus: record.DeliveryStatus,
-		Seq: sequence, EmittedAt: emittedAt,
+		Seq: sequence, EmittedAt: sequence,
+		Type: eventType, Status: record.Status,
+		DeliveryStatus: record.DeliveryStatus,
+	}
+}
+
+type blockingTaskTraceStorage struct {
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+
+	mu     sync.Mutex
+	policy evalcapture.Policy
+}
+
+func newBlockingTaskTraceStorage() *blockingTaskTraceStorage {
+	return &blockingTaskTraceStorage{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *blockingTaskTraceStorage) setPolicy(policy evalcapture.Policy) {
+	s.mu.Lock()
+	s.policy = policy
+	s.mu.Unlock()
+}
+
+func (s *blockingTaskTraceStorage) Save(
+	trace evaltrace.Trace,
+) (string, error) {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	s.mu.Lock()
+	policy := s.policy
+	s.mu.Unlock()
+	return (evaltrace.Store{
+		Root: policy.Root, Retention: policy.Retention,
+		MaxTraces: policy.MaxTraces,
+	}).Save(trace)
+}
+
+func (s *blockingTaskTraceStorage) Prune() (int, error) {
+	return 0, nil
+}
+
+func closeCoordinatorForTaskTraceTest(
+	t *testing.T,
+	coordinator *evalcapture.Coordinator,
+) {
+	t.Helper()
+	admissionCtx, cancelAdmission := context.WithTimeout(
+		context.Background(),
+		time.Second,
+	)
+	defer cancelAdmission()
+	if err := coordinator.Close(admissionCtx, time.Second); err != nil {
+		t.Fatal(err)
 	}
 }

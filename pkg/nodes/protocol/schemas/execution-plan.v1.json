@@ -19,6 +19,7 @@
     "prepared_at",
     "expires_at",
     "risk",
+    "descriptor_hash",
     "executor",
     "policy_revision",
     "plan_hash"
@@ -42,6 +43,7 @@
     "prepared_at": {"type": "integer", "minimum": 1},
     "expires_at": {"type": "integer", "minimum": 1},
     "risk": {"enum": ["read", "write", "privileged"]},
+    "descriptor_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "executor": {"$ref": "#/$defs/identifier"},
     "policy_revision": {"$ref": "#/$defs/identifier"},
     "plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
