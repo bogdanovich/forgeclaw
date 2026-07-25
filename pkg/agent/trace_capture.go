@@ -237,7 +237,7 @@ func reconcileStoredTaskTrace(
 		return candidate, true, nil
 	}
 	if err != nil {
-		return evaltrace.Trace{}, false, err
+		return evaltrace.Trace{}, false, &taskTraceStorageError{err: err}
 	}
 	selected, persist := reconcileTaskTraceCandidate(existing, candidate)
 	return selected, persist, nil

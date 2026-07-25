@@ -25,6 +25,18 @@ const (
 
 var errTaskTraceAlreadyDurable = errors.New("task trace is already durable")
 
+type taskTraceStorageError struct {
+	err error
+}
+
+func (e *taskTraceStorageError) Error() string {
+	return "task trace storage: " + e.err.Error()
+}
+
+func (e *taskTraceStorageError) Unwrap() error {
+	return e.err
+}
+
 type taskTraceKey struct {
 	workspace    string
 	taskID       string
@@ -164,8 +176,18 @@ func (p *taskTraceProjector) subscribe(
 	workspace string,
 	registry *taskregistry.Registry,
 ) {
+	p.mu.Lock()
+	if p.closed || !p.settings.enabled || p.registries[workspace] != registry {
+		p.mu.Unlock()
+		return
+	}
+	if _, exists := p.subs[workspace]; exists {
+		p.mu.Unlock()
+		return
+	}
 	if p.awaitPersistence {
 		if err := registry.SetTraceCaptureProtection(true); err != nil {
+			p.mu.Unlock()
 			logger.WarnCF("evaltrace", "Failed to protect task trace snapshot", map[string]any{
 				"workspace": workspace,
 				"error":     err.Error(),
@@ -178,18 +200,6 @@ func (p *taskTraceProjector) subscribe(
 			p.observe(workspace, observation)
 		},
 	)
-
-	p.mu.Lock()
-	if p.closed || !p.settings.enabled || p.registries[workspace] != registry {
-		p.mu.Unlock()
-		unsubscribe()
-		return
-	}
-	if _, exists := p.subs[workspace]; exists {
-		p.mu.Unlock()
-		unsubscribe()
-		return
-	}
 	p.subs[workspace] = taskRegistrySubscription{
 		registry: registry, unsubscribe: unsubscribe,
 	}
@@ -429,7 +439,7 @@ func (p *taskTraceProjector) trySubmitLocked(
 		return
 	}
 	delete(p.inflight, submissionID)
-	if taskTraceAdmissionCanRetry(err) {
+	if taskTracePersistCanRetry(err) {
 		if !state.retryable {
 			p.retryOrDeferLocked(key, state)
 		}
@@ -596,6 +606,11 @@ func (p *taskTraceProjector) setTracePendingLocked(
 func taskTraceAdmissionCanRetry(err error) bool {
 	var admission *evalcapture.AdmissionError
 	return errors.As(err, &admission) && admission.Reason == evalcapture.ReasonCapacity
+}
+
+func taskTracePersistCanRetry(err error) bool {
+	var storage *taskTraceStorageError
+	return taskTraceAdmissionCanRetry(err) || errors.As(err, &storage)
 }
 
 func (p *taskTraceProjector) scheduleRetryLocked() {
@@ -1083,6 +1098,10 @@ func reconcileTaskTraceCandidate(
 		if merged, ok := mergeCompleteTaskTrace(existing, candidate); ok {
 			return merged, true
 		}
+		if maxTaskTraceEventSequence(candidate.Records) >
+			maxTaskTraceEventSequence(existing.Records) {
+			return candidate, true
+		}
 		return existing, false
 	}
 	if traceRecordsExtend(existing.Records, candidate.Records) {
@@ -1202,6 +1221,16 @@ func taskTraceEventSequence(record evaltrace.Record) (int64, bool) {
 	}
 	value, err := strconv.ParseInt(eventID[sequence+1:eventType], 10, 64)
 	return value, err == nil && value > 0
+}
+
+func maxTaskTraceEventSequence(records []evaltrace.Record) int64 {
+	var highest int64
+	for _, record := range records {
+		if sequence, ok := taskTraceEventSequence(record); ok && sequence > highest {
+			highest = sequence
+		}
+	}
+	return highest
 }
 
 func taskErrorCode(record taskregistry.Record) string {
