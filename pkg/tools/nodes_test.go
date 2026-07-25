@@ -19,42 +19,44 @@ type fakeNodeDiscoverySource struct {
 	err           error
 }
 
-func (source *fakeNodeDiscoverySource) Resolve(ref string) (nodes.Snapshot, bool, error) {
+func (source *fakeNodeDiscoverySource) Lookup(
+	ref string,
+) (NodeDiscoveryRecord, bool, error) {
 	if source.err != nil {
-		return nodes.Snapshot{}, false, source.err
+		return NodeDiscoveryRecord{}, false, source.err
 	}
 	snapshot, ok := source.byRef[ref]
-	return snapshot, ok, nil
-}
-
-func (source *fakeNodeDiscoverySource) Registration(
-	id nodes.ID,
-) (nodes.Registration, bool, error) {
-	if source.err != nil {
-		return nodes.Registration{}, false, source.err
+	if !ok {
+		return NodeDiscoveryRecord{}, false, nil
 	}
-	registration, ok := source.registrations[id]
-	if ok && registration.Snapshot.ID == "" {
-		for _, snapshot := range source.byRef {
-			if snapshot.ID == id {
-				registration.Snapshot = snapshot
-				break
-			}
+	record := NodeDiscoveryRecord{
+		Snapshot:  snapshot,
+		Connected: source.Connected(snapshot.ID),
+	}
+	if registration, registered := source.registrations[snapshot.ID]; registered {
+		if registration.Snapshot.ID == "" {
+			registration.Snapshot = snapshot
 		}
+		record.Snapshot = registration.Snapshot
+		record.Registration = &registration
 	}
-	return registration, ok, nil
+	return record, true, nil
 }
 
 func (source *fakeNodeDiscoverySource) Connected(id nodes.ID) bool {
 	if source.connected != nil {
 		return source.connected[id]
 	}
+	return source.byRefNode(id).State == nodes.StateConnected
+}
+
+func (source *fakeNodeDiscoverySource) byRefNode(id nodes.ID) nodes.Snapshot {
 	for _, snapshot := range source.byRef {
 		if snapshot.ID == id {
-			return snapshot.State == nodes.StateConnected
+			return snapshot
 		}
 	}
-	return false
+	return nodes.Snapshot{}
 }
 
 func TestNodeDiscoveryToolListUsesEffectiveAgentPolicy(t *testing.T) {

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -12,9 +13,12 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/nodes"
 	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 const nodeAdmissionDrainTimeout = 5 * time.Second
+
+var errNodeDiscoveryAuthorityUnavailable = errors.New("node discovery authority unavailable")
 
 type nodeAdmissionRoutes interface {
 	RegisterHTTPHandler(string, http.Handler) error
@@ -30,6 +34,20 @@ type nodeAdmissionRuntime struct {
 	handler      *nodews.AdmissionHandler
 	sessions     *nodews.SessionHub
 	mounted      bool
+}
+
+type nodeDiscoverySource struct {
+	runtime      *nodeAdmissionRuntime
+	registryPath string
+}
+
+func (source *nodeDiscoverySource) Lookup(
+	ref string,
+) (tools.NodeDiscoveryRecord, bool, error) {
+	if source == nil || source.runtime == nil {
+		return tools.NodeDiscoveryRecord{}, false, errNodeDiscoveryAuthorityUnavailable
+	}
+	return source.runtime.lookup(source.registryPath, ref)
 }
 
 func setupNodeAdmission(
@@ -93,10 +111,10 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	runtime.registryMu.Lock()
 	runtime.registry = registry
 	runtime.sessions = sessions
-	runtime.registryMu.Unlock()
 	runtime.registryPath = registryPath
-	runtime.handler = handler
 	runtime.mounted = true
+	runtime.registryMu.Unlock()
+	runtime.handler = handler
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
 		"allow_loopback_plaintext": cfg.Nodes.AllowLoopbackPlaintext,
@@ -104,31 +122,34 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	return nil
 }
 
-func (runtime *nodeAdmissionRuntime) Resolve(ref string) (nodes.Snapshot, bool, error) {
-	registry := runtime.currentRegistry()
-	if registry == nil {
-		return nodes.Snapshot{}, false, nil
-	}
-	return registry.Resolve(ref)
-}
-
-func (runtime *nodeAdmissionRuntime) Registration(id nodes.ID) (nodes.Registration, bool, error) {
-	registry := runtime.currentRegistry()
-	if registry == nil {
-		return nodes.Registration{}, false, nil
-	}
-	return registry.Registration(id)
-}
-
-func (runtime *nodeAdmissionRuntime) Connected(id nodes.ID) bool {
-	sessions := runtime.currentSessions()
-	return sessions != nil && sessions.Connected(id)
-}
-
-func (runtime *nodeAdmissionRuntime) currentRegistry() *nodes.FileRegistry {
+func (runtime *nodeAdmissionRuntime) lookup(
+	expectedRegistryPath string,
+	ref string,
+) (tools.NodeDiscoveryRecord, bool, error) {
 	runtime.registryMu.RLock()
 	defer runtime.registryMu.RUnlock()
-	return runtime.registry
+	if !runtime.mounted ||
+		runtime.registry == nil ||
+		runtime.registryPath != expectedRegistryPath {
+		return tools.NodeDiscoveryRecord{}, false, errNodeDiscoveryAuthorityUnavailable
+	}
+	snapshot, found, err := runtime.registry.Resolve(ref)
+	if err != nil || !found {
+		return tools.NodeDiscoveryRecord{}, found, err
+	}
+	record := tools.NodeDiscoveryRecord{
+		Snapshot:  snapshot,
+		Connected: runtime.sessions != nil && runtime.sessions.Connected(snapshot.ID),
+	}
+	registration, registered, err := runtime.registry.Registration(snapshot.ID)
+	if err != nil {
+		return tools.NodeDiscoveryRecord{}, false, err
+	}
+	if registered {
+		record.Snapshot = registration.Snapshot
+		record.Registration = &registration
+	}
+	return record, true, nil
 }
 
 func (runtime *nodeAdmissionRuntime) currentSessions() *nodews.SessionHub {
@@ -138,9 +159,12 @@ func (runtime *nodeAdmissionRuntime) currentSessions() *nodews.SessionHub {
 }
 
 func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
-	if runtime.mounted {
+	runtime.registryMu.Lock()
+	wasMounted := runtime.mounted
+	runtime.mounted = false
+	runtime.registryMu.Unlock()
+	if wasMounted {
 		runtime.routes.UnregisterHTTPHandler(nodews.Path)
-		runtime.mounted = false
 	}
 	if runtime.handler != nil {
 		if err := runtime.handler.Close(ctx); err != nil {
@@ -150,8 +174,8 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registryMu.Lock()
 	runtime.registry = nil
 	runtime.sessions = nil
-	runtime.registryMu.Unlock()
 	runtime.registryPath = ""
+	runtime.registryMu.Unlock()
 	runtime.handler = nil
 	return nil
 }

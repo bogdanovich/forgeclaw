@@ -15,9 +15,13 @@ import (
 )
 
 type NodeDiscoverySource interface {
-	Resolve(string) (nodes.Snapshot, bool, error)
-	Registration(nodes.ID) (nodes.Registration, bool, error)
-	Connected(nodes.ID) bool
+	Lookup(string) (NodeDiscoveryRecord, bool, error)
+}
+
+type NodeDiscoveryRecord struct {
+	Snapshot     nodes.Snapshot
+	Registration *nodes.Registration
+	Connected    bool
 }
 
 type NodeDiscoveryTool struct {
@@ -175,34 +179,29 @@ func (tool *NodeDiscoveryTool) resolve(
 	if !exists || tool.source == nil {
 		return entry, nil, nil, nil
 	}
-	snapshot, found, err := tool.source.Resolve(binding.Node)
+	record, found, err := tool.source.Lookup(binding.Node)
 	if err != nil {
 		return entry, nil, nil, errors.New("node registry lookup failed")
 	}
 	if !found {
 		return entry, nil, nil, nil
 	}
-	registration, registered, err := tool.source.Registration(snapshot.ID)
-	if err != nil {
-		return entry, nil, nil, errors.New("node registration lookup failed")
-	}
-	if registered {
-		snapshot = registration.Snapshot
-	}
+	snapshot := record.Snapshot
+	registration := record.Registration
 	entry.State = snapshot.State
-	entry.Available = snapshot.State == nodes.StateConnected && tool.source.Connected(snapshot.ID)
+	entry.Available = snapshot.State == nodes.StateConnected && record.Connected
 	entry.DisplayName = snapshot.DisplayName
-	if registered {
+	if registration != nil {
 		currentCatalogHash := catalogHash(snapshot.Catalog)
 		if registration.ApprovedAt > 0 &&
 			(registration.ApprovedCatalogHash == "" ||
 				currentCatalogHash == "" ||
 				registration.ApprovedCatalogHash != currentCatalogHash) {
 			entry.RequiresReapproval = true
-			return entry, &snapshot, &registration, nil
+			return entry, &snapshot, registration, nil
 		}
-		entry.CommandCount = len(visibleNodeCommands(snapshot.Catalog, &registration))
-		return entry, &snapshot, &registration, nil
+		entry.CommandCount = len(visibleNodeCommands(snapshot.Catalog, registration))
+		return entry, &snapshot, registration, nil
 	}
 	return entry, &snapshot, nil, nil
 }

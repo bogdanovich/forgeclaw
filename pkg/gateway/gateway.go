@@ -49,6 +49,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/netbind"
+	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/pid"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/state"
@@ -516,7 +517,10 @@ func setupNodeDiscoveryTool(
 		if reloadCfg == nil || !reloadCfg.Nodes.Enabled {
 			return nil, nil
 		}
-		return tools.NewNodeDiscoveryTool(reloadCfg, runtime), nil
+		return tools.NewNodeDiscoveryTool(reloadCfg, &nodeDiscoverySource{
+			runtime:      runtime,
+			registryPath: nodes.RegistryPath(reloadCfg.WorkspacePath()),
+		}), nil
 	})
 }
 

@@ -10,7 +10,6 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/nodes"
-	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
 )
 
 type fakeNodeAdmissionRoutes struct {
@@ -60,6 +59,7 @@ func TestNodeAdmissionWorkspaceChangeWaitsForSuccessfulDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldRegistryPath := runtime.registryPath
+	oldSource := &nodeDiscoverySource{runtime: runtime, registryPath: oldRegistryPath}
 
 	disconnectCalls := 0
 	release, err := runtime.sessions.Claim(
@@ -88,6 +88,12 @@ func TestNodeAdmissionWorkspaceChangeWaitsForSuccessfulDrain(t *testing.T) {
 	if runtime.handler == nil || runtime.registryPath != oldRegistryPath || runtime.mounted || routes.handler != nil {
 		t.Fatal("failed drain discarded the closing authority runtime")
 	}
+	if _, _, lookupErr := oldSource.Lookup("node_test"); !errors.Is(
+		lookupErr,
+		errNodeDiscoveryAuthorityUnavailable,
+	) {
+		t.Fatalf("failed drain left old discovery authority readable: %v", lookupErr)
+	}
 	if err := runtime.Reconcile(cfg); err != nil {
 		t.Fatalf("workspace change did not recover after drain retry: %v", err)
 	}
@@ -100,24 +106,41 @@ type testNodeConnection struct{}
 
 func (*testNodeConnection) Close() error { return nil }
 
-func TestNodeAdmissionRuntimeConnectedRequiresLiveSessionOwner(t *testing.T) {
-	id := nodes.ID("node_restart")
-	runtime := &nodeAdmissionRuntime{sessions: nodews.NewSessionHub()}
-	if runtime.Connected(id) {
-		t.Fatal("new runtime reported persisted node as connected without a live session")
-	}
-	release, err := runtime.sessions.Claim(id, &testNodeConnection{}, nil, nil)
+func TestNodeDiscoverySourceBindsWorkspaceAuthority(t *testing.T) {
+	oldPath := filepath.Join(t.TempDir(), "old", "registry.json")
+	registry, err := nodes.NewFileRegistry(oldPath, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.Connected(id) {
-		t.Fatal("runtime did not report the live authenticated session")
+	runtime := &nodeAdmissionRuntime{
+		registry:     registry,
+		registryPath: oldPath,
+		mounted:      true,
 	}
-	if _, err := release(); err != nil {
-		t.Fatal(err)
+	oldSource := &nodeDiscoverySource{runtime: runtime, registryPath: oldPath}
+	if _, found, lookupErr := oldSource.Lookup("missing"); lookupErr != nil || found {
+		t.Fatalf("active authority lookup = found %v, error %v", found, lookupErr)
 	}
-	if runtime.Connected(id) {
-		t.Fatal("runtime retained availability after live session release")
+
+	newSource := &nodeDiscoverySource{
+		runtime:      runtime,
+		registryPath: filepath.Join(t.TempDir(), "new", "registry.json"),
+	}
+	if _, _, lookupErr := newSource.Lookup("missing"); !errors.Is(
+		lookupErr,
+		errNodeDiscoveryAuthorityUnavailable,
+	) {
+		t.Fatalf("cross-workspace lookup error = %v", lookupErr)
+	}
+
+	runtime.registryMu.Lock()
+	runtime.mounted = false
+	runtime.registryMu.Unlock()
+	if _, _, lookupErr := oldSource.Lookup("missing"); !errors.Is(
+		lookupErr,
+		errNodeDiscoveryAuthorityUnavailable,
+	) {
+		t.Fatalf("inactive authority lookup error = %v", lookupErr)
 	}
 }
 
