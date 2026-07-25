@@ -51,18 +51,39 @@ func TestSessionHubNewestClaimOwnsDisconnect(t *testing.T) {
 
 func TestSessionHubRequestRequiresDispatchCapableLiveSession(t *testing.T) {
 	hub := NewSessionHub()
-	if _, err := hub.Request(t.Context(), nodes.ID("node_missing"), "node.invoke", []byte(`{}`)); !errors.Is(
+	commitCalls := 0
+	if _, _, err := hub.Request(
+		t.Context(),
+		nodes.ID("node_missing"),
+		"node.invoke",
+		[]byte(`{}`),
+		"idem_test",
+		func() error {
+			commitCalls++
+			return nil
+		},
+	); !errors.Is(
 		err,
 		ErrNodeDisconnected,
 	) {
 		t.Fatalf("Request() error = %v", err)
+	}
+	if commitCalls != 0 {
+		t.Fatalf("disconnected request commit calls = %d", commitCalls)
 	}
 	release, err := hub.Claim(nodes.ID("node_legacy"), &trackingCloser{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	if _, err := hub.Request(t.Context(), nodes.ID("node_legacy"), "node.invoke", []byte(`{}`)); !errors.Is(
+	if _, _, err := hub.Request(
+		t.Context(),
+		nodes.ID("node_legacy"),
+		"node.invoke",
+		[]byte(`{}`),
+		"",
+		nil,
+	); !errors.Is(
 		err,
 		ErrNodeDisconnected,
 	) {

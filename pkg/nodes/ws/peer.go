@@ -94,16 +94,17 @@ func (session *peer) request(
 	method string,
 	params json.RawMessage,
 	idempotencyKey string,
-) (protocol.Envelope, error) {
+	commit func() error,
+) (protocol.Envelope, bool, error) {
 	select {
 	case <-ctx.Done():
-		return protocol.Envelope{}, ctx.Err()
+		return protocol.Envelope{}, false, ctx.Err()
 	case <-session.closed:
-		return protocol.Envelope{}, ErrNodeDisconnected
+		return protocol.Envelope{}, false, ErrNodeDisconnected
 	case <-session.ready:
 	}
 	if err := session.acquireRequestSlot(ctx); err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, false, err
 	}
 
 	id := fmt.Sprintf("req_%d", session.sequence.Add(1))
@@ -113,30 +114,31 @@ func (session *peer) request(
 	case <-session.closed:
 		session.pendingMu.Unlock()
 		session.releaseRequestSlot()
-		return protocol.Envelope{}, ErrNodeDisconnected
+		return protocol.Envelope{}, false, ErrNodeDisconnected
 	default:
 		session.pending[id] = result
 	}
 	session.pendingMu.Unlock()
-	if err := session.writeEnvelope(ctx, protocol.Envelope{
+	dispatched, err := session.writeEnvelopeAtDispatch(ctx, protocol.Envelope{
 		Type:           protocol.FrameRequest,
 		ID:             id,
 		Method:         method,
 		Params:         params,
 		IdempotencyKey: idempotencyKey,
-	}); err != nil {
+	}, commit)
+	if err != nil {
 		session.removePending(id)
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, dispatched, err
 	}
 	select {
 	case <-ctx.Done():
 		session.abandon(id)
-		return protocol.Envelope{}, ctx.Err()
+		return protocol.Envelope{}, true, ctx.Err()
 	case <-session.closed:
 		session.removePending(id)
-		return protocol.Envelope{}, ErrNodeDisconnected
+		return protocol.Envelope{}, true, ErrNodeDisconnected
 	case response := <-result:
-		return response.envelope, response.err
+		return response.envelope, true, response.err
 	}
 }
 
@@ -207,9 +209,18 @@ func (session *peer) releaseRequestSlot() {
 }
 
 func (session *peer) writeEnvelope(ctx context.Context, envelope protocol.Envelope) error {
+	_, err := session.writeEnvelopeAtDispatch(ctx, envelope, nil)
+	return err
+}
+
+func (session *peer) writeEnvelopeAtDispatch(
+	ctx context.Context,
+	envelope protocol.Envelope,
+	commit func() error,
+) (bool, error) {
 	data, err := protocol.Encode(envelope)
 	if err != nil {
-		return err
+		return false, err
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, defaultWriteTimeout)
 	defer cancel()
@@ -217,21 +228,26 @@ func (session *peer) writeEnvelope(ctx context.Context, envelope protocol.Envelo
 	case session.writeSlot <- struct{}{}:
 		defer func() { <-session.writeSlot }()
 	case <-writeCtx.Done():
-		return writeCtx.Err()
+		return false, writeCtx.Err()
 	case <-session.closed:
-		return ErrNodeDisconnected
+		return false, ErrNodeDisconnected
 	}
 	select {
 	case <-session.closed:
-		return ErrNodeDisconnected
+		return false, ErrNodeDisconnected
 	case <-writeCtx.Done():
-		return writeCtx.Err()
+		return false, writeCtx.Err()
 	default:
 	}
 	deadline, _ := writeCtx.Deadline()
 	if err := session.connection.SetWriteDeadline(deadline); err != nil {
 		_ = session.Close()
-		return err
+		return false, err
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			return false, err
+		}
 	}
 	cancelDone := make(chan struct{})
 	stopCancel := context.AfterFunc(writeCtx, func() {
@@ -245,10 +261,10 @@ func (session *peer) writeEnvelope(ctx context.Context, envelope protocol.Envelo
 	if writeErr != nil {
 		_ = session.Close()
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return true, ctx.Err()
 		}
 	}
-	return writeErr
+	return true, writeErr
 }
 
 func (session *peer) writeControl(messageType int, data []byte, deadline time.Time) error {

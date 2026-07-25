@@ -110,7 +110,7 @@ func TestCompanionProcessAuthenticatesAndInvokesOverWSS(t *testing.T) {
 	}
 	invokeCtx, cancelInvoke := context.WithTimeout(t.Context(), 6*time.Second)
 	defer cancelInvoke()
-	output, err := admission.Invoke(invokeCtx, connected.ID, plan)
+	output, _, err := admission.Invoke(invokeCtx, connected.ID, plan, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -129,11 +129,23 @@ func TestAdmissionRejectsPlanForUnapprovedCatalogBeforeDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handler.Invoke(t.Context(), nodeID, plan); !errors.Is(
+	commitCalls := 0
+	if _, dispatched, err := handler.Invoke(
+		t.Context(),
+		nodeID,
+		plan,
+		func() error {
+			commitCalls++
+			return nil
+		},
+	); !errors.Is(
 		err,
 		nodes.ErrCommandDenied,
-	) {
+	) || dispatched {
 		t.Fatalf("stale catalog invocation error = %v", err)
+	}
+	if commitCalls != 0 {
+		t.Fatalf("stale catalog dispatch commit calls = %d", commitCalls)
 	}
 }
 

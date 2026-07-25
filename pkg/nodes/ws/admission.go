@@ -299,57 +299,82 @@ func (handler *AdmissionHandler) prepareSession(session *peer, nodeID nodes.ID) 
 }
 
 // Invoke checks the durable pairing command surface and dispatches a prepared
-// plan. Agent approval and durable invocation records are added before this
-// transport boundary is exposed to tools.
+// plan. commit runs at the transport boundary after preflight and live-session
+// admission but before the first request frame write.
 func (handler *AdmissionHandler) Invoke(
 	ctx context.Context,
 	nodeID nodes.ID,
 	plan nodes.ExecutionPlan,
-) (json.RawMessage, error) {
-	approval, err := handler.authenticator.ApprovedCommand(nodeID, plan.Command)
+	commit func() error,
+) (json.RawMessage, bool, error) {
+	approval, err := handler.validateInvocationPreflight(nodeID, plan)
 	if err != nil {
-		return nil, err
-	}
-	if validationErr := plan.Validate(); validationErr != nil {
-		return nil, validationErr
-	}
-	descriptorHash, err := approval.Descriptor.Hash()
-	if err != nil {
-		return nil, err
-	}
-	if plan.NodeID != nodeID || plan.Risk != approval.Descriptor.Risk ||
-		plan.DescriptorHash != descriptorHash ||
-		plan.CatalogHash != approval.CatalogHash {
-		return nil, fmt.Errorf(
-			"%w: execution plan does not match approved command",
-			nodes.ErrCommandDenied,
-		)
+		return nil, false, err
 	}
 	params, err := json.Marshal(plan)
 	if err != nil {
-		return nil, fmt.Errorf("encode node execution plan: %w", err)
+		return nil, false, fmt.Errorf("encode node execution plan: %w", err)
 	}
-	response, err := handler.sessions.RequestWithIdempotencyKey(
+	response, dispatched, err := handler.sessions.Request(
 		ctx,
 		nodeID,
 		"node.invoke",
 		params,
 		plan.IdempotencyKey,
+		func() error {
+			if _, preflightErr := handler.validateInvocationPreflight(
+				nodeID,
+				plan,
+			); preflightErr != nil {
+				return preflightErr
+			}
+			if commit != nil {
+				return commit()
+			}
+			return nil
+		},
 	)
 	if err != nil {
-		return nil, err
+		return nil, dispatched, err
 	}
 	if response.OK == nil {
-		return nil, errors.New("node returned a malformed invocation response")
+		return nil, true, errors.New("node returned a malformed invocation response")
 	}
 	if !*response.OK {
-		return nil, fmt.Errorf(
+		return nil, true, fmt.Errorf(
 			"node invocation failed (%s): %s",
 			response.Error.Code,
 			response.Error.Message,
 		)
 	}
-	return validateInvocationResult(approval.Descriptor, plan, response.Result)
+	result, err := validateInvocationResult(approval.Descriptor, plan, response.Result)
+	return result, true, err
+}
+
+func (handler *AdmissionHandler) validateInvocationPreflight(
+	nodeID nodes.ID,
+	plan nodes.ExecutionPlan,
+) (nodes.CommandApproval, error) {
+	approval, err := handler.authenticator.ApprovedCommand(nodeID, plan.Command)
+	if err != nil {
+		return nodes.CommandApproval{}, err
+	}
+	if validationErr := plan.Validate(); validationErr != nil {
+		return nodes.CommandApproval{}, validationErr
+	}
+	descriptorHash, err := approval.Descriptor.Hash()
+	if err != nil {
+		return nodes.CommandApproval{}, err
+	}
+	if plan.NodeID != nodeID || plan.Risk != approval.Descriptor.Risk ||
+		plan.DescriptorHash != descriptorHash ||
+		plan.CatalogHash != approval.CatalogHash {
+		return nodes.CommandApproval{}, fmt.Errorf(
+			"%w: execution plan does not match approved command",
+			nodes.ErrCommandDenied,
+		)
+	}
+	return approval, nil
 }
 
 // Invocation returns the companion's durable record for reconnect recovery.
@@ -392,7 +417,7 @@ func (handler *AdmissionHandler) requestInvocationRecord(
 	if err != nil {
 		return nodes.InvocationRecord{}, fmt.Errorf("encode invocation record request: %w", err)
 	}
-	response, err := handler.sessions.Request(ctx, nodeID, method, params)
+	response, _, err := handler.sessions.Request(ctx, nodeID, method, params, "", nil)
 	if err != nil {
 		return nodes.InvocationRecord{}, err
 	}
