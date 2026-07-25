@@ -71,7 +71,7 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 		return fmt.Errorf("create node authenticator: %w", err)
 	}
 	sameRegistry := runtime.mounted && registryPath == runtime.registryPath
-	sessions := runtime.sessions
+	sessions := runtime.currentSessions()
 	if sessions == nil || !sameRegistry {
 		sessions = nodews.NewSessionHub()
 	}
@@ -92,10 +92,10 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	}
 	runtime.registryMu.Lock()
 	runtime.registry = registry
+	runtime.sessions = sessions
 	runtime.registryMu.Unlock()
 	runtime.registryPath = registryPath
 	runtime.handler = handler
-	runtime.sessions = sessions
 	runtime.mounted = true
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
@@ -120,10 +120,21 @@ func (runtime *nodeAdmissionRuntime) Registration(id nodes.ID) (nodes.Registrati
 	return registry.Registration(id)
 }
 
+func (runtime *nodeAdmissionRuntime) Connected(id nodes.ID) bool {
+	sessions := runtime.currentSessions()
+	return sessions != nil && sessions.Connected(id)
+}
+
 func (runtime *nodeAdmissionRuntime) currentRegistry() *nodes.FileRegistry {
 	runtime.registryMu.RLock()
 	defer runtime.registryMu.RUnlock()
 	return runtime.registry
+}
+
+func (runtime *nodeAdmissionRuntime) currentSessions() *nodews.SessionHub {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	return runtime.sessions
 }
 
 func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
@@ -138,9 +149,9 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	}
 	runtime.registryMu.Lock()
 	runtime.registry = nil
+	runtime.sessions = nil
 	runtime.registryMu.Unlock()
 	runtime.registryPath = ""
 	runtime.handler = nil
-	runtime.sessions = nil
 	return nil
 }

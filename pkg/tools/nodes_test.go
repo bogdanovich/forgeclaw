@@ -15,6 +15,7 @@ import (
 type fakeNodeDiscoverySource struct {
 	byRef         map[string]nodes.Snapshot
 	registrations map[nodes.ID]nodes.Registration
+	connected     map[nodes.ID]bool
 	err           error
 }
 
@@ -42,6 +43,18 @@ func (source *fakeNodeDiscoverySource) Registration(
 		}
 	}
 	return registration, ok, nil
+}
+
+func (source *fakeNodeDiscoverySource) Connected(id nodes.ID) bool {
+	if source.connected != nil {
+		return source.connected[id]
+	}
+	for _, snapshot := range source.byRef {
+		if snapshot.ID == id {
+			return snapshot.State == nodes.StateConnected
+		}
+	}
+	return false
 }
 
 func TestNodeDiscoveryToolListUsesEffectiveAgentPolicy(t *testing.T) {
@@ -198,6 +211,40 @@ func TestNodeDiscoveryToolRequiresReapprovalForChangedCatalog(t *testing.T) {
 	}
 	if commands := describePayload["commands"].([]any); len(commands) != 0 {
 		t.Fatalf("commands = %#v, want none until reapproval", commands)
+	}
+}
+
+func TestNodeDiscoveryToolDoesNotTrustPersistedConnectedStateAfterRestart(t *testing.T) {
+	cfg := nodeDiscoveryTestConfig()
+	snapshot := nodes.Snapshot{
+		ID:      "stale-connected-node",
+		State:   nodes.StateConnected,
+		Catalog: nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{}},
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef:     map[string]nodes.Snapshot{"builder-node": snapshot},
+		connected: map[nodes.ID]bool{},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				ApprovedCatalogHash: emptyCatalogHash(t),
+				ApprovedAt:          1,
+			},
+		},
+	}
+	tool := NewNodeDiscoveryTool(cfg, source)
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+
+	for _, action := range []map[string]any{
+		{"action": "list"},
+		{"action": "describe", "target": "build"},
+	} {
+		payload := decodeNodeResult(t, tool.Execute(ctx, action))
+		if action["action"] == "list" {
+			payload = payload["targets"].([]any)[0].(map[string]any)
+		}
+		if payload["state"] != string(nodes.StateConnected) || payload["available"] != false {
+			t.Fatalf("%v result = %#v, want persisted connected but unavailable", action, payload)
+		}
 	}
 }
 

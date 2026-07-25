@@ -17,6 +17,7 @@ import (
 type NodeDiscoverySource interface {
 	Resolve(string) (nodes.Snapshot, bool, error)
 	Registration(nodes.ID) (nodes.Registration, bool, error)
+	Connected(nodes.ID) bool
 }
 
 type NodeDiscoveryTool struct {
@@ -189,7 +190,7 @@ func (tool *NodeDiscoveryTool) resolve(
 		snapshot = registration.Snapshot
 	}
 	entry.State = snapshot.State
-	entry.Available = snapshot.State == nodes.StateConnected
+	entry.Available = snapshot.State == nodes.StateConnected && tool.source.Connected(snapshot.ID)
 	entry.DisplayName = snapshot.DisplayName
 	if registered {
 		currentCatalogHash := catalogHash(snapshot.Catalog)

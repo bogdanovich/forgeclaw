@@ -10,6 +10,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/nodes"
+	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
 )
 
 type fakeNodeAdmissionRoutes struct {
@@ -98,6 +99,27 @@ func TestNodeAdmissionWorkspaceChangeWaitsForSuccessfulDrain(t *testing.T) {
 type testNodeConnection struct{}
 
 func (*testNodeConnection) Close() error { return nil }
+
+func TestNodeAdmissionRuntimeConnectedRequiresLiveSessionOwner(t *testing.T) {
+	id := nodes.ID("node_restart")
+	runtime := &nodeAdmissionRuntime{sessions: nodews.NewSessionHub()}
+	if runtime.Connected(id) {
+		t.Fatal("new runtime reported persisted node as connected without a live session")
+	}
+	release, err := runtime.sessions.Claim(id, &testNodeConnection{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.Connected(id) {
+		t.Fatal("runtime did not report the live authenticated session")
+	}
+	if _, err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Connected(id) {
+		t.Fatal("runtime retained availability after live session release")
+	}
+}
 
 func TestServiceShutdownClosesNodeAdmissionOutsideReload(t *testing.T) {
 	routes := &fakeNodeAdmissionRoutes{}
