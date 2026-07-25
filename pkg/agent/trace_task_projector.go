@@ -2,9 +2,13 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,14 +21,7 @@ import (
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
-const (
-	taskTraceAdmissionRetryDelay    = 100 * time.Millisecond
-	taskTraceSubscriptionRetryDelay = time.Second
-	maxCompletedTaskTraces          = 4096
-	maxPendingTaskTraceAdmissions   = 128
-)
-
-var errTaskTraceAlreadyDurable = errors.New("task trace is already durable")
+const taskTraceSubscriptionRetryDelay = time.Second
 
 type taskTraceStorageError struct {
 	err error
@@ -38,22 +35,11 @@ func (e *taskTraceStorageError) Unwrap() error {
 	return e.err
 }
 
-type taskTraceKey struct {
-	workspace    string
-	taskID       string
-	generationID string
-}
-
 type taskTraceState struct {
 	trace      *activeTraceCapture
 	settings   traceCaptureSettings
 	lastSeq    int64
 	lastOffset int64
-	terminal   bool
-	retryable  bool
-	admitted   bool
-	dirty      bool
-	receipt    string
 }
 
 type taskRegistrySubscription struct {
@@ -61,49 +47,52 @@ type taskRegistrySubscription struct {
 	unsubscribe func()
 }
 
+// taskTraceProjector owns task-domain observation and source registration.
+// Persistence scheduling, writer receipts, retry, capacity, and drain are
+// exclusively owned by evalcapture.Coordinator.
 type taskTraceProjector struct {
-	mu       sync.Mutex
-	closed   bool
-	settings traceCaptureSettings
+	mu          sync.Mutex
+	closed      bool
+	settings    traceCaptureSettings
+	coordinator *evalcapture.Coordinator
 
-	registries             map[string]*taskregistry.Registry
-	subs                   map[string]taskRegistrySubscription
-	traces                 map[taskTraceKey]*taskTraceState
-	completed              map[taskTraceKey]int64
-	order                  []taskTraceKey
-	retryTimer             *time.Timer
-	subscriptionRetryTimer *time.Timer
-	submit                 func(traceCaptureSettings, *activeTraceCapture) error
-	submitWait             func(context.Context, traceCaptureSettings, *activeTraceCapture) error
-	awaitPersistence       bool
-	inflight               map[string]taskTraceKey
-	nextSubmission         uint64
+	registries map[string]*taskregistry.Registry
+	sources    map[string]*taskTraceSource
+	subs       map[string]taskRegistrySubscription
+	retryTimer *time.Timer
+}
 
-	pendingAdmissions int
-	overflowDeferrals uint64
-	permanentDrops    uint64
-	deferred          bool
+type taskTraceSource struct {
+	mu        sync.RWMutex
+	workspace string
+	registry  *taskregistry.Registry
+	settings  traceCaptureSettings
 }
 
 func newTaskTraceProjector(
 	settings traceCaptureSettings,
-	submit func(traceCaptureSettings, *activeTraceCapture) error,
-	waiters ...func(context.Context, traceCaptureSettings, *activeTraceCapture) error,
+	coordinator *evalcapture.Coordinator,
 ) *taskTraceProjector {
-	var submitWait func(context.Context, traceCaptureSettings, *activeTraceCapture) error
-	if len(waiters) > 0 {
-		submitWait = waiters[0]
-	}
 	return &taskTraceProjector{
-		settings:   settings,
-		registries: make(map[string]*taskregistry.Registry),
-		subs:       make(map[string]taskRegistrySubscription),
-		traces:     make(map[taskTraceKey]*taskTraceState),
-		completed:  make(map[taskTraceKey]int64),
-		inflight:   make(map[string]taskTraceKey),
-		submit:     submit,
-		submitWait: submitWait,
+		settings:    settings,
+		coordinator: coordinator,
+		registries:  make(map[string]*taskregistry.Registry),
+		sources:     make(map[string]*taskTraceSource),
+		subs:        make(map[string]taskRegistrySubscription),
 	}
+}
+
+func (p *taskTraceProjector) setCoordinator(
+	coordinator *evalcapture.Coordinator,
+) {
+	if p == nil || coordinator == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.coordinator == nil {
+		p.coordinator = coordinator
+	}
+	p.mu.Unlock()
 }
 
 func (m *traceCaptureManager) attachTaskRegistry(
@@ -115,7 +104,10 @@ func (m *traceCaptureManager) attachTaskRegistry(
 	}
 }
 
-func (p *taskTraceProjector) attach(workspace string, registry *taskregistry.Registry) {
+func (p *taskTraceProjector) attach(
+	workspace string,
+	registry *taskregistry.Registry,
+) {
 	if p == nil || registry == nil {
 		return
 	}
@@ -129,14 +121,12 @@ func (p *taskTraceProjector) attach(workspace string, registry *taskregistry.Reg
 		p.mu.Unlock()
 		return
 	}
-	if existing, exists := p.registries[workspace]; exists {
-		retry := existing == registry && p.settings.enabled
-		if _, subscribed := p.subs[workspace]; subscribed {
-			retry = false
-		}
+	if existing := p.registries[workspace]; existing != nil {
+		retry := existing == registry && p.settings.enabled &&
+			p.sources[workspace] == nil
 		p.mu.Unlock()
 		if retry {
-			p.subscribe(workspace, registry)
+			p.install(workspace, registry)
 		}
 		return
 	}
@@ -144,7 +134,7 @@ func (p *taskTraceProjector) attach(workspace string, registry *taskregistry.Reg
 	enabled := p.settings.enabled
 	p.mu.Unlock()
 	if enabled {
-		p.subscribe(workspace, registry)
+		p.install(workspace, registry)
 	}
 }
 
@@ -160,69 +150,95 @@ func (p *taskTraceProjector) updateSettings(settings traceCaptureSettings) {
 	wasEnabled := p.settings.enabled
 	p.settings = settings
 	if wasEnabled && !settings.enabled {
-		subs := p.takeSubscriptionsLocked()
+		subs, sources := p.detachLocked()
 		registries := cloneTaskRegistries(p.registries)
-		p.clearCaptureStateLocked()
 		p.mu.Unlock()
 		unsubscribeTaskRegistries(subs)
-		if p.awaitPersistence {
-			setTaskRegistryTraceProtection(registries, false)
-		}
+		p.unregisterSources(sources)
+		setTaskRegistryTraceProtection(registries, false, 0)
 		return
 	}
-	if wasEnabled || !settings.enabled {
+	if wasEnabled {
+		for _, source := range p.sources {
+			source.updateSettings(settings)
+		}
+		registries := cloneTaskRegistries(p.registries)
+		p.mu.Unlock()
+		setTaskRegistryTraceProtection(
+			registries,
+			true,
+			settings.limits.MaxRecords,
+		)
+		return
+	}
+	if !settings.enabled {
 		p.mu.Unlock()
 		return
 	}
 	registries := cloneTaskRegistries(p.registries)
 	p.mu.Unlock()
 	for workspace, registry := range registries {
-		p.subscribe(workspace, registry)
+		p.install(workspace, registry)
 	}
 }
 
-func (p *taskTraceProjector) subscribe(
+func (p *taskTraceProjector) install(
 	workspace string,
 	registry *taskregistry.Registry,
 ) {
 	p.mu.Lock()
-	if p.closed || !p.settings.enabled || p.registries[workspace] != registry {
+	if p.closed || !p.settings.enabled ||
+		p.registries[workspace] != registry || p.sources[workspace] != nil ||
+		p.coordinator == nil {
 		p.mu.Unlock()
 		return
 	}
-	if _, exists := p.subs[workspace]; exists {
+	if err := registry.SetTraceCaptureProtection(
+		true,
+		p.settings.limits.MaxRecords,
+	); err != nil {
+		p.scheduleRetryLocked()
 		p.mu.Unlock()
+		logger.WarnCF("evaltrace", "Failed to protect task trace snapshot", map[string]any{
+			"workspace": workspace,
+			"error":     err.Error(),
+		})
 		return
 	}
-	if p.awaitPersistence {
-		if err := registry.SetTraceCaptureProtection(true); err != nil {
-			p.scheduleSubscriptionRetryLocked()
-			p.mu.Unlock()
-			logger.WarnCF("evaltrace", "Failed to protect task trace snapshot", map[string]any{
-				"workspace": workspace,
-				"error":     err.Error(),
-			})
-			return
-		}
+
+	source := &taskTraceSource{
+		workspace: workspace,
+		registry:  registry,
+		settings:  p.settings,
+	}
+	sourceID := taskTraceSourceID(workspace)
+	if err := p.coordinator.RegisterSource(sourceID, source); err != nil {
+		p.scheduleRetryLocked()
+		p.mu.Unlock()
+		logger.WarnCF("evaltrace", "Failed to register task trace source", map[string]any{
+			"workspace": workspace,
+			"error":     err.Error(),
+		})
+		return
 	}
 	snapshot, activate, unsubscribe := registry.SubscribeSnapshot(
 		func(observation taskregistry.EventObservation) {
-			p.observe(workspace, observation)
+			p.observe(workspace, sourceID, observation)
 		},
 	)
+	p.sources[workspace] = source
 	p.subs[workspace] = taskRegistrySubscription{
 		registry: registry, unsubscribe: unsubscribe,
 	}
-	p.applySnapshotLocked(workspace, snapshot)
+	p.requestSnapshotLocked(sourceID, snapshot)
 	p.mu.Unlock()
 	activate()
 }
 
-func (p *taskTraceProjector) applySnapshotLocked(
-	workspace string,
+func (p *taskTraceProjector) requestSnapshotLocked(
+	sourceID string,
 	snapshot taskregistry.ObservationSnapshot,
 ) {
-	p.clearWorkspaceLocked(workspace)
 	records := append([]taskregistry.Record(nil), snapshot.Records...)
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].TaskID != records[j].TaskID {
@@ -230,26 +246,357 @@ func (p *taskTraceProjector) applySnapshotLocked(
 		}
 		return records[i].GenerationID < records[j].GenerationID
 	})
-	events := make(map[taskTraceKey][]taskregistry.TaskEvent, len(records))
-	for _, event := range snapshot.Events {
-		key := newTaskTraceKey(workspace, event.TaskID, event.GenerationID)
-		events[key] = append(events[key], event)
-	}
 	for _, record := range records {
-		key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-		state := p.restoreStateLocked(workspace, record, events[key])
-		p.traces[key] = state
-		if taskRecordIsCaptureTerminal(record) {
-			p.terminalizeLocked(key, state, record)
+		if record.TraceCapturePending &&
+			taskregistry.IsTraceCaptureTerminal(record) {
+			p.request(sourceID, record)
 		}
 	}
 }
 
-func (p *taskTraceProjector) restoreStateLocked(
+func (p *taskTraceProjector) observe(
+	workspace, sourceID string,
+	observation taskregistry.EventObservation,
+) {
+	if p == nil || !observation.FinalForTask ||
+		!taskregistry.IsTraceCaptureTerminal(observation.Record) {
+		return
+	}
+	p.mu.Lock()
+	active := !p.closed && p.settings.enabled &&
+		p.sources[workspace] != nil
+	p.mu.Unlock()
+	if active {
+		p.request(sourceID, observation.Record)
+	}
+}
+
+func (p *taskTraceProjector) request(
+	sourceID string,
+	record taskregistry.Record,
+) {
+	if p == nil || p.coordinator == nil {
+		return
+	}
+	key := encodeTaskTraceProjectionKey(record.TaskID, record.GenerationID)
+	err := p.coordinator.Request(sourceID, key)
+	var admission *evalcapture.AdmissionError
+	if err != nil && !errors.As(err, &admission) {
+		logger.WarnCF("evaltrace", "Failed to request task trace projection", map[string]any{
+			"source": sourceID,
+			"error":  err.Error(),
+		})
+	}
+}
+
+func (p *taskTraceProjector) scheduleRetryLocked() {
+	if p.retryTimer != nil || p.closed || !p.settings.enabled {
+		return
+	}
+	p.retryTimer = time.AfterFunc(
+		taskTraceSubscriptionRetryDelay,
+		p.retryInstallations,
+	)
+}
+
+func (p *taskTraceProjector) retryInstallations() {
+	p.mu.Lock()
+	p.retryTimer = nil
+	if p.closed || !p.settings.enabled {
+		p.mu.Unlock()
+		return
+	}
+	registries := make(map[string]*taskregistry.Registry)
+	for workspace, registry := range p.registries {
+		if p.sources[workspace] == nil {
+			registries[workspace] = registry
+		}
+	}
+	p.mu.Unlock()
+	for workspace, registry := range registries {
+		p.install(workspace, registry)
+	}
+}
+
+// stop detaches live observers but intentionally leaves sources and durable
+// markers installed so Coordinator.Close can perform its final recovery scan.
+func (p *taskTraceProjector) stop() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
+	if p.retryTimer != nil {
+		p.retryTimer.Stop()
+		p.retryTimer = nil
+	}
+	subs := make([]taskRegistrySubscription, 0, len(p.subs))
+	for workspace, sub := range p.subs {
+		subs = append(subs, sub)
+		delete(p.subs, workspace)
+	}
+	p.mu.Unlock()
+	unsubscribeTaskRegistries(subs)
+}
+
+func (p *taskTraceProjector) finish() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	sources := make(map[string]*taskTraceSource, len(p.sources))
+	for workspace, source := range p.sources {
+		sources[workspace] = source
+	}
+	registries := cloneTaskRegistries(p.registries)
+	p.sources = nil
+	p.registries = nil
+	p.subs = nil
+	p.mu.Unlock()
+	p.unregisterSources(sources)
+	setTaskRegistryTraceProtection(registries, false, 0)
+}
+
+func (p *taskTraceProjector) detachLocked() (
+	[]taskRegistrySubscription,
+	map[string]*taskTraceSource,
+) {
+	if p.retryTimer != nil {
+		p.retryTimer.Stop()
+		p.retryTimer = nil
+	}
+	subs := make([]taskRegistrySubscription, 0, len(p.subs))
+	for _, sub := range p.subs {
+		subs = append(subs, sub)
+	}
+	sources := make(map[string]*taskTraceSource, len(p.sources))
+	for workspace, source := range p.sources {
+		sources[workspace] = source
+	}
+	p.subs = make(map[string]taskRegistrySubscription)
+	p.sources = make(map[string]*taskTraceSource)
+	return subs, sources
+}
+
+func (p *taskTraceProjector) unregisterSources(
+	sources map[string]*taskTraceSource,
+) {
+	if p == nil || p.coordinator == nil {
+		return
+	}
+	for workspace := range sources {
+		p.coordinator.UnregisterSource(taskTraceSourceID(workspace))
+	}
+}
+
+func (s *taskTraceSource) updateSettings(settings traceCaptureSettings) {
+	s.mu.Lock()
+	s.settings = settings
+	s.mu.Unlock()
+}
+
+func (s *taskTraceSource) currentSettings() traceCaptureSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings
+}
+
+func (s *taskTraceSource) Pending(
+	ctx context.Context,
+	limit int,
+) ([]string, error) {
+	if s == nil || s.registry == nil || limit <= 0 {
+		return nil, nil
+	}
+	records := s.registry.List()
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].TaskID != records[j].TaskID {
+			return records[i].TaskID < records[j].TaskID
+		}
+		return records[i].GenerationID < records[j].GenerationID
+	})
+	keys := make([]string, 0, min(limit, len(records)))
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !record.TraceCapturePending ||
+			!taskregistry.IsTraceCaptureTerminal(record) {
+			continue
+		}
+		keys = append(keys, encodeTaskTraceProjectionKey(
+			record.TaskID,
+			record.GenerationID,
+		))
+		if len(keys) == limit {
+			break
+		}
+	}
+	return keys, nil
+}
+
+func (s *taskTraceSource) LoadLatest(
+	ctx context.Context,
+	key string,
+) (evalcapture.DurableCandidate, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return evalcapture.DurableCandidate{}, false, err
+	}
+	taskID, generationID, err := decodeTaskTraceProjectionKey(key)
+	if err != nil {
+		return evalcapture.DurableCandidate{}, false, err
+	}
+	record, events, exists := s.registry.GetGeneration(taskID, generationID)
+	if !exists || !record.TraceCapturePending ||
+		!taskregistry.IsTraceCaptureTerminal(record) {
+		return evalcapture.DurableCandidate{}, false, nil
+	}
+	if record.LastEventSeq <= 0 {
+		return evalcapture.DurableCandidate{}, false,
+			errors.New("terminal task trace has no revision")
+	}
+	settings := s.currentSettings()
+	trace := buildTaskTrace(
+		settings,
+		s.workspace,
+		record,
+		events,
+	)
+	finalized, policy, err := prepareTrace(settings, trace)
+	if err != nil {
+		return evalcapture.DurableCandidate{}, false, err
+	}
+	finalized, _, err = reconcileStoredTaskTrace(policy, finalized)
+	if err != nil {
+		return evalcapture.DurableCandidate{}, false, err
+	}
+	// TraceCapturePending is an unconfirmed durability claim. A visible file
+	// may be the result of a failed post-rename directory sync, so this source
+	// always requires a successful writer receipt before clearing the marker.
+	return evalcapture.DurableCandidate{
+		Revision: uint64(record.LastEventSeq),
+		Policy:   policy,
+		Trace:    finalized,
+		Persist:  true,
+	}, true, nil
+}
+
+func (s *taskTraceSource) Confirm(
+	ctx context.Context,
+	key string,
+	revision uint64,
+) (evalcapture.Confirmation, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if revision > math.MaxInt64 {
+		return "", fmt.Errorf("task trace revision exceeds int64")
+	}
+	taskID, generationID, err := decodeTaskTraceProjectionKey(key)
+	if err != nil {
+		return "", err
+	}
+	current, exists := s.registry.Get(taskID)
+	if !exists || current.GenerationID != generationID {
+		return evalcapture.ConfirmationGone, nil
+	}
+	record, confirmed, err := s.registry.ConfirmTraceCapturePersisted(
+		taskID,
+		generationID,
+		int64(revision),
+	)
+	if err != nil {
+		current, exists = s.registry.Get(taskID)
+		if !exists || current.GenerationID != generationID {
+			return evalcapture.ConfirmationGone, nil
+		}
+		return "", err
+	}
+	if confirmed {
+		return evalcapture.ConfirmationCurrent, nil
+	}
+	if record.LastEventSeq != int64(revision) {
+		return evalcapture.ConfirmationStale, nil
+	}
+	return "", fmt.Errorf("task trace revision %d was not confirmed", revision)
+}
+
+func taskTraceSourceID(workspace string) string {
+	sum := sha256.Sum256([]byte(workspace))
+	return fmt.Sprintf("task:%x", sum[:12])
+}
+
+func encodeTaskTraceProjectionKey(taskID, generationID string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(taskID)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(generationID))
+}
+
+func decodeTaskTraceProjectionKey(key string) (string, string, error) {
+	parts := strings.Split(key, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", errors.New("invalid task trace projection key")
+	}
+	taskID, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", "", fmt.Errorf("decode task ID: %w", err)
+	}
+	generationID, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", fmt.Errorf("decode generation ID: %w", err)
+	}
+	if len(taskID) == 0 || len(generationID) == 0 {
+		return "", "", errors.New("invalid empty task trace projection identity")
+	}
+	return string(taskID), string(generationID), nil
+}
+
+func unsubscribeTaskRegistries(subs []taskRegistrySubscription) {
+	for _, sub := range subs {
+		if sub.unsubscribe != nil {
+			sub.unsubscribe()
+		}
+	}
+}
+
+func setTaskRegistryTraceProtection(
+	registries map[string]*taskregistry.Registry,
+	enabled bool,
+	maxEvents int,
+) {
+	for workspace, registry := range registries {
+		if err := registry.SetTraceCaptureProtection(
+			enabled,
+			maxEvents,
+		); err != nil {
+			logger.WarnCF("evaltrace", "Failed to update task trace retention protection", map[string]any{
+				"workspace": workspace,
+				"enabled":   enabled,
+				"error":     err.Error(),
+			})
+		}
+	}
+}
+
+func cloneTaskRegistries(
+	registries map[string]*taskregistry.Registry,
+) map[string]*taskregistry.Registry {
+	cloned := make(map[string]*taskregistry.Registry, len(registries))
+	for workspace, registry := range registries {
+		cloned[workspace] = registry
+	}
+	return cloned
+}
+
+func buildTaskTrace(
+	settings traceCaptureSettings,
 	workspace string,
 	record taskregistry.Record,
 	history []taskregistry.TaskEvent,
-) *taskTraceState {
+) *activeTraceCapture {
 	history = append([]taskregistry.TaskEvent(nil), history...)
 	sort.Slice(history, func(i, j int) bool {
 		if history[i].Seq != history[j].Seq {
@@ -257,100 +604,54 @@ func (p *taskTraceProjector) restoreStateLocked(
 		}
 		return history[i].EventID < history[j].EventID
 	})
-	state := newTaskTraceState(p.settings, workspace, record, firstTaskEvent(history))
+	state := newTaskTraceState(
+		settings,
+		workspace,
+		record,
+		firstTaskEvent(history),
+	)
+	if record.TraceCaptureDropped > 0 {
+		state.trace.builder.MarkIncomplete(
+			"task_capture_journal_truncated",
+			record.TraceCaptureDropped,
+		)
+		state.lastSeq = int64(record.TraceCaptureDropped)
+	}
 	if len(history) == 0 {
-		state.trace.builder.MarkIncomplete(
-			"task_history_missing_at_startup",
-			int(max(1, record.LastEventSeq)),
-		)
-		state.lastSeq = record.LastEventSeq
-		return state
-	}
-	for _, event := range history {
-		if event.GenerationID == record.GenerationID {
-			p.appendEventLocked(state, event, record)
-		}
-	}
-	if state.lastSeq < record.LastEventSeq {
-		state.trace.builder.MarkIncomplete(
-			"task_history_missing_at_startup",
-			int(record.LastEventSeq-state.lastSeq),
-		)
-		state.lastSeq = record.LastEventSeq
-	}
-	return state
-}
-
-func (p *taskTraceProjector) observe(
-	workspace string,
-	observation taskregistry.EventObservation,
-) {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed || !p.settings.enabled {
-		return
-	}
-	event, record := observation.Event, observation.Record
-	key := newTaskTraceKey(workspace, event.TaskID, event.GenerationID)
-	if key.taskID == "" || key.generationID == "" ||
-		record.TaskID != event.TaskID || record.GenerationID != event.GenerationID {
-		return
-	}
-	if completedSeq, done := p.completed[key]; done {
-		if event.Seq <= completedSeq {
-			return
-		}
-		p.removeCompletedLocked(key)
-		if registry := p.registries[workspace]; registry != nil {
-			state := p.restoreStateLocked(
-				workspace,
-				record,
-				registry.ListEvents(record.TaskID),
+		if state.lastSeq < record.LastEventSeq {
+			state.trace.builder.MarkIncomplete(
+				"task_history_missing_at_startup",
+				int(record.LastEventSeq-state.lastSeq),
 			)
-			p.traces[key] = state
-			if observation.FinalForTask && taskRecordIsCaptureTerminal(record) {
-				p.terminalizeLocked(key, state, record)
+		}
+		state.lastSeq = record.LastEventSeq
+	} else {
+		for _, event := range history {
+			if event.GenerationID == record.GenerationID {
+				appendTaskEvent(state, event, record)
 			}
-			return
+		}
+		if state.lastSeq < record.LastEventSeq {
+			state.trace.builder.MarkIncomplete(
+				"task_history_missing_at_startup",
+				int(record.LastEventSeq-state.lastSeq),
+			)
+			state.lastSeq = record.LastEventSeq
 		}
 	}
-	state := p.traces[key]
-	if state == nil {
-		state = newTaskTraceState(p.settings, workspace, record, event)
-		p.traces[key] = state
-	}
-	if event.Seq <= state.lastSeq {
-		if state.terminal && state.retryable {
-			p.trySubmitLocked(key, state)
-		}
-		return
-	}
-	state.terminal = false
-	if state.retryable {
-		p.pendingAdmissions--
-		state.retryable = false
-	}
-	if state.admitted {
-		state.dirty = true
-	}
-	p.appendEventLocked(state, event, record)
-	if observation.FinalForTask && taskRecordIsCaptureTerminal(record) {
-		p.terminalizeLocked(key, state, record)
-	}
+	state.trace.builder.SetOutcome(evaltrace.Outcome{
+		Status:    string(record.Status),
+		ErrorCode: taskErrorCode(record),
+	})
+	return state.trace
 }
 
-func (p *taskTraceProjector) appendEventLocked(
+func appendTaskEvent(
 	state *taskTraceState,
 	event taskregistry.TaskEvent,
 	record taskregistry.Record,
 ) {
-	if state == nil || state.trace == nil {
-		return
-	}
-	if event.Seq <= state.lastSeq {
+	if state == nil || state.trace == nil || event.Seq <= state.lastSeq {
 		return
 	}
 	if event.Seq > state.lastSeq+1 {
@@ -373,656 +674,6 @@ func (p *taskTraceProjector) appendEventLocked(
 	state.lastOffset = taskRecord.OffsetNanos
 }
 
-func (p *taskTraceProjector) terminalizeLocked(
-	key taskTraceKey,
-	state *taskTraceState,
-	record taskregistry.Record,
-) {
-	state.trace.builder.SetOutcome(evaltrace.Outcome{
-		Status: string(record.Status), ErrorCode: taskErrorCode(record),
-	})
-	state.terminal = true
-	p.trySubmitLocked(key, state)
-}
-
-func (p *taskTraceProjector) trySubmitLocked(
-	key taskTraceKey,
-	state *taskTraceState,
-) {
-	if p.submit == nil || state == nil || state.trace == nil {
-		return
-	}
-	if state.admitted {
-		return
-	}
-	traceID := state.trace.builder.TraceID()
-	submissionID := ""
-	if p.awaitPersistence {
-		if err := p.setTracePendingLocked(key, true); err != nil {
-			logger.WarnCF("evaltrace", "Failed to protect task trace retry marker", map[string]any{
-				"workspace":     key.workspace,
-				"task_id":       key.taskID,
-				"generation_id": key.generationID,
-				"error":         err.Error(),
-			})
-			if !state.retryable {
-				p.retryOrDeferLocked(key, state)
-			}
-			return
-		}
-		submissionID = p.nextSubmissionIDLocked(traceID)
-		state.trace.submissionID = submissionID
-		p.inflight[submissionID] = key
-	}
-	err := p.submit(state.settings, state.trace)
-	if errors.Is(err, errTaskTraceAlreadyDurable) {
-		delete(p.inflight, submissionID)
-		confirmed, markerErr := p.confirmTracePersistedLocked(key, state)
-		if markerErr != nil {
-			if !state.retryable {
-				p.retryOrDeferLocked(key, state)
-			}
-			return
-		}
-		if !confirmed {
-			return
-		}
-		if state.retryable {
-			p.pendingAdmissions--
-		}
-		delete(p.traces, key)
-		p.recordCompletedLocked(key, state.lastSeq)
-		return
-	}
-	if err == nil {
-		if state.retryable {
-			p.pendingAdmissions--
-			state.retryable = false
-		}
-		if p.awaitPersistence {
-			state.admitted = true
-			state.receipt = submissionID
-			return
-		}
-		delete(p.traces, key)
-		p.recordCompletedLocked(key, state.lastSeq)
-		return
-	}
-	delete(p.inflight, submissionID)
-	if taskTracePersistCanRetry(err) {
-		if !state.retryable {
-			p.retryOrDeferLocked(key, state)
-		}
-		return
-	}
-	if state.retryable {
-		p.pendingAdmissions--
-	}
-	delete(p.traces, key)
-	p.recordCompletedLocked(key, state.lastSeq)
-	p.permanentDrops++
-	logger.WarnCF("evaltrace", "Dropped task trace after permanent admission failure", map[string]any{
-		"workspace":       key.workspace,
-		"task_id":         key.taskID,
-		"generation_id":   key.generationID,
-		"permanent_drops": p.permanentDrops,
-		"error":           err.Error(),
-	})
-}
-
-func (p *taskTraceProjector) retryOrDeferLocked(
-	key taskTraceKey,
-	state *taskTraceState,
-) {
-	if p.pendingAdmissions < maxPendingTaskTraceAdmissions {
-		state.retryable = true
-		p.pendingAdmissions++
-		p.scheduleRetryLocked()
-		return
-	}
-	delete(p.traces, key)
-	p.deferred = true
-	p.overflowDeferrals++
-	logger.WarnCF(
-		"evaltrace",
-		"Deferred task trace to durable registry after admission spool saturation",
-		map[string]any{
-			"workspace":          key.workspace,
-			"task_id":            key.taskID,
-			"generation_id":      key.generationID,
-			"pending":            p.pendingAdmissions,
-			"pending_limit":      maxPendingTaskTraceAdmissions,
-			"overflow_deferrals": p.overflowDeferrals,
-		},
-	)
-	p.scheduleRetryLocked()
-}
-
-func (p *taskTraceProjector) observeWriterEvent(event evalcapture.Event) {
-	if p == nil ||
-		(event.Kind != evalcapture.EventPersisted &&
-			event.Kind != evalcapture.EventPermanentlyFailed) {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.observeWriterEventLocked(event)
-}
-
-func (p *taskTraceProjector) observeWriterEventLocked(event evalcapture.Event) {
-	if strings.TrimSpace(event.SubmissionID) == "" {
-		return
-	}
-	key, tracked := p.inflight[event.SubmissionID]
-	if !tracked {
-		return
-	}
-	delete(p.inflight, event.SubmissionID)
-	state := p.traces[key]
-	if state == nil || state.receipt != event.SubmissionID {
-		return
-	}
-	state.admitted = false
-	state.receipt = ""
-	switch event.Kind {
-	case evalcapture.EventPersisted:
-		if state.dirty {
-			state.dirty = false
-			if state.terminal {
-				p.trySubmitLocked(key, state)
-			}
-			return
-		}
-		confirmed, err := p.confirmTracePersistedLocked(key, state)
-		if err != nil {
-			p.retryOrDeferLocked(key, state)
-			return
-		}
-		if !confirmed {
-			return
-		}
-		delete(p.traces, key)
-		p.recordCompletedLocked(key, state.lastSeq)
-	case evalcapture.EventPermanentlyFailed:
-		state.dirty = false
-		state.trace.forcePersist = true
-		p.retryOrDeferLocked(key, state)
-	}
-}
-
-func (p *taskTraceProjector) confirmTracePersistedLocked(
-	key taskTraceKey,
-	state *taskTraceState,
-) (bool, error) {
-	registry := p.registries[key.workspace]
-	if registry == nil {
-		return true, nil
-	}
-	record, confirmed, err := registry.ConfirmTraceCapturePersisted(
-		key.taskID,
-		key.generationID,
-		state.lastSeq,
-	)
-	if err != nil {
-		logger.WarnCF("evaltrace", "Failed to confirm task trace persistence", map[string]any{
-			"workspace":      key.workspace,
-			"task_id":        key.taskID,
-			"generation_id":  key.generationID,
-			"last_event_seq": state.lastSeq,
-			"error":          err.Error(),
-		})
-		return false, err
-	}
-	if confirmed {
-		return true, nil
-	}
-	if record.LastEventSeq <= state.lastSeq {
-		return false, fmt.Errorf(
-			"task %q trace revision moved backward from %d to %d",
-			key.taskID,
-			state.lastSeq,
-			record.LastEventSeq,
-		)
-	}
-	if state.retryable {
-		p.pendingAdmissions--
-	}
-	rebuilt := p.restoreStateLocked(
-		key.workspace,
-		record,
-		registry.ListEvents(record.TaskID),
-	)
-	p.traces[key] = rebuilt
-	if taskRecordIsCaptureTerminal(record) {
-		p.terminalizeLocked(key, rebuilt, record)
-	}
-	return false, nil
-}
-
-func (p *taskTraceProjector) setTracePendingLocked(
-	key taskTraceKey,
-	pending bool,
-) error {
-	registry := p.registries[key.workspace]
-	if registry == nil {
-		return nil
-	}
-	return registry.SetTraceCapturePending(
-		key.taskID,
-		key.generationID,
-		pending,
-	)
-}
-
-func taskTraceAdmissionCanRetry(err error) bool {
-	var admission *evalcapture.AdmissionError
-	return errors.As(err, &admission) && admission.Reason == evalcapture.ReasonCapacity
-}
-
-func taskTracePersistCanRetry(err error) bool {
-	var storage *taskTraceStorageError
-	return taskTraceAdmissionCanRetry(err) || errors.As(err, &storage)
-}
-
-func (p *taskTraceProjector) scheduleRetryLocked() {
-	if p.retryTimer != nil || p.closed || !p.settings.enabled {
-		return
-	}
-	p.retryTimer = time.AfterFunc(taskTraceAdmissionRetryDelay, p.retryPending)
-}
-
-func (p *taskTraceProjector) scheduleSubscriptionRetryLocked() {
-	if p.subscriptionRetryTimer != nil || p.closed || !p.settings.enabled {
-		return
-	}
-	p.subscriptionRetryTimer = time.AfterFunc(
-		taskTraceSubscriptionRetryDelay,
-		p.retrySubscriptions,
-	)
-}
-
-func (p *taskTraceProjector) retrySubscriptions() {
-	p.mu.Lock()
-	p.subscriptionRetryTimer = nil
-	if p.closed || !p.settings.enabled {
-		p.mu.Unlock()
-		return
-	}
-	registries := make(map[string]*taskregistry.Registry)
-	for workspace, registry := range p.registries {
-		if _, subscribed := p.subs[workspace]; !subscribed {
-			registries[workspace] = registry
-		}
-	}
-	p.mu.Unlock()
-	for workspace, registry := range registries {
-		p.subscribe(workspace, registry)
-	}
-}
-
-func (p *taskTraceProjector) retryPending() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.retryTimer = nil
-	if p.closed || !p.settings.enabled {
-		return
-	}
-	keys := make([]taskTraceKey, 0, len(p.traces))
-	for key, state := range p.traces {
-		if state.terminal && state.retryable {
-			keys = append(keys, key)
-		}
-	}
-	sortTaskTraceKeys(keys)
-	for _, key := range keys {
-		if state := p.traces[key]; state != nil {
-			p.trySubmitLocked(key, state)
-		}
-	}
-	p.recoverDeferredLocked()
-	if p.pendingAdmissions > 0 || p.deferred {
-		p.scheduleRetryLocked()
-	}
-}
-
-func (p *taskTraceProjector) recoverDeferredLocked() {
-	if !p.deferred || p.submit == nil {
-		return
-	}
-	p.deferred = false
-	workspaces := make([]string, 0, len(p.registries))
-	for workspace := range p.registries {
-		workspaces = append(workspaces, workspace)
-	}
-	sort.Strings(workspaces)
-	for _, workspace := range workspaces {
-		registry := p.registries[workspace]
-		records := registry.List()
-		sort.Slice(records, func(i, j int) bool {
-			if records[i].TaskID != records[j].TaskID {
-				return records[i].TaskID < records[j].TaskID
-			}
-			return records[i].GenerationID < records[j].GenerationID
-		})
-		for _, record := range records {
-			if !taskRecordIsCaptureTerminal(record) {
-				continue
-			}
-			key := newTaskTraceKey(workspace, record.TaskID, record.GenerationID)
-			completedSeq, done := p.completed[key]
-			if (done && record.LastEventSeq <= completedSeq) ||
-				p.traces[key] != nil {
-				continue
-			}
-			if done {
-				p.removeCompletedLocked(key)
-			}
-			if p.pendingAdmissions >= maxPendingTaskTraceAdmissions {
-				p.deferred = true
-				return
-			}
-			state := p.restoreStateLocked(
-				workspace,
-				record,
-				registry.ListEvents(record.TaskID),
-			)
-			p.traces[key] = state
-			p.terminalizeLocked(key, state, record)
-		}
-	}
-}
-
-func (p *taskTraceProjector) close() {
-	ctx, cancel := context.WithTimeout(context.Background(), traceShutdownAdmissionTimeout)
-	defer cancel()
-	_ = p.closeWithContext(ctx)
-	p.finishClose()
-}
-
-func (p *taskTraceProjector) closeWithContext(ctx context.Context) error {
-	if p == nil {
-		return nil
-	}
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil
-	}
-	p.closed = true
-	if p.retryTimer != nil {
-		p.retryTimer.Stop()
-		p.retryTimer = nil
-	}
-	if p.subscriptionRetryTimer != nil {
-		p.subscriptionRetryTimer.Stop()
-		p.subscriptionRetryTimer = nil
-	}
-	subs := p.takeSubscriptionsLocked()
-	keys := make([]taskTraceKey, 0, len(p.traces))
-	for key := range p.traces {
-		keys = append(keys, key)
-	}
-	sortTaskTraceKeys(keys)
-	type pendingClose struct {
-		key   taskTraceKey
-		state *taskTraceState
-	}
-	states := make([]pendingClose, 0, len(keys))
-	for _, key := range keys {
-		state := p.traces[key]
-		if state.admitted && !state.dirty {
-			continue
-		}
-		if !state.terminal {
-			state.trace.builder.MarkIncomplete(
-				"runtime_closed_before_terminal_task_delivery",
-				0,
-			)
-		}
-		states = append(states, pendingClose{key: key, state: state})
-	}
-	p.mu.Unlock()
-
-	unsubscribeTaskRegistries(subs)
-	var firstErr error
-	for _, pending := range states {
-		state := pending.state
-		traceID := state.trace.builder.TraceID()
-		submissionID := ""
-		if p.awaitPersistence {
-			p.mu.Lock()
-			markerErr := p.setTracePendingLocked(pending.key, true)
-			if markerErr == nil {
-				submissionID = p.nextSubmissionIDLocked(traceID)
-				state.trace.submissionID = submissionID
-				p.inflight[submissionID] = pending.key
-				state.receipt = submissionID
-				state.admitted = true
-			}
-			p.mu.Unlock()
-			if markerErr != nil {
-				if firstErr == nil {
-					firstErr = markerErr
-				}
-				continue
-			}
-		}
-		var err error
-		if p.submitWait != nil {
-			err = p.submitWait(ctx, state.settings, state.trace)
-		} else if p.submit != nil {
-			err = p.submit(state.settings, state.trace)
-		}
-		p.mu.Lock()
-		if p.traces[pending.key] != state {
-			p.mu.Unlock()
-			continue
-		}
-		switch {
-		case errors.Is(err, errTaskTraceAlreadyDurable):
-			p.clearInflightForKeyLocked(pending.key)
-			confirmed, markerErr := p.confirmTracePersistedLocked(
-				pending.key,
-				state,
-			)
-			if markerErr != nil {
-				if firstErr == nil {
-					firstErr = markerErr
-				}
-			} else if confirmed {
-				delete(p.traces, pending.key)
-				p.recordCompletedLocked(pending.key, state.lastSeq)
-			}
-		case err != nil:
-			delete(p.inflight, submissionID)
-			if state.receipt == submissionID {
-				state.admitted = false
-				state.receipt = ""
-			}
-			if firstErr == nil {
-				firstErr = err
-			}
-		default:
-			state.admitted = p.awaitPersistence
-			state.dirty = false
-		}
-		p.mu.Unlock()
-	}
-	return firstErr
-}
-
-func (p *taskTraceProjector) finishClose() {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.traces = nil
-	p.completed = nil
-	p.inflight = nil
-	p.order = nil
-	p.registries = nil
-}
-
-type taskTraceProjectorStats struct {
-	PendingAdmissions int
-	OverflowDeferrals uint64
-	PermanentDrops    uint64
-}
-
-func (p *taskTraceProjector) stats() taskTraceProjectorStats {
-	if p == nil {
-		return taskTraceProjectorStats{}
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return taskTraceProjectorStats{
-		PendingAdmissions: p.pendingAdmissions,
-		OverflowDeferrals: p.overflowDeferrals,
-		PermanentDrops:    p.permanentDrops,
-	}
-}
-
-func (p *taskTraceProjector) recordCompletedLocked(
-	key taskTraceKey,
-	lastSeq int64,
-) {
-	if _, exists := p.completed[key]; exists {
-		p.completed[key] = max(p.completed[key], lastSeq)
-		return
-	}
-	p.completed[key] = lastSeq
-	p.order = append(p.order, key)
-	if len(p.order) <= maxCompletedTaskTraces {
-		return
-	}
-	oldest := p.order[0]
-	p.order[0] = taskTraceKey{}
-	p.order = p.order[1:]
-	delete(p.completed, oldest)
-}
-
-func (p *taskTraceProjector) removeCompletedLocked(key taskTraceKey) {
-	delete(p.completed, key)
-	for i, ordered := range p.order {
-		if ordered != key {
-			continue
-		}
-		copy(p.order[i:], p.order[i+1:])
-		p.order[len(p.order)-1] = taskTraceKey{}
-		p.order = p.order[:len(p.order)-1]
-		return
-	}
-}
-
-func (p *taskTraceProjector) nextSubmissionIDLocked(traceID string) string {
-	p.nextSubmission++
-	return traceID + ":" + strconv.FormatUint(p.nextSubmission, 10)
-}
-
-func (p *taskTraceProjector) clearInflightForKeyLocked(key taskTraceKey) {
-	for submissionID, inflightKey := range p.inflight {
-		if inflightKey == key {
-			delete(p.inflight, submissionID)
-		}
-	}
-}
-
-func (p *taskTraceProjector) clearWorkspaceLocked(workspace string) {
-	for traceID, key := range p.inflight {
-		if key.workspace == workspace {
-			delete(p.inflight, traceID)
-		}
-	}
-	for key := range p.traces {
-		if key.workspace == workspace {
-			if p.traces[key].retryable {
-				p.pendingAdmissions--
-			}
-			delete(p.traces, key)
-		}
-	}
-	if len(p.completed) == 0 {
-		return
-	}
-	order := p.order[:0]
-	for _, key := range p.order {
-		if key.workspace == workspace {
-			delete(p.completed, key)
-			continue
-		}
-		order = append(order, key)
-	}
-	p.order = order
-}
-
-func (p *taskTraceProjector) clearCaptureStateLocked() {
-	if p.retryTimer != nil {
-		p.retryTimer.Stop()
-		p.retryTimer = nil
-	}
-	if p.subscriptionRetryTimer != nil {
-		p.subscriptionRetryTimer.Stop()
-		p.subscriptionRetryTimer = nil
-	}
-	p.traces = make(map[taskTraceKey]*taskTraceState)
-	p.completed = make(map[taskTraceKey]int64)
-	p.inflight = make(map[string]taskTraceKey)
-	p.order = nil
-	p.pendingAdmissions = 0
-	p.deferred = false
-}
-
-func (p *taskTraceProjector) takeSubscriptionsLocked() []taskRegistrySubscription {
-	subs := make([]taskRegistrySubscription, 0, len(p.subs))
-	for _, sub := range p.subs {
-		subs = append(subs, sub)
-	}
-	p.subs = make(map[string]taskRegistrySubscription)
-	return subs
-}
-
-func unsubscribeTaskRegistries(subs []taskRegistrySubscription) {
-	for _, sub := range subs {
-		if sub.unsubscribe != nil {
-			sub.unsubscribe()
-		}
-	}
-}
-
-func setTaskRegistryTraceProtection(
-	registries map[string]*taskregistry.Registry,
-	enabled bool,
-) {
-	for workspace, registry := range registries {
-		if err := registry.SetTraceCaptureProtection(enabled); err != nil {
-			logger.WarnCF("evaltrace", "Failed to update task trace retention protection", map[string]any{
-				"workspace": workspace,
-				"enabled":   enabled,
-				"error":     err.Error(),
-			})
-		}
-	}
-}
-
-func cloneTaskRegistries(
-	registries map[string]*taskregistry.Registry,
-) map[string]*taskregistry.Registry {
-	cloned := make(map[string]*taskregistry.Registry, len(registries))
-	for workspace, registry := range registries {
-		cloned[workspace] = registry
-	}
-	return cloned
-}
-
-func newTaskTraceKey(workspace, taskID, generationID string) taskTraceKey {
-	return taskTraceKey{
-		workspace:    strings.TrimSpace(workspace),
-		taskID:       strings.TrimSpace(taskID),
-		generationID: strings.TrimSpace(generationID),
-	}
-}
-
 func newTaskTraceState(
 	settings traceCaptureSettings,
 	workspace string,
@@ -1037,9 +688,8 @@ func newTaskTraceState(
 		startedAt = time.UnixMilli(1)
 	}
 	trace := &activeTraceCapture{
-		workspace:    workspace,
-		startedAt:    startedAt,
-		forcePersist: record.TraceCapturePending,
+		workspace: workspace,
+		startedAt: startedAt,
 		builder: evalcapture.NewTraceBuilder(evaltrace.Trace{
 			SchemaVersion: evaltrace.SchemaVersionV1,
 			TraceID: opaqueTraceID(
@@ -1054,8 +704,9 @@ func newTaskTraceState(
 			},
 			Limits: settings.limits,
 			Metadata: evaltrace.Metadata{
-				SessionHash: safeHash(settings, record.RequesterSessionKey),
-				AgentID:     record.AgentID,
+				SessionHash:        safeHash(settings, record.RequesterSessionKey),
+				AgentID:            record.AgentID,
+				ProjectionRevision: uint64(max(0, record.LastEventSeq)),
 			},
 			Records: make([]evaltrace.Record, 0, 16),
 		}),
@@ -1120,21 +771,27 @@ func normalizedTaskEventRecord(
 	}, critical
 }
 
-func taskRecordIsCaptureTerminal(record taskregistry.Record) bool {
-	statusTerminal := record.Status == taskregistry.StatusSucceeded ||
-		record.Status == taskregistry.StatusFailed ||
-		record.Status == taskregistry.StatusTimedOut ||
-		record.Status == taskregistry.StatusCancelled ||
-		record.Status == taskregistry.StatusLost &&
-			strings.TrimSpace(record.InteractionID) == ""
-	deliveryTerminal := record.DeliveryStatus == taskregistry.DeliveryDelivered ||
-		record.DeliveryStatus == taskregistry.DeliverySessionQueued ||
-		record.DeliveryStatus == taskregistry.DeliveryParentMissing ||
-		record.DeliveryStatus == taskregistry.DeliveryNotApplicable
-	if record.DeliveryStatus == taskregistry.DeliveryFailed {
-		deliveryTerminal = strings.TrimSpace(record.InteractionID) == ""
+func reconcileStoredTaskTrace(
+	policy evalcapture.Policy,
+	candidate evaltrace.Trace,
+) (evaltrace.Trace, bool, error) {
+	existing, err := (evaltrace.Store{Root: policy.Root}).Load(candidate.TraceID)
+	if errors.Is(err, os.ErrNotExist) {
+		return candidate, true, nil
 	}
-	return statusTerminal && deliveryTerminal
+	var corrupt *evaltrace.CorruptTraceError
+	if errors.As(err, &corrupt) {
+		logger.WarnCF("evaltrace", "Replacing corrupt stored task trace", map[string]any{
+			"trace_id": candidate.TraceID,
+			"error":    corrupt.Error(),
+		})
+		return candidate, true, nil
+	}
+	if err != nil {
+		return evaltrace.Trace{}, false, &taskTraceStorageError{err: err}
+	}
+	selected, persist := reconcileTaskTraceCandidate(existing, candidate)
+	return selected, persist, nil
 }
 
 func reconcileTaskTraceCandidate(
@@ -1143,12 +800,16 @@ func reconcileTaskTraceCandidate(
 	if existing.TraceID != candidate.TraceID {
 		return candidate, true
 	}
+	if taskTraceRevision(candidate) > taskTraceRevision(existing) {
+		if merged, ok := mergeCompleteTaskTrace(existing, candidate); ok {
+			return merged, true
+		}
+	}
 	if !existing.Truncation.Incomplete && candidate.Truncation.Incomplete {
 		if merged, ok := mergeCompleteTaskTrace(existing, candidate); ok {
 			return merged, true
 		}
-		if maxTaskTraceEventSequence(candidate.Records) >
-			maxTaskTraceEventSequence(existing.Records) {
+		if taskTraceRevision(candidate) > taskTraceRevision(existing) {
 			return candidate, true
 		}
 		return existing, false
@@ -1162,8 +823,7 @@ func reconcileTaskTraceCandidate(
 	if existing.Truncation.Incomplete && !candidate.Truncation.Incomplete {
 		return candidate, true
 	}
-	if maxTaskTraceEventSequence(candidate.Records) >
-		maxTaskTraceEventSequence(existing.Records) {
+	if taskTraceRevision(candidate) > taskTraceRevision(existing) {
 		return candidate, true
 	}
 	return existing, false
@@ -1238,7 +898,8 @@ func repairTaskHistoryTruncation(
 	reasons := truncation.Reasons[:0]
 	for _, reason := range truncation.Reasons {
 		if reason == "task_history_missing_at_startup" ||
-			reason == "task_event_sequence_gap" {
+			reason == "task_event_sequence_gap" ||
+			reason == "task_capture_journal_truncated" {
 			continue
 		}
 		reasons = append(reasons, reason)
@@ -1286,6 +947,13 @@ func maxTaskTraceEventSequence(records []evaltrace.Record) int64 {
 	return highest
 }
 
+func taskTraceRevision(trace evaltrace.Trace) uint64 {
+	if trace.Metadata.ProjectionRevision > 0 {
+		return trace.Metadata.ProjectionRevision
+	}
+	return uint64(max(0, maxTaskTraceEventSequence(trace.Records)))
+}
+
 func taskErrorCode(record taskregistry.Record) string {
 	if record.DeliveryStatus == taskregistry.DeliveryFailed {
 		return "delivery_failed"
@@ -1307,16 +975,4 @@ func parseTaskBool(value string) bool {
 func parseTaskInt(value string) int {
 	parsed, _ := strconv.Atoi(value)
 	return parsed
-}
-
-func sortTaskTraceKeys(keys []taskTraceKey) {
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].workspace != keys[j].workspace {
-			return keys[i].workspace < keys[j].workspace
-		}
-		if keys[i].taskID != keys[j].taskID {
-			return keys[i].taskID < keys[j].taskID
-		}
-		return keys[i].generationID < keys[j].generationID
-	})
 }

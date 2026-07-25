@@ -250,6 +250,15 @@ func (d *eventObserverDelivery) finishCallback() {
 
 func cloneTaskRecord(record Record) Record {
 	cloned := record
+	cloned.TraceCaptureEvents = make(
+		[]TaskEvent,
+		len(record.TraceCaptureEvents),
+	)
+	for i := range record.TraceCaptureEvents {
+		cloned.TraceCaptureEvents[i] = cloneTaskEvent(
+			record.TraceCaptureEvents[i],
+		)
+	}
 	if record.Completion != nil {
 		completion := *record.Completion
 		completion.Media = append([]CompletionMedia(nil), record.Completion.Media...)
