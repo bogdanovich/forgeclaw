@@ -156,6 +156,43 @@ func TestCoordinatorRecoversCapacityDeferredSourceKey(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRecoveryWindowIncludesTrackedKeys(t *testing.T) {
+	source := newCoordinatorSource()
+	storage := newBlockingCoordinatorStorage()
+	coordinator := newTestCoordinator(t, 2, source, storage)
+	waitCoordinator(t, func() bool {
+		coordinator.mu.Lock()
+		scanning := coordinator.scans != 0
+		coordinator.mu.Unlock()
+		return source.pendingCallCount() >= 1 && !scanning
+	})
+	source.set("a", 1)
+	source.set("b", 2)
+
+	if err := coordinator.Request("tasks", "a"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-storage.started:
+	case <-time.After(time.Second):
+		t.Fatal("tracked key did not reach storage")
+	}
+	coordinator.mu.Lock()
+	coordinator.recoverAt["tasks"] = time.Time{}
+	coordinator.signalLocked()
+	coordinator.mu.Unlock()
+
+	waitCoordinator(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		return coordinator.states[projectionID{source: "tasks", key: "b"}] != nil
+	})
+	if calls := source.pendingCallCount(); calls > 4 {
+		t.Fatalf("recovery repeatedly scanned tracked keys %d times", calls)
+	}
+	close(storage.release)
+}
+
 func TestCoordinatorRetriesPermanentWriterFailure(t *testing.T) {
 	source := newCoordinatorSource()
 	source.set("task", 9)
@@ -461,6 +498,7 @@ type coordinatorSource struct {
 	records         map[string]coordinatorSourceRecord
 	confirmFailures map[string]int
 	loadFailures    map[string]int
+	pendingCalls    int
 }
 
 func newCoordinatorSource() *coordinatorSource {
@@ -497,6 +535,7 @@ func (s *coordinatorSource) confirmedRevision(key string) uint64 {
 func (s *coordinatorSource) Pending(_ context.Context, limit int) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pendingCalls++
 	keys := make([]string, 0, len(s.records))
 	for key, record := range s.records {
 		if record.confirmed < record.revision {
@@ -508,6 +547,12 @@ func (s *coordinatorSource) Pending(_ context.Context, limit int) ([]string, err
 		keys = keys[:limit]
 	}
 	return keys, nil
+}
+
+func (s *coordinatorSource) pendingCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingCalls
 }
 
 func (s *coordinatorSource) LoadLatest(

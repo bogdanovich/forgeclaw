@@ -40,8 +40,8 @@ type DurableCandidate struct {
 
 // DurableSource remains the authority for domain identity, revision, recovery,
 // and compare-and-set confirmation. Implementations must return opaque keys
-// from Pending, return promptly when ctx is canceled, and must not include
-// secrets in errors.
+// from Pending without duplicates, return promptly when ctx is canceled, and
+// must not include secrets in errors.
 type DurableSource interface {
 	Pending(ctx context.Context, limit int) ([]string, error)
 	LoadLatest(ctx context.Context, key string) (DurableCandidate, bool, error)
@@ -332,18 +332,18 @@ func (c *Coordinator) Close(admissionCtx, drainCtx context.Context) error {
 func (c *Coordinator) run() {
 	defer close(c.done)
 	for {
-		wait := c.processAvailable()
+		wakeAt := c.processAvailable()
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
 			return
 		}
 		c.mu.Unlock()
-		if wait <= 0 {
+		if wakeAt.IsZero() {
 			<-c.wake
 			continue
 		}
-		timer := time.NewTimer(wait)
+		timer := time.NewTimer(time.Until(wakeAt))
 		select {
 		case <-c.wake:
 			if !timer.Stop() {
@@ -354,11 +354,11 @@ func (c *Coordinator) run() {
 	}
 }
 
-func (c *Coordinator) processAvailable() time.Duration {
+func (c *Coordinator) processAvailable() time.Time {
 	for {
-		id, state, registration, ok, next := c.nextWork()
+		id, state, registration, ok, wakeAt := c.nextWork()
 		if !ok {
-			return next
+			return wakeAt
 		}
 		switch state.phase {
 		case projectionNeedsLoad:
@@ -374,7 +374,7 @@ func (c *Coordinator) nextWork() (
 	projectionState,
 	*sourceRegistration,
 	bool,
-	time.Duration,
+	time.Time,
 ) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -406,7 +406,7 @@ func (c *Coordinator) nextWork() (
 			delete(c.states, id)
 			continue
 		}
-		return id, *state, registration, true, 0
+		return id, *state, registration, true, time.Time{}
 	}
 	if len(c.states) < c.capacity && c.scans == 0 {
 		sourceIDs := make([]string, 0, len(c.recoverAt))
@@ -430,10 +430,7 @@ func (c *Coordinator) nextWork() (
 		}
 	}
 	c.notifyIdleLocked()
-	if earliest.IsZero() {
-		return projectionID{}, projectionState{}, nil, false, 0
-	}
-	return projectionID{}, projectionState{}, nil, false, time.Until(earliest)
+	return projectionID{}, projectionState{}, nil, false, earliest
 }
 
 func (c *Coordinator) scanSource(
@@ -448,7 +445,14 @@ func (c *Coordinator) scanSource(
 		c.mu.Unlock()
 	}()
 	c.mu.Lock()
-	limit := c.capacity - len(c.states)
+	available := c.capacity - len(c.states)
+	tracked := 0
+	for id := range c.states {
+		if id.source == sourceID {
+			tracked++
+		}
+	}
+	limit := available + tracked
 	stopping := c.stopping
 	current := c.sources[sourceID] == registration
 	c.mu.Unlock()
@@ -467,6 +471,7 @@ func (c *Coordinator) scanSource(
 		c.signalLocked()
 		return
 	}
+	admitted := 0
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
 		if key == "" {
@@ -482,9 +487,14 @@ func (c *Coordinator) scanSource(
 			break
 		}
 		c.states[id] = &projectionState{phase: projectionNeedsLoad, generation: 1}
+		admitted++
 	}
 	if len(keys) >= limit && !stopping {
-		c.recoverAt[sourceID] = time.Time{}
+		if admitted == 0 {
+			c.recoverAt[sourceID] = time.Now().Add(c.retryDelay)
+		} else {
+			c.recoverAt[sourceID] = time.Time{}
+		}
 	}
 	c.signalLocked()
 }
