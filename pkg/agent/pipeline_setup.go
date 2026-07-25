@@ -164,6 +164,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		messages,
 		ts.model.RouteSessionKey,
 	)
+	defaultModelName := resolvedCandidateModelName(selection.selectedCandidates, execution.Model)
 	activeProvider := execution.Provider
 	if selection.usedLight && execution.LightProvider != nil {
 		activeProvider = execution.LightProvider
@@ -196,6 +197,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.model.candidateProviders = execution.CandidateProviders
 	exec.model.cleanup = nil
 	exec.model.usedLight = selection.usedLight
+	exec.model.defaultModelName = defaultModelName
 	exec.model.autoFallback = true
 	exec.model.visionRoute = visionRouteSameModel
 

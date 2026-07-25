@@ -3725,6 +3725,129 @@ func TestSendWithRetry_FinalReplyBypassesToolFeedbackFinalization(t *testing.T) 
 	}
 }
 
+func TestDecorateOutboundResponseFooter(t *testing.T) {
+	m := newTestManager()
+	cfg := config.DefaultConfig()
+	m.config = cfg
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind":       "final",
+				"model_name":          "fallback-model",
+				"default_model_name":  "primary-model",
+				"usage_input_tokens":  "10252",
+				"usage_output_tokens": "4500",
+				"usage_total_tokens":  "14752",
+			},
+		},
+	})
+
+	got := m.decorateOutboundResponseFooter(msg)
+	want := "final reply\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	if got.Content != want {
+		t.Fatalf("decorated content = %q, want %q", got.Content, want)
+	}
+	got = m.decorateOutboundResponseFooter(got)
+	if got.Content != want {
+		t.Fatalf("second decoration = %q, want unchanged %q", got.Content, want)
+	}
+}
+
+func TestDecorateOutboundResponseFooterDisabled(t *testing.T) {
+	m := newTestManager()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.ResponseFooter.Enabled = false
+	m.config = cfg
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind":      "final",
+				"model_name":         "fallback-model",
+				"default_model_name": "primary-model",
+			},
+		},
+	})
+
+	got := m.decorateOutboundResponseFooter(msg)
+	if got.Content != msg.Content {
+		t.Fatalf("decorated content = %q, want unchanged %q", got.Content, msg.Content)
+	}
+}
+
+func TestFormatFooterTokenCount(t *testing.T) {
+	tests := []struct {
+		tokens int
+		want   string
+	}{
+		{999, "999"},
+		{1000, "1k"},
+		{10252, "10.2k"},
+		{1_200_000, "1.2m"},
+	}
+
+	for _, tt := range tests {
+		if got := formatFooterTokenCount(tt.tokens); got != tt.want {
+			t.Fatalf("formatFooterTokenCount(%d) = %q, want %q", tt.tokens, got, tt.want)
+		}
+	}
+}
+
+func TestSendMessageWithRetryPolicy_AppliesResponseFooterBeforeSend(t *testing.T) {
+	m := newTestManager()
+	m.config = config.DefaultConfig()
+
+	ch := &mockChannel{}
+	m.channels["test"] = ch
+	m.deliveryOwners["test"] = deliveryOwnerFromWorker(
+		"test",
+		ch,
+		&channelWorker{
+			ch:      ch,
+			limiter: rate.NewLimiter(rate.Inf, 1),
+		},
+	)
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind":       "final",
+				"model_name":          "primary-model",
+				"default_model_name":  "primary-model",
+				"usage_input_tokens":  "10",
+				"usage_output_tokens": "3",
+			},
+		},
+	})
+
+	if err := m.SendMessage(context.Background(), msg); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if len(ch.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(ch.sentMessages))
+	}
+	want := "final reply\n\ntokens: in 10, out 3"
+	if got := ch.sentMessages[0].Content; got != want {
+		t.Fatalf("sent content = %q, want %q", got, want)
+	}
+}
+
 func TestSendWithRetry_ToolCallsPlaceholderDeleteAndFallsThroughToSend(t *testing.T) {
 	m := newTestManager()
 

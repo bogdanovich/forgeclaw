@@ -90,6 +90,10 @@ const (
 type turnResult struct {
 	finalContent           string
 	modelName              string
+	defaultModelName       string
+	usageInputTokens       int
+	usageOutputTokens      int
+	usageTotalTokens       int
 	completionMedia        []tools.CompletionMedia
 	status                 TurnEndStatus
 	followUps              []bus.InboundMessage
@@ -186,6 +190,7 @@ type turnExecutionModel struct {
 	cleanup            func()
 	usedLight          bool
 	llmModelName       string
+	defaultModelName   string
 	autoFallback       bool
 	visionRoute        string
 }

@@ -46,6 +46,9 @@ func DefaultConfig() *Config {
 					AnimationIntervalSecs:  0,
 					EditMinIntervalSeconds: 0,
 				},
+				ResponseFooter: ResponseFooterConfig{
+					Enabled: true,
+				},
 				FinalTurnRenderMode: "",
 				SplitOnMarker:       false,
 				MaxLLMRetries:       2,

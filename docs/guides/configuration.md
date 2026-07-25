@@ -1087,6 +1087,27 @@ Semantics:
   instead of producing an answer without the image.
 - `tools.image_generate.model` remains separate and only controls image generation.
 
+#### Response footer
+
+Final outbound messages can include a compact footer with response metadata.
+When enabled, PicoClaw appends the active model only when it differs from the
+turn's default model, and appends provider-reported input/output token usage
+when available.
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "response_footer": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+Set `agents.defaults.response_footer.enabled` to `false` to disable the footer.
+
 #### 🔒 Security Configuration (Recommended)
 
 PicoClaw supports separating sensitive data (API keys, tokens, secrets) from your main configuration by storing them in a `.security.yml` file.

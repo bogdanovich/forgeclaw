@@ -1237,6 +1237,53 @@ func TestDefaultConfig_ToolFeedbackDisabled(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_ResponseFooterEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.Agents.Defaults.IsResponseFooterEnabled() {
+		t.Fatal("DefaultConfig().Agents.Defaults.ResponseFooter.Enabled should be true")
+	}
+}
+
+func TestLoadConfig_ResponseFooterCanBeDisabled(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(
+		configPath,
+		[]byte(`{"version":3,"agents":{"defaults":{"workspace":"./workspace","response_footer":{"enabled":false}}}}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if cfg.Agents.Defaults.IsResponseFooterEnabled() {
+		t.Fatal("agents.defaults.response_footer.enabled should be false when explicitly disabled")
+	}
+}
+
+func TestLoadConfig_ResponseFooterDefaultsEnabledWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(
+		configPath,
+		[]byte(`{"version":3,"agents":{"defaults":{"workspace":"./workspace"}}}`),
+		0o600,
+	); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if !cfg.Agents.Defaults.IsResponseFooterEnabled() {
+		t.Fatal("agents.defaults.response_footer.enabled should default to true when omitted")
+	}
+}
+
 func TestDefaultConfig_MemoryToolEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.Tools.Memory.Enabled || !cfg.Tools.IsToolEnabled("memory") {
