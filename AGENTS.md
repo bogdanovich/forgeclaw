@@ -25,11 +25,11 @@ Branch policy:
 Formatting policy:
 
 - CI enables `golines` as a formatter with a 120-character maximum line
-  length (`.golangci.yaml`), in addition to `gofmt` and `gofumpt`.
-- Before committing changed Go files, run `golangci-lint fmt` from the
-  repository root, then validate the affected packages with
-  `golangci-lint run --build-tags=goolm,stdjson <changed Go packages>`. Do not
-  rely on `gofmt` alone.
+  length (`.golangci-format.yaml`), in addition to `gofmt` and `gofumpt`.
+- Before committing changed Go files, run `make fmt` from the repository root,
+  then validate the affected non-test packages with `make lint` or
+  `scripts/pre-push-lint.sh --changed`. Formatting still covers all Go files,
+  including tests. Do not rely on `gofmt` alone.
 - Manually wrap composite literals, calls, conditions, and test assertions
   approaching 120 characters when the formatter cannot run locally. This
   prevents avoidable CI-only `golines` failures.

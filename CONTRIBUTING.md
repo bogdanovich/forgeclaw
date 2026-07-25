@@ -25,6 +25,7 @@ merge conflicts and migration churn.
 Prerequisites:
 
 - Go 1.25 or later
+- the golangci-lint version recorded in `.golangci-lint-version`
 - `make`
 - Node.js 22+ and pnpm 10.33.0+ for launcher/frontend changes
 
@@ -91,13 +92,15 @@ When resolving conflicts:
 - Avoid unnecessary abstractions.
 - Add or update tests for behavioral changes.
 - Run focused package tests before pushing.
-- Run full lint when touching formatting-sensitive Go code:
+- Format all Go files, including tests, then lint non-test code:
 
 ```bash
+make fmt-check
 make lint
 ```
 
-The pre-push hook runs the same linter rules expected by GitHub checks.
+Run `make fmt` to apply formatting. The pre-push hook checks formatting and
+runs the same linter rules expected by GitHub checks.
 
 ## Documentation
 

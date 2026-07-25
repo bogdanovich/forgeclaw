@@ -1018,10 +1018,10 @@ type MessageToolsConfig struct {
 }
 
 type RequestUserInputToolsConfig struct {
-	Enabled               bool `json:"enabled" yaml:"-" env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_ENABLED"` //nolint:golines
-	DefaultTimeoutSeconds int  `json:"default_timeout_seconds" env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_DEFAULT_TIMEOUT_SECONDS"`
-	MaxTimeoutSeconds     int  `json:"max_timeout_seconds"     env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_MAX_TIMEOUT_SECONDS"`
-	RetentionHours        int  `json:"retention_hours"         env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_RETENTION_HOURS"`
+	Enabled               bool `json:"enabled"                 yaml:"-" env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_ENABLED"` //nolint:golines
+	DefaultTimeoutSeconds int  `json:"default_timeout_seconds"          env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_DEFAULT_TIMEOUT_SECONDS"`
+	MaxTimeoutSeconds     int  `json:"max_timeout_seconds"              env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_MAX_TIMEOUT_SECONDS"`
+	RetentionHours        int  `json:"retention_hours"                  env:"PICOCLAW_TOOLS_REQUEST_USER_INPUT_RETENTION_HOURS"`
 }
 
 func (c RequestUserInputToolsConfig) DefaultTimeout() time.Duration {
@@ -1323,7 +1323,7 @@ type ToolsConfig struct {
 	Memory           ToolConfig                  `json:"memory"                     yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_MEMORY_"`
 	Message          MessageToolsConfig          `json:"message"                    yaml:"-"`
 	ReadFile         ReadFileToolConfig          `json:"read_file"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
-	RequestUserInput RequestUserInputToolsConfig `json:"request_user_input" yaml:"-"` //nolint:golines
+	RequestUserInput RequestUserInputToolsConfig `json:"request_user_input"         yaml:"-"` //nolint:golines
 	Serial           ToolConfig                  `json:"serial"                     yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
 	SendFile         ToolConfig                  `json:"send_file"                  yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
 	SendTTS          ToolConfig                  `json:"send_tts"                   yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`

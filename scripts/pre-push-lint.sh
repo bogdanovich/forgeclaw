@@ -5,6 +5,13 @@ cd "$(git rev-parse --show-toplevel)"
 
 mode="${1:---changed}"
 base="${PRE_PUSH_BASE:-origin/main}"
+concurrency="${GOLANGCI_LINT_CONCURRENCY:-4}"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	default_cgo_enabled=0
+else
+	default_cgo_enabled=1
+fi
+cgo_enabled="${GOLANGCI_LINT_CGO_ENABLED:-$default_cgo_enabled}"
 run_step() {
 	local label="$1"
 	shift
@@ -23,7 +30,12 @@ run_step() {
 }
 
 lint_all() {
-	run_step "all Go packages" golangci-lint run --allow-serial-runners --build-tags=goolm,stdjson
+	run_step "Go formatting" golangci-lint fmt --config .golangci-format.yaml --diff
+	run_step "all Go packages" env CGO_ENABLED="$cgo_enabled" golangci-lint run \
+		--allow-serial-runners \
+		--tests=false \
+		--concurrency "$concurrency" \
+		--build-tags=goolm,stdjson
 }
 
 run_step "golangci-lint config verify" golangci-lint config verify
@@ -50,18 +62,36 @@ fi
 merge_base="$(git merge-base "$base" HEAD)"
 
 # Dependency and lint-policy changes can affect every package.
-if ! git diff --quiet "$merge_base"...HEAD -- go.mod go.sum .golangci.yml .golangci.yaml; then
+if ! git diff --quiet "$merge_base"...HEAD -- \
+	go.mod \
+	go.sum \
+	.golangci.yml \
+	.golangci.yaml \
+	.golangci-format.yaml \
+	.golangci-lint-version; then
 	lint_all
 	exit
 fi
 
-declare -A changed_dirs=()
+changed_dirs=()
 while IFS= read -r -d '' file; do
 	dir="${file%/*}"
 	if [[ "$dir" == "$file" ]]; then
 		dir="."
 	fi
-	changed_dirs["$dir"]=1
+
+	seen=false
+	if ((${#changed_dirs[@]} > 0)); then
+		for existing_dir in "${changed_dirs[@]}"; do
+			if [[ "$existing_dir" == "$dir" ]]; then
+				seen=true
+				break
+			fi
+		done
+	fi
+	if [[ "$seen" == false ]]; then
+		changed_dirs+=("$dir")
+	fi
 done < <(git diff --name-only --diff-filter=ACMRTUXBD -z "$merge_base"...HEAD -- '*.go')
 
 if ((${#changed_dirs[@]} == 0)); then
@@ -70,7 +100,7 @@ if ((${#changed_dirs[@]} == 0)); then
 fi
 
 packages=()
-while IFS= read -r dir; do
+for dir in "${changed_dirs[@]}"; do
 	if find "$dir" -maxdepth 1 -type f -name '*.go' -print -quit | grep -q .; then
 		if [[ "$dir" == "." ]]; then
 			packages+=(".")
@@ -78,7 +108,7 @@ while IFS= read -r dir; do
 			packages+=("./$dir")
 		fi
 	fi
-done < <(printf '%s\n' "${!changed_dirs[@]}" | sort)
+done
 
 if ((${#packages[@]} == 0)); then
 	echo "pre-push: changed Go files only removed packages"
@@ -87,4 +117,13 @@ fi
 
 echo "pre-push: linting ${#packages[@]} changed Go package(s) relative to $base"
 printf '  %s\n' "${packages[@]}"
-run_step "changed Go packages" golangci-lint run --allow-serial-runners --build-tags=goolm,stdjson "${packages[@]}"
+run_step "changed Go package formatting" golangci-lint fmt \
+	--config .golangci-format.yaml \
+	--diff \
+	"${packages[@]}"
+run_step "changed Go packages" env CGO_ENABLED="$cgo_enabled" golangci-lint run \
+	--allow-serial-runners \
+	--tests=false \
+	--concurrency "$concurrency" \
+	--build-tags=goolm,stdjson \
+	"${packages[@]}"
