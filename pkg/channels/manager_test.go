@@ -4361,6 +4361,52 @@ func TestGetStreamer_FinalizeDismissesTrackedToolFeedback(t *testing.T) {
 	}
 }
 
+func TestGetStreamer_FinalizeAppendsResponseFooter(t *testing.T) {
+	m := newTestManager()
+	m.config = config.DefaultConfig()
+	var finalizedContent string
+	ch := &mockStreamingChannel{
+		streamer: &mockStreamer{
+			finalizeFn: func(_ context.Context, content string) error {
+				finalizedContent = content
+				return nil
+			},
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "", runtimeevents.TraceScope{})
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	modelSetter, ok := streamer.(interface{ SetModelName(modelName string) })
+	if !ok {
+		t.Fatal("manager streamer should support SetModelName")
+	}
+	modelSetter.SetModelName("fallback-model")
+	defaultModelSetter, ok := streamer.(interface{ SetDefaultModelName(defaultModelName string) })
+	if !ok {
+		t.Fatal("manager streamer should support SetDefaultModelName")
+	}
+	defaultModelSetter.SetDefaultModelName("primary-model")
+	usageSetter, ok := streamer.(interface {
+		SetTurnUsage(inputTokens, outputTokens int)
+	})
+	if !ok {
+		t.Fatal("manager streamer should support SetTurnUsage")
+	}
+	usageSetter.SetTurnUsage(10252, 4500)
+
+	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+
+	want := "final reply\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	if finalizedContent != want {
+		t.Fatalf("finalized content = %q, want %q", finalizedContent, want)
+	}
+}
+
 func TestGetStreamer_FinalizeCleansPlaceholderImmediately(t *testing.T) {
 	m := newTestManager()
 	m.RecordPlaceholder("test", "123", "placeholder-1")
