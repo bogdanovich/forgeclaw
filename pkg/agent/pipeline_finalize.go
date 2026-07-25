@@ -22,10 +22,7 @@ func (p *Pipeline) Finalize(
 	turnStatus TurnEndStatus,
 	finalContent string,
 ) (turnResult, error) {
-	lastUsage := ts.GetLastUsage()
-	usageInputTokens := usagePromptTokens(lastUsage)
-	usageOutputTokens := usageCompletionTokens(lastUsage)
-	usageTotalTokens := usageTotalTokens(lastUsage)
+	_, usageInputTokens, usageOutputTokens, usageTotalTokens := ts.llmUsageTotals()
 
 	// When allResponsesHandled=true, ExecuteTools already finalized
 	// (added handledToolResponseSummary, saved session, set phase to Completed).

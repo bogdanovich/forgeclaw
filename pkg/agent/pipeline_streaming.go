@@ -57,11 +57,12 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 	}
 
 	publisher := &streamingChunkPublisher{
-		streamer:  streamer,
-		channel:   ts.channel,
-		chatID:    ts.chatID,
-		modelName: exec.model.llmModelName,
-		ts:        ts,
+		streamer:         streamer,
+		channel:          ts.channel,
+		chatID:           ts.chatID,
+		modelName:        exec.model.llmModelName,
+		defaultModelName: exec.model.defaultModelName,
+		ts:               ts,
 	}
 
 	logger.DebugCF("agent", "configured streaming enabled", map[string]any{
@@ -380,6 +381,7 @@ type streamingChunkPublisher struct {
 	channel            string
 	chatID             string
 	modelName          string
+	defaultModelName   string
 	published          bool
 	reasoningPublished bool
 	err                error
@@ -392,6 +394,9 @@ func (p *streamingChunkPublisher) Update(ctx context.Context, accumulated string
 	}
 	if setter, ok := p.streamer.(interface{ SetModelName(modelName string) }); ok {
 		setter.SetModelName(p.modelName)
+	}
+	if setter, ok := p.streamer.(interface{ SetDefaultModelName(defaultModelName string) }); ok {
+		setter.SetDefaultModelName(p.defaultModelName)
 	}
 	if err := p.streamer.Update(ctx, accumulated); err != nil {
 		p.err = err
@@ -411,6 +416,9 @@ func (p *streamingChunkPublisher) UpdateReasoning(ctx context.Context, accumulat
 	}
 	if setter, ok := p.streamer.(interface{ SetModelName(modelName string) }); ok {
 		setter.SetModelName(p.modelName)
+	}
+	if setter, ok := p.streamer.(interface{ SetDefaultModelName(defaultModelName string) }); ok {
+		setter.SetDefaultModelName(p.defaultModelName)
 	}
 	reasoningStreamer, ok := p.streamer.(bus.ReasoningStreamer)
 	if !ok {
@@ -457,10 +465,14 @@ func (p *streamingChunkPublisher) Finalize(
 	if setter, ok := p.streamer.(interface{ SetModelName(modelName string) }); ok {
 		setter.SetModelName(p.modelName)
 	}
+	if setter, ok := p.streamer.(interface{ SetDefaultModelName(defaultModelName string) }); ok {
+		setter.SetDefaultModelName(p.defaultModelName)
+	}
 	if p.ts != nil {
-		if usage := p.ts.GetLastUsage(); usage != nil {
+		_, inputTokens, outputTokens, _ := p.ts.llmUsageTotals()
+		if inputTokens > 0 || outputTokens > 0 {
 			if setter, ok := p.streamer.(interface{ SetTurnUsage(in, out int) }); ok {
-				setter.SetTurnUsage(usage.PromptTokens, usage.CompletionTokens)
+				setter.SetTurnUsage(inputTokens, outputTokens)
 			}
 		}
 	}

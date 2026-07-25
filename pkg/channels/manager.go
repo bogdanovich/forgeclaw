@@ -1101,11 +1101,16 @@ func (m *Manager) GetStreamer(
 
 	if m.config != nil && m.config.Agents.Defaults.SplitOnMarker {
 		return &splitMarkerStreamer{
-			current:     streamer,
-			reasoning:   reasoningStreamerFrom(streamer),
-			begin:       func(beginCtx context.Context) (bus.Streamer, error) { return sc.BeginStream(beginCtx, chatID) },
+			current:   streamer,
+			reasoning: reasoningStreamerFrom(streamer),
+			begin: func(beginCtx context.Context) (bus.Streamer, error) {
+				return sc.BeginStream(beginCtx, chatID)
+			},
 			onFinalize:  onFinalize,
 			clearMarker: clearMarker,
+			footer: responseFooterStreamState{
+				enabled: m.config != nil && m.config.Agents.Defaults.IsResponseFooterEnabled(),
+			},
 		}, true
 	}
 
@@ -1113,6 +1118,9 @@ func (m *Manager) GetStreamer(
 		Streamer:    streamer,
 		clearMarker: clearMarker,
 		onFinalize:  onFinalize,
+		footer: responseFooterStreamState{
+			enabled: m.config != nil && m.config.Agents.Defaults.IsResponseFooterEnabled(),
+		},
 	}, true
 }
 
@@ -1127,12 +1135,24 @@ type modelNameStreamer interface {
 	SetModelName(modelName string)
 }
 
+type defaultModelNameStreamer interface {
+	SetDefaultModelName(defaultModelName string)
+}
+
 func setStreamerModelName(streamer any, modelName string) {
 	setter, ok := streamer.(modelNameStreamer)
 	if !ok {
 		return
 	}
 	setter.SetModelName(modelName)
+}
+
+func setStreamerDefaultModelName(streamer any, defaultModelName string) {
+	setter, ok := streamer.(defaultModelNameStreamer)
+	if !ok {
+		return
+	}
+	setter.SetDefaultModelName(defaultModelName)
 }
 
 type turnUsageStreamer interface {
@@ -1149,6 +1169,42 @@ func setStreamerTurnUsage(streamer any, inputTokens, outputTokens int) {
 	setter.SetTurnUsage(inputTokens, outputTokens)
 }
 
+type responseFooterStreamState struct {
+	enabled          bool
+	modelName        string
+	defaultModelName string
+	inputTokens      int
+	outputTokens     int
+}
+
+func (s responseFooterStreamState) decorate(content string) string {
+	if !s.enabled {
+		return content
+	}
+	msg := bus.OutboundMessage{
+		Content: content,
+		Context: bus.InboundContext{
+			Raw: map[string]string{
+				"outbound_kind":       "final",
+				"model_name":          s.modelName,
+				"default_model_name":  s.defaultModelName,
+				"usage_input_tokens":  strconv.Itoa(s.inputTokens),
+				"usage_output_tokens": strconv.Itoa(s.outputTokens),
+				"usage_total_tokens":  strconv.Itoa(s.inputTokens + s.outputTokens),
+			},
+		},
+	}
+	footer := outboundResponseFooter(msg)
+	if footer == "" {
+		return content
+	}
+	trimmed := strings.TrimRight(content, " \t\r\n")
+	if trimmed == "" || strings.HasSuffix(trimmed, footer) {
+		return content
+	}
+	return trimmed + "\n\n" + footer
+}
+
 // splitMarkerStreamer turns accumulated streaming text containing
 // MessageSplitMarker into separate channel stream messages.
 type splitMarkerStreamer struct {
@@ -1161,8 +1217,10 @@ type splitMarkerStreamer struct {
 	onFinalize       func(context.Context, string)
 	clearMarker      func()
 	modelName        string
+	defaultModelName string
 	turnInputTokens  int
 	turnOutputTokens int
+	footer           responseFooterStreamState
 }
 
 func (s *splitMarkerStreamer) Update(ctx context.Context, content string) error {
@@ -1209,8 +1267,18 @@ func (s *splitMarkerStreamer) SetModelName(modelName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.modelName = strings.TrimSpace(modelName)
+	s.footer.modelName = s.modelName
 	setStreamerModelName(s.current, s.modelName)
 	setStreamerModelName(s.reasoning, s.modelName)
+}
+
+func (s *splitMarkerStreamer) SetDefaultModelName(defaultModelName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.defaultModelName = strings.TrimSpace(defaultModelName)
+	s.footer.defaultModelName = s.defaultModelName
+	setStreamerDefaultModelName(s.current, s.defaultModelName)
+	setStreamerDefaultModelName(s.reasoning, s.defaultModelName)
 }
 
 func (s *splitMarkerStreamer) SetTurnUsage(inputTokens, outputTokens int) {
@@ -1218,6 +1286,8 @@ func (s *splitMarkerStreamer) SetTurnUsage(inputTokens, outputTokens int) {
 	defer s.mu.Unlock()
 	s.turnInputTokens = inputTokens
 	s.turnOutputTokens = outputTokens
+	s.footer.inputTokens = inputTokens
+	s.footer.outputTokens = outputTokens
 	setStreamerTurnUsage(s.current, s.turnInputTokens, s.turnOutputTokens)
 }
 
@@ -1238,10 +1308,13 @@ func (s *splitMarkerStreamer) ClearFinalizedStreamMarker() {
 func (s *splitMarkerStreamer) updateLocked(ctx context.Context, content string) error {
 	parts := strings.Split(content, MessageSplitMarker)
 	completedLimit := len(parts) - 1
-	if err := s.finalizeCompletedPartsLocked(ctx, parts, completedLimit, nil); err != nil {
+	active := strings.TrimSpace(parts[len(parts)-1])
+	for active == "" && completedLimit > 0 && strings.TrimSpace(parts[completedLimit]) == "" {
+		completedLimit--
+	}
+	if err := s.finalizeCompletedPartsLocked(ctx, parts, completedLimit, nil, false); err != nil {
 		return err
 	}
-	active := strings.TrimSpace(parts[len(parts)-1])
 	if active == "" {
 		return nil
 	}
@@ -1253,7 +1326,7 @@ func (s *splitMarkerStreamer) updateLocked(ctx context.Context, content string) 
 
 func (s *splitMarkerStreamer) finalizeLocked(ctx context.Context, content string, usage *bus.ContextUsage) error {
 	parts := strings.Split(content, MessageSplitMarker)
-	return s.finalizeCompletedPartsLocked(ctx, parts, len(parts), usage)
+	return s.finalizeCompletedPartsLocked(ctx, parts, len(parts), usage, true)
 }
 
 func (s *splitMarkerStreamer) finalizeCompletedPartsLocked(
@@ -1261,15 +1334,27 @@ func (s *splitMarkerStreamer) finalizeCompletedPartsLocked(
 	parts []string,
 	limit int,
 	usage *bus.ContextUsage,
+	decorateFinal bool,
 ) error {
+	finalPart := -1
+	if decorateFinal {
+		for idx := s.completedParts; idx < limit; idx++ {
+			if strings.TrimSpace(parts[idx]) != "" {
+				finalPart = idx
+			}
+		}
+	}
 	for s.completedParts < limit {
 		content := strings.TrimSpace(parts[s.completedParts])
-		isLast := s.completedParts == limit-1
+		isFinalPart := s.completedParts == finalPart
 		if content != "" {
 			if err := s.ensureCurrentLocked(ctx); err != nil {
 				return err
 			}
-			if isLast && usage != nil {
+			if isFinalPart {
+				content = s.footer.decorate(content)
+			}
+			if isFinalPart && usage != nil {
 				if contextStreamer, ok := s.current.(bus.ContextUsageStreamer); ok {
 					if err := contextStreamer.FinalizeWithContext(ctx, content, usage); err != nil {
 						return err
@@ -1300,6 +1385,7 @@ func (s *splitMarkerStreamer) ensureCurrentLocked(ctx context.Context) error {
 	}
 	s.current = streamer
 	setStreamerModelName(s.current, s.modelName)
+	setStreamerDefaultModelName(s.current, s.defaultModelName)
 	setStreamerTurnUsage(s.current, s.turnInputTokens, s.turnOutputTokens)
 	return nil
 }
@@ -1376,9 +1462,11 @@ type finalizeHookStreamer struct {
 	Streamer
 	onFinalize  func(context.Context, string)
 	clearMarker func()
+	footer      responseFooterStreamState
 }
 
 func (s *finalizeHookStreamer) Finalize(ctx context.Context, content string) error {
+	content = s.footer.decorate(content)
 	if err := s.Streamer.Finalize(ctx, content); err != nil {
 		return err
 	}
@@ -1387,6 +1475,7 @@ func (s *finalizeHookStreamer) Finalize(ctx context.Context, content string) err
 }
 
 func (s *finalizeHookStreamer) FinalizeWithContext(ctx context.Context, content string, usage *bus.ContextUsage) error {
+	content = s.footer.decorate(content)
 	if streamer, ok := s.Streamer.(bus.ContextUsageStreamer); ok {
 		if err := streamer.FinalizeWithContext(ctx, content, usage); err != nil {
 			return err
@@ -1413,10 +1502,18 @@ func (s *finalizeHookStreamer) FinalizeReasoning(ctx context.Context, content st
 }
 
 func (s *finalizeHookStreamer) SetModelName(modelName string) {
-	setStreamerModelName(s.Streamer, strings.TrimSpace(modelName))
+	s.footer.modelName = strings.TrimSpace(modelName)
+	setStreamerModelName(s.Streamer, s.footer.modelName)
+}
+
+func (s *finalizeHookStreamer) SetDefaultModelName(defaultModelName string) {
+	s.footer.defaultModelName = strings.TrimSpace(defaultModelName)
+	setStreamerDefaultModelName(s.Streamer, s.footer.defaultModelName)
 }
 
 func (s *finalizeHookStreamer) SetTurnUsage(inputTokens, outputTokens int) {
+	s.footer.inputTokens = inputTokens
+	s.footer.outputTokens = outputTokens
 	setStreamerTurnUsage(s.Streamer, inputTokens, outputTokens)
 }
 

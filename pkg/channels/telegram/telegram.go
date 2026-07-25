@@ -321,7 +321,25 @@ func (c *TelegramChannel) sendTextChunks(
 	useRich bool,
 	isToolFeedback bool,
 ) ([]string, error) {
-	queue := []string{text}
+	result := c.sendTextChunkQueue(ctx, []string{text}, baseParams, useRich, isToolFeedback)
+	return result.messageIDs, result.err
+}
+
+type sendTextChunkResult struct {
+	messageIDs []string
+	remaining  []string
+	nextParams sendChunkParams
+	retryAfter time.Duration
+	err        error
+}
+
+func (c *TelegramChannel) sendTextChunkQueue(
+	ctx context.Context,
+	queue []string,
+	baseParams sendChunkParams,
+	useRich bool,
+	isToolFeedback bool,
+) sendTextChunkResult {
 	var messageIDs []string
 	for len(queue) > 0 {
 		chunk := queue[0]
@@ -358,7 +376,13 @@ func (c *TelegramChannel) sendTextChunks(
 					useMarkdownV2: baseParams.useMarkdownV2,
 				})
 				if err != nil {
-					return nil, err
+					return sendTextChunkResult{
+						messageIDs: messageIDs,
+						remaining:  append([]string{chunk}, queue...),
+						nextParams: baseParams,
+						retryAfter: telegramRetryDelayFor(err),
+						err:        err,
+					}
 				}
 				messageIDs = append(messageIDs, msgID)
 				baseParams.replyToID = ""
@@ -409,7 +433,13 @@ func (c *TelegramChannel) sendTextChunks(
 			if useRich && errors.Is(err, errTelegramMessageTooLong) {
 				runeChunk := []rune(chunk)
 				if len(runeChunk) <= 1 {
-					return nil, err
+					return sendTextChunkResult{
+						messageIDs: messageIDs,
+						remaining:  append([]string{chunk}, queue...),
+						nextParams: baseParams,
+						retryAfter: telegramRetryDelayFor(err),
+						err:        err,
+					}
 				}
 				smallerLen := len(runeChunk) / 2
 				subChunks := channels.SplitMessage(chunk, smallerLen)
@@ -428,13 +458,22 @@ func (c *TelegramChannel) sendTextChunks(
 				queue = append(nonEmpty, queue...)
 				continue
 			}
-			return nil, err
+			return sendTextChunkResult{
+				messageIDs: messageIDs,
+				remaining:  append([]string{chunk}, queue...),
+				nextParams: baseParams,
+				retryAfter: telegramRetryDelayFor(err),
+				err:        err,
+			}
 		}
 		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
 		baseParams.replyToID = ""
 	}
-	return messageIDs, nil
+	return sendTextChunkResult{
+		messageIDs: messageIDs,
+		nextParams: baseParams,
+	}
 }
 
 func (c *TelegramChannel) richMessagesEnabled(useMarkdownV2 bool) bool {
@@ -516,7 +555,7 @@ func (c *TelegramChannel) sendRichChunk(
 			"reply_to":  fallbackParams.replyToID,
 			"error":     err.Error(),
 		})
-		return "", fmt.Errorf("telegram send rich message: %w", channels.ErrTemporary)
+		return "", fmt.Errorf("telegram send rich message: %w: %w", channels.ErrTemporary, err)
 	}
 
 	return strconv.Itoa(pMsg.MessageID), nil
@@ -553,7 +592,7 @@ func (c *TelegramChannel) sendChunk(
 			tgMsg.ParseMode = ""
 			pMsg, err = c.bot.SendMessage(ctx, tgMsg)
 			if err != nil {
-				return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+				return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
 			}
 		} else {
 			logger.WarnCF("telegram", "sendMessage failed", map[string]any{
@@ -563,7 +602,7 @@ func (c *TelegramChannel) sendChunk(
 				"parse_mode": telegramParseModeName(params.useMarkdownV2),
 				"error":      err.Error(),
 			})
-			return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+			return "", fmt.Errorf("telegram send: %w: %w", channels.ErrTemporary, err)
 		}
 	}
 
@@ -2010,6 +2049,15 @@ func telegramFileMetadataRetryDelayFor(err error) time.Duration {
 	return telegramFileMetadataRetryDelay
 }
 
+func telegramRetryDelayFor(err error) time.Duration {
+	var apiErr *ta.Error
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == http.StatusTooManyRequests && apiErr.Parameters != nil &&
+		apiErr.Parameters.RetryAfter > 0 {
+		return time.Duration(apiErr.Parameters.RetryAfter) * time.Second
+	}
+	return 0
+}
+
 func parseContent(text string, useMarkdownV2 bool) string {
 	if useMarkdownV2 {
 		return markdownToTelegramMarkdownV2(text)
@@ -2486,21 +2534,17 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 	var err error
 	if s.richMessages {
-		_, err = s.channel.sendTextChunks(ctx, content, sendChunkParams{
+		_, err = s.finalizeTextChunks(ctx, content, sendChunkParams{
 			chatID:        s.chatID,
 			threadID:      s.threadID,
 			useMarkdownV2: false,
-		}, true, false)
+		}, true)
 	} else {
-		tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
-		tgMsg.MessageThreadID = s.threadID
-		tgMsg.ParseMode = telego.ModeHTML
-		_, err = s.bot.SendMessage(ctx, tgMsg)
-		if err != nil && shouldFallbackToPlainText(err) {
-			tgMsg.Text = content
-			tgMsg.ParseMode = ""
-			_, err = s.bot.SendMessage(ctx, tgMsg)
-		}
+		_, err = s.finalizeTextChunks(ctx, content, sendChunkParams{
+			chatID:        s.chatID,
+			threadID:      s.threadID,
+			useMarkdownV2: false,
+		}, false)
 	}
 
 	if err != nil {
@@ -2513,6 +2557,46 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 	}
 	s.Cancel(ctx)
 	return nil
+}
+
+func (s *telegramStreamer) finalizeTextChunks(
+	ctx context.Context,
+	content string,
+	baseParams sendChunkParams,
+	useRich bool,
+) ([]string, error) {
+	const maxAttempts = 2
+	queue := []string{content}
+	var messageIDs []string
+	var err error
+	for attempt := 0; attempt <= maxAttempts; attempt++ {
+		result := s.channel.sendTextChunkQueue(ctx, queue, baseParams, useRich, false)
+		messageIDs = append(messageIDs, result.messageIDs...)
+		if result.err == nil {
+			return messageIDs, nil
+		}
+		err = result.err
+		queue = result.remaining
+		baseParams = result.nextParams
+		if len(queue) == 0 {
+			break
+		}
+		if result.retryAfter > 0 {
+			timer := time.NewTimer(result.retryAfter)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return messageIDs, errors.Join(err, ctx.Err())
+			}
+		}
+	}
+	return messageIDs, err
 }
 
 func (s *telegramStreamer) Cancel(ctx context.Context) {

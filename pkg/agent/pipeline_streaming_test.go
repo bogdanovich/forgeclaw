@@ -1283,7 +1283,7 @@ func TestConfiguredStreamingToolCallsUseCompleteStreamResponse(t *testing.T) {
 	}
 }
 
-func TestConfiguredStreamingFinalTurnDoesNotReuseStaleUsageFromEarlierIteration(t *testing.T) {
+func TestConfiguredStreamingFinalTurnUsesAccumulatedTurnUsage(t *testing.T) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	streamer := &turnUsageRecordingStreamer{}
 	msgBus := bus.NewMessageBus()
@@ -1324,21 +1324,64 @@ func TestConfiguredStreamingFinalTurnDoesNotReuseStaleUsageFromEarlierIteration(
 	if got != "final answer without usage" {
 		t.Fatalf("response = %q, want final answer without usage", got)
 	}
-	if streamer.usageCalls != 0 {
+	if streamer.usageCalls != 1 {
 		t.Fatalf(
-			"SetTurnUsage calls = %d, want 0 when final streamed response has nil usage",
+			"SetTurnUsage calls = %d, want 1 for accumulated turn usage",
 			streamer.usageCalls,
 		)
 	}
-	if streamer.inputTokens != 0 || streamer.outputTokens != 0 {
+	if streamer.inputTokens != 123 || streamer.outputTokens != 45 {
 		t.Fatalf(
-			"streamed usage = (%d, %d), want (0, 0)",
+			"streamed usage = (%d, %d), want (123, 45)",
 			streamer.inputTokens,
 			streamer.outputTokens,
 		)
 	}
 	if len(streamer.finalized) != 1 || streamer.finalized[0] != "final answer without usage" {
 		t.Fatalf("stream finalized = %v, want [final answer without usage]", streamer.finalized)
+	}
+}
+
+func TestPipelineFinalizeUsesAccumulatedTurnUsage(t *testing.T) {
+	ts := &turnState{
+		opts: processOptions{NoHistory: true},
+	}
+	ts.RecordLLMUsage(&providers.UsageInfo{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+	ts.RecordLLMUsage(&providers.UsageInfo{
+		PromptTokens:     252,
+		CompletionTokens: 2500,
+		TotalTokens:      2752,
+	})
+
+	result, err := (&Pipeline{}).Finalize(
+		context.Background(),
+		context.Background(),
+		ts,
+		&turnExecution{
+			model: turnExecutionModel{
+				llmModelName:     "fallback-model",
+				defaultModelName: "primary-model",
+			},
+		},
+		TurnEndStatusCompleted,
+		"final answer",
+	)
+	if err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if result.usageInputTokens != 10252 ||
+		result.usageOutputTokens != 4500 ||
+		result.usageTotalTokens != 14752 {
+		t.Fatalf(
+			"usage = (%d, %d, %d), want (10252, 4500, 14752)",
+			result.usageInputTokens,
+			result.usageOutputTokens,
+			result.usageTotalTokens,
+		)
 	}
 }
 
