@@ -471,7 +471,6 @@ func (c *Coordinator) scanSource(
 		c.signalLocked()
 		return
 	}
-	admitted := 0
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
 		if key == "" {
@@ -487,14 +486,9 @@ func (c *Coordinator) scanSource(
 			break
 		}
 		c.states[id] = &projectionState{phase: projectionNeedsLoad, generation: 1}
-		admitted++
 	}
 	if len(keys) >= limit && !stopping {
-		if admitted == 0 {
-			c.recoverAt[sourceID] = time.Now().Add(c.retryDelay)
-		} else {
-			c.recoverAt[sourceID] = time.Time{}
-		}
+		c.recoverAt[sourceID] = time.Now().Add(c.retryDelay)
 	}
 	c.signalLocked()
 }
@@ -587,11 +581,13 @@ func (c *Coordinator) processConfirm(
 	switch result {
 	case ConfirmationCurrent, ConfirmationGone:
 		delete(c.states, id)
-		c.recoverAt[id.source] = time.Time{}
+		if _, scheduled := c.recoverAt[id.source]; !scheduled {
+			c.recoverAt[id.source] = time.Time{}
+		}
 		c.notifyIdleLocked()
 	case ConfirmationStale:
 		state.phase = projectionNeedsLoad
-		state.retryAt = time.Time{}
+		state.retryAt = time.Now().Add(c.retryDelay)
 		state.generation++
 	default:
 		c.confirmFailures++

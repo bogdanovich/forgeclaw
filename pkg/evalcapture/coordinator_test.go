@@ -347,7 +347,10 @@ func TestCoordinatorFailingSourceDoesNotStarveRecovery(t *testing.T) {
 	if err := coordinator.RegisterSource("b-healthy", healthy); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
+	t.Cleanup(func() {
+		coordinator.UnregisterSource("a-busy")
+		closeTestCoordinator(t, coordinator)
+	})
 
 	waitCoordinator(t, func() bool {
 		return healthy.confirmedRevision("task") == 12
@@ -356,6 +359,65 @@ func TestCoordinatorFailingSourceDoesNotStarveRecovery(t *testing.T) {
 		t.Fatal("failing source was not scanned")
 	}
 	coordinator.UnregisterSource("a-failing")
+}
+
+func TestCoordinatorFullSourceScanYieldsToLaterSource(t *testing.T) {
+	busy := &continuousCoordinatorSource{}
+	healthy := newCoordinatorSource()
+	healthy.set("task", 15)
+	coordinator := NewCoordinator(CoordinatorOptions{
+		PendingCapacity: 1,
+		RetryDelay:      10 * time.Millisecond,
+		Writer: Options{
+			StorageFactory: func(Policy) Storage {
+				return &coordinatorStorage{}
+			},
+		},
+	})
+	if err := coordinator.RegisterSource("a-busy", busy); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RegisterSource("b-healthy", healthy); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
+
+	waitCoordinator(t, func() bool {
+		return healthy.confirmedRevision("task") == 15
+	})
+	if confirmations := busy.confirmationCount(); confirmations > 20 {
+		t.Fatalf("busy source monopolized %d confirmations", confirmations)
+	}
+}
+
+func TestCoordinatorStaleKeyYieldsToLaterKey(t *testing.T) {
+	source := newCoordinatorSource()
+	source.set("a", 1)
+	source.set("b", 2)
+	source.setAlwaysStale("a")
+	coordinator := NewCoordinator(CoordinatorOptions{
+		PendingCapacity: 2,
+		RetryDelay:      10 * time.Millisecond,
+		Writer: Options{
+			StorageFactory: func(Policy) Storage {
+				return &coordinatorStorage{}
+			},
+		},
+	})
+	if err := coordinator.RegisterSource("tasks", source); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		coordinator.UnregisterSource("tasks")
+		closeTestCoordinator(t, coordinator)
+	})
+
+	waitCoordinator(t, func() bool {
+		return source.confirmedRevision("b") == 2
+	})
+	if loads := source.loadCallCount("a"); loads > 20 {
+		t.Fatalf("stale key monopolized %d loads", loads)
+	}
 }
 
 func TestCoordinatorSuccessfulScanContinuesToNextSource(t *testing.T) {
@@ -498,6 +560,8 @@ type coordinatorSource struct {
 	records         map[string]coordinatorSourceRecord
 	confirmFailures map[string]int
 	loadFailures    map[string]int
+	loadCalls       map[string]int
+	alwaysStale     map[string]bool
 	pendingCalls    int
 }
 
@@ -506,6 +570,8 @@ func newCoordinatorSource() *coordinatorSource {
 		records:         make(map[string]coordinatorSourceRecord),
 		confirmFailures: make(map[string]int),
 		loadFailures:    make(map[string]int),
+		loadCalls:       make(map[string]int),
+		alwaysStale:     make(map[string]bool),
 	}
 }
 
@@ -526,10 +592,22 @@ func (s *coordinatorSource) setAlreadyDurable(key string) {
 	s.mu.Unlock()
 }
 
+func (s *coordinatorSource) setAlwaysStale(key string) {
+	s.mu.Lock()
+	s.alwaysStale[key] = true
+	s.mu.Unlock()
+}
+
 func (s *coordinatorSource) confirmedRevision(key string) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.records[key].confirmed
+}
+
+func (s *coordinatorSource) loadCallCount(key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadCalls[key]
 }
 
 func (s *coordinatorSource) Pending(_ context.Context, limit int) ([]string, error) {
@@ -561,6 +639,7 @@ func (s *coordinatorSource) LoadLatest(
 ) (DurableCandidate, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.loadCalls[key]++
 	if s.loadFailures[key] > 0 {
 		s.loadFailures[key]--
 		return DurableCandidate{}, false, errors.New("injected load failure")
@@ -592,6 +671,11 @@ func (s *coordinatorSource) Confirm(
 	record, ok := s.records[key]
 	if !ok {
 		return ConfirmationGone, nil
+	}
+	if s.alwaysStale[key] {
+		record.revision++
+		s.records[key] = record
+		return ConfirmationStale, nil
 	}
 	if record.revision != revision {
 		return ConfirmationStale, nil
@@ -849,4 +933,56 @@ func (s *failingLoadSource) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.count
+}
+
+type continuousCoordinatorSource struct {
+	mu            sync.Mutex
+	confirmed     uint64
+	confirmations int
+}
+
+func (s *continuousCoordinatorSource) Pending(
+	context.Context,
+	int,
+) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return []string{fmt.Sprintf("key-%d", s.confirmed+1)}, nil
+}
+
+func (s *continuousCoordinatorSource) LoadLatest(
+	_ context.Context,
+	key string,
+) (DurableCandidate, bool, error) {
+	var revision uint64
+	if _, err := fmt.Sscanf(key, "key-%d", &revision); err != nil {
+		return DurableCandidate{}, false, err
+	}
+	return DurableCandidate{
+		Revision: revision,
+		Policy:   testPolicy(),
+		Trace:    testTraceForRevision(key, revision),
+		Persist:  true,
+	}, true, nil
+}
+
+func (s *continuousCoordinatorSource) Confirm(
+	_ context.Context,
+	_ string,
+	revision uint64,
+) (Confirmation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision != s.confirmed+1 {
+		return ConfirmationStale, nil
+	}
+	s.confirmed = revision
+	s.confirmations++
+	return ConfirmationCurrent, nil
+}
+
+func (s *continuousCoordinatorSource) confirmationCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.confirmations
 }
