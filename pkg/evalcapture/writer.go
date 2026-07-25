@@ -42,6 +42,7 @@ const (
 	EventRejected          EventKind = "rejected"
 	EventEvicted           EventKind = "evicted"
 	EventRetrying          EventKind = "retrying"
+	EventPersisted         EventKind = "persisted"
 	EventPermanentlyFailed EventKind = "permanently_failed"
 	EventPruneFailed       EventKind = "prune_failed"
 	EventPruned            EventKind = "pruned"
@@ -65,14 +66,15 @@ const (
 // Event reports an operational condition without exposing trace content.
 // EventSink implementations must return promptly and must not call Close.
 type Event struct {
-	Kind    EventKind
-	Reason  Reason
-	TraceID string
-	Class   Class
-	Attempt int
-	Removed int
-	Dropped int
-	Err     error
+	Kind         EventKind
+	Reason       Reason
+	TraceID      string
+	SubmissionID string
+	Class        Class
+	Attempt      int
+	Removed      int
+	Dropped      int
+	Err          error
 }
 
 // EventSink receives typed operational events. Admission errors are also
@@ -115,9 +117,10 @@ type Options struct {
 }
 
 type submission struct {
-	policy Policy
-	trace  evaltrace.Trace
-	class  Class
+	policy       Policy
+	trace        evaltrace.Trace
+	class        Class
+	submissionID string
 }
 
 // Writer accepts finalized traces without waiting for filesystem I/O.
@@ -127,6 +130,7 @@ type Writer struct {
 	closed   bool
 	capacity int
 	wake     chan struct{}
+	space    chan struct{}
 	done     chan struct{}
 
 	maxAttempts int
@@ -192,7 +196,8 @@ func NewWriter(options Options) *Writer {
 	w := &Writer{
 		capacity: capacity, maxAttempts: maxAttempts, retryDelay: retryDelay,
 		eventSink: options.EventSink, storage: storage,
-		wake: make(chan struct{}, 1), done: make(chan struct{}),
+		wake: make(chan struct{}, 1), space: make(chan struct{}, 1),
+		done:  make(chan struct{}),
 		queue: make([]submission, 0, capacity),
 	}
 	go w.run()
@@ -201,63 +206,151 @@ func NewWriter(options Options) *Writer {
 
 // Submit snapshots and admits a finalized trace without waiting for persistence.
 func (w *Writer) Submit(policy Policy, trace evaltrace.Trace, class Class) error {
+	return w.SubmitTracked(policy, trace, class, "")
+}
+
+// SubmitTracked admits a trace with an opaque caller-owned persistence receipt.
+func (w *Writer) SubmitTracked(
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+	submissionID string,
+) error {
+	item, err := w.prepareSubmission(policy, trace, class, submissionID)
+	if err != nil {
+		return err
+	}
+	accepted, evicted, reason := w.tryAdmit(item)
+	if !accepted {
+		return w.reject(trace.TraceID, class, reason, nil)
+	}
+	w.recordAdmission(item, evicted)
+	return nil
+}
+
+// SubmitWait waits for bounded queue admission or context cancellation. It is
+// intended for shutdown paths that must not discard a finalized critical trace.
+func (w *Writer) SubmitWait(
+	ctx context.Context,
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+) error {
+	return w.SubmitWaitTracked(ctx, policy, trace, class, "")
+}
+
+// SubmitWaitTracked waits for admission and preserves the caller's receipt.
+func (w *Writer) SubmitWaitTracked(
+	ctx context.Context,
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+	submissionID string,
+) error {
+	item, err := w.prepareSubmission(policy, trace, class, submissionID)
+	if err != nil {
+		return err
+	}
+	for {
+		accepted, evicted, reason := w.tryAdmit(item)
+		if accepted {
+			w.recordAdmission(item, evicted)
+			return nil
+		}
+		if reason != ReasonCapacity {
+			w.signalSpace()
+			return w.reject(trace.TraceID, class, reason, nil)
+		}
+		select {
+		case <-ctx.Done():
+			w.signalSpace()
+			return w.reject(trace.TraceID, class, ReasonCapacity, ctx.Err())
+		case <-w.space:
+		}
+	}
+}
+
+func (w *Writer) prepareSubmission(
+	policy Policy,
+	trace evaltrace.Trace,
+	class Class,
+	submissionID string,
+) (submission, error) {
 	if w == nil {
-		return &AdmissionError{Reason: ReasonClosed, TraceID: trace.TraceID, Class: class}
+		return submission{}, &AdmissionError{
+			Reason: ReasonClosed, TraceID: trace.TraceID, Class: class,
+		}
 	}
 	if class != ClassOrdinary && class != ClassCritical {
-		return w.reject(trace.TraceID, class, ReasonInvalidClass, nil)
+		return submission{}, w.reject(trace.TraceID, class, ReasonInvalidClass, nil)
 	}
 	if strings.TrimSpace(policy.Root) == "" {
-		return w.reject(trace.TraceID, class, ReasonInvalidPolicy, errors.New("store root is required"))
+		return submission{}, w.reject(
+			trace.TraceID, class, ReasonInvalidPolicy,
+			errors.New("store root is required"),
+		)
 	}
 	if err := evaltrace.Validate(trace); err != nil {
-		return w.reject(trace.TraceID, class, ReasonInvalidTrace, err)
+		return submission{}, w.reject(trace.TraceID, class, ReasonInvalidTrace, err)
 	}
+	return submission{
+		policy: policy, trace: cloneTrace(trace), class: class,
+		submissionID: strings.TrimSpace(submissionID),
+	}, nil
+}
 
+func (w *Writer) tryAdmit(item submission) (bool, *submission, Reason) {
+	if w == nil {
+		return false, nil, ReasonClosed
+	}
 	var evicted *submission
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.closed {
-		w.mu.Unlock()
-		return w.reject(trace.TraceID, class, ReasonClosed, nil)
+		return false, nil, ReasonClosed
 	}
-	if len(w.queue) >= w.capacity {
-		if class == ClassCritical {
-			for i := range w.queue {
-				if w.queue[i].class == ClassOrdinary {
-					item := w.queue[i]
-					evicted = &item
-					copy(w.queue[i:], w.queue[i+1:])
-					w.queue = w.queue[:len(w.queue)-1]
-					break
-				}
+	if len(w.queue) >= w.capacity && item.class == ClassCritical {
+		for i := range w.queue {
+			if w.queue[i].class == ClassOrdinary {
+				candidate := w.queue[i]
+				evicted = &candidate
+				copy(w.queue[i:], w.queue[i+1:])
+				w.queue = w.queue[:len(w.queue)-1]
+				break
 			}
 		}
-		if len(w.queue) >= w.capacity {
-			w.mu.Unlock()
-			return w.reject(trace.TraceID, class, ReasonCapacity, nil)
-		}
 	}
-	w.queue = append(w.queue, submission{policy: policy, trace: cloneTrace(trace), class: class})
-	w.mu.Unlock()
+	if len(w.queue) >= w.capacity {
+		return false, nil, ReasonCapacity
+	}
+	w.queue = append(w.queue, item)
+	return true, evicted, ""
+}
 
-	if class == ClassCritical {
+func (w *Writer) recordAdmission(item submission, evicted *submission) {
+	if item.class == ClassCritical {
 		w.stats.acceptedCritical.Add(1)
 	} else {
 		w.stats.acceptedOrdinary.Add(1)
 	}
 	if evicted != nil {
 		w.stats.evictedOrdinary.Add(1)
-		w.emit(Event{Kind: EventEvicted, Reason: ReasonCapacity, TraceID: evicted.trace.TraceID, Class: evicted.class})
+		w.emit(Event{
+			Kind: EventEvicted, Reason: ReasonCapacity,
+			TraceID: evicted.trace.TraceID, SubmissionID: evicted.submissionID,
+			Class: evicted.class,
+		})
 	}
-	if trace.Truncation.Incomplete || trace.Truncation.DroppedRecords > 0 {
+	if item.trace.Truncation.Incomplete || item.trace.Truncation.DroppedRecords > 0 {
 		w.stats.truncated.Add(1)
 		w.emit(Event{
 			Kind: EventTruncated, Reason: ReasonTraceIncomplete,
-			TraceID: trace.TraceID, Class: class, Dropped: trace.Truncation.DroppedRecords,
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class:   item.class,
+			Dropped: item.trace.Truncation.DroppedRecords,
 		})
 	}
 	w.signal()
-	return nil
 }
 
 func (w *Writer) reject(traceID string, class Class, reason Reason, err error) error {
@@ -280,6 +373,7 @@ func (w *Writer) Close(ctx context.Context) error {
 	w.closed = true
 	w.mu.Unlock()
 	w.signal()
+	w.signalSpace()
 	select {
 	case <-w.done:
 		return nil
@@ -313,6 +407,13 @@ func (w *Writer) signal() {
 	}
 }
 
+func (w *Writer) signalSpace() {
+	select {
+	case w.space <- struct{}{}:
+	default:
+	}
+}
+
 func (w *Writer) run() {
 	defer close(w.done)
 	for {
@@ -332,6 +433,7 @@ func (w *Writer) next() (submission, bool) {
 			copy(w.queue, w.queue[1:])
 			w.queue = w.queue[:len(w.queue)-1]
 			w.mu.Unlock()
+			w.signalSpace()
 			return item, true
 		}
 		closed := w.closed
@@ -349,8 +451,9 @@ func (w *Writer) persist(item submission) {
 		w.stats.permanentFailures.Add(1)
 		w.emit(Event{
 			Kind: EventPermanentlyFailed, Reason: ReasonStorageFailure,
-			TraceID: item.trace.TraceID, Class: item.class,
-			Err: errors.New("storage factory returned nil"),
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class: item.class,
+			Err:   errors.New("storage factory returned nil"),
 		})
 		return
 	}
@@ -358,6 +461,13 @@ func (w *Writer) persist(item submission) {
 		_, err := store.Save(item.trace)
 		if err == nil {
 			w.stats.persisted.Add(1)
+			w.emit(Event{
+				Kind:         EventPersisted,
+				TraceID:      item.trace.TraceID,
+				SubmissionID: item.submissionID,
+				Class:        item.class,
+				Attempt:      attempt,
+			})
 			w.prune(store, item)
 			return
 		}
@@ -365,14 +475,16 @@ func (w *Writer) persist(item submission) {
 			w.stats.permanentFailures.Add(1)
 			w.emit(Event{
 				Kind: EventPermanentlyFailed, Reason: ReasonStorageFailure,
-				TraceID: item.trace.TraceID, Class: item.class, Attempt: attempt, Err: err,
+				TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+				Class: item.class, Attempt: attempt, Err: err,
 			})
 			return
 		}
 		w.stats.retries.Add(1)
 		w.emit(Event{
 			Kind: EventRetrying, Reason: ReasonStorageFailure,
-			TraceID: item.trace.TraceID, Class: item.class, Attempt: attempt, Err: err,
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class: item.class, Attempt: attempt, Err: err,
 		})
 		if w.retryDelay > 0 {
 			time.Sleep(w.retryDelay)
@@ -386,13 +498,17 @@ func (w *Writer) prune(store Storage, item submission) {
 		w.stats.pruneFailures.Add(1)
 		w.emit(Event{
 			Kind: EventPruneFailed, Reason: ReasonRetentionFailed,
-			TraceID: item.trace.TraceID, Class: item.class, Err: err,
+			TraceID: item.trace.TraceID, SubmissionID: item.submissionID,
+			Class: item.class, Err: err,
 		})
 		return
 	}
 	if removed > 0 {
 		w.stats.pruned.Add(uint64(removed))
-		w.emit(Event{Kind: EventPruned, TraceID: item.trace.TraceID, Class: item.class, Removed: removed})
+		w.emit(Event{
+			Kind: EventPruned, TraceID: item.trace.TraceID,
+			SubmissionID: item.submissionID, Class: item.class, Removed: removed,
+		})
 	}
 }
 

@@ -6,11 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/evalcapture"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
@@ -188,6 +190,86 @@ func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
 	_ = eventBus.Close()
 }
 
+func TestTraceCaptureShutdownReservesWriterDrainTime(t *testing.T) {
+	workspace := t.TempDir()
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
+
+	manager.mu.Lock()
+	oldWriter := manager.writer
+	blocker := &blockingFirstTraceSave{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	manager.writer = evalcapture.NewWriter(evalcapture.Options{
+		Capacity:    1,
+		MaxAttempts: 1,
+		RetryDelay:  -1,
+		EventSink:   manager.handleTraceWriterEvent,
+		StorageFactory: func(policy evalcapture.Policy) evalcapture.Storage {
+			return &blockingTraceStorage{
+				blocker: blocker,
+				store: evaltrace.Store{
+					Root: policy.Root, Retention: policy.Retention,
+					MaxTraces: policy.MaxTraces,
+				},
+			}
+		},
+	})
+	manager.mu.Unlock()
+	if err := oldWriter.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	publishTerminalTurn := func(turnID string, offset time.Duration) {
+		startedAt := time.Now().UTC().Add(offset)
+		scope := runtimeevents.Scope{
+			TraceScope: runtimeevents.NewTraceScope(workspace, turnID),
+		}
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: turnID + "-start", Kind: runtimeevents.KindAgentTurnStart,
+			Time: startedAt, Scope: scope,
+			Payload: TurnStartPayload{Workspace: workspace},
+		})
+		publishCaptureEvent(t, eventBus, runtimeevents.Event{
+			ID: turnID + "-end", Kind: runtimeevents.KindAgentTurnEnd,
+			Time: startedAt.Add(time.Millisecond), Scope: scope,
+			Payload: TurnEndPayload{
+				Workspace: workspace, Status: TurnEndStatusCompleted,
+			},
+		})
+	}
+	publishTerminalTurn("blocking-turn", 0)
+	select {
+	case <-blocker.started:
+	case <-time.After(time.Second):
+		t.Fatal("first trace did not reach blocking storage")
+	}
+	publishTerminalTurn("queued-turn", time.Second)
+
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	manager.attachTaskRegistry(workspace, registry)
+	finishTaskForTrace(t, registry, "shutdown-task", "session", 0)
+
+	closed := make(chan struct{})
+	go func() {
+		manager.closeWithTimeouts(30*time.Millisecond, time.Second)
+		close(closed)
+	}()
+	time.Sleep(60 * time.Millisecond)
+	close(blocker.release)
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("trace capture manager did not close after storage recovered")
+	}
+	_ = eventBus.Close()
+
+	if paths := waitForTraceFiles(t, workspace, 2); len(paths) < 2 {
+		t.Fatalf("persisted turn traces = %d, want at least 2", len(paths))
+	}
+}
+
 func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 	workspace := t.TempDir()
 	eventBus := runtimeevents.NewBus()
@@ -271,6 +353,29 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 	if !found {
 		t.Fatalf("trace does not contain delivery outcome: %#v", trace.Records)
 	}
+}
+
+type blockingFirstTraceSave struct {
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+type blockingTraceStorage struct {
+	blocker *blockingFirstTraceSave
+	store   evaltrace.Store
+}
+
+func (s *blockingTraceStorage) Save(trace evaltrace.Trace) (string, error) {
+	s.blocker.once.Do(func() {
+		close(s.blocker.started)
+		<-s.blocker.release
+	})
+	return s.store.Save(trace)
+}
+
+func (s *blockingTraceStorage) Prune() (int, error) {
+	return s.store.Prune()
 }
 
 func TestTraceCaptureSeparatesIdenticalTurnIDsAcrossWorkspaces(t *testing.T) {

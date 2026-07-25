@@ -38,6 +38,8 @@ type traceCaptureSettings struct {
 
 type activeTraceCapture struct {
 	builder         *evalcapture.TraceBuilder
+	submissionID    string
+	forcePersist    bool
 	turnID          string
 	workspace       string
 	startedAt       time.Time
@@ -814,13 +816,4 @@ func primaryCandidateProvider(candidates []providers.FallbackCandidate) string {
 		return ""
 	}
 	return candidates[0].Provider
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }

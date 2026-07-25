@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -59,7 +60,12 @@ func TestWriterRetriesAndReportsPermanentFailure(t *testing.T) {
 		StorageFactory: func(Policy) Storage { return store },
 		EventSink:      func(event Event) { events = append(events, event) },
 	})
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-retry"), ClassCritical); err != nil {
+	if err := writer.SubmitTracked(
+		testPolicy(),
+		testTrace(t, "trace-retry"),
+		ClassCritical,
+		"receipt-retry",
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(context.Background()); err != nil {
@@ -70,6 +76,12 @@ func TestWriterRetriesAndReportsPermanentFailure(t *testing.T) {
 	}
 	if countEvents(events, EventRetrying) != 2 {
 		t.Fatalf("events = %+v", events)
+	}
+	if !slices.ContainsFunc(events, func(event Event) bool {
+		return event.Kind == EventPersisted &&
+			event.SubmissionID == "receipt-retry"
+	}) {
+		t.Fatalf("persistence receipt events = %+v", events)
 	}
 
 	store = &fakeStorage{saveFailures: 4}
@@ -127,7 +139,10 @@ func TestCriticalAdmissionEvictsOnlyQueuedOrdinaryTrace(t *testing.T) {
 	}
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
-	if len(events) != 1 || events[0].Kind != EventEvicted || events[0].TraceID != "trace-evicted" {
+	if countEvents(events, EventEvicted) != 1 ||
+		!slices.ContainsFunc(events, func(event Event) bool {
+			return event.Kind == EventEvicted && event.TraceID == "trace-evicted"
+		}) {
 		t.Fatalf("events = %+v", events)
 	}
 }
@@ -153,6 +168,50 @@ func TestWriterRejectsWhenQueueContainsOnlyCriticalTraces(t *testing.T) {
 	}
 	if got := writer.Stats(); got.RejectedCritical != 1 || got.Persisted != 2 {
 		t.Fatalf("stats = %+v", got)
+	}
+}
+
+func TestWriterSubmitWaitAdmitsAfterQueueSpaceIsAvailable(t *testing.T) {
+	store := newBlockingStorage()
+	writer := NewWriter(Options{
+		Capacity: 1, RetryDelay: -1,
+		StorageFactory: func(Policy) Storage { return store },
+	})
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-active"), ClassCritical); err != nil {
+		t.Fatal(err)
+	}
+	<-store.started
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-queued"), ClassCritical); err != nil {
+		t.Fatal(err)
+	}
+
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- writer.SubmitWait(
+			context.Background(),
+			testPolicy(),
+			testTrace(t, "trace-shutdown"),
+			ClassCritical,
+		)
+	}()
+	select {
+	case err := <-admitted:
+		t.Fatalf("SubmitWait returned before capacity was available: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(store.release)
+	if err := <-admitted; err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.savedIDs(); !equalStrings(
+		got,
+		[]string{"trace-active", "trace-queued", "trace-shutdown"},
+	) {
+		t.Fatalf("saved = %v", got)
 	}
 }
 
@@ -214,7 +273,11 @@ func TestWriterReportsPruneFailure(t *testing.T) {
 	var got Event
 	writer := NewWriter(Options{
 		RetryDelay: -1, StorageFactory: func(Policy) Storage { return store },
-		EventSink: func(event Event) { got = event },
+		EventSink: func(event Event) {
+			if event.Kind == EventPruneFailed {
+				got = event
+			}
+		},
 	})
 	if err := writer.Submit(testPolicy(), testTrace(t, "trace-prune"), ClassOrdinary); err != nil {
 		t.Fatal(err)
@@ -232,7 +295,11 @@ func TestWriterReportsTruncatedSubmission(t *testing.T) {
 	var got Event
 	writer := NewWriter(Options{
 		RetryDelay: -1, StorageFactory: func(Policy) Storage { return store },
-		EventSink: func(event Event) { got = event },
+		EventSink: func(event Event) {
+			if event.Kind == EventTruncated {
+				got = event
+			}
+		},
 	})
 	trace := testTrace(t, "trace-truncated")
 	trace.Truncation = evaltrace.Truncation{

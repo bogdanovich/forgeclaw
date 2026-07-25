@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,6 +29,8 @@ const (
 	RuntimeTool     Runtime = "tool"
 	RuntimeCron     Runtime = "cron"
 )
+
+var ErrTraceCapturePending = errors.New("task trace capture is pending")
 
 type Status string
 
@@ -185,6 +188,7 @@ type Record struct {
 	LastCompletionID    string              `json:"last_completion_id,omitempty"`
 	DeliveredAt         int64               `json:"delivered_at,omitempty"`
 	DeliveryError       string              `json:"delivery_error,omitempty"`
+	TraceCapturePending bool                `json:"trace_capture_pending,omitempty"`
 	CreatedAt           int64               `json:"created_at"`
 	StartedAt           int64               `json:"started_at,omitempty"`
 	EndedAt             int64               `json:"ended_at,omitempty"`
@@ -216,6 +220,10 @@ type Registry struct {
 	observers   []observerEntry
 	lastLoad    error
 	writeAtomic func(string, []byte, os.FileMode) error
+
+	traceCaptureProtection        bool
+	traceCaptureProtectionPending bool
+	unsyncedWrite                 bool
 }
 
 type Snapshot struct {
@@ -354,6 +362,16 @@ func (r *Registry) Upsert(rec Record) error {
 		r.mu.Unlock()
 		return err
 	}
+	if existing, ok := r.records[rec.TaskID]; ok &&
+		existing.TraceCapturePending {
+		r.mu.Unlock()
+		return fmt.Errorf(
+			"task %q generation %q: %w",
+			rec.TaskID,
+			existing.GenerationID,
+			ErrTraceCapturePending,
+		)
+	}
 	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
 	r.records[rec.TaskID] = rec
@@ -436,6 +454,130 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	r.mu.Unlock()
 	drainEventObservers(deliveries)
 	return err
+}
+
+// SetTraceCapturePending durably protects a terminal task while its canonical
+// evaluation trace is awaiting persistence. This projection is operational
+// metadata and intentionally does not append a task lifecycle event.
+func (r *Registry) SetTraceCapturePending(
+	taskID, generationID string,
+	pending bool,
+) error {
+	if r == nil || strings.TrimSpace(taskID) == "" ||
+		strings.TrimSpace(generationID) == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.writableErrorLocked(); err != nil {
+		return err
+	}
+	record, ok := r.records[taskID]
+	if !ok || record.GenerationID != generationID {
+		return fmt.Errorf("task %q generation %q not found", taskID, generationID)
+	}
+	if record.TraceCapturePending == pending {
+		if !r.unsyncedWrite {
+			return nil
+		}
+		return r.saveLocked()
+	}
+	rollback := r.captureStateLocked()
+	record.TraceCapturePending = pending
+	r.records[taskID] = record
+	if err := r.saveLocked(); err != nil {
+		if !fileutil.IsCommittedWriteError(err) {
+			r.restoreStateLocked(rollback)
+		}
+		return err
+	}
+	return nil
+}
+
+// ConfirmTraceCapturePersisted atomically clears trace protection only when the
+// acknowledged generation and event sequence are still current.
+func (r *Registry) ConfirmTraceCapturePersisted(
+	taskID, generationID string,
+	expectedLastEventSeq int64,
+) (Record, bool, error) {
+	if r == nil || strings.TrimSpace(taskID) == "" ||
+		strings.TrimSpace(generationID) == "" {
+		return Record{}, false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.writableErrorLocked(); err != nil {
+		return Record{}, false, err
+	}
+	record, ok := r.records[taskID]
+	if !ok || record.GenerationID != generationID {
+		return Record{}, false, fmt.Errorf(
+			"task %q generation %q not found",
+			taskID,
+			generationID,
+		)
+	}
+	if record.LastEventSeq != expectedLastEventSeq {
+		return cloneTaskRecord(record), false, nil
+	}
+	if !record.TraceCapturePending {
+		if r.unsyncedWrite {
+			if err := r.saveLocked(); err != nil {
+				return cloneTaskRecord(record), false, err
+			}
+		}
+		return cloneTaskRecord(record), true, nil
+	}
+	rollback := r.captureStateLocked()
+	record.TraceCapturePending = false
+	r.records[taskID] = record
+	if err := r.saveLocked(); err != nil {
+		// A visible post-rename snapshot is not a durability acknowledgement.
+		// Keep the in-memory marker until a later save confirms directory sync,
+		// so task ID reuse cannot replace the generation being acknowledged.
+		r.restoreStateLocked(rollback)
+		return cloneTaskRecord(r.records[taskID]), false, err
+	}
+	return cloneTaskRecord(record), true, nil
+}
+
+// SetTraceCaptureProtection controls atomic retention protection for new task
+// transitions. Disabling preserves existing pending markers for restart
+// recovery; enabling also protects retained terminal records before the caller
+// takes its startup snapshot.
+func (r *Registry) SetTraceCaptureProtection(enabled bool) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.writableErrorLocked(); err != nil {
+		return err
+	}
+	rollback := r.captureStateLocked()
+	previous := r.traceCaptureProtection
+	r.traceCaptureProtection = enabled
+	if !enabled {
+		r.traceCaptureProtectionPending = false
+		return nil
+	}
+	changed := r.protectRetainedTerminalRecordsLocked()
+	if !changed && previous == enabled &&
+		!r.traceCaptureProtectionPending && !r.unsyncedWrite {
+		return nil
+	}
+	if err := r.saveLocked(); err != nil {
+		if !fileutil.IsCommittedWriteError(err) {
+			r.restoreStateLocked(rollback)
+		}
+		// Keep protection requested in memory so pruning remains fail-closed
+		// until the caller retries and a complete protected snapshot is durable.
+		r.traceCaptureProtection = true
+		r.traceCaptureProtectionPending = true
+		return err
+	}
+	r.traceCaptureProtectionPending = false
+	return nil
 }
 
 func (r *Registry) Heartbeat(taskID, progress string) error {
@@ -914,6 +1056,9 @@ func (r *Registry) pruneLocked(now int64) bool {
 	if r == nil {
 		return false
 	}
+	if r.traceCaptureProtectionPending {
+		return false
+	}
 	changed := false
 	for id, rec := range r.records {
 		if shouldPruneExpired(rec, now) {
@@ -959,6 +1104,10 @@ func (r *Registry) pruneLoadedState(now int64) {
 }
 
 func (r *Registry) pruneMutationLocked(now int64, candidates []TaskEvent) {
+	if r.traceCaptureProtectionPending {
+		r.protectRetainedTerminalRecordsLocked()
+	}
+	r.protectTraceCandidatesLocked(candidates)
 	r.pruneLocked(now)
 	if len(candidates) == 0 {
 		return
@@ -1003,6 +1152,22 @@ func (r *Registry) pruneMutationLocked(now int64, candidates []TaskEvent) {
 		}
 	}
 	r.events = append(nonCandidates, mutationEvents...)
+}
+
+func (r *Registry) protectTraceCandidatesLocked(candidates []TaskEvent) {
+	if r == nil || !r.traceCaptureProtection {
+		return
+	}
+	for _, event := range candidates {
+		record, ok := r.records[event.TaskID]
+		if !ok || record.GenerationID != event.GenerationID ||
+			!taskRecordIsRetentionTerminal(record) ||
+			record.TraceCapturePending {
+			continue
+		}
+		record.TraceCapturePending = true
+		r.records[event.TaskID] = record
+	}
 }
 
 func (r *Registry) pruneSnapshotBytesLocked() bool {
@@ -1081,7 +1246,13 @@ func shouldPruneExpired(rec Record, now int64) bool {
 }
 
 func canPruneRecord(rec Record) bool {
-	return isTerminalStatus(rec.Status) && isFinalDeliveryStatus(rec.DeliveryStatus)
+	return !rec.TraceCapturePending &&
+		taskRecordIsRetentionTerminal(rec)
+}
+
+func taskRecordIsRetentionTerminal(rec Record) bool {
+	return isTerminalStatus(rec.Status) &&
+		isFinalDeliveryStatus(rec.DeliveryStatus)
 }
 
 func isTerminalStatus(status Status) bool {
@@ -1186,7 +1357,13 @@ func (r *Registry) saveLocked() error {
 	if writeAtomic == nil {
 		writeAtomic = fileutil.WriteFileAtomic
 	}
-	return writeAtomic(r.store, data, 0o600)
+	err = writeAtomic(r.store, data, 0o600)
+	if err == nil {
+		r.unsyncedWrite = false
+	} else if fileutil.IsCommittedWriteError(err) {
+		r.unsyncedWrite = true
+	}
+	return err
 }
 
 func (r *Registry) writableErrorLocked() error {
@@ -1247,7 +1424,24 @@ func (r *Registry) completeMutationLocked(
 	} else {
 		events = r.retainedEventsLocked(events)
 	}
+	if saveErr == nil && r.traceCaptureProtectionPending {
+		r.traceCaptureProtectionPending = false
+	}
 	return committed, r.queueCommittedNotificationsLocked(committed, events)
+}
+
+func (r *Registry) protectRetainedTerminalRecordsLocked() bool {
+	changed := false
+	for taskID, record := range r.records {
+		if !taskRecordIsRetentionTerminal(record) ||
+			record.TraceCapturePending {
+			continue
+		}
+		record.TraceCapturePending = true
+		r.records[taskID] = record
+		changed = true
+	}
+	return changed
 }
 
 func (r *Registry) retainedEventsLocked(candidates []TaskEvent) []TaskEvent {
@@ -1284,10 +1478,14 @@ func (r *Registry) appendUpdateEventsLocked(before, after Record, emittedAt int6
 		})
 	}
 	if before.DeliveryStatus != after.DeliveryStatus {
-		r.appendEventLocked(after, EventTaskDeliveryChanged, emittedAt, map[string]string{
+		payload := map[string]string{
 			"from": string(before.DeliveryStatus),
 			"to":   string(after.DeliveryStatus),
-		})
+		}
+		if completionID := strings.TrimSpace(after.LastCompletionID); completionID != "" {
+			payload["completion_id"] = completionID
+		}
+		r.appendEventLocked(after, EventTaskDeliveryChanged, emittedAt, payload)
 	}
 	if before.ProgressSummary != after.ProgressSummary && strings.TrimSpace(after.ProgressSummary) != "" {
 		r.appendEventLocked(after, EventTaskProgress, emittedAt, map[string]string{
