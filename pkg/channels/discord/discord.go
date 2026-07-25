@@ -346,10 +346,7 @@ func (c *DiscordChannel) SendPlaceholder(ctx context.Context, chatID string) (st
 }
 
 func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
+	return bus.OutboundMetadataFromMessage(msg).IsToolFeedback()
 }
 
 func (c *DiscordChannel) sendChunk(ctx context.Context, channelID, content, replyToID string) (string, error) {

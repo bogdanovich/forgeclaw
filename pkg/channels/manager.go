@@ -213,51 +213,31 @@ func outboundMessageChatID(msg bus.OutboundMessage) string {
 }
 
 func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
+	return bus.OutboundMetadataFromMessage(msg).IsToolFeedback()
 }
 
 func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_calls")
+	return bus.OutboundMetadataFromMessage(msg).IsToolCalls()
 }
 
 func outboundMessageHasAuxiliaryKind(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.TrimSpace(msg.Context.Raw["message_kind"]) != ""
+	return bus.OutboundMetadataFromMessage(msg).HasAuxiliaryKind()
 }
 
 func outboundMessageIsFinal(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["outbound_kind"]), "final")
+	return bus.OutboundMetadataFromMessage(msg).IsFinal()
 }
 
 func outboundMessageBypassesPlaceholderEdit(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	kind := strings.TrimSpace(msg.Context.Raw["message_kind"])
-	return strings.EqualFold(kind, "thought") ||
-		strings.EqualFold(kind, "tool_calls") ||
-		strings.EqualFold(kind, "final_reply")
+	return bus.OutboundMetadataFromMessage(msg).BypassesPlaceholderEdit()
 }
 
 func outboundMessageEditPayload(msg bus.OutboundMessage, content string) map[string]any {
 	payload := map[string]any{
 		"content": content,
 	}
-	if len(msg.Context.Raw) == 0 {
-		return payload
-	}
-	if modelName := strings.TrimSpace(msg.Context.Raw["model_name"]); modelName != "" {
+	metadata := bus.OutboundMetadataFromMessage(msg)
+	if modelName := metadata.ModelName; modelName != "" {
 		payload["model_name"] = modelName
 	}
 	return payload
@@ -283,19 +263,17 @@ func (m *Manager) decorateOutboundResponseFooter(msg bus.OutboundMessage) bus.Ou
 }
 
 func outboundResponseFooter(msg bus.OutboundMessage) string {
-	if len(msg.Context.Raw) == 0 {
-		return ""
-	}
 	var parts []string
-	modelName := strings.TrimSpace(msg.Context.Raw["model_name"])
-	defaultModelName := strings.TrimSpace(msg.Context.Raw["default_model_name"])
+	metadata := bus.OutboundMetadataFromMessage(msg)
+	modelName := metadata.ModelName
+	defaultModelName := metadata.DefaultModelName
 	if modelName != "" && defaultModelName != "" && modelName != defaultModelName {
 		parts = append(parts, "model: "+modelName)
 	}
 
-	inputTokens := parseOutboundFooterInt(msg.Context.Raw["usage_input_tokens"])
-	outputTokens := parseOutboundFooterInt(msg.Context.Raw["usage_output_tokens"])
-	totalTokens := parseOutboundFooterInt(msg.Context.Raw["usage_total_tokens"])
+	inputTokens := metadata.UsageInputTokens
+	outputTokens := metadata.UsageOutputTokens
+	totalTokens := metadata.UsageTotalTokens
 	if inputTokens > 0 || outputTokens > 0 {
 		parts = append(
 			parts,
@@ -312,14 +290,6 @@ func outboundResponseFooter(msg bus.OutboundMessage) string {
 		return ""
 	}
 	return strings.Join(parts, " · ")
-}
-
-func parseOutboundFooterInt(raw string) int {
-	value, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || value < 0 {
-		return 0
-	}
-	return value
 }
 
 func formatFooterTokenCount(tokens int) string {
@@ -898,7 +868,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					"channel":          name,
 					"chat_id":          chatID,
 					"placeholder_id":   entry.id,
-					"message_kind":     strings.TrimSpace(msg.Context.Raw["message_kind"]),
+					"message_kind":     bus.OutboundMetadataFromMessage(msg).MessageKind,
 					"is_tool_feedback": isToolFeedback,
 					"bypass":           outboundMessageBypassesPlaceholderEdit(msg),
 				})
@@ -1183,17 +1153,15 @@ func (s responseFooterStreamState) decorate(content string) string {
 	}
 	msg := bus.OutboundMessage{
 		Content: content,
-		Context: bus.InboundContext{
-			Raw: map[string]string{
-				"outbound_kind":       "final",
-				"model_name":          s.modelName,
-				"default_model_name":  s.defaultModelName,
-				"usage_input_tokens":  strconv.Itoa(s.inputTokens),
-				"usage_output_tokens": strconv.Itoa(s.outputTokens),
-				"usage_total_tokens":  strconv.Itoa(s.inputTokens + s.outputTokens),
-			},
-		},
 	}
+	bus.OutboundMetadata{
+		OutboundKind:      bus.OutboundKindFinal,
+		ModelName:         s.modelName,
+		DefaultModelName:  s.defaultModelName,
+		UsageInputTokens:  s.inputTokens,
+		UsageOutputTokens: s.outputTokens,
+		UsageTotalTokens:  s.inputTokens + s.outputTokens,
+	}.ApplyToContext(&msg.Context)
 	footer := outboundResponseFooter(msg)
 	if footer == "" {
 		return content

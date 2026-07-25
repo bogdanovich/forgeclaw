@@ -785,10 +785,7 @@ func (c *TelegramChannel) DeleteMessage(
 }
 
 func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
-	if len(msg.Context.Raw) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
+	return bus.OutboundMetadataFromMessage(msg).IsToolFeedback()
 }
 
 // SendPlaceholder implements channels.PlaceholderCapable.

@@ -108,10 +108,7 @@ func markFinalOutbound(msg *bus.OutboundMessage) {
 	if msg == nil {
 		return
 	}
-	if msg.Context.Raw == nil {
-		msg.Context.Raw = make(map[string]string, 1)
-	}
-	msg.Context.Raw[metadataKeyOutboundKind] = outboundKindFinal
+	bus.OutboundMetadata{OutboundKind: bus.OutboundKindFinal}.ApplyToContext(&msg.Context)
 }
 
 type outboundTurnMessageOptions struct {
@@ -139,18 +136,13 @@ func outboundMessageForTurnWithOptions(
 		return msg
 	}
 
-	if msg.Context.Raw == nil {
-		msg.Context.Raw = make(map[string]string, rawCount)
-	}
-	if trimmedKind != "" {
-		msg.Context.Raw[metadataKeyMessageKind] = trimmedKind
-	}
-	if trimmedModelName != "" {
-		msg.Context.Raw[metadataKeyModelName] = trimmedModelName
-	}
+	bus.OutboundMetadata{MessageKind: trimmedKind, ModelName: trimmedModelName}.ApplyToContext(&msg.Context)
 	for key, value := range opts.raw {
 		if strings.TrimSpace(key) == "" {
 			continue
+		}
+		if msg.Context.Raw == nil {
+			msg.Context.Raw = make(map[string]string, rawCount)
 		}
 		msg.Context.Raw[key] = value
 	}
@@ -166,10 +158,7 @@ func outboundContextWithMessageKind(
 	if kind == "" {
 		return ctx
 	}
-	if ctx.Raw == nil {
-		ctx.Raw = make(map[string]string, 1)
-	}
-	ctx.Raw[metadataKeyMessageKind] = kind
+	bus.OutboundMetadata{MessageKind: kind}.ApplyToContext(&ctx)
 	return ctx
 }
 

@@ -1,17 +1,6 @@
 package channels
 
-import (
-	"strings"
-
-	"github.com/sipeed/picoclaw/pkg/bus"
-)
-
-func outboundMessageKind(msg bus.OutboundMessage) string {
-	if len(msg.Context.Raw) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(msg.Context.Raw["message_kind"])
-}
+import "github.com/sipeed/picoclaw/pkg/bus"
 
 // OutboundMessageFinalizesTrackedToolFeedback reports whether a normal
 // user-visible outbound message may safely reuse the tracked tool-feedback
@@ -21,26 +10,23 @@ func outboundMessageKind(msg bus.OutboundMessage) string {
 // steering/follow-up input, are expected to bypass tracked tool-feedback
 // finalization and be sent as new messages instead.
 func OutboundMessageFinalizesTrackedToolFeedback(msg bus.OutboundMessage) bool {
-	kind := strings.ToLower(outboundMessageKind(msg))
-	switch kind {
-	case "", "tool_feedback":
-		return kind == ""
-	case "thought", "tool_calls", "final_reply":
-		return false
-	default:
+	metadata := bus.OutboundMetadataFromMessage(msg)
+	if metadata.MessageKind == "" {
 		return true
 	}
+	if metadata.IsToolFeedback() || metadata.IsThought() || metadata.IsToolCalls() || metadata.IsFinalReply() {
+		return false
+	}
+	return true
 }
 
 // OutboundMessageDismissesTrackedToolFeedback reports whether the outgoing
 // message is terminal user-facing content that should clear any previously
 // tracked tool-feedback carrier after a fresh send.
 func OutboundMessageDismissesTrackedToolFeedback(msg bus.OutboundMessage) bool {
-	kind := strings.ToLower(outboundMessageKind(msg))
-	switch kind {
-	case "tool_feedback", "thought", "tool_calls":
+	metadata := bus.OutboundMetadataFromMessage(msg)
+	if metadata.IsToolFeedback() || metadata.IsThought() || metadata.IsToolCalls() {
 		return false
-	default:
-		return true
 	}
+	return true
 }

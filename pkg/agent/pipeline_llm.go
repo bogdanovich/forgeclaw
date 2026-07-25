@@ -469,9 +469,7 @@ func (p *Pipeline) CallLLM(
 				)
 			}
 			originalHistoryCount := len(exec.history)
-			var fit bool
-			var trimmedStableHistory []providers.Message
-			trimmedStableHistory, exec.callMessages, fit = trimHistoryToFitContextWindow(
+			trimmedStableHistory, callMessages, fit := trimHistoryToFitContextWindow(
 				stableHistory,
 				func(trimmedHistory []providers.Message) []providers.Message {
 					rebuilt := buildMessages(trimmedHistory)
@@ -487,6 +485,7 @@ func (p *Pipeline) CallLLM(
 				exec.providerToolDefs,
 				ts.agent.MaxTokens,
 			)
+			exec.callMessages = callMessages
 			exec.history = append(trimmedStableHistory, protectedTurnTail...)
 			exec.messages = buildMessages(trimmedStableHistory)
 			if exec.gracefulTerminal {
