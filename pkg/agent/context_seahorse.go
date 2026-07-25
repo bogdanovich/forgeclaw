@@ -59,13 +59,17 @@ func newSeahorseContextManager(rawConfig json.RawMessage, al *AgentLoop) (Contex
 	if defaultAgent != nil {
 		mgr.defaultAgentID = defaultAgent.ID
 	}
-	dbPaths := seahorseAgentDBPaths(al.registry, mgr.defaultAgentID)
 	for _, agentID := range al.registry.ListAgentIDs() {
 		agent, ok := al.registry.GetAgent(agentID)
 		if !ok || agent == nil {
 			continue
 		}
-		runtime, err := newSeahorseAgentRuntime(rawConfig, al, agent, dbPaths[agentID])
+		runtime, err := newSeahorseAgentRuntime(
+			rawConfig,
+			al,
+			agent,
+			seahorseAgentDBPath(agent, mgr.defaultAgentID),
+		)
 		if err != nil {
 			_ = mgr.Close()
 			return nil, fmt.Errorf("seahorse: create runtime for agent %q: %w", agentID, err)
@@ -110,28 +114,12 @@ func newSeahorseAgentRuntime(
 	}, nil
 }
 
-func seahorseAgentDBPaths(registry *AgentRegistry, defaultAgentID string) map[string]string {
-	workspaceOwners := make(map[string]int)
-	for _, agentID := range registry.ListAgentIDs() {
-		agent, ok := registry.GetAgent(agentID)
-		if ok && agent != nil {
-			workspaceOwners[cleanWorkspacePath(agent.Workspace)]++
-		}
+func seahorseAgentDBPath(agent *AgentInstance, defaultAgentID string) string {
+	filename := "seahorse.db"
+	if agent.ID != defaultAgentID {
+		filename = fmt.Sprintf("seahorse-%s.db", agent.ID)
 	}
-
-	paths := make(map[string]string)
-	for _, agentID := range registry.ListAgentIDs() {
-		agent, ok := registry.GetAgent(agentID)
-		if !ok || agent == nil {
-			continue
-		}
-		filename := "seahorse.db"
-		if workspaceOwners[cleanWorkspacePath(agent.Workspace)] > 1 && agentID != defaultAgentID {
-			filename = fmt.Sprintf("seahorse-%s.db", agentID)
-		}
-		paths[agentID] = filepath.Join(agent.Workspace, "sessions", filename)
-	}
-	return paths
+	return filepath.Join(agent.Workspace, "sessions", filename)
 }
 
 func (m *seahorseContextManager) runtimeFor(agent *AgentInstance) (*seahorseAgentRuntime, error) {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -877,12 +878,13 @@ func TestSeahorseContextManagerIsolatesAgentRuntimes(t *testing.T) {
 			supportAgent.ID: supportAgent,
 		},
 	}
-	dbPaths := seahorseAgentDBPaths(registry, mainAgent.ID)
-	if dbPaths[mainAgent.ID] != filepath.Join(sharedWorkspace, "sessions", "seahorse.db") {
-		t.Fatalf("main DB path = %q", dbPaths[mainAgent.ID])
+	mainDBPath := seahorseAgentDBPath(mainAgent, mainAgent.ID)
+	if mainDBPath != filepath.Join(sharedWorkspace, "sessions", "seahorse.db") {
+		t.Fatalf("main DB path = %q", mainDBPath)
 	}
-	if dbPaths[supportAgent.ID] != filepath.Join(sharedWorkspace, "sessions", "seahorse-support.db") {
-		t.Fatalf("support DB path = %q", dbPaths[supportAgent.ID])
+	supportDBPath := seahorseAgentDBPath(supportAgent, mainAgent.ID)
+	if supportDBPath != filepath.Join(sharedWorkspace, "sessions", "seahorse-support.db") {
+		t.Fatalf("support DB path = %q", supportDBPath)
 	}
 	al := &AgentLoop{cfg: cfg, registry: registry}
 	managerValue, managerErr := newSeahorseContextManager(nil, al)
@@ -990,6 +992,53 @@ func TestSeahorseContextManagerIsolatesAgentRuntimes(t *testing.T) {
 			seahorse.AssembleInput{Budget: 100},
 		); err == nil {
 			t.Fatalf("Seahorse runtime for %s remained usable after Close", agentID)
+		}
+	}
+}
+
+func TestSeahorseAgentDBPathSeparatesWorkspaceAliases(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := t.TempDir()
+	symlinkWorkspace := filepath.Join(linkRoot, "workspace")
+	if err := os.Symlink(workspace, symlinkWorkspace); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeWorkspace, err := filepath.Rel(workingDir, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	agents := []*AgentInstance{
+		{ID: "main", Workspace: workspace},
+		{ID: "support", Workspace: symlinkWorkspace},
+		{ID: "relative", Workspace: relativeWorkspace},
+	}
+	wantFilenames := []string{"seahorse.db", "seahorse-support.db", "seahorse-relative.db"}
+	resolvedSessionsDir := ""
+	for i, agent := range agents {
+		dbPath := seahorseAgentDBPath(agent, "main")
+		if filepath.Base(dbPath) != wantFilenames[i] {
+			t.Fatalf("DB filename for %s = %q", agent.ID, filepath.Base(dbPath))
+		}
+		absoluteDir, err := filepath.Abs(filepath.Dir(dbPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolvedDir, err := filepath.EvalSymlinks(absoluteDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolvedSessionsDir == "" {
+			resolvedSessionsDir = resolvedDir
+		} else if resolvedDir != resolvedSessionsDir {
+			t.Fatalf("workspace alias for %s resolved to %q, want %q", agent.ID, resolvedDir, resolvedSessionsDir)
 		}
 	}
 }
