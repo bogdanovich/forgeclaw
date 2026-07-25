@@ -71,6 +71,28 @@ type mockMediaChannel struct {
 	sentMediaMessages []bus.OutboundMediaMessage
 }
 
+func sendWithRetryTuple(
+	m *Manager,
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMessage,
+) ([]string, bool, bool, error) {
+	result := m.sendWithRetry(ctx, name, w, msg)
+	return result.MessageIDs, result.Delivered(), !result.Delivered() && result.MayHaveDelivered(), result.Err
+}
+
+func sendMediaWithRetryTuple(
+	m *Manager,
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMediaMessage,
+) ([]string, error) {
+	result := m.sendMediaWithRetry(ctx, name, w, msg)
+	return result.MessageIDs, result.Err
+}
+
 func (m *mockMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
 	m.sentMediaMessages = append(m.sentMediaMessages, msg)
 	if m.sendMediaFn != nil {
@@ -1104,7 +1126,7 @@ func TestUnregisterChannel_RetiresToolFeedbackBeforeReplacement(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	if _, _, _, err := m.sendWithRetry(context.Background(), "test", owner.Worker(), feedback); err != nil {
+	if _, _, _, err := sendWithRetryTuple(m, context.Background(), "test", owner.Worker(), feedback); err != nil {
 		t.Fatalf("initial feedback error = %v", err)
 	}
 	if count := m.toolFeedback.ActiveCount(); count != 1 {
@@ -1117,7 +1139,7 @@ func TestUnregisterChannel_RetiresToolFeedbackBeforeReplacement(t *testing.T) {
 	}
 	replacement := &toolFeedbackTestChannel{}
 	replacementWorker := &channelWorker{ch: replacement, limiter: rate.NewLimiter(rate.Inf, 1)}
-	if _, _, _, err := m.sendWithRetry(context.Background(), "test", replacementWorker, feedback); err != nil {
+	if _, _, _, err := sendWithRetryTuple(m, context.Background(), "test", replacementWorker, feedback); err != nil {
 		t.Fatalf("replacement feedback error = %v", err)
 	}
 
@@ -1321,7 +1343,7 @@ func TestSendWithRetry_Success(t *testing.T) {
 	ctx := context.Background()
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 
 	if callCount != 1 {
 		t.Fatalf("expected 1 Send call, got %d", callCount)
@@ -1351,7 +1373,7 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 		ch:      &mockChannel{},
 		limiter: rate.NewLimiter(rate.Inf, 1),
 	}
-	m.sendWithRetry(
+	sendWithRetryTuple(m,
 		context.Background(),
 		"test",
 		successWorker,
@@ -1373,7 +1395,7 @@ func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
 		},
 		limiter: rate.NewLimiter(rate.Inf, 1),
 	}
-	m.sendWithRetry(
+	sendWithRetryTuple(m,
 		context.Background(),
 		"test",
 		failWorker,
@@ -1428,15 +1450,16 @@ func TestOutboundRuntimeEventsPreserveTraceScopes(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	textWorker := &channelWorker{ch: &mockChannel{}, limiter: rate.NewLimiter(0, 0)}
-	messageIDs, delivered, ambiguous, sendErr := m.sendWithRetry(canceled, "test", textWorker, text)
-	if sendErr == nil || delivered || ambiguous || len(messageIDs) != 0 {
-		t.Fatalf("canceled text send = ids %v, delivered %v, ambiguous %v, err %v",
-			messageIDs, delivered, ambiguous, sendErr)
+	textResult := m.sendWithRetry(canceled, "test", textWorker, text)
+	if textResult.Err == nil || textResult.Delivered() || textResult.MayHaveDelivered() ||
+		len(textResult.MessageIDs) != 0 {
+		t.Fatalf("canceled text send = %#v, want definite pre-send failure", textResult)
 	}
 	mediaWorker := &channelWorker{ch: &mockMediaChannel{}, limiter: rate.NewLimiter(0, 0)}
-	mediaIDs, mediaErr := m.sendMediaWithRetry(canceled, "test", mediaWorker, media)
-	if mediaErr == nil || len(mediaIDs) != 0 {
-		t.Fatalf("canceled media send = ids %v, err %v", mediaIDs, mediaErr)
+	mediaResult := m.sendMediaWithRetry(canceled, "test", mediaWorker, media)
+	if mediaResult.Err == nil || mediaResult.Delivered() || mediaResult.MayHaveDelivered() ||
+		len(mediaResult.MessageIDs) != 0 {
+		t.Fatalf("canceled media send = %#v, want definite pre-send failure", mediaResult)
 	}
 
 	for i := 0; i < 10; i++ {
@@ -1760,7 +1783,7 @@ func TestRetryCancellationPublishesTerminalFailure(t *testing.T) {
 			m := newTestManager()
 			m.runtimeEvents = eventBus
 			traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
-			_, _, _, _ = m.sendWithRetry(ctx, "test", worker, testOutboundMessage(bus.OutboundMessage{
+			_, _, _, _ = sendWithRetryTuple(m, ctx, "test", worker, testOutboundMessage(bus.OutboundMessage{
 				Channel: "test", ChatID: "chat-1", Content: "hello",
 				TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
 			}))
@@ -1796,7 +1819,7 @@ func TestSendWithRetry_TemporaryThenSuccess(t *testing.T) {
 	ctx := context.Background()
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 
 	if callCount != 3 {
 		t.Fatalf("expected 3 Send calls (2 failures + 1 success), got %d", callCount)
@@ -1820,7 +1843,7 @@ func TestSendWithRetry_PermanentFailure(t *testing.T) {
 	ctx := context.Background()
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 
 	if callCount != 1 {
 		t.Fatalf("expected 1 Send call (no retry for permanent failure), got %d", callCount)
@@ -1844,7 +1867,7 @@ func TestSendWithRetry_NotRunning(t *testing.T) {
 	ctx := context.Background()
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 
 	if callCount != 1 {
 		t.Fatalf("expected 1 Send call (no retry for ErrNotRunning), got %d", callCount)
@@ -1872,7 +1895,7 @@ func TestSendWithRetry_RateLimitRetry(t *testing.T) {
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
 	start := time.Now()
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 	elapsed := time.Since(start)
 
 	if callCount != 2 {
@@ -1901,7 +1924,7 @@ func TestSendWithRetry_MaxRetriesExhausted(t *testing.T) {
 	ctx := context.Background()
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 
 	expected := maxRetries + 1 // initial attempt + maxRetries retries
 	if callCount != expected {
@@ -2097,7 +2120,7 @@ func TestSendWithRetry_UnknownError(t *testing.T) {
 	ctx := context.Background()
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 
 	if callCount != 2 {
 		t.Fatalf("expected 2 Send calls (unknown error treated as temporary), got %d", callCount)
@@ -2128,7 +2151,7 @@ func TestSendWithRetry_ContextCancelled(t *testing.T) {
 		return fmt.Errorf("timeout: %w", ErrTemporary)
 	}
 
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 
 	// Should have called Send once, then noticed ctx canceled during backoff
 	if callCount != 1 {
@@ -2358,7 +2381,7 @@ func TestSendWithRetry_ExponentialBackoff(t *testing.T) {
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "1", Content: "hello"})
 
 	start := time.Now()
-	m.sendWithRetry(ctx, "test", w, msg)
+	sendWithRetryTuple(m, ctx, "test", w, msg)
 	totalElapsed := time.Since(start)
 
 	// With maxRetries=3: attempts at 0, ~500ms, ~1.5s, ~3.5s
@@ -2489,13 +2512,13 @@ func TestSendWithRetry_ToolFeedbackLifecycleOwnedByManager(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
 		t.Fatalf("initial feedback = (%v, %v, %v), want msg-1 sent", ids, sent, err)
 	}
 
 	feedback.Content = "Working...\n- tool: read_file"
-	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err = sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
 		t.Fatalf("feedback update = (%v, %v, %v), want edit of msg-1", ids, sent, err)
 	}
@@ -2526,7 +2549,7 @@ func TestSendWithRetry_FinalSendsBeforeProgressDelete(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	if _, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil || !sent {
+	if _, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback); err != nil || !sent {
 		t.Fatalf("feedback send = (%v, %v)", sent, err)
 	}
 	final := testOutboundMessage(bus.OutboundMessage{
@@ -2539,7 +2562,7 @@ func TestSendWithRetry_FinalSendsBeforeProgressDelete(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "final_reply"},
 		},
 	})
-	if _, sent, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil || !sent {
+	if _, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, final); err != nil || !sent {
 		t.Fatalf("final send = (%v, %v)", sent, err)
 	}
 
@@ -2569,7 +2592,7 @@ func TestSendWithRetry_FailedFinalKeepsProgressEditable(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+	if _, _, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback); err != nil {
 		t.Fatalf("feedback send error = %v", err)
 	}
 	ch.mu.Lock()
@@ -2585,14 +2608,14 @@ func TestSendWithRetry_FailedFinalKeepsProgressEditable(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "final_reply"},
 		},
 	})
-	if _, sent, _, err := m.sendWithRetry(context.Background(), "test", w, final); err == nil || sent {
+	if _, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, final); err == nil || sent {
 		t.Fatalf("failed final = (%v, %v), want failure", sent, err)
 	}
 	ch.mu.Lock()
 	ch.sendErr = nil
 	ch.mu.Unlock()
 	feedback.Content = "Working...\n- tool: retry"
-	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
 		t.Fatalf("resumed feedback = (%v, %v, %v), want msg-1 edit", ids, sent, err)
 	}
@@ -2622,7 +2645,7 @@ func TestLogicalSplitFailureKeepsProgressEditable(t *testing.T) {
 					Raw: map[string]string{"message_kind": "tool_feedback"},
 				},
 			})
-			if _, sent, _, err := m.sendWithRetry(
+			if _, sent, _, err := sendWithRetryTuple(m,
 				context.Background(), "test", w, feedback,
 			); err != nil || !sent {
 				t.Fatalf("feedback send = (%v, %v)", sent, err)
@@ -2651,7 +2674,7 @@ func TestLogicalSplitFailureKeepsProgressEditable(t *testing.T) {
 			}
 
 			feedback.Content = "retry"
-			ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+			ids, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 			if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
 				t.Fatalf("resumed feedback = (%v, %v, %v), want msg-1 edit", ids, sent, err)
 			}
@@ -2683,11 +2706,11 @@ func TestSendWithRetry_UneditableToolFeedbackSendsReplacement(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+	if _, _, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback); err != nil {
 		t.Fatalf("first feedback error = %v", err)
 	}
 	feedback.Content = "second"
-	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+	if _, _, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback); err != nil {
 		t.Fatalf("second feedback error = %v", err)
 	}
 	final := testOutboundMessage(bus.OutboundMessage{
@@ -2700,7 +2723,7 @@ func TestSendWithRetry_UneditableToolFeedbackSendsReplacement(t *testing.T) {
 			Raw:     map[string]string{"message_kind": "final_reply"},
 		},
 	})
-	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil {
+	if _, _, _, err := sendWithRetryTuple(m, context.Background(), "test", w, final); err != nil {
 		t.Fatalf("final error = %v", err)
 	}
 
@@ -2728,7 +2751,7 @@ func TestSendMediaWithRetry_BlocksSameTurnLateFeedback(t *testing.T) {
 		Context:     bus.InboundContext{Channel: "test", ChatID: "chat-1", MessageID: "turn-1"},
 		TraceScopes: []runtimeevents.TraceScope{turnOneScope},
 	})
-	if _, err := m.sendMediaWithRetry(context.Background(), "test", w, mediaMessage); err != nil {
+	if _, err := sendMediaWithRetryTuple(m, context.Background(), "test", w, mediaMessage); err != nil {
 		t.Fatalf("media send error = %v", err)
 	}
 	feedback := testOutboundMessage(bus.OutboundMessage{
@@ -2743,7 +2766,7 @@ func TestSendMediaWithRetry_BlocksSameTurnLateFeedback(t *testing.T) {
 			Raw:       map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || len(ids) != 0 {
 		t.Fatalf("late same-turn feedback = (%v, %v, %v), want suppressed", ids, sent, err)
 	}
@@ -2751,7 +2774,7 @@ func TestSendMediaWithRetry_BlocksSameTurnLateFeedback(t *testing.T) {
 	feedback.TraceScopes = []runtimeevents.TraceScope{
 		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
 	}
-	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err = sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || !slices.Equal(ids, []string{"msg-2"}) {
 		t.Fatalf("next-turn feedback = (%v, %v, %v), want msg-2", ids, sent, err)
 	}
@@ -2786,12 +2809,12 @@ func TestToolFeedbackLifecycle_IsolatedByTurnScope(t *testing.T) {
 			},
 		})
 	}
-	if _, _, _, err := m.sendWithRetry(
+	if _, _, _, err := sendWithRetryTuple(m,
 		context.Background(), "test", w, feedback(turnOne, "one"),
 	); err != nil {
 		t.Fatalf("turn one feedback error = %v", err)
 	}
-	if _, _, _, err := m.sendWithRetry(
+	if _, _, _, err := sendWithRetryTuple(m,
 		context.Background(), "test", w, feedback(turnTwo, "two"),
 	); err != nil {
 		t.Fatalf("turn two feedback error = %v", err)
@@ -2805,7 +2828,7 @@ func TestToolFeedbackLifecycle_IsolatedByTurnScope(t *testing.T) {
 	if count := m.toolFeedback.ActiveCount(); count != 1 {
 		t.Fatalf("ActiveCount() after turn one dismissal = %d, want 1", count)
 	}
-	if _, _, _, err := m.sendWithRetry(
+	if _, _, _, err := sendWithRetryTuple(m,
 		context.Background(), "test", w, feedback(turnTwo, "two updated"),
 	); err != nil {
 		t.Fatalf("turn two update error = %v", err)
@@ -2834,7 +2857,7 @@ func TestDismissToolFeedback_PreservesSessionAndTurnIdentity(t *testing.T) {
 			Raw: map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	if _, _, _, err := m.sendWithRetry(context.Background(), "test", w, feedback); err != nil {
+	if _, _, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback); err != nil {
 		t.Fatalf("feedback error = %v", err)
 	}
 
@@ -2891,7 +2914,7 @@ func TestDismissToolFeedback_UnscopedFallbackRequiresSingleActiveTurn(t *testing
 						Raw: map[string]string{"message_kind": "tool_feedback"},
 					},
 				})
-				if _, _, _, err := m.sendWithRetry(
+				if _, _, _, err := sendWithRetryTuple(m,
 					context.Background(), "test", w, feedback,
 				); err != nil {
 					t.Fatalf("feedback %s error = %v", turnID, err)
@@ -2952,7 +2975,7 @@ func TestToolFeedbackTerminal_UnscopedFallbackRequiresSingleActiveTurn(t *testin
 						Raw: map[string]string{"message_kind": "tool_feedback"},
 					},
 				})
-				if _, _, _, err := m.sendWithRetry(
+				if _, _, _, err := sendWithRetryTuple(m,
 					context.Background(), "test", w, feedback,
 				); err != nil {
 					t.Fatalf("feedback %s error = %v", turnID, err)
@@ -2965,7 +2988,7 @@ func TestToolFeedbackTerminal_UnscopedFallbackRequiresSingleActiveTurn(t *testin
 					Raw: map[string]string{"outbound_kind": "final"},
 				},
 			})
-			if _, _, _, err := m.sendWithRetry(
+			if _, _, _, err := sendWithRetryTuple(m,
 				context.Background(), "test", w, final,
 			); err != nil {
 				t.Fatalf("final error = %v", err)
@@ -3014,12 +3037,12 @@ func TestGetStreamer_FinalizedStateIsTurnScoped(t *testing.T) {
 			},
 		})
 	}
-	if _, sent, _, err := m.sendWithRetry(
+	if _, sent, _, err := sendWithRetryTuple(m,
 		context.Background(), "test", w, final(turnTwo, "turn two final"),
 	); err != nil || !sent {
 		t.Fatalf("turn two final = (%v, %v), want delivered", sent, err)
 	}
-	if ids, sent, _, err := m.sendWithRetry(
+	if ids, sent, _, err := sendWithRetryTuple(m,
 		context.Background(), "test", w, final(turnOne, "turn one queued duplicate"),
 	); err != nil || !sent || len(ids) != 0 {
 		t.Fatalf("turn one duplicate = (%v, %v, %v), want suppressed", ids, sent, err)
@@ -3060,18 +3083,18 @@ func TestGetStreamer_UnscopedFallbackMatchesSingleScopedStreamWithoutSession(t *
 			},
 		})
 	}
-	if ids, sent, _, err := m.sendWithRetry(
+	if ids, sent, _, err := sendWithRetryTuple(m,
 		context.Background(), "test", w, message("tool_feedback", "late feedback"),
 	); err != nil || !sent || len(ids) != 0 {
 		t.Fatalf("pre-final auxiliary = (%v, %v, %v), want suppressed", ids, sent, err)
 	}
 	final := message("final_reply", "queued duplicate")
 	final.Context.Raw["outbound_kind"] = "final"
-	if ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, final); err != nil ||
+	if ids, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, final); err != nil ||
 		!sent || len(ids) != 0 {
 		t.Fatalf("unscoped final = (%v, %v, %v), want suppressed", ids, sent, err)
 	}
-	if ids, sent, _, err := m.sendWithRetry(
+	if ids, sent, _, err := sendWithRetryTuple(m,
 		context.Background(), "test", w, message("thought", "late thought"),
 	); err != nil || !sent || len(ids) != 0 {
 		t.Fatalf("post-final auxiliary = (%v, %v, %v), want suppressed", ids, sent, err)
@@ -3133,7 +3156,16 @@ func TestSendMediaWithRetry_FailureReleasesSameTurnFeedback(t *testing.T) {
 		ChatID:  "chat-1",
 		Context: bus.InboundContext{Channel: "test", ChatID: "chat-1", MessageID: "turn-1"},
 	})
-	if _, err := m.sendMediaWithRetry(context.Background(), "test", w, mediaMessage); !errors.Is(err, ErrSendFailed) {
+	if _, err := sendMediaWithRetryTuple(
+		m,
+		context.Background(),
+		"test",
+		w,
+		mediaMessage,
+	); !errors.Is(
+		err,
+		ErrSendFailed,
+	) {
 		t.Fatalf("media send error = %v, want ErrSendFailed", err)
 	}
 
@@ -3151,7 +3183,7 @@ func TestSendMediaWithRetry_FailureReleasesSameTurnFeedback(t *testing.T) {
 			Raw:       map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
 		t.Fatalf("same-turn feedback = (%v, %v, %v), want msg-1", ids, sent, err)
 	}
@@ -3191,7 +3223,7 @@ func TestGetStreamer_FinalizeBlocksLateFeedbackUntilQueuedFinal(t *testing.T) {
 			Raw:       map[string]string{"message_kind": "tool_feedback"},
 		},
 	})
-	ids, sent, _, err := m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err := sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || len(ids) != 0 {
 		t.Fatalf("late feedback = (%v, %v, %v), want suppressed", ids, sent, err)
 	}
@@ -3211,7 +3243,7 @@ func TestGetStreamer_FinalizeBlocksLateFeedbackUntilQueuedFinal(t *testing.T) {
 			},
 		},
 	})
-	_, sent, _, err = m.sendWithRetry(context.Background(), "test", w, final)
+	_, sent, _, err = sendWithRetryTuple(m, context.Background(), "test", w, final)
 	if err != nil || !sent {
 		t.Fatalf("queued final = (%v, %v), want handled", sent, err)
 	}
@@ -3221,7 +3253,7 @@ func TestGetStreamer_FinalizeBlocksLateFeedbackUntilQueuedFinal(t *testing.T) {
 	feedback.TraceScopes = []runtimeevents.TraceScope{
 		runtimeevents.NewTraceScope("/workspace/main", "turn-2"),
 	}
-	ids, sent, _, err = m.sendWithRetry(context.Background(), "test", w, feedback)
+	ids, sent, _, err = sendWithRetryTuple(m, context.Background(), "test", w, feedback)
 	if err != nil || !sent || !slices.Equal(ids, []string{"msg-1"}) {
 		t.Fatalf("next-turn feedback = (%v, %v, %v), want msg-1", ids, sent, err)
 	}
@@ -3698,7 +3730,7 @@ func TestSendWithRetry_FinalReplyBypassesToolFeedbackFinalization(t *testing.T) 
 		},
 	})
 
-	messageIDs, sent, ambiguous, sendErr := m.sendWithRetry(context.Background(), "test", w, msg)
+	messageIDs, sent, ambiguous, sendErr := sendWithRetryTuple(m, context.Background(), "test", w, msg)
 	if !sent {
 		t.Fatal("expected final reply to be sent as a new message")
 	}
@@ -3891,7 +3923,7 @@ func TestSendWithRetry_ToolCallsPlaceholderDeleteAndFallsThroughToSend(t *testin
 		},
 	})
 
-	m.sendWithRetry(context.Background(), "test", w, msg)
+	sendWithRetryTuple(m, context.Background(), "test", w, msg)
 
 	if ch.deleteCalls != 1 {
 		t.Fatalf("expected placeholder deletion, got %d delete calls", ch.deleteCalls)
@@ -5464,7 +5496,7 @@ func TestSendWithRetry_PreSendEditsPlaceholder(t *testing.T) {
 	}
 
 	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"})
-	m.sendWithRetry(context.Background(), "test", w, msg)
+	sendWithRetryTuple(m, context.Background(), "test", w, msg)
 
 	if sendCalled {
 		t.Fatal("expected Send to NOT be called when placeholder was edited")
@@ -5889,7 +5921,7 @@ func TestManager_PlaceholderConsumedByResponse(t *testing.T) {
 		ChatID:  "chat-1",
 		Content: "Transcript: hello",
 	})
-	mgr.sendWithRetry(ctx, "mock", worker, msgTranscript)
+	sendWithRetryTuple(mgr, ctx, "mock", worker, msgTranscript)
 
 	if mockCh.editedMessages != 1 {
 		t.Errorf("expected 1 edited message (placeholder consumed by transcript), got %d", mockCh.editedMessages)
@@ -5909,7 +5941,7 @@ func TestManager_PlaceholderConsumedByResponse(t *testing.T) {
 		ChatID:  "chat-1",
 		Content: "Final Answer",
 	})
-	mgr.sendWithRetry(ctx, "mock", worker, msgFinal)
+	sendWithRetryTuple(mgr, ctx, "mock", worker, msgFinal)
 
 	if len(mockCh.sentMessages) != 1 {
 		t.Errorf("expected 1 normal message sent, got %d", len(mockCh.sentMessages))
@@ -6088,6 +6120,32 @@ func TestSendMessageDefiniteRetryOnlyStopsAfterAmbiguousFailure(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Fatalf("Send calls = %d, want 1 after ambiguous failure", callCount)
+	}
+}
+
+func TestSendMessagePreservesAmbiguityBeforeDefiniteRejection(t *testing.T) {
+	m := newTestManager()
+	callCount := 0
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+			callCount++
+			if callCount == 1 {
+				return fmt.Errorf("acceptance unknown: %w", ErrTemporary)
+			}
+			return fmt.Errorf("definitely rejected: %w", ErrSendFailed)
+		},
+	}
+	m.channels["test"] = ch
+	m.workers["test"] = &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	err := m.SendMessage(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "123", Content: "do not fallback",
+	}))
+	if err == nil || DeliveryDefinitelyNotSent(err) {
+		t.Fatalf("SendMessage() error = %v, want sticky ambiguous delivery", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("Send calls = %d, want 2", callCount)
 	}
 }
 

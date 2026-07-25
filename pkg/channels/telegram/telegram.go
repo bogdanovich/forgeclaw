@@ -299,7 +299,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		useMarkdownV2: useMarkdownV2,
 	}, c.richMessagesEnabled(useMarkdownV2) && !isToolFeedback, isToolFeedback)
 	if err != nil {
-		return nil, err
+		return messageIDs, err
 	}
 
 	return messageIDs, nil
@@ -322,15 +322,7 @@ func (c *TelegramChannel) sendTextChunks(
 	isToolFeedback bool,
 ) ([]string, error) {
 	result := c.sendTextChunkQueue(ctx, []string{text}, baseParams, useRich, isToolFeedback)
-	return result.messageIDs, result.err
-}
-
-type sendTextChunkResult struct {
-	messageIDs []string
-	remaining  []string
-	nextParams sendChunkParams
-	retryAfter time.Duration
-	err        error
+	return result.MessageIDs, result.Err
 }
 
 func (c *TelegramChannel) sendTextChunkQueue(
@@ -339,7 +331,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 	baseParams sendChunkParams,
 	useRich bool,
 	isToolFeedback bool,
-) sendTextChunkResult {
+) channels.DeliveryResult[string] {
 	var messageIDs []string
 	for len(queue) > 0 {
 		chunk := queue[0]
@@ -376,13 +368,12 @@ func (c *TelegramChannel) sendTextChunkQueue(
 					useMarkdownV2: baseParams.useMarkdownV2,
 				})
 				if err != nil {
-					return sendTextChunkResult{
-						messageIDs: messageIDs,
-						remaining:  append([]string{chunk}, queue...),
-						nextParams: baseParams,
-						retryAfter: telegramRetryDelayFor(err),
-						err:        err,
-					}
+					return channels.FailedDelivery(
+						messageIDs,
+						append([]string{chunk}, queue...),
+						telegramRetryDelayFor(err),
+						err,
+					)
 				}
 				messageIDs = append(messageIDs, msgID)
 				baseParams.replyToID = ""
@@ -433,13 +424,12 @@ func (c *TelegramChannel) sendTextChunkQueue(
 			if useRich && errors.Is(err, errTelegramMessageTooLong) {
 				runeChunk := []rune(chunk)
 				if len(runeChunk) <= 1 {
-					return sendTextChunkResult{
-						messageIDs: messageIDs,
-						remaining:  append([]string{chunk}, queue...),
-						nextParams: baseParams,
-						retryAfter: telegramRetryDelayFor(err),
-						err:        err,
-					}
+					return channels.FailedDelivery(
+						messageIDs,
+						append([]string{chunk}, queue...),
+						telegramRetryDelayFor(err),
+						err,
+					)
 				}
 				smallerLen := len(runeChunk) / 2
 				subChunks := channels.SplitMessage(chunk, smallerLen)
@@ -458,22 +448,18 @@ func (c *TelegramChannel) sendTextChunkQueue(
 				queue = append(nonEmpty, queue...)
 				continue
 			}
-			return sendTextChunkResult{
-				messageIDs: messageIDs,
-				remaining:  append([]string{chunk}, queue...),
-				nextParams: baseParams,
-				retryAfter: telegramRetryDelayFor(err),
-				err:        err,
-			}
+			return channels.FailedDelivery(
+				messageIDs,
+				append([]string{chunk}, queue...),
+				telegramRetryDelayFor(err),
+				err,
+			)
 		}
 		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
 		baseParams.replyToID = ""
 	}
-	return sendTextChunkResult{
-		messageIDs: messageIDs,
-		nextParams: baseParams,
-	}
+	return channels.SuccessfulDelivery[string](messageIDs)
 }
 
 func (c *TelegramChannel) richMessagesEnabled(useMarkdownV2 bool) bool {
@@ -2562,38 +2548,19 @@ func (s *telegramStreamer) finalizeTextChunks(
 	baseParams sendChunkParams,
 	useRich bool,
 ) ([]string, error) {
-	const maxAttempts = 2
-	queue := []string{content}
-	var messageIDs []string
-	var err error
-	for attempt := 0; attempt <= maxAttempts; attempt++ {
-		result := s.channel.sendTextChunkQueue(ctx, queue, baseParams, useRich, false)
-		messageIDs = append(messageIDs, result.messageIDs...)
-		if result.err == nil {
-			return messageIDs, nil
-		}
-		err = result.err
-		queue = result.remaining
-		baseParams = result.nextParams
-		if len(queue) == 0 {
-			break
-		}
-		if result.retryAfter > 0 {
-			timer := time.NewTimer(result.retryAfter)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				return messageIDs, errors.Join(err, ctx.Err())
-			}
-		}
-	}
-	return messageIDs, err
+	result := channels.DeliverWithRetry(
+		ctx,
+		[]string{content},
+		channels.DeliveryRetryPolicy{
+			MaxRetries:     2,
+			RetryAmbiguous: true,
+		},
+		func(ctx context.Context, pending []string) channels.DeliveryResult[string] {
+			return s.channel.sendTextChunkQueue(ctx, pending, baseParams, useRich, false)
+		},
+		nil,
+	)
+	return result.MessageIDs, result.Err
 }
 
 func (s *telegramStreamer) Cancel(ctx context.Context) {
