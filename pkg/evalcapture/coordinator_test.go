@@ -347,10 +347,7 @@ func TestCoordinatorFailingSourceDoesNotStarveRecovery(t *testing.T) {
 	if err := coordinator.RegisterSource("b-healthy", healthy); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		coordinator.UnregisterSource("a-busy")
-		closeTestCoordinator(t, coordinator)
-	})
+	t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
 
 	waitCoordinator(t, func() bool {
 		return healthy.confirmedRevision("task") == 12
@@ -380,7 +377,11 @@ func TestCoordinatorFullSourceScanYieldsToLaterSource(t *testing.T) {
 	if err := coordinator.RegisterSource("b-healthy", healthy); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { closeTestCoordinator(t, coordinator) })
+	t.Cleanup(func() {
+		coordinator.UnregisterSource("a-busy")
+		coordinator.UnregisterSource("b-healthy")
+		closeTestCoordinator(t, coordinator)
+	})
 
 	waitCoordinator(t, func() bool {
 		return healthy.confirmedRevision("task") == 15
