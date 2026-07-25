@@ -78,6 +78,7 @@ var (
 	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
 	ctxKeyRouteSessionKey  = &toolCtxKey{"routeSessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
+	ctxKeyToolCallID       = &toolCtxKey{"toolCallID"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -139,6 +140,13 @@ func WithToolSessionContext(
 // user starts a fresh history session through /new or /reset.
 func WithToolRouteSessionKey(ctx context.Context, routeSessionKey string) context.Context {
 	return context.WithValue(ctx, ctxKeyRouteSessionKey, routeSessionKey)
+}
+
+// WithToolCallID carries the provider-assigned identity of the active tool
+// call. Durable pre-execution state uses it to recover the same call after a
+// human-approval restart.
+func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
+	return context.WithValue(ctx, ctxKeyToolCallID, toolCallID)
 }
 
 // ToolChannel extracts the channel from ctx, or "" if unset.
@@ -249,6 +257,15 @@ func ToolAgentID(ctx context.Context) string {
 // ToolSessionKey extracts the active turn's session key from ctx, or "" if unset.
 func ToolSessionKey(ctx context.Context) string {
 	v, ok := ctx.Value(ctxKeySessionKey).(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
+
+// ToolCallID extracts the active provider tool-call identity from ctx.
+func ToolCallID(ctx context.Context) string {
+	v, ok := ctx.Value(ctxKeyToolCallID).(string)
 	if !ok {
 		return ""
 	}

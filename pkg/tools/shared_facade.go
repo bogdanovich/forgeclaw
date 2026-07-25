@@ -105,6 +105,10 @@ func WithToolRouteSessionKey(ctx context.Context, routeSessionKey string) contex
 	return toolshared.WithToolRouteSessionKey(ctx, routeSessionKey)
 }
 
+func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
+	return toolshared.WithToolCallID(ctx, toolCallID)
+}
+
 func ToolChannel(ctx context.Context) string {
 	return toolshared.ToolChannel(ctx)
 }
@@ -155,6 +159,10 @@ func ToolAgentID(ctx context.Context) string {
 
 func ToolSessionKey(ctx context.Context) string {
 	return toolshared.ToolSessionKey(ctx)
+}
+
+func ToolCallID(ctx context.Context) string {
+	return toolshared.ToolCallID(ctx)
 }
 
 func ToolRouteSessionKey(ctx context.Context) string {

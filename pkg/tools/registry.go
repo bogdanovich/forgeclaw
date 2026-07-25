@@ -33,6 +33,14 @@ type mediaStoreAware interface {
 	SetMediaStore(store media.MediaStore)
 }
 
+// ApprovalArgumentsProvider lets a trusted tool bind durable human approval to
+// runtime-prepared authority rather than only to model-authored arguments.
+// Implementations may persist prepared state, but must return the same
+// canonical arguments when the same tool call is resumed.
+type ApprovalArgumentsProvider interface {
+	ApprovalArguments(ctx context.Context, args map[string]any) (map[string]any, error)
+}
+
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools: make(map[string]*ToolEntry),
@@ -294,6 +302,47 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	return entry.Tool, true
 }
 
+// ApprovalArguments returns the trusted arguments that durable human approval
+// must bind for this call. Ordinary tools retain the existing model-argument
+// binding. The returned map is used only for hashing and is never sent to the
+// model or substituted for execution arguments.
+func (r *ToolRegistry) ApprovalArguments(
+	ctx context.Context,
+	name string,
+	args map[string]any,
+) (map[string]any, error) {
+	tool, ok := r.Get(name)
+	if !ok {
+		return nil, fmt.Errorf("tool %q not found", name)
+	}
+	provider, ok := tool.(ApprovalArgumentsProvider)
+	if !ok {
+		return args, nil
+	}
+	bound, err := provider.ApprovalArguments(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	if bound == nil {
+		return nil, fmt.Errorf("tool %q returned nil approval arguments", name)
+	}
+	return bound, nil
+}
+
+// ValidateArguments checks model-supplied arguments without executing the
+// tool. Approval flows use it before creating durable authority.
+func (r *ToolRegistry) ValidateArguments(name string, args map[string]any) error {
+	tool, ok := r.Get(name)
+	if !ok {
+		return fmt.Errorf("tool %q not found", name)
+	}
+	return validateRegisteredToolArguments(tool, args)
+}
+
+func validateRegisteredToolArguments(tool Tool, args map[string]any) error {
+	return validateToolArgs(tool.Parameters(), args)
+}
+
 func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string]any) *ToolResult {
 	return r.ExecuteWithContext(ctx, name, args, "", "", nil)
 }
@@ -327,7 +376,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	}
 
 	// Validate arguments against the tool's declared schema.
-	if err := validateToolArgs(tool.Parameters(), args); err != nil {
+	if err := validateRegisteredToolArguments(tool, args); err != nil {
 		logger.WarnCF("tool", "Tool argument validation failed",
 			map[string]any{"tool": name, "error": err.Error()})
 		return ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
