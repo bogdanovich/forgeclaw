@@ -79,6 +79,7 @@ var (
 	ctxKeyRouteSessionKey  = &toolCtxKey{"routeSessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
 	ctxKeyToolCallID       = &toolCtxKey{"toolCallID"}
+	ctxKeyApprovalResume   = &toolCtxKey{"approvalResume"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -147,6 +148,12 @@ func WithToolRouteSessionKey(ctx context.Context, routeSessionKey string) contex
 // human-approval restart.
 func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
 	return context.WithValue(ctx, ctxKeyToolCallID, toolCallID)
+}
+
+// WithToolApprovalContinuation marks execution resumed from a one-time human
+// approval. Durable tools use it to fail closed when retained authority expired.
+func WithToolApprovalContinuation(ctx context.Context, resumed bool) context.Context {
+	return context.WithValue(ctx, ctxKeyApprovalResume, resumed)
 }
 
 // ToolChannel extracts the channel from ctx, or "" if unset.
@@ -270,6 +277,12 @@ func ToolCallID(ctx context.Context) string {
 		return ""
 	}
 	return v
+}
+
+// ToolApprovalContinuation reports whether this call resumes human approval.
+func ToolApprovalContinuation(ctx context.Context) bool {
+	resumed, _ := ctx.Value(ctxKeyApprovalResume).(bool)
+	return resumed
 }
 
 // ToolRouteSessionKey extracts the canonical routed conversation key from ctx.

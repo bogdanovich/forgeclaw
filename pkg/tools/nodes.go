@@ -25,6 +25,10 @@ type NodeDiscoveryRecord struct {
 }
 
 type NodeDiscoveryTool struct {
+	access *nodeTargetAccess
+}
+
+type nodeTargetAccess struct {
 	source        NodeDiscoverySource
 	targets       map[string]config.ExecutionTarget
 	defaultPolicy *config.TargetPolicy
@@ -56,25 +60,29 @@ type nodeDescription struct {
 }
 
 func NewNodeDiscoveryTool(cfg *config.Config, source NodeDiscoverySource) *NodeDiscoveryTool {
-	tool := &NodeDiscoveryTool{
+	return &NodeDiscoveryTool{access: newNodeTargetAccess(cfg, source)}
+}
+
+func newNodeTargetAccess(cfg *config.Config, source NodeDiscoverySource) *nodeTargetAccess {
+	access := &nodeTargetAccess{
 		source:        source,
 		targets:       make(map[string]config.ExecutionTarget),
 		agentPolicies: make(map[string]*config.TargetPolicy),
 	}
 	if cfg == nil {
-		return tool
+		return access
 	}
 	for name, target := range cfg.Execution.Targets {
-		tool.targets[name] = target
+		access.targets[name] = target
 	}
-	tool.defaultPolicy = cloneTargetPolicy(cfg.Agents.Defaults.TargetPolicy)
+	access.defaultPolicy = cloneTargetPolicy(cfg.Agents.Defaults.TargetPolicy)
 	for i := range cfg.Agents.List {
 		agentCfg := &cfg.Agents.List[i]
 		if agentCfg.TargetPolicy != nil {
-			tool.agentPolicies[routing.NormalizeAgentID(agentCfg.ID)] = cloneTargetPolicy(agentCfg.TargetPolicy)
+			access.agentPolicies[routing.NormalizeAgentID(agentCfg.ID)] = cloneTargetPolicy(agentCfg.TargetPolicy)
 		}
 	}
-	return tool
+	return access
 }
 
 func (*NodeDiscoveryTool) Name() string { return "nodes" }
@@ -125,10 +133,10 @@ func (*NodeDiscoveryTool) ToolSteeringSafety(map[string]any) SteeringSafety {
 }
 
 func (tool *NodeDiscoveryTool) list(ctx context.Context) *ToolResult {
-	names, defaultTarget := tool.visibleTargets(ToolAgentID(ctx))
+	names, defaultTarget := tool.access.visibleTargets(ToolAgentID(ctx))
 	entries := make([]nodeListEntry, 0, len(names))
 	for _, name := range names {
-		entry, err := tool.listEntry(name, defaultTarget)
+		entry, err := tool.access.listEntry(name, defaultTarget)
 		if err != nil {
 			return ErrorResult(fmt.Sprintf("list node target %q: %v", name, err))
 		}
@@ -144,11 +152,11 @@ func (tool *NodeDiscoveryTool) describe(ctx context.Context, target string) *Too
 	if target == "" {
 		return ErrorResult("target is required for describe")
 	}
-	names, defaultTarget := tool.visibleTargets(ToolAgentID(ctx))
+	names, defaultTarget := tool.access.visibleTargets(ToolAgentID(ctx))
 	if !containsSorted(names, target) {
 		return ErrorResult(fmt.Sprintf("target %q is not visible to this agent", target))
 	}
-	entry, snapshot, registration, err := tool.resolve(target, defaultTarget)
+	entry, snapshot, registration, err := tool.access.resolve(target, defaultTarget)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("describe node target %q: %v", target, err))
 	}
@@ -165,21 +173,21 @@ func (tool *NodeDiscoveryTool) describe(ctx context.Context, target string) *Too
 	return nodeJSONResult(description)
 }
 
-func (tool *NodeDiscoveryTool) listEntry(target, defaultTarget string) (nodeListEntry, error) {
-	entry, _, _, err := tool.resolve(target, defaultTarget)
+func (access *nodeTargetAccess) listEntry(target, defaultTarget string) (nodeListEntry, error) {
+	entry, _, _, err := access.resolve(target, defaultTarget)
 	return entry, err
 }
 
-func (tool *NodeDiscoveryTool) resolve(
+func (access *nodeTargetAccess) resolve(
 	target string,
 	defaultTarget string,
 ) (nodeListEntry, *nodes.Snapshot, *nodes.Registration, error) {
 	entry := nodeListEntry{Target: target, Default: target == defaultTarget}
-	binding, exists := tool.targets[target]
-	if !exists || tool.source == nil {
+	binding, exists := access.targets[target]
+	if !exists || access.source == nil {
 		return entry, nil, nil, nil
 	}
-	record, found, err := tool.source.Lookup(binding.Node)
+	record, found, err := access.source.Lookup(binding.Node)
 	if err != nil {
 		return entry, nil, nil, errors.New("node registry lookup failed")
 	}
@@ -208,9 +216,9 @@ func (tool *NodeDiscoveryTool) resolve(
 	return entry, &snapshot, nil, nil
 }
 
-func (tool *NodeDiscoveryTool) visibleTargets(agentID string) ([]string, string) {
-	policy := tool.defaultPolicy
-	if agentPolicy, exists := tool.agentPolicies[routing.NormalizeAgentID(agentID)]; exists {
+func (access *nodeTargetAccess) visibleTargets(agentID string) ([]string, string) {
+	policy := access.defaultPolicy
+	if agentPolicy, exists := access.agentPolicies[routing.NormalizeAgentID(agentID)]; exists {
 		policy = agentPolicy
 	}
 	if policy == nil {

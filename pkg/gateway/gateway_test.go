@@ -208,12 +208,14 @@ func TestNodeDiscoveryToolTracksNodeEnablementAcrossReload(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
 	runtime := &nodeAdmissionRuntime{}
-	if err := setupNodeDiscoveryTool(cfg, al, runtime); err != nil {
-		t.Fatalf("setupNodeDiscoveryTool() error = %v", err)
+	if err := setupNodeTools(cfg, al, runtime); err != nil {
+		t.Fatalf("setupNodeTools() error = %v", err)
 	}
 	toolsList := al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
-	if !slices.Contains(toolsList, "nodes") {
-		t.Fatalf("registered tools = %#v, want nodes", toolsList)
+	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status"} {
+		if !slices.Contains(toolsList, name) {
+			t.Fatalf("registered tools = %#v, want %s", toolsList, name)
+		}
 	}
 
 	reloadCfg := config.DefaultConfig()
@@ -226,8 +228,10 @@ func TestNodeDiscoveryToolTracksNodeEnablementAcrossReload(t *testing.T) {
 		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
 	}
 	toolsList = al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
-	if slices.Contains(toolsList, "nodes") {
-		t.Fatalf("registered tools = %#v, nodes should be disabled", toolsList)
+	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status"} {
+		if slices.Contains(toolsList, name) {
+			t.Fatalf("registered tools = %#v, %s should be disabled", toolsList, name)
+		}
 	}
 }
 

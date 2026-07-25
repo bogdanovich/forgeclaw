@@ -57,7 +57,14 @@ type GatewayInvocationOwner struct {
 	Target     string
 	AgentID    string
 	SessionID  string
+	ActorID    string
 	ToolCallID string
+}
+
+type GatewayInvocationPrincipal struct {
+	AgentID   string
+	SessionID string
+	ActorID   string
 }
 
 type gatewayInvocationDocument struct {
@@ -184,7 +191,13 @@ func (store *GatewayInvocationStore) Prepare(
 			store.records = previous
 			return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
 		}
-		if sameGatewayToolCall(existing, plan.AgentID, plan.SessionID, record.ToolCallID) {
+		if sameGatewayToolCall(
+			existing,
+			plan.AgentID,
+			plan.SessionID,
+			plan.ActorID,
+			record.ToolCallID,
+		) {
 			if sameGatewayInvocationBinding(existing, record) {
 				if pruned {
 					if err := store.persistMutationLocked(previous); err != nil {
@@ -227,8 +240,7 @@ func (store *GatewayInvocationStore) Prepare(
 }
 
 func (store *GatewayInvocationStore) ByToolCall(
-	agentID string,
-	sessionID string,
+	principal GatewayInvocationPrincipal,
 	toolCallID string,
 ) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
@@ -242,7 +254,13 @@ func (store *GatewayInvocationStore) ByToolCall(
 		return GatewayInvocationRecord{}, false, err
 	}
 	for _, record := range store.records {
-		if sameGatewayToolCall(record, agentID, sessionID, toolCallID) {
+		if sameGatewayToolCall(
+			record,
+			principal.AgentID,
+			principal.SessionID,
+			principal.ActorID,
+			toolCallID,
+		) {
 			return cloneGatewayInvocationRecord(record), true, nil
 		}
 	}
@@ -250,8 +268,7 @@ func (store *GatewayInvocationStore) ByToolCall(
 }
 
 func (store *GatewayInvocationStore) Lookup(
-	agentID string,
-	sessionID string,
+	principal GatewayInvocationPrincipal,
 	invocationID string,
 ) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
@@ -265,7 +282,10 @@ func (store *GatewayInvocationStore) Lookup(
 		return GatewayInvocationRecord{}, false, err
 	}
 	record, found := store.records[invocationID]
-	if !found || record.Plan.AgentID != agentID || record.Plan.SessionID != sessionID {
+	if !found ||
+		record.Plan.AgentID != principal.AgentID ||
+		record.Plan.SessionID != principal.SessionID ||
+		record.Plan.ActorID != principal.ActorID {
 		return GatewayInvocationRecord{}, false, nil
 	}
 	return cloneGatewayInvocationRecord(record), true, nil
@@ -366,6 +386,7 @@ func (store *GatewayInvocationStore) loadLocked() error {
 		toolCallKey := gatewayToolCallKey(
 			record.Plan.AgentID,
 			record.Plan.SessionID,
+			record.Plan.ActorID,
 			record.ToolCallID,
 		)
 		if existing := toolCalls[toolCallKey]; existing != "" {
@@ -504,16 +525,19 @@ func sameGatewayToolCall(
 	record GatewayInvocationRecord,
 	agentID string,
 	sessionID string,
+	actorID string,
 	toolCallID string,
 ) bool {
 	return record.Plan.AgentID == strings.TrimSpace(agentID) &&
 		record.Plan.SessionID == strings.TrimSpace(sessionID) &&
+		record.Plan.ActorID == strings.TrimSpace(actorID) &&
 		record.ToolCallID == strings.TrimSpace(toolCallID)
 }
 
-func gatewayToolCallKey(agentID string, sessionID string, toolCallID string) string {
+func gatewayToolCallKey(agentID string, sessionID string, actorID string, toolCallID string) string {
 	return strings.TrimSpace(agentID) + "\x00" +
 		strings.TrimSpace(sessionID) + "\x00" +
+		strings.TrimSpace(actorID) + "\x00" +
 		strings.TrimSpace(toolCallID)
 }
 
@@ -525,13 +549,15 @@ func sameGatewayInvocationBinding(
 		left.ToolCallID == right.ToolCallID &&
 		left.ExpectedPlanHash == right.ExpectedPlanHash &&
 		left.Plan.AgentID == right.Plan.AgentID &&
-		left.Plan.SessionID == right.Plan.SessionID
+		left.Plan.SessionID == right.Plan.SessionID &&
+		left.Plan.ActorID == right.Plan.ActorID
 }
 
 func (owner GatewayInvocationOwner) validate() error {
 	if !gatewayTargetPattern.MatchString(strings.TrimSpace(owner.Target)) ||
 		!validInvocationIdentifier(strings.TrimSpace(owner.AgentID)) ||
 		!validInvocationIdentifier(strings.TrimSpace(owner.SessionID)) ||
+		!validInvocationIdentifier(strings.TrimSpace(owner.ActorID)) ||
 		len(strings.TrimSpace(owner.ToolCallID)) == 0 ||
 		len(strings.TrimSpace(owner.ToolCallID)) > maxGatewayToolCallIDLength {
 		return fmt.Errorf("%w: malformed gateway invocation owner", ErrInvalidInvocation)
@@ -543,6 +569,7 @@ func (owner GatewayInvocationOwner) matches(record GatewayInvocationRecord) bool
 	return strings.TrimSpace(owner.Target) == record.Target &&
 		strings.TrimSpace(owner.AgentID) == record.Plan.AgentID &&
 		strings.TrimSpace(owner.SessionID) == record.Plan.SessionID &&
+		strings.TrimSpace(owner.ActorID) == record.Plan.ActorID &&
 		strings.TrimSpace(owner.ToolCallID) == record.ToolCallID
 }
 

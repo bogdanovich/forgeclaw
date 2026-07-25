@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -33,12 +34,19 @@ type nodeAdmissionRuntime struct {
 	registryPath string
 	handler      *nodews.AdmissionHandler
 	sessions     *nodews.SessionHub
+	generation   uint64
 	mounted      bool
 }
 
 type nodeDiscoverySource struct {
 	runtime      *nodeAdmissionRuntime
 	registryPath string
+}
+
+type nodeInvocationSource struct {
+	nodeDiscoverySource
+	store      *nodes.GatewayInvocationStore
+	generation uint64
 }
 
 func (source *nodeDiscoverySource) Lookup(
@@ -112,9 +120,10 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	runtime.registry = registry
 	runtime.sessions = sessions
 	runtime.registryPath = registryPath
+	runtime.handler = handler
+	runtime.generation++
 	runtime.mounted = true
 	runtime.registryMu.Unlock()
-	runtime.handler = handler
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
 		"allow_loopback_plaintext": cfg.Nodes.AllowLoopbackPlaintext,
@@ -158,16 +167,42 @@ func (runtime *nodeAdmissionRuntime) currentSessions() *nodews.SessionHub {
 	return runtime.sessions
 }
 
+func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	return runtime.generation
+}
+
+// withInvocationHandler keeps a short local authority operation atomic with
+// generation validation. Callers must not perform network I/O in fn.
+func (runtime *nodeAdmissionRuntime) withInvocationHandler(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+	fn func(*nodews.AdmissionHandler) error,
+) error {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	if !runtime.mounted ||
+		runtime.handler == nil ||
+		runtime.registryPath != expectedRegistryPath ||
+		runtime.generation != expectedGeneration {
+		return errNodeDiscoveryAuthorityUnavailable
+	}
+	return fn(runtime.handler)
+}
+
 func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registryMu.Lock()
 	wasMounted := runtime.mounted
+	handler := runtime.handler
 	runtime.mounted = false
+	runtime.generation++
 	runtime.registryMu.Unlock()
 	if wasMounted {
 		runtime.routes.UnregisterHTTPHandler(nodews.Path)
 	}
-	if runtime.handler != nil {
-		if err := runtime.handler.Close(ctx); err != nil {
+	if handler != nil {
+		if err := handler.Close(ctx); err != nil {
 			return err
 		}
 	}
@@ -175,7 +210,172 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registry = nil
 	runtime.sessions = nil
 	runtime.registryPath = ""
-	runtime.registryMu.Unlock()
 	runtime.handler = nil
+	runtime.registryMu.Unlock()
+	return nil
+}
+
+func (source *nodeInvocationSource) PrepareInvocation(
+	target string,
+	toolCallID string,
+	plan nodes.ExecutionPlan,
+) (nodes.GatewayInvocationRecord, error) {
+	if source == nil || source.store == nil || source.runtime == nil {
+		return nodes.GatewayInvocationRecord{}, errNodeDiscoveryAuthorityUnavailable
+	}
+	var record nodes.GatewayInvocationRecord
+	err := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(*nodews.AdmissionHandler) error {
+			var prepareErr error
+			record, prepareErr = source.store.Prepare(target, toolCallID, plan)
+			return prepareErr
+		},
+	)
+	return record, err
+}
+
+func (source *nodeInvocationSource) LookupInvocationByToolCall(
+	principal nodes.GatewayInvocationPrincipal,
+	toolCallID string,
+) (nodes.GatewayInvocationRecord, bool, error) {
+	if source == nil || source.store == nil || source.runtime == nil {
+		return nodes.GatewayInvocationRecord{}, false, errNodeDiscoveryAuthorityUnavailable
+	}
+	var (
+		record nodes.GatewayInvocationRecord
+		found  bool
+	)
+	err := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(*nodews.AdmissionHandler) error {
+			var lookupErr error
+			record, found, lookupErr = source.store.ByToolCall(principal, toolCallID)
+			return lookupErr
+		},
+	)
+	return record, found, err
+}
+
+func (source *nodeInvocationSource) LookupInvocation(
+	principal nodes.GatewayInvocationPrincipal,
+	invocationID string,
+) (nodes.GatewayInvocationRecord, bool, error) {
+	if source == nil || source.store == nil || source.runtime == nil {
+		return nodes.GatewayInvocationRecord{}, false, errNodeDiscoveryAuthorityUnavailable
+	}
+	var (
+		record nodes.GatewayInvocationRecord
+		found  bool
+	)
+	err := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(*nodews.AdmissionHandler) error {
+			var lookupErr error
+			record, found, lookupErr = source.store.Lookup(principal, invocationID)
+			return lookupErr
+		},
+	)
+	return record, found, err
+}
+
+func (source *nodeInvocationSource) DispatchInvocation(
+	ctx context.Context,
+	owner nodes.GatewayInvocationOwner,
+	invocationID string,
+	expectedPlanHash string,
+) (json.RawMessage, bool, error) {
+	if source == nil || source.store == nil || source.runtime == nil {
+		return nil, false, errNodeDiscoveryAuthorityUnavailable
+	}
+	var (
+		handler *nodews.AdmissionHandler
+		record  nodes.GatewayInvocationRecord
+	)
+	err := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(current *nodews.AdmissionHandler) error {
+			var dispatchErr error
+			record, dispatchErr = source.store.MarkDispatched(
+				owner,
+				invocationID,
+				expectedPlanHash,
+			)
+			if dispatchErr == nil {
+				handler = current
+			}
+			return dispatchErr
+		},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	result, err := handler.Invoke(ctx, record.Plan.NodeID, record.Plan)
+	return result, true, err
+}
+
+func (source *nodeInvocationSource) QueryInvocation(
+	ctx context.Context,
+	principal nodes.GatewayInvocationPrincipal,
+	target string,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, error) {
+	if source == nil || source.store == nil || source.runtime == nil {
+		return nodes.InvocationRecord{}, errNodeDiscoveryAuthorityUnavailable
+	}
+	var (
+		handler *nodews.AdmissionHandler
+		record  nodes.GatewayInvocationRecord
+		found   bool
+	)
+	err := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(current *nodews.AdmissionHandler) error {
+			var lookupErr error
+			record, found, lookupErr = source.store.Lookup(principal, invocationID)
+			if lookupErr == nil {
+				handler = current
+			}
+			return lookupErr
+		},
+	)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if !found ||
+		record.Target != target ||
+		record.Plan.NodeID != nodeID ||
+		record.State != nodes.GatewayInvocationDispatched {
+		return nodes.InvocationRecord{}, nodes.ErrGatewayInvocationConflict
+	}
+	remote, err := handler.Invocation(ctx, nodeID, invocationID)
+	if err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	if err := verifyRemoteInvocation(record, remote); err != nil {
+		return nodes.InvocationRecord{}, err
+	}
+	return remote, nil
+}
+
+func verifyRemoteInvocation(
+	gateway nodes.GatewayInvocationRecord,
+	remote nodes.InvocationRecord,
+) error {
+	if remote.InvocationID != gateway.Plan.InvocationID ||
+		remote.IdempotencyKey != gateway.Plan.IdempotencyKey ||
+		remote.PlanHash != gateway.ExpectedPlanHash ||
+		remote.NodeID != gateway.Plan.NodeID ||
+		remote.CatalogHash != gateway.Plan.CatalogHash ||
+		remote.Command != gateway.Plan.Command ||
+		remote.Risk != gateway.Plan.Risk {
+		return nodes.ErrGatewayInvocationConflict
+	}
 	return nil
 }

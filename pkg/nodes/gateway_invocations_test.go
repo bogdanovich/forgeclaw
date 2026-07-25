@@ -31,7 +31,7 @@ func TestGatewayInvocationStorePersistsPreparedBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, found, err := reloaded.ByToolCall(plan.AgentID, plan.SessionID, "call-1")
+	got, found, err := reloaded.ByToolCall(gatewayTestPrincipal(plan), "call-1")
 	if err != nil || !found || got.ExpectedPlanHash != plan.PlanHash ||
 		got.Plan.InvocationID != plan.InvocationID {
 		t.Fatalf("reloaded record = (%#v, %v, %v)", got, found, err)
@@ -65,8 +65,7 @@ func TestGatewayInvocationStoreReloadsAcrossInstancesBeforeMutation(t *testing.T
 	}
 	for _, plan := range []ExecutionPlan{firstPlan, secondPlan} {
 		if _, found, lookupErr := first.Lookup(
-			plan.AgentID,
-			plan.SessionID,
+			gatewayTestPrincipal(plan),
 			plan.InvocationID,
 		); lookupErr != nil || !found {
 			t.Fatalf("canonical record %q = (%v, %v)", plan.InvocationID, found, lookupErr)
@@ -116,7 +115,8 @@ func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := GatewayInvocationOwner{
-		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID, ToolCallID: "call-1",
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
+		ActorID: plan.ActorID, ToolCallID: "call-1",
 	}
 	wrongOwner := owner
 	wrongOwner.ToolCallID = "call-other"
@@ -140,15 +140,23 @@ func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 	if dispatched.State != GatewayInvocationDispatched || dispatched.DispatchedAt == 0 {
 		t.Fatalf("dispatched record = %#v", dispatched)
 	}
-	if _, found, err := store.Lookup("other", plan.SessionID, plan.InvocationID); err != nil || found {
+	principal := gatewayTestPrincipal(plan)
+	principal.AgentID = "other"
+	if _, found, err := store.Lookup(principal, plan.InvocationID); err != nil || found {
 		t.Fatal("different agent accessed invocation")
 	}
-	if _, found, err := store.Lookup(plan.AgentID, "other", plan.InvocationID); err != nil || found {
+	principal = gatewayTestPrincipal(plan)
+	principal.SessionID = "other"
+	if _, found, err := store.Lookup(principal, plan.InvocationID); err != nil || found {
 		t.Fatal("different session accessed invocation")
 	}
+	principal = gatewayTestPrincipal(plan)
+	principal.ActorID = "other"
+	if _, found, err := store.Lookup(principal, plan.InvocationID); err != nil || found {
+		t.Fatal("different actor accessed invocation")
+	}
 	if _, found, err := store.Lookup(
-		plan.AgentID,
-		plan.SessionID,
+		gatewayTestPrincipal(plan),
 		plan.InvocationID,
 	); err != nil || !found {
 		t.Fatal("invocation owner could not access record")
@@ -164,14 +172,14 @@ func TestGatewayInvocationStoreRejectsExpiredPreparedAuthority(t *testing.T) {
 	}
 	now = now.Add(2 * time.Minute)
 	if _, found, err := store.ByToolCall(
-		plan.AgentID,
-		plan.SessionID,
+		gatewayTestPrincipal(plan),
 		"call-1",
 	); err != nil || found {
 		t.Fatalf("expired ByToolCall() = (%v, %v)", found, err)
 	}
 	owner := GatewayInvocationOwner{
-		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID, ToolCallID: "call-1",
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
+		ActorID: plan.ActorID, ToolCallID: "call-1",
 	}
 	if _, err := store.MarkDispatched(
 		owner,
@@ -196,12 +204,13 @@ func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
 		!fileutil.IsCommittedWriteError(err) {
 		t.Fatalf("Prepare() error = %v", err)
 	}
-	got, found, err := store.ByToolCall(plan.AgentID, plan.SessionID, "call-1")
+	got, found, err := store.ByToolCall(gatewayTestPrincipal(plan), "call-1")
 	if err != nil || !found || got.Plan.InvocationID != plan.InvocationID {
 		t.Fatalf("committed record = (%#v, %v, %v)", got, found, err)
 	}
 	owner := GatewayInvocationOwner{
-		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID, ToolCallID: "call-1",
+		Target: "vpn", AgentID: plan.AgentID, SessionID: plan.SessionID,
+		ActorID: plan.ActorID, ToolCallID: "call-1",
 	}
 	_, dispatchErr := store.MarkDispatched(
 		owner,
@@ -211,7 +220,7 @@ func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
 	if dispatchErr == nil || !fileutil.IsCommittedWriteError(dispatchErr) {
 		t.Fatalf("MarkDispatched() error = %v", dispatchErr)
 	}
-	got, found, err = store.Lookup(plan.AgentID, plan.SessionID, plan.InvocationID)
+	got, found, err = store.Lookup(gatewayTestPrincipal(plan), plan.InvocationID)
 	if err != nil || !found || got.State != GatewayInvocationDispatched {
 		t.Fatalf("committed dispatch = (%#v, %v, %v)", got, found, err)
 	}
@@ -272,7 +281,7 @@ func TestGatewayInvocationStoreLoadPrunesExpiredPreparedAuthority(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, found, lookupErr := store.ByToolCall(plan.AgentID, plan.SessionID, "call-1")
+	_, found, lookupErr := store.ByToolCall(gatewayTestPrincipal(plan), "call-1")
 	if lookupErr != nil || found {
 		t.Fatalf("expired loaded record = (%v, %v)", found, lookupErr)
 	}
@@ -311,4 +320,12 @@ func gatewayTestPlan(
 		t.Fatal(err)
 	}
 	return plan
+}
+
+func gatewayTestPrincipal(plan ExecutionPlan) GatewayInvocationPrincipal {
+	return GatewayInvocationPrincipal{
+		AgentID:   plan.AgentID,
+		SessionID: plan.SessionID,
+		ActorID:   plan.ActorID,
+	}
 }

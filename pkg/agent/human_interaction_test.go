@@ -60,8 +60,9 @@ func (t *approvalCountingTool) Execute(context.Context, map[string]any) *tools.T
 }
 
 type approvalBindingTool struct {
-	executions   int
-	bindingCalls []string
+	executions           int
+	bindingCalls         []string
+	bindingContinuations []bool
 }
 
 func (*approvalBindingTool) Name() string { return "approval_binding" }
@@ -81,6 +82,10 @@ func (t *approvalBindingTool) ApprovalArguments(
 	_ map[string]any,
 ) (map[string]any, error) {
 	t.bindingCalls = append(t.bindingCalls, tools.ToolCallID(ctx))
+	t.bindingContinuations = append(
+		t.bindingContinuations,
+		tools.ToolApprovalContinuation(ctx),
+	)
 	return map[string]any{"plan_hash": "prepared-plan-hash"}, nil
 }
 
@@ -991,6 +996,11 @@ func TestDurableHumanApprovalBindsTrustedPreparedArguments(t *testing.T) {
 		tool.bindingCalls[0] != "call-prepared" ||
 		tool.bindingCalls[1] != "call-prepared" {
 		t.Fatalf("approval binding calls = %#v", tool.bindingCalls)
+	}
+	if len(tool.bindingContinuations) != 2 ||
+		tool.bindingContinuations[0] ||
+		!tool.bindingContinuations[1] {
+		t.Fatalf("approval continuation markers = %#v", tool.bindingContinuations)
 	}
 }
 

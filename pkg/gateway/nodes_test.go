@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -141,6 +142,78 @@ func TestNodeDiscoverySourceBindsWorkspaceAuthority(t *testing.T) {
 		errNodeDiscoveryAuthorityUnavailable,
 	) {
 		t.Fatalf("inactive authority lookup error = %v", lookupErr)
+	}
+}
+
+func TestNodeInvocationSourceRejectsStaleRuntimeGeneration(t *testing.T) {
+	routes := &fakeNodeAdmissionRoutes{}
+	runtime := &nodeAdmissionRuntime{routes: routes}
+	cfg := config.DefaultConfig()
+	cfg.Nodes.Enabled = true
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := nodes.NewGatewayInvocationStore(
+		nodes.GatewayInvocationStorePath(cfg.WorkspacePath()),
+		8,
+		1024*1024,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &nodeInvocationSource{
+		nodeDiscoverySource: nodeDiscoverySource{
+			runtime: runtime, registryPath: runtime.registryPath,
+		},
+		store: store, generation: runtime.invocationGeneration(),
+	}
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.PrepareInvocation(
+		"build",
+		"call_1",
+		nodes.ExecutionPlan{},
+	); !errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
+		t.Fatalf("stale prepare error = %v", err)
+	}
+	if _, dispatched, err := source.DispatchInvocation(
+		context.Background(),
+		nodes.GatewayInvocationOwner{},
+		"inv_1",
+		"plan_1",
+	); !errors.Is(err, errNodeDiscoveryAuthorityUnavailable) || dispatched {
+		t.Fatalf("stale dispatch = (dispatched %v, error %v)", dispatched, err)
+	}
+}
+
+func TestVerifyRemoteInvocationRejectsAuthorityMismatch(t *testing.T) {
+	gateway := nodes.GatewayInvocationRecord{
+		ExpectedPlanHash: "plan-1",
+		Plan: nodes.ExecutionPlan{
+			InvocationRequest: nodes.InvocationRequest{
+				InvocationID: "inv-1", IdempotencyKey: "idem-1",
+				NodeID: "node-1", CatalogHash: "catalog-1",
+				Command: "system.exec.v1",
+			},
+			Risk: nodes.RiskWrite,
+		},
+	}
+	remote := nodes.InvocationRecord{
+		InvocationID: "inv-1", IdempotencyKey: "idem-1",
+		PlanHash: "plan-1", NodeID: "node-1", CatalogHash: "catalog-1",
+		Command: "system.exec.v1", Risk: nodes.RiskWrite,
+	}
+	if err := verifyRemoteInvocation(gateway, remote); err != nil {
+		t.Fatalf("matching remote invocation = %v", err)
+	}
+	remote.PlanHash = "different-plan"
+	if err := verifyRemoteInvocation(gateway, remote); !errors.Is(
+		err,
+		nodes.ErrGatewayInvocationConflict,
+	) {
+		t.Fatalf("mismatched remote invocation error = %v", err)
 	}
 }
 

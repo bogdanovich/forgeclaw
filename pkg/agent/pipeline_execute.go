@@ -495,6 +495,7 @@ toolLoop:
 		)
 		execCtx = tools.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
 		execCtx = tools.WithToolCallID(execCtx, tc.ID)
+		execCtx = tools.WithToolApprovalContinuation(execCtx, ts.opts.ApprovalGrant != nil)
 
 		if p.Interaction.Hooks != nil || ts.opts.ApprovalGrant != nil {
 			approval := ApprovalDecision{Approved: true}

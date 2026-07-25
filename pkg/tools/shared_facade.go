@@ -109,6 +109,10 @@ func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
 	return toolshared.WithToolCallID(ctx, toolCallID)
 }
 
+func WithToolApprovalContinuation(ctx context.Context, resumed bool) context.Context {
+	return toolshared.WithToolApprovalContinuation(ctx, resumed)
+}
+
 func ToolChannel(ctx context.Context) string {
 	return toolshared.ToolChannel(ctx)
 }
@@ -163,6 +167,10 @@ func ToolSessionKey(ctx context.Context) string {
 
 func ToolCallID(ctx context.Context) string {
 	return toolshared.ToolCallID(ctx)
+}
+
+func ToolApprovalContinuation(ctx context.Context) bool {
+	return toolshared.ToolApprovalContinuation(ctx)
 }
 
 func ToolRouteSessionKey(ctx context.Context) string {

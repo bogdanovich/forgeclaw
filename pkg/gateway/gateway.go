@@ -505,7 +505,7 @@ func setupDeployTool(cfg *config.Config, agentLoop *agent.AgentLoop) error {
 	})
 }
 
-func setupNodeDiscoveryTool(
+func setupNodeTools(
 	cfg *config.Config,
 	agentLoop *agent.AgentLoop,
 	runtime *nodeAdmissionRuntime,
@@ -513,7 +513,7 @@ func setupNodeDiscoveryTool(
 	if runtime == nil {
 		return nil
 	}
-	return agentLoop.RegisterRuntimeTool("nodes", func(reloadCfg *config.Config) (tools.Tool, error) {
+	if err := agentLoop.RegisterRuntimeTool("nodes", func(reloadCfg *config.Config) (tools.Tool, error) {
 		if reloadCfg == nil || !reloadCfg.Nodes.Enabled {
 			return nil, nil
 		}
@@ -521,7 +521,57 @@ func setupNodeDiscoveryTool(
 			runtime:      runtime,
 			registryPath: nodes.RegistryPath(reloadCfg.WorkspacePath()),
 		}), nil
-	})
+	}); err != nil {
+		return err
+	}
+	if err := agentLoop.RegisterRuntimeTool(
+		"nodes_invoke",
+		func(reloadCfg *config.Config) (tools.Tool, error) {
+			source, err := newNodeInvocationSource(reloadCfg, runtime)
+			if err != nil || source == nil {
+				return nil, err
+			}
+			return tools.NewNodeInvokeTool(reloadCfg, source), nil
+		},
+	); err != nil {
+		return err
+	}
+	return agentLoop.RegisterRuntimeTool(
+		"nodes_status",
+		func(reloadCfg *config.Config) (tools.Tool, error) {
+			source, err := newNodeInvocationSource(reloadCfg, runtime)
+			if err != nil || source == nil {
+				return nil, err
+			}
+			return tools.NewNodeStatusTool(reloadCfg, source), nil
+		},
+	)
+}
+
+func newNodeInvocationSource(
+	cfg *config.Config,
+	runtime *nodeAdmissionRuntime,
+) (*nodeInvocationSource, error) {
+	if cfg == nil || !cfg.Nodes.Enabled {
+		return nil, nil
+	}
+	workspace := cfg.WorkspacePath()
+	store, err := nodes.NewGatewayInvocationStore(
+		nodes.GatewayInvocationStorePath(workspace),
+		nodes.DefaultGatewayInvocationLimit,
+		nodes.DefaultGatewayInvocationStoreBytes,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open gateway node invocation store: %w", err)
+	}
+	return &nodeInvocationSource{
+		nodeDiscoverySource: nodeDiscoverySource{
+			runtime:      runtime,
+			registryPath: nodes.RegistryPath(workspace),
+		},
+		store:      store,
+		generation: runtime.invocationGeneration(),
+	}, nil
 }
 
 func newGatewayRestartToolFromConfig(
@@ -693,8 +743,8 @@ func setupAndStartServices(
 	if err != nil {
 		return nil, fmt.Errorf("error setting up node admission: %w", err)
 	}
-	if err = setupNodeDiscoveryTool(cfg, agentLoop, runningServices.NodeAdmission); err != nil {
-		return nil, fmt.Errorf("error setting up node discovery tool: %w", err)
+	if err = setupNodeTools(cfg, agentLoop, runningServices.NodeAdmission); err != nil {
+		return nil, fmt.Errorf("error setting up node tools: %w", err)
 	}
 
 	// Capture durable work before channel ingress starts, then replay the exact
@@ -948,8 +998,8 @@ func restartServices(
 	if err != nil {
 		return fmt.Errorf("error reloading node admission: %w", err)
 	}
-	if err = setupNodeDiscoveryTool(cfg, al, runningServices.NodeAdmission); err != nil {
-		return fmt.Errorf("error reloading node discovery tool: %w", err)
+	if err = setupNodeTools(cfg, al, runningServices.NodeAdmission); err != nil {
+		return fmt.Errorf("error reloading node tools: %w", err)
 	}
 	fmt.Println("  ✓ Channels restarted.")
 
