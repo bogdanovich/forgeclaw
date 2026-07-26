@@ -838,18 +838,15 @@ surface before its policy and node-side enforcement exist.
 
 ## Later Work
 
-- SSH bootstrap for installing a companion and a direct static SSH target
-  driver for hosts that cannot run one.
-- Docker execution on a connected node.
-- Bounded artifact upload and download.
-- Durable background jobs and streamed PTY sessions.
-- Browser proxy and node-hosted MCP capability descriptors.
-- Windows service and process adapters.
-- iOS and Android companions with camera, location, notification, and voice
-  capabilities.
-- Constrained camera or appliance nodes with a reduced command catalog.
-- Experimental OpenClaw protocol adapter pinned to an explicitly supported
-  protocol version.
+Post-MVP capability work is ordered and bounded in the
+[Node Companion Post-MVP Roadmap](node-companion-roadmap.md). Its first
+priority is typed file transfer, gateway artifacts, and explicitly configured
+administrator filesystem profiles. Later milestones cover service
+administration, fleet operations, additional executors, SSH, interactive
+capabilities, platforms, and compatibility adapters.
+
+The roadmap is not part of the MVP definition above and does not authorize
+implementation without a fresh milestone decision.
 
 ## Risks and Mitigations
 
