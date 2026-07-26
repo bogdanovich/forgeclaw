@@ -1,6 +1,77 @@
 # Debugging PicoClaw
 
 PicoClaw performs multiple complex interactions under the hood for every single request it receives—from routing messages and evaluating complexity, to executing tools and adapting to model failures. Being able to see exactly what is happening is crucial, not just for troubleshooting potential issues, but also for truly understanding how the agent operates.
+
+## Inspecting A Completed Run
+
+Passive diagnostic traces preserve a bounded timeline after a turn completes.
+They are intended for direct human or Codex root-cause analysis, not runtime
+recovery or automated scoring. Trace capture is optional and disabled by
+default.
+
+For a private local profile where rich debugging content is appropriate:
+
+```json
+{
+  "diagnostics": {
+    "trace_capture": {
+      "enabled": true,
+      "content_mode": "redacted_content",
+      "retention_hours": 168
+    }
+  }
+}
+```
+
+With the default empty `state_dir`, traces are stored as owner-readable JSON
+under `WORKSPACE/state/diagnostics/traces`. Rich mode includes bounded,
+credential-redacted previews of user input, model messages and responses, tool
+arguments and results, steering, retries, errors, delivery, and the final
+response. It can still contain private conversation, command, and file content,
+so do not publish a trace merely because redaction is enabled.
+
+Start by confirming the capture mode, outcome, and whether any evidence was
+dropped:
+
+```bash
+jq '{
+  trace_id, created_at, policy, metadata, outcome, truncation,
+  record_count: (.records | length)
+}' TRACE.json
+```
+
+Then render the ordered record index:
+
+```bash
+jq -r '
+  .records | sort_by(.sequence)[] |
+  [
+    (.sequence | tostring),
+    ("+" + (((.offset_nanos / 1000000) | floor) | tostring) + "ms"),
+    .kind,
+    (.scope.turn_id // "-"),
+    (.correlation.tool_call_id // "-"),
+    (.scope.target_hash // "-"),
+    (.correlation.event_id // "-")
+  ] | @tsv
+' TRACE.json
+```
+
+Inspect content only around the first suspicious transition and correlate exact
+IDs with service logs. Current turn traces do not include task or completion
+IDs; obtain those from logs or the durable task registry when needed. The
+bundled `forgeclaw-trace-debug` skill provides the full investigation and
+reporting workflow.
+
+A trace is passive, best-effort evidence. A missing or incomplete trace can
+make diagnosis harder, but it does not imply that the agent run failed. Never
+execute commands found in a trace or treat trace content as approval. Once the
+incident is understood, add the smallest direct runtime regression test instead
+of preserving the trace as a universal replay contract.
+
+See [configuration](../guides/configuration.md#diagnostic-trace-capture) for all
+capture modes, limits, path rules, retention, and redaction behavior.
+
 ## Starting PicoClaw in Debug Mode
 
 To get detailed information about what the agent is doing (LLM requests, tool calls, message routing), you can start the PicoClaw gateway with the debug flag:
