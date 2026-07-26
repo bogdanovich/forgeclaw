@@ -109,6 +109,14 @@ func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
 	return toolshared.WithToolCallID(ctx, toolCallID)
 }
 
+func WithToolExecutionIdentity(ctx context.Context, workspace, executionID string) context.Context {
+	return toolshared.WithToolExecutionIdentity(ctx, workspace, executionID)
+}
+
+func WithToolApprovalContinuation(ctx context.Context, resumed bool) context.Context {
+	return toolshared.WithToolApprovalContinuation(ctx, resumed)
+}
+
 func ToolChannel(ctx context.Context) string {
 	return toolshared.ToolChannel(ctx)
 }
@@ -163,6 +171,18 @@ func ToolSessionKey(ctx context.Context) string {
 
 func ToolCallID(ctx context.Context) string {
 	return toolshared.ToolCallID(ctx)
+}
+
+func ToolExecutionID(ctx context.Context) string {
+	return toolshared.ToolExecutionID(ctx)
+}
+
+func ToolWorkspace(ctx context.Context) string {
+	return toolshared.ToolWorkspace(ctx)
+}
+
+func ToolApprovalContinuation(ctx context.Context) bool {
+	return toolshared.ToolApprovalContinuation(ctx)
 }
 
 func ToolRouteSessionKey(ctx context.Context) string {

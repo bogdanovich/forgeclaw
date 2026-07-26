@@ -60,8 +60,11 @@ func (t *approvalCountingTool) Execute(context.Context, map[string]any) *tools.T
 }
 
 type approvalBindingTool struct {
-	executions   int
-	bindingCalls []string
+	executions           int
+	bindingCalls         []string
+	bindingContinuations []bool
+	executionIDs         []string
+	workspaces           []string
 }
 
 func (*approvalBindingTool) Name() string { return "approval_binding" }
@@ -81,6 +84,12 @@ func (t *approvalBindingTool) ApprovalArguments(
 	_ map[string]any,
 ) (map[string]any, error) {
 	t.bindingCalls = append(t.bindingCalls, tools.ToolCallID(ctx))
+	t.bindingContinuations = append(
+		t.bindingContinuations,
+		tools.ToolApprovalContinuation(ctx),
+	)
+	t.executionIDs = append(t.executionIDs, tools.ToolExecutionID(ctx))
+	t.workspaces = append(t.workspaces, tools.ToolWorkspace(ctx))
 	return map[string]any{"plan_hash": "prepared-plan-hash"}, nil
 }
 
@@ -991,6 +1000,25 @@ func TestDurableHumanApprovalBindsTrustedPreparedArguments(t *testing.T) {
 		tool.bindingCalls[0] != "call-prepared" ||
 		tool.bindingCalls[1] != "call-prepared" {
 		t.Fatalf("approval binding calls = %#v", tool.bindingCalls)
+	}
+	if len(tool.bindingContinuations) != 2 ||
+		tool.bindingContinuations[0] ||
+		!tool.bindingContinuations[1] {
+		t.Fatalf("approval continuation markers = %#v", tool.bindingContinuations)
+	}
+	if len(tool.executionIDs) != 2 ||
+		tool.executionIDs[0] != record.Origin.TurnID ||
+		tool.executionIDs[1] != record.Origin.TurnID {
+		t.Fatalf(
+			"approval execution identities = %#v, origin = %q",
+			tool.executionIDs,
+			record.Origin.TurnID,
+		)
+	}
+	if len(tool.workspaces) != 2 ||
+		tool.workspaces[0] != agent.Workspace ||
+		tool.workspaces[1] != agent.Workspace {
+		t.Fatalf("approval workspaces = %#v", tool.workspaces)
 	}
 }
 
