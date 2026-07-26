@@ -198,6 +198,42 @@ func TestStripBotMentionPreservesUnicodeAroundEntity(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_BotMentionSurvivesCollectedUnicodeTrimming(t *testing.T) {
+	ch, messageBus := newGroupMentionOnlyChannel(t, "testbot")
+	leadingWhitespace := "\u2003"
+	text := leadingWhitespace + "@testbot /answer 13ccbf94 yes\u2003"
+	message := &telego.Message{
+		Text: text,
+		Entities: []telego.MessageEntity{{
+			Type:   telego.EntityTypeMention,
+			Offset: len(utf16.Encode([]rune(leadingWhitespace))),
+			Length: len("@testbot"),
+		}},
+		MessageID: 43,
+		Chat: telego.Chat{
+			ID:   123,
+			Type: "group",
+		},
+		From: &telego.User{
+			ID:        7,
+			FirstName: "Alice",
+		},
+	}
+
+	if err := ch.handleMessage(t.Context(), message); err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+	select {
+	case inbound := <-messageBus.InboundChan():
+		want := "/answer 13ccbf94 yes"
+		if inbound.Content != want {
+			t.Fatalf("inbound.Content = %q, want %q", inbound.Content, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for trimmed answer command")
+	}
+}
+
 func TestIsBotMentioned_MentionEntityUnaffected(t *testing.T) {
 	ch, _ := newGroupMentionOnlyChannel(t, "testbot")
 

@@ -2401,7 +2401,8 @@ func (c *TelegramChannel) stripBotMention(message *telego.Message, content strin
 		return content
 	}
 	source, entities := telegramEntityTextAndList(message)
-	if source == "" || !strings.HasPrefix(content, source) {
+	collectedSource := strings.TrimSpace(source)
+	if collectedSource == "" || !strings.HasPrefix(content, collectedSource) {
 		return content
 	}
 	type entityRemoval struct {
@@ -2446,14 +2447,15 @@ func (c *TelegramChannel) stripBotMention(message *telego.Message, content strin
 	slices.SortFunc(removals, func(left, right entityRemoval) int {
 		return right.start - left.start
 	})
-	contentRunes := []rune(content)
 	for _, removal := range removals {
-		if removal.start < 0 || removal.end > len(contentRunes) || removal.start > removal.end {
+		if removal.start < 0 || removal.end > len(sourceRunes) || removal.start > removal.end {
 			continue
 		}
-		contentRunes = append(contentRunes[:removal.start], contentRunes[removal.end:]...)
+		sourceRunes = append(sourceRunes[:removal.start], sourceRunes[removal.end:]...)
 	}
-	return strings.TrimSpace(string(contentRunes))
+	normalizedSource := strings.TrimSpace(string(sourceRunes))
+	remainder := strings.TrimPrefix(content, collectedSource)
+	return strings.TrimSpace(normalizedSource + remainder)
 }
 
 // BeginStream implements channels.StreamingCapable.
