@@ -74,11 +74,14 @@ type channelWorker struct {
 // channelSlot abstraction can wrap this with lifecycle/visibility state for
 // safe reload swaps.
 type deliveryOwner struct {
-	name   string
-	ch     Channel
-	worker *channelWorker
-	mu     sync.Mutex
-	closed bool
+	name             string
+	ch               Channel
+	worker           *channelWorker
+	mu               sync.Mutex
+	closed           bool
+	closedCh         chan struct{}
+	enqueueWG        sync.WaitGroup
+	inflightEnqueues int
 }
 
 type Manager struct {
@@ -2017,9 +2020,10 @@ func newChannelWorker(name string, ch Channel, channelType string) *channelWorke
 
 func newDeliveryOwner(name string, ch Channel, channelType string) *deliveryOwner {
 	return &deliveryOwner{
-		name:   name,
-		ch:     ch,
-		worker: newChannelWorker(name, ch, channelType),
+		name:     name,
+		ch:       ch,
+		worker:   newChannelWorker(name, ch, channelType),
+		closedCh: make(chan struct{}),
 	}
 }
 
@@ -2027,7 +2031,7 @@ func deliveryOwnerFromWorker(name string, ch Channel, w *channelWorker) *deliver
 	if ch == nil || w == nil {
 		return nil
 	}
-	return &deliveryOwner{name: name, ch: ch, worker: w}
+	return &deliveryOwner{name: name, ch: ch, worker: w, closedCh: make(chan struct{})}
 }
 
 func (o *deliveryOwner) Worker() *channelWorker {
@@ -2061,16 +2065,19 @@ func (o *deliveryOwner) Enqueue(ctx context.Context, msg bus.OutboundMessage) (b
 	if o == nil || o.worker == nil {
 		return false, errDeliveryClosed
 	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.closed {
+	closedCh, ok := o.beginEnqueue()
+	if !ok {
 		return false, errDeliveryClosed
 	}
+	defer o.finishEnqueue()
+
 	select {
 	case o.worker.queue <- msg:
 		return true, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
+	case <-closedCh:
+		return false, errDeliveryClosed
 	}
 }
 
@@ -2081,17 +2088,41 @@ func (o *deliveryOwner) EnqueueMedia(
 	if o == nil || o.worker == nil {
 		return false, errDeliveryClosed
 	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.closed {
+	closedCh, ok := o.beginEnqueue()
+	if !ok {
 		return false, errDeliveryClosed
 	}
+	defer o.finishEnqueue()
+
 	select {
 	case o.worker.mediaQueue <- msg:
 		return true, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
+	case <-closedCh:
+		return false, errDeliveryClosed
 	}
+}
+
+func (o *deliveryOwner) beginEnqueue() (<-chan struct{}, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil, false
+	}
+	if o.closedCh == nil {
+		o.closedCh = make(chan struct{})
+	}
+	o.enqueueWG.Add(1)
+	o.inflightEnqueues++
+	return o.closedCh, true
+}
+
+func (o *deliveryOwner) finishEnqueue() {
+	o.mu.Lock()
+	o.inflightEnqueues--
+	o.mu.Unlock()
+	o.enqueueWG.Done()
 }
 
 func (o *deliveryOwner) CloseDeliveryAndWait() {
@@ -2113,9 +2144,15 @@ func (o *deliveryOwner) closeAdmission() {
 		return
 	}
 	o.closed = true
+	if o.closedCh == nil {
+		o.closedCh = make(chan struct{})
+	}
+	close(o.closedCh)
+	o.mu.Unlock()
+
+	o.enqueueWG.Wait()
 	close(o.worker.queue)
 	close(o.worker.mediaQueue)
-	o.mu.Unlock()
 }
 
 // runWorker processes outbound messages for a single channel.

@@ -45,8 +45,8 @@ First boundary completed:
   dedicated owners embedded in `Manager` for compatibility.
 - TTL eviction is implemented and tested by those owners instead of duplicated
   in manager tests.
-- Worker cancellation closes queue admission before a single pending-outcome
-  drain.
+- Queue admission uses a close signal and in-flight barrier so cancellation can
+  wake blocked enqueuers before a single pending-outcome drain.
 
 Remaining:
 

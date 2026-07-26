@@ -815,6 +815,103 @@ func TestDeliveryOwner_CloseDeliveryDrainsAndRejectsNewWork(t *testing.T) {
 	}
 }
 
+func TestDeliveryOwner_CloseAdmissionWakesBlockedTextEnqueue(t *testing.T) {
+	owner := newDeliveryOwner("test", &mockChannel{}, "test")
+	owner.worker.queue = make(chan bus.OutboundMessage, 1)
+	owner.worker.queue <- testOutboundMessage(bus.OutboundMessage{Content: "fills queue"})
+
+	result := make(chan error, 1)
+	go func() {
+		queued, err := owner.Enqueue(
+			context.Background(),
+			testOutboundMessage(bus.OutboundMessage{Content: "blocked"}),
+		)
+		if queued {
+			result <- errors.New("blocked enqueue unexpectedly succeeded")
+			return
+		}
+		result <- err
+	}()
+	waitForInflightEnqueues(t, owner, 1)
+
+	closed := make(chan struct{})
+	go func() {
+		owner.closeAdmission()
+		close(closed)
+	}()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, errDeliveryClosed) {
+			t.Fatalf("blocked Enqueue() err=%v, want errDeliveryClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked Enqueue did not wake when admission closed")
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("closeAdmission deadlocked behind blocked text enqueue")
+	}
+}
+
+func TestDeliveryOwner_CloseAdmissionWakesBlockedMediaEnqueue(t *testing.T) {
+	owner := newDeliveryOwner("test", &mockChannel{}, "test")
+	owner.worker.mediaQueue = make(chan bus.OutboundMediaMessage, 1)
+	owner.worker.mediaQueue <- testOutboundMediaMessage(bus.OutboundMediaMessage{})
+
+	result := make(chan error, 1)
+	go func() {
+		queued, err := owner.EnqueueMedia(
+			context.Background(),
+			testOutboundMediaMessage(bus.OutboundMediaMessage{}),
+		)
+		if queued {
+			result <- errors.New("blocked media enqueue unexpectedly succeeded")
+			return
+		}
+		result <- err
+	}()
+	waitForInflightEnqueues(t, owner, 1)
+
+	closed := make(chan struct{})
+	go func() {
+		owner.closeAdmission()
+		close(closed)
+	}()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, errDeliveryClosed) {
+			t.Fatalf("blocked EnqueueMedia() err=%v, want errDeliveryClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked EnqueueMedia did not wake when admission closed")
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("closeAdmission deadlocked behind blocked media enqueue")
+	}
+}
+
+func waitForInflightEnqueues(t *testing.T, owner *deliveryOwner, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		owner.mu.Lock()
+		got := owner.inflightEnqueues
+		owner.mu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("in-flight enqueues = %d, want %d", got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestDeliveryOwner_CloseDeliveryAndWaitIsWaitIdempotent(t *testing.T) {
 	sendStarted := make(chan struct{})
 	proceedSend := make(chan struct{})
