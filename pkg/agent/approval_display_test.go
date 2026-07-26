@@ -7,20 +7,17 @@ import (
 	"github.com/sipeed/picoclaw/pkg/interactions"
 )
 
-func TestRenderApprovalActionUsesRuntimeToolAndTrustedSummary(t *testing.T) {
-	action, err := renderApprovalAction(
+func TestValidateApprovalDisplayAcceptsRuntimeToolAndTrustedSummary(t *testing.T) {
+	err := validateApprovalDisplay(
 		"deploy",
 		"Deploy the current release to production",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if action != "Tool: deploy\nAction: Deploy the current release to production" {
-		t.Fatalf("renderApprovalAction() = %q", action)
-	}
 }
 
-func TestRenderApprovalActionRejectsMalformedPresentation(t *testing.T) {
+func TestValidateApprovalDisplayRejectsMalformedPresentation(t *testing.T) {
 	tests := []struct {
 		name    string
 		tool    string
@@ -39,8 +36,8 @@ func TestRenderApprovalActionRejectsMalformedPresentation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if action, err := renderApprovalAction(test.tool, test.summary); err == nil {
-				t.Fatalf("renderApprovalAction() = %q, want error", action)
+			if err := validateApprovalDisplay(test.tool, test.summary); err == nil {
+				t.Fatal("validateApprovalDisplay() succeeded, want error")
 			}
 		})
 	}

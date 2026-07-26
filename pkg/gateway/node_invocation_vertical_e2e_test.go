@@ -219,8 +219,11 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		t.Fatalf("suspended approval response = %q, want empty", response)
 	}
 	approvalPrompt := channel.nextMessage(t)
-	if !strings.Contains(approvalPrompt.Content, "Approval needed") ||
-		!strings.Contains(approvalPrompt.Content, "nodes_invoke") ||
+	if !strings.Contains(approvalPrompt.Content, "nodes_invoke") ||
+		!strings.Contains(approvalPrompt.Content, "Run an operator-approved command on target build") ||
+		!strings.Contains(approvalPrompt.Content, "allow_once") ||
+		!strings.Contains(approvalPrompt.Content, "deny") ||
+		strings.Contains(approvalPrompt.Content, "Approval needed") ||
 		strings.Contains(approvalPrompt.Content, commandDir) ||
 		strings.Contains(approvalPrompt.Content, "node-e2e-ok") {
 		t.Fatalf("approval prompt = %#v", approvalPrompt)

@@ -352,35 +352,58 @@ func interactionDeliveryKey(interactionID, kind string) string {
 func renderInteractionPrompt(record interactions.Record) string {
 	var builder strings.Builder
 	if record.Kind == interactions.KindApproval {
-		fmt.Fprintf(&builder, "Approval needed [%s]\n\n", record.ShortID)
-		builder.WriteString("Requested action:\n")
+		builder.WriteString(strings.TrimSpace(record.Origin.ToolName))
+		builder.WriteString("\n")
 		builder.WriteString(strings.TrimSpace(record.ApprovalAction))
 		fmt.Fprintf(
 			&builder,
-			"\n\nReply `allow_once` to authorize this exact tool call once, or `deny`. You can also use `/answer %s <decision>`.",
+			"\n\n`/answer %s allow_once`\n`/answer %s deny`",
+			record.ShortID,
 			record.ShortID,
 		)
 		return builder.String()
 	}
-	fmt.Fprintf(&builder, "Input needed [%s]\n", record.ShortID)
-	for index, question := range record.Questions {
-		fmt.Fprintf(&builder, "\n%d. [%s] ", index+1, question.ID)
-		if question.Header != "" {
-			fmt.Fprintf(&builder, "%s: ", question.Header)
-		}
-		builder.WriteString(question.Question)
-		for _, option := range question.Options {
-			fmt.Fprintf(&builder, "\n   - %s: %s", option.Label, option.Description)
-		}
-	}
 	if len(record.Questions) == 1 {
-		fmt.Fprintf(&builder, "\n\nReply with your answer or `/answer %s <answer>`.", record.ShortID)
-	} else {
-		fmt.Fprintf(
-			&builder,
-			"\n\nReply with one `question_id: answer` line per question, or prefix it with `/answer %s`.",
-			record.ShortID,
-		)
+		renderSingleInteractionQuestion(&builder, record.Questions[0])
+		fmt.Fprintf(&builder, "\n\n`/answer %s …`", record.ShortID)
+		return builder.String()
+	}
+	for index, question := range record.Questions {
+		if index > 0 {
+			builder.WriteString("\n\n")
+		}
+		fmt.Fprintf(&builder, "%d. `%s`", index+1, question.ID)
+		if question.Header != "" {
+			fmt.Fprintf(&builder, " %s", question.Header)
+		}
+		builder.WriteString("\n")
+		builder.WriteString(question.Question)
+		renderInteractionOptions(&builder, question.Options)
+	}
+	fmt.Fprintf(&builder, "\n\n`/answer %s`", record.ShortID)
+	for _, question := range record.Questions {
+		fmt.Fprintf(&builder, "\n`%s: …`", question.ID)
 	}
 	return builder.String()
+}
+
+func renderSingleInteractionQuestion(builder *strings.Builder, question interactions.Question) {
+	if question.Header != "" {
+		builder.WriteString(question.Header)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString(question.Question)
+	renderInteractionOptions(builder, question.Options)
+}
+
+func renderInteractionOptions(builder *strings.Builder, options []interactions.Option) {
+	if len(options) > 0 {
+		builder.WriteString("\n")
+	}
+	for _, option := range options {
+		fmt.Fprintf(builder, "\n• %s", option.Label)
+		if option.Description != "" {
+			fmt.Fprintf(builder, " — %s", option.Description)
+		}
+	}
 }

@@ -579,7 +579,7 @@ toolLoop:
 					)
 				}
 				if hashErr == nil {
-					approvalAction, displayErr := renderApprovalAction(
+					displayErr := validateApprovalDisplay(
 						toolName,
 						approval.ActionSummary,
 					)
@@ -597,7 +597,7 @@ toolLoop:
 								Timeout: time.Duration(approval.TimeoutSeconds) * time.Second,
 							}},
 							argumentHash,
-							approvalAction,
+							approval.ActionSummary,
 						)
 						if suspended {
 							return control

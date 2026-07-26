@@ -1,12 +1,47 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/interactions"
 	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
+
+func TestRequestUserInputToolGuidesConversationLanguagePresentation(t *testing.T) {
+	tool, err := NewRequestUserInputTool(RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatalf("NewRequestUserInputTool() error = %v", err)
+	}
+	description := tool.Description()
+	for _, want := range []string{
+		"same language and general style as the conversation",
+		"self-contained",
+		"enough context for the user to answer directly",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("Description() missing %q: %s", want, description)
+		}
+	}
+	questions := tool.Parameters()["properties"].(map[string]any)["questions"].(map[string]any)
+	items := questions["items"].(map[string]any)
+	properties := items["properties"].(map[string]any)
+	for _, field := range []string{"header", "question"} {
+		fieldDescription := properties[field].(map[string]any)["description"].(string)
+		if !strings.Contains(fieldDescription, "conversation's language and style") {
+			t.Fatalf("%s description does not assign language ownership: %s", field, fieldDescription)
+		}
+	}
+	options := properties["options"].(map[string]any)["items"].(map[string]any)
+	optionProperties := options["properties"].(map[string]any)
+	for _, field := range []string{"label", "description"} {
+		fieldDescription := optionProperties[field].(map[string]any)["description"].(string)
+		if !strings.Contains(fieldDescription, "conversation's language and style") {
+			t.Fatalf("option %s description does not assign language ownership: %s", field, fieldDescription)
+		}
+	}
+}
 
 func TestRequestUserInputToolReturnsTypedSuspension(t *testing.T) {
 	tool, err := NewRequestUserInputTool(RequestUserInputToolOptions{})

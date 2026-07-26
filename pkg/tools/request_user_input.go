@@ -53,7 +53,12 @@ func NewRequestUserInputTool(options RequestUserInputToolOptions) (*RequestUserI
 func (t *RequestUserInputTool) Name() string { return "request_user_input" }
 
 func (t *RequestUserInputTool) Description() string {
-	return "Pause the current task and ask the user one to three short questions when their input is required to continue safely or choose between meaningful alternatives. Do not use this for optional confirmation or information that can be discovered with available tools."
+	return "Pause the current task and ask the user one to three short questions when their input is required " +
+		"to continue safely or choose between meaningful alternatives. Write every user-facing question, header, " +
+		"option label, and option description in the same language and general style as the conversation. Make each " +
+		"question self-contained and include enough context for the user to answer directly, without an additional " +
+		"runtime explanation. Do not use this for optional confirmation or information that can be discovered with " +
+		"available tools."
 }
 
 func (t *RequestUserInputTool) Parameters() map[string]any {
@@ -75,11 +80,12 @@ func (t *RequestUserInputTool) Parameters() map[string]any {
 						},
 						"header": map[string]any{
 							"type":        "string",
-							"description": "Optional short label of at most 12 characters.",
+							"description": "Optional user-facing label of at most 12 characters, in the conversation's language and style.",
 						},
 						"question": map[string]any{
-							"type":        "string",
-							"description": "A concise question whose answer materially unblocks the task.",
+							"type": "string",
+							"description": "A self-contained user-facing question in the conversation's language and style, " +
+								"with enough context to answer directly.",
 						},
 						"options": map[string]any{
 							"type":     "array",
@@ -91,11 +97,12 @@ func (t *RequestUserInputTool) Parameters() map[string]any {
 								"properties": map[string]any{
 									"label": map[string]any{
 										"type":        "string",
-										"description": "Short user-facing choice label.",
+										"description": "Short user-facing choice label in the conversation's language and style.",
 									},
 									"description": map[string]any{
-										"type":        "string",
-										"description": "One sentence describing the choice's impact or tradeoff.",
+										"type": "string",
+										"description": "One user-facing sentence in the conversation's language and style " +
+											"describing the choice's impact or tradeoff.",
 									},
 								},
 								"required": []string{"label", "description"},
