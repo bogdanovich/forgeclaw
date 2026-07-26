@@ -41,6 +41,8 @@ Every post-MVP capability follows these rules:
    narrow authority but cannot broaden the node's configured policy.
 3. **Capabilities stay typed.** File transfer, service administration,
    updates, browser control, and hardware access do not become shell strings.
+   An admitted owner shell is its own explicit capability, not the hidden
+   implementation of every other capability.
 4. **Placement and isolation remain separate.** Selecting a node does not imply
    a root account, container, sandbox, or unrestricted filesystem.
 5. **Uncertain mutations are not replayed.** A disconnect after a commit or
@@ -56,21 +58,165 @@ Every post-MVP capability follows these rules:
    including filesystem root `/`, for a specifically authenticated actor and
    target.
 
+## Operating Modes
+
+The companion supports two deliberate operating modes over the same pairing,
+target, invocation, recovery, and audit foundations:
+
+- **Owner-control mode** is for an operator's own server. An out-of-band
+  configuration may authorize a specific actor, agent, and target to use an
+  arbitrary shell as a configured OS user, including UID 0, and to open an
+  interactive PTY. This is intentionally equivalent in authority to giving
+  that identity SSH access as the configured user. It is disabled by default
+  and cannot be enabled or broadened by a model argument or chat claim.
+- **Delegated/product mode** is for shared, customer, production, or
+  least-privilege deployments. It uses typed commands, unprivileged service
+  accounts, narrow privileged helpers, allowlists, and human approval where
+  appropriate.
+
+Owner-control mode does not replace typed capabilities. Typed operations remain
+easier to validate, approve, retry, audit, and expose safely to constrained
+agents. Conversely, typed capabilities must not make personal server ownership
+unnecessarily awkward. Policy profiles select the intended trust model without
+weakening the delegated default.
+
 ## Priority Overview
 
 | Priority | Milestone | Operator outcome | Depends on |
 | --- | --- | --- | --- |
-| P0 | File transfer and administrator filesystem access | Send files to a node, retrieve files and images, and manage explicitly authorized paths | Deployed execution MVP |
-| P1 | Typed service administration | Inspect logs/status and perform allowlisted service actions without a root shell | Privileged helper boundary proven by P0 |
-| P2 | Fleet operations and companion updates | Diagnose, version, update, and roll back companion instances safely | Stable node lifecycle and artifacts |
-| P3 | Additional executors and long-running work | Run contained builds/jobs without confusing placement with isolation | Stable invocation and artifact contracts |
-| P4 | Bootstrap and alternative transports | Enroll hosts through SSH and support bounded static SSH targets | Stable target-driver contract |
-| P5 | Interactive and application capabilities | Add PTY, browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
-| P6 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
+| P0 | Owner-controlled shell and terminal | Operate a personal server through ordinary shell commands and an interactive PTY, including explicit root profiles | Deployed execution MVP |
+| P1 | File transfer and administrator filesystem access | Send files to a node, retrieve files and images, and manage explicitly authorized paths | Owner profiles and deployed execution MVP |
+| P2 | Typed service administration | Inspect logs/status and perform allowlisted service actions without broad shell authority | Privileged helper boundary proven by P1 |
+| P3 | Fleet operations and companion updates | Diagnose, version, update, and roll back companion instances safely | Stable node lifecycle and artifacts |
+| P4 | Additional executors and long-running work | Run contained builds/jobs without confusing placement with isolation | Stable invocation and artifact contracts |
+| P5 | Bootstrap and alternative transports | Enroll hosts through SSH and support bounded static SSH targets | Stable target-driver contract |
+| P6 | Interactive application capabilities | Add browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
+| P7 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
 
 Priorities express ordering, not a commitment to implement every milestone.
 
-## P0: File Transfer And Administrator Filesystem Access
+## P0: Owner-Controlled Shell And Interactive Terminal
+
+### Operator outcome
+
+After installing a companion on a personal VPS, an explicitly authorized owner
+can:
+
+- run an ordinary shell command or pasted shell snippet as a configured OS
+  user, including root;
+- use familiar pipelines, redirects, expansions, conditionals, and scripts;
+- open an interactive PTY, send input and signals, resize it, and close it;
+- choose through operator configuration whether authorization is required for
+  every command, once per terminal session, or not at runtime.
+
+This milestone is about full ownership of a deliberately selected node. It
+does not claim that arbitrary root shell access is safe for untrusted agents.
+
+### Separate execution surfaces
+
+The existing `system.exec.v1` remains direct argv execution without shell
+parsing. It is the preferred primitive for typed and constrained automation.
+Shell behavior must not be smuggled through it with an implicit `sh -c`.
+
+Non-interactive shell execution uses a separate typed command such as
+`shell.exec.v1`. Its input is a command or bounded script evaluated by an
+operator-selected shell profile, so pipes, redirects, globbing, variables, and
+the syntax commonly shown in operating guides behave normally.
+
+Interactive terminal access uses a session protocol rather than synchronous
+`system.exec.v1` semantics. Its minimum operations are open, input, resize,
+signal, status, and close. Terminal sessions bind to stable session IDs and the
+same authenticated actor, agent, routed session, target, and policy profile
+that opened them.
+
+### Owner profiles and authority
+
+An operator-defined shell profile selects:
+
+- the shell executable and login or non-login behavior;
+- OS user and group, including an explicit UID 0 profile;
+- fixed and permitted environment, `PATH`, working roots, and initial
+  directory;
+- timeout, idle lifetime, maximum lifetime, output and concurrency limits;
+- executor and network policy;
+- approval mode such as each command, session start, or none.
+
+The exact schema belongs in the milestone architecture PR. The model may select
+only an alias already granted by target policy. It cannot supply a shell path,
+UID, root flag, environment-policy override, approval mode, or helper endpoint.
+Broad authority and approval-free operation are valid only when deliberately
+written into operator-owned configuration.
+
+### Security truth
+
+Parsing or scanning arbitrary shell text is not a security boundary. A root
+shell can read credentials, replace binaries and policy, alter audit sources,
+open network connections, and permanently change the host. Owner-control mode
+is therefore equivalent in impact to remote root SSH.
+
+The meaningful boundaries are authenticated pairing, actor and route binding,
+target policy, the selected out-of-band profile, node-local enforcement, and
+OS authority. The default profile remains disabled. Delegated agents never
+inherit owner authority merely because an owner used it elsewhere.
+
+The companion should remain unprivileged where practical, with a separately
+authenticated session broker providing the configured OS authority. However,
+an arbitrary root-shell broker is itself broad root authority, not a narrow
+helper. The architecture PR must compare that design with an explicitly
+root-run companion profile and choose based on attack surface, isolation, and
+operational simplicity rather than presenting either as harmless.
+
+### Terminal and durability semantics
+
+PTY transport must define terminal-byte framing, backpressure, resize,
+signals, process-tree containment, idle and maximum duration, output limits,
+and disconnect behavior. It must also prevent terminal control sequences from
+corrupting operator UI or ordinary logs.
+
+A non-interactive invocation follows existing durable execution identity and
+unknown-outcome rules. It is never replayed after the dispatch boundary.
+Interactive input is ordered within one live session and is not replayed after
+an ambiguous disconnect. The first release may terminate a terminal on
+disconnect; detached and reconnectable sessions require an explicit later
+contract rather than accidental persistence.
+
+Audit records contain identity, profile, lifecycle, timing, and bounded result
+metadata. Raw commands, terminal input, output, environment, and transcripts
+are excluded by default. Any transcript retention is a separate encrypted,
+opt-in policy with explicit retention and access controls.
+
+### Suggested delivery sequence
+
+1. Land an owner-mode threat model, shell and PTY contracts, profile schema,
+   approval choices, redaction, lifecycle, and explicit non-goals.
+2. Add non-interactive `shell.exec.v1` over the existing invocation path with
+   no hidden replay and a real-process test.
+3. Add authenticated terminal session streaming with input ordering,
+   backpressure, resize, signal, disconnect, and process-containment tests.
+4. Add and deploy the selected Linux root authority profile or broker, while
+   preserving disabled defaults and unprivileged delegated profiles.
+5. Expose focused model and operator UX and prove the complete flow on a real
+   VPS for both an authorized owner and a denied actor.
+
+### Completion evidence
+
+P0 is complete only when:
+
+- a configured owner profile can prove UID 0, while an unconfigured actor,
+  agent, route, target, or profile is denied;
+- normal shell snippets with pipelines, redirects, variables, and failure
+  status behave consistently;
+- PTY input, resize, signals, exit, timeout, and disconnect behavior are
+  deterministic and tested without timing-only assertions;
+- neither a completed nor an uncertain shell mutation has an automatic replay
+  path;
+- audit events expose lifecycle metadata without raw command, environment,
+  terminal content, or credentials;
+- owner approval policy is configured out of band and cannot be relaxed by the
+  model;
+- delegated/product profiles and fresh installations remain deny-by-default.
+
+## P1: File Transfer And Administrator Filesystem Access
 
 ### Operator outcome
 
@@ -197,7 +343,7 @@ node-local enforcement exist.
 
 ### Completion evidence
 
-P0 is complete only when:
+P1 is complete only when:
 
 - a text config and a binary image round-trip with matching digests;
 - overwrite and no-overwrite publication behave atomically;
@@ -211,7 +357,7 @@ P0 is complete only when:
   bytes or credentials;
 - the deployed default remains deny-all until an operator selects a profile.
 
-## P1: Typed Service Administration
+## P2: Typed Service Administration
 
 Add typed commands for:
 
@@ -225,14 +371,14 @@ bounded logs do not imply mutation authority. Mutating actions bind approval to
 the exact node, service, action, policy revision, and expiry.
 
 The privileged helper may reuse its authenticated request envelope and peer
-validation from P0, but service handlers remain separate from file handlers.
+validation from P1, but service handlers remain separate from file handlers.
 The helper never accepts a shell command or arbitrary system-manager flags.
 
 Completion requires Linux systemd coverage, explicit macOS launchd scope, real
 post-action verification, bounded logs, cancellation/unknown semantics, and
 one deployed operator use case.
 
-## P2: Fleet Operations And Companion Updates
+## P3: Fleet Operations And Companion Updates
 
 Improve operations only after multiple deployed companions justify it:
 
@@ -249,7 +395,7 @@ An update channel is separate from command execution and file transfer.
 Downloaded binaries require release-signature verification and cannot be
 authorized solely by a model-generated URL or digest.
 
-## P3: Additional Executors And Long-Running Work
+## P4: Additional Executors And Long-Running Work
 
 Add isolation and durable work as independent capabilities:
 
@@ -265,7 +411,7 @@ Target selection continues to answer *where* work runs; executor selection
 answers *how* it is isolated. A node target never silently changes a command
 from local execution to Docker or vice versa.
 
-## P4: Bootstrap And Alternative Transports
+## P5: Bootstrap And Alternative Transports
 
 ### SSH bootstrap
 
@@ -288,11 +434,10 @@ results, and audit, while honestly reporting weaker guarantees: no live
 catalog, durable remote ledger, or reconnect recovery unless a narrow remote
 helper is present.
 
-## P5: Interactive And Application Capabilities
+## P6: Interactive Application Capabilities
 
 Admit capabilities independently, each with its own policy and threat model:
 
-- streamed PTY sessions with explicit interactive authorization;
 - browser navigation, snapshot, screenshot, and download commands;
 - node-hosted MCP tool catalogs with bounded descriptor approval;
 - camera, microphone, location, notification, and sensor commands;
@@ -300,9 +445,9 @@ Admit capabilities independently, each with its own policy and threat model:
 - application-specific adapters that do not expose a general shell.
 
 Interactive sessions must not reuse synchronous `system.exec.v1` semantics.
-Media output uses the artifact contract established by P0.
+Media output uses the artifact contract established by P1.
 
-## P6: Platforms And Compatibility
+## P7: Platforms And Compatibility
 
 Potential later targets include:
 
@@ -348,10 +493,15 @@ After implementation:
   status;
 - using `system.exec.v1` argv, environment variables, shell text, or base64
   JSON as file transfer;
-- running the complete companion as root when a narrow helper suffices;
-- a general remote root shell;
+- enabling owner or root profiles by default;
+- allowing a model, tool argument, or chat claim to create or broaden an owner
+  profile;
+- presenting shell-text scanning as a sandbox for arbitrary commands;
+- exposing owner-control profiles to delegated or product agents;
+- running the complete companion as root by default when a better-isolated
+  broker or narrow helper suffices;
 - automatic synchronization of gateway and node filesystems;
 - implementing all platform and compatibility work before a demonstrated use
   case;
-- treating this roadmap as a release schedule or standing authorization for
-  broad automatic approval.
+- treating this roadmap as a release schedule or as authorization to enable
+  owner mode or broad automatic approval on any deployed profile.

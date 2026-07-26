@@ -840,10 +840,12 @@ surface before its policy and node-side enforcement exist.
 
 Post-MVP capability work is ordered and bounded in the
 [Node Companion Post-MVP Roadmap](node-companion-roadmap.md). Its first
-priority is typed file transfer, gateway artifacts, and explicitly configured
-administrator filesystem profiles. Later milestones cover service
-administration, fleet operations, additional executors, SSH, interactive
-capabilities, platforms, and compatibility adapters.
+priority is an explicit owner-control mode with non-interactive shell and
+interactive PTY access, including deliberately configured root profiles for a
+personal server. Later milestones cover typed file transfer and administrator
+filesystem access, service administration, fleet operations, additional
+executors, SSH, interactive application capabilities, platforms, and
+compatibility adapters.
 
 The roadmap is not part of the MVP definition above and does not authorize
 implementation without a fresh milestone decision.
@@ -852,7 +854,7 @@ implementation without a fresh milestone decision.
 
 | Risk | Mitigation |
 | --- | --- |
-| Agent gains broad server control | Dedicated user, named targets, node-local policy, typed privileged actions |
+| Agent gains unintended broad server control | Owner mode disabled by default; out-of-band owner profiles; dedicated users, named targets, node-local policy, and typed privileged actions for delegated profiles |
 | Gateway compromise controls nodes | Node-side final enforcement, revocable pairing, narrow command surface |
 | Prompt injection targets production | Agent-to-node ACL, human approval, no arbitrary target parameters |
 | Duplicate mutation after disconnect | Acceptance ledger, idempotency binding, unknown outcome instead of retry |
@@ -866,8 +868,8 @@ implementation without a fresh milestone decision.
 
 - Whether pairing state belongs in the existing durable interaction registry or
   a dedicated device registry with interaction records only for human prompts.
-- Whether MVP execution should permit an explicitly configured shell command
-  family or only argv-based execution.
+- The exact post-MVP owner-shell profile, broker, approval, and PTY contract;
+  MVP execution remains argv-based.
 - Whether service status/log commands are required for MVP completion or the
   immediately following milestone.
 - Whether companion updates are manual in version 1 or use a separately signed
