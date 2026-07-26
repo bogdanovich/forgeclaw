@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -180,20 +181,22 @@ func (s Store) safeRoot() (string, error) {
 }
 
 func canonicalizePlatformTempAlias(path string) string {
-	tempRoot, err := filepath.Abs(os.TempDir())
-	if err != nil {
+	if runtime.GOOS != "darwin" {
 		return path
 	}
-	tempRoot = filepath.Clean(tempRoot)
-	canonicalTempRoot, err := filepath.EvalSymlinks(tempRoot)
-	if err != nil || canonicalTempRoot == tempRoot {
+	const (
+		darwinVarAlias = "/var"
+		darwinVarRoot  = "/private/var"
+	)
+	resolvedAlias, err := filepath.EvalSymlinks(darwinVarAlias)
+	if err != nil || filepath.Clean(resolvedAlias) != darwinVarRoot {
 		return path
 	}
-	relative, err := filepath.Rel(tempRoot, path)
+	relative, err := filepath.Rel(darwinVarAlias, path)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return path
 	}
-	return filepath.Join(canonicalTempRoot, relative)
+	return filepath.Join(darwinVarRoot, relative)
 }
 
 func rejectSymlinkPath(path string) error {

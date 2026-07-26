@@ -289,6 +289,21 @@ func TestStoreRoundTripPermissionsPruneAndSymlinkDenial(t *testing.T) {
 	if _, err := (Store{Root: filepath.Join(linkedParent, "traces")}).Save(first); err == nil {
 		t.Fatal("expected parent symlink store rejection")
 	}
+
+	tempTarget := t.TempDir()
+	tempAlias := filepath.Join(t.TempDir(), "tmp-link")
+	if err := os.Symlink(tempTarget, tempAlias); err != nil {
+		t.Skipf("create temporary directory symlink: %v", err)
+	}
+	t.Setenv("TMPDIR", tempAlias)
+	t.Setenv("TMP", tempAlias)
+	t.Setenv("TEMP", tempAlias)
+	if filepath.Clean(os.TempDir()) != filepath.Clean(tempAlias) {
+		t.Skip("platform does not select temporary directories from TMPDIR, TMP, or TEMP")
+	}
+	if _, err := (Store{Root: filepath.Join(os.TempDir(), "traces")}).Save(first); err == nil {
+		t.Fatal("expected environment-controlled temp symlink rejection")
+	}
 }
 
 func TestStoreLoadClassifiesInvalidStoredContentAsCorrupt(t *testing.T) {
