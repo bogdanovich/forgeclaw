@@ -17,6 +17,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/nodes"
 )
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
@@ -204,20 +205,27 @@ func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 	}
 }
 
-func TestNodeDiscoveryToolTracksNodeEnablementAcrossReload(t *testing.T) {
+func TestNodeToolsTrackNodeEnablementAcrossReload(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
 	cfg.Agents.Defaults.ContextManager = "none"
 	cfg.Nodes.Enabled = true
 	msgBus := bus.NewMessageBus()
 	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
-	runtime := &nodeAdmissionRuntime{}
-	if err := setupNodeDiscoveryTool(cfg, al, runtime); err != nil {
-		t.Fatalf("setupNodeDiscoveryTool() error = %v", err)
+	runtime := &nodeAdmissionRuntime{
+		registryPath: nodes.RegistryPath(cfg.WorkspacePath()),
+		handler:      &fakeNodeAdmissionHandler{},
+		generation:   1,
+		mounted:      true,
+	}
+	if err := setupNodeTools(cfg, al, runtime); err != nil {
+		t.Fatalf("setupNodeTools() error = %v", err)
 	}
 	toolsList := al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
-	if !slices.Contains(toolsList, "nodes") {
-		t.Fatalf("registered tools = %#v, want nodes", toolsList)
+	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status"} {
+		if !slices.Contains(toolsList, name) {
+			t.Fatalf("registered tools = %#v, want %s", toolsList, name)
+		}
 	}
 
 	reloadCfg := config.DefaultConfig()
@@ -231,8 +239,10 @@ func TestNodeDiscoveryToolTracksNodeEnablementAcrossReload(t *testing.T) {
 		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
 	}
 	toolsList = al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
-	if slices.Contains(toolsList, "nodes") {
-		t.Fatalf("registered tools = %#v, nodes should be disabled", toolsList)
+	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status"} {
+		if slices.Contains(toolsList, name) {
+			t.Fatalf("registered tools = %#v, %s should be disabled", toolsList, name)
+		}
 	}
 }
 
