@@ -1,5 +1,10 @@
 # Interaction Replay Redesign
 
+> **Superseded:** PR #339 is closed. ForgeClaw will not implement durable
+> interaction trace projection. See
+> [Passive Diagnostics](passive-diagnostics.md) for the removal plan and
+> non-authoritative tracing boundary.
+
 ## Status
 
 This document replaces the delivery approach attempted in draft PR #272. That
