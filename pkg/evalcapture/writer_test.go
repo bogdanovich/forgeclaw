@@ -165,6 +165,53 @@ func TestWriterCloseInterruptsRetryDelay(t *testing.T) {
 	}
 }
 
+func TestWriterCloseStopsRetryBeforePublishingQueuedDrops(t *testing.T) {
+	store := &fakeStorage{saveFailures: 10}
+	retrying := make(chan struct{}, 1)
+	dropping := make(chan struct{})
+	releaseDrop := make(chan struct{})
+	writer := NewWriter(Options{
+		Capacity: 1, MaxAttempts: 10, RetryDelay: 20 * time.Millisecond,
+		StorageFactory: func(Policy) Storage { return store },
+		EventSink: func(event Event) {
+			switch {
+			case event.Kind == EventRetrying:
+				select {
+				case retrying <- struct{}{}:
+				default:
+				}
+			case event.Kind == EventDropped && event.TraceID == "trace-queued":
+				close(dropping)
+				<-releaseDrop
+			}
+		},
+	})
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-retry")); err != nil {
+		t.Fatal(err)
+	}
+	<-retrying
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-queued")); err != nil {
+		t.Fatal(err)
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		writer.Close()
+		close(closed)
+	}()
+	<-dropping
+	time.Sleep(50 * time.Millisecond)
+	store.mu.Lock()
+	remainingFailures := store.saveFailures
+	store.mu.Unlock()
+	if remainingFailures != 9 {
+		t.Fatalf("Save retried after shutdown began; remaining failures = %d", remainingFailures)
+	}
+	close(releaseDrop)
+	<-closed
+	waitDone(t, writer)
+}
+
 func TestWriterSnapshotsTraceWithoutHoldingRuntime(t *testing.T) {
 	store := newBlockingStorage()
 	writer := NewWriter(Options{

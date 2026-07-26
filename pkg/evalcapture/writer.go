@@ -261,10 +261,10 @@ func (w *Writer) Close() {
 	w.queue = nil
 	w.mu.Unlock()
 
+	w.stopOnce.Do(func() { close(w.stop) })
 	for _, item := range dropped {
 		_ = w.drop(item.trace.TraceID, ReasonShutdown, nil)
 	}
-	w.stopOnce.Do(func() { close(w.stop) })
 	w.signal()
 }
 
@@ -379,7 +379,7 @@ func (w *Writer) waitRetry() bool {
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-		return true
+		return !w.stopped()
 	case <-w.stop:
 		return false
 	}
