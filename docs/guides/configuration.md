@@ -148,9 +148,8 @@ treated as read-only no progress. Current audited read-only tools are
 
 ### Evaluation Trace Capture
 
-The `evaluation.trace_capture` block controls bounded replay/evaluation trace
-recording. Capture is disabled by default and enabling evaluation commands does
-not enable recording.
+The `evaluation.trace_capture` block controls bounded diagnostic trace
+recording. Capture is disabled by default.
 
 ```json
 {
@@ -172,7 +171,7 @@ not enable recording.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Explicitly enables production trace capture. Evaluation commands do not enable recording. |
+| `enabled` | `false` | Explicitly enables production diagnostic trace capture. |
 | `content_mode` | `metadata_only` | `metadata_only` stores safe counts, statuses, hashes, and IDs. `redacted_content` permits explicitly allowlisted filtered content. Runtime configuration never accepts fixture mode. |
 | `state_dir` | `""` | Optional trace directory. Empty selects the workspace evaluation state directory. |
 | `max_trace_bytes` | `2097152` | Soft serialized size limit for one trace. Compiled hard ceilings still apply. |
@@ -185,8 +184,8 @@ not enable recording.
 Trace files use owner-only permissions and atomic writes. Raw runtime-event
 payloads, arbitrary attributes, credentials, provider options, and unrestricted
 errors are not valid capture inputs. See
-[`../architecture/replay-evaluation.md`](../architecture/replay-evaluation.md)
-for the security and replay-isolation contract.
+[`../architecture/passive-diagnostics.md`](../architecture/passive-diagnostics.md)
+for the passive capture and security boundary.
 
 ### Task Registry Retention
 
@@ -217,16 +216,10 @@ removed by retention. A registry may therefore remain above the byte limit; at
 startup PicoClaw logs a warning that only protected records remain. Zero or
 omitted values use the built-in defaults.
 
-See [`replay-evaluation.md`](replay-evaluation.md) for trace evaluation,
-fixture validation, CLI output, and scenario safety.
-For a task-oriented introduction, see the
-[`Replay and Evaluation: Practical Overview`](replay-evaluation-overview.md).
-
 When `state_dir` is empty, traces are written under
 `WORKSPACE/state/evaluation/traces`. Relative custom paths are resolved from the
 workspace; absolute paths are used directly with a `traces` child directory.
-Root turns and long-lived tasks receive separate linked traces so async task
-completion does not keep a turn recorder open indefinitely.
+Completed turns produce bounded traces for direct diagnostic inspection.
 
 ### Request Context Policy
 
