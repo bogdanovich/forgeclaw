@@ -171,7 +171,7 @@ recording. Capture is disabled by default.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Explicitly enables production diagnostic trace capture. |
-| `content_mode` | `metadata_only` | `metadata_only` stores safe counts, statuses, hashes, and IDs. `redacted_content` permits explicitly allowlisted filtered content. |
+| `content_mode` | `metadata_only` | `metadata_only` stores counts, statuses, hashes, and IDs without content previews. `redacted_content` additionally stores bounded, credential-redacted previews. |
 | `state_dir` | `""` | Optional trace directory. Empty selects the workspace diagnostics state directory. |
 | `max_trace_bytes` | `2097152` | Soft serialized size limit for one trace. Compiled hard ceilings still apply. |
 | `max_records` | `2000` | Maximum normalized records per trace. |
@@ -179,9 +179,20 @@ recording. Capture is disabled by default.
 | `retention_hours` | `24` | Default trace retention period. |
 | `max_traces` | `100` | Maximum retained traces per workspace. |
 
-Trace files use owner-only permissions and atomic writes. Raw runtime-event
-payloads, arbitrary attributes, credentials, provider options, and unrestricted
-errors are not valid capture inputs. See
+Rich previews cover the user input and final response, model request messages,
+model response text and reasoning, model-requested tool calls, tool arguments
+and results, steering, retry and runtime errors, and delivery errors. Each
+preview is bounded before it enters the trace. Secret-key fields, configured
+credentials, authorization values, private keys, common token formats, data
+URLs, and credential-bearing URLs are redacted. Provider-only integrity data
+such as thought signatures is not captured.
+
+Trace files use owner-only permissions and atomic writes. Redaction reduces
+credential exposure but does not make rich traces suitable for sharing: they
+can contain conversation, workspace, command, and file content. Use
+`redacted_content` only where that local diagnostic detail is intended. Raw
+runtime-event payloads, arbitrary attributes, provider options, and unbounded
+errors are not copied into traces. See
 [`../architecture/passive-diagnostics.md`](../architecture/passive-diagnostics.md)
 for the passive capture and security boundary.
 

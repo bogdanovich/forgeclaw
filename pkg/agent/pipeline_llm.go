@@ -141,13 +141,14 @@ func (p *Pipeline) CallLLM(
 		runtimeevents.KindAgentLLMRequest,
 		ts.eventMeta("runTurn", "turn.llm.request"),
 		LLMRequestPayload{
-			Provider:      primaryCandidateProvider(exec.model.activeCandidates),
-			Model:         exec.llmModel,
-			PromptHash:    safeJSONHash(traceCaptureSettingsFromConfig(p.Cfg), exec.callMessages),
-			MessagesCount: len(exec.callMessages),
-			ToolsCount:    len(exec.providerToolDefs),
-			MaxTokens:     ts.agent.MaxTokens,
-			Temperature:   ts.agent.Temperature,
+			Provider:           primaryCandidateProvider(exec.model.activeCandidates),
+			Model:              exec.llmModel,
+			PromptHash:         safeJSONHash(traceCaptureSettingsFromConfig(p.Cfg), exec.callMessages),
+			MessagesCount:      len(exec.callMessages),
+			ToolsCount:         len(exec.providerToolDefs),
+			MaxTokens:          ts.agent.MaxTokens,
+			Temperature:        ts.agent.Temperature,
+			DiagnosticMessages: diagnosticMessagesPreview(p.Cfg, exec.callMessages),
 		},
 	)
 
@@ -636,6 +637,15 @@ func (p *Pipeline) CallLLM(
 			PromptTokens:     usagePromptTokens(exec.response.Usage),
 			CompletionTokens: usageCompletionTokens(exec.response.Usage),
 			TotalTokens:      usageTotalTokens(exec.response.Usage),
+			DiagnosticContent: diagnosticTextPreview(
+				p.Cfg, exec.response.Content, diagnosticModelResponseBytes,
+			),
+			DiagnosticReasoning: diagnosticTextPreview(
+				p.Cfg,
+				firstNonEmptyString(exec.response.ReasoningContent, exec.response.Reasoning),
+				diagnosticModelReasoningBytes,
+			),
+			DiagnosticToolCalls: diagnosticToolCallsPreview(p.Cfg, exec.response.ToolCalls),
 		},
 	)
 

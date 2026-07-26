@@ -124,7 +124,7 @@ func traceCaptureSettingsFromConfig(cfg *config.Config) traceCaptureSettings {
 		}),
 		retention: time.Duration(capture.RetentionHours) * time.Hour,
 		maxTraces: capture.MaxTraces,
-		filter:    cfg.FilterSensitiveData,
+		filter:    cfg.SensitiveDataReplacer().Replace,
 	}
 }
 
@@ -415,6 +415,9 @@ func runtimeEventRecord(
 		payload = diagnostictrace.TurnPayload{
 			InputHash: safeHash(settings, value.UserMessage),
 			InputLen:  len(value.UserMessage),
+			InputPreview: captureTextPreview(
+				settings, value.UserMessage, diagnosticTurnInputBytes,
+			),
 		}
 		critical = true
 	case runtimeevents.KindAgentTurnEnd:
@@ -428,6 +431,9 @@ func runtimeEventRecord(
 			FinalHash:  safeHash(settings, value.FinalContent),
 			FinalLen:   value.FinalContentLen,
 			Iterations: value.Iterations,
+			FinalPreview: captureTextPreview(
+				settings, value.FinalContent, diagnosticTurnFinalBytes,
+			),
 		}
 		critical = true
 	case runtimeevents.KindAgentLLMRequest:
@@ -442,6 +448,9 @@ func runtimeEventRecord(
 			PromptHash: value.PromptHash,
 			Messages:   value.MessagesCount,
 			Tools:      value.ToolsCount,
+			MessagesPreview: captureTextPreview(
+				settings, value.DiagnosticMessages, diagnosticModelMessagesBytes,
+			),
 		}
 	case runtimeevents.KindAgentLLMResponse:
 		value, ok := event.Payload.(LLMResponsePayload)
@@ -454,6 +463,15 @@ func runtimeEventRecord(
 			ResponseHash:   value.ResponseHash,
 			PromptTokens:   value.PromptTokens,
 			ResponseTokens: value.CompletionTokens,
+			ResponsePreview: captureTextPreview(
+				settings, value.DiagnosticContent, diagnosticModelResponseBytes,
+			),
+			ReasoningPreview: captureTextPreview(
+				settings, value.DiagnosticReasoning, diagnosticModelReasoningBytes,
+			),
+			ToolCallsPreview: captureTextPreview(
+				settings, value.DiagnosticToolCalls, diagnosticModelToolCallsBytes,
+			),
 		}
 	case runtimeevents.KindAgentLLMRetry:
 		value, ok := event.Payload.(LLMRetryPayload)
@@ -466,6 +484,9 @@ func runtimeEventRecord(
 			Status:    "retry",
 			Reason:    value.Reason,
 			ErrorCode: value.Reason,
+			ErrorPreview: captureTextPreview(
+				settings, value.Error, diagnosticErrorBytes,
+			),
 		}
 	case runtimeevents.KindAgentLLMFallbackAttempt:
 		value, ok := event.Payload.(LLMFallbackAttemptPayload)
@@ -494,6 +515,9 @@ func runtimeEventRecord(
 			ArgsHash: safeJSONHash(settings, value.Arguments),
 			Status:   "started",
 			Executed: true,
+			ArgumentsPreview: captureJSONPreview(
+				settings, value.Arguments, diagnosticToolArgumentsBytes,
+			),
 		}
 		toolCallID = value.ToolCallID
 	case runtimeevents.KindAgentToolExecEnd:
@@ -508,6 +532,9 @@ func runtimeEventRecord(
 			Status:     "completed",
 			Executed:   true,
 			IsError:    value.IsError,
+			ResultPreview: captureTextPreview(
+				settings, value.DiagnosticResult, diagnosticToolResultBytes,
+			),
 		}
 		toolCallID = value.ToolCallID
 	case runtimeevents.KindAgentToolExecSkipped:
@@ -570,6 +597,9 @@ func runtimeEventRecord(
 			MessageHash: value.MessageHash,
 			ContentLen:  value.ContentLen,
 			QueueDepth:  value.QueueDepth,
+			ContentPreview: captureTextPreview(
+				settings, value.DiagnosticContent, diagnosticSteeringBytes,
+			),
 		}
 	case runtimeevents.KindAgentContextCompress, runtimeevents.KindAgentSessionSummarize:
 		kind = diagnostictrace.RecordContextCompaction
@@ -627,6 +657,9 @@ func runtimeEventRecord(
 			ContentLen: value.ContentLen,
 			Attempt:    value.Retries,
 			ErrorCode:  deliveryErrorCode(value.Error),
+			ErrorPreview: captureTextPreview(
+				settings, value.Error, diagnosticErrorBytes,
+			),
 		}
 	case runtimeevents.KindAgentAsyncCompletion:
 		value, ok := event.Payload.(AsyncCompletionPayload)
@@ -641,6 +674,19 @@ func runtimeEventRecord(
 			WillParent: value.WillParent,
 			ContentLen: value.ContentLen,
 		}
+	case runtimeevents.KindAgentError:
+		value, ok := event.Payload.(ErrorPayload)
+		if !ok {
+			return diagnostictrace.Record{}, false, false
+		}
+		kind = diagnostictrace.RecordRuntimeError
+		payload = diagnostictrace.RuntimeErrorPayload{
+			Stage: safeCode(value.Stage),
+			MessagePreview: captureTextPreview(
+				settings, value.Message, diagnosticErrorBytes,
+			),
+		}
+		critical = true
 	default:
 		return diagnostictrace.Record{}, false, false
 	}
@@ -786,6 +832,24 @@ func safeJSONHash(settings traceCaptureSettings, value any) string {
 		return ""
 	}
 	return safeHash(settings, string(data))
+}
+
+func captureTextPreview(settings traceCaptureSettings, value string, maxBytes int) string {
+	if settings.contentMode != diagnostictrace.ContentRedacted || strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return diagnostictrace.Redactor{
+		Filter: settings.filter,
+	}.RedactText(value, maxBytes)
+}
+
+func captureJSONPreview(settings traceCaptureSettings, value any, maxBytes int) string {
+	if settings.contentMode != diagnostictrace.ContentRedacted || value == nil {
+		return ""
+	}
+	return diagnostictrace.Redactor{
+		Filter: settings.filter,
+	}.RedactJSON(value, maxBytes)
 }
 
 func opaqueTraceID(kind, id string, created time.Time) string {

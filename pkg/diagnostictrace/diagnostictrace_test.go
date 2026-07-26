@@ -3,12 +3,20 @@ package diagnostictrace
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+type panicJSONValue struct{}
+
+func (panicJSONValue) MarshalJSON() ([]byte, error) {
+	panic("must not invoke custom marshaler")
+}
 
 func TestFinalizeCanonicalizesOrdersAndDigests(t *testing.T) {
 	created := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
@@ -114,53 +122,114 @@ func TestValidateContentPolicy(t *testing.T) {
 	}
 }
 
-func TestRedactorIsAllowlistedAndDoesNotSerializeSecrets(t *testing.T) {
-	secret := "sk-super-secret-value"
+func TestRedactJSONRecursesFiltersCredentialsAndBoundsUTF8(t *testing.T) {
+	knownSecret := "workspace-config-secret"
+	privateKey := "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-material\n-----END OPENSSH PRIVATE KEY-----"
 	input := map[string]any{
-		"status":  "failed",
-		"body":    "Authorization: Bearer " + secret + " API_TOKEN=" + secret,
-		"api_key": secret,
-		"url":     "https://user:pass@example.test/path?token=" + secret + "&page=1",
-		"nested":  map[string]any{"password": secret},
-		"ignored": secret,
-		"data":    "data:image/png;base64," + secret,
+		"path": "/tmp/diagnostic.txt",
+		"nested": map[string]any{
+			"password": "arbitrary-password",
+			"message":  "known=" + knownSecret,
+			"key":      privateKey,
+		},
+		"tokens": []any{
+			"ghp_1234567890abcdefghijklmnop",
+			"Bearer abcdefghijklmnopqrstuvwxyz",
+			"request https://alice:hunter2@example.test/path?token=opaque&page=1 failed",
+			"Cookie: session=opaque-cookie",
+			"nested DATA:text/plain;base64,bmVzdGVkLXNlY3JldA==",
+		},
+		"token_" + knownSecret:                 "sensitive-key-value",
+		"ghp_abcdefghijklmnopqrstuvwxyz123456": "key-secret",
+		"unicode":                              strings.Repeat("界", 20),
 	}
-	allow := map[string]FieldPolicy{
-		"status": {Class: FieldMetadata}, "body": {Class: FieldContent},
-		"api_key": {Class: FieldContent}, "url": {Class: FieldContent},
-		"nested": {Class: FieldContent}, "data": {Class: FieldContent},
+	redactor := Redactor{
+		Filter: func(value string) string {
+			return strings.ReplaceAll(value, knownSecret, "[FILTERED]")
+		},
 	}
-	redactor := Redactor{Mode: ContentRedacted}
-	projected := redactor.Project(input, allow)
-	encoded, err := json.Marshal(projected)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+	got := redactor.RedactJSON(input, 1024)
+	for _, forbidden := range []string{
+		knownSecret, "arbitrary-password", "private-material", "ghp_1234567890",
+		"ghp_abcdefghijklmnopqrstuvwxyz", "key-secret", "abcdefghijklmnopqrstuvwxyz",
+		"hunter2", "token=opaque", "opaque-cookie",
+		"sensitive-key-value",
+		"bmVzdGVkLXNlY3JldA",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("redacted JSON leaked %q: %s", forbidden, got)
+		}
 	}
-	text := string(encoded)
-	if strings.Contains(text, secret) || strings.Contains(text, "user:pass") {
-		t.Fatalf("secret leaked: %s", text)
+	for _, expected := range []string{"/tmp/diagnostic.txt", "[FILTERED]", "[REDACTED]", "[PRIVATE KEY REDACTED]"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("redacted JSON lacks %q: %s", expected, got)
+		}
 	}
-	if _, ok := projected["api_key"]; ok {
-		t.Fatal("sensitive key was projected")
+	if len(got) > 1024 || !utf8.ValidString(got) {
+		t.Fatalf("bounded JSON length/encoding = %d, valid=%v", len(got), utf8.ValidString(got))
 	}
-	if _, ok := projected["ignored"]; ok {
-		t.Fatal("non-allowlisted field was projected")
-	}
-	if projected["nested"] != "[UNSUPPORTED]" || projected["data"] != "[DATA_URL REDACTED]" {
-		t.Fatalf("structural redaction = %#v", projected)
+
+	truncated := redactor.RedactText(strings.Repeat("界", 20), 17)
+	if len(truncated) > 17 || !utf8.ValidString(truncated) {
+		t.Fatalf("bounded text length/encoding = %d, valid=%v", len(truncated), utf8.ValidString(truncated))
 	}
 }
 
-func TestMetadataOnlyReplacesContentWithLength(t *testing.T) {
-	projected := (Redactor{Mode: ContentMetadataOnly}).Project(
-		map[string]any{"status": "ok", "content": "private"},
-		map[string]FieldPolicy{"status": {Class: FieldMetadata}, "content": {Class: FieldContent}},
-	)
-	if projected["status"] != "ok" || projected["content_len"] != len("private") {
-		t.Fatalf("projected = %#v", projected)
+func TestRedactorRemovesEmbeddedDataURLs(t *testing.T) {
+	tests := []string{
+		"data:text/plain;base64,c2VjcmV0",
+		" image: data:text/plain;base64,c2VjcmV0",
+		"\tDATA:application/octet-stream;base64,c2VjcmV0",
 	}
-	if _, ok := projected["content"]; ok {
-		t.Fatal("metadata-only projection retained content")
+	for _, input := range tests {
+		got := (Redactor{}).RedactText(input, 512)
+		if strings.Contains(got, "c2VjcmV0") ||
+			!strings.Contains(got, "[DATA_URL REDACTED]") {
+			t.Fatalf("RedactText(%q) = %q", input, got)
+		}
+	}
+}
+
+func TestRedactorContainsFilterPanicsWithoutLeakingInput(t *testing.T) {
+	redactor := Redactor{
+		Filter: func(string) string {
+			panic("filter failure")
+		},
+	}
+	if got := redactor.RedactText("content", 100); got != "" {
+		t.Fatalf("RedactText() = %q", got)
+	}
+	if got := redactor.RedactJSON(map[string]any{"content": "value"}, 100); strings.Contains(got, "value") {
+		t.Fatalf("RedactJSON() leaked input: %q", got)
+	}
+}
+
+func TestRedactorBoundsWorkAndRejectsCustomJSONTypes(t *testing.T) {
+	oversizedToken := "prefix ghp_" + strings.Repeat("a", 4096)
+	got := (Redactor{}).RedactText(oversizedToken, 128)
+	if len(got) > 128 || strings.Contains(got, "ghp_") {
+		t.Fatalf("oversized token preview = %q", got)
+	}
+	if got := (Redactor{}).RedactText("value", 0); got != "" {
+		t.Fatalf("zero-bound preview = %q", got)
+	}
+	got = (Redactor{}).RedactJSON(map[string]any{"custom": panicJSONValue{}}, 128)
+	if !strings.Contains(got, "[UNSUPPORTED]") {
+		t.Fatalf("custom JSON preview = %q", got)
+	}
+}
+
+func TestRedactorChargesSensitiveMapEntriesToNodeBudget(t *testing.T) {
+	input := make(map[string]any, maxRedactionNodes+100)
+	for index := 0; index < maxRedactionNodes+100; index++ {
+		input[fmt.Sprintf("token_%04d", index)] = "secret"
+	}
+	got := (Redactor{}).RedactJSON(input, 1<<20)
+	if !strings.Contains(got, "[TRUNCATED]") {
+		t.Fatalf("large sensitive map was not truncated")
+	}
+	if count := strings.Count(got, "[REDACTED]"); count >= len(input) {
+		t.Fatalf("redacted entries = %d, want fewer than %d", count, len(input))
 	}
 }
 

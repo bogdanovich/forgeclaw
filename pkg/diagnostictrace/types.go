@@ -36,6 +36,7 @@ const (
 	RecordDeliveryOutcome      RecordKind = "delivery.outcome"
 	RecordContextCompaction    RecordKind = "context.compaction"
 	RecordContextSnapshot      RecordKind = "context.snapshot"
+	RecordRuntimeError         RecordKind = "runtime.error"
 )
 
 type Trace struct {
