@@ -98,10 +98,10 @@ jq '
 
 Correlate:
 
-- `model.request` with `model.response`, retries, and fallbacks by request and
-  turn;
-- `tool.call`, `tool.result`, skipped calls, and loop decisions by
-  `tool_call_id`;
+- `model.request` with `model.response`, retries, and fallbacks by turn and
+  sequence; use provider, model, and attempt fields only where present;
+- `tool.call`, `tool.result`, and skipped calls by `tool_call_id`;
+- tool-loop decisions by turn, sequence, `data.tool`, and `data.args_hash`;
 - steering injection or interrupt with the next model/tool decision;
 - delivery decision, attempt, and outcome by turn, sequence, target hash,
   status, and event ID;
@@ -111,7 +111,9 @@ Correlate:
 Current runtime-produced turn traces do not populate `scope.task_id` or
 `correlation.completion_id`. Treat those identifiers as external log or durable
 task-registry evidence and cite that source explicitly; do not infer them from
-an empty trace field.
+an empty trace field. Model records also do not populate
+`correlation.request_id`, and loop-decision records do not populate
+`correlation.tool_call_id`.
 
 In rich mode, inspect only the relevant normalized preview fields in `.data`,
 including `input_preview`, `final_preview`, `messages_preview`,
