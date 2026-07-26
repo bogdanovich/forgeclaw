@@ -57,6 +57,10 @@ Every post-MVP capability follows these rules:
    are narrow, while an operator may deliberately configure broader authority,
    including filesystem root `/`, for a specifically authenticated actor and
    target.
+10. **Usable authority is discoverable.** Before invoking a capability, the
+    model receives a bounded, model-safe description of the effective
+    operations and constraints available to it. Policy denial remains final
+    enforcement, not the normal mechanism for discovering basic usage.
 
 ## Operating Modes
 
@@ -93,18 +97,133 @@ execution or an isolated shell without inheriting an owner's root profile.
 
 | Priority | Milestone | Operator outcome | Depends on |
 | --- | --- | --- | --- |
-| P0 | Owner-controlled shell and terminal | Operate a personal server through ordinary shell commands and an interactive PTY, including explicit root profiles | Deployed execution MVP |
-| P1 | File transfer and administrator filesystem access | Send files to a node, retrieve files and images, and manage explicitly authorized paths | Owner profiles and deployed execution MVP |
-| P2 | Typed service administration | Inspect logs/status and perform allowlisted service actions without broad shell authority | Privileged helper boundary proven by P1 |
-| P3 | Fleet operations and companion updates | Diagnose, version, update, and roll back companion instances safely | Stable node lifecycle and artifacts |
-| P4 | Additional executors and long-running work | Run contained builds/jobs without confusing placement with isolation | Stable invocation and artifact contracts |
-| P5 | Bootstrap and alternative transports | Enroll hosts through SSH and support bounded static SSH targets | Stable target-driver contract |
-| P6 | Interactive application capabilities | Add browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
-| P7 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
+| P0 | Model-visible capability contracts | Let an agent plan valid node calls from bounded discovery instead of guessing hidden policy | Deployed execution MVP |
+| P1 | Owner-controlled shell and terminal | Operate a personal server through ordinary shell commands and an interactive PTY, including explicit root profiles | P0 and deployed execution MVP |
+| P2 | File transfer and administrator filesystem access | Send files to a node, retrieve files and images, and manage explicitly authorized paths | P0, owner profiles, and deployed execution MVP |
+| P3 | Typed service administration | Inspect logs/status and perform allowlisted service actions without broad shell authority | Privileged helper boundary proven by P2 |
+| P4 | Fleet operations and companion updates | Diagnose, version, update, and roll back companion instances safely | Stable node lifecycle and artifacts |
+| P5 | Additional executors and long-running work | Run contained builds/jobs without confusing placement with isolation | Stable invocation and artifact contracts |
+| P6 | Bootstrap and alternative transports | Enroll hosts through SSH and support bounded static SSH targets | Stable target-driver contract |
+| P7 | Interactive application capabilities | Add browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
+| P8 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
 
 Priorities express ordering, not a commitment to implement every milestone.
 
-## P0: Owner-Controlled Shell And Interactive Terminal
+## P0: Model-Visible Capability Contracts
+
+### Current limitation
+
+The MVP enforces node authority correctly but exposes too little of that
+authority for reliable model planning. `nodes describe` reports an approved
+command name, risk, progress support, and cancellation support. For a command
+such as `system.exec.v1`, it does not tell the model which executable
+identities, working scopes, environment names, timeout ceiling, or output
+ceiling are usable. The generic `nodes_invoke.input` object also does not carry
+the selected command's typed input schema.
+
+Consequently, a model can know that `system.exec.v1` exists without knowing how
+to construct a call that the node will accept. A user-supplied prompt can fill
+in the hidden details, and node-local policy safely denies guesses, but policy
+denial is a poor capability-discovery interface.
+
+### Operator outcome
+
+An authorized agent can inspect a target and determine, before invocation:
+
+- which approved typed commands are currently usable;
+- the bounded input shape for each command;
+- model-safe effective constraints needed to construct a valid request;
+- whether human approval may be required;
+- timeout, output, progress, and cancellation behavior;
+- one or more bounded examples when the operator explicitly provides them.
+
+The agent must not infer that a typed command grants unrestricted shell,
+filesystem, environment, service, network, or device access.
+
+### Model-visible contract
+
+Discovery should expose the effective intersection of target grant, approved
+catalog, and node-local policy, not the broad union of independently configured
+authority. A command entry may include:
+
+- its approved versioned name, risk, and bounded input schema;
+- stable executable or action aliases rather than host paths where practical;
+- operator-defined working-scope aliases and descriptions;
+- permitted environment-name aliases or an explicit `environment: none`;
+- effective timeout and output ceilings;
+- progress, cancellation, and expected result metadata;
+- operator-authored usage guidance and schema-valid examples.
+
+Raw node IDs, credentials, transport endpoints, public keys, policy or catalog
+hashes, unrestricted filesystem paths, environment values, and hidden policy
+rules remain excluded. An operator may explicitly mark a path or service name
+as model-visible when it is necessary input, but discovery must not expose
+host details merely because enforcement knows them.
+
+The response must distinguish:
+
+- `available`: the model has enough current information to invoke;
+- `partially_described`: the command is authorized but some constraint cannot
+  yet be represented safely;
+- `requires_reapproval`: catalog or policy authority changed;
+- `unavailable`: the target or command cannot currently accept work.
+
+`partially_described` must not be presented as unrestricted. It should explain
+that an operator must provide missing model-safe guidance or that an attempted
+call may still be denied.
+
+### Authority and freshness
+
+Discovery is advisory and never becomes an authority source. Invocation still
+revalidates target policy, pairing approval, catalog authority, node-local
+policy, actor ownership, and the exact prepared plan.
+
+The model-visible contract must be derived from authoritative current state or
+bound to an opaque revision that is rechecked during preparation. Cached
+descriptions fail closed after relevant policy or catalog changes. Operator
+examples and labels cannot broaden executable, path, environment, timeout, or
+OS authority.
+
+Structured denial remains useful for races and stale plans. It should identify
+the violated model-visible constraint when safe, without leaking hidden policy
+or encouraging trial-and-error enumeration.
+
+### Suggested delivery sequence
+
+1. Define the bounded discovery schema, redaction rules, effective-policy
+   projection, freshness semantics, and explicit exclusions.
+2. Expose approved command input schemas and generic execution ceilings without
+   adding a new authority, store, protocol version, or invocation path.
+3. Add operator-owned aliases, descriptions, and examples for constraints that
+   should not expose raw host details.
+4. Add structured, model-safe policy-denial results aligned with the discovery
+   vocabulary.
+5. Prove one real model flow where the prompt names only the desired outcome:
+   the model discovers an executable and working scope, constructs a valid
+   `nodes_invoke`, and observes the result through `nodes_status`.
+
+The implementation should extend the existing `nodes` discovery surface. It
+must not create a second capability registry or mirror the complete node policy
+inside the gateway.
+
+### Completion evidence
+
+P0 is complete only when:
+
+- a model can invoke a constrained `system.exec.v1` without the user supplying
+  hidden executable, working-directory, environment, timeout, or schema facts;
+- the model cannot discover or invoke a target or command outside its agent
+  target policy and pairing grant;
+- changing catalog or relevant policy authority invalidates stale discovery
+  and fails closed before dispatch;
+- discovery and denial expose no credential, environment value, raw transport
+  detail, hidden path, or unrestricted policy document;
+- an operator-authored label or example cannot broaden node-local authority;
+- compact discovery remains bounded for large catalogs;
+- a real-process end-to-end test proves discovery, invocation, durable result,
+  and denial after a constraint change.
+
+## P1: Owner-Controlled Shell And Interactive Terminal
 
 ### Operator outcome
 
@@ -239,7 +358,7 @@ stopped.
 
 ### Completion evidence
 
-P0 is complete only when:
+P1 is complete only when:
 
 - a configured owner profile can prove UID 0, while an unconfigured actor,
   agent, route, target, or profile is denied;
@@ -258,7 +377,7 @@ P0 is complete only when:
   model;
 - delegated/product profiles and fresh installations remain deny-by-default.
 
-## P1: File Transfer And Administrator Filesystem Access
+## P2: File Transfer And Administrator Filesystem Access
 
 ### Operator outcome
 
@@ -385,7 +504,7 @@ node-local enforcement exist.
 
 ### Completion evidence
 
-P1 is complete only when:
+P2 is complete only when:
 
 - a text config and a binary image round-trip with matching digests;
 - overwrite and no-overwrite publication behave atomically;
@@ -399,7 +518,7 @@ P1 is complete only when:
   bytes or credentials;
 - the deployed default remains deny-all until an operator selects a profile.
 
-## P2: Typed Service Administration
+## P3: Typed Service Administration
 
 Add typed commands for:
 
@@ -413,14 +532,14 @@ bounded logs do not imply mutation authority. Mutating actions bind approval to
 the exact node, service, action, policy revision, and expiry.
 
 The privileged helper may reuse its authenticated request envelope and peer
-validation from P1, but service handlers remain separate from file handlers.
+validation from P2, but service handlers remain separate from file handlers.
 The helper never accepts a shell command or arbitrary system-manager flags.
 
 Completion requires Linux systemd coverage, explicit macOS launchd scope, real
 post-action verification, bounded logs, cancellation/unknown semantics, and
 one deployed operator use case.
 
-## P3: Fleet Operations And Companion Updates
+## P4: Fleet Operations And Companion Updates
 
 Improve operations only after multiple deployed companions justify it:
 
@@ -437,7 +556,7 @@ An update channel is separate from command execution and file transfer.
 Downloaded binaries require release-signature verification and cannot be
 authorized solely by a model-generated URL or digest.
 
-## P4: Additional Executors And Long-Running Work
+## P5: Additional Executors And Long-Running Work
 
 Add isolation and durable work as independent capabilities:
 
@@ -453,7 +572,7 @@ Target selection continues to answer *where* work runs; executor selection
 answers *how* it is isolated. A node target never silently changes a command
 from local execution to Docker or vice versa.
 
-## P5: Bootstrap And Alternative Transports
+## P6: Bootstrap And Alternative Transports
 
 ### SSH bootstrap
 
@@ -476,7 +595,7 @@ results, and audit, while honestly reporting weaker guarantees: no live
 catalog, durable remote ledger, or reconnect recovery unless a narrow remote
 helper is present.
 
-## P6: Interactive Application Capabilities
+## P7: Interactive Application Capabilities
 
 Admit capabilities independently, each with its own policy and threat model:
 
@@ -487,9 +606,9 @@ Admit capabilities independently, each with its own policy and threat model:
 - application-specific adapters that do not expose a general shell.
 
 Interactive sessions must not reuse synchronous `system.exec.v1` semantics.
-Media output uses the artifact contract established by P1.
+Media output uses the artifact contract established by P2.
 
-## P7: Platforms And Compatibility
+## P8: Platforms And Compatibility
 
 Potential later targets include:
 
