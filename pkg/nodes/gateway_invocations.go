@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,6 +47,7 @@ type GatewayInvocationRecord struct {
 	Target           string                 `json:"target"`
 	ToolCallID       string                 `json:"tool_call_id"`
 	Plan             ExecutionPlan          `json:"plan"`
+	Descriptor       CommandDescriptor      `json:"descriptor"`
 	ExpectedPlanHash string                 `json:"expected_plan_hash"`
 	State            GatewayInvocationState `json:"state"`
 	CreatedAt        int64                  `json:"created_at"`
@@ -57,7 +59,14 @@ type GatewayInvocationOwner struct {
 	Target     string
 	AgentID    string
 	SessionID  string
+	ActorID    string
 	ToolCallID string
+}
+
+type GatewayInvocationPrincipal struct {
+	AgentID   string
+	SessionID string
+	ActorID   string
 }
 
 type gatewayInvocationDocument struct {
@@ -138,12 +147,14 @@ func (store *GatewayInvocationStore) Prepare(
 	target string,
 	toolCallID string,
 	plan ExecutionPlan,
+	descriptor CommandDescriptor,
 ) (GatewayInvocationRecord, error) {
 	now := store.now()
 	record := GatewayInvocationRecord{
 		Target:           strings.TrimSpace(target),
 		ToolCallID:       strings.TrimSpace(toolCallID),
 		Plan:             cloneExecutionPlan(plan),
+		Descriptor:       cloneCommandDescriptor(descriptor),
 		ExpectedPlanHash: plan.PlanHash,
 		State:            GatewayInvocationPrepared,
 		CreatedAt:        now.UnixNano(),
@@ -184,7 +195,13 @@ func (store *GatewayInvocationStore) Prepare(
 			store.records = previous
 			return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
 		}
-		if sameGatewayToolCall(existing, plan.AgentID, plan.SessionID, record.ToolCallID) {
+		if sameGatewayToolCall(
+			existing,
+			plan.AgentID,
+			plan.SessionID,
+			plan.ActorID,
+			record.ToolCallID,
+		) {
 			if sameGatewayInvocationBinding(existing, record) {
 				if pruned {
 					if err := store.persistMutationLocked(previous); err != nil {
@@ -227,8 +244,7 @@ func (store *GatewayInvocationStore) Prepare(
 }
 
 func (store *GatewayInvocationStore) ByToolCall(
-	agentID string,
-	sessionID string,
+	principal GatewayInvocationPrincipal,
 	toolCallID string,
 ) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
@@ -242,7 +258,13 @@ func (store *GatewayInvocationStore) ByToolCall(
 		return GatewayInvocationRecord{}, false, err
 	}
 	for _, record := range store.records {
-		if sameGatewayToolCall(record, agentID, sessionID, toolCallID) {
+		if sameGatewayToolCall(
+			record,
+			principal.AgentID,
+			principal.SessionID,
+			principal.ActorID,
+			toolCallID,
+		) {
 			return cloneGatewayInvocationRecord(record), true, nil
 		}
 	}
@@ -250,8 +272,7 @@ func (store *GatewayInvocationStore) ByToolCall(
 }
 
 func (store *GatewayInvocationStore) Lookup(
-	agentID string,
-	sessionID string,
+	principal GatewayInvocationPrincipal,
 	invocationID string,
 ) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
@@ -265,7 +286,10 @@ func (store *GatewayInvocationStore) Lookup(
 		return GatewayInvocationRecord{}, false, err
 	}
 	record, found := store.records[invocationID]
-	if !found || record.Plan.AgentID != agentID || record.Plan.SessionID != sessionID {
+	if !found ||
+		record.Plan.AgentID != principal.AgentID ||
+		record.Plan.SessionID != principal.SessionID ||
+		record.Plan.ActorID != principal.ActorID {
 		return GatewayInvocationRecord{}, false, nil
 	}
 	return cloneGatewayInvocationRecord(record), true, nil
@@ -275,44 +299,55 @@ func (store *GatewayInvocationStore) MarkDispatched(
 	owner GatewayInvocationOwner,
 	invocationID string,
 	expectedPlanHash string,
-) (GatewayInvocationRecord, error) {
+) (GatewayInvocationRecord, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if err := owner.validate(); err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	release, err := store.lockAndReloadLocked()
 	if err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	defer release()
 	if err := store.pruneAndPersistLocked(store.now()); err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	record, found := store.records[invocationID]
 	if !found {
-		return GatewayInvocationRecord{}, ErrGatewayInvocationNotFound
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationNotFound
 	}
 	if !owner.matches(record) {
-		return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 	}
 	if err := record.Plan.ValidateAgainstHash(expectedPlanHash); err != nil ||
 		record.ExpectedPlanHash != expectedPlanHash {
-		return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 	}
 	if record.State == GatewayInvocationDispatched {
-		return cloneGatewayInvocationRecord(record), nil
+		return cloneGatewayInvocationRecord(record), false, nil
 	}
 	previous := cloneGatewayInvocationRecords(store.records)
 	now := store.now().UnixNano()
+	if now <= record.UpdatedAt {
+		if record.UpdatedAt == math.MaxInt64 {
+			return GatewayInvocationRecord{}, false, fmt.Errorf(
+				"%w: invocation timestamp exhausted",
+				ErrInvalidInvocation,
+			)
+		}
+		now = record.UpdatedAt + 1
+	}
 	record.State = GatewayInvocationDispatched
 	record.DispatchedAt = now
 	record.UpdatedAt = now
 	store.records[invocationID] = record
 	if err := store.persistMutationLocked(previous); err != nil {
-		return GatewayInvocationRecord{}, fmt.Errorf("persist dispatched node invocation: %w", err)
+		return cloneGatewayInvocationRecord(record),
+			fileutil.IsCommittedWriteError(err),
+			fmt.Errorf("persist dispatched node invocation: %w", err)
 	}
-	return cloneGatewayInvocationRecord(record), nil
+	return cloneGatewayInvocationRecord(record), true, nil
 }
 
 func (store *GatewayInvocationStore) lockAndReloadLocked() (func(), error) {
@@ -366,6 +401,7 @@ func (store *GatewayInvocationStore) loadLocked() error {
 		toolCallKey := gatewayToolCallKey(
 			record.Plan.AgentID,
 			record.Plan.SessionID,
+			record.Plan.ActorID,
 			record.ToolCallID,
 		)
 		if existing := toolCalls[toolCallKey]; existing != "" {
@@ -482,6 +518,18 @@ func (record GatewayInvocationRecord) validate() error {
 	if err := record.Plan.ValidateAgainstHash(record.ExpectedPlanHash); err != nil {
 		return err
 	}
+	if err := record.Descriptor.Validate(); err != nil {
+		return err
+	}
+	descriptorHash, err := record.Descriptor.Hash()
+	if err != nil {
+		return err
+	}
+	if record.Descriptor.Name != record.Plan.Command ||
+		record.Descriptor.Risk != record.Plan.Risk ||
+		descriptorHash != record.Plan.DescriptorHash {
+		return fmt.Errorf("%w: descriptor does not match plan", ErrInvalidInvocation)
+	}
 	switch record.State {
 	case GatewayInvocationPrepared:
 		if record.DispatchedAt != 0 {
@@ -504,16 +552,19 @@ func sameGatewayToolCall(
 	record GatewayInvocationRecord,
 	agentID string,
 	sessionID string,
+	actorID string,
 	toolCallID string,
 ) bool {
 	return record.Plan.AgentID == strings.TrimSpace(agentID) &&
 		record.Plan.SessionID == strings.TrimSpace(sessionID) &&
+		record.Plan.ActorID == strings.TrimSpace(actorID) &&
 		record.ToolCallID == strings.TrimSpace(toolCallID)
 }
 
-func gatewayToolCallKey(agentID string, sessionID string, toolCallID string) string {
+func gatewayToolCallKey(agentID string, sessionID string, actorID string, toolCallID string) string {
 	return strings.TrimSpace(agentID) + "\x00" +
 		strings.TrimSpace(sessionID) + "\x00" +
+		strings.TrimSpace(actorID) + "\x00" +
 		strings.TrimSpace(toolCallID)
 }
 
@@ -524,14 +575,17 @@ func sameGatewayInvocationBinding(
 	return left.Target == right.Target &&
 		left.ToolCallID == right.ToolCallID &&
 		left.ExpectedPlanHash == right.ExpectedPlanHash &&
+		sameCommandDescriptor(left.Descriptor, right.Descriptor) &&
 		left.Plan.AgentID == right.Plan.AgentID &&
-		left.Plan.SessionID == right.Plan.SessionID
+		left.Plan.SessionID == right.Plan.SessionID &&
+		left.Plan.ActorID == right.Plan.ActorID
 }
 
 func (owner GatewayInvocationOwner) validate() error {
 	if !gatewayTargetPattern.MatchString(strings.TrimSpace(owner.Target)) ||
 		!validInvocationIdentifier(strings.TrimSpace(owner.AgentID)) ||
 		!validInvocationIdentifier(strings.TrimSpace(owner.SessionID)) ||
+		!validInvocationIdentifier(strings.TrimSpace(owner.ActorID)) ||
 		len(strings.TrimSpace(owner.ToolCallID)) == 0 ||
 		len(strings.TrimSpace(owner.ToolCallID)) > maxGatewayToolCallIDLength {
 		return fmt.Errorf("%w: malformed gateway invocation owner", ErrInvalidInvocation)
@@ -543,6 +597,7 @@ func (owner GatewayInvocationOwner) matches(record GatewayInvocationRecord) bool
 	return strings.TrimSpace(owner.Target) == record.Target &&
 		strings.TrimSpace(owner.AgentID) == record.Plan.AgentID &&
 		strings.TrimSpace(owner.SessionID) == record.Plan.SessionID &&
+		strings.TrimSpace(owner.ActorID) == record.Plan.ActorID &&
 		strings.TrimSpace(owner.ToolCallID) == record.ToolCallID
 }
 
@@ -558,7 +613,20 @@ func cloneGatewayInvocationRecords(
 
 func cloneGatewayInvocationRecord(record GatewayInvocationRecord) GatewayInvocationRecord {
 	record.Plan = cloneExecutionPlan(record.Plan)
+	record.Descriptor = cloneCommandDescriptor(record.Descriptor)
 	return record
+}
+
+func cloneCommandDescriptor(descriptor CommandDescriptor) CommandDescriptor {
+	descriptor.InputSchema = bytes.Clone(descriptor.InputSchema)
+	descriptor.OutputSchema = bytes.Clone(descriptor.OutputSchema)
+	return descriptor
+}
+
+func sameCommandDescriptor(left, right CommandDescriptor) bool {
+	leftHash, leftErr := left.Hash()
+	rightHash, rightErr := right.Hash()
+	return leftErr == nil && rightErr == nil && leftHash == rightHash
 }
 
 func cloneExecutionPlan(plan ExecutionPlan) ExecutionPlan {
