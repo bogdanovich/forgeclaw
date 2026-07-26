@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"github.com/mymmrac/telego"
 	ta "github.com/mymmrac/telego/telegoapi"
@@ -2221,10 +2222,8 @@ func (c *TelegramChannel) isBotMentioned(message *telego.Message) bool {
 	}
 
 	botUsername := c.ownBotUsername()
-	runes := []rune(text)
-
 	for _, entity := range entities {
-		entityText, ok := telegramEntityText(runes, entity)
+		entityText, ok := telegramEntityText(text, entity)
 		if !ok {
 			continue
 		}
@@ -2255,10 +2254,8 @@ func (c *TelegramChannel) hasNonBotMention(message *telego.Message) bool {
 	}
 
 	botUsername := c.ownBotUsername()
-	runes := []rune(text)
-
 	for _, entity := range entities {
-		entityText, ok := telegramEntityText(runes, entity)
+		entityText, ok := telegramEntityText(text, entity)
 		if !ok {
 			continue
 		}
@@ -2327,15 +2324,51 @@ func telegramEntityTextAndList(message *telego.Message) (string, []telego.Messag
 	return message.Caption, message.CaptionEntities
 }
 
-func telegramEntityText(runes []rune, entity telego.MessageEntity) (string, bool) {
+func telegramEntityRuneRange(text string, entity telego.MessageEntity) (int, int, bool) {
 	if entity.Offset < 0 || entity.Length <= 0 {
+		return 0, 0, false
+	}
+	endOffset := entity.Offset + entity.Length
+	if endOffset < entity.Offset {
+		return 0, 0, false
+	}
+
+	runes := []rune(text)
+	start, startOK := telegramUTF16OffsetToRuneIndex(runes, entity.Offset)
+	end, endOK := telegramUTF16OffsetToRuneIndex(runes, endOffset)
+	if !startOK || !endOK || start >= end {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func telegramUTF16OffsetToRuneIndex(runes []rune, offset int) (int, bool) {
+	if offset < 0 {
+		return 0, false
+	}
+	if offset == 0 {
+		return 0, true
+	}
+
+	units := 0
+	for index, value := range runes {
+		units += utf16.RuneLen(value)
+		if units == offset {
+			return index + 1, true
+		}
+		if units > offset {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+func telegramEntityText(text string, entity telego.MessageEntity) (string, bool) {
+	start, end, ok := telegramEntityRuneRange(text, entity)
+	if !ok {
 		return "", false
 	}
-	end := entity.Offset + entity.Length
-	if entity.Offset >= len(runes) || end > len(runes) {
-		return "", false
-	}
-	return string(runes[entity.Offset:end]), true
+	return string([]rune(text)[start:end]), true
 }
 
 func isBotCommandEntityForThisBot(entityText, botUsername string) bool {
@@ -2378,11 +2411,12 @@ func (c *TelegramChannel) stripBotMention(message *telego.Message, content strin
 	removals := make([]entityRemoval, 0, len(entities))
 	sourceRunes := []rune(source)
 	for _, entity := range entities {
-		entityText, ok := telegramEntityText(sourceRunes, entity)
+		entityStart, entityEnd, ok := telegramEntityRuneRange(source, entity)
 		if !ok {
 			continue
 		}
-		start := entity.Offset
+		entityText := string(sourceRunes[entityStart:entityEnd])
+		start := entityStart
 		switch entity.Type {
 		case telego.EntityTypeBotCommand:
 			if !isBotCommandEntityForThisBot(entityText, botUsername) {
@@ -2406,7 +2440,7 @@ func (c *TelegramChannel) stripBotMention(message *telego.Message, content strin
 		}
 		removals = append(removals, entityRemoval{
 			start: start,
-			end:   entity.Offset + entity.Length,
+			end:   entityEnd,
 		})
 	}
 	slices.SortFunc(removals, func(left, right entityRemoval) int {

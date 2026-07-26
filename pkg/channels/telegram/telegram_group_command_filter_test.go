@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/mymmrac/telego"
 	ta "github.com/mymmrac/telego/telegoapi"
@@ -174,6 +175,26 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStripBotMentionPreservesUnicodeAroundEntity(t *testing.T) {
+	ch, _ := newGroupMentionOnlyChannel(t, "testbot")
+	prefix := "😀 test_region: eu "
+	content := prefix + "@testbot test_mode: balanced"
+	message := &telego.Message{
+		Text: content,
+		Entities: []telego.MessageEntity{{
+			Type:   telego.EntityTypeMention,
+			Offset: len(utf16.Encode([]rune(prefix))),
+			Length: len("@testbot"),
+		}},
+	}
+
+	got := ch.stripBotMention(message, content)
+	want := "😀 test_region: eu  test_mode: balanced"
+	if got != want {
+		t.Fatalf("stripBotMention() = %q, want %q", got, want)
 	}
 }
 
