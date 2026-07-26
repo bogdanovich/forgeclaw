@@ -98,6 +98,39 @@ func (t *approvalBindingTool) Execute(context.Context, map[string]any) *tools.To
 	return tools.NewToolResult("prepared action completed")
 }
 
+func TestToolExecutionIdentityDoesNotRepeatAcrossAgentLoops(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ModelName = "test-model"
+	executionIDs := make([]string, 0, 2)
+	turnIDs := make([]string, 0, 2)
+	for range 2 {
+		loop := NewAgentLoop(
+			cfg,
+			bus.NewMessageBus(),
+			&sequenceProvider{},
+			WithIsolatedToolBootstrap(),
+		)
+		agent := loop.registry.GetDefaultAgent()
+		scope := loop.newTurnEventScope(agent.ID, agent.Workspace, "session-1", nil)
+		state := newTurnState(
+			agent,
+			processOptions{Dispatch: DispatchRequest{SessionKey: "session-1"}},
+			scope,
+		)
+		executionIDs = append(executionIDs, state.executionID)
+		turnIDs = append(turnIDs, state.turnID)
+		loop.Close()
+	}
+	if turnIDs[0] != turnIDs[1] {
+		t.Fatalf("test setup did not reproduce turn counter reset: %#v", turnIDs)
+	}
+	if executionIDs[0] == "" || executionIDs[1] == "" ||
+		executionIDs[0] == executionIDs[1] {
+		t.Fatalf("execution identities repeated across loops: %#v", executionIDs)
+	}
+}
+
 type approvalContextTool struct {
 	executions int
 	inbound    bus.InboundContext
@@ -1007,12 +1040,12 @@ func TestDurableHumanApprovalBindsTrustedPreparedArguments(t *testing.T) {
 		t.Fatalf("approval continuation markers = %#v", tool.bindingContinuations)
 	}
 	if len(tool.executionIDs) != 2 ||
-		tool.executionIDs[0] != record.Origin.TurnID ||
-		tool.executionIDs[1] != record.Origin.TurnID {
+		tool.executionIDs[0] != record.Origin.ExecutionID ||
+		tool.executionIDs[1] != record.Origin.ExecutionID {
 		t.Fatalf(
 			"approval execution identities = %#v, origin = %q",
 			tool.executionIDs,
-			record.Origin.TurnID,
+			record.Origin.ExecutionID,
 		)
 	}
 	if len(tool.workspaces) != 2 ||

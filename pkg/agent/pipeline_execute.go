@@ -495,10 +495,9 @@ toolLoop:
 		)
 		execCtx = tools.WithToolRouteSessionKey(execCtx, ts.opts.Dispatch.RouteSessionKey)
 		execCtx = tools.WithToolCallID(execCtx, tc.ID)
-		executionID := ts.turnID
-		if grant := ts.opts.ApprovalGrant; grant != nil &&
-			strings.TrimSpace(grant.OriginTurnID) != "" {
-			executionID = grant.OriginTurnID
+		executionID := ts.executionID
+		if grant := ts.opts.ApprovalGrant; grant != nil {
+			executionID = strings.TrimSpace(grant.OriginExecutionID)
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
 		execCtx = tools.WithToolApprovalContinuation(execCtx, ts.opts.ApprovalGrant != nil)
@@ -1249,6 +1248,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		ExecutionContext: cloneInboundContext(inbound),
 		Origin: interactions.Origin{
 			TurnID:                 r.ts.turnID,
+			ExecutionID:            r.ts.executionID,
 			ToolCallID:             toolCall.ID,
 			ToolName:               toolName,
 			TaskID:                 r.ts.opts.TaskID,

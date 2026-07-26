@@ -1576,6 +1576,7 @@ func normalizeRoute(route Route) Route {
 
 func normalizeOrigin(origin Origin) Origin {
 	origin.TurnID = strings.TrimSpace(origin.TurnID)
+	origin.ExecutionID = strings.TrimSpace(origin.ExecutionID)
 	origin.ToolCallID = strings.TrimSpace(origin.ToolCallID)
 	origin.ToolName = strings.TrimSpace(origin.ToolName)
 	origin.TaskID = strings.TrimSpace(origin.TaskID)

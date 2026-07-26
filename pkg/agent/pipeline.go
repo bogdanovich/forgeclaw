@@ -87,9 +87,9 @@ type ToolSuspensionDisposition struct {
 }
 
 type ToolApprovalGrant struct {
-	InteractionID string
-	Revision      int64
-	OriginTurnID  string
+	InteractionID     string
+	Revision          int64
+	OriginExecutionID string
 }
 
 type ToolApprovalConsumptionRequest struct {
