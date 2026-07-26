@@ -117,7 +117,7 @@ jobs:
 
           # Collect release artifacts from goreleaser dist/
           ASSETS=()
-          for f in dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/checksums.txt build/mintclaw-android-universal.zip; do
+          for f in dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/*checksums.txt build/mintclaw-android-universal.zip; do
             [ -f "$f" ] && ASSETS+=("$f")
           done
 
