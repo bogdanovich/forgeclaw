@@ -66,12 +66,25 @@ type fakeNodeInvocationSource struct {
 	queryCalls     int
 }
 
+type atomicPrepareNodeInvocationSource struct {
+	*fakeNodeInvocationSource
+}
+
+func (source *atomicPrepareNodeInvocationSource) PrepareInvocation(
+	target string,
+	toolCallID string,
+	plan nodes.ExecutionPlan,
+	descriptor nodes.CommandDescriptor,
+) (nodes.GatewayInvocationRecord, bool, error) {
+	return source.store.Prepare(target, toolCallID, plan, descriptor)
+}
+
 func (source *fakeNodeInvocationSource) PrepareInvocation(
 	target string,
 	toolCallID string,
 	plan nodes.ExecutionPlan,
 	descriptor nodes.CommandDescriptor,
-) (nodes.GatewayInvocationRecord, error) {
+) (nodes.GatewayInvocationRecord, bool, error) {
 	source.prepareCalls++
 	return source.store.Prepare(target, toolCallID, plan, descriptor)
 }
@@ -440,6 +453,41 @@ func TestNodeInvocationEventsReportUncertainThenObservedFailure(t *testing.T) {
 	if strings.Contains(string(encoded), "sensitive transport endpoint") ||
 		strings.Contains(string(encoded), "remote failure detail") {
 		t.Fatalf("audit events leaked errors: %s", encoded)
+	}
+}
+
+func TestNodeInvocationPreparedEventEmittedOnceForConcurrentToolCall(t *testing.T) {
+	base := newFakeNodeInvocationSource(t)
+	base.lookupMiss = true
+	source := &atomicPrepareNodeInvocationSource{fakeNodeInvocationSource: base}
+	eventBus := &recordingNodeEventBus{}
+	tools := []*NodeInvokeTool{
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source),
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source),
+	}
+	for _, tool := range tools {
+		tool.SetEventPublisher(eventBus)
+	}
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	start := make(chan struct{})
+	results := make(chan error, len(tools))
+	for _, tool := range tools {
+		go func() {
+			<-start
+			_, err := tool.ApprovalArguments(ctx, nodeInvocationTestArgs())
+			results <- err
+		}()
+	}
+	close(start)
+	for range tools {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent prepare failed: %v", err)
+		}
+	}
+
+	events := eventBus.snapshot()
+	if len(events) != 1 || events[0].Kind != runtimeevents.KindNodeInvocationPrepared {
+		t.Fatalf("prepared events = %#v, want one creation transition", events)
 	}
 }
 

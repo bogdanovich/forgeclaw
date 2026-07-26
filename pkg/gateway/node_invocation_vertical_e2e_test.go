@@ -191,6 +191,16 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer waitingSubscription.Close()
+	interactionEndSubscription, interactionEndEvents, err := eventBus.Channel().
+		OfKind(runtimeevents.KindAgentInteractionEnd).
+		SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{
+			Name:   "node-vertical-slice-interaction-end",
+			Buffer: 1,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer interactionEndSubscription.Close()
 
 	const sessionKey = "node-e2e-session"
 	response, err := agentLoop.ProcessDirectWithChannel(
@@ -274,6 +284,20 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("vertical-slice audit leaked %q: %s", forbidden, encoded)
 		}
+	}
+	waitForVerticalSliceEvent(
+		t,
+		interactionEndEvents,
+		runtimeevents.KindAgentInteractionEnd,
+	)
+	if _, err := agentLoop.ProcessDirectWithChannel(
+		t.Context(),
+		"/clear",
+		sessionKey,
+		"telegram",
+		"chat-e2e",
+	); err != nil {
+		t.Fatalf("clear vertical-slice context before shutdown: %v", err)
 	}
 }
 

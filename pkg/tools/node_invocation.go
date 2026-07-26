@@ -28,7 +28,7 @@ type NodeInvocationSource interface {
 		toolCallID string,
 		plan nodes.ExecutionPlan,
 		descriptor nodes.CommandDescriptor,
-	) (nodes.GatewayInvocationRecord, error)
+	) (nodes.GatewayInvocationRecord, bool, error)
 	LookupInvocationByToolCall(
 		principal nodes.GatewayInvocationPrincipal,
 		toolCallID string,
@@ -523,13 +523,13 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			"command input violates target policy",
 		)
 	}
-	record, err := runtime.source.PrepareInvocation(
+	record, created, err := runtime.source.PrepareInvocation(
 		resolved.name,
 		storedToolCallID,
 		plan,
 		descriptor,
 	)
-	if err == nil {
+	if err == nil && created {
 		runtime.publishInvocationEvent(
 			ctx,
 			runtimeevents.KindNodeInvocationPrepared,
