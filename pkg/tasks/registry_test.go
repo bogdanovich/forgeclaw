@@ -12,6 +12,84 @@ import (
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 )
 
+func TestRegistryCreateAtomicallyRejectsDuplicateTaskID(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, task := range []string{"first", "second"} {
+		go func() {
+			<-start
+			results <- registry.Create(Record{
+				TaskID: "shared", Task: task, Status: StatusRunning,
+			})
+		}()
+	}
+	close(start)
+
+	var succeeded, rejected int
+	for range 2 {
+		err := <-results
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrTaskAlreadyExists):
+			rejected++
+		default:
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+	if succeeded != 1 || rejected != 1 {
+		t.Fatalf("Create() results = %d success, %d duplicate", succeeded, rejected)
+	}
+	record, ok := registry.Get("shared")
+	if !ok || record.GenerationID == "" ||
+		(record.Task != "first" && record.Task != "second") {
+		t.Fatalf("stored task = (%#v, %v)", record, ok)
+	}
+}
+
+func TestRegistryCreateDoesNotReplaceExistingGeneration(t *testing.T) {
+	registry := NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	if err := registry.Create(Record{
+		TaskID: "active", Task: "original", Status: StatusRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	original, _ := registry.Get("active")
+	err := registry.Create(Record{
+		TaskID: "active", Task: "replacement", Status: StatusRunning,
+	})
+	if !errors.Is(err, ErrTaskAlreadyExists) {
+		t.Fatalf("Create() error = %v, want ErrTaskAlreadyExists", err)
+	}
+	stored, _ := registry.Get("active")
+	if stored.GenerationID != original.GenerationID || stored.Task != "original" {
+		t.Fatalf("duplicate Create replaced task: %#v", stored)
+	}
+}
+
+func TestRegistryCreateAcceptsCommittedWrite(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "tasks.json")
+	registry := NewRegistry(store)
+	registry.writeAtomic = func(path string, data []byte, mode os.FileMode) error {
+		if err := os.WriteFile(path, data, mode); err != nil {
+			return err
+		}
+		return &fileutil.CommittedWriteError{
+			Err: errors.New("directory sync failed"),
+		}
+	}
+	if err := registry.Create(Record{
+		TaskID: "committed", Task: "launch", Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	record, ok := registry.Get("committed")
+	if !ok || record.GenerationID == "" || record.Status != StatusRunning {
+		t.Fatalf("committed task = (%#v, %v)", record, ok)
+	}
+}
+
 func TestRegistryRestoresLoadedStateWhenStartupPruneWriteFails(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "state", "task_registry.json")
 	initial := NewRegistry(store)
@@ -662,19 +740,6 @@ func TestRegistryPreservesExplicitDeliverableReport(t *testing.T) {
 	nested := storedReport.Extra["nested"].(map[string]any)
 	if nested["key"] != "value" {
 		t.Fatalf("extra map aliased: %+v", storedReport.Extra)
-	}
-}
-
-func TestRegistryMaxNumericSuffix(t *testing.T) {
-	registry := NewRegistry("")
-	for _, id := range []string{"subagent-2", "subagent-10", "other-99"} {
-		if err := registry.Upsert(Record{TaskID: id, Runtime: RuntimeSubagent, Task: "t"}); err != nil {
-			t.Fatalf("Upsert(%s) error = %v", id, err)
-		}
-	}
-
-	if got := registry.MaxNumericSuffix("subagent-"); got != 10 {
-		t.Fatalf("MaxNumericSuffix() = %d, want 10", got)
 	}
 }
 

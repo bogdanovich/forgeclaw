@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +10,47 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
+
+func TestTaskRegistryForWorkspaceCanonicalizesAliases(t *testing.T) {
+	workspace := t.TempDir()
+	parent := t.TempDir()
+	symlink := filepath.Join(parent, "workspace-link")
+	if err := os.Symlink(workspace, symlink); err != nil {
+		t.Skipf("create workspace symlink: %v", err)
+	}
+	current, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	relative, err := filepath.Rel(current, workspace)
+	if err != nil {
+		t.Fatalf("filepath.Rel() error = %v", err)
+	}
+	al := &AgentLoop{}
+
+	registry := al.taskRegistryForWorkspace(workspace)
+	for name, alias := range map[string]string{
+		"dot":      workspace + string(os.PathSeparator) + ".",
+		"relative": relative,
+		"symlink":  symlink,
+	} {
+		if aliased := al.taskRegistryForWorkspace(alias); aliased != registry {
+			t.Fatalf("%s workspace alias created a distinct task registry", name)
+		}
+	}
+
+	for _, taskID := range []string{"task-real", "task-symlink"} {
+		if err := registry.Create(taskregistry.Record{TaskID: taskID}); err != nil {
+			t.Fatalf("Create(%q) error = %v", taskID, err)
+		}
+	}
+	reloaded := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	for _, taskID := range []string{"task-real", "task-symlink"} {
+		if _, ok := reloaded.Get(taskID); !ok {
+			t.Fatalf("reloaded registry lost %q", taskID)
+		}
+	}
+}
 
 func TestTaskRegistryForWorkspaceUsesConfiguredRetentionLimits(t *testing.T) {
 	workspace := t.TempDir()

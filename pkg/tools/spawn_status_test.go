@@ -447,7 +447,14 @@ func TestSpawnStatusTool_RestoresTasksFromPersistentRegistry(t *testing.T) {
 	}
 	task := *manager.tasks["subagent-1"]
 	manager.mu.Unlock()
-	manager.recordTask(&task, "succeeded", "delivered", "saved result")
+	if err := manager.createTask(&task); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.recordTask(
+		&task, "succeeded", "delivered", "saved result",
+	); err != nil {
+		t.Fatal(err)
+	}
 
 	reloaded := NewSubagentManager(provider, "test-model", workspace)
 	tool := NewSpawnStatusTool(reloaded)

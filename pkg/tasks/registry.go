@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +29,10 @@ const (
 	RuntimeCron     Runtime = "cron"
 )
 
-var ErrTraceCapturePending = errors.New("task trace capture is pending")
+var (
+	ErrTaskAlreadyExists   = errors.New("task already exists")
+	ErrTraceCapturePending = errors.New("task trace capture is pending")
+)
 
 type Status string
 
@@ -330,7 +332,20 @@ func (r *Registry) Stats() Stats {
 	return stats
 }
 
+// Create persists a new task generation without replacing an existing task.
+func (r *Registry) Create(rec Record) error {
+	err := r.storeNewGeneration(rec, true)
+	if fileutil.IsCommittedWriteError(err) {
+		return nil
+	}
+	return err
+}
+
 func (r *Registry) Upsert(rec Record) error {
+	return r.storeNewGeneration(rec, false)
+}
+
+func (r *Registry) storeNewGeneration(rec Record, rejectExisting bool) error {
 	if r == nil || strings.TrimSpace(rec.TaskID) == "" {
 		return nil
 	}
@@ -366,15 +381,20 @@ func (r *Registry) Upsert(rec Record) error {
 		r.mu.Unlock()
 		return err
 	}
-	if existing, ok := r.records[rec.TaskID]; ok &&
-		existing.TraceCapturePending {
-		r.mu.Unlock()
-		return fmt.Errorf(
-			"task %q generation %q: %w",
-			rec.TaskID,
-			existing.GenerationID,
-			ErrTraceCapturePending,
-		)
+	if existing, ok := r.records[rec.TaskID]; ok {
+		if rejectExisting {
+			r.mu.Unlock()
+			return fmt.Errorf("task %q: %w", rec.TaskID, ErrTaskAlreadyExists)
+		}
+		if existing.TraceCapturePending {
+			r.mu.Unlock()
+			return fmt.Errorf(
+				"task %q generation %q: %w",
+				rec.TaskID,
+				existing.GenerationID,
+				ErrTraceCapturePending,
+			)
+		}
 	}
 	rollbackState := r.captureStateLocked()
 	eventStart := len(r.events)
@@ -1061,20 +1081,6 @@ func (r *Registry) ListPendingTerminalDelivery() []Record {
 		}
 	}
 	return out
-}
-
-func (r *Registry) MaxNumericSuffix(prefix string) int {
-	maxSeq := 0
-	for _, rec := range r.List() {
-		if !strings.HasPrefix(rec.TaskID, prefix) {
-			continue
-		}
-		n, err := strconv.Atoi(strings.TrimPrefix(rec.TaskID, prefix))
-		if err == nil && n > maxSeq {
-			maxSeq = n
-		}
-	}
-	return maxSeq
 }
 
 func (r *Registry) normalizeRecord(rec Record, now int64) Record {

@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
@@ -80,7 +83,6 @@ type SubagentManager struct {
 	temperature    float64
 	hasMaxTokens   bool
 	hasTemperature bool
-	nextID         int
 	spawner        SpawnSubTurnFunc
 	taskRegistry   *taskregistry.Registry
 
@@ -92,22 +94,13 @@ type SubagentManager struct {
 	loopDetection loopguard.Config
 }
 
-func NewSubagentManager(
-	provider providers.LLMProvider,
-	defaultModel, workspace string,
-) *SubagentManager {
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	return NewSubagentManagerWithRegistry(provider, defaultModel, workspace, registry)
-}
-
+// NewSubagentManagerWithRegistry requires the canonical task registry shared
+// by every manager that owns the same workspace.
 func NewSubagentManagerWithRegistry(
 	provider providers.LLMProvider,
 	defaultModel, workspace string,
 	registry *taskregistry.Registry,
 ) *SubagentManager {
-	if registry == nil {
-		registry = taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	}
 	manager := &SubagentManager{
 		tasks:         make(map[string]*SubagentTask),
 		provider:      provider,
@@ -116,11 +109,7 @@ func NewSubagentManagerWithRegistry(
 		tools:         NewToolRegistry(),
 		maxIterations: 10,
 		loopDetection: loopguard.DefaultConfig(),
-		nextID:        registry.MaxNumericSuffix("subagent-") + 1,
 		taskRegistry:  registry,
-	}
-	if manager.nextID <= 0 {
-		manager.nextID = 1
 	}
 	manager.restoreTasksFromRegistry()
 	return manager
@@ -183,9 +172,7 @@ func (sm *SubagentManager) Spawn(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	taskID := fmt.Sprintf("subagent-%d", sm.nextID)
-	sm.nextID++
-
+	taskID := "subagent-" + uuid.NewString()
 	subagentTask := &SubagentTask{
 		ID:            taskID,
 		Task:          task,
@@ -197,8 +184,10 @@ func (sm *SubagentManager) Spawn(
 		Status:        "running",
 		Created:       time.Now().UnixMilli(),
 	}
+	if err := sm.createTask(subagentTask); err != nil {
+		return "", fmt.Errorf("persist spawned subagent: %w", err)
+	}
 	sm.tasks[taskID] = subagentTask
-	sm.recordTask(subagentTask, taskregistry.StatusRunning, taskregistry.DeliveryPending, "")
 
 	// Start task in background with context cancellation support
 	go sm.runTask(ctx, subagentTask, callback)
@@ -215,7 +204,6 @@ func (sm *SubagentManager) runTask(
 	callback AsyncCallback,
 ) {
 	task.Status = "running"
-	task.Created = time.Now().UnixMilli()
 	// TODO(eventbus): once subagents are modeled as child turns inside
 	// pkg/agent, emit SubTurnEnd and SubTurnResultDelivered from the parent
 	// AgentLoop instead of this legacy manager.
@@ -227,7 +215,12 @@ func (sm *SubagentManager) runTask(
 		task.Status = "canceled"
 		task.Result = "Task canceled before execution"
 		sm.mu.Unlock()
-		sm.recordTask(task, taskregistry.StatusCancelled, taskregistry.DeliveryNotApplicable, task.Result)
+		sm.recordTaskOrLog(
+			task,
+			taskregistry.StatusCancelled,
+			taskregistry.DeliveryNotApplicable,
+			task.Result,
+		)
 		return
 	default:
 	}
@@ -331,9 +324,19 @@ After completing the task, provide a clear summary of what was done.`
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			task.Status = "canceled"
 			task.Result = "Task canceled during execution"
-			sm.recordTask(task, taskregistry.StatusCancelled, taskregistry.DeliveryPending, task.Result)
+			sm.recordTaskOrLog(
+				task,
+				taskregistry.StatusCancelled,
+				taskregistry.DeliveryPending,
+				task.Result,
+			)
 		} else {
-			sm.recordTask(task, taskregistry.StatusFailed, taskregistry.DeliveryPending, task.Result)
+			sm.recordTaskOrLog(
+				task,
+				taskregistry.StatusFailed,
+				taskregistry.DeliveryPending,
+				task.Result,
+			)
 		}
 		result = &ToolResult{
 			ForLLM:  task.Result,
@@ -391,15 +394,66 @@ func subagentTaskFromRecord(rec taskregistry.Record) *SubagentTask {
 	}
 }
 
+func (sm *SubagentManager) createTask(task *SubagentTask) error {
+	if sm == nil || sm.taskRegistry == nil || task == nil {
+		return errors.New("subagent task registry is unavailable")
+	}
+	return sm.taskRegistry.Create(sm.taskRecord(
+		task,
+		taskregistry.StatusRunning,
+		taskregistry.DeliveryPending,
+		"",
+	))
+}
+
 func (sm *SubagentManager) recordTask(
 	task *SubagentTask,
 	status taskregistry.Status,
 	delivery taskregistry.DeliveryStatus,
 	summary string,
-) {
+) error {
+	return sm.updateTask(task, status, delivery, summary, nil)
+}
+
+func (sm *SubagentManager) updateTask(
+	task *SubagentTask,
+	status taskregistry.Status,
+	delivery taskregistry.DeliveryStatus,
+	summary string,
+	mutate func(*taskregistry.Record),
+) error {
 	if sm == nil || sm.taskRegistry == nil || task == nil {
-		return
+		return errors.New("subagent task registry is unavailable")
 	}
+	rec := sm.taskRecord(task, status, delivery, summary)
+	return sm.taskRegistry.Update(task.ID, func(stored *taskregistry.Record) {
+		stored.Runtime = rec.Runtime
+		stored.TaskKind = rec.TaskKind
+		stored.Channel = rec.Channel
+		stored.ChatID = rec.ChatID
+		stored.AgentID = rec.AgentID
+		stored.Label = rec.Label
+		stored.Task = rec.Task
+		stored.Status = rec.Status
+		stored.DeliveryStatus = rec.DeliveryStatus
+		stored.NotifyPolicy = rec.NotifyPolicy
+		stored.DeliveryMode = rec.DeliveryMode
+		stored.EndedAt = rec.EndedAt
+		stored.LastEventAt = rec.LastEventAt
+		stored.Error = rec.Error
+		stored.TerminalSummary = rec.TerminalSummary
+		if mutate != nil {
+			mutate(stored)
+		}
+	})
+}
+
+func (sm *SubagentManager) taskRecord(
+	task *SubagentTask,
+	status taskregistry.Status,
+	delivery taskregistry.DeliveryStatus,
+	summary string,
+) taskregistry.Record {
 	now := time.Now().UnixMilli()
 	rec := taskregistry.Record{
 		TaskID:         task.ID,
@@ -433,7 +487,22 @@ func (sm *SubagentManager) recordTask(
 	if status == taskregistry.StatusFailed {
 		rec.Error = summary
 	}
-	_ = sm.taskRegistry.Upsert(rec)
+	return rec
+}
+
+func (sm *SubagentManager) recordTaskOrLog(
+	task *SubagentTask,
+	status taskregistry.Status,
+	delivery taskregistry.DeliveryStatus,
+	summary string,
+) {
+	if err := sm.recordTask(task, status, delivery, summary); err != nil {
+		logger.WarnCF("subagent", "Failed to persist subagent task state", map[string]any{
+			"task_id": task.ID,
+			"status":  status,
+			"error":   err.Error(),
+		})
+	}
 }
 
 func (sm *SubagentManager) recordTaskResult(task *SubagentTask, result *ToolResult) {
@@ -450,12 +519,19 @@ func (sm *SubagentManager) recordTaskResult(task *SubagentTask, result *ToolResu
 	}
 	completion := completionPayloadForTaskRegistry(result)
 	deliverable := deliverablePayloadForTaskRegistry(result)
-	sm.recordTask(task, taskregistry.StatusSucceeded, delivery, summary)
-	if completion != nil || deliverable != nil {
-		_ = sm.taskRegistry.Update(task.ID, func(rec *taskregistry.Record) {
+	if err := sm.updateTask(
+		task,
+		taskregistry.StatusSucceeded,
+		delivery,
+		summary,
+		func(rec *taskregistry.Record) {
 			rec.Completion = completionPayloadForLegacyStorage(completion, deliverable)
 			rec.Deliverable = deliverable
-			rec.LastEventAt = time.Now().UnixMilli()
+		},
+	); err != nil {
+		logger.WarnCF("subagent", "Failed to persist subagent task result", map[string]any{
+			"task_id": task.ID,
+			"error":   err.Error(),
 		})
 	}
 }

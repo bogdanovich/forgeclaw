@@ -52,6 +52,12 @@ func normalizeRuntimeWorkspace(workspace string) string {
 	if workspace == "" {
 		return ""
 	}
+	if absolute, err := filepath.Abs(workspace); err == nil {
+		workspace = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(workspace); err == nil {
+		workspace = resolved
+	}
 	return filepath.Clean(workspace)
 }
 
