@@ -954,15 +954,15 @@ func TestParseInteractionAnswerSupportsWhitespaceDelimitedCommands(t *testing.T)
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			answer, err := parseInteractionAnswer(test.record, test.content, "message-1")
+			answer, parseErr := parseInteractionAnswer(test.record, test.content, "message-1")
 			if test.wantError {
-				if err == nil {
+				if parseErr == nil {
 					t.Fatalf("parseInteractionAnswer(%q) accepted malformed answer: %#v", test.content, answer)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("parseInteractionAnswer(%q) error = %v", test.content, err)
+			if parseErr != nil {
+				t.Fatalf("parseInteractionAnswer(%q) error = %v", test.content, parseErr)
 			}
 			if answer.Text != test.wantText || answer.MessageID != "message-1" {
 				t.Fatalf("answer = %#v, want text %q and message id message-1", answer, test.wantText)
@@ -974,6 +974,13 @@ func TestParseInteractionAnswerSupportsWhitespaceDelimitedCommands(t *testing.T)
 			}
 		})
 	}
+	if _, incompleteErr := parseInteractionAnswer(
+		multipleRecord,
+		"test_region: eu",
+		"message-incomplete",
+	); incompleteErr == nil {
+		t.Fatal("parseInteractionAnswer() accepted incomplete multi-question answer")
+	}
 	_, _, matched, err := parseInteractionAnswerEnvelope("/answerfoo 13ccbf94 yes")
 	if matched || err != nil {
 		t.Fatalf("/answerfoo envelope = (matched:%v, err:%v), want non-command", matched, err)
@@ -982,6 +989,13 @@ func TestParseInteractionAnswerSupportsWhitespaceDelimitedCommands(t *testing.T)
 	prompt := renderInteractionPrompt(multipleRecord)
 	if !strings.Contains(prompt, "`test_region`") || !strings.Contains(prompt, "`test_mode`") {
 		t.Fatalf("multi-question prompt omitted canonical IDs: %q", prompt)
+	}
+	if _, roundTripErr := parseInteractionAnswer(
+		multipleRecord,
+		"test_region: eu\ntest_mode: balanced",
+		"message-plain",
+	); roundTripErr != nil {
+		t.Fatalf("rendered question IDs did not round-trip through parser: %v", roundTripErr)
 	}
 	templateStart := strings.Index(prompt, "`/answer")
 	if templateStart < 0 {

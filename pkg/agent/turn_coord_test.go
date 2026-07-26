@@ -651,14 +651,17 @@ func TestPipeline_CallLLM_SimpleResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Errorf("expected ControlBreak, got %v", ctrl)
+	if ctrl.Control != ControlBreak {
+		t.Errorf("expected ControlBreak, got %v", ctrl.Control)
 	}
 	if exec.response == nil {
 		t.Fatal("expected non-nil response")
 	}
 	if exec.response.Content == "" {
 		t.Error("expected non-empty content")
+	}
+	if ctrl.FinalContent != exec.response.Content {
+		t.Fatalf("final content = %q, want %q", ctrl.FinalContent, exec.response.Content)
 	}
 }
 
@@ -723,8 +726,8 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackIdentityAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Fatalf("expected ControlBreak, got %v", ctrl)
+	if ctrl.Control != ControlBreak {
+		t.Fatalf("expected ControlBreak, got %v", ctrl.Control)
 	}
 	if exec.model.llmModelName != "secondary" {
 		t.Fatalf("exec.model.llmModelName = %q, want %q", exec.model.llmModelName, "secondary")
@@ -772,8 +775,8 @@ func TestPipeline_CallLLM_UsesSuccessfulFallbackDisplayNameWithoutAlias(t *testi
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Fatalf("expected ControlBreak, got %v", ctrl)
+	if ctrl.Control != ControlBreak {
+		t.Fatalf("expected ControlBreak, got %v", ctrl.Control)
 	}
 	if exec.model.llmModelName != "anthropic/claude-sonnet" {
 		t.Fatalf(
@@ -982,8 +985,8 @@ func TestPipeline_CallLLM_WithToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
-	if ctrl != ControlToolLoop {
-		t.Errorf("expected ControlToolLoop, got %v", ctrl)
+	if ctrl.Control != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop, got %v", ctrl.Control)
 	}
 	if len(exec.normalizedToolCalls) == 0 {
 		t.Fatal("expected tool calls")
@@ -1020,8 +1023,8 @@ func TestPipeline_CallLLM_UsesNativeSearchWithoutClientWebSearchTool(t *testing.
 	if err != nil {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Fatalf("expected ControlBreak, got %v", ctrl)
+	if ctrl.Control != ControlBreak {
+		t.Fatalf("expected ControlBreak, got %v", ctrl.Control)
 	}
 	if got, _ := provider.lastOpts["native_search"].(bool); !got {
 		t.Fatalf("expected native_search=true, got %#v", provider.lastOpts["native_search"])
@@ -1093,11 +1096,11 @@ func TestPipeline_CallLLM_HTTP5xxRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected HTTP 500 retry to recover, got error: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Fatalf("expected ControlBreak, got %v", ctrl)
+	if ctrl.Control != ControlBreak {
+		t.Fatalf("expected ControlBreak, got %v", ctrl.Control)
 	}
-	if exec.finalContent != "Recovered from server error" {
-		t.Fatalf("finalContent = %q, want recovered response", exec.finalContent)
+	if ctrl.FinalContent != "Recovered from server error" {
+		t.Fatalf("finalContent = %q, want recovered response", ctrl.FinalContent)
 	}
 	if provider.callCount != 2 {
 		t.Fatalf("callCount = %d, want 2", provider.callCount)
@@ -1236,8 +1239,8 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallLLM(first) failed: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Fatalf("CallLLM(first) control = %v, want %v", ctrl, ControlBreak)
+	if ctrl.Control != ControlBreak {
+		t.Fatalf("CallLLM(first) control = %v, want %v", ctrl.Control, ControlBreak)
 	}
 
 	secondTS := newTurnState(
@@ -1262,8 +1265,8 @@ func TestPipeline_CallLLM_StickyAutoFallbackAcrossTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallLLM(second) failed: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Fatalf("CallLLM(second) control = %v, want %v", ctrl, ControlBreak)
+	if ctrl.Control != ControlBreak {
+		t.Fatalf("CallLLM(second) control = %v, want %v", ctrl.Control, ControlBreak)
 	}
 
 	provider.mu.Lock()
@@ -1511,8 +1514,8 @@ func TestPipeline_ExecuteTools_NoTools(t *testing.T) {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
 
-	if ctrl != ControlBreak {
-		t.Fatalf("expected ControlBreak, got %v", ctrl)
+	if ctrl.Control != ControlBreak {
+		t.Fatalf("expected ControlBreak, got %v", ctrl.Control)
 	}
 	// No tools to execute, Finalize should be called directly
 }

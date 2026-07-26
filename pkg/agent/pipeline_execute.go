@@ -227,8 +227,9 @@ type toolLoopRunner struct {
 	iteration int
 	toolCalls []providers.ToolCall
 
-	messages           []providers.Message
-	handledAttachments []providers.Attachment
+	messages               []providers.Message
+	handledAttachments     []providers.Attachment
+	suspendedInteractionID string
 }
 
 const queuedSteeringDeferredToolResult = "Deferred without execution because a newer user message arrived. " +
@@ -237,7 +238,7 @@ const queuedSteeringDeferredToolResult = "Deferred without execution because a n
 
 // ExecuteTools executes the tool loop, handling BeforeTool/ApproveTool/AfterTool hooks,
 // tool execution with async callbacks, media delivery, and steering injection.
-// Returns ToolControl indicating what the coordinator should do next:
+// Returns an explicit outcome indicating what the coordinator should do next:
 //   - ToolControlContinue: all tool results handled, pendingMessages or steering exists, continue turn
 //   - ToolControlBreak: tool loop exited, proceed to coordinator's hardAbort/finalContent/finalize
 func (p *Pipeline) ExecuteTools(
@@ -246,7 +247,7 @@ func (p *Pipeline) ExecuteTools(
 	ts *turnState,
 	exec *turnExecution,
 	iteration int,
-) ToolControl {
+) ToolLoopOutcome {
 	normalizedToolCalls := exec.normalizedToolCalls
 	runner := &toolLoopRunner{
 		p:         p,
@@ -264,8 +265,7 @@ func (p *Pipeline) ExecuteTools(
 toolLoop:
 	for i, tc := range normalizedToolCalls {
 		if ts.hardAbortRequested() {
-			exec.abortedByHardAbort = true
-			return ToolControlBreak
+			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 		}
 
 		toolName := tc.Name
@@ -446,12 +446,10 @@ toolLoop:
 				runner.appendToolMessage(deniedMsg, toolMessagePersistOnly)
 				continue
 			case HookActionAbortTurn:
-				exec.abortedByHook = true
-				return ToolControlBreak
+				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHook}
 			case HookActionHardAbort:
 				_ = ts.requestHardAbort()
-				exec.abortedByHardAbort = true
-				return ToolControlBreak
+				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 			}
 		}
 		if p.Interaction.Hooks != nil && runner.skipPendingToolForInterrupt(tc, toolName, toolArgs) {
@@ -600,7 +598,10 @@ toolLoop:
 							approval.ActionSummary,
 						)
 						if suspended {
-							return control
+							return ToolLoopOutcome{
+								Control:                control,
+								SuspendedInteractionID: runner.suspendedInteractionID,
+							}
 						}
 						if fallback != nil {
 							hashErr = errors.New(fallback.ContentForLLM())
@@ -730,8 +731,7 @@ toolLoop:
 		toolDuration := time.Since(toolStart)
 
 		if ts.hardAbortRequested() {
-			exec.abortedByHardAbort = true
-			return ToolControlBreak
+			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 		}
 
 		if p.Interaction.Hooks != nil {
@@ -754,12 +754,10 @@ toolLoop:
 					}
 				}
 			case HookActionAbortTurn:
-				exec.abortedByHook = true
-				return ToolControlBreak
+				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHook}
 			case HookActionHardAbort:
 				_ = ts.requestHardAbort()
-				exec.abortedByHardAbort = true
-				return ToolControlBreak
+				return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 			}
 		}
 
@@ -778,7 +776,10 @@ toolLoop:
 				"",
 			)
 			if suspended {
-				return control
+				return ToolLoopOutcome{
+					Control:                control,
+					SuspendedInteractionID: runner.suspendedInteractionID,
+				}
 			}
 			toolResult = fallback
 		}
@@ -876,11 +877,13 @@ toolLoop:
 							"error":      errSummary,
 							"session_id": ts.sessionKey,
 						})
-					exec.finalContent = fatalMCPServerErrorReply(mcpServerName, toolName)
 					exec.allResponsesHandled = false
 					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 					exec.messages = runner.messages
-					return ToolControlBreak
+					return ToolLoopOutcome{
+						Control:      ToolControlBreak,
+						FinalContent: fatalMCPServerErrorReply(mcpServerName, toolName),
+					}
 				}
 				streak := ts.recentToolExecutionErrorStreak(toolName, func(rec ToolExecutionRecord) bool {
 					return isFatalMCPTransportErrorSummary(rec.ErrorSummary)
@@ -895,11 +898,13 @@ toolLoop:
 							"streak":     streak,
 							"session_id": ts.sessionKey,
 						})
-					exec.finalContent = repeatedFatalToolErrorReply(toolName)
 					exec.allResponsesHandled = false
 					runner.appendToolMessage(toolResultMsg, toolMessagePersistAndIngest)
 					exec.messages = runner.messages
-					return ToolControlBreak
+					return ToolLoopOutcome{
+						Control:      ToolControlBreak,
+						FinalContent: repeatedFatalToolErrorReply(toolName),
+					}
 				}
 			}
 		}
@@ -930,7 +935,7 @@ toolLoop:
 				"allResponsesHandled": exec.allResponsesHandled,
 			})
 		exec.allResponsesHandled = false
-		return ToolControlContinue
+		return ToolLoopOutcome{Control: ToolControlContinue}
 	}
 
 	// Poll for newly arrived steering
@@ -945,7 +950,7 @@ toolLoop:
 			})
 		exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 		exec.allResponsesHandled = false
-		return ToolControlContinue
+		return ToolLoopOutcome{Control: ToolControlContinue}
 	}
 
 	// No pending steering: finalize or break depending on allResponsesHandled
@@ -959,7 +964,7 @@ toolLoop:
 				"tool_count": len(normalizedToolCalls),
 			},
 		)
-		return ToolControlFinalize
+		return ToolLoopOutcome{Control: ToolControlFinalize}
 	}
 
 	if exec.allResponsesHandled {
@@ -1000,7 +1005,7 @@ toolLoop:
 				"iteration":  iteration,
 				"tool_count": len(normalizedToolCalls),
 			})
-		return ToolControlBreak
+		return ToolLoopOutcome{Control: ToolControlBreak}
 	}
 
 	// allResponsesHandled=false and no pending steering: continue so coordinator
@@ -1010,7 +1015,7 @@ toolLoop:
 	logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
 		"agent_id": ts.agent.ID, "iteration": iteration,
 	})
-	return ToolControlContinue
+	return ToolLoopOutcome{Control: ToolControlContinue}
 }
 
 func toolResultContextStatus(result *tools.ToolResult) providers.ToolResultStatus {
@@ -1282,7 +1287,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		"Deferred until the pending human input is resolved. Reissue this tool if it is still needed.",
 	)
 	r.exec.messages = r.messages
-	r.exec.suspendedInteractionID = disposition.InteractionID
+	r.suspendedInteractionID = disposition.InteractionID
 	r.p.emitEvent(
 		runtimeevents.KindAgentToolExecEnd,
 		r.ts.eventMeta("runTurn", "turn.tool.suspended"),
