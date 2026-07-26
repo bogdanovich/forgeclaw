@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/commands"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -35,7 +36,8 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		}
 		return
 	}
-	if err := al.cancelInteractionForControlMessage(ctx, msg, target); err != nil {
+	cancellation, err := al.cancelInteractionForControlMessage(ctx, msg, target)
+	if err != nil {
 		if noticeErr := al.publishInteractionNotice(
 			ctx,
 			msg,
@@ -46,6 +48,18 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		} else {
 			al.ackInboundMessage(ctx, msg)
 		}
+		return
+	}
+	if cancellation.CommandHandled {
+		al.publishStopReply(
+			ctx,
+			msg,
+			target.runtimeSessionScope(),
+			target.Agent.ID,
+			commands.StopResult{Stopped: cancellation.Canceled},
+			nil,
+		)
+		al.ackInboundMessage(ctx, msg)
 		return
 	}
 	if al.shouldHandleInteractionInbound(msg, target) {

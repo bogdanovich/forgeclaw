@@ -184,6 +184,13 @@ func testRestartConfig() config.GatewaySafeRestartConfig {
 	}
 }
 
+func useRestartRuntimeGOOS(t *testing.T, goos string) {
+	t.Helper()
+	original := restartRuntimeGOOS
+	restartRuntimeGOOS = goos
+	t.Cleanup(func() { restartRuntimeGOOS = original })
+}
+
 func knownPreflightOptions() RestartPreflightOptions {
 	return RestartPreflightOptions{
 		ActiveTurnsAvailable: true,
@@ -207,6 +214,8 @@ func TestNewRestartControllerRejectsDisabledConfig(t *testing.T) {
 }
 
 func TestNewRestartControllerRejectsUnsupportedManager(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
@@ -224,6 +233,8 @@ func TestNewRestartControllerRejectsUnsupportedManager(t *testing.T) {
 }
 
 func TestNewRestartControllerValidatesSystemdService(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
@@ -242,6 +253,8 @@ func TestNewRestartControllerValidatesSystemdService(t *testing.T) {
 }
 
 func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
@@ -286,6 +299,8 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 }
 
 func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -324,6 +339,8 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 }
 
 func TestRestartControllerKeepsRunningStatusForUncertainDispatch(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -350,6 +367,8 @@ func TestRestartControllerKeepsRunningStatusForUncertainDispatch(t *testing.T) {
 }
 
 func TestRestartControllerDefersUntilIdle(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
@@ -385,6 +404,8 @@ func TestRestartControllerDefersUntilIdle(t *testing.T) {
 }
 
 func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
@@ -428,6 +449,8 @@ func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
 }
 
 func TestRestartControllerFailsWhenDrainTimesOutWithoutForce(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
@@ -485,6 +508,8 @@ func TestGatewayRestartToolReportsControllerErrors(t *testing.T) {
 }
 
 func TestRestartControllerBackgroundFailureWritesFailedSentinel(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
@@ -518,6 +543,8 @@ func TestRestartControllerBackgroundFailureWritesFailedSentinel(t *testing.T) {
 }
 
 func TestRestartControllerDoesNotScheduleOverlappingRestart(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	store, err := NewRestartSentinelStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)

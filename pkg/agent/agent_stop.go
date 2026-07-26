@@ -37,9 +37,21 @@ func (al *AgentLoop) tryHandleStopCommand(
 		}
 	}
 
+	al.publishStopReply(ctx, msg, scope, agentID, result, err)
+	return true
+}
+
+func (al *AgentLoop) publishStopReply(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	scope runtimeSessionScope,
+	agentID string,
+	result commands.StopResult,
+	stopErr error,
+) {
 	reply := commands.FormatStopReply(result)
-	if err != nil {
-		reply = "Failed to stop task: " + err.Error()
+	if stopErr != nil {
+		reply = "Failed to stop task: " + stopErr.Error()
 	}
 
 	if al.channelManager != nil {
@@ -49,7 +61,6 @@ func (al *AgentLoop) tryHandleStopCommand(
 	al.PublishResponseIfNeeded(
 		ctx, scope.workspace, agentID, msg.Channel, msg.ChatID, scope.sessionKey, reply,
 	)
-	return true
 }
 
 func (al *AgentLoop) stopActiveTurnForScope(scope runtimeSessionScope) (commands.StopResult, error) {
