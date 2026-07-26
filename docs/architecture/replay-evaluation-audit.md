@@ -1,5 +1,9 @@
 # Replay and Evaluation Completion Audit
 
+> **Superseded:** This audit describes an evaluation architecture scheduled for
+> removal. See [Passive Diagnostics](passive-diagnostics.md) for the current
+> decision and implementation inventory.
+
 Audit target: merged `bogdanovich/forgeclaw:main` at
 `5a98ccbe82e6400ff42acf66d02c1f4c6f629acb`.
 
