@@ -895,6 +895,43 @@ func TestDeliveryOwner_CloseAdmissionWakesBlockedMediaEnqueue(t *testing.T) {
 	}
 }
 
+func TestDeliveryOwner_CloseAdmissionWaitsForSharedCompletion(t *testing.T) {
+	owner := newDeliveryOwner("test", &mockChannel{}, "test")
+	if _, ok := owner.beginEnqueue(); !ok {
+		t.Fatal("beginEnqueue() rejected open admission")
+	}
+
+	firstClosed := make(chan struct{})
+	go func() {
+		owner.closeAdmission()
+		close(firstClosed)
+	}()
+	waitForDeliveryOwnerClosed(t, owner)
+
+	secondClosed := make(chan struct{})
+	go func() {
+		owner.closeAdmission()
+		close(secondClosed)
+	}()
+	select {
+	case <-secondClosed:
+		t.Fatal("second closeAdmission returned before shared closure completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	owner.finishEnqueue()
+	for name, closed := range map[string]<-chan struct{}{
+		"first":  firstClosed,
+		"second": secondClosed,
+	} {
+		select {
+		case <-closed:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s closeAdmission did not observe shared completion", name)
+		}
+	}
+}
+
 func waitForInflightEnqueues(t *testing.T, owner *deliveryOwner, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

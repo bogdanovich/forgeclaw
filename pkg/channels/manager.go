@@ -80,6 +80,7 @@ type deliveryOwner struct {
 	mu               sync.Mutex
 	closed           bool
 	closedCh         chan struct{}
+	closeDone        chan struct{}
 	enqueueWG        sync.WaitGroup
 	inflightEnqueues int
 }
@@ -2020,10 +2021,11 @@ func newChannelWorker(name string, ch Channel, channelType string) *channelWorke
 
 func newDeliveryOwner(name string, ch Channel, channelType string) *deliveryOwner {
 	return &deliveryOwner{
-		name:     name,
-		ch:       ch,
-		worker:   newChannelWorker(name, ch, channelType),
-		closedCh: make(chan struct{}),
+		name:      name,
+		ch:        ch,
+		worker:    newChannelWorker(name, ch, channelType),
+		closedCh:  make(chan struct{}),
+		closeDone: make(chan struct{}),
 	}
 }
 
@@ -2031,7 +2033,11 @@ func deliveryOwnerFromWorker(name string, ch Channel, w *channelWorker) *deliver
 	if ch == nil || w == nil {
 		return nil
 	}
-	return &deliveryOwner{name: name, ch: ch, worker: w, closedCh: make(chan struct{})}
+	return &deliveryOwner{
+		name: name, ch: ch, worker: w,
+		closedCh:  make(chan struct{}),
+		closeDone: make(chan struct{}),
+	}
 }
 
 func (o *deliveryOwner) Worker() *channelWorker {
@@ -2140,19 +2146,28 @@ func (o *deliveryOwner) closeAdmission() {
 	}
 	o.mu.Lock()
 	if o.closed {
+		closeDone := o.closeDone
 		o.mu.Unlock()
+		if closeDone != nil {
+			<-closeDone
+		}
 		return
 	}
 	o.closed = true
 	if o.closedCh == nil {
 		o.closedCh = make(chan struct{})
 	}
+	if o.closeDone == nil {
+		o.closeDone = make(chan struct{})
+	}
+	closeDone := o.closeDone
 	close(o.closedCh)
 	o.mu.Unlock()
 
 	o.enqueueWG.Wait()
 	close(o.worker.queue)
 	close(o.worker.mediaQueue)
+	close(closeDone)
 }
 
 // runWorker processes outbound messages for a single channel.
