@@ -498,7 +498,21 @@ func isInteractionAnswerCommandToken(token string) bool {
 	if !strings.EqualFold(command, answerCommand) {
 		return false
 	}
-	return !hasMention || mention != ""
+	if !hasMention {
+		return true
+	}
+	if mention == "" {
+		return false
+	}
+	for _, char := range mention {
+		if (char < 'a' || char > 'z') &&
+			(char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') &&
+			char != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func (al *AgentLoop) publishInteractionNotice(

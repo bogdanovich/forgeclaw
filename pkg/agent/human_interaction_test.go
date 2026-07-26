@@ -1800,7 +1800,8 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
-	_, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	waitingRevision := record.Revision
 	target := &inboundDispatchTarget{
 		Agent: agent, SessionKey: request.Route.SessionKey,
 		RouteClaimKey: runtimeRouteClaimKey(request.Route.RouteSessionKey, ""),
@@ -1823,6 +1824,22 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 	msg.Content = "/answerfoo"
 	if al.shouldHandleInteractionInbound(msg, target) {
 		t.Fatal("command-prefix collision was consumed as an interaction answer")
+	}
+	for _, malformedCommand := range []string{
+		fmt.Sprintf("/answer@bot@junk %s yes", record.ShortID),
+		fmt.Sprintf("/answer@bot/path %s yes", record.ShortID),
+		fmt.Sprintf("/answer@ %s yes", record.ShortID),
+	} {
+		msg.Content = malformedCommand
+		if al.shouldHandleInteractionInbound(msg, target) {
+			t.Errorf("malformed answer command %q was consumed", malformedCommand)
+		}
+		current, _ := registry.Get(record.ID)
+		if current.Status != interactions.StatusWaiting ||
+			current.Revision != waitingRevision ||
+			current.Answer != nil {
+			t.Errorf("malformed answer command %q mutated interaction: %#v", malformedCommand, current)
+		}
 	}
 	msg.Content = "/reset"
 	result, err := al.cancelInteractionForControlMessage(t.Context(), msg, target)
