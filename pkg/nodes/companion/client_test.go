@@ -623,6 +623,13 @@ func testGatewayAdmission(t *testing.T) (*nodes.FileRegistry, *nodews.AdmissionH
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if closeErr := handler.Close(ctx); closeErr != nil {
+			t.Errorf("close test admission handler: %v", closeErr)
+		}
+	})
 	return registry, handler
 }
 
