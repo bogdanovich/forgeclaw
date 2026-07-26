@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"context"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evalcapture"
@@ -13,10 +11,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
-const (
-	tracePersistBuffer        = 128
-	traceShutdownDrainTimeout = 5 * time.Second
-)
+const tracePersistBuffer = 128
 
 type traceCaptureManager struct {
 	mu      sync.Mutex
@@ -92,10 +87,6 @@ func (m *traceCaptureManager) enabled() bool {
 }
 
 func (m *traceCaptureManager) close() {
-	m.closeWithTimeout(traceShutdownDrainTimeout)
-}
-
-func (m *traceCaptureManager) closeWithTimeout(drainTimeout time.Duration) {
 	if m == nil {
 		return
 	}
@@ -112,20 +103,9 @@ func (m *traceCaptureManager) closeWithTimeout(drainTimeout time.Duration) {
 	m.mu.Unlock()
 
 	turns.close()
-	drainCtx, drainCancel := context.WithTimeout(
-		context.Background(),
-		drainTimeout,
-	)
 	if writer != nil {
-		if err := writer.Close(drainCtx); err != nil {
-			logger.WarnCF(
-				"evaltrace",
-				"Trace writer did not drain before shutdown deadline",
-				map[string]any{"error": err.Error()},
-			)
-		}
+		writer.Close()
 	}
-	drainCancel()
 }
 
 func (m *traceCaptureManager) enqueuePersist(
@@ -140,12 +120,11 @@ func (m *traceCaptureManager) enqueuePersist(
 	writer := m.writer
 	m.mu.Unlock()
 	if writer == nil {
-		return &evalcapture.AdmissionError{
+		return &evalcapture.DropError{
 			Reason: evalcapture.ReasonClosed, TraceID: finalized.TraceID,
-			Class: evalcapture.ClassCritical,
 		}
 	}
-	err = writer.Submit(policy, finalized, evalcapture.ClassCritical)
+	err = writer.Submit(policy, finalized)
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
@@ -159,9 +138,8 @@ func prepareTrace(
 	trace *activeTraceCapture,
 ) (evaltrace.Trace, evalcapture.Policy, error) {
 	if trace == nil || strings.TrimSpace(trace.workspace) == "" {
-		return evaltrace.Trace{}, evalcapture.Policy{}, &evalcapture.AdmissionError{
+		return evaltrace.Trace{}, evalcapture.Policy{}, &evalcapture.DropError{
 			Reason: evalcapture.ReasonInvalidTrace,
-			Class:  evalcapture.ClassCritical,
 		}
 	}
 	finalized, err := trace.builder.Finalize()
@@ -185,7 +163,7 @@ func logTraceWriterEvent(event evalcapture.Event) {
 	}
 	fields := map[string]any{
 		"event": string(event.Kind), "reason": string(event.Reason),
-		"trace_id": event.TraceID, "class": string(event.Class),
+		"trace_id": event.TraceID,
 	}
 	if event.Attempt > 0 {
 		fields["attempt"] = event.Attempt
