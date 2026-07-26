@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,115 @@ type deliveryInteractionState struct {
 	typingStops   sync.Map // "channel:chatID" -> typingEntry
 	reactionUndos sync.Map // "channel:chatID" -> reactionEntry
 	toolFeedback  *ToolFeedbackCoordinator
+}
+
+func (s *deliveryInteractionState) initializeToolFeedback(
+	config ToolFeedbackAnimatorConfig,
+	separateMessages bool,
+) {
+	s.toolFeedback = NewToolFeedbackCoordinator(config, separateMessages)
+}
+
+func (s *deliveryInteractionState) hasToolFeedback() bool {
+	return s != nil && s.toolFeedback != nil
+}
+
+func (s *deliveryInteractionState) beginToolFeedbackTerminals(
+	keys []string,
+	scoped bool,
+) []*toolFeedbackTerminal {
+	if !s.hasToolFeedback() {
+		return nil
+	}
+	terminals := make([]*toolFeedbackTerminal, 0, len(keys))
+	for _, key := range keys {
+		if scoped {
+			terminals = append(terminals, s.toolFeedback.BeginTerminal(key))
+		} else {
+			terminals = append(terminals, s.toolFeedback.BeginTransientTerminal(key))
+		}
+	}
+	return terminals
+}
+
+func (s *deliveryInteractionState) completeToolFeedbackTerminals(
+	ctx context.Context,
+	terminals []*toolFeedbackTerminal,
+	success bool,
+) {
+	if !s.hasToolFeedback() {
+		return
+	}
+	for _, terminal := range terminals {
+		s.toolFeedback.CompleteTerminal(ctx, terminal, success)
+	}
+}
+
+func (s *deliveryInteractionState) deliverToolFeedback(
+	ctx context.Context,
+	key, chatID, content string,
+	operations toolFeedbackOperations,
+	send func(context.Context, string) (toolFeedbackSendResult, error),
+) ([]string, error) {
+	if !s.hasToolFeedback() {
+		result, err := send(ctx, content)
+		return result.messageIDs, err
+	}
+	return s.toolFeedback.deliver(ctx, key, chatID, content, operations, send)
+}
+
+func (s *deliveryInteractionState) dismissToolFeedback(
+	ctx context.Context,
+	keys []string,
+	scoped bool,
+) {
+	if !s.hasToolFeedback() {
+		return
+	}
+	for _, key := range keys {
+		if scoped {
+			s.toolFeedback.Dismiss(ctx, key)
+		} else {
+			s.toolFeedback.DismissTransient(ctx, key)
+		}
+	}
+}
+
+func (s *deliveryInteractionState) singleActiveScopedToolFeedbackKey(base string) (string, bool) {
+	if !s.hasToolFeedback() {
+		return "", false
+	}
+	return s.toolFeedback.singleActiveScopedKey(base)
+}
+
+func (s *deliveryInteractionState) releaseToolFeedbackTerminals(keys []string) {
+	if !s.hasToolFeedback() {
+		return
+	}
+	for _, key := range keys {
+		s.toolFeedback.ReleaseTerminal(key)
+	}
+}
+
+func (s *deliveryInteractionState) stopToolFeedback() {
+	if s.hasToolFeedback() {
+		s.toolFeedback.StopAll()
+	}
+}
+
+func (s *deliveryInteractionState) retireToolFeedbackChannel(ctx context.Context, channel string) {
+	if s.hasToolFeedback() {
+		s.toolFeedback.RetireChannel(ctx, channel)
+	}
+}
+
+func (s *deliveryInteractionState) configureToolFeedback(
+	config ToolFeedbackAnimatorConfig,
+	separateMessages bool,
+) {
+	if s.hasToolFeedback() {
+		s.toolFeedback.Configure(config, separateMessages)
+	}
 }
 
 func (s *deliveryInteractionState) expire(now time.Time) {

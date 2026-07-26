@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,58 @@ func TestDeliveryInteractionStateExpire(t *testing.T) {
 		if _, ok := stateEntry(&state, key); !ok {
 			t.Fatalf("current entry %q was removed", key)
 		}
+	}
+}
+
+func TestDeliveryInteractionStateOwnsToolFeedbackCoordinator(t *testing.T) {
+	state := deliveryInteractionState{}
+	if state.hasToolFeedback() {
+		t.Fatal("zero interaction state unexpectedly has tool feedback")
+	}
+	if terminals := state.beginToolFeedbackTerminals([]string{"test:chat-1"}, true); terminals != nil {
+		t.Fatalf("zero-state terminals = %+v, want nil", terminals)
+	}
+
+	state.initializeToolFeedback(
+		ToolFeedbackAnimatorConfig{AnimationInterval: time.Hour},
+		false,
+	)
+	t.Cleanup(state.stopToolFeedback)
+	if !state.hasToolFeedback() {
+		t.Fatal("initialized interaction state has no tool feedback")
+	}
+
+	terminals := state.beginToolFeedbackTerminals([]string{"test:chat-1"}, true)
+	if len(terminals) != 1 || terminals[0] == nil {
+		t.Fatalf("beginToolFeedbackTerminals() = %+v", terminals)
+	}
+	state.completeToolFeedbackTerminals(context.Background(), terminals, false)
+	state.configureToolFeedback(
+		ToolFeedbackAnimatorConfig{AnimationInterval: time.Hour},
+		true,
+	)
+	if !state.toolFeedback.separateMessages() {
+		t.Fatal("configureToolFeedback() did not update separate-message mode")
+	}
+}
+
+func TestDeliveryInteractionStateToolFeedbackFallback(t *testing.T) {
+	state := deliveryInteractionState{}
+	messageIDs, err := state.deliverToolFeedback(
+		context.Background(),
+		"test:chat-1",
+		"chat-1",
+		"working",
+		toolFeedbackOperations{},
+		func(_ context.Context, content string) (toolFeedbackSendResult, error) {
+			if content != "working" {
+				t.Fatalf("fallback content = %q, want working", content)
+			}
+			return toolFeedbackSendResult{messageIDs: []string{"message-1"}}, nil
+		},
+	)
+	if err != nil || len(messageIDs) != 1 || messageIDs[0] != "message-1" {
+		t.Fatalf("fallback delivery = (%v, %v)", messageIDs, err)
 	}
 }
 
