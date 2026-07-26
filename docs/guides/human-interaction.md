@@ -37,18 +37,45 @@ text or offer two to three choices. ForgeClaw sends the prompt to the same route
 conversation and accepts an answer only from the recorded channel, account,
 chat, topic, session, and sender.
 
-For one question, reply normally or use:
+The model owns every user-facing question, header, option label, and option
+description. It writes them in the language and general style of the
+conversation and includes enough context for the prompt to be answerable
+without runtime-added prose. ForgeClaw renders that content directly. It does
+not detect a locale, translate text, or make another model call after
+suspension.
+
+For one question, the prompt contains the model-authored content followed by a
+compact command fallback:
 
 ```text
-/answer <short-id> <answer>
+Which environment should be used?
+
+• development — Local development.
+• staging — Pre-production validation.
+• production — The live environment.
+
+`/answer 16131195 …`
 ```
 
-For several questions, reply with one line per question:
+A normal message reply remains sufficient. For several questions, ForgeClaw
+adds question numbers and stable question IDs, then appends a keyed answer
+template:
 
 ```text
-deployment_mode: rolling
-maintenance_window: 02:00 UTC
+1. `region`
+Which region should be used?
+
+2. `mode`
+Which deployment mode should be used?
+
+`/answer 16131195`
+`region: …`
+`mode: …`
 ```
+
+The short interaction ID, question IDs, option layout, and `/answer` syntax are
+runtime-owned machine structure. Replies may contain the keyed lines directly
+or prefix them with the shown `/answer <short-id>` command.
 
 Commands such as `/new`, `/reset`, and `/clear` cancel the pending interaction
 before changing the session. `/stop` durably cancels it and completes the
@@ -78,13 +105,22 @@ Human approval is opt-in. A trusted tool approval hook can return:
 ```
 
 `action_summary` is trusted presentation data and must be action-specific,
-bounded, and free of secrets. ForgeClaw adds the runtime-owned tool name and
-never generically renders tool arguments.
+bounded, and free of secrets. ForgeClaw renders the exact runtime-owned tool
+name and trusted summary without model-authored approval presentation or
+generic tool arguments:
 
-Reply `allow_once` to authorize that exact tool call once, or `deny`. The runtime
-binds approval to the tool call and canonical argument hash, checks expiry,
-revalidates current policy, and consumes the grant before execution. The model
-cannot create its own approval authority or select the approving user.
+```text
+filesystem_delete
+Delete the production cache namespace
+
+`/answer a1b2c3d4 allow_once`
+`/answer a1b2c3d4 deny`
+```
+
+Direct `allow_once` and `deny` replies also work. The runtime binds approval to
+the tool call and canonical argument hash, checks expiry, revalidates current
+policy, and consumes the grant before execution. The model cannot create its
+own approval authority or select the approving user.
 
 ## Restart and Delivery Semantics
 

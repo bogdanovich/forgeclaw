@@ -9,24 +9,24 @@ import (
 	"github.com/sipeed/picoclaw/pkg/interactions"
 )
 
-// renderApprovalAction combines runtime-owned identity with trusted policy
-// presentation. Tool arguments are deliberately never serialized here.
-func renderApprovalAction(toolName, actionSummary string) (string, error) {
+// validateApprovalDisplay validates runtime-owned identity and trusted policy
+// presentation before the interaction persists them separately. Tool arguments
+// are deliberately never serialized here.
+func validateApprovalDisplay(toolName, actionSummary string) error {
 	if err := validateApprovalDisplayText("tool name", toolName, 256); err != nil {
-		return "", err
+		return err
 	}
 	if err := validateApprovalDisplayText(
 		"action summary",
 		actionSummary,
 		interactions.MaxSummaryLength,
 	); err != nil {
-		return "", err
+		return err
 	}
-	action := fmt.Sprintf("Tool: %s\nAction: %s", toolName, actionSummary)
-	if utf8.RuneCountInString(action) > interactions.MaxApprovalAction {
-		return "", fmt.Errorf("approval action exceeds the display limit")
+	if utf8.RuneCountInString(actionSummary) > interactions.MaxApprovalAction {
+		return fmt.Errorf("approval action exceeds the display limit")
 	}
-	return action, nil
+	return nil
 }
 
 func validateApprovalDisplayText(field, value string, maxRunes int) error {

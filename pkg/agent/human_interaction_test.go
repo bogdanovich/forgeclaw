@@ -262,8 +262,11 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 	}
 	select {
 	case outbound := <-manager.sent:
-		if !strings.Contains(outbound.Content, "Input needed ["+record.ShortID+"]") ||
+		if !strings.Contains(outbound.Content, "Which mode should be used?") ||
 			!strings.Contains(outbound.Content, "Canary") ||
+			!strings.Contains(outbound.Content, "`/answer "+record.ShortID+" …`") ||
+			strings.Contains(outbound.Content, "Input needed") ||
+			strings.Contains(outbound.Content, "Reply with your answer") ||
 			outbound.Context.Raw[interactionIDMetadata] != record.ID ||
 			outbound.Context.Raw["delivery_key"] != interactionDeliveryKey(record.ID, "prompt") ||
 			outbound.Context.Account != "primary" {
@@ -803,7 +806,7 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 		t.Fatal("parseInteractionAnswer() accepted incomplete multi-question answer")
 	}
 	prompt := renderInteractionPrompt(record)
-	if !strings.Contains(prompt, "[target]") || !strings.Contains(prompt, "[mode]") {
+	if !strings.Contains(prompt, "`target`") || !strings.Contains(prompt, "`mode`") {
 		t.Fatalf("multi-question prompt omitted canonical IDs: %q", prompt)
 	}
 	if _, err := parseInteractionAnswer(
@@ -815,18 +818,105 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 	}
 }
 
+func TestRenderInteractionPromptUsesAgentAuthoredLanguage(t *testing.T) {
+	tests := []struct {
+		name   string
+		record interactions.Record
+		want   string
+	}{
+		{
+			name: "Russian single question with options",
+			record: interactions.Record{
+				ShortID: "16131195",
+				Questions: []interactions.Question{{
+					ID: "environment", Question: "Какую среду выбрать?",
+					Options: []interactions.Option{
+						{Label: "development", Description: "Среда разработки."},
+						{Label: "staging", Description: "Предпродовая среда."},
+						{Label: "production", Description: "Боевая среда."},
+					},
+				}},
+			},
+			want: "Какую среду выбрать?\n\n" +
+				"• development — Среда разработки.\n" +
+				"• staging — Предпродовая среда.\n" +
+				"• production — Боевая среда.\n\n" +
+				"`/answer 16131195 …`",
+		},
+		{
+			name: "Japanese single question with header",
+			record: interactions.Record{
+				ShortID: "8f03c2aa",
+				Questions: []interactions.Question{{
+					ID: "region", Header: "地域", Question: "デプロイ先を選んでください。",
+				}},
+			},
+			want: "地域\n\nデプロイ先を選んでください。\n\n`/answer 8f03c2aa …`",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := renderInteractionPrompt(test.record); got != test.want {
+				t.Fatalf("renderInteractionPrompt() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRenderMultipleQuestionPromptUsesNeutralAnswerTemplate(t *testing.T) {
+	record := interactions.Record{
+		ShortID: "16131195",
+		Questions: []interactions.Question{
+			{ID: "region", Header: "Регион", Question: "Какой регион использовать?"},
+			{ID: "mode", Header: "Режим", Question: "Какой режим развёртывания выбрать?"},
+		},
+	}
+	want := "1. `region` Регион\nКакой регион использовать?\n\n" +
+		"2. `mode` Режим\nКакой режим развёртывания выбрать?\n\n" +
+		"`/answer 16131195`\n`region: …`\n`mode: …`"
+	got := renderInteractionPrompt(record)
+	if got != want {
+		t.Fatalf("renderInteractionPrompt() = %q, want %q", got, want)
+	}
+	for _, removed := range []string{"Input needed", "Reply with", "question_id", "<answer>"} {
+		if strings.Contains(got, removed) {
+			t.Fatalf("prompt retained runtime prose %q: %q", removed, got)
+		}
+	}
+}
+
+func TestParseSingleInteractionAnswerSupportsDirectAndCommandReplies(t *testing.T) {
+	record := interactions.Record{
+		ShortID: "16131195",
+		Questions: []interactions.Question{{
+			ID: "environment", Question: "Какую среду выбрать?",
+		}},
+	}
+	for _, reply := range []string{"production", "/answer 16131195 production"} {
+		answer, err := parseInteractionAnswer(record, reply, "message-single")
+		if err != nil || answer.Text != "production" || answer.MessageID != "message-single" {
+			t.Fatalf("parseInteractionAnswer(%q) = (%#v, %v)", reply, answer, err)
+		}
+	}
+}
+
 func TestApprovalPromptAndAnswerUseFixedPolicyChoices(t *testing.T) {
 	record := interactions.Record{
 		Kind: interactions.KindApproval, ShortID: "APR123",
+		Origin:         interactions.Origin{ToolName: "deploy"},
 		PromptSummary:  "Run a protected deployment command?",
-		ApprovalAction: "Tool: deploy\nAction: Run a protected deployment command?",
+		ApprovalAction: "Run a protected deployment command?",
 	}
 	prompt := renderInteractionPrompt(record)
-	if !strings.Contains(prompt, "Approval needed [APR123]") ||
-		!strings.Contains(prompt, record.PromptSummary) ||
-		!strings.Contains(prompt, record.ApprovalAction) ||
-		!strings.Contains(prompt, "allow_once") || !strings.Contains(prompt, "deny") {
-		t.Fatalf("approval prompt = %q", prompt)
+	want := "deploy\nRun a protected deployment command?\n\n" +
+		"`/answer APR123 allow_once`\n`/answer APR123 deny`"
+	if prompt != want {
+		t.Fatalf("approval prompt = %q, want %q", prompt, want)
+	}
+	for _, removed := range []string{"Approval needed", "Requested action", "Reply"} {
+		if strings.Contains(prompt, removed) {
+			t.Fatalf("approval prompt retained runtime prose %q: %q", removed, prompt)
+		}
 	}
 	answer, err := parseInteractionAnswer(record, "/answer apr123 allow once", "message-approval")
 	if err != nil || answer.Text != "allow_once" || answer.MessageID != "message-approval" {
@@ -851,7 +941,10 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 		revokePolicy   bool
 		mutateArgs     bool
 	}{
-		{name: "allow once", answer: "allow_once", outcome: interactions.OutcomeAllowed, wantExecutions: 1, wantConsumed: true},
+		{
+			name: "allow once", answer: "allow_once", outcome: interactions.OutcomeAllowed,
+			wantExecutions: 1, wantConsumed: true,
+		},
 		{name: "deny", answer: "deny", outcome: interactions.OutcomeDenied},
 		{name: "policy revoked", answer: "allow_once", outcome: interactions.OutcomeAllowed, revokePolicy: true},
 		{name: "arguments changed", answer: "allow_once", outcome: interactions.OutcomeAllowed, mutateArgs: true},
@@ -908,9 +1001,10 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 			}
 			select {
 			case prompt := <-manager.sent:
-				if !strings.Contains(prompt.Content, "Approval needed") ||
-					!strings.Contains(prompt.Content, "Tool: approval_counting") ||
-					!strings.Contains(prompt.Content, "Action: Run the protected test action") ||
+				if !strings.Contains(prompt.Content, "approval_counting") ||
+					!strings.Contains(prompt.Content, "Run the protected test action") ||
+					!strings.Contains(prompt.Content, "`/answer "+record.ShortID+" allow_once`") ||
+					strings.Contains(prompt.Content, "Approval needed") ||
 					strings.Contains(prompt.Content, "secret-value") {
 					t.Fatalf("approval prompt = %#v", prompt)
 				}
@@ -1166,7 +1260,7 @@ func TestHumanApprovalNeverRendersGenericArguments(t *testing.T) {
 		al.interactionRegistryForWorkspace(agent.Workspace), "session-opaque",
 	)
 	if !ok || strings.Contains(record.ApprovalAction, "PRIVATE KEY") ||
-		record.ApprovalAction != "Tool: approval_counting\nAction: Rotate production signing material" {
+		record.ApprovalAction != "Rotate production signing material" {
 		t.Fatalf("approval interaction = %#v", record)
 	}
 	select {
@@ -1226,7 +1320,7 @@ func TestApprovalRecoveryNeverReexecutesConsumedOrTimedOutCall(t *testing.T) {
 					},
 				},
 				PromptSummary:  "Run recovery action",
-				ApprovalAction: "Tool: approval_counting\nAction: Run recovery action",
+				ApprovalAction: "Run recovery action",
 				ExpiresAt:      expiresAt,
 			})
 			if err != nil {
@@ -1419,7 +1513,7 @@ func TestExpiredAllowOnceNeverExecutesProtectedTool(t *testing.T) {
 					ArgumentHash: argumentHash, ExecutionContext: inbound,
 				},
 				PromptSummary:  "Run the protected action",
-				ApprovalAction: "Tool: approval_counting\nAction: Run the protected action",
+				ApprovalAction: "Run the protected action",
 				ExpiresAt:      now.Add(time.Minute),
 			})
 			if err != nil {
