@@ -47,7 +47,7 @@ func (al *AgentLoop) interactionRegistryForWorkspace(workspace string) *interact
 	if al == nil {
 		return nil
 	}
-	workspace = strings.TrimSpace(workspace)
+	workspace = normalizeRuntimeWorkspace(workspace)
 	if workspace == "" {
 		return nil
 	}

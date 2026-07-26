@@ -99,7 +99,7 @@ func (p *interactionTraceProjector) attach(
 	if p == nil || registry == nil {
 		return
 	}
-	workspace = strings.TrimSpace(workspace)
+	workspace = normalizeRuntimeWorkspace(workspace)
 	if workspace == "" {
 		return
 	}
@@ -524,6 +524,7 @@ func (s *interactionTraceSource) Confirm(
 }
 
 func interactionTraceSourceID(workspace string) string {
+	workspace = normalizeRuntimeWorkspace(workspace)
 	sum := sha256.Sum256([]byte(workspace))
 	return fmt.Sprintf("interaction:%x", sum[:12])
 }
@@ -586,6 +587,7 @@ func buildInteractionTrace(
 	record interactions.Record,
 	events []interactions.Event,
 ) (*activeTraceCapture, interactionTraceEvidence) {
+	workspace = normalizeRuntimeWorkspace(workspace)
 	startedAt := time.UnixMilli(record.CreatedAt)
 	if record.CreatedAt <= 0 {
 		startedAt = time.UnixMilli(1)
@@ -600,7 +602,7 @@ func buildInteractionTrace(
 			SchemaVersion: evaltrace.SchemaVersionV1,
 			TraceID: opaqueTraceID(
 				"interaction",
-				strings.TrimSpace(workspace)+"\x00"+record.ID,
+				workspace+"\x00"+record.ID,
 				startedAt,
 			),
 			CreatedAt: startedAt.UTC(),

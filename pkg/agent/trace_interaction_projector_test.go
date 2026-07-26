@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -94,9 +95,61 @@ func TestBuildInteractionTraceUsesWorkspaceInIdentity(t *testing.T) {
 	}
 	settings := traceCaptureSettingsFromConfig(traceTestConfig(t.TempDir()))
 	left, _ := buildInteractionTrace(settings, "/workspace/a", record, events)
+	alias, _ := buildInteractionTrace(
+		settings, "/workspace/a/.", record, events,
+	)
 	right, _ := buildInteractionTrace(settings, "/workspace/b", record, events)
+	if left.builder.TraceID() != alias.builder.TraceID() ||
+		interactionTraceSourceID("/workspace/a") !=
+			interactionTraceSourceID("/workspace/a/.") {
+		t.Fatal("workspace alias changed interaction trace identity")
+	}
 	if left.builder.TraceID() == right.builder.TraceID() {
 		t.Fatalf("workspace collision produced trace ID %q", left.builder.TraceID())
+	}
+}
+
+func TestInteractionTraceWorkspaceAliasesShareRegistrySourceAndTrace(t *testing.T) {
+	workspace := t.TempDir()
+	alias := workspace + string(os.PathSeparator) + "."
+	eventBus := runtimeevents.NewBus()
+	cfg := traceTestConfig(workspace)
+	manager := newTraceCaptureManager(cfg, eventBus)
+	al := &AgentLoop{cfg: cfg, traceCapture: manager}
+
+	registry := al.interactionRegistryForWorkspace(workspace)
+	if aliasRegistry := al.interactionRegistryForWorkspace(alias); aliasRegistry != registry {
+		t.Fatal("workspace aliases created distinct interaction registries")
+	}
+	now := time.Now().UTC()
+	record := cancelInteractionForTrace(
+		t, registry, "interaction-alias", "session-alias", now,
+	)
+	waitForInteractionTraceMarkerCleared(t, registry, record.ID)
+	_ = waitForTraceFile(t, workspace)
+	manager.interactions.mu.Lock()
+	registryCount := len(manager.interactions.registries)
+	sourceCount := len(manager.interactions.sources)
+	manager.interactions.mu.Unlock()
+	if registryCount != 1 || sourceCount != 1 {
+		t.Fatalf(
+			"projector aliases = %d registries, %d sources",
+			registryCount,
+			sourceCount,
+		)
+	}
+	manager.close()
+	if err := eventBus.Close(); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(
+		filepath.Join(workspace, "state", "evaluation", "traces", "*.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("workspace aliases persisted %d traces, want 1", len(matches))
 	}
 }
 
