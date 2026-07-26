@@ -5723,39 +5723,17 @@ func TestTypingStopJanitorEviction(t *testing.T) {
 	m := newTestManager()
 
 	var stopCalled atomic.Bool
-	// Store a typing entry with a creation time far in the past
 	m.typingStops.Store("test:123", typingEntry{
 		stop:      func() { stopCalled.Store(true) },
-		createdAt: time.Now().Add(-10 * time.Minute), // well past typingStopTTL
+		createdAt: time.Now().Add(-10 * time.Minute),
 	})
 
-	// Run janitor with a short-lived context
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Manually trigger the janitor logic once by simulating a tick
-	go func() {
-		// Override janitor to run immediately
-		now := time.Now()
-		m.typingStops.Range(func(key, value any) bool {
-			if entry, ok := value.(typingEntry); ok {
-				if now.Sub(entry.createdAt) > typingStopTTL {
-					if _, loaded := m.typingStops.LoadAndDelete(key); loaded {
-						entry.stop()
-					}
-				}
-			}
-			return true
-		})
-		cancel()
-	}()
-
-	<-ctx.Done()
+	m.deliveryInteractionState.expire(time.Now())
 
 	if !stopCalled.Load() {
 		t.Fatal("expected typing stop function to be called by janitor eviction")
 	}
 
-	// Verify entry was deleted
 	if _, loaded := m.typingStops.Load("test:123"); loaded {
 		t.Fatal("expected typing entry to be deleted after eviction")
 	}
@@ -5764,24 +5742,13 @@ func TestTypingStopJanitorEviction(t *testing.T) {
 func TestPlaceholderJanitorEviction(t *testing.T) {
 	m := newTestManager()
 
-	// Store a placeholder entry with a creation time far in the past
 	m.placeholders.Store("test:456", placeholderEntry{
 		id:        "msg_old",
-		createdAt: time.Now().Add(-20 * time.Minute), // well past placeholderTTL
+		createdAt: time.Now().Add(-20 * time.Minute),
 	})
 
-	// Simulate janitor logic
-	now := time.Now()
-	m.placeholders.Range(func(key, value any) bool {
-		if entry, ok := value.(placeholderEntry); ok {
-			if now.Sub(entry.createdAt) > placeholderTTL {
-				m.placeholders.Delete(key)
-			}
-		}
-		return true
-	})
+	m.deliveryInteractionState.expire(time.Now())
 
-	// Verify entry was deleted
 	if _, loaded := m.placeholders.Load("test:456"); loaded {
 		t.Fatal("expected placeholder entry to be deleted after eviction")
 	}
@@ -5890,9 +5857,8 @@ func TestBuildMediaScope_WithMessageID(t *testing.T) {
 
 func TestManager_PlaceholderConsumedByResponse(t *testing.T) {
 	mgr := &Manager{
-		channels:     make(map[string]Channel),
-		workers:      make(map[string]*channelWorker),
-		placeholders: sync.Map{},
+		channels: make(map[string]Channel),
+		workers:  make(map[string]*channelWorker),
 	}
 
 	mockCh := &mockChannel{
@@ -6452,9 +6418,8 @@ func TestSendToChannel_FallbackUsesLockedChannelSnapshot(t *testing.T) {
 
 func TestManager_SendPlaceholder(t *testing.T) {
 	mgr := &Manager{
-		channels:     make(map[string]Channel),
-		workers:      make(map[string]*channelWorker),
-		placeholders: sync.Map{},
+		channels: make(map[string]Channel),
+		workers:  make(map[string]*channelWorker),
 	}
 
 	mockCh := &mockChannel{
