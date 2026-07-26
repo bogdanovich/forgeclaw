@@ -1,0 +1,4 @@
+interface:
+  display_name: "ForgeClaw Trace Debug"
+  short_description: "Diagnose ForgeClaw runs from passive JSON traces"
+  default_prompt: "Use $forgeclaw-trace-debug to inspect the relevant ForgeClaw diagnostic trace, identify the likely root cause from cited evidence, and propose a focused regression test."
