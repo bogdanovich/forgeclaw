@@ -77,6 +77,21 @@ The short interaction ID, question IDs, option layout, and `/answer` syntax are
 runtime-owned machine structure. Replies may contain the keyed lines directly
 or prefix them with the shown `/answer <short-id>` command.
 
+For example, a completed single-question command is:
+
+```text
+/answer 16131195 production
+```
+
+A completed multiple-question command puts the keyed answers on following
+lines:
+
+```text
+/answer 16131195
+region: eu
+mode: balanced
+```
+
 An ordinary answer, including a negative answer such as `no` or
 `/answer <short-id> no`, supplies that answer and resumes the agent. It does not
 cancel the operation.

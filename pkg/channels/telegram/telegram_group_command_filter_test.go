@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/mymmrac/telego"
 	ta "github.com/mymmrac/telego/telegoapi"
@@ -110,6 +111,12 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 			wantContent:   "/new",
 		},
 		{
+			name:          "multiline answer command with bot username",
+			text:          "/answer@testbot 13ccbf94\ntest_region: eu\nrecipient: alice@testbot.example",
+			wantForwarded: true,
+			wantContent:   "/answer 13ccbf94\ntest_region: eu\nrecipient: alice@testbot.example",
+		},
+		{
 			name:          "bare command",
 			text:          "/new",
 			wantForwarded: true,
@@ -131,7 +138,7 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 				Entities: []telego.MessageEntity{{
 					Type:   telego.EntityTypeBotCommand,
 					Offset: 0,
-					Length: len([]rune(tc.text)),
+					Length: len([]rune(strings.Fields(tc.text)[0])),
 				}},
 				MessageID: 42,
 				Chat: telego.Chat{
@@ -168,6 +175,62 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStripBotMentionPreservesUnicodeAroundEntity(t *testing.T) {
+	ch, _ := newGroupMentionOnlyChannel(t, "testbot")
+	prefix := "😀 test_region: eu "
+	content := prefix + "@testbot test_mode: balanced"
+	message := &telego.Message{
+		Text: content,
+		Entities: []telego.MessageEntity{{
+			Type:   telego.EntityTypeMention,
+			Offset: len(utf16.Encode([]rune(prefix))),
+			Length: len("@testbot"),
+		}},
+	}
+
+	got := ch.stripBotMention(message, content)
+	want := "😀 test_region: eu  test_mode: balanced"
+	if got != want {
+		t.Fatalf("stripBotMention() = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessage_BotMentionSurvivesCollectedUnicodeTrimming(t *testing.T) {
+	ch, messageBus := newGroupMentionOnlyChannel(t, "testbot")
+	leadingWhitespace := "\u2003"
+	text := leadingWhitespace + "@testbot /answer 13ccbf94 yes\u2003"
+	message := &telego.Message{
+		Text: text,
+		Entities: []telego.MessageEntity{{
+			Type:   telego.EntityTypeMention,
+			Offset: len(utf16.Encode([]rune(leadingWhitespace))),
+			Length: len("@testbot"),
+		}},
+		MessageID: 43,
+		Chat: telego.Chat{
+			ID:   123,
+			Type: "group",
+		},
+		From: &telego.User{
+			ID:        7,
+			FirstName: "Alice",
+		},
+	}
+
+	if err := ch.handleMessage(t.Context(), message); err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+	select {
+	case inbound := <-messageBus.InboundChan():
+		want := "/answer 13ccbf94 yes"
+		if inbound.Content != want {
+			t.Fatalf("inbound.Content = %q, want %q", inbound.Content, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for trimmed answer command")
 	}
 }
 

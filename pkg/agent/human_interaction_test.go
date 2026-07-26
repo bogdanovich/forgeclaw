@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -903,37 +904,151 @@ func TestRecoveryCommitsAcknowledgedPromptWithoutDuplicateSend(t *testing.T) {
 	}
 }
 
-func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T) {
-	record := interactions.Record{
-		ShortID: "ABC123",
+func TestParseInteractionAnswerSupportsWhitespaceDelimitedCommands(t *testing.T) {
+	singleRecord := interactions.Record{
+		ShortID: "ABC12345",
 		Questions: []interactions.Question{
-			{ID: "target", Question: "Where?"},
-			{ID: "mode", Question: "How?"},
+			{ID: "confirmation", Question: "Proceed?"},
 		},
 	}
-	answer, err := parseInteractionAnswer(
-		record,
-		"/answer abc123 target: staging\nmode: canary",
-		"message-1",
-	)
-	if err != nil {
-		t.Fatalf("parseInteractionAnswer() error = %v", err)
+	multipleRecord := interactions.Record{
+		ShortID: "13CCBF94",
+		Questions: []interactions.Question{
+			{ID: "test_region", Question: "Where?"},
+			{ID: "test_mode", Question: "How?"},
+		},
 	}
-	if answer.Values["target"] != "staging" || answer.Values["mode"] != "canary" ||
-		answer.MessageID != "message-1" {
-		t.Fatalf("answer = %#v", answer)
+	tests := []struct {
+		name       string
+		record     interactions.Record
+		content    string
+		wantText   string
+		wantValues map[string]string
+		wantError  bool
+	}{
+		{
+			name: "single question command", record: singleRecord,
+			content: "/answer abc12345 yes", wantText: "yes",
+			wantValues: map[string]string{"confirmation": "yes"},
+		},
+		{
+			name: "multiple answers first pair on command line", record: multipleRecord,
+			content:  "/answer 13ccbf94 test_region: eu\ntest_mode: balanced",
+			wantText: "test_region: eu\ntest_mode: balanced",
+			wantValues: map[string]string{
+				"test_region": "eu",
+				"test_mode":   "balanced",
+			},
+		},
+		{
+			name: "production newline after id regression", record: multipleRecord,
+			content:  "/answer 13ccbf94\ntest_region: eu\ntest_mode: balanced",
+			wantText: "test_region: eu\ntest_mode: balanced",
+			wantValues: map[string]string{
+				"test_region": "eu",
+				"test_mode":   "balanced",
+			},
+		},
+		{
+			name: "tab separator", record: singleRecord,
+			content: "/answer abc12345\tyes", wantText: "yes",
+			wantValues: map[string]string{"confirmation": "yes"},
+		},
+		{
+			name: "crlf multiline body", record: multipleRecord,
+			content:  "/answer\r\n13ccbf94\r\ntest_region: eu\r\ntest_mode: balanced",
+			wantText: "test_region: eu\r\ntest_mode: balanced",
+			wantValues: map[string]string{
+				"test_region": "eu",
+				"test_mode":   "balanced",
+			},
+		},
+		{
+			name: "unicode and surrounding whitespace", record: multipleRecord,
+			content:  "\u2003/answer\u200313ccbf94\u2003 test_region: eu \n test_mode: balanced \u2003",
+			wantText: "test_region: eu \n test_mode: balanced",
+			wantValues: map[string]string{
+				"test_region": "eu",
+				"test_mode":   "balanced",
+			},
+		},
+		{
+			name: "telegram bot mention", record: multipleRecord,
+			content:  "/answer@ForgeClawBot 13ccbf94\ntest_region: eu\ntest_mode: balanced",
+			wantText: "test_region: eu\ntest_mode: balanced",
+			wantValues: map[string]string{
+				"test_region": "eu",
+				"test_mode":   "balanced",
+			},
+		},
+		{
+			name: "plain message answer", record: singleRecord,
+			content: "yes", wantText: "yes",
+			wantValues: map[string]string{"confirmation": "yes"},
+		},
+		{
+			name: "wrong short id", record: singleRecord,
+			content: "/answer wrong-id yes", wantError: true,
+		},
+		{
+			name: "missing short id", record: singleRecord,
+			content: "/answer", wantError: true,
+		},
+		{
+			name: "missing answer body", record: singleRecord,
+			content: "/answer abc12345 \t\r\n", wantError: true,
+		},
+		{
+			name: "unknown question id", record: multipleRecord,
+			content: "/answer 13ccbf94\ntest_region: eu\nunknown: balanced", wantError: true,
+		},
+		{
+			name: "duplicate question id", record: multipleRecord,
+			content: "/answer 13ccbf94\ntest_region: eu\ntest_region: us", wantError: true,
+		},
 	}
-	if _, incompleteErr := parseInteractionAnswer(record, "target: staging", "message-2"); incompleteErr == nil {
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			answer, parseErr := parseInteractionAnswer(test.record, test.content, "message-1")
+			if test.wantError {
+				if parseErr == nil {
+					t.Fatalf("parseInteractionAnswer(%q) accepted malformed answer: %#v", test.content, answer)
+				}
+				return
+			}
+			if parseErr != nil {
+				t.Fatalf("parseInteractionAnswer(%q) error = %v", test.content, parseErr)
+			}
+			if answer.Text != test.wantText || answer.MessageID != "message-1" {
+				t.Fatalf("answer = %#v, want text %q and message id message-1", answer, test.wantText)
+			}
+			for questionID, want := range test.wantValues {
+				if answer.Values[questionID] != want {
+					t.Errorf("answer.Values[%q] = %q, want %q", questionID, answer.Values[questionID], want)
+				}
+			}
+		})
+	}
+	if _, incompleteErr := parseInteractionAnswer(
+		multipleRecord,
+		"test_region: eu",
+		"message-incomplete",
+	); incompleteErr == nil {
 		t.Fatal("parseInteractionAnswer() accepted incomplete multi-question answer")
 	}
-	prompt := renderInteractionPrompt(record)
-	if !strings.Contains(prompt, "`target`") || !strings.Contains(prompt, "`mode`") {
+	_, _, matched, err := parseInteractionAnswerEnvelope("/answerfoo 13ccbf94 yes")
+	if matched || err != nil {
+		t.Fatalf("/answerfoo envelope = (matched:%v, err:%v), want non-command", matched, err)
+	}
+
+	prompt := renderInteractionPrompt(multipleRecord)
+	if !strings.Contains(prompt, "`test_region`") || !strings.Contains(prompt, "`test_mode`") {
 		t.Fatalf("multi-question prompt omitted canonical IDs: %q", prompt)
 	}
 	if _, roundTripErr := parseInteractionAnswer(
-		record,
-		"target: staging\nmode: canary",
-		"message-3",
+		multipleRecord,
+		"test_region: eu\ntest_mode: balanced",
+		"message-plain",
 	); roundTripErr != nil {
 		t.Fatalf("rendered question IDs did not round-trip through parser: %v", roundTripErr)
 	}
@@ -942,12 +1057,125 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 		t.Fatalf("rendered prompt omitted answer template: %q", prompt)
 	}
 	renderedSubmission := strings.ReplaceAll(prompt[templateStart:], "`", "")
-	renderedSubmission = strings.Replace(renderedSubmission, "target: …", "target: staging", 1)
-	renderedSubmission = strings.Replace(renderedSubmission, "mode: …", "mode: canary", 1)
-	answer, err = parseInteractionAnswer(record, renderedSubmission, "message-4")
-	if err != nil || answer.Values["target"] != "staging" ||
-		answer.Values["mode"] != "canary" {
+	renderedSubmission = strings.Replace(renderedSubmission, "test_region: …", "test_region: eu", 1)
+	renderedSubmission = strings.Replace(renderedSubmission, "test_mode: …", "test_mode: balanced", 1)
+	answer, err := parseInteractionAnswer(multipleRecord, renderedSubmission, "message-rendered")
+	if err != nil || answer.Values["test_region"] != "eu" ||
+		answer.Values["test_mode"] != "balanced" {
 		t.Fatalf("rendered answer template did not round-trip: (%#v, %v)", answer, err)
+	}
+}
+
+func TestMalformedMultilineAnswerCanRetryAndResumeExactlyOnce(t *testing.T) {
+	provider := &sequenceProvider{responses: []*providers.LLMResponse{{
+		Content: "Interaction resumed.",
+	}}}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+
+	sessionKey := "session-multiline-answer-retry"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Configure the test"})
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-multiline-question", Name: "request_user_input",
+			Function: &providers.FunctionCall{Name: "request_user_input", Arguments: `{}`},
+		}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	request.Origin.ToolCallID = "call-multiline-question"
+	request.Prompt.Questions = []interactions.Question{
+		{ID: "test_region", Question: "Which region?"},
+		{ID: "test_mode", Question: "Which mode?"},
+	}
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	waitingRevision := record.Revision
+	target := &inboundDispatchTarget{
+		Agent: agent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+
+	malformed := bus.InboundMessage{
+		Content: fmt.Sprintf(
+			"/answer %s\ntest_region: eu\nunknown_question: balanced",
+			record.ShortID,
+		),
+		SpoolID: "spool-malformed-answer",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	malformed.Context.MessageID = "malformed-answer"
+	ownership, err := al.processInteractionInbound(t.Context(), malformed, target)
+	if err != nil || ownership != interactionInboundCallerOwned {
+		t.Fatalf("malformed processInteractionInbound() = (%v, %v)", ownership, err)
+	}
+	afterMalformed, _ := registry.Get(record.ID)
+	if afterMalformed.Status != interactions.StatusWaiting ||
+		afterMalformed.Revision != waitingRevision ||
+		afterMalformed.Answer != nil {
+		t.Fatalf("malformed answer mutated waiting interaction: %#v", afterMalformed)
+	}
+	if acked, released := tracker.counts(); acked != 0 || released != 0 {
+		t.Fatalf("malformed answer ownership = acked:%d released:%d, want 0/0", acked, released)
+	}
+
+	valid := bus.InboundMessage{
+		Content: fmt.Sprintf(
+			"/answer %s\ntest_region: eu\ntest_mode: balanced",
+			record.ShortID,
+		),
+		SpoolID: "spool-valid-answer",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	valid.Context.MessageID = "valid-answer"
+	ownership, err = al.processInteractionInbound(t.Context(), valid, target)
+	if err != nil || ownership != interactionInboundClaimed {
+		t.Fatalf("valid processInteractionInbound() = (%v, %v)", ownership, err)
+	}
+	resolved, _ := registry.Get(record.ID)
+	if resolved.Status != interactions.StatusResolved || resolved.Answer == nil ||
+		resolved.Answer.Values["test_region"] != "eu" ||
+		resolved.Answer.Values["test_mode"] != "balanced" {
+		t.Fatalf("resolved interaction = %#v", resolved)
+	}
+	if acked, released := tracker.counts(); acked != 1 || released != 0 {
+		t.Fatalf("valid retry ownership = acked:%d released:%d, want 1/0", acked, released)
+	}
+	provider.mu.Lock()
+	providerCalls := provider.callCount
+	provider.mu.Unlock()
+	if providerCalls != 1 {
+		t.Fatalf("resumption provider calls = %d, want 1", providerCalls)
+	}
+	toolResults := 0
+	for _, message := range agent.Sessions.GetHistory(sessionKey) {
+		if message.Role == "tool" && message.ToolCallID == "call-multiline-question" {
+			toolResults++
+		}
+	}
+	if toolResults != 1 {
+		t.Fatalf("matching tool results = %d, want 1", toolResults)
+	}
+	select {
+	case outbound := <-manager.sent:
+		if outbound.Content != "Interaction resumed." {
+			t.Fatalf("resumed final response = %#v", outbound)
+		}
+	default:
+		t.Fatal("resumed final response was not delivered")
 	}
 }
 
@@ -1740,7 +1968,8 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
-	_, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	waitingRevision := record.Revision
 	target := &inboundDispatchTarget{
 		Agent: agent, SessionKey: request.Route.SessionKey,
 		RouteClaimKey: runtimeRouteClaimKey(request.Route.RouteSessionKey, ""),
@@ -1760,6 +1989,27 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 	if al.shouldHandleInteractionInbound(msg, target) {
 		t.Fatal("control command was consumed as an interaction answer")
 	}
+	msg.Content = "/answerfoo"
+	if al.shouldHandleInteractionInbound(msg, target) {
+		t.Fatal("command-prefix collision was consumed as an interaction answer")
+	}
+	for _, malformedCommand := range []string{
+		fmt.Sprintf("/answer@bot@junk %s yes", record.ShortID),
+		fmt.Sprintf("/answer@bot/path %s yes", record.ShortID),
+		fmt.Sprintf("/answer@ %s yes", record.ShortID),
+	} {
+		msg.Content = malformedCommand
+		if al.shouldHandleInteractionInbound(msg, target) {
+			t.Errorf("malformed answer command %q was consumed", malformedCommand)
+		}
+		current, _ := registry.Get(record.ID)
+		if current.Status != interactions.StatusWaiting ||
+			current.Revision != waitingRevision ||
+			current.Answer != nil {
+			t.Errorf("malformed answer command %q mutated interaction: %#v", malformedCommand, current)
+		}
+	}
+	msg.Content = "/reset"
 	result, err := al.cancelInteractionForControlMessage(t.Context(), msg, target)
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"github.com/mymmrac/telego"
 	ta "github.com/mymmrac/telego/telegoapi"
@@ -1533,7 +1534,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 			return nil
 		}
 		if isMentioned {
-			content = c.stripBotMention(content)
+			content = c.stripBotMention(message, content)
 		}
 		respond, cleaned := c.ShouldRespondInGroupForTopic(isMentioned, content, topicID)
 		if !respond {
@@ -2221,10 +2222,8 @@ func (c *TelegramChannel) isBotMentioned(message *telego.Message) bool {
 	}
 
 	botUsername := c.ownBotUsername()
-	runes := []rune(text)
-
 	for _, entity := range entities {
-		entityText, ok := telegramEntityText(runes, entity)
+		entityText, ok := telegramEntityText(text, entity)
 		if !ok {
 			continue
 		}
@@ -2255,10 +2254,8 @@ func (c *TelegramChannel) hasNonBotMention(message *telego.Message) bool {
 	}
 
 	botUsername := c.ownBotUsername()
-	runes := []rune(text)
-
 	for _, entity := range entities {
-		entityText, ok := telegramEntityText(runes, entity)
+		entityText, ok := telegramEntityText(text, entity)
 		if !ok {
 			continue
 		}
@@ -2327,15 +2324,51 @@ func telegramEntityTextAndList(message *telego.Message) (string, []telego.Messag
 	return message.Caption, message.CaptionEntities
 }
 
-func telegramEntityText(runes []rune, entity telego.MessageEntity) (string, bool) {
+func telegramEntityRuneRange(text string, entity telego.MessageEntity) (int, int, bool) {
 	if entity.Offset < 0 || entity.Length <= 0 {
+		return 0, 0, false
+	}
+	endOffset := entity.Offset + entity.Length
+	if endOffset < entity.Offset {
+		return 0, 0, false
+	}
+
+	runes := []rune(text)
+	start, startOK := telegramUTF16OffsetToRuneIndex(runes, entity.Offset)
+	end, endOK := telegramUTF16OffsetToRuneIndex(runes, endOffset)
+	if !startOK || !endOK || start >= end {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func telegramUTF16OffsetToRuneIndex(runes []rune, offset int) (int, bool) {
+	if offset < 0 {
+		return 0, false
+	}
+	if offset == 0 {
+		return 0, true
+	}
+
+	units := 0
+	for index, value := range runes {
+		units += utf16.RuneLen(value)
+		if units == offset {
+			return index + 1, true
+		}
+		if units > offset {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+func telegramEntityText(text string, entity telego.MessageEntity) (string, bool) {
+	start, end, ok := telegramEntityRuneRange(text, entity)
+	if !ok {
 		return "", false
 	}
-	end := entity.Offset + entity.Length
-	if entity.Offset >= len(runes) || end > len(runes) {
-		return "", false
-	}
-	return string(runes[entity.Offset:end]), true
+	return string([]rune(text)[start:end]), true
 }
 
 func isBotCommandEntityForThisBot(entityText, botUsername string) bool {
@@ -2360,16 +2393,69 @@ func isBotCommandEntityForThisBot(entityText, botUsername string) bool {
 	return strings.EqualFold(mentionUsername, botUsername)
 }
 
-// stripBotMention removes the @bot mention from the content.
-func (c *TelegramChannel) stripBotMention(content string) string {
+// stripBotMention removes only Telegram entities that identify this bot. Text
+// outside those entity ranges may legitimately contain the same @username.
+func (c *TelegramChannel) stripBotMention(message *telego.Message, content string) string {
 	botUsername := c.ownBotUsername()
 	if botUsername == "" {
 		return content
 	}
-	// Case-insensitive replacement
-	re := regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(botUsername))
-	content = re.ReplaceAllString(content, "")
-	return strings.TrimSpace(content)
+	source, entities := telegramEntityTextAndList(message)
+	collectedSource := strings.TrimSpace(source)
+	if collectedSource == "" || !strings.HasPrefix(content, collectedSource) {
+		return content
+	}
+	type entityRemoval struct {
+		start int
+		end   int
+	}
+	removals := make([]entityRemoval, 0, len(entities))
+	sourceRunes := []rune(source)
+	for _, entity := range entities {
+		entityStart, entityEnd, ok := telegramEntityRuneRange(source, entity)
+		if !ok {
+			continue
+		}
+		entityText := string(sourceRunes[entityStart:entityEnd])
+		start := entityStart
+		switch entity.Type {
+		case telego.EntityTypeBotCommand:
+			if !isBotCommandEntityForThisBot(entityText, botUsername) {
+				continue
+			}
+			at := strings.IndexRune(entityText, '@')
+			if at < 0 {
+				continue
+			}
+			start += len([]rune(entityText[:at]))
+		case telego.EntityTypeMention:
+			if !strings.EqualFold(entityText, "@"+botUsername) {
+				continue
+			}
+		case telego.EntityTypeTextMention:
+			if entity.User == nil || !strings.EqualFold(entity.User.Username, botUsername) {
+				continue
+			}
+		default:
+			continue
+		}
+		removals = append(removals, entityRemoval{
+			start: start,
+			end:   entityEnd,
+		})
+	}
+	slices.SortFunc(removals, func(left, right entityRemoval) int {
+		return right.start - left.start
+	})
+	for _, removal := range removals {
+		if removal.start < 0 || removal.end > len(sourceRunes) || removal.start > removal.end {
+			continue
+		}
+		sourceRunes = append(sourceRunes[:removal.start], sourceRunes[removal.end:]...)
+	}
+	normalizedSource := strings.TrimSpace(string(sourceRunes))
+	remainder := strings.TrimPrefix(content, collectedSource)
+	return strings.TrimSpace(normalizedSource + remainder)
 }
 
 // BeginStream implements channels.StreamingCapable.
