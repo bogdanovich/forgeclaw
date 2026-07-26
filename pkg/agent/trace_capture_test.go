@@ -17,7 +17,7 @@ import (
 )
 
 func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	cfg := traceTestConfig(workspace)
 	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
 	eventBus := runtimeevents.NewBus()
@@ -162,7 +162,7 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 }
 
 func TestTraceCaptureMetadataOnlyOmitsContentPreviews(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	cfg := traceTestConfig(workspace)
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(cfg, eventBus)
@@ -205,7 +205,7 @@ func TestTraceCaptureMetadataOnlyOmitsContentPreviews(t *testing.T) {
 }
 
 func TestTraceCaptureDisabledWritesNothing(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	cfg := config.DefaultConfig()
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(cfg, eventBus)
@@ -246,7 +246,7 @@ func TestTraceCaptureDisabledWritesNothing(t *testing.T) {
 }
 
 func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	cfg := config.DefaultConfig()
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(cfg, eventBus)
@@ -287,7 +287,7 @@ func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
 }
 
 func TestTraceCaptureShutdownDoesNotWaitForIncompleteActiveTurn(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
 	startedAt := time.Now().UTC()
@@ -308,7 +308,7 @@ func TestTraceCaptureShutdownDoesNotWaitForIncompleteActiveTurn(t *testing.T) {
 }
 
 func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
 	t.Cleanup(func() {
@@ -393,8 +393,8 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 }
 
 func TestTraceCaptureSeparatesIdenticalTurnIDsAcrossWorkspaces(t *testing.T) {
-	workspaceA := t.TempDir()
-	workspaceB := t.TempDir()
+	workspaceA := traceTestWorkspace(t)
+	workspaceB := traceTestWorkspace(t)
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspaceA), eventBus)
 	t.Cleanup(func() {
@@ -441,7 +441,7 @@ func TestTraceCaptureSeparatesIdenticalTurnIDsAcrossWorkspaces(t *testing.T) {
 }
 
 func TestTraceCaptureSettlesEveryScopeOnAggregatedDelivery(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
 	t.Cleanup(func() {
@@ -490,7 +490,7 @@ func TestTraceCaptureSettlesEveryScopeOnAggregatedDelivery(t *testing.T) {
 }
 
 func TestTraceCaptureRetainsEarlyTerminalDeliveryUntilTurnEnd(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
 	t.Cleanup(func() {
@@ -532,12 +532,21 @@ func TestTraceCaptureRetainsEarlyTerminalDeliveryUntilTurnEnd(t *testing.T) {
 }
 
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := traceTestWorkspace(t)
 	settings := traceCaptureSettings{stateDir: "../../outside"}
 	want := filepath.Join(workspace, "state", "diagnostics", "traces")
 	if got := traceStoreRoot(settings, workspace); got != want {
 		t.Fatalf("traceStoreRoot = %q, want %q", got, want)
 	}
+}
+
+func traceTestWorkspace(t *testing.T) string {
+	t.Helper()
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve trace test workspace: %v", err)
+	}
+	return workspace
 }
 
 func traceTestConfig(workspace string) *config.Config {

@@ -59,9 +59,15 @@ test_region: eu
 test_mode: balanced
 ```
 
-Commands such as `/new`, `/reset`, and `/clear` cancel the pending interaction
-before changing the session. `/stop` durably cancels it and completes the
-suspended tool call with a cancellation result.
+An ordinary answer, including a negative answer such as `no` or
+`/answer <short-id> no`, supplies that answer and resumes the agent. It does not
+cancel the operation.
+
+`/stop` terminates the pending foreground turn or background task. ForgeClaw
+durably records the cancellation, completes the suspended tool call with a
+cancellation result, and does not resume the model. `/new`, `/reset`, and
+`/clear` perform the same durable cancellation first, then continue with their
+normal session change without emitting an extra stop acknowledgement.
 
 ## Background Tasks
 
