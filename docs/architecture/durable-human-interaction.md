@@ -139,9 +139,13 @@ Rules:
 - Transitions use compare-and-swap semantics on ID, status, and revision.
 - Only `waiting` accepts an answer.
 - Only one nonterminal interaction may exist per canonical session.
-- A duplicate inbound delivery with the same message identity is a no-op.
-- A second answer after `answer_claimed` receives an explanatory response and
-  cannot overwrite the first answer.
+- Explicit concurrent `/answer <short-id> ...` commands are first-writer-wins.
+  The registry's atomic answer claim chooses the durable winner.
+- An exact transport replay with the accepted inbound message identity is an
+  idempotent no-op.
+- A different explicit answer after `answer_claimed` may receive an explanatory
+  response, cannot overwrite the first answer, and is never reclassified as
+  steering or follow-up input.
 - A recoverable commit or resume failure records an attempt without reopening
   the request; the accepted answer remains immutable while recovery retries.
 - Terminal records are retained for a bounded audit period, then pruned.
@@ -270,10 +274,13 @@ Answer processing is:
 6. On normal completion, transition to `resolved`. On a recoverable process or
    provider failure, retain enough state for reconciliation to retry.
 
-Additional input received while an answer is `claimed` or `resuming` is placed
-in the existing deferred-ingress queue with its spool ID and is drained only
-after the interaction becomes terminal. It is never acknowledged as a busy
-notice and discarded.
+Unrelated user input received while an answer is `claimed` or `resuming` keeps
+the existing steering/follow-up semantics: it is placed in the deferred-ingress
+queue with its spool ID and drained after the interaction becomes terminal.
+Explicit `/answer <short-id> ...` traffic remains owned by the interaction
+protocol instead. Exact replay of the accepted inbound message is idempotent,
+while a losing command is consumed with a bounded already-accepted response and
+never enters the steering queue, model context, or conversation history.
 
 The tool-result payload is structured JSON containing request ID, question IDs,
 answers, and resolution reason. It must not contain channel envelope data.

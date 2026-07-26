@@ -27,6 +27,61 @@ type interactionChannelManager struct {
 	sendErr error
 }
 
+type blockingInteractionProvider struct {
+	started chan struct{}
+	release chan struct{}
+
+	mu       sync.Mutex
+	calls    int
+	messages [][]providers.Message
+}
+
+func newBlockingInteractionProvider() *blockingInteractionProvider {
+	return &blockingInteractionProvider{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *blockingInteractionProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	_ []providers.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.calls++
+	p.messages = append(p.messages, append([]providers.Message(nil), messages...))
+	p.mu.Unlock()
+	select {
+	case p.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return &providers.LLMResponse{
+		Content: "DUPLICATE_INTERACTION_OK: первый", FinishReason: "stop",
+	}, nil
+}
+
+func (p *blockingInteractionProvider) GetDefaultModel() string {
+	return "blocking-interaction-model"
+}
+
+func (p *blockingInteractionProvider) snapshot() (int, [][]providers.Message) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	messages := make([][]providers.Message, len(p.messages))
+	for i := range p.messages {
+		messages[i] = append([]providers.Message(nil), p.messages[i]...)
+	}
+	return p.calls, messages
+}
+
 type durableApprovalHook struct {
 	actionSummary string
 	revoked       bool
@@ -1861,6 +1916,547 @@ func TestAdditionalMessageDuringResumeIsDeferred(t *testing.T) {
 	queued := al.dequeueSteeringMessagesForTurn(scope, request.Route.SenderID)
 	if len(queued) != 1 || queued[0].InboundSpoolID != "spool-correction" {
 		t.Fatalf("deferred message = %#v", queued)
+	}
+}
+
+func TestConcurrentExplicitInteractionAnswersNeverBecomeSteering(t *testing.T) {
+	provider := newBlockingInteractionProvider()
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+
+	sessionKey := "session-concurrent-explicit-answers"
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{Role: "user", Content: "Choose a value"})
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-concurrent-answer", Name: "request_user_input",
+			Function: &providers.FunctionCall{Name: "request_user_input", Arguments: `{}`},
+		}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	request.Route.TopicID = "topic-1"
+	request.Origin.ToolCallID = "call-concurrent-answer"
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	target := &inboundDispatchTarget{
+		Agent:         agent,
+		SessionKey:    sessionKey,
+		RouteClaimKey: runtimeRouteClaimKey(request.Route.RouteSessionKey, ""),
+		Allocation:    session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	first := bus.InboundMessage{
+		Content: "/answer " + record.ShortID + " первый", SpoolID: "spool-answer-first",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	first.Context.MessageID = "answer-first"
+	coordinator := newInboundTurnCoordinator(al)
+	if !coordinator.routeExplicitInteractionAnswer(t.Context(), first, target) {
+		t.Fatal("first explicit answer was not classified as interaction protocol")
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the accepted interaction continuation")
+	}
+
+	contenders := []bus.InboundMessage{
+		first,
+		{
+			Content: "/answer " + record.ShortID + " первый", SpoolID: "spool-answer-same",
+			Context: inboundContextForInteraction(request.Route),
+		},
+		{
+			Content: "/answer " + record.ShortID + " второй", SpoolID: "spool-answer-second",
+			Context: inboundContextForInteraction(request.Route),
+		},
+		{
+			Content: "/answer deadbeef второй", SpoolID: "spool-answer-wrong-id",
+			Context: inboundContextForInteraction(request.Route),
+		},
+		{
+			Content: "/answer " + record.ShortID + " второй", SpoolID: "spool-answer-wrong-sender",
+			Context: inboundContextForInteraction(request.Route),
+		},
+		{
+			Content: "/answer " + record.ShortID + " второй", SpoolID: "spool-answer-wrong-chat",
+			Context: inboundContextForInteraction(request.Route),
+		},
+		{
+			Content: "/answer " + record.ShortID + " второй", SpoolID: "spool-answer-wrong-topic",
+			Context: inboundContextForInteraction(request.Route),
+		},
+	}
+	contenders[0].SpoolID = "spool-answer-replay"
+	contenders[1].Context.MessageID = "answer-same"
+	contenders[2].Context.MessageID = "answer-second"
+	contenders[3].Context.MessageID = "answer-wrong-id"
+	contenders[4].Context.MessageID = "answer-wrong-sender"
+	contenders[4].Context.SenderID = "user-2"
+	contenders[5].Context.MessageID = "answer-wrong-chat"
+	contenders[5].Context.ChatID = "chat-2"
+	contenders[6].Context.MessageID = "answer-wrong-topic"
+	contenders[6].Context.TopicID = "topic-2"
+	for _, contender := range contenders {
+		if !coordinator.routeExplicitInteractionAnswer(t.Context(), contender, target) {
+			t.Fatalf("explicit contender escaped protocol routing: %q", contender.Content)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		acked, released := tracker.counts()
+		if acked == 1+len(contenders) {
+			if released != 0 {
+				t.Fatalf("interaction ingress released %d spool entries", released)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spool acknowledgements = %d, want %d", acked, 1+len(contenders))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+	if got := al.pendingSteeringCountForScope(scope); got != 0 {
+		t.Fatalf("explicit answer contenders entered steering queue: %d", got)
+	}
+	close(provider.release)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		record, _ = registry.Get(record.ID)
+		if record.Status == interactions.StatusResolved {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("interaction did not resolve: %#v", record)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if record.Answer == nil || record.Answer.Text != "первый" ||
+		record.Answer.MessageID != "answer-first" {
+		t.Fatalf("durable winner = %#v", record.Answer)
+	}
+	if record.ResumeTries != 1 || record.FinalDeliveryTries != 1 || !record.FinalDelivered {
+		t.Fatalf("continuation/delivery counts = %#v", record)
+	}
+	eventCounts := map[interactions.EventType]int{}
+	for _, event := range registry.ListEvents(record.ID) {
+		eventCounts[event.Type]++
+	}
+	if eventCounts[interactions.EventAnswerClaimed] != 1 ||
+		eventCounts[interactions.EventResumeStarted] != 1 {
+		t.Fatalf("interaction event counts = %#v", eventCounts)
+	}
+	calls, modelCalls := provider.snapshot()
+	if calls != 1 || len(modelCalls) != 1 {
+		t.Fatalf("provider calls = %d, messages = %d", calls, len(modelCalls))
+	}
+	for _, message := range modelCalls[0] {
+		if strings.Contains(message.Content, "/answer") || strings.Contains(message.Content, "второй") {
+			t.Fatalf("losing answer entered model context: %#v", modelCalls[0])
+		}
+	}
+	for _, message := range agent.Sessions.GetHistory(sessionKey) {
+		if strings.Contains(message.Content, "/answer") || strings.Contains(message.Content, "второй") {
+			t.Fatalf("losing answer entered conversation history: %#v", message)
+		}
+	}
+	finals := 0
+	for len(manager.sent) > 0 {
+		outbound := <-manager.sent
+		if outbound.Content == "DUPLICATE_INTERACTION_OK: первый" {
+			finals++
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("final responses = %d, want 1", finals)
+	}
+
+	terminalReplay := first
+	terminalReplay.SpoolID = "spool-answer-terminal-replay"
+	if !coordinator.routeExplicitInteractionAnswer(t.Context(), terminalReplay, target) {
+		t.Fatal("terminal replay escaped interaction protocol routing")
+	}
+	acked, released := tracker.counts()
+	if acked != 2+len(contenders) || released != 0 {
+		t.Fatalf("terminal replay ownership = acked:%d released:%d", acked, released)
+	}
+	if callsAfterReplay, _ := provider.snapshot(); callsAfterReplay != 1 {
+		t.Fatalf("terminal replay started another continuation: %d calls", callsAfterReplay)
+	}
+}
+
+func TestExplicitAnswerContentionReleasesBeforeDurableAnswerAdmission(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		markWaiting bool
+		status      interactions.Status
+	}{
+		{name: "created_after_delivery", status: interactions.StatusCreated},
+		{name: "waiting", markWaiting: true, status: interactions.StatusWaiting},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+			defer cleanup()
+			tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+			al.bus = tracker
+			sessionKey := "session-answer-admission-contention-" + test.name
+			request := testToolSuspensionRequest(agent.Workspace)
+			request.Route.SessionKey = sessionKey
+			registry := al.interactionRegistryForWorkspace(agent.Workspace)
+			record, err := registry.Create(interactions.CreateRequest{
+				Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+				Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+			if test.markWaiting {
+				record, _ = registry.MarkWaiting(record.ID, record.Revision)
+			}
+			target := &inboundDispatchTarget{
+				Agent: agent, SessionKey: sessionKey,
+				Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+			}
+			scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+			blocker, claimed := al.claimRuntimeSession(scope, "answer-admission-blocker")
+			if !claimed {
+				t.Fatal("failed to claim the interaction session blocker")
+			}
+			defer blocker.releaseIfOwned()
+
+			contender := bus.InboundMessage{
+				Content: "/answer " + record.ShortID + " valid",
+				SpoolID: "spool-admission-contender-" + test.name,
+				Context: inboundContextForInteraction(request.Route),
+			}
+			contender.Context.MessageID = "admission-contender-" + test.name
+			if !newInboundTurnCoordinator(al).routeExplicitInteractionAnswer(
+				t.Context(),
+				contender,
+				target,
+			) {
+				t.Fatal("pre-admission contender escaped interaction protocol routing")
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				acked, released := tracker.counts()
+				if released == 1 {
+					if acked != 0 {
+						t.Fatalf("contender was acknowledged before a durable claim: %d", acked)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting for contended answer transport release")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			record, _ = registry.Get(record.ID)
+			if record.Status != test.status || record.Answer != nil {
+				t.Fatalf("runtime contention chose a durable answer: %#v", record)
+			}
+			if got := al.pendingSteeringCountForScope(scope); got != 0 {
+				t.Fatalf("released answer entered steering queue: %d", got)
+			}
+			for _, event := range registry.ListEvents(record.ID) {
+				if event.Type == interactions.EventAnswerClaimed ||
+					event.Type == interactions.EventResumeStarted {
+					t.Fatalf("contention emitted durable transition: %#v", event)
+				}
+			}
+		})
+	}
+}
+
+func TestRetainedAnswerReplayPrecedesNewActiveInteractionWrongID(t *testing.T) {
+	provider := &sequenceProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+	sessionKey := "session-retained-replay"
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	first, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ = registry.RecordDeliveryAttempt(first.ID, first.Revision, true, "")
+	first, _ = registry.MarkWaiting(first.ID, first.Revision)
+	first, err = registry.ClaimAnswer(first.ID, first.Revision, interactions.Answer{
+		Text: "первый", Values: map[string]string{"deploy_mode": "первый"},
+		MessageID: "retained-answer",
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err = registry.MarkResuming(first.ID, first.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.Resolve(first.ID, first.Revision); err != nil {
+		t.Fatal(err)
+	}
+	request.Origin.ToolCallID = "call-next-question"
+	second, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ = registry.RecordDeliveryAttempt(second.ID, second.Revision, true, "")
+	second, _ = registry.MarkWaiting(second.ID, second.Revision)
+	target := &inboundDispatchTarget{
+		Agent: agent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	replay := bus.InboundMessage{
+		Content: "/answer " + first.ShortID + " первый", SpoolID: "spool-retained-replay",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	replay.Context.MessageID = "retained-answer"
+	if !newInboundTurnCoordinator(al).routeExplicitInteractionAnswer(t.Context(), replay, target) {
+		t.Fatal("retained replay escaped interaction protocol routing")
+	}
+	acked, released := tracker.counts()
+	if acked != 1 || released != 0 {
+		t.Fatalf("retained replay ownership = acked:%d released:%d", acked, released)
+	}
+	second, _ = registry.Get(second.ID)
+	if second.Status != interactions.StatusWaiting || second.Answer != nil {
+		t.Fatalf("retained replay mutated the new interaction: %#v", second)
+	}
+	if got := al.pendingSteeringCountForScope(
+		newRuntimeSessionScope(agent.Workspace, sessionKey),
+	); got != 0 {
+		t.Fatalf("retained replay entered steering queue: %d", got)
+	}
+	provider.mu.Lock()
+	calls := provider.callCount
+	provider.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("retained replay started %d continuation(s)", calls)
+	}
+	select {
+	case outbound := <-tracker.OutboundChan():
+		t.Fatalf("retained replay produced a notice: %#v", outbound)
+	default:
+	}
+}
+
+func TestReloadedClaimedInteractionRejectsLosingExplicitAnswer(t *testing.T) {
+	provider := &sequenceProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+	sessionKey := "session-reloaded-claimed-answer"
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "первый", Values: map[string]string{"deploy_mode": "первый"},
+		MessageID: "answer-first",
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := *al.GetConfig()
+	if err = al.ReloadProviderAndConfig(t.Context(), provider, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	reloadedAgent, ok := al.GetRegistry().GetAgent(agent.ID)
+	if !ok {
+		t.Fatal("reloaded agent is unavailable")
+	}
+	target := &inboundDispatchTarget{
+		Agent: reloadedAgent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	loser := bus.InboundMessage{
+		Content: "/answer " + record.ShortID + " второй", SpoolID: "spool-reloaded-loser",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	loser.Context.MessageID = "answer-second"
+	if !newInboundTurnCoordinator(al).routeExplicitInteractionAnswer(t.Context(), loser, target) {
+		t.Fatal("reloaded losing answer escaped interaction protocol routing")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		acked, released := tracker.counts()
+		if acked == 1 {
+			if released != 0 {
+				t.Fatalf("reloaded loser released %d spool entries", released)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for reloaded loser acknowledgement")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusClaimed || record.Answer == nil ||
+		record.Answer.MessageID != "answer-first" {
+		t.Fatalf("reloaded interaction was mutated: %#v", record)
+	}
+	provider.mu.Lock()
+	calls := provider.callCount
+	provider.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("reloaded losing answer started %d continuation(s)", calls)
+	}
+	scope := newRuntimeSessionScope(reloadedAgent.Workspace, sessionKey)
+	if got := al.pendingSteeringCountForScope(scope); got != 0 {
+		t.Fatalf("reloaded losing answer entered steering queue: %d", got)
+	}
+	for _, message := range reloadedAgent.Sessions.GetHistory(sessionKey) {
+		if strings.Contains(message.Content, "второй") {
+			t.Fatalf("reloaded losing answer entered history: %#v", message)
+		}
+	}
+}
+
+func TestTaskInteractionConcurrentExplicitAnswersStartOneContinuation(t *testing.T) {
+	provider := newBlockingInteractionProvider()
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+
+	sessionKey := "session-task-concurrent-answer"
+	continuationSessionKey := "task-continuation-concurrent-answer"
+	agent.Sessions.AddFullMessage(continuationSessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-task-concurrent-answer", Name: "request_user_input",
+			Function: &providers.FunctionCall{Name: "request_user_input", Arguments: `{}`},
+		}},
+	})
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	request.Origin.ToolCallID = "call-task-concurrent-answer"
+	request.Origin.TaskID = "task-concurrent-answer"
+	request.Origin.ContinuationSessionKey = continuationSessionKey
+	tasks := al.taskRegistryForWorkspace(agent.Workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "task-concurrent-answer", Runtime: taskregistry.RuntimeSubagent,
+		TaskKind: "spawn", Task: "complete after input", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+		DeliveryMode:   string(tools.AsyncDeliveryUserOnly),
+		InteractionID:  "interaction-task-concurrent-answer",
+		Channel:        request.Route.Channel, ChatID: request.Route.ChatID,
+		RequesterSessionKey: sessionKey,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		ID:   "interaction-task-concurrent-answer",
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	target := &inboundDispatchTarget{
+		Agent:         agent,
+		SessionKey:    sessionKey,
+		RouteClaimKey: runtimeRouteClaimKey(request.Route.RouteSessionKey, ""),
+		Allocation:    session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	first := bus.InboundMessage{
+		Content: "/answer " + record.ShortID + " первый", SpoolID: "spool-task-first",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	first.Context.MessageID = "task-answer-first"
+	coordinator := newInboundTurnCoordinator(al)
+	coordinator.routeExplicitInteractionAnswer(t.Context(), first, target)
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task continuation")
+	}
+	second := bus.InboundMessage{
+		Content: "/answer " + record.ShortID + " второй", SpoolID: "spool-task-second",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	second.Context.MessageID = "task-answer-second"
+	coordinator.routeExplicitInteractionAnswer(t.Context(), second, target)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		acked, _ := tracker.counts()
+		if acked == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for task answer acknowledgements")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := al.pendingSteeringCountForScope(
+		newRuntimeSessionScope(agent.Workspace, sessionKey),
+	); got != 0 {
+		t.Fatalf("task losing answer entered steering queue: %d", got)
+	}
+	close(provider.release)
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		record, _ = registry.Get(record.ID)
+		task, _ := tasks.Get("task-concurrent-answer")
+		if record.Status == interactions.StatusResolved && task.Status == taskregistry.StatusSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task interaction did not complete once: record=%#v task=%#v", record, task)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if record.Answer == nil || record.Answer.Text != "первый" ||
+		record.ResumeTries != 1 || record.FinalDeliveryTries != 1 {
+		t.Fatalf("task interaction winner/counts = %#v", record)
+	}
+	if calls, _ := provider.snapshot(); calls != 1 {
+		t.Fatalf("task provider calls = %d, want 1", calls)
+	}
+	for _, message := range agent.Sessions.GetHistory(continuationSessionKey) {
+		if strings.Contains(message.Content, "второй") || strings.Contains(message.Content, "/answer") {
+			t.Fatalf("task losing answer entered continuation history: %#v", message)
+		}
 	}
 }
 

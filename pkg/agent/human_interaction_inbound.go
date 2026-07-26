@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -23,6 +22,11 @@ import (
 
 const answerCommand = "/answer"
 
+const (
+	interactionAnswerClaimAttempts = 8
+	interactionAnswerClaimDelay    = 10 * time.Millisecond
+)
+
 type interactionInboundOwnership int
 
 const (
@@ -37,6 +41,23 @@ type interactionControlCancellationResult struct {
 	Failed         bool
 	CommandHandled bool
 	TaskID         string
+}
+
+type explicitInteractionAnswerDisposition string
+
+const (
+	explicitInteractionAnswerActive       explicitInteractionAnswerDisposition = "active"
+	explicitInteractionAnswerReplay       explicitInteractionAnswerDisposition = "replay"
+	explicitInteractionAnswerDuplicate    explicitInteractionAnswerDisposition = "duplicate"
+	explicitInteractionAnswerWrongID      explicitInteractionAnswerDisposition = "wrong_id"
+	explicitInteractionAnswerUnauthorized explicitInteractionAnswerDisposition = "unauthorized"
+	explicitInteractionAnswerUnavailable  explicitInteractionAnswerDisposition = "unavailable"
+	explicitInteractionAnswerRetry        explicitInteractionAnswerDisposition = "retry"
+)
+
+type explicitInteractionAnswer struct {
+	Record      interactions.Record
+	Disposition explicitInteractionAnswerDisposition
 }
 
 func (al *AgentLoop) cancelInteractionForControlMessage(
@@ -116,9 +137,11 @@ func (al *AgentLoop) shouldHandleInteractionInbound(
 	if !ok || !interactionRouteAuthorizes(record.Route, target, msg.Context) {
 		return false
 	}
-	if commands.HasCommandPrefix(msg.Content) &&
-		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Content)), answerCommand) {
-		return false
+	if commands.HasCommandPrefix(msg.Content) {
+		name, ok := commands.CommandName(msg.Content)
+		if !ok || name != strings.TrimPrefix(answerCommand, "/") {
+			return false
+		}
 	}
 	switch record.Status {
 	case interactions.StatusWaiting, interactions.StatusClaimed, interactions.StatusResuming:
@@ -126,6 +149,156 @@ func (al *AgentLoop) shouldHandleInteractionInbound(
 	default:
 		return false
 	}
+}
+
+func (c *inboundTurnCoordinator) routeExplicitInteractionAnswer(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) bool {
+	classification, explicit := c.al.classifyExplicitInteractionAnswer(msg, target)
+	if !explicit {
+		return false
+	}
+	if classification.Disposition == explicitInteractionAnswerActive {
+		c.handleInteractionInbound(ctx, msg, target)
+		return true
+	}
+	c.consumeExplicitInteractionAnswer(ctx, msg, target, classification)
+	return true
+}
+
+func (al *AgentLoop) classifyExplicitInteractionAnswer(
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) (explicitInteractionAnswer, bool) {
+	shortID, answerText, explicit := splitExplicitInteractionAnswer(msg.Content)
+	if !explicit {
+		return explicitInteractionAnswer{}, false
+	}
+	if al == nil || target == nil || target.Agent == nil {
+		return explicitInteractionAnswer{Disposition: explicitInteractionAnswerUnavailable}, true
+	}
+	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
+	if registry == nil || registry.LastLoadError() != nil {
+		return explicitInteractionAnswer{Disposition: explicitInteractionAnswerUnavailable}, true
+	}
+	for _, record := range registry.List() {
+		if strings.EqualFold(shortID, record.ShortID) &&
+			interactionRouteAuthorizes(record.Route, target, msg.Context) &&
+			interactionInboundReplaysAnswer(record, msg.Context) {
+			return explicitInteractionAnswer{
+				Record: record, Disposition: explicitInteractionAnswerReplay,
+			}, true
+		}
+	}
+	if record, ok := activeInteractionForSession(registry, target.SessionKey); ok {
+		if !interactionRouteAuthorizes(record.Route, target, msg.Context) {
+			return explicitInteractionAnswer{
+				Record: record, Disposition: explicitInteractionAnswerUnauthorized,
+			}, true
+		}
+		if shortID == "" || answerText == "" || !strings.EqualFold(shortID, record.ShortID) {
+			return explicitInteractionAnswer{
+				Record: record, Disposition: explicitInteractionAnswerWrongID,
+			}, true
+		}
+		return explicitInteractionAnswer{
+			Record: record, Disposition: explicitInteractionAnswerActive,
+		}, true
+	}
+	var unauthorizedMatch interactions.Record
+	for _, record := range registry.List() {
+		if !strings.EqualFold(shortID, record.ShortID) {
+			continue
+		}
+		if !interactionRouteAuthorizes(record.Route, target, msg.Context) {
+			unauthorizedMatch = record
+			continue
+		}
+		disposition := explicitInteractionAnswerDuplicate
+		if interactionInboundReplaysAnswer(record, msg.Context) {
+			disposition = explicitInteractionAnswerReplay
+		}
+		return explicitInteractionAnswer{Record: record, Disposition: disposition}, true
+	}
+	if unauthorizedMatch.ID != "" {
+		return explicitInteractionAnswer{
+			Record: unauthorizedMatch, Disposition: explicitInteractionAnswerUnauthorized,
+		}, true
+	}
+	return explicitInteractionAnswer{Disposition: explicitInteractionAnswerWrongID}, true
+}
+
+func splitExplicitInteractionAnswer(content string) (string, string, bool) {
+	content = strings.TrimSpace(content)
+	name, ok := commands.CommandName(content)
+	if !ok || name != strings.TrimPrefix(answerCommand, "/") {
+		return "", "", false
+	}
+	commandEnd := strings.IndexAny(content, " \t\r\n")
+	if commandEnd < 0 {
+		return "", "", true
+	}
+	remainder := strings.TrimSpace(content[commandEnd:])
+	shortIDEnd := strings.IndexAny(remainder, " \t\r\n")
+	if shortIDEnd < 0 {
+		return strings.TrimSpace(remainder), "", true
+	}
+	return strings.TrimSpace(remainder[:shortIDEnd]), strings.TrimSpace(remainder[shortIDEnd:]), true
+}
+
+func (c *inboundTurnCoordinator) consumeExplicitInteractionAnswer(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+	classification explicitInteractionAnswer,
+) {
+	disposition := classification.Disposition
+	record := classification.Record
+	logExplicitInteractionAnswerDisposition(record, msg, disposition)
+	if disposition == explicitInteractionAnswerReplay {
+		c.al.ackInboundMessage(ctx, msg)
+		return
+	}
+	sessionKey := target.SessionKey
+	notice := "No matching pending interaction is accepting that answer."
+	switch disposition {
+	case explicitInteractionAnswerDuplicate:
+		notice = "An answer has already been accepted for this interaction."
+	case explicitInteractionAnswerWrongID:
+		if record.ShortID != "" {
+			notice = fmt.Sprintf("I could not accept that answer: use `/answer %s <answer>`", record.ShortID)
+		}
+	case explicitInteractionAnswerUnauthorized:
+		notice = "This answer is not authorized for the current route."
+	case explicitInteractionAnswerUnavailable:
+		notice = "Pending input state is unavailable; this session cannot continue until it is recovered."
+	}
+	if err := c.al.publishInteractionNotice(ctx, msg, sessionKey, notice); err != nil {
+		c.al.releaseInboundMessage(context.Background(), msg, err)
+		return
+	}
+	c.al.ackInboundMessage(ctx, msg)
+}
+
+func logExplicitInteractionAnswerDisposition(
+	record interactions.Record,
+	msg bus.InboundMessage,
+	disposition explicitInteractionAnswerDisposition,
+) {
+	fields := map[string]any{
+		"disposition":        disposition,
+		"inbound_message_id": strings.TrimSpace(msg.Context.MessageID),
+	}
+	if record.ID != "" {
+		fields["interaction_id"] = record.ID
+		fields["interaction_short_id"] = record.ShortID
+	}
+	if record.Answer != nil && record.Answer.MessageID != "" {
+		fields["accepted_message_id"] = record.Answer.MessageID
+	}
+	logger.InfoCF("agent", "Interaction answer ingress rejected or replayed", fields)
 }
 
 func (al *AgentLoop) hasNonterminalInteraction(workspace, sessionKey string) bool {
@@ -151,10 +324,75 @@ func (c *inboundTurnCoordinator) handleInteractionInbound(
 ) {
 	claim, _, claimed := c.claimSession(target)
 	if !claimed {
+		if _, _, explicit := splitExplicitInteractionAnswer(msg.Content); explicit {
+			go c.runContendedExplicitInteractionInbound(ctx, msg, target)
+			return
+		}
 		c.deferInteractionInbound(ctx, msg, target)
 		return
 	}
 	go c.runInteractionWorker(ctx, msg, target, claim)
+}
+
+func (c *inboundTurnCoordinator) runContendedExplicitInteractionInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	target *inboundDispatchTarget,
+) {
+	for attempt := 0; attempt < interactionAnswerClaimAttempts; attempt++ {
+		classification, _ := c.al.classifyExplicitInteractionAnswer(msg, target)
+		if classification.Disposition != explicitInteractionAnswerActive {
+			c.consumeExplicitInteractionAnswer(ctx, msg, target, classification)
+			return
+		}
+		record := classification.Record
+		if record.Status == interactions.StatusClaimed || record.Status == interactions.StatusResuming {
+			disposition := explicitInteractionAnswerDuplicate
+			if interactionInboundReplaysAnswer(record, msg.Context) {
+				disposition = explicitInteractionAnswerReplay
+			}
+			classification.Disposition = disposition
+			c.consumeExplicitInteractionAnswer(ctx, msg, target, classification)
+			return
+		}
+		if claim, _, claimed := c.claimSession(target); claimed {
+			current, _ := c.al.classifyExplicitInteractionAnswer(msg, target)
+			if current.Disposition != explicitInteractionAnswerActive {
+				claim.releaseIfOwned()
+				c.consumeExplicitInteractionAnswer(ctx, msg, target, current)
+				return
+			}
+			c.runInteractionWorker(ctx, msg, target, claim)
+			return
+		}
+		timer := time.NewTimer(interactionAnswerClaimDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			c.al.releaseInboundMessage(context.Background(), msg, ctx.Err())
+			return
+		case <-timer.C:
+		}
+	}
+	classification, _ := c.al.classifyExplicitInteractionAnswer(msg, target)
+	if classification.Disposition == explicitInteractionAnswerActive {
+		if classification.Record.Status == interactions.StatusCreated ||
+			classification.Record.Status == interactions.StatusWaiting {
+			logExplicitInteractionAnswerDisposition(
+				classification.Record,
+				msg,
+				explicitInteractionAnswerRetry,
+			)
+			c.al.releaseInboundMessage(
+				context.Background(),
+				msg,
+				errors.New("interaction answer is waiting for durable admission"),
+			)
+			return
+		}
+		classification.Disposition = explicitInteractionAnswerDuplicate
+	}
+	c.consumeExplicitInteractionAnswer(ctx, msg, target, classification)
 }
 
 func (c *inboundTurnCoordinator) runInteractionWorker(
@@ -283,6 +521,19 @@ func (al *AgentLoop) processInteractionInbound(
 				record,
 			)
 		}
+		if _, _, explicit := splitExplicitInteractionAnswer(msg.Content); explicit {
+			logExplicitInteractionAnswerDisposition(
+				record,
+				msg,
+				explicitInteractionAnswerDuplicate,
+			)
+			return interactionInboundCallerOwned, al.publishInteractionNotice(
+				ctx,
+				msg,
+				target.SessionKey,
+				"An answer has already been accepted for this interaction.",
+			)
+		}
 		if err := newInboundTurnCoordinator(al).enqueueDeferredInteractionInbound(
 			ctx,
 			msg,
@@ -407,14 +658,11 @@ func parseInteractionAnswer(
 	messageID string,
 ) (interactions.Answer, error) {
 	content = strings.TrimSpace(content)
-	if strings.HasPrefix(strings.ToLower(content), answerCommand) {
-		remainder := strings.TrimSpace(content[len(answerCommand):])
-		answerBoundary := strings.IndexFunc(remainder, unicode.IsSpace)
-		if answerBoundary < 0 ||
-			!strings.EqualFold(strings.TrimSpace(remainder[:answerBoundary]), record.ShortID) {
+	if shortID, answerText, explicit := splitExplicitInteractionAnswer(content); explicit {
+		if !strings.EqualFold(shortID, record.ShortID) {
 			return interactions.Answer{}, fmt.Errorf("use `/answer %s <answer>`", record.ShortID)
 		}
-		content = strings.TrimSpace(remainder[answerBoundary:])
+		content = answerText
 	}
 	if content == "" {
 		return interactions.Answer{}, fmt.Errorf("answer cannot be empty")
