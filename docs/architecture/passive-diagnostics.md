@@ -147,6 +147,13 @@ None will be added.
 | Retention and storage bounds | Keep; local deployment uses 168 hours. |
 | JSON output | Keep as the direct Codex and human debugging interface. |
 
+Rich content is projected only when `redacted_content` is explicitly enabled.
+Runtime event producers may attach bounded, already-redacted diagnostic
+previews; metadata-only events leave those fields empty. The passive projector
+applies the same credential redaction again when it converts existing raw
+turn, tool, retry, delivery, or error fields. Preview generation cannot change
+whether an event is emitted or whether the underlying operation succeeds.
+
 ### Simplify
 
 | Surface | Target |

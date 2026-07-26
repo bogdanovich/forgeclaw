@@ -394,6 +394,9 @@ toolLoop:
 							IsError:    hookResult.IsError,
 							Async:      hookResult.Async,
 							ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
+							DiagnosticResult: diagnosticTextPreview(
+								p.Cfg, contentForLLM, diagnosticToolResultBytes,
+							),
 						},
 					)
 					ts.recordToolExecution(
@@ -848,6 +851,9 @@ toolLoop:
 				IsError:    toolResult.IsError,
 				Async:      toolResult.Async,
 				ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
+				DiagnosticResult: diagnosticTextPreview(
+					p.Cfg, contentForLLM, diagnosticToolResultBytes,
+				),
 			},
 		)
 		ts.recordToolExecution(

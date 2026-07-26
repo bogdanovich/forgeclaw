@@ -384,6 +384,9 @@ func (al *AgentLoop) enqueueSteeringMessageWithSender(
 			ContentLen:  len(msg.Content),
 			QueueDepth:  queueDepth,
 			MessageHash: diagnosticSafeHash(al.GetConfig(), msg.Content),
+			DiagnosticContent: diagnosticTextPreview(
+				al.GetConfig(), msg.Content, diagnosticSteeringBytes,
+			),
 		},
 	)
 

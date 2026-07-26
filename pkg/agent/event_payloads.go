@@ -78,25 +78,29 @@ type TurnEndPayload struct {
 
 // LLMRequestPayload describes an outbound LLM request.
 type LLMRequestPayload struct {
-	Provider      string
-	Model         string
-	PromptHash    string
-	MessagesCount int
-	ToolsCount    int
-	MaxTokens     int
-	Temperature   float64
+	Provider           string
+	Model              string
+	PromptHash         string
+	MessagesCount      int
+	ToolsCount         int
+	MaxTokens          int
+	Temperature        float64
+	DiagnosticMessages string
 }
 
 // LLMResponsePayload describes an inbound LLM response.
 type LLMResponsePayload struct {
-	ResponseHash     string
-	ContentLen       int
-	ToolCalls        int
-	HasReasoning     bool
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
-	HasProviderUsage bool
+	ResponseHash        string
+	ContentLen          int
+	ToolCalls           int
+	HasReasoning        bool
+	PromptTokens        int
+	CompletionTokens    int
+	TotalTokens         int
+	HasProviderUsage    bool
+	DiagnosticContent   string
+	DiagnosticReasoning string
+	DiagnosticToolCalls string
 }
 
 // LLMDeltaPayload describes a streamed LLM delta.
@@ -179,16 +183,17 @@ type ToolExecStartPayload struct {
 
 // ToolExecEndPayload describes the outcome of a tool execution.
 type ToolExecEndPayload struct {
-	ToolCallID    string
-	Tool          string
-	Duration      time.Duration
-	ForLLMLen     int
-	ForUserLen    int
-	IsError       bool
-	Async         bool
-	ResultHash    string
-	Suspended     bool
-	InteractionID string
+	ToolCallID       string
+	Tool             string
+	Duration         time.Duration
+	ForLLMLen        int
+	ForUserLen       int
+	IsError          bool
+	Async            bool
+	ResultHash       string
+	Suspended        bool
+	InteractionID    string
+	DiagnosticResult string
 }
 
 // ToolExecSkippedPayload describes a skipped tool call.
@@ -255,12 +260,13 @@ const (
 
 // InterruptReceivedPayload describes accepted turn-control input.
 type InterruptReceivedPayload struct {
-	Kind        InterruptKind
-	Role        string
-	ContentLen  int
-	QueueDepth  int
-	HintLen     int
-	MessageHash string
+	Kind              InterruptKind
+	Role              string
+	ContentLen        int
+	QueueDepth        int
+	HintLen           int
+	MessageHash       string
+	DiagnosticContent string
 }
 
 // SubTurnSpawnPayload describes the creation of a child turn.

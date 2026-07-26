@@ -13,11 +13,13 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := traceTestConfig(workspace)
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(cfg, eventBus)
 	t.Cleanup(func() {
@@ -40,15 +42,60 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 		Payload: TurnStartPayload{UserMessage: "use " + secret, Workspace: workspace},
 	})
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "evt-model-request", Kind: runtimeevents.KindAgentLLMRequest,
+		Time: start.Add(time.Millisecond), Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
+		Payload: LLMRequestPayload{
+			Provider: "openai", Model: "gpt-test", MessagesCount: 1,
+			DiagnosticMessages: diagnosticMessagesPreview(cfg, []providers.Message{{
+				Role: "user", Content: "investigate " + secret,
+			}}),
+		},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
 		ID: "evt-tool", Kind: runtimeevents.KindAgentToolExecStart, Time: start.Add(time.Millisecond),
 		Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
 		Payload: ToolExecStartPayload{
 			Tool:      "read_file",
-			Arguments: map[string]any{"token": secret},
+			Arguments: map[string]any{"path": "/tmp/diagnostic.txt", "token": secret},
 		},
 	})
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
-		ID: "evt-fallback", Kind: runtimeevents.KindAgentLLMFallbackAttempt, Time: start.Add(2 * time.Millisecond),
+		ID: "evt-tool-end", Kind: runtimeevents.KindAgentToolExecEnd, Time: start.Add(2 * time.Millisecond),
+		Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
+		Payload: ToolExecEndPayload{
+			Tool: "read_file", IsError: true,
+			DiagnosticResult: diagnosticTextPreview(
+				cfg, "permission denied while reading "+secret, diagnosticToolResultBytes,
+			),
+		},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "evt-retry", Kind: runtimeevents.KindAgentLLMRetry, Time: start.Add(3 * time.Millisecond),
+		Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
+		Payload: LLMRetryPayload{
+			Attempt: 1, Reason: "provider_error", Error: "Bearer " + secret,
+		},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "evt-model-response", Kind: runtimeevents.KindAgentLLMResponse,
+		Time: start.Add(4 * time.Millisecond), Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
+		Payload: LLMResponsePayload{
+			ContentLen: len("diagnosis complete"),
+			DiagnosticContent: diagnosticTextPreview(
+				cfg, "diagnosis complete "+secret, diagnosticModelResponseBytes,
+			),
+		},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "evt-error", Kind: runtimeevents.KindAgentError, Time: start.Add(5 * time.Millisecond),
+		Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
+		Payload: ErrorPayload{
+			Stage:   "tool",
+			Message: "-----BEGIN PRIVATE KEY-----\n" + secret + "\n-----END PRIVATE KEY-----",
+		},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "evt-fallback", Kind: runtimeevents.KindAgentLLMFallbackAttempt, Time: start.Add(6 * time.Millisecond),
 		Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
 		Payload: LLMFallbackAttemptPayload{
 			Provider:    "openai",
@@ -59,7 +106,7 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 		},
 	})
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
-		ID: "evt-context", Kind: runtimeevents.KindAgentContextSnapshot, Time: start.Add(3 * time.Millisecond),
+		ID: "evt-context", Kind: runtimeevents.KindAgentContextSnapshot, Time: start.Add(7 * time.Millisecond),
 		Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
 		Payload: ContextSnapshotPayload{
 			MessageCount:     3,
@@ -69,7 +116,7 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 		},
 	})
 	publishCaptureEvent(t, eventBus, runtimeevents.Event{
-		ID: "evt-end", Kind: runtimeevents.KindAgentTurnEnd, Time: start.Add(4 * time.Millisecond),
+		ID: "evt-end", Kind: runtimeevents.KindAgentTurnEnd, Time: start.Add(8 * time.Millisecond),
 		Source: runtimeevents.Source{Component: "agent"}, Scope: scope,
 		Payload: TurnEndPayload{
 			Status:          TurnEndStatusCompleted,
@@ -87,6 +134,15 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 	if strings.Contains(string(data), secret) {
 		t.Fatalf("trace leaked secret: %s", data)
 	}
+	for _, expected := range []string{
+		"input_preview", "messages_preview", "arguments_preview", "result_preview",
+		"error_preview", "final_preview", "investigate", "permission denied",
+		"diagnosis complete", "[REDACTED]", "[PRIVATE KEY REDACTED]",
+	} {
+		if !strings.Contains(string(data), expected) {
+			t.Fatalf("trace lacks %q: %s", expected, data)
+		}
+	}
 	var trace diagnostictrace.Trace
 	if err := json.Unmarshal(data, &trace); err != nil {
 		t.Fatalf("decode trace: %v", err)
@@ -97,11 +153,54 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 	if trace.Outcome == nil || trace.Outcome.Status != string(TurnEndStatusCompleted) {
 		t.Fatalf("outcome = %#v", trace.Outcome)
 	}
-	if len(trace.Records) != 5 {
-		t.Fatalf("records = %d, want 5", len(trace.Records))
+	if len(trace.Records) != 10 {
+		t.Fatalf("records = %d, want 10", len(trace.Records))
 	}
 	if mode := fileModeForTraceTest(t, tracePath); mode.Perm() != 0o600 {
 		t.Fatalf("trace mode = %o", mode.Perm())
+	}
+}
+
+func TestTraceCaptureMetadataOnlyOmitsContentPreviews(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := traceTestConfig(workspace)
+	eventBus := runtimeevents.NewBus()
+	manager := newTraceCaptureManager(cfg, eventBus)
+	t.Cleanup(func() {
+		manager.close()
+		_ = eventBus.Close()
+	})
+
+	secret := "metadata-secret-content"
+	start := time.Now().UTC()
+	scope := runtimeevents.Scope{
+		TraceScope: runtimeevents.NewTraceScope(workspace, "turn-metadata"),
+	}
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "start", Kind: runtimeevents.KindAgentTurnStart, Time: start, Scope: scope,
+		Payload: TurnStartPayload{UserMessage: secret, Workspace: workspace},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "tool", Kind: runtimeevents.KindAgentToolExecStart,
+		Time: start.Add(time.Millisecond), Scope: scope,
+		Payload: ToolExecStartPayload{
+			Tool: "read_file", Arguments: map[string]any{"path": secret},
+		},
+	})
+	publishCaptureEvent(t, eventBus, runtimeevents.Event{
+		ID: "end", Kind: runtimeevents.KindAgentTurnEnd,
+		Time: start.Add(2 * time.Millisecond), Scope: scope,
+		Payload: TurnEndPayload{
+			Status: TurnEndStatusCompleted, Workspace: workspace, FinalContent: secret,
+		},
+	})
+
+	data, err := os.ReadFile(waitForTraceFile(t, workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), "_preview") {
+		t.Fatalf("metadata trace retained content: %s", data)
 	}
 }
 

@@ -161,11 +161,17 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 				MaxToolIterations: 10,
 			},
 		},
+		Diagnostics: config.DiagnosticsConfig{
+			TraceCapture: config.DiagnosticTraceCaptureConfig{
+				Enabled: true, ContentMode: "redacted_content",
+			},
+		},
 	}
 
 	msgBus := bus.NewMessageBus()
 	provider := &scriptedToolProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	defer al.Close()
 	al.RegisterTool(&mockCustomTool{})
 	defaultAgent := al.registry.GetDefaultAgent()
 	if defaultAgent == nil {
@@ -285,7 +291,17 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 	if toolEndPayload.IsError {
 		t.Fatal("expected mock_custom tool to succeed")
 	}
+	if !strings.Contains(toolEndPayload.DiagnosticResult, "Custom tool executed") {
+		t.Fatalf("tool diagnostic result = %q", toolEndPayload.DiagnosticResult)
+	}
 
+	firstLLMRequest, ok := events[1].Payload.(LLMRequestPayload)
+	if !ok {
+		t.Fatalf("expected first LLMRequestPayload, got %T", events[1].Payload)
+	}
+	if !strings.Contains(firstLLMRequest.DiagnosticMessages, "run tool") {
+		t.Fatalf("first LLM diagnostic messages = %q", firstLLMRequest.DiagnosticMessages)
+	}
 	firstLLMResponse, ok := events[2].Payload.(LLMResponsePayload)
 	if !ok {
 		t.Fatalf("expected first LLMResponsePayload, got %T", events[2].Payload)
@@ -297,6 +313,10 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 		firstLLMResponse.CompletionTokens != 7 ||
 		firstLLMResponse.TotalTokens != 18 {
 		t.Fatalf("first LLM usage = %+v, want prompt=11 completion=7 total=18", firstLLMResponse)
+	}
+	if !strings.Contains(firstLLMResponse.DiagnosticToolCalls, "mock_custom") ||
+		!strings.Contains(firstLLMResponse.DiagnosticToolCalls, "ping") {
+		t.Fatalf("first LLM diagnostic tool calls = %q", firstLLMResponse.DiagnosticToolCalls)
 	}
 
 	secondLLMResponse, ok := events[6].Payload.(LLMResponsePayload)
@@ -310,6 +330,9 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 		secondLLMResponse.CompletionTokens != 5 ||
 		secondLLMResponse.TotalTokens != 18 {
 		t.Fatalf("second LLM usage = %+v, want prompt=13 completion=5 total=18", secondLLMResponse)
+	}
+	if secondLLMResponse.DiagnosticContent != "done" {
+		t.Fatalf("second LLM diagnostic content = %q", secondLLMResponse.DiagnosticContent)
 	}
 
 	turnEndPayload, ok := events[len(events)-1].Payload.(TurnEndPayload)
