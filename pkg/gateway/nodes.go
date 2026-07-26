@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,13 +27,26 @@ type nodeAdmissionRoutes interface {
 	UnregisterHTTPHandler(string)
 }
 
+type nodeAdmissionHandler interface {
+	http.Handler
+	Close(context.Context) error
+	Invoke(
+		context.Context,
+		nodes.ID,
+		nodes.ExecutionPlan,
+		func() error,
+	) (json.RawMessage, bool, error)
+	Invocation(context.Context, nodes.ID, string) (nodes.InvocationRecord, error)
+}
+
 type nodeAdmissionRuntime struct {
 	registryMu   sync.RWMutex
 	routes       nodeAdmissionRoutes
 	registry     *nodes.FileRegistry
 	registryPath string
-	handler      *nodews.AdmissionHandler
+	handler      nodeAdmissionHandler
 	sessions     *nodews.SessionHub
+	generation   uint64
 	mounted      bool
 }
 
@@ -112,9 +126,10 @@ func (runtime *nodeAdmissionRuntime) Reconcile(cfg *config.Config) error {
 	runtime.registry = registry
 	runtime.sessions = sessions
 	runtime.registryPath = registryPath
+	runtime.handler = handler
+	runtime.generation++
 	runtime.mounted = true
 	runtime.registryMu.Unlock()
-	runtime.handler = handler
 	logger.InfoCF("nodes", "Node admission enabled", map[string]any{
 		"path":                     nodews.Path,
 		"allow_loopback_plaintext": cfg.Nodes.AllowLoopbackPlaintext,
@@ -158,16 +173,40 @@ func (runtime *nodeAdmissionRuntime) currentSessions() *nodews.SessionHub {
 	return runtime.sessions
 }
 
+func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	return runtime.generation
+}
+
+func (runtime *nodeAdmissionRuntime) withInvocationHandler(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+	fn func(nodeAdmissionHandler) error,
+) error {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	if !runtime.mounted ||
+		runtime.handler == nil ||
+		runtime.registryPath != expectedRegistryPath ||
+		runtime.generation != expectedGeneration {
+		return errNodeDiscoveryAuthorityUnavailable
+	}
+	return fn(runtime.handler)
+}
+
 func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registryMu.Lock()
 	wasMounted := runtime.mounted
+	handler := runtime.handler
 	runtime.mounted = false
+	runtime.generation++
 	runtime.registryMu.Unlock()
 	if wasMounted {
 		runtime.routes.UnregisterHTTPHandler(nodews.Path)
 	}
-	if runtime.handler != nil {
-		if err := runtime.handler.Close(ctx); err != nil {
+	if handler != nil {
+		if err := handler.Close(ctx); err != nil {
 			return err
 		}
 	}
@@ -175,7 +214,7 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registry = nil
 	runtime.sessions = nil
 	runtime.registryPath = ""
-	runtime.registryMu.Unlock()
 	runtime.handler = nil
+	runtime.registryMu.Unlock()
 	return nil
 }

@@ -27,10 +27,11 @@ const (
 )
 
 var (
-	ErrGatewayInvocationConflict  = errors.New("gateway node invocation conflicts with durable state")
-	ErrGatewayInvocationNotFound  = errors.New("gateway node invocation not found")
-	ErrGatewayInvocationStoreFull = errors.New("gateway node invocation store is full")
-	gatewayTargetPattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	ErrGatewayInvocationConflict   = errors.New("gateway node invocation conflicts with durable state")
+	ErrGatewayInvocationDispatched = errors.New("gateway node invocation was already dispatched")
+	ErrGatewayInvocationNotFound   = errors.New("gateway node invocation not found")
+	ErrGatewayInvocationStoreFull  = errors.New("gateway node invocation store is full")
+	gatewayTargetPattern           = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 )
 
 type GatewayInvocationState string
