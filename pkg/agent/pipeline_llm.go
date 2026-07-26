@@ -628,7 +628,7 @@ func (p *Pipeline) CallLLM(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
 		LLMResponsePayload{
-			ResponseHash:     evaluationSafeHash(p.Cfg, exec.response.Content),
+			ResponseHash:     diagnosticSafeHash(p.Cfg, exec.response.Content),
 			ContentLen:       len(exec.response.Content),
 			ToolCalls:        len(exec.response.ToolCalls),
 			HasReasoning:     exec.response.Reasoning != "" || exec.response.ReasoningContent != "",

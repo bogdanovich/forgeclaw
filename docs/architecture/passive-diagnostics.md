@@ -11,6 +11,13 @@ approvals, task continuation, and delivery remain authoritative runtime
 concerns. Diagnostic capture observes that runtime but cannot participate in
 its correctness.
 
+The cleanup has removed authoritative task trace state and projection,
+simplified the writer to best-effort submission, and removed the eval CLI,
+replay, evaluator, and scenario packages. The retained implementation is
+`pkg/diagnosticcapture`, `pkg/diagnostictrace`,
+`pkg/agent/trace_capture.go`, and `pkg/agent/trace_turn_projector.go`, configured
+under `diagnostics.trace_capture`.
+
 ## Decision
 
 ForgeClaw has three layers:
@@ -70,7 +77,7 @@ The evaluator packages contain another approximately 2,714 test lines. Task
 registry trace behavior is additionally covered by task projector and agent
 capture tests.
 
-The current dependency direction is:
+The baseline dependency direction was:
 
 ```text
 authoritative task registry
@@ -102,8 +109,8 @@ Nothing in the runtime may import or wait on a downstream diagnostic consumer.
 
 ## Runtime Coupling To Remove
 
-The following production paths currently let tracing influence authoritative
-behavior:
+The following baseline production paths let tracing influence authoritative
+behavior and have been removed:
 
 - `pkg/tasks/registry.go` persists `TraceCapturePending`,
   `TraceCaptureEvents`, and `TraceCaptureDropped`.
@@ -144,11 +151,11 @@ None will be added.
 
 | Surface | Target |
 | --- | --- |
-| `pkg/evalcapture` builder | Retain only passive bounded construction and filtering. Rename away from evaluation terminology if still useful. |
-| `pkg/evalcapture` writer | One nonblocking diagnostic priority, bounded queue/retry/storage, observable drops, and nonblocking stop. No receipts or admission waits. |
+| Former `pkg/evalcapture` builder, now `pkg/diagnosticcapture` | Retain only passive bounded construction and filtering. |
+| Former `pkg/evalcapture` writer, now `pkg/diagnosticcapture` | One nonblocking diagnostic priority, bounded queue/retry/storage, observable drops, and nonblocking stop. No receipts or admission waits. |
 | `pkg/agent/trace_capture.go` | Observe runtime and submit best effort. Never wait for persistence. |
 | `pkg/agent/trace_turn_projector.go` | Produce a useful model/tool/error timeline without replay-specific records. |
-| `pkg/evaltrace` | Retain only diagnostic schema, validation needed for safe reading, storage, filtering, and retention. Remove evaluator-only vocabulary. |
+| Former `pkg/evaltrace`, now `pkg/diagnostictrace` | Retain only diagnostic schema, validation needed for safe reading, storage, filtering, and retention. Remove evaluator-only vocabulary. |
 | Configuration | Rename `evaluation.trace_capture` and evaluation storage terminology to diagnostics. No compatibility alias is required. |
 | Operator documentation and skills | Teach direct trace discovery, rendering, and root-cause analysis without `picoclaw eval`. |
 
@@ -174,24 +181,24 @@ target state is represented on merged `main`.
 
 | Current surface | Target state |
 | --- | --- |
-| `pkg/config.Config.Evaluation` | Replace with a diagnostics configuration root. |
-| `pkg/config/evaluation.go` and `evaluation_test.go` | Rename and retain only capture limits, mode, path, and retention. Remove fixture/correction concepts. |
+| Former `pkg/config.Config.Evaluation` | Replaced by `Config.Diagnostics`. |
+| Former `pkg/config/evaluation.go` and `evaluation_test.go` | Replaced by diagnostic capture config containing only limits, mode, path, and retention. |
 | `pkg/agent/trace_capture.go` | Simplify to passive manager lifecycle and nonblocking submission. |
 | `pkg/agent/trace_turn_projector.go` | Keep passive turn/runtime-event projection and rich redacted timeline. |
 | `pkg/agent/trace_task_projector.go` and tests | Delete. Do not replace with another task projector. |
 | `pkg/tasks/registry.go` trace fields, validation, journaling, reuse, pruning, and acknowledgement branches | Delete. |
 | `pkg/tasks/observer.go` trace-journal cloning | Delete with the registry fields. |
-| `pkg/evalcapture/builder.go` | Keep bounded record assembly; rename and prune evaluator-only limits. |
-| `pkg/evalcapture/writer.go` | Simplify to bounded best-effort diagnostic persistence; remove tracked receipt/admission APIs. |
+| Former `pkg/evalcapture/builder.go` | Kept as `pkg/diagnosticcapture/builder.go` with bounded record assembly and no evaluator-only limits. |
+| Former `pkg/evalcapture/writer.go` | Kept as `pkg/diagnosticcapture/writer.go` with bounded best-effort persistence and no tracked receipt/admission APIs. |
 | `pkg/evalcapture/coordinator.go` and tests | Delete. |
-| `pkg/evaltrace/{canonical,limits,payloads,redact,store,types,validate}.go` | Retain only readable diagnostic contracts, redaction, bounds, and storage; rename the package. |
+| Former `pkg/evaltrace/{canonical,limits,payloads,redact,store,types,validate}.go` | Kept under `pkg/diagnostictrace` with only readable diagnostic contracts, redaction, bounds, and storage. |
 | `pkg/evalreplay` | Delete. |
 | `pkg/evalevaluator` and `testdata/historical_failures.json` | Delete. |
 | `pkg/evalscenario` | Delete unless a helper is proven useful to direct runtime tests and can move without replay/fixture dependencies. |
 | `pkg/agent/memory_replay_test.go` use of `evalreplay.VirtualClock` | Replace with a local/shared test clock independent of replay. |
 | `cmd/picoclaw/internal/eval` | Delete. |
 | `cmd/picoclaw/main.go` eval import and command registration | Delete. |
-| `state/evaluation/traces` | Rename to a diagnostics path. Local deployment is migrated atomically; old data need not be read. |
+| Former `state/evaluation/traces` | Replaced by `state/diagnostics/traces`. Local deployment is migrated atomically; old data is not read. |
 | `docs/architecture/replay-evaluation.md` | Delete after its implementation inventory is removed. |
 | `docs/architecture/replay-evaluation-audit.md` | Delete. |
 | `docs/architecture/interaction-replay-redesign.md` | Delete; PR #339 remains closed. |
@@ -202,11 +209,12 @@ target state is represented on merged `main`.
 
 ### Configuration Map
 
-The current root is `evaluation.trace_capture`, with matching
-`PICOCLAW_EVALUATION_TRACE_CAPTURE_*` environment variables. Replace it
-directly with diagnostic terminology; do not accept the old names.
+The former root was `evaluation.trace_capture`, with matching
+`PICOCLAW_EVALUATION_TRACE_CAPTURE_*` environment variables. The retained
+surface is `diagnostics.trace_capture` and
+`PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_*`; the old names are not accepted.
 
-| Current option | Target |
+| Former or retained option | Target |
 | --- | --- |
 | `enabled` | Keep. Capture remains disabled by default in product defaults and explicitly enabled per local profile. |
 | `content_mode` | Keep `metadata_only` and rich `redacted_content`; remove `fixture`. |

@@ -1,4 +1,4 @@
-package evalcapture
+package diagnosticcapture
 
 import (
 	"encoding/json"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
 )
 
 func TestWriterPersistsAndPrunesByPolicy(t *testing.T) {
@@ -286,7 +286,7 @@ func TestWriterReportsTruncatedSubmission(t *testing.T) {
 		EventSink: events.append,
 	})
 	trace := testTrace(t, "trace-truncated")
-	trace.Truncation = evaltrace.Truncation{
+	trace.Truncation = diagnostictrace.Truncation{
 		Incomplete: true, DroppedRecords: 3, Reasons: []string{"record_count_limit"},
 	}
 	if err := writer.Submit(testPolicy(), trace); err != nil {
@@ -302,15 +302,15 @@ func TestWriterReportsTruncatedSubmission(t *testing.T) {
 	writer.Close()
 }
 
-func testTrace(t *testing.T, id string) evaltrace.Trace {
+func testTrace(t *testing.T, id string) diagnostictrace.Trace {
 	t.Helper()
-	trace, err := evaltrace.Finalize(evaltrace.Trace{
+	trace, err := diagnostictrace.Finalize(diagnostictrace.Trace{
 		TraceID: id, CreatedAt: time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
-		Policy: evaltrace.CapturePolicy{ContentMode: evaltrace.ContentMetadataOnly},
-		Limits: evaltrace.DefaultLimits(),
-		Records: []evaltrace.Record{{
-			Sequence: 1, Kind: evaltrace.RecordTurnStart,
-			Origin: evaltrace.Origin{Kind: "test", ID: id + "-event"},
+		Policy: diagnostictrace.CapturePolicy{ContentMode: diagnostictrace.ContentMetadataOnly},
+		Limits: diagnostictrace.DefaultLimits(),
+		Records: []diagnostictrace.Record{{
+			Sequence: 1, Kind: diagnostictrace.RecordTurnStart,
+			Origin: diagnostictrace.Origin{Kind: "test", ID: id + "-event"},
 			Data:   json.RawMessage(`{"status":"started"}`),
 		}},
 	})
@@ -321,7 +321,7 @@ func testTrace(t *testing.T, id string) evaltrace.Trace {
 }
 
 func testPolicy() Policy {
-	return Policy{Root: filepath.Join(os.TempDir(), "evalcapture-test")}
+	return Policy{Root: filepath.Join(os.TempDir(), "diagnosticcapture-test")}
 }
 
 func waitForWriter(t *testing.T, writer *Writer, ready func(Stats) bool) {
@@ -348,10 +348,10 @@ type fakeStorage struct {
 	mu           sync.Mutex
 	saveFailures int
 	pruneErr     error
-	saved        []evaltrace.Trace
+	saved        []diagnostictrace.Trace
 }
 
-func (s *fakeStorage) Save(trace evaltrace.Trace) (string, error) {
+func (s *fakeStorage) Save(trace diagnostictrace.Trace) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.saveFailures > 0 {
@@ -375,7 +375,7 @@ func newBlockingStorage() *blockingStorage {
 	return &blockingStorage{started: make(chan struct{}), release: make(chan struct{})}
 }
 
-func (s *blockingStorage) Save(trace evaltrace.Trace) (string, error) {
+func (s *blockingStorage) Save(trace diagnostictrace.Trace) (string, error) {
 	s.once.Do(func() {
 		close(s.started)
 		<-s.release
@@ -393,10 +393,10 @@ func (s *blockingStorage) savedIDs() []string {
 	return result
 }
 
-func (s *blockingStorage) savedTraces() []evaltrace.Trace {
+func (s *blockingStorage) savedTraces() []diagnostictrace.Trace {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]evaltrace.Trace(nil), s.saved...)
+	return append([]diagnostictrace.Trace(nil), s.saved...)
 }
 
 type eventLog struct {

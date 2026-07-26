@@ -11,7 +11,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
@@ -87,11 +87,11 @@ func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
 	if strings.Contains(string(data), secret) {
 		t.Fatalf("trace leaked secret: %s", data)
 	}
-	var trace evaltrace.Trace
+	var trace diagnostictrace.Trace
 	if err := json.Unmarshal(data, &trace); err != nil {
 		t.Fatalf("decode trace: %v", err)
 	}
-	if err := evaltrace.Validate(trace); err != nil {
+	if err := diagnostictrace.Validate(trace); err != nil {
 		t.Fatalf("validate trace: %v", err)
 	}
 	if trace.Outcome == nil || trace.Outcome.Status != string(TurnEndStatusCompleted) {
@@ -139,7 +139,7 @@ func TestTraceCaptureDisabledWritesNothing(t *testing.T) {
 	)
 	manager.close()
 	_ = eventBus.Close()
-	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(
+	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "diagnostics", "traces", "*.json")); len(
 		matches,
 	) != 0 {
 		t.Fatalf("disabled capture wrote traces: %v", matches)
@@ -250,7 +250,7 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 			},
 		},
 	)
-	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(
+	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "diagnostics", "traces", "*.json")); len(
 		matches,
 	) != 0 {
 		t.Fatalf("trace persisted before delivery outcome: %v", matches)
@@ -262,7 +262,7 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 			TraceScopes: []runtimeevents.TraceScope{scope.TraceScope}, ContentLen: 4,
 		},
 	})
-	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(
+	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "diagnostics", "traces", "*.json")); len(
 		matches,
 	) != 0 {
 		t.Fatalf("non-settling delivery event persisted trace: %v", matches)
@@ -280,13 +280,13 @@ func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var trace evaltrace.Trace
+	var trace diagnostictrace.Trace
 	if err := json.Unmarshal(data, &trace); err != nil {
 		t.Fatal(err)
 	}
 	found := false
 	for _, record := range trace.Records {
-		found = found || record.Kind == evaltrace.RecordDeliveryOutcome
+		found = found || record.Kind == diagnostictrace.RecordDeliveryOutcome
 	}
 	if !found {
 		t.Fatalf("trace does not contain delivery outcome: %#v", trace.Records)
@@ -382,7 +382,7 @@ func TestTraceCaptureSettlesEveryScopeOnAggregatedDelivery(t *testing.T) {
 		trace := readCapturedTrace(t, path)
 		found := false
 		for _, record := range trace.Records {
-			found = found || record.Kind == evaltrace.RecordDeliveryOutcome
+			found = found || record.Kind == diagnostictrace.RecordDeliveryOutcome
 		}
 		if !found {
 			t.Fatalf("aggregated trace %s lacks delivery outcome", trace.Metadata.RootTurnID)
@@ -413,7 +413,7 @@ func TestTraceCaptureRetainsEarlyTerminalDeliveryUntilTurnEnd(t *testing.T) {
 			TraceScopes: []runtimeevents.TraceScope{traceScope}, TraceSettlement: true,
 		},
 	})
-	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "evaluation", "traces", "*.json")); len(
+	if matches, _ := filepath.Glob(filepath.Join(workspace, "state", "diagnostics", "traces", "*.json")); len(
 		matches,
 	) != 0 {
 		t.Fatalf("trace persisted before turn end: %v", matches)
@@ -435,7 +435,7 @@ func TestTraceCaptureRetainsEarlyTerminalDeliveryUntilTurnEnd(t *testing.T) {
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
 	workspace := t.TempDir()
 	settings := traceCaptureSettings{stateDir: "../../outside"}
-	want := filepath.Join(workspace, "state", "evaluation", "traces")
+	want := filepath.Join(workspace, "state", "diagnostics", "traces")
 	if got := traceStoreRoot(settings, workspace); got != want {
 		t.Fatalf("traceStoreRoot = %q, want %q", got, want)
 	}
@@ -444,8 +444,8 @@ func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {
 func traceTestConfig(workspace string) *config.Config {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = workspace
-	cfg.Evaluation.TraceCapture.Enabled = true
-	cfg.Evaluation.TraceCapture.ContentMode = "metadata_only"
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "metadata_only"
 	return cfg
 }
 
@@ -464,7 +464,7 @@ func waitForTraceFile(t *testing.T, workspace string) string {
 
 func waitForTraceFiles(t *testing.T, workspace string, count int) []string {
 	t.Helper()
-	pattern := filepath.Join(workspace, "state", "evaluation", "traces", "*.json")
+	pattern := filepath.Join(workspace, "state", "diagnostics", "traces", "*.json")
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		matches, _ := filepath.Glob(pattern)
@@ -477,27 +477,27 @@ func waitForTraceFiles(t *testing.T, workspace string, count int) []string {
 	return nil
 }
 
-func readCapturedTrace(t *testing.T, path string) evaltrace.Trace {
+func readCapturedTrace(t *testing.T, path string) diagnostictrace.Trace {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var trace evaltrace.Trace
+	var trace diagnostictrace.Trace
 	if err := json.Unmarshal(data, &trace); err != nil {
 		t.Fatal(err)
 	}
 	return trace
 }
 
-func assertCapturedTools(t *testing.T, trace evaltrace.Trace, want ...string) {
+func assertCapturedTools(t *testing.T, trace diagnostictrace.Trace, want ...string) {
 	t.Helper()
 	got := make([]string, 0, len(want))
 	for _, record := range trace.Records {
-		if record.Kind != evaltrace.RecordToolCall {
+		if record.Kind != diagnostictrace.RecordToolCall {
 			continue
 		}
-		var payload evaltrace.ToolPayload
+		var payload diagnostictrace.ToolPayload
 		if err := json.Unmarshal(record.Data, &payload); err != nil {
 			t.Fatal(err)
 		}

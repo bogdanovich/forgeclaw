@@ -5,8 +5,8 @@ import (
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/evalcapture"
-	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/diagnosticcapture"
+	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
 	"github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
@@ -20,7 +20,7 @@ type traceCaptureManager struct {
 
 	settings traceCaptureSettings
 	turns    *turnTraceProjector
-	writer   *evalcapture.Writer
+	writer   *diagnosticcapture.Writer
 }
 
 func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptureManager {
@@ -46,7 +46,7 @@ func (m *traceCaptureManager) start() {
 		return
 	}
 	if m.writer == nil {
-		m.writer = evalcapture.NewWriter(evalcapture.Options{
+		m.writer = diagnosticcapture.NewWriter(diagnosticcapture.Options{
 			Capacity:  tracePersistBuffer,
 			EventSink: logTraceWriterEvent,
 		})
@@ -120,13 +120,13 @@ func (m *traceCaptureManager) enqueuePersist(
 	writer := m.writer
 	m.mu.Unlock()
 	if writer == nil {
-		return &evalcapture.DropError{
-			Reason: evalcapture.ReasonClosed, TraceID: finalized.TraceID,
+		return &diagnosticcapture.DropError{
+			Reason: diagnosticcapture.ReasonClosed, TraceID: finalized.TraceID,
 		}
 	}
 	err = writer.Submit(policy, finalized)
 	if err != nil {
-		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
+		logger.WarnCF("diagnostictrace", "Failed to admit finalized diagnostic trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
 		})
 	}
@@ -136,20 +136,20 @@ func (m *traceCaptureManager) enqueuePersist(
 func prepareTrace(
 	settings traceCaptureSettings,
 	trace *activeTraceCapture,
-) (evaltrace.Trace, evalcapture.Policy, error) {
+) (diagnostictrace.Trace, diagnosticcapture.Policy, error) {
 	if trace == nil || strings.TrimSpace(trace.workspace) == "" {
-		return evaltrace.Trace{}, evalcapture.Policy{}, &evalcapture.DropError{
-			Reason: evalcapture.ReasonInvalidTrace,
+		return diagnostictrace.Trace{}, diagnosticcapture.Policy{}, &diagnosticcapture.DropError{
+			Reason: diagnosticcapture.ReasonInvalidTrace,
 		}
 	}
 	finalized, err := trace.builder.Finalize()
 	if err != nil {
-		logger.WarnCF("evaltrace", "Failed to finalize evaluation trace", map[string]any{
+		logger.WarnCF("diagnostictrace", "Failed to finalize diagnostic trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
 		})
-		return evaltrace.Trace{}, evalcapture.Policy{}, err
+		return diagnostictrace.Trace{}, diagnosticcapture.Policy{}, err
 	}
-	policy := evalcapture.Policy{
+	policy := diagnosticcapture.Policy{
 		Root:      traceStoreRoot(settings, trace.workspace),
 		Retention: settings.retention,
 		MaxTraces: settings.maxTraces,
@@ -157,8 +157,8 @@ func prepareTrace(
 	return finalized, policy, nil
 }
 
-func logTraceWriterEvent(event evalcapture.Event) {
-	if event.Kind == evalcapture.EventPersisted {
+func logTraceWriterEvent(event diagnosticcapture.Event) {
+	if event.Kind == diagnosticcapture.EventPersisted {
 		return
 	}
 	fields := map[string]any{
@@ -177,5 +177,5 @@ func logTraceWriterEvent(event evalcapture.Event) {
 	if event.Err != nil {
 		fields["error"] = event.Err.Error()
 	}
-	logger.WarnCF("evaltrace", "Evaluation trace writer event", fields)
+	logger.WarnCF("diagnostictrace", "Diagnostic trace writer event", fields)
 }

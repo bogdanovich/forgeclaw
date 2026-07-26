@@ -1,13 +1,13 @@
-package evalcapture
+package diagnosticcapture
 
 import (
 	"errors"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
 )
 
-// RecordClass states whether replay correctness depends on retaining a record.
+// RecordClass states whether a diagnostic record should displace ordinary data.
 type RecordClass string
 
 const (
@@ -30,20 +30,20 @@ const (
 type AppendResult struct {
 	Status      AppendStatus
 	Reason      string
-	DroppedKind evaltrace.RecordKind
+	DroppedKind diagnostictrace.RecordKind
 }
 
-// TraceBuilder owns bounded record assembly for one evaluation trace.
+// TraceBuilder owns bounded record assembly for one diagnostic trace.
 // It is not safe for concurrent use; source projectors provide serialization.
 type TraceBuilder struct {
-	trace    evaltrace.Trace
+	trace    diagnostictrace.Trace
 	critical map[uint64]bool
 	origins  map[string]struct{}
 }
 
 // NewTraceBuilder takes ownership of base and normalizes its limits.
-func NewTraceBuilder(base evaltrace.Trace) *TraceBuilder {
-	base.Limits = evaltrace.NormalizeLimits(base.Limits)
+func NewTraceBuilder(base diagnostictrace.Trace) *TraceBuilder {
+	base.Limits = diagnostictrace.NormalizeLimits(base.Limits)
 	builder := &TraceBuilder{
 		trace: base, critical: make(map[uint64]bool), origins: make(map[string]struct{}),
 	}
@@ -65,7 +65,7 @@ func (b *TraceBuilder) TraceID() string {
 }
 
 // SetOutcome records the terminal source outcome.
-func (b *TraceBuilder) SetOutcome(outcome evaltrace.Outcome) {
+func (b *TraceBuilder) SetOutcome(outcome diagnostictrace.Outcome) {
 	if b == nil {
 		return
 	}
@@ -85,7 +85,7 @@ func (b *TraceBuilder) MarkIncomplete(reason string, droppedRecords int) {
 }
 
 // Append admits one source record under the trace's bounded evidence policy.
-func (b *TraceBuilder) Append(record evaltrace.Record, class RecordClass) AppendResult {
+func (b *TraceBuilder) Append(record diagnostictrace.Record, class RecordClass) AppendResult {
 	if b == nil {
 		return AppendResult{
 			Status: AppendDroppedCritical, Reason: "builder_unavailable", DroppedKind: record.Kind,
@@ -146,17 +146,17 @@ func (b *TraceBuilder) Append(record evaltrace.Record, class RecordClass) Append
 
 // Finalize canonicalizes the trace and preferentially removes ordinary
 // records when the encoded trace exceeds its byte limit.
-func (b *TraceBuilder) Finalize() (evaltrace.Trace, error) {
+func (b *TraceBuilder) Finalize() (diagnostictrace.Trace, error) {
 	if b == nil {
-		return evaltrace.Trace{}, errors.New("trace builder is unavailable")
+		return diagnostictrace.Trace{}, errors.New("trace builder is unavailable")
 	}
 	for {
-		finalized, err := evaltrace.Finalize(b.trace)
+		finalized, err := diagnostictrace.Finalize(b.trace)
 		if err == nil {
 			return finalized, nil
 		}
 		if !strings.Contains(err.Error(), "trace exceeds byte limit") || len(b.trace.Records) == 0 {
-			return evaltrace.Trace{}, err
+			return diagnostictrace.Trace{}, err
 		}
 		dropped, critical := b.evictForByteLimit()
 		reason := "trace_size_limit"
@@ -167,17 +167,17 @@ func (b *TraceBuilder) Finalize() (evaltrace.Trace, error) {
 	}
 }
 
-func (b *TraceBuilder) evictOrdinary() (evaltrace.Record, bool) {
+func (b *TraceBuilder) evictOrdinary() (diagnostictrace.Record, bool) {
 	for i := len(b.trace.Records) - 1; i >= 0; i-- {
 		if b.critical[b.trace.Records[i].Sequence] {
 			continue
 		}
 		return b.removeRecord(i), true
 	}
-	return evaltrace.Record{}, false
+	return diagnostictrace.Record{}, false
 }
 
-func (b *TraceBuilder) evictForByteLimit() (evaltrace.Record, bool) {
+func (b *TraceBuilder) evictForByteLimit() (diagnostictrace.Record, bool) {
 	if dropped, ok := b.evictOrdinary(); ok {
 		return dropped, false
 	}
@@ -186,24 +186,24 @@ func (b *TraceBuilder) evictForByteLimit() (evaltrace.Record, bool) {
 	return dropped, true
 }
 
-func (b *TraceBuilder) removeRecord(index int) evaltrace.Record {
+func (b *TraceBuilder) removeRecord(index int) diagnostictrace.Record {
 	dropped := b.trace.Records[index]
 	b.trace.Records = append(b.trace.Records[:index], b.trace.Records[index+1:]...)
 	delete(b.critical, dropped.Sequence)
 	return dropped
 }
 
-func (b *TraceBuilder) recordDrop(reason string, kind evaltrace.RecordKind) {
+func (b *TraceBuilder) recordDrop(reason string, kind diagnostictrace.RecordKind) {
 	b.trace.Truncation.Incomplete = true
 	b.trace.Truncation.DroppedRecords++
 	b.trace.Truncation.Reasons = appendUniqueReason(b.trace.Truncation.Reasons, reason)
 	if b.trace.Truncation.DroppedByKind == nil {
-		b.trace.Truncation.DroppedByKind = make(map[evaltrace.RecordKind]int)
+		b.trace.Truncation.DroppedByKind = make(map[diagnostictrace.RecordKind]int)
 	}
 	b.trace.Truncation.DroppedByKind[kind]++
 }
 
-func nextRecordSequence(records []evaltrace.Record) uint64 {
+func nextRecordSequence(records []diagnostictrace.Record) uint64 {
 	var highest uint64
 	for _, record := range records {
 		if record.Sequence > highest {

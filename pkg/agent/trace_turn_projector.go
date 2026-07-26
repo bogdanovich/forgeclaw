@@ -14,8 +14,8 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/evalcapture"
-	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/diagnosticcapture"
+	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -28,16 +28,16 @@ const (
 
 type traceCaptureSettings struct {
 	enabled     bool
-	contentMode evaltrace.ContentMode
+	contentMode diagnostictrace.ContentMode
 	stateDir    string
-	limits      evaltrace.AppliedLimits
+	limits      diagnostictrace.AppliedLimits
 	retention   time.Duration
 	maxTraces   int
 	filter      func(string) string
 }
 
 type activeTraceCapture struct {
-	builder         *evalcapture.TraceBuilder
+	builder         *diagnosticcapture.TraceBuilder
 	turnID          string
 	workspace       string
 	startedAt       time.Time
@@ -89,7 +89,7 @@ func (p *turnTraceProjector) start() {
 		return
 	}
 	sub, err := p.eventBus.Channel().Subscribe(context.Background(), runtimeevents.SubscribeOptions{
-		Name:         "evaluation-trace-capture",
+		Name:         "diagnostic-trace-capture",
 		Buffer:       traceCaptureBuffer,
 		Concurrency:  runtimeevents.Locked,
 		Backpressure: runtimeevents.DropNewest,
@@ -100,7 +100,7 @@ func (p *turnTraceProjector) start() {
 	})
 	if err != nil {
 		logger.WarnCF(
-			"evaltrace",
+			"diagnostictrace",
 			"Failed to subscribe trace capture",
 			map[string]any{"error": err.Error()},
 		)
@@ -113,14 +113,14 @@ func traceCaptureSettingsFromConfig(cfg *config.Config) traceCaptureSettings {
 	if cfg == nil {
 		return traceCaptureSettings{}
 	}
-	capture := cfg.Evaluation.TraceCapture
+	capture := cfg.Diagnostics.TraceCapture
 	return traceCaptureSettings{
 		enabled:     capture.Enabled,
-		contentMode: evaltrace.ContentMode(capture.EffectiveContentMode()),
+		contentMode: diagnostictrace.ContentMode(capture.EffectiveContentMode()),
 		stateDir:    strings.TrimSpace(capture.StateDir),
-		limits: evaltrace.NormalizeLimits(evaltrace.AppliedLimits{
+		limits: diagnostictrace.NormalizeLimits(diagnostictrace.AppliedLimits{
 			MaxTraceBytes: capture.MaxTraceBytes, MaxRecords: capture.MaxRecords,
-			MaxRecordBytes: capture.MaxRecordBytes, MaxCorrections: capture.MaxCorrections,
+			MaxRecordBytes: capture.MaxRecordBytes,
 		}),
 		retention: time.Duration(capture.RetentionHours) * time.Hour,
 		maxTraces: capture.MaxTraces,
@@ -257,7 +257,7 @@ func (p *turnTraceProjector) observeRuntimeEvent(event runtimeevents.Event) {
 	deliveryExpected := false
 	if payload, ok := event.Payload.(TurnEndPayload); ok {
 		deliveryExpected = payload.DeliveryExpected
-		trace.builder.SetOutcome(evaltrace.Outcome{
+		trace.builder.SetOutcome(diagnostictrace.Outcome{
 			Status: string(payload.Status), ContentHash: safeHash(settings, payload.FinalContent),
 			ContentLen: payload.FinalContentLen,
 		})
@@ -324,22 +324,22 @@ func (p *turnTraceProjector) startTurnLocked(
 		turnID:    traceScope.TurnID,
 		workspace: traceScope.Workspace,
 		startedAt: event.Time,
-		builder: evalcapture.NewTraceBuilder(evaltrace.Trace{
-			SchemaVersion: evaltrace.SchemaVersionV1,
+		builder: diagnosticcapture.NewTraceBuilder(diagnostictrace.Trace{
+			SchemaVersion: diagnostictrace.SchemaVersionV1,
 			TraceID: opaqueTraceID(
 				"turn", traceScope.Workspace+"\x00"+traceScope.TurnID, event.Time,
 			),
 			CreatedAt: event.Time.UTC(),
-			Policy: evaltrace.CapturePolicy{
+			Policy: diagnostictrace.CapturePolicy{
 				ContentMode: settings.contentMode,
 				Redactor:    captureRedactorVersion(settings.contentMode),
 			},
 			Limits: settings.limits,
-			Metadata: evaltrace.Metadata{
+			Metadata: diagnostictrace.Metadata{
 				RootTurnID: traceScope.TurnID, SessionHash: safeHash(settings, event.Scope.SessionKey),
 				AgentID: event.Scope.AgentID, RuntimeID: event.Scope.RuntimeID,
 			},
-			Records: make([]evaltrace.Record, 0, 32),
+			Records: make([]diagnostictrace.Record, 0, 32),
 		}),
 	}
 	p.turns[traceScope] = trace
@@ -400,8 +400,8 @@ func runtimeEventRecord(
 	settings traceCaptureSettings,
 	trace *activeTraceCapture,
 	event runtimeevents.Event,
-) (evaltrace.Record, bool, bool) {
-	var kind evaltrace.RecordKind
+) (diagnostictrace.Record, bool, bool) {
+	var kind diagnostictrace.RecordKind
 	var payload any
 	critical := false
 	toolCallID := ""
@@ -409,10 +409,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentTurnStart:
 		value, ok := event.Payload.(TurnStartPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordTurnStart
-		payload = evaltrace.TurnPayload{
+		kind = diagnostictrace.RecordTurnStart
+		payload = diagnostictrace.TurnPayload{
 			InputHash: safeHash(settings, value.UserMessage),
 			InputLen:  len(value.UserMessage),
 		}
@@ -420,10 +420,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentTurnEnd:
 		value, ok := event.Payload.(TurnEndPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordTurnEnd
-		payload = evaltrace.TurnPayload{
+		kind = diagnostictrace.RecordTurnEnd
+		payload = diagnostictrace.TurnPayload{
 			Status:     string(value.Status),
 			FinalHash:  safeHash(settings, value.FinalContent),
 			FinalLen:   value.FinalContentLen,
@@ -433,10 +433,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentLLMRequest:
 		value, ok := event.Payload.(LLMRequestPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordModelRequest
-		payload = evaltrace.ModelPayload{
+		kind = diagnostictrace.RecordModelRequest
+		payload = diagnostictrace.ModelPayload{
 			Provider:   value.Provider,
 			Model:      value.Model,
 			PromptHash: value.PromptHash,
@@ -446,10 +446,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentLLMResponse:
 		value, ok := event.Payload.(LLMResponsePayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordModelResponse
-		payload = evaltrace.ModelPayload{
+		kind = diagnostictrace.RecordModelResponse
+		payload = diagnostictrace.ModelPayload{
 			Status:         "success",
 			ResponseHash:   value.ResponseHash,
 			PromptTokens:   value.PromptTokens,
@@ -458,10 +458,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentLLMRetry:
 		value, ok := event.Payload.(LLMRetryPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordModelRetry
-		payload = evaltrace.ModelPayload{
+		kind = diagnostictrace.RecordModelRetry
+		payload = diagnostictrace.ModelPayload{
 			Attempt:   value.Attempt,
 			Status:    "retry",
 			Reason:    value.Reason,
@@ -470,10 +470,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentLLMFallbackAttempt:
 		value, ok := event.Payload.(LLMFallbackAttemptPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordModelFallbackAttempt
-		payload = evaltrace.ModelPayload{
+		kind = diagnostictrace.RecordModelFallbackAttempt
+		payload = diagnostictrace.ModelPayload{
 			Provider:    value.Provider,
 			Model:       value.Model,
 			IdentityKey: value.IdentityKey,
@@ -486,10 +486,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentToolExecStart:
 		value, ok := event.Payload.(ToolExecStartPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordToolCall
-		payload = evaltrace.ToolPayload{
+		kind = diagnostictrace.RecordToolCall
+		payload = diagnostictrace.ToolPayload{
 			Tool:     value.Tool,
 			ArgsHash: safeJSONHash(settings, value.Arguments),
 			Status:   "started",
@@ -499,10 +499,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentToolExecEnd:
 		value, ok := event.Payload.(ToolExecEndPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordToolResult
-		payload = evaltrace.ToolPayload{
+		kind = diagnostictrace.RecordToolResult
+		payload = diagnostictrace.ToolPayload{
 			Tool:       value.Tool,
 			ResultHash: value.ResultHash,
 			Status:     "completed",
@@ -513,10 +513,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentToolExecSkipped:
 		value, ok := event.Payload.(ToolExecSkippedPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordToolSkipped
-		payload = evaltrace.ToolPayload{
+		kind = diagnostictrace.RecordToolSkipped
+		payload = diagnostictrace.ToolPayload{
 			Tool:         value.Tool,
 			Status:       "skipped",
 			Executed:     false,
@@ -526,10 +526,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentToolLoopDecision:
 		value, ok := event.Payload.(ToolLoopDecisionPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordToolLoopDecision
-		payload = evaltrace.ToolPayload{
+		kind = diagnostictrace.RecordToolLoopDecision
+		payload = diagnostictrace.ToolPayload{
 			Tool:         value.Tool,
 			ArgsHash:     value.ArgsHash,
 			Action:       value.Action,
@@ -540,20 +540,20 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentToolSteeringDecision:
 		value, ok := event.Payload.(ToolSteeringDecisionPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordToolSteeringDecision
-		payload = evaltrace.ToolPayload{
+		kind = diagnostictrace.RecordToolSteeringDecision
+		payload = diagnostictrace.ToolPayload{
 			Tool: value.Tool, Action: value.Decision, Classification: value.Classification, Cause: value.Cause,
 		}
 		toolCallID = value.ToolCallID
 	case runtimeevents.KindAgentSteeringInjected:
 		value, ok := event.Payload.(SteeringInjectedPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordSteeringInjected
-		payload = evaltrace.SteeringPayload{
+		kind = diagnostictrace.RecordSteeringInjected
+		payload = diagnostictrace.SteeringPayload{
 			Status:     "injected",
 			Count:      value.Count,
 			ContentLen: value.TotalContentLen,
@@ -561,10 +561,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentInterruptReceived:
 		value, ok := event.Payload.(InterruptReceivedPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordInterrupt
-		payload = evaltrace.SteeringPayload{
+		kind = diagnostictrace.RecordInterrupt
+		payload = diagnostictrace.SteeringPayload{
 			Status:      string(value.Kind),
 			Role:        value.Role,
 			MessageHash: value.MessageHash,
@@ -572,30 +572,30 @@ func runtimeEventRecord(
 			QueueDepth:  value.QueueDepth,
 		}
 	case runtimeevents.KindAgentContextCompress, runtimeevents.KindAgentSessionSummarize:
-		kind = evaltrace.RecordContextCompaction
+		kind = diagnostictrace.RecordContextCompaction
 		switch value := event.Payload.(type) {
 		case ContextCompressPayload:
-			payload = evaltrace.ContextPayload{
+			payload = diagnostictrace.ContextPayload{
 				Reason:         string(value.Reason),
 				BeforeMessages: value.DroppedMessages + value.RemainingMessages,
 				AfterMessages:  value.RemainingMessages,
 				TokensSaved:    value.TokensSaved,
 			}
 		case SessionSummarizePayload:
-			payload = evaltrace.ContextPayload{
+			payload = diagnostictrace.ContextPayload{
 				Reason:         "summarize",
 				BeforeMessages: value.SummarizedMessages + value.KeptMessages,
 				AfterMessages:  value.KeptMessages,
 			}
 		default:
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
 	case runtimeevents.KindAgentContextSnapshot:
 		value, ok := event.Payload.(ContextSnapshotPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind, critical = evaltrace.RecordContextSnapshot, true
+		kind, critical = diagnostictrace.RecordContextSnapshot, true
 		protected := []string{"tool_pairing_valid:" + strconv.FormatBool(value.ToolPairingValid)}
 		if value.GoalHash != "" {
 			protected = append(protected, "goal:"+value.GoalHash)
@@ -603,7 +603,7 @@ func runtimeEventRecord(
 		if value.SteeringCount > 0 {
 			protected = append(protected, "steering_count:"+strconv.Itoa(value.SteeringCount))
 		}
-		payload = evaltrace.ContextPayload{
+		payload = diagnostictrace.ContextPayload{
 			AfterMessages: value.MessageCount, SnapshotHash: value.SnapshotHash,
 			ProtectedFactRefs: protected,
 		}
@@ -612,16 +612,16 @@ func runtimeEventRecord(
 		runtimeevents.KindChannelMessageOutboundFailed:
 		value, ok := event.Payload.(channels.ChannelOutboundPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordDeliveryAttempt
+		kind = diagnostictrace.RecordDeliveryAttempt
 		status := "queued"
 		if event.Kind == runtimeevents.KindChannelMessageOutboundSent {
-			kind, status, critical = evaltrace.RecordDeliveryOutcome, "sent", true
+			kind, status, critical = diagnostictrace.RecordDeliveryOutcome, "sent", true
 		} else if event.Kind == runtimeevents.KindChannelMessageOutboundFailed {
-			kind, status, critical = evaltrace.RecordDeliveryOutcome, "failed", true
+			kind, status, critical = diagnostictrace.RecordDeliveryOutcome, "failed", true
 		}
-		payload = evaltrace.DeliveryPayload{
+		payload = diagnostictrace.DeliveryPayload{
 			Status:     status,
 			TargetHash: safeHash(settings, targetKey(event.Scope.Channel, event.Scope.ChatID)),
 			ContentLen: value.ContentLen,
@@ -631,10 +631,10 @@ func runtimeEventRecord(
 	case runtimeevents.KindAgentAsyncCompletion:
 		value, ok := event.Payload.(AsyncCompletionPayload)
 		if !ok {
-			return evaltrace.Record{}, false, false
+			return diagnostictrace.Record{}, false, false
 		}
-		kind = evaltrace.RecordDeliveryDecision
-		payload = evaltrace.DeliveryPayload{
+		kind = diagnostictrace.RecordDeliveryDecision
+		payload = diagnostictrace.DeliveryPayload{
 			Mode:       value.DeliveryMode,
 			Status:     "decided",
 			WillUser:   value.WillUser,
@@ -642,23 +642,23 @@ func runtimeEventRecord(
 			ContentLen: value.ContentLen,
 		}
 	default:
-		return evaltrace.Record{}, false, false
+		return diagnostictrace.Record{}, false, false
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return evaltrace.Record{}, false, false
+		return diagnostictrace.Record{}, false, false
 	}
-	return evaltrace.Record{
+	return diagnostictrace.Record{
 		OffsetNanos: max(0, event.Time.Sub(trace.startedAt).Nanoseconds()), Kind: kind,
-		Origin: evaltrace.Origin{Kind: "runtime_event", ID: event.ID},
-		Scope: evaltrace.Scope{
+		Origin: diagnostictrace.Origin{Kind: "runtime_event", ID: event.ID},
+		Scope: diagnostictrace.Scope{
 			AgentID:     event.Scope.AgentID,
 			SessionHash: safeHash(settings, event.Scope.SessionKey),
 			TurnID:      firstNonEmptyString(event.Scope.TurnID, trace.turnID),
 			Channel:     event.Scope.Channel,
 			TargetHash:  safeHash(settings, targetKey(event.Scope.Channel, event.Scope.ChatID)),
 		},
-		Correlation: evaltrace.Correlation{
+		Correlation: diagnostictrace.Correlation{
 			ParentTurnID: event.Correlation.ParentTurnID,
 			RequestID:    event.Correlation.RequestID,
 			ToolCallID:   toolCallID,
@@ -668,13 +668,13 @@ func runtimeEventRecord(
 	}, critical, true
 }
 
-func appendCaptureRecord(trace *activeTraceCapture, record evaltrace.Record, critical bool) {
+func appendCaptureRecord(trace *activeTraceCapture, record diagnostictrace.Record, critical bool) {
 	if trace == nil || trace.builder == nil {
 		return
 	}
-	class := evalcapture.RecordOrdinary
+	class := diagnosticcapture.RecordOrdinary
 	if critical {
-		class = evalcapture.RecordCritical
+		class = diagnosticcapture.RecordCritical
 	}
 	trace.builder.Append(record, class)
 }
@@ -690,14 +690,14 @@ func (p *turnTraceProjector) removeTurnLocked(
 
 func traceStoreRoot(settings traceCaptureSettings, workspace string) string {
 	if settings.stateDir == "" {
-		return filepath.Join(workspace, "state", "evaluation", "traces")
+		return filepath.Join(workspace, "state", "diagnostics", "traces")
 	}
 	if filepath.IsAbs(settings.stateDir) {
 		return filepath.Join(settings.stateDir, "traces")
 	}
 	clean := filepath.Clean(settings.stateDir)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return filepath.Join(workspace, "state", "evaluation", "traces")
+		return filepath.Join(workspace, "state", "diagnostics", "traces")
 	}
 	return filepath.Join(workspace, clean, "traces")
 }
@@ -734,7 +734,7 @@ func safeHash(settings traceCaptureSettings, value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func evaluationSafeHash(cfg *config.Config, value string) string {
+func diagnosticSafeHash(cfg *config.Config, value string) string {
 	return safeHash(traceCaptureSettingsFromConfig(cfg), value)
 }
 
@@ -774,7 +774,7 @@ func buildContextSnapshotPayload(cfg *config.Config, ts *turnState) ContextSnaps
 	return ContextSnapshotPayload{
 		MessageCount:     len(messages),
 		SnapshotHash:     safeJSONHash(traceCaptureSettingsFromConfig(cfg), canonical),
-		GoalHash:         evaluationSafeHash(cfg, ts.opts.ActiveGoal),
+		GoalHash:         diagnosticSafeHash(cfg, ts.opts.ActiveGoal),
 		SteeringCount:    len(ts.acceptedSteeringSnapshot()),
 		ToolPairingValid: pairingValid,
 	}
@@ -803,8 +803,8 @@ func targetKey(channel, chatID string) string {
 	return channel + "\x00" + chatID
 }
 
-func captureRedactorVersion(mode evaltrace.ContentMode) string {
-	if mode == evaltrace.ContentRedacted {
+func captureRedactorVersion(mode diagnostictrace.ContentMode) string {
+	if mode == diagnostictrace.ContentRedacted {
 		return "forgeclaw.config_filter.v1"
 	}
 	return ""
