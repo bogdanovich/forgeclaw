@@ -210,8 +210,8 @@ func TestRedactorBoundsWorkAndRejectsCustomJSONTypes(t *testing.T) {
 	if len(got) > 128 || strings.Contains(got, "ghp_") {
 		t.Fatalf("oversized token preview = %q", got)
 	}
-	if got := (Redactor{}).RedactText("value", 0); got != "" {
-		t.Fatalf("zero-bound preview = %q", got)
+	if zeroBound := (Redactor{}).RedactText("value", 0); zeroBound != "" {
+		t.Fatalf("zero-bound preview = %q", zeroBound)
 	}
 	got = (Redactor{}).RedactJSON(map[string]any{"custom": panicJSONValue{}}, 128)
 	if !strings.Contains(got, "[UNSUPPORTED]") {
@@ -279,6 +279,30 @@ func TestStoreRoundTripPermissionsPruneAndSymlinkDenial(t *testing.T) {
 	}
 	if _, err := (Store{Root: linkRoot}).Save(first); err == nil {
 		t.Fatal("expected symlink store rejection")
+	}
+
+	parentRoot := t.TempDir()
+	linkedParent := filepath.Join(parentRoot, "linked-parent")
+	if err := os.Symlink(realRoot, linkedParent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Store{Root: filepath.Join(linkedParent, "traces")}).Save(first); err == nil {
+		t.Fatal("expected parent symlink store rejection")
+	}
+
+	tempTarget := t.TempDir()
+	tempAlias := filepath.Join(t.TempDir(), "tmp-link")
+	if err := os.Symlink(tempTarget, tempAlias); err != nil {
+		t.Skipf("create temporary directory symlink: %v", err)
+	}
+	t.Setenv("TMPDIR", tempAlias)
+	t.Setenv("TMP", tempAlias)
+	t.Setenv("TEMP", tempAlias)
+	if filepath.Clean(os.TempDir()) != filepath.Clean(tempAlias) {
+		t.Skip("platform does not select temporary directories from TMPDIR, TMP, or TEMP")
+	}
+	if _, err := (Store{Root: filepath.Join(os.TempDir(), "traces")}).Save(first); err == nil {
+		t.Fatal("expected environment-controlled temp symlink rejection")
 	}
 }
 
