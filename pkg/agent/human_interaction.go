@@ -227,6 +227,7 @@ func (runtime *humanInteractionRuntime) SuspendToolCall(
 		Route: request.Route,
 		Origin: interactions.Origin{
 			TurnID:                 request.Origin.TurnID,
+			ExecutionID:            request.Origin.ExecutionID,
 			ToolCallID:             request.Origin.ToolCallID,
 			ToolName:               request.Origin.ToolName,
 			TaskID:                 request.Origin.TaskID,

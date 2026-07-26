@@ -60,8 +60,11 @@ func (t *approvalCountingTool) Execute(context.Context, map[string]any) *tools.T
 }
 
 type approvalBindingTool struct {
-	executions   int
-	bindingCalls []string
+	executions           int
+	bindingCalls         []string
+	bindingContinuations []bool
+	executionIDs         []string
+	workspaces           []string
 }
 
 func (*approvalBindingTool) Name() string { return "approval_binding" }
@@ -81,12 +84,51 @@ func (t *approvalBindingTool) ApprovalArguments(
 	_ map[string]any,
 ) (map[string]any, error) {
 	t.bindingCalls = append(t.bindingCalls, tools.ToolCallID(ctx))
+	t.bindingContinuations = append(
+		t.bindingContinuations,
+		tools.ToolApprovalContinuation(ctx),
+	)
+	t.executionIDs = append(t.executionIDs, tools.ToolExecutionID(ctx))
+	t.workspaces = append(t.workspaces, tools.ToolWorkspace(ctx))
 	return map[string]any{"plan_hash": "prepared-plan-hash"}, nil
 }
 
 func (t *approvalBindingTool) Execute(context.Context, map[string]any) *tools.ToolResult {
 	t.executions++
 	return tools.NewToolResult("prepared action completed")
+}
+
+func TestToolExecutionIdentityDoesNotRepeatAcrossAgentLoops(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ModelName = "test-model"
+	executionIDs := make([]string, 0, 2)
+	turnIDs := make([]string, 0, 2)
+	for range 2 {
+		loop := NewAgentLoop(
+			cfg,
+			bus.NewMessageBus(),
+			&sequenceProvider{},
+			WithIsolatedToolBootstrap(),
+		)
+		agent := loop.registry.GetDefaultAgent()
+		scope := loop.newTurnEventScope(agent.ID, agent.Workspace, "session-1", nil)
+		state := newTurnState(
+			agent,
+			processOptions{Dispatch: DispatchRequest{SessionKey: "session-1"}},
+			scope,
+		)
+		executionIDs = append(executionIDs, state.executionID)
+		turnIDs = append(turnIDs, state.turnID)
+		loop.Close()
+	}
+	if turnIDs[0] != turnIDs[1] {
+		t.Fatalf("test setup did not reproduce turn counter reset: %#v", turnIDs)
+	}
+	if executionIDs[0] == "" || executionIDs[1] == "" ||
+		executionIDs[0] == executionIDs[1] {
+		t.Fatalf("execution identities repeated across loops: %#v", executionIDs)
+	}
 }
 
 type approvalContextTool struct {
@@ -991,6 +1033,25 @@ func TestDurableHumanApprovalBindsTrustedPreparedArguments(t *testing.T) {
 		tool.bindingCalls[0] != "call-prepared" ||
 		tool.bindingCalls[1] != "call-prepared" {
 		t.Fatalf("approval binding calls = %#v", tool.bindingCalls)
+	}
+	if len(tool.bindingContinuations) != 2 ||
+		tool.bindingContinuations[0] ||
+		!tool.bindingContinuations[1] {
+		t.Fatalf("approval continuation markers = %#v", tool.bindingContinuations)
+	}
+	if len(tool.executionIDs) != 2 ||
+		tool.executionIDs[0] != record.Origin.ExecutionID ||
+		tool.executionIDs[1] != record.Origin.ExecutionID {
+		t.Fatalf(
+			"approval execution identities = %#v, origin = %q",
+			tool.executionIDs,
+			record.Origin.ExecutionID,
+		)
+	}
+	if len(tool.workspaces) != 2 ||
+		tool.workspaces[0] != agent.Workspace ||
+		tool.workspaces[1] != agent.Workspace {
+		t.Fatalf("approval workspaces = %#v", tool.workspaces)
 	}
 }
 

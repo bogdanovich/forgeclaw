@@ -146,6 +146,7 @@ type Route struct {
 
 type Origin struct {
 	TurnID                 string              `json:"turn_id"`
+	ExecutionID            string              `json:"execution_id,omitempty"`
 	ToolCallID             string              `json:"tool_call_id"`
 	ToolName               string              `json:"tool_name"`
 	TaskID                 string              `json:"task_id,omitempty"`
