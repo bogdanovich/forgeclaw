@@ -305,12 +305,16 @@ func (t *GatewayDeployTool) Execute(ctx context.Context, args map[string]any) *t
 				WithError(err)
 		}
 		return tools.UserResult("Deploy started in a detached worker. The final handoff status will be reported after completion.").
-			WithImmediateDelivery()
+			WithDeliveryIntent(tools.DeliveryFinalHandled)
 	}
 	out, _, err := t.runner.Run(ctx, target, origin)
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("gateway deploy failed: %v\n%s", err, out)).
 			WithError(err)
 	}
-	return tools.UserResult(out).WithImmediateDelivery()
+	message := out
+	if strings.TrimSpace(message) == "" {
+		message = fmt.Sprintf("Gateway deploy for target %s completed successfully.", target)
+	}
+	return tools.UserResult(message).WithDeliveryIntent(tools.DeliveryFinalHandled)
 }
