@@ -4,6 +4,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
 func TestDeliveryInteractionStateExpire(t *testing.T) {
@@ -80,6 +82,67 @@ func TestStreamDeliveryStateExpire(t *testing.T) {
 		if _, ok := state.streamAuxiliaryTombstones.Load(key); ok {
 			t.Fatalf("stale tombstone %q was not removed", key)
 		}
+	}
+}
+
+func TestStreamDeliveryStateFinalizationLifecycle(t *testing.T) {
+	state := streamDeliveryState{}
+	now := time.Now()
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	key := streamSuppressionKey("test", "chat-1", "session-1", traceScope)
+
+	state.markFinalized(key, now)
+
+	activeKey, active := state.activeKey("test", "chat-1", "session-1", traceScope)
+	if !active || activeKey != key {
+		t.Fatalf("activeKey() = (%q, %v), want (%q, true)", activeKey, active, key)
+	}
+	if !state.activeForChat("test", "chat-1") {
+		t.Fatal("activeForChat() = false, want true")
+	}
+	if !state.tombstoneActiveForMessage("test", "chat-1", "session-1", traceScope, now) {
+		t.Fatal("tombstoneActiveForMessage() = false, want true")
+	}
+	if !state.consumeActive(key) {
+		t.Fatal("consumeActive() = false, want true")
+	}
+	if _, active := state.activeKey("test", "chat-1", "session-1", traceScope); active {
+		t.Fatal("activeKey() remained active after consume")
+	}
+	if !state.tombstoneActive(key, now) {
+		t.Fatal("consumeActive() must preserve the auxiliary tombstone")
+	}
+
+	state.clearTombstone(key)
+	if state.tombstoneActive(key, now) {
+		t.Fatal("clearTombstone() left tombstone active")
+	}
+}
+
+func TestStreamDeliveryStateScopedFallbackAndClear(t *testing.T) {
+	state := streamDeliveryState{}
+	now := time.Now()
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	key := streamSuppressionKey("test", "chat-1", "", traceScope)
+	state.markFinalized(key, now)
+
+	activeKey, active := state.activeKey("test", "chat-1", "", runtimeevents.TraceScope{})
+	if !active || activeKey != key {
+		t.Fatalf("unscoped activeKey() = (%q, %v), want (%q, true)", activeKey, active, key)
+	}
+	if !state.tombstoneActiveForMessage(
+		"test",
+		"chat-1",
+		"",
+		runtimeevents.TraceScope{},
+		now,
+	) {
+		t.Fatal("unscoped tombstone fallback did not find the only scoped turn")
+	}
+
+	state.clear(key)
+	if state.activeForChat("test", "chat-1") || state.tombstoneActive(key, now) {
+		t.Fatal("clear() left stream suppression state")
 	}
 }
 
