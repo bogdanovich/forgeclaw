@@ -15,7 +15,6 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/evalreplay"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -156,7 +155,7 @@ type promptMemoryReplay struct {
 func replayBoundedPromptRollover(t *testing.T) promptMemoryReplay {
 	t.Helper()
 	workspace := t.TempDir()
-	clock := evalreplay.NewVirtualClock(time.Date(2026, time.July, 18, 23, 59, 0, 0, time.UTC))
+	clock := &memoryTestClock{now: time.Date(2026, time.July, 18, 23, 59, 0, 0, time.UTC)}
 	writeReplayMemoryFile(t, workspace, "memory/MEMORY.md",
 		"STABLE-HEAD\n"+strings.Repeat("stable-middle ", 80)+"\nSTABLE-TAIL")
 	writeReplayMemoryFile(t, workspace, "memory/202607/20260718.md",
@@ -193,6 +192,18 @@ func replayBoundedPromptRollover(t *testing.T) promptMemoryReplay {
 		t.Fatalf("unexpected bounded rollover observation: %#v", observation)
 	}
 	return observation
+}
+
+type memoryTestClock struct {
+	now time.Time
+}
+
+func (c *memoryTestClock) Now() time.Time {
+	return c.now
+}
+
+func (c *memoryTestClock) Advance(duration time.Duration) {
+	c.now = c.now.Add(duration)
 }
 
 func writeReplayMemoryFile(t *testing.T, workspace, relative, content string) {
