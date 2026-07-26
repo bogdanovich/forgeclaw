@@ -194,17 +194,47 @@ metadata. Raw commands, terminal input, output, environment, and transcripts
 are excluded by default. Any transcript retention is a separate encrypted,
 opt-in policy with explicit retention and access controls.
 
+### Model-facing invocation cancellation
+
+`nodes_cancel` was intentionally deferred from the MVP because the existing
+cancellation API could not be exposed as a thin model-facing adapter without
+additional lifecycle guarantees. Before exposing it, the contract must define:
+
+- authority scoped to the same actor, agent, routed session, target, workspace,
+  and execution identity as the invocation;
+- idempotent duplicate cancellation requests;
+- deterministic cancel-versus-completion races;
+- `cancel_requested` as distinct from confirmed `canceled`;
+- confirmed cancellation only after the companion proves process-tree
+  termination;
+- an explicit unknown outcome after disconnect or restart when termination
+  cannot be proven;
+- status recovery through `nodes_status`;
+- no replay of either the original invocation or the cancellation side effect.
+
+This follow-up reuses the existing coordinator, invocation store, companion
+ledger, and cancellation API. If implementation requires another generic
+lifecycle or durable-execution subsystem, stop and perform an architecture
+checkpoint instead of silently expanding the milestone.
+
+Interactive PTY close and signal operations are live session controls. They do
+not replace durable `nodes_cancel` semantics for non-interactive invocations,
+and accepting a cancellation request never by itself proves that execution
+stopped.
+
 ### Suggested delivery sequence
 
 1. Land an owner-mode threat model, shell and PTY contracts, profile schema,
    approval choices, redaction, lifecycle, and explicit non-goals.
-2. Add non-interactive `shell.exec.v1` over the existing invocation path with
+2. Define and expose the bounded `nodes_cancel` adapter over the existing
+   cancellation path, with authority, race, restart, and recovery tests.
+3. Add non-interactive `shell.exec.v1` over the existing invocation path with
    no hidden replay and a real-process test.
-3. Add authenticated terminal session streaming with input ordering,
+4. Add authenticated terminal session streaming with input ordering,
    backpressure, resize, signal, disconnect, and process-containment tests.
-4. Add and deploy the selected Linux root authority profile or broker, while
+5. Add and deploy the selected Linux root authority profile or broker, while
    preserving disabled defaults and unprivileged delegated profiles.
-5. Expose focused model and operator UX and prove the complete flow on a real
+6. Expose focused model and operator UX and prove the complete flow on a real
    VPS for both an authorized owner and a denied actor.
 
 ### Completion evidence
@@ -219,6 +249,9 @@ P0 is complete only when:
   deterministic and tested without timing-only assertions;
 - neither a completed nor an uncertain shell mutation has an automatic replay
   path;
+- `nodes_cancel` is actor-scoped, idempotent, race-safe, recoverable through
+  `nodes_status`, and reports confirmed cancellation only after proven
+  process-tree termination;
 - audit events expose lifecycle metadata without raw command, environment,
   terminal content, or credentials;
 - owner approval policy is configured out of band and cannot be relaxed by the
