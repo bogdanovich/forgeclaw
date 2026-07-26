@@ -2100,6 +2100,153 @@ func TestConcurrentExplicitInteractionAnswersNeverBecomeSteering(t *testing.T) {
 	}
 }
 
+func TestExplicitAnswerContentionReleasesWhileRegistryIsWaiting(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+	sessionKey := "session-waiting-answer-contention"
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	target := &inboundDispatchTarget{
+		Agent: agent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+	blocker, claimed := al.claimRuntimeSession(scope, "waiting-answer-blocker")
+	if !claimed {
+		t.Fatal("failed to claim the interaction session blocker")
+	}
+	defer blocker.releaseIfOwned()
+
+	contender := bus.InboundMessage{
+		Content: "/answer " + record.ShortID + " valid", SpoolID: "spool-waiting-contender",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	contender.Context.MessageID = "waiting-contender"
+	if !newInboundTurnCoordinator(al).routeExplicitInteractionAnswer(t.Context(), contender, target) {
+		t.Fatal("waiting contender escaped interaction protocol routing")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		acked, released := tracker.counts()
+		if released == 1 {
+			if acked != 0 {
+				t.Fatalf("waiting contender was acknowledged before a durable claim: %d", acked)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for contended answer transport release")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	record, _ = registry.Get(record.ID)
+	if record.Status != interactions.StatusWaiting || record.Answer != nil {
+		t.Fatalf("runtime contention chose a durable answer: %#v", record)
+	}
+	if got := al.pendingSteeringCountForScope(scope); got != 0 {
+		t.Fatalf("released answer entered steering queue: %d", got)
+	}
+	for _, event := range registry.ListEvents(record.ID) {
+		if event.Type == interactions.EventAnswerClaimed ||
+			event.Type == interactions.EventResumeStarted {
+			t.Fatalf("contention emitted durable transition: %#v", event)
+		}
+	}
+}
+
+func TestRetainedAnswerReplayPrecedesNewActiveInteractionWrongID(t *testing.T) {
+	provider := &sequenceProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = tracker
+	sessionKey := "session-retained-replay"
+	request := testToolSuspensionRequest(agent.Workspace)
+	request.Route.SessionKey = sessionKey
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	first, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ = registry.RecordDeliveryAttempt(first.ID, first.Revision, true, "")
+	first, _ = registry.MarkWaiting(first.ID, first.Revision)
+	first, err = registry.ClaimAnswer(first.ID, first.Revision, interactions.Answer{
+		Text: "первый", Values: map[string]string{"deploy_mode": "первый"},
+		MessageID: "retained-answer",
+	}, interactions.OutcomeAnswered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err = registry.MarkResuming(first.ID, first.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.Resolve(first.ID, first.Revision); err != nil {
+		t.Fatal(err)
+	}
+	request.Origin.ToolCallID = "call-next-question"
+	second, err := registry.Create(interactions.CreateRequest{
+		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ = registry.RecordDeliveryAttempt(second.ID, second.Revision, true, "")
+	second, _ = registry.MarkWaiting(second.ID, second.Revision)
+	target := &inboundDispatchTarget{
+		Agent: agent, SessionKey: sessionKey,
+		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+	}
+	replay := bus.InboundMessage{
+		Content: "/answer " + first.ShortID + " первый", SpoolID: "spool-retained-replay",
+		Context: inboundContextForInteraction(request.Route),
+	}
+	replay.Context.MessageID = "retained-answer"
+	if !newInboundTurnCoordinator(al).routeExplicitInteractionAnswer(t.Context(), replay, target) {
+		t.Fatal("retained replay escaped interaction protocol routing")
+	}
+	acked, released := tracker.counts()
+	if acked != 1 || released != 0 {
+		t.Fatalf("retained replay ownership = acked:%d released:%d", acked, released)
+	}
+	second, _ = registry.Get(second.ID)
+	if second.Status != interactions.StatusWaiting || second.Answer != nil {
+		t.Fatalf("retained replay mutated the new interaction: %#v", second)
+	}
+	if got := al.pendingSteeringCountForScope(
+		newRuntimeSessionScope(agent.Workspace, sessionKey),
+	); got != 0 {
+		t.Fatalf("retained replay entered steering queue: %d", got)
+	}
+	provider.mu.Lock()
+	calls := provider.callCount
+	provider.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("retained replay started %d continuation(s)", calls)
+	}
+	select {
+	case outbound := <-tracker.OutboundChan():
+		t.Fatalf("retained replay produced a notice: %#v", outbound)
+	default:
+	}
+}
+
 func TestReloadedClaimedInteractionRejectsLosingExplicitAnswer(t *testing.T) {
 	provider := &sequenceProvider{}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)

@@ -52,6 +52,7 @@ const (
 	explicitInteractionAnswerWrongID      explicitInteractionAnswerDisposition = "wrong_id"
 	explicitInteractionAnswerUnauthorized explicitInteractionAnswerDisposition = "unauthorized"
 	explicitInteractionAnswerUnavailable  explicitInteractionAnswerDisposition = "unavailable"
+	explicitInteractionAnswerRetry        explicitInteractionAnswerDisposition = "retry"
 )
 
 type explicitInteractionAnswer struct {
@@ -181,6 +182,15 @@ func (al *AgentLoop) classifyExplicitInteractionAnswer(
 	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
 	if registry == nil || registry.LastLoadError() != nil {
 		return explicitInteractionAnswer{Disposition: explicitInteractionAnswerUnavailable}, true
+	}
+	for _, record := range registry.List() {
+		if strings.EqualFold(shortID, record.ShortID) &&
+			interactionRouteAuthorizes(record.Route, target, msg.Context) &&
+			interactionInboundReplaysAnswer(record, msg.Context) {
+			return explicitInteractionAnswer{
+				Record: record, Disposition: explicitInteractionAnswerReplay,
+			}, true
+		}
 	}
 	if record, ok := activeInteractionForSession(registry, target.SessionKey); ok {
 		if !interactionRouteAuthorizes(record.Route, target, msg.Context) {
@@ -366,6 +376,19 @@ func (c *inboundTurnCoordinator) runContendedExplicitInteractionInbound(
 	}
 	classification, _ := c.al.classifyExplicitInteractionAnswer(msg, target)
 	if classification.Disposition == explicitInteractionAnswerActive {
+		if classification.Record.Status == interactions.StatusWaiting {
+			logExplicitInteractionAnswerDisposition(
+				classification.Record,
+				msg,
+				explicitInteractionAnswerRetry,
+			)
+			c.al.releaseInboundMessage(
+				context.Background(),
+				msg,
+				errors.New("interaction answer is waiting for session ownership"),
+			)
+			return
+		}
 		classification.Disposition = explicitInteractionAnswerDuplicate
 	}
 	c.consumeExplicitInteractionAnswer(ctx, msg, target, classification)
