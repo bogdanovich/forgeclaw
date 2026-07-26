@@ -172,7 +172,7 @@ func TestSpawnTool_SpawnStatusSeesSpawnedTask(t *testing.T) {
 		if status.IsError {
 			t.Fatalf("spawn_status returned error: %s", status.ForLLM)
 		}
-		if strings.Contains(status.ForLLM, "subagent-1") {
+		if strings.Contains(status.ForLLM, "subagent-") {
 			if !strings.Contains(status.ForLLM, "haiku-task") {
 				t.Fatalf("expected label in status output, got: %s", status.ForLLM)
 			}
