@@ -69,6 +69,13 @@ type LLMCallOutcome struct {
 	AbortCause   TurnAbortCause
 }
 
+func (o LLMCallOutcome) terminalCandidate(retained string) string {
+	if o.Control != ControlBreak {
+		return retained
+	}
+	return o.FinalContent
+}
+
 // ToolControl signals returned from ExecuteTools to drive tool loop iteration.
 type ToolControl int
 

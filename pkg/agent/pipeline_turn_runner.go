@@ -154,7 +154,7 @@ func (p *Pipeline) runTurnLoop(
 			return turnResult{}, turnStatus, callErr
 		}
 		messages = exec.messages
-		finalContent = llmOutcome.FinalContent
+		finalContent = llmOutcome.terminalCandidate(finalContent)
 
 		switch llmOutcome.Control {
 		case ControlContinue:

@@ -93,3 +93,42 @@ func TestPipelinePhaseOutcomesCarryAbortCause(t *testing.T) {
 		})
 	}
 }
+
+func TestLLMCallOutcomeTerminalCandidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome LLMCallOutcome
+		want    string
+	}{
+		{
+			name:    "continue retains prior answer",
+			outcome: LLMCallOutcome{Control: ControlContinue},
+			want:    "retained answer",
+		},
+		{
+			name:    "tool loop retains prior answer",
+			outcome: LLMCallOutcome{Control: ControlToolLoop},
+			want:    "retained answer",
+		},
+		{
+			name: "terminal answer replaces prior answer",
+			outcome: LLMCallOutcome{
+				Control:      ControlBreak,
+				FinalContent: "replacement answer",
+			},
+			want: "replacement answer",
+		},
+		{
+			name:    "empty terminal answer clears prior answer",
+			outcome: LLMCallOutcome{Control: ControlBreak},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.outcome.terminalCandidate("retained answer"); got != test.want {
+				t.Fatalf("terminal candidate = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
