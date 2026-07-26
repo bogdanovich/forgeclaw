@@ -488,7 +488,7 @@ build-macos-app:build-launcher
 		exit 1; \
 	fi
 	@./scripts/build-macos-app.sh $(PLATFORM)-$(ARCH)
-	@echo "macOS .app bundle created: $(BUILD_DIR)/MintClaw.app"
+	@echo "macOS .app bundle created: $(BUILD_DIR)/MintClaw Launcher.app"
 
 ## mem: Build membench, download LOCOMO data (if needed), run benchmark, and show results
 mem:

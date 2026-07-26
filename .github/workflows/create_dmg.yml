@@ -40,15 +40,11 @@ jobs:
       - name: Build with Make
         run: make build ARCH=${{ matrix.arch }} && make build-macos-app ARCH=${{ matrix.arch }}
 
-      # 4. Apply ad-hoc signing
-      - name: Ad-hoc Sign
-        run: codesign --force --deep --sign - "build/MintClaw Launcher.app"
-
-      # 5. Install the DMG packaging tool
+      # 4. Install the DMG packaging tool
       - name: Install create-dmg
         run: brew install create-dmg
 
-      # 6. Create the DMG
+      # 5. Create the DMG
       - name: Create DMG
         run: |
           mkdir -p dist
@@ -63,7 +59,7 @@ jobs:
             "dist/mintclaw-${{ matrix.arch }}.dmg" \
             "build/MintClaw Launcher.app"
 
-      # 7. Upload the DMG as a GitHub artifact
+      # 6. Upload the DMG as a GitHub artifact
       - name: Upload DMG
         uses: actions/upload-artifact@v7
         with:
