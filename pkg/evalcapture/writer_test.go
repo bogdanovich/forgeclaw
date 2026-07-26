@@ -1,12 +1,10 @@
 package evalcapture
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -19,18 +17,18 @@ func TestWriterPersistsAndPrunesByPolicy(t *testing.T) {
 	writer := NewWriter(Options{RetryDelay: -1})
 	for i := 1; i <= 3; i++ {
 		trace := testTrace(t, "trace-"+string(rune('0'+i)))
-		err := writer.Submit(
+		if err := writer.Submit(
 			Policy{Root: root, MaxTraces: 2, Retention: time.Hour},
 			trace,
-			ClassOrdinary,
-		)
-		if err != nil {
+		); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
 	}
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	waitForWriter(t, writer, func(stats Stats) bool {
+		return stats.Persisted == 3 && stats.Pruned == 1
+	})
+	writer.Close()
+
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
@@ -47,276 +45,214 @@ func TestWriterPersistsAndPrunesByPolicy(t *testing.T) {
 			t.Fatalf("trace mode = %o, want 600", info.Mode().Perm())
 		}
 	}
-	if got := writer.Stats(); got.Persisted != 3 || got.Pruned != 1 {
-		t.Fatalf("stats = %+v", got)
-	}
 }
 
 func TestWriterRetriesAndReportsPermanentFailure(t *testing.T) {
 	store := &fakeStorage{saveFailures: 2}
-	var events []Event
+	var events eventLog
 	writer := NewWriter(Options{
 		MaxAttempts: 3, RetryDelay: -1,
 		StorageFactory: func(Policy) Storage { return store },
-		EventSink:      func(event Event) { events = append(events, event) },
+		EventSink:      events.append,
 	})
-	if err := writer.SubmitTracked(
-		testPolicy(),
-		testTrace(t, "trace-retry"),
-		ClassCritical,
-		"receipt-retry",
-	); err != nil {
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-retry")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := writer.Stats(); got.Retries != 2 || got.Persisted != 1 || got.PermanentFailures != 0 {
+	waitForWriter(t, writer, func(stats Stats) bool { return stats.Persisted == 1 })
+	if got := writer.Stats(); got.Retries != 2 || got.PermanentFailures != 0 {
 		t.Fatalf("stats = %+v", got)
 	}
-	if countEvents(events, EventRetrying) != 2 {
-		t.Fatalf("events = %+v", events)
+	if events.count(EventRetrying) != 2 {
+		t.Fatalf("events = %+v", events.snapshot())
 	}
-	if !slices.ContainsFunc(events, func(event Event) bool {
-		return event.Kind == EventPersisted &&
-			event.SubmissionID == "receipt-retry"
-	}) {
-		t.Fatalf("persistence receipt events = %+v", events)
-	}
+	writer.Close()
 
 	store = &fakeStorage{saveFailures: 4}
+	events = eventLog{}
 	writer = NewWriter(Options{
 		MaxAttempts: 2, RetryDelay: -1,
 		StorageFactory: func(Policy) Storage { return store },
-		EventSink:      func(event Event) { events = append(events, event) },
+		EventSink:      events.append,
 	})
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-fail"), ClassCritical); err != nil {
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-fail")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := writer.Stats(); got.Retries != 1 || got.PermanentFailures != 1 || got.Persisted != 0 {
+	waitForWriter(t, writer, func(stats Stats) bool {
+		return stats.PermanentFailures == 1
+	})
+	if got := writer.Stats(); got.Retries != 1 || got.Persisted != 0 {
 		t.Fatalf("failure stats = %+v", got)
 	}
-	if events[len(events)-1].Kind != EventPermanentlyFailed {
-		t.Fatalf("last event = %+v", events[len(events)-1])
+	if events.last().Kind != EventPermanentlyFailed {
+		t.Fatalf("events = %+v", events.snapshot())
 	}
+	writer.Close()
 }
 
-func TestCriticalAdmissionEvictsOnlyQueuedOrdinaryTrace(t *testing.T) {
+func TestWriterDropsAtCapacityAndCloseNeverWaitsForStorage(t *testing.T) {
 	store := newBlockingStorage()
-	var events []Event
-	var eventsMu sync.Mutex
+	var events eventLog
 	writer := NewWriter(Options{
 		Capacity: 1, RetryDelay: -1,
 		StorageFactory: func(Policy) Storage { return store },
-		EventSink: func(event Event) {
-			eventsMu.Lock()
-			events = append(events, event)
-			eventsMu.Unlock()
-		},
+		EventSink:      events.append,
 	})
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-active"), ClassOrdinary); err != nil {
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-active")); err != nil {
 		t.Fatal(err)
 	}
 	<-store.started
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-evicted"), ClassOrdinary); err != nil {
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-queued")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-critical"), ClassCritical); err != nil {
-		t.Fatal(err)
-	}
-	close(store.release)
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.savedIDs(); !equalStrings(got, []string{"trace-active", "trace-critical"}) {
-		t.Fatalf("saved = %v", got)
-	}
-	if got := writer.Stats(); got.EvictedOrdinary != 1 || got.AcceptedCritical != 1 {
-		t.Fatalf("stats = %+v", got)
-	}
-	eventsMu.Lock()
-	defer eventsMu.Unlock()
-	if countEvents(events, EventEvicted) != 1 ||
-		!slices.ContainsFunc(events, func(event Event) bool {
-			return event.Kind == EventEvicted && event.TraceID == "trace-evicted"
-		}) {
-		t.Fatalf("events = %+v", events)
-	}
-}
-
-func TestWriterRejectsWhenQueueContainsOnlyCriticalTraces(t *testing.T) {
-	store := newBlockingStorage()
-	writer := NewWriter(Options{Capacity: 1, RetryDelay: -1, StorageFactory: func(Policy) Storage { return store }})
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-active"), ClassCritical); err != nil {
-		t.Fatal(err)
-	}
-	<-store.started
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-queued"), ClassCritical); err != nil {
-		t.Fatal(err)
-	}
-	err := writer.Submit(testPolicy(), testTrace(t, "trace-rejected"), ClassCritical)
-	var admission *AdmissionError
-	if !errors.As(err, &admission) || admission.Reason != ReasonCapacity {
+	err := writer.Submit(testPolicy(), testTrace(t, "trace-capacity"))
+	var dropped *DropError
+	if !errors.As(err, &dropped) || dropped.Reason != ReasonCapacity {
 		t.Fatalf("Submit error = %v", err)
 	}
+
+	closed := make(chan struct{})
+	go func() {
+		writer.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Close waited for blocked storage")
+	}
+	if got := writer.Stats(); got.Dropped != 2 {
+		t.Fatalf("stats after close = %+v", got)
+	}
+	if !events.contains(EventDropped, "trace-queued", ReasonShutdown) ||
+		!events.contains(EventDropped, "trace-capacity", ReasonCapacity) {
+		t.Fatalf("events = %+v", events.snapshot())
+	}
+
 	close(store.release)
-	if err := writer.Close(context.Background()); err != nil {
+	waitDone(t, writer)
+	if got := store.savedIDs(); len(got) != 1 || got[0] != "trace-active" {
+		t.Fatalf("saved = %v", got)
+	}
+}
+
+func TestWriterCloseInterruptsRetryDelay(t *testing.T) {
+	store := &fakeStorage{saveFailures: 10}
+	retrying := make(chan struct{}, 1)
+	writer := NewWriter(Options{
+		MaxAttempts: 10, RetryDelay: time.Hour,
+		StorageFactory: func(Policy) Storage { return store },
+		EventSink: func(event Event) {
+			if event.Kind == EventRetrying {
+				select {
+				case retrying <- struct{}{}:
+				default:
+				}
+			}
+		},
+	})
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-retry-stop")); err != nil {
 		t.Fatal(err)
 	}
-	if got := writer.Stats(); got.RejectedCritical != 1 || got.Persisted != 2 {
+	select {
+	case <-retrying:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not enter retry delay")
+	}
+	writer.Close()
+	waitDone(t, writer)
+	if got := writer.Stats(); got.Dropped != 1 || got.Retries != 1 {
 		t.Fatalf("stats = %+v", got)
 	}
 }
 
-func TestWriterSubmitWaitAdmitsAfterQueueSpaceIsAvailable(t *testing.T) {
+func TestWriterSnapshotsTraceWithoutHoldingRuntime(t *testing.T) {
 	store := newBlockingStorage()
 	writer := NewWriter(Options{
 		Capacity: 1, RetryDelay: -1,
 		StorageFactory: func(Policy) Storage { return store },
 	})
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-active"), ClassCritical); err != nil {
+	trace := testTrace(t, "trace-snapshot")
+	if err := writer.Submit(testPolicy(), trace); err != nil {
 		t.Fatal(err)
 	}
 	<-store.started
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-queued"), ClassCritical); err != nil {
-		t.Fatal(err)
-	}
-
-	admitted := make(chan error, 1)
-	go func() {
-		admitted <- writer.SubmitWait(
-			context.Background(),
-			testPolicy(),
-			testTrace(t, "trace-shutdown"),
-			ClassCritical,
-		)
-	}()
-	select {
-	case err := <-admitted:
-		t.Fatalf("SubmitWait returned before capacity was available: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-
+	trace.Records[0].Data[0] = 'x'
+	trace.Truncation.Reasons = append(trace.Truncation.Reasons, "mutated")
 	close(store.release)
-	if err := <-admitted; err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.savedIDs(); !equalStrings(
-		got,
-		[]string{"trace-active", "trace-queued", "trace-shutdown"},
-	) {
-		t.Fatalf("saved = %v", got)
-	}
-}
+	waitForWriter(t, writer, func(stats Stats) bool { return stats.Persisted == 1 })
+	writer.Close()
+	waitDone(t, writer)
 
-func TestWriterSnapshotsTraceAndDrainsAfterClose(t *testing.T) {
-	store := newBlockingStorage()
-	writer := NewWriter(Options{Capacity: 2, RetryDelay: -1, StorageFactory: func(Policy) Storage { return store }})
-	active := testTrace(t, "trace-active")
-	if err := writer.Submit(testPolicy(), active, ClassCritical); err != nil {
-		t.Fatal(err)
-	}
-	<-store.started
-	queued := testTrace(t, "trace-snapshot")
-	if err := writer.Submit(testPolicy(), queued, ClassCritical); err != nil {
-		t.Fatal(err)
-	}
-	queued.Records[0].Data[0] = 'x'
-	queued.Truncation.Reasons = append(queued.Truncation.Reasons, "mutated")
-
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- writer.Close(context.Background()) }()
-	select {
-	case <-closeDone:
-		t.Fatal("Close returned before admitted persistence drained")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(store.release)
-	if err := <-closeDone; err != nil {
-		t.Fatal(err)
-	}
 	stored := store.savedTraces()
-	if len(stored) != 2 || !json.Valid(stored[1].Records[0].Data) || len(stored[1].Truncation.Reasons) != 0 {
+	if len(stored) != 1 || !json.Valid(stored[0].Records[0].Data) ||
+		len(stored[0].Truncation.Reasons) != 0 {
 		t.Fatalf("stored trace was mutated: %+v", stored)
 	}
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-late"), ClassCritical); err == nil {
-		t.Fatal("Submit after Close succeeded")
+	err := writer.Submit(testPolicy(), testTrace(t, "trace-late"))
+	var dropped *DropError
+	if !errors.As(err, &dropped) || dropped.Reason != ReasonClosed {
+		t.Fatalf("Submit after Close error = %v", err)
 	}
 }
 
-func TestWriterRejectsInvalidInputsAndContainsSinkPanic(t *testing.T) {
+func TestWriterDropsInvalidInputsAndContainsSinkPanic(t *testing.T) {
 	writer := NewWriter(Options{RetryDelay: -1, EventSink: func(Event) { panic("sink") }})
 	invalid := testTrace(t, "trace-invalid")
 	invalid.Records[0].Digest = "tampered"
-	var admission *AdmissionError
-	err := writer.Submit(testPolicy(), invalid, ClassOrdinary)
-	if !errors.As(err, &admission) || admission.Reason != ReasonInvalidTrace {
+	var dropped *DropError
+	err := writer.Submit(testPolicy(), invalid)
+	if !errors.As(err, &dropped) || dropped.Reason != ReasonInvalidTrace {
 		t.Fatalf("invalid trace error = %v", err)
 	}
-	err = writer.Submit(Policy{}, testTrace(t, "trace-policy"), ClassOrdinary)
-	if !errors.As(err, &admission) || admission.Reason != ReasonInvalidPolicy {
+	err = writer.Submit(Policy{}, testTrace(t, "trace-policy"))
+	if !errors.As(err, &dropped) || dropped.Reason != ReasonInvalidPolicy {
 		t.Fatalf("invalid policy error = %v", err)
 	}
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	writer.Close()
+	waitDone(t, writer)
 }
 
 func TestWriterReportsPruneFailure(t *testing.T) {
 	store := &fakeStorage{pruneErr: errors.New("prune failed")}
-	var got Event
+	var events eventLog
 	writer := NewWriter(Options{
 		RetryDelay: -1, StorageFactory: func(Policy) Storage { return store },
-		EventSink: func(event Event) {
-			if event.Kind == EventPruneFailed {
-				got = event
-			}
-		},
+		EventSink: events.append,
 	})
-	if err := writer.Submit(testPolicy(), testTrace(t, "trace-prune"), ClassOrdinary); err != nil {
+	if err := writer.Submit(testPolicy(), testTrace(t, "trace-prune")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatal(err)
+	waitForWriter(t, writer, func(stats Stats) bool {
+		return stats.PruneFailures == 1
+	})
+	if !events.contains(EventPruneFailed, "trace-prune", ReasonRetentionFailed) {
+		t.Fatalf("events = %+v", events.snapshot())
 	}
-	if got.Kind != EventPruneFailed || got.Reason != ReasonRetentionFailed {
-		t.Fatalf("event = %+v", got)
-	}
+	writer.Close()
 }
 
 func TestWriterReportsTruncatedSubmission(t *testing.T) {
 	store := &fakeStorage{}
-	var got Event
+	var events eventLog
 	writer := NewWriter(Options{
 		RetryDelay: -1, StorageFactory: func(Policy) Storage { return store },
-		EventSink: func(event Event) {
-			if event.Kind == EventTruncated {
-				got = event
-			}
-		},
+		EventSink: events.append,
 	})
 	trace := testTrace(t, "trace-truncated")
 	trace.Truncation = evaltrace.Truncation{
 		Incomplete: true, DroppedRecords: 3, Reasons: []string{"record_count_limit"},
 	}
-	if err := writer.Submit(testPolicy(), trace, ClassCritical); err != nil {
+	if err := writer.Submit(testPolicy(), trace); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got.Kind != EventTruncated || got.Reason != ReasonTraceIncomplete || got.Dropped != 3 {
-		t.Fatalf("event = %+v", got)
+	waitForWriter(t, writer, func(stats Stats) bool { return stats.Persisted == 1 })
+	if !events.contains(EventTruncated, "trace-truncated", ReasonTraceIncomplete) {
+		t.Fatalf("events = %+v", events.snapshot())
 	}
 	if writer.Stats().Truncated != 1 {
 		t.Fatalf("stats = %+v", writer.Stats())
 	}
+	writer.Close()
 }
 
 func testTrace(t *testing.T, id string) evaltrace.Trace {
@@ -337,7 +273,29 @@ func testTrace(t *testing.T, id string) evaltrace.Trace {
 	return trace
 }
 
-func testPolicy() Policy { return Policy{Root: filepath.Join(os.TempDir(), "evalcapture-test")} }
+func testPolicy() Policy {
+	return Policy{Root: filepath.Join(os.TempDir(), "evalcapture-test")}
+}
+
+func waitForWriter(t *testing.T, writer *Writer, ready func(Stats) bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !ready(writer.Stats()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("writer stats did not settle: %+v", writer.Stats())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitDone(t *testing.T, writer *Writer) {
+	t.Helper()
+	select {
+	case <-writer.done:
+	case <-time.After(time.Second):
+		t.Fatal("writer worker did not stop")
+	}
+}
 
 type fakeStorage struct {
 	mu           sync.Mutex
@@ -394,9 +352,26 @@ func (s *blockingStorage) savedTraces() []evaltrace.Trace {
 	return append([]evaltrace.Trace(nil), s.saved...)
 }
 
-func countEvents(events []Event, kind EventKind) int {
+type eventLog struct {
+	mu     sync.Mutex
+	events []Event
+}
+
+func (l *eventLog) append(event Event) {
+	l.mu.Lock()
+	l.events = append(l.events, event)
+	l.mu.Unlock()
+}
+
+func (l *eventLog) snapshot() []Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]Event(nil), l.events...)
+}
+
+func (l *eventLog) count(kind EventKind) int {
 	count := 0
-	for _, event := range events {
+	for _, event := range l.snapshot() {
 		if event.Kind == kind {
 			count++
 		}
@@ -404,14 +379,19 @@ func countEvents(events []Event, kind EventKind) int {
 	return count
 }
 
-func equalStrings(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
+func (l *eventLog) contains(kind EventKind, traceID string, reason Reason) bool {
+	for _, event := range l.snapshot() {
+		if event.Kind == kind && event.TraceID == traceID && event.Reason == reason {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+func (l *eventLog) last() Event {
+	events := l.snapshot()
+	if len(events) == 0 {
+		return Event{}
+	}
+	return events[len(events)-1]
 }

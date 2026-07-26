@@ -187,7 +187,7 @@ func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
 	_ = eventBus.Close()
 }
 
-func TestTraceCaptureShutdownPersistsIncompleteActiveTurn(t *testing.T) {
+func TestTraceCaptureShutdownDoesNotWaitForIncompleteActiveTurn(t *testing.T) {
 	workspace := t.TempDir()
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(traceTestConfig(workspace), eventBus)
@@ -199,20 +199,13 @@ func TestTraceCaptureShutdownPersistsIncompleteActiveTurn(t *testing.T) {
 		},
 		Payload: TurnStartPayload{Workspace: workspace},
 	})
-	manager.close()
-	_ = eventBus.Close()
 
-	trace := readCapturedTrace(t, waitForTraceFile(t, workspace))
-	if !trace.Truncation.Incomplete {
-		t.Fatal("shutdown trace is not marked incomplete")
+	startedClosing := time.Now()
+	manager.close()
+	if elapsed := time.Since(startedClosing); elapsed > time.Second {
+		t.Fatalf("capture shutdown took %v; diagnostics must not delay runtime shutdown", elapsed)
 	}
-	found := false
-	for _, reason := range trace.Truncation.Reasons {
-		found = found || reason == "runtime_closed_before_terminal_outcome"
-	}
-	if !found {
-		t.Fatalf("shutdown truncation reasons = %v", trace.Truncation.Reasons)
-	}
+	_ = eventBus.Close()
 }
 
 func TestTraceCaptureWaitsForExpectedDeliveryOutcome(t *testing.T) {
