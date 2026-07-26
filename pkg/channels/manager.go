@@ -86,18 +86,17 @@ type deliveryOwner struct {
 }
 
 type Manager struct {
-	channels       map[string]Channel
-	workers        map[string]*channelWorker
-	deliveryOwners map[string]*deliveryOwner
-	bus            *bus.MessageBus
-	runtimeEvents  runtimeevents.Bus
-	config         *config.Config
-	mediaStore     media.MediaStore
-	dispatchTask   *asyncTask
-	mux            *dynamicServeMux
-	httpServer     *http.Server
-	httpListeners  []net.Listener
-	mu             sync.RWMutex
+	channels      map[string]Channel
+	bus           *bus.MessageBus
+	runtimeEvents runtimeevents.Bus
+	config        *config.Config
+	mediaStore    media.MediaStore
+	dispatchTask  *asyncTask
+	mux           *dynamicServeMux
+	httpServer    *http.Server
+	httpListeners []net.Listener
+	mu            sync.RWMutex
+	deliveryRegistry
 	deliveryInteractionState
 	streamDeliveryState
 	channelHashes          map[string]string // channel name → config hash
@@ -915,8 +914,7 @@ func NewManager(
 ) (*Manager, error) {
 	m := &Manager{
 		channels:               make(map[string]Channel),
-		workers:                make(map[string]*channelWorker),
-		deliveryOwners:         make(map[string]*deliveryOwner),
+		deliveryRegistry:       newDeliveryRegistry(),
 		bus:                    messageBus,
 		config:                 cfg,
 		mediaStore:             store,
@@ -974,8 +972,7 @@ func (m *Manager) installDeliveryOwnerLocked(
 	channelType string,
 ) *deliveryOwner {
 	owner := newDeliveryOwner(name, channel, channelType)
-	m.workers[name] = owner.Worker()
-	m.deliveryOwners[name] = owner
+	m.deliveryRegistry.install(owner)
 	owner.StartDelivery(ctx, m)
 	return owner
 }
@@ -1815,7 +1812,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 		)
 	}
 
-	if len(m.channels) > 0 && len(m.workers) == 0 {
+	if len(m.channels) > 0 && m.deliveryRegistry.workerCount() == 0 {
 		if m.dispatchTask != nil {
 			m.dispatchTask.cancel()
 			m.dispatchTask = nil
@@ -1839,7 +1836,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 		sort.Strings(failedNames)
 		logger.WarnCF("channels", "Some channels failed to start", map[string]any{
 			"failed":          len(failedNames),
-			"started":         len(m.workers),
+			"started":         m.deliveryRegistry.workerCount(),
 			"total":           len(m.channels),
 			"failed_channels": failedNames,
 		})
@@ -1904,7 +1901,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 
 	logger.InfoCF("channels", "Channel startup completed", map[string]any{
-		"started": len(m.workers),
+		"started": m.deliveryRegistry.workerCount(),
 		"failed":  len(failedNames),
 		"total":   len(m.channels),
 	})
@@ -1912,10 +1909,6 @@ func (m *Manager) StartAll(ctx context.Context) error {
 }
 
 func (m *Manager) StopAll(ctx context.Context) error {
-	type deliveryCloseTarget struct {
-		owner  *deliveryOwner
-		worker *channelWorker
-	}
 	type channelStopTarget struct {
 		name        string
 		channel     Channel
@@ -1932,13 +1925,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask = nil
 	}
 
-	deliveries := make([]deliveryCloseTarget, 0, len(m.workers))
-	for name, w := range m.workers {
-		deliveries = append(deliveries, deliveryCloseTarget{
-			owner:  m.deliveryOwners[name],
-			worker: w,
-		})
-	}
+	deliveries := m.deliveryRegistry.snapshot()
 
 	channels := make([]channelStopTarget, 0, len(m.channels))
 	for name, channel := range m.channels {
@@ -2757,14 +2744,7 @@ func (m *Manager) GetChannel(name string) (Channel, bool) {
 }
 
 func (m *Manager) deliveryOwnerLocked(name string) *deliveryOwner {
-	if m.deliveryOwners != nil {
-		if owner := m.deliveryOwners[name]; owner != nil {
-			return owner
-		}
-	}
-	ch := m.channels[name]
-	w := m.workers[name]
-	return deliveryOwnerFromWorker(name, ch, w)
+	return m.deliveryRegistry.owner(name, m.channels[name])
 }
 
 func (m *Manager) GetStatus() map[string]any {
@@ -2830,7 +2810,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			added = append(added, name)
 			continue
 		}
-		if w, ok := m.workers[name]; !ok || w == nil {
+		if !m.deliveryRegistry.hasActiveWorker(name) {
 			logger.InfoCF("channels", "Recreating inactive changed channel", map[string]any{
 				"channel": name,
 			})
@@ -2989,10 +2969,9 @@ func (m *Manager) UnregisterChannel(name string) {
 	if ch != nil && m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
-	owner := m.deliveryOwners[name]
-	w := m.workers[name]
+	owner, w := m.deliveryRegistry.lookup(name)
 	if owner == nil {
-		delete(m.workers, name)
+		m.deliveryRegistry.removeWorkerIfUnowned(name)
 		delete(m.channels, name)
 	}
 	m.mu.Unlock()
@@ -3007,12 +2986,7 @@ func (m *Manager) UnregisterChannel(name string) {
 	}
 
 	m.mu.Lock()
-	if owner != nil && m.deliveryOwners[name] == owner {
-		delete(m.deliveryOwners, name)
-	}
-	if w != nil && m.workers[name] == w {
-		delete(m.workers, name)
-	}
+	m.deliveryRegistry.removeIfMatches(name, owner, w)
 	if ch != nil && m.channels[name] == ch {
 		delete(m.channels, name)
 	}

@@ -236,8 +236,7 @@ func (m *mockStreamingChannel) ResolveOutboundChatID(
 func newTestManager() *Manager {
 	return &Manager{
 		channels:               make(map[string]Channel),
-		workers:                make(map[string]*channelWorker),
-		deliveryOwners:         make(map[string]*deliveryOwner),
+		deliveryRegistry:       newDeliveryRegistry(),
 		bus:                    bus.NewMessageBus(),
 		channelHashes:          make(map[string]string),
 		channelRestartRequired: make(map[string]string),
@@ -5799,9 +5798,9 @@ func TestDispatcherExitsOnCancel(t *testing.T) {
 	defer mb.Close()
 
 	m := &Manager{
-		channels: make(map[string]Channel),
-		workers:  make(map[string]*channelWorker),
-		bus:      mb,
+		channels:         make(map[string]Channel),
+		deliveryRegistry: newDeliveryRegistry(),
+		bus:              mb,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -5828,9 +5827,9 @@ func TestDispatcherMediaExitsOnCancel(t *testing.T) {
 	defer mb.Close()
 
 	m := &Manager{
-		channels: make(map[string]Channel),
-		workers:  make(map[string]*channelWorker),
-		bus:      mb,
+		channels:         make(map[string]Channel),
+		deliveryRegistry: newDeliveryRegistry(),
+		bus:              mb,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -5991,8 +5990,8 @@ func TestBuildMediaScope_WithMessageID(t *testing.T) {
 
 func TestManager_PlaceholderConsumedByResponse(t *testing.T) {
 	mgr := &Manager{
-		channels: make(map[string]Channel),
-		workers:  make(map[string]*channelWorker),
+		channels:         make(map[string]Channel),
+		deliveryRegistry: newDeliveryRegistry(),
 	}
 
 	mockCh := &mockChannel{
@@ -6552,8 +6551,8 @@ func TestSendToChannel_FallbackUsesLockedChannelSnapshot(t *testing.T) {
 
 func TestManager_SendPlaceholder(t *testing.T) {
 	mgr := &Manager{
-		channels: make(map[string]Channel),
-		workers:  make(map[string]*channelWorker),
+		channels:         make(map[string]Channel),
+		deliveryRegistry: newDeliveryRegistry(),
 	}
 
 	mockCh := &mockChannel{
