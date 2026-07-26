@@ -235,12 +235,27 @@ func (m *Manager) decorateOutboundResponseFooter(msg bus.OutboundMessage) bus.Ou
 	if footer == "" {
 		return msg
 	}
-	trimmed := strings.TrimRight(msg.Content, " \t\r\n")
-	if trimmed == "" || strings.HasSuffix(trimmed, footer) {
-		return msg
-	}
-	msg.Content = trimmed + "\n\n" + footer
+	msg.Content = appendOutboundResponseFooter(
+		msg.Content,
+		footer,
+		outboundMessageChannel(msg),
+	)
 	return msg
+}
+
+func appendOutboundResponseFooter(content, footer, channel string) string {
+	trimmed := strings.TrimRight(content, " \t\r\n")
+	if trimmed == "" || strings.HasSuffix(trimmed, footer) {
+		return content
+	}
+
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "telegram":
+		footer = "<sub>" + footer + "</sub>"
+	case "discord":
+		footer = "-# " + footer
+	}
+	return trimmed + "\n\n---\n" + footer
 }
 
 func outboundResponseFooter(msg bus.OutboundMessage) string {
@@ -994,6 +1009,7 @@ func (m *Manager) GetStreamer(
 			clearMarker: clearMarker,
 			footer: responseFooterStreamState{
 				enabled: m.config != nil && m.config.Agents.Defaults.IsResponseFooterEnabled(),
+				channel: channelName,
 			},
 		}, true
 	}
@@ -1004,6 +1020,7 @@ func (m *Manager) GetStreamer(
 		onFinalize:  onFinalize,
 		footer: responseFooterStreamState{
 			enabled: m.config != nil && m.config.Agents.Defaults.IsResponseFooterEnabled(),
+			channel: channelName,
 		},
 	}, true
 }
@@ -1055,6 +1072,7 @@ func setStreamerTurnUsage(streamer any, inputTokens, outputTokens int) {
 
 type responseFooterStreamState struct {
 	enabled          bool
+	channel          string
 	modelName        string
 	defaultModelName string
 	inputTokens      int
@@ -1080,11 +1098,7 @@ func (s responseFooterStreamState) decorate(content string) string {
 	if footer == "" {
 		return content
 	}
-	trimmed := strings.TrimRight(content, " \t\r\n")
-	if trimmed == "" || strings.HasSuffix(trimmed, footer) {
-		return content
-	}
-	return trimmed + "\n\n" + footer
+	return appendOutboundResponseFooter(content, footer, s.channel)
 }
 
 // splitMarkerStreamer turns accumulated streaming text containing

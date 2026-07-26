@@ -3914,7 +3914,7 @@ func TestDecorateOutboundResponseFooter(t *testing.T) {
 	})
 
 	got := m.decorateOutboundResponseFooter(msg)
-	want := "final reply\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	want := "final reply\n\n---\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
 	if got.Content != want {
 		t.Fatalf("decorated content = %q, want %q", got.Content, want)
 	}
@@ -3948,6 +3948,39 @@ func TestDecorateOutboundResponseFooterDisabled(t *testing.T) {
 	got := m.decorateOutboundResponseFooter(msg)
 	if got.Content != msg.Content {
 		t.Fatalf("decorated content = %q, want unchanged %q", got.Content, msg.Content)
+	}
+}
+
+func TestAppendOutboundResponseFooter_ChannelStyle(t *testing.T) {
+	tests := []struct {
+		name    string
+		channel string
+		want    string
+	}{
+		{
+			name:    "plain",
+			channel: "slack",
+			want:    "reply\n\n---\nmodel: fallback",
+		},
+		{
+			name:    "telegram subscript",
+			channel: "telegram",
+			want:    "reply\n\n---\n<sub>model: fallback</sub>",
+		},
+		{
+			name:    "discord subtext",
+			channel: "discord",
+			want:    "reply\n\n---\n-# model: fallback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := appendOutboundResponseFooter("reply", "model: fallback", tt.channel)
+			if got != tt.want {
+				t.Fatalf("decorated content = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -4007,7 +4040,7 @@ func TestSendMessageWithRetryPolicy_AppliesResponseFooterBeforeSend(t *testing.T
 	if len(ch.sentMessages) != 1 {
 		t.Fatalf("sent messages = %d, want 1", len(ch.sentMessages))
 	}
-	want := "final reply\n\ntokens: in 10, out 3"
+	want := "final reply\n\n---\ntokens: in 10, out 3"
 	if got := ch.sentMessages[0].Content; got != want {
 		t.Fatalf("sent content = %q, want %q", got, want)
 	}
@@ -4566,7 +4599,7 @@ func TestGetStreamer_FinalizeAppendsResponseFooter(t *testing.T) {
 		t.Fatalf("Finalize() error = %v", err)
 	}
 
-	want := "final reply\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	want := "final reply\n\n---\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
 	if finalizedContent != want {
 		t.Fatalf("finalized content = %q, want %q", finalizedContent, want)
 	}
@@ -4903,7 +4936,7 @@ func TestGetStreamer_SplitOnMarkerFooterOnlyOnFinalSegment(t *testing.T) {
 	if got := segments[0].finals; len(got) != 1 || got[0] != "first" {
 		t.Fatalf("segment 0 finals = %v, want [first]", got)
 	}
-	wantFinal := "second\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	wantFinal := "second\n\n---\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
 	if got := segments[1].finals; len(got) != 1 || got[0] != wantFinal {
 		t.Fatalf("segment 1 finals = %v, want [%q]", got, wantFinal)
 	}
@@ -4946,7 +4979,7 @@ func TestGetStreamer_SplitOnMarkerTerminalMarkerFooterAfterUsage(t *testing.T) {
 		t.Fatalf("Finalize() error = %v", err)
 	}
 
-	wantFinal := "only final segment\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	wantFinal := "only final segment\n\n---\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
 	if got := segments[0].finals; len(got) != 1 || got[0] != wantFinal {
 		t.Fatalf("segment finals = %v, want [%q]", got, wantFinal)
 	}
@@ -4990,7 +5023,7 @@ func TestGetStreamer_SplitOnMarkerConsecutiveTerminalMarkersFooterAfterUsage(t *
 		t.Fatalf("Finalize() error = %v", err)
 	}
 
-	wantFinal := "only final segment\n\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
+	wantFinal := "only final segment\n\n---\nmodel: fallback-model · tokens: in 10.2k, out 4.5k"
 	if got := segments[0].finals; len(got) != 1 || got[0] != wantFinal {
 		t.Fatalf("segment finals = %v, want [%q]", got, wantFinal)
 	}
