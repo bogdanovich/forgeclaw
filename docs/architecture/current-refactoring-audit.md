@@ -47,12 +47,15 @@ First boundary completed:
   in manager tests.
 - Queue admission uses a close signal and in-flight barrier so cancellation can
   wake blocked enqueuers before a single pending-outcome drain.
+- Worker and delivery-owner indexes are owned by a delivery registry with
+  install, snapshot, lookup, and conditional-removal operations.
 
 Remaining:
 
-- Move queue registration and lifecycle operations behind a delivery registry.
 - Move stream and tool-feedback operations onto their state owners rather than
   relying on promoted fields.
+- Remove the registry's promoted map compatibility after package tests use its
+  narrower fixture API.
 
 ### Turn Execution State
 
