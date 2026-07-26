@@ -72,13 +72,22 @@ target, invocation, recovery, and audit foundations:
 - **Delegated/product mode** is for shared, customer, production, or
   least-privilege deployments. It uses typed commands, unprivileged service
   accounts, narrow privileged helpers, allowlists, and human approval where
-  appropriate.
+  appropriate. Its normal general-purpose execution surface is a constrained
+  `system.exec.v1`: node policy bounds executable identities, arguments,
+  working roots, environment, timeout, output, and OS user.
 
 Owner-control mode does not replace typed capabilities. Typed operations remain
 easier to validate, approve, retry, audit, and expose safely to constrained
 agents. Conversely, typed capabilities must not make personal server ownership
 unnecessarily awkward. Policy profiles select the intended trust model without
 weakening the delegated default.
+
+A product profile may expose `shell.exec.v1` when shell syntax is genuinely
+needed, but shell-text allowlists or scanners do not make it constrained.
+Its acceptable blast radius must instead be enforced by the configured OS user,
+filesystem permissions, container or sandbox, resource and network policy, and
+target binding. A product can therefore offer either restricted direct
+execution or an isolated shell without inheriting an owner's root profile.
 
 ## Priority Overview
 
