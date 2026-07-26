@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // CommittedWriteError reports that rename committed the new file, but the
@@ -88,11 +87,7 @@ func writeFileAtomic(
 
 	// Create temp file in the same directory (ensures atomic rename works)
 	// Using a hidden prefix (.tmp-) to avoid issues with some tools
-	tmpFile, err := os.OpenFile(
-		filepath.Join(dir, fmt.Sprintf(".tmp-%d-%d", os.Getpid(), time.Now().UnixNano())),
-		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
-		perm,
-	)
+	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -113,16 +108,16 @@ func writeFileAtomic(
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
-	// CRITICAL: Force sync to storage medium before any other operations.
-	// This ensures data is physically written to disk, not just cached.
+	// Set file permissions before syncing so both the data and requested mode
+	// are durable before the temp file is renamed into place.
+	if err := tmpFile.Chmod(perm); err != nil {
+		return fmt.Errorf("failed to set permissions: %w", err)
+	}
+
+	// CRITICAL: Force data and metadata to the storage medium before rename.
 	// Essential for SD cards, eMMC, and other flash storage on edge devices.
 	if err := tmpFile.Sync(); err != nil {
 		return fmt.Errorf("failed to sync temp file: %w", err)
-	}
-
-	// Set file permissions before closing
-	if err := tmpFile.Chmod(perm); err != nil {
-		return fmt.Errorf("failed to set permissions: %w", err)
 	}
 
 	// Close file before rename (required on Windows)
