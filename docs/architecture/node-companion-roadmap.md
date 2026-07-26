@@ -105,7 +105,8 @@ execution or an isolated shell without inheriting an owner's root profile.
 | P5 | Additional executors and long-running work | Run contained builds/jobs without confusing placement with isolation | Stable invocation and artifact contracts |
 | P6 | Bootstrap and alternative transports | Enroll hosts through SSH and support bounded static SSH targets | Stable target-driver contract |
 | P7 | Interactive application capabilities | Add browser, MCP, camera, location, and other typed capabilities | Per-capability threat models |
-| P8 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
+| P8 | Remote workspace routing | Route an explicitly selected set of workspace-aware tools through one node execution context | P2, P5, and remote-capable P7 tools |
+| P9 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
 
 Priorities express ordering, not a commitment to implement every milestone.
 
@@ -608,7 +609,44 @@ Admit capabilities independently, each with its own policy and threat model:
 Interactive sessions must not reuse synchronous `system.exec.v1` semantics.
 Media output uses the artifact contract established by P2.
 
-## P8: Platforms And Compatibility
+## P8: Remote Workspace Routing
+
+After shell, filesystem, artifact, and selected application capabilities have
+proven their individual contracts, consider a remote workspace abstraction.
+It gives a turn or agent an explicit execution context such as `build-node`
+and routes only compatible tools through that target:
+
+```text
+agent turn
+    |
+    v
+workspace context: target=build-node
+    |
+    +-- exec/read/write/patch/search -> node workspace capabilities
+    +-- browser                    -> node browser capability, when admitted
+    +-- MCP tools                  -> node MCP catalog, when admitted
+    +-- memory/channels/approvals  -> gateway services
+```
+
+This is a routing layer over existing target, capability, policy, invocation,
+artifact, and audit contracts. It is not a second transport and does not move
+the AgentLoop, model session, memory, channel delivery, or approval authority
+onto the node.
+
+Each tool must declare whether it supports a remote execution context and how
+its paths, artifacts, cancellation, progress, and results cross that boundary.
+Unsupported tools remain gateway-local or fail explicitly; they must never
+silently run on the wrong machine. Operator policy defines selectable workspace
+targets and allowed tool groups. A model may select only from that bounded
+surface and cannot supply connection details or broaden the node catalog.
+
+Initial admission should require one cohesive vertical slice, preferably
+`exec`, `read`, `write`, `patch`, and `search` against a shared node workspace.
+Browser or MCP routing is added only after its independent P7 capability and
+threat model exist. Avoid a generic proxy that forwards arbitrary current or
+future tool calls without per-tool compatibility and policy declarations.
+
+## P9: Platforms And Compatibility
 
 Potential later targets include:
 
@@ -662,6 +700,9 @@ After implementation:
 - running the complete companion as root by default when a better-isolated
   broker or narrow helper suffices;
 - automatic synchronization of gateway and node filesystems;
+- treating a remote workspace as migration of the whole agent runtime;
+- implicitly routing an unsupported tool to either the gateway or a node;
+- forwarding every registered tool through a generic node proxy;
 - implementing all platform and compatibility work before a demonstrated use
   case;
 - treating this roadmap as a release schedule or as authorization to enable
