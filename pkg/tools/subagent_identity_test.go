@@ -122,7 +122,6 @@ func TestSubagentStatusUpdatePreservesDurableGeneration(t *testing.T) {
 	created, _ := registry.Get(task.ID)
 	task.Created = created.CreatedAt + int64(time.Hour/time.Millisecond)
 	if err := registry.Update(task.ID, func(record *taskregistry.Record) {
-		record.TraceCapturePending = true
 		record.InteractionID = "interaction-1"
 		record.Completion = &taskregistry.CompletionPayload{Text: "existing"}
 	}); err != nil {
@@ -142,7 +141,6 @@ func TestSubagentStatusUpdatePreservesDurableGeneration(t *testing.T) {
 		completed.StartedAt != created.StartedAt ||
 		completed.Status != taskregistry.StatusSucceeded ||
 		completed.TerminalSummary != "done" ||
-		!completed.TraceCapturePending ||
 		completed.InteractionID != "interaction-1" ||
 		completed.Completion == nil ||
 		completed.Completion.Text != "existing" {

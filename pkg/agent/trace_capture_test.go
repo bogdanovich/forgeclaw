@@ -13,7 +13,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 func TestTraceCaptureRecordsBoundedRedactedTurn(t *testing.T) {
@@ -111,7 +110,7 @@ func TestTraceCaptureDisabledWritesNothing(t *testing.T) {
 	cfg := config.DefaultConfig()
 	eventBus := runtimeevents.NewBus()
 	manager := newTraceCaptureManager(cfg, eventBus)
-	if manager.turns.sub != nil || manager.coordinator != nil {
+	if manager.turns.sub != nil || manager.writer != nil {
 		t.Fatal("disabled capture started background workers")
 	}
 	start := time.Now().UTC()
@@ -154,7 +153,7 @@ func TestTraceCaptureStartsLazilyAfterConfigEnable(t *testing.T) {
 	manager := newTraceCaptureManager(cfg, eventBus)
 	enabled := traceTestConfig(workspace)
 	manager.updateConfig(enabled)
-	if manager.turns.sub == nil || manager.coordinator == nil {
+	if manager.turns.sub == nil || manager.writer == nil {
 		t.Fatal("enabling capture did not start workers")
 	}
 	start := time.Now().UTC()
@@ -438,93 +437,6 @@ func TestTraceCaptureRetainsEarlyTerminalDeliveryUntilTurnEnd(t *testing.T) {
 	if len(trace.Records) != 3 {
 		t.Fatalf("early-settled trace records = %d, want 3", len(trace.Records))
 	}
-}
-
-func TestTraceCaptureCreatesCanonicalTerminalTaskTrace(t *testing.T) {
-	workspace := t.TempDir()
-	cfg := traceTestConfig(workspace)
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(cfg, eventBus)
-	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	manager.attachTaskRegistry(workspace, registry)
-	if err := registry.Upsert(taskregistry.Record{
-		TaskID: "task-1", Task: "test", RequesterSessionKey: "session-1",
-		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
-	}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-	if err := registry.AppendEvent("task-1", taskregistry.EventTaskDeliveryDecision, map[string]string{
-		"completion_id": "completion-1", "mode": "user_only", "will_user": "true",
-	}); err != nil {
-		t.Fatalf("AppendEvent: %v", err)
-	}
-	if err := registry.Update("task-1", func(record *taskregistry.Record) {
-		record.Status = taskregistry.StatusSucceeded
-		record.DeliveryStatus = taskregistry.DeliveryDelivered
-		record.LastCompletionID = "completion-1"
-	}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	tracePath := waitForTraceFile(t, workspace)
-	data, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var trace evaltrace.Trace
-	if err := json.Unmarshal(data, &trace); err != nil {
-		t.Fatal(err)
-	}
-	if trace.Outcome == nil || trace.Outcome.Status != string(taskregistry.StatusSucceeded) {
-		t.Fatalf("outcome = %#v", trace.Outcome)
-	}
-	foundDecision, foundOutcome := false, false
-	for _, record := range trace.Records {
-		foundDecision = foundDecision || record.Kind == evaltrace.RecordDeliveryDecision
-		foundOutcome = foundOutcome || record.Kind == evaltrace.RecordDeliveryOutcome
-	}
-	if !foundDecision || !foundOutcome {
-		t.Fatalf("missing delivery evidence: %#v", trace.Records)
-	}
-	manager.close()
-	_ = eventBus.Close()
-}
-
-func TestTraceCaptureBackfillsDurableTaskHistoryOnRestartReconciliation(t *testing.T) {
-	workspace := t.TempDir()
-	initial := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	if err := initial.Upsert(taskregistry.Record{
-		TaskID: "task-restart", Task: "test", RequesterSessionKey: "session-1",
-		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
-	}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-
-	cfg := traceTestConfig(workspace)
-	eventBus := runtimeevents.NewBus()
-	manager := newTraceCaptureManager(cfg, eventBus)
-	reloaded := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
-	manager.attachTaskRegistry(workspace, reloaded)
-	if changed, err := reloaded.MarkActiveLost("runtime restarted"); err != nil || changed != 1 {
-		t.Fatalf("MarkActiveLost = %d, %v", changed, err)
-	}
-	tracePath := waitForTraceFile(t, workspace)
-	data, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var trace evaltrace.Trace
-	if err := json.Unmarshal(data, &trace); err != nil {
-		t.Fatal(err)
-	}
-	if len(trace.Records) < 4 {
-		t.Fatalf("expected backfilled and reconciled events, got %d", len(trace.Records))
-	}
-	if trace.Records[0].Origin.ID == "" || trace.Records[0].Kind != evaltrace.RecordTaskTransition {
-		t.Fatalf("first historical record = %#v", trace.Records[0])
-	}
-	manager.close()
-	_ = eventBus.Close()
 }
 
 func TestTraceStoreRootRejectsRelativeTraversal(t *testing.T) {

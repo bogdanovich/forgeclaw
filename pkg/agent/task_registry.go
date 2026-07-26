@@ -19,9 +19,6 @@ func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Re
 	}
 	if existing, ok := al.taskRegistries.Load(workspace); ok {
 		if registry, ok := existing.(*taskregistry.Registry); ok {
-			if al.traceCapture != nil {
-				al.traceCapture.attachTaskRegistry(workspace, registry)
-			}
 			return registry
 		}
 	}
@@ -31,18 +28,12 @@ func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Re
 	)
 	actual, _ := al.taskRegistries.LoadOrStore(workspace, registry)
 	if stored, ok := actual.(*taskregistry.Registry); ok {
-		if al.traceCapture != nil {
-			al.traceCapture.attachTaskRegistry(workspace, stored)
-		}
 		if stored == registry {
 			al.reconcileActiveTasksAfterRegistryRestore(workspace, stored)
 			al.reconcilePendingTerminalTaskDelivery(workspace, stored)
 			al.logTaskRegistryStats(workspace, stored)
 		}
 		return stored
-	}
-	if al.traceCapture != nil {
-		al.traceCapture.attachTaskRegistry(workspace, registry)
 	}
 	al.reconcileActiveTasksAfterRegistryRestore(workspace, registry)
 	al.reconcilePendingTerminalTaskDelivery(workspace, registry)

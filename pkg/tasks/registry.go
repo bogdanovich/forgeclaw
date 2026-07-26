@@ -29,10 +29,7 @@ const (
 	RuntimeCron     Runtime = "cron"
 )
 
-var (
-	ErrTaskAlreadyExists   = errors.New("task already exists")
-	ErrTraceCapturePending = errors.New("task trace capture is pending")
-)
+var ErrTaskAlreadyExists = errors.New("task already exists")
 
 type Status string
 
@@ -190,9 +187,6 @@ type Record struct {
 	LastCompletionID    string              `json:"last_completion_id,omitempty"`
 	DeliveredAt         int64               `json:"delivered_at,omitempty"`
 	DeliveryError       string              `json:"delivery_error,omitempty"`
-	TraceCapturePending bool                `json:"trace_capture_pending,omitempty"`
-	TraceCaptureEvents  []TaskEvent         `json:"trace_capture_events,omitempty"`
-	TraceCaptureDropped int                 `json:"trace_capture_dropped,omitempty"`
 	CreatedAt           int64               `json:"created_at"`
 	StartedAt           int64               `json:"started_at,omitempty"`
 	EndedAt             int64               `json:"ended_at,omitempty"`
@@ -221,14 +215,10 @@ type Registry struct {
 	options     Options
 	records     map[string]Record
 	events      []TaskEvent
-	observers   []observerEntry
 	lastLoad    error
 	writeAtomic func(string, []byte, os.FileMode) error
 
-	traceCaptureProtection        bool
-	traceCaptureProtectionPending bool
-	traceCaptureMaxEvents         int
-	unsyncedWrite                 bool
+	unsyncedWrite bool
 }
 
 type Snapshot struct {
@@ -274,12 +264,11 @@ func NewRegistryWithOptions(storePath string, opts Options) *Registry {
 		opts.MaxSnapshotBytes = DefaultMaxSnapshotBytes
 	}
 	r := &Registry{
-		store:                 strings.TrimSpace(storePath),
-		options:               opts,
-		records:               make(map[string]Record),
-		events:                make([]TaskEvent, 0),
-		traceCaptureMaxEvents: opts.MaxEvents,
-		writeAtomic:           fileutil.WriteFileAtomic,
+		store:       strings.TrimSpace(storePath),
+		options:     opts,
+		records:     make(map[string]Record),
+		events:      make([]TaskEvent, 0),
+		writeAtomic: fileutil.WriteFileAtomic,
 	}
 	if r.store != "" {
 		r.lastLoad = r.load()
@@ -381,19 +370,10 @@ func (r *Registry) storeNewGeneration(rec Record, rejectExisting bool) error {
 		r.mu.Unlock()
 		return err
 	}
-	if existing, ok := r.records[rec.TaskID]; ok {
+	if _, ok := r.records[rec.TaskID]; ok {
 		if rejectExisting {
 			r.mu.Unlock()
 			return fmt.Errorf("task %q: %w", rec.TaskID, ErrTaskAlreadyExists)
-		}
-		if existing.TraceCapturePending {
-			r.mu.Unlock()
-			return fmt.Errorf(
-				"task %q generation %q: %w",
-				rec.TaskID,
-				existing.GenerationID,
-				ErrTraceCapturePending,
-			)
 		}
 	}
 	rollbackState := r.captureStateLocked()
@@ -406,9 +386,8 @@ func (r *Registry) storeNewGeneration(rec Record, rejectExisting bool) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneMutationLocked(now, newEvents)
 	err := r.saveLocked()
-	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
+	r.completeMutationLocked(err, rollbackState)
 	r.mu.Unlock()
-	drainEventObservers(deliveries)
 	return err
 }
 
@@ -447,9 +426,8 @@ func (r *Registry) Update(taskID string, mutate func(*Record)) error {
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneMutationLocked(rec.LastEventAt, newEvents)
 	err := r.saveLocked()
-	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
+	r.completeMutationLocked(err, rollbackState)
 	r.mu.Unlock()
-	drainEventObservers(deliveries)
 	return err
 }
 
@@ -474,149 +452,9 @@ func (r *Registry) AppendEvent(taskID string, eventType EventType, payload map[s
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneMutationLocked(now, newEvents)
 	err := r.saveLocked()
-	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
+	r.completeMutationLocked(err, rollbackState)
 	r.mu.Unlock()
-	drainEventObservers(deliveries)
 	return err
-}
-
-// SetTraceCapturePending durably protects a terminal task while its canonical
-// evaluation trace is awaiting persistence. This projection is operational
-// metadata and intentionally does not append a task lifecycle event.
-func (r *Registry) SetTraceCapturePending(
-	taskID, generationID string,
-	pending bool,
-) error {
-	if r == nil || strings.TrimSpace(taskID) == "" ||
-		strings.TrimSpace(generationID) == "" {
-		return nil
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.writableErrorLocked(); err != nil {
-		return err
-	}
-	record, ok := r.records[taskID]
-	if !ok || record.GenerationID != generationID {
-		return fmt.Errorf("task %q generation %q not found", taskID, generationID)
-	}
-	if record.TraceCapturePending == pending {
-		if !r.unsyncedWrite {
-			return nil
-		}
-		return r.saveLocked()
-	}
-	rollback := r.captureStateLocked()
-	record.TraceCapturePending = pending
-	if pending {
-		record.TraceCaptureEvents, record.TraceCaptureDropped = r.traceCaptureJournalLocked(record)
-	} else {
-		record.TraceCaptureEvents = nil
-		record.TraceCaptureDropped = 0
-	}
-	r.records[taskID] = record
-	if err := r.saveLocked(); err != nil {
-		if !fileutil.IsCommittedWriteError(err) {
-			r.restoreStateLocked(rollback)
-		}
-		return err
-	}
-	return nil
-}
-
-// ConfirmTraceCapturePersisted atomically clears trace protection only when the
-// acknowledged generation and event sequence are still current.
-func (r *Registry) ConfirmTraceCapturePersisted(
-	taskID, generationID string,
-	expectedLastEventSeq int64,
-) (Record, bool, error) {
-	if r == nil || strings.TrimSpace(taskID) == "" ||
-		strings.TrimSpace(generationID) == "" {
-		return Record{}, false, nil
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.writableErrorLocked(); err != nil {
-		return Record{}, false, err
-	}
-	record, ok := r.records[taskID]
-	if !ok || record.GenerationID != generationID {
-		return Record{}, false, fmt.Errorf(
-			"task %q generation %q not found",
-			taskID,
-			generationID,
-		)
-	}
-	if record.LastEventSeq != expectedLastEventSeq {
-		return cloneTaskRecord(record), false, nil
-	}
-	if !record.TraceCapturePending {
-		if r.unsyncedWrite {
-			if err := r.saveLocked(); err != nil {
-				return cloneTaskRecord(record), false, err
-			}
-		}
-		return cloneTaskRecord(record), true, nil
-	}
-	rollback := r.captureStateLocked()
-	record.TraceCapturePending = false
-	record.TraceCaptureEvents = nil
-	record.TraceCaptureDropped = 0
-	r.records[taskID] = record
-	if err := r.saveLocked(); err != nil {
-		// A visible post-rename snapshot is not a durability acknowledgement.
-		// Keep the in-memory marker until a later save confirms directory sync,
-		// so task ID reuse cannot replace the generation being acknowledged.
-		r.restoreStateLocked(rollback)
-		return cloneTaskRecord(r.records[taskID]), false, err
-	}
-	return cloneTaskRecord(record), true, nil
-}
-
-// SetTraceCaptureProtection controls durable lifecycle journaling for task
-// transitions. Disabling preserves terminal pending markers for restart
-// recovery; enabling journals retained records before the caller takes its
-// startup snapshot.
-func (r *Registry) SetTraceCaptureProtection(
-	enabled bool,
-	maxEvents int,
-) error {
-	if r == nil {
-		return nil
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.writableErrorLocked(); err != nil {
-		return err
-	}
-	rollback := r.captureStateLocked()
-	previous := r.traceCaptureProtection
-	r.traceCaptureProtection = enabled
-	if !enabled {
-		r.traceCaptureProtectionPending = false
-		return nil
-	}
-	if maxEvents <= 0 {
-		maxEvents = DefaultMaxEvents
-	}
-	r.traceCaptureMaxEvents = maxEvents
-	changed := r.journalRetainedTraceRecordsLocked()
-	if !changed && previous == enabled &&
-		!r.traceCaptureProtectionPending && !r.unsyncedWrite {
-		return nil
-	}
-	if err := r.saveLocked(); err != nil {
-		if !fileutil.IsCommittedWriteError(err) {
-			r.restoreStateLocked(rollback)
-		}
-		// Keep protection requested in memory so pruning remains fail-closed
-		// until the caller retries and a complete protected snapshot is durable.
-		r.traceCaptureProtection = true
-		r.traceCaptureProtectionPending = true
-		return err
-	}
-	r.traceCaptureProtectionPending = false
-	return nil
 }
 
 func (r *Registry) Heartbeat(taskID, progress string) error {
@@ -824,9 +662,8 @@ func (r *Registry) updateInteractionProjection(
 	newEvents := r.eventsSinceLocked(eventStart)
 	r.pruneMutationLocked(now, newEvents)
 	err = r.saveLocked()
-	_, deliveries := r.completeMutationLocked(err, rollbackState, newEvents)
+	r.completeMutationLocked(err, rollbackState)
 	r.mu.Unlock()
-	drainEventObservers(deliveries)
 	return err
 }
 
@@ -838,50 +675,6 @@ func (r *Registry) Get(taskID string) (Record, bool) {
 	defer r.mu.RUnlock()
 	rec, ok := r.records[taskID]
 	return cloneTaskRecord(rec), ok
-}
-
-// GetGeneration returns one exact task generation and its retained event
-// stream from the same registry revision.
-func (r *Registry) GetGeneration(
-	taskID, generationID string,
-) (Record, []TaskEvent, bool) {
-	if r == nil {
-		return Record{}, nil, false
-	}
-	taskID = strings.TrimSpace(taskID)
-	generationID = strings.TrimSpace(generationID)
-	if taskID == "" || generationID == "" {
-		return Record{}, nil, false
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	record, ok := r.records[taskID]
-	if !ok || record.GenerationID != generationID {
-		return Record{}, nil, false
-	}
-	if record.TraceCapturePending {
-		events := make(
-			[]TaskEvent,
-			len(record.TraceCaptureEvents),
-		)
-		for i := range record.TraceCaptureEvents {
-			events[i] = cloneTaskEvent(record.TraceCaptureEvents[i])
-		}
-		return cloneTaskRecord(record), events, true
-	}
-	events := make([]TaskEvent, 0, len(r.events))
-	for _, event := range r.events {
-		if event.TaskID == taskID && event.GenerationID == generationID {
-			events = append(events, cloneTaskEvent(event))
-		}
-	}
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].Seq != events[j].Seq {
-			return events[i].Seq < events[j].Seq
-		}
-		return events[i].EventID < events[j].EventID
-	})
-	return cloneTaskRecord(record), events, true
 }
 
 func (r *Registry) List() []Record {
@@ -995,18 +788,14 @@ func (r *Registry) MarkStaleActiveLost(maxAge time.Duration, reason string) (int
 	}
 	err := error(nil)
 	newEvents := r.eventsSinceLocked(eventStart)
-	var deliveries []*eventObserverDelivery
 	if changed > 0 {
 		r.pruneMutationLocked(now, newEvents)
 		err = r.saveLocked()
-		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
-		deliveries = queued
-		if !committed {
+		if !r.completeMutationLocked(err, rollbackState) {
 			changed = 0
 		}
 	}
 	r.mu.Unlock()
-	drainEventObservers(deliveries)
 	return changed, err
 }
 
@@ -1054,18 +843,14 @@ func (r *Registry) MarkActiveLost(reason string) (int, error) {
 	}
 	err := error(nil)
 	newEvents := r.eventsSinceLocked(eventStart)
-	var deliveries []*eventObserverDelivery
 	if changed > 0 {
 		r.pruneMutationLocked(now, newEvents)
 		err = r.saveLocked()
-		committed, queued := r.completeMutationLocked(err, rollbackState, newEvents)
-		deliveries = queued
-		if !committed {
+		if !r.completeMutationLocked(err, rollbackState) {
 			changed = 0
 		}
 	}
 	r.mu.Unlock()
-	drainEventObservers(deliveries)
 	return changed, err
 }
 
@@ -1125,9 +910,6 @@ func (r *Registry) pruneLocked(now int64) bool {
 	if r == nil {
 		return false
 	}
-	if r.traceCaptureProtectionPending {
-		return false
-	}
 	changed := false
 	for id, rec := range r.records {
 		if shouldPruneExpired(rec, now) {
@@ -1173,9 +955,6 @@ func (r *Registry) pruneLoadedState(now int64) {
 }
 
 func (r *Registry) pruneMutationLocked(now int64, candidates []TaskEvent) {
-	if r.traceCaptureProtectionPending {
-		r.journalRetainedTraceRecordsLocked()
-	}
 	r.pruneLocked(now)
 	if len(candidates) == 0 {
 		return
@@ -1298,17 +1077,10 @@ func shouldPruneExpired(rec Record, now int64) bool {
 }
 
 func canPruneRecord(rec Record) bool {
-	return !rec.TraceCapturePending &&
-		taskRecordIsRetentionTerminal(rec)
+	return taskRecordIsRetentionTerminal(rec)
 }
 
 func taskRecordIsRetentionTerminal(rec Record) bool {
-	return IsTraceCaptureTerminal(rec)
-}
-
-// IsTraceCaptureTerminal reports whether a task generation has reached a
-// stable terminal state that can be projected and released from retention.
-func IsTraceCaptureTerminal(rec Record) bool {
 	if strings.TrimSpace(rec.InteractionID) != "" &&
 		(rec.Status == StatusLost ||
 			rec.DeliveryStatus == DeliveryFailed) {
@@ -1379,9 +1151,6 @@ func (r *Registry) load() error {
 		if rec.LastEventSeq <= 0 {
 			return fmt.Errorf("task %q has invalid last_event_sequence", rec.TaskID)
 		}
-		if err := validateTraceCaptureJournal(rec); err != nil {
-			return fmt.Errorf("task %q trace capture journal: %w", rec.TaskID, err)
-		}
 		records[rec.TaskID] = r.normalizeRecord(rec, now)
 	}
 	for _, evt := range snap.Events {
@@ -1405,72 +1174,6 @@ func (r *Registry) load() error {
 	}
 	r.records = records
 	r.events = events
-	return nil
-}
-
-func validateTraceCaptureJournal(record Record) error {
-	if record.TraceCaptureDropped < 0 {
-		return errors.New("negative dropped event count")
-	}
-	if len(record.TraceCaptureEvents) == 0 {
-		if record.TraceCaptureDropped != 0 {
-			return errors.New("dropped event count without retained events")
-		}
-		return nil
-	}
-	var previousSeq int64
-	for i, event := range record.TraceCaptureEvents {
-		if event.TaskID != record.TaskID ||
-			event.GenerationID != record.GenerationID {
-			return fmt.Errorf("event %d belongs to another task generation", i)
-		}
-		if event.SchemaVersion != TaskEventSchemaVersion {
-			return fmt.Errorf(
-				"event %q has schema %q, want %q",
-				event.EventID,
-				event.SchemaVersion,
-				TaskEventSchemaVersion,
-			)
-		}
-		if event.Type == "" {
-			return fmt.Errorf("event %d is missing type", i)
-		}
-		if event.Seq <= previousSeq || event.Seq > record.LastEventSeq {
-			return fmt.Errorf("event %q has invalid generation sequence", event.EventID)
-		}
-		if i > 0 && event.Seq != previousSeq+1 {
-			return fmt.Errorf("event %q is not contiguous", event.EventID)
-		}
-		expectedID := fmt.Sprintf(
-			"%s:%s:%06d:%s",
-			event.TaskID,
-			event.GenerationID,
-			event.Seq,
-			event.Type,
-		)
-		if event.EventID != expectedID {
-			return fmt.Errorf("event %q has invalid identity", event.EventID)
-		}
-		if event.Fingerprint != taskEventFingerprint(event) {
-			return fmt.Errorf("event %q has invalid fingerprint", event.EventID)
-		}
-		previousSeq = event.Seq
-	}
-	firstSeq := record.TraceCaptureEvents[0].Seq
-	if record.TraceCaptureDropped != int(firstSeq-1) {
-		return fmt.Errorf(
-			"dropped event count %d does not match first retained sequence %d",
-			record.TraceCaptureDropped,
-			firstSeq,
-		)
-	}
-	if previousSeq != record.LastEventSeq {
-		return fmt.Errorf(
-			"journal ends at sequence %d, want %d",
-			previousSeq,
-			record.LastEventSeq,
-		)
-	}
 	return nil
 }
 
@@ -1548,119 +1251,12 @@ func (r *Registry) restoreStateLocked(state registryState) {
 func (r *Registry) completeMutationLocked(
 	saveErr error,
 	rollback registryState,
-	events []TaskEvent,
-) (bool, []*eventObserverDelivery) {
+) bool {
 	committed := saveErr == nil || fileutil.IsCommittedWriteError(saveErr)
 	if !committed {
 		r.restoreStateLocked(rollback)
-	} else {
-		events = r.retainedEventsLocked(events)
 	}
-	if saveErr == nil && r.traceCaptureProtectionPending {
-		r.traceCaptureProtectionPending = false
-	}
-	return committed, r.queueCommittedNotificationsLocked(committed, events)
-}
-
-func (r *Registry) journalRetainedTraceRecordsLocked() bool {
-	changed := false
-	for taskID, record := range r.records {
-		events, dropped := r.traceCaptureJournalLocked(record)
-		pending := taskRecordIsRetentionTerminal(record)
-		if record.TraceCapturePending == pending &&
-			record.TraceCaptureDropped == dropped &&
-			taskEventsEqual(record.TraceCaptureEvents, events) {
-			continue
-		}
-		record.TraceCapturePending = pending
-		record.TraceCaptureEvents = events
-		record.TraceCaptureDropped = dropped
-		r.records[taskID] = record
-		changed = true
-	}
-	return changed
-}
-
-func (r *Registry) traceCaptureJournalLocked(
-	record Record,
-) ([]TaskEvent, int) {
-	events := make([]TaskEvent, 0, len(record.TraceCaptureEvents))
-	seen := make(map[string]struct{}, len(record.TraceCaptureEvents))
-	for _, event := range record.TraceCaptureEvents {
-		if !taskEventFingerprintValid(event) {
-			continue
-		}
-		events = append(events, cloneTaskEvent(event))
-		seen[event.EventID] = struct{}{}
-	}
-	for _, event := range r.events {
-		if event.TaskID != record.TaskID ||
-			event.GenerationID != record.GenerationID ||
-			!taskEventFingerprintValid(event) {
-			continue
-		}
-		if _, exists := seen[event.EventID]; exists {
-			continue
-		}
-		events = append(events, cloneTaskEvent(event))
-		seen[event.EventID] = struct{}{}
-	}
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].Seq != events[j].Seq {
-			return events[i].Seq < events[j].Seq
-		}
-		return events[i].EventID < events[j].EventID
-	})
-	start := len(events)
-	if start > 0 {
-		start--
-		for start > 0 &&
-			events[start-1].Seq+1 == events[start].Seq {
-			start--
-		}
-		events = append([]TaskEvent(nil), events[start:]...)
-	}
-	if limit := r.traceCaptureMaxEvents; limit > 0 &&
-		len(events) > limit {
-		events = append(
-			[]TaskEvent(nil),
-			events[len(events)-limit:]...,
-		)
-	}
-	if len(events) == 0 {
-		return nil, 0
-	}
-	return events, max(0, int(events[0].Seq-1))
-}
-
-func taskEventsEqual(left, right []TaskEvent) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i].EventID != right[i].EventID ||
-			left[i].Fingerprint != right[i].Fingerprint {
-			return false
-		}
-	}
-	return true
-}
-
-func (r *Registry) retainedEventsLocked(candidates []TaskEvent) []TaskEvent {
-	if len(candidates) == 0 || len(r.events) == 0 {
-		return nil
-	}
-	retainedIDs := make(map[string]struct{}, len(r.events))
-	for _, event := range r.events {
-		retainedIDs[event.EventID] = struct{}{}
-	}
-	retained := make([]TaskEvent, 0, len(candidates))
-	for _, event := range candidates {
-		if _, ok := retainedIDs[event.EventID]; ok {
-			retained = append(retained, event)
-		}
-	}
-	return retained
+	return committed
 }
 
 func (r *Registry) sortedRecordIDsLocked() []string {
@@ -1734,39 +1330,6 @@ func (r *Registry) appendEventLocked(rec Record, eventType EventType, emittedAt 
 	evt.EventID = fmt.Sprintf("%s:%s:%06d:%s", rec.TaskID, rec.GenerationID, seq, eventType)
 	evt.Fingerprint = taskEventFingerprint(evt)
 	r.events = append(r.events, evt)
-	if r.traceCaptureProtection || stored.TraceCapturePending {
-		if r.traceCaptureProtection {
-			stored.TraceCapturePending = taskRecordIsRetentionTerminal(stored)
-		}
-		count := len(stored.TraceCaptureEvents)
-		if count == 0 ||
-			stored.TraceCaptureEvents[count-1].Seq+1 != evt.Seq {
-			stored.TraceCaptureEvents, stored.TraceCaptureDropped = r.traceCaptureJournalLocked(stored)
-		} else {
-			stored.TraceCaptureEvents = append(
-				stored.TraceCaptureEvents,
-				cloneTaskEvent(evt),
-			)
-			if limit := r.traceCaptureMaxEvents; limit > 0 &&
-				len(stored.TraceCaptureEvents) > limit {
-				dropped := len(stored.TraceCaptureEvents) - limit
-				stored.TraceCaptureEvents = append(
-					[]TaskEvent(nil),
-					stored.TraceCaptureEvents[dropped:]...,
-				)
-			}
-			stored.TraceCaptureDropped = max(
-				0,
-				int(stored.TraceCaptureEvents[0].Seq-1),
-			)
-		}
-		r.records[rec.TaskID] = stored
-	} else if len(stored.TraceCaptureEvents) > 0 ||
-		stored.TraceCaptureDropped > 0 {
-		stored.TraceCaptureEvents = nil
-		stored.TraceCaptureDropped = 0
-		r.records[rec.TaskID] = stored
-	}
 }
 
 func taskEventFingerprint(evt TaskEvent) string {
