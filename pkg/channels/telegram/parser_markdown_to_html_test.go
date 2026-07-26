@@ -19,8 +19,8 @@ func TestMarkdownToTelegramHTML(t *testing.T) {
 		},
 		{
 			name:     "rich subscript footer degrades to plain text",
-			input:    "---\n<sub>model: fallback</sub>",
-			expected: "---\nmodel: fallback",
+			input:    "reply\n\n---\n<sub>model: fallback</sub>",
+			expected: "reply\n\n---\nmodel: fallback",
 		},
 		{
 			name:     "bold",
