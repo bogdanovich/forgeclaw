@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/nodes/companion"
 	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
 	"github.com/sipeed/picoclaw/pkg/testharness/llmscenario"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
@@ -260,15 +262,29 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 	}
 
 	events := collectVerticalSliceEvents(t, eventChannel, 3)
-	wantKinds := []runtimeevents.Kind{
-		runtimeevents.KindNodeInvocationPrepared,
-		runtimeevents.KindNodeInvocationDispatched,
-		runtimeevents.KindNodeInvocationCompleted,
+	wantObservations := map[string]int{
+		tools.NodeInvocationObservationPrepared:   1,
+		tools.NodeInvocationObservationDispatched: 1,
+		tools.NodeInvocationObservationCompleted:  1,
 	}
-	for index, kind := range wantKinds {
-		if events[index].Kind != kind {
-			t.Fatalf("event[%d].Kind = %q, want %q", index, events[index].Kind, kind)
+	gotObservations := make(map[string]int, len(wantObservations))
+	for index, event := range events {
+		if event.Kind != runtimeevents.KindNodeInvocationObserved {
+			t.Fatalf(
+				"event[%d].Kind = %q, want %q",
+				index,
+				event.Kind,
+				runtimeevents.KindNodeInvocationObserved,
+			)
 		}
+		payload, ok := event.Payload.(tools.NodeInvocationEventPayload)
+		if !ok {
+			t.Fatalf("event[%d].Payload = %T", index, event.Payload)
+		}
+		gotObservations[payload.Observation]++
+	}
+	if !reflect.DeepEqual(gotObservations, wantObservations) {
+		t.Fatalf("observations = %#v, want %#v", gotObservations, wantObservations)
 	}
 	encoded, err := json.Marshal(events)
 	if err != nil {

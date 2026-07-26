@@ -325,21 +325,29 @@ func TestNodeInvocationEventsUseProvenStatesAndRedactPayloads(t *testing.T) {
 	}
 
 	events := eventBus.snapshot()
-	wantKinds := []runtimeevents.Kind{
-		runtimeevents.KindNodeInvocationPrepared,
-		runtimeevents.KindNodeInvocationDispatched,
-		runtimeevents.KindNodeInvocationCompleted,
+	wantObservations := []string{
+		NodeInvocationObservationPrepared,
+		NodeInvocationObservationDispatched,
+		NodeInvocationObservationCompleted,
 	}
-	if len(events) != len(wantKinds) {
-		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantKinds), events)
+	if len(events) != len(wantObservations) {
+		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantObservations), events)
 	}
 	for index, event := range events {
-		if event.Kind != wantKinds[index] {
-			t.Fatalf("event[%d].Kind = %q, want %q", index, event.Kind, wantKinds[index])
+		if event.Kind != runtimeevents.KindNodeInvocationObserved {
+			t.Fatalf("event[%d].Kind = %q, want %q", index, event.Kind, runtimeevents.KindNodeInvocationObserved)
 		}
 		payload, ok := event.Payload.(NodeInvocationEventPayload)
 		if !ok {
 			t.Fatalf("event[%d].Payload = %T", index, event.Payload)
+		}
+		if payload.Observation != wantObservations[index] {
+			t.Fatalf(
+				"event[%d].Observation = %q, want %q",
+				index,
+				payload.Observation,
+				wantObservations[index],
+			)
 		}
 		if payload.Target != "build" || payload.Command != "system.exec.v1" ||
 			payload.InvocationID == "" {
@@ -413,19 +421,28 @@ func TestNodeInvocationEventsReportUncertainThenObservedFailure(t *testing.T) {
 	}
 
 	events := eventBus.snapshot()
-	wantKinds := []runtimeevents.Kind{
-		runtimeevents.KindNodeInvocationPrepared,
-		runtimeevents.KindNodeInvocationDispatched,
-		runtimeevents.KindNodeInvocationUncertain,
-		runtimeevents.KindNodeInvocationStatusObserved,
-		runtimeevents.KindNodeInvocationStatusObserved,
+	wantObservations := []string{
+		NodeInvocationObservationPrepared,
+		NodeInvocationObservationDispatched,
+		NodeInvocationObservationUncertain,
+		NodeInvocationObservationStatus,
+		NodeInvocationObservationStatus,
 	}
-	if len(events) != len(wantKinds) {
-		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantKinds), events)
+	if len(events) != len(wantObservations) {
+		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantObservations), events)
 	}
-	for index, kind := range wantKinds {
-		if events[index].Kind != kind {
-			t.Fatalf("event[%d].Kind = %q, want %q", index, events[index].Kind, kind)
+	for index, observation := range wantObservations {
+		if events[index].Kind != runtimeevents.KindNodeInvocationObserved {
+			t.Fatalf(
+				"event[%d].Kind = %q, want %q",
+				index,
+				events[index].Kind,
+				runtimeevents.KindNodeInvocationObserved,
+			)
+		}
+		payload := events[index].Payload.(NodeInvocationEventPayload)
+		if payload.Observation != observation {
+			t.Fatalf("event[%d].Observation = %q, want %q", index, payload.Observation, observation)
 		}
 	}
 	uncertain := events[2].Payload.(NodeInvocationEventPayload)
@@ -441,9 +458,10 @@ func TestNodeInvocationEventsReportUncertainThenObservedFailure(t *testing.T) {
 			t.Fatalf("status observed event[%d] = %#v", index, events[index])
 		}
 	}
-	for _, event := range events {
-		if event.Kind == runtimeevents.KindNodeInvocationCompleted {
-			t.Fatalf("nodes_status emitted lifecycle completion: %#v", event)
+	for _, event := range events[3:] {
+		payload := event.Payload.(NodeInvocationEventPayload)
+		if payload.Observation == NodeInvocationObservationCompleted {
+			t.Fatalf("nodes_status emitted completion observation: %#v", event)
 		}
 	}
 	encoded, err := json.Marshal(events)
@@ -479,15 +497,28 @@ func TestNodeInvocationPreparedEventEmittedOnceForConcurrentToolCall(t *testing.
 		}()
 	}
 	close(start)
+	successes := 0
 	for range tools {
-		if err := <-results; err != nil {
+		err := <-results
+		if err == nil {
+			successes++
+			continue
+		}
+		if !errors.Is(err, nodes.ErrGatewayInvocationConflict) {
 			t.Fatalf("concurrent prepare failed: %v", err)
 		}
 	}
+	if successes == 0 {
+		t.Fatal("concurrent prepare did not create canonical authority")
+	}
 
 	events := eventBus.snapshot()
-	if len(events) != 1 || events[0].Kind != runtimeevents.KindNodeInvocationPrepared {
-		t.Fatalf("prepared events = %#v, want one creation transition", events)
+	if len(events) != 1 || events[0].Kind != runtimeevents.KindNodeInvocationObserved {
+		t.Fatalf("prepared observations = %#v, want one creation observation", events)
+	}
+	payload := events[0].Payload.(NodeInvocationEventPayload)
+	if payload.Observation != NodeInvocationObservationPrepared {
+		t.Fatalf("observation = %q, want %q", payload.Observation, NodeInvocationObservationPrepared)
 	}
 }
 
