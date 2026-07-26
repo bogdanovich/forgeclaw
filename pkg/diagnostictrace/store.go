@@ -176,7 +176,24 @@ func (s Store) safeRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Clean(abs), nil
+	return canonicalizePlatformTempAlias(filepath.Clean(abs)), nil
+}
+
+func canonicalizePlatformTempAlias(path string) string {
+	tempRoot, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return path
+	}
+	tempRoot = filepath.Clean(tempRoot)
+	canonicalTempRoot, err := filepath.EvalSymlinks(tempRoot)
+	if err != nil || canonicalTempRoot == tempRoot {
+		return path
+	}
+	relative, err := filepath.Rel(tempRoot, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return path
+	}
+	return filepath.Join(canonicalTempRoot, relative)
 }
 
 func rejectSymlinkPath(path string) error {

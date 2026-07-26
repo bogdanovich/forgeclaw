@@ -210,8 +210,8 @@ func TestRedactorBoundsWorkAndRejectsCustomJSONTypes(t *testing.T) {
 	if len(got) > 128 || strings.Contains(got, "ghp_") {
 		t.Fatalf("oversized token preview = %q", got)
 	}
-	if got := (Redactor{}).RedactText("value", 0); got != "" {
-		t.Fatalf("zero-bound preview = %q", got)
+	if zeroBound := (Redactor{}).RedactText("value", 0); zeroBound != "" {
+		t.Fatalf("zero-bound preview = %q", zeroBound)
 	}
 	got = (Redactor{}).RedactJSON(map[string]any{"custom": panicJSONValue{}}, 128)
 	if !strings.Contains(got, "[UNSUPPORTED]") {
@@ -279,6 +279,15 @@ func TestStoreRoundTripPermissionsPruneAndSymlinkDenial(t *testing.T) {
 	}
 	if _, err := (Store{Root: linkRoot}).Save(first); err == nil {
 		t.Fatal("expected symlink store rejection")
+	}
+
+	parentRoot := t.TempDir()
+	linkedParent := filepath.Join(parentRoot, "linked-parent")
+	if err := os.Symlink(realRoot, linkedParent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Store{Root: filepath.Join(linkedParent, "traces")}).Save(first); err == nil {
+		t.Fatal("expected parent symlink store rejection")
 	}
 }
 
