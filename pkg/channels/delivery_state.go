@@ -1,8 +1,11 @@
 package channels
 
 import (
+	"strings"
 	"sync"
 	"time"
+
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
 // typingEntry wraps a typing stop function with a creation timestamp for TTL eviction.
@@ -64,6 +67,101 @@ type streamDeliveryState struct {
 	streamAuxiliaryTombstones sync.Map // streamSuppressionKey -> time.Time
 }
 
+func (s *streamDeliveryState) activeKey(
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+) (string, bool) {
+	key := streamSuppressionKey(channel, chatID, sessionKey, traceScope)
+	if _, active := s.streamActive.Load(key); active {
+		return key, true
+	}
+	if traceScope.Complete() {
+		return "", false
+	}
+	return singleScopedStreamStateKey(
+		&s.streamActive,
+		streamSuppressionBaseKey(channel, chatID, sessionKey),
+		nil,
+	)
+}
+
+func (s *streamDeliveryState) consumeActive(key string) bool {
+	_, loaded := s.streamActive.LoadAndDelete(key)
+	return loaded
+}
+
+func (s *streamDeliveryState) clear(key string) {
+	s.streamActive.Delete(key)
+	s.streamAuxiliaryTombstones.Delete(key)
+}
+
+func (s *streamDeliveryState) markFinalized(key string, now time.Time) {
+	s.streamActive.Store(key, true)
+	s.streamAuxiliaryTombstones.Store(key, now)
+}
+
+func (s *streamDeliveryState) clearTombstone(key string) {
+	s.streamAuxiliaryTombstones.Delete(key)
+}
+
+func (s *streamDeliveryState) tombstoneActive(key string, now time.Time) bool {
+	value, ok := s.streamAuxiliaryTombstones.Load(key)
+	if !ok {
+		return false
+	}
+	createdAt, ok := value.(time.Time)
+	if !ok || now.Sub(createdAt) > streamAuxiliaryTombstoneTTL {
+		s.streamAuxiliaryTombstones.Delete(key)
+		return false
+	}
+	return true
+}
+
+func (s *streamDeliveryState) tombstoneActiveForMessage(
+	channel, chatID, sessionKey string,
+	traceScope runtimeevents.TraceScope,
+	now time.Time,
+) bool {
+	key := streamSuppressionKey(channel, chatID, sessionKey, traceScope)
+	if s.tombstoneActive(key, now) {
+		return true
+	}
+	if traceScope.Complete() {
+		return false
+	}
+	key, ok := singleScopedStreamStateKey(
+		&s.streamAuxiliaryTombstones,
+		streamSuppressionBaseKey(channel, chatID, sessionKey),
+		func(key string, value any) bool {
+			createdAt, ok := value.(time.Time)
+			if !ok || now.Sub(createdAt) > streamAuxiliaryTombstoneTTL {
+				s.streamAuxiliaryTombstones.Delete(key)
+				return false
+			}
+			return true
+		},
+	)
+	return ok && s.tombstoneActive(key, now)
+}
+
+func (s *streamDeliveryState) activeForChat(channel, chatID string) bool {
+	chatKey := streamSuppressionBaseKey(channel, chatID, "")
+	found := false
+	s.streamActive.Range(func(key, _ any) bool {
+		keyString, ok := key.(string)
+		if !ok {
+			return true
+		}
+		if keyString == chatKey || strings.HasPrefix(keyString, chatKey+":") ||
+			strings.HasPrefix(keyString, chatKey+"\x00turn\x00") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 func (s *streamDeliveryState) expire(now time.Time) {
 	s.streamAuxiliaryTombstones.Range(func(key, value any) bool {
 		if createdAt, ok := value.(time.Time); !ok || now.Sub(createdAt) > streamAuxiliaryTombstoneTTL {
@@ -71,4 +169,30 @@ func (s *streamDeliveryState) expire(now time.Time) {
 		}
 		return true
 	})
+}
+
+func singleScopedStreamStateKey(
+	state *sync.Map,
+	baseKey string,
+	valid func(string, any) bool,
+) (string, bool) {
+	prefix := baseKey + "\x00turn\x00"
+	matched := ""
+	ambiguous := false
+	state.Range(func(key, value any) bool {
+		keyString, ok := key.(string)
+		if !ok || !strings.HasPrefix(keyString, prefix) {
+			return true
+		}
+		if valid != nil && !valid(keyString, value) {
+			return true
+		}
+		if matched != "" {
+			ambiguous = true
+			return false
+		}
+		matched = keyString
+		return true
+	})
+	return matched, matched != "" && !ambiguous
 }

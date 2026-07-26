@@ -49,11 +49,13 @@ First boundary completed:
   wake blocked enqueuers before a single pending-outcome drain.
 - Worker and delivery-owner indexes are owned by a delivery registry with
   install, snapshot, lookup, and conditional-removal operations.
+- Stream activity and auxiliary tombstone lookup, consumption, finalization,
+  cleanup, and expiry are owned by the stream delivery state.
 
 Remaining:
 
-- Move stream and tool-feedback operations onto their state owners rather than
-  relying on promoted fields.
+- Move tool-feedback operations onto the interaction state owner rather than
+  relying on a promoted coordinator.
 - Remove the registry's promoted map compatibility after package tests use its
   narrower fixture API.
 
