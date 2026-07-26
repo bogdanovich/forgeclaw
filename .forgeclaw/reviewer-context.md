@@ -52,16 +52,16 @@ These changes deserve extra skepticism even when tests are green:
 - `pkg/interactions/**`
   - durable approval and clarification state
   - argument binding and exactly-once resolution
-  - expiry, replay, and restart recovery
+  - expiry, single consumption, and restart recovery
 - `pkg/nodes/**`, `cmd/picoclaw-node/**`
   - remote node identity and admission
   - authenticated command transport and schema validation
   - execution policy, cancellation, and durable invocation identity
   - systemd/launchd install, status, and uninstall ownership
-- `pkg/evalcapture/**`, `pkg/evaltrace/**`, `pkg/eval*/**`
-  - canonical trace identity and bounded evidence
-  - secret redaction and workspace isolation
-  - deterministic replay, reduction, and evaluator fidelity
+- `pkg/diagnosticcapture/**`, `pkg/diagnostictrace/**`
+  - passive bounded capture and observable loss
+  - credential redaction and workspace isolation
+  - retention, storage permissions, and path safety
 - `pkg/events/**`
   - event ordering and scope identity
   - subscription lifecycle, backpressure, and concurrent delivery
@@ -123,11 +123,11 @@ Review against these invariants explicitly:
    - Retry, reconnect, cancellation, or service restart must not execute a
      command twice or under a broader policy.
 
-8. **Evaluation evidence must be canonical and private**
-   - Capture, replay, and evaluation should derive from immutable scoped traces,
-     not reconstructed prose or mutable runtime state.
-   - Trace persistence must remain bounded, redacted, and isolated to the
-     originating workspace and turn.
+8. **Diagnostics must remain passive and private**
+   - Capture may be incomplete or dropped, but it must never mutate, delay,
+     retain, acknowledge, or otherwise affect authoritative runtime state.
+   - Persisted traces must remain bounded, credential-redacted, and isolated to
+     the originating workspace and turn.
 
 ## Review Philosophy
 
@@ -148,6 +148,7 @@ When changes touch runtime plumbing, ask:
 - Does this create another delivery path instead of reusing the current one?
 - Does this change cross workspace/profile boundaries?
 - Can a reconnect, retry, or restart repeat a remote or human-approved action?
-- Does trace or replay output preserve identity, ordering, redaction, and scope?
+- Does diagnostic output preserve useful ordering, redaction, bounds, and scope
+  without becoming authoritative?
 - Does this make upstream merges harder than necessary?
 - Is the user-visible chat/Telegram behavior still deterministic?

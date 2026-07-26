@@ -380,12 +380,12 @@ and tool arguments.
 Debug capture is optional and non-authoritative. The interaction registry and
 canonical session history remain the sources of truth. Capture may correlate
 interaction ID, turn ID, tool call ID, task ID, inbound message, and delivery
-attempt, but missing evidence must be reported as `not_evaluable`.
+attempt. Missing evidence is an observable diagnostic gap and never changes the
+interaction outcome.
 
 Capture must never block interaction progress, task reuse, pruning, delivery, or
 shutdown. It must not add acknowledgement state to the interaction registry.
-Lossless canonical trace artifacts are outside this feature and require a
-single transactional persistence boundary if implemented later.
+Lossless projection and cross-store trace transactions are outside this runtime.
 
 The interaction record, accepted answer, and canonical tool result have
 exactly-once state transitions. Channel publication cannot be exactly once when

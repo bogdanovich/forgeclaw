@@ -47,34 +47,26 @@
       "risk": "high",
       "codex": "required",
       "guidance": [
-        "Check durable human-interaction state transitions, argument binding, replay, expiry, and exactly-once resolution.",
+        "Check durable human-interaction state transitions, argument binding, single consumption, expiry, and exactly-once resolution.",
         "Verify persistence failures, file locking, and restart recovery cannot approve the wrong pending action."
       ]
     },
     {
-      "pattern": "pkg/evalcapture/**",
+      "pattern": "pkg/diagnosticcapture/**",
       "risk": "high",
       "codex": "required",
       "guidance": [
-        "Check trace identity, atomic writes, bounded payloads, redaction, and concurrent capture ordering.",
-        "Verify captured evidence is sufficient for replay without leaking credentials or unrelated workspace data."
+        "Check bounded best-effort writing, observable overflow, atomic files, retention, and workspace isolation.",
+        "Verify capture loss, saturation, persistence failure, or shutdown cannot delay or change agent work."
       ]
     },
     {
-      "pattern": "pkg/evaltrace/**",
+      "pattern": "pkg/diagnostictrace/**",
       "risk": "high",
       "codex": "required",
       "guidance": [
-        "Check trace schema validation, canonicalization, redaction, storage permissions, retention, and path safety.",
-        "Reject changes that make evaluator evidence ambiguous, mutable, oversized, or secret-bearing."
-      ]
-    },
-    {
-      "pattern": "pkg/eval*/**",
-      "risk": "elevated",
-      "codex": "auto",
-      "guidance": [
-        "Check deterministic replay, reducer ordering, fixture fidelity, and whether evaluator results follow from canonical trace evidence."
+        "Check bounds, credential redaction, storage permissions, retention, path safety, and readable timeline ordering.",
+        "Reject acknowledgements, registry coupling, workflow gates, or completeness requirements for diagnostic traces."
       ]
     },
     {
