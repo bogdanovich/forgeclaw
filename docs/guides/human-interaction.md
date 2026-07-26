@@ -40,7 +40,7 @@ chat, topic, session, and sender.
 For one question, reply normally or use:
 
 ```text
-/answer <short-id> <answer>
+/answer 13ccbf94 eu
 ```
 
 For several questions, reply with one line per question:
@@ -48,6 +48,15 @@ For several questions, reply with one line per question:
 ```text
 deployment_mode: rolling
 maintenance_window: 02:00 UTC
+```
+
+To correlate a multi-question reply explicitly, put the first answer on the
+next line after the short interaction ID:
+
+```text
+/answer 13ccbf94
+test_region: eu
+test_mode: balanced
 ```
 
 Commands such as `/new`, `/reset`, and `/clear` cancel the pending interaction

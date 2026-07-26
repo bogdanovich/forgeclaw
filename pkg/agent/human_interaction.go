@@ -376,11 +376,11 @@ func renderInteractionPrompt(record interactions.Record) string {
 	if len(record.Questions) == 1 {
 		fmt.Fprintf(&builder, "\n\nReply with your answer or `/answer %s <answer>`.", record.ShortID)
 	} else {
-		fmt.Fprintf(
-			&builder,
-			"\n\nReply with one `question_id: answer` line per question, or prefix it with `/answer %s`.",
-			record.ShortID,
-		)
+		fmt.Fprintf(&builder, "\n\nReply with:\n`/answer %s", record.ShortID)
+		for _, question := range record.Questions {
+			fmt.Fprintf(&builder, "\n%s: …", question.ID)
+		}
+		builder.WriteString("`")
 	}
 	return builder.String()
 }

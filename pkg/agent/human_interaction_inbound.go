@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -105,8 +106,8 @@ func (al *AgentLoop) shouldHandleInteractionInbound(
 	if !ok || !interactionRouteAuthorizes(record.Route, target, msg.Context) {
 		return false
 	}
-	if commands.HasCommandPrefix(msg.Content) &&
-		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Content)), answerCommand) {
+	_, _, answerCommandMatched, _ := parseInteractionAnswerEnvelope(msg.Content)
+	if commands.HasCommandPrefix(msg.Content) && !answerCommandMatched {
 		return false
 	}
 	switch record.Status {
@@ -396,13 +397,15 @@ func parseInteractionAnswer(
 	messageID string,
 ) (interactions.Answer, error) {
 	content = strings.TrimSpace(content)
-	if strings.HasPrefix(strings.ToLower(content), answerCommand) {
-		remainder := strings.TrimSpace(content[len(answerCommand):])
-		shortID, answerText, ok := strings.Cut(remainder, " ")
-		if !ok || !strings.EqualFold(strings.TrimSpace(shortID), record.ShortID) {
+	shortID, answerText, commandMatched, err := parseInteractionAnswerEnvelope(content)
+	if err != nil {
+		return interactions.Answer{}, fmt.Errorf("use `/answer %s <answer>`", record.ShortID)
+	}
+	if commandMatched {
+		if !strings.EqualFold(shortID, record.ShortID) {
 			return interactions.Answer{}, fmt.Errorf("use `/answer %s <answer>`", record.ShortID)
 		}
-		content = strings.TrimSpace(answerText)
+		content = answerText
 	}
 	if content == "" {
 		return interactions.Answer{}, fmt.Errorf("answer cannot be empty")
@@ -453,6 +456,39 @@ func parseInteractionAnswer(
 	}
 	answer.Values = values
 	return answer, nil
+}
+
+func parseInteractionAnswerEnvelope(content string) (shortID, body string, matched bool, err error) {
+	commandToken, remainder, ok := cutInteractionAnswerToken(content)
+	if !ok || !isInteractionAnswerCommandToken(commandToken) {
+		return "", "", false, nil
+	}
+	shortID, remainder, ok = cutInteractionAnswerToken(remainder)
+	if !ok {
+		return "", "", true, fmt.Errorf("short interaction id is required")
+	}
+	return shortID, strings.TrimSpace(remainder), true, nil
+}
+
+func cutInteractionAnswerToken(content string) (token, remainder string, ok bool) {
+	content = strings.TrimLeftFunc(content, unicode.IsSpace)
+	if content == "" {
+		return "", "", false
+	}
+	for index, char := range content {
+		if unicode.IsSpace(char) {
+			return content[:index], content[index:], true
+		}
+	}
+	return content, "", true
+}
+
+func isInteractionAnswerCommandToken(token string) bool {
+	command, mention, hasMention := strings.Cut(token, "@")
+	if !strings.EqualFold(command, answerCommand) {
+		return false
+	}
+	return !hasMention || mention != ""
 }
 
 func (al *AgentLoop) publishInteractionNotice(

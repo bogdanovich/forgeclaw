@@ -110,6 +110,12 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 			wantContent:   "/new",
 		},
 		{
+			name:          "multiline answer command with bot username",
+			text:          "/answer@testbot 13ccbf94\ntest_region: eu\ntest_mode: balanced",
+			wantForwarded: true,
+			wantContent:   "/answer 13ccbf94\ntest_region: eu\ntest_mode: balanced",
+		},
+		{
 			name:          "bare command",
 			text:          "/new",
 			wantForwarded: true,
@@ -131,7 +137,7 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 				Entities: []telego.MessageEntity{{
 					Type:   telego.EntityTypeBotCommand,
 					Offset: 0,
-					Length: len([]rune(tc.text)),
+					Length: len([]rune(strings.Fields(tc.text)[0])),
 				}},
 				MessageID: 42,
 				Chat: telego.Chat{
