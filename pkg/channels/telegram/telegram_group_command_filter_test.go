@@ -111,9 +111,9 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 		},
 		{
 			name:          "multiline answer command with bot username",
-			text:          "/answer@testbot 13ccbf94\ntest_region: eu\ntest_mode: balanced",
+			text:          "/answer@testbot 13ccbf94\ntest_region: eu\nrecipient: alice@testbot.example",
 			wantForwarded: true,
-			wantContent:   "/answer 13ccbf94\ntest_region: eu\ntest_mode: balanced",
+			wantContent:   "/answer 13ccbf94\ntest_region: eu\nrecipient: alice@testbot.example",
 		},
 		{
 			name:          "bare command",

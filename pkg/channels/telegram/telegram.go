@@ -1533,7 +1533,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 			return nil
 		}
 		if isMentioned {
-			content = c.stripBotMention(content)
+			content = c.stripBotMention(message, content)
 		}
 		respond, cleaned := c.ShouldRespondInGroupForTopic(isMentioned, content, topicID)
 		if !respond {
@@ -2360,16 +2360,66 @@ func isBotCommandEntityForThisBot(entityText, botUsername string) bool {
 	return strings.EqualFold(mentionUsername, botUsername)
 }
 
-// stripBotMention removes the @bot mention from the content.
-func (c *TelegramChannel) stripBotMention(content string) string {
+// stripBotMention removes only Telegram entities that identify this bot. Text
+// outside those entity ranges may legitimately contain the same @username.
+func (c *TelegramChannel) stripBotMention(message *telego.Message, content string) string {
 	botUsername := c.ownBotUsername()
 	if botUsername == "" {
 		return content
 	}
-	// Case-insensitive replacement
-	re := regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(botUsername))
-	content = re.ReplaceAllString(content, "")
-	return strings.TrimSpace(content)
+	source, entities := telegramEntityTextAndList(message)
+	if source == "" || !strings.HasPrefix(content, source) {
+		return content
+	}
+	type entityRemoval struct {
+		start int
+		end   int
+	}
+	removals := make([]entityRemoval, 0, len(entities))
+	sourceRunes := []rune(source)
+	for _, entity := range entities {
+		entityText, ok := telegramEntityText(sourceRunes, entity)
+		if !ok {
+			continue
+		}
+		start := entity.Offset
+		switch entity.Type {
+		case telego.EntityTypeBotCommand:
+			if !isBotCommandEntityForThisBot(entityText, botUsername) {
+				continue
+			}
+			at := strings.IndexRune(entityText, '@')
+			if at < 0 {
+				continue
+			}
+			start += len([]rune(entityText[:at]))
+		case telego.EntityTypeMention:
+			if !strings.EqualFold(entityText, "@"+botUsername) {
+				continue
+			}
+		case telego.EntityTypeTextMention:
+			if entity.User == nil || !strings.EqualFold(entity.User.Username, botUsername) {
+				continue
+			}
+		default:
+			continue
+		}
+		removals = append(removals, entityRemoval{
+			start: start,
+			end:   entity.Offset + entity.Length,
+		})
+	}
+	slices.SortFunc(removals, func(left, right entityRemoval) int {
+		return right.start - left.start
+	})
+	contentRunes := []rune(content)
+	for _, removal := range removals {
+		if removal.start < 0 || removal.end > len(contentRunes) || removal.start > removal.end {
+			continue
+		}
+		contentRunes = append(contentRunes[:removal.start], contentRunes[removal.end:]...)
+	}
+	return strings.TrimSpace(string(contentRunes))
 }
 
 // BeginStream implements channels.StreamingCapable.
