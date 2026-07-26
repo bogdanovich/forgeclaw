@@ -343,17 +343,18 @@ func TestTraceCaptureProtectionInstallationFailsClosed(t *testing.T) {
 		t.Fatalf("intervening successful mutation: %v", err)
 	}
 	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
-	stored, journal, ok := reloaded.GetTraceCapture(record.ID)
-	if err := reloaded.LastLoadError(); err != nil || !ok ||
-		!stored.TraceCapturePending || len(journal) == 0 ||
+	activeStored, activeJournal, activeOK := reloaded.GetTraceCapture(active.ID)
+	if err := reloaded.LastLoadError(); err != nil ||
+		!activeOK || activeStored.TraceCapturePending ||
+		len(activeJournal) == 0 ||
 		registry.traceCaptureProtectionPending ||
 		!registry.traceCaptureProtection ||
 		!reloaded.traceCaptureProtection {
 		t.Fatalf(
-			"successful mutation did not durably complete protection: (%#v, %#v, %v, %v)",
-			stored,
-			journal,
-			ok,
+			"successful mutation did not durably complete protection: active=(%#v, %#v, %v), err=%v",
+			activeStored,
+			activeJournal,
+			activeOK,
 			err,
 		)
 	}
@@ -403,10 +404,10 @@ func TestTraceCaptureFailedEnableIntentProtectsAcrossRegistryInstances(
 		t.Fatalf("retry trace protection: %v", err)
 	}
 	reloaded := NewRegistryWithOptions(path, Options{Now: clock.Now})
-	stored, ok := reloaded.Get(record.ID)
-	if err := reloaded.LastLoadError(); err != nil || !ok ||
-		!reloaded.traceCaptureProtection || !stored.TraceCapturePending {
-		t.Fatalf("durable protection retry = (%#v, %v, %v)", stored, ok, err)
+	if err := reloaded.LastLoadError(); err != nil ||
+		!reloaded.traceCaptureProtection ||
+		reloaded.traceCaptureProtectionPending {
+		t.Fatalf("durable protection retry = (%#v, %v)", reloaded.Stats(), err)
 	}
 }
 

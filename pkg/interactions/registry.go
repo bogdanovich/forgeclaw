@@ -1846,7 +1846,14 @@ func (r *Registry) reconcileTraceCaptureLocked(enabled bool) bool {
 	for id, record := range r.records {
 		events, dropped := r.traceCaptureJournalLocked(record)
 		pending := record.TraceCapturePending
-		if enabled && isTerminal(record.Status) {
+		owned := record.TraceCapturePending ||
+			len(record.TraceCaptureEvents) > 0 ||
+			record.TraceCaptureDropped > 0
+		if enabled && !owned {
+			events = nil
+			dropped = 0
+		}
+		if enabled && owned && isTerminal(record.Status) {
 			pending = true
 		}
 		if !enabled && !(pending && isTerminal(record.Status)) {

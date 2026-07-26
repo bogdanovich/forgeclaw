@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -261,6 +263,88 @@ func TestInteractionTraceShutdownFindsTerminalFromAnotherRegistryInstance(
 	stored, ok := reloaded.Get(record.ID)
 	if !ok || stored.TraceCapturePending {
 		t.Fatalf("cross-instance shutdown confirmation = (%#v, %v)", stored, ok)
+	}
+}
+
+func TestInteractionTraceActivationDrainsPendingNearSnapshotBudget(
+	t *testing.T,
+) {
+	workspace := t.TempDir()
+	now := time.Now().UTC()
+	storePath := interactions.WorkspaceStorePath(workspace)
+	seed := interactions.NewRegistryWithOptions(
+		storePath,
+		interactions.Options{Now: func() time.Time { return now }},
+	)
+	if err := seed.SetTraceCaptureProtection(true, 32); err != nil {
+		t.Fatal(err)
+	}
+	pending := cancelInteractionForTrace(
+		t,
+		seed,
+		"interaction-near-budget-pending",
+		"session-near-budget-pending",
+		now,
+	)
+	if err := seed.SetTraceCaptureProtection(false, 0); err != nil {
+		t.Fatal(err)
+	}
+	var historicalID string
+	for index := range 24 {
+		historicalID = fmt.Sprintf("interaction-near-budget-history-%02d", index)
+		cancelInteractionForTrace(
+			t,
+			seed,
+			historicalID,
+			fmt.Sprintf("session-near-budget-history-%02d", index),
+			now,
+		)
+	}
+	info, err := os.Stat(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := interactions.NewRegistryWithOptions(
+		storePath,
+		interactions.Options{
+			Now:              func() time.Time { return now },
+			MaxSnapshotBytes: int(info.Size()) + 512,
+		},
+	)
+	if loadErr := registry.LastLoadError(); loadErr != nil {
+		t.Fatal(loadErr)
+	}
+
+	eventBus := runtimeevents.NewBus()
+	cfg := traceTestConfig(workspace)
+	manager := newTraceCaptureManager(cfg, eventBus)
+	manager.attachInteractionRegistry(workspace, registry)
+	waitForInteractionTraceMarkerCleared(t, registry, pending.ID)
+	path := waitForTraceFile(t, workspace)
+	manager.close()
+	if closeErr := eventBus.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	trace := readCapturedTrace(t, path)
+	if len(trace.Records) == 0 ||
+		trace.Records[0].Correlation.InteractionID != pending.ID {
+		t.Fatalf("near-budget trace = %#v", trace)
+	}
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot interactions.Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.TraceCaptureEnabled || snapshot.TraceCaptureIntentID == "" {
+		t.Fatalf("capture intent was not acknowledged: %#v", snapshot)
+	}
+	historical, ok := registry.Get(historicalID)
+	if !ok || historical.TraceCapturePending ||
+		len(historical.TraceCaptureEvents) != 0 {
+		t.Fatalf("historical interaction was retroactively promoted: %#v", historical)
 	}
 }
 

@@ -322,6 +322,13 @@ the requested protection. Process-local desired-state tracking only drives the
 retry; it cannot become a second history authority. Graceful runtime shutdown
 leaves the configured durable mode intact.
 
+Capture activation is prospective. It preserves and drains journals already
+pending from an earlier enabled period, and it captures interactions active at
+the boundary on their next transition, but it does not copy every previously
+uncaptured terminal interaction out of the canonical global event history.
+This keeps activation bounded by mode metadata and retained capture state
+instead of duplicating the whole registry before the projection source exists.
+
 Projectors may add typed links between traces. They do not copy one domain's
 state machine into another projector or append interaction transitions directly
 to a turn buffer through session heuristics.
