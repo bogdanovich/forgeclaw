@@ -149,3 +149,45 @@ func TestSubagentStatusUpdatePreservesDurableGeneration(t *testing.T) {
 		t.Fatalf("updated durable task = %#v, created = %#v", completed, created)
 	}
 }
+
+func TestSubagentResultPersistsTerminalStateAndPayloadTogether(t *testing.T) {
+	registry := taskregistry.NewRegistry(filepath.Join(t.TempDir(), "tasks.json"))
+	manager := NewSubagentManagerWithRegistry(
+		&MockLLMProvider{}, "model", t.TempDir(), registry,
+	)
+	task := &SubagentTask{
+		ID: "subagent-" + strings.Repeat("b", 36), Task: "test",
+		Status: "running", Created: time.Now().UnixMilli(),
+	}
+	if err := manager.createTask(task); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.recordTaskResult(task, &ToolResult{
+		ForLLM: "done",
+		Deliverable: &DeliverableResult{
+			Text: "structured result",
+		},
+	})
+
+	completed, ok := registry.Get(task.ID)
+	if !ok {
+		t.Fatal("completed task not found")
+	}
+	if completed.Status != taskregistry.StatusSucceeded ||
+		!strings.Contains(completed.TerminalSummary, "done") ||
+		completed.Deliverable == nil ||
+		completed.Deliverable.Text != "structured result" {
+		t.Fatalf("completed durable task = %#v", completed)
+	}
+	events := registry.ListEvents(task.ID)
+	statusChanges := 0
+	for _, event := range events {
+		if event.Type == taskregistry.EventTaskStatusChanged {
+			statusChanges++
+		}
+	}
+	if statusChanges != 1 {
+		t.Fatalf("terminal events = %#v", events)
+	}
+}

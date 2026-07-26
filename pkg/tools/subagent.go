@@ -412,6 +412,16 @@ func (sm *SubagentManager) recordTask(
 	delivery taskregistry.DeliveryStatus,
 	summary string,
 ) error {
+	return sm.updateTask(task, status, delivery, summary, nil)
+}
+
+func (sm *SubagentManager) updateTask(
+	task *SubagentTask,
+	status taskregistry.Status,
+	delivery taskregistry.DeliveryStatus,
+	summary string,
+	mutate func(*taskregistry.Record),
+) error {
 	if sm == nil || sm.taskRegistry == nil || task == nil {
 		return errors.New("subagent task registry is unavailable")
 	}
@@ -432,6 +442,9 @@ func (sm *SubagentManager) recordTask(
 		stored.LastEventAt = rec.LastEventAt
 		stored.Error = rec.Error
 		stored.TerminalSummary = rec.TerminalSummary
+		if mutate != nil {
+			mutate(stored)
+		}
 	})
 }
 
@@ -506,29 +519,20 @@ func (sm *SubagentManager) recordTaskResult(task *SubagentTask, result *ToolResu
 	}
 	completion := completionPayloadForTaskRegistry(result)
 	deliverable := deliverablePayloadForTaskRegistry(result)
-	if err := sm.recordTask(
+	if err := sm.updateTask(
 		task,
 		taskregistry.StatusSucceeded,
 		delivery,
 		summary,
+		func(rec *taskregistry.Record) {
+			rec.Completion = completionPayloadForLegacyStorage(completion, deliverable)
+			rec.Deliverable = deliverable
+		},
 	); err != nil {
 		logger.WarnCF("subagent", "Failed to persist subagent task result", map[string]any{
 			"task_id": task.ID,
 			"error":   err.Error(),
 		})
-		return
-	}
-	if completion != nil || deliverable != nil {
-		if err := sm.taskRegistry.Update(task.ID, func(rec *taskregistry.Record) {
-			rec.Completion = completionPayloadForLegacyStorage(completion, deliverable)
-			rec.Deliverable = deliverable
-			rec.LastEventAt = time.Now().UnixMilli()
-		}); err != nil {
-			logger.WarnCF("subagent", "Failed to persist subagent deliverable", map[string]any{
-				"task_id": task.ID,
-				"error":   err.Error(),
-			})
-		}
 	}
 }
 
