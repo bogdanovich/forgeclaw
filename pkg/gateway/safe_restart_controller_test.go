@@ -46,6 +46,7 @@ type fakeServiceRestarter struct {
 	services []string
 	dispatch RestartDispatchResult
 	called   chan string
+	release  <-chan struct{}
 }
 
 func TestSystemdUserServiceRestarterQueuesRestartWithoutBlocking(t *testing.T) {
@@ -146,6 +147,9 @@ func (r *fakeServiceRestarter) DispatchRestart(_ context.Context, service string
 		case r.called <- service:
 		default:
 		}
+	}
+	if r.release != nil {
+		<-r.release
 	}
 	if r.dispatch.Outcome == "" {
 		return RestartDispatchResult{Outcome: RestartDispatchAccepted}
@@ -259,17 +263,40 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
 	}
-	restarter := &fakeServiceRestarter{called: make(chan string, 1)}
+	releaseRestart := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseRestart) })
+	}
+	nextTimestamp := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	var timestampMu sync.Mutex
+	now := func() time.Time {
+		timestampMu.Lock()
+		defer timestampMu.Unlock()
+		current := nextTimestamp
+		nextTimestamp = nextTimestamp.Add(time.Second)
+		return current
+	}
+	finalUpdatedAt := nextTimestamp.Add(4 * time.Second)
+	restarter := &fakeServiceRestarter{
+		called:  make(chan string, 1),
+		release: releaseRestart,
+	}
 	controller, err := NewRestartController(RestartControllerOptions{
 		Config:           testRestartConfig(),
 		Source:           &restartSourceSequence{},
 		Store:            store,
 		Restarter:        restarter,
 		PreflightOptions: knownPreflightOptions(),
+		Now:              now,
 	})
 	if err != nil {
 		t.Fatalf("NewRestartController() error = %v", err)
 	}
+	t.Cleanup(func() {
+		release()
+		waitForRestartSentinelUpdatedAt(t, store, finalUpdatedAt)
+	})
 
 	result, err := controller.RequestRestart(context.Background(), RestartRequest{
 		Origin: RestartOrigin{Channel: "telegram", ChatID: "chat-1", TopicID: "topic-1", SessionKey: "s1"},
@@ -283,9 +310,6 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	}
 	restarter.waitCalledWith(t, "picoclaw-main.service")
 	waitForRestartSentinelStatus(t, store, restartStatusRunning)
-	if !restarter.calledWith("picoclaw-main.service") {
-		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
-	}
 	sentinel, err := store.Read()
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
@@ -295,6 +319,11 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	}
 	if sentinel.Origin.ChatID != "chat-1" || sentinel.Origin.TopicID != "topic-1" {
 		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
+	}
+	release()
+	waitForRestartSentinelUpdatedAt(t, store, finalUpdatedAt)
+	if !restarter.calledWith("picoclaw-main.service") {
+		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
 	}
 }
 
@@ -605,6 +634,23 @@ func waitForRestartSentinelStatus(t *testing.T, store *RestartSentinelStore, sta
 		t.Fatalf("Read() error = %v", err)
 	}
 	t.Fatalf("sentinel status = %q, want %q", sentinel.Status, status)
+}
+
+func waitForRestartSentinelUpdatedAt(t *testing.T, store *RestartSentinelStore, want time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sentinel, err := store.Read()
+		if err == nil && sentinel.UpdatedAt.Equal(want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sentinel, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	t.Fatalf("sentinel updated_at = %v, want %v", sentinel.UpdatedAt, want)
 }
 
 func waitForRestartSentinelForcedAfterDrain(t *testing.T, store *RestartSentinelStore) {

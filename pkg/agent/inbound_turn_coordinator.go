@@ -62,6 +62,9 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 		al.ackInboundMessage(ctx, msg)
 		return
 	}
+	if c.routeExplicitInteractionAnswer(ctx, msg, target) {
+		return
+	}
 	if al.shouldHandleInteractionInbound(msg, target) {
 		c.handleInteractionInbound(ctx, msg, target)
 		return
