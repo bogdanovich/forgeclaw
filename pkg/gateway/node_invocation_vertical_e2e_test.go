@@ -192,6 +192,29 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 	}
 	defer waitingSubscription.Close()
 
+	const sessionKey = "node-e2e-session"
+	response, err := agentLoop.ProcessDirectWithChannel(
+		t.Context(),
+		"Run the remote node smoke test",
+		sessionKey,
+		"telegram",
+		"chat-e2e",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response != "" {
+		t.Fatalf("suspended approval response = %q, want empty", response)
+	}
+	approvalPrompt := channel.nextMessage(t)
+	if !strings.Contains(approvalPrompt.Content, "Approval needed") ||
+		!strings.Contains(approvalPrompt.Content, "nodes_invoke") ||
+		strings.Contains(approvalPrompt.Content, commandDir) ||
+		strings.Contains(approvalPrompt.Content, "node-e2e-ok") {
+		t.Fatalf("approval prompt = %#v", approvalPrompt)
+	}
+	waitForVerticalSliceEvent(t, waitingEvents, runtimeevents.KindAgentInteractionWaiting)
+
 	runCtx, stopAgentLoop := context.WithCancel(t.Context())
 	runDone := make(chan error, 1)
 	go func() {
@@ -208,27 +231,6 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 			t.Error("agent loop did not stop")
 		}
 	}()
-
-	const sessionKey = "node-e2e-session"
-	if err := msgBus.PublishInbound(
-		t.Context(),
-		verticalSliceInboundMessage(
-			sessionKey,
-			"message-request",
-			"Run the remote node smoke test",
-		),
-	); err != nil {
-		t.Fatal(err)
-	}
-	approvalPrompt := channel.nextMessage(t)
-	if !strings.Contains(approvalPrompt.Content, "Approval needed") ||
-		!strings.Contains(approvalPrompt.Content, "nodes_invoke") ||
-		strings.Contains(approvalPrompt.Content, commandDir) ||
-		strings.Contains(approvalPrompt.Content, "node-e2e-ok") {
-		t.Fatalf("approval prompt = %#v", approvalPrompt)
-	}
-	waitForVerticalSliceEvent(t, waitingEvents, runtimeevents.KindAgentInteractionWaiting)
-
 	if err := msgBus.PublishInbound(
 		t.Context(),
 		verticalSliceInboundMessage(
@@ -303,14 +305,9 @@ func verticalSliceInboundMessage(
 			Channel:   "telegram",
 			ChatID:    "chat-e2e",
 			ChatType:  "direct",
-			SenderID:  "user-e2e",
-			ActorID:   "user-e2e",
+			SenderID:  "cron",
+			ActorID:   "cron",
 			MessageID: messageID,
-		},
-		Sender: bus.SenderInfo{
-			Platform:    "telegram",
-			PlatformID:  "user-e2e",
-			CanonicalID: "telegram:user-e2e",
 		},
 		Content:    content,
 		SessionKey: sessionKey,
