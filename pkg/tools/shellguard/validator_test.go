@@ -147,19 +147,63 @@ func TestValidator_BlocksNonexistentPathThroughEscapingSymlink(t *testing.T) {
 	}
 }
 
+func TestValidator_BlocksDanglingSymlinkEscape(t *testing.T) {
+	workspace := t.TempDir()
+	outsideTarget := filepath.Join(t.TempDir(), "future.txt")
+	link := filepath.Join(workspace, "future-link")
+	if err := os.Symlink(outsideTarget, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	validator := New(Config{RestrictToWorkspace: true})
+	decision := validator.Validate("touch "+link, workspace)
+	if decision.Allowed {
+		t.Fatal("expected dangling symlink escape to be blocked")
+	}
+}
+
 func TestValidator_AllowsConfiguredExternalPath(t *testing.T) {
 	root := t.TempDir()
 	allowed := t.TempDir()
+	canonicalAllowed, err := filepath.EvalSymlinks(allowed)
+	if err != nil {
+		t.Fatalf("resolve allowed path: %v", err)
+	}
 	validator := New(Config{
 		RestrictToWorkspace: true,
 		AllowedPathPatterns: []*regexp.Regexp{
-			regexp.MustCompile("^" + regexp.QuoteMeta(allowed)),
+			regexp.MustCompile("^" + regexp.QuoteMeta(canonicalAllowed)),
 		},
 	})
 
 	decision := validator.Validate("cat "+filepath.Join(allowed, "file.txt"), root)
 	if !decision.Allowed {
 		t.Fatalf("expected allow-path match to be allowed: %s", decision.Reason)
+	}
+}
+
+func TestValidator_BlocksSymlinkEscapeFromAllowedPath(t *testing.T) {
+	root := t.TempDir()
+	allowed := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(allowed, "outside-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	canonicalAllowed, err := filepath.EvalSymlinks(allowed)
+	if err != nil {
+		t.Fatalf("resolve allowed path: %v", err)
+	}
+
+	validator := New(Config{
+		RestrictToWorkspace: true,
+		AllowedPathPatterns: []*regexp.Regexp{
+			regexp.MustCompile("^" + regexp.QuoteMeta(canonicalAllowed)),
+		},
+	})
+	decision := validator.Validate("cat "+filepath.Join(link, "future.txt"), root)
+	if decision.Allowed {
+		t.Fatal("expected symlink escape from allowed path to be blocked")
 	}
 }
 

@@ -554,8 +554,9 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 	if err != nil {
 		return Decision{Allowed: true, Reason: "allowed", Category: "allowed", CommandClass: ClassifyCommand(command)}
 	}
-	if resolved, resolveErr := resolvePathAgainstExistingAncestor(cwdPath); resolveErr == nil {
-		cwdPath = resolved
+	cwdPath, err = resolvePathAgainstExistingAncestor(cwdPath)
+	if err != nil {
+		return blockedWorkspacePathDecision(command)
 	}
 
 	if runtime.GOOS == "windows" {
@@ -583,14 +584,15 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 			}
 		}
 
-		if safePaths[p] || isAllowedPath(p, v.config.AllowedPathPatterns) {
+		if safePaths[p] {
 			continue
 		}
 
 		resolved, resolveErr := resolvePathAgainstExistingAncestor(p)
-		if resolveErr == nil {
-			p = resolved
+		if resolveErr != nil {
+			return blockedWorkspacePathDecision(command)
 		}
+		p = resolved
 
 		if safePaths[p] || isAllowedPath(p, v.config.AllowedPathPatterns) {
 			continue
@@ -602,16 +604,20 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 		}
 
 		if strings.HasPrefix(rel, "..") {
-			return Decision{
-				Allowed:      false,
-				Reason:       "Command blocked by safety guard (path outside working dir)",
-				Category:     "path_outside_working_dir",
-				CommandClass: ClassifyCommand(command),
-			}
+			return blockedWorkspacePathDecision(command)
 		}
 	}
 
 	return Decision{Allowed: true, Reason: "allowed", Category: "allowed", CommandClass: ClassifyCommand(command)}
+}
+
+func blockedWorkspacePathDecision(command string) Decision {
+	return Decision{
+		Allowed:      false,
+		Reason:       "Command blocked by safety guard (path outside working dir)",
+		Category:     "path_outside_working_dir",
+		CommandClass: ClassifyCommand(command),
+	}
 }
 
 func resolvePathAgainstExistingAncestor(path string) (string, error) {
@@ -630,6 +636,11 @@ func resolvePathAgainstExistingAncestor(path string) (string, error) {
 		}
 		if !os.IsNotExist(err) {
 			return "", err
+		}
+		if info, lstatErr := os.Lstat(current); lstatErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", err
+		} else if lstatErr != nil && !os.IsNotExist(lstatErr) {
+			return "", lstatErr
 		}
 		if filepath.Dir(current) == current {
 			return "", os.ErrNotExist
