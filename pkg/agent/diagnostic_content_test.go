@@ -95,3 +95,38 @@ func TestDiagnosticMessagesPreviewKeepsLatestWhenOriginIsOversized(t *testing.T)
 		t.Fatalf("message preview length = %d", len(got))
 	}
 }
+
+func TestDiagnosticToolCallsFailClosedForSerializedArguments(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+
+	tests := []struct {
+		name        string
+		arguments   string
+		placeholder string
+	}{
+		{
+			name: "malformed", arguments: `{"password":"hunter2"`,
+			placeholder: "malformed serialized arguments",
+		},
+		{
+			name:        "oversized",
+			arguments:   `{"password":"` + strings.Repeat("hunter2", 1024) + `"}`,
+			placeholder: "oversized serialized arguments",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := diagnosticToolCallsPreview(cfg, []providers.ToolCall{{
+				ID: "call-1",
+				Function: &providers.FunctionCall{
+					Name: "shell", Arguments: test.arguments,
+				},
+			}})
+			if !strings.Contains(got, test.placeholder) || strings.Contains(got, "hunter2") {
+				t.Fatalf("tool call preview = %q", got)
+			}
+		})
+	}
+}

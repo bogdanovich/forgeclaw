@@ -20,6 +20,7 @@ const (
 	diagnosticToolResultBytes     = 8 * 1024
 	diagnosticErrorBytes          = 2 * 1024
 	diagnosticSteeringBytes       = 4 * 1024
+	diagnosticSerializedArgsBytes = 4 * 1024
 	maxDiagnosticMessages         = 64
 	maxDiagnosticToolCalls        = 64
 )
@@ -121,18 +122,16 @@ func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) 
 
 func diagnosticToolCallFromProvider(call providers.ToolCall) map[string]any {
 	name := call.Name
-	arguments := any(call.Arguments)
+	var arguments any
+	if len(call.Arguments) > 0 {
+		arguments = call.Arguments
+	}
 	if call.Function != nil {
 		if name == "" {
 			name = call.Function.Name
 		}
 		if arguments == nil && call.Function.Arguments != "" {
-			var decoded any
-			if json.Unmarshal([]byte(call.Function.Arguments), &decoded) == nil {
-				arguments = decoded
-			} else {
-				arguments = call.Function.Arguments
-			}
+			arguments = diagnosticSerializedArguments(call.Function.Arguments)
 		}
 	}
 	item := map[string]any{}
@@ -142,6 +141,17 @@ func diagnosticToolCallFromProvider(call providers.ToolCall) map[string]any {
 		item["arguments"] = arguments
 	}
 	return item
+}
+
+func diagnosticSerializedArguments(value string) any {
+	if len(value) > diagnosticSerializedArgsBytes {
+		return "[UNSUPPORTED: oversized serialized arguments]"
+	}
+	var decoded any
+	if json.Unmarshal([]byte(value), &decoded) != nil {
+		return "[UNSUPPORTED: malformed serialized arguments]"
+	}
+	return decoded
 }
 
 func addDiagnosticValue[T comparable](item map[string]any, key string, value T) {

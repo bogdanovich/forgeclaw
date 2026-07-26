@@ -94,12 +94,14 @@ func (r Redactor) sanitizeJSON(value any, maxBytes int, nodes *int) any {
 	case string:
 		return r.RedactText(value, maxBytes)
 	case map[string]any:
-		out := make(map[string]any, len(value))
+		remaining := max(0, maxRedactionNodes-*nodes)
+		out := make(map[string]any, min(len(value), remaining))
 		for key, item := range value {
 			if *nodes >= maxRedactionNodes {
 				out["[TRUNCATED]"] = "node limit"
 				break
 			}
+			*nodes++
 			if sensitiveKeyPattern.MatchString(key) {
 				safeKey := r.RedactText(key, 256)
 				if safeKey == "" {
@@ -118,7 +120,8 @@ func (r Redactor) sanitizeJSON(value any, maxBytes int, nodes *int) any {
 		}
 		return out
 	case []any:
-		out := make([]any, 0, min(len(value), maxRedactionNodes))
+		remaining := max(0, maxRedactionNodes-*nodes)
+		out := make([]any, 0, min(len(value), remaining))
 		for _, item := range value {
 			if *nodes >= maxRedactionNodes {
 				out = append(out, "[TRUNCATED: node limit]")

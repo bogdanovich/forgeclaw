@@ -3,6 +3,7 @@ package diagnostictrace
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +199,20 @@ func TestRedactorBoundsWorkAndRejectsCustomJSONTypes(t *testing.T) {
 	got = (Redactor{}).RedactJSON(map[string]any{"custom": panicJSONValue{}}, 128)
 	if !strings.Contains(got, "[UNSUPPORTED]") {
 		t.Fatalf("custom JSON preview = %q", got)
+	}
+}
+
+func TestRedactorChargesSensitiveMapEntriesToNodeBudget(t *testing.T) {
+	input := make(map[string]any, maxRedactionNodes+100)
+	for index := 0; index < maxRedactionNodes+100; index++ {
+		input[fmt.Sprintf("token_%04d", index)] = "secret"
+	}
+	got := (Redactor{}).RedactJSON(input, 1<<20)
+	if !strings.Contains(got, "[TRUNCATED]") {
+		t.Fatalf("large sensitive map was not truncated")
+	}
+	if count := strings.Count(got, "[REDACTED]"); count >= len(input) {
+		t.Fatalf("redacted entries = %d, want fewer than %d", count, len(input))
 	}
 }
 
