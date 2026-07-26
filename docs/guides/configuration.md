@@ -1692,3 +1692,4 @@ Command cron jobs can execute shell commands. By default, remote channels cannot
 | [Hook System](../architecture/hooks/README.md) | Event-driven hooks: observers, interceptors, approval hooks |
 | [Steering](../architecture/steering.md) | Inject messages into a running agent loop between tool calls |
 | [SubTurn](../architecture/subturn.md) | Subagent coordination, concurrency control, lifecycle |
+| [Durable Human Interaction](human-interaction.md) | Pause, authorize, recover, and resume user questions and approvals |

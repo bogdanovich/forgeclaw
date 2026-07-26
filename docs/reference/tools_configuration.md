@@ -39,6 +39,25 @@ See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full
 | `filter_sensitive_data` | bool | `true` | Enable/disable filtering |
 | `filter_min_length` | int | `8` | Minimum content length to trigger filtering |
 
+## Request User Input
+
+The built-in `request_user_input` tool lets foreground turns and durable
+background tasks pause for an authorized user answer and resume across process
+restarts.
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `tools.request_user_input.enabled` | bool | `true` | Allow new model-requested questions |
+| `tools.request_user_input.default_timeout_seconds` | int | `3600` | Default wait, from 60 seconds to the configured maximum |
+| `tools.request_user_input.max_timeout_seconds` | int | `86400` | Maximum model-requested wait, at most 24 hours |
+| `tools.request_user_input.retention_hours` | int | `168` | Retain terminal interaction records before pruning |
+
+Disabling the tool prevents new questions but does not discard pending durable
+state. Human approval remains opt-in through a trusted approval hook.
+
+See [Durable Human Interaction](../guides/human-interaction.md) for answer
+formats, approval behavior, restart semantics, storage, and debugging.
+
 ## Web Tools
 
 Web tools are used for web search and fetching.

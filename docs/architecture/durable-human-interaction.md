@@ -2,16 +2,17 @@
 
 ## Status
 
-Proposed architecture for model-requested user input and human approval of
-sensitive tool calls. This document defines the contracts that implementation
-PRs must preserve.
+Implemented on ForgeClaw `main`. The architecture landed through PRs #263,
+#264, #266, #268, #269, and #270. This document describes the contracts the
+runtime preserves; operator-facing usage and configuration are documented in
+[Durable Human Interaction](../guides/human-interaction.md).
 
 ## Problem
 
-ForgeClaw can receive steering while a turn is running, but it cannot suspend a
-turn, release runtime resources, survive a restart, and later resume the exact
-tool call after an authorized person responds. Approval hooks are synchronous,
-and background tasks have no `waiting_for_input` state.
+ForgeClaw can suspend a foreground turn or durable background task, release
+runtime resources, survive a restart, and later resume the exact tool call after
+an authorized person responds. Trusted approval hooks can use the same durable
+interaction state machine, and background tasks expose `waiting_for_input`.
 
 This prevents agents from safely handling workflows such as:
 
@@ -33,7 +34,8 @@ workflow state, not an active model turn.
 4. Correlate answers to the canonical session, route, sender, and request.
 5. Make answer acceptance and restart recovery idempotent.
 6. Represent waiting background tasks honestly as `waiting_for_input`.
-7. Expose lifecycle events and bounded evaluation traces for debugging.
+7. Expose typed lifecycle events and optional, non-authoritative debugging
+   evidence.
 8. Keep policy authority outside model-controlled tool arguments.
 9. Work across text channels without requiring channel-specific forms.
 
@@ -62,8 +64,8 @@ typed interactions with restart reconciliation.
 
 ForgeClaw already has stronger primitives that this design reuses: canonical
 routed session keys, sender and topic context, durable task records, completion
-IDs, runtime events, and replay traces. Interaction state augments those
-subsystems instead of creating a second routing or task model.
+IDs, and runtime events. Interaction state augments those subsystems instead of
+creating a second routing or task model.
 
 ## Core Model
 
@@ -367,7 +369,7 @@ interaction ID on task records.
   the safe short request ID and bounded prompt summary.
 - Restart reconciliation preserves waiting tasks instead of marking them lost.
 
-## Events, Traces, and Privacy
+## Events, Debugging Evidence, and Privacy
 
 Add typed lifecycle events for created, delivery attempted, waiting, answer
 accepted/rejected, resume started, resolved, timed out, cancelled, and failed.
@@ -375,17 +377,15 @@ Events include interaction kind, IDs, route/session hashes, task ID, status,
 latency, and failure codes. They exclude raw answers, full questions, secrets,
 and tool arguments.
 
-Evaluation traces may capture bounded question and answer content according to
-the existing metadata/full capture mode and redaction policy. Correlation fields
-must link interaction ID, turn ID, tool call ID, task ID, inbound message, and
-delivery attempt so replay evaluators can detect:
+Debug capture is optional and non-authoritative. The interaction registry and
+canonical session history remain the sources of truth. Capture may correlate
+interaction ID, turn ID, tool call ID, task ID, inbound message, and delivery
+attempt, but missing evidence must be reported as `not_evaluable`.
 
-- duplicate prompts or accepted answers;
-- unauthorized answer acceptance;
-- missing or duplicate tool results;
-- restart recovery failures;
-- task-state mismatches;
-- final responses emitted while suspended.
+Capture must never block interaction progress, task reuse, pruning, delivery, or
+shutdown. It must not add acknowledgement state to the interaction registry.
+Lossless canonical trace artifacts are outside this feature and require a
+single transactional persistence boundary if implemented later.
 
 The interaction record, accepted answer, and canonical tool result have
 exactly-once state transitions. Channel publication cannot be exactly once when
@@ -444,23 +444,17 @@ Shutdown does not cancel waiting interactions. Explicit task cancellation does.
 Deploy/restart tooling must report nonterminal interaction counts and perform a
 post-restart reconciliation check.
 
-## Implementation Sequence
+## Implementation Status
 
-1. **Architecture:** land this contract before runtime changes.
-2. **Manager:** add durable types, store, state transitions, event vocabulary,
-   timeout/pruning, and restart reconciliation tests.
-3. **Question tool:** add schema, pipeline suspension, outbound rendering,
-   inbound correlation, atomic answer commit, and dedicated resumption.
-4. **Tasks:** add `waiting_for_input`, status projection, cancellation, and
-   restart behavior for spawn/delegate/cron paths.
-5. **Approval:** extend trusted policy results with `require_human` and consume
-   one-time approval through the shared manager.
-6. **Evaluation and operations:** add trace correlation, deterministic replay
-   checks, configuration documentation, deployment checks, and end-to-end tests.
-
-Each runtime PR must be independently deployable, keep incomplete later stages
-disabled or unreachable, and include migrations or compatibility handling only
-for persisted data introduced by earlier PRs in this sequence.
+| Capability | Status |
+| --- | --- |
+| Durable interaction registry and restart reconciliation | Implemented |
+| Foreground `request_user_input` suspension and resumption | Implemented |
+| Durable task `waiting_for_input` projection | Implemented |
+| Trusted human approval with one-time execution | Implemented |
+| Route, sender, topic, timeout, cancellation, and duplicate-answer handling | Implemented |
+| Typed runtime lifecycle events | Implemented |
+| Lossless interaction trace projection | Deferred; not required for product correctness |
 
 ## Acceptance Criteria
 
@@ -475,6 +469,5 @@ for persisted data introduced by earlier PRs in this sequence.
   duplicate prompts, or duplicate tool execution.
 - Timeout and cancellation resume or terminate through explicit audited states.
 - Human approval cannot be forged through model arguments or reused.
-- Replay evaluators identify malformed pairing, duplicate delivery, invalid
-  state transitions, and missing task projection.
+- Optional debugging evidence never participates in workflow correctness.
 - Targeted race tests and broader shared-package tests pass before activation.
