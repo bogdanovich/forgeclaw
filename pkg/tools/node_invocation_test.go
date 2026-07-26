@@ -6,13 +6,52 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
+
+type recordingNodeEventBus struct {
+	mu     sync.Mutex
+	events []runtimeevents.Event
+}
+
+func (bus *recordingNodeEventBus) Publish(
+	_ context.Context,
+	event runtimeevents.Event,
+) runtimeevents.PublishResult {
+	return bus.record(event)
+}
+
+func (bus *recordingNodeEventBus) PublishNonBlocking(
+	event runtimeevents.Event,
+) runtimeevents.PublishResult {
+	return bus.record(event)
+}
+
+func (bus *recordingNodeEventBus) record(
+	event runtimeevents.Event,
+) runtimeevents.PublishResult {
+	bus.mu.Lock()
+	bus.events = append(bus.events, event)
+	bus.mu.Unlock()
+	return runtimeevents.PublishResult{Matched: 1, Delivered: 1}
+}
+
+func (*recordingNodeEventBus) Channel() runtimeevents.EventChannel { return nil }
+func (*recordingNodeEventBus) Close() error                        { return nil }
+func (*recordingNodeEventBus) Stats() runtimeevents.Stats          { return runtimeevents.Stats{} }
+
+func (bus *recordingNodeEventBus) snapshot() []runtimeevents.Event {
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	return append([]runtimeevents.Event(nil), bus.events...)
+}
 
 type fakeNodeInvocationSource struct {
 	*fakeNodeDiscoverySource
@@ -254,6 +293,144 @@ func TestNodeInvokeToolReportsPostDispatchUncertaintyWithoutReplay(t *testing.T)
 	}
 }
 
+func TestNodeInvocationEventsUseProvenStatesAndRedactPayloads(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	eventBus := &recordingNodeEventBus{}
+	tool.SetEventPublisher(eventBus)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	args := nodeInvocationTestArgs()
+	args["input"] = map[string]any{
+		"argv": []any{"git", "status", "super-secret-command-input"},
+	}
+
+	if _, err := tool.ApprovalArguments(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	if result := tool.Execute(ctx, args); result.IsError {
+		t.Fatalf("nodes_invoke failed: %s", result.ForLLM)
+	}
+
+	events := eventBus.snapshot()
+	wantKinds := []runtimeevents.Kind{
+		runtimeevents.KindNodeInvocationPrepared,
+		runtimeevents.KindNodeInvocationDispatched,
+		runtimeevents.KindNodeInvocationCompleted,
+	}
+	if len(events) != len(wantKinds) {
+		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantKinds), events)
+	}
+	for index, event := range events {
+		if event.Kind != wantKinds[index] {
+			t.Fatalf("event[%d].Kind = %q, want %q", index, event.Kind, wantKinds[index])
+		}
+		payload, ok := event.Payload.(NodeInvocationEventPayload)
+		if !ok {
+			t.Fatalf("event[%d].Payload = %T", index, event.Payload)
+		}
+		if payload.Target != "build" || payload.Command != "system.exec.v1" ||
+			payload.InvocationID == "" {
+			t.Fatalf("event[%d] payload = %#v", index, payload)
+		}
+		if event.Scope.Workspace != "/workspace/main" ||
+			event.Scope.TurnID != "execution-1" ||
+			event.Scope.AgentID != "main" ||
+			event.Scope.SessionKey != "route-session" ||
+			event.Scope.Channel != "telegram" ||
+			event.Scope.ChatID != "chat-1" ||
+			event.Scope.SenderID != "actor-1" ||
+			event.Correlation.RequestID != "call-1" {
+			t.Fatalf("event[%d] scope = %#v correlation = %#v", index, event.Scope, event.Correlation)
+		}
+		wantGatewayState := nodes.GatewayInvocationPrepared
+		if index > 0 {
+			wantGatewayState = nodes.GatewayInvocationDispatched
+		}
+		if payload.GatewayState != wantGatewayState {
+			t.Fatalf(
+				"event[%d] gateway state = %q, want %q",
+				index,
+				payload.GatewayState,
+				wantGatewayState,
+			)
+		}
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"super-secret-command-input",
+		"private-node-id",
+		"plan_hash",
+		"policy_revision",
+		`\"stdout\"`,
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("audit events leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestNodeInvocationEventsReportUncertainThenObservedFailure(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	source.dispatchErr = errors.New("sensitive transport endpoint disconnected")
+	eventBus := &recordingNodeEventBus{}
+	invoke := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	invoke.SetEventPublisher(eventBus)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+
+	result := invoke.Execute(ctx, nodeInvocationTestArgs())
+	if !result.IsError {
+		t.Fatalf("nodes_invoke = %#v, want uncertain error", result)
+	}
+	invocationID := invocationIDFromError(t, result)
+	record := mustFakeGatewayInvocation(t, source, ctx, invocationID)
+	source.remote = failedRemoteInvocation(record)
+
+	status := NewNodeStatusTool(nodeDiscoveryTestConfig(), source)
+	status.SetEventPublisher(eventBus)
+	statusResult := status.Execute(ctx, map[string]any{"invocation_id": invocationID})
+	if statusResult.IsError {
+		t.Fatalf("nodes_status failed: %#v", statusResult)
+	}
+
+	events := eventBus.snapshot()
+	wantKinds := []runtimeevents.Kind{
+		runtimeevents.KindNodeInvocationPrepared,
+		runtimeevents.KindNodeInvocationDispatched,
+		runtimeevents.KindNodeInvocationUncertain,
+		runtimeevents.KindNodeInvocationCompleted,
+	}
+	if len(events) != len(wantKinds) {
+		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantKinds), events)
+	}
+	for index, kind := range wantKinds {
+		if events[index].Kind != kind {
+			t.Fatalf("event[%d].Kind = %q, want %q", index, events[index].Kind, kind)
+		}
+	}
+	uncertain := events[2].Payload.(NodeInvocationEventPayload)
+	if uncertain.State != string(nodes.InvocationUnknown) ||
+		uncertain.ErrorCode != "DISPATCH_UNCERTAIN" ||
+		events[2].Severity != runtimeevents.SeverityWarn {
+		t.Fatalf("uncertain event = %#v", events[2])
+	}
+	completed := events[3].Payload.(NodeInvocationEventPayload)
+	if completed.State != string(nodes.InvocationFailed) ||
+		completed.ErrorCode != "" {
+		t.Fatalf("completed event = %#v", events[3])
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "sensitive transport endpoint") ||
+		strings.Contains(string(encoded), "remote failure detail") {
+		t.Fatalf("audit events leaked errors: %s", encoded)
+	}
+}
+
 func TestNodeInvokeToolTreatsAlreadyDispatchedAsUncertain(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
@@ -412,6 +589,7 @@ func nodeInvocationTestContext(actorID string, toolCallID string) context.Contex
 	ctx := WithToolSessionContext(context.Background(), "main", "history-session", nil)
 	ctx = WithToolRouteSessionKey(ctx, "route-session")
 	ctx = WithToolExecutionIdentity(ctx, "/workspace/main", "execution-1")
+	ctx = WithToolInboundContext(ctx, "telegram", "chat-1", "", "")
 	ctx = WithToolInboundMetadata(ctx, bus.InboundContext{
 		Channel: "telegram", ChatID: "chat-1", SenderID: actorID, ActorID: actorID,
 	})
@@ -466,5 +644,21 @@ func successfulRemoteInvocation(
 		Risk: gateway.Plan.Risk, State: nodes.InvocationSucceeded,
 		AcceptedAt: now, UpdatedAt: now, CompletedAt: now, ExpiresAt: gateway.Plan.ExpiresAt,
 		Result: json.RawMessage(`{"stdout":"ok","exit_code":0}`),
+	}
+}
+
+func failedRemoteInvocation(
+	gateway nodes.GatewayInvocationRecord,
+) nodes.InvocationRecord {
+	now := time.Now().UnixNano()
+	return nodes.InvocationRecord{
+		InvocationID: gateway.Plan.InvocationID, IdempotencyKey: gateway.Plan.IdempotencyKey,
+		PlanHash: gateway.ExpectedPlanHash, NodeID: gateway.Plan.NodeID,
+		CatalogHash: gateway.Plan.CatalogHash, Command: gateway.Plan.Command,
+		Risk: nodes.RiskWrite, State: nodes.InvocationFailed,
+		AcceptedAt: now, UpdatedAt: now, CompletedAt: now, ExpiresAt: gateway.Plan.ExpiresAt,
+		Failure: &nodes.InvocationFailure{
+			Code: "REMOTE_FAILED", Message: "remote failure detail",
+		},
 	}
 }

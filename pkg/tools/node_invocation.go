@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/nodes"
 	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
 )
@@ -60,8 +61,9 @@ type NodeStatusTool struct {
 }
 
 type nodeInvocationToolRuntime struct {
-	access *nodeTargetAccess
-	source NodeInvocationSource
+	access        *nodeTargetAccess
+	source        NodeInvocationSource
+	runtimeEvents runtimeevents.Bus
 }
 
 type resolvedNodeTarget struct {
@@ -102,12 +104,39 @@ type nodeStatusResult struct {
 	RecoveryAction string                        `json:"recovery_action,omitempty"`
 }
 
+// NodeInvocationEventPayload is the redacted lifecycle view published to the
+// runtime event bus. Command input, output, node identity, and plan authority
+// are intentionally excluded.
+type NodeInvocationEventPayload struct {
+	InvocationID string                       `json:"invocation_id"`
+	Target       string                       `json:"target"`
+	Command      string                       `json:"command"`
+	Risk         nodes.Risk                   `json:"risk"`
+	GatewayState nodes.GatewayInvocationState `json:"gateway_state"`
+	State        string                       `json:"state"`
+	ErrorCode    string                       `json:"error_code,omitempty"`
+}
+
 func NewNodeInvokeTool(cfg *config.Config, source NodeInvocationSource) *NodeInvokeTool {
 	return &NodeInvokeTool{runtime: newNodeInvocationToolRuntime(cfg, source)}
 }
 
 func NewNodeStatusTool(cfg *config.Config, source NodeInvocationSource) *NodeStatusTool {
 	return &NodeStatusTool{runtime: newNodeInvocationToolRuntime(cfg, source)}
+}
+
+// SetEventPublisher injects the runtime event bus used for node invocation audit events.
+func (tool *NodeInvokeTool) SetEventPublisher(eventBus runtimeevents.Bus) {
+	if tool != nil && tool.runtime != nil {
+		tool.runtime.runtimeEvents = eventBus
+	}
+}
+
+// SetEventPublisher injects the runtime event bus used for node status audit events.
+func (tool *NodeStatusTool) SetEventPublisher(eventBus runtimeevents.Bus) {
+	if tool != nil && tool.runtime != nil {
+		tool.runtime.runtimeEvents = eventBus
+	}
 }
 
 func newNodeInvocationToolRuntime(
@@ -197,6 +226,24 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 	)
 	if err != nil {
 		if errors.Is(err, nodes.ErrGatewayInvocationDispatched) || dispatched {
+			if dispatched {
+				tool.runtime.publishInvocationEvent(
+					ctx,
+					runtimeevents.KindNodeInvocationDispatched,
+					"nodes_invoke",
+					record,
+					string(nodes.GatewayInvocationDispatched),
+					"",
+				)
+			}
+			tool.runtime.publishInvocationEvent(
+				ctx,
+				runtimeevents.KindNodeInvocationUncertain,
+				"nodes_invoke",
+				record,
+				string(nodes.InvocationUnknown),
+				"DISPATCH_UNCERTAIN",
+			)
 			view := nodeInvokeResult{
 				InvocationID:   record.Plan.InvocationID,
 				Target:         record.Target,
@@ -228,6 +275,22 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 			&view,
 		)
 	}
+	tool.runtime.publishInvocationEvent(
+		ctx,
+		runtimeevents.KindNodeInvocationDispatched,
+		"nodes_invoke",
+		record,
+		string(nodes.GatewayInvocationDispatched),
+		"",
+	)
+	tool.runtime.publishInvocationEvent(
+		ctx,
+		runtimeevents.KindNodeInvocationCompleted,
+		"nodes_invoke",
+		record,
+		string(nodes.InvocationSucceeded),
+		"",
+	)
 	return nodeJSONResult(nodeInvokeResult{
 		InvocationID: record.Plan.InvocationID,
 		Target:       record.Target,
@@ -282,6 +345,14 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 		view.State = string(nodes.InvocationUnknown)
 		view.ErrorCode = "NODE_UNAVAILABLE"
 		view.RecoveryAction = "Retry nodes_status after the target reconnects."
+		tool.runtime.publishInvocationEvent(
+			ctx,
+			runtimeevents.KindNodeInvocationUncertain,
+			"nodes_status",
+			record,
+			view.State,
+			view.ErrorCode,
+		)
 		return nodeJSONResult(view)
 	}
 	remote, err := tool.runtime.source.QueryInvocation(
@@ -295,7 +366,25 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 		view.State = string(nodes.InvocationUnknown)
 		view.ErrorCode = "STATUS_UNAVAILABLE"
 		view.RecoveryAction = "Retry nodes_status; do not replay the original command."
+		tool.runtime.publishInvocationEvent(
+			ctx,
+			runtimeevents.KindNodeInvocationUncertain,
+			"nodes_status",
+			record,
+			view.State,
+			view.ErrorCode,
+		)
 		return nodeJSONResult(view)
+	}
+	if remote.State.Terminal() {
+		tool.runtime.publishInvocationEvent(
+			ctx,
+			runtimeevents.KindNodeInvocationCompleted,
+			"nodes_status",
+			record,
+			string(remote.State),
+			"",
+		)
 	}
 	return nodeJSONResult(remoteStatusResult(record, remote, true))
 }
@@ -430,12 +519,91 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			"command input violates target policy",
 		)
 	}
-	return runtime.source.PrepareInvocation(
+	record, err := runtime.source.PrepareInvocation(
 		resolved.name,
 		storedToolCallID,
 		plan,
 		descriptor,
 	)
+	if err == nil {
+		runtime.publishInvocationEvent(
+			ctx,
+			runtimeevents.KindNodeInvocationPrepared,
+			"nodes_invoke",
+			record,
+			string(nodes.GatewayInvocationPrepared),
+			"",
+		)
+	}
+	return record, err
+}
+
+func (runtime *nodeInvocationToolRuntime) publishInvocationEvent(
+	ctx context.Context,
+	kind runtimeevents.Kind,
+	sourceName string,
+	record nodes.GatewayInvocationRecord,
+	state string,
+	errorCode string,
+) {
+	if runtime == nil || runtime.runtimeEvents == nil {
+		return
+	}
+	sessionKey := strings.TrimSpace(ToolRouteSessionKey(ctx))
+	if sessionKey == "" {
+		sessionKey = strings.TrimSpace(ToolSessionKey(ctx))
+	}
+	gatewayState := record.State
+	if kind == runtimeevents.KindNodeInvocationDispatched ||
+		kind == runtimeevents.KindNodeInvocationCompleted ||
+		kind == runtimeevents.KindNodeInvocationUncertain {
+		gatewayState = nodes.GatewayInvocationDispatched
+	}
+	payload := NodeInvocationEventPayload{
+		InvocationID: record.Plan.InvocationID,
+		Target:       record.Target,
+		Command:      record.Plan.Command,
+		Risk:         record.Plan.Risk,
+		GatewayState: gatewayState,
+		State:        state,
+		ErrorCode:    errorCode,
+	}
+	severity := runtimeevents.SeverityInfo
+	if kind == runtimeevents.KindNodeInvocationUncertain {
+		severity = runtimeevents.SeverityWarn
+	}
+	attrs := map[string]any{
+		"invocation_id": payload.InvocationID,
+		"target":        payload.Target,
+		"command":       payload.Command,
+		"risk":          payload.Risk,
+		"gateway_state": payload.GatewayState,
+		"state":         payload.State,
+	}
+	if payload.ErrorCode != "" {
+		attrs["error_code"] = payload.ErrorCode
+	}
+	runtime.runtimeEvents.PublishNonBlocking(runtimeevents.Event{
+		Kind:   kind,
+		Source: runtimeevents.Source{Component: "nodes", Name: sourceName},
+		Scope: runtimeevents.Scope{
+			TraceScope: runtimeevents.NewTraceScope(
+				ToolWorkspace(ctx),
+				ToolExecutionID(ctx),
+			),
+			AgentID:    ToolAgentID(ctx),
+			SessionKey: sessionKey,
+			Channel:    ToolChannel(ctx),
+			ChatID:     ToolChatID(ctx),
+			TopicID:    ToolTopicID(ctx),
+			SenderID:   ToolSenderID(ctx),
+			MessageID:  ToolMessageID(ctx),
+		},
+		Correlation: runtimeevents.Correlation{RequestID: ToolCallID(ctx)},
+		Severity:    severity,
+		Payload:     payload,
+		Attrs:       attrs,
+	})
 }
 
 func validateRetainedNodeInvocation(

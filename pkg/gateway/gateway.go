@@ -539,7 +539,9 @@ func setupNodeTools(
 		nodeInvocationToolFactory(
 			runtime,
 			func(cfg *config.Config, source tools.NodeInvocationSource) tools.Tool {
-				return tools.NewNodeInvokeTool(cfg, source)
+				tool := tools.NewNodeInvokeTool(cfg, source)
+				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
+				return tool
 			},
 		),
 	); err != nil {
@@ -550,7 +552,9 @@ func setupNodeTools(
 		nodeInvocationToolFactory(
 			runtime,
 			func(cfg *config.Config, source tools.NodeInvocationSource) tools.Tool {
-				return tools.NewNodeStatusTool(cfg, source)
+				tool := tools.NewNodeStatusTool(cfg, source)
+				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
+				return tool
 			},
 		),
 	)

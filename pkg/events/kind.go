@@ -115,6 +115,15 @@ const (
 	// KindGatewayReloadFailed is emitted when gateway reload fails.
 	KindGatewayReloadFailed Kind = "gateway.reload.failed"
 
+	// KindNodeInvocationPrepared is emitted when durable invocation authority is created.
+	KindNodeInvocationPrepared Kind = "node.invocation.prepared"
+	// KindNodeInvocationDispatched is emitted after the gateway commits dispatch.
+	KindNodeInvocationDispatched Kind = "node.invocation.dispatched"
+	// KindNodeInvocationCompleted is emitted after a terminal outcome is proven.
+	KindNodeInvocationCompleted Kind = "node.invocation.completed"
+	// KindNodeInvocationUncertain is emitted when a dispatched outcome cannot be proven.
+	KindNodeInvocationUncertain Kind = "node.invocation.uncertain"
+
 	// KindMCPServerConnected is emitted when an MCP server connects.
 	KindMCPServerConnected Kind = "mcp.server.connected"
 	// KindMCPServerConnecting is emitted before connecting to an MCP server.
@@ -182,6 +191,10 @@ var knownKinds = []Kind{
 	KindGatewayReloadStarted,
 	KindGatewayReloadCompleted,
 	KindGatewayReloadFailed,
+	KindNodeInvocationPrepared,
+	KindNodeInvocationDispatched,
+	KindNodeInvocationCompleted,
+	KindNodeInvocationUncertain,
 	KindMCPServerConnected,
 	KindMCPServerConnecting,
 	KindMCPServerFailed,
