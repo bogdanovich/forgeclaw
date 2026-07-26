@@ -39,6 +39,21 @@ Recommended direction:
 - Move placeholder/tool-feedback coordination out of the main manager.
 - Centralize retry policy around a typed delivery result.
 
+First boundary completed:
+
+- Transient delivery interaction state and stream suppression state have
+  dedicated owners embedded in `Manager` for compatibility.
+- TTL eviction is implemented and tested by those owners instead of duplicated
+  in manager tests.
+- Queue admission uses a close signal and in-flight barrier so cancellation can
+  wake blocked enqueuers before a single pending-outcome drain.
+
+Remaining:
+
+- Move queue registration and lifecycle operations behind a delivery registry.
+- Move stream and tool-feedback operations onto their state owners rather than
+  relying on promoted fields.
+
 ### Turn Execution State
 
 `turnExecution` is a large mutable bag shared by LLM calls, tool execution,

@@ -49,24 +49,6 @@ const (
 
 var errDeliveryClosed = errors.New("channel delivery is closed")
 
-// typingEntry wraps a typing stop function with a creation timestamp for TTL eviction.
-type typingEntry struct {
-	stop      func()
-	createdAt time.Time
-}
-
-// reactionEntry wraps a reaction undo function with a creation timestamp for TTL eviction.
-type reactionEntry struct {
-	undo      func()
-	createdAt time.Time
-}
-
-// placeholderEntry wraps a placeholder ID with a creation timestamp for TTL eviction.
-type placeholderEntry struct {
-	id        string
-	createdAt time.Time
-}
-
 // channelRateConfig maps channel name to per-second rate limit.
 var channelRateConfig = map[string]float64{
 	"telegram": 20,
@@ -92,34 +74,34 @@ type channelWorker struct {
 // channelSlot abstraction can wrap this with lifecycle/visibility state for
 // safe reload swaps.
 type deliveryOwner struct {
-	name   string
-	ch     Channel
-	worker *channelWorker
-	mu     sync.Mutex
-	closed bool
+	name             string
+	ch               Channel
+	worker           *channelWorker
+	mu               sync.Mutex
+	closed           bool
+	closedCh         chan struct{}
+	closeDone        chan struct{}
+	enqueueWG        sync.WaitGroup
+	inflightEnqueues int
 }
 
 type Manager struct {
-	channels                  map[string]Channel
-	workers                   map[string]*channelWorker
-	deliveryOwners            map[string]*deliveryOwner
-	bus                       *bus.MessageBus
-	runtimeEvents             runtimeevents.Bus
-	config                    *config.Config
-	mediaStore                media.MediaStore
-	dispatchTask              *asyncTask
-	mux                       *dynamicServeMux
-	httpServer                *http.Server
-	httpListeners             []net.Listener
-	mu                        sync.RWMutex
-	placeholders              sync.Map // "channel:chatID" → placeholderID (string)
-	typingStops               sync.Map // "channel:chatID" → func()
-	reactionUndos             sync.Map // "channel:chatID" → reactionEntry
-	streamActive              sync.Map // streamSuppressionKey → true (set when streamer.Finalize sent the message)
-	streamAuxiliaryTombstones sync.Map // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
-	toolFeedback              *ToolFeedbackCoordinator
-	channelHashes             map[string]string // channel name → config hash
-	channelRestartRequired    map[string]string // channel name → desired config hash that needs process restart
+	channels       map[string]Channel
+	workers        map[string]*channelWorker
+	deliveryOwners map[string]*deliveryOwner
+	bus            *bus.MessageBus
+	runtimeEvents  runtimeevents.Bus
+	config         *config.Config
+	mediaStore     media.MediaStore
+	dispatchTask   *asyncTask
+	mux            *dynamicServeMux
+	httpServer     *http.Server
+	httpListeners  []net.Listener
+	mu             sync.RWMutex
+	deliveryInteractionState
+	streamDeliveryState
+	channelHashes          map[string]string // channel name → config hash
+	channelRestartRequired map[string]string // channel name → desired config hash that needs process restart
 }
 
 type mediaStoreSetter interface {
@@ -2039,9 +2021,11 @@ func newChannelWorker(name string, ch Channel, channelType string) *channelWorke
 
 func newDeliveryOwner(name string, ch Channel, channelType string) *deliveryOwner {
 	return &deliveryOwner{
-		name:   name,
-		ch:     ch,
-		worker: newChannelWorker(name, ch, channelType),
+		name:      name,
+		ch:        ch,
+		worker:    newChannelWorker(name, ch, channelType),
+		closedCh:  make(chan struct{}),
+		closeDone: make(chan struct{}),
 	}
 }
 
@@ -2049,7 +2033,11 @@ func deliveryOwnerFromWorker(name string, ch Channel, w *channelWorker) *deliver
 	if ch == nil || w == nil {
 		return nil
 	}
-	return &deliveryOwner{name: name, ch: ch, worker: w}
+	return &deliveryOwner{
+		name: name, ch: ch, worker: w,
+		closedCh:  make(chan struct{}),
+		closeDone: make(chan struct{}),
+	}
 }
 
 func (o *deliveryOwner) Worker() *channelWorker {
@@ -2083,16 +2071,19 @@ func (o *deliveryOwner) Enqueue(ctx context.Context, msg bus.OutboundMessage) (b
 	if o == nil || o.worker == nil {
 		return false, errDeliveryClosed
 	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.closed {
+	closedCh, ok := o.beginEnqueue()
+	if !ok {
 		return false, errDeliveryClosed
 	}
+	defer o.finishEnqueue()
+
 	select {
 	case o.worker.queue <- msg:
 		return true, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
+	case <-closedCh:
+		return false, errDeliveryClosed
 	}
 }
 
@@ -2103,17 +2094,41 @@ func (o *deliveryOwner) EnqueueMedia(
 	if o == nil || o.worker == nil {
 		return false, errDeliveryClosed
 	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.closed {
+	closedCh, ok := o.beginEnqueue()
+	if !ok {
 		return false, errDeliveryClosed
 	}
+	defer o.finishEnqueue()
+
 	select {
 	case o.worker.mediaQueue <- msg:
 		return true, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
+	case <-closedCh:
+		return false, errDeliveryClosed
 	}
+}
+
+func (o *deliveryOwner) beginEnqueue() (<-chan struct{}, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil, false
+	}
+	if o.closedCh == nil {
+		o.closedCh = make(chan struct{})
+	}
+	o.enqueueWG.Add(1)
+	o.inflightEnqueues++
+	return o.closedCh, true
+}
+
+func (o *deliveryOwner) finishEnqueue() {
+	o.mu.Lock()
+	o.inflightEnqueues--
+	o.mu.Unlock()
+	o.enqueueWG.Done()
 }
 
 func (o *deliveryOwner) CloseDeliveryAndWait() {
@@ -2131,13 +2146,28 @@ func (o *deliveryOwner) closeAdmission() {
 	}
 	o.mu.Lock()
 	if o.closed {
+		closeDone := o.closeDone
 		o.mu.Unlock()
+		if closeDone != nil {
+			<-closeDone
+		}
 		return
 	}
 	o.closed = true
+	if o.closedCh == nil {
+		o.closedCh = make(chan struct{})
+	}
+	if o.closeDone == nil {
+		o.closeDone = make(chan struct{})
+	}
+	closeDone := o.closeDone
+	close(o.closedCh)
+	o.mu.Unlock()
+
+	o.enqueueWG.Wait()
 	close(o.worker.queue)
 	close(o.worker.mediaQueue)
-	o.mu.Unlock()
+	close(closeDone)
 }
 
 // runWorker processes outbound messages for a single channel.
@@ -2213,7 +2243,6 @@ func (m *Manager) runWorkerOwned(
 				m.publishOutboundSent(name, msg, messageIDs)
 			}
 		case <-ctx.Done():
-			m.failPendingOutbound(name, w.queue, ctx.Err())
 			if closeAdmission != nil {
 				closeAdmission()
 			}
@@ -2559,7 +2588,6 @@ func (m *Manager) runMediaWorkerOwned(
 			}
 			_ = m.sendMediaWithRetry(ctx, name, w, msg)
 		case <-ctx.Done():
-			m.failPendingOutboundMedia(name, w.mediaQueue, ctx.Err())
 			if closeAdmission != nil {
 				closeAdmission()
 			}
@@ -2715,40 +2743,8 @@ func (m *Manager) runTTLJanitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			m.typingStops.Range(func(key, value any) bool {
-				if entry, ok := value.(typingEntry); ok {
-					if now.Sub(entry.createdAt) > typingStopTTL {
-						if _, loaded := m.typingStops.LoadAndDelete(key); loaded {
-							entry.stop() // idempotent, safe
-						}
-					}
-				}
-				return true
-			})
-			m.reactionUndos.Range(func(key, value any) bool {
-				if entry, ok := value.(reactionEntry); ok {
-					if now.Sub(entry.createdAt) > typingStopTTL {
-						if _, loaded := m.reactionUndos.LoadAndDelete(key); loaded {
-							entry.undo() // idempotent, safe
-						}
-					}
-				}
-				return true
-			})
-			m.placeholders.Range(func(key, value any) bool {
-				if entry, ok := value.(placeholderEntry); ok {
-					if now.Sub(entry.createdAt) > placeholderTTL {
-						m.placeholders.Delete(key)
-					}
-				}
-				return true
-			})
-			m.streamAuxiliaryTombstones.Range(func(key, value any) bool {
-				if createdAt, ok := value.(time.Time); !ok || now.Sub(createdAt) > streamAuxiliaryTombstoneTTL {
-					m.streamAuxiliaryTombstones.Delete(key)
-				}
-				return true
-			})
+			m.deliveryInteractionState.expire(now)
+			m.streamDeliveryState.expire(now)
 		}
 	}
 }
