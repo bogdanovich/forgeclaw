@@ -35,6 +35,22 @@ func TestTaskTraceProjectionKeyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTaskTraceWorkspaceAliasesShareIdentity(t *testing.T) {
+	workspace := t.TempDir()
+	alias := workspace + string(os.PathSeparator) + "."
+	settings := traceCaptureSettingsFromConfig(traceTestConfig(workspace))
+	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))
+	record := finishTaskForTrace(t, registry, "alias", "session", 1)
+	history := registry.ListEvents(record.TaskID)
+
+	canonical := buildTaskTrace(settings, workspace, record, history)
+	aliased := buildTaskTrace(settings, alias, record, history)
+	if canonical.builder.TraceID() != aliased.builder.TraceID() ||
+		taskTraceSourceID(workspace) != taskTraceSourceID(alias) {
+		t.Fatal("workspace alias changed task trace identity")
+	}
+}
+
 func TestTaskTraceSourcePendingIsBoundedAndTerminalOnly(t *testing.T) {
 	workspace := t.TempDir()
 	registry := taskregistry.NewRegistry(taskregistry.WorkspaceStorePath(workspace))

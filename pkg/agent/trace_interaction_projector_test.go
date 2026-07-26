@@ -15,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/evaltrace"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/interactions"
+	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
 
 func TestBuildInteractionTraceIsDeterministicAndMetadataOnly(t *testing.T) {
@@ -117,25 +118,69 @@ func TestInteractionTraceWorkspaceAliasesShareRegistrySourceAndTrace(t *testing.
 	manager := newTraceCaptureManager(cfg, eventBus)
 	al := &AgentLoop{cfg: cfg, traceCapture: manager}
 
+	tasks := al.taskRegistryForWorkspace(alias)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID:         "task-alias",
+		Status:         taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryNotApplicable,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	registry := al.interactionRegistryForWorkspace(workspace)
 	if aliasRegistry := al.interactionRegistryForWorkspace(alias); aliasRegistry != registry {
 		t.Fatal("workspace aliases created distinct interaction registries")
 	}
 	now := time.Now().UTC()
-	record := cancelInteractionForTrace(
-		t, registry, "interaction-alias", "session-alias", now,
-	)
+	record, err := registry.Create(interactions.CreateRequest{
+		ID:   "interaction-alias",
+		Kind: interactions.KindQuestion,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-alias", Channel: "telegram",
+			ChatID: "chat-alias", SenderID: "sender-alias",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-alias", ToolCallID: "call-alias",
+			ToolName: "request_user_input", TaskID: "task-alias",
+		},
+		Questions: []interactions.Question{{
+			ID: "environment", Question: "Which environment?",
+		}},
+		ExpiresAt: now.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, ok := tasks.Get("task-alias")
+	if !ok || task.Status != taskregistry.StatusWaitingForInput {
+		t.Fatalf("task-backed interaction did not wait: (%#v, %v)", task, ok)
+	}
+	record, err = registry.Cancel(record.ID, record.Revision, "test_cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
 	waitForInteractionTraceMarkerCleared(t, registry, record.ID)
-	_ = waitForTraceFile(t, workspace)
+	task, ok = tasks.Get("task-alias")
+	if !ok || task.Status != taskregistry.StatusCancelled {
+		t.Fatalf("task-backed interaction did not cancel: (%#v, %v)", task, ok)
+	}
+	waitForTraceMarkerCleared(t, tasks, task.TaskID, task.GenerationID)
+	_ = waitForTraceFiles(t, workspace, 2)
 	manager.interactions.mu.Lock()
-	registryCount := len(manager.interactions.registries)
-	sourceCount := len(manager.interactions.sources)
+	interactionRegistryCount := len(manager.interactions.registries)
+	interactionSourceCount := len(manager.interactions.sources)
 	manager.interactions.mu.Unlock()
-	if registryCount != 1 || sourceCount != 1 {
+	manager.tasks.mu.Lock()
+	taskRegistryCount := len(manager.tasks.registries)
+	taskSourceCount := len(manager.tasks.sources)
+	manager.tasks.mu.Unlock()
+	if interactionRegistryCount != 1 || interactionSourceCount != 1 ||
+		taskRegistryCount != 1 || taskSourceCount != 1 {
 		t.Fatalf(
-			"projector aliases = %d registries, %d sources",
-			registryCount,
-			sourceCount,
+			"projector aliases = interactions %d/%d, tasks %d/%d registries/sources",
+			interactionRegistryCount,
+			interactionSourceCount,
+			taskRegistryCount,
+			taskSourceCount,
 		)
 	}
 	manager.close()
@@ -148,8 +193,18 @@ func TestInteractionTraceWorkspaceAliasesShareRegistrySourceAndTrace(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 {
-		t.Fatalf("workspace aliases persisted %d traces, want 1", len(matches))
+	kinds := map[evaltrace.TraceKind]int{}
+	for _, match := range matches {
+		kinds[readCapturedTrace(t, match).Metadata.TraceKind]++
+	}
+	if len(matches) != 2 ||
+		kinds[evaltrace.TraceKindInteraction] != 1 ||
+		kinds[evaltrace.TraceKindTask] != 1 {
+		t.Fatalf(
+			"workspace aliases persisted %d traces by kind %#v",
+			len(matches),
+			kinds,
+		)
 	}
 }
 

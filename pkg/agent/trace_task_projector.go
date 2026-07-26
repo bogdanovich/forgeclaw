@@ -111,7 +111,7 @@ func (p *taskTraceProjector) attach(
 	if p == nil || registry == nil {
 		return
 	}
-	workspace = strings.TrimSpace(workspace)
+	workspace = normalizeRuntimeWorkspace(workspace)
 	if workspace == "" {
 		return
 	}
@@ -521,6 +521,7 @@ func (s *taskTraceSource) Confirm(
 }
 
 func taskTraceSourceID(workspace string) string {
+	workspace = normalizeRuntimeWorkspace(workspace)
 	sum := sha256.Sum256([]byte(workspace))
 	return fmt.Sprintf("task:%x", sum[:12])
 }
@@ -592,6 +593,7 @@ func buildTaskTrace(
 	record taskregistry.Record,
 	history []taskregistry.TaskEvent,
 ) *activeTraceCapture {
+	workspace = normalizeRuntimeWorkspace(workspace)
 	history = append([]taskregistry.TaskEvent(nil), history...)
 	sort.Slice(history, func(i, j int) bool {
 		if history[i].Seq != history[j].Seq {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,17 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
 )
+
+func TestTaskRegistryForWorkspaceCanonicalizesAliases(t *testing.T) {
+	workspace := t.TempDir()
+	alias := workspace + string(os.PathSeparator) + "."
+	al := &AgentLoop{}
+
+	registry := al.taskRegistryForWorkspace(alias)
+	if canonical := al.taskRegistryForWorkspace(workspace); canonical != registry {
+		t.Fatal("workspace aliases created distinct task registries")
+	}
+}
 
 func TestTaskRegistryForWorkspaceUsesConfiguredRetentionLimits(t *testing.T) {
 	workspace := t.TempDir()

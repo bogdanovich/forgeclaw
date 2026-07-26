@@ -13,7 +13,7 @@ func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Re
 	if al == nil {
 		return nil
 	}
-	workspace = strings.TrimSpace(workspace)
+	workspace = normalizeRuntimeWorkspace(workspace)
 	if workspace == "" {
 		return nil
 	}
