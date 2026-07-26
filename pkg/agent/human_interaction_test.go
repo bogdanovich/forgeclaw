@@ -243,6 +243,72 @@ func testToolSuspensionRequest(workspace string) ToolSuspensionRequest {
 	}
 }
 
+func prepareWaitingControlInteraction(
+	t *testing.T,
+	al *AgentLoop,
+	agent *AgentInstance,
+	msg bus.InboundMessage,
+	taskID string,
+) (interactions.Record, *inboundDispatchTarget) {
+	t.Helper()
+	target, ok := al.resolveSteeringTarget(msg)
+	if !ok {
+		t.Fatal("failed to resolve interaction control target")
+	}
+	route := interactions.Route{
+		AgentID:         agent.ID,
+		SessionKey:      target.SessionKey,
+		RouteSessionKey: target.Allocation.RouteScopeKey,
+		Channel:         msg.Context.Channel,
+		AccountID:       msg.Context.Account,
+		ChatID:          msg.Context.ChatID,
+		ChatType:        msg.Context.ChatType,
+		TopicID:         msg.Context.TopicID,
+		SenderID:        msg.Context.SenderID,
+	}
+	origin := interactions.Origin{
+		TurnID:     "turn-control",
+		ToolCallID: "call-control-question",
+		ToolName:   "request_user_input",
+		TaskID:     taskID,
+	}
+	agent.Sessions.AddFullMessage(target.SessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: origin.ToolCallID, Name: origin.ToolName,
+			Function: &providers.FunctionCall{Name: origin.ToolName, Arguments: `{}`},
+		}},
+	})
+	registry := al.interactionRegistryForWorkspace(agent.Workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		Kind: interactions.KindQuestion, Route: route, Origin: origin,
+		Questions: []interactions.Question{{ID: "confirm", Question: "Proceed?"}},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkWaiting(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record, target
+}
+
+func countInteractionToolResults(history []providers.Message, toolCallID string) int {
+	count := 0
+	for _, message := range history {
+		if message.Role == "tool" && message.ToolCallID == toolCallID {
+			count++
+		}
+	}
+	return count
+}
+
 func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	manager := newInteractionChannelManager()
@@ -1493,9 +1559,17 @@ func TestInteractionRouteAuthorizationRequiresTrustedEnvelope(t *testing.T) {
 }
 
 func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
-	workspace := t.TempDir()
-	al := &AgentLoop{cfg: config.DefaultConfig()}
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	workspace := agent.Workspace
 	request := testToolSuspensionRequest(workspace)
+	agent.Sessions.AddFullMessage(request.Route.SessionKey, providers.Message{
+		Role: "assistant",
+		ToolCalls: []providers.ToolCall{{
+			ID: request.Origin.ToolCallID, Name: request.Origin.ToolName,
+			Function: &providers.FunctionCall{Name: request.Origin.ToolName, Arguments: `{}`},
+		}},
+	})
 	registry := al.interactionRegistryForWorkspace(workspace)
 	record, err := registry.Create(interactions.CreateRequest{
 		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
@@ -1507,8 +1581,9 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
 	_, _ = registry.MarkWaiting(record.ID, record.Revision)
 	target := &inboundDispatchTarget{
-		Agent: &AgentInstance{Workspace: workspace}, SessionKey: request.Route.SessionKey,
-		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+		Agent: agent, SessionKey: request.Route.SessionKey,
+		RouteClaimKey: runtimeRouteClaimKey(request.Route.RouteSessionKey, ""),
+		Allocation:    session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
 	}
 	msg := bus.InboundMessage{Content: "Canary", Context: inboundContextForInteraction(request.Route)}
 	if !al.shouldHandleInteractionInbound(msg, target) {
@@ -1524,8 +1599,12 @@ func TestInteractionIngressOnlyClaimsAuthorizedAnswers(t *testing.T) {
 	if al.shouldHandleInteractionInbound(msg, target) {
 		t.Fatal("control command was consumed as an interaction answer")
 	}
-	if err := al.cancelInteractionForControlMessage(t.Context(), msg, target); err != nil {
+	result, err := al.cancelInteractionForControlMessage(t.Context(), msg, target)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !result.Matched || !result.Canceled || result.Failed || result.CommandHandled {
+		t.Fatalf("reset cancellation result = %#v", result)
 	}
 	record, _ = registry.Get(record.ID)
 	if record.Status != interactions.StatusCancelled {
@@ -1775,8 +1854,13 @@ func TestStopCancellationPairsSuspendedToolCall(t *testing.T) {
 		Allocation:    session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
 	}
 	msg := bus.InboundMessage{Content: "/stop", Context: inboundContextForInteraction(request.Route)}
-	if err := al.cancelInteractionForControlMessage(t.Context(), msg, target); err != nil {
+	cancellation, err := al.cancelInteractionForControlMessage(t.Context(), msg, target)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !cancellation.Matched || !cancellation.Canceled ||
+		cancellation.Failed || !cancellation.CommandHandled {
+		t.Fatalf("stop cancellation result = %#v", cancellation)
 	}
 	record, _ = registry.Get(record.ID)
 	if record.Status != interactions.StatusCancelled {
@@ -1789,6 +1873,305 @@ func TestStopCancellationPairsSuspendedToolCall(t *testing.T) {
 	result := agent.Sessions.GetHistory(sessionKey)[resultIndex]
 	if !strings.Contains(result.Content, `"outcome":"canceled"`) {
 		t.Fatalf("cancellation tool result = %q", result.Content)
+	}
+}
+
+func TestWaitingForegroundInteractionStopUsesSuccessfulStopContract(t *testing.T) {
+	provider := &sequenceProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	msg := testInboundMessage(bus.InboundMessage{
+		Content:    "/stop",
+		SessionKey: session.BuildOpaqueSessionKey("agent:main:test:interaction-stop"),
+		Context: bus.InboundContext{
+			Channel: "telegram", Account: "primary", ChatID: "chat-1", ChatType: "direct",
+			TopicID: "topic-1", SenderID: "user-1", MessageID: "stop-1",
+		},
+	})
+	record, _ := prepareWaitingControlInteraction(t, al, agent, msg, "")
+
+	newInboundTurnCoordinator(al).handleInbound(t.Context(), msg)
+
+	messageBus := al.bus.(*bus.MessageBus)
+	select {
+	case outbound := <-messageBus.OutboundChan():
+		want := "Task stopped. Current task was canceled."
+		if outbound.Content != want {
+			t.Fatalf("stop reply = %q, want %q", outbound.Content, want)
+		}
+		if strings.Contains(outbound.Content, "No active task to stop.") {
+			t.Fatalf("stop reply used inactive-task contract: %q", outbound.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for interaction /stop reply")
+	}
+
+	record, _ = al.interactionRegistryForWorkspace(agent.Workspace).Get(record.ID)
+	if record.Status != interactions.StatusCancelled ||
+		record.FailureCode != "session_control_stop" {
+		t.Fatalf("stopped interaction = %#v", record)
+	}
+	history := agent.Sessions.GetHistory(record.Route.SessionKey)
+	if got := countInteractionToolResults(history, record.Origin.ToolCallID); got != 1 {
+		t.Fatalf("cancellation tool results = %d, want 1", got)
+	}
+	provider.mu.Lock()
+	calls := provider.callCount
+	provider.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("model calls after interaction stop = %d, want 0", calls)
+	}
+}
+
+func TestWaitingTaskInteractionStopTerminalizesTaskWithoutDelivery(t *testing.T) {
+	provider := &sequenceProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	msg := testInboundMessage(bus.InboundMessage{
+		Content:    "/stop",
+		SessionKey: session.BuildOpaqueSessionKey("agent:main:test:task-interaction-stop"),
+		Context: bus.InboundContext{
+			Channel: "telegram", Account: "primary", ChatID: "chat-task", ChatType: "direct",
+			TopicID: "topic-task", SenderID: "user-task", MessageID: "stop-task",
+		},
+	})
+	tasks := al.taskRegistryForWorkspace(agent.Workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "task-waiting-stop", Runtime: taskregistry.RuntimeSubagent,
+		Status: taskregistry.StatusRunning, DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := prepareWaitingControlInteraction(t, al, agent, msg, "task-waiting-stop")
+	task, _ := tasks.Get("task-waiting-stop")
+	if task.Status != taskregistry.StatusWaitingForInput {
+		t.Fatalf("task before stop = %#v", task)
+	}
+
+	newInboundTurnCoordinator(al).handleInbound(t.Context(), msg)
+	select {
+	case outbound := <-al.bus.(*bus.MessageBus).OutboundChan():
+		if outbound.Content != "Task stopped. Current task was canceled." {
+			t.Fatalf("task stop reply = %q", outbound.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task interaction /stop reply")
+	}
+
+	task, _ = tasks.Get("task-waiting-stop")
+	if task.Status != taskregistry.StatusCancelled ||
+		task.DeliveryStatus != taskregistry.DeliveryNotApplicable ||
+		task.EndedAt == 0 || tasks.Stats().ProtectedTaskCount != 0 {
+		t.Fatalf("task after stop = %#v, stats=%#v", task, tasks.Stats())
+	}
+	record, _ = al.interactionRegistryForWorkspace(agent.Workspace).Get(record.ID)
+	if record.Status != interactions.StatusCancelled {
+		t.Fatalf("task interaction after stop = %#v", record)
+	}
+	provider.mu.Lock()
+	calls := provider.callCount
+	provider.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("task continuation model calls after stop = %d, want 0", calls)
+	}
+	select {
+	case outbound := <-al.bus.(*bus.MessageBus).OutboundChan():
+		t.Fatalf("unexpected task completion after cancellation: %#v", outbound)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestTaskBoundInteractionCancellationReturnsTaskID(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	msg := testInboundMessage(bus.InboundMessage{
+		Content:    "/stop",
+		SessionKey: session.BuildOpaqueSessionKey("agent:main:test:task-id-stop"),
+		Context: bus.InboundContext{
+			Channel: "telegram", ChatID: "chat-task", ChatType: "direct",
+			SenderID: "user-task",
+		},
+	})
+	tasks := al.taskRegistryForWorkspace(agent.Workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "task-associated", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, target := prepareWaitingControlInteraction(t, al, agent, msg, "task-associated")
+
+	result, err := al.cancelInteractionForControlMessage(t.Context(), msg, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Matched || !result.Canceled || result.Failed ||
+		!result.CommandHandled || result.TaskID != "task-associated" {
+		t.Fatalf("task-bound cancellation result = %#v", result)
+	}
+}
+
+func TestInteractionControlCancellationReportsFailure(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	msg := testInboundMessage(bus.InboundMessage{
+		Content:    "/stop",
+		SessionKey: session.BuildOpaqueSessionKey("agent:main:test:failed-interaction-stop"),
+		Context: bus.InboundContext{
+			Channel: "telegram", ChatID: "chat-1", ChatType: "direct", SenderID: "user-1",
+		},
+	})
+	record, target := prepareWaitingControlInteraction(t, al, agent, msg, "")
+	agent.Sessions.SetHistory(record.Route.SessionKey, nil)
+
+	result, err := al.cancelInteractionForControlMessage(t.Context(), msg, target)
+	if err == nil {
+		t.Fatal("cancellation succeeded without the originating tool call")
+	}
+	if !result.Matched || result.Canceled || !result.Failed || result.CommandHandled {
+		t.Fatalf("failed cancellation result = %#v", result)
+	}
+	record, _ = al.interactionRegistryForWorkspace(agent.Workspace).Get(record.ID)
+	if record.Status != interactions.StatusCanceling ||
+		record.FailureCode != "session_control_stop" {
+		t.Fatalf("interaction after interrupted cancellation = %#v", record)
+	}
+}
+
+func TestRepeatedStopDoesNotDuplicateInteractionCancellation(t *testing.T) {
+	provider := &sequenceProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	msg := testInboundMessage(bus.InboundMessage{
+		Content:    "/stop",
+		SessionKey: session.BuildOpaqueSessionKey("agent:main:test:repeated-interaction-stop"),
+		Context: bus.InboundContext{
+			Channel: "telegram", ChatID: "chat-1", ChatType: "direct",
+			SenderID: "user-1", MessageID: "stop-first",
+		},
+	})
+	record, _ := prepareWaitingControlInteraction(t, al, agent, msg, "")
+	coordinator := newInboundTurnCoordinator(al)
+	coordinator.handleInbound(t.Context(), msg)
+	select {
+	case <-al.bus.(*bus.MessageBus).OutboundChan():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first stop reply")
+	}
+
+	msg.Context.MessageID = "stop-second"
+	coordinator.handleInbound(t.Context(), msg)
+	select {
+	case outbound := <-al.bus.(*bus.MessageBus).OutboundChan():
+		if outbound.Content != "No active task to stop." {
+			t.Fatalf("repeated stop reply = %q", outbound.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for repeated stop reply")
+	}
+
+	history := agent.Sessions.GetHistory(record.Route.SessionKey)
+	if got := countInteractionToolResults(history, record.Origin.ToolCallID); got != 1 {
+		t.Fatalf("repeated stop cancellation tool results = %d, want 1", got)
+	}
+	provider.mu.Lock()
+	calls := provider.callCount
+	provider.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("model calls after repeated stop = %d, want 0", calls)
+	}
+}
+
+func TestInteractionControlCancellationRequiresAuthorizedRoute(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*bus.InboundMessage)
+	}{
+		{name: "channel", mutate: func(msg *bus.InboundMessage) { msg.Context.Channel = "discord" }},
+		{name: "account", mutate: func(msg *bus.InboundMessage) { msg.Context.Account = "secondary" }},
+		{name: "sender", mutate: func(msg *bus.InboundMessage) { msg.Context.SenderID = "other-user" }},
+		{name: "chat", mutate: func(msg *bus.InboundMessage) { msg.Context.ChatID = "other-chat" }},
+		{name: "topic", mutate: func(msg *bus.InboundMessage) { msg.Context.TopicID = "other-topic" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+			defer cleanup()
+			msg := testInboundMessage(bus.InboundMessage{
+				Content:    "/stop",
+				SessionKey: session.BuildOpaqueSessionKey("agent:main:test:unauthorized-" + tt.name),
+				Context: bus.InboundContext{
+					Channel: "telegram", Account: "primary", ChatID: "chat-1", ChatType: "direct",
+					TopicID: "topic-1", SenderID: "user-1",
+				},
+			})
+			record, target := prepareWaitingControlInteraction(t, al, agent, msg, "")
+			tt.mutate(&msg)
+
+			result, err := al.cancelInteractionForControlMessage(t.Context(), msg, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Matched || result.Canceled || result.Failed || result.CommandHandled {
+				t.Fatalf("unauthorized cancellation result = %#v", result)
+			}
+			record, _ = al.interactionRegistryForWorkspace(agent.Workspace).Get(record.ID)
+			if record.Status != interactions.StatusWaiting {
+				t.Fatalf("unauthorized route canceled interaction: %#v", record)
+			}
+		})
+	}
+}
+
+func TestSessionControlCommandsCancelInteractionAndContinueNormally(t *testing.T) {
+	tests := []struct {
+		command   string
+		replyText string
+	}{
+		{command: "/new", replyText: "Started a fresh session and cleared the current goal."},
+		{command: "/reset", replyText: "Started a fresh session."},
+		{command: "/clear", replyText: "Chat history cleared!"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			provider := &sequenceProvider{}
+			al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+			defer cleanup()
+			msg := testInboundMessage(bus.InboundMessage{
+				Content:    tt.command,
+				SessionKey: session.BuildOpaqueSessionKey("agent:main:test:control-" + tt.command[1:]),
+				Context: bus.InboundContext{
+					Channel: "telegram", Account: "primary", ChatID: "chat-1", ChatType: "direct",
+					TopicID: "topic-1", SenderID: "user-1",
+				},
+			})
+			record, _ := prepareWaitingControlInteraction(t, al, agent, msg, "")
+
+			newInboundTurnCoordinator(al).handleInbound(t.Context(), msg)
+			select {
+			case outbound := <-al.bus.(*bus.MessageBus).OutboundChan():
+				if !strings.Contains(outbound.Content, tt.replyText) {
+					t.Fatalf("%s reply = %q", tt.command, outbound.Content)
+				}
+				if strings.Contains(outbound.Content, "Task stopped.") {
+					t.Fatalf("%s emitted an extra stop acknowledgement: %q", tt.command, outbound.Content)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("timed out waiting for %s reply", tt.command)
+			}
+
+			record, _ = al.interactionRegistryForWorkspace(agent.Workspace).Get(record.ID)
+			wantCode := "session_control_" + tt.command[1:]
+			if record.Status != interactions.StatusCancelled || record.FailureCode != wantCode {
+				t.Fatalf("%s interaction = %#v", tt.command, record)
+			}
+			provider.mu.Lock()
+			calls := provider.callCount
+			provider.mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("%s model calls = %d, want 0", tt.command, calls)
+			}
+		})
 	}
 }
 

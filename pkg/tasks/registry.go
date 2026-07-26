@@ -574,6 +574,8 @@ func (r *Registry) FinishInteraction(
 			rec.CleanupAfter = 0
 		}
 		rec.Status = status
+		rec.DeliveryStatus = DeliveryNotApplicable
+		rec.DeliveredAt = time.Now().UnixMilli()
 		rec.InteractionShortID = ""
 		rec.InteractionSummary = ""
 		rec.ProgressSummary = ""
