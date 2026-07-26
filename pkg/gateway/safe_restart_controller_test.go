@@ -355,6 +355,7 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 	if result.Err != nil {
 		t.Fatalf("Execute() error = %v", result.Err)
 	}
+	assertFinalHandledRestartResult(t, result)
 	restarter.waitCalledWith(t, "picoclaw-main.service")
 	waitForRestartSentinelStatus(t, store, restartStatusFailed)
 	sentinel, err := store.Read()
@@ -364,6 +365,51 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 	if sentinel.Origin.Channel != "telegram" || sentinel.Origin.ChatID != "chat-1" ||
 		sentinel.Origin.TopicID != "topic-1" {
 		t.Fatalf("sentinel origin = %#v", sentinel.Origin)
+	}
+}
+
+func TestGatewayRestartToolAlreadyScheduledIsFinalHandled(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
+	store, err := NewRestartSentinelStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := NewRestartController(RestartControllerOptions{
+		Config:           testRestartConfig(),
+		Source:           &restartSourceSequence{pending: [][]bus.InboundMessage{{{SpoolID: "pending"}}}},
+		Store:            store,
+		Restarter:        &fakeServiceRestarter{called: make(chan string, 1)},
+		PollInterval:     time.Hour,
+		PreflightOptions: knownPreflightOptions(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := NewGatewayRestartTool(controller)
+	first := tool.Execute(context.Background(), map[string]any{"reason": "first"})
+	if first.Err != nil {
+		t.Fatalf("first Execute() error = %v", first.Err)
+	}
+	assertFinalHandledRestartResult(t, first)
+
+	second := tool.Execute(context.Background(), map[string]any{"reason": "second"})
+	if second.Err != nil {
+		t.Fatalf("second Execute() error = %v", second.Err)
+	}
+	if !strings.Contains(second.ForUser, "already") {
+		t.Fatalf("second ForUser = %q, want already scheduled status", second.ForUser)
+	}
+	assertFinalHandledRestartResult(t, second)
+}
+
+func assertFinalHandledRestartResult(t *testing.T, result *tools.ToolResult) {
+	t.Helper()
+	if result.DeliveryIntent != tools.DeliveryFinalHandled || !result.ResponseHandled {
+		t.Fatalf("successful restart result did not own the turn: %#v", result)
+	}
+	if result.ImmediateDelivery || result.Silent {
+		t.Fatalf("successful restart retained immediate/silent flags: %#v", result)
 	}
 }
 

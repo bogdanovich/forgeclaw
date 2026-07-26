@@ -300,10 +300,10 @@ func (t *GatewayRestartTool) Execute(ctx context.Context, args map[string]any) *
 	}
 	if result.AlreadyScheduled {
 		message := fmt.Sprintf("Gateway restart for %s is already %s.", result.Service, result.Status)
-		return tools.UserResult(message).WithImmediateDelivery()
+		return tools.UserResult(message).WithDeliveryIntent(tools.DeliveryFinalHandled)
 	}
 	message := fmt.Sprintf("Gateway restart scheduled for %s. It will run after active work drains.", result.Service)
-	return tools.UserResult(message).WithImmediateDelivery()
+	return tools.UserResult(message).WithDeliveryIntent(tools.DeliveryFinalHandled)
 }
 
 func validateSystemdUserService(service string) error {

@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent"
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -155,8 +158,10 @@ func TestGatewayDeployToolPersistsTopicOrigin(t *testing.T) {
 
 type fakeDeployHandoffLauncher struct {
 	called bool
+	calls  int
 	target string
 	origin RestartOrigin
+	err    error
 }
 
 func (l *fakeDeployHandoffLauncher) Launch(
@@ -166,9 +171,10 @@ func (l *fakeDeployHandoffLauncher) Launch(
 	origin RestartOrigin,
 ) error {
 	l.called = true
+	l.calls++
 	l.target = target
 	l.origin = origin
-	return nil
+	return l.err
 }
 
 func TestGatewayDeployToolUsesDetachedHandoffForConfiguredTarget(t *testing.T) {
@@ -191,12 +197,229 @@ func TestGatewayDeployToolUsesDetachedHandoffForConfiguredTarget(t *testing.T) {
 	if !launcher.called || launcher.target != "current" {
 		t.Fatalf("launcher = %#v", launcher)
 	}
+	if launcher.calls != 1 {
+		t.Fatalf("launcher calls = %d, want 1", launcher.calls)
+	}
 	if launcher.origin.Channel != "telegram" || launcher.origin.ChatID != "chat-1" ||
 		launcher.origin.TopicID != "topic-1" {
 		t.Fatalf("launcher origin = %#v", launcher.origin)
 	}
 	if !strings.Contains(result.ForUser, "detached worker") {
 		t.Fatalf("result = %q", result.ForUser)
+	}
+	assertFinalHandledDeployResult(t, result)
+}
+
+func TestGatewayDeployToolSuccessfulNonHandoffIsFinalHandled(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "deploy-count")
+	script := writeDeployScript(t, "printf x >> \"$FORGECLAW_WORKSPACE/deploy-count\"; printf 'deploy complete'")
+	runner, err := NewDeployRunner(deployConfig(script), filepath.Dir(countPath), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := (&GatewayDeployTool{runner: runner}).Execute(context.Background(), map[string]any{"target": "all"})
+	if result.Err != nil {
+		t.Fatalf("Execute() error = %v", result.Err)
+	}
+	if result.ForUser != "deploy complete" {
+		t.Fatalf("ForUser = %q, want deploy output", result.ForUser)
+	}
+	assertFinalHandledDeployResult(t, result)
+
+	count, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(count) != "x" {
+		t.Fatalf("deploy marker = %q, want one invocation", count)
+	}
+}
+
+func TestGatewayDeployToolSuccessfulNonHandoffWithoutOutputReportsSuccess(t *testing.T) {
+	runner, err := NewDeployRunner(
+		deployConfig(writeDeployScript(t, "true")),
+		t.TempDir(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := (&GatewayDeployTool{runner: runner}).Execute(context.Background(), map[string]any{"target": "all"})
+	if result.Err != nil {
+		t.Fatalf("Execute() error = %v", result.Err)
+	}
+	if result.ForUser != "Gateway deploy for target all completed successfully." {
+		t.Fatalf("ForUser = %q", result.ForUser)
+	}
+	assertFinalHandledDeployResult(t, result)
+}
+
+func TestGatewayDeployToolFailuresRemainExplicitAndUnhandled(t *testing.T) {
+	t.Run("handoff launch", func(t *testing.T) {
+		cfg := deployConfig(writeDeployScript(t, "true"))
+		cfg.HandoffTargets = []string{"current"}
+		runner, err := NewDeployRunner(cfg, t.TempDir(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		launchErr := errors.New("launcher unavailable")
+		result := (&GatewayDeployTool{
+			runner:   runner,
+			launcher: &fakeDeployHandoffLauncher{err: launchErr},
+		}).Execute(context.Background(), nil)
+		assertFailedDeployResult(t, result, launchErr)
+	})
+
+	t.Run("deploy", func(t *testing.T) {
+		runner, err := NewDeployRunner(
+			deployConfig(writeDeployScript(t, "printf failure; exit 7")),
+			t.TempDir(),
+			"",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := (&GatewayDeployTool{runner: runner}).Execute(context.Background(), map[string]any{"target": "all"})
+		if result.Err == nil || !strings.Contains(result.ForLLM, "gateway deploy failed") ||
+			!strings.Contains(result.ForLLM, "failure") {
+			t.Fatalf("result = %#v", result)
+		}
+		if result.ResponseHandled || result.DeliveryIntent == tools.DeliveryFinalHandled {
+			t.Fatalf("failed deploy claimed handled success: %#v", result)
+		}
+	})
+}
+
+func assertFinalHandledDeployResult(t *testing.T, result *tools.ToolResult) {
+	t.Helper()
+	if result.DeliveryIntent != tools.DeliveryFinalHandled {
+		t.Fatalf("DeliveryIntent = %q, want final_handled", result.DeliveryIntent)
+	}
+	if !result.ResponseHandled {
+		t.Fatal("successful deploy result did not own the turn")
+	}
+	if result.ImmediateDelivery || result.Silent {
+		t.Fatalf("successful deploy retained immediate/silent flags: %#v", result)
+	}
+}
+
+func assertFailedDeployResult(t *testing.T, result *tools.ToolResult, wantErr error) {
+	t.Helper()
+	if !errors.Is(result.Err, wantErr) || !result.IsError {
+		t.Fatalf("result = %#v, want error %v", result, wantErr)
+	}
+	if result.ResponseHandled || result.DeliveryIntent == tools.DeliveryFinalHandled {
+		t.Fatalf("failed deploy claimed handled success: %#v", result)
+	}
+}
+
+type gatewayDeployTurnProvider struct {
+	calls  int
+	target string
+}
+
+func (p *gatewayDeployTurnProvider) Chat(
+	context.Context,
+	[]providers.Message,
+	[]providers.ToolDefinition,
+	string,
+	map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	if p.calls == 1 {
+		return &providers.LLMResponse{ToolCalls: []providers.ToolCall{{
+			ID:        "gateway-deploy-call",
+			Type:      "function",
+			Name:      "gateway_deploy",
+			Arguments: map[string]any{"target": p.target},
+		}}}, nil
+	}
+	return &providers.LLMResponse{}, nil
+}
+
+func (p *gatewayDeployTurnProvider) GetDefaultModel() string { return "gateway-deploy-test" }
+
+func TestGatewayDeployToolSuccessfulResultCompletesAgentTurn(t *testing.T) {
+	tests := []struct {
+		name              string
+		handoffTargets    []string
+		wantLauncherCalls int
+		wantContent       string
+	}{
+		{
+			name:              "handoff",
+			handoffTargets:    []string{"all"},
+			wantLauncherCalls: 1,
+			wantContent:       "Deploy started in a detached worker",
+		},
+		{
+			name:        "non-handoff",
+			wantContent: "deploy complete",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Agents.Defaults.Workspace = t.TempDir()
+			cfg.Agents.Defaults.ModelName = "gateway-deploy-test"
+			cfg.Agents.Defaults.MaxTokens = 1024
+			cfg.Agents.Defaults.ContextWindow = 32768
+
+			msgBus := bus.NewMessageBus()
+			provider := &gatewayDeployTurnProvider{target: "all"}
+			loop := agent.NewAgentLoop(cfg, msgBus, provider)
+			runnerWorkspace := t.TempDir()
+			deployCfg := deployConfig(writeDeployScript(t, "printf 'deploy complete'"))
+			deployCfg.HandoffTargets = tc.handoffTargets
+			runner, err := NewDeployRunner(deployCfg, runnerWorkspace, "picoclaw-main.service")
+			if err != nil {
+				t.Fatal(err)
+			}
+			launcher := &fakeDeployHandoffLauncher{}
+			loop.RegisterTool(&GatewayDeployTool{runner: runner, launcher: launcher})
+
+			response, err := loop.ProcessDirectWithChannel(
+				context.Background(),
+				"deploy all configured profiles",
+				"deploy-session",
+				"telegram",
+				"chat-1",
+			)
+			if err != nil {
+				t.Fatalf("ProcessDirectWithChannel() error = %v", err)
+			}
+			if response != "" {
+				t.Fatalf("response = %q, want handled empty return", response)
+			}
+			if provider.calls != 1 {
+				t.Fatalf("provider calls = %d, want 1", provider.calls)
+			}
+			if launcher.calls != tc.wantLauncherCalls {
+				t.Fatalf("launcher calls = %d, want %d", launcher.calls, tc.wantLauncherCalls)
+			}
+
+			select {
+			case outbound := <-msgBus.OutboundChan():
+				if outbound.Channel != "telegram" || outbound.ChatID != "chat-1" {
+					t.Fatalf("outbound route = %s/%s", outbound.Channel, outbound.ChatID)
+				}
+				if !strings.Contains(outbound.Content, tc.wantContent) {
+					t.Fatalf("outbound content = %q, want %q", outbound.Content, tc.wantContent)
+				}
+				if strings.Contains(outbound.Content, "empty response") {
+					t.Fatalf("outbound contained fallback: %q", outbound.Content)
+				}
+			default:
+				t.Fatal("deploy acknowledgement was not delivered")
+			}
+			select {
+			case outbound := <-msgBus.OutboundChan():
+				t.Fatalf("unexpected duplicate outbound: %#v", outbound)
+			default:
+			}
+		})
 	}
 }
 
