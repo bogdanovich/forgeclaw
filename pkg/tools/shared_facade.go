@@ -3,10 +3,10 @@ package tools
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/interactions"
-	"github.com/sipeed/picoclaw/pkg/session"
-	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/session"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 type (

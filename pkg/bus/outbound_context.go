@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 // ErrMixedTraceScopeWorkspaces rejects one physical outbound that attempts to

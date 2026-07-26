@@ -18,10 +18,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sipeed/picoclaw/pkg/fileutil"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
-	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const MaxReadFileSize = 64 * 1024 // 64KB limit to avoid context overflow

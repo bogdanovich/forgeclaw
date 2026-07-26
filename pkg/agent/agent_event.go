@@ -1,11 +1,11 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 
 package agent
 
 import (
 	"fmt"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 func (al *AgentLoop) newTurnEventScope(

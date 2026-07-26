@@ -3,7 +3,7 @@ package channels
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
 
 func TestEffectiveOutboundChatID(t *testing.T) {

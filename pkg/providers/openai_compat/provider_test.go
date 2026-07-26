@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers/common"
-	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers/common"
+	"github.com/bogdanovich/mintclaw/pkg/providers/protocoltypes"
 )
 
 func TestProviderChat_UsesMaxCompletionTokensForGLM(t *testing.T) {
@@ -1392,7 +1392,7 @@ func TestProviderChat_CustomHeadersInjected(t *testing.T) {
 		"key",
 		server.URL,
 		"",
-		WithUserAgent("PicoClaw/Test"),
+		WithUserAgent("MintClaw/Test"),
 		WithCustomHeaders(map[string]string{
 			"X-Source":      "coding-plan",
 			"Authorization": "Token custom-auth",
@@ -1440,7 +1440,7 @@ func TestProviderChatStream_CustomHeadersInjected(t *testing.T) {
 		"key",
 		server.URL,
 		"",
-		WithUserAgent("PicoClaw/Test"),
+		WithUserAgent("MintClaw/Test"),
 		WithCustomHeaders(map[string]string{
 			"X-Source":      "coding-plan",
 			"Authorization": "Token stream-auth",

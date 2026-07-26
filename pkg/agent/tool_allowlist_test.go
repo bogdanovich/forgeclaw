@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	agenttools "github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	agenttools "github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type allowlistTestTool struct {
@@ -78,7 +78,7 @@ func TestResolveAgentToolPolicyDistinguishesMissingAndEmptyToolsField(t *testing
 		{
 			name: "missing tools field allows all tools",
 			agentMD: `---
-name: pico
+name: mintclaw
 ---
 # Agent
 `,

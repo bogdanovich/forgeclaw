@@ -13,7 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 // TestShellTool_Success verifies successful command execution
@@ -152,7 +152,7 @@ func TestShellTool_ExposesWorkspaceTmp(t *testing.T) {
 
 	result := tool.Execute(context.Background(), map[string]any{
 		"action":  "run",
-		"command": `printf '%s' "$PICOCLAW_WORKSPACE_TMP"`,
+		"command": `printf '%s' "$MINTCLAW_WORKSPACE_TMP"`,
 	})
 	if result.IsError {
 		t.Fatalf("expected success, got error: %s", result.ForLLM)
@@ -843,7 +843,7 @@ func TestShellTool_URLsNotBlocked(t *testing.T) {
 		"wget http://example.com/file",
 		"browser open https://github.com/user/repo",
 		"fetch ftp://ftp.example.com/file.txt",
-		"git clone https://github.com/sipeed/picoclaw.git",
+		"git clone https://github.com/bogdanovich/mintclaw.git",
 	}
 
 	for _, cmd := range commands {
@@ -2138,7 +2138,7 @@ func TestShellTool_CustomAllowDoesNotBypassDenyPatterns(t *testing.T) {
 		t.Fatalf("NewExecToolWithConfig() error: %v", err)
 	}
 
-	got := tool.guardCommand(`jq -n '$ENV.PICOCLAW_VARIANT_CANARY'`, t.TempDir())
+	got := tool.guardCommand(`jq -n '$ENV.MINTCLAW_VARIANT_CANARY'`, t.TempDir())
 	if !strings.Contains(got, "dangerous pattern detected") {
 		t.Fatalf("custom allow should not bypass deny patterns, got: %q", got)
 	}

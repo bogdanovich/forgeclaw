@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 // LegacyStore wraps session.SessionManager for legacy baseline.

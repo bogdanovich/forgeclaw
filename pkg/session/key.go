@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
 )
 
 const (

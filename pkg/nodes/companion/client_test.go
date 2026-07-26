@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
-	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
 )
 
 func TestClientAuthenticatesPinnedWSSIdentity(t *testing.T) {

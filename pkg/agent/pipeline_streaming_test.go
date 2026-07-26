@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 type configuredStreamingProvider struct {
@@ -320,7 +320,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 	}{
 		{
 			name:              "channel and model enabled streams",
-			channel:           "pico",
+			channel:           "mintclaw",
 			channelStreaming:  true,
 			modelStreaming:    true,
 			streamingProvider: true,
@@ -338,7 +338,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 		},
 		{
 			name:              "channel disabled uses chat",
-			channel:           "pico",
+			channel:           "mintclaw",
 			modelStreaming:    true,
 			streamingProvider: true,
 			streamDelegate:    true,
@@ -346,7 +346,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 		},
 		{
 			name:              "model disabled uses chat",
-			channel:           "pico",
+			channel:           "mintclaw",
 			channelStreaming:  true,
 			streamingProvider: true,
 			streamDelegate:    true,
@@ -354,7 +354,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 		},
 		{
 			name:             "provider without streaming uses chat",
-			channel:          "pico",
+			channel:          "mintclaw",
 			channelStreaming: true,
 			modelStreaming:   true,
 			streamDelegate:   true,
@@ -362,7 +362,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 		},
 		{
 			name:              "multi candidate fallback uses chat",
-			channel:           "pico",
+			channel:           "mintclaw",
 			channelStreaming:  true,
 			modelStreaming:    true,
 			fallbacks:         []string{"fallback-model"},
@@ -372,7 +372,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 		},
 		{
 			name:              "missing streamer uses chat",
-			channel:           "pico",
+			channel:           "mintclaw",
 			channelStreaming:  true,
 			modelStreaming:    true,
 			streamingProvider: true,
@@ -380,7 +380,7 @@ func TestConfiguredStreamingEligibilityGates(t *testing.T) {
 		},
 		{
 			name:              "omitted fields use chat",
-			channel:           "pico",
+			channel:           "mintclaw",
 			streamingProvider: true,
 			streamDelegate:    true,
 			wantChatCalls:     1,
@@ -439,7 +439,7 @@ func TestPipelineChannelStreamingConfig_UsesInjectedProvider(t *testing.T) {
 		Config: PipelineConfigServices{ChannelStreaming: provider},
 	}
 
-	got, ok := pipeline.channelStreamingConfig("pico")
+	got, ok := pipeline.channelStreamingConfig("mintclaw")
 	if !ok {
 		t.Fatal("channelStreamingConfig() ok = false, want true")
 	}
@@ -456,7 +456,7 @@ func TestPipelineChannelStreamingConfig_FallsBackToConfig(t *testing.T) {
 		Cfg: newConfiguredStreamingTestConfig(t, true, true, nil),
 	}
 
-	got, ok := pipeline.channelStreamingConfig("pico")
+	got, ok := pipeline.channelStreamingConfig("mintclaw")
 	if !ok {
 		t.Fatal("channelStreamingConfig() ok = false, want true")
 	}
@@ -563,7 +563,7 @@ func TestConfiguredStreamingPreChunkFailureFallsBackToChat(t *testing.T) {
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "chat after stream failure" {
 		t.Fatalf("response = %q, want chat fallback response", got)
@@ -601,9 +601,9 @@ func TestConfiguredStreamingDisabledForInternalTurnWithoutUserVisibleOutput(t *t
 		chatResponse: &providers.LLMResponse{Content: "chat response"},
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
-	opts := configuredStreamingProcessOptions("pico")
+	opts := configuredStreamingProcessOptions("mintclaw")
 	opts.SendResponse = false
-	opts.AllowInterimPicoPublish = false
+	opts.AllowInterimMintClawPublish = false
 
 	got, err := al.runAgentLoop(context.Background(), al.GetRegistry().GetDefaultAgent(), opts)
 	if err != nil {
@@ -641,7 +641,7 @@ func TestConfiguredStreamingVisibleSendResponseFalseRetainsFinalizedStreamMarker
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "stream response" {
 		t.Fatalf("response = %q, want stream response", got)
@@ -651,7 +651,7 @@ func TestConfiguredStreamingVisibleSendResponseFalseRetainsFinalizedStreamMarker
 	}
 }
 
-func TestConfiguredStreamingStreamsPicoReasoningBeforeAnswerContent(t *testing.T) {
+func TestConfiguredStreamingStreamsMintClawReasoningBeforeAnswerContent(t *testing.T) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	streamer := &recordingStreamer{}
 	msgBus := bus.NewMessageBus()
@@ -671,7 +671,7 @@ func TestConfiguredStreamingStreamsPicoReasoningBeforeAnswerContent(t *testing.T
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 	if got != "answer" {
 		t.Fatalf("response = %q, want answer", got)
 	}
@@ -697,7 +697,7 @@ func TestConfiguredStreamingStreamsPicoReasoningBeforeAnswerContent(t *testing.T
 	}
 }
 
-func TestConfiguredStreamingSuppressesPicoReasoningWhenThinkingOff(t *testing.T) {
+func TestConfiguredStreamingSuppressesMintClawReasoningWhenThinkingOff(t *testing.T) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	cfg.ModelList[0].ThinkingLevel = "off"
 	streamer := &recordingStreamer{}
@@ -717,7 +717,7 @@ func TestConfiguredStreamingSuppressesPicoReasoningWhenThinkingOff(t *testing.T)
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 	if got != "answer" {
 		t.Fatalf("response = %q, want answer", got)
 	}
@@ -761,7 +761,7 @@ func TestConfiguredStreamingFinalFlushFailureAfterVisibleOutputReturnsErrorWitho
 	_, err := al.runAgentLoop(
 		context.Background(),
 		al.GetRegistry().GetDefaultAgent(),
-		configuredStreamingProcessOptions("pico"),
+		configuredStreamingProcessOptions("mintclaw"),
 	)
 	if err == nil {
 		t.Fatal("expected final flush failure after visible output to return an error")
@@ -791,7 +791,7 @@ func TestConfiguredStreamingFinalFlushFailureBeforeVisibleOutputPublishesFallbac
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "stream response" {
 		t.Fatalf("response = %q, want stream response", got)
@@ -823,7 +823,7 @@ func TestConfiguredStreamingFinalFlushFailureBeforeVisibleOutputKeepsNormalOutbo
 		}},
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
-	opts := configuredStreamingProcessOptions("pico")
+	opts := configuredStreamingProcessOptions("mintclaw")
 	opts.SendResponse = true
 
 	got, err := al.runAgentLoop(context.Background(), al.GetRegistry().GetDefaultAgent(), opts)
@@ -860,7 +860,7 @@ func TestConfiguredStreamingUpdateFailureThenStreamErrorFallsBackToChat(t *testi
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "chat fallback after invisible update" {
 		t.Fatalf("response = %q, want chat fallback", got)
@@ -902,7 +902,7 @@ func TestConfiguredStreamingUpdateFailureThenStreamSuccessFallsBackToChat(t *tes
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "chat fallback after invisible update" {
 		t.Fatalf("response = %q, want chat fallback", got)
@@ -947,7 +947,7 @@ func TestConfiguredStreamingLaterUpdateFailureThenStreamSuccessReturnsVisibleErr
 	_, err := al.runAgentLoop(
 		context.Background(),
 		al.GetRegistry().GetDefaultAgent(),
-		configuredStreamingProcessOptions("pico"),
+		configuredStreamingProcessOptions("mintclaw"),
 	)
 	if err == nil {
 		t.Fatal("expected post-visible update failure to return an error")
@@ -1024,7 +1024,7 @@ func TestConfiguredStreamingBeforeLLMModelRewriteReevaluatesModelStreaming(t *te
 				t.Fatalf("MountHook() error = %v", err)
 			}
 
-			got := runConfiguredStreamingTurn(t, al, "pico")
+			got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 			if provider.streamCalls != tt.wantStreamCalls {
 				t.Fatalf("ChatStream calls = %d, want %d", provider.streamCalls, tt.wantStreamCalls)
@@ -1074,7 +1074,7 @@ func TestConfiguredStreamingPostChunkFailureDoesNotFallBackToChat(t *testing.T) 
 	_, err := al.runAgentLoop(
 		context.Background(),
 		al.GetRegistry().GetDefaultAgent(),
-		configuredStreamingProcessOptions("pico"),
+		configuredStreamingProcessOptions("mintclaw"),
 	)
 	if err == nil {
 		t.Fatal("expected post-chunk stream failure to return an error")
@@ -1114,7 +1114,7 @@ func TestConfiguredStreamingPostChunkEOFDoesNotRetryOrCancelVisibleOutput(t *tes
 	_, err := al.runAgentLoop(
 		context.Background(),
 		al.GetRegistry().GetDefaultAgent(),
-		configuredStreamingProcessOptions("pico"),
+		configuredStreamingProcessOptions("mintclaw"),
 	)
 	if err == nil {
 		t.Fatal("expected post-chunk EOF to return an error")
@@ -1153,7 +1153,7 @@ func TestConfiguredStreamingFinalizesAfterAfterLLMHookMutation(t *testing.T) {
 		t.Fatalf("MountHook() error = %v", err)
 	}
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "hooked final response" {
 		t.Fatalf("response = %q, want hook-modified response", got)
@@ -1197,7 +1197,7 @@ func TestConfiguredStreamingAfterLLMAbortCancelsPublishedStream(t *testing.T) {
 			_, _ = al.runAgentLoop(
 				context.Background(),
 				al.GetRegistry().GetDefaultAgent(),
-				configuredStreamingProcessOptions("pico"),
+				configuredStreamingProcessOptions("mintclaw"),
 			)
 
 			if streamer.canceled != 1 {
@@ -1223,7 +1223,7 @@ func TestConfiguredStreamingFinalizesWithDefaultResponseWhenContentEmpty(t *test
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != defaultResponse {
 		t.Fatalf("response = %q, want default response", got)
@@ -1261,7 +1261,7 @@ func TestConfiguredStreamingToolCallsUseCompleteStreamResponse(t *testing.T) {
 	agent := al.GetRegistry().GetDefaultAgent()
 	agent.Tools.Register(&toolLimitTestTool{})
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "tool call handled" {
 		t.Fatalf("response = %q, want tool call handled", got)
@@ -1319,7 +1319,7 @@ func TestConfiguredStreamingFinalTurnUsesAccumulatedTurnUsage(t *testing.T) {
 	agent := al.GetRegistry().GetDefaultAgent()
 	agent.Tools.Register(&toolLimitTestTool{})
 
-	got := runConfiguredStreamingTurn(t, al, "pico")
+	got := runConfiguredStreamingTurn(t, al, "mintclaw")
 
 	if got != "final answer without usage" {
 		t.Fatalf("response = %q, want final answer without usage", got)
@@ -1409,8 +1409,8 @@ func newConfiguredStreamingTestConfig(
 			},
 		},
 		Channels: config.ChannelsConfig{
-			"pico":  newConfiguredStreamingPicoChannel(t, channelStreaming),
-			"wecom": newConfiguredStreamingWeComChannel(t, channelStreaming),
+			"mintclaw": newConfiguredStreamingMintClawChannel(t, channelStreaming),
+			"wecom":    newConfiguredStreamingWeComChannel(t, channelStreaming),
 		},
 		ModelList: []*config.ModelConfig{{
 			ModelName: "test-model",
@@ -1454,9 +1454,9 @@ func newConfiguredStreamingWeComChannel(t *testing.T, enabled bool) *config.Chan
 	}
 }
 
-func newConfiguredStreamingPicoChannel(t *testing.T, enabled bool) *config.Channel {
+func newConfiguredStreamingMintClawChannel(t *testing.T, enabled bool) *config.Channel {
 	t.Helper()
-	settings := config.PicoSettings{
+	settings := config.MintClawSettings{
 		Streaming: config.StreamingConfig{
 			Enabled:         enabled,
 			ThrottleSeconds: 1,
@@ -1469,7 +1469,7 @@ func newConfiguredStreamingPicoChannel(t *testing.T, enabled bool) *config.Chann
 		t.Fatalf("Marshal settings error = %v", err)
 	}
 	return &config.Channel{
-		Type:     config.ChannelPico,
+		Type:     config.ChannelMintClaw,
 		Enabled:  true,
 		Settings: config.RawNode(raw),
 	}
@@ -1477,15 +1477,15 @@ func newConfiguredStreamingPicoChannel(t *testing.T, enabled bool) *config.Chann
 
 func configuredStreamingProcessOptions(channel string) processOptions {
 	return processOptions{
-		SessionKey:              "agent:main:" + channel + ":session-1",
-		Channel:                 channel,
-		ChatID:                  "session-1",
-		UserMessage:             "hello",
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           false,
-		SendResponse:            false,
-		AllowInterimPicoPublish: true,
-		NoHistory:               true,
+		SessionKey:                  "agent:main:" + channel + ":session-1",
+		Channel:                     channel,
+		ChatID:                      "session-1",
+		UserMessage:                 "hello",
+		DefaultResponse:             defaultResponse,
+		EnableSummary:               false,
+		SendResponse:                false,
+		AllowInterimMintClawPublish: true,
+		NoHistory:                   true,
 	}
 }
 

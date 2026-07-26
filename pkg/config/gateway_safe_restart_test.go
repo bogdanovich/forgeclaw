@@ -12,7 +12,7 @@ func TestGatewaySafeRestartConfigParsing(t *testing.T) {
 			"safe_restart": {
 				"enabled": true,
 				"service_manager": "systemd-user",
-				"service": "picoclaw-main.service",
+				"service": "mintclaw-main.service",
 				"drain_timeout_seconds": 120,
 				"force_after_timeout": true
 			}
@@ -31,7 +31,7 @@ func TestGatewaySafeRestartConfigParsing(t *testing.T) {
 	if got.EffectiveServiceManager() != "systemd-user" {
 		t.Fatalf("service manager = %q", got.EffectiveServiceManager())
 	}
-	if got.EffectiveService() != "picoclaw-main.service" {
+	if got.EffectiveService() != "mintclaw-main.service" {
 		t.Fatalf("service = %q", got.EffectiveService())
 	}
 	if got.EffectiveDrainTimeoutSeconds() != 120 {
@@ -58,8 +58,8 @@ func TestGatewayDeployConfigParsing(t *testing.T) {
 		"gateway": {
 			"deploy": {
 				"enabled": true,
-				"group": "picoclaw-local",
-				"command": "/opt/picoclaw/deploy.sh",
+				"group": "mintclaw-local",
+				"command": "/opt/mintclaw/deploy.sh",
 				"default_target": "current",
 				"allowed_targets": ["current", "all", "reviewer"],
 				"handoff_targets": ["current", "all"],
@@ -74,7 +74,7 @@ func TestGatewayDeployConfigParsing(t *testing.T) {
 	}
 
 	got := cfg.Gateway.Deploy
-	if !got.Enabled || got.Group != "picoclaw-local" || got.Command != "/opt/picoclaw/deploy.sh" {
+	if !got.Enabled || got.Group != "mintclaw-local" || got.Command != "/opt/mintclaw/deploy.sh" {
 		t.Fatalf("deploy config = %#v", got)
 	}
 	if got.DefaultTarget != "current" || got.EffectiveTimeoutSeconds() != 120 {

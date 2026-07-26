@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
-	"github.com/sipeed/picoclaw/pkg/nodes/internal/jsonstrict"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const draft202012Prefix = "https://json-schema.org/draft/2020-12/"

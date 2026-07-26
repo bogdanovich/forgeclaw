@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func writeConfig(t *testing.T, dir, body string) string {
@@ -119,7 +119,7 @@ func TestEncryptedCredentialsAreNotPlaintextFindings(t *testing.T) {
 
 func TestFileAndEnvCredentialReferencesAreNotPlaintextFindings(t *testing.T) {
 	findings := plaintextFromJSON(
-		[]byte(`{"token":"file:///tmp/token","password":"${PICOCLAW_PASSWORD}","auth_token":"env://TOKEN"}`),
+		[]byte(`{"token":"file:///tmp/token","password":"${MINTCLAW_PASSWORD}","auth_token":"env://TOKEN"}`),
 		"config.json",
 	)
 	for _, finding := range findings {

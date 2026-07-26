@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
@@ -14,11 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
-const dailyAppendMarkerPrefix = "<!-- picoclaw:append_daily:v1:"
+const dailyAppendMarkerPrefix = "<!-- mintclaw:append_daily:v1:"
 
 // MemoryStore manages persistent memory for the agent.
 // - Long-term memory: memory/MEMORY.md

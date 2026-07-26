@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 func TestResolveSessionEpochIdleRotatesAfterInactivity(t *testing.T) {

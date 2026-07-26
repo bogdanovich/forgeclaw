@@ -3,7 +3,7 @@ package agent
 import (
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
 
 // Legacy synthetic system-message metadata. New async completion producers

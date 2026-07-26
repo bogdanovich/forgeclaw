@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 const taskRegistryHeartbeatInterval = 30 * time.Second

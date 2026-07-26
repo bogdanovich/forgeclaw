@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://forgeclaw.dev/schemas/nodes/execution-plan.v1.json",
-  "title": "ForgeClaw node execution plan v1",
+  "$id": "https://mintclaw.dev/schemas/nodes/execution-plan.v1.json",
+  "title": "MintClaw node execution plan v1",
   "type": "object",
   "additionalProperties": false,
   "required": [

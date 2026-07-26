@@ -204,7 +204,7 @@ function isConfigured(
       return hasValue("bridge_url")
     case "whatsapp_native":
       return asBool(config.use_native)
-    case "pico":
+    case "mintclaw":
       return hasValue("token")
     case "maixcam":
       return hasValue("host")
@@ -245,7 +245,7 @@ function getRequiredFieldKeys(channelName: string): string[] {
       return []
     case "whatsapp":
       return ["bridge_url"]
-    case "pico":
+    case "mintclaw":
       return ["token"]
     case "maixcam":
       return ["host"]
@@ -278,7 +278,7 @@ function getChannelDocSlug(channelName: string): string {
 }
 
 const CHANNELS_WITHOUT_DOCS = new Set([
-  "pico",
+  "mintclaw",
   "wecom",
   "matrix",
   "irc",
@@ -288,7 +288,7 @@ const CHANNELS_WITHOUT_DOCS = new Set([
 ])
 
 export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const { state: gatewayState } = useGateway()
 
   const [loading, setLoading] = useState(true)
@@ -400,16 +400,10 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
   const docsUrl = useMemo(() => {
     if (!channel) return ""
     if (CHANNELS_WITHOUT_DOCS.has(channel.name)) return ""
-    const language = (
-      i18n.resolvedLanguage ??
-      i18n.language ??
-      ""
-    ).toLowerCase()
-    const base = language.startsWith("zh")
-      ? "https://docs.picoclaw.io/zh-Hans/docs/channels"
-      : "https://docs.picoclaw.io/docs/channels"
+    const base =
+      "https://github.com/bogdanovich/mintclaw/tree/main/docs/channels"
     return `${base}/${getChannelDocSlug(channel.name)}`
-  }, [channel, i18n.language, i18n.resolvedLanguage])
+  }, [channel])
 
   const channelDisplayName = useMemo(() => {
     if (!channel) return channelName
@@ -676,7 +670,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             configuredSecrets={configuredSecrets}
             hiddenKeys={hiddenKeys}
             requiredKeys={requiredKeys}
-            supportsStreaming={channel?.name === "pico"}
+            supportsStreaming={channel?.name === "mintclaw"}
             fieldErrors={fieldErrors}
             registerArrayFieldFlusher={registerArrayFieldFlusher}
             arrayFieldResetVersion={arrayFieldResetVersion}

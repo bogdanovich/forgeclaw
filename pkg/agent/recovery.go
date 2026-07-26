@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 // RecoverUnansweredSessions resumes sessions whose durable history ends with a
@@ -130,10 +130,10 @@ func (al *AgentLoop) recoverUnansweredSession(
 			// Leave UserMessage empty. The unanswered user message is already
 			// durable session history; adding it again would duplicate history.
 		},
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           true,
-		SendResponse:            true,
-		AllowInterimPicoPublish: true,
+		DefaultResponse:             defaultResponse,
+		EnableSummary:               true,
+		SendResponse:                true,
+		AllowInterimMintClawPublish: true,
 	})
 	return err
 }

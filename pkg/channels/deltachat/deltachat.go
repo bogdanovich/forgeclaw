@@ -1,7 +1,7 @@
-// Package deltachat implements a PicoClaw channel for Delta Chat, an
+// Package deltachat implements a MintClaw channel for Delta Chat, an
 // email-based, end-to-end encrypted messenger.
 //
-// PicoClaw does not link the Delta Chat core directly. Instead it drives a
+// MintClaw does not link the Delta Chat core directly. Instead it drives a
 // local `deltachat-rpc-server` process (shipped with the `deltachat-rpc-server`
 // pip package or the precompiled release binary) over newline-delimited
 // JSON-RPC 2.0 on stdio. This keeps the Go binary free of CGO/native deps.
@@ -21,12 +21,12 @@ import (
 
 	"github.com/mdp/qrterminal/v3"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/identity"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/media"
 )
 
 // chatTypeSingle is Delta Chat's Chattype::Single — a 1:1 direct chat.
@@ -122,7 +122,7 @@ type dcChat struct {
 }
 
 // dcMessageData mirrors the fields of Delta Chat's MessageData (camelCase on the
-// wire) that PicoClaw sets when calling send_msg. Viewtype is normally left empty
+// wire) that MintClaw sets when calling send_msg. Viewtype is normally left empty
 // so Delta Chat infers it from the file (image/gif/video/file…); it is set only
 // for voice replies, which must be Viewtype::Voice to render as a voice bubble
 // rather than a generic audio attachment.
@@ -161,7 +161,7 @@ func parseDeltaChatEmailSetting(value string) (string, bool, error) {
 	email := strings.TrimSpace(value)
 	if email == "" {
 		return "", false, fmt.Errorf(
-			"deltachat: email is required.\nNext step: choose one of the chatmail servers below and set channel_list.deltachat.settings.email to %q, or use the same @server form with another chatmail relay. Run `picoclaw g` again; PicoClaw will create the account, print the generated full email address, and stop so you can save that address in the config.\nAvailable chatmail servers:\n%s",
+			"deltachat: email is required.\nNext step: choose one of the chatmail servers below and set channel_list.deltachat.settings.email to %q, or use the same @server form with another chatmail relay. Run `mintclaw g` again; MintClaw will create the account, print the generated full email address, and stop so you can save that address in the config.\nAvailable chatmail servers:\n%s",
 			"@"+defaultChatmailRelays[0].Domain,
 			formatChatmailRelayList(),
 		)
@@ -1079,7 +1079,7 @@ func (c *DeltaChatChannel) createChatmailBootstrapAccount(ctx context.Context, s
 	}
 
 	return fmt.Errorf(
-		"deltachat: created chatmail account %q on %s. Update channel_list.deltachat.settings.email from %q to %q, remove the @server bootstrap marker, then run PicoClaw again to use the account",
+		"deltachat: created chatmail account %q on %s. Update channel_list.deltachat.settings.email from %q to %q, remove the @server bootstrap marker, then run MintClaw again to use the account",
 		addr,
 		server,
 		c.config.Email,
@@ -1304,7 +1304,7 @@ func resolveDataDir(configured, channelName string) string {
 	if name == "" {
 		name = config.ChannelDeltaChat
 	}
-	return filepath.Join(home, ".picoclaw", "deltachat", name)
+	return filepath.Join(home, ".mintclaw", "deltachat", name)
 }
 
 func expandHome(path string) string {

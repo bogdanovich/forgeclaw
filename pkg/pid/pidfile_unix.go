@@ -30,15 +30,15 @@ func isProcessRunning(pid int) bool {
 	return errors.As(err, &errno) && errno == syscall.EPERM
 }
 
-// isPicoclawProcess reads /proc/<pid>/comm to confirm the process name
-// contains "picoclaw". Returns false when the comm file can be read and
+// isMintClawProcess reads /proc/<pid>/comm to confirm the process name
+// contains "mintclaw". Returns false when the comm file can be read and
 // the name does not match (e.g., PID was reused by an unrelated process).
 // Returns true if /proc/<pid>/comm is unreadable so the call site falls
 // back to trusting the liveness check alone.
-func isPicoclawProcess(pid int) bool {
+func isMintClawProcess(pid int) bool {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
 	if err != nil {
 		return true // cannot verify — trust liveness check
 	}
-	return strings.Contains(strings.TrimSpace(string(data)), "picoclaw")
+	return strings.Contains(strings.TrimSpace(string(data)), "mintclaw")
 }

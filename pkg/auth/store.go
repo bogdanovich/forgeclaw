@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 type AuthCredential struct {
@@ -30,7 +30,7 @@ type AuthStore struct {
 const (
 	providerGoogleAntigravity = "google-antigravity"
 	providerAntigravityAlias  = "antigravity"
-	envAuthFile               = "PICOCLAW_AUTH_FILE"
+	envAuthFile               = "MINTCLAW_AUTH_FILE"
 )
 
 var authStoreMu sync.Mutex

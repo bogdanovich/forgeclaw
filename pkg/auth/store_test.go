@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func setTestAuthHome(t *testing.T) string {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	t.Setenv(config.EnvHome, filepath.Join(tmpDir, ".picoclaw"))
+	t.Setenv(config.EnvHome, filepath.Join(tmpDir, ".mintclaw"))
 	return tmpDir
 }
 
@@ -108,7 +108,7 @@ func TestStoreFilePermissions(t *testing.T) {
 		t.Fatalf("SetCredential() error: %v", err)
 	}
 
-	path := filepath.Join(tmpDir, ".picoclaw", "auth.json")
+	path := filepath.Join(tmpDir, ".mintclaw", "auth.json")
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat() error: %v", err)
@@ -207,7 +207,7 @@ func TestGetCredentialCanonicalizesLegacyAntigravityProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error: %v", err)
 	}
-	path := filepath.Join(tmpDir, ".picoclaw", "auth.json")
+	path := filepath.Join(tmpDir, ".mintclaw", "auth.json")
 	err = os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)
@@ -260,7 +260,7 @@ func TestLoadStoreMergesAntigravityAliasesPreferringNewerExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error: %v", err)
 	}
-	path := filepath.Join(tmpDir, ".picoclaw", "auth.json")
+	path := filepath.Join(tmpDir, ".mintclaw", "auth.json")
 	err = os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)
@@ -326,7 +326,7 @@ func TestLoadStorePrefersCanonicalKeyWhenExpiryMatchesAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error: %v", err)
 	}
-	path := filepath.Join(tmpDir, ".picoclaw", "auth.json")
+	path := filepath.Join(tmpDir, ".mintclaw", "auth.json")
 	err = os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)
@@ -379,7 +379,7 @@ func TestSetCredentialReplacesLegacyAntigravityEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error: %v", err)
 	}
-	path := filepath.Join(tmpDir, ".picoclaw", "auth.json")
+	path := filepath.Join(tmpDir, ".mintclaw", "auth.json")
 	err = os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)
@@ -436,7 +436,7 @@ func TestDeleteCredentialRemovesLegacyAntigravityAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error: %v", err)
 	}
-	path := filepath.Join(tmpDir, ".picoclaw", "auth.json")
+	path := filepath.Join(tmpDir, ".mintclaw", "auth.json")
 	err = os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)

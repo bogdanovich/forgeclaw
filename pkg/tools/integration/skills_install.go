@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/fileutil"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/skills"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/skills"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
 const defaultSkillRegistryName = "github"
@@ -146,7 +146,7 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 		}
 	} else {
 		if _, statErr := os.Stat(targetDir); statErr == nil {
-			backupDir = filepath.Join(skillsDir, fmt.Sprintf(".%s.picoclaw-backup-%d", dirName, time.Now().UnixNano()))
+			backupDir = filepath.Join(skillsDir, fmt.Sprintf(".%s.mintclaw-backup-%d", dirName, time.Now().UnixNano()))
 			if renameErr := os.Rename(targetDir, backupDir); renameErr != nil {
 				return ErrorResult(fmt.Sprintf("failed to prepare reinstall for %q: %v", slug, renameErr))
 			}

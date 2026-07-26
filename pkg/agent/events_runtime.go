@@ -1,6 +1,6 @@
 package agent
 
-import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+import runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 
 func runtimeScopeFromHookMeta(meta HookMeta, eventCtx *TurnContext) runtimeevents.Scope {
 	scope := runtimeevents.Scope{

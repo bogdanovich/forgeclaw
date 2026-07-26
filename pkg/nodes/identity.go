@@ -187,5 +187,5 @@ func (proof IdentityProof) transcript() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode signature transcript: %v", ErrInvalidIdentityProof, err)
 	}
-	return append([]byte("forgeclaw-node-auth-v1\x00"), data...), nil
+	return append([]byte("mintclaw-node-auth-v1\x00"), data...), nil
 }

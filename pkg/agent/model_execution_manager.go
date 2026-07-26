@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/state"
 )
 
 type modelProviderFactory func(*config.ModelConfig) (providers.LLMProvider, string, error)

@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 // DeployHandoffLauncher starts a worker outside the gateway service cgroup.
@@ -44,7 +44,7 @@ func (systemdUserDeployHandoffLauncher) Launch(
 	}
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("resolve picoclaw executable: %w", err)
+		return fmt.Errorf("resolve mintclaw executable: %w", err)
 	}
 	originJSON, err := json.Marshal(origin)
 	if err != nil {
@@ -71,5 +71,5 @@ func (systemdUserDeployHandoffLauncher) Launch(
 
 func deployHandoffUnitName(group string) string {
 	hash := sha256.Sum256([]byte(group))
-	return fmt.Sprintf("picoclaw-deploy-%x", hash[:8])
+	return fmt.Sprintf("mintclaw-deploy-%x", hash[:8])
 }

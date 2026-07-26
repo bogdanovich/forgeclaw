@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 func (p *Pipeline) tryConfiguredStreamingLLM(
@@ -290,7 +290,7 @@ func (p *Pipeline) configuredStreamingEligible(ts *turnState, exec *turnExecutio
 		})
 		return false
 	}
-	if !ts.opts.SendResponse && !ts.opts.AllowInterimPicoPublish {
+	if !ts.opts.SendResponse && !ts.opts.AllowInterimMintClawPublish {
 		logger.DebugCF("agent", "configured streaming not used", map[string]any{
 			"agent_id": ts.agent.ID,
 			"channel":  ts.channel,

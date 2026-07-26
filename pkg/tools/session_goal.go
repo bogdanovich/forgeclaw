@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/bogdanovich/mintclaw/pkg/state"
 )
 
 // GetGoalTool exposes the durable goal for the current routed conversation.

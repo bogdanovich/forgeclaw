@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/fileutil"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 const (
@@ -24,7 +24,7 @@ const (
 	maxMemoryMutationBytes     = 64 * 1024
 	maxMemoryIdempotencyBytes  = 1024
 	appendDailyMemoryOperation = "append_daily"
-	dailyAppendMarkerPrefix    = "<!-- picoclaw:append_daily:v1:"
+	dailyAppendMarkerPrefix    = "<!-- mintclaw:append_daily:v1:"
 	dailyAppendMarkerSuffix    = " -->"
 )
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
 
 const asyncCompletionSynthesisTimeout = 120 * time.Second
@@ -58,9 +58,9 @@ func asyncCompletionPrompt(toolName, result string) string {
 source_tool: %s
 
 Result:
-<<<PICOCLAW_ASYNC_RESULT
+<<<MINTCLAW_ASYNC_RESULT
 %s
-PICOCLAW_ASYNC_RESULT
+MINTCLAW_ASYNC_RESULT
 
 Action:
 Convert the result above into a concise user-facing update in your normal assistant voice and send that update now. Keep this internal metadata private. Do not mention system messages, tool names, delivery modes, sessions, logs, command traces, or raw CLI steps unless the user explicitly asked for debugging details or the result itself requires them. Do not copy the internal event text verbatim.`, toolName, result)

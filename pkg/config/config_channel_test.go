@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/credential"
+	"github.com/bogdanovich/mintclaw/pkg/credential"
 )
 
 // ─── Test extend structs (simplified, settings + secure in one struct) ───
@@ -144,7 +144,7 @@ func TestStreamingConfig_IsChannelGeneric(t *testing.T) {
 	}
 }
 
-func TestPicoSettings_StreamingConfig(t *testing.T) {
+func TestMintClawSettings_StreamingConfig(t *testing.T) {
 	raw := RawNode(`{
 		"token": "test-token",
 		"streaming": {
@@ -154,18 +154,18 @@ func TestPicoSettings_StreamingConfig(t *testing.T) {
 		}
 	}`)
 	ch := &Channel{
-		Type:     ChannelPico,
+		Type:     ChannelMintClaw,
 		Enabled:  true,
 		Settings: raw,
 	}
-	ch.SetName("pico")
-	var picoCfg PicoSettings
-	if err := ch.Decode(&picoCfg); err != nil {
+	ch.SetName("mintclaw")
+	var mintclawCfg MintClawSettings
+	if err := ch.Decode(&mintclawCfg); err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	assert.True(t, picoCfg.Streaming.Enabled)
-	assert.Equal(t, 2, picoCfg.Streaming.ThrottleSeconds)
-	assert.Equal(t, 80, picoCfg.Streaming.MinGrowthChars)
+	assert.True(t, mintclawCfg.Streaming.Enabled)
+	assert.Equal(t, 2, mintclawCfg.Streaming.ThrottleSeconds)
+	assert.Equal(t, 80, mintclawCfg.Streaming.MinGrowthChars)
 }
 
 func TestWeComSettings_StreamingConfig(t *testing.T) {
@@ -192,7 +192,7 @@ func TestWeComSettings_StreamingConfig(t *testing.T) {
 	assert.Equal(t, 160, wecomCfg.Streaming.MinGrowthChars)
 }
 
-func TestPicoStreamingConfig_Defaults(t *testing.T) {
+func TestMintClawStreamingConfig_Defaults(t *testing.T) {
 	cfg := StreamingConfig{Enabled: true}
 	got := cfg.WithDefaults(1, 40)
 	assert.Equal(t, 1, got.ThrottleSeconds)
@@ -210,9 +210,9 @@ func TestPicoStreamingConfig_Defaults(t *testing.T) {
 }
 
 func TestInitChannelList_TelegramStreamingEnvCompatibility(t *testing.T) {
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED", "true")
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS", "3")
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS", "120")
+	t.Setenv("MINTCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED", "true")
+	t.Setenv("MINTCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS", "3")
+	t.Setenv("MINTCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS", "120")
 
 	channels := ChannelsConfig{
 		"telegram": {
@@ -220,10 +220,10 @@ func TestInitChannelList_TelegramStreamingEnvCompatibility(t *testing.T) {
 			Enabled:  true,
 			Settings: RawNode(`{"token":"telegram-token"}`),
 		},
-		"pico": {
-			Type:     ChannelPico,
+		"mintclaw": {
+			Type:     ChannelMintClaw,
 			Enabled:  true,
-			Settings: RawNode(`{"token":"pico-token"}`),
+			Settings: RawNode(`{"token":"mintclaw-token"}`),
 		},
 	}
 	if err := InitChannelList(channels); err != nil {
@@ -239,19 +239,19 @@ func TestInitChannelList_TelegramStreamingEnvCompatibility(t *testing.T) {
 	assert.Equal(t, 3, tgCfg.Streaming.ThrottleSeconds)
 	assert.Equal(t, 120, tgCfg.Streaming.MinGrowthChars)
 
-	picoDecoded, err := channels["pico"].GetDecoded()
+	mintclawDecoded, err := channels["mintclaw"].GetDecoded()
 	if err != nil {
-		t.Fatalf("pico GetDecoded() error = %v", err)
+		t.Fatalf("mintclaw GetDecoded() error = %v", err)
 	}
-	picoCfg := picoDecoded.(*PicoSettings)
-	assert.False(t, picoCfg.Streaming.Enabled)
-	assert.Equal(t, 0, picoCfg.Streaming.ThrottleSeconds)
-	assert.Equal(t, 0, picoCfg.Streaming.MinGrowthChars)
+	mintclawCfg := mintclawDecoded.(*MintClawSettings)
+	assert.False(t, mintclawCfg.Streaming.Enabled)
+	assert.Equal(t, 0, mintclawCfg.Streaming.ThrottleSeconds)
+	assert.Equal(t, 0, mintclawCfg.Streaming.MinGrowthChars)
 }
 
 func TestInitChannelList_TelegramTopicFilterEnvCompatibility(t *testing.T) {
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS", "3565,7777")
-	t.Setenv("PICOCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS", "6")
+	t.Setenv("MINTCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS", "3565,7777")
+	t.Setenv("MINTCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS", "6")
 
 	channels := ChannelsConfig{
 		"telegram": {
@@ -280,14 +280,14 @@ func TestInitChannelList_RejectsNegativeStreamingDeliveryValues(t *testing.T) {
 		settings    string
 	}{
 		{
-			name:        "pico throttle",
-			channelType: ChannelPico,
-			settings:    `{"token":"pico-token","streaming":{"enabled":true,"throttle_seconds":-1}}`,
+			name:        "mintclaw throttle",
+			channelType: ChannelMintClaw,
+			settings:    `{"token":"mintclaw-token","streaming":{"enabled":true,"throttle_seconds":-1}}`,
 		},
 		{
-			name:        "pico growth",
-			channelType: ChannelPico,
-			settings:    `{"token":"pico-token","streaming":{"enabled":true,"min_growth_chars":-1}}`,
+			name:        "mintclaw growth",
+			channelType: ChannelMintClaw,
+			settings:    `{"token":"mintclaw-token","streaming":{"enabled":true,"min_growth_chars":-1}}`,
 		},
 		{
 			name:        "telegram throttle",
@@ -362,11 +362,11 @@ func TestChannel_JSON_Marshal_SecureMasked(t *testing.T) {
 func TestChannel_JSON_Marshal_OmitsUnconfiguredStreaming(t *testing.T) {
 	ch := Channel{
 		Enabled:  true,
-		Type:     ChannelPico,
-		name:     "pico",
+		Type:     ChannelMintClaw,
+		name:     "mintclaw",
 		Settings: mustParseRawNode(`{"ping_interval":30}`),
 	}
-	var cfg PicoSettings
+	var cfg MintClawSettings
 	require.NoError(t, ch.Decode(&cfg))
 
 	data, err := json.MarshalIndent(ch, "", "  ")

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 func (sm *Manager) ResolveSessionEpoch(

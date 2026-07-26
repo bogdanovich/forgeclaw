@@ -1,5 +1,5 @@
 # ============================================================
-# Stage 1: Build the picoclaw binary
+# Stage 1: Build the mintclaw binary
 # ============================================================
 FROM golang:1.25-alpine AS builder
 
@@ -46,15 +46,15 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -q --spider http://localhost:18790/health || exit 1
 
 # Copy binary
-COPY --from=builder /src/build/picoclaw /usr/local/bin/picoclaw
+COPY --from=builder /src/build/mintclaw /usr/local/bin/mintclaw
 
 # Run onboard to create initial directories and config
-RUN /usr/local/bin/picoclaw onboard
+RUN /usr/local/bin/mintclaw onboard
 
 # Copy default workspace
-COPY workspace/ /root/.picoclaw/workspace/
+COPY workspace/ /root/.mintclaw/workspace/
 
-VOLUME /root/.picoclaw/workspace
+VOLUME /root/.mintclaw/workspace
 
-ENTRYPOINT ["picoclaw"]
+ENTRYPOINT ["mintclaw"]
 CMD ["gateway"]

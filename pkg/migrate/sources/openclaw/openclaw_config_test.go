@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func TestLoadOpenClawConfig(t *testing.T) {
@@ -84,8 +84,8 @@ func TestLoadOpenClawConfig(t *testing.T) {
 	}
 
 	workspace := cfg.GetDefaultWorkspace()
-	if workspace != "~/.picoclaw/workspace" {
-		t.Errorf("expected workspace '~/.picoclaw/workspace', got '%s'", workspace)
+	if workspace != "~/.mintclaw/workspace" {
+		t.Errorf("expected workspace '~/.mintclaw/workspace', got '%s'", workspace)
 	}
 
 	agents := cfg.GetAgents()
@@ -162,7 +162,7 @@ func TestGetProviderConfig(t *testing.T) {
 	}
 }
 
-func TestConvertToPicoClaw(t *testing.T) {
+func TestConvertToMintClaw(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -239,45 +239,48 @@ func TestConvertToPicoClaw(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, warnings, err := cfg.ConvertToPicoClaw("")
+	mintclawCfg, warnings, err := cfg.ConvertToMintClaw("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
 
-	if picoCfg.Agents.Defaults.ModelName != "claude-sonnet-4-20250514" {
-		t.Errorf("expected model 'claude-sonnet-4-20250514', got '%s'", picoCfg.Agents.Defaults.ModelName)
+	if mintclawCfg.Agents.Defaults.ModelName != "claude-sonnet-4-20250514" {
+		t.Errorf("expected model 'claude-sonnet-4-20250514', got '%s'", mintclawCfg.Agents.Defaults.ModelName)
 	}
-	if picoCfg.Agents.Defaults.Workspace != "~/.picoclaw/workspace" {
-		t.Errorf("expected workspace '~/.picoclaw/workspace', got '%s'", picoCfg.Agents.Defaults.Workspace)
+	if mintclawCfg.Agents.Defaults.Workspace != "~/.mintclaw/workspace" {
+		t.Errorf("expected workspace '~/.mintclaw/workspace', got '%s'", mintclawCfg.Agents.Defaults.Workspace)
 	}
 
-	if len(picoCfg.Agents.List) != 2 {
-		t.Errorf("expected 2 agents, got %d", len(picoCfg.Agents.List))
+	if len(mintclawCfg.Agents.List) != 2 {
+		t.Errorf("expected 2 agents, got %d", len(mintclawCfg.Agents.List))
 	}
-	if picoCfg.Agents.List[0].ID != "main" {
-		t.Errorf("expected first agent id 'main', got '%s'", picoCfg.Agents.List[0].ID)
+	if mintclawCfg.Agents.List[0].ID != "main" {
+		t.Errorf("expected first agent id 'main', got '%s'", mintclawCfg.Agents.List[0].ID)
 	}
-	if picoCfg.Agents.List[1].Skills == nil || len(picoCfg.Agents.List[1].Skills) != 2 {
+	if mintclawCfg.Agents.List[1].Skills == nil || len(mintclawCfg.Agents.List[1].Skills) != 2 {
 		t.Errorf("expected 2 skills for assistant agent")
 	}
 
-	if !picoCfg.Channels.Telegram.Enabled {
+	if !mintclawCfg.Channels.Telegram.Enabled {
 		t.Error("telegram should be enabled")
 	}
-	if picoCfg.Channels.Telegram.Token != "test-token" {
-		t.Errorf("expected telegram token 'test-token', got '%s'", picoCfg.Channels.Telegram.Token)
+	if mintclawCfg.Channels.Telegram.Token != "test-token" {
+		t.Errorf("expected telegram token 'test-token', got '%s'", mintclawCfg.Channels.Telegram.Token)
 	}
 
-	if picoCfg.Channels.WhatsApp.BridgeURL != "http://localhost:3000" {
-		t.Errorf("expected whatsapp bridge URL 'http://localhost:3000', got '%s'", picoCfg.Channels.WhatsApp.BridgeURL)
+	if mintclawCfg.Channels.WhatsApp.BridgeURL != "http://localhost:3000" {
+		t.Errorf(
+			"expected whatsapp bridge URL 'http://localhost:3000', got '%s'",
+			mintclawCfg.Channels.WhatsApp.BridgeURL,
+		)
 	}
 
-	if picoCfg.Channels.Feishu.AppID != "app-id" {
-		t.Errorf("expected feishu app ID 'app-id', got '%s'", picoCfg.Channels.Feishu.AppID)
+	if mintclawCfg.Channels.Feishu.AppID != "app-id" {
+		t.Errorf("expected feishu app ID 'app-id', got '%s'", mintclawCfg.Channels.Feishu.AppID)
 	}
 
-	if len(picoCfg.ModelList) != 1 {
-		t.Errorf("expected 1 model config (no models.json provided), got %d", len(picoCfg.ModelList))
+	if len(mintclawCfg.ModelList) != 1 {
+		t.Errorf("expected 1 model config (no models.json provided), got %d", len(mintclawCfg.ModelList))
 	}
 
 	foundWarning := false
@@ -293,7 +296,7 @@ func TestConvertToPicoClaw(t *testing.T) {
 }
 
 func TestToStandardConfig_ExecAllowRemoteDefaultsTrue(t *testing.T) {
-	cfg := (&PicoClawConfig{
+	cfg := (&MintClawConfig{
 		Tools: ToolsConfig{
 			Exec: ExecConfig{
 				EnableDenyPatterns: true,
@@ -306,7 +309,7 @@ func TestToStandardConfig_ExecAllowRemoteDefaultsTrue(t *testing.T) {
 	}
 }
 
-func TestConvertToPicoClawWithQQAndDingTalk(t *testing.T) {
+func TestConvertToMintClawWithQQAndDingTalk(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -352,47 +355,47 @@ func TestConvertToPicoClawWithQQAndDingTalk(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, _, err := cfg.ConvertToPicoClaw("")
+	mintclawCfg, _, err := cfg.ConvertToMintClaw("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
 
-	if !picoCfg.Channels.QQ.Enabled {
+	if !mintclawCfg.Channels.QQ.Enabled {
 		t.Error("qq should be enabled")
 	}
-	if picoCfg.Channels.QQ.AppID != "qq-app-id" {
-		t.Errorf("expected qq app ID 'qq-app-id', got '%s'", picoCfg.Channels.QQ.AppID)
+	if mintclawCfg.Channels.QQ.AppID != "qq-app-id" {
+		t.Errorf("expected qq app ID 'qq-app-id', got '%s'", mintclawCfg.Channels.QQ.AppID)
 	}
 
-	if !picoCfg.Channels.DingTalk.Enabled {
+	if !mintclawCfg.Channels.DingTalk.Enabled {
 		t.Error("dingtalk should be enabled")
 	}
-	if picoCfg.Channels.DingTalk.ClientID != "ding-app-id" {
-		t.Errorf("expected dingtalk client ID 'ding-app-id', got '%s'", picoCfg.Channels.DingTalk.ClientID)
+	if mintclawCfg.Channels.DingTalk.ClientID != "ding-app-id" {
+		t.Errorf("expected dingtalk client ID 'ding-app-id', got '%s'", mintclawCfg.Channels.DingTalk.ClientID)
 	}
 
-	if !picoCfg.Channels.MaixCam.Enabled {
+	if !mintclawCfg.Channels.MaixCam.Enabled {
 		t.Error("maixcam should be enabled")
 	}
-	if picoCfg.Channels.MaixCam.Host != "192.168.1.100" {
-		t.Errorf("expected maixcam host '192.168.1.100', got '%s'", picoCfg.Channels.MaixCam.Host)
+	if mintclawCfg.Channels.MaixCam.Host != "192.168.1.100" {
+		t.Errorf("expected maixcam host '192.168.1.100', got '%s'", mintclawCfg.Channels.MaixCam.Host)
 	}
-	if picoCfg.Channels.MaixCam.Port != 9000 {
-		t.Errorf("expected maixcam port 9000, got %d", picoCfg.Channels.MaixCam.Port)
+	if mintclawCfg.Channels.MaixCam.Port != 9000 {
+		t.Errorf("expected maixcam port 9000, got %d", mintclawCfg.Channels.MaixCam.Port)
 	}
 
-	if !picoCfg.Channels.Slack.Enabled {
+	if !mintclawCfg.Channels.Slack.Enabled {
 		t.Error("slack should be enabled")
 	}
-	if picoCfg.Channels.Slack.BotToken != "xoxb-test" {
-		t.Errorf("expected slack bot token 'xoxb-test', got '%s'", picoCfg.Channels.Slack.BotToken)
+	if mintclawCfg.Channels.Slack.BotToken != "xoxb-test" {
+		t.Errorf("expected slack bot token 'xoxb-test', got '%s'", mintclawCfg.Channels.Slack.BotToken)
 	}
-	if picoCfg.Channels.Slack.AppToken != "xapp-test" {
-		t.Errorf("expected slack app token 'xapp-test', got '%s'", picoCfg.Channels.Slack.AppToken)
+	if mintclawCfg.Channels.Slack.AppToken != "xapp-test" {
+		t.Errorf("expected slack app token 'xapp-test', got '%s'", mintclawCfg.Channels.Slack.AppToken)
 	}
 }
 
-func TestConvertToPicoClawWithMatrix(t *testing.T) {
+func TestConvertToMintClawWithMatrix(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -418,26 +421,26 @@ func TestConvertToPicoClawWithMatrix(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, warnings, err := cfg.ConvertToPicoClaw("")
+	mintclawCfg, warnings, err := cfg.ConvertToMintClaw("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
 
-	if !picoCfg.Channels.Matrix.Enabled {
+	if !mintclawCfg.Channels.Matrix.Enabled {
 		t.Error("matrix should be enabled")
 	}
-	if picoCfg.Channels.Matrix.Homeserver != "https://matrix.example.com" {
-		t.Errorf("expected matrix homeserver, got %q", picoCfg.Channels.Matrix.Homeserver)
+	if mintclawCfg.Channels.Matrix.Homeserver != "https://matrix.example.com" {
+		t.Errorf("expected matrix homeserver, got %q", mintclawCfg.Channels.Matrix.Homeserver)
 	}
-	if picoCfg.Channels.Matrix.UserID != "@bot:matrix.example.com" {
-		t.Errorf("expected matrix user_id, got %q", picoCfg.Channels.Matrix.UserID)
+	if mintclawCfg.Channels.Matrix.UserID != "@bot:matrix.example.com" {
+		t.Errorf("expected matrix user_id, got %q", mintclawCfg.Channels.Matrix.UserID)
 	}
-	if picoCfg.Channels.Matrix.AccessToken != "syt_test_token" {
-		t.Errorf("expected matrix access_token, got %q", picoCfg.Channels.Matrix.AccessToken)
+	if mintclawCfg.Channels.Matrix.AccessToken != "syt_test_token" {
+		t.Errorf("expected matrix access_token, got %q", mintclawCfg.Channels.Matrix.AccessToken)
 	}
-	if len(picoCfg.Channels.Matrix.AllowFrom) != 1 ||
-		picoCfg.Channels.Matrix.AllowFrom[0] != "@alice:matrix.example.com" {
-		t.Errorf("unexpected matrix allow_from: %#v", picoCfg.Channels.Matrix.AllowFrom)
+	if len(mintclawCfg.Channels.Matrix.AllowFrom) != 1 ||
+		mintclawCfg.Channels.Matrix.AllowFrom[0] != "@alice:matrix.example.com" {
+		t.Errorf("unexpected matrix allow_from: %#v", mintclawCfg.Channels.Matrix.AllowFrom)
 	}
 
 	for _, w := range warnings {
@@ -447,7 +450,7 @@ func TestConvertToPicoClawWithMatrix(t *testing.T) {
 	}
 }
 
-func TestConvertToPicoClawWithMatrixDisabled(t *testing.T) {
+func TestConvertToMintClawWithMatrixDisabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "openclaw.json")
 
@@ -472,12 +475,12 @@ func TestConvertToPicoClawWithMatrixDisabled(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	picoCfg, _, err := cfg.ConvertToPicoClaw("")
+	mintclawCfg, _, err := cfg.ConvertToMintClaw("")
 	if err != nil {
 		t.Fatalf("failed to convert config: %v", err)
 	}
 
-	if picoCfg.Channels.Matrix.Enabled {
+	if mintclawCfg.Channels.Matrix.Enabled {
 		t.Error("matrix should respect enabled=false from source config")
 	}
 }
@@ -636,12 +639,12 @@ func TestLoadOpenClawConfigFromDir(t *testing.T) {
 }
 
 func TestToStandardConfig(t *testing.T) {
-	picoCfg := &PicoClawConfig{
+	mintclawCfg := &MintClawConfig{
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
 				Provider:  "anthropic",
 				ModelName: "claude-sonnet-4-20250514",
-				Workspace: "~/.picoclaw/workspace",
+				Workspace: "~/.mintclaw/workspace",
 			},
 			List: []AgentConfig{
 				{
@@ -675,7 +678,7 @@ func TestToStandardConfig(t *testing.T) {
 		},
 	}
 
-	stdCfg := picoCfg.ToStandardConfig()
+	stdCfg := mintclawCfg.ToStandardConfig()
 
 	if stdCfg.Agents.Defaults.Provider != "anthropic" {
 		t.Errorf("expected provider 'anthropic', got '%s'", stdCfg.Agents.Defaults.Provider)
@@ -683,8 +686,8 @@ func TestToStandardConfig(t *testing.T) {
 	if stdCfg.Agents.Defaults.ModelName != "claude-sonnet-4-20250514" {
 		t.Errorf("expected model name 'claude-sonnet-4-20250514', got '%s'", stdCfg.Agents.Defaults.ModelName)
 	}
-	if stdCfg.Agents.Defaults.Workspace != "~/.picoclaw/workspace" {
-		t.Errorf("expected workspace '~/.picoclaw/workspace', got '%s'", stdCfg.Agents.Defaults.Workspace)
+	if stdCfg.Agents.Defaults.Workspace != "~/.mintclaw/workspace" {
+		t.Errorf("expected workspace '~/.mintclaw/workspace', got '%s'", stdCfg.Agents.Defaults.Workspace)
 	}
 
 	if len(stdCfg.Agents.List) != 1 {

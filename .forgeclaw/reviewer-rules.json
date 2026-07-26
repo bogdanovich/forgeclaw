@@ -34,7 +34,7 @@
       ]
     },
     {
-      "pattern": "cmd/picoclaw-node/**",
+      "pattern": "cmd/mintclaw-node/**",
       "risk": "high",
       "codex": "required",
       "guidance": [

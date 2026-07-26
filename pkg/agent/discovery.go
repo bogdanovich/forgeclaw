@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
 )
 
 // AgentDescriptor is the structured discovery payload injected into each
@@ -18,7 +18,7 @@ type AgentDescriptor struct {
 }
 
 // ListAgents returns structured descriptors for every agent in the current
-// PicoClaw instance. The current workspace, when provided, is used only to
+// MintClaw instance. The current workspace, when provided, is used only to
 // order the matching agent first for prompt readability.
 func (r *AgentRegistry) ListAgents(workspace string) []AgentDescriptor {
 	r.mu.RLock()

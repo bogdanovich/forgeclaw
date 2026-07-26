@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/nodes"
-	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const nodeAdmissionDrainTimeout = 5 * time.Second

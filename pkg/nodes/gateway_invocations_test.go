@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 func TestGatewayInvocationStorePersistsPreparedBinding(t *testing.T) {

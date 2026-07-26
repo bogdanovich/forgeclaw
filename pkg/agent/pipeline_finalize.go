@@ -1,14 +1,14 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 
 package agent
 
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 // Finalize handles turn finalization, either:
@@ -76,10 +76,10 @@ func (p *Pipeline) Finalize(
 
 	contextUsage := computeContextUsage(ts.agent, ts.sessionKey)
 	streamErr := finalizeConfiguredStreamingLLM(turnCtx, ts, exec, finalContent, contextUsage)
-	// If streaming never became visible, keep the legacy Pico interim publish path
+	// If streaming never became visible, keep the legacy MintClaw interim publish path
 	// so the final answer is still delivered outside normal SendResponse.
 	if ((streamErr != nil && !isConfiguredStreamingVisibleError(streamErr)) || exec.streamingFallback) &&
-		!ts.opts.SendResponse && ts.opts.AllowInterimPicoPublish &&
+		!ts.opts.SendResponse && ts.opts.AllowInterimMintClawPublish &&
 		finalContent != "" {
 		msg := outboundMessageForTurnWithOptions(ts, finalContent, outboundTurnMessageOptions{
 			modelName: exec.model.llmModelName,

@@ -8,7 +8,7 @@ import (
 	"io"
 	"regexp"
 
-	"github.com/sipeed/picoclaw/pkg/nodes/internal/jsonstrict"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const (

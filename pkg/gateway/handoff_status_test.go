@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/agent"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func TestReportRestartHandoffRecoversAndDeliversOnce(t *testing.T) {
@@ -20,7 +20,7 @@ func TestReportRestartHandoffRecoversAndDeliversOnce(t *testing.T) {
 	now := time.Now().UTC().Add(-time.Minute)
 	if writeErr := store.Write(RestartSentinel{
 		Status:           restartStatusRunning,
-		RequestedService: "picoclaw-main.service",
+		RequestedService: "mintclaw-main.service",
 		Origin: RestartOrigin{
 			Channel: "telegram", ChatID: "chat-1", TopicID: "topic-1", SessionKey: "session-1",
 		},
@@ -69,7 +69,7 @@ func TestReportDeployHandoffShowsFailureAndDoesNotDuplicate(t *testing.T) {
 	if err := store.Write(DeploySentinel{
 		Kind:        "deploy",
 		Status:      "failed",
-		Group:       "picoclaw-local",
+		Group:       "mintclaw-local",
 		Target:      "all",
 		Command:     "/opt/deploy.sh",
 		OutputTail:  "health check failed",
@@ -137,7 +137,7 @@ func TestWatchDeployHandoffsReportsFailureCreatedAfterStartup(t *testing.T) {
 	if writeErr := store.Write(DeploySentinel{
 		Kind:        "deploy",
 		Status:      "failed",
-		Group:       "picoclaw-local",
+		Group:       "mintclaw-local",
 		Target:      "current",
 		ExitCode:    128,
 		Handoff:     true,

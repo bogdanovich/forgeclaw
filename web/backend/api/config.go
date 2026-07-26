@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 // registerConfigRoutes binds configuration management endpoints to the ServeMux.
@@ -83,7 +83,7 @@ func (h *Handler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load existing config and copy security credentials before validation,
-	// so that security-managed fields (e.g. pico token) are available.
+	// so that security-managed fields (e.g. mintclaw token) are available.
 	err = cfg.SecurityCopyFrom(h.configPath)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to apply security config: %v", err), http.StatusInternalServerError)
@@ -356,13 +356,13 @@ func validateConfig(cfg *config.Config) []string {
 		}
 	}
 
-	// Pico channel: token required when enabled
+	// MintClaw channel: token required when enabled
 	{
-		bc := cfg.Channels.GetByType(config.ChannelPico)
+		bc := cfg.Channels.GetByType(config.ChannelMintClaw)
 		if bc != nil && bc.Enabled {
 			if decoded, err := bc.GetDecoded(); err == nil && decoded != nil {
-				if c, ok := decoded.(*config.PicoSettings); ok && c.Token.String() == "" {
-					errs = append(errs, "channels.pico.token is required when pico channel is enabled")
+				if c, ok := decoded.(*config.MintClawSettings); ok && c.Token.String() == "" {
+					errs = append(errs, "channels.mintclaw.token is required when mintclaw channel is enabled")
 				}
 			}
 		}

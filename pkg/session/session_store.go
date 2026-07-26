@@ -1,8 +1,8 @@
 package session
 
 import (
-	"github.com/sipeed/picoclaw/pkg/memory"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/memory"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 // SessionStore defines the persistence operations used by the agent loop.

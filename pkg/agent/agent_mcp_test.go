@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/mcp"
-	agenttools "github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/mcp"
+	agenttools "github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -260,7 +260,7 @@ func TestEnsureMCPInitialized_LoadFailureSetsInitErr(t *testing.T) {
 			Servers: map[string]config.MCPServerConfig{
 				"broken": {
 					Enabled: true,
-					Command: "picoclaw-command-that-does-not-exist-for-mcp-tests",
+					Command: "mintclaw-command-that-does-not-exist-for-mcp-tests",
 				},
 			},
 		},

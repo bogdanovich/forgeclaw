@@ -12,9 +12,9 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 
-	"github.com/sipeed/picoclaw/pkg/auth"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	orc "github.com/sipeed/picoclaw/pkg/providers/openai_responses_common"
+	"github.com/bogdanovich/mintclaw/pkg/auth"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	orc "github.com/bogdanovich/mintclaw/pkg/providers/openai_responses_common"
 )
 
 const (

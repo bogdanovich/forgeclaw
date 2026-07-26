@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/diagnosticcapture"
-	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/diagnosticcapture"
+	"github.com/bogdanovich/mintclaw/pkg/diagnostictrace"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 const (
@@ -869,7 +869,7 @@ func targetKey(channel, chatID string) string {
 
 func captureRedactorVersion(mode diagnostictrace.ContentMode) string {
 	if mode == diagnostictrace.ContentRedacted {
-		return "forgeclaw.config_filter.v1"
+		return "mintclaw.config_filter.v1"
 	}
 	return ""
 }

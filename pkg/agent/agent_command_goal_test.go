@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/commands"
+	"github.com/bogdanovich/mintclaw/pkg/commands"
 )
 
 func TestBuildCommandsRuntime_GoalCallbacksUseRouteSessionKey(t *testing.T) {

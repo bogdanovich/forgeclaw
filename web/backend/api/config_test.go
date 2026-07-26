@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 func TestHandlePatchConfig_PreservesTurnProfile(t *testing.T) {
@@ -149,7 +149,7 @@ func TestHandleUpdateConfig_PreservesExecAllowRemoteDefaultWhenOmitted(t *testin
 "version": 3,
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace"
+				"workspace": "~/.mintclaw/workspace"
 			}
 		},
 		"model_list": [
@@ -188,7 +188,7 @@ func TestHandleUpdateConfig_DoesNotInheritDefaultModelFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewBufferString(`{
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace"
+				"workspace": "~/.mintclaw/workspace"
 			}
 		},
 		"model_list": [
@@ -348,8 +348,8 @@ func TestHandlePatchConfig_NormalizesStringChannelArrayFields(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", bytes.NewBufferString(`{
 		"channel_list": {
-			"pico": {
-				"type": "pico",
+			"mintclaw": {
+				"type": "mintclaw",
 				"allow_from": " ou_a\u200b，\u2060ou_b\tou_c\u202e，ou_a ",
 				"group_trigger": {
 					"prefixes": "/，!;\n?，/"
@@ -385,37 +385,37 @@ func TestHandlePatchConfig_NormalizesStringChannelArrayFields(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
-	picoChannel := cfg.Channels[config.ChannelPico]
-	if len(picoChannel.AllowFrom) != 3 ||
-		picoChannel.AllowFrom[0] != "ou_a" ||
-		picoChannel.AllowFrom[1] != "ou_b" ||
-		picoChannel.AllowFrom[2] != "ou_c" {
+	mintclawChannel := cfg.Channels[config.ChannelMintClaw]
+	if len(mintclawChannel.AllowFrom) != 3 ||
+		mintclawChannel.AllowFrom[0] != "ou_a" ||
+		mintclawChannel.AllowFrom[1] != "ou_b" ||
+		mintclawChannel.AllowFrom[2] != "ou_c" {
 		t.Fatalf(
-			"pico allow_from = %#v, want [\"ou_a\", \"ou_b\", \"ou_c\"]",
-			picoChannel.AllowFrom,
+			"mintclaw allow_from = %#v, want [\"ou_a\", \"ou_b\", \"ou_c\"]",
+			mintclawChannel.AllowFrom,
 		)
 	}
-	if len(picoChannel.GroupTrigger.Prefixes) != 3 ||
-		picoChannel.GroupTrigger.Prefixes[0] != "/" ||
-		picoChannel.GroupTrigger.Prefixes[1] != "!;" ||
-		picoChannel.GroupTrigger.Prefixes[2] != "?" {
+	if len(mintclawChannel.GroupTrigger.Prefixes) != 3 ||
+		mintclawChannel.GroupTrigger.Prefixes[0] != "/" ||
+		mintclawChannel.GroupTrigger.Prefixes[1] != "!;" ||
+		mintclawChannel.GroupTrigger.Prefixes[2] != "?" {
 		t.Fatalf(
-			"pico group_trigger.prefixes = %#v, want [\"/\", \"!;\", \"?\"]",
-			picoChannel.GroupTrigger.Prefixes,
+			"mintclaw group_trigger.prefixes = %#v, want [\"/\", \"!;\", \"?\"]",
+			mintclawChannel.GroupTrigger.Prefixes,
 		)
 	}
 
-	decoded, err := picoChannel.GetDecoded()
+	decoded, err := mintclawChannel.GetDecoded()
 	if err != nil {
-		t.Fatalf("GetDecoded() pico error = %v", err)
+		t.Fatalf("GetDecoded() mintclaw error = %v", err)
 	}
-	picoCfg := decoded.(*config.PicoSettings)
-	if len(picoCfg.AllowOrigins) != 2 ||
-		picoCfg.AllowOrigins[0] != "https://a.example.com" ||
-		picoCfg.AllowOrigins[1] != "http://localhost:5173" {
+	mintclawCfg := decoded.(*config.MintClawSettings)
+	if len(mintclawCfg.AllowOrigins) != 2 ||
+		mintclawCfg.AllowOrigins[0] != "https://a.example.com" ||
+		mintclawCfg.AllowOrigins[1] != "http://localhost:5173" {
 		t.Fatalf(
-			"pico allow_origins = %#v, want [\"https://a.example.com\", \"http://localhost:5173\"]",
-			picoCfg.AllowOrigins,
+			"mintclaw allow_origins = %#v, want [\"https://a.example.com\", \"http://localhost:5173\"]",
+			mintclawCfg.AllowOrigins,
 		)
 	}
 
@@ -585,7 +585,7 @@ func TestHandlePatchConfig_RejectsNegativeStreamingDeliveryValues(t *testing.T) 
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", bytes.NewBufferString(`{
 		"channel_list": {
-			"pico": {
+			"mintclaw": {
 				"settings": {
 					"streaming": {
 						"enabled": true,
@@ -759,20 +759,20 @@ func TestHandlePatchConfig_CreatesMissingChannelWithTypeAndSecret(t *testing.T) 
 	}
 }
 
-// setupPicoEnabledEnv creates a test environment with Pico channel enabled and
+// setupMintClawEnabledEnv creates a test environment with MintClaw channel enabled and
 // its token stored only in .security.yml (not in the JSON payload).
-func setupPicoEnabledEnv(t *testing.T) (string, func()) {
+func setupMintClawEnabledEnv(t *testing.T) (string, func()) {
 	t.Helper()
 
 	tmp := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	oldPicoHome := os.Getenv("PICOCLAW_HOME")
+	oldMintClawHome := os.Getenv("MINTCLAW_HOME")
 
 	if err := os.Setenv("HOME", tmp); err != nil {
 		t.Fatalf("set HOME: %v", err)
 	}
-	if err := os.Setenv("PICOCLAW_HOME", filepath.Join(tmp, ".picoclaw")); err != nil {
-		t.Fatalf("set PICOCLAW_HOME: %v", err)
+	if err := os.Setenv("MINTCLAW_HOME", filepath.Join(tmp, ".mintclaw")); err != nil {
+		t.Fatalf("set MINTCLAW_HOME: %v", err)
 	}
 
 	cfg := config.DefaultConfig()
@@ -782,14 +782,14 @@ func setupPicoEnabledEnv(t *testing.T) (string, func()) {
 		APIKeys:   config.SimpleSecureStrings("sk-default"),
 	}}
 	cfg.Agents.Defaults.ModelName = "custom-default"
-	bc := cfg.Channels["pico"]
+	bc := cfg.Channels["mintclaw"]
 	decoded, err := bc.GetDecoded()
 	if err != nil {
 		t.Fatalf("GetDecoded() error = %v", err)
 	}
-	picoCfg := decoded.(*config.PicoSettings)
+	mintclawCfg := decoded.(*config.MintClawSettings)
 	bc.Enabled = true
-	picoCfg.Token = *config.NewSecureString("test-pico-token")
+	mintclawCfg.Token = *config.NewSecureString("test-mintclaw-token")
 
 	configPath := filepath.Join(tmp, "config.json")
 	if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -798,34 +798,34 @@ func setupPicoEnabledEnv(t *testing.T) (string, func()) {
 
 	cleanup := func() {
 		_ = os.Setenv("HOME", oldHome)
-		if oldPicoHome == "" {
-			_ = os.Unsetenv("PICOCLAW_HOME")
+		if oldMintClawHome == "" {
+			_ = os.Unsetenv("MINTCLAW_HOME")
 		} else {
-			_ = os.Setenv("PICOCLAW_HOME", oldPicoHome)
+			_ = os.Setenv("MINTCLAW_HOME", oldMintClawHome)
 		}
 	}
 	return configPath, cleanup
 }
 
-func TestHandleUpdateConfig_SucceedsWhenPicoTokenInSecurityOnly(t *testing.T) {
-	configPath, cleanup := setupPicoEnabledEnv(t)
+func TestHandleUpdateConfig_SucceedsWhenMintClawTokenInSecurityOnly(t *testing.T) {
+	configPath, cleanup := setupMintClawEnabledEnv(t)
 	defer cleanup()
 
 	h := NewHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	// PUT request with pico enabled but no token in JSON — token is in .security.yml
+	// PUT request with mintclaw enabled but no token in JSON — token is in .security.yml
 	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewBufferString(`{
 		"version": 1,
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.mintclaw/workspace",
 				"model_name": "custom-default"
 			}
 		},
 		"channels": {
-			"pico": {
+			"mintclaw": {
 				"enabled": true,
 				"ping_interval": 30,
 				"read_timeout": 60,
@@ -855,15 +855,15 @@ func TestHandleUpdateConfig_SucceedsWhenPicoTokenInSecurityOnly(t *testing.T) {
 	}
 }
 
-func TestHandlePatchConfig_SucceedsWhenPicoTokenInSecurityOnly(t *testing.T) {
-	configPath, cleanup := setupPicoEnabledEnv(t)
+func TestHandlePatchConfig_SucceedsWhenMintClawTokenInSecurityOnly(t *testing.T) {
+	configPath, cleanup := setupMintClawEnabledEnv(t)
 	defer cleanup()
 
 	h := NewHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	// PATCH request changing an unrelated field — pico token still in .security.yml
+	// PATCH request changing an unrelated field — mintclaw token still in .security.yml
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", bytes.NewBufferString(`{
 		"gateway": {
 			"log_level": "info"
@@ -888,7 +888,7 @@ func TestHandleUpdateConfig_AppliesGatewayLogLevel(t *testing.T) {
 		"version": 1,
 		"agents": {
 			"defaults": {
-				"workspace": "~/.picoclaw/workspace",
+				"workspace": "~/.mintclaw/workspace",
 				"model_name": "custom-default"
 			}
 		},

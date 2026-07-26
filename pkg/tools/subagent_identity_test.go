@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func NewSubagentManager(

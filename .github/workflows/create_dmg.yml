@@ -42,7 +42,7 @@ jobs:
 
       # 4. Apply ad-hoc signing
       - name: Ad-hoc Sign
-        run: codesign --force --deep --sign - "build/PicoClaw Launcher.app"
+        run: codesign --force --deep --sign - "build/MintClaw Launcher.app"
 
       # 5. Install the DMG packaging tool
       - name: Install create-dmg
@@ -53,15 +53,15 @@ jobs:
         run: |
           mkdir -p dist
           create-dmg \
-            --volname "PicoClaw Installer" \
+            --volname "MintClaw Installer" \
             --window-pos 200 120 \
             --window-size 800 400 \
             --icon-size 100 \
-            --icon "PicoClaw Launcher.app" 200 190 \
-            --hide-extension "PicoClaw Launcher.app" \
+            --icon "MintClaw Launcher.app" 200 190 \
+            --hide-extension "MintClaw Launcher.app" \
             --app-drop-link 600 185 \
-            "dist/picoclaw-${{ matrix.arch }}.dmg" \
-            "build/PicoClaw Launcher.app"
+            "dist/mintclaw-${{ matrix.arch }}.dmg" \
+            "build/MintClaw Launcher.app"
 
       # 7. Upload the DMG as a GitHub artifact
       - name: Upload DMG

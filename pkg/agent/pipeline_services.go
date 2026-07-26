@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/session"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func persistFullSessionMessage(
@@ -121,14 +121,14 @@ func (p *Pipeline) targetReasoningChannelID(channelName string) string {
 	return p.Interaction.Reasoning.targetReasoningChannelID(channelName)
 }
 
-func (p *Pipeline) publishPicoReasoning(
+func (p *Pipeline) publishMintClawReasoning(
 	ctx context.Context,
 	reasoningContent, chatID, sessionKey, modelName string,
 ) {
 	if p == nil || p.Interaction.Reasoning == nil {
 		return
 	}
-	p.Interaction.Reasoning.publishPicoReasoning(
+	p.Interaction.Reasoning.publishMintClawReasoning(
 		ctx,
 		reasoningContent,
 		chatID,
@@ -137,7 +137,7 @@ func (p *Pipeline) publishPicoReasoning(
 	)
 }
 
-func (p *Pipeline) publishPicoToolCallInterim(
+func (p *Pipeline) publishMintClawToolCallInterim(
 	ctx context.Context,
 	ts *turnState,
 	modelName string,
@@ -148,7 +148,7 @@ func (p *Pipeline) publishPicoToolCallInterim(
 	if p == nil || p.Interaction.Reasoning == nil {
 		return
 	}
-	p.Interaction.Reasoning.publishPicoToolCallInterim(
+	p.Interaction.Reasoning.publishMintClawToolCallInterim(
 		ctx,
 		ts,
 		modelName,

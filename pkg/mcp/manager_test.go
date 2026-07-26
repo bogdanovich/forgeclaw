@@ -18,8 +18,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 func TestLoadEnvFile(t *testing.T) {
@@ -710,7 +710,7 @@ func newScriptedServerConnection(
 	}
 
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{
-		Name:    "picoclaw-test",
+		Name:    "mintclaw-test",
 		Version: "1.0.0",
 	}, nil)
 	session, err := client.Connect(context.Background(), transport, nil)

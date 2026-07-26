@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 const adjacentMediaFollowupWindow = 2 * time.Minute

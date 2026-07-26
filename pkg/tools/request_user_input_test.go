@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/interactions"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 func TestRequestUserInputToolGuidesConversationLanguagePresentation(t *testing.T) {

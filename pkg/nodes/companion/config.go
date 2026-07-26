@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 const (
@@ -90,7 +90,7 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 		if homeErr != nil {
 			return Config{}, fmt.Errorf("resolve home directory: %w", homeErr)
 		}
-		cfg.StateDir = filepath.Join(home, ".picoclaw-node")
+		cfg.StateDir = filepath.Join(home, ".mintclaw-node")
 	} else {
 		cfg.StateDir, err = resolveConfigPath(baseDir, cfg.StateDir)
 		if err != nil {

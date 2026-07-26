@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/sipeed/picoclaw/pkg/updater"
+	"github.com/bogdanovich/mintclaw/pkg/updater"
 )
 
 // registerUpdateRoutes registers the self-update endpoint.
@@ -39,7 +39,7 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	binary := req.Binary
 	if binary == "" {
-		binary = "picoclaw-launcher"
+		binary = "mintclaw-launcher"
 	}
 
 	if err := updater.UpdateSelfFromRelease(req.URL, "", "", binary); err != nil {

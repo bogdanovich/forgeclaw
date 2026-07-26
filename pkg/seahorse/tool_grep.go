@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/tools"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 // GrepTool searches summaries and messages for matching content.

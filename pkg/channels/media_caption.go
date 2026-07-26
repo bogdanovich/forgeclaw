@@ -3,7 +3,7 @@ package channels
 import (
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
 
 // FirstMediaCaption returns the first non-empty caption from the media parts.

@@ -15,7 +15,7 @@ before:
     - sh -c 'if [ "${INCLUDE_ANDROID_BUNDLE:-}" = "true" ]; then make build-android-bundle; fi'
 
 builds:
-  - id: picoclaw
+  - id: mintclaw
     env:
       - CGO_ENABLED=0
     tags:
@@ -23,10 +23,10 @@ builds:
       - stdjson
     ldflags:
       - -s -w
-      - -X github.com/sipeed/picoclaw/pkg/config.Version={{ .Version }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GitCommit={{ .ShortCommit }}
-      - -X github.com/sipeed/picoclaw/pkg/config.BuildTime={{ .Date }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.Version={{ .Version }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.GitCommit={{ .ShortCommit }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.BuildTime={{ .Date }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
     goos:
       - linux
       - windows
@@ -40,13 +40,10 @@ builds:
       - loong64
       - arm
       - s390x
-      - mipsle
     goarm:
       - "6"
       - "7"
-    gomips:
-      - softfloat
-    main: ./cmd/picoclaw
+    main: ./cmd/mintclaw
     ignore:
       - goos: windows
         goarch: arm
@@ -56,9 +53,11 @@ builds:
         goarch: mips64
       - goos: netbsd
         goarch: arm
+      - goos: netbsd
+        goarch: arm64
 
-  - id: picoclaw-launcher
-    binary: picoclaw-launcher
+  - id: mintclaw-launcher
+    binary: mintclaw-launcher
     env:
       - CGO_ENABLED=0
     tags:
@@ -66,10 +65,10 @@ builds:
       - stdjson
     ldflags:
       - -s -w
-      - -X github.com/sipeed/picoclaw/pkg/config.Version={{ .Version }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GitCommit={{ .ShortCommit }}
-      - -X github.com/sipeed/picoclaw/pkg/config.BuildTime={{ .Date }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.Version={{ .Version }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.GitCommit={{ .ShortCommit }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.BuildTime={{ .Date }}
+      - -X github.com/bogdanovich/mintclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
     goos:
       - linux
       - windows
@@ -83,12 +82,9 @@ builds:
       - loong64
       - arm
       - s390x
-      - mipsle
     goarm:
       - "6"
       - "7"
-    gomips:
-      - softfloat
     main: ./web/backend
     ignore:
       - goos: windows
@@ -99,17 +95,18 @@ builds:
         goarch: mips64
       - goos: netbsd
         goarch: arm
+      - goos: netbsd
+        goarch: arm64
 
 dockers_v2:
-  - id: picoclaw
+  - id: mintclaw
     dockerfile: docker/Dockerfile.goreleaser
     extra_files:
       - docker/entrypoint.sh
     ids:
-      - picoclaw
+      - mintclaw
     images:
-      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/picoclaw"
-      - 'docker.io/{{ .Env.DOCKERHUB_IMAGE_NAME }}'
+      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/mintclaw"
     tags:
       - '{{ if isEnvSet "NIGHTLY_BUILD" }}nightly{{ else }}{{ .Tag }}{{ end }}'
       - '{{ if isEnvSet "NIGHTLY_BUILD" }}nightly{{ else }}latest{{ end }}'
@@ -118,14 +115,13 @@ dockers_v2:
       - linux/arm64
       - linux/riscv64
 
-  - id: picoclaw-launcher
+  - id: mintclaw-launcher
     dockerfile: docker/Dockerfile.goreleaser.launcher
     ids:
-      - picoclaw
-      - picoclaw-launcher
+      - mintclaw
+      - mintclaw-launcher
     images:
-      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/picoclaw"
-      - 'docker.io/{{ .Env.DOCKERHUB_IMAGE_NAME }}'
+      - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/mintclaw"
     tags:
       - '{{ if isEnvSet "NIGHTLY_BUILD" }}nightly-launcher{{ else }}{{ .Tag }}-launcher{{ end }}'
       - '{{ if isEnvSet "NIGHTLY_BUILD" }}nightly-launcher{{ else }}launcher{{ end }}'
@@ -133,22 +129,6 @@ dockers_v2:
       - linux/amd64
       - linux/arm64
       - linux/riscv64
-
-notarize:
-  macos:
-    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
-      ids:
-        - picoclaw
-        - picoclaw-launcher
-      sign:
-        certificate: "{{.Env.MACOS_SIGN_P12}}"
-        password: "{{.Env.MACOS_SIGN_PASSWORD}}"
-      notarize:
-        issuer_id: "{{.Env.MACOS_NOTARY_ISSUER_ID}}"
-        key_id: "{{.Env.MACOS_NOTARY_KEY_ID}}"
-        key: "{{.Env.MACOS_NOTARY_KEY}}"
-        wait: true
-        timeout: 20m
 
 archives:
   - formats: [tar.gz]
@@ -166,31 +146,31 @@ archives:
         formats: [zip]
 
 nfpms:
-  - id: picoclaw
+  - id: mintclaw
     ids:
-      - picoclaw
-      - picoclaw-launcher
-    package_name: picoclaw
+      - mintclaw
+      - mintclaw-launcher
+    package_name: mintclaw
     file_name_template: >-
       {{ .PackageName }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "arm64" }}aarch64
       {{- else if eq .Arch "arm" }}armv{{ .Arm }}
       {{- else }}{{ .Arch }}{{ end }}
-    vendor: picoclaw
-    homepage: https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/picoclaw
-    maintainer: picoclaw contributors
-    description: picoclaw - a tool for managing and running tasks
+    vendor: MintClaw
+    homepage: https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/mintclaw
+    maintainer: MintClaw contributors
+    description: MintClaw - a tool for managing and running tasks
     license: MIT
     formats:
       - rpm
       - deb
     bindir: /usr/bin
     contents:
-      - src: web/picoclaw-launcher.desktop
-        dst: /usr/share/applications/picoclaw-launcher.desktop
-      - src: web/picoclaw-launcher.png
-        dst: /usr/share/icons/hicolor/512x512/apps/picoclaw-launcher.png
+      - src: web/mintclaw-launcher.desktop
+        dst: /usr/share/applications/mintclaw-launcher.desktop
+      - src: web/mintclaw-launcher.png
+        dst: /usr/share/icons/hicolor/512x512/apps/mintclaw-launcher.png
 
 changelog:
   sort: asc
@@ -207,7 +187,7 @@ changelog:
 release:
   disable: '{{ isEnvSet "NIGHTLY_BUILD" }}'
   extra_files:
-    - glob: ./build/picoclaw-android-universal.zip
+    - glob: ./build/mintclaw-android-universal.zip
   footer: >-
 
     ---

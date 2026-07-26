@@ -1,35 +1,30 @@
-import {
-  IconCheck,
-  IconChevronDown,
-  IconCopy,
-} from "@tabler/icons-react"
-import { useAtom } from "jotai"
+import { IconCheck, IconChevronDown, IconCopy } from "@tabler/icons-react"
 import hljs from "highlight.js/lib/core"
 import json from "highlight.js/lib/languages/json"
+import { useAtom } from "jotai"
 import {
-  type ComponentProps,
   type CSSProperties,
+  type ComponentProps,
   type ReactNode,
   useState,
 } from "react"
 import { useTranslation } from "react-i18next"
 
+import { Button } from "@/components/ui/button"
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 import { cn } from "@/lib/utils"
 import { codeBlockWrapAtom } from "@/store/code-block"
 
 import {
+  type MarkdownNode,
   extractCodeBlockFromPreNode,
   extractCodeBlockRenderState,
-  type MarkdownNode,
   splitCodeIntoLines,
   splitHighlightedHtmlIntoLines,
   splitRenderedCodeContentIntoLines,
   trimTrailingEmptyRenderedCodeLine,
   trimTrailingEmptyStringLine,
 } from "./message-code-block.utils"
-
-import { Button } from "@/components/ui/button"
 
 const CODE_LABEL_FONT_FAMILY =
   'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", monospace'
@@ -96,21 +91,21 @@ export function MessageCodeBlock({
     ? splitHighlightedHtmlIntoLines(highlightedHtml)
     : null
   const codeLines = children
-    ? (trimTrailingEmptyLine
-        ? trimTrailingEmptyRenderedCodeLine(
-            splitRenderedCodeContentIntoLines(renderedCodeState.renderedContent),
-          )
-        : splitRenderedCodeContentIntoLines(renderedCodeState.renderedContent))
-    : (trimTrailingEmptyLine
-        ? trimTrailingEmptyStringLine(
-            highlightedLines ?? splitCodeIntoLines(code),
-          )
-        : (highlightedLines ?? splitCodeIntoLines(code)))
+    ? trimTrailingEmptyLine
+      ? trimTrailingEmptyRenderedCodeLine(
+          splitRenderedCodeContentIntoLines(renderedCodeState.renderedContent),
+        )
+      : splitRenderedCodeContentIntoLines(renderedCodeState.renderedContent)
+    : trimTrailingEmptyLine
+      ? trimTrailingEmptyStringLine(
+          highlightedLines ?? splitCodeIntoLines(code),
+        )
+      : (highlightedLines ?? splitCodeIntoLines(code))
   const lineNumberWidth = `${String(codeLines.length).length + 1}ch`
 
   return (
     <div
-      data-picoclaw-code-block=""
+      data-mintclaw-code-block=""
       className={cn(
         "not-prose my-4 overflow-hidden rounded-lg border border-[#d0d7de] bg-[#f6f8fa] text-[#24292f] shadow-xs dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#c9d1d9]",
         className,
@@ -133,11 +128,7 @@ export function MessageCodeBlock({
             aria-label={copyLabel}
             title={copyLabel}
           >
-            {isCopied ? (
-              <IconCheck className="text-green-500" />
-            ) : (
-              <IconCopy />
-            )}
+            {isCopied ? <IconCheck className="text-green-500" /> : <IconCopy />}
             <span className="hidden sm:inline">{copyLabel}</span>
           </Button>
           <Button
@@ -163,7 +154,10 @@ export function MessageCodeBlock({
             title={expandLabel}
           >
             <IconChevronDown
-              className={cn("transition-transform duration-200", isExpanded && "rotate-180")}
+              className={cn(
+                "transition-transform duration-200",
+                isExpanded && "rotate-180",
+              )}
             />
             <span className="hidden sm:inline">{expandLabel}</span>
           </Button>
@@ -182,7 +176,10 @@ export function MessageCodeBlock({
               "block bg-transparent p-0 text-inherit",
               children
                 ? renderedCodeState.className
-                : cn(highlightedHtml && "hljs", language && `language-${language}`),
+                : cn(
+                    highlightedHtml && "hljs",
+                    language && `language-${language}`,
+                  ),
             )}
           >
             {codeLines.map((line, index) => (
@@ -195,7 +192,7 @@ export function MessageCodeBlock({
                   } as CSSProperties
                 }
               >
-                <span className="sticky left-0 z-1 select-none bg-[#f6f8fa] text-right text-zinc-500/80 dark:bg-[#0d1117] dark:text-zinc-500">
+                <span className="sticky left-0 z-1 bg-[#f6f8fa] text-right text-zinc-500/80 select-none dark:bg-[#0d1117] dark:text-zinc-500">
                   {index + 1}
                 </span>
                 {!children && highlightedLines ? (

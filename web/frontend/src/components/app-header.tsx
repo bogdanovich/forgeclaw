@@ -103,9 +103,16 @@ export function AppHeader() {
         <SidebarTrigger className="text-muted-foreground hover:bg-accent hover:text-foreground flex h-9 w-9 items-center justify-center rounded-lg sm:hidden [&>svg]:size-5">
           <IconMenu2 />
         </SidebarTrigger>
-        <div className="hidden w-36 shrink-0 items-center sm:flex">
-          <Link to="/">
-            <img className="w-full" src="/logo_with_text.png" alt="Logo" />
+        <div className="hidden shrink-0 items-center sm:flex">
+          <Link className="flex items-center gap-2" to="/">
+            <img
+              className="size-9 rounded-lg"
+              src="/web-app-manifest-192x192.png"
+              alt=""
+            />
+            <span className="text-lg font-semibold tracking-tight">
+              MintClaw
+            </span>
           </Link>
         </div>
       </div>
@@ -272,7 +279,11 @@ export function AppHeader() {
           data-tour="docs-button"
           asChild
         >
-          <a href="https://docs.picoclaw.io" target="_blank" rel="noreferrer">
+          <a
+            href="https://github.com/bogdanovich/mintclaw/tree/main/docs"
+            target="_blank"
+            rel="noreferrer"
+          >
             <IconBook className="size-4.5" />
           </a>
         </Button>

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/netbind"
+	"github.com/bogdanovich/mintclaw/pkg/netbind"
 )
 
 func TestOpenGatewayListeners_HonorsIPv6OnlyHost(t *testing.T) {

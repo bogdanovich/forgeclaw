@@ -20,12 +20,12 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/constants"
-	"github.com/sipeed/picoclaw/pkg/isolation"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/tools/shellguard"
-	workspaceutil "github.com/sipeed/picoclaw/pkg/workspace"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/constants"
+	"github.com/bogdanovich/mintclaw/pkg/isolation"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/tools/shellguard"
+	workspaceutil "github.com/bogdanovich/mintclaw/pkg/workspace"
 )
 
 var (
@@ -255,7 +255,7 @@ func (t *ExecTool) Parameters() map[string]any {
 			},
 			"cwd": map[string]any{
 				"type":        "string",
-				"description": "Working directory for the command. For temporary scripts, drafts, and scratch files, prefer $PICOCLAW_WORKSPACE_TMP instead of creating tmp_* files in the workspace root.",
+				"description": "Working directory for the command. For temporary scripts, drafts, and scratch files, prefer $MINTCLAW_WORKSPACE_TMP instead of creating tmp_* files in the workspace root.",
 			},
 			"timeout": map[string]any{
 				"type":        "integer",
@@ -404,12 +404,12 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 		cmd.Dir = cwd
 	}
 	cmd.Env = append(os.Environ(),
-		"PICOCLAW_TOOL_CHANNEL="+ToolChannel(ctx),
-		"PICOCLAW_TOOL_CHAT_ID="+ToolChatID(ctx),
-		"PICOCLAW_TOOL_TOPIC_ID="+ToolTopicID(ctx),
-		"PICOCLAW_TOOL_MESSAGE_ID="+ToolMessageID(ctx),
-		"PICOCLAW_TOOL_REPLY_TO_MESSAGE_ID="+ToolReplyToMessageID(ctx),
-		"PICOCLAW_WORKSPACE_TMP="+t.workspaceTempDir,
+		"MINTCLAW_TOOL_CHANNEL="+ToolChannel(ctx),
+		"MINTCLAW_TOOL_CHAT_ID="+ToolChatID(ctx),
+		"MINTCLAW_TOOL_TOPIC_ID="+ToolTopicID(ctx),
+		"MINTCLAW_TOOL_MESSAGE_ID="+ToolMessageID(ctx),
+		"MINTCLAW_TOOL_REPLY_TO_MESSAGE_ID="+ToolReplyToMessageID(ctx),
+		"MINTCLAW_WORKSPACE_TMP="+t.workspaceTempDir,
 	)
 
 	prepareCommandForTermination(cmd)
@@ -578,12 +578,12 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		cmd.Dir = cwd
 	}
 	cmd.Env = append(os.Environ(),
-		"PICOCLAW_TOOL_CHANNEL="+ToolChannel(ctx),
-		"PICOCLAW_TOOL_CHAT_ID="+ToolChatID(ctx),
-		"PICOCLAW_TOOL_TOPIC_ID="+ToolTopicID(ctx),
-		"PICOCLAW_TOOL_MESSAGE_ID="+ToolMessageID(ctx),
-		"PICOCLAW_TOOL_REPLY_TO_MESSAGE_ID="+ToolReplyToMessageID(ctx),
-		"PICOCLAW_WORKSPACE_TMP="+t.workspaceTempDir,
+		"MINTCLAW_TOOL_CHANNEL="+ToolChannel(ctx),
+		"MINTCLAW_TOOL_CHAT_ID="+ToolChatID(ctx),
+		"MINTCLAW_TOOL_TOPIC_ID="+ToolTopicID(ctx),
+		"MINTCLAW_TOOL_MESSAGE_ID="+ToolMessageID(ctx),
+		"MINTCLAW_TOOL_REPLY_TO_MESSAGE_ID="+ToolReplyToMessageID(ctx),
+		"MINTCLAW_WORKSPACE_TMP="+t.workspaceTempDir,
 	)
 
 	prepareCommandForTermination(cmd)

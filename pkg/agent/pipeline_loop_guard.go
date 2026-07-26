@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/tools"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 func (p *Pipeline) beforeToolLoopDecision(

@@ -248,7 +248,7 @@ func TestValidator_DoesNotTreatURLPathAsWorkspaceEscape(t *testing.T) {
 	root := t.TempDir()
 	validator := New(Config{RestrictToWorkspace: true})
 
-	decision := validator.Validate("git clone https://github.com/sipeed/picoclaw", root)
+	decision := validator.Validate("git clone https://github.com/bogdanovich/mintclaw", root)
 	if !decision.Allowed {
 		t.Fatalf("expected URL path component to be ignored: %s", decision.Reason)
 	}
@@ -297,7 +297,7 @@ func TestClassifyCommand(t *testing.T) {
 		{name: "gh pr view read only", command: "gh pr view 17", want: CommandClassReadOnly},
 		{name: "gh pr comment write", command: "gh pr comment 17 --body hi", want: CommandClassWrite},
 		{name: "rm destructive", command: "rm -rf tmp", want: CommandClassDestructive},
-		{name: "read only pipeline", command: "cat README.md | grep Pico", want: CommandClassReadOnly},
+		{name: "read only pipeline", command: "cat README.md | grep MintClaw", want: CommandClassReadOnly},
 		{name: "compound write", command: "git status && touch file.txt", want: CommandClassWrite},
 		{name: "background write", command: "git status & touch file.txt", want: CommandClassWrite},
 		{name: "compound destructive", command: "git status; rm -rf tmp", want: CommandClassDestructive},

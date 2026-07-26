@@ -34,7 +34,7 @@ func TestWriteFileAtomic_PropagatesDirectorySyncFailure(t *testing.T) {
 func TestWriteFileAtomic_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")
-	data := []byte("hello picoclaw")
+	data := []byte("hello mintclaw")
 
 	err := WriteFileAtomic(path, data, 0o644)
 	if err != nil {

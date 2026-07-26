@@ -17,8 +17,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
-	"github.com/sipeed/picoclaw/pkg/nodes/protocol"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 )
 
 var ErrIncompatibleGateway = errors.New("node gateway protocol is incompatible")

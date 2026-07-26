@@ -36,7 +36,7 @@ const CHANNEL_IMPORTANCE_TAIL = [
   "qq",
   "onebot",
   "matrix",
-  "pico",
+  "mintclaw",
   "maixcam",
   "irc",
   "whatsapp",
@@ -81,7 +81,7 @@ const CHANNEL_ICON_MAP: Record<
   matrix: IconBrandMatrix,
   maixcam: IconCamera,
   onebot: IconRobot,
-  pico: IconBrandChrome,
+  mintclaw: IconBrandChrome,
   irc: IconMessages,
 }
 

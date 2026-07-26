@@ -3,7 +3,7 @@ package config
 import "strings"
 
 // NormalizeMCPTransportType canonicalizes MCP transport names used in config.
-// "http" is PicoClaw's streamable HTTP request-response mode, and
+// "http" is MintClaw's streamable HTTP request-response mode, and
 // "streamable-http" is accepted as an explicit alias for the same transport.
 func NormalizeMCPTransportType(transport string) string {
 	normalized := strings.ToLower(strings.TrimSpace(transport))

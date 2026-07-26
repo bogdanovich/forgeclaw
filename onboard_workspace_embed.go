@@ -1,4 +1,4 @@
-package picoclaw
+package mintclaw
 
 import "embed"
 

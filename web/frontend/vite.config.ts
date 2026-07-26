@@ -29,11 +29,11 @@ export default defineConfig({
         target: "http://localhost:18800",
         changeOrigin: true,
       },
-      "/pico/media": {
+      "/mintclaw/media": {
         target: "http://localhost:18800",
         changeOrigin: true,
       },
-      "/pico/ws": {
+      "/mintclaw/ws": {
         target: "ws://localhost:18800",
         ws: true,
       },

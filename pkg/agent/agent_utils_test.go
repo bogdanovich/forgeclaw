@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
 
 func TestOutboundMessageForTurnCarriesTraceScopeWithoutSettlement(t *testing.T) {

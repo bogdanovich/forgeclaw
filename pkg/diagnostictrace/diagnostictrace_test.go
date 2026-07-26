@@ -72,8 +72,8 @@ func TestValidateRejectsSchemaOrderingDuplicateAndTampering(t *testing.T) {
 		name string
 		edit func(*Trace)
 	}{
-		{"schema", func(v *Trace) { v.SchemaVersion = "forgeclaw.diagnostic_trace.v2" }},
-		{"removed evaluation schema", func(v *Trace) { v.SchemaVersion = "forgeclaw.eval_trace.v1" }},
+		{"schema", func(v *Trace) { v.SchemaVersion = "mintclaw.diagnostic_trace.v2" }},
+		{"removed evaluation schema", func(v *Trace) { v.SchemaVersion = "mintclaw.eval_trace.v1" }},
 		{"unsafe id", func(v *Trace) { v.TraceID = "../escape" }},
 		{"unknown kind", func(v *Trace) { v.Records[0].Kind = "future.kind" }},
 		{"tampered data", func(v *Trace) { v.Records[0].Data = json.RawMessage(`{"status":"changed"}`) }},

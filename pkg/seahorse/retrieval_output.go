@@ -1,8 +1,8 @@
 package seahorse
 
 import (
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tokenizer"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tokenizer"
 )
 
 const retrievalToolMaxTokens = 16 * 1024

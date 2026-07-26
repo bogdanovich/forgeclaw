@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/agent"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
@@ -69,8 +69,8 @@ func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=TestGatewayRunStartupFailureHelper")
 			cmd.Env = append(os.Environ(),
 				"GO_WANT_GATEWAY_RUN_HELPER=1",
-				"PICO_TEST_HOME="+homeDir,
-				"PICO_TEST_CONFIG="+configPath,
+				"MINTCLAW_TEST_HOME="+homeDir,
+				"MINTCLAW_TEST_CONFIG="+configPath,
 			)
 
 			output, err := cmd.CombinedOutput()
@@ -103,8 +103,8 @@ func TestGatewayRunStartupFailureHelper(t *testing.T) {
 		return
 	}
 
-	homeDir := os.Getenv("PICO_TEST_HOME")
-	configPath := os.Getenv("PICO_TEST_CONFIG")
+	homeDir := os.Getenv("MINTCLAW_TEST_HOME")
+	configPath := os.Getenv("MINTCLAW_TEST_CONFIG")
 
 	err := Run(false, homeDir, configPath, false)
 	if err == nil {
@@ -124,7 +124,7 @@ func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
 	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
 		Enabled:             true,
 		ServiceManager:      "systemd-user",
-		Service:             "picoclaw-main.service",
+		Service:             "mintclaw-main.service",
 		DrainTimeoutSeconds: 1,
 		ForceAfterTimeout:   true,
 	}
@@ -178,7 +178,7 @@ func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
 	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
 		Enabled:             true,
 		ServiceManager:      "systemd-user",
-		Service:             "picoclaw-main.service",
+		Service:             "mintclaw-main.service",
 		DrainTimeoutSeconds: 1,
 		ForceAfterTimeout:   true,
 	}

@@ -20,13 +20,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/health"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/netbind"
-	ppid "github.com/sipeed/picoclaw/pkg/pid"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/web/backend/utils"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/health"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/netbind"
+	ppid "github.com/bogdanovich/mintclaw/pkg/pid"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/web/backend/utils"
 )
 
 // gateway holds the state for the managed gateway process.
@@ -39,40 +39,40 @@ var gateway = struct {
 	runtimeStatus       string
 	startupDeadline     time.Time
 	logs                *LogBuffer
-	pidData             *ppid.PidFileData // pid file data read from picoclaw.pid.json
-	picoToken           string            // cached raw pico token for upstream gateway proxy injection
+	pidData             *ppid.PidFileData // pid file data read from mintclaw.pid.json
+	mintclawToken       string            // cached raw mintclaw token for upstream gateway proxy injection
 }{
 	runtimeStatus: "stopped",
 	logs:          NewLogBuffer(200),
 }
 
-// refreshPicoTokensLocked reads the pico token from config and caches it.
+// refreshMintClawTokensLocked reads the mintclaw token from config and caches it.
 // Caller must hold gateway.mu (or be sole writer).
-func refreshPicoTokensLocked(configPath string) {
+func refreshMintClawTokensLocked(configPath string) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return
 	}
-	var picoCfg config.PicoSettings
-	if bc := cfg.Channels.GetByType(config.ChannelPico); bc != nil {
+	var mintclawCfg config.MintClawSettings
+	if bc := cfg.Channels.GetByType(config.ChannelMintClaw); bc != nil {
 		decoded, err := bc.GetDecoded()
 		if err == nil && decoded != nil {
-			if p, ok := decoded.(*config.PicoSettings); ok {
-				picoCfg = *p
+			if p, ok := decoded.(*config.MintClawSettings); ok {
+				mintclawCfg = *p
 			}
 		}
 	}
-	gateway.picoToken = picoCfg.Token.String()
+	gateway.mintclawToken = mintclawCfg.Token.String()
 }
 
-// ensurePicoTokenCachedLocked lazily fills the in-memory pico token cache when
+// ensureMintClawTokenCachedLocked lazily fills the in-memory mintclaw token cache when
 // the launcher has already discovered a running gateway via pidData, but has
 // not yet refreshed the token into memory.
-func ensurePicoTokenCachedLocked(configPath string) {
-	if gateway.picoToken != "" {
+func ensureMintClawTokenCachedLocked(configPath string) {
+	if gateway.mintclawToken != "" {
 		return
 	}
-	refreshPicoTokensLocked(configPath)
+	refreshMintClawTokensLocked(configPath)
 }
 
 func (h *Handler) gatewayCommandArgs() []string {
@@ -88,15 +88,15 @@ const (
 	tokenPrefix = "token."
 )
 
-// picoGatewayProtocol returns the gateway-facing pico subprotocol that the
+// mintclawGatewayProtocol returns the gateway-facing mintclaw subprotocol that the
 // launcher should inject when proxying browser traffic upstream.
-func picoGatewayProtocol() string {
+func mintclawGatewayProtocol() string {
 	gateway.mu.Lock()
 	defer gateway.mu.Unlock()
-	if gateway.picoToken == "" {
+	if gateway.mintclawToken == "" {
 		return ""
 	}
-	return tokenPrefix + gateway.picoToken
+	return tokenPrefix + gateway.mintclawToken
 }
 
 var (
@@ -156,7 +156,7 @@ func getGatewayHealthByURL(url string, timeout time.Duration) (*health.StatusRes
 	return &healthResponse, resp.StatusCode, nil
 }
 
-// isLikelyGatewayProcess returns whether PID appears to be a picoclaw gateway
+// isLikelyGatewayProcess returns whether PID appears to be a mintclaw gateway
 // process plus whether inspection was conclusive on this platform/environment.
 func isLikelyGatewayProcess(pid int) (bool, bool) {
 	if pid <= 0 {
@@ -188,7 +188,7 @@ func isLikelyGatewayProcess(pid int) (bool, bool) {
 		// A CSV row means the process exists, but may have a custom executable
 		// name we cannot classify here.
 		if strings.HasPrefix(line, "\"") {
-			if strings.Contains(line, "\"picoclaw.exe\"") {
+			if strings.Contains(line, "\"mintclaw.exe\"") {
 				return true, true
 			}
 			return false, true
@@ -211,7 +211,7 @@ func isLikelyGatewayProcess(pid int) (bool, bool) {
 }
 
 // looksLikeGatewayCommandLine checks whether a process command line likely
-// represents "picoclaw gateway ..." regardless of executable filename.
+// represents "mintclaw gateway ..." regardless of executable filename.
 func looksLikeGatewayCommandLine(cmdline string) bool {
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(cmdline)))
 	if len(fields) == 0 {
@@ -265,7 +265,7 @@ func (h *Handler) validateGatewayPidData(
 
 	if gatewayProcess, inspected := gatewayProcessMatcher(pidData.PID); inspected {
 		if !gatewayProcess {
-			return false, true, "pid process command is not picoclaw gateway"
+			return false, true, "pid process command is not mintclaw gateway"
 		}
 		return true, true, ""
 	}
@@ -335,7 +335,7 @@ func (h *Handler) TryAutoStartGateway() {
 			logger.ErrorC("gateway", fmt.Sprintf("Failed to attach to running gateway (PID: %d): %v", pid, err))
 		} else {
 			gateway.pidData = pidData
-			refreshPicoTokensLocked(h.configPath)
+			refreshMintClawTokensLocked(h.configPath)
 			logger.InfoC("gateway", fmt.Sprintf("Attached to running gateway via PID file (PID: %d)", pid))
 		}
 		gateway.mu.Unlock()
@@ -1025,8 +1025,8 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	}
 
 	// Start new process
-	// Locate the picoclaw executable
-	execPath := utils.FindPicoclawBinary()
+	// Locate the mintclaw executable
+	execPath := utils.FindMintClawBinary()
 	logger.InfoC("gateway", fmt.Sprintf("Starting gateway process (%s)", execPath))
 
 	cmd = gatewayExecCommand(execPath, h.gatewayCommandArgs()...)
@@ -1056,19 +1056,19 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	// Clear old logs for this new run
 	gateway.logs.Reset()
 
-	// Ensure Pico Channel is configured before starting gateway
-	changed, err := h.EnsurePicoChannel()
+	// Ensure MintClaw Channel is configured before starting gateway
+	changed, err := h.EnsureMintClawChannel()
 	if err != nil {
-		logger.ErrorC("gateway", fmt.Sprintf("Warning: failed to ensure pico channel: %v", err))
-		// Non-fatal: gateway can still start without pico channel
+		logger.ErrorC("gateway", fmt.Sprintf("Warning: failed to ensure mintclaw channel: %v", err))
+		// Non-fatal: gateway can still start without mintclaw channel
 	}
-	// Refresh cached pico token in case EnsurePicoChannel generated a new one.
+	// Refresh cached mintclaw token in case EnsureMintClawChannel generated a new one.
 	// Already holding gateway.mu from caller.
 	if changed {
-		refreshPicoTokensLocked(h.configPath)
+		refreshMintClawTokensLocked(h.configPath)
 		cfg, err = config.LoadConfig(h.configPath)
 		if err != nil {
-			return 0, fmt.Errorf("failed to reload config after ensuring pico channel: %w", err)
+			return 0, fmt.Errorf("failed to reload config after ensuring mintclaw channel: %w", err)
 		}
 		defaultModelName = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
 	}
@@ -1083,7 +1083,7 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	gateway.bootConfigSignature = computeConfigSignature(cfg)
 	setGatewayRuntimeStatusLocked(initialStatus)
 	pid = cmd.Process.Pid
-	logger.InfoC("gateway", fmt.Sprintf("Started picoclaw gateway (PID: %d) from %s", pid, execPath))
+	logger.InfoC("gateway", fmt.Sprintf("Started mintclaw gateway (PID: %d) from %s", pid, execPath))
 
 	// Capture stdout/stderr in background
 	go scanPipe(stdoutPipe, gateway.logs)
@@ -1126,16 +1126,16 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 				gateway.mu.Lock()
 				if gateway.cmd == cmd {
 					gateway.pidData = pd
-					var picoCfg config.PicoSettings
-					if bc := cfg.Channels.GetByType(config.ChannelPico); bc != nil {
+					var mintclawCfg config.MintClawSettings
+					if bc := cfg.Channels.GetByType(config.ChannelMintClaw); bc != nil {
 						decoded, err := bc.GetDecoded()
 						if err == nil && decoded != nil {
-							if p, ok := decoded.(*config.PicoSettings); ok {
-								picoCfg = *p
+							if p, ok := decoded.(*config.MintClawSettings); ok {
+								mintclawCfg = *p
 							}
 						}
 					}
-					gateway.picoToken = picoCfg.Token.String()
+					gateway.mintclawToken = mintclawCfg.Token.String()
 					setGatewayRuntimeStatusLocked("running")
 				}
 				gateway.mu.Unlock()
@@ -1167,7 +1167,7 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	return pid, nil
 }
 
-// handleGatewayStart starts the picoclaw gateway subprocess.
+// handleGatewayStart starts the mintclaw gateway subprocess.
 //
 //	POST /api/gateway/start
 func (h *Handler) handleGatewayStart(w http.ResponseWriter, r *http.Request) {

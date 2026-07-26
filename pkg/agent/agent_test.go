@@ -17,18 +17,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/routing"
-	"github.com/sipeed/picoclaw/pkg/session"
-	"github.com/sipeed/picoclaw/pkg/state"
-	"github.com/sipeed/picoclaw/pkg/tools"
-	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/state"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
 type fakeChannel struct{ id string }
@@ -589,7 +589,7 @@ func TestMemoryToolAppendDailyVisibleInNextPrompt(t *testing.T) {
 	if !strings.Contains(after, "## Recent Daily Notes") || !strings.Contains(after, content) {
 		t.Fatalf("next prompt did not include daily memory: %q", after)
 	}
-	if strings.Contains(after, "picoclaw:append_daily") {
+	if strings.Contains(after, "mintclaw:append_daily") {
 		t.Fatalf("next prompt exposed daily idempotency metadata: %q", after)
 	}
 }
@@ -742,8 +742,8 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 		context.Background(),
 		defaultAgent.Workspace,
 		defaultAgent.ID,
-		"pico",
-		"pico:session-1",
+		"mintclaw",
+		"mintclaw:session-1",
 		"session-1",
 		"final reply",
 	)
@@ -888,16 +888,16 @@ func TestDeliverFinalTurnResult_DirectTelegramDeliveryIncludesResponseFooter(t *
 	}
 }
 
-func TestPublishPicoReasoningIncludesSessionKey(t *testing.T) {
+func TestPublishMintClawReasoningIncludesSessionKey(t *testing.T) {
 	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 	_ = provider
 
-	al.publishPicoReasoning(context.Background(), "reasoning", "pico-chat", "session-1", "")
+	al.publishMintClawReasoning(context.Background(), "reasoning", "mintclaw-chat", "session-1", "")
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
-		if outbound.Channel != "pico" || outbound.ChatID != "pico-chat" {
+		if outbound.Channel != "mintclaw" || outbound.ChatID != "mintclaw-chat" {
 			t.Fatalf("unexpected outbound target: %+v", outbound)
 		}
 		if outbound.Content != "reasoning" {
@@ -914,7 +914,7 @@ func TestPublishPicoReasoningIncludesSessionKey(t *testing.T) {
 			)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("expected pico reasoning outbound")
+		t.Fatal("expected mintclaw reasoning outbound")
 	}
 }
 
@@ -987,7 +987,7 @@ func TestProcessMessage_DoesNotPassImplicitThinkingOffToCapableProvider(t *testi
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel: "pico",
+		Channel: "mintclaw",
 		ChatID:  "chat-1",
 		Content: "hello",
 	}))
@@ -1026,7 +1026,7 @@ func TestProcessMessage_PassesExplicitThinkingOffToCapableProvider(t *testing.T)
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel: "pico",
+		Channel: "mintclaw",
 		ChatID:  "chat-1",
 		Content: "hello",
 	}))
@@ -1062,7 +1062,7 @@ func TestProcessMessage_PassesExplicitThinkingOffToProviderWithoutThinkingCapabi
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel: "pico",
+		Channel: "mintclaw",
 		ChatID:  "chat-1",
 		Content: "hello",
 	}))
@@ -1099,7 +1099,7 @@ func TestProcessMessage_PassesDeepSeekThinkingLevelToThinkingCapableProvider(t *
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
-		Channel: "pico",
+		Channel: "mintclaw",
 		ChatID:  "chat-1",
 		Content: "hello",
 	}))
@@ -1138,8 +1138,8 @@ func TestProcessMessage_SuppressesReasoningWhenThinkingOff(t *testing.T) {
 		context.Background(),
 		al.GetRegistry().GetDefaultAgent(),
 		processOptions{
-			SessionKey:      "agent:main:pico:chat-1",
-			Channel:         "pico",
+			SessionKey:      "agent:main:mintclaw:chat-1",
+			Channel:         "mintclaw",
 			ChatID:          "chat-1",
 			UserMessage:     "hello",
 			SendResponse:    false,
@@ -1196,9 +1196,9 @@ func TestProcessMessage_BeforeLLMModelRewriteReevaluatesThinkingOff(t *testing.T
 	}
 
 	response, err := al.processMessage(context.Background(), bus.InboundMessage{
-		Channel:  "pico",
+		Channel:  "mintclaw",
 		SenderID: "user1",
-		ChatID:   "pico:test-session",
+		ChatID:   "mintclaw:test-session",
 		Content:  "hello",
 	})
 	if err != nil {
@@ -1255,9 +1255,9 @@ func TestProcessMessage_BeforeLLMModelRewriteDoesNotLeakThinkingOff(t *testing.T
 	}
 
 	response, err := al.processMessage(context.Background(), bus.InboundMessage{
-		Channel:  "pico",
+		Channel:  "mintclaw",
 		SenderID: "user1",
-		ChatID:   "pico:test-session",
+		ChatID:   "mintclaw:test-session",
 		Content:  "hello",
 	})
 	if err != nil {
@@ -4286,11 +4286,11 @@ func TestToolFeedbackArgsPreview_UsesJSONAndTruncates(t *testing.T) {
 	}
 }
 
-type picoInterleavedContentProvider struct {
+type mintclawInterleavedContentProvider struct {
 	calls int
 }
 
-func (m *picoInterleavedContentProvider) Chat(
+func (m *mintclawInterleavedContentProvider) Chat(
 	ctx context.Context,
 	messages []providers.Message,
 	tools []providers.ToolDefinition,
@@ -4316,15 +4316,15 @@ func (m *picoInterleavedContentProvider) Chat(
 	}, nil
 }
 
-func (m *picoInterleavedContentProvider) GetDefaultModel() string {
-	return "pico-interleaved-content-model"
+func (m *mintclawInterleavedContentProvider) GetDefaultModel() string {
+	return "mintclaw-interleaved-content-model"
 }
 
-type picoDistinctToolCallContentProvider struct {
+type mintclawDistinctToolCallContentProvider struct {
 	calls int
 }
 
-func (m *picoDistinctToolCallContentProvider) Chat(
+func (m *mintclawDistinctToolCallContentProvider) Chat(
 	ctx context.Context,
 	messages []providers.Message,
 	tools []providers.ToolDefinition,
@@ -4353,8 +4353,8 @@ func (m *picoDistinctToolCallContentProvider) Chat(
 	}, nil
 }
 
-func (m *picoDistinctToolCallContentProvider) GetDefaultModel() string {
-	return "pico-distinct-tool-call-content-model"
+func (m *mintclawDistinctToolCallContentProvider) GetDefaultModel() string {
+	return "mintclaw-distinct-tool-call-content-model"
 }
 
 type toolLimitOnlyProvider struct{}
@@ -8185,7 +8185,7 @@ func TestProcessMessage_PublishesReasoningContentToReasoningChannel(t *testing.T
 	}
 }
 
-func TestProcessMessage_PicoPublishesReasoningAsThoughtMessage(t *testing.T) {
+func TestProcessMessage_MintClawPublishesReasoningAsThoughtMessage(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
@@ -8206,9 +8206,9 @@ func TestProcessMessage_PicoPublishesReasoningAsThoughtMessage(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	response, err := al.processMessage(context.Background(), bus.InboundMessage{
-		Channel:  "pico",
+		Channel:  "mintclaw",
 		SenderID: "user1",
-		ChatID:   "pico:test-session",
+		ChatID:   "mintclaw:test-session",
 		Content:  "hello",
 	})
 	if err != nil {
@@ -8229,13 +8229,13 @@ func TestProcessMessage_PicoPublishesReasoningAsThoughtMessage(t *testing.T) {
 				thoughtMsg = &msg
 			}
 		case <-deadline:
-			t.Fatal("expected thought outbound message for pico")
+			t.Fatal("expected thought outbound message for mintclaw")
 		}
 	}
 
-	if thoughtMsg.Channel != "pico" || thoughtMsg.ChatID != "pico:test-session" {
+	if thoughtMsg.Channel != "mintclaw" || thoughtMsg.ChatID != "mintclaw:test-session" {
 		t.Fatalf(
-			"thought message route = %s/%s, want pico/pico:test-session",
+			"thought message route = %s/%s, want mintclaw/mintclaw:test-session",
 			thoughtMsg.Channel,
 			thoughtMsg.ChatID,
 		)
@@ -8419,9 +8419,9 @@ func TestProcessMessage_PersistsReasoningContentInSessionHistory(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	response, err := al.processMessage(context.Background(), bus.InboundMessage{
-		Channel:  "pico",
+		Channel:  "mintclaw",
 		SenderID: "user1",
-		ChatID:   "pico:test-session",
+		ChatID:   "mintclaw:test-session",
 		Content:  "hello",
 	})
 	if err != nil {
@@ -9068,7 +9068,7 @@ func TestProcessMessage_MessageToolPublishesOutboundWithTopicContext(t *testing.
 	}
 }
 
-func TestRun_PicoPublishesAssistantContentDuringToolCallsWithoutFinalDuplicate(t *testing.T) {
+func TestRun_MintClawPublishesAssistantContentDuringToolCallsWithoutFinalDuplicate(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg := &config.Config{
@@ -9083,7 +9083,7 @@ func TestRun_PicoPublishesAssistantContentDuringToolCallsWithoutFinalDuplicate(t
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &picoDistinctToolCallContentProvider{}
+	provider := &mintclawDistinctToolCallContentProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	agent := al.GetRegistry().GetDefaultAgent()
@@ -9101,7 +9101,7 @@ func TestRun_PicoPublishesAssistantContentDuringToolCallsWithoutFinalDuplicate(t
 	}()
 
 	if err := msgBus.PublishInbound(context.Background(), bus.InboundMessage{
-		Channel:  "pico",
+		Channel:  "mintclaw",
 		SenderID: "user-1",
 		ChatID:   "session-1",
 		Content:  "run with tools",
@@ -9116,7 +9116,7 @@ func TestRun_PicoPublishesAssistantContentDuringToolCallsWithoutFinalDuplicate(t
 		case outbound := <-msgBus.OutboundChan():
 			outputs = append(outputs, outbound)
 		case <-deadline:
-			t.Fatalf("timed out waiting for pico outputs, got %v", outputs)
+			t.Fatalf("timed out waiting for mintclaw outputs, got %v", outputs)
 		}
 	}
 
@@ -9153,13 +9153,13 @@ func TestRun_PicoPublishesAssistantContentDuringToolCallsWithoutFinalDuplicate(t
 	select {
 	case outbound := <-msgBus.OutboundChan():
 		if outbound.Content == "final model text" {
-			t.Fatalf("unexpected duplicate final pico output: %+v", outbound)
+			t.Fatalf("unexpected duplicate final mintclaw output: %+v", outbound)
 		}
 	case <-time.After(200 * time.Millisecond):
 	}
 }
 
-func TestRunAgentLoop_PicoSkipsInterimPublishWhenNotAllowed(t *testing.T) {
+func TestRunAgentLoop_MintClawSkipsInterimPublishWhenNotAllowed(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg := &config.Config{
@@ -9174,7 +9174,7 @@ func TestRunAgentLoop_PicoSkipsInterimPublishWhenNotAllowed(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &picoInterleavedContentProvider{}
+	provider := &mintclawInterleavedContentProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	agent := al.GetRegistry().GetDefaultAgent()
@@ -9184,15 +9184,15 @@ func TestRunAgentLoop_PicoSkipsInterimPublishWhenNotAllowed(t *testing.T) {
 	agent.Tools.Register(&toolLimitTestTool{})
 
 	response, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:              "agent:main:pico:session-1",
-		Channel:                 "pico",
-		ChatID:                  "session-1",
-		UserMessage:             "run with tools",
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           false,
-		SendResponse:            false,
-		AllowInterimPicoPublish: false,
-		SuppressToolFeedback:    true,
+		SessionKey:                  "agent:main:mintclaw:session-1",
+		Channel:                     "mintclaw",
+		ChatID:                      "session-1",
+		UserMessage:                 "run with tools",
+		DefaultResponse:             defaultResponse,
+		EnableSummary:               false,
+		SendResponse:                false,
+		AllowInterimMintClawPublish: false,
+		SuppressToolFeedback:        true,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop() error = %v", err)
@@ -9208,7 +9208,7 @@ func TestRunAgentLoop_PicoSkipsInterimPublishWhenNotAllowed(t *testing.T) {
 	}
 }
 
-func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testing.T) {
+func TestRun_MintClawToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg := &config.Config{
@@ -9226,7 +9226,7 @@ func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testi
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &picoInterleavedContentProvider{}
+	provider := &mintclawInterleavedContentProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	agent := al.GetRegistry().GetDefaultAgent()
@@ -9244,7 +9244,7 @@ func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testi
 	}()
 
 	if err := msgBus.PublishInbound(context.Background(), bus.InboundMessage{
-		Channel:  "pico",
+		Channel:  "mintclaw",
 		SenderID: "user-1",
 		ChatID:   "session-1",
 		Content:  "run with tools",
@@ -9259,7 +9259,7 @@ func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testi
 		case outbound := <-msgBus.OutboundChan():
 			outputs = append(outputs, outbound)
 		case <-deadline:
-			t.Fatalf("timed out waiting for pico outputs, got %v", outputs)
+			t.Fatalf("timed out waiting for mintclaw outputs, got %v", outputs)
 		}
 	}
 
@@ -9291,7 +9291,7 @@ func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testi
 
 	select {
 	case outbound := <-msgBus.OutboundChan():
-		t.Fatalf("unexpected extra pico output after tool feedback + final reply: %+v", outbound)
+		t.Fatalf("unexpected extra mintclaw output after tool feedback + final reply: %+v", outbound)
 	case <-time.After(200 * time.Millisecond):
 	}
 }

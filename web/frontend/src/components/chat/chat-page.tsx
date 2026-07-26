@@ -37,7 +37,7 @@ import {
 } from "@/features/chat/image-input"
 import { useChatModels } from "@/hooks/use-chat-models"
 import { useGateway } from "@/hooks/use-gateway"
-import { usePicoChat } from "@/hooks/use-pico-chat"
+import { useMintClawChat } from "@/hooks/use-mintclaw-chat"
 import { useSessionHistory } from "@/hooks/use-session-history"
 import type { AssistantDetailVisibility } from "@/store/chat"
 import type { ConnectionState } from "@/store/chat"
@@ -136,7 +136,7 @@ export function ChatPage() {
     sendMessage,
     switchSession,
     newChat,
-  } = usePicoChat()
+  } = useMintClawChat()
 
   const { state: gwState } = useGateway()
   const isGatewayRunning = gwState === "running"

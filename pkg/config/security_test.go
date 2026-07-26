@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -38,8 +38,8 @@ func TestSecurityPath(t *testing.T) {
 	}{
 		{
 			name:      "standard path",
-			configDir: "/home/user/.picoclaw/config.json",
-			want:      "/home/user/.picoclaw/.security.yml",
+			configDir: "/home/user/.mintclaw/config.json",
+			want:      "/home/user/.mintclaw/.security.yml",
 		},
 		{
 			name:      "nested path",
@@ -115,7 +115,7 @@ func TestSaveAndLoadSecurityConfig(t *testing.T) {
 				{"feishu", `{"enabled":true,"settings":{"app_id":"feishu_app_id","app_secret":"feishu_app_secret"}}`},
 				{"discord", `{"enabled":true,"settings":{"token":"discord_token"}}`},
 				{"qq", `{"enabled":true,"settings":{"app_secret":"qq_app_secret"}}`},
-				{"pico_client", `{"enabled":true,"settings":{"token":"pico_client_token"}}`},
+				{"mintclaw_client", `{"enabled":true,"settings":{"token":"mintclaw_client_token"}}`},
 			} {
 				bc := &Channel{}
 				json.Unmarshal([]byte(d.raw), bc)
@@ -129,8 +129,8 @@ func TestSaveAndLoadSecurityConfig(t *testing.T) {
 					bc.Decode(&DiscordSettings{})
 				case "feishu":
 					bc.Decode(&FeishuSettings{})
-				case "pico_client":
-					bc.Decode(&PicoClientSettings{})
+				case "mintclaw_client":
+					bc.Decode(&MintClawClientSettings{})
 				}
 				chs[d.name] = bc
 			}
@@ -185,7 +185,7 @@ func TestSaveAndLoadSecurityConfig(t *testing.T) {
 		assert.Contains(t, getSetting("feishu")["app_secret"], "feishu_app_secret")
 		assert.Contains(t, getSetting("discord")["token"], "discord_token")
 		assert.Contains(t, getSetting("qq")["app_secret"], "qq_app_secret")
-		assert.Contains(t, getSetting("pico_client")["token"], "pico_client_token")
+		assert.Contains(t, getSetting("mintclaw_client")["token"], "mintclaw_client_token")
 
 		// Rewrite file with deterministic content for load test (use channel_list)
 		yamlOutput := `channel_list:
@@ -197,8 +197,8 @@ func TestSaveAndLoadSecurityConfig(t *testing.T) {
     token: discord_token
   qq:
     app_secret: qq_app_secret
-  pico_client:
-    token: pico_client_token
+  mintclaw_client:
+    token: mintclaw_client_token
 model_list:
   model1:0:
     api_keys:
@@ -254,8 +254,8 @@ skills:
 			Tools: original.Tools,
 		}
 
-		t.Setenv("PICOCLAW_CHANNELS_QQ_APP_SECRET", "qq_app_secret_env")
-		t.Setenv("PICOCLAW_TOOLS_WEB_BRAVE_API_KEYS", "brave_key_env,abc")
+		t.Setenv("MINTCLAW_CHANNELS_QQ_APP_SECRET", "qq_app_secret_env")
+		t.Setenv("MINTCLAW_TOOLS_WEB_BRAVE_API_KEYS", "brave_key_env,abc")
 
 		require.NoError(t, env.Parse(envCfg))
 		// Channel env overrides need explicit handling since ChannelsConfig is map-based

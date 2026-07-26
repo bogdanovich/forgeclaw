@@ -13,7 +13,7 @@ func (k Kind) String() string {
 	return string(k)
 }
 
-// Event is the runtime event envelope shared across PicoClaw components.
+// Event is the runtime event envelope shared across MintClaw components.
 type Event struct {
 	ID          string         `json:"id"`
 	Kind        Kind           `json:"kind"`

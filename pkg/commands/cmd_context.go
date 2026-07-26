@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/sipeed/picoclaw/pkg/seahorse"
+	"github.com/bogdanovich/mintclaw/pkg/seahorse"
 )
 
 func contextCommand() Definition {

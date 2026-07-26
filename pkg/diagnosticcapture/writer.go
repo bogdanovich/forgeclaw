@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
+	"github.com/bogdanovich/mintclaw/pkg/diagnostictrace"
 )
 
 const (

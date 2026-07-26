@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
-const pidFileName = ".picoclaw.pid"
+const pidFileName = ".mintclaw.pid"
 
 var errInvalidPidFile = errors.New("invalid pid file")
 
@@ -64,14 +64,14 @@ func WritePidFile(homePath, host string, port int) (*PidFileData, error) {
 			// pass the isProcessRunning check, blocking new gateway starts.
 			// Treat recorded PID 1 as always stale.
 			if data.PID != 1 && isProcessRunning(data.PID) {
-				// Verify the process is actually a picoclaw instance.
+				// Verify the process is actually a mintclaw instance.
 				// If the PID was reused by an unrelated process
 				// (e.g. systemd-resolved after a kill -9), treat
 				// the PID file as stale and proceed with startup.
-				if isPicoclawProcess(data.PID) {
+				if isMintClawProcess(data.PID) {
 					return nil, fmt.Errorf("gateway is already running (PID: %d, version: %s)", data.PID, data.Version)
 				}
-				logger.Warnf("found pid file (PID: %d) but process is not picoclaw", data.PID)
+				logger.Warnf("found pid file (PID: %d) but process is not mintclaw", data.PID)
 			}
 			logger.Warnf("not running (PID: %d) so will remove the pid file: %s", data.PID, pidPath)
 		}

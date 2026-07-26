@@ -52,13 +52,13 @@ type testReleasePayload struct {
 	Assets  []testReleaseAsset `json:"assets"`
 }
 
-const testReleaseAPIPath = "/api.github.com/repos/sipeed/picoclaw/releases/latest"
+const testReleaseAPIPath = "/api.github.com/repos/bogdanovich/mintclaw/releases/latest"
 
 // TestDownloadAndExtractRelease_IntegrationLatestRelease downloads the latest
 // public release for a single platform as an opt-in smoke test.
 func TestDownloadAndExtractRelease_IntegrationLatestRelease(t *testing.T) {
-	if os.Getenv("PICOCLAW_INTEGRATION_TESTS") == "" {
-		t.Skip("skipping integration test (set PICOCLAW_INTEGRATION_TESTS=1 to enable)")
+	if os.Getenv("MINTCLAW_INTEGRATION_TESTS") == "" {
+		t.Skip("skipping integration test (set MINTCLAW_INTEGRATION_TESTS=1 to enable)")
 	}
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -115,23 +115,23 @@ func TestFindAssetInfo_SelectsPreferredAsset(t *testing.T) {
 				TagName: "v0.2.6",
 				Assets: []testReleaseAsset{
 					{
-						Name:               "picoclaw_Linux_x86_64.zip",
-						BrowserDownloadURL: server.URL + "/assets/picoclaw_Linux_x86_64.zip",
+						Name:               "mintclaw_Linux_x86_64.zip",
+						BrowserDownloadURL: server.URL + "/assets/mintclaw_Linux_x86_64.zip",
 						Digest:             "sha256:" + strings.Repeat("1", 64),
 					},
 					{
-						Name:               "picoclaw_Linux_x86_64.tar.gz",
-						BrowserDownloadURL: server.URL + "/assets/picoclaw_Linux_x86_64.tar.gz",
+						Name:               "mintclaw_Linux_x86_64.tar.gz",
+						BrowserDownloadURL: server.URL + "/assets/mintclaw_Linux_x86_64.tar.gz",
 						Digest:             "sha256:" + strings.Repeat("2", 64),
 					},
 					{
-						Name:               "picoclaw_Windows_x86_64.zip",
-						BrowserDownloadURL: server.URL + "/assets/picoclaw_Windows_x86_64.zip",
+						Name:               "mintclaw_Windows_x86_64.zip",
+						BrowserDownloadURL: server.URL + "/assets/mintclaw_Windows_x86_64.zip",
 						Digest:             "sha256:" + strings.Repeat("3", 64),
 					},
 					{
-						Name:               "picoclaw_Windows_arm64.zip",
-						BrowserDownloadURL: server.URL + "/assets/picoclaw_Windows_arm64.zip",
+						Name:               "mintclaw_Windows_arm64.zip",
+						BrowserDownloadURL: server.URL + "/assets/mintclaw_Windows_arm64.zip",
 						Digest:             "sha256:" + strings.Repeat("4", 64),
 					},
 				},
@@ -155,21 +155,21 @@ func TestFindAssetInfo_SelectsPreferredAsset(t *testing.T) {
 			name:         "linux prefers tar.gz over zip",
 			platform:     "linux",
 			arch:         "amd64",
-			wantURL:      server.URL + "/assets/picoclaw_Linux_x86_64.tar.gz",
+			wantURL:      server.URL + "/assets/mintclaw_Linux_x86_64.tar.gz",
 			wantChecksum: strings.Repeat("2", 64),
 		},
 		{
 			name:         "windows amd64 matches x86_64 zip",
 			platform:     "windows",
 			arch:         "amd64",
-			wantURL:      server.URL + "/assets/picoclaw_Windows_x86_64.zip",
+			wantURL:      server.URL + "/assets/mintclaw_Windows_x86_64.zip",
 			wantChecksum: strings.Repeat("3", 64),
 		},
 		{
 			name:         "windows arm64 matches arm64 zip",
 			platform:     "windows",
 			arch:         "arm64",
-			wantURL:      server.URL + "/assets/picoclaw_Windows_arm64.zip",
+			wantURL:      server.URL + "/assets/mintclaw_Windows_arm64.zip",
 			wantChecksum: strings.Repeat("4", 64),
 		},
 	}
@@ -207,8 +207,8 @@ func TestFindAssetInfo_UsesChecksumAssetWhenDigestMissing(t *testing.T) {
 				TagName: "v0.2.6",
 				Assets: []testReleaseAsset{
 					{
-						Name:               "picoclaw_Windows_x86_64.zip",
-						BrowserDownloadURL: server.URL + "/assets/picoclaw_Windows_x86_64.zip",
+						Name:               "mintclaw_Windows_x86_64.zip",
+						BrowserDownloadURL: server.URL + "/assets/mintclaw_Windows_x86_64.zip",
 					},
 					{
 						Name:               "checksums.txt",
@@ -217,8 +217,8 @@ func TestFindAssetInfo_UsesChecksumAssetWhenDigestMissing(t *testing.T) {
 				},
 			})
 		case "/assets/checksums.txt":
-			_, _ = io.WriteString(w, checksum+"  picoclaw_Windows_x86_64.zip\n")
-		case "/assets/picoclaw_Windows_x86_64.zip":
+			_, _ = io.WriteString(w, checksum+"  mintclaw_Windows_x86_64.zip\n")
+		case "/assets/mintclaw_Windows_x86_64.zip":
 			w.WriteHeader(http.StatusInternalServerError)
 		default:
 			http.NotFound(w, r)
@@ -232,8 +232,8 @@ func TestFindAssetInfo_UsesChecksumAssetWhenDigestMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findAssetInfo returned error: %v", err)
 	}
-	if gotURL != server.URL+"/assets/picoclaw_Windows_x86_64.zip" {
-		t.Fatalf("assetURL = %q, want %q", gotURL, server.URL+"/assets/picoclaw_Windows_x86_64.zip")
+	if gotURL != server.URL+"/assets/mintclaw_Windows_x86_64.zip" {
+		t.Fatalf("assetURL = %q, want %q", gotURL, server.URL+"/assets/mintclaw_Windows_x86_64.zip")
 	}
 	if gotChecksum != checksum {
 		t.Fatalf("checksum = %q, want %q", gotChecksum, checksum)
@@ -242,7 +242,7 @@ func TestFindAssetInfo_UsesChecksumAssetWhenDigestMissing(t *testing.T) {
 
 func TestDownloadAndExtractRelease_ExtractsTarGz(t *testing.T) {
 	tarGzContent := buildTestTarGz(t, map[string]string{
-		"picoclaw_Linux_x86_64/picoclaw": "test linux binary payload",
+		"mintclaw_Linux_x86_64/mintclaw": "test linux binary payload",
 	})
 	sum := sha256.Sum256(tarGzContent)
 	checksum := hex.EncodeToString(sum[:])
@@ -255,13 +255,13 @@ func TestDownloadAndExtractRelease_ExtractsTarGz(t *testing.T) {
 				TagName: "v0.2.6",
 				Assets: []testReleaseAsset{
 					{
-						Name:               "picoclaw_Linux_x86_64.tar.gz",
-						BrowserDownloadURL: server.URL + "/assets/picoclaw_Linux_x86_64.tar.gz",
+						Name:               "mintclaw_Linux_x86_64.tar.gz",
+						BrowserDownloadURL: server.URL + "/assets/mintclaw_Linux_x86_64.tar.gz",
 						Digest:             "sha256:" + checksum,
 					},
 				},
 			})
-		case "/assets/picoclaw_Linux_x86_64.tar.gz":
+		case "/assets/mintclaw_Linux_x86_64.tar.gz":
 			w.Header().Set("Content-Type", "application/gzip")
 			_, _ = w.Write(tarGzContent)
 		default:
@@ -278,7 +278,7 @@ func TestDownloadAndExtractRelease_ExtractsTarGz(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	binPath, err := findBinaryInDir(dir, "picoclaw")
+	binPath, err := findBinaryInDir(dir, "mintclaw")
 	if err != nil {
 		t.Fatalf("findBinaryInDir returned error: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestDownloadAndExtractRelease_ExtractsTarGz(t *testing.T) {
 
 func TestDownloadAndExtractRelease_RetriesTransientAssetFailure(t *testing.T) {
 	zipContent := buildTestZip(t, map[string]string{
-		"picoclaw.exe": "test windows binary payload",
+		"mintclaw.exe": "test windows binary payload",
 	})
 	sum := sha256.Sum256(zipContent)
 	checksum := hex.EncodeToString(sum[:])
@@ -303,15 +303,15 @@ func TestDownloadAndExtractRelease_RetriesTransientAssetFailure(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api.github.com/repos/sipeed/picoclaw/releases/latest":
+		case "/api.github.com/repos/bogdanovich/mintclaw/releases/latest":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(
 				w,
-				`{"tag_name":"v0.2.6","assets":[{"name":"picoclaw_Windows_x86_64.zip","browser_download_url":%q,"digest":"sha256:%s"}]}`,
-				server.URL+"/assets/picoclaw_Windows_x86_64.zip",
+				`{"tag_name":"v0.2.6","assets":[{"name":"mintclaw_Windows_x86_64.zip","browser_download_url":%q,"digest":"sha256:%s"}]}`,
+				server.URL+"/assets/mintclaw_Windows_x86_64.zip",
 				checksum,
 			)
-		case "/assets/picoclaw_Windows_x86_64.zip":
+		case "/assets/mintclaw_Windows_x86_64.zip":
 			assetAttempts++
 			if assetAttempts == 1 {
 				w.WriteHeader(http.StatusGatewayTimeout)
@@ -328,7 +328,7 @@ func TestDownloadAndExtractRelease_RetriesTransientAssetFailure(t *testing.T) {
 	withTestHTTPClient(t, server.Client())
 
 	dir, err := DownloadAndExtractRelease(
-		server.URL+"/api.github.com/repos/sipeed/picoclaw/releases/latest",
+		server.URL+"/api.github.com/repos/bogdanovich/mintclaw/releases/latest",
 		"windows",
 		"amd64",
 	)
@@ -341,7 +341,7 @@ func TestDownloadAndExtractRelease_RetriesTransientAssetFailure(t *testing.T) {
 		t.Fatalf("asset attempts = %d, want 2", assetAttempts)
 	}
 
-	bs, err := os.ReadFile(filepath.Join(dir, "picoclaw.exe"))
+	bs, err := os.ReadFile(filepath.Join(dir, "mintclaw.exe"))
 	if err != nil {
 		t.Fatalf("ReadFile extracted asset: %v", err)
 	}

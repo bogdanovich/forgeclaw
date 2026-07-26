@@ -1,6 +1,6 @@
 package agent
 
-import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+import runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 
 type turnAbortController struct {
 	events runtimeEventEmitter

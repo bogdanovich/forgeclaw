@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -26,7 +26,7 @@ your config.
 
 ## 1. Create .security.yml
 
-File: ~/.picoclaw/.security.yml
+File: ~/.mintclaw/.security.yml
 
 ```yaml
 # Model API Keys
@@ -77,7 +77,7 @@ web:
 
 ## 2. Simplify config.json
 
-File: ~/.picoclaw/config.json
+File: ~/.mintclaw/config.json
 
 Note: Sensitive fields are omitted because they're loaded from .security.yml
 
@@ -87,7 +87,7 @@ Note: Sensitive fields are omitted because they're loaded from .security.yml
 	  "version": 1,
 	  "agents": {
 	    "defaults": {
-	      "workspace": "~/picoclaw-workspace",
+	      "workspace": "~/mintclaw-workspace",
 	      "model_name": "gpt-5.4"
 	    }
 	  },
@@ -142,7 +142,7 @@ Note: Sensitive fields are omitted because they're loaded from .security.yml
 ## 3. Set proper permissions
 
 ```bash
-chmod 600 ~/.picoclaw/.security.yml
+chmod 600 ~/.mintclaw/.security.yml
 ```
 
 ## 4. Add to .gitignore
@@ -155,7 +155,7 @@ chmod 600 ~/.picoclaw/.security.yml
 ## 5. Verify it works
 
 ```bash
-picoclaw --version
+mintclaw --version
 ```
 
 # Supported Fields in .security.yml
@@ -233,7 +233,7 @@ channels:
 	  secret: "value"
 	  token: "value"
 	  encoding_aes_key: "value"
-	pico:
+	mintclaw:
 	  token: "value"
 	irc:
 	  password: "value"
@@ -336,19 +336,19 @@ You can also mix security values and direct values:
 
 ## Step 1: Backup your config
 ```bash
-cp ~/.picoclaw/config.json ~/.picoclaw/config.json.backup
+cp ~/.mintclaw/config.json ~/.mintclaw/config.json.backup
 ```
 
 ## Step 2: Create .security.yml
 ```bash
-cp security.example.yml ~/.picoclaw/.security.yml
+cp security.example.yml ~/.mintclaw/.security.yml
 ```
 
 ## Step 3: Fill in your API keys
-Edit ~/.picoclaw/.security.yml and replace placeholders with your actual keys.
+Edit ~/.mintclaw/.security.yml and replace placeholders with your actual keys.
 
 ## Step 4: Simplify config.json (Recommended)
-Remove sensitive fields from ~/.picoclaw/config.json:
+Remove sensitive fields from ~/.mintclaw/config.json:
 - `api_key` fields from model_list entries
 - `token` fields from channels
 - `api_key` fields from tools.web
@@ -356,17 +356,17 @@ Remove sensitive fields from ~/.picoclaw/config.json:
 
 ## Step 5: Set permissions
 ```bash
-chmod 600 ~/.picoclaw/.security.yml
+chmod 600 ~/.mintclaw/.security.yml
 ```
 
 ## Step 6: Test
 ```bash
-picoclaw --version
+mintclaw --version
 ```
 
 If everything works, you can delete the backup:
 ```bash
-rm ~/.picoclaw/config.json.backup
+rm ~/.mintclaw/config.json.backup
 ```
 
 # Advanced Features
@@ -520,7 +520,7 @@ even when your config uses indexed model names for load balancing.
 The security file should have restricted permissions:
 
 ```bash
-chmod 600 ~/.picoclaw/.security.yml
+chmod 600 ~/.mintclaw/.security.yml
 ```
 
 This ensures only the owner can read and write the file.
@@ -529,7 +529,7 @@ This ensures only the owner can read and write the file.
 
 1. Never commit .security.yml to version control
 2. Add .security.yml to your .gitignore file
-3. Set file permissions: chmod 600 ~/.picoclaw/.security.yml
+3. Set file permissions: chmod 600 ~/.mintclaw/.security.yml
 4. Use different keys for different environments (dev, staging, production)
 5. Rotate keys regularly and update .security.yml
 6. Encrypt backups containing .security.yml
@@ -541,15 +541,15 @@ You can override any security value using environment variables:
 
 ```bash
 # Channels
-export PICOCLAW_CHANNELS_TELEGRAM_TOKEN="token-from-env"
-export PICOCLAW_CHANNELS_DISCORD_TOKEN="discord-token-from-env"
+export MINTCLAW_CHANNELS_TELEGRAM_TOKEN="token-from-env"
+export MINTCLAW_CHANNELS_DISCORD_TOKEN="discord-token-from-env"
 
 # Web Tools
-export PICOCLAW_TOOLS_WEB_BRAVE_API_KEY="brave-key-from-env"
-export PICOCLAW_TOOLS_WEB_BAIDU_API_KEY="baidu-key-from-env"
+export MINTCLAW_TOOLS_WEB_BRAVE_API_KEY="brave-key-from-env"
+export MINTCLAW_TOOLS_WEB_BAIDU_API_KEY="baidu-key-from-env"
 
 # Skills
-export PICOCLAW_TOOLS_SKILLS_GITHUB_TOKEN="github-token-from-env"
+export MINTCLAW_TOOLS_SKILLS_GITHUB_TOKEN="github-token-from-env"
 ```
 
 Environment variables have the highest priority and will override both config.json
@@ -576,7 +576,7 @@ and .security.yml values.
 
 ## Keys Not Being Applied
 - Check that .security.yml is in the same directory as config.json
-- Verify the file permissions allow reading (chmod 600 ~/.picoclaw/.security.yml)
+- Verify the file permissions allow reading (chmod 600 ~/.mintclaw/.security.yml)
 - Ensure the YAML structure matches the expected format
 - Check for typos in field names (case-sensitive)
 - Verify the model/channel names match exactly (case-sensitive)

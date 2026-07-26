@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 func TestEmbeddedSchemasAreValidJSON(t *testing.T) {
@@ -241,7 +241,7 @@ func resolveSchema(t *testing.T, name string) *jsonschema.Resolved {
 	}
 	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{
 		Loader: func(uri *url.URL) (*jsonschema.Schema, error) {
-			const prefix = "https://forgeclaw.dev/schemas/nodes/"
+			const prefix = "https://mintclaw.dev/schemas/nodes/"
 			name, ok := strings.CutPrefix(uri.String(), prefix)
 			if !ok {
 				return nil, fmt.Errorf("unsupported node schema URI %q", uri)

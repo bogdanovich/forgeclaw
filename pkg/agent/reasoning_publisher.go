@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/bogdanovich/mintclaw/pkg/agent/interfaces"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
 type reasoningPublisherComponent struct {
@@ -42,7 +42,7 @@ func (rp *reasoningPublisherComponent) targetReasoningChannelID(channelName stri
 	return ""
 }
 
-func (rp *reasoningPublisherComponent) publishPicoReasoning(
+func (rp *reasoningPublisherComponent) publishMintClawReasoning(
 	ctx context.Context,
 	reasoningContent, chatID, sessionKey, modelName string,
 ) {
@@ -64,7 +64,7 @@ func (rp *reasoningPublisherComponent) publishPicoReasoning(
 
 	if err := rp.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
 		Context: bus.InboundContext{
-			Channel: "pico",
+			Channel: "mintclaw",
 			ChatID:  chatID,
 			Raw:     raw,
 		},
@@ -73,20 +73,20 @@ func (rp *reasoningPublisherComponent) publishPicoReasoning(
 	}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
 			errors.Is(err, bus.ErrBusClosed) {
-			logger.DebugCF("agent", "Pico reasoning publish skipped (timeout/cancel)", map[string]any{
-				"channel": "pico",
+			logger.DebugCF("agent", "MintClaw reasoning publish skipped (timeout/cancel)", map[string]any{
+				"channel": "mintclaw",
 				"error":   err.Error(),
 			})
 		} else {
-			logger.WarnCF("agent", "Failed to publish pico reasoning (best-effort)", map[string]any{
-				"channel": "pico",
+			logger.WarnCF("agent", "Failed to publish mintclaw reasoning (best-effort)", map[string]any{
+				"channel": "mintclaw",
 				"error":   err.Error(),
 			})
 		}
 	}
 }
 
-func (rp *reasoningPublisherComponent) publishPicoToolCallInterim(
+func (rp *reasoningPublisherComponent) publishMintClawToolCallInterim(
 	ctx context.Context,
 	ts *turnState,
 	modelName string,
@@ -115,7 +115,7 @@ func (rp *reasoningPublisherComponent) publishPicoToolCallInterim(
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) &&
 			!errors.Is(err, context.Canceled) &&
 			!errors.Is(err, bus.ErrBusClosed) {
-			logger.WarnCF("agent", "Failed to publish pico reasoning", map[string]any{
+			logger.WarnCF("agent", "Failed to publish mintclaw reasoning", map[string]any{
 				"channel": ts.channel,
 				"chat_id": ts.chatID,
 				"error":   err.Error(),
@@ -123,7 +123,7 @@ func (rp *reasoningPublisherComponent) publishPicoToolCallInterim(
 		}
 	}
 
-	if !ts.opts.AllowInterimPicoPublish {
+	if !ts.opts.AllowInterimMintClawPublish {
 		return
 	}
 
@@ -147,7 +147,7 @@ func (rp *reasoningPublisherComponent) publishPicoToolCallInterim(
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) &&
 			!errors.Is(err, context.Canceled) &&
 			!errors.Is(err, bus.ErrBusClosed) {
-			logger.WarnCF("agent", "Failed to publish pico interim assistant content", map[string]any{
+			logger.WarnCF("agent", "Failed to publish mintclaw interim assistant content", map[string]any{
 				"channel": ts.channel,
 				"chat_id": ts.chatID,
 				"error":   err.Error(),
@@ -161,7 +161,7 @@ func (rp *reasoningPublisherComponent) publishPicoToolCallInterim(
 
 	rawToolCalls, err := json.Marshal(visibleToolCalls)
 	if err != nil {
-		logger.WarnCF("agent", "Failed to serialize pico tool calls", map[string]any{
+		logger.WarnCF("agent", "Failed to serialize mintclaw tool calls", map[string]any{
 			"channel": ts.channel,
 			"chat_id": ts.chatID,
 			"error":   err.Error(),
@@ -183,7 +183,7 @@ func (rp *reasoningPublisherComponent) publishPicoToolCallInterim(
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) &&
 		!errors.Is(err, context.Canceled) &&
 		!errors.Is(err, bus.ErrBusClosed) {
-		logger.WarnCF("agent", "Failed to publish pico tool calls", map[string]any{
+		logger.WarnCF("agent", "Failed to publish mintclaw tool calls", map[string]any{
 			"channel": ts.channel,
 			"chat_id": ts.chatID,
 			"error":   err.Error(),

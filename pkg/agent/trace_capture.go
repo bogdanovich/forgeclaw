@@ -4,11 +4,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/diagnosticcapture"
-	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
-	"github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/diagnosticcapture"
+	"github.com/bogdanovich/mintclaw/pkg/diagnostictrace"
+	"github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 const tracePersistBuffer = 128

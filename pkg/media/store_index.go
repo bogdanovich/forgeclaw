@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 const mediaIndexVersion = 1

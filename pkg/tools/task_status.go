@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 const taskStatusActiveStaleAfter = 30 * time.Minute

@@ -43,11 +43,11 @@ func isProcessRunning(pid int) bool {
 	return exitCode == stillActive
 }
 
-// isPicoclawProcess uses QueryFullProcessImageNameW to confirm the
-// process image name contains "picoclaw". Returns false when the name
+// isMintClawProcess uses QueryFullProcessImageNameW to confirm the
+// process image name contains "mintclaw". Returns false when the name
 // clearly does not match. Returns true if the query fails, falling
 // back to trusting the liveness check alone.
-func isPicoclawProcess(pid int) bool {
+func isMintClawProcess(pid int) bool {
 	handle, _, _ := procOpenProcess.Call(
 		uintptr(processQueryLimitedInformation),
 		0,
@@ -70,5 +70,5 @@ func isPicoclawProcess(pid int) bool {
 		return true // cannot verify — trust liveness check
 	}
 	name := strings.ToLower(syscall.UTF16ToString(buf[:size]))
-	return strings.Contains(name, "picoclaw")
+	return strings.Contains(name, "mintclaw")
 }

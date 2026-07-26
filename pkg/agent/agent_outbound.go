@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 
 package agent
 
@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	agentinterfaces "github.com/sipeed/picoclaw/pkg/agent/interfaces"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/constants"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	agentinterfaces "github.com/bogdanovich/mintclaw/pkg/agent/interfaces"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/constants"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const finalDeliveryFallbackTimeout = 5 * time.Second
@@ -758,14 +758,14 @@ func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string
 	return al.reasoningPublisher().targetReasoningChannelID(channelName)
 }
 
-func (al *AgentLoop) publishPicoReasoning(
+func (al *AgentLoop) publishMintClawReasoning(
 	ctx context.Context,
 	reasoningContent, chatID, sessionKey, modelName string,
 ) {
-	al.reasoningPublisher().publishPicoReasoning(ctx, reasoningContent, chatID, sessionKey, modelName)
+	al.reasoningPublisher().publishMintClawReasoning(ctx, reasoningContent, chatID, sessionKey, modelName)
 }
 
-func (al *AgentLoop) publishPicoToolCallInterim(
+func (al *AgentLoop) publishMintClawToolCallInterim(
 	ctx context.Context,
 	ts *turnState,
 	modelName string,
@@ -773,7 +773,7 @@ func (al *AgentLoop) publishPicoToolCallInterim(
 	content string,
 	toolCalls []providers.ToolCall,
 ) {
-	al.reasoningPublisher().publishPicoToolCallInterim(ctx, ts, modelName, reasoningContent, content, toolCalls)
+	al.reasoningPublisher().publishMintClawToolCallInterim(ctx, ts, modelName, reasoningContent, content, toolCalls)
 }
 
 func (al *AgentLoop) handleReasoning(

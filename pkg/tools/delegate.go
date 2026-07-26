@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/routing"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 // DelegateTool delegates a task to a specific named agent and waits for

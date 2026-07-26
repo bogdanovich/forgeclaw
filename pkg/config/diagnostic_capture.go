@@ -13,14 +13,14 @@ type DiagnosticsConfig struct {
 }
 
 type DiagnosticTraceCaptureConfig struct {
-	Enabled        bool   `json:"enabled"                    env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_ENABLED"`
-	ContentMode    string `json:"content_mode,omitempty"     env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_CONTENT_MODE"`
-	StateDir       string `json:"state_dir,omitempty"        env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_STATE_DIR"`
-	MaxTraceBytes  int    `json:"max_trace_bytes,omitempty"  env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_TRACE_BYTES"`
-	MaxRecords     int    `json:"max_records,omitempty"      env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_RECORDS"`
-	MaxRecordBytes int    `json:"max_record_bytes,omitempty" env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_RECORD_BYTES"`
-	RetentionHours int    `json:"retention_hours,omitempty"  env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_RETENTION_HOURS"`
-	MaxTraces      int    `json:"max_traces,omitempty"       env:"PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_TRACES"`
+	Enabled        bool   `json:"enabled"                    env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_ENABLED"`
+	ContentMode    string `json:"content_mode,omitempty"     env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_CONTENT_MODE"`
+	StateDir       string `json:"state_dir,omitempty"        env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_STATE_DIR"`
+	MaxTraceBytes  int    `json:"max_trace_bytes,omitempty"  env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_TRACE_BYTES"`
+	MaxRecords     int    `json:"max_records,omitempty"      env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_RECORDS"`
+	MaxRecordBytes int    `json:"max_record_bytes,omitempty" env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_RECORD_BYTES"`
+	RetentionHours int    `json:"retention_hours,omitempty"  env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_RETENTION_HOURS"`
+	MaxTraces      int    `json:"max_traces,omitempty"       env:"MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_MAX_TRACES"`
 }
 
 func (c DiagnosticTraceCaptureConfig) EffectiveContentMode() string {

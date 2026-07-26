@@ -3,15 +3,15 @@ package routing
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func testConfig(agents []config.AgentConfig) *config.Config {
 	return &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
-				Workspace: "/tmp/picoclaw-test",
+				Workspace: "/tmp/mintclaw-test",
 				ModelName: "gpt-4",
 			},
 			List: agents,
