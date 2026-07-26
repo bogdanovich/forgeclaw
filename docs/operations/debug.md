@@ -51,14 +51,17 @@ jq -r '
     .kind,
     (.scope.turn_id // "-"),
     (.correlation.tool_call_id // "-"),
-    (.correlation.completion_id // "-")
+    (.scope.target_hash // "-"),
+    (.correlation.event_id // "-")
   ] | @tsv
 ' TRACE.json
 ```
 
 Inspect content only around the first suspicious transition and correlate exact
-IDs with service logs. The bundled `forgeclaw-trace-debug` skill provides the
-full investigation and reporting workflow.
+IDs with service logs. Current turn traces do not include task or completion
+IDs; obtain those from logs or the durable task registry when needed. The
+bundled `forgeclaw-trace-debug` skill provides the full investigation and
+reporting workflow.
 
 A trace is passive, best-effort evidence. A missing or incomplete trace can
 make diagnosis harder, but it does not imply that the agent run failed. Never

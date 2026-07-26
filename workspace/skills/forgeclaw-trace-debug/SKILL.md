@@ -75,9 +75,8 @@ jq -r '
     ("+" + (((.offset_nanos / 1000000) | floor) | tostring) + "ms"),
     .kind,
     (.scope.turn_id // "-"),
-    (.scope.task_id // "-"),
+    (.scope.target_hash // "-"),
     (.correlation.tool_call_id // "-"),
-    (.correlation.completion_id // "-"),
     (.correlation.event_id // "-")
   ] | @tsv
 ' TRACE.json
@@ -104,9 +103,15 @@ Correlate:
 - `tool.call`, `tool.result`, skipped calls, and loop decisions by
   `tool_call_id`;
 - steering injection or interrupt with the next model/tool decision;
-- delivery decision, attempt, and outcome by `completion_id` and target hash;
+- delivery decision, attempt, and outcome by turn, sequence, target hash,
+  status, and event ID;
 - context compaction with the model behavior immediately before and after it;
 - turn start/end and the final outcome.
+
+Current runtime-produced turn traces do not populate `scope.task_id` or
+`correlation.completion_id`. Treat those identifiers as external log or durable
+task-registry evidence and cite that source explicitly; do not infer them from
+an empty trace field.
 
 In rich mode, inspect only the relevant normalized preview fields in `.data`,
 including `input_preview`, `final_preview`, `messages_preview`,
