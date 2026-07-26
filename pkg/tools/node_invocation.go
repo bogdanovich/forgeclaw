@@ -377,13 +377,17 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 		return nodeJSONResult(view)
 	}
 	if remote.State.Terminal() {
+		errorCode := ""
+		if remote.Failure != nil {
+			errorCode = remote.Failure.Code
+		}
 		tool.runtime.publishInvocationEvent(
 			ctx,
-			runtimeevents.KindNodeInvocationCompleted,
+			runtimeevents.KindNodeInvocationStatusObserved,
 			"nodes_status",
 			record,
 			string(remote.State),
-			"",
+			errorCode,
 		)
 	}
 	return nodeJSONResult(remoteStatusResult(record, remote, true))

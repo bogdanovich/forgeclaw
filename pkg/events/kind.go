@@ -121,6 +121,8 @@ const (
 	KindNodeInvocationDispatched Kind = "node.invocation.dispatched"
 	// KindNodeInvocationCompleted is emitted after a terminal outcome is proven.
 	KindNodeInvocationCompleted Kind = "node.invocation.completed"
+	// KindNodeInvocationStatusObserved records a read-only status observation.
+	KindNodeInvocationStatusObserved Kind = "node.invocation.status_observed"
 	// KindNodeInvocationUncertain is emitted when a dispatched outcome cannot be proven.
 	KindNodeInvocationUncertain Kind = "node.invocation.uncertain"
 
@@ -194,6 +196,7 @@ var knownKinds = []Kind{
 	KindNodeInvocationPrepared,
 	KindNodeInvocationDispatched,
 	KindNodeInvocationCompleted,
+	KindNodeInvocationStatusObserved,
 	KindNodeInvocationUncertain,
 	KindMCPServerConnected,
 	KindMCPServerConnecting,

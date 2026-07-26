@@ -394,13 +394,18 @@ func TestNodeInvocationEventsReportUncertainThenObservedFailure(t *testing.T) {
 	if statusResult.IsError {
 		t.Fatalf("nodes_status failed: %#v", statusResult)
 	}
+	repeatedStatusResult := status.Execute(ctx, map[string]any{"invocation_id": invocationID})
+	if repeatedStatusResult.IsError {
+		t.Fatalf("repeated nodes_status failed: %#v", repeatedStatusResult)
+	}
 
 	events := eventBus.snapshot()
 	wantKinds := []runtimeevents.Kind{
 		runtimeevents.KindNodeInvocationPrepared,
 		runtimeevents.KindNodeInvocationDispatched,
 		runtimeevents.KindNodeInvocationUncertain,
-		runtimeevents.KindNodeInvocationCompleted,
+		runtimeevents.KindNodeInvocationStatusObserved,
+		runtimeevents.KindNodeInvocationStatusObserved,
 	}
 	if len(events) != len(wantKinds) {
 		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantKinds), events)
@@ -416,10 +421,17 @@ func TestNodeInvocationEventsReportUncertainThenObservedFailure(t *testing.T) {
 		events[2].Severity != runtimeevents.SeverityWarn {
 		t.Fatalf("uncertain event = %#v", events[2])
 	}
-	completed := events[3].Payload.(NodeInvocationEventPayload)
-	if completed.State != string(nodes.InvocationFailed) ||
-		completed.ErrorCode != "" {
-		t.Fatalf("completed event = %#v", events[3])
+	for _, index := range []int{3, 4} {
+		observed := events[index].Payload.(NodeInvocationEventPayload)
+		if observed.State != string(nodes.InvocationFailed) ||
+			observed.ErrorCode != "REMOTE_FAILED" {
+			t.Fatalf("status observed event[%d] = %#v", index, events[index])
+		}
+	}
+	for _, event := range events {
+		if event.Kind == runtimeevents.KindNodeInvocationCompleted {
+			t.Fatalf("nodes_status emitted lifecycle completion: %#v", event)
+		}
 	}
 	encoded, err := json.Marshal(events)
 	if err != nil {
