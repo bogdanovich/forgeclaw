@@ -1,11 +1,12 @@
 # Node Companion Architecture
 
-Status: proposed
+Status: MVP implemented on `main`; deployment remains operator-configured
 
-This document defines a first-party ForgeClaw node architecture for running
-bounded capabilities on remote machines. The initial companions target Linux
-and macOS. Windows, mobile devices, cameras, and compatibility adapters are
-future extensions of the same model, not requirements for the first release.
+This document defines the implemented first-party ForgeClaw node architecture
+for running bounded capabilities on remote machines. The MVP companion targets
+Linux and macOS and exposes discovery plus synchronous typed execution.
+Windows, mobile devices, cameras, service-management commands, additional
+executors, and compatibility adapters remain post-MVP work.
 
 The design follows the distributed node shape used by OpenClaw rather than the
 single selected terminal-backend shape used by Hermes. It does not adopt the
@@ -792,49 +793,98 @@ transports without changing the node domain.
 
 ## MVP Scope
 
-The MVP is complete when:
+The MVP is the implemented vertical slice:
 
-- one Linux or macOS companion can establish an outbound WSS connection;
-- first connection requires explicit device pairing;
-- the gateway lists connected and disconnected paired nodes;
-- agents can be bound to a bounded set of named targets;
-- `node.info.v1`, `system.which.v1`, and synchronous `system.exec.v1` work;
-- working roots, executable policy, timeout, output, and environment are
-  enforced again on the node;
-- accepted invocation IDs are stored in a bounded ledger and duplicate
-  mutations are not blindly replayed;
-- disconnect, timeout, cancellation, and unknown-outcome semantics are tested;
-- audit events contain no raw secrets or command output;
-- systemd and LaunchAgent installation paths are documented and tested;
-- the companion build is checked to remain independent of LLM, channel, and
-  workspace-memory packages;
-- an end-to-end test uses a real companion process and loopback WSS gateway.
+```text
+model nodes_invoke
+    -> configured target and gateway policy
+    -> durable human approval when required
+    -> durable gateway invocation coordinator
+    -> authenticated WSS session
+    -> node-local command policy
+    -> system.exec.v1
+    -> companion invocation ledger
+    -> model-visible result or explicit unknown state
+```
 
-Typed service status and logs are strongly preferred in the MVP. Privileged
-service actions may follow immediately after the basic transport and policy
-path if the helper boundary is not yet ready.
+`nodes_status` observes the same durable invocation without redispatching it.
+The gateway never interprets a disconnect after dispatch as proof that a
+mutation did not execute.
 
-## Suggested PR Sequence
+### Implementation Requirement Matrix
 
-1. Add domain types, registry contracts, and this protocol's JSON schemas with
-   no network listener or agent tool.
-2. Add gateway connection admission, challenge authentication, and pending
-   pairing persistence.
-3. Add the lightweight `picoclaw-node run` companion with reconnect and
-   capability advertisement.
-4. Add operator node list, describe, approve, revoke, and agent target binding.
-5. Add synchronous `system.exec.v1`, canonical plans, node-local policy, and
-   bounded output.
-6. Add invocation ledger, idempotency, cancellation, recovery queries, and
-   uncertain-outcome tests.
-7. Integrate durable human approval and runtime audit events.
-8. Add Linux systemd and macOS launchd status/log handlers.
-9. Add the narrow privileged service helper and allowlisted service actions.
-10. Add installer, doctor checks, deployment documentation, and an end-to-end
-    Linux/macOS compatibility matrix.
+| Requirement | Merged PRs | Owning code | Focused evidence | Deployment status |
+| --- | --- | --- | --- | --- |
+| Domain, protocol schema, identity, and durable registry | #275, #277 | `pkg/nodes`, `pkg/nodes/protocol` | domain, schema, identity, and registry tests | Available in the merged binaries; inactive until nodes are enabled |
+| Outbound authenticated WSS and explicit pairing | #278, #282, #284 | `pkg/nodes/ws`, `pkg/gateway`, `pkg/nodes/companion` | admission, pairing, session ownership, reconnect, and reload tests | Requires an operator-configured WSS endpoint and paired companion |
+| Slim Linux/macOS companion | #280 | `cmd/picoclaw-node`, `pkg/nodes/companion` | dependency-boundary and companion startup tests | Built separately as `picoclaw-node` |
+| Operator lifecycle and durable catalog approval | #283, #288, #290 | `cmd/picoclaw`, `pkg/nodes` | approve, revoke, changed-catalog, and node-local denial tests | Explicit pairing approval required before execution |
+| Durable invocation identity, ledger, recovery, and no-blind-replay semantics | #297, #301, #305 | `pkg/nodes`, `pkg/nodes/companion`, `pkg/nodes/ws` | idempotency, concurrent dispatch, cancellation, recovery, disconnect, and unknown-outcome tests | Persisted in bounded gateway and companion stores |
+| Typed `system.exec.v1` with node-local bounds | #307 | `pkg/nodes/companion` | executable, argv, working-root, environment, timeout, output, and failure tests | Disabled unless explicitly allowlisted in companion policy |
+| Linux systemd and macOS LaunchAgent process lifecycle | #311, #312, #313, #314, #316, #321, #325 | `cmd/picoclaw-node` | install, status, uninstall, rollback, and real-process lifecycle tests | Optional operator installation path; not a remote service-management capability |
+| Agent target policy and model-facing discovery | #326, #327 | `pkg/config`, `pkg/tools/nodes.go` | target visibility, alias resolution, default target, agent isolation, and reload tests | Visible only when the workspace enables nodes and grants targets |
+| Model-facing invocation, status, approval continuation, and authority binding | #329, #331, #340, #342, #346, #348, #355 | `pkg/tools/node_invocation.go`, `pkg/gateway/node_invocations.go`, `pkg/nodes/gateway_invocations.go` | workspace, agent, session, actor, tool-call, approval, dispatch-boundary, recovery, and output-schema tests | Registered as `nodes_invoke` and `nodes_status` when nodes are enabled |
+| Redacted passive observations and complete real-process vertical slice | #372 | `pkg/events`, `pkg/tools/node_invocation.go`, `pkg/gateway/node_invocation_vertical_e2e_test.go` | model tool -> approval -> WSS -> companion -> `system.exec.v1` -> model result E2E | Event bus observations are available wherever runtime events are configured |
 
-Each PR should leave the runtime in a valid state and avoid exposing a command
-surface before its policy and node-side enforcement exist.
+The matrix records merged implementation evidence. It does not imply that a
+particular installation has enabled node access. Deployment deliberately
+requires operator configuration, pairing approval, target grants, and
+node-local command policy.
+
+### Authority and Sources of Truth
+
+| Decision | Authoritative owner | Important rule |
+| --- | --- | --- |
+| Which target an agent may name | Operator configuration and `nodeTargetAccess` | Model arguments cannot introduce a hostname, node ID, credential, executor, or policy override |
+| Which device and catalog are paired | Durable node registry and approved catalog hash | A changed catalog fails closed until explicitly approved |
+| Which invocation was prepared or dispatched | Durable gateway invocation store | `prepared -> dispatched` is monotonic; dispatched mutations are never automatically replayed |
+| Whether human approval applies | Durable interaction record bound to the retained execution plan | Approval continuation reuses the exact plan and cannot mint replacement authority |
+| What the node accepted and how it ended | Companion invocation ledger | Duplicate IDs return durable evidence; missing evidence is not converted into success or failure |
+| Which command may run | Pairing-approved catalog, target policy, and node-local policy | Gateway approval may narrow but never broaden node-local authority |
+| What the process can change | Companion OS account and configured executor | Prompt, approval, and command validation are not an OS sandbox |
+
+### Audit Observation Semantics
+
+Node invocation runtime events use the single
+`node.invocation.observed` kind with a bounded `observation` value such as
+`prepared`, `dispatched`, `completed`, `uncertain`, or `status`. These events
+are passive snapshots for correlation and diagnostics, not an ordered
+transaction log. Concurrent callers may publish observations out of order.
+The gateway invocation store and companion ledger remain authoritative.
+
+Observations exclude command input and output, argv and environment values,
+node identity, plan and catalog hashes, policy internals, credentials,
+connection details, raw approval text, and transport frames. A validated
+bounded failure code may be included; failure messages are excluded.
+
+### Cancellation Gate
+
+Internal cancellation transport and companion-ledger semantics are implemented
+and tested, but model-facing `nodes_cancel` is intentionally deferred.
+
+The current MVP command `system.exec.v1` advertises
+`supports_cancel=false` because process-tree termination cannot yet be proven
+across supported platforms. The gateway-facing invocation adapter also does
+not expose structured cancellation outcomes that let a model tool reliably
+distinguish unsupported, requested, confirmed, disconnected, and unknown
+states. Adding a useful tool therefore would not be a thin wrapper over the
+current model-facing contract.
+
+This decision does not weaken internal cancellation behavior. A later
+milestone may expose cancellation only after a cancel-capable command and
+bounded structured gateway outcomes exist. Request delivery alone must never
+be reported as confirmed termination.
+
+### Deployment Status
+
+The implementation is merged and covered by repository tests. Node support
+remains disabled unless a workspace enables it and grants named targets. A
+production rollout must build both `picoclaw` and `picoclaw-node` from the same
+merged revision, preserve disabled-by-default policy, and verify tool
+registration and companion connectivity only where a node is configured.
+
+No target, command, automatic approval, or broader machine authority is enabled
+merely by installing the binaries.
 
 ## Later Work
 
@@ -864,17 +914,24 @@ implementation without a fresh milestone decision.
 | Capability catalog grows without bound | Pairing approval for broadened commands and bounded model projection |
 | SSH becomes a parallel execution stack | Shared target driver, plan, policy, result, artifact, and audit contracts |
 
-## Open Questions Before Implementation
+## Intentional Limitations and Deferred Capabilities
 
-- Whether pairing state belongs in the existing durable interaction registry or
-  a dedicated device registry with interaction records only for human prompts.
-- The exact post-MVP owner-shell profile, broker, approval, and PTY contract;
-  MVP execution remains argv-based.
-- Whether service status/log commands are required for MVP completion or the
-  immediately following milestone.
-- Whether companion updates are manual in version 1 or use a separately signed
-  update channel later.
-- What bounded retention window is appropriate for the node invocation ledger.
+The implemented MVP does not include:
 
-These questions do not change the major boundaries and can be resolved in the
-first implementation PRs with focused threat-model tests.
+- model-facing cancellation;
+- remote service status, logs, restart, or privileged helper commands;
+- an owner shell, PTY, background remote jobs, or streamed execution;
+- artifact or binary transfer;
+- Docker, bubblewrap, or SSH execution backends;
+- SSH bootstrap or companion update/reinstall orchestration;
+- browser, MCP, camera, location, mobile, Windows, or hardware capabilities;
+- OpenClaw or other external protocol compatibility adapters;
+- multi-gateway service by one companion process;
+- automatic approval, arbitrary target selection, or automatic replay;
+- an ordered or durable audit-event log.
+
+Post-MVP proposals live in the
+[Node Companion Post-MVP Roadmap](node-companion-roadmap.md) and require a
+separate scope decision. They must reuse the implemented identity, target,
+policy, invocation, recovery, and redaction boundaries rather than weakening
+them.
