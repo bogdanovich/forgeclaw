@@ -149,7 +149,7 @@ func (store *GatewayInvocationStore) Prepare(
 	toolCallID string,
 	plan ExecutionPlan,
 	descriptor CommandDescriptor,
-) (GatewayInvocationRecord, error) {
+) (GatewayInvocationRecord, bool, error) {
 	now := store.now()
 	record := GatewayInvocationRecord{
 		Target:           strings.TrimSpace(target),
@@ -162,10 +162,10 @@ func (store *GatewayInvocationStore) Prepare(
 		UpdatedAt:        now.UnixNano(),
 	}
 	if err := record.validate(); err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	if now.Unix() >= plan.ExpiresAt {
-		return GatewayInvocationRecord{}, fmt.Errorf(
+		return GatewayInvocationRecord{}, false, fmt.Errorf(
 			"%w: execution plan expired before persistence",
 			ErrInvalidInvocation,
 		)
@@ -175,12 +175,12 @@ func (store *GatewayInvocationStore) Prepare(
 	defer store.mu.Unlock()
 	release, err := store.lockAndReloadLocked()
 	if err != nil {
-		return GatewayInvocationRecord{}, err
+		return GatewayInvocationRecord{}, false, err
 	}
 	defer release()
 	now = store.now()
 	if now.Unix() >= plan.ExpiresAt {
-		return GatewayInvocationRecord{}, fmt.Errorf(
+		return GatewayInvocationRecord{}, false, fmt.Errorf(
 			"%w: execution plan expired before persistence",
 			ErrInvalidInvocation,
 		)
@@ -194,7 +194,7 @@ func (store *GatewayInvocationStore) Prepare(
 		if existing.Plan.IdempotencyKey == plan.IdempotencyKey &&
 			!sameGatewayInvocationBinding(existing, record) {
 			store.records = previous
-			return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
+			return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 		}
 		if sameGatewayToolCall(
 			existing,
@@ -206,42 +206,45 @@ func (store *GatewayInvocationStore) Prepare(
 			if sameGatewayInvocationBinding(existing, record) {
 				if pruned {
 					if err := store.persistMutationLocked(previous); err != nil {
-						return GatewayInvocationRecord{}, fmt.Errorf(
+						return GatewayInvocationRecord{}, false, fmt.Errorf(
 							"persist pruned node invocations: %w",
 							err,
 						)
 					}
 				}
-				return cloneGatewayInvocationRecord(existing), nil
+				return cloneGatewayInvocationRecord(existing), false, nil
 			}
 			store.records = previous
-			return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
+			return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 		}
 	}
 	if existing, found := store.records[plan.InvocationID]; found {
 		if sameGatewayInvocationBinding(existing, record) {
 			if pruned {
 				if err := store.persistMutationLocked(previous); err != nil {
-					return GatewayInvocationRecord{}, fmt.Errorf(
+					return GatewayInvocationRecord{}, false, fmt.Errorf(
 						"persist pruned node invocations: %w",
 						err,
 					)
 				}
 			}
-			return cloneGatewayInvocationRecord(existing), nil
+			return cloneGatewayInvocationRecord(existing), false, nil
 		}
 		store.records = previous
-		return GatewayInvocationRecord{}, ErrGatewayInvocationConflict
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
 	}
 	if len(store.records) >= store.maxRecords {
 		store.records = previous
-		return GatewayInvocationRecord{}, ErrGatewayInvocationStoreFull
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationStoreFull
 	}
 	store.records[plan.InvocationID] = record
 	if err := store.persistMutationLocked(previous); err != nil {
-		return GatewayInvocationRecord{}, fmt.Errorf("persist prepared node invocation: %w", err)
+		return GatewayInvocationRecord{}, false, fmt.Errorf(
+			"persist prepared node invocation: %w",
+			err,
+		)
 	}
-	return cloneGatewayInvocationRecord(record), nil
+	return cloneGatewayInvocationRecord(record), true, nil
 }
 
 func (store *GatewayInvocationStore) ByToolCall(
