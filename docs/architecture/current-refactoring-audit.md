@@ -51,13 +51,16 @@ First boundary completed:
   install, snapshot, lookup, and conditional-removal operations.
 - Stream activity and auxiliary tombstone lookup, consumption, finalization,
   cleanup, and expiry are owned by the stream delivery state.
+- Tool-feedback initialization, terminal lifecycle, delivery, dismissal,
+  scoped lookup, configuration, channel retirement, and shutdown are owned by
+  the delivery interaction state.
 
 Remaining:
 
-- Move tool-feedback operations onto the interaction state owner rather than
-  relying on a promoted coordinator.
 - Remove the registry's promoted map compatibility after package tests use its
   narrower fixture API.
+- Remove promoted interaction-state fields after package tests use narrower
+  state fixtures.
 
 ### Turn Execution State
 

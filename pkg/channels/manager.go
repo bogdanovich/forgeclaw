@@ -398,11 +398,9 @@ func (m *Manager) cleanupDeliveryState(
 	}
 
 	if opts.DismissToolFeedback {
-		if m.toolFeedback != nil {
-			m.dismissToolFeedbackTargets(
-				ctx, name, ch, chatID, outboundCtx, opts.SessionKey, opts.TraceScopes,
-			)
-		}
+		m.dismissToolFeedbackTargets(
+			ctx, name, ch, chatID, outboundCtx, opts.SessionKey, opts.TraceScopes,
+		)
 	}
 
 	if opts.DeletePlaceholder {
@@ -496,21 +494,13 @@ func (m *Manager) beginToolFeedbackTerminals(
 	sessionKey string,
 	traceScopes []runtimeevents.TraceScope,
 ) []*toolFeedbackTerminal {
-	if m == nil || m.toolFeedback == nil {
+	if m == nil || !m.deliveryInteractionState.hasToolFeedback() {
 		return nil
 	}
 	keys, scoped := m.resolveToolFeedbackTargets(
 		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
 	)
-	terminals := make([]*toolFeedbackTerminal, 0, len(keys))
-	for _, key := range keys {
-		if scoped {
-			terminals = append(terminals, m.toolFeedback.BeginTerminal(key))
-		} else {
-			terminals = append(terminals, m.toolFeedback.BeginTransientTerminal(key))
-		}
-	}
-	return terminals
+	return m.deliveryInteractionState.beginToolFeedbackTerminals(keys, scoped)
 }
 
 func (m *Manager) completeToolFeedbackTerminals(
@@ -518,9 +508,7 @@ func (m *Manager) completeToolFeedbackTerminals(
 	terminals []*toolFeedbackTerminal,
 	success bool,
 ) {
-	for _, terminal := range terminals {
-		m.toolFeedback.CompleteTerminal(ctx, terminal, success)
-	}
+	m.deliveryInteractionState.completeToolFeedbackTerminals(ctx, terminals, success)
 }
 
 func (m *Manager) beginOutboundToolFeedbackTerminals(
@@ -528,7 +516,7 @@ func (m *Manager) beginOutboundToolFeedbackTerminals(
 	ch Channel,
 	msg bus.OutboundMessage,
 ) []*toolFeedbackTerminal {
-	if m == nil || m.toolFeedback == nil || outboundMessageIsToolFeedback(msg) ||
+	if m == nil || !m.deliveryInteractionState.hasToolFeedback() || outboundMessageIsToolFeedback(msg) ||
 		!OutboundMessageDismissesTrackedToolFeedback(msg) {
 		return nil
 	}
@@ -559,7 +547,7 @@ func (m *Manager) deliverToolFeedback(
 	)
 	content := prepareToolFeedbackMessageContent(ch, msg.Content)
 	operations := toolFeedbackOperationsFor(ch)
-	return m.toolFeedback.deliver(
+	return m.deliveryInteractionState.deliverToolFeedback(
 		ctx,
 		key,
 		deliveryChatID,
@@ -580,7 +568,7 @@ func (m *Manager) deliverToolFeedback(
 
 // DismissToolFeedback clears tracked progress for one outbound identity.
 func (m *Manager) DismissToolFeedback(ctx context.Context, target bus.OutboundMessage) {
-	if m == nil || m.toolFeedback == nil {
+	if m == nil || !m.deliveryInteractionState.hasToolFeedback() {
 		return
 	}
 	channelName := outboundMessageChannel(target)
@@ -611,13 +599,7 @@ func (m *Manager) dismissToolFeedbackTargets(
 	keys, scoped := m.resolveToolFeedbackTargets(
 		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
 	)
-	for _, key := range keys {
-		if scoped {
-			m.toolFeedback.Dismiss(ctx, key)
-		} else {
-			m.toolFeedback.DismissTransient(ctx, key)
-		}
-	}
+	m.deliveryInteractionState.dismissToolFeedback(ctx, keys, scoped)
 }
 
 func (m *Manager) resolveToolFeedbackTargets(
@@ -632,7 +614,7 @@ func (m *Manager) resolveToolFeedbackTargets(
 		channelName, ch, chatID, outboundCtx, sessionKey, traceScopes,
 	)
 	if !scoped && len(keys) == 1 {
-		if key, ok := m.toolFeedback.singleActiveScopedKey(keys[0]); ok {
+		if key, ok := m.deliveryInteractionState.singleActiveScopedToolFeedbackKey(keys[0]); ok {
 			return []string{key}, true
 		}
 	}
@@ -775,13 +757,11 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 						}
 					}
 				}
-				if m.toolFeedback != nil {
+				if m.deliveryInteractionState.hasToolFeedback() {
 					keys, _ := toolFeedbackTargets(
 						name, ch, chatID, &msg.Context, msg.SessionKey, msg.TraceScopes,
 					)
-					for _, key := range keys {
-						m.toolFeedback.ReleaseTerminal(key)
-					}
+					m.deliveryInteractionState.releaseToolFeedbackTerminals(keys)
 				}
 				return nil, true
 			}
@@ -880,7 +860,7 @@ func NewManager(
 		channelRestartRequired: make(map[string]string),
 	}
 	if cfg != nil {
-		m.toolFeedback = NewToolFeedbackCoordinator(
+		m.deliveryInteractionState.initializeToolFeedback(
 			ToolFeedbackAnimatorConfig{
 				AnimationInterval: cfg.Agents.Defaults.GetToolFeedbackAnimationInterval(),
 				MinEditInterval:   cfg.Agents.Defaults.GetToolFeedbackEditMinInterval(),
@@ -982,17 +962,15 @@ func (m *Manager) GetStreamer(
 		m.streamDeliveryState.consumeActive(streamKey)
 	}
 	onFinalize := func(finalizeCtx context.Context, finalContent string) {
-		if m.toolFeedback != nil {
-			m.dismissToolFeedbackTargets(
-				finalizeCtx,
-				channelName,
-				ch,
-				chatID,
-				&bus.InboundContext{Channel: channelName, ChatID: chatID},
-				sessionKey,
-				[]runtimeevents.TraceScope{traceScope},
-			)
-		}
+		m.dismissToolFeedbackTargets(
+			finalizeCtx,
+			channelName,
+			ch,
+			chatID,
+			&bus.InboundContext{Channel: channelName, ChatID: chatID},
+			sessionKey,
+			[]runtimeevents.TraceScope{traceScope},
+		)
 		if v, loaded := m.placeholders.LoadAndDelete(placeholderKey); loaded {
 			if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 				if deleter, ok := ch.(MessageDeleter); ok {
@@ -1858,9 +1836,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		}
 		closeWorkerAndWait(delivery.worker)
 	}
-	if m.toolFeedback != nil {
-		m.toolFeedback.StopAll()
-	}
+	m.deliveryInteractionState.stopToolFeedback()
 
 	// Stop all channels
 	for _, target := range channels {
@@ -2265,7 +2241,7 @@ func (m *Manager) sendWithRetryPolicy(
 			attemptMsg := pending[0]
 			var msgIDs []string
 			var err error
-			if isToolFeedback && m.toolFeedback != nil {
+			if isToolFeedback && m.deliveryInteractionState.hasToolFeedback() {
 				msgIDs, err = m.deliverToolFeedback(ctx, name, w.ch, attemptMsg, w.ch.Send)
 			} else {
 				msgIDs, err = w.ch.Send(ctx, attemptMsg)
@@ -2558,7 +2534,7 @@ func (m *Manager) sendMediaWithRetryPolicy(
 
 	terminalSucceeded := false
 	var terminals []*toolFeedbackTerminal
-	if m.toolFeedback != nil {
+	if m.deliveryInteractionState.hasToolFeedback() {
 		terminals = m.beginToolFeedbackTerminals(
 			name,
 			w.ch,
@@ -2777,9 +2753,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			cancel()
 			return err
 		}
-		if m.toolFeedback != nil {
-			m.toolFeedback.RetireChannel(ctx, name)
-		}
+		m.deliveryInteractionState.retireToolFeedbackChannel(ctx, name)
 		if err := oldChannel.Stop(ctx); err != nil {
 			logger.ErrorCF("channels", "Error stopping inactive changed channel", map[string]any{
 				"channel": name,
@@ -2828,8 +2802,8 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 
 	// Commit hashes only on full success.
 	m.channelHashes = list
-	if m.toolFeedback != nil && cfg != nil {
-		m.toolFeedback.Configure(
+	if cfg != nil {
+		m.deliveryInteractionState.configureToolFeedback(
 			ToolFeedbackAnimatorConfig{
 				AnimationInterval: cfg.Agents.Defaults.GetToolFeedbackAnimationInterval(),
 				MinEditInterval:   cfg.Agents.Defaults.GetToolFeedbackEditMinInterval(),
@@ -2881,9 +2855,7 @@ func (m *Manager) UnregisterChannel(name string) {
 	} else {
 		closeWorkerAndWait(w)
 	}
-	if m.toolFeedback != nil {
-		m.toolFeedback.RetireChannel(context.Background(), name)
-	}
+	m.deliveryInteractionState.retireToolFeedbackChannel(context.Background(), name)
 
 	m.mu.Lock()
 	m.deliveryRegistry.removeIfMatches(name, owner, w)
