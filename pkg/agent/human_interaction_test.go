@@ -2100,69 +2100,87 @@ func TestConcurrentExplicitInteractionAnswersNeverBecomeSteering(t *testing.T) {
 	}
 }
 
-func TestExplicitAnswerContentionReleasesWhileRegistryIsWaiting(t *testing.T) {
-	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
-	defer cleanup()
-	tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
-	al.bus = tracker
-	sessionKey := "session-waiting-answer-contention"
-	request := testToolSuspensionRequest(agent.Workspace)
-	request.Route.SessionKey = sessionKey
-	registry := al.interactionRegistryForWorkspace(agent.Workspace)
-	record, err := registry.Create(interactions.CreateRequest{
-		Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
-		Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
-	record, _ = registry.MarkWaiting(record.ID, record.Revision)
-	target := &inboundDispatchTarget{
-		Agent: agent, SessionKey: sessionKey,
-		Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
-	}
-	scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
-	blocker, claimed := al.claimRuntimeSession(scope, "waiting-answer-blocker")
-	if !claimed {
-		t.Fatal("failed to claim the interaction session blocker")
-	}
-	defer blocker.releaseIfOwned()
-
-	contender := bus.InboundMessage{
-		Content: "/answer " + record.ShortID + " valid", SpoolID: "spool-waiting-contender",
-		Context: inboundContextForInteraction(request.Route),
-	}
-	contender.Context.MessageID = "waiting-contender"
-	if !newInboundTurnCoordinator(al).routeExplicitInteractionAnswer(t.Context(), contender, target) {
-		t.Fatal("waiting contender escaped interaction protocol routing")
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		acked, released := tracker.counts()
-		if released == 1 {
-			if acked != 0 {
-				t.Fatalf("waiting contender was acknowledged before a durable claim: %d", acked)
+func TestExplicitAnswerContentionReleasesBeforeDurableAnswerAdmission(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		markWaiting bool
+		status      interactions.Status
+	}{
+		{name: "created_after_delivery", status: interactions.StatusCreated},
+		{name: "waiting", markWaiting: true, status: interactions.StatusWaiting},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+			defer cleanup()
+			tracker := &interactionOwnershipBus{MessageBus: al.bus.(*bus.MessageBus)}
+			al.bus = tracker
+			sessionKey := "session-answer-admission-contention-" + test.name
+			request := testToolSuspensionRequest(agent.Workspace)
+			request.Route.SessionKey = sessionKey
+			registry := al.interactionRegistryForWorkspace(agent.Workspace)
+			record, err := registry.Create(interactions.CreateRequest{
+				Kind: request.Prompt.Kind, Route: request.Route, Origin: request.Origin,
+				Questions: request.Prompt.Questions, ExpiresAt: time.Now().Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
 			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for contended answer transport release")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	record, _ = registry.Get(record.ID)
-	if record.Status != interactions.StatusWaiting || record.Answer != nil {
-		t.Fatalf("runtime contention chose a durable answer: %#v", record)
-	}
-	if got := al.pendingSteeringCountForScope(scope); got != 0 {
-		t.Fatalf("released answer entered steering queue: %d", got)
-	}
-	for _, event := range registry.ListEvents(record.ID) {
-		if event.Type == interactions.EventAnswerClaimed ||
-			event.Type == interactions.EventResumeStarted {
-			t.Fatalf("contention emitted durable transition: %#v", event)
-		}
+			record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+			if test.markWaiting {
+				record, _ = registry.MarkWaiting(record.ID, record.Revision)
+			}
+			target := &inboundDispatchTarget{
+				Agent: agent, SessionKey: sessionKey,
+				Allocation: session.Allocation{RouteScopeKey: request.Route.RouteSessionKey},
+			}
+			scope := newRuntimeSessionScope(agent.Workspace, sessionKey)
+			blocker, claimed := al.claimRuntimeSession(scope, "answer-admission-blocker")
+			if !claimed {
+				t.Fatal("failed to claim the interaction session blocker")
+			}
+			defer blocker.releaseIfOwned()
+
+			contender := bus.InboundMessage{
+				Content: "/answer " + record.ShortID + " valid",
+				SpoolID: "spool-admission-contender-" + test.name,
+				Context: inboundContextForInteraction(request.Route),
+			}
+			contender.Context.MessageID = "admission-contender-" + test.name
+			if !newInboundTurnCoordinator(al).routeExplicitInteractionAnswer(
+				t.Context(),
+				contender,
+				target,
+			) {
+				t.Fatal("pre-admission contender escaped interaction protocol routing")
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				acked, released := tracker.counts()
+				if released == 1 {
+					if acked != 0 {
+						t.Fatalf("contender was acknowledged before a durable claim: %d", acked)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting for contended answer transport release")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			record, _ = registry.Get(record.ID)
+			if record.Status != test.status || record.Answer != nil {
+				t.Fatalf("runtime contention chose a durable answer: %#v", record)
+			}
+			if got := al.pendingSteeringCountForScope(scope); got != 0 {
+				t.Fatalf("released answer entered steering queue: %d", got)
+			}
+			for _, event := range registry.ListEvents(record.ID) {
+				if event.Type == interactions.EventAnswerClaimed ||
+					event.Type == interactions.EventResumeStarted {
+					t.Fatalf("contention emitted durable transition: %#v", event)
+				}
+			}
+		})
 	}
 }
 

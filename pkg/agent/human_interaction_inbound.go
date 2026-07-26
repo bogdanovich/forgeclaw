@@ -376,7 +376,8 @@ func (c *inboundTurnCoordinator) runContendedExplicitInteractionInbound(
 	}
 	classification, _ := c.al.classifyExplicitInteractionAnswer(msg, target)
 	if classification.Disposition == explicitInteractionAnswerActive {
-		if classification.Record.Status == interactions.StatusWaiting {
+		if classification.Record.Status == interactions.StatusCreated ||
+			classification.Record.Status == interactions.StatusWaiting {
 			logExplicitInteractionAnswerDisposition(
 				classification.Record,
 				msg,
@@ -385,7 +386,7 @@ func (c *inboundTurnCoordinator) runContendedExplicitInteractionInbound(
 			c.al.releaseInboundMessage(
 				context.Background(),
 				msg,
-				errors.New("interaction answer is waiting for session ownership"),
+				errors.New("interaction answer is waiting for durable admission"),
 			)
 			return
 		}
