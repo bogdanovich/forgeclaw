@@ -343,7 +343,8 @@ func (store *GatewayInvocationStore) MarkDispatched(
 	record.UpdatedAt = now
 	store.records[invocationID] = record
 	if err := store.persistMutationLocked(previous); err != nil {
-		return cloneGatewayInvocationRecord(record), true,
+		return cloneGatewayInvocationRecord(record),
+			fileutil.IsCommittedWriteError(err),
 			fmt.Errorf("persist dispatched node invocation: %w", err)
 	}
 	return cloneGatewayInvocationRecord(record), true, nil

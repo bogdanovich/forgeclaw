@@ -337,6 +337,48 @@ func TestGatewayInvocationStoreKeepsCommittedMutationInMemory(t *testing.T) {
 	}
 }
 
+func TestGatewayInvocationStoreDoesNotGrantRolledBackDispatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node_invocations.json")
+	store, err := NewGatewayInvocationStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := gatewayTestPlan(t, "inv_rollback", "idem_rollback", time.Now())
+	if _, err = store.Prepare(
+		"vpn",
+		"call-1",
+		plan,
+		gatewayTestDescriptor(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeErr := errors.New("write invocation store")
+	store.writeFile = func(string, []byte, os.FileMode) error { return writeErr }
+	owner := gatewayTestOwner("vpn", "call-1", plan)
+	_, transitioned, err := store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	)
+	if !errors.Is(err, writeErr) || transitioned {
+		t.Fatalf("failed dispatch = (transitioned %v, error %v)", transitioned, err)
+	}
+	record, found, err := store.Lookup(gatewayTestPrincipal(plan), plan.InvocationID)
+	if err != nil || !found || record.State != GatewayInvocationPrepared {
+		t.Fatalf("rolled-back record = (%#v, %v, %v)", record, found, err)
+	}
+
+	store.writeFile = fileutil.WriteFileAtomic
+	_, transitioned, err = store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	)
+	if err != nil || !transitioned {
+		t.Fatalf("retry dispatch = (transitioned %v, error %v)", transitioned, err)
+	}
+}
+
 func TestGatewayInvocationStoreLoadRejectsMutatedPlan(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node_invocations.json")
 	plan := gatewayTestPlan(t, "inv_mutated", "idem_mutated", time.Now())
