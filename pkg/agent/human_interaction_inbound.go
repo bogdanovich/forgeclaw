@@ -712,21 +712,21 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 	exec.normalizedToolCalls = []providers.ToolCall{toolCall}
 	exec.allResponsesHandled = true
 	exec.assistantToolCallsPersisted = true
-	control := pipeline.ExecuteTools(ctx, ctx, ts, exec, 1)
-	if control == ToolControlSuspend {
-		return control, nil
+	outcome := pipeline.ExecuteTools(ctx, ctx, ts, exec, 1)
+	if outcome.Control == ToolControlSuspend {
+		return outcome.Control, nil
 	}
 	if _, resultIndex := interactionToolPairIndexes(
 		agent.Sessions.GetHistory(interactionContinuationSessionKey(record)),
 		record.Origin.ToolCallID,
 	); resultIndex < 0 {
-		return control, fmt.Errorf("approved tool execution did not persist a matching result")
+		return outcome.Control, fmt.Errorf("approved tool execution did not persist a matching result")
 	}
 	_, ok = registry.Get(record.ID)
 	if !ok {
-		return control, interactions.ErrNotFound
+		return outcome.Control, interactions.ErrNotFound
 	}
-	return control, nil
+	return outcome.Control, nil
 }
 
 func (al *AgentLoop) interactionContinuationAgent(

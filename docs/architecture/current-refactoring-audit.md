@@ -77,6 +77,19 @@ Recommended direction:
 - Add invariant tests around usage aggregation, final content selection,
   streaming completion, and compaction triggers.
 
+First boundary completed:
+
+- LLM and tool phases return typed outcomes carrying control flow, terminal
+  content, abort cause, and durable suspension identity.
+- The turn runner no longer infers those results from shared terminal fields
+  on `turnExecution`.
+
+Remaining:
+
+- Move finalization inputs into a typed context.
+- Continue narrowing message, tool, and streaming mutation to their owning
+  phases.
+
 ### Delivery Retry Semantics
 
 Text delivery, media delivery, and Telegram chunk finalization each carry related

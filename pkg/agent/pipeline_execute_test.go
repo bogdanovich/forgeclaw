@@ -112,14 +112,14 @@ func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T
 	}
 
 	control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
-	if control != ToolControlSuspend {
-		t.Fatalf("control = %v, want suspend", control)
+	if control.Control != ToolControlSuspend {
+		t.Fatalf("control = %v, want suspend", control.Control)
 	}
 	if deferredTool.executions != 0 {
 		t.Fatalf("deferred tool executions = %d, want 0", deferredTool.executions)
 	}
-	if exec.suspendedInteractionID != "interaction-1" || len(manager.requests) != 1 {
-		t.Fatalf("suspension = %q, requests = %#v", exec.suspendedInteractionID, manager.requests)
+	if control.SuspendedInteractionID != "interaction-1" || len(manager.requests) != 1 {
+		t.Fatalf("suspension = %q, requests = %#v", control.SuspendedInteractionID, manager.requests)
 	}
 	request := manager.requests[0]
 	if request.Origin.ToolCallID != "call-question" || request.Origin.TurnID != ts.turnID ||
@@ -173,8 +173,8 @@ func TestPipelineSuspensionFailureBecomesPairedToolError(t *testing.T) {
 	}
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{Suspension: manager}}
 
-	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control != ToolControlContinue {
-		t.Fatalf("control = %v, want continue with tool error", control)
+	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control.Control != ToolControlContinue {
+		t.Fatalf("control = %v, want continue with tool error", control.Control)
 	}
 	if len(manager.requests) != 0 {
 		t.Fatal("suspension manager called before assistant persistence")
@@ -215,8 +215,8 @@ func TestPipelineSteeringWinsBeforeSuspensionCommit(t *testing.T) {
 		Interaction: PipelineInteractionServices{Suspension: manager},
 	}
 
-	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control != ToolControlContinue {
-		t.Fatalf("control = %v, want continue", control)
+	if control := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1); control.Control != ToolControlContinue {
+		t.Fatalf("control = %v, want continue", control.Control)
 	}
 	if len(manager.requests) != 0 || len(exec.pendingMessages) != 1 {
 		t.Fatalf("requests = %d, pending = %#v", len(manager.requests), exec.pendingMessages)
@@ -382,8 +382,8 @@ func TestPipelineLoopGuardBlocksAndPreservesToolCallResults(t *testing.T) {
 			ts,
 			exec,
 			i,
-		); got != ToolControlContinue {
-			t.Fatalf("iteration %d control = %v", i, got)
+		); got.Control != ToolControlContinue {
+			t.Fatalf("iteration %d control = %v", i, got.Control)
 		}
 	}
 
@@ -638,8 +638,8 @@ func TestPipelineLoopGuardBlocksBeforeApprovalAuthority(t *testing.T) {
 				ts,
 				exec,
 				1,
-			); control != ToolControlContinue {
-				t.Fatalf("control = %v, want continue", control)
+			); control.Control != ToolControlContinue {
+				t.Fatalf("control = %v, want continue", control.Control)
 			}
 			if len(tool.bindingCalls) != 0 || len(manager.requests) != 0 ||
 				len(manager.consumptions) != 0 || tool.executions != 0 {
@@ -859,8 +859,8 @@ func TestPipelineSteeringClassifiesEveryPendingToolAndPreservesPairing(t *testin
 		ts,
 		exec,
 		1,
-	); got != ToolControlContinue {
-		t.Fatalf("control = %v, want continue", got)
+	); got.Control != ToolControlContinue {
+		t.Fatalf("control = %v, want continue", got.Control)
 	}
 	if readOnly.executions != 1 || nonCancellable.executions != 1 {
 		t.Fatalf("safe executions = read:%d commit:%d, want 1 each", readOnly.executions, nonCancellable.executions)

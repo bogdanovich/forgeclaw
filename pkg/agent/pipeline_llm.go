@@ -20,14 +20,14 @@ const contextOverflowCompactTimeout = 45 * time.Second
 
 // CallLLM performs an LLM call with fallback support, hook invocation, and retry logic.
 // It handles PreLLM setup, the actual LLM invocation with retry, and AfterLLM processing.
-// Returns Control indicating what the coordinator should do next.
+// Returns an explicit outcome indicating what the coordinator should do next.
 func (p *Pipeline) CallLLM(
 	ctx context.Context,
 	turnCtx context.Context,
 	ts *turnState,
 	exec *turnExecution,
 	iteration int,
-) (Control, error) {
+) (LLMCallOutcome, error) {
 	maxMediaSize := p.maxMediaSize()
 
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
@@ -38,7 +38,7 @@ func (p *Pipeline) CallLLM(
 			exec,
 		)
 		if err != nil {
-			return ControlBreak, err
+			return LLMCallOutcome{Control: ControlBreak}, err
 		}
 		if usedVisionOverride {
 			logger.InfoCF(
@@ -127,13 +127,11 @@ func (p *Pipeline) CallLLM(
 			}
 		case HookActionAbortTurn:
 			cancelConfiguredStreamingLLM(turnCtx, exec)
-			exec.abortedByHook = true
-			return ControlBreak, nil
+			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHook}, nil
 		case HookActionHardAbort:
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			_ = ts.requestHardAbort()
-			exec.abortedByHardAbort = true
-			return ControlBreak, nil
+			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
 		}
 	}
 
@@ -292,8 +290,7 @@ func (p *Pipeline) CallLLM(
 		}
 		if ts.hardAbortRequested() && errors.Is(err, context.Canceled) {
 			_ = ts.requestHardAbort()
-			exec.abortedByHardAbort = true
-			return ControlBreak, nil
+			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
 		}
 		if isConfiguredStreamingVisibleError(err) {
 			break
@@ -367,7 +364,7 @@ func (p *Pipeline) CallLLM(
 			if sleepErr := sleepWithContext(turnCtx, backoff); sleepErr != nil {
 				if ts.hardAbortRequested() {
 					_ = ts.requestHardAbort()
-					return ControlBreak, nil
+					return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
 				}
 				err = sleepErr
 				break
@@ -554,7 +551,7 @@ func (p *Pipeline) CallLLM(
 				"model":     exec.llmModel,
 				"error":     err.Error(),
 			})
-		return ControlBreak, fmt.Errorf("LLM call failed after retries: %w", err)
+		return LLMCallOutcome{Control: ControlBreak}, fmt.Errorf("LLM call failed after retries: %w", err)
 	}
 
 	// AfterLLM hook
@@ -572,13 +569,11 @@ func (p *Pipeline) CallLLM(
 			}
 		case HookActionAbortTurn:
 			cancelConfiguredStreamingLLM(turnCtx, exec)
-			exec.abortedByHook = true
-			return ControlBreak, nil
+			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHook}, nil
 		case HookActionHardAbort:
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			_ = ts.requestHardAbort()
-			exec.abortedByHardAbort = true
-			return ControlBreak, nil
+			return LLMCallOutcome{Control: ControlBreak, AbortCause: TurnAbortHard}, nil
 		}
 	}
 
@@ -691,17 +686,16 @@ func (p *Pipeline) CallLLM(
 					"steering_count": len(steerMsgs),
 				})
 			exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
-			return ControlContinue, nil
+			return LLMCallOutcome{Control: ControlContinue}, nil
 		}
 
-		exec.finalContent = responseContent
 		logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 			map[string]any{
 				"agent_id":      ts.agent.ID,
 				"iteration":     iteration,
-				"content_chars": len(exec.finalContent),
+				"content_chars": len(responseContent),
 			})
-		return ControlBreak, nil
+		return LLMCallOutcome{Control: ControlBreak, FinalContent: responseContent}, nil
 	}
 	cancelConfiguredStreamingLLM(turnCtx, exec)
 
@@ -788,7 +782,7 @@ func (p *Pipeline) CallLLM(
 		)
 	}
 
-	return ControlToolLoop, nil
+	return LLMCallOutcome{Control: ControlToolLoop}, nil
 }
 
 func turnIntroducedMedia(ts *turnState) bool {

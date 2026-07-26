@@ -30,7 +30,7 @@ func (p *Pipeline) runTurnLoop(
 
 	messages := exec.messages
 	maxMediaSize := p.maxMediaSize()
-	finalContent := exec.finalContent
+	finalContent := ""
 	mediaResolver := p.Context.MediaResolver
 
 	for {
@@ -148,26 +148,24 @@ func (p *Pipeline) runTurnLoop(
 
 		// Execute LLM call via Pipeline
 		ts.setPhase(TurnPhaseRunning)
-		ctrl, callErr := p.CallLLM(ctx, turnCtx, ts, exec, iteration)
+		llmOutcome, callErr := p.CallLLM(ctx, turnCtx, ts, exec, iteration)
 		if callErr != nil {
 			turnStatus = TurnEndStatusError
 			return turnResult{}, turnStatus, callErr
 		}
 		messages = exec.messages
-		finalContent = exec.finalContent
+		finalContent = llmOutcome.terminalCandidate(finalContent)
 
-		switch ctrl {
+		switch llmOutcome.Control {
 		case ControlContinue:
 			continue
 		case ControlBreak:
-			// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
-			if exec.abortedByHardAbort {
+			if llmOutcome.AbortCause == TurnAbortHard {
 				turnStatus = TurnEndStatusAborted
 				result, abortErr := host.abortTurn(ts)
 				return result, turnStatus, abortErr
 			}
-			// Hook abort (HookActionAbortTurn): sets TurnEndStatusError, returns error
-			if exec.abortedByHook {
+			if llmOutcome.AbortCause == TurnAbortHook {
 				turnStatus = TurnEndStatusError
 				return turnResult{}, turnStatus, fmt.Errorf("hook requested turn abort")
 			}
@@ -194,8 +192,8 @@ func (p *Pipeline) runTurnLoop(
 			return result, turnStatus, finalizeErr
 		case ControlToolLoop:
 			// Execute tools via Pipeline
-			toolCtrl := p.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
-			switch toolCtrl {
+			toolOutcome := p.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
+			switch toolOutcome.Control {
 			case ToolControlContinue:
 				// Re-read exec.messages since ExecuteTools may have updated it
 				// (added tool results/skipped messages) before returning ControlContinue
@@ -246,25 +244,23 @@ func (p *Pipeline) runTurnLoop(
 				ts.setPhase(TurnPhaseSuspended)
 				return turnResult{
 					status:                 turnStatus,
-					suspendedInteractionID: exec.suspendedInteractionID,
+					suspendedInteractionID: toolOutcome.SuspendedInteractionID,
 				}, turnStatus, nil
 			case ToolControlBreak:
-				// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
-				if exec.abortedByHardAbort {
+				if toolOutcome.AbortCause == TurnAbortHard {
 					turnStatus = TurnEndStatusAborted
 					result, abortErr := host.abortTurn(ts)
 					return result, turnStatus, abortErr
 				}
-				// Hook abort (HookActionAbortTurn): sets TurnEndStatusError, returns error
-				if exec.abortedByHook {
+				if toolOutcome.AbortCause == TurnAbortHook {
 					turnStatus = TurnEndStatusError
 					return turnResult{}, turnStatus, fmt.Errorf("hook requested turn abort")
 				}
 				// ExecuteTools returned ControlBreak:
-				// - allResponsesHandled=true: finalize without DefaultResponse (exec.finalContent empty)
-				// - allResponsesHandled=false: finalize with exec.finalContent when present
-				if strings.TrimSpace(exec.finalContent) != "" {
-					finalContent = exec.finalContent
+				// - allResponsesHandled=true: finalize without DefaultResponse
+				// - allResponsesHandled=false: finalize with outcome content when present
+				if strings.TrimSpace(toolOutcome.FinalContent) != "" {
+					finalContent = toolOutcome.FinalContent
 				}
 				if exec.allResponsesHandled {
 					finalContent = ""

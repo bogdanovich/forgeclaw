@@ -1589,8 +1589,8 @@ func TestPipeline_CallLLM_BeforeLLMRewriteDoesNotMutateStickyAutoFallbackSelecti
 	if err != nil {
 		t.Fatalf("CallLLM() error = %v", err)
 	}
-	if control != ControlBreak {
-		t.Fatalf("CallLLM() control = %v, want %v", control, ControlBreak)
+	if control.Control != ControlBreak {
+		t.Fatalf("CallLLM() control = %v, want %v", control.Control, ControlBreak)
 	}
 
 	sel, ok := al.getAutoModelSelection("rewrite-session")

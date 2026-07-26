@@ -53,6 +53,29 @@ const (
 	ControlToolLoop
 )
 
+// TurnAbortCause describes why a pipeline phase asked the runner to abort.
+type TurnAbortCause int
+
+const (
+	TurnAbortNone TurnAbortCause = iota
+	TurnAbortHook
+	TurnAbortHard
+)
+
+// LLMCallOutcome is the explicit result of one LLM phase.
+type LLMCallOutcome struct {
+	Control      Control
+	FinalContent string
+	AbortCause   TurnAbortCause
+}
+
+func (o LLMCallOutcome) terminalCandidate(retained string) string {
+	if o.Control != ControlBreak {
+		return retained
+	}
+	return o.FinalContent
+}
+
 // ToolControl signals returned from ExecuteTools to drive tool loop iteration.
 type ToolControl int
 
@@ -69,6 +92,14 @@ const (
 	// of a pending human interaction has transferred to the runtime.
 	ToolControlSuspend
 )
+
+// ToolLoopOutcome is the explicit result of one tool-execution phase.
+type ToolLoopOutcome struct {
+	Control                ToolControl
+	FinalContent           string
+	AbortCause             TurnAbortCause
+	SuspendedInteractionID string
+}
 
 // LLMPhase indicates which phase the turn is executing in.
 type LLMPhase int
@@ -135,7 +166,6 @@ type turnExecution struct {
 	summary         string
 
 	// Turn output
-	finalContent           string
 	completionMedia        []tools.CompletionMedia
 	actionLog              []TurnActionRecord
 	writeAudit             []tools.WriteAuditEntry
@@ -173,13 +203,8 @@ type turnExecution struct {
 	// again or it can race with continuation-level cleanup.
 	initialSteeringSpoolIDs map[string]struct{}
 
-	// Abort signaling for the turn runner, set by Pipeline methods.
-	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
-	abortedByHook      bool // true when HookActionAbortTurn triggered
-
 	assistantToolCallsPersisted bool
 	assistantToolCallsWriteErr  error
-	suspendedInteractionID      string
 }
 
 type turnExecutionModel struct {

@@ -868,19 +868,19 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 		answer.MessageID != "message-1" {
 		t.Fatalf("answer = %#v", answer)
 	}
-	if _, err := parseInteractionAnswer(record, "target: staging", "message-2"); err == nil {
+	if _, incompleteErr := parseInteractionAnswer(record, "target: staging", "message-2"); incompleteErr == nil {
 		t.Fatal("parseInteractionAnswer() accepted incomplete multi-question answer")
 	}
 	prompt := renderInteractionPrompt(record)
 	if !strings.Contains(prompt, "`target`") || !strings.Contains(prompt, "`mode`") {
 		t.Fatalf("multi-question prompt omitted canonical IDs: %q", prompt)
 	}
-	if _, err := parseInteractionAnswer(
+	if _, roundTripErr := parseInteractionAnswer(
 		record,
 		"target: staging\nmode: canary",
 		"message-3",
-	); err != nil {
-		t.Fatalf("rendered question IDs did not round-trip through parser: %v", err)
+	); roundTripErr != nil {
+		t.Fatalf("rendered question IDs did not round-trip through parser: %v", roundTripErr)
 	}
 	templateStart := strings.Index(prompt, "`/answer")
 	if templateStart < 0 {
