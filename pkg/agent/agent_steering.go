@@ -221,6 +221,21 @@ func (t *continuationTarget) retainResponseMetadata(
 	return false
 }
 
+func (t *continuationTarget) appendContinuationResponse(
+	responses []string,
+	snapshot bus.OutboundMetadata,
+	response string,
+) ([]string, bool) {
+	if !t.retainResponseMetadata(snapshot, response) {
+		return responses, false
+	}
+	retained := appendSteeringResponse(responses, response)
+	if len(retained) == len(responses) {
+		t.responseMetadata = snapshot
+	}
+	return retained, true
+}
+
 func (al *AgentLoop) drainQueuedSteeringContinuations(
 	ctx context.Context,
 	target *continuationTarget,
@@ -257,10 +272,15 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 			target.responseMetadata = metadataBefore
 			return joinSteeringResponses(responses), continueErr
 		}
-		if !target.retainResponseMetadata(metadataBefore, continued) {
+		var keepDraining bool
+		responses, keepDraining = target.appendContinuationResponse(
+			responses,
+			metadataBefore,
+			continued,
+		)
+		if !keepDraining {
 			break
 		}
-		responses = appendSteeringResponse(responses, continued)
 	}
 
 	return joinSteeringResponses(responses), nil

@@ -5516,6 +5516,7 @@ func waitForSentMessages(t *testing.T, ch *fakeMediaChannel, want int) {
 
 func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 	target := &continuationTarget{}
+	responses := []string{}
 
 	firstSnapshot := target.responseMetadata
 	target.observeFinalResponse(bus.OutboundMetadata{
@@ -5525,19 +5526,50 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 		UsageOutputTokens: 10,
 		UsageTotalTokens:  110,
 	})
-	if !target.retainResponseMetadata(firstSnapshot, "retained response") {
+	var keepDraining bool
+	responses, keepDraining = target.appendContinuationResponse(
+		responses,
+		firstSnapshot,
+		"retained response",
+	)
+	if !keepDraining {
 		t.Fatal("first response metadata was not retained")
 	}
 
 	secondSnapshot := target.responseMetadata
 	target.observeFinalResponse(bus.OutboundMetadata{
-		ModelName:         "handled-model",
+		ModelName:         "duplicate-model",
 		DefaultModelName:  "workspace-default",
 		UsageInputTokens:  200,
 		UsageOutputTokens: 20,
 		UsageTotalTokens:  220,
 	})
-	if target.retainResponseMetadata(secondSnapshot, "") {
+	responses, keepDraining = target.appendContinuationResponse(
+		responses,
+		secondSnapshot,
+		"retained response",
+	)
+	if !keepDraining {
+		t.Fatal("duplicate response stopped continuation draining")
+	}
+	if len(responses) != 1 {
+		t.Fatalf("responses after duplicate = %q, want one response", responses)
+	}
+
+	thirdSnapshot := target.responseMetadata
+	target.observeFinalResponse(bus.OutboundMetadata{
+		ModelName:         "handled-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  300,
+		UsageOutputTokens: 30,
+		UsageTotalTokens:  330,
+	})
+	responses, keepDraining = target.appendContinuationResponse(
+		responses,
+		thirdSnapshot,
+		"",
+	)
+	if keepDraining {
 		t.Fatal("empty second response metadata was retained")
 	}
 
