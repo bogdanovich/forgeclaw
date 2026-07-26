@@ -1,5 +1,10 @@
 # Replay And Evaluation
 
+> **Superseded:** ForgeClaw is removing this replay/evaluator architecture in
+> favor of [passive diagnostics](passive-diagnostics.md). This document is
+> retained temporarily as a removal inventory and must be deleted with the
+> implementation it describes.
+
 ## Status
 
 This document defines the target architecture and delivery plan for deterministic
