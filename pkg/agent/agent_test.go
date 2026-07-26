@@ -5514,6 +5514,45 @@ func waitForSentMessages(t *testing.T, ch *fakeMediaChannel, want int) {
 	t.Fatalf("sent messages = %d, want at least %d", len(ch.messagesSnapshot()), want)
 }
 
+func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
+	target := &continuationTarget{}
+
+	firstSnapshot := target.responseMetadata
+	target.observeFinalResponse(bus.OutboundMetadata{
+		ModelName:         "first-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  100,
+		UsageOutputTokens: 10,
+		UsageTotalTokens:  110,
+	})
+	if !target.retainResponseMetadata(firstSnapshot, "retained response") {
+		t.Fatal("first response metadata was not retained")
+	}
+
+	secondSnapshot := target.responseMetadata
+	target.observeFinalResponse(bus.OutboundMetadata{
+		ModelName:         "handled-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  200,
+		UsageOutputTokens: 20,
+		UsageTotalTokens:  220,
+	})
+	if target.retainResponseMetadata(secondSnapshot, "") {
+		t.Fatal("empty second response metadata was retained")
+	}
+
+	want := (bus.OutboundMetadata{
+		ModelName:         "first-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  100,
+		UsageOutputTokens: 10,
+		UsageTotalTokens:  110,
+	})
+	if target.responseMetadata != want {
+		t.Fatalf("retained metadata = %+v, want %+v", target.responseMetadata, want)
+	}
+}
+
 func TestProcessMessage_ShowModelReflectsStickyAutoFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 

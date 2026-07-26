@@ -210,6 +210,17 @@ func (t *continuationTarget) observeFinalResponse(metadata bus.OutboundMetadata)
 	t.responseMetadata.UsageTotalTokens += metadata.UsageTotalTokens
 }
 
+func (t *continuationTarget) retainResponseMetadata(
+	snapshot bus.OutboundMetadata,
+	response string,
+) bool {
+	if t == nil || strings.TrimSpace(response) != "" {
+		return true
+	}
+	t.responseMetadata = snapshot
+	return false
+}
+
 func (al *AgentLoop) drainQueuedSteeringContinuations(
 	ctx context.Context,
 	target *continuationTarget,
@@ -240,11 +251,13 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"queue_depth": al.pendingSteeringCountForScope(scope),
 			})
 
+		metadataBefore := target.responseMetadata
 		continued, continueErr := al.continueRuntimeSession(ctx, target)
 		if continueErr != nil {
+			target.responseMetadata = metadataBefore
 			return joinSteeringResponses(responses), continueErr
 		}
-		if continued == "" {
+		if !target.retainResponseMetadata(metadataBefore, continued) {
 			break
 		}
 		responses = appendSteeringResponse(responses, continued)
