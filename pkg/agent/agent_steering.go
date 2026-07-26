@@ -104,6 +104,7 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 		ChatID:                   turn.Message.ChatID,
 		ObserveFinalDeliveryTurn: observeTurn,
 	}
+	turn.Options.ObserveFinalResponse = target.observeFinalResponse
 	if turn.Agent != nil {
 		target.AgentID = turn.Agent.ID
 		target.Workspace = turn.Agent.Workspace
@@ -138,9 +139,12 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 		response = ""
 	}
 	responses := appendSteeringResponse(nil, response)
+	initialMetadata := target.responseMetadata
+	target.responseMetadata = bus.OutboundMetadata{}
 
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
 	if continueErr != nil {
+		target.responseMetadata = initialMetadata
 		if ctx.Err() != nil {
 			return false
 		}
@@ -154,13 +158,15 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 		continuedResponses := appendSteeringResponse(nil, continued)
 		if len(continuedResponses) > 0 {
 			responses = continuedResponses
+		} else {
+			target.responseMetadata = initialMetadata
 		}
 	}
 
 	// Publish final response
 	finalResponse := joinSteeringResponses(responses)
 	if finalResponse != "" {
-		al.publishResponseWithContextAndScopes(
+		al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -182,10 +188,52 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 				}(),
 			},
 			finalResponseAlwaysPublish,
+			target.responseMetadata,
 			*traceScopes,
 		)
 	}
 	return true
+}
+
+func (t *continuationTarget) observeFinalResponse(metadata bus.OutboundMetadata) {
+	if t == nil {
+		return
+	}
+	if metadata.ModelName != "" {
+		t.responseMetadata.ModelName = metadata.ModelName
+	}
+	if metadata.DefaultModelName != "" {
+		t.responseMetadata.DefaultModelName = metadata.DefaultModelName
+	}
+	t.responseMetadata.UsageInputTokens += metadata.UsageInputTokens
+	t.responseMetadata.UsageOutputTokens += metadata.UsageOutputTokens
+	t.responseMetadata.UsageTotalTokens += metadata.UsageTotalTokens
+}
+
+func (t *continuationTarget) retainResponseMetadata(
+	snapshot bus.OutboundMetadata,
+	response string,
+) bool {
+	if t == nil || strings.TrimSpace(response) != "" {
+		return true
+	}
+	t.responseMetadata = snapshot
+	return false
+}
+
+func (t *continuationTarget) appendContinuationResponse(
+	responses []string,
+	snapshot bus.OutboundMetadata,
+	response string,
+) ([]string, bool) {
+	if !t.retainResponseMetadata(snapshot, response) {
+		return responses, false
+	}
+	retained := appendSteeringResponse(responses, response)
+	if len(retained) == len(responses) {
+		t.responseMetadata = snapshot
+	}
+	return retained, true
 }
 
 func (al *AgentLoop) drainQueuedSteeringContinuations(
@@ -218,14 +266,21 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"queue_depth": al.pendingSteeringCountForScope(scope),
 			})
 
+		metadataBefore := target.responseMetadata
 		continued, continueErr := al.continueRuntimeSession(ctx, target)
 		if continueErr != nil {
+			target.responseMetadata = metadataBefore
 			return joinSteeringResponses(responses), continueErr
 		}
-		if continued == "" {
+		var keepDraining bool
+		responses, keepDraining = target.appendContinuationResponse(
+			responses,
+			metadataBefore,
+			continued,
+		)
+		if !keepDraining {
 			break
 		}
-		responses = appendSteeringResponse(responses, continued)
 	}
 
 	return joinSteeringResponses(responses), nil

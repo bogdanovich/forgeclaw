@@ -4703,6 +4703,50 @@ func newChatCompletionTestServer(
 	}))
 }
 
+func newChatCompletionTestServerWithUsage(
+	t *testing.T,
+	label string,
+	response string,
+	calls *int,
+	model *string,
+	promptTokens, completionTokens int,
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("%s server path = %q, want /chat/completions", label, r.URL.Path)
+		}
+		*calls = *calls + 1
+		defer r.Body.Close()
+
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode %s request: %v", label, err)
+		}
+		*model = req.Model
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message":       map[string]any{"content": response},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]int{
+				"prompt_tokens":     promptTokens,
+				"completion_tokens": completionTokens,
+				"total_tokens":      promptTokens + completionTokens,
+			},
+		}); err != nil {
+			t.Fatalf("encode %s response: %v", label, err)
+		}
+	}))
+}
+
 func newStrictChatCompletionTestServer(
 	t *testing.T,
 	label string,
@@ -5319,6 +5363,225 @@ func TestProcessMessage_ModelOverrideIsSessionScoped(t *testing.T) {
 	}
 	if localModel != "openai/gpt-5.4" {
 		t.Fatalf("local model = %q, want %q", localModel, "openai/gpt-5.4")
+	}
+}
+
+func TestProcessMessage_ModelOverrideDecoratesDirectChannelResponse(t *testing.T) {
+	workspace := t.TempDir()
+
+	defaultCalls := 0
+	defaultModel := ""
+	defaultServer := newChatCompletionTestServer(
+		t,
+		"default",
+		"default reply",
+		&defaultCalls,
+		&defaultModel,
+	)
+	defer defaultServer.Close()
+
+	overrideCalls := 0
+	overrideModel := ""
+	overrideServer := newChatCompletionTestServerWithUsage(
+		t,
+		"override",
+		"override reply",
+		&overrideCalls,
+		&overrideModel,
+		123,
+		45,
+	)
+	defer overrideServer.Close()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				Provider:          "openai",
+				ModelName:         "workspace-default",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				ResponseFooter: config.ResponseFooterConfig{
+					Enabled: true,
+				},
+			},
+		},
+		Session: config.SessionConfig{
+			Dimensions: []string{"chat"},
+		},
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "workspace-default",
+				Model:     "openai/default-model",
+				Provider:  "openai",
+				APIBase:   defaultServer.URL,
+				APIKeys:   config.SimpleSecureStrings("default-key"),
+				Enabled:   true,
+			},
+			{
+				ModelName: "override-alias",
+				Model:     "openai/override-model",
+				Provider:  "openai",
+				APIBase:   overrideServer.URL,
+				APIKeys:   config.SimpleSecureStrings("override-key"),
+				Enabled:   true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider, _, err := providers.CreateProvider(cfg)
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
+	al.SetChannelManager(
+		newStartedTestChannelManagerWithConfig(
+			t,
+			cfg,
+			msgBus,
+			media.NewFileMediaStore(),
+			"telegram",
+			telegramChannel,
+		),
+	)
+	inbound := bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-a",
+		ChatType: "direct",
+		SenderID: "telegram:123",
+	}
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	t.Cleanup(runCancel)
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- al.Run(runCtx)
+	}()
+
+	if err := msgBus.PublishInbound(context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "/model use override-alias",
+	}); err != nil {
+		t.Fatalf("PublishInbound(/model) error = %v", err)
+	}
+	waitForSentMessages(t, telegramChannel, 1)
+	if got := telegramChannel.messagesSnapshot()[0].Content; !strings.Contains(
+		got,
+		"Set session model override.",
+	) {
+		t.Fatalf("unexpected /model reply: %q", got)
+	}
+
+	if err := msgBus.PublishInbound(context.Background(), bus.InboundMessage{
+		Context: inbound,
+		Content: "hello from overridden chat",
+	}); err != nil {
+		t.Fatalf("PublishInbound(message) error = %v", err)
+	}
+	waitForSentMessages(t, telegramChannel, 2)
+
+	messages := telegramChannel.messagesSnapshot()
+	if len(messages) != 2 {
+		t.Fatalf("sent messages = %d, want 2", len(messages))
+	}
+	metadata := bus.OutboundMetadataFromMessage(messages[1])
+	if metadata.OutboundKind != bus.OutboundKindFinal ||
+		metadata.ModelName != "override-alias" ||
+		metadata.DefaultModelName != "workspace-default" ||
+		metadata.UsageInputTokens != 123 ||
+		metadata.UsageOutputTokens != 45 ||
+		metadata.UsageTotalTokens != 168 {
+		t.Fatalf("sent metadata = %+v", metadata)
+	}
+	want := "override reply\n\nmodel: override-alias · tokens: in 123, out 45"
+	if got := messages[1].Content; got != want {
+		t.Fatalf("sent content = %q, want %q", got, want)
+	}
+}
+
+func waitForSentMessages(t *testing.T, ch *fakeMediaChannel, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(ch.messagesSnapshot()) >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("sent messages = %d, want at least %d", len(ch.messagesSnapshot()), want)
+}
+
+func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
+	target := &continuationTarget{}
+	responses := []string{}
+
+	firstSnapshot := target.responseMetadata
+	target.observeFinalResponse(bus.OutboundMetadata{
+		ModelName:         "first-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  100,
+		UsageOutputTokens: 10,
+		UsageTotalTokens:  110,
+	})
+	var keepDraining bool
+	responses, keepDraining = target.appendContinuationResponse(
+		responses,
+		firstSnapshot,
+		"retained response",
+	)
+	if !keepDraining {
+		t.Fatal("first response metadata was not retained")
+	}
+
+	secondSnapshot := target.responseMetadata
+	target.observeFinalResponse(bus.OutboundMetadata{
+		ModelName:         "duplicate-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  200,
+		UsageOutputTokens: 20,
+		UsageTotalTokens:  220,
+	})
+	responses, keepDraining = target.appendContinuationResponse(
+		responses,
+		secondSnapshot,
+		"retained response",
+	)
+	if !keepDraining {
+		t.Fatal("duplicate response stopped continuation draining")
+	}
+	if len(responses) != 1 {
+		t.Fatalf("responses after duplicate = %q, want one response", responses)
+	}
+
+	thirdSnapshot := target.responseMetadata
+	target.observeFinalResponse(bus.OutboundMetadata{
+		ModelName:         "handled-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  300,
+		UsageOutputTokens: 30,
+		UsageTotalTokens:  330,
+	})
+	responses, keepDraining = target.appendContinuationResponse(
+		responses,
+		thirdSnapshot,
+		"",
+	)
+	if keepDraining {
+		t.Fatal("empty second response metadata was retained")
+	}
+
+	want := (bus.OutboundMetadata{
+		ModelName:         "first-model",
+		DefaultModelName:  "workspace-default",
+		UsageInputTokens:  100,
+		UsageOutputTokens: 10,
+		UsageTotalTokens:  110,
+	})
+	if target.responseMetadata != want {
+		t.Fatalf("retained metadata = %+v, want %+v", target.responseMetadata, want)
 	}
 }
 

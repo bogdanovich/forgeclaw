@@ -480,6 +480,7 @@ func (al *AgentLoop) continueWithSteeringMessages(
 	modelBinding effectiveModelBinding,
 	steeringMsgs []providers.Message,
 	observeTurn func(runtimeevents.TraceScope),
+	observeFinalResponse func(bus.OutboundMetadata),
 ) (string, error) {
 	routeSessionKey := sessionKey
 	if scope != nil && strings.TrimSpace(scope.RouteScopeKey) != "" {
@@ -507,6 +508,7 @@ func (al *AgentLoop) continueWithSteeringMessages(
 		SendResponse:             false,
 		ExpectFinalDelivery:      observeTurn != nil,
 		ObserveFinalDeliveryTurn: observeTurn,
+		ObserveFinalResponse:     observeFinalResponse,
 		InitialSteeringMessages:  steeringMsgs,
 		SkipInitialSteeringPoll:  true,
 	})
@@ -646,6 +648,7 @@ func (al *AgentLoop) continueRuntimeSession(
 		modelBinding,
 		steeringMsgs,
 		target.ObserveFinalDeliveryTurn,
+		target.observeFinalResponse,
 	)
 	if err != nil {
 		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)

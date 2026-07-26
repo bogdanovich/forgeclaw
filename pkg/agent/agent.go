@@ -126,6 +126,7 @@ type processOptions struct {
 	SendResponse             bool                           // Whether to send response via bus
 	ExpectFinalDelivery      bool                           // Whether an outer coordinator will publish the final response
 	ObserveFinalDeliveryTurn func(runtimeevents.TraceScope) // Records turns settled by an outer final response
+	ObserveFinalResponse     func(bus.OutboundMetadata)     // Preserves metadata for an outer final response
 	AllowInterimPicoPublish  bool                           // Whether pico tool-call interim text can be published when SendResponse is false
 	SuppressToolUserDelivery bool                           // Whether direct user-facing delivery from tools is suppressed for this turn
 	SuppressToolFeedback     bool                           // Whether to suppress inline tool feedback messages
@@ -143,6 +144,7 @@ type continuationTarget struct {
 	ChatID                   string
 	Workspace                string
 	ObserveFinalDeliveryTurn func(runtimeevents.TraceScope)
+	responseMetadata         bus.OutboundMetadata
 }
 
 const (
@@ -520,6 +522,11 @@ func (al *AgentLoop) runAgentLoop(
 	}
 	if opts.TurnStatus != nil {
 		*opts.TurnStatus = result.status
+	}
+	if opts.ObserveFinalResponse != nil &&
+		result.status != TurnEndStatusAborted &&
+		result.status != TurnEndStatusSuspended {
+		opts.ObserveFinalResponse(outboundMetadataForTurnResult(result))
 	}
 	if result.status == TurnEndStatusAborted {
 		return "", nil

@@ -179,6 +179,31 @@ func (al *AgentLoop) publishResponseWithContextAndScopes(
 	policy finalResponseDeliveryPolicy,
 	traceScopes []runtimeevents.TraceScope,
 ) {
+	al.publishResponseWithMetadataAndScopes(
+		ctx,
+		workspace,
+		agentID,
+		channel,
+		chatID,
+		sessionKey,
+		response,
+		inboundCtx,
+		policy,
+		bus.OutboundMetadata{},
+		traceScopes,
+	)
+}
+
+func (al *AgentLoop) publishResponseWithMetadataAndScopes(
+	ctx context.Context,
+	workspace, agentID string,
+	channel, chatID, sessionKey string,
+	response string,
+	inboundCtx *bus.InboundContext,
+	policy finalResponseDeliveryPolicy,
+	metadata bus.OutboundMetadata,
+	traceScopes []runtimeevents.TraceScope,
+) {
 	if response == "" {
 		return
 	}
@@ -226,8 +251,20 @@ func (al *AgentLoop) publishResponseWithContextAndScopes(
 	if sessionKey != "" {
 		msg.ContextUsage = computeContextUsage(agent, sessionKey)
 	}
+	metadata.ApplyToContext(&msg.Context)
 	markFinalOutbound(&msg)
 	al.bus.PublishOutbound(ctx, msg)
+}
+
+func outboundMetadataForTurnResult(result turnResult) bus.OutboundMetadata {
+	return bus.OutboundMetadata{
+		OutboundKind:      bus.OutboundKindFinal,
+		ModelName:         result.modelName,
+		DefaultModelName:  result.defaultModelName,
+		UsageInputTokens:  result.usageInputTokens,
+		UsageOutputTokens: result.usageOutputTokens,
+		UsageTotalTokens:  result.usageTotalTokens,
+	}
 }
 
 func (al *AgentLoop) deliverFinalTurnResult(

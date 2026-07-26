@@ -270,7 +270,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 		return
 	}
 	if continued != "" {
-		al.publishResponseWithContextAndScopes(
+		al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -280,6 +280,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			continued,
 			&msg.Context,
 			finalResponseAlwaysPublish,
+			target.responseMetadata,
 			traceScopes,
 		)
 	}
