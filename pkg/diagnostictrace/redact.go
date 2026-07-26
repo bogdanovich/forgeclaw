@@ -22,6 +22,7 @@ var (
 	)
 	envSecretPattern   = regexp.MustCompile(`(?i)([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*)=([^\s]+)`)
 	embeddedURLPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]+`)
+	dataURLPattern     = regexp.MustCompile(`(?i)\bdata:[^\s"'<>]+`)
 	privateKeyPattern  = regexp.MustCompile(
 		`(?is)-----BEGIN [^-]*(?:PRIVATE KEY)-----.*?-----END [^-]*(?:PRIVATE KEY)-----`,
 	)
@@ -172,10 +173,8 @@ func scrubString(value string) string {
 	for _, pattern := range commonTokenPatterns {
 		value = pattern.ReplaceAllString(value, "[REDACTED]")
 	}
+	value = dataURLPattern.ReplaceAllString(value, "[DATA_URL REDACTED]")
 	value = embeddedURLPattern.ReplaceAllStringFunc(value, redactURLCredentials)
-	if strings.HasPrefix(value, "data:") {
-		return "[DATA_URL REDACTED]"
-	}
 	return value
 }
 

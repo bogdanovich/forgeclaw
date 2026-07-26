@@ -137,6 +137,7 @@ func TestRedactJSONRecursesFiltersCredentialsAndBoundsUTF8(t *testing.T) {
 			"Bearer abcdefghijklmnopqrstuvwxyz",
 			"request https://alice:hunter2@example.test/path?token=opaque&page=1 failed",
 			"Cookie: session=opaque-cookie",
+			"nested DATA:text/plain;base64,bmVzdGVkLXNlY3JldA==",
 		},
 		"token_" + knownSecret:                 "sensitive-key-value",
 		"ghp_abcdefghijklmnopqrstuvwxyz123456": "key-secret",
@@ -153,6 +154,7 @@ func TestRedactJSONRecursesFiltersCredentialsAndBoundsUTF8(t *testing.T) {
 		"ghp_abcdefghijklmnopqrstuvwxyz", "key-secret", "abcdefghijklmnopqrstuvwxyz",
 		"hunter2", "token=opaque", "opaque-cookie",
 		"sensitive-key-value",
+		"bmVzdGVkLXNlY3JldA",
 	} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("redacted JSON leaked %q: %s", forbidden, got)
@@ -170,6 +172,21 @@ func TestRedactJSONRecursesFiltersCredentialsAndBoundsUTF8(t *testing.T) {
 	truncated := redactor.RedactText(strings.Repeat("界", 20), 17)
 	if len(truncated) > 17 || !utf8.ValidString(truncated) {
 		t.Fatalf("bounded text length/encoding = %d, valid=%v", len(truncated), utf8.ValidString(truncated))
+	}
+}
+
+func TestRedactorRemovesEmbeddedDataURLs(t *testing.T) {
+	tests := []string{
+		"data:text/plain;base64,c2VjcmV0",
+		" image: data:text/plain;base64,c2VjcmV0",
+		"\tDATA:application/octet-stream;base64,c2VjcmV0",
+	}
+	for _, input := range tests {
+		got := (Redactor{}).RedactText(input, 512)
+		if strings.Contains(got, "c2VjcmV0") ||
+			!strings.Contains(got, "[DATA_URL REDACTED]") {
+			t.Fatalf("RedactText(%q) = %q", input, got)
+		}
 	}
 }
 
