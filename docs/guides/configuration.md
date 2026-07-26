@@ -146,14 +146,14 @@ repeated output from unclassified, MCP, dynamic, or mutating tools is never
 treated as read-only no progress. Current audited read-only tools are
 `read_file`, `list_dir`, `search_files`, and `short_grep`.
 
-### Evaluation Trace Capture
+### Diagnostic Trace Capture
 
-The `evaluation.trace_capture` block controls bounded diagnostic trace
+The `diagnostics.trace_capture` block controls bounded diagnostic trace
 recording. Capture is disabled by default.
 
 ```json
 {
-  "evaluation": {
+  "diagnostics": {
     "trace_capture": {
       "enabled": false,
       "content_mode": "metadata_only",
@@ -161,7 +161,6 @@ recording. Capture is disabled by default.
       "max_trace_bytes": 2097152,
       "max_records": 2000,
       "max_record_bytes": 16384,
-      "max_corrections": 8,
       "retention_hours": 24,
       "max_traces": 100
     }
@@ -172,12 +171,11 @@ recording. Capture is disabled by default.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Explicitly enables production diagnostic trace capture. |
-| `content_mode` | `metadata_only` | `metadata_only` stores safe counts, statuses, hashes, and IDs. `redacted_content` permits explicitly allowlisted filtered content. Runtime configuration never accepts fixture mode. |
-| `state_dir` | `""` | Optional trace directory. Empty selects the workspace evaluation state directory. |
+| `content_mode` | `metadata_only` | `metadata_only` stores safe counts, statuses, hashes, and IDs. `redacted_content` permits explicitly allowlisted filtered content. |
+| `state_dir` | `""` | Optional trace directory. Empty selects the workspace diagnostics state directory. |
 | `max_trace_bytes` | `2097152` | Soft serialized size limit for one trace. Compiled hard ceilings still apply. |
 | `max_records` | `2000` | Maximum normalized records per trace. |
 | `max_record_bytes` | `16384` | Maximum redacted JSON payload size for one record. |
-| `max_corrections` | `8` | Maximum explicit correction annotations. Corrections are never inferred from ordinary follow-ups. |
 | `retention_hours` | `24` | Default trace retention period. |
 | `max_traces` | `100` | Maximum retained traces per workspace. |
 
@@ -217,7 +215,7 @@ startup PicoClaw logs a warning that only protected records remain. Zero or
 omitted values use the built-in defaults.
 
 When `state_dir` is empty, traces are written under
-`WORKSPACE/state/evaluation/traces`. Relative custom paths are resolved from the
+`WORKSPACE/state/diagnostics/traces`. Relative custom paths are resolved from the
 workspace; absolute paths are used directly with a `traces` child directory.
 Completed turns produce bounded traces for direct diagnostic inspection.
 

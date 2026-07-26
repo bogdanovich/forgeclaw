@@ -1,6 +1,6 @@
-// Package evalcapture persists finalized evaluation traces independently of
+// Package diagnosticcapture persists finalized diagnostic traces independently of
 // the runtime component that produced them.
-package evalcapture
+package diagnosticcapture
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/evaltrace"
+	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
 )
 
 const (
@@ -76,16 +76,16 @@ type DropError struct {
 
 func (e *DropError) Error() string {
 	if e.Err != nil {
-		return fmt.Sprintf("evaluation trace %s dropped: %s: %v", e.TraceID, e.Reason, e.Err)
+		return fmt.Sprintf("diagnostic trace %s dropped: %s: %v", e.TraceID, e.Reason, e.Err)
 	}
-	return fmt.Sprintf("evaluation trace %s dropped: %s", e.TraceID, e.Reason)
+	return fmt.Sprintf("diagnostic trace %s dropped: %s", e.TraceID, e.Reason)
 }
 
 func (e *DropError) Unwrap() error { return e.Err }
 
 // Storage is the persistence boundary used by Writer.
 type Storage interface {
-	Save(evaltrace.Trace) (string, error)
+	Save(diagnostictrace.Trace) (string, error)
 	Prune() (int, error)
 }
 
@@ -101,7 +101,7 @@ type Options struct {
 
 type submission struct {
 	policy Policy
-	trace  evaltrace.Trace
+	trace  diagnostictrace.Trace
 }
 
 // Writer accepts bounded best-effort diagnostics without waiting for
@@ -163,7 +163,7 @@ func NewWriter(options Options) *Writer {
 	storage := options.StorageFactory
 	if storage == nil {
 		storage = func(policy Policy) Storage {
-			return evaltrace.Store{
+			return diagnostictrace.Store{
 				Root: policy.Root, Retention: policy.Retention, MaxTraces: policy.MaxTraces,
 			}
 		}
@@ -181,7 +181,7 @@ func NewWriter(options Options) *Writer {
 }
 
 // Submit snapshots a finalized trace and either admits or drops it immediately.
-func (w *Writer) Submit(policy Policy, trace evaltrace.Trace) error {
+func (w *Writer) Submit(policy Policy, trace diagnostictrace.Trace) error {
 	item, err := w.prepareSubmission(policy, trace)
 	if err != nil {
 		return err
@@ -203,7 +203,7 @@ func (w *Writer) Submit(policy Policy, trace evaltrace.Trace) error {
 
 func (w *Writer) prepareSubmission(
 	policy Policy,
-	trace evaltrace.Trace,
+	trace diagnostictrace.Trace,
 ) (submission, error) {
 	if w == nil {
 		return submission{}, &DropError{Reason: ReasonClosed, TraceID: trace.TraceID}
@@ -213,7 +213,7 @@ func (w *Writer) prepareSubmission(
 			trace.TraceID, ReasonInvalidPolicy, errors.New("store root is required"),
 		)
 	}
-	if err := evaltrace.Validate(trace); err != nil {
+	if err := diagnostictrace.Validate(trace); err != nil {
 		return submission{}, w.drop(trace.TraceID, ReasonInvalidTrace, err)
 	}
 	return submission{policy: policy, trace: cloneTrace(trace)}, nil
@@ -424,19 +424,15 @@ func (w *Writer) emit(event Event) {
 	}
 }
 
-func cloneTrace(trace evaltrace.Trace) evaltrace.Trace {
-	trace.Records = append([]evaltrace.Record(nil), trace.Records...)
+func cloneTrace(trace diagnostictrace.Trace) diagnostictrace.Trace {
+	trace.Records = append([]diagnostictrace.Record(nil), trace.Records...)
 	for i := range trace.Records {
 		trace.Records[i].Data = append([]byte(nil), trace.Records[i].Data...)
-	}
-	trace.Corrections = append([]evaltrace.Correction(nil), trace.Corrections...)
-	for i := range trace.Corrections {
-		trace.Corrections[i].RecordRefs = append([]uint64(nil), trace.Corrections[i].RecordRefs...)
 	}
 	trace.Truncation.Reasons = append([]string(nil), trace.Truncation.Reasons...)
 	if trace.Truncation.DroppedByKind != nil {
 		trace.Truncation.DroppedByKind = make(
-			map[evaltrace.RecordKind]int,
+			map[diagnostictrace.RecordKind]int,
 			len(trace.Truncation.DroppedByKind),
 		)
 		for kind, count := range trace.Truncation.DroppedByKind {

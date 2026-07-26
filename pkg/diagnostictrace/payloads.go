@@ -1,4 +1,4 @@
-package evaltrace
+package diagnostictrace
 
 // Payload structs intentionally contain only normalized evidence. Capture
 // adapters must project source-specific values into these fields instead of
@@ -56,17 +56,6 @@ type SteeringPayload struct {
 	ScopeHash   string `json:"scope_hash,omitempty"`
 }
 
-type TaskPayload struct {
-	EventType      string `json:"event_type"`
-	Runtime        string `json:"runtime,omitempty"`
-	Status         string `json:"status,omitempty"`
-	DeliveryStatus string `json:"delivery_status,omitempty"`
-	GenerationID   string `json:"generation_id,omitempty"`
-	Sequence       int64  `json:"sequence,omitempty"`
-	Fingerprint    string `json:"fingerprint,omitempty"`
-	Producer       string `json:"producer,omitempty"`
-}
-
 type DeliveryPayload struct {
 	Mode        string `json:"mode,omitempty"`
 	Status      string `json:"status,omitempty"`
@@ -89,12 +78,4 @@ type ContextPayload struct {
 	Revision          int64    `json:"revision,omitempty"`
 	SnapshotHash      string   `json:"snapshot_hash,omitempty"`
 	ProtectedFactRefs []string `json:"protected_fact_refs,omitempty"`
-}
-
-type RestartPayload struct {
-	Phase     string `json:"phase"`
-	SpoolID   string `json:"spool_id,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	StateHash string `json:"state_hash,omitempty"`
 }

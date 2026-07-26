@@ -383,7 +383,7 @@ func (al *AgentLoop) enqueueSteeringMessageWithSender(
 			Role:        msg.Role,
 			ContentLen:  len(msg.Content),
 			QueueDepth:  queueDepth,
-			MessageHash: evaluationSafeHash(al.GetConfig(), msg.Content),
+			MessageHash: diagnosticSafeHash(al.GetConfig(), msg.Content),
 		},
 	)
 

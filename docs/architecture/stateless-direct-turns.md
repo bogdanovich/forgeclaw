@@ -29,5 +29,5 @@ independent turns.
 After changing an automation worker to pass `--stateless`, old conversation
 files are no longer read or extended. They may be retained for audit or removed
 once the operator has identified the exact automation session. Do not delete
-task registries, queue databases, evaluation traces, or human-channel sessions
+task registries, queue databases, diagnostic traces, or human-channel sessions
 as part of that cleanup.

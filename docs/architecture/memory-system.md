@@ -150,7 +150,7 @@ and audit events. They avoid assertions on private helper structure.
 The deterministic matrix lives in `pkg/agent/memory_replay_test.go`. It runs
 each scenario twice in fresh disposable workspaces and compares canonical
 observations. It deliberately exercises production subsystem boundaries rather
-than adding private memory content to evaluation traces: the curated-memory
+than adding private memory content to diagnostic traces: the curated-memory
 tool and events bus, rendered prompt context, Seahorse retrieval tools, and the
 explicit stateless context-manager runtime are the observed surfaces.
 

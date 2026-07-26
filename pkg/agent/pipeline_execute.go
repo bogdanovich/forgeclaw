@@ -393,7 +393,7 @@ toolLoop:
 							ForUserLen: len(hookResult.ForUser),
 							IsError:    hookResult.IsError,
 							Async:      hookResult.Async,
-							ResultHash: evaluationSafeHash(p.Cfg, contentForLLM),
+							ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
 						},
 					)
 					ts.recordToolExecution(
@@ -847,7 +847,7 @@ toolLoop:
 				ForUserLen: len(toolResult.ForUser),
 				IsError:    toolResult.IsError,
 				Async:      toolResult.Async,
-				ResultHash: evaluationSafeHash(p.Cfg, contentForLLM),
+				ResultHash: diagnosticSafeHash(p.Cfg, contentForLLM),
 			},
 		)
 		ts.recordToolExecution(

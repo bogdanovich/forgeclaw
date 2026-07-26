@@ -1,4 +1,4 @@
-package evaltrace
+package diagnostictrace
 
 import (
 	"bytes"
@@ -12,14 +12,13 @@ import (
 var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 var supportedKinds = map[RecordKind]struct{}{
-	RecordTurnStart: {}, RecordTurnEnd: {}, RecordFinalOutcome: {},
+	RecordTurnStart: {}, RecordTurnEnd: {},
 	RecordModelRequest: {}, RecordModelResponse: {}, RecordModelRetry: {}, RecordModelFallbackAttempt: {},
 	RecordToolCall: {}, RecordToolResult: {}, RecordToolSkipped: {}, RecordToolLoopDecision: {},
 	RecordToolSteeringDecision: {},
-	RecordSteeringEnqueued:     {}, RecordSteeringInjected: {}, RecordInterrupt: {},
-	RecordTaskTransition: {}, RecordDeliveryDecision: {}, RecordDeliveryAttempt: {}, RecordDeliveryOutcome: {},
-	RecordContextCompaction: {}, RecordContextReconciliation: {}, RecordContextSnapshot: {},
-	RecordRestartBoundary: {}, RecordInboundSpoolTransition: {}, RecordUserCorrection: {},
+	RecordSteeringInjected:     {}, RecordInterrupt: {},
+	RecordDeliveryDecision: {}, RecordDeliveryAttempt: {}, RecordDeliveryOutcome: {},
+	RecordContextCompaction: {}, RecordContextSnapshot: {},
 }
 
 func Validate(trace Trace) error {
@@ -33,16 +32,12 @@ func Validate(trace Trace) error {
 		return errors.New("created_at is required")
 	}
 	switch trace.Policy.ContentMode {
-	case ContentMetadataOnly, ContentRedacted, ContentFixture:
+	case ContentMetadataOnly, ContentRedacted:
 	default:
 		return fmt.Errorf("unsupported content mode %q", trace.Policy.ContentMode)
 	}
 	if trace.Policy.ContentMode == ContentRedacted && trace.Policy.Redactor == "" {
 		return errors.New("redacted_content traces require a redactor version")
-	}
-	if trace.Policy.ContentMode == ContentFixture &&
-		(trace.Source.FixtureID == "" || trace.Source.FixtureSource == "") {
-		return errors.New("fixture traces require fixture_id and fixture_source")
 	}
 	limits := NormalizeLimits(trace.Limits)
 	if trace.Limits != limits {
@@ -51,12 +46,7 @@ func Validate(trace Trace) error {
 	if len(trace.Records) > limits.MaxRecords {
 		return fmt.Errorf("records exceed limit: %d > %d", len(trace.Records), limits.MaxRecords)
 	}
-	if len(trace.Corrections) > limits.MaxCorrections {
-		return fmt.Errorf("corrections exceed limit: %d > %d", len(trace.Corrections), limits.MaxCorrections)
-	}
-
 	origins := make(map[string]string)
-	sequences := make(map[uint64]struct{}, len(trace.Records))
 	var previousSequence uint64
 	var previousOffset int64
 	for i, record := range trace.Records {
@@ -103,25 +93,6 @@ func Validate(trace Trace) error {
 		}
 		previousSequence = record.Sequence
 		previousOffset = record.OffsetNanos
-		sequences[record.Sequence] = struct{}{}
-	}
-	correctionIDs := make(map[string]struct{}, len(trace.Corrections))
-	for i, correction := range trace.Corrections {
-		if !safeIDPattern.MatchString(correction.CorrectionID) {
-			return fmt.Errorf("correction %d has invalid id", i+1)
-		}
-		if _, exists := correctionIDs[correction.CorrectionID]; exists {
-			return fmt.Errorf("correction %d duplicates id", i+1)
-		}
-		correctionIDs[correction.CorrectionID] = struct{}{}
-		if len(correction.Note) > 4096 {
-			return fmt.Errorf("correction %d note exceeds limit", i+1)
-		}
-		for _, ref := range correction.RecordRefs {
-			if _, exists := sequences[ref]; !exists {
-				return fmt.Errorf("correction %d references unknown record %d", i+1, ref)
-			}
-		}
 	}
 	data, err := json.Marshal(trace)
 	if err != nil {

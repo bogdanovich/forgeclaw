@@ -1,4 +1,4 @@
-package evaltrace
+package diagnostictrace
 
 import (
 	"encoding/json"
@@ -64,7 +64,8 @@ func TestValidateRejectsSchemaOrderingDuplicateAndTampering(t *testing.T) {
 		name string
 		edit func(*Trace)
 	}{
-		{"schema", func(v *Trace) { v.SchemaVersion = "forgeclaw.eval_trace.v2" }},
+		{"schema", func(v *Trace) { v.SchemaVersion = "forgeclaw.diagnostic_trace.v2" }},
+		{"removed evaluation schema", func(v *Trace) { v.SchemaVersion = "forgeclaw.eval_trace.v1" }},
 		{"unsafe id", func(v *Trace) { v.TraceID = "../escape" }},
 		{"unknown kind", func(v *Trace) { v.Records[0].Kind = "future.kind" }},
 		{"tampered data", func(v *Trace) { v.Records[0].Data = json.RawMessage(`{"status":"changed"}`) }},
@@ -90,35 +91,22 @@ func TestNormalizeLimitsUsesDefaultsAndHardCeilings(t *testing.T) {
 	}
 	hard := NormalizeLimits(AppliedLimits{
 		MaxTraceBytes: 1 << 30, MaxRecords: 1 << 20,
-		MaxRecordBytes: 1 << 20, MaxCorrections: 1000,
+		MaxRecordBytes: 1 << 20,
 	})
 	if hard.MaxTraceBytes != HardMaxTraceBytes || hard.MaxRecords != HardMaxRecords ||
-		hard.MaxRecordBytes != HardMaxRecordBytes || hard.MaxCorrections != HardMaxCorrections {
+		hard.MaxRecordBytes != HardMaxRecordBytes {
 		t.Fatalf("hard limits = %#v", hard)
 	}
 }
 
-func TestValidateCorrectionAndContentPolicy(t *testing.T) {
+func TestValidateContentPolicy(t *testing.T) {
 	trace, err := Finalize(baseTrace(time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
-	trace.Corrections = []Correction{{CorrectionID: "correction-1", RecordRefs: []uint64{99}}}
+	trace.Policy.ContentMode = "fixture"
 	if err := Validate(trace); err == nil {
-		t.Fatal("expected unknown correction reference error")
-	}
-	trace.Corrections[0].RecordRefs = []uint64{1}
-	if err := Validate(trace); err != nil {
-		t.Fatalf("valid correction: %v", err)
-	}
-	trace.Policy.ContentMode = ContentFixture
-	if err := Validate(trace); err == nil {
-		t.Fatal("expected fixture provenance error")
-	}
-	trace.Source.FixtureID = "fixture-1"
-	trace.Source.FixtureSource = "commit:4de727cd"
-	if err := Validate(trace); err != nil {
-		t.Fatalf("valid fixture provenance: %v", err)
+		t.Fatal("expected unsupported content mode error")
 	}
 	trace.Policy.ContentMode = ContentRedacted
 	if err := Validate(trace); err == nil {

@@ -1,4 +1,4 @@
-package evaltrace
+package diagnostictrace
 
 import (
 	"bytes"

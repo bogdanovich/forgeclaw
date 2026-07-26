@@ -319,8 +319,8 @@ func DefaultConfig() *Config {
 		Events: EventsConfig{
 			Logging: defaultEventLoggingConfig(),
 		},
-		Evaluation: defaultEvaluationConfig(),
-		Tasks:      defaultTaskConfig(),
+		Diagnostics: defaultDiagnosticsConfig(),
+		Tasks:       defaultTaskConfig(),
 		Tools: ToolsConfig{
 			FilterSensitiveData: true,
 			FilterMinLength:     8,
