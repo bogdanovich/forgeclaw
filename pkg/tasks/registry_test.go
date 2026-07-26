@@ -428,7 +428,8 @@ func TestRegistryProjectsDurableInteractionLifecycle(t *testing.T) {
 		t.Fatalf("FinishInteraction() error = %v", err)
 	}
 	rec, _ = registry.Get("task-1")
-	if rec.Status != StatusTimedOut || rec.Error != "human input timed out" {
+	if rec.Status != StatusTimedOut || rec.Error != "human input timed out" ||
+		rec.DeliveryStatus != DeliveryNotApplicable || registry.Stats().ProtectedTaskCount != 0 {
 		t.Fatalf("terminal record = %#v", rec)
 	}
 }

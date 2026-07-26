@@ -30,61 +30,71 @@ const (
 	interactionInboundDeferred
 )
 
+type interactionControlCancellationResult struct {
+	Matched        bool
+	Canceled       bool
+	Failed         bool
+	CommandHandled bool
+	TaskID         string
+}
+
 func (al *AgentLoop) cancelInteractionForControlMessage(
 	ctx context.Context,
 	msg bus.InboundMessage,
 	target *inboundDispatchTarget,
-) error {
+) (interactionControlCancellationResult, error) {
+	result := interactionControlCancellationResult{}
 	name, ok := commands.CommandName(msg.Content)
 	if !ok || (name != "new" && name != "reset" && name != "clear" && name != "stop") ||
 		al == nil || target == nil || target.Agent == nil {
-		return nil
+		return result, nil
 	}
 	registry := al.interactionRegistryForWorkspace(target.Agent.Workspace)
 	record, found := activeInteractionForSession(registry, target.SessionKey)
 	if !found || !interactionRouteAuthorizes(record.Route, target, msg.Context) {
-		return nil
+		return result, nil
 	}
-	if name == "stop" {
-		claim, _, claimed := al.claimRuntimeRouteSession(
-			target,
-			fmt.Sprintf("pending-interaction-cancel-%s-%d", record.ShortID, al.turnSeq.Add(1)),
+	result.Matched = true
+	result.TaskID = strings.TrimSpace(record.Origin.TaskID)
+
+	claim, _, claimed := al.claimRuntimeRouteSession(
+		target,
+		fmt.Sprintf("pending-interaction-cancel-%s-%d", record.ShortID, al.turnSeq.Add(1)),
+	)
+	if !claimed {
+		result.Failed = true
+		return result, fmt.Errorf("interaction session is busy while canceling")
+	}
+	defer claim.releaseIfOwned()
+
+	if record.Status != interactions.StatusCanceling {
+		var err error
+		record, err = registry.BeginCancellation(
+			record.ID,
+			record.Revision,
+			"session_control_"+name,
 		)
-		if !claimed {
-			return fmt.Errorf("interaction session is busy while canceling")
+		if err != nil {
+			result.Failed = true
+			return result, fmt.Errorf("begin %s cancellation: %w", name, err)
 		}
-		defer claim.releaseIfOwned()
-		if record.Status != interactions.StatusCanceling {
-			var err error
-			record, err = registry.BeginCancellation(
-				record.ID,
-				record.Revision,
-				"session_control_stop",
-			)
-			if err != nil {
-				return fmt.Errorf("begin stop cancellation: %w", err)
-			}
-		}
-		if err := al.ensureInteractionCancellationToolResult(
-			ctx,
-			al.interactionContinuationAgent(record, target.Agent),
-			record,
-			record.FailureCode,
-		); err != nil {
-			return fmt.Errorf("persist stop cancellation result: %w", err)
-		}
-		if _, err := registry.CompleteCancellation(record.ID, record.Revision); err != nil {
-			return fmt.Errorf("complete stop cancellation: %w", err)
-		}
-		return nil
 	}
-	if _, err := registry.Cancel(record.ID, record.Revision, "session_control_"+name); err != nil {
-		logger.WarnCF("agent", "Failed to cancel interaction for session control", map[string]any{
-			"interaction_id": record.ID, "command": name, "error": err.Error(),
-		})
-		return err
+	if err := al.ensureInteractionCancellationToolResult(
+		ctx,
+		al.interactionContinuationAgent(record, target.Agent),
+		record,
+		record.FailureCode,
+	); err != nil {
+		result.Failed = true
+		return result, fmt.Errorf("persist %s cancellation result: %w", name, err)
 	}
-	return nil
+	if _, err := registry.CompleteCancellation(record.ID, record.Revision); err != nil {
+		result.Failed = true
+		return result, fmt.Errorf("complete %s cancellation: %w", name, err)
+	}
+	result.Canceled = true
+	result.CommandHandled = name == "stop"
+	return result, nil
 }
 
 func (al *AgentLoop) shouldHandleInteractionInbound(

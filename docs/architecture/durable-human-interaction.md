@@ -444,6 +444,13 @@ Shutdown does not cancel waiting interactions. Explicit task cancellation does.
 Deploy/restart tooling must report nonterminal interaction counts and perform a
 post-restart reconciliation check.
 
+Session-control commands preserve the suspended tool-call/result pair while
+terminating pending work. `/stop` completes durable cancellation and returns
+the normal successful stop acknowledgement without resuming the model. A
+negative answer such as `no` remains an answer and resumes the continuation.
+`/new`, `/reset`, and `/clear` complete durable cancellation before applying
+their normal session changes and do not publish a separate stop reply.
+
 ## Implementation Status
 
 | Capability | Status |
