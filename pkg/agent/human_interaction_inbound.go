@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -398,11 +399,12 @@ func parseInteractionAnswer(
 	content = strings.TrimSpace(content)
 	if strings.HasPrefix(strings.ToLower(content), answerCommand) {
 		remainder := strings.TrimSpace(content[len(answerCommand):])
-		shortID, answerText, ok := strings.Cut(remainder, " ")
-		if !ok || !strings.EqualFold(strings.TrimSpace(shortID), record.ShortID) {
+		answerBoundary := strings.IndexFunc(remainder, unicode.IsSpace)
+		if answerBoundary < 0 ||
+			!strings.EqualFold(strings.TrimSpace(remainder[:answerBoundary]), record.ShortID) {
 			return interactions.Answer{}, fmt.Errorf("use `/answer %s <answer>`", record.ShortID)
 		}
-		content = strings.TrimSpace(answerText)
+		content = strings.TrimSpace(remainder[answerBoundary:])
 	}
 	if content == "" {
 		return interactions.Answer{}, fmt.Errorf("answer cannot be empty")

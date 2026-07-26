@@ -816,6 +816,18 @@ func TestParseInteractionAnswerSupportsExplicitAndStructuredReplies(t *testing.T
 	); err != nil {
 		t.Fatalf("rendered question IDs did not round-trip through parser: %v", err)
 	}
+	templateStart := strings.Index(prompt, "`/answer")
+	if templateStart < 0 {
+		t.Fatalf("rendered prompt omitted answer template: %q", prompt)
+	}
+	renderedSubmission := strings.ReplaceAll(prompt[templateStart:], "`", "")
+	renderedSubmission = strings.Replace(renderedSubmission, "target: …", "target: staging", 1)
+	renderedSubmission = strings.Replace(renderedSubmission, "mode: …", "mode: canary", 1)
+	answer, err = parseInteractionAnswer(record, renderedSubmission, "message-4")
+	if err != nil || answer.Values["target"] != "staging" ||
+		answer.Values["mode"] != "canary" {
+		t.Fatalf("rendered answer template did not round-trip: (%#v, %v)", answer, err)
+	}
 }
 
 func TestRenderInteractionPromptUsesAgentAuthoredLanguage(t *testing.T) {
