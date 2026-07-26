@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	fstools "github.com/sipeed/picoclaw/pkg/tools/fs"
 )
 
 // Decision is a structured command validation result.
@@ -554,6 +556,10 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 	if err != nil {
 		return Decision{Allowed: true, Reason: "allowed", Category: "allowed", CommandClass: ClassifyCommand(command)}
 	}
+	cwdPath, err = resolvePathAgainstExistingAncestor(cwdPath)
+	if err != nil {
+		return blockedWorkspacePathDecision(command)
+	}
 
 	if runtime.GOOS == "windows" {
 		command = ExpandPowerShellEnvVars(command)
@@ -580,12 +586,20 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 			}
 		}
 
-		resolved, resolveErr := filepath.EvalSymlinks(p)
-		if resolveErr == nil {
-			p = resolved
+		if safePaths[p] {
+			continue
+		}
+		if fstools.IsAllowedPath(p, v.config.AllowedPathPatterns) {
+			continue
 		}
 
-		if safePaths[p] || isAllowedPath(p, v.config.AllowedPathPatterns) {
+		resolved, resolveErr := resolvePathAgainstExistingAncestor(p)
+		if resolveErr != nil {
+			return blockedWorkspacePathDecision(command)
+		}
+		p = resolved
+
+		if safePaths[p] {
 			continue
 		}
 
@@ -595,16 +609,48 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 		}
 
 		if strings.HasPrefix(rel, "..") {
-			return Decision{
-				Allowed:      false,
-				Reason:       "Command blocked by safety guard (path outside working dir)",
-				Category:     "path_outside_working_dir",
-				CommandClass: ClassifyCommand(command),
-			}
+			return blockedWorkspacePathDecision(command)
 		}
 	}
 
 	return Decision{Allowed: true, Reason: "allowed", Category: "allowed", CommandClass: ClassifyCommand(command)}
+}
+
+func blockedWorkspacePathDecision(command string) Decision {
+	return Decision{
+		Allowed:      false,
+		Reason:       "Command blocked by safety guard (path outside working dir)",
+		Category:     "path_outside_working_dir",
+		CommandClass: ClassifyCommand(command),
+	}
+}
+
+func resolvePathAgainstExistingAncestor(path string) (string, error) {
+	cleaned := filepath.Clean(path)
+	for current := cleaned; ; current = filepath.Dir(current) {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			suffix, relErr := filepath.Rel(current, cleaned)
+			if relErr != nil {
+				return "", relErr
+			}
+			if suffix == "." {
+				return filepath.Clean(resolved), nil
+			}
+			return filepath.Clean(filepath.Join(resolved, suffix)), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		if info, lstatErr := os.Lstat(current); lstatErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", err
+		} else if lstatErr != nil && !os.IsNotExist(lstatErr) {
+			return "", lstatErr
+		}
+		if filepath.Dir(current) == current {
+			return "", os.ErrNotExist
+		}
+	}
 }
 
 func commandPathAbs(pathText, cwdPath string) (string, error) {
@@ -744,15 +790,6 @@ func commonFileExtension(ext string) bool {
 func localPathExists(cwd, token string) bool {
 	info, err := os.Lstat(filepath.Join(cwd, token))
 	return err == nil && info != nil
-}
-
-func isAllowedPath(path string, patterns []*regexp.Regexp) bool {
-	for _, pattern := range patterns {
-		if pattern.MatchString(path) {
-			return true
-		}
-	}
-	return false
 }
 
 var (

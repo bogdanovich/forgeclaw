@@ -213,16 +213,22 @@ func unescapeRegexLiteral(s string) (string, bool) {
 }
 
 func isWithinAllowedRoot(path, root string) bool {
-	candidate := filepath.Clean(path)
+	candidateVariants := []string{filepath.Clean(path)}
+	if resolvedPath, err := resolvePathAgainstExistingAncestor(path); err == nil {
+		candidateVariants = appendUniquePath(candidateVariants, filepath.Clean(resolvedPath))
+	}
+
 	allowedVariants := []string{filepath.Clean(root)}
 
 	if resolvedRoot, err := resolvePathAgainstExistingAncestor(root); err == nil {
 		allowedVariants = appendUniquePath(allowedVariants, filepath.Clean(resolvedRoot))
 	}
 
-	for _, allowedRoot := range allowedVariants {
-		if isWithinWorkspace(candidate, allowedRoot) {
-			return true
+	for _, candidate := range candidateVariants {
+		for _, allowedRoot := range allowedVariants {
+			if isWithinWorkspace(candidate, allowedRoot) {
+				return true
+			}
 		}
 	}
 
@@ -258,6 +264,11 @@ func resolvePathAgainstExistingAncestor(path string) (string, error) {
 		}
 		if !os.IsNotExist(err) {
 			return "", err
+		}
+		if info, lstatErr := os.Lstat(current); lstatErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", err
+		} else if lstatErr != nil && !os.IsNotExist(lstatErr) {
+			return "", lstatErr
 		}
 		if filepath.Dir(current) == current {
 			return "", os.ErrNotExist

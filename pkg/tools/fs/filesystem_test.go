@@ -810,6 +810,25 @@ func TestWhitelistFs_BlocksSymlinkEscapeInAllowedDir(t *testing.T) {
 	}
 }
 
+func TestWhitelistFs_BlocksDanglingSymlinkInAllowedDir(t *testing.T) {
+	workspace := t.TempDir()
+	allowedDir := t.TempDir()
+	linkPath := filepath.Join(allowedDir, "future-link")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "future.txt"), linkPath); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+
+	patterns := []*regexp.Regexp{regexp.MustCompile(`^` + regexp.QuoteMeta(allowedDir))}
+	tool := NewWriteFileTool(workspace, true, patterns)
+	result := tool.Execute(context.Background(), map[string]any{
+		"path":    linkPath,
+		"content": "outside write",
+	})
+	if !result.IsError {
+		t.Fatalf("expected dangling symlink in allowed dir to be blocked, got: %s", result.ForLLM)
+	}
+}
+
 func TestWhitelistFs_WriteAllowsNewFileUnderAllowedDir(t *testing.T) {
 	workspace := t.TempDir()
 	rootDir := t.TempDir()
