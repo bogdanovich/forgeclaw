@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
@@ -273,6 +275,7 @@ type turnState struct {
 	scope   turnEventScope
 
 	turnID            string
+	executionID       string
 	agentID           string
 	sessionKey        string
 	activeSkills      []string
@@ -361,6 +364,7 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 		profile:      opts.TurnProfile,
 		scope:        scope,
 		turnID:       scope.turnID,
+		executionID:  "execution_" + uuid.NewString(),
 		agentID:      agent.ID,
 		sessionKey:   opts.Dispatch.SessionKey,
 		activeSkills: activeSkillNames(agent, opts),
