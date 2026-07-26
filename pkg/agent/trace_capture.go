@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	tracePersistBuffer            = 128
-	traceShutdownAdmissionTimeout = 5 * time.Second
-	traceShutdownDrainTimeout     = 5 * time.Second
+	tracePersistBuffer        = 128
+	traceShutdownDrainTimeout = 5 * time.Second
 )
 
 type traceCaptureManager struct {
@@ -24,17 +23,15 @@ type traceCaptureManager struct {
 	closed  bool
 	startMu sync.Mutex
 
-	settings    traceCaptureSettings
-	turns       *turnTraceProjector
-	tasks       *taskTraceProjector
-	coordinator *evalcapture.Coordinator
+	settings traceCaptureSettings
+	turns    *turnTraceProjector
+	writer   *evalcapture.Writer
 }
 
 func newTraceCaptureManager(cfg *config.Config, eventBus events.Bus) *traceCaptureManager {
 	settings := traceCaptureSettingsFromConfig(cfg)
 	manager := &traceCaptureManager{settings: settings}
 	manager.turns = newTurnTraceProjector(settings, eventBus, manager.enqueuePersist)
-	manager.tasks = newTaskTraceProjector(settings, manager.coordinator)
 	if settings.enabled {
 		manager.start()
 	}
@@ -53,15 +50,11 @@ func (m *traceCaptureManager) start() {
 		m.mu.Unlock()
 		return
 	}
-	if m.coordinator == nil {
-		m.coordinator = evalcapture.NewCoordinator(evalcapture.CoordinatorOptions{
-			PendingCapacity: tracePersistBuffer,
-			Writer: evalcapture.Options{
-				Capacity:  tracePersistBuffer,
-				EventSink: logTraceWriterEvent,
-			},
+	if m.writer == nil {
+		m.writer = evalcapture.NewWriter(evalcapture.Options{
+			Capacity:  tracePersistBuffer,
+			EventSink: logTraceWriterEvent,
 		})
-		m.tasks.setCoordinator(m.coordinator)
 	}
 	turns := m.turns
 	m.mu.Unlock()
@@ -80,14 +73,13 @@ func (m *traceCaptureManager) updateConfig(cfg *config.Config) {
 		return
 	}
 	m.settings = updated
-	turns, tasks := m.turns, m.tasks
+	turns := m.turns
 	m.mu.Unlock()
 
 	if updated.enabled {
 		m.start()
 	}
 	turns.updateSettings(updated)
-	tasks.updateSettings(updated)
 }
 
 func (m *traceCaptureManager) enabled() bool {
@@ -100,15 +92,10 @@ func (m *traceCaptureManager) enabled() bool {
 }
 
 func (m *traceCaptureManager) close() {
-	m.closeWithTimeouts(
-		traceShutdownAdmissionTimeout,
-		traceShutdownDrainTimeout,
-	)
+	m.closeWithTimeout(traceShutdownDrainTimeout)
 }
 
-func (m *traceCaptureManager) closeWithTimeouts(
-	admissionTimeout, drainTimeout time.Duration,
-) {
+func (m *traceCaptureManager) closeWithTimeout(drainTimeout time.Duration) {
 	if m == nil {
 		return
 	}
@@ -121,26 +108,24 @@ func (m *traceCaptureManager) closeWithTimeouts(
 		return
 	}
 	m.closed = true
-	turns, tasks, coordinator := m.turns, m.tasks, m.coordinator
+	turns, writer := m.turns, m.writer
 	m.mu.Unlock()
 
 	turns.close()
-	tasks.stop()
-	admissionCtx, admissionCancel := context.WithTimeout(
+	drainCtx, drainCancel := context.WithTimeout(
 		context.Background(),
-		admissionTimeout,
+		drainTimeout,
 	)
-	if coordinator != nil {
-		if err := coordinator.Close(admissionCtx, drainTimeout); err != nil {
+	if writer != nil {
+		if err := writer.Close(drainCtx); err != nil {
 			logger.WarnCF(
 				"evaltrace",
-				"Durable trace coordinator did not drain before shutdown deadline",
+				"Trace writer did not drain before shutdown deadline",
 				map[string]any{"error": err.Error()},
 			)
 		}
 	}
-	admissionCancel()
-	tasks.finish()
+	drainCancel()
 }
 
 func (m *traceCaptureManager) enqueuePersist(
@@ -152,15 +137,15 @@ func (m *traceCaptureManager) enqueuePersist(
 		return err
 	}
 	m.mu.Lock()
-	coordinator := m.coordinator
+	writer := m.writer
 	m.mu.Unlock()
-	if coordinator == nil {
+	if writer == nil {
 		return &evalcapture.AdmissionError{
 			Reason: evalcapture.ReasonClosed, TraceID: finalized.TraceID,
 			Class: evalcapture.ClassCritical,
 		}
 	}
-	err = coordinator.Submit(policy, finalized, evalcapture.ClassCritical)
+	err = writer.Submit(policy, finalized, evalcapture.ClassCritical)
 	if err != nil {
 		logger.WarnCF("evaltrace", "Failed to admit finalized evaluation trace", map[string]any{
 			"trace_id": trace.builder.TraceID(), "error": err.Error(),
