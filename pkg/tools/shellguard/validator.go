@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	fstools "github.com/sipeed/picoclaw/pkg/tools/fs"
 )
 
 // Decision is a structured command validation result.
@@ -587,6 +589,9 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 		if safePaths[p] {
 			continue
 		}
+		if fstools.IsAllowedPath(p, v.config.AllowedPathPatterns) {
+			continue
+		}
 
 		resolved, resolveErr := resolvePathAgainstExistingAncestor(p)
 		if resolveErr != nil {
@@ -594,7 +599,7 @@ func (v *Validator) validateWorkspacePaths(command, cwd string) Decision {
 		}
 		p = resolved
 
-		if safePaths[p] || isAllowedPath(p, v.config.AllowedPathPatterns) {
+		if safePaths[p] {
 			continue
 		}
 
@@ -785,15 +790,6 @@ func commonFileExtension(ext string) bool {
 func localPathExists(cwd, token string) bool {
 	info, err := os.Lstat(filepath.Join(cwd, token))
 	return err == nil && info != nil
-}
-
-func isAllowedPath(path string, patterns []*regexp.Regexp) bool {
-	for _, pattern := range patterns {
-		if pattern.MatchString(path) {
-			return true
-		}
-	}
-	return false
 }
 
 var (

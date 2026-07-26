@@ -165,14 +165,10 @@ func TestValidator_BlocksDanglingSymlinkEscape(t *testing.T) {
 func TestValidator_AllowsConfiguredExternalPath(t *testing.T) {
 	root := t.TempDir()
 	allowed := t.TempDir()
-	canonicalAllowed, err := filepath.EvalSymlinks(allowed)
-	if err != nil {
-		t.Fatalf("resolve allowed path: %v", err)
-	}
 	validator := New(Config{
 		RestrictToWorkspace: true,
 		AllowedPathPatterns: []*regexp.Regexp{
-			regexp.MustCompile("^" + regexp.QuoteMeta(canonicalAllowed)),
+			regexp.MustCompile("^" + regexp.QuoteMeta(allowed)),
 		},
 	})
 
@@ -190,20 +186,46 @@ func TestValidator_BlocksSymlinkEscapeFromAllowedPath(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	canonicalAllowed, err := filepath.EvalSymlinks(allowed)
-	if err != nil {
-		t.Fatalf("resolve allowed path: %v", err)
-	}
 
 	validator := New(Config{
 		RestrictToWorkspace: true,
 		AllowedPathPatterns: []*regexp.Regexp{
-			regexp.MustCompile("^" + regexp.QuoteMeta(canonicalAllowed)),
+			regexp.MustCompile("^" + regexp.QuoteMeta(allowed)),
 		},
 	})
 	decision := validator.Validate("cat "+filepath.Join(link, "future.txt"), root)
 	if decision.Allowed {
 		t.Fatal("expected symlink escape from allowed path to be blocked")
+	}
+}
+
+func TestValidator_AllowsConfiguredPathAliasSpellings(t *testing.T) {
+	root := t.TempDir()
+	allowed := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "allowed-link")
+	if err := os.Symlink(allowed, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(allowed, "existing.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("write allowed file: %v", err)
+	}
+
+	validator := New(Config{
+		RestrictToWorkspace: true,
+		AllowedPathPatterns: []*regexp.Regexp{
+			regexp.MustCompile("^" + regexp.QuoteMeta(alias)),
+		},
+	})
+	for _, path := range []string{
+		filepath.Join(alias, "existing.txt"),
+		filepath.Join(alias, "future", "file.txt"),
+		filepath.Join(allowed, "existing.txt"),
+		filepath.Join(allowed, "future", "file.txt"),
+	} {
+		decision := validator.Validate("cat "+path, root)
+		if !decision.Allowed {
+			t.Fatalf("expected configured path spelling %q to be allowed: %s", path, decision.Reason)
+		}
 	}
 }
 
