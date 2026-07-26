@@ -115,6 +115,11 @@ const (
 	// KindGatewayReloadFailed is emitted when gateway reload fails.
 	KindGatewayReloadFailed Kind = "gateway.reload.failed"
 
+	// KindNodeInvocationObserved records a passive snapshot of invocation state.
+	// Observations from concurrent callers may arrive out of order; durable node
+	// and gateway state remain authoritative.
+	KindNodeInvocationObserved Kind = "node.invocation.observed"
+
 	// KindMCPServerConnected is emitted when an MCP server connects.
 	KindMCPServerConnected Kind = "mcp.server.connected"
 	// KindMCPServerConnecting is emitted before connecting to an MCP server.
@@ -182,6 +187,7 @@ var knownKinds = []Kind{
 	KindGatewayReloadStarted,
 	KindGatewayReloadCompleted,
 	KindGatewayReloadFailed,
+	KindNodeInvocationObserved,
 	KindMCPServerConnected,
 	KindMCPServerConnecting,
 	KindMCPServerFailed,

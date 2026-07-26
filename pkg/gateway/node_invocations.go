@@ -58,21 +58,29 @@ func (source *nodeInvocationSource) PrepareInvocation(
 	toolCallID string,
 	plan nodes.ExecutionPlan,
 	descriptor nodes.CommandDescriptor,
-) (nodes.GatewayInvocationRecord, error) {
+) (nodes.GatewayInvocationRecord, bool, error) {
 	if source == nil || source.store == nil || source.runtime == nil {
-		return nodes.GatewayInvocationRecord{}, errNodeDiscoveryAuthorityUnavailable
+		return nodes.GatewayInvocationRecord{}, false, errNodeDiscoveryAuthorityUnavailable
 	}
-	var record nodes.GatewayInvocationRecord
+	var (
+		record  nodes.GatewayInvocationRecord
+		created bool
+	)
 	err := source.runtime.withInvocationHandler(
 		source.registryPath,
 		source.generation,
 		func(nodeAdmissionHandler) error {
 			var prepareErr error
-			record, prepareErr = source.store.Prepare(target, toolCallID, plan, descriptor)
+			record, created, prepareErr = source.store.Prepare(
+				target,
+				toolCallID,
+				plan,
+				descriptor,
+			)
 			return prepareErr
 		},
 	)
-	return record, err
+	return record, created, err
 }
 
 func (source *nodeInvocationSource) LookupInvocationByToolCall(

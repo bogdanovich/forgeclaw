@@ -59,7 +59,12 @@ func TestNodeInvocationSourceGrantsOneDispatchWinner(t *testing.T) {
 	handler := &fakeNodeAdmissionHandler{beforeCommit: &beforeCommit}
 	source := newTestNodeInvocationSource(t, handler)
 	descriptor, plan, owner := testGatewayInvocation(t)
-	if _, err := source.PrepareInvocation("build", owner.ToolCallID, plan, descriptor); err != nil {
+	if _, _, err := source.PrepareInvocation(
+		"build",
+		owner.ToolCallID,
+		plan,
+		descriptor,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +122,12 @@ func TestNodeInvocationSourceRecoversOnlyBoundDispatchedResult(t *testing.T) {
 	handler := &fakeNodeAdmissionHandler{}
 	source := newTestNodeInvocationSource(t, handler)
 	descriptor, plan, owner := testGatewayInvocation(t)
-	if _, err := source.PrepareInvocation("build", owner.ToolCallID, plan, descriptor); err != nil {
+	if _, _, err := source.PrepareInvocation(
+		"build",
+		owner.ToolCallID,
+		plan,
+		descriptor,
+	); err != nil {
 		t.Fatal(err)
 	}
 	principal := nodes.GatewayInvocationPrincipal{
@@ -194,7 +204,7 @@ func TestNodeInvocationSourceRejectsStaleRuntimeGeneration(t *testing.T) {
 	source.runtime.registryMu.Unlock()
 	descriptor, plan, owner := testGatewayInvocation(t)
 
-	if _, err := source.PrepareInvocation(
+	if _, _, err := source.PrepareInvocation(
 		"build",
 		owner.ToolCallID,
 		plan,
