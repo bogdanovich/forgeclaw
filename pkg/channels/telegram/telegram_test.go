@@ -1296,14 +1296,14 @@ func TestEditMessage_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.RichMessages.Enabled = true
 
-	content := "reply\n\n---\n<sub>model: fallback</sub>"
+	content := "reply\n\n<sub>model: fallback</sub>"
 	err := ch.EditMessage(context.Background(), "12345", "1", content)
 
 	require.NoError(t, err)
 	require.Len(t, caller.calls, 3)
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
-	assert.Equal(t, "reply\n\n---\nmodel: fallback", payload["text"])
+	assert.Equal(t, "reply\n\nmodel: fallback", payload["text"])
 	assert.Empty(t, payload["parse_mode"])
 }
 
@@ -1700,7 +1700,7 @@ func TestSend_RichFooterFallbackRetriesPlainWithoutSubTag(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.RichMessages.Enabled = true
-	content := "reply\n\n---\n<sub>model: fallback</sub>"
+	content := "reply\n\n<sub>model: fallback</sub>"
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -1711,7 +1711,7 @@ func TestSend_RichFooterFallbackRetriesPlainWithoutSubTag(t *testing.T) {
 	require.Len(t, caller.calls, 3)
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
-	assert.Equal(t, "reply\n\n---\nmodel: fallback", payload["text"])
+	assert.Equal(t, "reply\n\nmodel: fallback", payload["text"])
 	assert.Empty(t, payload["parse_mode"])
 }
 
@@ -2567,7 +2567,7 @@ func TestBeginStream_RichDraftFallbackRetriesPlainWithoutSubTag(t *testing.T) {
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.Streaming.Enabled = true
 	ch.tgCfg.RichMessages.Enabled = true
-	content := "reply\n\n---\n<sub>model: fallback</sub>"
+	content := "reply\n\n<sub>model: fallback</sub>"
 
 	streamer, err := ch.BeginStream(context.Background(), "12345")
 	require.NoError(t, err)
@@ -2576,7 +2576,7 @@ func TestBeginStream_RichDraftFallbackRetriesPlainWithoutSubTag(t *testing.T) {
 	require.Len(t, caller.calls, 3)
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
-	assert.Equal(t, "reply\n\n---\nmodel: fallback", payload["text"])
+	assert.Equal(t, "reply\n\nmodel: fallback", payload["text"])
 	assert.Empty(t, payload["parse_mode"])
 }
 

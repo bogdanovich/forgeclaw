@@ -53,8 +53,8 @@ func TestMarkdownToTelegramRichMarkdown(t *testing.T) {
 
 func TestUnwrapTelegramRichFooter(t *testing.T) {
 	t.Run("unwraps generated terminal footer", func(t *testing.T) {
-		input := "reply\n\n---\n<sub>model: fallback · tokens: in 10, out 2</sub>"
-		want := "reply\n\n---\nmodel: fallback · tokens: in 10, out 2"
+		input := "reply\n\n<sub>model: fallback · tokens: in 10, out 2</sub>"
+		want := "reply\n\nmodel: fallback · tokens: in 10, out 2"
 		require.Equal(t, want, unwrapTelegramRichFooter(input))
 	})
 
@@ -64,7 +64,7 @@ func TestUnwrapTelegramRichFooter(t *testing.T) {
 	})
 
 	t.Run("preserves unrelated terminal sub tag", func(t *testing.T) {
-		input := "reply\n\n---\n<sub>ordinary content</sub>"
+		input := "reply\n\n<sub>ordinary content</sub>"
 		require.Equal(t, input, unwrapTelegramRichFooter(input))
 	})
 }

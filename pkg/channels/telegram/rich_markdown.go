@@ -3,7 +3,7 @@ package telegram
 import "strings"
 
 const (
-	telegramRichFooterPrefix = "\n\n---\n<sub>"
+	telegramRichFooterPrefix = "\n\n<sub>"
 	telegramRichFooterSuffix = "</sub>"
 )
 
@@ -21,7 +21,7 @@ func unwrapTelegramRichFooter(text string) string {
 		(!strings.HasPrefix(footer, "model: ") && !strings.HasPrefix(footer, "tokens: ")) {
 		return text
 	}
-	return text[:start] + "\n\n---\n" + footer
+	return text[:start] + "\n\n" + footer
 }
 
 func markdownToTelegramRichMarkdown(text string) string {

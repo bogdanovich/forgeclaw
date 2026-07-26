@@ -1122,10 +1122,9 @@ Semantics:
 Final outbound messages can include a compact footer with response metadata.
 When enabled, PicoClaw appends the active model only when it differs from the
 turn's default model, and appends provider-reported input/output token usage
-when available. A horizontal separator keeps the footer distinct from the
-response. Channels with native compact-text formatting render the footer in a
-smaller secondary style; other channels preserve the same text at their normal
-size.
+when available. Channels with native compact-text formatting render the footer
+in a smaller secondary style; other channels preserve the same text at their
+normal size.
 
 ```json
 {

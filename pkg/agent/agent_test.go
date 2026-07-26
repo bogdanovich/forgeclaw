@@ -879,7 +879,7 @@ func TestDeliverFinalTurnResult_DirectTelegramDeliveryIncludesResponseFooter(t *
 	if len(messages) != 1 {
 		t.Fatalf("sent messages = %d, want 1", len(messages))
 	}
-	want := "final reply\n\n---\n<sub>model: fallback-model · tokens: in 123, out 45</sub>"
+	want := "final reply\n\n<sub>model: fallback-model · tokens: in 123, out 45</sub>"
 	if got := messages[0].Content; got != want {
 		t.Fatalf("sent content = %q, want %q", got, want)
 	}
@@ -5495,7 +5495,7 @@ func TestProcessMessage_ModelOverrideDecoratesDirectChannelResponse(t *testing.T
 		metadata.UsageTotalTokens != 168 {
 		t.Fatalf("sent metadata = %+v", metadata)
 	}
-	want := "override reply\n\n---\n<sub>model: override-alias · tokens: in 123, out 45</sub>"
+	want := "override reply\n\n<sub>model: override-alias · tokens: in 123, out 45</sub>"
 	if got := messages[1].Content; got != want {
 		t.Fatalf("sent content = %q, want %q", got, want)
 	}

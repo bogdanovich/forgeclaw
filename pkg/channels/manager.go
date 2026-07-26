@@ -255,7 +255,7 @@ func appendOutboundResponseFooter(content, footer, channel string) string {
 	case "discord":
 		footer = "-# " + footer
 	}
-	return trimmed + "\n\n---\n" + footer
+	return trimmed + "\n\n" + footer
 }
 
 func outboundResponseFooter(msg bus.OutboundMessage) string {
