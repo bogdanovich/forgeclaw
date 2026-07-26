@@ -117,6 +117,8 @@ func TestGatewayRunStartupFailureHelper(t *testing.T) {
 }
 
 func TestSetupSafeRestartToolRegistersGatewayRestart(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
 	cfg.Gateway.SafeRestart = config.GatewaySafeRestartConfig{
@@ -168,6 +170,8 @@ func TestSetupSafeRestartToolDisabledDoesNotAffectReload(t *testing.T) {
 }
 
 func TestSafeRestartToolSurvivesAgentRegistryReload(t *testing.T) {
+	useRestartRuntimeGOOS(t, "linux")
+
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
 	cfg.Agents.Defaults.ContextManager = "none"
