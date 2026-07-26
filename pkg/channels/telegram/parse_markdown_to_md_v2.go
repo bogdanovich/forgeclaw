@@ -89,6 +89,8 @@ var verbatimEntities = map[string]bool{
 //
 // Reference: https://core.telegram.org/bots/api#formatting-options
 func markdownToTelegramMarkdownV2(text string) string {
+	text = unwrapTelegramRichFooter(text)
+
 	// 1. Convert Markdown headings → *escaped heading text*
 	text = reHeading.ReplaceAllStringFunc(text, func(match string) string {
 		sub := reHeading.FindStringSubmatch(match)

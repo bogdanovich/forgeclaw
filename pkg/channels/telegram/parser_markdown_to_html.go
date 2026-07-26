@@ -22,6 +22,7 @@ func markdownToTelegramHTML(text string) string {
 	if text == "" {
 		return ""
 	}
+	text = unwrapTelegramRichFooter(text)
 
 	codeBlocks := extractCodeBlocks(text)
 	text = codeBlocks.text

@@ -1296,13 +1296,14 @@ func TestEditMessage_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.RichMessages.Enabled = true
 
-	err := ch.EditMessage(context.Background(), "12345", "1", "**broken")
+	content := "reply\n\n---\n<sub>model: fallback</sub>"
+	err := ch.EditMessage(context.Background(), "12345", "1", content)
 
 	require.NoError(t, err)
 	require.Len(t, caller.calls, 3)
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
-	assert.Equal(t, "**broken", payload["text"])
+	assert.Equal(t, "reply\n\n---\nmodel: fallback", payload["text"])
 	assert.Empty(t, payload["parse_mode"])
 }
 
@@ -1677,6 +1678,41 @@ func TestSendRichChunk_FallbackBuildsLegacyMarkdownV2Content(t *testing.T) {
 	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
 	assert.Equal(t, parseContent("**bold**", true), payload["text"])
 	assert.Equal(t, telego.ModeMarkdownV2, payload["parse_mode"])
+}
+
+func TestSend_RichFooterFallbackRetriesPlainWithoutSubTag(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				assert.Contains(t, url, "sendRichMessage")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			case 2:
+				assert.Contains(t, url, "sendMessage")
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
+			default:
+				assert.Contains(t, url, "sendMessage")
+				return successResponse(t), nil
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+	content := "reply\n\n---\n<sub>model: fallback</sub>"
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: content,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 3)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
+	assert.Equal(t, "reply\n\n---\nmodel: fallback", payload["text"])
+	assert.Empty(t, payload["parse_mode"])
 }
 
 func TestSend_NonFormattingError_DoesNotFallbackToPlainText(t *testing.T) {
@@ -2508,6 +2544,40 @@ func TestBeginStream_RichDraftFallbackUsesLegacyHTML(t *testing.T) {
 	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &payload))
 	assert.Equal(t, "<b>partial</b>", payload["text"])
 	assert.Equal(t, telego.ModeHTML, payload["parse_mode"])
+}
+
+func TestBeginStream_RichDraftFallbackRetriesPlainWithoutSubTag(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				assert.Contains(t, url, "sendRichMessageDraft")
+				return nil, errors.New(`api: 404 "Not Found"`)
+			case 2:
+				assert.Contains(t, url, "sendMessageDraft")
+				return nil, errors.New(`api: 400 "Bad Request: can't parse entities"`)
+			default:
+				assert.Contains(t, url, "sendMessageDraft")
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+	ch.tgCfg.RichMessages.Enabled = true
+	content := "reply\n\n---\n<sub>model: fallback</sub>"
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	require.NoError(t, streamer.Update(context.Background(), content))
+
+	require.Len(t, caller.calls, 3)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &payload))
+	assert.Equal(t, "reply\n\n---\nmodel: fallback", payload["text"])
+	assert.Empty(t, payload["parse_mode"])
 }
 
 func TestBeginStream_RichDraftDowngradesOversizedContent(t *testing.T) {

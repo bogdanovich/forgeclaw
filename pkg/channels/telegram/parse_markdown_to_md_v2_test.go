@@ -47,6 +47,11 @@ func Test_markdownToTelegramMarkdownV2(t *testing.T) {
 			expected: "o",
 		},
 		{
+			name:     "rich subscript footer degrades to plain text",
+			input:    "reply\n\n---\n<sub>model: fallback</sub>",
+			expected: "reply\n\n\\-\\-\\-\nmodel: fallback",
+		},
+		{
 			name:     "",
 			input:    "*Last update: ~10 24h*",
 			expected: "*Last update: \\~10 24h*",

@@ -365,7 +365,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 					threadID:      baseParams.threadID,
 					content:       content,
 					replyToID:     baseParams.replyToID,
-					mdFallback:    chunk,
+					mdFallback:    unwrapTelegramRichFooter(chunk),
 					useMarkdownV2: baseParams.useMarkdownV2,
 				})
 				if err != nil {
@@ -410,7 +410,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 			threadID:      baseParams.threadID,
 			content:       content,
 			replyToID:     baseParams.replyToID,
-			mdFallback:    chunk,
+			mdFallback:    unwrapTelegramRichFooter(chunk),
 			useMarkdownV2: baseParams.useMarkdownV2,
 		}
 
@@ -501,7 +501,7 @@ func (c *TelegramChannel) sendRichChunk(
 		fallbackParams.content = parseContent(rawContent, fallbackParams.useMarkdownV2)
 	}
 	if fallbackParams.mdFallback == "" {
-		fallbackParams.mdFallback = rawContent
+		fallbackParams.mdFallback = unwrapTelegramRichFooter(rawContent)
 	}
 
 	params := &telego.SendRichMessageParams{
@@ -575,7 +575,7 @@ func (c *TelegramChannel) sendChunk(
 		if shouldFallbackToPlainText(err) {
 			logFormattingFallback(err, params.useMarkdownV2)
 
-			tgMsg.Text = params.mdFallback
+			tgMsg.Text = unwrapTelegramRichFooter(params.mdFallback)
 			tgMsg.ParseMode = ""
 			pMsg, err = c.bot.SendMessage(ctx, tgMsg)
 			if err != nil {
@@ -721,11 +721,17 @@ func (c *TelegramChannel) editMessageText(
 			_, err = c.bot.EditMessageText(ctx, legacyEditMsg)
 			if err != nil && shouldFallbackToPlainText(err) {
 				logFormattingFallback(err, useMarkdownV2)
-				_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
+				_, err = c.bot.EditMessageText(
+					ctx,
+					tu.EditMessageText(tu.ID(cid), mid, unwrapTelegramRichFooter(content)),
+				)
 			}
 		} else if shouldFallbackToPlainText(err) {
 			logFormattingFallback(err, useMarkdownV2)
-			_, err = c.bot.EditMessageText(ctx, tu.EditMessageText(tu.ID(cid), mid, content))
+			_, err = c.bot.EditMessageText(
+				ctx,
+				tu.EditMessageText(tu.ID(cid), mid, unwrapTelegramRichFooter(content)),
+			)
 		}
 	}
 
@@ -2527,7 +2533,10 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 				ChatID:          s.chatID,
 				MessageThreadID: s.threadID,
 				DraftID:         s.draftID,
-				Text:            telegramClampText(content, telegramTextLimit),
+				Text: telegramClampText(
+					unwrapTelegramRichFooter(content),
+					telegramTextLimit,
+				),
 			})
 		} else {
 			err = s.bot.SendRichMessageDraft(ctx, &telego.SendRichMessageDraftParams{
@@ -2541,7 +2550,10 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 					ChatID:          s.chatID,
 					MessageThreadID: s.threadID,
 					DraftID:         s.draftID,
-					Text:            telegramClampText(content, telegramTextLimit),
+					Text: telegramClampText(
+						unwrapTelegramRichFooter(content),
+						telegramTextLimit,
+					),
 				})
 			}
 			if err != nil && (shouldFallbackFromRichMessage(err) || shouldFallbackToPlainText(err)) {
@@ -2565,7 +2577,7 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 						ChatID:          s.chatID,
 						MessageThreadID: s.threadID,
 						DraftID:         s.draftID,
-						Text:            content,
+						Text:            unwrapTelegramRichFooter(content),
 					})
 				}
 			}
@@ -2583,7 +2595,7 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 				ChatID:          s.chatID,
 				MessageThreadID: s.threadID,
 				DraftID:         s.draftID,
-				Text:            content,
+				Text:            unwrapTelegramRichFooter(content),
 			})
 		}
 	}
