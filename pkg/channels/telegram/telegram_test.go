@@ -1296,7 +1296,7 @@ func TestEditMessage_RichFallbackRetriesRawTextWhenLegacyParseFails(t *testing.T
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.RichMessages.Enabled = true
 
-	content := "reply\n\n<sub>model: fallback</sub>"
+	content := "reply\n\n<a name=\"mintclaw-response-footer\"></a><sub>model: fallback</sub>"
 	err := ch.EditMessage(context.Background(), "12345", "1", content)
 
 	require.NoError(t, err)
@@ -1700,7 +1700,7 @@ func TestSend_RichFooterFallbackRetriesPlainWithoutSubTag(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.RichMessages.Enabled = true
-	content := "reply\n\n<sub>model: fallback</sub>"
+	content := "reply\n\n<a name=\"mintclaw-response-footer\"></a><sub>model: fallback</sub>"
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
@@ -2567,7 +2567,7 @@ func TestBeginStream_RichDraftFallbackRetriesPlainWithoutSubTag(t *testing.T) {
 	ch := newTestChannel(t, caller)
 	ch.tgCfg.Streaming.Enabled = true
 	ch.tgCfg.RichMessages.Enabled = true
-	content := "reply\n\n<sub>model: fallback</sub>"
+	content := "reply\n\n<a name=\"mintclaw-response-footer\"></a><sub>model: fallback</sub>"
 
 	streamer, err := ch.BeginStream(context.Background(), "12345")
 	require.NoError(t, err)

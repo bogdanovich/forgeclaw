@@ -3,7 +3,7 @@ package telegram
 import "strings"
 
 const (
-	telegramRichFooterPrefix = "\n\n<sub>"
+	telegramRichFooterPrefix = "\n\n<a name=\"mintclaw-response-footer\"></a><sub>"
 	telegramRichFooterSuffix = "</sub>"
 )
 

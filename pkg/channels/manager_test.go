@@ -3965,7 +3965,7 @@ func TestAppendOutboundResponseFooter_ChannelStyle(t *testing.T) {
 		{
 			name:    "telegram subscript",
 			channel: "telegram",
-			want:    "reply\n\n<sub>model: fallback</sub>",
+			want:    "reply\n\n<a name=\"mintclaw-response-footer\"></a><sub>model: fallback</sub>",
 		},
 		{
 			name:    "discord subtext",
