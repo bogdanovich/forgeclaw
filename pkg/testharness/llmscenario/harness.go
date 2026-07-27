@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 // ProviderCall captures one model request made by the runtime.

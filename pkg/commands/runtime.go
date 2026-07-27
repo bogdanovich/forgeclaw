@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 type MCPServerInfo struct {

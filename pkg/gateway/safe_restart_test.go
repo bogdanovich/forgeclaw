@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
 
 type restartPreflightSourceStub struct {
@@ -145,7 +145,7 @@ func TestRestartSentinelStoreWriteReadClear(t *testing.T) {
 	requestedAt := time.Date(2026, 7, 9, 2, 3, 4, 0, time.UTC)
 	want := RestartSentinel{
 		Status:           "pending",
-		RequestedService: "picoclaw-main.service",
+		RequestedService: "mintclaw-main.service",
 		Origin: RestartOrigin{
 			Channel:    "telegram",
 			ChatID:     "chat-1",
@@ -213,7 +213,7 @@ func TestRestartSentinelStoreMarksInterruptedRestartComplete(t *testing.T) {
 			updatedAt := requestedAt.Add(time.Minute)
 			if writeErr := store.Write(RestartSentinel{
 				Status:           tt.status,
-				RequestedService: "picoclaw-main.service",
+				RequestedService: "mintclaw-main.service",
 				RequestedAt:      requestedAt,
 				UpdatedAt:        requestedAt,
 			}); writeErr != nil {

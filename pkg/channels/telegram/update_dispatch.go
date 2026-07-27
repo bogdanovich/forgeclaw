@@ -7,7 +7,7 @@ import (
 
 	"github.com/mymmrac/telego"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 const telegramUpdateQueueSize = 64

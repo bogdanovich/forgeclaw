@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 var (
@@ -40,7 +40,7 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:   "membench",
-		Short: "Memory benchmark tool for picoclaw",
+		Short: "Memory benchmark tool for mintclaw",
 	}
 
 	ingestCmd := &cobra.Command{

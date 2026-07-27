@@ -11,8 +11,8 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
-	"github.com/sipeed/picoclaw/pkg/providers/common"
-	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/bogdanovich/mintclaw/pkg/providers/common"
+	"github.com/bogdanovich/mintclaw/pkg/providers/protocoltypes"
 )
 
 const maxFunctionCallOutputBytes = 8 * 1024 * 1024

@@ -13,7 +13,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 // TestIntegration_RealConfiguredServer is an opt-in smoke test for a real MCP
@@ -25,25 +25,25 @@ import (
 //
 // Minimum configuration:
 //
-//	PICOCLAW_MCP_REAL_SERVER_JSON='{"enabled":true,"type":"http","url":"http://127.0.0.1:8080/mcp"}'
+//	MINTCLAW_MCP_REAL_SERVER_JSON='{"enabled":true,"type":"http","url":"http://127.0.0.1:8080/mcp"}'
 //
 // Optional tool invocation:
 //
-//	PICOCLAW_MCP_REAL_TOOL_NAME=echo
-//	PICOCLAW_MCP_REAL_TOOL_ARGS_JSON='{"message":"hello"}'
-//	PICOCLAW_MCP_REAL_EXPECT_SUBSTRING=hello
+//	MINTCLAW_MCP_REAL_TOOL_NAME=echo
+//	MINTCLAW_MCP_REAL_TOOL_ARGS_JSON='{"message":"hello"}'
+//	MINTCLAW_MCP_REAL_EXPECT_SUBSTRING=hello
 //
 // Stdio subprocess example:
 //
-//	PICOCLAW_MCP_REAL_SERVER_JSON='{"enabled":true,"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}'
+//	MINTCLAW_MCP_REAL_SERVER_JSON='{"enabled":true,"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}'
 func TestIntegration_RealConfiguredServer(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	serverJSON := strings.TrimSpace(os.Getenv("PICOCLAW_MCP_REAL_SERVER_JSON"))
+	serverJSON := strings.TrimSpace(os.Getenv("MINTCLAW_MCP_REAL_SERVER_JSON"))
 	if serverJSON == "" {
-		t.Skip("skipping integration test (set PICOCLAW_MCP_REAL_SERVER_JSON to enable)")
+		t.Skip("skipping integration test (set MINTCLAW_MCP_REAL_SERVER_JSON to enable)")
 	}
 
 	serverCfg, err := loadRealServerConfig(serverJSON)
@@ -80,22 +80,22 @@ func TestIntegration_RealConfiguredServer(t *testing.T) {
 		}
 	}
 
-	if expectedCountRaw := strings.TrimSpace(os.Getenv("PICOCLAW_MCP_REAL_EXPECT_TOOL_COUNT")); expectedCountRaw != "" {
+	if expectedCountRaw := strings.TrimSpace(os.Getenv("MINTCLAW_MCP_REAL_EXPECT_TOOL_COUNT")); expectedCountRaw != "" {
 		expectedCount, err := strconv.Atoi(expectedCountRaw)
 		if err != nil {
-			t.Fatalf("invalid PICOCLAW_MCP_REAL_EXPECT_TOOL_COUNT %q: %v", expectedCountRaw, err)
+			t.Fatalf("invalid MINTCLAW_MCP_REAL_EXPECT_TOOL_COUNT %q: %v", expectedCountRaw, err)
 		}
 		if len(tools) != expectedCount {
 			t.Fatalf("tool count = %d, want %d", len(tools), expectedCount)
 		}
 	}
 
-	toolName := strings.TrimSpace(os.Getenv("PICOCLAW_MCP_REAL_TOOL_NAME"))
+	toolName := strings.TrimSpace(os.Getenv("MINTCLAW_MCP_REAL_TOOL_NAME"))
 	if toolName == "" {
 		return
 	}
 
-	toolArgs, err := loadRealToolArgs(os.Getenv("PICOCLAW_MCP_REAL_TOOL_ARGS_JSON"))
+	toolArgs, err := loadRealToolArgs(os.Getenv("MINTCLAW_MCP_REAL_TOOL_ARGS_JSON"))
 	if err != nil {
 		t.Fatalf("loadRealToolArgs() error = %v", err)
 	}
@@ -108,7 +108,7 @@ func TestIntegration_RealConfiguredServer(t *testing.T) {
 	textPayload := joinTextContents(result)
 	t.Logf("tool %q returned text payload: %q", toolName, textPayload)
 
-	if want := os.Getenv("PICOCLAW_MCP_REAL_EXPECT_SUBSTRING"); want != "" && !strings.Contains(textPayload, want) {
+	if want := os.Getenv("MINTCLAW_MCP_REAL_EXPECT_SUBSTRING"); want != "" && !strings.Contains(textPayload, want) {
 		t.Fatalf("tool result %q does not contain expected substring %q", textPayload, want)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func TestStartTaskRegistryHeartbeatEveryUpdatesRunningTask(t *testing.T) {

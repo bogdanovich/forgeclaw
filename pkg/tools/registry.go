@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 type ToolEntry struct {

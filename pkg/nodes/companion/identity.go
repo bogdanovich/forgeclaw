@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 const identityFileVersion = 1

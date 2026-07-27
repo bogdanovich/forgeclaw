@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -16,7 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 const (

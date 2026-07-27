@@ -9,12 +9,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/constants"
-	"github.com/sipeed/picoclaw/pkg/cron"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/constants"
+	"github.com/bogdanovich/mintclaw/pkg/cron"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
 // JobExecutor is the interface for executing cron jobs through the agent

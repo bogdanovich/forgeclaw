@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 const (

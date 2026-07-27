@@ -1,13 +1,13 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 
 package adapters
 
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/agent/interfaces"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 // messageBusAdapter wraps *bus.MessageBus to implement interfaces.MessageBus.

@@ -1,35 +1,35 @@
 services:
   # ─────────────────────────────────────────────
-  # PicoClaw Agent (one-shot query)
-  #   docker compose -f docker/docker-compose.yml run --rm picoclaw-agent -m "Hello"
+  # MintClaw Agent (one-shot query)
+  #   docker compose -f docker/docker-compose.yml run --rm mintclaw-agent -m "Hello"
   # ─────────────────────────────────────────────
-  picoclaw-agent:
+  mintclaw-agent:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: docker.io/sipeed/picoclaw:latest
-    container_name: picoclaw-agent
+    image: ghcr.io/bogdanovich/mintclaw:latest
+    container_name: mintclaw-agent
     profiles:
       - agent
     # Uncomment to access host network; leave commented unless needed.
     #extra_hosts:
     #  - "host.docker.internal:host-gateway"
     volumes:
-      - ./data:/root/.picoclaw
-    entrypoint: ["picoclaw", "agent"]
+      - ./data:/root/.mintclaw
+    entrypoint: ["mintclaw", "agent"]
     stdin_open: true
     tty: true
 
   # ─────────────────────────────────────────────
-  # PicoClaw Gateway (Long-running Bot)
+  # MintClaw Gateway (Long-running Bot)
   #   docker compose -f docker/docker-compose.yml --profile gateway up
   # ─────────────────────────────────────────────
-  picoclaw-gateway:
+  mintclaw-gateway:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: docker.io/sipeed/picoclaw:latest
-    container_name: picoclaw-gateway
+    image: ghcr.io/bogdanovich/mintclaw:latest
+    container_name: mintclaw-gateway
     restart: unless-stopped
     profiles:
       - gateway
@@ -37,28 +37,28 @@ services:
     #extra_hosts:
     #  - "host.docker.internal:host-gateway"
     volumes:
-      - ./data:/root/.picoclaw
+      - ./data:/root/.mintclaw
 
   # ─────────────────────────────────────────────
-  # PicoClaw Launcher (Web Console + Gateway)
+  # MintClaw Launcher (Web Console + Gateway)
   #   docker compose -f docker/docker-compose.yml --profile launcher up
   # ─────────────────────────────────────────────
-  picoclaw-launcher:
+  mintclaw-launcher:
     build:
       context: ..
       dockerfile: docker/Dockerfile.launcher
-    image: docker.io/sipeed/picoclaw:launcher
-    container_name: picoclaw-launcher
+    image: ghcr.io/bogdanovich/mintclaw:launcher
+    container_name: mintclaw-launcher
     restart: unless-stopped
     profiles:
       - launcher
     environment:
-      - PICOCLAW_GATEWAY_HOST=0.0.0.0
+      - MINTCLAW_GATEWAY_HOST=0.0.0.0
       # Set a fixed dashboard token instead of a random one each restart.
       # If not set, a random token is generated and printed to the console on startup.
-      #- PICOCLAW_LAUNCHER_TOKEN=your-secret-token-here
+      #- MINTCLAW_LAUNCHER_TOKEN=your-secret-token-here
     ports:
       - "18800:18800"
       - "18790:18790"
     volumes:
-      - ./data:/root/.picoclaw
+      - ./data:/root/.mintclaw

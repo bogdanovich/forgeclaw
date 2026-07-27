@@ -13,10 +13,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 var labeledArtifactPathRe = regexp.MustCompile(

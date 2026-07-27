@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/nodes"
-	"github.com/sipeed/picoclaw/pkg/routing"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 type NodeDiscoverySource interface {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 type PromptLayer string
@@ -166,7 +166,7 @@ func builtinPromptSources() []PromptSourceDescriptor {
 		{
 			ID:              PromptSourceKernel,
 			Owner:           "agent",
-			Description:     "Core picoclaw identity and hard rules",
+			Description:     "Core mintclaw identity and hard rules",
 			Allowed:         []PromptPlacement{{Layer: PromptLayerKernel, Slot: PromptSlotIdentity}},
 			StableByDefault: true,
 		},

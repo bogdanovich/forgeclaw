@@ -1,17 +1,17 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 
 package agent
 
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/interactions"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 // Pipeline holds the runtime dependencies used by Pipeline methods.
@@ -213,11 +213,11 @@ type steeringDequeuer interface {
 
 type reasoningPublisher interface {
 	targetReasoningChannelID(channelName string) string
-	publishPicoReasoning(
+	publishMintClawReasoning(
 		ctx context.Context,
 		reasoningContent, chatID, sessionKey, modelName string,
 	)
-	publishPicoToolCallInterim(
+	publishMintClawToolCallInterim(
 		ctx context.Context,
 		ts *turnState,
 		modelName string,

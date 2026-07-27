@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/sipeed/picoclaw/pkg/nodes/protocol"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 )
 
 func TestPeerDiscardsResponseAfterRequestCancellation(t *testing.T) {

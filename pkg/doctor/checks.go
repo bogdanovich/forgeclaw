@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 const (

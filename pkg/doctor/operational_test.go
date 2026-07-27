@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func writeOperationalJSON(t *testing.T, path string, value any) {

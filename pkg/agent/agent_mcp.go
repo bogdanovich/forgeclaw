@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
@@ -12,10 +12,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/mcp"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/mcp"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type mcpRuntime struct {

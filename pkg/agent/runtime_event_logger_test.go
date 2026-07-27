@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 func TestRuntimeEventLoggerFiltering(t *testing.T) {
@@ -416,7 +416,7 @@ func TestReloadProviderAndConfigRequiresRestartForSeahorse(t *testing.T) {
 func tempDirWithRetryCleanup(t *testing.T) string {
 	t.Helper()
 
-	dir, err := os.MkdirTemp("", "picoclaw-reload-cancel-*")
+	dir, err := os.MkdirTemp("", "mintclaw-reload-cancel-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp failed: %v", err)
 	}

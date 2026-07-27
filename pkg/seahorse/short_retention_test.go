@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	toolpolicy "github.com/sipeed/picoclaw/pkg/tools/policy"
+	toolpolicy "github.com/bogdanovich/mintclaw/pkg/tools/policy"
 )
 
 func TestProjectToolResultMessagesAppliesAllRetentionModes(t *testing.T) {

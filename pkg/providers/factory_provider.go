@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	anthropicmessages "github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
-	"github.com/sipeed/picoclaw/pkg/providers/azure"
-	"github.com/sipeed/picoclaw/pkg/providers/bedrock"
-	"github.com/sipeed/picoclaw/pkg/providers/common"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	anthropicmessages "github.com/bogdanovich/mintclaw/pkg/providers/anthropic_messages"
+	"github.com/bogdanovich/mintclaw/pkg/providers/azure"
+	"github.com/bogdanovich/mintclaw/pkg/providers/bedrock"
+	"github.com/bogdanovich/mintclaw/pkg/providers/common"
 )
 
 // createClaudeAuthProvider creates a Claude provider using OAuth credentials from auth store.
@@ -25,7 +25,7 @@ func createClaudeAuthProvider() (LLMProvider, error) {
 		return nil, fmt.Errorf("loading auth credentials: %w", err)
 	}
 	if cred == nil {
-		return nil, fmt.Errorf("no credentials for anthropic. Run: picoclaw auth login --provider anthropic")
+		return nil, fmt.Errorf("no credentials for anthropic. Run: mintclaw auth login --provider anthropic")
 	}
 	return NewClaudeProviderWithTokenSource(cred.AccessToken, createClaudeTokenSource()), nil
 }
@@ -37,7 +37,7 @@ func createCodexAuthProvider() (LLMProvider, error) {
 		return nil, fmt.Errorf("loading auth credentials: %w", err)
 	}
 	if cred == nil {
-		return nil, fmt.Errorf("no credentials for openai. Run: picoclaw auth login --provider openai")
+		return nil, fmt.Errorf("no credentials for openai. Run: mintclaw auth login --provider openai")
 	}
 	return NewCodexProviderWithTokenSource(cred.AccessToken, cred.AccountID, createCodexTokenSource()), nil
 }
@@ -102,7 +102,7 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 
 	userAgent := cfg.UserAgent
 	if userAgent == "" {
-		userAgent = fmt.Sprintf("PicoClaw/%s", config.Version)
+		userAgent = fmt.Sprintf("MintClaw/%s", config.Version)
 	}
 
 	switch protocol {

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/memory"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/routing"
-	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/memory"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 // Compile-time interface satisfaction checks.
@@ -276,30 +276,30 @@ func TestJSONLBackend_EnsureSessionMetadata_PromotesLegacyAliasHistory(t *testin
 	}
 }
 
-func TestJSONLBackend_EnsureSessionMetadata_PromotesLegacyPicoDirectAliasHistory(t *testing.T) {
+func TestJSONLBackend_EnsureSessionMetadata_PromotesLegacyMintClawDirectAliasHistory(t *testing.T) {
 	b := newBackend(t)
 
-	legacyKey := "agent:main:pico:direct:pico:session-123"
-	b.AddMessage(legacyKey, "user", "legacy pico history")
+	legacyKey := "agent:main:mintclaw:direct:mintclaw:session-123"
+	b.AddMessage(legacyKey, "user", "legacy mintclaw history")
 
 	scope := &session.SessionScope{
 		Version:    session.ScopeVersionV1,
 		AgentID:    "main",
-		Channel:    "pico",
+		Channel:    "mintclaw",
 		Account:    "default",
 		Dimensions: []string{"sender"},
 		Values: map[string]string{
-			"sender": "pico-user",
+			"sender": "mintclaw-user",
 		},
 	}
 	allocation := session.AllocateRouteSession(session.AllocationInput{
 		AgentID: "main",
 		Context: bus.InboundContext{
-			Channel:  "pico",
+			Channel:  "mintclaw",
 			Account:  "default",
-			ChatID:   "pico:session-123",
+			ChatID:   "mintclaw:session-123",
 			ChatType: "direct",
-			SenderID: "pico-user",
+			SenderID: "mintclaw-user",
 		},
 		SessionPolicy: routing.SessionPolicy{
 			Dimensions: []string{"sender"},
@@ -312,7 +312,7 @@ func TestJSONLBackend_EnsureSessionMetadata_PromotesLegacyPicoDirectAliasHistory
 		t.Fatalf("ResolveSessionKey() = %q, want %q", got, allocation.SessionKey)
 	}
 	history := b.GetHistory(allocation.SessionKey)
-	if len(history) != 1 || history[0].Content != "legacy pico history" {
+	if len(history) != 1 || history[0].Content != "legacy mintclaw history" {
 		t.Fatalf("promoted history = %+v", history)
 	}
 }

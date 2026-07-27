@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/interactions"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 const (

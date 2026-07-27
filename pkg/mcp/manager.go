@@ -15,9 +15,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 // headerTransport is an http.RoundTripper that adds custom headers to requests
@@ -335,7 +335,7 @@ func connectServer(
 
 	// Create client
 	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "picoclaw",
+		Name:    "mintclaw",
 		Version: "1.0.0",
 	}, nil)
 

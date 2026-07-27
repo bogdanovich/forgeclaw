@@ -13,11 +13,11 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/identity"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 const (

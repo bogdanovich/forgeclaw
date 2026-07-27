@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/media"
 )
 
 func TestNewDeltaChatChannel(t *testing.T) {
@@ -35,7 +35,7 @@ func TestNewDeltaChatChannel(t *testing.T) {
 		if !strings.Contains(err.Error(), "@nine.testrun.org") {
 			t.Fatalf("error = %v, want bootstrap server guidance", err)
 		}
-		if !strings.Contains(err.Error(), "Next step:") || !strings.Contains(err.Error(), "picoclaw g") {
+		if !strings.Contains(err.Error(), "Next step:") || !strings.Contains(err.Error(), "mintclaw g") {
 			t.Fatalf("error = %v, want next-step guidance", err)
 		}
 	})
@@ -114,18 +114,18 @@ func TestMentionsBot(t *testing.T) {
 		email       string
 		want        bool
 	}{
-		{"display name", "hey PicoBot can you help", "PicoBot", "bot@example.org", true},
-		{"case insensitive name", "hey picobot", "PicoBot", "bot@example.org", true},
+		{"display name", "hey MintClawBot can you help", "MintClawBot", "bot@example.org", true},
+		{"case insensitive name", "hey mintclawbot", "MintClawBot", "bot@example.org", true},
 		{"short display name exact", "hey bot can you help", "bot", "bot@example.org", true},
 		{"short display name with punctuation", "AI, summarize this", "ai", "bot@example.org", true},
-		{"multi word display name", "hey PicoClaw Bot, can you help", "PicoClaw Bot", "bot@example.org", true},
+		{"multi word display name", "hey MintClaw Bot, can you help", "MintClaw Bot", "bot@example.org", true},
 		{"email local part", "@bot please summarize", "", "bot@example.org", true},
 		{"email local part with punctuation", "please summarize, @bot.", "", "bot@example.org", true},
-		{"no mention", "just chatting here", "PicoBot", "bot@example.org", false},
+		{"no mention", "just chatting here", "MintClawBot", "bot@example.org", false},
 		{"local part without @", "the robot is cool", "", "bot@example.org", false},
 		{"short display name inside word", "the robot is cool", "bot", "bot@example.org", false},
 		{"short display name inside mail", "please email me later", "ai", "bot@example.org", false},
-		{"display name with prefix word", "hey SuperPicoClaw Bot", "PicoClaw Bot", "bot@example.org", false},
+		{"display name with prefix word", "hey SuperMintClaw Bot", "MintClaw Bot", "bot@example.org", false},
 		{"email local part inside handle", "hello @botanic", "", "bot@example.org", false},
 	}
 	for _, tt := range tests {
@@ -160,8 +160,9 @@ func TestResolveDataDir(t *testing.T) {
 	if got := resolveDataDir("/explicit/dir", "x"); got != "/explicit/dir" {
 		t.Errorf("explicit data dir = %q, want /explicit/dir", got)
 	}
-	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".picoclaw", "deltachat", "mychan")
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	want := filepath.Join(home, "deltachat", "mychan")
 	if got := resolveDataDir("", "mychan"); got != want {
 		t.Errorf("default data dir = %q, want %q", got, want)
 	}
@@ -242,8 +243,8 @@ func TestDeltaChatSettingsDecode(t *testing.T) {
 		"allow_from": ["alice@example.org"],
 		"settings": {
 			"email": "bot@example.org",
-			"display_name": "PicoBot",
-			"avatar_image": "/tmp/picobot.png",
+			"display_name": "MintClawBot",
+			"avatar_image": "/tmp/mintclawbot.png",
 			"allow_crosspost": true,
 			"imap_port": 993
 		}
@@ -264,11 +265,11 @@ func TestDeltaChatSettingsDecode(t *testing.T) {
 	if cfg.Email != "bot@example.org" {
 		t.Errorf("email = %q, want bot@example.org", cfg.Email)
 	}
-	if cfg.DisplayName != "PicoBot" {
-		t.Errorf("display_name = %q, want PicoBot", cfg.DisplayName)
+	if cfg.DisplayName != "MintClawBot" {
+		t.Errorf("display_name = %q, want MintClawBot", cfg.DisplayName)
 	}
-	if cfg.AvatarImage != "/tmp/picobot.png" {
-		t.Errorf("avatar_image = %q, want /tmp/picobot.png", cfg.AvatarImage)
+	if cfg.AvatarImage != "/tmp/mintclawbot.png" {
+		t.Errorf("avatar_image = %q, want /tmp/mintclawbot.png", cfg.AvatarImage)
 	}
 	if cfg.IMAPPort != 993 {
 		t.Errorf("imap_port = %d, want 993", cfg.IMAPPort)
@@ -352,7 +353,7 @@ func TestEnsureAccountReconfiguresConfiguredAccountWhenSettingsChange(t *testing
 
 func TestEnsureAccountSkipsConfiguredAccountWhenSettingsMatch(t *testing.T) {
 	ch := newTestChannel(t)
-	ch.config.DisplayName = "Pico Bot"
+	ch.config.DisplayName = "MintClaw Bot"
 	ch.config.IMAPServer = "imap.example.org"
 	ch.config.IMAPPort = 993
 	ch.config.SMTPServer = "smtp.example.org"
@@ -372,7 +373,7 @@ func TestEnsureAccountSkipsConfiguredAccountWhenSettingsMatch(t *testing.T) {
 			current := map[string]*string{
 				"addr":        strPtr("bot@example.org"),
 				"mail_pw":     strPtr("pw"),
-				"displayname": strPtr("Pico Bot"),
+				"displayname": strPtr("MintClaw Bot"),
 				"mail_server": strPtr("imap.example.org"),
 				"mail_port":   strPtr("993"),
 				"send_server": strPtr("smtp.example.org"),
@@ -442,7 +443,7 @@ func TestEnsureAccountCreatesBootstrapAccountAndStops(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected created-account instruction error")
 	}
-	if !strings.Contains(err.Error(), "bot123@mehl.cloud") || !strings.Contains(err.Error(), "run PicoClaw again") {
+	if !strings.Contains(err.Error(), "bot123@mehl.cloud") || !strings.Contains(err.Error(), "run MintClaw again") {
 		t.Fatalf("error = %v, want generated email and rerun instruction", err)
 	}
 }

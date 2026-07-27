@@ -8,7 +8,7 @@ import (
 
 	"github.com/mdp/qrterminal/v3"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 // AuthFlowOpts configures the interactive QR login flow.

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"log"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func toChannelHashes(cfg *config.Config) map[string]string {
@@ -46,8 +46,8 @@ func hiddenValues(key string, value map[string]any, ch *config.Channel) {
 		return
 	}
 	switch key {
-	case "pico":
-		if settings, ok := v.(*config.PicoSettings); ok {
+	case "mintclaw":
+		if settings, ok := v.(*config.MintClawSettings); ok {
 			value["token"] = settings.Token.String()
 		}
 	case "telegram":

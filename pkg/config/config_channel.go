@@ -12,13 +12,13 @@ import (
 	"github.com/caarlos0/env/v11"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 // Channel type constants — single source of truth for all channel type names.
 const (
-	ChannelPico           = "pico"
-	ChannelPicoClient     = "pico_client"
+	ChannelMintClaw       = "mintclaw"
+	ChannelMintClawClient = "mintclaw_client"
 	ChannelTelegram       = "telegram"
 	ChannelDiscord        = "discord"
 	ChannelFeishu         = "feishu"
@@ -42,8 +42,8 @@ const (
 )
 
 func initChannel() {
-	registerSingletonChannel(ChannelPico)
-	registerSingletonChannel(ChannelPicoClient)
+	registerSingletonChannel(ChannelMintClaw)
+	registerSingletonChannel(ChannelMintClawClient)
 }
 
 // singletonRegistry stores which channel types are singletons (only allow one instance).
@@ -660,8 +660,8 @@ func filterSecureFields(r RawNode, secureFields map[string]struct{}) RawNode {
 var channelSettingsMu sync.RWMutex
 
 var channelSettingsFactory = map[string]any{
-	ChannelPico:           (PicoSettings{}),
-	ChannelPicoClient:     (PicoClientSettings{}),
+	ChannelMintClaw:       (MintClawSettings{}),
+	ChannelMintClawClient: (MintClawClientSettings{}),
 	ChannelTelegram:       (TelegramSettings{}),
 	ChannelDiscord:        (DiscordSettings{}),
 	ChannelFeishu:         (FeishuSettings{}),
@@ -721,7 +721,7 @@ func isValidChannelType(channelType string) bool {
 //  1. Validates that each channel has a non-empty Type
 //  2. Validates singleton constraints
 //  3. Decodes Settings into the correct typed struct based on Type,
-//     so that b.extend contains the actual settings (e.g., PicoSettings)
+//     so that b.extend contains the actual settings (e.g., MintClawSettings)
 //
 // After calling this method, callers can safely use b.extend via Decode()
 // without re-parsing raw Settings.
@@ -771,17 +771,17 @@ func applyTelegramStreamingEnvCompat(target any) {
 		return
 	}
 
-	if raw, ok := os.LookupEnv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED"); ok {
+	if raw, ok := os.LookupEnv("MINTCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED"); ok {
 		if value, err := strconv.ParseBool(raw); err == nil {
 			settings.Streaming.Enabled = value
 		}
 	}
-	if raw, ok := os.LookupEnv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS"); ok {
+	if raw, ok := os.LookupEnv("MINTCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS"); ok {
 		if value, err := strconv.Atoi(raw); err == nil {
 			settings.Streaming.ThrottleSeconds = value
 		}
 	}
-	if raw, ok := os.LookupEnv("PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS"); ok {
+	if raw, ok := os.LookupEnv("MINTCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS"); ok {
 		if value, err := strconv.Atoi(raw); err == nil {
 			settings.Streaming.MinGrowthChars = value
 		}
@@ -791,7 +791,7 @@ func applyTelegramStreamingEnvCompat(target any) {
 func validateChannelStreamingConfig(channelName string, target any) error {
 	var streaming StreamingConfig
 	switch settings := target.(type) {
-	case *PicoSettings:
+	case *MintClawSettings:
 		streaming = settings.Streaming
 	case *TelegramSettings:
 		streaming = settings.Streaming

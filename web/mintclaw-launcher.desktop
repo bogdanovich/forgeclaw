@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MintClaw Launcher
+Comment=Web-based configuration and management UI for MintClaw
+Exec=mintclaw-launcher
+Icon=mintclaw-launcher
+Terminal=true
+Type=Application
+Categories=Utility;Network;
+Keywords=mintclaw;ai;agent;bot;

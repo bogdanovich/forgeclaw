@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/interactions"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 // Test constants (use defaults from subturn.go)

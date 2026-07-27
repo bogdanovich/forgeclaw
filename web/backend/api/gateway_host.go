@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/netbind"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/netbind"
 )
 
 func (h *Handler) effectiveLauncherPublic() bool {
@@ -194,7 +194,7 @@ func forwardedPortFirst(r *http.Request) string {
 }
 
 // clientVisiblePort picks the TCP port the browser uses to reach this app (after proxies).
-// Used by picoWebUIAddr → buildWsURL / buildPicoEventsURL / buildPicoSendURL so WebSocket and
+// Used by mintclawWebUIAddr → buildWsURL / buildMintClawEventsURL / buildMintClawSendURL so WebSocket and
 // HTTP URLs match the dashboard page origin (cookies / token flow behind tunnels and reverse proxies).
 func clientVisiblePort(r *http.Request, serverListenPort int) string {
 	if p := forwardedPortFirst(r); p != "" {
@@ -225,10 +225,10 @@ func joinClientVisibleHostPort(r *http.Request, host string, serverListenPort in
 	return net.JoinHostPort(host, clientVisiblePort(r, serverListenPort))
 }
 
-// picoWebUIAddr is host:port for URLs returned to the browser (/pico/ws, /pico/events, /pico/send).
+// mintclawWebUIAddr is host:port for URLs returned to the browser (/mintclaw/ws, /mintclaw/events, /mintclaw/send).
 // It must match the HTTP Host the client used (or X-Forwarded-*), not cfg.Gateway.Host — otherwise
 // e.g. page on localhost with ws_url 127.0.0.1 omits cookies and the dashboard auth handshake fails.
-func (h *Handler) picoWebUIAddr(r *http.Request) string {
+func (h *Handler) mintclawWebUIAddr(r *http.Request) string {
 	wsPort := h.serverPort
 	if wsPort == 0 {
 		wsPort = 18800
@@ -240,13 +240,13 @@ func (h *Handler) picoWebUIAddr(r *http.Request) string {
 }
 
 func (h *Handler) buildWsURL(r *http.Request) string {
-	return requestWSScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/ws"
+	return requestWSScheme(r) + "://" + h.mintclawWebUIAddr(r) + "/mintclaw/ws"
 }
 
-func (h *Handler) buildPicoEventsURL(r *http.Request) string {
-	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/events"
+func (h *Handler) buildMintClawEventsURL(r *http.Request) string {
+	return requestHTTPScheme(r) + "://" + h.mintclawWebUIAddr(r) + "/mintclaw/events"
 }
 
-func (h *Handler) buildPicoSendURL(r *http.Request) string {
-	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/send"
+func (h *Handler) buildMintClawSendURL(r *http.Request) string {
+	return requestHTTPScheme(r) + "://" + h.mintclawWebUIAddr(r) + "/mintclaw/send"
 }

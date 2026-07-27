@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/routing"
-	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 type inboundDispatchTarget struct {
@@ -122,14 +122,14 @@ func (al *AgentLoop) buildInboundMessageTurnForTarget(
 			UserMessage:    msg.Content,
 			Media:          append([]string(nil), msg.Media...),
 		},
-		ModelBinding:            modelBinding,
-		SenderID:                msg.SenderID,
-		SenderDisplayName:       msg.Sender.DisplayName,
-		DefaultResponse:         defaultResponse,
-		EnableSummary:           true,
-		SendResponse:            false,
-		ExpectFinalDelivery:     true,
-		AllowInterimPicoPublish: true,
+		ModelBinding:                modelBinding,
+		SenderID:                    msg.SenderID,
+		SenderDisplayName:           msg.Sender.DisplayName,
+		DefaultResponse:             defaultResponse,
+		EnableSummary:               true,
+		SendResponse:                false,
+		ExpectFinalDelivery:         true,
+		AllowInterimMintClawPublish: true,
 	}
 
 	return inboundMessageTurn{

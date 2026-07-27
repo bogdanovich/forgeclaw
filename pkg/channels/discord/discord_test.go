@@ -15,10 +15,10 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/sipeed/picoclaw/pkg/audio/tts"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/audio/tts"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/media"
 )
 
 type stubTTSProvider struct{}

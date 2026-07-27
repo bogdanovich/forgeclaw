@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 func TestDiagnosticContentHelpersAreOptInAndExcludeProviderSecrets(t *testing.T) {

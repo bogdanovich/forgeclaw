@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 const restartSentinelFileName = "restart-sentinel.json"

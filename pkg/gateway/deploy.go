@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/fileutil"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const deployOutputLimit = 16 * 1024
@@ -113,7 +113,7 @@ func deployGroupLockPath(group string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve deploy lock directory: %w", err)
 	}
-	dir := filepath.Join(cacheDir, "picoclaw", "deploy-locks")
+	dir := filepath.Join(cacheDir, "mintclaw", "deploy-locks")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create deploy lock directory: %w", err)
 	}
@@ -220,11 +220,11 @@ func (r *DeployRunner) run(
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.cfg.Command, "--target", target)
 	cmd.Env = append(cmd.Environ(),
-		"FORGECLAW_DEPLOY_GROUP="+r.cfg.Group,
-		"FORGECLAW_DEPLOY_TARGET="+target,
-		"FORGECLAW_WORKSPACE="+r.workspace,
-		"FORGECLAW_SERVICE="+r.service,
-		"FORGECLAW_SESSION_KEY="+origin.SessionKey,
+		"MINTCLAW_DEPLOY_GROUP="+r.cfg.Group,
+		"MINTCLAW_DEPLOY_TARGET="+target,
+		"MINTCLAW_WORKSPACE="+r.workspace,
+		"MINTCLAW_SERVICE="+r.service,
+		"MINTCLAW_SESSION_KEY="+origin.SessionKey,
 	)
 	out, err := cmd.CombinedOutput()
 	text := truncateDeployOutput(string(out))

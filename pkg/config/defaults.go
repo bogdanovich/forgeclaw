@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -9,10 +9,10 @@ import (
 	"encoding/json"
 	"path/filepath"
 
-	"github.com/sipeed/picoclaw/pkg"
+	"github.com/bogdanovich/mintclaw/pkg"
 )
 
-// DefaultConfig returns the default configuration for PicoClaw.
+// DefaultConfig returns the default configuration for MintClaw.
 func DefaultConfig() *Config {
 	workspacePath := filepath.Join(GetHome(), pkg.WorkspaceName)
 
@@ -593,7 +593,7 @@ func defaultChannels() ChannelsConfig {
 			"group_trigger": map[string]any{"mention_only": true},
 			"settings": map[string]any{
 				"email":        "@nine.testrun.org",
-				"display_name": "PicoClaw Bot",
+				"display_name": "MintClaw Bot",
 			},
 		},
 		"line": map[string]any{
@@ -622,7 +622,7 @@ func defaultChannels() ChannelsConfig {
 				"cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",
 			},
 		},
-		"pico": map[string]any{
+		"mintclaw": map[string]any{
 			"settings": map[string]any{
 				"ping_interval":   30,
 				"read_timeout":    60,
@@ -635,7 +635,7 @@ func defaultChannels() ChannelsConfig {
 			"settings": map[string]any{
 				"server":   "",
 				"tls":      true,
-				"nick":     "picoclaw",
+				"nick":     "mintclaw",
 				"channels": []string{},
 			},
 		},

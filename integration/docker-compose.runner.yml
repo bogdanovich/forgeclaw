@@ -5,8 +5,8 @@ services:
     entrypoint: ["bash", "-c"]
     volumes:
       - ${INTEGRATION_REPO_ROOT}:/workspace
-      - picoclaw-integration-gocache:/go-build-cache
-      - picoclaw-integration-gomodcache:/go-mod-cache
+      - mintclaw-integration-gocache:/go-build-cache
+      - mintclaw-integration-gomodcache:/go-mod-cache
     environment:
       GOCACHE: /go-build-cache
       GOMODCACHE: /go-mod-cache
@@ -15,5 +15,5 @@ services:
       GOFLAGS: -tags=goolm,stdjson,integration
 
 volumes:
-  picoclaw-integration-gocache:
-  picoclaw-integration-gomodcache:
+  mintclaw-integration-gocache:
+  mintclaw-integration-gomodcache:

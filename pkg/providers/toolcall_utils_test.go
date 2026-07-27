@@ -6,7 +6,7 @@ func TestNormalizeToolCall_PreservesExtraContentGoogleThoughtSignature(t *testin
 	tc := NormalizeToolCall(ToolCall{
 		ID:        "call_1",
 		Name:      "search",
-		Arguments: map[string]any{"q": "pico"},
+		Arguments: map[string]any{"q": "mintclaw"},
 		ExtraContent: &ExtraContent{
 			Google: &GoogleExtra{ThoughtSignature: "sig-1"},
 		},

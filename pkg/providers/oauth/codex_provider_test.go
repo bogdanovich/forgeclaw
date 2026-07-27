@@ -12,7 +12,7 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 
-	orc "github.com/sipeed/picoclaw/pkg/providers/openai_responses_common"
+	orc "github.com/bogdanovich/mintclaw/pkg/providers/openai_responses_common"
 )
 
 func TestBuildCodexParams_BasicMessage(t *testing.T) {

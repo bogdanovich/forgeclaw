@@ -11,7 +11,7 @@ import {
   updateChatStore,
 } from "@/store/chat"
 
-export interface PicoMessage {
+export interface MintClawMessage {
   type: string
   id?: string
   session_id?: string
@@ -78,9 +78,13 @@ function parseContextUsage(
   return {
     used_tokens: used,
     total_tokens: total,
-    history_tokens: obj.history_tokens != null ? Number(obj.history_tokens) : undefined,
+    history_tokens:
+      obj.history_tokens != null ? Number(obj.history_tokens) : undefined,
     compress_at_tokens: Number(obj.compress_at_tokens) || 0,
-    summarize_at_tokens: obj.summarize_at_tokens != null ? Number(obj.summarize_at_tokens) : undefined,
+    summarize_at_tokens:
+      obj.summarize_at_tokens != null
+        ? Number(obj.summarize_at_tokens)
+        : undefined,
     used_percent: Number(obj.used_percent) || 0,
   }
 }
@@ -93,8 +97,8 @@ function parseModelName(payload: Record<string, unknown>): string | undefined {
   return modelName || undefined
 }
 
-export function handlePicoMessage(
-  message: PicoMessage,
+export function handleMintClawMessage(
+  message: MintClawMessage,
   expectedSessionId: string,
 ) {
   if (message.session_id && message.session_id !== expectedSessionId) {
@@ -106,7 +110,8 @@ export function handlePicoMessage(
   switch (message.type) {
     case "message.create":
     case "media.create": {
-      const messageId = (payload.message_id as string) || `pico-${Date.now()}`
+      const messageId =
+        (payload.message_id as string) || `mintclaw-${Date.now()}`
       const { content, kind, toolCalls } =
         parseAssistantMessageCreateState(payload)
       const attachments = parseAttachments(payload)
@@ -229,7 +234,7 @@ export function handlePicoMessage(
       const errorMessage =
         typeof payload.message === "string" ? payload.message : ""
 
-      console.error("Pico error:", payload)
+      console.error("MintClaw error:", payload)
       if (errorMessage) {
         toast.error(errorMessage)
       }
@@ -246,6 +251,6 @@ export function handlePicoMessage(
       break
 
     default:
-      console.log("Unknown pico message type:", message.type)
+      console.log("Unknown mintclaw message type:", message.type)
   }
 }

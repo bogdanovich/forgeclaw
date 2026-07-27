@@ -13,7 +13,7 @@ import (
 
 func main() {
 	server := mcp.NewServer(&mcp.Implementation{
-		Name:    "picoclaw-integration-streamable-server",
+		Name:    "mintclaw-integration-streamable-server",
 		Version: "1.0.0",
 	}, nil)
 

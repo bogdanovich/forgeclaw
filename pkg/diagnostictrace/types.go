@@ -1,4 +1,4 @@
-// Package diagnostictrace defines ForgeClaw's bounded diagnostic trace format.
+// Package diagnostictrace defines MintClaw's bounded diagnostic trace format.
 package diagnostictrace
 
 import (
@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const SchemaVersionV1 = "forgeclaw.diagnostic_trace.v1"
+const SchemaVersionV1 = "mintclaw.diagnostic_trace.v1"
 
 type ContentMode string
 
@@ -53,8 +53,8 @@ type Trace struct {
 }
 
 type Source struct {
-	ForgeClawVersion string `json:"forgeclaw_version,omitempty"`
-	Commit           string `json:"commit,omitempty"`
+	MintClawVersion string `json:"mintclaw_version,omitempty"`
+	Commit          string `json:"commit,omitempty"`
 }
 
 type CapturePolicy struct {

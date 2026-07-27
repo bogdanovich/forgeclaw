@@ -1,4 +1,4 @@
-module github.com/sipeed/picoclaw
+module github.com/bogdanovich/mintclaw
 
 go 1.25.12
 

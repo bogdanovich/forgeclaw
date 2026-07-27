@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -9,46 +9,46 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sipeed/picoclaw/pkg"
+	"github.com/bogdanovich/mintclaw/pkg"
 )
 
-// Runtime environment variable keys for the picoclaw process.
+// Runtime environment variable keys for the mintclaw process.
 // These control the location of files and binaries at runtime and are read
-// directly via os.Getenv / os.LookupEnv. All picoclaw-specific keys use the
-// PICOCLAW_ prefix. Reference these constants instead of inline string
+// directly via os.Getenv / os.LookupEnv. All mintclaw-specific keys use the
+// MINTCLAW_ prefix. Reference these constants instead of inline string
 // literals to keep all supported knobs visible in one place and to prevent
 // typos.
 const (
-	// EnvHome overrides the base directory for all picoclaw data
+	// EnvHome overrides the base directory for all mintclaw data
 	// (config, workspace, skills, auth store, …).
-	// Default: ~/.picoclaw
-	EnvHome = "PICOCLAW_HOME"
+	// Default: ~/.mintclaw
+	EnvHome = "MINTCLAW_HOME"
 
 	// EnvConfig overrides the full path to the JSON config file.
-	// Default: $PICOCLAW_HOME/config.json
-	EnvConfig = "PICOCLAW_CONFIG"
+	// Default: $MINTCLAW_HOME/config.json
+	EnvConfig = "MINTCLAW_CONFIG"
 
 	// EnvBuiltinSkills overrides the directory from which built-in
 	// skills are loaded.
 	// Default: <cwd>/skills
-	EnvBuiltinSkills = "PICOCLAW_BUILTIN_SKILLS"
+	EnvBuiltinSkills = "MINTCLAW_BUILTIN_SKILLS"
 
-	// EnvBinary overrides the path to the picoclaw executable.
+	// EnvBinary overrides the path to the mintclaw executable.
 	// Used by the web launcher when spawning the gateway subprocess.
 	// Default: resolved from the same directory as the current executable.
-	EnvBinary = "PICOCLAW_BINARY"
+	EnvBinary = "MINTCLAW_BINARY"
 
 	// EnvGatewayHost overrides the host address for the gateway server.
 	// Default: "localhost"
-	EnvGatewayHost = "PICOCLAW_GATEWAY_HOST"
+	EnvGatewayHost = "MINTCLAW_GATEWAY_HOST"
 )
 
 func GetHome() string {
 	homePath, _ := os.UserHomeDir()
-	if picoclawHome := os.Getenv(EnvHome); picoclawHome != "" {
-		homePath = picoclawHome
+	if mintclawHome := os.Getenv(EnvHome); mintclawHome != "" {
+		homePath = mintclawHome
 	} else if homePath != "" {
-		homePath = filepath.Join(homePath, pkg.DefaultPicoClawHome)
+		homePath = filepath.Join(homePath, pkg.DefaultMintClawHome)
 	}
 	if homePath == "" {
 		homePath = "."

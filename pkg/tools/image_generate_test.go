@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 type fakeImageGenerationProvider struct {

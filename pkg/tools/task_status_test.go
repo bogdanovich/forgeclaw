@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func TestTaskStatusTool_ListsVisibleRecords(t *testing.T) {

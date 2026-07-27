@@ -20,17 +20,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/nodes"
-	"github.com/sipeed/picoclaw/pkg/nodes/companion"
-	nodews "github.com/sipeed/picoclaw/pkg/nodes/ws"
-	"github.com/sipeed/picoclaw/pkg/testharness/llmscenario"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/agent"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/companion"
+	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
+	"github.com/bogdanovich/mintclaw/pkg/testharness/llmscenario"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
@@ -466,8 +466,8 @@ func buildVerticalSliceCompanion(t *testing.T, outputDir string) string {
 		t.Fatal("resolve gateway E2E test source")
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
-	binaryPath := filepath.Join(outputDir, "picoclaw-node")
-	command := exec.Command("go", "build", "-o", binaryPath, "./cmd/picoclaw-node")
+	binaryPath := filepath.Join(outputDir, "mintclaw-node")
+	command := exec.Command("go", "build", "-o", binaryPath, "./cmd/mintclaw-node")
 	command.Dir = repositoryRoot
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build companion binary: %v\n%s", err, output)

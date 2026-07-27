@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/auth"
-	"github.com/sipeed/picoclaw/pkg/config"
-	ppid "github.com/sipeed/picoclaw/pkg/pid"
-	"github.com/sipeed/picoclaw/web/backend/utils"
+	"github.com/bogdanovich/mintclaw/pkg/auth"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	ppid "github.com/bogdanovich/mintclaw/pkg/pid"
+	"github.com/bogdanovich/mintclaw/web/backend/utils"
 )
 
 func startLongRunningProcess(t *testing.T) *exec.Cmd {
@@ -45,7 +45,7 @@ func startGatewayLikeProcess(t *testing.T) *exec.Cmd {
 	if runtime.GOOS == "windows" {
 		t.Skip("gateway-like process commandline check is not deterministic on Windows tests")
 	}
-	cmd = exec.Command("sh", "-c", "sleep 30 # picoclaw gateway")
+	cmd = exec.Command("sh", "-c", "sleep 30 # mintclaw gateway")
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -57,7 +57,7 @@ func startGatewayLikeProcess(t *testing.T) *exec.Cmd {
 func writeTestPidFile(t *testing.T, data ppid.PidFileData) string {
 	t.Helper()
 
-	path := filepath.Join(globalConfigDir(), ".picoclaw.pid")
+	path := filepath.Join(globalConfigDir(), ".mintclaw.pid")
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal pid file: %v", err)
@@ -101,7 +101,7 @@ func resetGatewayTestState(t *testing.T) {
 	originalRestartGracePeriod := gatewayRestartGracePeriod
 	originalRestartForceKillWindow := gatewayRestartForceKillWindow
 	originalRestartPollInterval := gatewayRestartPollInterval
-	t.Setenv("PICOCLAW_HOME", t.TempDir())
+	t.Setenv("MINTCLAW_HOME", t.TempDir())
 	t.Cleanup(func() {
 		gatewayHealthGet = originalHealthGet
 		gatewayProcessMatcher = originalProcessMatcher
@@ -121,15 +121,15 @@ func resetGatewayTestState(t *testing.T) {
 	})
 }
 
-func TestPicoGatewayProtocol(t *testing.T) {
+func TestMintClawGatewayProtocol(t *testing.T) {
 	resetGatewayTestState(t)
 
 	gateway.mu.Lock()
-	gateway.picoToken = "ui-token"
+	gateway.mintclawToken = "ui-token"
 	gateway.mu.Unlock()
 
-	if got := picoGatewayProtocol(); got != tokenPrefix+"ui-token" {
-		t.Fatalf("picoGatewayProtocol() = %q, want %q", got, tokenPrefix+"ui-token")
+	if got := mintclawGatewayProtocol(); got != tokenPrefix+"ui-token" {
+		t.Fatalf("mintclawGatewayProtocol() = %q, want %q", got, tokenPrefix+"ui-token")
 	}
 }
 
@@ -295,7 +295,7 @@ func TestStartGatewayLocked_UsesReloadedConfigForBootSignature(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	cfg := config.DefaultConfig()
-	delete(cfg.Channels, "pico")
+	delete(cfg.Channels, "mintclaw")
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -334,7 +334,7 @@ func TestStartGatewayLocked_UsesReloadedConfigForBootSignature(t *testing.T) {
 	}
 	expectedSignature := computeConfigSignature(updatedCfg)
 	if expectedSignature == originalSignature {
-		t.Fatal("expected EnsurePicoChannel() to change the config signature during gateway start")
+		t.Fatal("expected EnsureMintClawChannel() to change the config signature during gateway start")
 	}
 	if bootSignature != expectedSignature {
 		t.Fatalf("bootConfigSignature = %q, want %q", bootSignature, expectedSignature)
@@ -402,8 +402,8 @@ func TestLooksLikeGatewayCommandLine(t *testing.T) {
 		want    bool
 	}{
 		{
-			name:    "default picoclaw gateway",
-			cmdline: "/usr/local/bin/picoclaw gateway -E",
+			name:    "default mintclaw gateway",
+			cmdline: "/usr/local/bin/mintclaw gateway -E",
 			want:    true,
 		},
 		{
@@ -2180,11 +2180,11 @@ func TestGatewayRestartReturnsErrorStatusWhenReplacementFailsToStart(t *testing.
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	invalidBinaryPath := filepath.Join(t.TempDir(), "fake-picoclaw")
+	invalidBinaryPath := filepath.Join(t.TempDir(), "fake-mintclaw")
 	if err := os.WriteFile(invalidBinaryPath, []byte("#!/bin/sh\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	t.Setenv("PICOCLAW_BINARY", invalidBinaryPath)
+	t.Setenv("MINTCLAW_BINARY", invalidBinaryPath)
 
 	h := NewHandler(configPath)
 	mux := http.NewServeMux()
@@ -2357,29 +2357,29 @@ func TestGatewayClearLogsResetsBufferedHistory(t *testing.T) {
 	}
 }
 
-func TestFindPicoclawBinary_EnvOverride(t *testing.T) {
+func TestFindMintClawBinary_EnvOverride(t *testing.T) {
 	// Create a temporary file to act as the mock binary
 	tmpDir := t.TempDir()
-	mockBinary := filepath.Join(tmpDir, "picoclaw-mock")
+	mockBinary := filepath.Join(tmpDir, "mintclaw-mock")
 	if err := os.WriteFile(mockBinary, []byte("mock"), 0o755); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	t.Setenv("PICOCLAW_BINARY", mockBinary)
+	t.Setenv("MINTCLAW_BINARY", mockBinary)
 
-	got := utils.FindPicoclawBinary()
+	got := utils.FindMintClawBinary()
 	if got != mockBinary {
-		t.Errorf("FindPicoclawBinary() = %q, want %q", got, mockBinary)
+		t.Errorf("FindMintClawBinary() = %q, want %q", got, mockBinary)
 	}
 }
 
-func TestFindPicoclawBinary_EnvOverride_InvalidPath(t *testing.T) {
-	// When PICOCLAW_BINARY points to a non-existent path, fall through to next strategy
-	t.Setenv("PICOCLAW_BINARY", "/nonexistent/picoclaw-binary")
+func TestFindMintClawBinary_EnvOverride_InvalidPath(t *testing.T) {
+	// When MINTCLAW_BINARY points to a non-existent path, fall through to next strategy
+	t.Setenv("MINTCLAW_BINARY", "/nonexistent/mintclaw-binary")
 
-	got := utils.FindPicoclawBinary()
-	// Should not return the invalid path; falls back to "picoclaw" or another found path
-	if got == "/nonexistent/picoclaw-binary" {
-		t.Errorf("FindPicoclawBinary() returned invalid env path %q, expected fallback", got)
+	got := utils.FindMintClawBinary()
+	// Should not return the invalid path; falls back to "mintclaw" or another found path
+	if got == "/nonexistent/mintclaw-binary" {
+		t.Errorf("FindMintClawBinary() returned invalid env path %q, expected fallback", got)
 	}
 }

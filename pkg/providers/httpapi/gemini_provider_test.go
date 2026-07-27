@@ -60,7 +60,7 @@ func TestGeminiProvider_ChatSeparatesThoughtAndToolCall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewGeminiProvider("test-key", server.URL, "", "picoclaw-test", 0, nil, nil)
+	provider := NewGeminiProvider("test-key", server.URL, "", "mintclaw-test", 0, nil, nil)
 	resp, err := provider.Chat(
 		t.Context(),
 		[]Message{{Role: "user", Content: "hello"}},

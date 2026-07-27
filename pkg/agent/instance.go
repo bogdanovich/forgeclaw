@@ -7,16 +7,16 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/isolation"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/memory"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/routing"
-	"github.com/sipeed/picoclaw/pkg/session"
-	"github.com/sipeed/picoclaw/pkg/tools"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/isolation"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/memory"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
 )
 
 // AgentInstance represents a fully configured agent with its own workspace,
@@ -493,7 +493,7 @@ func resolveAgentWorkspace(agentCfg *config.AgentConfig, defaults *config.AgentD
 	if agentCfg != nil && strings.TrimSpace(agentCfg.Workspace) != "" {
 		return expandHome(strings.TrimSpace(agentCfg.Workspace))
 	}
-	// Use the configured default workspace (respects PICOCLAW_HOME)
+	// Use the configured default workspace (respects MINTCLAW_HOME)
 	if agentCfg == nil || agentCfg.Default || agentCfg.ID == "" ||
 		routing.NormalizeAgentID(agentCfg.ID) == "main" {
 		return expandHome(defaults.Workspace)

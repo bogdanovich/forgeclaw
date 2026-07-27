@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
+	"github.com/bogdanovich/mintclaw/pkg/diagnostictrace"
 )
 
 // RecordClass states whether a diagnostic record should displace ordinary data.

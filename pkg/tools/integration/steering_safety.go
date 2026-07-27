@@ -1,6 +1,6 @@
 package integrationtools
 
-import toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
+import toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 
 func (*WebSearchTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyReadOnly

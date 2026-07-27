@@ -5,7 +5,7 @@ package api
 import (
 	"os/exec"
 
-	"github.com/sipeed/picoclaw/web/backend/utils"
+	"github.com/bogdanovich/mintclaw/web/backend/utils"
 )
 
 func launcherExecCommand(name string, args ...string) *exec.Cmd {

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
-	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
 
 const (

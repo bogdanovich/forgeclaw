@@ -3,8 +3,8 @@ package agent
 import (
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/state"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/bogdanovich/mintclaw/pkg/state"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
 const maxActiveGoalObjectiveRunes = 480

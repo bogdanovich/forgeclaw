@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 type backgroundCompactionRunner struct {

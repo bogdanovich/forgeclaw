@@ -6,14 +6,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/agent/interfaces"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 // AsyncDeliveryDecision is the routing plan for a completed async tool result.

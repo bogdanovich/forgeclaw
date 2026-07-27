@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/agent"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func deployConfig(script string) config.GatewayDeployConfig {
@@ -38,7 +38,7 @@ func writeDeployScript(t *testing.T, body string) string {
 }
 
 func TestDeployRunnerValidatesTargetAndRecordsSuccess(t *testing.T) {
-	script := writeDeployScript(t, "printf '%s:%s' \"$1\" \"$FORGECLAW_DEPLOY_TARGET\"")
+	script := writeDeployScript(t, "printf '%s:%s' \"$1\" \"$MINTCLAW_DEPLOY_TARGET\"")
 	workspace := t.TempDir()
 	runner, err := NewDeployRunner(deployConfig(script), workspace, "main.service")
 	if err != nil {
@@ -181,7 +181,7 @@ func TestGatewayDeployToolUsesDetachedHandoffForConfiguredTarget(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := deployConfig(writeDeployScript(t, "true"))
 	cfg.HandoffTargets = []string{"current"}
-	runner, err := NewDeployRunner(cfg, workspace, "picoclaw-main.service")
+	runner, err := NewDeployRunner(cfg, workspace, "mintclaw-main.service")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestGatewayDeployToolUsesDetachedHandoffForConfiguredTarget(t *testing.T) {
 
 func TestGatewayDeployToolSuccessfulNonHandoffIsFinalHandled(t *testing.T) {
 	countPath := filepath.Join(t.TempDir(), "deploy-count")
-	script := writeDeployScript(t, "printf x >> \"$FORGECLAW_WORKSPACE/deploy-count\"; printf 'deploy complete'")
+	script := writeDeployScript(t, "printf x >> \"$MINTCLAW_WORKSPACE/deploy-count\"; printf 'deploy complete'")
 	runner, err := NewDeployRunner(deployConfig(script), filepath.Dir(countPath), "")
 	if err != nil {
 		t.Fatal(err)
@@ -373,7 +373,7 @@ func TestGatewayDeployToolSuccessfulResultCompletesAgentTurn(t *testing.T) {
 			runnerWorkspace := t.TempDir()
 			deployCfg := deployConfig(writeDeployScript(t, "printf 'deploy complete'"))
 			deployCfg.HandoffTargets = tc.handoffTargets
-			runner, err := NewDeployRunner(deployCfg, runnerWorkspace, "picoclaw-main.service")
+			runner, err := NewDeployRunner(deployCfg, runnerWorkspace, "mintclaw-main.service")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -424,8 +424,8 @@ func TestGatewayDeployToolSuccessfulResultCompletesAgentTurn(t *testing.T) {
 }
 
 func TestDeployHandoffUnitNameIsStableAndScopedToGroup(t *testing.T) {
-	first := deployHandoffUnitName("picoclaw-local")
-	if first != deployHandoffUnitName("picoclaw-local") {
+	first := deployHandoffUnitName("mintclaw-local")
+	if first != deployHandoffUnitName("mintclaw-local") {
 		t.Fatalf("unit name must be stable")
 	}
 	if first == deployHandoffUnitName("another-group") {
@@ -464,7 +464,7 @@ func TestDeployRunnerFailureTimeoutAndTruncation(t *testing.T) {
 
 func TestDeployRunnerRejectsConcurrentDeploy(t *testing.T) {
 	workspace := t.TempDir()
-	script := writeDeployScript(t, "touch \"$FORGECLAW_WORKSPACE/started\"; sleep 2")
+	script := writeDeployScript(t, "touch \"$MINTCLAW_WORKSPACE/started\"; sleep 2")
 	cfg := deployConfig(script)
 	cfg.TimeoutSeconds = 5
 	first, err := NewDeployRunner(cfg, workspace, "")

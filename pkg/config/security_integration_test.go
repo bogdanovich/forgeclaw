@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -250,7 +250,7 @@ func TestAllSecurityKeysAccessible(t *testing.T) {
       "enabled": true,
       "bot_id": "test_wecom_bot_id"
     },
-    "pico": {
+    "mintclaw": {
       "enabled": true
     },
     "irc": {
@@ -319,8 +319,8 @@ channels:
     access_token: "onebot_test_access_token"
   wecom:
     secret: "wecom_test_secret"
-  pico:
-    token: "pico_test_token"
+  mintclaw:
+    token: "mintclaw_test_token"
   irc:
     password: "irc_test_password"
     nickserv_password: "irc_test_nickserv_password"
@@ -437,10 +437,10 @@ skills:
 		t.Logf("WeCom BotID: %s", wcSec.(*WeComSettings).BotID)
 		t.Logf("WeCom Secret(): %s", secureStr(wcSec.(*WeComSettings).Secret))
 
-		// Pico
-		picoSec := decodeChannel("pico")
-		assert.Equal(t, "pico_test_token", secureStr(picoSec.(*PicoSettings).Token))
-		t.Logf("Pico Token(): %s", secureStr(picoSec.(*PicoSettings).Token))
+		// MintClaw
+		mintclawSec := decodeChannel("mintclaw")
+		assert.Equal(t, "mintclaw_test_token", secureStr(mintclawSec.(*MintClawSettings).Token))
+		t.Logf("MintClaw Token(): %s", secureStr(mintclawSec.(*MintClawSettings).Token))
 
 		// IRC
 		ircSec := decodeChannel("irc")

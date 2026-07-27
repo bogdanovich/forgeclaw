@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func TestBuildFinalTurnRenderInstructionIncludesWriteAudit(t *testing.T) {

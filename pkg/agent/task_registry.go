@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func (al *AgentLoop) taskRegistryForWorkspace(workspace string) *taskregistry.Registry {

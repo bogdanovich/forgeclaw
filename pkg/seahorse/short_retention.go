@@ -3,8 +3,8 @@ package seahorse
 import (
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	toolpolicy "github.com/sipeed/picoclaw/pkg/tools/policy"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	toolpolicy "github.com/bogdanovich/mintclaw/pkg/tools/policy"
 )
 
 type toolResultProjectionReport struct {

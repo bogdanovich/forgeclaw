@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"unicode/utf8"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 // EstimateMessageTokens estimates the token count for a single message,

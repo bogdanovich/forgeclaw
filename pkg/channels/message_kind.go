@@ -1,6 +1,6 @@
 package channels
 
-import "github.com/sipeed/picoclaw/pkg/bus"
+import "github.com/bogdanovich/mintclaw/pkg/bus"
 
 // OutboundMessageFinalizesTrackedToolFeedback reports whether a normal
 // user-visible outbound message may safely reuse the tracked tool-feedback

@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
@@ -13,10 +13,10 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools/loopguard"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
 // ToolLoopConfig configures the tool execution loop.

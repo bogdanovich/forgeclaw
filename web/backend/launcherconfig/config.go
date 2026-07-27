@@ -15,7 +15,7 @@ const (
 	// DefaultPort is the default port for the web launcher.
 	DefaultPort = 18800
 	// EnvLauncherHost overrides launcher listen host.
-	EnvLauncherHost = "PICOCLAW_LAUNCHER_HOST"
+	EnvLauncherHost = "MINTCLAW_LAUNCHER_HOST"
 )
 
 // Config stores launch parameters for the web backend service.

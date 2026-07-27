@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func TestTaskRegistryForWorkspaceCanonicalizesAliases(t *testing.T) {

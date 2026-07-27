@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type restartSourceSequence struct {
@@ -62,14 +62,14 @@ func TestSystemdUserServiceRestarterQueuesRestartWithoutBlocking(t *testing.T) {
 	}
 
 	if got := (SystemdUserServiceRestarter{}).DispatchRestart(
-		context.Background(), "picoclaw-main.service",
+		context.Background(), "mintclaw-main.service",
 	); got.Outcome != RestartDispatchAccepted {
 		t.Fatalf("DispatchRestart() = %#v", got)
 	}
 	if gotName != "systemctl" {
 		t.Fatalf("command = %q, want systemctl", gotName)
 	}
-	if want := []string{"--user", "restart", "--no-block", "picoclaw-main.service"}; !slices.Equal(gotArgs, want) {
+	if want := []string{"--user", "restart", "--no-block", "mintclaw-main.service"}; !slices.Equal(gotArgs, want) {
 		t.Fatalf("args = %#v, want %#v", gotArgs, want)
 	}
 }
@@ -87,7 +87,7 @@ func TestSystemdUserServiceRestarterMarksSignaledCommandUncertain(t *testing.T) 
 		return exec.Command("sh", "-c", "kill -TERM $$")
 	}
 
-	got := (SystemdUserServiceRestarter{}).DispatchRestart(context.Background(), "picoclaw-main.service")
+	got := (SystemdUserServiceRestarter{}).DispatchRestart(context.Background(), "mintclaw-main.service")
 	if got.Outcome != RestartDispatchIndeterminate {
 		t.Fatalf("DispatchRestart() = %#v, want indeterminate", got)
 	}
@@ -105,14 +105,14 @@ func TestLaunchdServiceRestarterKickstartsConfiguredTarget(t *testing.T) {
 		return exec.Command(os.Args[0], "-test.run=^TestSystemdUserServiceRestarterHelper$")
 	}
 
-	got := (LaunchdServiceRestarter{}).DispatchRestart(context.Background(), "gui/501/com.example.picoclaw")
+	got := (LaunchdServiceRestarter{}).DispatchRestart(context.Background(), "gui/501/com.example.mintclaw")
 	if got.Outcome != RestartDispatchAccepted {
 		t.Fatalf("DispatchRestart() = %#v", got)
 	}
 	if gotName != "launchctl" {
 		t.Fatalf("command = %q, want launchctl", gotName)
 	}
-	if want := []string{"kickstart", "-k", "gui/501/com.example.picoclaw"}; !slices.Equal(gotArgs, want) {
+	if want := []string{"kickstart", "-k", "gui/501/com.example.mintclaw"}; !slices.Equal(gotArgs, want) {
 		t.Fatalf("args = %#v, want %#v", gotArgs, want)
 	}
 }
@@ -127,7 +127,7 @@ func TestConfiguredServiceRestarterGuardsPlatformAndWindowsSCM(t *testing.T) {
 		t.Fatalf("systemd guard error = %v", err)
 	}
 	cfg.ServiceManager = "launchd"
-	cfg.Service = "gui/501/com.example.picoclaw"
+	cfg.Service = "gui/501/com.example.mintclaw"
 	if _, err := newConfiguredServiceRestarter(cfg); err != nil {
 		t.Fatalf("launchd factory error = %v", err)
 	}
@@ -182,7 +182,7 @@ func testRestartConfig() config.GatewaySafeRestartConfig {
 	return config.GatewaySafeRestartConfig{
 		Enabled:             true,
 		ServiceManager:      "systemd-user",
-		Service:             "picoclaw-main.service",
+		Service:             "mintclaw-main.service",
 		DrainTimeoutSeconds: 1,
 		ForceAfterTimeout:   true,
 	}
@@ -244,7 +244,7 @@ func TestNewRestartControllerValidatesSystemdService(t *testing.T) {
 		t.Fatalf("NewRestartSentinelStore() error = %v", err)
 	}
 	cfg := testRestartConfig()
-	cfg.Service = "picoclaw-main.service;rm"
+	cfg.Service = "mintclaw-main.service;rm"
 	_, err = NewRestartController(RestartControllerOptions{
 		Config:    cfg,
 		Source:    &restartSourceSequence{},
@@ -308,7 +308,7 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	if result.Status != restartStatusPending {
 		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
 	}
-	restarter.waitCalledWith(t, "picoclaw-main.service")
+	restarter.waitCalledWith(t, "mintclaw-main.service")
 	waitForRestartSentinelStatus(t, store, restartStatusRunning)
 	sentinel, err := store.Read()
 	if err != nil {
@@ -322,7 +322,7 @@ func TestRestartControllerSafePathWritesSentinelAndRestarts(t *testing.T) {
 	}
 	release()
 	waitForRestartSentinelUpdatedAt(t, store, finalUpdatedAt)
-	if !restarter.calledWith("picoclaw-main.service") {
+	if !restarter.calledWith("mintclaw-main.service") {
 		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
 	}
 }
@@ -356,7 +356,7 @@ func TestGatewayRestartToolPersistsTopicOrigin(t *testing.T) {
 		t.Fatalf("Execute() error = %v", result.Err)
 	}
 	assertFinalHandledRestartResult(t, result)
-	restarter.waitCalledWith(t, "picoclaw-main.service")
+	restarter.waitCalledWith(t, "mintclaw-main.service")
 	waitForRestartSentinelStatus(t, store, restartStatusFailed)
 	sentinel, err := store.Read()
 	if err != nil {
@@ -437,7 +437,7 @@ func TestRestartControllerKeepsRunningStatusForUncertainDispatch(t *testing.T) {
 	if _, err := controller.RequestRestart(context.Background(), RestartRequest{}); err != nil {
 		t.Fatal(err)
 	}
-	restarter.waitCalledWith(t, "picoclaw-main.service")
+	restarter.waitCalledWith(t, "mintclaw-main.service")
 	waitForRestartSentinelStatus(t, store, restartStatusRunning)
 }
 
@@ -471,8 +471,8 @@ func TestRestartControllerDefersUntilIdle(t *testing.T) {
 	if result.ForcedAfterDrain {
 		t.Fatal("restart should not force when work drains")
 	}
-	restarter.waitCalledWith(t, "picoclaw-main.service")
-	if !restarter.calledWith("picoclaw-main.service") {
+	restarter.waitCalledWith(t, "mintclaw-main.service")
+	if !restarter.calledWith("mintclaw-main.service") {
 		t.Fatalf("restarter calls = %#v, want configured service", restarter.services)
 	}
 	waitForRestartSentinelStatus(t, store, restartStatusRunning)
@@ -512,7 +512,7 @@ func TestRestartControllerForcesAfterDrainTimeout(t *testing.T) {
 	if result.Status != restartStatusPending {
 		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
 	}
-	restarter.waitCalledWith(t, "picoclaw-main.service")
+	restarter.waitCalledWith(t, "mintclaw-main.service")
 	waitForRestartSentinelForcedAfterDrain(t, store)
 	sentinel, err := store.Read()
 	if err != nil {
@@ -613,7 +613,7 @@ func TestRestartControllerBackgroundFailureWritesFailedSentinel(t *testing.T) {
 	if result.Status != restartStatusPending {
 		t.Fatalf("status = %q, want %q", result.Status, restartStatusPending)
 	}
-	restarter.waitCalledWith(t, "picoclaw-main.service")
+	restarter.waitCalledWith(t, "mintclaw-main.service")
 	waitForRestartSentinelStatus(t, store, restartStatusFailed)
 }
 

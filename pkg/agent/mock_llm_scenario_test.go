@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/testharness/llmscenario"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/testharness/llmscenario"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func TestMockLLMScenario_ProcessDirectExecutesToolAndReturnsFinalAnswer(t *testing.T) {

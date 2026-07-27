@@ -11,7 +11,7 @@ func GetOpenAIToken() (accessToken, accountID string, err error) {
 		return "", "", fmt.Errorf("loading auth credentials: %w", err)
 	}
 	if cred == nil {
-		return "", "", fmt.Errorf("no credentials for openai. Run: picoclaw auth login --provider openai")
+		return "", "", fmt.Errorf("no credentials for openai. Run: mintclaw auth login --provider openai")
 	}
 
 	if cred.AuthMethod == "oauth" && cred.NeedsRefresh() && cred.RefreshToken != "" {
@@ -22,7 +22,7 @@ func GetOpenAIToken() (accessToken, accountID string, err error) {
 				return fmt.Errorf("loading auth credentials: %w", err)
 			}
 			if current == nil {
-				return fmt.Errorf("no credentials for openai. Run: picoclaw auth login --provider openai")
+				return fmt.Errorf("no credentials for openai. Run: mintclaw auth login --provider openai")
 			}
 			if current.AuthMethod != "oauth" || !current.NeedsRefresh() || current.RefreshToken == "" {
 				refreshedAccessToken = current.AccessToken

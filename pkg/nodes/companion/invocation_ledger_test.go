@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/fileutil"
-	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 func TestInvocationLedgerPersistsTerminalResultAndDeduplicates(t *testing.T) {
@@ -437,7 +437,7 @@ func TestInvocationLedgerFileIsPrivateAndVersioned(t *testing.T) {
 }
 
 func TestInvocationLedgerRejectsConcurrentProcessOwner(t *testing.T) {
-	const helperPathEnv = "PICOCLAW_TEST_INVOCATION_LEDGER_LOCK"
+	const helperPathEnv = "MINTCLAW_TEST_INVOCATION_LEDGER_LOCK"
 	if path := os.Getenv(helperPathEnv); path != "" {
 		ledger, err := NewFileInvocationLedger(path, 4, 1024*1024)
 		if err != nil {

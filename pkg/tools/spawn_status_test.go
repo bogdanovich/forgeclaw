@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 func TestSpawnStatusTool_Name(t *testing.T) {

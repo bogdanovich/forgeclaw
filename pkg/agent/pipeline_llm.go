@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 
 package agent
 
@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/constants"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/constants"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 const contextOverflowCompactTimeout = 45 * time.Second
@@ -593,24 +593,24 @@ func (p *Pipeline) CallLLM(
 		exec.response.ReasoningDetails = nil
 	}
 	reasoningContent := responseReasoningContent(exec.response)
-	shouldPublishPicoToolCallInterim := ts.channel == "pico" && len(exec.response.ToolCalls) > 0
-	if shouldPublishPicoToolCallInterim {
-		// Pico tool-call turns publish their reasoning/content/tool summary as a
+	shouldPublishMintClawToolCallInterim := ts.channel == "mintclaw" && len(exec.response.ToolCalls) > 0
+	if shouldPublishMintClawToolCallInterim {
+		// MintClaw tool-call turns publish their reasoning/content/tool summary as a
 		// structured sequence after the tool-call payload is normalized below.
-	} else if ts.channel == "pico" {
+	} else if ts.channel == "mintclaw" {
 		if exec.streamingPublisher != nil && exec.streamingPublisher.ReasoningPublished() {
 			if err := exec.streamingPublisher.FinalizeReasoning(turnCtx, reasoningContent); err != nil {
-				logger.WarnCF("agent", "Failed to finalize streamed pico reasoning", map[string]any{
+				logger.WarnCF("agent", "Failed to finalize streamed mintclaw reasoning", map[string]any{
 					"channel": ts.channel,
 					"chat_id": ts.chatID,
 					"error":   err.Error(),
 				})
 			}
 		} else {
-			// Publish pico thoughts before the turn context is canceled at return time.
+			// Publish mintclaw thoughts before the turn context is canceled at return time.
 			// The async variant can race with turn teardown and intermittently drop the
 			// thought message in CI even though the LLM produced reasoning content.
-			p.publishPicoReasoning(turnCtx, reasoningContent, ts.chatID, ts.sessionKey, exec.model.llmModelName)
+			p.publishMintClawReasoning(turnCtx, reasoningContent, ts.chatID, ts.sessionKey, exec.model.llmModelName)
 		}
 	} else {
 		go p.handleReasoning(
@@ -663,7 +663,7 @@ func (p *Pipeline) CallLLM(
 	// No-tool-call path: steering check and direct response
 	if len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
 		responseContent := exec.response.Content
-		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "pico" {
+		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "mintclaw" {
 			responseContent = exec.response.ReasoningContent
 		}
 		exec.actionLog = appendTurnActionRecord(
@@ -767,12 +767,12 @@ func (p *Pipeline) CallLLM(
 		}
 		p.ingestMessage(turnCtx, ts, assistantMsg, writeErr)
 	}
-	if shouldPublishPicoToolCallInterim {
+	if shouldPublishMintClawToolCallInterim {
 		interimContent := exec.response.Content
 		if p.shouldPublishToolFeedback(ts) {
 			interimContent = ""
 		}
-		p.publishPicoToolCallInterim(
+		p.publishMintClawToolCallInterim(
 			turnCtx,
 			ts,
 			exec.model.llmModelName,

@@ -9,16 +9,16 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/commands"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/interactions"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/session"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/commands"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/session"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const answerCommand = "/answer"
@@ -896,13 +896,13 @@ func (al *AgentLoop) resumeClaimedInteraction(
 			InboundContext:  cloneInboundContext(&inbound),
 			SessionScope:    session.CloneScope(scope),
 		},
-		DefaultResponse:          defaultResponse,
-		EnableSummary:            true,
-		SendResponse:             false,
-		ExpectFinalDelivery:      expectFinalDelivery,
-		ObserveFinalDeliveryTurn: observeFinalDeliveryTurn,
-		AllowInterimPicoPublish:  true,
-		SkipInitialSteeringPoll:  true,
+		DefaultResponse:             defaultResponse,
+		EnableSummary:               true,
+		SendResponse:                false,
+		ExpectFinalDelivery:         expectFinalDelivery,
+		ObserveFinalDeliveryTurn:    observeFinalDeliveryTurn,
+		AllowInterimMintClawPublish: true,
+		SkipInitialSteeringPoll:     true,
 	})
 	if runErr != nil {
 		_, _ = registry.RecordResumeFailure(resuming.ID, resuming.Revision, runErr.Error())

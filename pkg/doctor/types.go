@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 type Severity string
@@ -103,7 +103,7 @@ func Run(opts Options) (*Report, error) {
 
 	report := &Report{
 		SchemaVersion: SchemaVersion,
-		GeneratedBy:   "picoclaw doctor",
+		GeneratedBy:   "mintclaw doctor",
 		ConfigPath:    configPath,
 		Findings:      findings,
 	}

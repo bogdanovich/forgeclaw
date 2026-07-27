@@ -14,12 +14,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/skills"
-	"github.com/sipeed/picoclaw/pkg/utils"
-	workspaceutil "github.com/sipeed/picoclaw/pkg/workspace"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/skills"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
+	workspaceutil "github.com/bogdanovich/mintclaw/pkg/workspace"
 )
 
 type ContextBuilder struct {
@@ -186,9 +186,9 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 	}
 
 	return fmt.Sprintf(
-		`# picoclaw 🦞 (%s)
+		`# mintclaw 🦞 (%s)
 
-You are picoclaw, a helpful AI assistant.
+You are mintclaw, a helpful AI assistant.
 
 ## Workspace
 Your workspace is at: %s
@@ -268,7 +268,7 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 		Layer:   PromptLayerKernel,
 		Slot:    PromptSlotIdentity,
 		Source:  PromptSource{ID: PromptSourceKernel, Name: "identity"},
-		Title:   "picoclaw identity",
+		Title:   "mintclaw identity",
 		Content: cb.getIdentity(opts.IncludeToolUseRule),
 		Stable:  true,
 		Cache:   PromptCacheEphemeral,
@@ -871,7 +871,7 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// locally to avoid repeated file I/O and string building on every call
 	// (fixes issue #607). Profile-customized static prompts are built on demand.
 	// Dynamic parts (time, session, summary) are appended per request unless the
-	// profile suppresses PicoClaw system context.
+	// profile suppresses MintClaw system context.
 	// Everything is sent as a single system message for provider compatibility:
 	// - Anthropic adapter extracts messages[0] (Role=="system") and maps its content
 	//   to the top-level "system" parameter in the Messages API request. A single

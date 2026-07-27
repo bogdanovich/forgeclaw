@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/providers/common"
+	"github.com/bogdanovich/mintclaw/pkg/providers/common"
 )
 
 const (

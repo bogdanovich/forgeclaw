@@ -9,7 +9,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sipeed/picoclaw/pkg/providers/common"
+	"github.com/bogdanovich/mintclaw/pkg/providers/common"
 )
 
 // Common patterns in Go HTTP error messages

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/memory"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/seahorse"
-	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/bogdanovich/mintclaw/pkg/memory"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/seahorse"
+	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
 func newReconciliationTestManager(t *testing.T) (*seahorseContextManager, *memory.JSONLStore) {

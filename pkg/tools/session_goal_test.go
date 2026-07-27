@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/bogdanovich/mintclaw/pkg/state"
 )
 
 func goalToolContext(routeSessionKey string) context.Context {

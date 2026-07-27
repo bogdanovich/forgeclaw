@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func TestMemoryContextBoundsLongTermAndPreservesEdges(t *testing.T) {
@@ -111,7 +111,7 @@ func TestMemoryStoreHidesDailyIdempotencyMarkers(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(dailyPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const marker = "<!-- picoclaw:append_daily:v1:0123456789abcdef -->"
+	const marker = "<!-- mintclaw:append_daily:v1:0123456789abcdef -->"
 	if err := os.WriteFile(dailyPath, []byte("# 2026-07-18\n\n"+marker+"\nVisible event\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

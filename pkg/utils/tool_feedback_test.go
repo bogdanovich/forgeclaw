@@ -86,7 +86,7 @@ func TestFormatToolFeedbackMessageWithStyle_WorkingSummaryShowsWorkspaceRelative
 		"working_summary",
 		"read_file",
 		"",
-		"{\"path\":\"/home/server/.picoclaw/spouse/workspace/memory/MEMORY.md\"}",
+		"{\"path\":\"/home/server/.mintclaw/spouse/workspace/memory/MEMORY.md\"}",
 	)
 	want := "Working...\n• tool: `read_file` — `memory/MEMORY.md`"
 	if got != want {
@@ -112,7 +112,7 @@ func TestFormatToolFeedbackMessageWithStyle_WorkingSummaryShowsExecScriptNameOnl
 		"working_summary",
 		"exec",
 		"",
-		"{\"command\":\"OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 bash -lc /home/server/.picoclaw/main/workspace/tmp_add_questions_anya_form_api.sh --api-key sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789\"}",
+		"{\"command\":\"OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 bash -lc /home/server/.mintclaw/main/workspace/tmp_add_questions_anya_form_api.sh --api-key sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789\"}",
 	)
 	want := "Working...\n• tool: `exec` — `tmp_add_questions_anya_form_api.sh`"
 	if got != want {

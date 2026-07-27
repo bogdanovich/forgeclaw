@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
 )
 
 func TestValidateApprovalDisplayAcceptsRuntimeToolAndTrustedSummary(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/media"
 )
 
 // LoadImageTool loads a local image file into the MediaStore and returns a

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 func TestPublishConsume(t *testing.T) {
@@ -156,7 +156,7 @@ func TestPublishInbound_BackfillsContextFromLegacyFields(t *testing.T) {
 	defer mb.Close()
 
 	msg := InboundMessage{
-		Channel:   "pico",
+		Channel:   "mintclaw",
 		ChatID:    "session-1",
 		SenderID:  "user-1",
 		MessageID: "msg-1",
@@ -168,8 +168,8 @@ func TestPublishInbound_BackfillsContextFromLegacyFields(t *testing.T) {
 	}
 
 	got := <-mb.InboundChan()
-	if got.Context.Channel != "pico" {
-		t.Fatalf("expected context channel pico, got %q", got.Context.Channel)
+	if got.Context.Channel != "mintclaw" {
+		t.Fatalf("expected context channel mintclaw, got %q", got.Context.Channel)
 	}
 	if got.Context.ChatID != "session-1" {
 		t.Fatalf("expected context chat ID session-1, got %q", got.Context.ChatID)

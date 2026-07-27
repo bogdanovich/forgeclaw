@@ -1,6 +1,6 @@
 package skills
 
-import "github.com/sipeed/picoclaw/pkg/config"
+import "github.com/bogdanovich/mintclaw/pkg/config"
 
 const defaultGitHubRegistryBaseURL = "https://github.com"
 

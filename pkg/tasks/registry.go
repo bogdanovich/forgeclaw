@@ -17,7 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
 
 type Runtime string

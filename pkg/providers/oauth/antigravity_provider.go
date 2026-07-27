@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/auth"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers/common"
+	"github.com/bogdanovich/mintclaw/pkg/auth"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers/common"
 )
 
 const (
@@ -455,7 +455,7 @@ func createAntigravityTokenSource() func() (string, string, error) {
 		}
 		if cred == nil {
 			return "", "", fmt.Errorf(
-				"no credentials for google-antigravity. Run: picoclaw auth login --provider google-antigravity",
+				"no credentials for google-antigravity. Run: mintclaw auth login --provider google-antigravity",
 			)
 		}
 
@@ -478,7 +478,7 @@ func createAntigravityTokenSource() func() (string, string, error) {
 
 		if cred.IsExpired() {
 			return "", "", fmt.Errorf(
-				"antigravity credentials expired. Run: picoclaw auth login --provider google-antigravity",
+				"antigravity credentials expired. Run: mintclaw auth login --provider google-antigravity",
 			)
 		}
 

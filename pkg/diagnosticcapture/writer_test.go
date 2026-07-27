@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
+	"github.com/bogdanovich/mintclaw/pkg/diagnostictrace"
 )
 
 func TestWriterPersistsAndPrunesByPolicy(t *testing.T) {

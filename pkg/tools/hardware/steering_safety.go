@@ -1,6 +1,6 @@
 package hardwaretools
 
-import toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
+import toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 
 func (*I2CTool) ToolSteeringSafety(map[string]any) toolshared.SteeringSafety {
 	return toolshared.SteeringSafetyCancellable

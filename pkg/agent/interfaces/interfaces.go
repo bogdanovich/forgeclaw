@@ -1,13 +1,13 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 
 package interfaces
 
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 // MessageBus publishes inbound and outbound messages.

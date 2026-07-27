@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/providers/common"
+	"github.com/bogdanovich/mintclaw/pkg/providers/common"
 )
 
 type stubNetError struct {

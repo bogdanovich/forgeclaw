@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func TestHandleGetChannelConfig_ReturnsSecretPresenceWithoutLeakingSecrets(t *testing.T) {
@@ -187,11 +187,11 @@ func TestHandleGetChannelConfig_ReturnsConfiguredStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	pico := cfg.Channels.Get(config.ChannelPico)
-	if pico == nil {
-		t.Fatal("missing pico channel")
+	mintclaw := cfg.Channels.Get(config.ChannelMintClaw)
+	if mintclaw == nil {
+		t.Fatal("missing mintclaw channel")
 	}
-	pico.Settings = config.RawNode(`{"streaming":{"enabled":true,"throttle_seconds":2,"min_growth_chars":80}}`)
+	mintclaw.Settings = config.RawNode(`{"streaming":{"enabled":true,"throttle_seconds":2,"min_growth_chars":80}}`)
 	if err := config.InitChannelList(cfg.Channels); err != nil {
 		t.Fatalf("InitChannelList() error = %v", err)
 	}
@@ -203,13 +203,13 @@ func TestHandleGetChannelConfig_ReturnsConfiguredStreaming(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/channels/pico/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/channels/mintclaw/config", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf(
-			"GET /api/channels/pico/config status = %d, want %d, body=%s",
+			"GET /api/channels/mintclaw/config status = %d, want %d, body=%s",
 			rec.Code,
 			http.StatusOK,
 			rec.Body.String(),
@@ -276,8 +276,8 @@ func TestHandleGetChannelConfig_ReturnsDefaultShapeForMissingChannel(t *testing.
 	if got := resp.Config["server"]; got != "" {
 		t.Fatalf("config.server = %#v, want empty string", got)
 	}
-	if got := resp.Config["nick"]; got != "picoclaw" {
-		t.Fatalf("config.nick = %#v, want %q", got, "picoclaw")
+	if got := resp.Config["nick"]; got != "mintclaw" {
+		t.Fatalf("config.nick = %#v, want %q", got, "mintclaw")
 	}
 	if got := resp.Config["enabled"]; got != false {
 		t.Fatalf("config.enabled = %#v, want false", got)

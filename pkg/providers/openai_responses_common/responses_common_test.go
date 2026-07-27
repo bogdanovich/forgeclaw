@@ -8,7 +8,7 @@ import (
 
 	"github.com/openai/openai-go/v3/responses"
 
-	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/bogdanovich/mintclaw/pkg/providers/protocoltypes"
 )
 
 // --- TranslateMessages tests ---

@@ -2,7 +2,7 @@
   "version": 3,
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.mintclaw/workspace",
       "restrict_to_workspace": true,
       "model_name": "gpt-5.4",
       "max_tokens": 8192,
@@ -305,9 +305,9 @@
         "send_thinking_message": true
       }
     },
-    "pico": {
+    "mintclaw": {
       "enabled": false,
-      "type": "pico",
+      "type": "mintclaw",
       "allow_from": [],
       "settings": {
         "token": "YOUR_PICO_TOKEN",
@@ -318,12 +318,12 @@
         "max_connections": 100
       }
     },
-    "pico_client": {
+    "mintclaw_client": {
       "enabled": false,
-      "type": "pico_client",
+      "type": "mintclaw_client",
       "allow_from": [],
       "settings": {
-        "url": "wss://remote-pico-server/pico/ws",
+        "url": "wss://remote-mintclaw-server/mintclaw/ws",
         "token": "YOUR_PICO_TOKEN",
         "session_id": "",
         "ping_interval": 30,
@@ -627,7 +627,7 @@
     "safe_restart": {
       "enabled": false,
       "service_manager": "systemd-user",
-      "service": "picoclaw-main.service",
+      "service": "mintclaw-main.service",
       "drain_timeout_seconds": 300,
       "force_after_timeout": true
     }

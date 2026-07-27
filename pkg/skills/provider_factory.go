@@ -3,7 +3,7 @@ package skills
 import (
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 type RegistryProviderBuilder func(name string, cfg config.SkillRegistryConfig) RegistryProvider

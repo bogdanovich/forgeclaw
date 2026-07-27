@@ -6,7 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/sipeed/picoclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
 )
 
 // validateApprovalDisplay validates runtime-owned identity and trusted policy

@@ -3,8 +3,8 @@ package session
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/routing"
 )
 
 func TestAllocateRouteSession_PerPeerDM(t *testing.T) {
@@ -126,23 +126,23 @@ func TestAllocateRouteSession_TelegramForumTopicsRemainIsolatedByDefault(t *test
 	}
 }
 
-func TestAllocateRouteSession_PicoDirectAliasesIncludeLegacyChatKey(t *testing.T) {
+func TestAllocateRouteSession_MintClawDirectAliasesIncludeLegacyChatKey(t *testing.T) {
 	allocation := AllocateRouteSession(AllocationInput{
 		AgentID: "main",
 		Context: bus.InboundContext{
-			Channel:  "pico",
+			Channel:  "mintclaw",
 			Account:  "default",
-			ChatID:   "pico:session-123",
+			ChatID:   "mintclaw:session-123",
 			ChatType: "direct",
-			SenderID: "pico-user",
+			SenderID: "mintclaw-user",
 		},
 		SessionPolicy: routing.SessionPolicy{
 			Dimensions: []string{"sender"},
 		},
 	})
 
-	if !containsAlias(allocation.SessionAliases, "agent:main:pico:direct:pico:session-123") {
-		t.Fatalf("SessionAliases = %v, want pico legacy alias", allocation.SessionAliases)
+	if !containsAlias(allocation.SessionAliases, "agent:main:mintclaw:direct:mintclaw:session-123") {
+		t.Fatalf("SessionAliases = %v, want mintclaw legacy alias", allocation.SessionAliases)
 	}
 }
 

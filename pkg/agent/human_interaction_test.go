@@ -11,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/interactions"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/session"
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/interactions"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/session"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type interactionChannelManager struct {
@@ -974,7 +974,7 @@ func TestParseInteractionAnswerSupportsWhitespaceDelimitedCommands(t *testing.T)
 		},
 		{
 			name: "telegram bot mention", record: multipleRecord,
-			content:  "/answer@ForgeClawBot 13ccbf94\ntest_region: eu\ntest_mode: balanced",
+			content:  "/answer@MintClawBot 13ccbf94\ntest_region: eu\ntest_mode: balanced",
 			wantText: "test_region: eu\ntest_mode: balanced",
 			wantValues: map[string]string{
 				"test_region": "eu",

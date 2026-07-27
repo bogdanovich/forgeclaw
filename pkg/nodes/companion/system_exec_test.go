@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 const (
-	systemExecHelperEnabled = "PICOCLAW_SYSTEM_EXEC_HELPER"
-	systemExecHelperAction  = "PICOCLAW_SYSTEM_EXEC_ACTION"
-	systemExecVisibleEnv    = "PICOCLAW_SYSTEM_EXEC_VISIBLE"
-	systemExecHiddenEnv     = "PICOCLAW_SYSTEM_EXEC_HIDDEN"
+	systemExecHelperEnabled = "MINTCLAW_SYSTEM_EXEC_HELPER"
+	systemExecHelperAction  = "MINTCLAW_SYSTEM_EXEC_ACTION"
+	systemExecVisibleEnv    = "MINTCLAW_SYSTEM_EXEC_VISIBLE"
+	systemExecHiddenEnv     = "MINTCLAW_SYSTEM_EXEC_HIDDEN"
 )
 
 var systemExecPlanSequence atomic.Uint64

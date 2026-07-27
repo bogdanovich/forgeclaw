@@ -1,6 +1,6 @@
 //go:build azidentity
 
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -10,7 +10,7 @@ package providers
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 // With the azidentity build tag, an azure config with no api_key must succeed

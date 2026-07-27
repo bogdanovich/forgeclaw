@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 // noneContextManager disables stored context assembly and compaction.

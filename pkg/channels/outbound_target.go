@@ -3,7 +3,7 @@ package channels
 import (
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
 )
 
 // EffectiveOutboundChatID returns the explicit chat ID when provided, otherwise

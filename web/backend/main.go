@@ -1,13 +1,13 @@
-// PicoClaw Web Console - Web-based chat and management interface
+// MintClaw Web Console - Web-based chat and management interface
 //
-// Provides a web UI for chatting with PicoClaw via the Pico Channel WebSocket,
+// Provides a web UI for chatting with MintClaw via the MintClaw Channel WebSocket,
 // with configuration management and gateway process control.
 //
 // Usage:
 //
-//	go build -o picoclaw-web ./web/backend/
-//	./picoclaw-web [config.json]
-//	./picoclaw-web -public config.json
+//	go build -o mintclaw-web ./web/backend/
+//	./mintclaw-web [config.json]
+//	./mintclaw-web -public config.json
 
 package main
 
@@ -26,18 +26,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/netbind"
-	"github.com/sipeed/picoclaw/web/backend/api"
-	"github.com/sipeed/picoclaw/web/backend/dashboardauth"
-	"github.com/sipeed/picoclaw/web/backend/launcherconfig"
-	"github.com/sipeed/picoclaw/web/backend/middleware"
-	"github.com/sipeed/picoclaw/web/backend/utils"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/netbind"
+	"github.com/bogdanovich/mintclaw/web/backend/api"
+	"github.com/bogdanovich/mintclaw/web/backend/dashboardauth"
+	"github.com/bogdanovich/mintclaw/web/backend/launcherconfig"
+	"github.com/bogdanovich/mintclaw/web/backend/middleware"
+	"github.com/bogdanovich/mintclaw/web/backend/utils"
 )
 
 const (
-	appName = "PicoClaw"
+	appName = "MintClaw"
 
 	logPath   = "logs"
 	panicFile = "launcher_panic.log"
@@ -413,7 +413,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s Launcher - Web console and gateway manager\n\n", appName)
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [config.json]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Arguments:\n")
-		fmt.Fprintf(os.Stderr, "  config.json    Path to the configuration file (default: ~/.picoclaw/config.json)\n\n")
+		fmt.Fprintf(os.Stderr, "  config.json    Path to the configuration file (default: ~/.mintclaw/config.json)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
@@ -435,9 +435,9 @@ func main() {
 	flag.Parse()
 
 	// Initialize logger
-	picoHome := utils.GetPicoclawHome()
+	mintclawHome := utils.GetMintClawHome()
 
-	f := filepath.Join(picoHome, logPath, panicFile)
+	f := filepath.Join(mintclawHome, logPath, panicFile)
 	panicFunc, err := logger.InitPanic(f)
 	if err != nil {
 		panic(fmt.Sprintf("error initializing panic log: %v", err))
@@ -452,7 +452,7 @@ func main() {
 			logger.DisableConsole()
 		}
 
-		f := filepath.Join(picoHome, logPath, logFile)
+		f := filepath.Join(mintclawHome, logPath, logFile)
 		if err = logger.EnableFileLogging(f); err != nil {
 			panic(fmt.Sprintf("error enabling file logging: %v", err))
 		}
@@ -486,7 +486,7 @@ func main() {
 	}
 
 	logger.InfoC("web", fmt.Sprintf("%s launcher starting (version %s)...", appName, appVersion))
-	logger.InfoC("web", fmt.Sprintf("%s Home: %s", appName, picoHome))
+	logger.InfoC("web", fmt.Sprintf("%s Home: %s", appName, mintclawHome))
 	if debug {
 		logger.InfoC("web", "Debug mode enabled")
 		logger.DebugC(
@@ -542,7 +542,7 @@ func main() {
 	}
 
 	if !explicitHost && hostOverrideActive {
-		logger.InfoC("web", "Using launcher host from environment PICOCLAW_LAUNCHER_HOST")
+		logger.InfoC("web", "Using launcher host from environment MINTCLAW_LAUNCHER_HOST")
 	}
 
 	if hostOverrideActive && explicitPublic {
@@ -578,7 +578,7 @@ func main() {
 	}
 
 	// Open the bcrypt password store (creates the DB file on first run).
-	authStore, authStoreErr := dashboardauth.New(picoHome)
+	authStore, authStoreErr := dashboardauth.New(mintclawHome)
 	var passwordStore api.PasswordStore
 	if authStoreErr == nil {
 		passwordStore = authStore
@@ -648,8 +648,8 @@ func main() {
 	// API Routes (e.g. /api/status)
 	apiHandler = api.NewHandler(absPath)
 	apiHandler.SetDebug(debug)
-	if _, err = apiHandler.EnsurePicoChannel(); err != nil {
-		logger.ErrorC("web", fmt.Sprintf("Warning: failed to ensure pico channel on startup: %v", err))
+	if _, err = apiHandler.EnsureMintClawChannel(); err != nil {
+		logger.ErrorC("web", fmt.Sprintf("Warning: failed to ensure mintclaw channel on startup: %v", err))
 	}
 	apiHandler.SetServerOptions(portNum, effectivePublic, explicitPublic, launcherCfg.AllowedCIDRs)
 	apiHandler.SetServerAccessOptions(

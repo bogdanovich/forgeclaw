@@ -13,7 +13,7 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/sipeed/picoclaw/pkg/nodes/internal/jsonstrict"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const (
@@ -454,7 +454,7 @@ func ValidateInvocationOutput(
 func validateInvocationValue(rawSchema json.RawMessage, value map[string]any, label string) error {
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
-	schemaURL := "urn:forgeclaw:node-command-" + label
+	schemaURL := "urn:mintclaw:node-command-" + label
 	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(rawSchema))
 	if err != nil {
 		return fmt.Errorf("%w: decode %s schema: %v", ErrInvalidInvocation, label, err)

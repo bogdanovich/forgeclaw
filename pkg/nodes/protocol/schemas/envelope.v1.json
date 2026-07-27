@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://forgeclaw.dev/schemas/nodes/envelope.v1.json",
-  "title": "ForgeClaw node protocol envelope v1",
+  "$id": "https://mintclaw.dev/schemas/nodes/envelope.v1.json",
+  "title": "MintClaw node protocol envelope v1",
   "oneOf": [
     {"$ref": "#/$defs/request"},
     {"$ref": "#/$defs/response"},

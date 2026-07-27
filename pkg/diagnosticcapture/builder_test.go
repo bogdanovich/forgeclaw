@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/diagnostictrace"
+	"github.com/bogdanovich/mintclaw/pkg/diagnostictrace"
 )
 
 func TestTraceBuilderSequencesAndDeduplicatesOrigins(t *testing.T) {

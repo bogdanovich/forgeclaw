@@ -1,6 +1,6 @@
 //go:build !bedrock
 
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
 // Copyright (c) 2026 PicoClaw contributors
@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/bogdanovich/mintclaw/pkg/providers/protocoltypes"
 )
 
 type (

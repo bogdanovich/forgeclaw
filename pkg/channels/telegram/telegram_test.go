@@ -19,10 +19,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/channels"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/media"
 )
 
 const testToken = "1234567890:aaaabbbbaaaabbbbaaaabbbbaaaabbbbccc"
@@ -2905,8 +2905,8 @@ func TestHandleMessage_ReplyToOwnBotMessage_UsesAssistantRole(t *testing.T) {
 				return successUserResponse(t, &telego.User{
 					ID:        42,
 					IsBot:     true,
-					FirstName: "Pico",
-					Username:  "afjcjsbx_picoclaw_bot",
+					FirstName: "MintClaw",
+					Username:  "afjcjsbx_mintclaw_bot",
 				}), nil
 			}
 			t.Fatalf("unexpected API call: %s", url)
@@ -2934,8 +2934,8 @@ func TestHandleMessage_ReplyToOwnBotMessage_UsesAssistantRole(t *testing.T) {
 			From: &telego.User{
 				ID:        42,
 				IsBot:     true,
-				FirstName: "Pico",
-				Username:  "afjcjsbx_picoclaw_bot",
+				FirstName: "MintClaw",
+				Username:  "afjcjsbx_mintclaw_bot",
 			},
 		},
 	}
@@ -2948,7 +2948,7 @@ func TestHandleMessage_ReplyToOwnBotMessage_UsesAssistantRole(t *testing.T) {
 	assert.Equal(t, "101", inbound.Context.ReplyToMessageID)
 	assert.Equal(
 		t,
-		"[quoted assistant message from afjcjsbx_picoclaw_bot]: Fatto! Ho creato il file notizie_2026_03_28.md\n\nti ricordi questo file?",
+		"[quoted assistant message from afjcjsbx_mintclaw_bot]: Fatto! Ho creato il file notizie_2026_03_28.md\n\nti ricordi questo file?",
 		inbound.Content,
 	)
 }

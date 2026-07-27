@@ -10,7 +10,7 @@ import (
 	"github.com/gomarkdown/markdown/parser"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 // AgentDefinitionSource identifies which agent bootstrap file produced the definition.

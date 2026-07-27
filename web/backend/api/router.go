@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sipeed/picoclaw/web/backend/launcherconfig"
+	"github.com/bogdanovich/mintclaw/web/backend/launcherconfig"
 )
 
 // Handler serves HTTP API requests.
@@ -58,7 +58,7 @@ func (h *Handler) SetServerAccessOptions(allowLocalhostBypass bool, trustedProxy
 }
 
 // SetServerBindHost stores the launcher's effective bind host.
-// When explicit is true, hostInput is the normalized -host / PICOCLAW_LAUNCHER_HOST value.
+// When explicit is true, hostInput is the normalized -host / MINTCLAW_LAUNCHER_HOST value.
 func (h *Handler) SetServerBindHost(hostInput string, explicit bool) {
 	h.serverHostInput = strings.TrimSpace(hostInput)
 	if !explicit {
@@ -76,8 +76,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Config CRUD
 	h.registerConfigRoutes(mux)
 
-	// Pico Channel (WebSocket chat)
-	h.registerPicoRoutes(mux)
+	// MintClaw Channel (WebSocket chat)
+	h.registerMintClawRoutes(mux)
 
 	// Gateway process lifecycle
 	h.registerGatewayRoutes(mux)

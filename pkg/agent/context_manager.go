@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/providers"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 // ContextManager manages conversation context via a pluggable strategy.

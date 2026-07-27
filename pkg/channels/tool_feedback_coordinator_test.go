@@ -860,13 +860,13 @@ func TestToolFeedbackCoordinator_SeparateMessagesDoesNotEditOrDelete(t *testing.
 	}
 	for _, id := range []string{"progress-1", "progress-2"} {
 		if _, err := coordinator.Deliver(
-			context.Background(), "pico:chat-1", "chat-1", id, operations,
+			context.Background(), "mintclaw:chat-1", "chat-1", id, operations,
 			func(context.Context, string) ([]string, error) { sends++; return []string{id}, nil },
 		); err != nil {
 			t.Fatalf("Deliver(%s) error = %v", id, err)
 		}
 	}
-	terminal := coordinator.BeginTerminal("pico:chat-1")
+	terminal := coordinator.BeginTerminal("mintclaw:chat-1")
 	coordinator.CompleteTerminal(context.Background(), terminal, true)
 	if sends != 2 || edits != 0 || deletes != 0 {
 		t.Fatalf("separate operations = sends %d edits %d deletes %d", sends, edits, deletes)

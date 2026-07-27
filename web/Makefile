@@ -1,4 +1,4 @@
-.PHONY: dev dev-frontend dev-backend build build-frontend build-dev-picoclaw test lint clean \
+.PHONY: dev dev-frontend dev-backend build build-frontend build-dev-mintclaw test lint clean \
 	build-android-arm64 build-android-bundle
 
 # Go variables
@@ -18,14 +18,14 @@ export GOTOOLCHAIN
 # Build variables
 BUILD_DIR=build
 EXT=
-OUTPUT?=$(BUILD_DIR)/picoclaw-launcher$(EXT)
-OUTPUT_ANDROID_ARM64?=$(BUILD_DIR)/picoclaw-launcher-android-arm64$(EXT)
+OUTPUT?=$(BUILD_DIR)/mintclaw-launcher$(EXT)
+OUTPUT_ANDROID_ARM64?=$(BUILD_DIR)/mintclaw-launcher-android-arm64$(EXT)
 FRONTEND_DIR=frontend
-FRONTEND_INSTALL_STAMP=$(FRONTEND_DIR)/node_modules/.picoclaw-install-stamp
+FRONTEND_INSTALL_STAMP=$(FRONTEND_DIR)/node_modules/.mintclaw-install-stamp
 BACKEND_DIR=backend
 BACKEND_DIST=$(BACKEND_DIR)/dist
-PICOCLAW_BINARY_NAME=picoclaw
-PICOCLAW_BINARY?=$(abspath ../build/$(PICOCLAW_BINARY_NAME))
+MINTCLAW_BINARY_NAME=mintclaw
+MINTCLAW_BINARY?=$(abspath ../build/$(MINTCLAW_BINARY_NAME))
 LAUNCHER_GUI_LDFLAG=
 
 ifeq ($(OS),Windows_NT)
@@ -49,7 +49,7 @@ VERSION?=$(if $(VERSION_RAW),$(VERSION_RAW),dev)
 GIT_COMMIT=$(if $(GIT_COMMIT_RAW),$(GIT_COMMIT_RAW),dev)
 BUILD_TIME=$(if $(BUILD_TIME_RAW),$(BUILD_TIME_RAW),dev)
 GO_VERSION=$(if $(GO_VERSION_RAW),$(GO_VERSION_RAW),unknown)
-CONFIG_PKG=github.com/sipeed/picoclaw/pkg/config
+CONFIG_PKG=github.com/bogdanovich/mintclaw/pkg/config
 LDFLAGS=-X $(CONFIG_PKG).Version=$(VERSION) -X $(CONFIG_PKG).GitCommit=$(GIT_COMMIT) -X $(CONFIG_PKG).BuildTime=$(BUILD_TIME) -X $(CONFIG_PKG).GoVersion=$(GO_VERSION) -s -w
 
 
@@ -108,7 +108,7 @@ else ifeq ($(UNAME_S),Windows)
 		ARCH=$(UNAME_M)
 	endif
 	EXT=.exe
-	PICOCLAW_BINARY_NAME=picoclaw.exe
+	MINTCLAW_BINARY_NAME=mintclaw.exe
 	LAUNCHER_GUI_LDFLAG=-H=windowsgui
 else
 	PLATFORM=$(UNAME_S)
@@ -118,7 +118,7 @@ endif
 LAUNCHER_LDFLAGS=$(strip $(LAUNCHER_GUI_LDFLAG) $(LDFLAGS))
 
 # Run both frontend and backend dev servers
-dev: build-dev-picoclaw
+dev: build-dev-mintclaw
 	@if [ ! -f "$(BACKEND_DIST)/index.html" ]; then \
 		echo "Embedded frontend not found, building..."; \
 		$(MAKE) build-frontend; \
@@ -132,7 +132,7 @@ dev-frontend:
 
 # Start backend dev server
 dev-backend:
-	cd $(BACKEND_DIR) && PICOCLAW_BINARY="$(PICOCLAW_BINARY)" ${WEB_GO} run -ldflags "$(LAUNCHER_LDFLAGS)" . $(BACKEND_ARGS)
+	cd $(BACKEND_DIR) && MINTCLAW_BINARY="$(MINTCLAW_BINARY)" ${WEB_GO} run -ldflags "$(LAUNCHER_LDFLAGS)" . $(BACKEND_ARGS)
 
 # Build frontend and embed into Go binary
 build: build-frontend
@@ -159,7 +159,7 @@ ifeq ($(OS),Windows_NT)
 else
 	@mkdir -p $(BUILD_DIR)
 endif
-	GOOS=android GOARCH=arm64 $(GO) build -tags stdjson -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/picoclaw-launcher-android-arm64" ./$(BACKEND_DIR)/
+	GOOS=android GOARCH=arm64 $(GO) build -tags stdjson -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/mintclaw-launcher-android-arm64" ./$(BACKEND_DIR)/
 	@echo "All Android launcher builds complete"
 
 build-frontend:
@@ -179,14 +179,14 @@ endif
 	@echo "Building frontend..."
 	@cd $(FRONTEND_DIR) && pnpm build:backend
 
-build-dev-picoclaw:
-	@echo "Building picoclaw for launcher development..."
+build-dev-mintclaw:
+	@echo "Building mintclaw for launcher development..."
 ifeq ($(OS),Windows_NT)
-	@$(POWERSHELL) "New-Item -ItemType Directory -Force -Path (Split-Path -Parent '$(PICOCLAW_BINARY)') | Out-Null"
+	@$(POWERSHELL) "New-Item -ItemType Directory -Force -Path (Split-Path -Parent '$(MINTCLAW_BINARY)') | Out-Null"
 else
-	@mkdir -p "$$(dirname "$(PICOCLAW_BINARY)")"
+	@mkdir -p "$$(dirname "$(MINTCLAW_BINARY)")"
 endif
-	@$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o "$(PICOCLAW_BINARY)" ../cmd/picoclaw
+	@$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o "$(MINTCLAW_BINARY)" ../cmd/mintclaw
 
 # Run all tests
 test:

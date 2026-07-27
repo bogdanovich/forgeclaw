@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/nodes/internal/jsonstrict"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const (

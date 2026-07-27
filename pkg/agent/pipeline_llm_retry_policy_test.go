@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 type testLLMRetryPolicy struct {

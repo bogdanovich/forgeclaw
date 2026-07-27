@@ -2,7 +2,7 @@ package config
 
 // EventsConfig groups runtime event configuration.
 type EventsConfig struct {
-	Logging EventLoggingConfig `json:"logging,omitempty" envPrefix:"PICOCLAW_EVENTS_LOGGING_"`
+	Logging EventLoggingConfig `json:"logging,omitempty" envPrefix:"MINTCLAW_EVENTS_LOGGING_"`
 }
 
 // EventLoggingConfig controls centralized runtime event logging.

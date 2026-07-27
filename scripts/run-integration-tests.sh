@@ -44,7 +44,7 @@ run_suite() {
   fi
 
   local compose_args=()
-  compose_args+=(--project-directory "$ROOT_DIR" -p "picoclaw-int-$(sanitize_project_name "$suite_name")")
+  compose_args+=(--project-directory "$ROOT_DIR" -p "mintclaw-int-$(sanitize_project_name "$suite_name")")
   compose_args+=(-f "$BASE_COMPOSE")
 
   local compose_files=()

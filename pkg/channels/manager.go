@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// MintClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
@@ -22,14 +22,14 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/constants"
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/health"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/media"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/constants"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	"github.com/bogdanovich/mintclaw/pkg/health"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/utils"
 )
 
 const (
@@ -1454,7 +1454,7 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, settings.Homeserver != "" && settings.UserID != "" && settings.AccessToken.String() != ""
 	case *config.WeComSettings:
 		return bc, settings.BotID != "" && settings.Secret.String() != ""
-	case *config.PicoClientSettings:
+	case *config.MintClawClientSettings:
 		return bc, settings.URL != ""
 	case *config.DingTalkSettings:
 		return bc, settings.ClientID != ""
@@ -1462,7 +1462,7 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, settings.BotToken.String() != ""
 	case *config.WeixinSettings:
 		return bc, settings.Token.String() != ""
-	case *config.PicoSettings:
+	case *config.MintClawSettings:
 		return bc, settings.Token.String() != ""
 	case *config.IRCSettings:
 		return bc, settings.Server != ""

@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"strings"
 
-	fstools "github.com/sipeed/picoclaw/pkg/tools/fs"
+	fstools "github.com/bogdanovich/mintclaw/pkg/tools/fs"
 )
 
 // Decision is a structured command validation result.

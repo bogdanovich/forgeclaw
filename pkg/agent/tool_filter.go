@@ -3,8 +3,8 @@ package agent
 import (
 	"path"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 func agentAllowsTool(agent *AgentInstance, toolName string) bool {

@@ -14,7 +14,7 @@ import (
 )
 
 // LauncherDashboardCookieName is the HttpOnly cookie set after a successful password login.
-const LauncherDashboardCookieName = "picoclaw_launcher_auth"
+const LauncherDashboardCookieName = "mintclaw_launcher_auth"
 
 // launcherDashboardSessionMaxAgeSec is the dashboard session cookie lifetime (31 days).
 const launcherDashboardSessionMaxAgeSec = 31 * 24 * 3600
@@ -297,7 +297,7 @@ func validLauncherDashboardAuth(r *http.Request, cfg LauncherDashboardAuthConfig
 }
 
 func rejectLauncherDashboardAuth(w http.ResponseWriter, r *http.Request, canonicalPath string) {
-	if canonicalPath == "/pico/ws" {
+	if canonicalPath == "/mintclaw/ws" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

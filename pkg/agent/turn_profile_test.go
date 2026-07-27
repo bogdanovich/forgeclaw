@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type turnProfileCaptureProvider struct {
@@ -61,7 +61,7 @@ func newTurnProfileAgentLoop(
 	provider *turnProfileCaptureProvider,
 ) *AgentLoop {
 	t.Helper()
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	t.Setenv("MINTCLAW_BUILTIN_SKILLS", t.TempDir())
 	if cfg.Agents.Defaults.Workspace == "" {
 		cfg.Agents.Defaults.Workspace = t.TempDir()
 	}
@@ -207,12 +207,12 @@ func TestTurnProfile_ProcessMessageUsesEnabledTurnProfile(t *testing.T) {
 
 	_, err := al.processMessage(context.Background(), bus.InboundMessage{
 		Context: bus.InboundContext{
-			Channel:  "pico",
-			ChatID:   "pico:sess-1",
+			Channel:  "mintclaw",
+			ChatID:   "mintclaw:sess-1",
 			ChatType: "direct",
-			SenderID: "pico-user",
+			SenderID: "mintclaw-user",
 		},
-		Content: "hello from pico",
+		Content: "hello from mintclaw",
 	})
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
@@ -220,8 +220,8 @@ func TestTurnProfile_ProcessMessageUsesEnabledTurnProfile(t *testing.T) {
 	if len(provider.messages) != 2 {
 		t.Fatalf("provider messages len = %d, want system + current user", len(provider.messages))
 	}
-	if provider.messages[1].Content != "hello from pico" {
-		t.Fatalf("current message = %q, want hello from pico", provider.messages[1].Content)
+	if provider.messages[1].Content != "hello from mintclaw" {
+		t.Fatalf("current message = %q, want hello from mintclaw", provider.messages[1].Content)
 	}
 }
 
@@ -246,7 +246,7 @@ func TestTurnProfile_BtwCommandUsesEnabledTurnProfile(t *testing.T) {
 			Model:     "openai/test-model",
 		}},
 	}
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	t.Setenv("MINTCLAW_BUILTIN_SKILLS", t.TempDir())
 	sideProvider := &turnProfileSideQuestionCaptureProvider{}
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &turnProfileCaptureProvider{})
 	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
@@ -255,10 +255,10 @@ func TestTurnProfile_BtwCommandUsesEnabledTurnProfile(t *testing.T) {
 
 	_, err := al.processMessage(context.Background(), bus.InboundMessage{
 		Context: bus.InboundContext{
-			Channel:  "pico",
-			ChatID:   "pico:btw",
+			Channel:  "mintclaw",
+			ChatID:   "mintclaw:btw",
 			ChatType: "direct",
-			SenderID: "pico-user",
+			SenderID: "mintclaw-user",
 		},
 		Content: "/btw explain privately",
 	})
@@ -490,7 +490,7 @@ func TestTurnProfile_BtwCommandDoesNotAddToolFallbackWhenSystemPromptOff(t *test
 			Model:     "openai/test-model",
 		}},
 	}
-	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	t.Setenv("MINTCLAW_BUILTIN_SKILLS", t.TempDir())
 	sideProvider := &turnProfileSideQuestionCaptureProvider{}
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), &turnProfileCaptureProvider{})
 	al.RegisterTool(&echoTextTool{})
@@ -500,10 +500,10 @@ func TestTurnProfile_BtwCommandDoesNotAddToolFallbackWhenSystemPromptOff(t *test
 
 	_, err := al.processMessage(context.Background(), bus.InboundMessage{
 		Context: bus.InboundContext{
-			Channel:  "pico",
-			ChatID:   "pico:btw-system-off",
+			Channel:  "mintclaw",
+			ChatID:   "mintclaw:btw-system-off",
 			ChatType: "direct",
-			SenderID: "pico-user",
+			SenderID: "mintclaw-user",
 		},
 		Content: "/btw explain privately",
 	})
@@ -548,10 +548,10 @@ func TestTurnProfile_BtwHookCannotReenableNativeSearchWhenToolsOff(t *testing.T)
 
 	_, err := al.processMessage(context.Background(), bus.InboundMessage{
 		Context: bus.InboundContext{
-			Channel:  "pico",
-			ChatID:   "pico:btw-native-search",
+			Channel:  "mintclaw",
+			ChatID:   "mintclaw:btw-native-search",
 			ChatType: "direct",
-			SenderID: "pico-user",
+			SenderID: "mintclaw-user",
 		},
 		Content: "/btw search privately",
 	})

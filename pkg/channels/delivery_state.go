@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 )
 
 // typingEntry wraps a typing stop function with a creation timestamp for TTL eviction.

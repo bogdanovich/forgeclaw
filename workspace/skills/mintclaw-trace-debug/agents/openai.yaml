@@ -1,0 +1,4 @@
+interface:
+  display_name: "MintClaw Trace Debug"
+  short_description: "Diagnose MintClaw runs from passive JSON traces"
+  default_prompt: "Use $mintclaw-trace-debug to inspect the relevant MintClaw diagnostic trace, identify the likely root cause from cited evidence, and propose a focused regression test."

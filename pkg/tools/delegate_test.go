@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	taskregistry "github.com/sipeed/picoclaw/pkg/tasks"
+	taskregistry "github.com/bogdanovich/mintclaw/pkg/tasks"
 )
 
 // delegateMockSpawner records the config and returns a canned result.
@@ -282,7 +282,7 @@ func TestDelegateTool_Execute_RecordsDeliverableArtifactFromLabeledPath(t *testi
 		result: (&ToolResult{
 			ForLLM: "child finished",
 			Completion: &CompletionResult{
-				Text: "- sendable_file_path: `/tmp/picoclaw/source.mp4`\n- russian_recipe_translation: `recipe`",
+				Text: "- sendable_file_path: `/tmp/mintclaw/source.mp4`\n- russian_recipe_translation: `recipe`",
 			},
 		}),
 	}
@@ -310,8 +310,8 @@ func TestDelegateTool_Execute_RecordsDeliverableArtifactFromLabeledPath(t *testi
 		t.Fatalf("artifact count = %d, want 1: %+v", len(deliverable.Artifacts), deliverable)
 	}
 	artifact := deliverable.Artifacts[0]
-	if artifact.Ref != "file:/tmp/picoclaw/source.mp4" {
-		t.Fatalf("artifact ref = %q, want file:/tmp/picoclaw/source.mp4", artifact.Ref)
+	if artifact.Ref != "file:/tmp/mintclaw/source.mp4" {
+		t.Fatalf("artifact ref = %q, want file:/tmp/mintclaw/source.mp4", artifact.Ref)
 	}
 	if artifact.Kind != "video" {
 		t.Fatalf("artifact kind = %q, want video", artifact.Kind)
