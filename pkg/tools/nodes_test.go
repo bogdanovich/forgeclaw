@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -331,6 +332,70 @@ func TestNodeDiscoveryToolFailsClosedForOversizedCommandProjection(t *testing.T)
 	if !result.IsError || !strings.Contains(result.ForLLM, "exceeds limits") ||
 		strings.Contains(result.ForLLM, "hidden-projection-data") {
 		t.Fatalf("oversized command discovery = %#v", result)
+	}
+}
+
+func TestNodeDiscoveryToolBoundsAndSortsMaximumCatalog(t *testing.T) {
+	commands := make([]nodes.CommandDescriptor, 0, nodes.MaxCatalogCommands)
+	allowed := make([]string, 0, nodes.MaxCatalogCommands)
+	for index := nodes.MaxCatalogCommands - 1; index >= 0; index-- {
+		name := fmt.Sprintf("system.command%03d.v1", index)
+		command := testNodeCommand(name, nodes.RiskRead, false, false)
+		command.ModelContract = &nodes.CommandModelContract{
+			Availability:      nodes.ModelAvailable,
+			TimeoutSecondsMax: 30,
+			OutputBytesMax:    4096,
+			ResultKind:        "json",
+			Guidance:          []string{},
+			Examples:          []json.RawMessage{},
+		}
+		commands = append(commands, command)
+		allowed = append(allowed, name)
+	}
+	catalog := nodes.CapabilityCatalog{Commands: commands}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "private-node-id",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "policy-1",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef:     map[string]nodes.Snapshot{"builder-node": snapshot},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot:            snapshot,
+				AllowedCommands:     allowed,
+				ApprovedCatalogHash: catalogHash,
+				ApprovedAt:          1,
+			},
+		},
+	}
+	tool := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source)
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	args := map[string]any{"action": "describe", "target": "build"}
+	first := tool.Execute(ctx, args)
+	second := tool.Execute(ctx, args)
+	if first.IsError || second.IsError || first.ForLLM != second.ForLLM {
+		t.Fatalf("maximum catalog discovery is not deterministic: first=%#v second=%#v", first, second)
+	}
+	if len(first.ForLLM) > nodes.MaxCatalogBytes {
+		t.Fatalf("maximum catalog projection size = %d, want <= %d", len(first.ForLLM), nodes.MaxCatalogBytes)
+	}
+	payload := decodeNodeResult(t, first)
+	projected := payload["commands"].([]any)
+	if len(projected) != nodes.MaxCatalogCommands {
+		t.Fatalf("projected command count = %d, want %d", len(projected), nodes.MaxCatalogCommands)
+	}
+	for index, raw := range projected {
+		command := raw.(map[string]any)
+		want := fmt.Sprintf("system.command%03d.v1", index)
+		if command["name"] != want {
+			t.Fatalf("projected command[%d] = %#v, want %q", index, command, want)
+		}
 	}
 }
 

@@ -53,6 +53,57 @@ certificate pin can be used instead:
 There is no `insecure_skip_verify` option. Plain `ws://` is accepted only for a
 loopback endpoint when `allow_loopback_plaintext` is explicitly true.
 
+### Model-visible `system.exec.v1`
+
+Fresh companion configurations do not enable `system.exec.v1`. To make a
+bounded command usable by a model, first grant its raw node-local authority,
+then add separate operator-owned discovery aliases:
+
+```json
+{
+  "policy": {
+    "revision": "diagnostic-v1",
+    "allowed_commands": ["system.exec.v1"],
+    "maximum_risk": "write",
+    "max_timeout_seconds": 10,
+    "max_output_bytes": 4096
+  },
+  "system_exec": {
+    "working_roots": ["/srv/mintclaw-smoke"],
+    "executables": ["/usr/bin/printf"],
+    "environment": ["LANG"],
+    "discovery": {
+      "executable_aliases": {
+        "diagnostic": "/usr/bin/printf"
+      },
+      "working_scope_aliases": {
+        "workspace": "/srv/mintclaw-smoke"
+      },
+      "environment_names": ["LANG"],
+      "guidance": [
+        "Use diagnostic only for the bounded smoke check."
+      ],
+      "examples": [
+        {
+          "argv": ["diagnostic", "ready"],
+          "cwd": "workspace",
+          "timeout_seconds": 5,
+          "env": {}
+        }
+      ]
+    }
+  }
+}
+```
+
+Alias destinations must already be present in `executables` or
+`working_roots`, and visible environment names must already be present in
+`environment`. Discovery metadata cannot grant new authority. Raw normalized
+paths remain accepted by node-local enforcement for existing operators but
+are not shown to the model. Without at least one executable alias and one
+working-scope alias, the command remains `partially_described` and cannot be
+invoked by the model.
+
 ## Run
 
 ```bash

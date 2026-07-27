@@ -269,6 +269,34 @@ func TestNodeInvokeToolRejectsStaleDiscoveryBeforePreparation(t *testing.T) {
 	}
 }
 
+func TestNodeInvokeToolMarksOnlyStructuredApprovalDenialAsModelSafe(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	args := nodeInvocationTestArgs()
+	args["discovery_revision"] = "dr_v1_stale-secret-value"
+	_, err := tool.ApprovalArguments(
+		nodeInvocationTestContext("actor-1", "call-stale-approval"),
+		args,
+	)
+	result, safe := SafeApprovalDenialResult(err)
+	if !safe {
+		t.Fatalf("approval denial was not marked model-safe: %v", err)
+	}
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialDiscoveryStale,
+		nodeConstraintCommandPolicy,
+		nodeActionRefreshDiscovery,
+	)
+	if strings.Contains(result.ForLLM, "stale-secret-value") {
+		t.Fatalf("approval denial leaked rejected revision: %s", result.ForLLM)
+	}
+	if _, safe := SafeApprovalDenialResult(errors.New("private approval failure")); safe {
+		t.Fatal("ordinary approval error was marked model-safe")
+	}
+}
+
 func TestNodeInvokeToolRejectsAliasReassignmentBeforePreparation(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	original := source.byRef["builder-node"]
