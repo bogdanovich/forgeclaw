@@ -890,12 +890,12 @@ merely by installing the binaries.
 
 Post-MVP capability work is ordered and bounded in the
 [Node Companion Post-MVP Roadmap](node-companion-roadmap.md). Its first
-priority is an explicit owner-control mode with non-interactive shell and
-interactive PTY access, including deliberately configured root profiles for a
-personal server. Later milestones cover typed file transfer and administrator
-filesystem access, service administration, fleet operations, additional
-executors, SSH, interactive application capabilities, platforms, and
-compatibility adapters.
+priority is the bounded model-visible capability contract admitted in
+[Node Companion P0 Capability Contracts](node-companion-p0-contracts.md).
+Owner-controlled shell and interactive PTY access remain P1. Later milestones
+cover typed file transfer and administrator filesystem access, service
+administration, fleet operations, additional executors, SSH, interactive
+application capabilities, platforms, and compatibility adapters.
 
 The roadmap is not part of the MVP definition above and does not authorize
 implementation without a fresh milestone decision.
