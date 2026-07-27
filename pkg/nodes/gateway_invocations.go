@@ -624,6 +624,10 @@ func cloneGatewayInvocationRecord(record GatewayInvocationRecord) GatewayInvocat
 func cloneCommandDescriptor(descriptor CommandDescriptor) CommandDescriptor {
 	descriptor.InputSchema = bytes.Clone(descriptor.InputSchema)
 	descriptor.OutputSchema = bytes.Clone(descriptor.OutputSchema)
+	if descriptor.ModelContract != nil {
+		contract := cloneCommandModelContract(*descriptor.ModelContract)
+		descriptor.ModelContract = &contract
+	}
 	return descriptor
 }
 

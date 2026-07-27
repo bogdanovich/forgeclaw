@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,18 +10,23 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const (
-	ProtocolV1         = 1
-	MaxIDLength        = 128
-	MaxAliasLength     = 64
-	MaxCommandNameLen  = 128
-	MaxSchemaBytes     = 64 * 1024
-	MaxCatalogCommands = 128
-	MaxCatalogBytes    = 512 * 1024
+	ProtocolV1            = 1
+	MaxIDLength           = 128
+	MaxAliasLength        = 64
+	MaxCommandNameLen     = 128
+	MaxSchemaBytes        = 64 * 1024
+	MaxCatalogCommands    = 128
+	MaxCatalogBytes       = 512 * 1024
+	MaxModelContractBytes = 32 * 1024
+	MaxModelGuidanceBytes = 2 * 1024
+	MaxModelExamples      = 4
+	MaxModelExampleBytes  = 8 * 1024
 )
 
 var (
@@ -86,13 +92,131 @@ func (risk Risk) Valid() bool {
 	return risk == RiskRead || risk == RiskWrite || risk == RiskPrivileged
 }
 
+type ModelAvailability string
+
+const (
+	ModelAvailable          ModelAvailability = "available"
+	ModelPartiallyDescribed ModelAvailability = "partially_described"
+	ModelUnavailable        ModelAvailability = "unavailable"
+)
+
+func (availability ModelAvailability) Valid() bool {
+	switch availability {
+	case ModelAvailable, ModelPartiallyDescribed, ModelUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+type CommandModelConstraints struct {
+	ExecutableAliases []string `json:"executable_aliases,omitempty"`
+	WorkingScopes     []string `json:"working_scopes,omitempty"`
+	EnvironmentNames  []string `json:"environment_names,omitempty"`
+}
+
+type CommandModelContract struct {
+	Availability      ModelAvailability       `json:"availability"`
+	TimeoutSecondsMax int                     `json:"timeout_seconds_max"`
+	OutputBytesMax    int                     `json:"output_bytes_max"`
+	ResultKind        string                  `json:"result_kind"`
+	Constraints       CommandModelConstraints `json:"constraints"`
+	Guidance          []string                `json:"guidance"`
+	Examples          []json.RawMessage       `json:"examples"`
+}
+
+func (contract CommandModelContract) Validate(inputSchema json.RawMessage) error {
+	if !contract.Availability.Valid() ||
+		contract.TimeoutSecondsMax <= 0 ||
+		contract.TimeoutSecondsMax > MaxInvocationTimeout ||
+		contract.OutputBytesMax <= 0 ||
+		contract.OutputBytesMax > MaxInvocationOutput ||
+		contract.ResultKind != "json" ||
+		contract.Guidance == nil ||
+		contract.Examples == nil {
+		return fmt.Errorf("%w: malformed model contract", ErrInvalidCapability)
+	}
+	if err := validateModelConstraintNames(contract.Constraints); err != nil {
+		return err
+	}
+	guidanceBytes := 0
+	for _, statement := range contract.Guidance {
+		guidanceBytes += len(statement)
+		if statement == "" || statement != strings.TrimSpace(statement) ||
+			!utf8.ValidString(statement) || containsModelControl(statement) ||
+			guidanceBytes > MaxModelGuidanceBytes {
+			return fmt.Errorf("%w: malformed model guidance", ErrInvalidCapability)
+		}
+	}
+	if len(contract.Examples) > MaxModelExamples {
+		return fmt.Errorf("%w: too many model examples", ErrInvalidCapability)
+	}
+	for _, example := range contract.Examples {
+		if len(example) == 0 || len(example) > MaxModelExampleBytes {
+			return fmt.Errorf("%w: model example exceeds size limit", ErrInvalidCapability)
+		}
+		value, err := jsonstrict.Decode(example)
+		if err != nil {
+			return fmt.Errorf("%w: invalid model example", ErrInvalidCapability)
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%w: model example must be an object", ErrInvalidCapability)
+		}
+		if err := validateInvocationInput(inputSchema, object); err != nil {
+			return fmt.Errorf("%w: model example violates input schema", ErrInvalidCapability)
+		}
+	}
+	data, err := json.Marshal(contract)
+	if err != nil || len(data) > MaxModelContractBytes {
+		return fmt.Errorf("%w: model contract exceeds size limit", ErrInvalidCapability)
+	}
+	return nil
+}
+
+func validateModelConstraintNames(constraints CommandModelConstraints) error {
+	groups := [][]string{
+		constraints.ExecutableAliases,
+		constraints.WorkingScopes,
+		constraints.EnvironmentNames,
+	}
+	limits := []int{64, 32, 64}
+	for index, values := range groups {
+		if len(values) > limits[index] {
+			return fmt.Errorf("%w: too many model constraint names", ErrInvalidCapability)
+		}
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			if len(value) == 0 || len(value) > MaxAliasLength ||
+				value != strings.TrimSpace(value) || !idPattern.MatchString(value) {
+				return fmt.Errorf("%w: malformed model constraint name", ErrInvalidCapability)
+			}
+			if _, duplicate := seen[value]; duplicate {
+				return fmt.Errorf("%w: duplicate model constraint name", ErrInvalidCapability)
+			}
+			seen[value] = struct{}{}
+		}
+		if !sort.StringsAreSorted(values) {
+			return fmt.Errorf("%w: model constraint names are not sorted", ErrInvalidCapability)
+		}
+	}
+	return nil
+}
+
+func containsModelControl(value string) bool {
+	return strings.IndexFunc(value, func(character rune) bool {
+		return character < 0x20 || character == 0x7f
+	}) >= 0
+}
+
 type CommandDescriptor struct {
-	Name             string          `json:"name"`
-	InputSchema      json.RawMessage `json:"input_schema"`
-	OutputSchema     json.RawMessage `json:"output_schema"`
-	Risk             Risk            `json:"risk"`
-	SupportsProgress bool            `json:"supports_progress,omitempty"`
-	SupportsCancel   bool            `json:"supports_cancel,omitempty"`
+	Name             string                `json:"name"`
+	InputSchema      json.RawMessage       `json:"input_schema"`
+	OutputSchema     json.RawMessage       `json:"output_schema"`
+	Risk             Risk                  `json:"risk"`
+	SupportsProgress bool                  `json:"supports_progress,omitempty"`
+	SupportsCancel   bool                  `json:"supports_cancel,omitempty"`
+	ModelContract    *CommandModelContract `json:"model_contract,omitempty"`
 }
 
 func (descriptor CommandDescriptor) Validate() error {
@@ -108,6 +232,11 @@ func (descriptor CommandDescriptor) Validate() error {
 	}
 	if err := validateObjectSchema("output", descriptor.OutputSchema); err != nil {
 		return err
+	}
+	if descriptor.ModelContract != nil {
+		if err := descriptor.ModelContract.Validate(descriptor.InputSchema); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -137,6 +266,13 @@ func (catalog CapabilityCatalog) Validate() error {
 	totalBytes := 0
 	for _, descriptor := range catalog.Commands {
 		totalBytes += len(descriptor.Name) + len(descriptor.InputSchema) + len(descriptor.OutputSchema)
+		if descriptor.ModelContract != nil {
+			modelContract, err := json.Marshal(descriptor.ModelContract)
+			if err != nil {
+				return fmt.Errorf("%w: encode model contract", ErrInvalidCapability)
+			}
+			totalBytes += len(modelContract)
+		}
 		if totalBytes > MaxCatalogBytes {
 			return fmt.Errorf("%w: catalog exceeds size limit", ErrInvalidCapability)
 		}
@@ -171,6 +307,16 @@ func (catalog CapabilityCatalog) Hash() (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if commands[i].ModelContract != nil {
+			contract := cloneCommandModelContract(*commands[i].ModelContract)
+			for exampleIndex := range contract.Examples {
+				contract.Examples[exampleIndex], err = canonicalJSON(contract.Examples[exampleIndex])
+				if err != nil {
+					return "", err
+				}
+			}
+			commands[i].ModelContract = &contract
+		}
 	}
 	data, err := json.Marshal(CapabilityCatalog{Commands: commands})
 	if err != nil {
@@ -178,6 +324,30 @@ func (catalog CapabilityCatalog) Hash() (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func cloneCommandModelContract(contract CommandModelContract) CommandModelContract {
+	contract.Constraints.ExecutableAliases = append(
+		[]string(nil),
+		contract.Constraints.ExecutableAliases...,
+	)
+	contract.Constraints.WorkingScopes = append([]string(nil), contract.Constraints.WorkingScopes...)
+	contract.Constraints.EnvironmentNames = append(
+		[]string(nil),
+		contract.Constraints.EnvironmentNames...,
+	)
+	contract.Guidance = append([]string(nil), contract.Guidance...)
+	contract.Examples = append([]json.RawMessage(nil), contract.Examples...)
+	for index := range contract.Examples {
+		contract.Examples[index] = bytes.Clone(contract.Examples[index])
+	}
+	if contract.Guidance == nil {
+		contract.Guidance = []string{}
+	}
+	if contract.Examples == nil {
+		contract.Examples = []json.RawMessage{}
+	}
+	return contract
 }
 
 type Snapshot struct {

@@ -666,6 +666,12 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 		result.Catalog.Commands[index].OutputSchema = append(
 			json.RawMessage(nil), snapshot.Catalog.Commands[index].OutputSchema...,
 		)
+		if snapshot.Catalog.Commands[index].ModelContract != nil {
+			contract := cloneCommandModelContract(
+				*snapshot.Catalog.Commands[index].ModelContract,
+			)
+			result.Catalog.Commands[index].ModelContract = &contract
+		}
 	}
 	return result
 }

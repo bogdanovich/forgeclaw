@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -147,18 +148,19 @@ func NewRuntime(
 	if settings.systemExec != nil {
 		handlers = append(handlers, newSystemExecHandler(*settings.systemExec))
 	}
-	catalog := nodes.CapabilityCatalog{Commands: make([]nodes.CommandDescriptor, 0, len(handlers))}
-	byName := make(map[string]commandHandler, len(handlers))
-	for _, handler := range handlers {
-		descriptor := handler.descriptor()
-		catalog.Commands = append(catalog.Commands, descriptor)
-		byName[descriptor.Name] = handler
-	}
 	if err := nodeID.Validate(); err != nil {
 		return nil, err
 	}
 	if err := policy.Validate(); err != nil {
 		return nil, err
+	}
+	catalog := nodes.CapabilityCatalog{Commands: make([]nodes.CommandDescriptor, 0, len(handlers))}
+	byName := make(map[string]commandHandler, len(handlers))
+	for _, handler := range handlers {
+		descriptor := handler.descriptor()
+		descriptor.ModelContract = effectiveModelContract(descriptor, policy)
+		catalog.Commands = append(catalog.Commands, descriptor)
+		byName[descriptor.Name] = handler
 	}
 	if err := catalog.Validate(); err != nil {
 		return nil, err
@@ -174,6 +176,42 @@ func NewRuntime(
 		ledger:   ledger,
 		active:   make(map[string]*activeInvocation),
 	}, nil
+}
+
+func effectiveModelContract(
+	descriptor nodes.CommandDescriptor,
+	policy nodes.LocalCommandPolicy,
+) *nodes.CommandModelContract {
+	availability := nodes.ModelAvailable
+	if !slices.Contains(policy.AllowedCommands, descriptor.Name) ||
+		modelRiskRank(descriptor.Risk) > modelRiskRank(policy.MaximumRisk) {
+		availability = nodes.ModelUnavailable
+	} else if descriptor.Name == "system.exec.v1" {
+		// Host paths stay hidden until operator metadata supplies aliases that
+		// are validated against the command enforcement policy.
+		availability = nodes.ModelPartiallyDescribed
+	}
+	return &nodes.CommandModelContract{
+		Availability:      availability,
+		TimeoutSecondsMax: policy.MaxTimeoutSeconds,
+		OutputBytesMax:    policy.MaxOutputBytes,
+		ResultKind:        "json",
+		Guidance:          []string{},
+		Examples:          []json.RawMessage{},
+	}
+}
+
+func modelRiskRank(risk nodes.Risk) int {
+	switch risk {
+	case nodes.RiskRead:
+		return 1
+	case nodes.RiskWrite:
+		return 2
+	case nodes.RiskPrivileged:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func (runtime *Runtime) Catalog() nodes.CapabilityCatalog {

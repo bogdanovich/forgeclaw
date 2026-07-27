@@ -25,6 +25,33 @@ func TestRuntimeExposesExecutionProfile(t *testing.T) {
 	}
 }
 
+func TestRuntimeProjectsEffectiveGenericModelContracts(t *testing.T) {
+	policy := testRuntimePolicy([]string{"node.info.v1"})
+	policy.MaxTimeoutSeconds = 17
+	policy.MaxOutputBytes = 2048
+	runtime, err := NewRuntime(nodes.ID("node_test"), "test", policy, newMemoryInvocationLedger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := runtime.Catalog()
+	contracts := make(map[string]*nodes.CommandModelContract, len(catalog.Commands))
+	for _, descriptor := range catalog.Commands {
+		contracts[descriptor.Name] = descriptor.ModelContract
+	}
+	info := contracts["node.info.v1"]
+	if info == nil ||
+		info.Availability != nodes.ModelAvailable ||
+		info.TimeoutSecondsMax != 17 ||
+		info.OutputBytesMax != 2048 ||
+		info.ResultKind != "json" {
+		t.Fatalf("node.info model contract = %#v", info)
+	}
+	which := contracts["system.which.v1"]
+	if which == nil || which.Availability != nodes.ModelUnavailable {
+		t.Fatalf("system.which model contract = %#v, want unavailable", which)
+	}
+}
+
 func TestRuntimeRequiresLocalCommandApproval(t *testing.T) {
 	policy := testRuntimePolicy(nil)
 	runtime, err := NewRuntime(nodes.ID("node_test"), "test", policy, newMemoryInvocationLedger())

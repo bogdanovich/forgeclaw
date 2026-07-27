@@ -132,8 +132,39 @@ func cloneCatalog(catalog nodes.CapabilityCatalog) nodes.CapabilityCatalog {
 			json.RawMessage(nil),
 			catalog.Commands[index].OutputSchema...,
 		)
+		result.Commands[index].ModelContract = cloneModelContract(
+			catalog.Commands[index].ModelContract,
+		)
 	}
 	return result
+}
+
+func cloneModelContract(
+	contract *nodes.CommandModelContract,
+) *nodes.CommandModelContract {
+	if contract == nil {
+		return nil
+	}
+	result := *contract
+	result.Constraints.ExecutableAliases = append(
+		[]string(nil),
+		contract.Constraints.ExecutableAliases...,
+	)
+	result.Constraints.WorkingScopes = append(
+		[]string(nil),
+		contract.Constraints.WorkingScopes...,
+	)
+	result.Constraints.EnvironmentNames = append(
+		[]string(nil),
+		contract.Constraints.EnvironmentNames...,
+	)
+	result.Guidance = make([]string, len(contract.Guidance))
+	copy(result.Guidance, contract.Guidance)
+	result.Examples = make([]json.RawMessage, len(contract.Examples))
+	for index := range contract.Examples {
+		result.Examples[index] = append(json.RawMessage(nil), contract.Examples[index]...)
+	}
+	return &result
 }
 
 func (client *Client) Run(ctx context.Context) error {

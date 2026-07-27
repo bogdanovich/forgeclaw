@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools/loopguard"
@@ -194,6 +195,191 @@ func TestNodeInvokeToolReusesPreparedAuthorityAndDispatches(t *testing.T) {
 	if strings.Contains(result.ForLLM, "private-node-id") ||
 		strings.Contains(result.ForLLM, "plan_hash") {
 		t.Fatalf("invoke result leaked internal authority: %s", result.ForLLM)
+	}
+}
+
+func TestNodeInvokeToolRejectsStaleDiscoveryBeforePreparation(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	args := nodeInvocationTestArgs()
+	args["discovery_revision"] = "dr_v1_stale"
+
+	result := tool.Execute(nodeInvocationTestContext("actor-1", "call-stale"), args)
+	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
+		t.Fatalf("stale invocation = %#v", result)
+	}
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"stale invocation prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
+func TestNodeInvokeToolTargetGrantOrBindingChangeMakesDiscoveryStale(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{
+			name: "target grant",
+			mutate: func(cfg *config.Config) {
+				cfg.Agents.Defaults.TargetPolicy.DefaultTarget = "cold"
+				cfg.Agents.Defaults.TargetPolicy.AllowedTargets = []string{"cold"}
+			},
+		},
+		{
+			name: "target binding",
+			mutate: func(cfg *config.Config) {
+				binding := cfg.Execution.Targets["build"]
+				binding.Node = "replacement-node"
+				cfg.Execution.Targets["build"] = binding
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := newFakeNodeInvocationSource(t)
+			cfg := nodeDiscoveryTestConfig()
+			test.mutate(cfg)
+			result := NewNodeInvokeTool(cfg, source).Execute(
+				nodeInvocationTestContext("actor-1", "call-target-stale"),
+				nodeInvocationTestArgs(),
+			)
+			if !result.IsError ||
+				!strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
+				t.Fatalf("changed target invocation = %#v", result)
+			}
+			if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+				t.Fatalf(
+					"changed target mutated invocation: prepare=%d dispatch=%d",
+					source.prepareCalls,
+					source.dispatchCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestNodeInvokeToolCatalogReapprovalStateMakesDiscoveryStale(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	args := nodeInvocationTestArgs()
+	snapshot := source.byRef["builder-node"]
+	registration := source.registrations[snapshot.ID]
+	registration.ApprovedCatalogHash = strings.Repeat("a", 64)
+	source.registrations[snapshot.ID] = registration
+
+	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(
+		nodeInvocationTestContext("actor-1", "call-reapproval-stale"),
+		args,
+	)
+	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
+		t.Fatalf("catalog reapproval invocation = %#v", result)
+	}
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"catalog reapproval prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
+func TestNodeInvokeToolRejectsLocallyUnavailableCommandBeforePreparation(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	snapshot := source.byRef["builder-node"]
+	command := snapshot.Catalog.Commands[0]
+	command.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelUnavailable,
+		TimeoutSecondsMax: 30,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		Guidance:          []string{},
+		Examples:          []json.RawMessage{},
+	}
+	snapshot.Catalog = nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	snapshot.CatalogHash = mustCatalogHash(t, snapshot.Catalog)
+	source.byRef["builder-node"] = snapshot
+	registration := source.registrations[snapshot.ID]
+	registration.Snapshot = snapshot
+	registration.ApprovedCatalogHash = snapshot.CatalogHash
+	source.registrations[snapshot.ID] = registration
+
+	ctx := nodeInvocationTestContext("actor-1", "call-unavailable")
+	discovered := decodeNodeResult(t, NewNodeDiscoveryTool(
+		nodeDiscoveryTestConfig(),
+		source,
+	).Execute(ctx, map[string]any{
+		"action":  "describe",
+		"target":  "build",
+		"command": command.Name,
+	}))
+	args := nodeInvocationTestArgs()
+	args["discovery_revision"] = discovered["discovery_revision"]
+	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, args)
+	if !result.IsError || !strings.Contains(result.ForLLM, "unavailable under node policy") {
+		t.Fatalf("locally unavailable invocation = %#v", result)
+	}
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"locally unavailable invocation mutated state: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
+func TestNodeInvokeToolApprovalResumeCannotRefreshRetainedAuthority(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	ctx := nodeInvocationTestContext("actor-1", "call-resume-stale")
+	args := nodeInvocationTestArgs()
+	if _, err := tool.ApprovalArguments(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := source.byRef["builder-node"]
+	snapshot.PolicyRevision = "policy-2"
+	source.byRef["builder-node"] = snapshot
+	registration := source.registrations[snapshot.ID]
+	registration.Snapshot = snapshot
+	source.registrations[snapshot.ID] = registration
+
+	if _, err := tool.ApprovalArguments(
+		WithToolApprovalContinuation(ctx, true),
+		args,
+	); !errors.Is(err, errDiscoveryStale) {
+		t.Fatalf("approval resume with stale discovery error = %v", err)
+	}
+	if source.prepareCalls != 1 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"stale resume mutated invocation: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+
+	discovery := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source)
+	discovered := decodeNodeResult(t, discovery.Execute(ctx, map[string]any{
+		"action":  "describe",
+		"target":  "build",
+		"command": "system.exec.v1",
+	}))
+	freshArgs := nodeInvocationTestArgs()
+	freshArgs["discovery_revision"] = discovered["discovery_revision"]
+	if _, err := tool.ApprovalArguments(
+		WithToolApprovalContinuation(ctx, true),
+		freshArgs,
+	); err == nil || !strings.Contains(err.Error(), "conflicts with retained invocation authority") {
+		t.Fatalf("approval resume replaced retained authority: %v", err)
+	}
+	if source.prepareCalls != 1 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"fresh resume replaced invocation: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
 	}
 }
 
@@ -636,10 +822,7 @@ func TestNodeInvocationToolRuntimeSemantics(t *testing.T) {
 
 func newFakeNodeInvocationSource(t *testing.T) *fakeNodeInvocationSource {
 	t.Helper()
-	command := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, true)
-	command.InputSchema = json.RawMessage(
-		`{"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}}},"required":["argv"],"additionalProperties":false}`,
-	)
+	command := nodeInvocationTestDescriptor()
 	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
 	catalogHash := mustCatalogHash(t, catalog)
 	snapshot := nodes.Snapshot{
@@ -688,11 +871,47 @@ func nodeInvocationTestContext(actorID string, toolCallID string) context.Contex
 }
 
 func nodeInvocationTestArgs() map[string]any {
-	return map[string]any{
-		"target":  "build",
-		"command": "system.exec.v1",
-		"input":   map[string]any{"argv": []any{"git", "status"}},
+	command := nodeInvocationTestDescriptor()
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash, err := catalog.Hash()
+	if err != nil {
+		panic(err)
 	}
+	snapshot := nodes.Snapshot{
+		ID:             "private-node-id",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "policy-1",
+	}
+	registration := nodes.Registration{
+		Snapshot:            snapshot,
+		AllowedCommands:     []string{command.Name},
+		ApprovedCatalogHash: catalogHash,
+		ApprovedAt:          1,
+	}
+	revision, err := newNodeTargetAccess(
+		nodeDiscoveryTestConfig(),
+		nil,
+	).discoveryRevision("main", "build", command.Name, snapshot, registration, command, true)
+	if err != nil {
+		panic(err)
+	}
+	return map[string]any{
+		"target":             "build",
+		"command":            "system.exec.v1",
+		"input":              map[string]any{"argv": []any{"git", "status"}},
+		"discovery_revision": revision,
+	}
+}
+
+func nodeInvocationTestDescriptor() nodes.CommandDescriptor {
+	command := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, true)
+	command.InputSchema = json.RawMessage(
+		`{"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}}},"required":["argv"],"additionalProperties":false}`,
+	)
+	return command
 }
 
 func mustFakeGatewayInvocation(

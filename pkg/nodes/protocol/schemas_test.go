@@ -148,6 +148,25 @@ func TestCommandDescriptorSchemaAndDomainConformance(t *testing.T) {
 			domainOK: true,
 		},
 		{
+			name: "valid model contract",
+			descriptor: nodes.CommandDescriptor{
+				Name:         "system.exec.v1",
+				InputSchema:  json.RawMessage(`{"type":"object","additionalProperties":false}`),
+				OutputSchema: json.RawMessage(`{"type":"object"}`),
+				Risk:         nodes.RiskWrite,
+				ModelContract: &nodes.CommandModelContract{
+					Availability:      nodes.ModelPartiallyDescribed,
+					TimeoutSecondsMax: 30,
+					OutputBytesMax:    4096,
+					ResultKind:        "json",
+					Guidance:          []string{},
+					Examples:          []json.RawMessage{},
+				},
+			},
+			schemaOK: true,
+			domainOK: true,
+		},
+		{
 			name: "overlong command",
 			descriptor: nodes.CommandDescriptor{
 				Name:         "system." + strings.Repeat("x", 120) + ".v1",
