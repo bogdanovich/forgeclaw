@@ -89,6 +89,10 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		SystemExec: &companion.SystemExecPolicy{
 			WorkingRoots: []string{commandDir},
 			Executables:  []string{executable},
+			Discovery: &companion.SystemExecDiscovery{
+				ExecutableAliases:   map[string]string{"diagnostic": executable},
+				WorkingScopeAliases: map[string]string{"workspace": commandDir},
+			},
 		},
 	}
 	configPath := filepath.Join(tempDir, "config.json")
@@ -142,8 +146,8 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 					"command":            "system.exec.v1",
 					"discovery_revision": discovered.DiscoveryRevision,
 					"input": map[string]any{
-						"argv":            []any{executable, "node-e2e-ok"},
-						"cwd":             commandDir,
+						"argv":            []any{"diagnostic", "node-e2e-ok"},
+						"cwd":             "workspace",
 						"timeout_seconds": 5,
 						"env":             map[string]any{},
 					},

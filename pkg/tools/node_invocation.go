@@ -30,6 +30,63 @@ var (
 	errNodeTargetNotVisible = errors.New("target is not visible to this agent")
 )
 
+const (
+	nodeDenialTargetUnavailable   = "TARGET_UNAVAILABLE"
+	nodeDenialCommandUnavailable  = "COMMAND_UNAVAILABLE"
+	nodeDenialReapprovalRequired  = "REAPPROVAL_REQUIRED"
+	nodeDenialDiscoveryIncomplete = "DISCOVERY_INCOMPLETE"
+	nodeDenialDiscoveryStale      = "DISCOVERY_STALE"
+	nodeDenialSchemaInvalid       = "SCHEMA_INVALID"
+	nodeDenialConstraintViolation = "CONSTRAINT_VIOLATION"
+
+	nodeConstraintInputSchema   = "input_schema"
+	nodeConstraintExecutable    = "executable_alias"
+	nodeConstraintWorkingScope  = "working_scope"
+	nodeConstraintEnvironment   = "environment_name"
+	nodeConstraintTimeout       = "timeout"
+	nodeConstraintOutputLimit   = "output_limit"
+	nodeConstraintCommandPolicy = "command_policy"
+
+	nodeActionRefreshDiscovery = "refresh_discovery"
+	nodeActionCorrectInput     = "correct_input"
+	nodeActionAskOperator      = "ask_operator"
+)
+
+type nodeSafeDenialError struct {
+	Code       string
+	Constraint string
+	Action     string
+	cause      error
+}
+
+func (denial *nodeSafeDenialError) Error() string {
+	return "node invocation denied"
+}
+
+func (denial *nodeSafeDenialError) Unwrap() error {
+	return denial.cause
+}
+
+func denyNodeInvocation(
+	code string,
+	constraint string,
+	action string,
+	cause error,
+) error {
+	return &nodeSafeDenialError{
+		Code: code, Constraint: constraint, Action: action, cause: cause,
+	}
+}
+
+func denyStaleNodeDiscovery() error {
+	return denyNodeInvocation(
+		nodeDenialDiscoveryStale,
+		nodeConstraintCommandPolicy,
+		nodeActionRefreshDiscovery,
+		errDiscoveryStale,
+	)
+}
+
 type NodeInvocationSource interface {
 	NodeDiscoverySource
 	PrepareInvocation(
@@ -80,11 +137,19 @@ type nodeInvocationToolRuntime struct {
 }
 
 type resolvedNodeTarget struct {
-	name         string
-	binding      config.ExecutionTarget
-	snapshot     nodes.Snapshot
-	registration *nodes.Registration
-	available    bool
+	name               string
+	binding            config.ExecutionTarget
+	snapshot           nodes.Snapshot
+	registration       *nodes.Registration
+	available          bool
+	requiresReapproval bool
+}
+
+type nodeDenialResult struct {
+	Status     string `json:"status"`
+	Code       string `json:"code"`
+	Constraint string `json:"constraint"`
+	Action     string `json:"action"`
 }
 
 type nodeInvokeResult struct {
@@ -236,10 +301,29 @@ func (tool *NodeInvokeTool) ApprovalArguments(
 func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
 	record, err := tool.runtime.prepare(ctx, args)
 	if err != nil {
-		if errors.Is(err, errDiscoveryStale) {
-			return nodeInvocationError("DISCOVERY_STALE", "refresh command discovery before invoking", nil)
+		var denial *nodeSafeDenialError
+		if errors.As(err, &denial) {
+			return nodeDenialToolResult(nodeDenialResult{
+				Status:     "denied",
+				Code:       denial.Code,
+				Constraint: denial.Constraint,
+				Action:     denial.Action,
+			})
 		}
-		return nodeInvocationError("PREPARE_DENIED", err.Error(), nil)
+		if errors.Is(err, errDiscoveryStale) {
+			return nodeDenialToolResult(nodeDenialResult{
+				Status:     "denied",
+				Code:       nodeDenialDiscoveryStale,
+				Constraint: nodeConstraintCommandPolicy,
+				Action:     nodeActionRefreshDiscovery,
+			})
+		}
+		return nodeDenialToolResult(nodeDenialResult{
+			Status:     "denied",
+			Code:       nodeDenialCommandUnavailable,
+			Constraint: nodeConstraintCommandPolicy,
+			Action:     nodeActionRefreshDiscovery,
+		})
 	}
 	owner := nodes.GatewayInvocationOwner{
 		Target:     record.Target,
@@ -436,24 +520,52 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 	args map[string]any,
 ) (nodes.GatewayInvocationRecord, error) {
 	if runtime == nil || runtime.source == nil || runtime.access == nil {
-		return nodes.GatewayInvocationRecord{}, errors.New("node invocation runtime is unavailable")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialTargetUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			nil,
+		)
 	}
 	agentID := strings.TrimSpace(ToolAgentID(ctx))
 	resolved, err := runtime.resolveTarget(agentID, stringArgument(args, "target"), false)
 	if err != nil {
 		if strings.TrimSpace(stringArgument(args, "discovery_revision")) != "" &&
 			(errors.Is(err, errNodeTargetNotVisible) || errors.Is(err, errNodeTargetNotPaired)) {
-			return nodes.GatewayInvocationRecord{}, errDiscoveryStale
+			return nodes.GatewayInvocationRecord{}, denyStaleNodeDiscovery()
 		}
-		return nodes.GatewayInvocationRecord{}, err
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialTargetUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			err,
+		)
 	}
 	command := strings.TrimSpace(stringArgument(args, "command"))
 	if command == "" {
-		return nodes.GatewayInvocationRecord{}, errors.New("command is required")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialCommandUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			nil,
+		)
 	}
 	descriptor, advertised := nodeCatalogDescriptor(resolved.snapshot.Catalog, command)
 	if !advertised {
-		return nodes.GatewayInvocationRecord{}, errors.New("command is not currently approved")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialCommandUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			nil,
+		)
+	}
+	if resolved.requiresReapproval {
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialReapprovalRequired,
+			nodeConstraintCommandPolicy,
+			nodeActionAskOperator,
+			nil,
+		)
 	}
 	currentRevision, err := runtime.access.discoveryRevision(
 		agentID,
@@ -465,43 +577,90 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		resolved.available,
 	)
 	if err != nil {
-		return nodes.GatewayInvocationRecord{}, errors.New("command discovery is unavailable")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialDiscoveryIncomplete,
+			nodeConstraintInputSchema,
+			nodeActionRefreshDiscovery,
+			err,
+		)
 	}
 	if strings.TrimSpace(stringArgument(args, "discovery_revision")) != currentRevision {
-		return nodes.GatewayInvocationRecord{}, errDiscoveryStale
+		return nodes.GatewayInvocationRecord{}, denyStaleNodeDiscovery()
 	}
 	if !resolved.available {
-		return nodes.GatewayInvocationRecord{}, errors.New("target is not currently connected")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialTargetUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			nil,
+		)
 	}
-	if descriptor.ModelContract != nil &&
-		descriptor.ModelContract.Availability == nodes.ModelUnavailable {
-		return nodes.GatewayInvocationRecord{}, errors.New("command is unavailable under node policy")
+	if descriptor.ModelContract == nil ||
+		descriptor.ModelContract.Availability == nodes.ModelPartiallyDescribed {
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialDiscoveryIncomplete,
+			nodeConstraintInputSchema,
+			nodeActionRefreshDiscovery,
+			nil,
+		)
+	}
+	if descriptor.ModelContract.Availability == nodes.ModelUnavailable {
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialCommandUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionAskOperator,
+			nil,
+		)
 	}
 	descriptor, err = resolved.registration.ApprovedCommand(command)
 	if err != nil {
-		return nodes.GatewayInvocationRecord{}, errors.New("command is not currently approved")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialReapprovalRequired,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			err,
+		)
 	}
 	profile := nodes.ExecutionProfile{
 		Executor:       resolved.snapshot.Executor,
 		PolicyRevision: resolved.snapshot.PolicyRevision,
 	}
 	if profileErr := profile.Validate(); profileErr != nil {
-		return nodes.GatewayInvocationRecord{}, errors.New(
-			"target has no authenticated execution profile",
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialCommandUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionAskOperator,
+			profileErr,
 		)
 	}
 	if resolved.binding.Executor != "" && resolved.binding.Executor != profile.Executor {
-		return nodes.GatewayInvocationRecord{}, errors.New(
-			"target executor does not match the authenticated node",
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialCommandUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionAskOperator,
+			nil,
 		)
 	}
 	input, ok := args["input"].(map[string]any)
 	if !ok {
-		return nodes.GatewayInvocationRecord{}, errors.New("input must be an object")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialSchemaInvalid,
+			nodeConstraintInputSchema,
+			nodeActionCorrectInput,
+			nil,
+		)
+	}
+	if constraintErr := validateNodeModelConstraints(descriptor, input); constraintErr != nil {
+		return nodes.GatewayInvocationRecord{}, constraintErr
 	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		return nodes.GatewayInvocationRecord{}, errors.New("encode command input")
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialSchemaInvalid,
+			nodeConstraintInputSchema,
+			nodeActionCorrectInput,
+			err,
+		)
 	}
 	timeoutMaximum := nodes.MaxInvocationTimeout
 	outputMaximum := nodes.MaxInvocationOutput
@@ -516,7 +675,12 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		timeoutMaximum,
 	)
 	if err != nil {
-		return nodes.GatewayInvocationRecord{}, err
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialConstraintViolation,
+			nodeConstraintTimeout,
+			nodeActionCorrectInput,
+			err,
+		)
 	}
 	outputLimit, err := boundedNodeInteger(
 		args,
@@ -525,7 +689,12 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		outputMaximum,
 	)
 	if err != nil {
-		return nodes.GatewayInvocationRecord{}, err
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialConstraintViolation,
+			nodeConstraintOutputLimit,
+			nodeActionCorrectInput,
+			err,
+		)
 	}
 	principal, executionCallID, err := nodeInvocationIdentity(ctx)
 	if err != nil {
@@ -561,8 +730,11 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		nodes.MaxExecutionPlanTTL,
 	)
 	if err != nil {
-		return nodes.GatewayInvocationRecord{}, errors.New(
-			"command input violates target policy",
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialSchemaInvalid,
+			nodeConstraintInputSchema,
+			nodeActionCorrectInput,
+			err,
 		)
 	}
 	requestedRevision := strings.TrimSpace(stringArgument(args, "discovery_revision"))
@@ -585,15 +757,18 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		},
 	)
 	if errors.Is(err, nodes.ErrGatewayInvocationNotFound) && ToolApprovalContinuation(ctx) {
-		return nodes.GatewayInvocationRecord{}, errors.New(
-			"retained invocation authority expired before approval resumed",
-		)
+		return nodes.GatewayInvocationRecord{}, denyStaleNodeDiscovery()
 	}
 	if errors.Is(err, errDiscoveryStale) {
-		return nodes.GatewayInvocationRecord{}, errDiscoveryStale
+		return nodes.GatewayInvocationRecord{}, denyStaleNodeDiscovery()
 	}
 	if err != nil {
-		return nodes.GatewayInvocationRecord{}, err
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialTargetUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			err,
+		)
 	}
 	if !created {
 		if retainedErr := validateRetainedNodeInvocation(
@@ -603,7 +778,7 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			descriptor,
 			profile,
 		); retainedErr != nil {
-			return nodes.GatewayInvocationRecord{}, retainedErr
+			return nodes.GatewayInvocationRecord{}, denyStaleNodeDiscovery()
 		}
 		return record, nil
 	}
@@ -829,11 +1004,12 @@ func (runtime *nodeInvocationToolRuntime) resolveTarget(
 		return resolvedNodeTarget{}, errors.New("target is not currently connected")
 	}
 	return resolvedNodeTarget{
-		name:         target,
-		binding:      runtime.access.targets[target],
-		snapshot:     *snapshot,
-		registration: registration,
-		available:    entry.liveConnected,
+		name:               target,
+		binding:            runtime.access.targets[target],
+		snapshot:           *snapshot,
+		registration:       registration,
+		available:          entry.liveConnected,
+		requiresReapproval: entry.RequiresReapproval,
 	}, nil
 }
 
@@ -929,6 +1105,121 @@ func boundedNodeInteger(
 	return value, nil
 }
 
+func validateNodeModelConstraints(
+	descriptor nodes.CommandDescriptor,
+	input map[string]any,
+) error {
+	if descriptor.Name != "system.exec.v1" || descriptor.ModelContract == nil {
+		return nil
+	}
+	constraints := descriptor.ModelContract.Constraints
+	argv, ok := input["argv"].([]any)
+	if !ok || len(argv) == 0 {
+		return denyNodeInvocation(
+			nodeDenialSchemaInvalid,
+			nodeConstraintInputSchema,
+			nodeActionCorrectInput,
+			nil,
+		)
+	}
+	executable, ok := argv[0].(string)
+	if !ok || strings.TrimSpace(executable) == "" {
+		return denyNodeInvocation(
+			nodeDenialSchemaInvalid,
+			nodeConstraintInputSchema,
+			nodeActionCorrectInput,
+			nil,
+		)
+	}
+	if !containsSorted(constraints.ExecutableAliases, executable) {
+		return denyNodeInvocation(
+			nodeDenialConstraintViolation,
+			nodeConstraintExecutable,
+			nodeActionCorrectInput,
+			nil,
+		)
+	}
+	if raw, exists := input["cwd"]; exists {
+		workingScope, valid := raw.(string)
+		if !valid {
+			return denyNodeInvocation(
+				nodeDenialSchemaInvalid,
+				nodeConstraintInputSchema,
+				nodeActionCorrectInput,
+				nil,
+			)
+		}
+		if !containsSorted(constraints.WorkingScopes, workingScope) {
+			return denyNodeInvocation(
+				nodeDenialConstraintViolation,
+				nodeConstraintWorkingScope,
+				nodeActionCorrectInput,
+				nil,
+			)
+		}
+	}
+	if raw, exists := input["env"]; exists {
+		environment, valid := raw.(map[string]any)
+		if !valid {
+			return denyNodeInvocation(
+				nodeDenialSchemaInvalid,
+				nodeConstraintInputSchema,
+				nodeActionCorrectInput,
+				nil,
+			)
+		}
+		for name := range environment {
+			if !containsSorted(constraints.EnvironmentNames, name) {
+				return denyNodeInvocation(
+					nodeDenialConstraintViolation,
+					nodeConstraintEnvironment,
+					nodeActionCorrectInput,
+					nil,
+				)
+			}
+		}
+	}
+	if raw, exists := input["timeout_seconds"]; exists {
+		timeout, valid := nodeInteger(raw)
+		if !valid {
+			return denyNodeInvocation(
+				nodeDenialSchemaInvalid,
+				nodeConstraintInputSchema,
+				nodeActionCorrectInput,
+				nil,
+			)
+		}
+		if timeout <= 0 || timeout > descriptor.ModelContract.TimeoutSecondsMax {
+			return denyNodeInvocation(
+				nodeDenialConstraintViolation,
+				nodeConstraintTimeout,
+				nodeActionCorrectInput,
+				nil,
+			)
+		}
+	}
+	return nil
+}
+
+func nodeInteger(raw any) (int, bool) {
+	switch typed := raw.(type) {
+	case int:
+		return typed, true
+	case int64:
+		if int64(int(typed)) != typed {
+			return 0, false
+		}
+		return int(typed), true
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, false
+		}
+		return int(typed), true
+	default:
+		return 0, false
+	}
+}
+
 func stringArgument(args map[string]any, name string) string {
 	value, _ := args[name].(string)
 	return value
@@ -942,6 +1233,14 @@ func nodeInvocationError(code string, message string, view *nodeInvokeResult) *T
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return ErrorResult("node invocation failed")
+	}
+	return ErrorResult(string(data))
+}
+
+func nodeDenialToolResult(denial nodeDenialResult) *ToolResult {
+	data, err := json.Marshal(denial)
+	if err != nil {
+		return ErrorResult("node invocation denied")
 	}
 	return ErrorResult(string(data))
 }

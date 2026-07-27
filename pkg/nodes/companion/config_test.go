@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -78,6 +79,138 @@ func TestConfigNormalizesSystemExecPolicy(t *testing.T) {
 	if cfg.SystemExec == nil || len(cfg.SystemExec.rootSet) != 1 ||
 		len(cfg.SystemExec.executableSet) != 1 || len(cfg.SystemExec.environmentSet) != 1 {
 		t.Fatalf("normalized system_exec policy = %+v", cfg.SystemExec)
+	}
+}
+
+func TestConfigNormalizesSystemExecDiscoveryMetadata(t *testing.T) {
+	root := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := (Config{
+		GatewayURL: "wss://gateway.example",
+		Policy: nodes.LocalCommandPolicy{
+			Revision:          "alias-policy",
+			AllowedCommands:   []string{"system.exec.v1"},
+			MaximumRisk:       nodes.RiskWrite,
+			MaxTimeoutSeconds: 12,
+			MaxOutputBytes:    4096,
+		},
+		SystemExec: &SystemExecPolicy{
+			WorkingRoots: []string{root},
+			Executables:  []string{executable},
+			Environment:  []string{"HOME"},
+			Discovery: &SystemExecDiscovery{
+				ExecutableAliases:   map[string]string{"diagnostic": executable},
+				WorkingScopeAliases: map[string]string{"workspace": root},
+				EnvironmentNames:    []string{"HOME"},
+				Guidance:            []string{"Use the bounded diagnostic alias."},
+				Examples: []json.RawMessage{
+					json.RawMessage(
+						`{"timeout_seconds":5,"env":{},"cwd":"workspace","argv":["diagnostic","--version"]}`,
+					),
+				},
+			},
+		},
+	}).Normalize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery := cfg.SystemExec.Discovery
+	if discovery == nil ||
+		discovery.ExecutableAliases["diagnostic"] != cfg.SystemExec.Executables[0] ||
+		discovery.WorkingScopeAliases["workspace"] != cfg.SystemExec.WorkingRoots[0] ||
+		len(discovery.Examples) != 1 ||
+		string(discovery.Examples[0]) !=
+			`{"argv":["diagnostic","--version"],"cwd":"workspace","env":{},"timeout_seconds":5}` {
+		t.Fatalf("normalized discovery metadata = %#v", discovery)
+	}
+	contract, err := systemExecModelContract(*cfg.SystemExec, cfg.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contract.Availability != nodes.ModelAvailable ||
+		contract.AuthorityDigest == "" ||
+		len(contract.Constraints.ExecutableAliases) != 1 ||
+		len(contract.Constraints.WorkingScopes) != 1 {
+		t.Fatalf("system.exec model contract = %#v", contract)
+	}
+}
+
+func TestConfigRejectsSystemExecDiscoveryThatBroadensAuthority(t *testing.T) {
+	root := t.TempDir()
+	hiddenRoot := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := SystemExecPolicy{
+		WorkingRoots: []string{root},
+		Executables:  []string{executable},
+		Environment:  []string{"HOME"},
+	}
+	tests := []struct {
+		name      string
+		discovery *SystemExecDiscovery
+	}{
+		{
+			name: "hidden executable",
+			discovery: &SystemExecDiscovery{
+				ExecutableAliases: map[string]string{"diagnostic": filepath.Join(root, "missing")},
+			},
+		},
+		{
+			name: "hidden root",
+			discovery: &SystemExecDiscovery{
+				WorkingScopeAliases: map[string]string{"workspace": hiddenRoot},
+			},
+		},
+		{
+			name: "hidden environment",
+			discovery: &SystemExecDiscovery{
+				EnvironmentNames: []string{"SECRET_TOKEN"},
+			},
+		},
+		{
+			name: "cross-kind alias collision",
+			discovery: &SystemExecDiscovery{
+				ExecutableAliases:   map[string]string{"shared": executable},
+				WorkingScopeAliases: map[string]string{"shared": root},
+			},
+		},
+		{
+			name: "hidden example value",
+			discovery: &SystemExecDiscovery{
+				ExecutableAliases:   map[string]string{"diagnostic": executable},
+				WorkingScopeAliases: map[string]string{"workspace": root},
+				Examples: []json.RawMessage{
+					json.RawMessage(
+						`{"argv":["diagnostic"],"cwd":"/hidden","timeout_seconds":5,"env":{}}`,
+					),
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := base
+			policy.Discovery = test.discovery
+			cfg := Config{
+				GatewayURL: "wss://gateway.example",
+				Policy: nodes.LocalCommandPolicy{
+					Revision:          "alias-policy",
+					AllowedCommands:   []string{"system.exec.v1"},
+					MaximumRisk:       nodes.RiskWrite,
+					MaxTimeoutSeconds: 30,
+					MaxOutputBytes:    4096,
+				},
+				SystemExec: &policy,
+			}
+			if _, err := cfg.Normalize(t.TempDir()); err == nil {
+				t.Fatalf("Normalize() accepted authority-broadening metadata: %#v", test.discovery)
+			}
+		})
 	}
 }
 

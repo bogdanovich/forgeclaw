@@ -429,11 +429,17 @@ func makeNodeCommandContract(
 	model nodes.CommandModelContract,
 	availability string,
 ) nodeCommandContract {
+	inputSchema := append(json.RawMessage(nil), descriptor.InputSchema...)
+	if descriptor.Name == "system.exec.v1" && descriptor.ModelContract != nil {
+		if projected, err := nodes.SystemExecModelInputSchema(model); err == nil {
+			inputSchema = projected
+		}
+	}
 	return nodeCommandContract{
 		Name:         descriptor.Name,
 		Risk:         descriptor.Risk,
 		Availability: availability,
-		InputSchema:  append(json.RawMessage(nil), descriptor.InputSchema...),
+		InputSchema:  inputSchema,
 		Result: nodeCommandResult{
 			Kind:            model.ResultKind,
 			SchemaAvailable: len(descriptor.OutputSchema) > 0,

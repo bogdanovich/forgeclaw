@@ -212,6 +212,50 @@ func TestNodeDiscoveryToolReturnsOneBoundedCommandContract(t *testing.T) {
 	}
 }
 
+func TestProjectedSystemExecContractUsesOnlyVisibleAliases(t *testing.T) {
+	descriptor := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, false)
+	descriptor.InputSchema = json.RawMessage(
+		`{"type":"object","required":["argv","cwd","timeout_seconds","env"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string"}},"cwd":{"type":"string"},"timeout_seconds":{"type":"integer"},"env":{"type":"object"}},"additionalProperties":false}`,
+	)
+	descriptor.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelAvailable,
+		TimeoutSecondsMax: 12,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		AuthorityDigest:   strings.Repeat("a", 64),
+		Constraints: nodes.CommandModelConstraints{
+			ExecutableAliases: []string{"diagnostic"},
+			WorkingScopes:     []string{"workspace"},
+			EnvironmentNames:  []string{"LANG"},
+		},
+		Guidance: []string{"Use the configured aliases."},
+		Examples: []json.RawMessage{
+			json.RawMessage(
+				`{"argv":["diagnostic"],"cwd":"workspace","timeout_seconds":5,"env":{"LANG":"C"}}`,
+			),
+		},
+	}
+	contract := projectedNodeCommandContract(descriptor, string(nodes.ModelAvailable))
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"diagnostic", "workspace", "LANG"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("projected contract omitted %q: %s", want, data)
+		}
+	}
+	for _, forbidden := range []string{
+		descriptor.ModelContract.AuthorityDigest,
+		"/usr/bin",
+		"/srv/workspace",
+	} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("projected contract leaked %q: %s", forbidden, data)
+		}
+	}
+}
+
 func TestNodeDiscoveryToolFailsClosedForOversizedCommandProjection(t *testing.T) {
 	cfg := nodeDiscoveryTestConfig()
 	command := testNodeCommand("system.info.v1", nodes.RiskRead, false, false)

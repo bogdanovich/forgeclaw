@@ -120,6 +120,7 @@ type CommandModelContract struct {
 	TimeoutSecondsMax int                     `json:"timeout_seconds_max"`
 	OutputBytesMax    int                     `json:"output_bytes_max"`
 	ResultKind        string                  `json:"result_kind"`
+	AuthorityDigest   string                  `json:"authority_digest,omitempty"`
 	Constraints       CommandModelConstraints `json:"constraints"`
 	Guidance          []string                `json:"guidance"`
 	Examples          []json.RawMessage       `json:"examples"`
@@ -132,6 +133,7 @@ func (contract CommandModelContract) Validate(inputSchema json.RawMessage) error
 		contract.OutputBytesMax <= 0 ||
 		contract.OutputBytesMax > MaxInvocationOutput ||
 		contract.ResultKind != "json" ||
+		(contract.AuthorityDigest != "" && !validSHA256Digest(contract.AuthorityDigest)) ||
 		contract.Guidance == nil ||
 		contract.Examples == nil {
 		return fmt.Errorf("%w: malformed model contract", ErrInvalidCapability)

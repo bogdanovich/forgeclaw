@@ -157,6 +157,9 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 		if normalizeErr != nil {
 			return Config{}, fmt.Errorf("validate system_exec policy: %w", normalizeErr)
 		}
+		if _, contractErr := systemExecModelContract(normalized, cfg.Policy); contractErr != nil {
+			return Config{}, fmt.Errorf("validate system_exec discovery: %w", contractErr)
+		}
 		cfg.SystemExec = &normalized
 	}
 	return cfg, nil

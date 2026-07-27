@@ -253,9 +253,13 @@ func TestNodeInvokeToolRejectsStaleDiscoveryBeforePreparation(t *testing.T) {
 	args["discovery_revision"] = "dr_v1_stale"
 
 	result := tool.Execute(nodeInvocationTestContext("actor-1", "call-stale"), args)
-	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
-		t.Fatalf("stale invocation = %#v", result)
-	}
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialDiscoveryStale,
+		nodeConstraintCommandPolicy,
+		nodeActionRefreshDiscovery,
+	)
 	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
 		t.Fatalf(
 			"stale invocation prepared or dispatched: prepare=%d dispatch=%d",
@@ -280,9 +284,13 @@ func TestNodeInvokeToolRejectsAliasReassignmentBeforePreparation(t *testing.T) {
 		nodeInvocationTestContext("actor-1", "call-alias-move"),
 		nodeInvocationTestArgs(),
 	)
-	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
-		t.Fatalf("alias reassignment invocation = %#v", result)
-	}
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialDiscoveryStale,
+		nodeConstraintCommandPolicy,
+		nodeActionRefreshDiscovery,
+	)
 	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
 		t.Fatalf(
 			"alias reassignment prepared or dispatched: prepare=%d dispatch=%d",
@@ -307,9 +315,13 @@ func TestNodeInvokeToolRevalidatesAuthorityInsidePreparationLease(t *testing.T) 
 		nodeInvocationTestContext("actor-1", "call-authority-race"),
 		nodeInvocationTestArgs(),
 	)
-	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
-		t.Fatalf("authority race invocation = %#v", result)
-	}
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialDiscoveryStale,
+		nodeConstraintCommandPolicy,
+		nodeActionRefreshDiscovery,
+	)
 	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
 		t.Fatalf(
 			"authority race mutated invocation: prepare=%d dispatch=%d",
@@ -349,10 +361,13 @@ func TestNodeInvokeToolTargetGrantOrBindingChangeMakesDiscoveryStale(t *testing.
 				nodeInvocationTestContext("actor-1", "call-target-stale"),
 				nodeInvocationTestArgs(),
 			)
-			if !result.IsError ||
-				!strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
-				t.Fatalf("changed target invocation = %#v", result)
-			}
+			assertNodeDenialResult(
+				t,
+				result,
+				nodeDenialDiscoveryStale,
+				nodeConstraintCommandPolicy,
+				nodeActionRefreshDiscovery,
+			)
 			if source.prepareCalls != 0 || source.dispatchCalls != 0 {
 				t.Fatalf(
 					"changed target mutated invocation: prepare=%d dispatch=%d",
@@ -364,7 +379,7 @@ func TestNodeInvokeToolTargetGrantOrBindingChangeMakesDiscoveryStale(t *testing.
 	}
 }
 
-func TestNodeInvokeToolCatalogReapprovalStateMakesDiscoveryStale(t *testing.T) {
+func TestNodeInvokeToolReportsCatalogReapprovalRequirement(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	args := nodeInvocationTestArgs()
 	snapshot := source.byRef["builder-node"]
@@ -376,9 +391,13 @@ func TestNodeInvokeToolCatalogReapprovalStateMakesDiscoveryStale(t *testing.T) {
 		nodeInvocationTestContext("actor-1", "call-reapproval-stale"),
 		args,
 	)
-	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
-		t.Fatalf("catalog reapproval invocation = %#v", result)
-	}
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialReapprovalRequired,
+		nodeConstraintCommandPolicy,
+		nodeActionAskOperator,
+	)
 	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
 		t.Fatalf(
 			"catalog reapproval prepared or dispatched: prepare=%d dispatch=%d",
@@ -420,9 +439,13 @@ func TestNodeInvokeToolRejectsLocallyUnavailableCommandBeforePreparation(t *test
 	args := nodeInvocationTestArgs()
 	args["discovery_revision"] = discovered["discovery_revision"]
 	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, args)
-	if !result.IsError || !strings.Contains(result.ForLLM, "unavailable under node policy") {
-		t.Fatalf("locally unavailable invocation = %#v", result)
-	}
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialCommandUnavailable,
+		nodeConstraintCommandPolicy,
+		nodeActionAskOperator,
+	)
 	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
 		t.Fatalf(
 			"locally unavailable invocation mutated state: prepare=%d dispatch=%d",
@@ -430,6 +453,168 @@ func TestNodeInvokeToolRejectsLocallyUnavailableCommandBeforePreparation(t *test
 			source.dispatchCalls,
 		)
 	}
+}
+
+func TestNodeInvokeToolReturnsSafeConstraintDenials(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(map[string]any)
+		constraint string
+	}{
+		{
+			name: "executable alias",
+			mutate: func(args map[string]any) {
+				args["input"] = map[string]any{"argv": []any{"/secret/bin/git", "status"}}
+			},
+			constraint: nodeConstraintExecutable,
+		},
+		{
+			name: "working scope",
+			mutate: func(args map[string]any) {
+				args["input"] = map[string]any{
+					"argv": []any{"git", "status"},
+					"cwd":  "/secret/worktree",
+				}
+			},
+			constraint: nodeConstraintWorkingScope,
+		},
+		{
+			name: "environment name",
+			mutate: func(args map[string]any) {
+				args["input"] = map[string]any{
+					"argv": []any{"git", "status"},
+					"env":  map[string]any{"SECRET_TOKEN": "do-not-return"},
+				}
+			},
+			constraint: nodeConstraintEnvironment,
+		},
+		{
+			name: "command timeout",
+			mutate: func(args map[string]any) {
+				args["input"] = map[string]any{
+					"argv":            []any{"git", "status"},
+					"timeout_seconds": 31,
+				}
+			},
+			constraint: nodeConstraintTimeout,
+		},
+		{
+			name: "tool timeout",
+			mutate: func(args map[string]any) {
+				args["timeout_seconds"] = 31
+			},
+			constraint: nodeConstraintTimeout,
+		},
+		{
+			name: "output limit",
+			mutate: func(args map[string]any) {
+				args["output_limit_bytes"] = 4097
+			},
+			constraint: nodeConstraintOutputLimit,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := newFakeNodeInvocationSource(t)
+			args := nodeInvocationTestArgs()
+			test.mutate(args)
+			result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(
+				nodeInvocationTestContext("actor-1", "call-constraint"),
+				args,
+			)
+			assertNodeDenialResult(
+				t,
+				result,
+				nodeDenialConstraintViolation,
+				test.constraint,
+				nodeActionCorrectInput,
+			)
+			for _, secret := range []string{
+				"/secret/bin/git",
+				"/secret/worktree",
+				"SECRET_TOKEN",
+				"do-not-return",
+			} {
+				if strings.Contains(result.ForLLM, secret) {
+					t.Fatalf("denial leaked rejected value %q: %s", secret, result.ForLLM)
+				}
+			}
+			if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+				t.Fatalf(
+					"constraint denial mutated invocation: prepare=%d dispatch=%d",
+					source.prepareCalls,
+					source.dispatchCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestNodeInvokeToolReturnsSafeSchemaDenial(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	args := nodeInvocationTestArgs()
+	args["input"] = map[string]any{"argv": "secret malformed argv"}
+	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(
+		nodeInvocationTestContext("actor-1", "call-schema"),
+		args,
+	)
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialSchemaInvalid,
+		nodeConstraintInputSchema,
+		nodeActionCorrectInput,
+	)
+	if strings.Contains(result.ForLLM, "secret malformed argv") {
+		t.Fatalf("schema denial leaked rejected input: %s", result.ForLLM)
+	}
+}
+
+func TestNodeInvokeToolDeniesDisconnectedTargetAfterFreshDiscovery(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	source.connected["private-node-id"] = false
+	ctx := nodeInvocationTestContext("actor-1", "call-disconnected")
+	args := freshNodeInvocationArgs(t, source, ctx)
+	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, args)
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialTargetUnavailable,
+		nodeConstraintCommandPolicy,
+		nodeActionRefreshDiscovery,
+	)
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"disconnected target mutated invocation: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
+func TestNodeInvokeToolDeniesPartiallyDescribedCommand(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	snapshot := source.byRef["builder-node"]
+	command := snapshot.Catalog.Commands[0]
+	command.ModelContract = nil
+	snapshot.Catalog = nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	snapshot.CatalogHash = mustCatalogHash(t, snapshot.Catalog)
+	source.byRef["builder-node"] = snapshot
+	registration := source.registrations[snapshot.ID]
+	registration.Snapshot = snapshot
+	registration.ApprovedCatalogHash = snapshot.CatalogHash
+	source.registrations[snapshot.ID] = registration
+
+	ctx := nodeInvocationTestContext("actor-1", "call-partial")
+	args := freshNodeInvocationArgs(t, source, ctx)
+	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, args)
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialDiscoveryIncomplete,
+		nodeConstraintInputSchema,
+		nodeActionRefreshDiscovery,
+	)
 }
 
 func TestNodeInvokeToolApprovalResumeCannotRefreshRetainedAuthority(t *testing.T) {
@@ -473,7 +658,7 @@ func TestNodeInvokeToolApprovalResumeCannotRefreshRetainedAuthority(t *testing.T
 	if _, err := tool.ApprovalArguments(
 		WithToolApprovalContinuation(ctx, true),
 		freshArgs,
-	); err == nil || !strings.Contains(err.Error(), "conflicts with retained invocation authority") {
+	); !errors.Is(err, errDiscoveryStale) {
 		t.Fatalf("approval resume replaced retained authority: %v", err)
 	}
 	if source.prepareCalls != 1 || source.dispatchCalls != 0 {
@@ -555,8 +740,7 @@ func TestNodeInvokeToolRejectsChangedArgumentsAfterPreparation(t *testing.T) {
 	}
 	changed := nodeInvocationTestArgs()
 	changed["input"] = map[string]any{"argv": []any{"git", "diff"}}
-	if _, err := tool.ApprovalArguments(ctx, changed); err == nil ||
-		!strings.Contains(err.Error(), "retained invocation") {
+	if _, err := tool.ApprovalArguments(ctx, changed); !errors.Is(err, errDiscoveryStale) {
 		t.Fatalf("changed approval error = %v", err)
 	}
 }
@@ -570,8 +754,10 @@ func TestNodeInvokeToolDoesNotReplaceExpiredAuthorityOnApprovalResume(t *testing
 	}
 	source.lookupMiss = true
 	ctx = WithToolApprovalContinuation(ctx, true)
-	if _, err := tool.ApprovalArguments(ctx, nodeInvocationTestArgs()); err == nil ||
-		!strings.Contains(err.Error(), "expired before approval resumed") {
+	if _, err := tool.ApprovalArguments(
+		ctx,
+		nodeInvocationTestArgs(),
+	); !errors.Is(err, errDiscoveryStale) {
 		t.Fatalf("approval resume error = %v", err)
 	}
 	if source.prepareCalls != 1 {
@@ -1008,11 +1194,72 @@ func nodeInvocationTestArgs() map[string]any {
 	}
 }
 
+func freshNodeInvocationArgs(
+	t *testing.T,
+	source NodeDiscoverySource,
+	ctx context.Context,
+) map[string]any {
+	t.Helper()
+	result := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source).Execute(
+		ctx,
+		map[string]any{
+			"action":  "describe",
+			"target":  "build",
+			"command": "system.exec.v1",
+		},
+	)
+	if result.IsError {
+		t.Fatalf("fresh node discovery failed: %s", result.ForLLM)
+	}
+	discovered := decodeNodeResult(t, result)
+	return map[string]any{
+		"target":             "build",
+		"command":            "system.exec.v1",
+		"input":              map[string]any{"argv": []any{"git", "status"}},
+		"discovery_revision": discovered["discovery_revision"],
+	}
+}
+
+func assertNodeDenialResult(
+	t *testing.T,
+	result *ToolResult,
+	code string,
+	constraint string,
+	action string,
+) {
+	t.Helper()
+	if result == nil || !result.IsError {
+		t.Fatalf("node denial = %#v", result)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.ForLLM), &payload); err != nil {
+		t.Fatalf("decode node denial %q: %v", result.ForLLM, err)
+	}
+	if len(payload) != 4 ||
+		payload["status"] != "denied" ||
+		payload["code"] != code ||
+		payload["constraint"] != constraint ||
+		payload["action"] != action {
+		t.Fatalf("node denial = %#v", payload)
+	}
+}
+
 func nodeInvocationTestDescriptor() nodes.CommandDescriptor {
 	command := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, true)
 	command.InputSchema = json.RawMessage(
 		`{"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}}},"required":["argv"],"additionalProperties":false}`,
 	)
+	command.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelAvailable,
+		TimeoutSecondsMax: 30,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		Constraints: nodes.CommandModelConstraints{
+			ExecutableAliases: []string{"git"},
+		},
+		Guidance: []string{},
+		Examples: []json.RawMessage{},
+	}
 	return command
 }
 

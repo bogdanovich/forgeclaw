@@ -172,6 +172,12 @@ func TestCommandModelContractRejectsMalformedOrUnboundedMetadata(t *testing.T) {
 			},
 		},
 		{
+			name: "malformed authority digest",
+			mutate: func(contract *CommandModelContract) {
+				contract.AuthorityDigest = "not-a-sha256-digest"
+			},
+		},
+		{
 			name: "schema-invalid example",
 			mutate: func(contract *CommandModelContract) {
 				contract.Examples = []json.RawMessage{json.RawMessage(`{"other":"hidden"}`)}
