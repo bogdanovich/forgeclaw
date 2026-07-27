@@ -311,6 +311,43 @@ func (registry *FileRegistry) withCommandApproval(
 	return approval, nil
 }
 
+func (registry *FileRegistry) withResolvedCommandApproval(
+	ref string,
+	command string,
+	operation func(Registration, CommandApproval) error,
+) (CommandApproval, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return CommandApproval{}, fmt.Errorf("%w: node reference is required", ErrInvalidNode)
+	}
+	if operation == nil {
+		return CommandApproval{}, errors.New("resolved command approval operation is required")
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	release, err := registry.lockAndReloadLocked()
+	if err != nil {
+		return CommandApproval{}, err
+	}
+	defer release()
+	record, exists, err := resolvedRegistryRecord(registry.records, ref)
+	if err != nil {
+		return CommandApproval{}, err
+	}
+	if !exists {
+		return CommandApproval{}, fmt.Errorf("%w: unknown node reference", ErrInvalidNode)
+	}
+	registration := cloneRegistration(record)
+	approval, err := commandApproval(registration, command)
+	if err != nil {
+		return CommandApproval{}, err
+	}
+	if err := operation(registration, approval); err != nil {
+		return CommandApproval{}, err
+	}
+	return approval, nil
+}
+
 // Approve pairs a pending identity or renews an existing command-surface
 // approval. It records only commands present in the authenticated catalog.
 func (registry *FileRegistry) Approve(id ID, approval PairingApproval) (Registration, error) {
@@ -644,6 +681,34 @@ func validateRegistryNamespace(records map[string]registryRecord) error {
 		}
 	}
 	return nil
+}
+
+func resolvedRegistryRecord(
+	records map[string]registryRecord,
+	ref string,
+) (registryRecord, bool, error) {
+	if record, exists := records[ref]; exists {
+		return record, true, nil
+	}
+	var found *registryRecord
+	for _, record := range records {
+		if !snapshotHasAlias(record.Snapshot, Alias(ref)) {
+			continue
+		}
+		if found != nil {
+			return registryRecord{}, false, fmt.Errorf(
+				"%w: ambiguous alias %q",
+				ErrInvalidNode,
+				ref,
+			)
+		}
+		candidate := record
+		found = &candidate
+	}
+	if found == nil {
+		return registryRecord{}, false, nil
+	}
+	return *found, true, nil
 }
 
 func snapshotHasAlias(snapshot Snapshot, alias Alias) bool {

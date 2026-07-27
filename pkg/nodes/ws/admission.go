@@ -365,6 +365,16 @@ func (handler *AdmissionHandler) Invoke(
 	return result, true, err
 }
 
+// WithResolvedApprovedCommand exposes the registry authority lease used by
+// gateway preparation without exposing the registry itself.
+func (handler *AdmissionHandler) WithResolvedApprovedCommand(
+	ref string,
+	command string,
+	operation func(nodes.Registration, nodes.CommandApproval) error,
+) (nodes.CommandApproval, error) {
+	return handler.authenticator.WithResolvedApprovedCommand(ref, command, operation)
+}
+
 func (handler *AdmissionHandler) validateInvocationPreflight(
 	nodeID nodes.ID,
 	plan nodes.ExecutionPlan,

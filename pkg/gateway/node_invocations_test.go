@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type fakeNodeAdmissionHandler struct {
@@ -25,6 +26,15 @@ type fakeNodeAdmissionHandler struct {
 func (*fakeNodeAdmissionHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
 
 func (*fakeNodeAdmissionHandler) Close(context.Context) error { return nil }
+
+func (*fakeNodeAdmissionHandler) WithResolvedApprovedCommand(
+	_ string,
+	_ string,
+	operation func(nodes.Registration, nodes.CommandApproval) error,
+) (nodes.CommandApproval, error) {
+	approval := nodes.CommandApproval{}
+	return approval, operation(nodes.Registration{}, approval)
+}
 
 func (handler *fakeNodeAdmissionHandler) Invoke(
 	_ context.Context,
@@ -60,10 +70,16 @@ func TestNodeInvocationSourceGrantsOneDispatchWinner(t *testing.T) {
 	source := newTestNodeInvocationSource(t, handler)
 	descriptor, plan, owner := testGatewayInvocation(t)
 	if _, _, err := source.PrepareInvocation(
+		"builder-node",
 		"build",
 		owner.ToolCallID,
+		nodes.GatewayInvocationPrincipal{
+			AgentID: plan.AgentID, SessionID: plan.SessionID, ActorID: plan.ActorID,
+		},
 		plan,
 		descriptor,
+		true,
+		func(tools.NodeDiscoveryRecord) error { return nil },
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -123,10 +139,16 @@ func TestNodeInvocationSourceRecoversOnlyBoundDispatchedResult(t *testing.T) {
 	source := newTestNodeInvocationSource(t, handler)
 	descriptor, plan, owner := testGatewayInvocation(t)
 	if _, _, err := source.PrepareInvocation(
+		"builder-node",
 		"build",
 		owner.ToolCallID,
+		nodes.GatewayInvocationPrincipal{
+			AgentID: plan.AgentID, SessionID: plan.SessionID, ActorID: plan.ActorID,
+		},
 		plan,
 		descriptor,
+		true,
+		func(tools.NodeDiscoveryRecord) error { return nil },
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -205,10 +227,16 @@ func TestNodeInvocationSourceRejectsStaleRuntimeGeneration(t *testing.T) {
 	descriptor, plan, owner := testGatewayInvocation(t)
 
 	if _, _, err := source.PrepareInvocation(
+		"builder-node",
 		"build",
 		owner.ToolCallID,
+		nodes.GatewayInvocationPrincipal{
+			AgentID: plan.AgentID, SessionID: plan.SessionID, ActorID: plan.ActorID,
+		},
 		plan,
 		descriptor,
+		true,
+		func(tools.NodeDiscoveryRecord) error { return nil },
 	); !errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
 		t.Fatalf("stale prepare error = %v", err)
 	}

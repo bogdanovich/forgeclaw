@@ -465,6 +465,7 @@ type discoveryRevisionInput struct {
 	TargetType          string      `json:"target_type"`
 	TargetExecutor      string      `json:"target_executor"`
 	TargetBindingDigest string      `json:"target_binding_digest"`
+	NodeIdentityDigest  string      `json:"node_identity_digest"`
 	Command             string      `json:"command"`
 	DescriptorDigest    string      `json:"descriptor_digest"`
 	State               nodes.State `json:"state"`
@@ -497,6 +498,7 @@ func (access *nodeTargetAccess) discoveryRevision(
 		return "", err
 	}
 	bindingDigest := sha256.Sum256([]byte(binding.Node))
+	nodeIdentityDigest := sha256.Sum256([]byte(snapshot.ID))
 	approvedCommands := append([]string(nil), registration.AllowedCommands...)
 	sort.Strings(approvedCommands)
 	input := discoveryRevisionInput{
@@ -506,6 +508,7 @@ func (access *nodeTargetAccess) discoveryRevision(
 		TargetType:          binding.Type,
 		TargetExecutor:      binding.Executor,
 		TargetBindingDigest: base64.RawURLEncoding.EncodeToString(bindingDigest[:]),
+		NodeIdentityDigest:  base64.RawURLEncoding.EncodeToString(nodeIdentityDigest[:]),
 		Command:             command,
 		DescriptorDigest:    descriptorDigest,
 		State:               snapshot.State,

@@ -21,8 +21,11 @@ const (
 	defaultNodeInvocationOutput  = 64 * 1024
 )
 
+// ErrNodeDiscoveryStale marks a failed atomic preparation revalidation.
+var ErrNodeDiscoveryStale = errors.New("node discovery revision is stale")
+
 var (
-	errDiscoveryStale       = errors.New("discovery revision is stale")
+	errDiscoveryStale       = ErrNodeDiscoveryStale
 	errNodeTargetNotPaired  = errors.New("target is not paired and approved")
 	errNodeTargetNotVisible = errors.New("target is not visible to this agent")
 )
@@ -30,10 +33,14 @@ var (
 type NodeInvocationSource interface {
 	NodeDiscoverySource
 	PrepareInvocation(
+		nodeRef string,
 		target string,
 		toolCallID string,
+		principal nodes.GatewayInvocationPrincipal,
 		plan nodes.ExecutionPlan,
 		descriptor nodes.CommandDescriptor,
+		allowCreate bool,
+		validate func(NodeDiscoveryRecord) error,
 	) (nodes.GatewayInvocationRecord, bool, error)
 	LookupInvocationByToolCall(
 		principal nodes.GatewayInvocationPrincipal,
@@ -545,30 +552,6 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		TimeoutSeconds:   timeout,
 		OutputLimitBytes: outputLimit,
 	}
-	retained, found, err := runtime.source.LookupInvocationByToolCall(
-		principal,
-		storedToolCallID,
-	)
-	if err != nil {
-		return nodes.GatewayInvocationRecord{}, errors.New("invocation registry is unavailable")
-	}
-	if found {
-		if retainedErr := validateRetainedNodeInvocation(
-			retained,
-			resolved.name,
-			request,
-			descriptor,
-			profile,
-		); retainedErr != nil {
-			return nodes.GatewayInvocationRecord{}, retainedErr
-		}
-		return retained, nil
-	}
-	if ToolApprovalContinuation(ctx) {
-		return nodes.GatewayInvocationRecord{}, errors.New(
-			"retained invocation authority expired before approval resumed",
-		)
-	}
 	plan, err := nodes.PrepareExecutionPlan(
 		request,
 		descriptor,
@@ -582,12 +565,48 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			"command input violates target policy",
 		)
 	}
+	requestedRevision := strings.TrimSpace(stringArgument(args, "discovery_revision"))
 	record, created, err := runtime.source.PrepareInvocation(
+		resolved.binding.Node,
 		resolved.name,
 		storedToolCallID,
+		principal,
 		plan,
 		descriptor,
+		!ToolApprovalContinuation(ctx),
+		func(current NodeDiscoveryRecord) error {
+			return runtime.validatePreparationAuthority(
+				agentID,
+				resolved.name,
+				command,
+				requestedRevision,
+				current,
+			)
+		},
 	)
+	if errors.Is(err, nodes.ErrGatewayInvocationNotFound) && ToolApprovalContinuation(ctx) {
+		return nodes.GatewayInvocationRecord{}, errors.New(
+			"retained invocation authority expired before approval resumed",
+		)
+	}
+	if errors.Is(err, errDiscoveryStale) {
+		return nodes.GatewayInvocationRecord{}, errDiscoveryStale
+	}
+	if err != nil {
+		return nodes.GatewayInvocationRecord{}, err
+	}
+	if !created {
+		if retainedErr := validateRetainedNodeInvocation(
+			record,
+			resolved.name,
+			request,
+			descriptor,
+			profile,
+		); retainedErr != nil {
+			return nodes.GatewayInvocationRecord{}, retainedErr
+		}
+		return record, nil
+	}
 	if err == nil && created {
 		runtime.publishInvocationEvent(
 			ctx,
@@ -599,6 +618,43 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		)
 	}
 	return record, err
+}
+
+func (runtime *nodeInvocationToolRuntime) validatePreparationAuthority(
+	agentID string,
+	target string,
+	command string,
+	requestedRevision string,
+	current NodeDiscoveryRecord,
+) error {
+	if current.Registration == nil || current.Snapshot.ID == "" {
+		return errDiscoveryStale
+	}
+	descriptor, advertised := nodeCatalogDescriptor(current.Snapshot.Catalog, command)
+	if !advertised {
+		return errDiscoveryStale
+	}
+	revision, err := runtime.access.discoveryRevision(
+		agentID,
+		target,
+		command,
+		current.Snapshot,
+		*current.Registration,
+		descriptor,
+		current.Connected,
+	)
+	if err != nil || revision != requestedRevision {
+		return errDiscoveryStale
+	}
+	if !current.Connected ||
+		(descriptor.ModelContract != nil &&
+			descriptor.ModelContract.Availability == nodes.ModelUnavailable) {
+		return errDiscoveryStale
+	}
+	if _, err := current.Registration.ApprovedCommand(command); err != nil {
+		return errDiscoveryStale
+	}
+	return nil
 }
 
 func nodeCatalogDescriptor(

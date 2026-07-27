@@ -30,6 +30,11 @@ type nodeAdmissionRoutes interface {
 type nodeAdmissionHandler interface {
 	http.Handler
 	Close(context.Context) error
+	WithResolvedApprovedCommand(
+		string,
+		string,
+		func(nodes.Registration, nodes.CommandApproval) error,
+	) (nodes.CommandApproval, error)
 	Invoke(
 		context.Context,
 		nodes.ID,

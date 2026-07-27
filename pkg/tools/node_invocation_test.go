@@ -56,15 +56,17 @@ func (bus *recordingNodeEventBus) snapshot() []runtimeevents.Event {
 
 type fakeNodeInvocationSource struct {
 	*fakeNodeDiscoverySource
-	store          *nodes.GatewayInvocationStore
-	preDispatchErr error
-	dispatchErr    error
-	queryErr       error
-	remote         nodes.InvocationRecord
-	lookupMiss     bool
-	prepareCalls   int
-	dispatchCalls  int
-	queryCalls     int
+	store                   *nodes.GatewayInvocationStore
+	preDispatchErr          error
+	dispatchErr             error
+	queryErr                error
+	remote                  nodes.InvocationRecord
+	lookupMiss              bool
+	beforeAuthorityValidate func()
+	prepareMu               sync.Mutex
+	prepareCalls            int
+	dispatchCalls           int
+	queryCalls              int
 }
 
 type atomicPrepareNodeInvocationSource struct {
@@ -72,20 +74,66 @@ type atomicPrepareNodeInvocationSource struct {
 }
 
 func (source *atomicPrepareNodeInvocationSource) PrepareInvocation(
+	nodeRef string,
 	target string,
 	toolCallID string,
+	principal nodes.GatewayInvocationPrincipal,
 	plan nodes.ExecutionPlan,
 	descriptor nodes.CommandDescriptor,
+	allowCreate bool,
+	validate func(NodeDiscoveryRecord) error,
 ) (nodes.GatewayInvocationRecord, bool, error) {
-	return source.store.Prepare(target, toolCallID, plan, descriptor)
+	return source.fakeNodeInvocationSource.PrepareInvocation(
+		nodeRef,
+		target,
+		toolCallID,
+		principal,
+		plan,
+		descriptor,
+		allowCreate,
+		validate,
+	)
 }
 
 func (source *fakeNodeInvocationSource) PrepareInvocation(
+	nodeRef string,
 	target string,
 	toolCallID string,
+	principal nodes.GatewayInvocationPrincipal,
 	plan nodes.ExecutionPlan,
 	descriptor nodes.CommandDescriptor,
+	allowCreate bool,
+	validate func(NodeDiscoveryRecord) error,
 ) (nodes.GatewayInvocationRecord, bool, error) {
+	source.prepareMu.Lock()
+	defer source.prepareMu.Unlock()
+	if source.beforeAuthorityValidate != nil {
+		hook := source.beforeAuthorityValidate
+		source.beforeAuthorityValidate = nil
+		hook()
+	}
+	current, found, err := source.Lookup(nodeRef)
+	if err != nil {
+		return nodes.GatewayInvocationRecord{}, false, err
+	}
+	if !found {
+		return nodes.GatewayInvocationRecord{}, false, errDiscoveryStale
+	}
+	if err := validate(current); err != nil {
+		return nodes.GatewayInvocationRecord{}, false, err
+	}
+	if !source.lookupMiss {
+		retained, retainedFound, lookupErr := source.store.ByToolCall(principal, toolCallID)
+		if lookupErr != nil {
+			return nodes.GatewayInvocationRecord{}, false, lookupErr
+		}
+		if retainedFound {
+			return retained, false, nil
+		}
+	}
+	if !allowCreate {
+		return nodes.GatewayInvocationRecord{}, false, nodes.ErrGatewayInvocationNotFound
+	}
 	source.prepareCalls++
 	return source.store.Prepare(target, toolCallID, plan, descriptor)
 }
@@ -211,6 +259,60 @@ func TestNodeInvokeToolRejectsStaleDiscoveryBeforePreparation(t *testing.T) {
 	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
 		t.Fatalf(
 			"stale invocation prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
+func TestNodeInvokeToolRejectsAliasReassignmentBeforePreparation(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	original := source.byRef["builder-node"]
+	replacement := original
+	replacement.ID = "replacement-private-node-id"
+	registration := source.registrations[original.ID]
+	registration.Snapshot = replacement
+	source.byRef["builder-node"] = replacement
+	source.registrations[replacement.ID] = registration
+	source.connected[replacement.ID] = true
+
+	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(
+		nodeInvocationTestContext("actor-1", "call-alias-move"),
+		nodeInvocationTestArgs(),
+	)
+	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
+		t.Fatalf("alias reassignment invocation = %#v", result)
+	}
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"alias reassignment prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
+func TestNodeInvokeToolRevalidatesAuthorityInsidePreparationLease(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	source.beforeAuthorityValidate = func() {
+		snapshot := source.byRef["builder-node"]
+		snapshot.PolicyRevision = "policy-raced"
+		source.byRef["builder-node"] = snapshot
+		registration := source.registrations[snapshot.ID]
+		registration.Snapshot = snapshot
+		source.registrations[snapshot.ID] = registration
+	}
+
+	result := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(
+		nodeInvocationTestContext("actor-1", "call-authority-race"),
+		nodeInvocationTestArgs(),
+	)
+	if !result.IsError || !strings.Contains(result.ForLLM, `"error_code":"DISCOVERY_STALE"`) {
+		t.Fatalf("authority race invocation = %#v", result)
+	}
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"authority race mutated invocation: prepare=%d dispatch=%d",
 			source.prepareCalls,
 			source.dispatchCalls,
 		)

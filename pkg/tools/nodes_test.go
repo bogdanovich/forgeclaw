@@ -363,6 +363,55 @@ func TestNodeDiscoveryRevisionTracksAuthorityButNotHeartbeat(t *testing.T) {
 	}
 }
 
+func TestNodeDiscoveryRevisionChangesWhenAliasMovesToAnotherIdentity(t *testing.T) {
+	command := testNodeCommand("system.info.v1", nodes.RiskRead, true, false)
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "node-identity-one",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "policy-1",
+	}
+	registration := nodes.Registration{
+		Snapshot:            snapshot,
+		AllowedCommands:     []string{command.Name},
+		ApprovedCatalogHash: catalogHash,
+		ApprovedAt:          1,
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef:         map[string]nodes.Snapshot{"builder-node": snapshot},
+		connected:     map[nodes.ID]bool{snapshot.ID: true},
+		registrations: map[nodes.ID]nodes.Registration{snapshot.ID: registration},
+	}
+	tool := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source)
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	revision := func() string {
+		t.Helper()
+		payload := decodeNodeResult(t, tool.Execute(ctx, map[string]any{
+			"action":  "describe",
+			"target":  "build",
+			"command": command.Name,
+		}))
+		return payload["discovery_revision"].(string)
+	}
+	initial := revision()
+
+	replacement := snapshot
+	replacement.ID = "node-identity-two"
+	replacementRegistration := registration
+	replacementRegistration.Snapshot = replacement
+	source.byRef["builder-node"] = replacement
+	source.connected[replacement.ID] = true
+	source.registrations[replacement.ID] = replacementRegistration
+
+	if moved := revision(); moved == initial {
+		t.Fatal("alias reassignment to another authenticated identity did not invalidate discovery")
+	}
+}
+
 func TestNodeDiscoveryToolDescribeRedactsIdentityAndUnapprovedCapabilities(t *testing.T) {
 	cfg := nodeDiscoveryTestConfig()
 	snapshot := nodes.Snapshot{
