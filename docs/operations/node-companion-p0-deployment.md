@@ -119,9 +119,11 @@ The required result is:
 }
 ```
 
-There must be no approval creation, prepared observation, dispatched
-observation, or duplicate command effect. Restore the exact prior constraint
-immediately and confirm that command-specific discovery succeeds again.
+A retained plan may already have one `prepared` observation from the approval
+request before the constraint changes. After the change there must be no new
+approval, replacement `prepared` observation, `dispatched` observation, or
+duplicate command effect. Restore the exact prior constraint immediately and
+confirm that command-specific discovery succeeds again.
 
 ## Evidence record
 

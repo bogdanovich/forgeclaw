@@ -532,6 +532,24 @@ toolLoop:
 					)
 				}
 			}
+			if denial, safe := tools.SafeApprovalDenialResult(approvalArgsErr); safe {
+				ts.opts.ApprovalGrant = nil
+				exec.allResponsesHandled = false
+				denyContent := denial.ContentForLLM()
+				p.emitEvent(
+					runtimeevents.KindAgentToolExecSkipped,
+					ts.eventMeta("runTurn", "turn.tool.skipped"),
+					ToolExecSkippedPayload{
+						ToolCallID: tc.ID,
+						Tool:       toolName,
+						Reason:     denyContent,
+					},
+				)
+				runner.appendToolMessage(providers.Message{
+					Role: "tool", Content: denyContent, ToolCallID: tc.ID,
+				}, toolMessagePersistOnly)
+				continue
+			}
 			if grant := ts.opts.ApprovalGrant; grant != nil {
 				var consumeErr error
 				if !approval.Approved && !approval.RequireHuman {
@@ -609,22 +627,6 @@ toolLoop:
 					}
 				}
 				exec.allResponsesHandled = false
-				if denial, safe := tools.SafeApprovalDenialResult(approvalArgsErr); safe {
-					denyContent := denial.ContentForLLM()
-					p.emitEvent(
-						runtimeevents.KindAgentToolExecSkipped,
-						ts.eventMeta("runTurn", "turn.tool.skipped"),
-						ToolExecSkippedPayload{
-							ToolCallID: tc.ID,
-							Tool:       toolName,
-							Reason:     denyContent,
-						},
-					)
-					runner.appendToolMessage(providers.Message{
-						Role: "tool", Content: denyContent, ToolCallID: tc.ID,
-					}, toolMessagePersistOnly)
-					continue
-				}
 				denyContent := hookDeniedToolContent(
 					"Tool execution denied because human approval could not be requested",
 					errString(hashErr),

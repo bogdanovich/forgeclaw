@@ -100,7 +100,9 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 	configPath := filepath.Join(tempDir, "config.json")
 	writeVerticalSliceConfig(t, configPath, companionConfig)
 	process := startVerticalSliceCompanion(t, binaryPath, configPath)
-	defer process.stop(t)
+	defer func() {
+		process.stop(t)
+	}()
 
 	pending := waitForVerticalSliceNodeState(t, registry, nodes.StatePendingPairing)
 	if _, err := registry.Approve(pending.ID, nodes.PairingApproval{
@@ -292,11 +294,6 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		runtimeevents.KindAgentInteractionEnd,
 	)
 
-	staleSnapshot := connected
-	staleSnapshot.PolicyRevision = "vertical-e2e-policy-stale"
-	if err := registry.Upsert(staleSnapshot); err != nil {
-		t.Fatal(err)
-	}
 	staleResponse, err := agentLoop.ProcessDirectWithChannel(
 		t.Context(),
 		"Verify the remote outcome cannot be duplicated after a constraint change",
@@ -307,14 +304,61 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if staleResponse != "Stale discovery denied before dispatch." {
-		t.Fatalf("stale response = %q", staleResponse)
+	if staleResponse != "" {
+		t.Fatalf("stale suspended response = %q, want empty", staleResponse)
 	}
-	assertNoVerticalSliceEvent(t, eventChannel)
+	staleApprovalPrompt := channel.nextMessage(t)
+	if !strings.Contains(staleApprovalPrompt.Content, "nodes_invoke") ||
+		strings.Contains(staleApprovalPrompt.Content, commandDir) ||
+		strings.Contains(staleApprovalPrompt.Content, "node-e2e-ok") {
+		t.Fatalf("stale approval prompt = %#v", staleApprovalPrompt)
+	}
+	waitForVerticalSliceEvent(t, waitingEvents, runtimeevents.KindAgentInteractionWaiting)
+	stalePrepared := waitForVerticalSliceEvent(
+		t,
+		eventChannel,
+		runtimeevents.KindNodeInvocationObserved,
+	)
+	stalePreparedPayload, ok := stalePrepared.Payload.(tools.NodeInvocationEventPayload)
+	if !ok || stalePreparedPayload.Observation != tools.NodeInvocationObservationPrepared {
+		t.Fatalf("stale pre-change observation = %#v", stalePrepared)
+	}
 
-	if err := registry.Upsert(connected); err != nil {
+	process.stop(t)
+	staleCompanionConfig := companionConfig
+	staleCompanionConfig.Policy.Revision = "vertical-e2e-policy-stale"
+	writeVerticalSliceConfig(t, configPath, staleCompanionConfig)
+	process = startVerticalSliceCompanion(t, binaryPath, configPath)
+	waitForVerticalSlicePolicyRevision(
+		t,
+		registry,
+		staleCompanionConfig.Policy.Revision,
+	)
+	if err := msgBus.PublishInbound(
+		t.Context(),
+		verticalSliceInboundMessage(
+			"node-e2e-stale-session",
+			"message-stale-approval",
+			"allow_once",
+		),
+	); err != nil {
 		t.Fatal(err)
 	}
+	staleFinal := channel.nextMessage(t)
+	if staleFinal.Content != "Stale discovery refreshed without dispatch." {
+		t.Fatalf("stale final response = %#v", staleFinal)
+	}
+	waitForVerticalSliceEvent(
+		t,
+		interactionEndEvents,
+		runtimeevents.KindAgentInteractionEnd,
+	)
+	assertNoVerticalSliceEvent(t, eventChannel)
+
+	process.stop(t)
+	writeVerticalSliceConfig(t, configPath, companionConfig)
+	process = startVerticalSliceCompanion(t, binaryPath, configPath)
+	waitForVerticalSlicePolicyRevision(t, registry, connected.PolicyRevision)
 	recoveredResponse, err := agentLoop.ProcessDirectWithChannel(
 		t.Context(),
 		"Confirm remote capability discovery recovered",
@@ -489,8 +533,27 @@ func (provider *nodeP0EvidenceProvider) Chat(
 			payload["action"] != "refresh_discovery" {
 			return nil, fmt.Errorf("stale denial is not model-safe: %#v", payload)
 		}
-		return llmscenario.TextResponse("Stale discovery denied before dispatch."), nil
+		return llmscenario.ToolCallResponse(
+			"I will refresh discovery after the stale denial.",
+			llmscenario.ToolCall("call-node-stale-refresh", "nodes", map[string]any{
+				"action":  "describe",
+				"target":  provider.target,
+				"command": provider.command,
+			}),
+		), nil
 	case 8:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		command, ok := payload["command"].(map[string]any)
+		revision, revisionOK := payload["discovery_revision"].(string)
+		if !ok || command["availability"] != string(nodes.ModelAvailable) ||
+			!revisionOK || revision == "" || revision == provider.discoveryRevision {
+			return nil, fmt.Errorf("stale discovery did not refresh: %#v", payload)
+		}
+		return llmscenario.TextResponse("Stale discovery refreshed without dispatch."), nil
+	case 9:
 		if err := requireNodeOutcomeOnlyPrompt(call, provider.forbidden); err != nil {
 			return nil, err
 		}
@@ -502,7 +565,7 @@ func (provider *nodeP0EvidenceProvider) Chat(
 				"command": provider.command,
 			}),
 		), nil
-	case 9:
+	case 10:
 		payload, err := nodeP0LastToolPayload(call)
 		if err != nil {
 			return nil, err
@@ -521,8 +584,8 @@ func (provider *nodeP0EvidenceProvider) Chat(
 func (provider *nodeP0EvidenceProvider) AssertExhausted() error {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if provider.step != 10 {
-		return fmt.Errorf("node P0 evidence consumed %d model steps, want 10", provider.step)
+	if provider.step != 11 {
+		return fmt.Errorf("node P0 evidence consumed %d model steps, want 11", provider.step)
 	}
 	return nil
 }
@@ -945,6 +1008,29 @@ func waitForVerticalSliceNodeState(
 	}
 	snapshots, err := registry.List(nodes.Filter{})
 	t.Fatalf("nodes = %s, error %v; want one %q node", formatVerticalSliceNodes(snapshots), err, want)
+	return nodes.Snapshot{}
+}
+
+func waitForVerticalSlicePolicyRevision(
+	t *testing.T,
+	registry *nodes.FileRegistry,
+	want string,
+) nodes.Snapshot {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, found, err := registry.Resolve("build-node")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found &&
+			snapshot.State == nodes.StateConnected &&
+			snapshot.PolicyRevision == want {
+			return snapshot
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for authenticated policy revision %q", want)
 	return nodes.Snapshot{}
 }
 
