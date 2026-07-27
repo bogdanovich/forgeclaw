@@ -256,6 +256,25 @@ func TestProjectedSystemExecContractUsesOnlyVisibleAliases(t *testing.T) {
 	}
 }
 
+func TestProjectedLegacySystemExecContractFailsClosed(t *testing.T) {
+	descriptor := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, false)
+	descriptor.InputSchema = json.RawMessage(
+		`{"type":"object","required":["argv","cwd"],"properties":{"argv":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"}}}`,
+	)
+	projected := projectedNodeCommandContract(descriptor, string(nodes.ModelAvailable))
+	var schema map[string]any
+	if err := json.Unmarshal(projected.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	argv := properties["argv"].(map[string]any)
+	prefix := argv["prefixItems"].([]any)
+	if prefix[0] != false || properties["cwd"] != false ||
+		projected.Availability != string(nodes.ModelPartiallyDescribed) {
+		t.Fatalf("legacy system.exec projection = %#v", projected)
+	}
+}
+
 func TestNodeDiscoveryToolFailsClosedForOversizedCommandProjection(t *testing.T) {
 	cfg := nodeDiscoveryTestConfig()
 	command := testNodeCommand("system.info.v1", nodes.RiskRead, false, false)

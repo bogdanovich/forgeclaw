@@ -430,9 +430,11 @@ func makeNodeCommandContract(
 	availability string,
 ) nodeCommandContract {
 	inputSchema := append(json.RawMessage(nil), descriptor.InputSchema...)
-	if descriptor.Name == "system.exec.v1" && descriptor.ModelContract != nil {
+	if descriptor.Name == "system.exec.v1" {
 		if projected, err := nodes.SystemExecModelInputSchema(model); err == nil {
 			inputSchema = projected
+		} else {
+			inputSchema = json.RawMessage("false")
 		}
 	}
 	return nodeCommandContract{
