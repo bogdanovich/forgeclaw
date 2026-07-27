@@ -112,6 +112,10 @@ Priorities express ordering, not a commitment to implement every milestone.
 
 ## P0: Model-Visible Capability Contracts
 
+P0 is admitted with fixed scope and completion gates in
+[`node-companion-p0-contracts.md`](node-companion-p0-contracts.md). That
+contract controls implementation scope; P1 and later work remains unadmitted.
+
 ### Current limitation
 
 The MVP enforces node authority correctly but exposes too little of that
