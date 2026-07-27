@@ -365,6 +365,38 @@ func (handler *AdmissionHandler) Invoke(
 	return result, true, err
 }
 
+// WithResolvedApprovedCommand exposes the registry authority lease used by
+// gateway preparation without exposing the registry itself.
+func (handler *AdmissionHandler) WithResolvedApprovedCommand(
+	ref string,
+	command string,
+	operation func(nodes.Registration, nodes.CommandApproval) error,
+) (nodes.CommandApproval, error) {
+	return handler.authenticator.WithResolvedApprovedCommand(ref, command, operation)
+}
+
+// WithPreparationAuthority keeps both the active authenticated session
+// generation and resolved registry command authority stable through one
+// durable preparation mutation.
+func (handler *AdmissionHandler) WithPreparationAuthority(
+	nodeID nodes.ID,
+	ref string,
+	command string,
+	operation func(nodes.Registration, nodes.CommandApproval) error,
+) (nodes.CommandApproval, error) {
+	var approval nodes.CommandApproval
+	err := handler.sessions.WithConnectedGeneration(nodeID, func() error {
+		var leaseErr error
+		approval, leaseErr = handler.authenticator.WithResolvedApprovedCommand(
+			ref,
+			command,
+			operation,
+		)
+		return leaseErr
+	})
+	return approval, err
+}
+
 func (handler *AdmissionHandler) validateInvocationPreflight(
 	nodeID nodes.ID,
 	plan nodes.ExecutionPlan,

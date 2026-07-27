@@ -105,6 +105,30 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForVerticalSliceNodeState(t, registry, nodes.StateConnected)
+	discovery := tools.NewNodeDiscoveryTool(cfg, &nodeDiscoverySource{
+		runtime:      runtimeState,
+		registryPath: nodes.RegistryPath(cfg.WorkspacePath()),
+	})
+	discoveryResult := discovery.Execute(
+		tools.WithToolSessionContext(t.Context(), "main", "node-e2e-session", nil),
+		map[string]any{
+			"action":  "describe",
+			"target":  "build",
+			"command": "system.exec.v1",
+		},
+	)
+	if discoveryResult.IsError {
+		t.Fatalf("discover node command: %s", discoveryResult.ForLLM)
+	}
+	var discovered struct {
+		DiscoveryRevision string `json:"discovery_revision"`
+	}
+	if err := json.Unmarshal([]byte(discoveryResult.ForLLM), &discovered); err != nil {
+		t.Fatal(err)
+	}
+	if discovered.DiscoveryRevision == "" {
+		t.Fatal("node discovery returned no revision")
+	}
 
 	provider := llmscenario.NewScriptedProvider(
 		"node-e2e-model",
@@ -114,8 +138,9 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 			Response: llmscenario.ToolCallResponse(
 				"I will run the approved command.",
 				llmscenario.ToolCall("call-node-e2e", "nodes_invoke", map[string]any{
-					"target":  "build",
-					"command": "system.exec.v1",
+					"target":             "build",
+					"command":            "system.exec.v1",
+					"discovery_revision": discovered.DiscoveryRevision,
 					"input": map[string]any{
 						"argv":            []any{executable, "node-e2e-ok"},
 						"cwd":             commandDir,

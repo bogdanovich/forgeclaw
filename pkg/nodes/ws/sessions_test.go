@@ -195,6 +195,9 @@ func TestSessionHubActivatesReplacementBeforeOldOwnerCanRelease(t *testing.T) {
 		claimed <- claimResult{release: release, err: claimErr}
 	}()
 	<-activationStarted
+	if hub.Connected(nodes.ID("node_test")) {
+		t.Fatal("replacement became discoverable before durable activation")
+	}
 	oldReleased := make(chan bool, 1)
 	go func() {
 		owned, _ := releaseFirst()
@@ -215,6 +218,53 @@ func TestSessionHubActivatesReplacementBeforeOldOwnerCanRelease(t *testing.T) {
 	}
 	if owned, _ := result.release(); !owned {
 		t.Fatal("activated replacement lost ownership")
+	}
+}
+
+func TestSessionHubConnectedGenerationBlocksRelease(t *testing.T) {
+	hub := NewSessionHub()
+	release, err := hub.Claim(nodes.ID("node_test"), &trackingCloser{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationStarted := make(chan struct{})
+	allowOperation := make(chan struct{})
+	operationDone := make(chan error, 1)
+	go func() {
+		operationDone <- hub.WithConnectedGeneration(
+			nodes.ID("node_test"),
+			func() error {
+				close(operationStarted)
+				<-allowOperation
+				return nil
+			},
+		)
+	}()
+	<-operationStarted
+
+	released := make(chan bool, 1)
+	go func() {
+		owned, _ := release()
+		released <- owned
+	}()
+	select {
+	case <-released:
+		t.Fatal("active session released during connected-generation lease")
+	case <-time.After(25 * time.Millisecond):
+	}
+	if !hub.Connected(nodes.ID("node_test")) {
+		t.Fatal("leased session stopped reporting connected before operation completed")
+	}
+
+	close(allowOperation)
+	if err := <-operationDone; err != nil {
+		t.Fatal(err)
+	}
+	if owned := <-released; !owned {
+		t.Fatal("leased session lost ownership before release")
+	}
+	if hub.Connected(nodes.ID("node_test")) {
+		t.Fatal("released session still reports connected")
 	}
 }
 

@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,24 +41,56 @@ type nodeListEntry struct {
 	Target             string      `json:"target"`
 	Default            bool        `json:"default,omitempty"`
 	State              nodes.State `json:"state,omitempty"`
+	Availability       string      `json:"availability"`
 	Available          bool        `json:"available"`
-	DisplayName        string      `json:"display_name,omitempty"`
 	RequiresReapproval bool        `json:"requires_reapproval,omitempty"`
 	CommandCount       int         `json:"command_count,omitempty"`
+	liveConnected      bool
 }
 
 type nodeCommandSummary struct {
 	Name             string     `json:"name"`
 	Risk             nodes.Risk `json:"risk"`
+	Availability     string     `json:"availability"`
 	SupportsProgress bool       `json:"supports_progress,omitempty"`
 	SupportsCancel   bool       `json:"supports_cancel,omitempty"`
+	Approval         string     `json:"approval"`
 }
 
 type nodeDescription struct {
 	nodeListEntry
-	ProtocolVersion int                  `json:"protocol_version,omitempty"`
-	LastSeenAt      int64                `json:"last_seen_at,omitempty"`
-	Commands        []nodeCommandSummary `json:"commands"`
+	Commands []nodeCommandSummary `json:"commands"`
+}
+
+type nodeCommandResult struct {
+	Kind            string `json:"kind"`
+	SchemaAvailable bool   `json:"schema_available"`
+}
+
+type nodeCommandExecution struct {
+	TimeoutSecondsMax int    `json:"timeout_seconds_max"`
+	OutputBytesMax    int    `json:"output_bytes_max"`
+	SupportsProgress  bool   `json:"supports_progress"`
+	SupportsCancel    bool   `json:"supports_cancel"`
+	Approval          string `json:"approval"`
+}
+
+type nodeCommandContract struct {
+	Name         string                        `json:"name"`
+	Risk         nodes.Risk                    `json:"risk"`
+	Availability string                        `json:"availability"`
+	InputSchema  json.RawMessage               `json:"input_schema"`
+	Result       nodeCommandResult             `json:"result"`
+	Execution    nodeCommandExecution          `json:"execution"`
+	Constraints  nodes.CommandModelConstraints `json:"constraints"`
+	Guidance     []string                      `json:"guidance"`
+	Examples     []json.RawMessage             `json:"examples"`
+}
+
+type nodeCommandDescription struct {
+	nodeListEntry
+	Command           nodeCommandContract `json:"command"`
+	DiscoveryRevision string              `json:"discovery_revision"`
 }
 
 func NewNodeDiscoveryTool(cfg *config.Config, source NodeDiscoverySource) *NodeDiscoveryTool {
@@ -105,6 +139,11 @@ func (*NodeDiscoveryTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Operator-configured target name. Required for describe.",
 			},
+			"command": map[string]any{
+				"type": "string",
+				"description": "Approved command name. When set, describe returns one bounded model contract " +
+					"and its freshness revision.",
+			},
 		},
 		"required":             []string{"action"},
 		"additionalProperties": false,
@@ -118,7 +157,8 @@ func (tool *NodeDiscoveryTool) Execute(ctx context.Context, args map[string]any)
 		return tool.list(ctx)
 	case "describe":
 		target, _ := args["target"].(string)
-		return tool.describe(ctx, strings.TrimSpace(target))
+		command, _ := args["command"].(string)
+		return tool.describe(ctx, strings.TrimSpace(target), strings.TrimSpace(command))
 	default:
 		return ErrorResult("action must be list or describe")
 	}
@@ -148,7 +188,11 @@ func (tool *NodeDiscoveryTool) list(ctx context.Context) *ToolResult {
 	})
 }
 
-func (tool *NodeDiscoveryTool) describe(ctx context.Context, target string) *ToolResult {
+func (tool *NodeDiscoveryTool) describe(
+	ctx context.Context,
+	target string,
+	command string,
+) *ToolResult {
 	if target == "" {
 		return ErrorResult("target is required for describe")
 	}
@@ -165,12 +209,40 @@ func (tool *NodeDiscoveryTool) describe(ctx context.Context, target string) *Too
 		Commands:      make([]nodeCommandSummary, 0),
 	}
 	if snapshot == nil {
+		if command != "" {
+			return ErrorResult("command is unavailable on this target")
+		}
 		return nodeJSONResult(description)
 	}
-	description.ProtocolVersion = snapshot.ProtocolVersion
-	description.LastSeenAt = snapshot.LastSeenAt
-	description.Commands = visibleNodeCommands(snapshot.Catalog, registration)
-	return nodeJSONResult(description)
+	description.Commands = visibleNodeCommands(snapshot.Catalog, registration, entry.Availability)
+	if command == "" {
+		return nodeJSONResult(description)
+	}
+	descriptor, ok := visibleNodeCommand(snapshot.Catalog, registration, command)
+	if !ok || entry.RequiresReapproval {
+		return ErrorResult("command is unavailable on this target")
+	}
+	if !commandProjectionFits(descriptor) {
+		return ErrorResult("command discovery is incomplete because its safe projection exceeds limits")
+	}
+	contract := projectedNodeCommandContract(descriptor, entry.Availability)
+	revision, revisionErr := tool.access.discoveryRevision(
+		ToolAgentID(ctx),
+		target,
+		command,
+		*snapshot,
+		*registration,
+		descriptor,
+		entry.liveConnected,
+	)
+	if revisionErr != nil {
+		return ErrorResult("command discovery is temporarily unavailable")
+	}
+	return nodeJSONResult(nodeCommandDescription{
+		nodeListEntry:     entry,
+		Command:           contract,
+		DiscoveryRevision: revision,
+	})
 }
 
 func (access *nodeTargetAccess) listEntry(target, defaultTarget string) (nodeListEntry, error) {
@@ -182,7 +254,11 @@ func (access *nodeTargetAccess) resolve(
 	target string,
 	defaultTarget string,
 ) (nodeListEntry, *nodes.Snapshot, *nodes.Registration, error) {
-	entry := nodeListEntry{Target: target, Default: target == defaultTarget}
+	entry := nodeListEntry{
+		Target:       target,
+		Default:      target == defaultTarget,
+		Availability: string(nodes.ModelUnavailable),
+	}
 	binding, exists := access.targets[target]
 	if !exists || access.source == nil {
 		return entry, nil, nil, nil
@@ -197,8 +273,8 @@ func (access *nodeTargetAccess) resolve(
 	snapshot := record.Snapshot
 	registration := record.Registration
 	entry.State = snapshot.State
-	entry.Available = snapshot.State == nodes.StateConnected && record.Connected
-	entry.DisplayName = snapshot.DisplayName
+	connected := snapshot.State == nodes.StateConnected && record.Connected
+	entry.liveConnected = connected
 	if registration != nil {
 		currentCatalogHash := catalogHash(snapshot.Catalog)
 		if registration.RevokedAt == 0 &&
@@ -208,9 +284,19 @@ func (access *nodeTargetAccess) resolve(
 				currentCatalogHash == "" ||
 				registration.ApprovedCatalogHash != currentCatalogHash) {
 			entry.RequiresReapproval = true
+			entry.Availability = "requires_reapproval"
 			return entry, &snapshot, registration, nil
 		}
-		entry.CommandCount = len(visibleNodeCommands(snapshot.Catalog, registration))
+		targetAvailability := string(nodes.ModelUnavailable)
+		if connected {
+			targetAvailability = string(nodes.ModelAvailable)
+		}
+		commands := visibleNodeCommands(snapshot.Catalog, registration, targetAvailability)
+		entry.CommandCount = len(commands)
+		if connected {
+			entry.Availability = aggregateTargetAvailability(commands)
+			entry.Available = entry.Availability == string(nodes.ModelAvailable)
+		}
 		return entry, &snapshot, registration, nil
 	}
 	return entry, &snapshot, nil, nil
@@ -232,6 +318,7 @@ func (access *nodeTargetAccess) visibleTargets(agentID string) ([]string, string
 func visibleNodeCommands(
 	catalog nodes.CapabilityCatalog,
 	registration *nodes.Registration,
+	targetAvailability string,
 ) []nodeCommandSummary {
 	if registration == nil || len(registration.AllowedCommands) == 0 {
 		return []nodeCommandSummary{}
@@ -253,12 +340,193 @@ func visibleNodeCommands(
 		commands = append(commands, nodeCommandSummary{
 			Name:             descriptor.Name,
 			Risk:             descriptor.Risk,
+			Availability:     commandAvailability(descriptor, targetAvailability),
 			SupportsProgress: descriptor.SupportsProgress,
 			SupportsCancel:   descriptor.SupportsCancel,
+			Approval:         "may_be_required",
 		})
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	return commands
+}
+
+func visibleNodeCommand(
+	catalog nodes.CapabilityCatalog,
+	registration *nodes.Registration,
+	name string,
+) (nodes.CommandDescriptor, bool) {
+	if registration == nil {
+		return nodes.CommandDescriptor{}, false
+	}
+	for _, descriptor := range catalog.Commands {
+		if descriptor.Name != name {
+			continue
+		}
+		for _, allowed := range registration.AllowedCommands {
+			if allowed == name &&
+				registration.ApprovedAt > 0 &&
+				registration.ApprovedCatalogHash != "" &&
+				registration.ApprovedCatalogHash == catalogHash(catalog) {
+				return descriptor, true
+			}
+		}
+	}
+	return nodes.CommandDescriptor{}, false
+}
+
+func commandAvailability(descriptor nodes.CommandDescriptor, targetAvailability string) string {
+	if targetAvailability == string(nodes.ModelUnavailable) {
+		return string(nodes.ModelUnavailable)
+	}
+	if descriptor.ModelContract == nil {
+		return string(nodes.ModelPartiallyDescribed)
+	}
+	if !commandProjectionFits(descriptor) {
+		return string(nodes.ModelPartiallyDescribed)
+	}
+	return string(descriptor.ModelContract.Availability)
+}
+
+func aggregateTargetAvailability(commands []nodeCommandSummary) string {
+	availability := string(nodes.ModelUnavailable)
+	for _, command := range commands {
+		if command.Availability == string(nodes.ModelAvailable) {
+			return command.Availability
+		}
+		if command.Availability == string(nodes.ModelPartiallyDescribed) {
+			availability = command.Availability
+		}
+	}
+	return availability
+}
+
+func projectedNodeCommandContract(
+	descriptor nodes.CommandDescriptor,
+	targetAvailability string,
+) nodeCommandContract {
+	model := descriptorModelContract(descriptor)
+	availability := commandAvailability(descriptor, targetAvailability)
+	return makeNodeCommandContract(descriptor, model, availability)
+}
+
+func descriptorModelContract(descriptor nodes.CommandDescriptor) nodes.CommandModelContract {
+	model := nodes.CommandModelContract{
+		Availability:      nodes.ModelPartiallyDescribed,
+		TimeoutSecondsMax: nodes.MaxInvocationTimeout,
+		OutputBytesMax:    nodes.MaxInvocationOutput,
+		ResultKind:        "json",
+		Guidance:          []string{},
+		Examples:          []json.RawMessage{},
+	}
+	if descriptor.ModelContract != nil {
+		model = *descriptor.ModelContract
+	}
+	return model
+}
+
+func makeNodeCommandContract(
+	descriptor nodes.CommandDescriptor,
+	model nodes.CommandModelContract,
+	availability string,
+) nodeCommandContract {
+	return nodeCommandContract{
+		Name:         descriptor.Name,
+		Risk:         descriptor.Risk,
+		Availability: availability,
+		InputSchema:  append(json.RawMessage(nil), descriptor.InputSchema...),
+		Result: nodeCommandResult{
+			Kind:            model.ResultKind,
+			SchemaAvailable: len(descriptor.OutputSchema) > 0,
+		},
+		Execution: nodeCommandExecution{
+			TimeoutSecondsMax: model.TimeoutSecondsMax,
+			OutputBytesMax:    model.OutputBytesMax,
+			SupportsProgress:  descriptor.SupportsProgress,
+			SupportsCancel:    descriptor.SupportsCancel,
+			Approval:          "may_be_required",
+		},
+		Constraints: model.Constraints,
+		Guidance:    append([]string(nil), model.Guidance...),
+		Examples:    append([]json.RawMessage(nil), model.Examples...),
+	}
+}
+
+func commandProjectionFits(descriptor nodes.CommandDescriptor) bool {
+	model := descriptorModelContract(descriptor)
+	contract := makeNodeCommandContract(descriptor, model, string(model.Availability))
+	data, err := json.Marshal(contract)
+	return err == nil && len(data) <= nodes.MaxModelContractBytes
+}
+
+type discoveryRevisionInput struct {
+	AgentTargets        []string    `json:"agent_targets"`
+	DefaultTarget       string      `json:"default_target"`
+	Target              string      `json:"target"`
+	TargetType          string      `json:"target_type"`
+	TargetExecutor      string      `json:"target_executor"`
+	TargetBindingDigest string      `json:"target_binding_digest"`
+	NodeIdentityDigest  string      `json:"node_identity_digest"`
+	Command             string      `json:"command"`
+	DescriptorDigest    string      `json:"descriptor_digest"`
+	State               nodes.State `json:"state"`
+	Connected           bool        `json:"connected"`
+	CatalogDigest       string      `json:"catalog_digest"`
+	PolicyRevision      string      `json:"policy_revision"`
+	NodeExecutor        string      `json:"node_executor"`
+	ApprovedCatalog     string      `json:"approved_catalog"`
+	ApprovedCommands    []string    `json:"approved_commands"`
+	ApprovedAt          int64       `json:"approved_at"`
+	RevokedAt           int64       `json:"revoked_at"`
+}
+
+func (access *nodeTargetAccess) discoveryRevision(
+	agentID string,
+	target string,
+	command string,
+	snapshot nodes.Snapshot,
+	registration nodes.Registration,
+	descriptor nodes.CommandDescriptor,
+	connected bool,
+) (string, error) {
+	targets, defaultTarget := access.visibleTargets(agentID)
+	binding, ok := access.targets[target]
+	if !ok {
+		return "", errors.New("target binding is unavailable")
+	}
+	descriptorDigest, err := descriptor.Hash()
+	if err != nil {
+		return "", err
+	}
+	bindingDigest := sha256.Sum256([]byte(binding.Node))
+	nodeIdentityDigest := sha256.Sum256([]byte(snapshot.ID))
+	approvedCommands := append([]string(nil), registration.AllowedCommands...)
+	sort.Strings(approvedCommands)
+	input := discoveryRevisionInput{
+		AgentTargets:        targets,
+		DefaultTarget:       defaultTarget,
+		Target:              target,
+		TargetType:          binding.Type,
+		TargetExecutor:      binding.Executor,
+		TargetBindingDigest: base64.RawURLEncoding.EncodeToString(bindingDigest[:]),
+		NodeIdentityDigest:  base64.RawURLEncoding.EncodeToString(nodeIdentityDigest[:]),
+		Command:             command,
+		DescriptorDigest:    descriptorDigest,
+		State:               snapshot.State,
+		Connected:           connected,
+		CatalogDigest:       snapshot.CatalogHash,
+		PolicyRevision:      snapshot.PolicyRevision,
+		NodeExecutor:        snapshot.Executor,
+		ApprovedCatalog:     registration.ApprovedCatalogHash,
+		ApprovedCommands:    approvedCommands,
+		ApprovedAt:          registration.ApprovedAt,
+		RevokedAt:           registration.RevokedAt,
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(data)
+	return "dr_v1_" + base64.RawURLEncoding.EncodeToString(digest[:]), nil
 }
 
 func catalogHash(catalog nodes.CapabilityCatalog) string {

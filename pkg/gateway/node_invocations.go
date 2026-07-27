@@ -3,10 +3,12 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type nodeInvocationSource struct {
@@ -54,32 +56,88 @@ func newNodeInvocationSource(
 }
 
 func (source *nodeInvocationSource) PrepareInvocation(
+	nodeRef string,
 	target string,
 	toolCallID string,
+	principal nodes.GatewayInvocationPrincipal,
 	plan nodes.ExecutionPlan,
 	descriptor nodes.CommandDescriptor,
+	allowCreate bool,
+	validate func(tools.NodeDiscoveryRecord) error,
 ) (nodes.GatewayInvocationRecord, bool, error) {
-	if source == nil || source.store == nil || source.runtime == nil {
+	if source == nil || source.store == nil || source.runtime == nil || validate == nil {
 		return nodes.GatewayInvocationRecord{}, false, errNodeDiscoveryAuthorityUnavailable
 	}
 	var (
-		record  nodes.GatewayInvocationRecord
-		created bool
+		record             nodes.GatewayInvocationRecord
+		created            bool
+		authorityValidated bool
 	)
-	err := source.runtime.withInvocationHandler(
+	handler, err := source.runtime.invocationHandlerSnapshot(
 		source.registryPath,
 		source.generation,
-		func(nodeAdmissionHandler) error {
-			var prepareErr error
-			record, created, prepareErr = source.store.Prepare(
-				target,
-				toolCallID,
-				plan,
-				descriptor,
+	)
+	if err != nil {
+		return nodes.GatewayInvocationRecord{}, false, err
+	}
+	_, err = handler.WithPreparationAuthority(
+		plan.NodeID,
+		nodeRef,
+		plan.Command,
+		func(
+			registration nodes.Registration,
+			_ nodes.CommandApproval,
+		) error {
+			return source.runtime.withInvocationHandler(
+				source.registryPath,
+				source.generation,
+				func(currentHandler nodeAdmissionHandler) error {
+					if currentHandler != handler {
+						return errNodeDiscoveryAuthorityUnavailable
+					}
+					current := tools.NodeDiscoveryRecord{
+						Snapshot:     registration.Snapshot,
+						Registration: &registration,
+						Connected:    true,
+					}
+					if validationErr := validate(current); validationErr != nil {
+						return validationErr
+					}
+					authorityValidated = true
+					retained, found, lookupErr := source.store.ByToolCall(
+						principal,
+						toolCallID,
+					)
+					if lookupErr != nil {
+						return lookupErr
+					}
+					if found {
+						record = retained
+						return nil
+					}
+					if !allowCreate {
+						return nodes.ErrGatewayInvocationNotFound
+					}
+					var prepareErr error
+					record, created, prepareErr = source.store.Prepare(
+						target,
+						toolCallID,
+						plan,
+						descriptor,
+					)
+					return prepareErr
+				},
 			)
-			return prepareErr
 		},
 	)
+	if err != nil &&
+		!errors.Is(err, errNodeDiscoveryAuthorityUnavailable) &&
+		!authorityValidated {
+		return nodes.GatewayInvocationRecord{}, false, fmt.Errorf(
+			"%w: current registry authority changed",
+			tools.ErrNodeDiscoveryStale,
+		)
+	}
 	return record, created, err
 }
 

@@ -21,13 +21,26 @@ const (
 	defaultNodeInvocationOutput  = 64 * 1024
 )
 
+// ErrNodeDiscoveryStale marks a failed atomic preparation revalidation.
+var ErrNodeDiscoveryStale = errors.New("node discovery revision is stale")
+
+var (
+	errDiscoveryStale       = ErrNodeDiscoveryStale
+	errNodeTargetNotPaired  = errors.New("target is not paired and approved")
+	errNodeTargetNotVisible = errors.New("target is not visible to this agent")
+)
+
 type NodeInvocationSource interface {
 	NodeDiscoverySource
 	PrepareInvocation(
+		nodeRef string,
 		target string,
 		toolCallID string,
+		principal nodes.GatewayInvocationPrincipal,
 		plan nodes.ExecutionPlan,
 		descriptor nodes.CommandDescriptor,
+		allowCreate bool,
+		validate func(NodeDiscoveryRecord) error,
 	) (nodes.GatewayInvocationRecord, bool, error)
 	LookupInvocationByToolCall(
 		principal nodes.GatewayInvocationPrincipal,
@@ -182,6 +195,10 @@ func (*NodeInvokeTool) Parameters() map[string]any {
 				"type":        "object",
 				"description": "Typed command input matching the advertised command schema.",
 			},
+			"discovery_revision": map[string]any{
+				"type":        "string",
+				"description": "Opaque revision returned by command-specific nodes describe.",
+			},
 			"timeout_seconds": map[string]any{
 				"type":        "integer",
 				"description": "Optional execution timeout from 1 to 3600 seconds.",
@@ -191,7 +208,7 @@ func (*NodeInvokeTool) Parameters() map[string]any {
 				"description": "Optional bounded result size from 1 to 524288 bytes.",
 			},
 		},
-		"required":             []string{"command", "input"},
+		"required":             []string{"command", "input", "discovery_revision"},
 		"additionalProperties": false,
 	}
 }
@@ -219,6 +236,9 @@ func (tool *NodeInvokeTool) ApprovalArguments(
 func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
 	record, err := tool.runtime.prepare(ctx, args)
 	if err != nil {
+		if errors.Is(err, errDiscoveryStale) {
+			return nodeInvocationError("DISCOVERY_STALE", "refresh command discovery before invoking", nil)
+		}
 		return nodeInvocationError("PREPARE_DENIED", err.Error(), nil)
 	}
 	owner := nodes.GatewayInvocationOwner{
@@ -419,15 +439,45 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		return nodes.GatewayInvocationRecord{}, errors.New("node invocation runtime is unavailable")
 	}
 	agentID := strings.TrimSpace(ToolAgentID(ctx))
-	resolved, err := runtime.resolveTarget(agentID, stringArgument(args, "target"), true)
+	resolved, err := runtime.resolveTarget(agentID, stringArgument(args, "target"), false)
 	if err != nil {
+		if strings.TrimSpace(stringArgument(args, "discovery_revision")) != "" &&
+			(errors.Is(err, errNodeTargetNotVisible) || errors.Is(err, errNodeTargetNotPaired)) {
+			return nodes.GatewayInvocationRecord{}, errDiscoveryStale
+		}
 		return nodes.GatewayInvocationRecord{}, err
 	}
 	command := strings.TrimSpace(stringArgument(args, "command"))
 	if command == "" {
 		return nodes.GatewayInvocationRecord{}, errors.New("command is required")
 	}
-	descriptor, err := resolved.registration.ApprovedCommand(command)
+	descriptor, advertised := nodeCatalogDescriptor(resolved.snapshot.Catalog, command)
+	if !advertised {
+		return nodes.GatewayInvocationRecord{}, errors.New("command is not currently approved")
+	}
+	currentRevision, err := runtime.access.discoveryRevision(
+		agentID,
+		resolved.name,
+		command,
+		resolved.snapshot,
+		*resolved.registration,
+		descriptor,
+		resolved.available,
+	)
+	if err != nil {
+		return nodes.GatewayInvocationRecord{}, errors.New("command discovery is unavailable")
+	}
+	if strings.TrimSpace(stringArgument(args, "discovery_revision")) != currentRevision {
+		return nodes.GatewayInvocationRecord{}, errDiscoveryStale
+	}
+	if !resolved.available {
+		return nodes.GatewayInvocationRecord{}, errors.New("target is not currently connected")
+	}
+	if descriptor.ModelContract != nil &&
+		descriptor.ModelContract.Availability == nodes.ModelUnavailable {
+		return nodes.GatewayInvocationRecord{}, errors.New("command is unavailable under node policy")
+	}
+	descriptor, err = resolved.registration.ApprovedCommand(command)
 	if err != nil {
 		return nodes.GatewayInvocationRecord{}, errors.New("command is not currently approved")
 	}
@@ -453,11 +503,17 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 	if err != nil {
 		return nodes.GatewayInvocationRecord{}, errors.New("encode command input")
 	}
+	timeoutMaximum := nodes.MaxInvocationTimeout
+	outputMaximum := nodes.MaxInvocationOutput
+	if descriptor.ModelContract != nil {
+		timeoutMaximum = descriptor.ModelContract.TimeoutSecondsMax
+		outputMaximum = descriptor.ModelContract.OutputBytesMax
+	}
 	timeout, err := boundedNodeInteger(
 		args,
 		"timeout_seconds",
-		defaultNodeInvocationTimeout,
-		nodes.MaxInvocationTimeout,
+		min(defaultNodeInvocationTimeout, timeoutMaximum),
+		timeoutMaximum,
 	)
 	if err != nil {
 		return nodes.GatewayInvocationRecord{}, err
@@ -465,8 +521,8 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 	outputLimit, err := boundedNodeInteger(
 		args,
 		"output_limit_bytes",
-		defaultNodeInvocationOutput,
-		nodes.MaxInvocationOutput,
+		min(defaultNodeInvocationOutput, outputMaximum),
+		outputMaximum,
 	)
 	if err != nil {
 		return nodes.GatewayInvocationRecord{}, err
@@ -496,30 +552,6 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		TimeoutSeconds:   timeout,
 		OutputLimitBytes: outputLimit,
 	}
-	retained, found, err := runtime.source.LookupInvocationByToolCall(
-		principal,
-		storedToolCallID,
-	)
-	if err != nil {
-		return nodes.GatewayInvocationRecord{}, errors.New("invocation registry is unavailable")
-	}
-	if found {
-		if retainedErr := validateRetainedNodeInvocation(
-			retained,
-			resolved.name,
-			request,
-			descriptor,
-			profile,
-		); retainedErr != nil {
-			return nodes.GatewayInvocationRecord{}, retainedErr
-		}
-		return retained, nil
-	}
-	if ToolApprovalContinuation(ctx) {
-		return nodes.GatewayInvocationRecord{}, errors.New(
-			"retained invocation authority expired before approval resumed",
-		)
-	}
 	plan, err := nodes.PrepareExecutionPlan(
 		request,
 		descriptor,
@@ -533,12 +565,48 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 			"command input violates target policy",
 		)
 	}
+	requestedRevision := strings.TrimSpace(stringArgument(args, "discovery_revision"))
 	record, created, err := runtime.source.PrepareInvocation(
+		resolved.binding.Node,
 		resolved.name,
 		storedToolCallID,
+		principal,
 		plan,
 		descriptor,
+		!ToolApprovalContinuation(ctx),
+		func(current NodeDiscoveryRecord) error {
+			return runtime.validatePreparationAuthority(
+				agentID,
+				resolved.name,
+				command,
+				requestedRevision,
+				current,
+			)
+		},
 	)
+	if errors.Is(err, nodes.ErrGatewayInvocationNotFound) && ToolApprovalContinuation(ctx) {
+		return nodes.GatewayInvocationRecord{}, errors.New(
+			"retained invocation authority expired before approval resumed",
+		)
+	}
+	if errors.Is(err, errDiscoveryStale) {
+		return nodes.GatewayInvocationRecord{}, errDiscoveryStale
+	}
+	if err != nil {
+		return nodes.GatewayInvocationRecord{}, err
+	}
+	if !created {
+		if retainedErr := validateRetainedNodeInvocation(
+			record,
+			resolved.name,
+			request,
+			descriptor,
+			profile,
+		); retainedErr != nil {
+			return nodes.GatewayInvocationRecord{}, retainedErr
+		}
+		return record, nil
+	}
 	if err == nil && created {
 		runtime.publishInvocationEvent(
 			ctx,
@@ -550,6 +618,55 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 		)
 	}
 	return record, err
+}
+
+func (runtime *nodeInvocationToolRuntime) validatePreparationAuthority(
+	agentID string,
+	target string,
+	command string,
+	requestedRevision string,
+	current NodeDiscoveryRecord,
+) error {
+	if current.Registration == nil || current.Snapshot.ID == "" {
+		return errDiscoveryStale
+	}
+	descriptor, advertised := nodeCatalogDescriptor(current.Snapshot.Catalog, command)
+	if !advertised {
+		return errDiscoveryStale
+	}
+	revision, err := runtime.access.discoveryRevision(
+		agentID,
+		target,
+		command,
+		current.Snapshot,
+		*current.Registration,
+		descriptor,
+		current.Connected,
+	)
+	if err != nil || revision != requestedRevision {
+		return errDiscoveryStale
+	}
+	if !current.Connected ||
+		(descriptor.ModelContract != nil &&
+			descriptor.ModelContract.Availability == nodes.ModelUnavailable) {
+		return errDiscoveryStale
+	}
+	if _, err := current.Registration.ApprovedCommand(command); err != nil {
+		return errDiscoveryStale
+	}
+	return nil
+}
+
+func nodeCatalogDescriptor(
+	catalog nodes.CapabilityCatalog,
+	command string,
+) (nodes.CommandDescriptor, bool) {
+	for _, descriptor := range catalog.Commands {
+		if descriptor.Name == command {
+			return descriptor, true
+		}
+	}
+	return nodes.CommandDescriptor{}, false
 }
 
 func (runtime *nodeInvocationToolRuntime) publishInvocationEvent(
@@ -699,16 +816,16 @@ func (runtime *nodeInvocationToolRuntime) resolveTarget(
 		target = defaultTarget
 	}
 	if target == "" || !containsSorted(names, target) {
-		return resolvedNodeTarget{}, errors.New("target is not visible to this agent")
+		return resolvedNodeTarget{}, errNodeTargetNotVisible
 	}
 	entry, snapshot, registration, err := runtime.access.resolve(target, defaultTarget)
 	if err != nil {
 		return resolvedNodeTarget{}, errors.New("node registry lookup failed")
 	}
 	if snapshot == nil || registration == nil {
-		return resolvedNodeTarget{}, errors.New("target is not paired and approved")
+		return resolvedNodeTarget{}, errNodeTargetNotPaired
 	}
-	if requireAvailable && !entry.Available {
+	if requireAvailable && !entry.liveConnected {
 		return resolvedNodeTarget{}, errors.New("target is not currently connected")
 	}
 	return resolvedNodeTarget{
@@ -716,7 +833,7 @@ func (runtime *nodeInvocationToolRuntime) resolveTarget(
 		binding:      runtime.access.targets[target],
 		snapshot:     *snapshot,
 		registration: registration,
-		available:    entry.Available,
+		available:    entry.liveConnected,
 	}, nil
 }
 

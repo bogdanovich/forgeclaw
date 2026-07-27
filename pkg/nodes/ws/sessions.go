@@ -27,6 +27,7 @@ var (
 type sessionEntry struct {
 	connection io.Closer
 	peer       *peer
+	active     bool
 }
 
 type transportEntry struct {
@@ -116,35 +117,35 @@ func (hub *SessionHub) Claim(
 		slot = &sessionSlot{}
 		hub.sessions[id] = slot
 	}
+	hub.active.Add(1)
+	hub.mu.Unlock()
+
+	slot.lifecycle.Lock()
+	hub.mu.Lock()
+	if hub.closed {
+		hub.mu.Unlock()
+		slot.lifecycle.Unlock()
+		hub.active.Done()
+		_ = connection.Close()
+		return nil, ErrSessionHubClosed
+	}
 	previous := slot.current
 	slot.current = entry
-	hub.active.Add(1)
 	hub.mu.Unlock()
 	if previous != nil {
 		_ = previous.connection.Close()
 	}
 
-	slot.lifecycle.Lock()
-	hub.mu.Lock()
-	current := slot.current == entry
-	closed := hub.closed
-	hub.mu.Unlock()
-	if !current || closed {
-		slot.lifecycle.Unlock()
-		hub.active.Done()
-		if closed {
-			return nil, ErrSessionHubClosed
-		}
-		return nil, ErrSessionSuperseded
-	}
 	activationErr := error(nil)
 	if activate != nil {
 		activationErr = activate()
 	}
 	hub.mu.Lock()
-	current = slot.current == entry
-	closed = hub.closed
-	if (activationErr != nil || !current || closed) && current {
+	current := slot.current == entry
+	closed := hub.closed
+	if activationErr == nil && current && !closed {
+		entry.active = true
+	} else if current {
 		slot.current = nil
 	}
 	hub.mu.Unlock()
@@ -177,6 +178,7 @@ func (hub *SessionHub) Claim(
 			hub.mu.Lock()
 			if slot.current == entry {
 				owned = true
+				entry.active = false
 				slot.current = nil
 			}
 			hub.mu.Unlock()
@@ -195,7 +197,33 @@ func (hub *SessionHub) Connected(id nodes.ID) bool {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	slot := hub.sessions[id]
-	return slot != nil && slot.current != nil
+	return !hub.closed && slot != nil && slot.current != nil && slot.current.active
+}
+
+// WithConnectedGeneration keeps the exact currently active authenticated
+// session stable while operation validates and persists one gateway mutation.
+func (hub *SessionHub) WithConnectedGeneration(
+	id nodes.ID,
+	operation func() error,
+) error {
+	if operation == nil {
+		return errors.New("connected session operation is required")
+	}
+	hub.mu.Lock()
+	slot := hub.sessions[id]
+	hub.mu.Unlock()
+	if slot == nil {
+		return ErrNodeDisconnected
+	}
+	slot.lifecycle.Lock()
+	defer slot.lifecycle.Unlock()
+	hub.mu.Lock()
+	connected := !hub.closed && slot.current != nil && slot.current.active
+	hub.mu.Unlock()
+	if !connected {
+		return ErrNodeDisconnected
+	}
+	return operation()
 }
 
 // Request sends one correlated request to the current authenticated generation.
@@ -210,7 +238,8 @@ func (hub *SessionHub) Request(
 ) (protocol.Envelope, bool, error) {
 	hub.mu.Lock()
 	slot := hub.sessions[id]
-	if hub.closed || slot == nil || slot.current == nil || slot.current.peer == nil {
+	if hub.closed || slot == nil || slot.current == nil ||
+		!slot.current.active || slot.current.peer == nil {
 		hub.mu.Unlock()
 		return protocol.Envelope{}, false, ErrNodeDisconnected
 	}

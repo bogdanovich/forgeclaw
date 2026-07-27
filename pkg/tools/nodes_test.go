@@ -97,8 +97,11 @@ func TestNodeDiscoveryToolListUsesEffectiveAgentPolicy(t *testing.T) {
 	if got := mainTargets[0].(map[string]any)["default"]; got != true {
 		t.Fatalf("build default = %v, want true", got)
 	}
-	if got := mainTargets[0].(map[string]any)["available"]; got != true {
-		t.Fatalf("build available = %v, want true", got)
+	if got := mainTargets[0].(map[string]any)["available"]; got != false {
+		t.Fatalf("build available = %v, want false without a usable command", got)
+	}
+	if got := mainTargets[0].(map[string]any)["availability"]; got != string(nodes.ModelUnavailable) {
+		t.Fatalf("build availability = %v, want unavailable", got)
 	}
 	if strings.Contains(mainResult.ForLLM, "node-secret-builder") ||
 		strings.Contains(mainResult.ForLLM, "builder-node") {
@@ -113,6 +116,299 @@ func TestNodeDiscoveryToolListUsesEffectiveAgentPolicy(t *testing.T) {
 	opsTargets := opsPayload["targets"].([]any)
 	if len(opsTargets) != 1 || opsTargets[0].(map[string]any)["target"] != "vpn" {
 		t.Fatalf("ops targets = %#v, want only vpn", opsTargets)
+	}
+}
+
+func TestNodeDiscoveryToolReturnsOneBoundedCommandContract(t *testing.T) {
+	cfg := nodeDiscoveryTestConfig()
+	command := testNodeCommand("system.info.v1", nodes.RiskRead, true, false)
+	command.InputSchema = json.RawMessage(
+		`{"type":"object","properties":{"detail":{"type":"boolean"}},"required":["detail"],"additionalProperties":false}`,
+	)
+	command.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelAvailable,
+		TimeoutSecondsMax: 12,
+		OutputBytesMax:    2048,
+		ResultKind:        "json",
+		Constraints: nodes.CommandModelConstraints{
+			EnvironmentNames: []string{"LANG"},
+		},
+		Guidance: []string{"Request only the detail level needed."},
+		Examples: []json.RawMessage{
+			json.RawMessage(`{"detail":false}`),
+		},
+	}
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "private-node-id",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "policy-secret",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef:     map[string]nodes.Snapshot{"builder-node": snapshot},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot:            snapshot,
+				PublicKey:           []byte("private-public-key"),
+				AllowedCommands:     []string{command.Name},
+				ApprovedCatalogHash: catalogHash,
+				ApprovedAt:          1,
+			},
+		},
+	}
+	tool := NewNodeDiscoveryTool(cfg, source)
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+
+	summary := tool.Execute(ctx, map[string]any{"action": "describe", "target": "build"})
+	if summary.IsError {
+		t.Fatalf("target describe failed: %s", summary.ForLLM)
+	}
+	if strings.Contains(summary.ForLLM, "input_schema") ||
+		strings.Contains(summary.ForLLM, "Request only") {
+		t.Fatalf("target summary included full command metadata: %s", summary.ForLLM)
+	}
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":  "describe",
+		"target":  "build",
+		"command": command.Name,
+	})
+	payload := decodeNodeResult(t, result)
+	if payload["availability"] != string(nodes.ModelAvailable) || payload["available"] != true {
+		t.Fatalf("target availability = %#v", payload)
+	}
+	discovered := payload["command"].(map[string]any)
+	if discovered["availability"] != string(nodes.ModelAvailable) ||
+		discovered["name"] != command.Name {
+		t.Fatalf("command contract = %#v", discovered)
+	}
+	execution := discovered["execution"].(map[string]any)
+	if execution["timeout_seconds_max"] != float64(12) ||
+		execution["output_bytes_max"] != float64(2048) {
+		t.Fatalf("execution contract = %#v", execution)
+	}
+	if _, ok := discovered["input_schema"].(map[string]any); !ok {
+		t.Fatalf("input schema = %#v", discovered["input_schema"])
+	}
+	revision, ok := payload["discovery_revision"].(string)
+	if !ok || !strings.HasPrefix(revision, "dr_v1_") || len(revision) != len("dr_v1_")+43 {
+		t.Fatalf("discovery revision = %#v", payload["discovery_revision"])
+	}
+	for _, forbidden := range []string{
+		"private-node-id",
+		"builder-node",
+		"private-public-key",
+		"policy-secret",
+		"output_schema",
+	} {
+		if strings.Contains(result.ForLLM, forbidden) {
+			t.Fatalf("command contract leaked %q: %s", forbidden, result.ForLLM)
+		}
+	}
+}
+
+func TestNodeDiscoveryToolFailsClosedForOversizedCommandProjection(t *testing.T) {
+	cfg := nodeDiscoveryTestConfig()
+	command := testNodeCommand("system.info.v1", nodes.RiskRead, false, false)
+	command.InputSchema = json.RawMessage(
+		`{"type":"object","description":"` + strings.Repeat("hidden-projection-data", 1900) + `"}`,
+	)
+	command.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelAvailable,
+		TimeoutSecondsMax: 30,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		Guidance:          []string{},
+		Examples:          []json.RawMessage{},
+	}
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "private-node-id",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "policy-1",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef:     map[string]nodes.Snapshot{"builder-node": snapshot},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot:            snapshot,
+				AllowedCommands:     []string{command.Name},
+				ApprovedCatalogHash: catalogHash,
+				ApprovedAt:          1,
+			},
+		},
+	}
+	tool := NewNodeDiscoveryTool(cfg, source)
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	summary := decodeNodeResult(t, tool.Execute(ctx, map[string]any{
+		"action": "describe",
+		"target": "build",
+	}))
+	commands := summary["commands"].([]any)
+	if len(commands) != 1 ||
+		commands[0].(map[string]any)["availability"] != string(nodes.ModelPartiallyDescribed) {
+		t.Fatalf("oversized command summary = %#v", commands)
+	}
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":  "describe",
+		"target":  "build",
+		"command": command.Name,
+	})
+	if !result.IsError || !strings.Contains(result.ForLLM, "exceeds limits") ||
+		strings.Contains(result.ForLLM, "hidden-projection-data") {
+		t.Fatalf("oversized command discovery = %#v", result)
+	}
+}
+
+func TestNodeDiscoveryRevisionTracksAuthorityButNotHeartbeat(t *testing.T) {
+	cfg := nodeDiscoveryTestConfig()
+	command := testNodeCommand("system.info.v1", nodes.RiskRead, false, false)
+	command.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelAvailable,
+		TimeoutSecondsMax: 30,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		Guidance:          []string{},
+		Examples:          []json.RawMessage{},
+	}
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "private-node-id",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "policy-1",
+		LastSeenAt:     10,
+	}
+	registration := nodes.Registration{
+		Snapshot:            snapshot,
+		AllowedCommands:     []string{command.Name},
+		ApprovedCatalogHash: catalogHash,
+		ApprovedAt:          1,
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef:         map[string]nodes.Snapshot{"builder-node": snapshot},
+		connected:     map[nodes.ID]bool{snapshot.ID: true},
+		registrations: map[nodes.ID]nodes.Registration{snapshot.ID: registration},
+	}
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	revision := func(tool *NodeDiscoveryTool) string {
+		t.Helper()
+		payload := decodeNodeResult(t, tool.Execute(ctx, map[string]any{
+			"action":  "describe",
+			"target":  "build",
+			"command": command.Name,
+		}))
+		return payload["discovery_revision"].(string)
+	}
+	initial := revision(NewNodeDiscoveryTool(cfg, source))
+
+	snapshot.LastSeenAt++
+	registration.Snapshot = snapshot
+	source.byRef["builder-node"] = snapshot
+	source.registrations[snapshot.ID] = registration
+	if heartbeat := revision(NewNodeDiscoveryTool(cfg, source)); heartbeat != initial {
+		t.Fatalf("heartbeat changed discovery revision: %s != %s", heartbeat, initial)
+	}
+
+	snapshot.PolicyRevision = "policy-2"
+	registration.Snapshot = snapshot
+	source.byRef["builder-node"] = snapshot
+	source.registrations[snapshot.ID] = registration
+	policyChanged := revision(NewNodeDiscoveryTool(cfg, source))
+	if policyChanged == initial {
+		t.Fatal("policy revision did not invalidate discovery")
+	}
+
+	narrowed := nodeDiscoveryTestConfig()
+	narrowed.Agents.Defaults.TargetPolicy.AllowedTargets = []string{"build"}
+	if changed := revision(NewNodeDiscoveryTool(narrowed, source)); changed == policyChanged {
+		t.Fatal("effective target grant did not invalidate discovery")
+	}
+
+	rebound := nodeDiscoveryTestConfig()
+	binding := rebound.Execution.Targets["build"]
+	binding.Node = "builder-node-2"
+	rebound.Execution.Targets["build"] = binding
+	source.byRef["builder-node-2"] = snapshot
+	reboundRevision := revision(NewNodeDiscoveryTool(rebound, source))
+	if reboundRevision == policyChanged {
+		t.Fatal("target binding did not invalidate discovery")
+	}
+
+	command.ModelContract.TimeoutSecondsMax = 29
+	catalog = nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash = mustCatalogHash(t, catalog)
+	snapshot.Catalog = catalog
+	snapshot.CatalogHash = catalogHash
+	registration.Snapshot = snapshot
+	registration.ApprovedCatalogHash = catalogHash
+	source.byRef["builder-node-2"] = snapshot
+	source.registrations[snapshot.ID] = registration
+	if changed := revision(NewNodeDiscoveryTool(rebound, source)); changed == reboundRevision {
+		t.Fatal("descriptor model contract did not invalidate discovery")
+	}
+}
+
+func TestNodeDiscoveryRevisionChangesWhenAliasMovesToAnotherIdentity(t *testing.T) {
+	command := testNodeCommand("system.info.v1", nodes.RiskRead, true, false)
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "node-identity-one",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "policy-1",
+	}
+	registration := nodes.Registration{
+		Snapshot:            snapshot,
+		AllowedCommands:     []string{command.Name},
+		ApprovedCatalogHash: catalogHash,
+		ApprovedAt:          1,
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef:         map[string]nodes.Snapshot{"builder-node": snapshot},
+		connected:     map[nodes.ID]bool{snapshot.ID: true},
+		registrations: map[nodes.ID]nodes.Registration{snapshot.ID: registration},
+	}
+	tool := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source)
+	ctx := WithToolSessionContext(context.Background(), "main", "session", nil)
+	revision := func() string {
+		t.Helper()
+		payload := decodeNodeResult(t, tool.Execute(ctx, map[string]any{
+			"action":  "describe",
+			"target":  "build",
+			"command": command.Name,
+		}))
+		return payload["discovery_revision"].(string)
+	}
+	initial := revision()
+
+	replacement := snapshot
+	replacement.ID = "node-identity-two"
+	replacementRegistration := registration
+	replacementRegistration.Snapshot = replacement
+	source.byRef["builder-node"] = replacement
+	source.connected[replacement.ID] = true
+	source.registrations[replacement.ID] = replacementRegistration
+
+	if moved := revision(); moved == initial {
+		t.Fatal("alias reassignment to another authenticated identity did not invalidate discovery")
 	}
 }
 

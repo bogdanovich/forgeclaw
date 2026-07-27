@@ -30,6 +30,12 @@ type nodeAdmissionRoutes interface {
 type nodeAdmissionHandler interface {
 	http.Handler
 	Close(context.Context) error
+	WithPreparationAuthority(
+		nodes.ID,
+		string,
+		string,
+		func(nodes.Registration, nodes.CommandApproval) error,
+	) (nodes.CommandApproval, error)
 	Invoke(
 		context.Context,
 		nodes.ID,
@@ -141,30 +147,84 @@ func (runtime *nodeAdmissionRuntime) lookup(
 	expectedRegistryPath string,
 	ref string,
 ) (tools.NodeDiscoveryRecord, bool, error) {
-	runtime.registryMu.RLock()
-	defer runtime.registryMu.RUnlock()
-	if !runtime.mounted ||
-		runtime.registry == nil ||
-		runtime.registryPath != expectedRegistryPath {
-		return tools.NodeDiscoveryRecord{}, false, errNodeDiscoveryAuthorityUnavailable
+	registry, sessions, generation, err := runtime.discoveryAuthoritySnapshot(
+		expectedRegistryPath,
+	)
+	if err != nil {
+		return tools.NodeDiscoveryRecord{}, false, err
 	}
-	snapshot, found, err := runtime.registry.Resolve(ref)
+	snapshot, found, err := registry.Resolve(ref)
 	if err != nil || !found {
+		if revalidateErr := runtime.revalidateDiscoveryAuthority(
+			expectedRegistryPath,
+			generation,
+			registry,
+			sessions,
+		); revalidateErr != nil {
+			return tools.NodeDiscoveryRecord{}, false, revalidateErr
+		}
 		return tools.NodeDiscoveryRecord{}, found, err
 	}
 	record := tools.NodeDiscoveryRecord{
 		Snapshot:  snapshot,
-		Connected: runtime.sessions != nil && runtime.sessions.Connected(snapshot.ID),
+		Connected: sessions != nil && sessions.Connected(snapshot.ID),
 	}
-	registration, registered, err := runtime.registry.Registration(snapshot.ID)
+	registration, registered, err := registry.Registration(snapshot.ID)
 	if err != nil {
+		if revalidateErr := runtime.revalidateDiscoveryAuthority(
+			expectedRegistryPath,
+			generation,
+			registry,
+			sessions,
+		); revalidateErr != nil {
+			return tools.NodeDiscoveryRecord{}, false, revalidateErr
+		}
 		return tools.NodeDiscoveryRecord{}, false, err
 	}
 	if registered {
 		record.Snapshot = registration.Snapshot
 		record.Registration = &registration
 	}
+	if err := runtime.revalidateDiscoveryAuthority(
+		expectedRegistryPath,
+		generation,
+		registry,
+		sessions,
+	); err != nil {
+		return tools.NodeDiscoveryRecord{}, false, err
+	}
 	return record, true, nil
+}
+
+func (runtime *nodeAdmissionRuntime) discoveryAuthoritySnapshot(
+	expectedRegistryPath string,
+) (*nodes.FileRegistry, *nodews.SessionHub, uint64, error) {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	if !runtime.mounted ||
+		runtime.registry == nil ||
+		runtime.registryPath != expectedRegistryPath {
+		return nil, nil, 0, errNodeDiscoveryAuthorityUnavailable
+	}
+	return runtime.registry, runtime.sessions, runtime.generation, nil
+}
+
+func (runtime *nodeAdmissionRuntime) revalidateDiscoveryAuthority(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+	expectedRegistry *nodes.FileRegistry,
+	expectedSessions *nodews.SessionHub,
+) error {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	if !runtime.mounted ||
+		runtime.registryPath != expectedRegistryPath ||
+		runtime.generation != expectedGeneration ||
+		runtime.registry != expectedRegistry ||
+		runtime.sessions != expectedSessions {
+		return errNodeDiscoveryAuthorityUnavailable
+	}
+	return nil
 }
 
 func (runtime *nodeAdmissionRuntime) currentSessions() *nodews.SessionHub {
@@ -177,6 +237,21 @@ func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
 	runtime.registryMu.RLock()
 	defer runtime.registryMu.RUnlock()
 	return runtime.generation
+}
+
+func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+) (nodeAdmissionHandler, error) {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	if !runtime.mounted ||
+		runtime.handler == nil ||
+		runtime.registryPath != expectedRegistryPath ||
+		runtime.generation != expectedGeneration {
+		return nil, errNodeDiscoveryAuthorityUnavailable
+	}
+	return runtime.handler, nil
 }
 
 func (runtime *nodeAdmissionRuntime) withInvocationHandler(

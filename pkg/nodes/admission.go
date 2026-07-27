@@ -44,6 +44,11 @@ type PairingRegistry interface {
 	Pending(ID) (PendingPairing, bool, error)
 	Registration(ID) (Registration, bool, error)
 	withCommandApproval(ID, string, func(CommandApproval) error) (CommandApproval, error)
+	withResolvedCommandApproval(
+		string,
+		string,
+		func(Registration, CommandApproval) error,
+	) (CommandApproval, error)
 }
 
 type AdmissionResult struct {
@@ -258,6 +263,17 @@ func (auth *Authenticator) WithApprovedCommand(
 	operation func(CommandApproval) error,
 ) (CommandApproval, error) {
 	return auth.registry.withCommandApproval(id, command, operation)
+}
+
+// WithResolvedApprovedCommand resolves an operator-owned node reference and
+// keeps its durable identity and command authority unchanged while operation
+// performs one atomic gateway mutation.
+func (auth *Authenticator) WithResolvedApprovedCommand(
+	ref string,
+	command string,
+	operation func(Registration, CommandApproval) error,
+) (CommandApproval, error) {
+	return auth.registry.withResolvedCommandApproval(ref, command, operation)
 }
 
 func commandApproval(registration Registration, command string) (CommandApproval, error) {
