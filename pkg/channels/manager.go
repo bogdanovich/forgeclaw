@@ -251,11 +251,11 @@ func appendOutboundResponseFooter(content, footer, channel string) string {
 
 	switch strings.ToLower(strings.TrimSpace(channel)) {
 	case "telegram":
-		footer = "<sub>" + footer + "</sub>"
+		footer = `<a name="mintclaw-response-footer"></a><sub>` + footer + "</sub>"
 	case "discord":
 		footer = "-# " + footer
 	}
-	return trimmed + "\n\n---\n" + footer
+	return trimmed + "\n\n" + footer
 }
 
 func outboundResponseFooter(msg bus.OutboundMessage) string {
