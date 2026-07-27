@@ -309,6 +309,86 @@ func newSystemExecRuntime(
 	return runtime, ledger, root, policy.Executables[0]
 }
 
+func TestSystemExecAliasesResolveWithoutRemovingRawAuthority(t *testing.T) {
+	root := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := normalizeSystemExecPolicy(SystemExecPolicy{
+		WorkingRoots: []string{root},
+		Executables:  []string{executable},
+		Discovery: &SystemExecDiscovery{
+			ExecutableAliases:   map[string]string{"diagnostic": executable},
+			WorkingScopeAliases: map[string]string{"workspace": root},
+		},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newSystemExecHandler(policy)
+	for _, input := range []systemExecInput{
+		{
+			Argv: []string{"diagnostic"}, CWD: "workspace",
+			TimeoutSeconds: 5, Env: map[string]string{},
+		},
+		{
+			Argv: []string{policy.Executables[0]}, CWD: policy.WorkingRoots[0],
+			TimeoutSeconds: 5, Env: map[string]string{},
+		},
+	} {
+		raw, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := handler.prepare(raw, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prepared.executable != policy.Executables[0] ||
+			prepared.cwd != policy.WorkingRoots[0] {
+			t.Fatalf("prepared aliases = %#v", prepared)
+		}
+	}
+}
+
+func TestSystemExecAliasDestinationChangesAuthorityDigest(t *testing.T) {
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	makePolicy := func(destination string) SystemExecPolicy {
+		t.Helper()
+		policy, err := normalizeSystemExecPolicy(SystemExecPolicy{
+			WorkingRoots: []string{firstRoot, secondRoot},
+			Executables:  []string{executable},
+			Discovery: &SystemExecDiscovery{
+				ExecutableAliases:   map[string]string{"diagnostic": executable},
+				WorkingScopeAliases: map[string]string{"workspace": destination},
+			},
+		}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return policy
+	}
+	local := testRuntimePolicy([]string{"system.exec.v1"})
+	local.MaximumRisk = nodes.RiskWrite
+	first, err := systemExecModelContract(makePolicy(firstRoot), local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := systemExecModelContract(makePolicy(secondRoot), local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AuthorityDigest == second.AuthorityDigest {
+		t.Fatal("alias destination change did not alter hidden authority digest")
+	}
+}
+
 func invokeSystemExec(
 	t *testing.T,
 	runtime *Runtime,

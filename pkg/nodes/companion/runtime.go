@@ -158,7 +158,15 @@ func NewRuntime(
 	byName := make(map[string]commandHandler, len(handlers))
 	for _, handler := range handlers {
 		descriptor := handler.descriptor()
-		descriptor.ModelContract = effectiveModelContract(descriptor, policy)
+		if systemExec, ok := handler.(*systemExecHandler); ok {
+			modelContract, err := systemExecModelContract(systemExec.policy, policy)
+			if err != nil {
+				return nil, fmt.Errorf("project system.exec model contract: %w", err)
+			}
+			descriptor.ModelContract = modelContract
+		} else {
+			descriptor.ModelContract = effectiveModelContract(descriptor, policy)
+		}
 		catalog.Commands = append(catalog.Commands, descriptor)
 		byName[descriptor.Name] = handler
 	}
@@ -186,10 +194,6 @@ func effectiveModelContract(
 	if !slices.Contains(policy.AllowedCommands, descriptor.Name) ||
 		modelRiskRank(descriptor.Risk) > modelRiskRank(policy.MaximumRisk) {
 		availability = nodes.ModelUnavailable
-	} else if descriptor.Name == "system.exec.v1" {
-		// Host paths stay hidden until operator metadata supplies aliases that
-		// are validated against the command enforcement policy.
-		availability = nodes.ModelPartiallyDescribed
 	}
 	return &nodes.CommandModelContract{
 		Availability:      availability,

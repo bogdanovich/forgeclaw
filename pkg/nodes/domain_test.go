@@ -88,7 +88,7 @@ func TestCapabilityCatalogHashNormalizesEquivalentNumbers(t *testing.T) {
 
 func TestCapabilityCatalogHashBindsCanonicalModelContract(t *testing.T) {
 	first := descriptor(
-		"system.exec.v1",
+		"system.info.v1",
 		`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`,
 	)
 	first.ModelContract = &CommandModelContract{
@@ -172,6 +172,12 @@ func TestCommandModelContractRejectsMalformedOrUnboundedMetadata(t *testing.T) {
 			},
 		},
 		{
+			name: "malformed authority digest",
+			mutate: func(contract *CommandModelContract) {
+				contract.AuthorityDigest = "not-a-sha256-digest"
+			},
+		},
+		{
 			name: "schema-invalid example",
 			mutate: func(contract *CommandModelContract) {
 				contract.Examples = []json.RawMessage{json.RawMessage(`{"other":"hidden"}`)}
@@ -201,6 +207,32 @@ func TestCommandModelContractRejectsMalformedOrUnboundedMetadata(t *testing.T) {
 				t.Fatalf("Validate() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestCommandDescriptorRejectsSystemExecExampleOutsideProjection(t *testing.T) {
+	command := descriptor(
+		"system.exec.v1",
+		`{"type":"object","required":["argv","cwd","timeout_seconds","env"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string"}},"cwd":{"type":"string"},"timeout_seconds":{"type":"integer"},"env":{"type":"object"}},"additionalProperties":false}`,
+	)
+	command.ModelContract = &CommandModelContract{
+		Availability:      ModelAvailable,
+		TimeoutSecondsMax: 30,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		Constraints: CommandModelConstraints{
+			ExecutableAliases: []string{"diagnostic"},
+			WorkingScopes:     []string{"workspace"},
+		},
+		Guidance: []string{},
+		Examples: []json.RawMessage{
+			json.RawMessage(
+				`{"argv":["/hidden/bin/tool"],"cwd":"/hidden/root","timeout_seconds":5,"env":{}}`,
+			),
+		},
+	}
+	if err := command.Validate(); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

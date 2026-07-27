@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +52,62 @@ func TestRuntimeProjectsEffectiveGenericModelContracts(t *testing.T) {
 	if which == nil || which.Availability != nodes.ModelUnavailable {
 		t.Fatalf("system.which model contract = %#v, want unavailable", which)
 	}
+}
+
+func TestRuntimeProjectsAvailableSystemExecAliasContract(t *testing.T) {
+	root := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	systemExec, err := normalizeSystemExecPolicy(SystemExecPolicy{
+		WorkingRoots: []string{root},
+		Executables:  []string{executable},
+		Discovery: &SystemExecDiscovery{
+			ExecutableAliases:   map[string]string{"diagnostic": executable},
+			WorkingScopeAliases: map[string]string{"workspace": root},
+			Guidance:            []string{"Use the bounded diagnostic alias."},
+			Examples: []json.RawMessage{
+				json.RawMessage(
+					`{"argv":["diagnostic"],"cwd":"workspace","timeout_seconds":5,"env":{}}`,
+				),
+			},
+		},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := testRuntimePolicy([]string{"system.exec.v1"})
+	policy.MaximumRisk = nodes.RiskWrite
+	runtime, err := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		policy,
+		newMemoryInvocationLedger(),
+		WithSystemExec(systemExec),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, descriptor := range runtime.Catalog().Commands {
+		if descriptor.Name != "system.exec.v1" {
+			continue
+		}
+		contract := descriptor.ModelContract
+		if contract == nil ||
+			contract.Availability != nodes.ModelAvailable ||
+			contract.AuthorityDigest == "" ||
+			!slices.Equal(contract.Constraints.ExecutableAliases, []string{"diagnostic"}) ||
+			!slices.Equal(contract.Constraints.WorkingScopes, []string{"workspace"}) {
+			t.Fatalf("system.exec model contract = %#v", contract)
+		}
+		if strings.Contains(string(descriptor.InputSchema), executable) ||
+			strings.Contains(string(descriptor.InputSchema), root) {
+			t.Fatalf("descriptor schema leaked enforcement path: %s", descriptor.InputSchema)
+		}
+		return
+	}
+	t.Fatal("system.exec descriptor is missing")
 }
 
 func TestRuntimeRequiresLocalCommandApproval(t *testing.T) {
