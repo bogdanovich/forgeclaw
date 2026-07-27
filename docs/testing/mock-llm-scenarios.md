@@ -1,6 +1,6 @@
 # Mock LLM Scenarios
 
-Picoclaw's mock LLM scenario harness provides deterministic end-to-end tests for
+MintClaw's mock LLM scenario harness provides deterministic end-to-end tests for
 agent runtime behavior without calling a real model.
 
 Use it when a regression spans more than one package, for example:
@@ -22,7 +22,7 @@ A scenario scripts model responses in order:
 1. The runtime sends messages and tool definitions to `ScriptedProvider`.
 2. The current `ProviderStep` optionally asserts the request shape.
 3. The step returns either a final text response or tool calls.
-4. Picoclaw executes real or stub tools.
+4. MintClaw executes real or stub tools.
 5. The next provider step can assert that the tool result was fed back into
    model context.
 
@@ -57,7 +57,7 @@ These are not unit tests. They are deterministic runtime integration tests:
 
 - no real LLM
 - no network provider dependency
-- real Picoclaw loop/tool/registry/delivery code where the scenario needs it
+- real MintClaw loop/tool/registry/delivery code where the scenario needs it
 
 Prefer this harness over live Telegram/manual testing for regressions that need
 to stay fixed.

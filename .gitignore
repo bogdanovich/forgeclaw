@@ -15,7 +15,9 @@ cmd/**/workspace
 # MintClaw specific
 
 # MintClaw
-.mintclaw/
+.mintclaw/*
+!.mintclaw/reviewer-context.md
+!.mintclaw/reviewer-rules.json
 config.json
 sessions/
 build/

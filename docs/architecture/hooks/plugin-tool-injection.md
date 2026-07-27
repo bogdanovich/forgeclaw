@@ -1,6 +1,6 @@
 # Plugin Tool Injection Example
 
-This document demonstrates how to use PicoClaw's hook system to implement external plugin tool injection, allowing LLM to call tools implemented by external hook processes.
+This document demonstrates how to use MintClaw's hook system to implement external plugin tool injection, allowing LLM to call tools implemented by external hook processes.
 
 ---
 
@@ -11,7 +11,7 @@ Through the hook system's `respond` action, external hooks can:
 1. Inject tool **definitions** in `before_llm`, letting LLM know the tool is available
 2. Return tool **execution results** directly in `before_tool` using `respond` action, skipping ToolRegistry
 
-This way, external hooks can fully implement plugin tools without registering any tools inside PicoClaw.
+This way, external hooks can fully implement plugin tools without registering any tools inside MintClaw.
 
 ---
 
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-### 2. Configure PicoClaw
+### 2. Configure MintClaw
 
 Add hook configuration in the config file:
 
@@ -207,9 +207,9 @@ Add hook configuration in the config file:
 
 When user asks "What's the weather in Beijing today?":
 
-1. PicoClaw sends `hook.before_llm`, hook injects `get_weather` tool definition
+1. MintClaw sends `hook.before_llm`, hook injects `get_weather` tool definition
 2. LLM sees tool definition, decides to call `get_weather(city="Beijing")`
-3. PicoClaw sends `hook.before_tool`, hook uses `respond` action to return weather data
+3. MintClaw sends `hook.before_tool`, hook uses `respond` action to return weather data
 4. LLM receives result, replies to user "Beijing is sunny today, temperature 15°C"
 
 ---
@@ -219,7 +219,7 @@ When user asks "What's the weather in Beijing today?":
 ```
 User: "What's the weather in Beijing today?"
         ↓
-    PicoClaw
+    MintClaw
         ↓
     hook.before_llm
         ↓ (inject get_weather tool definition)
@@ -342,7 +342,7 @@ Media references use the `media://` protocol:
 media://<store-id>
 ```
 
-These references are managed by PicoClaw's MediaStore and can be:
+These references are managed by MintClaw's MediaStore and can be:
 - Sent to user via channel
 - Converted to base64 in LLM vision requests
 
@@ -459,7 +459,7 @@ def handle_before_tool(params: dict) -> dict:
 
 ## Coexistence with Built-in Tools
 
-Injected plugin tools coexist with PicoClaw built-in tools:
+Injected plugin tools coexist with MintClaw built-in tools:
 
 - Built-in tools (like `bash`, `read_file`) execute normally through ToolRegistry
 - Plugin tools return results through hook's `respond` action
@@ -476,8 +476,8 @@ package myhooks
 
 import (
     "context"
-    "github.com/sipeed/picoclaw/pkg/agent"
-    "github.com/sipeed/picoclaw/pkg/tools"
+    "github.com/bogdanovich/mintclaw/pkg/agent"
+    "github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type WeatherPluginHook struct{}
@@ -543,7 +543,7 @@ Through the hook system's `respond` action, external processes can:
 
 1. **Inject tool definitions**: Let LLM know new tools are available
 2. **Provide tool implementation**: Return execution results directly, no need to register in ToolRegistry
-3. **Coexist with built-in tools**: Does not affect normal operation of PicoClaw's original tools
+3. **Coexist with built-in tools**: Does not affect normal operation of MintClaw's original tools
 
 This provides a flexible and elegant solution for plugin development.
 

@@ -1,6 +1,6 @@
 # Workspace Temp Directory
 
-Picoclaw workspaces have a standard scratch directory:
+MintClaw workspaces have a standard scratch directory:
 
 ```text
 <workspace>/tmp
@@ -24,20 +24,20 @@ them available to tools that are restricted to the workspace.
 
 The standard temp path is implemented by `pkg/workspace.TempDir`.
 
-When the `exec` tool is configured with a workspace, Picoclaw creates the temp
+When the `exec` tool is configured with a workspace, MintClaw creates the temp
 directory and exposes it to subprocesses as:
 
 ```sh
-PICOCLAW_WORKSPACE_TMP=<workspace>/tmp
+MINTCLAW_WORKSPACE_TMP=<workspace>/tmp
 ```
 
 Shell commands should use that variable for scratch work:
 
 ```sh
-cat > "$PICOCLAW_WORKSPACE_TMP/check_payload.py" <<'PY'
+cat > "$MINTCLAW_WORKSPACE_TMP/check_payload.py" <<'PY'
 print("temporary helper")
 PY
-python3 "$PICOCLAW_WORKSPACE_TMP/check_payload.py"
+python3 "$MINTCLAW_WORKSPACE_TMP/check_payload.py"
 ```
 
 File tools should use paths under `tmp/` for temporary files:

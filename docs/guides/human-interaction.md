@@ -1,6 +1,6 @@
 # Durable Human Interaction
 
-ForgeClaw can pause an agent turn or durable background task, ask the authorized
+MintClaw can pause an agent turn or durable background task, ask the authorized
 user for input, release runtime resources while waiting, and resume the exact
 tool call after the answer arrives. Pending interactions survive process
 restarts.
@@ -33,14 +33,14 @@ cleanup.
 ## Asking and Answering
 
 The model can ask one to three bounded questions. Each question may accept free
-text or offer two to three choices. ForgeClaw sends the prompt to the same routed
+text or offer two to three choices. MintClaw sends the prompt to the same routed
 conversation and accepts an answer only from the recorded channel, account,
 chat, topic, session, and sender.
 
 The model owns every user-facing question, header, option label, and option
 description. It writes them in the language and general style of the
 conversation and includes enough context for the prompt to be answerable
-without runtime-added prose. ForgeClaw renders that content directly. It does
+without runtime-added prose. MintClaw renders that content directly. It does
 not detect a locale, translate text, or make another model call after
 suspension.
 
@@ -57,7 +57,7 @@ Which environment should be used?
 `/answer 16131195 …`
 ```
 
-A normal message reply remains sufficient. For several questions, ForgeClaw
+A normal message reply remains sufficient. For several questions, MintClaw
 adds question numbers and stable question IDs, then appends a keyed answer
 template:
 
@@ -96,7 +96,7 @@ An ordinary answer, including a negative answer such as `no` or
 `/answer <short-id> no`, supplies that answer and resumes the agent. It does not
 cancel the operation.
 
-`/stop` terminates the pending foreground turn or background task. ForgeClaw
+`/stop` terminates the pending foreground turn or background task. MintClaw
 durably records the cancellation, completes the suspended tool call with a
 cancellation result, and does not resume the model. `/new`, `/reset`, and
 `/clear` perform the same durable cancellation first, then continue with their
@@ -126,7 +126,7 @@ Human approval is opt-in. A trusted tool approval hook can return:
 ```
 
 `action_summary` is trusted presentation data and must be action-specific,
-bounded, and free of secrets. ForgeClaw renders the exact runtime-owned tool
+bounded, and free of secrets. MintClaw renders the exact runtime-owned tool
 name and trusted summary without model-authored approval presentation or
 generic tool arguments:
 
@@ -154,14 +154,14 @@ Interaction state is stored at:
 Workspace discovery records used during restart recovery are stored under:
 
 ```text
-<picoclaw-home>/state/interaction_workspaces/
+<mintclaw-home>/state/interaction_workspaces/
 ```
 
-On startup ForgeClaw loads pending records, expires overdue requests, restores
+On startup MintClaw loads pending records, expires overdue requests, restores
 task state, and resumes already-claimed answers. Duplicate or concurrent answers
 produce one accepted claim and one continuation.
 
-Remote chat APIs generally do not provide exactly-once publication. ForgeClaw
+Remote chat APIs generally do not provide exactly-once publication. MintClaw
 therefore does not resend a prompt or final response after an ambiguous send
 window, which avoids duplicate user-visible delivery at the cost of reporting a
 delivery-unknown failure.

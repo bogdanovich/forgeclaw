@@ -1,6 +1,6 @@
 # Async Task Delivery
 
-PicoClaw background work now uses an explicit task/completion/delivery shape:
+MintClaw background work now uses an explicit task/completion/delivery shape:
 
 1. A tool or child runtime records a durable task in the task registry.
 2. When the async result completes, the runtime builds a typed `AsyncCompletionInput`.

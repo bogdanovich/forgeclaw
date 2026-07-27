@@ -2,7 +2,7 @@
 
 Status: MVP implemented on `main`; deployment remains operator-configured
 
-This document defines the implemented first-party ForgeClaw node architecture
+This document defines the implemented first-party MintClaw node architecture
 for running bounded capabilities on remote machines. The MVP companion targets
 Linux and macOS and exposes discovery plus synchronous typed execution.
 Windows, mobile devices, cameras, service-management commands, additional
@@ -17,7 +17,7 @@ execution code.
 ## Decision Summary
 
 - A node is a lightweight capability host that makes an outbound connection to
-  the ForgeClaw gateway.
+  the MintClaw gateway.
 - Nodes are discovered dynamically after identity pairing and advertise a
   versioned command catalog.
 - Machine placement, command execution, and authorization are separate
@@ -56,7 +56,7 @@ execution code.
 
 - Full OpenClaw protocol or mobile-application compatibility in version 1.
 - An arbitrary remote root shell.
-- Transparent synchronization of an entire ForgeClaw workspace to every node.
+- Transparent synchronization of an entire MintClaw workspace to every node.
 - Moving the LLM, channel gateway, memory, or session store onto companion
   nodes.
 - General distributed scheduling, clustering, or workload migration.
@@ -90,7 +90,7 @@ placement.
 
 ## Terminology
 
-- **Gateway**: the trusted ForgeClaw control plane that owns agents, sessions,
+- **Gateway**: the trusted MintClaw control plane that owns agents, sessions,
   policy orchestration, and connected-node state.
 - **Node**: a paired machine or device that advertises and executes bounded
   capabilities.
@@ -128,7 +128,7 @@ node command policy
 executor: local | bubblewrap | docker
 ```
 
-ForgeClaw's existing `pkg/isolation` remains the local subprocess isolation
+MintClaw's existing `pkg/isolation` remains the local subprocess isolation
 implementation. A node executor may reuse the same package where its platform
 supports it.
 
@@ -557,20 +557,20 @@ with an explicit containment guarantee.
 ### Lightweight companion
 
 The companion runtime lives in shared Go packages but is distributed through a
-dedicated `cmd/picoclaw-node` build target. Go therefore links only the node
+dedicated `cmd/mintclaw-node` build target. Go therefore links only the node
 runtime and its dependencies, producing a smaller binary than the gateway. Its
 dependency graph does not import the agent, model-provider, channel, MCP-host,
 or workspace-memory runtimes:
 
 ```text
-picoclaw-node run
-picoclaw-node install
-picoclaw-node status
-picoclaw-node uninstall
+mintclaw-node run
+mintclaw-node install
+mintclaw-node status
+mintclaw-node uninstall
 ```
 
-The full `picoclaw` CLI owns gateway-side node administration commands, while
-the remote machine requires only `picoclaw-node`. Shared protocol, identity,
+The full `mintclaw` CLI owns gateway-side node administration commands, while
+the remote machine requires only `mintclaw-node`. Shared protocol, identity,
 policy, and capability packages prevent implementation duplication. A CI import
 boundary test protects the slim binary from accidentally acquiring gateway
 dependencies.
@@ -589,10 +589,10 @@ memory. Linux installs as a systemd user service by default. macOS installs as
 a LaunchAgent. System-level installation is explicit.
 
 The MVP uses one gateway binding per companion process. One machine may run
-multiple named service instances from the same `picoclaw-node` binary, each
+multiple named service instances from the same `mintclaw-node` binary, each
 with a separate configuration, state directory, device key, gateway binding,
 policy, and invocation ledger. This is the default way for independently
-deployed ForgeClaw workspaces to use the same host without sharing authority.
+deployed MintClaw workspaces to use the same host without sharing authority.
 
 A future multi-gateway supervisor may host several connection bindings over one
 shared capability runtime. The runtime is therefore instance-scoped rather than
@@ -610,7 +610,7 @@ require elevation.
 
 Privileged service actions use one of these, in preference order:
 
-1. an optional ForgeClaw privileged helper with a narrow typed Unix-socket API;
+1. an optional MintClaw privileged helper with a narrow typed Unix-socket API;
 2. an operator-supplied tightly scoped polkit or sudoers rule for exact service
    actions;
 3. no privileged capability.
@@ -692,7 +692,7 @@ whether interactive or shell execution is available.
 SSH is not part of the node MVP, but it has two useful future roles.
 
 First, an explicit operator command may use SSH to bootstrap a companion on a
-new machine. It verifies the host key, copies the slim `picoclaw-node` binary,
+new machine. It verifies the host key, copies the slim `mintclaw-node` binary,
 installs an unprivileged service, and supplies a short-lived enrollment token
 plus the pinned gateway TLS identity. Normal operation then switches to the
 node's outbound WSS connection. SSH credentials remain in an operator-owned
@@ -714,7 +714,7 @@ false node presence. This keeps SSH and paired nodes as different transports
 over shared execution contracts instead of creating parallel policy and result
 stacks.
 
-Sensitive actions integrate with ForgeClaw's durable human-interaction system.
+Sensitive actions integrate with MintClaw's durable human-interaction system.
 Approval is bound to the canonical plan hash, node identity, policy revision,
 and expiry. Approval consumption happens before dispatch. An uncertain result
 does not restore the approval.
@@ -767,7 +767,7 @@ OpenClaw-compatible WebSocket frames
 OpenClaw transport adapter
                 |
                 v
-ForgeClaw NodeRegistry / NodeInvoker / policy
+MintClaw NodeRegistry / NodeInvoker / policy
 ```
 
 The internal model intentionally preserves concepts that map cleanly to an
@@ -817,11 +817,11 @@ mutation did not execute.
 | --- | --- | --- | --- | --- |
 | Domain, protocol schema, identity, and durable registry | #275, #277 | `pkg/nodes`, `pkg/nodes/protocol` | domain, schema, identity, and registry tests | Available in the merged binaries; inactive until nodes are enabled |
 | Outbound authenticated WSS and explicit pairing | #278, #282, #284 | `pkg/nodes/ws`, `pkg/gateway`, `pkg/nodes/companion` | admission, pairing, session ownership, reconnect, and reload tests | Requires an operator-configured WSS endpoint and paired companion |
-| Slim Linux/macOS companion | #280 | `cmd/picoclaw-node`, `pkg/nodes/companion` | dependency-boundary and companion startup tests | Built separately as `picoclaw-node` |
-| Operator lifecycle and durable catalog approval | #283, #288, #290 | `cmd/picoclaw`, `pkg/nodes` | approve, revoke, changed-catalog, and node-local denial tests | Explicit pairing approval required before execution |
+| Slim Linux/macOS companion | #280 | `cmd/mintclaw-node`, `pkg/nodes/companion` | dependency-boundary and companion startup tests | Built separately as `mintclaw-node` |
+| Operator lifecycle and durable catalog approval | #283, #288, #290 | `cmd/mintclaw`, `pkg/nodes` | approve, revoke, changed-catalog, and node-local denial tests | Explicit pairing approval required before execution |
 | Durable invocation identity, ledger, recovery, and no-blind-replay semantics | #297, #301, #305 | `pkg/nodes`, `pkg/nodes/companion`, `pkg/nodes/ws` | idempotency, concurrent dispatch, cancellation, recovery, disconnect, and unknown-outcome tests | Persisted in bounded gateway and companion stores |
 | Typed `system.exec.v1` with node-local bounds | #307 | `pkg/nodes/companion` | executable, argv, working-root, environment, timeout, output, and failure tests | Disabled unless explicitly allowlisted in companion policy |
-| Linux systemd and macOS LaunchAgent process lifecycle | #311, #312, #313, #314, #316, #321, #325 | `cmd/picoclaw-node` | install, status, uninstall, rollback, and real-process lifecycle tests | Optional operator installation path; not a remote service-management capability |
+| Linux systemd and macOS LaunchAgent process lifecycle | #311, #312, #313, #314, #316, #321, #325 | `cmd/mintclaw-node` | install, status, uninstall, rollback, and real-process lifecycle tests | Optional operator installation path; not a remote service-management capability |
 | Agent target policy and model-facing discovery | #326, #327 | `pkg/config`, `pkg/tools/nodes.go` | target visibility, alias resolution, default target, agent isolation, and reload tests | Visible only when the workspace enables nodes and grants targets |
 | Model-facing invocation, status, approval continuation, and authority binding | #329, #331, #340, #342, #346, #348, #355 | `pkg/tools/node_invocation.go`, `pkg/gateway/node_invocations.go`, `pkg/nodes/gateway_invocations.go` | workspace, agent, session, actor, tool-call, approval, dispatch-boundary, recovery, and output-schema tests | Registered as `nodes_invoke` and `nodes_status` when nodes are enabled |
 | Redacted passive observations and complete real-process vertical slice | #372 | `pkg/events`, `pkg/tools/node_invocation.go`, `pkg/gateway/node_invocation_vertical_e2e_test.go` | model tool -> approval -> WSS -> companion -> `system.exec.v1` -> model result E2E | Event bus observations are available wherever runtime events are configured |
@@ -879,7 +879,7 @@ be reported as confirmed termination.
 
 The implementation is merged and covered by repository tests. Node support
 remains disabled unless a workspace enables it and grants named targets. A
-production rollout must build both `picoclaw` and `picoclaw-node` from the same
+production rollout must build both `mintclaw` and `mintclaw-node` from the same
 merged revision, preserve disabled-by-default policy, and verify tool
 registration and companion connectivity only where a node is configured.
 

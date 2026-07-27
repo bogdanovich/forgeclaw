@@ -1,6 +1,6 @@
 # Durable Ingress
 
-ForgeClaw protects inbound chat messages with a normalized durable ingress spool.
+MintClaw protects inbound chat messages with a normalized durable ingress spool.
 
 The spool sits behind `bus.MessageBus.PublishInbound`, after a channel adapter has
 converted a platform-specific update into a `bus.InboundMessage`. This makes the
@@ -25,7 +25,7 @@ bus.
 On gateway startup, `ReplayInboundSpool` republishes unacked pending or processing
 entries into the bus before normal channel traffic continues. This covers the
 common failure case where the process exits after a normalized inbound message
-has entered ForgeClaw but before the agent has processed it.
+has entered MintClaw but before the agent has processed it.
 
 ## File States
 
@@ -34,7 +34,7 @@ has entered ForgeClaw but before the agent has processed it.
 - `*.failed`: terminal tombstone for entries intentionally failed by runtime
   code.
 
-Current gateway wiring enables the spool automatically for `picoclaw gateway`.
+Current gateway wiring enables the spool automatically for `mintclaw gateway`.
 One-shot CLI helpers and tests use a plain in-memory bus unless they explicitly
 attach an `InboundSpool`.
 
@@ -43,7 +43,7 @@ attach an `InboundSpool`.
 This layer stores normalized `bus.InboundMessage` values. It does not store raw
 platform payloads before channel normalization.
 
-That means it protects all channels uniformly after they publish into ForgeClaw,
+That means it protects all channels uniformly after they publish into MintClaw,
 but it does not yet provide OpenClaw-style raw transport offset protection for
 Telegram long polling before `PublishInbound` is called. A deeper transport-level
 spool can be added later for channels whose upstream protocol needs exactly that

@@ -1,6 +1,6 @@
-# PicoClaw Channel System: Complete Development Guide
+# MintClaw Channel System: Complete Development Guide
 
-> **Scope**: `pkg/channels/`, `pkg/bus/`, `pkg/media/`, `pkg/identity/`, `cmd/picoclaw/internal/gateway/`
+> **Scope**: `pkg/channels/`, `pkg/bus/`, `pkg/media/`, `pkg/identity/`, `cmd/mintclaw/internal/gateway/`
 
 ---
 
@@ -60,7 +60,7 @@ pkg/channels/
 ├── discord/
 │   ├── init.go
 │   └── discord.go
-├── slack/ line/ onebot/ dingtalk/ feishu/ wecom/ qq/ whatsapp/ whatsapp_native/ maixcam/ pico/
+├── slack/ line/ onebot/ dingtalk/ feishu/ wecom/ qq/ whatsapp/ whatsapp_native/ maixcam/ mintclaw/
 │   └── ...
 
 pkg/bus/
@@ -162,19 +162,19 @@ Using Telegram as an example, the main changes are:
 package channels
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 // New code (refactored branch)
 package telegram
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"     // Reference parent package
-    "github.com/sipeed/picoclaw/pkg/config"
-    "github.com/sipeed/picoclaw/pkg/identity"      // New
-    "github.com/sipeed/picoclaw/pkg/media"          // New (if media support needed)
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"     // Reference parent package
+    "github.com/bogdanovich/mintclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/identity"      // New
+    "github.com/bogdanovich/mintclaw/pkg/media"          // New (if media support needed)
 )
 ```
 
@@ -321,9 +321,9 @@ Create `init.go` for your channel:
 package telegram
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"
-    "github.com/sipeed/picoclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"
+    "github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func init() {
@@ -341,11 +341,11 @@ func init() {
 **3h. Import sub-package in Gateway**
 
 ```go
-// cmd/picoclaw/internal/gateway/helpers.go
+// cmd/mintclaw/internal/gateway/helpers.go
 import (
-    _ "github.com/sipeed/picoclaw/pkg/channels/telegram"   // Triggers init() registration
-    _ "github.com/sipeed/picoclaw/pkg/channels/discord"
-    _ "github.com/sipeed/picoclaw/pkg/channels/your_new_channel"  // New addition
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/telegram"   // Triggers init() registration
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/discord"
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/your_new_channel"  // New addition
 )
 ```
 
@@ -426,9 +426,9 @@ To add a new chat platform (e.g., `matrix`), you need to:
 package matrix
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"
-    "github.com/sipeed/picoclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"
+    "github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func init() {
@@ -452,11 +452,11 @@ import (
     "context"
     "fmt"
 
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"
-    "github.com/sipeed/picoclaw/pkg/config"
-    "github.com/sipeed/picoclaw/pkg/identity"
-    "github.com/sipeed/picoclaw/pkg/logger"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"
+    "github.com/bogdanovich/mintclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/identity"
+    "github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 // MatrixChannel implements channels.Channel for the Matrix protocol.
@@ -767,9 +767,9 @@ if c.owner != nil && c.placeholderRecorder != nil {
 ```
 
 **This means**:
-- Channels implementing `TypingCapable` (Telegram, Discord, LINE, Pico) do not need to manually call `StartTyping` + `RecordTypingStop` in `handleMessage`
+- Channels implementing `TypingCapable` (Telegram, Discord, LINE, MintClaw) do not need to manually call `StartTyping` + `RecordTypingStop` in `handleMessage`
 - Channels implementing `ReactionCapable` (Slack, OneBot) do not need to manually call `AddReaction` + `RecordTypingStop` in `handleMessage`
-- Channels implementing `PlaceholderCapable` (Telegram, Discord, Pico) do not need to manually send placeholder messages and call `RecordPlaceholder` in `handleMessage`
+- Channels implementing `PlaceholderCapable` (Telegram, Discord, MintClaw) do not need to manually send placeholder messages and call `RecordPlaceholder` in `handleMessage`
 - Channels only need to implement the corresponding interface; `HandleMessage` handles orchestration automatically
 - Channels that don't implement these interfaces are unaffected (type assertions will fail and be skipped)
 - `PlaceholderCapable`'s `SendPlaceholder` method internally decides whether to send based on the configured `PlaceholderConfig.Enabled`; returning `("", nil)` skips registration
@@ -841,9 +841,9 @@ just register the factory and the config entry.
 #### Add blank import in Gateway
 
 ```go
-// cmd/picoclaw/internal/gateway/helpers.go
+// cmd/mintclaw/internal/gateway/helpers.go
 import (
-    _ "github.com/sipeed/picoclaw/pkg/channels/matrix"
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/matrix"
 )
 ```
 
@@ -1312,7 +1312,7 @@ make test                                       # Full test suite
 | `pkg/channels/whatsapp_native/` | `"whatsapp_native"` | — (Native whatsmeow mode) |
 | `pkg/channels/maixcam/` | `"maixcam"` | — |
 | `pkg/channels/mqtt/` | `"mqtt"` | — |
-| `pkg/channels/pico/` | `"pico"` | TypingCapable, PlaceholderCapable, MessageEditor, WebhookHandler |
+| `pkg/channels/mintclaw/` | `"mintclaw"` | TypingCapable, PlaceholderCapable, MessageEditor, WebhookHandler |
 
 ### A.3 Interface Quick Reference
 
@@ -1424,12 +1424,12 @@ agentLoop.Stop()               // Stop Agent
 
 3. **WeCom is now a single channel**: `"wecom"` is implemented as a WebSocket-based AI Bot channel with route persistence. Access control uses the shared channel allowlist mechanism. It no longer exposes the legacy webhook/app split.
 
-4. **Pico Protocol**: `pkg/channels/pico/` implements a custom PicoClaw native protocol channel that receives messages via WebSocket webhook (`/pico/ws`).
+4. **MintClaw Protocol**: `pkg/channels/mintclaw/` implements a custom MintClaw native protocol channel that receives messages via WebSocket webhook (`/mintclaw/ws`).
 
 5. **WhatsApp has two modes**: `"whatsapp"` (Bridge mode, communicates via external bridge URL) and `"whatsapp_native"` (native whatsmeow mode, connects directly to WhatsApp). Manager selects which to initialize based on `WhatsAppConfig.UseNative`.
 
 6. **DingTalk uses Stream mode**: DingTalk uses the SDK's Stream/WebSocket mode (not HTTP webhook), so it does not implement `WebhookHandler`.
 
-7. **PlaceholderConfig vs implementation**: `PlaceholderConfig` appears in 6 channel configs (Telegram, Discord, Slack, LINE, OneBot, Pico), but only channels that implement both `PlaceholderCapable` + `MessageEditor` (Telegram, Discord, Pico) can actually use placeholder message editing. The rest are reserved fields.
+7. **PlaceholderConfig vs implementation**: `PlaceholderConfig` appears in 6 channel configs (Telegram, Discord, Slack, LINE, OneBot, MintClaw), but only channels that implement both `PlaceholderCapable` + `MessageEditor` (Telegram, Discord, MintClaw) can actually use placeholder message editing. The rest are reserved fields.
 
 8. **ReasoningChannelID**: Most channel configs include a `reasoning_channel_id` field to route LLM reasoning/thinking output to a designated channel (WhatsApp, Telegram, Feishu, Discord, MaixCam, QQ, DingTalk, Slack, LINE, OneBot, WeCom). Note: `PicoConfig` does not currently expose this field. `BaseChannel` exposes this via the `WithReasoningChannelID` option and `ReasoningChannelID()` method.

@@ -6,13 +6,13 @@ All hooks use `JSON-RPC 2.0` format, with one JSON message per line, transmitted
 
 ## Basic Protocol Structure
 
-### Request (PicoClaw → Hook)
+### Request (MintClaw → Hook)
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"hook.xxx","params":{...}}
 ```
 
-### Response (Hook → PicoClaw)
+### Response (Hook → MintClaw)
 
 Success:
 ```json
@@ -451,7 +451,7 @@ Approval hook for deciding whether to allow execution of sensitive tools.
 
 `action_summary` is required when `require_human` is true. It is trusted,
 action-specific presentation data produced by the policy hook and must not
-contain secrets. ForgeClaw displays it with the runtime-owned tool name; it does
+contain secrets. MintClaw displays it with the runtime-owned tool name; it does
 not render arbitrary tool arguments. Runtime separately binds approval to the
 exact canonical arguments and revalidates policy before one-time execution.
 
@@ -594,4 +594,4 @@ def handle_before_tool(params: dict) -> dict:
     return {"action": "continue"}
 ```
 
-This way, external hooks can fully implement plugin tools without registering any tool implementation inside PicoClaw.
+This way, external hooks can fully implement plugin tools without registering any tool implementation inside MintClaw.

@@ -1,6 +1,6 @@
-# PicoClaw Doctor
+# MintClaw Doctor
 
-`picoclaw doctor` audits a ForgeClaw deployment for unsafe configuration and
+`mintclaw doctor` audits a MintClaw deployment for unsafe configuration and
 unresolved operational state. It is designed for interactive troubleshooting,
 deployment checks, and CI automation.
 
@@ -13,7 +13,7 @@ workspace state. You can run it while the gateway is active.
 Run Doctor on the active deployment:
 
 ```sh
-picoclaw doctor
+mintclaw doctor
 ```
 
 The command prints every finding with:
@@ -31,23 +31,23 @@ After changing configuration or resolving operational state, run the same
 command again. A normal remediation workflow is:
 
 ```sh
-picoclaw doctor
+mintclaw doctor
 # Review and fix findings.
-picoclaw doctor
+mintclaw doctor
 ```
 
 ## Usage
 
 ```sh
-picoclaw doctor
-picoclaw doctor --json
-picoclaw doctor --strict
-picoclaw doctor --config /path/to/config.json
-picoclaw doctor --stale-task-age 45m --pending-delivery-age 20m
+mintclaw doctor
+mintclaw doctor --json
+mintclaw doctor --strict
+mintclaw doctor --config /path/to/config.json
+mintclaw doctor --stale-task-age 45m --pending-delivery-age 20m
 ```
 
 `--config` selects a deployment explicitly. Without it, Doctor uses the active
-PicoClaw configuration path in the same way as other CLI commands.
+MintClaw configuration path in the same way as other CLI commands.
 
 ## Reading Results
 
@@ -79,7 +79,7 @@ Use strict mode for deployment gates where warnings must be resolved or
 explicitly accepted:
 
 ```sh
-picoclaw doctor --strict
+mintclaw doctor --strict
 ```
 
 ## JSON Schema
@@ -87,7 +87,7 @@ picoclaw doctor --strict
 Use JSON output for scripts and CI:
 
 ```sh
-picoclaw doctor --json > doctor-report.json
+mintclaw doctor --json > doctor-report.json
 jq '.summary' doctor-report.json
 ```
 
@@ -96,7 +96,7 @@ can intentionally exit with `2`:
 
 ```sh
 set +e
-picoclaw doctor --json > doctor-report.json
+mintclaw doctor --json > doctor-report.json
 doctor_status=$?
 set -e
 
@@ -107,7 +107,7 @@ if [ "$doctor_status" -ne 0 ]; then
 fi
 ```
 
-JSON stdout contains only the report, without the interactive PicoClaw banner.
+JSON stdout contains only the report, without the interactive MintClaw banner.
 The output uses `schema_version: "doctor.v1"`.
 Top-level fields are `schema_version`, `generated_by`, `config_path`, `summary`,
 and `findings`. Each finding has `id`, `severity`, `status`, `title`,
@@ -137,7 +137,7 @@ Thresholds accept Go duration values such as `30m`, `2h`, or `48h`:
 Example for a deployment with intentionally long background jobs:
 
 ```sh
-picoclaw doctor \
+mintclaw doctor \
   --stale-task-age 2h \
   --pending-delivery-age 30m \
   --recent-failure-age 48h

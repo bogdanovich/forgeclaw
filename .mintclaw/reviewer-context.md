@@ -1,7 +1,7 @@
-# ForgeClaw Reviewer Context
+# MintClaw Reviewer Context
 
-This file is repo-owned reviewer context for `bogdanovich/forgeclaw`. It is
-separate from `.forgeclaw/reviewer-rules.json`:
+This file is repo-owned reviewer context for `bogdanovich/mintclaw`. It is
+separate from `.mintclaw/reviewer-rules.json`:
 
 - `reviewer-rules.json` is for deterministic path/risk/Codex policy.
 - `reviewer-context.md` is for architecture notes, invariants, compatibility
@@ -12,17 +12,16 @@ external reviewer workspace notes when the two overlap.
 
 ## Project Character
 
-ForgeClaw is a long-lived personal fork of upstream PicoClaw. The fork
-prioritizes:
+MintClaw is an independent agent runtime. The project prioritizes:
 
 - deployable multi-workspace runtime behavior;
 - durable background automation;
 - Telegram-first UX correctness;
-- safe changes without breaking upstream mergeability more than necessary.
+- coherent cross-platform packaging and operations.
 
-Review changes with that fork reality in mind. A change can be locally clean
-and still be a bad ForgeClaw change if it increases operational ambiguity,
-workspace coupling, or merge friction without enough payoff.
+Review changes with that operational reality in mind. A change can be locally
+clean and still be a bad MintClaw change if it increases ambiguity, workspace
+coupling, or maintenance cost without enough payoff.
 
 ## High-Risk Architecture Areas
 
@@ -53,7 +52,7 @@ These changes deserve extra skepticism even when tests are green:
   - durable approval and clarification state
   - argument binding and exactly-once resolution
   - expiry, single consumption, and restart recovery
-- `pkg/nodes/**`, `cmd/picoclaw-node/**`
+- `pkg/nodes/**`, `cmd/mintclaw-node/**`
   - remote node identity and admission
   - authenticated command transport and schema validation
   - execution policy, cancellation, and durable invocation identity
@@ -113,9 +112,9 @@ Review against these invariants explicitly:
    - Wrong topic routing, broken formatting, leaked tool feedback, or missed
      suppression rules are not cosmetic issues.
 
-6. **Upstream mergeability still matters**
-   - Avoid gratuitous renames or abstractions that make future upstream syncs
-     harder unless the local payoff is clear.
+6. **Project coherence matters**
+   - Avoid duplicate identities, compatibility layers, or abstractions that
+     obscure the canonical runtime behavior.
 
 7. **Remote execution must be identity-bound and fail closed**
    - A node command must remain bound to the authenticated node, invocation,
@@ -150,5 +149,5 @@ When changes touch runtime plumbing, ask:
 - Can a reconnect, retry, or restart repeat a remote or human-approved action?
 - Does diagnostic output preserve useful ordering, redaction, bounds, and scope
   without becoming authoritative?
-- Does this make upstream merges harder than necessary?
+- Does this preserve one canonical project and runtime identity?
 - Is the user-visible chat/Telegram behavior still deterministic?

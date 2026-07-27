@@ -1,28 +1,6 @@
-> [!IMPORTANT]
-> **Fork note**
->
-> This branch is a personal fork that currently carries additional features and behavior on top of `upstream/main`, including:
->
-> * **Image generation support:** provider-backed image generation tool and pluggable image generation provider wiring.
-> * **Local coding tools:** `apply_patch` for guarded file edits, `search_files` for workspace search with optional gitignore override, and `update_plan` for explicit task progress.
-> * **Planning and search providers:** Gemini web search provider, related web-search UI/config support, and safer provider behavior around unsupported range filters.
-> * **Agent / subagent runtime fixes:** async follow-up origin preservation, direct async error surfacing, final-reply delivery after interim progress messages, improved `spawn` / `delegate` delivery semantics, and durable task status behavior.
-> * **Runtime delivery coordination:** typed async completion handling, legacy synthetic system-message adapter isolation, delivery-mode routing (`user_only`, `parent_only`, `user_and_parent`), duplicate/restart idempotency, and task-registry-backed `spawn_status` / `task_status`.
-> * **Unified tool delivery intents:** declarative `ToolResult` delivery intents and outbound payloads (`immediate_continue`, `final_handled`, `parent_only`, `silent`) so tools like `message` and generated-media tools share one delivery coordinator path.
-> * **Durable background task registry:** bounded persistent records for spawn, delegate, and cron executions, including delivery status, completion IDs, restart reconciliation, and user-visible `task_status` diagnostics.
-> * **Seahorse context hardening:** LCM-style summary-prefix pressure compaction, formatted-summary budgeting, non-history prompt/tool budget reservation, coverage-root assembly, capped summary output, less noisy XML text escaping, and fail-closed oversized-context behavior.
-> * **Agent capability policy:** frontmatter-based per-agent `tools` / `mcpServers` filtering, replacing the older config-level per-agent tool filter layer.
-> * **MCP transport safety:** fatal MCP transport / JSON-RPC framing errors fail fast instead of triggering speculative fallback tool calls after a broken MCP response.
-> * **Telegram / channel fixes:** forum topic preservation for final replies and message-tool sends, media-group album handling, topic-aware trigger overrides, typing / feedback cleanup, and real `MinEditInterval` throttling for tool-feedback edits.
-> * **Media/message delivery ownership:** message-tool media sending with explicit `media_enabled` configuration, generated-media continuation for multi-image tasks, cleaner forwardable media captions, and reduced duplicate “done” replies after file/media delivery.
-> * **Tooling and workflow fixes:** relative script paths allowed in the exec guard, head/tail truncation for oversized command output, session-scoped Seahorse retrieval tools, cron feedback suppression plus cron execution records, session reset command, and tool-feedback controls.
-> * **Provider auth support:** OpenAI OAuth support for Codex and transcription flows.
->
-> Treat this branch as deployment-specific until the corresponding changes are merged upstream.
-
 <div align="center">
 
-<h1>ForgeClaw</h1>
+<h1>MintClaw</h1>
 
 <h3>A fast, hackable agent runtime for personal automation, MCP tools, and multi-agent workflows.</h3>
 
@@ -38,9 +16,9 @@
 
 ---
 
-ForgeClaw is a personal fork of [PicoClaw](https://github.com/sipeed/picoclaw). It keeps PicoClaw's small Go runtime as the base, but carries deployment-specific changes for day-to-day agent workflows: durable task state, better tool delivery semantics, MCP-heavy integrations, media handling, and context-management hardening.
-
-This repository is not the upstream PicoClaw project. Treat it as an experimental fork optimized for one actively used deployment.
+MintClaw is an independent Go agent runtime for personal automation. It combines
+durable task state, deterministic tool delivery, MCP integrations, media
+handling, multi-agent workflows, and bounded context management in one project.
 
 ## Features
 
@@ -51,24 +29,13 @@ This repository is not the upstream PicoClaw project. Treat it as an experimenta
 - **Context-management hardening** through Seahorse compaction improvements and fail-closed oversized-context behavior.
 - **Provider and search extensions** including OpenAI OAuth support and additional web-search/provider behavior.
 
-## Upstream
+## Project Status
 
 > [!CAUTION]
 > **Security Notice**
 >
-> * **NOTE:** PicoClaw is in early rapid development. There may be unresolved security issues. Do not deploy to production before v1.0.
-> * **NOTE:** PicoClaw has recently merged many PRs. Recent builds may use 10-20MB RAM. Resource optimization is planned after feature stabilization.
-
-ForgeClaw tracks upstream PicoClaw as:
-
-```bash
-upstream https://github.com/sipeed/picoclaw.git
-origin   git@github.com:bogdanovich/forgeclaw.git
-```
-
-Recent upstream milestones:
-
-- 2026-05-11: LicheeRV-Claw became available on [AliExpress](https://www.aliexpress.com/item/1005006519668532.html).
+> * **NOTE:** MintClaw is in early rapid development. There may be unresolved security issues. Do not deploy to production before v1.0.
+> * **NOTE:** MintClaw has recently merged many PRs. Recent builds may use 10-20MB RAM. Resource optimization is planned after feature stabilization.
 
 ## Install
 
@@ -80,9 +47,9 @@ Prerequisites:
 - Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
 
 ```bash
-git clone https://github.com/bogdanovich/forgeclaw.git
+git clone https://github.com/bogdanovich/mintclaw.git
 
-cd forgeclaw
+cd mintclaw
 make deps
 
 # Install frontend dependencies
@@ -113,19 +80,15 @@ make install
 The WebUI Launcher provides a browser-based interface for configuration and chat. This is the easiest way to get started — no command-line knowledge required.
 
 ```bash
-picoclaw-launcher
+mintclaw-launcher
 # Open http://localhost:18800 in your browser
 ```
 
 > [!TIP]
 > **Remote access / Docker / VM:** Add the `-public` flag to listen on all interfaces:
 > ```bash
-> picoclaw-launcher -public
+> mintclaw-launcher -public
 > ```
-
-<p align="center">
-<img src="assets/launcher-webui.jpg" alt="WebUI Launcher" width="600">
-</p>
 
 **Getting started:**
 
@@ -138,8 +101,8 @@ For more details, see the local documentation in `docs/`.
 
 ```bash
 # 1. Clone this repo
-git clone https://github.com/bogdanovich/forgeclaw.git
-cd forgeclaw
+git clone https://github.com/bogdanovich/mintclaw.git
+cd mintclaw
 
 # 2. First run — auto-generates docker/data/config.json then exits
 #    (only triggers when both config.json and workspace/ are missing)
@@ -154,7 +117,7 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 # Open http://localhost:18800
 ```
 
-> **Docker / VM users:** The Gateway listens on `127.0.0.1` by default. Set `PICOCLAW_GATEWAY_HOST=0.0.0.0` or use the `-public` flag to make it accessible from the host.
+> **Docker / VM users:** The Gateway listens on `127.0.0.1` by default. Set `MINTCLAW_GATEWAY_HOST=0.0.0.0` or use the `-public` flag to make it accessible from the host.
 
 ```bash
 # Check logs
@@ -173,23 +136,15 @@ docker compose -f docker/docker-compose.yml --profile launcher up -d
 <details>
 <summary><b>macOS — First Launch Security Warning</b></summary>
 
-macOS may block `picoclaw-launcher` on first launch because it is downloaded from the internet and not notarized through the Mac App Store.
+macOS may block `mintclaw-launcher` on first launch because it is downloaded from the internet and not notarized through the Mac App Store.
 
-**Step 1:** Double-click `picoclaw-launcher`. You will see a security warning:
+**Step 1:** Double-click `mintclaw-launcher`. macOS may report that it cannot
+verify the developer because release artifacts are intentionally unsigned.
 
-<p align="center">
-<img src="assets/macos-gatekeeper-warning.jpg" alt="macOS Gatekeeper warning" width="400">
-</p>
+**Step 2:** Open **System Settings** → **Privacy & Security** → scroll to
+**Security** → click **Open Anyway**, then confirm the action.
 
-> *"picoclaw-launcher" Not Opened — Apple could not verify "picoclaw-launcher" is free of malware that may harm your Mac or compromise your privacy.*
-
-**Step 2:** Open **System Settings** → **Privacy & Security** → scroll down to the **Security** section → click **Open Anyway** → confirm by clicking **Open Anyway** in the dialog.
-
-<p align="center">
-<img src="assets/macos-gatekeeper-allow.jpg" alt="macOS Privacy & Security — Open Anyway" width="600">
-</p>
-
-After this one-time step, `picoclaw-launcher` will open normally on subsequent launches.
+After this one-time step, `mintclaw-launcher` will open normally on subsequent launches.
 
 </details>
 
@@ -198,39 +153,24 @@ After this one-time step, `picoclaw-launcher` will open normally on subsequent l
 
 Give your decade-old phone a second life. Turn it into a small always-on AI assistant.
 
-**Option 1: APK Install**
-
-Preview:
-
-<table>
-  <tr>
-    <td><img src="assets/fui_main_page.jpg" width="200"></td>
-    <td><img src="assets/fui_web_page.jpg" width="200"></td>
-    <td><img src="assets/fui_log_page.jpg" width="200"></td>
-    <td><img src="assets/fui_setting_page.jpg" width="200"></td>
-  </tr>
-</table>
-
-Download the APK from [picoclaw.io](https://picoclaw.io/download/) and install directly. No Termux required.
-
-**Option 2: Termux**
-
-For a full command-line setup checklist, see the [Android Termux Guide](docs/guides/android-termux.md).
+Use Termux for the supported Android command-line setup. See the
+[Android Termux Guide](docs/guides/android-termux.md) for the complete
+installation checklist.
 
 <details>
 <summary><b>Terminal Launcher (for resource-constrained environments)</b></summary>
 
-For minimal environments where only the `picoclaw` core binary is available (no Launcher UI), you can configure everything via the command line and a JSON config file.
+For minimal environments where only the `mintclaw` core binary is available (no Launcher UI), you can configure everything via the command line and a JSON config file.
 
 **1. Initialize**
 
 ```bash
-picoclaw onboard
+mintclaw onboard
 ```
 
-This creates `~/.picoclaw/config.json` and the workspace directory.
+This creates `~/.mintclaw/config.json` and the workspace directory.
 
-**2. Configure** (`~/.picoclaw/config.json`)
+**2. Configure** (`~/.mintclaw/config.json`)
 
 ```json
 {
@@ -258,20 +198,20 @@ This creates `~/.picoclaw/config.json` and the workspace directory.
 
 ```bash
 # One-shot question
-picoclaw agent -m "What is 2+2?"
+mintclaw agent -m "What is 2+2?"
 
 # Interactive mode
-picoclaw agent
+mintclaw agent
 
 # Start gateway for chat app integration
-picoclaw gateway
+mintclaw gateway
 ```
 
 </details>
 
 ## 🔌 Providers (LLM)
 
-PicoClaw supports 30+ LLM providers through the `model_list` configuration. Use the `protocol/model` format:
+MintClaw supports 30+ LLM providers through the `model_list` configuration. Use the `protocol/model` format:
 
 | Provider | Protocol | API Key | Notes |
 |----------|----------|---------|-------|
@@ -339,7 +279,7 @@ For full provider configuration details, see [Providers & Models](docs/guides/pr
 
 ## 💬 Channels (Chat Apps)
 
-Talk to your PicoClaw through 19+ messaging platforms:
+Talk to your MintClaw through 19+ messaging platforms:
 
 | Channel | Setup | Protocol | Docs |
 |---------|-------|----------|------|
@@ -360,12 +300,12 @@ Talk to your PicoClaw through 19+ messaging platforms:
 | **OneBot** | Medium (WebSocket URL) | OneBot v11 | [Guide](docs/channels/onebot/README.md) |
 | **MQTT** | Easy (broker + agent_id) | MQTT pub/sub | [Guide](docs/channels/mqtt/README.md) |
 | **MaixCam** | Easy (enable) | TCP socket | [Guide](docs/channels/maixcam/README.md) |
-| **Pico** | Easy (enable) | Native protocol | Built-in |
-| **Pico Client** | Easy (WebSocket URL) | WebSocket | Built-in |
+| **MintClaw** | Easy (enable) | Native protocol | Built-in |
+| **MintClaw Client** | Easy (WebSocket URL) | WebSocket | Built-in |
 
 > All webhook-based channels share a single Gateway HTTP server (`gateway.host`:`gateway.port`, default `127.0.0.1:18790`). Feishu uses WebSocket/SDK mode and does not use the shared HTTP server.
 
-> Log verbosity is controlled by `gateway.log_level` (default: `warn`). Supported values: `debug`, `info`, `warn`, `error`, `fatal`. Can also be set via `PICOCLAW_LOG_LEVEL`. See [Configuration](docs/guides/configuration.md#gateway-log-level) for details.
+> Log verbosity is controlled by `gateway.log_level` (default: `warn`). Supported values: `debug`, `info`, `warn`, `error`, `fatal`. Can also be set via `MINTCLAW_LOG_LEVEL`. See [Configuration](docs/guides/configuration.md#gateway-log-level) for details.
 
 For detailed channel setup instructions, see [Chat Apps Configuration](docs/guides/chat-apps.md).
 
@@ -373,7 +313,7 @@ For detailed channel setup instructions, see [Chat Apps Configuration](docs/guid
 
 ### 🔍 Web Search
 
-PicoClaw can search the web to provide up-to-date information. Configure in `tools.web`:
+MintClaw can search the web to provide up-to-date information. Configure in `tools.web`:
 
 | Search Engine | API Key | Free Tier | Link |
 |--------------|---------|-----------|------|
@@ -389,7 +329,7 @@ PicoClaw can search the web to provide up-to-date information. Configure in `too
 
 ### ⚙️ Other Tools
 
-PicoClaw includes built-in tools for file operations, code execution, scheduling, and more. See [Tools Configuration](docs/reference/tools_configuration.md) for details.
+MintClaw includes built-in tools for file operations, code execution, scheduling, and more. See [Tools Configuration](docs/reference/tools_configuration.md) for details.
 
 ## 🎯 Skills
 
@@ -398,8 +338,8 @@ Skills are modular capabilities that extend your Agent. They are loaded from `SK
 **Install skills from ClawHub:**
 
 ```bash
-picoclaw skills search "web scraping"
-picoclaw skills install <skill-name>
+mintclaw skills search "web scraping"
+mintclaw skills install <skill-name>
 ```
 
 **Configure skill registries**:
@@ -430,7 +370,7 @@ For more details, see [Tools Configuration - Skills](docs/reference/tools_config
 
 ## 🔗 MCP (Model Context Protocol)
 
-PicoClaw natively supports [MCP](https://modelcontextprotocol.io/) — connect any MCP server to extend your Agent's capabilities with external tools and data sources.
+MintClaw natively supports [MCP](https://modelcontextprotocol.io/) — connect any MCP server to extend your Agent's capabilities with external tools and data sources.
 
 ```json
 {
@@ -452,15 +392,15 @@ PicoClaw natively supports [MCP](https://modelcontextprotocol.io/) — connect a
 You can manage common MCP setups directly from the CLI instead of editing JSON by hand:
 
 ```bash
-picoclaw mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
-picoclaw mcp list
-picoclaw mcp test filesystem
+mintclaw mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
+mintclaw mcp list
+mintclaw mcp test filesystem
 ```
 
-`picoclaw mcp` is a configuration manager: it updates `config.json` under `tools.mcp.servers`, but it does not keep the server process running itself.
+`mintclaw mcp` is a configuration manager: it updates `config.json` under `tools.mcp.servers`, but it does not keep the server process running itself.
 
-Use `picoclaw mcp edit` when you need advanced fields that are not covered by `picoclaw mcp add`.
-For example, `picoclaw mcp add` supports `--deferred` and `--env-file`, while `picoclaw mcp edit` is still useful for direct JSON editing and uncommon MCP settings.
+Use `mintclaw mcp edit` when you need advanced fields that are not covered by `mintclaw mcp add`.
+For example, `mintclaw mcp add` supports `--deferred` and `--env-file`, while `mintclaw mcp edit` is still useful for direct JSON editing and uncommon MCP settings.
 
 For full MCP configuration (stdio, SSE, HTTP transports, Tool Discovery), see [Tools Configuration - MCP](docs/reference/tools_configuration.md#mcp-tool). For CLI usage and examples, see [MCP Server CLI](docs/reference/mcp-cli.md).
 
@@ -468,32 +408,32 @@ For full MCP configuration (stdio, SSE, HTTP transports, Tool Discovery), see [T
 
 | Command                   | Description                      |
 | ------------------------- | -------------------------------- |
-| `picoclaw onboard`        | Initialize config & workspace    |
-| `picoclaw auth weixin` | Connect WeChat account via QR |
-| `picoclaw agent -m "..."` | Chat with the agent              |
-| `picoclaw agent`          | Interactive chat mode            |
-| `picoclaw agent --stateless -m "..."` | Run without loading or saving conversation history |
-| `picoclaw gateway`        | Start the gateway                |
-| `picoclaw status`         | Show status                      |
-| `picoclaw version`        | Show version info                |
-| `picoclaw model`          | View or switch the default model |
-| `picoclaw mcp list`       | List configured MCP servers      |
-| `picoclaw mcp add ...`    | Add or update an MCP server entry |
-| `picoclaw mcp test`       | Probe a configured MCP server    |
-| `picoclaw mcp edit`       | Open config for advanced MCP editing |
-| `picoclaw mcp remove`     | Remove an MCP server entry       |
-| `picoclaw cron list`      | List all scheduled jobs          |
-| `picoclaw cron add ...`   | Add a scheduled job              |
-| `picoclaw cron disable`   | Disable a scheduled job          |
-| `picoclaw cron remove`    | Remove a scheduled job           |
-| `picoclaw skills list`    | List installed skills            |
-| `picoclaw skills install` | Install a skill                  |
-| `picoclaw migrate`        | Migrate data from older versions |
-| `picoclaw auth login`     | Authenticate with providers      |
+| `mintclaw onboard`        | Initialize config & workspace    |
+| `mintclaw auth weixin` | Connect WeChat account via QR |
+| `mintclaw agent -m "..."` | Chat with the agent              |
+| `mintclaw agent`          | Interactive chat mode            |
+| `mintclaw agent --stateless -m "..."` | Run without loading or saving conversation history |
+| `mintclaw gateway`        | Start the gateway                |
+| `mintclaw status`         | Show status                      |
+| `mintclaw version`        | Show version info                |
+| `mintclaw model`          | View or switch the default model |
+| `mintclaw mcp list`       | List configured MCP servers      |
+| `mintclaw mcp add ...`    | Add or update an MCP server entry |
+| `mintclaw mcp test`       | Probe a configured MCP server    |
+| `mintclaw mcp edit`       | Open config for advanced MCP editing |
+| `mintclaw mcp remove`     | Remove an MCP server entry       |
+| `mintclaw cron list`      | List all scheduled jobs          |
+| `mintclaw cron add ...`   | Add a scheduled job              |
+| `mintclaw cron disable`   | Disable a scheduled job          |
+| `mintclaw cron remove`    | Remove a scheduled job           |
+| `mintclaw skills list`    | List installed skills            |
+| `mintclaw skills install` | Install a skill                  |
+| `mintclaw migrate`        | Migrate data from older versions |
+| `mintclaw auth login`     | Authenticate with providers      |
 
 ### ⏰ Scheduled Tasks / Reminders
 
-PicoClaw supports scheduled reminders and recurring tasks through the `cron` tool:
+MintClaw supports scheduled reminders and recurring tasks through the `cron` tool:
 
 * **One-time reminders**: "Remind me in 10 minutes" -> triggers once after 10min
 * **Recurring tasks**: "Remind me every 2 hours" -> triggers every 2 hours
@@ -522,7 +462,5 @@ For detailed guides beyond this README:
 | [Hardware Compatibility](docs/guides/hardware-compatibility.md) | Tested boards, minimum requirements |
 
 ## Contributing
-
-This is a personal fork. Changes intended for upstream should usually be proposed to the upstream PicoClaw project. Fork-specific changes should keep this deployment focus clear and avoid adding unrelated product or community marketing back into this README.
 
 For local development guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).

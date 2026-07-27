@@ -1,6 +1,6 @@
 # Memory system
 
-ForgeClaw memory is a set of deliberately separate layers. They have different
+MintClaw memory is a set of deliberately separate layers. They have different
 owners, retention rules, privacy boundaries, and failure modes. They must not be
 collapsed into one universal memory database.
 

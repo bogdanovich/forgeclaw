@@ -1,11 +1,11 @@
-# pico-echo-server
+# mintclaw-echo-server
 
-Minimal Pico Protocol WebSocket server for testing the `pico_client` channel.
+Minimal MintClaw Protocol WebSocket server for testing the `mintclaw_client` channel.
 
 ## Usage
 
 ```bash
-go run ./examples/pico-echo-server -addr :9090 -token secret
+go run ./examples/mintclaw-echo-server -addr :9090 -token secret
 ```
 
 ### Flags
@@ -23,18 +23,18 @@ go run ./examples/pico-echo-server -addr :9090 -token secret
 - Responds to `ping` with `pong`
 - Lines typed into stdin are broadcast as `message.create` to all connected clients
 
-## Testing with pico_client
+## Testing with mintclaw_client
 
 1. Start the server:
    ```bash
-   go run ./examples/pico-echo-server -token mytoken
+   go run ./examples/mintclaw-echo-server -token mytoken
    ```
 
-2. Configure `pico_client` in your `config.json`:
+2. Configure `mintclaw_client` in your `config.json`:
    ```json
    {
      "channel_list": {
-       "pico_client": {
+       "mintclaw_client": {
          "enabled": true,
          "url": "ws://localhost:9090/ws",
          "token": "mytoken",
@@ -44,4 +44,4 @@ go run ./examples/pico-echo-server -addr :9090 -token secret
    }
    ```
 
-3. Start picoclaw — the client connects and you can exchange messages interactively via stdin/stdout.
+3. Start mintclaw — the client connects and you can exchange messages interactively via stdin/stdout.

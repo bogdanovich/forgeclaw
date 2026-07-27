@@ -12,7 +12,7 @@ These tests exist to catch regressions that are easy to miss with unit tests alo
 
 ## Two Layers of Integration Testing
 
-PicoClaw currently uses two related mechanisms:
+MintClaw currently uses two related mechanisms:
 
 1. Go integration tests, usually in `*_integration_test.go` files and guarded by `//go:build integration`
 2. Docker-backed suites in `integration/suites/` that start real dependencies and run one or more of those Go tests in CI
@@ -58,7 +58,7 @@ It does three things:
 
 - builds and starts a fixture MCP server from [`integration/fixtures/mcp-streamable-server/`](fixtures/mcp-streamable-server/)
 - injects connection details into the runner container through environment variables
-- runs [`TestIntegration_RealConfiguredServer`](../pkg/mcp/manager_real_server_integration_test.go) to verify that PicoClaw can connect to a real server, discover tools, invoke one, and validate the response payload
+- runs [`TestIntegration_RealConfiguredServer`](../pkg/mcp/manager_real_server_integration_test.go) to verify that MintClaw can connect to a real server, discover tools, invoke one, and validate the response payload
 
 That suite complements [`TestIntegration_StreamableHTTPCompatibility`](../pkg/mcp/manager_integration_test.go), which exercises the same area in-process. Together they cover both protocol behavior and real service wiring.
 
@@ -131,10 +131,10 @@ go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_Streamabl
 You can also run the real-server smoke test directly if you provide the same environment variables that the Docker suite would inject:
 
 ```bash
-PICOCLAW_MCP_REAL_SERVER_JSON='{"enabled":true,"type":"http","url":"http://127.0.0.1:8080/mcp"}' \
-PICOCLAW_MCP_REAL_TOOL_NAME=echo \
-PICOCLAW_MCP_REAL_TOOL_ARGS_JSON='{"message":"hello"}' \
-PICOCLAW_MCP_REAL_EXPECT_SUBSTRING=hello \
+MINTCLAW_MCP_REAL_SERVER_JSON='{"enabled":true,"type":"http","url":"http://127.0.0.1:8080/mcp"}' \
+MINTCLAW_MCP_REAL_TOOL_NAME=echo \
+MINTCLAW_MCP_REAL_TOOL_ARGS_JSON='{"message":"hello"}' \
+MINTCLAW_MCP_REAL_EXPECT_SUBSTRING=hello \
 go test -tags=goolm,stdjson,integration ./pkg/mcp -run TestIntegration_RealConfiguredServer -v
 ```
 
@@ -163,7 +163,7 @@ Describe the real workflow that could break after a merge. The sharper the scena
 
 Examples:
 
-- "PicoClaw can still connect to a streamable MCP server after transport normalization changes."
+- "MintClaw can still connect to a streamable MCP server after transport normalization changes."
 - "A provider wrapper still parses the real CLI output format after refactors in response handling."
 
 ### 2. Implement the Go test

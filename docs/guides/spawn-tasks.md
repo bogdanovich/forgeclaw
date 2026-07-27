@@ -2,7 +2,7 @@
 
 > Back to [README](../README.md)
 
-PicoClaw supports **asynchronous task execution** via the `spawn` tool. This is primarily used by the **Heartbeat** system to run long-running tasks without blocking the main agent loop.
+MintClaw supports **asynchronous task execution** via the `spawn` tool. This is primarily used by the **Heartbeat** system to run long-running tasks without blocking the main agent loop.
 
 ## Heartbeat
 
@@ -69,5 +69,5 @@ Use `task_status` and `spawn_status` to inspect durable child-task execution.
 
 **Environment variables:**
 
-* `PICOCLAW_HEARTBEAT_ENABLED=false` to disable
-* `PICOCLAW_HEARTBEAT_INTERVAL=60` to change interval
+* `MINTCLAW_HEARTBEAT_ENABLED=false` to disable
+* `MINTCLAW_HEARTBEAT_INTERVAL=60` to change interval

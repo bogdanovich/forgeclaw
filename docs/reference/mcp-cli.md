@@ -2,7 +2,7 @@
 
 > Back to [README](../README.md)
 
-PicoClaw includes an `mcp` CLI command group for managing MCP server entries in `config.json`.
+MintClaw includes an `mcp` CLI command group for managing MCP server entries in `config.json`.
 
 This CLI acts as a **configuration manager**:
 
@@ -12,102 +12,102 @@ This CLI acts as a **configuration manager**:
 
 ## Where It Writes
 
-The CLI updates the same config file used by the rest of PicoClaw:
+The CLI updates the same config file used by the rest of MintClaw:
 
-- `PICOCLAW_CONFIG` if set
-- otherwise `~/.picoclaw/config.json`
+- `MINTCLAW_CONFIG` if set
+- otherwise `~/.mintclaw/config.json`
 
 When the CLI writes the file, it:
 
 - saves atomically
-- preserves the standard 2-space JSON formatting used by PicoClaw
+- preserves the standard 2-space JSON formatting used by MintClaw
 - validates the generated JSON before writing
 
 Behavior notes:
 
-- `picoclaw mcp add ...` enables `tools.mcp.enabled`
-- removing the last server with `picoclaw mcp remove ...` disables `tools.mcp.enabled`
+- `mintclaw mcp add ...` enables `tools.mcp.enabled`
+- removing the last server with `mintclaw mcp remove ...` disables `tools.mcp.enabled`
 
 ## Quick Start
 
 Add a stdio server via `npx`:
 
 ```bash
-picoclaw mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
+mintclaw mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
 Add a stdio server with environment variables saved in config:
 
 ```bash
-picoclaw mcp add github --env GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxx -- npx -y @modelcontextprotocol/server-github
+mintclaw mcp add github --env GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxx -- npx -y @modelcontextprotocol/server-github
 ```
 
 Add a stdio server using an env file for secrets:
 
 ```bash
-picoclaw mcp add github --env-file .env.github -- npx -y @modelcontextprotocol/server-github
+mintclaw mcp add github --env-file .env.github -- npx -y @modelcontextprotocol/server-github
 ```
 
 Add a remote HTTP server:
 
 ```bash
-picoclaw mcp add context7 --transport http https://mcp.context7.com/mcp
+mintclaw mcp add context7 --transport http https://mcp.context7.com/mcp
 ```
 
 Add a remote HTTP server with auth header, even with flags after the URL:
 
 ```bash
-picoclaw mcp add apify "https://mcp.apify.com/" -t http --header "Authorization: Bearer OMITTED"
+mintclaw mcp add apify "https://mcp.apify.com/" -t http --header "Authorization: Bearer OMITTED"
 ```
 
 Add a stdio server using an explicit command separator:
 
 ```bash
-picoclaw mcp add --transport stdio --env AIRTABLE_API_KEY=YOUR_KEY airtable -- npx -y airtable-mcp-server
+mintclaw mcp add --transport stdio --env AIRTABLE_API_KEY=YOUR_KEY airtable -- npx -y airtable-mcp-server
 ```
 
 Inspect the configured entries:
 
 ```bash
-picoclaw mcp list
-picoclaw mcp list --status
+mintclaw mcp list
+mintclaw mcp list --status
 ```
 
 Inspect one server's full details and its exposed tools:
 
 ```bash
-picoclaw mcp show filesystem
+mintclaw mcp show filesystem
 ```
 
 Probe a single server entry:
 
 ```bash
-picoclaw mcp test filesystem
+mintclaw mcp test filesystem
 ```
 
 Open the raw config for advanced editing:
 
 ```bash
-picoclaw mcp edit
+mintclaw mcp edit
 ```
 
 ## Command Summary
 
 | Command | Purpose |
 |---------|---------|
-| `picoclaw mcp add <name> [flags] <command-or-url> [args...]` | Add or update an MCP server entry |
-| `picoclaw mcp remove <name>` | Remove a server entry from config |
-| `picoclaw mcp list` | List configured MCP servers |
-| `picoclaw mcp show <name>` | Show full details and tools for one server |
-| `picoclaw mcp test <name>` | Try connecting to one configured server |
-| `picoclaw mcp edit` | Open `config.json` in `$EDITOR` |
+| `mintclaw mcp add <name> [flags] <command-or-url> [args...]` | Add or update an MCP server entry |
+| `mintclaw mcp remove <name>` | Remove a server entry from config |
+| `mintclaw mcp list` | List configured MCP servers |
+| `mintclaw mcp show <name>` | Show full details and tools for one server |
+| `mintclaw mcp test <name>` | Try connecting to one configured server |
+| `mintclaw mcp edit` | Open `config.json` in `$EDITOR` |
 
-## `picoclaw mcp add`
+## `mintclaw mcp add`
 
 Syntax:
 
 ```bash
-picoclaw mcp add <name> [flags] <command-or-url> [args...]
+mintclaw mcp add <name> [flags] <command-or-url> [args...]
 ```
 
 Supported flags:
@@ -127,16 +127,16 @@ When neither `--deferred` nor `--no-deferred` is passed, the `deferred` field is
 Supported forms:
 
 ```bash
-picoclaw mcp add [flags] <name> <command-or-url> [args...]
-picoclaw mcp add [flags] <name> -- <command> [args...]
+mintclaw mcp add [flags] <name> <command-or-url> [args...]
+mintclaw mcp add [flags] <name> -- <command> [args...]
 ```
 
 Parsing behavior:
 
 - CLI flags can appear before the name, between the name and target, or after the URL for remote transports
 - for `stdio`, the most robust form is `-- <command> [args...]`
-- use the `--` separator when the stdio command itself has arguments that may look like PicoClaw CLI flags
-- without `--`, PicoClaw treats the first two non-flag tokens as `<name>` and `<command-or-url>`
+- use the `--` separator when the stdio command itself has arguments that may look like MintClaw CLI flags
+- without `--`, MintClaw treats the first two non-flag tokens as `<name>` and `<command-or-url>`
 
 Secret handling:
 
@@ -146,7 +146,7 @@ Secret handling:
 Example:
 
 ```bash
-picoclaw mcp add sqlite npx -y @modelcontextprotocol/server-sqlite --db ./mydb.db
+mintclaw mcp add sqlite npx -y @modelcontextprotocol/server-sqlite --db ./mydb.db
 ```
 
 This stores:
@@ -172,7 +172,7 @@ This stores:
 Adding the same server with `--deferred` stores the extra field:
 
 ```bash
-picoclaw mcp add --deferred sqlite npx -y @modelcontextprotocol/server-sqlite --db ./mydb.db
+mintclaw mcp add --deferred sqlite npx -y @modelcontextprotocol/server-sqlite --db ./mydb.db
 ```
 
 ```json
@@ -229,38 +229,38 @@ For `http` / `streamable-http` / `sse`:
 
 Overwrite behavior:
 
-- if `<name>` already exists, PicoClaw asks for confirmation
+- if `<name>` already exists, MintClaw asks for confirmation
 - use `--force` to skip the prompt
 
 Local path validation:
 
 - if the command looks like a local path such as `./server.py` or `/opt/mcp/server`
-- PicoClaw checks that the file exists
+- MintClaw checks that the file exists
 - on non-Windows platforms, it also checks that the file is executable
 
 Clear URL/transport error:
 
-- if the target looks like `https://...` but transport is still `stdio`, PicoClaw returns an explicit error telling you to use `--transport http` or `--transport sse`
+- if the target looks like `https://...` but transport is still `stdio`, MintClaw returns an explicit error telling you to use `--transport http` or `--transport sse`
 
-## `picoclaw mcp remove`
+## `mintclaw mcp remove`
 
 Syntax:
 
 ```bash
-picoclaw mcp remove <name>
+mintclaw mcp remove <name>
 ```
 
 This removes the named entry from `tools.mcp.servers`.
 
-If the removed server was the last configured MCP server, PicoClaw also disables `tools.mcp.enabled`.
+If the removed server was the last configured MCP server, MintClaw also disables `tools.mcp.enabled`.
 
-## `picoclaw mcp list`
+## `mintclaw mcp list`
 
 Syntax:
 
 ```bash
-picoclaw mcp list
-picoclaw mcp list --status
+mintclaw mcp list
+mintclaw mcp list --status
 ```
 
 On wide terminals the output is a styled box (same look as `mcp show`). On narrow terminals or when stdout is not a TTY, a plain ASCII table is printed instead.
@@ -277,17 +277,17 @@ Output fields:
 
 Notes:
 
-- without `--status`, PicoClaw prints configuration state only
-- with `--status`, PicoClaw tries to connect to each enabled server and reports `ok (N tools)` or `error`
-- to see the full list of tools a server exposes, use `picoclaw mcp show <name>`
+- without `--status`, MintClaw prints configuration state only
+- with `--status`, MintClaw tries to connect to each enabled server and reports `ok (N tools)` or `error`
+- to see the full list of tools a server exposes, use `mintclaw mcp show <name>`
 
-## `picoclaw mcp show`
+## `mintclaw mcp show`
 
 Syntax:
 
 ```bash
-picoclaw mcp show <name>
-picoclaw mcp show <name> --timeout 15s
+mintclaw mcp show <name>
+mintclaw mcp show <name> --timeout 15s
 ```
 
 This connects to the named server and prints:
@@ -331,12 +331,12 @@ Notes:
 - if the server is disabled in config, `mcp show` prints the metadata only and skips tool discovery
 - `mcp show` always connects live to fetch the tool list; use `mcp test` if you only need a reachability check
 
-## `picoclaw mcp test`
+## `mintclaw mcp test`
 
 Syntax:
 
 ```bash
-picoclaw mcp test <name>
+mintclaw mcp test <name>
 ```
 
 This performs a direct connection test for one configured entry and prints the number of discovered tools when successful.
@@ -347,17 +347,17 @@ It is useful when:
 - you want to debug one server without probing the whole list
 - the entry is currently disabled in config but you still want to validate its definition
 
-## `picoclaw mcp edit`
+## `mintclaw mcp edit`
 
 Syntax:
 
 ```bash
-picoclaw mcp edit
+mintclaw mcp edit
 ```
 
 This opens the config file in the editor pointed to by `$EDITOR`.
 
-Use it when you need to configure MCP fields that are not exposed directly by `picoclaw mcp add`.
+Use it when you need to configure MCP fields that are not exposed directly by `mintclaw mcp add`.
 
 If `$EDITOR` is not set, the command fails with an explicit error.
 
@@ -365,16 +365,16 @@ If `$EDITOR` is not set, the command fails with an explicit error.
 
 For common cases:
 
-1. Add the server with `picoclaw mcp add` (include `--deferred` if you want tools hidden by default).
-2. Verify connectivity and inspect the exposed tools with `picoclaw mcp show <name>`.
-3. Check all servers at a glance with `picoclaw mcp list --status`.
-4. Start PicoClaw normally so the configured MCP server is loaded by the host.
+1. Add the server with `mintclaw mcp add` (include `--deferred` if you want tools hidden by default).
+2. Verify connectivity and inspect the exposed tools with `mintclaw mcp show <name>`.
+3. Check all servers at a glance with `mintclaw mcp list --status`.
+4. Start MintClaw normally so the configured MCP server is loaded by the host.
 
 For advanced cases:
 
-1. Add the base entry with `picoclaw mcp add`.
-2. Run `picoclaw mcp edit` to fill in fields that are not exposed as CLI flags.
-3. Run `picoclaw mcp show <name>` to confirm the final configuration and tool list.
+1. Add the base entry with `mintclaw mcp add`.
+2. Run `mintclaw mcp edit` to fill in fields that are not exposed as CLI flags.
+3. Run `mintclaw mcp show <name>` to confirm the final configuration and tool list.
 
 ## Related Docs
 

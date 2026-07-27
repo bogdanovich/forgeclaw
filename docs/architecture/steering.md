@@ -59,7 +59,7 @@ In `config.json`, under `agents.defaults`:
 | `"one-at-a-time"` | **(default)** Dequeues only one message per polling cycle. If there are 3 messages in the queue, they are processed one at a time across 3 successive iterations. |
 | `"all"` | Drains the entire queue in a single poll. All pending messages are injected into the context together. |
 
-The environment variable `PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE` can be used as an alternative.
+The environment variable `MINTCLAW_AGENTS_DEFAULTS_STEERING_MODE` can be used as an alternative.
 
 ## Go API
 
@@ -129,7 +129,7 @@ only calls that have not been dispatched:
 | `cancellable` | Skip before execution |
 | `unknown` or missing | Skip before execution (fail closed) |
 
-Once a tool has been dispatched, ForgeClaw lets it finish. Steering does not
+Once a tool has been dispatched, MintClaw lets it finish. Steering does not
 cancel its context because cancellation after an external commit could leave
 the runtime and external system in disagreement. Tool authors must classify
 the externally visible operation, not merely its Go implementation. Call

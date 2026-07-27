@@ -1,6 +1,6 @@
-# Debugging PicoClaw
+# Debugging MintClaw
 
-PicoClaw performs multiple complex interactions under the hood for every single request it receives—from routing messages and evaluating complexity, to executing tools and adapting to model failures. Being able to see exactly what is happening is crucial, not just for troubleshooting potential issues, but also for truly understanding how the agent operates.
+MintClaw performs multiple complex interactions under the hood for every single request it receives—from routing messages and evaluating complexity, to executing tools and adapting to model failures. Being able to see exactly what is happening is crucial, not just for troubleshooting potential issues, but also for truly understanding how the agent operates.
 
 ## Inspecting A Completed Run
 
@@ -60,7 +60,7 @@ jq -r '
 Inspect content only around the first suspicious transition and correlate exact
 IDs with service logs. Current turn traces do not include task or completion
 IDs; obtain those from logs or the durable task registry when needed. The
-bundled `forgeclaw-trace-debug` skill provides the full investigation and
+bundled `mintclaw-trace-debug` skill provides the full investigation and
 reporting workflow.
 
 A trace is passive, best-effort evidence. A missing or incomplete trace can
@@ -72,28 +72,28 @@ of preserving the trace as a universal replay contract.
 See [configuration](../guides/configuration.md#diagnostic-trace-capture) for all
 capture modes, limits, path rules, retention, and redaction behavior.
 
-## Starting PicoClaw in Debug Mode
+## Starting MintClaw in Debug Mode
 
-To get detailed information about what the agent is doing (LLM requests, tool calls, message routing), you can start the PicoClaw gateway with the debug flag:
+To get detailed information about what the agent is doing (LLM requests, tool calls, message routing), you can start the MintClaw gateway with the debug flag:
 
 ```bash
-picoclaw gateway --debug
+mintclaw gateway --debug
 # or
-picoclaw gateway -d
+mintclaw gateway -d
 ```
 
 In this mode, the system will format the logs extensively and display previews of system prompts and tool execution results.
 
 ## Disabling Log Truncation (Full Logs)
 
-By default, PicoClaw truncates very long strings (such as the *System Prompt* or large JSON output results) in the debug logs to keep the console readable.
+By default, MintClaw truncates very long strings (such as the *System Prompt* or large JSON output results) in the debug logs to keep the console readable.
 
 If you need to inspect the complete output of a command or the exact payload sent to the LLM model, you can use the `--no-truncate` flag.
 
 **Note:** This flag *only* works when combined with the `--debug` mode.
 
 ```bash
-picoclaw gateway --debug --no-truncate
+mintclaw gateway --debug --no-truncate
 
 ```
 
@@ -121,7 +121,7 @@ A typical synchronous tool call produces two consecutive lines in the console:
 
 ```
 [...] [INFO] agent: LLM requested tool calls {tools=[web_search], count=1, iteration=1}
-[...] [INFO] agent: Tool call: web_search({"query":"picoclaw release notes"}) {tool=web_search, iteration=1}
+[...] [INFO] agent: Tool call: web_search({"query":"mintclaw release notes"}) {tool=web_search, iteration=1}
 ```
 
 The arguments preview is hard-capped at **200 characters** in the logs regardless of the `--no-truncate` flag, because it belongs to the `INFO`-level path. Use `--no-truncate` together with `--debug` to see the full `tools_json` field emitted by the `Full LLM request` DEBUG entry, which contains every tool definition sent to the model.
@@ -152,7 +152,7 @@ When `enabled` is `true`, every tool call sends a short message to the chat befo
 
 ```bash
 🔧 `web_search`
-{"query": "picoclaw release notes"}
+{"query": "mintclaw release notes"}
 ```
 
 Set `style` to `working_summary` to use a compact, non-argument progress message that can be edited in place as tools run:
@@ -209,12 +209,12 @@ The `working_summary` style intentionally does not show raw tool arguments, expl
 These fields can also be set via environment variables:
 
 ```bash
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED=true
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH=300
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_SEPARATE_MESSAGES=false
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_STYLE=working_summary
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ANIMATION_INTERVAL_SECS=3
-PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_EDIT_MIN_INTERVAL_SECONDS=10
+MINTCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED=true
+MINTCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH=300
+MINTCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_SEPARATE_MESSAGES=false
+MINTCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_STYLE=working_summary
+MINTCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ANIMATION_INTERVAL_SECS=3
+MINTCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_EDIT_MIN_INTERVAL_SECONDS=10
 ```
 
 > **Note:** `tool_feedback` is independent of `--debug` mode. It works in production and does not require the gateway to be started with any special flag.

@@ -108,7 +108,7 @@ topic override to `disabled`:
 
 ## Built-in Commands
 
-Telegram auto-registers PicoClaw's top-level bot commands at startup, including `/start`, `/help`, `/show`, `/list`, `/model`, `/goal`, `/new`, and `/use`.
+Telegram auto-registers MintClaw's top-level bot commands at startup, including `/start`, `/help`, `/show`, `/list`, `/model`, `/goal`, `/new`, and `/use`.
 
 Skill-related commands:
 

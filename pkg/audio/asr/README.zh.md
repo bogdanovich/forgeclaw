@@ -1,6 +1,6 @@
 # ASR（自动语音识别）
 
-这个目录负责 PicoClaw 的语音转文字能力。
+这个目录负责 MintClaw 的语音转文字能力。
 
 如果你是第一次配置 ASR，可以参考如下步骤：
 
@@ -21,7 +21,7 @@
 
 ## ASR 配置是如何工作的
 
-PicoClaw 不会把 ASR 的 API Key 放在 `voice` 配置里。
+MintClaw 不会把 ASR 的 API Key 放在 `voice` 配置里。
 
 推荐的方式是：
 
@@ -29,7 +29,7 @@ PicoClaw 不会把 ASR 的 API Key 放在 `voice` 配置里。
 -  `model_list` 条目描述真实的提供商和模型。
 - `.security.yml` 负责保存该模型条目的 API Key。
 
-这种方式更明确、更安全，也和 PicoClaw 其他模型配置方式保持一致。
+这种方式更明确、更安全，也和 MintClaw 其他模型配置方式保持一致。
 
 ## 推荐配置方式
 
@@ -63,7 +63,7 @@ model_list:
 
 说明：
 
-- 你可以不写 `api_base`，PicoClaw 会自动使用 Groq 默认接口地址。
+- 你可以不写 `api_base`，MintClaw 会自动使用 Groq 默认接口地址。
 - 如果你手动设置 Groq Whisper 的 `api_base`，下面两种写法都可以：
   - `https://api.groq.com/openai/v1`
   - `https://api.groq.com/openai/v1/audio/transcriptions`
@@ -127,7 +127,7 @@ model_list:
 
 ## 其他支持 ASR 的模型类型
 
-PicoClaw 目前主要支持三种 ASR 路径：
+MintClaw 目前主要支持三种 ASR 路径：
 
 | 路径 | 示例模型 | 行为说明 |
 | --- | --- | --- |
@@ -137,7 +137,7 @@ PicoClaw 目前主要支持三种 ASR 路径：
 
 如果你不确定该选哪种，建议优先使用 Groq Whisper 或 ElevenLabs。
 
-## PicoClaw 如何选择转录器
+## MintClaw 如何选择转录器
 
 `DetectTranscriber` 会按下面顺序选择 ASR：
 
@@ -146,7 +146,7 @@ PicoClaw 目前主要支持三种 ASR 路径：
    - `provider=elevenlabs` 的模型，则使用 ElevenLabs transcriber。
    - OpenAI 兼容的 Whisper 模型，则使用 Whisper transcriber。
    - 支持音频输入的聊天模型，则使用 `AudioModelTranscriber`。
-3. **回退路径**：如果没有设置 `voice.model_name`，PicoClaw 会为了兼容旧配置，扫描 `model_list` 中可自动识别的 ASR 条目。
+3. **回退路径**：如果没有设置 `voice.model_name`，MintClaw 会为了兼容旧配置，扫描 `model_list` 中可自动识别的 ASR 条目。
 
 回退扫描只是为了兼容旧行为。新配置建议始终显式设置 `voice.model_name`。
 

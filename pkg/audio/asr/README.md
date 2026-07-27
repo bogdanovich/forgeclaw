@@ -1,6 +1,6 @@
 # ASR (Automatic Speech Recognition)
 
-This package handles speech-to-text for PicoClaw voice input.
+This package handles speech-to-text for MintClaw voice input.
 
 If you are new to ASR setup, the simplest mental model is:
 
@@ -21,7 +21,7 @@ Pricing and free-plan limits can change, so check the linked pricing pages befor
 
 ## How ASR Configuration Works
 
-PicoClaw does not keep ASR API keys inside the `voice` section.
+MintClaw does not keep ASR API keys inside the `voice` section.
 
 Instead:
 
@@ -29,7 +29,7 @@ Instead:
 - The matching `model_list` entry describes the actual provider and model.
 - `.security.yml` stores the API key for that named model entry.
 
-This is the recommended pattern because it is explicit, reusable, and consistent with the rest of PicoClaw's model configuration.
+This is the recommended pattern because it is explicit, reusable, and consistent with the rest of MintClaw's model configuration.
 
 ## Recommended Setup
 
@@ -63,7 +63,7 @@ model_list:
 
 Notes:
 
-- You can omit `api_base` and PicoClaw will use Groq's default API base automatically.
+- You can omit `api_base` and MintClaw will use Groq's default API base automatically.
 - If you set `api_base` manually for Groq Whisper, both of these forms work:
   - `https://api.groq.com/openai/v1`
   - `https://api.groq.com/openai/v1/audio/transcriptions`
@@ -127,7 +127,7 @@ model_list:
 
 ## Other ASR-Capable Model Types
 
-PicoClaw currently supports three main ASR routes:
+MintClaw currently supports three main ASR routes:
 
 | Route | Example models | Behavior |
 | --- | --- | --- |
@@ -137,16 +137,16 @@ PicoClaw currently supports three main ASR routes:
 
 If you are unsure which one to pick, choose Groq Whisper or ElevenLabs first.
 
-## How PicoClaw Chooses a Transcriber
+## How MintClaw Chooses a Transcriber
 
 `DetectTranscriber` resolves ASR in this order:
 
 1. **Preferred path**: resolve `voice.model_name` against `model_list`.
 2. If that resolved model is:
-   - an `elevenlabs` provider model, PicoClaw uses the ElevenLabs transcriber.
-   - an OpenAI-compatible Whisper model, PicoClaw uses the Whisper transcriber.
-   - an audio-capable chat model, PicoClaw uses `AudioModelTranscriber`.
-3. **Fallback path**: if `voice.model_name` is not set, PicoClaw performs a compatibility scan through `model_list` for legacy auto-detected ASR entries.
+   - an `elevenlabs` provider model, MintClaw uses the ElevenLabs transcriber.
+   - an OpenAI-compatible Whisper model, MintClaw uses the Whisper transcriber.
+   - an audio-capable chat model, MintClaw uses `AudioModelTranscriber`.
+3. **Fallback path**: if `voice.model_name` is not set, MintClaw performs a compatibility scan through `model_list` for legacy auto-detected ASR entries.
 
 Fallback scanning exists for backward compatibility. New configurations should set `voice.model_name` explicitly.
 

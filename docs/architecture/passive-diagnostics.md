@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the replacement architecture for ForgeClaw tracing and
+This document defines the replacement architecture for MintClaw tracing and
 supersedes the replay and evaluation program. The inventory is based on
 `origin/main` at `a87183a9`.
 
@@ -20,7 +20,7 @@ under `diagnostics.trace_capture`.
 
 ## Decision
 
-ForgeClaw has three layers:
+MintClaw has three layers:
 
 1. **Authoritative runtime.** Durable tasks, interactions, approvals,
    continuation, and delivery own their state and exactly-once guarantees.
@@ -68,7 +68,7 @@ counting trace state embedded in `pkg/tasks/registry.go`.
 | `pkg/evalreplay` | 873 | universal replay |
 | `pkg/evalevaluator` | 633 | deterministic evaluators |
 | `pkg/evalscenario` | 543 | scripted scenario replay |
-| `cmd/picoclaw/internal/eval` | 175 | `picoclaw eval` |
+| Former evaluator CLI | 175 | Removed evaluator command and wiring |
 | `pkg/agent/trace_capture.go` | 218 | capture manager |
 | `pkg/agent/trace_turn_projector.go` | 818 | passive turn projection |
 | `pkg/agent/trace_task_projector.go` | 978 | durable task projection |
@@ -87,7 +87,7 @@ authoritative task registry
   -> tracked writer receipt
   -> registry compare-and-set confirmation
 
-picoclaw eval
+mintclaw eval
   -> evalevaluator
   -> evalreplay
   -> evaltrace
@@ -164,7 +164,7 @@ whether an event is emitted or whether the underlying operation succeeds.
 | `pkg/agent/trace_turn_projector.go` | Produce a useful model/tool/error timeline without replay-specific records. |
 | Former `pkg/evaltrace`, now `pkg/diagnostictrace` | Retain only diagnostic schema, validation needed for safe reading, storage, filtering, and retention. Remove evaluator-only vocabulary. |
 | Configuration | Rename `evaluation.trace_capture` and evaluation storage terminology to diagnostics. No compatibility alias is required. |
-| Operator documentation and skills | Teach direct trace discovery, rendering, and root-cause analysis without `picoclaw eval`. |
+| Operator documentation and skills | Teach direct trace discovery, rendering, and root-cause analysis without a dedicated evaluator CLI. |
 
 ### Remove
 
@@ -174,7 +174,7 @@ whether an event is emitted or whether the underlying operation succeeds.
 | `pkg/evalcapture/coordinator.go` | Implements registry-to-trace acknowledgement and recovery. |
 | Tracked writer receipts and admission waits | Exist for lossless projection. |
 | Task registry trace fields, journals, mutation APIs, errors, and pruning protection | Diagnostics cannot alter authoritative state or lifetime. |
-| `cmd/picoclaw/internal/eval` and CLI registration | The evaluator product is not used. |
+| Former evaluator command package and CLI registration | The evaluator product is not used. |
 | `pkg/evalreplay` | Duplicates runtime state machines and constrains their evolution. |
 | `pkg/evalevaluator` | Mechanical invariants belong in direct runtime tests. |
 | `pkg/evalscenario` | Remove portions that exist only for universal replay/evaluation. Preserve independently useful runtime test helpers only when demonstrated. |
@@ -203,8 +203,8 @@ target state is represented on merged `main`.
 | `pkg/evalevaluator` and `testdata/historical_failures.json` | Delete. |
 | `pkg/evalscenario` | Delete unless a helper is proven useful to direct runtime tests and can move without replay/fixture dependencies. |
 | `pkg/agent/memory_replay_test.go` use of `evalreplay.VirtualClock` | Replace with a local/shared test clock independent of replay. |
-| `cmd/picoclaw/internal/eval` | Delete. |
-| `cmd/picoclaw/main.go` eval import and command registration | Delete. |
+| Former evaluator command package | Delete. |
+| CLI entry-point evaluator import and command registration | Delete. |
 | Former `state/evaluation/traces` | Replaced by `state/diagnostics/traces`. Local deployment is migrated atomically; old data is not read. |
 | `docs/architecture/replay-evaluation.md` | Delete after its implementation inventory is removed. |
 | `docs/architecture/replay-evaluation-audit.md` | Delete. |
@@ -212,14 +212,14 @@ target state is represented on merged `main`.
 | `docs/guides/replay-evaluation.md` and `replay-evaluation-overview.md` | Replace with direct diagnostic-trace documentation. |
 | `docs/guides/configuration.md` evaluation examples | Replace with diagnostics configuration. |
 | Architecture and guide indexes | Link only the retained passive diagnostic documentation. |
-| Installed Codex and ForgeClaw trace-debug skills | Replace evaluator invocation with direct trace inspection. |
+| Installed Codex and MintClaw trace-debug skills | Replace evaluator invocation with direct trace inspection. |
 
 ### Configuration Map
 
 The former root was `evaluation.trace_capture`, with matching
-`PICOCLAW_EVALUATION_TRACE_CAPTURE_*` environment variables. The retained
+`MINTCLAW_EVALUATION_TRACE_CAPTURE_*` environment variables. The retained
 surface is `diagnostics.trace_capture` and
-`PICOCLAW_DIAGNOSTICS_TRACE_CAPTURE_*`; the old names are not accepted.
+`MINTCLAW_DIAGNOSTICS_TRACE_CAPTURE_*`; the old names are not accepted.
 
 | Former or retained option | Target |
 | --- | --- |
@@ -293,9 +293,9 @@ cannot fail or delay an agent task.
 
 ### 3. Remove Replay And Evaluation
 
-Delete `picoclaw eval`, `pkg/evalreplay`, `pkg/evalevaluator`, evaluator
-fixtures/reports, and evaluator-specific CI. Delete scenario replay code without
-an independent runtime-testing use.
+Delete the former evaluator CLI, `pkg/evalreplay`, `pkg/evalevaluator`,
+evaluator fixtures/reports, and evaluator-specific CI. Delete scenario replay
+code without an independent runtime-testing use.
 
 Exit condition: CLI help has no `eval`; production packages do not import
 replay/evaluator packages; no evaluator fixture or report contract remains.
@@ -311,12 +311,12 @@ evaluation terminology implies an automated quality verdict.
 
 ### 5. Document, Install, And Deploy
 
-Update ForgeClaw and installed Codex skills to inspect JSON traces directly.
+Update MintClaw and installed Codex skills to inspect JSON traces directly.
 Document trace modes, redaction, limits, retention, discovery, and a practical
 root-cause workflow. Configure intended profiles for rich redacted capture with
 168-hour retention, restart them, and verify healthy operation and trace output.
 
-Exit condition: Codex and ForgeClaw can inspect a generated trace, cite relevant
+Exit condition: Codex and MintClaw can inspect a generated trace, cite relevant
 entries, identify a likely root cause, and propose a focused regression test
 without invoking an evaluator.
 
@@ -335,7 +335,8 @@ The completed program must prove:
 - no production workflow imports diagnostics or waits for trace persistence;
 - writer failure, saturation, missing output, and shutdown do not alter runtime
   outcomes;
-- `picoclaw eval`, replay, evaluators, and evaluator fixtures are absent;
+- the former evaluator CLI, replay, evaluators, and evaluator fixtures are
+  absent;
 - metadata-only and rich redacted traces remain bounded;
 - credentials, authentication material, private keys, tokens, and explicit
   secrets are filtered;

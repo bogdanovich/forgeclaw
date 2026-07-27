@@ -2,7 +2,7 @@
 
 > Back to [README](../README.md)
 
-In PicoClaw, routing has two user-facing parts:
+In MintClaw, routing has two user-facing parts:
 
 - **agent routing**: choose which agent should handle a message
 - **model routing**: choose whether a turn should use the primary model or the configured light model
@@ -103,7 +103,7 @@ agents.dispatch.rules
 
 Rules are evaluated from top to bottom.
 The **first matching rule wins**.
-If no rule matches, PicoClaw falls back to the default agent.
+If no rule matches, MintClaw falls back to the default agent.
 
 ## Supported Match Fields
 
@@ -240,7 +240,7 @@ Current fields:
 Important behavior:
 
 - the light model must exist in `model_list`
-- PicoClaw resolves the light model at startup; if it is invalid, routing is disabled
+- MintClaw resolves the light model at startup; if it is invalid, routing is disabled
 - one turn stays on one model tier, even if it later calls tools
 
 ## What Affects The Complexity Score

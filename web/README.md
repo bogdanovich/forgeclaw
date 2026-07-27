@@ -1,16 +1,16 @@
-# PicoClaw Web
+# MintClaw Web
 
-`web/` contains the standalone WebUI launcher for PicoClaw.
-It is not just a frontend: it is a small launcher service that bundles a React dashboard, exposes a backend API, manages launcher authentication, and starts or attaches to the `picoclaw gateway` process.
+`web/` contains the standalone WebUI launcher for MintClaw.
+It is not just a frontend: it is a small launcher service that bundles a React dashboard, exposes a backend API, manages launcher authentication, and starts or attaches to the `mintclaw gateway` process.
 
-![PicoClaw Launcher](./picoclaw-launcher.png)
+![MintClaw Launcher](./mintclaw-launcher.png)
 
 ## What This Directory Provides
 
-- A browser-based chat UI backed by the Pico channel WebSocket proxy.
+- A browser-based chat UI backed by the MintClaw channel WebSocket proxy.
 - A dashboard for models, credentials, channels, agent tools, skills, logs, and runtime settings.
 - A launcher process that can auto-open the browser, show a system tray menu, and persist launcher-specific settings.
-- A controlled way to start, stop, restart, and inspect the `picoclaw gateway` subprocess.
+- A controlled way to start, stop, restart, and inspect the `mintclaw gateway` subprocess.
 - A single-binary deployment target where the frontend is embedded into the Go backend.
 
 ## Architecture
@@ -19,26 +19,26 @@ This directory is a small monorepo:
 
 - `backend/`
   - Go HTTP server and launcher runtime.
-  - Serves REST APIs, authentication endpoints, channel helper flows, and the Pico WebSocket reverse proxy.
+  - Serves REST APIs, authentication endpoints, channel helper flows, and the MintClaw WebSocket reverse proxy.
   - Embeds compiled frontend assets from `backend/dist`.
 - `frontend/`
   - Vite + React 19 + TanStack Router SPA.
   - Provides the launcher dashboard and chat UI.
 
-At runtime the launcher and the main PicoClaw engine are separate processes:
+At runtime the launcher and the main MintClaw engine are separate processes:
 
 1. The launcher starts the web backend on port `18800` by default.
 2. The launcher serves the dashboard and handles dashboard authentication.
-3. When allowed, it starts or attaches to `picoclaw gateway -E`.
+3. When allowed, it starts or attaches to `mintclaw gateway -E`.
 4. The frontend talks only to the launcher backend.
-5. The launcher proxies chat traffic to the gateway through `/pico/ws`.
+5. The launcher proxies chat traffic to the gateway through `/mintclaw/ws`.
 
 ## Dashboard Capabilities
 
 The current frontend exposes these major pages and flows:
 
 - `/`
-  - Chat UI with session history, default model selection, and Pico channel messaging.
+  - Chat UI with session history, default model selection, and MintClaw channel messaging.
 - `/models`
   - Add, edit, delete, and set the default model.
   - Supports API-key models, OAuth-backed models, and local/CLI-backed models.
@@ -47,7 +47,7 @@ The current frontend exposes these major pages and flows:
   - Current built-in flows: OpenAI, Anthropic, and Google Antigravity.
 - `/channels/*`
   - Configure supported channels from a shared catalog.
-  - Current catalog: `weixin`, `telegram`, `discord`, `slack`, `feishu`, `dingtalk`, `line`, `qq`, `onebot`, `wecom`, `whatsapp`, `whatsapp_native`, `pico`, `maixcam`, `matrix`, `irc`, `mqtt`.
+  - Current catalog: `weixin`, `telegram`, `discord`, `slack`, `feishu`, `dingtalk`, `line`, `qq`, `onebot`, `wecom`, `whatsapp`, `whatsapp_native`, `mintclaw`, `maixcam`, `matrix`, `irc`, `mqtt`.
   - Includes QR-based binding helpers for WeChat and WeCom.
 - `/agent/skills`
   - Browse built-in, global, and workspace skills.
@@ -65,16 +65,16 @@ The UI currently supports English and Simplified Chinese, plus light and dark th
 
 ### Config Resolution
 
-The launcher uses the same PicoClaw config file as the main binary.
+The launcher uses the same MintClaw config file as the main binary.
 
-- Default app config path: `~/.picoclaw/config.json`
-- Override with environment variable: `PICOCLAW_CONFIG`
-- Override with a positional CLI argument: `picoclaw-launcher /path/to/config.json`
+- Default app config path: `~/.mintclaw/config.json`
+- Override with environment variable: `MINTCLAW_CONFIG`
+- Override with a positional CLI argument: `mintclaw-launcher /path/to/config.json`
 
 Launcher-only settings are stored beside that app config:
 
 - File name: `launcher-config.json`
-- Default location: `~/.picoclaw/launcher-config.json`
+- Default location: `~/.mintclaw/launcher-config.json`
 
 That file currently stores:
 
@@ -92,20 +92,20 @@ If they are omitted, stored launcher settings are used.
 If the target config file does not exist, the launcher tries to bootstrap it automatically by running:
 
 ```bash
-picoclaw onboard
+mintclaw onboard
 ```
 
-The launcher looks for the main PicoClaw binary in this order:
+The launcher looks for the main MintClaw binary in this order:
 
-1. `PICOCLAW_BINARY`
-2. A `picoclaw` binary in the same directory as the launcher
-3. `picoclaw` from `PATH`
+1. `MINTCLAW_BINARY`
+2. A `mintclaw` binary in the same directory as the launcher
+3. `mintclaw` from `PATH`
 
-If onboarding or gateway startup cannot find the main binary, set `PICOCLAW_BINARY` explicitly.
+If onboarding or gateway startup cannot find the main binary, set `MINTCLAW_BINARY` explicitly.
 
 ### Gateway Management
 
-The launcher manages `picoclaw gateway -E`.
+The launcher manages `mintclaw gateway -E`.
 
 On startup it tries to auto-start or attach to the gateway, but only when startup preconditions pass. In the current code, the main checks are:
 
@@ -119,7 +119,7 @@ When a gateway process is started by the launcher, the launcher:
 - captures stdout and stderr into an in-memory ring buffer
 - tracks transient states such as `starting`, `restarting`, and `stopping`
 - marks restart-required when the default model or enabled tool set changed since boot
-- ensures the Pico channel is configured before startup
+- ensures the MintClaw channel is configured before startup
 
 ### Launcher Authentication
 
@@ -133,7 +133,7 @@ The dashboard is protected by password login.
 - On supported platforms, the password is stored as a bcrypt hash in `launcher-auth.db`.
 - On platforms where the SQLite password store is unavailable, the launcher stores the bcrypt hash in `launcher-config.json`.
 - Legacy `launcher_token` values are migrated once into password login and are removed from saved launcher config.
-- `PICOCLAW_LAUNCHER_TOKEN` is deprecated and ignored; after upgrading from env-token auth, open `/launcher-setup` to create a password.
+- `MINTCLAW_LAUNCHER_TOKEN` is deprecated and ignored; after upgrading from env-token auth, open `/launcher-setup` to create a password.
 - URL token login and `Authorization: Bearer` dashboard auth are not supported.
 
 ### Network Exposure
@@ -187,8 +187,8 @@ make dev
 
 This does three things:
 
-1. Builds `../build/picoclaw` for launcher development.
-2. Starts the Go backend with `PICOCLAW_BINARY` pointing at that binary.
+1. Builds `../build/mintclaw` for launcher development.
+2. Starts the Go backend with `MINTCLAW_BINARY` pointing at that binary.
 3. Starts the Vite frontend dev server.
 
 Use this when you want the full launcher flow during development.
@@ -221,12 +221,12 @@ This:
 1. Installs frontend dependencies when needed.
 2. Builds the frontend into `backend/dist`.
 3. Embeds those assets into the Go backend.
-4. Produces `build/picoclaw-launcher`.
+4. Produces `build/mintclaw-launcher`.
 
 Override the output path if needed:
 
 ```bash
-make build OUTPUT=/tmp/picoclaw-launcher
+make build OUTPUT=/tmp/mintclaw-launcher
 ```
 
 From the repository root you can also use:
@@ -238,10 +238,10 @@ make build-launcher
 That writes the platform-specific launcher to:
 
 ```text
-build/picoclaw-launcher-<platform>-<arch>
+build/mintclaw-launcher-<platform>-<arch>
 ```
 
-and refreshes the `build/picoclaw-launcher` symlink.
+and refreshes the `build/mintclaw-launcher` symlink.
 
 ### Frontend-Only Builds
 
@@ -261,10 +261,10 @@ pnpm build:backend
 Examples:
 
 ```bash
-./build/picoclaw-launcher
-./build/picoclaw-launcher -console
-./build/picoclaw-launcher -public
-./build/picoclaw-launcher -port 19999 /path/to/config.json
+./build/mintclaw-launcher
+./build/mintclaw-launcher -console
+./build/mintclaw-launcher -public
+./build/mintclaw-launcher -port 19999 /path/to/config.json
 ```
 
 Current launcher flags:
@@ -348,12 +348,12 @@ Check these in the dashboard:
 - the model has credentials or OAuth state
 - local models such as Ollama or vLLM are reachable
 
-### The launcher cannot find `picoclaw`
+### The launcher cannot find `mintclaw`
 
 Set the main binary explicitly:
 
 ```bash
-export PICOCLAW_BINARY=/absolute/path/to/picoclaw
+export MINTCLAW_BINARY=/absolute/path/to/mintclaw
 ```
 
 This affects onboarding and gateway subprocess startup.
@@ -369,4 +369,3 @@ If you run only `make dev-backend`, either run `make dev-frontend` alongside it 
 - Configuration guide: [`../docs/guides/configuration.md`](../docs/guides/configuration.md)
 - Providers: [`../docs/guides/providers.md`](../docs/guides/providers.md)
 - Troubleshooting: [`../docs/operations/troubleshooting.md`](../docs/operations/troubleshooting.md)
-- Official docs site: [docs.picoclaw.io](https://docs.picoclaw.io)

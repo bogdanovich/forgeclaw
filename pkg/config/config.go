@@ -764,7 +764,7 @@ func (c *WeixinSettings) SetToken(token string) {
 }
 
 type MintClawSettings struct {
-	Token           SecureString    `json:"token,omitzero"              yaml:"token,omitempty" env:"MINTCLAW_CHANNELS_PICO_TOKEN"`
+	Token           SecureString    `json:"token,omitzero"              yaml:"token,omitempty" env:"MINTCLAW_CHANNELS_MINTCLAW_TOKEN"`
 	AllowTokenQuery bool            `json:"allow_token_query,omitempty" yaml:"-"`
 	AllowOrigins    []string        `json:"allow_origins,omitempty"     yaml:"-"`
 	Streaming       StreamingConfig `json:"streaming,omitzero"          yaml:"-"`
@@ -780,8 +780,8 @@ func (c *MintClawSettings) SetToken(token string) {
 }
 
 type MintClawClientSettings struct {
-	URL          string       `json:"url"                     yaml:"-"               env:"MINTCLAW_CHANNELS_PICO_CLIENT_URL"`
-	Token        SecureString `json:"token,omitzero"          yaml:"token,omitempty" env:"MINTCLAW_CHANNELS_PICO_CLIENT_TOKEN"`
+	URL          string       `json:"url"                     yaml:"-"               env:"MINTCLAW_CHANNELS_MINTCLAW_CLIENT_URL"`
+	Token        SecureString `json:"token,omitzero"          yaml:"token,omitempty" env:"MINTCLAW_CHANNELS_MINTCLAW_CLIENT_TOKEN"`
 	SessionID    string       `json:"session_id,omitempty"    yaml:"-"`
 	PingInterval int          `json:"ping_interval,omitempty" yaml:"-"`
 	ReadTimeout  int          `json:"read_timeout,omitempty"  yaml:"-"`
