@@ -112,9 +112,14 @@ Priorities express ordering, not a commitment to implement every milestone.
 
 ## P0: Model-Visible Capability Contracts
 
-P0 is admitted with fixed scope and completion gates in
+P0 is complete under the fixed scope and completion gates in
 [`node-companion-p0-contracts.md`](node-companion-p0-contracts.md). That
-contract controls implementation scope; P1 and later work remains unadmitted.
+contract controls its implementation scope. P1 implementation is admitted in
+dependency order by
+[`node-companion-p1-admission.md`](node-companion-p1-admission.md), while
+production owner-mode enablement remains deferred until its trusted approval
+prerequisite and separate operator decision are recorded. P2 and later work
+remain unadmitted.
 
 ### Current limitation
 
@@ -229,6 +234,13 @@ P0 is complete only when:
   and denial after a constraint change.
 
 ## P1: Owner-Controlled Shell And Interactive Terminal
+
+P1 implementation is admitted with exact scope, authority decisions, delivery
+order, stop conditions, and completion gates in
+[`node-companion-p1-admission.md`](node-companion-p1-admission.md). This
+admission does not enable production owner mode. Production remains
+deny-by-default until the trusted approval and deployment gates in that
+contract are satisfied.
 
 ### Operator outcome
 
@@ -350,10 +362,12 @@ stopped.
 
 1. Land an owner-mode threat model, shell and PTY contracts, profile schema,
    approval choices, redaction, lifecycle, and explicit non-goals.
-2. Define and expose the bounded `nodes_cancel` adapter over the existing
-   cancellation path, with authority, race, restart, and recovery tests.
-3. Add non-interactive `shell.exec.v1` over the existing invocation path with
-   no hidden replay and a real-process test.
+2. Add non-interactive `shell.exec.v1` over the existing invocation path with
+   cancel-capable process-tree ownership, no hidden replay, and a real-process
+   test.
+3. Define and expose the bounded `nodes_cancel` adapter over the existing
+   cancellation path and cancel-capable shell consumer, with authority, race,
+   restart, and recovery tests.
 4. Add authenticated terminal session streaming with input ordering,
    backpressure, resize, signal, disconnect, and process-containment tests.
 5. Add and deploy the selected Linux root authority profile or broker, while
