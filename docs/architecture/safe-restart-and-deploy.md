@@ -23,9 +23,9 @@ checks, or service-manager-specific deployment policy.
 
 ## Why Restart Is Required
 
-MintClaw and MintClaw are Go binaries. Once the operating system starts a Go
-process, the process executes the mapped binary image it already opened. Replacing
-the file on disk does not change code that is already running.
+MintClaw is a Go binary. Once the operating system starts the process, it
+executes the mapped binary image it already opened. Replacing the file on disk
+does not change code that is already running.
 
 For that reason, updating MintClaw code requires starting a new process. The
 expected mechanism is a supervisor such as systemd, launchd, a container

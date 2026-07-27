@@ -68,7 +68,7 @@ counting trace state embedded in `pkg/tasks/registry.go`.
 | `pkg/evalreplay` | 873 | universal replay |
 | `pkg/evalevaluator` | 633 | deterministic evaluators |
 | `pkg/evalscenario` | 543 | scripted scenario replay |
-| `cmd/mintclaw/internal/eval` | 175 | `mintclaw eval` |
+| Former evaluator CLI | 175 | Removed evaluator command and wiring |
 | `pkg/agent/trace_capture.go` | 218 | capture manager |
 | `pkg/agent/trace_turn_projector.go` | 818 | passive turn projection |
 | `pkg/agent/trace_task_projector.go` | 978 | durable task projection |
@@ -164,7 +164,7 @@ whether an event is emitted or whether the underlying operation succeeds.
 | `pkg/agent/trace_turn_projector.go` | Produce a useful model/tool/error timeline without replay-specific records. |
 | Former `pkg/evaltrace`, now `pkg/diagnostictrace` | Retain only diagnostic schema, validation needed for safe reading, storage, filtering, and retention. Remove evaluator-only vocabulary. |
 | Configuration | Rename `evaluation.trace_capture` and evaluation storage terminology to diagnostics. No compatibility alias is required. |
-| Operator documentation and skills | Teach direct trace discovery, rendering, and root-cause analysis without `mintclaw eval`. |
+| Operator documentation and skills | Teach direct trace discovery, rendering, and root-cause analysis without a dedicated evaluator CLI. |
 
 ### Remove
 
@@ -174,7 +174,7 @@ whether an event is emitted or whether the underlying operation succeeds.
 | `pkg/evalcapture/coordinator.go` | Implements registry-to-trace acknowledgement and recovery. |
 | Tracked writer receipts and admission waits | Exist for lossless projection. |
 | Task registry trace fields, journals, mutation APIs, errors, and pruning protection | Diagnostics cannot alter authoritative state or lifetime. |
-| `cmd/mintclaw/internal/eval` and CLI registration | The evaluator product is not used. |
+| Former evaluator command package and CLI registration | The evaluator product is not used. |
 | `pkg/evalreplay` | Duplicates runtime state machines and constrains their evolution. |
 | `pkg/evalevaluator` | Mechanical invariants belong in direct runtime tests. |
 | `pkg/evalscenario` | Remove portions that exist only for universal replay/evaluation. Preserve independently useful runtime test helpers only when demonstrated. |
@@ -203,8 +203,8 @@ target state is represented on merged `main`.
 | `pkg/evalevaluator` and `testdata/historical_failures.json` | Delete. |
 | `pkg/evalscenario` | Delete unless a helper is proven useful to direct runtime tests and can move without replay/fixture dependencies. |
 | `pkg/agent/memory_replay_test.go` use of `evalreplay.VirtualClock` | Replace with a local/shared test clock independent of replay. |
-| `cmd/mintclaw/internal/eval` | Delete. |
-| `cmd/mintclaw/main.go` eval import and command registration | Delete. |
+| Former evaluator command package | Delete. |
+| CLI entry-point evaluator import and command registration | Delete. |
 | Former `state/evaluation/traces` | Replaced by `state/diagnostics/traces`. Local deployment is migrated atomically; old data is not read. |
 | `docs/architecture/replay-evaluation.md` | Delete after its implementation inventory is removed. |
 | `docs/architecture/replay-evaluation-audit.md` | Delete. |
@@ -293,9 +293,9 @@ cannot fail or delay an agent task.
 
 ### 3. Remove Replay And Evaluation
 
-Delete `mintclaw eval`, `pkg/evalreplay`, `pkg/evalevaluator`, evaluator
-fixtures/reports, and evaluator-specific CI. Delete scenario replay code without
-an independent runtime-testing use.
+Delete the former evaluator CLI, `pkg/evalreplay`, `pkg/evalevaluator`,
+evaluator fixtures/reports, and evaluator-specific CI. Delete scenario replay
+code without an independent runtime-testing use.
 
 Exit condition: CLI help has no `eval`; production packages do not import
 replay/evaluator packages; no evaluator fixture or report contract remains.
@@ -335,7 +335,8 @@ The completed program must prove:
 - no production workflow imports diagnostics or waits for trace persistence;
 - writer failure, saturation, missing output, and shutdown do not alter runtime
   outcomes;
-- `mintclaw eval`, replay, evaluators, and evaluator fixtures are absent;
+- the former evaluator CLI, replay, evaluators, and evaluator fixtures are
+  absent;
 - metadata-only and rich redacted traces remain bounded;
 - credentials, authentication material, private keys, tokens, and explicit
   secrets are filtered;
