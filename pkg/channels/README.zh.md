@@ -1,6 +1,6 @@
-# PicoClaw Channel System：完整开发指南
+# MintClaw Channel System：完整开发指南
 
-> **影响范围**: `pkg/channels/`, `pkg/bus/`, `pkg/media/`, `pkg/identity/`, `cmd/picoclaw/internal/gateway/`
+> **影响范围**: `pkg/channels/`, `pkg/bus/`, `pkg/media/`, `pkg/identity/`, `cmd/mintclaw/internal/gateway/`
 
 ---
 
@@ -60,7 +60,7 @@ pkg/channels/
 ├── discord/
 │   ├── init.go
 │   └── discord.go
-├── slack/ line/ onebot/ dingtalk/ feishu/ wecom/ qq/ whatsapp/ whatsapp_native/ maixcam/ pico/
+├── slack/ line/ onebot/ dingtalk/ feishu/ wecom/ qq/ whatsapp/ whatsapp_native/ maixcam/ mintclaw/
 │   └── ...
 
 pkg/bus/
@@ -162,19 +162,19 @@ pkg/identity/
 package channels
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 // 新代码（重构分支）
 package telegram
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"     // 引用父包
-    "github.com/sipeed/picoclaw/pkg/config"
-    "github.com/sipeed/picoclaw/pkg/identity"      // 新增
-    "github.com/sipeed/picoclaw/pkg/media"          // 新增（如需媒体）
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"     // 引用父包
+    "github.com/bogdanovich/mintclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/identity"      // 新增
+    "github.com/bogdanovich/mintclaw/pkg/media"          // 新增（如需媒体）
 )
 ```
 
@@ -321,9 +321,9 @@ c.HandleMessage(ctx, peer, messageID, senderID, chatID, content, mediaRefs, meta
 package telegram
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"
-    "github.com/sipeed/picoclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"
+    "github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func init() {
@@ -341,11 +341,11 @@ func init() {
 **3h. 在 Gateway 中导入子包**
 
 ```go
-// cmd/picoclaw/internal/gateway/helpers.go
+// cmd/mintclaw/internal/gateway/helpers.go
 import (
-    _ "github.com/sipeed/picoclaw/pkg/channels/telegram"   // 触发 init() 注册
-    _ "github.com/sipeed/picoclaw/pkg/channels/discord"
-    _ "github.com/sipeed/picoclaw/pkg/channels/your_new_channel"  // 新增
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/telegram"   // 触发 init() 注册
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/discord"
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/your_new_channel"  // 新增
 )
 ```
 
@@ -426,9 +426,9 @@ Agent Loop 的主要变化：
 package matrix
 
 import (
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"
-    "github.com/sipeed/picoclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"
+    "github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func init() {
@@ -452,11 +452,11 @@ import (
     "context"
     "fmt"
 
-    "github.com/sipeed/picoclaw/pkg/bus"
-    "github.com/sipeed/picoclaw/pkg/channels"
-    "github.com/sipeed/picoclaw/pkg/config"
-    "github.com/sipeed/picoclaw/pkg/identity"
-    "github.com/sipeed/picoclaw/pkg/logger"
+    "github.com/bogdanovich/mintclaw/pkg/bus"
+    "github.com/bogdanovich/mintclaw/pkg/channels"
+    "github.com/bogdanovich/mintclaw/pkg/config"
+    "github.com/bogdanovich/mintclaw/pkg/identity"
+    "github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
 // MatrixChannel implements channels.Channel for the Matrix protocol.
@@ -766,9 +766,9 @@ if c.owner != nil && c.placeholderRecorder != nil {
 ```
 
 **这意味着**：
-- 实现 `TypingCapable` 的 channel（Telegram、Discord、LINE、Pico）无需在 `handleMessage` 中手动调用 `StartTyping` + `RecordTypingStop`
+- 实现 `TypingCapable` 的 channel（Telegram、Discord、LINE、MintClaw）无需在 `handleMessage` 中手动调用 `StartTyping` + `RecordTypingStop`
 - 实现 `ReactionCapable` 的 channel（Slack、OneBot）无需在 `handleMessage` 中手动调用 `AddReaction` + `RecordTypingStop`
-- 实现 `PlaceholderCapable` 的 channel（Telegram、Discord、Pico）无需在 `handleMessage` 中手动发送占位消息并调用 `RecordPlaceholder`
+- 实现 `PlaceholderCapable` 的 channel（Telegram、Discord、MintClaw）无需在 `handleMessage` 中手动发送占位消息并调用 `RecordPlaceholder`
 - Channel 只需实现对应接口，`HandleMessage` 会自动完成编排
 - 不实现这些接口的 channel 不受影响（类型断言会失败，跳过）
 - `PlaceholderCapable` 的 `SendPlaceholder` 方法内部根据配置的 `PlaceholderConfig.Enabled` 决定是否发送；返回 `("", nil)` 时跳过注册
@@ -839,9 +839,9 @@ Manager 使用 `InitChannelList()` 来验证类型和解码设置，
 #### 在 Gateway 中添加 blank import
 
 ```go
-// cmd/picoclaw/internal/gateway/helpers.go
+// cmd/mintclaw/internal/gateway/helpers.go
 import (
-    _ "github.com/sipeed/picoclaw/pkg/channels/matrix"
+    _ "github.com/bogdanovich/mintclaw/pkg/channels/matrix"
 )
 ```
 
@@ -1309,7 +1309,7 @@ make test                                       # 全量测试
 | `pkg/channels/whatsapp_native/` | `"whatsapp_native"` | — (原生 whatsmeow 模式) |
 | `pkg/channels/maixcam/` | `"maixcam"` | — |
 | `pkg/channels/mqtt/` | `"mqtt"` | — |
-| `pkg/channels/pico/` | `"pico"` | TypingCapable, PlaceholderCapable, MessageEditor, WebhookHandler |
+| `pkg/channels/mintclaw/` | `"mintclaw"` | TypingCapable, PlaceholderCapable, MessageEditor, WebhookHandler |
 
 ### A.3 接口速查表
 
@@ -1421,12 +1421,12 @@ agentLoop.Stop()               // 停止 Agent
 
 3. **WeCom 现在只有一个 channel**：`"wecom"` 采用 WebSocket AI Bot 实现，带路由持久化；访问控制走统一的 channel 白名单机制，不再保留旧的 webhook/app 双分支。
 
-4. **Pico Protocol**：`pkg/channels/pico/` 实现了一个自定义的 PicoClaw 原生协议 channel，通过 WebSocket webhook (`/pico/ws`) 接收消息。
+4. **MintClaw Protocol**：`pkg/channels/mintclaw/` 实现了一个自定义的 MintClaw 原生协议 channel，通过 WebSocket webhook (`/mintclaw/ws`) 接收消息。
 
 5. **WhatsApp 有两种模式**：`"whatsapp"`（Bridge 模式，通过外部 bridge URL 通信）和 `"whatsapp_native"`（原生 whatsmeow 模式，直接连接 WhatsApp）。Manager 根据 `WhatsAppConfig.UseNative` 决定初始化哪个。
 
 6. **DingTalk 使用 Stream 模式**：DingTalk 使用 SDK 的 Stream/WebSocket 模式（非 HTTP webhook），因此不实现 `WebhookHandler`。
 
-7. **PlaceholderConfig 的配置与实现**：`PlaceholderConfig` 出现在 6 个 channel config 中（Telegram、Discord、Slack、LINE、OneBot、Pico），但只有实现了 `PlaceholderCapable` + `MessageEditor` 的 channel（Telegram、Discord、Pico）能真正使用占位消息编辑功能。其余 channel 的 `PlaceholderConfig` 为预留字段。
+7. **PlaceholderConfig 的配置与实现**：`PlaceholderConfig` 出现在 6 个 channel config 中（Telegram、Discord、Slack、LINE、OneBot、MintClaw），但只有实现了 `PlaceholderCapable` + `MessageEditor` 的 channel（Telegram、Discord、MintClaw）能真正使用占位消息编辑功能。其余 channel 的 `PlaceholderConfig` 为预留字段。
 
 8. **ReasoningChannelID**：大多数 channel config 都包含 `reasoning_channel_id` 字段，用于将 LLM 的思维链（reasoning/thinking）路由到指定 channel（WhatsApp、Telegram、Feishu、Discord、MaixCam、QQ、DingTalk、Slack、LINE、OneBot、WeCom）。注意：`PicoConfig` 目前不包含该字段。`BaseChannel` 通过 `WithReasoningChannelID` 选项和 `ReasoningChannelID()` 方法暴露此配置。

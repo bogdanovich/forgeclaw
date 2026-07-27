@@ -1,6 +1,6 @@
 # Subagent Model Policy
 
-PicoClaw distinguishes three separate concerns for child-agent model selection:
+MintClaw distinguishes three separate concerns for child-agent model selection:
 
 1. The target agent's normal model configuration.
 2. An optional subagent-specific model policy.
@@ -40,7 +40,7 @@ Supported fields:
 Child-run model selection follows this order:
 
 1. Explicit per-call model override.
-   Current PicoClaw child tools do not expose this yet; the slot is reserved for
+   Current MintClaw child tools do not expose this yet; the slot is reserved for
    future extension.
 2. Target agent `subagents.model`
 3. Global `agents.defaults.subagents.model`

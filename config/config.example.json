@@ -310,7 +310,7 @@
       "type": "mintclaw",
       "allow_from": [],
       "settings": {
-        "token": "YOUR_PICO_TOKEN",
+        "token": "YOUR_MINTCLAW_TOKEN",
         "allow_token_query": false,
         "allow_origins": [],
         "ping_interval": 30,
@@ -324,7 +324,7 @@
       "allow_from": [],
       "settings": {
         "url": "wss://remote-mintclaw-server/mintclaw/ws",
-        "token": "YOUR_PICO_TOKEN",
+        "token": "YOUR_MINTCLAW_TOKEN",
         "session_id": "",
         "ping_interval": 30,
         "read_timeout": 60

@@ -1,6 +1,6 @@
 # Runtime Events And Event Logging
 
-PicoClaw runtime events are the read-only observation surface for agent, channel, gateway, message bus, and MCP activity. Publishing events and printing logs are separate responsibilities:
+MintClaw runtime events are the read-only observation surface for agent, channel, gateway, message bus, and MCP activity. Publishing events and printing logs are separate responsibilities:
 
 - Event publishing: components publish `pkg/events.Event` values to the runtime event bus for hooks, tests, diagnostics, and future UI consumers.
 - Event logging: the built-in runtime event logger subscribes to the same bus and prints only the events selected by configuration.
@@ -69,11 +69,11 @@ Common patterns:
 The same settings can be overridden with environment variables:
 
 ```bash
-PICOCLAW_EVENTS_LOGGING_ENABLED=true
-PICOCLAW_EVENTS_LOGGING_INCLUDE="gateway.*,channel.lifecycle.*"
-PICOCLAW_EVENTS_LOGGING_EXCLUDE="gateway.ready"
-PICOCLAW_EVENTS_LOGGING_MIN_SEVERITY=info
-PICOCLAW_EVENTS_LOGGING_INCLUDE_PAYLOAD=false
+MINTCLAW_EVENTS_LOGGING_ENABLED=true
+MINTCLAW_EVENTS_LOGGING_INCLUDE="gateway.*,channel.lifecycle.*"
+MINTCLAW_EVENTS_LOGGING_EXCLUDE="gateway.ready"
+MINTCLAW_EVENTS_LOGGING_MIN_SEVERITY=info
+MINTCLAW_EVENTS_LOGGING_INCLUDE_PAYLOAD=false
 ```
 
 `include` and `exclude` use comma-separated values.

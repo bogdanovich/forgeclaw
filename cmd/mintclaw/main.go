@@ -41,7 +41,6 @@ var rootNoColor bool
 
 // initTermuxSSL detects Termux environment and sets SSL_CERT_FILE if not already set.
 // This fixes X509 certificate errors when running MintClaw inside Termux or termux-chroot.
-// See: https://github.com/sipeed/picoclaw/issues/2944
 func initTermuxSSL() {
 	// Only applicable on Linux/Android
 	if runtime.GOOS != "linux" && runtime.GOOS != "android" {

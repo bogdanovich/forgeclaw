@@ -1,8 +1,8 @@
 # `pkg/isolation`
 
-`pkg/isolation` provides process-level isolation for child processes started by `picoclaw`.
+`pkg/isolation` provides process-level isolation for child processes started by `mintclaw`.
 
-It does not sandbox the main `picoclaw` process itself.
+It does not sandbox the main `mintclaw` process itself.
 
 ## Scope
 
@@ -15,7 +15,7 @@ The current scope is the child-process startup path:
 
 ## One-Sentence Model
 
-- The `picoclaw` main process still runs in the host environment.
+- The `mintclaw` main process still runs in the host environment.
 - Every child process should enter the shared `pkg/isolation` startup path first.
 - The startup path applies platform-specific isolation according to config.
 
@@ -62,7 +62,7 @@ Example:
       },
       {
         "source": "/data/shared-assets",
-        "target": "/opt/picoclaw-instance-a/workspace/assets",
+        "target": "/opt/mintclaw-instance-a/workspace/assets",
         "mode": "rw"
       }
     ]
@@ -88,8 +88,8 @@ Platform note:
 
 The instance root follows `config.GetHome()`:
 
-- If `PICOCLAW_HOME` is set, use it.
-- Otherwise use the default `.picoclaw` directory under the user home.
+- If `MINTCLAW_HOME` is set, use it.
+- Otherwise use the default `.mintclaw` directory under the user home.
 
 If `config.GetHome()` falls back to `.` while isolation is enabled, startup should fail.
 
@@ -147,7 +147,7 @@ Capabilities:
 
 Default mounts include the instance root plus the minimum runtime system paths such as `/usr`, `/bin`, `/lib`, `/lib64`, and `/etc/resolv.conf`.
 
-At runtime, PicoClaw also adds the executable path, its directory, the effective working directory, and absolute path arguments when needed.
+At runtime, MintClaw also adds the executable path, its directory, the effective working directory, and absolute path arguments when needed.
 
 There is no automatic fallback when `bwrap` is missing.
 
@@ -194,7 +194,7 @@ When isolation is explicitly enabled on an unsupported platform, the higher-leve
 
 ## Logging And Debugging
 
-When isolation is enabled, PicoClaw logs the generated isolation plan.
+When isolation is enabled, MintClaw logs the generated isolation plan.
 
 Linux log name:
 
@@ -219,7 +219,7 @@ They complement each other and do not replace each other.
 - Linux does not currently enable a dedicated `pid` namespace by default.
 - Windows does not yet implement full host ACL enforcement for every allowed or denied path.
 - macOS is not implemented.
-- The current design isolates child processes, not the main `picoclaw` process.
+- The current design isolates child processes, not the main `mintclaw` process.
 
 ## Suggested Reading Order
 

@@ -1,8 +1,8 @@
-# ForgeClaw Roadmap
+# MintClaw Roadmap
 
-ForgeClaw is a deployment-focused fork of PicoClaw. The roadmap tracks work
-that matters for the active ForgeClaw deployment while preserving the ability to
-merge upstream PicoClaw changes.
+MintClaw is an independent, deployment-focused agent runtime. The roadmap
+tracks work that matters for reliable personal automation across supported
+platforms.
 
 ## 1. Runtime Reliability
 
@@ -67,14 +67,13 @@ merge upstream PicoClaw changes.
 - Let deployments layer domain-specific agents and policies outside the core
   runtime.
 
-## 7. Upstream Compatibility
+## 7. Project Coherence
 
-- Merge `upstream/main` regularly.
-- Keep fork-specific behavior documented in the root README fork note.
-- Avoid repo-wide renames of binary/config/module paths unless there is a strong
-  reason.
-- Prefer small compatibility patches over broad rewrites that increase merge
-  conflict cost.
+- Keep one canonical MintClaw identity across binaries, modules, packages,
+  configuration, release artifacts, and documentation.
+- Prefer direct migrations over permanent compatibility aliases.
+- Remove superseded behavior once its replacement is validated and deployed.
+- Keep platform packaging and runtime conventions explicit and testable.
 
 ## 8. Model Selection Architecture
 

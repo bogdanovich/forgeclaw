@@ -1,6 +1,6 @@
 # Inbound Message Relations
 
-ForgeClaw currently preserves normalized inbound messages through the durable
+MintClaw currently preserves normalized inbound messages through the durable
 ingress spool, but it still leaves too much conversational boundary inference
 to prompt-building heuristics.
 

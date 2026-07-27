@@ -2,7 +2,7 @@
 
 > Back to [README](../README.md)
 
-PicoClaw sessions decide which messages share the same conversation history.
+MintClaw sessions decide which messages share the same conversation history.
 If your bot "remembers too much" or "forgets too much", the first thing to check is the session configuration.
 
 This guide is for users configuring session behavior in `config.json`.
@@ -20,7 +20,7 @@ A session controls:
 Session data is stored under your workspace, typically:
 
 ```text
-~/.picoclaw/workspace/sessions/
+~/.mintclaw/workspace/sessions/
 ```
 
 ## Quick Start
@@ -113,7 +113,7 @@ Even if two agents receive messages from the same chat, they do not share one se
 
 ### Sessions are still separated by channel and account
 
-`session.dimensions` adds finer-grained isolation, but PicoClaw still keeps a baseline separation by:
+`session.dimensions` adds finer-grained isolation, but MintClaw still keeps a baseline separation by:
 
 - agent
 - channel
@@ -167,7 +167,7 @@ Monday. A timezone is required so host timezone changes cannot silently alter se
 }
 ```
 
-The idle checkpoint is durable. Restarting PicoClaw does not reset the inactivity timer.
+The idle checkpoint is durable. Restarting MintClaw does not reset the inactivity timer.
 
 ### Limit maximum session age
 
@@ -281,7 +281,7 @@ In this example:
 
 ## Identity Links
 
-`session.identity_links` helps when the same user may appear under multiple raw sender IDs and you want PicoClaw to treat them as one sender identity.
+`session.identity_links` helps when the same user may appear under multiple raw sender IDs and you want MintClaw to treat them as one sender identity.
 
 Example:
 
@@ -325,7 +325,7 @@ Switch to:
 ### The same user does not share memory across Slack and Telegram
 
 That is expected.
-PicoClaw still separates sessions by channel even if you use `sender`.
+MintClaw still separates sessions by channel even if you use `sender`.
 
 ### Threads are mixing together
 
@@ -342,7 +342,7 @@ Add `topic` when the channel provides one:
 ### Old sessions seem to use legacy keys
 
 That is normal during migration.
-PicoClaw keeps compatibility with older `agent:...` session keys while moving runtime storage to opaque canonical keys.
+MintClaw keeps compatibility with older `agent:...` session keys while moving runtime storage to opaque canonical keys.
 
 ## Related Guides
 

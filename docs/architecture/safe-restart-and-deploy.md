@@ -1,6 +1,6 @@
 # Safe Restart And Deploy
 
-ForgeClaw safe restart and deploy support is a control-plane contract between
+MintClaw safe restart and deploy support is a control-plane contract between
 core runtime orchestration and operator-owned infrastructure scripts.
 
 The runtime goal is to make restart and deploy requests explicit, bounded, and
@@ -23,11 +23,11 @@ checks, or service-manager-specific deployment policy.
 
 ## Why Restart Is Required
 
-ForgeClaw and PicoClaw are Go binaries. Once the operating system starts a Go
+MintClaw and MintClaw are Go binaries. Once the operating system starts a Go
 process, the process executes the mapped binary image it already opened. Replacing
 the file on disk does not change code that is already running.
 
-For that reason, updating ForgeClaw code requires starting a new process. The
+For that reason, updating MintClaw code requires starting a new process. The
 expected mechanism is a supervisor such as systemd, launchd, a container
 orchestrator, or another operator-owned process manager. Core may request a
 configured service restart; it must not try to replace its own executable in
@@ -66,8 +66,8 @@ checkpointing system for an in-flight LLM call or tool execution.
 
 | Platform | `service_manager` | Service identifier | Status |
 | --- | --- | --- | --- |
-| Linux | `systemd-user` | Simple `.service` unit, such as `picoclaw-main.service` | Supported. Core uses `systemctl --user restart --no-block`. A signalled caller is an indeterminate handoff, confirmed by the replacement gateway. |
-| macOS | `launchd` | Explicit launchctl target, such as `gui/501/com.example.picoclaw` | Supported backend. Core uses `launchctl kickstart -k`; the operator owns bootstrap, plist installation, and target domain selection. |
+| Linux | `systemd-user` | Simple `.service` unit, such as `mintclaw-main.service` | Supported. Core uses `systemctl --user restart --no-block`. A signalled caller is an indeterminate handoff, confirmed by the replacement gateway. |
+| macOS | `launchd` | Explicit launchctl target, such as `gui/501/com.example.mintclaw` | Supported backend. Core uses `launchctl kickstart -k`; the operator owns bootstrap, plist installation, and target domain selection. |
 | Windows | `windows-scm` | Windows service name | Explicitly unsupported for self-restart. SCM has no atomic self-restart primitive; core rejects this configuration until an operator-provided external supervisor helper is implemented. |
 
 Core validates the manager against the running operating system before any
@@ -121,14 +121,14 @@ Core must not accept arbitrary shell fragments from the model or chat command.
     "safe_restart": {
       "enabled": true,
       "service_manager": "systemd-user",
-      "service": "picoclaw-main.service",
+      "service": "mintclaw-main.service",
       "drain_timeout_seconds": 300,
       "force_after_timeout": true
     },
     "deploy": {
       "enabled": true,
-      "group": "picoclaw-local",
-      "command": "/home/server/.picoclaw/shared/deploy/picoclaw/deploy.sh",
+      "group": "mintclaw-local",
+      "command": "/home/server/.mintclaw/shared/deploy/mintclaw/deploy.sh",
       "default_target": "current",
       "allowed_targets": ["current", "all", "main", "nutrition", "spouse", "reviewer"],
       "handoff_targets": ["current", "all"],
@@ -147,7 +147,7 @@ plist path:
     "safe_restart": {
       "enabled": true,
       "service_manager": "launchd",
-      "service": "gui/501/com.example.picoclaw"
+      "service": "gui/501/com.example.mintclaw"
     }
   }
 }
@@ -170,11 +170,11 @@ deploy.sh --target main
 Core sets these environment variables when values are known:
 
 ```sh
-FORGECLAW_DEPLOY_GROUP=picoclaw-local
-FORGECLAW_DEPLOY_TARGET=current
-FORGECLAW_WORKSPACE=/path/to/workspace
-FORGECLAW_SERVICE=picoclaw-main.service
-FORGECLAW_SESSION_KEY=<originating-session>
+MINTCLAW_DEPLOY_GROUP=mintclaw-local
+MINTCLAW_DEPLOY_TARGET=current
+MINTCLAW_WORKSPACE=/path/to/workspace
+MINTCLAW_SERVICE=mintclaw-main.service
+MINTCLAW_SESSION_KEY=<originating-session>
 ```
 
 The command path should be absolute or validated according to existing config

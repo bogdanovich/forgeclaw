@@ -23,7 +23,7 @@ still exists and durably invalidates a stale ref before returning an
 unavailable error. A deleted temporary file is therefore unavailable rather
 than accidentally resolving to a fabricated mapping.
 
-The index is workspace-local, so profiles sharing one PicoClaw binary do not
+The index is workspace-local, so profiles sharing one MintClaw binary do not
 share media references. It is an index only: media file retention remains
 controlled by the existing cleanup policy and the underlying storage.
 

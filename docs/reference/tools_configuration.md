@@ -1,6 +1,6 @@
 # Tools Configuration
 
-PicoClaw's tools configuration is located in the `tools` field of `config.json`.
+MintClaw's tools configuration is located in the `tools` field of `config.json`.
 
 > **Related:** Per-agent tool filtering is configured in each agent's `AGENT.md` frontmatter, not under the top-level `tools` section. See the [Configuration Guide](../guides/configuration.md#per-agent-tool-filtering).
 
@@ -30,7 +30,7 @@ PicoClaw's tools configuration is located in the `tools` field of `config.json`.
 
 ## Sensitive Data Filtering
 
-Before tool results are sent to the LLM, PicoClaw can filter sensitive values (API keys, tokens, secrets) from the output. This prevents the LLM from seeing its own credentials.
+Before tool results are sent to the LLM, MintClaw can filter sensitive values (API keys, tokens, secrets) from the output. This prevents the LLM from seeing its own credentials.
 
 See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full documentation.
 
@@ -229,7 +229,7 @@ At runtime, the `web_search` tool accepts the following parameters:
 | `count` | integer | no | Number of results to return. Default: `10`, max: `10` |
 | `range` | string | no | Optional time filter: `d` (day), `w` (week), `m` (month), `y` (year) |
 
-If `range` is omitted, PicoClaw performs an unrestricted search.
+If `range` is omitted, MintClaw performs an unrestricted search.
 For Kagi, `d`, `w`, and `m` map to Kagi lens `time_relative`; `y` maps to a lens `time_after` date one year before the current day.
 
 ### Example `web_search` Call
@@ -253,7 +253,7 @@ image generation.
 | `model` | string | `gpt-image-2` | Image generation model. Values may include a provider prefix, for example `openai-codex/gpt-image-2` |
 
 `tools.image_generate.model` is configured independently from vision / `load_image`
-routing. If it is not set, PicoClaw uses `gpt-image-2`.
+routing. If it is not set, MintClaw uses `gpt-image-2`.
 
 ```json
 {
@@ -306,7 +306,7 @@ Example:
 
 The `search_files` tool searches workspace files without shelling out to
 `grep`, `rg`, `find`, or `ls`. It is intended for routine repository and
-workspace discovery while preserving PicoClaw's read workspace restrictions and
+workspace discovery while preserving MintClaw's read workspace restrictions and
 `tools.allow_read_paths`. It respects `.gitignore` by default so normal search
 does not drown in generated/cache/runtime files. This is a noise filter, not a
 security boundary; use `include_ignored: true` only when explicitly inspecting
@@ -380,7 +380,7 @@ To completely disable the `exec` tool, set `enabled` to `false`:
 
 **Via environment variable:**
 ```bash
-PICOCLAW_TOOLS_EXEC_ENABLED=false
+MINTCLAW_TOOLS_EXEC_ENABLED=false
 ```
 
 > **Note:** When disabled, the agent will not be able to execute shell commands. This also affects the Cron tool's ability to run scheduled shell commands.
@@ -393,7 +393,7 @@ PICOCLAW_TOOLS_EXEC_ENABLED=false
 
 ### Default Blocked Command Patterns
 
-By default, PicoClaw blocks the following dangerous commands:
+By default, MintClaw blocks the following dangerous commands:
 
 - Delete commands: `rm -rf`, `del /f/q`, `rmdir /s`
 - Disk operations: `format`, `mkfs`, `diskpart`, `dd if=`, writing to `/dev/sd*`
@@ -410,7 +410,7 @@ By default, PicoClaw blocks the following dangerous commands:
 
 ### Known Architectural Limitation
 
-The exec guard only validates the top-level command sent to PicoClaw. It does **not** recursively inspect child
+The exec guard only validates the top-level command sent to MintClaw. It does **not** recursively inspect child
 processes spawned by build tools or scripts after that command starts running.
 
 Examples of workflows that can bypass the direct command guard once the initial command is allowed:
@@ -491,14 +491,14 @@ For schedule types, execution modes (`deliver`, agent turn, and command jobs), p
 
 The MCP tool enables integration with external Model Context Protocol servers.
 
-If you prefer not to edit JSON manually, PicoClaw also provides an MCP configuration manager CLI:
+If you prefer not to edit JSON manually, MintClaw also provides an MCP configuration manager CLI:
 
-- `picoclaw mcp add` — add or update a server (supports `--deferred` / `--no-deferred`)
-- `picoclaw mcp list` — list all configured servers with status and deferred state
-- `picoclaw mcp show <name>` — show full details and the tool list for one server
-- `picoclaw mcp test <name>` — connectivity check for one server
-- `picoclaw mcp remove <name>` — remove a server entry
-- `picoclaw mcp edit` — open `config.json` in `$EDITOR` for advanced edits
+- `mintclaw mcp add` — add or update a server (supports `--deferred` / `--no-deferred`)
+- `mintclaw mcp list` — list all configured servers with status and deferred state
+- `mintclaw mcp show <name>` — show full details and the tool list for one server
+- `mintclaw mcp test <name>` — connectivity check for one server
+- `mintclaw mcp remove <name>` — remove a server entry
+- `mintclaw mcp edit` — open `config.json` in `$EDITOR` for advanced edits
 
 These commands manage the same `tools.mcp.servers` section documented below. See [MCP Server CLI](mcp-cli.md) for command syntax, examples, and behavior details.
 
@@ -797,18 +797,18 @@ The skills tool configures skill discovery and installation via registries like 
 
 ## Environment Variables
 
-All configuration options can be overridden via environment variables with the format `PICOCLAW_TOOLS_<SECTION>_<KEY>`:
+All configuration options can be overridden via environment variables with the format `MINTCLAW_TOOLS_<SECTION>_<KEY>`:
 
 For example:
 
-- `PICOCLAW_TOOLS_WEB_BRAVE_ENABLED=true`
-- `PICOCLAW_TOOLS_EXEC_ENABLED=false`
-- `PICOCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS=false`
-- `PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
-- `PICOCLAW_TOOLS_MCP_ENABLED=true`
-- `PICOCLAW_TOOLS_MCP_MAX_INLINE_TEXT_CHARS=16384`
+- `MINTCLAW_TOOLS_WEB_BRAVE_ENABLED=true`
+- `MINTCLAW_TOOLS_EXEC_ENABLED=false`
+- `MINTCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS=false`
+- `MINTCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
+- `MINTCLAW_TOOLS_MCP_ENABLED=true`
+- `MINTCLAW_TOOLS_MCP_MAX_INLINE_TEXT_CHARS=16384`
 
 Note: Nested map-style config (for example `tools.mcp.servers.<name>.*`) is configured in `config.json` rather than
 environment variables.
 
-For MCP tools, `tools.mcp.max_inline_text_chars` controls how much text result is kept inline in model context. The threshold is counted in Unicode characters (Go runes), not bytes. For example, `16384` means up to 16,384 characters inline, which may occupy more than 16 KB for multibyte text such as CJK. Above this threshold, PicoClaw saves the MCP text result as a local artifact in the agent workspace and gives the model a short note plus a structured `[file:...]` artifact path instead of injecting the full payload into context.
+For MCP tools, `tools.mcp.max_inline_text_chars` controls how much text result is kept inline in model context. The threshold is counted in Unicode characters (Go runes), not bytes. For example, `16384` means up to 16,384 characters inline, which may occupy more than 16 KB for multibyte text such as CJK. Above this threshold, MintClaw saves the MCP text result as a local artifact in the agent workspace and gives the model a short note plus a structured `[file:...]` artifact path instead of injecting the full payload into context.

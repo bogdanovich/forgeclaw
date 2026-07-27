@@ -2,7 +2,7 @@
 
 > Back to [README](../README.md)
 
-In PicoClaw, the runtime "routing system" is not just one decision.
+In MintClaw, the runtime "routing system" is not just one decision.
 It is the combined pipeline that decides:
 
 1. which agent handles an inbound message

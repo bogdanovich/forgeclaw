@@ -2,7 +2,7 @@
 
 > Back to [README](../README.md)
 
-This document describes the runtime session system used by PicoClaw to:
+This document describes the runtime session system used by MintClaw to:
 
 - map inbound messages onto stable conversation scopes
 - persist message history and summaries
@@ -81,7 +81,7 @@ For compatibility, the allocator also emits legacy aliases such as:
 ```text
 agent:main:direct:user123
 agent:main:slack:channel:c001
-agent:main:pico:direct:pico:session-123
+agent:main:mintclaw:direct:mintclaw:session-123
 ```
 
 These aliases matter because older sessions, tests, and some tools still refer to the legacy shape.
@@ -295,7 +295,7 @@ That promotion only happens when the canonical session is still empty, so active
 This is how the system preserves old histories such as:
 
 - legacy direct-message keys
-- older Pico direct-session keys
+- older MintClaw direct-session keys
 
 while moving the runtime onto opaque canonical keys.
 

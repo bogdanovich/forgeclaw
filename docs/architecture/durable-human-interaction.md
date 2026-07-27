@@ -2,14 +2,14 @@
 
 ## Status
 
-Implemented on ForgeClaw `main`. The architecture landed through PRs #263,
+Implemented on MintClaw `main`. The architecture landed through PRs #263,
 #264, #266, #268, #269, and #270. This document describes the contracts the
 runtime preserves; operator-facing usage and configuration are documented in
 [Durable Human Interaction](../guides/human-interaction.md).
 
 ## Problem
 
-ForgeClaw can suspend a foreground turn or durable background task, release
+MintClaw can suspend a foreground turn or durable background task, release
 runtime resources, survive a restart, and later resume the exact tool call after
 an authorized person responds. Trusted approval hooks can use the same durable
 interaction state machine, and background tasks expose `waiting_for_input`.
@@ -53,16 +53,16 @@ workflow state, not an active model turn.
 
 OpenClaw's ask-user tool provides a useful structured question schema, explicit
 timeouts, and a gateway boundary. Its current pending-question map is in process
-memory and restricts blocking questions to the main session. ForgeClaw adopts
+memory and restricts blocking questions to the main session. MintClaw adopts
 the structured UX and bounded inputs, but replaces the in-memory wait with a
 durable suspend/resume protocol that also works for background tasks.
 
 Hermes cleanly separates clarification and approval callbacks from ordinary
-tool execution. Its approval queues are also process-local. ForgeClaw adopts
+tool execution. Its approval queues are also process-local. MintClaw adopts
 the separation between clarification and authorization, while storing both as
 typed interactions with restart reconciliation.
 
-ForgeClaw already has stronger primitives that this design reuses: canonical
+MintClaw already has stronger primitives that this design reuses: canonical
 routed session keys, sender and topic context, durable task records, completion
 IDs, and runtime events. Interaction state augments those subsystems instead of
 creating a second routing or task model.

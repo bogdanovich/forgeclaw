@@ -1,14 +1,12 @@
-# ForgeClaw Documentation
+# MintClaw Documentation
 
-ForgeClaw documentation is organized by document type.
+MintClaw documentation is organized by document type.
 
 This file describes the current documentation layout and what `make lint-docs` checks locally.
 
-ForgeClaw is a fork of PicoClaw. Many command names, paths, environment
-variables, and package references still intentionally use `picoclaw`, for
-example `picoclaw gateway` and `~/.picoclaw/config.json`. Treat those as
-runtime names, not stale branding. Project-level marketing, release news,
-hardware sales copy, and download links should be ForgeClaw-specific or omitted.
+The canonical project identity is MintClaw. Commands, paths, environment
+variables, module imports, packages, and release artifacts in current
+documentation must use that identity consistently.
 
 ## Reader Navigation
 

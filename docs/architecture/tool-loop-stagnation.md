@@ -3,7 +3,7 @@
 ## Status
 
 This document is the implementation specification for generic tool-loop
-stagnation protection in ForgeClaw. It describes required invariants and a
+stagnation protection in MintClaw. It describes required invariants and a
 preferred design, not an obligation to preserve current internal boundaries.
 Implementation may refactor or replace existing code when that produces a
 clearer architecture. Material deviations must preserve the invariants below
@@ -11,7 +11,7 @@ and be explained in the pull request.
 
 ## Problem
 
-ForgeClaw limits the number of model/tool iterations and has a special-case
+MintClaw limits the number of model/tool iterations and has a special-case
 breaker for repeated fatal MCP transport failures. It does not generally detect
 an agent that repeatedly:
 
@@ -21,7 +21,7 @@ an agent that repeatedly:
 
 The first implementation should cover these common cases with a small,
 auditable controller. Polling-specific, alternating ping-pong, global, and
-post-compaction detectors are deferred until a concrete ForgeClaw trace and
+post-compaction detectors are deferred until a concrete MintClaw trace and
 regression test demonstrate that the smaller controller is insufficient.
 
 ## Current Runtime Constraints
@@ -31,7 +31,7 @@ regression test demonstrate that the smaller controller is insufficient.
 `pkg/agent/pipeline_execute.go` executes a provider tool-call batch
 sequentially. Before execution, a call can be denied or modified by the turn
 profile and hooks. After execution, hooks and synchronous delivery can replace
-or wrap the `ToolResult`. Steering can stop the rest of a batch, but ForgeClaw
+or wrap the `ToolResult`. Steering can stop the rest of a batch, but MintClaw
 still appends a synthetic tool result for every skipped provider call.
 
 Detector integration must use the effective name, arguments, and result after
@@ -182,7 +182,7 @@ Do not initially implement:
 - a global all-tool circuit breaker;
 - post-compaction replay detection.
 
-Add one only with a captured or reproducible ForgeClaw failure that is not
+Add one only with a captured or reproducible MintClaw failure that is not
 handled by the initial rules.
 
 ## Runtime Integration
@@ -262,7 +262,7 @@ Initial defaults:
 | read-only no-progress block | 5 |
 
 These follow Hermes' conservative warning-first controller. Change them only
-with a ForgeClaw-specific rationale and tests.
+with a MintClaw-specific rationale and tests.
 
 ## Events and Diagnostics
 
@@ -369,5 +369,5 @@ generic event sink to that reusable package is deferred until another legacy
 consumer needs lifecycle observability. Polling-specific, alternating
 ping-pong, global, and post-compaction detectors remain deferred as described
 above; unlike Hermes and OpenClaw, this first version does not attempt to infer
-those broader stagnation patterns without a ForgeClaw trace and regression
+those broader stagnation patterns without a MintClaw trace and regression
 test.

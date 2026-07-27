@@ -4,11 +4,11 @@ Direct agent invocations are stateful by default. They resolve the configured
 route, assemble that route's conversation history, and persist the completed
 turn for future invocations.
 
-Use `picoclaw agent --stateless` for self-contained automation jobs whose
+Use `mintclaw agent --stateless` for self-contained automation jobs whose
 durable state lives outside conversational memory:
 
 ```bash
-picoclaw agent --stateless --session review-pr-251 \
+mintclaw agent --stateless --session review-pr-251 \
   -m "Process the queued review job and wait for writeback."
 ```
 

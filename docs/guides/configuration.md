@@ -4,33 +4,33 @@
 
 ## ⚙️ Configuration
 
-Config file: `~/.picoclaw/config.json`
+Config file: `~/.mintclaw/config.json`
 
 > **Security Configuration:** For storing API keys, tokens, and other sensitive data, see the [Security Configuration Guide](../security/security_configuration.md).
 
 ### Environment Variables
 
-You can override default paths using environment variables. This is useful for portable installations, containerized deployments, or running picoclaw as a system service. These variables are independent and control different paths.
+You can override default paths using environment variables. This is useful for portable installations, containerized deployments, or running mintclaw as a system service. These variables are independent and control different paths.
 
 | Variable          | Description                                                                                                                             | Default Path              |
 |-------------------|-----------------------------------------------------------------------------------------------------------------------------------------|---------------------------|
-| `PICOCLAW_CONFIG` | Overrides the path to the configuration file. This directly tells picoclaw which `config.json` to load, ignoring all other locations. | `~/.picoclaw/config.json` |
-| `PICOCLAW_HOME`   | Overrides the root directory for picoclaw data. This changes the default location of the `workspace` and other data directories.          | `~/.picoclaw`             |
+| `MINTCLAW_CONFIG` | Overrides the path to the configuration file. This directly tells mintclaw which `config.json` to load, ignoring all other locations. | `~/.mintclaw/config.json` |
+| `MINTCLAW_HOME`   | Overrides the root directory for mintclaw data. This changes the default location of the `workspace` and other data directories.          | `~/.mintclaw`             |
 
 **Examples:**
 
 ```bash
-# Run picoclaw using a specific config file
+# Run mintclaw using a specific config file
 # The workspace path will be read from within that config file
-PICOCLAW_CONFIG=/etc/picoclaw/production.json picoclaw gateway
+MINTCLAW_CONFIG=/etc/mintclaw/production.json mintclaw gateway
 
-# Run picoclaw with all its data stored in /opt/picoclaw
-# Config will be loaded from the default ~/.picoclaw/config.json
-# Workspace will be created at /opt/picoclaw/workspace
-PICOCLAW_HOME=/opt/picoclaw picoclaw agent
+# Run mintclaw with all its data stored in /opt/mintclaw
+# Config will be loaded from the default ~/.mintclaw/config.json
+# Workspace will be created at /opt/mintclaw/workspace
+MINTCLAW_HOME=/opt/mintclaw mintclaw agent
 
 # Use both for a fully customized setup
-PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gateway
+MINTCLAW_HOME=/srv/mintclaw MINTCLAW_CONFIG=/srv/mintclaw/main.json mintclaw gateway
 ```
 
 ### Gateway Log Level
@@ -47,14 +47,14 @@ PICOCLAW_HOME=/srv/picoclaw PICOCLAW_CONFIG=/srv/picoclaw/main.json picoclaw gat
 
 When omitted, the default is `warn`. Supported values: `debug`, `info`, `warn`, `error`, `fatal`.
 
-You can also override this with the environment variable `PICOCLAW_LOG_LEVEL`.
+You can also override this with the environment variable `MINTCLAW_LOG_LEVEL`.
 
 ### Workspace Layout
 
-PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspace`):
+MintClaw stores data in your configured workspace (default: `~/.mintclaw/workspace`):
 
 ```
-~/.picoclaw/workspace/
+~/.mintclaw/workspace/
 ├── sessions/          # Conversation sessions and history
 ├── memory/           # Long-term memory (MEMORY.md)
 ├── state/            # Persistent state (last channel, durable ingress spool, etc.)
@@ -222,7 +222,7 @@ event count, and its exact serialized snapshot size:
 
 Active, non-terminal, and terminal tasks that still require delivery are never
 removed by retention. A registry may therefore remain above the byte limit; at
-startup PicoClaw logs a warning that only protected records remain. Zero or
+startup MintClaw logs a warning that only protected records remain. Zero or
 omitted values use the built-in defaults.
 
 When `state_dir` is empty, traces are written under
@@ -232,13 +232,13 @@ Completed turns produce bounded traces for direct diagnostic inspection.
 
 ### Request Context Policy
 
-`turn_profile` is an optional request context policy under `agents.defaults.turn_profile`. Leave it unset or set `"enabled": false` to keep PicoClaw's normal behavior. When `"enabled": true`, the same policy applies to every new turn.
+`turn_profile` is an optional request context policy under `agents.defaults.turn_profile`. Leave it unset or set `"enabled": false` to keep MintClaw's normal behavior. When `"enabled": true`, the same policy applies to every new turn.
 
 Each block uses the same `mode` values:
 
 | Mode | Meaning |
 | --- | --- |
-| `default` | Keep PicoClaw's normal behavior for that block. Missing blocks and missing `mode` fields are treated as `default`. |
+| `default` | Keep MintClaw's normal behavior for that block. Missing blocks and missing `mode` fields are treated as `default`. |
 | `off` | Disable that block for the turn. |
 | `custom` | Use an allow list. In this version, `custom` is supported only for `skills` and `tools`; using it for `history` or `system_prompt` is a validation error. |
 
@@ -247,11 +247,11 @@ Profile blocks:
 | Block | What it controls |
 | --- | --- |
 | `history` | Whether the turn reads prior session history and summary, writes user/assistant/tool messages, ingests context, and runs compaction or summarization. |
-| `system_prompt` | Whether PicoClaw injects its default identity, workspace instructions, memory, runtime context, and summary. External request system prompts are still allowed when this is `off`. |
+| `system_prompt` | Whether MintClaw injects its default identity, workspace instructions, memory, runtime context, and summary. External request system prompts are still allowed when this is `off`. |
 | `skills` | Whether the skill catalog and active skill prompt content are loaded. `custom.allow` keeps only the listed skill names in prompt context. |
 | `tools` | Which callable tools are exposed to the model and allowed at execution time. `custom.allow` keeps only listed registered tool names. |
 
-When `system_prompt.mode` is `off`, tools are still visible, and no external system prompt is supplied, PicoClaw uses its existing tool-use rule as the minimal fallback prompt. If `tools.mode` is `off`, no fallback prompt is added.
+When `system_prompt.mode` is `off`, tools are still visible, and no external system prompt is supplied, MintClaw uses its existing tool-use rule as the minimal fallback prompt. If `tools.mode` is `off`, no fallback prompt is added.
 
 Example clean web policy:
 
@@ -276,13 +276,13 @@ Example clean web policy:
 
 ### Web launcher dashboard
 
-**picoclaw-launcher** serves a browser UI that requires password sign-in first. On first run, open `/launcher-setup` to create the dashboard password. Later manual sign-ins use `/launcher-login`.
+**mintclaw-launcher** serves a browser UI that requires password sign-in first. On first run, open `/launcher-setup` to create the dashboard password. Later manual sign-ins use `/launcher-login`.
 
-- **Config file**: Same directory as `config.json` (or the file pointed to by `PICOCLAW_CONFIG`). The launcher-specific file is `launcher-config.json`.
+- **Config file**: Same directory as `config.json` (or the file pointed to by `MINTCLAW_CONFIG`). The launcher-specific file is `launcher-config.json`.
 - **Password storage**: On supported platforms, the password is stored as a bcrypt hash in `launcher-auth.db`. On platforms where the SQLite password store is unavailable, the bcrypt hash is stored in `launcher-config.json`.
 - **Legacy migration**: Older `launcher_token` values are migrated once into password login and removed from saved launcher config.
 - **Local auto-login**: When the launcher auto-opens a local browser after startup, it uses a one-shot loopback-only bootstrap endpoint to set the session cookie automatically.
-- **Unsupported auth paths**: URL token login (`?token=...`), `PICOCLAW_LAUNCHER_TOKEN`, and `Authorization: Bearer` dashboard auth are no longer supported.
+- **Unsupported auth paths**: URL token login (`?token=...`), `MINTCLAW_LAUNCHER_TOKEN`, and `Authorization: Bearer` dashboard auth are no longer supported.
 - **Sign-out**: Use **`POST /api/auth/logout`** with **`Content-Type: application/json`** (body may be `{}`). Do not rely on a GET URL for logout (CSRF-safe pattern).
 - **Brute-force**: **`POST /api/auth/login`** is **rate-limited per client IP per minute** (HTTP 429 when exceeded).
 - **Session lifetime**: The HttpOnly session cookie lasts about **31 days** by default, but sessions are invalidated when the launcher process restarts.
@@ -291,14 +291,14 @@ Example clean web policy:
 
 By default, skills are loaded from:
 
-1. `~/.picoclaw/workspace/skills` (workspace)
-2. `~/.picoclaw/skills` (global)
+1. `~/.mintclaw/workspace/skills` (workspace)
+2. `~/.mintclaw/skills` (global)
 3. `<binary-embedded-path>/skills` (builtin, set at build time)
 
 For advanced/test setups, you can override the builtin skills root with:
 
 ```bash
-export PICOCLAW_BUILTIN_SKILLS=/path/to/skills
+export MINTCLAW_BUILTIN_SKILLS=/path/to/skills
 ```
 
 ### Using Skills From Chat Channels
@@ -503,7 +503,7 @@ Raw JSONL and Seahorse message rows remain unchanged and available to audit and 
 
 `agents.defaults.final_turn_render_mode` controls an experimental final-response render pass for steering-heavy turns.
 
-When enabled with value `llm`, PicoClaw may do one extra **same-agent** LLM pass after tool execution has already completed:
+When enabled with value `llm`, MintClaw may do one extra **same-agent** LLM pass after tool execution has already completed:
 
 - it reuses the accumulated turn context
 - it disables tool calling for that final pass
@@ -540,7 +540,7 @@ Routing is configured through `agents.dispatch.rules`.
 
 Each rule matches against the normalized inbound context produced by channels.
 Rules are evaluated from top to bottom. The first matching rule wins. If no
-rule matches, PicoClaw falls back to the configured default agent.
+rule matches, MintClaw falls back to the configured default agent.
 
 Supported match fields:
 
@@ -641,7 +641,7 @@ to `0` to use no additional per-agent limit.
 
 Per-agent tool declarations live in `AGENT.md` frontmatter, not in `config.json`.
 
-If `tools` is omitted from frontmatter, the agent gets the normal globally enabled tool set. If `tools` is present, PicoClaw applies the declared tool policy during registration.
+If `tools` is omitted from frontmatter, the agent gets the normal globally enabled tool set. If `tools` is present, MintClaw applies the declared tool policy during registration.
 
 ```md
 ---
@@ -690,7 +690,7 @@ Policy rules:
 
 ### Agent Discovery (Automatic)
 
-When an agent has spawnable peers and can call `spawn`, PicoClaw injects a structured agent registry into that agent's system prompt on every turn. No extra `list_agents` tool call is required.
+When an agent has spawnable peers and can call `spawn`, MintClaw injects a structured agent registry into that agent's system prompt on every turn. No extra `list_agents` tool call is required.
 
 This registry is intended to make delegation concrete and reliable, especially when using `spawn` with a target `agent_id`.
 
@@ -773,7 +773,7 @@ This filtering is enforced at tool registration time. Filtered tools do not appe
 
 ### 🔒 Security Sandbox
 
-PicoClaw runs in a sandboxed environment by default. The agent can only access files and execute commands within the configured workspace.
+MintClaw runs in a sandboxed environment by default. The agent can only access files and execute commands within the configured workspace.
 
 #### Default Configuration
 
@@ -781,7 +781,7 @@ PicoClaw runs in a sandboxed environment by default. The agent can only access f
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.mintclaw/workspace",
       "restrict_to_workspace": true
     }
   }
@@ -790,7 +790,7 @@ PicoClaw runs in a sandboxed environment by default. The agent can only access f
 
 | Option                  | Default                 | Description                               |
 | ----------------------- | ----------------------- | ----------------------------------------- |
-| `workspace`             | `~/.picoclaw/workspace` | Working directory for the agent           |
+| `workspace`             | `~/.mintclaw/workspace` | Working directory for the agent           |
 | `restrict_to_workspace` | `true`                  | Restrict file/command access to workspace |
 
 #### Protected Tools
@@ -827,7 +827,7 @@ Even with `restrict_to_workspace: false`, the `exec` tool blocks these dangerous
 
 ### Read File Mode
 
-`read_file` has two mutually exclusive implementations selected by config. PicoClaw registers exactly one of them at startup:
+`read_file` has two mutually exclusive implementations selected by config. MintClaw registers exactly one of them at startup:
 
 | Config Key | Type | Default | Description |
 |------------|------|---------|-------------|
@@ -901,7 +901,7 @@ Use `mode = lines` when:
 
 #### Known Limitation: Child Processes From Build Tools
 
-The exec safety guard only inspects the command line PicoClaw launches directly. It does not recursively inspect child
+The exec safety guard only inspects the command line MintClaw launches directly. It does not recursively inspect child
 processes spawned by allowed developer tools such as `make`, `go run`, `cargo`, `npm run`, or custom build scripts.
 
 That means a top-level command can still compile or launch other binaries after it passes the initial guard check. In
@@ -912,7 +912,7 @@ For higher-risk environments:
 
 * Review build scripts before execution.
 * Prefer approval/manual review for compile-and-run workflows.
-* Run PicoClaw inside a container or VM if you need stronger isolation than the built-in guard provides.
+* Run MintClaw inside a container or VM if you need stronger isolation than the built-in guard provides.
 
 #### Error Examples
 
@@ -945,7 +945,7 @@ If you need the agent to access paths outside the workspace:
 **Method 2: Environment variable**
 
 ```bash
-export PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
+export MINTCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE=false
 ```
 
 > ⚠️ **Warning**: Disabling this restriction allows the agent to access any path on your system. Use with caution in controlled environments only.
@@ -964,7 +964,7 @@ All paths share the same workspace restriction — there's no way to bypass the 
 
 ### Heartbeat (Periodic Tasks)
 
-PicoClaw can perform periodic tasks automatically. Create a `HEARTBEAT.md` file in your workspace:
+MintClaw can perform periodic tasks automatically. Create a `HEARTBEAT.md` file in your workspace:
 
 ```markdown
 # Periodic Tasks
@@ -1039,8 +1039,8 @@ The subagent has access to its configured tools, but completion delivery is owne
 
 **Environment variables:**
 
-* `PICOCLAW_HEARTBEAT_ENABLED=false` to disable
-* `PICOCLAW_HEARTBEAT_INTERVAL=60` to change interval
+* `MINTCLAW_HEARTBEAT_ENABLED=false` to disable
+* `MINTCLAW_HEARTBEAT_INTERVAL=60` to change interval
 
 ### Providers
 
@@ -1051,7 +1051,7 @@ The subagent has access to its configured tools, but completion delivery is owne
 | ------------ | --------------------------------------- | ------------------------------------------------------------ |
 | `gemini`     | LLM (Gemini direct)                     | [aistudio.google.com](https://aistudio.google.com)           |
 | `zhipu`      | LLM (Zhipu direct)                      | [bigmodel.cn](https://bigmodel.cn)                           |
-| `volcengine` | LLM (Volcengine direct)                 | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| `volcengine` | LLM (Volcengine direct)                 | [volcengine.com](https://www.volcengine.com/activity/codingplan?utm_campaign=MintClaw&utm_content=MintClaw&utm_medium=devrel&utm_source=OWO&utm_term=MintClaw) |
 | `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai)                       |
 | `anthropic`  | LLM (Claude direct)                     | [console.anthropic.com](https://console.anthropic.com)       |
 | `openai`     | LLM (GPT direct)                        | [platform.openai.com](https://platform.openai.com)           |
@@ -1063,7 +1063,7 @@ The subagent has access to its configured tools, but completion delivery is owne
 
 ### Model Configuration (model_list)
 
-> **What's New?** PicoClaw now prefers explicit `provider` + native `model` configuration (for example `"provider": "zhipu", "model": "glm-4.7"`). The legacy single-field `provider/model` form remains supported for compatibility when `provider` is omitted.
+> **What's New?** MintClaw now prefers explicit `provider` + native `model` configuration (for example `"provider": "zhipu", "model": "glm-4.7"`). The legacy single-field `provider/model` form remains supported for compatibility when `provider` is omitted.
 
 This design also enables **multi-agent support** with flexible provider selection:
 
@@ -1120,7 +1120,7 @@ Semantics:
 #### Response footer
 
 Final outbound messages can include a compact footer with response metadata.
-When enabled, PicoClaw appends the active model only when it differs from the
+When enabled, MintClaw appends the active model only when it differs from the
 turn's default model, and appends provider-reported input/output token usage
 when available. Channels with native compact-text formatting render the footer
 in a smaller secondary style; other channels preserve the same text at their
@@ -1142,7 +1142,7 @@ Set `agents.defaults.response_footer.enabled` to `false` to disable the footer.
 
 #### 🔒 Security Configuration (Recommended)
 
-PicoClaw supports separating sensitive data (API keys, tokens, secrets) from your main configuration by storing them in a `.security.yml` file.
+MintClaw supports separating sensitive data (API keys, tokens, secrets) from your main configuration by storing them in a `.security.yml` file.
 
 **Key Benefits:**
 - **Security**: Sensitive data is never in your main config file
@@ -1152,7 +1152,7 @@ PicoClaw supports separating sensitive data (API keys, tokens, secrets) from you
 
 **Quick Setup:**
 
-1. Create `~/.picoclaw/.security.yml` with your API keys:
+1. Create `~/.mintclaw/.security.yml` with your API keys:
 ```yaml
 model_list:
   gpt-5.4:
@@ -1174,7 +1174,7 @@ web:
 
 2. Set proper permissions:
 ```bash
-chmod 600 ~/.picoclaw/.security.yml
+chmod 600 ~/.mintclaw/.security.yml
 ```
 
 3. Remove sensitive fields from `config.json` (recommended):
@@ -1225,7 +1225,7 @@ For complete documentation, see [`../security/security_configuration.md`](../sec
 | **LiteLLM Proxy**       | `litellm`         | `http://localhost:4000/v1`                          | OpenAI    | Your LiteLLM proxy key                                           |
 | **VLLM**                | `vllm`            | `http://localhost:8000/v1`                          | OpenAI    | Local                                                            |
 | **Cerebras**            | `cerebras`        | `https://api.cerebras.ai/v1`                        | OpenAI    | [Get Key](https://cerebras.ai)                                   |
-| **VolcEngine (Doubao)** | `volcengine`      | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Get Key](https://www.volcengine.com/activity/codingplan?utm_campaign=PicoClaw&utm_content=PicoClaw&utm_medium=devrel&utm_source=OWO&utm_term=PicoClaw) |
+| **VolcEngine (Doubao)** | `volcengine`      | `https://ark.cn-beijing.volces.com/api/v3`          | OpenAI    | [Get Key](https://www.volcengine.com/activity/codingplan?utm_campaign=MintClaw&utm_content=MintClaw&utm_medium=devrel&utm_source=OWO&utm_term=MintClaw) |
 | **神算云**              | `shengsuanyun`    | `https://router.shengsuanyun.com/api/v1`            | OpenAI    | —                                                                |
 | **BytePlus**            | `byteplus`        | `https://ark.ap-southeast.bytepluses.com/api/v3`    | OpenAI    | [Get Key](https://www.byteplus.com)                              |
 | **Vivgrid**             | `vivgrid`         | `https://api.vivgrid.com/v1`                        | OpenAI    | [Get Key](https://vivgrid.com)                                   |
@@ -1279,15 +1279,15 @@ For complete documentation, see [`../security/security_configuration.md`](../sec
 Resolution rules:
 
 - Prefer explicit `"provider": "openai", "model": "gpt-5.4"`.
-- If `provider` is set, PicoClaw sends `model` unchanged.
-- If `provider` is omitted, PicoClaw treats the first `/` segment in `model` as the provider and everything after that first `/` as the runtime model ID.
+- If `provider` is set, MintClaw sends `model` unchanged.
+- If `provider` is omitted, MintClaw treats the first `/` segment in `model` as the provider and everything after that first `/` as the runtime model ID.
 - This means `"model": "openrouter/openai/gpt-5.4"` still works as a compatibility form and sends `openai/gpt-5.4` to OpenRouter.
 
 #### Streaming Configuration
 
-Provider streaming uses a double opt-in and is disabled by default. The agent only tries streaming when the current channel has `settings.streaming.enabled: true`, the active model entry has `streaming.enabled: true`, and both the provider and channel support streaming. If any condition is missing, PicoClaw uses the normal non-streaming request path.
+Provider streaming uses a double opt-in and is disabled by default. The agent only tries streaming when the current channel has `settings.streaming.enabled: true`, the active model entry has `streaming.enabled: true`, and both the provider and channel support streaming. If any condition is missing, MintClaw uses the normal non-streaming request path.
 
-Pico WebUI is the first fully wired channel. Pico creates the first assistant message with the existing `message.create` wire message, then updates that same message with `message.update`; no new Pico wire message type is introduced.
+MintClaw WebUI is the first fully wired channel. MintClaw creates the first assistant message with the existing `message.create` wire message, then updates that same message with `message.update`; no new MintClaw wire message type is introduced.
 
 Leave `streaming` unset when you do not want streaming. An omitted `streaming` block means disabled; you do not need to write `"streaming": {"enabled": false}`.
 
@@ -1307,11 +1307,11 @@ Opt-in example:
     }
   ],
   "channel_list": {
-    "pico": {
+    "mintclaw": {
       "enabled": true,
-      "type": "pico",
+      "type": "mintclaw",
       "settings": {
-        "token": "YOUR_PICO_TOKEN",
+        "token": "YOUR_MINTCLAW_TOKEN",
         "streaming": {
           "enabled": true
         }
@@ -1324,15 +1324,15 @@ Opt-in example:
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
 | `channel_list.<name>.settings.streaming.enabled` | bool | `false` | Allows this channel to display provider streaming output |
-| `channel_list.<name>.settings.streaming.throttle_seconds` | int | Pico default after enabling: `0` | Minimum interval for intermediate updates; final content is always flushed |
-| `channel_list.<name>.settings.streaming.min_growth_chars` | int | Pico default after enabling: `1` | Minimum character growth before sending an intermediate update; final content is always flushed |
+| `channel_list.<name>.settings.streaming.throttle_seconds` | int | MintClaw default after enabling: `0` | Minimum interval for intermediate updates; final content is always flushed |
+| `channel_list.<name>.settings.streaming.min_growth_chars` | int | MintClaw default after enabling: `1` | Minimum character growth before sending an intermediate update; final content is always flushed |
 | `model_list[].streaming.enabled` | bool | `false` | Allows this model entry to try provider streaming requests |
 
-Legacy Telegram environment variables remain compatible: `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, and `PICOCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. They only apply to Telegram settings and do not enable or modify Pico `settings.streaming`.
+Legacy Telegram environment variables remain compatible: `MINTCLAW_CHANNELS_TELEGRAM_STREAMING_ENABLED`, `MINTCLAW_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS`, and `MINTCLAW_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS`. They only apply to Telegram settings and do not enable or modify MintClaw `settings.streaming`.
 
 Telegram topic ownership filters can also be set through environment overrides:
-`PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS` and
-`PICOCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS`. Use comma-separated topic IDs
+`MINTCLAW_CHANNELS_TELEGRAM_ALLOWED_TOPIC_IDS` and
+`MINTCLAW_CHANNELS_TELEGRAM_IGNORED_TOPIC_IDS`. Use comma-separated topic IDs
 such as `3565,7777`.
 
 For Telegram forum groups, you can restrict a workspace to specific topics:
@@ -1357,7 +1357,7 @@ For Telegram forum groups, you can restrict a workspace to specific topics:
 - The filter is applied before media download, suppressed-message observation, and session routing side effects.
 - Non-forum chats and regular Telegram private chats are unaffected.
 
-Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, PicoClaw retries once through the normal `Chat()` path. If a chunk has already been shown to the user, PicoClaw does not send a second non-streaming answer, because that would duplicate visible output.
+Failure behavior is intentionally conservative: if streaming fails before any visible chunk is sent, MintClaw retries once through the normal `Chat()` path. If a chunk has already been shown to the user, MintClaw does not send a second non-streaming answer, because that would duplicate visible output.
 
 For model-specific TTS request fields such as custom speech `voice` names or
 `response_format: "mp3"`, use `model_list[].extra_body`.
@@ -1463,7 +1463,7 @@ Pair this with:
 }
 ```
 
-> Run `picoclaw auth login --provider anthropic` to paste your API token.
+> Run `mintclaw auth login --provider anthropic` to paste your API token.
 
 For direct Anthropic API access or custom endpoints that only support Anthropic's native message format:
 
@@ -1506,7 +1506,7 @@ For direct Anthropic API access or custom endpoints that only support Anthropic'
 ```
 
 `api_base` defaults to `http://localhost:1234/v1`. API key is optional unless your LM Studio server enables authentication.<br/>
-With explicit `provider`, PicoClaw sends `openai/gpt-oss-20b` unchanged to LM Studio. The legacy compatibility form `"model": "lmstudio/openai/gpt-oss-20b"` still resolves to the same upstream model ID when `provider` is omitted.
+With explicit `provider`, MintClaw sends `openai/gpt-oss-20b` unchanged to LM Studio. The legacy compatibility form `"model": "lmstudio/openai/gpt-oss-20b"` still resolves to the same upstream model ID when `provider` is omitted.
 
 </details>
 
@@ -1523,13 +1523,13 @@ With explicit `provider`, PicoClaw sends `openai/gpt-oss-20b` unchanged to LM St
 }
 ```
 
-With explicit `provider`, PicoClaw sends `model` unchanged. That means `"provider": "litellm", "model": "lite-gpt4"` sends `lite-gpt4`, while `"provider": "litellm", "model": "openai/gpt-4o"` sends `openai/gpt-4o`. The legacy compatibility forms `litellm/lite-gpt4` and `litellm/openai/gpt-4o` still resolve the same way when `provider` is omitted.
+With explicit `provider`, MintClaw sends `model` unchanged. That means `"provider": "litellm", "model": "lite-gpt4"` sends `lite-gpt4`, while `"provider": "litellm", "model": "openai/gpt-4o"` sends `openai/gpt-4o`. The legacy compatibility forms `litellm/lite-gpt4` and `litellm/openai/gpt-4o` still resolve the same way when `provider` is omitted.
 
 </details>
 
 #### Load Balancing
 
-Configure multiple endpoints for the same model name — PicoClaw will automatically round-robin between them:
+Configure multiple endpoints for the same model name — MintClaw will automatically round-robin between them:
 
 **Option 1: Multiple API Keys in .security.yml (Recommended)**
 
@@ -1586,7 +1586,7 @@ The old `providers` configuration is **deprecated** and has been removed in V2. 
 
 ### Provider Architecture
 
-PicoClaw routes providers by protocol family:
+MintClaw routes providers by protocol family:
 
 - **OpenAI-compatible**: OpenRouter, Groq, Zhipu, vLLM-style endpoints, and most others.
 - **Gemini native**: Google Gemini via the native `models/*:generateContent` and `models/*:streamGenerateContent` endpoints.
@@ -1602,7 +1602,7 @@ This keeps the runtime lightweight while making new OpenAI-compatible backends m
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.mintclaw/workspace",
       "model": "glm-4.7",
       "max_tokens": 8192,
       "temperature": 0.7,
@@ -1668,7 +1668,7 @@ This keeps the runtime lightweight while making new OpenAI-compatible backends m
 
 ### Scheduled Tasks / Reminders
 
-PicoClaw supports cron-style scheduled tasks via the `cron` tool. The agent can set, list, and cancel reminders or recurring jobs that trigger at specified times.
+MintClaw supports cron-style scheduled tasks via the `cron` tool. The agent can set, list, and cancel reminders or recurring jobs that trigger at specified times.
 
 ```json
 {
@@ -1683,9 +1683,9 @@ PicoClaw supports cron-style scheduled tasks via the `cron` tool. The agent can 
 }
 ```
 
-Scheduled tasks persist across restarts and are stored in `~/.picoclaw/workspace/cron/`.
+Scheduled tasks persist across restarts and are stored in `~/.mintclaw/workspace/cron/`.
 
-Command cron jobs can execute shell commands. By default, remote channels cannot schedule command jobs. To allow specific remote channels, set `command_allowed_remotes` to entries such as `"telegram"` or `"telegram:1234567890"`; use `"*"` only if every non-empty channel should be allowed. The `"*"` wildcard is potentially dangerous because any remote channel that can talk to PicoClaw can schedule shell commands. This does not bypass `allow_command`, `command_confirm`, or exec safety checks.
+Command cron jobs can execute shell commands. By default, remote channels cannot schedule command jobs. To allow specific remote channels, set `command_allowed_remotes` to entries such as `"telegram"` or `"telegram:1234567890"`; use `"*"` only if every non-empty channel should be allowed. The `"*"` wildcard is potentially dangerous because any remote channel that can talk to MintClaw can schedule shell commands. This does not bypass `allow_command`, `command_confirm`, or exec safety checks.
 
 ### Advanced Topics
 

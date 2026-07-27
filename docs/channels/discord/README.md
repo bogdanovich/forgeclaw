@@ -2,7 +2,7 @@
 
 # Discord
 
-Discord is a free voice, video, and text chat application designed for communities. PicoClaw connects to Discord servers via the Discord Bot API, supporting both receiving and sending messages.
+Discord is a free voice, video, and text chat application designed for communities. MintClaw connects to Discord servers via the Discord Bot API, supporting both receiving and sending messages.
 
 ## Configuration
 
@@ -54,7 +54,7 @@ Discord can show three different kinds of "working" feedback:
 
 ```text
 🔧 `web_search`
-Checking the latest PicoClaw release notes before I answer.
+Checking the latest MintClaw release notes before I answer.
 ```
 
 If you only see `Bot is typing`, check that `placeholder.enabled` or `tool_feedback.enabled` is actually set in your runtime config.

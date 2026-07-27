@@ -144,6 +144,22 @@ func TestStreamingConfig_IsChannelGeneric(t *testing.T) {
 	}
 }
 
+func TestMintClawSettings_UseCanonicalEnvironmentNames(t *testing.T) {
+	serverType := reflect.TypeOf(MintClawSettings{})
+	serverToken, ok := serverType.FieldByName("Token")
+	require.True(t, ok)
+	assert.Equal(t, "MINTCLAW_CHANNELS_MINTCLAW_TOKEN", serverToken.Tag.Get("env"))
+
+	clientType := reflect.TypeOf(MintClawClientSettings{})
+	clientURL, ok := clientType.FieldByName("URL")
+	require.True(t, ok)
+	assert.Equal(t, "MINTCLAW_CHANNELS_MINTCLAW_CLIENT_URL", clientURL.Tag.Get("env"))
+
+	clientToken, ok := clientType.FieldByName("Token")
+	require.True(t, ok)
+	assert.Equal(t, "MINTCLAW_CHANNELS_MINTCLAW_CLIENT_TOKEN", clientToken.Tag.Get("env"))
+}
+
 func TestMintClawSettings_StreamingConfig(t *testing.T) {
 	raw := RawNode(`{
 		"token": "test-token",

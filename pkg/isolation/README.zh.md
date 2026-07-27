@@ -1,8 +1,8 @@
 # `pkg/isolation`
 
-`pkg/isolation` 为 `picoclaw` 启动的子进程提供进程级隔离能力。
+`pkg/isolation` 为 `mintclaw` 启动的子进程提供进程级隔离能力。
 
-它当前不会把 `picoclaw` 主进程自身放进沙箱中运行。
+它当前不会把 `mintclaw` 主进程自身放进沙箱中运行。
 
 ## 生效范围
 
@@ -15,7 +15,7 @@
 
 ## 一句话理解
 
-- `picoclaw` 主进程仍运行在宿主环境中。
+- `mintclaw` 主进程仍运行在宿主环境中。
 - 所有子进程都应先经过 `pkg/isolation` 的统一启动入口。
 - 入口会根据配置和平台，为子进程施加对应隔离。
 
@@ -62,7 +62,7 @@
       },
       {
         "source": "/data/shared-assets",
-        "target": "/opt/picoclaw-instance-a/workspace/assets",
+        "target": "/opt/mintclaw-instance-a/workspace/assets",
         "mode": "rw"
       }
     ]
@@ -88,8 +88,8 @@
 
 实例根遵循 `config.GetHome()`：
 
-- 如果设置了 `PICOCLAW_HOME`，使用该值。
-- 否则默认使用用户目录下的 `.picoclaw`。
+- 如果设置了 `MINTCLAW_HOME`，使用该值。
+- 否则默认使用用户目录下的 `.mintclaw`。
 
 如果 `config.GetHome()` 在隔离开启时最终回退到当前目录 `.`，启动应直接失败。
 
@@ -194,7 +194,7 @@ Windows 后端当前使用：
 
 ## 日志与排障
 
-隔离开启后，PicoClaw 会打印生成后的隔离计划，便于排障。
+隔离开启后，MintClaw 会打印生成后的隔离计划，便于排障。
 
 Linux 日志名：
 
@@ -219,7 +219,7 @@ Windows 日志名：
 - Linux 当前没有默认启用独立的 `pid namespace`。
 - Windows 还没有对所有允许/拒绝路径做完整 ACL 落地。
 - macOS 尚未实现。
-- 当前隔离的是子进程，不是 `picoclaw` 主进程自身。
+- 当前隔离的是子进程，不是 `mintclaw` 主进程自身。
 
 ## 建议阅读顺序
 

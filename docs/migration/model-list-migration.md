@@ -103,8 +103,8 @@ Legacy compatibility format:
 
 Resolution rules:
 
-1. If `provider` is set, PicoClaw sends `model` unchanged.
-2. If `provider` is omitted, PicoClaw treats the first `/` segment in `model` as the provider and everything after that first `/` as the runtime model ID.
+1. If `provider` is set, MintClaw sends `model` unchanged.
+2. If `provider` is omitted, MintClaw treats the first `/` segment in `model` as the provider and everything after that first `/` as the runtime model ID.
 
 Examples:
 
@@ -263,5 +263,5 @@ api_key or api_base is required for HTTP-based protocol "xxx"
 
 ## Need Help?
 
-- [GitHub Issues](https://github.com/sipeed/picoclaw/issues)
-- [Discussion #122](https://github.com/sipeed/picoclaw/discussions/122): Original proposal
+- [GitHub Issues](https://github.com/bogdanovich/mintclaw/issues)
+- [Discussion #122](https://github.com/bogdanovich/mintclaw/discussions/122): Original proposal

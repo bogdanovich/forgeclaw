@@ -1,24 +1,15 @@
-# Contributing to ForgeClaw
+# Contributing to MintClaw
 
-ForgeClaw is a personal fork of [PicoClaw](https://github.com/sipeed/picoclaw).
-It keeps the upstream Go runtime and binary names, but carries deployment-driven
-changes for personal automation, MCP-heavy workflows, task delivery, media
-handling, context management, and multi-agent workflows.
-
-This repository is not the upstream PicoClaw project. Contributions here should
-optimize for the running ForgeClaw deployment while keeping upstream merges as
-low-conflict as practical.
+MintClaw is an independent Go agent runtime for personal automation, MCP-heavy
+workflows, task delivery, media handling, context management, and multi-agent
+workflows. Contributions should preserve one canonical MintClaw identity and
+optimize for reliable deployed behavior.
 
 ## Repository Layout
 
-- `origin`: `git@github.com:bogdanovich/forgeclaw.git`
-- `upstream`: `https://github.com/sipeed/picoclaw.git`
-- `main`: active ForgeClaw branch.
-- `upstream/main`: read-only tracking branch for upstream PicoClaw.
-
-The binary, Go module path, config directory, and most command examples still
-use `picoclaw` intentionally. Renaming those would create unnecessary upstream
-merge conflicts and migration churn.
+- `origin`: `git@github.com:bogdanovich/mintclaw.git`
+- `main`: public MintClaw development and release branch.
+- topic branches: focused changes created from the latest `origin/main`.
 
 ## Development Setup
 
@@ -47,7 +38,7 @@ make build-launcher
 
 ## Branching
 
-For ForgeClaw changes:
+For a MintClaw change:
 
 ```bash
 git checkout main
@@ -55,35 +46,7 @@ git pull origin main
 git checkout -b feat/short-description
 ```
 
-Target ForgeClaw PRs at `main`.
-
-For upstreamable changes:
-
-1. Start from the latest `upstream/main`.
-2. Create a clean topic branch.
-3. Cherry-pick or manually port only the intended upstream patch.
-4. Avoid bringing ForgeClaw-only deployment behavior into upstream PRs.
-
-Do not open upstream PRs directly from ForgeClaw `main`.
-
-## Keeping Up With Upstream
-
-Periodically merge upstream into ForgeClaw:
-
-```bash
-git fetch upstream
-git checkout main
-git merge upstream/main
-```
-
-When resolving conflicts:
-
-- keep ForgeClaw branding in the root README;
-- keep deployment-specific fork notes unless the feature was truly merged
-  upstream;
-- preserve upstream bug fixes and dependency bumps unless they conflict with a
-  fork-specific behavior that is still required;
-- prefer small compatibility shims over broad rewrites.
+Target MintClaw PRs at `main`.
 
 ## Code Style
 
@@ -104,7 +67,7 @@ runs the same linter rules expected by GitHub checks.
 
 ## Documentation
 
-The root `README.md` is the authoritative ForgeClaw entry document.
+The root `README.md` is the authoritative MintClaw entry document.
 
 Use `docs/README.md` for documentation layout and naming conventions. Run:
 
@@ -114,12 +77,12 @@ make lint-docs
 
 Documentation guidelines:
 
-- Keep ForgeClaw-specific docs in English unless translations are intentionally
+- Keep MintClaw-specific docs in English unless translations are intentionally
   maintained.
-- Do not reintroduce upstream PicoClaw marketing, hardware sales, crypto scam
-  warnings, star-count news, or `picoclaw.io` download instructions into the
-  ForgeClaw root README.
-- Keep command names such as `picoclaw`, paths such as `~/.picoclaw`, and Go
+- Keep project and release links on official MintClaw repository endpoints.
+- Do not add unmaintained product domains or download instructions.
+- Use only MintClaw command, package, module, environment, and config names.
+- Keep command names such as `mintclaw`, paths such as `~/.mintclaw`, and Go
   module references when they describe the actual current binary/runtime.
 
 ## PR Expectations
@@ -159,13 +122,13 @@ Use concise imperative messages, preferably with a functional scope:
 ```text
 fix(agent): preserve media delivery status
 feat(tasks): add task delivery status view
-docs: clarify fork maintenance workflow
+docs: clarify release workflow
 ```
 
 Avoid `[codex]` prefixes in commit or PR titles.
 
 ## Communication
 
-Use GitHub issues and PR comments for durable project discussion. For local
-deployment notes that should not become upstream-facing docs, prefer workspace
-documentation outside this source repository.
+Use GitHub issues and PR comments for durable project discussion. Keep local
+deployment notes that do not belong in project documentation outside this
+source repository.

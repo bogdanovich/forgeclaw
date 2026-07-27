@@ -382,7 +382,7 @@ P1 is complete only when:
 
 ### Operator outcome
 
-An authorized operator can ask ForgeClaw to:
+An authorized operator can ask MintClaw to:
 
 - upload a local gateway file or retained artifact to a node path;
 - download a node file into a gateway artifact;

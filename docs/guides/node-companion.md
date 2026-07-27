@@ -1,7 +1,7 @@
 # Node Companion
 
-`picoclaw-node` is the slim first-party process that connects a Linux or macOS
-machine to a ForgeClaw gateway. It does not include models, agents, channels,
+`mintclaw-node` is the slim first-party process that connects a Linux or macOS
+machine to a MintClaw gateway. It does not include models, agents, channels,
 sessions, MCP hosting, or workspace memory.
 
 The companion creates a durable device identity, authenticates it with a signed
@@ -17,18 +17,18 @@ policy. The current command surface includes `node.info.v1`,
 make build-node
 ```
 
-The resulting binary is `build/picoclaw-node`.
+The resulting binary is `build/mintclaw-node`.
 
 ## Configure
 
-Create `~/.picoclaw-node/config.json`:
+Create `~/.mintclaw-node/config.json`:
 
 ```json
 {
-  "gateway_url": "wss://forgeclaw.example.com/nodes/v1/ws",
-  "state_dir": "~/.picoclaw-node",
+  "gateway_url": "wss://mintclaw.example.com/nodes/v1/ws",
+  "state_dir": "~/.mintclaw-node",
   "tls": {
-    "ca_file": "/etc/ssl/private/forgeclaw-ca.pem"
+    "ca_file": "/etc/ssl/private/mintclaw-ca.pem"
   },
   "reconnect": {
     "min_delay_seconds": 1,
@@ -56,7 +56,7 @@ loopback endpoint when `allow_loopback_plaintext` is explicitly true.
 ## Run
 
 ```bash
-picoclaw-node run --config ~/.picoclaw-node/config.json
+mintclaw-node run --config ~/.mintclaw-node/config.json
 ```
 
 The first successful handshake creates
@@ -68,20 +68,20 @@ secret: replacing it creates a different node identity.
 Install a named systemd user service after creating its configuration:
 
 ```bash
-picoclaw-node install \
+mintclaw-node install \
   --instance main \
-  --config ~/.picoclaw-node/main/config.json
+  --config ~/.mintclaw-node/main/config.json
 ```
 
 System installation requires an absolute configuration path and an explicit
 unprivileged account:
 
 ```bash
-sudo picoclaw-node install \
+sudo mintclaw-node install \
   --system \
   --instance vpn \
-  --config /etc/forgeclaw/vpn-node.json \
-  --service-user forgeclaw-node
+  --config /etc/mintclaw/vpn-node.json \
+  --service-user mintclaw-node
 ```
 
 Installation is create-only. It refuses an existing managed or administrator
@@ -89,19 +89,19 @@ unit rather than replacing it. The installer serializes work per service,
 publishes the unit without replacement, starts it, and waits for a stable
 `active` state. A failed install removes only the exact unit created by that
 transaction. Reinstall, upgrade, and uninstall are separate lifecycle actions.
-The per-service lock coordinates ForgeClaw lifecycle commands; administrators
+The per-service lock coordinates MintClaw lifecycle commands; administrators
 must not edit or reload the same unit concurrently with a lifecycle transaction.
 
 Remove a managed user service:
 
 ```bash
-picoclaw-node uninstall --instance main
+mintclaw-node uninstall --instance main
 ```
 
 System-service removal is explicit:
 
 ```bash
-sudo picoclaw-node uninstall --system --instance vpn
+sudo mintclaw-node uninstall --system --instance vpn
 ```
 
 Uninstall is idempotent when both the managed unit and its systemd registration
@@ -114,13 +114,13 @@ enablement and active state when safe.
 Inspect a named systemd user service:
 
 ```bash
-picoclaw-node status --instance main
+mintclaw-node status --instance main
 ```
 
 System-service status is explicit:
 
 ```bash
-sudo picoclaw-node status --system --instance vpn
+sudo mintclaw-node status --system --instance vpn
 ```
 
 Use `--json` for stable machine-readable output from install, uninstall, and
@@ -135,13 +135,13 @@ platform.
 Install a named per-user LaunchAgent:
 
 ```bash
-picoclaw-node install \
+mintclaw-node install \
   --instance main \
-  --config ~/.picoclaw-node/main/config.json
+  --config ~/.mintclaw-node/main/config.json
 ```
 
 This writes
-`~/Library/LaunchAgents/com.forgeclaw.picoclaw-node.main.plist`, bootstraps it
+`~/Library/LaunchAgents/com.mintclaw.mintclaw-node.main.plist`, bootstraps it
 into the current user's launchd domain, and waits for a stable running state.
 Installation is create-only and refuses an existing or foreign plist or an
 already loaded job.
@@ -149,21 +149,21 @@ already loaded job.
 Inspect or remove that instance with:
 
 ```bash
-picoclaw-node status --instance main
-picoclaw-node uninstall --instance main
+mintclaw-node status --instance main
+mintclaw-node uninstall --instance main
 ```
 
 A system LaunchDaemon requires root, an absolute configuration path, and an
 explicit unprivileged service account:
 
 ```bash
-sudo picoclaw-node install \
+sudo mintclaw-node install \
   --system \
   --instance vpn \
-  --config /etc/forgeclaw/vpn-node.json \
-  --service-user forgeclaw-node
-sudo picoclaw-node status --system --instance vpn
-sudo picoclaw-node uninstall --system --instance vpn
+  --config /etc/mintclaw/vpn-node.json \
+  --service-user mintclaw-node
+sudo mintclaw-node status --system --instance vpn
+sudo mintclaw-node uninstall --system --instance vpn
 ```
 
 The LaunchAgent and LaunchDaemon lifecycle is transactional and fail-closed.
@@ -193,10 +193,10 @@ The MVP uses one gateway binding per process. Run named service instances from
 the same binary with distinct config and state directories:
 
 ```text
-~/.picoclaw-node/main/config.json
-~/.picoclaw-node/main/state/
-~/.picoclaw-node/nutrition/config.json
-~/.picoclaw-node/nutrition/state/
+~/.mintclaw-node/main/config.json
+~/.mintclaw-node/main/state/
+~/.mintclaw-node/nutrition/config.json
+~/.mintclaw-node/nutrition/state/
 ```
 
 Each instance is paired and authorized independently. Do not point multiple
@@ -262,9 +262,9 @@ After an unknown companion connects, inspect and approve its durable identity
 from the gateway host:
 
 ```bash
-picoclaw nodes list --state pending_pairing
-picoclaw nodes describe node_<fingerprint>
-picoclaw nodes approve node_<fingerprint> \
+mintclaw nodes list --state pending_pairing
+mintclaw nodes describe node_<fingerprint>
+mintclaw nodes approve node_<fingerprint> \
   --alias vpn-box \
   --display-name "VPN box" \
   --allow-command node.info.v1
@@ -277,8 +277,8 @@ display name, and allowed-command set to retain. Deny an untrusted pending
 identity or revoke a paired one with a recorded reason:
 
 ```bash
-picoclaw nodes deny node_<fingerprint> --reason "unknown device"
-picoclaw nodes revoke vpn-box --reason "device retired"
+mintclaw nodes deny node_<fingerprint> --reason "unknown device"
+mintclaw nodes revoke vpn-box --reason "device retired"
 ```
 
 All read and mutation commands accept `--json`. The CLI prints only a public-key
