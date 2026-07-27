@@ -398,6 +398,82 @@ func TestNodeInvocationPreparationAndDispatchLockOrderSurvivesReloadWriter(t *te
 	}
 }
 
+func TestNodeDiscoveryAndPreparationLockOrderSurvivesReloadWriter(t *testing.T) {
+	fixture := newRealNodePreparationFixture(t)
+	registryHeld := make(chan struct{})
+	allowPreparationRuntime := make(chan struct{})
+	preparationDone := make(chan error, 1)
+	go func() {
+		_, err := fixture.handler.WithPreparationAuthority(
+			fixture.nodeID,
+			string(fixture.nodeID),
+			fixture.descriptor.Name,
+			func(nodes.Registration, nodes.CommandApproval) error {
+				close(registryHeld)
+				<-allowPreparationRuntime
+				return fixture.runtime.withInvocationHandler(
+					fixture.runtime.registryPath,
+					fixture.runtime.generation,
+					func(nodeAdmissionHandler) error { return nil },
+				)
+			},
+		)
+		preparationDone <- err
+	}()
+	<-registryHeld
+
+	type discoveryResult struct {
+		found bool
+		err   error
+	}
+	discoveryStarted := make(chan struct{})
+	discoveryDone := make(chan discoveryResult, 1)
+	go func() {
+		close(discoveryStarted)
+		_, found, err := fixture.runtime.lookup(
+			fixture.runtime.registryPath,
+			string(fixture.nodeID),
+		)
+		discoveryDone <- discoveryResult{found: found, err: err}
+	}()
+	<-discoveryStarted
+	time.Sleep(25 * time.Millisecond)
+
+	writerStarted := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		close(writerStarted)
+		fixture.runtime.registryMu.Lock()
+		fixture.runtime.registryMu.Unlock()
+		close(writerDone)
+	}()
+	<-writerStarted
+	time.Sleep(25 * time.Millisecond)
+	close(allowPreparationRuntime)
+
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("reload writer deadlocked behind discovery and preparation")
+	}
+	select {
+	case err := <-preparationDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("preparation deadlocked behind discovery and reload")
+	}
+	select {
+	case result := <-discoveryDone:
+		if result.err != nil || !result.found {
+			t.Fatalf("lookup = found %v, error %v", result.found, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("discovery deadlocked behind preparation and reload")
+	}
+}
+
 type realNodePreparationFixture struct {
 	source     *nodeInvocationSource
 	runtime    *nodeAdmissionRuntime
