@@ -30,7 +30,8 @@ type nodeAdmissionRoutes interface {
 type nodeAdmissionHandler interface {
 	http.Handler
 	Close(context.Context) error
-	WithResolvedApprovedCommand(
+	WithPreparationAuthority(
+		nodes.ID,
 		string,
 		string,
 		func(nodes.Registration, nodes.CommandApproval) error,
@@ -182,6 +183,21 @@ func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
 	runtime.registryMu.RLock()
 	defer runtime.registryMu.RUnlock()
 	return runtime.generation
+}
+
+func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+) (nodeAdmissionHandler, error) {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	if !runtime.mounted ||
+		runtime.handler == nil ||
+		runtime.registryPath != expectedRegistryPath ||
+		runtime.generation != expectedGeneration {
+		return nil, errNodeDiscoveryAuthorityUnavailable
+	}
+	return runtime.handler, nil
 }
 
 func (runtime *nodeAdmissionRuntime) withInvocationHandler(

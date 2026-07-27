@@ -73,22 +73,32 @@ func (source *nodeInvocationSource) PrepareInvocation(
 		created            bool
 		authorityValidated bool
 	)
-	err := source.runtime.withInvocationHandler(
+	handler, err := source.runtime.invocationHandlerSnapshot(
 		source.registryPath,
 		source.generation,
-		func(handler nodeAdmissionHandler) error {
-			_, leaseErr := handler.WithResolvedApprovedCommand(
-				nodeRef,
-				plan.Command,
-				func(
-					registration nodes.Registration,
-					_ nodes.CommandApproval,
-				) error {
+	)
+	if err != nil {
+		return nodes.GatewayInvocationRecord{}, false, err
+	}
+	_, err = handler.WithPreparationAuthority(
+		plan.NodeID,
+		nodeRef,
+		plan.Command,
+		func(
+			registration nodes.Registration,
+			_ nodes.CommandApproval,
+		) error {
+			return source.runtime.withInvocationHandler(
+				source.registryPath,
+				source.generation,
+				func(currentHandler nodeAdmissionHandler) error {
+					if currentHandler != handler {
+						return errNodeDiscoveryAuthorityUnavailable
+					}
 					current := tools.NodeDiscoveryRecord{
 						Snapshot:     registration.Snapshot,
 						Registration: &registration,
-						Connected: source.runtime.sessions != nil &&
-							source.runtime.sessions.Connected(registration.Snapshot.ID),
+						Connected:    true,
 					}
 					if validationErr := validate(current); validationErr != nil {
 						return validationErr
@@ -118,7 +128,6 @@ func (source *nodeInvocationSource) PrepareInvocation(
 					return prepareErr
 				},
 			)
-			return leaseErr
 		},
 	)
 	if err != nil &&

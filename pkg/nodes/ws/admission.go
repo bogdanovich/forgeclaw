@@ -375,6 +375,28 @@ func (handler *AdmissionHandler) WithResolvedApprovedCommand(
 	return handler.authenticator.WithResolvedApprovedCommand(ref, command, operation)
 }
 
+// WithPreparationAuthority keeps both the active authenticated session
+// generation and resolved registry command authority stable through one
+// durable preparation mutation.
+func (handler *AdmissionHandler) WithPreparationAuthority(
+	nodeID nodes.ID,
+	ref string,
+	command string,
+	operation func(nodes.Registration, nodes.CommandApproval) error,
+) (nodes.CommandApproval, error) {
+	var approval nodes.CommandApproval
+	err := handler.sessions.WithConnectedGeneration(nodeID, func() error {
+		var leaseErr error
+		approval, leaseErr = handler.authenticator.WithResolvedApprovedCommand(
+			ref,
+			command,
+			operation,
+		)
+		return leaseErr
+	})
+	return approval, err
+}
+
 func (handler *AdmissionHandler) validateInvocationPreflight(
 	nodeID nodes.ID,
 	plan nodes.ExecutionPlan,
