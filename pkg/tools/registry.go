@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -39,6 +40,25 @@ type mediaStoreAware interface {
 // canonical arguments when the same tool call is resumed.
 type ApprovalArgumentsProvider interface {
 	ApprovalArguments(ctx context.Context, args map[string]any) (map[string]any, error)
+}
+
+type safeApprovalDenialProvider interface {
+	SafeApprovalDenialResult() *ToolResult
+}
+
+// SafeApprovalDenialResult returns a tool-authored, model-safe denial for an
+// approval-preparation error. Ordinary errors are never forwarded to the
+// model through this path.
+func SafeApprovalDenialResult(err error) (*ToolResult, bool) {
+	var provider safeApprovalDenialProvider
+	if !errors.As(err, &provider) {
+		return nil, false
+	}
+	result := provider.SafeApprovalDenialResult()
+	if result == nil || !result.IsError || strings.TrimSpace(result.ContentForLLM()) == "" {
+		return nil, false
+	}
+	return result, true
 }
 
 func NewToolRegistry() *ToolRegistry {

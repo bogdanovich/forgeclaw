@@ -67,6 +67,15 @@ func (denial *nodeSafeDenialError) Unwrap() error {
 	return denial.cause
 }
 
+func (denial *nodeSafeDenialError) SafeApprovalDenialResult() *ToolResult {
+	return nodeDenialToolResult(nodeDenialResult{
+		Status:     "denied",
+		Code:       denial.Code,
+		Constraint: denial.Constraint,
+		Action:     denial.Action,
+	})
+}
+
 func denyNodeInvocation(
 	code string,
 	constraint string,

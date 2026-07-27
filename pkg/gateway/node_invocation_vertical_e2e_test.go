@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/nodes/companion"
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/testharness/llmscenario"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
@@ -98,7 +100,9 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 	configPath := filepath.Join(tempDir, "config.json")
 	writeVerticalSliceConfig(t, configPath, companionConfig)
 	process := startVerticalSliceCompanion(t, binaryPath, configPath)
-	defer process.stop(t)
+	defer func() {
+		process.stop(t)
+	}()
 
 	pending := waitForVerticalSliceNodeState(t, registry, nodes.StatePendingPairing)
 	if _, err := registry.Approve(pending.ID, nodes.PairingApproval{
@@ -108,62 +112,15 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waitForVerticalSliceNodeState(t, registry, nodes.StateConnected)
-	discovery := tools.NewNodeDiscoveryTool(cfg, &nodeDiscoverySource{
-		runtime:      runtimeState,
-		registryPath: nodes.RegistryPath(cfg.WorkspacePath()),
-	})
-	discoveryResult := discovery.Execute(
-		tools.WithToolSessionContext(t.Context(), "main", "node-e2e-session", nil),
-		map[string]any{
-			"action":  "describe",
-			"target":  "build",
-			"command": "system.exec.v1",
-		},
-	)
-	if discoveryResult.IsError {
-		t.Fatalf("discover node command: %s", discoveryResult.ForLLM)
-	}
-	var discovered struct {
-		DiscoveryRevision string `json:"discovery_revision"`
-	}
-	if err := json.Unmarshal([]byte(discoveryResult.ForLLM), &discovered); err != nil {
-		t.Fatal(err)
-	}
-	if discovered.DiscoveryRevision == "" {
-		t.Fatal("node discovery returned no revision")
-	}
-
-	provider := llmscenario.NewScriptedProvider(
-		"node-e2e-model",
-		llmscenario.ProviderStep{
-			Name:   "model requests remote execution",
-			Assert: llmscenario.RequireToolDefinition("nodes_invoke"),
-			Response: llmscenario.ToolCallResponse(
-				"I will run the approved command.",
-				llmscenario.ToolCall("call-node-e2e", "nodes_invoke", map[string]any{
-					"target":             "build",
-					"command":            "system.exec.v1",
-					"discovery_revision": discovered.DiscoveryRevision,
-					"input": map[string]any{
-						"argv":            []any{"diagnostic", "node-e2e-ok"},
-						"cwd":             "workspace",
-						"timeout_seconds": 5,
-						"env":             map[string]any{},
-					},
-					"timeout_seconds":    5,
-					"output_limit_bytes": 4096,
-				}),
-			),
-		},
-		llmscenario.ProviderStep{
-			Name: "model receives companion result",
-			Assert: llmscenario.RequireLastMessage(
-				"tool",
-				"node-e2e-ok",
-			),
-			Response: llmscenario.TextResponse("Remote command completed: node-e2e-ok"),
-		},
+	connected := waitForVerticalSliceNodeState(t, registry, nodes.StateConnected)
+	provider := newNodeP0EvidenceProvider(
+		commandDir,
+		executable,
+		"build",
+		"system.exec.v1",
+		"diagnostic",
+		"workspace",
+		"4096",
 	)
 
 	msgBus := bus.NewMessageBus()
@@ -289,15 +246,13 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 	if final.Content != "Remote command completed: node-e2e-ok" {
 		t.Fatalf("final response = %#v", final)
 	}
-	if err := provider.AssertExhausted(); err != nil {
-		t.Fatal(err)
-	}
 
-	events := collectVerticalSliceEvents(t, eventChannel, 3)
+	events := collectVerticalSliceEvents(t, eventChannel, 4)
 	wantObservations := map[string]int{
 		tools.NodeInvocationObservationPrepared:   1,
 		tools.NodeInvocationObservationDispatched: 1,
 		tools.NodeInvocationObservationCompleted:  1,
+		tools.NodeInvocationObservationStatus:     1,
 	}
 	gotObservations := make(map[string]int, len(wantObservations))
 	for index, event := range events {
@@ -338,6 +293,88 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		interactionEndEvents,
 		runtimeevents.KindAgentInteractionEnd,
 	)
+
+	staleResponse, err := agentLoop.ProcessDirectWithChannel(
+		t.Context(),
+		"Verify the remote outcome cannot be duplicated after a constraint change",
+		"node-e2e-stale-session",
+		"telegram",
+		"chat-e2e",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staleResponse != "" {
+		t.Fatalf("stale suspended response = %q, want empty", staleResponse)
+	}
+	staleApprovalPrompt := channel.nextMessage(t)
+	if !strings.Contains(staleApprovalPrompt.Content, "nodes_invoke") ||
+		strings.Contains(staleApprovalPrompt.Content, commandDir) ||
+		strings.Contains(staleApprovalPrompt.Content, "node-e2e-ok") {
+		t.Fatalf("stale approval prompt = %#v", staleApprovalPrompt)
+	}
+	waitForVerticalSliceEvent(t, waitingEvents, runtimeevents.KindAgentInteractionWaiting)
+	stalePrepared := waitForVerticalSliceEvent(
+		t,
+		eventChannel,
+		runtimeevents.KindNodeInvocationObserved,
+	)
+	stalePreparedPayload, ok := stalePrepared.Payload.(tools.NodeInvocationEventPayload)
+	if !ok || stalePreparedPayload.Observation != tools.NodeInvocationObservationPrepared {
+		t.Fatalf("stale pre-change observation = %#v", stalePrepared)
+	}
+
+	process.stop(t)
+	staleCompanionConfig := companionConfig
+	staleCompanionConfig.Policy.Revision = "vertical-e2e-policy-stale"
+	writeVerticalSliceConfig(t, configPath, staleCompanionConfig)
+	process = startVerticalSliceCompanion(t, binaryPath, configPath)
+	waitForVerticalSlicePolicyRevision(
+		t,
+		registry,
+		staleCompanionConfig.Policy.Revision,
+	)
+	if err := msgBus.PublishInbound(
+		t.Context(),
+		verticalSliceInboundMessage(
+			"node-e2e-stale-session",
+			"message-stale-approval",
+			"allow_once",
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	staleFinal := channel.nextMessage(t)
+	if staleFinal.Content != "Stale discovery refreshed without dispatch." {
+		t.Fatalf("stale final response = %#v", staleFinal)
+	}
+	waitForVerticalSliceEvent(
+		t,
+		interactionEndEvents,
+		runtimeevents.KindAgentInteractionEnd,
+	)
+	assertNoVerticalSliceEvent(t, eventChannel)
+
+	process.stop(t)
+	writeVerticalSliceConfig(t, configPath, companionConfig)
+	process = startVerticalSliceCompanion(t, binaryPath, configPath)
+	waitForVerticalSlicePolicyRevision(t, registry, connected.PolicyRevision)
+	recoveredResponse, err := agentLoop.ProcessDirectWithChannel(
+		t.Context(),
+		"Confirm remote capability discovery recovered",
+		"node-e2e-recovered-session",
+		"telegram",
+		"chat-e2e",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredResponse != "Remote discovery recovered." {
+		t.Fatalf("recovered response = %q", recoveredResponse)
+	}
+	if err := provider.AssertExhausted(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := agentLoop.ProcessDirectWithChannel(
 		t.Context(),
 		"/clear",
@@ -346,6 +383,391 @@ func TestNodeInvocationVerticalSliceWithApprovalAndRealCompanion(t *testing.T) {
 		"chat-e2e",
 	); err != nil {
 		t.Fatalf("clear vertical-slice context before shutdown: %v", err)
+	}
+}
+
+type nodeP0EvidenceProvider struct {
+	mu sync.Mutex
+
+	step              int
+	target            string
+	command           string
+	executableAlias   string
+	workingScopeAlias string
+	discoveryRevision string
+	invocationID      string
+	timeoutSeconds    int
+	outputLimitBytes  int
+	forbidden         []string
+}
+
+func newNodeP0EvidenceProvider(forbidden ...string) *nodeP0EvidenceProvider {
+	return &nodeP0EvidenceProvider{forbidden: append([]string(nil), forbidden...)}
+}
+
+func (*nodeP0EvidenceProvider) GetDefaultModel() string {
+	return "node-e2e-model"
+}
+
+func (provider *nodeP0EvidenceProvider) Chat(
+	_ context.Context,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+	_ string,
+	_ map[string]any,
+) (*providers.LLMResponse, error) {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+
+	call := llmscenario.ProviderCall{Messages: messages, Tools: toolDefs}
+	step := provider.step
+	provider.step++
+	switch step {
+	case 0:
+		if err := requireNodeOutcomeOnlyPrompt(call, provider.forbidden); err != nil {
+			return nil, err
+		}
+		if err := llmscenario.RequireToolDefinition("nodes")(call); err != nil {
+			return nil, err
+		}
+		return llmscenario.ToolCallResponse(
+			"I will discover an available target.",
+			llmscenario.ToolCall("call-node-list", "nodes", map[string]any{"action": "list"}),
+		), nil
+	case 1:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		target, err := nodeP0AvailableTarget(payload)
+		if err != nil {
+			return nil, err
+		}
+		provider.target = target
+		return llmscenario.ToolCallResponse(
+			"I will inspect the target's approved commands.",
+			llmscenario.ToolCall("call-node-target", "nodes", map[string]any{
+				"action": "describe",
+				"target": target,
+			}),
+		), nil
+	case 2:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		command, err := nodeP0AvailableCommand(payload)
+		if err != nil {
+			return nil, err
+		}
+		provider.command = command
+		return llmscenario.ToolCallResponse(
+			"I will inspect the bounded command contract.",
+			llmscenario.ToolCall("call-node-command", "nodes", map[string]any{
+				"action":  "describe",
+				"target":  provider.target,
+				"command": command,
+			}),
+		), nil
+	case 3:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		invokeArgs, err := provider.nodeP0InvocationFromContract(payload)
+		if err != nil {
+			return nil, err
+		}
+		return llmscenario.ToolCallResponse(
+			"I will run the discovered bounded command.",
+			llmscenario.ToolCall("call-node-e2e", "nodes_invoke", invokeArgs),
+		), nil
+	case 4:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		invocationID, ok := payload["invocation_id"].(string)
+		if !ok || invocationID == "" || !nodeP0ResultContains(payload, "node-e2e-ok") {
+			return nil, fmt.Errorf("invoke result is incomplete: %#v", payload)
+		}
+		provider.invocationID = invocationID
+		return llmscenario.ToolCallResponse(
+			"I will verify the retained result without replaying it.",
+			llmscenario.ToolCall("call-node-status", "nodes_status", map[string]any{
+				"invocation_id": invocationID,
+			}),
+		), nil
+	case 5:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		if payload["invocation_id"] != provider.invocationID ||
+			payload["state"] != string(nodes.InvocationSucceeded) ||
+			!nodeP0ResultContains(payload, "node-e2e-ok") {
+			return nil, fmt.Errorf("retained status is incomplete: %#v", payload)
+		}
+		return llmscenario.TextResponse("Remote command completed: node-e2e-ok"), nil
+	case 6:
+		if err := requireNodeOutcomeOnlyPrompt(call, provider.forbidden); err != nil {
+			return nil, err
+		}
+		return llmscenario.ToolCallResponse(
+			"I will verify the prior discovery cannot replay the command.",
+			llmscenario.ToolCall(
+				"call-node-stale",
+				"nodes_invoke",
+				provider.nodeP0InvocationArgs(),
+			),
+		), nil
+	case 7:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		if len(payload) != 4 ||
+			payload["status"] != "denied" ||
+			payload["code"] != "DISCOVERY_STALE" ||
+			payload["constraint"] != "command_policy" ||
+			payload["action"] != "refresh_discovery" {
+			return nil, fmt.Errorf("stale denial is not model-safe: %#v", payload)
+		}
+		return llmscenario.ToolCallResponse(
+			"I will refresh discovery after the stale denial.",
+			llmscenario.ToolCall("call-node-stale-refresh", "nodes", map[string]any{
+				"action":  "describe",
+				"target":  provider.target,
+				"command": provider.command,
+			}),
+		), nil
+	case 8:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		command, ok := payload["command"].(map[string]any)
+		revision, revisionOK := payload["discovery_revision"].(string)
+		if !ok || command["availability"] != string(nodes.ModelAvailable) ||
+			!revisionOK || revision == "" || revision == provider.discoveryRevision {
+			return nil, fmt.Errorf("stale discovery did not refresh: %#v", payload)
+		}
+		return llmscenario.TextResponse("Stale discovery refreshed without dispatch."), nil
+	case 9:
+		if err := requireNodeOutcomeOnlyPrompt(call, provider.forbidden); err != nil {
+			return nil, err
+		}
+		return llmscenario.ToolCallResponse(
+			"I will rediscover the restored command contract.",
+			llmscenario.ToolCall("call-node-recovered", "nodes", map[string]any{
+				"action":  "describe",
+				"target":  provider.target,
+				"command": provider.command,
+			}),
+		), nil
+	case 10:
+		payload, err := nodeP0LastToolPayload(call)
+		if err != nil {
+			return nil, err
+		}
+		command, ok := payload["command"].(map[string]any)
+		if !ok || command["availability"] != string(nodes.ModelAvailable) ||
+			payload["discovery_revision"] != provider.discoveryRevision {
+			return nil, fmt.Errorf("restored discovery is incomplete: %#v", payload)
+		}
+		return llmscenario.TextResponse("Remote discovery recovered."), nil
+	default:
+		return nil, fmt.Errorf("unexpected node P0 evidence model call %d", step+1)
+	}
+}
+
+func (provider *nodeP0EvidenceProvider) AssertExhausted() error {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if provider.step != 11 {
+		return fmt.Errorf("node P0 evidence consumed %d model steps, want 11", provider.step)
+	}
+	return nil
+}
+
+func (provider *nodeP0EvidenceProvider) nodeP0InvocationFromContract(
+	payload map[string]any,
+) (map[string]any, error) {
+	command, ok := payload["command"].(map[string]any)
+	if !ok || command["name"] != provider.command ||
+		command["availability"] != string(nodes.ModelAvailable) {
+		return nil, fmt.Errorf("command contract is unavailable: %#v", payload)
+	}
+	revision, ok := payload["discovery_revision"].(string)
+	if !ok || revision == "" {
+		return nil, errors.New("command contract omitted discovery revision")
+	}
+	constraints, ok := command["constraints"].(map[string]any)
+	if !ok {
+		return nil, errors.New("command contract omitted constraints")
+	}
+	executable, err := nodeP0FirstString(constraints["executable_aliases"])
+	if err != nil {
+		return nil, err
+	}
+	workingScope, err := nodeP0FirstString(constraints["working_scopes"])
+	if err != nil {
+		return nil, err
+	}
+	execution, ok := command["execution"].(map[string]any)
+	if !ok {
+		return nil, errors.New("command contract omitted execution bounds")
+	}
+	timeout, ok := execution["timeout_seconds_max"].(float64)
+	if !ok || timeout < 1 {
+		return nil, errors.New("command contract omitted timeout ceiling")
+	}
+	outputLimit, ok := execution["output_bytes_max"].(float64)
+	if !ok || outputLimit < 1 {
+		return nil, errors.New("command contract omitted output ceiling")
+	}
+	inputSchema, ok := command["input_schema"].(map[string]any)
+	if !ok {
+		return nil, errors.New("command contract omitted input schema")
+	}
+	encodedSchema, err := json.Marshal(inputSchema)
+	if err != nil {
+		return nil, err
+	}
+	encodedExecutable, _ := json.Marshal(executable)
+	encodedScope, _ := json.Marshal(workingScope)
+	if !bytes.Contains(encodedSchema, encodedExecutable) ||
+		!bytes.Contains(encodedSchema, encodedScope) {
+		return nil, fmt.Errorf("command schema omitted aliases: %s", encodedSchema)
+	}
+	provider.executableAlias = executable
+	provider.workingScopeAlias = workingScope
+	provider.discoveryRevision = revision
+	provider.timeoutSeconds = int(timeout)
+	provider.outputLimitBytes = int(outputLimit)
+	return provider.nodeP0InvocationArgs(), nil
+}
+
+func (provider *nodeP0EvidenceProvider) nodeP0InvocationArgs() map[string]any {
+	return map[string]any{
+		"target":             provider.target,
+		"command":            provider.command,
+		"discovery_revision": provider.discoveryRevision,
+		"input": map[string]any{
+			"argv":            []any{provider.executableAlias, "node-e2e-ok"},
+			"cwd":             provider.workingScopeAlias,
+			"timeout_seconds": provider.timeoutSeconds,
+			"env":             map[string]any{},
+		},
+		"timeout_seconds":    provider.timeoutSeconds,
+		"output_limit_bytes": provider.outputLimitBytes,
+	}
+}
+
+func requireNodeOutcomeOnlyPrompt(
+	call llmscenario.ProviderCall,
+	forbidden []string,
+) error {
+	if len(call.Messages) == 0 {
+		return errors.New("model received no outcome prompt")
+	}
+	last := call.Messages[len(call.Messages)-1]
+	if last.Role != "user" {
+		return fmt.Errorf("last message role = %q, want user", last.Role)
+	}
+	for _, value := range forbidden {
+		if value != "" && strings.Contains(last.Content, value) {
+			return fmt.Errorf("outcome prompt leaked operator policy value")
+		}
+	}
+	return nil
+}
+
+func nodeP0LastToolPayload(call llmscenario.ProviderCall) (map[string]any, error) {
+	if len(call.Messages) == 0 {
+		return nil, errors.New("model received no tool result")
+	}
+	last := call.Messages[len(call.Messages)-1]
+	if last.Role != "tool" {
+		return nil, fmt.Errorf("last message role = %q, want tool", last.Role)
+	}
+	content := last.Content
+	if start, end := strings.Index(content, "{"), strings.LastIndex(content, "}"); start >= 0 && end >= start {
+		content = content[start : end+1]
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return nil, fmt.Errorf("decode tool result %q: %w", content, err)
+	}
+	return payload, nil
+}
+
+func nodeP0AvailableTarget(payload map[string]any) (string, error) {
+	targets, ok := payload["targets"].([]any)
+	if !ok {
+		return "", errors.New("node list omitted targets")
+	}
+	for _, raw := range targets {
+		target, ok := raw.(map[string]any)
+		if !ok || target["available"] != true {
+			continue
+		}
+		name, ok := target["target"].(string)
+		if ok && name != "" {
+			return name, nil
+		}
+	}
+	return "", errors.New("node list contained no available target")
+}
+
+func nodeP0AvailableCommand(payload map[string]any) (string, error) {
+	commands, ok := payload["commands"].([]any)
+	if !ok {
+		return "", errors.New("target description omitted commands")
+	}
+	for _, raw := range commands {
+		command, ok := raw.(map[string]any)
+		if !ok || command["availability"] != string(nodes.ModelAvailable) {
+			continue
+		}
+		name, ok := command["name"].(string)
+		if ok && name != "" {
+			return name, nil
+		}
+	}
+	return "", errors.New("target description contained no available command")
+}
+
+func nodeP0FirstString(raw any) (string, error) {
+	values, ok := raw.([]any)
+	if !ok || len(values) == 0 {
+		return "", errors.New("model constraint omitted visible aliases")
+	}
+	value, ok := values[0].(string)
+	if !ok || value == "" {
+		return "", errors.New("model constraint alias is invalid")
+	}
+	return value, nil
+}
+
+func nodeP0ResultContains(payload map[string]any, want string) bool {
+	result, exists := payload["result"]
+	if !exists {
+		return false
+	}
+	encoded, err := json.Marshal(result)
+	return err == nil && bytes.Contains(encoded, []byte(want))
+}
+
+func assertNoVerticalSliceEvent(
+	t *testing.T,
+	eventChannel <-chan runtimeevents.Event,
+) {
+	t.Helper()
+	select {
+	case event := <-eventChannel:
+		t.Fatalf("stale invocation emitted event: %#v", event)
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
@@ -586,6 +1008,29 @@ func waitForVerticalSliceNodeState(
 	}
 	snapshots, err := registry.List(nodes.Filter{})
 	t.Fatalf("nodes = %s, error %v; want one %q node", formatVerticalSliceNodes(snapshots), err, want)
+	return nodes.Snapshot{}
+}
+
+func waitForVerticalSlicePolicyRevision(
+	t *testing.T,
+	registry *nodes.FileRegistry,
+	want string,
+) nodes.Snapshot {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, found, err := registry.Resolve("build-node")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found &&
+			snapshot.State == nodes.StateConnected &&
+			snapshot.PolicyRevision == want {
+			return snapshot
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for authenticated policy revision %q", want)
 	return nodes.Snapshot{}
 }
 
