@@ -4,7 +4,28 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
+
+func TestDefaultReqIDStorePathHonorsHomeOverride(t *testing.T) {
+	firstHome := t.TempDir()
+	t.Setenv(config.EnvHome, firstHome)
+	firstPath := defaultReqIDStorePath()
+	if want := filepath.Join(firstHome, "wecom", "reqid-store.json"); firstPath != want {
+		t.Fatalf("defaultReqIDStorePath() = %q, want %q", firstPath, want)
+	}
+
+	secondHome := t.TempDir()
+	t.Setenv(config.EnvHome, secondHome)
+	secondPath := defaultReqIDStorePath()
+	if want := filepath.Join(secondHome, "wecom", "reqid-store.json"); secondPath != want {
+		t.Fatalf("defaultReqIDStorePath() after override change = %q, want %q", secondPath, want)
+	}
+	if secondPath == firstPath {
+		t.Fatalf("defaultReqIDStorePath() did not change with %s", config.EnvHome)
+	}
+}
 
 func TestReqIDStorePersistsRoutes(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "reqids.json")

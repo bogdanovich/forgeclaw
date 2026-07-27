@@ -1296,15 +1296,11 @@ func resolveDataDir(configured, channelName string) string {
 	if configured != "" {
 		return expandHome(configured)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
 	name := channelName
 	if name == "" {
 		name = config.ChannelDeltaChat
 	}
-	return filepath.Join(home, ".mintclaw", "deltachat", name)
+	return filepath.Join(config.GetHome(), "deltachat", name)
 }
 
 func expandHome(path string) string {

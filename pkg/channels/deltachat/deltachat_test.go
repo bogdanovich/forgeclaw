@@ -160,8 +160,9 @@ func TestResolveDataDir(t *testing.T) {
 	if got := resolveDataDir("/explicit/dir", "x"); got != "/explicit/dir" {
 		t.Errorf("explicit data dir = %q, want /explicit/dir", got)
 	}
-	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".mintclaw", "deltachat", "mychan")
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	want := filepath.Join(home, "deltachat", "mychan")
 	if got := resolveDataDir("", "mychan"); got != want {
 		t.Errorf("default data dir = %q, want %q", got, want)
 	}
