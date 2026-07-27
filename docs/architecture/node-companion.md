@@ -892,8 +892,11 @@ Post-MVP capability work is ordered and bounded in the
 [Node Companion Post-MVP Roadmap](node-companion-roadmap.md). Its first
 priority is the bounded model-visible capability contract admitted in
 [Node Companion P0 Capability Contracts](node-companion-p0-contracts.md).
-Owner-controlled shell and interactive PTY access remain P1. Later milestones
-cover typed file transfer and administrator filesystem access, service
+Owner-controlled shell and interactive PTY implementation is admitted in
+[Node Companion P1 Owner-Control Admission](node-companion-p1-admission.md),
+with production enablement deferred until its trusted approval and deployment
+gates are satisfied. Later milestones cover typed file transfer and
+administrator filesystem access, service
 administration, fleet operations, additional executors, SSH, interactive
 application capabilities, platforms, and compatibility adapters.
 
