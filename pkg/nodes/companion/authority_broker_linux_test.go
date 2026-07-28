@@ -144,7 +144,7 @@ func TestAuthorityBrokerUnixPreservesUnknownRunnerOutcome(t *testing.T) {
 
 func TestAuthorityBrokerUnixRejectsSecondSameCredentialProcess(t *testing.T) {
 	runner := &fakeAuthorityBrokerRunner{}
-	client, stop := startTestAuthorityBrokerServer(t, runner)
+	client, stop := startUnclaimedTestAuthorityBrokerServer(t, runner)
 	defer stop()
 	command := exec.Command(
 		os.Args[0],
@@ -158,6 +158,9 @@ func TestAuthorityBrokerUnixRejectsSecondSameCredentialProcess(t *testing.T) {
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("direct peer helper: %v\n%s", err, output)
+	}
+	if _, err := client.Snapshot(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
@@ -177,6 +180,9 @@ func TestAuthorityBrokerDirectPeerHelper(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := client.Snapshot(t.Context()); err == nil {
+		t.Fatal("direct same-credential process claimed the first snapshot")
 	}
 	if _, err := client.Execute(t.Context(), validAuthorityBrokerRequest()); err == nil {
 		t.Fatal("direct same-credential process execution was accepted")
@@ -337,6 +343,19 @@ func startTestAuthorityBrokerServer(
 	runner authorityBrokerExecutionRunner,
 ) (*AuthorityBrokerClient, func()) {
 	t.Helper()
+	client, stop := startUnclaimedTestAuthorityBrokerServer(t, runner)
+	if _, err := client.Snapshot(t.Context()); err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	return client, stop
+}
+
+func startUnclaimedTestAuthorityBrokerServer(
+	t *testing.T,
+	runner authorityBrokerExecutionRunner,
+) (*AuthorityBrokerClient, func()) {
+	t.Helper()
 	config := validAuthorityBrokerConfig(t)
 	config.AllowedUID = uint32(os.Getuid())
 	config.AllowedGID = uint32(os.Getgid())
@@ -346,7 +365,11 @@ func startTestAuthorityBrokerServer(
 	profile.SupplementaryGroups = nil
 	profile.ShellPath = "/bin/sh"
 	config.normalizedProfile["owner-root"] = profile
-	server, err := newAuthorityBrokerServer(config, runner)
+	identity, err := newAuthorityBrokerPIDIdentity(int32(os.Getpid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := newAuthorityBrokerServer(config, runner, identity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,9 +389,6 @@ func startTestAuthorityBrokerServer(
 		uint32(os.Getgid()),
 	)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Snapshot(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	return client, func() {

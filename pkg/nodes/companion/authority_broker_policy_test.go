@@ -126,6 +126,9 @@ func TestAuthorityBrokerPolicyFailsClosed(t *testing.T) {
 		{name: "root peer", mutate: func(config *AuthorityBrokerConfig) {
 			config.AllowedUID = 0
 		}},
+		{name: "uncanonical cgroup", mutate: func(config *AuthorityBrokerConfig) {
+			config.CompanionCgroup = "/system.slice/../user.slice"
+		}},
 		{name: "network claim", mutate: func(config *AuthorityBrokerConfig) {
 			profile := config.Profiles["owner-root"]
 			profile.Network = "isolated"
@@ -145,11 +148,12 @@ func TestAuthorityBrokerPolicyFailsClosed(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			config := AuthorityBrokerConfig{
-				SocketPath: filepath.Join(base, "broker.sock"),
-				AllowedUID: uint32(os.Getuid()),
-				AllowedGID: uint32(os.Getgid()),
-				Revision:   "broker-v1",
-				Profiles:   map[string]AuthorityBrokerProfile{"owner-root": validProfile},
+				SocketPath:      filepath.Join(base, "broker.sock"),
+				AllowedUID:      uint32(os.Getuid()),
+				AllowedGID:      uint32(os.Getgid()),
+				CompanionCgroup: "/system.slice/mintclaw-node.service",
+				Revision:        "broker-v1",
+				Profiles:        map[string]AuthorityBrokerProfile{"owner-root": validProfile},
 			}
 			test.mutate(&config)
 			if _, err := NormalizeAuthorityBrokerConfig(config, base); err == nil {
@@ -171,10 +175,11 @@ func validAuthorityBrokerConfig(t *testing.T) AuthorityBrokerConfig {
 		t.Fatal(err)
 	}
 	config, err := NormalizeAuthorityBrokerConfig(AuthorityBrokerConfig{
-		SocketPath: filepath.Join(base, "broker.sock"),
-		AllowedUID: uint32(os.Getuid()),
-		AllowedGID: uint32(os.Getgid()),
-		Revision:   "broker-v1",
+		SocketPath:      filepath.Join(base, "broker.sock"),
+		AllowedUID:      uint32(os.Getuid()),
+		AllowedGID:      uint32(os.Getgid()),
+		CompanionCgroup: "/system.slice/mintclaw-node.service",
+		Revision:        "broker-v1",
 		Profiles: map[string]AuthorityBrokerProfile{
 			"owner-root": {
 				Revision: "profile-v1", ShellPath: shell,

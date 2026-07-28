@@ -15,10 +15,11 @@ func TestLoadAuthorityBrokerConfigRequiresRootOwnedProtectedFile(t *testing.T) {
 	base := authorityBrokerServiceTestDir(t)
 	path := filepath.Join(base, "broker.json")
 	config := AuthorityBrokerConfig{
-		SocketPath: filepath.Join(base, "broker.sock"),
-		AllowedUID: 12345,
-		AllowedGID: 12345,
-		Revision:   "broker-v1",
+		SocketPath:      filepath.Join(base, "broker.sock"),
+		AllowedUID:      12345,
+		AllowedGID:      12345,
+		CompanionCgroup: "/system.slice/mintclaw-node.service",
+		Revision:        "broker-v1",
 		Profiles: map[string]AuthorityBrokerProfile{
 			"owner-root": {
 				Revision: "profile-v1", ShellPath: "/bin/sh",
@@ -96,7 +97,7 @@ func TestLoadAuthorityBrokerConfigRequiresRootOwnedProtectedFile(t *testing.T) {
 }
 
 func TestPrepareAuthorityBrokerSocketFailsClosed(t *testing.T) {
-	base := t.TempDir()
+	base := authorityBrokerServiceTestDir(t)
 	path := filepath.Join(base, "broker.sock")
 	if os.Geteuid() != 0 {
 		if err := prepareAuthorityBrokerSocket(path); err == nil {
@@ -130,6 +131,25 @@ func TestPrepareAuthorityBrokerSocketFailsClosed(t *testing.T) {
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("stale socket remains: %v", err)
 	}
+	unsafeBase := t.TempDir()
+	if err := prepareAuthorityBrokerSocket(
+		filepath.Join(unsafeBase, "broker.sock"),
+	); err == nil {
+		t.Fatal("socket directory below a writable ancestor was accepted")
+	}
+	realDirectory := filepath.Join(base, "real-socket-directory")
+	if err := os.Mkdir(realDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(base, "linked-socket-directory")
+	if err := os.Symlink(realDirectory, symlink); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareAuthorityBrokerSocket(
+		filepath.Join(symlink, "broker.sock"),
+	); err == nil {
+		t.Fatal("socket directory below a symlinked ancestor was accepted")
+	}
 }
 
 func TestRunAuthorityBrokerRequiresRoot(t *testing.T) {
@@ -142,6 +162,43 @@ func TestRunAuthorityBrokerRequiresRoot(t *testing.T) {
 		"/bin/false",
 	); err == nil {
 		t.Fatal("unprivileged authority broker start was accepted")
+	}
+}
+
+func TestAuthorityBrokerSocketDirectoryBindsByDescriptor(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("descriptor-relative socket proof requires a root-owned directory chain")
+	}
+	base := authorityBrokerServiceTestDir(t)
+	path := filepath.Join(base, "broker.sock")
+	directory, err := openAuthorityBrokerSocketDirectory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := directory.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.ListenUnix(
+		"unix",
+		&net.UnixAddr{Name: directory.descriptorPath(), Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+	defer listener.Close()
+	defer func() { _ = directory.unlink() }()
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("descriptor-relative socket = (%#v, %v)", info, err)
+	}
+	connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

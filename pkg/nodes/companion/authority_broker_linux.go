@@ -172,25 +172,29 @@ type authorityBrokerExecutionRunner interface {
 }
 
 type authorityBrokerServer struct {
-	config       AuthorityBrokerConfig
-	runner       authorityBrokerExecutionRunner
-	semaphores   map[string]chan struct{}
-	companionMu  sync.Mutex
-	companionPID int32
+	config     AuthorityBrokerConfig
+	runner     authorityBrokerExecutionRunner
+	semaphores map[string]chan struct{}
+	identity   authorityBrokerCompanionIdentity
 }
 
 func newAuthorityBrokerServer(
 	config AuthorityBrokerConfig,
 	runner authorityBrokerExecutionRunner,
+	identity authorityBrokerCompanionIdentity,
 ) (*authorityBrokerServer, error) {
-	if len(config.normalizedProfile) != MaxShellBrokerProfiles || runner == nil {
+	if len(config.normalizedProfile) != MaxShellBrokerProfiles ||
+		runner == nil ||
+		identity == nil {
 		return nil, errors.New("authority broker server configuration is incomplete")
 	}
 	semaphores := make(map[string]chan struct{}, len(config.normalizedProfile))
 	for alias, profile := range config.normalizedProfile {
 		semaphores[alias] = make(chan struct{}, profile.ConcurrentCommands)
 	}
-	return &authorityBrokerServer{config: config, runner: runner, semaphores: semaphores}, nil
+	return &authorityBrokerServer{
+		config: config, runner: runner, semaphores: semaphores, identity: identity,
+	}, nil
 }
 
 func (server *authorityBrokerServer) Serve(
@@ -200,6 +204,7 @@ func (server *authorityBrokerServer) Serve(
 	if server == nil || listener == nil {
 		return errors.New("authority broker server is unavailable")
 	}
+	defer server.identity.Close()
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	go func() {
@@ -246,7 +251,7 @@ func (server *authorityBrokerServer) handleConnection(
 		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "INVALID_REQUEST"})
 		return
 	}
-	if !server.authorizeCompanionPID(peer.Pid, request.Action) {
+	if !server.identity.Authorize(peer.Pid, request.Action) {
 		return
 	}
 	if request.Action == authorityBrokerActionSnapshot {
@@ -298,21 +303,6 @@ func (server *authorityBrokerServer) handleConnection(
 	case <-peerClosed:
 	case <-time.After(time.Second):
 	}
-}
-
-func (server *authorityBrokerServer) authorizeCompanionPID(peerPID int32, action string) bool {
-	if peerPID <= 0 {
-		return false
-	}
-	server.companionMu.Lock()
-	defer server.companionMu.Unlock()
-	if server.companionPID == 0 {
-		if action != authorityBrokerActionSnapshot {
-			return false
-		}
-		server.companionPID = peerPID
-	}
-	return server.companionPID == peerPID
 }
 
 func (*authorityBrokerServer) writeResponse(
