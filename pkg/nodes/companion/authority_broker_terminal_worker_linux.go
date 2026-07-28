@@ -41,6 +41,14 @@ type terminalPTYRead struct {
 	err  error
 }
 
+type terminalPTYWrite struct {
+	control  TerminalBrokerControl
+	digest   [sha256.Size]byte
+	expected int
+	written  int
+	err      error
+}
+
 type terminalPTYBuffer struct {
 	mu       sync.Mutex
 	frames   []terminalPTYRead
@@ -316,6 +324,12 @@ func runAuthorityBrokerTerminalWorker(
 		return fmt.Errorf("start authority broker terminal: %w", startErr)
 	}
 	defer terminal.Close()
+	terminalFD := int(terminal.Fd())
+	if err := unix.SetNonblock(terminalFD, true); err != nil {
+		_ = unix.Kill(-command.Process.Pid, unix.SIGKILL)
+		_ = command.Wait()
+		return fmt.Errorf("make authority broker terminal nonblocking: %w", err)
+	}
 	processGroup := command.Process.Pid
 	startedAt := time.Now().UnixMilli()
 	if err := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
@@ -330,18 +344,17 @@ func runAuthorityBrokerTerminalWorker(
 	output := newTerminalPTYBuffer(request.BufferBytes)
 	go func() {
 		for {
-			buffer := make([]byte, MaxTerminalFrameBytes)
-			count, readErr := terminal.Read(buffer)
-			frame := terminalPTYRead{data: append([]byte(nil), buffer[:count]...), err: readErr}
+			frame := readTerminalPTY(terminalFD)
 			if !output.push(frame) {
 				_ = unix.Kill(-processGroup, unix.SIGKILL)
 				return
 			}
-			if readErr != nil {
+			if frame.err != nil {
 				return
 			}
 		}
 	}()
+	terminalShutdown := make(chan struct{})
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- command.Wait() }()
 	idleTimer := time.NewTimer(time.Duration(request.IdleSeconds) * time.Second)
@@ -365,26 +378,32 @@ func runAuthorityBrokerTerminalWorker(
 		cleanupErr      error
 		processExited   bool
 		ptyClosed       bool
+		writeInFlight   bool
+		shuttingDown    bool
 		eventSinkFailed bool
+		controlUnknown  bool
 	)
+	writeDone := make(chan terminalPTYWrite, 1)
 	controlsChannel := (<-chan TerminalBrokerControl)(controlFrames)
 	controlErrorsChannel := (<-chan error)(controlErrors)
 	disconnectedChannel := (<-chan struct{})(disconnected)
 	idleChannel := idleTimer.C
 	lifetimeChannel := lifetimeContext.Done()
 	shutdown := func(reason string) {
-		if controlsChannel == nil {
+		if shuttingDown {
 			return
 		}
+		shuttingDown = true
 		closeReason = reason
 		controlsChannel = nil
 		controlErrorsChannel = nil
 		disconnectedChannel = nil
 		idleChannel = nil
 		lifetimeChannel = nil
+		close(terminalShutdown)
 		_ = unix.Kill(-processGroup, unix.SIGKILL)
 	}
-	for !processExited || !ptyClosed {
+	for !processExited || !ptyClosed || writeInFlight {
 		select {
 		case <-output.notify:
 			for {
@@ -401,7 +420,7 @@ func runAuthorityBrokerTerminalWorker(
 						eventSinkFailed = true
 						shutdown(TerminalCloseDisconnected)
 					}
-					if controlsChannel != nil {
+					if !shuttingDown {
 						resetIdle()
 					}
 				}
@@ -441,13 +460,28 @@ func runAuthorityBrokerTerminalWorker(
 				}
 				continue
 			}
-			lastSequence = frame.Sequence
-			lastKey = frame.IdempotencyKey
-			lastDigest = frameDigest
+			if len(data) > 0 {
+				writeInFlight = true
+				controlsChannel = nil
+				go func(
+					control TerminalBrokerControl,
+					digest [sha256.Size]byte,
+					input []byte,
+				) {
+					written, writeErr := writeTerminalPTY(
+						terminalFD,
+						input,
+						terminalShutdown,
+					)
+					writeDone <- terminalPTYWrite{
+						control: control, digest: digest,
+						expected: len(input), written: written, err: writeErr,
+					}
+				}(frame, frameDigest, append([]byte(nil), data...))
+				continue
+			}
 			var operationErr error
 			switch {
-			case len(data) > 0:
-				_, operationErr = terminal.Write(data)
 			case frame.Resize != nil:
 				operationErr = pty.Setsize(terminal, &pty.Winsize{
 					Cols: uint16(frame.Resize.Columns), Rows: uint16(frame.Resize.Rows),
@@ -461,6 +495,9 @@ func runAuthorityBrokerTerminalWorker(
 				shutdown(TerminalCloseDisconnected)
 				continue
 			}
+			lastSequence = frame.Sequence
+			lastKey = frame.IdempotencyKey
+			lastDigest = frameDigest
 			if ackErr := writeTerminalWorkerAck(
 				events,
 				request.TerminalID,
@@ -474,9 +511,34 @@ func runAuthorityBrokerTerminalWorker(
 			if frame.Close {
 				shutdown(TerminalCloseRequested)
 			}
+		case result := <-writeDone:
+			writeInFlight = false
+			if shuttingDown {
+				continue
+			}
+			if result.err != nil || result.written != result.expected {
+				controlUnknown = true
+				shutdown(TerminalCloseDisconnected)
+				continue
+			}
+			lastSequence = result.control.Sequence
+			lastKey = result.control.IdempotencyKey
+			lastDigest = result.digest
+			if ackErr := writeTerminalWorkerAck(
+				events,
+				request.TerminalID,
+				lastSequence,
+			); ackErr != nil {
+				eventSinkFailed = true
+				shutdown(TerminalCloseDisconnected)
+				continue
+			}
+			resetIdle()
+			controlsChannel = controlFrames
 		case waitErr = <-waitDone:
 			processExited = true
 			cleanupErr = terminateAuthorityBrokerDescendants(processGroup)
+			shutdown(TerminalCloseNatural)
 		case <-idleChannel:
 			shutdown(TerminalCloseIdleTimeout)
 		case <-lifetimeChannel:
@@ -500,6 +562,13 @@ func runAuthorityBrokerTerminalWorker(
 	if eventSinkFailed {
 		return ErrTerminalOutcomeUnknown
 	}
+	if controlUnknown {
+		_ = writeTerminalWorkerEvent(events, TerminalBrokerEvent{
+			Type: TerminalEventUnknown, TerminalID: request.TerminalID,
+			State: "unknown", Reason: "input_outcome_unknown", StartedAt: startedAt,
+		})
+		return ErrTerminalOutcomeUnknown
+	}
 	exitCode, signalName, exitErr := authorityBrokerExit(waitErr)
 	if exitErr != nil {
 		return exitErr
@@ -510,6 +579,71 @@ func runAuthorityBrokerTerminalWorker(
 		StartedAt: startedAt, CompletedAt: time.Now().UnixMilli(),
 		TerminationConfirmed: true,
 	})
+}
+
+func readTerminalPTY(descriptor int) terminalPTYRead {
+	for {
+		poll := []unix.PollFd{{
+			Fd:     int32(descriptor),
+			Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR,
+		}}
+		if _, err := unix.Poll(poll, -1); err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return terminalPTYRead{err: err}
+		}
+		buffer := make([]byte, MaxTerminalFrameBytes)
+		count, err := unix.Read(descriptor, buffer)
+		if errors.Is(err, unix.EAGAIN) {
+			continue
+		}
+		if count == 0 && err == nil {
+			err = io.EOF
+		}
+		return terminalPTYRead{
+			data: append([]byte(nil), buffer[:max(0, count)]...),
+			err:  err,
+		}
+	}
+}
+
+func writeTerminalPTY(
+	descriptor int,
+	data []byte,
+	shutdown <-chan struct{},
+) (int, error) {
+	written := 0
+	for written < len(data) {
+		select {
+		case <-shutdown:
+			return written, context.Canceled
+		default:
+		}
+		poll := []unix.PollFd{{
+			Fd:     int32(descriptor),
+			Events: unix.POLLOUT | unix.POLLHUP | unix.POLLERR,
+		}}
+		ready, err := unix.Poll(poll, 50)
+		if err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return written, err
+		}
+		if ready == 0 {
+			continue
+		}
+		count, err := unix.Write(descriptor, data[written:])
+		written += max(0, count)
+		if errors.Is(err, unix.EAGAIN) {
+			continue
+		}
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
 }
 
 func terminalControlDigest(control TerminalBrokerControl) ([sha256.Size]byte, error) {

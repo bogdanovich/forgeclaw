@@ -217,17 +217,24 @@ func (terminal *AuthorityBrokerTerminal) Send(
 	}
 	terminal.writeMu.Lock()
 	defer terminal.writeMu.Unlock()
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := terminal.connection.SetWriteDeadline(deadline); err != nil {
-			return err
-		}
-		defer terminal.connection.SetWriteDeadline(time.Time{})
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := writeAuthorityBrokerFrame(terminal.connection, control); err != nil {
-		return fmt.Errorf("%w: write terminal control: %v", ErrTerminalOutcomeUnknown, err)
+	stopInterrupt, err := armAuthorityBrokerTerminalContext(
+		ctx,
+		terminal.connection.SetWriteDeadline,
+	)
+	if err != nil {
+		return err
+	}
+	writeErr := writeAuthorityBrokerFrame(terminal.connection, control)
+	interrupted := stopInterrupt()
+	if writeErr != nil {
+		if interrupted {
+			_ = terminal.Close()
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: write terminal control: %v", ErrTerminalOutcomeUnknown, writeErr)
 	}
 	return nil
 }
@@ -241,21 +248,28 @@ func (terminal *AuthorityBrokerTerminal) Receive(ctx context.Context) (TerminalB
 	if terminal.ended {
 		return TerminalBrokerEvent{}, errors.New("authority broker terminal has ended")
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := terminal.connection.SetReadDeadline(deadline); err != nil {
-			return TerminalBrokerEvent{}, err
-		}
-		defer terminal.connection.SetReadDeadline(time.Time{})
+	if err := ctx.Err(); err != nil {
+		return TerminalBrokerEvent{}, err
+	}
+	stopInterrupt, err := armAuthorityBrokerTerminalContext(
+		ctx,
+		terminal.connection.SetReadDeadline,
+	)
+	if err != nil {
+		return TerminalBrokerEvent{}, err
 	}
 	var event TerminalBrokerEvent
-	if err := readAuthorityBrokerFrame(terminal.connection, &event); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return TerminalBrokerEvent{}, ctxErr
+	readErr := readAuthorityBrokerFrame(terminal.connection, &event)
+	interrupted := stopInterrupt()
+	if readErr != nil {
+		if interrupted {
+			_ = terminal.Close()
+			return TerminalBrokerEvent{}, ctx.Err()
 		}
 		return TerminalBrokerEvent{}, fmt.Errorf(
 			"%w: read terminal event: %v",
 			ErrTerminalOutcomeUnknown,
-			err,
+			readErr,
 		)
 	}
 	if err := event.validate(); err != nil || event.TerminalID != terminal.terminalID {
@@ -283,6 +297,43 @@ func (terminal *AuthorityBrokerTerminal) Receive(ctx context.Context) (TerminalB
 		terminal.ended = true
 	}
 	return event, nil
+}
+
+func armAuthorityBrokerTerminalContext(
+	ctx context.Context,
+	setDeadline func(time.Time) error,
+) (func() bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := setDeadline(deadline); err != nil {
+			return nil, err
+		}
+	}
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	interrupted := make(chan struct{}, 1)
+	go func() {
+		defer close(exited)
+		select {
+		case <-ctx.Done():
+			_ = setDeadline(time.Now())
+			interrupted <- struct{}{}
+		case <-done:
+		}
+	}()
+	return func() bool {
+		close(done)
+		<-exited
+		_ = setDeadline(time.Time{})
+		select {
+		case <-interrupted:
+			return true
+		default:
+			return false
+		}
+	}, nil
 }
 
 func (terminal *AuthorityBrokerTerminal) Close() error {

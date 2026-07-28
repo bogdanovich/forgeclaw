@@ -152,6 +152,59 @@ func TestAuthorityBrokerTerminalWorkerCancellationDrainsBlockedOutput(t *testing
 	}
 }
 
+func TestAuthorityBrokerTerminalWorkerCancellationInterruptsBlockedInput(t *testing.T) {
+	readyFile := t.TempDir() + "/ready"
+	runner := testAuthorityBrokerProcessRunner(t)
+	controls := make(chan TerminalBrokerControl)
+	events := make(chan TerminalBrokerEvent)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.Terminal(
+			ctx,
+			testPreparedAuthorityBrokerTerminal(t),
+			testAuthorityBrokerTerminalRequest(),
+			"terminal_blocked_input",
+			controls,
+			events,
+		)
+	}()
+	if opened := receiveTerminalWorkerEvent(t, events); opened.Type != TerminalEventOpened {
+		t.Fatalf("opened event = %#v", opened)
+	}
+	controls <- terminalInputControl(
+		1,
+		"input-1",
+		"stty raw -echo; printf ready > "+readyFile+"; exec sleep 3600\n",
+	)
+	waitForTerminalAck(t, events, 1)
+	waitForAuthorityBrokerFile(t, readyFile)
+	blocked := false
+	for sequence := uint64(2); sequence < 128; sequence++ {
+		controls <- terminalInputControl(
+			sequence,
+			"input-"+strconv.FormatUint(sequence, 10),
+			strings.Repeat("x", MaxTerminalFrameBytes),
+		)
+		if !waitForTerminalAckWithin(t, events, sequence, time.Second) {
+			blocked = true
+			break
+		}
+	}
+	if !blocked {
+		t.Fatal("non-reading foreground process did not apply input backpressure")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminal worker cancellation did not interrupt blocked input")
+	}
+}
+
 func TestTerminalPTYBufferAccountsBytesAndSignalsOverflowCompletion(t *testing.T) {
 	buffer := newTerminalPTYBuffer(4)
 	if !buffer.push(terminalPTYRead{data: []byte("abc")}) {
@@ -380,6 +433,27 @@ func assertNoTerminalOutput(
 			}
 		case <-timer.C:
 			return
+		}
+	}
+}
+
+func waitForTerminalAckWithin(
+	t *testing.T,
+	events <-chan TerminalBrokerEvent,
+	sequence uint64,
+	timeout time.Duration,
+) bool {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-events:
+			if event.Type == TerminalEventAck && event.AcceptedSequence == sequence {
+				return true
+			}
+		case <-timer.C:
+			return false
 		}
 	}
 }

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
@@ -350,6 +352,64 @@ func TestAuthorityBrokerTerminalOverflowReleasesProfileCapacity(t *testing.T) {
 	waitForAuthorityBrokerTerminalClosed(t, second)
 }
 
+func TestAuthorityBrokerTerminalReceiveHonorsDeadlineFreeCancellation(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := terminal.Receive(ctx)
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Receive() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Receive() ignored deadline-free context cancellation")
+	}
+}
+
+func TestAuthorityBrokerTerminalSendHonorsBackpressuredCancellation(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	fillAuthorityBrokerUnixWriteBuffer(t, connection)
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- terminal.Send(ctx, terminalInputControl(
+			1,
+			"input-1",
+			strings.Repeat("x", MaxTerminalFrameBytes),
+		))
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Send() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send() ignored backpressured context cancellation")
+	}
+}
+
 func TestRuntimeShellExecThroughUnixBrokerRealProcess(t *testing.T) {
 	runner := testAuthorityBrokerProcessRunner(t)
 	client, stop := startTestAuthorityBrokerServer(t, runner)
@@ -510,6 +570,81 @@ func waitForAuthorityBrokerTerminalClosed(
 		if event.Type == TerminalEventClosed || event.Type == TerminalEventUnknown {
 			return event
 		}
+	}
+}
+
+func testAuthorityBrokerUnixPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
+	t.Helper()
+	socketPath := t.TempDir() + "/terminal.sock"
+	listener, err := net.ListenUnix(
+		"unix",
+		&net.UnixAddr{Name: socketPath, Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan *net.UnixConn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		connection, err := listener.AcceptUnix()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- connection
+	}()
+	connection, err := net.DialUnix(
+		"unix",
+		nil,
+		&net.UnixAddr{Name: socketPath, Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case peer := <-accepted:
+		return connection, peer
+	case err := <-acceptErr:
+		connection.Close()
+		t.Fatal(err)
+		return nil, nil
+	}
+}
+
+func fillAuthorityBrokerUnixWriteBuffer(t *testing.T, connection *net.UnixConn) {
+	t.Helper()
+	if err := connection.SetWriteBuffer(1024); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fillErr error
+	if err := raw.Write(func(descriptor uintptr) bool {
+		data := make([]byte, 4096)
+		for {
+			_, sendErr := unix.SendmsgN(
+				int(descriptor),
+				data,
+				nil,
+				nil,
+				unix.MSG_DONTWAIT,
+			)
+			if errors.Is(sendErr, unix.EAGAIN) {
+				return true
+			}
+			if sendErr != nil {
+				fillErr = sendErr
+				return true
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fillErr != nil {
+		t.Fatal(fillErr)
 	}
 }
 
