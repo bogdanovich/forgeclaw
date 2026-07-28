@@ -120,7 +120,11 @@ func RunAuthorityBroker(
 	if err != nil {
 		return err
 	}
-	identity := newAuthorityBrokerCgroupIdentity(config.CompanionCgroup)
+	identity, err := newAuthorityBrokerCgroupIdentity(config.CompanionCgroup)
+	if err != nil {
+		return err
+	}
+	defer identity.Close()
 	server, err := newAuthorityBrokerServer(config, runner, identity)
 	if err != nil {
 		return err
