@@ -14,7 +14,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const authorityBrokerHandshakeTimeout = 5 * time.Second
+const (
+	authorityBrokerHandshakeTimeout     = 5 * time.Second
+	authorityBrokerResponseWriteTimeout = time.Second
+	authorityBrokerSocketWriteBuffer    = 32 * 1024
+)
 
 type AuthorityBrokerClient struct {
 	socketPath        string
@@ -168,9 +172,11 @@ type authorityBrokerExecutionRunner interface {
 }
 
 type authorityBrokerServer struct {
-	config     AuthorityBrokerConfig
-	runner     authorityBrokerExecutionRunner
-	semaphores map[string]chan struct{}
+	config       AuthorityBrokerConfig
+	runner       authorityBrokerExecutionRunner
+	semaphores   map[string]chan struct{}
+	companionMu  sync.Mutex
+	companionPID int32
 }
 
 func newAuthorityBrokerServer(
@@ -227,6 +233,9 @@ func (server *authorityBrokerServer) handleConnection(
 		peer.Gid != server.config.AllowedGID {
 		return
 	}
+	if err := connection.SetWriteBuffer(authorityBrokerSocketWriteBuffer); err != nil {
+		return
+	}
 	_ = connection.SetReadDeadline(time.Now().Add(authorityBrokerHandshakeTimeout))
 	var request authorityBrokerRequestFrame
 	if readErr := readAuthorityBrokerFrame(connection, &request); readErr != nil {
@@ -234,21 +243,24 @@ func (server *authorityBrokerServer) handleConnection(
 	}
 	_ = connection.SetReadDeadline(time.Time{})
 	if validationErr := validateAuthorityBrokerRequestFrame(request); validationErr != nil {
-		server.writeResponse(connection, authorityBrokerResponseFrame{Code: "INVALID_REQUEST"})
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "INVALID_REQUEST"})
+		return
+	}
+	if !server.authorizeCompanionPID(peer.Pid, request.Action) {
 		return
 	}
 	if request.Action == authorityBrokerActionSnapshot {
 		snapshot, snapshotErr := server.config.Snapshot()
 		if snapshotErr != nil {
-			server.writeResponse(connection, authorityBrokerResponseFrame{Code: "UNAVAILABLE"})
+			_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "UNAVAILABLE"})
 			return
 		}
-		server.writeResponse(connection, authorityBrokerResponseFrame{OK: true, Snapshot: &snapshot})
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{OK: true, Snapshot: &snapshot})
 		return
 	}
 	prepared, err := server.config.prepareExecution(*request.Execute)
 	if err != nil {
-		server.writeResponse(connection, authorityBrokerResponseFrame{Code: "DENIED"})
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "DENIED"})
 		return
 	}
 	executeContext, cancel := context.WithCancel(serverContext)
@@ -265,7 +277,7 @@ func (server *authorityBrokerServer) handleConnection(
 	case semaphore <- struct{}{}:
 		defer func() { <-semaphore }()
 	case <-executeContext.Done():
-		server.writeResponse(connection, authorityBrokerResponseFrame{Code: "CANCELED"})
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "CANCELED"})
 		return
 	}
 	result, executeErr := server.runner.Execute(executeContext, prepared, *request.Execute)
@@ -278,7 +290,9 @@ func (server *authorityBrokerServer) handleConnection(
 	default:
 		response.OK = true
 	}
-	server.writeResponse(connection, response)
+	if err := server.writeResponse(connection, response); err != nil {
+		return
+	}
 	_ = connection.CloseRead()
 	select {
 	case <-peerClosed:
@@ -286,12 +300,32 @@ func (server *authorityBrokerServer) handleConnection(
 	}
 }
 
+func (server *authorityBrokerServer) authorizeCompanionPID(peerPID int32, action string) bool {
+	if peerPID <= 0 {
+		return false
+	}
+	server.companionMu.Lock()
+	defer server.companionMu.Unlock()
+	if server.companionPID == 0 {
+		if action != authorityBrokerActionSnapshot {
+			return false
+		}
+		server.companionPID = peerPID
+	}
+	return server.companionPID == peerPID
+}
+
 func (*authorityBrokerServer) writeResponse(
 	connection *net.UnixConn,
 	response authorityBrokerResponseFrame,
-) {
+) error {
 	response.Version = AuthorityBrokerProtocolVersion
-	_ = writeAuthorityBrokerFrame(connection, response)
+	if err := connection.SetWriteDeadline(
+		time.Now().Add(authorityBrokerResponseWriteTimeout),
+	); err != nil {
+		return err
+	}
+	return writeAuthorityBrokerFrame(connection, response)
 }
 
 func authorityBrokerPeerCredentials(connection *net.UnixConn) (*unix.Ucred, error) {

@@ -12,7 +12,7 @@ import (
 )
 
 func TestLoadAuthorityBrokerConfigRequiresRootOwnedProtectedFile(t *testing.T) {
-	base := t.TempDir()
+	base := authorityBrokerServiceTestDir(t)
 	path := filepath.Join(base, "broker.json")
 	config := AuthorityBrokerConfig{
 		SocketPath: filepath.Join(base, "broker.sock"),
@@ -68,6 +68,31 @@ func TestLoadAuthorityBrokerConfigRequiresRootOwnedProtectedFile(t *testing.T) {
 	if _, err := LoadAuthorityBrokerConfig(path); err == nil {
 		t.Fatal("authority broker config with duplicate fields was accepted")
 	}
+	unsafeBase := t.TempDir()
+	unsafePath := filepath.Join(unsafeBase, "broker.json")
+	if err := os.WriteFile(unsafePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAuthorityBrokerConfig(unsafePath); err == nil {
+		t.Fatal("authority broker config below a writable ancestor was accepted")
+	}
+	realDirectory := filepath.Join(base, "real")
+	if err := os.Mkdir(realDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realPath := filepath.Join(realDirectory, "broker.json")
+	if err := os.WriteFile(realPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(base, "linked")
+	if err := os.Symlink(realDirectory, symlink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAuthorityBrokerConfig(
+		filepath.Join(symlink, "broker.json"),
+	); err == nil {
+		t.Fatal("authority broker config below a symlinked ancestor was accepted")
+	}
 }
 
 func TestPrepareAuthorityBrokerSocketFailsClosed(t *testing.T) {
@@ -118,4 +143,21 @@ func TestRunAuthorityBrokerRequiresRoot(t *testing.T) {
 	); err == nil {
 		t.Fatal("unprivileged authority broker start was accepted")
 	}
+}
+
+func authorityBrokerServiceTestDir(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		return t.TempDir()
+	}
+	path, err := os.MkdirTemp("/run", "mintclaw-authority-broker-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(path); err != nil {
+			t.Errorf("remove authority broker test directory: %v", err)
+		}
+	})
+	return path
 }

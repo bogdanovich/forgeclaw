@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ type fakeAuthorityBrokerRunner struct {
 	started  chan struct{}
 	block    bool
 	err      error
+	result   ShellBrokerResult
 }
 
 func (runner *fakeAuthorityBrokerRunner) Execute(
@@ -35,6 +37,7 @@ func (runner *fakeAuthorityBrokerRunner) Execute(
 	started := runner.started
 	block := runner.block
 	executeErr := runner.err
+	result := runner.result
 	runner.mu.Unlock()
 	if started != nil {
 		select {
@@ -49,6 +52,9 @@ func (runner *fakeAuthorityBrokerRunner) Execute(
 	}
 	if executeErr != nil {
 		return ShellBrokerResult{}, executeErr
+	}
+	if result.StartedAt != 0 {
+		return result, nil
 	}
 	return ShellBrokerResult{
 		ExitCode: 0, Stdout: "ok",
@@ -133,6 +139,97 @@ func TestAuthorityBrokerUnixPreservesUnknownRunnerOutcome(t *testing.T) {
 		validAuthorityBrokerRequest(),
 	); !errors.Is(err, ErrShellBrokerOutcomeUnknown) {
 		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+func TestAuthorityBrokerUnixRejectsSecondSameCredentialProcess(t *testing.T) {
+	runner := &fakeAuthorityBrokerRunner{}
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	command := exec.Command(
+		os.Args[0],
+		"-test.run=^TestAuthorityBrokerDirectPeerHelper$",
+	)
+	command.Env = append(
+		os.Environ(),
+		"MINTCLAW_AUTHORITY_BROKER_DIRECT_PEER_TEST=1",
+		"MINTCLAW_AUTHORITY_BROKER_DIRECT_PEER_SOCKET="+
+			client.socketPath,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("direct peer helper: %v\n%s", err, output)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.requests) != 0 {
+		t.Fatalf("direct same-credential process reached runner: %d requests", len(runner.requests))
+	}
+}
+
+func TestAuthorityBrokerDirectPeerHelper(t *testing.T) {
+	if os.Getenv("MINTCLAW_AUTHORITY_BROKER_DIRECT_PEER_TEST") != "1" {
+		return
+	}
+	client, err := newAuthorityBrokerClient(
+		os.Getenv("MINTCLAW_AUTHORITY_BROKER_DIRECT_PEER_SOCKET"),
+		uint32(os.Getuid()),
+		uint32(os.Getgid()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Execute(t.Context(), validAuthorityBrokerRequest()); err == nil {
+		t.Fatal("direct same-credential process execution was accepted")
+	}
+}
+
+func TestAuthorityBrokerUnixBoundsNonReadingPeer(t *testing.T) {
+	runner := &fakeAuthorityBrokerRunner{
+		started: make(chan struct{}),
+		result: ShellBrokerResult{
+			Stdout:    strings.Repeat("x", 120*1024),
+			StartedAt: 1, CompletedAt: 2,
+		},
+	}
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	connection, err := net.DialUnix(
+		"unix",
+		nil,
+		&net.UnixAddr{Name: client.socketPath, Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := writeAuthorityBrokerFrame(
+		connection,
+		authorityBrokerRequestFrame{
+			Version: AuthorityBrokerProtocolVersion,
+			Action:  authorityBrokerActionExecute,
+			Execute: pointerTo(validAuthorityBrokerRequest()),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	done := make(chan error, 1)
+	go func() {
+		_, executeErr := client.Execute(t.Context(), validAuthorityBrokerRequest())
+		done <- executeErr
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("second execution bypassed occupied semaphore: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("non-reading peer retained broker capacity")
 	}
 }
 
@@ -271,6 +368,9 @@ func startTestAuthorityBrokerServer(
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.Snapshot(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	return client, func() {
 		cancel()
 		select {
@@ -282,6 +382,10 @@ func startTestAuthorityBrokerServer(
 			t.Error("authority broker server did not stop")
 		}
 	}
+}
+
+func pointerTo[T any](value T) *T {
+	return &value
 }
 
 func newRuntimeWithAuthorityBrokerClient(
