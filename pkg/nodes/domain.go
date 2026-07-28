@@ -241,6 +241,12 @@ func (descriptor CommandDescriptor) Validate() error {
 	if err := validateObjectSchema("output", descriptor.OutputSchema); err != nil {
 		return err
 	}
+	if descriptor.Name == "shell.exec.v1" &&
+		(descriptor.Risk != RiskPrivileged ||
+			descriptor.ModelContract == nil ||
+			descriptor.ModelContract.ApprovalMode != "each_command") {
+		return fmt.Errorf("%w: shell.exec requires privileged per-command approval", ErrInvalidCapability)
+	}
 	if descriptor.ModelContract != nil {
 		if err := descriptor.ModelContract.Validate(descriptor.InputSchema); err != nil {
 			return err
@@ -261,6 +267,19 @@ func (descriptor CommandDescriptor) Validate() error {
 			}
 			if err := descriptor.ModelContract.Validate(modelSchema); err != nil {
 				return err
+			}
+			for _, example := range descriptor.ModelContract.Examples {
+				value, err := jsonstrict.Decode(example)
+				if err != nil {
+					return fmt.Errorf("%w: invalid shell.exec example", ErrInvalidCapability)
+				}
+				input, ok := value.(map[string]any)
+				if !ok {
+					return fmt.Errorf("%w: shell.exec example must be an object", ErrInvalidCapability)
+				}
+				if err := ValidateShellExecModelInput(input); err != nil {
+					return err
+				}
 			}
 		}
 	}

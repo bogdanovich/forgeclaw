@@ -5,6 +5,11 @@ import (
 	"fmt"
 )
 
+const (
+	MaxShellExecScriptBytes      = 64 * 1024
+	MaxShellExecEnvironmentBytes = 8 * 1024
+)
+
 // ShellExecModelInputSchema returns the model-visible shell.exec.v1 schema.
 // Only operator-authored aliases and permitted environment names are
 // projected. Shell paths, identities, environment values, and raw working
@@ -43,7 +48,7 @@ func ShellExecModelInputSchema(
 			"script": map[string]any{
 				"type":      "string",
 				"minLength": 1,
-				"maxLength": 64 * 1024,
+				"maxLength": MaxShellExecScriptBytes,
 			},
 			"cwd": workingScopeSchema,
 			"env": environmentSchema,
@@ -63,6 +68,31 @@ func ShellExecModelInputSchema(
 		return nil, err
 	}
 	return json.RawMessage(data), nil
+}
+
+// ValidateShellExecModelInput enforces byte ceilings that JSON Schema
+// maxLength cannot express because maxLength counts Unicode code points.
+func ValidateShellExecModelInput(input map[string]any) error {
+	script, ok := input["script"].(string)
+	if !ok || len(script) == 0 || len(script) > MaxShellExecScriptBytes {
+		return fmt.Errorf("%w: shell.exec script exceeds byte limits", ErrInvalidCapability)
+	}
+	environment, ok := input["env"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("%w: shell.exec environment is invalid", ErrInvalidCapability)
+	}
+	totalBytes := 0
+	for name, raw := range environment {
+		value, valid := raw.(string)
+		if !valid {
+			return fmt.Errorf("%w: shell.exec environment is invalid", ErrInvalidCapability)
+		}
+		totalBytes += len(name) + len(value) + 1
+		if totalBytes > MaxShellExecEnvironmentBytes {
+			return fmt.Errorf("%w: shell.exec environment exceeds byte limits", ErrInvalidCapability)
+		}
+	}
+	return nil
 }
 
 func enumStringSchema(values []string) any {

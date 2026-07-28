@@ -41,6 +41,7 @@ const (
 	nodeDenialApprovalRequired    = "APPROVAL_REQUIRED"
 
 	nodeConstraintInputSchema   = "input_schema"
+	nodeConstraintInputSize     = "input_size"
 	nodeConstraintExecutable    = "executable_alias"
 	nodeConstraintProfile       = "profile_alias"
 	nodeConstraintWorkingScope  = "working_scope"
@@ -1182,6 +1183,14 @@ func validateShellExecModelConstraints(
 	input map[string]any,
 	constraints nodes.CommandModelConstraints,
 ) error {
+	if err := nodes.ValidateShellExecModelInput(input); err != nil {
+		return denyNodeInvocation(
+			nodeDenialConstraintViolation,
+			nodeConstraintInputSize,
+			nodeActionCorrectInput,
+			err,
+		)
+	}
 	profile, ok := input["profile"].(string)
 	if !ok || !containsSorted(constraints.ProfileAliases, profile) {
 		return denyNodeInvocation(

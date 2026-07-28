@@ -283,6 +283,40 @@ func TestNodeInvokeToolRequiresHumanApprovalContinuationForShellExec(t *testing.
 		"discovery_revision": revision,
 	}
 	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	oversizedInputs := []map[string]any{
+		{
+			"profile": "owner",
+			"script":  strings.Repeat("界", nodes.MaxShellExecScriptBytes/3+1),
+			"cwd":     "workspace", "env": map[string]any{}, "timeout_seconds": 5,
+		},
+		{
+			"profile": "owner", "script": "true", "cwd": "workspace",
+			"env": map[string]any{
+				"LANG": strings.Repeat("x", nodes.MaxShellExecEnvironmentBytes/2),
+				"TERM": strings.Repeat("y", nodes.MaxShellExecEnvironmentBytes/2),
+			},
+			"timeout_seconds": 5,
+		},
+	}
+	for _, oversizedInput := range oversizedInputs {
+		oversizedArgs := maps.Clone(args)
+		oversizedArgs["input"] = oversizedInput
+		result := tool.Execute(ctx, oversizedArgs)
+		assertNodeDenialResult(
+			t,
+			result,
+			nodeDenialConstraintViolation,
+			nodeConstraintInputSize,
+			nodeActionCorrectInput,
+		)
+	}
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"oversized shell input prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
 	invalidArgs := maps.Clone(args)
 	invalidInput := maps.Clone(args["input"].(map[string]any))
 	invalidInput["profile"] = "invented"
