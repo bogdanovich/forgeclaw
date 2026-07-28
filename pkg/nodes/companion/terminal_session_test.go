@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -126,6 +127,38 @@ func TestTerminalCoordinatorDoesNotReplayAmbiguousOpen(t *testing.T) {
 	}
 	if broker.openCount() != 1 {
 		t.Fatalf("ambiguous open dispatched %d times", broker.openCount())
+	}
+}
+
+func TestTerminalCoordinatorBoundsRetainedFailedOpenMetadata(t *testing.T) {
+	coordinator, broker := testTerminalCoordinator(t)
+	for index := 0; index < MaxTerminalMetadataRecords; index++ {
+		coordinator.failedOpens[fmt.Sprintf("open_failed_%d", index)] = failedTerminalOpen{
+			planHash:       strings.Repeat("a", 64),
+			idempotencyKey: fmt.Sprintf("terminal-failed-%d", index),
+			expiresAt:      coordinator.now().Add(time.Minute).Unix(),
+		}
+	}
+	plan := testTerminalOpenPlan(t, coordinator, "open_new")
+	if _, err := coordinator.Open(t.Context(), plan); err == nil ||
+		!strings.Contains(err.Error(), "metadata limit") {
+		t.Fatalf("metadata-bounded Open() error = %v", err)
+	}
+	if broker.openCount() != 0 || len(coordinator.failedOpens) != MaxTerminalMetadataRecords {
+		t.Fatalf(
+			"bounded state = (broker opens %d, failed opens %d)",
+			broker.openCount(),
+			len(coordinator.failedOpens),
+		)
+	}
+	existingPlan := testTerminalOpenPlan(t, coordinator, "open_failed_0")
+	coordinator.failedOpens[existingPlan.OpenID] = failedTerminalOpen{
+		planHash:       existingPlan.PlanHash,
+		idempotencyKey: existingPlan.IdempotencyKey,
+		expiresAt:      existingPlan.ExpiresAt,
+	}
+	if _, err := coordinator.Open(t.Context(), existingPlan); !errors.Is(err, ErrTerminalOutcomeUnknown) {
+		t.Fatalf("exact failed-open retry error = %v", err)
 	}
 }
 

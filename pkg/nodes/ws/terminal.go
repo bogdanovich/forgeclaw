@@ -158,6 +158,8 @@ func (handler *AdmissionHandler) AttachTerminal(
 	}
 	if metadata.TerminalID != request.TerminalID || metadata.State != "live" {
 		err = errors.New("node returned an unrelated terminal attachment")
+		_, cleanupErr := session.detachTerminalGuaranteed(request)
+		err = errors.Join(err, cleanupErr)
 		session.unsubscribeTerminal(request.TerminalID, subscription, err)
 		return nil, nodes.TerminalMetadata{}, err
 	}

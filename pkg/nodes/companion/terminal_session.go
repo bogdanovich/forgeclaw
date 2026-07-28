@@ -197,6 +197,11 @@ func (coordinator *TerminalCoordinator) Open(
 		}
 		return existing.metadata, nil
 	}
+	if len(coordinator.byID)+len(coordinator.opening)+len(coordinator.failedOpens) >=
+		MaxTerminalMetadataRecords {
+		coordinator.mu.Unlock()
+		return nodes.TerminalMetadata{}, errors.New("node terminal metadata limit reached")
+	}
 	if coordinator.activeSessionsLocked()+len(coordinator.opening) >= MaxNodeTerminalSessions {
 		coordinator.mu.Unlock()
 		return nodes.TerminalMetadata{}, errors.New("node terminal session limit reached")

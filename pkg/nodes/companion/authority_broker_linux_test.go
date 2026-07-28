@@ -30,6 +30,26 @@ type fakeAuthorityBrokerRunner struct {
 	result   ShellBrokerResult
 }
 
+type exitingAuthorityBrokerTerminalRunner struct {
+	fakeAuthorityBrokerRunner
+	startedAt int64
+}
+
+func (runner *exitingAuthorityBrokerTerminalRunner) Terminal(
+	_ context.Context,
+	_ preparedAuthorityBrokerTerminal,
+	_ TerminalBrokerOpenRequest,
+	terminalID string,
+	_ <-chan TerminalBrokerControl,
+	events chan<- TerminalBrokerEvent,
+) error {
+	events <- TerminalBrokerEvent{
+		Version: AuthorityBrokerProtocolVersion, Type: TerminalEventOpened,
+		TerminalID: terminalID, State: "live", StartedAt: runner.startedAt,
+	}
+	return nil
+}
+
 func (runner *fakeAuthorityBrokerRunner) Execute(
 	ctx context.Context,
 	_ preparedAuthorityBrokerExecution,
@@ -285,6 +305,29 @@ func TestAuthorityBrokerTerminalUnixRoundTripRealPTY(t *testing.T) {
 		closed.Reason != TerminalCloseRequested ||
 		!closed.TerminationConfirmed {
 		t.Fatalf("closed event = %#v", closed)
+	}
+}
+
+func TestAuthorityBrokerTerminalRunnerExitPreservesStartedAt(t *testing.T) {
+	runner := &exitingAuthorityBrokerTerminalRunner{startedAt: 1_700_000_001}
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	terminal, opened, err := client.OpenTerminal(t.Context(), testAuthorityBrokerTerminalRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	unknown := receiveAuthorityBrokerTerminalEvent(t, terminal)
+	if unknown.Type != TerminalEventUnknown ||
+		unknown.StartedAt != opened.StartedAt {
+		t.Fatalf("runner-exit event = %#v, opened = %#v", unknown, opened)
+	}
+	if _, err := (nodes.TerminalEvent{
+		Version: nodes.TerminalProtocolVersion, Type: unknown.Type,
+		TerminalID: unknown.TerminalID, State: unknown.State,
+		Reason: unknown.Reason, StartedAt: unknown.StartedAt,
+	}).Validate(); err != nil {
+		t.Fatalf("runner-exit transport event is invalid: %v", err)
 	}
 }
 

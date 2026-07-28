@@ -701,7 +701,7 @@ func (server *authorityBrokerServer) handleTerminal(
 			unknown := TerminalBrokerEvent{
 				Version: AuthorityBrokerProtocolVersion,
 				Type:    TerminalEventUnknown, TerminalID: terminalID, State: "unknown",
-				Reason: TerminalCloseDisconnected,
+				Reason: TerminalCloseDisconnected, StartedAt: opened.StartedAt,
 			}
 			_ = server.writeTerminalEvent(connection, unknown)
 			return

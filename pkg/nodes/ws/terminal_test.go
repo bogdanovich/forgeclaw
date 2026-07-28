@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -224,6 +225,64 @@ func TestAttachPostDispatchCancellationPerformsOwnerBoundDetach(t *testing.T) {
 	session.terminalMu.Unlock()
 	if attached {
 		t.Fatal("failed attach retained terminal event subscription")
+	}
+}
+
+func TestAttachUnrelatedSuccessPerformsOwnerBoundDetach(t *testing.T) {
+	connection := newTerminalRecordingConnection()
+	session := newPeer(connection)
+	session.markReady()
+	hub := NewSessionHub()
+	release, err := hub.Claim(nodes.ID("node_test"), session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	handler := &AdmissionHandler{sessions: hub}
+	request := nodes.TerminalSessionRequest{
+		TerminalID: "terminal_test",
+		Owner:      testTerminalOwner(),
+	}
+	attachDone := make(chan error, 1)
+	go func() {
+		_, _, attachErr := handler.AttachTerminal(t.Context(), nodes.ID("node_test"), request)
+		attachDone <- attachErr
+	}()
+	attach := <-connection.writes
+	if attach.Method != "node.terminal.attach" {
+		t.Fatalf("first method = %q", attach.Method)
+	}
+	result, err := json.Marshal(nodes.TerminalMetadata{
+		TerminalID: "terminal_other", Owner: request.Owner,
+		State: "live", StartedAt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := true
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: attach.ID, OK: &ok, Result: result,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	detach := <-connection.writes
+	if detach.Method != "node.terminal.detach" {
+		t.Fatalf("unrelated-success cleanup method = %q", detach.Method)
+	}
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: detach.ID, OK: &ok,
+		Result: []byte(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-attachDone; err == nil {
+		t.Fatal("unrelated successful attachment was accepted")
+	}
+	session.terminalMu.Lock()
+	_, attached := session.terminals[request.TerminalID]
+	session.terminalMu.Unlock()
+	if attached {
+		t.Fatal("unrelated successful attach retained terminal event subscription")
 	}
 }
 
