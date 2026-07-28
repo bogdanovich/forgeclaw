@@ -164,6 +164,140 @@ func TestServiceShutdownClosesNodeAdmissionOutsideReload(t *testing.T) {
 	}
 }
 
+func TestNodeAdmissionDisableReconcilesActiveTerminalStore(t *testing.T) {
+	routes := &fakeNodeAdmissionRoutes{}
+	runtime := &nodeAdmissionRuntime{routes: routes}
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Nodes.Enabled = true
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := runtime.gatewayTerminalStore(
+		nodes.GatewayTerminalStorePath(cfg.WorkspacePath()),
+		8,
+		1024*1024,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := nodes.TerminalOwner{
+		ActorID: "actor_disable", AgentID: "agent_disable", RouteID: "route_disable",
+		SessionID: "session_disable", WorkspaceID: "workspace_disable",
+		Target: "vpn", Profile: "owner",
+	}
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_disable",
+		IdempotencyKey:  "idem_disable",
+		NodeID:          nodes.ID("node_disable"),
+		Owner:           owner,
+		CatalogHash:     testDigest("a"),
+		AuthorityDigest: testDigest("b"),
+		WorkingScope:    "workspace",
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MarkDispatched(owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Nodes.Enabled = false
+	if err := runtime.Reconcile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.terminalStore != nil || runtime.terminalStorePath != "" {
+		t.Fatal("disabled runtime retained a reconciled terminal store")
+	}
+	record, found, err := store.Lookup(owner, plan.OpenID)
+	if err != nil || !found ||
+		record.State != nodes.GatewayTerminalUnknown ||
+		record.Reason != "gateway_shutdown" {
+		t.Fatalf("disabled terminal = (%#v, %v, %v)", record, found, err)
+	}
+}
+
+func TestNodeAdmissionCloseRetainsTerminalStoreWhenReconciliationFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node_terminals.json")
+	initial, err := nodes.NewGatewayTerminalStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := nodes.TerminalOwner{
+		ActorID: "actor_retry", AgentID: "agent_retry", RouteID: "route_retry",
+		SessionID: "session_retry", WorkspaceID: "workspace_retry",
+		Target: "vpn", Profile: "owner",
+	}
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_retry",
+		IdempotencyKey:  "idem_retry",
+		NodeID:          nodes.ID("node_retry"),
+		Owner:           owner,
+		CatalogHash:     testDigest("a"),
+		AuthorityDigest: testDigest("b"),
+		WorkingScope:    "workspace",
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := initial.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := initial.MarkDispatched(owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &nodeAdmissionRuntime{
+		handler:           &fakeNodeAdmissionHandler{},
+		terminalStore:     initial,
+		terminalStorePath: path,
+	}
+	if err := runtime.Close(t.Context()); err == nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if runtime.terminalStore != initial ||
+		runtime.terminalStorePath != path ||
+		runtime.handler == nil {
+		t.Fatal("failed terminal reconciliation discarded retry authority")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(t.Context()); err != nil {
+		t.Fatalf("retry Close() error = %v", err)
+	}
+	if runtime.terminalStore != nil || runtime.handler != nil {
+		t.Fatal("successful retry retained terminal shutdown authority")
+	}
+	record, found, err := initial.Lookup(owner, plan.OpenID)
+	if err != nil || !found ||
+		record.State != nodes.GatewayTerminalUnknown ||
+		record.Reason != "gateway_shutdown" {
+		t.Fatalf("retried reconciliation state = (%#v, %v, %v)", record, found, err)
+	}
+}
+
 func (routes *fakeNodeAdmissionRoutes) RegisterHTTPHandler(_ string, handler http.Handler) error {
 	if routes.handler != nil {
 		return errors.New("route already registered")

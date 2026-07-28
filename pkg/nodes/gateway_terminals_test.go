@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
@@ -264,6 +265,76 @@ func TestGatewayTerminalStoreRestartFailsActiveSessionsClosed(t *testing.T) {
 		record.Reason != "gateway_restarted" ||
 		record.TerminationConfirmed {
 		t.Fatalf("recovered terminal = (%#v, %v, %v)", record, found, err)
+	}
+}
+
+func TestGatewayTerminalStoreReconcilesShutdownAndPersists(t *testing.T) {
+	now := time.Now()
+	path := filepath.Join(t.TempDir(), "node_terminals.json")
+	store := newGatewayTerminalStore(path, 8, 1024*1024, func() time.Time { return now })
+	plan := gatewayTerminalTestPlan(t, "open_shutdown", "idem_shutdown", now)
+	if _, _, err := store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MarkDispatched(plan.Owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReconcileShutdown(); err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := store.Lookup(plan.Owner, plan.OpenID)
+	if err != nil || !found ||
+		record.State != GatewayTerminalUnknown ||
+		record.Reason != gatewayTerminalShutdownReason ||
+		record.TerminationConfirmed {
+		t.Fatalf("shutdown terminal = (%#v, %v, %v)", record, found, err)
+	}
+	reloaded, err := NewGatewayTerminalStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, found, err := reloaded.Lookup(plan.Owner, plan.OpenID)
+	if err != nil || !found ||
+		retained.State != GatewayTerminalUnknown ||
+		retained.Reason != gatewayTerminalShutdownReason {
+		t.Fatalf("reloaded shutdown terminal = (%#v, %v, %v)", retained, found, err)
+	}
+}
+
+func TestGatewayTerminalStoreRetriesFailedShutdownPersistence(t *testing.T) {
+	now := time.Now()
+	path := filepath.Join(t.TempDir(), "node_terminals.json")
+	store := newGatewayTerminalStore(path, 8, 1024*1024, func() time.Time { return now })
+	plan := gatewayTerminalTestPlan(t, "open_shutdown_retry", "idem_shutdown_retry", now)
+	if _, _, err := store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MarkDispatched(plan.Owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	writeFile := store.writeFile
+	attempts := 0
+	store.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		attempts++
+		if attempts == 1 {
+			return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+		}
+		return writeFile(path, data, mode)
+	}
+	if err := store.ReconcileShutdown(); !fileutil.IsCommittedWriteError(err) {
+		t.Fatalf("first ReconcileShutdown() error = %v", err)
+	}
+	if err := store.ReconcileShutdown(); err != nil {
+		t.Fatalf("retry ReconcileShutdown() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("shutdown persistence attempts = %d, want 2", attempts)
+	}
+	record, found, err := store.Lookup(plan.Owner, plan.OpenID)
+	if err != nil || !found ||
+		record.State != GatewayTerminalUnknown ||
+		record.Reason != gatewayTerminalShutdownReason {
+		t.Fatalf("retried shutdown terminal = (%#v, %v, %v)", record, found, err)
 	}
 }
 

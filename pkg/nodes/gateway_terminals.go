@@ -19,6 +19,8 @@ import (
 
 const (
 	gatewayTerminalStoreVersion      = 1
+	gatewayTerminalRestartReason     = "gateway_restarted"
+	gatewayTerminalShutdownReason    = "gateway_shutdown"
 	DefaultGatewayTerminalLimit      = 256
 	DefaultGatewayTerminalStoreBytes = 4 * 1024 * 1024
 	DefaultGatewayTerminalRetention  = 30 * 24 * time.Hour
@@ -237,6 +239,34 @@ func (store *GatewayTerminalStore) Lookup(
 		return GatewayTerminalRecord{}, false, nil
 	}
 	return record, true, nil
+}
+
+// ReconcileShutdown records that live gateway authority ended after the node
+// transport was drained. It always rewrites the document so a caller can
+// retry an earlier committed-but-not-confirmed atomic write.
+func (store *GatewayTerminalStore) ReconcileShutdown() error {
+	if store == nil {
+		return nil
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
+	previous := cloneGatewayTerminalRecords(store.records)
+	if err := store.markActiveUnknownLocked(store.now(), gatewayTerminalShutdownReason); err != nil {
+		store.records = previous
+		return err
+	}
+	if err := store.saveLocked(); err != nil {
+		if !fileutil.IsCommittedWriteError(err) {
+			store.records = previous
+		}
+		return fmt.Errorf("persist gateway terminal shutdown: %w", err)
+	}
+	return nil
 }
 
 func (store *GatewayTerminalStore) MarkDispatched(
@@ -498,6 +528,13 @@ func (store *GatewayTerminalStore) saveLocked() error {
 }
 
 func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) error {
+	return store.markActiveUnknownLocked(now, gatewayTerminalRestartReason)
+}
+
+func (store *GatewayTerminalStore) markActiveUnknownLocked(
+	now time.Time,
+	reason string,
+) error {
 	for openID, record := range store.records {
 		switch record.State {
 		case GatewayTerminalDispatched, GatewayTerminalPendingAttach,
@@ -507,7 +544,7 @@ func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) error {
 				updatedAt = record.UpdatedAt
 			}
 			record.State = GatewayTerminalUnknown
-			record.Reason = "gateway_restarted"
+			record.Reason = reason
 			record.CompletedAt = now.Unix()
 			if record.CompletedAt < record.StartedAt {
 				record.CompletedAt = record.StartedAt
@@ -608,7 +645,8 @@ func (record GatewayTerminalRecord) validate() error {
 			return fmt.Errorf("%w: invalid retained terminal metadata", ErrInvalidTerminal)
 		}
 	} else if record.State == GatewayTerminalUnknown &&
-		(record.Reason != "gateway_restarted" ||
+		((record.Reason != gatewayTerminalRestartReason &&
+			record.Reason != gatewayTerminalShutdownReason) ||
 			record.StartedAt != 0 ||
 			record.ExitCode != 0 ||
 			record.Signal != "" ||

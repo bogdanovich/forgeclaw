@@ -314,6 +314,7 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registryMu.Lock()
 	wasMounted := runtime.mounted
 	handler := runtime.handler
+	terminalStore := runtime.terminalStore
 	runtime.mounted = false
 	runtime.generation++
 	runtime.registryMu.Unlock()
@@ -323,6 +324,11 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	if handler != nil {
 		if err := handler.Close(ctx); err != nil {
 			return err
+		}
+	}
+	if terminalStore != nil {
+		if err := terminalStore.ReconcileShutdown(); err != nil {
+			return fmt.Errorf("reconcile gateway terminals after node drain: %w", err)
 		}
 	}
 	runtime.registryMu.Lock()
