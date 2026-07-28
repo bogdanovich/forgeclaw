@@ -336,6 +336,25 @@ func TestNodeInvokeToolRequiresHumanApprovalContinuationForShellExec(t *testing.
 			source.dispatchCalls,
 		)
 	}
+	rawAuthorityArgs := maps.Clone(args)
+	rawAuthorityInput := maps.Clone(args["input"].(map[string]any))
+	rawAuthorityInput["shell_path"] = "/bin/sh"
+	rawAuthorityArgs["input"] = rawAuthorityInput
+	rawAuthority := tool.Execute(ctx, rawAuthorityArgs)
+	assertNodeDenialResult(
+		t,
+		rawAuthority,
+		nodeDenialSchemaInvalid,
+		nodeConstraintInputSchema,
+		nodeActionCorrectInput,
+	)
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"raw shell authority prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
 	if _, err := tool.ApprovalArguments(ctx, args); err != nil {
 		t.Fatal(err)
 	}

@@ -1200,7 +1200,18 @@ func validateShellExecModelConstraints(
 			nil,
 		)
 	}
-	return validateNodeScopeEnvironmentTimeout(descriptor, input, constraints)
+	if err := validateNodeScopeEnvironmentTimeout(descriptor, input, constraints); err != nil {
+		return err
+	}
+	if err := nodes.ValidateShellExecModelInputSchema(*descriptor.ModelContract, input); err != nil {
+		return denyNodeInvocation(
+			nodeDenialSchemaInvalid,
+			nodeConstraintInputSchema,
+			nodeActionCorrectInput,
+			err,
+		)
+	}
+	return nil
 }
 
 func validateNodeScopeEnvironmentTimeout(

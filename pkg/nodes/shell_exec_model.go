@@ -70,6 +70,19 @@ func ShellExecModelInputSchema(
 	return json.RawMessage(data), nil
 }
 
+// ValidateShellExecModelInputSchema validates an invocation against the
+// model-visible schema rather than the node-private descriptor schema.
+func ValidateShellExecModelInputSchema(
+	contract CommandModelContract,
+	input map[string]any,
+) error {
+	schema, err := ShellExecModelInputSchema(contract)
+	if err != nil {
+		return err
+	}
+	return validateInvocationValue(schema, input, "shell-model-input")
+}
+
 // ValidateShellExecModelInput enforces byte ceilings that JSON Schema
 // maxLength cannot express because maxLength counts Unicode code points.
 func ValidateShellExecModelInput(input map[string]any) error {
