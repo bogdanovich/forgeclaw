@@ -255,11 +255,16 @@ func TestAuthorityBrokerTerminalUnixRoundTripRealPTY(t *testing.T) {
 	}
 	if err := terminal.Send(
 		t.Context(),
-		terminalInputControl(1, "echo-off-1", "stty -echo\n"),
+		terminalInputControl(
+			1,
+			"echo-off-1",
+			"stty -echo; printf '\\145cho-off-ready\\n'\n",
+		),
 	); err != nil {
 		t.Fatal(err)
 	}
 	waitForAuthorityBrokerTerminalAck(t, terminal, 1)
+	waitForAuthorityBrokerTerminalOutput(t, terminal, "echo-off-ready")
 	if err := terminal.Send(
 		t.Context(),
 		terminalInputControl(2, "input-2", "printf 'broker-terminal-marker\\n'\n"),
@@ -273,7 +278,7 @@ func TestAuthorityBrokerTerminalUnixRoundTripRealPTY(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForAuthorityBrokerTerminalAck(t, terminal, 3)
-	closed := receiveAuthorityBrokerTerminalEvent(t, terminal)
+	closed := waitForAuthorityBrokerTerminalClosed(t, terminal)
 	if closed.Type != TerminalEventClosed ||
 		closed.Reason != TerminalCloseRequested ||
 		!closed.TerminationConfirmed {
@@ -427,6 +432,19 @@ func waitForAuthorityBrokerTerminalOutput(
 		output.Write(data)
 		if strings.Contains(output.String(), marker) {
 			return
+		}
+	}
+}
+
+func waitForAuthorityBrokerTerminalClosed(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+) TerminalBrokerEvent {
+	t.Helper()
+	for {
+		event := receiveAuthorityBrokerTerminalEvent(t, terminal)
+		if event.Type == TerminalEventClosed || event.Type == TerminalEventUnknown {
+			return event
 		}
 	}
 }

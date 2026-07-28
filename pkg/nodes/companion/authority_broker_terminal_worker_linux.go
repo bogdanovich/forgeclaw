@@ -116,7 +116,6 @@ func (runner *authorityBrokerProcessRunner) Terminal(
 		case <-workerDone:
 		}
 	}()
-	terminalObserved := false
 	for {
 		var event TerminalBrokerEvent
 		if err := readAuthorityBrokerFrame(stdout, &event); err != nil {
@@ -147,7 +146,6 @@ func (runner *authorityBrokerProcessRunner) Terminal(
 			return nil
 		}
 		if event.Type == TerminalEventClosed || event.Type == TerminalEventUnknown {
-			terminalObserved = true
 			break
 		}
 	}
@@ -156,9 +154,6 @@ func (runner *authorityBrokerProcessRunner) Terminal(
 	_ = stdin.Close()
 	if err := command.Wait(); err != nil {
 		return fmt.Errorf("%w: terminal worker failed: %v", ErrTerminalOutcomeUnknown, err)
-	}
-	if !terminalObserved {
-		return ErrTerminalOutcomeUnknown
 	}
 	return nil
 }
@@ -218,11 +213,11 @@ func runAuthorityBrokerTerminalWorker(
 		len(request.SupplementaryGroups) != 0 {
 		return errors.New("unprivileged terminal fixture cannot change identity")
 	}
-	terminal, err := pty.StartWithAttrs(command, &pty.Winsize{
+	terminal, startErr := pty.StartWithAttrs(command, &pty.Winsize{
 		Cols: uint16(request.Columns), Rows: uint16(request.Rows),
 	}, attributes)
-	if err != nil {
-		return fmt.Errorf("start authority broker terminal: %w", err)
+	if startErr != nil {
+		return fmt.Errorf("start authority broker terminal: %w", startErr)
 	}
 	defer terminal.Close()
 	processGroup := command.Process.Pid
@@ -304,10 +299,10 @@ func runAuthorityBrokerTerminalWorker(
 		case frame := <-output:
 			if len(frame.data) > 0 {
 				cursor += uint64(len(frame.data))
-				if err := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
+				if eventErr := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
 					Type: TerminalEventOutput, TerminalID: request.TerminalID,
 					Cursor: cursor, DataBase64: base64.StdEncoding.EncodeToString(frame.data),
-				}); err != nil {
+				}); eventErr != nil {
 					eventSinkFailed = true
 					shutdown(TerminalCloseDisconnected)
 				}
@@ -324,17 +319,21 @@ func runAuthorityBrokerTerminalWorker(
 				frame.Sequence > lastSequence+1 ||
 				frame.Sequence < lastSequence ||
 				(frame.Sequence == lastSequence && frame.IdempotencyKey != lastKey) {
-				if err := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
+				if eventErr := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
 					Type: TerminalEventDenied, TerminalID: request.TerminalID,
 					State: "live", Reason: "invalid_sequence",
-				}); err != nil {
+				}); eventErr != nil {
 					eventSinkFailed = true
 					shutdown(TerminalCloseDisconnected)
 				}
 				continue
 			}
 			if frame.Sequence == lastSequence {
-				if err := writeTerminalWorkerAck(events, request.TerminalID, lastSequence); err != nil {
+				if ackErr := writeTerminalWorkerAck(
+					events,
+					request.TerminalID,
+					lastSequence,
+				); ackErr != nil {
 					eventSinkFailed = true
 					shutdown(TerminalCloseDisconnected)
 				}
@@ -342,23 +341,28 @@ func runAuthorityBrokerTerminalWorker(
 			}
 			lastSequence = frame.Sequence
 			lastKey = frame.IdempotencyKey
+			var operationErr error
 			switch {
 			case len(data) > 0:
-				_, err = terminal.Write(data)
+				_, operationErr = terminal.Write(data)
 			case frame.Resize != nil:
-				err = pty.Setsize(terminal, &pty.Winsize{
+				operationErr = pty.Setsize(terminal, &pty.Winsize{
 					Cols: uint16(frame.Resize.Columns), Rows: uint16(frame.Resize.Rows),
 				})
 			case frame.Signal != "":
-				err = unix.Kill(-processGroup, terminalSignal(frame.Signal))
+				operationErr = unix.Kill(-processGroup, terminalSignal(frame.Signal))
 			case frame.Close:
 				closeReason = TerminalCloseRequested
 			}
-			if err != nil {
+			if operationErr != nil {
 				shutdown(TerminalCloseDisconnected)
 				continue
 			}
-			if err := writeTerminalWorkerAck(events, request.TerminalID, lastSequence); err != nil {
+			if ackErr := writeTerminalWorkerAck(
+				events,
+				request.TerminalID,
+				lastSequence,
+			); ackErr != nil {
 				eventSinkFailed = true
 				shutdown(TerminalCloseDisconnected)
 				continue

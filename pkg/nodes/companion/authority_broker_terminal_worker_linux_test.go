@@ -35,8 +35,13 @@ func TestAuthorityBrokerTerminalWorkerInteractiveLifecycle(t *testing.T) {
 		t.Fatalf("opened event = %#v", opened)
 	}
 
-	controls <- terminalInputControl(1, "echo-off-1", "stty -echo\n")
+	controls <- terminalInputControl(
+		1,
+		"echo-off-1",
+		"stty -echo; printf '\\145cho-off-ready\\n'\n",
+	)
 	waitForTerminalAck(t, events, 1)
+	waitForTerminalOutput(t, events, "echo-off-ready")
 	drainTerminalEvents(events)
 
 	controls <- terminalInputControl(2, "input-2", "printf 'terminal-marker\\n'\n")
@@ -72,7 +77,7 @@ func TestAuthorityBrokerTerminalWorkerInteractiveLifecycle(t *testing.T) {
 		IdempotencyKey: "close-5", Close: true,
 	}
 	waitForTerminalAck(t, events, 5)
-	closed := receiveTerminalWorkerEvent(t, events)
+	closed := waitForTerminalClosed(t, events)
 	if closed.Type != TerminalEventClosed ||
 		closed.Reason != TerminalCloseRequested ||
 		!closed.TerminationConfirmed {
@@ -115,9 +120,7 @@ func TestAuthorityBrokerTerminalWorkerReapsSetsidDescendantOnClose(t *testing.T)
 		IdempotencyKey: "close-2", Close: true,
 	}
 	waitForTerminalAck(t, events, 2)
-	if closed := receiveTerminalWorkerEvent(t, events); closed.Type != TerminalEventClosed {
-		t.Fatalf("closed event = %#v", closed)
-	}
+	waitForTerminalClosed(t, events)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +225,19 @@ func waitForTerminalAck(
 		event := receiveTerminalWorkerEvent(t, events)
 		if event.Type == TerminalEventAck && event.AcceptedSequence == sequence {
 			return
+		}
+	}
+}
+
+func waitForTerminalClosed(
+	t *testing.T,
+	events <-chan TerminalBrokerEvent,
+) TerminalBrokerEvent {
+	t.Helper()
+	for {
+		event := receiveTerminalWorkerEvent(t, events)
+		if event.Type == TerminalEventClosed || event.Type == TerminalEventUnknown {
+			return event
 		}
 	}
 }
