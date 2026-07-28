@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,8 @@ type nodeAdmissionRuntime struct {
 	sessions          *nodews.SessionHub
 	terminalStore     *nodes.GatewayTerminalStore
 	terminalStorePath string
+	terminalHub       *nodeTerminalOperatorHub
+	terminalMounted   bool
 	generation        uint64
 	mounted           bool
 }
@@ -269,6 +272,9 @@ func (runtime *nodeAdmissionRuntime) existingGatewayTerminalStore(
 	runtime.registryMu.Lock()
 	defer runtime.registryMu.Unlock()
 	if runtime.terminalStore != nil && runtime.terminalStorePath == path {
+		if err := runtime.terminalStore.ReconcileShutdown(); err != nil {
+			return nil, true, err
+		}
 		return runtime.terminalStore, true, nil
 	}
 	store, found, err := nodes.OpenExistingGatewayTerminalStore(path, maxRecords, maxBytes)
@@ -313,6 +319,68 @@ func (runtime *nodeAdmissionRuntime) terminalHandlerSnapshot(
 	return terminalHandler, nil
 }
 
+func (runtime *nodeAdmissionRuntime) terminalOperatorHub() *nodeTerminalOperatorHub {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	return runtime.terminalHub
+}
+
+func (runtime *nodeAdmissionRuntime) configureTerminalOperator(cfg *config.Config) error {
+	token, allowOrigins, err := terminalOperatorAuthentication(cfg)
+	if err != nil {
+		return err
+	}
+	runtime.registryMu.RLock()
+	wasMounted := runtime.terminalMounted
+	oldHub := runtime.terminalHub
+	runtime.registryMu.RUnlock()
+	if token == "" {
+		if wasMounted {
+			runtime.routes.UnregisterHTTPHandler(nodeTerminalOperatorPath)
+		}
+		runtime.registryMu.Lock()
+		runtime.terminalMounted = false
+		runtime.terminalHub = nil
+		runtime.registryMu.Unlock()
+		if oldHub != nil {
+			oldHub.shutdown()
+		}
+		return nil
+	}
+	hub := newNodeTerminalOperatorHub(token, allowOrigins)
+	if wasMounted {
+		err = runtime.routes.ReplaceHTTPHandler(nodeTerminalOperatorPath, hub)
+	} else {
+		err = runtime.routes.RegisterHTTPHandler(nodeTerminalOperatorPath, hub)
+	}
+	if err != nil {
+		return fmt.Errorf("mount authenticated terminal operator route: %w", err)
+	}
+	runtime.registryMu.Lock()
+	runtime.terminalMounted = true
+	runtime.terminalHub = hub
+	runtime.registryMu.Unlock()
+	if oldHub != nil {
+		oldHub.shutdown()
+	}
+	return nil
+}
+
+func terminalOperatorAuthentication(cfg *config.Config) (string, []string, error) {
+	if cfg == nil {
+		return "", nil, nil
+	}
+	channel := cfg.Channels.GetByType(config.ChannelMintClaw)
+	if channel == nil || !channel.Enabled {
+		return "", nil, nil
+	}
+	var settings config.MintClawSettings
+	if err := channel.Decode(&settings); err != nil {
+		return "", nil, fmt.Errorf("decode MintClaw operator authentication: %w", err)
+	}
+	return strings.TrimSpace(settings.Token.String()), append([]string(nil), settings.AllowOrigins...), nil
+}
+
 func (runtime *nodeAdmissionRuntime) withInvocationHandler(
 	expectedRegistryPath string,
 	expectedGeneration uint64,
@@ -339,6 +407,18 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registryMu.Unlock()
 	if wasMounted {
 		runtime.routes.UnregisterHTTPHandler(nodews.Path)
+	}
+	runtime.registryMu.Lock()
+	terminalMounted := runtime.terminalMounted
+	terminalHub := runtime.terminalHub
+	runtime.terminalMounted = false
+	runtime.terminalHub = nil
+	runtime.registryMu.Unlock()
+	if terminalMounted {
+		runtime.routes.UnregisterHTTPHandler(nodeTerminalOperatorPath)
+	}
+	if terminalHub != nil {
+		terminalHub.shutdown()
 	}
 	var closeErr error
 	if handler != nil {

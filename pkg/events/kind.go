@@ -119,6 +119,8 @@ const (
 	// Observations from concurrent callers may arrive out of order; durable node
 	// and gateway state remain authoritative.
 	KindNodeInvocationObserved Kind = "node.invocation.observed"
+	// KindNodeTerminalObserved records redacted attached-terminal lifecycle.
+	KindNodeTerminalObserved Kind = "node.terminal.observed"
 
 	// KindMCPServerConnected is emitted when an MCP server connects.
 	KindMCPServerConnected Kind = "mcp.server.connected"
@@ -188,6 +190,7 @@ var knownKinds = []Kind{
 	KindGatewayReloadCompleted,
 	KindGatewayReloadFailed,
 	KindNodeInvocationObserved,
+	KindNodeTerminalObserved,
 	KindMCPServerConnected,
 	KindMCPServerConnecting,
 	KindMCPServerFailed,
