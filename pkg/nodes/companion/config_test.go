@@ -59,6 +59,53 @@ func TestConfigRejectsInvalidLocalPolicy(t *testing.T) {
 	}
 }
 
+func TestConfigKeepsOwnerShellAbsentAndDisabledByDefault(t *testing.T) {
+	for _, ownerShell := range []*OwnerShellConfig{
+		nil,
+		{Enabled: false},
+	} {
+		cfg, err := (Config{
+			GatewayURL: "wss://gateway.example",
+			OwnerShell: ownerShell,
+		}).Normalize(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.OwnerShell != nil {
+			t.Fatalf("disabled owner shell survived normalization: %#v", cfg.OwnerShell)
+		}
+	}
+}
+
+func TestConfigRequiresExplicitOwnerShellBrokerSocket(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, err := (Config{
+		GatewayURL: "wss://gateway.example",
+		OwnerShell: &OwnerShellConfig{
+			Enabled:      true,
+			BrokerSocket: "authority.sock",
+		},
+	}).Normalize(baseDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OwnerShell == nil ||
+		cfg.OwnerShell.BrokerSocket != filepath.Join(baseDir, "authority.sock") {
+		t.Fatalf("owner shell config = %#v", cfg.OwnerShell)
+	}
+	for _, ownerShell := range []*OwnerShellConfig{
+		{Enabled: true},
+		{Enabled: false, BrokerSocket: "/run/hidden.sock"},
+	} {
+		if _, err := (Config{
+			GatewayURL: "wss://gateway.example",
+			OwnerShell: ownerShell,
+		}).Normalize(baseDir); err == nil {
+			t.Fatalf("unsafe owner shell config accepted: %#v", ownerShell)
+		}
+	}
+}
+
 func TestConfigNormalizesSystemExecPolicy(t *testing.T) {
 	root := t.TempDir()
 	executable, err := os.Executable()

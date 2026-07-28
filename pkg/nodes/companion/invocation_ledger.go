@@ -229,6 +229,17 @@ func (ledger *InvocationLedger) MarkRunning(invocationID string) (nodes.Invocati
 	})
 }
 
+func (ledger *InvocationLedger) MarkUnknown(invocationID string) (nodes.InvocationRecord, error) {
+	return ledger.transition(invocationID, func(record *nodes.InvocationRecord, now int64) error {
+		if record.State != nodes.InvocationRunning {
+			return fmt.Errorf("%w: invocation is %s", nodes.ErrInvalidInvocationRecord, record.State)
+		}
+		record.State = nodes.InvocationUnknown
+		record.UpdatedAt = now
+		return nil
+	})
+}
+
 func (ledger *InvocationLedger) CompleteSuccess(
 	invocationID string,
 	result json.RawMessage,

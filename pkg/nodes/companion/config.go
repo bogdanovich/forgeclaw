@@ -37,6 +37,11 @@ type ReconnectConfig struct {
 	PendingDelaySeconds int `json:"pending_delay_seconds,omitempty"`
 }
 
+type OwnerShellConfig struct {
+	Enabled      bool   `json:"enabled"`
+	BrokerSocket string `json:"broker_socket,omitempty"`
+}
+
 type Config struct {
 	GatewayURL             string                   `json:"gateway_url"`
 	StateDir               string                   `json:"state_dir,omitempty"`
@@ -45,6 +50,7 @@ type Config struct {
 	Reconnect              ReconnectConfig          `json:"reconnect,omitempty"`
 	Policy                 nodes.LocalCommandPolicy `json:"policy,omitempty"`
 	SystemExec             *SystemExecPolicy        `json:"system_exec,omitempty"`
+	OwnerShell             *OwnerShellConfig        `json:"owner_shell,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -161,6 +167,20 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 			return Config{}, fmt.Errorf("validate system_exec discovery: %w", contractErr)
 		}
 		cfg.SystemExec = &normalized
+	}
+	if cfg.OwnerShell != nil {
+		if !cfg.OwnerShell.Enabled {
+			if strings.TrimSpace(cfg.OwnerShell.BrokerSocket) != "" {
+				return Config{}, errors.New("disabled owner_shell cannot configure a broker socket")
+			}
+			cfg.OwnerShell = nil
+		} else {
+			socket, socketErr := resolveConfigPath(baseDir, cfg.OwnerShell.BrokerSocket)
+			if socketErr != nil || strings.TrimSpace(cfg.OwnerShell.BrokerSocket) == "" {
+				return Config{}, errors.New("enabled owner_shell requires a broker socket")
+			}
+			cfg.OwnerShell.BrokerSocket = socket
+		}
 	}
 	return cfg, nil
 }

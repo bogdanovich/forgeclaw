@@ -85,6 +85,27 @@ func TestInvocationLedgerRecoversRunningInvocationAsUnknown(t *testing.T) {
 	}
 }
 
+func TestInvocationLedgerMarksRunningInvocationUnknown(t *testing.T) {
+	ledger := newMemoryInvocationLedger()
+	plan := testLedgerPlan(t, "explicit-unknown")
+	if _, _, err := ledger.Accept(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.MarkRunning(plan.InvocationID); err != nil {
+		t.Fatal(err)
+	}
+	record, err := ledger.MarkUnknown(plan.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != nodes.InvocationUnknown ||
+		record.CompletedAt != 0 ||
+		record.Failure != nil ||
+		len(record.Result) != 0 {
+		t.Fatalf("unknown record = %#v", record)
+	}
+}
+
 func TestInvocationLedgerPreservesAcceptedInvocationForResume(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invocations.json")
 	ledger, newErr := NewFileInvocationLedger(path, 4, 1024*1024)

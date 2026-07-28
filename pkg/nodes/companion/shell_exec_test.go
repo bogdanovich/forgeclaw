@@ -209,6 +209,23 @@ func TestShellExecCancellationRequiresBrokerTerminationProof(t *testing.T) {
 	}
 }
 
+func TestShellExecPreservesUnknownBrokerOutcome(t *testing.T) {
+	broker := successfulFakeShellBroker()
+	broker.err = ErrShellBrokerOutcomeUnknown
+	runtime := newShellRuntime(t, broker)
+	plan := testRuntimePlan(t, runtime, "shell.exec.v1", validShellInput())
+	if _, err := runtime.Invoke(t.Context(), plan); !errors.Is(err, ErrInvocationOutcomeUnknown) {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	record, found, err := runtime.Invocation(plan.InvocationID)
+	if err != nil || !found ||
+		record.State != nodes.InvocationUnknown ||
+		record.CompletedAt != 0 ||
+		record.Failure != nil {
+		t.Fatalf("unknown invocation = (%#v, %v, %v)", record, found, err)
+	}
+}
+
 func TestShellBrokerSnapshotFailsClosed(t *testing.T) {
 	tests := []ShellBrokerSnapshot{
 		{},
