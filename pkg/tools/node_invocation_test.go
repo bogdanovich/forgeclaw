@@ -1376,7 +1376,7 @@ func TestNodeCancelToolDistinguishesConfirmedAndTerminalOutcomes(t *testing.T) {
 	}
 }
 
-func TestNodeCancelToolDoesNotSendForPreparedOrDisconnectedInvocation(t *testing.T) {
+func TestNodeCancelToolPersistsOfflineIntentWithoutReplay(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	ctx := nodeInvocationTestContext("actor-1", "call-1")
 	approval, err := NewNodeInvokeTool(
@@ -1407,9 +1407,26 @@ func TestNodeCancelToolDoesNotSendForPreparedOrDisconnectedInvocation(t *testing
 		t.Fatal(err)
 	}
 	source.connected = map[nodes.ID]bool{}
+	source.cancelErr = errors.New("node unavailable")
 	offline := decodeNodeResult(t, cancel.Execute(ctx, args))
-	if offline["status"] != "unknown" || source.cancelCalls != 0 {
+	retained := mustFakeGatewayInvocation(t, source, ctx, record.Plan.InvocationID)
+	if offline["status"] != "unknown" || source.cancelCalls != 1 ||
+		retained.Cancellation == nil {
 		t.Fatalf("offline cancellation = %#v; calls = %d", offline, source.cancelCalls)
+	}
+	source.connected = map[nodes.ID]bool{record.Plan.NodeID: true}
+	source.cancelErr = nil
+	now := time.Now().UnixNano()
+	source.remote = nodes.InvocationRecord{
+		InvocationID: record.Plan.InvocationID, IdempotencyKey: record.Plan.IdempotencyKey,
+		PlanHash: record.ExpectedPlanHash, NodeID: record.Plan.NodeID,
+		CatalogHash: record.Plan.CatalogHash, Command: record.Plan.Command,
+		Risk: record.Plan.Risk, State: nodes.InvocationRunning,
+		AcceptedAt: now, UpdatedAt: now, ExpiresAt: record.Plan.ExpiresAt,
+	}
+	repeated := decodeNodeResult(t, cancel.Execute(ctx, args))
+	if repeated["status"] != "unknown" || source.cancelCalls != 1 {
+		t.Fatalf("repeated cancellation = %#v; calls = %d", repeated, source.cancelCalls)
 	}
 }
 

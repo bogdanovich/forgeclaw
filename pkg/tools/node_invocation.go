@@ -594,7 +594,7 @@ func (*NodeCancelTool) Parameters() map[string]any {
 }
 
 func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	record, principal, snapshot, available, err := tool.runtime.visibleInvocation(ctx, args)
+	record, principal, snapshot, _, err := tool.runtime.visibleInvocation(ctx, args)
 	if err != nil {
 		return nodeJSONResult(nodeCancelResult{Status: "denied", ErrorCode: "CANCEL_DENIED"})
 	}
@@ -606,20 +606,6 @@ func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *T
 	if record.State == nodes.GatewayInvocationPrepared {
 		view.Status = "already_terminal"
 		view.OriginalState = "not_dispatched"
-		return nodeJSONResult(view)
-	}
-	if !available {
-		view.Status = "unknown"
-		view.ErrorCode = "NODE_UNAVAILABLE"
-		view.RecoveryAction = "Call nodes_status after the target reconnects; do not replay cancellation."
-		tool.runtime.publishInvocationEvent(
-			ctx,
-			NodeInvocationObservationUncertain,
-			"nodes_cancel",
-			record,
-			view.Status,
-			view.ErrorCode,
-		)
 		return nodeJSONResult(view)
 	}
 	remote, _, err := tool.runtime.source.CancelInvocation(
