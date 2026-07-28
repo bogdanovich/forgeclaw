@@ -70,8 +70,8 @@ func RunAuthorityBroker(
 	if err != nil {
 		return err
 	}
-	if err := prepareAuthorityBrokerSocket(config.SocketPath); err != nil {
-		return err
+	if prepareErr := prepareAuthorityBrokerSocket(config.SocketPath); prepareErr != nil {
+		return prepareErr
 	}
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: config.SocketPath, Net: "unix"})
 	if err != nil {
@@ -79,11 +79,11 @@ func RunAuthorityBroker(
 	}
 	defer listener.Close()
 	defer os.Remove(config.SocketPath)
-	if err := os.Chown(config.SocketPath, 0, int(config.AllowedGID)); err != nil {
-		return fmt.Errorf("own authority broker socket: %w", err)
+	if chownErr := os.Chown(config.SocketPath, 0, int(config.AllowedGID)); chownErr != nil {
+		return fmt.Errorf("own authority broker socket: %w", chownErr)
 	}
-	if err := os.Chmod(config.SocketPath, 0o660); err != nil {
-		return fmt.Errorf("protect authority broker socket: %w", err)
+	if chmodErr := os.Chmod(config.SocketPath, 0o660); chmodErr != nil {
+		return fmt.Errorf("protect authority broker socket: %w", chmodErr)
 	}
 	return server.Serve(ctx, listener)
 }

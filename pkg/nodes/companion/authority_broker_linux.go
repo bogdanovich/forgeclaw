@@ -221,19 +221,19 @@ func (server *authorityBrokerServer) handleConnection(
 	serverContext context.Context,
 	connection *net.UnixConn,
 ) {
-	peer, err := authorityBrokerPeerCredentials(connection)
-	if err != nil ||
+	peer, peerErr := authorityBrokerPeerCredentials(connection)
+	if peerErr != nil ||
 		peer.Uid != server.config.AllowedUID ||
 		peer.Gid != server.config.AllowedGID {
 		return
 	}
 	_ = connection.SetReadDeadline(time.Now().Add(authorityBrokerHandshakeTimeout))
 	var request authorityBrokerRequestFrame
-	if err := readAuthorityBrokerFrame(connection, &request); err != nil {
+	if readErr := readAuthorityBrokerFrame(connection, &request); readErr != nil {
 		return
 	}
 	_ = connection.SetReadDeadline(time.Time{})
-	if err := validateAuthorityBrokerRequestFrame(request); err != nil {
+	if validationErr := validateAuthorityBrokerRequestFrame(request); validationErr != nil {
 		server.writeResponse(connection, authorityBrokerResponseFrame{Code: "INVALID_REQUEST"})
 		return
 	}
