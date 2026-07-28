@@ -26,6 +26,7 @@ var (
 
 const (
 	maxOutstandingRequests = 1024
+	maxAbandonedTerminals  = 256
 	defaultWriteTimeout    = 15 * time.Second
 )
 
@@ -154,14 +155,27 @@ func (session *peer) unsubscribeTerminal(
 	terminalID string,
 	subscription *terminalEventSubscription,
 	err error,
+	retainTombstone bool,
 ) {
+	failClosed := false
 	session.terminalMu.Lock()
 	if session.terminals[terminalID] == subscription {
 		delete(session.terminals, terminalID)
-		session.abandonedTerminals[terminalID] = struct{}{}
+		if retainTombstone {
+			if _, exists := session.abandonedTerminals[terminalID]; !exists {
+				if len(session.abandonedTerminals) >= maxAbandonedTerminals {
+					failClosed = true
+				} else {
+					session.abandonedTerminals[terminalID] = struct{}{}
+				}
+			}
+		}
 	}
 	session.terminalMu.Unlock()
 	subscription.fail(err)
+	if failClosed {
+		_ = session.Close()
+	}
 }
 
 func (session *peer) handleTerminalEvent(
@@ -197,7 +211,7 @@ func (session *peer) handleTerminalEvent(
 	}
 	if err := subscription.offer(payload.Event); err != nil {
 		request := subscription.request
-		session.unsubscribeTerminal(payload.TerminalID, subscription, err)
+		session.unsubscribeTerminal(payload.TerminalID, subscription, err, true)
 		return &request, err
 	}
 	return nil, nil

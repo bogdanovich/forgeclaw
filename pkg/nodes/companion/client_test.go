@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -503,8 +504,36 @@ func TestClientServesOwnerBoundTerminalOverAuthenticatedSession(t *testing.T) {
 	if err != nil || output.Type != TerminalEventOutput || output.Cursor != 1 {
 		t.Fatalf("terminal output = (%#v, %v)", output, err)
 	}
+	broker.session.events <- TerminalBrokerEvent{
+		Version: AuthorityBrokerProtocolVersion, Type: TerminalEventClosed,
+		TerminalID: metadata.TerminalID, State: TerminalSessionClosed,
+		Reason: TerminalCloseNatural, StartedAt: 1_700_000_000,
+		CompletedAt: 1_700_000_001, TerminationConfirmed: true,
+	}
+	naturalClose, err := stream.Receive(t.Context())
+	if err != nil || naturalClose.Type != TerminalEventClosed {
+		t.Fatalf("natural terminal close = (%#v, %v)", naturalClose, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		client.attachmentsMu.Lock()
+		_, attached := client.attachments[metadata.TerminalID]
+		client.attachmentsMu.Unlock()
+		if !attached {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("naturally closed terminal attachment was not released")
+		}
+		goruntime.Gosched()
+	}
 	if err := stream.Close(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case err := <-runDone:
+		t.Fatalf("idempotent detach disconnected healthy node: %v", err)
+	default:
 	}
 	closed, err := admission.TerminalStatus(t.Context(), identity.ID, request)
 	if err != nil || closed.State != TerminalSessionClosed ||

@@ -719,6 +719,14 @@ func (client *Client) handleTerminalDetach(
 	attachment := client.attachments[request.TerminalID]
 	client.attachmentsMu.Unlock()
 	if attachment == nil {
+		metadata, err := client.runtime.terminals.Status(request)
+		if err != nil {
+			return client.writeTerminalAccessError(writer, envelope.ID, err)
+		}
+		if metadata.State == TerminalSessionClosed ||
+			metadata.State == TerminalSessionUnknown {
+			return writeTerminalMetadata(writer, envelope.ID, metadata)
+		}
 		return client.writeCommandError(
 			writer,
 			envelope.ID,

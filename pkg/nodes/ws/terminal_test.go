@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -177,6 +178,81 @@ func TestTerminalStreamCloseUsesInternalCleanupAfterCallerCancellation(t *testin
 	case <-session.closed:
 		t.Fatal("confirmed detach unnecessarily closed authenticated peer")
 	default:
+	}
+}
+
+func TestRejectedTerminalAttachDoesNotRetainTombstone(t *testing.T) {
+	connection := newTerminalRecordingConnection()
+	session := newPeer(connection)
+	session.markReady()
+	hub := NewSessionHub()
+	release, err := hub.Claim(nodes.ID("node_test"), session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	handler := &AdmissionHandler{sessions: hub}
+	request := nodes.TerminalSessionRequest{
+		TerminalID: "terminal_rejected",
+		Owner:      testTerminalOwner(),
+	}
+	attachDone := make(chan error, 1)
+	go func() {
+		_, _, attachErr := handler.AttachTerminal(t.Context(), nodes.ID("node_test"), request)
+		attachDone <- attachErr
+	}()
+	attach := <-connection.writes
+	ok := false
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: attach.ID, OK: &ok,
+		Error: &protocol.Error{Code: "TERMINAL_NOT_FOUND", Message: "not found"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-attachDone; err == nil {
+		t.Fatal("rejected terminal attach succeeded")
+	}
+	session.terminalMu.Lock()
+	abandoned := len(session.abandonedTerminals)
+	session.terminalMu.Unlock()
+	if abandoned != 0 {
+		t.Fatalf("definitively rejected attach retained %d tombstones", abandoned)
+	}
+	select {
+	case <-session.closed:
+		t.Fatal("definitively rejected attach closed healthy peer")
+	default:
+	}
+}
+
+func TestTerminalTombstoneLimitFailClosesPeer(t *testing.T) {
+	connection := newStubPeerConnection()
+	session := newPeer(connection)
+	session.markReady()
+	session.terminalMu.Lock()
+	for index := 0; index < maxAbandonedTerminals; index++ {
+		session.abandonedTerminals[fmt.Sprintf("terminal_abandoned_%d", index)] = struct{}{}
+	}
+	session.terminalMu.Unlock()
+	request := nodes.TerminalSessionRequest{
+		TerminalID: "terminal_overflow",
+		Owner:      testTerminalOwner(),
+	}
+	subscription, err := session.subscribeTerminal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.unsubscribeTerminal(request.TerminalID, subscription, ErrNodeDisconnected, true)
+	select {
+	case <-session.closed:
+	default:
+		t.Fatal("terminal tombstone overflow left authenticated peer open")
+	}
+	session.terminalMu.Lock()
+	abandoned := len(session.abandonedTerminals)
+	session.terminalMu.Unlock()
+	if abandoned > maxAbandonedTerminals {
+		t.Fatalf("terminal tombstones grew to %d", abandoned)
 	}
 }
 

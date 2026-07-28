@@ -144,23 +144,29 @@ func (handler *AdmissionHandler) AttachTerminal(
 			_, cleanupErr := session.detachTerminalGuaranteed(request)
 			err = errors.Join(err, cleanupErr)
 		}
-		session.unsubscribeTerminal(request.TerminalID, subscription, err)
+		session.unsubscribeTerminal(request.TerminalID, subscription, err, dispatched)
 		return nil, nodes.TerminalMetadata{}, err
 	}
 	metadata, err := decodeTerminalMetadata(response, request.Owner)
 	if err != nil {
-		if response.OK == nil || *response.OK {
+		retainTombstone := response.OK == nil || *response.OK
+		if retainTombstone {
 			_, cleanupErr := session.detachTerminalGuaranteed(request)
 			err = errors.Join(err, cleanupErr)
 		}
-		session.unsubscribeTerminal(request.TerminalID, subscription, err)
+		session.unsubscribeTerminal(
+			request.TerminalID,
+			subscription,
+			err,
+			retainTombstone,
+		)
 		return nil, nodes.TerminalMetadata{}, err
 	}
 	if metadata.TerminalID != request.TerminalID || metadata.State != "live" {
 		err = errors.New("node returned an unrelated terminal attachment")
 		_, cleanupErr := session.detachTerminalGuaranteed(request)
 		err = errors.Join(err, cleanupErr)
-		session.unsubscribeTerminal(request.TerminalID, subscription, err)
+		session.unsubscribeTerminal(request.TerminalID, subscription, err, true)
 		return nil, nodes.TerminalMetadata{}, err
 	}
 	return &TerminalStream{
@@ -250,6 +256,7 @@ func (stream *TerminalStream) Close(_ context.Context) error {
 			stream.request.TerminalID,
 			stream.subscription,
 			ErrNodeDisconnected,
+			true,
 		)
 	}
 	return err
