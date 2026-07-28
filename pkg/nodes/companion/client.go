@@ -697,6 +697,14 @@ func (client *Client) handleTerminalDetach(
 	writer *connectedWriter,
 	envelope protocol.Envelope,
 ) error {
+	if client.runtime == nil || client.runtime.terminals == nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"TERMINAL_UNAVAILABLE",
+			"node terminal runtime is disabled",
+		)
+	}
 	if envelope.IdempotencyKey != "" {
 		return client.writeCommandError(
 			writer,

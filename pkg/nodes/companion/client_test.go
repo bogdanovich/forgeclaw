@@ -21,7 +21,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
 )
 
@@ -543,6 +546,68 @@ func TestClientServesOwnerBoundTerminalOverAuthenticatedSession(t *testing.T) {
 	cancelRun()
 	if err := <-runDone; err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestClientTerminalDetachReturnsUnavailableWhenRuntimeDisabled(t *testing.T) {
+	accepted := make(chan *websocket.Conn, 1)
+	release := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		connection, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			return
+		}
+		accepted <- connection
+		<-release
+		_ = connection.Close()
+	}))
+	defer server.Close()
+	connection, response, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http"),
+		nil,
+	)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	serverConnection := <-accepted
+	defer close(release)
+	params, err := json.Marshal(nodes.TerminalSessionRequest{
+		TerminalID: "terminal_disabled",
+		Owner:      testCompanionTerminalOwner(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{attachments: make(map[string]*TerminalAttachment)}
+	if err := client.handleTerminalDetach(
+		&connectedWriter{connection: serverConnection},
+		protocol.Envelope{
+			Type: protocol.FrameRequest, ID: "detach_disabled",
+			Method: "node.terminal.detach", Params: params,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := protocol.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK == nil || *envelope.OK ||
+		envelope.Error == nil ||
+		envelope.Error.Code != "TERMINAL_UNAVAILABLE" {
+		t.Fatalf("disabled terminal detach response = %#v", envelope)
 	}
 }
 
