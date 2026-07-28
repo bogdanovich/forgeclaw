@@ -41,6 +41,7 @@ func (handler *AdmissionHandler) OpenTerminal(
 	if err != nil {
 		return nodes.TerminalMetadata{}, false, fmt.Errorf("encode terminal open plan: %w", err)
 	}
+	var commitWarning error
 	response, dispatched, err := handler.sessions.Request(
 		ctx,
 		nodeID,
@@ -55,15 +56,7 @@ func (handler *AdmissionHandler) OpenTerminal(
 					if validationErr := validateTerminalApproval(current, nodeID, plan); validationErr != nil {
 						return validationErr
 					}
-					if commit != nil {
-						if commitErr := commit(); commitErr != nil {
-							if !fileutil.IsCommittedWriteError(commitErr) {
-								return commitErr
-							}
-							return errors.Join(commitErr, write())
-						}
-					}
-					return write()
+					return commitTerminalDispatch(commit, write, &commitWarning)
 				},
 			)
 			return leaseErr
@@ -72,15 +65,48 @@ func (handler *AdmissionHandler) OpenTerminal(
 	if err != nil {
 		return nodes.TerminalMetadata{}, dispatched, err
 	}
-	metadata, err := decodeTerminalMetadata(response, plan.Owner)
+	metadata, err := decodeTerminalOpenResponse(response, plan.Owner)
 	if err != nil {
-		return nodes.TerminalMetadata{}, true, err
-	}
-	if metadata.State != "pending_attach" {
-		return nodes.TerminalMetadata{}, true, errors.New("node returned an invalid terminal open state")
+		return metadata, true, errors.Join(commitWarning, err)
 	}
 	_ = approval
-	return metadata, true, nil
+	return metadata, true, commitWarning
+}
+
+func decodeTerminalOpenResponse(
+	response protocol.Envelope,
+	owner nodes.TerminalOwner,
+) (nodes.TerminalMetadata, error) {
+	metadata, err := decodeTerminalMetadata(response, owner)
+	if err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	if metadata.State != "pending_attach" {
+		return metadata, errors.New("node returned an invalid terminal open state")
+	}
+	return metadata, nil
+}
+
+func commitTerminalDispatch(
+	commit func() error,
+	write func() error,
+	commitWarning *error,
+) error {
+	if commit == nil {
+		return write()
+	}
+	commitErr := commit()
+	if commitErr == nil {
+		return write()
+	}
+	if !fileutil.IsCommittedWriteError(commitErr) {
+		return commitErr
+	}
+	if writeErr := write(); writeErr != nil {
+		return errors.Join(commitErr, writeErr)
+	}
+	*commitWarning = commitErr
+	return nil
 }
 
 func (handler *AdmissionHandler) validateTerminalPreflight(
@@ -200,6 +226,24 @@ func (handler *AdmissionHandler) TerminalStatus(
 		return nodes.TerminalMetadata{}, err
 	}
 	return decodeTerminalMetadata(response, request.Owner)
+}
+
+// TerminateTerminal attaches only long enough to close a pending P1 terminal.
+// It is the fail-closed cleanup path when the gateway cannot retain the
+// post-open authority needed to expose the attached operator stream.
+func (handler *AdmissionHandler) TerminateTerminal(
+	ctx context.Context,
+	nodeID nodes.ID,
+	request nodes.TerminalSessionRequest,
+) (nodes.TerminalMetadata, error) {
+	stream, _, err := handler.AttachTerminal(ctx, nodeID, request)
+	if err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	if err := stream.Close(ctx); err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	return handler.TerminalStatus(ctx, nodeID, request)
 }
 
 func (stream *TerminalStream) Receive(ctx context.Context) (nodes.TerminalEvent, error) {

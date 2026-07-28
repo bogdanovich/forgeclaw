@@ -13,9 +13,96 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 )
+
+func TestTerminalDispatchConsumesResponseAfterCommittedWarning(t *testing.T) {
+	connection := newTerminalRecordingConnection()
+	session := newPeer(connection)
+	session.markReady()
+	commitCause := errors.New("directory sync failed")
+	commitErr := &fileutil.CommittedWriteError{Err: commitCause}
+	var commitWarning error
+	done := make(chan struct {
+		response   protocol.Envelope
+		dispatched bool
+		err        error
+	}, 1)
+	go func() {
+		response, dispatched, requestErr := session.request(
+			t.Context(),
+			"node.terminal.open",
+			json.RawMessage(`{}`),
+			"idem_warning",
+			func(write func() error) error {
+				return commitTerminalDispatch(
+					func() error { return commitErr },
+					write,
+					&commitWarning,
+				)
+			},
+		)
+		done <- struct {
+			response   protocol.Envelope
+			dispatched bool
+			err        error
+		}{response: response, dispatched: dispatched, err: requestErr}
+	}()
+
+	open := <-connection.writes
+	if open.Method != "node.terminal.open" {
+		t.Fatalf("method = %q", open.Method)
+	}
+	ok := true
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: open.ID, OK: &ok, Result: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if !got.dispatched ||
+		got.response.ID != open.ID ||
+		got.err != nil ||
+		!errors.Is(commitWarning, commitCause) ||
+		!fileutil.IsCommittedWriteError(commitWarning) {
+		t.Fatalf(
+			"terminal dispatch = (response %#v, dispatched %v, error %v, warning %v)",
+			got.response,
+			got.dispatched,
+			got.err,
+			commitWarning,
+		)
+	}
+	session.pendingMu.Lock()
+	_, abandoned := session.abandoned[open.ID]
+	session.pendingMu.Unlock()
+	if abandoned {
+		t.Fatal("terminal response correlation was abandoned after committed warning")
+	}
+}
+
+func TestTerminalOpenResponseRetainsValidatedIdentityForInvalidState(t *testing.T) {
+	owner := testTerminalOwner()
+	result, err := json.Marshal(nodes.TerminalMetadata{
+		TerminalID: "terminal_invalid_state",
+		Owner:      owner,
+		State:      "live",
+		StartedAt:  time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := true
+	metadata, err := decodeTerminalOpenResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: "req_open", OK: &ok, Result: result,
+	}, owner)
+	if err == nil || metadata.TerminalID != "terminal_invalid_state" ||
+		metadata.Owner != owner {
+		t.Fatalf("decodeTerminalOpenResponse() = (%#v, %v)", metadata, err)
+	}
+}
 
 func TestTerminalEventSubscriptionAppliesByteAccurateBackpressure(t *testing.T) {
 	subscription := &terminalEventSubscription{
@@ -178,6 +265,88 @@ func TestTerminalStreamCloseUsesInternalCleanupAfterCallerCancellation(t *testin
 	case <-session.closed:
 		t.Fatal("confirmed detach unnecessarily closed authenticated peer")
 	default:
+	}
+}
+
+func TestTerminateTerminalAttachesClosesAndConfirmsStatus(t *testing.T) {
+	connection := newTerminalRecordingConnection()
+	session := newPeer(connection)
+	session.markReady()
+	hub := NewSessionHub()
+	release, err := hub.Claim(nodes.ID("node_test"), session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	handler := &AdmissionHandler{sessions: hub}
+	request := nodes.TerminalSessionRequest{
+		TerminalID: "terminal_cleanup",
+		Owner:      testTerminalOwner(),
+	}
+	done := make(chan struct {
+		metadata nodes.TerminalMetadata
+		err      error
+	}, 1)
+	go func() {
+		metadata, terminateErr := handler.TerminateTerminal(
+			t.Context(),
+			nodes.ID("node_test"),
+			request,
+		)
+		done <- struct {
+			metadata nodes.TerminalMetadata
+			err      error
+		}{metadata: metadata, err: terminateErr}
+	}()
+	attach := <-connection.writes
+	if attach.Method != "node.terminal.attach" {
+		t.Fatalf("first method = %q", attach.Method)
+	}
+	ok := true
+	live, err := json.Marshal(nodes.TerminalMetadata{
+		TerminalID: request.TerminalID, Owner: request.Owner,
+		State: "live", StartedAt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: attach.ID, OK: &ok, Result: live,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	detach := <-connection.writes
+	if detach.Method != "node.terminal.detach" {
+		t.Fatalf("second method = %q", detach.Method)
+	}
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: detach.ID, OK: &ok,
+		Result: []byte(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status := <-connection.writes
+	if status.Method != "node.terminal.status" {
+		t.Fatalf("third method = %q", status.Method)
+	}
+	closed, err := json.Marshal(nodes.TerminalMetadata{
+		TerminalID: request.TerminalID, Owner: request.Owner,
+		State: "closed", Reason: "close", StartedAt: 1, CompletedAt: 2,
+		TerminationConfirmed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: status.ID, OK: &ok, Result: closed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	if result.err != nil ||
+		result.metadata.State != "closed" ||
+		!result.metadata.TerminationConfirmed {
+		t.Fatalf("TerminateTerminal() = (%#v, %v)", result.metadata, result.err)
 	}
 }
 

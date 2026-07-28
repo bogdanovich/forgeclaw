@@ -20,8 +20,9 @@ var defaultDeactivationRetryDelays = []time.Duration{
 }
 
 var (
-	ErrSessionHubClosed  = errors.New("node session hub is closed")
-	ErrSessionSuperseded = errors.New("node session was superseded")
+	ErrSessionHubClosed       = errors.New("node session hub is closed")
+	ErrSessionSuperseded      = errors.New("node session was superseded")
+	ErrSessionDrainIncomplete = errors.New("node session drain did not complete")
 )
 
 type sessionEntry struct {
@@ -280,7 +281,7 @@ func (hub *SessionHub) Close(ctx context.Context) error {
 	}()
 	select {
 	case <-ctx.Done():
-		return errors.Join(ctx.Err(), hub.deactivationError())
+		return errors.Join(ErrSessionDrainIncomplete, ctx.Err(), hub.deactivationError())
 	case <-done:
 		return hub.deactivationError()
 	}

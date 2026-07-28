@@ -47,14 +47,16 @@ type nodeAdmissionHandler interface {
 }
 
 type nodeAdmissionRuntime struct {
-	registryMu   sync.RWMutex
-	routes       nodeAdmissionRoutes
-	registry     *nodes.FileRegistry
-	registryPath string
-	handler      nodeAdmissionHandler
-	sessions     *nodews.SessionHub
-	generation   uint64
-	mounted      bool
+	registryMu        sync.RWMutex
+	routes            nodeAdmissionRoutes
+	registry          *nodes.FileRegistry
+	registryPath      string
+	handler           nodeAdmissionHandler
+	sessions          *nodews.SessionHub
+	terminalStore     *nodes.GatewayTerminalStore
+	terminalStorePath string
+	generation        uint64
+	mounted           bool
 }
 
 type nodeDiscoverySource struct {
@@ -240,6 +242,44 @@ func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
 	return runtime.generation
 }
 
+func (runtime *nodeAdmissionRuntime) gatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+) (*nodes.GatewayTerminalStore, error) {
+	runtime.registryMu.Lock()
+	defer runtime.registryMu.Unlock()
+	if runtime.terminalStore != nil && runtime.terminalStorePath == path {
+		return runtime.terminalStore, nil
+	}
+	store, err := nodes.NewGatewayTerminalStore(path, maxRecords, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	runtime.terminalStore = store
+	runtime.terminalStorePath = path
+	return store, nil
+}
+
+func (runtime *nodeAdmissionRuntime) existingGatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+) (*nodes.GatewayTerminalStore, bool, error) {
+	runtime.registryMu.Lock()
+	defer runtime.registryMu.Unlock()
+	if runtime.terminalStore != nil && runtime.terminalStorePath == path {
+		return runtime.terminalStore, true, nil
+	}
+	store, found, err := nodes.OpenExistingGatewayTerminalStore(path, maxRecords, maxBytes)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	runtime.terminalStore = store
+	runtime.terminalStorePath = path
+	return store, true, nil
+}
+
 func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
 	expectedRegistryPath string,
 	expectedGeneration uint64,
@@ -253,6 +293,24 @@ func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
 		return nil, errNodeDiscoveryAuthorityUnavailable
 	}
 	return runtime.handler, nil
+}
+
+func (runtime *nodeAdmissionRuntime) terminalHandlerSnapshot(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+) (nodeTerminalHandler, error) {
+	handler, err := runtime.invocationHandlerSnapshot(
+		expectedRegistryPath,
+		expectedGeneration,
+	)
+	if err != nil {
+		return nil, err
+	}
+	terminalHandler, ok := handler.(nodeTerminalHandler)
+	if !ok {
+		return nil, errNodeDiscoveryAuthorityUnavailable
+	}
+	return terminalHandler, nil
 }
 
 func (runtime *nodeAdmissionRuntime) withInvocationHandler(
@@ -275,20 +333,34 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registryMu.Lock()
 	wasMounted := runtime.mounted
 	handler := runtime.handler
+	terminalStore := runtime.terminalStore
 	runtime.mounted = false
 	runtime.generation++
 	runtime.registryMu.Unlock()
 	if wasMounted {
 		runtime.routes.UnregisterHTTPHandler(nodews.Path)
 	}
+	var closeErr error
 	if handler != nil {
-		if err := handler.Close(ctx); err != nil {
-			return err
+		closeErr = handler.Close(ctx)
+		if errors.Is(closeErr, nodews.ErrSessionDrainIncomplete) {
+			return closeErr
 		}
+	}
+	var terminalErr error
+	if terminalStore != nil {
+		if err := terminalStore.ReconcileShutdown(); err != nil {
+			terminalErr = fmt.Errorf("reconcile gateway terminals after node drain: %w", err)
+		}
+	}
+	if closeErr != nil || terminalErr != nil {
+		return errors.Join(closeErr, terminalErr)
 	}
 	runtime.registryMu.Lock()
 	runtime.registry = nil
 	runtime.sessions = nil
+	runtime.terminalStore = nil
+	runtime.terminalStorePath = ""
 	runtime.registryPath = ""
 	runtime.handler = nil
 	runtime.registryMu.Unlock()

@@ -19,6 +19,8 @@ import (
 
 const (
 	gatewayTerminalStoreVersion      = 1
+	gatewayTerminalRestartReason     = "gateway_restarted"
+	gatewayTerminalShutdownReason    = "gateway_shutdown"
 	DefaultGatewayTerminalLimit      = 256
 	DefaultGatewayTerminalStoreBytes = 4 * 1024 * 1024
 	DefaultGatewayTerminalRetention  = 30 * 24 * time.Hour
@@ -37,6 +39,7 @@ const (
 	GatewayTerminalDispatched    GatewayTerminalState = "dispatched"
 	GatewayTerminalPendingAttach GatewayTerminalState = "pending_attach"
 	GatewayTerminalLive          GatewayTerminalState = "live"
+	GatewayTerminalClosing       GatewayTerminalState = "closing"
 	GatewayTerminalClosed        GatewayTerminalState = "closed"
 	GatewayTerminalUnknown       GatewayTerminalState = "unknown"
 )
@@ -73,10 +76,12 @@ type GatewayTerminalStore struct {
 	maxBytes   int
 	retention  time.Duration
 	now        func() time.Time
-	writeFile  func(string, []byte, os.FileMode) error
+	writeFile  func(*anchoredDirectory, string, []byte, os.FileMode) error
+	directory  *anchoredDirectory
 
 	mu      sync.Mutex
 	records map[string]GatewayTerminalRecord
+	loaded  bool
 }
 
 func GatewayTerminalStorePath(workspace string) string {
@@ -84,33 +89,54 @@ func GatewayTerminalStorePath(workspace string) string {
 }
 
 func NewGatewayTerminalStore(path string, maxRecords, maxBytes int) (*GatewayTerminalStore, error) {
+	store, _, err := openGatewayTerminalStore(path, maxRecords, maxBytes, false)
+	return store, err
+}
+
+// OpenExistingGatewayTerminalStore recovers an existing lifecycle document
+// without creating one. The leaf is opened atomically without following
+// symlinks and must be a regular file.
+func OpenExistingGatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+) (*GatewayTerminalStore, bool, error) {
+	return openGatewayTerminalStore(path, maxRecords, maxBytes, true)
+}
+
+func openGatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+	existingOnly bool,
+) (*GatewayTerminalStore, bool, error) {
 	path = filepath.Clean(path)
 	if path == "." || path == string(filepath.Separator) {
-		return nil, errors.New("gateway terminal store path is required")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create gateway terminal store directory: %w", err)
+		return nil, false, errors.New("gateway terminal store path is required")
 	}
 	store := newGatewayTerminalStore(path, maxRecords, maxBytes, time.Now)
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	release, err := store.lockAndReloadLocked()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer release()
+	if existingOnly && !store.loaded {
+		return nil, false, nil
+	}
 	previous := cloneGatewayTerminalRecords(store.records)
 	now := store.now()
 	store.pruneLocked(now)
 	if err := store.recoverActiveLocked(now); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !sameGatewayTerminalRecords(previous, store.records) {
 		if err := store.persistMutationLocked(previous); err != nil {
-			return nil, fmt.Errorf("recover gateway terminal store: %w", err)
+			return nil, false, fmt.Errorf("recover gateway terminal store: %w", err)
 		}
 	}
-	return store, nil
+	return store, true, nil
 }
 
 func newGatewayTerminalStore(
@@ -134,8 +160,15 @@ func newGatewayTerminalStore(
 		maxBytes:   maxBytes,
 		retention:  DefaultGatewayTerminalRetention,
 		now:        now,
-		writeFile:  fileutil.WriteFileAtomic,
-		records:    make(map[string]GatewayTerminalRecord),
+		writeFile: func(
+			directory *anchoredDirectory,
+			name string,
+			data []byte,
+			mode os.FileMode,
+		) error {
+			return directory.writeFileAtomic(name, data, mode)
+		},
+		records: make(map[string]GatewayTerminalRecord),
 	}
 }
 
@@ -238,6 +271,34 @@ func (store *GatewayTerminalStore) Lookup(
 	return record, true, nil
 }
 
+// ReconcileShutdown records that live gateway authority ended after the node
+// transport was drained. It always rewrites the document so a caller can
+// retry an earlier committed-but-not-confirmed atomic write.
+func (store *GatewayTerminalStore) ReconcileShutdown() error {
+	if store == nil {
+		return nil
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return err
+	}
+	defer release()
+	previous := cloneGatewayTerminalRecords(store.records)
+	if err := store.markActiveUnknownLocked(store.now(), gatewayTerminalShutdownReason); err != nil {
+		store.records = previous
+		return err
+	}
+	if err := store.saveLocked(); err != nil {
+		if !fileutil.IsCommittedWriteError(err) {
+			store.records = previous
+		}
+		return fmt.Errorf("persist gateway terminal shutdown: %w", err)
+	}
+	return nil
+}
+
 func (store *GatewayTerminalStore) MarkDispatched(
 	owner TerminalOwner,
 	openID string,
@@ -310,11 +371,21 @@ func (store *GatewayTerminalStore) RecordLifecycle(
 			if record.State != GatewayTerminalPendingAttach {
 				return false, ErrGatewayTerminalConflict
 			}
+		case GatewayTerminalClosing:
+			if record.State == GatewayTerminalClosing {
+				return false, metadataMatchesGatewayTerminal(*record, metadata)
+			}
+			if record.State != GatewayTerminalPendingAttach &&
+				record.State != GatewayTerminalLive {
+				return false, ErrGatewayTerminalConflict
+			}
 		case GatewayTerminalClosed, GatewayTerminalUnknown:
 			if record.State == GatewayTerminalClosed || record.State == GatewayTerminalUnknown {
 				return false, metadataMatchesGatewayTerminal(*record, metadata)
 			}
-			if record.State != GatewayTerminalPendingAttach && record.State != GatewayTerminalLive {
+			if record.State != GatewayTerminalPendingAttach &&
+				record.State != GatewayTerminalLive &&
+				record.State != GatewayTerminalClosing {
 				return false, ErrGatewayTerminalConflict
 			}
 		default:
@@ -390,9 +461,20 @@ func (store *GatewayTerminalStore) lockAndReloadLocked() (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(store.path), 0o700); err != nil {
 		return nil, fmt.Errorf("create gateway terminal store directory: %w", err)
 	}
-	release, err := acquireRegistryFileLock(store.path + ".lock")
+	directory, err := openAnchoredDirectory(filepath.Dir(store.path))
 	if err != nil {
+		return nil, fmt.Errorf("open gateway terminal store directory without following links: %w", err)
+	}
+	releaseLock, err := directory.acquireLock(filepath.Base(store.path) + ".lock")
+	if err != nil {
+		_ = directory.close()
 		return nil, err
+	}
+	store.directory = directory
+	release := func() {
+		store.directory = nil
+		releaseLock()
+		_ = directory.close()
 	}
 	if err := store.loadLocked(); err != nil {
 		release()
@@ -402,22 +484,22 @@ func (store *GatewayTerminalStore) lockAndReloadLocked() (func(), error) {
 }
 
 func (store *GatewayTerminalStore) loadLocked() error {
-	info, err := os.Stat(store.path)
+	if store.directory == nil {
+		return errors.New("gateway terminal store directory is not locked")
+	}
+	file, info, err := store.directory.openRegular(filepath.Base(store.path))
 	if errors.Is(err, os.ErrNotExist) {
 		store.records = make(map[string]GatewayTerminalRecord)
+		store.loaded = false
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("stat gateway terminal store: %w", err)
+		return fmt.Errorf("open gateway terminal store without following links: %w", err)
 	}
+	defer file.Close()
 	if info.Size() > int64(store.maxBytes) {
 		return ErrGatewayTerminalStoreFull
 	}
-	file, err := os.Open(store.path)
-	if err != nil {
-		return fmt.Errorf("open gateway terminal store: %w", err)
-	}
-	defer file.Close()
 	raw, err := io.ReadAll(io.LimitReader(file, int64(store.maxBytes)+1))
 	if err != nil {
 		return fmt.Errorf("read gateway terminal store: %w", err)
@@ -466,6 +548,7 @@ func (store *GatewayTerminalStore) loadLocked() error {
 		}
 	}
 	store.records = cloneGatewayTerminalRecords(document.Records)
+	store.loaded = true
 	return nil
 }
 
@@ -483,19 +566,39 @@ func (store *GatewayTerminalStore) saveLocked() error {
 	if store.path == "" {
 		return nil
 	}
-	return store.writeFile(store.path, append(data, '\n'), 0o600)
+	if store.directory == nil {
+		return errors.New("gateway terminal store directory is not locked")
+	}
+	err = store.writeFile(
+		store.directory,
+		filepath.Base(store.path),
+		append(data, '\n'),
+		0o600,
+	)
+	if err == nil || fileutil.IsCommittedWriteError(err) {
+		store.loaded = true
+	}
+	return err
 }
 
 func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) error {
+	return store.markActiveUnknownLocked(now, gatewayTerminalRestartReason)
+}
+
+func (store *GatewayTerminalStore) markActiveUnknownLocked(
+	now time.Time,
+	reason string,
+) error {
 	for openID, record := range store.records {
 		switch record.State {
-		case GatewayTerminalDispatched, GatewayTerminalPendingAttach, GatewayTerminalLive:
+		case GatewayTerminalDispatched, GatewayTerminalPendingAttach,
+			GatewayTerminalLive, GatewayTerminalClosing:
 			updatedAt, err := nextGatewayTerminalTimestamp(record.UpdatedAt, now.UnixNano())
 			if err != nil {
 				updatedAt = record.UpdatedAt
 			}
 			record.State = GatewayTerminalUnknown
-			record.Reason = "gateway_restarted"
+			record.Reason = reason
 			record.CompletedAt = now.Unix()
 			if record.CompletedAt < record.StartedAt {
 				record.CompletedAt = record.StartedAt
@@ -560,13 +663,18 @@ func (record GatewayTerminalRecord) validate() error {
 			!record.hasEmptyLifecycle() {
 			return fmt.Errorf("%w: invalid dispatched terminal", ErrInvalidTerminal)
 		}
-	case GatewayTerminalPendingAttach, GatewayTerminalLive:
+	case GatewayTerminalPendingAttach, GatewayTerminalLive, GatewayTerminalClosing:
 		if record.DispatchedAt <= 0 || record.TerminalID == "" || record.StartedAt <= 0 ||
 			record.CompletedAt != 0 {
 			return fmt.Errorf("%w: invalid active terminal", ErrInvalidTerminal)
 		}
-	case GatewayTerminalClosed, GatewayTerminalUnknown:
+	case GatewayTerminalClosed:
 		if record.DispatchedAt <= 0 || record.CompletedAt <= 0 {
+			return fmt.Errorf("%w: invalid terminal outcome", ErrInvalidTerminal)
+		}
+	case GatewayTerminalUnknown:
+		if record.DispatchedAt <= 0 ||
+			(record.TerminalID == "" && record.CompletedAt <= 0) {
 			return fmt.Errorf("%w: invalid terminal outcome", ErrInvalidTerminal)
 		}
 	default:
@@ -591,7 +699,8 @@ func (record GatewayTerminalRecord) validate() error {
 			return fmt.Errorf("%w: invalid retained terminal metadata", ErrInvalidTerminal)
 		}
 	} else if record.State == GatewayTerminalUnknown &&
-		(record.Reason != "gateway_restarted" ||
+		((record.Reason != gatewayTerminalRestartReason &&
+			record.Reason != gatewayTerminalShutdownReason) ||
 			record.StartedAt != 0 ||
 			record.ExitCode != 0 ||
 			record.Signal != "" ||
@@ -626,6 +735,14 @@ func validateGatewayTerminalMetadata(metadata TerminalMetadata, owner TerminalOw
 			metadata.TerminationConfirmed {
 			return ErrGatewayTerminalConflict
 		}
+	case GatewayTerminalClosing:
+		if !validInvocationIdentifier(metadata.Reason) ||
+			metadata.CompletedAt != 0 ||
+			metadata.ExitCode != 0 ||
+			metadata.Signal != "" ||
+			metadata.TerminationConfirmed {
+			return ErrGatewayTerminalConflict
+		}
 	case GatewayTerminalClosed:
 		if !validInvocationIdentifier(metadata.Reason) ||
 			metadata.CompletedAt < metadata.StartedAt ||
@@ -635,7 +752,7 @@ func validateGatewayTerminalMetadata(metadata TerminalMetadata, owner TerminalOw
 		}
 	case GatewayTerminalUnknown:
 		if !validInvocationIdentifier(metadata.Reason) ||
-			metadata.CompletedAt < metadata.StartedAt ||
+			(metadata.CompletedAt != 0 && metadata.CompletedAt < metadata.StartedAt) ||
 			metadata.ExitCode != 0 ||
 			metadata.Signal != "" ||
 			metadata.TerminationConfirmed {
