@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"time"
 
@@ -58,16 +57,12 @@ func newNodeTerminalSource(
 	storePath := nodes.GatewayTerminalStorePath(workspace)
 	enabled := cfg.Nodes.Enabled && cfg.Nodes.TerminalEnabled
 	if !enabled {
-		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		} else if err != nil {
-			return nil, fmt.Errorf("inspect gateway terminal store: %w", err)
-		}
-		if _, err := runtime.gatewayTerminalStore(
+		_, _, err := runtime.existingGatewayTerminalStore(
 			storePath,
 			nodes.DefaultGatewayTerminalLimit,
 			nodes.DefaultGatewayTerminalStoreBytes,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, fmt.Errorf("recover disabled gateway terminal store: %w", err)
 		}
 		return nil, nil

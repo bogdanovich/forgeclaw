@@ -261,6 +261,25 @@ func (runtime *nodeAdmissionRuntime) gatewayTerminalStore(
 	return store, nil
 }
 
+func (runtime *nodeAdmissionRuntime) existingGatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+) (*nodes.GatewayTerminalStore, bool, error) {
+	runtime.registryMu.Lock()
+	defer runtime.registryMu.Unlock()
+	if runtime.terminalStore != nil && runtime.terminalStorePath == path {
+		return runtime.terminalStore, true, nil
+	}
+	store, found, err := nodes.OpenExistingGatewayTerminalStore(path, maxRecords, maxBytes)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	runtime.terminalStore = store
+	runtime.terminalStorePath = path
+	return store, true, nil
+}
+
 func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
 	expectedRegistryPath string,
 	expectedGeneration uint64,

@@ -80,6 +80,7 @@ type GatewayTerminalStore struct {
 
 	mu      sync.Mutex
 	records map[string]GatewayTerminalRecord
+	loaded  bool
 }
 
 func GatewayTerminalStorePath(workspace string) string {
@@ -87,33 +88,57 @@ func GatewayTerminalStorePath(workspace string) string {
 }
 
 func NewGatewayTerminalStore(path string, maxRecords, maxBytes int) (*GatewayTerminalStore, error) {
+	store, _, err := openGatewayTerminalStore(path, maxRecords, maxBytes, false)
+	return store, err
+}
+
+// OpenExistingGatewayTerminalStore recovers an existing lifecycle document
+// without creating one. The leaf is opened atomically without following
+// symlinks and must be a regular file.
+func OpenExistingGatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+) (*GatewayTerminalStore, bool, error) {
+	return openGatewayTerminalStore(path, maxRecords, maxBytes, true)
+}
+
+func openGatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+	existingOnly bool,
+) (*GatewayTerminalStore, bool, error) {
 	path = filepath.Clean(path)
 	if path == "." || path == string(filepath.Separator) {
-		return nil, errors.New("gateway terminal store path is required")
+		return nil, false, errors.New("gateway terminal store path is required")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create gateway terminal store directory: %w", err)
+		return nil, false, fmt.Errorf("create gateway terminal store directory: %w", err)
 	}
 	store := newGatewayTerminalStore(path, maxRecords, maxBytes, time.Now)
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	release, err := store.lockAndReloadLocked()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer release()
+	if existingOnly && !store.loaded {
+		return nil, false, nil
+	}
 	previous := cloneGatewayTerminalRecords(store.records)
 	now := store.now()
 	store.pruneLocked(now)
 	if err := store.recoverActiveLocked(now); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !sameGatewayTerminalRecords(previous, store.records) {
 		if err := store.persistMutationLocked(previous); err != nil {
-			return nil, fmt.Errorf("recover gateway terminal store: %w", err)
+			return nil, false, fmt.Errorf("recover gateway terminal store: %w", err)
 		}
 	}
-	return store, nil
+	return store, true, nil
 }
 
 func newGatewayTerminalStore(
@@ -443,22 +468,19 @@ func (store *GatewayTerminalStore) lockAndReloadLocked() (func(), error) {
 }
 
 func (store *GatewayTerminalStore) loadLocked() error {
-	info, err := os.Stat(store.path)
+	file, info, err := openRegularFileNoFollow(store.path)
 	if errors.Is(err, os.ErrNotExist) {
 		store.records = make(map[string]GatewayTerminalRecord)
+		store.loaded = false
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("stat gateway terminal store: %w", err)
+		return fmt.Errorf("open gateway terminal store without following links: %w", err)
 	}
+	defer file.Close()
 	if info.Size() > int64(store.maxBytes) {
 		return ErrGatewayTerminalStoreFull
 	}
-	file, err := os.Open(store.path)
-	if err != nil {
-		return fmt.Errorf("open gateway terminal store: %w", err)
-	}
-	defer file.Close()
 	raw, err := io.ReadAll(io.LimitReader(file, int64(store.maxBytes)+1))
 	if err != nil {
 		return fmt.Errorf("read gateway terminal store: %w", err)
@@ -507,6 +529,7 @@ func (store *GatewayTerminalStore) loadLocked() error {
 		}
 	}
 	store.records = cloneGatewayTerminalRecords(document.Records)
+	store.loaded = true
 	return nil
 }
 
@@ -524,7 +547,11 @@ func (store *GatewayTerminalStore) saveLocked() error {
 	if store.path == "" {
 		return nil
 	}
-	return store.writeFile(store.path, append(data, '\n'), 0o600)
+	err = store.writeFile(store.path, append(data, '\n'), 0o600)
+	if err == nil || fileutil.IsCommittedWriteError(err) {
+		store.loaded = true
+	}
+	return err
 }
 
 func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) error {
