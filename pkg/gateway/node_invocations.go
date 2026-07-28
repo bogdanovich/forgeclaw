@@ -119,7 +119,8 @@ func (source *nodeInvocationSource) PrepareInvocation(
 						return nodes.ErrGatewayInvocationNotFound
 					}
 					var prepareErr error
-					record, created, prepareErr = source.store.Prepare(
+					record, created, prepareErr = source.store.PrepareOwned(
+						principal,
 						target,
 						toolCallID,
 						plan,
@@ -208,9 +209,11 @@ func (source *nodeInvocationSource) DispatchInvocation(
 			var lookupErr error
 			record, found, lookupErr = source.store.Lookup(
 				nodes.GatewayInvocationPrincipal{
-					AgentID:   owner.AgentID,
-					SessionID: owner.SessionID,
-					ActorID:   owner.ActorID,
+					AgentID:     owner.AgentID,
+					SessionID:   owner.SessionID,
+					ActorID:     owner.ActorID,
+					WorkspaceID: owner.WorkspaceID,
+					ExecutionID: owner.ExecutionID,
 				},
 				invocationID,
 			)
@@ -266,7 +269,64 @@ func gatewayInvocationMatchesOwner(
 		record.Plan.AgentID == owner.AgentID &&
 		record.Plan.SessionID == owner.SessionID &&
 		record.Plan.ActorID == owner.ActorID &&
-		record.ToolCallID == owner.ToolCallID
+		record.ToolCallID == owner.ToolCallID &&
+		record.WorkspaceID == owner.WorkspaceID &&
+		record.ExecutionID == owner.ExecutionID
+}
+
+func (source *nodeInvocationSource) CancelInvocation(
+	ctx context.Context,
+	principal nodes.GatewayInvocationPrincipal,
+	target string,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, bool, error) {
+	if source == nil || source.store == nil || source.runtime == nil {
+		return nodes.InvocationRecord{}, false, errNodeDiscoveryAuthorityUnavailable
+	}
+	var (
+		handler      nodeAdmissionHandler
+		record       nodes.GatewayInvocationRecord
+		transitioned bool
+	)
+	err := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(current nodeAdmissionHandler) error {
+			retained, found, lookupErr := source.store.Lookup(principal, invocationID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if !found || retained.Target != target || retained.Plan.NodeID != nodeID {
+				return nodes.ErrGatewayInvocationConflict
+			}
+			var requestErr error
+			record, transitioned, requestErr = source.store.RequestCancellation(
+				principal,
+				invocationID,
+			)
+			if requestErr == nil {
+				handler = current
+			}
+			return requestErr
+		},
+	)
+	if err != nil {
+		return nodes.InvocationRecord{}, transitioned, err
+	}
+	var remote nodes.InvocationRecord
+	if transitioned {
+		remote, err = handler.CancelInvocation(ctx, nodeID, invocationID)
+	} else {
+		remote, err = handler.Invocation(ctx, nodeID, invocationID)
+	}
+	if err != nil {
+		return nodes.InvocationRecord{}, transitioned, err
+	}
+	if err := verifyRemoteInvocation(record, &remote); err != nil {
+		return nodes.InvocationRecord{}, transitioned, err
+	}
+	return remote, transitioned, nil
 }
 
 func (source *nodeInvocationSource) QueryInvocation(

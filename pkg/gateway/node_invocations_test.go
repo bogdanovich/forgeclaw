@@ -24,6 +24,7 @@ type fakeNodeAdmissionHandler struct {
 	invokeCalls  atomic.Int32
 	writeCalls   atomic.Int32
 	queryCalls   atomic.Int32
+	cancelCalls  atomic.Int32
 }
 
 func (*fakeNodeAdmissionHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
@@ -64,6 +65,15 @@ func (handler *fakeNodeAdmissionHandler) Invocation(
 	string,
 ) (nodes.InvocationRecord, error) {
 	handler.queryCalls.Add(1)
+	return handler.invocation, nil
+}
+
+func (handler *fakeNodeAdmissionHandler) CancelInvocation(
+	context.Context,
+	nodes.ID,
+	string,
+) (nodes.InvocationRecord, error) {
+	handler.cancelCalls.Add(1)
 	return handler.invocation, nil
 }
 
@@ -135,6 +145,78 @@ func TestNodeInvocationSourceGrantsOneDispatchWinner(t *testing.T) {
 	)
 	if err != nil || !found || record.State != nodes.GatewayInvocationDispatched {
 		t.Fatalf("durable dispatch record = %#v, found %v, error %v", record, found, err)
+	}
+}
+
+func TestNodeInvocationSourceSendsOneDurableCancellation(t *testing.T) {
+	handler := &fakeNodeAdmissionHandler{}
+	source := newTestNodeInvocationSource(t, handler)
+	descriptor, plan, owner := testGatewayInvocation(t)
+	principal := nodes.GatewayInvocationPrincipal{
+		AgentID:     owner.AgentID,
+		SessionID:   owner.SessionID,
+		ActorID:     owner.ActorID,
+		WorkspaceID: "workspace_1",
+		ExecutionID: "execution_1",
+	}
+	owner.WorkspaceID = principal.WorkspaceID
+	owner.ExecutionID = principal.ExecutionID
+	if _, _, err := source.PrepareInvocation(
+		"builder-node",
+		"build",
+		owner.ToolCallID,
+		principal,
+		plan,
+		descriptor,
+		true,
+		func(tools.NodeDiscoveryRecord) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := source.store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixNano()
+	handler.invocation = nodes.InvocationRecord{
+		InvocationID: plan.InvocationID, IdempotencyKey: plan.IdempotencyKey,
+		PlanHash: plan.PlanHash, NodeID: plan.NodeID, CatalogHash: plan.CatalogHash,
+		Command: plan.Command, Risk: plan.Risk, State: nodes.InvocationRunning,
+		AcceptedAt: now, UpdatedAt: now, ExpiresAt: plan.ExpiresAt,
+		Cancellation: &nodes.InvocationCancellation{RequestedAt: now},
+	}
+	for index := range 2 {
+		remote, transitioned, err := source.CancelInvocation(
+			t.Context(),
+			principal,
+			"build",
+			plan.NodeID,
+			plan.InvocationID,
+		)
+		if err != nil || remote.Cancellation == nil || transitioned != (index == 0) {
+			t.Fatalf("cancellation %d = (%#v, %v, %v)", index, remote, transitioned, err)
+		}
+	}
+	if handler.cancelCalls.Load() != 1 || handler.queryCalls.Load() != 1 {
+		t.Fatalf(
+			"remote calls = cancel %d, query %d",
+			handler.cancelCalls.Load(),
+			handler.queryCalls.Load(),
+		)
+	}
+	wrongExecution := principal
+	wrongExecution.ExecutionID = "execution_2"
+	if _, _, err := source.CancelInvocation(
+		t.Context(),
+		wrongExecution,
+		"build",
+		plan.NodeID,
+		plan.InvocationID,
+	); !errors.Is(err, nodes.ErrGatewayInvocationConflict) {
+		t.Fatalf("wrong execution cancellation error = %v", err)
 	}
 }
 

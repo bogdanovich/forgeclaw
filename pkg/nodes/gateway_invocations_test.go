@@ -243,6 +243,89 @@ func TestGatewayInvocationStoreMarksDispatchAgainstRetainedHash(t *testing.T) {
 	}
 }
 
+func TestGatewayInvocationStorePersistsOneExactScopeCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "node_invocations.json")
+	store, err := NewGatewayInvocationStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := gatewayTestPlan(t, "inv_cancel", "idem_cancel", time.Now())
+	principal := gatewayTestPrincipal(plan)
+	principal.WorkspaceID = "workspace_1"
+	principal.ExecutionID = "execution_1"
+	record, _, err := store.PrepareOwned(
+		principal,
+		"vpn",
+		"call-1",
+		plan,
+		gatewayTestDescriptor(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := gatewayTestOwner("vpn", "call-1", plan)
+	owner.WorkspaceID = principal.WorkspaceID
+	owner.ExecutionID = principal.ExecutionID
+	if _, _, err := store.MarkDispatched(owner, plan.InvocationID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+
+	wrongExecution := principal
+	wrongExecution.ExecutionID = "execution_2"
+	if _, transitioned, err := store.RequestCancellation(
+		wrongExecution,
+		plan.InvocationID,
+	); !errors.Is(err, ErrGatewayInvocationConflict) || transitioned {
+		t.Fatalf("wrong execution cancellation = transitioned %v, error %v", transitioned, err)
+	}
+	requested, transitioned, err := store.RequestCancellation(principal, plan.InvocationID)
+	if err != nil || !transitioned || requested.Cancellation == nil {
+		t.Fatalf("first cancellation = (%#v, %v, %v)", requested, transitioned, err)
+	}
+	repeated, transitioned, err := store.RequestCancellation(principal, plan.InvocationID)
+	if err != nil || transitioned ||
+		repeated.Cancellation.RequestedAt != requested.Cancellation.RequestedAt {
+		t.Fatalf("repeated cancellation = (%#v, %v, %v)", repeated, transitioned, err)
+	}
+	reloaded, err := NewGatewayInvocationStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, found, err := reloaded.Lookup(principal, plan.InvocationID)
+	if err != nil || !found || retained.Cancellation == nil ||
+		retained.Cancellation.RequestedAt != requested.Cancellation.RequestedAt ||
+		retained.WorkspaceID != record.WorkspaceID {
+		t.Fatalf("reloaded cancellation = (%#v, %v, %v)", retained, found, err)
+	}
+}
+
+func TestGatewayInvocationStoreCancellationFailsClosedForLegacyOwnership(t *testing.T) {
+	store := newGatewayInvocationStore("", 8, 1024*1024, time.Now)
+	plan := gatewayTestPlan(t, "inv_legacy", "idem_legacy", time.Now())
+	if _, _, err := store.Prepare("vpn", "call-1", plan, gatewayTestDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MarkDispatched(
+		gatewayTestOwner("vpn", "call-1", plan),
+		plan.InvocationID,
+		plan.PlanHash,
+	); err != nil {
+		t.Fatal(err)
+	}
+	principal := gatewayTestPrincipal(plan)
+	principal.WorkspaceID = "workspace_1"
+	principal.ExecutionID = "execution_1"
+	if _, found, err := store.Lookup(principal, plan.InvocationID); err != nil || !found {
+		t.Fatalf("legacy status lookup = (%v, %v)", found, err)
+	}
+	if _, _, err := store.RequestCancellation(
+		principal,
+		plan.InvocationID,
+	); !errors.Is(err, ErrGatewayInvocationConflict) {
+		t.Fatalf("legacy cancellation error = %v", err)
+	}
+}
+
 func TestGatewayInvocationStoreAllowsOneDispatchWinnerAcrossInstances(t *testing.T) {
 	now := time.Now()
 	path := filepath.Join(t.TempDir(), "node_invocations.json")

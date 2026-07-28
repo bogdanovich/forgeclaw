@@ -226,7 +226,7 @@ func TestNodeToolsTrackNodeEnablementAcrossReload(t *testing.T) {
 		t.Fatalf("setupNodeTools() error = %v", err)
 	}
 	toolsList := al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
-	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status"} {
+	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status", "nodes_cancel"} {
 		if !slices.Contains(toolsList, name) {
 			t.Fatalf("registered tools = %#v, want %s", toolsList, name)
 		}
@@ -243,7 +243,7 @@ func TestNodeToolsTrackNodeEnablementAcrossReload(t *testing.T) {
 		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
 	}
 	toolsList = al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
-	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status"} {
+	for _, name := range []string{"nodes", "nodes_invoke", "nodes_status", "nodes_cancel"} {
 		if slices.Contains(toolsList, name) {
 			t.Fatalf("registered tools = %#v, %s should be disabled", toolsList, name)
 		}
