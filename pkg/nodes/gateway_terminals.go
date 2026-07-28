@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
 const (
@@ -100,7 +102,9 @@ func NewGatewayTerminalStore(path string, maxRecords, maxBytes int) (*GatewayTer
 	previous := cloneGatewayTerminalRecords(store.records)
 	now := store.now()
 	store.pruneLocked(now)
-	store.recoverActiveLocked(now)
+	if err := store.recoverActiveLocked(now); err != nil {
+		return nil, err
+	}
 	if !sameGatewayTerminalRecords(previous, store.records) {
 		if err := store.persistMutationLocked(previous); err != nil {
 			return nil, fmt.Errorf("recover gateway terminal store: %w", err)
@@ -168,6 +172,10 @@ func (store *GatewayTerminalStore) Prepare(
 		return GatewayTerminalRecord{}, false, fmt.Errorf("%w: terminal plan is stale", ErrInvalidTerminal)
 	}
 	for _, existing := range store.records {
+		if existing.TerminalID == plan.OpenID {
+			store.records = previous
+			return GatewayTerminalRecord{}, false, ErrGatewayTerminalConflict
+		}
 		if existing.Plan.IdempotencyKey == plan.IdempotencyKey {
 			if sameGatewayTerminalBinding(existing, record) {
 				if !sameGatewayTerminalRecords(previous, store.records) {
@@ -268,6 +276,13 @@ func (store *GatewayTerminalStore) RecordOpened(
 		}
 		if record.State != GatewayTerminalDispatched || record.TerminalID != "" {
 			return false, ErrGatewayTerminalConflict
+		}
+		for otherOpenID, existing := range store.records {
+			if otherOpenID == metadata.TerminalID ||
+				(otherOpenID != record.Plan.OpenID &&
+					existing.TerminalID == metadata.TerminalID) {
+				return false, ErrGatewayTerminalConflict
+			}
 		}
 		record.TerminalID = metadata.TerminalID
 		record.State = GatewayTerminalPendingAttach
@@ -403,8 +418,18 @@ func (store *GatewayTerminalStore) loadLocked() error {
 		return fmt.Errorf("open gateway terminal store: %w", err)
 	}
 	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, int64(store.maxBytes)+1))
+	if err != nil {
+		return fmt.Errorf("read gateway terminal store: %w", err)
+	}
+	if len(raw) > store.maxBytes {
+		return ErrGatewayTerminalStoreFull
+	}
+	if _, err := jsonstrict.Decode(raw); err != nil {
+		return fmt.Errorf("strictly decode gateway terminal store: %w", err)
+	}
 	var document gatewayTerminalDocument
-	decoder := json.NewDecoder(io.LimitReader(file, int64(store.maxBytes)+1))
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil {
 		return fmt.Errorf("decode gateway terminal store: %w", err)
@@ -417,8 +442,11 @@ func (store *GatewayTerminalStore) loadLocked() error {
 		len(document.Records) > store.maxRecords {
 		return errors.New("gateway terminal store has invalid metadata")
 	}
-	terminalIDs := make(map[string]string, len(document.Records))
+	identities := make(map[string]string, len(document.Records)*2)
 	idempotency := make(map[string]string, len(document.Records))
+	for openID := range document.Records {
+		identities[openID] = openID
+	}
 	for openID, record := range document.Records {
 		if openID != record.Plan.OpenID {
 			return errors.New("gateway terminal store has mismatched record identity")
@@ -431,10 +459,10 @@ func (store *GatewayTerminalStore) loadLocked() error {
 		}
 		idempotency[record.Plan.IdempotencyKey] = openID
 		if record.TerminalID != "" {
-			if existing := terminalIDs[record.TerminalID]; existing != "" {
+			if existing := identities[record.TerminalID]; existing != "" {
 				return fmt.Errorf("gateway terminals %q and %q share terminal identity", existing, openID)
 			}
-			terminalIDs[record.TerminalID] = openID
+			identities[record.TerminalID] = openID
 		}
 	}
 	store.records = cloneGatewayTerminalRecords(document.Records)
@@ -458,7 +486,7 @@ func (store *GatewayTerminalStore) saveLocked() error {
 	return store.writeFile(store.path, append(data, '\n'), 0o600)
 }
 
-func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) {
+func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) error {
 	for openID, record := range store.records {
 		switch record.State {
 		case GatewayTerminalDispatched, GatewayTerminalPendingAttach, GatewayTerminalLive:
@@ -469,11 +497,18 @@ func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) {
 			record.State = GatewayTerminalUnknown
 			record.Reason = "gateway_restarted"
 			record.CompletedAt = now.Unix()
+			if record.CompletedAt < record.StartedAt {
+				record.CompletedAt = record.StartedAt
+			}
 			record.TerminationConfirmed = false
 			record.UpdatedAt = updatedAt
+			if err := record.validate(); err != nil {
+				return fmt.Errorf("validate recovered gateway terminal %q: %w", openID, err)
+			}
 			store.records[openID] = record
 		}
 	}
+	return nil
 }
 
 func (store *GatewayTerminalStore) pruneLocked(now time.Time) {

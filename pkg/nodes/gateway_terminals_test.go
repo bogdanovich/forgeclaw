@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
 
 func TestGatewayTerminalStorePersistsImmutableOwnerBoundPlan(t *testing.T) {
@@ -69,6 +71,60 @@ func TestGatewayTerminalStoreRejectsRebindingAndBearerOnlyLookup(t *testing.T) {
 	}
 	if _, found, err := store.Lookup(TerminalOwner{}, plan.OpenID); err == nil || found {
 		t.Fatalf("bearer-only lookup = (%v, %v)", found, err)
+	}
+}
+
+func TestGatewayTerminalStoreRejectsCrossNamespaceIdentityCollisions(t *testing.T) {
+	now := time.Now()
+	store := newGatewayTerminalStore("", 8, 1024*1024, func() time.Time { return now })
+	first := gatewayTerminalTestPlan(t, "open_first", "idem_first", now)
+	second := gatewayTerminalTestPlan(t, "open_second", "idem_second", now)
+	for _, plan := range []TerminalOpenPlan{first, second} {
+		if _, _, err := store.Prepare(plan); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.MarkDispatched(
+			plan.Owner,
+			plan.OpenID,
+			plan.PlanHash,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := store.RecordOpened(first.Owner, first.OpenID, TerminalMetadata{
+		TerminalID: second.OpenID,
+		Owner:      first.Owner,
+		State:      string(GatewayTerminalPendingAttach),
+		StartedAt:  now.Unix(),
+	}); !errors.Is(err, ErrGatewayTerminalConflict) {
+		t.Fatalf("terminal/open collision error = %v", err)
+	}
+	firstMetadata := TerminalMetadata{
+		TerminalID: "terminal_shared",
+		Owner:      first.Owner,
+		State:      string(GatewayTerminalPendingAttach),
+		StartedAt:  now.Unix(),
+	}
+	if _, _, err := store.RecordOpened(first.Owner, first.OpenID, firstMetadata); err != nil {
+		t.Fatal(err)
+	}
+	secondMetadata := firstMetadata
+	secondMetadata.Owner = second.Owner
+	if _, _, err := store.RecordOpened(
+		second.Owner,
+		second.OpenID,
+		secondMetadata,
+	); !errors.Is(err, ErrGatewayTerminalConflict) {
+		t.Fatalf("duplicate terminal identity error = %v", err)
+	}
+	collidingPlan := gatewayTerminalTestPlan(
+		t,
+		firstMetadata.TerminalID,
+		"idem_collision",
+		now,
+	)
+	if _, _, err := store.Prepare(collidingPlan); !errors.Is(err, ErrGatewayTerminalConflict) {
+		t.Fatalf("open/terminal collision error = %v", err)
 	}
 }
 
@@ -162,6 +218,38 @@ func TestGatewayTerminalStoreRestartFailsActiveSessionsClosed(t *testing.T) {
 	}
 }
 
+func TestGatewayTerminalStoreRestartClampsSkewedCompletionTime(t *testing.T) {
+	now := time.Now()
+	path := filepath.Join(t.TempDir(), "node_terminals.json")
+	store := newGatewayTerminalStore(path, 8, 1024*1024, func() time.Time { return now })
+	plan := gatewayTerminalTestPlan(t, "open_skew", "idem_skew", now)
+	if _, _, err := store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MarkDispatched(plan.Owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := now.Add(time.Hour).Unix()
+	if _, _, err := store.RecordOpened(plan.Owner, plan.OpenID, TerminalMetadata{
+		TerminalID: "terminal_skew",
+		Owner:      plan.Owner,
+		State:      string(GatewayTerminalPendingAttach),
+		StartedAt:  startedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewGatewayTerminalStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := reloaded.Lookup(plan.Owner, "terminal_skew")
+	if err != nil || !found ||
+		record.State != GatewayTerminalUnknown ||
+		record.CompletedAt != startedAt {
+		t.Fatalf("skew-recovered terminal = (%#v, %v, %v)", record, found, err)
+	}
+}
+
 func TestGatewayTerminalStoreEnforcesBoundsAndRejectsCorruption(t *testing.T) {
 	now := time.Now()
 	store := newGatewayTerminalStore("", 1, 1024*1024, func() time.Time { return now })
@@ -217,6 +305,29 @@ func TestGatewayTerminalStoreEnforcesBoundsAndRejectsCorruption(t *testing.T) {
 	}
 	if _, err := NewGatewayTerminalStore(path, 8, 1024*1024); err == nil {
 		t.Fatal("prepared terminal with lifecycle metadata was accepted")
+	}
+	validRecord.Reason = ""
+	data, err = json.Marshal(gatewayTerminalDocument{
+		Version: gatewayTerminalStoreVersion,
+		Records: map[string]GatewayTerminalRecord{first.OpenID: validRecord},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicatedOwner := strings.Replace(
+		string(data),
+		`"actor_id":"actor_test"`,
+		`"actor_id":"shadowed","actor_id":"actor_test"`,
+		1,
+	)
+	if err := os.WriteFile(path, []byte(duplicatedOwner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewGatewayTerminalStore(path, 8, 1024*1024); !errors.Is(
+		err,
+		jsonstrict.ErrDuplicateMember,
+	) {
+		t.Fatalf("duplicate nested owner error = %v", err)
 	}
 }
 
