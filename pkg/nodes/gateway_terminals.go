@@ -76,7 +76,8 @@ type GatewayTerminalStore struct {
 	maxBytes   int
 	retention  time.Duration
 	now        func() time.Time
-	writeFile  func(string, []byte, os.FileMode) error
+	writeFile  func(*anchoredDirectory, string, []byte, os.FileMode) error
+	directory  *anchoredDirectory
 
 	mu      sync.Mutex
 	records map[string]GatewayTerminalRecord
@@ -112,9 +113,6 @@ func openGatewayTerminalStore(
 	path = filepath.Clean(path)
 	if path == "." || path == string(filepath.Separator) {
 		return nil, false, errors.New("gateway terminal store path is required")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, false, fmt.Errorf("create gateway terminal store directory: %w", err)
 	}
 	store := newGatewayTerminalStore(path, maxRecords, maxBytes, time.Now)
 	store.mu.Lock()
@@ -162,8 +160,15 @@ func newGatewayTerminalStore(
 		maxBytes:   maxBytes,
 		retention:  DefaultGatewayTerminalRetention,
 		now:        now,
-		writeFile:  fileutil.WriteFileAtomic,
-		records:    make(map[string]GatewayTerminalRecord),
+		writeFile: func(
+			directory *anchoredDirectory,
+			name string,
+			data []byte,
+			mode os.FileMode,
+		) error {
+			return directory.writeFileAtomic(name, data, mode)
+		},
+		records: make(map[string]GatewayTerminalRecord),
 	}
 }
 
@@ -456,9 +461,20 @@ func (store *GatewayTerminalStore) lockAndReloadLocked() (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(store.path), 0o700); err != nil {
 		return nil, fmt.Errorf("create gateway terminal store directory: %w", err)
 	}
-	release, err := acquireRegistryFileLock(store.path + ".lock")
+	directory, err := openAnchoredDirectory(filepath.Dir(store.path))
 	if err != nil {
+		return nil, fmt.Errorf("open gateway terminal store directory without following links: %w", err)
+	}
+	releaseLock, err := directory.acquireLock(filepath.Base(store.path) + ".lock")
+	if err != nil {
+		_ = directory.close()
 		return nil, err
+	}
+	store.directory = directory
+	release := func() {
+		store.directory = nil
+		releaseLock()
+		_ = directory.close()
 	}
 	if err := store.loadLocked(); err != nil {
 		release()
@@ -468,7 +484,10 @@ func (store *GatewayTerminalStore) lockAndReloadLocked() (func(), error) {
 }
 
 func (store *GatewayTerminalStore) loadLocked() error {
-	file, info, err := openRegularFileNoFollow(store.path)
+	if store.directory == nil {
+		return errors.New("gateway terminal store directory is not locked")
+	}
+	file, info, err := store.directory.openRegular(filepath.Base(store.path))
 	if errors.Is(err, os.ErrNotExist) {
 		store.records = make(map[string]GatewayTerminalRecord)
 		store.loaded = false
@@ -547,7 +566,15 @@ func (store *GatewayTerminalStore) saveLocked() error {
 	if store.path == "" {
 		return nil
 	}
-	err = store.writeFile(store.path, append(data, '\n'), 0o600)
+	if store.directory == nil {
+		return errors.New("gateway terminal store directory is not locked")
+	}
+	err = store.writeFile(
+		store.directory,
+		filepath.Base(store.path),
+		append(data, '\n'),
+		0o600,
+	)
 	if err == nil || fileutil.IsCommittedWriteError(err) {
 		store.loaded = true
 	}

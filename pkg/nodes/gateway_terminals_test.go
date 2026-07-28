@@ -55,6 +55,44 @@ func TestGatewayTerminalStorePersistsImmutableOwnerBoundPlan(t *testing.T) {
 	}
 }
 
+func TestOpenExistingGatewayTerminalStoreRejectsHardLinkedLeaf(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "target", "node_terminals.json")
+	target, err := NewGatewayTerminalStore(targetPath, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := gatewayTerminalTestPlan(t, "open_hard_link", "idem_hard_link", time.Now())
+	if _, _, err := target.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := target.MarkDispatched(plan.Owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedPath := filepath.Join(t.TempDir(), "state", "node_terminals.json")
+	if err := os.MkdirAll(filepath.Dir(linkedPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(targetPath, linkedPath); err != nil {
+		t.Skipf("create terminal store hard link: %v", err)
+	}
+	if store, found, err := OpenExistingGatewayTerminalStore(linkedPath, 8, 1024*1024); err == nil ||
+		found ||
+		store != nil {
+		t.Fatalf("hard-linked terminal store = (%#v, %v, %v)", store, found, err)
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("target terminal store changed through hard link")
+	}
+}
+
 func TestGatewayTerminalStoreRejectsRebindingAndBearerOnlyLookup(t *testing.T) {
 	store := newGatewayTerminalStore("", 8, 1024*1024, time.Now)
 	plan := gatewayTerminalTestPlan(t, "open_owner", "idem_owner", time.Now())
@@ -314,12 +352,17 @@ func TestGatewayTerminalStoreRetriesFailedShutdownPersistence(t *testing.T) {
 	}
 	writeFile := store.writeFile
 	attempts := 0
-	store.writeFile = func(path string, data []byte, mode os.FileMode) error {
+	store.writeFile = func(
+		directory *anchoredDirectory,
+		name string,
+		data []byte,
+		mode os.FileMode,
+	) error {
 		attempts++
 		if attempts == 1 {
 			return &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
 		}
-		return writeFile(path, data, mode)
+		return writeFile(directory, name, data, mode)
 	}
 	if err := store.ReconcileShutdown(); !fileutil.IsCommittedWriteError(err) {
 		t.Fatalf("first ReconcileShutdown() error = %v", err)

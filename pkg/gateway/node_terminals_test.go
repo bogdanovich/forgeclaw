@@ -575,6 +575,61 @@ func TestDisabledNodeTerminalSourceRejectsCrossWorkspaceStoreSymlink(t *testing.
 	}
 }
 
+func TestDisabledNodeTerminalSourceRejectsCrossWorkspaceStateDirectorySymlink(t *testing.T) {
+	targetWorkspace := t.TempDir()
+	targetPath := nodes.GatewayTerminalStorePath(targetWorkspace)
+	targetStore, err := nodes.NewGatewayTerminalStore(targetPath, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := nodes.TerminalOwner{
+		ActorID: "actor_parent_link", AgentID: "agent_parent_link", RouteID: "route_parent_link",
+		SessionID: "session_parent_link", WorkspaceID: "workspace_parent_link",
+		Target: "vpn", Profile: "owner",
+	}
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_parent_link",
+		IdempotencyKey:  "idem_parent_link",
+		NodeID:          nodes.ID("node_parent_link"),
+		Owner:           owner,
+		CatalogHash:     testDigest("a"),
+		AuthorityDigest: testDigest("b"),
+		WorkingScope:    "workspace",
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := targetStore.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := targetStore.MarkDispatched(owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+
+	recoveringWorkspace := t.TempDir()
+	recoveringStatePath := filepath.Dir(nodes.GatewayTerminalStorePath(recoveringWorkspace))
+	targetStatePath := filepath.Dir(targetPath)
+	if err := os.Symlink(targetStatePath, recoveringStatePath); err != nil {
+		t.Skipf("create terminal state directory symlink: %v", err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = recoveringWorkspace
+	runtime := &nodeAdmissionRuntime{}
+	if source, err := newNodeTerminalSource(cfg, runtime); err == nil || source != nil {
+		t.Fatalf("linked-parent disabled terminal source = (%#v, %v)", source, err)
+	}
+	if runtime.terminalStore != nil {
+		t.Fatal("store under linked parent entered runtime authority")
+	}
+	record, found, err := targetStore.Lookup(owner, plan.OpenID)
+	if err != nil || !found || record.State != nodes.GatewayTerminalDispatched {
+		t.Fatalf("target workspace terminal changed = (%#v, %v, %v)", record, found, err)
+	}
+}
+
 func TestNodeTerminalSourceReusesActiveStoreAcrossSameWorkspaceReload(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := config.DefaultConfig()
