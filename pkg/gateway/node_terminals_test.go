@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
 )
@@ -27,6 +28,7 @@ type fakeGatewayTerminalHandler struct {
 	statusCalls       atomic.Int32
 	terminateCalls    atomic.Int32
 	afterCommit       func()
+	openResultErr     error
 }
 
 func (handler *fakeGatewayTerminalHandler) WithPreparationAuthority(
@@ -55,7 +57,7 @@ func (handler *fakeGatewayTerminalHandler) OpenTerminal(
 		handler.afterCommit()
 	}
 	handler.openWrites.Add(1)
-	return handler.openMetadata, true, nil
+	return handler.openMetadata, true, handler.openResultErr
 }
 
 func (*fakeGatewayTerminalHandler) AttachTerminal(
@@ -107,6 +109,9 @@ func TestNodeTerminalSourcePreparesCurrentProfileAuthority(t *testing.T) {
 		record.State != nodes.GatewayTerminalPrepared {
 		t.Fatalf("prepared terminal = %#v", record)
 	}
+	source.now = func() time.Time {
+		return time.Unix(record.Plan.PreparedAt, 0).Add(2 * time.Second)
+	}
 	repeated, created, err := source.PrepareTerminal(
 		nodeID,
 		"vpn-node",
@@ -117,8 +122,71 @@ func TestNodeTerminalSourcePreparesCurrentProfileAuthority(t *testing.T) {
 		80,
 		24,
 	)
-	if err != nil || created || repeated.CreatedAt != record.CreatedAt {
+	if err != nil || created ||
+		repeated.CreatedAt != record.CreatedAt ||
+		repeated.Plan.PlanHash != record.Plan.PlanHash ||
+		repeated.Plan.PreparedAt != record.Plan.PreparedAt {
 		t.Fatalf("repeated preparation = (%#v, %v, %v)", repeated, created, err)
+	}
+	if _, _, err := source.PrepareTerminal(
+		nodeID,
+		"vpn-node",
+		"open_test",
+		"idem_test",
+		owner,
+		"workspace",
+		81,
+		24,
+	); !errors.Is(err, nodes.ErrGatewayTerminalConflict) {
+		t.Fatalf("changed repeated preparation error = %v", err)
+	}
+}
+
+func TestNodeTerminalSourceTerminatesCommittedOpenWarning(t *testing.T) {
+	source, handler, owner, nodeID := newTestNodeTerminalSource(t)
+	record, _, err := source.PrepareTerminal(
+		nodeID,
+		"vpn-node",
+		"open_warning",
+		"idem_warning",
+		owner,
+		"workspace",
+		80,
+		24,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.openMetadata = nodes.TerminalMetadata{
+		TerminalID: "terminal_warning",
+		Owner:      owner,
+		State:      string(nodes.GatewayTerminalPendingAttach),
+		StartedAt:  source.now().Unix(),
+	}
+	handler.openResultErr = &fileutil.CommittedWriteError{Err: errors.New("directory sync failed")}
+	handler.terminateMetadata = nodes.TerminalMetadata{
+		TerminalID:           handler.openMetadata.TerminalID,
+		Owner:                owner,
+		State:                string(nodes.GatewayTerminalClosed),
+		Reason:               "close",
+		StartedAt:            handler.openMetadata.StartedAt,
+		CompletedAt:          handler.openMetadata.StartedAt + 1,
+		TerminationConfirmed: true,
+	}
+	if _, dispatched, openErr := source.OpenTerminal(
+		t.Context(),
+		owner,
+		record.Plan.OpenID,
+		record.ExpectedPlanHash,
+	); !dispatched || !fileutil.IsCommittedWriteError(openErr) {
+		t.Fatalf("committed warning open = (dispatched %v, error %v)", dispatched, openErr)
+	}
+	if handler.terminateCalls.Load() != 1 {
+		t.Fatalf("terminate calls = %d, want 1", handler.terminateCalls.Load())
+	}
+	retained, found, lookupErr := source.store.Lookup(owner, handler.openMetadata.TerminalID)
+	if lookupErr != nil || !found || retained.State != nodes.GatewayTerminalClosed {
+		t.Fatalf("retained cleanup = (%#v, %v, %v)", retained, found, lookupErr)
 	}
 }
 
@@ -144,7 +212,7 @@ func TestNodeTerminalSourceDeniesUnapprovedProfileBeforePersistence(t *testing.T
 
 func TestNodeTerminalSourceDeniesRelaxedApprovalBeforePersistence(t *testing.T) {
 	source, handler, owner, nodeID := newTestNodeTerminalSource(t)
-	handler.approval.Descriptor.ModelContract.ApprovalMode = "each_command"
+	handler.approval.Descriptor.ModelContract.ApprovalMode = "session_start"
 	if _, created, err := source.PrepareTerminal(
 		nodeID,
 		"vpn-node",
@@ -345,7 +413,7 @@ func newTestNodeTerminalSource(
 	contract := &nodes.CommandModelContract{
 		Availability:    nodes.ModelAvailable,
 		AuthorityDigest: testDigest("b"),
-		ApprovalMode:    "session_start",
+		ApprovalMode:    "each_command",
 		Constraints: nodes.CommandModelConstraints{
 			ProfileAliases: []string{"owner"},
 			WorkingScopes:  []string{"workspace"},

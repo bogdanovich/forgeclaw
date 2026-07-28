@@ -13,9 +13,75 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 )
+
+func TestTerminalDispatchConsumesResponseAfterCommittedWarning(t *testing.T) {
+	connection := newTerminalRecordingConnection()
+	session := newPeer(connection)
+	session.markReady()
+	commitCause := errors.New("directory sync failed")
+	commitErr := &fileutil.CommittedWriteError{Err: commitCause}
+	var commitWarning error
+	done := make(chan struct {
+		response   protocol.Envelope
+		dispatched bool
+		err        error
+	}, 1)
+	go func() {
+		response, dispatched, requestErr := session.request(
+			t.Context(),
+			"node.terminal.open",
+			json.RawMessage(`{}`),
+			"idem_warning",
+			func(write func() error) error {
+				return commitTerminalDispatch(
+					func() error { return commitErr },
+					write,
+					&commitWarning,
+				)
+			},
+		)
+		done <- struct {
+			response   protocol.Envelope
+			dispatched bool
+			err        error
+		}{response: response, dispatched: dispatched, err: requestErr}
+	}()
+
+	open := <-connection.writes
+	if open.Method != "node.terminal.open" {
+		t.Fatalf("method = %q", open.Method)
+	}
+	ok := true
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: open.ID, OK: &ok, Result: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if !got.dispatched ||
+		got.response.ID != open.ID ||
+		got.err != nil ||
+		!errors.Is(commitWarning, commitCause) ||
+		!fileutil.IsCommittedWriteError(commitWarning) {
+		t.Fatalf(
+			"terminal dispatch = (response %#v, dispatched %v, error %v, warning %v)",
+			got.response,
+			got.dispatched,
+			got.err,
+			commitWarning,
+		)
+	}
+	session.pendingMu.Lock()
+	_, abandoned := session.abandoned[open.ID]
+	session.pendingMu.Unlock()
+	if abandoned {
+		t.Fatal("terminal response correlation was abandoned after committed warning")
+	}
+}
 
 func TestTerminalEventSubscriptionAppliesByteAccurateBackpressure(t *testing.T) {
 	subscription := &terminalEventSubscription{

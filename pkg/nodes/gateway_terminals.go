@@ -577,8 +577,13 @@ func (record GatewayTerminalRecord) validate() error {
 			record.CompletedAt != 0 {
 			return fmt.Errorf("%w: invalid active terminal", ErrInvalidTerminal)
 		}
-	case GatewayTerminalClosed, GatewayTerminalUnknown:
+	case GatewayTerminalClosed:
 		if record.DispatchedAt <= 0 || record.CompletedAt <= 0 {
+			return fmt.Errorf("%w: invalid terminal outcome", ErrInvalidTerminal)
+		}
+	case GatewayTerminalUnknown:
+		if record.DispatchedAt <= 0 ||
+			(record.TerminalID == "" && record.CompletedAt <= 0) {
 			return fmt.Errorf("%w: invalid terminal outcome", ErrInvalidTerminal)
 		}
 	default:
@@ -655,7 +660,7 @@ func validateGatewayTerminalMetadata(metadata TerminalMetadata, owner TerminalOw
 		}
 	case GatewayTerminalUnknown:
 		if !validInvocationIdentifier(metadata.Reason) ||
-			metadata.CompletedAt < metadata.StartedAt ||
+			(metadata.CompletedAt != 0 && metadata.CompletedAt < metadata.StartedAt) ||
 			metadata.ExitCode != 0 ||
 			metadata.Signal != "" ||
 			metadata.TerminationConfirmed {

@@ -120,25 +120,10 @@ func (source *nodeTerminalSource) PrepareTerminal(
 				approval.Descriptor.Risk != nodes.RiskPrivileged ||
 				contract == nil ||
 				contract.Availability != nodes.ModelAvailable ||
-				contract.ApprovalMode != "session_start" ||
+				contract.ApprovalMode != "each_command" ||
 				!slices.Contains(contract.Constraints.ProfileAliases, owner.Profile) ||
 				!slices.Contains(contract.Constraints.WorkingScopes, workingScope) {
 				return nodes.ErrCommandDenied
-			}
-			plan, planErr := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
-				OpenID:          openID,
-				IdempotencyKey:  idempotencyKey,
-				NodeID:          nodeID,
-				Owner:           owner,
-				CatalogHash:     approval.CatalogHash,
-				AuthorityDigest: contract.AuthorityDigest,
-				WorkingScope:    workingScope,
-				Columns:         columns,
-				Rows:            rows,
-				ApprovalMode:    "session_start",
-			}, source.now(), gatewayTerminalPlanTTL)
-			if planErr != nil {
-				return planErr
 			}
 			return source.runtime.withInvocationHandler(
 				source.registryPath,
@@ -148,6 +133,44 @@ func (source *nodeTerminalSource) PrepareTerminal(
 						return errNodeDiscoveryAuthorityUnavailable
 					}
 					authorityValidated = true
+					existing, found, lookupErr := source.store.Lookup(owner, openID)
+					if lookupErr != nil {
+						return lookupErr
+					}
+					if found {
+						if !terminalPreparationMatches(
+							existing,
+							nodeID,
+							openID,
+							idempotencyKey,
+							owner,
+							approval.CatalogHash,
+							contract.AuthorityDigest,
+							workingScope,
+							columns,
+							rows,
+						) {
+							return nodes.ErrGatewayTerminalConflict
+						}
+						record = existing
+						created = false
+						return nil
+					}
+					plan, planErr := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+						OpenID:          openID,
+						IdempotencyKey:  idempotencyKey,
+						NodeID:          nodeID,
+						Owner:           owner,
+						CatalogHash:     approval.CatalogHash,
+						AuthorityDigest: contract.AuthorityDigest,
+						WorkingScope:    workingScope,
+						Columns:         columns,
+						Rows:            rows,
+						ApprovalMode:    "session_start",
+					}, source.now(), gatewayTerminalPlanTTL)
+					if planErr != nil {
+						return planErr
+					}
 					var storeErr error
 					record, created, storeErr = source.store.Prepare(plan)
 					return storeErr
@@ -164,6 +187,31 @@ func (source *nodeTerminalSource) PrepareTerminal(
 		)
 	}
 	return record, created, err
+}
+
+func terminalPreparationMatches(
+	record nodes.GatewayTerminalRecord,
+	nodeID nodes.ID,
+	openID string,
+	idempotencyKey string,
+	owner nodes.TerminalOwner,
+	catalogHash string,
+	authorityDigest string,
+	workingScope string,
+	columns int,
+	rows int,
+) bool {
+	plan := record.Plan
+	return plan.NodeID == nodeID &&
+		plan.OpenID == openID &&
+		plan.IdempotencyKey == idempotencyKey &&
+		plan.Owner == owner &&
+		plan.CatalogHash == catalogHash &&
+		plan.AuthorityDigest == authorityDigest &&
+		plan.WorkingScope == workingScope &&
+		plan.Columns == columns &&
+		plan.Rows == rows &&
+		plan.ApprovalMode == "session_start"
 }
 
 func (source *nodeTerminalSource) OpenTerminal(
@@ -183,7 +231,7 @@ func (source *nodeTerminalSource) OpenTerminal(
 		record.ExpectedPlanHash != expectedPlanHash {
 		return nodes.TerminalMetadata{}, false, nodes.ErrGatewayTerminalConflict
 	}
-	metadata, dispatched, err := terminalHandler.OpenTerminal(
+	metadata, dispatched, openErr := terminalHandler.OpenTerminal(
 		ctx,
 		record.Plan.NodeID,
 		record.Plan,
@@ -211,8 +259,9 @@ func (source *nodeTerminalSource) OpenTerminal(
 			)
 		},
 	)
-	if err != nil {
-		return nodes.TerminalMetadata{}, dispatched, err
+	if openErr != nil &&
+		(metadata.TerminalID == "" || !fileutil.IsCommittedWriteError(openErr)) {
+		return nodes.TerminalMetadata{}, dispatched, openErr
 	}
 	var persistErr error
 	runtimeErr := source.runtime.withInvocationHandler(
@@ -229,7 +278,8 @@ func (source *nodeTerminalSource) OpenTerminal(
 	if persistErr == nil {
 		persistErr = runtimeErr
 	}
-	if persistErr == nil {
+	openedRetained := persistErr == nil
+	if persistErr == nil && openErr == nil {
 		return metadata, true, nil
 	}
 	request := nodes.TerminalSessionRequest{
@@ -249,7 +299,7 @@ func (source *nodeTerminalSource) OpenTerminal(
 	if cleanupErr == nil &&
 		(cleanupMetadata.State == string(nodes.GatewayTerminalClosed) ||
 			cleanupMetadata.State == string(nodes.GatewayTerminalUnknown)) {
-		if persistErr == nil || fileutil.IsCommittedWriteError(persistErr) {
+		if openedRetained || fileutil.IsCommittedWriteError(persistErr) {
 			_, _, lifecycleErr := source.store.RecordLifecycle(
 				owner,
 				metadata.TerminalID,
@@ -260,6 +310,7 @@ func (source *nodeTerminalSource) OpenTerminal(
 	}
 	return nodes.TerminalMetadata{}, true, errors.Join(
 		errors.New("retain opened terminal authority"),
+		openErr,
 		persistErr,
 		cleanupErr,
 	)

@@ -195,6 +195,45 @@ func TestGatewayTerminalStoreTracksRedactedLifecycle(t *testing.T) {
 	}
 }
 
+func TestGatewayTerminalStoreAcceptsUnknownWithoutCompletionTime(t *testing.T) {
+	now := time.Now()
+	path := filepath.Join(t.TempDir(), "node_terminals.json")
+	store := newGatewayTerminalStore(path, 8, 1024*1024, func() time.Time { return now })
+	plan := gatewayTerminalTestPlan(t, "open_unknown", "idem_unknown", now)
+	if _, _, err := store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MarkDispatched(plan.Owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	opened := TerminalMetadata{
+		TerminalID: "terminal_unknown",
+		Owner:      plan.Owner,
+		State:      string(GatewayTerminalPendingAttach),
+		StartedAt:  now.Unix(),
+	}
+	if _, _, err := store.RecordOpened(plan.Owner, plan.OpenID, opened); err != nil {
+		t.Fatal(err)
+	}
+	unknown := opened
+	unknown.State = string(GatewayTerminalUnknown)
+	unknown.Reason = "transport_unknown"
+	record, transitioned, err := store.RecordLifecycle(plan.Owner, opened.TerminalID, unknown)
+	if err != nil || !transitioned || record.CompletedAt != 0 {
+		t.Fatalf("unknown RecordLifecycle() = (%#v, %v, %v)", record, transitioned, err)
+	}
+	reloaded, err := NewGatewayTerminalStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, found, err := reloaded.Lookup(plan.Owner, opened.TerminalID)
+	if err != nil || !found ||
+		retained.State != GatewayTerminalUnknown ||
+		retained.CompletedAt != 0 {
+		t.Fatalf("reloaded unknown = (%#v, %v, %v)", retained, found, err)
+	}
+}
+
 func TestGatewayTerminalStoreRestartFailsActiveSessionsClosed(t *testing.T) {
 	now := time.Now()
 	path := filepath.Join(t.TempDir(), "node_terminals.json")

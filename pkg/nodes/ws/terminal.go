@@ -41,6 +41,7 @@ func (handler *AdmissionHandler) OpenTerminal(
 	if err != nil {
 		return nodes.TerminalMetadata{}, false, fmt.Errorf("encode terminal open plan: %w", err)
 	}
+	var commitWarning error
 	response, dispatched, err := handler.sessions.Request(
 		ctx,
 		nodeID,
@@ -55,15 +56,7 @@ func (handler *AdmissionHandler) OpenTerminal(
 					if validationErr := validateTerminalApproval(current, nodeID, plan); validationErr != nil {
 						return validationErr
 					}
-					if commit != nil {
-						if commitErr := commit(); commitErr != nil {
-							if !fileutil.IsCommittedWriteError(commitErr) {
-								return commitErr
-							}
-							return errors.Join(commitErr, write())
-						}
-					}
-					return write()
+					return commitTerminalDispatch(commit, write, &commitWarning)
 				},
 			)
 			return leaseErr
@@ -74,13 +67,38 @@ func (handler *AdmissionHandler) OpenTerminal(
 	}
 	metadata, err := decodeTerminalMetadata(response, plan.Owner)
 	if err != nil {
-		return nodes.TerminalMetadata{}, true, err
+		return nodes.TerminalMetadata{}, true, errors.Join(commitWarning, err)
 	}
 	if metadata.State != "pending_attach" {
-		return nodes.TerminalMetadata{}, true, errors.New("node returned an invalid terminal open state")
+		return nodes.TerminalMetadata{}, true, errors.Join(
+			commitWarning,
+			errors.New("node returned an invalid terminal open state"),
+		)
 	}
 	_ = approval
-	return metadata, true, nil
+	return metadata, true, commitWarning
+}
+
+func commitTerminalDispatch(
+	commit func() error,
+	write func() error,
+	commitWarning *error,
+) error {
+	if commit == nil {
+		return write()
+	}
+	commitErr := commit()
+	if commitErr == nil {
+		return write()
+	}
+	if !fileutil.IsCommittedWriteError(commitErr) {
+		return commitErr
+	}
+	if writeErr := write(); writeErr != nil {
+		return errors.Join(commitErr, writeErr)
+	}
+	*commitWarning = commitErr
+	return nil
 }
 
 func (handler *AdmissionHandler) validateTerminalPreflight(
