@@ -14,8 +14,13 @@ tests, or merged pull requests.
 - Terminal control PR: #427
 - Exact-head GitHub checks: Linter, Security Check, Tests, and Integration Tests
   passed.
-- Earlier dependency PRs in the same P1 implementation sequence: #423, #424,
-  #425, and #426.
+- Admission contract: #406.
+- Owner shell discovery and execution: #407 and #419.
+- Root authority broker: #420.
+- Owner-scoped cancellation: #421.
+- Broker-backed terminal core and attached terminal transport: #422 and #423.
+- Durable terminal authority, close semantics, gateway coordination, and
+  operator/model control surfaces: #424, #425, #426, and #427.
 
 The server repository was clean before deployment, its `origin` was
 `git@github.com:bogdanovich/mintclaw.git`, and it was updated from
