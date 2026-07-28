@@ -87,6 +87,7 @@ type commandInvocation struct {
 
 type runtimeOptions struct {
 	systemExec *SystemExecPolicy
+	ownerShell *OwnerShellPolicy
 }
 
 type RuntimeOption func(*runtimeOptions) error
@@ -98,6 +99,17 @@ func WithSystemExec(policy SystemExecPolicy) RuntimeOption {
 			return err
 		}
 		options.systemExec = &cloned
+		return nil
+	}
+}
+
+func WithOwnerShell(policy OwnerShellPolicy) RuntimeOption {
+	return func(options *runtimeOptions) error {
+		cloned, err := cloneReadyOwnerShellPolicy(policy)
+		if err != nil {
+			return err
+		}
+		options.ownerShell = &cloned
 		return nil
 	}
 }
@@ -148,6 +160,9 @@ func NewRuntime(
 	if settings.systemExec != nil {
 		handlers = append(handlers, newSystemExecHandler(*settings.systemExec))
 	}
+	if settings.ownerShell != nil {
+		handlers = append(handlers, newShellExecHandler(*settings.ownerShell))
+	}
 	if err := nodeID.Validate(); err != nil {
 		return nil, err
 	}
@@ -162,6 +177,12 @@ func NewRuntime(
 			modelContract, err := systemExecModelContract(systemExec.policy, policy)
 			if err != nil {
 				return nil, fmt.Errorf("project system.exec model contract: %w", err)
+			}
+			descriptor.ModelContract = modelContract
+		} else if shellExec, ok := handler.(*shellExecHandler); ok {
+			modelContract, err := ownerShellModelContract(shellExec.policy, policy)
+			if err != nil {
+				return nil, fmt.Errorf("project shell.exec model contract: %w", err)
 			}
 			descriptor.ModelContract = modelContract
 		} else {

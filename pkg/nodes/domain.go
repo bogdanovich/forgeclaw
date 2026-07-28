@@ -111,6 +111,7 @@ func (availability ModelAvailability) Valid() bool {
 
 type CommandModelConstraints struct {
 	ExecutableAliases []string `json:"executable_aliases,omitempty"`
+	ProfileAliases    []string `json:"profile_aliases,omitempty"`
 	WorkingScopes     []string `json:"working_scopes,omitempty"`
 	EnvironmentNames  []string `json:"environment_names,omitempty"`
 }
@@ -121,6 +122,7 @@ type CommandModelContract struct {
 	OutputBytesMax    int                     `json:"output_bytes_max"`
 	ResultKind        string                  `json:"result_kind"`
 	AuthorityDigest   string                  `json:"authority_digest,omitempty"`
+	ApprovalMode      string                  `json:"approval_mode,omitempty"`
 	Constraints       CommandModelConstraints `json:"constraints"`
 	Guidance          []string                `json:"guidance"`
 	Examples          []json.RawMessage       `json:"examples"`
@@ -134,6 +136,9 @@ func (contract CommandModelContract) Validate(inputSchema json.RawMessage) error
 		contract.OutputBytesMax > MaxInvocationOutput ||
 		contract.ResultKind != "json" ||
 		(contract.AuthorityDigest != "" && !validSHA256Digest(contract.AuthorityDigest)) ||
+		(contract.ApprovalMode != "" &&
+			contract.ApprovalMode != "each_command" &&
+			contract.ApprovalMode != "session_start") ||
 		contract.Guidance == nil ||
 		contract.Examples == nil {
 		return fmt.Errorf("%w: malformed model contract", ErrInvalidCapability)
@@ -179,10 +184,11 @@ func (contract CommandModelContract) Validate(inputSchema json.RawMessage) error
 func validateModelConstraintNames(constraints CommandModelConstraints) error {
 	groups := [][]string{
 		constraints.ExecutableAliases,
+		constraints.ProfileAliases,
 		constraints.WorkingScopes,
 		constraints.EnvironmentNames,
 	}
-	limits := []int{64, 32, 64}
+	limits := []int{64, 32, 32, 64}
 	for index, values := range groups {
 		if len(values) > limits[index] {
 			return fmt.Errorf("%w: too many model constraint names", ErrInvalidCapability)
@@ -341,6 +347,10 @@ func cloneCommandModelContract(contract CommandModelContract) CommandModelContra
 	contract.Constraints.ExecutableAliases = append(
 		[]string(nil),
 		contract.Constraints.ExecutableAliases...,
+	)
+	contract.Constraints.ProfileAliases = append(
+		[]string(nil),
+		contract.Constraints.ProfileAliases...,
 	)
 	contract.Constraints.WorkingScopes = append([]string(nil), contract.Constraints.WorkingScopes...)
 	contract.Constraints.EnvironmentNames = append(

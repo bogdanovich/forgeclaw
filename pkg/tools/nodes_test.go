@@ -257,6 +257,48 @@ func TestProjectedSystemExecContractUsesOnlyVisibleAliases(t *testing.T) {
 	}
 }
 
+func TestProjectedShellExecContractUsesOnlyVisibleOwnerMetadata(t *testing.T) {
+	descriptor := testNodeCommand("shell.exec.v1", nodes.RiskPrivileged, false, true)
+	descriptor.InputSchema = json.RawMessage(
+		`{"type":"object","required":["profile","script","cwd","env","timeout_seconds"],"properties":{"profile":{"type":"string"},"script":{"type":"string"},"cwd":{"type":"string"},"env":{"type":"object"},"timeout_seconds":{"type":"integer"}},"additionalProperties":false}`,
+	)
+	descriptor.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelAvailable,
+		TimeoutSecondsMax: 12,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		AuthorityDigest:   strings.Repeat("c", 64),
+		ApprovalMode:      "each_command",
+		Constraints: nodes.CommandModelConstraints{
+			ProfileAliases:   []string{"owner"},
+			WorkingScopes:    []string{"workspace"},
+			EnvironmentNames: []string{"LANG"},
+		},
+		Guidance: []string{"Use the owner profile."},
+		Examples: []json.RawMessage{},
+	}
+	contract := projectedNodeCommandContract(descriptor, string(nodes.ModelAvailable))
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"owner", "workspace", "LANG", "each_command"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("projected shell contract omitted %q: %s", want, data)
+		}
+	}
+	for _, forbidden := range []string{
+		descriptor.ModelContract.AuthorityDigest,
+		"/bin/sh",
+		`"uid"`,
+		`"broker"`,
+	} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("projected shell contract leaked %q: %s", forbidden, data)
+		}
+	}
+}
+
 func TestProjectedLegacySystemExecContractFailsClosed(t *testing.T) {
 	descriptor := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, false)
 	descriptor.InputSchema = json.RawMessage(

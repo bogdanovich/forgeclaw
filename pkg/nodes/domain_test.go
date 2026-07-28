@@ -178,6 +178,12 @@ func TestCommandModelContractRejectsMalformedOrUnboundedMetadata(t *testing.T) {
 			},
 		},
 		{
+			name: "unsupported approval mode",
+			mutate: func(contract *CommandModelContract) {
+				contract.ApprovalMode = "model_decides"
+			},
+		},
+		{
 			name: "schema-invalid example",
 			mutate: func(contract *CommandModelContract) {
 				contract.Examples = []json.RawMessage{json.RawMessage(`{"other":"hidden"}`)}

@@ -38,14 +38,17 @@ const (
 	nodeDenialDiscoveryStale      = "DISCOVERY_STALE"
 	nodeDenialSchemaInvalid       = "SCHEMA_INVALID"
 	nodeDenialConstraintViolation = "CONSTRAINT_VIOLATION"
+	nodeDenialApprovalRequired    = "APPROVAL_REQUIRED"
 
 	nodeConstraintInputSchema   = "input_schema"
 	nodeConstraintExecutable    = "executable_alias"
+	nodeConstraintProfile       = "profile_alias"
 	nodeConstraintWorkingScope  = "working_scope"
 	nodeConstraintEnvironment   = "environment_name"
 	nodeConstraintTimeout       = "timeout"
 	nodeConstraintOutputLimit   = "output_limit"
 	nodeConstraintCommandPolicy = "command_policy"
+	nodeConstraintApproval      = "approval"
 
 	nodeActionRefreshDiscovery = "refresh_discovery"
 	nodeActionCorrectInput     = "correct_input"
@@ -332,6 +335,14 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 			Code:       nodeDenialCommandUnavailable,
 			Constraint: nodeConstraintCommandPolicy,
 			Action:     nodeActionRefreshDiscovery,
+		})
+	}
+	if record.Plan.Command == "shell.exec.v1" && !ToolApprovalContinuation(ctx) {
+		return nodeDenialToolResult(nodeDenialResult{
+			Status:     "denied",
+			Code:       nodeDenialApprovalRequired,
+			Constraint: nodeConstraintApproval,
+			Action:     nodeActionAskOperator,
 		})
 	}
 	owner := nodes.GatewayInvocationOwner{
@@ -1118,10 +1129,25 @@ func validateNodeModelConstraints(
 	descriptor nodes.CommandDescriptor,
 	input map[string]any,
 ) error {
-	if descriptor.Name != "system.exec.v1" || descriptor.ModelContract == nil {
+	if descriptor.ModelContract == nil {
 		return nil
 	}
 	constraints := descriptor.ModelContract.Constraints
+	switch descriptor.Name {
+	case "system.exec.v1":
+		return validateSystemExecModelConstraints(descriptor, input, constraints)
+	case "shell.exec.v1":
+		return validateShellExecModelConstraints(descriptor, input, constraints)
+	default:
+		return nil
+	}
+}
+
+func validateSystemExecModelConstraints(
+	descriptor nodes.CommandDescriptor,
+	input map[string]any,
+	constraints nodes.CommandModelConstraints,
+) error {
 	argv, ok := input["argv"].([]any)
 	if !ok || len(argv) == 0 {
 		return denyNodeInvocation(
@@ -1148,6 +1174,31 @@ func validateNodeModelConstraints(
 			nil,
 		)
 	}
+	return validateNodeScopeEnvironmentTimeout(descriptor, input, constraints)
+}
+
+func validateShellExecModelConstraints(
+	descriptor nodes.CommandDescriptor,
+	input map[string]any,
+	constraints nodes.CommandModelConstraints,
+) error {
+	profile, ok := input["profile"].(string)
+	if !ok || !containsSorted(constraints.ProfileAliases, profile) {
+		return denyNodeInvocation(
+			nodeDenialConstraintViolation,
+			nodeConstraintProfile,
+			nodeActionCorrectInput,
+			nil,
+		)
+	}
+	return validateNodeScopeEnvironmentTimeout(descriptor, input, constraints)
+}
+
+func validateNodeScopeEnvironmentTimeout(
+	descriptor nodes.CommandDescriptor,
+	input map[string]any,
+	constraints nodes.CommandModelConstraints,
+) error {
 	if raw, exists := input["cwd"]; exists {
 		workingScope, valid := raw.(string)
 		if !valid {

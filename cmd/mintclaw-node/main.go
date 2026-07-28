@@ -66,9 +66,12 @@ func run(args []string) error {
 		return err
 	}
 	defer ledger.Close()
-	runtimeOptions := make([]companion.RuntimeOption, 0, 1)
+	runtimeOptions := make([]companion.RuntimeOption, 0, 2)
 	if cfg.SystemExec != nil {
 		runtimeOptions = append(runtimeOptions, companion.WithSystemExec(*cfg.SystemExec))
+	}
+	if cfg.OwnerShell != nil && cfg.OwnerShell.Enabled {
+		runtimeOptions = append(runtimeOptions, companion.WithOwnerShell(*cfg.OwnerShell))
 	}
 	commandRuntime, err := companion.NewRuntime(
 		identity.ID,
