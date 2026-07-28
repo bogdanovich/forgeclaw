@@ -61,6 +61,7 @@ type fakeNodeInvocationSource struct {
 	preDispatchErr          error
 	dispatchErr             error
 	queryErr                error
+	cancelErr               error
 	remote                  nodes.InvocationRecord
 	lookupMiss              bool
 	beforeAuthorityValidate func()
@@ -68,6 +69,7 @@ type fakeNodeInvocationSource struct {
 	prepareCalls            int
 	dispatchCalls           int
 	queryCalls              int
+	cancelCalls             int
 }
 
 type atomicPrepareNodeInvocationSource struct {
@@ -136,7 +138,7 @@ func (source *fakeNodeInvocationSource) PrepareInvocation(
 		return nodes.GatewayInvocationRecord{}, false, nodes.ErrGatewayInvocationNotFound
 	}
 	source.prepareCalls++
-	return source.store.Prepare(target, toolCallID, plan, descriptor)
+	return source.store.PrepareOwned(principal, target, toolCallID, plan, descriptor)
 }
 
 func (source *fakeNodeInvocationSource) LookupInvocationByToolCall(
@@ -166,7 +168,11 @@ func (source *fakeNodeInvocationSource) DispatchInvocation(
 		return nil, false, source.preDispatchErr
 	}
 	principal := nodes.GatewayInvocationPrincipal{
-		AgentID: owner.AgentID, SessionID: owner.SessionID, ActorID: owner.ActorID,
+		AgentID:     owner.AgentID,
+		SessionID:   owner.SessionID,
+		ActorID:     owner.ActorID,
+		WorkspaceID: owner.WorkspaceID,
+		ExecutionID: owner.ExecutionID,
 	}
 	record, found, err := source.store.Lookup(principal, invocationID)
 	if err != nil || !found {
@@ -189,6 +195,29 @@ func (source *fakeNodeInvocationSource) DispatchInvocation(
 		return nil, true, source.dispatchErr
 	}
 	return json.RawMessage(`{"stdout":"ok","exit_code":0}`), true, nil
+}
+
+func (source *fakeNodeInvocationSource) CancelInvocation(
+	_ context.Context,
+	principal nodes.GatewayInvocationPrincipal,
+	target string,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, bool, error) {
+	record, transitioned, err := source.store.RequestCancellation(principal, invocationID)
+	if err != nil {
+		return nodes.InvocationRecord{}, false, err
+	}
+	if record.Target != target || record.Plan.NodeID != nodeID {
+		return nodes.InvocationRecord{}, transitioned, nodes.ErrGatewayInvocationConflict
+	}
+	if transitioned {
+		source.cancelCalls++
+	}
+	if source.cancelErr != nil {
+		return nodes.InvocationRecord{}, transitioned, source.cancelErr
+	}
+	return source.remote, transitioned, nil
 }
 
 func (source *fakeNodeInvocationSource) QueryInvocation(
@@ -1254,6 +1283,153 @@ func TestNodeStatusToolReturnsPreparedStateWithoutQuery(t *testing.T) {
 	}
 }
 
+func TestNodeCancelToolIsIdempotentAndRequiresExactExecutionScope(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	record := mustFakeGatewayInvocation(t, source, ctx, invocationID)
+	now := time.Now().UnixNano()
+	source.remote = nodes.InvocationRecord{
+		InvocationID: record.Plan.InvocationID, IdempotencyKey: record.Plan.IdempotencyKey,
+		PlanHash: record.ExpectedPlanHash, NodeID: record.Plan.NodeID,
+		CatalogHash: record.Plan.CatalogHash, Command: record.Plan.Command,
+		Risk: record.Plan.Risk, State: nodes.InvocationRunning,
+		AcceptedAt: now, UpdatedAt: now, ExpiresAt: record.Plan.ExpiresAt,
+		Cancellation: &nodes.InvocationCancellation{RequestedAt: now},
+	}
+	cancel := NewNodeCancelTool(nodeDiscoveryTestConfig(), source)
+	args := map[string]any{"invocation_id": invocationID}
+	first := decodeNodeResult(t, cancel.Execute(ctx, args))
+	repeated := decodeNodeResult(t, cancel.Execute(ctx, args))
+	if first["status"] != "cancel_requested" ||
+		repeated["status"] != "cancel_requested" ||
+		source.cancelCalls != 1 {
+		t.Fatalf("cancellation results = %#v, %#v; calls = %d", first, repeated, source.cancelCalls)
+	}
+
+	otherExecution := WithToolExecutionIdentity(ctx, "/workspace/main", "execution-2")
+	denied := decodeNodeResult(t, cancel.Execute(otherExecution, args))
+	if denied["status"] != "denied" || source.cancelCalls != 1 {
+		t.Fatalf("cross-execution cancellation = %#v; calls = %d", denied, source.cancelCalls)
+	}
+	otherWorkspace := WithToolExecutionIdentity(ctx, "/workspace/other", "execution-1")
+	denied = decodeNodeResult(t, cancel.Execute(otherWorkspace, args))
+	if denied["status"] != "denied" || source.cancelCalls != 1 {
+		t.Fatalf("cross-workspace cancellation = %#v; calls = %d", denied, source.cancelCalls)
+	}
+}
+
+func TestNodeCancelToolDistinguishesConfirmedAndTerminalOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		remote func(nodes.GatewayInvocationRecord) nodes.InvocationRecord
+		want   string
+	}{
+		{
+			name: "confirmed cancellation",
+			remote: func(record nodes.GatewayInvocationRecord) nodes.InvocationRecord {
+				now := time.Now().UnixNano()
+				return nodes.InvocationRecord{
+					InvocationID:   record.Plan.InvocationID,
+					IdempotencyKey: record.Plan.IdempotencyKey,
+					PlanHash:       record.ExpectedPlanHash, NodeID: record.Plan.NodeID,
+					CatalogHash: record.Plan.CatalogHash, Command: record.Plan.Command,
+					Risk: record.Plan.Risk, State: nodes.InvocationCanceled,
+					AcceptedAt: now, UpdatedAt: now, CompletedAt: now,
+					ExpiresAt: record.Plan.ExpiresAt,
+					Failure:   &nodes.InvocationFailure{Code: "CANCELED", Message: "canceled"},
+					Cancellation: &nodes.InvocationCancellation{
+						RequestedAt: now, TerminationConfirmed: true,
+					},
+				}
+			},
+			want: "canceled",
+		},
+		{name: "completion won", remote: successfulRemoteInvocation, want: "already_terminal"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := newFakeNodeInvocationSource(t)
+			ctx := nodeInvocationTestContext("actor-1", "call-1")
+			invocationID := decodeNodeResult(
+				t,
+				NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(
+					ctx,
+					nodeInvocationTestArgs(),
+				),
+			)["invocation_id"].(string)
+			record := mustFakeGatewayInvocation(t, source, ctx, invocationID)
+			source.remote = test.remote(record)
+			payload := decodeNodeResult(
+				t,
+				NewNodeCancelTool(nodeDiscoveryTestConfig(), source).Execute(
+					ctx,
+					map[string]any{"invocation_id": invocationID},
+				),
+			)
+			if payload["status"] != test.want {
+				t.Fatalf("cancellation = %#v, want %q", payload, test.want)
+			}
+		})
+	}
+}
+
+func TestNodeCancelToolPersistsOfflineIntentWithoutReplay(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	approval, err := NewNodeInvokeTool(
+		nodeDiscoveryTestConfig(),
+		source,
+	).ApprovalArguments(ctx, nodeInvocationTestArgs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel := NewNodeCancelTool(nodeDiscoveryTestConfig(), source)
+	args := map[string]any{"invocation_id": approval["invocation_id"]}
+	prepared := decodeNodeResult(t, cancel.Execute(ctx, args))
+	if prepared["status"] != "already_terminal" || source.cancelCalls != 0 {
+		t.Fatalf("prepared cancellation = %#v; calls = %d", prepared, source.cancelCalls)
+	}
+
+	record := mustFakeGatewayInvocation(t, source, ctx, approval["invocation_id"].(string))
+	owner := nodes.GatewayInvocationOwner{
+		Target: record.Target, AgentID: record.Plan.AgentID, SessionID: record.Plan.SessionID,
+		ActorID: record.Plan.ActorID, ToolCallID: record.ToolCallID,
+		WorkspaceID: record.WorkspaceID, ExecutionID: record.ExecutionID,
+	}
+	if _, _, err := source.store.MarkDispatched(
+		owner,
+		record.Plan.InvocationID,
+		record.ExpectedPlanHash,
+	); err != nil {
+		t.Fatal(err)
+	}
+	source.connected = map[nodes.ID]bool{}
+	source.cancelErr = errors.New("node unavailable")
+	offline := decodeNodeResult(t, cancel.Execute(ctx, args))
+	retained := mustFakeGatewayInvocation(t, source, ctx, record.Plan.InvocationID)
+	if offline["status"] != "unknown" || source.cancelCalls != 1 ||
+		retained.Cancellation == nil {
+		t.Fatalf("offline cancellation = %#v; calls = %d", offline, source.cancelCalls)
+	}
+	source.connected = map[nodes.ID]bool{record.Plan.NodeID: true}
+	source.cancelErr = nil
+	now := time.Now().UnixNano()
+	source.remote = nodes.InvocationRecord{
+		InvocationID: record.Plan.InvocationID, IdempotencyKey: record.Plan.IdempotencyKey,
+		PlanHash: record.ExpectedPlanHash, NodeID: record.Plan.NodeID,
+		CatalogHash: record.Plan.CatalogHash, Command: record.Plan.Command,
+		Risk: record.Plan.Risk, State: nodes.InvocationRunning,
+		AcceptedAt: now, UpdatedAt: now, ExpiresAt: record.Plan.ExpiresAt,
+	}
+	repeated := decodeNodeResult(t, cancel.Execute(ctx, args))
+	if repeated["status"] != "unknown" || source.cancelCalls != 1 {
+		t.Fatalf("repeated cancellation = %#v; calls = %d", repeated, source.cancelCalls)
+	}
+}
+
 func TestNodeInvocationToolRuntimeSemantics(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	if got := NewNodeInvokeTool(nil, source).ToolLoopSemantics(); got != loopguard.SemanticsMutating {
@@ -1262,6 +1438,9 @@ func TestNodeInvocationToolRuntimeSemantics(t *testing.T) {
 	if got := NewNodeStatusTool(nil, source).ToolLoopSemantics(); got !=
 		loopguard.SemanticsReadOnlyIdempotent {
 		t.Fatalf("status semantics = %q", got)
+	}
+	if got := NewNodeCancelTool(nil, source).ToolLoopSemantics(); got != loopguard.SemanticsMutating {
+		t.Fatalf("cancel semantics = %q", got)
 	}
 }
 

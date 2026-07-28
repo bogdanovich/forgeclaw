@@ -43,6 +43,7 @@ type nodeAdmissionHandler interface {
 		func() error,
 	) (json.RawMessage, bool, error)
 	Invocation(context.Context, nodes.ID, string) (nodes.InvocationRecord, error)
+	CancelInvocation(context.Context, nodes.ID, string) (nodes.InvocationRecord, error)
 }
 
 type nodeAdmissionRuntime struct {

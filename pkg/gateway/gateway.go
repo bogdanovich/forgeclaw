@@ -547,12 +547,25 @@ func setupNodeTools(
 	); err != nil {
 		return err
 	}
-	return agentLoop.RegisterRuntimeTool(
+	if err := agentLoop.RegisterRuntimeTool(
 		"nodes_status",
 		nodeInvocationToolFactory(
 			runtime,
 			func(cfg *config.Config, source tools.NodeInvocationSource) tools.Tool {
 				tool := tools.NewNodeStatusTool(cfg, source)
+				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
+				return tool
+			},
+		),
+	); err != nil {
+		return err
+	}
+	return agentLoop.RegisterRuntimeTool(
+		"nodes_cancel",
+		nodeInvocationToolFactory(
+			runtime,
+			func(cfg *config.Config, source tools.NodeInvocationSource) tools.Tool {
+				tool := tools.NewNodeCancelTool(cfg, source)
 				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
 				return tool
 			},

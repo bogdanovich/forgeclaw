@@ -7,14 +7,19 @@ import (
 	"fmt"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type nodeInvocationSource struct {
 	nodeDiscoverySource
-	store      *nodes.GatewayInvocationStore
-	generation uint64
+	store               *nodes.GatewayInvocationStore
+	generation          uint64
+	requestCancellation func(
+		nodes.GatewayInvocationPrincipal,
+		string,
+	) (nodes.GatewayInvocationRecord, bool, error)
 }
 
 func newNodeInvocationSource(
@@ -119,7 +124,8 @@ func (source *nodeInvocationSource) PrepareInvocation(
 						return nodes.ErrGatewayInvocationNotFound
 					}
 					var prepareErr error
-					record, created, prepareErr = source.store.Prepare(
+					record, created, prepareErr = source.store.PrepareOwned(
+						principal,
 						target,
 						toolCallID,
 						plan,
@@ -208,9 +214,11 @@ func (source *nodeInvocationSource) DispatchInvocation(
 			var lookupErr error
 			record, found, lookupErr = source.store.Lookup(
 				nodes.GatewayInvocationPrincipal{
-					AgentID:   owner.AgentID,
-					SessionID: owner.SessionID,
-					ActorID:   owner.ActorID,
+					AgentID:     owner.AgentID,
+					SessionID:   owner.SessionID,
+					ActorID:     owner.ActorID,
+					WorkspaceID: owner.WorkspaceID,
+					ExecutionID: owner.ExecutionID,
 				},
 				invocationID,
 			)
@@ -266,7 +274,72 @@ func gatewayInvocationMatchesOwner(
 		record.Plan.AgentID == owner.AgentID &&
 		record.Plan.SessionID == owner.SessionID &&
 		record.Plan.ActorID == owner.ActorID &&
-		record.ToolCallID == owner.ToolCallID
+		record.ToolCallID == owner.ToolCallID &&
+		record.WorkspaceID == owner.WorkspaceID &&
+		record.ExecutionID == owner.ExecutionID
+}
+
+func (source *nodeInvocationSource) CancelInvocation(
+	ctx context.Context,
+	principal nodes.GatewayInvocationPrincipal,
+	target string,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, bool, error) {
+	if source == nil || source.store == nil || source.runtime == nil {
+		return nodes.InvocationRecord{}, false, errNodeDiscoveryAuthorityUnavailable
+	}
+	var (
+		handler      nodeAdmissionHandler
+		record       nodes.GatewayInvocationRecord
+		transitioned bool
+		persistErr   error
+	)
+	err := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(current nodeAdmissionHandler) error {
+			retained, found, lookupErr := source.store.Lookup(principal, invocationID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if !found || retained.Target != target || retained.Plan.NodeID != nodeID {
+				return nodes.ErrGatewayInvocationConflict
+			}
+			var requestErr error
+			requestCancellation := source.store.RequestCancellation
+			if source.requestCancellation != nil {
+				requestCancellation = source.requestCancellation
+			}
+			record, transitioned, requestErr = requestCancellation(
+				principal,
+				invocationID,
+			)
+			if requestErr == nil ||
+				(transitioned && fileutil.IsCommittedWriteError(requestErr)) {
+				handler = current
+				persistErr = requestErr
+				return nil
+			}
+			return requestErr
+		},
+	)
+	if err != nil {
+		return nodes.InvocationRecord{}, transitioned, err
+	}
+	var remote nodes.InvocationRecord
+	if transitioned {
+		remote, err = handler.CancelInvocation(ctx, nodeID, invocationID)
+	} else {
+		remote, err = handler.Invocation(ctx, nodeID, invocationID)
+	}
+	if err != nil {
+		return nodes.InvocationRecord{}, transitioned, errors.Join(persistErr, err)
+	}
+	if err := verifyRemoteInvocation(record, &remote); err != nil {
+		return nodes.InvocationRecord{}, transitioned, errors.Join(persistErr, err)
+	}
+	return remote, transitioned, persistErr
 }
 
 func (source *nodeInvocationSource) QueryInvocation(

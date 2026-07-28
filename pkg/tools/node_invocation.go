@@ -133,6 +133,13 @@ type NodeInvocationSource interface {
 		nodeID nodes.ID,
 		invocationID string,
 	) (nodes.InvocationRecord, error)
+	CancelInvocation(
+		ctx context.Context,
+		principal nodes.GatewayInvocationPrincipal,
+		target string,
+		nodeID nodes.ID,
+		invocationID string,
+	) (record nodes.InvocationRecord, requested bool, err error)
 }
 
 type NodeInvokeTool struct {
@@ -140,6 +147,10 @@ type NodeInvokeTool struct {
 }
 
 type NodeStatusTool struct {
+	runtime *nodeInvocationToolRuntime
+}
+
+type NodeCancelTool struct {
 	runtime *nodeInvocationToolRuntime
 }
 
@@ -195,12 +206,24 @@ type nodeStatusResult struct {
 	RecoveryAction string                        `json:"recovery_action,omitempty"`
 }
 
+type nodeCancelResult struct {
+	InvocationID   string                        `json:"invocation_id"`
+	Target         string                        `json:"target,omitempty"`
+	Command        string                        `json:"command,omitempty"`
+	Status         string                        `json:"status"`
+	OriginalState  string                        `json:"original_state,omitempty"`
+	Cancellation   *nodes.InvocationCancellation `json:"cancellation,omitempty"`
+	ErrorCode      string                        `json:"error_code,omitempty"`
+	RecoveryAction string                        `json:"recovery_action,omitempty"`
+}
+
 const (
 	NodeInvocationObservationPrepared   = "prepared"
 	NodeInvocationObservationDispatched = "dispatched"
 	NodeInvocationObservationCompleted  = "completed"
 	NodeInvocationObservationStatus     = "status"
 	NodeInvocationObservationUncertain  = "uncertain"
+	NodeInvocationObservationCancel     = "cancel"
 )
 
 // NodeInvocationEventPayload is a redacted, passive invocation snapshot
@@ -226,6 +249,10 @@ func NewNodeStatusTool(cfg *config.Config, source NodeInvocationSource) *NodeSta
 	return &NodeStatusTool{runtime: newNodeInvocationToolRuntime(cfg, source)}
 }
 
+func NewNodeCancelTool(cfg *config.Config, source NodeInvocationSource) *NodeCancelTool {
+	return &NodeCancelTool{runtime: newNodeInvocationToolRuntime(cfg, source)}
+}
+
 // SetEventPublisher injects the runtime event bus used for node invocation audit events.
 func (tool *NodeInvokeTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 	if tool != nil && tool.runtime != nil {
@@ -235,6 +262,13 @@ func (tool *NodeInvokeTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 
 // SetEventPublisher injects the runtime event bus used for node status audit events.
 func (tool *NodeStatusTool) SetEventPublisher(eventBus runtimeevents.Bus) {
+	if tool != nil && tool.runtime != nil {
+		tool.runtime.runtimeEvents = eventBus
+	}
+}
+
+// SetEventPublisher injects the runtime event bus used for cancellation audit events.
+func (tool *NodeCancelTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 	if tool != nil && tool.runtime != nil {
 		tool.runtime.runtimeEvents = eventBus
 	}
@@ -347,11 +381,13 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 		})
 	}
 	owner := nodes.GatewayInvocationOwner{
-		Target:     record.Target,
-		AgentID:    record.Plan.AgentID,
-		SessionID:  record.Plan.SessionID,
-		ActorID:    record.Plan.ActorID,
-		ToolCallID: record.ToolCallID,
+		Target:      record.Target,
+		AgentID:     record.Plan.AgentID,
+		SessionID:   record.Plan.SessionID,
+		ActorID:     record.Plan.ActorID,
+		ToolCallID:  record.ToolCallID,
+		WorkspaceID: record.WorkspaceID,
+		ExecutionID: record.ExecutionID,
 	}
 	result, dispatched, err := tool.runtime.source.DispatchInvocation(
 		ctx,
@@ -534,6 +570,103 @@ func (*NodeStatusTool) ToolLoopSemantics() loopguard.Semantics {
 
 func (*NodeStatusTool) ToolSteeringSafety(map[string]any) SteeringSafety {
 	return SteeringSafetyReadOnly
+}
+
+func (*NodeCancelTool) Name() string { return "nodes_cancel" }
+
+func (*NodeCancelTool) Description() string {
+	return "Request cancellation of one running node invocation owned by this exact execution scope. " +
+		"Cancellation is idempotent and never replays the original command."
+}
+
+func (*NodeCancelTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"invocation_id": map[string]any{
+				"type":        "string",
+				"description": "Invocation ID returned by nodes_invoke.",
+			},
+		},
+		"required":             []string{"invocation_id"},
+		"additionalProperties": false,
+	}
+}
+
+func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+	record, principal, snapshot, _, err := tool.runtime.visibleInvocation(ctx, args)
+	if err != nil {
+		return nodeJSONResult(nodeCancelResult{Status: "denied", ErrorCode: "CANCEL_DENIED"})
+	}
+	view := nodeCancelResult{
+		InvocationID: record.Plan.InvocationID,
+		Target:       record.Target,
+		Command:      record.Plan.Command,
+	}
+	if record.State == nodes.GatewayInvocationPrepared {
+		view.Status = "already_terminal"
+		view.OriginalState = "not_dispatched"
+		return nodeJSONResult(view)
+	}
+	remote, _, err := tool.runtime.source.CancelInvocation(
+		ctx,
+		principal,
+		record.Target,
+		snapshot.ID,
+		record.Plan.InvocationID,
+	)
+	if err != nil {
+		if errors.Is(err, nodes.ErrGatewayInvocationConflict) ||
+			errors.Is(err, nodes.ErrGatewayInvocationNotFound) ||
+			errors.Is(err, nodes.ErrGatewayInvocationNotDispatched) {
+			return nodeJSONResult(nodeCancelResult{Status: "denied", ErrorCode: "CANCEL_DENIED"})
+		}
+		view.Status = "unknown"
+		view.ErrorCode = "CANCEL_OUTCOME_UNKNOWN"
+		view.RecoveryAction = "Call nodes_status; do not replay cancellation or the original command."
+		tool.runtime.publishInvocationEvent(
+			ctx,
+			NodeInvocationObservationUncertain,
+			"nodes_cancel",
+			record,
+			view.Status,
+			view.ErrorCode,
+		)
+		return nodeJSONResult(view)
+	}
+	view.OriginalState = string(remote.State)
+	view.Cancellation = remote.Cancellation
+	switch {
+	case remote.State == nodes.InvocationCanceled &&
+		remote.Cancellation != nil &&
+		remote.Cancellation.TerminationConfirmed:
+		view.Status = "canceled"
+	case remote.State.Terminal():
+		view.Status = "already_terminal"
+	case remote.Cancellation != nil:
+		view.Status = "cancel_requested"
+	default:
+		view.Status = "unknown"
+		view.ErrorCode = "CANCEL_OUTCOME_UNKNOWN"
+		view.RecoveryAction = "Call nodes_status; do not replay cancellation or the original command."
+	}
+	tool.runtime.publishInvocationEvent(
+		ctx,
+		NodeInvocationObservationCancel,
+		"nodes_cancel",
+		record,
+		view.Status,
+		view.ErrorCode,
+	)
+	return nodeJSONResult(view)
+}
+
+func (*NodeCancelTool) ToolLoopSemantics() loopguard.Semantics {
+	return loopguard.SemanticsMutating
+}
+
+func (*NodeCancelTool) ToolSteeringSafety(map[string]any) SteeringSafety {
+	return SteeringSafetyCancellable
 }
 
 func (runtime *nodeInvocationToolRuntime) prepare(
@@ -1077,10 +1210,19 @@ func nodeInvocationIdentityWithoutCall(
 			"node invocation requires agent, session, and actor identity",
 		)
 	}
+	workspace := strings.TrimSpace(ToolWorkspace(ctx))
+	executionID := strings.TrimSpace(ToolExecutionID(ctx))
+	if workspace == "" || executionID == "" {
+		return nodes.GatewayInvocationPrincipal{}, errors.New(
+			"node invocation requires workspace and execution identity",
+		)
+	}
 	return nodes.GatewayInvocationPrincipal{
-		AgentID:   stableNodeInvocationID("agent", agentID),
-		SessionID: stableNodeInvocationID("session", sessionID),
-		ActorID:   stableNodeInvocationID("actor", actorID),
+		AgentID:     stableNodeInvocationID("agent", agentID),
+		SessionID:   stableNodeInvocationID("session", sessionID),
+		ActorID:     stableNodeInvocationID("actor", actorID),
+		WorkspaceID: stableNodeInvocationID("workspace", workspace),
+		ExecutionID: stableNodeInvocationID("execution_scope", workspace, executionID),
 	}, nil
 }
 

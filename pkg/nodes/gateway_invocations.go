@@ -27,11 +27,12 @@ const (
 )
 
 var (
-	ErrGatewayInvocationConflict   = errors.New("gateway node invocation conflicts with durable state")
-	ErrGatewayInvocationDispatched = errors.New("gateway node invocation was already dispatched")
-	ErrGatewayInvocationNotFound   = errors.New("gateway node invocation not found")
-	ErrGatewayInvocationStoreFull  = errors.New("gateway node invocation store is full")
-	gatewayTargetPattern           = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	ErrGatewayInvocationConflict      = errors.New("gateway node invocation conflicts with durable state")
+	ErrGatewayInvocationDispatched    = errors.New("gateway node invocation was already dispatched")
+	ErrGatewayInvocationNotDispatched = errors.New("gateway node invocation was not dispatched")
+	ErrGatewayInvocationNotFound      = errors.New("gateway node invocation not found")
+	ErrGatewayInvocationStoreFull     = errors.New("gateway node invocation store is full")
+	gatewayTargetPattern              = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 )
 
 type GatewayInvocationState string
@@ -45,29 +46,40 @@ const (
 // tool call to one immutable execution plan. ExpectedPlanHash is stored
 // separately so a mutated plan cannot validate itself.
 type GatewayInvocationRecord struct {
-	Target           string                 `json:"target"`
-	ToolCallID       string                 `json:"tool_call_id"`
-	Plan             ExecutionPlan          `json:"plan"`
-	Descriptor       CommandDescriptor      `json:"descriptor"`
-	ExpectedPlanHash string                 `json:"expected_plan_hash"`
-	State            GatewayInvocationState `json:"state"`
-	CreatedAt        int64                  `json:"created_at"`
-	UpdatedAt        int64                  `json:"updated_at"`
-	DispatchedAt     int64                  `json:"dispatched_at,omitempty"`
+	Target           string                         `json:"target"`
+	ToolCallID       string                         `json:"tool_call_id"`
+	Plan             ExecutionPlan                  `json:"plan"`
+	Descriptor       CommandDescriptor              `json:"descriptor"`
+	ExpectedPlanHash string                         `json:"expected_plan_hash"`
+	State            GatewayInvocationState         `json:"state"`
+	CreatedAt        int64                          `json:"created_at"`
+	UpdatedAt        int64                          `json:"updated_at"`
+	DispatchedAt     int64                          `json:"dispatched_at,omitempty"`
+	WorkspaceID      string                         `json:"workspace_id,omitempty"`
+	ExecutionID      string                         `json:"execution_id,omitempty"`
+	Cancellation     *GatewayInvocationCancellation `json:"cancellation,omitempty"`
+}
+
+type GatewayInvocationCancellation struct {
+	RequestedAt int64 `json:"requested_at"`
 }
 
 type GatewayInvocationOwner struct {
-	Target     string
-	AgentID    string
-	SessionID  string
-	ActorID    string
-	ToolCallID string
+	Target      string
+	AgentID     string
+	SessionID   string
+	ActorID     string
+	ToolCallID  string
+	WorkspaceID string
+	ExecutionID string
 }
 
 type GatewayInvocationPrincipal struct {
-	AgentID   string
-	SessionID string
-	ActorID   string
+	AgentID     string
+	SessionID   string
+	ActorID     string
+	WorkspaceID string
+	ExecutionID string
 }
 
 type gatewayInvocationDocument struct {
@@ -150,6 +162,35 @@ func (store *GatewayInvocationStore) Prepare(
 	plan ExecutionPlan,
 	descriptor CommandDescriptor,
 ) (GatewayInvocationRecord, bool, error) {
+	return store.PrepareOwned(
+		GatewayInvocationPrincipal{
+			AgentID: plan.AgentID, SessionID: plan.SessionID, ActorID: plan.ActorID,
+		},
+		target,
+		toolCallID,
+		plan,
+		descriptor,
+	)
+}
+
+func (store *GatewayInvocationStore) PrepareOwned(
+	principal GatewayInvocationPrincipal,
+	target string,
+	toolCallID string,
+	plan ExecutionPlan,
+	descriptor CommandDescriptor,
+) (GatewayInvocationRecord, bool, error) {
+	principal.AgentID = strings.TrimSpace(principal.AgentID)
+	principal.SessionID = strings.TrimSpace(principal.SessionID)
+	principal.ActorID = strings.TrimSpace(principal.ActorID)
+	principal.WorkspaceID = strings.TrimSpace(principal.WorkspaceID)
+	principal.ExecutionID = strings.TrimSpace(principal.ExecutionID)
+	if principal.AgentID != plan.AgentID ||
+		principal.SessionID != plan.SessionID ||
+		principal.ActorID != plan.ActorID ||
+		(principal.WorkspaceID == "") != (principal.ExecutionID == "") {
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
+	}
 	now := store.now()
 	record := GatewayInvocationRecord{
 		Target:           strings.TrimSpace(target),
@@ -160,6 +201,8 @@ func (store *GatewayInvocationStore) Prepare(
 		State:            GatewayInvocationPrepared,
 		CreatedAt:        now.UnixNano(),
 		UpdatedAt:        now.UnixNano(),
+		WorkspaceID:      strings.TrimSpace(principal.WorkspaceID),
+		ExecutionID:      strings.TrimSpace(principal.ExecutionID),
 	}
 	if err := record.validate(); err != nil {
 		return GatewayInvocationRecord{}, false, err
@@ -202,7 +245,7 @@ func (store *GatewayInvocationStore) Prepare(
 			plan.SessionID,
 			plan.ActorID,
 			record.ToolCallID,
-		) {
+		) && gatewayInvocationScopeMatches(existing, principal) {
 			if sameGatewayInvocationBinding(existing, record) {
 				if pruned {
 					if err := store.persistMutationLocked(previous); err != nil {
@@ -268,7 +311,7 @@ func (store *GatewayInvocationStore) ByToolCall(
 			principal.SessionID,
 			principal.ActorID,
 			toolCallID,
-		) {
+		) && gatewayInvocationScopeMatches(record, principal) {
 			return cloneGatewayInvocationRecord(record), true, nil
 		}
 	}
@@ -293,8 +336,61 @@ func (store *GatewayInvocationStore) Lookup(
 	if !found ||
 		record.Plan.AgentID != principal.AgentID ||
 		record.Plan.SessionID != principal.SessionID ||
-		record.Plan.ActorID != principal.ActorID {
+		record.Plan.ActorID != principal.ActorID ||
+		!gatewayInvocationWorkspaceMatches(record, principal) {
 		return GatewayInvocationRecord{}, false, nil
+	}
+	return cloneGatewayInvocationRecord(record), true, nil
+}
+
+func (store *GatewayInvocationStore) RequestCancellation(
+	principal GatewayInvocationPrincipal,
+	invocationID string,
+) (GatewayInvocationRecord, bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	release, err := store.lockAndReloadLocked()
+	if err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	defer release()
+	if err := store.pruneAndPersistLocked(store.now()); err != nil {
+		return GatewayInvocationRecord{}, false, err
+	}
+	record, found := store.records[invocationID]
+	if !found {
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationNotFound
+	}
+	if record.Plan.AgentID != principal.AgentID ||
+		record.Plan.SessionID != principal.SessionID ||
+		record.Plan.ActorID != principal.ActorID ||
+		!gatewayInvocationScopeMatches(record, principal) {
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationConflict
+	}
+	if record.State != GatewayInvocationDispatched {
+		return GatewayInvocationRecord{}, false, ErrGatewayInvocationNotDispatched
+	}
+	if record.Cancellation != nil {
+		return cloneGatewayInvocationRecord(record), false, nil
+	}
+	previous := cloneGatewayInvocationRecords(store.records)
+	now := store.now().UnixNano()
+	if now <= record.UpdatedAt {
+		if record.UpdatedAt == math.MaxInt64 {
+			return GatewayInvocationRecord{}, false, fmt.Errorf(
+				"%w: invocation timestamp exhausted",
+				ErrInvalidInvocation,
+			)
+		}
+		now = record.UpdatedAt + 1
+	}
+	record.Cancellation = &GatewayInvocationCancellation{RequestedAt: now}
+	record.UpdatedAt = now
+	store.records[invocationID] = record
+	if err := store.persistMutationLocked(previous); err != nil {
+		return cloneGatewayInvocationRecord(record),
+			fileutil.IsCommittedWriteError(err),
+			fmt.Errorf("persist node invocation cancellation: %w", err)
 	}
 	return cloneGatewayInvocationRecord(record), true, nil
 }
@@ -536,7 +632,7 @@ func (record GatewayInvocationRecord) validate() error {
 	}
 	switch record.State {
 	case GatewayInvocationPrepared:
-		if record.DispatchedAt != 0 {
+		if record.DispatchedAt != 0 || record.Cancellation != nil {
 			return fmt.Errorf("%w: prepared invocation has dispatch time", ErrInvalidInvocation)
 		}
 	case GatewayInvocationDispatched:
@@ -549,7 +645,36 @@ func (record GatewayInvocationRecord) validate() error {
 	if record.CreatedAt <= 0 || record.UpdatedAt < record.CreatedAt {
 		return fmt.Errorf("%w: invalid gateway invocation timestamps", ErrInvalidInvocation)
 	}
+	if (record.WorkspaceID == "") != (record.ExecutionID == "") ||
+		(record.WorkspaceID != "" &&
+			(!validInvocationIdentifier(record.WorkspaceID) ||
+				!validInvocationIdentifier(record.ExecutionID))) ||
+		(record.Cancellation != nil &&
+			(record.Cancellation.RequestedAt < record.DispatchedAt ||
+				record.Cancellation.RequestedAt > record.UpdatedAt)) {
+		return fmt.Errorf("%w: invalid gateway invocation ownership", ErrInvalidInvocation)
+	}
 	return nil
+}
+
+func gatewayInvocationScopeMatches(
+	record GatewayInvocationRecord,
+	principal GatewayInvocationPrincipal,
+) bool {
+	if record.WorkspaceID == "" || record.ExecutionID == "" {
+		return strings.TrimSpace(principal.WorkspaceID) == "" &&
+			strings.TrimSpace(principal.ExecutionID) == ""
+	}
+	return record.WorkspaceID == strings.TrimSpace(principal.WorkspaceID) &&
+		record.ExecutionID == strings.TrimSpace(principal.ExecutionID)
+}
+
+func gatewayInvocationWorkspaceMatches(
+	record GatewayInvocationRecord,
+	principal GatewayInvocationPrincipal,
+) bool {
+	return record.WorkspaceID == "" ||
+		record.WorkspaceID == strings.TrimSpace(principal.WorkspaceID)
 }
 
 func sameGatewayToolCall(
@@ -582,7 +707,9 @@ func sameGatewayInvocationBinding(
 		sameCommandDescriptor(left.Descriptor, right.Descriptor) &&
 		left.Plan.AgentID == right.Plan.AgentID &&
 		left.Plan.SessionID == right.Plan.SessionID &&
-		left.Plan.ActorID == right.Plan.ActorID
+		left.Plan.ActorID == right.Plan.ActorID &&
+		left.WorkspaceID == right.WorkspaceID &&
+		left.ExecutionID == right.ExecutionID
 }
 
 func (owner GatewayInvocationOwner) validate() error {
@@ -591,7 +718,11 @@ func (owner GatewayInvocationOwner) validate() error {
 		!validInvocationIdentifier(strings.TrimSpace(owner.SessionID)) ||
 		!validInvocationIdentifier(strings.TrimSpace(owner.ActorID)) ||
 		len(strings.TrimSpace(owner.ToolCallID)) == 0 ||
-		len(strings.TrimSpace(owner.ToolCallID)) > maxGatewayToolCallIDLength {
+		len(strings.TrimSpace(owner.ToolCallID)) > maxGatewayToolCallIDLength ||
+		(owner.WorkspaceID == "") != (owner.ExecutionID == "") ||
+		(owner.WorkspaceID != "" &&
+			(!validInvocationIdentifier(strings.TrimSpace(owner.WorkspaceID)) ||
+				!validInvocationIdentifier(strings.TrimSpace(owner.ExecutionID)))) {
 		return fmt.Errorf("%w: malformed gateway invocation owner", ErrInvalidInvocation)
 	}
 	return nil
@@ -602,7 +733,9 @@ func (owner GatewayInvocationOwner) matches(record GatewayInvocationRecord) bool
 		strings.TrimSpace(owner.AgentID) == record.Plan.AgentID &&
 		strings.TrimSpace(owner.SessionID) == record.Plan.SessionID &&
 		strings.TrimSpace(owner.ActorID) == record.Plan.ActorID &&
-		strings.TrimSpace(owner.ToolCallID) == record.ToolCallID
+		strings.TrimSpace(owner.ToolCallID) == record.ToolCallID &&
+		strings.TrimSpace(owner.WorkspaceID) == record.WorkspaceID &&
+		strings.TrimSpace(owner.ExecutionID) == record.ExecutionID
 }
 
 func cloneGatewayInvocationRecords(
@@ -618,6 +751,10 @@ func cloneGatewayInvocationRecords(
 func cloneGatewayInvocationRecord(record GatewayInvocationRecord) GatewayInvocationRecord {
 	record.Plan = cloneExecutionPlan(record.Plan)
 	record.Descriptor = cloneCommandDescriptor(record.Descriptor)
+	if record.Cancellation != nil {
+		cancellation := *record.Cancellation
+		record.Cancellation = &cancellation
+	}
 	return record
 }
 
