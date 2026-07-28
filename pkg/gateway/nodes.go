@@ -47,14 +47,16 @@ type nodeAdmissionHandler interface {
 }
 
 type nodeAdmissionRuntime struct {
-	registryMu   sync.RWMutex
-	routes       nodeAdmissionRoutes
-	registry     *nodes.FileRegistry
-	registryPath string
-	handler      nodeAdmissionHandler
-	sessions     *nodews.SessionHub
-	generation   uint64
-	mounted      bool
+	registryMu        sync.RWMutex
+	routes            nodeAdmissionRoutes
+	registry          *nodes.FileRegistry
+	registryPath      string
+	handler           nodeAdmissionHandler
+	sessions          *nodews.SessionHub
+	terminalStore     *nodes.GatewayTerminalStore
+	terminalStorePath string
+	generation        uint64
+	mounted           bool
 }
 
 type nodeDiscoverySource struct {
@@ -240,6 +242,25 @@ func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
 	return runtime.generation
 }
 
+func (runtime *nodeAdmissionRuntime) gatewayTerminalStore(
+	path string,
+	maxRecords int,
+	maxBytes int,
+) (*nodes.GatewayTerminalStore, error) {
+	runtime.registryMu.Lock()
+	defer runtime.registryMu.Unlock()
+	if runtime.terminalStore != nil && runtime.terminalStorePath == path {
+		return runtime.terminalStore, nil
+	}
+	store, err := nodes.NewGatewayTerminalStore(path, maxRecords, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	runtime.terminalStore = store
+	runtime.terminalStorePath = path
+	return store, nil
+}
+
 func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
 	expectedRegistryPath string,
 	expectedGeneration uint64,
@@ -307,6 +328,8 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	runtime.registryMu.Lock()
 	runtime.registry = nil
 	runtime.sessions = nil
+	runtime.terminalStore = nil
+	runtime.terminalStorePath = ""
 	runtime.registryPath = ""
 	runtime.handler = nil
 	runtime.registryMu.Unlock()

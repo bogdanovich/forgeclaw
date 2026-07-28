@@ -65,18 +65,26 @@ func (handler *AdmissionHandler) OpenTerminal(
 	if err != nil {
 		return nodes.TerminalMetadata{}, dispatched, err
 	}
-	metadata, err := decodeTerminalMetadata(response, plan.Owner)
+	metadata, err := decodeTerminalOpenResponse(response, plan.Owner)
 	if err != nil {
-		return nodes.TerminalMetadata{}, true, errors.Join(commitWarning, err)
-	}
-	if metadata.State != "pending_attach" {
-		return nodes.TerminalMetadata{}, true, errors.Join(
-			commitWarning,
-			errors.New("node returned an invalid terminal open state"),
-		)
+		return metadata, true, errors.Join(commitWarning, err)
 	}
 	_ = approval
 	return metadata, true, commitWarning
+}
+
+func decodeTerminalOpenResponse(
+	response protocol.Envelope,
+	owner nodes.TerminalOwner,
+) (nodes.TerminalMetadata, error) {
+	metadata, err := decodeTerminalMetadata(response, owner)
+	if err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	if metadata.State != "pending_attach" {
+		return metadata, errors.New("node returned an invalid terminal open state")
+	}
+	return metadata, nil
 }
 
 func commitTerminalDispatch(

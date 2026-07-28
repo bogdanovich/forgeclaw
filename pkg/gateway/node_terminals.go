@@ -62,7 +62,7 @@ func newNodeTerminalSource(
 	if _, err := runtime.terminalHandlerSnapshot(registryPath, generation); err != nil {
 		return nil, err
 	}
-	store, err := nodes.NewGatewayTerminalStore(
+	store, err := runtime.gatewayTerminalStore(
 		nodes.GatewayTerminalStorePath(workspace),
 		nodes.DefaultGatewayTerminalLimit,
 		nodes.DefaultGatewayTerminalStoreBytes,
@@ -259,8 +259,7 @@ func (source *nodeTerminalSource) OpenTerminal(
 			)
 		},
 	)
-	if openErr != nil &&
-		(metadata.TerminalID == "" || !fileutil.IsCommittedWriteError(openErr)) {
+	if openErr != nil && (metadata.TerminalID == "" || !dispatched) {
 		return nodes.TerminalMetadata{}, dispatched, openErr
 	}
 	var persistErr error

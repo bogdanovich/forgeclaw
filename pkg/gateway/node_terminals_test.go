@@ -190,6 +190,54 @@ func TestNodeTerminalSourceTerminatesCommittedOpenWarning(t *testing.T) {
 	}
 }
 
+func TestNodeTerminalSourceTerminatesInvalidSuccessfulOpenState(t *testing.T) {
+	source, handler, owner, nodeID := newTestNodeTerminalSource(t)
+	record, _, err := source.PrepareTerminal(
+		nodeID,
+		"vpn-node",
+		"open_invalid_state",
+		"idem_invalid_state",
+		owner,
+		"workspace",
+		80,
+		24,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.openMetadata = nodes.TerminalMetadata{
+		TerminalID: "terminal_invalid_state",
+		Owner:      owner,
+		State:      string(nodes.GatewayTerminalLive),
+		StartedAt:  source.now().Unix(),
+	}
+	handler.openResultErr = errors.New("node returned an invalid terminal open state")
+	handler.terminateMetadata = nodes.TerminalMetadata{
+		TerminalID:           handler.openMetadata.TerminalID,
+		Owner:                owner,
+		State:                string(nodes.GatewayTerminalClosed),
+		Reason:               "close",
+		StartedAt:            handler.openMetadata.StartedAt,
+		CompletedAt:          handler.openMetadata.StartedAt + 1,
+		TerminationConfirmed: true,
+	}
+	if _, dispatched, openErr := source.OpenTerminal(
+		t.Context(),
+		owner,
+		record.Plan.OpenID,
+		record.ExpectedPlanHash,
+	); openErr == nil || !dispatched {
+		t.Fatalf("invalid-state open = (dispatched %v, error %v)", dispatched, openErr)
+	}
+	if handler.terminateCalls.Load() != 1 {
+		t.Fatalf("terminate calls = %d, want 1", handler.terminateCalls.Load())
+	}
+	retained, found, lookupErr := source.store.Lookup(owner, record.Plan.OpenID)
+	if lookupErr != nil || !found || retained.State != nodes.GatewayTerminalDispatched {
+		t.Fatalf("retained invalid-state cleanup = (%#v, %v, %v)", retained, found, lookupErr)
+	}
+}
+
 func TestNodeTerminalSourceDeniesUnapprovedProfileBeforePersistence(t *testing.T) {
 	source, _, owner, nodeID := newTestNodeTerminalSource(t)
 	owner.Profile = "unapproved"
@@ -397,6 +445,76 @@ func TestNewNodeTerminalSourceIsDisabledByDefault(t *testing.T) {
 	cfg.Nodes.Enabled = true
 	if source, err := newNodeTerminalSource(cfg, nil); err != nil || source != nil {
 		t.Fatalf("default terminal source = (%#v, %v)", source, err)
+	}
+}
+
+func TestNodeTerminalSourceReusesActiveStoreAcrossSameWorkspaceReload(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = workspace
+	cfg.Nodes.Enabled = true
+	cfg.Nodes.TerminalEnabled = true
+	handler := &fakeGatewayTerminalHandler{fakeNodeAdmissionHandler: &fakeNodeAdmissionHandler{}}
+	runtime := &nodeAdmissionRuntime{
+		registryPath: nodes.RegistryPath(workspace),
+		handler:      handler,
+		generation:   1,
+		mounted:      true,
+	}
+	first, err := newNodeTerminalSource(cfg, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := nodes.TerminalOwner{
+		ActorID: "actor_reload", AgentID: "agent_reload", RouteID: "route_reload",
+		SessionID: "session_reload", WorkspaceID: "workspace_reload",
+		Target: "vpn", Profile: "owner",
+	}
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_reload",
+		IdempotencyKey:  "idem_reload",
+		NodeID:          nodes.ID("node_reload"),
+		Owner:           owner,
+		CatalogHash:     testDigest("a"),
+		AuthorityDigest: testDigest("b"),
+		WorkingScope:    "workspace",
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := first.store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := first.store.MarkDispatched(owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	opened := nodes.TerminalMetadata{
+		TerminalID: "terminal_reload",
+		Owner:      owner,
+		State:      string(nodes.GatewayTerminalPendingAttach),
+		StartedAt:  time.Now().Unix(),
+	}
+	if _, _, err := first.store.RecordOpened(owner, plan.OpenID, opened); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.registryMu.Lock()
+	runtime.handler = &fakeGatewayTerminalHandler{fakeNodeAdmissionHandler: &fakeNodeAdmissionHandler{}}
+	runtime.generation++
+	runtime.registryMu.Unlock()
+	reloaded, err := newNodeTerminalSource(cfg, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.store != first.store {
+		t.Fatal("same-workspace reload reopened the terminal store")
+	}
+	retained, found, err := reloaded.store.Lookup(owner, opened.TerminalID)
+	if err != nil || !found || retained.State != nodes.GatewayTerminalPendingAttach {
+		t.Fatalf("active terminal after reload = (%#v, %v, %v)", retained, found, err)
 	}
 }
 

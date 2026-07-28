@@ -83,6 +83,27 @@ func TestTerminalDispatchConsumesResponseAfterCommittedWarning(t *testing.T) {
 	}
 }
 
+func TestTerminalOpenResponseRetainsValidatedIdentityForInvalidState(t *testing.T) {
+	owner := testTerminalOwner()
+	result, err := json.Marshal(nodes.TerminalMetadata{
+		TerminalID: "terminal_invalid_state",
+		Owner:      owner,
+		State:      "live",
+		StartedAt:  time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := true
+	metadata, err := decodeTerminalOpenResponse(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: "req_open", OK: &ok, Result: result,
+	}, owner)
+	if err == nil || metadata.TerminalID != "terminal_invalid_state" ||
+		metadata.Owner != owner {
+		t.Fatalf("decodeTerminalOpenResponse() = (%#v, %v)", metadata, err)
+	}
+}
+
 func TestTerminalEventSubscriptionAppliesByteAccurateBackpressure(t *testing.T) {
 	subscription := &terminalEventSubscription{
 		request: nodes.TerminalSessionRequest{
