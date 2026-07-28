@@ -34,6 +34,13 @@ func (*AuthorityBrokerClient) OpenTerminal(
 	return nil, TerminalBrokerEvent{}, errors.New("authority broker requires Linux")
 }
 
+func (client *AuthorityBrokerClient) openTerminal(
+	ctx context.Context,
+	request TerminalBrokerOpenRequest,
+) (terminalBrokerSession, TerminalBrokerEvent, error) {
+	return client.OpenTerminal(ctx, request)
+}
+
 func (*AuthorityBrokerTerminal) ID() string { return "" }
 
 func (*AuthorityBrokerTerminal) Send(context.Context, TerminalBrokerControl) error {
