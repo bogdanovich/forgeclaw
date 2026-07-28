@@ -379,6 +379,26 @@ func TestAuthorityBrokerTerminalReceiveHonorsDeadlineFreeCancellation(t *testing
 	}
 }
 
+func TestAuthorityBrokerTerminalReceiveDeadlineClosesInterruptedStream(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := terminal.Receive(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	select {
+	case <-terminal.done:
+	default:
+		t.Fatal("Receive() deadline left interrupted stream open")
+	}
+}
+
 func TestAuthorityBrokerTerminalSendHonorsBackpressuredCancellation(t *testing.T) {
 	connection, peer := testAuthorityBrokerUnixPair(t)
 	defer connection.Close()
@@ -407,6 +427,31 @@ func TestAuthorityBrokerTerminalSendHonorsBackpressuredCancellation(t *testing.T
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Send() ignored backpressured context cancellation")
+	}
+}
+
+func TestAuthorityBrokerTerminalSendDeadlineClosesInterruptedStream(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	fillAuthorityBrokerUnixWriteBuffer(t, connection)
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	err := terminal.Send(ctx, terminalInputControl(
+		1,
+		"input-1",
+		strings.Repeat("x", MaxTerminalFrameBytes),
+	))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Send() error = %v", err)
+	}
+	select {
+	case <-terminal.done:
+	default:
+		t.Fatal("Send() deadline left interrupted stream open")
 	}
 }
 

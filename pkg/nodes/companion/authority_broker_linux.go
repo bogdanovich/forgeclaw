@@ -306,11 +306,6 @@ func armAuthorityBrokerTerminalContext(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := setDeadline(deadline); err != nil {
-			return nil, err
-		}
-	}
 	done := make(chan struct{})
 	exited := make(chan struct{})
 	interrupted := make(chan struct{}, 1)
