@@ -518,11 +518,13 @@ func setupNodeTools(
 	if runtime == nil {
 		return nil
 	}
-	if cfg != nil && cfg.Nodes.Enabled {
-		if _, err := newNodeInvocationSource(cfg, runtime); err != nil {
+	if cfg != nil {
+		if _, err := newNodeTerminalSource(cfg, runtime); err != nil {
 			return err
 		}
-		if _, err := newNodeTerminalSource(cfg, runtime); err != nil {
+	}
+	if cfg != nil && cfg.Nodes.Enabled {
+		if _, err := newNodeInvocationSource(cfg, runtime); err != nil {
 			return err
 		}
 	}

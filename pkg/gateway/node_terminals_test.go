@@ -442,9 +442,79 @@ func TestNodeTerminalSourceTerminatesWhenOpenedMetadataCannotPersist(t *testing.
 
 func TestNewNodeTerminalSourceIsDisabledByDefault(t *testing.T) {
 	cfg := &config.Config{}
+	cfg.Agents.Defaults.Workspace = t.TempDir()
 	cfg.Nodes.Enabled = true
-	if source, err := newNodeTerminalSource(cfg, nil); err != nil || source != nil {
+	runtime := &nodeAdmissionRuntime{}
+	if source, err := newNodeTerminalSource(cfg, runtime); err != nil || source != nil {
 		t.Fatalf("default terminal source = (%#v, %v)", source, err)
+	}
+	if runtime.terminalStore != nil {
+		t.Fatal("fresh disabled configuration created a terminal store")
+	}
+}
+
+func TestDisabledNodeTerminalSourceRecoversExistingStore(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		nodesEnabled    bool
+		terminalEnabled bool
+	}{
+		{name: "terminal disabled", nodesEnabled: true},
+		{name: "nodes disabled", terminalEnabled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			path := nodes.GatewayTerminalStorePath(workspace)
+			store, err := nodes.NewGatewayTerminalStore(path, 8, 1024*1024)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := nodes.TerminalOwner{
+				ActorID: "actor_restart", AgentID: "agent_restart", RouteID: "route_restart",
+				SessionID: "session_restart", WorkspaceID: "workspace_restart",
+				Target: "vpn", Profile: "owner",
+			}
+			plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+				OpenID:          "open_disabled_restart",
+				IdempotencyKey:  "idem_disabled_restart",
+				NodeID:          nodes.ID("node_restart"),
+				Owner:           owner,
+				CatalogHash:     testDigest("a"),
+				AuthorityDigest: testDigest("b"),
+				WorkingScope:    "workspace",
+				Columns:         80,
+				Rows:            24,
+				ApprovalMode:    "session_start",
+			}, time.Now(), time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.Prepare(plan); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.MarkDispatched(owner, plan.OpenID, plan.PlanHash); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := config.DefaultConfig()
+			cfg.Agents.Defaults.Workspace = workspace
+			cfg.Nodes.Enabled = test.nodesEnabled
+			cfg.Nodes.TerminalEnabled = test.terminalEnabled
+			runtime := &nodeAdmissionRuntime{}
+			source, err := newNodeTerminalSource(cfg, runtime)
+			if err != nil || source != nil {
+				t.Fatalf("disabled terminal source = (%#v, %v)", source, err)
+			}
+			if runtime.terminalStore == nil || runtime.terminalStorePath != path {
+				t.Fatal("disabled startup did not retain the recovered terminal store")
+			}
+			record, found, err := runtime.terminalStore.Lookup(owner, plan.OpenID)
+			if err != nil || !found ||
+				record.State != nodes.GatewayTerminalUnknown ||
+				record.Reason != "gateway_restarted" {
+				t.Fatalf("disabled startup terminal = (%#v, %v, %v)", record, found, err)
+			}
+		})
 	}
 }
 

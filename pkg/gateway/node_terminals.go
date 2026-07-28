@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"time"
 
@@ -50,20 +51,34 @@ func newNodeTerminalSource(
 	cfg *config.Config,
 	runtime *nodeAdmissionRuntime,
 ) (*nodeTerminalSource, error) {
-	if cfg == nil || !cfg.Nodes.Enabled || !cfg.Nodes.TerminalEnabled {
+	if cfg == nil || runtime == nil {
 		return nil, nil
 	}
-	if runtime == nil {
-		return nil, errNodeDiscoveryAuthorityUnavailable
-	}
 	workspace := cfg.WorkspacePath()
+	storePath := nodes.GatewayTerminalStorePath(workspace)
+	enabled := cfg.Nodes.Enabled && cfg.Nodes.TerminalEnabled
+	if !enabled {
+		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		} else if err != nil {
+			return nil, fmt.Errorf("inspect gateway terminal store: %w", err)
+		}
+		if _, err := runtime.gatewayTerminalStore(
+			storePath,
+			nodes.DefaultGatewayTerminalLimit,
+			nodes.DefaultGatewayTerminalStoreBytes,
+		); err != nil {
+			return nil, fmt.Errorf("recover disabled gateway terminal store: %w", err)
+		}
+		return nil, nil
+	}
 	registryPath := nodes.RegistryPath(workspace)
 	generation := runtime.invocationGeneration()
 	if _, err := runtime.terminalHandlerSnapshot(registryPath, generation); err != nil {
 		return nil, err
 	}
 	store, err := runtime.gatewayTerminalStore(
-		nodes.GatewayTerminalStorePath(workspace),
+		storePath,
 		nodes.DefaultGatewayTerminalLimit,
 		nodes.DefaultGatewayTerminalStoreBytes,
 	)
