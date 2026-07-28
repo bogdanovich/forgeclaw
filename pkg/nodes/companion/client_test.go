@@ -3,6 +3,7 @@ package companion
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -386,6 +387,133 @@ func TestClientCancelsInvocationOverAuthenticatedSession(t *testing.T) {
 	cancel()
 	if runErr := <-done; runErr != nil {
 		t.Fatal(runErr)
+	}
+}
+
+func TestClientServesOwnerBoundTerminalOverAuthenticatedSession(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	broker := &fakeTerminalBroker{
+		session: &fakeTerminalBrokerSession{events: make(chan TerminalBrokerEvent, 8)},
+	}
+	policy := nodes.LocalCommandPolicy{
+		Revision:          "terminal-test",
+		AllowedCommands:   []string{"shell.exec.v1"},
+		MaximumRisk:       nodes.RiskPrivileged,
+		MaxTimeoutSeconds: 30,
+		MaxOutputBytes:    64 * 1024,
+	}
+	runtime, err := NewRuntime(
+		identity.ID,
+		"test",
+		policy,
+		newMemoryInvocationLedger(),
+		WithShellBroker(validShellBrokerSnapshot(), broker),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := testRuntimeClientForServer(t, server, identity, runtime)
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Approve(result.NodeID, nodes.PairingApproval{
+		AllowedCommands: []string{"shell.exec.v1"},
+		At:              time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancelRun := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- client.Run(runCtx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	owner := testCompanionTerminalOwner()
+	owner.Profile = runtime.terminals.profile.Alias
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_transport",
+		IdempotencyKey:  "terminal-open-transport",
+		NodeID:          identity.ID,
+		Owner:           owner,
+		CatalogHash:     runtime.terminals.catalogHash,
+		AuthorityDigest: runtime.terminals.authorityHash,
+		WorkingScope:    runtime.terminals.profile.WorkingScopes[0],
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commits atomic.Int32
+	metadata, dispatched, err := admission.OpenTerminal(
+		t.Context(),
+		identity.ID,
+		plan,
+		func() error {
+			commits.Add(1)
+			return nil
+		},
+	)
+	if err != nil || !dispatched || commits.Load() != 1 ||
+		metadata.State != TerminalSessionPendingAttach {
+		t.Fatalf(
+			"OpenTerminal() = (%#v, dispatched %v, commits %d, error %v)",
+			metadata,
+			dispatched,
+			commits.Load(),
+			err,
+		)
+	}
+	request := nodes.TerminalSessionRequest{TerminalID: metadata.TerminalID, Owner: owner}
+	other := request
+	other.Owner.RouteID = "route_other"
+	if _, err := admission.TerminalStatus(t.Context(), identity.ID, other); err == nil {
+		t.Fatal("different owner route read terminal status")
+	}
+	stream, attached, err := admission.AttachTerminal(t.Context(), identity.ID, request)
+	if err != nil || attached.State != TerminalSessionLive {
+		t.Fatalf("AttachTerminal() = (%#v, %v)", attached, err)
+	}
+	if err := stream.Control(t.Context(), nodes.TerminalControlRequest{
+		TerminalSessionRequest: request,
+		Sequence:               1,
+		IdempotencyKey:         "input-1",
+		InputBase64:            base64.StdEncoding.EncodeToString([]byte("x")),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	broker.session.events <- TerminalBrokerEvent{
+		Version: AuthorityBrokerProtocolVersion, Type: TerminalEventAck,
+		TerminalID: metadata.TerminalID, AcceptedSequence: 1, State: "live",
+	}
+	broker.session.events <- TerminalBrokerEvent{
+		Version: AuthorityBrokerProtocolVersion, Type: TerminalEventOutput,
+		TerminalID: metadata.TerminalID, Cursor: 1,
+		DataBase64: base64.StdEncoding.EncodeToString([]byte("x")),
+	}
+	ack, err := stream.Receive(t.Context())
+	if err != nil || ack.Type != TerminalEventAck || ack.AcceptedSequence != 1 {
+		t.Fatalf("terminal ack = (%#v, %v)", ack, err)
+	}
+	output, err := stream.Receive(t.Context())
+	if err != nil || output.Type != TerminalEventOutput || output.Cursor != 1 {
+		t.Fatalf("terminal output = (%#v, %v)", output, err)
+	}
+	if err := stream.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := admission.TerminalStatus(t.Context(), identity.ID, request)
+	if err != nil || closed.State != TerminalSessionClosed ||
+		!closed.TerminationConfirmed {
+		t.Fatalf("terminal close = (%#v, %v)", closed, err)
+	}
+	cancelRun()
+	if err := <-runDone; err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 }
 

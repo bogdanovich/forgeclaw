@@ -39,6 +39,8 @@ type Client struct {
 	stableWindow  time.Duration
 	invokeSlots   chan struct{}
 	workers       sync.WaitGroup
+	attachmentsMu sync.Mutex
+	attachments   map[string]*TerminalAttachment
 }
 
 func NewClient(
@@ -111,6 +113,7 @@ func newClient(
 		logger:        logger,
 		stableWindow:  defaultStableSessionWindow,
 		invokeSlots:   make(chan struct{}, maxConcurrentInvocations),
+		attachments:   make(map[string]*TerminalAttachment),
 		dialer: websocket.Dialer{
 			HandshakeTimeout: DefaultHandshakeTimeout,
 			TLSClientConfig:  tlsConfig,
@@ -350,6 +353,7 @@ func (client *Client) identityProof(challenge nodes.Challenge) (nodes.IdentityPr
 
 func (client *Client) serveConnected(ctx context.Context, connection *websocket.Conn) error {
 	defer connection.Close()
+	defer client.disconnectTerminals()
 	stopContextClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
 	defer stopContextClose()
 	if err := connection.SetWriteDeadline(time.Time{}); err != nil {
@@ -414,7 +418,7 @@ func (client *Client) dispatchRequest(
 	envelope protocol.Envelope,
 	workerFailure chan<- error,
 ) error {
-	if envelope.Method != "node.invoke" {
+	if !client.concurrentRequest(envelope.Method) {
 		return client.handleRequest(ctx, writer, envelope)
 	}
 	select {
@@ -442,6 +446,16 @@ func (client *Client) dispatchRequest(
 	return nil
 }
 
+func (client *Client) concurrentRequest(method string) bool {
+	switch method {
+	case "node.invoke", "node.terminal.open", "node.terminal.attach", "node.terminal.control",
+		"node.terminal.detach":
+		return true
+	default:
+		return false
+	}
+}
+
 func (client *Client) handleRequest(
 	ctx context.Context,
 	writer *connectedWriter,
@@ -454,6 +468,16 @@ func (client *Client) handleRequest(
 		return client.handleInvocationQuery(writer, envelope)
 	case "node.invoke.cancel":
 		return client.handleInvocationCancel(writer, envelope)
+	case "node.terminal.open":
+		return client.handleTerminalOpen(ctx, writer, envelope)
+	case "node.terminal.attach":
+		return client.handleTerminalAttach(writer, envelope)
+	case "node.terminal.control":
+		return client.handleTerminalControl(ctx, writer, envelope)
+	case "node.terminal.status":
+		return client.handleTerminalStatus(writer, envelope)
+	case "node.terminal.detach":
+		return client.handleTerminalDetach(writer, envelope)
 	default:
 		return client.writeCommandError(
 			writer,
@@ -462,6 +486,334 @@ func (client *Client) handleRequest(
 			"unsupported node method",
 		)
 	}
+}
+
+type terminalTransportEvent struct {
+	TerminalID string              `json:"terminal_id"`
+	Event      TerminalBrokerEvent `json:"event"`
+}
+
+func (client *Client) handleTerminalOpen(
+	ctx context.Context,
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+) error {
+	if client.runtime == nil || client.runtime.terminals == nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"TERMINAL_UNAVAILABLE",
+			"node terminal runtime is disabled",
+		)
+	}
+	var plan nodes.TerminalOpenPlan
+	if err := decodeStrictJSON(envelope.Params, &plan); err != nil ||
+		envelope.IdempotencyKey == "" ||
+		envelope.IdempotencyKey != plan.IdempotencyKey {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_PLAN",
+			"invalid terminal open plan",
+		)
+	}
+	metadata, err := client.runtime.terminals.Open(ctx, plan)
+	if err != nil {
+		code := "TERMINAL_OPEN_FAILED"
+		message := "terminal open failed"
+		if errors.Is(err, nodes.ErrCommandDenied) || errors.Is(err, nodes.ErrInvalidTerminal) {
+			code = "TERMINAL_DENIED"
+			message = "terminal open denied"
+		} else if errors.Is(err, ErrTerminalOpenConflict) {
+			code = "IDEMPOTENCY_CONFLICT"
+			message = "terminal open conflicts with existing session"
+		}
+		return client.writeCommandError(writer, envelope.ID, code, message)
+	}
+	return writeTerminalMetadata(writer, envelope.ID, metadata)
+}
+
+func (client *Client) handleTerminalAttach(
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+) error {
+	if client.runtime == nil || client.runtime.terminals == nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"TERMINAL_UNAVAILABLE",
+			"node terminal runtime is disabled",
+		)
+	}
+	if envelope.IdempotencyKey != "" {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_ATTACH",
+			"terminal attach cannot carry an idempotency key",
+		)
+	}
+	var request nodes.TerminalSessionRequest
+	if err := decodeStrictJSON(envelope.Params, &request); err != nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_ATTACH",
+			"invalid terminal attach request",
+		)
+	}
+	attachment, err := client.runtime.terminals.Attach(request)
+	if err != nil {
+		return client.writeTerminalAccessError(writer, envelope.ID, err)
+	}
+	metadata, err := client.runtime.terminals.Status(request)
+	if err != nil {
+		_ = attachment.Close()
+		return client.writeTerminalAccessError(writer, envelope.ID, err)
+	}
+	client.attachmentsMu.Lock()
+	if client.attachments[request.TerminalID] != nil {
+		client.attachmentsMu.Unlock()
+		_ = attachment.Close()
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"TERMINAL_ALREADY_ATTACHED",
+			"terminal session was already attached",
+		)
+	}
+	client.attachments[request.TerminalID] = attachment
+	client.attachmentsMu.Unlock()
+	if err := writeTerminalMetadata(writer, envelope.ID, metadata); err != nil {
+		client.removeAttachment(request.TerminalID, attachment)
+		_ = attachment.Close()
+		return err
+	}
+	client.workers.Add(1)
+	go client.forwardTerminalEvents(writer, request.TerminalID, attachment)
+	return nil
+}
+
+func (client *Client) handleTerminalControl(
+	ctx context.Context,
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+) error {
+	var request nodes.TerminalControlRequest
+	if err := decodeStrictJSON(envelope.Params, &request); err != nil ||
+		envelope.IdempotencyKey == "" ||
+		envelope.IdempotencyKey != request.IdempotencyKey {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_CONTROL",
+			"invalid terminal control request",
+		)
+	}
+	client.attachmentsMu.Lock()
+	attachment := client.attachments[request.TerminalID]
+	client.attachmentsMu.Unlock()
+	if attachment == nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"TERMINAL_NOT_ATTACHED",
+			"terminal session is not attached",
+		)
+	}
+	if err := attachment.Send(ctx, request); err != nil {
+		return client.writeTerminalAccessError(writer, envelope.ID, err)
+	}
+	result, err := json.Marshal(map[string]any{
+		"terminal_id": request.TerminalID,
+		"sequence":    request.Sequence,
+		"dispatched":  true,
+	})
+	if err != nil {
+		return err
+	}
+	ok := true
+	return writer.writeEnvelope(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: envelope.ID, OK: &ok, Result: result,
+	})
+}
+
+func (client *Client) handleTerminalStatus(
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+) error {
+	if client.runtime == nil || client.runtime.terminals == nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"TERMINAL_UNAVAILABLE",
+			"node terminal runtime is disabled",
+		)
+	}
+	if envelope.IdempotencyKey != "" {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_STATUS",
+			"terminal status cannot carry an idempotency key",
+		)
+	}
+	var request nodes.TerminalSessionRequest
+	if err := decodeStrictJSON(envelope.Params, &request); err != nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_STATUS",
+			"invalid terminal status request",
+		)
+	}
+	metadata, err := client.runtime.terminals.Status(request)
+	if err != nil {
+		return client.writeTerminalAccessError(writer, envelope.ID, err)
+	}
+	return writeTerminalMetadata(writer, envelope.ID, metadata)
+}
+
+func (client *Client) handleTerminalDetach(
+	writer *connectedWriter,
+	envelope protocol.Envelope,
+) error {
+	if envelope.IdempotencyKey != "" {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_DETACH",
+			"terminal detach cannot carry an idempotency key",
+		)
+	}
+	var request nodes.TerminalSessionRequest
+	if err := decodeStrictJSON(envelope.Params, &request); err != nil ||
+		request.Validate() != nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"INVALID_TERMINAL_DETACH",
+			"invalid terminal detach request",
+		)
+	}
+	client.attachmentsMu.Lock()
+	attachment := client.attachments[request.TerminalID]
+	client.attachmentsMu.Unlock()
+	if attachment == nil {
+		return client.writeCommandError(
+			writer,
+			envelope.ID,
+			"TERMINAL_NOT_ATTACHED",
+			"terminal session is not attached",
+		)
+	}
+	if !terminalOwnersEqual(attachment.owner, request.Owner) {
+		return client.writeTerminalAccessError(writer, envelope.ID, ErrTerminalOwnerMismatch)
+	}
+	if err := attachment.Close(); err != nil {
+		return client.writeTerminalAccessError(writer, envelope.ID, err)
+	}
+	client.removeAttachment(request.TerminalID, attachment)
+	metadata, err := client.runtime.terminals.Status(request)
+	if err != nil {
+		return client.writeTerminalAccessError(writer, envelope.ID, err)
+	}
+	return writeTerminalMetadata(writer, envelope.ID, metadata)
+}
+
+func (client *Client) forwardTerminalEvents(
+	writer *connectedWriter,
+	terminalID string,
+	attachment *TerminalAttachment,
+) {
+	defer client.workers.Done()
+	defer client.removeAttachment(terminalID, attachment)
+	defer attachment.Close()
+	for event := range attachment.Events() {
+		payload, err := json.Marshal(terminalTransportEvent{
+			TerminalID: terminalID,
+			Event:      event,
+		})
+		if err != nil {
+			_ = writer.connection.Close()
+			return
+		}
+		if err := writer.writeEnvelope(protocol.Envelope{
+			Type: protocol.FrameEvent, Event: "node.terminal.event", Payload: payload,
+		}); err != nil {
+			_ = writer.connection.Close()
+			return
+		}
+	}
+}
+
+func (client *Client) removeAttachment(
+	terminalID string,
+	attachment *TerminalAttachment,
+) {
+	client.attachmentsMu.Lock()
+	if client.attachments[terminalID] == attachment {
+		delete(client.attachments, terminalID)
+	}
+	client.attachmentsMu.Unlock()
+}
+
+func (client *Client) disconnectTerminals() {
+	client.attachmentsMu.Lock()
+	attachments := make([]*TerminalAttachment, 0, len(client.attachments))
+	for terminalID, attachment := range client.attachments {
+		attachments = append(attachments, attachment)
+		delete(client.attachments, terminalID)
+	}
+	client.attachmentsMu.Unlock()
+	var closed sync.WaitGroup
+	for _, attachment := range attachments {
+		closed.Add(1)
+		go func() {
+			defer closed.Done()
+			_ = attachment.Close()
+		}()
+	}
+	closed.Wait()
+	if client.runtime != nil && client.runtime.terminals != nil {
+		_ = client.runtime.terminals.Disconnect()
+	}
+}
+
+func (client *Client) writeTerminalAccessError(
+	writer *connectedWriter,
+	requestID string,
+	err error,
+) error {
+	code := "TERMINAL_FAILED"
+	message := "terminal operation failed"
+	switch {
+	case errors.Is(err, ErrTerminalOwnerMismatch):
+		code = "TERMINAL_DENIED"
+		message = "terminal operation denied"
+	case errors.Is(err, ErrTerminalNotFound):
+		code = "TERMINAL_NOT_FOUND"
+		message = "terminal session not found"
+	case errors.Is(err, ErrTerminalAlreadyAttached):
+		code = "TERMINAL_ALREADY_ATTACHED"
+		message = "terminal session was already attached"
+	}
+	return client.writeCommandError(writer, requestID, code, message)
+}
+
+func writeTerminalMetadata(
+	writer *connectedWriter,
+	requestID string,
+	metadata nodes.TerminalMetadata,
+) error {
+	result, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("encode terminal metadata: %w", err)
+	}
+	ok := true
+	return writer.writeEnvelope(protocol.Envelope{
+		Type: protocol.FrameResponse, ID: requestID, OK: &ok, Result: result,
+	})
 }
 
 func (client *Client) handleInvoke(

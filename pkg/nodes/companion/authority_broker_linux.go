@@ -197,6 +197,13 @@ func (client *AuthorityBrokerClient) OpenTerminal(
 	return terminal, *response.Terminal, nil
 }
 
+func (client *AuthorityBrokerClient) openTerminal(
+	ctx context.Context,
+	request TerminalBrokerOpenRequest,
+) (terminalBrokerSession, TerminalBrokerEvent, error) {
+	return client.OpenTerminal(ctx, request)
+}
+
 func (terminal *AuthorityBrokerTerminal) ID() string {
 	if terminal == nil {
 		return ""

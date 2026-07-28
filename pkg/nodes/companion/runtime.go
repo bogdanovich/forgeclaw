@@ -87,8 +87,9 @@ type commandInvocation struct {
 }
 
 type runtimeOptions struct {
-	systemExec *SystemExecPolicy
-	shellExec  *shellExecRuntime
+	systemExec     *SystemExecPolicy
+	shellExec      *shellExecRuntime
+	terminalBroker terminalBrokerOpener
 }
 
 type RuntimeOption func(*runtimeOptions) error
@@ -111,6 +112,9 @@ func WithShellBroker(snapshot ShellBrokerSnapshot, broker ShellBroker) RuntimeOp
 			return err
 		}
 		options.shellExec = shellRuntime
+		if terminalBroker, ok := broker.(terminalBrokerOpener); ok {
+			options.terminalBroker = terminalBroker
+		}
 		return nil
 	}
 }
@@ -130,13 +134,14 @@ type invocationStore interface {
 // Runtime is the instance-scoped capability boundary. It owns no gateway
 // connection and can therefore be reused by a future multi-binding supervisor.
 type Runtime struct {
-	nodeID   nodes.ID
-	policy   nodes.LocalCommandPolicy
-	catalog  nodes.CapabilityCatalog
-	handlers map[string]commandHandler
-	ledger   invocationStore
-	activeMu sync.Mutex
-	active   map[string]*activeInvocation
+	nodeID    nodes.ID
+	policy    nodes.LocalCommandPolicy
+	catalog   nodes.CapabilityCatalog
+	handlers  map[string]commandHandler
+	ledger    invocationStore
+	activeMu  sync.Mutex
+	active    map[string]*activeInvocation
+	terminals *TerminalCoordinator
 }
 
 func NewRuntime(
@@ -200,14 +205,29 @@ func NewRuntime(
 	if ledger == nil {
 		return nil, errors.New("node invocation ledger is required")
 	}
-	return &Runtime{
+	commandRuntime := &Runtime{
 		nodeID:   nodeID,
 		policy:   policy,
 		catalog:  catalog,
 		handlers: byName,
 		ledger:   ledger,
 		active:   make(map[string]*activeInvocation),
-	}, nil
+	}
+	if settings.shellExec != nil && settings.terminalBroker != nil &&
+		settings.shellExec.handler.contract != nil &&
+		settings.shellExec.handler.contract.Availability == nodes.ModelAvailable {
+		terminals, terminalErr := NewTerminalCoordinator(
+			nodeID,
+			catalog,
+			settings.shellExec.handler.snapshot,
+			settings.terminalBroker,
+		)
+		if terminalErr != nil {
+			return nil, fmt.Errorf("configure terminal coordinator: %w", terminalErr)
+		}
+		commandRuntime.terminals = terminals
+	}
+	return commandRuntime, nil
 }
 
 func effectiveModelContract(

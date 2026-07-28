@@ -1,23 +1,28 @@
 package ws
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 )
 
 var (
-	ErrNodeDisconnected   = errors.New("node is not connected")
-	ErrUnexpectedResponse = errors.New("node returned an unexpected response")
-	ErrRequestLimit       = errors.New("node request limit reached")
+	ErrNodeDisconnected          = errors.New("node is not connected")
+	ErrUnexpectedResponse        = errors.New("node returned an unexpected response")
+	ErrRequestLimit              = errors.New("node request limit reached")
+	ErrTerminalEventBackpressure = errors.New("terminal event transport exceeded its bounded buffer")
 )
 
 const (
@@ -40,31 +45,51 @@ type responseResult struct {
 	err      error
 }
 
+type terminalEventResult struct {
+	event nodes.TerminalEvent
+	size  int
+}
+
+type terminalEventSubscription struct {
+	request nodes.TerminalSessionRequest
+	events  chan terminalEventResult
+
+	mu          sync.Mutex
+	queuedBytes int
+	closed      bool
+	err         error
+}
+
 // peer owns all application writes and response correlation for one
 // authenticated WebSocket generation.
 type peer struct {
-	connection   peerConnection
-	ready        chan struct{}
-	closed       chan struct{}
-	readyOnce    sync.Once
-	closeOnce    sync.Once
-	writeSlot    chan struct{}
-	requestSlots chan struct{}
-	pendingMu    sync.Mutex
-	pending      map[string]chan responseResult
-	abandoned    map[string]struct{}
-	sequence     atomic.Uint64
+	connection         peerConnection
+	ready              chan struct{}
+	closed             chan struct{}
+	readyOnce          sync.Once
+	closeOnce          sync.Once
+	writeSlot          chan struct{}
+	requestSlots       chan struct{}
+	pendingMu          sync.Mutex
+	pending            map[string]chan responseResult
+	abandoned          map[string]struct{}
+	sequence           atomic.Uint64
+	terminalMu         sync.Mutex
+	terminals          map[string]*terminalEventSubscription
+	abandonedTerminals map[string]struct{}
 }
 
 func newPeer(connection peerConnection) *peer {
 	return &peer{
-		connection:   connection,
-		ready:        make(chan struct{}),
-		closed:       make(chan struct{}),
-		writeSlot:    make(chan struct{}, 1),
-		requestSlots: make(chan struct{}, maxOutstandingRequests),
-		pending:      make(map[string]chan responseResult),
-		abandoned:    make(map[string]struct{}),
+		connection:         connection,
+		ready:              make(chan struct{}),
+		closed:             make(chan struct{}),
+		writeSlot:          make(chan struct{}, 1),
+		requestSlots:       make(chan struct{}, maxOutstandingRequests),
+		pending:            make(map[string]chan responseResult),
+		abandoned:          make(map[string]struct{}),
+		terminals:          make(map[string]*terminalEventSubscription),
+		abandonedTerminals: make(map[string]struct{}),
 	}
 }
 
@@ -82,11 +107,164 @@ func (session *peer) Close() error {
 		session.pending = make(map[string]chan responseResult)
 		session.abandoned = make(map[string]struct{})
 		session.pendingMu.Unlock()
+		session.terminalMu.Lock()
+		terminals := session.terminals
+		session.terminals = make(map[string]*terminalEventSubscription)
+		session.abandonedTerminals = make(map[string]struct{})
+		session.terminalMu.Unlock()
 		for _, result := range pending {
 			result <- responseResult{err: ErrNodeDisconnected}
 		}
+		for _, subscription := range terminals {
+			subscription.fail(ErrNodeDisconnected)
+		}
 	})
 	return closeErr
+}
+
+func (session *peer) subscribeTerminal(
+	request nodes.TerminalSessionRequest,
+) (*terminalEventSubscription, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	subscription := &terminalEventSubscription{
+		request: request,
+		events: make(
+			chan terminalEventResult,
+			nodes.MaxTerminalTransportBuffer/nodes.MinTerminalTransportEventCharge,
+		),
+	}
+	session.terminalMu.Lock()
+	defer session.terminalMu.Unlock()
+	select {
+	case <-session.closed:
+		return nil, ErrNodeDisconnected
+	default:
+	}
+	if session.terminals[request.TerminalID] != nil {
+		return nil, errors.New("terminal event subscription already exists")
+	}
+	delete(session.abandonedTerminals, request.TerminalID)
+	session.terminals[request.TerminalID] = subscription
+	return subscription, nil
+}
+
+func (session *peer) unsubscribeTerminal(
+	terminalID string,
+	subscription *terminalEventSubscription,
+	err error,
+) {
+	session.terminalMu.Lock()
+	if session.terminals[terminalID] == subscription {
+		delete(session.terminals, terminalID)
+		session.abandonedTerminals[terminalID] = struct{}{}
+	}
+	session.terminalMu.Unlock()
+	subscription.fail(err)
+}
+
+func (session *peer) handleTerminalEvent(
+	envelope protocol.Envelope,
+) (*nodes.TerminalSessionRequest, error) {
+	if envelope.Event != "node.terminal.event" {
+		return nil, errors.New("node sent an unsupported event")
+	}
+	var payload struct {
+		TerminalID string              `json:"terminal_id"`
+		Event      nodes.TerminalEvent `json:"event"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(envelope.Payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode terminal event: %w", err)
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("decode terminal event: trailing data")
+	}
+	if payload.TerminalID == "" || payload.Event.TerminalID != payload.TerminalID {
+		return nil, errors.New("node sent an unrelated terminal event")
+	}
+	size := 1
+	if payload.Event.DataBase64 != "" {
+		data, err := base64.StdEncoding.Strict().DecodeString(payload.Event.DataBase64)
+		if err != nil || len(data) == 0 || len(data) > nodes.MaxTerminalTransportFrameBytes {
+			return nil, errors.New("node sent an invalid terminal output frame")
+		}
+		size = len(data)
+	}
+	session.terminalMu.Lock()
+	subscription := session.terminals[payload.TerminalID]
+	_, abandoned := session.abandonedTerminals[payload.TerminalID]
+	session.terminalMu.Unlock()
+	if subscription == nil {
+		if abandoned {
+			return nil, nil
+		}
+		return nil, errors.New("node sent an event for an unattached terminal")
+	}
+	if err := subscription.offer(payload.Event, size); err != nil {
+		request := subscription.request
+		session.unsubscribeTerminal(payload.TerminalID, subscription, err)
+		return &request, err
+	}
+	return nil, nil
+}
+
+func (subscription *terminalEventSubscription) offer(
+	event nodes.TerminalEvent,
+	size int,
+) error {
+	subscription.mu.Lock()
+	defer subscription.mu.Unlock()
+	if subscription.closed {
+		return subscription.err
+	}
+	charge := max(size, nodes.MinTerminalTransportEventCharge)
+	if size <= 0 || subscription.queuedBytes+charge > nodes.MaxTerminalTransportBuffer {
+		return ErrTerminalEventBackpressure
+	}
+	select {
+	case subscription.events <- terminalEventResult{event: event, size: charge}:
+		subscription.queuedBytes += charge
+		return nil
+	default:
+		return ErrTerminalEventBackpressure
+	}
+}
+
+func (subscription *terminalEventSubscription) receive(
+	ctx context.Context,
+) (nodes.TerminalEvent, error) {
+	select {
+	case <-ctx.Done():
+		return nodes.TerminalEvent{}, ctx.Err()
+	case result, ok := <-subscription.events:
+		if !ok {
+			subscription.mu.Lock()
+			err := subscription.err
+			subscription.mu.Unlock()
+			if err == nil {
+				err = ErrNodeDisconnected
+			}
+			return nodes.TerminalEvent{}, err
+		}
+		subscription.mu.Lock()
+		subscription.queuedBytes -= result.size
+		subscription.mu.Unlock()
+		return result.event, nil
+	}
+}
+
+func (subscription *terminalEventSubscription) fail(err error) {
+	subscription.mu.Lock()
+	defer subscription.mu.Unlock()
+	if subscription.closed {
+		return
+	}
+	subscription.closed = true
+	subscription.err = err
+	close(subscription.events)
 }
 
 func (session *peer) request(

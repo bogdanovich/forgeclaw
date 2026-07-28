@@ -271,15 +271,50 @@ func (handler *AdmissionHandler) serveSession(
 		}
 		if messageType == websocket.TextMessage {
 			envelope, decodeErr := protocol.Decode(data)
-			if decodeErr != nil || envelope.Type != protocol.FrameResponse ||
-				session.handleResponse(envelope) != nil {
+			if decodeErr != nil {
 				_ = session.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(
 					websocket.ClosePolicyViolation, "node admission: unexpected command response",
 				), time.Now().Add(time.Second))
 				return
 			}
+			switch envelope.Type {
+			case protocol.FrameResponse:
+				if session.handleResponse(envelope) != nil {
+					_ = session.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(
+						websocket.ClosePolicyViolation, "node admission: unexpected command response",
+					), time.Now().Add(time.Second))
+					return
+				}
+			case protocol.FrameEvent:
+				request, eventErr := session.handleTerminalEvent(envelope)
+				if errors.Is(eventErr, ErrTerminalEventBackpressure) && request != nil {
+					go handler.detachBackpressuredTerminal(session, *request)
+					continue
+				}
+				if eventErr != nil {
+					_ = session.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(
+						websocket.ClosePolicyViolation, "node admission: unexpected node event",
+					), time.Now().Add(time.Second))
+					return
+				}
+			default:
+				return
+			}
 		}
 	}
+}
+
+func (handler *AdmissionHandler) detachBackpressuredTerminal(
+	session *peer,
+	request nodes.TerminalSessionRequest,
+) {
+	params, err := json.Marshal(request)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultWriteTimeout)
+	defer cancel()
+	_, _, _ = session.request(ctx, "node.terminal.detach", params, "", nil)
 }
 
 func (handler *AdmissionHandler) prepareSession(session *peer, nodeID nodes.ID) error {
