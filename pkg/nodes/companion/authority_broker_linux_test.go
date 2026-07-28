@@ -286,6 +286,70 @@ func TestAuthorityBrokerTerminalUnixRoundTripRealPTY(t *testing.T) {
 	}
 }
 
+func TestAuthorityBrokerTerminalOpenCancellationReleasesPendingClient(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	first, _, err := client.OpenTerminal(t.Context(), testAuthorityBrokerTerminalRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, _, err := client.OpenTerminal(
+		ctx,
+		testAuthorityBrokerTerminalRequest(),
+	); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pending terminal open error = %v", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("pending terminal open ignored cancellation")
+	}
+	if err := first.Send(t.Context(), TerminalBrokerControl{
+		Sequence: 1, IdempotencyKey: "close-1", Close: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, first, 1)
+	waitForAuthorityBrokerTerminalClosed(t, first)
+}
+
+func TestAuthorityBrokerTerminalOverflowReleasesProfileCapacity(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	overflowRequest := testAuthorityBrokerTerminalRequest()
+	overflowRequest.BufferBytes = 1
+	first, _, err := client.OpenTerminal(t.Context(), overflowRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := waitForAuthorityBrokerTerminalClosed(t, first)
+	if closed.Type != TerminalEventClosed ||
+		closed.Reason != TerminalCloseOutputOverflow {
+		t.Fatalf("overflow outcome = %#v", closed)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	second, _, err := client.OpenTerminal(ctx, testAuthorityBrokerTerminalRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := second.Send(t.Context(), TerminalBrokerControl{
+		Sequence: 1, IdempotencyKey: "close-1", Close: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, second, 1)
+	waitForAuthorityBrokerTerminalClosed(t, second)
+}
+
 func TestRuntimeShellExecThroughUnixBrokerRealProcess(t *testing.T) {
 	runner := testAuthorityBrokerProcessRunner(t)
 	client, stop := startTestAuthorityBrokerServer(t, runner)

@@ -48,11 +48,12 @@ func TestAuthorityBrokerTerminalWorkerInteractiveLifecycle(t *testing.T) {
 	waitForTerminalOutput(t, events, "terminal-marker")
 
 	controls <- terminalInputControl(2, "input-2", "printf 'terminal-marker\\n'\n")
-	duplicateAck := receiveTerminalWorkerEvent(t, events)
-	if duplicateAck.Type != TerminalEventAck || duplicateAck.AcceptedSequence != 2 {
-		t.Fatalf("duplicate acknowledgement = %#v", duplicateAck)
-	}
+	waitForTerminalAck(t, events, 2)
 	assertNoTerminalOutput(t, events, "terminal-marker")
+
+	controls <- terminalInputControl(2, "input-2", "printf 'altered-marker\\n'\n")
+	waitForTerminalDenied(t, events, "invalid_sequence")
+	assertNoTerminalOutput(t, events, "altered-marker")
 
 	controls <- TerminalBrokerControl{
 		Version: AuthorityBrokerProtocolVersion, Sequence: 4,
@@ -85,6 +86,83 @@ func TestAuthorityBrokerTerminalWorkerInteractiveLifecycle(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAuthorityBrokerTerminalWorkerBoundsOutputAndCompletesOverflow(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	request := testAuthorityBrokerTerminalRequest()
+	request.BufferBytes = 1
+	controls := make(chan TerminalBrokerControl)
+	events := make(chan TerminalBrokerEvent)
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.Terminal(
+			t.Context(),
+			testPreparedAuthorityBrokerTerminal(t),
+			request,
+			"terminal_overflow",
+			controls,
+			events,
+		)
+	}()
+	if opened := receiveTerminalWorkerEvent(t, events); opened.Type != TerminalEventOpened {
+		t.Fatalf("opened event = %#v", opened)
+	}
+	closed := waitForTerminalClosed(t, events)
+	if closed.Type != TerminalEventClosed ||
+		closed.Reason != TerminalCloseOutputOverflow ||
+		!closed.TerminationConfirmed {
+		t.Fatalf("overflow outcome = %#v", closed)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthorityBrokerTerminalWorkerCancellationDrainsBlockedOutput(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	controls := make(chan TerminalBrokerControl)
+	events := make(chan TerminalBrokerEvent, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.Terminal(
+			ctx,
+			testPreparedAuthorityBrokerTerminal(t),
+			testAuthorityBrokerTerminalRequest(),
+			"terminal_blocked_output",
+			controls,
+			events,
+		)
+	}()
+	if opened := receiveTerminalWorkerEvent(t, events); opened.Type != TerminalEventOpened {
+		t.Fatalf("opened event = %#v", opened)
+	}
+	controls <- terminalInputControl(1, "input-1", "yes terminal-output\n")
+	waitForTerminalEventBuffer(t, events)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminal worker cancellation blocked behind output")
+	}
+}
+
+func TestTerminalPTYBufferAccountsBytesAndSignalsOverflowCompletion(t *testing.T) {
+	buffer := newTerminalPTYBuffer(4)
+	if !buffer.push(terminalPTYRead{data: []byte("abc")}) {
+		t.Fatal("in-bounds output was rejected")
+	}
+	if buffer.push(terminalPTYRead{data: []byte("de")}) {
+		t.Fatal("byte-overflowing output was accepted")
+	}
+	frame, ok, overflow, done := buffer.pop()
+	if !ok || string(frame.data) != "abc" || !overflow || !done {
+		t.Fatalf("buffer outcome = (%#v, %v, %v, %v)", frame, ok, overflow, done)
 	}
 }
 
@@ -242,6 +320,20 @@ func waitForTerminalClosed(
 	}
 }
 
+func waitForTerminalDenied(
+	t *testing.T,
+	events <-chan TerminalBrokerEvent,
+	reason string,
+) {
+	t.Helper()
+	for {
+		event := receiveTerminalWorkerEvent(t, events)
+		if event.Type == TerminalEventDenied && event.Reason == reason {
+			return
+		}
+	}
+}
+
 func waitForTerminalOutput(
 	t *testing.T,
 	events <-chan TerminalBrokerEvent,
@@ -299,5 +391,19 @@ func drainTerminalEvents(events <-chan TerminalBrokerEvent) {
 		default:
 			return
 		}
+	}
+}
+
+func waitForTerminalEventBuffer(
+	t *testing.T,
+	events <-chan TerminalBrokerEvent,
+) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(events) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("terminal event buffer was not filled")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

@@ -130,12 +130,24 @@ func (client *AuthorityBrokerClient) OpenTerminal(
 		_ = connection.Close()
 		return nil, TerminalBrokerEvent{}, errors.New("authority broker server identity is invalid")
 	}
+	handshakeDone := make(chan struct{})
+	defer close(handshakeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = unixConnection.Close()
+		case <-handshakeDone:
+		}
+	}()
 	if err := writeAuthorityBrokerFrame(connection, authorityBrokerRequestFrame{
 		Version:  AuthorityBrokerProtocolVersion,
 		Action:   authorityBrokerActionTerminal,
 		Terminal: &request,
 	}); err != nil {
 		_ = connection.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, TerminalBrokerEvent{}, ctxErr
+		}
 		return nil, TerminalBrokerEvent{}, fmt.Errorf(
 			"%w: write terminal open request: %v",
 			ErrTerminalOutcomeUnknown,
@@ -145,6 +157,9 @@ func (client *AuthorityBrokerClient) OpenTerminal(
 	var response authorityBrokerResponseFrame
 	if err := readAuthorityBrokerFrame(connection, &response); err != nil {
 		_ = connection.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, TerminalBrokerEvent{}, ctxErr
+		}
 		return nil, TerminalBrokerEvent{}, fmt.Errorf(
 			"%w: read terminal open response: %v",
 			ErrTerminalOutcomeUnknown,

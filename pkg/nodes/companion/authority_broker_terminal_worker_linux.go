@@ -4,12 +4,15 @@ package companion
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,6 +39,71 @@ type authorityBrokerTerminalWorkerRequest struct {
 type terminalPTYRead struct {
 	data []byte
 	err  error
+}
+
+type terminalPTYBuffer struct {
+	mu       sync.Mutex
+	frames   []terminalPTYRead
+	bytes    int
+	limit    int
+	closed   bool
+	overflow bool
+	notify   chan struct{}
+}
+
+func newTerminalPTYBuffer(limit int) *terminalPTYBuffer {
+	return &terminalPTYBuffer{
+		limit:  limit,
+		notify: make(chan struct{}, 1),
+	}
+}
+
+func (buffer *terminalPTYBuffer) push(frame terminalPTYRead) bool {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	if buffer.closed {
+		return false
+	}
+	if len(frame.data) > buffer.limit-buffer.bytes {
+		buffer.closed = true
+		buffer.overflow = true
+		buffer.signal()
+		return false
+	}
+	if len(frame.data) > 0 || frame.err != nil {
+		buffer.frames = append(buffer.frames, frame)
+		buffer.bytes += len(frame.data)
+	}
+	if frame.err != nil {
+		buffer.closed = true
+	}
+	buffer.signal()
+	return true
+}
+
+func (buffer *terminalPTYBuffer) pop() (terminalPTYRead, bool, bool, bool) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	var frame terminalPTYRead
+	hasFrame := len(buffer.frames) > 0
+	if hasFrame {
+		frame = buffer.frames[0]
+		buffer.frames[0] = terminalPTYRead{}
+		buffer.frames = buffer.frames[1:]
+		buffer.bytes -= len(frame.data)
+	}
+	done := buffer.closed && len(buffer.frames) == 0
+	if len(buffer.frames) > 0 {
+		buffer.signal()
+	}
+	return frame, hasFrame, buffer.overflow, done
+}
+
+func (buffer *terminalPTYBuffer) signal() {
+	select {
+	case buffer.notify <- struct{}{}:
+	default:
+	}
 }
 
 func (runner *authorityBrokerProcessRunner) Terminal(
@@ -122,7 +190,8 @@ func (runner *authorityBrokerProcessRunner) Terminal(
 			close(workerDone)
 			_ = controlWrite.Close()
 			_ = stdin.Close()
-			waitErr := command.Wait()
+			_ = command.Process.Kill()
+			waitErr := waitAuthorityBrokerTerminalWorker(command, stdout, true)
 			if ctx.Err() != nil && waitErr == nil {
 				return nil
 			}
@@ -133,7 +202,7 @@ func (runner *authorityBrokerProcessRunner) Terminal(
 			_ = controlWrite.Close()
 			_ = stdin.Close()
 			_ = command.Process.Kill()
-			_ = command.Wait()
+			_ = waitAuthorityBrokerTerminalWorker(command, stdout, true)
 			return fmt.Errorf("%w: invalid terminal worker event", ErrTerminalOutcomeUnknown)
 		}
 		select {
@@ -142,8 +211,7 @@ func (runner *authorityBrokerProcessRunner) Terminal(
 			close(workerDone)
 			_ = controlWrite.Close()
 			_ = stdin.Close()
-			_ = command.Wait()
-			return nil
+			return waitAuthorityBrokerTerminalWorker(command, stdout, true)
 		}
 		if event.Type == TerminalEventClosed || event.Type == TerminalEventUnknown {
 			break
@@ -152,10 +220,38 @@ func (runner *authorityBrokerProcessRunner) Terminal(
 	close(workerDone)
 	_ = controlWrite.Close()
 	_ = stdin.Close()
-	if err := command.Wait(); err != nil {
+	if err := waitAuthorityBrokerTerminalWorker(command, stdout, false); err != nil {
 		return fmt.Errorf("%w: terminal worker failed: %v", ErrTerminalOutcomeUnknown, err)
 	}
 	return nil
+}
+
+func waitAuthorityBrokerTerminalWorker(
+	command *exec.Cmd,
+	stdout io.ReadCloser,
+	drain bool,
+) error {
+	if drain {
+		go func() {
+			_, _ = io.Copy(io.Discard, stdout)
+		}()
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	timer := time.NewTimer(authorityBrokerCleanupLimit)
+	defer timer.Stop()
+	select {
+	case err := <-waitDone:
+		return err
+	case <-timer.C:
+		_ = command.Process.Kill()
+		select {
+		case err := <-waitDone:
+			return err
+		case <-time.After(authorityBrokerCleanupLimit):
+			return errors.New("authority broker terminal worker did not terminate")
+		}
+	}
 }
 
 func runAuthorityBrokerTerminalWorker(
@@ -231,19 +327,14 @@ func runAuthorityBrokerTerminalWorker(
 		_ = terminateAuthorityBrokerDescendants(processGroup)
 		return err
 	}
-	readCapacity := max(1, request.BufferBytes/MaxTerminalFrameBytes)
-	output := make(chan terminalPTYRead, readCapacity)
-	overflow := make(chan struct{}, 1)
+	output := newTerminalPTYBuffer(request.BufferBytes)
 	go func() {
 		for {
 			buffer := make([]byte, MaxTerminalFrameBytes)
 			count, readErr := terminal.Read(buffer)
 			frame := terminalPTYRead{data: append([]byte(nil), buffer[:count]...), err: readErr}
-			select {
-			case output <- frame:
-			default:
+			if !output.push(frame) {
 				_ = unix.Kill(-processGroup, unix.SIGKILL)
-				overflow <- struct{}{}
 				return
 			}
 			if readErr != nil {
@@ -268,6 +359,7 @@ func runAuthorityBrokerTerminalWorker(
 		cursor          uint64
 		lastSequence    uint64
 		lastKey         string
+		lastDigest      [sha256.Size]byte
 		closeReason     = TerminalCloseNatural
 		waitErr         error
 		cleanupErr      error
@@ -280,7 +372,6 @@ func runAuthorityBrokerTerminalWorker(
 	disconnectedChannel := (<-chan struct{})(disconnected)
 	idleChannel := idleTimer.C
 	lifetimeChannel := lifetimeContext.Done()
-	overflowChannel := (<-chan struct{})(overflow)
 	shutdown := func(reason string) {
 		if controlsChannel == nil {
 			return
@@ -291,34 +382,45 @@ func runAuthorityBrokerTerminalWorker(
 		disconnectedChannel = nil
 		idleChannel = nil
 		lifetimeChannel = nil
-		overflowChannel = nil
 		_ = unix.Kill(-processGroup, unix.SIGKILL)
 	}
 	for !processExited || !ptyClosed {
 		select {
-		case frame := <-output:
-			if len(frame.data) > 0 {
-				cursor += uint64(len(frame.data))
-				if eventErr := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
-					Type: TerminalEventOutput, TerminalID: request.TerminalID,
-					Cursor: cursor, DataBase64: base64.StdEncoding.EncodeToString(frame.data),
-				}); eventErr != nil {
-					eventSinkFailed = true
-					shutdown(TerminalCloseDisconnected)
+		case <-output.notify:
+			for {
+				frame, hasFrame, didOverflow, done := output.pop()
+				if didOverflow {
+					shutdown(TerminalCloseOutputOverflow)
 				}
-				if controlsChannel != nil {
-					resetIdle()
+				if hasFrame && len(frame.data) > 0 {
+					cursor += uint64(len(frame.data))
+					if eventErr := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
+						Type: TerminalEventOutput, TerminalID: request.TerminalID,
+						Cursor: cursor, DataBase64: base64.StdEncoding.EncodeToString(frame.data),
+					}); eventErr != nil {
+						eventSinkFailed = true
+						shutdown(TerminalCloseDisconnected)
+					}
+					if controlsChannel != nil {
+						resetIdle()
+					}
 				}
-			}
-			if frame.err != nil {
-				ptyClosed = true
+				if done {
+					ptyClosed = true
+				}
+				if !hasFrame {
+					break
+				}
 			}
 		case frame := <-controlsChannel:
 			data, validationErr := frame.validate()
+			frameDigest, digestErr := terminalControlDigest(frame)
 			if validationErr != nil ||
+				digestErr != nil ||
 				frame.Sequence > lastSequence+1 ||
 				frame.Sequence < lastSequence ||
-				(frame.Sequence == lastSequence && frame.IdempotencyKey != lastKey) {
+				(frame.Sequence == lastSequence &&
+					(frame.IdempotencyKey != lastKey || frameDigest != lastDigest)) {
 				if eventErr := writeTerminalWorkerEvent(events, TerminalBrokerEvent{
 					Type: TerminalEventDenied, TerminalID: request.TerminalID,
 					State: "live", Reason: "invalid_sequence",
@@ -341,6 +443,7 @@ func runAuthorityBrokerTerminalWorker(
 			}
 			lastSequence = frame.Sequence
 			lastKey = frame.IdempotencyKey
+			lastDigest = frameDigest
 			var operationErr error
 			switch {
 			case len(data) > 0:
@@ -382,8 +485,6 @@ func runAuthorityBrokerTerminalWorker(
 			shutdown(TerminalCloseDisconnected)
 		case <-controlErrorsChannel:
 			shutdown(TerminalCloseDisconnected)
-		case <-overflowChannel:
-			shutdown(TerminalCloseOutputOverflow)
 		}
 	}
 	if cleanupErr == nil {
@@ -409,6 +510,14 @@ func runAuthorityBrokerTerminalWorker(
 		StartedAt: startedAt, CompletedAt: time.Now().UnixMilli(),
 		TerminationConfirmed: true,
 	})
+}
+
+func terminalControlDigest(control TerminalBrokerControl) ([sha256.Size]byte, error) {
+	encoded, err := json.Marshal(control)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(encoded), nil
 }
 
 func (request authorityBrokerTerminalWorkerRequest) validate() error {
