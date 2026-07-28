@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
@@ -217,6 +218,95 @@ func TestNodeInvocationSourceSendsOneDurableCancellation(t *testing.T) {
 		plan.InvocationID,
 	); !errors.Is(err, nodes.ErrGatewayInvocationConflict) {
 		t.Fatalf("wrong execution cancellation error = %v", err)
+	}
+}
+
+func TestNodeInvocationSourceDeliversCancellationAfterCommittedWriteWarning(t *testing.T) {
+	handler := &fakeNodeAdmissionHandler{}
+	source := newTestNodeInvocationSource(t, handler)
+	descriptor, plan, owner := testGatewayInvocation(t)
+	principal := nodes.GatewayInvocationPrincipal{
+		AgentID:     owner.AgentID,
+		SessionID:   owner.SessionID,
+		ActorID:     owner.ActorID,
+		WorkspaceID: "workspace_1",
+		ExecutionID: "execution_1",
+	}
+	owner.WorkspaceID = principal.WorkspaceID
+	owner.ExecutionID = principal.ExecutionID
+	if _, _, err := source.PrepareInvocation(
+		"builder-node",
+		"build",
+		owner.ToolCallID,
+		principal,
+		plan,
+		descriptor,
+		true,
+		func(tools.NodeDiscoveryRecord) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := source.store.MarkDispatched(
+		owner,
+		plan.InvocationID,
+		plan.PlanHash,
+	); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixNano()
+	handler.invocation = nodes.InvocationRecord{
+		InvocationID: plan.InvocationID, IdempotencyKey: plan.IdempotencyKey,
+		PlanHash: plan.PlanHash, NodeID: plan.NodeID, CatalogHash: plan.CatalogHash,
+		Command: plan.Command, Risk: plan.Risk, State: nodes.InvocationRunning,
+		AcceptedAt: now, UpdatedAt: now, ExpiresAt: plan.ExpiresAt,
+		Cancellation: &nodes.InvocationCancellation{RequestedAt: now},
+	}
+	source.requestCancellation = func(
+		requestPrincipal nodes.GatewayInvocationPrincipal,
+		invocationID string,
+	) (nodes.GatewayInvocationRecord, bool, error) {
+		record, transitioned, err := source.store.RequestCancellation(
+			requestPrincipal,
+			invocationID,
+		)
+		if err == nil && transitioned {
+			err = &fileutil.CommittedWriteError{Err: errors.New("sync invocation directory")}
+		}
+		return record, transitioned, err
+	}
+	remote, transitioned, err := source.CancelInvocation(
+		t.Context(),
+		principal,
+		"build",
+		plan.NodeID,
+		plan.InvocationID,
+	)
+	if !transitioned || !fileutil.IsCommittedWriteError(err) ||
+		remote.Cancellation == nil || handler.cancelCalls.Load() != 1 {
+		t.Fatalf(
+			"committed cancellation = (%#v, %v, %v); cancel calls = %d",
+			remote,
+			transitioned,
+			err,
+			handler.cancelCalls.Load(),
+		)
+	}
+	source.requestCancellation = nil
+	if _, transitioned, err := source.CancelInvocation(
+		t.Context(),
+		principal,
+		"build",
+		plan.NodeID,
+		plan.InvocationID,
+	); err != nil || transitioned {
+		t.Fatalf("repeated cancellation = transitioned %v, error %v", transitioned, err)
+	}
+	if handler.cancelCalls.Load() != 1 || handler.queryCalls.Load() != 1 {
+		t.Fatalf(
+			"remote calls = cancel %d, query %d",
+			handler.cancelCalls.Load(),
+			handler.queryCalls.Load(),
+		)
 	}
 }
 

@@ -7,14 +7,19 @@ import (
 	"fmt"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 type nodeInvocationSource struct {
 	nodeDiscoverySource
-	store      *nodes.GatewayInvocationStore
-	generation uint64
+	store               *nodes.GatewayInvocationStore
+	generation          uint64
+	requestCancellation func(
+		nodes.GatewayInvocationPrincipal,
+		string,
+	) (nodes.GatewayInvocationRecord, bool, error)
 }
 
 func newNodeInvocationSource(
@@ -288,6 +293,7 @@ func (source *nodeInvocationSource) CancelInvocation(
 		handler      nodeAdmissionHandler
 		record       nodes.GatewayInvocationRecord
 		transitioned bool
+		persistErr   error
 	)
 	err := source.runtime.withInvocationHandler(
 		source.registryPath,
@@ -301,12 +307,19 @@ func (source *nodeInvocationSource) CancelInvocation(
 				return nodes.ErrGatewayInvocationConflict
 			}
 			var requestErr error
-			record, transitioned, requestErr = source.store.RequestCancellation(
+			requestCancellation := source.store.RequestCancellation
+			if source.requestCancellation != nil {
+				requestCancellation = source.requestCancellation
+			}
+			record, transitioned, requestErr = requestCancellation(
 				principal,
 				invocationID,
 			)
-			if requestErr == nil {
+			if requestErr == nil ||
+				(transitioned && fileutil.IsCommittedWriteError(requestErr)) {
 				handler = current
+				persistErr = requestErr
+				return nil
 			}
 			return requestErr
 		},
@@ -321,12 +334,12 @@ func (source *nodeInvocationSource) CancelInvocation(
 		remote, err = handler.Invocation(ctx, nodeID, invocationID)
 	}
 	if err != nil {
-		return nodes.InvocationRecord{}, transitioned, err
+		return nodes.InvocationRecord{}, transitioned, errors.Join(persistErr, err)
 	}
 	if err := verifyRemoteInvocation(record, &remote); err != nil {
-		return nodes.InvocationRecord{}, transitioned, err
+		return nodes.InvocationRecord{}, transitioned, errors.Join(persistErr, err)
 	}
-	return remote, transitioned, nil
+	return remote, transitioned, persistErr
 }
 
 func (source *nodeInvocationSource) QueryInvocation(
