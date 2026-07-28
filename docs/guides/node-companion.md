@@ -9,8 +9,7 @@ challenge over WSS, and keeps retrying while the gateway records an unknown
 node as `pending_pairing`. After explicit operator approval, the gateway can
 invoke only the commands allowed by both gateway policy and the node-local
 policy. The current command surface includes `node.info.v1`,
-`system.which.v1`, optional synchronous `system.exec.v1`, and optional
-operator-owned `shell.exec.v1`.
+`system.which.v1`, and optional synchronous `system.exec.v1`.
 
 ## Build
 
@@ -104,71 +103,6 @@ paths remain accepted by node-local enforcement for existing operators but
 are not shown to the model. Without at least one executable alias and one
 working-scope alias, the command remains `partially_described` and cannot be
 invoked by the model.
-
-### Operator-owned `shell.exec.v1`
-
-Fresh configurations expose no shell authority. `owner_shell` must be present,
-explicitly enabled, allowed as a privileged local command, approved in the
-paired catalog, and used through a trusted per-command human approval flow.
-The initial implementation runs only as the companion service account.
-`authority_broker` profiles, including UID 0, fail closed until the separate
-broker boundary is installed in a later release.
-
-```json
-{
-  "policy": {
-    "revision": "owner-shell-v1",
-    "allowed_commands": ["shell.exec.v1"],
-    "maximum_risk": "privileged",
-    "max_timeout_seconds": 900,
-    "max_output_bytes": 131072
-  },
-  "owner_shell": {
-    "enabled": true,
-    "revision": "owner-shell-v1",
-    "profiles": {
-      "owner": {
-        "executor": "companion_user",
-        "label": "Owner shell",
-        "shell": {
-          "path": "/bin/bash",
-          "login": false
-        },
-        "working_roots": ["/srv/owner-workspace"],
-        "initial_directory": "/srv/owner-workspace",
-        "working_scope_aliases": {
-          "workspace": "/srv/owner-workspace"
-        },
-        "fixed_environment": {
-          "PATH": "/usr/local/bin:/usr/bin:/bin"
-        },
-        "permitted_environment_names": [],
-        "network": "inherit",
-        "approval": {
-          "shell_exec": "each_command",
-          "terminal_open": "session_start"
-        },
-        "limits": {
-          "command_bytes": 65536,
-          "timeout_seconds": 900,
-          "output_bytes": 131072,
-          "concurrent_commands": 2,
-          "concurrent_terminals": 1,
-          "terminal_idle_seconds": 900,
-          "terminal_lifetime_seconds": 28800,
-          "terminal_buffer_bytes": 1048576
-        }
-      }
-    }
-  }
-}
-```
-
-The model sees only profile and working-scope aliases, permitted environment
-names, effective limits, cancellation support, and `each_command` approval
-metadata. Shell paths, service identity, raw paths, fixed environment values,
-and authority revisions remain hidden. `system.exec.v1` stays direct argv
-execution and never gains implicit shell parsing.
 
 ## Run
 

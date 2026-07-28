@@ -245,8 +245,17 @@ func (descriptor CommandDescriptor) Validate() error {
 		if err := descriptor.ModelContract.Validate(descriptor.InputSchema); err != nil {
 			return err
 		}
-		if descriptor.Name == "system.exec.v1" {
+		switch descriptor.Name {
+		case "system.exec.v1":
 			modelSchema, err := SystemExecModelInputSchema(*descriptor.ModelContract)
+			if err != nil {
+				return err
+			}
+			if err := descriptor.ModelContract.Validate(modelSchema); err != nil {
+				return err
+			}
+		case "shell.exec.v1":
+			modelSchema, err := ShellExecModelInputSchema(*descriptor.ModelContract)
 			if err != nil {
 				return err
 			}

@@ -242,6 +242,62 @@ func TestCommandDescriptorRejectsSystemExecExampleOutsideProjection(t *testing.T
 	}
 }
 
+func TestCommandDescriptorRejectsShellExecExamplesOutsideProjection(t *testing.T) {
+	tests := []struct {
+		name    string
+		example json.RawMessage
+	}{
+		{
+			name: "raw working path",
+			example: json.RawMessage(
+				`{"profile":"owner","script":"true","cwd":"/private/raw/root","env":{},"timeout_seconds":5}`,
+			),
+		},
+		{
+			name: "unknown profile",
+			example: json.RawMessage(
+				`{"profile":"invented","script":"true","cwd":"workspace","env":{},"timeout_seconds":5}`,
+			),
+		},
+		{
+			name: "unknown scope",
+			example: json.RawMessage(
+				`{"profile":"owner","script":"true","cwd":"invented","env":{},"timeout_seconds":5}`,
+			),
+		},
+		{
+			name: "unpermitted environment",
+			example: json.RawMessage(
+				`{"profile":"owner","script":"true","cwd":"workspace","env":{"SECRET":"value"},"timeout_seconds":5}`,
+			),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := descriptor(
+				"shell.exec.v1",
+				`{"type":"object","required":["profile","script","cwd","env","timeout_seconds"],"properties":{"profile":{"type":"string"},"script":{"type":"string"},"cwd":{"type":"string"},"env":{"type":"object","additionalProperties":{"type":"string"}},"timeout_seconds":{"type":"integer"}},"additionalProperties":false}`,
+			)
+			command.ModelContract = &CommandModelContract{
+				Availability:      ModelAvailable,
+				TimeoutSecondsMax: 30,
+				OutputBytesMax:    4096,
+				ResultKind:        "json",
+				ApprovalMode:      "each_command",
+				Constraints: CommandModelConstraints{
+					ProfileAliases: []string{"owner"},
+					WorkingScopes:  []string{"workspace"},
+				},
+				Guidance: []string{},
+				Examples: []json.RawMessage{test.example},
+			}
+			if err := command.Validate(); !errors.Is(err, ErrInvalidCapability) {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestCapabilityCatalogRejectsDuplicateSchemaMembers(t *testing.T) {
 	catalog := CapabilityCatalog{Commands: []CommandDescriptor{
 		descriptor("system.exec.v1", `{"type":"object","type":"array"}`),

@@ -45,7 +45,6 @@ type Config struct {
 	Reconnect              ReconnectConfig          `json:"reconnect,omitempty"`
 	Policy                 nodes.LocalCommandPolicy `json:"policy,omitempty"`
 	SystemExec             *SystemExecPolicy        `json:"system_exec,omitempty"`
-	OwnerShell             *OwnerShellPolicy        `json:"owner_shell,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -162,18 +161,6 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 			return Config{}, fmt.Errorf("validate system_exec discovery: %w", contractErr)
 		}
 		cfg.SystemExec = &normalized
-	}
-	if cfg.OwnerShell != nil {
-		normalized, normalizeErr := normalizeOwnerShellPolicy(*cfg.OwnerShell, baseDir)
-		if normalizeErr != nil {
-			return Config{}, fmt.Errorf("validate owner_shell policy: %w", normalizeErr)
-		}
-		if normalized.Enabled {
-			if _, contractErr := ownerShellModelContract(normalized, cfg.Policy); contractErr != nil {
-				return Config{}, fmt.Errorf("validate owner_shell discovery: %w", contractErr)
-			}
-		}
-		cfg.OwnerShell = &normalized
 	}
 	return cfg, nil
 }
