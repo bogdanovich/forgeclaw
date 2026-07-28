@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -243,6 +244,134 @@ func TestNodeInvokeToolReusesPreparedAuthorityAndDispatches(t *testing.T) {
 	if strings.Contains(result.ForLLM, "private-node-id") ||
 		strings.Contains(result.ForLLM, "plan_hash") {
 		t.Fatalf("invoke result leaked internal authority: %s", result.ForLLM)
+	}
+}
+
+func TestNodeInvokeToolRequiresHumanApprovalContinuationForShellExec(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	command := shellNodeInvocationTestDescriptor()
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := source.byRef["builder-node"]
+	snapshot.Catalog = catalog
+	snapshot.CatalogHash = catalogHash
+	source.byRef["builder-node"] = snapshot
+	source.registrations[snapshot.ID] = nodes.Registration{
+		Snapshot:            snapshot,
+		AllowedCommands:     []string{command.Name},
+		ApprovedCatalogHash: catalogHash,
+		ApprovedAt:          1,
+	}
+	ctx := nodeInvocationTestContext("actor-1", "call-shell")
+	discovery := NewNodeDiscoveryTool(nodeDiscoveryTestConfig(), source).Execute(
+		ctx,
+		map[string]any{
+			"action": "describe", "target": "build", "command": command.Name,
+		},
+	)
+	if discovery.IsError {
+		t.Fatalf("shell discovery failed: %s", discovery.ForLLM)
+	}
+	revision := decodeNodeResult(t, discovery)["discovery_revision"]
+	args := map[string]any{
+		"target":  "build",
+		"command": command.Name,
+		"input": map[string]any{
+			"profile": "owner", "script": "true", "cwd": "workspace",
+			"env": map[string]any{}, "timeout_seconds": 5,
+		},
+		"discovery_revision": revision,
+	}
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	oversizedInputs := []map[string]any{
+		{
+			"profile": "owner",
+			"script":  strings.Repeat("界", nodes.MaxShellExecScriptBytes/3+1),
+			"cwd":     "workspace", "env": map[string]any{}, "timeout_seconds": 5,
+		},
+		{
+			"profile": "owner", "script": "true", "cwd": "workspace",
+			"env": map[string]any{
+				"LANG": strings.Repeat("x", nodes.MaxShellExecEnvironmentBytes/2),
+				"TERM": strings.Repeat("y", nodes.MaxShellExecEnvironmentBytes/2),
+			},
+			"timeout_seconds": 5,
+		},
+	}
+	for _, oversizedInput := range oversizedInputs {
+		oversizedArgs := maps.Clone(args)
+		oversizedArgs["input"] = oversizedInput
+		result := tool.Execute(ctx, oversizedArgs)
+		assertNodeDenialResult(
+			t,
+			result,
+			nodeDenialConstraintViolation,
+			nodeConstraintInputSize,
+			nodeActionCorrectInput,
+		)
+	}
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"oversized shell input prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+	invalidArgs := maps.Clone(args)
+	invalidInput := maps.Clone(args["input"].(map[string]any))
+	invalidInput["profile"] = "invented"
+	invalidArgs["input"] = invalidInput
+	invalid := tool.Execute(ctx, invalidArgs)
+	assertNodeDenialResult(
+		t,
+		invalid,
+		nodeDenialConstraintViolation,
+		nodeConstraintProfile,
+		nodeActionCorrectInput,
+	)
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"unknown shell profile prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+	rawAuthorityArgs := maps.Clone(args)
+	rawAuthorityInput := maps.Clone(args["input"].(map[string]any))
+	rawAuthorityInput["shell_path"] = "/bin/sh"
+	rawAuthorityArgs["input"] = rawAuthorityInput
+	rawAuthority := tool.Execute(ctx, rawAuthorityArgs)
+	assertNodeDenialResult(
+		t,
+		rawAuthority,
+		nodeDenialSchemaInvalid,
+		nodeConstraintInputSchema,
+		nodeActionCorrectInput,
+	)
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"raw shell authority prepared or dispatched: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+	if _, err := tool.ApprovalArguments(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	result := tool.Execute(ctx, args)
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialApprovalRequired,
+		nodeConstraintApproval,
+		nodeActionAskOperator,
+	)
+	if source.dispatchCalls != 0 {
+		t.Fatalf("shell dispatched without human approval: %d", source.dispatchCalls)
+	}
+	result = tool.Execute(WithToolApprovalContinuation(ctx, true), args)
+	if result.IsError || source.dispatchCalls != 1 {
+		t.Fatalf("approved shell result = %s, dispatches = %d", result.ForLLM, source.dispatchCalls)
 	}
 }
 
@@ -1284,6 +1413,28 @@ func nodeInvocationTestDescriptor() nodes.CommandDescriptor {
 		ResultKind:        "json",
 		Constraints: nodes.CommandModelConstraints{
 			ExecutableAliases: []string{"git"},
+		},
+		Guidance: []string{},
+		Examples: []json.RawMessage{},
+	}
+	return command
+}
+
+func shellNodeInvocationTestDescriptor() nodes.CommandDescriptor {
+	command := testNodeCommand("shell.exec.v1", nodes.RiskPrivileged, false, true)
+	command.InputSchema = json.RawMessage(
+		`{"type":"object","required":["profile","script","cwd","env","timeout_seconds"],"properties":{"profile":{"type":"string"},"script":{"type":"string"},"cwd":{"type":"string"},"env":{"type":"object"},"timeout_seconds":{"type":"integer"}},"additionalProperties":false}`,
+	)
+	command.ModelContract = &nodes.CommandModelContract{
+		Availability:      nodes.ModelAvailable,
+		TimeoutSecondsMax: 30,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		AuthorityDigest:   strings.Repeat("b", 64),
+		ApprovalMode:      "each_command",
+		Constraints: nodes.CommandModelConstraints{
+			ProfileAliases: []string{"owner"},
+			WorkingScopes:  []string{"workspace"},
 		},
 		Guidance: []string{},
 		Examples: []json.RawMessage{},

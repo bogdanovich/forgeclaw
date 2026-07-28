@@ -54,6 +54,25 @@ func TestRuntimeProjectsEffectiveGenericModelContracts(t *testing.T) {
 	}
 }
 
+func TestRuntimeDoesNotRegisterShellExecWithoutExecutionDomain(t *testing.T) {
+	policy := testRuntimePolicy([]string{"shell.exec.v1"})
+	policy.MaximumRisk = nodes.RiskPrivileged
+	runtime, err := NewRuntime(
+		nodes.ID("node_test"),
+		"test",
+		policy,
+		newMemoryInvocationLedger(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, descriptor := range runtime.Catalog().Commands {
+		if descriptor.Name == "shell.exec.v1" {
+			t.Fatal("shell.exec.v1 registered without a broker-owned execution domain")
+		}
+	}
+}
+
 func TestRuntimeProjectsAvailableSystemExecAliasContract(t *testing.T) {
 	root := t.TempDir()
 	executable, err := os.Executable()

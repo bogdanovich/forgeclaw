@@ -171,14 +171,19 @@ The broker boundary must have all of these properties:
 - requests bound to the node-authenticated profile revision and a prepared
   execution or terminal-open identity;
 - bounded request and response frames;
-- process-group or cgroup ownership sufficient to prove termination;
+- a broker-owned cgroup or equivalent execution domain that arbitrary shell
+  descendants cannot leave and whose empty state proves termination;
 - no network listener, remote enrollment, general file API, service-manager
   API, updater, scheduler, or credential store; and
 - broker logs subject to the same metadata-only redaction contract.
 
-Profiles using the companion's own unprivileged account may execute directly
-without the broker, but they use the same profile, approval, durability, and
-redaction rules.
+All P1 shell and terminal profiles, including profiles that ultimately run as
+the companion's own unprivileged account, use the broker-owned execution
+domain. A same-UID shell can create a new session or process group, so direct
+companion execution cannot prove arbitrary descendant termination. The broker
+may select the unprivileged companion identity for a profile, but the
+root-owned containment domain and profile policy remain outside that identity's
+write authority.
 
 A root-run companion remains an explicit rejected alternative for P1. It would
 reduce one IPC boundary, but it would place the full remote protocol and

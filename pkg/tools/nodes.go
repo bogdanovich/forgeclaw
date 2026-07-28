@@ -343,7 +343,7 @@ func visibleNodeCommands(
 			Availability:     commandAvailability(descriptor, targetAvailability),
 			SupportsProgress: descriptor.SupportsProgress,
 			SupportsCancel:   descriptor.SupportsCancel,
-			Approval:         "may_be_required",
+			Approval:         descriptorApprovalMode(descriptor),
 		})
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
@@ -436,6 +436,12 @@ func makeNodeCommandContract(
 		} else {
 			inputSchema = json.RawMessage("false")
 		}
+	} else if descriptor.Name == "shell.exec.v1" {
+		if projected, err := nodes.ShellExecModelInputSchema(model); err == nil {
+			inputSchema = projected
+		} else {
+			inputSchema = json.RawMessage("false")
+		}
 	}
 	return nodeCommandContract{
 		Name:         descriptor.Name,
@@ -451,12 +457,26 @@ func makeNodeCommandContract(
 			OutputBytesMax:    model.OutputBytesMax,
 			SupportsProgress:  descriptor.SupportsProgress,
 			SupportsCancel:    descriptor.SupportsCancel,
-			Approval:          "may_be_required",
+			Approval:          projectedApprovalMode(model),
 		},
 		Constraints: model.Constraints,
 		Guidance:    append([]string(nil), model.Guidance...),
 		Examples:    append([]json.RawMessage(nil), model.Examples...),
 	}
+}
+
+func descriptorApprovalMode(descriptor nodes.CommandDescriptor) string {
+	if descriptor.ModelContract != nil && descriptor.ModelContract.ApprovalMode != "" {
+		return descriptor.ModelContract.ApprovalMode
+	}
+	return "may_be_required"
+}
+
+func projectedApprovalMode(model nodes.CommandModelContract) string {
+	if model.ApprovalMode != "" {
+		return model.ApprovalMode
+	}
+	return "may_be_required"
 }
 
 func commandProjectionFits(descriptor nodes.CommandDescriptor) bool {

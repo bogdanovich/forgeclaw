@@ -150,6 +150,10 @@ func cloneModelContract(
 		[]string(nil),
 		contract.Constraints.ExecutableAliases...,
 	)
+	result.Constraints.ProfileAliases = append(
+		[]string(nil),
+		contract.Constraints.ProfileAliases...,
+	)
 	result.Constraints.WorkingScopes = append(
 		[]string(nil),
 		contract.Constraints.WorkingScopes...,

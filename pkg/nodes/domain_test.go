@@ -178,6 +178,12 @@ func TestCommandModelContractRejectsMalformedOrUnboundedMetadata(t *testing.T) {
 			},
 		},
 		{
+			name: "unsupported approval mode",
+			mutate: func(contract *CommandModelContract) {
+				contract.ApprovalMode = "model_decides"
+			},
+		},
+		{
 			name: "schema-invalid example",
 			mutate: func(contract *CommandModelContract) {
 				contract.Examples = []json.RawMessage{json.RawMessage(`{"other":"hidden"}`)}
@@ -233,6 +239,151 @@ func TestCommandDescriptorRejectsSystemExecExampleOutsideProjection(t *testing.T
 	}
 	if err := command.Validate(); !errors.Is(err, ErrInvalidCapability) {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestCommandDescriptorRejectsShellExecExamplesOutsideProjection(t *testing.T) {
+	oversizedScript, err := json.Marshal(map[string]any{
+		"profile": "owner", "script": strings.Repeat("界", MaxShellExecScriptBytes/3+1),
+		"cwd": "workspace", "env": map[string]any{}, "timeout_seconds": 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversizedEnvironment, err := json.Marshal(map[string]any{
+		"profile": "owner", "script": "true", "cwd": "workspace",
+		"env": map[string]any{
+			"LANG": strings.Repeat("x", MaxShellExecEnvironmentBytes/2),
+			"TERM": strings.Repeat("y", MaxShellExecEnvironmentBytes/2),
+		},
+		"timeout_seconds": 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		example json.RawMessage
+	}{
+		{
+			name: "raw working path",
+			example: json.RawMessage(
+				`{"profile":"owner","script":"true","cwd":"/private/raw/root","env":{},"timeout_seconds":5}`,
+			),
+		},
+		{
+			name: "unknown profile",
+			example: json.RawMessage(
+				`{"profile":"invented","script":"true","cwd":"workspace","env":{},"timeout_seconds":5}`,
+			),
+		},
+		{
+			name: "unknown scope",
+			example: json.RawMessage(
+				`{"profile":"owner","script":"true","cwd":"invented","env":{},"timeout_seconds":5}`,
+			),
+		},
+		{
+			name: "unpermitted environment",
+			example: json.RawMessage(
+				`{"profile":"owner","script":"true","cwd":"workspace","env":{"SECRET":"value"},"timeout_seconds":5}`,
+			),
+		},
+		{name: "multibyte script bytes", example: oversizedScript},
+		{name: "aggregate environment bytes", example: oversizedEnvironment},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := descriptor(
+				"shell.exec.v1",
+				`{"type":"object","required":["profile","script","cwd","env","timeout_seconds"],"properties":{"profile":{"type":"string"},"script":{"type":"string"},"cwd":{"type":"string"},"env":{"type":"object","additionalProperties":{"type":"string"}},"timeout_seconds":{"type":"integer"}},"additionalProperties":false}`,
+			)
+			command.Risk = RiskPrivileged
+			command.ModelContract = &CommandModelContract{
+				Availability:      ModelAvailable,
+				TimeoutSecondsMax: 30,
+				OutputBytesMax:    4096,
+				ResultKind:        "json",
+				ApprovalMode:      "each_command",
+				Constraints: CommandModelConstraints{
+					ProfileAliases: []string{"owner"},
+					WorkingScopes:  []string{"workspace"},
+					EnvironmentNames: []string{
+						"LANG",
+						"TERM",
+					},
+				},
+				Guidance: []string{},
+				Examples: []json.RawMessage{test.example},
+			}
+			if err := command.Validate(); !errors.Is(err, ErrInvalidCapability) {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCommandDescriptorRejectsContradictoryShellSecurityMetadata(t *testing.T) {
+	valid := descriptor(
+		"shell.exec.v1",
+		`{"type":"object","required":["profile","script","cwd","env","timeout_seconds"],"properties":{"profile":{"type":"string"},"script":{"type":"string"},"cwd":{"type":"string"},"env":{"type":"object"},"timeout_seconds":{"type":"integer"}},"additionalProperties":false}`,
+	)
+	valid.Risk = RiskPrivileged
+	valid.ModelContract = &CommandModelContract{
+		Availability:      ModelAvailable,
+		TimeoutSecondsMax: 30,
+		OutputBytesMax:    4096,
+		ResultKind:        "json",
+		ApprovalMode:      "each_command",
+		Constraints: CommandModelConstraints{
+			ProfileAliases: []string{"owner"},
+			WorkingScopes:  []string{"workspace"},
+		},
+		Guidance: []string{},
+		Examples: []json.RawMessage{},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid shell descriptor rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*CommandDescriptor)
+	}{
+		{
+			name: "missing model contract",
+			mutate: func(command *CommandDescriptor) {
+				command.ModelContract = nil
+			},
+		},
+		{
+			name: "understated risk",
+			mutate: func(command *CommandDescriptor) {
+				command.Risk = RiskRead
+			},
+		},
+		{
+			name: "missing approval mode",
+			mutate: func(command *CommandDescriptor) {
+				command.ModelContract.ApprovalMode = ""
+			},
+		},
+		{
+			name: "session approval mode",
+			mutate: func(command *CommandDescriptor) {
+				command.ModelContract.ApprovalMode = "session_start"
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := valid
+			contract := *valid.ModelContract
+			command.ModelContract = &contract
+			test.mutate(&command)
+			if err := command.Validate(); !errors.Is(err, ErrInvalidCapability) {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
 	}
 }
 

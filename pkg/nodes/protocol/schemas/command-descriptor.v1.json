@@ -30,6 +30,7 @@
         "output_bytes_max": {"type": "integer", "minimum": 1, "maximum": 524288},
         "result_kind": {"const": "json"},
         "authority_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "approval_mode": {"enum": ["each_command", "session_start"]},
         "constraints": {
           "type": "object",
           "additionalProperties": false,
@@ -37,6 +38,11 @@
             "executable_aliases": {
               "type": "array",
               "maxItems": 64,
+              "items": {"type": "string", "minLength": 1, "maxLength": 64}
+            },
+            "profile_aliases": {
+              "type": "array",
+              "maxItems": 32,
               "items": {"type": "string", "minLength": 1, "maxLength": 64}
             },
             "working_scopes": {
