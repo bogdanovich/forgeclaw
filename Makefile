@@ -1,4 +1,4 @@
-.PHONY: all build build-node install uninstall clean help test integration-test build-all fmt fmt-check lint lint-docs fix
+.PHONY: all build build-node build-node-broker install uninstall clean help test integration-test build-all fmt fmt-check lint lint-docs fix
 
 # Build variables
 BINARY_NAME=mintclaw
@@ -204,6 +204,12 @@ else
 	@GOOS=$(PLATFORM) GOARCH=$(ARCH) $(GO) build $(GOFLAGS) -ldflags "$(NODE_LDFLAGS)" -o $(BUILD_DIR)/mintclaw-node$(EXT) ./cmd/mintclaw-node
 endif
 	@echo "Build complete: $(BUILD_DIR)/mintclaw-node$(EXT)"
+
+## build-node-broker: Build the Linux node authority broker
+build-node-broker:
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=linux GOARCH=$(ARCH) $(GO) build $(GOFLAGS) -ldflags "-s -w" -o $(BUILD_DIR)/mintclaw-node-broker ./cmd/mintclaw-node-broker
+	@echo "Build complete: $(BUILD_DIR)/mintclaw-node-broker"
 
 ## build-launcher: Build the mintclaw-launcher (web console) binary
 build-launcher:

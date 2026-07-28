@@ -119,6 +119,7 @@ type invocationStore interface {
 	Existing(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
 	Accept(nodes.ExecutionPlan) (nodes.InvocationRecord, bool, error)
 	MarkRunning(string) (nodes.InvocationRecord, error)
+	MarkUnknown(string) (nodes.InvocationRecord, error)
 	RequestCancellation(string) (nodes.InvocationRecord, error)
 	CompleteCancellation(string) (nodes.InvocationRecord, error)
 	CompleteSuccess(string, json.RawMessage) (nodes.InvocationRecord, error)
@@ -352,6 +353,16 @@ func (runtime *Runtime) executeAccepted(
 	})
 	cancellationDelivered := invocation.finishHandler()
 	if executeErr != nil {
+		if errors.Is(executeErr, ErrInvocationOutcomeUnknown) {
+			if _, err := runtime.ledger.MarkUnknown(plan.InvocationID); err != nil {
+				return nil, fmt.Errorf(
+					"%w: persist unknown result: %v",
+					ErrInvocationOutcomeUnknown,
+					err,
+				)
+			}
+			return nil, executeErr
+		}
 		if cancellationDelivered && errors.Is(executeErr, errCommandCancellationConfirmed) {
 			if _, err := runtime.ledger.CompleteCancellation(plan.InvocationID); err != nil {
 				return nil, fmt.Errorf(

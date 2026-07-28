@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes/companion"
 )
@@ -66,9 +67,22 @@ func run(args []string) error {
 		return err
 	}
 	defer ledger.Close()
-	runtimeOptions := make([]companion.RuntimeOption, 0, 1)
+	runtimeOptions := make([]companion.RuntimeOption, 0, 2)
 	if cfg.SystemExec != nil {
 		runtimeOptions = append(runtimeOptions, companion.WithSystemExec(*cfg.SystemExec))
+	}
+	if cfg.OwnerShell != nil && cfg.OwnerShell.Enabled {
+		broker, brokerErr := companion.NewAuthorityBrokerClient(cfg.OwnerShell.BrokerSocket)
+		if brokerErr != nil {
+			return brokerErr
+		}
+		snapshotContext, cancelSnapshot := context.WithTimeout(context.Background(), 5*time.Second)
+		snapshot, snapshotErr := broker.Snapshot(snapshotContext)
+		cancelSnapshot()
+		if snapshotErr != nil {
+			return fmt.Errorf("load authority broker snapshot: %w", snapshotErr)
+		}
+		runtimeOptions = append(runtimeOptions, companion.WithShellBroker(snapshot, broker))
 	}
 	commandRuntime, err := companion.NewRuntime(
 		identity.ID,

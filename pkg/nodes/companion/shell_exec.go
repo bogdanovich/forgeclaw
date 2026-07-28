@@ -18,6 +18,8 @@ const (
 
 var ErrShellBrokerCancellationConfirmed = errors.New("shell broker confirmed process-domain termination")
 
+var ErrShellBrokerOutcomeUnknown = errors.New("shell broker execution outcome is unknown")
+
 // ShellBroker is the narrow companion-side client contract. Execute may return
 // ErrShellBrokerCancellationConfirmed only after the broker-owned process
 // domain is empty.
@@ -240,6 +242,9 @@ func (handler *shellExecHandler) execute(
 				return nil, newCommandFailure("TIMEOUT", "shell.exec timed out", err)
 			}
 			return nil, fmt.Errorf("%w: %v", errCommandCancellationConfirmed, err)
+		}
+		if errors.Is(err, ErrShellBrokerOutcomeUnknown) {
+			return nil, fmt.Errorf("%w: %v", ErrInvocationOutcomeUnknown, err)
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, newCommandFailure("TIMEOUT", "shell.exec timed out", err)
