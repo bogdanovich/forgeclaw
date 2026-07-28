@@ -33,13 +33,17 @@ type ShellBrokerSnapshot struct {
 }
 
 type ShellBrokerProfile struct {
-	Alias              string   `json:"alias"`
-	Revision           string   `json:"revision"`
-	WorkingScopes      []string `json:"working_scopes"`
-	EnvironmentNames   []string `json:"environment_names"`
-	TimeoutSecondsMax  int      `json:"timeout_seconds_max"`
-	OutputBytesMax     int      `json:"output_bytes_max"`
-	ConcurrentCommands int      `json:"concurrent_commands"`
+	Alias                   string   `json:"alias"`
+	Revision                string   `json:"revision"`
+	WorkingScopes           []string `json:"working_scopes"`
+	EnvironmentNames        []string `json:"environment_names"`
+	TimeoutSecondsMax       int      `json:"timeout_seconds_max"`
+	OutputBytesMax          int      `json:"output_bytes_max"`
+	ConcurrentCommands      int      `json:"concurrent_commands"`
+	ConcurrentTerminals     int      `json:"concurrent_terminals"`
+	TerminalIdleSeconds     int      `json:"terminal_idle_seconds"`
+	TerminalLifetimeSeconds int      `json:"terminal_lifetime_seconds"`
+	TerminalBufferBytes     int      `json:"terminal_buffer_bytes"`
 }
 
 type ShellBrokerRequest struct {
@@ -111,13 +115,33 @@ func normalizeShellBrokerSnapshot(snapshot ShellBrokerSnapshot) (ShellBrokerSnap
 	profile := snapshot.Profiles[0]
 	profile.Alias = strings.TrimSpace(profile.Alias)
 	profile.Revision = strings.TrimSpace(profile.Revision)
+	if profile.ConcurrentTerminals == 0 {
+		profile.ConcurrentTerminals = 1
+	}
+	if profile.TerminalIdleSeconds == 0 {
+		profile.TerminalIdleSeconds = DefaultTerminalIdleSeconds
+	}
+	if profile.TerminalLifetimeSeconds == 0 {
+		profile.TerminalLifetimeSeconds = MaxTerminalLifetimeSeconds
+	}
+	if profile.TerminalBufferBytes == 0 {
+		profile.TerminalBufferBytes = DefaultTerminalBufferBytes
+	}
 	if profile.Alias == "" || !validShellBrokerRevision(profile.Revision) ||
 		profile.TimeoutSecondsMax <= 0 ||
 		profile.TimeoutSecondsMax > nodes.MaxInvocationTimeout ||
 		profile.OutputBytesMax <= 0 ||
 		profile.OutputBytesMax > 128*1024 ||
 		profile.ConcurrentCommands <= 0 ||
-		profile.ConcurrentCommands > 8 {
+		profile.ConcurrentCommands > 8 ||
+		profile.ConcurrentTerminals <= 0 ||
+		profile.ConcurrentTerminals > maxConcurrentTerminals ||
+		profile.TerminalIdleSeconds <= 0 ||
+		profile.TerminalIdleSeconds > MaxTerminalIdleSeconds ||
+		profile.TerminalLifetimeSeconds < profile.TerminalIdleSeconds ||
+		profile.TerminalLifetimeSeconds > MaxTerminalLifetimeSeconds ||
+		profile.TerminalBufferBytes <= 0 ||
+		profile.TerminalBufferBytes > MaxTerminalBufferBytes {
 		return ShellBrokerSnapshot{}, errors.New("shell broker profile is invalid")
 	}
 	profile.WorkingScopes = append([]string(nil), profile.WorkingScopes...)

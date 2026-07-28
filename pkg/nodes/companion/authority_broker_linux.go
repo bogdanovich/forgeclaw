@@ -4,6 +4,9 @@ package companion
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -24,6 +27,17 @@ type AuthorityBrokerClient struct {
 	socketPath        string
 	expectedServerUID uint32
 	expectedServerGID uint32
+}
+
+type AuthorityBrokerTerminal struct {
+	connection *net.UnixConn
+	terminalID string
+	writeMu    sync.Mutex
+	readMu     sync.Mutex
+	closeOnce  sync.Once
+	done       chan struct{}
+	cursor     uint64
+	ended      bool
 }
 
 func NewAuthorityBrokerClient(socketPath string) (*AuthorityBrokerClient, error) {
@@ -88,6 +102,186 @@ func (client *AuthorityBrokerClient) Execute(
 		)
 	}
 	return *response.Result, nil
+}
+
+func (client *AuthorityBrokerClient) OpenTerminal(
+	ctx context.Context,
+	request TerminalBrokerOpenRequest,
+) (*AuthorityBrokerTerminal, TerminalBrokerEvent, error) {
+	if client == nil {
+		return nil, TerminalBrokerEvent{}, errors.New("authority broker client is unavailable")
+	}
+	if err := request.validate(); err != nil {
+		return nil, TerminalBrokerEvent{}, err
+	}
+	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", client.socketPath)
+	if err != nil {
+		return nil, TerminalBrokerEvent{}, fmt.Errorf("connect authority broker: %w", err)
+	}
+	unixConnection, ok := connection.(*net.UnixConn)
+	if !ok {
+		_ = connection.Close()
+		return nil, TerminalBrokerEvent{}, errors.New("authority broker connection is not Unix")
+	}
+	peer, err := authorityBrokerPeerCredentials(unixConnection)
+	if err != nil ||
+		peer.Uid != client.expectedServerUID ||
+		peer.Gid != client.expectedServerGID {
+		_ = connection.Close()
+		return nil, TerminalBrokerEvent{}, errors.New("authority broker server identity is invalid")
+	}
+	if err := writeAuthorityBrokerFrame(connection, authorityBrokerRequestFrame{
+		Version:  AuthorityBrokerProtocolVersion,
+		Action:   authorityBrokerActionTerminal,
+		Terminal: &request,
+	}); err != nil {
+		_ = connection.Close()
+		return nil, TerminalBrokerEvent{}, fmt.Errorf(
+			"%w: write terminal open request: %v",
+			ErrTerminalOutcomeUnknown,
+			err,
+		)
+	}
+	var response authorityBrokerResponseFrame
+	if err := readAuthorityBrokerFrame(connection, &response); err != nil {
+		_ = connection.Close()
+		return nil, TerminalBrokerEvent{}, fmt.Errorf(
+			"%w: read terminal open response: %v",
+			ErrTerminalOutcomeUnknown,
+			err,
+		)
+	}
+	if response.Version != AuthorityBrokerProtocolVersion ||
+		!response.OK ||
+		response.Terminal == nil ||
+		response.Result != nil ||
+		response.Snapshot != nil ||
+		response.Terminal.Type != TerminalEventOpened {
+		_ = connection.Close()
+		return nil, TerminalBrokerEvent{}, errors.New("authority broker denied terminal open")
+	}
+	if err := response.Terminal.validate(); err != nil {
+		_ = connection.Close()
+		return nil, TerminalBrokerEvent{}, fmt.Errorf(
+			"%w: invalid terminal open response",
+			ErrTerminalOutcomeUnknown,
+		)
+	}
+	terminal := &AuthorityBrokerTerminal{
+		connection: unixConnection,
+		terminalID: response.Terminal.TerminalID,
+		done:       make(chan struct{}),
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = terminal.Close()
+		case <-terminal.done:
+		}
+	}()
+	return terminal, *response.Terminal, nil
+}
+
+func (terminal *AuthorityBrokerTerminal) ID() string {
+	if terminal == nil {
+		return ""
+	}
+	return terminal.terminalID
+}
+
+func (terminal *AuthorityBrokerTerminal) Send(
+	ctx context.Context,
+	control TerminalBrokerControl,
+) error {
+	if terminal == nil || terminal.connection == nil {
+		return errors.New("authority broker terminal is unavailable")
+	}
+	control.Version = AuthorityBrokerProtocolVersion
+	if _, err := control.validate(); err != nil {
+		return err
+	}
+	terminal.writeMu.Lock()
+	defer terminal.writeMu.Unlock()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := terminal.connection.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
+		defer terminal.connection.SetWriteDeadline(time.Time{})
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := writeAuthorityBrokerFrame(terminal.connection, control); err != nil {
+		return fmt.Errorf("%w: write terminal control: %v", ErrTerminalOutcomeUnknown, err)
+	}
+	return nil
+}
+
+func (terminal *AuthorityBrokerTerminal) Receive(ctx context.Context) (TerminalBrokerEvent, error) {
+	if terminal == nil || terminal.connection == nil {
+		return TerminalBrokerEvent{}, errors.New("authority broker terminal is unavailable")
+	}
+	terminal.readMu.Lock()
+	defer terminal.readMu.Unlock()
+	if terminal.ended {
+		return TerminalBrokerEvent{}, errors.New("authority broker terminal has ended")
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := terminal.connection.SetReadDeadline(deadline); err != nil {
+			return TerminalBrokerEvent{}, err
+		}
+		defer terminal.connection.SetReadDeadline(time.Time{})
+	}
+	var event TerminalBrokerEvent
+	if err := readAuthorityBrokerFrame(terminal.connection, &event); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return TerminalBrokerEvent{}, ctxErr
+		}
+		return TerminalBrokerEvent{}, fmt.Errorf(
+			"%w: read terminal event: %v",
+			ErrTerminalOutcomeUnknown,
+			err,
+		)
+	}
+	if err := event.validate(); err != nil || event.TerminalID != terminal.terminalID {
+		return TerminalBrokerEvent{}, fmt.Errorf(
+			"%w: invalid terminal event",
+			ErrTerminalOutcomeUnknown,
+		)
+	}
+	switch event.Type {
+	case TerminalEventOpened:
+		return TerminalBrokerEvent{}, fmt.Errorf(
+			"%w: repeated terminal opened event",
+			ErrTerminalOutcomeUnknown,
+		)
+	case TerminalEventOutput:
+		data, _ := base64.StdEncoding.Strict().DecodeString(event.DataBase64)
+		if event.Cursor != terminal.cursor+uint64(len(data)) {
+			return TerminalBrokerEvent{}, fmt.Errorf(
+				"%w: terminal output cursor is discontinuous",
+				ErrTerminalOutcomeUnknown,
+			)
+		}
+		terminal.cursor = event.Cursor
+	case TerminalEventClosed, TerminalEventUnknown:
+		terminal.ended = true
+	}
+	return event, nil
+}
+
+func (terminal *AuthorityBrokerTerminal) Close() error {
+	if terminal == nil {
+		return nil
+	}
+	var closeErr error
+	terminal.closeOnce.Do(func() {
+		close(terminal.done)
+		if terminal.connection != nil {
+			closeErr = terminal.connection.Close()
+		}
+	})
+	return closeErr
 }
 
 func (client *AuthorityBrokerClient) call(
@@ -171,11 +365,23 @@ type authorityBrokerExecutionRunner interface {
 	) (ShellBrokerResult, error)
 }
 
+type authorityBrokerTerminalRunner interface {
+	Terminal(
+		context.Context,
+		preparedAuthorityBrokerTerminal,
+		TerminalBrokerOpenRequest,
+		string,
+		<-chan TerminalBrokerControl,
+		chan<- TerminalBrokerEvent,
+	) error
+}
+
 type authorityBrokerServer struct {
-	config     AuthorityBrokerConfig
-	runner     authorityBrokerExecutionRunner
-	semaphores map[string]chan struct{}
-	identity   authorityBrokerCompanionIdentity
+	config             AuthorityBrokerConfig
+	runner             authorityBrokerExecutionRunner
+	semaphores         map[string]chan struct{}
+	terminalSemaphores map[string]chan struct{}
+	identity           authorityBrokerCompanionIdentity
 }
 
 func newAuthorityBrokerServer(
@@ -189,11 +395,14 @@ func newAuthorityBrokerServer(
 		return nil, errors.New("authority broker server configuration is incomplete")
 	}
 	semaphores := make(map[string]chan struct{}, len(config.normalizedProfile))
+	terminalSemaphores := make(map[string]chan struct{}, len(config.normalizedProfile))
 	for alias, profile := range config.normalizedProfile {
 		semaphores[alias] = make(chan struct{}, profile.ConcurrentCommands)
+		terminalSemaphores[alias] = make(chan struct{}, profile.ConcurrentTerminals)
 	}
 	return &authorityBrokerServer{
-		config: config, runner: runner, semaphores: semaphores, identity: identity,
+		config: config, runner: runner, semaphores: semaphores,
+		terminalSemaphores: terminalSemaphores, identity: identity,
 	}, nil
 }
 
@@ -263,6 +472,10 @@ func (server *authorityBrokerServer) handleConnection(
 		_ = server.writeResponse(connection, authorityBrokerResponseFrame{OK: true, Snapshot: &snapshot})
 		return
 	}
+	if request.Action == authorityBrokerActionTerminal {
+		server.handleTerminal(serverContext, connection, *request.Terminal)
+		return
+	}
 	prepared, err := server.config.prepareExecution(*request.Execute)
 	if err != nil {
 		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "DENIED"})
@@ -305,6 +518,137 @@ func (server *authorityBrokerServer) handleConnection(
 	}
 }
 
+func (server *authorityBrokerServer) handleTerminal(
+	serverContext context.Context,
+	connection *net.UnixConn,
+	request TerminalBrokerOpenRequest,
+) {
+	runner, ok := server.runner.(authorityBrokerTerminalRunner)
+	if !ok {
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "UNAVAILABLE"})
+		return
+	}
+	prepared, err := server.config.prepareTerminal(request)
+	if err != nil {
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "DENIED"})
+		return
+	}
+	terminalID, err := newAuthorityBrokerTerminalID()
+	if err != nil {
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "UNAVAILABLE"})
+		return
+	}
+	terminalContext, cancel := context.WithCancel(serverContext)
+	defer cancel()
+	controls := make(chan TerminalBrokerControl)
+	peerDone := make(chan error, 1)
+	go func() {
+		for {
+			var control TerminalBrokerControl
+			if readErr := readAuthorityBrokerFrame(connection, &control); readErr != nil {
+				peerDone <- readErr
+				cancel()
+				return
+			}
+			if _, validationErr := control.validate(); validationErr != nil {
+				peerDone <- validationErr
+				cancel()
+				return
+			}
+			select {
+			case controls <- control:
+			case <-terminalContext.Done():
+				peerDone <- terminalContext.Err()
+				return
+			}
+		}
+	}()
+	semaphore := server.terminalSemaphores[request.Profile]
+	select {
+	case semaphore <- struct{}{}:
+		defer func() { <-semaphore }()
+	case <-terminalContext.Done():
+		return
+	}
+	events := make(chan TerminalBrokerEvent)
+	runnerDone := make(chan error, 1)
+	go func() {
+		runnerDone <- runner.Terminal(
+			terminalContext,
+			prepared,
+			request,
+			terminalID,
+			controls,
+			events,
+		)
+	}()
+	var opened TerminalBrokerEvent
+	select {
+	case opened = <-events:
+		if opened.Type != TerminalEventOpened ||
+			opened.TerminalID != terminalID ||
+			opened.validate() != nil {
+			cancel()
+			<-runnerDone
+			_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "UNKNOWN"})
+			return
+		}
+	case <-peerDone:
+		cancel()
+		<-runnerDone
+		return
+	case <-runnerDone:
+		_ = server.writeResponse(connection, authorityBrokerResponseFrame{Code: "UNKNOWN"})
+		return
+	}
+	if err := server.writeResponse(connection, authorityBrokerResponseFrame{
+		OK: true, Terminal: &opened,
+	}); err != nil {
+		cancel()
+		<-runnerDone
+		return
+	}
+	for {
+		select {
+		case event := <-events:
+			if event.TerminalID != terminalID || event.validate() != nil {
+				cancel()
+				<-runnerDone
+				return
+			}
+			if err := server.writeTerminalEvent(connection, event); err != nil {
+				cancel()
+				<-runnerDone
+				return
+			}
+			if event.Type == TerminalEventClosed || event.Type == TerminalEventUnknown {
+				<-runnerDone
+				return
+			}
+		case <-peerDone:
+			cancel()
+			<-runnerDone
+			return
+		case <-runnerDone:
+			unknown := TerminalBrokerEvent{
+				Version: AuthorityBrokerProtocolVersion,
+				Type:    TerminalEventUnknown, TerminalID: terminalID, State: "unknown",
+				Reason: TerminalCloseDisconnected,
+			}
+			_ = server.writeTerminalEvent(connection, unknown)
+			return
+		}
+	}
+}
+
+func newAuthorityBrokerTerminalID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return "terminal_" + hex.EncodeToString(random[:]), nil
+}
+
 func (*authorityBrokerServer) writeResponse(
 	connection *net.UnixConn,
 	response authorityBrokerResponseFrame,
@@ -316,6 +660,19 @@ func (*authorityBrokerServer) writeResponse(
 		return err
 	}
 	return writeAuthorityBrokerFrame(connection, response)
+}
+
+func (*authorityBrokerServer) writeTerminalEvent(
+	connection *net.UnixConn,
+	event TerminalBrokerEvent,
+) error {
+	event.Version = AuthorityBrokerProtocolVersion
+	if err := connection.SetWriteDeadline(
+		time.Now().Add(authorityBrokerResponseWriteTimeout),
+	); err != nil {
+		return err
+	}
+	return writeAuthorityBrokerFrame(connection, event)
 }
 
 func authorityBrokerPeerCredentials(connection *net.UnixConn) (*unix.Ucred, error) {

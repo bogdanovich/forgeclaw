@@ -35,6 +35,13 @@ type authorityBrokerWorkerRequest struct {
 	OutputBytesMax      int      `json:"output_bytes_max"`
 }
 
+type authorityBrokerWorkerEnvelope struct {
+	Version  int                                   `json:"version"`
+	Action   string                                `json:"action"`
+	Execute  *authorityBrokerWorkerRequest         `json:"execute,omitempty"`
+	Terminal *authorityBrokerTerminalWorkerRequest `json:"terminal,omitempty"`
+}
+
 type authorityBrokerWorkerResponse struct {
 	OK       bool              `json:"ok"`
 	Canceled bool              `json:"canceled,omitempty"`
@@ -94,7 +101,11 @@ func (runner *authorityBrokerProcessRunner) Execute(
 		SupplementaryGroups: prepared.profile.SupplementaryGroups,
 		TimeoutSeconds:      request.TimeoutSeconds, OutputBytesMax: request.OutputBytesMax,
 	}
-	if err := writeAuthorityBrokerFrame(stdin, workerRequest); err != nil {
+	if err := writeAuthorityBrokerFrame(stdin, authorityBrokerWorkerEnvelope{
+		Version: AuthorityBrokerProtocolVersion,
+		Action:  authorityBrokerActionExecute,
+		Execute: &workerRequest,
+	}); err != nil {
 		_ = stdin.Close()
 		_ = command.Process.Kill()
 		_ = command.Wait()
@@ -137,15 +148,37 @@ func RunAuthorityBrokerWorker(ctx context.Context, requireRoot bool) error {
 	if requireRoot && os.Geteuid() != 0 {
 		return errors.New("authority broker worker must run as root")
 	}
-	var request authorityBrokerWorkerRequest
-	if err := readAuthorityBrokerFrame(os.Stdin, &request); err != nil {
+	var envelope authorityBrokerWorkerEnvelope
+	if err := readAuthorityBrokerFrame(os.Stdin, &envelope); err != nil {
 		return fmt.Errorf("read authority broker worker request: %w", err)
 	}
-	response, err := executeAuthorityBrokerWorker(ctx, request, authorityBrokerControlFD)
-	if writeErr := writeAuthorityBrokerFrame(os.Stdout, response); writeErr != nil {
-		return writeErr
+	if envelope.Version != AuthorityBrokerProtocolVersion {
+		return errors.New("authority broker worker protocol is unsupported")
 	}
-	return err
+	switch envelope.Action {
+	case authorityBrokerActionExecute:
+		if envelope.Execute == nil || envelope.Terminal != nil {
+			return errors.New("authority broker worker execution request is invalid")
+		}
+		response, err := executeAuthorityBrokerWorker(ctx, *envelope.Execute, authorityBrokerControlFD)
+		if writeErr := writeAuthorityBrokerFrame(os.Stdout, response); writeErr != nil {
+			return writeErr
+		}
+		return err
+	case authorityBrokerActionTerminal:
+		if envelope.Terminal == nil || envelope.Execute != nil {
+			return errors.New("authority broker worker terminal request is invalid")
+		}
+		return runAuthorityBrokerTerminalWorker(
+			ctx,
+			*envelope.Terminal,
+			os.Stdin,
+			os.Stdout,
+			authorityBrokerControlFD,
+		)
+	default:
+		return errors.New("authority broker worker action is invalid")
+	}
 }
 
 func executeAuthorityBrokerWorker(

@@ -4,6 +4,7 @@ package companion
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -239,6 +240,47 @@ func TestAuthorityBrokerUnixBoundsNonReadingPeer(t *testing.T) {
 	}
 }
 
+func TestAuthorityBrokerTerminalUnixRoundTripRealPTY(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	request := testAuthorityBrokerTerminalRequest()
+	terminal, opened, err := client.OpenTerminal(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	if opened.Type != TerminalEventOpened || terminal.ID() != opened.TerminalID {
+		t.Fatalf("opened terminal = (%q, %#v)", terminal.ID(), opened)
+	}
+	if err := terminal.Send(
+		t.Context(),
+		terminalInputControl(1, "echo-off-1", "stty -echo\n"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, terminal, 1)
+	if err := terminal.Send(
+		t.Context(),
+		terminalInputControl(2, "input-2", "printf 'broker-terminal-marker\\n'\n"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalOutput(t, terminal, "broker-terminal-marker")
+	if err := terminal.Send(t.Context(), TerminalBrokerControl{
+		Sequence: 3, IdempotencyKey: "close-3", Close: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, terminal, 3)
+	closed := receiveAuthorityBrokerTerminalEvent(t, terminal)
+	if closed.Type != TerminalEventClosed ||
+		closed.Reason != TerminalCloseRequested ||
+		!closed.TerminationConfirmed {
+		t.Fatalf("closed event = %#v", closed)
+	}
+}
+
 func TestRuntimeShellExecThroughUnixBrokerRealProcess(t *testing.T) {
 	runner := testAuthorityBrokerProcessRunner(t)
 	client, stop := startTestAuthorityBrokerServer(t, runner)
@@ -335,6 +377,57 @@ func waitForAuthorityBrokerFileOrError(
 			t.Fatal("authority broker process barrier was not reached")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func receiveAuthorityBrokerTerminalEvent(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+) TerminalBrokerEvent {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	event, err := terminal.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
+func waitForAuthorityBrokerTerminalAck(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+	sequence uint64,
+) {
+	t.Helper()
+	for {
+		event := receiveAuthorityBrokerTerminalEvent(t, terminal)
+		if event.Type == TerminalEventAck && event.AcceptedSequence == sequence {
+			return
+		}
+	}
+}
+
+func waitForAuthorityBrokerTerminalOutput(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+	marker string,
+) {
+	t.Helper()
+	var output strings.Builder
+	for {
+		event := receiveAuthorityBrokerTerminalEvent(t, terminal)
+		if event.Type != TerminalEventOutput {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(event.DataBase64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output.Write(data)
+		if strings.Contains(output.String(), marker) {
+			return
+		}
 	}
 }
 

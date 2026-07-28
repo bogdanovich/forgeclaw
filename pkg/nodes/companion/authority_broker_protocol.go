@@ -19,12 +19,14 @@ const (
 const (
 	authorityBrokerActionSnapshot = "snapshot"
 	authorityBrokerActionExecute  = "execute"
+	authorityBrokerActionTerminal = "terminal.open"
 )
 
 type authorityBrokerRequestFrame struct {
-	Version int                 `json:"version"`
-	Action  string              `json:"action"`
-	Execute *ShellBrokerRequest `json:"execute,omitempty"`
+	Version  int                        `json:"version"`
+	Action   string                     `json:"action"`
+	Execute  *ShellBrokerRequest        `json:"execute,omitempty"`
+	Terminal *TerminalBrokerOpenRequest `json:"terminal,omitempty"`
 }
 
 type authorityBrokerResponseFrame struct {
@@ -33,6 +35,7 @@ type authorityBrokerResponseFrame struct {
 	Code     string               `json:"code,omitempty"`
 	Snapshot *ShellBrokerSnapshot `json:"snapshot,omitempty"`
 	Result   *ShellBrokerResult   `json:"result,omitempty"`
+	Terminal *TerminalBrokerEvent `json:"terminal,omitempty"`
 }
 
 func readAuthorityBrokerFrame(reader io.Reader, target any) error {
@@ -82,12 +85,16 @@ func validateAuthorityBrokerRequestFrame(frame authorityBrokerRequestFrame) erro
 	}
 	switch frame.Action {
 	case authorityBrokerActionSnapshot:
-		if frame.Execute != nil {
+		if frame.Execute != nil || frame.Terminal != nil {
 			return errors.New("authority broker snapshot request carries execution")
 		}
 	case authorityBrokerActionExecute:
-		if frame.Execute == nil {
+		if frame.Execute == nil || frame.Terminal != nil {
 			return errors.New("authority broker execute request is missing")
+		}
+	case authorityBrokerActionTerminal:
+		if frame.Terminal == nil || frame.Execute != nil {
+			return errors.New("authority broker terminal request is missing")
 		}
 	default:
 		return errors.New("authority broker action is unsupported")
