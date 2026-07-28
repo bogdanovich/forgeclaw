@@ -574,7 +574,11 @@ func (coordinator *TerminalCoordinator) readEvents(session *terminalSession) {
 		}
 		switch event.Type {
 		case TerminalEventClosed:
+			requestedReason := session.metadata.Reason
 			coordinator.finishLocked(session, event, TerminalSessionClosed)
+			if event.Reason == TerminalCloseRequested && requestedReason != "" {
+				session.metadata.Reason = requestedReason
+			}
 		case TerminalEventUnknown:
 			coordinator.finishLocked(session, event, TerminalSessionUnknown)
 		}
