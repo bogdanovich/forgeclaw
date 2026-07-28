@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,15 @@ type fakeNodeAdmissionRoutes struct {
 	registerCount   int
 	replaceCount    int
 	unregisterCount int
+}
+
+type closeErrorNodeAdmissionHandler struct {
+	*fakeNodeAdmissionHandler
+	err error
+}
+
+func (handler *closeErrorNodeAdmissionHandler) Close(context.Context) error {
+	return handler.err
 }
 
 func TestNodeAdmissionWorkspaceChangeFailsClosed(t *testing.T) {
@@ -223,6 +234,61 @@ func TestNodeAdmissionDisableReconcilesActiveTerminalStore(t *testing.T) {
 	}
 }
 
+func TestNodeAdmissionCloseReconcilesAfterPostDrainDeactivationError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node_terminals.json")
+	store, err := nodes.NewGatewayTerminalStore(path, 8, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := nodes.TerminalOwner{
+		ActorID: "actor_deactivate", AgentID: "agent_deactivate", RouteID: "route_deactivate",
+		SessionID: "session_deactivate", WorkspaceID: "workspace_deactivate",
+		Target: "vpn", Profile: "owner",
+	}
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_deactivate",
+		IdempotencyKey:  "idem_deactivate",
+		NodeID:          nodes.ID("node_deactivate"),
+		Owner:           owner,
+		CatalogHash:     testDigest("a"),
+		AuthorityDigest: testDigest("b"),
+		WorkingScope:    "workspace",
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MarkDispatched(owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	deactivationErr := errors.New("registry deactivation failed")
+	runtime := &nodeAdmissionRuntime{
+		handler: &closeErrorNodeAdmissionHandler{
+			fakeNodeAdmissionHandler: &fakeNodeAdmissionHandler{},
+			err:                      deactivationErr,
+		},
+		terminalStore:     store,
+		terminalStorePath: path,
+	}
+	if err := runtime.Close(t.Context()); !errors.Is(err, deactivationErr) {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if runtime.terminalStore != store || runtime.handler == nil {
+		t.Fatal("post-drain deactivation error discarded retry authority")
+	}
+	record, found, err := store.Lookup(owner, plan.OpenID)
+	if err != nil || !found ||
+		record.State != nodes.GatewayTerminalUnknown ||
+		record.Reason != "gateway_shutdown" {
+		t.Fatalf("post-drain terminal = (%#v, %v, %v)", record, found, err)
+	}
+}
+
 func TestNodeAdmissionCloseRetainsTerminalStoreWhenReconciliationFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node_terminals.json")
 	initial, err := nodes.NewGatewayTerminalStore(path, 8, 1024*1024)
@@ -265,12 +331,17 @@ func TestNodeAdmissionCloseRetainsTerminalStoreWhenReconciliationFails(t *testin
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	deactivationErr := errors.New("registry deactivation failed")
 	runtime := &nodeAdmissionRuntime{
-		handler:           &fakeNodeAdmissionHandler{},
+		handler: &closeErrorNodeAdmissionHandler{
+			fakeNodeAdmissionHandler: &fakeNodeAdmissionHandler{},
+			err:                      deactivationErr,
+		},
 		terminalStore:     initial,
 		terminalStorePath: path,
 	}
-	if err := runtime.Close(t.Context()); err == nil {
+	if err := runtime.Close(t.Context()); !errors.Is(err, deactivationErr) ||
+		!strings.Contains(err.Error(), "reconcile gateway terminals") {
 		t.Fatalf("Close() error = %v", err)
 	}
 	if runtime.terminalStore != initial ||
@@ -284,6 +355,7 @@ func TestNodeAdmissionCloseRetainsTerminalStoreWhenReconciliationFails(t *testin
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runtime.handler = &fakeNodeAdmissionHandler{}
 	if err := runtime.Close(t.Context()); err != nil {
 		t.Fatalf("retry Close() error = %v", err)
 	}

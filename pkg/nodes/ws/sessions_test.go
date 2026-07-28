@@ -354,7 +354,8 @@ func TestSessionHubCloseHonorsDeadlineDuringBlockedDeactivation(t *testing.T) {
 	<-deactivationStarted
 	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
 	defer cancel()
-	if err := hub.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	if err := hub.Close(ctx); !errors.Is(err, context.DeadlineExceeded) ||
+		!errors.Is(err, ErrSessionDrainIncomplete) {
 		t.Fatalf("Close() error = %v", err)
 	}
 	close(allowDeactivation)
@@ -379,7 +380,8 @@ func TestSessionHubCloseReturnsDisconnectError(t *testing.T) {
 	if _, err := release(); !errors.Is(err, wantErr) {
 		t.Fatalf("release() error = %v", err)
 	}
-	if err := hub.Close(t.Context()); !errors.Is(err, wantErr) {
+	if err := hub.Close(t.Context()); !errors.Is(err, wantErr) ||
+		errors.Is(err, ErrSessionDrainIncomplete) {
 		t.Fatalf("Close() error = %v", err)
 	}
 }

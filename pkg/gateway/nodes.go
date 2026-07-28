@@ -321,15 +321,21 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	if wasMounted {
 		runtime.routes.UnregisterHTTPHandler(nodews.Path)
 	}
+	var closeErr error
 	if handler != nil {
-		if err := handler.Close(ctx); err != nil {
-			return err
+		closeErr = handler.Close(ctx)
+		if errors.Is(closeErr, nodews.ErrSessionDrainIncomplete) {
+			return closeErr
 		}
 	}
+	var terminalErr error
 	if terminalStore != nil {
 		if err := terminalStore.ReconcileShutdown(); err != nil {
-			return fmt.Errorf("reconcile gateway terminals after node drain: %w", err)
+			terminalErr = fmt.Errorf("reconcile gateway terminals after node drain: %w", err)
 		}
+	}
+	if closeErr != nil || terminalErr != nil {
+		return errors.Join(closeErr, terminalErr)
 	}
 	runtime.registryMu.Lock()
 	runtime.registry = nil
