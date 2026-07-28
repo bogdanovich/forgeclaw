@@ -3,7 +3,6 @@ package ws
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +55,7 @@ type terminalEventSubscription struct {
 
 	mu          sync.Mutex
 	queuedBytes int
+	cursor      uint64
 	closed      bool
 	err         error
 }
@@ -185,14 +185,6 @@ func (session *peer) handleTerminalEvent(
 	if payload.TerminalID == "" || payload.Event.TerminalID != payload.TerminalID {
 		return nil, errors.New("node sent an unrelated terminal event")
 	}
-	size := 1
-	if payload.Event.DataBase64 != "" {
-		data, err := base64.StdEncoding.Strict().DecodeString(payload.Event.DataBase64)
-		if err != nil || len(data) == 0 || len(data) > nodes.MaxTerminalTransportFrameBytes {
-			return nil, errors.New("node sent an invalid terminal output frame")
-		}
-		size = len(data)
-	}
 	session.terminalMu.Lock()
 	subscription := session.terminals[payload.TerminalID]
 	_, abandoned := session.abandonedTerminals[payload.TerminalID]
@@ -203,7 +195,7 @@ func (session *peer) handleTerminalEvent(
 		}
 		return nil, errors.New("node sent an event for an unattached terminal")
 	}
-	if err := subscription.offer(payload.Event, size); err != nil {
+	if err := subscription.offer(payload.Event); err != nil {
 		request := subscription.request
 		session.unsubscribeTerminal(payload.TerminalID, subscription, err)
 		return &request, err
@@ -213,20 +205,30 @@ func (session *peer) handleTerminalEvent(
 
 func (subscription *terminalEventSubscription) offer(
 	event nodes.TerminalEvent,
-	size int,
 ) error {
+	size, err := event.Validate()
+	if err != nil {
+		return err
+	}
 	subscription.mu.Lock()
 	defer subscription.mu.Unlock()
 	if subscription.closed {
 		return subscription.err
 	}
+	if event.Type == "output" &&
+		event.Cursor != subscription.cursor+uint64(size) {
+		return fmt.Errorf("%w: terminal output cursor is discontinuous", nodes.ErrInvalidTerminal)
+	}
 	charge := max(size, nodes.MinTerminalTransportEventCharge)
-	if size <= 0 || subscription.queuedBytes+charge > nodes.MaxTerminalTransportBuffer {
+	if charge <= 0 || subscription.queuedBytes+charge > nodes.MaxTerminalTransportBuffer {
 		return ErrTerminalEventBackpressure
 	}
 	select {
 	case subscription.events <- terminalEventResult{event: event, size: charge}:
 		subscription.queuedBytes += charge
+		if event.Type == "output" {
+			subscription.cursor = event.Cursor
+		}
 		return nil
 	default:
 		return ErrTerminalEventBackpressure

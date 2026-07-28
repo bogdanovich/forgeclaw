@@ -308,13 +308,7 @@ func (handler *AdmissionHandler) detachBackpressuredTerminal(
 	session *peer,
 	request nodes.TerminalSessionRequest,
 ) {
-	params, err := json.Marshal(request)
-	if err != nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), defaultWriteTimeout)
-	defer cancel()
-	_, _, _ = session.request(ctx, "node.terminal.detach", params, "", nil)
+	_, _ = session.detachTerminalGuaranteed(request)
 }
 
 func (handler *AdmissionHandler) prepareSession(session *peer, nodeID nodes.ID) error {

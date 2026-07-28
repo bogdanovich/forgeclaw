@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -79,6 +80,61 @@ func TestTerminalOpenPlanRejectsBearerOnlyOrUnapprovedRequests(t *testing.T) {
 				t.Fatal("invalid terminal plan accepted")
 			}
 		})
+	}
+}
+
+func TestTerminalEventValidationIsTypeSpecific(t *testing.T) {
+	output := TerminalEvent{
+		Version: TerminalProtocolVersion, Type: "output", TerminalID: "terminal_test",
+		Cursor: 1, DataBase64: base64.StdEncoding.EncodeToString([]byte("x")),
+	}
+	if size, err := output.Validate(); err != nil || size != 1 {
+		t.Fatalf("output validation = (%d, %v)", size, err)
+	}
+	valid := []TerminalEvent{
+		{
+			Version: TerminalProtocolVersion, Type: "ack", TerminalID: "terminal_test",
+			AcceptedSequence: 1, State: "live",
+		},
+		{
+			Version: TerminalProtocolVersion, Type: "denied", TerminalID: "terminal_test",
+			State: "live", Reason: "invalid_sequence",
+		},
+		{
+			Version: TerminalProtocolVersion, Type: "closed", TerminalID: "terminal_test",
+			State: "closed", Reason: "exit", StartedAt: 1, CompletedAt: 2,
+			TerminationConfirmed: true,
+		},
+		{
+			Version: TerminalProtocolVersion, Type: "unknown", TerminalID: "terminal_test",
+			State: "unknown", Reason: "disconnect", StartedAt: 1,
+		},
+	}
+	for _, event := range valid {
+		if _, err := event.Validate(); err != nil {
+			t.Fatalf("valid %s event: %v", event.Type, err)
+		}
+	}
+	invalid := []TerminalEvent{
+		{Version: TerminalProtocolVersion, Type: "mystery", TerminalID: "terminal_test"},
+		{Version: TerminalProtocolVersion, Type: "output", TerminalID: "terminal_test", Cursor: 1},
+		{
+			Version: TerminalProtocolVersion, Type: "ack", TerminalID: "terminal_test",
+			AcceptedSequence: 1, State: "live", DataBase64: output.DataBase64,
+		},
+		{
+			Version: TerminalProtocolVersion, Type: "closed", TerminalID: "terminal_test",
+			State: "closed", Reason: "exit", StartedAt: 1,
+		},
+		{
+			Version: TerminalProtocolVersion + 1, Type: "ack", TerminalID: "terminal_test",
+			AcceptedSequence: 1, State: "live",
+		},
+	}
+	for _, event := range invalid {
+		if _, err := event.Validate(); err == nil {
+			t.Fatalf("invalid event accepted: %#v", event)
+		}
 	}
 }
 

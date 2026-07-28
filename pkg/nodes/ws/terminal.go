@@ -20,7 +20,8 @@ type TerminalStream struct {
 	session      *peer
 	subscription *terminalEventSubscription
 	request      nodes.TerminalSessionRequest
-	closeOnce    sync.Once
+	closeMu      sync.Mutex
+	closed       bool
 }
 
 // OpenTerminal dispatches one immutable, owner-bound terminal plan through the
@@ -137,13 +138,21 @@ func (handler *AdmissionHandler) AttachTerminal(
 	if err != nil {
 		return nil, nodes.TerminalMetadata{}, err
 	}
-	response, _, err := session.request(ctx, "node.terminal.attach", params, "", nil)
+	response, dispatched, err := session.request(ctx, "node.terminal.attach", params, "", nil)
 	if err != nil {
+		if dispatched {
+			_, cleanupErr := session.detachTerminalGuaranteed(request)
+			err = errors.Join(err, cleanupErr)
+		}
 		session.unsubscribeTerminal(request.TerminalID, subscription, err)
 		return nil, nodes.TerminalMetadata{}, err
 	}
 	metadata, err := decodeTerminalMetadata(response, request.Owner)
 	if err != nil {
+		if response.OK == nil || *response.OK {
+			_, cleanupErr := session.detachTerminalGuaranteed(request)
+			err = errors.Join(err, cleanupErr)
+		}
 		session.unsubscribeTerminal(request.TerminalID, subscription, err)
 		return nil, nodes.TerminalMetadata{}, err
 	}
@@ -223,34 +232,55 @@ func (stream *TerminalStream) Control(
 	return terminalResponseError(response)
 }
 
-func (stream *TerminalStream) Close(ctx context.Context) error {
+func (stream *TerminalStream) Close(_ context.Context) error {
 	if stream == nil || stream.session == nil {
 		return nil
 	}
-	var result error
-	stream.closeOnce.Do(func() {
-		params, err := json.Marshal(stream.request)
-		if err == nil {
-			var response protocol.Envelope
-			response, _, err = stream.session.request(
-				ctx,
-				"node.terminal.detach",
-				params,
-				"",
-				nil,
-			)
-			if err == nil {
-				err = terminalResponseError(response)
-			}
-		}
+	stream.closeMu.Lock()
+	defer stream.closeMu.Unlock()
+	if stream.closed {
+		return nil
+	}
+	closed, err := stream.session.detachTerminalGuaranteed(stream.request)
+	if closed {
+		stream.closed = true
 		stream.session.unsubscribeTerminal(
 			stream.request.TerminalID,
 			stream.subscription,
 			ErrNodeDisconnected,
 		)
-		result = err
-	})
-	return result
+	}
+	return err
+}
+
+func (session *peer) detachTerminalGuaranteed(
+	request nodes.TerminalSessionRequest,
+) (bool, error) {
+	params, err := json.Marshal(request)
+	if err != nil {
+		return false, err
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), defaultWriteTimeout)
+	defer cancel()
+	response, dispatched, requestErr := session.request(
+		cleanupCtx,
+		"node.terminal.detach",
+		params,
+		"",
+		nil,
+	)
+	if requestErr == nil {
+		requestErr = terminalResponseError(response)
+	}
+	if requestErr == nil {
+		return true, nil
+	}
+	closeErr := session.Close()
+	return true, errors.Join(
+		requestErr,
+		fmt.Errorf("terminal detach failed; peer fail-closed (dispatched=%t)", dispatched),
+		closeErr,
+	)
 }
 
 func (hub *SessionHub) subscribeTerminal(

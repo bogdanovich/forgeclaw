@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes/internal/jsonstrict"
 )
@@ -18,6 +20,7 @@ const (
 	MaxTerminalTransportFrameBytes  = 32 * 1024
 	MaxTerminalTransportBuffer      = 1024 * 1024
 	MinTerminalTransportEventCharge = 256
+	TerminalProtocolVersion         = 1
 )
 
 var ErrInvalidTerminal = errors.New("invalid node terminal request")
@@ -243,4 +246,87 @@ type TerminalEvent struct {
 	StartedAt            int64  `json:"started_at,omitempty"`
 	CompletedAt          int64  `json:"completed_at,omitempty"`
 	TerminationConfirmed bool   `json:"termination_confirmed,omitempty"`
+}
+
+// Validate enforces the shared live-event contract at both sides of the
+// authenticated transport. The returned size is the decoded output byte count
+// and is zero for non-output events.
+func (event TerminalEvent) Validate() (int, error) {
+	if event.Version != TerminalProtocolVersion ||
+		!validInvocationIdentifier(event.TerminalID) {
+		return 0, fmt.Errorf("%w: malformed terminal event identity", ErrInvalidTerminal)
+	}
+	noBytesOrCursor := func() bool {
+		return event.Cursor == 0 && event.DataBase64 == ""
+	}
+	noLifecycle := func() bool {
+		return event.Reason == "" &&
+			event.ExitCode == 0 &&
+			event.Signal == "" &&
+			event.StartedAt == 0 &&
+			event.CompletedAt == 0 &&
+			!event.TerminationConfirmed
+	}
+	switch event.Type {
+	case "output":
+		data, err := base64.StdEncoding.Strict().DecodeString(event.DataBase64)
+		if err != nil || len(data) == 0 || len(data) > MaxTerminalTransportFrameBytes ||
+			event.Cursor < uint64(len(data)) ||
+			event.AcceptedSequence != 0 ||
+			event.State != "" ||
+			!noLifecycle() {
+			return 0, fmt.Errorf("%w: malformed terminal output event", ErrInvalidTerminal)
+		}
+		return len(data), nil
+	case "ack":
+		if event.AcceptedSequence == 0 ||
+			event.State != "live" ||
+			!noBytesOrCursor() ||
+			!noLifecycle() {
+			return 0, fmt.Errorf("%w: malformed terminal acknowledgement", ErrInvalidTerminal)
+		}
+	case "denied":
+		if event.AcceptedSequence != 0 ||
+			event.State != "live" ||
+			!validInvocationIdentifier(event.Reason) ||
+			!noBytesOrCursor() ||
+			event.ExitCode != 0 ||
+			event.Signal != "" ||
+			event.StartedAt != 0 ||
+			event.CompletedAt != 0 ||
+			event.TerminationConfirmed {
+			return 0, fmt.Errorf("%w: malformed terminal denial", ErrInvalidTerminal)
+		}
+	case "closed":
+		if event.AcceptedSequence != 0 ||
+			event.State != "closed" ||
+			!validInvocationIdentifier(event.Reason) ||
+			!noBytesOrCursor() ||
+			event.StartedAt <= 0 ||
+			event.CompletedAt < event.StartedAt ||
+			!event.TerminationConfirmed ||
+			!validTerminalSignalMetadata(event.Signal) {
+			return 0, fmt.Errorf("%w: malformed terminal close event", ErrInvalidTerminal)
+		}
+	case "unknown":
+		if event.AcceptedSequence != 0 ||
+			event.State != "unknown" ||
+			!validInvocationIdentifier(event.Reason) ||
+			!noBytesOrCursor() ||
+			event.ExitCode != 0 ||
+			event.StartedAt <= 0 ||
+			event.CompletedAt != 0 ||
+			event.TerminationConfirmed ||
+			event.Signal != "" {
+			return 0, fmt.Errorf("%w: malformed terminal unknown event", ErrInvalidTerminal)
+		}
+	default:
+		return 0, fmt.Errorf("%w: unsupported terminal event type", ErrInvalidTerminal)
+	}
+	return 0, nil
+}
+
+func validTerminalSignalMetadata(signal string) bool {
+	return len(signal) <= 32 &&
+		strings.IndexFunc(signal, unicode.IsControl) < 0
 }

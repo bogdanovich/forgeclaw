@@ -517,6 +517,99 @@ func TestClientServesOwnerBoundTerminalOverAuthenticatedSession(t *testing.T) {
 	}
 }
 
+func TestClientDisconnectDrainsTerminalOpenGeneration(t *testing.T) {
+	registry, admission := testGatewayAdmission(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	broker := &fakeTerminalBroker{
+		session:     &fakeTerminalBrokerSession{events: make(chan TerminalBrokerEvent, 8)},
+		openGate:    make(chan struct{}),
+		openStarted: make(chan struct{}, 1),
+	}
+	policy := nodes.LocalCommandPolicy{
+		Revision:          "terminal-test",
+		AllowedCommands:   []string{"shell.exec.v1"},
+		MaximumRisk:       nodes.RiskPrivileged,
+		MaxTimeoutSeconds: 30,
+		MaxOutputBytes:    64 * 1024,
+	}
+	runtime, err := NewRuntime(
+		identity.ID,
+		"test",
+		policy,
+		newMemoryInvocationLedger(),
+		WithShellBroker(validShellBrokerSnapshot(), broker),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := testRuntimeClientForServer(t, server, identity, runtime)
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Approve(result.NodeID, nodes.PairingApproval{
+		AllowedCommands: []string{"shell.exec.v1"},
+		At:              time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancelRun := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- client.Run(runCtx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+	owner := testCompanionTerminalOwner()
+	owner.Profile = runtime.terminals.profile.Alias
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_disconnect",
+		IdempotencyKey:  "terminal-open-disconnect",
+		NodeID:          identity.ID,
+		Owner:           owner,
+		CatalogHash:     runtime.terminals.catalogHash,
+		AuthorityDigest: runtime.terminals.authorityHash,
+		WorkingScope:    runtime.terminals.profile.WorkingScopes[0],
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openDone := make(chan error, 1)
+	go func() {
+		_, _, openErr := admission.OpenTerminal(t.Context(), identity.ID, plan, func() error {
+			return nil
+		})
+		openDone <- openErr
+	}()
+	<-broker.openStarted
+	cancelRun()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection generation did not drain terminal open worker")
+	}
+	select {
+	case err := <-openDone:
+		if err == nil {
+			t.Fatal("disconnected terminal open unexpectedly succeeded")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway terminal open remained pending after disconnect")
+	}
+	runtime.terminals.mu.Lock()
+	openings := len(runtime.terminals.opening)
+	sessions := len(runtime.terminals.byID)
+	runtime.terminals.mu.Unlock()
+	if openings != 0 || sessions != 0 {
+		t.Fatalf("disconnect retained terminal state: openings=%d sessions=%d", openings, sessions)
+	}
+}
+
 func TestRuntimeConcurrentDuplicateExecutesOnce(t *testing.T) {
 	commandRuntime, err := NewRuntime(
 		nodes.ID("node_test"),

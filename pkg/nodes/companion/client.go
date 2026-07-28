@@ -38,9 +38,13 @@ type Client struct {
 	dialer        websocket.Dialer
 	stableWindow  time.Duration
 	invokeSlots   chan struct{}
-	workers       sync.WaitGroup
 	attachmentsMu sync.Mutex
 	attachments   map[string]*TerminalAttachment
+}
+
+type connectedWorkers struct {
+	requests sync.WaitGroup
+	events   sync.WaitGroup
 }
 
 func NewClient(
@@ -175,7 +179,6 @@ func cloneModelContract(
 }
 
 func (client *Client) Run(ctx context.Context) error {
-	defer client.workers.Wait()
 	backoff := client.config.minReconnectDelay
 	for {
 		connection, result, err := client.connectAndAuthenticate(ctx)
@@ -352,9 +355,16 @@ func (client *Client) identityProof(challenge nodes.Challenge) (nodes.IdentityPr
 }
 
 func (client *Client) serveConnected(ctx context.Context, connection *websocket.Conn) error {
-	defer connection.Close()
-	defer client.disconnectTerminals()
-	stopContextClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	connectionCtx, cancelConnection := context.WithCancel(ctx)
+	workers := &connectedWorkers{}
+	defer func() {
+		cancelConnection()
+		_ = connection.Close()
+		workers.requests.Wait()
+		client.disconnectTerminals()
+		workers.events.Wait()
+	}()
+	stopContextClose := context.AfterFunc(connectionCtx, func() { _ = connection.Close() })
 	defer stopContextClose()
 	if err := connection.SetWriteDeadline(time.Time{}); err != nil {
 		return err
@@ -393,10 +403,11 @@ func (client *Client) serveConnected(ctx context.Context, connection *websocket.
 				return decodeErr
 			}
 			if requestErr := client.dispatchRequest(
-				ctx,
+				connectionCtx,
 				writer,
 				envelope,
 				workerFailure,
+				workers,
 			); requestErr != nil {
 				return requestErr
 			}
@@ -417,9 +428,10 @@ func (client *Client) dispatchRequest(
 	writer *connectedWriter,
 	envelope protocol.Envelope,
 	workerFailure chan<- error,
+	workers *connectedWorkers,
 ) error {
 	if !client.concurrentRequest(envelope.Method) {
-		return client.handleRequest(ctx, writer, envelope)
+		return client.handleRequest(ctx, writer, envelope, workers)
 	}
 	select {
 	case client.invokeSlots <- struct{}{}:
@@ -431,11 +443,11 @@ func (client *Client) dispatchRequest(
 			"node invocation concurrency limit reached",
 		)
 	}
-	client.workers.Add(1)
+	workers.requests.Add(1)
 	go func() {
-		defer client.workers.Done()
+		defer workers.requests.Done()
 		defer func() { <-client.invokeSlots }()
-		if err := client.handleRequest(ctx, writer, envelope); err != nil {
+		if err := client.handleRequest(ctx, writer, envelope, workers); err != nil {
 			select {
 			case workerFailure <- err:
 			default:
@@ -460,6 +472,7 @@ func (client *Client) handleRequest(
 	ctx context.Context,
 	writer *connectedWriter,
 	envelope protocol.Envelope,
+	workers *connectedWorkers,
 ) error {
 	switch envelope.Method {
 	case "node.invoke":
@@ -471,7 +484,7 @@ func (client *Client) handleRequest(
 	case "node.terminal.open":
 		return client.handleTerminalOpen(ctx, writer, envelope)
 	case "node.terminal.attach":
-		return client.handleTerminalAttach(writer, envelope)
+		return client.handleTerminalAttach(writer, envelope, workers)
 	case "node.terminal.control":
 		return client.handleTerminalControl(ctx, writer, envelope)
 	case "node.terminal.status":
@@ -536,6 +549,7 @@ func (client *Client) handleTerminalOpen(
 func (client *Client) handleTerminalAttach(
 	writer *connectedWriter,
 	envelope protocol.Envelope,
+	workers *connectedWorkers,
 ) error {
 	if client.runtime == nil || client.runtime.terminals == nil {
 		return client.writeCommandError(
@@ -589,8 +603,13 @@ func (client *Client) handleTerminalAttach(
 		_ = attachment.Close()
 		return err
 	}
-	client.workers.Add(1)
-	go client.forwardTerminalEvents(writer, request.TerminalID, attachment)
+	workers.events.Add(1)
+	go client.forwardTerminalEvents(
+		writer,
+		request.TerminalID,
+		attachment,
+		workers,
+	)
 	return nil
 }
 
@@ -725,8 +744,9 @@ func (client *Client) forwardTerminalEvents(
 	writer *connectedWriter,
 	terminalID string,
 	attachment *TerminalAttachment,
+	workers *connectedWorkers,
 ) {
-	defer client.workers.Done()
+	defer workers.events.Done()
 	defer client.removeAttachment(terminalID, attachment)
 	defer attachment.Close()
 	for event := range attachment.Events() {
