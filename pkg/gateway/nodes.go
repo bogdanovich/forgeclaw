@@ -255,6 +255,24 @@ func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
 	return runtime.handler, nil
 }
 
+func (runtime *nodeAdmissionRuntime) terminalHandlerSnapshot(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+) (nodeTerminalHandler, error) {
+	handler, err := runtime.invocationHandlerSnapshot(
+		expectedRegistryPath,
+		expectedGeneration,
+	)
+	if err != nil {
+		return nil, err
+	}
+	terminalHandler, ok := handler.(nodeTerminalHandler)
+	if !ok {
+		return nil, errNodeDiscoveryAuthorityUnavailable
+	}
+	return terminalHandler, nil
+}
+
 func (runtime *nodeAdmissionRuntime) withInvocationHandler(
 	expectedRegistryPath string,
 	expectedGeneration uint64,

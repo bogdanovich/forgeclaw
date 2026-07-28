@@ -37,6 +37,7 @@ const (
 	GatewayTerminalDispatched    GatewayTerminalState = "dispatched"
 	GatewayTerminalPendingAttach GatewayTerminalState = "pending_attach"
 	GatewayTerminalLive          GatewayTerminalState = "live"
+	GatewayTerminalClosing       GatewayTerminalState = "closing"
 	GatewayTerminalClosed        GatewayTerminalState = "closed"
 	GatewayTerminalUnknown       GatewayTerminalState = "unknown"
 )
@@ -310,11 +311,21 @@ func (store *GatewayTerminalStore) RecordLifecycle(
 			if record.State != GatewayTerminalPendingAttach {
 				return false, ErrGatewayTerminalConflict
 			}
+		case GatewayTerminalClosing:
+			if record.State == GatewayTerminalClosing {
+				return false, metadataMatchesGatewayTerminal(*record, metadata)
+			}
+			if record.State != GatewayTerminalPendingAttach &&
+				record.State != GatewayTerminalLive {
+				return false, ErrGatewayTerminalConflict
+			}
 		case GatewayTerminalClosed, GatewayTerminalUnknown:
 			if record.State == GatewayTerminalClosed || record.State == GatewayTerminalUnknown {
 				return false, metadataMatchesGatewayTerminal(*record, metadata)
 			}
-			if record.State != GatewayTerminalPendingAttach && record.State != GatewayTerminalLive {
+			if record.State != GatewayTerminalPendingAttach &&
+				record.State != GatewayTerminalLive &&
+				record.State != GatewayTerminalClosing {
 				return false, ErrGatewayTerminalConflict
 			}
 		default:
@@ -489,7 +500,8 @@ func (store *GatewayTerminalStore) saveLocked() error {
 func (store *GatewayTerminalStore) recoverActiveLocked(now time.Time) error {
 	for openID, record := range store.records {
 		switch record.State {
-		case GatewayTerminalDispatched, GatewayTerminalPendingAttach, GatewayTerminalLive:
+		case GatewayTerminalDispatched, GatewayTerminalPendingAttach,
+			GatewayTerminalLive, GatewayTerminalClosing:
 			updatedAt, err := nextGatewayTerminalTimestamp(record.UpdatedAt, now.UnixNano())
 			if err != nil {
 				updatedAt = record.UpdatedAt
@@ -560,7 +572,7 @@ func (record GatewayTerminalRecord) validate() error {
 			!record.hasEmptyLifecycle() {
 			return fmt.Errorf("%w: invalid dispatched terminal", ErrInvalidTerminal)
 		}
-	case GatewayTerminalPendingAttach, GatewayTerminalLive:
+	case GatewayTerminalPendingAttach, GatewayTerminalLive, GatewayTerminalClosing:
 		if record.DispatchedAt <= 0 || record.TerminalID == "" || record.StartedAt <= 0 ||
 			record.CompletedAt != 0 {
 			return fmt.Errorf("%w: invalid active terminal", ErrInvalidTerminal)
@@ -620,6 +632,14 @@ func validateGatewayTerminalMetadata(metadata TerminalMetadata, owner TerminalOw
 	switch GatewayTerminalState(metadata.State) {
 	case GatewayTerminalPendingAttach, GatewayTerminalLive:
 		if metadata.Reason != "" ||
+			metadata.CompletedAt != 0 ||
+			metadata.ExitCode != 0 ||
+			metadata.Signal != "" ||
+			metadata.TerminationConfirmed {
+			return ErrGatewayTerminalConflict
+		}
+	case GatewayTerminalClosing:
+		if !validInvocationIdentifier(metadata.Reason) ||
 			metadata.CompletedAt != 0 ||
 			metadata.ExitCode != 0 ||
 			metadata.Signal != "" ||

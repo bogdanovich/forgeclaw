@@ -164,7 +164,17 @@ func TestGatewayTerminalStoreTracksRedactedLifecycle(t *testing.T) {
 	); err != nil || !transitioned {
 		t.Fatalf("live RecordLifecycle() = (%v, %v)", transitioned, err)
 	}
-	closed := live
+	closing := live
+	closing.State = string(GatewayTerminalClosing)
+	closing.Reason = "close"
+	if _, transitioned, err := store.RecordLifecycle(
+		plan.Owner,
+		opened.TerminalID,
+		closing,
+	); err != nil || !transitioned {
+		t.Fatalf("closing RecordLifecycle() = (%v, %v)", transitioned, err)
+	}
+	closed := closing
 	closed.State = string(GatewayTerminalClosed)
 	closed.Reason = "exit"
 	closed.CompletedAt = now.Add(time.Second).Unix()

@@ -857,6 +857,7 @@ type DevicesConfig struct {
 
 type NodesConfig struct {
 	Enabled                bool `json:"enabled,omitempty"                  env:"MINTCLAW_NODES_ENABLED"`
+	TerminalEnabled        bool `json:"terminal_enabled,omitempty"         env:"MINTCLAW_NODES_TERMINAL_ENABLED"`
 	AllowLoopbackPlaintext bool `json:"allow_loopback_plaintext,omitempty" env:"MINTCLAW_NODES_ALLOW_LOOPBACK_PLAINTEXT"`
 	MaxPendingPairings     int  `json:"max_pending_pairings,omitempty"     env:"MINTCLAW_NODES_MAX_PENDING_PAIRINGS"`
 }

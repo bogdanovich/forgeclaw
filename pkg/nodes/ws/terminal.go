@@ -202,6 +202,24 @@ func (handler *AdmissionHandler) TerminalStatus(
 	return decodeTerminalMetadata(response, request.Owner)
 }
 
+// TerminateTerminal attaches only long enough to close a pending P1 terminal.
+// It is the fail-closed cleanup path when the gateway cannot retain the
+// post-open authority needed to expose the attached operator stream.
+func (handler *AdmissionHandler) TerminateTerminal(
+	ctx context.Context,
+	nodeID nodes.ID,
+	request nodes.TerminalSessionRequest,
+) (nodes.TerminalMetadata, error) {
+	stream, _, err := handler.AttachTerminal(ctx, nodeID, request)
+	if err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	if err := stream.Close(ctx); err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	return handler.TerminalStatus(ctx, nodeID, request)
+}
+
 func (stream *TerminalStream) Receive(ctx context.Context) (nodes.TerminalEvent, error) {
 	if stream == nil || stream.subscription == nil {
 		return nodes.TerminalEvent{}, ErrNodeDisconnected

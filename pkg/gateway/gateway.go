@@ -522,6 +522,9 @@ func setupNodeTools(
 		if _, err := newNodeInvocationSource(cfg, runtime); err != nil {
 			return err
 		}
+		if _, err := newNodeTerminalSource(cfg, runtime); err != nil {
+			return err
+		}
 	}
 	if err := agentLoop.RegisterRuntimeTool("nodes", func(reloadCfg *config.Config) (tools.Tool, error) {
 		if reloadCfg == nil || !reloadCfg.Nodes.Enabled {
