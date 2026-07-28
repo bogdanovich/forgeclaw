@@ -565,7 +565,7 @@ func setupNodeTools(
 	); err != nil {
 		return err
 	}
-	return agentLoop.RegisterRuntimeTool(
+	if err := agentLoop.RegisterRuntimeTool(
 		"nodes_cancel",
 		nodeInvocationToolFactory(
 			runtime,
@@ -575,6 +575,26 @@ func setupNodeTools(
 				return tool
 			},
 		),
+	); err != nil {
+		return err
+	}
+	return agentLoop.RegisterRuntimeTool(
+		"nodes_terminal",
+		func(reloadCfg *config.Config) (tools.Tool, error) {
+			source, err := newNodeTerminalSource(reloadCfg, runtime)
+			if errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
+				return nil, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			if source == nil || runtime.terminalOperatorHub() == nil {
+				return nil, nil
+			}
+			tool := tools.NewNodeTerminalTool(reloadCfg, source)
+			tool.SetEventPublisher(agentLoop.RuntimeEventBus())
+			return tool, nil
+		},
 	)
 }
 

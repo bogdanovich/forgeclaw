@@ -56,8 +56,15 @@ func newNodeTerminalSource(
 	workspace := cfg.WorkspacePath()
 	storePath := nodes.GatewayTerminalStorePath(workspace)
 	enabled := cfg.Nodes.Enabled && cfg.Nodes.TerminalEnabled
-	if !enabled {
-		_, _, err := runtime.existingGatewayTerminalStore(
+	token, _, err := terminalOperatorAuthentication(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !enabled || token == "" {
+		if configureErr := runtime.configureTerminalOperator(nil); configureErr != nil {
+			return nil, configureErr
+		}
+		_, _, err = runtime.existingGatewayTerminalStore(
 			storePath,
 			nodes.DefaultGatewayTerminalLimit,
 			nodes.DefaultGatewayTerminalStoreBytes,
@@ -69,8 +76,8 @@ func newNodeTerminalSource(
 	}
 	registryPath := nodes.RegistryPath(workspace)
 	generation := runtime.invocationGeneration()
-	if _, err := runtime.terminalHandlerSnapshot(registryPath, generation); err != nil {
-		return nil, err
+	if _, snapshotErr := runtime.terminalHandlerSnapshot(registryPath, generation); snapshotErr != nil {
+		return nil, snapshotErr
 	}
 	store, err := runtime.gatewayTerminalStore(
 		storePath,
@@ -80,7 +87,7 @@ func newNodeTerminalSource(
 	if err != nil {
 		return nil, fmt.Errorf("open gateway terminal store: %w", err)
 	}
-	return &nodeTerminalSource{
+	source := &nodeTerminalSource{
 		nodeDiscoverySource: nodeDiscoverySource{
 			runtime:      runtime,
 			registryPath: registryPath,
@@ -88,7 +95,11 @@ func newNodeTerminalSource(
 		store:      store,
 		generation: generation,
 		now:        time.Now,
-	}, nil
+	}
+	if err := runtime.configureTerminalOperator(cfg); err != nil {
+		return nil, err
+	}
+	return source, nil
 }
 
 func (source *nodeTerminalSource) PrepareTerminal(
@@ -100,6 +111,7 @@ func (source *nodeTerminalSource) PrepareTerminal(
 	workingScope string,
 	columns int,
 	rows int,
+	allowCreate bool,
 ) (nodes.GatewayTerminalRecord, bool, error) {
 	if source == nil || source.store == nil || source.runtime == nil {
 		return nodes.GatewayTerminalRecord{}, false, errNodeDiscoveryAuthorityUnavailable
@@ -165,6 +177,9 @@ func (source *nodeTerminalSource) PrepareTerminal(
 						record = existing
 						created = false
 						return nil
+					}
+					if !allowCreate {
+						return nodes.ErrGatewayTerminalNotFound
 					}
 					plan, planErr := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
 						OpenID:          openID,
@@ -325,6 +340,83 @@ func (source *nodeTerminalSource) OpenTerminal(
 	)
 }
 
+func (source *nodeTerminalSource) AttachTerminal(
+	ctx context.Context,
+	owner nodes.TerminalOwner,
+	terminalID string,
+) (*nodews.TerminalStream, nodes.TerminalMetadata, error) {
+	handler, terminalHandler, record, err := source.terminalRecordSnapshot(owner, terminalID)
+	if err != nil {
+		return nil, nodes.TerminalMetadata{}, err
+	}
+	if record.TerminalID != terminalID ||
+		record.State != nodes.GatewayTerminalPendingAttach {
+		return nil, nodes.TerminalMetadata{}, nodes.ErrGatewayTerminalConflict
+	}
+	request := nodes.TerminalSessionRequest{TerminalID: terminalID, Owner: owner}
+	stream, metadata, err := terminalHandler.AttachTerminal(ctx, record.Plan.NodeID, request)
+	if err != nil {
+		return nil, nodes.TerminalMetadata{}, err
+	}
+	persistErr := source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(current nodeAdmissionHandler) error {
+			if current != handler {
+				return errNodeDiscoveryAuthorityUnavailable
+			}
+			_, _, recordErr := source.store.RecordLifecycle(owner, terminalID, metadata)
+			return recordErr
+		},
+	)
+	if persistErr != nil {
+		return nil, nodes.TerminalMetadata{}, errors.Join(
+			persistErr,
+			stream.Close(context.WithoutCancel(ctx)),
+		)
+	}
+	return stream, metadata, nil
+}
+
+func (source *nodeTerminalSource) attachOperatorTerminal(
+	ctx context.Context,
+	owner nodes.TerminalOwner,
+	terminalID string,
+) (nodeTerminalOperatorStream, nodes.TerminalMetadata, error) {
+	return source.AttachTerminal(ctx, owner, terminalID)
+}
+
+func (source *nodeTerminalSource) terminalOperatorStatus(
+	ctx context.Context,
+	owner nodes.TerminalOwner,
+	terminalID string,
+) (nodes.TerminalMetadata, error) {
+	return source.TerminalStatus(ctx, owner, terminalID)
+}
+
+func (source *nodeTerminalSource) closeOperatorTerminal(
+	ctx context.Context,
+	owner nodes.TerminalOwner,
+	terminalID string,
+) (nodes.TerminalMetadata, error) {
+	return source.CloseTerminal(ctx, owner, terminalID)
+}
+
+func (source *nodeTerminalSource) BindTerminalOperator(
+	owner nodes.TerminalOwner,
+	terminalID string,
+	operatorSessionID string,
+) error {
+	if source == nil || source.runtime == nil {
+		return errNodeDiscoveryAuthorityUnavailable
+	}
+	hub := source.runtime.terminalOperatorHub()
+	if hub == nil {
+		return errNodeDiscoveryAuthorityUnavailable
+	}
+	return hub.bind(source, owner, terminalID, operatorSessionID)
+}
+
 func (source *nodeTerminalSource) TerminalStatus(
 	ctx context.Context,
 	owner nodes.TerminalOwner,
@@ -364,6 +456,69 @@ func (source *nodeTerminalSource) TerminalStatus(
 				terminalID,
 				metadata,
 			)
+			return persistErr
+		},
+	)
+	if err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	return metadata, nil
+}
+
+func (source *nodeTerminalSource) SignalTerminal(
+	ctx context.Context,
+	owner nodes.TerminalOwner,
+	terminalID string,
+	signal string,
+) (nodes.TerminalMetadata, error) {
+	if source == nil || source.runtime == nil {
+		return nodes.TerminalMetadata{}, errNodeDiscoveryAuthorityUnavailable
+	}
+	hub := source.runtime.terminalOperatorHub()
+	if hub == nil {
+		return nodes.TerminalMetadata{}, errNodeDiscoveryAuthorityUnavailable
+	}
+	if err := hub.signal(ctx, owner, terminalID, signal); err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	return source.TerminalStatus(ctx, owner, terminalID)
+}
+
+func (source *nodeTerminalSource) CloseTerminal(
+	ctx context.Context,
+	owner nodes.TerminalOwner,
+	terminalID string,
+) (nodes.TerminalMetadata, error) {
+	handler, terminalHandler, record, err := source.terminalRecordSnapshot(owner, terminalID)
+	if err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	if record.TerminalID != terminalID ||
+		record.State == nodes.GatewayTerminalPrepared ||
+		record.State == nodes.GatewayTerminalDispatched {
+		return nodes.TerminalMetadata{}, nodes.ErrGatewayTerminalConflict
+	}
+	if hub := source.runtime.terminalOperatorHub(); hub != nil {
+		if closeErr := hub.closeTerminal(ctx, owner, terminalID); closeErr == nil {
+			return source.TerminalStatus(ctx, owner, terminalID)
+		} else if !errors.Is(closeErr, nodes.ErrGatewayTerminalNotFound) {
+			return nodes.TerminalMetadata{}, closeErr
+		}
+		hub.unbind(owner, terminalID)
+	}
+	request := nodes.TerminalSessionRequest{TerminalID: terminalID, Owner: owner}
+	metadata, err := terminalHandler.TerminateTerminal(ctx, record.Plan.NodeID, request)
+	if err != nil {
+		return nodes.TerminalMetadata{}, err
+	}
+	err = source.runtime.withInvocationHandler(
+		source.registryPath,
+		source.generation,
+		func(current nodeAdmissionHandler) error {
+			if current != handler {
+				return errNodeDiscoveryAuthorityUnavailable
+			}
+			_, _, persistErr := source.store.RecordLifecycle(owner, terminalID, metadata)
 			return persistErr
 		},
 	)

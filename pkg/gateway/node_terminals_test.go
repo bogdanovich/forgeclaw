@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -97,6 +98,7 @@ func TestNodeTerminalSourcePreparesCurrentProfileAuthority(t *testing.T) {
 		"workspace",
 		80,
 		24,
+		true,
 	)
 	if err != nil || !created {
 		t.Fatalf("PrepareTerminal() = (%#v, %v, %v)", record, created, err)
@@ -121,6 +123,7 @@ func TestNodeTerminalSourcePreparesCurrentProfileAuthority(t *testing.T) {
 		"workspace",
 		80,
 		24,
+		true,
 	)
 	if err != nil || created ||
 		repeated.CreatedAt != record.CreatedAt ||
@@ -137,6 +140,7 @@ func TestNodeTerminalSourcePreparesCurrentProfileAuthority(t *testing.T) {
 		"workspace",
 		81,
 		24,
+		true,
 	); !errors.Is(err, nodes.ErrGatewayTerminalConflict) {
 		t.Fatalf("changed repeated preparation error = %v", err)
 	}
@@ -153,6 +157,7 @@ func TestNodeTerminalSourceTerminatesCommittedOpenWarning(t *testing.T) {
 		"workspace",
 		80,
 		24,
+		true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -201,6 +206,7 @@ func TestNodeTerminalSourceTerminatesInvalidSuccessfulOpenState(t *testing.T) {
 		"workspace",
 		80,
 		24,
+		true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +256,7 @@ func TestNodeTerminalSourceDeniesUnapprovedProfileBeforePersistence(t *testing.T
 		"workspace",
 		80,
 		24,
+		true,
 	); err == nil || created {
 		t.Fatalf("unapproved profile preparation = (%v, %v)", created, err)
 	}
@@ -270,6 +277,7 @@ func TestNodeTerminalSourceDeniesRelaxedApprovalBeforePersistence(t *testing.T) 
 		"workspace",
 		80,
 		24,
+		true,
 	); !errors.Is(err, nodes.ErrCommandDenied) || created {
 		t.Fatalf("relaxed approval preparation = (%v, %v)", created, err)
 	}
@@ -289,6 +297,7 @@ func TestNodeTerminalSourceCommitsBeforeOpenAndPersistsLifecycle(t *testing.T) {
 		"workspace",
 		80,
 		24,
+		true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -364,6 +373,7 @@ func TestNodeTerminalSourceTerminatesWhenOpenedMetadataCannotPersist(t *testing.
 		"workspace",
 		80,
 		24,
+		true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -441,15 +451,26 @@ func TestNodeTerminalSourceTerminatesWhenOpenedMetadataCannotPersist(t *testing.
 }
 
 func TestNewNodeTerminalSourceIsDisabledByDefault(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Agents.Defaults.Workspace = t.TempDir()
-	cfg.Nodes.Enabled = true
-	runtime := &nodeAdmissionRuntime{}
-	if source, err := newNodeTerminalSource(cfg, runtime); err != nil || source != nil {
-		t.Fatalf("default terminal source = (%#v, %v)", source, err)
-	}
-	if runtime.terminalStore != nil {
-		t.Fatal("fresh disabled configuration created a terminal store")
+	for _, test := range []struct {
+		name            string
+		terminalEnabled bool
+	}{
+		{name: "terminal disabled"},
+		{name: "operator authentication absent", terminalEnabled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Agents.Defaults.Workspace = t.TempDir()
+			cfg.Nodes.Enabled = true
+			cfg.Nodes.TerminalEnabled = test.terminalEnabled
+			runtime := &nodeAdmissionRuntime{}
+			if source, err := newNodeTerminalSource(cfg, runtime); err != nil || source != nil {
+				t.Fatalf("default terminal source = (%#v, %v)", source, err)
+			}
+			if runtime.terminalStore != nil || runtime.terminalHub != nil || runtime.terminalMounted {
+				t.Fatal("fresh unavailable terminal configuration created runtime authority")
+			}
+		})
 	}
 }
 
@@ -636,12 +657,14 @@ func TestNodeTerminalSourceReusesActiveStoreAcrossSameWorkspaceReload(t *testing
 	cfg.Agents.Defaults.Workspace = workspace
 	cfg.Nodes.Enabled = true
 	cfg.Nodes.TerminalEnabled = true
+	enableTestMintClawOperator(t, cfg, "operator-token", nil)
 	handler := &fakeGatewayTerminalHandler{fakeNodeAdmissionHandler: &fakeNodeAdmissionHandler{}}
 	runtime := &nodeAdmissionRuntime{
 		registryPath: nodes.RegistryPath(workspace),
 		handler:      handler,
 		generation:   1,
 		mounted:      true,
+		routes:       &fakeNodeAdmissionRoutes{},
 	}
 	first, err := newNodeTerminalSource(cfg, runtime)
 	if err != nil {
@@ -697,6 +720,96 @@ func TestNodeTerminalSourceReusesActiveStoreAcrossSameWorkspaceReload(t *testing
 	retained, found, err := reloaded.store.Lookup(owner, opened.TerminalID)
 	if err != nil || !found || retained.State != nodes.GatewayTerminalPendingAttach {
 		t.Fatalf("active terminal after reload = (%#v, %v, %v)", retained, found, err)
+	}
+}
+
+func TestNodeTerminalSourceDisableReconcilesActiveSameWorkspaceStore(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = workspace
+	cfg.Nodes.Enabled = true
+	cfg.Nodes.TerminalEnabled = true
+	enableTestMintClawOperator(t, cfg, "operator-token", nil)
+	routes := &fakeNodeAdmissionRoutes{}
+	runtime := &nodeAdmissionRuntime{
+		registryPath: nodes.RegistryPath(workspace),
+		handler:      &fakeGatewayTerminalHandler{fakeNodeAdmissionHandler: &fakeNodeAdmissionHandler{}},
+		generation:   1,
+		mounted:      true,
+		routes:       routes,
+	}
+	source, err := newNodeTerminalSource(cfg, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := nodes.TerminalOwner{
+		ActorID: "actor_disable", AgentID: "agent_disable", RouteID: "route_disable",
+		SessionID: "session_disable", WorkspaceID: "workspace_disable",
+		Target: "vpn", Profile: "owner",
+	}
+	plan, err := nodes.PrepareTerminalOpenPlan(nodes.TerminalOpenPlan{
+		OpenID:          "open_disable",
+		IdempotencyKey:  "idem_disable",
+		NodeID:          nodes.ID("node_disable"),
+		Owner:           owner,
+		CatalogHash:     testDigest("a"),
+		AuthorityDigest: testDigest("b"),
+		WorkingScope:    "workspace",
+		Columns:         80,
+		Rows:            24,
+		ApprovalMode:    "session_start",
+	}, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := source.store.Prepare(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := source.store.MarkDispatched(owner, plan.OpenID, plan.PlanHash); err != nil {
+		t.Fatal(err)
+	}
+	opened := nodes.TerminalMetadata{
+		TerminalID: "terminal_disable", Owner: owner,
+		State: string(nodes.GatewayTerminalPendingAttach), StartedAt: time.Now().Unix(),
+	}
+	if _, _, err := source.store.RecordOpened(owner, plan.OpenID, opened); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Nodes.TerminalEnabled = false
+	disabled, err := newNodeTerminalSource(cfg, runtime)
+	if err != nil || disabled != nil {
+		t.Fatalf("disabled source = (%#v, %v)", disabled, err)
+	}
+	record, found, err := source.store.Lookup(owner, opened.TerminalID)
+	if err != nil || !found ||
+		record.State != nodes.GatewayTerminalUnknown ||
+		record.Reason != "gateway_shutdown" {
+		t.Fatalf("disabled active terminal = (%#v, %v, %v)", record, found, err)
+	}
+	if runtime.terminalHub != nil || runtime.terminalMounted || routes.handler != nil {
+		t.Fatal("disabled terminal retained operator transport authority")
+	}
+}
+
+func enableTestMintClawOperator(
+	t *testing.T,
+	cfg *config.Config,
+	token string,
+	allowOrigins []string,
+) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"token":         token,
+		"allow_origins": allowOrigins,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Channels[config.ChannelMintClaw] = &config.Channel{
+		Enabled:  true,
+		Type:     config.ChannelMintClaw,
+		Settings: config.RawNode(raw),
 	}
 }
 
