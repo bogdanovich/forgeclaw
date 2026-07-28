@@ -53,6 +53,10 @@ type AuthorityBrokerProfile struct {
 	TimeoutSecondsMax         int               `json:"timeout_seconds_max"`
 	OutputBytesMax            int               `json:"output_bytes_max"`
 	ConcurrentCommands        int               `json:"concurrent_commands"`
+	ConcurrentTerminals       int               `json:"concurrent_terminals"`
+	TerminalIdleSeconds       int               `json:"terminal_idle_seconds"`
+	TerminalLifetimeSeconds   int               `json:"terminal_lifetime_seconds"`
+	TerminalBufferBytes       int               `json:"terminal_buffer_bytes"`
 }
 
 type normalizedAuthorityBrokerProfile struct {
@@ -62,6 +66,14 @@ type normalizedAuthorityBrokerProfile struct {
 }
 
 type preparedAuthorityBrokerExecution struct {
+	profile          normalizedAuthorityBrokerProfile
+	shellPath        string
+	shellArguments   []string
+	workingDirectory string
+	environment      []string
+}
+
+type preparedAuthorityBrokerTerminal struct {
 	profile          normalizedAuthorityBrokerProfile
 	shellPath        string
 	shellArguments   []string
@@ -148,6 +160,18 @@ func normalizeAuthorityBrokerProfile(
 			alias,
 		)
 	}
+	if profile.ConcurrentTerminals == 0 {
+		profile.ConcurrentTerminals = 1
+	}
+	if profile.TerminalIdleSeconds == 0 {
+		profile.TerminalIdleSeconds = DefaultTerminalIdleSeconds
+	}
+	if profile.TerminalLifetimeSeconds == 0 {
+		profile.TerminalLifetimeSeconds = MaxTerminalLifetimeSeconds
+	}
+	if profile.TerminalBufferBytes == 0 {
+		profile.TerminalBufferBytes = DefaultTerminalBufferBytes
+	}
 	if len(profile.SupplementaryGroups) > MaxAuthorityBrokerGroups ||
 		len(profile.WorkingScopes) == 0 ||
 		len(profile.WorkingScopes) > MaxAuthorityBrokerWorkingScopes ||
@@ -159,7 +183,15 @@ func normalizeAuthorityBrokerProfile(
 		profile.OutputBytesMax <= 0 ||
 		profile.OutputBytesMax > 128*1024 ||
 		profile.ConcurrentCommands <= 0 ||
-		profile.ConcurrentCommands > maxAuthorityBrokerConcurrentCalls {
+		profile.ConcurrentCommands > maxAuthorityBrokerConcurrentCalls ||
+		profile.ConcurrentTerminals <= 0 ||
+		profile.ConcurrentTerminals > maxConcurrentTerminals ||
+		profile.TerminalIdleSeconds <= 0 ||
+		profile.TerminalIdleSeconds > MaxTerminalIdleSeconds ||
+		profile.TerminalLifetimeSeconds < profile.TerminalIdleSeconds ||
+		profile.TerminalLifetimeSeconds > MaxTerminalLifetimeSeconds ||
+		profile.TerminalBufferBytes <= 0 ||
+		profile.TerminalBufferBytes > MaxTerminalBufferBytes {
 		return normalizedAuthorityBrokerProfile{}, fmt.Errorf(
 			"authority broker profile %q limits are invalid",
 			alias,
@@ -253,11 +285,15 @@ func normalizeAuthorityBrokerProfile(
 		Profiles: []ShellBrokerProfile{
 			{
 				Alias: alias, Revision: profile.Revision,
-				WorkingScopes:      sortedAuthorityBrokerMapKeys(workingScopes),
-				EnvironmentNames:   permitted,
-				TimeoutSecondsMax:  profile.TimeoutSecondsMax,
-				OutputBytesMax:     profile.OutputBytesMax,
-				ConcurrentCommands: profile.ConcurrentCommands,
+				WorkingScopes:           sortedAuthorityBrokerMapKeys(workingScopes),
+				EnvironmentNames:        permitted,
+				TimeoutSecondsMax:       profile.TimeoutSecondsMax,
+				OutputBytesMax:          profile.OutputBytesMax,
+				ConcurrentCommands:      profile.ConcurrentCommands,
+				ConcurrentTerminals:     profile.ConcurrentTerminals,
+				TerminalIdleSeconds:     profile.TerminalIdleSeconds,
+				TerminalLifetimeSeconds: profile.TerminalLifetimeSeconds,
+				TerminalBufferBytes:     profile.TerminalBufferBytes,
 			},
 		},
 	}
@@ -275,6 +311,68 @@ func normalizeAuthorityBrokerProfile(
 	}, nil
 }
 
+func (config AuthorityBrokerConfig) prepareTerminal(
+	request TerminalBrokerOpenRequest,
+) (preparedAuthorityBrokerTerminal, error) {
+	if err := request.validate(); err != nil {
+		return preparedAuthorityBrokerTerminal{}, err
+	}
+	profile, ok := config.normalizedProfile[request.Profile]
+	if !ok ||
+		request.ProfileRevision != profile.Revision ||
+		request.IdleSeconds > profile.TerminalIdleSeconds ||
+		request.LifetimeSeconds > profile.TerminalLifetimeSeconds ||
+		request.BufferBytes > profile.TerminalBufferBytes {
+		return preparedAuthorityBrokerTerminal{}, errors.New("terminal profile authority is invalid")
+	}
+	workingDirectory, ok := profile.WorkingScopes[request.WorkingScope]
+	if !ok {
+		return preparedAuthorityBrokerTerminal{}, errors.New("terminal working scope is invalid")
+	}
+	environment, err := profile.prepareEnvironment(request.Environment)
+	if err != nil {
+		return preparedAuthorityBrokerTerminal{}, err
+	}
+	arguments := []string{"-i"}
+	if profile.Login {
+		arguments = []string{"-l", "-i"}
+	}
+	return preparedAuthorityBrokerTerminal{
+		profile:          profile,
+		shellPath:        profile.ShellPath,
+		shellArguments:   arguments,
+		workingDirectory: workingDirectory,
+		environment:      environment,
+	}, nil
+}
+
+func (profile normalizedAuthorityBrokerProfile) prepareEnvironment(
+	supplied map[string]string,
+) ([]string, error) {
+	environment := make(map[string]string, len(profile.FixedEnvironment)+len(supplied))
+	for name, value := range profile.FixedEnvironment {
+		environment[name] = value
+	}
+	suppliedBytes := 0
+	for name, value := range supplied {
+		if _, allowed := profile.environmentNames[name]; !allowed ||
+			strings.ContainsRune(value, 0) {
+			return nil, errors.New("authority broker supplied environment is invalid")
+		}
+		suppliedBytes += len(name) + len(value) + 1
+		if suppliedBytes > nodes.MaxShellExecEnvironmentBytes {
+			return nil, errors.New("authority broker supplied environment is too large")
+		}
+		environment[name] = value
+	}
+	names := sortedAuthorityBrokerMapKeys(environment)
+	encoded := make([]string, 0, len(names))
+	for _, name := range names {
+		encoded = append(encoded, name+"="+environment[name])
+	}
+	return encoded, nil
+}
+
 func (config AuthorityBrokerConfig) Snapshot() (ShellBrokerSnapshot, error) {
 	if len(config.normalizedProfile) != MaxShellBrokerProfiles {
 		return ShellBrokerSnapshot{}, errors.New("authority broker config is not normalized")
@@ -283,11 +381,15 @@ func (config AuthorityBrokerConfig) Snapshot() (ShellBrokerSnapshot, error) {
 	for alias, profile := range config.normalizedProfile {
 		profiles = append(profiles, ShellBrokerProfile{
 			Alias: alias, Revision: profile.Revision,
-			WorkingScopes:      sortedAuthorityBrokerMapKeys(profile.WorkingScopes),
-			EnvironmentNames:   append([]string(nil), profile.PermittedEnvironmentNames...),
-			TimeoutSecondsMax:  profile.TimeoutSecondsMax,
-			OutputBytesMax:     profile.OutputBytesMax,
-			ConcurrentCommands: profile.ConcurrentCommands,
+			WorkingScopes:           sortedAuthorityBrokerMapKeys(profile.WorkingScopes),
+			EnvironmentNames:        append([]string(nil), profile.PermittedEnvironmentNames...),
+			TimeoutSecondsMax:       profile.TimeoutSecondsMax,
+			OutputBytesMax:          profile.OutputBytesMax,
+			ConcurrentCommands:      profile.ConcurrentCommands,
+			ConcurrentTerminals:     profile.ConcurrentTerminals,
+			TerminalIdleSeconds:     profile.TerminalIdleSeconds,
+			TerminalLifetimeSeconds: profile.TerminalLifetimeSeconds,
+			TerminalBufferBytes:     profile.TerminalBufferBytes,
 		})
 	}
 	slices.SortFunc(profiles, func(left, right ShellBrokerProfile) int {
@@ -325,30 +427,9 @@ func (config AuthorityBrokerConfig) prepareExecution(
 	if !ok {
 		return preparedAuthorityBrokerExecution{}, errors.New("authority broker working scope is invalid")
 	}
-	environment := make(map[string]string, len(profile.FixedEnvironment)+len(request.Environment))
-	for name, value := range profile.FixedEnvironment {
-		environment[name] = value
-	}
-	suppliedBytes := 0
-	for name, value := range request.Environment {
-		if _, allowed := profile.environmentNames[name]; !allowed ||
-			strings.ContainsRune(value, 0) {
-			return preparedAuthorityBrokerExecution{}, errors.New(
-				"authority broker supplied environment is invalid",
-			)
-		}
-		suppliedBytes += len(name) + len(value) + 1
-		if suppliedBytes > nodes.MaxShellExecEnvironmentBytes {
-			return preparedAuthorityBrokerExecution{}, errors.New(
-				"authority broker supplied environment is too large",
-			)
-		}
-		environment[name] = value
-	}
-	names := sortedAuthorityBrokerMapKeys(environment)
-	encodedEnvironment := make([]string, 0, len(names))
-	for _, name := range names {
-		encodedEnvironment = append(encodedEnvironment, name+"="+environment[name])
+	encodedEnvironment, err := profile.prepareEnvironment(request.Environment)
+	if err != nil {
+		return preparedAuthorityBrokerExecution{}, err
 	}
 	shellArguments := []string{"-c", request.Script}
 	if profile.Login {

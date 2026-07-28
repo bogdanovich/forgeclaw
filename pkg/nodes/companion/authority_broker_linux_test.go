@@ -4,6 +4,7 @@ package companion
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
@@ -239,6 +242,219 @@ func TestAuthorityBrokerUnixBoundsNonReadingPeer(t *testing.T) {
 	}
 }
 
+func TestAuthorityBrokerTerminalUnixRoundTripRealPTY(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	request := testAuthorityBrokerTerminalRequest()
+	terminal, opened, err := client.OpenTerminal(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	if opened.Type != TerminalEventOpened || terminal.ID() != opened.TerminalID {
+		t.Fatalf("opened terminal = (%q, %#v)", terminal.ID(), opened)
+	}
+	if err := terminal.Send(
+		t.Context(),
+		terminalInputControl(
+			1,
+			"echo-off-1",
+			"stty -echo; printf '\\145cho-off-ready\\n'\n",
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, terminal, 1)
+	waitForAuthorityBrokerTerminalOutput(t, terminal, "echo-off-ready")
+	if err := terminal.Send(
+		t.Context(),
+		terminalInputControl(2, "input-2", "printf 'broker-terminal-marker\\n'\n"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalOutput(t, terminal, "broker-terminal-marker")
+	if err := terminal.Send(t.Context(), TerminalBrokerControl{
+		Sequence: 3, IdempotencyKey: "close-3", Close: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, terminal, 3)
+	closed := waitForAuthorityBrokerTerminalClosed(t, terminal)
+	if closed.Type != TerminalEventClosed ||
+		closed.Reason != TerminalCloseRequested ||
+		!closed.TerminationConfirmed {
+		t.Fatalf("closed event = %#v", closed)
+	}
+}
+
+func TestAuthorityBrokerTerminalOpenCancellationReleasesPendingClient(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	first, _, err := client.OpenTerminal(t.Context(), testAuthorityBrokerTerminalRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, _, err := client.OpenTerminal(
+		ctx,
+		testAuthorityBrokerTerminalRequest(),
+	); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pending terminal open error = %v", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("pending terminal open ignored cancellation")
+	}
+	if err := first.Send(t.Context(), TerminalBrokerControl{
+		Sequence: 1, IdempotencyKey: "close-1", Close: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, first, 1)
+	waitForAuthorityBrokerTerminalClosed(t, first)
+}
+
+func TestAuthorityBrokerTerminalOverflowReleasesProfileCapacity(t *testing.T) {
+	runner := testAuthorityBrokerProcessRunner(t)
+	client, stop := startTestAuthorityBrokerServer(t, runner)
+	defer stop()
+	overflowRequest := testAuthorityBrokerTerminalRequest()
+	overflowRequest.BufferBytes = 1
+	first, _, err := client.OpenTerminal(t.Context(), overflowRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := waitForAuthorityBrokerTerminalClosed(t, first)
+	if closed.Type != TerminalEventClosed ||
+		closed.Reason != TerminalCloseOutputOverflow {
+		t.Fatalf("overflow outcome = %#v", closed)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	second, _, err := client.OpenTerminal(ctx, testAuthorityBrokerTerminalRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := second.Send(t.Context(), TerminalBrokerControl{
+		Sequence: 1, IdempotencyKey: "close-1", Close: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorityBrokerTerminalAck(t, second, 1)
+	waitForAuthorityBrokerTerminalClosed(t, second)
+}
+
+func TestAuthorityBrokerTerminalReceiveHonorsDeadlineFreeCancellation(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := terminal.Receive(ctx)
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Receive() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Receive() ignored deadline-free context cancellation")
+	}
+}
+
+func TestAuthorityBrokerTerminalReceiveDeadlineClosesInterruptedStream(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := terminal.Receive(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	select {
+	case <-terminal.done:
+	default:
+		t.Fatal("Receive() deadline left interrupted stream open")
+	}
+}
+
+func TestAuthorityBrokerTerminalSendHonorsBackpressuredCancellation(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	fillAuthorityBrokerUnixWriteBuffer(t, connection)
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- terminal.Send(ctx, terminalInputControl(
+			1,
+			"input-1",
+			strings.Repeat("x", MaxTerminalFrameBytes),
+		))
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Send() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send() ignored backpressured context cancellation")
+	}
+}
+
+func TestAuthorityBrokerTerminalSendDeadlineClosesInterruptedStream(t *testing.T) {
+	connection, peer := testAuthorityBrokerUnixPair(t)
+	defer connection.Close()
+	defer peer.Close()
+	fillAuthorityBrokerUnixWriteBuffer(t, connection)
+	terminal := &AuthorityBrokerTerminal{
+		connection: connection, terminalID: "terminal_test", done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	err := terminal.Send(ctx, terminalInputControl(
+		1,
+		"input-1",
+		strings.Repeat("x", MaxTerminalFrameBytes),
+	))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Send() error = %v", err)
+	}
+	select {
+	case <-terminal.done:
+	default:
+		t.Fatal("Send() deadline left interrupted stream open")
+	}
+}
+
 func TestRuntimeShellExecThroughUnixBrokerRealProcess(t *testing.T) {
 	runner := testAuthorityBrokerProcessRunner(t)
 	client, stop := startTestAuthorityBrokerServer(t, runner)
@@ -335,6 +551,145 @@ func waitForAuthorityBrokerFileOrError(
 			t.Fatal("authority broker process barrier was not reached")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func receiveAuthorityBrokerTerminalEvent(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+) TerminalBrokerEvent {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	event, err := terminal.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
+func waitForAuthorityBrokerTerminalAck(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+	sequence uint64,
+) {
+	t.Helper()
+	for {
+		event := receiveAuthorityBrokerTerminalEvent(t, terminal)
+		if event.Type == TerminalEventAck && event.AcceptedSequence == sequence {
+			return
+		}
+	}
+}
+
+func waitForAuthorityBrokerTerminalOutput(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+	marker string,
+) {
+	t.Helper()
+	var output strings.Builder
+	for {
+		event := receiveAuthorityBrokerTerminalEvent(t, terminal)
+		if event.Type != TerminalEventOutput {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(event.DataBase64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output.Write(data)
+		if strings.Contains(output.String(), marker) {
+			return
+		}
+	}
+}
+
+func waitForAuthorityBrokerTerminalClosed(
+	t *testing.T,
+	terminal *AuthorityBrokerTerminal,
+) TerminalBrokerEvent {
+	t.Helper()
+	for {
+		event := receiveAuthorityBrokerTerminalEvent(t, terminal)
+		if event.Type == TerminalEventClosed || event.Type == TerminalEventUnknown {
+			return event
+		}
+	}
+}
+
+func testAuthorityBrokerUnixPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
+	t.Helper()
+	socketPath := t.TempDir() + "/terminal.sock"
+	listener, err := net.ListenUnix(
+		"unix",
+		&net.UnixAddr{Name: socketPath, Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan *net.UnixConn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		connection, err := listener.AcceptUnix()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- connection
+	}()
+	connection, err := net.DialUnix(
+		"unix",
+		nil,
+		&net.UnixAddr{Name: socketPath, Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case peer := <-accepted:
+		return connection, peer
+	case err := <-acceptErr:
+		connection.Close()
+		t.Fatal(err)
+		return nil, nil
+	}
+}
+
+func fillAuthorityBrokerUnixWriteBuffer(t *testing.T, connection *net.UnixConn) {
+	t.Helper()
+	if err := connection.SetWriteBuffer(1024); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fillErr error
+	if err := raw.Write(func(descriptor uintptr) bool {
+		data := make([]byte, 4096)
+		for {
+			_, sendErr := unix.SendmsgN(
+				int(descriptor),
+				data,
+				nil,
+				nil,
+				unix.MSG_DONTWAIT,
+			)
+			if errors.Is(sendErr, unix.EAGAIN) {
+				return true
+			}
+			if sendErr != nil {
+				fillErr = sendErr
+				return true
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fillErr != nil {
+		t.Fatal(fillErr)
 	}
 }
 
