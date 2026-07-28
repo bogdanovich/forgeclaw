@@ -80,6 +80,7 @@ type commandAuthorizer interface {
 }
 
 type commandInvocation struct {
+	Plan             nodes.ExecutionPlan
 	Input            json.RawMessage
 	TimeoutSeconds   int
 	OutputLimitBytes int
@@ -87,6 +88,7 @@ type commandInvocation struct {
 
 type runtimeOptions struct {
 	systemExec *SystemExecPolicy
+	shellExec  *shellExecRuntime
 }
 
 type RuntimeOption func(*runtimeOptions) error
@@ -98,6 +100,17 @@ func WithSystemExec(policy SystemExecPolicy) RuntimeOption {
 			return err
 		}
 		options.systemExec = &cloned
+		return nil
+	}
+}
+
+func WithShellBroker(snapshot ShellBrokerSnapshot, broker ShellBroker) RuntimeOption {
+	return func(options *runtimeOptions) error {
+		shellRuntime, err := newShellExecRuntime(snapshot, broker)
+		if err != nil {
+			return err
+		}
+		options.shellExec = shellRuntime
 		return nil
 	}
 }
@@ -148,6 +161,9 @@ func NewRuntime(
 	if settings.systemExec != nil {
 		handlers = append(handlers, newSystemExecHandler(*settings.systemExec))
 	}
+	if settings.shellExec != nil {
+		handlers = append(handlers, settings.shellExec.handler)
+	}
 	if err := nodeID.Validate(); err != nil {
 		return nil, err
 	}
@@ -164,6 +180,13 @@ func NewRuntime(
 				return nil, fmt.Errorf("project system.exec model contract: %w", err)
 			}
 			descriptor.ModelContract = modelContract
+		} else if shellExec, ok := handler.(*shellExecHandler); ok {
+			modelContract, err := shellExec.modelContract(policy)
+			if err != nil {
+				return nil, fmt.Errorf("project shell.exec model contract: %w", err)
+			}
+			descriptor.ModelContract = modelContract
+			shellExec.contract = cloneModelContract(modelContract)
 		} else {
 			descriptor.ModelContract = effectiveModelContract(descriptor, policy)
 		}
@@ -322,6 +345,7 @@ func (runtime *Runtime) executeAccepted(
 		return nil, fmt.Errorf("%w: persist running state: %v", ErrInvocationOutcomeUnknown, err)
 	}
 	result, executeErr := handler.execute(invokeCtx, commandInvocation{
+		Plan:             plan,
 		Input:            plan.Input,
 		TimeoutSeconds:   plan.TimeoutSeconds,
 		OutputLimitBytes: plan.OutputLimitBytes,
