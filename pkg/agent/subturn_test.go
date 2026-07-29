@@ -2103,6 +2103,7 @@ func TestSpawnSubTurn_DurableTaskDismissesPublishedToolFeedbackSession(t *testin
 		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          parentAgent,
+		workspace:      parentAgent.Workspace,
 		opts: processOptions{
 			Dispatch: DispatchRequest{
 				SessionKey:  "parent-durable-tool-feedback",
