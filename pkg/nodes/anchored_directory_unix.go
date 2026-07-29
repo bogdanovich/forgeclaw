@@ -250,6 +250,36 @@ func (directory *anchoredDirectory) removeRegular(name string) error {
 	return err
 }
 
+func (directory *anchoredDirectory) listNames() ([]string, error) {
+	if directory == nil || directory.file == nil {
+		return nil, errors.New("anchored directory is closed")
+	}
+	descriptor, err := unix.Openat(
+		int(directory.file.Fd()),
+		".",
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(descriptor), directory.file.Name())
+	if file == nil {
+		_ = unix.Close(descriptor)
+		return nil, errors.New("enumerate anchored directory: invalid descriptor")
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names, nil
+}
+
 func (directory *anchoredDirectory) writeFileAtomic(
 	name string,
 	data []byte,

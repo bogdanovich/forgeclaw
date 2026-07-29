@@ -187,9 +187,9 @@ func (directory *anchoredDirectory) createRegularExclusive(
 		return nil, errors.New("create anchored regular file: invalid handle")
 	}
 	if err := file.Chmod(mode); err != nil {
-		directory.deleteOnClose(handle)
-		_ = file.Close()
-		return nil, err
+		deleteErr := directory.deleteOnClose(handle)
+		closeErr := file.Close()
+		return nil, errors.Join(err, deleteErr, closeErr)
 	}
 	return file, nil
 }
@@ -224,8 +224,43 @@ func (directory *anchoredDirectory) removeRegular(name string) error {
 	if err != nil {
 		return err
 	}
-	directory.deleteOnClose(handle)
-	return windows.CloseHandle(handle)
+	deleteErr := directory.deleteOnClose(handle)
+	closeErr := windows.CloseHandle(handle)
+	return errors.Join(deleteErr, closeErr)
+}
+
+func (directory *anchoredDirectory) listNames() ([]string, error) {
+	if directory == nil || directory.handle == 0 {
+		return nil, errors.New("anchored directory is closed")
+	}
+	process := windows.CurrentProcess()
+	var handle windows.Handle
+	if err := windows.DuplicateHandle(
+		process,
+		directory.handle,
+		process,
+		&handle,
+		0,
+		false,
+		windows.DUPLICATE_SAME_ACCESS,
+	); err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), "anchored-directory")
+	if file == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, errors.New("enumerate anchored directory: invalid handle")
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names, nil
 }
 
 func (directory *anchoredDirectory) writeFileAtomic(
@@ -257,7 +292,7 @@ func (directory *anchoredDirectory) writeFileAtomic(
 	renamed := false
 	defer func() {
 		if !renamed {
-			directory.deleteOnClose(handle)
+			_ = directory.deleteOnClose(handle)
 		}
 		_ = temp.Close()
 	}()
@@ -382,12 +417,12 @@ func (directory *anchoredDirectory) renameWithFlags(
 	)
 }
 
-func (directory *anchoredDirectory) deleteOnClose(handle windows.Handle) {
+func (directory *anchoredDirectory) deleteOnClose(handle windows.Handle) error {
 	var (
 		status windows.IO_STATUS_BLOCK
 		remove = byte(1)
 	)
-	_ = windows.NtSetInformationFile(
+	return windows.NtSetInformationFile(
 		handle,
 		&status,
 		&remove,

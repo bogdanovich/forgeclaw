@@ -31,6 +31,8 @@ const (
 	DefaultGatewayTransferLimit     = 256
 	DefaultGatewayTransferSpoolSize = int64(4 * 1024 * 1024 * 1024)
 	DefaultGatewayTransferRetention = 24 * time.Hour
+	MaxGatewayActiveTransfers       = 8
+	MaxTargetProfileActiveTransfers = 2
 	MaxGatewayTransferRetention     = 7 * 24 * time.Hour
 	MaxGatewayTransferLifetime      = time.Hour
 	MaxTransferArtifactBytes        = int64(1024 * 1024 * 1024)
@@ -272,7 +274,7 @@ func (store *GatewayTransferSpool) Begin(
 		return nil, TransferArtifactRecord{}, false, err
 	}
 	for _, existing := range store.records {
-		if existing.Spec.TransferID != spec.TransferID {
+		if !sameTransferArtifactIdentity(existing, owner, spec) {
 			continue
 		}
 		if sameTransferArtifactBinding(existing, owner, spec) &&
@@ -282,7 +284,12 @@ func (store *GatewayTransferSpool) Begin(
 		return nil, TransferArtifactRecord{}, false, ErrTransferArtifactConflict
 	}
 	if len(store.records) >= store.maxRecords ||
-		store.reservedBytesLocked()+spec.DeclaredSize > store.maxBytes {
+		store.reservedBytesLocked()+spec.DeclaredSize > store.maxBytes ||
+		store.activeTransferCountLocked() >= MaxGatewayActiveTransfers ||
+		store.targetProfileActiveTransferCountLocked(
+			spec.Target,
+			spec.ProfileRevision,
+		) >= MaxTargetProfileActiveTransfers {
 		return nil, TransferArtifactRecord{}, false, ErrTransferSpoolFull
 	}
 	artifactID, err := randomTransferArtifactID()
@@ -311,13 +318,13 @@ func (store *GatewayTransferSpool) Begin(
 	}
 	previous := cloneTransferArtifactRecords(store.records)
 	store.records[artifactID] = record
-	if err := store.persistLocked(); err != nil {
-		store.records = previous
+	persistErr := store.persistMutationLocked(previous)
+	if persistErr != nil && !fileutil.IsCommittedWriteError(persistErr) {
 		_ = file.Close()
 		_ = store.directory.removeRegular(stagingName)
 		return nil, TransferArtifactRecord{}, false, fmt.Errorf(
 			"persist staged transfer artifact: %w",
-			err,
+			persistErr,
 		)
 	}
 	writer := &TransferArtifactWriter{
@@ -327,7 +334,10 @@ func (store *GatewayTransferSpool) Begin(
 		digest:     sha256.New(),
 	}
 	store.active[artifactID] = writer
-	return writer, cloneTransferArtifactRecord(record), true, nil
+	if persistErr != nil {
+		persistErr = fmt.Errorf("persist staged transfer artifact: %w", persistErr)
+	}
+	return writer, cloneTransferArtifactRecord(record), true, persistErr
 }
 
 func (writer *TransferArtifactWriter) WriteChunk(sequence uint64, data []byte) error {
@@ -454,18 +464,23 @@ func (writer *TransferArtifactWriter) Abort() error {
 	}
 	previous := cloneTransferArtifactRecords(store.records)
 	delete(store.records, writer.artifactID)
-	if err := store.persistLocked(); err != nil {
-		store.records = previous
-		return err
+	persistErr := store.persistMutationLocked(previous)
+	if persistErr != nil && !fileutil.IsCommittedWriteError(persistErr) {
+		return persistErr
 	}
-	return store.directory.removeRegular(record.StagingName)
+	removeErr := store.directory.removeRegular(record.StagingName)
+	return errors.Join(persistErr, removeErr)
 }
 
 func (store *GatewayTransferSpool) Resolve(
 	owner TransferArtifactOwner,
+	spec TransferArtifactSpec,
 	ref string,
 ) (*os.File, TransferArtifactRecord, error) {
 	if err := owner.Validate(); err != nil {
+		return nil, TransferArtifactRecord{}, err
+	}
+	if err := spec.Validate(); err != nil {
 		return nil, TransferArtifactRecord{}, err
 	}
 	artifactID, err := parseTransferArtifactRef(ref)
@@ -483,7 +498,7 @@ func (store *GatewayTransferSpool) Resolve(
 	record, found := store.records[artifactID]
 	if !found ||
 		record.State != TransferArtifactCommitted ||
-		record.Owner != owner {
+		!sameTransferArtifactBinding(record, owner, spec) {
 		return nil, TransferArtifactRecord{}, ErrTransferArtifactNotFound
 	}
 	file, info, err := store.directory.openRegular(record.DataName)
@@ -512,9 +527,13 @@ func (store *GatewayTransferSpool) Resolve(
 
 func (store *GatewayTransferSpool) Release(
 	owner TransferArtifactOwner,
+	spec TransferArtifactSpec,
 	ref string,
 ) error {
 	if err := owner.Validate(); err != nil {
+		return err
+	}
+	if err := spec.Validate(); err != nil {
 		return err
 	}
 	artifactID, err := parseTransferArtifactRef(ref)
@@ -527,16 +546,19 @@ func (store *GatewayTransferSpool) Release(
 		return ErrTransferSpoolClosed
 	}
 	record, found := store.records[artifactID]
-	if !found || record.Owner != owner || store.active[artifactID] != nil {
+	if !found ||
+		!sameTransferArtifactBinding(record, owner, spec) ||
+		store.active[artifactID] != nil {
 		return ErrTransferArtifactNotFound
 	}
 	previous := cloneTransferArtifactRecords(store.records)
 	delete(store.records, artifactID)
-	if err := store.persistLocked(); err != nil {
-		store.records = previous
-		return err
+	persistErr := store.persistMutationLocked(previous)
+	if persistErr != nil && !fileutil.IsCommittedWriteError(persistErr) {
+		return persistErr
 	}
-	return store.directory.removeRegular(record.DataName)
+	removeErr := store.directory.removeRegular(record.DataName)
+	return errors.Join(persistErr, removeErr)
 }
 
 func (store *GatewayTransferSpool) Cleanup() (int, error) {
@@ -546,10 +568,8 @@ func (store *GatewayTransferSpool) Cleanup() (int, error) {
 		return 0, ErrTransferSpoolClosed
 	}
 	before := len(store.records)
-	if err := store.cleanupExpiredLocked(store.now()); err != nil {
-		return 0, err
-	}
-	return before - len(store.records), nil
+	err := store.cleanupExpiredLocked(store.now())
+	return before - len(store.records), err
 }
 
 func (store *GatewayTransferSpool) Close() error {
@@ -603,11 +623,11 @@ func (store *GatewayTransferSpool) loadAndReconcile() error {
 		}
 		store.records = document.Records
 	}
-	changed := false
+	indexChanged := false
 	removeNames := make([]string, 0)
 	now := store.now()
 	for artifactID, record := range store.records {
-		if err := validateTransferArtifactRecord(record); err != nil ||
+		if validationErr := validateTransferArtifactRecord(record); validationErr != nil ||
 			record.ArtifactID != artifactID {
 			return fmt.Errorf("invalid gateway transfer spool record %q", artifactID)
 		}
@@ -623,16 +643,27 @@ func (store *GatewayTransferSpool) loadAndReconcile() error {
 			} else {
 				store.records[artifactID] = *recovered
 			}
-			changed = true
+			indexChanged = true
 		case TransferArtifactCommitted:
 			file, info, openErr := store.directory.openRegular(record.DataName)
-			if openErr != nil || info.Size() != record.Spec.DeclaredSize {
+			removeRecord := openErr != nil
+			if openErr == nil && info.Size() == record.Spec.DeclaredSize {
+				digest, hashErr := hashOpenFile(file)
+				if hashErr != nil {
+					_ = file.Close()
+					return hashErr
+				}
+				removeRecord = digest != record.Spec.SHA256
+			} else if openErr == nil {
+				removeRecord = true
+			}
+			if removeRecord {
 				if file != nil {
 					_ = file.Close()
 				}
 				delete(store.records, artifactID)
 				removeNames = append(removeNames, record.DataName)
-				changed = true
+				indexChanged = true
 			} else {
 				_ = file.Close()
 			}
@@ -644,21 +675,45 @@ func (store *GatewayTransferSpool) loadAndReconcile() error {
 		if store.artifactExpiredLocked(record, now) {
 			delete(store.records, artifactID)
 			removeNames = append(removeNames, record.StagingName, record.DataName)
+			indexChanged = true
 		}
 	}
-	changed = changed || len(removeNames) != 0
 	if len(store.records) > store.maxRecords || store.reservedBytesLocked() > store.maxBytes {
 		return ErrTransferSpoolFull
 	}
-	if changed {
-		if err := store.persistLocked(); err != nil {
-			return err
+
+	names, err := store.directory.listNames()
+	if err != nil {
+		return fmt.Errorf("enumerate gateway transfer spool: %w", err)
+	}
+	referenced := make(map[string]struct{}, len(store.records)*2)
+	for _, record := range store.records {
+		if record.StagingName != "" {
+			referenced[record.StagingName] = struct{}{}
 		}
-		for _, name := range removeNames {
-			_ = store.directory.removeRegular(name)
+		referenced[record.DataName] = struct{}{}
+	}
+	for _, name := range names {
+		if !isTransferArtifactDataName(name) {
+			continue
+		}
+		if _, found := referenced[name]; !found {
+			removeNames = append(removeNames, name)
 		}
 	}
-	return nil
+	removeNames = uniqueNonemptyNames(removeNames)
+	if len(removeNames) != 0 {
+		indexChanged = true
+	}
+	if !indexChanged {
+		return nil
+	}
+	persistErr := store.persistLocked()
+	if persistErr != nil && !fileutil.IsCommittedWriteError(persistErr) {
+		return persistErr
+	}
+	removeErr := store.removeRegularFilesLocked(removeNames)
+	return errors.Join(persistErr, removeErr)
 }
 
 func (store *GatewayTransferSpool) recoverStagingLocked(
@@ -669,8 +724,6 @@ func (store *GatewayTransferSpool) recoverStagingLocked(
 	if err == nil {
 		defer file.Close()
 		if info.Size() != record.Spec.DeclaredSize {
-			_ = store.directory.removeRegular(record.DataName)
-			_ = store.directory.removeRegular(record.StagingName)
 			return nil, nil
 		}
 		digest, hashErr := hashOpenFile(file)
@@ -678,8 +731,6 @@ func (store *GatewayTransferSpool) recoverStagingLocked(
 			return nil, hashErr
 		}
 		if digest != record.Spec.SHA256 {
-			_ = store.directory.removeRegular(record.DataName)
-			_ = store.directory.removeRegular(record.StagingName)
 			return nil, nil
 		}
 		record.State = TransferArtifactCommitted
@@ -692,7 +743,6 @@ func (store *GatewayTransferSpool) recoverStagingLocked(
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	_ = store.directory.removeRegular(record.StagingName)
 	return nil, nil
 }
 
@@ -704,18 +754,19 @@ func (store *GatewayTransferSpool) cleanupExpiredLocked(now time.Time) error {
 	if sameTransferArtifactRecords(previous, store.records) {
 		return nil
 	}
-	if err := store.persistLocked(); err != nil {
-		store.records = previous
-		return err
+	persistErr := store.persistMutationLocked(previous)
+	if persistErr != nil && !fileutil.IsCommittedWriteError(persistErr) {
+		return persistErr
 	}
+	removeNames := make([]string, 0, (len(previous)-len(store.records))*2)
 	for artifactID, record := range previous {
 		if _, retained := store.records[artifactID]; retained {
 			continue
 		}
-		_ = store.directory.removeRegular(record.StagingName)
-		_ = store.directory.removeRegular(record.DataName)
+		removeNames = append(removeNames, record.StagingName, record.DataName)
 	}
-	return nil
+	removeErr := store.removeRegularFilesLocked(removeNames)
+	return errors.Join(persistErr, removeErr)
 }
 
 func (store *GatewayTransferSpool) cleanupExpiredWithoutPersistLocked(now time.Time) error {
@@ -756,12 +807,55 @@ func (store *GatewayTransferSpool) persistLocked() error {
 	return store.writeIndex(data)
 }
 
+func (store *GatewayTransferSpool) persistMutationLocked(
+	previous map[string]TransferArtifactRecord,
+) error {
+	err := store.persistLocked()
+	if err != nil && !fileutil.IsCommittedWriteError(err) {
+		store.records = previous
+	}
+	return err
+}
+
+func (store *GatewayTransferSpool) removeRegularFilesLocked(names []string) error {
+	var removeErr error
+	for _, name := range uniqueNonemptyNames(names) {
+		removeErr = errors.Join(removeErr, store.directory.removeRegular(name))
+	}
+	return removeErr
+}
+
 func (store *GatewayTransferSpool) reservedBytesLocked() int64 {
 	var total int64
 	for _, record := range store.records {
 		total += record.Spec.DeclaredSize
 	}
 	return total
+}
+
+func (store *GatewayTransferSpool) activeTransferCountLocked() int {
+	count := 0
+	for _, record := range store.records {
+		if record.State == TransferArtifactStaging {
+			count++
+		}
+	}
+	return count
+}
+
+func (store *GatewayTransferSpool) targetProfileActiveTransferCountLocked(
+	target string,
+	profileRevision string,
+) int {
+	count := 0
+	for _, record := range store.records {
+		if record.State == TransferArtifactStaging &&
+			record.Spec.Target == target &&
+			record.Spec.ProfileRevision == profileRevision {
+			count++
+		}
+	}
+	return count
 }
 
 func ensureTransferSpoolRoot(root string) error {
@@ -851,6 +945,60 @@ func sameTransferArtifactBinding(
 	spec TransferArtifactSpec,
 ) bool {
 	return record.Owner == owner && record.Spec == spec
+}
+
+func sameTransferArtifactIdentity(
+	record TransferArtifactRecord,
+	owner TransferArtifactOwner,
+	spec TransferArtifactSpec,
+) bool {
+	return record.Owner == owner &&
+		record.Spec.TransferID == spec.TransferID &&
+		record.Spec.Direction == spec.Direction &&
+		record.Spec.Target == spec.Target &&
+		record.Spec.ProfileRevision == spec.ProfileRevision
+}
+
+func isTransferArtifactDataName(name string) bool {
+	const (
+		prefix = "artifact_"
+		part   = ".part"
+		data   = ".data"
+	)
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	var suffix string
+	switch {
+	case strings.HasSuffix(name, part):
+		suffix = part
+	case strings.HasSuffix(name, data):
+		suffix = data
+	default:
+		return false
+	}
+	artifactID := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+	if len(artifactID) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(artifactID)
+	return err == nil
+}
+
+func uniqueNonemptyNames(names []string) []string {
+	unique := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, found := seen[name]; found {
+			continue
+		}
+		seen[name] = struct{}{}
+		unique = append(unique, name)
+	}
+	return unique
 }
 
 func cloneTransferArtifactRecord(record TransferArtifactRecord) TransferArtifactRecord {
