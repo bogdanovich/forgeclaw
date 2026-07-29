@@ -501,8 +501,11 @@ toolLoop:
 			executionID = strings.TrimSpace(grant.OriginExecutionID)
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
-		execCtx = tools.WithToolApprovalContinuation(execCtx, ts.opts.ApprovalGrant != nil)
 		allowAllApprovals := p.Cfg != nil && p.Cfg.Tools.Approval.AllowAll()
+		execCtx = tools.WithToolApprovalContinuation(
+			execCtx,
+			ts.opts.ApprovalGrant != nil && !allowAllApprovals,
+		)
 		execCtx = tools.WithToolApprovalBypass(execCtx, allowAllApprovals)
 
 		if (!allowAllApprovals && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {

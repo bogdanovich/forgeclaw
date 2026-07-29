@@ -85,6 +85,11 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 		opts: processOptions{
 			NoHistory: true,
 			Dispatch:  DispatchRequest{SessionKey: "allow-all"},
+			ApprovalGrant: &ToolApprovalGrant{
+				InteractionID:     "approval-before-allow-all",
+				Revision:          1,
+				OriginExecutionID: "original-execution",
+			},
 		},
 	}
 	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
@@ -99,9 +104,13 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 	}
 	cfg := config.DefaultConfig()
 	cfg.Tools.Approval.Mode = config.ToolApprovalModeAllowAll
+	manager := &fakeToolSuspensionManager{}
 	pipeline := &Pipeline{
-		Cfg:         cfg,
-		Interaction: PipelineInteractionServices{Hooks: hooks},
+		Cfg: cfg,
+		Interaction: PipelineInteractionServices{
+			Hooks:      hooks,
+			Suspension: manager,
+		},
 	}
 
 	pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
@@ -109,8 +118,20 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 	if hook.calls != 0 {
 		t.Fatalf("approval hook calls = %d, want 0", hook.calls)
 	}
-	if tool.executions != 1 || !tool.bypass {
-		t.Fatalf("tool executions = %d, bypass = %v", tool.executions, tool.bypass)
+	if tool.executions != 1 || !tool.bypass || tool.continued {
+		t.Fatalf(
+			"tool executions = %d, bypass = %v, continued = %v",
+			tool.executions,
+			tool.bypass,
+			tool.continued,
+		)
+	}
+	if len(manager.consumptions) != 1 || ts.opts.ApprovalGrant != nil {
+		t.Fatalf(
+			"approval consumptions = %d, retained grant = %#v",
+			len(manager.consumptions),
+			ts.opts.ApprovalGrant,
+		)
 	}
 }
 

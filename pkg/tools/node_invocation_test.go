@@ -416,12 +416,14 @@ func TestNodeInvokeToolRequiresHumanApprovalContinuationForShellExec(t *testing.
 	}
 	bypassTool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), bypassSource)
 	bypassCtx := nodeInvocationTestContext("actor-1", "call-shell-bypass")
-	if _, err := bypassTool.ApprovalArguments(bypassCtx, args); err != nil {
-		t.Fatal(err)
-	}
 	result = bypassTool.Execute(WithToolApprovalBypass(bypassCtx, true), args)
-	if result.IsError || bypassSource.dispatchCalls != 1 {
-		t.Fatalf("allow-all shell result = %s, dispatches = %d", result.ForLLM, bypassSource.dispatchCalls)
+	if result.IsError || bypassSource.prepareCalls != 1 || bypassSource.dispatchCalls != 1 {
+		t.Fatalf(
+			"allow-all shell result = %s, prepares = %d, dispatches = %d",
+			result.ForLLM,
+			bypassSource.prepareCalls,
+			bypassSource.dispatchCalls,
+		)
 	}
 }
 

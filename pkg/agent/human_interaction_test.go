@@ -193,6 +193,7 @@ type approvalContextTool struct {
 	executions int
 	inbound    bus.InboundContext
 	bypass     bool
+	continued  bool
 }
 
 func (*approvalContextTool) Name() string { return "approval_context" }
@@ -207,6 +208,7 @@ func (t *approvalContextTool) Execute(ctx context.Context, _ map[string]any) *to
 	t.executions++
 	t.inbound = tools.ToolInboundContext(ctx)
 	t.bypass = tools.ToolApprovalBypass(ctx)
+	t.continued = tools.ToolApprovalContinuation(ctx)
 	return tools.NewToolResult("protected context captured")
 }
 

@@ -230,16 +230,19 @@ func TestNodeTerminalToolBindsApprovalAndAuthenticatedOperatorSession(t *testing
 	bypassTool := NewNodeTerminalTool(nodeDiscoveryTestConfig(), bypassSource)
 	bypassCtx := nodeTerminalTestContext("actor-1", "call-open-bypass")
 	bypassArgs := nodeTerminalOpenArgs(t, bypassTool, bypassCtx)
-	if _, err := bypassTool.ApprovalArguments(bypassCtx, bypassArgs); err != nil {
-		t.Fatal(err)
-	}
 	bypassed := decodeNodeResult(
 		t,
 		bypassTool.Execute(WithToolApprovalBypass(bypassCtx, true), bypassArgs),
 	)
 	if bypassed["state"] != string(nodes.GatewayTerminalPendingAttach) ||
+		bypassSource.prepared != 1 ||
 		bypassSource.opened != 1 {
-		t.Fatalf("allow-all terminal open = %#v; opened=%d", bypassed, bypassSource.opened)
+		t.Fatalf(
+			"allow-all terminal open = %#v; prepared=%d opened=%d",
+			bypassed,
+			bypassSource.prepared,
+			bypassSource.opened,
+		)
 	}
 }
 
