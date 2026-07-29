@@ -372,7 +372,9 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 			Action:     nodeActionRefreshDiscovery,
 		})
 	}
-	if record.Plan.Command == "shell.exec.v1" && !ToolApprovalContinuation(ctx) {
+	if record.Plan.Command == "shell.exec.v1" &&
+		!ToolApprovalContinuation(ctx) &&
+		!ToolApprovalBypass(ctx) {
 		return nodeDenialToolResult(nodeDenialResult{
 			Status:     "denied",
 			Code:       nodeDenialApprovalRequired,

@@ -82,6 +82,7 @@ var (
 	ctxKeyExecutionID      = &toolCtxKey{"executionID"}
 	ctxKeyWorkspace        = &toolCtxKey{"workspace"}
 	ctxKeyApprovalResume   = &toolCtxKey{"approvalResume"}
+	ctxKeyApprovalBypass   = &toolCtxKey{"approvalBypass"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -163,6 +164,12 @@ func WithToolExecutionIdentity(ctx context.Context, workspace, executionID strin
 // approval. Durable tools use it to fail closed when retained authority expired.
 func WithToolApprovalContinuation(ctx context.Context, resumed bool) context.Context {
 	return context.WithValue(ctx, ctxKeyApprovalResume, resumed)
+}
+
+// WithToolApprovalBypass marks execution as authorized by the configured
+// allow-all approval policy. It does not represent a consumed human grant.
+func WithToolApprovalBypass(ctx context.Context, bypass bool) context.Context {
+	return context.WithValue(ctx, ctxKeyApprovalBypass, bypass)
 }
 
 // ToolChannel extracts the channel from ctx, or "" if unset.
@@ -310,6 +317,12 @@ func ToolWorkspace(ctx context.Context) string {
 func ToolApprovalContinuation(ctx context.Context) bool {
 	resumed, _ := ctx.Value(ctxKeyApprovalResume).(bool)
 	return resumed
+}
+
+// ToolApprovalBypass reports whether the configured policy bypasses approval.
+func ToolApprovalBypass(ctx context.Context) bool {
+	bypass, _ := ctx.Value(ctxKeyApprovalBypass).(bool)
+	return bypass
 }
 
 // ToolRouteSessionKey extracts the canonical routed conversation key from ctx.

@@ -90,6 +90,10 @@ type ToolApprovalGrant struct {
 	InteractionID     string
 	Revision          int64
 	OriginExecutionID string
+	// OriginArgumentHash is the trusted binding stored with the suspended
+	// interaction. Fresh approval arguments may differ after retained
+	// time-bound tool state expires, but consumption must spend this binding.
+	OriginArgumentHash string
 }
 
 type ToolApprovalConsumptionRequest struct {

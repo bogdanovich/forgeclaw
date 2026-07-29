@@ -117,6 +117,10 @@ func WithToolApprovalContinuation(ctx context.Context, resumed bool) context.Con
 	return toolshared.WithToolApprovalContinuation(ctx, resumed)
 }
 
+func WithToolApprovalBypass(ctx context.Context, bypass bool) context.Context {
+	return toolshared.WithToolApprovalBypass(ctx, bypass)
+}
+
 func ToolChannel(ctx context.Context) string {
 	return toolshared.ToolChannel(ctx)
 }
@@ -183,6 +187,10 @@ func ToolWorkspace(ctx context.Context) string {
 
 func ToolApprovalContinuation(ctx context.Context) bool {
 	return toolshared.ToolApprovalContinuation(ctx)
+}
+
+func ToolApprovalBypass(ctx context.Context) bool {
+	return toolshared.ToolApprovalBypass(ctx)
 }
 
 func ToolRouteSessionKey(ctx context.Context) string {

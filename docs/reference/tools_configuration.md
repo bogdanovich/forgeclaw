@@ -39,6 +39,31 @@ See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full
 | `filter_sensitive_data` | bool | `true` | Enable/disable filtering |
 | `filter_min_length` | int | `8` | Minimum content length to trigger filtering |
 
+## Tool Approvals
+
+Tool approvals default to `required`. To run an explicitly trusted deployment
+without approval prompts, set:
+
+```json
+{
+  "tools": {
+    "approval": {
+      "mode": "allow_all"
+    }
+  }
+}
+```
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `tools.approval.mode` | string | `required` | `required` uses approval hooks and operator confirmation; `allow_all` bypasses both |
+
+`allow_all` is a global unattended-operation mode. It bypasses only the
+approval boundary. Pairing, target/profile authorization, discovery revisions,
+node policy, broker identity checks, and timeout/output limits still apply.
+Subagents also remain limited to targets and profiles granted to them. Run
+`mintclaw doctor` to surface this mode as a high-risk finding.
+
 ## Request User Input
 
 The built-in `request_user_input` tool lets foreground turns and durable

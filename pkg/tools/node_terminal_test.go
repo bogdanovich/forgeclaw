@@ -225,6 +225,25 @@ func TestNodeTerminalToolBindsApprovalAndAuthenticatedOperatorSession(t *testing
 			source.operatorSession,
 		)
 	}
+
+	bypassSource := newFakeNodeTerminalSource(t)
+	bypassTool := NewNodeTerminalTool(nodeDiscoveryTestConfig(), bypassSource)
+	bypassCtx := nodeTerminalTestContext("actor-1", "call-open-bypass")
+	bypassArgs := nodeTerminalOpenArgs(t, bypassTool, bypassCtx)
+	bypassed := decodeNodeResult(
+		t,
+		bypassTool.Execute(WithToolApprovalBypass(bypassCtx, true), bypassArgs),
+	)
+	if bypassed["state"] != string(nodes.GatewayTerminalPendingAttach) ||
+		bypassSource.prepared != 1 ||
+		bypassSource.opened != 1 {
+		t.Fatalf(
+			"allow-all terminal open = %#v; prepared=%d opened=%d",
+			bypassed,
+			bypassSource.prepared,
+			bypassSource.opened,
+		)
+	}
 }
 
 func TestNodeTerminalToolDeniesDifferentOwnerAndNonOperatorRoute(t *testing.T) {

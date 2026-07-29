@@ -469,6 +469,33 @@ func TestLoadConfigAcceptsDisabledContextManager(t *testing.T) {
 	}
 }
 
+func TestToolApprovalConfigDefaultsToRequired(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := cfg.Tools.Approval.EffectiveMode(); got != ToolApprovalModeRequired {
+		t.Fatalf("approval mode = %q, want %q", got, ToolApprovalModeRequired)
+	}
+	if cfg.Tools.Approval.AllowAll() {
+		t.Fatal("default approval mode unexpectedly allows all")
+	}
+}
+
+func TestValidateToolApprovalConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Tools.Approval.Mode = " ALLOW_ALL "
+	if err := cfg.ValidateToolApprovalConfig(); err != nil {
+		t.Fatalf("ValidateToolApprovalConfig() error = %v", err)
+	}
+	if cfg.Tools.Approval.Mode != ToolApprovalModeAllowAll || !cfg.Tools.Approval.AllowAll() {
+		t.Fatalf("normalized approval config = %#v", cfg.Tools.Approval)
+	}
+
+	cfg.Tools.Approval.Mode = "sometimes"
+	err := cfg.ValidateToolApprovalConfig()
+	if err == nil || !strings.Contains(err.Error(), "tools.approval.mode") {
+		t.Fatalf("ValidateToolApprovalConfig() error = %v", err)
+	}
+}
+
 func TestImageGenerateToolsConfig_EffectiveModel(t *testing.T) {
 	defaults := AgentDefaults{}
 

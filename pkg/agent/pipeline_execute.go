@@ -501,18 +501,23 @@ toolLoop:
 			executionID = strings.TrimSpace(grant.OriginExecutionID)
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
-		execCtx = tools.WithToolApprovalContinuation(execCtx, ts.opts.ApprovalGrant != nil)
+		allowAllApprovals := p.Cfg != nil && p.Cfg.Tools.Approval.AllowAll()
+		execCtx = tools.WithToolApprovalContinuation(
+			execCtx,
+			ts.opts.ApprovalGrant != nil && !allowAllApprovals,
+		)
+		execCtx = tools.WithToolApprovalBypass(execCtx, allowAllApprovals)
 
-		if p.Interaction.Hooks != nil || ts.opts.ApprovalGrant != nil {
+		if (!allowAllApprovals && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
 			approval := ApprovalDecision{Approved: true}
-			if p.Interaction.Hooks != nil {
+			if !allowAllApprovals && p.Interaction.Hooks != nil {
 				approval = p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
 					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
 					Context:   cloneTurnContext(ts.turnCtx),
 					Tool:      toolName,
 					Arguments: toolArgs,
 				})
-			} else {
+			} else if !allowAllApprovals {
 				approval = ApprovalDecision{Reason: "approval policy is no longer available"}
 			}
 			interactionWorkspace := strings.TrimSpace(ts.opts.InteractionWorkspace)
@@ -559,13 +564,24 @@ toolLoop:
 				} else if approvalArgsErr != nil {
 					consumeErr = approvalArgsErr
 				} else {
-					argumentHash, hashErr := interactions.HashArguments(
-						interactionWorkspace,
-						approvalArgs,
-					)
-					if hashErr != nil {
-						consumeErr = hashErr
+					var argumentHash string
+					if allowAllApprovals {
+						// ApprovalArguments above still validates current tool
+						// state. This transition consumes the original durable
+						// binding, not a newly prepared time-bound node plan.
+						argumentHash = strings.TrimSpace(grant.OriginArgumentHash)
+						if argumentHash == "" {
+							consumeErr = fmt.Errorf(
+								"originating approval argument hash is unavailable",
+							)
+						}
 					} else {
+						argumentHash, consumeErr = interactions.HashArguments(
+							interactionWorkspace,
+							approvalArgs,
+						)
+					}
+					if consumeErr == nil {
 						consumeErr = p.Interaction.Suspension.ConsumeApproval(
 							ctx,
 							ToolApprovalConsumptionRequest{

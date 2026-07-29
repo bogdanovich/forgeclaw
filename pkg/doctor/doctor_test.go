@@ -146,3 +146,18 @@ func TestDefaultAgentFallbackReferencesAreAudited(t *testing.T) {
 	}
 	t.Fatalf("missing defaults fallback finding: %+v", findings)
 }
+
+func TestToolApprovalAllowAllIsFailFinding(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Approval.Mode = config.ToolApprovalModeAllowAll
+
+	findings := checkToolRisks(cfg)
+	for _, finding := range findings {
+		if finding.ID == CheckToolApprovalAllowAll && finding.Severity == SeverityFail &&
+			len(finding.Evidence) == 1 &&
+			finding.Evidence[0].Path == "tools.approval.mode" {
+			return
+		}
+	}
+	t.Fatalf("missing allow-all approval finding: %+v", findings)
+}
