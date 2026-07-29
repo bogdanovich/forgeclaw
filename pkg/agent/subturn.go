@@ -590,7 +590,7 @@ func spawnSubTurn(
 				childTS.channel,
 				childTS.chatID,
 				childTS.opts.Dispatch.InboundContext,
-				childID,
+				childTS.sessionKey,
 				[]runtimeevents.TraceScope{runtimeevents.NewTraceScope(childTS.workspace, childTS.turnID)},
 			))
 			dismissCancel()

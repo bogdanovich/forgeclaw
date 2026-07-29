@@ -2058,6 +2058,103 @@ func TestSpawnSubTurn_InheritsSuppressToolFeedback(t *testing.T) {
 	}
 }
 
+func TestSpawnSubTurn_DurableTaskDismissesPublishedToolFeedbackSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	readPath := filepath.Join(tmpDir, "subturn-feedback.txt")
+	if err := os.WriteFile(readPath, []byte("durable subturn feedback task"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				ToolFeedback: config.ToolFeedbackConfig{
+					Enabled:       true,
+					MaxArgsLength: 300,
+				},
+			},
+		},
+		Tools: config.ToolsConfig{
+			ReadFile: config.ReadFileToolConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &toolFeedbackProvider{filePath: readPath})
+	channelManager := &recordingChannelManager{}
+	al.channelManager = channelManager
+	parentAgent := al.registry.GetDefaultAgent()
+	if parentAgent == nil {
+		t.Fatal("expected default parent agent")
+	}
+
+	parent := &turnState{
+		ctx:            context.Background(),
+		turnID:         "parent-durable-tool-feedback",
+		depth:          0,
+		childTurnIDs:   []string{},
+		pendingResults: make(chan *tools.ToolResult, 4),
+		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
+		session:        &ephemeralSessionStore{},
+		agent:          parentAgent,
+		workspace:      parentAgent.Workspace,
+		opts: processOptions{
+			Dispatch: DispatchRequest{
+				SessionKey:  "parent-durable-tool-feedback",
+				UserMessage: "spawn durable child",
+				InboundContext: &bus.InboundContext{
+					Channel:  "telegram",
+					ChatID:   "chat-1",
+					ChatType: "direct",
+					SenderID: "user-1",
+				},
+			},
+			NoHistory: true,
+		},
+	}
+
+	const taskID = "subagent-durable-feedback"
+	result, err := spawnSubTurn(context.Background(), al, parent, SubTurnConfig{
+		Model:        "test-model",
+		SystemPrompt: "read the file",
+		TaskID:       taskID,
+	})
+	if err != nil {
+		t.Fatalf("spawnSubTurn failed: %v", err)
+	}
+	if result == nil || result.ForLLM != "HEARTBEAT_OK" {
+		t.Fatalf("spawnSubTurn result = %#v, want HEARTBEAT_OK", result)
+	}
+
+	var outbound bus.OutboundMessage
+	select {
+	case outbound = <-msgBus.OutboundChan():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected child tool feedback outbound")
+	}
+	if len(channelManager.dismissedTargets) != 1 {
+		t.Fatalf("dismiss targets = %d, want 1", len(channelManager.dismissedTargets))
+	}
+	dismissedTarget := channelManager.dismissedTargets[0]
+	wantSessionKey := durableTaskSessionKey(parentAgent.Workspace, taskID)
+	if outbound.SessionKey != wantSessionKey {
+		t.Fatalf("feedback session = %q, want %q", outbound.SessionKey, wantSessionKey)
+	}
+	if dismissedTarget.SessionKey != outbound.SessionKey {
+		t.Fatalf(
+			"dismiss target session = %q, want feedback session %q",
+			dismissedTarget.SessionKey,
+			outbound.SessionKey,
+		)
+	}
+}
+
 func TestSpawnSubTurn_ReturnsStructuredCompletionWithMedia(t *testing.T) {
 	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
 	defer cleanup()
