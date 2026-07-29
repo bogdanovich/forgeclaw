@@ -86,9 +86,10 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 			NoHistory: true,
 			Dispatch:  DispatchRequest{SessionKey: "allow-all"},
 			ApprovalGrant: &ToolApprovalGrant{
-				InteractionID:     "approval-before-allow-all",
-				Revision:          1,
-				OriginExecutionID: "original-execution",
+				InteractionID:      "approval-before-allow-all",
+				Revision:           1,
+				OriginExecutionID:  "original-execution",
+				OriginArgumentHash: strings.Repeat("a", 64),
 			},
 		},
 	}
@@ -132,6 +133,9 @@ func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
 			len(manager.consumptions),
 			ts.opts.ApprovalGrant,
 		)
+	}
+	if got := manager.consumptions[0].Origin.ArgumentHash; got != strings.Repeat("a", 64) {
+		t.Fatalf("consumed argument hash = %q, want original retained hash", got)
 	}
 }
 

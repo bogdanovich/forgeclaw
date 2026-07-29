@@ -564,12 +564,12 @@ toolLoop:
 				} else if approvalArgsErr != nil {
 					consumeErr = approvalArgsErr
 				} else {
-					argumentHash, hashErr := interactions.HashArguments(
-						interactionWorkspace,
-						approvalArgs,
-					)
-					if hashErr != nil {
-						consumeErr = hashErr
+					// ApprovalArguments above still validates current tool state.
+					// Consumption must use the original durable binding, not a
+					// newly prepared time-bound node plan.
+					argumentHash := strings.TrimSpace(grant.OriginArgumentHash)
+					if argumentHash == "" {
+						consumeErr = fmt.Errorf("originating approval argument hash is unavailable")
 					} else {
 						consumeErr = p.Interaction.Suspension.ConsumeApproval(
 							ctx,
