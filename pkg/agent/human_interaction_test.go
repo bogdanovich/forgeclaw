@@ -86,12 +86,14 @@ func (p *blockingInteractionProvider) snapshot() (int, [][]providers.Message) {
 type durableApprovalHook struct {
 	actionSummary string
 	revoked       bool
+	calls         int
 }
 
 func (h *durableApprovalHook) ApproveTool(
 	context.Context,
 	*ToolApprovalRequest,
 ) (ApprovalDecision, error) {
+	h.calls++
 	if h.revoked {
 		return ApprovalDecision{Reason: "policy revoked human override"}, nil
 	}
@@ -190,6 +192,7 @@ func TestToolExecutionIdentityDoesNotRepeatAcrossAgentLoops(t *testing.T) {
 type approvalContextTool struct {
 	executions int
 	inbound    bus.InboundContext
+	bypass     bool
 }
 
 func (*approvalContextTool) Name() string { return "approval_context" }
@@ -203,6 +206,7 @@ func (*approvalContextTool) Parameters() map[string]any {
 func (t *approvalContextTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
 	t.executions++
 	t.inbound = tools.ToolInboundContext(ctx)
+	t.bypass = tools.ToolApprovalBypass(ctx)
 	return tools.NewToolResult("protected context captured")
 }
 

@@ -1307,6 +1307,7 @@ type ToolsConfig struct {
 	FilterMinLength  int                         `json:"filter_min_length"          yaml:"-"                env:"MINTCLAW_TOOLS_FILTER_MIN_LENGTH"`
 	LoopDetection    ToolLoopDetectionConfig     `json:"loop_detection"             yaml:"-"`
 	ResultRetention  ResultRetentionConfig       `json:"result_retention,omitempty" yaml:"-"`
+	Approval         ToolApprovalConfig          `json:"approval,omitempty"         yaml:"-"`
 	Web              WebToolsConfig              `json:"web"                        yaml:"web,omitempty"`
 	Cron             CronToolsConfig             `json:"cron"                       yaml:"-"`
 	Exec             ExecConfig                  `json:"exec"                       yaml:"-"`
@@ -1336,6 +1337,27 @@ type ToolsConfig struct {
 	UpdatePlan       ToolConfig                  `json:"update_plan"                yaml:"-"                                                       envPrefix:"MINTCLAW_TOOLS_UPDATE_PLAN_"`
 	WebFetch         ToolConfig                  `json:"web_fetch"                  yaml:"-"                                                       envPrefix:"MINTCLAW_TOOLS_WEB_FETCH_"`
 	WriteFile        ToolConfig                  `json:"write_file"                 yaml:"-"                                                       envPrefix:"MINTCLAW_TOOLS_WRITE_FILE_"`
+}
+
+const (
+	ToolApprovalModeRequired = "required"
+	ToolApprovalModeAllowAll = "allow_all"
+)
+
+type ToolApprovalConfig struct {
+	Mode string `json:"mode,omitempty" yaml:"-" env:"MINTCLAW_TOOLS_APPROVAL_MODE"`
+}
+
+func (c ToolApprovalConfig) EffectiveMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == "" {
+		return ToolApprovalModeRequired
+	}
+	return mode
+}
+
+func (c ToolApprovalConfig) AllowAll() bool {
+	return c.EffectiveMode() == ToolApprovalModeAllowAll
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -1708,6 +1730,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateExecConfig(); err != nil {
 		return nil, err
 	}
+	if err = cfg.ValidateToolApprovalConfig(); err != nil {
+		return nil, err
+	}
 	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
 		return nil, err
 	}
@@ -1934,6 +1959,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 		return nil, err
 	}
 	if err = cfg.ValidateExecConfig(); err != nil {
+		return nil, err
+	}
+	if err = cfg.ValidateToolApprovalConfig(); err != nil {
 		return nil, err
 	}
 	if err = cfg.ValidateRequestUserInputConfig(); err != nil {
@@ -2192,6 +2220,25 @@ func (c *Config) ValidateExecConfig() error {
 		return fmt.Errorf(
 			"tools.exec.permission_mode: unsupported value %q (allowed: \"\", \"read_only\")",
 			c.Tools.Exec.PermissionMode,
+		)
+	}
+}
+
+func (c *Config) ValidateToolApprovalConfig() error {
+	if c == nil {
+		return nil
+	}
+	mode := c.Tools.Approval.EffectiveMode()
+	switch mode {
+	case ToolApprovalModeRequired, ToolApprovalModeAllowAll:
+		c.Tools.Approval.Mode = mode
+		return nil
+	default:
+		return fmt.Errorf(
+			"tools.approval.mode: unsupported value %q (allowed: %q, %q)",
+			c.Tools.Approval.Mode,
+			ToolApprovalModeRequired,
+			ToolApprovalModeAllowAll,
 		)
 	}
 }

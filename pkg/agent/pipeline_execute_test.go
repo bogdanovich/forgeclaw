@@ -70,6 +70,50 @@ func TestToolResultContextStatus(t *testing.T) {
 	}
 }
 
+func TestPipelineAllowAllBypassesApprovalHook(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &approvalContextTool{}
+	registry.Register(tool)
+	agent := &AgentInstance{
+		ID:       "main",
+		Tools:    registry,
+		Sessions: session.NewSessionManager(""),
+	}
+	ts := &turnState{
+		agent: agent, agentID: "main", turnID: "turn-allow-all",
+		sessionKey: "allow-all", workspace: t.TempDir(),
+		opts: processOptions{
+			NoHistory: true,
+			Dispatch:  DispatchRequest{SessionKey: "allow-all"},
+		},
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{{
+		ID: "call-allow-all", Name: tool.Name(), Arguments: map[string]any{},
+	}}
+	hook := &durableApprovalHook{actionSummary: "must not be requested"}
+	hooks := NewHookManager(nil)
+	defer hooks.Close()
+	if err := hooks.Mount(NamedHook("approval", hook)); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Tools.Approval.Mode = config.ToolApprovalModeAllowAll
+	pipeline := &Pipeline{
+		Cfg:         cfg,
+		Interaction: PipelineInteractionServices{Hooks: hooks},
+	}
+
+	pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+
+	if hook.calls != 0 {
+		t.Fatalf("approval hook calls = %d, want 0", hook.calls)
+	}
+	if tool.executions != 1 || !tool.bypass {
+		t.Fatalf("tool executions = %d, bypass = %v", tool.executions, tool.bypass)
+	}
+}
+
 func TestPipelineSuspendsDurablyWithoutFabricatingPendingToolResult(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	requestTool, err := tools.NewRequestUserInputTool(tools.RequestUserInputToolOptions{})

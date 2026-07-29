@@ -502,17 +502,19 @@ toolLoop:
 		}
 		execCtx = tools.WithToolExecutionIdentity(execCtx, ts.workspace, executionID)
 		execCtx = tools.WithToolApprovalContinuation(execCtx, ts.opts.ApprovalGrant != nil)
+		allowAllApprovals := p.Cfg != nil && p.Cfg.Tools.Approval.AllowAll()
+		execCtx = tools.WithToolApprovalBypass(execCtx, allowAllApprovals)
 
-		if p.Interaction.Hooks != nil || ts.opts.ApprovalGrant != nil {
+		if (!allowAllApprovals && p.Interaction.Hooks != nil) || ts.opts.ApprovalGrant != nil {
 			approval := ApprovalDecision{Approved: true}
-			if p.Interaction.Hooks != nil {
+			if !allowAllApprovals && p.Interaction.Hooks != nil {
 				approval = p.Interaction.Hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
 					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
 					Context:   cloneTurnContext(ts.turnCtx),
 					Tool:      toolName,
 					Arguments: toolArgs,
 				})
-			} else {
+			} else if !allowAllApprovals {
 				approval = ApprovalDecision{Reason: "approval policy is no longer available"}
 			}
 			interactionWorkspace := strings.TrimSpace(ts.opts.InteractionWorkspace)

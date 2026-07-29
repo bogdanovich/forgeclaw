@@ -402,6 +402,27 @@ func TestNodeInvokeToolRequiresHumanApprovalContinuationForShellExec(t *testing.
 	if result.IsError || source.dispatchCalls != 1 {
 		t.Fatalf("approved shell result = %s, dispatches = %d", result.ForLLM, source.dispatchCalls)
 	}
+
+	bypassSource := newFakeNodeInvocationSource(t)
+	bypassSnapshot := bypassSource.byRef["builder-node"]
+	bypassSnapshot.Catalog = catalog
+	bypassSnapshot.CatalogHash = catalogHash
+	bypassSource.byRef["builder-node"] = bypassSnapshot
+	bypassSource.registrations[bypassSnapshot.ID] = nodes.Registration{
+		Snapshot:            bypassSnapshot,
+		AllowedCommands:     []string{command.Name},
+		ApprovedCatalogHash: catalogHash,
+		ApprovedAt:          1,
+	}
+	bypassTool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), bypassSource)
+	bypassCtx := nodeInvocationTestContext("actor-1", "call-shell-bypass")
+	if _, err := bypassTool.ApprovalArguments(bypassCtx, args); err != nil {
+		t.Fatal(err)
+	}
+	result = bypassTool.Execute(WithToolApprovalBypass(bypassCtx, true), args)
+	if result.IsError || bypassSource.dispatchCalls != 1 {
+		t.Fatalf("allow-all shell result = %s, dispatches = %d", result.ForLLM, bypassSource.dispatchCalls)
+	}
 }
 
 func TestNodeInvokeToolRejectsStaleDiscoveryBeforePreparation(t *testing.T) {

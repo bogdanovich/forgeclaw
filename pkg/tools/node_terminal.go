@@ -272,7 +272,7 @@ func (tool *NodeTerminalTool) open(ctx context.Context, args map[string]any) *To
 	if err != nil {
 		return nodeTerminalDenial()
 	}
-	if !ToolApprovalContinuation(ctx) {
+	if !ToolApprovalContinuation(ctx) && !ToolApprovalBypass(ctx) {
 		return nodeDenialToolResult(nodeDenialResult{
 			Status:     "denied",
 			Code:       nodeDenialApprovalRequired,

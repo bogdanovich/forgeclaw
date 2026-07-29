@@ -18,6 +18,7 @@ const (
 	CheckGatewayPublicExposure    = "gateway.public_exposure"
 	CheckChannelOpenAllowFrom     = "channels.open_allow_from"
 	CheckChannelPermissiveTrigger = "channels.permissive_group_trigger"
+	CheckToolApprovalAllowAll     = "tools.approval_allow_all"
 	CheckExecRemoteWrite          = "tools.exec_remote_write"
 	CheckFilesystemWriteScope     = "tools.filesystem_write_scope"
 	CheckInstallSkillEnabled      = "tools.install_skill_enabled"
@@ -107,6 +108,19 @@ func checkChannels(cfg *config.Config) []Finding {
 
 func checkToolRisks(cfg *config.Config) []Finding {
 	var findings []Finding
+	if cfg.Tools.Approval.AllowAll() {
+		findings = append(findings, newFinding(
+			CheckToolApprovalAllowAll,
+			SeverityFail,
+			"All tool approvals are bypassed",
+			"Every tool call proceeds without approval-hook or operator confirmation.",
+			"Set tools.approval.mode to required when unattended operation is no longer needed.",
+			Evidence{
+				Path:    "tools.approval.mode",
+				Summary: "approval mode is allow_all",
+			},
+		))
+	}
 	execWriteCapable := !strings.EqualFold(
 		strings.TrimSpace(cfg.Tools.Exec.PermissionMode),
 		"read_only",

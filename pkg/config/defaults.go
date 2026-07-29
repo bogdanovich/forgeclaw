@@ -324,6 +324,9 @@ func DefaultConfig() *Config {
 		Tools: ToolsConfig{
 			FilterSensitiveData: true,
 			FilterMinLength:     8,
+			Approval: ToolApprovalConfig{
+				Mode: ToolApprovalModeRequired,
+			},
 			LoopDetection: ToolLoopDetectionConfig{
 				Enabled:             true,
 				WarningsEnabled:     true,
