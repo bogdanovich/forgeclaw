@@ -119,8 +119,12 @@ contract controls its implementation scope. P1 implementation is admitted in
 dependency order by
 [`node-companion-p1-admission.md`](node-companion-p1-admission.md), while
 production owner-mode enablement remains deferred until its trusted approval
-prerequisite and separate operator decision are recorded. P2 and later work
-remain unadmitted.
+prerequisite and separate operator decision are recorded. P2 implementation is
+admitted in dependency order by
+[`node-companion-p2-admission.md`](node-companion-p2-admission.md). Production
+administrator-file access remains deferred until that contract's trusted
+approval and deployment gates are satisfied. P3 and later work remain
+unadmitted.
 
 ### Current limitation
 
@@ -532,6 +536,13 @@ This follow-up is complete only when:
   operational evidence are recorded.
 
 ## P2: File Transfer And Administrator Filesystem Access
+
+P2 implementation is admitted with exact scope, authority decisions, delivery
+order, completion gates, and mandatory stop conditions in
+[`node-companion-p2-admission.md`](node-companion-p2-admission.md). This
+admission does not enable production file access. Production remains deny by
+default until the trusted approval and deployment gates in that contract are
+satisfied.
 
 ### Operator outcome
 
