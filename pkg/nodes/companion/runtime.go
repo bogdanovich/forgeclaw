@@ -120,7 +120,7 @@ func WithShellBroker(snapshot ShellBrokerSnapshot, broker ShellBroker) RuntimeOp
 	}
 }
 
-func WithFileCapabilities(runtime *FileTransferRuntime) RuntimeOption {
+func WithFileCapabilities(runtime FileTransferCapability) RuntimeOption {
 	return func(options *runtimeOptions) error {
 		if runtime == nil {
 			return errors.New("node file transfer runtime is required")

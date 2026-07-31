@@ -69,6 +69,7 @@ func normalizeFilePolicies(
 	}
 	normalized := make(FilePolicies, len(policies))
 	aliases := make([]string, 0, len(policies))
+	foldedAliases := make(map[string]string, len(policies))
 	revisions := make(map[string]string, len(policies))
 	for rawAlias, rawProfile := range policies {
 		alias := strings.TrimSpace(rawAlias)
@@ -78,6 +79,15 @@ func normalizeFilePolicies(
 		if err := (nodes.Alias(alias)).Validate(); err != nil {
 			return nil, fmt.Errorf("validate file policy alias: %w", err)
 		}
+		foldedAlias := strings.ToLower(alias)
+		if prior, duplicate := foldedAliases[foldedAlias]; duplicate {
+			return nil, fmt.Errorf(
+				"file policy aliases %q and %q collide",
+				prior,
+				alias,
+			)
+		}
+		foldedAliases[foldedAlias] = alias
 		profile, err := normalizeFilePolicyProfile(alias, rawProfile, baseDir)
 		if err != nil {
 			return nil, fmt.Errorf("validate file policy %q: %w", alias, err)

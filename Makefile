@@ -211,6 +211,12 @@ build-node-broker:
 	@GOOS=linux GOARCH=$(ARCH) $(GO) build $(GOFLAGS) -ldflags "-s -w" -o $(BUILD_DIR)/mintclaw-node-broker ./cmd/mintclaw-node-broker
 	@echo "Build complete: $(BUILD_DIR)/mintclaw-node-broker"
 
+## build-node-file-helper: Build the Linux privileged file helper
+build-node-file-helper:
+	@mkdir -p $(BUILD_DIR)
+	@GOOS=linux GOARCH=$(ARCH) $(GO) build $(GOFLAGS) -ldflags "-s -w" -o $(BUILD_DIR)/mintclaw-node-file-helper ./cmd/mintclaw-node-file-helper
+	@echo "Build complete: $(BUILD_DIR)/mintclaw-node-file-helper"
+
 ## build-launcher: Build the mintclaw-launcher (web console) binary
 build-launcher:
 	@echo "Building mintclaw-launcher for $(PLATFORM)/$(ARCH)..."
