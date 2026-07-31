@@ -87,9 +87,10 @@ type commandInvocation struct {
 }
 
 type runtimeOptions struct {
-	systemExec     *SystemExecPolicy
-	shellExec      *shellExecRuntime
-	terminalBroker terminalBrokerOpener
+	systemExec      *SystemExecPolicy
+	shellExec       *shellExecRuntime
+	terminalBroker  terminalBrokerOpener
+	fileDescriptors []nodes.CommandDescriptor
 }
 
 type RuntimeOption func(*runtimeOptions) error
@@ -115,6 +116,20 @@ func WithShellBroker(snapshot ShellBrokerSnapshot, broker ShellBroker) RuntimeOp
 		if terminalBroker, ok := broker.(terminalBrokerOpener); ok {
 			options.terminalBroker = terminalBroker
 		}
+		return nil
+	}
+}
+
+func WithFileCapabilities(runtime *FileTransferRuntime) RuntimeOption {
+	return func(options *runtimeOptions) error {
+		if runtime == nil {
+			return errors.New("node file transfer runtime is required")
+		}
+		descriptors := runtime.Descriptors()
+		if len(descriptors) == 0 {
+			return errors.New("node file transfer runtime has no capabilities")
+		}
+		options.fileDescriptors = descriptors
 		return nil
 	}
 }
@@ -198,6 +213,15 @@ func NewRuntime(
 		}
 		catalog.Commands = append(catalog.Commands, descriptor)
 		byName[descriptor.Name] = handler
+	}
+	for _, descriptor := range settings.fileDescriptors {
+		if byName[descriptor.Name] != nil {
+			return nil, fmt.Errorf(
+				"configure node runtime: duplicate capability %q",
+				descriptor.Name,
+			)
+		}
+		catalog.Commands = append(catalog.Commands, descriptor)
 	}
 	if err := catalog.Validate(); err != nil {
 		return nil, err
