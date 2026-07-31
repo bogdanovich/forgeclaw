@@ -138,13 +138,16 @@ func TestDiagnosticNodeFileMessagesRetainStructureWithoutAuthority(t *testing.T)
 	secretPath := "/private/node/config.json"
 	fullDigest := strings.Repeat("a", 64)
 	mediaRef := "media://private-artifact"
+	transferRef := "transfer-artifact://private-download"
 	messages := []providers.Message{
 		{
 			Role: "user", Content: "upload [file:/private/gateway/source]", Media: []string{mediaRef},
 			Attachments: []providers.Attachment{{Ref: mediaRef}},
 		},
 		{
-			Role: "assistant",
+			Role:             "assistant",
+			Content:          "upload " + transferRef,
+			ReasoningContent: "Use " + secretPath + " with digest " + fullDigest,
 			ToolCalls: []providers.ToolCall{{
 				ID: "call-file", Name: "nodes_upload", Arguments: map[string]any{
 					"artifact_ref": mediaRef, "destination": secretPath,
@@ -162,10 +165,66 @@ func TestDiagnosticNodeFileMessagesRetainStructureWithoutAuthority(t *testing.T)
 		if !strings.Contains(got, "redacted") {
 			t.Fatalf("sensitive diagnostic projection = %q", got)
 		}
-		for _, forbidden := range []string{secretPath, fullDigest, mediaRef, "/private/gateway/source"} {
+		for _, forbidden := range []string{
+			secretPath, fullDigest, mediaRef, transferRef, "/private/gateway/source",
+		} {
 			if strings.Contains(got, forbidden) {
 				t.Fatalf("sensitive diagnostic projection leaked %q: %s", forbidden, got)
 			}
 		}
+	}
+}
+
+func TestFormatMessagesForLogRedactsNodeFileHistory(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	mediaRef := "media://private-upload"
+	transferRef := "transfer-artifact://private-download"
+	messages := []providers.Message{
+		{Role: "user", Content: "upload " + mediaRef, Media: []string{mediaRef}},
+		{
+			Role: "assistant", Content: "write " + secretPath,
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-file", Name: "nodes_upload",
+				Function: &providers.FunctionCall{
+					Name:      "nodes_upload",
+					Arguments: `{"destination":"` + secretPath + `","artifact_ref":"` + mediaRef + `"}`,
+				},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-file", Content: transferRef + " " + secretPath},
+	}
+
+	got := formatMessagesForLog(messages)
+	for _, want := range []string{"nodes_upload", "[REDACTED]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log projection omitted %q: %s", want, got)
+		}
+	}
+	for _, forbidden := range []string{secretPath, mediaRef, transferRef} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("log projection leaked %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestDiagnosticLLMResponseSuppressesNodeFileContentAndReasoning(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	transferRef := "transfer-artifact://private-download"
+	content, reasoning, sensitive := diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content:          "upload " + secretPath,
+		ReasoningContent: "deliver " + transferRef,
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-file", Name: "nodes_download",
+		}},
+	})
+	if !sensitive || content != "" || reasoning != "" {
+		t.Fatalf("sensitive response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+
+	content, reasoning, sensitive = diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content: "safe content", Reasoning: "safe reasoning",
+	})
+	if sensitive || content != "safe content" || reasoning != "safe reasoning" {
+		t.Fatalf("ordinary response projection = (%q, %q, %v)", content, reasoning, sensitive)
 	}
 }

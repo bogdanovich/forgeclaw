@@ -620,6 +620,9 @@ func (p *Pipeline) CallLLM(
 			p.targetReasoningChannelID(ts.channel),
 		)
 	}
+	diagnosticResponseContent, diagnosticResponseReasoning, sensitiveNodeResponse := diagnosticLLMResponseContent(
+		exec.response,
+	)
 	p.emitEvent(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
@@ -633,11 +636,11 @@ func (p *Pipeline) CallLLM(
 			CompletionTokens: usageCompletionTokens(exec.response.Usage),
 			TotalTokens:      usageTotalTokens(exec.response.Usage),
 			DiagnosticContent: diagnosticTextPreview(
-				p.Cfg, exec.response.Content, diagnosticModelResponseBytes,
+				p.Cfg, diagnosticResponseContent, diagnosticModelResponseBytes,
 			),
 			DiagnosticReasoning: diagnosticTextPreview(
 				p.Cfg,
-				firstNonEmptyString(exec.response.ReasoningContent, exec.response.Reasoning),
+				diagnosticResponseReasoning,
 				diagnosticModelReasoningBytes,
 			),
 			DiagnosticToolCalls: diagnosticToolCallsPreview(p.Cfg, exec.response.ToolCalls),
@@ -649,9 +652,13 @@ func (p *Pipeline) CallLLM(
 		"iteration":      iteration,
 		"content_chars":  len(exec.response.Content),
 		"tool_calls":     len(exec.response.ToolCalls),
-		"reasoning":      exec.response.Reasoning,
 		"target_channel": p.targetReasoningChannelID(ts.channel),
 		"channel":        ts.channel,
+	}
+	if sensitiveNodeResponse {
+		llmResponseFields["reasoning_redacted"] = true
+	} else {
+		llmResponseFields["reasoning"] = exec.response.Reasoning
 	}
 	if exec.response.Usage != nil {
 		llmResponseFields["prompt_tokens"] = exec.response.Usage.PromptTokens

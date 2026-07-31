@@ -84,27 +84,17 @@ func diagnosticMessagePreview(
 	item := map[string]any{
 		"role": message.Role,
 	}
-	sensitiveResult := message.Role == "tool" &&
-		!diagnosticToolPreviewAllowed(toolNames[message.ToolCallID])
-	sensitiveAttachment := len(message.Attachments) > 0
-	sensitiveCall := false
-	for _, call := range message.ToolCalls {
-		name := call.Name
-		if name == "" && call.Function != nil {
-			name = call.Function.Name
-		}
-		if !diagnosticToolPreviewAllowed(name) {
-			sensitiveCall = true
-			break
-		}
-	}
-	if sensitiveResult || sensitiveAttachment || sensitiveCall ||
-		diagnosticContentContainsArtifactReference(message.Content) {
+	sensitive := diagnosticMessageContainsNodeEvidence(message, toolNames)
+	if sensitive {
 		item["content_redacted"] = true
 	} else {
 		addDiagnosticValue(item, "content", message.Content)
 	}
-	addDiagnosticValue(item, "reasoning_content", message.ReasoningContent)
+	if sensitive && message.ReasoningContent != "" {
+		item["reasoning_content_redacted"] = true
+	} else {
+		addDiagnosticValue(item, "reasoning_content", message.ReasoningContent)
+	}
 	addDiagnosticValue(item, "tool_call_id", message.ToolCallID)
 	addDiagnosticValue(item, "tool_result_status", message.ToolResultStatus)
 	addDiagnosticCount(item, "media_count", len(message.Media))
@@ -121,8 +111,21 @@ func diagnosticMessagePreview(
 	return item
 }
 
+func diagnosticMessageContainsNodeEvidence(
+	message providers.Message,
+	toolNames map[string]string,
+) bool {
+	if message.Role == "tool" && !diagnosticToolPreviewAllowed(toolNames[message.ToolCallID]) {
+		return true
+	}
+	return len(message.Attachments) > 0 || len(message.Media) > 0 ||
+		diagnosticToolCallsContainNodeEvidence(message.ToolCalls) ||
+		diagnosticContentContainsArtifactReference(message.Content) ||
+		diagnosticContentContainsArtifactReference(message.ReasoningContent)
+}
+
 func diagnosticContentContainsArtifactReference(content string) bool {
-	if strings.Contains(content, "media://") {
+	if strings.Contains(content, "media://") || strings.Contains(content, "transfer-artifact://") {
 		return true
 	}
 	for _, prefix := range []string{"[image:/", "[audio:/", "[video:/", "[file:/"} {
@@ -131,6 +134,31 @@ func diagnosticContentContainsArtifactReference(content string) bool {
 		}
 	}
 	return false
+}
+
+func diagnosticToolCallsContainNodeEvidence(calls []providers.ToolCall) bool {
+	for _, call := range calls {
+		name := call.Name
+		if name == "" && call.Function != nil {
+			name = call.Function.Name
+		}
+		if !diagnosticToolPreviewAllowed(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosticLLMResponseContent(response *providers.LLMResponse) (string, string, bool) {
+	if response == nil {
+		return "", "", false
+	}
+	if diagnosticToolCallsContainNodeEvidence(response.ToolCalls) {
+		return "", "", true
+	}
+	return response.Content,
+		firstNonEmptyString(response.ReasoningContent, response.Reasoning),
+		false
 }
 
 func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) string {
