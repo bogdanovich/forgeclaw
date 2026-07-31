@@ -267,7 +267,7 @@ func (directory *anchoredDirectory) writeFileAtomic(
 	name string,
 	data []byte,
 	mode os.FileMode,
-) error {
+) (returnErr error) {
 	if err := validateAnchoredName(name); err != nil {
 		return err
 	}
@@ -291,10 +291,14 @@ func (directory *anchoredDirectory) writeFileAtomic(
 	}
 	renamed := false
 	defer func() {
-		if !renamed {
-			_ = directory.deleteOnClose(handle)
+		if renamed {
+			return
 		}
-		_ = temp.Close()
+		returnErr = errors.Join(
+			returnErr,
+			directory.deleteOnClose(handle),
+			temp.Close(),
+		)
 	}()
 	if _, err := temp.Write(data); err != nil {
 		return fmt.Errorf("write gateway terminal store temp file: %w", err)
