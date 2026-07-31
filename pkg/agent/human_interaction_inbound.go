@@ -1254,6 +1254,9 @@ func interactionFinalAfterToolResult(
 	for _, message := range history[resultIndex+1:] {
 		if message.Role == "assistant" && len(message.ToolCalls) == 0 &&
 			strings.TrimSpace(message.Content) != "" {
+			if message.Content == handledToolResponseSummary && len(message.Attachments) > 0 {
+				return "", true
+			}
 			return message.Content, true
 		}
 	}

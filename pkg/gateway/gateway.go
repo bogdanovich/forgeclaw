@@ -590,7 +590,9 @@ func setupNodeTools(
 		nodeFileTransferToolFactory(
 			runtime,
 			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
-				return tools.NewNodeFileInfoTool(cfg, source)
+				tool := tools.NewNodeFileInfoTool(cfg, source)
+				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
+				return tool
 			},
 		),
 	); err != nil {
@@ -601,7 +603,9 @@ func setupNodeTools(
 		nodeFileTransferToolFactory(
 			runtime,
 			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
-				return tools.NewNodeUploadTool(cfg, source)
+				tool := tools.NewNodeUploadTool(cfg, source)
+				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
+				return tool
 			},
 		),
 	); err != nil {
@@ -612,7 +616,9 @@ func setupNodeTools(
 		nodeFileTransferToolFactory(
 			runtime,
 			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
-				return tools.NewNodeDownloadTool(cfg, source)
+				tool := tools.NewNodeDownloadTool(cfg, source)
+				tool.SetEventPublisher(agentLoop.RuntimeEventBus())
+				return tool
 			},
 		),
 	); err != nil {

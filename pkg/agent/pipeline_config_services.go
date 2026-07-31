@@ -284,16 +284,19 @@ func (p *Pipeline) buildTurnMessages(
 	if p == nil {
 		return nil
 	}
+	var messages []providers.Message
 	if p.Config.PromptBuilder == nil {
-		return newConfigPipelinePromptBuilder(p.Cfg).
+		messages = newConfigPipelinePromptBuilder(p.Cfg).
 			buildTurnMessages(ts, history, summary, currentMessage, media, activeSkills)
+	} else {
+		messages = p.Config.PromptBuilder.buildTurnMessages(
+			ts,
+			history,
+			summary,
+			currentMessage,
+			media,
+			activeSkills,
+		)
 	}
-	return p.Config.PromptBuilder.buildTurnMessages(
-		ts,
-		history,
-		summary,
-		currentMessage,
-		media,
-		activeSkills,
-	)
+	return projectNodeFileMediaAttachments(messages, ts, media, p.Context.MediaResolver)
 }

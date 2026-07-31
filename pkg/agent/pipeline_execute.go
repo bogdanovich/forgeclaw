@@ -318,7 +318,7 @@ toolLoop:
 					hookResult := toolReq.HookResult
 					runner.recordCommittedHookResponseDecision(tc, toolName)
 
-					argsJSON, _ := json.Marshal(toolArgs)
+					argsJSON, _ := json.Marshal(tools.ToolLogArguments(toolName, toolArgs))
 					argsPreview := utils.Truncate(string(argsJSON), 200)
 					logger.InfoCF("agent", fmt.Sprintf("Tool call (hook respond): %s(%s)", toolName, argsPreview),
 						map[string]any{
@@ -547,6 +547,17 @@ toolLoop:
 					)
 				}
 			}
+			if approval.RequireHuman && approvalArgsErr == nil {
+				var fileAction string
+				var isFileAction bool
+				fileAction, isFileAction, approvalArgsErr = tools.NodeFileApprovalAction(
+					toolName,
+					approvalArgs,
+				)
+				if approvalArgsErr == nil && isFileAction {
+					approval.ActionSummary = fileAction
+				}
+			}
 			if denial, safe := tools.SafeApprovalDenialResult(approvalArgsErr); safe {
 				ts.opts.ApprovalGrant = nil
 				exec.allResponsesHandled = false
@@ -689,7 +700,7 @@ toolLoop:
 			}
 		}
 
-		argsJSON, _ := json.Marshal(toolArgs)
+		argsJSON, _ := json.Marshal(tools.ToolLogArguments(toolName, toolArgs))
 		argsPreview := utils.Truncate(string(argsJSON), 200)
 		logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", toolName, argsPreview),
 			map[string]any{

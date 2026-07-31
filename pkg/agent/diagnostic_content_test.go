@@ -130,3 +130,168 @@ func TestDiagnosticToolCallsFailClosedForSerializedArguments(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnosticNodeFileMessagesRetainStructureWithoutAuthority(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	secretPath := "/private/node/config.json"
+	fullDigest := strings.Repeat("a", 64)
+	mediaRef := "media://private-artifact"
+	transferRef := "transfer-artifact://private-download"
+	messages := []providers.Message{
+		{
+			Role: "user", Content: "upload [file:/private/gateway/source]", Media: []string{mediaRef},
+			Attachments: []providers.Attachment{{Ref: mediaRef}},
+		},
+		{
+			Role:             "assistant",
+			Content:          "upload " + transferRef,
+			ReasoningContent: "Use " + secretPath + " with digest " + fullDigest,
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-file", Name: "nodes_upload", Arguments: map[string]any{
+					"artifact_ref": mediaRef, "destination": secretPath,
+				},
+			}},
+		},
+		{
+			Role: "tool", ToolCallID: "call-file",
+			Content: `{"path":"` + secretPath + `","sha256":"` + fullDigest + `"}`,
+		},
+	}
+	preview := diagnosticMessagesPreview(cfg, messages)
+	toolCalls := diagnosticToolCallsPreview(cfg, messages[1].ToolCalls)
+	for _, got := range []string{preview, toolCalls} {
+		if !strings.Contains(got, "redacted") {
+			t.Fatalf("sensitive diagnostic projection = %q", got)
+		}
+		for _, forbidden := range []string{
+			secretPath, fullDigest, mediaRef, transferRef, "/private/gateway/source",
+		} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("sensitive diagnostic projection leaked %q: %s", forbidden, got)
+			}
+		}
+	}
+}
+
+func TestFormatMessagesForLogRedactsNodeFileHistory(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	mediaRef := "media://private-upload"
+	transferRef := "transfer-artifact://private-download"
+	messages := []providers.Message{
+		{Role: "user", Content: "upload " + mediaRef, Media: []string{mediaRef}},
+		{
+			Role: "assistant", Content: "write " + secretPath,
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-file", Name: "nodes_upload",
+				Function: &providers.FunctionCall{
+					Name:      "nodes_upload",
+					Arguments: `{"destination":"` + secretPath + `","artifact_ref":"` + mediaRef + `"}`,
+				},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-file", Content: transferRef + " " + secretPath},
+	}
+
+	got := formatMessagesForLog(messages)
+	for _, want := range []string{"nodes_upload", "[REDACTED]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log projection omitted %q: %s", want, got)
+		}
+	}
+	for _, forbidden := range []string{secretPath, mediaRef, transferRef} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("log projection leaked %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestDiagnosticLLMResponseSuppressesNodeFileContentAndReasoning(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	transferRef := "transfer-artifact://private-download"
+	content, reasoning, sensitive := diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content:          "upload " + secretPath,
+		ReasoningContent: "deliver " + transferRef,
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-file", Name: "nodes_download",
+		}},
+	}, nil)
+	if !sensitive || content != "" || reasoning != "" {
+		t.Fatalf("sensitive response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+
+	content, reasoning, sensitive = diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content: "safe content", Reasoning: "safe reasoning",
+	}, nil)
+	if sensitive || content != "safe content" || reasoning != "safe reasoning" {
+		t.Fatalf("ordinary response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+}
+
+func TestDiagnosticLLMResponseSuppressesImmediateNodeFileFollowUp(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	fullDigest := strings.Repeat("b", 64)
+	request := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-info", Name: "nodes_file_info",
+			}},
+		},
+		{
+			Role: "tool", ToolCallID: "call-info",
+			Content: `{"path":"` + secretPath + `","sha256":"` + fullDigest + `"}`,
+		},
+	}
+	content, reasoning, sensitive := diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content:   "The file is at " + secretPath,
+		Reasoning: "Its digest is " + fullDigest,
+	}, request)
+	if !sensitive || content != "" || reasoning != "" {
+		t.Fatalf("follow-up response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+
+	request = append(request, providers.Message{Role: "user", Content: "new unrelated turn"})
+	content, reasoning, sensitive = diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content: "safe content", Reasoning: "safe reasoning",
+	}, request)
+	if sensitive || content != "safe content" || reasoning != "safe reasoning" {
+		t.Fatalf("later response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+}
+
+func TestDiagnosticLLMResponseSuppressesNodeFileGracefulInterrupt(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	fullDigest := strings.Repeat("c", 64)
+	request := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-download", Name: "nodes_download",
+			}},
+		},
+		{
+			Role: "tool", ToolCallID: "call-download",
+			Content: `{"path":"` + secretPath + `","sha256":"` + fullDigest + `"}`,
+		},
+		interruptPromptMessage("Stop scheduling tools and provide a short final summary."),
+	}
+	content, reasoning, sensitive := diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content:   "Downloaded " + secretPath,
+		Reasoning: "The digest is " + fullDigest,
+	}, request)
+	if !sensitive || content != "" || reasoning != "" {
+		t.Fatalf("graceful response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+
+	request[len(request)-1] = providers.Message{
+		Role: "user", Content: "Stop scheduling tools and provide a short final summary.",
+	}
+	content, reasoning, sensitive = diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content: "safe content", Reasoning: "safe reasoning",
+	}, request)
+	if sensitive || content != "safe content" || reasoning != "safe reasoning" {
+		t.Fatalf("untrusted lookalike projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+}
