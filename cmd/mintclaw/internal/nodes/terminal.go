@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/netbind"
 	nodepkg "github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
@@ -417,24 +418,21 @@ func mintClawOperatorCredentials(cfg *config.Config) (terminalOperatorCredential
 }
 
 func localGatewayWebSocketURL(cfg *config.Config) (*url.URL, error) {
-	host := strings.TrimSpace(cfg.Gateway.Host)
-	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "127.0.0.1"
+	plan, err := netbind.BuildPlan(cfg.Gateway.Host, netbind.DefaultLoopback)
+	if err != nil {
+		return nil, fmt.Errorf("resolve gateway host: %w", err)
 	}
-	normalizedHost := strings.Trim(host, "[]")
-	if !strings.EqualFold(normalizedHost, "localhost") {
-		parsed := net.ParseIP(normalizedHost)
-		if parsed == nil || !parsed.IsLoopback() {
-			return nil, errors.New(
-				"terminal smoke must run on the gateway host through a loopback address",
-			)
-		}
+	host := plan.ProbeHost
+	if !netbind.IsLoopbackHost(host) {
+		return nil, errors.New(
+			"terminal smoke must run on the gateway host through a loopback address",
+		)
 	}
 	if cfg.Gateway.Port <= 0 {
 		return nil, errors.New("gateway port is required for terminal smoke")
 	}
 	return &url.URL{
 		Scheme: "ws",
-		Host:   net.JoinHostPort(normalizedHost, strconv.Itoa(cfg.Gateway.Port)),
+		Host:   net.JoinHostPort(host, strconv.Itoa(cfg.Gateway.Port)),
 	}, nil
 }

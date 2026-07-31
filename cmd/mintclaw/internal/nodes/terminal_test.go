@@ -201,6 +201,15 @@ func TestLocalGatewayWebSocketURLRejectsRemoteTokenTransport(t *testing.T) {
 	if endpoint.Hostname() != "127.0.0.1" {
 		t.Fatalf("unspecified gateway endpoint = %s", endpoint)
 	}
+
+	cfg.Gateway.Host = "::1,127.0.0.1"
+	endpoint, err = localGatewayWebSocketURL(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint.Hostname() != "::1" {
+		t.Fatalf("multi-host gateway endpoint = %s", endpoint)
+	}
 }
 
 func terminalSmokeTestConfig(t *testing.T, serverURL string, token string) *config.Config {
