@@ -344,20 +344,12 @@ func (session *peer) unsubscribeTransfer(
 	err error,
 	retainTombstone bool,
 ) {
-	failClosed := false
 	session.transferMu.Lock()
-	if session.transfers[transferID] == subscription {
-		delete(session.transfers, transferID)
-		if retainTombstone {
-			if _, exists := session.abandonedTransfers[transferID]; !exists {
-				if len(session.abandonedTransfers) >= maxAbandonedTransfers {
-					failClosed = true
-				} else {
-					session.abandonedTransfers[transferID] = struct{}{}
-				}
-			}
-		}
-	}
+	_, failClosed := session.removeTransferLocked(
+		transferID,
+		subscription,
+		retainTombstone,
+	)
 	session.transferMu.Unlock()
 	subscription.fail(err)
 	if failClosed {
@@ -365,26 +357,59 @@ func (session *peer) unsubscribeTransfer(
 	}
 }
 
+func (session *peer) removeTransferLocked(
+	transferID string,
+	subscription *transferFrameSubscription,
+	retainTombstone bool,
+) (bool, bool) {
+	if session.transfers[transferID] != subscription {
+		return false, false
+	}
+	if !retainTombstone {
+		delete(session.transfers, transferID)
+		return true, false
+	}
+	if _, exists := session.abandonedTransfers[transferID]; exists {
+		delete(session.transfers, transferID)
+		return true, false
+	}
+	if len(session.abandonedTransfers) >= maxAbandonedTransfers {
+		// Keep the active identity reserved until fail-closed connection
+		// teardown clears the generation.
+		return true, true
+	}
+	delete(session.transfers, transferID)
+	session.abandonedTransfers[transferID] = struct{}{}
+	return true, false
+}
+
 func (session *peer) handleTransferFrame(frame protocol.TransferFrame) error {
 	session.transferMu.Lock()
 	subscription := session.transfers[frame.TransferID]
 	_, abandoned := session.abandonedTransfers[frame.TransferID]
-	session.transferMu.Unlock()
 	if subscription == nil {
+		session.transferMu.Unlock()
 		if abandoned {
 			return nil
 		}
 		return errors.New("node sent a frame for an unattached transfer")
 	}
 	if err := subscription.offer(frame); err != nil {
-		session.unsubscribeTransfer(
+		removed, failClosed := session.removeTransferLocked(
 			frame.TransferID,
 			subscription,
-			err,
 			true,
 		)
+		session.transferMu.Unlock()
+		if removed {
+			subscription.fail(err)
+		}
+		if failClosed {
+			_ = session.Close()
+		}
 		return err
 	}
+	session.transferMu.Unlock()
 	return nil
 }
 

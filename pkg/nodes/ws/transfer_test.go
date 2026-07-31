@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -81,17 +82,8 @@ func TestTransferStreamUsesAuthenticatedPeerGeneration(t *testing.T) {
 
 func TestTransferStreamRejectsBindingAndSequenceChanges(t *testing.T) {
 	t.Parallel()
-	session := newPeer(&transferRecordingConnection{})
-	session.markReady()
 	binding := testTransferBinding()
-	subscription, err := session.subscribeTransfer(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := &TransferStream{
-		session: session, subscription: subscription, binding: binding,
-	}
-	defer stream.Close()
+	_, session, stream := openTestTransferStream(t, &transferRecordingConnection{}, binding)
 
 	changed := testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil)
 	changed.PolicyRevision = "other-policy"
@@ -109,17 +101,8 @@ func TestTransferStreamRejectsBindingAndSequenceChanges(t *testing.T) {
 
 func TestTransferStreamRejectsChunksBeyondDeclaredSize(t *testing.T) {
 	t.Parallel()
-	session := newPeer(&transferRecordingConnection{})
-	session.markReady()
 	binding := testTransferBinding()
-	subscription, err := session.subscribeTransfer(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := &TransferStream{
-		session: session, subscription: subscription, binding: binding,
-	}
-	defer stream.Close()
+	_, session, stream := openTestTransferStream(t, &transferRecordingConnection{}, binding)
 
 	full := testTransferFrame(binding, protocol.TransferFrameChunk, 1, []byte("payload"))
 	if err := stream.Send(t.Context(), full); err != nil {
@@ -139,16 +122,8 @@ func TestTransferStreamRejectsChunksBeyondDeclaredSize(t *testing.T) {
 
 func TestTransferStreamInvalidAcknowledgementFailsClosed(t *testing.T) {
 	t.Parallel()
-	session := newPeer(&transferRecordingConnection{})
-	session.markReady()
 	binding := testTransferBinding()
-	subscription, err := session.subscribeTransfer(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := &TransferStream{
-		session: session, subscription: subscription, binding: binding,
-	}
+	_, session, stream := openTestTransferStream(t, &transferRecordingConnection{}, binding)
 
 	chunk := testTransferFrame(binding, protocol.TransferFrameChunk, 1, []byte("payload"))
 	if sendErr := stream.Send(t.Context(), chunk); sendErr != nil {
@@ -205,15 +180,8 @@ func TestTransferSubscriptionEnforcesByteBackpressure(t *testing.T) {
 
 func TestTransferStreamTombstonesLateFrames(t *testing.T) {
 	t.Parallel()
-	session := newPeer(&transferRecordingConnection{})
 	binding := testTransferBinding()
-	subscription, err := session.subscribeTransfer(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := &TransferStream{
-		session: session, subscription: subscription, binding: binding,
-	}
+	_, session, stream := openTestTransferStream(t, &transferRecordingConnection{}, binding)
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -234,16 +202,8 @@ func TestTransferStreamTombstonesLateFrames(t *testing.T) {
 func TestTransferSendCancellationInterruptsWrite(t *testing.T) {
 	t.Parallel()
 	connection := newCancelBlockingTransferConnection()
-	session := newPeer(connection)
-	session.markReady()
 	binding := testTransferBinding()
-	subscription, err := session.subscribeTransfer(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := &TransferStream{
-		session: session, subscription: subscription, binding: binding,
-	}
+	_, _, stream := openTestTransferStream(t, connection, binding)
 	ctx, cancel := context.WithCancel(t.Context())
 	sendDone := make(chan error, 1)
 	go func() {
@@ -265,6 +225,135 @@ func TestTransferSendCancellationInterruptsWrite(t *testing.T) {
 	if connection.deadlineCalls.Load() < 2 {
 		t.Fatal("canceled transfer write did not advance its deadline")
 	}
+}
+
+func TestTransferWriteKeepsExactPeerGenerationStable(t *testing.T) {
+	t.Parallel()
+	connection := newGatedTransferConnection()
+	defer connection.release()
+	binding := testTransferBinding()
+	hub, _, stream := openTestTransferStream(t, connection, binding)
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- stream.Send(
+			t.Context(),
+			testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil),
+		)
+	}()
+	<-connection.writeStarted
+
+	replacement := newPeer(&transferRecordingConnection{})
+	replacement.markReady()
+	type claimResult struct {
+		release func() (bool, error)
+		err     error
+	}
+	claimDone := make(chan claimResult, 1)
+	go func() {
+		release, claimErr := hub.Claim(testTransferNodeID(), replacement, nil, nil)
+		claimDone <- claimResult{release: release, err: claimErr}
+	}()
+	select {
+	case result := <-claimDone:
+		t.Fatalf("replacement claimed during transfer write: %v", result.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	connection.release()
+	if sendErr := <-sendDone; sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	result := <-claimDone
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	defer func() { _, _ = result.release() }()
+	status := testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil)
+	if sendErr := stream.Send(t.Context(), status); !errors.Is(sendErr, ErrNodeDisconnected) {
+		t.Fatalf("superseded transfer Send() error = %v", sendErr)
+	}
+}
+
+func TestTransferDeliverySerializesWithNormalClose(t *testing.T) {
+	t.Parallel()
+	binding := testTransferBinding()
+	_, session, stream := openTestTransferStream(t, &transferRecordingConnection{}, binding)
+	stream.subscription.mu.Lock()
+	offerBlocked := true
+	defer func() {
+		if offerBlocked {
+			stream.subscription.mu.Unlock()
+		}
+	}()
+	handleDone := make(chan error, 1)
+	go func() {
+		handleDone <- session.handleTransferFrame(
+			testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil),
+		)
+	}()
+	waitForMutexHeld(t, &session.transferMu)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- stream.Close() }()
+	select {
+	case closeErr := <-closeDone:
+		t.Fatalf("Close() bypassed in-progress delivery: %v", closeErr)
+	case <-time.After(25 * time.Millisecond):
+	}
+	stream.subscription.mu.Unlock()
+	offerBlocked = false
+	if handleErr := <-handleDone; handleErr != nil {
+		t.Fatalf("frame delivery racing Close() error = %v", handleErr)
+	}
+	if closeErr := <-closeDone; closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	late := testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil)
+	if handleErr := session.handleTransferFrame(late); handleErr != nil {
+		t.Fatalf("late frame after Close() error = %v", handleErr)
+	}
+}
+
+func openTestTransferStream(
+	t *testing.T,
+	connection peerConnection,
+	binding TransferBinding,
+) (*SessionHub, *peer, *TransferStream) {
+	t.Helper()
+	hub := NewSessionHub()
+	session := newPeer(connection)
+	session.markReady()
+	release, err := hub.Claim(testTransferNodeID(), session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := hub.OpenTransfer(t.Context(), testTransferNodeID(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stream.Close()
+		_, _ = release()
+		_ = hub.Close(context.Background())
+	})
+	return hub, session, stream
+}
+
+func testTransferNodeID() nodes.ID {
+	return nodes.ID("n_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+}
+
+func waitForMutexHeld(t *testing.T, mutex *sync.Mutex) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if mutex.TryLock() {
+			mutex.Unlock()
+			runtime.Gosched()
+			continue
+		}
+		return
+	}
+	t.Fatal("mutex was not acquired by competing operation")
 }
 
 func testTransferBinding() TransferBinding {
@@ -375,4 +464,33 @@ func (connection *cancelBlockingTransferConnection) WriteMessage(int, []byte) er
 	connection.startOnce.Do(func() { close(connection.writeStarted) })
 	<-connection.writeInterrupted
 	return context.DeadlineExceeded
+}
+
+type gatedTransferConnection struct {
+	transferRecordingConnection
+
+	writeStarted chan struct{}
+	allowWrite   chan struct{}
+	startOnce    sync.Once
+	releaseOnce  sync.Once
+}
+
+func newGatedTransferConnection() *gatedTransferConnection {
+	return &gatedTransferConnection{
+		writeStarted: make(chan struct{}),
+		allowWrite:   make(chan struct{}),
+	}
+}
+
+func (connection *gatedTransferConnection) WriteMessage(
+	messageType int,
+	data []byte,
+) error {
+	connection.startOnce.Do(func() { close(connection.writeStarted) })
+	<-connection.allowWrite
+	return connection.transferRecordingConnection.WriteMessage(messageType, data)
+}
+
+func (connection *gatedTransferConnection) release() {
+	connection.releaseOnce.Do(func() { close(connection.allowWrite) })
 }
