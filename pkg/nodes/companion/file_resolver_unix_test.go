@@ -192,6 +192,22 @@ func TestFileResolverCreateAndReplaceAreExplicit(t *testing.T) {
 	if err := replaceStage.publish(filePublicationReplace); err != nil {
 		t.Fatal(err)
 	}
+	finalInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalIdentity, err := identityFromInfo(finalInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalIdentity.Device != replaceStage.identity.Device ||
+		finalIdentity.Inode != replaceStage.identity.Inode {
+		t.Fatalf(
+			"published identity = %#v, staged %#v",
+			finalIdentity,
+			replaceStage.identity,
+		)
+	}
 	_ = replaceStage.file.Close()
 	_ = replaceParent.close()
 	data, err := os.ReadFile(path)
@@ -203,64 +219,35 @@ func TestFileResolverCreateAndReplaceAreExplicit(t *testing.T) {
 	}
 }
 
-func TestFileResolverPublishesPinnedStageAfterNameSubstitution(t *testing.T) {
+func TestFileResolverRejectsUnprotectedStageParent(t *testing.T) {
 	rootPath := canonicalTempDir(t)
-	destination := filepath.Join(rootPath, "published.txt")
+	shared := filepath.Join(rootPath, "shared")
+	if err := os.Mkdir(shared, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o770); err != nil {
+		t.Fatal(err)
+	}
 	root, err := openFileRoot(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = root.close() })
-	parent, err := root.resolveParent(destination, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer parent.close()
-	stage, err := parent.createStage("transfer_stage_substitution")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stage.file.Close()
-	if _, err := stage.file.Write([]byte("trusted")); err != nil {
-		t.Fatal(err)
-	}
-	stolen := stage.name + ".stolen"
-	if err := unix.Renameat(
-		int(parent.staging.Fd()),
-		stage.name,
-		int(parent.staging.Fd()),
-		stolen,
-	); err != nil {
-		t.Fatal(err)
-	}
-	attackerDescriptor, err := unix.Openat(
-		int(parent.staging.Fd()),
-		stage.name,
-		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC,
-		0o600,
+	defer root.close()
+	parent, err := root.resolveParent(
+		filepath.Join(shared, "destination.txt"),
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	attacker := os.NewFile(uintptr(attackerDescriptor), stage.name)
-	if _, err := attacker.Write([]byte("attacker")); err != nil {
-		_ = attacker.Close()
-		t.Fatal(err)
-	}
-	if err := attacker.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	var committed *committedFileMutationError
-	if err := stage.publish(filePublicationCreate); !errors.As(err, &committed) {
-		t.Fatalf("substituted stage publication error = %v", err)
-	}
-	data, err := os.ReadFile(destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "trusted" {
-		t.Fatalf("published substituted stage = %q", data)
+	defer parent.close()
+	if stage, stageErr := parent.createStage(
+		"unprotected_parent",
+	); !errors.Is(stageErr, ErrFileAccessDenied) {
+		if stage != nil && stage.file != nil {
+			_ = stage.file.Close()
+		}
+		t.Fatalf("group-writable staging parent error = %v", stageErr)
 	}
 }
 

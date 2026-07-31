@@ -11,6 +11,7 @@ import (
 func platformPublishFileStage(
 	stageFD int,
 	stagingDirectoryFD int,
+	_ string,
 	destinationDirectoryFD int,
 	finalName string,
 	publication string,

@@ -275,6 +275,7 @@ func TestFileTransferRuntimeCreateRefusesExistingAndReplaceIsAtomic(t *testing.T
 	publishFileStage = func(
 		stageFD int,
 		stagingDirectoryFD int,
+		stageName string,
 		destinationDirectoryFD int,
 		finalName string,
 		publication string,
@@ -284,6 +285,7 @@ func TestFileTransferRuntimeCreateRefusesExistingAndReplaceIsAtomic(t *testing.T
 		return originalPublish(
 			stageFD,
 			stagingDirectoryFD,
+			stageName,
 			destinationDirectoryFD,
 			finalName,
 			publication,
@@ -782,6 +784,67 @@ func TestFileTransferRuntimeRestartReconcilesPreCommitAndPublishedUpload(
 	}
 	_ = publishedStage.file.Close()
 	_ = publishedParent.close()
+
+	ambiguousContent := []byte("destination already has intended bytes")
+	ambiguousDigest := sha256.Sum256(ambiguousContent)
+	ambiguousPath := filepath.Join(root, "ambiguous.txt")
+	if err := os.WriteFile(ambiguousPath, ambiguousContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ambiguousParent, err := opened.resolveWritableParent(ambiguousPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguousStage, err := ambiguousParent.createStage("restart_ambiguous")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ambiguousStage.file.Write(ambiguousContent); err != nil {
+		t.Fatal(err)
+	}
+	if err := ambiguousStage.file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	ambiguousRecord := FileTransferRecord{
+		TransferID:     "restart_ambiguous",
+		Direction:      protocol.TransferUpload,
+		Operation:      fileOperationUpload,
+		ProfileAlias:   "project",
+		PolicyRevision: "project-v1",
+		Path:           ambiguousPath,
+		Publication:    filePublicationReplace,
+		TotalSize:      uint64(len(ambiguousContent)),
+		SHA256:         hex.EncodeToString(ambiguousDigest[:]),
+		ExpiresAt:      time.Now().Add(time.Minute).Unix(),
+		State:          FileTransferAccepted,
+		StageName:      ambiguousStage.name,
+		StageIdentity:  ambiguousStage.identity,
+	}
+	if _, _, err := ledger.Accept(ambiguousRecord); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Transition(ambiguousRecord.TransferID, func(
+		record *FileTransferRecord,
+		_ time.Time,
+	) error {
+		record.State = FileTransferStaged
+		record.Sequence = 1
+		record.ObservedBytes = uint64(len(ambiguousContent))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Transition(ambiguousRecord.TransferID, func(
+		record *FileTransferRecord,
+		_ time.Time,
+	) error {
+		record.State = FileTransferCommitRequested
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = ambiguousStage.file.Close()
+	_ = ambiguousParent.close()
 	opened.close()
 	ledger.Close()
 
@@ -823,6 +886,26 @@ func TestFileTransferRuntimeRestartReconcilesPreCommitAndPublishedUpload(
 	if !bytes.Equal(data, publishedContent) {
 		t.Fatal("reconciled publication differs from exact staged bytes")
 	}
+	ambiguous, found, err := reloaded.Lookup(ambiguousRecord.TransferID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found ||
+		ambiguous.State != FileTransferUnknown ||
+		ambiguous.FailureCode != "PUBLICATION_UNPROVEN" {
+		t.Fatalf(
+			"identical pre-existing destination became publication proof: %#v, found %v",
+			ambiguous,
+			found,
+		)
+	}
+	data, err = os.ReadFile(ambiguousPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, ambiguousContent) {
+		t.Fatal("reconciliation changed identical pre-existing destination")
+	}
 }
 
 func TestFileTransferRuntimeCancelVersusCommitHasOneTruthfulOutcome(t *testing.T) {
@@ -855,6 +938,7 @@ func TestFileTransferRuntimeCancelVersusCommitHasOneTruthfulOutcome(t *testing.T
 	publishFileStage = func(
 		stageFD int,
 		stagingDirectoryFD int,
+		stageName string,
 		destinationDirectoryFD int,
 		finalName string,
 		publication string,
@@ -864,6 +948,7 @@ func TestFileTransferRuntimeCancelVersusCommitHasOneTruthfulOutcome(t *testing.T
 		return originalPublish(
 			stageFD,
 			stagingDirectoryFD,
+			stageName,
 			destinationDirectoryFD,
 			finalName,
 			publication,

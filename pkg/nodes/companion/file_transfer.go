@@ -1346,6 +1346,8 @@ func (runtime *FileTransferRuntime) reconcileUpload(
 	if record.State == FileTransferCommitRequested {
 		final, finalErr := parent.openFinalRegular()
 		if finalErr == nil &&
+			final.identity.Device == record.StageIdentity.Device &&
+			final.identity.Inode == record.StageIdentity.Inode &&
 			uint64(final.info.Size()) == record.TotalSize {
 			digest, digestErr := hashOpenedFile(context.Background(), final.file)
 			_ = final.file.Close()
@@ -1408,6 +1410,29 @@ func (runtime *FileTransferRuntime) reconcileUpload(
 			)
 			return transitionErr
 		}
+		if cleanupErr := parent.removeStage(
+			record.StageIdentity,
+			record.StageName,
+		); cleanupErr != nil {
+			_, transitionErr := runtime.ledger.Transition(
+				record.TransferID,
+				func(current *FileTransferRecord, _ time.Time) error {
+					current.State = FileTransferUnknown
+					current.FailureCode = "CLEANUP_UNCERTAIN"
+					return nil
+				},
+			)
+			return transitionErr
+		}
+		_, transitionErr := runtime.ledger.Transition(
+			record.TransferID,
+			func(current *FileTransferRecord, _ time.Time) error {
+				current.State = FileTransferUnknown
+				current.FailureCode = "PUBLICATION_UNPROVEN"
+				return nil
+			},
+		)
+		return transitionErr
 	}
 	if cleanupErr := parent.removeStage(
 		record.StageIdentity,

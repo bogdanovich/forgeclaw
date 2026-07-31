@@ -379,6 +379,7 @@ func (stage *stagedFile) publish(publication string) error {
 	if err := publishFileStage(
 		int(stage.file.Fd()),
 		int(stage.parent.staging.Fd()),
+		stage.name,
 		int(stage.parent.file.Fd()),
 		stage.parent.basename,
 		publication,
