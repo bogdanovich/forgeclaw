@@ -19,6 +19,7 @@ import (
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const (
@@ -510,14 +511,18 @@ func runtimeEventRecord(
 			return diagnostictrace.Record{}, false, false
 		}
 		kind = diagnostictrace.RecordToolCall
-		payload = diagnostictrace.ToolPayload{
-			Tool:     value.Tool,
-			ArgsHash: safeJSONHash(settings, value.Arguments),
-			Status:   "started",
-			Executed: true,
-			ArgumentsPreview: captureJSONPreview(
+		argumentsPreview := ""
+		if diagnosticToolPreviewAllowed(value.Tool) {
+			argumentsPreview = captureJSONPreview(
 				settings, value.Arguments, diagnosticToolArgumentsBytes,
-			),
+			)
+		}
+		payload = diagnostictrace.ToolPayload{
+			Tool:             value.Tool,
+			ArgsHash:         safeJSONHash(settings, value.Arguments),
+			Status:           "started",
+			Executed:         true,
+			ArgumentsPreview: argumentsPreview,
 		}
 		toolCallID = value.ToolCallID
 	case runtimeevents.KindAgentToolExecEnd:
@@ -526,17 +531,40 @@ func runtimeEventRecord(
 			return diagnostictrace.Record{}, false, false
 		}
 		kind = diagnostictrace.RecordToolResult
-		payload = diagnostictrace.ToolPayload{
-			Tool:       value.Tool,
-			ResultHash: value.ResultHash,
-			Status:     "completed",
-			Executed:   true,
-			IsError:    value.IsError,
-			ResultPreview: captureTextPreview(
+		resultPreview := ""
+		if diagnosticToolPreviewAllowed(value.Tool) {
+			resultPreview = captureTextPreview(
 				settings, value.DiagnosticResult, diagnosticToolResultBytes,
-			),
+			)
+		}
+		payload = diagnostictrace.ToolPayload{
+			Tool:          value.Tool,
+			ResultHash:    value.ResultHash,
+			Status:        "completed",
+			Executed:      true,
+			IsError:       value.IsError,
+			ResultPreview: resultPreview,
 		}
 		toolCallID = value.ToolCallID
+	case runtimeevents.KindNodeInvocationObserved:
+		value, ok := event.Payload.(tools.NodeInvocationEventPayload)
+		if !ok {
+			return diagnostictrace.Record{}, false, false
+		}
+		kind = diagnostictrace.RecordToolResult
+		toolName := strings.TrimSpace(event.Source.Name)
+		if toolName == "" {
+			toolName = "nodes"
+		}
+		payload = diagnostictrace.ToolPayload{
+			Tool:         toolName,
+			ResultHash:   safeHash(settings, value.InvocationID),
+			Status:       safeCode(value.State),
+			Executed:     value.Observation != tools.NodeInvocationObservationPrepared,
+			Action:       safeCode(value.Observation),
+			DecisionCode: safeCode(value.ErrorCode),
+		}
+		toolCallID = event.Correlation.RequestID
 	case runtimeevents.KindAgentToolExecSkipped:
 		value, ok := event.Payload.(ToolExecSkippedPayload)
 		if !ok {
@@ -712,6 +740,15 @@ func runtimeEventRecord(
 		},
 		Data: data,
 	}, critical, true
+}
+
+func diagnosticToolPreviewAllowed(tool string) bool {
+	switch strings.TrimSpace(tool) {
+	case "nodes", "nodes_file_info", "nodes_upload", "nodes_download", "nodes_status", "nodes_cancel":
+		return false
+	default:
+		return true
+	}
 }
 
 func appendCaptureRecord(trace *activeTraceCapture, record diagnostictrace.Record, critical bool) {

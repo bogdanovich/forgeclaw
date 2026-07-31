@@ -697,22 +697,54 @@ func (runtime *nodeInvocationToolRuntime) fileTransferStatus(
 	if !available {
 		result.Code = "NODE_UNAVAILABLE"
 		result.RecoveryAction = "Retry nodes_status after the target reconnects; do not replay the transfer."
+		runtime.publishInvocationEvent(
+			ctx,
+			NodeInvocationObservationUncertain,
+			"nodes_status",
+			record,
+			result.State,
+			result.Code,
+		)
 		return nodeJSONResult(result)
 	}
 	source, ok := runtime.source.(NodeFileTransferSource)
 	if !ok {
 		result.Code = "STATUS_UNAVAILABLE"
 		result.RecoveryAction = "Retry nodes_status; do not replay the transfer."
+		runtime.publishInvocationEvent(
+			ctx,
+			NodeInvocationObservationUncertain,
+			"nodes_status",
+			record,
+			result.State,
+			result.Code,
+		)
 		return nodeJSONResult(result)
 	}
 	remote, err := source.QueryFileTransfer(ctx, principal, record)
 	if err != nil {
 		result.Code = "STATUS_UNAVAILABLE"
 		result.RecoveryAction = "Retry nodes_status; do not replay the transfer."
+		runtime.publishInvocationEvent(
+			ctx,
+			NodeInvocationObservationUncertain,
+			"nodes_status",
+			record,
+			result.State,
+			result.Code,
+		)
 		return nodeJSONResult(result)
 	}
 	remote.TransferID = record.Plan.InvocationID
 	remote.PolicyRevision = record.Plan.PolicyRevision
+	runtime.publishInvocationEvent(
+		ctx,
+		NodeInvocationObservationStatus,
+		"nodes_status",
+		record,
+		remote.State,
+		remote.Code,
+	)
 	return nodeJSONResult(remote)
 }
 
@@ -730,6 +762,14 @@ func (runtime *nodeInvocationToolRuntime) cancelFileTransfer(
 	if !ok {
 		view.Status = "denied"
 		view.ErrorCode = "CANCEL_DENIED"
+		runtime.publishInvocationEvent(
+			ctx,
+			NodeInvocationObservationCancel,
+			"nodes_cancel",
+			record,
+			view.Status,
+			view.ErrorCode,
+		)
 		return nodeJSONResult(view)
 	}
 	result, requested, err := source.CancelFileTransfer(ctx, principal, record)
@@ -742,6 +782,18 @@ func (runtime *nodeInvocationToolRuntime) cancelFileTransfer(
 			view.Status = "denied"
 			view.ErrorCode = "CANCEL_DENIED"
 		}
+		observation := NodeInvocationObservationCancel
+		if requested {
+			observation = NodeInvocationObservationUncertain
+		}
+		runtime.publishInvocationEvent(
+			ctx,
+			observation,
+			"nodes_cancel",
+			record,
+			view.Status,
+			view.ErrorCode,
+		)
 		return nodeJSONResult(view)
 	}
 	view.OriginalState = result.State
@@ -762,6 +814,14 @@ func (runtime *nodeInvocationToolRuntime) cancelFileTransfer(
 	default:
 		view.Status = "already_terminal"
 	}
+	runtime.publishInvocationEvent(
+		ctx,
+		NodeInvocationObservationCancel,
+		"nodes_cancel",
+		record,
+		view.Status,
+		view.ErrorCode,
+	)
 	return nodeJSONResult(view)
 }
 
@@ -1123,7 +1183,30 @@ func (runtime *nodeInvocationToolRuntime) publishInvocationEvent(
 	state string,
 	errorCode string,
 ) {
-	if runtime == nil || runtime.runtimeEvents == nil {
+	if runtime == nil {
+		return
+	}
+	publishNodeInvocationEvent(
+		runtime.runtimeEvents,
+		ctx,
+		observation,
+		sourceName,
+		record,
+		state,
+		errorCode,
+	)
+}
+
+func publishNodeInvocationEvent(
+	eventBus runtimeevents.Bus,
+	ctx context.Context,
+	observation string,
+	sourceName string,
+	record nodes.GatewayInvocationRecord,
+	state string,
+	errorCode string,
+) {
+	if eventBus == nil {
 		return
 	}
 	sessionKey := strings.TrimSpace(ToolRouteSessionKey(ctx))
@@ -1160,7 +1243,7 @@ func (runtime *nodeInvocationToolRuntime) publishInvocationEvent(
 	if payload.ErrorCode != "" {
 		attrs["error_code"] = payload.ErrorCode
 	}
-	runtime.runtimeEvents.PublishNonBlocking(runtimeevents.Event{
+	eventBus.PublishNonBlocking(runtimeevents.Event{
 		Kind:   runtimeevents.KindNodeInvocationObserved,
 		Source: runtimeevents.Source{Component: "nodes", Name: sourceName},
 		Scope: runtimeevents.Scope{

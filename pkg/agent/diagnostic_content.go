@@ -54,18 +54,19 @@ func diagnosticMessagesPreview(cfg *config.Config, messages []providers.Message)
 		return ""
 	}
 	totalMessages := len(messages)
+	toolNames := diagnosticToolNamesByCallID(messages)
 	envelope := map[string]any{
 		"total_messages": totalMessages,
-		"latest_message": diagnosticMessagePreview(messages[len(messages)-1]),
+		"latest_message": diagnosticMessagePreview(messages[len(messages)-1], toolNames),
 	}
 	selected := 1
 	if len(messages) > 1 {
-		envelope["origin_message"] = diagnosticMessagePreview(messages[0])
+		envelope["origin_message"] = diagnosticMessagePreview(messages[0], toolNames)
 		selected++
 	}
 	recent := make([]any, 0, min(maxDiagnosticMessages-selected, len(messages)-selected))
 	for index := len(messages) - 2; index > 0 && selected < maxDiagnosticMessages; index-- {
-		recent = append(recent, diagnosticMessagePreview(messages[index]))
+		recent = append(recent, diagnosticMessagePreview(messages[index], toolNames))
 		selected++
 	}
 	if len(recent) > 0 {
@@ -76,11 +77,33 @@ func diagnosticMessagesPreview(cfg *config.Config, messages []providers.Message)
 	return diagnosticJSONPreview(cfg, envelope, diagnosticModelMessagesBytes)
 }
 
-func diagnosticMessagePreview(message providers.Message) map[string]any {
+func diagnosticMessagePreview(
+	message providers.Message,
+	toolNames map[string]string,
+) map[string]any {
 	item := map[string]any{
 		"role": message.Role,
 	}
-	addDiagnosticValue(item, "content", message.Content)
+	sensitiveResult := message.Role == "tool" &&
+		!diagnosticToolPreviewAllowed(toolNames[message.ToolCallID])
+	sensitiveAttachment := len(message.Attachments) > 0
+	sensitiveCall := false
+	for _, call := range message.ToolCalls {
+		name := call.Name
+		if name == "" && call.Function != nil {
+			name = call.Function.Name
+		}
+		if !diagnosticToolPreviewAllowed(name) {
+			sensitiveCall = true
+			break
+		}
+	}
+	if sensitiveResult || sensitiveAttachment || sensitiveCall ||
+		diagnosticContentContainsArtifactReference(message.Content) {
+		item["content_redacted"] = true
+	} else {
+		addDiagnosticValue(item, "content", message.Content)
+	}
 	addDiagnosticValue(item, "reasoning_content", message.ReasoningContent)
 	addDiagnosticValue(item, "tool_call_id", message.ToolCallID)
 	addDiagnosticValue(item, "tool_result_status", message.ToolResultStatus)
@@ -96,6 +119,18 @@ func diagnosticMessagePreview(message providers.Message) map[string]any {
 		item["tool_calls"] = append(renderedCalls, diagnosticToolCallFromProvider(call))
 	}
 	return item
+}
+
+func diagnosticContentContainsArtifactReference(content string) bool {
+	if strings.Contains(content, "media://") {
+		return true
+	}
+	for _, prefix := range []string{"[image:/", "[audio:/", "[video:/", "[file:/"} {
+		if strings.Contains(content, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) string {
@@ -138,9 +173,29 @@ func diagnosticToolCallFromProvider(call providers.ToolCall) map[string]any {
 	addDiagnosticValue(item, "id", call.ID)
 	addDiagnosticValue(item, "name", name)
 	if arguments != nil {
-		item["arguments"] = arguments
+		if diagnosticToolPreviewAllowed(name) {
+			item["arguments"] = arguments
+		} else {
+			item["arguments_redacted"] = true
+		}
 	}
 	return item
+}
+
+func diagnosticToolNamesByCallID(messages []providers.Message) map[string]string {
+	result := make(map[string]string)
+	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			name := call.Name
+			if name == "" && call.Function != nil {
+				name = call.Function.Name
+			}
+			if call.ID != "" && name != "" {
+				result[call.ID] = name
+			}
+		}
+	}
+	return result
 }
 
 func diagnosticSerializedArguments(value string) any {

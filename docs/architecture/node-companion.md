@@ -895,13 +895,37 @@ priority is the bounded model-visible capability contract admitted in
 Owner-controlled shell and interactive PTY implementation is admitted in
 [Node Companion P1 Owner-Control Admission](node-companion-p1-admission.md),
 with production enablement deferred until its trusted approval and deployment
-gates are satisfied. Later milestones cover typed file transfer and
-administrator filesystem access, service
-administration, fleet operations, additional executors, SSH, interactive
-application capabilities, platforms, and compatibility adapters.
+gates are satisfied. Bounded typed regular-file transfer and an optional Linux
+administrator helper are implemented under the
+[Node Companion P2 File Transfer Admission](node-companion-p2-admission.md).
+Its operational proof is specified in the
+[P2 deployment runbook](../operations/node-companion-p2-deployment.md).
+Later milestones cover directory transfer, service administration, fleet
+operations, additional executors, SSH, interactive application capabilities,
+platforms, and compatibility adapters.
 
 The roadmap is not part of the MVP definition above and does not authorize
 implementation without a fresh milestone decision.
+
+### P2 file-transfer implementation status
+
+P2 extends the existing target, execution-identity, approval, WSS, ledger,
+event, trace, and routed-delivery boundaries; it does not add a general remote
+filesystem or artifact platform.
+
+| Requirement | Implemented by | Authoritative proof before deployment |
+| --- | --- | --- |
+| Bounded gateway spool and retention | `pkg/nodes` transfer store | spool quota, cleanup, restart, duplicate, and race tests |
+| Authenticated binary framing | `pkg/nodes/protocol`, `pkg/nodes/ws` | malformed, oversized, reordered, duplicate, disconnect, and authentication tests |
+| Unprivileged regular-file transfer | `pkg/nodes/companion` | real-process regular-file round trips, path/race denial, ledger recovery, and no-replay tests |
+| Model discovery, invocation, approval, status/cancel, and routed delivery | `pkg/tools`, `pkg/agent`, `pkg/gateway` | model-facing WSS vertical slice, exact retained-plan approval, actor/route isolation, one-time media delivery, events, and trace redaction tests |
+| Linux administrator file boundary | `cmd/mintclaw-node-broker`, `pkg/nodes/companion` | peer/profile/revision/path/metadata denial and root-owned atomic-replacement fixtures |
+| Canary deployment and rollback | [P2 deployment runbook](../operations/node-companion-p2-deployment.md) | recorded same-revision artifacts, deny-by-default profile, reversible production fixtures, journals, persistence, and rollback evidence |
+
+The complete companion remains unprivileged. File tools are absent without an
+operator-owned target and file profile, and administrator access additionally
+requires the local Linux helper and trusted durable human approval. Completed
+or uncertain transfers and deliveries have no automatic replay path.
 
 ## Risks and Mitigations
 
@@ -924,7 +948,8 @@ The implemented MVP does not include:
 - model-facing cancellation;
 - remote service status, logs, restart, or privileged helper commands;
 - an owner shell, PTY, background remote jobs, or streamed execution;
-- artifact or binary transfer;
+- directory, archive, resumable, symlink, special-file, macOS-privileged, or
+  Windows-privileged transfer;
 - Docker, bubblewrap, or SSH execution backends;
 - SSH bootstrap or companion update/reinstall orchestration;
 - browser, MCP, camera, location, mobile, Windows, or hardware capabilities;

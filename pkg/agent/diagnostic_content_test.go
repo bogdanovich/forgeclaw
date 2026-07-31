@@ -130,3 +130,42 @@ func TestDiagnosticToolCallsFailClosedForSerializedArguments(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnosticNodeFileMessagesRetainStructureWithoutAuthority(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	secretPath := "/private/node/config.json"
+	fullDigest := strings.Repeat("a", 64)
+	mediaRef := "media://private-artifact"
+	messages := []providers.Message{
+		{
+			Role: "user", Content: "upload [file:/private/gateway/source]", Media: []string{mediaRef},
+			Attachments: []providers.Attachment{{Ref: mediaRef}},
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-file", Name: "nodes_upload", Arguments: map[string]any{
+					"artifact_ref": mediaRef, "destination": secretPath,
+				},
+			}},
+		},
+		{
+			Role: "tool", ToolCallID: "call-file",
+			Content: `{"path":"` + secretPath + `","sha256":"` + fullDigest + `"}`,
+		},
+	}
+	preview := diagnosticMessagesPreview(cfg, messages)
+	toolCalls := diagnosticToolCallsPreview(cfg, messages[1].ToolCalls)
+	for _, got := range []string{preview, toolCalls} {
+		if !strings.Contains(got, "redacted") {
+			t.Fatalf("sensitive diagnostic projection = %q", got)
+		}
+		for _, forbidden := range []string{secretPath, fullDigest, mediaRef, "/private/gateway/source"} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("sensitive diagnostic projection leaked %q: %s", forbidden, got)
+			}
+		}
+	}
+}

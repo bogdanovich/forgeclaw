@@ -101,6 +101,9 @@ func resolveMediaRefs(
 				resolved = append(resolved, ref)
 				continue
 			}
+			if providerAttachmentHasRef(m.Attachments, ref) {
+				continue
+			}
 
 			localPath, meta, err := store.ResolveWithMeta(ref)
 			if err != nil {

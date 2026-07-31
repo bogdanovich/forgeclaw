@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
@@ -136,6 +137,7 @@ type nodeFileTransferToolRuntime struct {
 	access          *nodeTargetAccess
 	source          NodeFileTransferSource
 	permittedAgents map[string]struct{}
+	runtimeEvents   runtimeevents.Bus
 }
 
 type preparedNodeFileTransfer struct {
@@ -174,6 +176,27 @@ func NewNodeUploadTool(cfg *config.Config, source NodeFileTransferSource) *NodeU
 
 func NewNodeDownloadTool(cfg *config.Config, source NodeFileTransferSource) *NodeDownloadTool {
 	return &NodeDownloadTool{runtime: newNodeFileTransferToolRuntime(cfg, source)}
+}
+
+// SetEventPublisher injects the runtime event bus used for file-transfer observations.
+func (tool *NodeFileInfoTool) SetEventPublisher(eventBus runtimeevents.Bus) {
+	if tool != nil && tool.runtime != nil {
+		tool.runtime.runtimeEvents = eventBus
+	}
+}
+
+// SetEventPublisher injects the runtime event bus used for file-transfer observations.
+func (tool *NodeUploadTool) SetEventPublisher(eventBus runtimeevents.Bus) {
+	if tool != nil && tool.runtime != nil {
+		tool.runtime.runtimeEvents = eventBus
+	}
+}
+
+// SetEventPublisher injects the runtime event bus used for file-transfer observations.
+func (tool *NodeDownloadTool) SetEventPublisher(eventBus runtimeevents.Bus) {
+	if tool != nil && tool.runtime != nil {
+		tool.runtime.runtimeEvents = eventBus
+	}
 }
 
 func newNodeFileTransferToolRuntime(
@@ -413,6 +436,136 @@ func nodeFileApprovalArguments(prepared preparedNodeFileTransfer) map[string]any
 	return result
 }
 
+// NodeFileApprovalAction renders the exact operator-visible action from the
+// retained file-transfer plan. The boolean is false for non-file tools.
+func NodeFileApprovalAction(toolName string, arguments map[string]any) (string, bool, error) {
+	if !isNodeFileToolName(toolName) {
+		return "", false, nil
+	}
+	operation, ok := arguments["operation"].(string)
+	if !ok || operation == "" {
+		return "", true, errors.New("file approval operation is unavailable")
+	}
+	target, targetOK := arguments["target"].(string)
+	profile, profileOK := arguments["profile"].(string)
+	blastRadius, blastRadiusOK := arguments["profile_scope"].(string)
+	if !targetOK || target == "" || !profileOK || profile == "" ||
+		!blastRadiusOK || blastRadius == "" {
+		return "", true, errors.New("file approval authority is unavailable")
+	}
+	switch toolName {
+	case "nodes_file_info":
+		path, pathOK := arguments["path"].(string)
+		if operation != "file.info.v1" || !pathOK || path == "" {
+			return "", true, errors.New("file metadata approval is incomplete")
+		}
+		return fmt.Sprintf(
+			"Inspect regular-file metadata at %s on target %s using profile %s (%s)",
+			path,
+			target,
+			profile,
+			blastRadius,
+		), true, nil
+	case "nodes_upload":
+		destination, destinationOK := arguments["destination"].(string)
+		publication, publicationOK := arguments["publication"].(string)
+		size, sizeOK := exactNodeFileApprovalSize(arguments["size"])
+		digest, digestOK := arguments["sha256"].(string)
+		if operation != "file.upload.v1" || !destinationOK || destination == "" ||
+			!publicationOK || (publication != "create" && publication != "replace") ||
+			!sizeOK || !digestOK || !validNodeFileApprovalDigest(digest) {
+			return "", true, errors.New("file upload approval is incomplete")
+		}
+		consequence := "create only; fail if the destination exists"
+		if publication == "replace" {
+			consequence = "atomically replace the existing regular file"
+		}
+		return fmt.Sprintf(
+			"Upload %d bytes with SHA-256 %s to %s on target %s using profile %s (%s); %s",
+			size,
+			digest,
+			destination,
+			target,
+			profile,
+			blastRadius,
+			consequence,
+		), true, nil
+	case "nodes_download":
+		source, sourceOK := arguments["source"].(string)
+		size, sizeOK := exactNodeFileApprovalSize(arguments["size"])
+		digest, digestOK := arguments["sha256"].(string)
+		deliver, deliverOK := arguments["deliver"].(bool)
+		if operation != "file.download.v1" || !sourceOK || source == "" ||
+			!sizeOK || !digestOK || !validNodeFileApprovalDigest(digest) || !deliverOK {
+			return "", true, errors.New("file download approval is incomplete")
+		}
+		delivery := "retain the bounded gateway artifact without chat delivery"
+		if deliver {
+			delivery = "deliver once to the originating authorized conversation"
+		}
+		return fmt.Sprintf(
+			"Download %d bytes with SHA-256 %s from %s on target %s using profile %s (%s); %s",
+			size,
+			digest,
+			source,
+			target,
+			profile,
+			blastRadius,
+			delivery,
+		), true, nil
+	default:
+		return "", false, nil
+	}
+}
+
+func isNodeFileToolName(toolName string) bool {
+	switch toolName {
+	case "nodes_file_info", "nodes_upload", "nodes_download":
+		return true
+	default:
+		return false
+	}
+}
+
+// ToolLogArguments returns bounded log fields without retaining file paths,
+// artifact references, transfer identities, or discovery authority.
+func ToolLogArguments(toolName string, arguments map[string]any) map[string]any {
+	if isNodeFileToolName(toolName) || toolName == "nodes_status" || toolName == "nodes_cancel" {
+		return map[string]any{
+			"redacted":       true,
+			"argument_count": len(arguments),
+		}
+	}
+	return arguments
+}
+
+func exactNodeFileApprovalSize(value any) (uint64, bool) {
+	switch size := value.(type) {
+	case float64:
+		if size < 0 || size != float64(uint64(size)) {
+			return 0, false
+		}
+		return uint64(size), true
+	case uint64:
+		return size, true
+	case int:
+		if size < 0 {
+			return 0, false
+		}
+		return uint64(size), true
+	default:
+		return 0, false
+	}
+}
+
+func validNodeFileApprovalDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
 func nodeFileProfileBlastRadius(profile nodes.FileProfileDescriptor) string {
 	if nodeFileContainsString(profile.ReadableRoots, "/") ||
 		nodeFileContainsString(profile.WritableRoots, "/") {
@@ -606,7 +759,7 @@ func (runtime *nodeFileTransferToolRuntime) prepare(
 	if err != nil {
 		return preparedNodeFileTransfer{}, err
 	}
-	record, _, err := runtime.source.PrepareInvocation(
+	record, created, err := runtime.source.PrepareInvocation(
 		resolved.binding.Node,
 		resolved.name,
 		storedToolCallID,
@@ -627,6 +780,15 @@ func (runtime *nodeFileTransferToolRuntime) prepare(
 	)
 	if err != nil {
 		return preparedNodeFileTransfer{}, err
+	}
+	if created {
+		runtime.publishFileTransferEvent(
+			ctx,
+			NodeInvocationObservationPrepared,
+			record,
+			string(nodes.GatewayInvocationPrepared),
+			"",
+		)
 	}
 	return preparedNodeFileTransfer{
 		record: record, profile: profile, owner: owner,
@@ -845,8 +1007,22 @@ func (runtime *nodeFileTransferToolRuntime) execute(
 			record,
 		)
 		if err != nil {
+			runtime.publishFileTransferEvent(
+				ctx,
+				NodeInvocationObservationUncertain,
+				record,
+				"unknown",
+				"STATUS_UNAVAILABLE",
+			)
 			return nodeFileUnknown(record.Plan.InvocationID)
 		}
+		runtime.publishFileTransferEvent(
+			ctx,
+			NodeInvocationObservationStatus,
+			record,
+			result.State,
+			result.Code,
+		)
 		return runtime.result(ctx, prepared, result, store)
 	}
 	owner := nodes.GatewayInvocationOwner{
@@ -861,6 +1037,20 @@ func (runtime *nodeFileTransferToolRuntime) execute(
 	result, dispatched, err := runtime.source.DispatchFileTransfer(ctx, owner, record)
 	if err != nil {
 		if dispatched {
+			runtime.publishFileTransferEvent(
+				ctx,
+				NodeInvocationObservationDispatched,
+				record,
+				string(nodes.GatewayInvocationDispatched),
+				"",
+			)
+			runtime.publishFileTransferEvent(
+				ctx,
+				NodeInvocationObservationUncertain,
+				record,
+				"unknown",
+				"TRANSFER_OUTCOME_UNKNOWN",
+			)
 			if ctx.Err() != nil {
 				runtime.cancelAfterContext(record)
 			}
@@ -868,7 +1058,55 @@ func (runtime *nodeFileTransferToolRuntime) execute(
 		}
 		return nodeFileDenied(err)
 	}
+	runtime.publishFileTransferEvent(
+		ctx,
+		NodeInvocationObservationDispatched,
+		record,
+		string(nodes.GatewayInvocationDispatched),
+		"",
+	)
+	runtime.publishFileTransferEvent(
+		ctx,
+		NodeInvocationObservationCompleted,
+		record,
+		result.State,
+		result.Code,
+	)
 	return runtime.result(ctx, prepared, result, store)
+}
+
+func (runtime *nodeFileTransferToolRuntime) publishFileTransferEvent(
+	ctx context.Context,
+	observation string,
+	record nodes.GatewayInvocationRecord,
+	state string,
+	errorCode string,
+) {
+	if runtime == nil {
+		return
+	}
+	publishNodeInvocationEvent(
+		runtime.runtimeEvents,
+		ctx,
+		observation,
+		nodeFileToolName(record.Plan.Command),
+		record,
+		state,
+		errorCode,
+	)
+}
+
+func nodeFileToolName(command string) string {
+	switch command {
+	case "file.info.v1":
+		return "nodes_file_info"
+	case "file.upload.v1":
+		return "nodes_upload"
+	case "file.download.v1":
+		return "nodes_download"
+	default:
+		return "nodes_file_transfer"
+	}
 }
 
 func (runtime *nodeFileTransferToolRuntime) cancelAfterContext(

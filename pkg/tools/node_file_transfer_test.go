@@ -12,6 +12,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
@@ -171,6 +172,149 @@ func TestNodeFileInfoReusesExactApprovalAndQueriesWithoutReplay(t *testing.T) {
 		t.Fatalf("repeated result = %#v, dispatches=%d queries=%d",
 			repeatedPayload, source.dispatchCalls, source.queryCalls)
 	}
+}
+
+func TestNodeFileTransferEventsExposeLifecycleWithoutContentOrAuthority(t *testing.T) {
+	source := newFakeNodeFileTransferSource(t, "none")
+	tool := NewNodeFileInfoTool(nodeFileTransferTestConfig(), source)
+	eventBus := &recordingNodeEventBus{}
+	tool.SetEventPublisher(eventBus)
+	ctx := nodeInvocationTestContext("actor-1", "file-event-call")
+	args := nodeFileInfoTestArgs(t, source, ctx)
+
+	result := tool.Execute(ctx, args)
+	if result.IsError {
+		t.Fatalf("nodes_file_info failed: %s", result.ForLLM)
+	}
+	events := eventBus.snapshot()
+	want := []string{
+		NodeInvocationObservationPrepared,
+		NodeInvocationObservationDispatched,
+		NodeInvocationObservationCompleted,
+	}
+	if len(events) != len(want) {
+		t.Fatalf("file-transfer event count = %d, want %d: %#v", len(events), len(want), events)
+	}
+	for index, event := range events {
+		if event.Kind != runtimeevents.KindNodeInvocationObserved {
+			t.Fatalf("event[%d].Kind = %q", index, event.Kind)
+		}
+		payload, ok := event.Payload.(NodeInvocationEventPayload)
+		if !ok || payload.Observation != want[index] ||
+			payload.Command != "file.info.v1" || payload.Target != "build" ||
+			payload.InvocationID == "" {
+			t.Fatalf("event[%d] payload = %#v", index, event.Payload)
+		}
+		if event.Source.Name != "nodes_file_info" ||
+			event.Scope.Workspace != "/workspace/main" ||
+			event.Scope.TurnID != "execution-1" ||
+			event.Scope.AgentID != "main" ||
+			event.Scope.SessionKey != "route-session" ||
+			event.Scope.Channel != "telegram" ||
+			event.Scope.ChatID != "chat-1" ||
+			event.Scope.SenderID != "actor-1" ||
+			event.Correlation.RequestID != "file-event-call" {
+			t.Fatalf("event[%d] scope = %#v correlation = %#v", index, event.Scope, event.Correlation)
+		}
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"/srv/project/config.json",
+		strings.Repeat("a", sha256.Size*2),
+		"project-v1",
+		"private-node-id",
+		"plan_hash",
+		"artifact_ref",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("file-transfer audit leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestNodeFileApprovalActionUsesExactRetainedPlan(t *testing.T) {
+	digest := strings.Repeat("a", sha256.Size*2)
+	common := map[string]any{
+		"target":        "files",
+		"profile":       "project",
+		"profile_scope": "configured_regular_file_roots",
+	}
+	tests := []struct {
+		name      string
+		tool      string
+		arguments map[string]any
+		contains  []string
+	}{
+		{
+			name: "metadata",
+			tool: "nodes_file_info",
+			arguments: mergeNodeFileApprovalArguments(common, map[string]any{
+				"operation": "file.info.v1",
+				"path":      "/srv/project/photo.png",
+			}),
+			contains: []string{"Inspect", "/srv/project/photo.png", "files", "project"},
+		},
+		{
+			name: "upload replace",
+			tool: "nodes_upload",
+			arguments: mergeNodeFileApprovalArguments(common, map[string]any{
+				"operation":   "file.upload.v1",
+				"destination": "/srv/project/photo.png",
+				"publication": "replace",
+				"size":        float64(42),
+				"sha256":      digest,
+			}),
+			contains: []string{"Upload 42 bytes", digest, "/srv/project/photo.png", "atomically replace"},
+		},
+		{
+			name: "download and deliver",
+			tool: "nodes_download",
+			arguments: mergeNodeFileApprovalArguments(common, map[string]any{
+				"operation": "file.download.v1",
+				"source":    "/srv/project/photo.png",
+				"size":      float64(42),
+				"sha256":    digest,
+				"deliver":   true,
+			}),
+			contains: []string{"Download 42 bytes", digest, "/srv/project/photo.png", "deliver once"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			action, handled, err := NodeFileApprovalAction(test.tool, test.arguments)
+			if err != nil || !handled {
+				t.Fatalf("NodeFileApprovalAction() = (%q, %v, %v)", action, handled, err)
+			}
+			for _, value := range test.contains {
+				if !strings.Contains(action, value) {
+					t.Fatalf("approval action %q omitted %q", action, value)
+				}
+			}
+		})
+	}
+	if _, handled, err := NodeFileApprovalAction("nodes_upload", mergeNodeFileApprovalArguments(
+		common,
+		map[string]any{"operation": "file.upload.v1"},
+	)); err == nil || !handled {
+		t.Fatalf("incomplete file approval = (handled=%v, err=%v)", handled, err)
+	}
+	if action, handled, err := NodeFileApprovalAction("read_file", nil); err != nil || handled || action != "" {
+		t.Fatalf("non-file approval = (%q, %v, %v)", action, handled, err)
+	}
+}
+
+func mergeNodeFileApprovalArguments(base, extra map[string]any) map[string]any {
+	result := make(map[string]any, len(base)+len(extra))
+	for key, value := range base {
+		result[key] = value
+	}
+	for key, value := range extra {
+		result[key] = value
+	}
+	return result
 }
 
 func TestNodeFileApprovalContinuationRejectsChangedInputAndActor(t *testing.T) {

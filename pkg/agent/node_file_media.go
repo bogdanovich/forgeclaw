@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 type nodeFileMediaOwnerBinder interface {
@@ -72,4 +73,51 @@ func nodeFileMediaOwnerForTurn(ts *turnState) (media.MediaOwner, error) {
 		ts.chatID,
 		topicID,
 	)
+}
+
+func projectNodeFileMediaAttachments(
+	messages []providers.Message,
+	ts *turnState,
+	refs []string,
+	resolver mediaResolver,
+) []providers.Message {
+	if len(messages) == 0 || len(refs) == 0 || resolver == nil || ts == nil ||
+		ts.agent == nil || ts.agent.Tools == nil ||
+		!ts.agent.Tools.HasRegistered("nodes_upload") {
+		return messages
+	}
+	allowed := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if strings.HasPrefix(strings.TrimSpace(ref), "media://") {
+			allowed[ref] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return messages
+	}
+	projected := append([]providers.Message(nil), messages...)
+	for index := range projected {
+		if projected[index].Role != "user" || len(projected[index].Media) == 0 {
+			continue
+		}
+		for _, ref := range projected[index].Media {
+			if _, ok := allowed[ref]; !ok || providerAttachmentHasRef(projected[index].Attachments, ref) {
+				continue
+			}
+			attachments := buildProviderAttachments(resolver, []string{ref})
+			if len(attachments) == 1 {
+				projected[index].Attachments = append(projected[index].Attachments, attachments[0])
+			}
+		}
+	}
+	return projected
+}
+
+func providerAttachmentHasRef(attachments []providers.Attachment, ref string) bool {
+	for _, attachment := range attachments {
+		if attachment.Ref == ref {
+			return true
+		}
+	}
+	return false
 }

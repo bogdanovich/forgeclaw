@@ -825,11 +825,15 @@ func (nodeVerticalSliceApprovalHook) ApproveTool(
 
 type nodeVerticalSliceChannel struct {
 	messages chan bus.OutboundMessage
+	media    chan bus.OutboundMediaMessage
 	running  bool
 }
 
 func newNodeVerticalSliceChannel() *nodeVerticalSliceChannel {
-	return &nodeVerticalSliceChannel{messages: make(chan bus.OutboundMessage, 8)}
+	return &nodeVerticalSliceChannel{
+		messages: make(chan bus.OutboundMessage, 8),
+		media:    make(chan bus.OutboundMediaMessage, 8),
+	}
 }
 
 func (*nodeVerticalSliceChannel) Name() string { return "telegram" }
@@ -852,6 +856,14 @@ func (channel *nodeVerticalSliceChannel) Send(
 	return []string{"node-e2e-message"}, nil
 }
 
+func (channel *nodeVerticalSliceChannel) SendMedia(
+	_ context.Context,
+	message bus.OutboundMediaMessage,
+) ([]string, error) {
+	channel.media <- message
+	return []string{"node-e2e-media"}, nil
+}
+
 func (channel *nodeVerticalSliceChannel) IsRunning() bool { return channel.running }
 func (*nodeVerticalSliceChannel) IsAllowed(string) bool   { return true }
 func (*nodeVerticalSliceChannel) IsAllowedSender(bus.SenderInfo) bool {
@@ -867,6 +879,17 @@ func (channel *nodeVerticalSliceChannel) nextMessage(t *testing.T) bus.OutboundM
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for channel message")
 		return bus.OutboundMessage{}
+	}
+}
+
+func (channel *nodeVerticalSliceChannel) nextMedia(t *testing.T) bus.OutboundMediaMessage {
+	t.Helper()
+	select {
+	case message := <-channel.media:
+		return message
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for channel media")
+		return bus.OutboundMediaMessage{}
 	}
 }
 

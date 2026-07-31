@@ -3420,6 +3420,23 @@ func TestInteractionFinalAfterToolResultRequiresMatchingOrder(t *testing.T) {
 	}
 }
 
+func TestInteractionFinalAfterToolResultDoesNotDuplicateHandledAttachment(t *testing.T) {
+	history := []providers.Message{
+		{Role: "assistant", ToolCalls: []providers.ToolCall{{ID: "call-media"}}},
+		{Role: "tool", ToolCallID: "call-media", Content: "delivered"},
+		{
+			Role:    "assistant",
+			Content: handledToolResponseSummary,
+			Attachments: []providers.Attachment{{
+				Ref: "media://delivered",
+			}},
+		},
+	}
+	if content, ok := interactionFinalAfterToolResult(history, "call-media"); !ok || content != "" {
+		t.Fatalf("interactionFinalAfterToolResult() = (%q, %v), want empty handled final", content, ok)
+	}
+}
+
 func TestInteractionPairingIgnoresReusedToolCallIDFromOlderRound(t *testing.T) {
 	history := []providers.Message{
 		{Role: "assistant", ToolCalls: []providers.ToolCall{{ID: "call-reused"}}},
