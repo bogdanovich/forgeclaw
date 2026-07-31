@@ -85,6 +85,35 @@ func TestRequestUserInputToolReturnsTypedSuspension(t *testing.T) {
 	}
 }
 
+func TestRequestUserInputToolAcceptsLocalizedHeader(t *testing.T) {
+	tool, err := NewRequestUserInputTool(RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatalf("NewRequestUserInputTool() error = %v", err)
+	}
+	result := tool.Execute(t.Context(), map[string]any{
+		"questions": []any{map[string]any{
+			"id":       "confirm_event",
+			"header":   "Подтверждение",
+			"question": "Создать событие?",
+		}},
+	})
+	if result.IsError || result.Suspension == nil {
+		t.Fatalf("Execute() = %#v, want suspension", result)
+	}
+
+	result = tool.Execute(t.Context(), map[string]any{
+		"questions": []any{map[string]any{
+			"id":       "confirm_event",
+			"header":   strings.Repeat("я", interactions.MaxHeaderLength+1),
+			"question": "Создать событие?",
+		}},
+	})
+	if !result.IsError ||
+		!strings.Contains(result.ContentForLLM(), "header exceeds 64 characters") {
+		t.Fatalf("Execute() = %#v, want field-specific header bound error", result)
+	}
+}
+
 func TestRequestUserInputToolUsesBoundedConfiguredTimeout(t *testing.T) {
 	tool, err := NewRequestUserInputTool(RequestUserInputToolOptions{
 		DefaultTimeout: 5 * time.Minute,
@@ -179,5 +208,34 @@ func TestRequestUserInputToolParametersExposeRuntimeMaximum(t *testing.T) {
 	timeout := properties["timeout_seconds"].(map[string]any)
 	if got := timeout["maximum"]; got != 600 {
 		t.Fatalf("timeout maximum = %#v, want 600", got)
+	}
+}
+
+func TestRequestUserInputToolParametersExposeStringBounds(t *testing.T) {
+	tool, err := NewRequestUserInputTool(RequestUserInputToolOptions{})
+	if err != nil {
+		t.Fatalf("NewRequestUserInputTool() error = %v", err)
+	}
+	questions := tool.Parameters()["properties"].(map[string]any)["questions"].(map[string]any)
+	properties := questions["items"].(map[string]any)["properties"].(map[string]any)
+	for field, want := range map[string]int{
+		"id":       interactions.MaxQuestionIDLength,
+		"header":   interactions.MaxHeaderLength,
+		"question": interactions.MaxQuestionLength,
+	} {
+		if got := properties[field].(map[string]any)["maxLength"]; got != want {
+			t.Errorf("%s maxLength = %#v, want %d", field, got, want)
+		}
+	}
+	options := properties["options"].(map[string]any)
+	optionItems := options["items"].(map[string]any)
+	optionProperties := optionItems["properties"].(map[string]any)
+	for field, want := range map[string]int{
+		"label":       interactions.MaxOptionLabelLength,
+		"description": interactions.MaxDescriptionLength,
+	} {
+		if got := optionProperties[field].(map[string]any)["maxLength"]; got != want {
+			t.Errorf("option %s maxLength = %#v, want %d", field, got, want)
+		}
 	}
 }
