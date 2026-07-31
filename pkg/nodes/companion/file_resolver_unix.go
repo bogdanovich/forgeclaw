@@ -396,7 +396,7 @@ func (parent *resolvedParent) ensureFinalRegular() error {
 		return classifyFileAccessError(err)
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG ||
-		(!parent.rootAllowsCrossMounts() && uint64(stat.Dev) != parent.root.device) {
+		(!parent.rootAllowsCrossMounts() && fileStatDevice(&stat) != parent.root.device) {
 		return ErrFileAccessDenied
 	}
 	return nil
@@ -453,10 +453,10 @@ func (parent *resolvedParent) stageMatches(
 		return false, classifyFileAccessError(err)
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG ||
-		uint64(stat.Dev) != identity.Device ||
+		fileStatDevice(&stat) != identity.Device ||
 		stat.Ino != identity.Inode ||
-		uint64(stat.Nlink) == 0 ||
-		(requireOriginalLinks && uint64(stat.Nlink) != identity.Links) {
+		fileStatLinks(&stat) == 0 ||
+		(requireOriginalLinks && fileStatLinks(&stat) != identity.Links) {
 		return false, ErrFileConflict
 	}
 	return true, nil
@@ -559,9 +559,9 @@ func identityFromInfo(info os.FileInfo) (fileIdentity, error) {
 		return fileIdentity{}, ErrFileAccessDenied
 	}
 	return fileIdentity{
-		Device: uint64(stat.Dev),
+		Device: syscallStatDevice(stat),
 		Inode:  stat.Ino,
-		Links:  uint64(stat.Nlink),
+		Links:  syscallStatLinks(stat),
 	}, nil
 }
 
