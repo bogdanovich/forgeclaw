@@ -17,7 +17,7 @@ import (
 
 const maxProcessStatusBytes = 64 * 1024
 
-var requiredCapabilityFields = [...]string{"CapPrm", "CapEff", "CapAmb"}
+var requiredCapabilityFields = [...]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}
 
 func validateFileHelperProcessIdentity(cfg companion.Config) error {
 	if cfg.FileHelper == nil {

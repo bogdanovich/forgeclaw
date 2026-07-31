@@ -13,7 +13,12 @@ func TestFileHelperAuthorityRejectsRootCompanion(t *testing.T) {
 	config := companion.Config{
 		FileHelper: &companion.FileHelperClientConfig{Enabled: true, SocketPath: "/run/helper.sock"},
 	}
-	zeroCapabilities := []byte("CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapAmb:\t0000000000000000\n")
+	zeroCapabilities := []byte(
+		"CapInh:\t0000000000000000\n" +
+			"CapPrm:\t0000000000000000\n" +
+			"CapEff:\t0000000000000000\n" +
+			"CapAmb:\t0000000000000000\n",
+	)
 	if err := validateFileHelperProcessIdentityStatus(config, 0, zeroCapabilities); err == nil {
 		t.Fatal("root-run full companion was accepted with helper authority")
 	}
@@ -31,7 +36,10 @@ func TestFileHelperAuthorityRejectsLinuxCapabilities(t *testing.T) {
 	}
 	for _, field := range requiredCapabilityFields {
 		t.Run(field, func(t *testing.T) {
-			status := "CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapAmb:\t0000000000000000\n"
+			status := "CapInh:\t0000000000000000\n" +
+				"CapPrm:\t0000000000000000\n" +
+				"CapEff:\t0000000000000000\n" +
+				"CapAmb:\t0000000000000000\n"
 			status = strings.Replace(status, field+":\t0000000000000000", field+":\t0000000000000001", 1)
 			if err := validateFileHelperProcessIdentityStatus(config, 1000, []byte(status)); err == nil {
 				t.Fatalf("nonzero %s was accepted", field)
@@ -45,9 +53,9 @@ func TestFileHelperAuthorityRejectsMalformedCapabilityStatus(t *testing.T) {
 		FileHelper: &companion.FileHelperClientConfig{Enabled: true, SocketPath: "/run/helper.sock"},
 	}
 	for name, status := range map[string]string{
-		"missing":   "CapPrm:\t0\nCapEff:\t0\n",
-		"invalid":   "CapPrm:\t0\nCapEff:\tnot-hex\nCapAmb:\t0\n",
-		"duplicate": "CapPrm:\t0\nCapEff:\t0\nCapEff:\t0\nCapAmb:\t0\n",
+		"missing":   "CapInh:\t0\nCapPrm:\t0\nCapEff:\t0\n",
+		"invalid":   "CapInh:\t0\nCapPrm:\t0\nCapEff:\tnot-hex\nCapAmb:\t0\n",
+		"duplicate": "CapInh:\t0\nCapPrm:\t0\nCapEff:\t0\nCapEff:\t0\nCapAmb:\t0\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := validateFileHelperProcessIdentityStatus(config, 1000, []byte(status)); err == nil {
