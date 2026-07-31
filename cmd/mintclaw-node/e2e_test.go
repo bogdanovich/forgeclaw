@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -21,11 +22,12 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	"github.com/bogdanovich/mintclaw/pkg/nodes/companion"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
 )
 
 func TestCompanionProcessAuthenticatesAndInvokesOverWSS(t *testing.T) {
-	registry, admission := newProcessTestGateway(t)
+	registry, admission, _ := newProcessTestGateway(t)
 	server := httptest.NewTLSServer(admission)
 	defer server.Close()
 	defer func() {
@@ -128,7 +130,191 @@ func TestCompanionProcessAuthenticatesAndInvokesOverWSS(t *testing.T) {
 	waitForOnlyNodeState(t, registry, nodes.StateDisconnected)
 }
 
-func newProcessTestGateway(t *testing.T) (*nodes.FileRegistry, *nodews.AdmissionHandler) {
+func TestCompanionProcessTransfersFilesOverAuthenticatedWSS(t *testing.T) {
+	registry, admission, sessions := newProcessTestGateway(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := admission.Close(ctx); err != nil {
+			t.Errorf("close admission: %v", err)
+		}
+	}()
+
+	tempDir := t.TempDir()
+	projectRoot, err := filepath.EvalSymlinks(filepath.Join(tempDir, "project"))
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(filepath.Join(tempDir, "project"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		projectRoot, err = filepath.EvalSymlinks(filepath.Join(tempDir, "project"))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := buildCompanionBinary(t, tempDir)
+	fingerprint := sha256.Sum256(server.Certificate().Raw)
+	config := companion.Config{
+		GatewayURL: strings.Replace(server.URL, "https://", "wss://", 1) +
+			companion.GatewayPath,
+		StateDir: filepath.Join(tempDir, "state"),
+		TLS: companion.TLSConfig{
+			CertificateSHA256: hex.EncodeToString(fingerprint[:]),
+		},
+		Reconnect: companion.ReconnectConfig{
+			MinDelaySeconds:     1,
+			MaxDelaySeconds:     1,
+			PendingDelaySeconds: 1,
+		},
+		Policy: nodes.LocalCommandPolicy{
+			Revision:          "e2e-policy",
+			AllowedCommands:   []string{"node.info.v1"},
+			MaximumRisk:       nodes.RiskRead,
+			MaxTimeoutSeconds: 5,
+			MaxOutputBytes:    4096,
+		},
+		FilePolicies: companion.FilePolicies{
+			"project": {
+				Enabled:        true,
+				Revision:       "project-files-v1",
+				ReadableRoots:  []string{projectRoot},
+				WritableRoots:  []string{projectRoot},
+				AllowCreate:    true,
+				AllowOverwrite: true,
+				MaxFileBytes:   protocol.MaxTransferFileBytes,
+			},
+		},
+	}
+	configPath := filepath.Join(tempDir, "config.json")
+	writeProcessTestConfig(t, configPath, config)
+	process := startCompanionProcess(t, binaryPath, configPath)
+	defer process.stop(t)
+
+	pending := waitForOnlyNodeState(t, registry, nodes.StatePendingPairing)
+	if _, err := registry.Approve(pending.ID, nodes.PairingApproval{
+		AllowedCommands: []string{
+			"file.download.v1",
+			"file.info.v1",
+			"file.upload.v1",
+			"node.info.v1",
+		},
+		At: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connected := waitForOnlyNodeState(t, registry, nodes.StateConnected)
+
+	uploadContent := bytes.Repeat([]byte("real process upload\n"), 20000)
+	uploadDigest := sha256.Sum256(uploadContent)
+	uploadBinding := nodews.TransferBinding{
+		TransferID:     "process_upload",
+		Direction:      protocol.TransferUpload,
+		PolicyRevision: "project-files-v1",
+		TotalSize:      uint64(len(uploadContent)),
+		SHA256:         uploadDigest,
+	}
+	uploadCtx, cancelUpload := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancelUpload()
+	upload, err := sessions.OpenTransfer(uploadCtx, connected.ID, uploadBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upload.Close()
+	uploadPath := filepath.Join(projectRoot, "uploaded.txt")
+	sendTransferPrepare(t, uploadCtx, upload, uploadBinding, map[string]any{
+		"operation":   "upload",
+		"path":        uploadPath,
+		"publication": "create",
+		"expires_at":  time.Now().Add(time.Minute).Unix(),
+	})
+	expectTransferType(t, uploadCtx, upload, protocol.TransferFrameAccept)
+	sendGatewayUpload(t, uploadCtx, upload, uploadBinding, uploadContent)
+	if err := upload.Send(uploadCtx, transferFrame(
+		uploadBinding,
+		protocol.TransferFrameCommit,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	expectTransferType(t, uploadCtx, upload, protocol.TransferFrameCommitted)
+	uploaded, err := os.ReadFile(uploadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(uploaded, uploadContent) {
+		t.Fatal("real-process upload published different bytes")
+	}
+
+	downloadContent := bytes.Repeat([]byte{0, 1, 2, 3, 255}, 70000)
+	downloadPath := filepath.Join(projectRoot, "source.bin")
+	if err := os.WriteFile(downloadPath, downloadContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	downloadDigest := sha256.Sum256(downloadContent)
+	downloadBinding := nodews.TransferBinding{
+		TransferID:     "process_download",
+		Direction:      protocol.TransferDownload,
+		PolicyRevision: "project-files-v1",
+		TotalSize:      uint64(len(downloadContent)),
+		SHA256:         downloadDigest,
+	}
+	downloadCtx, cancelDownload := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancelDownload()
+	download, err := sessions.OpenTransfer(
+		downloadCtx,
+		connected.ID,
+		downloadBinding,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer download.Close()
+	sendTransferPrepare(t, downloadCtx, download, downloadBinding, map[string]any{
+		"operation":  "download",
+		"path":       downloadPath,
+		"expires_at": time.Now().Add(time.Minute).Unix(),
+	})
+	expectTransferType(t, downloadCtx, download, protocol.TransferFrameAccept)
+	var downloaded bytes.Buffer
+	for downloaded.Len() < len(downloadContent) {
+		frame, err := download.Receive(downloadCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame.Type != protocol.TransferFrameChunk {
+			t.Fatalf("download frame = %#v, want chunk", frame)
+		}
+		_, _ = downloaded.Write(frame.Payload)
+		ack := transferFrame(downloadBinding, protocol.TransferFrameAck)
+		ack.Sequence = frame.Sequence
+		if err := download.Send(downloadCtx, ack); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !bytes.Equal(downloaded.Bytes(), downloadContent) {
+		t.Fatal("real-process download returned different bytes")
+	}
+	received := expectTransferType(
+		t,
+		downloadCtx,
+		download,
+		protocol.TransferFrameStatus,
+	)
+	if !bytes.Contains(received.Payload, []byte(`"state":"received"`)) {
+		t.Fatalf("download received status = %s", received.Payload)
+	}
+	if err := download.Send(downloadCtx, transferFrame(
+		downloadBinding,
+		protocol.TransferFrameCommit,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	expectTransferType(t, downloadCtx, download, protocol.TransferFrameCommitted)
+}
+
+func newProcessTestGateway(
+	t *testing.T,
+) (*nodes.FileRegistry, *nodews.AdmissionHandler, *nodews.SessionHub) {
 	t.Helper()
 	registry, err := nodes.NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 4)
 	if err != nil {
@@ -138,11 +324,90 @@ func newProcessTestGateway(t *testing.T) (*nodes.FileRegistry, *nodews.Admission
 	if err != nil {
 		t.Fatal(err)
 	}
-	admission, err := nodews.NewAdmissionHandler(authenticator, nodews.AdmissionConfig{})
+	sessions := nodews.NewSessionHub()
+	admission, err := nodews.NewAdmissionHandler(authenticator, nodews.AdmissionConfig{
+		Sessions: sessions,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return registry, admission
+	return registry, admission, sessions
+}
+
+func sendTransferPrepare(
+	t *testing.T,
+	ctx context.Context,
+	stream *nodews.TransferStream,
+	binding nodews.TransferBinding,
+	metadata map[string]any,
+) {
+	t.Helper()
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := transferFrame(binding, protocol.TransferFramePrepare)
+	frame.Payload = payload
+	if err := stream.Send(ctx, frame); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sendGatewayUpload(
+	t *testing.T,
+	ctx context.Context,
+	stream *nodews.TransferStream,
+	binding nodews.TransferBinding,
+	content []byte,
+) {
+	t.Helper()
+	var sequence uint64
+	for len(content) > 0 {
+		count := min(len(content), protocol.MaxTransferChunkBytes)
+		sequence++
+		frame := transferFrame(binding, protocol.TransferFrameChunk)
+		frame.Sequence = sequence
+		frame.Payload = append([]byte(nil), content[:count]...)
+		if err := stream.Send(ctx, frame); err != nil {
+			t.Fatal(err)
+		}
+		ack := expectTransferType(t, ctx, stream, protocol.TransferFrameAck)
+		if ack.Sequence != sequence {
+			t.Fatalf("upload acknowledgement sequence = %d, want %d", ack.Sequence, sequence)
+		}
+		content = content[count:]
+	}
+}
+
+func expectTransferType(
+	t *testing.T,
+	ctx context.Context,
+	stream *nodews.TransferStream,
+	want protocol.TransferFrameType,
+) protocol.TransferFrame {
+	t.Helper()
+	frame, err := stream.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.Type != want {
+		t.Fatalf("transfer frame = %#v, want type %d", frame, want)
+	}
+	return frame
+}
+
+func transferFrame(
+	binding nodews.TransferBinding,
+	frameType protocol.TransferFrameType,
+) protocol.TransferFrame {
+	return protocol.TransferFrame{
+		Type:           frameType,
+		Direction:      binding.Direction,
+		TransferID:     binding.TransferID,
+		PolicyRevision: binding.PolicyRevision,
+		TotalSize:      binding.TotalSize,
+		SHA256:         binding.SHA256,
+	}
 }
 
 func buildCompanionBinary(t *testing.T, outputDir string) string {

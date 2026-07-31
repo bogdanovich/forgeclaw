@@ -67,7 +67,31 @@ func run(args []string) error {
 		return err
 	}
 	defer ledger.Close()
-	runtimeOptions := make([]companion.RuntimeOption, 0, 2)
+	runtimeOptions := make([]companion.RuntimeOption, 0, 3)
+	var fileTransfers *companion.FileTransferRuntime
+	if companion.HasEnabledFilePolicy(cfg.FilePolicies) {
+		transferLedger, transferLedgerErr := companion.NewFileTransferLedger(
+			companion.FileTransferLedgerPath(cfg.StateDir),
+			companion.DefaultFileTransferLedgerLimit,
+			companion.DefaultFileTransferLedgerBytes,
+		)
+		if transferLedgerErr != nil {
+			return transferLedgerErr
+		}
+		defer transferLedger.Close()
+		fileTransfers, err = companion.NewFileTransferRuntime(
+			cfg.FilePolicies,
+			transferLedger,
+		)
+		if err != nil {
+			return err
+		}
+		defer fileTransfers.Close()
+		runtimeOptions = append(
+			runtimeOptions,
+			companion.WithFileCapabilities(fileTransfers),
+		)
+	}
 	if cfg.SystemExec != nil {
 		runtimeOptions = append(runtimeOptions, companion.WithSystemExec(*cfg.SystemExec))
 	}
@@ -94,13 +118,25 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := companion.NewClientWithRuntime(
-		cfg,
-		identity,
-		clientVersion(),
-		commandRuntime,
-		slog.Default(),
-	)
+	var client *companion.Client
+	if fileTransfers != nil {
+		client, err = companion.NewClientWithRuntimeAndTransferHandler(
+			cfg,
+			identity,
+			clientVersion(),
+			commandRuntime,
+			fileTransfers,
+			slog.Default(),
+		)
+	} else {
+		client, err = companion.NewClientWithRuntime(
+			cfg,
+			identity,
+			clientVersion(),
+			commandRuntime,
+			slog.Default(),
+		)
+	}
 	if err != nil {
 		return err
 	}

@@ -51,6 +51,7 @@ type Config struct {
 	Policy                 nodes.LocalCommandPolicy `json:"policy,omitempty"`
 	SystemExec             *SystemExecPolicy        `json:"system_exec,omitempty"`
 	OwnerShell             *OwnerShellConfig        `json:"owner_shell,omitempty"`
+	FilePolicies           FilePolicies             `json:"node_file_policies,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -155,8 +156,8 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 	if cfg.Policy.AllowedCommands == nil {
 		cfg.Policy.AllowedCommands = make([]string, 0)
 	}
-	if err := cfg.Policy.Validate(); err != nil {
-		return Config{}, fmt.Errorf("validate node policy: %w", err)
+	if policyErr := cfg.Policy.Validate(); policyErr != nil {
+		return Config{}, fmt.Errorf("validate node policy: %w", policyErr)
 	}
 	if cfg.SystemExec != nil {
 		normalized, normalizeErr := normalizeSystemExecPolicy(*cfg.SystemExec, baseDir)
@@ -181,6 +182,10 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 			}
 			cfg.OwnerShell.BrokerSocket = socket
 		}
+	}
+	cfg.FilePolicies, err = normalizeFilePolicies(cfg.FilePolicies, baseDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("validate node file policies: %w", err)
 	}
 	return cfg, nil
 }

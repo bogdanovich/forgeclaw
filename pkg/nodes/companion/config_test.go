@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/nodes/protocol"
 )
 
 func TestConfigNormalizesSecureEndpointAndPaths(t *testing.T) {
@@ -256,6 +257,143 @@ func TestConfigRejectsSystemExecDiscoveryThatBroadensAuthority(t *testing.T) {
 			}
 			if _, err := cfg.Normalize(t.TempDir()); err == nil {
 				t.Fatalf("Normalize() accepted authority-broadening metadata: %#v", test.discovery)
+			}
+		})
+	}
+}
+
+func TestConfigKeepsFileAuthorityAbsentByDefault(t *testing.T) {
+	cfg, err := (Config{GatewayURL: "wss://gateway.example"}).Normalize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FilePolicies != nil {
+		t.Fatalf("default file policies = %#v, want absent", cfg.FilePolicies)
+	}
+}
+
+func TestConfigNormalizesExplicitFilePolicy(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := (Config{
+		GatewayURL: "wss://gateway.example",
+		FilePolicies: FilePolicies{
+			"project": {
+				Enabled:        true,
+				Revision:       "project-v1",
+				ReadableRoots:  []string{root},
+				WritableRoots:  []string{root},
+				AllowCreate:    true,
+				AllowOverwrite: true,
+				Approval: FileApprovalPolicy{
+					Read:  FileApprovalRequired,
+					Write: FileApprovalRequired,
+				},
+			},
+		},
+	}).Normalize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := cfg.FilePolicies["project"]
+	if profile.normalizedAlias != "project" ||
+		profile.Revision != "project-v1" ||
+		profile.MaxFileBytes != protocol.MaxTransferFileBytes ||
+		!profile.AllowCreate ||
+		!profile.AllowOverwrite ||
+		profile.Approval.Metadata != FileApprovalNone ||
+		profile.Approval.Read != FileApprovalRequired ||
+		profile.Approval.Write != FileApprovalRequired ||
+		len(profile.ReadableRoots) != 1 ||
+		profile.ReadableRoots[0] != root {
+		t.Fatalf("normalized file profile = %#v", profile)
+	}
+}
+
+func TestConfigRejectsUnsafeFilePolicies(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	tests := []struct {
+		name     string
+		policies FilePolicies
+	}{
+		{
+			name: "disabled authority",
+			policies: FilePolicies{
+				"project": {
+					Enabled:       false,
+					Revision:      "project-v1",
+					ReadableRoots: []string{root},
+				},
+			},
+		},
+		{
+			name: "symlink following",
+			policies: FilePolicies{
+				"project": {
+					Enabled:        true,
+					Revision:       "project-v1",
+					ReadableRoots:  []string{root},
+					FollowSymlinks: true,
+				},
+			},
+		},
+		{
+			name: "relative root",
+			policies: FilePolicies{
+				"project": {
+					Enabled:       true,
+					Revision:      "project-v1",
+					ReadableRoots: []string{"relative"},
+				},
+			},
+		},
+		{
+			name: "duplicate revision",
+			policies: FilePolicies{
+				"project": {
+					Enabled:       true,
+					Revision:      "shared-v1",
+					ReadableRoots: []string{root},
+				},
+				"other": {
+					Enabled:       true,
+					Revision:      "shared-v1",
+					ReadableRoots: []string{other},
+				},
+			},
+		},
+		{
+			name: "write mode without root",
+			policies: FilePolicies{
+				"project": {
+					Enabled:     true,
+					Revision:    "project-v1",
+					AllowCreate: true,
+				},
+			},
+		},
+		{
+			name: "oversized limit",
+			policies: FilePolicies{
+				"project": {
+					Enabled:       true,
+					Revision:      "project-v1",
+					ReadableRoots: []string{root},
+					MaxFileBytes:  protocol.MaxTransferFileBytes + 1,
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := (Config{
+				GatewayURL:   "wss://gateway.example",
+				FilePolicies: test.policies,
+			}).Normalize(t.TempDir()); err == nil {
+				t.Fatalf("Normalize() accepted unsafe file policies: %#v", test.policies)
 			}
 		})
 	}
