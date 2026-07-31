@@ -50,7 +50,7 @@ func newNodesCommand(deps commandDeps) *cobra.Command {
 		"",
 		"Path to config.json (default: active MintClaw config)",
 	)
-	open := func() (*nodepkg.FileRegistry, error) {
+	loadConfig := func() (*config.Config, error) {
 		path := strings.TrimSpace(configPath)
 		if path == "" {
 			path = deps.configPath()
@@ -58,6 +58,13 @@ func newNodesCommand(deps commandDeps) *cobra.Command {
 		cfg, err := config.LoadConfig(path)
 		if err != nil {
 			return nil, fmt.Errorf("load config: %w", err)
+		}
+		return cfg, nil
+	}
+	open := func() (*nodepkg.FileRegistry, error) {
+		cfg, err := loadConfig()
+		if err != nil {
+			return nil, err
 		}
 		workspace := strings.TrimSpace(cfg.WorkspacePath())
 		if workspace == "" {
@@ -79,6 +86,7 @@ func newNodesCommand(deps commandDeps) *cobra.Command {
 		newApproveCommand(open, deps.now),
 		newDenyCommand(open, deps.now),
 		newRevokeCommand(open, deps.now),
+		newTerminalCommand(loadConfig),
 	)
 	return cmd
 }
