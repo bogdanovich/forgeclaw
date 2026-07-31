@@ -54,6 +54,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if privilegeErr := validateFileHelperProcessIdentity(cfg, os.Geteuid()); privilegeErr != nil {
+		return privilegeErr
+	}
 	identity, err := companion.LoadOrCreateIdentity(cfg.StateDir)
 	if err != nil {
 		return err
@@ -68,7 +71,7 @@ func run(args []string) error {
 	}
 	defer ledger.Close()
 	runtimeOptions := make([]companion.RuntimeOption, 0, 3)
-	var fileTransfers *companion.FileTransferRuntime
+	fileCapabilities := make([]companion.FileTransferCapability, 0, 2)
 	if companion.HasEnabledFilePolicy(cfg.FilePolicies) {
 		transferLedger, transferLedgerErr := companion.NewFileTransferLedger(
 			companion.FileTransferLedgerPath(cfg.StateDir),
@@ -79,18 +82,36 @@ func run(args []string) error {
 			return transferLedgerErr
 		}
 		defer transferLedger.Close()
-		fileTransfers, err = companion.NewFileTransferRuntime(
+		fileTransfers, transferRuntimeErr := companion.NewFileTransferRuntime(
 			cfg.FilePolicies,
 			transferLedger,
 		)
+		if transferRuntimeErr != nil {
+			return transferRuntimeErr
+		}
+		defer fileTransfers.Close()
+		fileCapabilities = append(fileCapabilities, fileTransfers)
+	}
+	if cfg.FileHelper != nil {
+		snapshotContext, cancelSnapshot := context.WithTimeout(context.Background(), 5*time.Second)
+		fileHelper, helperErr := companion.NewFileHelperClient(
+			snapshotContext,
+			cfg.FileHelper.SocketPath,
+		)
+		cancelSnapshot()
+		if helperErr != nil {
+			return fmt.Errorf("load file helper snapshot: %w", helperErr)
+		}
+		defer fileHelper.Close()
+		fileCapabilities = append(fileCapabilities, fileHelper)
+	}
+	var fileTransfers *companion.FileTransferRouter
+	if len(fileCapabilities) > 0 {
+		fileTransfers, err = companion.NewFileTransferRouter(fileCapabilities...)
 		if err != nil {
 			return err
 		}
-		defer fileTransfers.Close()
-		runtimeOptions = append(
-			runtimeOptions,
-			companion.WithFileCapabilities(fileTransfers),
-		)
+		runtimeOptions = append(runtimeOptions, companion.WithFileCapabilities(fileTransfers))
 	}
 	if cfg.SystemExec != nil {
 		runtimeOptions = append(runtimeOptions, companion.WithSystemExec(*cfg.SystemExec))
@@ -144,6 +165,13 @@ func run(args []string) error {
 	defer stop()
 	slog.Info("starting node companion", "node_id", identity.ID, "gateway", cfg.GatewayURL)
 	return client.Run(ctx)
+}
+
+func validateFileHelperProcessIdentity(cfg companion.Config, effectiveUID int) error {
+	if cfg.FileHelper != nil && effectiveUID == 0 {
+		return errors.New("node companion with file helper authority must remain unprivileged")
+	}
+	return nil
 }
 
 func clientVersion() string {

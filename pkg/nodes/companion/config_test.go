@@ -270,6 +270,9 @@ func TestConfigKeepsFileAuthorityAbsentByDefault(t *testing.T) {
 	if cfg.FilePolicies != nil {
 		t.Fatalf("default file policies = %#v, want absent", cfg.FilePolicies)
 	}
+	if cfg.FileHelper != nil {
+		t.Fatalf("default file helper = %#v, want absent", cfg.FileHelper)
+	}
 }
 
 func TestConfigNormalizesExplicitFilePolicy(t *testing.T) {
@@ -361,6 +364,21 @@ func TestConfigRejectsUnsafeFilePolicies(t *testing.T) {
 				"other": {
 					Enabled:       true,
 					Revision:      "shared-v1",
+					ReadableRoots: []string{other},
+				},
+			},
+		},
+		{
+			name: "case-colliding alias",
+			policies: FilePolicies{
+				"project": {
+					Enabled:       true,
+					Revision:      "project-v1",
+					ReadableRoots: []string{root},
+				},
+				"PROJECT": {
+					Enabled:       true,
+					Revision:      "project-v2",
 					ReadableRoots: []string{other},
 				},
 			},
