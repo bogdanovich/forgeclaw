@@ -17,11 +17,12 @@ const mediaIndexVersion = 1
 // The local file is deliberately not copied: the store only records ownership
 // and verifies the file before every resolution.
 type persistentMediaEntry struct {
-	Ref      string    `json:"ref"`
-	Path     string    `json:"path"`
-	Meta     MediaMeta `json:"meta"`
-	Scope    string    `json:"scope"`
-	StoredAt time.Time `json:"stored_at"`
+	Ref      string      `json:"ref"`
+	Path     string      `json:"path"`
+	Meta     MediaMeta   `json:"meta"`
+	Scope    string      `json:"scope"`
+	StoredAt time.Time   `json:"stored_at"`
+	Owner    *MediaOwner `json:"owner,omitempty"`
 }
 
 type mediaIndexSnapshot struct {
@@ -59,6 +60,11 @@ func loadMediaIndex(path string) ([]persistentMediaEntry, error) {
 			return nil, fmt.Errorf("duplicate media ref in index: %s", entry.Ref)
 		}
 		seen[entry.Ref] = struct{}{}
+		if entry.Owner != nil {
+			if err := entry.Owner.validate(); err != nil {
+				return nil, fmt.Errorf("invalid media owner for ref %s", entry.Ref)
+			}
+		}
 	}
 	return snapshot.Entries, nil
 }

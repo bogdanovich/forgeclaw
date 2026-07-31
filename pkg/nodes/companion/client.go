@@ -170,6 +170,9 @@ func cloneCatalog(catalog nodes.CapabilityCatalog) nodes.CapabilityCatalog {
 		result.Commands[index].ModelContract = cloneModelContract(
 			catalog.Commands[index].ModelContract,
 		)
+		result.Commands[index].FileProfiles = cloneFileProfileDescriptors(
+			catalog.Commands[index].FileProfiles,
+		)
 	}
 	return result
 }

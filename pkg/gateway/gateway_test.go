@@ -250,6 +250,86 @@ func TestNodeToolsTrackNodeEnablementAcrossReload(t *testing.T) {
 	}
 }
 
+func TestNodeFileToolsRequireConfiguredTargetGrant(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
+	cfg.Nodes.Enabled = true
+	cfg.Execution.Targets = map[string]config.ExecutionTarget{
+		"personal": {
+			Type:        "node",
+			Node:        "personal-node",
+			FileProfile: "project",
+		},
+	}
+	cfg.Agents.Defaults.TargetPolicy = &config.TargetPolicy{
+		DefaultTarget:  "personal",
+		AllowedTargets: []string{"personal"},
+	}
+	msgBus := bus.NewMessageBus()
+	al := agent.NewAgentLoop(cfg, msgBus, &startupBlockedProvider{reason: "not used"})
+	runtime := &nodeAdmissionRuntime{
+		registryPath: nodes.RegistryPath(cfg.WorkspacePath()),
+		handler:      &fakeNodeAdmissionHandler{},
+		generation:   1,
+		mounted:      true,
+	}
+	t.Cleanup(func() {
+		if runtime.transferSpool != nil {
+			_ = runtime.transferSpool.Close()
+		}
+	})
+	if err := setupNodeTools(cfg, al, runtime); err != nil {
+		t.Fatal(err)
+	}
+	toolNames := al.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
+	for _, name := range []string{
+		"nodes_file_info",
+		"nodes_upload",
+		"nodes_download",
+	} {
+		if !slices.Contains(toolNames, name) {
+			t.Fatalf("registered tools = %#v, want %s", toolNames, name)
+		}
+	}
+
+	withoutGrant := config.DefaultConfig()
+	withoutGrant.Agents.Defaults.Workspace = t.TempDir()
+	withoutGrant.Agents.Defaults.ContextManager = "none"
+	withoutGrant.Nodes.Enabled = true
+	withoutGrant.Execution.Targets = map[string]config.ExecutionTarget{
+		"personal": {Type: "node", Node: "personal-node"},
+	}
+	withoutGrant.Agents.Defaults.TargetPolicy = &config.TargetPolicy{
+		DefaultTarget:  "personal",
+		AllowedTargets: []string{"personal"},
+	}
+	otherLoop := agent.NewAgentLoop(
+		withoutGrant,
+		bus.NewMessageBus(),
+		&startupBlockedProvider{reason: "not used"},
+	)
+	otherRuntime := &nodeAdmissionRuntime{
+		registryPath: nodes.RegistryPath(withoutGrant.WorkspacePath()),
+		handler:      &fakeNodeAdmissionHandler{},
+		generation:   1,
+		mounted:      true,
+	}
+	if err := setupNodeTools(withoutGrant, otherLoop, otherRuntime); err != nil {
+		t.Fatal(err)
+	}
+	toolNames = otherLoop.GetStartupInfo()["tools"].(map[string]any)["names"].([]string)
+	for _, name := range []string{
+		"nodes_file_info",
+		"nodes_upload",
+		"nodes_download",
+	} {
+		if slices.Contains(toolNames, name) {
+			t.Fatalf("registered tools = %#v, %s requires an explicit file profile", toolNames, name)
+		}
+	}
+}
+
 func TestReplayGatewayInboundSnapshotReplaysCapturedMessages(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	spool, err := bus.NewInboundSpool(t.TempDir())

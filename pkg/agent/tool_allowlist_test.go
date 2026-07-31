@@ -12,6 +12,15 @@ type allowlistTestTool struct {
 	name string
 }
 
+type scopedAllowlistTestTool struct {
+	allowlistTestTool
+	agents map[string]bool
+}
+
+func (tool *scopedAllowlistTestTool) ToolEnabledForAgent(agentID string) bool {
+	return tool.agents[agentID]
+}
+
 func (t *allowlistTestTool) Name() string { return t.name }
 
 func (t *allowlistTestTool) Description() string { return "test tool" }
@@ -44,6 +53,32 @@ tools: [read_file, web_serach, mcp_github_search]
 	unknown := unknownAgentToolNames(registry, loadAgentDefinition(workspace))
 	if len(unknown) != 1 || unknown[0] != "web_serach" {
 		t.Fatalf("unknownAgentToolNames() = %v, want [web_serach]", unknown)
+	}
+}
+
+func TestRegisterToolOnRegistryHonorsAgentScope(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{Workspace: workspace},
+			List: []config.AgentConfig{
+				{ID: "main", Default: true, Workspace: workspace},
+				{ID: "worker", Workspace: workspace},
+			},
+		},
+	}
+	registry := NewAgentRegistry(cfg, nil)
+	registerToolOnRegistry(registry, &scopedAllowlistTestTool{
+		allowlistTestTool: allowlistTestTool{name: "scoped"},
+		agents:            map[string]bool{"main": true},
+	})
+	mainAgent, _ := registry.GetAgent("main")
+	workerAgent, _ := registry.GetAgent("worker")
+	if !mainAgent.Tools.HasRegistered("scoped") {
+		t.Fatal("scoped tool was not registered for the explicitly permitted agent")
+	}
+	if workerAgent.Tools.HasRegistered("scoped") {
+		t.Fatal("scoped tool leaked into an unpermitted agent registry")
 	}
 }
 

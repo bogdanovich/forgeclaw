@@ -34,6 +34,14 @@ type mediaStoreAware interface {
 	SetMediaStore(store media.MediaStore)
 }
 
+// AgentScopedTool lets a runtime tool deny registration for agents that do
+// not hold its explicit out-of-band grant. This is checked before the tool is
+// exposed to the agent's registry, so delegated agents do not discover tools
+// they cannot use.
+type AgentScopedTool interface {
+	ToolEnabledForAgent(agentID string) bool
+}
+
 // ApprovalArgumentsProvider lets a trusted tool bind durable human approval to
 // runtime-prepared authority rather than only to model-authored arguments.
 // Implementations may persist prepared state, but must return the same

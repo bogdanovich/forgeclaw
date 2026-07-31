@@ -213,6 +213,73 @@ func TestNodeDiscoveryToolReturnsOneBoundedCommandContract(t *testing.T) {
 	}
 }
 
+func TestNodeDiscoveryProjectsOnlyConfiguredFileProfile(t *testing.T) {
+	cfg := nodeFileTransferTestConfig()
+	command := nodeFileInfoTestDescriptor("required")
+	otherProfile := command.FileProfiles[0]
+	otherProfile.Alias = "secret-admin"
+	otherProfile.Revision = "secret-admin-v1"
+	otherProfile.ReadableRoots = []string{"/"}
+	command.FileProfiles = append(command.FileProfiles, otherProfile)
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{command}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "private-node-id",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "node-policy-v1",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef: map[string]nodes.Snapshot{"builder-node": snapshot},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot:            snapshot,
+				AllowedCommands:     []string{command.Name},
+				ApprovedCatalogHash: catalogHash,
+				ApprovedAt:          1,
+			},
+		},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+	}
+	result := NewNodeDiscoveryTool(cfg, source).Execute(
+		WithToolSessionContext(context.Background(), "main", "session", nil),
+		map[string]any{
+			"action":  "describe",
+			"target":  "build",
+			"command": "file.info.v1",
+		},
+	)
+	payload := decodeNodeResult(t, result)
+	commandView := payload["command"].(map[string]any)
+	fileView := commandView["file"].(map[string]any)
+	schema := commandView["input_schema"].(map[string]any)
+	properties := schema["properties"].(map[string]any)
+	if commandView["availability"] != string(nodes.ModelAvailable) ||
+		commandView["execution"].(map[string]any)["approval"] != "each_command" ||
+		fileView["digest"] != "sha256" ||
+		fileView["max_file_bytes"] != float64(1024*1024) {
+		t.Fatalf("file command projection = %#v", commandView)
+	}
+	for _, required := range []string{"target", "path", "discovery_revision"} {
+		if _, found := properties[required]; !found {
+			t.Fatalf("projected schema lacks %q: %#v", required, schema)
+		}
+	}
+	for _, hidden := range []string{
+		"project-v1",
+		"secret-admin",
+		"secret-admin-v1",
+		"private-node-id",
+		"builder-node",
+	} {
+		if strings.Contains(result.ForLLM, hidden) {
+			t.Fatalf("file discovery leaked %q: %s", hidden, result.ForLLM)
+		}
+	}
+}
+
 func TestProjectedSystemExecContractUsesOnlyVisibleAliases(t *testing.T) {
 	descriptor := testNodeCommand("system.exec.v1", nodes.RiskWrite, false, false)
 	descriptor.InputSchema = json.RawMessage(

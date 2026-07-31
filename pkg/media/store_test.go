@@ -773,6 +773,88 @@ func TestPersistentIndexRecoversRefsAfterRestart(t *testing.T) {
 	}
 }
 
+func TestPersistentIndexRecoversIdempotentNodeTransferRef(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")
+	path := createTempFile(t, dir, "download.bin")
+	meta := MediaMeta{
+		Filename:      "download.bin",
+		ContentType:   "application/octet-stream",
+		Source:        "tool:nodes_download",
+		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
+	}
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.StoreIdempotent(path, meta, "session-1", "delivery_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := restarted.StoreIdempotent(path, meta, "session-1", "delivery_1")
+	if err != nil || second != first {
+		t.Fatalf("StoreIdempotent after restart = (%q, %v), want %q", second, err, first)
+	}
+	if _, err := restarted.StoreIdempotent(
+		path,
+		meta,
+		"other-session",
+		"delivery_1",
+	); err == nil {
+		t.Fatal("conflicting idempotent delivery scope was accepted")
+	}
+}
+
+func TestPersistentMediaOwnerIsExactAndImmutable(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")
+	path := createTempFile(t, dir, "owned.bin")
+	store, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Store(path, MediaMeta{Source: "telegram"}, "inbound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerA, err := NewMediaOwner(
+		"/workspace/main", "main", "actor-a", "route-1", "telegram", "chat-1", "topic-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerB, err := NewMediaOwner(
+		"/workspace/main", "main", "actor-b", "route-1", "telegram", "chat-1", "topic-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindOwner(ref, ownerA); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindOwner(ref, ownerA); err != nil {
+		t.Fatalf("idempotent owner bind: %v", err)
+	}
+	if err := store.BindOwner(ref, ownerB); err == nil {
+		t.Fatal("owner rebinding was accepted")
+	}
+	if _, _, err := store.ResolveOwnedWithMeta(ref, ownerB); err == nil {
+		t.Fatal("cross-actor owner resolved media")
+	}
+
+	restarted, err := NewFileMediaStoreWithPersistentIndex(indexPath, MediaCleanerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, _, err := restarted.ResolveOwnedWithMeta(ref, ownerA); err != nil || resolved != path {
+		t.Fatalf("owned resolution after restart = (%q, %v), want %q", resolved, err, path)
+	}
+}
+
 func TestPersistentIndexDropsMissingFilesDuringRecovery(t *testing.T) {
 	dir := t.TempDir()
 	indexPath := filepath.Join(dir, "workspace", "state", "media", "index.json")

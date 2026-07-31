@@ -514,6 +514,9 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 		view.State = string(nodes.GatewayInvocationPrepared)
 		return nodeJSONResult(view)
 	}
+	if isNodeFileTransferCommand(record.Plan.Command) {
+		return tool.runtime.fileTransferStatus(ctx, record, principal, available)
+	}
 	if !available {
 		view.State = string(nodes.InvocationUnknown)
 		view.ErrorCode = "NODE_UNAVAILABLE"
@@ -596,7 +599,7 @@ func (*NodeCancelTool) Parameters() map[string]any {
 }
 
 func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	record, principal, snapshot, _, err := tool.runtime.visibleInvocation(ctx, args)
+	record, principal, snapshot, available, err := tool.runtime.visibleInvocation(ctx, args)
 	if err != nil {
 		return nodeJSONResult(nodeCancelResult{Status: "denied", ErrorCode: "CANCEL_DENIED"})
 	}
@@ -609,6 +612,15 @@ func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *T
 		view.Status = "already_terminal"
 		view.OriginalState = "not_dispatched"
 		return nodeJSONResult(view)
+	}
+	if isNodeFileTransferCommand(record.Plan.Command) {
+		if !available {
+			view.Status = "unknown"
+			view.ErrorCode = "NODE_UNAVAILABLE"
+			view.RecoveryAction = "Call nodes_status after the target reconnects; do not replay cancellation or the transfer."
+			return nodeJSONResult(view)
+		}
+		return tool.runtime.cancelFileTransfer(ctx, record, principal)
 	}
 	remote, _, err := tool.runtime.source.CancelInvocation(
 		ctx,
@@ -671,6 +683,101 @@ func (*NodeCancelTool) ToolSteeringSafety(map[string]any) SteeringSafety {
 	return SteeringSafetyCancellable
 }
 
+func (runtime *nodeInvocationToolRuntime) fileTransferStatus(
+	ctx context.Context,
+	record nodes.GatewayInvocationRecord,
+	principal nodes.GatewayInvocationPrincipal,
+	available bool,
+) *ToolResult {
+	result := NodeFileTransferResult{
+		TransferID:     record.Plan.InvocationID,
+		State:          string(nodes.InvocationUnknown),
+		PolicyRevision: record.Plan.PolicyRevision,
+	}
+	if !available {
+		result.Code = "NODE_UNAVAILABLE"
+		result.RecoveryAction = "Retry nodes_status after the target reconnects; do not replay the transfer."
+		return nodeJSONResult(result)
+	}
+	source, ok := runtime.source.(NodeFileTransferSource)
+	if !ok {
+		result.Code = "STATUS_UNAVAILABLE"
+		result.RecoveryAction = "Retry nodes_status; do not replay the transfer."
+		return nodeJSONResult(result)
+	}
+	remote, err := source.QueryFileTransfer(ctx, principal, record)
+	if err != nil {
+		result.Code = "STATUS_UNAVAILABLE"
+		result.RecoveryAction = "Retry nodes_status; do not replay the transfer."
+		return nodeJSONResult(result)
+	}
+	remote.TransferID = record.Plan.InvocationID
+	remote.PolicyRevision = record.Plan.PolicyRevision
+	return nodeJSONResult(remote)
+}
+
+func (runtime *nodeInvocationToolRuntime) cancelFileTransfer(
+	ctx context.Context,
+	record nodes.GatewayInvocationRecord,
+	principal nodes.GatewayInvocationPrincipal,
+) *ToolResult {
+	view := nodeCancelResult{
+		InvocationID: record.Plan.InvocationID,
+		Target:       record.Target,
+		Command:      record.Plan.Command,
+	}
+	source, ok := runtime.source.(NodeFileTransferSource)
+	if !ok {
+		view.Status = "denied"
+		view.ErrorCode = "CANCEL_DENIED"
+		return nodeJSONResult(view)
+	}
+	result, requested, err := source.CancelFileTransfer(ctx, principal, record)
+	if err != nil {
+		if requested {
+			view.Status = "unknown"
+			view.ErrorCode = "CANCEL_OUTCOME_UNKNOWN"
+			view.RecoveryAction = "Call nodes_status; do not replay cancellation or the transfer."
+		} else {
+			view.Status = "denied"
+			view.ErrorCode = "CANCEL_DENIED"
+		}
+		return nodeJSONResult(view)
+	}
+	view.OriginalState = result.State
+	switch {
+	case result.RecoveryAction == "already_committed" || result.State == "committed":
+		view.Status = "already_committed"
+	case result.State == "canceled":
+		view.Status = "canceled"
+	case result.State == "cancel_requested":
+		view.Status = "cancel_requested"
+	case result.State == "denied":
+		view.Status = "denied"
+		view.ErrorCode = result.Code
+	case result.State == "unknown":
+		view.Status = "unknown"
+		view.ErrorCode = "CANCEL_OUTCOME_UNKNOWN"
+		view.RecoveryAction = "Call nodes_status; do not replay cancellation or the transfer."
+	default:
+		view.Status = "already_terminal"
+	}
+	return nodeJSONResult(view)
+}
+
+func isNodeFileTransferDescriptor(descriptor nodes.CommandDescriptor) bool {
+	return len(descriptor.FileProfiles) > 0 || isNodeFileTransferCommand(descriptor.Name)
+}
+
+func isNodeFileTransferCommand(command string) bool {
+	switch command {
+	case "file.info.v1", "file.upload.v1", "file.download.v1":
+		return true
+	default:
+		return false
+	}
+}
+
 func (runtime *nodeInvocationToolRuntime) prepare(
 	ctx context.Context,
 	args map[string]any,
@@ -708,6 +815,14 @@ func (runtime *nodeInvocationToolRuntime) prepare(
 	}
 	descriptor, advertised := nodeCatalogDescriptor(resolved.snapshot.Catalog, command)
 	if !advertised {
+		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
+			nodeDenialCommandUnavailable,
+			nodeConstraintCommandPolicy,
+			nodeActionRefreshDiscovery,
+			nil,
+		)
+	}
+	if isNodeFileTransferDescriptor(descriptor) {
 		return nodes.GatewayInvocationRecord{}, denyNodeInvocation(
 			nodeDenialCommandUnavailable,
 			nodeConstraintCommandPolicy,

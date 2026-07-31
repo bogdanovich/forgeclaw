@@ -296,6 +296,19 @@ func removeDurableInteractionTools(registry *tools.ToolRegistry) {
 	registry.Unregister("request_user_input")
 }
 
+func removeInheritedNodeFileTools(registry *tools.ToolRegistry) {
+	if registry == nil {
+		return
+	}
+	for _, name := range []string{
+		"nodes_file_info",
+		"nodes_upload",
+		"nodes_download",
+	} {
+		registry.Unregister(name)
+	}
+}
+
 func isUserDeliveryToolName(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 	switch normalized {
@@ -457,6 +470,7 @@ func spawnSubTurn(
 	// don't pollute the parent's registry.
 	if baseAgent.Tools != nil {
 		agent.Tools = baseAgent.Tools.Clone()
+		removeInheritedNodeFileTools(agent.Tools)
 		if !durableTask {
 			removeDurableInteractionTools(agent.Tools)
 		}

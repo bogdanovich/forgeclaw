@@ -238,6 +238,7 @@ func newStartedTestChannelManagerWithConfig(
 type recordingProvider struct {
 	lastMessages []providers.Message
 	lastModel    string
+	lastTools    []providers.ToolDefinition
 }
 
 func (r *recordingProvider) Chat(
@@ -249,6 +250,7 @@ func (r *recordingProvider) Chat(
 ) (*providers.LLMResponse, error) {
 	r.lastMessages = append([]providers.Message(nil), messages...)
 	r.lastModel = model
+	r.lastTools = append([]providers.ToolDefinition(nil), tools...)
 	return &providers.LLMResponse{
 		Content:   "Mock response",
 		ToolCalls: []providers.ToolCall{},
@@ -8279,6 +8281,9 @@ func TestProcessHeartbeat_DoesNotPublishToolFeedback(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	provider := &toolFeedbackProvider{filePath: heartbeatFile}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	for _, name := range []string{"nodes_file_info", "nodes_upload", "nodes_download"} {
+		al.RegisterTool(&allowlistTestTool{name: name})
+	}
 
 	response, err := al.ProcessHeartbeat(
 		context.Background(),
@@ -8297,6 +8302,42 @@ func TestProcessHeartbeat_DoesNotPublishToolFeedback(t *testing.T) {
 	case outbound := <-msgBus.OutboundChan():
 		t.Fatalf("expected no outbound tool feedback during heartbeat, got %+v", outbound)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestProcessScheduledDoesNotInheritNodeFileTools(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &config.Config{Agents: config.AgentsConfig{Defaults: config.AgentDefaults{
+		Workspace: workspace,
+		ModelName: "test-model",
+		MaxTokens: 4096,
+	}}}
+	provider := &recordingProvider{}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	for _, name := range []string{
+		"nodes_file_info",
+		"nodes_upload",
+		"nodes_download",
+		"nodes",
+	} {
+		al.RegisterTool(&allowlistTestTool{name: name})
+	}
+	if _, _, err := al.ProcessScheduledWithIdentity(
+		t.Context(), "scheduled task", "cron-session", "telegram", "chat-1",
+	); err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool, len(provider.lastTools))
+	for _, definition := range provider.lastTools {
+		seen[definition.Function.Name] = true
+	}
+	for _, name := range []string{"nodes_file_info", "nodes_upload", "nodes_download"} {
+		if seen[name] {
+			t.Fatalf("scheduled turn inherited node file tool %q", name)
+		}
+	}
+	if !seen["nodes"] {
+		t.Fatal("scheduled turn lost unrelated nodes discovery tool")
 	}
 }
 

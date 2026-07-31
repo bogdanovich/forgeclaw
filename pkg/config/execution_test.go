@@ -11,7 +11,7 @@ import (
 func TestValidateExecutionTargetsAcceptsBoundedNodePolicies(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Execution.Targets = map[string]ExecutionTarget{
-		"build": {Type: "node", Node: "linux-builder"},
+		"build": {Type: "node", Node: "linux-builder", FileProfile: "project-files"},
 		"vpn":   {Type: "node", Node: "node_0123456789abcdef", Executor: "local"},
 	}
 	cfg.Agents.Defaults.TargetPolicy = &TargetPolicy{
@@ -60,6 +60,12 @@ func TestValidateExecutionTargetsRejectsInvalidDefinitions(t *testing.T) {
 			target: "build",
 			value:  ExecutionTarget{Type: "node", Node: "builder", Executor: "docker"},
 			want:   `unsupported executor "docker"`,
+		},
+		{
+			name:   "invalid file profile",
+			target: "build",
+			value:  ExecutionTarget{Type: "node", Node: "builder", FileProfile: "Root Files"},
+			want:   "invalid file profile",
 		},
 	}
 	for _, test := range tests {

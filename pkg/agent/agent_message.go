@@ -120,6 +120,7 @@ func (al *AgentLoop) processScheduledMessage(
 	if routeErr != nil {
 		return "", "", routeErr
 	}
+	agent = agentWithoutInheritedNodeFileTools(agent)
 	allocation := al.allocateRouteSession(route, msg)
 	allocation, routeErr = al.applySessionLifecycle(allocation, route.SessionPolicy.Lifecycle)
 	if routeErr != nil {
@@ -178,6 +179,7 @@ func (al *AgentLoop) ProcessHeartbeat(
 	if agent == nil {
 		return "", fmt.Errorf("no default agent for heartbeat")
 	}
+	agent = agentWithoutInheritedNodeFileTools(agent)
 	dispatch := DispatchRequest{
 		SessionKey:  "heartbeat",
 		UserMessage: content,

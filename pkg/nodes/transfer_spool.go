@@ -132,6 +132,9 @@ type TransferArtifactRecord struct {
 	CreatedAt    int64                 `json:"created_at"`
 	UpdatedAt    int64                 `json:"updated_at"`
 	CommittedAt  int64                 `json:"committed_at,omitempty"`
+	MediaRef     string                `json:"media_ref,omitempty"`
+	DeliveryKey  string                `json:"delivery_key,omitempty"`
+	DeliveryAt   int64                 `json:"delivery_at,omitempty"`
 }
 
 type transferSpoolDocument struct {
@@ -501,6 +504,125 @@ func (store *GatewayTransferSpool) Resolve(
 		!sameTransferArtifactBinding(record, owner, spec) {
 		return nil, TransferArtifactRecord{}, ErrTransferArtifactNotFound
 	}
+	return store.openCommittedLocked(record)
+}
+
+// ResolveOwned opens an already committed artifact only when the complete
+// retained owner tuple matches. It is used when a durable transfer plan
+// already binds the exact artifact specification and must not trust a
+// model-supplied duplicate of that metadata.
+func (store *GatewayTransferSpool) ResolveOwned(
+	owner TransferArtifactOwner,
+	ref string,
+) (*os.File, TransferArtifactRecord, error) {
+	if err := owner.Validate(); err != nil {
+		return nil, TransferArtifactRecord{}, err
+	}
+	artifactID, err := parseTransferArtifactRef(ref)
+	if err != nil {
+		return nil, TransferArtifactRecord{}, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return nil, TransferArtifactRecord{}, ErrTransferSpoolClosed
+	}
+	if cleanupErr := store.cleanupExpiredLocked(store.now()); cleanupErr != nil {
+		return nil, TransferArtifactRecord{}, cleanupErr
+	}
+	record, found := store.records[artifactID]
+	if !found ||
+		record.State != TransferArtifactCommitted ||
+		record.Owner != owner {
+		return nil, TransferArtifactRecord{}, ErrTransferArtifactNotFound
+	}
+	return store.openCommittedLocked(record)
+}
+
+// LookupTransfer returns the artifact owned by one transfer identity without
+// making the opaque reference bearer authority.
+func (store *GatewayTransferSpool) LookupTransfer(
+	owner TransferArtifactOwner,
+	transferID string,
+) (TransferArtifactRecord, bool, error) {
+	if err := owner.Validate(); err != nil ||
+		!validInvocationIdentifier(transferID) {
+		return TransferArtifactRecord{}, false, ErrTransferArtifactNotFound
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return TransferArtifactRecord{}, false, ErrTransferSpoolClosed
+	}
+	if cleanupErr := store.cleanupExpiredLocked(store.now()); cleanupErr != nil {
+		return TransferArtifactRecord{}, false, cleanupErr
+	}
+	for _, record := range store.records {
+		if record.Owner == owner && record.Spec.TransferID == transferID {
+			return cloneTransferArtifactRecord(record), true, nil
+		}
+	}
+	return TransferArtifactRecord{}, false, nil
+}
+
+// ClaimDelivery durably records the one permitted routed-delivery attempt for
+// a committed artifact. A duplicate claim returns the original record without
+// authorizing another outbound send.
+func (store *GatewayTransferSpool) ClaimDelivery(
+	owner TransferArtifactOwner,
+	ref string,
+	mediaRef string,
+	deliveryKey string,
+) (TransferArtifactRecord, bool, error) {
+	if err := owner.Validate(); err != nil ||
+		len(mediaRef) == 0 ||
+		len(mediaRef) > 256 ||
+		!strings.HasPrefix(mediaRef, "media://") ||
+		!validInvocationIdentifier(deliveryKey) {
+		return TransferArtifactRecord{}, false, ErrTransferArtifactNotFound
+	}
+	artifactID, err := parseTransferArtifactRef(ref)
+	if err != nil {
+		return TransferArtifactRecord{}, false, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return TransferArtifactRecord{}, false, ErrTransferSpoolClosed
+	}
+	record, found := store.records[artifactID]
+	if !found ||
+		record.State != TransferArtifactCommitted ||
+		record.Owner != owner {
+		return TransferArtifactRecord{}, false, ErrTransferArtifactNotFound
+	}
+	if record.DeliveryAt != 0 {
+		if record.MediaRef != mediaRef || record.DeliveryKey != deliveryKey {
+			return TransferArtifactRecord{}, false, ErrTransferArtifactConflict
+		}
+		return cloneTransferArtifactRecord(record), false, nil
+	}
+	previous := cloneTransferArtifactRecords(store.records)
+	now := store.now().UnixNano()
+	if now <= record.UpdatedAt {
+		now = record.UpdatedAt + 1
+	}
+	record.MediaRef = mediaRef
+	record.DeliveryKey = deliveryKey
+	record.DeliveryAt = now
+	record.UpdatedAt = now
+	store.records[artifactID] = record
+	if err := store.persistMutationLocked(previous); err != nil {
+		return cloneTransferArtifactRecord(record),
+			fileutil.IsCommittedWriteError(err),
+			err
+	}
+	return cloneTransferArtifactRecord(record), true, nil
+}
+
+func (store *GatewayTransferSpool) openCommittedLocked(
+	record TransferArtifactRecord,
+) (*os.File, TransferArtifactRecord, error) {
 	file, info, err := store.directory.openRegular(record.DataName)
 	if err != nil {
 		return nil, TransferArtifactRecord{}, ErrTransferArtifactNotFound
@@ -934,6 +1056,17 @@ func validateTransferArtifactRecord(record TransferArtifactRecord) error {
 			return ErrTransferArtifactConflict
 		}
 	default:
+		return ErrTransferArtifactConflict
+	}
+	if (record.DeliveryAt == 0) !=
+		(record.MediaRef == "" && record.DeliveryKey == "") {
+		return ErrTransferArtifactConflict
+	}
+	if record.DeliveryAt != 0 &&
+		(record.DeliveryAt < record.CommittedAt ||
+			len(record.MediaRef) > 256 ||
+			!strings.HasPrefix(record.MediaRef, "media://") ||
+			!validInvocationIdentifier(record.DeliveryKey)) {
 		return ErrTransferArtifactConflict
 	}
 	return nil

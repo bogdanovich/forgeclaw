@@ -56,6 +56,8 @@ type nodeAdmissionRuntime struct {
 	sessions          *nodews.SessionHub
 	terminalStore     *nodes.GatewayTerminalStore
 	terminalStorePath string
+	transferSpool     *nodes.GatewayTransferSpool
+	transferSpoolPath string
 	terminalHub       *nodeTerminalOperatorHub
 	terminalMounted   bool
 	generation        uint64
@@ -239,6 +241,21 @@ func (runtime *nodeAdmissionRuntime) currentSessions() *nodews.SessionHub {
 	return runtime.sessions
 }
 
+func (runtime *nodeAdmissionRuntime) transferSessionsSnapshot(
+	expectedRegistryPath string,
+	expectedGeneration uint64,
+) (*nodews.SessionHub, error) {
+	runtime.registryMu.RLock()
+	defer runtime.registryMu.RUnlock()
+	if !runtime.mounted ||
+		runtime.sessions == nil ||
+		runtime.registryPath != expectedRegistryPath ||
+		runtime.generation != expectedGeneration {
+		return nil, errNodeDiscoveryAuthorityUnavailable
+	}
+	return runtime.sessions, nil
+}
+
 func (runtime *nodeAdmissionRuntime) invocationGeneration() uint64 {
 	runtime.registryMu.RLock()
 	defer runtime.registryMu.RUnlock()
@@ -284,6 +301,31 @@ func (runtime *nodeAdmissionRuntime) existingGatewayTerminalStore(
 	runtime.terminalStore = store
 	runtime.terminalStorePath = path
 	return store, true, nil
+}
+
+func (runtime *nodeAdmissionRuntime) gatewayTransferSpool(
+	path string,
+) (*nodes.GatewayTransferSpool, error) {
+	runtime.registryMu.Lock()
+	defer runtime.registryMu.Unlock()
+	if runtime.transferSpool != nil && runtime.transferSpoolPath == path {
+		return runtime.transferSpool, nil
+	}
+	if runtime.transferSpool != nil {
+		return nil, errors.New("gateway transfer spool path changed before node runtime reconciliation")
+	}
+	spool, err := nodes.NewGatewayTransferSpool(
+		path,
+		nodes.DefaultGatewayTransferLimit,
+		nodes.DefaultGatewayTransferSpoolSize,
+		nodes.DefaultGatewayTransferRetention,
+	)
+	if err != nil {
+		return nil, err
+	}
+	runtime.transferSpool = spool
+	runtime.transferSpoolPath = path
+	return spool, nil
 }
 
 func (runtime *nodeAdmissionRuntime) invocationHandlerSnapshot(
@@ -402,6 +444,7 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 	wasMounted := runtime.mounted
 	handler := runtime.handler
 	terminalStore := runtime.terminalStore
+	transferSpool := runtime.transferSpool
 	runtime.mounted = false
 	runtime.generation++
 	runtime.registryMu.Unlock()
@@ -433,14 +476,22 @@ func (runtime *nodeAdmissionRuntime) Close(ctx context.Context) error {
 			terminalErr = fmt.Errorf("reconcile gateway terminals after node drain: %w", err)
 		}
 	}
-	if closeErr != nil || terminalErr != nil {
-		return errors.Join(closeErr, terminalErr)
+	var transferErr error
+	if transferSpool != nil {
+		if err := transferSpool.Close(); err != nil {
+			transferErr = fmt.Errorf("close gateway transfer spool: %w", err)
+		}
+	}
+	if closeErr != nil || terminalErr != nil || transferErr != nil {
+		return errors.Join(closeErr, terminalErr, transferErr)
 	}
 	runtime.registryMu.Lock()
 	runtime.registry = nil
 	runtime.sessions = nil
 	runtime.terminalStore = nil
 	runtime.terminalStorePath = ""
+	runtime.transferSpool = nil
+	runtime.transferSpoolPath = ""
 	runtime.registryPath = ""
 	runtime.handler = nil
 	runtime.registryMu.Unlock()
