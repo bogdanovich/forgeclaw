@@ -52,7 +52,10 @@ type TransferStream struct {
 	session      *peer
 	subscription *transferFrameSubscription
 	binding      TransferBinding
+	receiveSlot  chan struct{}
 
+	// Lock order is receiveSlot, slot.lifecycle, then stateMu. Subscription
+	// delivery may take transferMu and subscription.mu after stateMu.
 	stateMu               sync.Mutex
 	sentChunkSequence     uint64
 	sentChunkBytes        uint64
@@ -105,6 +108,7 @@ func (hub *SessionHub) OpenTransfer(
 		session:      session,
 		subscription: subscription,
 		binding:      binding,
+		receiveSlot:  make(chan struct{}, 1),
 	}, nil
 }
 
@@ -140,46 +144,50 @@ func (stream *TransferStream) Send(
 	if err := stream.binding.ValidateFrame(frame); err != nil {
 		return err
 	}
-	stream.stateMu.Lock()
-	defer stream.stateMu.Unlock()
-	if stream.closed {
-		return ErrNodeDisconnected
-	}
-	if frame.Type == protocol.TransferFrameChunk {
-		if frame.Sequence != stream.sentChunkSequence+1 {
-			return protocol.ErrInvalidTransferFrame
+	return stream.hub.withTransferGeneration(stream.slot, stream.entry, func() error {
+		stream.stateMu.Lock()
+		defer stream.stateMu.Unlock()
+		if stream.closed {
+			return ErrNodeDisconnected
 		}
-		if stream.sentChunkBytes+uint64(len(frame.Payload)) > stream.binding.TotalSize {
-			return protocol.ErrInvalidTransferFrame
+		if frame.Type == protocol.TransferFrameChunk {
+			if frame.Sequence != stream.sentChunkSequence+1 {
+				return protocol.ErrInvalidTransferFrame
+			}
+			if stream.sentChunkBytes+uint64(len(frame.Payload)) > stream.binding.TotalSize {
+				return protocol.ErrInvalidTransferFrame
+			}
 		}
-	}
-	if frame.Type == protocol.TransferFrameAck {
-		if frame.Sequence < stream.sentAckSequence ||
-			frame.Sequence > stream.receivedChunkSequence {
-			return protocol.ErrInvalidTransferFrame
+		if frame.Type == protocol.TransferFrameAck {
+			if frame.Sequence < stream.sentAckSequence ||
+				frame.Sequence > stream.receivedChunkSequence {
+				return protocol.ErrInvalidTransferFrame
+			}
 		}
-	}
-	if err := stream.hub.withTransferGeneration(stream.slot, stream.entry, func() error {
-		return stream.session.writeTransferFrame(ctx, frame)
-	}); err != nil {
-		return err
-	}
-	if frame.Type == protocol.TransferFrameChunk {
-		stream.sentChunkSequence = frame.Sequence
-		stream.sentChunkBytes += uint64(len(frame.Payload))
-	}
-	if frame.Type == protocol.TransferFrameAck {
-		stream.sentAckSequence = frame.Sequence
-	}
-	return nil
+		if err := stream.session.writeTransferFrame(ctx, frame); err != nil {
+			return err
+		}
+		if frame.Type == protocol.TransferFrameChunk {
+			stream.sentChunkSequence = frame.Sequence
+			stream.sentChunkBytes += uint64(len(frame.Payload))
+		}
+		if frame.Type == protocol.TransferFrameAck {
+			stream.sentAckSequence = frame.Sequence
+		}
+		return nil
+	})
 }
 
 func (stream *TransferStream) Receive(
 	ctx context.Context,
 ) (protocol.TransferFrame, error) {
-	if stream == nil || stream.subscription == nil {
+	if stream == nil || stream.subscription == nil || stream.receiveSlot == nil {
 		return protocol.TransferFrame{}, ErrNodeDisconnected
 	}
+	if err := stream.acquireReceiveSlot(ctx); err != nil {
+		return protocol.TransferFrame{}, err
+	}
+	defer func() { <-stream.receiveSlot }()
 	frame, err := stream.subscription.receive(ctx)
 	if err != nil {
 		return protocol.TransferFrame{}, err
@@ -213,6 +221,24 @@ func (stream *TransferStream) Receive(
 		return protocol.TransferFrame{}, err
 	}
 	return frame, nil
+}
+
+func (stream *TransferStream) acquireReceiveSlot(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stream.session.closed:
+		return ErrNodeDisconnected
+	default:
+	}
+	select {
+	case stream.receiveSlot <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stream.session.closed:
+		return ErrNodeDisconnected
+	}
 }
 
 func (stream *TransferStream) Close() error {

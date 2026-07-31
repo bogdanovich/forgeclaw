@@ -313,6 +313,122 @@ func TestTransferDeliverySerializesWithNormalClose(t *testing.T) {
 	}
 }
 
+func TestTransferSendAndReceiveUseOneLockOrder(t *testing.T) {
+	t.Parallel()
+	binding := testTransferBinding()
+	_, session, stream := openTestTransferStream(t, &transferRecordingConnection{}, binding)
+	inbound := testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil)
+	if handleErr := session.handleTransferFrame(inbound); handleErr != nil {
+		t.Fatal(handleErr)
+	}
+
+	stream.stateMu.Lock()
+	stateHeld := true
+	defer func() {
+		if stateHeld {
+			stream.stateMu.Unlock()
+		}
+	}()
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- stream.Send(
+			t.Context(),
+			testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil),
+		)
+	}()
+	waitForMutexHeld(t, &stream.slot.lifecycle)
+	type receiveResult struct {
+		frame protocol.TransferFrame
+		err   error
+	}
+	receiveDone := make(chan receiveResult, 1)
+	go func() {
+		frame, receiveErr := stream.Receive(t.Context())
+		receiveDone <- receiveResult{frame: frame, err: receiveErr}
+	}()
+	select {
+	case sendErr := <-sendDone:
+		t.Fatalf("Send() bypassed held stream state: %v", sendErr)
+	case result := <-receiveDone:
+		t.Fatalf("Receive() bypassed generation lease: %#v", result)
+	case <-time.After(25 * time.Millisecond):
+	}
+	stream.stateMu.Unlock()
+	stateHeld = false
+	if sendErr := <-sendDone; sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	result := <-receiveDone
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.frame.Type != protocol.TransferFrameStatus {
+		t.Fatalf("Receive() frame = %#v", result.frame)
+	}
+}
+
+func TestTransferReceiveSerializesBeforeDequeue(t *testing.T) {
+	t.Parallel()
+	binding := testTransferBinding()
+	_, session, stream := openTestTransferStream(t, &transferRecordingConnection{}, binding)
+	first := testTransferFrame(binding, protocol.TransferFrameChunk, 1, []byte("abc"))
+	second := testTransferFrame(binding, protocol.TransferFrameChunk, 2, []byte("defg"))
+	if handleErr := session.handleTransferFrame(first); handleErr != nil {
+		t.Fatal(handleErr)
+	}
+	if handleErr := session.handleTransferFrame(second); handleErr != nil {
+		t.Fatal(handleErr)
+	}
+
+	stream.slot.lifecycle.Lock()
+	lifecycleHeld := true
+	defer func() {
+		if lifecycleHeld {
+			stream.slot.lifecycle.Unlock()
+		}
+	}()
+	type receiveResult struct {
+		frame protocol.TransferFrame
+		err   error
+	}
+	firstDone := make(chan receiveResult, 1)
+	go func() {
+		frame, receiveErr := stream.Receive(t.Context())
+		firstDone <- receiveResult{frame: frame, err: receiveErr}
+	}()
+	waitForFrameQueueLength(t, stream.subscription.frames, 1)
+	secondDone := make(chan receiveResult, 1)
+	go func() {
+		frame, receiveErr := stream.Receive(t.Context())
+		secondDone <- receiveResult{frame: frame, err: receiveErr}
+	}()
+	select {
+	case result := <-secondDone:
+		t.Fatalf("second Receive() bypassed receiver serialization: %#v", result)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if queued := len(stream.subscription.frames); queued != 1 {
+		t.Fatalf("queued frames = %d; second Receive() dequeued early", queued)
+	}
+	stream.slot.lifecycle.Unlock()
+	lifecycleHeld = false
+	firstResult := <-firstDone
+	if firstResult.err != nil {
+		t.Fatal(firstResult.err)
+	}
+	secondResult := <-secondDone
+	if secondResult.err != nil {
+		t.Fatal(secondResult.err)
+	}
+	if firstResult.frame.Sequence != 1 || secondResult.frame.Sequence != 2 {
+		t.Fatalf(
+			"Receive() order = %d, %d",
+			firstResult.frame.Sequence,
+			secondResult.frame.Sequence,
+		)
+	}
+}
+
 func openTestTransferStream(
 	t *testing.T,
 	connection peerConnection,
@@ -354,6 +470,22 @@ func waitForMutexHeld(t *testing.T, mutex *sync.Mutex) {
 		return
 	}
 	t.Fatal("mutex was not acquired by competing operation")
+}
+
+func waitForFrameQueueLength(
+	t *testing.T,
+	frames <-chan protocol.TransferFrame,
+	want int,
+) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(frames) == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("queued frames = %d; want %d", len(frames), want)
 }
 
 func testTransferBinding() TransferBinding {
