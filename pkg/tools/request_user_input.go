@@ -76,14 +76,17 @@ func (t *RequestUserInputTool) Parameters() map[string]any {
 					"properties": map[string]any{
 						"id": map[string]any{
 							"type":        "string",
+							"maxLength":   interactions.MaxQuestionIDLength,
 							"description": "Stable snake_case identifier for this answer.",
 						},
 						"header": map[string]any{
 							"type":        "string",
-							"description": "Optional user-facing label of at most 12 characters, in the conversation's language and style.",
+							"maxLength":   interactions.MaxHeaderLength,
+							"description": "Optional short user-facing label in the conversation's language and style.",
 						},
 						"question": map[string]any{
-							"type": "string",
+							"type":      "string",
+							"maxLength": interactions.MaxQuestionLength,
 							"description": "A self-contained user-facing question in the conversation's language and style, " +
 								"with enough context to answer directly.",
 						},
@@ -97,10 +100,12 @@ func (t *RequestUserInputTool) Parameters() map[string]any {
 								"properties": map[string]any{
 									"label": map[string]any{
 										"type":        "string",
+										"maxLength":   interactions.MaxOptionLabelLength,
 										"description": "Short user-facing choice label in the conversation's language and style.",
 									},
 									"description": map[string]any{
-										"type": "string",
+										"type":      "string",
+										"maxLength": interactions.MaxDescriptionLength,
 										"description": "One user-facing sentence in the conversation's language and style " +
 											"describing the choice's impact or tradeoff.",
 									},

@@ -313,7 +313,7 @@ Schema limits:
 
 - one to three questions;
 - stable unique question IDs;
-- headers up to 12 characters;
+- headers up to 64 Unicode code points;
 - bounded question and description lengths;
 - zero or two to three options per question;
 - optional timeout from 60 seconds to 24 hours;

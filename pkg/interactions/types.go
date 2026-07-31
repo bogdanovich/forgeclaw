@@ -81,7 +81,7 @@ const (
 	MaxQuestions         = 3
 	MaxOptions           = 3
 	MaxQuestionIDLength  = 64
-	MaxHeaderLength      = 12
+	MaxHeaderLength      = 64
 	MaxQuestionLength    = 1000
 	MaxOptionLabelLength = 64
 	MaxDescriptionLength = 500
@@ -318,23 +318,59 @@ func validateQuestionsWithPolicy(
 			return fmt.Errorf("%w: duplicate question id %q", ErrInvalidInteraction, question.ID)
 		}
 		seen[question.ID] = struct{}{}
-		if !validBoundedString(question.Header, MaxHeaderLength) ||
-			strings.TrimSpace(question.Question) == "" ||
-			!validBoundedString(
-				question.Question,
+		if !validBoundedString(question.Header, MaxHeaderLength) {
+			return fmt.Errorf(
+				"%w: question %q header exceeds %d characters",
+				ErrInvalidInteraction,
+				question.ID,
+				MaxHeaderLength,
+			)
+		}
+		if strings.TrimSpace(question.Question) == "" {
+			return fmt.Errorf("%w: question %q text is required", ErrInvalidInteraction, question.ID)
+		}
+		if !validBoundedString(question.Question, MaxQuestionLength) {
+			return fmt.Errorf(
+				"%w: question %q text exceeds %d characters",
+				ErrInvalidInteraction,
+				question.ID,
 				MaxQuestionLength,
-			) || len(question.Options) > maxOptions || (strictChoices && len(question.Options) == 1) {
-			return fmt.Errorf("%w: question %q exceeds bounds", ErrInvalidInteraction, question.ID)
+			)
+		}
+		if len(question.Options) > maxOptions || (strictChoices && len(question.Options) == 1) {
+			return fmt.Errorf(
+				"%w: question %q must contain zero or 2 to %d options",
+				ErrInvalidInteraction,
+				question.ID,
+				maxOptions,
+			)
 		}
 		optionLabels := make(map[string]struct{}, len(question.Options))
-		for _, option := range question.Options {
-			if strings.TrimSpace(option.Label) == "" ||
-				!validBoundedString(option.Label, MaxOptionLabelLength) ||
-				!validBoundedString(option.Description, MaxDescriptionLength) {
+		for optionIndex, option := range question.Options {
+			if strings.TrimSpace(option.Label) == "" {
 				return fmt.Errorf(
-					"%w: question %q has invalid option",
+					"%w: question %q option %d label is required",
 					ErrInvalidInteraction,
 					question.ID,
+					optionIndex,
+				)
+			}
+			if !validBoundedString(option.Label, MaxOptionLabelLength) {
+				return fmt.Errorf(
+					"%w: question %q option %d label exceeds %d characters",
+					ErrInvalidInteraction,
+					question.ID,
+					optionIndex,
+					MaxOptionLabelLength,
+				)
+			}
+			if !validBoundedString(option.Description, MaxDescriptionLength) {
+				return fmt.Errorf(
+					"%w: question %q option %d description exceeds %d characters",
+					ErrInvalidInteraction,
+					question.ID,
+					optionIndex,
+					MaxDescriptionLength,
 				)
 			}
 			label := strings.ToLower(strings.TrimSpace(option.Label))
