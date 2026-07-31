@@ -216,15 +216,47 @@ func TestDiagnosticLLMResponseSuppressesNodeFileContentAndReasoning(t *testing.T
 		ToolCalls: []providers.ToolCall{{
 			ID: "call-file", Name: "nodes_download",
 		}},
-	})
+	}, nil)
 	if !sensitive || content != "" || reasoning != "" {
 		t.Fatalf("sensitive response projection = (%q, %q, %v)", content, reasoning, sensitive)
 	}
 
 	content, reasoning, sensitive = diagnosticLLMResponseContent(&providers.LLMResponse{
 		Content: "safe content", Reasoning: "safe reasoning",
-	})
+	}, nil)
 	if sensitive || content != "safe content" || reasoning != "safe reasoning" {
 		t.Fatalf("ordinary response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+}
+
+func TestDiagnosticLLMResponseSuppressesImmediateNodeFileFollowUp(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	fullDigest := strings.Repeat("b", 64)
+	request := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-info", Name: "nodes_file_info",
+			}},
+		},
+		{
+			Role: "tool", ToolCallID: "call-info",
+			Content: `{"path":"` + secretPath + `","sha256":"` + fullDigest + `"}`,
+		},
+	}
+	content, reasoning, sensitive := diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content:   "The file is at " + secretPath,
+		Reasoning: "Its digest is " + fullDigest,
+	}, request)
+	if !sensitive || content != "" || reasoning != "" {
+		t.Fatalf("follow-up response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+
+	request = append(request, providers.Message{Role: "user", Content: "new unrelated turn"})
+	content, reasoning, sensitive = diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content: "safe content", Reasoning: "safe reasoning",
+	}, request)
+	if sensitive || content != "safe content" || reasoning != "safe reasoning" {
+		t.Fatalf("later response projection = (%q, %q, %v)", content, reasoning, sensitive)
 	}
 }

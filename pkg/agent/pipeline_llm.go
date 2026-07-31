@@ -622,6 +622,7 @@ func (p *Pipeline) CallLLM(
 	}
 	diagnosticResponseContent, diagnosticResponseReasoning, sensitiveNodeResponse := diagnosticLLMResponseContent(
 		exec.response,
+		exec.callMessages,
 	)
 	p.emitEvent(
 		runtimeevents.KindAgentLLMResponse,

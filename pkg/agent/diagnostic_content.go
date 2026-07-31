@@ -149,16 +149,38 @@ func diagnosticToolCallsContainNodeEvidence(calls []providers.ToolCall) bool {
 	return false
 }
 
-func diagnosticLLMResponseContent(response *providers.LLMResponse) (string, string, bool) {
+func diagnosticLLMResponseContent(
+	response *providers.LLMResponse,
+	requestMessages []providers.Message,
+) (string, string, bool) {
 	if response == nil {
 		return "", "", false
 	}
-	if diagnosticToolCallsContainNodeEvidence(response.ToolCalls) {
+	reasoning := firstNonEmptyString(response.ReasoningContent, response.Reasoning)
+	if diagnosticToolCallsContainNodeEvidence(response.ToolCalls) ||
+		diagnosticContentContainsArtifactReference(response.Content) ||
+		diagnosticContentContainsArtifactReference(reasoning) ||
+		diagnosticMessagesEndWithNodeResult(requestMessages) {
 		return "", "", true
 	}
-	return response.Content,
-		firstNonEmptyString(response.ReasoningContent, response.Reasoning),
-		false
+	return response.Content, reasoning, false
+}
+
+func diagnosticMessagesEndWithNodeResult(messages []providers.Message) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	toolNames := diagnosticToolNamesByCallID(messages)
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Role != "tool" {
+			break
+		}
+		if !diagnosticToolPreviewAllowed(toolNames[message.ToolCallID]) {
+			return true
+		}
+	}
+	return false
 }
 
 func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) string {
