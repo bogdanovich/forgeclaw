@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -611,6 +612,88 @@ func TestClientTerminalDetachReturnsUnavailableWhenRuntimeDisabled(t *testing.T)
 	}
 }
 
+func TestClientRoutesAuthenticatedTransferFramesToBoundedHandler(t *testing.T) {
+	t.Parallel()
+	registry, admission, sessions := testGatewayAdmissionWithSessions(t)
+	server := httptest.NewTLSServer(admission)
+	defer server.Close()
+	identity := testIdentity(t)
+	client := testClientForServer(t, server, identity, ReconnectConfig{})
+	handler := &recordingTransferFrameHandler{}
+	client.transferHandler = handler
+
+	result, err := client.Authenticate(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, approveErr := registry.Approve(result.NodeID, nodes.PairingApproval{
+		At: time.Now().Unix(),
+	}); approveErr != nil {
+		t.Fatal(approveErr)
+	}
+	runCtx, cancelRun := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- client.Run(runCtx) }()
+	waitForNodeState(t, registry, identity.ID, nodes.StateConnected)
+
+	digest := sha256.Sum256([]byte("payload"))
+	binding := nodews.TransferBinding{
+		TransferID: "transfer_1", Direction: protocol.TransferUpload,
+		PolicyRevision: "files-v1", TotalSize: 7, SHA256: digest,
+	}
+	stream, err := sessions.OpenTransfer(t.Context(), identity.ID, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	frame := protocol.TransferFrame{
+		Type: protocol.TransferFrameChunk, Direction: protocol.TransferUpload,
+		TransferID: "transfer_1", PolicyRevision: "files-v1",
+		Sequence: 1, TotalSize: 7, SHA256: digest, Payload: []byte("payload"),
+	}
+	if sendErr := stream.Send(t.Context(), frame); sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	ack, err := stream.Receive(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Type != protocol.TransferFrameAck ||
+		ack.TransferID != frame.TransferID ||
+		ack.Sequence != frame.Sequence {
+		t.Fatalf("transfer acknowledgement = %#v", ack)
+	}
+	handler.mu.Lock()
+	handledFrame := handler.frame
+	handler.mu.Unlock()
+	if handledFrame.TransferID != frame.TransferID ||
+		string(handledFrame.Payload) != "payload" {
+		t.Fatalf("handler frame = %#v", handledFrame)
+	}
+	cancelRun()
+	if runErr := <-runDone; runErr != nil {
+		t.Fatalf("Run() error = %v", runErr)
+	}
+}
+
+type recordingTransferFrameHandler struct {
+	mu    sync.Mutex
+	frame protocol.TransferFrame
+}
+
+func (handler *recordingTransferFrameHandler) HandleTransferFrame(
+	_ context.Context,
+	frame protocol.TransferFrame,
+	send func(protocol.TransferFrame) error,
+) error {
+	handler.mu.Lock()
+	handler.frame = frame
+	handler.mu.Unlock()
+	frame.Type = protocol.TransferFrameAck
+	frame.Payload = nil
+	return send(frame)
+}
+
 func TestClientDisconnectDrainsTerminalOpenGeneration(t *testing.T) {
 	registry, admission := testGatewayAdmission(t)
 	server := httptest.NewTLSServer(admission)
@@ -926,6 +1009,14 @@ func TestClientAuthenticatesThroughHTTPConnectProxy(t *testing.T) {
 
 func testGatewayAdmission(t *testing.T) (*nodes.FileRegistry, *nodews.AdmissionHandler) {
 	t.Helper()
+	registry, handler, _ := testGatewayAdmissionWithSessions(t)
+	return registry, handler
+}
+
+func testGatewayAdmissionWithSessions(
+	t *testing.T,
+) (*nodes.FileRegistry, *nodews.AdmissionHandler, *nodews.SessionHub) {
+	t.Helper()
 	registry, err := nodes.NewFileRegistry(filepath.Join(t.TempDir(), "registry.json"), 8)
 	if err != nil {
 		t.Fatal(err)
@@ -934,7 +1025,10 @@ func testGatewayAdmission(t *testing.T) (*nodes.FileRegistry, *nodews.AdmissionH
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := nodews.NewAdmissionHandler(authenticator, nodews.AdmissionConfig{})
+	sessions := nodews.NewSessionHub()
+	handler, err := nodews.NewAdmissionHandler(authenticator, nodews.AdmissionConfig{
+		Sessions: sessions,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -945,7 +1039,7 @@ func testGatewayAdmission(t *testing.T) (*nodes.FileRegistry, *nodews.AdmissionH
 			t.Errorf("close test admission handler: %v", closeErr)
 		}
 	})
-	return registry, handler
+	return registry, handler, sessions
 }
 
 func testIdentity(t *testing.T) Identity {

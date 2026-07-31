@@ -29,17 +29,26 @@ const (
 )
 
 type Client struct {
-	config        Config
-	identity      Identity
-	clientVersion string
-	catalog       nodes.CapabilityCatalog
-	runtime       *Runtime
-	logger        *slog.Logger
-	dialer        websocket.Dialer
-	stableWindow  time.Duration
-	invokeSlots   chan struct{}
-	attachmentsMu sync.Mutex
-	attachments   map[string]*TerminalAttachment
+	config          Config
+	identity        Identity
+	clientVersion   string
+	catalog         nodes.CapabilityCatalog
+	runtime         *Runtime
+	logger          *slog.Logger
+	dialer          websocket.Dialer
+	stableWindow    time.Duration
+	invokeSlots     chan struct{}
+	transferHandler TransferFrameHandler
+	attachmentsMu   sync.Mutex
+	attachments     map[string]*TerminalAttachment
+}
+
+type TransferFrameHandler interface {
+	HandleTransferFrame(
+		context.Context,
+		protocol.TransferFrame,
+		func(protocol.TransferFrame) error,
+	) error
 }
 
 type connectedWorkers struct {
@@ -71,6 +80,25 @@ func NewClientWithRuntime(
 		return nil, errors.New("node command runtime identity does not match client identity")
 	}
 	return newClient(cfg, identity, clientVersion, runtime.Catalog(), runtime, logger)
+}
+
+func NewClientWithRuntimeAndTransferHandler(
+	cfg Config,
+	identity Identity,
+	clientVersion string,
+	runtime *Runtime,
+	handler TransferFrameHandler,
+	logger *slog.Logger,
+) (*Client, error) {
+	if handler == nil {
+		return nil, errors.New("node transfer frame handler is required")
+	}
+	client, err := NewClientWithRuntime(cfg, identity, clientVersion, runtime, logger)
+	if err != nil {
+		return nil, err
+	}
+	client.transferHandler = handler
+	return client, nil
 }
 
 func newClient(
@@ -395,7 +423,26 @@ func (client *Client) serveConnected(ctx context.Context, connection *websocket.
 			return fmt.Errorf("node gateway session ended: %w", err)
 		}
 		if messageType == websocket.BinaryMessage {
-			return errors.New("node gateway sent a non-text command frame")
+			if client.transferHandler == nil {
+				return errors.New("node gateway sent a transfer frame while transfers are disabled")
+			}
+			frame, decodeErr := protocol.DecodeTransferFrame(data)
+			if decodeErr != nil {
+				return errors.New("node gateway sent an invalid transfer frame")
+			}
+			if handleErr := client.transferHandler.HandleTransferFrame(
+				connectionCtx,
+				frame,
+				func(response protocol.TransferFrame) error {
+					if !frame.SameBinding(response) {
+						return protocol.ErrInvalidTransferFrame
+					}
+					return writer.writeTransferFrame(response)
+				},
+			); handleErr != nil {
+				return handleErr
+			}
+			continue
 		}
 		if messageType == websocket.TextMessage {
 			envelope, decodeErr := decodeCommandRequest(data)
@@ -1059,6 +1106,21 @@ func (writer *connectedWriter) writeEnvelope(envelope protocol.Envelope) error {
 		return err
 	}
 	return writer.connection.WriteMessage(websocket.TextMessage, data)
+}
+
+func (writer *connectedWriter) writeTransferFrame(
+	frame protocol.TransferFrame,
+) error {
+	data, err := protocol.EncodeTransferFrame(frame)
+	if err != nil {
+		return err
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if err := writer.connection.SetWriteDeadline(time.Now().Add(DefaultHandshakeTimeout)); err != nil {
+		return err
+	}
+	return writer.connection.WriteMessage(websocket.BinaryMessage, data)
 }
 
 func readChallenge(connection *websocket.Conn) (nodes.Challenge, error) {

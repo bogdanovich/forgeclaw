@@ -264,10 +264,14 @@ func (handler *AdmissionHandler) serveSession(
 			return
 		}
 		if messageType == websocket.BinaryMessage {
-			_ = session.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(
-				websocket.CloseUnsupportedData, "node admission: text command frame required",
-			), time.Now().Add(time.Second))
-			return
+			frame, decodeErr := protocol.DecodeTransferFrame(data)
+			if decodeErr != nil || session.handleTransferFrame(frame) != nil {
+				_ = session.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(
+					websocket.ClosePolicyViolation, "node admission: unexpected transfer frame",
+				), time.Now().Add(time.Second))
+				return
+			}
+			continue
 		}
 		if messageType == websocket.TextMessage {
 			envelope, decodeErr := protocol.Decode(data)
