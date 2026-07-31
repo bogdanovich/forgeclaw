@@ -85,6 +85,17 @@ type nodeCommandContract struct {
 	Constraints  nodes.CommandModelConstraints `json:"constraints"`
 	Guidance     []string                      `json:"guidance"`
 	Examples     []json.RawMessage             `json:"examples"`
+	File         *nodeFileCommandContract      `json:"file,omitempty"`
+}
+
+type nodeFileCommandContract struct {
+	ReadableRoots  []string                  `json:"readable_roots,omitempty"`
+	WritableRoots  []string                  `json:"writable_roots,omitempty"`
+	AllowCreate    bool                      `json:"allow_create,omitempty"`
+	AllowOverwrite bool                      `json:"allow_overwrite,omitempty"`
+	MaxFileBytes   int64                     `json:"max_file_bytes"`
+	Digest         string                    `json:"digest"`
+	Approval       nodes.FileProfileApproval `json:"approval"`
 }
 
 type nodeCommandDescription struct {
@@ -214,12 +225,22 @@ func (tool *NodeDiscoveryTool) describe(
 		}
 		return nodeJSONResult(description)
 	}
-	description.Commands = visibleNodeCommands(snapshot.Catalog, registration, entry.Availability)
+	binding := tool.access.targets[target]
+	description.Commands = visibleNodeCommands(
+		snapshot.Catalog,
+		registration,
+		entry.Availability,
+		binding.FileProfile,
+	)
 	if command == "" {
 		return nodeJSONResult(description)
 	}
 	descriptor, ok := visibleNodeCommand(snapshot.Catalog, registration, command)
 	if !ok || entry.RequiresReapproval {
+		return ErrorResult("command is unavailable on this target")
+	}
+	descriptor, ok = projectFileDescriptorForTarget(descriptor, binding.FileProfile)
+	if !ok {
 		return ErrorResult("command is unavailable on this target")
 	}
 	if !commandProjectionFits(descriptor) {
@@ -291,7 +312,12 @@ func (access *nodeTargetAccess) resolve(
 		if connected {
 			targetAvailability = string(nodes.ModelAvailable)
 		}
-		commands := visibleNodeCommands(snapshot.Catalog, registration, targetAvailability)
+		commands := visibleNodeCommands(
+			snapshot.Catalog,
+			registration,
+			targetAvailability,
+			binding.FileProfile,
+		)
 		entry.CommandCount = len(commands)
 		if connected {
 			entry.Availability = aggregateTargetAvailability(commands)
@@ -319,6 +345,7 @@ func visibleNodeCommands(
 	catalog nodes.CapabilityCatalog,
 	registration *nodes.Registration,
 	targetAvailability string,
+	fileProfiles ...string,
 ) []nodeCommandSummary {
 	if registration == nil || len(registration.AllowedCommands) == 0 {
 		return []nodeCommandSummary{}
@@ -337,17 +364,67 @@ func visibleNodeCommands(
 		if _, ok := allowed[descriptor.Name]; !ok {
 			continue
 		}
+		fileProfile := ""
+		if len(fileProfiles) > 0 {
+			fileProfile = fileProfiles[0]
+		}
+		projected, available := projectFileDescriptorForTarget(descriptor, fileProfile)
+		if !available {
+			continue
+		}
 		commands = append(commands, nodeCommandSummary{
-			Name:             descriptor.Name,
-			Risk:             descriptor.Risk,
-			Availability:     commandAvailability(descriptor, targetAvailability),
-			SupportsProgress: descriptor.SupportsProgress,
-			SupportsCancel:   descriptor.SupportsCancel,
-			Approval:         descriptorApprovalMode(descriptor),
+			Name:             projected.Name,
+			Risk:             projected.Risk,
+			Availability:     commandAvailability(projected, targetAvailability),
+			SupportsProgress: projected.SupportsProgress,
+			SupportsCancel:   projected.SupportsCancel,
+			Approval:         descriptorApprovalMode(projected),
 		})
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	return commands
+}
+
+func projectFileDescriptorForTarget(
+	descriptor nodes.CommandDescriptor,
+	fileProfile string,
+) (nodes.CommandDescriptor, bool) {
+	if len(descriptor.FileProfiles) == 0 {
+		return descriptor, true
+	}
+	if fileProfile == "" {
+		return nodes.CommandDescriptor{}, false
+	}
+	for _, profile := range descriptor.FileProfiles {
+		if profile.Alias != fileProfile {
+			continue
+		}
+		descriptor.FileProfiles = []nodes.FileProfileDescriptor{profile}
+		if descriptor.ModelContract == nil {
+			return nodes.CommandDescriptor{}, false
+		}
+		contract := *descriptor.ModelContract
+		contract.Availability = nodes.ModelAvailable
+		switch descriptor.Name {
+		case "file.info.v1":
+			if profile.Approval.Metadata == "required" {
+				contract.ApprovalMode = "each_command"
+			}
+		case "file.download.v1":
+			if profile.Approval.Read == "required" {
+				contract.ApprovalMode = "each_command"
+			}
+		case "file.upload.v1":
+			if profile.Approval.Write == "required" {
+				contract.ApprovalMode = "each_command"
+			}
+		default:
+			return nodes.CommandDescriptor{}, false
+		}
+		descriptor.ModelContract = &contract
+		return descriptor, true
+	}
+	return nodes.CommandDescriptor{}, false
 }
 
 func visibleNodeCommand(
@@ -442,8 +519,10 @@ func makeNodeCommandContract(
 		} else {
 			inputSchema = json.RawMessage("false")
 		}
+	} else if len(descriptor.FileProfiles) == 1 {
+		inputSchema = projectedFileToolInputSchema(descriptor.Name)
 	}
-	return nodeCommandContract{
+	contract := nodeCommandContract{
 		Name:         descriptor.Name,
 		Risk:         descriptor.Risk,
 		Availability: availability,
@@ -462,6 +541,55 @@ func makeNodeCommandContract(
 		Constraints: model.Constraints,
 		Guidance:    append([]string(nil), model.Guidance...),
 		Examples:    append([]json.RawMessage(nil), model.Examples...),
+	}
+	if len(descriptor.FileProfiles) == 1 {
+		profile := descriptor.FileProfiles[0]
+		contract.Constraints.ProfileAliases = nil
+		contract.File = &nodeFileCommandContract{
+			ReadableRoots:  append([]string(nil), profile.ReadableRoots...),
+			WritableRoots:  append([]string(nil), profile.WritableRoots...),
+			AllowCreate:    profile.AllowCreate,
+			AllowOverwrite: profile.AllowOverwrite,
+			MaxFileBytes:   profile.MaxFileBytes,
+			Digest:         "sha256",
+			Approval:       profile.Approval,
+		}
+	}
+	return contract
+}
+
+func projectedFileToolInputSchema(command string) json.RawMessage {
+	switch command {
+	case "file.info.v1":
+		return json.RawMessage(
+			`{"additionalProperties":false,"properties":{` +
+				`"target":{"maxLength":64,"minLength":1,"type":"string"},` +
+				`"path":{"maxLength":4096,"minLength":1,"type":"string"},` +
+				`"discovery_revision":{"maxLength":128,"minLength":1,"type":"string"}},` +
+				`"required":["target","path","discovery_revision"],"type":"object"}`,
+		)
+	case "file.upload.v1":
+		return json.RawMessage(
+			`{"additionalProperties":false,"properties":{` +
+				`"target":{"maxLength":64,"minLength":1,"type":"string"},` +
+				`"artifact_ref":{"maxLength":256,"minLength":1,"type":"string"},` +
+				`"destination":{"maxLength":4096,"minLength":1,"type":"string"},` +
+				`"publication":{"enum":["create","replace"],"type":"string"},` +
+				`"discovery_revision":{"maxLength":128,"minLength":1,"type":"string"}},` +
+				`"required":["target","artifact_ref","destination","publication","discovery_revision"],` +
+				`"type":"object"}`,
+		)
+	case "file.download.v1":
+		return json.RawMessage(
+			`{"additionalProperties":false,"properties":{` +
+				`"target":{"maxLength":64,"minLength":1,"type":"string"},` +
+				`"source":{"maxLength":4096,"minLength":1,"type":"string"},` +
+				`"deliver":{"type":"boolean"},` +
+				`"discovery_revision":{"maxLength":128,"minLength":1,"type":"string"}},` +
+				`"required":["target","source","deliver","discovery_revision"],"type":"object"}`,
+		)
+	default:
+		return json.RawMessage("false")
 	}
 }
 
@@ -492,6 +620,7 @@ type discoveryRevisionInput struct {
 	Target              string      `json:"target"`
 	TargetType          string      `json:"target_type"`
 	TargetExecutor      string      `json:"target_executor"`
+	TargetFileProfile   string      `json:"target_file_profile,omitempty"`
 	TargetBindingDigest string      `json:"target_binding_digest"`
 	NodeIdentityDigest  string      `json:"node_identity_digest"`
 	Command             string      `json:"command"`
@@ -535,6 +664,7 @@ func (access *nodeTargetAccess) discoveryRevision(
 		Target:              target,
 		TargetType:          binding.Type,
 		TargetExecutor:      binding.Executor,
+		TargetFileProfile:   binding.FileProfile,
 		TargetBindingDigest: base64.RawURLEncoding.EncodeToString(bindingDigest[:]),
 		NodeIdentityDigest:  base64.RawURLEncoding.EncodeToString(nodeIdentityDigest[:]),
 		Command:             command,

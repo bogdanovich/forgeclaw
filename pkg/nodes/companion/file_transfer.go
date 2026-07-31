@@ -229,6 +229,7 @@ func (runtime *FileTransferRuntime) Descriptors() []nodes.CommandDescriptor {
 			descriptor.OutputSchema...,
 		)
 		result[index].ModelContract = cloneModelContract(descriptor.ModelContract)
+		result[index].FileProfiles = cloneFileProfileDescriptors(descriptor.FileProfiles)
 	}
 	return result
 }

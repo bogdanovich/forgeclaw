@@ -3226,6 +3226,36 @@ func TestRemoveDurableInteractionTools(t *testing.T) {
 	}
 }
 
+func TestRemoveInheritedNodeFileTools(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	for _, name := range []string{
+		"nodes_file_info",
+		"nodes_upload",
+		"nodes_download",
+		"nodes",
+		"read_file",
+	} {
+		registry.Register(&allowlistTestTool{name: name})
+	}
+
+	removeInheritedNodeFileTools(registry)
+
+	for _, name := range []string{
+		"nodes_file_info",
+		"nodes_upload",
+		"nodes_download",
+	} {
+		if registry.HasRegistered(name) {
+			t.Fatalf("inherited node file tool %q remained available to same-agent subturn", name)
+		}
+	}
+	for _, name := range []string{"nodes", "read_file"} {
+		if !registry.HasRegistered(name) {
+			t.Fatalf("unrelated tool %q was removed", name)
+		}
+	}
+}
+
 func TestSpawnSubTurn_TargetAgentID_EmptyModelAccepted(t *testing.T) {
 	al, cleanup := newMultiAgentLoop(t, &mockProvider{})
 	defer cleanup()

@@ -512,6 +512,12 @@ func (al *AgentLoop) runAgentLoop(
 		),
 	)
 	ts := newTurnState(agent, opts, turnScope)
+	if bindErr := bindNodeFileMediaOwner(al.mediaStore, ts, opts.Dispatch.Media); bindErr != nil {
+		logger.WarnCF("media", "Failed to bind inbound media ownership", map[string]any{
+			"agent_id":    agent.ID,
+			"media_count": len(opts.Dispatch.Media),
+		})
+	}
 	if opts.ObserveFinalDeliveryTurn != nil {
 		opts.ObserveFinalDeliveryTurn(runtimeevents.NewTraceScope(turnScope.workspace, turnScope.turnID))
 	}

@@ -128,6 +128,81 @@ type CommandModelContract struct {
 	Examples          []json.RawMessage       `json:"examples"`
 }
 
+// FileProfileDescriptor is the authenticated, model-safe projection of one
+// node-local regular-file profile. The gateway selects it only through
+// operator-owned target configuration; model tool input never carries Alias,
+// Revision, roots, approval, or limits.
+type FileProfileDescriptor struct {
+	Alias          string              `json:"alias"`
+	Revision       string              `json:"revision"`
+	ReadableRoots  []string            `json:"readable_roots,omitempty"`
+	WritableRoots  []string            `json:"writable_roots,omitempty"`
+	AllowCreate    bool                `json:"allow_create,omitempty"`
+	AllowOverwrite bool                `json:"allow_overwrite,omitempty"`
+	MaxFileBytes   int64               `json:"max_file_bytes"`
+	Approval       FileProfileApproval `json:"approval"`
+}
+
+type FileProfileApproval struct {
+	Metadata string `json:"metadata"`
+	Read     string `json:"read"`
+	Write    string `json:"write"`
+}
+
+func (profile FileProfileDescriptor) Validate() error {
+	if err := (Alias(profile.Alias)).Validate(); err != nil ||
+		!validInvocationIdentifier(profile.Revision) ||
+		profile.MaxFileBytes < 0 ||
+		profile.MaxFileBytes > MaxTransferArtifactBytes ||
+		len(profile.ReadableRoots) > 32 ||
+		len(profile.WritableRoots) > 32 ||
+		!validFileProfileApproval(profile.Approval) {
+		return fmt.Errorf("%w: malformed file profile descriptor", ErrInvalidCapability)
+	}
+	if !sort.StringsAreSorted(profile.ReadableRoots) ||
+		!sort.StringsAreSorted(profile.WritableRoots) ||
+		!validModelFileRoots(profile.ReadableRoots) ||
+		!validModelFileRoots(profile.WritableRoots) {
+		return fmt.Errorf("%w: malformed file profile roots", ErrInvalidCapability)
+	}
+	if len(profile.WritableRoots) == 0 &&
+		(profile.AllowCreate || profile.AllowOverwrite) {
+		return fmt.Errorf("%w: file publication lacks a writable root", ErrInvalidCapability)
+	}
+	return nil
+}
+
+func validFileProfileApproval(approval FileProfileApproval) bool {
+	for _, value := range []string{approval.Metadata, approval.Read, approval.Write} {
+		if value != "none" && value != "required" {
+			return false
+		}
+	}
+	return true
+}
+
+func validModelFileRoots(roots []string) bool {
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		if root == "" ||
+			len(root) > 4096 ||
+			root != strings.TrimSpace(root) ||
+			!utf8.ValidString(root) ||
+			strings.IndexFunc(root, containsModelControlRune) >= 0 {
+			return false
+		}
+		if _, duplicate := seen[root]; duplicate {
+			return false
+		}
+		seen[root] = struct{}{}
+	}
+	return true
+}
+
+func containsModelControlRune(character rune) bool {
+	return character < 0x20 || character == 0x7f
+}
+
 func (contract CommandModelContract) Validate(inputSchema json.RawMessage) error {
 	if !contract.Availability.Valid() ||
 		contract.TimeoutSecondsMax <= 0 ||
@@ -218,13 +293,14 @@ func containsModelControl(value string) bool {
 }
 
 type CommandDescriptor struct {
-	Name             string                `json:"name"`
-	InputSchema      json.RawMessage       `json:"input_schema"`
-	OutputSchema     json.RawMessage       `json:"output_schema"`
-	Risk             Risk                  `json:"risk"`
-	SupportsProgress bool                  `json:"supports_progress,omitempty"`
-	SupportsCancel   bool                  `json:"supports_cancel,omitempty"`
-	ModelContract    *CommandModelContract `json:"model_contract,omitempty"`
+	Name             string                  `json:"name"`
+	InputSchema      json.RawMessage         `json:"input_schema"`
+	OutputSchema     json.RawMessage         `json:"output_schema"`
+	Risk             Risk                    `json:"risk"`
+	SupportsProgress bool                    `json:"supports_progress,omitempty"`
+	SupportsCancel   bool                    `json:"supports_cancel,omitempty"`
+	ModelContract    *CommandModelContract   `json:"model_contract,omitempty"`
+	FileProfiles     []FileProfileDescriptor `json:"file_profiles,omitempty"`
 }
 
 func (descriptor CommandDescriptor) Validate() error {
@@ -281,6 +357,41 @@ func (descriptor CommandDescriptor) Validate() error {
 					return err
 				}
 			}
+		}
+	}
+	if len(descriptor.FileProfiles) > 0 {
+		switch descriptor.Name {
+		case "file.info.v1", "file.download.v1", "file.upload.v1":
+		default:
+			return fmt.Errorf("%w: non-file command carries file profiles", ErrInvalidCapability)
+		}
+		if len(descriptor.FileProfiles) > 32 {
+			return fmt.Errorf("%w: too many file profiles", ErrInvalidCapability)
+		}
+		aliases := make(map[string]struct{}, len(descriptor.FileProfiles))
+		revisions := make(map[string]struct{}, len(descriptor.FileProfiles))
+		priorAlias := ""
+		for _, profile := range descriptor.FileProfiles {
+			if err := profile.Validate(); err != nil {
+				return err
+			}
+			if priorAlias != "" && profile.Alias <= priorAlias {
+				return fmt.Errorf("%w: file profiles are not sorted", ErrInvalidCapability)
+			}
+			if _, duplicate := aliases[profile.Alias]; duplicate {
+				return fmt.Errorf("%w: duplicate file profile alias", ErrInvalidCapability)
+			}
+			if _, duplicate := revisions[profile.Revision]; duplicate {
+				return fmt.Errorf("%w: duplicate file profile revision", ErrInvalidCapability)
+			}
+			aliases[profile.Alias] = struct{}{}
+			revisions[profile.Revision] = struct{}{}
+			priorAlias = profile.Alias
+		}
+	} else {
+		switch descriptor.Name {
+		case "file.info.v1", "file.download.v1", "file.upload.v1":
+			return fmt.Errorf("%w: file command lacks file profiles", ErrInvalidCapability)
 		}
 	}
 	return nil

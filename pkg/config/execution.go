@@ -24,9 +24,10 @@ type ExecutionConfig struct {
 // destination. Only first-party node targets and the local node executor are
 // available in the MVP.
 type ExecutionTarget struct {
-	Type     string `json:"type"`
-	Node     string `json:"node"`
-	Executor string `json:"executor,omitempty"`
+	Type        string `json:"type"`
+	Node        string `json:"node"`
+	Executor    string `json:"executor,omitempty"`
+	FileProfile string `json:"file_profile,omitempty"`
 }
 
 // TargetPolicy bounds the named execution targets visible to one agent.
@@ -57,6 +58,9 @@ func (c *Config) ValidateExecutionTargets() error {
 		}
 		if target.Executor != "" && target.Executor != "local" {
 			return fmt.Errorf("execution target %q has unsupported executor %q", name, target.Executor)
+		}
+		if target.FileProfile != "" && !validNodeFileProfile(target.FileProfile) {
+			return fmt.Errorf("execution target %q has an invalid file profile", name)
 		}
 	}
 	if err := validateTargetPolicy(
@@ -117,4 +121,8 @@ func validExecutionTargetName(value string) bool {
 
 func validNodeReference(value string) bool {
 	return value == strings.TrimSpace(value) && nodeReferencePattern.MatchString(value)
+}
+
+func validNodeFileProfile(value string) bool {
+	return value == strings.TrimSpace(value) && executionTargetNamePattern.MatchString(value)
 }

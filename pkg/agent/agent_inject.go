@@ -89,10 +89,26 @@ func registerToolOnRegistry(registry *AgentRegistry, tool tools.Tool) {
 		return
 	}
 	for _, agentID := range registry.ListAgentIDs() {
+		if scoped, ok := tool.(tools.AgentScopedTool); ok &&
+			!scoped.ToolEnabledForAgent(agentID) {
+			continue
+		}
 		if agent, ok := registry.GetAgent(agentID); ok {
 			registerToolIfAllowed(agent, tool)
 		}
 	}
+}
+
+func agentWithoutInheritedNodeFileTools(agent *AgentInstance) *AgentInstance {
+	if agent == nil {
+		return nil
+	}
+	cloned := *agent
+	if agent.Tools != nil {
+		cloned.Tools = agent.Tools.Clone()
+		removeInheritedNodeFileTools(cloned.Tools)
+	}
+	return &cloned
 }
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {

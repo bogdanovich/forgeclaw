@@ -125,6 +125,80 @@ func TestGatewayTransferSpoolBindsOwnerAndTransferIdentity(t *testing.T) {
 	}
 }
 
+func TestGatewayTransferSpoolRetainsOneDeliveryClaimAcrossRestart(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_800_000_000, 0)
+	root := filepath.Join(t.TempDir(), "spool")
+	store, err := newGatewayTransferSpool(root, 8, 1024*1024, time.Hour, func() time.Time {
+		return now
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := testTransferOwner("actor-a")
+	content := []byte("delivery payload")
+	spec := testTransferSpec(content, now)
+	writer, _, _, err := store.Begin(owner, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteChunk(1, content); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := writer.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, first, err := store.ClaimDelivery(
+		owner,
+		committed.Ref,
+		"media://node-transfer-test",
+		"delivery_test",
+	)
+	if err != nil || !first || claimed.DeliveryAt == 0 {
+		t.Fatalf("ClaimDelivery() = (%#v, %v, %v)", claimed, first, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := newGatewayTransferSpool(root, 8, 1024*1024, time.Hour, func() time.Time {
+		return now.Add(time.Minute)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	file, retained, err := restarted.ResolveOwned(owner, committed.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	if retained.DeliveryAt != claimed.DeliveryAt ||
+		retained.MediaRef != claimed.MediaRef ||
+		retained.DeliveryKey != claimed.DeliveryKey {
+		t.Fatalf("restarted delivery claim = %#v, want %#v", retained, claimed)
+	}
+	duplicate, second, err := restarted.ClaimDelivery(
+		owner,
+		committed.Ref,
+		claimed.MediaRef,
+		claimed.DeliveryKey,
+	)
+	if err != nil || second || duplicate.DeliveryAt != claimed.DeliveryAt {
+		t.Fatalf("duplicate ClaimDelivery() = (%#v, %v, %v)", duplicate, second, err)
+	}
+	otherOwner := owner
+	otherOwner.RouteID = "other-route"
+	if _, _, err := restarted.ClaimDelivery(
+		otherOwner,
+		committed.Ref,
+		claimed.MediaRef,
+		claimed.DeliveryKey,
+	); !errors.Is(err, ErrTransferArtifactNotFound) {
+		t.Fatalf("cross-route ClaimDelivery() error = %v", err)
+	}
+}
+
 func TestGatewayTransferSpoolScopesTransferIDToOwnerAndTransferIdentity(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1_800_000_000, 0)

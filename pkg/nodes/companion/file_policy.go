@@ -245,8 +245,23 @@ func fileCapabilityDescriptors(policies FilePolicies) ([]nodes.CommandDescriptor
 	authoritySum := sha256.Sum256(authorityData)
 	authorityDigest := hex.EncodeToString(authoritySum[:])
 	profileAliases := make([]string, 0, len(enabled))
+	profileDescriptors := make([]nodes.FileProfileDescriptor, 0, len(enabled))
 	for _, profile := range enabled {
 		profileAliases = append(profileAliases, profile.normalizedAlias)
+		profileDescriptors = append(profileDescriptors, nodes.FileProfileDescriptor{
+			Alias:          profile.normalizedAlias,
+			Revision:       profile.Revision,
+			ReadableRoots:  append([]string(nil), profile.ReadableRoots...),
+			WritableRoots:  append([]string(nil), profile.WritableRoots...),
+			AllowCreate:    profile.AllowCreate,
+			AllowOverwrite: profile.AllowOverwrite,
+			MaxFileBytes:   profile.MaxFileBytes,
+			Approval: nodes.FileProfileApproval{
+				Metadata: string(profile.Approval.Metadata),
+				Read:     string(profile.Approval.Read),
+				Write:    string(profile.Approval.Write),
+			},
+		})
 	}
 	contract := &nodes.CommandModelContract{
 		Availability:      nodes.ModelUnavailable,
@@ -261,9 +276,9 @@ func fileCapabilityDescriptors(policies FilePolicies) ([]nodes.CommandDescriptor
 		Examples: []json.RawMessage{},
 	}
 	descriptors := []nodes.CommandDescriptor{
-		fileCapabilityDescriptor("file.info.v1", nodes.RiskRead, contract),
-		fileCapabilityDescriptor("file.download.v1", nodes.RiskRead, contract),
-		fileCapabilityDescriptor("file.upload.v1", nodes.RiskWrite, contract),
+		fileCapabilityDescriptor("file.info.v1", nodes.RiskRead, contract, profileDescriptors),
+		fileCapabilityDescriptor("file.download.v1", nodes.RiskRead, contract, profileDescriptors),
+		fileCapabilityDescriptor("file.upload.v1", nodes.RiskWrite, contract, profileDescriptors),
 	}
 	for _, descriptor := range descriptors {
 		if err := descriptor.Validate(); err != nil {
@@ -277,10 +292,9 @@ func fileCapabilityDescriptor(
 	name string,
 	risk nodes.Risk,
 	contract *nodes.CommandModelContract,
+	profiles []nodes.FileProfileDescriptor,
 ) nodes.CommandDescriptor {
-	input := json.RawMessage(
-		`{"additionalProperties":false,"properties":{},"type":"object"}`,
-	)
+	input := fileTransferPlanInputSchema(name)
 	output := json.RawMessage(
 		`{"additionalProperties":true,"properties":{},"type":"object"}`,
 	)
@@ -297,5 +311,66 @@ func fileCapabilityDescriptor(
 		SupportsProgress: true,
 		SupportsCancel:   true,
 		ModelContract:    &clonedContract,
+		FileProfiles:     cloneFileProfileDescriptors(profiles),
 	}
+}
+
+func fileTransferPlanInputSchema(name string) json.RawMessage {
+	const commonProperties = `"route_id":{"maxLength":128,"minLength":1,"type":"string"},` +
+		`"discovery_revision":{"maxLength":128,"minLength":1,"type":"string"}`
+	switch name {
+	case "file.info.v1":
+		return json.RawMessage(
+			`{"additionalProperties":false,"properties":{` +
+				`"path":{"maxLength":4096,"minLength":1,"type":"string"},` +
+				commonProperties +
+				`},"required":["path","route_id","discovery_revision"],"type":"object"}`,
+		)
+	case "file.upload.v1":
+		return json.RawMessage(
+			`{"additionalProperties":false,"properties":{` +
+				`"artifact_ref":{"maxLength":256,"minLength":1,"type":"string"},` +
+				`"source_artifact_id":{"maxLength":128,"minLength":1,"type":"string"},` +
+				`"destination":{"maxLength":4096,"minLength":1,"type":"string"},` +
+				`"publication":{"enum":["create","replace"],"type":"string"},` +
+				`"size":{"maximum":1073741824,"minimum":0,"type":"integer"},` +
+				`"sha256":{"maxLength":64,"minLength":64,"type":"string"},` +
+				`"filename":{"maxLength":255,"minLength":1,"type":"string"},` +
+				`"content_type":{"maxLength":255,"type":"string"},` +
+				commonProperties +
+				`},"required":["artifact_ref","source_artifact_id","destination","publication",` +
+				`"size","sha256",` +
+				`"filename","route_id","discovery_revision"],"type":"object"}`,
+		)
+	case "file.download.v1":
+		return json.RawMessage(
+			`{"additionalProperties":false,"properties":{` +
+				`"source":{"maxLength":4096,"minLength":1,"type":"string"},` +
+				`"deliver":{"type":"boolean"},` +
+				`"size":{"maximum":1073741824,"minimum":0,"type":"integer"},` +
+				`"sha256":{"maxLength":64,"minLength":64,"type":"string"},` +
+				`"filename":{"maxLength":255,"minLength":1,"type":"string"},` +
+				`"content_type":{"maxLength":255,"type":"string"},` +
+				`"channel":{"maxLength":64,"type":"string"},` +
+				`"chat_id":{"maxLength":512,"type":"string"},` +
+				`"topic_id":{"maxLength":512,"type":"string"},` +
+				commonProperties +
+				`},"required":["source","deliver","size","sha256","filename","route_id",` +
+				`"discovery_revision"],"type":"object"}`,
+		)
+	default:
+		return json.RawMessage("false")
+	}
+}
+
+func cloneFileProfileDescriptors(
+	profiles []nodes.FileProfileDescriptor,
+) []nodes.FileProfileDescriptor {
+	result := make([]nodes.FileProfileDescriptor, len(profiles))
+	for index, profile := range profiles {
+		result[index] = profile
+		result[index].ReadableRoots = append([]string(nil), profile.ReadableRoots...)
+		result[index].WritableRoots = append([]string(nil), profile.WritableRoots...)
+	}
+	return result
 }

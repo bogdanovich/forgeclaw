@@ -527,6 +527,13 @@ func setupNodeTools(
 		if _, err := newNodeInvocationSource(cfg, runtime); err != nil {
 			return err
 		}
+		if configuredNodeFileTarget(cfg) {
+			if _, err := newNodeFileTransferSource(cfg, runtime); err != nil {
+				logger.ErrorCF("nodes", "Node file tools disabled", map[string]any{
+					"reason": "transfer_runtime_unavailable",
+				})
+			}
+		}
 	}
 	if err := agentLoop.RegisterRuntimeTool("nodes", func(reloadCfg *config.Config) (tools.Tool, error) {
 		if reloadCfg == nil || !reloadCfg.Nodes.Enabled {
@@ -578,6 +585,39 @@ func setupNodeTools(
 	); err != nil {
 		return err
 	}
+	if err := agentLoop.RegisterRuntimeTool(
+		"nodes_file_info",
+		nodeFileTransferToolFactory(
+			runtime,
+			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
+				return tools.NewNodeFileInfoTool(cfg, source)
+			},
+		),
+	); err != nil {
+		return err
+	}
+	if err := agentLoop.RegisterRuntimeTool(
+		"nodes_upload",
+		nodeFileTransferToolFactory(
+			runtime,
+			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
+				return tools.NewNodeUploadTool(cfg, source)
+			},
+		),
+	); err != nil {
+		return err
+	}
+	if err := agentLoop.RegisterRuntimeTool(
+		"nodes_download",
+		nodeFileTransferToolFactory(
+			runtime,
+			func(cfg *config.Config, source tools.NodeFileTransferSource) tools.Tool {
+				return tools.NewNodeDownloadTool(cfg, source)
+			},
+		),
+	); err != nil {
+		return err
+	}
 	return agentLoop.RegisterRuntimeTool(
 		"nodes_terminal",
 		func(reloadCfg *config.Config) (tools.Tool, error) {
@@ -598,11 +638,50 @@ func setupNodeTools(
 	)
 }
 
+func nodeFileTransferToolFactory(
+	runtime *nodeAdmissionRuntime,
+	build func(*config.Config, tools.NodeFileTransferSource) tools.Tool,
+) agent.RuntimeToolFactory {
+	return func(cfg *config.Config) (tools.Tool, error) {
+		source, err := newNodeFileTransferSource(cfg, runtime)
+		if err != nil {
+			logger.ErrorCF("nodes", "Node file tools disabled", map[string]any{
+				"reason": "transfer_runtime_unavailable",
+			})
+			return nil, nil //nolint:nilerr // A broken private spool disables only file tools.
+		}
+		if source == nil {
+			return nil, nil
+		}
+		return build(cfg, source), nil
+	}
+}
+
 func nodeInvocationToolFactory(
 	runtime *nodeAdmissionRuntime,
 	build func(*config.Config, tools.NodeInvocationSource) tools.Tool,
 ) agent.RuntimeToolFactory {
 	return func(cfg *config.Config) (tools.Tool, error) {
+		if configuredNodeFileTarget(cfg) {
+			fileSource, fileErr := newNodeFileTransferSource(cfg, runtime)
+			if fileErr == nil && fileSource != nil {
+				return build(cfg, fileSource), nil
+			}
+			if fileErr != nil && !errors.Is(fileErr, errNodeDiscoveryAuthorityUnavailable) {
+				logger.ErrorCF("nodes", "Node file status and cancellation disabled", map[string]any{
+					"reason": "transfer_runtime_unavailable",
+				})
+			}
+		}
+		recoverySource, recoveryErr := newNodeFileTransferRecoverySource(cfg, runtime)
+		if recoveryErr == nil && recoverySource != nil {
+			return build(cfg, recoverySource), nil
+		}
+		if recoveryErr != nil && !errors.Is(recoveryErr, errNodeDiscoveryAuthorityUnavailable) {
+			logger.ErrorCF("nodes", "Node file recovery disabled", map[string]any{
+				"reason": "transfer_runtime_unavailable",
+			})
+		}
 		source, err := newNodeInvocationSource(cfg, runtime)
 		if errors.Is(err, errNodeDiscoveryAuthorityUnavailable) {
 			// Config reload rebuilds the agent registry before reconciling the

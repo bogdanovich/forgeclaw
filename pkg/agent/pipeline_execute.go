@@ -344,6 +344,16 @@ toolLoop:
 					verifiedWrite := hasVerifiedWriteAudit(hookResult.WriteAudit)
 					exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, hookResult.WriteAudit)
 					recordFinalRenderToolCall(exec, tc.ID, toolName, verifiedWrite)
+					if bindErr := bindNodeFileMediaOwner(
+						p.Context.MediaResolver,
+						ts,
+						hookResult.Media,
+					); bindErr != nil {
+						logger.WarnCF("media", "Failed to bind tool media ownership", map[string]any{
+							"tool":        toolName,
+							"media_count": len(hookResult.Media),
+						})
+					}
 					attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, hookResult, toolName)
 					hookResult = deliveredResult
 					runner.handledAttachments = append(runner.handledAttachments, attachments...)
@@ -833,6 +843,16 @@ toolLoop:
 
 		exec.writeAudit = appendTurnWriteAudit(exec.writeAudit, toolName, toolResult.WriteAudit)
 		recordFinalRenderToolCall(exec, toolCallID, toolName, verifiedWrite)
+		if bindErr := bindNodeFileMediaOwner(
+			p.Context.MediaResolver,
+			ts,
+			toolResult.Media,
+		); bindErr != nil {
+			logger.WarnCF("media", "Failed to bind tool media ownership", map[string]any{
+				"tool":        toolName,
+				"media_count": len(toolResult.Media),
+			})
+		}
 		attachments, deliveredResult := p.applySyncToolResultDelivery(ctx, ts, toolResult, toolName)
 		toolResult = deliveredResult
 		runner.handledAttachments = append(runner.handledAttachments, attachments...)

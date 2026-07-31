@@ -761,11 +761,24 @@ func cloneGatewayInvocationRecord(record GatewayInvocationRecord) GatewayInvocat
 func cloneCommandDescriptor(descriptor CommandDescriptor) CommandDescriptor {
 	descriptor.InputSchema = bytes.Clone(descriptor.InputSchema)
 	descriptor.OutputSchema = bytes.Clone(descriptor.OutputSchema)
+	descriptor.FileProfiles = cloneNodeFileProfileDescriptors(descriptor.FileProfiles)
 	if descriptor.ModelContract != nil {
 		contract := cloneCommandModelContract(*descriptor.ModelContract)
 		descriptor.ModelContract = &contract
 	}
 	return descriptor
+}
+
+func cloneNodeFileProfileDescriptors(
+	profiles []FileProfileDescriptor,
+) []FileProfileDescriptor {
+	cloned := make([]FileProfileDescriptor, len(profiles))
+	for index, profile := range profiles {
+		cloned[index] = profile
+		cloned[index].ReadableRoots = append([]string(nil), profile.ReadableRoots...)
+		cloned[index].WritableRoots = append([]string(nil), profile.WritableRoots...)
+	}
+	return cloned
 }
 
 func sameCommandDescriptor(left, right CommandDescriptor) bool {
