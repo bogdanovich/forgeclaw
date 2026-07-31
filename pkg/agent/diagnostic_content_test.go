@@ -260,3 +260,38 @@ func TestDiagnosticLLMResponseSuppressesImmediateNodeFileFollowUp(t *testing.T) 
 		t.Fatalf("later response projection = (%q, %q, %v)", content, reasoning, sensitive)
 	}
 }
+
+func TestDiagnosticLLMResponseSuppressesNodeFileGracefulInterrupt(t *testing.T) {
+	secretPath := "/private/node/config.json"
+	fullDigest := strings.Repeat("c", 64)
+	request := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-download", Name: "nodes_download",
+			}},
+		},
+		{
+			Role: "tool", ToolCallID: "call-download",
+			Content: `{"path":"` + secretPath + `","sha256":"` + fullDigest + `"}`,
+		},
+		interruptPromptMessage("Stop scheduling tools and provide a short final summary."),
+	}
+	content, reasoning, sensitive := diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content:   "Downloaded " + secretPath,
+		Reasoning: "The digest is " + fullDigest,
+	}, request)
+	if !sensitive || content != "" || reasoning != "" {
+		t.Fatalf("graceful response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+
+	request[len(request)-1] = providers.Message{
+		Role: "user", Content: "Stop scheduling tools and provide a short final summary.",
+	}
+	content, reasoning, sensitive = diagnosticLLMResponseContent(&providers.LLMResponse{
+		Content: "safe content", Reasoning: "safe reasoning",
+	}, request)
+	if sensitive || content != "safe content" || reasoning != "safe reasoning" {
+		t.Fatalf("untrusted lookalike projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+}

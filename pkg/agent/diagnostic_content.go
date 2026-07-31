@@ -173,6 +173,9 @@ func diagnosticMessagesEndWithNodeResult(messages []providers.Message) bool {
 	toolNames := diagnosticToolNamesByCallID(messages)
 	for index := len(messages) - 1; index >= 0; index-- {
 		message := messages[index]
+		if diagnosticSyntheticInterruptMessage(message) {
+			continue
+		}
 		if message.Role != "tool" {
 			break
 		}
@@ -181,6 +184,12 @@ func diagnosticMessagesEndWithNodeResult(messages []providers.Message) bool {
 		}
 	}
 	return false
+}
+
+func diagnosticSyntheticInterruptMessage(message providers.Message) bool {
+	return message.PromptLayer == string(PromptLayerTurn) &&
+		message.PromptSlot == string(PromptSlotInterrupt) &&
+		message.PromptSource == string(PromptSourceInterrupt)
 }
 
 func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) string {
