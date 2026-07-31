@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -232,7 +233,7 @@ func TestFileHelperUnixDeniesPeerProfileRevisionPathSizeModeExpiryAndDigest(t *t
 	)
 	if response := rawFileHelperRequest(
 		t,
-		config.SocketPath,
+		config,
 		"other-profile",
 		wrongProfile,
 	); response.Type != protocol.TransferFrameDeny {
@@ -243,11 +244,53 @@ func TestFileHelperUnixDeniesPeerProfileRevisionPathSizeModeExpiryAndDigest(t *t
 	wrongRevision.PolicyRevision = "other-v1"
 	if response := rawFileHelperRequest(
 		t,
-		config.SocketPath,
+		config,
 		"server-admin",
 		wrongRevision,
 	); response.Type != protocol.TransferFrameDeny {
 		t.Fatalf("wrong revision response = %#v", response)
+	}
+	serviceDigest, err := fileHelperServiceDigest(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleDigest := "0" + serviceDigest[1:]
+	if serviceDigest[0] == '0' {
+		staleDigest = "1" + serviceDigest[1:]
+	}
+	stalePath := filepath.Join(root, "stale-authority")
+	staleAuthority := helperPrepareFrame(
+		t,
+		"helper_authority_stale",
+		protocol.TransferUpload,
+		emptyTransferDigest,
+		0,
+		fileTransferPrepare{
+			Operation:   fileOperationUpload,
+			Path:        stalePath,
+			Publication: filePublicationCreate,
+			ExpiresAt:   time.Now().Add(time.Minute).Unix(),
+		},
+	)
+	connection := rawFileHelperConnection(t, config.SocketPath)
+	writeRawFileHelperTransfer(
+		t,
+		connection,
+		staleDigest,
+		"server-admin",
+		staleAuthority,
+	)
+	staleResponse := readRawFileHelperTransfer(t, connection)
+	_ = connection.Close()
+	var staleResult fileTransferResult
+	if err := json.Unmarshal(staleResponse.Payload, &staleResult); err != nil {
+		t.Fatal(err)
+	}
+	if staleResponse.Type != protocol.TransferFrameDeny || staleResult.Code != "AUTHORITY_STALE" {
+		t.Fatalf("stale helper authority response = %#v (%#v)", staleResponse, staleResult)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("stale helper authority reached the filesystem: %v", err)
 	}
 
 	goodDigest := sha256.Sum256([]byte("ok"))
@@ -264,8 +307,8 @@ func TestFileHelperUnixDeniesPeerProfileRevisionPathSizeModeExpiryAndDigest(t *t
 			ExpiresAt:   time.Now().Add(time.Minute).Unix(),
 		},
 	)
-	connection := rawFileHelperConnection(t, config.SocketPath)
-	writeRawFileHelperTransfer(t, connection, "server-admin", prepare)
+	connection = rawFileHelperConnection(t, config.SocketPath)
+	writeRawFileHelperTransfer(t, connection, serviceDigest, "server-admin", prepare)
 	if response := readRawFileHelperTransfer(t, connection); response.Type != protocol.TransferFrameAccept {
 		t.Fatalf("digest prepare response = %#v", response)
 	}
@@ -273,7 +316,7 @@ func TestFileHelperUnixDeniesPeerProfileRevisionPathSizeModeExpiryAndDigest(t *t
 	changed.Sequence = 1
 	changed.Payload = []byte("ok")
 	changed.SHA256 = sha256.Sum256([]byte("no"))
-	writeRawFileHelperTransfer(t, connection, "server-admin", changed)
+	writeRawFileHelperTransfer(t, connection, serviceDigest, "server-admin", changed)
 	message, err := readFileHelperMessage(connection)
 	if err != nil || message.Kind != fileHelperErrorResponse {
 		t.Fatalf("digest conflict response = (%#v, %v)", message, err)
@@ -513,14 +556,18 @@ func downloadThroughHelper(
 
 func rawFileHelperRequest(
 	t *testing.T,
-	socketPath string,
+	config FileHelperServiceConfig,
 	profileAlias string,
 	frame protocol.TransferFrame,
 ) protocol.TransferFrame {
 	t.Helper()
-	connection := rawFileHelperConnection(t, socketPath)
+	serviceDigest, err := fileHelperServiceDigest(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := rawFileHelperConnection(t, config.SocketPath)
 	defer connection.Close()
-	writeRawFileHelperTransfer(t, connection, profileAlias, frame)
+	writeRawFileHelperTransfer(t, connection, serviceDigest, profileAlias, frame)
 	return readRawFileHelperTransfer(t, connection)
 }
 
@@ -536,11 +583,12 @@ func rawFileHelperConnection(t *testing.T, socketPath string) *net.UnixConn {
 func writeRawFileHelperTransfer(
 	t *testing.T,
 	connection *net.UnixConn,
+	serviceDigest string,
 	profileAlias string,
 	frame protocol.TransferFrame,
 ) {
 	t.Helper()
-	payload, err := encodeFileHelperTransferRequest(profileAlias, frame)
+	payload, err := encodeFileHelperTransferRequest(serviceDigest, profileAlias, frame)
 	if err != nil {
 		t.Fatal(err)
 	}

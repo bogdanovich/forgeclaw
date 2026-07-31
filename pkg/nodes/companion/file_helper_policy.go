@@ -1,6 +1,9 @@
 package companion
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -78,4 +81,31 @@ func (config FileHelperServiceConfig) Descriptors() ([]nodes.CommandDescriptor, 
 		return nil, errors.New("file helper configuration is not normalized")
 	}
 	return fileCapabilityDescriptors(config.Profiles)
+}
+
+func fileHelperServiceDigest(config FileHelperServiceConfig) (string, error) {
+	if !config.normalized {
+		return "", errors.New("file helper configuration is not normalized")
+	}
+	binding := struct {
+		Version    int          `json:"version"`
+		SocketPath string       `json:"socket_path"`
+		StateDir   string       `json:"state_dir"`
+		AllowedUID uint32       `json:"allowed_uid"`
+		AllowedGID uint32       `json:"allowed_gid"`
+		Profiles   FilePolicies `json:"node_file_policies"`
+	}{
+		Version:    FileHelperProtocolVersion,
+		SocketPath: config.SocketPath,
+		StateDir:   config.StateDir,
+		AllowedUID: config.AllowedUID,
+		AllowedGID: config.AllowedGID,
+		Profiles:   config.Profiles,
+	}
+	data, err := json.Marshal(binding)
+	if err != nil {
+		return "", fmt.Errorf("encode file helper service authority: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
 }

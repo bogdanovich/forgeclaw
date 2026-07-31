@@ -41,6 +41,7 @@ var (
 type fileHelperSnapshot struct {
 	Profile         nodes.FileProfileDescriptor `json:"profile"`
 	AuthorityDigest string                      `json:"authority_digest"`
+	ServiceDigest   string                      `json:"service_digest"`
 }
 
 type fileHelperMessage struct {
@@ -49,8 +50,9 @@ type fileHelperMessage struct {
 }
 
 type fileHelperTransfer struct {
-	ProfileAlias string
-	Frame        protocol.TransferFrame
+	ServiceDigest string
+	ProfileAlias  string
+	Frame         protocol.TransferFrame
 }
 
 func readFileHelperMessage(reader io.Reader) (fileHelperMessage, error) {
@@ -135,9 +137,13 @@ func (message fileHelperMessage) validate() error {
 }
 
 func encodeFileHelperTransferRequest(
+	serviceDigest string,
 	profileAlias string,
 	frame protocol.TransferFrame,
 ) ([]byte, error) {
+	if !validFileHelperDigest(serviceDigest) {
+		return nil, errors.New("file helper service digest is invalid")
+	}
 	if err := (nodes.Alias(profileAlias)).Validate(); err != nil {
 		return nil, errors.New("file helper profile alias is invalid")
 	}
@@ -145,13 +151,16 @@ func encodeFileHelperTransferRequest(
 	if err != nil {
 		return nil, err
 	}
-	if len(profileAlias) > 0xffff || len(encoded)+len(profileAlias)+2 > MaxFileHelperMessageBytes {
+	if len(profileAlias) > 0xffff ||
+		len(encoded)+len(profileAlias)+2+sha256.Size*2 > MaxFileHelperMessageBytes {
 		return nil, errors.New("file helper transfer request exceeds bounds")
 	}
-	payload := make([]byte, len(encoded)+len(profileAlias)+2)
+	payload := make([]byte, len(encoded)+len(profileAlias)+2+sha256.Size*2)
 	binary.BigEndian.PutUint16(payload[:2], uint16(len(profileAlias)))
 	copy(payload[2:], profileAlias)
-	copy(payload[2+len(profileAlias):], encoded)
+	digestOffset := 2 + len(profileAlias)
+	copy(payload[digestOffset:], serviceDigest)
+	copy(payload[digestOffset+sha256.Size*2:], encoded)
 	return payload, nil
 }
 
@@ -160,27 +169,50 @@ func decodeFileHelperTransferRequest(payload []byte) (fileHelperTransfer, error)
 		return fileHelperTransfer{}, errors.New("file helper transfer request is truncated")
 	}
 	aliasLength := int(binary.BigEndian.Uint16(payload[:2]))
-	if aliasLength <= 0 || 2+aliasLength >= len(payload) {
+	if aliasLength <= 0 || 2+aliasLength+sha256.Size*2 >= len(payload) {
 		return fileHelperTransfer{}, errors.New("file helper transfer request alias length is invalid")
 	}
 	alias := string(payload[2 : 2+aliasLength])
 	if err := (nodes.Alias(alias)).Validate(); err != nil {
 		return fileHelperTransfer{}, errors.New("file helper transfer request alias is invalid")
 	}
-	frame, err := protocol.DecodeTransferFrame(payload[2+aliasLength:])
+	digestOffset := 2 + aliasLength
+	serviceDigest := string(payload[digestOffset : digestOffset+sha256.Size*2])
+	if !validFileHelperDigest(serviceDigest) {
+		return fileHelperTransfer{}, errors.New("file helper transfer request digest is invalid")
+	}
+	frame, err := protocol.DecodeTransferFrame(payload[digestOffset+sha256.Size*2:])
 	if err != nil {
 		return fileHelperTransfer{}, err
 	}
-	return fileHelperTransfer{ProfileAlias: alias, Frame: frame}, nil
+	return fileHelperTransfer{
+		ServiceDigest: serviceDigest,
+		ProfileAlias:  alias,
+		Frame:         frame,
+	}, nil
 }
 
-func encodeFileHelperSnapshot(descriptors []nodes.CommandDescriptor) ([]byte, error) {
+func encodeFileHelperSnapshot(
+	descriptors []nodes.CommandDescriptor,
+	serviceDigest string,
+) ([]byte, error) {
 	if err := validateFileHelperDescriptors(descriptors); err != nil {
+		return nil, err
+	}
+	if !validFileHelperDigest(serviceDigest) {
+		return nil, errors.New("file helper service digest is invalid")
+	}
+	combinedAuthority, err := combineFileHelperAuthority(
+		descriptors[0].ModelContract.AuthorityDigest,
+		serviceDigest,
+	)
+	if err != nil {
 		return nil, err
 	}
 	snapshot := fileHelperSnapshot{
 		Profile:         descriptors[0].FileProfiles[0],
-		AuthorityDigest: descriptors[0].ModelContract.AuthorityDigest,
+		AuthorityDigest: combinedAuthority,
+		ServiceDigest:   serviceDigest,
 	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
@@ -213,13 +245,31 @@ func (snapshot fileHelperSnapshot) validate() error {
 	if err := snapshot.Profile.Validate(); err != nil {
 		return err
 	}
-	if len(snapshot.AuthorityDigest) != sha256.Size*2 {
-		return errors.New("file helper snapshot authority digest is invalid")
-	}
-	if _, err := hex.DecodeString(snapshot.AuthorityDigest); err != nil {
+	if !validFileHelperDigest(snapshot.AuthorityDigest) ||
+		!validFileHelperDigest(snapshot.ServiceDigest) {
 		return errors.New("file helper snapshot authority digest is invalid")
 	}
 	return nil
+}
+
+func validFileHelperDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func combineFileHelperAuthority(profileDigest, serviceDigest string) (string, error) {
+	if !validFileHelperDigest(profileDigest) || !validFileHelperDigest(serviceDigest) {
+		return "", errors.New("file helper authority digest is invalid")
+	}
+	data, err := json.Marshal([]string{profileDigest, serviceDigest})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (snapshot fileHelperSnapshot) descriptors() ([]nodes.CommandDescriptor, error) {

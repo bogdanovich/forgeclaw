@@ -14,7 +14,8 @@ import (
 
 func TestFileHelperProtocolRoundTripsSnapshotAndBinaryTransfer(t *testing.T) {
 	runtime, _, _ := newTestFileTransferRuntime(t)
-	snapshotPayload, err := encodeFileHelperSnapshot(runtime.Descriptors())
+	serviceDigest := strings.Repeat("a", sha256.Size*2)
+	snapshotPayload, err := encodeFileHelperSnapshot(runtime.Descriptors(), serviceDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +33,7 @@ func TestFileHelperProtocolRoundTripsSnapshotAndBinaryTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transferRequest, err := encodeFileHelperTransferRequest("project", transfer)
+	transferRequest, err := encodeFileHelperTransferRequest(serviceDigest, "project", transfer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +78,11 @@ func TestFileHelperProtocolRejectsMalformedAndOversizedRequests(t *testing.T) {
 	if _, err := readFileHelperMessage(bytes.NewReader(header[:])); err == nil {
 		t.Fatal("oversized file helper request was accepted")
 	}
-	if _, err := encodeFileHelperSnapshot(nil); err == nil {
+	if _, err := encodeFileHelperSnapshot(nil, strings.Repeat("a", sha256.Size*2)); err == nil {
 		t.Fatal("empty file helper snapshot was accepted")
+	}
+	if _, err := encodeFileHelperTransferRequest("stale", "project", protocol.TransferFrame{}); err == nil {
+		t.Fatal("invalid service digest was accepted")
 	}
 	if _, err := decodeFileHelperSnapshot([]byte(
 		`{"profile":{},"profile":{}}`,

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/nodes/companion"
@@ -12,13 +13,46 @@ func TestFileHelperAuthorityRejectsRootCompanion(t *testing.T) {
 	config := companion.Config{
 		FileHelper: &companion.FileHelperClientConfig{Enabled: true, SocketPath: "/run/helper.sock"},
 	}
-	if err := validateFileHelperProcessIdentity(config, 0); err == nil {
+	zeroCapabilities := []byte("CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapAmb:\t0000000000000000\n")
+	if err := validateFileHelperProcessIdentityStatus(config, 0, zeroCapabilities); err == nil {
 		t.Fatal("root-run full companion was accepted with helper authority")
 	}
-	if err := validateFileHelperProcessIdentity(config, 1000); err != nil {
+	if err := validateFileHelperProcessIdentityStatus(config, 1000, zeroCapabilities); err != nil {
 		t.Fatalf("unprivileged companion rejected: %v", err)
 	}
-	if err := validateFileHelperProcessIdentity(companion.Config{}, 0); err != nil {
+	if err := validateFileHelperProcessIdentityStatus(companion.Config{}, 0, nil); err != nil {
 		t.Fatalf("unrelated root-run companion behavior changed: %v", err)
+	}
+}
+
+func TestFileHelperAuthorityRejectsLinuxCapabilities(t *testing.T) {
+	config := companion.Config{
+		FileHelper: &companion.FileHelperClientConfig{Enabled: true, SocketPath: "/run/helper.sock"},
+	}
+	for _, field := range requiredCapabilityFields {
+		t.Run(field, func(t *testing.T) {
+			status := "CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapAmb:\t0000000000000000\n"
+			status = strings.Replace(status, field+":\t0000000000000000", field+":\t0000000000000001", 1)
+			if err := validateFileHelperProcessIdentityStatus(config, 1000, []byte(status)); err == nil {
+				t.Fatalf("nonzero %s was accepted", field)
+			}
+		})
+	}
+}
+
+func TestFileHelperAuthorityRejectsMalformedCapabilityStatus(t *testing.T) {
+	config := companion.Config{
+		FileHelper: &companion.FileHelperClientConfig{Enabled: true, SocketPath: "/run/helper.sock"},
+	}
+	for name, status := range map[string]string{
+		"missing":   "CapPrm:\t0\nCapEff:\t0\n",
+		"invalid":   "CapPrm:\t0\nCapEff:\tnot-hex\nCapAmb:\t0\n",
+		"duplicate": "CapPrm:\t0\nCapEff:\t0\nCapEff:\t0\nCapAmb:\t0\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateFileHelperProcessIdentityStatus(config, 1000, []byte(status)); err == nil {
+				t.Fatalf("%s capability status was accepted", name)
+			}
+		})
 	}
 }

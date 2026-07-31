@@ -54,7 +54,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if privilegeErr := validateFileHelperProcessIdentity(cfg, os.Geteuid()); privilegeErr != nil {
+	if privilegeErr := validateFileHelperProcessIdentity(cfg); privilegeErr != nil {
 		return privilegeErr
 	}
 	identity, err := companion.LoadOrCreateIdentity(cfg.StateDir)
@@ -165,13 +165,6 @@ func run(args []string) error {
 	defer stop()
 	slog.Info("starting node companion", "node_id", identity.ID, "gateway", cfg.GatewayURL)
 	return client.Run(ctx)
-}
-
-func validateFileHelperProcessIdentity(cfg companion.Config, effectiveUID int) error {
-	if cfg.FileHelper != nil && effectiveUID == 0 {
-		return errors.New("node companion with file helper authority must remain unprivileged")
-	}
-	return nil
 }
 
 func clientVersion() string {

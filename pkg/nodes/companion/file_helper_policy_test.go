@@ -72,3 +72,62 @@ func TestFileHelperServiceConfigRequiresOneApprovedProfile(t *testing.T) {
 		t.Fatal("multiple helper profiles were accepted")
 	}
 }
+
+func TestFileHelperServiceDigestBindsRuntimeAuthority(t *testing.T) {
+	root := canonicalTempDir(t)
+	base := FileHelperServiceConfig{
+		SocketPath: filepath.Join(root, "helper.sock"),
+		StateDir:   filepath.Join(root, "state-a"),
+		AllowedUID: 1000,
+		AllowedGID: 1000,
+		Profiles:   normalizedFilePoliciesForTest(t, "server-admin", "server-admin-v1", root),
+	}
+	first, err := NormalizeFileHelperServiceConfig(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := base
+	changed.StateDir = filepath.Join(root, "state-b")
+	second, err := NormalizeFileHelperServiceConfig(changed, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDigest, err := fileHelperServiceDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := fileHelperServiceDigest(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("file helper state directory change retained the old service authority")
+	}
+	firstDescriptors, err := first.Descriptors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSnapshot, err := encodeFileHelperSnapshot(firstDescriptors, firstDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDescriptors, err := second.Descriptors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSnapshot, err := encodeFileHelperSnapshot(secondDescriptors, secondDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedFirst, err := decodeFileHelperSnapshot(firstSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedSecond, err := decodeFileHelperSnapshot(secondSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decodedFirst.AuthorityDigest == decodedSecond.AuthorityDigest {
+		t.Fatal("file helper catalog authority did not change with runtime authority")
+	}
+}

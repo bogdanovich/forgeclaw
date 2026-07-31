@@ -27,6 +27,7 @@ type FileHelperClient struct {
 	expectedServerUID uint32
 	expectedServerGID uint32
 	descriptors       []nodes.CommandDescriptor
+	serviceDigest     string
 	aliasesByRevision map[string]string
 
 	mu      sync.Mutex
@@ -73,11 +74,12 @@ func newFileHelperClient(
 		expectedServerUID: expectedServerUID,
 		expectedServerGID: expectedServerGID,
 	}
-	descriptors, err := client.snapshot(ctx)
+	descriptors, serviceDigest, err := client.snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	client.descriptors = descriptors
+	client.serviceDigest = serviceDigest
 	client.aliasesByRevision = make(map[string]string)
 	for _, profile := range descriptors[0].FileProfiles {
 		client.aliasesByRevision[profile.Revision] = profile.Alias
@@ -111,7 +113,7 @@ func (client *FileHelperClient) HandleTransferFrame(
 	if err != nil {
 		return err
 	}
-	return session.sendTransfer(profileAlias, frame, send)
+	return session.sendTransfer(client.serviceDigest, profileAlias, frame, send)
 }
 
 func (client *FileHelperClient) Close() error {
@@ -131,10 +133,10 @@ func (client *FileHelperClient) Close() error {
 
 func (client *FileHelperClient) snapshot(
 	ctx context.Context,
-) ([]nodes.CommandDescriptor, error) {
+) ([]nodes.CommandDescriptor, string, error) {
 	connection, err := client.dial(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer connection.Close()
 	deadline := time.Now().Add(fileHelperHandshakeTimeout)
@@ -142,32 +144,32 @@ func (client *FileHelperClient) snapshot(
 		deadline = contextDeadline
 	}
 	if deadlineErr := connection.SetDeadline(deadline); deadlineErr != nil {
-		return nil, deadlineErr
+		return nil, "", deadlineErr
 	}
 	if writeErr := writeFileHelperMessage(connection, fileHelperMessage{
 		Kind: fileHelperSnapshotRequest,
 	}); writeErr != nil {
-		return nil, fmt.Errorf("request file helper snapshot: %w", writeErr)
+		return nil, "", fmt.Errorf("request file helper snapshot: %w", writeErr)
 	}
 	message, err := readFileHelperMessage(connection)
 	if err != nil {
-		return nil, fmt.Errorf("read file helper snapshot: %w", err)
+		return nil, "", fmt.Errorf("read file helper snapshot: %w", err)
 	}
 	if message.Kind == fileHelperErrorResponse {
-		return nil, errors.New("file helper denied snapshot")
+		return nil, "", errors.New("file helper denied snapshot")
 	}
 	if message.Kind != fileHelperSnapshotResponse {
-		return nil, errors.New("file helper returned an unexpected snapshot response")
+		return nil, "", errors.New("file helper returned an unexpected snapshot response")
 	}
 	snapshot, err := decodeFileHelperSnapshot(message.Payload)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	descriptors, err := snapshot.descriptors()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return cloneFileCapabilityDescriptors(descriptors), nil
+	return cloneFileCapabilityDescriptors(descriptors), snapshot.ServiceDigest, nil
 }
 
 func (client *FileHelperClient) ensureSession(
@@ -229,11 +231,12 @@ func (session *fileHelperClientSession) available() bool {
 }
 
 func (session *fileHelperClientSession) sendTransfer(
+	serviceDigest string,
 	profileAlias string,
 	frame protocol.TransferFrame,
 	send func(protocol.TransferFrame) error,
 ) error {
-	encoded, err := encodeFileHelperTransferRequest(profileAlias, frame)
+	encoded, err := encodeFileHelperTransferRequest(serviceDigest, profileAlias, frame)
 	if err != nil {
 		return err
 	}
@@ -334,9 +337,10 @@ func (session *fileHelperClientSession) finish(reason error) error {
 }
 
 type fileHelperServer struct {
-	config   FileHelperServiceConfig
-	runtime  *FileTransferRuntime
-	snapshot []byte
+	config        FileHelperServiceConfig
+	runtime       *FileTransferRuntime
+	serviceDigest string
+	snapshot      []byte
 }
 
 func newFileHelperServer(
@@ -350,12 +354,17 @@ func newFileHelperServer(
 	if err := validateFileHelperDescriptors(descriptors); err != nil {
 		return nil, err
 	}
-	snapshot, err := encodeFileHelperSnapshot(descriptors)
+	serviceDigest, err := fileHelperServiceDigest(config)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := encodeFileHelperSnapshot(descriptors, serviceDigest)
 	if err != nil {
 		return nil, err
 	}
 	return &fileHelperServer{
-		config: config, runtime: runtime, snapshot: snapshot,
+		config: config, runtime: runtime,
+		serviceDigest: serviceDigest, snapshot: snapshot,
 	}, nil
 }
 
@@ -425,13 +434,18 @@ func (server *fileHelperServer) handleConnection(
 				return
 			}
 			profile, found := server.config.Profiles[transfer.ProfileAlias]
+			denialCode := "PROFILE_DENIED"
+			if transfer.ServiceDigest != server.serviceDigest {
+				denialCode = "AUTHORITY_STALE"
+				found = false
+			}
 			if !found || !profile.Enabled || profile.Revision != transfer.Frame.PolicyRevision {
 				_ = writer.writeTransfer(responseTransferFrame(
 					transfer.Frame,
 					protocol.TransferFrameDeny,
 					mustFileTransferResult(fileTransferResult{
 						State: FileTransferFailed,
-						Code:  "PROFILE_DENIED",
+						Code:  denialCode,
 					}),
 				))
 				continue
