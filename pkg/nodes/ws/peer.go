@@ -22,11 +22,14 @@ var (
 	ErrUnexpectedResponse        = errors.New("node returned an unexpected response")
 	ErrRequestLimit              = errors.New("node request limit reached")
 	ErrTerminalEventBackpressure = errors.New("terminal event transport exceeded its bounded buffer")
+	ErrTransferFrameBackpressure = errors.New("transfer frame transport exceeded its bounded buffer")
 )
 
 const (
 	maxOutstandingRequests = 1024
 	maxAbandonedTerminals  = 256
+	maxAbandonedTransfers  = 256
+	maxTransferQueueBytes  = 1024 * 1024
 	defaultWriteTimeout    = 15 * time.Second
 )
 
@@ -61,6 +64,18 @@ type terminalEventSubscription struct {
 	err         error
 }
 
+type transferFrameSubscription struct {
+	binding TransferBinding
+	frames  chan protocol.TransferFrame
+
+	mu            sync.Mutex
+	queuedBytes   int
+	chunkSequence uint64
+	chunkBytes    uint64
+	closed        bool
+	err           error
+}
+
 // peer owns all application writes and response correlation for one
 // authenticated WebSocket generation.
 type peer struct {
@@ -78,6 +93,9 @@ type peer struct {
 	terminalMu         sync.Mutex
 	terminals          map[string]*terminalEventSubscription
 	abandonedTerminals map[string]struct{}
+	transferMu         sync.Mutex
+	transfers          map[string]*transferFrameSubscription
+	abandonedTransfers map[string]struct{}
 }
 
 func newPeer(connection peerConnection) *peer {
@@ -91,6 +109,8 @@ func newPeer(connection peerConnection) *peer {
 		abandoned:          make(map[string]struct{}),
 		terminals:          make(map[string]*terminalEventSubscription),
 		abandonedTerminals: make(map[string]struct{}),
+		transfers:          make(map[string]*transferFrameSubscription),
+		abandonedTransfers: make(map[string]struct{}),
 	}
 }
 
@@ -113,10 +133,18 @@ func (session *peer) Close() error {
 		session.terminals = make(map[string]*terminalEventSubscription)
 		session.abandonedTerminals = make(map[string]struct{})
 		session.terminalMu.Unlock()
+		session.transferMu.Lock()
+		transfers := session.transfers
+		session.transfers = make(map[string]*transferFrameSubscription)
+		session.abandonedTransfers = make(map[string]struct{})
+		session.transferMu.Unlock()
 		for _, result := range pending {
 			result <- responseResult{err: ErrNodeDisconnected}
 		}
 		for _, subscription := range terminals {
+			subscription.fail(ErrNodeDisconnected)
+		}
+		for _, subscription := range transfers {
 			subscription.fail(ErrNodeDisconnected)
 		}
 	})
@@ -281,6 +309,179 @@ func (subscription *terminalEventSubscription) fail(err error) {
 	subscription.closed = true
 	subscription.err = err
 	close(subscription.events)
+}
+
+func (session *peer) subscribeTransfer(
+	binding TransferBinding,
+) (*transferFrameSubscription, error) {
+	if err := binding.Validate(); err != nil {
+		return nil, err
+	}
+	subscription := &transferFrameSubscription{
+		binding: binding,
+		frames:  make(chan protocol.TransferFrame, 8),
+	}
+	session.transferMu.Lock()
+	defer session.transferMu.Unlock()
+	select {
+	case <-session.closed:
+		return nil, ErrNodeDisconnected
+	default:
+	}
+	if session.transfers[binding.TransferID] != nil {
+		return nil, errors.New("transfer frame subscription already exists")
+	}
+	if _, abandoned := session.abandonedTransfers[binding.TransferID]; abandoned {
+		return nil, errors.New("transfer frame subscription identity was already abandoned")
+	}
+	session.transfers[binding.TransferID] = subscription
+	return subscription, nil
+}
+
+func (session *peer) unsubscribeTransfer(
+	transferID string,
+	subscription *transferFrameSubscription,
+	err error,
+	retainTombstone bool,
+) {
+	session.transferMu.Lock()
+	_, failClosed := session.removeTransferLocked(
+		transferID,
+		subscription,
+		retainTombstone,
+	)
+	session.transferMu.Unlock()
+	subscription.fail(err)
+	if failClosed {
+		_ = session.Close()
+	}
+}
+
+func (session *peer) removeTransferLocked(
+	transferID string,
+	subscription *transferFrameSubscription,
+	retainTombstone bool,
+) (bool, bool) {
+	if session.transfers[transferID] != subscription {
+		return false, false
+	}
+	if !retainTombstone {
+		delete(session.transfers, transferID)
+		return true, false
+	}
+	if _, exists := session.abandonedTransfers[transferID]; exists {
+		delete(session.transfers, transferID)
+		return true, false
+	}
+	if len(session.abandonedTransfers) >= maxAbandonedTransfers {
+		// Keep the active identity reserved until fail-closed connection
+		// teardown clears the generation.
+		return true, true
+	}
+	delete(session.transfers, transferID)
+	session.abandonedTransfers[transferID] = struct{}{}
+	return true, false
+}
+
+func (session *peer) handleTransferFrame(frame protocol.TransferFrame) error {
+	session.transferMu.Lock()
+	subscription := session.transfers[frame.TransferID]
+	_, abandoned := session.abandonedTransfers[frame.TransferID]
+	if subscription == nil {
+		session.transferMu.Unlock()
+		if abandoned {
+			return nil
+		}
+		return errors.New("node sent a frame for an unattached transfer")
+	}
+	if err := subscription.offer(frame); err != nil {
+		removed, failClosed := session.removeTransferLocked(
+			frame.TransferID,
+			subscription,
+			true,
+		)
+		session.transferMu.Unlock()
+		if removed {
+			subscription.fail(err)
+		}
+		if failClosed {
+			_ = session.Close()
+		}
+		return err
+	}
+	session.transferMu.Unlock()
+	return nil
+}
+
+func (subscription *transferFrameSubscription) offer(
+	frame protocol.TransferFrame,
+) error {
+	if err := subscription.binding.ValidateFrame(frame); err != nil {
+		return err
+	}
+	charge := max(len(frame.Payload), protocol.MaxTransferMetadataBytes)
+	subscription.mu.Lock()
+	defer subscription.mu.Unlock()
+	if subscription.closed {
+		return subscription.err
+	}
+	if frame.Type == protocol.TransferFrameChunk {
+		if frame.Sequence != subscription.chunkSequence+1 {
+			return protocol.ErrInvalidTransferFrame
+		}
+		if subscription.chunkBytes+uint64(len(frame.Payload)) > subscription.binding.TotalSize {
+			return protocol.ErrInvalidTransferFrame
+		}
+	}
+	if subscription.queuedBytes+charge > maxTransferQueueBytes {
+		return ErrTransferFrameBackpressure
+	}
+	select {
+	case subscription.frames <- frame:
+		subscription.queuedBytes += charge
+		if frame.Type == protocol.TransferFrameChunk {
+			subscription.chunkSequence = frame.Sequence
+			subscription.chunkBytes += uint64(len(frame.Payload))
+		}
+		return nil
+	default:
+		return ErrTransferFrameBackpressure
+	}
+}
+
+func (subscription *transferFrameSubscription) receive(
+	ctx context.Context,
+) (protocol.TransferFrame, error) {
+	select {
+	case <-ctx.Done():
+		return protocol.TransferFrame{}, ctx.Err()
+	case frame, ok := <-subscription.frames:
+		if !ok {
+			subscription.mu.Lock()
+			err := subscription.err
+			subscription.mu.Unlock()
+			if err == nil {
+				err = ErrNodeDisconnected
+			}
+			return protocol.TransferFrame{}, err
+		}
+		charge := max(len(frame.Payload), protocol.MaxTransferMetadataBytes)
+		subscription.mu.Lock()
+		subscription.queuedBytes -= charge
+		subscription.mu.Unlock()
+		return frame, nil
+	}
+}
+
+func (subscription *transferFrameSubscription) fail(err error) {
+	subscription.mu.Lock()
+	defer subscription.mu.Unlock()
+	if subscription.closed {
+		return
+	}
+	subscription.closed = true
+	subscription.err = err
+	close(subscription.frames)
 }
 
 func (session *peer) request(
@@ -495,4 +696,53 @@ func (session *peer) writeControl(messageType int, data []byte, deadline time.Ti
 	default:
 	}
 	return session.connection.WriteControl(messageType, data, deadline)
+}
+
+func (session *peer) writeTransferFrame(
+	ctx context.Context,
+	frame protocol.TransferFrame,
+) error {
+	data, err := protocol.EncodeTransferFrame(frame)
+	if err != nil {
+		return err
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, defaultWriteTimeout)
+	defer cancel()
+	select {
+	case session.writeSlot <- struct{}{}:
+		defer func() { <-session.writeSlot }()
+	case <-writeCtx.Done():
+		return writeCtx.Err()
+	case <-session.closed:
+		return ErrNodeDisconnected
+	}
+	select {
+	case <-writeCtx.Done():
+		return writeCtx.Err()
+	case <-session.closed:
+		return ErrNodeDisconnected
+	default:
+	}
+	deadline, _ := writeCtx.Deadline()
+	if err := session.connection.SetWriteDeadline(deadline); err != nil {
+		_ = session.Close()
+		return err
+	}
+	cancelDone := make(chan struct{})
+	stopCancel := context.AfterFunc(writeCtx, func() {
+		_ = session.connection.SetWriteDeadline(time.Now())
+		close(cancelDone)
+	})
+	writeErr := session.connection.WriteMessage(websocket.BinaryMessage, data)
+	if !stopCancel() {
+		<-cancelDone
+	}
+	if writeErr != nil {
+		_ = session.Close()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return writeErr
+	}
+	return nil
 }
