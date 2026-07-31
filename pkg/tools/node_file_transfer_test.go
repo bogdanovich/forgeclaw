@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -358,6 +359,30 @@ func TestNodeStatusReportsDisconnectedFileTransferUnknownWithoutReplay(t *testin
 		source.queryCalls != 0 || source.dispatchCalls != 1 {
 		t.Fatalf("disconnected status = %#v, queries=%d dispatches=%d",
 			statusPayload, source.queryCalls, source.dispatchCalls)
+	}
+}
+
+func TestNodeCancelReportsDisconnectedFileTransferUnknownWithoutRequest(t *testing.T) {
+	source := newFakeNodeFileTransferSource(t, "none")
+	ctx := nodeInvocationTestContext("actor-1", "file-call-disconnected-cancel")
+	args := nodeFileInfoTestArgs(t, source, ctx)
+	payload := decodeNodeResult(
+		t,
+		NewNodeFileInfoTool(nodeFileTransferTestConfig(), source).Execute(ctx, args),
+	)
+	source.connected["private-node-id"] = false
+
+	canceled := NewNodeCancelTool(nodeFileTransferTestConfig(), source).Execute(
+		ctx,
+		map[string]any{"invocation_id": payload["transfer_id"]},
+	)
+	canceledPayload := decodeNodeResult(t, canceled)
+	if canceledPayload["status"] != "unknown" ||
+		canceledPayload["error_code"] != "NODE_UNAVAILABLE" ||
+		!strings.Contains(fmt.Sprint(canceledPayload["recovery_action"]), "nodes_status") ||
+		source.cancelCalls != 0 || source.dispatchCalls != 1 {
+		t.Fatalf("disconnected cancel = %#v, cancels=%d dispatches=%d",
+			canceledPayload, source.cancelCalls, source.dispatchCalls)
 	}
 }
 

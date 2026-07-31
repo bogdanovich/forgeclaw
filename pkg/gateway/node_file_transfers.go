@@ -652,14 +652,14 @@ func (source *nodeFileTransferSource) HandoffDownloadedArtifact(
 	}
 	defer file.Close()
 	deliveryKey := nodeFileDeliveryKey(owner, artifact)
-	localPath := filepath.Join(
+	localPath, copyErr := copyNodeTransferDelivery(
+		ctx,
+		file,
+		artifact,
 		source.workspace,
-		"state",
-		"media",
-		"node-transfers",
 		deliveryKey+".data",
 	)
-	if copyErr := copyNodeTransferDelivery(ctx, file, artifact, localPath); copyErr != nil {
+	if copyErr != nil {
 		return "", false, copyErr
 	}
 	mediaRef, storeErr := idempotentStore.StoreIdempotentOwned(
@@ -1024,81 +1024,6 @@ func nodeFileDeliveryKey(
 			artifact.Ref,
 	))
 	return "delivery_" + hex.EncodeToString(sum[:16])
-}
-
-func copyNodeTransferDelivery(
-	ctx context.Context,
-	source *os.File,
-	artifact nodes.TransferArtifactRecord,
-	destination string,
-) error {
-	if source == nil {
-		return nodes.ErrTransferArtifactNotFound
-	}
-	directory := filepath.Dir(destination)
-	if mkdirErr := os.MkdirAll(directory, 0o700); mkdirErr != nil {
-		return mkdirErr
-	}
-	directoryInfo, lstatErr := os.Lstat(directory)
-	if lstatErr != nil ||
-		!directoryInfo.IsDir() ||
-		directoryInfo.Mode()&os.ModeSymlink != 0 ||
-		directoryInfo.Mode().Perm()&0o077 != 0 {
-		return errors.New("node transfer delivery directory is not private")
-	}
-	if existing, _, existingErr := openNodeTransferMedia(destination); existingErr == nil {
-		defer existing.Close()
-		return verifyNodeTransferDelivery(existing, artifact)
-	} else if !errors.Is(existingErr, os.ErrNotExist) {
-		return existingErr
-	}
-	temp, createErr := os.CreateTemp(directory, ".node-transfer-*")
-	if createErr != nil {
-		return createErr
-	}
-	tempName := temp.Name()
-	removeTemp := true
-	defer func() {
-		_ = temp.Close()
-		if removeTemp {
-			_ = os.Remove(tempName)
-		}
-	}()
-	if chmodErr := temp.Chmod(0o600); chmodErr != nil {
-		return chmodErr
-	}
-	hasher := sha256.New()
-	written, copyErr := io.Copy(
-		io.MultiWriter(temp, hasher),
-		&contextBoundedReader{
-			ctx:       ctx,
-			reader:    source,
-			remaining: artifact.Spec.DeclaredSize,
-		},
-	)
-	if copyErr != nil ||
-		written != artifact.Spec.DeclaredSize ||
-		hex.EncodeToString(hasher.Sum(nil)) != artifact.Spec.SHA256 {
-		if copyErr == nil {
-			copyErr = nodes.ErrTransferDigestMismatch
-		}
-		return copyErr
-	}
-	var extra [1]byte
-	if count, readErr := source.Read(extra[:]); count != 0 || !errors.Is(readErr, io.EOF) {
-		return nodes.ErrTransferSizeExceeded
-	}
-	if syncErr := temp.Sync(); syncErr != nil {
-		return syncErr
-	}
-	if closeErr := temp.Close(); closeErr != nil {
-		return closeErr
-	}
-	if renameErr := os.Rename(tempName, destination); renameErr != nil {
-		return renameErr
-	}
-	removeTemp = false
-	return syncNodeTransferDirectory(directory)
 }
 
 func verifyNodeTransferDelivery(

@@ -599,7 +599,7 @@ func (*NodeCancelTool) Parameters() map[string]any {
 }
 
 func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	record, principal, snapshot, _, err := tool.runtime.visibleInvocation(ctx, args)
+	record, principal, snapshot, available, err := tool.runtime.visibleInvocation(ctx, args)
 	if err != nil {
 		return nodeJSONResult(nodeCancelResult{Status: "denied", ErrorCode: "CANCEL_DENIED"})
 	}
@@ -614,6 +614,12 @@ func (tool *NodeCancelTool) Execute(ctx context.Context, args map[string]any) *T
 		return nodeJSONResult(view)
 	}
 	if isNodeFileTransferCommand(record.Plan.Command) {
+		if !available {
+			view.Status = "unknown"
+			view.ErrorCode = "NODE_UNAVAILABLE"
+			view.RecoveryAction = "Call nodes_status after the target reconnects; do not replay cancellation or the transfer."
+			return nodeJSONResult(view)
+		}
 		return tool.runtime.cancelFileTransfer(ctx, record, principal)
 	}
 	remote, _, err := tool.runtime.source.CancelInvocation(

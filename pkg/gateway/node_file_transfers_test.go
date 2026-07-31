@@ -384,6 +384,46 @@ func TestNodeFileTransferHandoffClaimsOneRoutedDelivery(t *testing.T) {
 	}
 }
 
+func TestCopyNodeTransferDeliveryRejectsSymlinkedWorkspaceAncestor(t *testing.T) {
+	workspace := t.TempDir()
+	escape := t.TempDir()
+	if err := os.Symlink(escape, filepath.Join(workspace, "state")); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("must remain in the workspace")
+	sourcePath := filepath.Join(t.TempDir(), "source.data")
+	if err := os.WriteFile(sourcePath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	digest := sha256.Sum256(content)
+	artifact := nodes.TransferArtifactRecord{Spec: nodes.TransferArtifactSpec{
+		DeclaredSize: int64(len(content)),
+		SHA256:       hex.EncodeToString(digest[:]),
+	}}
+	if _, err := copyNodeTransferDelivery(
+		t.Context(),
+		source,
+		artifact,
+		workspace,
+		"delivery.data",
+	); err == nil {
+		t.Fatal("delivery below a symlinked workspace ancestor succeeded")
+	}
+	if _, err := os.Stat(
+		filepath.Join(escape, "media", "node-transfers", "delivery.data"),
+	); !errors.Is(
+		err,
+		os.ErrNotExist,
+	) {
+		t.Fatalf("delivery escaped workspace: %v", err)
+	}
+}
+
 func testNodeTransferMediaOwner(t *testing.T, actor string) media.MediaOwner {
 	t.Helper()
 	owner, err := media.NewMediaOwner(

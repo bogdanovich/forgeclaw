@@ -1981,6 +1981,55 @@ func TestSpawnSubTurn_DefaultSyncDeliveryRemovesUserDeliveryTools(t *testing.T) 
 	}
 }
 
+func TestSpawnSubTurn_TargetAgentIDRemovesNodeFileTools(t *testing.T) {
+	provider := &subturnToolCaptureProvider{}
+	al, cleanup := newMultiAgentLoop(t, provider)
+	defer cleanup()
+
+	alphaAgent, _ := al.registry.GetAgent("alpha")
+	betaAgent, _ := al.registry.GetAgent("beta")
+	for _, name := range []string{
+		"nodes_file_info",
+		"nodes_upload",
+		"nodes_download",
+		"nodes",
+		"read_file",
+	} {
+		betaAgent.Tools.Register(&allowlistTestTool{name: name})
+	}
+	parent := &turnState{
+		ctx:            context.Background(),
+		turnID:         "parent-cross-agent-file-tools",
+		pendingResults: make(chan *tools.ToolResult, 4),
+		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
+		session:        &ephemeralSessionStore{},
+		agent:          alphaAgent,
+		opts: processOptions{
+			Dispatch:  DispatchRequest{SessionKey: "parent-cross-agent-file-tools"},
+			NoHistory: true,
+		},
+	}
+
+	if _, err := spawnSubTurn(context.Background(), al, parent, SubTurnConfig{
+		TargetAgentID: "beta",
+		SystemPrompt:  "capture delegated tool list",
+	}); err != nil {
+		t.Fatalf("spawnSubTurn failed: %v", err)
+	}
+
+	names := provider.toolNames()
+	for _, name := range []string{"nodes_file_info", "nodes_upload", "nodes_download"} {
+		if names[name] {
+			t.Fatalf("cross-agent delegated provider saw node file tool %q", name)
+		}
+	}
+	for _, name := range []string{"nodes", "read_file"} {
+		if !names[name] {
+			t.Fatalf("cross-agent delegated provider did not see unrelated tool %q", name)
+		}
+	}
+}
+
 func TestSpawnSubTurn_InheritsSuppressToolFeedback(t *testing.T) {
 	tmpDir := t.TempDir()
 	readPath := filepath.Join(tmpDir, "subturn-feedback.txt")

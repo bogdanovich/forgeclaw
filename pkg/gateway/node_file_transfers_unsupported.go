@@ -3,14 +3,23 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"os"
+
+	"github.com/bogdanovich/mintclaw/pkg/nodes"
 )
 
 func openNodeTransferMedia(string) (*os.File, os.FileInfo, error) {
 	return nil, nil, errors.New("node file transfer is unsupported on this gateway platform")
 }
 
-func syncNodeTransferDirectory(string) error {
-	return errors.New("node file transfer is unsupported on this gateway platform")
+func copyNodeTransferDelivery(
+	context.Context,
+	*os.File,
+	nodes.TransferArtifactRecord,
+	string,
+	string,
+) (string, error) {
+	return "", errors.New("node file transfer is unsupported on this gateway platform")
 }
