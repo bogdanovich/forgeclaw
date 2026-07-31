@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+var errAnchoredDirectoryLockBusy = errors.New("anchored directory lock is busy")
+
 func validateAnchoredName(name string) error {
 	if name == "" ||
 		name == "." ||

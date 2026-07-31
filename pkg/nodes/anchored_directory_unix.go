@@ -124,6 +124,162 @@ func (directory *anchoredDirectory) acquireLock(name string) (func(), error) {
 	}, nil
 }
 
+func (directory *anchoredDirectory) tryAcquireLock(name string) (func(), error) {
+	if directory == nil || directory.file == nil {
+		return nil, errors.New("anchored directory is closed")
+	}
+	if err := validateAnchoredName(name); err != nil {
+		return nil, err
+	}
+	descriptor, err := unix.Openat(
+		int(directory.file.Fd()),
+		name,
+		unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0o600,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open anchored directory lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(descriptor), name)
+	if lock == nil {
+		_ = unix.Close(descriptor)
+		return nil, errors.New("open anchored directory lock: invalid descriptor")
+	}
+	info, err := lock.Stat()
+	if err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("inspect anchored directory lock: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = lock.Close()
+		return nil, fmt.Errorf("anchored directory lock is non-regular: %q", name)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Nlink != 1 {
+		_ = lock.Close()
+		return nil, fmt.Errorf("anchored directory lock is multiply linked: %q", name)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, errAnchoredDirectoryLockBusy
+		}
+		return nil, fmt.Errorf("lock anchored directory: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}, nil
+}
+
+func (directory *anchoredDirectory) createRegularExclusive(
+	name string,
+	mode os.FileMode,
+) (*os.File, error) {
+	if directory == nil || directory.file == nil {
+		return nil, errors.New("anchored directory is closed")
+	}
+	if err := validateAnchoredName(name); err != nil {
+		return nil, err
+	}
+	descriptor, err := unix.Openat(
+		int(directory.file.Fd()),
+		name,
+		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		uint32(mode.Perm()),
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(descriptor), name)
+	if file == nil {
+		_ = unix.Close(descriptor)
+		_ = unix.Unlinkat(int(directory.file.Fd()), name, 0)
+		return nil, errors.New("create anchored regular file: invalid descriptor")
+	}
+	return file, nil
+}
+
+func (directory *anchoredDirectory) publishRegularNoReplace(
+	stagingName string,
+	finalName string,
+) error {
+	if directory == nil || directory.file == nil {
+		return errors.New("anchored directory is closed")
+	}
+	if err := validateAnchoredName(stagingName); err != nil {
+		return err
+	}
+	if err := validateAnchoredName(finalName); err != nil {
+		return err
+	}
+	if err := unix.Linkat(
+		int(directory.file.Fd()),
+		stagingName,
+		int(directory.file.Fd()),
+		finalName,
+		0,
+	); err != nil {
+		return err
+	}
+	if err := unix.Unlinkat(int(directory.file.Fd()), stagingName, 0); err != nil {
+		return &fileutil.CommittedWriteError{Err: fmt.Errorf(
+			"remove published staging link: %w",
+			err,
+		)}
+	}
+	if err := directory.file.Sync(); err != nil {
+		return &fileutil.CommittedWriteError{Err: fmt.Errorf(
+			"sync anchored directory after publication: %w",
+			err,
+		)}
+	}
+	return nil
+}
+
+func (directory *anchoredDirectory) removeRegular(name string) error {
+	if directory == nil || directory.file == nil {
+		return errors.New("anchored directory is closed")
+	}
+	if err := validateAnchoredName(name); err != nil {
+		return err
+	}
+	err := unix.Unlinkat(int(directory.file.Fd()), name, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	return err
+}
+
+func (directory *anchoredDirectory) listNames() ([]string, error) {
+	if directory == nil || directory.file == nil {
+		return nil, errors.New("anchored directory is closed")
+	}
+	descriptor, err := unix.Openat(
+		int(directory.file.Fd()),
+		".",
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(descriptor), directory.file.Name())
+	if file == nil {
+		_ = unix.Close(descriptor)
+		return nil, errors.New("enumerate anchored directory: invalid descriptor")
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names, nil
+}
+
 func (directory *anchoredDirectory) writeFileAtomic(
 	name string,
 	data []byte,

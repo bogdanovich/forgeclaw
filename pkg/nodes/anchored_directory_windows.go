@@ -123,11 +123,151 @@ func (directory *anchoredDirectory) acquireLock(name string) (func(), error) {
 	}, nil
 }
 
+func (directory *anchoredDirectory) tryAcquireLock(name string) (func(), error) {
+	handle, err := directory.openRelative(
+		name,
+		windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE,
+		windows.FILE_OPEN_IF,
+		windows.FILE_NON_DIRECTORY_FILE,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open anchored directory lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(handle), name)
+	if lock == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, errors.New("open anchored directory lock: invalid handle")
+	}
+	info, err := lock.Stat()
+	if err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("inspect anchored directory lock: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = lock.Close()
+		return nil, fmt.Errorf("anchored directory lock is non-regular: %q", name)
+	}
+	overlapped := &windows.Overlapped{}
+	if err := windows.LockFileEx(
+		windows.Handle(lock.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		1,
+		0,
+		overlapped,
+	); err != nil {
+		_ = lock.Close()
+		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			return nil, errAnchoredDirectoryLockBusy
+		}
+		return nil, fmt.Errorf("lock anchored directory: %w", err)
+	}
+	return func() {
+		_ = windows.UnlockFileEx(windows.Handle(lock.Fd()), 0, 1, 0, overlapped)
+		_ = lock.Close()
+	}, nil
+}
+
+func (directory *anchoredDirectory) createRegularExclusive(
+	name string,
+	mode os.FileMode,
+) (*os.File, error) {
+	handle, err := directory.openRelative(
+		name,
+		windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE,
+		windows.FILE_CREATE,
+		windows.FILE_NON_DIRECTORY_FILE,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), name)
+	if file == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, errors.New("create anchored regular file: invalid handle")
+	}
+	if err := file.Chmod(mode); err != nil {
+		deleteErr := directory.deleteOnClose(handle)
+		closeErr := file.Close()
+		return nil, errors.Join(err, deleteErr, closeErr)
+	}
+	return file, nil
+}
+
+func (directory *anchoredDirectory) publishRegularNoReplace(
+	stagingName string,
+	finalName string,
+) error {
+	handle, err := directory.openRelative(
+		stagingName,
+		windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE,
+		windows.FILE_OPEN,
+		windows.FILE_NON_DIRECTORY_FILE,
+	)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	return directory.renameWithFlags(handle, finalName, windows.FILE_RENAME_POSIX_SEMANTICS)
+}
+
+func (directory *anchoredDirectory) removeRegular(name string) error {
+	handle, err := directory.openRelative(
+		name,
+		windows.DELETE,
+		windows.FILE_OPEN,
+		windows.FILE_NON_DIRECTORY_FILE,
+	)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	deleteErr := directory.deleteOnClose(handle)
+	closeErr := windows.CloseHandle(handle)
+	return errors.Join(deleteErr, closeErr)
+}
+
+func (directory *anchoredDirectory) listNames() ([]string, error) {
+	if directory == nil || directory.handle == 0 {
+		return nil, errors.New("anchored directory is closed")
+	}
+	process := windows.CurrentProcess()
+	var handle windows.Handle
+	if err := windows.DuplicateHandle(
+		process,
+		directory.handle,
+		process,
+		&handle,
+		0,
+		false,
+		windows.DUPLICATE_SAME_ACCESS,
+	); err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), "anchored-directory")
+	if file == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, errors.New("enumerate anchored directory: invalid handle")
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names, nil
+}
+
 func (directory *anchoredDirectory) writeFileAtomic(
 	name string,
 	data []byte,
 	mode os.FileMode,
-) error {
+) (returnErr error) {
 	if err := validateAnchoredName(name); err != nil {
 		return err
 	}
@@ -151,10 +291,14 @@ func (directory *anchoredDirectory) writeFileAtomic(
 	}
 	renamed := false
 	defer func() {
-		if !renamed {
-			directory.deleteOnClose(handle)
+		if renamed {
+			return
 		}
-		_ = temp.Close()
+		returnErr = errors.Join(
+			returnErr,
+			directory.deleteOnClose(handle),
+			temp.Close(),
+		)
 	}()
 	if _, err := temp.Write(data); err != nil {
 		return fmt.Errorf("write gateway terminal store temp file: %w", err)
@@ -241,6 +385,18 @@ func (directory *anchoredDirectory) openRelative(
 }
 
 func (directory *anchoredDirectory) rename(handle windows.Handle, name string) error {
+	return directory.renameWithFlags(
+		handle,
+		name,
+		windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS,
+	)
+}
+
+func (directory *anchoredDirectory) renameWithFlags(
+	handle windows.Handle,
+	name string,
+	flags uint32,
+) error {
 	nameUTF16, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
@@ -250,7 +406,7 @@ func (directory *anchoredDirectory) rename(handle windows.Handle, name string) e
 	bufferSize := int(unsafe.Offsetof(template.FileName)) + nameBytes
 	buffer := make([]byte, bufferSize)
 	information := (*anchoredFileRenameInformation)(unsafe.Pointer(&buffer[0]))
-	information.ReplaceIfExists = windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS
+	information.ReplaceIfExists = flags
 	information.RootDirectory = directory.handle
 	information.FileNameLength = uint32(nameBytes)
 	target := unsafe.Slice(&information.FileName[0], nameBytes/2)
@@ -265,12 +421,12 @@ func (directory *anchoredDirectory) rename(handle windows.Handle, name string) e
 	)
 }
 
-func (directory *anchoredDirectory) deleteOnClose(handle windows.Handle) {
+func (directory *anchoredDirectory) deleteOnClose(handle windows.Handle) error {
 	var (
 		status windows.IO_STATUS_BLOCK
 		remove = byte(1)
 	)
-	_ = windows.NtSetInformationFile(
+	return windows.NtSetInformationFile(
 		handle,
 		&status,
 		&remove,
