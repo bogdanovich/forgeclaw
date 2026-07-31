@@ -79,6 +79,7 @@ type FileTransferRuntime struct {
 	ledger      *FileTransferLedger
 	descriptors []nodes.CommandDescriptor
 	profiles    map[string]*fileProfileRuntime
+	now         func() time.Time
 
 	activeMu sync.Mutex
 	active   map[string]*activeFileTransfer
@@ -108,6 +109,7 @@ func NewFileTransferRuntime(
 		descriptors: descriptors,
 		profiles:    make(map[string]*fileProfileRuntime),
 		active:      make(map[string]*activeFileTransfer),
+		now:         time.Now,
 	}
 	aliases := make([]string, 0, len(policies))
 	for alias := range policies {
@@ -301,7 +303,7 @@ func (runtime *FileTransferRuntime) prepare(
 		}
 		return runtime.sendExisting(frame, existing, send)
 	}
-	now := time.Now()
+	now := runtime.now()
 	if now.Unix() >= request.ExpiresAt ||
 		request.ExpiresAt > now.Add(time.Hour).Unix() {
 		return runtime.sendDenial(frame, send, "INVALID_PREPARE")
@@ -543,6 +545,9 @@ func (runtime *FileTransferRuntime) receiveUploadChunk(
 		active.stage.file == nil {
 		return protocol.ErrInvalidTransferFrame
 	}
+	if runtime.enforceExpiryLocked(active) {
+		return runtime.sendExisting(frame, active.record, send)
+	}
 	chunkDigest := sha256.Sum256(frame.Payload)
 	if prior, duplicate := active.chunkDigests[frame.Sequence]; duplicate {
 		if prior != chunkDigest || frame.Sequence > active.record.Sequence {
@@ -606,6 +611,9 @@ func (runtime *FileTransferRuntime) receiveDownloadAcknowledgement(
 		frame.Sequence > active.record.Sequence+1 {
 		return protocol.ErrInvalidTransferFrame
 	}
+	if runtime.enforceExpiryLocked(active) {
+		return nil
+	}
 	if frame.Sequence <= active.record.Sequence ||
 		frame.Sequence == active.lastAck {
 		return nil
@@ -636,6 +644,12 @@ func (runtime *FileTransferRuntime) streamDownload(
 		count, readErr := active.source.file.Read(buffer)
 		if count > 0 {
 			active.mu.Lock()
+			if runtime.enforceExpiryLocked(active) {
+				record := active.record
+				active.mu.Unlock()
+				_ = runtime.sendExisting(binding, record, send)
+				return
+			}
 			sequence := active.record.Sequence + 1
 			active.pendingAck = sequence
 			active.mu.Unlock()
@@ -675,6 +689,12 @@ func (runtime *FileTransferRuntime) streamDownload(
 				}
 			}
 			active.mu.Lock()
+			if runtime.enforceExpiryLocked(active) {
+				record := active.record
+				active.mu.Unlock()
+				_ = runtime.sendExisting(binding, record, send)
+				return
+			}
 			record, err := runtime.ledger.Transition(
 				active.record.TransferID,
 				func(record *FileTransferRecord, _ time.Time) error {
@@ -712,6 +732,10 @@ func (runtime *FileTransferRuntime) streamDownload(
 	}
 	active.mu.Lock()
 	defer active.mu.Unlock()
+	if runtime.enforceExpiryLocked(active) {
+		_ = runtime.sendExisting(binding, active.record, send)
+		return
+	}
 	info, err := active.source.file.Stat()
 	digest := active.hasher.Sum(nil)
 	if err != nil ||
@@ -788,6 +812,9 @@ func (runtime *FileTransferRuntime) commit(
 	defer active.mu.Unlock()
 	if !sameRecordFrameBinding(active.record, frame) {
 		return protocol.ErrInvalidTransferFrame
+	}
+	if runtime.enforceExpiryLocked(active) {
+		return runtime.sendExisting(frame, active.record, send)
 	}
 	if active.record.Direction == protocol.TransferUpload {
 		return runtime.commitUploadLocked(active, frame, send)
@@ -1038,6 +1065,23 @@ func (runtime *FileTransferRuntime) watchConnection(
 		}
 		active.mu.Unlock()
 	}
+}
+
+func (runtime *FileTransferRuntime) enforceExpiryLocked(
+	active *activeFileTransfer,
+) bool {
+	if active == nil ||
+		active.record.State.terminal() ||
+		runtime.now().Unix() < active.record.ExpiresAt {
+		return false
+	}
+	if active.record.Direction == protocol.TransferDownload &&
+		active.record.State == FileTransferReceived {
+		runtime.markUnknownLocked(active, "COMMIT_UNCERTAIN")
+		return true
+	}
+	runtime.cancelLocked(active, FileTransferExpired)
+	return true
 }
 
 func (runtime *FileTransferRuntime) disconnectTransfer(
@@ -1302,8 +1346,6 @@ func (runtime *FileTransferRuntime) reconcileUpload(
 	if record.State == FileTransferCommitRequested {
 		final, finalErr := parent.openFinalRegular()
 		if finalErr == nil &&
-			final.identity.Device == record.StageIdentity.Device &&
-			final.identity.Inode == record.StageIdentity.Inode &&
 			uint64(final.info.Size()) == record.TotalSize {
 			digest, digestErr := hashOpenedFile(context.Background(), final.file)
 			_ = final.file.Close()

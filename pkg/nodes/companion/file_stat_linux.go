@@ -23,3 +23,22 @@ func syscallStatDevice(stat *syscall.Stat_t) uint64 {
 func syscallStatLinks(stat *syscall.Stat_t) uint64 {
 	return stat.Nlink
 }
+
+func platformDescriptorMountIdentity(
+	descriptor int,
+) (fileMountIdentity, error) {
+	var stat unix.Statx_t
+	if err := unix.Statx(
+		descriptor,
+		"",
+		unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT,
+		unix.STATX_MNT_ID,
+		&stat,
+	); err != nil {
+		return fileMountIdentity{}, err
+	}
+	if stat.Mask&unix.STATX_MNT_ID == 0 {
+		return fileMountIdentity{}, ErrFileAccessDenied
+	}
+	return fileMountIdentity{primary: stat.Mnt_id}, nil
+}

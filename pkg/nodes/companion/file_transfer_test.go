@@ -271,13 +271,25 @@ func TestFileTransferRuntimeCreateRefusesExistingAndReplaceIsAtomic(t *testing.T
 	sendUploadChunks(t, runtime, replace, replaceContent)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	originalRename := renameFileStage
-	renameFileStage = func(directoryFD int, stagingName, finalName string) error {
+	originalPublish := publishFileStage
+	publishFileStage = func(
+		stageFD int,
+		stagingDirectoryFD int,
+		destinationDirectoryFD int,
+		finalName string,
+		publication string,
+	) error {
 		close(entered)
 		<-release
-		return originalRename(directoryFD, stagingName, finalName)
+		return originalPublish(
+			stageFD,
+			stagingDirectoryFD,
+			destinationDirectoryFD,
+			finalName,
+			publication,
+		)
 	}
-	t.Cleanup(func() { renameFileStage = originalRename })
+	t.Cleanup(func() { publishFileStage = originalPublish })
 	commitDone := make(chan transferCallResult, 1)
 	go func() {
 		responses, callErr := callTransfer(
@@ -437,7 +449,9 @@ func TestFileTransferRuntimeDisconnectCancelsBeforePublication(t *testing.T) {
 	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("disconnect published destination: %v", err)
 	}
-	if matches, err := filepath.Glob(filepath.Join(root, ".mintclaw-transfer-*")); err != nil {
+	if matches, err := filepath.Glob(
+		filepath.Join(root, fileStageDirectoryName, ".mintclaw-transfer-*"),
+	); err != nil {
 		t.Fatal(err)
 	} else if len(matches) != 0 {
 		t.Fatalf("disconnect retained staging files: %v", matches)
@@ -593,6 +607,49 @@ func TestFileTransferRuntimeExpiresAndCleansPreCommitUpload(t *testing.T) {
 	}
 	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expired upload published destination: %v", err)
+	}
+}
+
+func TestFileTransferRuntimeRejectsUploadCommitAtExpiry(t *testing.T) {
+	runtime, root, ledger := newTestFileTransferRuntime(t)
+	base := time.Now().Add(time.Hour)
+	runtime.now = func() time.Time { return base }
+	content := []byte("expires at commit")
+	digest := sha256.Sum256(content)
+	destination := filepath.Join(root, "expired-commit.txt")
+	prepare := testFilePrepareFrame(
+		t,
+		"upload_expired_commit",
+		protocol.TransferUpload,
+		digest,
+		uint64(len(content)),
+		fileTransferPrepare{
+			Operation:   fileOperationUpload,
+			Path:        destination,
+			Publication: filePublicationCreate,
+			ExpiresAt:   base.Add(time.Minute).Unix(),
+		},
+	)
+	collectTransferResponses(t, runtime, prepare)
+	sendUploadChunks(t, runtime, prepare, content)
+
+	runtime.now = func() time.Time { return base.Add(time.Minute) }
+	commit := transferFrameFromBinding(prepare, protocol.TransferFrameCommit)
+	responses := collectTransferResponses(t, runtime, commit)
+	if len(responses) != 1 ||
+		responses[0].Type != protocol.TransferFrameFailure ||
+		!bytes.Contains(responses[0].Payload, []byte(`"state":"expired"`)) {
+		t.Fatalf("expiry-bound commit responses = %#v", responses)
+	}
+	record, found, err := ledger.Lookup(prepare.TransferID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || record.State != FileTransferExpired {
+		t.Fatalf("expiry-bound commit record = %#v, found %v", record, found)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expiry-bound commit published destination: %v", err)
 	}
 }
 
@@ -794,13 +851,25 @@ func TestFileTransferRuntimeCancelVersusCommitHasOneTruthfulOutcome(t *testing.T
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	originalRename := renameFileStage
-	renameFileStage = func(directoryFD int, stagingName, finalName string) error {
+	originalPublish := publishFileStage
+	publishFileStage = func(
+		stageFD int,
+		stagingDirectoryFD int,
+		destinationDirectoryFD int,
+		finalName string,
+		publication string,
+	) error {
 		close(entered)
 		<-release
-		return originalRename(directoryFD, stagingName, finalName)
+		return originalPublish(
+			stageFD,
+			stagingDirectoryFD,
+			destinationDirectoryFD,
+			finalName,
+			publication,
+		)
 	}
-	t.Cleanup(func() { renameFileStage = originalRename })
+	t.Cleanup(func() { publishFileStage = originalPublish })
 	commitDone := make(chan transferCallResult, 1)
 	go func() {
 		responses, callErr := callTransfer(

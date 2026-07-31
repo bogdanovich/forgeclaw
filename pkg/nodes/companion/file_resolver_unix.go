@@ -29,10 +29,15 @@ type fileIdentity struct {
 	Links  uint64 `json:"links"`
 }
 
+type fileMountIdentity struct {
+	primary   uint64
+	secondary uint64
+}
+
 type fileRoot struct {
-	path   string
-	file   *os.File
-	device uint64
+	path  string
+	file  *os.File
+	mount fileMountIdentity
 }
 
 type resolvedFile struct {
@@ -44,6 +49,7 @@ type resolvedFile struct {
 type resolvedParent struct {
 	root        *fileRoot
 	file        *os.File
+	staging     *os.File
 	basename    string
 	crossMounts bool
 }
@@ -55,7 +61,12 @@ type stagedFile struct {
 	identity fileIdentity
 }
 
-var renameFileStage = platformRenameFileStage
+var (
+	descriptorMountIdentity = platformDescriptorMountIdentity
+	publishFileStage        = platformPublishFileStage
+)
+
+const fileStageDirectoryName = ".mintclaw-transfer-staging"
 
 func openFileRoot(path string) (*fileRoot, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
@@ -100,16 +111,27 @@ func openFileRoot(path string) (*fileRoot, error) {
 		_ = current.Close()
 		return nil, classifyFileAccessError(err)
 	}
-	identity, err := identityFromInfo(info)
+	_, err = identityFromInfo(info)
 	if err != nil || !info.IsDir() {
 		_ = current.Close()
 		return nil, ErrFileAccessDenied
 	}
-	if denied, err := deniedFileSystem(int(current.Fd())); err != nil || denied {
+	if denied, deniedErr := deniedFileSystem(
+		int(current.Fd()),
+	); deniedErr != nil || denied {
 		_ = current.Close()
 		return nil, ErrFileAccessDenied
 	}
-	return &fileRoot{path: path, file: current, device: identity.Device}, nil
+	mount, err := descriptorMountIdentity(int(current.Fd()))
+	if err != nil {
+		_ = current.Close()
+		return nil, ErrFileAccessDenied
+	}
+	return &fileRoot{
+		path:  path,
+		file:  current,
+		mount: mount,
+	}, nil
 }
 
 func (root *fileRoot) close() error {
@@ -151,11 +173,13 @@ func (root *fileRoot) openRegular(
 		return nil, classifyFileAccessError(err)
 	}
 	identity, identityErr := identityFromInfo(info)
+	mount, mountErr := descriptorMountIdentity(int(file.Fd()))
 	if identityErr != nil ||
+		mountErr != nil ||
 		!info.Mode().IsRegular() ||
 		info.Size() < 0 ||
 		info.Size() > maxBytes ||
-		(!crossMounts && identity.Device != root.device) {
+		(!crossMounts && mount != root.mount) {
 		_ = file.Close()
 		return nil, ErrFileAccessDenied
 	}
@@ -222,10 +246,12 @@ func (root *fileRoot) resolveParent(
 			_ = current.Close()
 			return nil, classifyFileAccessError(statErr)
 		}
-		identity, identityErr := identityFromInfo(info)
+		_, identityErr := identityFromInfo(info)
+		mount, mountErr := descriptorMountIdentity(int(next.Fd()))
 		if identityErr != nil ||
+			mountErr != nil ||
 			!info.IsDir() ||
-			(!crossMounts && identity.Device != root.device) {
+			(!crossMounts && mount != root.mount) {
 			_ = next.Close()
 			_ = current.Close()
 			return nil, ErrFileAccessDenied
@@ -268,15 +294,18 @@ func (parent *resolvedParent) createStage(transferID string) (*stagedFile, error
 	if parent == nil || parent.file == nil {
 		return nil, ErrFileAccessDenied
 	}
-	var suffix [16]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return nil, fmt.Errorf("generate file transfer stage name: %w", err)
+	staging, err := parent.openStageDirectory(true)
+	if err != nil {
+		return nil, err
 	}
-	name := ".mintclaw-transfer-" + hex.EncodeToString(suffix[:]) + ".tmp"
+	name, err := randomFileStageName()
+	if err != nil {
+		return nil, err
+	}
 	descriptor, err := unix.Openat(
-		int(parent.file.Fd()),
+		int(staging.Fd()),
 		name,
-		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW,
 		0o600,
 	)
 	if err != nil {
@@ -285,22 +314,26 @@ func (parent *resolvedParent) createStage(transferID string) (*stagedFile, error
 	file := os.NewFile(uintptr(descriptor), name)
 	if file == nil {
 		_ = unix.Close(descriptor)
-		_ = unix.Unlinkat(int(parent.file.Fd()), name, 0)
+		_ = unix.Unlinkat(int(staging.Fd()), name, 0)
 		return nil, errors.New("create file transfer stage descriptor")
 	}
 	info, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		_ = unix.Unlinkat(int(parent.file.Fd()), name, 0)
+		_ = unix.Unlinkat(int(staging.Fd()), name, 0)
 		return nil, classifyFileAccessError(err)
 	}
 	identity, identityErr := identityFromInfo(info)
+	stageMount, mountErr := descriptorMountIdentity(int(file.Fd()))
+	parentMount, parentMountErr := descriptorMountIdentity(int(parent.file.Fd()))
 	if identityErr != nil ||
+		mountErr != nil ||
+		parentMountErr != nil ||
 		!info.Mode().IsRegular() ||
 		identity.Links != 1 ||
-		identity.Device != parent.root.device {
+		stageMount != parentMount {
 		_ = file.Close()
-		_ = unix.Unlinkat(int(parent.file.Fd()), name, 0)
+		_ = unix.Unlinkat(int(staging.Fd()), name, 0)
 		return nil, ErrFileAccessDenied
 	}
 	_ = transferID
@@ -336,31 +369,27 @@ func (stage *stagedFile) publish(publication string) error {
 		if err := stage.parent.ensureFinalAbsent(); err != nil {
 			return err
 		}
-		if err := unix.Linkat(
-			int(stage.parent.file.Fd()),
-			stage.name,
-			int(stage.parent.file.Fd()),
-			stage.parent.basename,
-			0,
-		); err != nil {
-			return classifyFileAccessError(err)
-		}
-		if err := unix.Unlinkat(int(stage.parent.file.Fd()), stage.name, 0); err != nil {
-			return &committedFileMutationError{err: err}
-		}
 	case filePublicationReplace:
 		if err := stage.parent.ensureFinalRegular(); err != nil {
 			return err
 		}
-		if err := renameFileStage(
-			int(stage.parent.file.Fd()),
-			stage.name,
-			stage.parent.basename,
-		); err != nil {
-			return classifyFileAccessError(err)
-		}
 	default:
 		return ErrFileAccessDenied
+	}
+	if err := publishFileStage(
+		int(stage.file.Fd()),
+		int(stage.parent.staging.Fd()),
+		int(stage.parent.file.Fd()),
+		stage.parent.basename,
+		publication,
+	); err != nil {
+		return classifyFileAccessError(err)
+	}
+	if err := stage.parent.removePublishedStage(
+		stage.identity,
+		stage.name,
+	); err != nil {
+		return &committedFileMutationError{err: err}
 	}
 	if err := stage.parent.file.Sync(); err != nil {
 		return &committedFileMutationError{err: err}
@@ -386,17 +415,24 @@ func (parent *resolvedParent) ensureFinalAbsent() error {
 }
 
 func (parent *resolvedParent) ensureFinalRegular() error {
-	var stat unix.Stat_t
-	if err := unix.Fstatat(
+	finalDescriptor, err := unix.Openat(
 		int(parent.file.Fd()),
 		parent.basename,
-		&stat,
-		unix.AT_SYMLINK_NOFOLLOW,
-	); err != nil {
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
+		0,
+	)
+	if err != nil {
 		return classifyFileAccessError(err)
 	}
+	defer unix.Close(finalDescriptor)
+	var stat unix.Stat_t
+	if err := unix.Fstat(finalDescriptor, &stat); err != nil {
+		return classifyFileAccessError(err)
+	}
+	finalMount, mountErr := descriptorMountIdentity(finalDescriptor)
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG ||
-		(!parent.rootAllowsCrossMounts() && fileStatDevice(&stat) != parent.root.device) {
+		mountErr != nil ||
+		(!parent.rootAllowsCrossMounts() && finalMount != parent.root.mount) {
 		return ErrFileAccessDenied
 	}
 	return nil
@@ -411,10 +447,10 @@ func (parent *resolvedParent) removeStage(identity fileIdentity, name string) er
 	if err != nil || !exists {
 		return err
 	}
-	if err := unix.Unlinkat(int(parent.file.Fd()), name, 0); err != nil {
+	if err := unix.Unlinkat(int(parent.staging.Fd()), name, 0); err != nil {
 		return classifyFileAccessError(err)
 	}
-	return parent.file.Sync()
+	return parent.staging.Sync()
 }
 
 func (parent *resolvedParent) removePublishedStage(
@@ -425,10 +461,10 @@ func (parent *resolvedParent) removePublishedStage(
 	if err != nil || !exists {
 		return err
 	}
-	if err := unix.Unlinkat(int(parent.file.Fd()), name, 0); err != nil {
+	if err := unix.Unlinkat(int(parent.staging.Fd()), name, 0); err != nil {
 		return classifyFileAccessError(err)
 	}
-	return parent.file.Sync()
+	return parent.staging.Sync()
 }
 
 func (parent *resolvedParent) stageMatches(
@@ -439,9 +475,16 @@ func (parent *resolvedParent) stageMatches(
 	if parent == nil || parent.file == nil || name == "" {
 		return false, ErrFileConflict
 	}
+	staging, err := parent.openStageDirectory(false)
+	if errors.Is(err, ErrFileNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	var stat unix.Stat_t
-	err := unix.Fstatat(
-		int(parent.file.Fd()),
+	err = unix.Fstatat(
+		int(staging.Fd()),
 		name,
 		&stat,
 		unix.AT_SYMLINK_NOFOLLOW,
@@ -492,9 +535,11 @@ func (parent *resolvedParent) openFinalRegular() (*resolvedFile, error) {
 		return nil, classifyFileAccessError(err)
 	}
 	identity, identityErr := identityFromInfo(info)
+	mount, mountErr := descriptorMountIdentity(int(file.Fd()))
 	if identityErr != nil ||
+		mountErr != nil ||
 		!info.Mode().IsRegular() ||
-		(!parent.crossMounts && identity.Device != parent.root.device) {
+		(!parent.crossMounts && mount != parent.root.mount) {
 		_ = file.Close()
 		return nil, ErrFileAccessDenied
 	}
@@ -506,12 +551,94 @@ func (parent *resolvedParent) openFinalRegular() (*resolvedFile, error) {
 }
 
 func (parent *resolvedParent) close() error {
-	if parent == nil || parent.file == nil {
+	if parent == nil {
 		return nil
 	}
-	err := parent.file.Close()
-	parent.file = nil
-	return err
+	var result error
+	if parent.staging != nil {
+		result = parent.staging.Close()
+		parent.staging = nil
+	}
+	if parent.file != nil {
+		if err := parent.file.Close(); result == nil {
+			result = err
+		}
+		parent.file = nil
+	}
+	return result
+}
+
+func (parent *resolvedParent) openStageDirectory(create bool) (*os.File, error) {
+	if parent == nil || parent.file == nil {
+		return nil, ErrFileAccessDenied
+	}
+	if parent.staging != nil {
+		return parent.staging, nil
+	}
+	parentInfo, err := parent.file.Stat()
+	if err != nil || !parentInfo.IsDir() || !protectedFileStageParent(parentInfo) {
+		return nil, ErrFileAccessDenied
+	}
+	if create {
+		err = unix.Mkdirat(
+			int(parent.file.Fd()),
+			fileStageDirectoryName,
+			0o700,
+		)
+		if err != nil && !errors.Is(err, unix.EEXIST) {
+			return nil, classifyFileAccessError(err)
+		}
+	}
+	descriptor, err := unix.Openat(
+		int(parent.file.Fd()),
+		fileStageDirectoryName,
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW,
+		0,
+	)
+	if err != nil {
+		return nil, classifyFileAccessError(err)
+	}
+	staging := os.NewFile(uintptr(descriptor), fileStageDirectoryName)
+	if staging == nil {
+		_ = unix.Close(descriptor)
+		return nil, errors.New("open file transfer staging directory")
+	}
+	info, err := staging.Stat()
+	mount, mountErr := descriptorMountIdentity(int(staging.Fd()))
+	parentMount, parentMountErr := descriptorMountIdentity(int(parent.file.Fd()))
+	if err != nil ||
+		mountErr != nil ||
+		parentMountErr != nil ||
+		!info.IsDir() ||
+		info.Mode().Perm() != 0o700 ||
+		!fileStageDirectoryOwnedByProcess(info) ||
+		mount != parentMount {
+		_ = staging.Close()
+		return nil, ErrFileAccessDenied
+	}
+	if denied, deniedErr := deniedFileSystem(int(staging.Fd())); deniedErr != nil || denied {
+		_ = staging.Close()
+		return nil, ErrFileAccessDenied
+	}
+	parent.staging = staging
+	return staging, nil
+}
+
+func protectedFileStageParent(info os.FileInfo) bool {
+	return info.Mode().Perm()&0o022 == 0 || info.Mode()&os.ModeSticky != 0
+}
+
+func fileStageDirectoryOwnedByProcess(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Geteuid())
+}
+
+func randomFileStageName() (string, error) {
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate file transfer stage name: %w", err)
+	}
+	return ".mintclaw-transfer-" + hex.EncodeToString(suffix[:]) + ".tmp", nil
 }
 
 func validateFilePath(path string) error {

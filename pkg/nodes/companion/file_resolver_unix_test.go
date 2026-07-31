@@ -203,9 +203,74 @@ func TestFileResolverCreateAndReplaceAreExplicit(t *testing.T) {
 	}
 }
 
+func TestFileResolverPublishesPinnedStageAfterNameSubstitution(t *testing.T) {
+	rootPath := canonicalTempDir(t)
+	destination := filepath.Join(rootPath, "published.txt")
+	root, err := openFileRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.close() })
+	parent, err := root.resolveParent(destination, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.close()
+	stage, err := parent.createStage("transfer_stage_substitution")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.file.Close()
+	if _, err := stage.file.Write([]byte("trusted")); err != nil {
+		t.Fatal(err)
+	}
+	stolen := stage.name + ".stolen"
+	if err := unix.Renameat(
+		int(parent.staging.Fd()),
+		stage.name,
+		int(parent.staging.Fd()),
+		stolen,
+	); err != nil {
+		t.Fatal(err)
+	}
+	attackerDescriptor, err := unix.Openat(
+		int(parent.staging.Fd()),
+		stage.name,
+		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC,
+		0o600,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attacker := os.NewFile(uintptr(attackerDescriptor), stage.name)
+	if _, err := attacker.Write([]byte("attacker")); err != nil {
+		_ = attacker.Close()
+		t.Fatal(err)
+	}
+	if err := attacker.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var committed *committedFileMutationError
+	if err := stage.publish(filePublicationCreate); !errors.As(err, &committed) {
+		t.Fatalf("substituted stage publication error = %v", err)
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "trusted" {
+		t.Fatalf("published substituted stage = %q", data)
+	}
+}
+
 func canonicalTempDir(t *testing.T) string {
 	t.Helper()
-	path, err := filepath.EvalSymlinks(t.TempDir())
+	temporary := t.TempDir()
+	if err := os.Chmod(temporary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.EvalSymlinks(temporary)
 	if err != nil {
 		t.Fatal(err)
 	}
