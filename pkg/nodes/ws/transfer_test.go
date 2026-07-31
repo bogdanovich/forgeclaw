@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,6 +137,42 @@ func TestTransferStreamRejectsChunksBeyondDeclaredSize(t *testing.T) {
 	}
 }
 
+func TestTransferStreamInvalidAcknowledgementFailsClosed(t *testing.T) {
+	t.Parallel()
+	session := newPeer(&transferRecordingConnection{})
+	session.markReady()
+	binding := testTransferBinding()
+	subscription, err := session.subscribeTransfer(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := &TransferStream{
+		session: session, subscription: subscription, binding: binding,
+	}
+
+	chunk := testTransferFrame(binding, protocol.TransferFrameChunk, 1, []byte("payload"))
+	if sendErr := stream.Send(t.Context(), chunk); sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	invalidAck := testTransferFrame(binding, protocol.TransferFrameAck, 2, nil)
+	if handleErr := session.handleTransferFrame(invalidAck); handleErr != nil {
+		t.Fatal(handleErr)
+	}
+	if _, receiveErr := stream.Receive(t.Context()); !errors.Is(
+		receiveErr,
+		protocol.ErrInvalidTransferFrame,
+	) {
+		t.Fatalf("Receive() invalid acknowledgement error = %v", receiveErr)
+	}
+	status := testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil)
+	if sendErr := stream.Send(t.Context(), status); !errors.Is(sendErr, ErrNodeDisconnected) {
+		t.Fatalf("Send() after invalid acknowledgement error = %v", sendErr)
+	}
+	if _, subscribeErr := session.subscribeTransfer(binding); subscribeErr == nil {
+		t.Fatal("invalid acknowledgement allowed transfer identity reuse")
+	}
+}
+
 func TestTransferSubscriptionEnforcesByteBackpressure(t *testing.T) {
 	t.Parallel()
 	session := newPeer(&transferRecordingConnection{})
@@ -180,6 +217,9 @@ func TestTransferStreamTombstonesLateFrames(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if _, subscribeErr := session.subscribeTransfer(binding); subscribeErr == nil {
+		t.Fatal("tombstoned transfer identity was reopened")
+	}
 	late := testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil)
 	if err := session.handleTransferFrame(late); err != nil {
 		t.Fatalf("late tombstoned frame error = %v", err)
@@ -188,6 +228,42 @@ func TestTransferStreamTombstonesLateFrames(t *testing.T) {
 	unknown.TransferID = "unknown_transfer"
 	if err := session.handleTransferFrame(unknown); err == nil {
 		t.Fatal("unattached transfer frame was accepted")
+	}
+}
+
+func TestTransferSendCancellationInterruptsWrite(t *testing.T) {
+	t.Parallel()
+	connection := newCancelBlockingTransferConnection()
+	session := newPeer(connection)
+	session.markReady()
+	binding := testTransferBinding()
+	subscription, err := session.subscribeTransfer(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := &TransferStream{
+		session: session, subscription: subscription, binding: binding,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- stream.Send(
+			ctx,
+			testTransferFrame(binding, protocol.TransferFrameStatus, 0, nil),
+		)
+	}()
+	<-connection.writeStarted
+	cancel()
+	select {
+	case sendErr := <-sendDone:
+		if !errors.Is(sendErr, context.Canceled) {
+			t.Fatalf("Send() cancellation error = %v", sendErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled transfer write remained blocked")
+	}
+	if connection.deadlineCalls.Load() < 2 {
+		t.Fatal("canceled transfer write did not advance its deadline")
 	}
 }
 
@@ -269,4 +345,34 @@ func (connection *transferRecordingConnection) lastWrite() (int, []byte) {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 	return connection.messageType, append([]byte(nil), connection.data...)
+}
+
+type cancelBlockingTransferConnection struct {
+	transferRecordingConnection
+
+	writeStarted     chan struct{}
+	writeInterrupted chan struct{}
+	startOnce        sync.Once
+	interruptOnce    sync.Once
+	deadlineCalls    atomic.Int32
+}
+
+func newCancelBlockingTransferConnection() *cancelBlockingTransferConnection {
+	return &cancelBlockingTransferConnection{
+		writeStarted:     make(chan struct{}),
+		writeInterrupted: make(chan struct{}),
+	}
+}
+
+func (connection *cancelBlockingTransferConnection) SetWriteDeadline(time.Time) error {
+	if connection.deadlineCalls.Add(1) > 1 {
+		connection.interruptOnce.Do(func() { close(connection.writeInterrupted) })
+	}
+	return nil
+}
+
+func (connection *cancelBlockingTransferConnection) WriteMessage(int, []byte) error {
+	connection.startOnce.Do(func() { close(connection.writeStarted) })
+	<-connection.writeInterrupted
+	return context.DeadlineExceeded
 }

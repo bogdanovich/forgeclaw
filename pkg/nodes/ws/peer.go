@@ -331,7 +331,9 @@ func (session *peer) subscribeTransfer(
 	if session.transfers[binding.TransferID] != nil {
 		return nil, errors.New("transfer frame subscription already exists")
 	}
-	delete(session.abandonedTransfers, binding.TransferID)
+	if _, abandoned := session.abandonedTransfers[binding.TransferID]; abandoned {
+		return nil, errors.New("transfer frame subscription identity was already abandoned")
+	}
 	session.transfers[binding.TransferID] = subscription
 	return subscription, nil
 }
@@ -689,14 +691,33 @@ func (session *peer) writeTransferFrame(
 	case <-session.closed:
 		return ErrNodeDisconnected
 	}
+	select {
+	case <-writeCtx.Done():
+		return writeCtx.Err()
+	case <-session.closed:
+		return ErrNodeDisconnected
+	default:
+	}
 	deadline, _ := writeCtx.Deadline()
 	if err := session.connection.SetWriteDeadline(deadline); err != nil {
 		_ = session.Close()
 		return err
 	}
-	if err := session.connection.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	cancelDone := make(chan struct{})
+	stopCancel := context.AfterFunc(writeCtx, func() {
+		_ = session.connection.SetWriteDeadline(time.Now())
+		close(cancelDone)
+	})
+	writeErr := session.connection.WriteMessage(websocket.BinaryMessage, data)
+	if !stopCancel() {
+		<-cancelDone
+	}
+	if writeErr != nil {
 		_ = session.Close()
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return writeErr
 	}
 	return nil
 }

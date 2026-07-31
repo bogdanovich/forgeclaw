@@ -149,8 +149,8 @@ func (stream *TransferStream) Receive(
 		return protocol.TransferFrame{}, err
 	}
 	stream.stateMu.Lock()
-	defer stream.stateMu.Unlock()
 	if stream.closed {
+		stream.stateMu.Unlock()
 		return protocol.TransferFrame{}, ErrNodeDisconnected
 	}
 	switch frame.Type {
@@ -159,10 +159,19 @@ func (stream *TransferStream) Receive(
 	case protocol.TransferFrameAck:
 		if frame.Sequence < stream.receivedAckSequence ||
 			frame.Sequence > stream.sentChunkSequence {
+			stream.closed = true
+			stream.stateMu.Unlock()
+			stream.session.unsubscribeTransfer(
+				stream.binding.TransferID,
+				stream.subscription,
+				protocol.ErrInvalidTransferFrame,
+				true,
+			)
 			return protocol.TransferFrame{}, protocol.ErrInvalidTransferFrame
 		}
 		stream.receivedAckSequence = frame.Sequence
 	}
+	stream.stateMu.Unlock()
 	return frame, nil
 }
 
