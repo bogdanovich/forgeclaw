@@ -196,7 +196,18 @@ func runTerminalSmoke(
 		_ = chat.SetWriteDeadline(deadline)
 	}
 	requestID := uuid.NewString()
-	prompt := terminalSmokeOpenPrompt(options)
+	openOptions := options
+	if openOptions.Columns < 400 {
+		openOptions.Columns++
+	} else {
+		openOptions.Columns--
+	}
+	if openOptions.Rows < 200 {
+		openOptions.Rows++
+	} else {
+		openOptions.Rows--
+	}
+	prompt := terminalSmokeOpenPrompt(openOptions)
 	writeErr := chat.WriteJSON(terminalChatMessage{
 		Type:      "message.send",
 		ID:        requestID,
@@ -321,8 +332,25 @@ func readTerminalSmokeOutput(
 ) (terminalSmokeResult, error) {
 	var output strings.Builder
 	var cursor uint64
+	resizeAcknowledged := false
+	closeAcknowledged := false
 	closeSent := false
 	var parsed terminalSmokeResult
+	sendClose := func() error {
+		if closeSent || !resizeAcknowledged || parsed.Marker == "" {
+			return nil
+		}
+		if err := connection.WriteJSON(terminalOperatorControl{
+			Version:        nodepkg.TerminalProtocolVersion,
+			Type:           "close",
+			Sequence:       3,
+			IdempotencyKey: "terminal_smoke_close_3",
+		}); err != nil {
+			return fmt.Errorf("close terminal: %w", err)
+		}
+		closeSent = true
+		return nil
+	}
 	for {
 		var event nodepkg.TerminalEvent
 		if err := connection.ReadJSON(&event); err != nil {
@@ -362,20 +390,30 @@ func readTerminalSmokeOutput(
 					parsed.Rows = rows
 					parsed.Columns = columns
 					parsed.Marker = terminalSmokeMarker
-					if err := connection.WriteJSON(terminalOperatorControl{
-						Version:        nodepkg.TerminalProtocolVersion,
-						Type:           "close",
-						Sequence:       3,
-						IdempotencyKey: "terminal_smoke_close_3",
-					}); err != nil {
-						return terminalSmokeResult{}, fmt.Errorf("close terminal: %w", err)
+					if err := sendClose(); err != nil {
+						return terminalSmokeResult{}, err
 					}
-					closeSent = true
 				}
 			}
+		case "ack":
+			switch event.AcceptedSequence {
+			case 1:
+				resizeAcknowledged = true
+				if err := sendClose(); err != nil {
+					return terminalSmokeResult{}, err
+				}
+			case 3:
+				closeAcknowledged = true
+			}
 		case "closed":
-			if !closeSent || !event.TerminationConfirmed {
-				return terminalSmokeResult{}, errors.New("terminal closed before smoke completion")
+			if !closeSent ||
+				!closeAcknowledged ||
+				!event.TerminationConfirmed ||
+				event.State != "closed" ||
+				event.Reason != "close" {
+				return terminalSmokeResult{}, errors.New(
+					"terminal closed without confirming the requested close",
+				)
 			}
 			parsed.State = event.State
 			parsed.CloseReason = event.Reason

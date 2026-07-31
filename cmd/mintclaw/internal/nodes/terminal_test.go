@@ -52,7 +52,8 @@ func TestRunTerminalSmokeCompletesAttachedLifecycle(t *testing.T) {
 		if message.Type != "message.send" ||
 			message.SessionID != request.URL.Query().Get("session_id") ||
 			!strings.Contains(content, `target "vpn-smoke"`) ||
-			!strings.Contains(content, `profile "owner-test"`) {
+			!strings.Contains(content, `profile "owner-test"`) ||
+			!strings.Contains(content, "columns 101, rows 32") {
 			t.Errorf("unexpected terminal open request: %#v", message)
 			return
 		}
@@ -96,6 +97,14 @@ func TestRunTerminalSmokeCompletesAttachedLifecycle(t *testing.T) {
 			t.Errorf("unexpected resize: %#v", resize)
 			return
 		}
+		if err := connection.WriteJSON(nodepkg.TerminalEvent{
+			Version: nodepkg.TerminalProtocolVersion,
+			Type:    "ack", TerminalID: terminalID,
+			AcceptedSequence: 1, State: "live",
+		}); err != nil {
+			t.Error(err)
+			return
+		}
 		var input terminalOperatorControl
 		if err := connection.ReadJSON(&input); err != nil {
 			t.Error(err)
@@ -124,6 +133,14 @@ func TestRunTerminalSmokeCompletesAttachedLifecycle(t *testing.T) {
 		}
 		if closeRequest.Type != "close" || closeRequest.Sequence != 3 {
 			t.Errorf("unexpected close: %#v", closeRequest)
+			return
+		}
+		if err := connection.WriteJSON(nodepkg.TerminalEvent{
+			Version: nodepkg.TerminalProtocolVersion,
+			Type:    "ack", TerminalID: terminalID,
+			AcceptedSequence: 3, State: "live",
+		}); err != nil {
+			t.Error(err)
 			return
 		}
 		if err := connection.WriteJSON(nodepkg.TerminalEvent{
@@ -160,6 +177,99 @@ func TestRunTerminalSmokeCompletesAttachedLifecycle(t *testing.T) {
 		result.State != "closed" ||
 		result.CloseReason != "close" {
 		t.Fatalf("smoke result = %#v", result)
+	}
+}
+
+func TestReadTerminalSmokeOutputRequiresResizeAndCloseProof(t *testing.T) {
+	const terminalID = "terminal_0123456789abcdef0123456789abcdef"
+	options := terminalSmokeOptions{Columns: 100, Rows: 31}
+	tests := []struct {
+		name       string
+		sendEvents func(*testing.T, *websocket.Conn)
+	}{
+		{
+			name: "missing resize acknowledgement",
+			sendEvents: func(t *testing.T, connection *websocket.Conn) {
+				t.Helper()
+				writeTerminalSmokeOutput(t, connection, terminalID)
+				writeTerminalClosed(t, connection, terminalID, "close")
+			},
+		},
+		{
+			name: "natural exit after marker",
+			sendEvents: func(t *testing.T, connection *websocket.Conn) {
+				t.Helper()
+				writeTerminalAck(t, connection, terminalID, 1)
+				writeTerminalSmokeOutput(t, connection, terminalID)
+				var closeRequest terminalOperatorControl
+				if err := connection.ReadJSON(&closeRequest); err != nil {
+					t.Fatal(err)
+				}
+				writeTerminalAck(t, connection, terminalID, 3)
+				writeTerminalClosed(t, connection, terminalID, "exit")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				connection, err := upgrader.Upgrade(writer, request, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer connection.Close()
+				test.sendEvents(t, connection)
+			}))
+			defer server.Close()
+			endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
+			connection, _, err := websocket.DefaultDialer.Dial(endpoint, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer connection.Close()
+			_, err = readTerminalSmokeOutput(connection, options, terminalID)
+			if err == nil || !strings.Contains(err.Error(), "requested close") {
+				t.Fatalf("close proof error = %v", err)
+			}
+		})
+	}
+}
+
+func writeTerminalAck(t *testing.T, connection *websocket.Conn, terminalID string, sequence uint64) {
+	t.Helper()
+	if err := connection.WriteJSON(nodepkg.TerminalEvent{
+		Version: nodepkg.TerminalProtocolVersion,
+		Type:    "ack", TerminalID: terminalID,
+		AcceptedSequence: sequence, State: "live",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTerminalSmokeOutput(t *testing.T, connection *websocket.Conn, terminalID string) {
+	t.Helper()
+	outputBytes := []byte("MINTCLAW_PTY_OK UID=1001 SIZE=31 100\r\n")
+	if err := connection.WriteJSON(nodepkg.TerminalEvent{
+		Version: nodepkg.TerminalProtocolVersion,
+		Type:    "output", TerminalID: terminalID,
+		Cursor:     uint64(len(outputBytes)),
+		DataBase64: base64.StdEncoding.EncodeToString(outputBytes),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTerminalClosed(t *testing.T, connection *websocket.Conn, terminalID string, reason string) {
+	t.Helper()
+	if err := connection.WriteJSON(nodepkg.TerminalEvent{
+		Version: nodepkg.TerminalProtocolVersion,
+		Type:    "closed", TerminalID: terminalID,
+		State: "closed", Reason: reason,
+		StartedAt: 1, CompletedAt: 2, TerminationConfirmed: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
