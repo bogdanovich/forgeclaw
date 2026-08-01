@@ -476,10 +476,10 @@ func formatMessagesForLog(messages []providers.Message) string {
 	}
 
 	var sb strings.Builder
-	toolNames := diagnosticToolNamesByCallID(messages)
+	classifications := diagnosticMessageClassifications(messages)
 	sb.WriteString("[\n")
 	for i, msg := range messages {
-		sensitive := diagnosticMessageContainsNodeEvidence(msg, toolNames)
+		sensitive := classifications[i].sensitive
 		fmt.Fprintf(&sb, "  [%d] Role: %s\n", i, msg.Role)
 		if len(msg.ToolCalls) > 0 {
 			sb.WriteString("  ToolCalls:\n")
@@ -487,7 +487,7 @@ func formatMessagesForLog(messages []providers.Message) string {
 				fmt.Fprintf(&sb, "    - ID: %s, Type: %s, Name: %s\n", tc.ID, tc.Type, tc.Name)
 				if tc.Function != nil {
 					arguments := utils.Truncate(tc.Function.Arguments, 200)
-					if !diagnosticToolPreviewAllowed(tc.Function.Name) {
+					if sensitive || !diagnosticToolPreviewAllowed(tc.Function.Name) {
 						arguments = "[REDACTED]"
 					}
 					fmt.Fprintf(&sb, "      Arguments: %s\n", arguments)

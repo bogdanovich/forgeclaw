@@ -744,7 +744,8 @@ func runtimeEventRecord(
 
 func diagnosticToolPreviewAllowed(tool string) bool {
 	switch strings.TrimSpace(tool) {
-	case "nodes", "nodes_file_info", "nodes_upload", "nodes_download", "nodes_status", "nodes_cancel":
+	case "nodes", "nodes_file_info", "nodes_upload", "nodes_download", "nodes_status", "nodes_cancel",
+		"request_user_input":
 		return false
 	default:
 		return true

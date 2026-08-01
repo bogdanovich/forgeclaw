@@ -644,7 +644,11 @@ func (p *Pipeline) CallLLM(
 				diagnosticResponseReasoning,
 				diagnosticModelReasoningBytes,
 			),
-			DiagnosticToolCalls: diagnosticToolCallsPreview(p.Cfg, exec.response.ToolCalls),
+			DiagnosticToolCalls: diagnosticToolCallsPreviewWithSensitivity(
+				p.Cfg,
+				exec.response.ToolCalls,
+				sensitiveNodeResponse,
+			),
 		},
 	)
 

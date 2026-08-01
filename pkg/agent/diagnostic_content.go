@@ -54,19 +54,25 @@ func diagnosticMessagesPreview(cfg *config.Config, messages []providers.Message)
 		return ""
 	}
 	totalMessages := len(messages)
-	toolNames := diagnosticToolNamesByCallID(messages)
+	classifications := diagnosticMessageClassifications(messages)
 	envelope := map[string]any{
 		"total_messages": totalMessages,
-		"latest_message": diagnosticMessagePreview(messages[len(messages)-1], toolNames),
+		"latest_message": diagnosticMessagePreview(
+			messages[len(messages)-1],
+			classifications[len(messages)-1],
+		),
 	}
 	selected := 1
 	if len(messages) > 1 {
-		envelope["origin_message"] = diagnosticMessagePreview(messages[0], toolNames)
+		envelope["origin_message"] = diagnosticMessagePreview(messages[0], classifications[0])
 		selected++
 	}
 	recent := make([]any, 0, min(maxDiagnosticMessages-selected, len(messages)-selected))
 	for index := len(messages) - 2; index > 0 && selected < maxDiagnosticMessages; index-- {
-		recent = append(recent, diagnosticMessagePreview(messages[index], toolNames))
+		recent = append(
+			recent,
+			diagnosticMessagePreview(messages[index], classifications[index]),
+		)
 		selected++
 	}
 	if len(recent) > 0 {
@@ -79,12 +85,12 @@ func diagnosticMessagesPreview(cfg *config.Config, messages []providers.Message)
 
 func diagnosticMessagePreview(
 	message providers.Message,
-	toolNames map[string]string,
+	classification diagnosticMessageClassification,
 ) map[string]any {
 	item := map[string]any{
 		"role": message.Role,
 	}
-	sensitive := diagnosticMessageContainsNodeEvidence(message, toolNames)
+	sensitive := classification.sensitive
 	if sensitive {
 		item["content_redacted"] = true
 	} else {
@@ -106,16 +112,16 @@ func diagnosticMessagePreview(
 	}
 	for _, call := range calls {
 		renderedCalls, _ := item["tool_calls"].([]any)
-		item["tool_calls"] = append(renderedCalls, diagnosticToolCallFromProvider(call))
+		item["tool_calls"] = append(renderedCalls, diagnosticToolCallFromProvider(call, sensitive))
 	}
 	return item
 }
 
 func diagnosticMessageContainsNodeEvidence(
 	message providers.Message,
-	toolNames map[string]string,
+	result diagnosticResultClassification,
 ) bool {
-	if message.Role == "tool" && !diagnosticToolPreviewAllowed(toolNames[message.ToolCallID]) {
+	if message.ToolCallID != "" && (!result.matched || !diagnosticToolPreviewAllowed(result.toolName)) {
 		return true
 	}
 	return len(message.Attachments) > 0 || len(message.Media) > 0 ||
@@ -170,7 +176,7 @@ func diagnosticMessagesEndWithNodeResult(messages []providers.Message) bool {
 	if len(messages) == 0 {
 		return false
 	}
-	toolNames := diagnosticToolNamesByCallID(messages)
+	classifications := diagnosticMessageClassifications(messages)
 	for index := len(messages) - 1; index >= 0; index-- {
 		message := messages[index]
 		if diagnosticSyntheticInterruptMessage(message) {
@@ -179,7 +185,7 @@ func diagnosticMessagesEndWithNodeResult(messages []providers.Message) bool {
 		if message.Role != "tool" {
 			break
 		}
-		if !diagnosticToolPreviewAllowed(toolNames[message.ToolCallID]) {
+		if classifications[index].sensitive {
 			return true
 		}
 	}
@@ -193,6 +199,14 @@ func diagnosticSyntheticInterruptMessage(message providers.Message) bool {
 }
 
 func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) string {
+	return diagnosticToolCallsPreviewWithSensitivity(cfg, calls, false)
+}
+
+func diagnosticToolCallsPreviewWithSensitivity(
+	cfg *config.Config,
+	calls []providers.ToolCall,
+	forceRedaction bool,
+) string {
 	if !diagnosticContentEnabled(cfg) || len(calls) == 0 {
 		return ""
 	}
@@ -204,7 +218,7 @@ func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) 
 	}
 	preview := make([]any, 0, len(calls))
 	for _, call := range calls {
-		preview = append(preview, diagnosticToolCallFromProvider(call))
+		preview = append(preview, diagnosticToolCallFromProvider(call, forceRedaction))
 	}
 	envelope := map[string]any{
 		"total_tool_calls": totalCalls,
@@ -214,7 +228,7 @@ func diagnosticToolCallsPreview(cfg *config.Config, calls []providers.ToolCall) 
 	return diagnosticJSONPreview(cfg, envelope, diagnosticModelToolCallsBytes)
 }
 
-func diagnosticToolCallFromProvider(call providers.ToolCall) map[string]any {
+func diagnosticToolCallFromProvider(call providers.ToolCall, forceRedaction bool) map[string]any {
 	name := call.Name
 	var arguments any
 	if len(call.Arguments) > 0 {
@@ -232,7 +246,7 @@ func diagnosticToolCallFromProvider(call providers.ToolCall) map[string]any {
 	addDiagnosticValue(item, "id", call.ID)
 	addDiagnosticValue(item, "name", name)
 	if arguments != nil {
-		if diagnosticToolPreviewAllowed(name) {
+		if !forceRedaction && diagnosticToolPreviewAllowed(name) {
 			item["arguments"] = arguments
 		} else {
 			item["arguments_redacted"] = true
@@ -241,16 +255,40 @@ func diagnosticToolCallFromProvider(call providers.ToolCall) map[string]any {
 	return item
 }
 
-func diagnosticToolNamesByCallID(messages []providers.Message) map[string]string {
-	result := make(map[string]string)
-	for _, message := range messages {
+type diagnosticResultClassification struct {
+	toolName string
+	matched  bool
+}
+
+type diagnosticMessageClassification struct {
+	result    diagnosticResultClassification
+	sensitive bool
+}
+
+func diagnosticMessageClassifications(messages []providers.Message) []diagnosticMessageClassification {
+	result := make([]diagnosticMessageClassification, len(messages))
+	latestCalls := make(map[string]string)
+	pendingSensitiveFollowUp := false
+	for index, message := range messages {
+		if message.ToolCallID != "" {
+			result[index].result.toolName, result[index].result.matched = latestCalls[message.ToolCallID]
+		}
+		result[index].sensitive = diagnosticMessageContainsNodeEvidence(message, result[index].result)
+		if message.Role == "assistant" {
+			result[index].sensitive = result[index].sensitive || pendingSensitiveFollowUp
+			pendingSensitiveFollowUp = false
+		} else if message.ToolCallID != "" {
+			pendingSensitiveFollowUp = pendingSensitiveFollowUp || result[index].sensitive
+		} else if !diagnosticSyntheticInterruptMessage(message) {
+			pendingSensitiveFollowUp = false
+		}
 		for _, call := range message.ToolCalls {
 			name := call.Name
 			if name == "" && call.Function != nil {
 				name = call.Function.Name
 			}
 			if call.ID != "" && name != "" {
-				result[call.ID] = name
+				latestCalls[call.ID] = name
 			}
 		}
 	}
