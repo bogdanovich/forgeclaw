@@ -28,4 +28,5 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Tool-Loop Stagnation Protection](tool-loop-stagnation.md): warning-first repeated failure and read-only no-progress detection with hash-safe state and events.
 - [Passive Diagnostics](passive-diagnostics.md): bounded redacted execution traces for direct human and Codex debugging without runtime coupling.
 - [Current Refactoring Audit](current-refactoring-audit.md): near-term architecture risks around metadata, delivery, turn state, context manager migration, and provider contracts.
+- [Reliability and Refactoring Roadmap](reliability-refactoring-roadmap.md): prioritized durability, security, ownership, provider-contract, and cross-platform verification work with explicit completion criteria.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.
