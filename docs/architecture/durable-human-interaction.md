@@ -403,6 +403,16 @@ Capture must never block interaction progress, task reuse, pruning, delivery, or
 shutdown. It must not add acknowledgement state to the interaction registry.
 Lossless projection and cross-store trace transactions are outside this runtime.
 
+This privacy boundary protects the exact accepted-answer payload, its canonical
+tool result, and interaction-adjacent diagnostic projections. It is not a
+transitive taint system for arbitrary text the model later generates. If the
+model deliberately includes answer-derived text in a later ordinary tool call,
+that call follows the tool's own argument logging and redaction policy. Approval
+continuations consume a normalized allow or deny outcome rather than relying on
+free-form approval prose. Implementations may conservatively suppress an
+immediate response projection without attaching a durable sensitivity label to
+later execution.
+
 The interaction record, accepted answer, and canonical tool result have
 exactly-once state transitions. Channel publication cannot be exactly once when
 the remote API has no idempotency protocol. The runtime therefore records

@@ -207,6 +207,180 @@ func TestFormatMessagesForLogRedactsNodeFileHistory(t *testing.T) {
 	}
 }
 
+func TestHumanInteractionAnswersAreRedactedFromLogsAndTraces(t *testing.T) {
+	interactionID := "interaction-private-approval"
+	answer := "allow-once-private-answer"
+	messages := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-question", Name: "request_user_input",
+				Function: &providers.FunctionCall{
+					Name:      "request_user_input",
+					Arguments: `{"questions":[{"id":"approval","question":"Reveal private approval?"}]}`,
+				},
+			}},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call-question",
+			Content: `{"interaction_id":"` + interactionID +
+				`","outcome":"answered","answers":{"approval":"` + answer + `"}}`,
+		},
+		{
+			Role:             "assistant",
+			Content:          "The private decision was " + answer,
+			ReasoningContent: "Use " + answer + " in the next tool call",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-question", Name: "read_file",
+				Function: &providers.FunctionCall{
+					Name: "read_file", Arguments: `{"path":"` + answer + `"}`,
+				},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-question", Content: "public-result"},
+	}
+
+	logPreview := formatMessagesForLog(messages)
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	tracePreview := diagnosticMessagesPreview(cfg, messages)
+	for _, preview := range []string{logPreview, tracePreview} {
+		if !strings.Contains(preview, "request_user_input") ||
+			!strings.Contains(strings.ToLower(preview), "redact") ||
+			!strings.Contains(preview, "public-result") {
+			t.Fatalf("interaction preview was not redacted: %s", preview)
+		}
+		for _, forbidden := range []string{
+			interactionID, answer, "Reveal private approval?",
+		} {
+			if strings.Contains(preview, forbidden) {
+				t.Fatalf("interaction preview leaked %q: %s", forbidden, preview)
+			}
+		}
+	}
+}
+
+func TestUnmatchedToolResultsAreRedactedFromLogsAndTraces(t *testing.T) {
+	answer := "unmatched-private-answer"
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	for _, message := range []providers.Message{
+		{Role: "tool", ToolCallID: "missing-call", Content: answer},
+		{Role: "tool", Content: answer},
+	} {
+		for _, preview := range []string{
+			formatMessagesForLog([]providers.Message{message}),
+			diagnosticMessagesPreview(cfg, []providers.Message{message}),
+		} {
+			if strings.Contains(preview, answer) || !strings.Contains(strings.ToLower(preview), "redact") {
+				t.Fatalf("unmatched tool result was not redacted: %s", preview)
+			}
+		}
+	}
+}
+
+func TestUnnamedReusedToolCallsInvalidateEarlierCorrelation(t *testing.T) {
+	answer := "unnamed-private-answer"
+	messages := []providers.Message{
+		{
+			Role:      "assistant",
+			ToolCalls: []providers.ToolCall{{ID: "reused-call", Name: "read_file"}},
+		},
+		{Role: "tool", ToolCallID: "reused-call", Content: "public-result"},
+		{
+			Role:      "assistant",
+			ToolCalls: []providers.ToolCall{{ID: "reused-call"}},
+		},
+		{Role: "tool", ToolCallID: "reused-call", Content: answer},
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	for _, preview := range []string{
+		formatMessagesForLog(messages),
+		diagnosticMessagesPreview(cfg, messages),
+	} {
+		if strings.Contains(preview, answer) || !strings.Contains(preview, "public-result") {
+			t.Fatalf("unnamed reused tool call did not fail closed: %s", preview)
+		}
+	}
+}
+
+func TestDuplicateToolCallIDsInOneBatchFailClosed(t *testing.T) {
+	answer := "duplicate-private-answer"
+	messages := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{
+				{ID: "duplicate-call", Name: "request_user_input"},
+				{ID: "duplicate-call", Name: "read_file"},
+			},
+		},
+		{Role: "tool", ToolCallID: "duplicate-call", Content: answer},
+		{
+			Role:      "assistant",
+			ToolCalls: []providers.ToolCall{{ID: "duplicate-call", Name: "read_file"}},
+		},
+		{Role: "tool", ToolCallID: "duplicate-call", Content: "public-result"},
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	for _, preview := range []string{
+		formatMessagesForLog(messages),
+		diagnosticMessagesPreview(cfg, messages),
+	} {
+		if strings.Contains(preview, answer) || !strings.Contains(strings.ToLower(preview), "redact") ||
+			!strings.Contains(preview, "public-result") {
+			t.Fatalf("duplicate tool-call ID did not fail closed: %s", preview)
+		}
+	}
+}
+
+func TestDiagnosticLLMResponseRedactsFollowUpToolArguments(t *testing.T) {
+	answer := "private-approval-answer"
+	request := []providers.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []providers.ToolCall{{
+				ID: "call-question", Name: "request_user_input",
+			}},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call-question",
+			Content:    answer,
+		},
+	}
+	response := &providers.LLMResponse{
+		Content:   "The private decision was " + answer,
+		Reasoning: "Use the private decision in the next tool call",
+		ToolCalls: []providers.ToolCall{{
+			ID: "call-read", Name: "read_file",
+			Function: &providers.FunctionCall{
+				Name: "read_file", Arguments: `{"path":"` + answer + `"}`,
+			},
+		}},
+	}
+
+	content, reasoning, sensitive := diagnosticLLMResponseContent(response, request)
+	if !sensitive || content != "" || reasoning != "" {
+		t.Fatalf("sensitive response projection = (%q, %q, %v)", content, reasoning, sensitive)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Diagnostics.TraceCapture.Enabled = true
+	cfg.Diagnostics.TraceCapture.ContentMode = "redacted_content"
+	toolCalls := diagnosticToolCallsPreviewWithSensitivity(cfg, response.ToolCalls, sensitive)
+	if strings.Contains(toolCalls, answer) || !strings.Contains(toolCalls, "arguments_redacted") {
+		t.Fatalf("sensitive response tool arguments were not redacted: %s", toolCalls)
+	}
+}
+
 func TestDiagnosticLLMResponseSuppressesNodeFileContentAndReasoning(t *testing.T) {
 	secretPath := "/private/node/config.json"
 	transferRef := "transfer-artifact://private-download"
