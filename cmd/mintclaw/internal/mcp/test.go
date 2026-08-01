@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/bogdanovich/mintclaw/pkg/config"
 )
 
 func newTestCommand() *cobra.Command {
@@ -26,12 +28,26 @@ func newTestCommand() *cobra.Command {
 			if !exists {
 				return fmt.Errorf("MCP server %q not found", name)
 			}
+			exclusiveLock := "no"
+			if server.ExclusiveLockFile != "" {
+				exclusiveLock = "yes"
+			}
+			fmt.Fprintf(
+				cmd.OutOrStdout(),
+				"MCP server %q configuration: session replay=%s, exclusive lock=%s.\n",
+				name,
+				config.EffectiveMCPSessionLossReplay(server),
+				exclusiveLock,
+			)
 
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
 			result, err := serverProbe(ctx, name, server, cfg.WorkspacePath())
 			if err != nil {
+				if exclusiveLeaseBusy(err) {
+					return exclusiveLeaseBusyDiagnostic(name)
+				}
 				return fmt.Errorf("failed to reach MCP server %q: %w", name, err)
 			}
 

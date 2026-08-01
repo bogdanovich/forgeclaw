@@ -215,6 +215,36 @@ func renderServerTarget(server config.MCPServerConfig) string {
 	return rendered
 }
 
+const maxMCPFailureTargetRunes = 256
+
+func renderServerFailureTarget(server config.MCPServerConfig) string {
+	transport := inferTransportType(server)
+	if transport == "http" || transport == "sse" {
+		if server.URL == "" {
+			return "<missing url>"
+		}
+		parsed, err := url.Parse(server.URL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return "<remote target configured>"
+		}
+		return boundMCPFailureTarget(parsed.Scheme + "://" + parsed.Host)
+	}
+
+	command := strings.TrimSpace(server.Command)
+	if command == "" {
+		return "<missing command>"
+	}
+	return boundMCPFailureTarget(filepath.Base(command))
+}
+
+func boundMCPFailureTarget(target string) string {
+	runes := []rune(target)
+	if len(runes) <= maxMCPFailureTargetRunes {
+		return target
+	}
+	return string(runes[:maxMCPFailureTargetRunes-3]) + "..."
+}
+
 func sortedServerNames(servers map[string]config.MCPServerConfig) []string {
 	names := make([]string, 0, len(servers))
 	for name := range servers {
@@ -368,6 +398,18 @@ func defaultServerProbe(
 	}
 
 	return probeResult{ToolCount: len(conn.Tools)}, nil
+}
+
+func exclusiveLeaseBusy(err error) bool {
+	var busyErr *mintclawmcp.ExclusiveLeaseBusyError
+	return errors.As(err, &busyErr)
+}
+
+func exclusiveLeaseBusyDiagnostic(name string) error {
+	return fmt.Errorf(
+		"MCP server %q is busy: its configured exclusive lease is held by another process",
+		name,
+	)
 }
 
 func confirmOverwrite(r io.Reader, w io.Writer, name string) (bool, error) {

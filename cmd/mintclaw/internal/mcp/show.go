@@ -162,7 +162,7 @@ func newShowCommand() *cobra.Command {
 			serverInfo := buildServerInfo(name, server, cfg.Tools.MCP.Discovery.Enabled)
 
 			if !server.Enabled {
-				cliui.PrintMCPShow(cmd.OutOrStdout(), serverInfo, nil, true)
+				cliui.PrintMCPShow(cmd.OutOrStdout(), serverInfo, nil, cliui.MCPShowDiscoveryDisabled)
 				return nil
 			}
 
@@ -171,6 +171,15 @@ func newShowCommand() *cobra.Command {
 
 			details, err := serverShowProbe(ctx, name, server, cfg.WorkspacePath())
 			if err != nil {
+				serverInfo.Target = renderServerFailureTarget(server)
+				discoveryState := cliui.MCPShowDiscoveryUnavailable
+				if exclusiveLeaseBusy(err) {
+					discoveryState = cliui.MCPShowDiscoveryBusy
+				}
+				cliui.PrintMCPShow(cmd.OutOrStdout(), serverInfo, nil, discoveryState)
+				if discoveryState == cliui.MCPShowDiscoveryBusy {
+					return exclusiveLeaseBusyDiagnostic(name)
+				}
 				return fmt.Errorf("failed to connect to MCP server %q: %w", name, err)
 			}
 
@@ -192,7 +201,7 @@ func newShowCommand() *cobra.Command {
 				})
 			}
 
-			cliui.PrintMCPShow(cmd.OutOrStdout(), serverInfo, tools, false)
+			cliui.PrintMCPShow(cmd.OutOrStdout(), serverInfo, tools, cliui.MCPShowDiscoveryAvailable)
 			return nil
 		},
 	}

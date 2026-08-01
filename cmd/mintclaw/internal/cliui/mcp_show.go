@@ -38,19 +38,34 @@ type MCPShowParam struct {
 	Required    bool
 }
 
+// MCPShowDiscoveryState describes the bounded result of live tool discovery.
+type MCPShowDiscoveryState uint8
+
+const (
+	MCPShowDiscoveryAvailable MCPShowDiscoveryState = iota
+	MCPShowDiscoveryDisabled
+	MCPShowDiscoveryUnavailable
+	MCPShowDiscoveryBusy
+)
+
 // PrintMCPShow renders the mcp show output (plain or fancy).
 // w is where the output is written; pass cmd.OutOrStdout() from cobra commands.
-func PrintMCPShow(w io.Writer, server MCPShowServer, tools []MCPShowTool, disabled bool) {
+func PrintMCPShow(w io.Writer, server MCPShowServer, tools []MCPShowTool, discoveryState MCPShowDiscoveryState) {
 	if !UseFancyLayout() {
-		printMCPShowPlain(w, server, tools, disabled)
+		printMCPShowPlain(w, server, tools, discoveryState)
 		return
 	}
-	printMCPShowFancy(w, server, tools, disabled)
+	printMCPShowFancy(w, server, tools, discoveryState)
 }
 
 // ── plain (narrow / non-TTY) ────────────────────────────────────────────────
 
-func printMCPShowPlain(w io.Writer, server MCPShowServer, tools []MCPShowTool, disabled bool) {
+func printMCPShowPlain(
+	w io.Writer,
+	server MCPShowServer,
+	tools []MCPShowTool,
+	discoveryState MCPShowDiscoveryState,
+) {
 	fmt.Fprintf(w, "Server: %s\n", server.Name)
 	fmt.Fprintf(w, "Type:   %s\n", server.Type)
 	fmt.Fprintf(w, "Target: %s\n", server.Target)
@@ -73,8 +88,8 @@ func printMCPShowPlain(w io.Writer, server MCPShowServer, tools []MCPShowTool, d
 	}
 	fmt.Fprintln(w)
 
-	if disabled {
-		fmt.Fprintln(w, "Server is disabled; skipping tool discovery.")
+	if note := mcpShowDiscoveryNote(discoveryState); note != "" {
+		fmt.Fprintln(w, note)
 		return
 	}
 	if len(tools) == 0 {
@@ -134,7 +149,12 @@ var (
 	}
 )
 
-func printMCPShowFancy(w io.Writer, server MCPShowServer, tools []MCPShowTool, disabled bool) {
+func printMCPShowFancy(
+	w io.Writer,
+	server MCPShowServer,
+	tools []MCPShowTool,
+	discoveryState MCPShowDiscoveryState,
+) {
 	inner := InnerWidth()
 	box := borderStyle().Width(inner)
 
@@ -170,9 +190,9 @@ func printMCPShowFancy(w io.Writer, server MCPShowServer, tools []MCPShowTool, d
 		writeKV("Headers", mutedStyle().Render(strings.Join(server.Headers, ", ")))
 	}
 
-	if disabled {
+	if note := mcpShowDiscoveryNote(discoveryState); note != "" {
 		b.WriteString("\n")
-		b.WriteString(mutedStyle().Render("Server is disabled; skipping tool discovery."))
+		b.WriteString(mutedStyle().Render(note))
 		fmt.Fprintln(w, box.Render(b.String()))
 		return
 	}
@@ -241,6 +261,19 @@ func printMCPShowFancy(w io.Writer, server MCPShowServer, tools []MCPShowTool, d
 	}
 
 	fmt.Fprintln(w, box.Render(b.String()))
+}
+
+func mcpShowDiscoveryNote(state MCPShowDiscoveryState) string {
+	switch state {
+	case MCPShowDiscoveryDisabled:
+		return "Server is disabled; skipping tool discovery."
+	case MCPShowDiscoveryBusy:
+		return "Tool discovery unavailable: configured exclusive lease is busy."
+	case MCPShowDiscoveryUnavailable:
+		return "Tool discovery unavailable: MCP connection failed."
+	default:
+		return ""
+	}
 }
 
 // ── mcp list ────────────────────────────────────────────────────────────────
