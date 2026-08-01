@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,22 @@ import (
 
 type pipelineLoopGuardTool struct {
 	executions int
+}
+
+type toolResultFailingJournal struct {
+	session.SessionStore
+	err error
+}
+
+func (s *toolResultFailingJournal) AppendTurnMessage(
+	ctx context.Context,
+	sessionKey string,
+	msg providers.Message,
+) error {
+	if msg.Role == "tool" {
+		return s.err
+	}
+	return s.SessionStore.AppendTurnMessage(ctx, sessionKey, msg)
 }
 
 type fakeToolSuspensionManager struct {
@@ -67,6 +84,63 @@ func TestToolResultContextStatus(t *testing.T) {
 				t.Fatalf("status = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPipelineToolResultJournalFailureLeavesDurableUnresolvedIntent(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &steeringSafetyTestTool{name: "side-effect", safety: tools.SteeringSafetyNonCancellable}
+	registry.Register(tool)
+	baseStore := session.NewSessionManager("")
+	journalErr := errors.New("tool result fsync failed")
+	store := &toolResultFailingJournal{SessionStore: baseStore, err: journalErr}
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: store}
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, turnID: "turn-journal-failure",
+		sessionKey: "session-journal-failure",
+		opts:       processOptions{Dispatch: DispatchRequest{SessionKey: "session-journal-failure"}},
+	}
+	toolCall := providers.ToolCall{ID: "call-side-effect", Name: tool.Name(), Arguments: map[string]any{}}
+	intent := providers.Message{Role: "assistant", ToolCalls: []providers.ToolCall{toolCall}}
+	if err := store.AppendTurnMessage(t.Context(), ts.sessionKey, intent); err != nil {
+		t.Fatalf("persist tool intent: %v", err)
+	}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.messages = []providers.Message{intent}
+	exec.normalizedToolCalls = []providers.ToolCall{toolCall}
+	exec.assistantToolCallsPersisted = true
+
+	outcome := (&Pipeline{}).ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+
+	if tool.executions != 1 {
+		t.Fatalf("tool executions = %d, want 1", tool.executions)
+	}
+	if !errors.Is(outcome.JournalErr, journalErr) {
+		t.Fatalf("journal error = %v, want %v", outcome.JournalErr, journalErr)
+	}
+	history := baseStore.GetHistory(ts.sessionKey)
+	if len(history) != 1 || history[0].Role != "assistant" || len(history[0].ToolCalls) != 1 {
+		t.Fatalf("durable history = %+v, want unresolved assistant tool intent", history)
+	}
+}
+
+func TestPipelineToolCallIntentJournalFailurePreventsExecution(t *testing.T) {
+	registry := tools.NewToolRegistry()
+	tool := &steeringSafetyTestTool{name: "must-not-run", safety: tools.SteeringSafetyNonCancellable}
+	registry.Register(tool)
+	agent := &AgentInstance{ID: "main", Tools: registry, Sessions: session.NewSessionManager("")}
+	ts := &turnState{agent: agent, opts: processOptions{Dispatch: DispatchRequest{SessionKey: "intent-fail"}}}
+	exec := newTurnExecution(agent, ts.opts, nil, "", nil)
+	exec.normalizedToolCalls = []providers.ToolCall{{ID: "call-1", Name: tool.Name()}}
+	exec.assistantToolCallsWriteErr = errors.New("assistant intent rename failed")
+
+	outcome := (&Pipeline{}).ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+
+	if tool.executions != 0 {
+		t.Fatalf("tool executions = %d, want 0", tool.executions)
+	}
+	if !errors.Is(outcome.JournalErr, exec.assistantToolCallsWriteErr) {
+		t.Fatalf("journal error = %v, want %v", outcome.JournalErr, exec.assistantToolCallsWriteErr)
 	}
 }
 

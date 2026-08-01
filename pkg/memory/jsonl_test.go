@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,59 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
+
+func TestJSONLStoreTurnJournalFaultStagesFailClosed(t *testing.T) {
+	stages := []jsonlJournalWriteStage{
+		jsonlJournalStageFlush,
+		jsonlJournalStageAppend,
+		jsonlJournalStageFsync,
+		jsonlJournalStageRename,
+	}
+	for _, stage := range stages {
+		t.Run(string(stage), func(t *testing.T) {
+			store := newTestStore(t)
+			injectedErr := errors.New("injected " + string(stage) + " failure")
+			store.journalFault = func(current jsonlJournalWriteStage) error {
+				if current == stage {
+					return injectedErr
+				}
+				return nil
+			}
+
+			err := store.AddFullMessage(t.Context(), "turn", providers.Message{
+				Role: "user", Content: "must be durable",
+			})
+			if !errors.Is(err, injectedErr) {
+				t.Fatalf("AddFullMessage() error = %v, want %v", err, injectedErr)
+			}
+		})
+	}
+}
+
+func TestJSONLStoreCanceledTurnJournalWaitDoesNotMutate(t *testing.T) {
+	store := newTestStore(t)
+	lock := store.sessionLock("turn")
+	lock.Lock()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- store.AddFullMessage(ctx, "turn", providers.Message{Role: "user", Content: "canceled"})
+	}()
+	cancel()
+	lock.Unlock()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("AddFullMessage() error = %v, want %v", err, context.Canceled)
+	}
+	history, err := store.GetHistory(t.Context(), "turn")
+	if err != nil {
+		t.Fatalf("GetHistory() error = %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("canceled journal append persisted history: %+v", history)
+	}
+}
 
 func newTestStore(t *testing.T) *JSONLStore {
 	t.Helper()

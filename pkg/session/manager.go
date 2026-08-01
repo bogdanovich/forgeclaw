@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/memory"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/providers/messageutil"
@@ -145,6 +147,41 @@ func (sm *SessionManager) AddFullMessageWithError(sessionKey string, msg provide
 	return nil
 }
 
+func (sm *SessionManager) AppendTurnMessage(
+	ctx context.Context,
+	sessionKey string,
+	msg providers.Message,
+) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	if messageutil.IsTransientAssistantThoughtMessage(msg) {
+		return nil
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	ensureMessageCreatedAt(&msg, now)
+	next := Session{Key: sessionKey, Messages: []providers.Message{}, Created: now, Updated: now}
+	if current := sm.sessions[sessionKey]; current != nil {
+		next = cloneSession(*current)
+	}
+	next.Messages = append(next.Messages, msg)
+	advanceHistoryRevision(&next)
+	next.Updated = now
+
+	writeErr := sm.writeSessionSnapshot(sessionKey, next)
+	if writeErr == nil || fileutil.IsCommittedWriteError(writeErr) {
+		sm.sessions[sessionKey] = &next
+	}
+	return writeErr
+}
+
 func (sm *SessionManager) GetHistory(key string) []providers.Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -236,81 +273,38 @@ func sanitizeFilename(key string) string {
 }
 
 func (sm *SessionManager) Save(key string) error {
-	if sm.storage == "" {
-		return nil
-	}
-
-	filename := sanitizeFilename(key)
-
-	// filepath.IsLocal rejects empty names, "..", absolute paths, and
-	// OS-reserved device names (NUL, COM1 … on Windows). sanitizeFilename
-	// already replaced '/' and '\' with '_', so no subdirs are created.
-	if filename == "." || !filepath.IsLocal(filename) {
-		return os.ErrInvalid
-	}
-
-	// Snapshot under read lock, then perform slow file I/O after unlock.
 	sm.mu.RLock()
 	stored, ok := sm.sessions[key]
 	if !ok {
 		sm.mu.RUnlock()
 		return nil
 	}
-
-	snapshot := Session{
-		Key:             stored.Key,
-		Summary:         stored.Summary,
-		Created:         stored.Created,
-		Updated:         stored.Updated,
-		HistoryRevision: stored.HistoryRevision,
-	}
-	if len(stored.Messages) > 0 {
-		snapshot.Messages = messageutil.FilterInvalidHistoryMessages(stored.Messages)
-	} else {
-		snapshot.Messages = []providers.Message{}
-	}
+	snapshot := cloneSession(*stored)
 	sm.mu.RUnlock()
+	return sm.writeSessionSnapshot(key, snapshot)
+}
 
+func cloneSession(stored Session) Session {
+	snapshot := stored
+	snapshot.Messages = append([]providers.Message(nil), stored.Messages...)
+	return snapshot
+}
+
+func (sm *SessionManager) writeSessionSnapshot(key string, snapshot Session) error {
+	if sm.storage == "" {
+		return nil
+	}
+	filename := sanitizeFilename(key)
+	if filename == "." || !filepath.IsLocal(filename) {
+		return os.ErrInvalid
+	}
+	snapshot.Messages = messageutil.FilterInvalidHistoryMessages(snapshot.Messages)
 	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return err
 	}
-
 	sessionPath := filepath.Join(sm.storage, filename+".json")
-	tmpFile, err := os.CreateTemp(sm.storage, "session-*.tmp")
-	if err != nil {
-		return err
-	}
-
-	tmpPath := tmpFile.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := tmpFile.Write(data); err != nil {
-		_ = tmpFile.Close()
-		return err
-	}
-	if err := tmpFile.Chmod(0o600); err != nil {
-		_ = tmpFile.Close()
-		return err
-	}
-	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tmpPath, sessionPath); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return fileutil.WriteFileAtomic(sessionPath, data, 0o600)
 }
 
 func (sm *SessionManager) loadSessions() error {

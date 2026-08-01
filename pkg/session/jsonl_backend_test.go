@@ -1,6 +1,8 @@
 package session_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -10,6 +12,19 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/routing"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 )
+
+func TestJSONLBackendTurnJournalHonorsCancellation(t *testing.T) {
+	backend := newBackend(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := backend.AppendTurnMessage(ctx, "turn", providers.Message{Role: "user", Content: "canceled"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("AppendTurnMessage() error = %v, want %v", err, context.Canceled)
+	}
+	if history := backend.GetHistory("turn"); len(history) != 0 {
+		t.Fatalf("canceled append mutated history: %+v", history)
+	}
+}
 
 // Compile-time interface satisfaction checks.
 var (

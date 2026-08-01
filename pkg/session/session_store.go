@@ -1,6 +1,8 @@
 package session
 
 import (
+	"context"
+
 	"github.com/bogdanovich/mintclaw/pkg/memory"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
@@ -10,10 +12,12 @@ import (
 // interface, allowing the storage layer to be swapped without touching the
 // agent loop code.
 //
-// Write methods (Add*, Set*, Truncate*) are fire-and-forget: they do not
-// return errors. Implementations should log failures internally. This
-// matches the original SessionManager contract that the agent loop relies on.
+// Compatibility writes (Add*, Set*, Truncate*) remain fire-and-forget for
+// passive and administrative callers. Turn-critical writes must use the
+// embedded TurnJournal contract.
 type SessionStore interface {
+	TurnJournal
+
 	// AddMessage appends a simple role/content message to the session.
 	AddMessage(sessionKey, role, content string)
 	// AddFullMessage appends a complete message including tool calls.
@@ -36,18 +40,17 @@ type SessionStore interface {
 	Close() error
 }
 
+// TurnJournal is the durability boundary for messages that determine whether
+// a turn may start, execute an external side effect, or report success. A nil
+// result means the complete message is durably owned by the canonical store.
+type TurnJournal interface {
+	AppendTurnMessage(ctx context.Context, sessionKey string, msg providers.Message) error
+}
+
 // HistoryRevisionProvider exposes a cheap identity for the canonical history.
 // Context caches use it to avoid rereading unchanged histories at startup.
 type HistoryRevisionProvider interface {
 	GetHistoryRevision(sessionKey string) (memory.HistoryRevision, error)
-}
-
-// ErrorAwareSessionWriter exposes canonical write failures to callers that
-// must coordinate a derived store. SessionStore keeps its legacy fire-and-
-// forget methods for compatibility.
-type ErrorAwareSessionWriter interface {
-	AddMessageWithError(sessionKey, role, content string) error
-	AddFullMessageWithError(sessionKey string, msg providers.Message) error
 }
 
 // ErrorAwareHistoryReader allows recovery paths to distinguish a failed write

@@ -99,6 +99,7 @@ type ToolLoopOutcome struct {
 	FinalContent           string
 	AbortCause             TurnAbortCause
 	SuspendedInteractionID string
+	JournalErr             error
 }
 
 // LLMPhase indicates which phase the turn is executing in.

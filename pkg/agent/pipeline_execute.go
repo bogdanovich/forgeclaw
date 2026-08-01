@@ -227,9 +227,11 @@ type toolLoopRunner struct {
 	iteration int
 	toolCalls []providers.ToolCall
 
-	messages               []providers.Message
-	handledAttachments     []providers.Attachment
-	suspendedInteractionID string
+	messages                    []providers.Message
+	handledAttachments          []providers.Attachment
+	suspendedInteractionID      string
+	journalErr                  error
+	journalOwnershipTransferred bool
 }
 
 const queuedSteeringDeferredToolResult = "Deferred without execution because a newer user message arrived. " +
@@ -247,7 +249,7 @@ func (p *Pipeline) ExecuteTools(
 	ts *turnState,
 	exec *turnExecution,
 	iteration int,
-) ToolLoopOutcome {
+) (outcome ToolLoopOutcome) {
 	normalizedToolCalls := exec.normalizedToolCalls
 	runner := &toolLoopRunner{
 		p:         p,
@@ -258,12 +260,29 @@ func (p *Pipeline) ExecuteTools(
 		toolCalls: normalizedToolCalls,
 		messages:  exec.messages,
 	}
+	if exec.assistantToolCallsWriteErr != nil {
+		return ToolLoopOutcome{
+			Control:    ToolControlBreak,
+			JournalErr: fmt.Errorf("persist assistant tool-call intent: %w", exec.assistantToolCallsWriteErr),
+		}
+	}
+	defer func() {
+		if runner.journalErr != nil {
+			outcome = ToolLoopOutcome{
+				Control:    ToolControlBreak,
+				JournalErr: fmt.Errorf("persist tool transcript: %w", runner.journalErr),
+			}
+		}
+	}()
 
 	ts.setPhase(TurnPhaseTools)
 	runner.captureSteering(false)
 
 toolLoop:
 	for i, tc := range normalizedToolCalls {
+		if runner.journalErr != nil {
+			break toolLoop
+		}
 		if ts.hardAbortRequested() {
 			return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 		}
@@ -1039,17 +1058,22 @@ toolLoop:
 			Attachments: append([]providers.Attachment(nil), runner.handledAttachments...),
 		}
 		if !ts.opts.NoHistory {
-			writeErr := persistFullSessionMessage(ts.agent.Sessions, ts.sessionKey, summaryMsg)
-			if writeErr == nil {
+			writeErr := persistFullSessionMessage(
+				turnCtx,
+				ts.agent.Sessions,
+				ts.sessionKey,
+				summaryMsg,
+			)
+			if writeErr != nil {
+				// The durable tool result already records the side-effect outcome;
+				// this assistant summary is only a passive transcript observation.
+				logger.WarnCF("agent", "Failed to persist handled tool summary", map[string]any{
+					"agent_id": ts.agent.ID,
+					"error":    writeErr.Error(),
+				})
+			} else {
 				ts.recordPersistedMessage(summaryMsg)
-			}
-			p.ingestMessage(turnCtx, ts, summaryMsg, writeErr)
-			if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
-				logger.WarnCF("agent", "Failed to save session after tool delivery",
-					map[string]any{
-						"agent_id": ts.agent.ID,
-						"error":    err.Error(),
-					})
+				p.ingestMessage(turnCtx, ts, summaryMsg, nil)
 			}
 		}
 		if !ts.opts.NoHistory && ts.opts.EnableSummary {
@@ -1105,7 +1129,7 @@ func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMes
 	if r.ts == nil || r.ts.opts.NoHistory {
 		return
 	}
-	writeErr := persistFullSessionMessage(r.ts.agent.Sessions, r.ts.sessionKey, msg)
+	writeErr := persistFullSessionMessage(r.turnCtx, r.ts.agent.Sessions, r.ts.sessionKey, msg)
 	if writeErr == nil {
 		r.ts.recordPersistedMessage(msg)
 	}
@@ -1116,6 +1140,9 @@ func (r *toolLoopRunner) appendToolMessage(msg providers.Message, ingest toolMes
 			"session_key": r.ts.sessionKey,
 			"error":       writeErr.Error(),
 		})
+	}
+	if writeErr != nil && !r.journalOwnershipTransferred && r.journalErr == nil {
+		r.journalErr = writeErr
 	}
 }
 
@@ -1220,12 +1247,15 @@ func (r *toolLoopRunner) appendInjectedTurnMessage(msg providers.Message) {
 	if r.ts == nil || r.ts.opts.NoHistory {
 		return
 	}
-	writeErr := persistFullSessionMessage(r.ts.agent.Sessions, r.ts.sessionKey, msg)
+	writeErr := persistFullSessionMessage(r.turnCtx, r.ts.agent.Sessions, r.ts.sessionKey, msg)
 	if writeErr == nil {
 		r.ts.recordPersistedMessage(msg)
 	}
 	if r.p != nil {
 		r.p.ingestMessage(r.turnCtx, r.ts, msg, writeErr)
+	}
+	if writeErr != nil && r.journalErr == nil {
+		r.journalErr = writeErr
 	}
 }
 
@@ -1338,6 +1368,7 @@ func (r *toolLoopRunner) trySuspendToolCall(
 		}
 		return fallback("failed to suspend for human input: " + err.Error())
 	}
+	r.journalOwnershipTransferred = true
 	if err != nil {
 		logger.WarnCF("agent", "Human interaction persisted with pending delivery recovery", map[string]any{
 			"agent_id":       r.ts.agent.ID,

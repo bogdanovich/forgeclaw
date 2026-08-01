@@ -358,8 +358,15 @@ type saveFailingSessionStore struct {
 	err error
 }
 
-func (s *saveFailingSessionStore) Save(_ string) error {
-	return s.err
+func (s *saveFailingSessionStore) AppendTurnMessage(
+	ctx context.Context,
+	sessionKey string,
+	msg providers.Message,
+) error {
+	if msg.Role == "assistant" {
+		return s.err
+	}
+	return s.SessionStore.AppendTurnMessage(ctx, sessionKey, msg)
 }
 
 type blockingCompactContextManager struct {
@@ -923,7 +930,7 @@ func TestMaybeBuildVisionExecutionState_UsesRoutedLightModelOverride(t *testing.
 	}
 }
 
-func TestRunTurn_FinalizeSaveErrorEmitsErrorTurnEnd(t *testing.T) {
+func TestRunTurn_FinalizeJournalErrorEmitsErrorTurnEnd(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
 

@@ -839,19 +839,19 @@ type saveFailOnContentSessionStore struct {
 	failed  bool
 }
 
-func (s *saveFailOnContentSessionStore) Save(sessionKey string) error {
+func (s *saveFailOnContentSessionStore) AppendTurnMessage(
+	ctx context.Context,
+	sessionKey string,
+	msg providers.Message,
+) error {
 	s.mu.Lock()
-	if !s.failed {
-		for _, msg := range s.SessionStore.GetHistory(sessionKey) {
-			if strings.Contains(msg.Content, s.content) {
-				s.failed = true
-				s.mu.Unlock()
-				return s.err
-			}
-		}
+	if !s.failed && strings.Contains(msg.Content, s.content) {
+		s.failed = true
+		s.mu.Unlock()
+		return s.err
 	}
 	s.mu.Unlock()
-	return s.SessionStore.Save(sessionKey)
+	return s.SessionStore.AppendTurnMessage(ctx, sessionKey, msg)
 }
 
 type recordingMessageBus struct {
