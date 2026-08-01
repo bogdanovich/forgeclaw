@@ -23,6 +23,10 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
   browser milestones for current-specialist hardening, first-party tools,
   artifacts, human handoff, companion placement, profiles, providers, and
   computer fallback.
+- [Browser Capability B0 Admission](browser-capability-b0-admission.md):
+  admitted no-blind-replay, exclusive stdio lease, MCP artifact ownership,
+  specialist allowlist, diagnostics, deployment evidence, and exact stop
+  conditions for stabilizing the current browser specialist.
 - [Node Companion P0 Capability Contracts](node-companion-p0-contracts.md): admitted scope, bounded discovery schema, effective-policy projection, freshness, redaction, and completion gates for model-visible node capabilities.
 - [Node Companion P1 Owner-Control Admission](node-companion-p1-admission.md): admitted owner shell, cancellation, Linux root broker, and interactive terminal contracts with disabled production defaults and exact completion gates.
 - [Node Companion P2 File Transfer Admission](node-companion-p2-admission.md): admitted regular-file transfer, gateway spool, path safety, Linux administrator helper, approval, replay, deployment, and mandatory completion gates.
