@@ -277,6 +277,7 @@ func runInteractiveTerminal(
 		return fmt.Errorf("read local terminal size: %w", err)
 	}
 	options.Columns, options.Rows = columns, rows
+	lastColumns, lastRows := columns, rows
 	if validationErr := validateTerminalOptions(cfg, options); validationErr != nil {
 		return validationErr
 	}
@@ -350,7 +351,7 @@ func runInteractiveTerminal(
 			}
 		case <-resizeSignals:
 			columns, rows, sizeErr := local.GetSize(int(stdin.Fd()))
-			if sizeErr == nil {
+			if sizeErr == nil && (columns != lastColumns || rows != lastRows) {
 				if sendErr := client.send(sessionCtx, terminalControlAction{
 					typeName: "resize",
 					columns:  columns,
@@ -358,6 +359,7 @@ func runInteractiveTerminal(
 				}); sendErr != nil {
 					return sendErr
 				}
+				lastColumns, lastRows = columns, rows
 			}
 		case err := <-client.writeErr:
 			return fmt.Errorf("write terminal control: %w", err)

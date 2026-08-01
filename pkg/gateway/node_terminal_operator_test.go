@@ -23,6 +23,7 @@ type fakeNodeTerminalOperatorOpener struct {
 	requests []tools.NodeTerminalOperatorOpenRequest
 	result   tools.NodeTerminalOperatorOpenResult
 	err      error
+	open     func(tools.NodeTerminalOperatorOpenRequest) (tools.NodeTerminalOperatorOpenResult, error)
 }
 
 func (opener *fakeNodeTerminalOperatorOpener) Open(
@@ -30,6 +31,9 @@ func (opener *fakeNodeTerminalOperatorOpener) Open(
 	request tools.NodeTerminalOperatorOpenRequest,
 ) (tools.NodeTerminalOperatorOpenResult, error) {
 	opener.requests = append(opener.requests, request)
+	if opener.open != nil {
+		return opener.open(request)
+	}
 	return opener.result, opener.err
 }
 
@@ -84,14 +88,18 @@ func (stream *fakeNodeTerminalOperatorStream) Close(context.Context) error {
 }
 
 type fakeNodeTerminalOperatorSource struct {
-	stream       *fakeNodeTerminalOperatorStream
-	metadata     nodes.TerminalMetadata
-	attachOwner  nodes.TerminalOwner
-	attachID     string
-	attachCount  int
-	closeCount   int
-	closeStarted chan struct{}
-	closeRelease <-chan struct{}
+	mu            sync.Mutex
+	stream        *fakeNodeTerminalOperatorStream
+	metadata      nodes.TerminalMetadata
+	attachOwner   nodes.TerminalOwner
+	attachID      string
+	attachCount   int
+	attachStarted chan struct{}
+	attachRelease <-chan struct{}
+	attachErr     error
+	closeCount    int
+	closeStarted  chan struct{}
+	closeRelease  <-chan struct{}
 }
 
 type fakeNodeTerminalOperatorRoutes struct {
@@ -122,14 +130,31 @@ func (routes *fakeNodeTerminalOperatorRoutes) UnregisterHTTPHandler(path string)
 }
 
 func (source *fakeNodeTerminalOperatorSource) attachOperatorTerminal(
-	_ context.Context,
+	ctx context.Context,
 	owner nodes.TerminalOwner,
 	terminalID string,
 ) (nodeTerminalOperatorStream, nodes.TerminalMetadata, error) {
+	source.mu.Lock()
 	source.attachOwner = owner
 	source.attachID = terminalID
 	source.attachCount++
-	return source.stream, source.metadata, nil
+	started := source.attachStarted
+	release := source.attachRelease
+	attachErr := source.attachErr
+	stream := source.stream
+	metadata := source.metadata
+	source.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, nodes.TerminalMetadata{}, ctx.Err()
+		}
+	}
+	return stream, metadata, attachErr
 }
 
 func (source *fakeNodeTerminalOperatorSource) terminalOperatorStatus(
@@ -145,19 +170,26 @@ func (source *fakeNodeTerminalOperatorSource) closeOperatorTerminal(
 	owner nodes.TerminalOwner,
 	terminalID string,
 ) (nodes.TerminalMetadata, error) {
+	source.mu.Lock()
 	if owner != source.metadata.Owner || terminalID != source.metadata.TerminalID {
+		source.mu.Unlock()
 		return nodes.TerminalMetadata{}, nodes.ErrGatewayTerminalConflict
 	}
-	if source.closeStarted != nil {
-		close(source.closeStarted)
+	started := source.closeStarted
+	release := source.closeRelease
+	source.mu.Unlock()
+	if started != nil {
+		close(started)
 	}
-	if source.closeRelease != nil {
+	if release != nil {
 		select {
-		case <-source.closeRelease:
+		case <-release:
 		case <-ctx.Done():
 			return nodes.TerminalMetadata{}, ctx.Err()
 		}
 	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
 	source.closeCount++
 	source.metadata.State = string(nodes.GatewayTerminalClosed)
 	source.metadata.Reason = "close"
@@ -522,6 +554,76 @@ func TestNodeTerminalOperatorConfigRotationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestNodeTerminalOperatorPublishedGenerationBindsItsOwnHub(t *testing.T) {
+	oldHub := newNodeTerminalOperatorHub("operator-secret", nil)
+	newHub := newNodeTerminalOperatorHub("operator-secret", nil)
+	source, owner := newFakeNodeTerminalOperatorFixture()
+	boundSource := &nodeTerminalHubSource{
+		nodeTerminalSource: &nodeTerminalSource{},
+		hub:                newHub,
+	}
+	// Keep runtime.terminalHub on the old generation while the already-published
+	// new handler opens. This is the route-publication/runtime-pointer
+	// interleaving that previously allowed a new request to bind the old hub.
+	opener := &fakeNodeTerminalOperatorOpener{open: func(
+		request tools.NodeTerminalOperatorOpenRequest,
+	) (tools.NodeTerminalOperatorOpenResult, error) {
+		if err := boundSource.BindTerminalOperator(
+			owner,
+			source.metadata.TerminalID,
+			request.OperatorSessionID,
+		); err != nil {
+			return tools.NodeTerminalOperatorOpenResult{}, err
+		}
+		return tools.NodeTerminalOperatorOpenResult{
+			TerminalID:   source.metadata.TerminalID,
+			State:        string(nodes.GatewayTerminalPendingAttach),
+			AttachBefore: time.Now().Add(30 * time.Second).Unix(),
+		}, nil
+	}}
+	newHub.configureOpener(opener, "/workspace/main")
+	runtime := &nodeAdmissionRuntime{terminalHub: oldHub}
+	published := make(chan http.Handler, 1)
+	releasePublication := make(chan struct{})
+	publicationDone := make(chan struct{})
+	go func() {
+		// Model ReplaceHTTPHandler publishing the new route before
+		// configureTerminalOperator updates runtime.terminalHub.
+		published <- newHub
+		<-releasePublication
+		runtime.registryMu.Lock()
+		runtime.terminalHub = newHub
+		runtime.registryMu.Unlock()
+		close(publicationDone)
+	}()
+	publishedHandler := <-published
+	requestBody := `{"version":1,"session_id":"mint-session","request_id":"request-one",` +
+		`"target":"target_test","profile":"profile_test","working_scope":"workspace",` +
+		`"columns":100,"rows":31}`
+	request := httptest.NewRequest(http.MethodPost, nodeTerminalOperatorOpenPath, strings.NewReader(requestBody))
+	request.Header.Set("Authorization", "Bearer operator-secret")
+	response := httptest.NewRecorder()
+	publishedHandler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("published generation open = %d: %s", response.Code, response.Body.String())
+	}
+	key := terminalOperatorKey("mint-session", source.metadata.TerminalID)
+	newHub.mu.Lock()
+	_, boundNew := newHub.pending[key]
+	newHub.mu.Unlock()
+	oldHub.mu.Lock()
+	_, boundOld := oldHub.pending[key]
+	oldHub.mu.Unlock()
+	if !boundNew || boundOld || runtime.terminalOperatorHub() != oldHub {
+		t.Fatalf("generation binding: new=%t old=%t", boundNew, boundOld)
+	}
+	close(releasePublication)
+	<-publicationDone
+	if runtime.terminalOperatorHub() != newHub {
+		t.Fatal("publication barrier did not release the new runtime generation")
+	}
+}
+
 func TestNodeTerminalOperatorShutdownTerminatesPendingAttach(t *testing.T) {
 	hub := newNodeTerminalOperatorHub("operator-secret", nil)
 	source, owner := newFakeNodeTerminalOperatorFixture()
@@ -539,6 +641,51 @@ func TestNodeTerminalOperatorShutdownTerminatesPendingAttach(t *testing.T) {
 		"mint-session",
 	); err == nil {
 		t.Fatal("shut down operator transport accepted a new binding")
+	}
+}
+
+func TestNodeTerminalOperatorShutdownTerminatesClaimBeforeAttachDispatch(t *testing.T) {
+	hub := newNodeTerminalOperatorHub("operator-secret", nil)
+	source, owner := newFakeNodeTerminalOperatorFixture()
+	if err := hub.bind(source, owner, source.metadata.TerminalID, "mint-session"); err != nil {
+		t.Fatal(err)
+	}
+	key := terminalOperatorKey("mint-session", source.metadata.TerminalID)
+	if _, found := hub.claim(key, time.Now()); !found {
+		t.Fatal("pending terminal was not claimed")
+	}
+	hub.shutdown()
+	if source.closeCount != 1 {
+		t.Fatalf("claimed terminal close count = %d", source.closeCount)
+	}
+}
+
+func TestNodeTerminalOperatorShutdownTerminatesClaimDuringAttach(t *testing.T) {
+	hub := newNodeTerminalOperatorHub("operator-secret", nil)
+	source, owner := newFakeNodeTerminalOperatorFixture()
+	source.attachStarted = make(chan struct{})
+	source.attachRelease = make(chan struct{})
+	if err := hub.bind(source, owner, source.metadata.TerminalID, "mint-session"); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(hub)
+	defer server.Close()
+	endpoint := "ws" + strings.TrimPrefix(server.URL, "http") +
+		"?session_id=mint-session&terminal_id=" + source.metadata.TerminalID
+	header := http.Header{"Authorization": []string{"Bearer operator-secret"}}
+	connection, response, err := websocket.DefaultDialer.Dial(endpoint, header)
+	if err != nil {
+		t.Fatalf("dial operator websocket: response=%#v error=%v", response, err)
+	}
+	defer connection.Close()
+	waitForTerminalCleanupStart(t, source.attachStarted)
+	hub.shutdown()
+	source.mu.Lock()
+	attachCount := source.attachCount
+	closeCount := source.closeCount
+	source.mu.Unlock()
+	if attachCount != 1 || closeCount != 1 {
+		t.Fatalf("attach count = %d, close count = %d", attachCount, closeCount)
 	}
 }
 

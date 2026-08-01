@@ -11,7 +11,6 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
-	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const gatewayTerminalPlanTTL = time.Minute
@@ -45,6 +44,25 @@ type nodeTerminalSource struct {
 	store      *nodes.GatewayTerminalStore
 	generation uint64
 	now        func() time.Time
+}
+
+// nodeTerminalHubSource pins deterministic operator opens to the exact hub
+// generation serving their authenticated HTTP request. The model-facing
+// source continues to resolve the current runtime hub for its own sessions.
+type nodeTerminalHubSource struct {
+	*nodeTerminalSource
+	hub *nodeTerminalOperatorHub
+}
+
+func (source *nodeTerminalHubSource) BindTerminalOperator(
+	owner nodes.TerminalOwner,
+	terminalID string,
+	operatorSessionID string,
+) error {
+	if source == nil || source.nodeTerminalSource == nil || source.hub == nil {
+		return errNodeDiscoveryAuthorityUnavailable
+	}
+	return source.hub.bind(source.nodeTerminalSource, owner, terminalID, operatorSessionID)
 }
 
 func newNodeTerminalSource(
@@ -97,8 +115,7 @@ func newNodeTerminalSource(
 		generation: generation,
 		now:        time.Now,
 	}
-	operator := tools.NewNodeTerminalOperator(cfg, source)
-	if err := runtime.configureTerminalOperator(cfg, operator); err != nil {
+	if err := runtime.configureTerminalOperator(cfg, source); err != nil {
 		return nil, err
 	}
 	return source, nil

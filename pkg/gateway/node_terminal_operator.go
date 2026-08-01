@@ -66,6 +66,18 @@ type nodeTerminalOperatorBinding struct {
 	expires    time.Time
 }
 
+type nodeTerminalOperatorClaim struct {
+	binding nodeTerminalOperatorBinding
+
+	mu          sync.Mutex
+	stream      nodeTerminalOperatorStream
+	started     bool
+	cleanup     bool
+	resolved    chan struct{}
+	resolveOnce sync.Once
+	cleanupOnce sync.Once
+}
+
 type nodeTerminalOperatorSession struct {
 	mu         sync.Mutex
 	owner      nodes.TerminalOwner
@@ -80,7 +92,7 @@ type nodeTerminalOperatorHub struct {
 	mu        sync.Mutex
 	token     string
 	pending   map[string]nodeTerminalOperatorBinding
-	claimed   map[string]nodeTerminalOperatorBinding
+	claimed   map[string]*nodeTerminalOperatorClaim
 	active    map[string]*nodeTerminalOperatorSession
 	closed    bool
 	opener    nodeTerminalOperatorOpener
@@ -140,7 +152,7 @@ func newNodeTerminalOperatorHub(token string, allowOrigins []string) *nodeTermin
 	return &nodeTerminalOperatorHub{
 		token:   token,
 		pending: make(map[string]nodeTerminalOperatorBinding),
-		claimed: make(map[string]nodeTerminalOperatorBinding),
+		claimed: make(map[string]*nodeTerminalOperatorClaim),
 		active:  make(map[string]*nodeTerminalOperatorSession),
 		ctx:     ctx,
 		cancel:  cancel,
@@ -179,6 +191,15 @@ func (hub *nodeTerminalOperatorHub) bind(
 		return errors.New("authenticated terminal operator transport is unavailable")
 	}
 	hub.pruneLocked(time.Now())
+	if binding, exists := hub.pending[key]; exists && binding.owner == owner {
+		return nil
+	}
+	if claim, exists := hub.claimed[key]; exists && claim.binding.owner == owner {
+		return nil
+	}
+	if session, exists := hub.active[key]; exists && session.owner == owner {
+		return nil
+	}
 	if hub.terminalBoundLocked(terminalID) {
 		return nodes.ErrGatewayTerminalConflict
 	}
@@ -201,7 +222,7 @@ func (hub *nodeTerminalOperatorHub) ServeHTTP(w http.ResponseWriter, request *ht
 	operatorSessionID := strings.TrimSpace(request.URL.Query().Get("session_id"))
 	terminalID := strings.TrimSpace(request.URL.Query().Get("terminal_id"))
 	key := terminalOperatorKey(operatorSessionID, terminalID)
-	binding, found := hub.claim(key, time.Now())
+	claim, found := hub.claim(key, time.Now())
 	if !found {
 		http.Error(w, "terminal unavailable", http.StatusNotFound)
 		return
@@ -212,10 +233,10 @@ func (hub *nodeTerminalOperatorHub) ServeHTTP(w http.ResponseWriter, request *ht
 	}
 	connection, err := hub.upgrader.Upgrade(w, request, responseHeader)
 	if err != nil {
-		hub.restore(key, binding)
+		hub.restore(key, claim)
 		return
 	}
-	hub.serveConnection(connection, key, terminalID, binding)
+	hub.serveConnection(connection, key, terminalID, claim)
 }
 
 func (hub *nodeTerminalOperatorHub) configureOpener(
@@ -353,9 +374,14 @@ func (hub *nodeTerminalOperatorHub) serveConnection(
 	connection *websocket.Conn,
 	key string,
 	terminalID string,
-	binding nodeTerminalOperatorBinding,
+	claim *nodeTerminalOperatorClaim,
 ) {
 	defer connection.Close()
+	if !claim.beginAttach() {
+		claim.cleanupTerminal()
+		return
+	}
+	binding := claim.binding
 	attachCtx, attachCancel := context.WithDeadline(
 		hub.ctx,
 		binding.expires,
@@ -366,21 +392,18 @@ func (hub *nodeTerminalOperatorHub) serveConnection(
 		terminalID,
 	)
 	attachCancel()
+	claim.resolve(stream)
 	if err != nil {
-		hub.releaseClaim(key)
+		hub.releaseClaim(key, claim)
+		claim.cleanupTerminal()
 		return
 	}
 	session := &nodeTerminalOperatorSession{
 		owner: binding.owner, terminalID: terminalID, stream: stream,
 		next: 1, finished: make(chan struct{}),
 	}
-	if !hub.activate(key, session) {
-		closeCtx, closeCancel := context.WithTimeout(
-			context.Background(),
-			nodeAdmissionDrainTimeout,
-		)
-		_ = stream.Close(closeCtx)
-		closeCancel()
+	if !hub.activate(key, claim, session) {
+		claim.cleanupTerminal()
 		return
 	}
 	defer func() {
@@ -628,54 +651,135 @@ func (hub *nodeTerminalOperatorHub) ownedActive(
 	return nil
 }
 
+func newNodeTerminalOperatorClaim(binding nodeTerminalOperatorBinding) *nodeTerminalOperatorClaim {
+	return &nodeTerminalOperatorClaim{
+		binding:  binding,
+		resolved: make(chan struct{}),
+	}
+}
+
+func (claim *nodeTerminalOperatorClaim) beginAttach() bool {
+	if claim == nil {
+		return false
+	}
+	claim.mu.Lock()
+	defer claim.mu.Unlock()
+	if claim.cleanup {
+		return false
+	}
+	claim.started = true
+	return true
+}
+
+func (claim *nodeTerminalOperatorClaim) resolve(stream nodeTerminalOperatorStream) {
+	if claim == nil {
+		return
+	}
+	claim.resolveOnce.Do(func() {
+		claim.mu.Lock()
+		claim.stream = stream
+		claim.mu.Unlock()
+		close(claim.resolved)
+	})
+}
+
+func (claim *nodeTerminalOperatorClaim) cleanupTerminal() {
+	if claim == nil {
+		return
+	}
+	claim.cleanupOnce.Do(func() {
+		claim.mu.Lock()
+		claim.cleanup = true
+		started := claim.started
+		claim.mu.Unlock()
+		if !started {
+			claim.resolve(nil)
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), nodeAdmissionDrainTimeout)
+		defer cancel()
+		select {
+		case <-claim.resolved:
+			claim.mu.Lock()
+			stream := claim.stream
+			claim.mu.Unlock()
+			if stream != nil {
+				_ = stream.Close(cleanupCtx)
+				return
+			}
+		case <-cleanupCtx.Done():
+		}
+		_, _ = claim.binding.source.closeOperatorTerminal(
+			cleanupCtx,
+			claim.binding.owner,
+			claim.binding.terminalID,
+		)
+	})
+}
+
 func (hub *nodeTerminalOperatorHub) claim(
 	key string,
 	now time.Time,
-) (nodeTerminalOperatorBinding, bool) {
+) (*nodeTerminalOperatorClaim, bool) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	if hub.closed {
-		return nodeTerminalOperatorBinding{}, false
+		return nil, false
 	}
 	hub.pruneLocked(now)
 	binding, found := hub.pending[key]
 	if !found {
-		return nodeTerminalOperatorBinding{}, false
+		return nil, false
 	}
 	delete(hub.pending, key)
-	hub.claimed[key] = binding
-	return binding, true
+	claim := newNodeTerminalOperatorClaim(binding)
+	hub.claimed[key] = claim
+	return claim, true
 }
 
 func (hub *nodeTerminalOperatorHub) restore(
 	key string,
-	binding nodeTerminalOperatorBinding,
+	claim *nodeTerminalOperatorClaim,
 ) {
-	hub.mu.Lock()
-	defer hub.mu.Unlock()
-	delete(hub.claimed, key)
-	if !hub.closed && time.Now().Before(binding.expires) {
-		hub.pending[key] = binding
+	if claim == nil {
+		return
 	}
+	hub.mu.Lock()
+	if hub.claimed[key] != claim {
+		hub.mu.Unlock()
+		return
+	}
+	delete(hub.claimed, key)
+	if !hub.closed && time.Now().Before(claim.binding.expires) {
+		hub.pending[key] = claim.binding
+		hub.mu.Unlock()
+		return
+	}
+	hub.mu.Unlock()
+	claim.cleanupTerminal()
 }
 
-func (hub *nodeTerminalOperatorHub) releaseClaim(key string) {
+func (hub *nodeTerminalOperatorHub) releaseClaim(key string, claim *nodeTerminalOperatorClaim) {
 	hub.mu.Lock()
-	delete(hub.claimed, key)
+	if hub.claimed[key] == claim {
+		delete(hub.claimed, key)
+	}
 	hub.mu.Unlock()
 }
 
 func (hub *nodeTerminalOperatorHub) activate(
 	key string,
+	claim *nodeTerminalOperatorClaim,
 	session *nodeTerminalOperatorSession,
 ) bool {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	if hub.closed {
-		delete(hub.claimed, key)
+		if hub.claimed[key] == claim {
+			delete(hub.claimed, key)
+		}
 		return false
 	}
-	if _, claimed := hub.claimed[key]; !claimed {
+	if hub.claimed[key] != claim {
 		return false
 	}
 	if _, exists := hub.active[key]; exists {
@@ -702,9 +806,10 @@ func (hub *nodeTerminalOperatorHub) unbind(
 			delete(hub.pending, key)
 		}
 	}
-	for key, binding := range hub.claimed {
-		if strings.HasSuffix(key, suffix) && binding.owner == owner {
+	for key, claim := range hub.claimed {
+		if strings.HasSuffix(key, suffix) && claim.binding.owner == owner {
 			delete(hub.claimed, key)
+			go claim.cleanupTerminal()
 		}
 	}
 }
@@ -761,11 +866,15 @@ func (hub *nodeTerminalOperatorHub) shutdown() {
 	hub.cancel()
 	sessions := make([]*nodeTerminalOperatorSession, 0, len(hub.active))
 	pending := make([]nodeTerminalOperatorBinding, 0, len(hub.pending))
+	claims := make([]*nodeTerminalOperatorClaim, 0, len(hub.claimed))
 	for _, session := range hub.active {
 		sessions = append(sessions, session)
 	}
 	for _, binding := range hub.pending {
 		pending = append(pending, binding)
+	}
+	for _, claim := range hub.claimed {
+		claims = append(claims, claim)
 	}
 	clear(hub.pending)
 	clear(hub.claimed)
@@ -797,6 +906,13 @@ func (hub *nodeTerminalOperatorHub) shutdown() {
 				binding.owner,
 				binding.terminalID,
 			)
+		}()
+	}
+	for _, claim := range claims {
+		cleanup.Add(1)
+		go func() {
+			defer cleanup.Done()
+			claim.cleanupTerminal()
 		}()
 	}
 	done := make(chan struct{})

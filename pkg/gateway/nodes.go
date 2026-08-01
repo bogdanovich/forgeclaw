@@ -369,7 +369,7 @@ func (runtime *nodeAdmissionRuntime) terminalOperatorHub() *nodeTerminalOperator
 
 func (runtime *nodeAdmissionRuntime) configureTerminalOperator(
 	cfg *config.Config,
-	opener nodeTerminalOperatorOpener,
+	source *nodeTerminalSource,
 ) error {
 	token, allowOrigins, err := terminalOperatorAuthentication(cfg)
 	if err != nil {
@@ -393,7 +393,9 @@ func (runtime *nodeAdmissionRuntime) configureTerminalOperator(
 		return nil
 	}
 	hub := newNodeTerminalOperatorHub(token, allowOrigins)
-	if cfg != nil {
+	if cfg != nil && source != nil {
+		boundSource := &nodeTerminalHubSource{nodeTerminalSource: source, hub: hub}
+		opener := tools.NewNodeTerminalOperator(cfg, boundSource)
 		hub.configureOpener(opener, cfg.WorkspacePath())
 	}
 	if wasMounted {

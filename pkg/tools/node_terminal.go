@@ -211,7 +211,7 @@ func (operator *NodeTerminalOperator) Open(
 		request.Owner.ActorID,
 		request.RequestID,
 	)
-	record, _, err := operator.source.PrepareTerminal(
+	record, created, err := operator.source.PrepareTerminal(
 		resolved.snapshot.ID,
 		resolved.binding.Node,
 		openID,
@@ -225,14 +225,30 @@ func (operator *NodeTerminalOperator) Open(
 	if err != nil {
 		return NodeTerminalOperatorOpenResult{}, err
 	}
-	metadata, _, err := operator.source.OpenTerminal(
-		ctx,
-		record.Plan.Owner,
-		record.Plan.OpenID,
-		record.ExpectedPlanHash,
-	)
-	if err != nil {
-		return NodeTerminalOperatorOpenResult{}, err
+	var metadata nodes.TerminalMetadata
+	if !created && record.State == nodes.GatewayTerminalPendingAttach {
+		metadata = nodes.TerminalMetadata{
+			TerminalID: record.TerminalID,
+			Owner:      record.Plan.Owner,
+			State:      string(record.State),
+			StartedAt:  record.StartedAt,
+		}
+		if metadata.TerminalID == "" || metadata.StartedAt <= 0 {
+			return NodeTerminalOperatorOpenResult{}, nodes.ErrGatewayTerminalConflict
+		}
+	} else {
+		if !created && record.State != nodes.GatewayTerminalPrepared {
+			return NodeTerminalOperatorOpenResult{}, nodes.ErrGatewayTerminalConflict
+		}
+		metadata, _, err = operator.source.OpenTerminal(
+			ctx,
+			record.Plan.Owner,
+			record.Plan.OpenID,
+			record.ExpectedPlanHash,
+		)
+		if err != nil {
+			return NodeTerminalOperatorOpenResult{}, err
+		}
 	}
 	if err := operator.source.BindTerminalOperator(
 		record.Plan.Owner,
