@@ -61,6 +61,7 @@ type fakeNodeInvocationSource struct {
 	preDispatchErr          error
 	dispatchErr             error
 	queryErr                error
+	queryErrors             []error
 	cancelErr               error
 	remote                  nodes.InvocationRecord
 	lookupMiss              bool
@@ -228,6 +229,9 @@ func (source *fakeNodeInvocationSource) QueryInvocation(
 	invocationID string,
 ) (nodes.InvocationRecord, error) {
 	source.queryCalls++
+	if len(source.queryErrors) >= source.queryCalls && source.queryErrors[source.queryCalls-1] != nil {
+		return nodes.InvocationRecord{}, source.queryErrors[source.queryCalls-1]
+	}
 	record, found, err := source.store.Lookup(principal, invocationID)
 	if err != nil {
 		return nodes.InvocationRecord{}, err
@@ -1275,6 +1279,7 @@ func TestNodeStatusToolReportsDisconnectedDispatchedInvocationAsUnknown(t *testi
 		invoke.Execute(ctx, nodeInvocationTestArgs()),
 	)["invocation_id"].(string)
 	source.connected = map[nodes.ID]bool{}
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryNodeUnavailable, nil)
 
 	status := NewNodeStatusTool(nodeDiscoveryTestConfig(), source)
 	payload := decodeNodeResult(
@@ -1284,8 +1289,43 @@ func TestNodeStatusToolReportsDisconnectedDispatchedInvocationAsUnknown(t *testi
 	if payload["state"] != string(nodes.InvocationUnknown) ||
 		payload["error_code"] != "NODE_UNAVAILABLE" ||
 		payload["node_available"] != false ||
-		source.queryCalls != 0 {
+		payload["status_attempts"] != float64(defaultNodeStatusAttempts) ||
+		source.queryCalls != defaultNodeStatusAttempts {
 		t.Fatalf("offline status = %#v, query calls = %d", payload, source.queryCalls)
+	}
+}
+
+func TestNodeStatusToolRecoversWhenInitiallyDisconnectedNodeReconnects(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	record := mustFakeGatewayInvocation(t, source, ctx, invocationID)
+	source.connected = map[nodes.ID]bool{}
+	source.remote = successfulRemoteInvocation(record)
+	source.queryErrors = []error{
+		nodes.NewInvocationQueryError(nodes.InvocationQueryNodeUnavailable, nil),
+	}
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	if payload["state"] != string(nodes.InvocationSucceeded) ||
+		payload["node_available"] != false ||
+		payload["status_attempts"] != float64(2) ||
+		source.queryCalls != 2 || source.dispatchCalls != 1 {
+		t.Fatalf(
+			"reconnected status = %#v; query calls = %d; dispatch calls = %d",
+			payload,
+			source.queryCalls,
+			source.dispatchCalls,
+		)
 	}
 }
 
@@ -1303,6 +1343,156 @@ func TestNodeStatusToolReturnsPreparedStateWithoutQuery(t *testing.T) {
 	}))
 	if payload["state"] != string(nodes.GatewayInvocationPrepared) || source.queryCalls != 0 {
 		t.Fatalf("prepared status = %#v, query calls = %d", payload, source.queryCalls)
+	}
+}
+
+func TestNodeStatusToolRecoversAfterBoundedTransientQueriesWithoutRedispatch(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	record := mustFakeGatewayInvocation(t, source, ctx, invocationID)
+	source.remote = successfulRemoteInvocation(record)
+	source.queryErrors = []error{
+		nodes.NewInvocationQueryError(nodes.InvocationQueryTransportUnavailable, errors.New("private endpoint")),
+		nodes.NewInvocationQueryError(nodes.InvocationQueryNotFound, nil),
+	}
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	if payload["state"] != string(nodes.InvocationSucceeded) ||
+		payload["status_attempts"] != float64(defaultNodeStatusAttempts) ||
+		source.queryCalls != defaultNodeStatusAttempts ||
+		source.dispatchCalls != 1 {
+		t.Fatalf(
+			"recovered status = %#v; query calls = %d; dispatch calls = %d",
+			payload,
+			source.queryCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
+func TestNodeStatusToolPreservesSafeFailureClassificationAfterBoundedPolling(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	privateCause := errors.New("dial secret.internal.example:1234")
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryNodeUnavailable, privateCause)
+	eventBus := &recordingNodeEventBus{}
+	status := NewNodeStatusTool(nodeDiscoveryTestConfig(), source)
+	status.SetEventPublisher(eventBus)
+
+	payload := decodeNodeResult(t, status.Execute(ctx, map[string]any{"invocation_id": invocationID}))
+	if payload["state"] != string(nodes.InvocationUnknown) ||
+		payload["error_code"] != nodes.InvocationQueryNodeUnavailable ||
+		payload["status_attempts"] != float64(defaultNodeStatusAttempts) ||
+		source.queryCalls != defaultNodeStatusAttempts ||
+		source.dispatchCalls != 1 {
+		t.Fatalf(
+			"uncertain status = %#v; query calls = %d; dispatch calls = %d",
+			payload,
+			source.queryCalls,
+			source.dispatchCalls,
+		)
+	}
+	encodedPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedEvents, err := json.Marshal(eventBus.snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedPayload), "secret.internal") ||
+		strings.Contains(string(encodedEvents), "secret.internal") {
+		t.Fatalf("status diagnostics leaked transport details: payload=%s events=%s", encodedPayload, encodedEvents)
+	}
+}
+
+func TestNodeStatusToolDoesNotRetryLedgerFailure(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryLedgerUnavailable, nil)
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	if payload["error_code"] != nodes.InvocationQueryLedgerUnavailable ||
+		payload["status_attempts"] != float64(1) || source.queryCalls != 1 {
+		t.Fatalf("ledger status = %#v; query calls = %d", payload, source.queryCalls)
+	}
+}
+
+func TestNodeStatusToolDoesNotRetryOrExposeRejectedRecord(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	privateCause := errors.New("remote result exposed private.internal.example")
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryRejected, privateCause)
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["error_code"] != nodes.InvocationQueryRejected ||
+		payload["status_attempts"] != float64(1) || source.queryCalls != 1 {
+		t.Fatalf("rejected status = %#v; query calls = %d", payload, source.queryCalls)
+	}
+	if strings.Contains(string(encoded), "private.internal") {
+		t.Fatalf("rejected status leaked remote details: %s", encoded)
+	}
+}
+
+func TestNodeStatusToolPreservesDeadlineDuringRetryBackoff(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	baseCtx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(baseCtx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryTransportUnavailable, nil)
+	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Millisecond)
+	defer cancel()
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	if payload["error_code"] != nodes.InvocationQueryTimeout ||
+		payload["status_attempts"] != float64(1) || source.queryCalls != 1 {
+		t.Fatalf("deadline status = %#v; query calls = %d", payload, source.queryCalls)
 	}
 }
 

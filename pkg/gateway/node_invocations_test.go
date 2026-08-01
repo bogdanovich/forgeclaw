@@ -20,12 +20,13 @@ import (
 )
 
 type fakeNodeAdmissionHandler struct {
-	beforeCommit *sync.WaitGroup
-	invocation   nodes.InvocationRecord
-	invokeCalls  atomic.Int32
-	writeCalls   atomic.Int32
-	queryCalls   atomic.Int32
-	cancelCalls  atomic.Int32
+	beforeCommit  *sync.WaitGroup
+	invocation    nodes.InvocationRecord
+	invocationErr error
+	invokeCalls   atomic.Int32
+	writeCalls    atomic.Int32
+	queryCalls    atomic.Int32
+	cancelCalls   atomic.Int32
 }
 
 func (*fakeNodeAdmissionHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
@@ -66,6 +67,9 @@ func (handler *fakeNodeAdmissionHandler) Invocation(
 	string,
 ) (nodes.InvocationRecord, error) {
 	handler.queryCalls.Add(1)
+	if handler.invocationErr != nil {
+		return nodes.InvocationRecord{}, handler.invocationErr
+	}
 	return handler.invocation, nil
 }
 
@@ -391,6 +395,21 @@ func TestNodeInvocationSourceRecoversOnlyBoundDispatchedResult(t *testing.T) {
 		plan.InvocationID,
 	); !errors.Is(err, nodes.ErrGatewayInvocationConflict) {
 		t.Fatalf("schema-invalid recovery error = %v", err)
+	} else if code, classified := nodes.InvocationQueryErrorCode(err); !classified || code != nodes.InvocationQueryRejected {
+		t.Fatalf("schema-invalid recovery classification = %q, %v", code, classified)
+	}
+
+	handler.invocationErr = nodes.NewInvocationQueryError(nodes.InvocationQueryNotFound, nil)
+	if _, err := source.QueryInvocation(
+		t.Context(),
+		principal,
+		owner.Target,
+		plan.NodeID,
+		plan.InvocationID,
+	); err == nil {
+		t.Fatal("missing invocation query unexpectedly succeeded")
+	} else if code, classified := nodes.InvocationQueryErrorCode(err); !classified || code != nodes.InvocationQueryNotFound {
+		t.Fatalf("missing invocation query error = %v, code = %q", err, code)
 	}
 }
 

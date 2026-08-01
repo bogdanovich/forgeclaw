@@ -19,7 +19,10 @@ import (
 const (
 	defaultNodeInvocationTimeout = 30
 	defaultNodeInvocationOutput  = 64 * 1024
+	defaultNodeStatusAttempts    = 3
 )
+
+var defaultNodeStatusRetryDelays = []time.Duration{250 * time.Millisecond, 750 * time.Millisecond}
 
 // ErrNodeDiscoveryStale marks a failed atomic preparation revalidation.
 var ErrNodeDiscoveryStale = errors.New("node discovery revision is stale")
@@ -204,6 +207,7 @@ type nodeStatusResult struct {
 	Cancellation   *nodes.InvocationCancellation `json:"cancellation,omitempty"`
 	ErrorCode      string                        `json:"error_code,omitempty"`
 	RecoveryAction string                        `json:"recovery_action,omitempty"`
+	StatusAttempts int                           `json:"status_attempts,omitempty"`
 }
 
 type nodeCancelResult struct {
@@ -517,21 +521,7 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 	if isNodeFileTransferCommand(record.Plan.Command) {
 		return tool.runtime.fileTransferStatus(ctx, record, principal, available)
 	}
-	if !available {
-		view.State = string(nodes.InvocationUnknown)
-		view.ErrorCode = "NODE_UNAVAILABLE"
-		view.RecoveryAction = "Retry nodes_status after the target reconnects."
-		tool.runtime.publishInvocationEvent(
-			ctx,
-			NodeInvocationObservationUncertain,
-			"nodes_status",
-			record,
-			view.State,
-			view.ErrorCode,
-		)
-		return nodeJSONResult(view)
-	}
-	remote, err := tool.runtime.source.QueryInvocation(
+	remote, attempts, err := tool.runtime.queryInvocationStatus(
 		ctx,
 		principal,
 		record.Target,
@@ -540,8 +530,8 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 	)
 	if err != nil {
 		view.State = string(nodes.InvocationUnknown)
-		view.ErrorCode = "STATUS_UNAVAILABLE"
-		view.RecoveryAction = "Retry nodes_status; do not replay the original command."
+		view.ErrorCode, view.RecoveryAction = nodeInvocationStatusFailure(err)
+		view.StatusAttempts = attempts
 		tool.runtime.publishInvocationEvent(
 			ctx,
 			NodeInvocationObservationUncertain,
@@ -566,7 +556,86 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 			errorCode,
 		)
 	}
-	return nodeJSONResult(remoteStatusResult(record, remote, true))
+	view = remoteStatusResult(record, remote, available)
+	view.StatusAttempts = attempts
+	return nodeJSONResult(view)
+}
+
+func (runtime *nodeInvocationToolRuntime) queryInvocationStatus(
+	ctx context.Context,
+	principal nodes.GatewayInvocationPrincipal,
+	target string,
+	nodeID nodes.ID,
+	invocationID string,
+) (nodes.InvocationRecord, int, error) {
+	for attempt := 1; attempt <= defaultNodeStatusAttempts; attempt++ {
+		remote, err := runtime.source.QueryInvocation(ctx, principal, target, nodeID, invocationID)
+		if err == nil {
+			return remote, attempt, nil
+		}
+		if attempt == defaultNodeStatusAttempts || !retryableNodeInvocationStatusError(err) {
+			return nodes.InvocationRecord{}, attempt, err
+		}
+		delay := defaultNodeStatusRetryDelays[attempt-1]
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nodes.InvocationRecord{}, attempt, nodeInvocationQueryContextError(ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return nodes.InvocationRecord{}, defaultNodeStatusAttempts, nodes.NewInvocationQueryError(
+		nodes.InvocationQueryTransportUnavailable,
+		nil,
+	)
+}
+
+func nodeInvocationQueryContextError(err error) error {
+	code := nodes.InvocationQueryCanceled
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = nodes.InvocationQueryTimeout
+	}
+	return nodes.NewInvocationQueryError(code, err)
+}
+
+func retryableNodeInvocationStatusError(err error) bool {
+	code, classified := nodes.InvocationQueryErrorCode(err)
+	if !classified {
+		return false
+	}
+	switch code {
+	case nodes.InvocationQueryNotFound,
+		nodes.InvocationQueryNodeUnavailable,
+		nodes.InvocationQueryTransportUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func nodeInvocationStatusFailure(err error) (string, string) {
+	code, classified := nodes.InvocationQueryErrorCode(err)
+	if !classified {
+		code = nodes.InvocationQueryTransportUnavailable
+	}
+	switch code {
+	case nodes.InvocationQueryNotFound:
+		return code, "The node did not observe the invocation after bounded status polling; do not replay automatically."
+	case nodes.InvocationQueryLedgerUnavailable:
+		return code, "Inspect the node invocation ledger, then retry nodes_status; do not replay the original command."
+	case nodes.InvocationQueryNodeUnavailable:
+		return code, "Retry nodes_status after the target reconnects; do not replay the original command."
+	case nodes.InvocationQueryTimeout:
+		return code, "Retry nodes_status with sufficient time; do not replay the original command."
+	case nodes.InvocationQueryCanceled:
+		return code, "The status query was canceled; do not replay the original command."
+	case nodes.InvocationQueryRejected:
+		return code, "The node rejected the status query; inspect node policy and ledger health."
+	default:
+		return nodes.InvocationQueryTransportUnavailable,
+			"Retry nodes_status after transport recovery; do not replay the original command."
+	}
 }
 
 func (*NodeStatusTool) ToolLoopSemantics() loopguard.Semantics {
