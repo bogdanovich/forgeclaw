@@ -1,40 +1,58 @@
-# Node terminal lifecycle smoke test
+# Node terminal client and lifecycle smoke test
 
-Use `mintclaw nodes terminal smoke` to verify the complete attached PTY path on
-a running gateway:
+MintClaw provides two operator commands for the authenticated attached-PTY
+transport:
 
-```text
-authenticated MintClaw session
-  -> nodes_terminal discover/open
-  -> operator WebSocket attach
-  -> resize
-  -> ordered input and bounded output
-  -> confirmed close
-```
+- `mintclaw nodes terminal open` is a real interactive terminal client;
+- `mintclaw nodes terminal smoke` is a bounded, non-interactive deployment
+  check with stable JSON output for automation.
 
-The command is intended for deployment verification and manual operator
-testing. It is not a general interactive terminal client.
+Both commands use the deterministic authenticated terminal-open endpoint. An
+LLM is not involved in opening, attaching, or closing the PTY.
 
 ## Prerequisites
 
-The active gateway configuration must have:
+The gateway configuration must have:
 
-- `nodes.enabled: true`;
-- `nodes.terminal_enabled: true`;
+- `nodes.enabled: true` and `nodes.terminal_enabled: true`;
 - an enabled MintClaw channel with its token stored through the normal secure
   configuration path;
-- a visible paired target whose approved `shell.exec.v1` contract exposes the
-  selected owner profile and working scope; and
-- an approval policy that can complete terminal-open authorization during the
-  command's bounded wait.
+- a paired, connected target visible to the `main` agent;
+- approved `shell.exec.v1` authority whose model contract exposes the selected
+  profile and working scope; and
+- a companion authority broker configured for that profile.
 
-The companion and authority broker must already be configured for that profile.
-Fresh installations and product profiles remain terminal-disabled by default.
+Run these commands on the gateway host. The CLI refuses a non-loopback gateway
+address so the MintClaw channel token never crosses a plaintext network hop.
+Raw PTY input and output remain on the authenticated operator WebSocket and are
+not copied into diagnostic traces or passive lifecycle metadata.
 
-Run the smoke command on the gateway host. It refuses non-loopback gateway
-addresses so the channel token cannot cross a plaintext WebSocket, connects
-only to the gateway address in the selected MintClaw configuration, and never
-prints the token:
+## Interactive terminal
+
+```bash
+mintclaw nodes terminal open \
+  --config /path/to/config.json \
+  --target vpn-smoke \
+  --profile owner-test \
+  --working-scope workspace
+```
+
+The client prints `Opening`, `opened; attaching`, and `Attached` status before
+placing the local terminal in raw mode. Once attached, it behaves like a normal
+remote terminal:
+
+- ordinary bytes, Enter, arrow/function keys, Ctrl+C, and Ctrl+D are forwarded
+  to the remote PTY without line buffering;
+- the initial local size and subsequent `SIGWINCH` resizes are propagated;
+- remote bytes are written to local stdout in cursor order;
+- press `Ctrl+]` to request a confirmed remote close and disconnect locally.
+
+The local TTY is restored after normal exit, remote close, local escape,
+signal, transport failure, or protocol error. A successful local return means
+the companion confirmed remote process-tree termination. An unconfirmed
+disconnect returns a non-zero status and an explicit error.
+
+## Automated smoke
 
 ```bash
 mintclaw nodes terminal smoke \
@@ -44,7 +62,9 @@ mintclaw nodes terminal smoke \
   --working-scope workspace
 ```
 
-For automation, request stable JSON and use the process exit status:
+Human-readable mode writes progress to stderr as it opens, attaches, checks
+resize/input/output, and confirms termination. For automation, stdout remains
+one stable JSON object and progress is suppressed:
 
 ```bash
 mintclaw nodes terminal smoke \
@@ -52,10 +72,11 @@ mintclaw nodes terminal smoke \
   --target vpn-smoke \
   --profile owner-test \
   --working-scope workspace \
+  --timeout 30s \
   --json
 ```
 
-A successful result contains:
+Example success:
 
 ```json
 {
@@ -71,54 +92,16 @@ A successful result contains:
 }
 ```
 
-The exact UID depends on the selected out-of-band profile.
+The smoke does not create, modify, or delete files. It resizes the PTY,
+disables echo for its fixture, reads the process UID and PTY size, checks the
+`MINTCLAW_PTY_OK` marker, requests an ordered close, and waits for confirmed
+process-tree termination. The marker is assembled remotely, so echoed input
+cannot produce a false positive.
 
-## What the smoke changes
+Common deterministic open errors are:
 
-The smoke does not create, modify, or delete files on the target node. The
-gateway still writes its normal session state, redacted diagnostic trace, and
-bounded lifecycle audit metadata. After attachment the smoke:
-
-1. resizes the PTY to the requested bounded dimensions;
-2. disables terminal echo for the fixture;
-3. obtains the process UID and terminal size;
-4. prints the deterministic `MINTCLAW_PTY_OK` marker; and
-5. requests an ordered close and waits for confirmed process-tree termination.
-
-The literal success marker is not present in the input frame, so an echoed
-command cannot create a false positive. Raw PTY bytes remain on the authenticated
-operator WebSocket and are not copied into diagnostic traces or passive audit
-events.
-
-## Failure interpretation
-
-- An error mentioning `terminal_enabled` means the capability is still
-  disabled in the selected gateway configuration.
-- A MintClaw channel or token error means authenticated operator transport is
-  unavailable.
-- A timeout before terminal attachment commonly means the agent could not
-  complete `nodes_terminal` discovery/open, the target was offline, or runtime
-  approval was still required.
-- An attachment error means the operator route was not mounted, the terminal
-  missed its attach deadline, or the session identity did not match.
-- A size or marker error means PTY input/output or resize did not complete as
-  requested.
-- A close error means process-tree termination was not confirmed and must be
-  investigated before retrying privileged tests.
-
-After a failed deployed smoke, inspect the newest redacted diagnostic trace and
-bounded gateway, companion, and broker journals. Do not paste raw terminal
-frames or secure configuration into incident reports.
-
-## Ordinary terminal clients
-
-SSH, Telnet, and generic WebSocket clients cannot attach directly. The
-companion opens no inbound terminal port, and the operator transport requires
-MintClaw authentication, exact session ownership, ordered control sequences,
-base64 byte frames, resize semantics, and confirmed close handling.
-
-A future `mintclaw nodes terminal` interactive client can adapt the local
-console's raw mode, input, resize, and signals to this protocol. A browser
-terminal similarly requires the authenticated Launcher proxy and a terminal
-emulator boundary. Those interactive clients are separate from this bounded
-smoke command.
+- `UNAUTHORIZED` or `ORIGIN_DENIED`: operator authentication is invalid;
+- `TERMINAL_DENIED`: target, pairing/catalog, profile, working scope, or
+  durable command authority does not permit the request;
+- `TARGET_UNAVAILABLE`: the target is not currently connected;
+- `TERMINAL_UNAVAILABLE`: the configured terminal runtime is not mounted.

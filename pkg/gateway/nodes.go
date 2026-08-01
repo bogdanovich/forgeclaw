@@ -367,7 +367,10 @@ func (runtime *nodeAdmissionRuntime) terminalOperatorHub() *nodeTerminalOperator
 	return runtime.terminalHub
 }
 
-func (runtime *nodeAdmissionRuntime) configureTerminalOperator(cfg *config.Config) error {
+func (runtime *nodeAdmissionRuntime) configureTerminalOperator(
+	cfg *config.Config,
+	source *nodeTerminalSource,
+) error {
 	token, allowOrigins, err := terminalOperatorAuthentication(cfg)
 	if err != nil {
 		return err
@@ -390,6 +393,11 @@ func (runtime *nodeAdmissionRuntime) configureTerminalOperator(cfg *config.Confi
 		return nil
 	}
 	hub := newNodeTerminalOperatorHub(token, allowOrigins)
+	if cfg != nil && source != nil {
+		boundSource := &nodeTerminalHubSource{nodeTerminalSource: source, hub: hub}
+		opener := tools.NewNodeTerminalOperator(cfg, boundSource)
+		hub.configureOpener(opener, cfg.WorkspacePath())
+	}
 	if wasMounted {
 		err = runtime.routes.ReplaceHTTPHandler(nodeTerminalOperatorPath, hub)
 	} else {

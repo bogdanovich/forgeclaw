@@ -86,6 +86,9 @@ func (source *fakeNodeTerminalSource) OpenTerminal(
 		TerminalID: "terminal_test", Owner: owner,
 		State: string(nodes.GatewayTerminalPendingAttach), StartedAt: time.Now().Unix(),
 	}
+	source.record.TerminalID = source.metadata.TerminalID
+	source.record.State = nodes.GatewayTerminalPendingAttach
+	source.record.StartedAt = source.metadata.StartedAt
 	return source.metadata, true, nil
 }
 
@@ -243,6 +246,93 @@ func TestNodeTerminalToolBindsApprovalAndAuthenticatedOperatorSession(t *testing
 			bypassSource.prepared,
 			bypassSource.opened,
 		)
+	}
+}
+
+func TestNodeTerminalOperatorOpensWithSharedAuthorityChecks(t *testing.T) {
+	source := newFakeNodeTerminalSource(t)
+	operator := NewNodeTerminalOperator(nodeDiscoveryTestConfig(), source)
+	owner := nodes.TerminalOwner{
+		ActorID: "operator_test", AgentID: "agent_test", RouteID: "route_test",
+		SessionID: "session_test", WorkspaceID: "workspace_test",
+		Target: "build", Profile: "owner",
+	}
+	result, err := operator.Open(t.Context(), NodeTerminalOperatorOpenRequest{
+		AgentID: "main", OperatorSessionID: "operator-session", RequestID: "request-one",
+		Owner: owner, Target: "build", Profile: "owner", WorkingScope: "workspace",
+		Columns: 100, Rows: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TerminalID != "terminal_test" ||
+		result.State != string(nodes.GatewayTerminalPendingAttach) ||
+		source.prepared != 1 || source.opened != 1 || source.bound != 1 ||
+		source.operatorSession != "operator-session" {
+		t.Fatalf("operator open = %#v, source = %#v", result, source)
+	}
+}
+
+func TestNodeTerminalOperatorReplaysLostOpenResponse(t *testing.T) {
+	source := newFakeNodeTerminalSource(t)
+	operator := NewNodeTerminalOperator(nodeDiscoveryTestConfig(), source)
+	owner := nodes.TerminalOwner{
+		ActorID: "operator_test", AgentID: "agent_test", RouteID: "route_test",
+		SessionID: "session_test", WorkspaceID: "workspace_test",
+		Target: "build", Profile: "owner",
+	}
+	request := NodeTerminalOperatorOpenRequest{
+		AgentID: "main", OperatorSessionID: "operator-session", RequestID: "request-one",
+		Owner: owner, Target: "build", Profile: "owner", WorkingScope: "workspace",
+		Columns: 100, Rows: 40,
+	}
+	first, err := operator.Open(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model a caller losing the 201 response and replaying the exact request.
+	second, err := operator.Open(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || source.prepared != 1 || source.opened != 1 || source.bound != 2 {
+		t.Fatalf(
+			"replayed open = (%#v, %#v), prepared=%d opened=%d bound=%d",
+			first,
+			second,
+			source.prepared,
+			source.opened,
+			source.bound,
+		)
+	}
+}
+
+func TestNodeTerminalOperatorDeniesInvisibleTargetAndProfile(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		target  string
+		profile string
+	}{
+		{name: "target", target: "private", profile: "owner"},
+		{name: "profile", target: "build", profile: "root"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := newFakeNodeTerminalSource(t)
+			operator := NewNodeTerminalOperator(nodeDiscoveryTestConfig(), source)
+			owner := nodes.TerminalOwner{
+				ActorID: "operator_test", AgentID: "agent_test", RouteID: "route_test",
+				SessionID: "session_test", WorkspaceID: "workspace_test",
+				Target: test.target, Profile: test.profile,
+			}
+			_, err := operator.Open(t.Context(), NodeTerminalOperatorOpenRequest{
+				AgentID: "main", OperatorSessionID: "operator-session", RequestID: "request-one",
+				Owner: owner, Target: test.target, Profile: test.profile, WorkingScope: "workspace",
+				Columns: 100, Rows: 40,
+			})
+			if err == nil || source.opened != 0 || source.bound != 0 {
+				t.Fatalf("denied operator open error = %v, source = %#v", err, source)
+			}
+		})
 	}
 }
 

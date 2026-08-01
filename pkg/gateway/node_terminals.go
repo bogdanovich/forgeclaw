@@ -46,6 +46,25 @@ type nodeTerminalSource struct {
 	now        func() time.Time
 }
 
+// nodeTerminalHubSource pins deterministic operator opens to the exact hub
+// generation serving their authenticated HTTP request. The model-facing
+// source continues to resolve the current runtime hub for its own sessions.
+type nodeTerminalHubSource struct {
+	*nodeTerminalSource
+	hub *nodeTerminalOperatorHub
+}
+
+func (source *nodeTerminalHubSource) BindTerminalOperator(
+	owner nodes.TerminalOwner,
+	terminalID string,
+	operatorSessionID string,
+) error {
+	if source == nil || source.nodeTerminalSource == nil || source.hub == nil {
+		return errNodeDiscoveryAuthorityUnavailable
+	}
+	return source.hub.bind(source.nodeTerminalSource, owner, terminalID, operatorSessionID)
+}
+
 func newNodeTerminalSource(
 	cfg *config.Config,
 	runtime *nodeAdmissionRuntime,
@@ -61,7 +80,7 @@ func newNodeTerminalSource(
 		return nil, err
 	}
 	if !enabled || token == "" {
-		if configureErr := runtime.configureTerminalOperator(nil); configureErr != nil {
+		if configureErr := runtime.configureTerminalOperator(nil, nil); configureErr != nil {
 			return nil, configureErr
 		}
 		_, _, err = runtime.existingGatewayTerminalStore(
@@ -96,7 +115,7 @@ func newNodeTerminalSource(
 		generation: generation,
 		now:        time.Now,
 	}
-	if err := runtime.configureTerminalOperator(cfg); err != nil {
+	if err := runtime.configureTerminalOperator(cfg, source); err != nil {
 		return nil, err
 	}
 	return source, nil
