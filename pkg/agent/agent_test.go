@@ -5571,7 +5571,7 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 		UsageOutputTokens: 30,
 		UsageTotalTokens:  330,
 	})
-	responses, keepDraining = target.appendContinuationResponse(
+	_, keepDraining = target.appendContinuationResponse(
 		responses,
 		thirdSnapshot,
 		"",

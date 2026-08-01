@@ -37,22 +37,22 @@ func TestBindNodeFileMediaOwnerUsesExactActorAndRoute(t *testing.T) {
 			},
 		}},
 	}
-	if err := bindNodeFileMediaOwner(store, ts, []string{ref}); err != nil {
-		t.Fatal(err)
+	if bindErr := bindNodeFileMediaOwner(store, ts, []string{ref}); bindErr != nil {
+		t.Fatal(bindErr)
 	}
 	ownerA, err := nodeFileMediaOwnerForTurn(ts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ResolveOwnedWithMeta(ref, ownerA); err != nil {
-		t.Fatalf("exact owner failed to resolve: %v", err)
+	if _, _, resolveErr := store.ResolveOwnedWithMeta(ref, ownerA); resolveErr != nil {
+		t.Fatalf("exact owner failed to resolve: %v", resolveErr)
 	}
 	ts.opts.Dispatch.InboundContext.ActorID = "actor-b"
 	ownerB, err := nodeFileMediaOwnerForTurn(ts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ResolveOwnedWithMeta(ref, ownerB); err == nil {
+	if _, _, resolveErr := store.ResolveOwnedWithMeta(ref, ownerB); resolveErr == nil {
 		t.Fatal("other actor resolved bound inbound media")
 	}
 }
@@ -80,14 +80,14 @@ func TestBindNodeFileMediaOwnerDoesNothingWithoutUploadAuthority(t *testing.T) {
 			},
 		}},
 	}
-	if err := bindNodeFileMediaOwner(store, ts, []string{ref}); err != nil {
-		t.Fatal(err)
+	if bindErr := bindNodeFileMediaOwner(store, ts, []string{ref}); bindErr != nil {
+		t.Fatal(bindErr)
 	}
 	owner, err := nodeFileMediaOwnerForTurn(ts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ResolveOwnedWithMeta(ref, owner); err == nil {
+	if _, _, resolveErr := store.ResolveOwnedWithMeta(ref, owner); resolveErr == nil {
 		t.Fatal("profile without nodes_upload authority unexpectedly bound media")
 	}
 }
