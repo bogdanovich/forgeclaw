@@ -124,6 +124,9 @@ type ServerConnection struct {
 	Session     *mcp.ClientSession
 	Tools       []*mcp.Tool
 	reconnectMu sync.Mutex
+	// recoveryRequired is set after a session-loss reconnect fails. New calls
+	// must recover this known-stale connection before dispatching a tool.
+	recoveryRequired atomic.Bool
 }
 
 // Manager manages multiple MCP server connections
@@ -553,6 +556,13 @@ func (m *Manager) CallTool(
 		return nil, fmt.Errorf("server %s not found", serverName)
 	}
 	defer m.wg.Done()
+	if conn.recoveryRequired.Load() {
+		reconnectedConn, err := m.reconnectServer(ctx, serverName, conn)
+		if err != nil {
+			return nil, fmt.Errorf("failed to recover MCP server before tool call: %w", err)
+		}
+		conn = reconnectedConn
+	}
 
 	params := &mcp.CallToolParams{
 		Name:      toolName,
@@ -681,6 +691,7 @@ func (m *Manager) reconnectServer(
 	if currentConn != staleConn {
 		return currentConn, nil
 	}
+	staleConn.recoveryRequired.Store(true)
 
 	freshConn, err := connectServerFunc(ctx, serverName, staleConn.Config)
 	if err != nil {

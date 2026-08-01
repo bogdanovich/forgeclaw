@@ -682,7 +682,7 @@ func TestCallTool_DoesNotReplayWhenSessionLossReplayIsNever(t *testing.T) {
 	}
 }
 
-func TestCallTool_ReportsUncertainWhenNoReplayReconnectFails(t *testing.T) {
+func TestCallTool_RecoversBeforeNextCallWhenNoReplayReconnectFails(t *testing.T) {
 	originalConnectServerFunc := connectServerFunc
 	t.Cleanup(func() {
 		connectServerFunc = originalConnectServerFunc
@@ -698,8 +698,26 @@ func TestCallTool_ReportsUncertainWhenNoReplayReconnectFails(t *testing.T) {
 	}
 	staleConn.Config.SessionLossReplay = config.MCPSessionLossReplayNever
 
+	freshConn, freshTransport, err := newScriptedServerConnection(
+		"session-2",
+		&sdkmcp.CallToolResult{
+			Content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: "executed once after recovery"},
+			},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+	}
+
+	connectCalls := 0
 	connectServerFunc = func(context.Context, string, config.MCPServerConfig) (*ServerConnection, error) {
-		return nil, errors.New("replacement unavailable")
+		connectCalls++
+		if connectCalls == 1 {
+			return nil, errors.New("replacement temporarily unavailable")
+		}
+		return freshConn, nil
 	}
 
 	mgr := NewManager()
@@ -722,6 +740,27 @@ func TestCallTool_ReportsUncertainWhenNoReplayReconnectFails(t *testing.T) {
 	conn, ok := mgr.GetServer("playwright")
 	if !ok || conn != staleConn {
 		t.Fatalf("GetServer(playwright) = %#v, %v; want stale connection retained", conn, ok)
+	}
+
+	result, callErr = mgr.CallTool(context.Background(), "playwright", "browser_click", nil)
+	if callErr != nil {
+		t.Fatalf("second CallTool() error = %v", callErr)
+	}
+	if result == nil || len(result.Content) != 1 {
+		t.Fatalf("second CallTool() result = %#v, want fresh-session result", result)
+	}
+	text, ok := result.Content[0].(*sdkmcp.TextContent)
+	if !ok || text.Text != "executed once after recovery" {
+		t.Fatalf("second CallTool() content = %#v, want fresh-session result", result.Content[0])
+	}
+	if connectCalls != 2 {
+		t.Fatalf("connectCalls = %d, want 2", connectCalls)
+	}
+	if staleTransport.toolCallCalls != 1 {
+		t.Fatalf("stale toolCallCalls after second call = %d, want 1", staleTransport.toolCallCalls)
+	}
+	if freshTransport.toolCallCalls != 1 {
+		t.Fatalf("fresh toolCallCalls = %d, want 1", freshTransport.toolCallCalls)
 	}
 }
 
