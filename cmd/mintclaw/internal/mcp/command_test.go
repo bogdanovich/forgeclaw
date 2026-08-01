@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	mintclawmcp "github.com/bogdanovich/mintclaw/pkg/mcp"
 )
 
 func TestNewMCPCommand(t *testing.T) {
@@ -493,7 +495,46 @@ func TestMCPTestUsesProbe(t *testing.T) {
 	cmd := NewMCPCommand()
 	output, err := executeCommand(cmd, []string{"test", "filesystem"}, "")
 	require.NoError(t, err)
+	assert.Contains(t, output, `session replay=once, exclusive lock=no`)
 	assert.Contains(t, output, `MCP server "filesystem" reachable (2 tools)`)
+}
+
+func TestMCPTestReportsExclusiveLeaseBusyWithoutLockPath(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+	lockPath := filepath.Join(t.TempDir(), "private-playwright.lock")
+	writeMCPConfig(t, configPath, &config.Config{
+		Tools: config.ToolsConfig{
+			MCP: config.MCPConfig{
+				ToolConfig: config.ToolConfig{Enabled: true},
+				Servers: map[string]config.MCPServerConfig{
+					"playwright": {
+						Enabled:           true,
+						Type:              "stdio",
+						Command:           "npx",
+						SessionLossReplay: config.MCPSessionLossReplayNever,
+						ExclusiveLockFile: lockPath,
+					},
+				},
+			},
+		},
+	})
+
+	originalProbe := serverProbe
+	defer func() { serverProbe = originalProbe }()
+	serverProbe = func(context.Context, string, config.MCPServerConfig, string) (probeResult, error) {
+		return probeResult{}, fmt.Errorf("wrapped probe failure: %w", &mintclawmcp.ExclusiveLeaseBusyError{
+			Server: "playwright",
+		})
+	}
+
+	cmd := NewMCPCommand()
+	output, err := executeCommand(cmd, []string{"test", "playwright"}, "")
+	require.Error(t, err)
+	assert.Contains(t, output, `session replay=never, exclusive lock=yes`)
+	assert.Contains(t, err.Error(), `MCP server "playwright" is busy`)
+	assert.NotContains(t, output, lockPath)
+	assert.NotContains(t, err.Error(), lockPath)
+	assert.NotContains(t, err.Error(), "wrapped probe failure")
 }
 
 func TestMCPAddDeferredFlag(t *testing.T) {
@@ -617,6 +658,46 @@ func TestMCPShowUsesProbe(t *testing.T) {
 	assert.Contains(t, output, "required")
 	assert.Contains(t, output, "list_dir")
 	assert.Contains(t, output, "none")
+}
+
+func TestMCPShowReportsConfigurationWhenExclusiveLeaseIsBusy(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+	lockPath := filepath.Join(t.TempDir(), "private-playwright.lock")
+	writeMCPConfig(t, configPath, &config.Config{
+		Tools: config.ToolsConfig{
+			MCP: config.MCPConfig{
+				ToolConfig: config.ToolConfig{Enabled: true},
+				Servers: map[string]config.MCPServerConfig{
+					"playwright": {
+						Enabled:           true,
+						Type:              "stdio",
+						Command:           "npx",
+						SessionLossReplay: config.MCPSessionLossReplayNever,
+						ExclusiveLockFile: lockPath,
+					},
+				},
+			},
+		},
+	})
+
+	originalProbe := serverShowProbe
+	defer func() { serverShowProbe = originalProbe }()
+	serverShowProbe = func(context.Context, string, config.MCPServerConfig, string) ([]toolDetail, error) {
+		return nil, fmt.Errorf("wrapped probe failure: %w", &mintclawmcp.ExclusiveLeaseBusyError{
+			Server: "playwright",
+		})
+	}
+
+	cmd := NewMCPCommand()
+	output, err := executeCommand(cmd, []string{"show", "playwright"}, "")
+	require.Error(t, err)
+	assert.Contains(t, output, "Session replay: never")
+	assert.Contains(t, output, "Exclusive lock: yes")
+	assert.Contains(t, output, "Tool discovery unavailable: configured exclusive lease is busy.")
+	assert.Contains(t, err.Error(), `MCP server "playwright" is busy`)
+	assert.NotContains(t, output, lockPath)
+	assert.NotContains(t, err.Error(), lockPath)
+	assert.NotContains(t, err.Error(), "wrapped probe failure")
 }
 
 func setupMCPConfigEnv(t *testing.T) string {

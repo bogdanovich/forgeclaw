@@ -333,6 +333,10 @@ Flags:
 Notes:
 
 - if the server is disabled in config, `mcp show` prints the metadata only and skips tool discovery
+- configuration metadata is printed even when live discovery fails, so the
+  effective replay policy and presence of an exclusive lease remain visible
+- lease contention is reported as a bounded busy state without printing the
+  configured lock path
 - `mcp show` always connects live to fetch the tool list; use `mcp test` if you only need a reachability check
 
 ## `mintclaw mcp test`
@@ -343,7 +347,11 @@ Syntax:
 mintclaw mcp test <name>
 ```
 
-This performs a direct connection test for one configured entry and prints the number of discovered tools when successful.
+This prints the effective session replay policy and whether an exclusive lease
+is configured, then performs a direct connection test for one configured entry
+and prints the number of discovered tools when successful. If another process
+holds the lease, the command reports a bounded busy result without printing the
+configured lock path.
 
 It is useful when:
 

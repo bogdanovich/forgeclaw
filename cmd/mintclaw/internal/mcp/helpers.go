@@ -370,6 +370,18 @@ func defaultServerProbe(
 	return probeResult{ToolCount: len(conn.Tools)}, nil
 }
 
+func exclusiveLeaseBusy(err error) bool {
+	var busyErr *mintclawmcp.ExclusiveLeaseBusyError
+	return errors.As(err, &busyErr)
+}
+
+func exclusiveLeaseBusyDiagnostic(name string) error {
+	return fmt.Errorf(
+		"MCP server %q is busy: its configured exclusive lease is held by another process",
+		name,
+	)
+}
+
 func confirmOverwrite(r io.Reader, w io.Writer, name string) (bool, error) {
 	if _, err := fmt.Fprintf(w, "MCP server %q already exists. Overwrite? [y/N]: ", name); err != nil {
 		return false, err
