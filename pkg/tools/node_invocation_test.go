@@ -1279,6 +1279,7 @@ func TestNodeStatusToolReportsDisconnectedDispatchedInvocationAsUnknown(t *testi
 		invoke.Execute(ctx, nodeInvocationTestArgs()),
 	)["invocation_id"].(string)
 	source.connected = map[nodes.ID]bool{}
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryNodeUnavailable, nil)
 
 	status := NewNodeStatusTool(nodeDiscoveryTestConfig(), source)
 	payload := decodeNodeResult(
@@ -1288,8 +1289,43 @@ func TestNodeStatusToolReportsDisconnectedDispatchedInvocationAsUnknown(t *testi
 	if payload["state"] != string(nodes.InvocationUnknown) ||
 		payload["error_code"] != "NODE_UNAVAILABLE" ||
 		payload["node_available"] != false ||
-		source.queryCalls != 0 {
+		payload["status_attempts"] != float64(defaultNodeStatusAttempts) ||
+		source.queryCalls != defaultNodeStatusAttempts {
 		t.Fatalf("offline status = %#v, query calls = %d", payload, source.queryCalls)
+	}
+}
+
+func TestNodeStatusToolRecoversWhenInitiallyDisconnectedNodeReconnects(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	record := mustFakeGatewayInvocation(t, source, ctx, invocationID)
+	source.connected = map[nodes.ID]bool{}
+	source.remote = successfulRemoteInvocation(record)
+	source.queryErrors = []error{
+		nodes.NewInvocationQueryError(nodes.InvocationQueryNodeUnavailable, nil),
+	}
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	if payload["state"] != string(nodes.InvocationSucceeded) ||
+		payload["node_available"] != false ||
+		payload["status_attempts"] != float64(2) ||
+		source.queryCalls != 2 || source.dispatchCalls != 1 {
+		t.Fatalf(
+			"reconnected status = %#v; query calls = %d; dispatch calls = %d",
+			payload,
+			source.queryCalls,
+			source.dispatchCalls,
+		)
 	}
 }
 
@@ -1403,6 +1439,30 @@ func TestNodeStatusToolDoesNotRetryLedgerFailure(t *testing.T) {
 	if payload["error_code"] != nodes.InvocationQueryLedgerUnavailable ||
 		payload["status_attempts"] != float64(1) || source.queryCalls != 1 {
 		t.Fatalf("ledger status = %#v; query calls = %d", payload, source.queryCalls)
+	}
+}
+
+func TestNodeStatusToolPreservesDeadlineDuringRetryBackoff(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	baseCtx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(baseCtx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryTransportUnavailable, nil)
+	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Millisecond)
+	defer cancel()
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	if payload["error_code"] != nodes.InvocationQueryTimeout ||
+		payload["status_attempts"] != float64(1) || source.queryCalls != 1 {
+		t.Fatalf("deadline status = %#v; query calls = %d", payload, source.queryCalls)
 	}
 }
 

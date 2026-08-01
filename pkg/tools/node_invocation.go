@@ -521,20 +521,6 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 	if isNodeFileTransferCommand(record.Plan.Command) {
 		return tool.runtime.fileTransferStatus(ctx, record, principal, available)
 	}
-	if !available {
-		view.State = string(nodes.InvocationUnknown)
-		view.ErrorCode = "NODE_UNAVAILABLE"
-		view.RecoveryAction = "Retry nodes_status after the target reconnects."
-		tool.runtime.publishInvocationEvent(
-			ctx,
-			NodeInvocationObservationUncertain,
-			"nodes_status",
-			record,
-			view.State,
-			view.ErrorCode,
-		)
-		return nodeJSONResult(view)
-	}
 	remote, attempts, err := tool.runtime.queryInvocationStatus(
 		ctx,
 		principal,
@@ -570,7 +556,7 @@ func (tool *NodeStatusTool) Execute(ctx context.Context, args map[string]any) *T
 			errorCode,
 		)
 	}
-	view = remoteStatusResult(record, remote, true)
+	view = remoteStatusResult(record, remote, available)
 	view.StatusAttempts = attempts
 	return nodeJSONResult(view)
 }
@@ -595,10 +581,7 @@ func (runtime *nodeInvocationToolRuntime) queryInvocationStatus(
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nodes.InvocationRecord{}, attempt, nodes.NewInvocationQueryError(
-				nodes.InvocationQueryCanceled,
-				ctx.Err(),
-			)
+			return nodes.InvocationRecord{}, attempt, nodeInvocationQueryContextError(ctx.Err())
 		case <-timer.C:
 		}
 	}
@@ -606,6 +589,14 @@ func (runtime *nodeInvocationToolRuntime) queryInvocationStatus(
 		nodes.InvocationQueryTransportUnavailable,
 		nil,
 	)
+}
+
+func nodeInvocationQueryContextError(err error) error {
+	code := nodes.InvocationQueryCanceled
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = nodes.InvocationQueryTimeout
+	}
+	return nodes.NewInvocationQueryError(code, err)
 }
 
 func retryableNodeInvocationStatusError(err error) bool {
