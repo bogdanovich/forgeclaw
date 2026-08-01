@@ -16,6 +16,13 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Safe Restart And Deploy](safe-restart-and-deploy.md): bounded restart/deploy handoff, shared binary targets, and durability boundaries.
 - [Node Companion](node-companion.md): outbound paired capability hosts, transport and identity boundaries, remote execution policy, and the Linux/macOS MVP.
 - [Node Companion Post-MVP Roadmap](node-companion-roadmap.md): ordered future milestones for explicit owner/root shell and PTY access, administrator file transfer, service management, fleet operations, executors, transports, and additional capabilities.
+- [Reliable Browser Capability](browser-capability.md): deployed-state
+  investigation, comparative analysis, and target broker/worker architecture
+  for safe local, companion, and cloud browser automation.
+- [Reliable Browser Capability Roadmap](browser-capability-roadmap.md): ordered
+  browser milestones for current-specialist hardening, first-party tools,
+  artifacts, human handoff, companion placement, profiles, providers, and
+  computer fallback.
 - [Node Companion P0 Capability Contracts](node-companion-p0-contracts.md): admitted scope, bounded discovery schema, effective-policy projection, freshness, redaction, and completion gates for model-visible node capabilities.
 - [Node Companion P1 Owner-Control Admission](node-companion-p1-admission.md): admitted owner shell, cancellation, Linux root broker, and interactive terminal contracts with disabled production defaults and exact completion gates.
 - [Node Companion P2 File Transfer Admission](node-companion-p2-admission.md): admitted regular-file transfer, gateway spool, path safety, Linux administrator helper, approval, replay, deployment, and mandatory completion gates.
