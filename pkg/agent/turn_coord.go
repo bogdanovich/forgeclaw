@@ -94,6 +94,12 @@ func (al *AgentLoop) runTurn(
 			return
 		}
 		if turnStatus == TurnEndStatusCompleted && err == nil {
+			if ts.opts.ExpectFinalDelivery &&
+				strings.TrimSpace(result.finalContent) != "" &&
+				ts.opts.FinalDeliveryObservation != nil {
+				ts.opts.FinalDeliveryObservation.observeSteering(acceptedSteering)
+				return
+			}
 			host.ackAcceptedSteeringMessages(ctx, acceptedSteering)
 			return
 		}

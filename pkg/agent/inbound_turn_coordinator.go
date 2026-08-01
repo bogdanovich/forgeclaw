@@ -9,7 +9,6 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/commands"
-	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
@@ -243,15 +242,11 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	claim.releaseIfOwned()
 	al.ackInboundMessage(ctx, msg)
 
-	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	target := &continuationTarget{
 		SessionKey: claim.scope.sessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
 		Workspace:  claim.scope.workspace,
-		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
-			traceScopes = appendUniqueTraceScope(traceScopes, scope)
-		},
 	}
 	if dispatchTarget != nil && dispatchTarget.Agent != nil {
 		target.AgentID = dispatchTarget.Agent.ID
@@ -267,7 +262,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			claim.scope.sessionKey,
 			continueErr,
 			finalResponseAlwaysPublish,
-			traceScopes,
+			target.traceScopes,
 		)
 		al.settleSteeringMessages(
 			rejectedFinalResponseAdmission(continueErr),
@@ -288,7 +283,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			&msg.Context,
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
-			traceScopes,
+			target.traceScopes,
 		)
 	}
 	al.settleSteeringMessages(admission, steeringAggregate.messages)

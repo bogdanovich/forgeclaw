@@ -182,6 +182,35 @@ func TestInboundTurnCoordinatorReleasesOriginalAndSteeringAfterAggregateRejectio
 	}
 }
 
+func TestInboundTurnCoordinatorReleasesActiveTurnSteeringAfterAggregateRejection(t *testing.T) {
+	rejection := errors.New("aggregate outbound rejected")
+	al, _, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus: al.bus.(*bus.MessageBus),
+		publishErr: rejection,
+	}
+	al.bus = trackingBus
+	msg := finalResponseAdmissionInboundMessage("spool-original")
+	coordinator, target, claim := prepareFinalResponseAdmissionTurnForSender(
+		t,
+		al,
+		msg,
+		"spool-steering",
+		msg.SenderID,
+	)
+
+	coordinator.runWorker(t.Context(), msg, target, claim)
+
+	acked, released, cause := trackingBus.ownership()
+	if len(acked) != 0 || !containsExactly(released, "spool-original", "spool-steering") {
+		t.Fatalf("rejected active-turn aggregate ownership = acked:%v released:%v", acked, released)
+	}
+	if !errors.Is(cause, rejection) {
+		t.Fatalf("release cause = %v, want %v", cause, rejection)
+	}
+}
+
 func TestInboundTurnCoordinatorSettlesOriginalAndSteeringAdmissionsIndependently(t *testing.T) {
 	rejection := errors.New("outbound rejected")
 	tests := []struct {
@@ -248,20 +277,29 @@ func TestInboundTurnCoordinatorSettlesHandledNoOutputIndependently(t *testing.T)
 	tests := []struct {
 		name         string
 		responses    []*providers.LLMResponse
+		steeringID   string
 		wantAcked    []string
 		wantReleased []string
 	}{
 		{
 			name:         "handled original does not depend on continuation aggregate",
 			responses:    []*providers.LLMResponse{handledResponse, handledTerminalResponse, textResponse},
+			steeringID:   "user-2",
 			wantAcked:    []string{"spool-original"},
 			wantReleased: []string{"spool-steering"},
 		},
 		{
 			name:         "handled steering does not depend on original aggregate",
 			responses:    []*providers.LLMResponse{textResponse, handledResponse, handledTerminalResponse},
+			steeringID:   "user-2",
 			wantAcked:    []string{"spool-steering"},
 			wantReleased: []string{"spool-original"},
+		},
+		{
+			name:       "handled active-turn steering does not wait for aggregate admission",
+			responses:  []*providers.LLMResponse{handledResponse, handledTerminalResponse},
+			steeringID: "user-1",
+			wantAcked:  []string{"spool-original", "spool-steering"},
 		},
 	}
 	for _, tt := range tests {
@@ -285,7 +323,13 @@ func TestInboundTurnCoordinatorSettlesHandledNoOutputIndependently(t *testing.T)
 				&fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}},
 			))
 			msg := finalResponseAdmissionInboundMessage("spool-original")
-			coordinator, target, claim := prepareFinalResponseAdmissionTurn(t, al, msg, "spool-steering")
+			coordinator, target, claim := prepareFinalResponseAdmissionTurnForSender(
+				t,
+				al,
+				msg,
+				"spool-steering",
+				tt.steeringID,
+			)
 
 			coordinator.runWorker(t.Context(), msg, target, claim)
 
@@ -319,6 +363,16 @@ func prepareFinalResponseAdmissionTurn(
 	msg bus.InboundMessage,
 	steeringSpoolID string,
 ) (*inboundTurnCoordinator, *inboundDispatchTarget, *runtimeSessionClaim) {
+	return prepareFinalResponseAdmissionTurnForSender(t, al, msg, steeringSpoolID, "user-2")
+}
+
+func prepareFinalResponseAdmissionTurnForSender(
+	t *testing.T,
+	al *AgentLoop,
+	msg bus.InboundMessage,
+	steeringSpoolID string,
+	steeringSenderID string,
+) (*inboundTurnCoordinator, *inboundDispatchTarget, *runtimeSessionClaim) {
 	t.Helper()
 	coordinator := newInboundTurnCoordinator(al)
 	target, ok := al.resolveSteeringTarget(msg)
@@ -329,7 +383,7 @@ func prepareFinalResponseAdmissionTurn(
 		err := al.enqueueSteeringMessageWithSender(
 			target.runtimeSessionScope(),
 			target.Agent.ID,
-			"user-2",
+			steeringSenderID,
 			providers.Message{
 				Role:           "user",
 				Content:        "queued steering",

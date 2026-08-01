@@ -91,25 +91,19 @@ func (al *AgentLoop) runInboundTurnWithSteering(
 	ctx context.Context,
 	turn inboundMessageTurn,
 ) finalResponseAdmission {
-	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
-	observeTurn := func(scope runtimeevents.TraceScope) {
-		traceScopes = appendUniqueTraceScope(traceScopes, scope)
-	}
-	turn.Options.ObserveFinalDeliveryTurn = observeTurn
 	target := &continuationTarget{
-		SessionKey:               turn.SessionKey,
-		Channel:                  turn.Message.Channel,
-		ChatID:                   turn.Message.ChatID,
-		ObserveFinalDeliveryTurn: observeTurn,
+		SessionKey: turn.SessionKey,
+		Channel:    turn.Message.Channel,
+		ChatID:     turn.Message.ChatID,
 	}
-	turn.Options.ObserveFinalResponse = target.observeFinalResponse
+	turn.Options.FinalDeliveryObservation = &target.finalDeliveryObservation
 	if turn.Agent != nil {
 		target.AgentID = turn.Agent.ID
 		target.Workspace = turn.Agent.Workspace
 	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
 		return al.processInboundMessageTurn(ctx, turn)
-	}, target, &traceScopes)
+	}, target)
 }
 
 func (al *AgentLoop) runTurnAndDrainSteering(
@@ -117,7 +111,6 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	initialMsg bus.InboundMessage,
 	process func() (string, error),
 	target *continuationTarget,
-	traceScopes *[]runtimeevents.TraceScope,
 ) finalResponseAdmission {
 	response, err := process()
 	initialAdmission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
@@ -134,7 +127,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			initialMsg.SessionKey,
 			err,
 			finalResponseAlwaysPublish,
-			*traceScopes,
+			target.traceScopes,
 		)
 		if errors.Is(initialAdmission.err, context.Canceled) {
 			return initialAdmission
@@ -190,7 +183,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			},
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
-			*traceScopes,
+			target.traceScopes,
 		)
 	}
 	al.settleSteeringMessages(aggregateAdmission, steeringAggregate.messages)
@@ -214,10 +207,8 @@ func (t *continuationTarget) takeUnsettledSteering() []providers.Message {
 	if t == nil {
 		return nil
 	}
-	messages := append([]providers.Message(nil), t.unsettledSteering...)
-	t.unsettledSteering = nil
 	t.holdSteeringSettlement = false
-	return messages
+	return t.finalDeliveryObservation.takeUnsettledSteering()
 }
 
 func (al *AgentLoop) settleSteeringMessages(
@@ -248,19 +239,42 @@ func (al *AgentLoop) drainSteeringForAggregate(
 	}, err
 }
 
-func (t *continuationTarget) observeFinalResponse(metadata bus.OutboundMetadata) {
-	if t == nil {
+func (o *finalDeliveryObservation) observeTurn(scope runtimeevents.TraceScope) {
+	if o == nil {
+		return
+	}
+	o.traceScopes = appendUniqueTraceScope(o.traceScopes, scope)
+}
+
+func (o *finalDeliveryObservation) observeResponse(metadata bus.OutboundMetadata) {
+	if o == nil {
 		return
 	}
 	if metadata.ModelName != "" {
-		t.responseMetadata.ModelName = metadata.ModelName
+		o.responseMetadata.ModelName = metadata.ModelName
 	}
 	if metadata.DefaultModelName != "" {
-		t.responseMetadata.DefaultModelName = metadata.DefaultModelName
+		o.responseMetadata.DefaultModelName = metadata.DefaultModelName
 	}
-	t.responseMetadata.UsageInputTokens += metadata.UsageInputTokens
-	t.responseMetadata.UsageOutputTokens += metadata.UsageOutputTokens
-	t.responseMetadata.UsageTotalTokens += metadata.UsageTotalTokens
+	o.responseMetadata.UsageInputTokens += metadata.UsageInputTokens
+	o.responseMetadata.UsageOutputTokens += metadata.UsageOutputTokens
+	o.responseMetadata.UsageTotalTokens += metadata.UsageTotalTokens
+}
+
+func (o *finalDeliveryObservation) observeSteering(messages []providers.Message) {
+	if o == nil {
+		return
+	}
+	o.unsettledSteering = append(o.unsettledSteering, messages...)
+}
+
+func (o *finalDeliveryObservation) takeUnsettledSteering() []providers.Message {
+	if o == nil {
+		return nil
+	}
+	messages := append([]providers.Message(nil), o.unsettledSteering...)
+	o.unsettledSteering = nil
+	return messages
 }
 
 func (t *continuationTarget) retainResponseMetadata(

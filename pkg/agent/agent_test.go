@@ -5526,7 +5526,7 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 	responses := []string{}
 
 	firstSnapshot := target.responseMetadata
-	target.observeFinalResponse(bus.OutboundMetadata{
+	target.observeResponse(bus.OutboundMetadata{
 		ModelName:         "first-model",
 		DefaultModelName:  "workspace-default",
 		UsageInputTokens:  100,
@@ -5544,7 +5544,7 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 	}
 
 	secondSnapshot := target.responseMetadata
-	target.observeFinalResponse(bus.OutboundMetadata{
+	target.observeResponse(bus.OutboundMetadata{
 		ModelName:         "duplicate-model",
 		DefaultModelName:  "workspace-default",
 		UsageInputTokens:  200,
@@ -5564,7 +5564,7 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 	}
 
 	thirdSnapshot := target.responseMetadata
-	target.observeFinalResponse(bus.OutboundMetadata{
+	target.observeResponse(bus.OutboundMetadata{
 		ModelName:         "handled-model",
 		DefaultModelName:  "workspace-default",
 		UsageInputTokens:  300,

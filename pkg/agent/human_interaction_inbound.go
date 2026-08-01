@@ -442,16 +442,12 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 	if al.hasNonterminalInteraction(workspace, route.SessionKey) {
 		return nil
 	}
-	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	target := &continuationTarget{
 		AgentID:    route.AgentID,
 		SessionKey: route.SessionKey,
 		Channel:    route.Channel,
 		ChatID:     route.ChatID,
 		Workspace:  workspace,
-		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
-			traceScopes = appendUniqueTraceScope(traceScopes, scope)
-		},
 	}
 	steeringAggregate, err := al.drainSteeringForAggregate(ctx, target)
 	if err != nil {
@@ -471,7 +467,7 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 			&inbound,
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
-			traceScopes,
+			target.traceScopes,
 		)
 	}
 	al.settleSteeringMessages(admission, steeringAggregate.messages)
@@ -878,15 +874,12 @@ func (al *AgentLoop) resumeClaimedInteraction(
 	modelBinding := al.bindEffectiveModel(routeSessionKey, agent)
 	defer modelBinding.Cleanup()
 	turnStatus := TurnEndStatusCompleted
-	traceScopes := make([]runtimeevents.TraceScope, 0, 1)
 	expectFinalDelivery := al.interactionContinuationExpectsUserDelivery(
 		interactionWorkspace, record,
 	)
-	var observeFinalDeliveryTurn func(runtimeevents.TraceScope)
+	var deliveryObservation *finalDeliveryObservation
 	if expectFinalDelivery {
-		observeFinalDeliveryTurn = func(scope runtimeevents.TraceScope) {
-			traceScopes = appendUniqueTraceScope(traceScopes, scope)
-		}
+		deliveryObservation = &finalDeliveryObservation{}
 	}
 	finalContent, runErr := al.runAgentLoop(ctx, agent, processOptions{
 		ModelBinding:          modelBinding,
@@ -906,7 +899,7 @@ func (al *AgentLoop) resumeClaimedInteraction(
 		EnableSummary:               true,
 		SendResponse:                false,
 		ExpectFinalDelivery:         expectFinalDelivery,
-		ObserveFinalDeliveryTurn:    observeFinalDeliveryTurn,
+		FinalDeliveryObservation:    deliveryObservation,
 		AllowInterimMintClawPublish: true,
 		SkipInitialSteeringPoll:     true,
 	})
@@ -917,9 +910,27 @@ func (al *AgentLoop) resumeClaimedInteraction(
 	if turnStatus == TurnEndStatusSuspended {
 		return nil
 	}
-	return al.deliverInteractionFinal(
-		ctx, registry, interactionWorkspace, resuming, inbound, finalContent, traceScopes,
+	var traceScopes []runtimeevents.TraceScope
+	if deliveryObservation != nil {
+		traceScopes = deliveryObservation.traceScopes
+	}
+	deliveryErr := al.deliverInteractionFinal(
+		ctx,
+		registry,
+		interactionWorkspace,
+		resuming,
+		inbound,
+		finalContent,
+		traceScopes,
 	)
+	if deliveryObservation != nil {
+		admission := finalResponseAdmission{status: finalResponseAdmissionAccepted}
+		if deliveryErr != nil {
+			admission = rejectedFinalResponseAdmission(deliveryErr)
+		}
+		al.settleSteeringMessages(admission, deliveryObservation.takeUnsettledSteering())
+	}
+	return deliveryErr
 }
 
 func (al *AgentLoop) executeApprovedInteractionTool(
