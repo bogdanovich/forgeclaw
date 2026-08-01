@@ -29,10 +29,11 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 	if !ok {
 		// Non-routable message (e.g. system) stays synchronous so it preserves
 		// the historical ordering guarantee and does not enter session steering.
-		if al.processMessageSync(ctx, msg) {
+		admission := al.processMessageSync(ctx, msg)
+		if admission.permitsInboundAck() {
 			al.ackInboundMessage(ctx, msg)
 		} else {
-			al.releaseInboundMessage(context.Background(), msg, ctx.Err())
+			al.releaseInboundMessage(context.Background(), msg, admission.err)
 		}
 		return
 	}
@@ -194,10 +195,11 @@ func (c *inboundTurnCoordinator) runWorker(
 	}
 
 	turn := al.buildInboundMessageTurnForTarget(ctx, msg, target)
-	if al.runInboundTurnWithSteering(ctx, turn) {
+	admission := al.runInboundTurnWithSteering(ctx, turn)
+	if admission.permitsInboundAck() {
 		al.ackInboundMessage(ctx, msg)
 	} else {
-		al.releaseInboundMessage(context.Background(), msg, ctx.Err())
+		al.releaseInboundMessage(context.Background(), msg, admission.err)
 	}
 }
 

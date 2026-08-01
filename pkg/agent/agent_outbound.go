@@ -28,6 +28,33 @@ const (
 	finalResponseAlwaysPublish
 )
 
+type finalResponseAdmissionStatus uint8
+
+const (
+	finalResponseAdmissionRejected finalResponseAdmissionStatus = iota
+	finalResponseAdmissionNotRequired
+	finalResponseAdmissionSuppressed
+	finalResponseAdmissionAccepted
+)
+
+type finalResponseAdmission struct {
+	status finalResponseAdmissionStatus
+	err    error
+}
+
+func (a finalResponseAdmission) permitsInboundAck() bool {
+	return a.status == finalResponseAdmissionNotRequired ||
+		a.status == finalResponseAdmissionSuppressed ||
+		a.status == finalResponseAdmissionAccepted
+}
+
+func rejectedFinalResponseAdmission(err error) finalResponseAdmission {
+	if err == nil {
+		err = fmt.Errorf("final response delivery admission rejected")
+	}
+	return finalResponseAdmission{status: finalResponseAdmissionRejected, err: err}
+}
+
 type toolResultDeliveryOutcome uint8
 
 const (
@@ -42,7 +69,7 @@ func (al *AgentLoop) maybePublishErrorWithPolicy(
 	channel, chatID, sessionKey string,
 	err error,
 	policy finalResponseDeliveryPolicy,
-) bool {
+) finalResponseAdmission {
 	return al.maybePublishErrorWithScopes(
 		ctx, workspace, agentID, channel, chatID, sessionKey, err, policy, nil,
 	)
@@ -55,11 +82,11 @@ func (al *AgentLoop) maybePublishErrorWithScopes(
 	err error,
 	policy finalResponseDeliveryPolicy,
 	traceScopes []runtimeevents.TraceScope,
-) bool {
+) finalResponseAdmission {
 	if errors.Is(err, context.Canceled) {
-		return false
+		return rejectedFinalResponseAdmission(err)
 	}
-	al.publishResponseWithContextAndScopes(
+	return al.publishResponseWithContextAndScopes(
 		ctx,
 		workspace,
 		agentID,
@@ -71,7 +98,6 @@ func (al *AgentLoop) maybePublishErrorWithScopes(
 		policy,
 		traceScopes,
 	)
-	return true
 }
 
 func formatUserFacingAgentError(err error) string {
@@ -165,8 +191,8 @@ func (al *AgentLoop) publishResponseWithContextIfNeeded(
 	channel, chatID, sessionKey, response string,
 	inboundCtx *bus.InboundContext,
 	policy finalResponseDeliveryPolicy,
-) {
-	al.publishResponseWithContextAndScopes(
+) finalResponseAdmission {
+	return al.publishResponseWithContextAndScopes(
 		ctx, workspace, agentID, channel, chatID, sessionKey, response, inboundCtx, policy, nil,
 	)
 }
@@ -178,8 +204,8 @@ func (al *AgentLoop) publishResponseWithContextAndScopes(
 	inboundCtx *bus.InboundContext,
 	policy finalResponseDeliveryPolicy,
 	traceScopes []runtimeevents.TraceScope,
-) {
-	al.publishResponseWithMetadataAndScopes(
+) finalResponseAdmission {
+	return al.publishResponseWithMetadataAndScopes(
 		ctx,
 		workspace,
 		agentID,
@@ -203,9 +229,12 @@ func (al *AgentLoop) publishResponseWithMetadataAndScopes(
 	policy finalResponseDeliveryPolicy,
 	metadata bus.OutboundMetadata,
 	traceScopes []runtimeevents.TraceScope,
-) {
+) finalResponseAdmission {
 	if response == "" {
-		return
+		return finalResponseAdmission{status: finalResponseAdmissionNotRequired}
+	}
+	if al == nil || al.bus == nil {
+		return rejectedFinalResponseAdmission(fmt.Errorf("message bus is unavailable"))
 	}
 
 	agent := al.agentForRuntimeScope(newRuntimeSessionScope(workspace, sessionKey), agentID)
@@ -228,7 +257,7 @@ func (al *AgentLoop) publishResponseWithMetadataAndScopes(
 			"chat_id": chatID,
 			"error":   err.Error(),
 		})
-		return
+		return rejectedFinalResponseAdmission(err)
 	}
 
 	if policy == finalResponseSuppressIfMessageToolSent && messageToolSentToSameChat {
@@ -238,7 +267,7 @@ func (al *AgentLoop) publishResponseWithMetadataAndScopes(
 			"Skipped outbound (message tool already sent to same chat)",
 			map[string]any{"channel": channel, "chat_id": chatID},
 		)
-		return
+		return finalResponseAdmission{status: finalResponseAdmissionSuppressed}
 	}
 
 	msg.TraceSettlement = len(msg.TraceScopes) > 0
@@ -253,7 +282,10 @@ func (al *AgentLoop) publishResponseWithMetadataAndScopes(
 	}
 	metadata.ApplyToContext(&msg.Context)
 	markFinalOutbound(&msg)
-	al.bus.PublishOutbound(ctx, msg)
+	if err := al.bus.PublishOutbound(ctx, msg); err != nil {
+		return rejectedFinalResponseAdmission(err)
+	}
+	return finalResponseAdmission{status: finalResponseAdmissionAccepted}
 }
 
 func outboundMetadataForTurnResult(result turnResult) bus.OutboundMetadata {

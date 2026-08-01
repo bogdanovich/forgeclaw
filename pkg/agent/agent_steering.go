@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -13,7 +14,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 )
 
-func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) bool {
+func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) finalResponseAdmission {
 	if al.channelManager != nil {
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
@@ -25,7 +26,7 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 	response, err := al.processMessage(ctx, msg)
 	if err != nil {
-		if !al.maybePublishErrorWithPolicy(
+		return al.maybePublishErrorWithPolicy(
 			ctx,
 			workspace,
 			agentID,
@@ -34,12 +35,9 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 			msg.SessionKey,
 			err,
 			finalResponseAlwaysPublish,
-		) {
-			return false
-		}
-		response = ""
+		)
 	}
-	al.publishResponseWithContextIfNeeded(
+	return al.publishResponseWithContextIfNeeded(
 		ctx,
 		workspace,
 		agentID,
@@ -50,7 +48,6 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 		&msg.Context,
 		finalResponseAlwaysPublish,
 	)
-	return true
 }
 
 func (al *AgentLoop) ackInboundMessage(ctx context.Context, msg bus.InboundMessage) {
@@ -92,7 +89,7 @@ func (al *AgentLoop) releaseInboundMessage(
 func (al *AgentLoop) runInboundTurnWithSteering(
 	ctx context.Context,
 	turn inboundMessageTurn,
-) bool {
+) finalResponseAdmission {
 	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	observeTurn := func(scope runtimeevents.TraceScope) {
 		traceScopes = appendUniqueTraceScope(traceScopes, scope)
@@ -120,10 +117,11 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	process func() (string, error),
 	target *continuationTarget,
 	traceScopes *[]runtimeevents.TraceScope,
-) bool {
+) finalResponseAdmission {
 	response, err := process()
+	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	if err != nil {
-		if !al.maybePublishErrorWithScopes(
+		admission = al.maybePublishErrorWithScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -133,8 +131,9 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			err,
 			finalResponseAlwaysPublish,
 			*traceScopes,
-		) {
-			return false // context canceled
+		)
+		if errors.Is(admission.err, context.Canceled) {
+			return admission
 		}
 		response = ""
 	}
@@ -146,7 +145,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	if continueErr != nil {
 		target.responseMetadata = initialMetadata
 		if ctx.Err() != nil {
-			return false
+			return rejectedFinalResponseAdmission(ctx.Err())
 		}
 		logger.WarnCF("agent", "Failed to continue queued steering",
 			map[string]any{
@@ -166,7 +165,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	// Publish final response
 	finalResponse := joinSteeringResponses(responses)
 	if finalResponse != "" {
-		al.publishResponseWithMetadataAndScopes(
+		admission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -192,7 +191,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			*traceScopes,
 		)
 	}
-	return true
+	return admission
 }
 
 func (t *continuationTarget) observeFinalResponse(metadata bus.OutboundMetadata) {

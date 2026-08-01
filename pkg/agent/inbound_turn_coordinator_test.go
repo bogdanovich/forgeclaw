@@ -4,6 +4,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,160 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 )
+
+type finalResponseAdmissionTestBus struct {
+	*bus.MessageBus
+	publishErr error
+
+	mu           sync.Mutex
+	acked        []string
+	released     []string
+	releaseCause error
+}
+
+func (b *finalResponseAdmissionTestBus) PublishOutbound(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) error {
+	if b.publishErr != nil {
+		return b.publishErr
+	}
+	return b.MessageBus.PublishOutbound(ctx, msg)
+}
+
+func (b *finalResponseAdmissionTestBus) AckInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+) error {
+	b.mu.Lock()
+	b.acked = append(b.acked, msg.SpoolID)
+	b.mu.Unlock()
+	return b.MessageBus.AckInbound(ctx, msg)
+}
+
+func (b *finalResponseAdmissionTestBus) ReleaseInbound(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	cause error,
+) error {
+	b.mu.Lock()
+	b.released = append(b.released, msg.SpoolID)
+	b.releaseCause = cause
+	b.mu.Unlock()
+	return b.MessageBus.ReleaseInbound(ctx, msg, cause)
+}
+
+func (b *finalResponseAdmissionTestBus) ownership() (acked, released []string, cause error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.acked...), append([]string(nil), b.released...), b.releaseCause
+}
+
+func TestFinalResponseAdmissionRejectsClosedBus(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	msgBus.Close()
+
+	admission := al.publishResponseWithMetadataAndScopes(
+		t.Context(),
+		al.registry.GetDefaultAgent().Workspace,
+		"main",
+		"telegram",
+		"chat-1",
+		"session-1",
+		"final reply",
+		&bus.InboundContext{Channel: "telegram", ChatID: "chat-1"},
+		finalResponseAlwaysPublish,
+		bus.OutboundMetadata{},
+		nil,
+	)
+
+	if admission.permitsInboundAck() {
+		t.Fatalf("closed bus admission = %+v, want rejection", admission)
+	}
+	if !errors.Is(admission.err, bus.ErrBusClosed) {
+		t.Fatalf("closed bus admission error = %v, want %v", admission.err, bus.ErrBusClosed)
+	}
+}
+
+func TestInboundTurnCoordinatorAcknowledgesAcceptedFinalResponse(t *testing.T) {
+	al, _, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	trackingBus := &finalResponseAdmissionTestBus{MessageBus: al.bus.(*bus.MessageBus)}
+	al.bus = trackingBus
+	msg := finalResponseAdmissionInboundMessage("spool-accepted")
+
+	runFinalResponseAdmissionTurn(t, al, msg)
+
+	acked, released, cause := trackingBus.ownership()
+	if len(acked) != 1 || acked[0] != msg.SpoolID || len(released) != 0 || cause != nil {
+		t.Fatalf("accepted ownership = acked:%v released:%v cause:%v", acked, released, cause)
+	}
+	select {
+	case outbound := <-trackingBus.OutboundChan():
+		if outbound.Content != "Hello! How can I help you today?" {
+			t.Fatalf("outbound content = %q", outbound.Content)
+		}
+	default:
+		t.Fatal("accepted final response was not queued")
+	}
+}
+
+func TestInboundTurnCoordinatorReleasesRejectedFinalResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "queue rejection", err: errors.New("outbound queue rejected")},
+		{name: "canceled admission", err: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			al, _, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+			defer cleanup()
+			trackingBus := &finalResponseAdmissionTestBus{
+				MessageBus: al.bus.(*bus.MessageBus),
+				publishErr: tt.err,
+			}
+			al.bus = trackingBus
+			msg := finalResponseAdmissionInboundMessage("spool-rejected")
+
+			runFinalResponseAdmissionTurn(t, al, msg)
+
+			acked, released, cause := trackingBus.ownership()
+			if len(acked) != 0 || len(released) != 1 || released[0] != msg.SpoolID {
+				t.Fatalf("rejected ownership = acked:%v released:%v", acked, released)
+			}
+			if !errors.Is(cause, tt.err) {
+				t.Fatalf("release cause = %v, want %v", cause, tt.err)
+			}
+		})
+	}
+}
+
+func finalResponseAdmissionInboundMessage(spoolID string) bus.InboundMessage {
+	return testInboundMessage(bus.InboundMessage{
+		SpoolID:  spoolID,
+		Channel:  "telegram",
+		ChatID:   "chat-1",
+		SenderID: "user-1",
+		Content:  "hello",
+	})
+}
+
+func runFinalResponseAdmissionTurn(t *testing.T, al *AgentLoop, msg bus.InboundMessage) {
+	t.Helper()
+	coordinator := newInboundTurnCoordinator(al)
+	target, ok := al.resolveSteeringTarget(msg)
+	if !ok {
+		t.Fatal("resolveSteeringTarget() rejected test inbound")
+	}
+	claim, active, claimed := coordinator.claimSession(target)
+	if !claimed {
+		t.Fatalf("claimSession() failed with active target %+v", active)
+	}
+	coordinator.runWorker(t.Context(), msg, target, claim)
+}
 
 func TestAcquireTurnCapacityDoesNotHoldAdmissionWhileWaitingForWorker(t *testing.T) {
 	al := &AgentLoop{

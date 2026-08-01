@@ -631,7 +631,7 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	if result == nil || result.IsError {
 		t.Fatalf("message tool execute failed: %+v", result)
 	}
-	al.PublishResponseIfNeeded(
+	admission := al.publishResponseWithContextIfNeeded(
 		context.Background(),
 		defaultAgent.Workspace,
 		defaultAgent.ID,
@@ -639,7 +639,12 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 		"-100123",
 		"session-1",
 		"final reply",
+		nil,
+		finalResponseSuppressIfMessageToolSent,
 	)
+	if admission.status != finalResponseAdmissionSuppressed || !admission.permitsInboundAck() {
+		t.Fatalf("admission = %+v, want acknowledged suppression", admission)
+	}
 
 	if got := cm.dismissedSessions; len(got) != 1 || got[0] != "telegram:-100123:session-1" {
 		t.Fatalf("dismissedSessions = %v, want [telegram:-100123:session-1]", got)
