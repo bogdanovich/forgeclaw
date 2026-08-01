@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -15,9 +14,7 @@ func TestExclusiveServerLeaseIsNonBlockingAndReleasable(t *testing.T) {
 	}
 	t.Cleanup(lease.release)
 
-	if mode := statFileMode(t, path).Perm(); mode != 0o600 {
-		t.Fatalf("lock file mode = %o, want 600", mode)
-	}
+	assertExclusiveLeaseFileSecurity(t, path)
 
 	contender, err := acquireExclusiveServerLease("playwright", path)
 	if contender != nil {
@@ -38,13 +35,4 @@ func TestExclusiveServerLeaseIsNonBlockingAndReleasable(t *testing.T) {
 		t.Fatalf("acquireExclusiveServerLease(after release) error = %v", err)
 	}
 	reacquired.release()
-}
-
-func statFileMode(t *testing.T, path string) os.FileMode {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", path, err)
-	}
-	return info.Mode()
 }

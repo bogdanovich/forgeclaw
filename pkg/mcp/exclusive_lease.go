@@ -32,13 +32,9 @@ type exclusiveServerLease struct {
 }
 
 func acquireExclusiveServerLease(serverName, path string) (*exclusiveServerLease, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := openExclusiveLeaseFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("open MCP server exclusive lease: %w", withoutPath(err))
-	}
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("secure MCP server exclusive lease: %w", withoutPath(err))
 	}
 	if err := tryAcquireExclusiveFileLock(file); err != nil {
 		_ = file.Close()
