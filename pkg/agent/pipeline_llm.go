@@ -620,7 +620,7 @@ func (p *Pipeline) CallLLM(
 			p.targetReasoningChannelID(ts.channel),
 		)
 	}
-	diagnosticResponseContent, diagnosticResponseReasoning, sensitiveNodeResponse := diagnosticLLMResponseContent(
+	diagnosticResponseContent, diagnosticResponseReasoning, sensitiveDiagnosticResponse := diagnosticLLMResponseContent(
 		exec.response,
 		exec.callMessages,
 	)
@@ -644,7 +644,11 @@ func (p *Pipeline) CallLLM(
 				diagnosticResponseReasoning,
 				diagnosticModelReasoningBytes,
 			),
-			DiagnosticToolCalls: diagnosticToolCallsPreview(p.Cfg, exec.response.ToolCalls),
+			DiagnosticToolCalls: diagnosticToolCallsPreviewWithSensitivity(
+				p.Cfg,
+				exec.response.ToolCalls,
+				sensitiveDiagnosticResponse,
+			),
 		},
 	)
 
@@ -656,7 +660,7 @@ func (p *Pipeline) CallLLM(
 		"target_channel": p.targetReasoningChannelID(ts.channel),
 		"channel":        ts.channel,
 	}
-	if sensitiveNodeResponse {
+	if sensitiveDiagnosticResponse {
 		llmResponseFields["reasoning_redacted"] = true
 	} else {
 		llmResponseFields["reasoning"] = exec.response.Reasoning
