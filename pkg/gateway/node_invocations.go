@@ -389,7 +389,7 @@ func (source *nodeInvocationSource) QueryInvocation(
 		)
 	}
 	if err := verifyRemoteInvocation(record, &remote); err != nil {
-		return nodes.InvocationRecord{}, err
+		return nodes.InvocationRecord{}, nodes.NewInvocationQueryError(nodes.InvocationQueryRejected, err)
 	}
 	return remote, nil
 }

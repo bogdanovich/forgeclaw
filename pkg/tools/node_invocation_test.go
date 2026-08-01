@@ -1442,6 +1442,36 @@ func TestNodeStatusToolDoesNotRetryLedgerFailure(t *testing.T) {
 	}
 }
 
+func TestNodeStatusToolDoesNotRetryOrExposeRejectedRecord(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	ctx := nodeInvocationTestContext("actor-1", "call-1")
+	invocationID := decodeNodeResult(
+		t,
+		NewNodeInvokeTool(nodeDiscoveryTestConfig(), source).Execute(ctx, nodeInvocationTestArgs()),
+	)["invocation_id"].(string)
+	privateCause := errors.New("remote result exposed private.internal.example")
+	source.queryErr = nodes.NewInvocationQueryError(nodes.InvocationQueryRejected, privateCause)
+
+	payload := decodeNodeResult(
+		t,
+		NewNodeStatusTool(nodeDiscoveryTestConfig(), source).Execute(
+			ctx,
+			map[string]any{"invocation_id": invocationID},
+		),
+	)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["error_code"] != nodes.InvocationQueryRejected ||
+		payload["status_attempts"] != float64(1) || source.queryCalls != 1 {
+		t.Fatalf("rejected status = %#v; query calls = %d", payload, source.queryCalls)
+	}
+	if strings.Contains(string(encoded), "private.internal") {
+		t.Fatalf("rejected status leaked remote details: %s", encoded)
+	}
+}
+
 func TestNodeStatusToolPreservesDeadlineDuringRetryBackoff(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	baseCtx := nodeInvocationTestContext("actor-1", "call-1")

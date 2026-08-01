@@ -395,6 +395,8 @@ func TestNodeInvocationSourceRecoversOnlyBoundDispatchedResult(t *testing.T) {
 		plan.InvocationID,
 	); !errors.Is(err, nodes.ErrGatewayInvocationConflict) {
 		t.Fatalf("schema-invalid recovery error = %v", err)
+	} else if code, classified := nodes.InvocationQueryErrorCode(err); !classified || code != nodes.InvocationQueryRejected {
+		t.Fatalf("schema-invalid recovery classification = %q, %v", code, classified)
 	}
 
 	handler.invocationErr = nodes.NewInvocationQueryError(nodes.InvocationQueryNotFound, nil)
