@@ -66,6 +66,36 @@ type NodeTerminalTool struct {
 	runtimeEvents runtimeevents.Bus
 }
 
+// NodeTerminalOperator opens terminals for an explicitly authenticated
+// operator while sharing the same target and command authority checks as the
+// model-facing tool.
+type NodeTerminalOperator struct {
+	access *nodeTargetAccess
+	source NodeTerminalSource
+}
+
+// NodeTerminalOperatorOpenRequest contains authenticated, server-derived
+// operator identity plus the bounded terminal authority requested by the CLI.
+type NodeTerminalOperatorOpenRequest struct {
+	AgentID           string
+	OperatorSessionID string
+	RequestID         string
+	Owner             nodes.TerminalOwner
+	Target            string
+	Profile           string
+	WorkingScope      string
+	Columns           int
+	Rows              int
+}
+
+// NodeTerminalOperatorOpenResult is the safe handoff needed to attach the
+// authenticated operator WebSocket.
+type NodeTerminalOperatorOpenResult struct {
+	TerminalID   string `json:"terminal_id"`
+	State        string `json:"state"`
+	AttachBefore int64  `json:"attach_before"`
+}
+
 type nodeTerminalPreparation struct {
 	record            nodes.GatewayTerminalRecord
 	operatorSessionID string
@@ -124,6 +154,101 @@ func NewNodeTerminalTool(cfg *config.Config, source NodeTerminalSource) *NodeTer
 		access: newNodeTargetAccess(cfg, source),
 		source: source,
 	}
+}
+
+// NewNodeTerminalOperator creates the deterministic operator-side terminal
+// opener using the same configured target authority as the model-facing tool.
+func NewNodeTerminalOperator(cfg *config.Config, source NodeTerminalSource) *NodeTerminalOperator {
+	return &NodeTerminalOperator{
+		access: newNodeTargetAccess(cfg, source),
+		source: source,
+	}
+}
+
+// Open treats the authenticated operator's explicit request as the
+// session-start approval. It still revalidates all durable node and command
+// authority immediately before dispatch.
+func (operator *NodeTerminalOperator) Open(
+	ctx context.Context,
+	request NodeTerminalOperatorOpenRequest,
+) (NodeTerminalOperatorOpenResult, error) {
+	if operator == nil || operator.source == nil || operator.access == nil {
+		return NodeTerminalOperatorOpenResult{}, errors.New("terminal runtime is unavailable")
+	}
+	request.AgentID = strings.TrimSpace(request.AgentID)
+	request.OperatorSessionID = strings.TrimSpace(request.OperatorSessionID)
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Target = strings.TrimSpace(request.Target)
+	request.Profile = strings.TrimSpace(request.Profile)
+	request.WorkingScope = strings.TrimSpace(request.WorkingScope)
+	if request.AgentID == "" || request.OperatorSessionID == "" || request.RequestID == "" ||
+		request.Target == "" || request.Profile == "" || request.WorkingScope == "" ||
+		request.Owner.Target != request.Target || request.Owner.Profile != request.Profile {
+		return NodeTerminalOperatorOpenResult{}, nodes.ErrInvalidTerminal
+	}
+	if request.Columns < 20 || request.Columns > 400 || request.Rows < 5 || request.Rows > 200 {
+		return NodeTerminalOperatorOpenResult{}, nodes.ErrInvalidTerminal
+	}
+	resolved, descriptor, _, err := resolveTerminalAuthority(
+		operator.access,
+		operator.source,
+		request.AgentID,
+		request.Target,
+		true,
+	)
+	if err != nil {
+		return NodeTerminalOperatorOpenResult{}, err
+	}
+	contract := descriptor.ModelContract
+	if !slices.Contains(contract.Constraints.ProfileAliases, request.Profile) ||
+		!slices.Contains(contract.Constraints.WorkingScopes, request.WorkingScope) {
+		return NodeTerminalOperatorOpenResult{}, nodes.ErrCommandDenied
+	}
+	openID := stableNodeInvocationID(
+		"terminal_operator",
+		request.Owner.AgentID,
+		request.Owner.SessionID,
+		request.Owner.ActorID,
+		request.RequestID,
+	)
+	record, _, err := operator.source.PrepareTerminal(
+		resolved.snapshot.ID,
+		resolved.binding.Node,
+		openID,
+		stableNodeInvocationID("terminal_operator_idem", openID),
+		request.Owner,
+		request.WorkingScope,
+		request.Columns,
+		request.Rows,
+		true,
+	)
+	if err != nil {
+		return NodeTerminalOperatorOpenResult{}, err
+	}
+	metadata, _, err := operator.source.OpenTerminal(
+		ctx,
+		record.Plan.Owner,
+		record.Plan.OpenID,
+		record.ExpectedPlanHash,
+	)
+	if err != nil {
+		return NodeTerminalOperatorOpenResult{}, err
+	}
+	if err := operator.source.BindTerminalOperator(
+		record.Plan.Owner,
+		metadata.TerminalID,
+		request.OperatorSessionID,
+	); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, closeErr := operator.source.CloseTerminal(cleanupCtx, record.Plan.Owner, metadata.TerminalID)
+		return NodeTerminalOperatorOpenResult{}, errors.Join(err, closeErr)
+	}
+	return NodeTerminalOperatorOpenResult{
+		TerminalID:   metadata.TerminalID,
+		State:        metadata.State,
+		AttachBefore: metadata.StartedAt + 30,
+	}, nil
 }
 
 func (tool *NodeTerminalTool) SetEventPublisher(eventBus runtimeevents.Bus) {
@@ -472,16 +597,38 @@ func (tool *NodeTerminalTool) resolveTerminalAuthority(
 	args map[string]any,
 	requireAvailable bool,
 ) (resolvedNodeTarget, nodes.CommandDescriptor, string, error) {
-	if tool == nil || tool.source == nil || tool.access == nil {
+	if tool == nil {
 		return resolvedNodeTarget{}, nodes.CommandDescriptor{}, "", errors.New("terminal runtime is unavailable")
 	}
-	runtime := &nodeInvocationToolRuntime{access: tool.access}
-	resolved, err := runtime.resolveTarget(
+	return resolveTerminalAuthority(
+		tool.access,
+		tool.source,
 		ToolAgentID(ctx),
 		strings.TrimSpace(stringArgument(args, "target")),
 		requireAvailable,
 	)
-	if err != nil || resolved.requiresReapproval {
+}
+
+func resolveTerminalAuthority(
+	access *nodeTargetAccess,
+	source NodeTerminalSource,
+	agentID string,
+	target string,
+	requireAvailable bool,
+) (resolvedNodeTarget, nodes.CommandDescriptor, string, error) {
+	if source == nil || access == nil {
+		return resolvedNodeTarget{}, nodes.CommandDescriptor{}, "", errors.New("terminal runtime is unavailable")
+	}
+	runtime := &nodeInvocationToolRuntime{access: access}
+	resolved, err := runtime.resolveTarget(
+		agentID,
+		strings.TrimSpace(target),
+		requireAvailable,
+	)
+	if err != nil {
+		return resolvedNodeTarget{}, nodes.CommandDescriptor{}, "", err
+	}
+	if resolved.requiresReapproval {
 		return resolvedNodeTarget{}, nodes.CommandDescriptor{}, "", nodes.ErrCommandDenied
 	}
 	descriptor, found := nodeCatalogDescriptor(resolved.snapshot.Catalog, "shell.exec.v1")
@@ -496,8 +643,8 @@ func (tool *NodeTerminalTool) resolveTerminalAuthority(
 	if _, approvalErr := resolved.registration.ApprovedCommand("shell.exec.v1"); approvalErr != nil {
 		return resolvedNodeTarget{}, nodes.CommandDescriptor{}, "", nodes.ErrCommandDenied
 	}
-	revision, err := tool.access.discoveryRevision(
-		ToolAgentID(ctx),
+	revision, err := access.discoveryRevision(
+		agentID,
 		resolved.name,
 		"shell.exec.v1",
 		resolved.snapshot,

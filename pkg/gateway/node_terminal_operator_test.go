@@ -16,7 +16,22 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
+
+type fakeNodeTerminalOperatorOpener struct {
+	requests []tools.NodeTerminalOperatorOpenRequest
+	result   tools.NodeTerminalOperatorOpenResult
+	err      error
+}
+
+func (opener *fakeNodeTerminalOperatorOpener) Open(
+	_ context.Context,
+	request tools.NodeTerminalOperatorOpenRequest,
+) (tools.NodeTerminalOperatorOpenResult, error) {
+	opener.requests = append(opener.requests, request)
+	return opener.result, opener.err
+}
 
 type fakeNodeTerminalOperatorStream struct {
 	events   chan nodes.TerminalEvent
@@ -318,6 +333,90 @@ func TestNodeTerminalOperatorAcceptsBrowserSubprotocolAuthentication(t *testing.
 	}
 }
 
+func TestNodeTerminalOperatorOpenRequiresAuthenticationOriginAndIsolatesSessions(t *testing.T) {
+	hub := newNodeTerminalOperatorHub("operator-secret", []string{"https://operator.example"})
+	opener := &fakeNodeTerminalOperatorOpener{result: tools.NodeTerminalOperatorOpenResult{
+		TerminalID: "terminal_test", State: string(nodes.GatewayTerminalPendingAttach),
+		AttachBefore: time.Now().Add(30 * time.Second).Unix(),
+	}}
+	hub.configureOpener(opener, "/workspace/main")
+	server := httptest.NewServer(hub)
+	defer server.Close()
+
+	body := `{"version":1,"session_id":"operator-one","request_id":"request-one",` +
+		`"target":"vpn-smoke","profile":"owner-test","working_scope":"workspace",` +
+		`"columns":100,"rows":31}`
+	request, err := http.NewRequest(http.MethodPost, server.URL+nodeTerminalOperatorOpenPath, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized || len(opener.requests) != 0 {
+		t.Fatalf("unauthenticated open = %d, calls = %d", response.StatusCode, len(opener.requests))
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+nodeTerminalOperatorOpenPath, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer operator-secret")
+	request.Header.Set("Origin", "https://attacker.example")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || len(opener.requests) != 0 {
+		t.Fatalf("cross-origin open = %d, calls = %d", response.StatusCode, len(opener.requests))
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+nodeTerminalOperatorOpenPath, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer operator-secret")
+	request.Header.Set("Origin", "https://operator.example")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated || len(opener.requests) != 1 {
+		t.Fatalf("authenticated open = %d, calls = %d", response.StatusCode, len(opener.requests))
+	}
+	first := opener.requests[0]
+	if first.OperatorSessionID != "operator-one" || first.AgentID != "main" ||
+		first.Owner.Target != "vpn-smoke" || first.Owner.Profile != "owner-test" ||
+		first.Owner.Validate() != nil {
+		t.Fatalf("operator request = %#v", first)
+	}
+
+	secondBody := strings.Replace(body, "operator-one", "operator-two", 1)
+	request, err = http.NewRequest(
+		http.MethodPost,
+		server.URL+nodeTerminalOperatorOpenPath,
+		strings.NewReader(secondBody),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer operator-secret")
+	request.Header.Set("Origin", "https://operator.example")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated || len(opener.requests) != 2 ||
+		opener.requests[1].Owner == first.Owner {
+		t.Fatalf("second session open = %d, requests = %#v", response.StatusCode, opener.requests)
+	}
+}
+
 func TestNodeTerminalOperatorModelCloseSharesOrderedStream(t *testing.T) {
 	hub := newNodeTerminalOperatorHub("operator-secret", nil)
 	source, owner := newFakeNodeTerminalOperatorFixture()
@@ -376,11 +475,12 @@ func TestNodeTerminalOperatorConfigRotationFailsClosed(t *testing.T) {
 	runtime := &nodeAdmissionRuntime{routes: routes}
 	cfg := config.DefaultConfig()
 	enableTestMintClawOperator(t, cfg, "first-token", []string{"https://first.example"})
-	if err := runtime.configureTerminalOperator(cfg); err != nil {
+	if err := runtime.configureTerminalOperator(cfg, nil); err != nil {
 		t.Fatal(err)
 	}
 	first := runtime.terminalOperatorHub()
-	if first == nil || routes.handlers[nodeTerminalOperatorPath] != first {
+	if first == nil || routes.handlers[nodeTerminalOperatorPath] != first ||
+		routes.handlers[nodeTerminalOperatorOpenPath] != first {
 		t.Fatal("authenticated operator route was not mounted")
 	}
 	source, owner := newFakeNodeTerminalOperatorFixture()
@@ -391,11 +491,12 @@ func TestNodeTerminalOperatorConfigRotationFailsClosed(t *testing.T) {
 	first.active[terminalOperatorKey("mint-session", source.metadata.TerminalID)] = session
 
 	enableTestMintClawOperator(t, cfg, "second-token", []string{"https://second.example"})
-	if err := runtime.configureTerminalOperator(cfg); err != nil {
+	if err := runtime.configureTerminalOperator(cfg, nil); err != nil {
 		t.Fatal(err)
 	}
 	second := runtime.terminalOperatorHub()
-	if second == nil || second == first || routes.handlers[nodeTerminalOperatorPath] != second {
+	if second == nil || second == first || routes.handlers[nodeTerminalOperatorPath] != second ||
+		routes.handlers[nodeTerminalOperatorOpenPath] != second {
 		t.Fatal("operator token rotation did not replace the transport")
 	}
 	select {
@@ -410,12 +511,13 @@ func TestNodeTerminalOperatorConfigRotationFailsClosed(t *testing.T) {
 		t.Fatal("operator token rotation retained old session authority")
 	}
 
-	if err := runtime.configureTerminalOperator(nil); err != nil {
+	if err := runtime.configureTerminalOperator(nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.terminalOperatorHub() != nil ||
 		runtime.terminalMounted ||
-		routes.handlers[nodeTerminalOperatorPath] != nil {
+		routes.handlers[nodeTerminalOperatorPath] != nil ||
+		routes.handlers[nodeTerminalOperatorOpenPath] != nil {
 		t.Fatal("operator transport remained mounted after authentication was disabled")
 	}
 }

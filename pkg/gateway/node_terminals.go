@@ -11,6 +11,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
+	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
 const gatewayTerminalPlanTTL = time.Minute
@@ -61,7 +62,7 @@ func newNodeTerminalSource(
 		return nil, err
 	}
 	if !enabled || token == "" {
-		if configureErr := runtime.configureTerminalOperator(nil); configureErr != nil {
+		if configureErr := runtime.configureTerminalOperator(nil, nil); configureErr != nil {
 			return nil, configureErr
 		}
 		_, _, err = runtime.existingGatewayTerminalStore(
@@ -96,7 +97,8 @@ func newNodeTerminalSource(
 		generation: generation,
 		now:        time.Now,
 	}
-	if err := runtime.configureTerminalOperator(cfg); err != nil {
+	operator := tools.NewNodeTerminalOperator(cfg, source)
+	if err := runtime.configureTerminalOperator(cfg, operator); err != nil {
 		return nil, err
 	}
 	return source, nil
