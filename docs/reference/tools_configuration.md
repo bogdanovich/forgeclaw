@@ -559,17 +559,18 @@ and injected into the context for a configured number of turns (`ttl`).
 
 ### Per-Server Config
 
-| Config     | Type    | Required | Description                                                                                                                                                     |
-|------------|---------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `enabled`  | bool    | yes      | Enable this MCP server                                                                                                                                          |
-| `deferred` | bool    | no       | Override deferred mode for this server only. `true` = tools are hidden and discoverable via search; `false` = tools are always visible in context. When omitted, the global `discovery.enabled` value applies. |
-| `type`     | string  | no       | Transport type: `stdio`, `sse`, `http`                                                                                                                          |
-| `command`  | string  | stdio    | Executable command for stdio transport                                                                                                                          |
-| `args`     | array   | no       | Command arguments for stdio transport                                                                                                                           |
-| `env`      | object  | no       | Environment variables for stdio process                                                                                                                         |
-| `env_file` | string  | no       | Path to environment file for stdio process                                                                                                                      |
-| `url`      | string  | sse/http | Endpoint URL for `sse`/`http` transport                                                                                                                         |
-| `headers`  | object  | no       | HTTP headers for `sse`/`http` transport                                                                                                                         |
+| Config | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | bool | yes | Enable this MCP server |
+| `deferred` | bool | no | Override deferred mode for this server only. `true` = tools are hidden and discoverable via search; `false` = tools are always visible in context. When omitted, the global `discovery.enabled` value applies. |
+| `type` | string | no | Transport type: `stdio`, `sse`, `http` |
+| `command` | string | stdio | Executable command for stdio transport |
+| `args` | array | no | Command arguments for stdio transport |
+| `env` | object | no | Environment variables for stdio process |
+| `env_file` | string | no | Path to environment file for stdio process |
+| `url` | string | sse/http | Endpoint URL for `sse`/`http` transport |
+| `headers` | object | no | HTTP headers for `sse`/`http` transport |
+| `session_loss_replay` | string | no | `once` (default) reconnects and invokes an interrupted call once; `never` reconnects for future calls but returns the interrupted call as uncertain without replay |
 
 ### Transport Behavior
 
@@ -578,6 +579,8 @@ and injected into the context for a configured number of turns (`ttl`).
     - `command` is set → `stdio`
 - `http` and `sse` both use `url` + optional `headers`.
 - `env` and `env_file` are only applied to `stdio` servers.
+- Use `session_loss_replay: "never"` for servers whose tools may have external
+  effects that cannot be safely repeated after a lost response.
 
 ### Configuration Examples
 

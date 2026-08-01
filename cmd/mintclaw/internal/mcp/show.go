@@ -215,6 +215,7 @@ func buildServerInfo(name string, server config.MCPServerConfig, discoveryEnable
 		Enabled:           server.Enabled,
 		EffectiveDeferred: effectiveDeferred,
 		DeferredExplicit:  deferredExplicit,
+		SessionLossReplay: string(config.EffectiveMCPSessionLossReplay(server)),
 		EnvFile:           server.EnvFile,
 	}
 	if len(server.Env) > 0 {
