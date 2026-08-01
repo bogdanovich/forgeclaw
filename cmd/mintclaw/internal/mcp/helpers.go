@@ -80,6 +80,9 @@ const mcpConfigSchemaJSON = `{
                   "session_loss_replay": {
                     "type": "string",
                     "enum": ["once", "never"]
+                  },
+                  "exclusive_lock_file": {
+                    "type": "string"
                   }
                 },
                 "required": ["enabled"],

@@ -118,12 +118,13 @@ func loadEnvFile(path string) (map[string]string, error) {
 
 // ServerConnection represents a connection to an MCP server
 type ServerConnection struct {
-	Name        string
-	Config      config.MCPServerConfig
-	Client      *mcp.Client
-	Session     *mcp.ClientSession
-	Tools       []*mcp.Tool
-	reconnectMu sync.Mutex
+	Name           string
+	Config         config.MCPServerConfig
+	Client         *mcp.Client
+	Session        *mcp.ClientSession
+	Tools          []*mcp.Tool
+	reconnectMu    sync.Mutex
+	exclusiveLease *exclusiveServerLease
 	// recoveryRequired is set after a session-loss reconnect fails. New calls
 	// must recover this known-stale connection before dispatching a tool.
 	recoveryRequired atomic.Bool
@@ -317,20 +318,36 @@ func (m *Manager) ConnectServer(
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
 		return err
 	}
-	cfg.SessionLossReplay = config.EffectiveMCPSessionLossReplay(cfg)
-
-	m.publishServerEvent(runtimeevents.KindMCPServerConnecting, name, cfg, 0, nil)
-	conn, err := connectServerFunc(ctx, name, cfg)
-	if err != nil {
+	if err := config.ValidateMCPExclusiveLockFile(cfg); err != nil {
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
 		return err
 	}
+	cfg.SessionLossReplay = config.EffectiveMCPSessionLossReplay(cfg)
+
+	m.publishServerEvent(runtimeevents.KindMCPServerConnecting, name, cfg, 0, nil)
+	var lease *exclusiveServerLease
+	if cfg.ExclusiveLockFile != "" {
+		var err error
+		lease, err = acquireExclusiveServerLease(name, cfg.ExclusiveLockFile)
+		if err != nil {
+			m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
+			return err
+		}
+	}
+	conn, err := connectServerFunc(ctx, name, cfg)
+	if err != nil {
+		lease.release()
+		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
+		return err
+	}
+	conn.exclusiveLease = lease
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.closed.Load() {
 		_ = conn.Session.Close()
+		conn.releaseExclusiveLease()
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, fmt.Errorf("manager is closed"))
 		return fmt.Errorf("manager is closed")
 	}
@@ -713,6 +730,8 @@ func (m *Manager) reconnectServer(
 	}
 
 	if currentConn == staleConn {
+		freshConn.exclusiveLease = staleConn.exclusiveLease
+		staleConn.exclusiveLease = nil
 		m.servers[serverName] = freshConn
 		staleToClose := staleConn
 		m.mu.Unlock()
@@ -755,6 +774,7 @@ func (m *Manager) Close() error {
 				})
 			errs = append(errs, fmt.Errorf("server %s: %w", name, err))
 		}
+		conn.releaseExclusiveLease()
 	}
 
 	m.servers = make(map[string]*ServerConnection)
@@ -764,6 +784,14 @@ func (m *Manager) Close() error {
 	}
 
 	return nil
+}
+
+func (c *ServerConnection) releaseExclusiveLease() {
+	if c == nil || c.exclusiveLease == nil {
+		return
+	}
+	c.exclusiveLease.release()
+	c.exclusiveLease = nil
 }
 
 // GetAllTools returns all tools from all connected servers

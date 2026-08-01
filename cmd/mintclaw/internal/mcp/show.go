@@ -216,6 +216,7 @@ func buildServerInfo(name string, server config.MCPServerConfig, discoveryEnable
 		EffectiveDeferred: effectiveDeferred,
 		DeferredExplicit:  deferredExplicit,
 		SessionLossReplay: string(config.EffectiveMCPSessionLossReplay(server)),
+		ExclusiveLock:     server.ExclusiveLockFile != "",
 		EnvFile:           server.EnvFile,
 	}
 	if len(server.Env) > 0 {

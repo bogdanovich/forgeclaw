@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/bogdanovich/mintclaw/pkg/config"
@@ -28,6 +30,20 @@ func TestBuildServerInfoProjectsEffectiveSessionLossReplay(t *testing.T) {
 	}
 }
 
+func TestBuildServerInfoReportsExclusiveLockWithoutPath(t *testing.T) {
+	lockPath := "/private/operator/playwright.lock"
+	info := buildServerInfo("playwright", config.MCPServerConfig{
+		Command:           "npx",
+		ExclusiveLockFile: lockPath,
+	}, false)
+	if !info.ExclusiveLock {
+		t.Fatal("ExclusiveLock = false, want true")
+	}
+	if strings.Contains(fmt.Sprintf("%+v", info), lockPath) {
+		t.Fatalf("server info leaked exclusive lock path: %+v", info)
+	}
+}
+
 func TestMCPConfigSchemaValidatesSessionLossReplay(t *testing.T) {
 	valid := []byte(`{
 		"tools": {
@@ -37,7 +53,8 @@ func TestMCPConfigSchemaValidatesSessionLossReplay(t *testing.T) {
 					"playwright": {
 						"enabled": true,
 						"command": "npx",
-						"session_loss_replay": "never"
+						"session_loss_replay": "never",
+						"exclusive_lock_file": "/tmp/playwright.lock"
 					}
 				}
 			}

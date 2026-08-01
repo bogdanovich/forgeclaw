@@ -2,8 +2,12 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
+
+const maxMCPExclusiveLockFilePathBytes = 4096
 
 // MCPSessionLossReplay controls whether MintClaw replays a tool call after
 // reconnecting an MCP server whose session was lost during that call.
@@ -72,4 +76,33 @@ func ValidateMCPSessionLossReplay(server MCPServerConfig) error {
 			server.SessionLossReplay,
 		)
 	}
+}
+
+// ValidateMCPExclusiveLockFile validates an optional cross-process lease path
+// before an MCP subprocess is started.
+func ValidateMCPExclusiveLockFile(server MCPServerConfig) error {
+	path := server.ExclusiveLockFile
+	if path == "" {
+		return nil
+	}
+	if EffectiveMCPTransportType(server) != "stdio" {
+		return fmt.Errorf("exclusive_lock_file is supported only for stdio MCP servers")
+	}
+	if len(path) > maxMCPExclusiveLockFilePathBytes {
+		return fmt.Errorf("exclusive_lock_file exceeds %d bytes", maxMCPExclusiveLockFilePathBytes)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("exclusive_lock_file must be absolute")
+	}
+	if filepath.Clean(path) != path {
+		return fmt.Errorf("exclusive_lock_file must be clean")
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("exclusive_lock_file parent is unavailable")
+	}
+	if !parent.IsDir() {
+		return fmt.Errorf("exclusive_lock_file parent is not a directory")
+	}
+	return nil
 }
