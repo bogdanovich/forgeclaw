@@ -613,6 +613,144 @@ func TestCallTool_ReconnectsWhenHTTPServerLosesSession(t *testing.T) {
 	}
 }
 
+func TestCallTool_DoesNotReplayWhenSessionLossReplayIsNever(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() {
+		connectServerFunc = originalConnectServerFunc
+	})
+
+	staleConn, staleTransport, err := newScriptedServerConnection(
+		"session-1",
+		nil,
+		fmt.Errorf(`sending "tools/call": failed to connect (session ID: session-1): %w`, sdkmcp.ErrSessionMissing),
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	staleConn.Config.SessionLossReplay = config.MCPSessionLossReplayNever
+
+	freshConn, freshTransport, err := newScriptedServerConnection(
+		"session-2",
+		&sdkmcp.CallToolResult{
+			Content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: "must not be returned"},
+			},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+	}
+
+	connectCalls := 0
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig) (*ServerConnection, error) {
+		connectCalls++
+		return freshConn, nil
+	}
+
+	mgr := NewManager()
+	mgr.servers["playwright"] = staleConn
+
+	result, callErr := mgr.CallTool(
+		context.Background(),
+		"playwright",
+		"browser_click",
+		map[string]any{"ref": "e1"},
+	)
+	if result != nil {
+		t.Fatalf("CallTool() result = %#v, want nil", result)
+	}
+	var uncertainErr *CallOutcomeUncertainError
+	if !errors.As(callErr, &uncertainErr) {
+		t.Fatalf("CallTool() error = %v, want CallOutcomeUncertainError", callErr)
+	}
+	if uncertainErr.Server != "playwright" || uncertainErr.Tool != "browser_click" || !uncertainErr.Reconnected {
+		t.Fatalf("CallTool() uncertain error = %+v", uncertainErr)
+	}
+	if connectCalls != 1 {
+		t.Fatalf("connectCalls = %d, want 1", connectCalls)
+	}
+	if staleTransport.toolCallCalls != 1 {
+		t.Fatalf("stale toolCallCalls = %d, want 1", staleTransport.toolCallCalls)
+	}
+	if freshTransport.toolCallCalls != 0 {
+		t.Fatalf("fresh toolCallCalls = %d, want 0", freshTransport.toolCallCalls)
+	}
+	conn, ok := mgr.GetServer("playwright")
+	if !ok || conn.Session.ID() != "session-2" {
+		t.Fatalf("GetServer(playwright) = %#v, %v; want replacement session", conn, ok)
+	}
+}
+
+func TestCallTool_ReportsUncertainWhenNoReplayReconnectFails(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() {
+		connectServerFunc = originalConnectServerFunc
+	})
+
+	staleConn, staleTransport, err := newScriptedServerConnection(
+		"session-1",
+		nil,
+		fmt.Errorf(`sending "tools/call": failed to connect (session ID: session-1): %w`, sdkmcp.ErrSessionMissing),
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	staleConn.Config.SessionLossReplay = config.MCPSessionLossReplayNever
+
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig) (*ServerConnection, error) {
+		return nil, errors.New("replacement unavailable")
+	}
+
+	mgr := NewManager()
+	mgr.servers["playwright"] = staleConn
+
+	result, callErr := mgr.CallTool(context.Background(), "playwright", "browser_click", nil)
+	if result != nil {
+		t.Fatalf("CallTool() result = %#v, want nil", result)
+	}
+	var uncertainErr *CallOutcomeUncertainError
+	if !errors.As(callErr, &uncertainErr) {
+		t.Fatalf("CallTool() error = %v, want CallOutcomeUncertainError", callErr)
+	}
+	if uncertainErr.Reconnected {
+		t.Fatalf("CallTool() uncertain error = %+v, want reconnect failure", uncertainErr)
+	}
+	if staleTransport.toolCallCalls != 1 {
+		t.Fatalf("stale toolCallCalls = %d, want 1", staleTransport.toolCallCalls)
+	}
+	conn, ok := mgr.GetServer("playwright")
+	if !ok || conn != staleConn {
+		t.Fatalf("GetServer(playwright) = %#v, %v; want stale connection retained", conn, ok)
+	}
+}
+
+func TestConnectServerRejectsUnknownSessionLossReplay(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() {
+		connectServerFunc = originalConnectServerFunc
+	})
+
+	connectCalls := 0
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig) (*ServerConnection, error) {
+		connectCalls++
+		return nil, errors.New("must not connect")
+	}
+
+	mgr := NewManager()
+	err := mgr.ConnectServer(context.Background(), "invalid", config.MCPServerConfig{
+		Enabled:           true,
+		Command:           "example",
+		SessionLossReplay: "automatic",
+	})
+	if err == nil {
+		t.Fatal("ConnectServer() error = nil, want invalid replay policy")
+	}
+	if connectCalls != 0 {
+		t.Fatalf("connectCalls = %d, want 0", connectCalls)
+	}
+}
+
 func TestCallTool_ReconnectsWhenStdioTransportIsClosed(t *testing.T) {
 	originalConnectServerFunc := connectServerFunc
 	t.Cleanup(func() {

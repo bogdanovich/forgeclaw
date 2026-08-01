@@ -76,6 +76,10 @@ const mcpConfigSchemaJSON = `{
                   "headers": {
                     "type": "object",
                     "additionalProperties": { "type": "string" }
+                  },
+                  "session_loss_replay": {
+                    "type": "string",
+                    "enum": ["once", "never"]
                   }
                 },
                 "required": ["enabled"],
@@ -142,6 +146,9 @@ func normalizedConfigForSave(cfg *config.Config) *config.Config {
 	for name, server := range cfg.Tools.MCP.Servers {
 		if server.Type != "" {
 			server.Type = config.NormalizeMCPTransportType(server.Type)
+		}
+		if server.SessionLossReplay != "" {
+			server.SessionLossReplay = config.NormalizeMCPSessionLossReplay(server.SessionLossReplay)
 		}
 		clone.Tools.MCP.Servers[name] = server
 	}

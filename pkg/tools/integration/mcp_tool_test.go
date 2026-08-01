@@ -2,6 +2,7 @@ package integrationtools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
+	mintclawmcp "github.com/bogdanovich/mintclaw/pkg/mcp"
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	toolshared "github.com/bogdanovich/mintclaw/pkg/tools/shared"
 )
@@ -347,11 +349,15 @@ func TestMCPTool_Execute_PublishesRuntimeEvents(t *testing.T) {
 	if !ok {
 		t.Fatalf("ended payload = %T, want MCPToolCallPayload", ended.Payload)
 	}
-	if payload.Server != "github" || payload.Tool != "search_repos" || payload.IsError {
+	if payload.Server != "github" ||
+		payload.Tool != "search_repos" ||
+		payload.Outcome != mcpToolCallOutcomeSucceeded ||
+		payload.IsError {
 		t.Fatalf("ended payload = %+v", payload)
 	}
 	if ended.Attrs["server"] != "github" ||
 		ended.Attrs["tool"] != "search_repos" ||
+		ended.Attrs["outcome"] != mcpToolCallOutcomeSucceeded ||
 		ended.Attrs["duration_ms"] == nil {
 		t.Fatalf("ended attrs = %#v", ended.Attrs)
 	}
@@ -397,6 +403,79 @@ func TestMCPTool_Execute_ManagerError(t *testing.T) {
 	}
 	if !strings.Contains(result.ForLLM, "connection failed") {
 		t.Errorf("Error message should include original error, got: %s", result.ForLLM)
+	}
+}
+
+func TestMCPTool_Execute_UncertainOutcomeIsDistinctAndRedacted(t *testing.T) {
+	eventBus := runtimeevents.NewBus()
+	defer func() {
+		if err := eventBus.Close(); err != nil {
+			t.Errorf("event bus close failed: %v", err)
+		}
+	}()
+
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindMCPToolCallStart,
+		runtimeevents.KindMCPToolCallEnd,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "mcp-uncertain-events", Buffer: 2})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	manager := &MockMCPManager{
+		callToolFunc: func(
+			context.Context,
+			string,
+			string,
+			map[string]any,
+		) (*mcp.CallToolResult, error) {
+			return nil, &mintclawmcp.CallOutcomeUncertainError{
+				Server:      "playwright",
+				Tool:        "browser_click",
+				Reconnected: true,
+			}
+		},
+	}
+	mcpTool := NewMCPTool(manager, "playwright", &mcp.Tool{Name: "browser_click"})
+	mcpTool.SetEventPublisher(eventBus)
+
+	result := mcpTool.Execute(context.Background(), map[string]any{
+		"ref":    "e1",
+		"secret": "must-not-appear",
+	})
+	if result == nil || !result.IsError {
+		t.Fatalf("Execute result = %+v, want error", result)
+	}
+	if !strings.Contains(result.ForLLM, "outcome is uncertain") ||
+		!strings.Contains(result.ForLLM, "Do not repeat this action automatically") ||
+		!strings.Contains(result.ForLLM, "reconnected for future calls") {
+		t.Fatalf("Execute result = %q, want uncertainty guidance", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, "must-not-appear") {
+		t.Fatalf("Execute result leaked tool arguments: %q", result.ForLLM)
+	}
+	var uncertainErr *mintclawmcp.CallOutcomeUncertainError
+	if !errors.As(result.Err, &uncertainErr) {
+		t.Fatalf("Execute result error = %v, want CallOutcomeUncertainError", result.Err)
+	}
+
+	_ = receiveMCPToolRuntimeEvent(t, eventsCh)
+	ended := receiveMCPToolRuntimeEvent(t, eventsCh)
+	if ended.Severity != runtimeevents.SeverityWarn {
+		t.Fatalf("ended severity = %q, want %q", ended.Severity, runtimeevents.SeverityWarn)
+	}
+	payload, ok := ended.Payload.(MCPToolCallPayload)
+	if !ok {
+		t.Fatalf("ended payload = %T, want MCPToolCallPayload", ended.Payload)
+	}
+	if payload.Outcome != mcpToolCallOutcomeUncertain || !payload.IsError {
+		t.Fatalf("ended payload = %+v, want uncertain error", payload)
+	}
+	if ended.Attrs["outcome"] != mcpToolCallOutcomeUncertain {
+		t.Fatalf("ended attrs = %#v, want uncertain outcome", ended.Attrs)
+	}
+	if strings.Contains(payload.Error, "must-not-appear") {
+		t.Fatalf("ended payload leaked tool arguments: %+v", payload)
 	}
 }
 

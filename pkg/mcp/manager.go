@@ -140,6 +140,23 @@ var connectServerFunc = connectServer
 // ManagerOption configures an MCP manager.
 type ManagerOption func(*Manager)
 
+// CallOutcomeUncertainError reports that an MCP tool call lost its server
+// session after dispatch may have begun. The call was not replayed, so callers
+// must inspect external state before deciding whether to issue a new action.
+type CallOutcomeUncertainError struct {
+	Server      string
+	Tool        string
+	Reconnected bool
+}
+
+func (e *CallOutcomeUncertainError) Error() string {
+	message := "MCP tool outcome is uncertain after server session loss; do not retry automatically"
+	if e != nil && e.Reconnected {
+		return message + "; server reconnected for future calls"
+	}
+	return message + "; server reconnect failed"
+}
+
 // WithRuntimeEvents injects the runtime event bus used for MCP observations.
 func WithRuntimeEvents(eventBus runtimeevents.Bus) ManagerOption {
 	return func(m *Manager) {
@@ -293,6 +310,12 @@ func (m *Manager) ConnectServer(
 	name string,
 	cfg config.MCPServerConfig,
 ) error {
+	if err := config.ValidateMCPSessionLossReplay(cfg); err != nil {
+		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
+		return err
+	}
+	cfg.SessionLossReplay = config.EffectiveMCPSessionLossReplay(cfg)
+
 	m.publishServerEvent(runtimeevents.KindMCPServerConnecting, name, cfg, 0, nil)
 	conn, err := connectServerFunc(ctx, name, cfg)
 	if err != nil {
@@ -539,14 +562,29 @@ func (m *Manager) CallTool(
 	result, err := conn.Session.CallTool(ctx, params)
 	if err != nil {
 		if shouldReconnectCallError(err) {
-			logger.WarnCF("mcp", "MCP server session was lost during tool call, reconnecting",
+			logger.WarnCF("mcp", "MCP server session was lost during tool call, recovering session",
 				map[string]any{
 					"server": serverName,
 					"tool":   toolName,
-					"error":  err.Error(),
+					"reason": "session_lost",
 				})
 
 			reconnectedConn, reconnectErr := m.reconnectServer(ctx, serverName, conn)
+			if config.EffectiveMCPSessionLossReplay(conn.Config) == config.MCPSessionLossReplayNever {
+				if reconnectErr != nil {
+					logger.WarnCF("mcp", "MCP server reconnect failed after uncertain tool call",
+						map[string]any{
+							"server": serverName,
+							"tool":   toolName,
+							"reason": "reconnect_failed",
+						})
+				}
+				return nil, &CallOutcomeUncertainError{
+					Server:      serverName,
+					Tool:        toolName,
+					Reconnected: reconnectErr == nil,
+				}
+			}
 			if reconnectErr != nil {
 				return nil, fmt.Errorf("failed to recover lost MCP session: %w", reconnectErr)
 			}
