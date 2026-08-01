@@ -171,6 +171,7 @@ func newShowCommand() *cobra.Command {
 
 			details, err := serverShowProbe(ctx, name, server, cfg.WorkspacePath())
 			if err != nil {
+				serverInfo.Target = renderServerFailureTarget(server)
 				discoveryState := cliui.MCPShowDiscoveryUnavailable
 				if exclusiveLeaseBusy(err) {
 					discoveryState = cliui.MCPShowDiscoveryBusy

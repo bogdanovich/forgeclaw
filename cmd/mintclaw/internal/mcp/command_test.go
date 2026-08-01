@@ -663,6 +663,8 @@ func TestMCPShowUsesProbe(t *testing.T) {
 func TestMCPShowReportsConfigurationWhenExclusiveLeaseIsBusy(t *testing.T) {
 	configPath := setupMCPConfigEnv(t)
 	lockPath := filepath.Join(t.TempDir(), "private-playwright.lock")
+	commandPath := filepath.Join(t.TempDir(), "playwright-mcp")
+	secretArgument := "secret-profile-token"
 	writeMCPConfig(t, configPath, &config.Config{
 		Tools: config.ToolsConfig{
 			MCP: config.MCPConfig{
@@ -671,7 +673,8 @@ func TestMCPShowReportsConfigurationWhenExclusiveLeaseIsBusy(t *testing.T) {
 					"playwright": {
 						Enabled:           true,
 						Type:              "stdio",
-						Command:           "npx",
+						Command:           commandPath,
+						Args:              []string{"--token", secretArgument},
 						SessionLossReplay: config.MCPSessionLossReplayNever,
 						ExclusiveLockFile: lockPath,
 					},
@@ -693,9 +696,12 @@ func TestMCPShowReportsConfigurationWhenExclusiveLeaseIsBusy(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, output, "Session replay: never")
 	assert.Contains(t, output, "Exclusive lock: yes")
+	assert.Contains(t, output, "Target: playwright-mcp")
 	assert.Contains(t, output, "Tool discovery unavailable: configured exclusive lease is busy.")
 	assert.Contains(t, err.Error(), `MCP server "playwright" is busy`)
 	assert.NotContains(t, output, lockPath)
+	assert.NotContains(t, output, filepath.Dir(commandPath))
+	assert.NotContains(t, output, secretArgument)
 	assert.NotContains(t, err.Error(), lockPath)
 	assert.NotContains(t, err.Error(), "wrapped probe failure")
 }

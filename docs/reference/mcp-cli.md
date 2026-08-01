@@ -335,6 +335,9 @@ Notes:
 - if the server is disabled in config, `mcp show` prints the metadata only and skips tool discovery
 - configuration metadata is printed even when live discovery fails, so the
   effective replay policy and presence of an exclusive lease remain visible
+- failed probes reduce the target to the stdio executable basename or remote
+  scheme and host; command arguments, URL credentials, paths, and queries are
+  omitted
 - lease contention is reported as a bounded busy state without printing the
   configured lock path
 - `mcp show` always connects live to fetch the tool list; use `mcp test` if you only need a reachability check
