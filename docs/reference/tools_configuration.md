@@ -571,6 +571,7 @@ and injected into the context for a configured number of turns (`ttl`).
 | `url` | string | sse/http | Endpoint URL for `sse`/`http` transport |
 | `headers` | object | no | HTTP headers for `sse`/`http` transport |
 | `session_loss_replay` | string | no | `once` (default) reconnects and invokes an interrupted call once; `never` reconnects for future calls but returns the interrupted call as uncertain without replay |
+| `exclusive_lock_file` | string | no | Absolute path to an operator-owned, non-blocking exclusive lease for a stdio server; omitted by default |
 
 ### Transport Behavior
 
@@ -581,6 +582,10 @@ and injected into the context for a configured number of turns (`ttl`).
 - `env` and `env_file` are only applied to `stdio` servers.
 - Use `session_loss_replay: "never"` for servers whose tools may have external
   effects that cannot be safely repeated after a lost response.
+- Use `exclusive_lock_file` when a stdio server owns a persistent resource such
+  as a browser profile. Its parent directory must already exist. MintClaw holds
+  the OS lock across reconnects and releases it when the manager closes; remote
+  HTTP/SSE servers reject this setting.
 
 ### Configuration Examples
 

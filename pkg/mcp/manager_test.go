@@ -790,6 +790,104 @@ func TestConnectServerRejectsUnknownSessionLossReplay(t *testing.T) {
 	}
 }
 
+func TestConnectServerReleasesExclusiveLeaseAfterConnectionFailure(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() {
+		connectServerFunc = originalConnectServerFunc
+	})
+
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig) (*ServerConnection, error) {
+		return nil, errors.New("startup failed")
+	}
+	lockPath := filepath.Join(t.TempDir(), "playwright.lock")
+	mgr := NewManager()
+	err := mgr.ConnectServer(context.Background(), "playwright", config.MCPServerConfig{
+		Enabled:           true,
+		Command:           "example",
+		ExclusiveLockFile: lockPath,
+	})
+	if err == nil {
+		t.Fatal("ConnectServer() error = nil, want startup failure")
+	}
+
+	lease, err := acquireExclusiveServerLease("contender", lockPath)
+	if err != nil {
+		t.Fatalf("acquireExclusiveServerLease() after failed startup error = %v", err)
+	}
+	lease.release()
+}
+
+func TestExclusiveLeaseIsHeldAcrossReconnectAndReleasedOnClose(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() {
+		connectServerFunc = originalConnectServerFunc
+	})
+
+	staleConn, _, err := newScriptedServerConnection(
+		"session-1",
+		nil,
+		fmt.Errorf(`sending "tools/call": failed to connect (session ID: session-1): %w`, sdkmcp.ErrSessionMissing),
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	freshConn, freshTransport, err := newScriptedServerConnection(
+		"session-2",
+		&sdkmcp.CallToolResult{
+			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "reconnected"}},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+	}
+
+	lockPath := filepath.Join(t.TempDir(), "playwright.lock")
+	connectCalls := 0
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig) (*ServerConnection, error) {
+		connectCalls++
+		contender, contenderErr := acquireExclusiveServerLease("contender", lockPath)
+		if contender != nil {
+			contender.release()
+			t.Fatal("exclusive lease was not held while connecting")
+		}
+		var busyErr *ExclusiveLeaseBusyError
+		if !errors.As(contenderErr, &busyErr) {
+			t.Fatalf("lease contender error = %v, want busy classification", contenderErr)
+		}
+		if connectCalls == 1 {
+			return staleConn, nil
+		}
+		return freshConn, nil
+	}
+
+	mgr := NewManager()
+	if err := mgr.ConnectServer(context.Background(), "playwright", config.MCPServerConfig{
+		Enabled:           true,
+		Command:           "example",
+		ExclusiveLockFile: lockPath,
+	}); err != nil {
+		t.Fatalf("ConnectServer() error = %v", err)
+	}
+
+	result, err := mgr.CallTool(context.Background(), "playwright", "browser_snapshot", nil)
+	if err != nil || result == nil {
+		t.Fatalf("CallTool() result = %#v, error = %v", result, err)
+	}
+	if connectCalls != 2 || freshTransport.toolCallCalls != 1 {
+		t.Fatalf("connectCalls = %d, fresh tool calls = %d; want 2, 1", connectCalls, freshTransport.toolCallCalls)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	lease, err := acquireExclusiveServerLease("contender", lockPath)
+	if err != nil {
+		t.Fatalf("acquireExclusiveServerLease() after close error = %v", err)
+	}
+	lease.release()
+}
+
 func TestCallTool_ReconnectsWhenStdioTransportIsClosed(t *testing.T) {
 	originalConnectServerFunc := connectServerFunc
 	t.Cleanup(func() {

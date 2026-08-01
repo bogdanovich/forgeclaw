@@ -293,8 +293,8 @@ mintclaw mcp show <name> --timeout 15s
 This connects to the named server and prints:
 
 - server metadata: name, transport type, target, enabled state, deferred
-  override, effective session-loss replay policy, env var names, env file, and
-  header names
+  override, effective session-loss replay policy, whether an exclusive lock is
+  configured, env var names, env file, and header names
 - every tool the server exposes, with its name, description, and parameters (name, type, required/optional, description)
 
 On wide terminals the output is a styled box matching the `mcp list` look. On narrow terminals or non-TTY stdout, plain text is printed instead.
@@ -310,6 +310,7 @@ Example output (wide terminal):
 │ Enabled     yes                                          │
 │ Deferred    no                                           │
 │ Session replay  once                                     │
+│ Exclusive lock  no                                       │
 │                                                          │
 │ Tools (3)                                                │
 │                                                          │

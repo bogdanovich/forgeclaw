@@ -1493,6 +1493,9 @@ type MCPServerConfig struct {
 	// replacement MCP session after the original session is lost. Empty keeps
 	// the backward-compatible `once` behavior.
 	SessionLossReplay MCPSessionLossReplay `json:"session_loss_replay,omitempty"`
+	// ExclusiveLockFile is an optional cross-process lease for stdio servers.
+	// It is held for the lifetime of the managed server, including reconnects.
+	ExclusiveLockFile string `json:"exclusive_lock_file,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers
