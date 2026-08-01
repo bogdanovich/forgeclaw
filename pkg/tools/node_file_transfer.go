@@ -583,7 +583,7 @@ func (tool *NodeFileInfoTool) Execute(
 		return nodeFileDenied(err)
 	}
 	if approvalRequired(prepared.profile.Approval.Metadata) &&
-		!ToolApprovalContinuation(ctx) {
+		!nodeFileApprovalGranted(ctx) {
 		return nodeFileApprovalRequired()
 	}
 	return tool.runtime.execute(ctx, prepared, nil)
@@ -598,7 +598,7 @@ func (tool *NodeUploadTool) Execute(
 		return nodeFileDenied(err)
 	}
 	if approvalRequired(prepared.profile.Approval.Write) &&
-		!ToolApprovalContinuation(ctx) {
+		!nodeFileApprovalGranted(ctx) {
 		return nodeFileApprovalRequired()
 	}
 	return tool.runtime.execute(ctx, prepared, tool.mediaStore)
@@ -613,10 +613,14 @@ func (tool *NodeDownloadTool) Execute(
 		return nodeFileDenied(err)
 	}
 	if approvalRequired(prepared.profile.Approval.Read) &&
-		!ToolApprovalContinuation(ctx) {
+		!nodeFileApprovalGranted(ctx) {
 		return nodeFileApprovalRequired()
 	}
 	return tool.runtime.execute(ctx, prepared, tool.mediaStore)
+}
+
+func nodeFileApprovalGranted(ctx context.Context) bool {
+	return ToolApprovalContinuation(ctx) || ToolApprovalBypass(ctx)
 }
 
 func approvalRequired(value string) bool {

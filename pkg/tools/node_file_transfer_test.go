@@ -379,9 +379,65 @@ func TestNodeFileApprovalContinuationRejectsChangedInputAndActor(t *testing.T) {
 	}
 
 	result = tool.Execute(WithToolApprovalBypass(ctx, true), args)
-	if !strings.Contains(result.ForLLM, "APPROVAL_REQUIRED") || source.dispatchCalls != 0 {
+	if result.IsError || source.dispatchCalls != 1 {
 		t.Fatalf("approval bypass = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
 	}
+}
+
+func TestNodeFileApprovalBypassDispatchesRequiredUploadAndDownload(t *testing.T) {
+	t.Run("upload", func(t *testing.T) {
+		source := newFakeNodeFileTransferSourceForDescriptor(
+			t,
+			nodeFileUploadTestDescriptor("required"),
+		)
+		source.snapshotRecord = nodes.TransferArtifactRecord{
+			Ref: "transfer-artifact://bypass-upload",
+			Spec: nodes.TransferArtifactSpec{
+				Direction:    nodes.TransferDirectionUpload,
+				Filename:     "config.json",
+				ContentType:  "application/json",
+				DeclaredSize: 12,
+				SHA256:       strings.Repeat("a", sha256.Size*2),
+			},
+		}
+		tool := NewNodeUploadTool(nodeFileTransferTestConfig(), source)
+		ctx := nodeInvocationTestContext("actor-1", "file-bypass-upload")
+		args := nodeFileUploadTestArgs(t, source, ctx, "media://bypass-upload")
+		if result := tool.Execute(ctx, args); !strings.Contains(result.ForLLM, "APPROVAL_REQUIRED") {
+			t.Fatalf("unapproved upload = %s", result.ForLLM)
+		}
+		result := tool.Execute(WithToolApprovalBypass(ctx, true), args)
+		if result.IsError || source.dispatchCalls != 1 {
+			t.Fatalf("bypassed upload = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
+		}
+	})
+
+	t.Run("download", func(t *testing.T) {
+		source := newFakeNodeFileTransferSourceForDescriptor(
+			t,
+			nodeFileDownloadTestDescriptor("required"),
+		)
+		digest := strings.Repeat("d", sha256.Size*2)
+		source.inspectResult = NodeFileTransferResult{State: "committed", Size: 19, SHA256: digest}
+		source.dispatchResult = NodeFileTransferResult{
+			State:       "committed",
+			Size:        19,
+			SHA256:      digest,
+			ArtifactRef: "transfer-artifact://bypass-download",
+			Filename:    "image.png",
+			ContentType: "image/png",
+		}
+		tool := NewNodeDownloadTool(nodeFileTransferTestConfig(), source)
+		ctx := nodeInvocationTestContext("actor-1", "file-bypass-download")
+		args := nodeFileDownloadTestArgs(t, source, ctx, false)
+		if result := tool.Execute(ctx, args); !strings.Contains(result.ForLLM, "APPROVAL_REQUIRED") {
+			t.Fatalf("unapproved download = %s", result.ForLLM)
+		}
+		result := tool.Execute(WithToolApprovalBypass(ctx, true), args)
+		if result.IsError || source.dispatchCalls != 1 {
+			t.Fatalf("bypassed download = %s, dispatches=%d", result.ForLLM, source.dispatchCalls)
+		}
+	})
 }
 
 func TestNodeUploadApprovalContinuationBindsOriginalMediaArtifact(t *testing.T) {
