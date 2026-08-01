@@ -453,24 +453,30 @@ func (al *AgentLoop) drainDeferredInteractionIngress(
 			traceScopes = appendUniqueTraceScope(traceScopes, scope)
 		},
 	}
-	continued, err := al.drainQueuedSteeringContinuations(ctx, target)
+	steeringAggregate, err := al.drainSteeringForAggregate(ctx, target)
 	if err != nil {
+		al.settleSteeringMessages(rejectedFinalResponseAdmission(err), steeringAggregate.messages)
 		return err
 	}
-	if strings.TrimSpace(continued) != "" {
-		al.publishResponseWithMetadataAndScopes(
+	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
+	if strings.TrimSpace(steeringAggregate.response) != "" {
+		admission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			workspace,
 			route.AgentID,
 			route.Channel,
 			route.ChatID,
 			route.SessionKey,
-			continued,
+			steeringAggregate.response,
 			&inbound,
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
 			traceScopes,
 		)
+	}
+	al.settleSteeringMessages(admission, steeringAggregate.messages)
+	if !admission.permitsInboundAck() {
+		return admission.err
 	}
 	return nil
 }

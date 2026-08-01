@@ -256,9 +256,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	if dispatchTarget != nil && dispatchTarget.Agent != nil {
 		target.AgentID = dispatchTarget.Agent.ID
 	}
-	target.beginSteeringSettlement()
-	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
-	steeringMessages := target.takeUnsettledSteering()
+	steeringAggregate, continueErr := al.drainSteeringForAggregate(ctx, target)
 	if continueErr != nil {
 		al.maybePublishErrorWithScopes(
 			ctx,
@@ -271,11 +269,14 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			finalResponseAlwaysPublish,
 			traceScopes,
 		)
-		al.settleSteeringMessages(rejectedFinalResponseAdmission(continueErr), steeringMessages)
+		al.settleSteeringMessages(
+			rejectedFinalResponseAdmission(continueErr),
+			steeringAggregate.messages,
+		)
 		return
 	}
 	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
-	if continued != "" {
+	if steeringAggregate.response != "" {
 		admission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
@@ -283,14 +284,14 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			target.Channel,
 			target.ChatID,
 			target.SessionKey,
-			continued,
+			steeringAggregate.response,
 			&msg.Context,
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
 			traceScopes,
 		)
 	}
-	al.settleSteeringMessages(admission, steeringMessages)
+	al.settleSteeringMessages(admission, steeringAggregate.messages)
 }
 
 func (c *inboundTurnCoordinator) recoverWorkerPanic(sessionKey string, msg bus.InboundMessage) {

@@ -654,7 +654,9 @@ func (al *AgentLoop) continueRuntimeSession(
 		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)
 		return response, err
 	}
-	if target.holdSteeringSettlement {
+	if strings.TrimSpace(response) == "" {
+		al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
+	} else if target.holdSteeringSettlement {
 		target.unsettledSteering = append(target.unsettledSteering, steeringMsgs...)
 	} else {
 		al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)

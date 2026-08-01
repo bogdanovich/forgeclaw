@@ -3544,6 +3544,45 @@ func TestDrainQueuedSteeringStopsWhileInteractionIsNonterminal(t *testing.T) {
 	}
 }
 
+func TestDrainDeferredInteractionIngressReleasesSteeringAfterAggregateRejection(t *testing.T) {
+	rejection := errors.New("deferred aggregate rejected")
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	trackingBus := &finalResponseAdmissionTestBus{
+		MessageBus: al.bus.(*bus.MessageBus),
+		publishErr: rejection,
+	}
+	al.bus = trackingBus
+	sessionKey := "session-deferred-admission"
+	if err := al.enqueueSteeringMessageWithSender(
+		newRuntimeSessionScope(agent.Workspace, sessionKey),
+		agent.ID,
+		"user-2",
+		providers.Message{
+			Role:           "user",
+			Content:        "deferred interaction follow-up",
+			InboundSpoolID: "spool-deferred",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	err := al.drainDeferredInteractionIngress(t.Context(), agent.Workspace, interactions.Route{
+		AgentID: agent.ID, SessionKey: sessionKey, Channel: "telegram", ChatID: "chat-1",
+	}, bus.InboundContext{Channel: "telegram", ChatID: "chat-1"})
+
+	if !errors.Is(err, rejection) {
+		t.Fatalf("drainDeferredInteractionIngress() error = %v, want %v", err, rejection)
+	}
+	acked, released, cause := trackingBus.ownership()
+	if len(acked) != 0 || !containsExactly(released, "spool-deferred") {
+		t.Fatalf("deferred ownership = acked:%v released:%v", acked, released)
+	}
+	if !errors.Is(cause, rejection) {
+		t.Fatalf("release cause = %v, want %v", cause, rejection)
+	}
+}
+
 func TestRecoveryKeepsCatalogEntryWhenRegistryLoadFails(t *testing.T) {
 	provider := &simpleConvProvider{}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)

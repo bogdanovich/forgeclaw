@@ -11,6 +11,7 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
+	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 )
@@ -218,6 +219,71 @@ func TestInboundTurnCoordinatorSettlesOriginalAndSteeringAdmissionsIndependently
 				publishResults: append([]error(nil), tt.publishResults...),
 			}
 			al.bus = trackingBus
+			msg := finalResponseAdmissionInboundMessage("spool-original")
+			coordinator, target, claim := prepareFinalResponseAdmissionTurn(t, al, msg, "spool-steering")
+
+			coordinator.runWorker(t.Context(), msg, target, claim)
+
+			acked, released, _ := trackingBus.ownership()
+			if !containsExactly(acked, tt.wantAcked...) || !containsExactly(released, tt.wantReleased...) {
+				t.Fatalf("ownership = acked:%v released:%v", acked, released)
+			}
+		})
+	}
+}
+
+func TestInboundTurnCoordinatorSettlesHandledNoOutputIndependently(t *testing.T) {
+	rejection := errors.New("aggregate outbound rejected")
+	handledResponse := &providers.LLMResponse{
+		Content: "Delivering the result now.",
+		ToolCalls: []providers.ToolCall{{
+			ID:        "call-handled-user",
+			Type:      "function",
+			Name:      "handled_user_tool",
+			Arguments: map[string]any{},
+		}},
+	}
+	textResponse := &providers.LLMResponse{Content: "aggregate text", FinishReason: "stop"}
+	handledTerminalResponse := &providers.LLMResponse{}
+	tests := []struct {
+		name         string
+		responses    []*providers.LLMResponse
+		wantAcked    []string
+		wantReleased []string
+	}{
+		{
+			name:         "handled original does not depend on continuation aggregate",
+			responses:    []*providers.LLMResponse{handledResponse, handledTerminalResponse, textResponse},
+			wantAcked:    []string{"spool-original"},
+			wantReleased: []string{"spool-steering"},
+		},
+		{
+			name:         "handled steering does not depend on original aggregate",
+			responses:    []*providers.LLMResponse{textResponse, handledResponse, handledTerminalResponse},
+			wantAcked:    []string{"spool-steering"},
+			wantReleased: []string{"spool-original"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &sequenceProvider{responses: tt.responses}
+			al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+			defer cleanup()
+			agent.Tools.Register(&handledUserTool{})
+			trackingBus := &finalResponseAdmissionTestBus{
+				MessageBus:     al.bus.(*bus.MessageBus),
+				publishResults: []error{nil, rejection},
+			}
+			al.bus = trackingBus
+			store := media.NewFileMediaStore()
+			al.SetMediaStore(store)
+			al.SetChannelManager(newStartedTestChannelManager(
+				t,
+				trackingBus.MessageBus,
+				store,
+				"telegram",
+				&fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}},
+			))
 			msg := finalResponseAdmissionInboundMessage("spool-original")
 			coordinator, target, claim := prepareFinalResponseAdmissionTurn(t, al, msg, "spool-steering")
 

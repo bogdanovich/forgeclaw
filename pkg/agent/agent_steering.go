@@ -122,6 +122,7 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	response, err := process()
 	initialAdmission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	initialResponsePublished := false
+	initialRequiresAggregate := strings.TrimSpace(response) != ""
 	if err != nil {
 		initialResponsePublished = true
 		initialAdmission = al.maybePublishErrorWithScopes(
@@ -143,10 +144,8 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	responses := appendSteeringResponse(nil, response)
 	initialMetadata := target.responseMetadata
 	target.responseMetadata = bus.OutboundMetadata{}
-	target.beginSteeringSettlement()
-
-	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
-	steeringMessages := target.takeUnsettledSteering()
+	steeringAggregate, continueErr := al.drainSteeringForAggregate(ctx, target)
+	continued := steeringAggregate.response
 	if continueErr != nil {
 		if ctx.Err() == nil {
 			logger.WarnCF("agent", "Failed to continue queued steering",
@@ -194,8 +193,11 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			*traceScopes,
 		)
 	}
-	al.settleSteeringMessages(aggregateAdmission, steeringMessages)
+	al.settleSteeringMessages(aggregateAdmission, steeringAggregate.messages)
 	if initialResponsePublished {
+		return initialAdmission
+	}
+	if !initialRequiresAggregate {
 		return initialAdmission
 	}
 	return aggregateAdmission
@@ -227,6 +229,23 @@ func (al *AgentLoop) settleSteeringMessages(
 		return
 	}
 	al.releaseSteeringMessages(context.Background(), messages, admission.err)
+}
+
+type steeringAggregateInput struct {
+	response string
+	messages []providers.Message
+}
+
+func (al *AgentLoop) drainSteeringForAggregate(
+	ctx context.Context,
+	target *continuationTarget,
+) (steeringAggregateInput, error) {
+	target.beginSteeringSettlement()
+	response, err := al.drainQueuedSteeringContinuations(ctx, target)
+	return steeringAggregateInput{
+		response: response,
+		messages: target.takeUnsettledSteering(),
+	}, err
 }
 
 func (t *continuationTarget) observeFinalResponse(metadata bus.OutboundMetadata) {
