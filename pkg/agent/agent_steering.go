@@ -12,6 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
 func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) finalResponseAdmission {
@@ -119,9 +120,11 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	traceScopes *[]runtimeevents.TraceScope,
 ) finalResponseAdmission {
 	response, err := process()
-	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
+	initialAdmission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
+	initialResponsePublished := false
 	if err != nil {
-		admission = al.maybePublishErrorWithScopes(
+		initialResponsePublished = true
+		initialAdmission = al.maybePublishErrorWithScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -132,40 +135,40 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			finalResponseAlwaysPublish,
 			*traceScopes,
 		)
-		if errors.Is(admission.err, context.Canceled) {
-			return admission
+		if errors.Is(initialAdmission.err, context.Canceled) {
+			return initialAdmission
 		}
 		response = ""
 	}
 	responses := appendSteeringResponse(nil, response)
 	initialMetadata := target.responseMetadata
 	target.responseMetadata = bus.OutboundMetadata{}
+	target.beginSteeringSettlement()
 
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
+	steeringMessages := target.takeUnsettledSteering()
 	if continueErr != nil {
-		target.responseMetadata = initialMetadata
-		if ctx.Err() != nil {
-			return rejectedFinalResponseAdmission(ctx.Err())
+		if ctx.Err() == nil {
+			logger.WarnCF("agent", "Failed to continue queued steering",
+				map[string]any{
+					"channel": target.Channel,
+					"chat_id": target.ChatID,
+					"error":   continueErr.Error(),
+				})
 		}
-		logger.WarnCF("agent", "Failed to continue queued steering",
-			map[string]any{
-				"channel": target.Channel,
-				"chat_id": target.ChatID,
-				"error":   continueErr.Error(),
-			})
+	}
+	continuedResponses := appendSteeringResponse(nil, continued)
+	if len(continuedResponses) > 0 {
+		responses = continuedResponses
 	} else {
-		continuedResponses := appendSteeringResponse(nil, continued)
-		if len(continuedResponses) > 0 {
-			responses = continuedResponses
-		} else {
-			target.responseMetadata = initialMetadata
-		}
+		target.responseMetadata = initialMetadata
 	}
 
 	// Publish final response
+	aggregateAdmission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	finalResponse := joinSteeringResponses(responses)
 	if finalResponse != "" {
-		admission = al.publishResponseWithMetadataAndScopes(
+		aggregateAdmission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -191,7 +194,39 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			*traceScopes,
 		)
 	}
-	return admission
+	al.settleSteeringMessages(aggregateAdmission, steeringMessages)
+	if initialResponsePublished {
+		return initialAdmission
+	}
+	return aggregateAdmission
+}
+
+func (t *continuationTarget) beginSteeringSettlement() {
+	if t == nil {
+		return
+	}
+	t.holdSteeringSettlement = true
+}
+
+func (t *continuationTarget) takeUnsettledSteering() []providers.Message {
+	if t == nil {
+		return nil
+	}
+	messages := append([]providers.Message(nil), t.unsettledSteering...)
+	t.unsettledSteering = nil
+	t.holdSteeringSettlement = false
+	return messages
+}
+
+func (al *AgentLoop) settleSteeringMessages(
+	admission finalResponseAdmission,
+	messages []providers.Message,
+) {
+	if admission.permitsInboundAck() {
+		al.ackAcceptedSteeringMessages(context.Background(), messages)
+		return
+	}
+	al.releaseSteeringMessages(context.Background(), messages, admission.err)
 }
 
 func (t *continuationTarget) observeFinalResponse(metadata bus.OutboundMetadata) {

@@ -145,6 +145,8 @@ type continuationTarget struct {
 	Workspace                string
 	ObserveFinalDeliveryTurn func(runtimeevents.TraceScope)
 	responseMetadata         bus.OutboundMetadata
+	holdSteeringSettlement   bool
+	unsettledSteering        []providers.Message
 }
 
 const (

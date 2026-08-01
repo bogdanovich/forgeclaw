@@ -256,7 +256,9 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	if dispatchTarget != nil && dispatchTarget.Agent != nil {
 		target.AgentID = dispatchTarget.Agent.ID
 	}
+	target.beginSteeringSettlement()
 	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
+	steeringMessages := target.takeUnsettledSteering()
 	if continueErr != nil {
 		al.maybePublishErrorWithScopes(
 			ctx,
@@ -269,10 +271,12 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			finalResponseAlwaysPublish,
 			traceScopes,
 		)
+		al.settleSteeringMessages(rejectedFinalResponseAdmission(continueErr), steeringMessages)
 		return
 	}
+	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	if continued != "" {
-		al.publishResponseWithMetadataAndScopes(
+		admission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -286,6 +290,7 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			traceScopes,
 		)
 	}
+	al.settleSteeringMessages(admission, steeringMessages)
 }
 
 func (c *inboundTurnCoordinator) recoverWorkerPanic(sessionKey string, msg bus.InboundMessage) {
