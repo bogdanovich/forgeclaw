@@ -571,6 +571,39 @@ func TestNodeDownloadDeliveryIsClaimedOnceWithoutCompletionReply(t *testing.T) {
 	}
 }
 
+func TestNodeDownloadRetainOnlyKeepsExplicitFalseInPlan(t *testing.T) {
+	source := newFakeNodeFileTransferSourceForDescriptor(
+		t,
+		nodeFileDownloadTestDescriptor("none"),
+	)
+	digest := strings.Repeat("d", sha256.Size*2)
+	source.inspectResult = NodeFileTransferResult{
+		State:  "committed",
+		Size:   19,
+		SHA256: digest,
+	}
+	source.dispatchResult = NodeFileTransferResult{
+		State:       "committed",
+		Size:        19,
+		SHA256:      digest,
+		ArtifactRef: "transfer-artifact://retained-image",
+		Filename:    "image.png",
+		ContentType: "image/png",
+	}
+	tool := NewNodeDownloadTool(nodeFileTransferTestConfig(), source)
+	ctx := nodeInvocationTestContext("actor-1", "file-call-retain-only")
+	args := nodeFileDownloadTestArgs(t, source, ctx, false)
+
+	result := tool.Execute(ctx, args)
+	payload := decodeNodeResult(t, result)
+	if payload["state"] != "committed" ||
+		payload["artifact_ref"] != "transfer-artifact://retained-image" ||
+		source.dispatchCalls != 1 || source.handoffCalls != 0 {
+		t.Fatalf("retain-only result = %#v, dispatches=%d handoffs=%d",
+			payload, source.dispatchCalls, source.handoffCalls)
+	}
+}
+
 func TestNodeFileApprovalPreparationReturnsOnlySafeDenial(t *testing.T) {
 	source := newFakeNodeFileTransferSource(t, "required")
 	tool := NewNodeFileInfoTool(nodeFileTransferTestConfig(), source)

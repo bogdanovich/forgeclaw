@@ -111,7 +111,7 @@ type nodeFileTransferPlanInput struct {
 	SHA256            string  `json:"sha256,omitempty"`
 	Filename          string  `json:"filename,omitempty"`
 	ContentType       string  `json:"content_type,omitempty"`
-	Deliver           bool    `json:"deliver,omitempty"`
+	Deliver           *bool   `json:"deliver,omitempty"`
 	Channel           string  `json:"channel,omitempty"`
 	ChatID            string  `json:"chat_id,omitempty"`
 	TopicID           string  `json:"topic_id,omitempty"`
@@ -431,7 +431,7 @@ func nodeFileApprovalArguments(prepared preparedNodeFileTransfer) map[string]any
 		result["source"] = input.Source
 		result["size"] = input.Size
 		result["sha256"] = input.SHA256
-		result["deliver"] = input.Deliver
+		result["deliver"] = input.Deliver != nil && *input.Deliver
 	}
 	return result
 }
@@ -949,7 +949,8 @@ func (runtime *nodeFileTransferToolRuntime) preparePlanInput(
 		input.ContentType = artifact.Spec.ContentType
 	case "file.download.v1":
 		input.Source, err = exactNodeFileArgument(args, "source")
-		input.Deliver, _ = args["deliver"].(bool)
+		deliver, _ := args["deliver"].(bool)
+		input.Deliver = &deliver
 		if err != nil {
 			return nodeFileTransferPlanInput{}, errors.New("source is required")
 		}
@@ -980,7 +981,7 @@ func (runtime *nodeFileTransferToolRuntime) preparePlanInput(
 		input.SHA256 = hex.EncodeToString(digest[:])
 		input.Filename = safeNodeDownloadFilename(input.Source)
 		input.ContentType = ""
-		if input.Deliver {
+		if *input.Deliver {
 			input.Channel = ToolChannel(ctx)
 			input.ChatID = ToolChatID(ctx)
 			input.TopicID = ToolTopicID(ctx)
@@ -1147,7 +1148,7 @@ func (runtime *nodeFileTransferToolRuntime) result(
 	if input.Source == "" {
 		return nodeFileUnknown(prepared.record.Plan.InvocationID)
 	}
-	if !input.Deliver || result.ArtifactRef == "" {
+	if input.Deliver == nil || !*input.Deliver || result.ArtifactRef == "" {
 		return nodeJSONResult(result)
 	}
 	mediaOwner, err := nodeFileMediaOwner(ctx)
@@ -1237,7 +1238,7 @@ func validateRetainedFileTransfer(
 		deliver, _ := args["deliver"].(bool)
 		source, err := exactNodeFileArgument(args, "source")
 		if err != nil || input.Source != source ||
-			input.Deliver != deliver {
+			input.Deliver == nil || *input.Deliver != deliver {
 			return fmt.Errorf("%w: retained download input changed", errDiscoveryStale)
 		}
 	default:
