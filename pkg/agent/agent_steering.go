@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,9 +12,10 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
+	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
 
-func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) bool {
+func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) finalResponseAdmission {
 	if al.channelManager != nil {
 		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
@@ -25,7 +27,7 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 	response, err := al.processMessage(ctx, msg)
 	if err != nil {
-		if !al.maybePublishErrorWithPolicy(
+		return al.maybePublishErrorWithPolicy(
 			ctx,
 			workspace,
 			agentID,
@@ -34,12 +36,9 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 			msg.SessionKey,
 			err,
 			finalResponseAlwaysPublish,
-		) {
-			return false
-		}
-		response = ""
+		)
 	}
-	al.publishResponseWithContextIfNeeded(
+	return al.publishResponseWithContextIfNeeded(
 		ctx,
 		workspace,
 		agentID,
@@ -50,7 +49,6 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 		&msg.Context,
 		finalResponseAlwaysPublish,
 	)
-	return true
 }
 
 func (al *AgentLoop) ackInboundMessage(ctx context.Context, msg bus.InboundMessage) {
@@ -92,26 +90,20 @@ func (al *AgentLoop) releaseInboundMessage(
 func (al *AgentLoop) runInboundTurnWithSteering(
 	ctx context.Context,
 	turn inboundMessageTurn,
-) bool {
-	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
-	observeTurn := func(scope runtimeevents.TraceScope) {
-		traceScopes = appendUniqueTraceScope(traceScopes, scope)
-	}
-	turn.Options.ObserveFinalDeliveryTurn = observeTurn
+) finalResponseAdmission {
 	target := &continuationTarget{
-		SessionKey:               turn.SessionKey,
-		Channel:                  turn.Message.Channel,
-		ChatID:                   turn.Message.ChatID,
-		ObserveFinalDeliveryTurn: observeTurn,
+		SessionKey: turn.SessionKey,
+		Channel:    turn.Message.Channel,
+		ChatID:     turn.Message.ChatID,
 	}
-	turn.Options.ObserveFinalResponse = target.observeFinalResponse
+	turn.Options.FinalDeliveryObservation = &target.finalDeliveryObservation
 	if turn.Agent != nil {
 		target.AgentID = turn.Agent.ID
 		target.Workspace = turn.Agent.Workspace
 	}
 	return al.runTurnAndDrainSteering(ctx, turn.Message, func() (string, error) {
 		return al.processInboundMessageTurn(ctx, turn)
-	}, target, &traceScopes)
+	}, target)
 }
 
 func (al *AgentLoop) runTurnAndDrainSteering(
@@ -119,11 +111,14 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 	initialMsg bus.InboundMessage,
 	process func() (string, error),
 	target *continuationTarget,
-	traceScopes *[]runtimeevents.TraceScope,
-) bool {
+) finalResponseAdmission {
 	response, err := process()
+	initialAdmission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
+	initialResponsePublished := false
+	initialRequiresAggregate := strings.TrimSpace(response) != ""
 	if err != nil {
-		if !al.maybePublishErrorWithScopes(
+		initialResponsePublished = true
+		initialAdmission = al.maybePublishErrorWithScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -132,41 +127,40 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			initialMsg.SessionKey,
 			err,
 			finalResponseAlwaysPublish,
-			*traceScopes,
-		) {
-			return false // context canceled
+			target.traceScopes,
+		)
+		if errors.Is(initialAdmission.err, context.Canceled) {
+			return initialAdmission
 		}
 		response = ""
 	}
 	responses := appendSteeringResponse(nil, response)
 	initialMetadata := target.responseMetadata
 	target.responseMetadata = bus.OutboundMetadata{}
-
-	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
+	steeringAggregate, continueErr := al.drainSteeringForAggregate(ctx, target)
+	continued := steeringAggregate.response
 	if continueErr != nil {
-		target.responseMetadata = initialMetadata
-		if ctx.Err() != nil {
-			return false
+		if ctx.Err() == nil {
+			logger.WarnCF("agent", "Failed to continue queued steering",
+				map[string]any{
+					"channel": target.Channel,
+					"chat_id": target.ChatID,
+					"error":   continueErr.Error(),
+				})
 		}
-		logger.WarnCF("agent", "Failed to continue queued steering",
-			map[string]any{
-				"channel": target.Channel,
-				"chat_id": target.ChatID,
-				"error":   continueErr.Error(),
-			})
+	}
+	continuedResponses := appendSteeringResponse(nil, continued)
+	if len(continuedResponses) > 0 {
+		responses = continuedResponses
 	} else {
-		continuedResponses := appendSteeringResponse(nil, continued)
-		if len(continuedResponses) > 0 {
-			responses = continuedResponses
-		} else {
-			target.responseMetadata = initialMetadata
-		}
+		target.responseMetadata = initialMetadata
 	}
 
 	// Publish final response
+	aggregateAdmission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
 	finalResponse := joinSteeringResponses(responses)
 	if finalResponse != "" {
-		al.publishResponseWithMetadataAndScopes(
+		aggregateAdmission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
@@ -189,25 +183,105 @@ func (al *AgentLoop) runTurnAndDrainSteering(
 			},
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
-			*traceScopes,
+			target.traceScopes,
 		)
 	}
-	return true
+	al.settleSteeringMessages(aggregateAdmission, steeringAggregate.messages)
+	if initialResponsePublished {
+		return initialAdmission
+	}
+	if !initialRequiresAggregate {
+		return initialAdmission
+	}
+	return aggregateAdmission
 }
 
-func (t *continuationTarget) observeFinalResponse(metadata bus.OutboundMetadata) {
+func (t *continuationTarget) beginSteeringSettlement() {
 	if t == nil {
 		return
 	}
+	t.holdSteeringSettlement = true
+}
+
+func (t *continuationTarget) heldFinalDeliveryObservation() *finalDeliveryObservation {
+	if t == nil || !t.holdSteeringSettlement {
+		return nil
+	}
+	return &t.finalDeliveryObservation
+}
+
+func (t *continuationTarget) takeUnsettledSteering() []providers.Message {
+	if t == nil {
+		return nil
+	}
+	t.holdSteeringSettlement = false
+	return t.finalDeliveryObservation.takeUnsettledSteering()
+}
+
+func (al *AgentLoop) settleSteeringMessages(
+	admission finalResponseAdmission,
+	messages []providers.Message,
+) {
+	if admission.permitsInboundAck() {
+		al.ackAcceptedSteeringMessages(context.Background(), messages)
+		return
+	}
+	al.releaseSteeringMessages(context.Background(), messages, admission.err)
+}
+
+type steeringAggregateInput struct {
+	response string
+	messages []providers.Message
+}
+
+func (al *AgentLoop) drainSteeringForAggregate(
+	ctx context.Context,
+	target *continuationTarget,
+) (steeringAggregateInput, error) {
+	target.beginSteeringSettlement()
+	response, err := al.drainQueuedSteeringContinuations(ctx, target)
+	return steeringAggregateInput{
+		response: response,
+		messages: target.takeUnsettledSteering(),
+	}, err
+}
+
+func (o *finalDeliveryObservation) observeTurn(scope runtimeevents.TraceScope) {
+	if o == nil {
+		return
+	}
+	o.traceScopes = appendUniqueTraceScope(o.traceScopes, scope)
+}
+
+func (o *finalDeliveryObservation) observeResponse(metadata bus.OutboundMetadata) {
+	if o == nil {
+		return
+	}
 	if metadata.ModelName != "" {
-		t.responseMetadata.ModelName = metadata.ModelName
+		o.responseMetadata.ModelName = metadata.ModelName
 	}
 	if metadata.DefaultModelName != "" {
-		t.responseMetadata.DefaultModelName = metadata.DefaultModelName
+		o.responseMetadata.DefaultModelName = metadata.DefaultModelName
 	}
-	t.responseMetadata.UsageInputTokens += metadata.UsageInputTokens
-	t.responseMetadata.UsageOutputTokens += metadata.UsageOutputTokens
-	t.responseMetadata.UsageTotalTokens += metadata.UsageTotalTokens
+	o.responseMetadata.UsageInputTokens += metadata.UsageInputTokens
+	o.responseMetadata.UsageOutputTokens += metadata.UsageOutputTokens
+	o.responseMetadata.UsageTotalTokens += metadata.UsageTotalTokens
+}
+
+func (o *finalDeliveryObservation) observeSteering(messages []providers.Message) {
+	if o == nil {
+		return
+	}
+	o.unsettledSteering = append(o.unsettledSteering, messages...)
+}
+
+func (o *finalDeliveryObservation) takeUnsettledSteering() []providers.Message {
+	if o == nil {
+		return nil
+	}
+	messages := append([]providers.Message(nil), o.unsettledSteering...)
+	o.unsettledSteering = nil
+	return messages
 }
 
 func (t *continuationTarget) retainResponseMetadata(

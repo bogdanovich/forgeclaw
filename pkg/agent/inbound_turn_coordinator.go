@@ -9,7 +9,6 @@ import (
 
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/commands"
-	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 )
@@ -29,10 +28,11 @@ func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.Inbo
 	if !ok {
 		// Non-routable message (e.g. system) stays synchronous so it preserves
 		// the historical ordering guarantee and does not enter session steering.
-		if al.processMessageSync(ctx, msg) {
+		admission := al.processMessageSync(ctx, msg)
+		if admission.permitsInboundAck() {
 			al.ackInboundMessage(ctx, msg)
 		} else {
-			al.releaseInboundMessage(context.Background(), msg, ctx.Err())
+			al.releaseInboundMessage(context.Background(), msg, admission.err)
 		}
 		return
 	}
@@ -194,10 +194,11 @@ func (c *inboundTurnCoordinator) runWorker(
 	}
 
 	turn := al.buildInboundMessageTurnForTarget(ctx, msg, target)
-	if al.runInboundTurnWithSteering(ctx, turn) {
+	admission := al.runInboundTurnWithSteering(ctx, turn)
+	if admission.permitsInboundAck() {
 		al.ackInboundMessage(ctx, msg)
 	} else {
-		al.releaseInboundMessage(context.Background(), msg, ctx.Err())
+		al.releaseInboundMessage(context.Background(), msg, admission.err)
 	}
 }
 
@@ -241,20 +242,16 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 	claim.releaseIfOwned()
 	al.ackInboundMessage(ctx, msg)
 
-	traceScopes := make([]runtimeevents.TraceScope, 0, 2)
 	target := &continuationTarget{
 		SessionKey: claim.scope.sessionKey,
 		Channel:    msg.Channel,
 		ChatID:     msg.ChatID,
 		Workspace:  claim.scope.workspace,
-		ObserveFinalDeliveryTurn: func(scope runtimeevents.TraceScope) {
-			traceScopes = appendUniqueTraceScope(traceScopes, scope)
-		},
 	}
 	if dispatchTarget != nil && dispatchTarget.Agent != nil {
 		target.AgentID = dispatchTarget.Agent.ID
 	}
-	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
+	steeringAggregate, continueErr := al.drainSteeringForAggregate(ctx, target)
 	if continueErr != nil {
 		al.maybePublishErrorWithScopes(
 			ctx,
@@ -265,25 +262,31 @@ func (c *inboundTurnCoordinator) handlePendingStop(
 			claim.scope.sessionKey,
 			continueErr,
 			finalResponseAlwaysPublish,
-			traceScopes,
+			target.traceScopes,
+		)
+		al.settleSteeringMessages(
+			rejectedFinalResponseAdmission(continueErr),
+			steeringAggregate.messages,
 		)
 		return
 	}
-	if continued != "" {
-		al.publishResponseWithMetadataAndScopes(
+	admission := finalResponseAdmission{status: finalResponseAdmissionNotRequired}
+	if steeringAggregate.response != "" {
+		admission = al.publishResponseWithMetadataAndScopes(
 			ctx,
 			target.Workspace,
 			target.AgentID,
 			target.Channel,
 			target.ChatID,
 			target.SessionKey,
-			continued,
+			steeringAggregate.response,
 			&msg.Context,
 			finalResponseAlwaysPublish,
 			target.responseMetadata,
-			traceScopes,
+			target.traceScopes,
 		)
 	}
+	al.settleSteeringMessages(admission, steeringAggregate.messages)
 }
 
 func (c *inboundTurnCoordinator) recoverWorkerPanic(sessionKey string, msg bus.InboundMessage) {

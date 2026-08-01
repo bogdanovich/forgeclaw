@@ -631,7 +631,7 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	if result == nil || result.IsError {
 		t.Fatalf("message tool execute failed: %+v", result)
 	}
-	al.PublishResponseIfNeeded(
+	admission := al.publishResponseWithContextIfNeeded(
 		context.Background(),
 		defaultAgent.Workspace,
 		defaultAgent.ID,
@@ -639,7 +639,12 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 		"-100123",
 		"session-1",
 		"final reply",
+		nil,
+		finalResponseSuppressIfMessageToolSent,
 	)
+	if admission.status != finalResponseAdmissionSuppressed || !admission.permitsInboundAck() {
+		t.Fatalf("admission = %+v, want acknowledged suppression", admission)
+	}
 
 	if got := cm.dismissedSessions; len(got) != 1 || got[0] != "telegram:-100123:session-1" {
 		t.Fatalf("dismissedSessions = %v, want [telegram:-100123:session-1]", got)
@@ -5521,7 +5526,7 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 	responses := []string{}
 
 	firstSnapshot := target.responseMetadata
-	target.observeFinalResponse(bus.OutboundMetadata{
+	target.observeResponse(bus.OutboundMetadata{
 		ModelName:         "first-model",
 		DefaultModelName:  "workspace-default",
 		UsageInputTokens:  100,
@@ -5539,7 +5544,7 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 	}
 
 	secondSnapshot := target.responseMetadata
-	target.observeFinalResponse(bus.OutboundMetadata{
+	target.observeResponse(bus.OutboundMetadata{
 		ModelName:         "duplicate-model",
 		DefaultModelName:  "workspace-default",
 		UsageInputTokens:  200,
@@ -5559,14 +5564,14 @@ func TestContinuationTarget_MetadataTracksOnlyRetainedResponses(t *testing.T) {
 	}
 
 	thirdSnapshot := target.responseMetadata
-	target.observeFinalResponse(bus.OutboundMetadata{
+	target.observeResponse(bus.OutboundMetadata{
 		ModelName:         "handled-model",
 		DefaultModelName:  "workspace-default",
 		UsageInputTokens:  300,
 		UsageOutputTokens: 30,
 		UsageTotalTokens:  330,
 	})
-	responses, keepDraining = target.appendContinuationResponse(
+	_, keepDraining = target.appendContinuationResponse(
 		responses,
 		thirdSnapshot,
 		"",
