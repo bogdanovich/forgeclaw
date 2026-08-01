@@ -329,10 +329,11 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 		},
 	}
 	replyToMessageID := ""
-	if record.Origin.ExecutionContext != nil {
-		replyToMessageID = strings.TrimSpace(record.Origin.ExecutionContext.MessageID)
-	}
-	if record.Kind == interactions.KindApproval {
+	if record.Kind == interactions.KindApproval &&
+		strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") {
+		if record.Origin.ExecutionContext != nil {
+			replyToMessageID = strings.TrimSpace(record.Origin.ExecutionContext.MessageID)
+		}
 		bus.OutboundMetadata{
 			InteractionKind:     bus.OutboundInteractionApproval,
 			InteractionControls: bus.OutboundInteractionControlsPrompt,

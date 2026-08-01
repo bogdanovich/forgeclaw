@@ -1274,7 +1274,7 @@ func TestSend_ApprovalFinalRemovesKeyboard(t *testing.T) {
 	}.ApplyToContext(&outboundCtx)
 
 	_, err := ch.Send(t.Context(), bus.OutboundMessage{
-		ChatID: "12345", Context: outboundCtx, Content: "Done",
+		ChatID: "12345", Context: outboundCtx, Content: "Done", ReplyToMessageID: "73",
 	})
 	require.NoError(t, err)
 	require.Len(t, caller.calls, 1)
@@ -1283,6 +1283,7 @@ func TestSend_ApprovalFinalRemovesKeyboard(t *testing.T) {
 	markup := payload["reply_markup"].(map[string]any)
 	assert.Equal(t, true, markup["remove_keyboard"])
 	assert.Equal(t, true, markup["selective"])
+	assert.Equal(t, float64(73), payload["reply_parameters"].(map[string]any)["message_id"])
 }
 
 func TestEditMessage_RichMessagesEnabledUsesRichMarkdown(t *testing.T) {
