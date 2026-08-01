@@ -1047,6 +1047,13 @@ func (al *AgentLoop) deliverInteractionFinal(
 	content string,
 	traceScopes []runtimeevents.TraceScope,
 ) error {
+	al.dismissInteractionToolFeedback(ctx, record, inbound, traceScopes)
+	if record.Kind == interactions.KindApproval {
+		bus.OutboundMetadata{
+			InteractionKind:     bus.OutboundInteractionApproval,
+			InteractionControls: bus.OutboundInteractionControlsRemove,
+		}.ApplyToContext(&inbound)
+	}
 	if strings.TrimSpace(record.Origin.TaskID) != "" {
 		return al.deliverTaskInteractionFinal(
 			ctx, registry, interactionWorkspace, record, inbound, content, traceScopes,
@@ -1107,6 +1114,24 @@ func (al *AgentLoop) deliverInteractionFinal(
 		)
 	}
 	return err
+}
+
+func (al *AgentLoop) dismissInteractionToolFeedback(
+	ctx context.Context,
+	record interactions.Record,
+	inbound bus.InboundContext,
+	traceScopes []runtimeevents.TraceScope,
+) {
+	target := toolFeedbackTargetForSession(
+		record.Route.Channel,
+		record.Route.ChatID,
+		&inbound,
+		record.Route.SessionKey,
+		traceScopes,
+	)
+	dismissCtx, dismissCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	al.toolFeedbackPublisher().dismissToolFeedback(dismissCtx, target)
+	dismissCancel()
 }
 
 func (al *AgentLoop) deliverTaskInteractionFinal(

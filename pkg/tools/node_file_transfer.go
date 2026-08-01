@@ -275,7 +275,8 @@ func (*NodeFileInfoTool) Parameters() map[string]any {
 func (*NodeUploadTool) Name() string { return "nodes_upload" }
 
 func (*NodeUploadTool) Description() string {
-	return "Upload one retained gateway artifact to one regular-file destination on an authorized node target."
+	return "Upload one retained gateway artifact to one regular-file destination on an authorized node target. " +
+		"If policy requires human approval, call this tool directly; the runtime requests and resumes approval."
 }
 
 func (*NodeUploadTool) Parameters() map[string]any {
@@ -286,7 +287,8 @@ func (*NodeDownloadTool) Name() string { return "nodes_download" }
 
 func (*NodeDownloadTool) Description() string {
 	return "Download one regular file from an authorized node target into the bounded gateway spool, " +
-		"optionally delivering it once to the originating routed conversation."
+		"optionally delivering it once to the originating routed conversation. If policy requires human approval, " +
+		"call this tool directly; the runtime requests and resumes approval."
 }
 
 func (*NodeDownloadTool) Parameters() map[string]any {

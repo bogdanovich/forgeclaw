@@ -14,6 +14,8 @@ const (
 	OutboundMetadataKeyUsageInput   = "usage_input_tokens"
 	OutboundMetadataKeyUsageOutput  = "usage_output_tokens"
 	OutboundMetadataKeyUsageTotal   = "usage_total_tokens"
+	OutboundMetadataKeyInteraction  = "interaction_kind"
+	OutboundMetadataKeyControls     = "interaction_controls"
 
 	OutboundMessageKindThought      = "thought"
 	OutboundMessageKindToolFeedback = "tool_feedback"
@@ -21,19 +23,26 @@ const (
 	OutboundMessageKindFinalReply   = "final_reply"
 
 	OutboundKindFinal = "final"
+
+	OutboundInteractionApproval = "approval"
+
+	OutboundInteractionControlsPrompt = "prompt"
+	OutboundInteractionControlsRemove = "remove"
 )
 
 // OutboundMetadata is the typed form of the cross-package outbound metadata
 // stored in InboundContext.Raw for wire/backward compatibility.
 type OutboundMetadata struct {
-	MessageKind       string
-	ToolCalls         string
-	OutboundKind      string
-	ModelName         string
-	DefaultModelName  string
-	UsageInputTokens  int
-	UsageOutputTokens int
-	UsageTotalTokens  int
+	MessageKind         string
+	ToolCalls           string
+	OutboundKind        string
+	ModelName           string
+	DefaultModelName    string
+	UsageInputTokens    int
+	UsageOutputTokens   int
+	UsageTotalTokens    int
+	InteractionKind     string
+	InteractionControls string
 }
 
 func OutboundMetadataFromMessage(msg OutboundMessage) OutboundMetadata {
@@ -49,14 +58,16 @@ func OutboundMetadataFromRaw(raw map[string]string) OutboundMetadata {
 		return OutboundMetadata{}
 	}
 	return OutboundMetadata{
-		MessageKind:       strings.TrimSpace(raw[OutboundMetadataKeyMessageKind]),
-		ToolCalls:         strings.TrimSpace(raw[OutboundMetadataKeyToolCalls]),
-		OutboundKind:      strings.TrimSpace(raw[OutboundMetadataKeyOutboundKind]),
-		ModelName:         strings.TrimSpace(raw[OutboundMetadataKeyModelName]),
-		DefaultModelName:  strings.TrimSpace(raw[OutboundMetadataKeyDefaultModel]),
-		UsageInputTokens:  parseOutboundMetadataInt(raw[OutboundMetadataKeyUsageInput]),
-		UsageOutputTokens: parseOutboundMetadataInt(raw[OutboundMetadataKeyUsageOutput]),
-		UsageTotalTokens:  parseOutboundMetadataInt(raw[OutboundMetadataKeyUsageTotal]),
+		MessageKind:         strings.TrimSpace(raw[OutboundMetadataKeyMessageKind]),
+		ToolCalls:           strings.TrimSpace(raw[OutboundMetadataKeyToolCalls]),
+		OutboundKind:        strings.TrimSpace(raw[OutboundMetadataKeyOutboundKind]),
+		ModelName:           strings.TrimSpace(raw[OutboundMetadataKeyModelName]),
+		DefaultModelName:    strings.TrimSpace(raw[OutboundMetadataKeyDefaultModel]),
+		UsageInputTokens:    parseOutboundMetadataInt(raw[OutboundMetadataKeyUsageInput]),
+		UsageOutputTokens:   parseOutboundMetadataInt(raw[OutboundMetadataKeyUsageOutput]),
+		UsageTotalTokens:    parseOutboundMetadataInt(raw[OutboundMetadataKeyUsageTotal]),
+		InteractionKind:     strings.TrimSpace(raw[OutboundMetadataKeyInteraction]),
+		InteractionControls: strings.TrimSpace(raw[OutboundMetadataKeyControls]),
 	}
 }
 
@@ -89,6 +100,12 @@ func (m OutboundMetadata) ApplyToContext(ctx *InboundContext) {
 	if m.UsageTotalTokens > 0 {
 		rawCount++
 	}
+	if strings.TrimSpace(m.InteractionKind) != "" {
+		rawCount++
+	}
+	if strings.TrimSpace(m.InteractionControls) != "" {
+		rawCount++
+	}
 	if rawCount == 0 {
 		return
 	}
@@ -103,6 +120,8 @@ func (m OutboundMetadata) ApplyToContext(ctx *InboundContext) {
 	setOutboundMetadataInt(ctx.Raw, OutboundMetadataKeyUsageInput, m.UsageInputTokens)
 	setOutboundMetadataInt(ctx.Raw, OutboundMetadataKeyUsageOutput, m.UsageOutputTokens)
 	setOutboundMetadataInt(ctx.Raw, OutboundMetadataKeyUsageTotal, m.UsageTotalTokens)
+	setOutboundMetadataString(ctx.Raw, OutboundMetadataKeyInteraction, m.InteractionKind)
+	setOutboundMetadataString(ctx.Raw, OutboundMetadataKeyControls, m.InteractionControls)
 }
 
 func (m OutboundMetadata) IsToolFeedback() bool {
@@ -131,6 +150,16 @@ func (m OutboundMetadata) IsFinal() bool {
 
 func (m OutboundMetadata) BypassesPlaceholderEdit() bool {
 	return m.IsThought() || m.IsToolCalls() || m.IsFinalReply()
+}
+
+func (m OutboundMetadata) IsApprovalPrompt() bool {
+	return strings.EqualFold(m.InteractionKind, OutboundInteractionApproval) &&
+		strings.EqualFold(m.InteractionControls, OutboundInteractionControlsPrompt)
+}
+
+func (m OutboundMetadata) RemovesInteractionControls() bool {
+	return strings.EqualFold(m.InteractionKind, OutboundInteractionApproval) &&
+		strings.EqualFold(m.InteractionControls, OutboundInteractionControlsRemove)
 }
 
 func parseOutboundMetadataInt(raw string) int {

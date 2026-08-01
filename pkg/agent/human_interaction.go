@@ -328,13 +328,24 @@ func (runtime *humanInteractionRuntime) publishPrompt(
 			"delivery_key":         interactionDeliveryKey(record.ID, "prompt"),
 		},
 	}
+	replyToMessageID := ""
+	if record.Origin.ExecutionContext != nil {
+		replyToMessageID = strings.TrimSpace(record.Origin.ExecutionContext.MessageID)
+	}
+	if record.Kind == interactions.KindApproval {
+		bus.OutboundMetadata{
+			InteractionKind:     bus.OutboundInteractionApproval,
+			InteractionControls: bus.OutboundInteractionControlsPrompt,
+		}.ApplyToContext(&outboundContext)
+	}
 	return runtime.al.sendInteractionMessage(ctx, bus.OutboundMessage{
-		Channel:    record.Route.Channel,
-		ChatID:     record.Route.ChatID,
-		Context:    outboundContext,
-		AgentID:    record.Route.AgentID,
-		SessionKey: record.Route.SessionKey,
-		Content:    content,
+		Channel:          record.Route.Channel,
+		ChatID:           record.Route.ChatID,
+		Context:          outboundContext,
+		AgentID:          record.Route.AgentID,
+		SessionKey:       record.Route.SessionKey,
+		Content:          content,
+		ReplyToMessageID: replyToMessageID,
 	})
 }
 

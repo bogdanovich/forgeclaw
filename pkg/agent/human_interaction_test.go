@@ -1340,7 +1340,7 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 				t.Fatal(err)
 			}
 			inbound := &bus.InboundContext{
-				Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+				Channel: "telegram", ChatID: "chat-1", SenderID: "user-1", MessageID: "origin-message",
 			}
 			turnStatus := TurnEndStatusCompleted
 			response, err := al.runAgentLoop(t.Context(), agent, processOptions{
@@ -1372,11 +1372,17 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 					!strings.Contains(prompt.Content, "Run the protected test action") ||
 					!strings.Contains(prompt.Content, "`/answer "+record.ShortID+" allow_once`") ||
 					strings.Contains(prompt.Content, "Approval needed") ||
-					strings.Contains(prompt.Content, "secret-value") {
+					strings.Contains(prompt.Content, "secret-value") ||
+					prompt.ReplyToMessageID != "origin-message" ||
+					!bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
 					t.Fatalf("approval prompt = %#v", prompt)
 				}
 			case <-time.After(time.Second):
 				t.Fatal("approval prompt was not delivered")
+			}
+			if len(manager.dismissedSessions) != 1 ||
+				manager.dismissedSessions[0] != "telegram:chat-1:session-approval" {
+				t.Fatalf("suspension feedback cleanup = %#v", manager.dismissedSessions)
 			}
 			if test.revokePolicy {
 				hook.revoked = true
@@ -1413,11 +1419,16 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 			}
 			select {
 			case final := <-manager.sent:
-				if final.Content != "approval flow finished" {
+				if final.Content != "approval flow finished" ||
+					!bus.OutboundMetadataFromMessage(final).RemovesInteractionControls() {
 					t.Fatalf("approval final = %#v", final)
 				}
 			case <-time.After(time.Second):
 				t.Fatal("approval continuation final was not delivered")
+			}
+			if len(manager.dismissedSessions) != 2 ||
+				manager.dismissedSessions[1] != "telegram:chat-1:session-approval" {
+				t.Fatalf("final feedback cleanup = %#v", manager.dismissedSessions)
 			}
 		})
 	}
