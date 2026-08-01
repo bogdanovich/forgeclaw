@@ -645,7 +645,7 @@ func (al *AgentLoop) continueRuntimeSession(
 		steeringBatch.senderID,
 		modelBinding,
 		steeringMsgs,
-		&target.finalDeliveryObservation,
+		target.heldFinalDeliveryObservation(),
 	)
 	if err != nil {
 		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)

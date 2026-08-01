@@ -203,6 +203,13 @@ func (t *continuationTarget) beginSteeringSettlement() {
 	t.holdSteeringSettlement = true
 }
 
+func (t *continuationTarget) heldFinalDeliveryObservation() *finalDeliveryObservation {
+	if t == nil || !t.holdSteeringSettlement {
+		return nil
+	}
+	return &t.finalDeliveryObservation
+}
+
 func (t *continuationTarget) takeUnsettledSteering() []providers.Message {
 	if t == nil {
 		return nil
