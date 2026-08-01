@@ -509,19 +509,35 @@ func (handler *AdmissionHandler) requestInvocationRecord(
 	}
 	response, _, err := handler.sessions.Request(ctx, nodeID, method, params, "", nil)
 	if err != nil {
-		return nodes.InvocationRecord{}, err
+		return nodes.InvocationRecord{}, classifyInvocationQueryTransportError(err)
 	}
 	if response.OK == nil {
-		return nodes.InvocationRecord{}, errors.New("node returned a malformed invocation record response")
-	}
-	if !*response.OK {
-		return nodes.InvocationRecord{}, fmt.Errorf(
-			"node invocation record request failed (%s): %s",
-			response.Error.Code,
-			response.Error.Message,
+		return nodes.InvocationRecord{}, nodes.NewInvocationQueryError(
+			nodes.InvocationQueryRejected,
+			errors.New("node returned a malformed invocation record response"),
 		)
 	}
-	return decodeInvocationRecord(response.Result, nodeID, invocationID)
+	if !*response.OK {
+		return nodes.InvocationRecord{}, nodes.NewInvocationQueryError(response.Error.Code, nil)
+	}
+	record, err := decodeInvocationRecord(response.Result, nodeID, invocationID)
+	if err != nil {
+		return nodes.InvocationRecord{}, nodes.NewInvocationQueryError(nodes.InvocationQueryRejected, err)
+	}
+	return record, nil
+}
+
+func classifyInvocationQueryTransportError(err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return nodes.NewInvocationQueryError(nodes.InvocationQueryTimeout, err)
+	case errors.Is(err, context.Canceled):
+		return nodes.NewInvocationQueryError(nodes.InvocationQueryCanceled, err)
+	case errors.Is(err, ErrNodeDisconnected):
+		return nodes.NewInvocationQueryError(nodes.InvocationQueryNodeUnavailable, err)
+	default:
+		return nodes.NewInvocationQueryError(nodes.InvocationQueryTransportUnavailable, err)
+	}
 }
 
 func decodeInvocationRecord(

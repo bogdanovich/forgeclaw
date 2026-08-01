@@ -380,7 +380,13 @@ func (source *nodeInvocationSource) QueryInvocation(
 	}
 	remote, err := handler.Invocation(ctx, nodeID, invocationID)
 	if err != nil {
-		return nodes.InvocationRecord{}, err
+		if _, classified := nodes.InvocationQueryErrorCode(err); classified {
+			return nodes.InvocationRecord{}, err
+		}
+		return nodes.InvocationRecord{}, nodes.NewInvocationQueryError(
+			nodes.InvocationQueryTransportUnavailable,
+			err,
+		)
 	}
 	if err := verifyRemoteInvocation(record, &remote); err != nil {
 		return nodes.InvocationRecord{}, err
