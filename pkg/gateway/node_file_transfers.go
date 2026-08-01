@@ -153,24 +153,18 @@ func (source *nodeFileTransferSource) SnapshotUploadArtifact(
 	store media.MediaStore,
 	mediaOwner media.MediaOwner,
 ) (nodes.TransferArtifactRecord, error) {
-	if source == nil || source.spool == nil || store == nil {
+	if source == nil || source.spool == nil {
 		return nodes.TransferArtifactRecord{}, errNodeDiscoveryAuthorityUnavailable
 	}
 	if maxBytes <= 0 || maxBytes > nodes.MaxTransferArtifactBytes {
 		return nodes.TransferArtifactRecord{}, nodes.ErrTransferSizeExceeded
 	}
-	ownedStore, ok := store.(ownedNodeTransferMediaStore)
-	if !ok {
-		return nodes.TransferArtifactRecord{}, nodes.ErrTransferArtifactNotFound
-	}
-	localPath, meta, resolveErr := ownedStore.ResolveOwnedWithMeta(
+	file, initial, meta, openErr := source.openUploadSource(
+		owner,
 		strings.TrimSpace(artifactRef),
+		store,
 		mediaOwner,
 	)
-	if resolveErr != nil {
-		return nodes.TransferArtifactRecord{}, nodes.ErrTransferArtifactNotFound
-	}
-	file, initial, openErr := openNodeTransferMedia(localPath)
 	if openErr != nil {
 		return nodes.TransferArtifactRecord{}, openErr
 	}
@@ -192,7 +186,7 @@ func (source *nodeFileTransferSource) SnapshotUploadArtifact(
 		Direction:       nodes.TransferDirectionUpload,
 		Target:          target,
 		ProfileRevision: profileRevision,
-		Filename:        safeNodeTransferFilename(meta.Filename, localPath),
+		Filename:        safeNodeTransferFilename(meta.Filename, initial.Name()),
 		ContentType:     safeNodeTransferContentType(meta.ContentType),
 		DeclaredSize:    size,
 		SHA256:          hex.EncodeToString(digest.Sum(nil)),
@@ -240,6 +234,42 @@ func (source *nodeFileTransferSource) SnapshotUploadArtifact(
 		committed = true
 	}
 	return retained, commitErr
+}
+
+func (source *nodeFileTransferSource) openUploadSource(
+	owner nodes.TransferArtifactOwner,
+	artifactRef string,
+	store media.MediaStore,
+	mediaOwner media.MediaOwner,
+) (*os.File, os.FileInfo, media.MediaMeta, error) {
+	if strings.HasPrefix(artifactRef, nodes.TransferArtifactRefPrefix) {
+		file, artifact, err := source.spool.ResolveRoutedDownload(owner, artifactRef)
+		if err != nil {
+			return nil, nil, media.MediaMeta{}, err
+		}
+		info, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return nil, nil, media.MediaMeta{}, statErr
+		}
+		return file, info, media.MediaMeta{
+			Filename:    artifact.Spec.Filename,
+			ContentType: artifact.Spec.ContentType,
+		}, nil
+	}
+	if store == nil {
+		return nil, nil, media.MediaMeta{}, nodes.ErrTransferArtifactNotFound
+	}
+	ownedStore, ok := store.(ownedNodeTransferMediaStore)
+	if !ok {
+		return nil, nil, media.MediaMeta{}, nodes.ErrTransferArtifactNotFound
+	}
+	localPath, meta, err := ownedStore.ResolveOwnedWithMeta(artifactRef, mediaOwner)
+	if err != nil {
+		return nil, nil, media.MediaMeta{}, nodes.ErrTransferArtifactNotFound
+	}
+	file, info, err := openNodeTransferMedia(localPath)
+	return file, info, meta, err
 }
 
 func (source *nodeFileTransferSource) InspectFile(

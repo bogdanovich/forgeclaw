@@ -125,6 +125,81 @@ func TestGatewayTransferSpoolBindsOwnerAndTransferIdentity(t *testing.T) {
 	}
 }
 
+func TestGatewayTransferSpoolReusesDownloadOnlyWithinRoutedOwner(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_800_000_000, 0)
+	store := openTestTransferSpool(t, now, 0, 0)
+	owner := testTransferOwner("actor-a")
+	content := []byte("downloaded payload")
+	spec := testTransferSpec(content, now)
+	writer, _, _, err := store.Begin(owner, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writeErr := writer.WriteChunk(1, content); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	committed, err := writer.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nextCall := owner
+	nextCall.ToolCallID = "tool-call-next"
+	file, retained, err := store.ResolveRoutedDownload(nextCall, committed.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatal(errors.Join(readErr, closeErr))
+	}
+	if string(got) != string(content) || retained.Ref != committed.Ref {
+		t.Fatalf("ResolveRoutedDownload() = %q, %#v", got, retained)
+	}
+
+	for name, mutate := range map[string]func(*TransferArtifactOwner){
+		"workspace": func(candidate *TransferArtifactOwner) { candidate.WorkspaceID = "other-workspace" },
+		"agent":     func(candidate *TransferArtifactOwner) { candidate.AgentID = "other-agent" },
+		"actor":     func(candidate *TransferArtifactOwner) { candidate.ActorID = "actor-b" },
+		"route":     func(candidate *TransferArtifactOwner) { candidate.RouteID = "other-route" },
+		"session":   func(candidate *TransferArtifactOwner) { candidate.SessionID = "other-session" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := nextCall
+			mutate(&candidate)
+			if _, _, resolveErr := store.ResolveRoutedDownload(candidate, committed.Ref); !errors.Is(
+				resolveErr,
+				ErrTransferArtifactNotFound,
+			) {
+				t.Fatalf("ResolveRoutedDownload() error = %v", resolveErr)
+			}
+		})
+	}
+
+	uploadSpec := spec
+	uploadSpec.TransferID = "transfer-upload"
+	uploadSpec.Direction = TransferDirectionUpload
+	uploadWriter, _, _, err := store.Begin(owner, uploadSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writeErr := uploadWriter.WriteChunk(1, content); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	upload, err := uploadWriter.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ResolveRoutedDownload(nextCall, upload.Ref); !errors.Is(
+		err,
+		ErrTransferArtifactNotFound,
+	) {
+		t.Fatalf("upload artifact reuse error = %v", err)
+	}
+}
+
 func TestGatewayTransferSpoolRetainsOneDeliveryClaimAcrossRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1_800_000_000, 0)
