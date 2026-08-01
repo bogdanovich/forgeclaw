@@ -561,6 +561,86 @@ func TestAgentLoop_Continue_WithMessages(t *testing.T) {
 	}
 }
 
+func TestAgentLoop_Continue_AcksSteeringAcceptedDuringActiveTurn(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				ContextManager:    "none",
+			},
+		},
+	}
+	msgBus := bus.NewMessageBus()
+	provider := &lateSteeringProvider{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	defer al.Close()
+	recordingBus := &recordingMessageBus{MessageBus: msgBus}
+	al.bus = recordingBus
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	scope := newRuntimeSessionScope(agent.Workspace, "test-session")
+	if err := al.enqueueSteeringMessageWithSender(
+		scope,
+		agent.ID,
+		"user-a",
+		providers.Message{Role: "user", Content: "initial", InboundSpoolID: "spool-initial"},
+	); err != nil {
+		t.Fatalf("enqueue initial steering: %v", err)
+	}
+
+	type continueResult struct {
+		response string
+		err      error
+	}
+	resultCh := make(chan continueResult, 1)
+	go func() {
+		response, err := al.Continue(t.Context(), tmpDir, scope.sessionKey, "test", "chat1")
+		resultCh <- continueResult{response: response, err: err}
+	}()
+
+	select {
+	case <-provider.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for standalone continuation to start")
+	}
+	if err := al.enqueueSteeringMessageWithSender(
+		scope,
+		agent.ID,
+		"user-a",
+		providers.Message{Role: "user", Content: "active", InboundSpoolID: "spool-active"},
+	); err != nil {
+		t.Fatalf("enqueue active steering: %v", err)
+	}
+	close(provider.releaseFirstCall)
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Continue() error = %v", result.err)
+		}
+		if result.response != "continued response" {
+			t.Fatalf("Continue() response = %q", result.response)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for standalone continuation")
+	}
+
+	acked, released := recordingBus.ownershipIDs()
+	if !containsExactly(acked, "spool-initial", "spool-active") || len(released) != 0 {
+		t.Fatalf("standalone continuation ownership = acked:%v released:%v", acked, released)
+	}
+}
+
 // slowTool simulates a tool that takes some time to execute.
 type slowTool struct {
 	name     string
@@ -778,7 +858,15 @@ type recordingMessageBus struct {
 	interfaces.MessageBus
 
 	mu          sync.Mutex
+	ackedIDs    []string
 	releasedIDs []string
+}
+
+func (b *recordingMessageBus) AckInbound(ctx context.Context, msg bus.InboundMessage) error {
+	b.mu.Lock()
+	b.ackedIDs = append(b.ackedIDs, msg.SpoolID)
+	b.mu.Unlock()
+	return b.MessageBus.AckInbound(ctx, msg)
 }
 
 func (b *recordingMessageBus) ReleaseInbound(
@@ -796,6 +884,12 @@ func (b *recordingMessageBus) releaseCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.releasedIDs)
+}
+
+func (b *recordingMessageBus) ownershipIDs() (acked, released []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.ackedIDs...), append([]string(nil), b.releasedIDs...)
 }
 
 type fixedTranscriber struct {

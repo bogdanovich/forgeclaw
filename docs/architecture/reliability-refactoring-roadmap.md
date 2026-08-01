@@ -66,10 +66,8 @@ The aggregated final response path calls `MessageBus.PublishOutbound`, ignores i
 the turn as handled. The inbound coordinator subsequently acknowledges the durable ingress item. The outbound bus is
 an in-memory buffered channel, and shutdown drains queued outbound values without persisting or delivering them.
 
-This permits two loss cases:
-
-- bus admission fails, but the inbound item is still acknowledged;
-- bus admission succeeds and the process exits after inbound acknowledgement but before channel delivery.
+This permits the inbound item to be acknowledged even when bus admission fails. A separate loss window remains after
+successful in-memory admission and is owned by R2.
 
 #### Direction
 
@@ -82,7 +80,8 @@ This permits two loss cases:
 #### Acceptance Criteria
 
 - Tests prove that a closed bus, cancelled context, and rejected channel queue cannot produce an inbound ack.
-- Successful acknowledgement requires synchronous delivery success or durable ownership transfer.
+- Successful acknowledgement requires intentional no-output or suppression, synchronous delivery success, or
+  successful transfer to the current outbound owner. R2 upgrades that ownership transfer from memory to durable state.
 - Existing final reply, streaming, steering, and message-tool suppression behavior remains covered.
 
 ### R1: Canonical Session Writes Fail Open

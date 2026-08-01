@@ -479,8 +479,7 @@ func (al *AgentLoop) continueWithSteeringMessages(
 	senderID string,
 	modelBinding effectiveModelBinding,
 	steeringMsgs []providers.Message,
-	observeTurn func(runtimeevents.TraceScope),
-	observeFinalResponse func(bus.OutboundMetadata),
+	observation *finalDeliveryObservation,
 ) (string, error) {
 	routeSessionKey := sessionKey
 	if scope != nil && strings.TrimSpace(scope.RouteScopeKey) != "" {
@@ -506,9 +505,8 @@ func (al *AgentLoop) continueWithSteeringMessages(
 		DefaultResponse:          defaultResponse,
 		EnableSummary:            true,
 		SendResponse:             false,
-		ExpectFinalDelivery:      observeTurn != nil,
-		ObserveFinalDeliveryTurn: observeTurn,
-		ObserveFinalResponse:     observeFinalResponse,
+		ExpectFinalDelivery:      observation != nil,
+		FinalDeliveryObservation: observation,
 		InitialSteeringMessages:  steeringMsgs,
 		SkipInitialSteeringPoll:  true,
 	})
@@ -647,14 +645,19 @@ func (al *AgentLoop) continueRuntimeSession(
 		steeringBatch.senderID,
 		modelBinding,
 		steeringMsgs,
-		target.ObserveFinalDeliveryTurn,
-		target.observeFinalResponse,
+		target.heldFinalDeliveryObservation(),
 	)
 	if err != nil {
 		al.releaseSteeringMessages(context.Background(), steeringMsgs, err)
 		return response, err
 	}
-	al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
+	if strings.TrimSpace(response) == "" {
+		al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
+	} else if target.holdSteeringSettlement {
+		target.unsettledSteering = append(target.unsettledSteering, steeringMsgs...)
+	} else {
+		al.ackAcceptedSteeringMessages(context.Background(), steeringMsgs)
+	}
 	return response, err
 }
 

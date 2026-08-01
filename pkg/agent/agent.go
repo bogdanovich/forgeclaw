@@ -117,34 +117,39 @@ type processOptions struct {
 	UserMessage                 string             // User message content (may include prefix)
 	ForcedSkills                []string           // Skills explicitly requested for this message
 	TurnProfile                 config.EffectiveTurnProfile
-	SystemPromptOverride        string                         // Override the default system prompt (Used by SubTurns)
-	Media                       []string                       // media:// refs from inbound message
-	InitialSteeringMessages     []providers.Message            // Steering messages from refactor/agent
-	ActiveGoal                  string                         // Dynamic session goal reminder for normal LLM turns
-	DefaultResponse             string                         // Response when LLM returns empty
-	EnableSummary               bool                           // Whether to trigger summarization
-	SendResponse                bool                           // Whether to send response via bus
-	ExpectFinalDelivery         bool                           // Whether an outer coordinator will publish the final response
-	ObserveFinalDeliveryTurn    func(runtimeevents.TraceScope) // Records turns settled by an outer final response
-	ObserveFinalResponse        func(bus.OutboundMetadata)     // Preserves metadata for an outer final response
-	AllowInterimMintClawPublish bool                           // Whether mintclaw tool-call interim text can be published when SendResponse is false
-	SuppressToolUserDelivery    bool                           // Whether direct user-facing delivery from tools is suppressed for this turn
-	SuppressToolFeedback        bool                           // Whether to suppress inline tool feedback messages
-	NoHistory                   bool                           // If true, don't load session history (for heartbeat)
-	SkipInitialSteeringPoll     bool                           // If true, skip the steering poll at loop start (used by Continue)
-	InboundContext              *bus.InboundContext            // Normalized inbound facts for events/hooks
-	RouteResult                 *routing.ResolvedRoute         // Route decision snapshot for events/hooks
-	SessionScope                *session.SessionScope          // Session scope snapshot for events/hooks
+	SystemPromptOverride        string                    // Override the default system prompt (Used by SubTurns)
+	Media                       []string                  // media:// refs from inbound message
+	InitialSteeringMessages     []providers.Message       // Steering messages from refactor/agent
+	ActiveGoal                  string                    // Dynamic session goal reminder for normal LLM turns
+	DefaultResponse             string                    // Response when LLM returns empty
+	EnableSummary               bool                      // Whether to trigger summarization
+	SendResponse                bool                      // Whether to send response via bus
+	ExpectFinalDelivery         bool                      // Whether an outer coordinator will publish the final response
+	FinalDeliveryObservation    *finalDeliveryObservation // Collects state settled by an outer final response
+	AllowInterimMintClawPublish bool                      // Whether mintclaw tool-call interim text can be published when SendResponse is false
+	SuppressToolUserDelivery    bool                      // Whether direct user-facing delivery from tools is suppressed for this turn
+	SuppressToolFeedback        bool                      // Whether to suppress inline tool feedback messages
+	NoHistory                   bool                      // If true, don't load session history (for heartbeat)
+	SkipInitialSteeringPoll     bool                      // If true, skip the steering poll at loop start (used by Continue)
+	InboundContext              *bus.InboundContext       // Normalized inbound facts for events/hooks
+	RouteResult                 *routing.ResolvedRoute    // Route decision snapshot for events/hooks
+	SessionScope                *session.SessionScope     // Session scope snapshot for events/hooks
 }
 
 type continuationTarget struct {
-	AgentID                  string
-	SessionKey               string
-	Channel                  string
-	ChatID                   string
-	Workspace                string
-	ObserveFinalDeliveryTurn func(runtimeevents.TraceScope)
-	responseMetadata         bus.OutboundMetadata
+	finalDeliveryObservation
+	AgentID                string
+	SessionKey             string
+	Channel                string
+	ChatID                 string
+	Workspace              string
+	holdSteeringSettlement bool
+}
+
+type finalDeliveryObservation struct {
+	traceScopes       []runtimeevents.TraceScope
+	responseMetadata  bus.OutboundMetadata
+	unsettledSteering []providers.Message
 }
 
 const (
@@ -518,8 +523,10 @@ func (al *AgentLoop) runAgentLoop(
 			"media_count": len(opts.Dispatch.Media),
 		})
 	}
-	if opts.ObserveFinalDeliveryTurn != nil {
-		opts.ObserveFinalDeliveryTurn(runtimeevents.NewTraceScope(turnScope.workspace, turnScope.turnID))
+	if opts.FinalDeliveryObservation != nil {
+		opts.FinalDeliveryObservation.observeTurn(
+			runtimeevents.NewTraceScope(turnScope.workspace, turnScope.turnID),
+		)
 	}
 	pipeline := NewPipeline(al)
 	result, err := al.runTurn(ctx, ts, pipeline)
@@ -529,10 +536,10 @@ func (al *AgentLoop) runAgentLoop(
 	if opts.TurnStatus != nil {
 		*opts.TurnStatus = result.status
 	}
-	if opts.ObserveFinalResponse != nil &&
+	if opts.FinalDeliveryObservation != nil &&
 		result.status != TurnEndStatusAborted &&
 		result.status != TurnEndStatusSuspended {
-		opts.ObserveFinalResponse(outboundMetadataForTurnResult(result))
+		opts.FinalDeliveryObservation.observeResponse(outboundMetadataForTurnResult(result))
 	}
 	if result.status == TurnEndStatusAborted {
 		return "", nil
