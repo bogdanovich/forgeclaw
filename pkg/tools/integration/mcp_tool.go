@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
@@ -496,8 +497,6 @@ func (t *MCPTool) persistLargeTextArtifact(text string) *ToolResult {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return t.largeTextArtifactFallback(text, err)
 	}
-	// TODO: Add lifecycle cleanup/retention for MCP artifact files.
-
 	pattern := fmt.Sprintf(
 		"%s_%s_*.txt",
 		sanitizeIdentifierComponent(t.serverName),
@@ -517,6 +516,27 @@ func (t *MCPTool) persistLargeTextArtifact(text string) *ToolResult {
 		_ = os.Remove(path)
 		return t.largeTextArtifactFallback(text, err)
 	}
+	if t.mediaStore == nil {
+		_ = os.Remove(path)
+		return t.largeTextArtifactFallback(text, errors.New("media store is unavailable"))
+	}
+
+	scope := fmt.Sprintf(
+		"tool:mcp:%s:%s:text:%s",
+		sanitizeIdentifierComponent(t.serverName),
+		sanitizeIdentifierComponent(t.tool.Name),
+		uuid.NewString(),
+	)
+	_, err = t.mediaStore.Store(path, media.MediaMeta{
+		Filename:      filepath.Base(path),
+		ContentType:   "text/plain",
+		Source:        mcpArtifactSource(t.serverName, t.tool.Name),
+		CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+	}, scope)
+	if err != nil {
+		_ = os.Remove(path)
+		return t.largeTextArtifactFallback(text, err)
+	}
 
 	return &ToolResult{
 		ForLLM: fmt.Sprintf(
@@ -525,6 +545,14 @@ func (t *MCPTool) persistLargeTextArtifact(text string) *ToolResult {
 		),
 		ArtifactTags: []string{"[file:" + path + "]"},
 	}
+}
+
+func mcpArtifactSource(serverName, toolName string) string {
+	return fmt.Sprintf(
+		"tool:mcp:%s:%s",
+		sanitizeIdentifierComponent(serverName),
+		sanitizeIdentifierComponent(toolName),
+	)
 }
 
 func (t *MCPTool) largeTextArtifactFallback(text string, err error) *ToolResult {
@@ -641,11 +669,7 @@ func (t *MCPTool) storeBinaryContent(
 	ref, err := t.mediaStore.Store(tmpPath, media.MediaMeta{
 		Filename:    filename,
 		ContentType: mimeType,
-		Source: fmt.Sprintf(
-			"tool:mcp:%s:%s",
-			sanitizeIdentifierComponent(t.serverName),
-			sanitizeIdentifierComponent(t.tool.Name),
-		),
+		Source:      mcpArtifactSource(t.serverName, t.tool.Name),
 	}, scope)
 	if err != nil {
 		_ = os.Remove(tmpPath)

@@ -23,6 +23,31 @@ type MockMCPManager struct {
 	callToolFunc func(ctx context.Context, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error)
 }
 
+type capturingMediaStore struct {
+	media.MediaStore
+	path     string
+	meta     media.MediaMeta
+	scope    string
+	storeErr error
+}
+
+func (s *capturingMediaStore) Store(
+	localPath string,
+	meta media.MediaMeta,
+	scope string,
+) (string, error) {
+	s.path = localPath
+	s.meta = meta
+	s.scope = scope
+	if s.storeErr != nil {
+		return "", s.storeErr
+	}
+	if s.MediaStore != nil {
+		return s.MediaStore.Store(localPath, meta, scope)
+	}
+	return "media://captured", nil
+}
+
 func (m *MockMCPManager) CallTool(
 	ctx context.Context,
 	serverName, toolName string,
@@ -806,6 +831,7 @@ func TestMCPTool_Execute_LargeBase64TextIsOmittedFromContext(t *testing.T) {
 
 func TestMCPTool_Execute_LargeBase64TextArtifactPreservesRawPayload(t *testing.T) {
 	workspace := t.TempDir()
+	store := media.NewFileMediaStore()
 	largeBase64 := strings.Repeat("QUJD", 400)
 	manager := &MockMCPManager{
 		callToolFunc: func(ctx context.Context, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
@@ -818,6 +844,7 @@ func TestMCPTool_Execute_LargeBase64TextArtifactPreservesRawPayload(t *testing.T
 	}
 
 	mcpTool := NewMCPTool(manager, "test_server", &mcp.Tool{Name: "dump_payload"})
+	mcpTool.SetMediaStore(store)
 	mcpTool.SetWorkspace(workspace)
 	mcpTool.SetMaxInlineTextRunes(32)
 
@@ -849,6 +876,7 @@ func TestMCPTool_Execute_LargeBase64TextArtifactPreservesRawPayload(t *testing.T
 
 func TestMCPTool_Execute_LargeTextStoredAsArtifact(t *testing.T) {
 	workspace := t.TempDir()
+	store := &capturingMediaStore{MediaStore: media.NewFileMediaStore()}
 	largeText := strings.Repeat("This is a large MCP text payload.\n", 800)
 	manager := &MockMCPManager{
 		callToolFunc: func(ctx context.Context, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
@@ -861,6 +889,7 @@ func TestMCPTool_Execute_LargeTextStoredAsArtifact(t *testing.T) {
 	}
 
 	mcpTool := NewMCPTool(manager, "test_server", &mcp.Tool{Name: "dump_payload"})
+	mcpTool.SetMediaStore(store)
 	mcpTool.SetWorkspace(workspace)
 
 	result := mcpTool.Execute(context.Background(), nil)
@@ -890,10 +919,38 @@ func TestMCPTool_Execute_LargeTextStoredAsArtifact(t *testing.T) {
 	if string(data) != strings.TrimSpace(largeText) {
 		t.Fatalf("expected artifact file contents to match source text")
 	}
+	if store.path != path {
+		t.Fatalf("registered path = %q, want %q", store.path, path)
+	}
+	if store.meta.ContentType != "text/plain" ||
+		store.meta.Source != "tool:mcp:test_server:dump_payload" ||
+		store.meta.CleanupPolicy != media.CleanupPolicyDeleteOnCleanup {
+		t.Fatalf("registered metadata = %+v", store.meta)
+	}
+	if store.meta.Filename != filepath.Base(path) {
+		t.Fatalf("registered filename = %q, want %q", store.meta.Filename, filepath.Base(path))
+	}
+	if !strings.HasPrefix(store.scope, "tool:mcp:test_server:dump_payload:text:") || len(store.scope) > 256 {
+		t.Fatalf("registered scope = %q", store.scope)
+	}
+	neighbor := filepath.Join(filepath.Dir(path), "operator-owned.txt")
+	if err := os.WriteFile(neighbor, []byte("retain"), 0o600); err != nil {
+		t.Fatalf("WriteFile(neighbor) error = %v", err)
+	}
+	if err := store.ReleaseAll(store.scope); err != nil {
+		t.Fatalf("ReleaseAll() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("artifact still exists after MediaStore cleanup: %v", err)
+	}
+	if data, err := os.ReadFile(neighbor); err != nil || string(data) != "retain" {
+		t.Fatalf("MediaStore cleanup changed neighboring file: data=%q error=%v", data, err)
+	}
 }
 
 func TestMCPTool_Execute_CustomInlineTextThreshold(t *testing.T) {
 	workspace := t.TempDir()
+	store := media.NewFileMediaStore()
 	text := strings.Repeat("small custom threshold text\n", 20)
 	manager := &MockMCPManager{
 		callToolFunc: func(ctx context.Context, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
@@ -906,6 +963,7 @@ func TestMCPTool_Execute_CustomInlineTextThreshold(t *testing.T) {
 	}
 
 	mcpTool := NewMCPTool(manager, "test_server", &mcp.Tool{Name: "dump_payload"})
+	mcpTool.SetMediaStore(store)
 	mcpTool.SetWorkspace(workspace)
 	mcpTool.SetMaxInlineTextRunes(32)
 
@@ -950,6 +1008,71 @@ func TestMCPTool_Execute_LargeTextArtifactFailureStillOmitsContext(t *testing.T)
 	}
 	if len(result.ArtifactTags) != 0 {
 		t.Fatalf("expected no artifact tags on persistence failure, got %+v", result.ArtifactTags)
+	}
+}
+
+func TestMCPTool_Execute_LargeTextRegistrationFailureDeletesArtifact(t *testing.T) {
+	workspace := t.TempDir()
+	store := &capturingMediaStore{storeErr: errors.New("index unavailable")}
+	largeText := strings.Repeat("This is a large MCP text payload.\n", 800)
+	manager := &MockMCPManager{
+		callToolFunc: func(
+			context.Context,
+			string,
+			string,
+			map[string]any,
+		) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: largeText}},
+			}, nil
+		},
+	}
+
+	mcpTool := NewMCPTool(manager, "test_server", &mcp.Tool{Name: "dump_payload"})
+	mcpTool.SetWorkspace(workspace)
+	mcpTool.SetMediaStore(store)
+	result := mcpTool.Execute(context.Background(), nil)
+
+	if !strings.Contains(result.ForLLM, "artifact persistence failed") || len(result.ArtifactTags) != 0 {
+		t.Fatalf("Execute() result = %+v, want bounded registration failure", result)
+	}
+	if store.path == "" {
+		t.Fatal("MediaStore.Store() was not called")
+	}
+	if _, err := os.Stat(store.path); !os.IsNotExist(err) {
+		t.Fatalf("unregistered artifact still exists: %v", err)
+	}
+}
+
+func TestMCPTool_Execute_LargeTextWithoutMediaStoreLeavesNoArtifact(t *testing.T) {
+	workspace := t.TempDir()
+	largeText := strings.Repeat("This is a large MCP text payload.\n", 800)
+	manager := &MockMCPManager{
+		callToolFunc: func(
+			context.Context,
+			string,
+			string,
+			map[string]any,
+		) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: largeText}},
+			}, nil
+		},
+	}
+
+	mcpTool := NewMCPTool(manager, "test_server", &mcp.Tool{Name: "dump_payload"})
+	mcpTool.SetWorkspace(workspace)
+	result := mcpTool.Execute(context.Background(), nil)
+
+	if !strings.Contains(result.ForLLM, "artifact persistence failed") || len(result.ArtifactTags) != 0 {
+		t.Fatalf("Execute() result = %+v, want bounded unavailable-store failure", result)
+	}
+	entries, err := os.ReadDir(filepath.Join(workspace, ".artifacts", "mcp"))
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifact directory contains unmanaged files: %+v", entries)
 	}
 }
 
