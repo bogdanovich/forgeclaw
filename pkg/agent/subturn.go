@@ -787,8 +787,10 @@ func (e *ephemeralSessionStore) AppendTurnMessage(
 	_ string,
 	msg providers.Message,
 ) error {
-	if err := context.Cause(ctx); err != nil {
-		return err
+	if ctx != nil {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 	}
 	e.AddFullMessage("", msg)
 	return nil

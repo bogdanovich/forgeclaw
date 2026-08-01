@@ -144,11 +144,11 @@ func (b *JSONLBackend) AppendTurnMessage(
 	sessionKey string,
 	msg providers.Message,
 ) error {
-	if err := context.Cause(ctx); err != nil {
+	if err := contextCause(ctx); err != nil {
 		return err
 	}
 	sessionKey = b.resolveSessionKey(ctx, sessionKey)
-	if err := context.Cause(ctx); err != nil {
+	if err := contextCause(ctx); err != nil {
 		return err
 	}
 	return b.store.AddFullMessage(ctx, sessionKey, msg)

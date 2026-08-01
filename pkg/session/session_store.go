@@ -47,6 +47,13 @@ type TurnJournal interface {
 	AppendTurnMessage(ctx context.Context, sessionKey string, msg providers.Message) error
 }
 
+func contextCause(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return context.Cause(ctx)
+}
+
 // HistoryRevisionProvider exposes a cheap identity for the canonical history.
 // Context caches use it to avoid rereading unchanged histories at startup.
 type HistoryRevisionProvider interface {

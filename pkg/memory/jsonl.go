@@ -75,6 +75,13 @@ type JSONLStore struct {
 	journalFault func(jsonlJournalWriteStage) error
 }
 
+func contextCause(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return context.Cause(ctx)
+}
+
 type jsonlJournalWriteStage string
 
 const (
@@ -696,7 +703,7 @@ func (s *JSONLStore) AddFullMessage(
 
 // addMsg is the shared implementation for AddMessage and AddFullMessage.
 func (s *JSONLStore) addMsg(ctx context.Context, sessionKey string, msg providers.Message) error {
-	if err := context.Cause(ctx); err != nil {
+	if err := contextCause(ctx); err != nil {
 		return err
 	}
 	if messageutil.IsTransientAssistantThoughtMessage(msg) {
@@ -706,7 +713,7 @@ func (s *JSONLStore) addMsg(ctx context.Context, sessionKey string, msg provider
 	l := s.sessionLock(sessionKey)
 	l.Lock()
 	defer l.Unlock()
-	if err := context.Cause(ctx); err != nil {
+	if err := contextCause(ctx); err != nil {
 		return err
 	}
 

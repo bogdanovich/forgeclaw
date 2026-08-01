@@ -152,7 +152,7 @@ func (sm *SessionManager) AppendTurnMessage(
 	sessionKey string,
 	msg providers.Message,
 ) error {
-	if err := context.Cause(ctx); err != nil {
+	if err := contextCause(ctx); err != nil {
 		return err
 	}
 	if messageutil.IsTransientAssistantThoughtMessage(msg) {
@@ -161,7 +161,7 @@ func (sm *SessionManager) AppendTurnMessage(
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	if err := context.Cause(ctx); err != nil {
+	if err := contextCause(ctx); err != nil {
 		return err
 	}
 

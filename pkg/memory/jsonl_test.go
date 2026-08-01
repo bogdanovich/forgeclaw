@@ -68,6 +68,17 @@ func TestJSONLStoreCanceledTurnJournalWaitDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestJSONLStoreLegacyNilContextStillAppends(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.AddFullMessage(nil, "turn", providers.Message{Role: "user", Content: "legacy"}); err != nil {
+		t.Fatalf("AddFullMessage(nil) error = %v", err)
+	}
+	history, err := store.GetHistory(t.Context(), "turn")
+	if err != nil || len(history) != 1 || history[0].Content != "legacy" {
+		t.Fatalf("GetHistory() = %+v, %v", history, err)
+	}
+}
+
 func newTestStore(t *testing.T) *JSONLStore {
 	t.Helper()
 	store, err := NewJSONLStore(t.TempDir())
