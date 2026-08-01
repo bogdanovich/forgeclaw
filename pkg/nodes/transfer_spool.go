@@ -539,6 +539,40 @@ func (store *GatewayTransferSpool) ResolveOwned(
 	return store.openCommittedLocked(record)
 }
 
+// ResolveRoutedDownload opens a committed download for a later upload in the
+// same durable routed authority. The originating and consuming tool calls are
+// necessarily different, so the opaque reference is authorized by every
+// retained owner dimension except ToolCallID. Upload artifacts are never
+// reusable through this path.
+func (store *GatewayTransferSpool) ResolveRoutedDownload(
+	owner TransferArtifactOwner,
+	ref string,
+) (*os.File, TransferArtifactRecord, error) {
+	if err := owner.Validate(); err != nil {
+		return nil, TransferArtifactRecord{}, err
+	}
+	artifactID, err := parseTransferArtifactRef(ref)
+	if err != nil {
+		return nil, TransferArtifactRecord{}, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return nil, TransferArtifactRecord{}, ErrTransferSpoolClosed
+	}
+	if cleanupErr := store.cleanupExpiredLocked(store.now()); cleanupErr != nil {
+		return nil, TransferArtifactRecord{}, cleanupErr
+	}
+	record, found := store.records[artifactID]
+	if !found ||
+		record.State != TransferArtifactCommitted ||
+		record.Spec.Direction != TransferDirectionDownload ||
+		!sameTransferArtifactRoute(record.Owner, owner) {
+		return nil, TransferArtifactRecord{}, ErrTransferArtifactNotFound
+	}
+	return store.openCommittedLocked(record)
+}
+
 // LookupTransfer returns the artifact owned by one transfer identity without
 // making the opaque reference bearer authority.
 func (store *GatewayTransferSpool) LookupTransfer(
@@ -1090,6 +1124,14 @@ func sameTransferArtifactIdentity(
 		record.Spec.Direction == spec.Direction &&
 		record.Spec.Target == spec.Target &&
 		record.Spec.ProfileRevision == spec.ProfileRevision
+}
+
+func sameTransferArtifactRoute(left, right TransferArtifactOwner) bool {
+	return left.WorkspaceID == right.WorkspaceID &&
+		left.AgentID == right.AgentID &&
+		left.ActorID == right.ActorID &&
+		left.RouteID == right.RouteID &&
+		left.SessionID == right.SessionID
 }
 
 func isTransferArtifactDataName(name string) bool {

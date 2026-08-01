@@ -296,6 +296,86 @@ func TestNodeFileTransferSnapshotsOnlyRetainedMedia(t *testing.T) {
 	}
 }
 
+func TestNodeFileTransferSnapshotsRoutedDownloadForUpload(t *testing.T) {
+	workspace := t.TempDir()
+	spool, err := nodes.NewGatewayTransferSpool(
+		filepath.Join(workspace, "spool"),
+		8,
+		1024*1024,
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = spool.Close() })
+	content := []byte("download then upload")
+	digest := sha256.Sum256(content)
+	downloadOwner := testNodeTransferOwner()
+	writer, _, created, err := spool.Begin(downloadOwner, nodes.TransferArtifactSpec{
+		TransferID:      "transfer-download-source",
+		Direction:       nodes.TransferDirectionDownload,
+		Target:          "personal-vpn",
+		ProfileRevision: "profile-v1",
+		Filename:        "round-trip.bin",
+		ContentType:     "application/octet-stream",
+		DeclaredSize:    int64(len(content)),
+		SHA256:          hex.EncodeToString(digest[:]),
+		ExpiresAt:       time.Now().Add(5 * time.Minute).Unix(),
+	})
+	if err != nil || !created {
+		t.Fatalf("Begin() = (%v, %v)", created, err)
+	}
+	if writeErr := writer.WriteChunk(1, content); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	download, err := writer.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := &nodeFileTransferSource{spool: spool, workspace: workspace}
+	uploadOwner := downloadOwner
+	uploadOwner.ToolCallID = "tool-call-upload"
+	upload, err := source.SnapshotUploadArtifact(
+		t.Context(),
+		uploadOwner,
+		"transfer-upload-copy",
+		"personal-vpn",
+		"profile-v1",
+		time.Now().Add(5*time.Minute).Unix(),
+		1024,
+		download.Ref,
+		nil,
+		media.MediaOwner{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upload.Spec.Direction != nodes.TransferDirectionUpload ||
+		upload.Spec.DeclaredSize != int64(len(content)) ||
+		upload.Spec.SHA256 != hex.EncodeToString(digest[:]) ||
+		upload.Spec.Filename != "round-trip.bin" {
+		t.Fatalf("upload snapshot = %#v", upload)
+	}
+
+	otherActor := uploadOwner
+	otherActor.ActorID = "actor-2"
+	if _, err := source.SnapshotUploadArtifact(
+		t.Context(),
+		otherActor,
+		"transfer-upload-other-actor",
+		"personal-vpn",
+		"profile-v1",
+		time.Now().Add(5*time.Minute).Unix(),
+		1024,
+		download.Ref,
+		nil,
+		media.MediaOwner{},
+	); !errors.Is(err, nodes.ErrTransferArtifactNotFound) {
+		t.Fatalf("cross-actor download snapshot error = %v", err)
+	}
+}
+
 func TestNodeFileTransferHandoffClaimsOneRoutedDelivery(t *testing.T) {
 	workspace := t.TempDir()
 	spool, err := nodes.NewGatewayTransferSpool(
