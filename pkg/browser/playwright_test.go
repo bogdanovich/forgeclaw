@@ -107,9 +107,9 @@ func TestPlaywrightWorkerFactoryOwnsPrivateClientAndMapsAdmittedCalls(t *testing
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	worker, ok := opened.(*playwrightWorker)
+	worker, ok := opened.Owner.(*playwrightWorker)
 	if !ok {
-		t.Fatalf("Open() worker type = %T", opened)
+		t.Fatalf("Open() worker type = %T", opened.Owner)
 	}
 	if len(worker.catalogRevision) != 64 {
 		t.Fatalf("catalog revision = %q", worker.catalogRevision)
@@ -202,13 +202,78 @@ func TestPlaywrightWorkerFactoryRejectsIncompatibleCatalog(t *testing.T) {
 			}
 			client := &fakePlaywrightClient{catalog: test.catalog}
 			factory.clientFactory = func() playwrightMCPClient { return client }
-			_, err = factory.Open(context.Background(), WorkerOpenRequest{
+			opened, openErr := factory.Open(context.Background(), WorkerOpenRequest{
 				SessionID: "session_1", Target: "gateway", Profile: "managed", DryRun: true,
 			})
-			if !errors.Is(err, ErrDriverIncompatible) || client.closeCalls != 1 {
-				t.Fatalf("Open() error = %v, client closes = %d", err, client.closeCalls)
+			if !errors.Is(openErr, ErrDriverIncompatible) || opened.Owner == nil || client.closeCalls != 0 {
+				t.Fatalf("Open() = %+v, %v; client closes = %d", opened, openErr, client.closeCalls)
+			}
+			if err = opened.Owner.Close(context.Background()); err != nil || client.closeCalls != 1 {
+				t.Fatalf("cleanup Close() error = %v, client closes = %d", err, client.closeCalls)
 			}
 		})
+	}
+}
+
+func TestPlaywrightWorkerFactoryReturnsRetryableCleanupOwnerAfterCatalogFailure(t *testing.T) {
+	factory, err := NewPlaywrightWorkerFactory(admittedBrowserConfig())
+	if err != nil {
+		t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
+	}
+	client := &fakePlaywrightClient{
+		catalog: playwrightCatalogFixture()[:4], closeErr: errors.New("process tree still alive"),
+	}
+	factory.clientFactory = func() playwrightMCPClient { return client }
+	opened, err := factory.Open(context.Background(), WorkerOpenRequest{
+		SessionID: "session_1", Target: "gateway", Profile: "managed", DryRun: true,
+	})
+	if !errors.Is(err, ErrDriverIncompatible) || opened.Owner == nil {
+		t.Fatalf("Open() = %+v, %v; want cleanup owner and incompatible error", opened, err)
+	}
+	if err = opened.Owner.Close(context.Background()); !errors.Is(err, ErrWorkerUnavailable) ||
+		client.closeCalls != 1 {
+		t.Fatalf("first cleanup Close() error = %v, client closes = %d", err, client.closeCalls)
+	}
+	client.closeErr = nil
+	if err = opened.Owner.Close(context.Background()); err != nil || client.closeCalls != 2 {
+		t.Fatalf("second cleanup Close() error = %v, client closes = %d", err, client.closeCalls)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("failed startup replayed browser calls: %+v", client.calls)
+	}
+}
+
+func TestBrokerRetriesPlaywrightCleanupAfterCatalogFailure(t *testing.T) {
+	root := admittedBrowserConfig()
+	factory, err := NewPlaywrightWorkerFactory(root)
+	if err != nil {
+		t.Fatalf("NewPlaywrightWorkerFactory() error = %v", err)
+	}
+	client := &fakePlaywrightClient{
+		catalog: playwrightCatalogFixture()[:4], closeErr: errors.New("process tree still alive"),
+	}
+	factory.clientFactory = func() playwrightMCPClient { return client }
+	broker, err := NewBroker(root, NewMemoryStore(), factory)
+	if err != nil {
+		t.Fatalf("NewBroker() error = %v", err)
+	}
+	owner := testOwner()
+
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: config.BrowserDefaultTarget, Profile: config.BrowserDefaultProfile,
+	})
+	if !errors.Is(err, ErrWorkerUnavailable) || session.State != SessionClosing ||
+		client.closeCalls != 1 {
+		t.Fatalf("Open() = %+v, %v; client closes = %d", session, err, client.closeCalls)
+	}
+	client.closeErr = nil
+	lost, err := broker.Close(context.Background(), owner, session.ID)
+	if err != nil || lost.State != SessionLost || lost.SafeFailure != "worker_unavailable" ||
+		client.closeCalls != 2 {
+		t.Fatalf("Close() retry = %+v, %v; client closes = %d", lost, err, client.closeCalls)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("failed startup admitted browser calls: %+v", client.calls)
 	}
 }
 
@@ -352,7 +417,7 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	worker := opened.(*playwrightWorker)
+	worker := opened.Owner.(*playwrightWorker)
 	t.Cleanup(func() { _ = worker.Close(context.Background()) })
 	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixture.URL}); err != nil {
 		t.Fatalf("navigate error = %v", err)

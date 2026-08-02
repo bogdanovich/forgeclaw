@@ -148,16 +148,19 @@ func NewPlaywrightWorkerFactory(rootConfig *config.Config) (*PlaywrightWorkerFac
 func (factory *PlaywrightWorkerFactory) Open(
 	ctx context.Context,
 	request WorkerOpenRequest,
-) (Worker, error) {
+) (WorkerOpenResult, error) {
 	if factory == nil || factory.clientFactory == nil || request.Target != factory.target ||
 		request.Profile != factory.profile || !request.DryRun || !validIdentifier(request.SessionID) {
-		return nil, ErrDenied
+		return WorkerOpenResult{}, ErrDenied
 	}
 	client := factory.clientFactory()
 	if client == nil {
-		return nil, ErrWorkerUnavailable
+		return WorkerOpenResult{}, ErrWorkerUnavailable
 	}
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.WithoutCancel(ctx))
+	worker := &playwrightWorker{
+		client: client, limits: request.Limits.Effective(), cancelLifetime: cancelLifetime,
+	}
 	stopStartupCancellation := context.AfterFunc(ctx, cancelLifetime)
 	catalog, err := client.Connect(
 		lifetimeCtx,
@@ -166,25 +169,28 @@ func (factory *PlaywrightWorkerFactory) Open(
 	)
 	startupActive := stopStartupCancellation()
 	if err != nil {
-		cancelLifetime()
-		_ = client.Close()
-		return nil, ErrWorkerUnavailable
+		return failedPlaywrightOpen(worker, ErrWorkerUnavailable)
 	}
 	if !startupActive {
-		cancelLifetime()
-		_ = client.Close()
-		return nil, ErrWorkerUnavailable
+		return failedPlaywrightOpen(worker, ErrWorkerUnavailable)
 	}
 	catalogRevision, err := validatePlaywrightCatalog(catalog)
 	if err != nil {
-		cancelLifetime()
-		_ = client.Close()
-		return nil, ErrDriverIncompatible
+		return failedPlaywrightOpen(worker, ErrDriverIncompatible)
 	}
-	return &playwrightWorker{
-		client: client, limits: request.Limits.Effective(), catalogRevision: catalogRevision,
-		cancelLifetime: cancelLifetime,
-	}, nil
+	worker.catalogRevision = catalogRevision
+	return WorkerOpenResult{Owner: worker}, nil
+}
+
+func failedPlaywrightOpen(worker *playwrightWorker, err error) (WorkerOpenResult, error) {
+	if worker == nil {
+		return WorkerOpenResult{}, err
+	}
+	worker.closing = true
+	if worker.cancelLifetime != nil {
+		worker.cancelLifetime()
+	}
+	return WorkerOpenResult{Owner: worker}, err
 }
 
 type playwrightWorker struct {
