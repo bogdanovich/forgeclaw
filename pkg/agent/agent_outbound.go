@@ -282,8 +282,31 @@ func (al *AgentLoop) publishResponseWithMetadataAndScopes(
 	}
 	metadata.ApplyToContext(&msg.Context)
 	markFinalOutbound(&msg)
-	if err := al.bus.PublishOutbound(ctx, msg); err != nil {
+	durableAdmission, err := al.admitDurableMessage(ctx, workspace, msg)
+	if err != nil {
 		return rejectedFinalResponseAdmission(err)
+	}
+	msg = durableAdmission.message
+	if durableAdmission.durable && !durableAdmission.dispatch {
+		return finalResponseAdmission{status: finalResponseAdmissionAccepted}
+	}
+	if err := al.bus.PublishOutbound(ctx, msg); err != nil {
+		if durableAdmission.coordinator != nil {
+			if releaseErr := durableAdmission.coordinator.ReleaseAdmission(msg.DeliveryID); releaseErr != nil {
+				logger.ErrorCF("agent", "Failed to release durable outbound admission", map[string]any{
+					"delivery_id": msg.DeliveryID,
+					"error":       releaseErr.Error(),
+				})
+			}
+		}
+		return rejectedFinalResponseAdmission(err)
+	}
+	if durableAdmission.durable {
+		logger.DebugCF("agent", "Transferred final response to durable outbox", map[string]any{
+			"delivery_id": msg.DeliveryID,
+			"channel":     msg.Context.Channel,
+			"chat_id":     msg.Context.ChatID,
+		})
 	}
 	return finalResponseAdmission{status: finalResponseAdmissionAccepted}
 }

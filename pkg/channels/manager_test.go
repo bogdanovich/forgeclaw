@@ -32,6 +32,46 @@ type mockChannel struct {
 	lastPlaceholderID string
 }
 
+type recordingDurableDelivery struct {
+	mu       sync.Mutex
+	begun    bool
+	beginIDs []string
+	outcomes []DurableDeliveryOutcome
+	complete chan struct{}
+}
+
+func (d *recordingDurableDelivery) BeginDelivery(deliveryID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.begun = true
+	d.beginIDs = append(d.beginIDs, deliveryID)
+	return nil
+}
+
+func (d *recordingDurableDelivery) CompleteDelivery(
+	_ string,
+	outcome DurableDeliveryOutcome,
+) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.outcomes = append(d.outcomes, outcome)
+	if d.complete != nil {
+		select {
+		case d.complete <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (d *recordingDurableDelivery) snapshot() (bool, []string, []DurableDeliveryOutcome) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.begun,
+		append([]string(nil), d.beginIDs...),
+		append([]DurableDeliveryOutcome(nil), d.outcomes...)
+}
+
 func (m *mockChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	m.sentMessages = append(m.sentMessages, msg)
 	if m.sendFn == nil {
@@ -6341,6 +6381,100 @@ func TestSendMessageDefiniteRetryOnlyStopsAfterAmbiguousFailure(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Fatalf("Send calls = %d, want 1 after ambiguous failure", callCount)
+	}
+}
+
+func TestSendMessagePersistsDurableBoundaryBeforeChannelCall(t *testing.T) {
+	m := newTestManager()
+	lifecycle := &recordingDurableDelivery{}
+	m.durableDelivery = lifecycle
+	ch := &mockChannel{sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+		begun, _, _ := lifecycle.snapshot()
+		if !begun {
+			t.Error("channel Send called before BeginDelivery")
+		}
+		return nil
+	}}
+	m.channels["test"] = ch
+	m.workers["test"] = &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	err := m.SendMessage(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		DeliveryID: "out_0123456789abcdef0123456789abcdef",
+		Channel:    "test",
+		ChatID:     "123",
+		Content:    "durable",
+	}))
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	_, beginIDs, outcomes := lifecycle.snapshot()
+	if len(beginIDs) != 1 || len(outcomes) != 1 || outcomes[0].Err != nil {
+		t.Fatalf("durable lifecycle = begin %#v outcomes %#v", beginIDs, outcomes)
+	}
+}
+
+func TestSendMessageDoesNotRetryAmbiguousDurableDelivery(t *testing.T) {
+	m := newTestManager()
+	lifecycle := &recordingDurableDelivery{}
+	m.durableDelivery = lifecycle
+	calls := 0
+	ch := &mockChannel{sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+		calls++
+		return fmt.Errorf("acceptance unknown: %w", ErrTemporary)
+	}}
+	m.channels["test"] = ch
+	m.workers["test"] = &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+
+	err := m.SendMessage(context.Background(), testOutboundMessage(bus.OutboundMessage{
+		DeliveryID: "out_0123456789abcdef0123456789abcdef",
+		Channel:    "test",
+		ChatID:     "123",
+		Content:    "do not retry",
+	}))
+	if err == nil {
+		t.Fatal("SendMessage() unexpectedly succeeded")
+	}
+	if calls != 1 {
+		t.Fatalf("Send calls = %d, want 1", calls)
+	}
+	_, _, outcomes := lifecycle.snapshot()
+	if len(outcomes) != 1 || !outcomes[0].MayHaveDelivered {
+		t.Fatalf("durable outcomes = %#v, want one ambiguous result", outcomes)
+	}
+}
+
+func TestRunWorkerPersistsDurableDeliveryOutcome(t *testing.T) {
+	m := newTestManager()
+	lifecycle := &recordingDurableDelivery{complete: make(chan struct{}, 1)}
+	m.durableDelivery = lifecycle
+	ch := &mockChannel{sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+		begun, _, _ := lifecycle.snapshot()
+		if !begun {
+			t.Error("worker called channel before BeginDelivery")
+		}
+		return nil
+	}}
+	w := newChannelWorker("test", ch, "test")
+	ctx, cancel := context.WithCancel(t.Context())
+	go m.runWorkerOwned(ctx, "test", w, nil)
+
+	w.queue <- testOutboundMessage(bus.OutboundMessage{
+		DeliveryID: "out_0123456789abcdef0123456789abcdef",
+		Channel:    "test",
+		ChatID:     "123",
+		Content:    "queued durable response",
+	})
+	select {
+	case <-lifecycle.complete:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not persist durable outcome")
+	}
+	cancel()
+	<-w.done
+
+	_, beginIDs, outcomes := lifecycle.snapshot()
+	if len(beginIDs) != 1 || len(outcomes) != 1 || outcomes[0].Err != nil {
+		t.Fatalf("durable lifecycle = begin %#v outcomes %#v", beginIDs, outcomes)
 	}
 }
 

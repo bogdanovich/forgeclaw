@@ -86,16 +86,17 @@ type deliveryOwner struct {
 }
 
 type Manager struct {
-	channels      map[string]Channel
-	bus           *bus.MessageBus
-	runtimeEvents runtimeevents.Bus
-	config        *config.Config
-	mediaStore    media.MediaStore
-	dispatchTask  *asyncTask
-	mux           *dynamicServeMux
-	httpServer    *http.Server
-	httpListeners []net.Listener
-	mu            sync.RWMutex
+	channels        map[string]Channel
+	bus             *bus.MessageBus
+	runtimeEvents   runtimeevents.Bus
+	durableDelivery DurableDeliveryLifecycle
+	config          *config.Config
+	mediaStore      media.MediaStore
+	dispatchTask    *asyncTask
+	mux             *dynamicServeMux
+	httpServer      *http.Server
+	httpListeners   []net.Listener
+	mu              sync.RWMutex
 	deliveryRegistry
 	deliveryInteractionState
 	streamDeliveryState
@@ -114,6 +115,13 @@ type ManagerOption func(*Manager)
 func WithRuntimeEvents(eventBus runtimeevents.Bus) ManagerOption {
 	return func(m *Manager) {
 		m.runtimeEvents = eventBus
+	}
+}
+
+// WithDurableDelivery installs the owner that persists channel send outcomes.
+func WithDurableDelivery(lifecycle DurableDeliveryLifecycle) ManagerOption {
+	return func(m *Manager) {
+		m.durableDelivery = lifecycle
 	}
 }
 
@@ -2140,22 +2148,35 @@ func (m *Manager) runWorkerOwned(
 			}
 
 			// Step 3: Send all chunks and publish one outcome for the logical message.
+			if err := m.beginDurableDelivery(msg.DeliveryID); err != nil {
+				m.publishOutboundFailed(name, msg, err, false)
+				continue
+			}
 			terminals := m.beginOutboundToolFeedbackTerminals(name, w.ch, msg)
 			var messageIDs []string
 			delivered := true
+			var deliveryResult DeliveryResult[bus.OutboundMessage]
 			for _, chunk := range chunks {
 				chunkMsg := msg
 				chunkMsg.Content = chunk
-				result := m.sendWithRetryPolicy(
-					ctx, name, w, chunkMsg, true, publishNoOutcome,
+				deliveryResult = m.sendWithRetryPolicy(
+					ctx, name, w, chunkMsg, msg.DeliveryID == "", publishNoOutcome,
 				)
-				if !result.Delivered() {
-					m.publishOutboundFailed(name, msg, result.Err, false)
+				if !deliveryResult.Delivered() {
+					m.publishOutboundFailed(name, msg, deliveryResult.Err, false)
 					delivered = false
 					break
 				}
-				messageIDs = append(messageIDs, result.MessageIDs...)
+				messageIDs = append(messageIDs, deliveryResult.MessageIDs...)
 			}
+			if delivered {
+				deliveryResult = SuccessfulDelivery[bus.OutboundMessage](messageIDs)
+			} else if len(messageIDs) > 0 {
+				deliveryResult.MessageIDs = append(messageIDs, deliveryResult.MessageIDs...)
+				deliveryResult.Status = DeliveryPartial
+				deliveryResult.Acceptance = DeliveryAcceptanceUnknown
+			}
+			m.completeDurableDelivery(msg.DeliveryID, deliveryResult)
 			m.completeToolFeedbackTerminals(ctx, terminals, delivered)
 			if delivered {
 				m.publishOutboundSent(name, msg, messageIDs)
@@ -2167,6 +2188,36 @@ func (m *Manager) runWorkerOwned(
 			m.failPendingOutbound(name, w.queue, ctx.Err())
 			return
 		}
+	}
+}
+
+func (m *Manager) beginDurableDelivery(deliveryID string) error {
+	if strings.TrimSpace(deliveryID) == "" || m == nil || m.durableDelivery == nil {
+		return nil
+	}
+	if err := m.durableDelivery.BeginDelivery(deliveryID); err != nil {
+		return fmt.Errorf("begin durable delivery %s: %w", deliveryID, err)
+	}
+	return nil
+}
+
+func (m *Manager) completeDurableDelivery(
+	deliveryID string,
+	result DeliveryResult[bus.OutboundMessage],
+) {
+	if strings.TrimSpace(deliveryID) == "" || m == nil || m.durableDelivery == nil {
+		return
+	}
+	if err := m.durableDelivery.CompleteDelivery(deliveryID, DurableDeliveryOutcome{
+		MessageIDs:       append([]string(nil), result.MessageIDs...),
+		RetryAfter:       result.RetryAfter,
+		Err:              result.Err,
+		MayHaveDelivered: result.MayHaveDelivered(),
+	}); err != nil {
+		logger.ErrorCF("channels", "Failed to persist durable delivery outcome", map[string]any{
+			"delivery_id": deliveryID,
+			"error":       err.Error(),
+		})
 	}
 }
 
@@ -2986,6 +3037,10 @@ func (m *Manager) sendMessageWithRetryPolicy(
 			outcome, channelName, msg, fmt.Errorf("channel %s has no active worker", channelName),
 		)
 	}
+	if err := m.beginDurableDelivery(msg.DeliveryID); err != nil {
+		return m.rejectMessageBeforeSend(outcome, channelName, msg, err)
+	}
+	retryAmbiguous = retryAmbiguous && msg.DeliveryID == ""
 	terminals := m.beginOutboundToolFeedbackTerminals(channelName, w.ch, msg)
 	terminalSucceeded := false
 	defer func() {
@@ -3007,6 +3062,12 @@ func (m *Manager) sendMessageWithRetryPolicy(
 			)
 			if !result.Delivered() {
 				logicalAmbiguous := result.MayHaveDelivered() || deliveredChunks > 0
+				result.MessageIDs = append(messageIDs, result.MessageIDs...)
+				if deliveredChunks > 0 {
+					result.Status = DeliveryPartial
+					result.Acceptance = DeliveryAcceptanceUnknown
+				}
+				m.completeDurableDelivery(msg.DeliveryID, result)
 				if outcome.failure(logicalAmbiguous) {
 					m.publishOutboundFailed(channelName, msg, result.Err, false)
 				}
@@ -3021,6 +3082,10 @@ func (m *Manager) sendMessageWithRetryPolicy(
 		if outcome.success() {
 			m.publishOutboundSent(channelName, msg, messageIDs)
 		}
+		m.completeDurableDelivery(
+			msg.DeliveryID,
+			SuccessfulDelivery[bus.OutboundMessage](messageIDs),
+		)
 		terminalSucceeded = true
 	} else {
 		if len(chunks) == 1 {
@@ -3030,11 +3095,13 @@ func (m *Manager) sendMessageWithRetryPolicy(
 			ctx, channelName, w, msg, retryAmbiguous, outcome,
 		)
 		if !result.Delivered() {
+			m.completeDurableDelivery(msg.DeliveryID, result)
 			return newDeliveryError(
 				fmt.Errorf("channel %s failed to deliver message: %w", channelName, result.Err),
 				result.MayHaveDelivered(),
 			)
 		}
+		m.completeDurableDelivery(msg.DeliveryID, result)
 		terminalSucceeded = true
 	}
 	return nil

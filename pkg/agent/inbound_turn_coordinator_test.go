@@ -12,6 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/config"
 	"github.com/bogdanovich/mintclaw/pkg/media"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/session"
 )
@@ -21,6 +22,7 @@ type finalResponseAdmissionTestBus struct {
 	publishErr     error
 	publishResults []error
 	publishCalls   int
+	beforePublish  func(bus.OutboundMessage) error
 
 	mu           sync.Mutex
 	acked        []string
@@ -65,6 +67,11 @@ func (b *finalResponseAdmissionTestBus) PublishOutbound(
 	ctx context.Context,
 	msg bus.OutboundMessage,
 ) error {
+	if b.beforePublish != nil {
+		if err := b.beforePublish(msg); err != nil {
+			return err
+		}
+	}
 	b.mu.Lock()
 	if b.publishCalls < len(b.publishResults) {
 		err := b.publishResults[b.publishCalls]
@@ -80,6 +87,56 @@ func (b *finalResponseAdmissionTestBus) PublishOutbound(
 		return b.publishErr
 	}
 	return b.MessageBus.PublishOutbound(ctx, msg)
+}
+
+func TestFinalResponseAdmissionPersistsOutboxBeforeBusPublish(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	workspace := al.registry.GetDefaultAgent().Workspace
+	coordinator := outbox.NewCoordinator()
+	al.SetOutboundOutbox(coordinator)
+
+	trackingBus := &finalResponseAdmissionTestBus{MessageBus: msgBus}
+	trackingBus.beforePublish = func(msg bus.OutboundMessage) error {
+		store, err := outbox.Open(workspace)
+		if err != nil {
+			return err
+		}
+		intent, err := store.Get(msg.DeliveryID)
+		if err != nil {
+			return err
+		}
+		if intent.Status != outbox.StatusPending {
+			return errors.New("outbox intent was not pending before bus publish")
+		}
+		return nil
+	}
+	al.bus = trackingBus
+
+	admission := al.publishResponseWithMetadataAndScopes(
+		withOutboundSource(t.Context(), "spool-durable-final"),
+		workspace,
+		"main",
+		"telegram",
+		"chat-1",
+		"session-1",
+		"final reply",
+		&bus.InboundContext{Channel: "telegram", ChatID: "chat-1"},
+		finalResponseAlwaysPublish,
+		bus.OutboundMetadata{},
+		nil,
+	)
+	if !admission.permitsInboundAck() || admission.err != nil {
+		t.Fatalf("admission = %+v, want durable acceptance", admission)
+	}
+	select {
+	case msg := <-msgBus.OutboundChan():
+		if msg.DeliveryID == "" {
+			t.Fatal("published message has no delivery ID")
+		}
+	default:
+		t.Fatal("durable final response was not published")
+	}
 }
 
 func (b *finalResponseAdmissionTestBus) AckInbound(

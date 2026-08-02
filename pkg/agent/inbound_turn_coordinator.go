@@ -23,6 +23,7 @@ func newInboundTurnCoordinator(al *AgentLoop) *inboundTurnCoordinator {
 
 func (c *inboundTurnCoordinator) handleInbound(ctx context.Context, msg bus.InboundMessage) {
 	al := c.al
+	ctx = withOutboundSource(ctx, msg.SpoolID)
 
 	target, ok := al.resolveSteeringTarget(msg)
 	if !ok {

@@ -51,6 +51,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/media"
 	"github.com/bogdanovich/mintclaw/pkg/netbind"
 	"github.com/bogdanovich/mintclaw/pkg/nodes"
+	"github.com/bogdanovich/mintclaw/pkg/outbox"
 	"github.com/bogdanovich/mintclaw/pkg/pid"
 	"github.com/bogdanovich/mintclaw/pkg/providers"
 	"github.com/bogdanovich/mintclaw/pkg/state"
@@ -225,6 +226,8 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 		msgBus.Close()
 		return fmt.Errorf("initialize agent: %w", err)
 	}
+	outboundOutbox := outbox.NewCoordinator()
+	agentLoop.SetOutboundOutbox(outboundOutbox)
 	msgBus.SetEventPublisher(agentLoop.RuntimeEventBus())
 	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayStart, startedAt, nil)
 
@@ -240,7 +243,15 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 
 	go agentLoop.Run(ctx)
 
-	runningServices, err := setupAndStartServices(ctx, cfg, agentLoop, msgBus, pidData.Token, listenResult)
+	runningServices, err := setupAndStartServices(
+		ctx,
+		cfg,
+		agentLoop,
+		msgBus,
+		outboundOutbox,
+		pidData.Token,
+		listenResult,
+	)
 	if err != nil {
 		return err
 	}
@@ -772,6 +783,7 @@ func setupAndStartServices(
 	cfg *config.Config,
 	agentLoop *agent.AgentLoop,
 	msgBus *bus.MessageBus,
+	outboundOutbox *outbox.Coordinator,
 	authToken string,
 	listenResult netbind.OpenResult,
 ) (*services, error) {
@@ -827,12 +839,12 @@ func setupAndStartServices(
 	}
 	mediaStore.Start()
 	runningServices.MediaStore = mediaStore
-
 	runningServices.ChannelManager, err = channels.NewManager(
 		cfg,
 		msgBus,
 		runningServices.MediaStore,
 		channels.WithRuntimeEvents(agentLoop.RuntimeEventBus()),
+		channels.WithDurableDelivery(outboundOutbox),
 	)
 	if err != nil {
 		mediaStore.Stop()
