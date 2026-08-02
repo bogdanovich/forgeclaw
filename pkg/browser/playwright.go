@@ -33,6 +33,7 @@ var (
 	playwrightDialogPattern = regexp.MustCompile(
 		`^- \["(alert|beforeunload|confirm|prompt)" dialog with message "(.*)"\]: can be handled by browser_handle_dialog$`,
 	)
+	playwrightSnapshotLinkPattern = regexp.MustCompile(`^- \[Snapshot\]\(.+\)$`)
 )
 
 type DriverActionKind string
@@ -389,31 +390,40 @@ func (worker *playwrightWorker) Execute(ctx context.Context, action DriverAction
 	if err != nil {
 		return err
 	}
-	result, err := worker.call(ctx, tool, arguments)
-	if err != nil {
-		return err
+	result, callErr := worker.client.CallTool(ctx, tool, arguments)
+	if callErr != nil || result == nil {
+		worker.lost = true
+		return ErrWorkerUnavailable
+	}
+	driverErr := error(nil)
+	if result.IsError {
+		driverErr = ErrDriverRejected
 	}
 	text, err := boundedPlaywrightText(result, worker.limits.ToolResultBytes)
 	if err != nil {
-		return err
+		worker.lost = true
+		return errors.Join(driverErr, err)
 	}
-	if action.Kind == DriverDialog {
-		worker.pendingDialog = nil
-		return nil
-	}
-	dialog, err := parsePlaywrightPendingDialog(text)
+	dialog, err := parsePlaywrightPendingDialog(text, playwrightActionIncludesSnapshot(action.Kind))
 	if err != nil {
 		worker.lost = true
-		return err
+		return errors.Join(driverErr, err)
 	}
-	if dialog != nil {
-		if worker.lastObservation.Origin == "" {
-			worker.lost = true
-			return ErrDriverIncompatible
-		}
-		worker.pendingDialog = dialog
+	if dialog != nil && worker.lastObservation.Origin == "" {
+		worker.lost = true
+		return errors.Join(driverErr, ErrDriverIncompatible)
 	}
-	return nil
+	worker.pendingDialog = dialog
+	return driverErr
+}
+
+func playwrightActionIncludesSnapshot(kind DriverActionKind) bool {
+	switch kind {
+	case DriverNavigate, DriverClick, DriverFill, DriverSelect:
+		return true
+	default:
+		return false
+	}
 }
 
 func (worker *playwrightWorker) Close(ctx context.Context) error {
@@ -641,27 +651,12 @@ func parsePlaywrightObservation(
 	}, nil
 }
 
-func parsePlaywrightPendingDialog(text string) (*DialogObservation, error) {
-	section, found, err := playwrightMarkdownSection(text, "Modal state")
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, nil
-	}
-	section = strings.TrimSpace(section)
-	match := playwrightDialogPattern.FindStringSubmatch(section)
-	if len(match) != 3 || !validDialogType(match[1]) || len(match[2]) > MaxDialogMessageBytes {
-		return nil, ErrDriverIncompatible
-	}
-	return &DialogObservation{Type: match[1], Message: match[2]}, nil
-}
-
-func playwrightMarkdownSection(text, title string) (string, bool, error) {
+func parsePlaywrightPendingDialog(
+	text string,
+	allowSnapshotTail bool,
+) (*DialogObservation, error) {
 	lines := strings.Split(text, "\n")
-	header := "### " + title
-	start := -1
-	end := len(lines)
+	modalHeader := -1
 	inFence := false
 	for index, line := range lines {
 		if strings.HasPrefix(line, "```") {
@@ -671,25 +666,60 @@ func playwrightMarkdownSection(text, title string) (string, bool, error) {
 		if inFence {
 			continue
 		}
-		if line == header {
-			if start >= 0 {
-				return "", false, ErrDriverIncompatible
+		if line == "### Modal state" {
+			if modalHeader >= 0 {
+				return nil, ErrDriverIncompatible
 			}
-			start = index + 1
-			continue
-		}
-		if start >= 0 && strings.HasPrefix(line, "### ") {
-			end = index
-			break
+			modalHeader = index
 		}
 	}
 	if inFence {
-		return "", false, ErrDriverIncompatible
+		return nil, ErrDriverIncompatible
 	}
-	if start < 0 {
-		return "", false, nil
+	if modalHeader < 0 {
+		return nil, nil
 	}
-	return strings.Join(lines[start:end], "\n"), true, nil
+	if modalHeader+1 >= len(lines) {
+		return nil, ErrDriverIncompatible
+	}
+	match := playwrightDialogPattern.FindStringSubmatch(lines[modalHeader+1])
+	if len(match) != 3 || !validDialogType(match[1]) || len(match[2]) > MaxDialogMessageBytes {
+		return nil, ErrDriverIncompatible
+	}
+	tail := trimEmptyPlaywrightLines(lines[modalHeader+2:])
+	if len(tail) != 0 {
+		if !allowSnapshotTail || !validPlaywrightSnapshotTail(tail) {
+			return nil, ErrDriverIncompatible
+		}
+	}
+	return &DialogObservation{Type: match[1], Message: match[2]}, nil
+}
+
+func trimEmptyPlaywrightLines(lines []string) []string {
+	for len(lines) != 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) != 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func validPlaywrightSnapshotTail(lines []string) bool {
+	if len(lines) == 2 && lines[0] == "### Snapshot" &&
+		playwrightSnapshotLinkPattern.MatchString(lines[1]) {
+		return true
+	}
+	if len(lines) < 3 || lines[0] != "### Snapshot" || lines[1] != "```yaml" ||
+		lines[len(lines)-1] != "```" {
+		return false
+	}
+	for _, line := range lines[2 : len(lines)-1] {
+		if line == "```" || strings.HasPrefix(line, "### ") {
+			return false
+		}
+	}
+	return true
 }
 
 func parsePlaywrightElements(snapshot string) []DriverElement {
