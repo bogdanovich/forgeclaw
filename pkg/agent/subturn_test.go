@@ -1146,6 +1146,7 @@ func TestHardAbortOrderOfOperations(t *testing.T) {
 		pendingResults:       make(chan *tools.ToolResult, 16),
 		concurrencySem:       make(chan struct{}, 5),
 	}
+	rootTS.captureRestorePoint(sess.GetHistory("")[:1], sess.GetSummary(""))
 
 	al.activeTurnStates.Store(rootTS.runtimeSessionScope(), rootTS)
 
@@ -1166,7 +1167,7 @@ func TestHardAbortOrderOfOperations(t *testing.T) {
 	// Verify history was rolled back
 	finalHistory := sess.GetHistory("")
 	if len(finalHistory) != 1 {
-		t.Errorf("expected history to rollback to 1 message, got %d", len(finalHistory))
+		t.Fatalf("expected history to rollback to 1 message, got %d", len(finalHistory))
 	}
 
 	if finalHistory[0].Content != "initial message" {
