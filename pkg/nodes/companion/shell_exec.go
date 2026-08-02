@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -73,7 +74,7 @@ type shellExecInput struct {
 	Script         string            `json:"script"`
 	CWD            string            `json:"cwd"`
 	Env            map[string]string `json:"env"`
-	TimeoutSeconds int               `json:"timeout_seconds"`
+	TimeoutSeconds float64           `json:"timeout_seconds"`
 }
 
 type shellExecRuntime struct {
@@ -292,13 +293,15 @@ func (handler *shellExecHandler) prepare(plan nodes.ExecutionPlan) (ShellBrokerR
 	}
 	if input.Profile != handler.profile.Alias ||
 		input.TimeoutSeconds <= 0 ||
-		input.TimeoutSeconds > handler.profile.TimeoutSecondsMax ||
-		input.TimeoutSeconds > plan.TimeoutSeconds {
+		input.TimeoutSeconds > float64(handler.profile.TimeoutSecondsMax) ||
+		input.TimeoutSeconds > float64(plan.TimeoutSeconds) ||
+		math.Trunc(input.TimeoutSeconds) != input.TimeoutSeconds {
 		return ShellBrokerRequest{}, errors.New("shell.exec profile or timeout is invalid")
 	}
+	timeoutSeconds := int(input.TimeoutSeconds)
 	modelInput := map[string]any{
 		"profile": input.Profile, "script": input.Script, "cwd": input.CWD,
-		"env": stringMapToAny(input.Env), "timeout_seconds": input.TimeoutSeconds,
+		"env": stringMapToAny(input.Env), "timeout_seconds": timeoutSeconds,
 	}
 	contract, err := handler.modelContract(nodes.LocalCommandPolicy{
 		Revision:          "shell-authorize",
@@ -324,7 +327,7 @@ func (handler *shellExecHandler) prepare(plan nodes.ExecutionPlan) (ShellBrokerR
 		Script:          input.Script,
 		WorkingScope:    input.CWD,
 		Environment:     input.Env,
-		TimeoutSeconds:  input.TimeoutSeconds,
+		TimeoutSeconds:  timeoutSeconds,
 		OutputBytesMax:  min(plan.OutputLimitBytes, handler.profile.OutputBytesMax),
 	}, nil
 }
