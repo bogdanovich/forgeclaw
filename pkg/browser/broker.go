@@ -181,9 +181,7 @@ func (broker *Broker) finishFailedOpen(
 	closing.Revision++
 	closing.UpdatedAt = broker.now().UTC().UnixNano()
 	if updateErr := broker.store.UpdateSession(ctx, closing.Revision-1, closing); updateErr != nil {
-		if closeErr := broker.cleanupSlot(ctx, slot); closeErr == nil {
-			delete(broker.slots, session.ID)
-		}
+		_ = broker.cleanupSlot(ctx, slot)
 		return session, errors.Join(ErrWorkerUnavailable, updateErr)
 	}
 	session = closing

@@ -337,6 +337,30 @@ func TestBrokerRetainsFailedOpenCleanupWhenClosingPersistenceFails(t *testing.T)
 	}
 }
 
+func TestBrokerRetainsCleanupCompleteSlotWhenClosingPersistenceFails(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore(), failState: SessionClosing}
+	cleanup := &fakeWorker{}
+	factory := &fakeWorkerFactory{
+		openErr: errors.New("secret startup failure"), cleanupWorker: cleanup,
+	}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if !errors.Is(err, ErrWorkerUnavailable) || !errors.Is(err, ErrStale) || session.ID == "" ||
+		session.State != SessionOpening || cleanup.closed != 1 {
+		t.Fatalf("Open() = %+v, %v; cleanup closes = %d", session, err, cleanup.closed)
+	}
+
+	lost, err := broker.Close(context.Background(), owner, session.ID)
+	if err != nil || lost.State != SessionLost || lost.SafeFailure != "worker_unavailable" ||
+		cleanup.closed != 1 {
+		t.Fatalf("Close() transition retry = %+v, %v; cleanup closes = %d", lost, err, cleanup.closed)
+	}
+}
+
 func TestBrokerCleansWorkerAndPersistsLossWhenReadyPersistenceFails(t *testing.T) {
 	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore(), failState: SessionReady}
 	factory := &fakeWorkerFactory{}
