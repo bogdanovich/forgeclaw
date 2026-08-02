@@ -668,13 +668,11 @@ func parsePlaywrightObservation(
 	if err != nil {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
-	maximumEncodedSnapshotBytes := maximumToolResultBytes - config.BrowserToolResultEnvelopeBytes -
-		encodedJSONStringBytes(safeURL) - encodedJSONStringBytes(origin) - encodedJSONStringBytes(title)
 	projected, truncated, err := projectPlaywrightSnapshot(
 		snapshot,
 		maximumSnapshotBytes,
 		maximumSnapshotRefs,
-		maximumEncodedSnapshotBytes,
+		maximumToolResultBytes-config.BrowserToolResultEnvelopeBytes,
 	)
 	if err != nil {
 		return DriverObservation{}, err
@@ -849,6 +847,9 @@ func extractPlaywrightLine(text, prefix string) string {
 }
 
 func sanitizeObservedURL(raw string) (string, string, error) {
+	if len(raw) > MaxURLBytes {
+		return "", "", ErrInvalid
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
 		return "", "", ErrInvalid
@@ -873,7 +874,11 @@ func sanitizeObservedURL(raw string) (string, string, error) {
 	parsed.ForceQuery = false
 	parsed.Fragment = ""
 	origin := parsed.Scheme + "://" + host
-	return parsed.String(), origin, nil
+	safeURL := parsed.String()
+	if len(safeURL) > MaxURLBytes || len(origin) > MaxURLBytes {
+		return "", "", ErrInvalid
+	}
+	return safeURL, origin, nil
 }
 
 var pinnedPlaywrightToolSchemas = map[string]json.RawMessage{

@@ -34,10 +34,10 @@ const (
 	BrowserMaxConfiguredOrigins = 64
 )
 
-// BrowserToolResultEnvelopeBytes reserves encoded space for opaque authority
-// IDs, tab metadata, limits, and the browser_act wrapper. The adapter budgets
-// encoded URL, origin, title, and snapshot bytes separately.
-const BrowserToolResultEnvelopeBytes = 16 * 1024
+// BrowserToolResultEnvelopeBytes reserves encoded space for bounded page and
+// dialog metadata, opaque authority IDs, tab metadata, limits, and the
+// browser_act wrapper. Snapshot content is budgeted separately.
+const BrowserToolResultEnvelopeBytes = 64 * 1024
 
 var (
 	browserAliasPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)

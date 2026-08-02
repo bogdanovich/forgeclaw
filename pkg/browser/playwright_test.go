@@ -777,17 +777,37 @@ func TestPlaywrightObservationBudgetsEncodedSnapshot(t *testing.T) {
 	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
 		"### Snapshot\n```yaml\n" + snapshot + "\n```"
 	encodedBudget := encodedVisiblePlaywrightSnapshotBytes(firstLine)
-	contextBudget := encodedJSONStringBytes("https://example.com/") +
-		encodedJSONStringBytes("https://example.com") + encodedJSONStringBytes("Fixture")
 	projected, err := parsePlaywrightObservation(
 		observation,
 		1024,
 		2,
-		config.BrowserToolResultEnvelopeBytes+contextBudget+encodedBudget,
+		config.BrowserToolResultEnvelopeBytes+encodedBudget,
 	)
 	if err != nil || !projected.Truncated || projected.Snapshot != strings.TrimSuffix(firstLine, "\n") ||
 		encodedVisiblePlaywrightSnapshotBytes(projected.Snapshot) > encodedBudget {
 		t.Fatalf("parsePlaywrightObservation(encoded projection) = %+v, %v", projected, err)
+	}
+}
+
+func TestPlaywrightObservationProjectsAtMinimumToolResultLimit(t *testing.T) {
+	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+		"### Snapshot\n```yaml\n- button [ref=e1]\n```"
+	projected, err := parsePlaywrightObservation(
+		observation, 1024, 2, config.BrowserToolResultEnvelopeBytes,
+	)
+	if err != nil || !projected.Truncated || projected.Snapshot != "" || len(projected.Elements) != 0 {
+		t.Fatalf("parsePlaywrightObservation(minimum tool result) = %+v, %v", projected, err)
+	}
+}
+
+func TestSanitizeObservedURLRejectsOversizedURL(t *testing.T) {
+	if _, _, err := sanitizeObservedURL(
+		"https://example.com/" + strings.Repeat("a", MaxURLBytes),
+	); !errors.Is(
+		err,
+		ErrInvalid,
+	) {
+		t.Fatalf("sanitizeObservedURL(oversized) error = %v, want ErrInvalid", err)
 	}
 }
 
