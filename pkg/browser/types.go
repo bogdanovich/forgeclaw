@@ -203,7 +203,7 @@ func (action Action) Validate(maxTextBytes int) error {
 func validBrowserKey(key string) bool {
 	switch key {
 	case "Escape", "Tab", "Shift+Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-		"Home", "End", "PageUp", "PageDown", "Backspace", "Delete", "Enter":
+		"Home", "End", "PageUp", "PageDown", "Backspace", "Delete":
 		return true
 	default:
 		return false
@@ -365,9 +365,7 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 		}
 	case ActionPress:
 		if prepared.DestinationOrigin != "" || prepared.ElementRole != "" || prepared.ElementName != "" ||
-			prepared.Effect != classifyPressEffect(
-				prepared.Action.Key,
-			) || prepared.InputDigest != "" || prepared.InputBytes != 0 {
+			prepared.Effect != EffectUnknown || prepared.InputDigest != "" || prepared.InputBytes != 0 {
 			return fmt.Errorf("%w: malformed prepared key press", ErrInvalid)
 		}
 	case ActionScroll:

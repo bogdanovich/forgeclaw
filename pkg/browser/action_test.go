@@ -24,6 +24,7 @@ type actionTestWorker struct {
 	resolveErr     error
 	resolveCalls   int
 	actions        []DriverAction
+	onExecute      func(DriverAction)
 	closed         int
 }
 
@@ -50,6 +51,9 @@ func (worker *actionTestWorker) Resolve(context.Context, string) (DriverElement,
 
 func (worker *actionTestWorker) Execute(_ context.Context, action DriverAction) error {
 	worker.actions = append(worker.actions, action)
+	if worker.onExecute != nil {
+		worker.onExecute(action)
+	}
 	return nil
 }
 
@@ -367,10 +371,6 @@ func TestBrokerExecutesAdmittedSelectPressAndScrollActions(t *testing.T) {
 			wantDriver: DriverAction{Kind: DriverSelect, Target: "e1", Element: "State", Value: "CA"},
 		},
 		{
-			name: "press", action: Action{Kind: ActionPress, Key: "Tab"},
-			wantEffect: EffectLocalEdit, wantDriver: DriverAction{Kind: DriverPress, Key: "Tab"},
-		},
-		{
 			name: "scroll", action: Action{Kind: ActionScroll, Direction: "down", Amount: 3},
 			wantEffect: EffectRead,
 			wantDriver: DriverAction{Kind: DriverScroll, Direction: "down", Amount: 3},
@@ -417,28 +417,38 @@ func TestBrokerExecutesAdmittedSelectPressAndScrollActions(t *testing.T) {
 	}
 }
 
-func TestBrokerTreatsEnterAsProtectedCommit(t *testing.T) {
+func TestBrokerTreatsGlobalPressAsUnknownAndDryRunDenied(t *testing.T) {
 	broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+	pageHandlerCommitted := false
+	worker.onExecute = func(DriverAction) { pageHandlerCommitted = true }
 	owner := testOwner()
 	observation, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
-		Owner: owner, RequestID: "request_enter", SessionID: session.ID, TabID: session.TabID,
+		Owner: owner, RequestID: "request_press", SessionID: session.ID, TabID: session.TabID,
 		SnapshotID: observation.SnapshotID, SnapshotGeneration: observation.SnapshotGeneration,
-		Action: Action{Kind: ActionPress, Key: "Enter"},
+		Action: Action{Kind: ActionPress, Key: "Tab"},
 	})
-	if err != nil || !prepared.RequiresApproval || prepared.Action.Effect != EffectExternalCommit {
-		t.Fatalf("PrepareAction(Enter) = %+v, %v", prepared, err)
+	if err != nil || !prepared.RequiresApproval || prepared.Action.Effect != EffectUnknown {
+		t.Fatalf("PrepareAction(Tab) = %+v, %v", prepared, err)
 	}
 	if _, err = broker.ExecuteAction(
 		context.Background(), owner, prepared.Action.ID, nil,
 	); !errors.Is(err, ErrApprovalRequired) {
-		t.Fatalf("ExecuteAction(Enter) error = %v, want ErrApprovalRequired", err)
+		t.Fatalf("ExecuteAction(Tab) error = %v, want ErrApprovalRequired", err)
 	}
-	if len(worker.actions) != 0 {
-		t.Fatalf("protected Enter reached driver: %+v", worker.actions)
+	if len(worker.actions) != 0 || pageHandlerCommitted {
+		t.Fatalf("unapproved global press reached driver: %+v", worker.actions)
+	}
+	if _, err = broker.ExecuteAction(
+		context.Background(), owner, prepared.Action.ID, &prepared.Approval,
+	); !errors.Is(err, ErrDenied) {
+		t.Fatalf("ExecuteAction(Tab, approved dry-run) error = %v, want ErrDenied", err)
+	}
+	if len(worker.actions) != 0 || pageHandlerCommitted {
+		t.Fatalf("dry-run global press reached driver: %+v", worker.actions)
 	}
 }
 
@@ -446,6 +456,7 @@ func TestActionValidationRejectsUnadmittedKeyAndUnboundedScroll(t *testing.T) {
 	for _, action := range []Action{
 		{Kind: ActionPress, Key: "a"},
 		{Kind: ActionPress, Key: "Control+L"},
+		{Kind: ActionPress, Key: "Enter"},
 		{Kind: ActionScroll, Direction: "left", Amount: 1},
 		{Kind: ActionScroll, Direction: "down", Amount: MaxScrollAmount + 1},
 	} {

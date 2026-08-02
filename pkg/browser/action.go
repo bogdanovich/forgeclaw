@@ -344,7 +344,10 @@ func (broker *Broker) resolvePreparedActionLocked(
 			return PreparedAction{}, ErrStale
 		}
 		if request.Action.Kind == ActionPress {
-			prepared.Effect = classifyPressEffect(request.Action.Key)
+			// A page-global key event can run arbitrary same-origin handlers. Until
+			// the driver can bind a press to a revalidated element, its effect is
+			// unknown even when the key itself is allowlisted.
+			prepared.Effect = EffectUnknown
 		} else {
 			prepared.Effect = EffectRead
 		}
@@ -485,13 +488,6 @@ func classifyClickEffect(element DriverElement) Effect {
 		// destination with no submit or script semantics.
 		return EffectUnknown
 	}
-}
-
-func classifyPressEffect(key string) Effect {
-	if key == "Enter" {
-		return EffectExternalCommit
-	}
-	return EffectLocalEdit
 }
 
 func editableElementRole(role string) bool {
