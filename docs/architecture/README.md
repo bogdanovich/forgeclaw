@@ -16,6 +16,9 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Safe Restart And Deploy](safe-restart-and-deploy.md): bounded restart/deploy handoff, shared binary targets, and durability boundaries.
 - [Node Companion](node-companion.md): outbound paired capability hosts, transport and identity boundaries, remote execution policy, and the Linux/macOS MVP.
 - [Node Companion Post-MVP Roadmap](node-companion-roadmap.md): ordered future milestones for explicit owner/root shell and PTY access, administrator file transfer, service management, fleet operations, executors, transports, and additional capabilities.
+- [Android Companion Roadmap](android-companion-roadmap.md): native Android
+  operator chat and device-node architecture, reliability, permissions,
+  distribution profiles, SMS safety, and phased delivery plan.
 - [Reliable Browser Capability](browser-capability.md): deployed-state
   investigation, comparative analysis, and target broker/worker architecture
   for safe local, companion, and cloud browser automation.
