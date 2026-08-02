@@ -397,6 +397,31 @@ func TestBrokerStatusRetainsCleanupPathWhenLostPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestBrokerClosePreservesPendingLossAfterStatusPersistenceFails(t *testing.T) {
+	store := &failNextSessionUpdateStore{MemoryStore: NewMemoryStore()}
+	factory := &fakeWorkerFactory{}
+	broker := newTestBroker(t, admittedBrowserConfig(), store, factory)
+	owner := testOwner()
+	session, err := broker.Open(context.Background(), OpenRequest{
+		Owner: owner, Target: "gateway", Profile: "managed",
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	worker := factory.workers[0]
+	worker.status = WorkerLost
+	worker.rejectRepeatedClose = true
+	store.failNext = true
+	if _, err = broker.Status(context.Background(), owner, session.ID); !errors.Is(err, ErrStale) {
+		t.Fatalf("Status() persistence error = %v, want ErrStale", err)
+	}
+	lost, err := broker.Close(context.Background(), owner, session.ID)
+	if err != nil || lost.State != SessionLost || lost.SafeFailure != "worker_lost" ||
+		worker.closed != 1 {
+		t.Fatalf("Close() pending loss retry = %+v, %v; worker = %+v", lost, err, worker)
+	}
+}
+
 func TestBrokerStatusRedactsWorkerFailure(t *testing.T) {
 	store := NewMemoryStore()
 	factory := &fakeWorkerFactory{}

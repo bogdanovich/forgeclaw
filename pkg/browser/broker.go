@@ -249,6 +249,9 @@ func (broker *Broker) Close(ctx context.Context, owner Owner, sessionID string) 
 		session.SafeFailure = "worker_lost"
 	} else if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
 		return Session{}, fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable)
+	} else if slot.safeFailure != "" {
+		session.State = SessionLost
+		session.SafeFailure = slot.safeFailure
 	} else {
 		session.State = SessionClosed
 	}
