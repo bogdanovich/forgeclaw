@@ -71,11 +71,15 @@ jobs:
       - name: Run go generate
         run: go generate ./...
 
+      - name: Compile default Go test graph
+        shell: bash
+        run: time go test -tags goolm,stdjson -run '^$' ./...
+
       - name: Run Go tests with timing
         shell: bash
         run: |
           set -o pipefail
-          go test -json -tags goolm,stdjson ./... | tee /tmp/mintclaw-go-test.json
+          go test -count=1 -json -tags goolm,stdjson ./... | tee /tmp/mintclaw-go-test.json
 
       - name: Publish Go test timings
         if: always()
