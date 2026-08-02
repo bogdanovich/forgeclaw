@@ -12,9 +12,13 @@ const (
 	MaxServiceProfiles    = 32
 	MaxServicesPerProfile = 64
 	MaxServiceDescription = 256
-	MaxServiceLogEntries  = 500
-	MaxServiceLogBytes    = 256 * 1024
-	MaxServiceLogAge      = 7 * 24 * 60 * 60
+	// MaxServiceDescriptionProjectionBytes bounds the aggregate JSON-encoded
+	// description values in one target profile so its complete model contract
+	// remains within MaxModelContractBytes at maximum service authority.
+	MaxServiceDescriptionProjectionBytes = 4 * 1024
+	MaxServiceLogEntries                 = 500
+	MaxServiceLogBytes                   = 256 * 1024
+	MaxServiceLogAge                     = 7 * 24 * 60 * 60
 )
 
 type ServiceAction string
@@ -132,9 +136,20 @@ func (profile ServiceProfileDescriptor) Validate() error {
 		return err
 	}
 	prior := ""
+	descriptionBytes := 0
 	for _, service := range profile.Services {
 		if err := service.Validate(); err != nil {
 			return err
+		}
+		encodedDescription, err := json.Marshal(service.Description)
+		if err != nil {
+			return fmt.Errorf("%w: malformed service description", ErrInvalidCapability)
+		}
+		// Exclude the surrounding JSON quotes; escaping remains charged to the
+		// budget so accepted profiles cannot expand unexpectedly in discovery.
+		descriptionBytes += len(encodedDescription) - 2
+		if descriptionBytes > MaxServiceDescriptionProjectionBytes {
+			return fmt.Errorf("%w: service descriptions exceed projection budget", ErrInvalidCapability)
 		}
 		if prior != "" && service.Alias <= prior {
 			return fmt.Errorf("%w: services are not sorted", ErrInvalidCapability)

@@ -364,6 +364,94 @@ func TestNodeDiscoveryProjectsOnlyConfiguredServiceProfile(t *testing.T) {
 	}
 }
 
+func TestNodeDiscoveryAdmitsMaximumServiceActionProjection(t *testing.T) {
+	actions := []nodes.ServiceAction{
+		nodes.ServiceActionDisable,
+		nodes.ServiceActionEnable,
+		nodes.ServiceActionReload,
+		nodes.ServiceActionRestart,
+		nodes.ServiceActionStart,
+		nodes.ServiceActionStop,
+	}
+	services := make([]nodes.ServiceDescriptor, nodes.MaxServicesPerProfile)
+	for index := range services {
+		prefix := fmt.Sprintf("service_%02d_", index)
+		services[index] = nodes.ServiceDescriptor{
+			Alias: prefix + strings.Repeat("x", nodes.MaxAliasLength-len(prefix)),
+			Description: strings.Repeat(
+				"d",
+				nodes.MaxServiceDescriptionProjectionBytes/nodes.MaxServicesPerProfile,
+			),
+			Actions: append([]nodes.ServiceAction(nil), actions...),
+		}
+	}
+	profiles := []nodes.ServiceProfileDescriptor{{
+		Alias:          "maximum-services",
+		Revision:       "maximum-services-v1",
+		Manager:        "systemd",
+		Services:       services,
+		LogLimits:      nodes.ServiceLogLimits{EntriesMax: 1, BytesMax: 1, AgeSecondsMax: 1},
+		ActionApproval: "required",
+	}}
+	descriptor := nodes.CommandDescriptor{
+		Name:         "service.action.v1",
+		InputSchema:  nodes.ServiceCommandInputSchema("service.action.v1", profiles),
+		OutputSchema: nodes.ServiceCommandOutputSchema("service.action.v1"),
+		Risk:         nodes.RiskPrivileged,
+		ModelContract: &nodes.CommandModelContract{
+			Availability:      nodes.ModelUnavailable,
+			TimeoutSecondsMax: 30,
+			OutputBytesMax:    4096,
+			ResultKind:        "json",
+			AuthorityDigest:   strings.Repeat("a", 64),
+			Guidance:          []string{},
+			Examples:          []json.RawMessage{},
+		},
+		ServiceProfiles: profiles,
+	}
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("maximum service descriptor: %v", err)
+	}
+	catalog := nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{descriptor}}
+	catalogHash := mustCatalogHash(t, catalog)
+	snapshot := nodes.Snapshot{
+		ID:             "maximum-node",
+		State:          nodes.StateConnected,
+		Catalog:        catalog,
+		CatalogHash:    catalogHash,
+		Executor:       "local",
+		PolicyRevision: "node-policy-v1",
+	}
+	source := &fakeNodeDiscoverySource{
+		byRef: map[string]nodes.Snapshot{"builder-node": snapshot},
+		registrations: map[nodes.ID]nodes.Registration{
+			snapshot.ID: {
+				Snapshot:            snapshot,
+				AllowedCommands:     []string{descriptor.Name},
+				ApprovedCatalogHash: catalogHash,
+				ApprovedAt:          1,
+			},
+		},
+		connected: map[nodes.ID]bool{snapshot.ID: true},
+	}
+	cfg := nodeDiscoveryTestConfig()
+	target := cfg.Execution.Targets["build"]
+	target.ServiceProfile = profiles[0].Alias
+	cfg.Execution.Targets["build"] = target
+	result := NewNodeDiscoveryTool(cfg, source).Execute(
+		WithToolSessionContext(context.Background(), "main", "session", nil),
+		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
+	)
+	payload := decodeNodeResult(t, result)
+	contract, err := json.Marshal(payload["command"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contract) > nodes.MaxModelContractBytes {
+		t.Fatalf("maximum target service contract = %d bytes, limit %d", len(contract), nodes.MaxModelContractBytes)
+	}
+}
+
 func TestProjectServiceLogsDescriptorUsesSelectedProfileLimits(t *testing.T) {
 	descriptor := serviceStatusTestDescriptor()
 	descriptor.Name = "service.logs.v1"

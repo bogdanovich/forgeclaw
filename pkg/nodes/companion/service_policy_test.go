@@ -103,6 +103,32 @@ func TestNormalizeServicePoliciesRejectsUnsafeAuthority(t *testing.T) {
 	}
 }
 
+func TestNormalizeServicePoliciesRejectsDescriptionProjectionBeyondBudget(t *testing.T) {
+	services := make(map[string]ServicePolicyEntry, nodes.MaxServicesPerProfile)
+	for index := 0; index < nodes.MaxServicesPerProfile; index++ {
+		alias := fmt.Sprintf("service_%02d", index)
+		services[alias] = ServicePolicyEntry{
+			Unit: alias + ".service",
+			Description: strings.Repeat(
+				"d",
+				nodes.MaxServiceDescriptionProjectionBytes/nodes.MaxServicesPerProfile+1,
+			),
+			Status: true,
+		}
+	}
+	_, err := normalizeServicePolicies(ServicePolicies{
+		"maximum-services": {
+			Enabled:  true,
+			Revision: "maximum-services-v1",
+			Manager:  "systemd-system",
+			Services: services,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "projection budget") {
+		t.Fatalf("description projection admission error = %v", err)
+	}
+}
+
 func TestNormalizeServicePoliciesRejectsAggregateSchemaBeyondCeiling(t *testing.T) {
 	policies := make(ServicePolicies, 8)
 	actions := []nodes.ServiceAction{

@@ -99,6 +99,28 @@ func TestServiceActionSchemaFitsMaximumSingleProfileAuthority(t *testing.T) {
 	}
 }
 
+func TestServiceProfileRejectsDescriptionProjectionBeyondBudget(t *testing.T) {
+	services := make([]ServiceDescriptor, MaxServicesPerProfile)
+	for index := range services {
+		services[index] = ServiceDescriptor{
+			Alias:       fmt.Sprintf("service_%02d", index),
+			Description: strings.Repeat("d", MaxServiceDescriptionProjectionBytes/MaxServicesPerProfile+1),
+			Status:      true,
+		}
+	}
+	profile := ServiceProfileDescriptor{
+		Alias:          "maximum-services",
+		Revision:       "maximum-services-v1",
+		Manager:        "systemd",
+		Services:       services,
+		LogLimits:      ServiceLogLimits{EntriesMax: 1, BytesMax: 1, AgeSecondsMax: 1},
+		ActionApproval: "required",
+	}
+	if err := profile.Validate(); err == nil || !strings.Contains(err.Error(), "projection budget") {
+		t.Fatalf("description projection validation error = %v", err)
+	}
+}
+
 func TestCloneSnapshotIsolatesNestedServiceAuthority(t *testing.T) {
 	descriptor := serviceActionDescriptorFixture()
 	original := Snapshot{
