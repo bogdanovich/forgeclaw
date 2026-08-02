@@ -17,6 +17,7 @@ const (
 	// remains within MaxModelContractBytes at maximum service authority.
 	MaxServiceDescriptionProjectionBytes = 4 * 1024
 	MaxServiceLogEntries                 = 500
+	MaxServiceLogRecordBytes             = 16 * 1024
 	MaxServiceLogBytes                   = 256 * 1024
 	MaxServiceLogAge                     = 7 * 24 * 60 * 60
 )
@@ -270,7 +271,9 @@ func ServiceCommandOutputSchema(command string) json.RawMessage {
 							"severity": map[string]any{
 								"enum": []string{"debug", "info", "notice", "warning", "error", "critical"},
 							},
-							"message": map[string]any{"type": "string", "maxLength": 16384},
+							"message": map[string]any{
+								"type": "string", "maxLength": MaxServiceLogRecordBytes,
+							},
 						},
 					},
 				},
