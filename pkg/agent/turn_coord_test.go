@@ -201,14 +201,10 @@ type errorProvider struct {
 
 type recordingRetrySleeper struct {
 	delays []time.Duration
-	err    error
 }
 
 func (s *recordingRetrySleeper) Sleep(ctx context.Context, delay time.Duration) error {
 	s.delays = append(s.delays, delay)
-	if s.err != nil {
-		return s.err
-	}
 	return ctx.Err()
 }
 
@@ -1355,7 +1351,7 @@ func TestPipeline_CallLLM_RetrySleepCancellation(t *testing.T) {
 	defer cleanup()
 
 	pipeline := NewPipeline(al)
-	sleeper := &recordingRetrySleeper{err: context.Canceled}
+	sleeper := &recordingRetrySleeper{}
 	pipeline.Config.RetrySleeper = sleeper
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
 		turnID:  "turn-1",
@@ -1367,7 +1363,10 @@ func TestPipeline_CallLLM_RetrySleepCancellation(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	turnCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = pipeline.CallLLM(context.Background(), turnCtx, ts, exec, 1)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("CallLLM error = %v, want context canceled", err)
 	}
