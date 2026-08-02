@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -48,6 +49,10 @@ type OpenRequest struct {
 	Target  string
 	Profile string
 }
+
+// InvocationExecutor crosses the driver acceptance boundary exactly once. A
+// caller must not add retries below this callback.
+type InvocationExecutor func(context.Context) (json.RawMessage, error)
 
 // workerSlot is the broker's sole owner of a live worker. A successful cleanup
 // is remembered separately from durable session completion so a CAS retry never
@@ -217,6 +222,12 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	if !session.Owner.Equal(owner) {
 		return Session{}, ErrNotFound
 	}
+	if !session.State.Terminal() && session.PolicyRevision != broker.policyRevision {
+		return broker.finishSessionLocked(ctx, session, SessionLost, "policy_changed")
+	}
+	if !session.State.Terminal() && broker.sessionExpired(session, broker.now().UTC()) {
+		return broker.finishSessionLocked(ctx, session, SessionExpired, "")
+	}
 	if session.State != SessionReady {
 		return session, nil
 	}
@@ -249,6 +260,9 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 			return Session{}, fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable)
 		}
 	}
+	if err = broker.terminateInvocationsLocked(ctx, session.ID, safeFailure); err != nil {
+		return Session{}, err
+	}
 	session.State = SessionLost
 	session.SafeFailure = safeFailure
 	session.Revision++
@@ -259,6 +273,97 @@ func (broker *Broker) Status(ctx context.Context, owner Owner, sessionID string)
 	}
 	delete(broker.slots, session.ID)
 	return session, nil
+}
+
+// Touch records activity after an admitted observe or action. Status and
+// discovery deliberately do not renew the idle deadline.
+func (broker *Broker) Touch(ctx context.Context, owner Owner, sessionID string) (Session, error) {
+	if err := owner.Validate(); err != nil {
+		return Session{}, err
+	}
+	if !validIdentifier(sessionID) {
+		return Session{}, fmt.Errorf("%w: malformed session ID", ErrInvalid)
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	session, err := broker.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !session.Owner.Equal(owner) {
+		return Session{}, ErrNotFound
+	}
+	if session.State != SessionReady || broker.slots[session.ID] == nil {
+		return Session{}, ErrWorkerUnavailable
+	}
+	if session.PolicyRevision != broker.policyRevision {
+		return broker.finishSessionLocked(ctx, session, SessionLost, "policy_changed")
+	}
+	now := broker.now().UTC()
+	if broker.sessionExpired(session, now) {
+		return broker.finishSessionLocked(ctx, session, SessionExpired, "")
+	}
+	session.Revision++
+	session.UpdatedAt = now.UnixNano()
+	session.LastActivityAt = session.UpdatedAt
+	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+		return Session{}, err
+	}
+	return session, nil
+}
+
+// Sweep expires sessions without treating a status check as activity.
+func (broker *Broker) Sweep(ctx context.Context) error {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	sessions, err := broker.store.ListSessions(ctx)
+	if err != nil {
+		return err
+	}
+	now := broker.now().UTC()
+	for _, session := range sessions {
+		if !session.State.Terminal() && (session.PolicyRevision != broker.policyRevision || broker.sessionExpired(session, now)) {
+			state, failure := SessionExpired, ""
+			if session.PolicyRevision != broker.policyRevision {
+				state, failure = SessionLost, "policy_changed"
+			}
+			if _, err = broker.finishSessionLocked(ctx, session, state, failure); err != nil {
+				return err
+			}
+		}
+	}
+	retention := time.Duration(broker.config.Limits.Effective().RetentionSecs) * time.Second
+	return broker.store.PruneInvocations(ctx, now.Add(-retention).UnixNano())
+}
+
+// Recover reconciles state after a gateway restart. B1 workers are
+// in-process, so continuity cannot be proven: live sessions become lost and
+// every accepted unterminated invocation becomes unknown without dispatch.
+func (broker *Broker) Recover(ctx context.Context) error {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	sessions, err := broker.store.ListSessions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		if session.State.Terminal() {
+			continue
+		}
+		if err = broker.terminateInvocationsLocked(ctx, session.ID, "gateway_restarted"); err != nil {
+			return err
+		}
+		now := broker.now().UTC().UnixNano()
+		session.State = SessionLost
+		session.SafeFailure = "gateway_restarted"
+		session.Revision++
+		session.UpdatedAt = now
+		session.LastActivityAt = now
+		if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (broker *Broker) Close(ctx context.Context, owner Owner, sessionID string) (Session, error) {
@@ -281,34 +386,209 @@ func (broker *Broker) Close(ctx context.Context, owner Owner, sessionID string) 
 	if session.State.Terminal() {
 		return session, nil
 	}
+	return broker.finishSessionLocked(ctx, session, SessionClosed, "")
+}
+
+func (broker *Broker) finishSessionLocked(
+	ctx context.Context,
+	session Session,
+	desired SessionState,
+	safeFailure string,
+) (Session, error) {
+	if session.State.Terminal() {
+		return session, nil
+	}
+	if err := broker.terminateInvocationsLocked(ctx, session.ID, terminalInvocationFailure(desired, safeFailure)); err != nil {
+		return Session{}, err
+	}
 	if session.State != SessionClosing {
 		session.State = SessionClosing
 		session.Revision++
 		session.UpdatedAt = broker.now().UTC().UnixNano()
-		if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+		if err := broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
 			return Session{}, err
 		}
 	}
 	slot := broker.slots[session.ID]
 	if slot == nil {
-		session.State = SessionLost
-		session.SafeFailure = "worker_lost"
+		desired = SessionLost
+		if safeFailure == "" {
+			safeFailure = "worker_lost"
+		}
 	} else if closeErr := broker.cleanupSlot(ctx, slot); closeErr != nil {
 		return Session{}, fmt.Errorf("%w: worker cleanup failed", ErrWorkerUnavailable)
 	} else if slot.safeFailure != "" {
-		session.State = SessionLost
-		session.SafeFailure = slot.safeFailure
-	} else {
-		session.State = SessionClosed
+		desired = SessionLost
+		safeFailure = slot.safeFailure
+	}
+	session.State = desired
+	session.SafeFailure = safeFailure
+	if desired != SessionLost {
+		session.SafeFailure = ""
 	}
 	session.Revision++
 	session.UpdatedAt = broker.now().UTC().UnixNano()
 	session.LastActivityAt = session.UpdatedAt
-	if err = broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
+	if err := broker.store.UpdateSession(ctx, session.Revision-1, session); err != nil {
 		return Session{}, err
 	}
 	delete(broker.slots, session.ID)
 	return session, nil
+}
+
+func terminalInvocationFailure(state SessionState, safeFailure string) string {
+	if safeFailure != "" {
+		return safeFailure
+	}
+	if state == SessionExpired {
+		return "session_expired"
+	}
+	return "session_closed"
+}
+
+func (broker *Broker) sessionExpired(session Session, now time.Time) bool {
+	if now.UnixNano() >= session.ExpiresAt {
+		return true
+	}
+	idle := time.Duration(broker.config.Limits.Effective().IdleSeconds) * time.Second
+	return now.Sub(time.Unix(0, session.LastActivityAt)) >= idle
+}
+
+func (broker *Broker) terminateInvocationsLocked(ctx context.Context, sessionID, failure string) error {
+	invocations, err := broker.store.ListInvocations(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, invocation := range invocations {
+		if invocation.State.Terminal() {
+			continue
+		}
+		now := broker.now().UTC().UnixNano()
+		if invocation.State == InvocationPrepared {
+			invocation.State = InvocationCanceled
+		} else {
+			invocation.State = InvocationUnknown
+		}
+		invocation.SafeFailure = failure
+		invocation.Revision++
+		invocation.UpdatedAt = now
+		invocation.CompletedAt = now
+		if err = broker.store.UpdateInvocation(ctx, invocation.Revision-1, invocation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ExecutePrepared durably accepts one prepared invocation before dispatch.
+// Existing terminal records are returned idempotently; an existing accepted
+// record becomes unknown and is never dispatched again.
+func (broker *Broker) ExecutePrepared(
+	ctx context.Context,
+	owner Owner,
+	invocationID string,
+	actionHash string,
+	execute InvocationExecutor,
+) (Invocation, error) {
+	if err := owner.Validate(); err != nil {
+		return Invocation{}, err
+	}
+	if !validIdentifier(invocationID) || !validDigest(actionHash) || execute == nil {
+		return Invocation{}, fmt.Errorf("%w: malformed invocation dispatch", ErrInvalid)
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	invocation, err := broker.store.GetInvocation(ctx, invocationID)
+	if err != nil {
+		return Invocation{}, err
+	}
+	if !invocation.Owner.Equal(owner) || invocation.ActionHash != actionHash {
+		return Invocation{}, ErrNotFound
+	}
+	if invocation.State.Terminal() {
+		return invocation, nil
+	}
+	if invocation.State == InvocationAccepted {
+		return broker.completeInvocationLocked(ctx, invocation, InvocationUnknown, nil, "worker_lost")
+	}
+	if ctx.Err() != nil {
+		return broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationCanceled, nil, "canceled_before_acceptance")
+	}
+	now := broker.now().UTC()
+	if now.UnixNano() >= invocation.ExpiresAt {
+		return broker.completeInvocationLocked(ctx, invocation, InvocationCanceled, nil, "invocation_expired")
+	}
+	session, err := broker.store.GetSession(ctx, invocation.SessionID)
+	if err != nil || session.State != SessionReady || !session.Owner.Equal(owner) {
+		return Invocation{}, ErrWorkerUnavailable
+	}
+	if session.PolicyRevision != broker.policyRevision {
+		if _, finishErr := broker.finishSessionLocked(ctx, session, SessionLost, "policy_changed"); finishErr != nil {
+			return Invocation{}, errors.Join(ErrWorkerUnavailable, finishErr)
+		}
+		return Invocation{}, ErrWorkerUnavailable
+	}
+	if broker.sessionExpired(session, now) {
+		if _, finishErr := broker.finishSessionLocked(ctx, session, SessionExpired, ""); finishErr != nil {
+			return Invocation{}, errors.Join(ErrWorkerUnavailable, finishErr)
+		}
+		return Invocation{}, ErrWorkerUnavailable
+	}
+	if broker.slots[session.ID] == nil {
+		if _, finishErr := broker.finishSessionLocked(ctx, session, SessionLost, "worker_lost"); finishErr != nil {
+			return Invocation{}, errors.Join(ErrWorkerUnavailable, finishErr)
+		}
+		return Invocation{}, ErrWorkerUnavailable
+	}
+	invocation.State = InvocationAccepted
+	invocation.AcceptedAt = now.UnixNano()
+	invocation.UpdatedAt = invocation.AcceptedAt
+	invocation.Revision++
+	if err = broker.store.UpdateInvocation(ctx, invocation.Revision-1, invocation); err != nil {
+		return Invocation{}, err
+	}
+	result, executeErr := execute(ctx)
+	if executeErr != nil {
+		return broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationUnknown, nil, "outcome_unknown")
+	}
+	if len(result) == 0 || len(result) > MaxTerminalBytes || !json.Valid(result) {
+		return broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationUnknown, nil, "result_invalid")
+	}
+	completed, err := broker.completeInvocationLocked(context.WithoutCancel(ctx), invocation, InvocationSucceeded, result, "")
+	if err != nil {
+		return completed, err
+	}
+	// A completed action is activity, but never extends the absolute lifetime.
+	session.Revision++
+	session.UpdatedAt = broker.now().UTC().UnixNano()
+	session.LastActivityAt = session.UpdatedAt
+	if err = broker.store.UpdateSession(context.WithoutCancel(ctx), session.Revision-1, session); err != nil {
+		return completed, err
+	}
+	return completed, nil
+}
+
+func (broker *Broker) completeInvocationLocked(
+	ctx context.Context,
+	invocation Invocation,
+	state InvocationState,
+	result json.RawMessage,
+	failure string,
+) (Invocation, error) {
+	now := broker.now().UTC().UnixNano()
+	invocation.State = state
+	invocation.Revision++
+	invocation.UpdatedAt = now
+	invocation.CompletedAt = now
+	invocation.TerminalResult = cloneBytes(result)
+	invocation.SafeFailure = failure
+	if state == InvocationCanceled {
+		invocation.AcceptedAt = 0
+	}
+	if err := broker.store.UpdateInvocation(ctx, invocation.Revision-1, invocation); err != nil {
+		return invocation, err
+	}
+	return invocation, nil
 }
 
 func (broker *Broker) cleanupSlot(ctx context.Context, slot *workerSlot) error {
