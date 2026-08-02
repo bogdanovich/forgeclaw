@@ -846,6 +846,21 @@ toolLoop:
 			toolResult = tools.ErrorResult("hook returned nil tool result")
 		}
 		if toolResult.Suspension != nil {
+			argumentHash, approvalAction, approvalErr := runner.prepareToolApprovalSuspension(
+				execCtx,
+				toolName,
+				toolArgs,
+				toolResult,
+			)
+			if approvalErr != nil {
+				if denial, safe := tools.SafeApprovalDenialResult(approvalErr); safe {
+					toolResult = denial
+				} else {
+					toolResult = tools.ErrorResult(
+						"Tool execution denied because approval authority could not be prepared.",
+					)
+				}
+			}
 			control, suspended, fallback := runner.trySuspendToolCall(
 				ctx,
 				i,
@@ -853,8 +868,8 @@ toolLoop:
 				toolName,
 				toolDuration,
 				toolResult,
-				"",
-				"",
+				argumentHash,
+				approvalAction,
 			)
 			if suspended {
 				return ToolLoopOutcome{
@@ -1113,6 +1128,40 @@ toolLoop:
 		"agent_id": ts.agent.ID, "iteration": iteration,
 	})
 	return ToolLoopOutcome{Control: ToolControlContinue}
+}
+
+func (r *toolLoopRunner) prepareToolApprovalSuspension(
+	ctx context.Context,
+	toolName string,
+	toolArgs map[string]any,
+	result *tools.ToolResult,
+) (string, string, error) {
+	if result == nil || result.Suspension == nil || result.Suspension.Kind != interactions.KindApproval {
+		return "", "", nil
+	}
+	if r.ts == nil || r.ts.agent == nil || r.ts.agent.Tools == nil {
+		return "", "", errors.New("tool registry is unavailable")
+	}
+	action := result.Suspension.PromptSummary
+	if err := validateApprovalDisplay(toolName, action); err != nil {
+		return "", "", err
+	}
+	if err := r.ts.agent.Tools.ValidateArguments(toolName, toolArgs); err != nil {
+		return "", "", err
+	}
+	bound, err := r.ts.agent.Tools.ApprovalArguments(ctx, toolName, toolArgs)
+	if err != nil {
+		return "", "", err
+	}
+	workspace := strings.TrimSpace(r.ts.opts.InteractionWorkspace)
+	if workspace == "" {
+		workspace = r.ts.workspace
+	}
+	hash, err := interactions.HashArguments(workspace, bound)
+	if err != nil {
+		return "", "", err
+	}
+	return hash, action, nil
 }
 
 func toolResultContextStatus(result *tools.ToolResult) providers.ToolResultStatus {
