@@ -34,13 +34,17 @@ func acquireStoreLock(path string) (func(), error) {
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		attributes,
 		windows.OPEN_ALWAYS,
-		windows.FILE_ATTRIBUTE_NORMAL,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open browser state lock: %w", err)
 	}
 	lock := os.NewFile(uintptr(handle), path)
+	if err = rejectWindowsStoreReparsePoint(handle); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
 	if err = secureWindowsStoreHandle(handle, owner); err != nil {
 		_ = lock.Close()
 		return nil, err

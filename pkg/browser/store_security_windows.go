@@ -3,6 +3,8 @@
 package browser
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -10,9 +12,9 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-
-	"github.com/bogdanovich/mintclaw/pkg/fileutil"
 )
+
+var renameWindowsStoreFile = os.Rename
 
 func prepareStorePath(path string) error {
 	directory := filepath.Dir(path)
@@ -36,13 +38,100 @@ func prepareStorePath(path string) error {
 }
 
 func writeSecureStoreFile(path string, data []byte, mode os.FileMode) error {
-	if err := fileutil.WriteFileAtomic(path, data, mode); err != nil {
+	owner, err := currentWindowsStoreOwner()
+	if err != nil {
 		return err
 	}
-	if err := secureWindowsStorePath(path, false); err != nil {
-		return &fileutil.CommittedWriteError{Err: err}
+	descriptor, _, err := ownerOnlyWindowsStoreDescriptor(owner)
+	if err != nil {
+		return err
 	}
+	var temporaryPath string
+	var temporary *os.File
+	for range 100 {
+		var suffix [16]byte
+		if _, err = rand.Read(suffix[:]); err != nil {
+			return fmt.Errorf("generate Windows browser-store temporary name: %w", err)
+		}
+		temporaryPath = filepath.Join(filepath.Dir(path), ".browser-state-"+hex.EncodeToString(suffix[:]))
+		temporary, err = createOwnerOnlyWindowsStoreFile(temporaryPath, descriptor, windows.CREATE_NEW)
+		if errors.Is(err, windows.ERROR_FILE_EXISTS) || errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		break
+	}
+	if temporary == nil {
+		return errors.New("create unique Windows browser-store temporary file")
+	}
+	committed := false
+	defer func() {
+		_ = temporary.Close()
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if _, err = temporary.Write(data); err != nil {
+		return fmt.Errorf("write Windows browser-store temporary file: %w", err)
+	}
+	if err = temporary.Chmod(mode); err != nil {
+		return fmt.Errorf("set Windows browser-store temporary mode: %w", err)
+	}
+	if err = temporary.Sync(); err != nil {
+		return fmt.Errorf("sync Windows browser-store temporary file: %w", err)
+	}
+	if err = temporary.Close(); err != nil {
+		return fmt.Errorf("close Windows browser-store temporary file: %w", err)
+	}
+	if err = renameWindowsStoreFile(temporaryPath, path); err != nil {
+		return fmt.Errorf("replace Windows browser state store: %w", err)
+	}
+	committed = true
 	return nil
+}
+
+func createOwnerOnlyWindowsStoreFile(
+	path string,
+	descriptor *windows.SECURITY_DESCRIPTOR,
+	creationDisposition uint32,
+) (*os.File, error) {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	attributes := &windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: descriptor,
+	}
+	handle, err := windows.CreateFile(
+		pathPtr,
+		windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER,
+		windows.FILE_SHARE_READ,
+		attributes,
+		creationDisposition,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if err = rejectWindowsStoreReparsePoint(handle); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	owner, err := currentWindowsStoreOwner()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if err = secureWindowsStoreHandle(handle, owner); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func currentWindowsStoreOwner() (*windows.SID, error) {
@@ -78,7 +167,9 @@ func secureWindowsStorePath(path string, directory bool) error {
 	}
 	flags := uint32(windows.FILE_ATTRIBUTE_NORMAL)
 	if directory {
-		flags = windows.FILE_FLAG_BACKUP_SEMANTICS
+		flags = windows.FILE_FLAG_BACKUP_SEMANTICS | windows.FILE_FLAG_OPEN_REPARSE_POINT
+	} else {
+		flags |= windows.FILE_FLAG_OPEN_REPARSE_POINT
 	}
 	handle, err := windows.CreateFile(
 		pathPtr,
@@ -93,7 +184,21 @@ func secureWindowsStorePath(path string, directory bool) error {
 		return fmt.Errorf("open Windows browser-store path: %w", err)
 	}
 	defer windows.CloseHandle(handle)
+	if err = rejectWindowsStoreReparsePoint(handle); err != nil {
+		return err
+	}
 	return secureWindowsStoreHandle(handle, owner)
+}
+
+func rejectWindowsStoreReparsePoint(handle windows.Handle) error {
+	var information windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &information); err != nil {
+		return fmt.Errorf("inspect Windows browser-store path: %w", err)
+	}
+	if information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return errors.New("Windows browser-store path must not be a reparse point")
+	}
+	return nil
 }
 
 func secureWindowsStoreHandle(handle windows.Handle, owner *windows.SID) error {

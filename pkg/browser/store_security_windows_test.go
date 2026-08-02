@@ -4,12 +4,57 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
+
+func TestWindowsStoreReplacementIsSecuredBeforeRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "browser.json")
+	store, err := NewFileStore(path, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	wantErr := errors.New("injected pre-commit stop")
+	originalRename := renameWindowsStoreFile
+	renameWindowsStoreFile = func(temporaryPath, destination string) error {
+		if destination != path {
+			t.Fatalf("rename destination = %q, want %q", destination, path)
+		}
+		assertOwnerOnlyWindowsStorePath(t, temporaryPath, false)
+		return wantErr
+	}
+	defer func() { renameWindowsStoreFile = originalRename }()
+	if err = store.CreateSession(context.Background(), testOpeningSession(testOwner())); !errors.Is(err, wantErr) {
+		t.Fatalf("CreateSession() error = %v, want injected pre-commit stop", err)
+	}
+	if _, err = os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("canonical store exists after pre-commit stop: %v", err)
+	}
+}
+
+func TestWindowsStoreRejectsReparsePointDirectory(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	directory := filepath.Join(root, "state")
+	if err := os.Symlink(target, directory); err != nil {
+		t.Fatalf("create Windows directory symlink: %v", err)
+	}
+	store, err := NewFileStore(filepath.Join(directory, "browser.json"), 0, 0)
+	if store != nil {
+		store.Close()
+	}
+	if err == nil {
+		t.Fatal("NewFileStore() through reparse point error = nil")
+	}
+	if _, statErr := os.Stat(filepath.Join(target, "browser.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("reparse target was modified: %v", statErr)
+	}
+}
 
 func TestFileStoreCreatesAndReopensWithOwnerOnlyWindowsDACL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "browser.json")
