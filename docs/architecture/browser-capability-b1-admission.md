@@ -239,6 +239,10 @@ Rules:
 - only `mode=managed` is valid in B1;
 - allowed origins are normalized `http` or `https` origins without path,
   query, fragment, user information, or wildcard public suffix;
+- the exact empty `about:blank` document is the sole runtime origin exception:
+  it is not configurable, contains no title, snapshot content, references, or
+  dialog, and its snapshot can authorize only navigation to an allowed HTTP(S)
+  origin;
 - exact allowed origins are also applied at the driver request boundary;
   redirects and every resulting document origin are rechecked before further
   page interaction;
@@ -286,7 +290,10 @@ invocation, or change retained state.
 ### `browser_session`
 
 `open` accepts only `target` and `profile` aliases. It creates at most one
-session and returns its ID, state, controller, expiry, and initial tab ID.
+session and returns its ID, state, controller, expiry, and initial tab ID. A
+new driver may start on an empty `about:blank` tab. The specialist observes
+that tab before the first navigation so the navigation remains bound to fresh
+snapshot authority.
 
 `status` accepts `browser_session_id` and returns bounded session state and
 tab summaries. It may reconcile already persisted worker state, but it does
@@ -302,7 +309,8 @@ invocation cannot be proven terminal, that invocation becomes `unknown`.
 The tool accepts `browser_session_id` and an optional `tab_id`. It returns:
 
 - the resolved session and tab IDs;
-- the current normalized URL and origin;
+- the current normalized HTTP(S) URL and origin, or the exact empty
+  `about:blank` bootstrap document;
 - a new opaque snapshot ID and monotonically increasing generation;
 - a bounded accessibility tree with scoped element references;
 - bounded tab summaries and pending dialog metadata; and
@@ -335,6 +343,12 @@ admitted key; `scroll` contains a bounded direction and amount; and `dialog`
 contains `accept` or `dismiss` plus an optional bounded prompt value. No call
 contains multiple actions, a driver tool name, CSS/XPath selector, JavaScript,
 coordinate, file path, credential, or retry flag.
+
+An observation of the exact empty `about:blank` document can authorize only a
+`navigate` action. Any title, snapshot content, reference, dialog, alternate
+`about:` URL, or non-navigation action fails closed as driver-incompatible or
+denied. The destination still passes the configured-origin and network checks
+at preparation and immediately before dispatch.
 
 The result contains the invocation ID, derived effect class, terminal state,
 and a fresh observation when one can be obtained safely. A prepared action

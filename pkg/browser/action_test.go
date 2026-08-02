@@ -105,6 +105,149 @@ func TestBrokerObservationScopesOpaqueReferencesToFreshGeneration(t *testing.T) 
 	}
 }
 
+func TestBrokerBlankSnapshotAuthorizesOnlyAllowedNavigation(t *testing.T) {
+	store := NewMemoryStore()
+	broker, worker, session := openActionTestBroker(t, store)
+	owner := testOwner()
+	worker.observation = DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin}
+
+	blank, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blank.URL != initialBlankOrigin || blank.Origin != initialBlankOrigin || blank.Snapshot != "" ||
+		blank.SnapshotID == "" || blank.SnapshotGeneration != 1 {
+		t.Fatalf("blank observation = %+v", blank)
+	}
+	_, err = broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_blank_scroll", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: blank.SnapshotID, SnapshotGeneration: blank.SnapshotGeneration,
+		Action: Action{Kind: ActionScroll, Direction: "down", Amount: 1},
+	})
+	if !errors.Is(err, ErrDenied) {
+		t.Fatalf("PrepareAction(blank scroll) error = %v, want ErrDenied", err)
+	}
+
+	prepared, err := broker.PrepareAction(context.Background(), PrepareActionRequest{
+		Owner: owner, RequestID: "request_blank_navigate", SessionID: session.ID, TabID: session.TabID,
+		SnapshotID: blank.SnapshotID, SnapshotGeneration: blank.SnapshotGeneration,
+		Action: Action{Kind: ActionNavigate, URL: "https://example.com/form"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Action.CurrentOrigin != initialBlankOrigin ||
+		prepared.Action.DestinationOrigin != "https://example.com" {
+		t.Fatalf("prepared blank navigation = %+v", prepared.Action)
+	}
+	worker.onExecute = func(DriverAction) {
+		worker.observation = driverObservationFixture(
+			DriverElement{Target: "e1", Role: "textbox", Name: "Name"},
+		)
+	}
+	invocation, err := broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+	if err != nil || invocation.State != InvocationSucceeded {
+		t.Fatalf("ExecuteAction(blank navigation) = %+v, %v", invocation, err)
+	}
+	if len(worker.actions) != 1 || worker.actions[0].Kind != DriverNavigate ||
+		worker.actions[0].URL != "https://example.com/form" {
+		t.Fatalf("blank navigation driver actions = %+v", worker.actions)
+	}
+	observed, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+	if err != nil || observed.Origin != "https://example.com" || observed.SnapshotGeneration != 2 {
+		t.Fatalf("Observe(after blank navigation) = %+v, %v", observed, err)
+	}
+}
+
+func TestBrokerRejectsNonEmptyBlankDriverObservation(t *testing.T) {
+	dialog := &DialogObservation{Type: "alert", Message: "unexpected"}
+	tests := []struct {
+		name        string
+		observation DriverObservation
+	}{
+		{name: "different URL", observation: DriverObservation{URL: "about:srcdoc", Origin: initialBlankOrigin}},
+		{
+			name: "blank URL with HTTP origin",
+			observation: DriverObservation{
+				URL: initialBlankOrigin, Origin: "https://example.com",
+			},
+		},
+		{
+			name:        "title",
+			observation: DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin, Title: "Blank"},
+		},
+		{
+			name:        "snapshot",
+			observation: DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin, Snapshot: "text"},
+		},
+		{
+			name: "element",
+			observation: DriverObservation{
+				URL:      initialBlankOrigin,
+				Origin:   initialBlankOrigin,
+				Elements: []DriverElement{{Target: "e1"}},
+			},
+		},
+		{
+			name:        "dialog",
+			observation: DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin, PendingDialog: dialog},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+			worker.observation = test.observation
+			_, err := broker.Observe(context.Background(), testOwner(), session.ID, session.TabID)
+			if !errors.Is(err, ErrDriverIncompatible) {
+				t.Fatalf("Observe() error = %v, want ErrDriverIncompatible", err)
+			}
+		})
+	}
+}
+
+func TestBrokerRejectsBlankMutationAtActionObservationBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		execute bool
+	}{
+		{name: "prepare"},
+		{name: "execute", execute: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+			owner := testOwner()
+			worker.observation = DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin}
+			blank, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := PrepareActionRequest{
+				Owner: owner, RequestID: "request_blank_mutation", SessionID: session.ID,
+				TabID: session.TabID, SnapshotID: blank.SnapshotID,
+				SnapshotGeneration: blank.SnapshotGeneration,
+				Action:             Action{Kind: ActionNavigate, URL: "https://example.com/form"},
+			}
+			if test.execute {
+				prepared, prepareErr := broker.PrepareAction(context.Background(), request)
+				if prepareErr != nil {
+					t.Fatal(prepareErr)
+				}
+				worker.observation.Title = "mutated"
+				_, err = broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+			} else {
+				worker.observation.Origin = "https://example.com"
+				_, err = broker.PrepareAction(context.Background(), request)
+			}
+			if !errors.Is(err, ErrDriverIncompatible) {
+				t.Fatalf("action boundary error = %v, want ErrDriverIncompatible", err)
+			}
+			if len(worker.actions) != 0 {
+				t.Fatalf("malformed blank observation dispatched actions: %+v", worker.actions)
+			}
+		})
+	}
+}
+
 func TestBrokerObservationDeniesPrivateDNSResolutionAndClosesSession(t *testing.T) {
 	store := NewMemoryStore()
 	broker, worker, session := openActionTestBroker(t, store)

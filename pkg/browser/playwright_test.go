@@ -698,6 +698,36 @@ func TestPlaywrightObservationEnforcesReferenceLimit(t *testing.T) {
 	}
 }
 
+func TestPlaywrightObservationAcceptsOnlyExactEmptyInitialBlank(t *testing.T) {
+	fence := "### Snapshot\n```yaml\n\n```"
+	blank := "### Page\n- Page URL: about:blank\n" + fence
+	observation, err := parsePlaywrightObservation(blank, 1024, 2)
+	if err != nil || observation.URL != initialBlankOrigin || observation.Origin != initialBlankOrigin ||
+		observation.Title != "" || observation.Snapshot != "" || len(observation.Elements) != 0 {
+		t.Fatalf("parsePlaywrightObservation(blank) = %+v, %v", observation, err)
+	}
+	if _, err = parsePlaywrightObservation(blank, 0, 2); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("parsePlaywrightObservation(blank, zero bytes) error = %v", err)
+	}
+	if _, err = parsePlaywrightObservation(blank, 1024, 0); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("parsePlaywrightObservation(blank, zero refs) error = %v", err)
+	}
+
+	invalid := map[string]string{
+		"title":       strings.Replace(blank, fence, "- Page Title: Blank\n"+fence, 1),
+		"snapshot":    strings.Replace(blank, "```yaml\n\n```", "```yaml\n- button [ref=e1]\n```", 1),
+		"fragment":    strings.Replace(blank, "about:blank", "about:blank#fragment", 1),
+		"other about": strings.Replace(blank, "about:blank", "about:srcdoc", 1),
+	}
+	for name, input := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if _, parseErr := parsePlaywrightObservation(input, 1024, 2); !errors.Is(parseErr, ErrDriverIncompatible) {
+				t.Fatalf("parsePlaywrightObservation() error = %v, want ErrDriverIncompatible", parseErr)
+			}
+		})
+	}
+}
+
 func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	if os.Getenv("MINTCLAW_BROWSER_REAL_DRIVER") != "1" {
 		t.Skip("set MINTCLAW_BROWSER_REAL_DRIVER=1 to run the pinned Playwright MCP fixture")
@@ -748,6 +778,11 @@ func TestPlaywrightWorkerRealBrowserFixture(t *testing.T) {
 	}
 	worker := opened.Owner.(*playwrightWorker)
 	t.Cleanup(func() { _ = worker.Close(context.Background()) })
+	initial, err := worker.Observe(ctx)
+	if err != nil || initial.URL != initialBlankOrigin || initial.Origin != initialBlankOrigin ||
+		initial.Snapshot != "" || len(initial.Elements) != 0 {
+		t.Fatalf("initial Observe() = %+v, %v", initial, err)
+	}
 	if err = worker.Execute(ctx, DriverAction{Kind: DriverNavigate, URL: fixtureOrigin}); err != nil {
 		t.Fatalf("navigate error = %v", err)
 	}

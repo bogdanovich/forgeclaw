@@ -20,6 +20,7 @@ func OpaqueAgentID(agentID string) string {
 }
 
 const (
+	initialBlankOrigin    = "about:blank"
 	MaxIdentifierBytes    = 128
 	MaxSafeFailureBytes   = 256
 	MaxTerminalBytes      = 320 * 1024
@@ -302,7 +303,7 @@ func (session Session) Validate() error {
 		len(session.SnapshotOrigin) > MaxURLBytes {
 		return fmt.Errorf("%w: malformed session snapshot", ErrInvalid)
 	}
-	if session.SnapshotOrigin != "" {
+	if session.SnapshotOrigin != "" && session.SnapshotOrigin != initialBlankOrigin {
 		normalized, err := config.NormalizeBrowserOrigin(session.SnapshotOrigin)
 		if err != nil || normalized != session.SnapshotOrigin {
 			return fmt.Errorf("%w: malformed session snapshot origin", ErrInvalid)
@@ -373,9 +374,15 @@ func (prepared PreparedAction) Validate(maxTextBytes int) error {
 	if prepared.Action.Kind != ActionDialog && (prepared.DialogType != "" || prepared.DialogMessage != "") {
 		return fmt.Errorf("%w: unexpected prepared dialog binding", ErrInvalid)
 	}
-	currentOrigin, err := config.NormalizeBrowserOrigin(prepared.CurrentOrigin)
-	if err != nil || currentOrigin != prepared.CurrentOrigin {
-		return fmt.Errorf("%w: malformed prepared action origin", ErrInvalid)
+	if prepared.CurrentOrigin == initialBlankOrigin {
+		if prepared.Action.Kind != ActionNavigate {
+			return fmt.Errorf("%w: blank-document authority permits only navigation", ErrInvalid)
+		}
+	} else {
+		currentOrigin, err := config.NormalizeBrowserOrigin(prepared.CurrentOrigin)
+		if err != nil || currentOrigin != prepared.CurrentOrigin {
+			return fmt.Errorf("%w: malformed prepared action origin", ErrInvalid)
+		}
 	}
 	switch prepared.Action.Kind {
 	case ActionNavigate:

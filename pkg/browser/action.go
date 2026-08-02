@@ -67,6 +67,9 @@ func (broker *Broker) Observe(ctx context.Context, owner Owner, sessionID, tabID
 	if err != nil {
 		return Observation{}, err
 	}
+	if err = validateBlankObservation(driverObservation, ""); err != nil {
+		return Observation{}, err
+	}
 	if !broker.originAllowed(session, driverObservation.Origin) {
 		return Observation{}, ErrDenied
 	}
@@ -286,6 +289,9 @@ func (broker *Broker) resolvePreparedActionLocked(
 		CreatedAt: now.UnixNano(),
 		ExpiresAt: now.Add(time.Duration(broker.config.Limits.Effective().PreparedSeconds) * time.Second).UnixNano(),
 	}
+	if prepared.CurrentOrigin == initialBlankOrigin && request.Action.Kind != ActionNavigate {
+		return PreparedAction{}, ErrDenied
+	}
 	if !validDigest(prepared.CatalogRevision) {
 		return PreparedAction{}, ErrDriverIncompatible
 	}
@@ -297,6 +303,9 @@ func (broker *Broker) resolvePreparedActionLocked(
 		observation, observeErr := worker.Observe(ctx)
 		if observeErr != nil {
 			return PreparedAction{}, observeErr
+		}
+		if blankErr := validateBlankObservation(observation, session.SnapshotOrigin); blankErr != nil {
+			return PreparedAction{}, blankErr
 		}
 		if observation.Origin != session.SnapshotOrigin {
 			return PreparedAction{}, ErrStale
@@ -348,6 +357,9 @@ func (broker *Broker) resolvePreparedActionLocked(
 		if observeErr != nil {
 			return PreparedAction{}, observeErr
 		}
+		if blankErr := validateBlankObservation(observation, session.SnapshotOrigin); blankErr != nil {
+			return PreparedAction{}, blankErr
+		}
 		if observation.Origin != session.SnapshotOrigin {
 			return PreparedAction{}, ErrStale
 		}
@@ -363,6 +375,9 @@ func (broker *Broker) resolvePreparedActionLocked(
 		observation, observeErr := worker.Observe(ctx)
 		if observeErr != nil {
 			return PreparedAction{}, observeErr
+		}
+		if blankErr := validateBlankObservation(observation, session.SnapshotOrigin); blankErr != nil {
+			return PreparedAction{}, blankErr
 		}
 		if observation.Origin != session.SnapshotOrigin || observation.PendingDialog == nil {
 			return PreparedAction{}, ErrStale
@@ -404,6 +419,9 @@ func (broker *Broker) revalidatePreparedLocked(
 		if err != nil {
 			return err
 		}
+		if err = validateBlankObservation(observation, prepared.CurrentOrigin); err != nil {
+			return err
+		}
 		if observation.Origin != prepared.CurrentOrigin {
 			return ErrStale
 		}
@@ -412,6 +430,9 @@ func (broker *Broker) revalidatePreparedLocked(
 	if prepared.Action.Kind == ActionDialog {
 		observation, err := worker.Observe(ctx)
 		if err != nil {
+			return err
+		}
+		if err = validateBlankObservation(observation, prepared.CurrentOrigin); err != nil {
 			return err
 		}
 		if observation.Origin != prepared.CurrentOrigin || observation.PendingDialog == nil ||
@@ -689,6 +710,9 @@ func actionHasSensitiveInput(action Action) bool {
 }
 
 func (broker *Broker) originAllowed(session Session, origin string) bool {
+	if origin == initialBlankOrigin {
+		return true
+	}
 	target, ok := broker.config.Targets[session.Target]
 	if !ok {
 		return false
@@ -707,6 +731,9 @@ func (broker *Broker) originAllowed(session Session, origin string) bool {
 }
 
 func (broker *Broker) originNetworkAllowed(ctx context.Context, origin string) bool {
+	if origin == initialBlankOrigin {
+		return true
+	}
 	parsed, err := url.Parse(origin)
 	if err != nil || parsed.Hostname() == "" || broker.lookupIP == nil {
 		return false
@@ -725,6 +752,23 @@ func (broker *Broker) originNetworkAllowed(ctx context.Context, origin string) b
 		}
 	}
 	return true
+}
+
+func validInitialBlankObservation(observation DriverObservation) bool {
+	return observation.URL == initialBlankOrigin && observation.Origin == initialBlankOrigin &&
+		observation.Title == "" && observation.Snapshot == "" && len(observation.Elements) == 0 &&
+		observation.PendingDialog == nil
+}
+
+func validateBlankObservation(observation DriverObservation, expectedOrigin string) error {
+	if observation.URL != initialBlankOrigin && observation.Origin != initialBlankOrigin &&
+		expectedOrigin != initialBlankOrigin {
+		return nil
+	}
+	if !validInitialBlankObservation(observation) {
+		return ErrDriverIncompatible
+	}
+	return nil
 }
 
 func (broker *Broker) quarantineNetworkDeniedLocked(ctx context.Context, session Session) error {
