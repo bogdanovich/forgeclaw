@@ -247,6 +247,30 @@ func TestBrowserObserveResolvesDefaultTabAndReturnsBoundedProjection(t *testing.
 	}
 }
 
+func TestBrowserObserveDeliversEscapedTruncatedSnapshotWithinToolLimit(t *testing.T) {
+	cfg := browserToolTestConfig()
+	cfg.Tools.Browser.Limits.ToolResultBytes = config.BrowserToolResultEnvelopeBytes + 512
+	snapshot := `- text "` + strings.Repeat(`quoted\\path"`, 12)
+	source := &fakeBrowserToolSource{
+		available: true,
+		status:    browser.Session{ID: "browser_session_1", State: browser.SessionReady, TabID: "tab_primary"},
+		observe: browser.Observation{
+			SessionID: "browser_session_1", TabID: "tab_primary", SnapshotID: "snapshot_1",
+			SnapshotGeneration: 3, URL: "https://example.com/listing", Origin: "https://example.com",
+			Title: "Listing", Snapshot: snapshot, Truncated: true,
+		},
+	}
+	result := NewBrowserObserveTool(cfg, source).Execute(browserToolTestContext(), map[string]any{
+		"browser_session_id": "browser_session_1",
+	})
+	var observation browserObservationView
+	decodeBrowserToolResult(t, result, &observation)
+	if !observation.Truncated || observation.Snapshot != snapshot ||
+		len(result.ContentForLLM()) > cfg.Tools.Browser.Limits.ToolResultBytes {
+		t.Fatalf("escaped observation = %#v; encoded bytes = %d", observation, len(result.ContentForLLM()))
+	}
+}
+
 func TestBrowserActSuspendsAndResumesWithPreparedAuthority(t *testing.T) {
 	binding := browser.ApprovalBinding{
 		PreparedActionID: "prepared_1", ActionHash: strings.Repeat("a", 64),

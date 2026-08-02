@@ -689,20 +689,24 @@ func TestPlaywrightWorkerBoundsObservationAndRedactsDriverError(t *testing.T) {
 	}
 }
 
+const testPlaywrightToolResultBytes = config.BrowserToolResultEnvelopeBytes + 4096
+
 func TestPlaywrightObservationProjectsReferenceLimit(t *testing.T) {
 	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
 		"### Snapshot\n```yaml\n- button [ref=e1]\n- textbox [ref=e2]\n```"
-	full, err := parsePlaywrightObservation(observation, 1024, 2)
+	full, err := parsePlaywrightObservation(observation, 1024, 2, testPlaywrightToolResultBytes)
 	if err != nil || full.Truncated {
 		t.Fatalf("parsePlaywrightObservation() boundary error = %v", err)
 	}
-	projected, err := parsePlaywrightObservation(observation, 1024, 1)
+	projected, err := parsePlaywrightObservation(observation, 1024, 1, testPlaywrightToolResultBytes)
 	if err != nil || !projected.Truncated || projected.Snapshot != "- button [ref=e1]" ||
 		len(projected.Elements) != 1 || projected.Elements[0].Target != "e1" {
 		t.Fatalf("parsePlaywrightObservation() projected = %+v, %v", projected, err)
 	}
 	malformed := strings.Replace(observation, "[ref=e1]", "[ref=selector]", 1)
-	if _, err := parsePlaywrightObservation(malformed, 1024, 2); !errors.Is(err, ErrDriverIncompatible) {
+	if _, err := parsePlaywrightObservation(
+		malformed, 1024, 2, testPlaywrightToolResultBytes,
+	); !errors.Is(err, ErrDriverIncompatible) {
 		t.Fatalf("parsePlaywrightObservation() malformed ref error = %v", err)
 	}
 }
@@ -710,7 +714,7 @@ func TestPlaywrightObservationProjectsReferenceLimit(t *testing.T) {
 func TestPlaywrightObservationAcceptsFrameQualifiedReferences(t *testing.T) {
 	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
 		"### Snapshot\n```yaml\n- button \"Save\" [ref=f1e2]\n```"
-	parsed, err := parsePlaywrightObservation(observation, 1024, 2)
+	parsed, err := parsePlaywrightObservation(observation, 1024, 2, testPlaywrightToolResultBytes)
 	if err != nil || parsed.Truncated || len(parsed.Elements) != 1 ||
 		parsed.Elements[0] != (DriverElement{Target: "f1e2", Role: "button", Name: "Save"}) {
 		t.Fatalf("parsePlaywrightObservation(frame-qualified ref) = %+v, %v", parsed, err)
@@ -728,10 +732,62 @@ func TestPlaywrightObservationProjectsByteLimitAtLineBoundary(t *testing.T) {
 	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
 		"### Snapshot\n```yaml\n" + snapshot + "\n```"
 	limit := len("- heading \"First\"\n- paragraph \"Second\"")
-	projected, err := parsePlaywrightObservation(observation, limit, 2)
+	projected, err := parsePlaywrightObservation(observation, limit, 2, testPlaywrightToolResultBytes)
 	if err != nil || !projected.Truncated || projected.Snapshot != "- heading \"First\"" ||
 		len(projected.Elements) != 0 {
 		t.Fatalf("parsePlaywrightObservation() byte projection = %+v, %v", projected, err)
+	}
+}
+
+func TestPlaywrightObservationProjectsEmptyPrefixWhenFirstLineExceedsLimit(t *testing.T) {
+	tests := []struct {
+		name          string
+		snapshot      string
+		maximumBytes  int
+		maximumRefs   int
+		toolResultMax int
+	}{
+		{
+			name: "bytes", snapshot: "- heading \"A very long accessible name\"",
+			maximumBytes: 1, maximumRefs: 2, toolResultMax: testPlaywrightToolResultBytes,
+		},
+		{
+			name: "references", snapshot: "- group [ref=e1] [ref=e2]",
+			maximumBytes: 1024, maximumRefs: 1, toolResultMax: testPlaywrightToolResultBytes,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+				"### Snapshot\n```yaml\n" + test.snapshot + "\n```"
+			projected, err := parsePlaywrightObservation(
+				observation, test.maximumBytes, test.maximumRefs, test.toolResultMax,
+			)
+			if err != nil || !projected.Truncated || projected.Snapshot != "" ||
+				len(projected.Elements) != 0 {
+				t.Fatalf("parsePlaywrightObservation(first-line overflow) = %+v, %v", projected, err)
+			}
+		})
+	}
+}
+
+func TestPlaywrightObservationBudgetsEncodedSnapshot(t *testing.T) {
+	firstLine := `- text "quoted\\path"` + "\n"
+	snapshot := firstLine + `- text "another\\quoted\\path"`
+	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
+		"### Snapshot\n```yaml\n" + snapshot + "\n```"
+	encodedBudget := encodedVisiblePlaywrightSnapshotBytes(firstLine)
+	contextBudget := encodedJSONStringBytes("https://example.com/") +
+		encodedJSONStringBytes("https://example.com") + encodedJSONStringBytes("Fixture")
+	projected, err := parsePlaywrightObservation(
+		observation,
+		1024,
+		2,
+		config.BrowserToolResultEnvelopeBytes+contextBudget+encodedBudget,
+	)
+	if err != nil || !projected.Truncated || projected.Snapshot != strings.TrimSuffix(firstLine, "\n") ||
+		encodedVisiblePlaywrightSnapshotBytes(projected.Snapshot) > encodedBudget {
+		t.Fatalf("parsePlaywrightObservation(encoded projection) = %+v, %v", projected, err)
 	}
 }
 
@@ -740,7 +796,7 @@ func TestPlaywrightObservationBudgetsOpaqueReferenceExpansion(t *testing.T) {
 	observation := "### Page\n- Page URL: https://example.com/\n- Page Title: Fixture\n" +
 		"### Snapshot\n```yaml\n" + snapshot + "\n```"
 	limit := visiblePlaywrightSnapshotBytes("- button [ref=e1]\n")
-	projected, err := parsePlaywrightObservation(observation, limit, 2)
+	projected, err := parsePlaywrightObservation(observation, limit, 2, testPlaywrightToolResultBytes)
 	if err != nil || !projected.Truncated || projected.Snapshot != "- button [ref=e1]" ||
 		len(projected.Elements) != 1 {
 		t.Fatalf("parsePlaywrightObservation() opaque-ref projection = %+v, %v", projected, err)
@@ -750,16 +806,25 @@ func TestPlaywrightObservationBudgetsOpaqueReferenceExpansion(t *testing.T) {
 func TestPlaywrightObservationAcceptsOnlyExactEmptyInitialBlank(t *testing.T) {
 	fence := "### Snapshot\n```yaml\n\n```"
 	blank := "### Page\n- Page URL: about:blank\n" + fence
-	observation, err := parsePlaywrightObservation(blank, 1024, 2)
+	observation, err := parsePlaywrightObservation(blank, 1024, 2, testPlaywrightToolResultBytes)
 	if err != nil || observation.URL != initialBlankOrigin || observation.Origin != initialBlankOrigin ||
 		observation.Title != "" || observation.Snapshot != "" || len(observation.Elements) != 0 {
 		t.Fatalf("parsePlaywrightObservation(blank) = %+v, %v", observation, err)
 	}
-	if _, err = parsePlaywrightObservation(blank, 0, 2); !errors.Is(err, ErrDriverIncompatible) {
+	if _, err = parsePlaywrightObservation(
+		blank, 0, 2, testPlaywrightToolResultBytes,
+	); !errors.Is(err, ErrDriverIncompatible) {
 		t.Fatalf("parsePlaywrightObservation(blank, zero bytes) error = %v", err)
 	}
-	if _, err = parsePlaywrightObservation(blank, 1024, 0); !errors.Is(err, ErrDriverIncompatible) {
+	if _, err = parsePlaywrightObservation(
+		blank, 1024, 0, testPlaywrightToolResultBytes,
+	); !errors.Is(err, ErrDriverIncompatible) {
 		t.Fatalf("parsePlaywrightObservation(blank, zero refs) error = %v", err)
+	}
+	if _, err = parsePlaywrightObservation(
+		blank, 1024, 2, config.BrowserToolResultEnvelopeBytes-1,
+	); !errors.Is(err, ErrDriverIncompatible) {
+		t.Fatalf("parsePlaywrightObservation(blank, undersized tool result) error = %v", err)
 	}
 
 	invalid := map[string]string{
@@ -770,7 +835,9 @@ func TestPlaywrightObservationAcceptsOnlyExactEmptyInitialBlank(t *testing.T) {
 	}
 	for name, input := range invalid {
 		t.Run(name, func(t *testing.T) {
-			if _, parseErr := parsePlaywrightObservation(input, 1024, 2); !errors.Is(parseErr, ErrDriverIncompatible) {
+			if _, parseErr := parsePlaywrightObservation(
+				input, 1024, 2, testPlaywrightToolResultBytes,
+			); !errors.Is(parseErr, ErrDriverIncompatible) {
 				t.Fatalf("parsePlaywrightObservation() error = %v, want ErrDriverIncompatible", parseErr)
 			}
 		})

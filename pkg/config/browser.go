@@ -34,6 +34,11 @@ const (
 	BrowserMaxConfiguredOrigins = 64
 )
 
+// BrowserToolResultEnvelopeBytes reserves encoded space for opaque authority
+// IDs, tab metadata, limits, and the browser_act wrapper. The adapter budgets
+// encoded URL, origin, title, and snapshot bytes separately.
+const BrowserToolResultEnvelopeBytes = 16 * 1024
+
 var (
 	browserAliasPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 	browserHostnamePattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
@@ -449,6 +454,12 @@ func validateBrowserLimits(limits BrowserLimitsConfig) error {
 		if check.value < 0 || check.value > check.max {
 			return fmt.Errorf("%s must be between 0 and %d", check.name, check.max)
 		}
+	}
+	if limits.ToolResultBytes != 0 && limits.ToolResultBytes < BrowserToolResultEnvelopeBytes {
+		return fmt.Errorf(
+			"tool_result_bytes must be 0 or at least %d",
+			BrowserToolResultEnvelopeBytes,
+		)
 	}
 	effective := limits.Effective()
 	if effective.IdleSeconds > effective.SessionSeconds {

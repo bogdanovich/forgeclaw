@@ -334,6 +334,7 @@ func (worker *playwrightWorker) Observe(ctx context.Context) (DriverObservation,
 		text,
 		worker.limits.SnapshotBytes,
 		worker.limits.SnapshotRefs,
+		worker.limits.ToolResultBytes,
 	)
 	if err != nil {
 		return DriverObservation{}, err
@@ -355,7 +356,12 @@ func (worker *playwrightWorker) Resolve(ctx context.Context, target string) (Dri
 	if err != nil {
 		return DriverElement{}, "", err
 	}
-	observation, err := parsePlaywrightObservation(text, worker.limits.SnapshotBytes, worker.limits.SnapshotRefs)
+	observation, err := parsePlaywrightObservation(
+		text,
+		worker.limits.SnapshotBytes,
+		worker.limits.SnapshotRefs,
+		worker.limits.ToolResultBytes,
+	)
 	if err != nil {
 		return DriverElement{}, "", err
 	}
@@ -628,6 +634,7 @@ func parsePlaywrightObservation(
 	text string,
 	maximumSnapshotBytes int,
 	maximumSnapshotRefs int,
+	maximumToolResultBytes int,
 ) (DriverObservation, error) {
 	pageURL := extractPlaywrightLine(text, "- Page URL: ")
 	title := extractPlaywrightLine(text, "- Page Title: ")
@@ -645,13 +652,15 @@ func parsePlaywrightObservation(
 	referenceTokens := playwrightSnapshotRefToken.FindAllStringIndex(snapshot, -1)
 	targetReferences := playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, -1)
 	if pageURL == initialBlankOrigin {
-		if maximumSnapshotBytes <= 0 || maximumSnapshotRefs <= 0 || title != "" || snapshot != "" ||
+		if maximumSnapshotBytes <= 0 || maximumSnapshotRefs <= 0 ||
+			maximumToolResultBytes < config.BrowserToolResultEnvelopeBytes || title != "" || snapshot != "" ||
 			len(referenceTokens) != 0 || len(targetReferences) != 0 {
 			return DriverObservation{}, ErrDriverIncompatible
 		}
 		return DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin}, nil
 	}
 	if snapshot == "" || len(title) > 1024 || maximumSnapshotBytes <= 0 || maximumSnapshotRefs <= 0 ||
+		maximumToolResultBytes < config.BrowserToolResultEnvelopeBytes ||
 		len(referenceTokens) != len(targetReferences) {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
@@ -659,7 +668,14 @@ func parsePlaywrightObservation(
 	if err != nil {
 		return DriverObservation{}, ErrDriverIncompatible
 	}
-	projected, truncated, err := projectPlaywrightSnapshot(snapshot, maximumSnapshotBytes, maximumSnapshotRefs)
+	maximumEncodedSnapshotBytes := maximumToolResultBytes - config.BrowserToolResultEnvelopeBytes -
+		encodedJSONStringBytes(safeURL) - encodedJSONStringBytes(origin) - encodedJSONStringBytes(title)
+	projected, truncated, err := projectPlaywrightSnapshot(
+		snapshot,
+		maximumSnapshotBytes,
+		maximumSnapshotRefs,
+		maximumEncodedSnapshotBytes,
+	)
 	if err != nil {
 		return DriverObservation{}, err
 	}
@@ -670,32 +686,39 @@ func parsePlaywrightObservation(
 	}, nil
 }
 
-func projectPlaywrightSnapshot(snapshot string, maximumBytes, maximumRefs int) (string, bool, error) {
-	if snapshot == "" || maximumBytes <= 0 || maximumRefs <= 0 {
+func projectPlaywrightSnapshot(
+	snapshot string,
+	maximumBytes int,
+	maximumRefs int,
+	maximumEncodedBytes int,
+) (string, bool, error) {
+	if snapshot == "" || maximumBytes <= 0 || maximumRefs <= 0 || maximumEncodedBytes < 0 {
 		return "", false, ErrDriverIncompatible
 	}
 	if visiblePlaywrightSnapshotBytes(snapshot) <= maximumBytes &&
+		encodedVisiblePlaywrightSnapshotBytes(snapshot) <= maximumEncodedBytes &&
 		len(playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, -1)) <= maximumRefs {
 		return snapshot, false, nil
 	}
 	var projected strings.Builder
 	retainedRefs := 0
 	projectedVisibleBytes := 0
+	projectedEncodedBytes := 0
 	for _, line := range strings.SplitAfter(snapshot, "\n") {
 		lineTargets := playwrightSnapshotTargetRef.FindAllStringSubmatch(line, -1)
 		lineVisibleBytes := visiblePlaywrightSnapshotBytes(line)
+		lineEncodedBytes := encodedVisiblePlaywrightSnapshotBytes(line)
 		if projectedVisibleBytes+lineVisibleBytes > maximumBytes ||
+			projectedEncodedBytes+lineEncodedBytes > maximumEncodedBytes ||
 			retainedRefs+len(lineTargets) > maximumRefs {
 			break
 		}
 		projected.WriteString(line)
 		retainedRefs += len(lineTargets)
 		projectedVisibleBytes += lineVisibleBytes
+		projectedEncodedBytes += lineEncodedBytes
 	}
 	result := strings.TrimSuffix(projected.String(), "\n")
-	if result == "" {
-		return "", false, ErrDriverIncompatible
-	}
 	return result, true, nil
 }
 
@@ -705,6 +728,19 @@ func visiblePlaywrightSnapshotBytes(snapshot string) int {
 		visibleBytes += opaqueSnapshotReferenceBytes - len(target[1])
 	}
 	return visibleBytes
+}
+
+func encodedVisiblePlaywrightSnapshotBytes(snapshot string) int {
+	visible := playwrightSnapshotTargetRef.ReplaceAllString(
+		snapshot,
+		"[ref=ref_00000000000000000000000000000000]",
+	)
+	return encodedJSONStringBytes(visible)
+}
+
+func encodedJSONStringBytes(value string) int {
+	encoded, _ := json.Marshal(value)
+	return len(encoded) - len(`""`)
 }
 
 func parsePlaywrightPendingDialog(
