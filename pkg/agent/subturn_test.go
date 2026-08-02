@@ -950,6 +950,7 @@ func TestHardAbortSessionRollback(t *testing.T) {
 		pendingResults:       make(chan *tools.ToolResult, 16),
 		concurrencySem:       make(chan struct{}, 5),
 	}
+	rootTS.captureRestorePoint(sess.GetHistory(""), sess.GetSummary(""))
 
 	// Register the turn state
 	al.activeTurnStates.Store(rootTS.runtimeSessionScope(), rootTS)
@@ -972,7 +973,7 @@ func TestHardAbortSessionRollback(t *testing.T) {
 	// Verify history rolled back to initial 2 messages
 	finalHistory := sess.GetHistory("")
 	if len(finalHistory) != 2 {
-		t.Errorf("expected history to rollback to 2 messages, got %d", len(finalHistory))
+		t.Fatalf("expected history to rollback to 2 messages, got %d", len(finalHistory))
 	}
 
 	// Verify the content matches the initial state
