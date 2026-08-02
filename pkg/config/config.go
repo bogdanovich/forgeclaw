@@ -1313,6 +1313,7 @@ type ToolsConfig struct {
 	Exec             ExecConfig                  `json:"exec"                       yaml:"-"`
 	Skills           SkillsToolsConfig           `json:"skills"                     yaml:"skills,omitempty"`
 	MediaCleanup     MediaCleanupConfig          `json:"media_cleanup"              yaml:"-"`
+	Browser          BrowserToolsConfig          `json:"browser,omitempty"          yaml:"-"`
 	MCP              MCPConfig                   `json:"mcp"                        yaml:"-"`
 	AppendFile       ToolConfig                  `json:"append_file"                yaml:"-"                                                       envPrefix:"MINTCLAW_TOOLS_APPEND_FILE_"`
 	ApplyPatch       ToolConfig                  `json:"apply_patch"                yaml:"-"                                                       envPrefix:"MINTCLAW_TOOLS_APPLY_PATCH_"`
@@ -1746,6 +1747,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateExecutionTargets(); err != nil {
 		return nil, err
 	}
+	if err = cfg.ValidateBrowserConfig(); err != nil {
+		return nil, err
+	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid tools.result_retention: %w", err)
 	}
@@ -1975,6 +1979,9 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 		return nil, err
 	}
 	if err = cfg.ValidateExecutionTargets(); err != nil {
+		return nil, err
+	}
+	if err = cfg.ValidateBrowserConfig(); err != nil {
 		return nil, err
 	}
 	if err = cfg.Tools.ResultRetention.Validate(); err != nil {
