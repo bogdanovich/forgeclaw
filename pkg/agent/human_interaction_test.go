@@ -428,6 +428,138 @@ func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
 	}
 }
 
+func TestInteractionAnswerContentUsesTelegramApprovalButtonChoice(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channels["tg1"] = &config.Channel{Enabled: true, Type: config.ChannelTelegram}
+	al := &AgentLoop{cfg: cfg}
+	record := interactions.Record{Kind: interactions.KindApproval}
+	msg := bus.InboundMessage{
+		Content: "[quoted assistant message]: approve?\n\nAllow once",
+		Context: bus.InboundContext{
+			Channel: "tg1", ReplyToMessageID: "prompt-1",
+			Raw: map[string]string{
+				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
+			},
+		},
+	}
+
+	content := al.interactionAnswerContent(record, msg)
+	if content != bus.InboundInteractionChoiceAllowOnce {
+		t.Fatalf("interactionAnswerContent() = %q", content)
+	}
+	answer, err := parseInteractionAnswer(record, content, "answer-1")
+	if err != nil || answer.Text != "allow_once" {
+		t.Fatalf("parseInteractionAnswer() = (%#v, %v)", answer, err)
+	}
+}
+
+func TestInteractionAnswerContentIgnoresChoiceOutsideTelegramApprovalReply(t *testing.T) {
+	cfg := config.DefaultConfig()
+	al := &AgentLoop{cfg: cfg}
+	record := interactions.Record{Kind: interactions.KindQuestion}
+	msg := bus.InboundMessage{
+		Content: "Allow once",
+		Context: bus.InboundContext{
+			Channel: "telegram", ReplyToMessageID: "prompt-1",
+			Raw: map[string]string{
+				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
+			},
+		},
+	}
+	if got := al.interactionAnswerContent(record, msg); got != msg.Content {
+		t.Fatalf("question interaction content = %q", got)
+	}
+
+	record.Kind = interactions.KindApproval
+	msg.Context.Channel = "slack"
+	if got := al.interactionAnswerContent(record, msg); got != msg.Content {
+		t.Fatalf("non-Telegram interaction content = %q", got)
+	}
+
+	msg.Context.Channel = "telegram"
+	msg.Context.ReplyToMessageID = ""
+	if got := al.interactionAnswerContent(record, msg); got != msg.Content {
+		t.Fatalf("non-reply interaction content = %q", got)
+	}
+}
+
+func TestInteractionAnswerContentRejectsNonTelegramInstanceNamedTelegram(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channels["telegram"] = &config.Channel{Enabled: true, Type: config.ChannelSlack}
+	al := &AgentLoop{cfg: cfg}
+	msg := bus.InboundMessage{
+		Content: "[quoted assistant message]: approve?\n\nAllow once",
+		Context: bus.InboundContext{
+			Channel: "telegram", ReplyToMessageID: "prompt-1",
+			Raw: map[string]string{
+				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
+			},
+		},
+	}
+
+	if got := al.interactionAnswerContent(
+		interactions.Record{Kind: interactions.KindApproval},
+		msg,
+	); got != msg.Content {
+		t.Fatalf("non-Telegram instance content = %q", got)
+	}
+}
+
+func TestInteractionAnswerContentConcurrentConfigReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.ContextManager = "none"
+	cfg.Agents.List = []config.AgentConfig{{ID: "main", Default: true}}
+	cfg.Channels["tg1"] = &config.Channel{Enabled: true, Type: config.ChannelTelegram}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	defer al.Close()
+
+	record := interactions.Record{Kind: interactions.KindApproval}
+	msg := bus.InboundMessage{
+		Content: "[quoted assistant message]: approve?\n\nAllow once",
+		Context: bus.InboundContext{
+			Channel: "tg1", ReplyToMessageID: "prompt-1",
+			Raw: map[string]string{
+				bus.InboundMetadataKeyInteractionChoice: bus.InboundInteractionChoiceAllowOnce,
+			},
+		},
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < 10; i++ {
+			reloaded := config.DefaultConfig()
+			reloaded.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
+			reloaded.Agents.Defaults.ContextManager = "none"
+			reloaded.Agents.List = cfg.Agents.List
+			reloaded.Channels["tg1"] = &config.Channel{
+				Enabled: true,
+				Type:    []string{config.ChannelTelegram, config.ChannelSlack}[i%2],
+			}
+			if err := al.ReloadProviderAndConfig(t.Context(), &mockProvider{}, reloaded); err != nil {
+				reloadDone <- err
+				return
+			}
+		}
+		reloadDone <- nil
+	}()
+
+	for {
+		select {
+		case err := <-reloadDone:
+			if err != nil {
+				t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+			}
+			return
+		default:
+			got := al.interactionAnswerContent(record, msg)
+			if got != msg.Content && got != bus.InboundInteractionChoiceAllowOnce {
+				t.Fatalf("interactionAnswerContent() = %q", got)
+			}
+		}
+	}
+}
+
 func TestInteractionEventsProjectOwningTaskState(t *testing.T) {
 	workspace := t.TempDir()
 	al := &AgentLoop{cfg: config.DefaultConfig()}
