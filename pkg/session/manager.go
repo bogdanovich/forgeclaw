@@ -182,6 +182,40 @@ func (sm *SessionManager) AppendTurnMessage(
 	return writeErr
 }
 
+func (sm *SessionManager) RestoreTurnSnapshot(
+	ctx context.Context,
+	sessionKey string,
+	history []providers.Message,
+	summary string,
+) error {
+	if err := contextCause(ctx); err != nil {
+		return err
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if err := contextCause(ctx); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	next := Session{Key: sessionKey, Messages: []providers.Message{}, Created: now, Updated: now}
+	if current := sm.sessions[sessionKey]; current != nil {
+		next = cloneSession(*current)
+	}
+	next.Messages = messageutil.FilterInvalidHistoryMessages(append([]providers.Message(nil), history...))
+	normalizeHistoryCreatedAt(next.Messages)
+	next.Summary = summary
+	advanceHistoryRevision(&next)
+	next.Updated = now
+
+	writeErr := sm.writeSessionSnapshot(sessionKey, next)
+	if writeErr == nil || fileutil.IsCommittedWriteError(writeErr) {
+		sm.sessions[sessionKey] = &next
+	}
+	return writeErr
+}
+
 func (sm *SessionManager) GetHistory(key string) []providers.Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()

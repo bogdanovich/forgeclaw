@@ -392,6 +392,20 @@ type saveFailingSessionStore struct {
 	err error
 }
 
+type restoreFailingSessionStore struct {
+	session.SessionStore
+	err error
+}
+
+func (s *restoreFailingSessionStore) RestoreTurnSnapshot(
+	context.Context,
+	string,
+	[]providers.Message,
+	string,
+) error {
+	return s.err
+}
+
 func (s *saveFailingSessionStore) AppendTurnMessage(
 	ctx context.Context,
 	sessionKey string,
@@ -1615,6 +1629,34 @@ func TestRunTurn_PostToolHardAbortPreservesDurableIntent(t *testing.T) {
 	if len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" ||
 		len(history[1].ToolCalls) != 1 {
 		t.Fatalf("history = %+v, want root plus unresolved durable tool intent", history)
+	}
+}
+
+func TestAbortTurnSnapshotFailureIsNotReportedAsSuccessfulRollback(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	injectedErr := errors.New("restore snapshot")
+	agent.Sessions = &restoreFailingSessionStore{SessionStore: agent.Sessions, err: injectedErr}
+	opts := normalizeProcessOptions(makeTestProcessOpts("failed-abort-restore"))
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-failed-abort-restore",
+		context: newTurnContext(nil, nil, nil),
+	})
+	if err := agent.Sessions.AppendTurnMessage(
+		t.Context(),
+		ts.sessionKey,
+		providers.Message{Role: "user", Content: opts.Dispatch.UserMessage},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := al.abortTurn(ts)
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("abortTurn() error = %v, want %v", err, injectedErr)
+	}
+	history := agent.Sessions.GetHistory(ts.sessionKey)
+	if len(history) != 1 || history[0].Content != opts.Dispatch.UserMessage {
+		t.Fatalf("failed rollback unexpectedly changed history: %+v", history)
 	}
 }
 

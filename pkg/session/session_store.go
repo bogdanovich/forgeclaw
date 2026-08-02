@@ -17,6 +17,7 @@ import (
 // embedded TurnJournal contract.
 type SessionStore interface {
 	TurnJournal
+	TurnSnapshotStore
 
 	// AddMessage appends a simple role/content message to the session.
 	AddMessage(sessionKey, role, content string)
@@ -45,6 +46,17 @@ type SessionStore interface {
 // result means the complete message is durably owned by the canonical store.
 type TurnJournal interface {
 	AppendTurnMessage(ctx context.Context, sessionKey string, msg providers.Message) error
+}
+
+// TurnSnapshotStore restores the canonical pre-turn state when execution is
+// aborted before any external side effect may have started.
+type TurnSnapshotStore interface {
+	RestoreTurnSnapshot(
+		ctx context.Context,
+		sessionKey string,
+		history []providers.Message,
+		summary string,
+	) error
 }
 
 func contextCause(ctx context.Context) error {

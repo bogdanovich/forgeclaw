@@ -763,6 +763,7 @@ func newEphemeralSession(initial []providers.Message) ephemeralSessionStoreIface
 // Declared so newEphemeralSession can return a typed interface.
 type ephemeralSessionStoreIface interface {
 	AppendTurnMessage(ctx context.Context, sessionKey string, msg providers.Message) error
+	RestoreTurnSnapshot(ctx context.Context, sessionKey string, history []providers.Message, summary string) error
 	AddMessage(sessionKey, role, content string)
 	AddFullMessage(sessionKey string, msg providers.Message)
 	GetHistory(key string) []providers.Message
@@ -793,6 +794,25 @@ func (e *ephemeralSessionStore) AppendTurnMessage(
 		}
 	}
 	e.AddFullMessage("", msg)
+	return nil
+}
+
+func (e *ephemeralSessionStore) RestoreTurnSnapshot(
+	ctx context.Context,
+	_ string,
+	history []providers.Message,
+	summary string,
+) error {
+	if ctx != nil {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.history = messageutil.FilterInvalidHistoryMessages(append([]providers.Message(nil), history...))
+	e.summary = summary
+	e.truncateLocked()
 	return nil
 }
 

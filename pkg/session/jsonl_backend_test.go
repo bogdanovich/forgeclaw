@@ -13,6 +13,42 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/session"
 )
 
+type resolveFailingStore struct {
+	*memory.JSONLStore
+	err error
+}
+
+func (s *resolveFailingStore) ResolveSessionKey(
+	context.Context,
+	string,
+) (string, bool, error) {
+	return "", false, s.err
+}
+
+type snapshotFailingStore struct {
+	memory.Store
+	historyErr error
+	summaryErr error
+}
+
+func (s *snapshotFailingStore) SetHistory(
+	ctx context.Context,
+	sessionKey string,
+	history []providers.Message,
+) error {
+	if s.historyErr != nil {
+		return s.historyErr
+	}
+	return s.Store.SetHistory(ctx, sessionKey, history)
+}
+
+func (s *snapshotFailingStore) SetSummary(ctx context.Context, sessionKey, summary string) error {
+	if s.summaryErr != nil {
+		return s.summaryErr
+	}
+	return s.Store.SetSummary(ctx, sessionKey, summary)
+}
+
 func TestJSONLBackendTurnJournalHonorsCancellation(t *testing.T) {
 	backend := newBackend(t)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -23,6 +59,77 @@ func TestJSONLBackendTurnJournalHonorsCancellation(t *testing.T) {
 	}
 	if history := backend.GetHistory("turn"); len(history) != 0 {
 		t.Fatalf("canceled append mutated history: %+v", history)
+	}
+}
+
+func TestJSONLBackendTurnJournalPropagatesCanonicalResolutionFailure(t *testing.T) {
+	store, err := memory.NewJSONLStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	injectedErr := errors.New("resolve metadata")
+	backend := session.NewJSONLBackend(&resolveFailingStore{JSONLStore: store, err: injectedErr})
+
+	err = backend.AppendTurnMessage(
+		t.Context(),
+		"legacy-alias",
+		providers.Message{Role: "user", Content: "must not be misdirected"},
+	)
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("AppendTurnMessage() error = %v, want %v", err, injectedErr)
+	}
+	history, readErr := store.GetHistory(t.Context(), "legacy-alias")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(history) != 0 {
+		t.Fatalf("resolution failure wrote alias history: %+v", history)
+	}
+}
+
+func TestJSONLBackendRestoreTurnSnapshotPropagatesReplacementFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		historyErr error
+		summaryErr error
+	}{
+		{name: "history", historyErr: errors.New("replace history")},
+		{name: "summary", summaryErr: errors.New("replace summary")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := memory.NewJSONLStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			backend := session.NewJSONLBackend(&snapshotFailingStore{
+				Store:      store,
+				historyErr: tc.historyErr,
+				summaryErr: tc.summaryErr,
+			})
+			if appendErr := store.AddFullMessage(
+				t.Context(),
+				"turn",
+				providers.Message{Role: "user", Content: "admitted root"},
+			); appendErr != nil {
+				t.Fatal(appendErr)
+			}
+
+			err = backend.RestoreTurnSnapshot(
+				t.Context(),
+				"turn",
+				[]providers.Message{{Role: "user", Content: "before"}},
+				"before summary",
+			)
+			wantErr := tc.historyErr
+			if wantErr == nil {
+				wantErr = tc.summaryErr
+			}
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("RestoreTurnSnapshot() error = %v, want %v", err, wantErr)
+			}
+		})
 	}
 }
 

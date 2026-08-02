@@ -901,9 +901,7 @@ func (ts *turnState) restoreSession(agent *AgentInstance) error {
 	summary := ts.restorePointSummary
 	ts.mu.RUnlock()
 
-	agent.Sessions.SetHistory(ts.sessionKey, history)
-	agent.Sessions.SetSummary(ts.sessionKey, summary)
-	return agent.Sessions.Save(ts.sessionKey)
+	return agent.Sessions.RestoreTurnSnapshot(context.Background(), ts.sessionKey, history, summary)
 }
 
 func matchingTurnMessageTail(history, persisted []providers.Message) int {

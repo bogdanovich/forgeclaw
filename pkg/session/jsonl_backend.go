@@ -41,19 +41,27 @@ func NewJSONLBackend(store memory.Store) *JSONLBackend {
 }
 
 func (b *JSONLBackend) resolveSessionKey(ctx context.Context, sessionKey string) string {
-	metaStore, ok := b.store.(metaAwareStore)
-	if !ok {
-		return sessionKey
-	}
-	resolved, found, err := metaStore.ResolveSessionKey(ctx, sessionKey)
+	resolved, err := b.resolveSessionKeyWithError(ctx, sessionKey)
 	if err != nil {
 		log.Printf("session: resolve session key: %v", err)
 		return sessionKey
 	}
-	if found && resolved != "" {
-		return resolved
+	return resolved
+}
+
+func (b *JSONLBackend) resolveSessionKeyWithError(ctx context.Context, sessionKey string) (string, error) {
+	metaStore, ok := b.store.(metaAwareStore)
+	if !ok {
+		return sessionKey, nil
 	}
-	return sessionKey
+	resolved, found, err := metaStore.ResolveSessionKey(ctx, sessionKey)
+	if err != nil {
+		return "", fmt.Errorf("session: resolve session key: %w", err)
+	}
+	if found && resolved != "" {
+		return resolved, nil
+	}
+	return sessionKey, nil
 }
 
 // ResolveSessionKey maps aliases onto their canonical session key when the
@@ -147,11 +155,36 @@ func (b *JSONLBackend) AppendTurnMessage(
 	if err := contextCause(ctx); err != nil {
 		return err
 	}
-	sessionKey = b.resolveSessionKey(ctx, sessionKey)
+	resolvedKey, err := b.resolveSessionKeyWithError(ctx, sessionKey)
+	if err != nil {
+		return err
+	}
 	if err := contextCause(ctx); err != nil {
 		return err
 	}
-	return b.store.AddFullMessage(ctx, sessionKey, msg)
+	return b.store.AddFullMessage(ctx, resolvedKey, msg)
+}
+
+func (b *JSONLBackend) RestoreTurnSnapshot(
+	ctx context.Context,
+	sessionKey string,
+	history []providers.Message,
+	summary string,
+) error {
+	if err := contextCause(ctx); err != nil {
+		return err
+	}
+	resolvedKey, err := b.resolveSessionKeyWithError(ctx, sessionKey)
+	if err != nil {
+		return err
+	}
+	if err := b.store.SetHistory(ctx, resolvedKey, history); err != nil {
+		return fmt.Errorf("restore history: %w", err)
+	}
+	if err := b.store.SetSummary(ctx, resolvedKey, summary); err != nil {
+		return fmt.Errorf("restore summary: %w", err)
+	}
+	return nil
 }
 
 func (b *JSONLBackend) GetHistory(key string) []providers.Message {
