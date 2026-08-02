@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/caarlos0/env/v11"
@@ -158,6 +159,19 @@ func TestSkillRegistryConfigDecodeParam(t *testing.T) {
 	err := registry.DecodeParam(&private)
 	assert.NoError(t, err)
 	assert.Equal(t, "http://127.0.0.1:7890", private.Proxy)
+}
+
+func TestNormalizeAllowFrom(t *testing.T) {
+	got := NormalizeAllowFrom([]string{" owner-1 ", "", "  ", "*"})
+	if !reflect.DeepEqual(got, FlexibleStringSlice{"owner-1", "*"}) {
+		t.Fatalf("NormalizeAllowFrom() = %#v", got)
+	}
+	if !IsPublicAllowFrom(got) {
+		t.Fatal("IsPublicAllowFrom() = false, want true")
+	}
+	if IsPublicAllowFrom([]string{"owner-1"}) {
+		t.Fatal("private allowlist reported as public")
+	}
 }
 
 func TestSkillRegistryConfigJSONFlattensParam(t *testing.T) {

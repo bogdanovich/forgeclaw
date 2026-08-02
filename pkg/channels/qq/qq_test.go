@@ -25,7 +25,7 @@ import (
 func TestHandleC2CMessage_IncludesAccountIDMetadata(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 	}
@@ -67,7 +67,7 @@ func TestHandleC2CMessage_AttachmentOnlyPublishesMedia(t *testing.T) {
 	localPath := writeTempFile(t, t.TempDir(), "image.png", []byte("fake-image"))
 
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 		downloadFn: func(urlStr, filename string) string {
@@ -123,7 +123,7 @@ func TestHandleGroupATMessage_AttachmentOnlyPublishesMedia(t *testing.T) {
 	localPath := writeTempFile(t, t.TempDir(), "report.pdf", []byte("fake-pdf"))
 
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
 		ctx:         context.Background(),
 		downloadFn: func(urlStr, filename string) string {
@@ -194,7 +194,7 @@ func TestSendMedia_UploadsLocalFileAsBase64(t *testing.T) {
 		transportResp: mustJSON(t, dto.Message{FileInfo: []byte("uploaded-file-info")}),
 	}
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config:      &config.QQSettings{},
 		api:         api,
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
@@ -290,7 +290,7 @@ func assertAudioWAVUploadType(t *testing.T, duration time.Duration, wantFileType
 		transportResp: mustJSON(t, dto.Message{FileInfo: []byte("file-info")}),
 	}
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config:      &config.QQSettings{},
 		api:         api,
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
@@ -325,7 +325,7 @@ func TestSendMedia_RemoteAudioFallsBackToFileUpload(t *testing.T) {
 		transportResp: mustJSON(t, dto.Message{FileInfo: []byte("remote-file-info")}),
 	}
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config:      &config.QQSettings{},
 		api:         api,
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
@@ -370,7 +370,7 @@ func TestSendMedia_LocalAudioWithUnknownDurationFallsBackToFileUpload(t *testing
 		transportResp: mustJSON(t, dto.Message{FileInfo: []byte("file-info")}),
 	}
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config:      &config.QQSettings{},
 		api:         api,
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
@@ -405,7 +405,7 @@ func TestSendMedia_UsesRemoteURLUploadForC2C(t *testing.T) {
 		transportResp: mustJSON(t, dto.Message{FileInfo: []byte("remote-file-info")}),
 	}
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config:      &config.QQSettings{},
 		api:         api,
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
@@ -477,7 +477,7 @@ func TestSendMedia_LocalFileUploadIncludesStoredFilename(t *testing.T) {
 		transportResp: mustJSON(t, dto.Message{FileInfo: []byte("local-file-info")}),
 	}
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config:      &config.QQSettings{},
 		api:         api,
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
@@ -516,7 +516,7 @@ func TestSendMedia_LocalFileUploadIncludesStoredFilename(t *testing.T) {
 func TestSendMedia_ReturnsSendFailedWithoutMediaStore(t *testing.T) {
 	messageBus := bus.NewMessageBus()
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config:      &config.QQSettings{},
 		api:         &fakeQQAPI{},
 		dedup:       channels.NewDedupStore(dedupTTL, dedupMaxSize),
@@ -562,7 +562,7 @@ func TestSendMedia_ReturnsSendFailedWhenLocalFileExceedsBase64MiBLimit(t *testin
 
 	api := &fakeQQAPI{}
 	ch := &QQChannel{
-		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, nil),
+		BaseChannel: channels.NewBaseChannel("qq", nil, messageBus, []string{"*"}),
 		config: &config.QQSettings{
 			MaxBase64FileSizeMiB: 1,
 		},

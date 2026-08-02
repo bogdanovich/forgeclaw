@@ -89,6 +89,11 @@ func (h *Handler) registerWecomRoutes(mux *http.ServeMux) {
 //
 //	POST /api/wecom/flows
 func (h *Handler) handleStartWecomFlow(w http.ResponseWriter, r *http.Request) {
+	if err := h.validateWecomAllowFrom(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), wecomPollStartTimeout)
 	defer cancel()
 
@@ -221,6 +226,11 @@ func (h *Handler) saveWecomBinding(botID, secret string) error {
 		bc = &config.Channel{Type: config.ChannelWeCom}
 		cfg.Channels["wecom"] = bc
 	}
+	if len(config.NormalizeAllowFrom(bc.AllowFrom)) == 0 {
+		return fmt.Errorf(
+			"configure channel_list.wecom.allow_from with trusted sender IDs or [\"*\"] before QR binding",
+		)
+	}
 	bc.Enabled = true
 
 	var wecomCfg config.WeComSettings
@@ -244,6 +254,20 @@ func (h *Handler) saveWecomBinding(botID, secret string) error {
 		logger.ErrorCF("wecom", "failed to restart gateway after saving binding", map[string]any{
 			"error": err.Error(),
 		})
+	}
+	return nil
+}
+
+func (h *Handler) validateWecomAllowFrom() error {
+	cfg, err := config.LoadConfigReadOnly(h.configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	bc := cfg.Channels.Get(config.ChannelWeCom)
+	if bc == nil || len(config.NormalizeAllowFrom(bc.AllowFrom)) == 0 {
+		return fmt.Errorf(
+			"configure channel_list.wecom.allow_from with trusted sender IDs or [\"*\"] before QR binding",
+		)
 	}
 	return nil
 }

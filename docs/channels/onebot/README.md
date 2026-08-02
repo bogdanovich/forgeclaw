@@ -14,7 +14,7 @@ OneBot is an open protocol standard for QQ bots, providing a unified interface f
       "type": "onebot",
       "ws_url": "ws://localhost:8080",
       "access_token": "",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -25,7 +25,7 @@ OneBot is an open protocol standard for QQ bots, providing a unified interface f
 | enabled      | bool   | Yes      | Whether to enable the OneBot channel                             |
 | ws_url       | string | Yes      | WebSocket URL of the OneBot server                               |
 | access_token | string | No       | Access token for connecting to the OneBot server                 |
-| allow_from   | array  | No       | User ID whitelist; empty means all users are allowed             |
+| allow_from   | array  | No       | User ID whitelist; empty denies all users; use `["*"]` for public access             |
 
 ## Setup
 

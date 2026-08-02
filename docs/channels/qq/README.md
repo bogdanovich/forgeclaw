@@ -14,7 +14,7 @@ MintClaw provides QQ support via the official Bot API from the QQ Open Platform.
       "type": "qq",
       "app_id": "YOUR_APP_ID",
       "app_secret": "YOUR_APP_SECRET",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -25,7 +25,7 @@ MintClaw provides QQ support via the official Bot API from the QQ Open Platform.
 | enabled    | bool   | Yes      | Whether to enable the QQ channel                         |
 | app_id     | string | Yes      | App ID of the QQ bot application                         |
 | app_secret | string | Yes      | App Secret of the QQ bot application                     |
-| allow_from | array  | No       | Allowlist of user IDs; empty means all users are allowed |
+| allow_from | array  | No       | Allowlist of user IDs; empty denies all users; use `["*"]` for public access |
 
 ## Setup
 

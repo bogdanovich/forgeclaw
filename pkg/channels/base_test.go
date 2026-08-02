@@ -16,10 +16,22 @@ func TestBaseChannelIsAllowed(t *testing.T) {
 		want      bool
 	}{
 		{
-			name:      "empty allowlist allows all",
+			name:      "empty allowlist denies all",
 			allowList: nil,
 			senderID:  "anyone",
+			want:      false,
+		},
+		{
+			name:      "wildcard explicitly allows all",
+			allowList: []string{"*"},
+			senderID:  "anyone",
 			want:      true,
+		},
+		{
+			name:      "blank entries deny all",
+			allowList: []string{"", "  "},
+			senderID:  "anyone",
+			want:      false,
 		},
 		{
 			name:      "compound sender matches numeric allowlist",
@@ -228,8 +240,14 @@ func TestIsAllowedSender(t *testing.T) {
 		want      bool
 	}{
 		{
-			name:      "empty allowlist allows all",
+			name:      "empty allowlist denies all",
 			allowList: nil,
+			sender:    bus.SenderInfo{PlatformID: "anyone"},
+			want:      false,
+		},
+		{
+			name:      "wildcard explicitly allows all",
+			allowList: []string{"*"},
 			sender:    bus.SenderInfo{PlatformID: "anyone"},
 			want:      true,
 		},
@@ -345,7 +363,7 @@ func TestHandleInboundContext_PublishesNormalizedContext(t *testing.T) {
 			msgBus := bus.NewMessageBus()
 			defer msgBus.Close()
 
-			ch := NewBaseChannel("test", nil, msgBus, nil)
+			ch := NewBaseChannel("test", nil, msgBus, []string{"*"})
 			ch.HandleInboundContext(context.Background(), tt.inbound.ChatID, "hello", nil, tt.inbound)
 
 			msg := <-msgBus.InboundChan()

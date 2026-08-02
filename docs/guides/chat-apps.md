@@ -8,6 +8,12 @@ Talk to your mintclaw through Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk,
 
 > **Note**: Channels that rely on HTTP callbacks share a single Gateway HTTP server (`gateway.host`:`gateway.port`, default `127.0.0.1:18790`). Socket/stream-based channels such as Feishu, DingTalk, and WeCom do not rely on the shared webhook server for inbound delivery.
 
+Every inbound channel uses `allow_from` as a sender policy. An omitted, empty, or blank-only list denies all senders. Configure trusted sender IDs, or use `["*"]` only when public access is intentional. Run `mintclaw doctor` after changing channel policy.
+
+### Migrating Existing Configurations
+
+Before upgrading a running installation, inspect every enabled `channel_list.<name>.allow_from`. Replace omitted, empty, or blank-only values with trusted sender IDs. Use `["*"]` only for channels that are intentionally public. Native MintClaw protocol peers can use `["mintclaw-user"]` on the server and `["mintclaw-remote"]` on the client. Then run `mintclaw doctor --strict`, restart the gateway, and verify an authorized sender can deliver a message. If a channel is unexpectedly silent after upgrading, correct its `allow_from` value and restart it; no data migration is required.
+
 | Channel              | Difficulty         | Description                                           | Documentation                                                                                                    |
 | -------------------- | ------------------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Telegram**         | ⭐ Easy            | Recommended, voice-to-text, long polling (no public IP needed) | [Docs](../channels/telegram/README.md)                                                                  |
@@ -197,7 +203,7 @@ MintClaw can connect to WhatsApp in two ways:
       "type": "whatsapp",
       "use_native": true,
       "session_store_path": "",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -217,13 +223,13 @@ MintClaw supports connecting to your personal WeChat account using the official 
 
 Run the interactive QR login flow:
 ```bash
-mintclaw auth weixin
+mintclaw auth weixin --allow-from YOUR_USER_ID
 ```
 Scan the printed QR code with your WeChat mobile app. On success, the token is saved to your config.
 
 **2. Configure**
 
-(Optional) Update `allow_from` with your WeChat User ID to restrict who can message the bot:
+Set `allow_from` to the WeChat User IDs that may message the bot:
 ```json
 {
   "channel_list": {
@@ -264,7 +270,7 @@ QQ Open Platform provides a one-click setup page for OpenClaw-compatible bots:
       "type": "qq",
       "app_id": "YOUR_APP_ID",
       "app_secret": "YOUR_APP_SECRET",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -307,13 +313,13 @@ If you prefer to create the bot manually:
       "type": "dingtalk",
       "client_id": "YOUR_CLIENT_ID",
       "client_secret": "YOUR_CLIENT_SECRET",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
 ```
 
-> Set `allow_from` to empty to allow all users, or specify DingTalk user IDs to restrict access.
+> Set `allow_from` to trusted DingTalk user IDs. Use `["*"]` only for intentional public access; an empty list denies all senders.
 
 **3. Run**
 
@@ -342,7 +348,7 @@ mintclaw gateway
       "homeserver": "https://matrix.org",
       "user_id": "@your-bot:matrix.org",
       "access_token": "YOUR_MATRIX_ACCESS_TOKEN",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -379,7 +385,7 @@ For full options (`device_id`, `join_on_invite`, `group_trigger`, `placeholder`,
       "channel_secret": "YOUR_CHANNEL_SECRET",
       "channel_access_token": "YOUR_CHANNEL_ACCESS_TOKEN",
       "webhook_path": "/webhook/line",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -422,7 +428,7 @@ See [WeCom Configuration Guide](../channels/wecom/README.md) for the full config
 **1. Authenticate**
 
 ```bash
-mintclaw auth wecom
+mintclaw auth wecom --allow-from YOUR_USER_ID
 ```
 
 This command shows a QR code, waits for approval in WeCom, and writes `bot_id` + `secret` into `channels.wecom`.
@@ -439,7 +445,7 @@ This command shows a QR code, waits for approval in WeCom, and writes `bot_id` +
       "secret": "YOUR_SECRET",
       "websocket_url": "wss://openws.work.weixin.qq.com",
       "send_thinking_message": true,
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "reasoning_channel_id": ""
     }
   }
@@ -479,7 +485,7 @@ MintClaw connects to Feishu via WebSocket/SDK mode — no public webhook URL or 
       "type": "feishu",
       "app_id": "cli_xxx",
       "app_secret": "YOUR_APP_SECRET",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -520,7 +526,7 @@ For full options, see [Feishu Channel Configuration Guide](../channels/feishu/RE
       "type": "slack",
       "bot_token": "xoxb-YOUR-BOT-TOKEN",
       "app_token": "xapp-YOUR-APP-TOKEN",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -551,7 +557,7 @@ mintclaw gateway
       "nick": "mintclaw-bot",
       "channels": ["#your-channel"],
       "password": "",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -589,7 +595,7 @@ Install and run a OneBot v11 compatible QQ bot framework. Enable its WebSocket s
       "type": "onebot",
       "ws_url": "ws://127.0.0.1:8080",
       "access_token": "",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }

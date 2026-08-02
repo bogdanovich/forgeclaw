@@ -1505,6 +1505,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		content = "[media only]"
 	}
 	mediaGroupMetadata := telegramMediaGroupMetadata(messages)
+	interactionChoice := c.telegramInteractionChoice(message)
 
 	// In group chats, apply unified group trigger filtering
 	isMentioned := false
@@ -1570,7 +1571,8 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		if isMentioned {
 			content = c.stripBotMention(message, content)
 		}
-		respond, cleaned := c.ShouldRespondInGroupForTopic(isMentioned, content, topicID)
+		directedToBot := isMentioned || interactionChoice != ""
+		respond, cleaned := c.ShouldRespondInGroupForTopic(directedToBot, content, topicID)
 		if !respond {
 			return nil
 		}
@@ -1621,6 +1623,9 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		"username":   user.Username,
 		"first_name": user.FirstName,
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
+	}
+	if interactionChoice != "" {
+		metadata[bus.InboundMetadataKeyInteractionChoice] = interactionChoice
 	}
 	mergeTelegramRawMetadata(metadata, mediaGroupMetadata)
 
@@ -1865,6 +1870,22 @@ func (c *TelegramChannel) isOwnBotUser(user *telego.User) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(user.Username), "@"), botUsername)
+}
+
+func (c *TelegramChannel) telegramInteractionChoice(message *telego.Message) string {
+	if message == nil || message.ReplyToMessage == nil ||
+		!c.isOwnBotUser(message.ReplyToMessage.From) {
+		return ""
+	}
+
+	switch message.Text {
+	case "Allow once":
+		return bus.InboundInteractionChoiceAllowOnce
+	case "Deny":
+		return bus.InboundInteractionChoiceDeny
+	default:
+		return ""
+	}
 }
 
 func (c *TelegramChannel) ownBotIdentity() (int64, string) {

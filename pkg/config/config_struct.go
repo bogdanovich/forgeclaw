@@ -21,6 +21,27 @@ import (
 // including both English (,) and Chinese (，) commas.
 type FlexibleStringSlice []string
 
+// NormalizeAllowFrom trims sender entries and removes blanks so every caller
+// applies the same empty-list policy.
+func NormalizeAllowFrom(values []string) FlexibleStringSlice {
+	normalized := make(FlexibleStringSlice, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			normalized = append(normalized, value)
+		}
+	}
+	return normalized
+}
+
+func IsPublicAllowFrom(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
 		*f = nil

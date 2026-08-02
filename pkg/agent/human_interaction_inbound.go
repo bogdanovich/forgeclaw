@@ -12,6 +12,7 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/bus"
 	"github.com/bogdanovich/mintclaw/pkg/channels"
 	"github.com/bogdanovich/mintclaw/pkg/commands"
+	"github.com/bogdanovich/mintclaw/pkg/config"
 	runtimeevents "github.com/bogdanovich/mintclaw/pkg/events"
 	"github.com/bogdanovich/mintclaw/pkg/interactions"
 	"github.com/bogdanovich/mintclaw/pkg/logger"
@@ -548,7 +549,8 @@ func (al *AgentLoop) processInteractionInbound(
 			"This session is waiting for an answer from the authorized user.",
 		)
 	}
-	answer, err := parseInteractionAnswer(record, msg.Content, msg.Context.MessageID)
+	answerContent := al.interactionAnswerContent(record, msg)
+	answer, err := parseInteractionAnswer(record, answerContent, msg.Context.MessageID)
 	if err != nil {
 		return interactionInboundCallerOwned, al.publishInteractionNotice(
 			ctx,
@@ -585,6 +587,32 @@ func (al *AgentLoop) processInteractionInbound(
 		msg.Context,
 		claimed,
 	)
+}
+
+func (al *AgentLoop) interactionAnswerContent(record interactions.Record, msg bus.InboundMessage) string {
+	if record.Kind != interactions.KindApproval ||
+		strings.TrimSpace(msg.Context.ReplyToMessageID) == "" {
+		return msg.Content
+	}
+	if al == nil {
+		return msg.Content
+	}
+	cfg := al.GetConfig()
+	if cfg == nil {
+		return msg.Content
+	}
+	channel := cfg.Channels.Get(msg.Context.Channel)
+	if channel == nil || channel.Type != config.ChannelTelegram {
+		return msg.Content
+	}
+
+	choice := strings.TrimSpace(msg.Context.Raw[bus.InboundMetadataKeyInteractionChoice])
+	switch choice {
+	case bus.InboundInteractionChoiceAllowOnce, bus.InboundInteractionChoiceDeny:
+		return choice
+	default:
+		return msg.Content
+	}
 }
 
 func interactionAnswerOutcome(

@@ -7,7 +7,7 @@ MintClaw supports connecting to your personal WeChat account using the official 
 The easiest way to set up the Weixin channel is using the interactive onboarding command:
 
 ```bash
-mintclaw auth weixin
+mintclaw auth weixin --allow-from YOUR_USER_ID
 ```
 
 This command will:
@@ -50,7 +50,7 @@ You can also manually configure the filter rules in `config.json` under the `cha
 |---|---|
 | `enabled` | Set to `true` to enable the channel at startup. |
 | `token` | The authentication token obtained via QR login. |
-| `allow_from` | (Optional) List of WeChat User IDs permitted to interact with the bot. If empty, anyone who can send messages to the connected account can trigger the bot. |
+| `allow_from` | (Optional) List of WeChat User IDs permitted to interact with the bot. An empty list denies all senders; use `["*"]` for public access. |
 | `proxy` | (Optional) HTTP proxy address (e.g. `http://localhost:7890`) for environments where connection to `ilinkai.weixin.qq.com` is restricted. |
 
 ## ⚠️ Important Notes

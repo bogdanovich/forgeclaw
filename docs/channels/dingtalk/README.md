@@ -14,7 +14,7 @@ DingTalk is Alibaba's enterprise communication platform, widely used in Chinese 
       "type": "dingtalk",
       "client_id": "YOUR_CLIENT_ID",
       "client_secret": "YOUR_CLIENT_SECRET",
-      "allow_from": []
+      "allow_from": ["TRUSTED_SENDER_ID"]
     }
   }
 }
@@ -25,7 +25,7 @@ DingTalk is Alibaba's enterprise communication platform, widely used in Chinese 
 | enabled       | bool   | Yes      | Whether to enable the DingTalk channel                   |
 | client_id     | string | Yes      | Client ID of the DingTalk application                    |
 | client_secret | string | Yes      | Client Secret of the DingTalk application                |
-| allow_from    | array  | No       | User ID whitelist; empty means all users are allowed     |
+| allow_from    | array  | No       | User ID whitelist; empty denies all users; use `["*"]` for public access     |
 
 ## Setup
 

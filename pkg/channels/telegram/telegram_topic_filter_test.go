@@ -19,7 +19,7 @@ func TestHandleMessage_TopicFilterSuppressesWrongForumTopic(t *testing.T) {
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{MentionOnly: false}),
 		),
 		bot:     newTestTelegramBot(t, "testbot"),
@@ -65,7 +65,7 @@ func TestHandleMessage_TopicFilterSuppressesWrongForumTopicBeforeSideEffects(t *
 			"telegram",
 			nil,
 			messageBus,
-			nil,
+			[]string{"*"},
 			channels.WithGroupTrigger(config.GroupTriggerConfig{
 				MentionOnly: false,
 				Topics: map[string]config.GroupTriggerConfig{

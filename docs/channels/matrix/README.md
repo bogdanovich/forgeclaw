@@ -17,7 +17,7 @@ Add this to `config.json`:
       "access_token": "YOUR_MATRIX_ACCESS_TOKEN",
       "device_id": "",
       "join_on_invite": true,
-      "allow_from": [],
+      "allow_from": ["TRUSTED_SENDER_ID"],
       "group_trigger": {
         "mention_only": true
       },
