@@ -638,6 +638,13 @@ func parsePlaywrightObservation(
 	snapshot := text[start : start+end]
 	referenceTokens := playwrightSnapshotRefToken.FindAllStringIndex(snapshot, maximumSnapshotRefs+1)
 	targetReferences := playwrightSnapshotTargetRef.FindAllStringSubmatch(snapshot, maximumSnapshotRefs+1)
+	if pageURL == initialBlankOrigin {
+		if maximumSnapshotBytes <= 0 || maximumSnapshotRefs <= 0 || title != "" || snapshot != "" ||
+			len(referenceTokens) != 0 || len(targetReferences) != 0 {
+			return DriverObservation{}, ErrDriverIncompatible
+		}
+		return DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin}, nil
+	}
 	if snapshot == "" || len(snapshot) > maximumSnapshotBytes || len(title) > 1024 ||
 		maximumSnapshotRefs <= 0 ||
 		len(referenceTokens) > maximumSnapshotRefs || len(referenceTokens) != len(targetReferences) {
