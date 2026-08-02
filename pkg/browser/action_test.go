@@ -167,6 +167,12 @@ func TestBrokerRejectsNonEmptyBlankDriverObservation(t *testing.T) {
 	}{
 		{name: "different URL", observation: DriverObservation{URL: "about:srcdoc", Origin: initialBlankOrigin}},
 		{
+			name: "blank URL with HTTP origin",
+			observation: DriverObservation{
+				URL: initialBlankOrigin, Origin: "https://example.com",
+			},
+		},
+		{
 			name:        "title",
 			observation: DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin, Title: "Blank"},
 		},
@@ -194,6 +200,49 @@ func TestBrokerRejectsNonEmptyBlankDriverObservation(t *testing.T) {
 			_, err := broker.Observe(context.Background(), testOwner(), session.ID, session.TabID)
 			if !errors.Is(err, ErrDriverIncompatible) {
 				t.Fatalf("Observe() error = %v, want ErrDriverIncompatible", err)
+			}
+		})
+	}
+}
+
+func TestBrokerRejectsBlankMutationAtActionObservationBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		execute bool
+	}{
+		{name: "prepare"},
+		{name: "execute", execute: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			broker, worker, session := openActionTestBroker(t, NewMemoryStore())
+			owner := testOwner()
+			worker.observation = DriverObservation{URL: initialBlankOrigin, Origin: initialBlankOrigin}
+			blank, err := broker.Observe(context.Background(), owner, session.ID, session.TabID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := PrepareActionRequest{
+				Owner: owner, RequestID: "request_blank_mutation", SessionID: session.ID,
+				TabID: session.TabID, SnapshotID: blank.SnapshotID,
+				SnapshotGeneration: blank.SnapshotGeneration,
+				Action:             Action{Kind: ActionNavigate, URL: "https://example.com/form"},
+			}
+			if test.execute {
+				prepared, prepareErr := broker.PrepareAction(context.Background(), request)
+				if prepareErr != nil {
+					t.Fatal(prepareErr)
+				}
+				worker.observation.Title = "mutated"
+				_, err = broker.ExecuteAction(context.Background(), owner, prepared.Action.ID, nil)
+			} else {
+				worker.observation.Origin = "https://example.com"
+				_, err = broker.PrepareAction(context.Background(), request)
+			}
+			if !errors.Is(err, ErrDriverIncompatible) {
+				t.Fatalf("action boundary error = %v, want ErrDriverIncompatible", err)
+			}
+			if len(worker.actions) != 0 {
+				t.Fatalf("malformed blank observation dispatched actions: %+v", worker.actions)
 			}
 		})
 	}
