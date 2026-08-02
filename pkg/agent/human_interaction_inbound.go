@@ -557,14 +557,7 @@ func (al *AgentLoop) processInteractionInbound(
 			"I could not accept that answer: "+err.Error(),
 		)
 	}
-	outcome := interactions.OutcomeAnswered
-	if record.Kind == interactions.KindApproval {
-		if answer.Text == "allow_once" {
-			outcome = interactions.OutcomeAllowed
-		} else {
-			outcome = interactions.OutcomeDenied
-		}
-	}
+	outcome := interactionAnswerOutcome(record, answer)
 	claimed, err := registry.ClaimAnswer(
 		record.ID,
 		record.Revision,
@@ -592,6 +585,19 @@ func (al *AgentLoop) processInteractionInbound(
 		msg.Context,
 		claimed,
 	)
+}
+
+func interactionAnswerOutcome(
+	record interactions.Record,
+	answer interactions.Answer,
+) interactions.Outcome {
+	if record.Kind != interactions.KindApproval {
+		return interactions.OutcomeAnswered
+	}
+	if answer.Text == "allow_once" {
+		return interactions.OutcomeAllowed
+	}
+	return interactions.OutcomeDenied
 }
 
 func interactionInboundReplaysAnswer(record interactions.Record, inbound bus.InboundContext) bool {
@@ -1018,6 +1024,9 @@ func (al *AgentLoop) executeApprovedInteractionTool(
 	exec.allResponsesHandled = true
 	exec.assistantToolCallsPersisted = true
 	outcome := pipeline.ExecuteTools(ctx, ctx, ts, exec, 1)
+	dismissCtx, dismissCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	pipeline.dismissToolFeedbackForTurn(dismissCtx, ts)
+	dismissCancel()
 	if outcome.Control == ToolControlSuspend {
 		return outcome.Control, nil
 	}
@@ -1064,6 +1073,14 @@ func (al *AgentLoop) deliverInteractionFinal(
 	content string,
 	traceScopes []runtimeevents.TraceScope,
 ) error {
+	al.dismissInteractionToolFeedback(ctx, record, inbound, traceScopes)
+	if record.Kind == interactions.KindApproval {
+		inbound.ReplyToMessageID = interactionApprovalReplyTarget(record, inbound)
+		bus.OutboundMetadata{
+			InteractionKind:     bus.OutboundInteractionApproval,
+			InteractionControls: bus.OutboundInteractionControlsRemove,
+		}.ApplyToContext(&inbound)
+	}
 	if strings.TrimSpace(record.Origin.TaskID) != "" {
 		return al.deliverTaskInteractionFinal(
 			ctx, registry, interactionWorkspace, record, inbound, content, traceScopes,
@@ -1098,6 +1115,7 @@ func (al *AgentLoop) deliverInteractionFinal(
 		Channel: record.Route.Channel, ChatID: record.Route.ChatID,
 		Context: inbound, AgentID: record.Route.AgentID,
 		SessionKey: record.Route.SessionKey, Content: content,
+		ReplyToMessageID: inbound.ReplyToMessageID,
 	}
 	if err := bus.SetOutboundTraceScopes(&message, traceScopes); err != nil {
 		return err
@@ -1124,6 +1142,37 @@ func (al *AgentLoop) deliverInteractionFinal(
 		)
 	}
 	return err
+}
+
+func interactionApprovalReplyTarget(record interactions.Record, inbound bus.InboundContext) string {
+	if record.Kind != interactions.KindApproval ||
+		!strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") {
+		return ""
+	}
+	if record.Answer != nil {
+		if messageID := strings.TrimSpace(record.Answer.MessageID); messageID != "" {
+			return messageID
+		}
+	}
+	return strings.TrimSpace(inbound.MessageID)
+}
+
+func (al *AgentLoop) dismissInteractionToolFeedback(
+	ctx context.Context,
+	record interactions.Record,
+	inbound bus.InboundContext,
+	traceScopes []runtimeevents.TraceScope,
+) {
+	target := toolFeedbackTargetForSession(
+		record.Route.Channel,
+		record.Route.ChatID,
+		&inbound,
+		record.Route.SessionKey,
+		traceScopes,
+	)
+	dismissCtx, dismissCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	al.toolFeedbackPublisher().dismissToolFeedback(dismissCtx, target)
+	dismissCancel()
 }
 
 func (al *AgentLoop) deliverTaskInteractionFinal(
@@ -1158,6 +1207,22 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 	case tools.AsyncDeliveryParentOnly, tools.AsyncDeliveryUserOnly, tools.AsyncDeliveryUserAndParent:
 	default:
 		mode = tools.AsyncDeliveryUserOnly
+	}
+	if mode == tools.AsyncDeliveryParentOnly && record.Kind == interactions.KindApproval &&
+		strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") {
+		if err := al.deliverApprovalControlsRemoved(ctx, record, inbound); err != nil {
+			_, recordErr := registry.CompleteFinalDelivery(
+				started.ID,
+				started.Revision,
+				false,
+				!channels.DeliveryDefinitelyNotSent(err),
+				err.Error(),
+			)
+			if recordErr != nil {
+				return fmt.Errorf("record approval control removal: %w", recordErr)
+			}
+			return err
+		}
 	}
 	result := (&tools.ToolResult{ForLLM: content, ForUser: content}).
 		WithAsyncTaskID(taskID).
@@ -1215,6 +1280,34 @@ func (al *AgentLoop) deliverTaskInteractionFinal(
 	}
 	_, err := registry.Resolve(updated.ID, updated.Revision)
 	return err
+}
+
+func (al *AgentLoop) deliverApprovalControlsRemoved(
+	ctx context.Context,
+	record interactions.Record,
+	inbound bus.InboundContext,
+) error {
+	if inbound.Raw == nil {
+		inbound.Raw = make(map[string]string)
+	}
+	inbound.Raw[interactionIDMetadata] = record.ID
+	inbound.Raw[interactionShortIDMeta] = record.ShortID
+	inbound.Raw["delivery_key"] = interactionDeliveryKey(record.ID, "controls_removed")
+	bus.OutboundMetadata{
+		InteractionKind:     bus.OutboundInteractionApproval,
+		InteractionControls: bus.OutboundInteractionControlsRemove,
+	}.ApplyToContext(&inbound)
+	replyToMessageID := interactionApprovalReplyTarget(record, inbound)
+	inbound.ReplyToMessageID = replyToMessageID
+	return al.sendInteractionMessage(ctx, bus.OutboundMessage{
+		Channel:          record.Route.Channel,
+		ChatID:           record.Route.ChatID,
+		Context:          inbound,
+		AgentID:          record.Route.AgentID,
+		SessionKey:       record.Route.SessionKey,
+		Content:          "Approval response recorded.",
+		ReplyToMessageID: replyToMessageID,
+	})
 }
 
 func (al *AgentLoop) interactionContinuationExpectsUserDelivery(

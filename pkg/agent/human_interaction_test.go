@@ -377,10 +377,9 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 	al := &AgentLoop{cfg: config.DefaultConfig(), bus: messageBus, channelManager: manager}
 	workspace := t.TempDir()
 
-	disposition, err := al.humanInteractionRuntime().SuspendToolCall(
-		t.Context(),
-		testToolSuspensionRequest(workspace),
-	)
+	request := testToolSuspensionRequest(workspace)
+	request.ExecutionContext = &bus.InboundContext{MessageID: "question-origin"}
+	disposition, err := al.humanInteractionRuntime().SuspendToolCall(t.Context(), request)
 	if err != nil || !disposition.Durable || disposition.InteractionID == "" {
 		t.Fatalf("SuspendToolCall() = (%#v, %v)", disposition, err)
 	}
@@ -397,11 +396,35 @@ func TestHumanInteractionRuntimePersistsAndQueuesPromptBeforeWaiting(t *testing.
 			strings.Contains(outbound.Content, "Reply with your answer") ||
 			outbound.Context.Raw[interactionIDMetadata] != record.ID ||
 			outbound.Context.Raw["delivery_key"] != interactionDeliveryKey(record.ID, "prompt") ||
-			outbound.Context.Account != "primary" {
+			outbound.Context.Account != "primary" || outbound.ReplyToMessageID != "" ||
+			bus.OutboundMetadataFromMessage(outbound).IsApprovalPrompt() {
 			t.Fatalf("outbound prompt = %#v", outbound)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for interaction prompt")
+	}
+}
+
+func TestNonTelegramApprovalPromptDoesNotProjectTelegramControls(t *testing.T) {
+	manager := newInteractionChannelManager()
+	al := &AgentLoop{cfg: config.DefaultConfig(), channelManager: manager}
+	record := interactions.Record{
+		ID: "approval-slack", ShortID: "apr123", Kind: interactions.KindApproval,
+		Route: interactions.Route{
+			AgentID: "main", SessionKey: "session-1", Channel: "slack", ChatID: "chat-1",
+		},
+		Origin: interactions.Origin{
+			ToolName: "protected", ExecutionContext: &bus.InboundContext{MessageID: "origin-message"},
+		},
+		ApprovalAction: "Run protected action",
+	}
+
+	if err := al.humanInteractionRuntime().publishPrompt(t.Context(), record); err != nil {
+		t.Fatal(err)
+	}
+	prompt := <-manager.sent
+	if prompt.ReplyToMessageID != "" || bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
+		t.Fatalf("non-Telegram approval prompt = %#v", prompt)
 	}
 }
 
@@ -544,6 +567,103 @@ func TestTaskInteractionFinalHonorsParentOnlyDelivery(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("parent-only completion was not processed")
+	}
+}
+
+func TestParentOnlyTaskApprovalRemovesTelegramControlsWithoutLeakingResult(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	manager := newInteractionChannelManager()
+	al.channelManager = manager
+	workspace := agent.Workspace
+	tasks := al.taskRegistryForWorkspace(workspace)
+	if err := tasks.Upsert(taskregistry.Record{
+		TaskID: "approval-parent", Runtime: taskregistry.RuntimeSubagent,
+		TaskKind: "spawn", Task: "finish approval in parent", Status: taskregistry.StatusRunning,
+		DeliveryStatus: taskregistry.DeliveryPending,
+		DeliveryMode:   string(tools.AsyncDeliveryParentOnly),
+		InteractionID:  "interaction-approval-parent",
+		Channel:        "telegram", ChatID: "chat-1", RequesterSessionKey: "owner-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	argumentHash := strings.Repeat("a", 64)
+	registry := al.interactionRegistryForWorkspace(workspace)
+	record, err := registry.Create(interactions.CreateRequest{
+		ID: "interaction-approval-parent", Kind: interactions.KindApproval,
+		Route: interactions.Route{
+			AgentID: agent.ID, SessionKey: "owner-session", RouteSessionKey: "route-owner",
+			Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+		},
+		Origin: interactions.Origin{
+			TurnID: "turn-task", ToolCallID: "call-task", ToolName: "protected",
+			TaskID: "approval-parent", ContinuationSessionKey: "task-session",
+			ArgumentHash: argumentHash,
+			ExecutionContext: &bus.InboundContext{
+				Channel: "telegram", ChatID: "chat-1", SenderID: "user-1", MessageID: "origin-message",
+			},
+		},
+		PromptSummary:  "Approve protected task action",
+		ApprovalAction: "Run protected task action",
+		ExpiresAt:      time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ = registry.RecordDeliveryAttempt(record.ID, record.Revision, true, "")
+	record, _ = registry.MarkWaiting(record.ID, record.Revision)
+	record, err = registry.ClaimAnswer(record.ID, record.Revision, interactions.Answer{
+		Text: "allow_once", MessageID: "typed-fallback-answer", ReceivedAt: time.Now().UnixMilli(),
+	}, interactions.OutcomeAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.MarkResuming(record.ID, record.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = registry.ConsumeApproval(
+		record.ID, record.Revision, record.Origin.ToolCallID, record.Origin.ToolName, argumentHash,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := al.deliverInteractionFinal(
+		t.Context(), registry, workspace, record,
+		bus.InboundContext{
+			Channel: "telegram", ChatID: "chat-1", SenderID: "user-1", MessageID: "recovery-message",
+		},
+		"raw child final", nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case acknowledgement := <-manager.sent:
+		if acknowledgement.Content == "raw child final" ||
+			acknowledgement.ReplyToMessageID != "typed-fallback-answer" ||
+			!bus.OutboundMetadataFromMessage(acknowledgement).RemovesInteractionControls() {
+			t.Fatalf("approval control acknowledgement = %#v", acknowledgement)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parent-only approval did not remove Telegram controls")
+	}
+	task, _ := tasks.Get("approval-parent")
+	if task.Status != taskregistry.StatusSucceeded ||
+		task.DeliveryStatus != taskregistry.DeliverySessionQueued {
+		t.Fatalf("parent-only approval task = %#v", task)
+	}
+	resolved, _ := registry.Get(record.ID)
+	if resolved.Status != interactions.StatusResolved ||
+		resolved.FinalDeliveryState != interactions.DeliveryStateDelivered {
+		t.Fatalf("parent-only approval interaction = %#v", resolved)
+	}
+	select {
+	case outbound := <-al.bus.(*bus.MessageBus).OutboundChan():
+		if outbound.Content == "raw child final" {
+			t.Fatalf("parent-only approval leaked raw child final: %#v", outbound)
+		}
+	default:
 	}
 }
 
@@ -1298,6 +1418,40 @@ func TestApprovalPromptAndAnswerUseFixedPolicyChoices(t *testing.T) {
 	}
 }
 
+func TestApprovalAnswerOutcomeIsChannelIndependent(t *testing.T) {
+	for _, channel := range []string{"telegram", "slack"} {
+		for _, test := range []struct {
+			answer string
+			want   interactions.Outcome
+		}{
+			{answer: "allow_once", want: interactions.OutcomeAllowed},
+			{answer: "deny", want: interactions.OutcomeDenied},
+		} {
+			record := interactions.Record{
+				Kind:  interactions.KindApproval,
+				Route: interactions.Route{Channel: channel},
+			}
+			got := interactionAnswerOutcome(record, interactions.Answer{Text: test.answer})
+			if got != test.want {
+				t.Fatalf(
+					"interactionAnswerOutcome(channel=%q, answer=%q) = %q, want %q",
+					channel,
+					test.answer,
+					got,
+					test.want,
+				)
+			}
+		}
+	}
+	question := interactions.Record{Kind: interactions.KindQuestion}
+	if got := interactionAnswerOutcome(
+		question,
+		interactions.Answer{Text: "allow_once"},
+	); got != interactions.OutcomeAnswered {
+		t.Fatalf("question outcome = %q, want answered", got)
+	}
+}
+
 func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -1340,11 +1494,12 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 				t.Fatal(err)
 			}
 			inbound := &bus.InboundContext{
-				Channel: "telegram", ChatID: "chat-1", SenderID: "user-1",
+				Channel: "telegram", ChatID: "chat-1", SenderID: "user-1", MessageID: "origin-message",
 			}
 			turnStatus := TurnEndStatusCompleted
 			response, err := al.runAgentLoop(t.Context(), agent, processOptions{
-				TurnStatus: &turnStatus,
+				TurnStatus:            &turnStatus,
+				InteractionSessionKey: "owner-session",
 				Dispatch: DispatchRequest{
 					RouteSessionKey: "route-approval", SessionKey: "session-approval",
 					UserMessage: "run protected action", InboundContext: inbound,
@@ -1361,7 +1516,7 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 				)
 			}
 			registry := al.interactionRegistryForWorkspace(agent.Workspace)
-			record, ok := activeInteractionForSession(registry, "session-approval")
+			record, ok := activeInteractionForSession(registry, "owner-session")
 			if !ok || record.Kind != interactions.KindApproval ||
 				record.Status != interactions.StatusWaiting || record.Origin.ArgumentHash == "" {
 				t.Fatalf("approval interaction = %#v", record)
@@ -1372,11 +1527,17 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 					!strings.Contains(prompt.Content, "Run the protected test action") ||
 					!strings.Contains(prompt.Content, "`/answer "+record.ShortID+" allow_once`") ||
 					strings.Contains(prompt.Content, "Approval needed") ||
-					strings.Contains(prompt.Content, "secret-value") {
+					strings.Contains(prompt.Content, "secret-value") ||
+					prompt.ReplyToMessageID != "origin-message" ||
+					!bus.OutboundMetadataFromMessage(prompt).IsApprovalPrompt() {
 					t.Fatalf("approval prompt = %#v", prompt)
 				}
 			case <-time.After(time.Second):
 				t.Fatal("approval prompt was not delivered")
+			}
+			if len(manager.dismissedSessions) != 1 ||
+				manager.dismissedSessions[0] != "telegram:chat-1:session-approval" {
+				t.Fatalf("suspension feedback cleanup = %#v", manager.dismissedSessions)
 			}
 			if test.revokePolicy {
 				hook.revoked = true
@@ -1413,11 +1574,31 @@ func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 			}
 			select {
 			case final := <-manager.sent:
-				if final.Content != "approval flow finished" {
+				if final.Content != "approval flow finished" ||
+					!bus.OutboundMetadataFromMessage(final).RemovesInteractionControls() ||
+					final.ReplyToMessageID != "approval-answer" {
 					t.Fatalf("approval final = %#v", final)
 				}
 			case <-time.After(time.Second):
 				t.Fatal("approval continuation final was not delivered")
+			}
+			wantDismissed := []string{
+				"telegram:chat-1:session-approval",
+				"telegram:chat-1:owner-session",
+			}
+			if test.outcome == interactions.OutcomeAllowed {
+				wantDismissed = []string{
+					"telegram:chat-1:session-approval",
+					"telegram:chat-1:session-approval",
+					"telegram:chat-1:owner-session",
+				}
+			}
+			if strings.Join(manager.dismissedSessions, "\n") != strings.Join(wantDismissed, "\n") {
+				t.Fatalf(
+					"feedback cleanup = %#v, want %#v",
+					manager.dismissedSessions,
+					wantDismissed,
+				)
 			}
 		})
 	}

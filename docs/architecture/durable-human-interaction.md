@@ -249,6 +249,13 @@ request details.
 The manager validates option labels but always permits bounded free-form text
 for clarification questions. Approval interactions accept only the fixed
 policy-owned choices `allow_once` and `deny` in the first version.
+Supporting channels may project those fixed choices as presentation-only
+controls without creating a second answer path. Telegram uses a selective,
+one-time reply keyboard on approval prompts and removes it with the final
+interaction response. Button presses still enter through the same routed
+message authorization and exactly-once answer claim as typed text; `/answer`
+remains the explicit fallback. A parent-only task sends a neutral targeted
+acknowledgement to remove the controls without exposing its result to the user.
 
 ## Atomic Answer Commit and Resumption
 

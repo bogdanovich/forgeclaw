@@ -33,6 +33,16 @@ type fakeNodeFileTransferSource struct {
 	handoffCalls   int
 }
 
+func TestNodeFileTransferDescriptionsDelegateApprovalToRuntime(t *testing.T) {
+	for _, tool := range []Tool{&NodeUploadTool{}, &NodeDownloadTool{}} {
+		description := tool.Description()
+		if !strings.Contains(description, "call this tool directly") ||
+			!strings.Contains(description, "runtime requests and resumes approval") {
+			t.Fatalf("%s description does not delegate approval to runtime: %q", tool.Name(), description)
+		}
+	}
+}
+
 func (source *fakeNodeFileTransferSource) SnapshotUploadArtifact(
 	_ context.Context,
 	owner nodes.TransferArtifactOwner,

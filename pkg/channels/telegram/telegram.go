@@ -289,6 +289,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 	}
 
 	isToolFeedback := outboundMessageIsToolFeedback(msg)
+	replyMarkup := telegramInteractionReplyMarkup(bus.OutboundMetadataFromMessage(msg))
 	textContent := msg.Content
 	if isToolFeedback {
 		textContent = fitToolFeedbackForTelegram(msg.Content, useMarkdownV2, 4096)
@@ -298,7 +299,8 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		threadID:      threadID,
 		replyToID:     msg.ReplyToMessageID,
 		useMarkdownV2: useMarkdownV2,
-	}, c.richMessagesEnabled(useMarkdownV2) && !isToolFeedback, isToolFeedback)
+		replyMarkup:   replyMarkup,
+	}, c.richMessagesEnabled(useMarkdownV2) && !isToolFeedback && replyMarkup == nil, isToolFeedback)
 	if err != nil {
 		return messageIDs, err
 	}
@@ -313,6 +315,25 @@ type sendChunkParams struct {
 	replyToID     string
 	mdFallback    string
 	useMarkdownV2 bool
+	replyMarkup   telego.ReplyMarkup
+}
+
+func telegramInteractionReplyMarkup(metadata bus.OutboundMetadata) telego.ReplyMarkup {
+	if metadata.IsApprovalPrompt() {
+		return &telego.ReplyKeyboardMarkup{
+			Keyboard: [][]telego.KeyboardButton{{
+				{Text: "Allow once"},
+				{Text: "Deny"},
+			}},
+			ResizeKeyboard:  true,
+			OneTimeKeyboard: true,
+			Selective:       true,
+		}
+	}
+	if metadata.RemovesInteractionControls() {
+		return &telego.ReplyKeyboardRemove{RemoveKeyboard: true, Selective: true}
+	}
+	return nil
 }
 
 func (c *TelegramChannel) sendTextChunks(
@@ -367,6 +388,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 					replyToID:     baseParams.replyToID,
 					mdFallback:    unwrapTelegramRichFooter(chunk),
 					useMarkdownV2: baseParams.useMarkdownV2,
+					replyMarkup:   baseParams.replyMarkup,
 				})
 				if err != nil {
 					return channels.FailedDelivery(
@@ -378,6 +400,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 				}
 				messageIDs = append(messageIDs, msgID)
 				baseParams.replyToID = ""
+				baseParams.replyMarkup = nil
 				continue
 			}
 
@@ -412,6 +435,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 			replyToID:     baseParams.replyToID,
 			mdFallback:    unwrapTelegramRichFooter(chunk),
 			useMarkdownV2: baseParams.useMarkdownV2,
+			replyMarkup:   baseParams.replyMarkup,
 		}
 
 		var msgID string
@@ -459,6 +483,7 @@ func (c *TelegramChannel) sendTextChunkQueue(
 		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
 		baseParams.replyToID = ""
+		baseParams.replyMarkup = nil
 	}
 	return channels.SuccessfulDelivery[string](messageIDs)
 }
@@ -568,6 +593,9 @@ func (c *TelegramChannel) sendChunk(
 				MessageID: mid,
 			}
 		}
+	}
+	if params.replyMarkup != nil {
+		tgMsg.ReplyMarkup = params.replyMarkup
 	}
 
 	pMsg, err := c.bot.SendMessage(ctx, tgMsg)

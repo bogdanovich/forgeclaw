@@ -1227,6 +1227,65 @@ func TestSend_ShortMessage_SingleCall(t *testing.T) {
 	assert.Len(t, caller.calls, 1, "short message should result in exactly one SendMessage call")
 }
 
+func TestSend_ApprovalPromptUsesSelectiveOneTimeKeyboard(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			assert.Contains(t, url, "sendMessage")
+			assert.NotContains(t, url, "sendRichMessage")
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.RichMessages.Enabled = true
+	outboundCtx := bus.InboundContext{}
+	bus.OutboundMetadata{
+		InteractionKind:     bus.OutboundInteractionApproval,
+		InteractionControls: bus.OutboundInteractionControlsPrompt,
+	}.ApplyToContext(&outboundCtx)
+
+	_, err := ch.Send(t.Context(), bus.OutboundMessage{
+		ChatID: "12345", Context: outboundCtx, Content: "Approve?", ReplyToMessageID: "42",
+	})
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	assert.Equal(t, float64(42), payload["reply_parameters"].(map[string]any)["message_id"])
+	markup := payload["reply_markup"].(map[string]any)
+	assert.Equal(t, true, markup["resize_keyboard"])
+	assert.Equal(t, true, markup["one_time_keyboard"])
+	assert.Equal(t, true, markup["selective"])
+	row := markup["keyboard"].([]any)[0].([]any)
+	assert.Equal(t, "Allow once", row[0].(map[string]any)["text"])
+	assert.Equal(t, "Deny", row[1].(map[string]any)["text"])
+}
+
+func TestSend_ApprovalFinalRemovesKeyboard(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	outboundCtx := bus.InboundContext{}
+	bus.OutboundMetadata{
+		InteractionKind:     bus.OutboundInteractionApproval,
+		InteractionControls: bus.OutboundInteractionControlsRemove,
+	}.ApplyToContext(&outboundCtx)
+
+	_, err := ch.Send(t.Context(), bus.OutboundMessage{
+		ChatID: "12345", Context: outboundCtx, Content: "Done", ReplyToMessageID: "73",
+	})
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &payload))
+	markup := payload["reply_markup"].(map[string]any)
+	assert.Equal(t, true, markup["remove_keyboard"])
+	assert.Equal(t, true, markup["selective"])
+	assert.Equal(t, float64(73), payload["reply_parameters"].(map[string]any)["message_id"])
+}
+
 func TestEditMessage_RichMessagesEnabledUsesRichMarkdown(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {

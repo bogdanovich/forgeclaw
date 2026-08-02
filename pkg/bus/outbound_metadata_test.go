@@ -45,6 +45,29 @@ func TestOutboundMetadataApplyToContextAndReadBack(t *testing.T) {
 	}
 }
 
+func TestOutboundMetadataInteractionControls(t *testing.T) {
+	var ctx InboundContext
+	OutboundMetadata{
+		InteractionKind:     OutboundInteractionApproval,
+		InteractionControls: OutboundInteractionControlsPrompt,
+	}.ApplyToContext(&ctx)
+
+	metadata := OutboundMetadataFromContext(ctx)
+	if !metadata.IsApprovalPrompt() || metadata.RemovesInteractionControls() {
+		t.Fatalf("approval prompt metadata = %#v", metadata)
+	}
+
+	ctx = InboundContext{}
+	OutboundMetadata{
+		InteractionKind:     OutboundInteractionApproval,
+		InteractionControls: OutboundInteractionControlsRemove,
+	}.ApplyToContext(&ctx)
+	metadata = OutboundMetadataFromContext(ctx)
+	if metadata.IsApprovalPrompt() || !metadata.RemovesInteractionControls() {
+		t.Fatalf("approval removal metadata = %#v", metadata)
+	}
+}
+
 func TestOutboundMetadataFromRawSanitizesUsage(t *testing.T) {
 	metadata := OutboundMetadataFromRaw(map[string]string{
 		OutboundMetadataKeyUsageInput:  "-1",
