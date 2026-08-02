@@ -457,6 +457,13 @@ func (worker *playwrightWorker) callAndConsume(
 		worker.lost = true
 		return "", errors.Join(driverErr, err)
 	}
+	if result.IsError && tool == "browser_handle_dialog" && worker.pendingDialog != nil && dialog == nil {
+		// A rejected handler call without modal metadata does not establish
+		// whether the known dialog closed. Do not guess and then issue another
+		// potentially blocked MCP call; retire this worker instead.
+		worker.lost = true
+		return "", errors.Join(driverErr, ErrWorkerUnavailable)
+	}
 	if dialog != nil && worker.lastObservation.Origin == "" {
 		worker.lost = true
 		return "", errors.Join(driverErr, ErrDriverIncompatible)

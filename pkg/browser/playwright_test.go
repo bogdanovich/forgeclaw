@@ -480,6 +480,34 @@ func TestPlaywrightWorkerPreservesConcurrentDialogFromErrorResult(t *testing.T) 
 	}
 }
 
+func TestPlaywrightWorkerFailsClosedAfterAmbiguousDialogRejection(t *testing.T) {
+	client := &fakePlaywrightClient{callResults: map[string]*sdkmcp.CallToolResult{
+		"browser_handle_dialog": {
+			IsError: true,
+			Content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: "### Error\n- dialog handling failed"},
+			},
+		},
+	}}
+	worker := &playwrightWorker{
+		client: client, limits: config.BrowserLimitsConfig{}.Effective(),
+		lastObservation: DriverObservation{Origin: "https://example.com"},
+		pendingDialog:   &DialogObservation{Type: "confirm", Message: "Continue?"},
+	}
+
+	err := worker.Execute(context.Background(), DriverAction{Kind: DriverDialog})
+	if !errors.Is(err, ErrDriverRejected) || !errors.Is(err, ErrWorkerUnavailable) || !worker.lost {
+		t.Fatalf("Execute(ambiguous dialog rejection) = %v; lost = %t", err, worker.lost)
+	}
+	calls := len(client.calls)
+	if _, err = worker.Observe(context.Background()); !errors.Is(err, ErrWorkerUnavailable) {
+		t.Fatalf("Observe() error = %v, want ErrWorkerUnavailable", err)
+	}
+	if len(client.calls) != calls {
+		t.Fatalf("Observe() called MCP after ambiguous dialog rejection: %+v", client.calls[calls:])
+	}
+}
+
 func TestPlaywrightWorkerCapturesAsynchronousDialogFromRejectedSnapshot(t *testing.T) {
 	for _, targeted := range []bool{false, true} {
 		name := "observe"
