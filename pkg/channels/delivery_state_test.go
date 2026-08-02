@@ -65,7 +65,7 @@ func TestDeliveryInteractionStateOwnsToolFeedbackCoordinator(t *testing.T) {
 	if state.hasToolFeedback() {
 		t.Fatal("zero interaction state unexpectedly has tool feedback")
 	}
-	if terminals := state.beginToolFeedbackTerminals([]string{"test:chat-1"}, true); terminals != nil {
+	if terminals := state.beginToolFeedbackTerminals([]string{"test:chat-1"}, true, false); terminals != nil {
 		t.Fatalf("zero-state terminals = %+v, want nil", terminals)
 	}
 
@@ -78,7 +78,7 @@ func TestDeliveryInteractionStateOwnsToolFeedbackCoordinator(t *testing.T) {
 		t.Fatal("initialized interaction state has no tool feedback")
 	}
 
-	terminals := state.beginToolFeedbackTerminals([]string{"test:chat-1"}, true)
+	terminals := state.beginToolFeedbackTerminals([]string{"test:chat-1"}, true, false)
 	if len(terminals) != 1 || terminals[0] == nil {
 		t.Fatalf("beginToolFeedbackTerminals() = %+v", terminals)
 	}

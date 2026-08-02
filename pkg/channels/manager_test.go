@@ -2936,6 +2936,89 @@ func TestSendMediaWithRetry_BlocksSameTurnLateFeedback(t *testing.T) {
 	}
 }
 
+func TestInterimOutboundAllowsLaterSameTurnFeedback(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: "checking",
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+		Context: bus.InboundContext{
+			Channel: "test", ChatID: "chat-1",
+			Raw: map[string]string{bus.OutboundMetadataKeyMessageKind: bus.OutboundMessageKindToolFeedback},
+		},
+	})
+	if _, sent, _, err := sendWithRetryTuple(m, t.Context(), "test", w, feedback); err != nil || !sent {
+		t.Fatalf("initial feedback = (%v, %v)", sent, err)
+	}
+
+	interim := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: "checking services",
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+		Context: bus.InboundContext{
+			Channel: "test", ChatID: "chat-1",
+			Raw: map[string]string{bus.OutboundMetadataKeyOutboundKind: bus.OutboundKindInterim},
+		},
+	})
+	if _, sent, _, err := sendWithRetryTuple(m, t.Context(), "test", w, interim); err != nil || !sent {
+		t.Fatalf("interim message = (%v, %v)", sent, err)
+	}
+
+	feedback.Content = "checking ports"
+	ids, sent, _, err := sendWithRetryTuple(m, t.Context(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-3"}) {
+		t.Fatalf("later feedback = (%v, %v, %v), want msg-3", ids, sent, err)
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	want := []string{"send:checking", "send:checking services", "delete:msg-1", "send:checking ports"}
+	if !slices.Equal(ch.operations, want) {
+		t.Fatalf("operations = %v, want %v", ch.operations, want)
+	}
+	if count := m.toolFeedback.ActiveCount(); count != 1 {
+		t.Fatalf("ActiveCount() = %d, want later feedback active", count)
+	}
+}
+
+func TestInterimMediaAllowsLaterSameTurnFeedback(t *testing.T) {
+	m := newTestManager()
+	enableTestToolFeedbackCoordinator(t, m, false)
+	ch := &toolFeedbackTestChannel{}
+	w := &channelWorker{ch: ch, limiter: rate.NewLimiter(rate.Inf, 1)}
+	traceScope := runtimeevents.NewTraceScope("/workspace/main", "turn-1")
+	feedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Content: "creating image",
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+		Context: bus.InboundContext{
+			Channel: "test", ChatID: "chat-1",
+			Raw: map[string]string{bus.OutboundMetadataKeyMessageKind: bus.OutboundMessageKindToolFeedback},
+		},
+	})
+	if _, sent, _, err := sendWithRetryTuple(m, t.Context(), "test", w, feedback); err != nil || !sent {
+		t.Fatalf("initial feedback = (%v, %v)", sent, err)
+	}
+
+	mediaContext := bus.InboundContext{Channel: "test", ChatID: "chat-1", MessageID: "turn-1"}
+	bus.OutboundMetadata{OutboundKind: bus.OutboundKindInterim}.ApplyToContext(&mediaContext)
+	interim := testOutboundMediaMessage(bus.OutboundMediaMessage{
+		Channel: "test", ChatID: "chat-1", SessionKey: "session-1", Context: mediaContext,
+		TraceScopes: []runtimeevents.TraceScope{traceScope},
+	})
+	if _, err := sendMediaWithRetryTuple(m, t.Context(), "test", w, interim); err != nil {
+		t.Fatalf("interim media = %v", err)
+	}
+
+	feedback.Content = "describing image"
+	ids, sent, _, err := sendWithRetryTuple(m, t.Context(), "test", w, feedback)
+	if err != nil || !sent || !slices.Equal(ids, []string{"msg-3"}) {
+		t.Fatalf("later feedback = (%v, %v, %v), want msg-3", ids, sent, err)
+	}
+}
+
 func TestToolFeedbackLifecycle_IsolatedByTurnScope(t *testing.T) {
 	m := newTestManager()
 	enableTestToolFeedbackCoordinator(t, m, false)

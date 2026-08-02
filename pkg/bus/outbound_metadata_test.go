@@ -71,6 +71,16 @@ func TestOutboundMetadataInteractionControls(t *testing.T) {
 	}
 }
 
+func TestOutboundMetadataInterimKind(t *testing.T) {
+	var ctx InboundContext
+	OutboundMetadata{OutboundKind: " INTERIM "}.ApplyToContext(&ctx)
+
+	metadata := OutboundMetadataFromContext(ctx)
+	if !metadata.IsInterim() || metadata.IsFinal() {
+		t.Fatalf("interim metadata = %#v", metadata)
+	}
+}
+
 func TestOutboundMetadataFromRawSanitizesUsage(t *testing.T) {
 	metadata := OutboundMetadataFromRaw(map[string]string{
 		OutboundMetadataKeyUsageInput:  "-1",

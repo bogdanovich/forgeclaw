@@ -3126,6 +3126,70 @@ func TestDeliverExplicitToolOutbound_NoBusDoesNotReportQueuedText(t *testing.T) 
 	}
 }
 
+func TestDeliverImmediateToolResultMarksOutboundInterim(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
+	defer al.Close()
+	agent := al.registry.GetDefaultAgent()
+	ts := &turnState{
+		agent: agent, agentID: agent.ID, channel: "cli", chatID: "chat-1", sessionKey: "session-1",
+		opts: processOptions{Dispatch: DispatchRequest{InboundContext: &bus.InboundContext{
+			Channel: "cli", ChatID: "chat-1", SenderID: "user-1",
+		}}},
+	}
+
+	t.Run("explicit text", func(t *testing.T) {
+		result := (&tools.ToolResult{}).
+			WithOutboundDelivery(toolshared.OutboundDelivery{Text: "checking services"}).
+			WithImmediateDelivery()
+		if _, outcome, err := al.deliverToolResultToUser(
+			t.Context(),
+			ts,
+			result,
+			"message",
+		); err != nil ||
+			outcome != toolResultDeliveryQueued {
+			t.Fatalf("delivery = (%v, %v)", outcome, err)
+		}
+		select {
+		case outbound := <-msgBus.OutboundChan():
+			if metadata := bus.OutboundMetadataFromMessage(outbound); !metadata.IsInterim() {
+				t.Fatalf("outbound metadata = %#v, want interim", metadata)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("immediate text was not queued")
+		}
+	})
+
+	t.Run("explicit media", func(t *testing.T) {
+		result := (&tools.ToolResult{}).
+			WithOutboundDelivery(toolshared.OutboundDelivery{Media: []bus.MediaPart{{
+				Type: "image", Ref: "media://test-image",
+			}}}).
+			WithImmediateDelivery()
+		if _, outcome, err := al.deliverToolResultToUser(
+			t.Context(),
+			ts,
+			result,
+			"image_generation",
+		); err != nil ||
+			outcome != toolResultDeliveryQueued {
+			t.Fatalf("delivery = (%v, %v)", outcome, err)
+		}
+		select {
+		case outbound := <-msgBus.OutboundMediaChan():
+			metadata := bus.OutboundMetadataFromContext(outbound.Context)
+			if !metadata.IsInterim() {
+				t.Fatalf("outbound metadata = %#v, want interim", metadata)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("immediate media was not queued")
+		}
+	})
+}
+
 func TestDeliverFinalTurnToolTextCarriesTraceSettlement(t *testing.T) {
 	for _, test := range []struct {
 		name   string
