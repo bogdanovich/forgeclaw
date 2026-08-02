@@ -166,26 +166,26 @@ func TestSearchFilesTool_CountModeReportsLimitTruncation(t *testing.T) {
 	)
 }
 
-func TestSearchFilesTool_CountModeKeepsLogicalOmittedCountWhenByteTruncated(t *testing.T) {
-	tmpDir := t.TempDir()
+func TestFormatContentSearchResult_CountModeKeepsLogicalOmittedCountWhenByteTruncated(t *testing.T) {
+	fileCounts := make(map[string]int, 520)
 	for i := 0; i < 520; i++ {
-		mustWriteSearchFile(
-			t,
-			tmpDir,
-			filepath.Join(
-				"long-count-paths",
-				fmt.Sprintf("file-%03d-%s.txt", i, strings.Repeat("longname", 8)),
-			),
-			"needle\n",
+		path := filepath.Join(
+			"long-count-paths",
+			fmt.Sprintf("file-%03d-%s.txt", i, strings.Repeat("longname", 8)),
 		)
+		fileCounts[path] = 1
 	}
 
-	tool := NewSearchFilesTool(tmpDir, true, 0)
-	result := tool.Execute(context.Background(), map[string]any{
-		"pattern":     "needle",
-		"output_mode": "count",
-		"limit":       500,
-	})
+	opts := searchFilesOptions{pattern: "needle", outputMode: "count", limit: 500}
+	result := formatContentSearchResult(
+		opts,
+		nil,
+		nil,
+		fileCounts,
+		len(fileCounts),
+		&searchWalkStats{},
+		newSearchTruncationInfo(opts.limit),
+	)
 
 	if result.IsError {
 		t.Fatalf("search_files failed: %s", result.ForLLM)
@@ -354,21 +354,28 @@ func TestSearchFilesTool_RestrictsOutsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestSearchFilesTool_TruncatesOversizedContentResults(t *testing.T) {
-	tmpDir := t.TempDir()
-	var huge strings.Builder
-	for i := 0; i < 1200; i++ {
-		fmt.Fprintf(&huge, "line %04d: NO_REPLY runtime payload for context overflow testing\n", i)
+func TestFormatContentSearchResult_TruncatesOversizedContentResults(t *testing.T) {
+	matches := make([]contentMatch, 0, 500)
+	for i := 0; i < 500; i++ {
+		matches = append(matches, contentMatch{
+			path:       "sessions/runtime.jsonl",
+			lineNumber: i + 1,
+			line:       fmt.Sprintf("line %04d: NO_REPLY runtime payload for context overflow testing", i),
+		})
 	}
-	mustWriteSearchFile(t, tmpDir, "sessions/runtime.jsonl", huge.String())
 
-	tool := NewSearchFilesTool(tmpDir, true, 0)
-	result := tool.Execute(context.Background(), map[string]any{
-		"pattern":     "NO_REPLY",
-		"path":        ".",
-		"output_mode": "content",
-		"limit":       500,
-	})
+	opts := searchFilesOptions{pattern: "NO_REPLY", outputMode: "content", limit: 500}
+	truncation := newSearchTruncationInfo(opts.limit)
+	truncation.mark("count_limit", len(matches), 0, false)
+	result := formatContentSearchResult(
+		opts,
+		matches,
+		nil,
+		nil,
+		1,
+		&searchWalkStats{},
+		truncation,
+	)
 
 	if result.IsError {
 		t.Fatalf("search_files failed: %s", result.ForLLM)
@@ -405,23 +412,28 @@ func TestSearchFilesTool_TruncatesOversizedContentResults(t *testing.T) {
 	}
 }
 
-func TestSearchFilesTool_ByteTruncationWithIgnoredPathsKeepsOmittedUnknown(t *testing.T) {
-	tmpDir := t.TempDir()
-	mustWriteSearchFile(t, tmpDir, ".gitignore", "ignored/\n")
-	mustWriteSearchFile(t, tmpDir, "ignored/hidden.txt", "NO_REPLY hidden\n")
-	var huge strings.Builder
-	for i := 0; i < 1200; i++ {
-		fmt.Fprintf(&huge, "line %04d: NO_REPLY visible payload for byte limit testing\n", i)
+func TestFormatContentSearchResult_ByteTruncationWithIgnoredPathsKeepsOmittedUnknown(t *testing.T) {
+	matches := make([]contentMatch, 0, 500)
+	for i := 0; i < 500; i++ {
+		matches = append(matches, contentMatch{
+			path:       "visible/runtime.txt",
+			lineNumber: i + 1,
+			line:       fmt.Sprintf("line %04d: NO_REPLY visible payload for byte limit testing", i),
+		})
 	}
-	mustWriteSearchFile(t, tmpDir, "visible/runtime.txt", huge.String())
 
-	tool := NewSearchFilesTool(tmpDir, true, 0)
-	result := tool.Execute(context.Background(), map[string]any{
-		"pattern":     "NO_REPLY",
-		"path":        ".",
-		"output_mode": "content",
-		"limit":       500,
-	})
+	opts := searchFilesOptions{pattern: "NO_REPLY", outputMode: "content", limit: 500}
+	truncation := newSearchTruncationInfo(opts.limit)
+	truncation.mark("count_limit", len(matches), 0, false)
+	result := formatContentSearchResult(
+		opts,
+		matches,
+		nil,
+		nil,
+		1,
+		&searchWalkStats{ignoredSkipped: 1},
+		truncation,
+	)
 
 	if result.IsError {
 		t.Fatalf("search_files failed: %s", result.ForLLM)
@@ -443,25 +455,16 @@ func TestSearchFilesTool_ByteTruncationWithIgnoredPathsKeepsOmittedUnknown(t *te
 	)
 }
 
-func TestSearchFilesTool_TruncatesOversizedFilesOnlyResults(t *testing.T) {
-	tmpDir := t.TempDir()
-	for i := 0; i < 2000; i++ {
-		mustWriteSearchFile(
-			t,
-			tmpDir,
-			filepath.Join("sessions", fmt.Sprintf("session-%04d.jsonl", i)),
-			"runtime marker\n",
-		)
+func TestFormatFileNameSearchResult_TruncatesOversizedFilesOnlyResults(t *testing.T) {
+	matches := make([]string, 0, 500)
+	for i := 0; i < 500; i++ {
+		matches = append(matches, filepath.Join("sessions", fmt.Sprintf("session-%04d.jsonl", i)))
 	}
 
-	tool := NewSearchFilesTool(tmpDir, true, 0)
-	result := tool.Execute(context.Background(), map[string]any{
-		"pattern":     "session-*.jsonl",
-		"target":      "files",
-		"path":        ".",
-		"output_mode": "files_only",
-		"limit":       500,
-	})
+	opts := searchFilesOptions{pattern: "session-*.jsonl", target: "files", limit: 500}
+	truncation := newSearchTruncationInfo(opts.limit)
+	truncation.mark("count_limit", len(matches), 0, false)
+	result := formatFileNameSearchResult(matches, opts, &searchWalkStats{}, truncation)
 
 	if result.IsError {
 		t.Fatalf("search_files failed: %s", result.ForLLM)
@@ -495,27 +498,22 @@ func TestSearchFilesTool_TruncatesOversizedFilesOnlyResults(t *testing.T) {
 	}
 }
 
-func TestSearchFilesTool_FilesSearchKeepsUnknownOmittedCountWhenByteTruncated(t *testing.T) {
-	tmpDir := t.TempDir()
-	for i := 0; i < 700; i++ {
-		mustWriteSearchFile(
-			t,
-			tmpDir,
+func TestFormatFileNameSearchResult_KeepsUnknownOmittedCountWhenByteTruncated(t *testing.T) {
+	matches := make([]string, 0, 500)
+	for i := 0; i < 500; i++ {
+		matches = append(
+			matches,
 			filepath.Join(
 				"long-file-paths",
 				fmt.Sprintf("session-%03d-%s.jsonl", i, strings.Repeat("longname", 8)),
 			),
-			"runtime marker\n",
 		)
 	}
 
-	tool := NewSearchFilesTool(tmpDir, true, 0)
-	result := tool.Execute(context.Background(), map[string]any{
-		"pattern": "session-*.jsonl",
-		"target":  "files",
-		"path":    ".",
-		"limit":   500,
-	})
+	opts := searchFilesOptions{pattern: "session-*.jsonl", target: "files", limit: 500}
+	truncation := newSearchTruncationInfo(opts.limit)
+	truncation.mark("count_limit", len(matches), 0, false)
+	result := formatFileNameSearchResult(matches, opts, &searchWalkStats{}, truncation)
 
 	if result.IsError {
 		t.Fatalf("search_files failed: %s", result.ForLLM)

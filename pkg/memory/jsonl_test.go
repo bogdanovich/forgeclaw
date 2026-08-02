@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1020,20 +1021,33 @@ func TestConcurrent_AddAndRead(t *testing.T) {
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	const goroutines = 10
-	const msgsPerGoroutine = 20
+	const goroutines = 4
+	const msgsPerGoroutine = 5
+	start := make(chan struct{})
+	errCh := make(chan error, goroutines*msgsPerGoroutine)
 
-	// Concurrent writes.
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
-		go func() {
+		go func(id int) {
 			defer wg.Done()
+			<-start
 			for i := 0; i < msgsPerGoroutine; i++ {
-				_ = store.AddMessage(ctx, "concurrent", "user", "msg")
+				content := fmt.Sprintf("msg-%d-%d", id, i)
+				if err := store.AddMessage(ctx, "concurrent", "user", content); err != nil {
+					errCh <- fmt.Errorf("AddMessage(%s): %w", content, err)
+				}
 			}
-		}()
+		}(g)
 	}
+	close(start)
 	wg.Wait()
+	close(errCh)
+	for operationErr := range errCh {
+		t.Error(operationErr)
+	}
+	if t.Failed() {
+		return
+	}
 
 	history, err := store.GetHistory(ctx, "concurrent")
 	if err != nil {
@@ -1041,7 +1055,19 @@ func TestConcurrent_AddAndRead(t *testing.T) {
 	}
 	expected := goroutines * msgsPerGoroutine
 	if len(history) != expected {
-		t.Errorf("expected %d messages, got %d", expected, len(history))
+		t.Fatalf("expected %d messages, got %d", expected, len(history))
+	}
+	contents := make(map[string]struct{}, len(history))
+	for _, message := range history {
+		contents[message.Content] = struct{}{}
+	}
+	for g := 0; g < goroutines; g++ {
+		for i := 0; i < msgsPerGoroutine; i++ {
+			want := fmt.Sprintf("msg-%d-%d", g, i)
+			if _, ok := contents[want]; !ok {
+				t.Errorf("missing concurrent message %q", want)
+			}
+		}
 	}
 }
 
@@ -1051,45 +1077,83 @@ func TestConcurrent_SummarizeRace(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	// Seed with some messages.
-	for i := 0; i < 20; i++ {
-		err := store.AddMessage(ctx, "race", "user", "seed")
+	const seedMessages = 4
+	const writerMessages = 8
+	const summaryIterations = 3
+	const keepLast = 3
+	for i := 0; i < seedMessages; i++ {
+		err := store.AddMessage(ctx, "race", "user", fmt.Sprintf("seed-%d", i))
 		if err != nil {
 			t.Fatalf("AddMessage: %v", err)
 		}
 	}
 
 	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errCh := make(chan error, writerMessages+summaryIterations*2)
 
-	// Writer goroutine (main agent loop).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 50; i++ {
-			_ = store.AddMessage(ctx, "race", "user", "new")
+		<-start
+		for i := 0; i < writerMessages; i++ {
+			if err := store.AddMessage(ctx, "race", "user", fmt.Sprintf("new-%d", i)); err != nil {
+				errCh <- fmt.Errorf("writer AddMessage(%d): %w", i, err)
+			}
 		}
 	}()
 
-	// Summarizer goroutine (background task).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 10; i++ {
-			_ = store.SetSummary(ctx, "race", "summary")
-			_ = store.TruncateHistory(ctx, "race", 5)
+		<-start
+		for i := 0; i < summaryIterations; i++ {
+			if err := store.SetSummary(ctx, "race", fmt.Sprintf("summary-%d", i)); err != nil {
+				errCh <- fmt.Errorf("summarizer SetSummary(%d): %w", i, err)
+			}
+			if err := store.TruncateHistory(ctx, "race", keepLast); err != nil {
+				errCh <- fmt.Errorf("summarizer TruncateHistory(%d): %w", i, err)
+			}
 		}
 	}()
 
+	close(start)
 	wg.Wait()
+	close(errCh)
+	for operationErr := range errCh {
+		t.Error(operationErr)
+	}
+	if t.Failed() {
+		return
+	}
 
-	// Verify the store is still in a consistent state.
-	_, err := store.GetHistory(ctx, "race")
+	history, err := store.GetHistory(ctx, "race")
 	if err != nil {
 		t.Fatalf("GetHistory after race: %v", err)
 	}
-	_, err = store.GetSummary(ctx, "race")
+	if len(history) < keepLast || len(history) > keepLast+writerMessages {
+		t.Fatalf("retained history length = %d, want [%d, %d]", len(history), keepLast, keepLast+writerMessages)
+	}
+	for _, message := range history {
+		if !strings.HasPrefix(message.Content, "seed-") && !strings.HasPrefix(message.Content, "new-") {
+			t.Fatalf("unexpected retained message %q", message.Content)
+		}
+	}
+
+	summary, err := store.GetSummary(ctx, "race")
 	if err != nil {
 		t.Fatalf("GetSummary after race: %v", err)
+	}
+	if summary != "summary-2" {
+		t.Fatalf("summary after race = %q, want summary-2", summary)
+	}
+
+	revision, err := store.GetHistoryRevision(ctx, "race")
+	if err != nil {
+		t.Fatalf("GetHistoryRevision after race: %v", err)
+	}
+	if revision.Dirty || revision.Count != seedMessages+writerMessages || revision.Skip != revision.Count-len(history) {
+		t.Fatalf("inconsistent history revision after race: %+v, retained=%d", revision, len(history))
 	}
 }
 

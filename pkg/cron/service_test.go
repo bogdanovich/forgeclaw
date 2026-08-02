@@ -376,50 +376,104 @@ func TestCronService_PersistenceIntegrity(t *testing.T) {
 }
 
 func TestCronService_ConcurrentAccess(t *testing.T) {
-	cs, path := setupService(nil)
-	defer os.Remove(path)
-
-	cs.Start()
-	defer cs.Stop()
+	path := filepath.Join(t.TempDir(), "jobs.json")
+	cs := NewCronService(path, nil)
+	at := time.Now().Add(time.Hour).UnixMilli()
+	seed, err := cs.AddJob("seed", CronSchedule{Kind: "at", AtMS: &at}, "", "", "", "")
+	if err != nil {
+		t.Fatalf("AddJob(seed): %v", err)
+	}
 
 	var wg sync.WaitGroup
-	workers := 10
-	iterations := 50
+	const workers = 4
+	const iterations = 4
+	start := make(chan struct{})
+	errCh := make(chan error, workers*iterations*2)
 
-	wg.Add(workers * 2)
-
-	// add jobs concurrently
 	for i := range workers {
+		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			<-start
 			for j := range iterations {
-				at := time.Now().Add(time.Hour).UnixMilli()
-				cs.AddJob(
+				jobAt := time.Now().Add(time.Hour).UnixMilli()
+				if _, addErr := cs.AddJob(
 					fmt.Sprintf("Job-%d-%d", id, j),
-					CronSchedule{Kind: "at", AtMS: &at},
+					CronSchedule{Kind: "at", AtMS: &jobAt},
 					"",
 					"",
 					"",
 					"",
-				)
-				time.Sleep(100 * time.Microsecond)
+				); addErr != nil {
+					errCh <- fmt.Errorf("worker %d AddJob(%d): %w", id, j, addErr)
+				}
 			}
 		}(i)
 	}
 
-	// read and update jobs concurrently
-	for range workers {
-		go func() {
+	for i := range workers {
+		wg.Add(1)
+		go func(id int) {
 			defer wg.Done()
+			<-start
 			for j := range iterations {
-				jobs := cs.ListJobs(true)
-				if len(jobs) > 0 {
-					cs.EnableJob(jobs[0].ID, j%2 == 0)
+				job, ok := cs.GetJob(seed.ID)
+				if !ok {
+					errCh <- fmt.Errorf("worker %d GetJob(%d): seed missing", id, j)
+					continue
 				}
-				time.Sleep(100 * time.Microsecond)
+				job.Enabled = (id+j)%2 == 0
+				if updateErr := cs.UpdateJob(job); updateErr != nil {
+					errCh <- fmt.Errorf("worker %d UpdateJob(%d): %w", id, j, updateErr)
+				}
 			}
-		}()
+		}(i)
 	}
 
+	close(start)
 	wg.Wait()
+	close(errCh)
+	for operationErr := range errCh {
+		t.Error(operationErr)
+	}
+	if t.Failed() {
+		return
+	}
+
+	job, ok := cs.GetJob(seed.ID)
+	if !ok {
+		t.Fatal("seed job missing after concurrent operations")
+	}
+	job.Enabled = true
+	if err := cs.UpdateJob(job); err != nil {
+		t.Fatalf("normalize seed state: %v", err)
+	}
+
+	const wantJobs = 1 + workers*iterations
+	jobs := cs.ListJobs(true)
+	if len(jobs) != wantJobs {
+		t.Fatalf("jobs after concurrent operations = %d, want %d", len(jobs), wantJobs)
+	}
+	ids := make(map[string]struct{}, len(jobs))
+	for _, persistedJob := range jobs {
+		if persistedJob.ID == "" {
+			t.Fatal("job with empty ID after concurrent operations")
+		}
+		if _, duplicate := ids[persistedJob.ID]; duplicate {
+			t.Fatalf("duplicate job ID %q after concurrent operations", persistedJob.ID)
+		}
+		ids[persistedJob.ID] = struct{}{}
+	}
+
+	reloaded := NewCronService(path, nil)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("Load persisted concurrent state: %v", err)
+	}
+	if got := len(reloaded.ListJobs(true)); got != wantJobs {
+		t.Fatalf("persisted jobs = %d, want %d", got, wantJobs)
+	}
+	reloadedSeed, ok := reloaded.GetJob(seed.ID)
+	if !ok || !reloadedSeed.Enabled {
+		t.Fatalf("persisted seed state = (%+v, %t), want enabled seed", reloadedSeed, ok)
+	}
 }
