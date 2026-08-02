@@ -301,6 +301,88 @@ func TestPipelineToolResultJournalFailurePreventsEveryDeliveryMode(t *testing.T)
 	}
 }
 
+func TestPipelineSuppressedToolDeliveryRetainsHandledAndImmediateMedia(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		immediate bool
+		hook      bool
+	}{
+		{name: "normal handled"},
+		{name: "normal immediate", immediate: true},
+		{name: "hook handled", hook: true},
+		{name: "hook immediate", immediate: true, hook: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := (&tools.ToolResult{
+				ForLLM:  "media result",
+				ForUser: "media delivery",
+				Media:   []string{"media://suppressed-result"},
+			}).WithResponseHandled()
+			if tc.immediate {
+				result = (&tools.ToolResult{
+					ForLLM:  "media result",
+					ForUser: "media delivery",
+					Media:   []string{"media://suppressed-result"},
+				}).WithImmediateDelivery()
+			}
+
+			registry := tools.NewToolRegistry()
+			tool := &fixedToolResultTool{name: "suppressed-media", result: result}
+			registry.Register(tool)
+			store := session.NewSessionManager("")
+			agent := &AgentInstance{ID: "main", Tools: registry, Sessions: store}
+			ts := &turnState{
+				agent: agent, agentID: agent.ID, turnID: "turn-suppressed-media",
+				sessionKey: "session-suppressed-media",
+				opts: processOptions{
+					SuppressToolUserDelivery: true,
+					SendResponse:             true,
+					Dispatch:                 DispatchRequest{SessionKey: "session-suppressed-media"},
+				},
+			}
+			toolCall := providers.ToolCall{ID: "call-media", Name: tool.Name(), Arguments: map[string]any{}}
+			intent := providers.Message{Role: "assistant", ToolCalls: []providers.ToolCall{toolCall}}
+			if err := store.AppendTurnMessage(t.Context(), ts.sessionKey, intent); err != nil {
+				t.Fatal(err)
+			}
+			exec := newTurnExecution(agent, ts.opts, nil, "", []providers.Message{intent})
+			exec.normalizedToolCalls = []providers.ToolCall{toolCall}
+			exec.assistantToolCallsPersisted = true
+			delivery := &recordingToolResultDelivery{}
+			pipeline := &Pipeline{
+				Runtime: PipelineRuntimeServices{Bus: delivery},
+				Interaction: PipelineInteractionServices{
+					SyncToolDelivery: delivery,
+				},
+			}
+			if tc.hook {
+				pipeline.Interaction.Hooks = &toolResultRespondHook{result: result}
+			}
+
+			outcome := pipeline.ExecuteTools(t.Context(), t.Context(), ts, exec, 1)
+
+			if outcome.JournalErr != nil {
+				t.Fatalf("journal error = %v", outcome.JournalErr)
+			}
+			if delivery.outboundCalls != 0 || delivery.syncCalls != 0 {
+				t.Fatalf(
+					"delivery calls = outbound:%d sync:%d, want none",
+					delivery.outboundCalls,
+					delivery.syncCalls,
+				)
+			}
+			if len(exec.completionMedia) != 1 || exec.completionMedia[0].Ref != "media://suppressed-result" {
+				t.Fatalf("completion media = %+v, want suppressed result", exec.completionMedia)
+			}
+			history := store.GetHistory(ts.sessionKey)
+			if len(history) != 2 || len(history[1].Media) != 1 ||
+				history[1].Media[0] != "media://suppressed-result" {
+				t.Fatalf("durable history = %+v, want tool media", history)
+			}
+		})
+	}
+}
+
 func TestPipelineToolCallIntentJournalFailurePreventsExecution(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	tool := &steeringSafetyTestTool{name: "must-not-run", safety: tools.SteeringSafetyNonCancellable}

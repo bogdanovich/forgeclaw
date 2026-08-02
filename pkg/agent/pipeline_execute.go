@@ -337,7 +337,7 @@ toolLoop:
 					if !ts.tryMarkToolExecutionStarted() {
 						return ToolLoopOutcome{Control: ToolControlBreak, AbortCause: TurnAbortHard}
 					}
-					hookResult := toolReq.HookResult
+					hookResult := normalizeToolResultForSyncDelivery(ts, toolReq.HookResult)
 					runner.recordCommittedHookResponseDecision(tc, toolName)
 
 					argsJSON, _ := json.Marshal(tools.ToolLogArguments(toolName, toolArgs))
@@ -864,6 +864,7 @@ toolLoop:
 			}
 			toolResult = fallback
 		}
+		toolResult = normalizeToolResultForSyncDelivery(ts, toolResult)
 
 		verifiedWrite := hasVerifiedWriteAudit(toolResult.WriteAudit)
 		toolSummary := strings.TrimSpace(toolResult.ForUser)
