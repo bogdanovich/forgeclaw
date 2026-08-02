@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -47,24 +48,20 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if err != nil {
 		return nil, err
 	}
+	td := t.TerminateDuration
+	if td <= 0 {
+		td = isolatedCommandTerminateDuration
+	}
+	pipe := &isolatedPipeRWC{
+		stdout: stdout, stdin: stdin, terminateDuration: td,
+		stopProcessTree: processTree.stop,
+	}
+	t.cleanup = pipe
 	if err := isolation.Start(t.Command); err != nil {
-		_ = processTree.stop(t.TerminateDuration)
-		return nil, err
+		return nil, errors.Join(err, pipe.Close())
 	}
-	if err := processTree.started(); err != nil {
-		_ = t.Command.Process.Kill()
-		_ = processTree.stop(t.TerminateDuration)
-		_ = t.Command.Wait()
-		return nil, err
-	}
-	logger.InfoCF("mcp", "MCP stdio process started",
-		map[string]any{
-			"server":  t.ServerName,
-			"command": t.Command.Path,
-			"pid":     t.Command.Process.Pid,
-		})
-	go logStdioProcessStderr(ctx, t.ServerName, t.Command.Path, stderr)
 	waitCh := make(chan error, 1)
+	pipe.waitCh = waitCh
 	go func() {
 		err := t.Command.Wait()
 		fields := map[string]any{
@@ -80,19 +77,24 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 		}
 		waitCh <- err
 	}()
-	td := t.TerminateDuration
-	if td <= 0 {
-		td = isolatedCommandTerminateDuration
+	if err := processTree.started(); err != nil {
+		_ = t.Command.Process.Kill()
+		return nil, errors.Join(err, pipe.Close())
 	}
-	pipe := &isolatedPipeRWC{
-		stdout: stdout, stdin: stdin,
-		waitCh: waitCh, terminateDuration: td, stopProcessTree: processTree.stop,
-	}
-	t.cleanup = pipe
+	logger.InfoCF("mcp", "MCP stdio process started",
+		map[string]any{
+			"server":  t.ServerName,
+			"command": t.Command.Path,
+			"pid":     t.Command.Process.Pid,
+		})
+	go logStdioProcessStderr(ctx, t.ServerName, t.Command.Path, stderr)
 	return newIsolatedIOConn(pipe), nil
 }
 
 type isolatedPipeRWC struct {
+	closeMu           sync.Mutex
+	stdinOnce         sync.Once
+	closed            bool
 	stopProcessTree   func(time.Duration) error
 	stdout            io.ReadCloser
 	stdin             io.WriteCloser
@@ -109,18 +111,28 @@ func (s *isolatedPipeRWC) Write(p []byte) (n int, err error) {
 }
 
 func (s *isolatedPipeRWC) Close() error {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.closed {
+		return nil
+	}
 	// Closing stdin gives a cooperative MCP server its first opportunity to
 	// stop. Process-tree termination then proves that wrappers and browser
 	// descendants sharing the owned process group are gone before Close
 	// succeeds and an exclusive profile lease may be released.
-	_ = s.stdin.Close()
+	s.stdinOnce.Do(func() { _ = s.stdin.Close() })
 	if err := s.stopProcessTree(s.terminateDuration); err != nil {
 		return err
+	}
+	if s.waitCh == nil {
+		s.closed = true
+		return nil
 	}
 	timer := time.NewTimer(s.terminateDuration)
 	defer timer.Stop()
 	select {
 	case <-s.waitCh:
+		s.closed = true
 		return nil
 	case <-timer.C:
 		return fmt.Errorf("browser driver process was not reaped after tree termination")

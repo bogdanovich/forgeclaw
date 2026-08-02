@@ -135,11 +135,12 @@ type ServerConnection struct {
 
 // Manager manages multiple MCP server connections
 type Manager struct {
-	servers       map[string]*ServerConnection
-	runtimeEvents runtimeevents.Bus
-	mu            sync.RWMutex
-	closed        atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
-	wg            sync.WaitGroup // tracks in-flight CallTool calls
+	servers        map[string]*ServerConnection
+	pendingCleanup []*ServerConnection
+	runtimeEvents  runtimeevents.Bus
+	mu             sync.RWMutex
+	closed         atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
+	wg             sync.WaitGroup // tracks in-flight CallTool calls
 }
 
 var connectServerFunc = connectServer
@@ -339,23 +340,37 @@ func (m *Manager) ConnectServer(
 	}
 	conn, err := connectServerFunc(ctx, name, cfg)
 	if err != nil {
-		lease.release()
+		retain, cleanupErr := closeRejectedConnection(conn, lease)
+		if retain {
+			m.mu.Lock()
+			m.pendingCleanup = append(m.pendingCleanup, conn)
+			m.mu.Unlock()
+		}
+		if cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("connection cleanup failed: %w", cleanupErr))
+		}
 		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
 		return err
 	}
 	conn.exclusiveLease = lease
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.closed.Load() {
-		_ = conn.Session.Close()
-		conn.releaseExclusiveLease()
-		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, fmt.Errorf("manager is closed"))
-		return fmt.Errorf("manager is closed")
+		closedErr := fmt.Errorf("manager is closed")
+		retain, cleanupErr := closeRejectedConnection(conn, lease)
+		if retain {
+			m.pendingCleanup = append(m.pendingCleanup, conn)
+		}
+		m.mu.Unlock()
+		if cleanupErr != nil {
+			closedErr = errors.Join(closedErr, fmt.Errorf("connection cleanup failed: %w", cleanupErr))
+		}
+		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, closedErr)
+		return closedErr
 	}
 
 	m.servers[name] = conn
+	m.mu.Unlock()
 	for _, tool := range conn.Tools {
 		toolName := ""
 		if tool != nil {
@@ -365,6 +380,23 @@ func (m *Manager) ConnectServer(
 	}
 	m.publishServerEvent(runtimeevents.KindMCPServerConnected, name, cfg, len(conn.Tools), nil)
 	return nil
+}
+
+func closeRejectedConnection(
+	conn *ServerConnection,
+	lease *exclusiveServerLease,
+) (retain bool, err error) {
+	if conn == nil {
+		lease.release()
+		return false, nil
+	}
+	conn.exclusiveLease = lease
+	err = conn.close()
+	if err == nil || conn.cleanup == nil {
+		conn.releaseExclusiveLease()
+		return false, err
+	}
+	return true, err
 }
 
 func connectServer(
@@ -501,7 +533,19 @@ func connectServer(
 	// Connect to server
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		if commandTransport != nil && commandTransport.cleanup != nil {
+			return &ServerConnection{
+				Name: name, Config: cfg, Client: client,
+				cleanup: commandTransport.cleanup, cleanupFailed: true,
+			}, fmt.Errorf("failed to connect: %w", err)
+		}
 		return nil, fmt.Errorf("failed to connect: %w", err)
+	}
+	conn := &ServerConnection{
+		Name: name, Config: cfg, Client: client, Session: session,
+	}
+	if commandTransport != nil {
+		conn.cleanup = commandTransport.cleanup
 	}
 
 	// Get server info
@@ -517,20 +561,9 @@ func connectServer(
 	// List available tools if supported
 	tools, err := listServerTools(ctx, name, session, initResult)
 	if err != nil {
-		_ = session.Close()
-		return nil, err
+		return conn, err
 	}
-
-	conn := &ServerConnection{
-		Name:    name,
-		Config:  cfg,
-		Client:  client,
-		Session: session,
-		Tools:   tools,
-	}
-	if commandTransport != nil {
-		conn.cleanup = commandTransport.cleanup
-	}
+	conn.Tools = tools
 	return conn, nil
 }
 
@@ -769,7 +802,7 @@ func (m *Manager) Close() error {
 
 	logger.InfoCF("mcp", "Closing all MCP server connections",
 		map[string]any{
-			"count": len(m.servers),
+			"count": len(m.servers) + len(m.pendingCleanup),
 		})
 
 	var errs []error
@@ -789,6 +822,19 @@ func (m *Manager) Close() error {
 	}
 
 	m.servers = remaining
+	remainingPending := make([]*ServerConnection, 0, len(m.pendingCleanup))
+	for _, conn := range m.pendingCleanup {
+		if err := conn.close(); err != nil {
+			name := conn.Name
+			logger.ErrorCF("mcp", "Failed to close rejected server connection",
+				map[string]any{"server": name, "error": err.Error()})
+			errs = append(errs, fmt.Errorf("rejected server %s: %w", name, err))
+			remainingPending = append(remainingPending, conn)
+			continue
+		}
+		conn.releaseExclusiveLease()
+	}
+	m.pendingCleanup = remainingPending
 
 	if len(errs) > 0 {
 		return fmt.Errorf("failed to close %d server(s): %w", len(errs), errors.Join(errs...))
@@ -799,6 +845,14 @@ func (m *Manager) Close() error {
 
 func (c *ServerConnection) close() error {
 	if c.cleanupFailed && c.cleanup != nil {
+		err := c.cleanup.Close()
+		c.cleanupFailed = err != nil
+		return err
+	}
+	if c.Session == nil {
+		if c.cleanup == nil {
+			return nil
+		}
 		err := c.cleanup.Close()
 		c.cleanupFailed = err != nil
 		return err

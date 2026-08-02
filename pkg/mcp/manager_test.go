@@ -817,6 +817,92 @@ func TestConnectServerReleasesExclusiveLeaseAfterConnectionFailure(t *testing.T)
 	lease.release()
 }
 
+func TestConnectServerRetainsPartialConnectionWhenRejectionCleanupFails(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	cleanup := &retryableTestCleanup{err: errors.New("process tree still alive")}
+	connectServerFunc = func(_ context.Context, name string, cfg config.MCPServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name: name, Config: cfg, cleanup: cleanup, cleanupFailed: true,
+		}, errors.New("tool discovery failed")
+	}
+	lockPath := filepath.Join(t.TempDir(), "playwright.lock")
+	mgr := NewManager()
+	err := mgr.ConnectServer(context.Background(), "playwright", config.MCPServerConfig{
+		Enabled: true, Command: "example", ExclusiveLockFile: lockPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "tool discovery failed") ||
+		!strings.Contains(err.Error(), "process tree still alive") {
+		t.Fatalf("ConnectServer() error = %v, want discovery and cleanup errors", err)
+	}
+	if len(mgr.pendingCleanup) != 1 {
+		t.Fatalf("pending cleanup count = %d, want 1", len(mgr.pendingCleanup))
+	}
+	if contender, contenderErr := acquireExclusiveServerLease("contender", lockPath); contenderErr == nil {
+		contender.release()
+		t.Fatal("exclusive lease was released after rejected-connection cleanup failed")
+	}
+
+	cleanup.err = nil
+	if err = mgr.Close(); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
+	}
+	if cleanup.calls != 2 {
+		t.Fatalf("cleanup calls = %d, want 2", cleanup.calls)
+	}
+	lease, err := acquireExclusiveServerLease("contender", lockPath)
+	if err != nil {
+		t.Fatalf("lease remained held after successful retry: %v", err)
+	}
+	lease.release()
+}
+
+func TestConnectServerRetainsClosedManagerRejectionWhenCleanupFails(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	cleanup := &retryableTestCleanup{err: errors.New("process tree still alive")}
+	connectServerFunc = func(_ context.Context, name string, cfg config.MCPServerConfig) (*ServerConnection, error) {
+		return &ServerConnection{
+			Name: name, Config: cfg, cleanup: cleanup, cleanupFailed: true,
+		}, nil
+	}
+	lockPath := filepath.Join(t.TempDir(), "playwright.lock")
+	mgr := NewManager()
+	mgr.closed.Store(true)
+	err := mgr.ConnectServer(context.Background(), "playwright", config.MCPServerConfig{
+		Enabled: true, Command: "example", ExclusiveLockFile: lockPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "manager is closed") ||
+		!strings.Contains(err.Error(), "process tree still alive") {
+		t.Fatalf("ConnectServer() error = %v, want manager-closed and cleanup errors", err)
+	}
+	if len(mgr.pendingCleanup) != 1 {
+		t.Fatalf("pending cleanup count = %d, want 1", len(mgr.pendingCleanup))
+	}
+
+	cleanup.err = nil
+	if err = mgr.Close(); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
+	}
+	lease, err := acquireExclusiveServerLease("contender", lockPath)
+	if err != nil {
+		t.Fatalf("lease remained held after successful retry: %v", err)
+	}
+	lease.release()
+}
+
+type retryableTestCleanup struct {
+	err   error
+	calls int
+}
+
+func (c *retryableTestCleanup) Close() error {
+	c.calls++
+	return c.err
+}
+
 func TestExclusiveLeaseIsHeldAcrossReconnectAndReleasedOnClose(t *testing.T) {
 	originalConnectServerFunc := connectServerFunc
 	t.Cleanup(func() {
