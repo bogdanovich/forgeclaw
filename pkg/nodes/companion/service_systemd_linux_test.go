@@ -59,7 +59,8 @@ func TestSystemdServiceManagerReadsStrictProfileAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = nodes.ValidateInvocationOutput(descriptors[0], statusJSON, 4096); err != nil {
+	statusDescriptor := manager.Descriptors()[0]
+	if _, err = nodes.ValidateInvocationOutput(statusDescriptor, statusJSON, 4096); err != nil {
 		t.Fatalf("status output contract: %v", err)
 	}
 
