@@ -11,6 +11,9 @@ Operational docs for debugging, diagnosis, and production troubleshooting.
 - [Node Companion P2 file-transfer deployment](node-companion-p2-deployment.md):
   deny-by-default rollout, reversible transfer fixtures, redaction checks, and
   rollback evidence.
+- [Node Companion P2 deployment evidence](node-companion-p2-deployment-evidence.md):
+  merged revisions, focused validation, live canaries, completion gates,
+  enabled authority, backups, and the mandatory stop before P3.
 - [Node terminal client and lifecycle smoke test](node-terminal-smoke.md):
   interactive use and automated verification of authenticated PTY open,
   attach, resize, input/output, and confirmed close.
