@@ -227,6 +227,7 @@ const (
 	NodeInvocationObservationCompleted  = "completed"
 	NodeInvocationObservationStatus     = "status"
 	NodeInvocationObservationUncertain  = "uncertain"
+	NodeInvocationObservationRejected   = "rejected"
 	NodeInvocationObservationCancel     = "cancel"
 )
 
@@ -402,6 +403,46 @@ func (tool *NodeInvokeTool) Execute(ctx context.Context, args map[string]any) *T
 		record.ExpectedPlanHash,
 	)
 	if err != nil {
+		if errorCode, remoteRejection := nodes.InvocationDispatchErrorCode(err); remoteRejection &&
+			errorCode != nodes.InvocationDispatchUnknown {
+			state := "rejected"
+			message := "the node rejected the invocation"
+			if errorCode == nodes.InvocationDispatchExecutionFailed {
+				state = string(nodes.InvocationFailed)
+				message = "the node reported a terminal invocation failure"
+			} else if errorCode == nodes.InvocationDispatchCanceled {
+				state = string(nodes.InvocationCanceled)
+				message = "the node reported the invocation canceled"
+			}
+			if dispatched {
+				tool.runtime.publishInvocationEvent(
+					ctx,
+					NodeInvocationObservationDispatched,
+					"nodes_invoke",
+					record,
+					string(nodes.GatewayInvocationDispatched),
+					"",
+				)
+			}
+			tool.runtime.publishInvocationEvent(
+				ctx,
+				NodeInvocationObservationRejected,
+				"nodes_invoke",
+				record,
+				state,
+				errorCode,
+			)
+			view := nodeInvokeResult{
+				InvocationID: record.Plan.InvocationID,
+				Target:       record.Target,
+				Command:      record.Plan.Command,
+				Risk:         record.Plan.Risk,
+				GatewayState: nodes.GatewayInvocationDispatched,
+				State:        state,
+				ErrorCode:    errorCode,
+			}
+			return nodeInvocationError(errorCode, message, &view)
+		}
 		if errors.Is(err, nodes.ErrGatewayInvocationDispatched) || dispatched {
 			if dispatched {
 				tool.runtime.publishInvocationEvent(
@@ -1297,7 +1338,8 @@ func publishNodeInvocationEvent(
 		ErrorCode:    errorCode,
 	}
 	severity := runtimeevents.SeverityInfo
-	if observation == NodeInvocationObservationUncertain {
+	if observation == NodeInvocationObservationUncertain ||
+		observation == NodeInvocationObservationRejected {
 		severity = runtimeevents.SeverityWarn
 	}
 	attrs := map[string]any{

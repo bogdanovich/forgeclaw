@@ -29,6 +29,19 @@ import (
 	nodews "github.com/bogdanovich/mintclaw/pkg/nodes/ws"
 )
 
+func TestInvocationRejectionReasonDistinguishesAuthorizationLayers(t *testing.T) {
+	inputDenied := &commandInputDeniedError{}
+	if !errors.Is(inputDenied, nodes.ErrCommandDenied) {
+		t.Fatal("command input denial no longer preserves command-denied semantics")
+	}
+	if reason := invocationRejectionReason(inputDenied); reason != "command_input_denied" {
+		t.Fatalf("input rejection reason = %q", reason)
+	}
+	if reason := invocationRejectionReason(nodes.ErrCommandDenied); reason != "plan_authorization_denied" {
+		t.Fatalf("plan rejection reason = %q", reason)
+	}
+}
+
 func TestClientAuthenticatesPinnedWSSIdentity(t *testing.T) {
 	registry, handler := testGatewayAdmission(t)
 	server := httptest.NewTLSServer(handler)

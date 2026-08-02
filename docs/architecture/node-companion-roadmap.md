@@ -108,6 +108,7 @@ execution or an isolated shell without inheriting an owner's root profile.
 | P8 | Remote workspace routing | Route an explicitly selected set of workspace-aware tools through one node execution context | P2, P5, and remote-capable P7 tools |
 | P9 | Platforms and compatibility adapters | Add Windows/mobile companions and explicitly versioned external adapters | Stable internal contracts |
 | Future P1 follow-up | Terminal clients and agent-operated PTY | Use the existing attached PTY from a browser, a local CLI, or a bounded agent loop without exposing a node port through NAT | Deployed P1 terminal core and trusted owner approval |
+| Future operations follow-up | Authenticated live-agent and invocation smoke | Exercise the running gateway agent and durable node invocation path without Telegram or a second disconnected AgentLoop | Stable gateway operator authentication and deployed node execution |
 
 Priorities express ordering, not a commitment to implement every milestone.
 
@@ -720,6 +721,38 @@ Improve operations only after multiple deployed companions justify it:
 An update channel is separate from command execution and file transfer.
 Downloaded binaries require release-signature verification and cannot be
 authorized solely by a model-generated URL or digest.
+
+### Future operations follow-up: authenticated live-agent and invocation smoke
+
+Add a deterministic operator-facing smoke path for the already running gateway.
+The existing `mintclaw agent` command creates a separate `AgentLoop`, so it
+cannot see node sessions owned by the gateway process and is not a valid test
+of `nodes_invoke` or `nodes_status` in production.
+
+The future smoke must:
+
+- reuse the gateway's authenticated operator identity and live node session
+  instead of starting a second agent runtime;
+- support a stateless live-agent prompt and a lower-level durable invocation
+  fixture so model selection and transport/persistence can be tested
+  independently;
+- accept only configured target, command, profile, and working-scope aliases;
+- preserve normal target grants, node-local policy, approval, durable plan,
+  idempotency, status recovery, and no-blind-replay semantics;
+- print bounded machine-readable progress, invocation identity, terminal state,
+  exit status, and a fixed marker without command output or credentials;
+- use a fixed read-only fixture by default and require an explicit operator
+  choice before any mutating fixture;
+- time out, cancel local waiting, and leave an uncertain remote invocation for
+  `nodes_status` recovery rather than replaying it; and
+- produce a correlated redacted diagnostic trace suitable for deployment
+  verification.
+
+This follow-up is complete only when CI covers authentication denial, target
+and profile denial, successful execution, definitive rejection, disconnect
+after dispatch, status recovery, duplicate-request idempotency, and output
+redaction; and a deployed command can verify the `vpn` companion without a
+Telegram message or an inbound node port.
 
 ## P5: Additional Executors And Long-Running Work
 

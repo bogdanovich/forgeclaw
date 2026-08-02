@@ -28,6 +28,16 @@ var errCancellationRequested = errors.New("node invocation cancellation requeste
 
 var errCommandCancellationConfirmed = errors.New("node command cancellation confirmed")
 
+type commandInputDeniedError struct{}
+
+func (*commandInputDeniedError) Error() string {
+	return "node command input denied"
+}
+
+func (*commandInputDeniedError) Is(target error) bool {
+	return target == nodes.ErrCommandDenied
+}
+
 type activeInvocation struct {
 	mu                    sync.Mutex
 	ctx                   context.Context
@@ -557,7 +567,7 @@ func (runtime *Runtime) authorizeHandler(plan nodes.ExecutionPlan) error {
 		return nil
 	}
 	if err := authorizer.authorize(plan); err != nil {
-		return fmt.Errorf("%w: command-specific policy rejected input", nodes.ErrCommandDenied)
+		return &commandInputDeniedError{}
 	}
 	return nil
 }
