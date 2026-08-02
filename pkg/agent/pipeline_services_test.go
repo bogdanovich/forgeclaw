@@ -9,21 +9,21 @@ import (
 	"github.com/bogdanovich/mintclaw/pkg/tools"
 )
 
-type immediateDeliveryOrderCheck struct {
+type immediateDeliveryFeedbackCheck struct {
 	t          *testing.T
 	dismissed  *bool
 	wasInvoked bool
 }
 
-func (d *immediateDeliveryOrderCheck) applySyncToolResultDelivery(
+func (d *immediateDeliveryFeedbackCheck) applySyncToolResultDelivery(
 	_ context.Context,
 	_ *turnState,
 	result *tools.ToolResult,
 	_ string,
 ) ([]providers.Attachment, *tools.ToolResult) {
 	d.wasInvoked = true
-	if !*d.dismissed {
-		d.t.Fatal("tool feedback was not dismissed before immediate delivery")
+	if *d.dismissed {
+		d.t.Fatal("interim delivery dismissed feedback for subsequent tools")
 	}
 	return nil, result
 }
@@ -54,20 +54,20 @@ func (m *immediateDeliveryFeedbackManager) shouldPublishToolFeedback(*turnState)
 	return false
 }
 
-func TestPipelineImmediateDeliveryDismissesToolFeedbackFirst(t *testing.T) {
+func TestPipelineInterimMessageDeliveryDoesNotDismissToolFeedback(t *testing.T) {
 	feedback := &immediateDeliveryFeedbackManager{}
-	delivery := &immediateDeliveryOrderCheck{t: t, dismissed: &feedback.dismissed}
+	delivery := &immediateDeliveryFeedbackCheck{t: t, dismissed: &feedback.dismissed}
 	pipeline := &Pipeline{Interaction: PipelineInteractionServices{
 		ToolFeedback:     feedback,
 		SyncToolDelivery: delivery,
 	}}
-	result := tools.UserResult("restart scheduled").WithImmediateDelivery()
+	result := tools.UserResult("checking services").WithImmediateDelivery()
 
 	_, got := pipeline.applySyncToolResultDelivery(
 		context.Background(),
 		&turnState{channel: "telegram", chatID: "chat-1", opts: processOptions{InboundContext: &bus.InboundContext{}}},
 		result,
-		"gateway_restart",
+		"message",
 	)
 
 	if got != result {
