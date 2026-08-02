@@ -1418,6 +1418,37 @@ func TestApprovalPromptAndAnswerUseFixedPolicyChoices(t *testing.T) {
 	}
 }
 
+func TestApprovalAnswerOutcomeIsChannelIndependent(t *testing.T) {
+	for _, channel := range []string{"telegram", "slack"} {
+		for _, test := range []struct {
+			answer string
+			want   interactions.Outcome
+		}{
+			{answer: "allow_once", want: interactions.OutcomeAllowed},
+			{answer: "deny", want: interactions.OutcomeDenied},
+		} {
+			record := interactions.Record{
+				Kind:  interactions.KindApproval,
+				Route: interactions.Route{Channel: channel},
+			}
+			got := interactionAnswerOutcome(record, interactions.Answer{Text: test.answer})
+			if got != test.want {
+				t.Fatalf(
+					"interactionAnswerOutcome(channel=%q, answer=%q) = %q, want %q",
+					channel,
+					test.answer,
+					got,
+					test.want,
+				)
+			}
+		}
+	}
+	question := interactions.Record{Kind: interactions.KindQuestion}
+	if got := interactionAnswerOutcome(question, interactions.Answer{Text: "allow_once"}); got != interactions.OutcomeAnswered {
+		t.Fatalf("question outcome = %q, want answered", got)
+	}
+}
+
 func TestDurableHumanApprovalAllowsOrDeniesOriginalToolCall(t *testing.T) {
 	for _, test := range []struct {
 		name           string

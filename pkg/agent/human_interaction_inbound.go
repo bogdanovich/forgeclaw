@@ -557,15 +557,7 @@ func (al *AgentLoop) processInteractionInbound(
 			"I could not accept that answer: "+err.Error(),
 		)
 	}
-	outcome := interactions.OutcomeAnswered
-	if record.Kind == interactions.KindApproval &&
-		strings.EqualFold(strings.TrimSpace(record.Route.Channel), "telegram") {
-		if answer.Text == "allow_once" {
-			outcome = interactions.OutcomeAllowed
-		} else {
-			outcome = interactions.OutcomeDenied
-		}
-	}
+	outcome := interactionAnswerOutcome(record, answer)
 	claimed, err := registry.ClaimAnswer(
 		record.ID,
 		record.Revision,
@@ -593,6 +585,19 @@ func (al *AgentLoop) processInteractionInbound(
 		msg.Context,
 		claimed,
 	)
+}
+
+func interactionAnswerOutcome(
+	record interactions.Record,
+	answer interactions.Answer,
+) interactions.Outcome {
+	if record.Kind != interactions.KindApproval {
+		return interactions.OutcomeAnswered
+	}
+	if answer.Text == "allow_once" {
+		return interactions.OutcomeAllowed
+	}
+	return interactions.OutcomeDenied
 }
 
 func interactionInboundReplaysAnswer(record interactions.Record, inbound bus.InboundContext) bool {
