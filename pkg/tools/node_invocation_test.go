@@ -993,6 +993,73 @@ func TestNodeInvokeToolReportsPostDispatchUncertaintyWithoutReplay(t *testing.T)
 	}
 }
 
+func TestNodeInvokeToolReportsDefinitiveCompanionRejection(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	source.dispatchErr = nodes.NewInvocationDispatchError(
+		nodes.InvocationDispatchCommandDenied,
+		errors.New("secret policy and command detail"),
+	)
+	eventBus := &recordingNodeEventBus{}
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+	tool.SetEventPublisher(eventBus)
+
+	result := tool.Execute(
+		nodeInvocationTestContext("actor-1", "call-1"),
+		nodeInvocationTestArgs(),
+	)
+	if !result.IsError || !strings.Contains(result.ForLLM, nodes.InvocationDispatchCommandDenied) ||
+		!strings.Contains(result.ForLLM, `"state":"rejected"`) {
+		t.Fatalf("definitive rejection = %#v", result)
+	}
+	for _, forbidden := range []string{"DISPATCH_UNCERTAIN", "secret policy", "nodes_status"} {
+		if strings.Contains(result.ForLLM, forbidden) {
+			t.Fatalf("definitive rejection leaked or misstated %q: %s", forbidden, result.ForLLM)
+		}
+	}
+
+	events := eventBus.snapshot()
+	wantObservations := []string{
+		NodeInvocationObservationPrepared,
+		NodeInvocationObservationDispatched,
+		NodeInvocationObservationRejected,
+	}
+	if len(events) != len(wantObservations) {
+		t.Fatalf("event count = %d, want %d: %#v", len(events), len(wantObservations), events)
+	}
+	for index, want := range wantObservations {
+		payload := events[index].Payload.(NodeInvocationEventPayload)
+		if payload.Observation != want {
+			t.Fatalf("event[%d] observation = %q, want %q", index, payload.Observation, want)
+		}
+	}
+	rejected := events[2].Payload.(NodeInvocationEventPayload)
+	if rejected.State != "rejected" || rejected.ErrorCode != nodes.InvocationDispatchCommandDenied ||
+		events[2].Severity != runtimeevents.SeverityWarn {
+		t.Fatalf("rejected event = %#v", events[2])
+	}
+}
+
+func TestNodeInvokeToolKeepsRemoteUnknownAsPostDispatchUncertainty(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	source.dispatchErr = nodes.NewInvocationDispatchError(
+		nodes.InvocationDispatchUnknown,
+		errors.New("secret uncertain detail"),
+	)
+	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)
+
+	result := tool.Execute(
+		nodeInvocationTestContext("actor-1", "call-1"),
+		nodeInvocationTestArgs(),
+	)
+	if !result.IsError || !strings.Contains(result.ForLLM, "DISPATCH_UNCERTAIN") ||
+		!strings.Contains(result.ForLLM, "nodes_status") {
+		t.Fatalf("remote unknown = %#v", result)
+	}
+	if strings.Contains(result.ForLLM, "secret uncertain detail") {
+		t.Fatalf("remote unknown leaked companion detail: %s", result.ForLLM)
+	}
+}
+
 func TestNodeInvocationEventsUseProvenStatesAndRedactPayloads(t *testing.T) {
 	source := newFakeNodeInvocationSource(t)
 	tool := NewNodeInvokeTool(nodeDiscoveryTestConfig(), source)

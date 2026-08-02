@@ -169,6 +169,55 @@ func TestAdmissionWritesAfterCommittedDispatchError(t *testing.T) {
 	}
 }
 
+func TestAdmissionPreservesBoundedCompanionRejectionCode(t *testing.T) {
+	_, handler, nodeID, plan := testInvocationAdmission(t, "")
+	connection := newStubPeerConnection()
+	session := newPeer(connection)
+	session.markReady()
+	releaseSession, err := handler.sessions.Claim(nodeID, session, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseSession()
+
+	type invokeResult struct {
+		dispatched bool
+		err        error
+	}
+	invoked := make(chan invokeResult, 1)
+	go func() {
+		_, dispatched, invokeErr := handler.Invoke(
+			t.Context(),
+			nodeID,
+			plan,
+			func() error { return nil },
+		)
+		invoked <- invokeResult{dispatched: dispatched, err: invokeErr}
+	}()
+	<-connection.writeStarted
+	waitForPeerPending(t, session, 1)
+	ok := false
+	if err := session.handleResponse(protocol.Envelope{
+		Type: protocol.FrameResponse,
+		ID:   "req_1",
+		OK:   &ok,
+		Error: &protocol.Error{
+			Code:    nodes.InvocationDispatchCommandDenied,
+			Message: "secret local policy detail",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := <-invoked
+	code, typed := nodes.InvocationDispatchErrorCode(result.err)
+	if !result.dispatched || !typed || code != nodes.InvocationDispatchCommandDenied {
+		t.Fatalf("Invoke() = (dispatched %v, code %q, typed %v, error %v)", result.dispatched, code, typed, result.err)
+	}
+	if strings.Contains(result.err.Error(), "secret local policy detail") {
+		t.Fatalf("companion rejection leaked detail: %v", result.err)
+	}
+}
+
 func testInvocationAdmission(
 	t *testing.T,
 	requestCatalogHash string,
