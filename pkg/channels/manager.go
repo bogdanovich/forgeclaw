@@ -1133,6 +1133,7 @@ type splitMarkerStreamer struct {
 	defaultModelName string
 	turnInputTokens  int
 	turnOutputTokens int
+	agentID          string
 	footer           responseFooterStreamState
 }
 
@@ -1197,8 +1198,9 @@ func (s *splitMarkerStreamer) SetDefaultModelName(defaultModelName string) {
 func (s *splitMarkerStreamer) SetAgentID(agentID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	setStreamerAgentID(s.current, agentID)
-	setStreamerAgentID(s.reasoning, agentID)
+	s.agentID = strings.TrimSpace(agentID)
+	setStreamerAgentID(s.current, s.agentID)
+	setStreamerAgentID(s.reasoning, s.agentID)
 }
 
 func (s *splitMarkerStreamer) SetTurnUsage(inputTokens, outputTokens int) {
@@ -1282,6 +1284,16 @@ func (s *splitMarkerStreamer) finalizeCompletedPartsLocked(
 				} else if err := s.current.Finalize(ctx, content); err != nil {
 					return err
 				}
+			} else if isFinalPart {
+				if err := s.current.Finalize(ctx, content); err != nil {
+					return err
+				}
+			} else if segmentStreamer, ok := s.current.(interface {
+				FinalizeSegment(context.Context, string) error
+			}); ok {
+				if err := segmentStreamer.FinalizeSegment(ctx, content); err != nil {
+					return err
+				}
 			} else if err := s.current.Finalize(ctx, content); err != nil {
 				return err
 			}
@@ -1307,6 +1319,7 @@ func (s *splitMarkerStreamer) ensureCurrentLocked(ctx context.Context) error {
 	setStreamerModelName(s.current, s.modelName)
 	setStreamerDefaultModelName(s.current, s.defaultModelName)
 	setStreamerTurnUsage(s.current, s.turnInputTokens, s.turnOutputTokens)
+	setStreamerAgentID(s.current, s.agentID)
 	return nil
 }
 

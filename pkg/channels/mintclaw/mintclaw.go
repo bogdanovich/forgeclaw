@@ -663,6 +663,20 @@ func (s *mintclawStreamer) Finalize(ctx context.Context, content string) error {
 	return s.FinalizeWithContext(ctx, content, nil)
 }
 
+// FinalizeSegment flushes a completed split-stream segment without marking it
+// as the terminal response for the owning agent turn.
+func (s *mintclawStreamer) FinalizeSegment(ctx context.Context, content string) error {
+	if s == nil {
+		return fmt.Errorf("streamer is not initialized")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.channel == nil {
+		return fmt.Errorf("streamer is not initialized")
+	}
+	return s.sendLockedWithFinal(ctx, content, false, nil)
+}
+
 func (s *mintclawStreamer) FinalizeWithContext(
 	ctx context.Context,
 	content string,
@@ -1602,6 +1616,9 @@ func setOutboundIdentityPayload(payload map[string]any, msg bus.OutboundMessage)
 	}
 	if requestID == "" {
 		requestID = strings.TrimSpace(msg.Context.ReplyToMessageID)
+	}
+	if requestID == "" {
+		requestID = strings.TrimSpace(msg.Context.MessageID)
 	}
 	if requestID != "" {
 		payload["request_id"] = requestID

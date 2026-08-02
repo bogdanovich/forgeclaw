@@ -140,7 +140,9 @@ func TestSend_FinalMessageIncludesCorrelationMetadata(t *testing.T) {
 	defer cleanup()
 	ch.addConnForTest(&mintclawConn{id: "conn-final", conn: clientConn, sessionID: "sess-final"})
 
-	ctx := bus.InboundContext{Channel: "mintclaw", ChatID: "mintclaw:sess-final", Raw: map[string]string{}}
+	ctx := bus.InboundContext{
+		Channel: "mintclaw", ChatID: "mintclaw:sess-final", MessageID: "request-final", Raw: map[string]string{},
+	}
 	ctx.Raw[PayloadKeyInteractionID] = "interaction-final"
 	ctx.Raw[PayloadKeyInteractionShortID] = "short-final"
 	bus.OutboundMetadata{
@@ -148,12 +150,11 @@ func TestSend_FinalMessageIncludesCorrelationMetadata(t *testing.T) {
 		OutboundKind: bus.OutboundKindFinal,
 	}.ApplyToContext(&ctx)
 	if _, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:           "mintclaw:sess-final",
-		Content:          "done",
-		Context:          ctx,
-		AgentID:          "main",
-		SessionKey:       "sk_v1_final",
-		ReplyToMessageID: "request-final",
+		ChatID:     "mintclaw:sess-final",
+		Content:    "done",
+		Context:    ctx,
+		AgentID:    "main",
+		SessionKey: "sk_v1_final",
 		TraceScopes: []runtimeevents.TraceScope{
 			runtimeevents.NewTraceScope("/workspace", "turn-final"),
 		},
@@ -168,6 +169,43 @@ func TestSend_FinalMessageIncludesCorrelationMetadata(t *testing.T) {
 		msg.Payload[PayloadKeyInteractionID] != "interaction-final" ||
 		msg.Payload[PayloadKeyInteractionShortID] != "short-final" {
 		t.Fatalf("payload = %#v", msg.Payload)
+	}
+}
+
+func TestScopedStreamSegmentIsNotMarkedAsTurnFinal(t *testing.T) {
+	ch := newTestMintClawChannel(t)
+	ch.config.Streaming.Enabled = true
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Stop(context.Background())
+	var got MintClawMessage
+	ch.broadcastFn = func(_ context.Context, _ string, msg MintClawMessage) error {
+		got = msg
+		return nil
+	}
+	streamer, err := ch.BeginStreamForScope(
+		context.Background(),
+		"mintclaw:stream-segment",
+		"sk_v1_stream",
+		"request-stream",
+		runtimeevents.NewTraceScope("/workspace", "turn-stream"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segmentStreamer, ok := streamer.(interface {
+		FinalizeSegment(context.Context, string) error
+	})
+	if !ok {
+		t.Fatal("MintClaw streamer does not support non-terminal segment finalization")
+	}
+	if err := segmentStreamer.FinalizeSegment(context.Background(), "first segment"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Payload[PayloadKeyFinal] != nil || got.Payload[PayloadKeyKind] == MessageKindFinalReply ||
+		got.Payload[PayloadKeyOutbound] == bus.OutboundKindFinal || got.Payload["request_id"] != "request-stream" {
+		t.Fatalf("segment payload = %#v", got.Payload)
 	}
 }
 
