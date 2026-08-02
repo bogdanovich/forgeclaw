@@ -293,14 +293,15 @@ func containsModelControl(value string) bool {
 }
 
 type CommandDescriptor struct {
-	Name             string                  `json:"name"`
-	InputSchema      json.RawMessage         `json:"input_schema"`
-	OutputSchema     json.RawMessage         `json:"output_schema"`
-	Risk             Risk                    `json:"risk"`
-	SupportsProgress bool                    `json:"supports_progress,omitempty"`
-	SupportsCancel   bool                    `json:"supports_cancel,omitempty"`
-	ModelContract    *CommandModelContract   `json:"model_contract,omitempty"`
-	FileProfiles     []FileProfileDescriptor `json:"file_profiles,omitempty"`
+	Name             string                     `json:"name"`
+	InputSchema      json.RawMessage            `json:"input_schema"`
+	OutputSchema     json.RawMessage            `json:"output_schema"`
+	Risk             Risk                       `json:"risk"`
+	SupportsProgress bool                       `json:"supports_progress,omitempty"`
+	SupportsCancel   bool                       `json:"supports_cancel,omitempty"`
+	ModelContract    *CommandModelContract      `json:"model_contract,omitempty"`
+	FileProfiles     []FileProfileDescriptor    `json:"file_profiles,omitempty"`
+	ServiceProfiles  []ServiceProfileDescriptor `json:"service_profiles,omitempty"`
 }
 
 func (descriptor CommandDescriptor) Validate() error {
@@ -394,6 +395,78 @@ func (descriptor CommandDescriptor) Validate() error {
 			return fmt.Errorf("%w: file command lacks file profiles", ErrInvalidCapability)
 		}
 	}
+	if err := descriptor.validateServiceProfiles(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (descriptor CommandDescriptor) validateServiceProfiles() error {
+	if len(descriptor.ServiceProfiles) == 0 {
+		if IsServiceCommand(descriptor.Name) {
+			return fmt.Errorf("%w: service command lacks service profiles", ErrInvalidCapability)
+		}
+		return nil
+	}
+	if !IsServiceCommand(descriptor.Name) {
+		return fmt.Errorf("%w: non-service command carries service profiles", ErrInvalidCapability)
+	}
+	if len(descriptor.ServiceProfiles) > MaxServiceProfiles {
+		return fmt.Errorf("%w: too many service profiles", ErrInvalidCapability)
+	}
+	priorAlias := ""
+	revisions := make(map[string]struct{}, len(descriptor.ServiceProfiles))
+	for _, profile := range descriptor.ServiceProfiles {
+		if err := profile.Validate(); err != nil {
+			return err
+		}
+		if priorAlias != "" && profile.Alias <= priorAlias {
+			return fmt.Errorf("%w: service profiles are not sorted", ErrInvalidCapability)
+		}
+		if _, duplicate := revisions[profile.Revision]; duplicate {
+			return fmt.Errorf("%w: duplicate service profile revision", ErrInvalidCapability)
+		}
+		for _, service := range profile.Services {
+			switch descriptor.Name {
+			case "service.status.v1":
+				if !service.Status || service.Logs || len(service.Actions) > 0 {
+					return fmt.Errorf("%w: status command carries broader service authority", ErrInvalidCapability)
+				}
+			case "service.logs.v1":
+				if !service.Logs || service.Status || len(service.Actions) > 0 {
+					return fmt.Errorf("%w: logs command carries broader service authority", ErrInvalidCapability)
+				}
+			case "service.action.v1":
+				if service.Status || service.Logs || len(service.Actions) == 0 {
+					return fmt.Errorf("%w: action command carries malformed service authority", ErrInvalidCapability)
+				}
+			}
+		}
+		revisions[profile.Revision] = struct{}{}
+		priorAlias = profile.Alias
+	}
+	if descriptor.Name == "service.action.v1" && descriptor.Risk != RiskPrivileged {
+		return fmt.Errorf("%w: service action requires privileged risk", ErrInvalidCapability)
+	}
+	if descriptor.Name != "service.action.v1" && descriptor.Risk != RiskRead {
+		return fmt.Errorf("%w: service observation requires read risk", ErrInvalidCapability)
+	}
+	expectedInput, err := canonicalJSON(ServiceCommandInputSchema(descriptor.Name, descriptor.ServiceProfiles))
+	if err != nil {
+		return err
+	}
+	actualInput, err := canonicalJSON(descriptor.InputSchema)
+	if err != nil || !bytes.Equal(actualInput, expectedInput) {
+		return fmt.Errorf("%w: service input schema does not match profile authority", ErrInvalidCapability)
+	}
+	expectedOutput, err := canonicalJSON(ServiceCommandOutputSchema(descriptor.Name))
+	if err != nil {
+		return err
+	}
+	actualOutput, err := canonicalJSON(descriptor.OutputSchema)
+	if err != nil || !bytes.Equal(actualOutput, expectedOutput) {
+		return fmt.Errorf("%w: service output schema does not match typed contract", ErrInvalidCapability)
+	}
 	return nil
 }
 
@@ -428,6 +501,16 @@ func (catalog CapabilityCatalog) Validate() error {
 				return fmt.Errorf("%w: encode model contract", ErrInvalidCapability)
 			}
 			totalBytes += len(modelContract)
+		}
+		if len(descriptor.FileProfiles) > 0 || len(descriptor.ServiceProfiles) > 0 {
+			profiles, err := json.Marshal(struct {
+				File    []FileProfileDescriptor    `json:"file,omitempty"`
+				Service []ServiceProfileDescriptor `json:"service,omitempty"`
+			}{File: descriptor.FileProfiles, Service: descriptor.ServiceProfiles})
+			if err != nil {
+				return fmt.Errorf("%w: encode command profiles", ErrInvalidCapability)
+			}
+			totalBytes += len(profiles)
 		}
 		if totalBytes > MaxCatalogBytes {
 			return fmt.Errorf("%w: catalog exceeds size limit", ErrInvalidCapability)

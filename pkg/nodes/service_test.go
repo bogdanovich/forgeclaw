@@ -1,0 +1,159 @@
+package nodes
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestCommandDescriptorBindsSchemasToServiceAuthority(t *testing.T) {
+	descriptor := serviceActionDescriptorFixture()
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("valid descriptor: %v", err)
+	}
+
+	extraAlias := descriptor
+	extraAlias.InputSchema = json.RawMessage(
+		`{"oneOf":[{"additionalProperties":false,"properties":{"action":{"const":"restart"},` +
+			`"service":{"const":"database"}},"required":["service","action"],"type":"object"}]}`,
+	)
+	if err := extraAlias.Validate(); err == nil || !strings.Contains(err.Error(), "input schema") {
+		t.Fatalf("extra alias validation error = %v", err)
+	}
+
+	alteredOutput := descriptor
+	alteredOutput.OutputSchema = json.RawMessage(`{"type":"object"}`)
+	if err := alteredOutput.Validate(); err == nil || !strings.Contains(err.Error(), "output schema") {
+		t.Fatalf("altered output validation error = %v", err)
+	}
+}
+
+func TestServiceActionSchemaDeduplicatesAuthorityAcrossProfiles(t *testing.T) {
+	descriptor := serviceActionDescriptorFixture()
+	second := descriptor.ServiceProfiles[0]
+	second.Alias = "other-services"
+	second.Revision = "other-services-v1"
+	second.Services = CloneServiceProfileDescriptors([]ServiceProfileDescriptor{second})[0].Services
+	descriptor.ServiceProfiles = append([]ServiceProfileDescriptor{second}, descriptor.ServiceProfiles...)
+	descriptor.InputSchema = ServiceCommandInputSchema(descriptor.Name, descriptor.ServiceProfiles)
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("two-profile descriptor: %v", err)
+	}
+	_, err := PrepareExecutionPlan(InvocationRequest{
+		InvocationID:     "inv_duplicate_pair",
+		IdempotencyKey:   "idem_duplicate_pair",
+		NodeID:           ID("node_test"),
+		CatalogHash:      strings.Repeat("a", 64),
+		Command:          descriptor.Name,
+		Input:            json.RawMessage(`{"service":"vpn","action":"restart"}`),
+		AgentID:          "main",
+		SessionID:        "session",
+		ActorID:          "actor",
+		TimeoutSeconds:   30,
+		OutputLimitBytes: 4096,
+	}, descriptor, "local", "policy-v1", time.Unix(1, 0), time.Minute)
+	if err != nil {
+		t.Fatalf("authorized duplicate pair was unusable: %v", err)
+	}
+}
+
+func TestServiceActionSchemaFitsMaximumSingleProfileAuthority(t *testing.T) {
+	actions := []ServiceAction{
+		ServiceActionDisable,
+		ServiceActionEnable,
+		ServiceActionReload,
+		ServiceActionRestart,
+		ServiceActionStart,
+		ServiceActionStop,
+	}
+	services := make([]ServiceDescriptor, MaxServicesPerProfile)
+	for index := range services {
+		prefix := fmt.Sprintf("service_%02d_", index)
+		services[index] = ServiceDescriptor{
+			Alias:   prefix + strings.Repeat("x", MaxAliasLength-len(prefix)),
+			Actions: append([]ServiceAction(nil), actions...),
+		}
+	}
+	profiles := []ServiceProfileDescriptor{{
+		Alias:          "maximum-services",
+		Revision:       "maximum-services-v1",
+		Manager:        "systemd",
+		Services:       services,
+		LogLimits:      ServiceLogLimits{EntriesMax: 1, BytesMax: 1, AgeSecondsMax: 1},
+		ActionApproval: "required",
+	}}
+	descriptor := CommandDescriptor{
+		Name:            "service.action.v1",
+		InputSchema:     ServiceCommandInputSchema("service.action.v1", profiles),
+		OutputSchema:    ServiceCommandOutputSchema("service.action.v1"),
+		Risk:            RiskPrivileged,
+		ServiceProfiles: profiles,
+	}
+	if len(descriptor.InputSchema) > MaxSchemaBytes {
+		t.Fatalf("maximum action schema = %d bytes, limit %d", len(descriptor.InputSchema), MaxSchemaBytes)
+	}
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("maximum single-profile authority: %v", err)
+	}
+}
+
+func TestServiceProfileRejectsDescriptionProjectionBeyondBudget(t *testing.T) {
+	services := make([]ServiceDescriptor, MaxServicesPerProfile)
+	for index := range services {
+		services[index] = ServiceDescriptor{
+			Alias:       fmt.Sprintf("service_%02d", index),
+			Description: strings.Repeat("d", MaxServiceDescriptionProjectionBytes/MaxServicesPerProfile+1),
+			Status:      true,
+		}
+	}
+	profile := ServiceProfileDescriptor{
+		Alias:          "maximum-services",
+		Revision:       "maximum-services-v1",
+		Manager:        "systemd",
+		Services:       services,
+		LogLimits:      ServiceLogLimits{EntriesMax: 1, BytesMax: 1, AgeSecondsMax: 1},
+		ActionApproval: "required",
+	}
+	if err := profile.Validate(); err == nil || !strings.Contains(err.Error(), "projection budget") {
+		t.Fatalf("description projection validation error = %v", err)
+	}
+}
+
+func TestCloneSnapshotIsolatesNestedServiceAuthority(t *testing.T) {
+	descriptor := serviceActionDescriptorFixture()
+	original := Snapshot{
+		Catalog: CapabilityCatalog{Commands: []CommandDescriptor{descriptor}},
+	}
+	cloned := cloneSnapshot(original)
+	cloned.Catalog.Commands[0].ServiceProfiles[0].Services[0].Alias = "database"
+	cloned.Catalog.Commands[0].ServiceProfiles[0].Services[0].Actions[0] = ServiceActionStop
+
+	service := original.Catalog.Commands[0].ServiceProfiles[0].Services[0]
+	if service.Alias != "vpn" || service.Actions[0] != ServiceActionRestart {
+		t.Fatalf("clone mutated retained snapshot authority: %#v", service)
+	}
+}
+
+func serviceActionDescriptorFixture() CommandDescriptor {
+	profiles := []ServiceProfileDescriptor{{
+		Alias:    "server-services",
+		Revision: "server-services-v1",
+		Manager:  "systemd",
+		Services: []ServiceDescriptor{{
+			Alias: "vpn", Actions: []ServiceAction{ServiceActionRestart},
+		}},
+		LogLimits: ServiceLogLimits{
+			EntriesMax: 100, BytesMax: 4096, AgeSecondsMax: 3600,
+		},
+		ActionApproval: "required",
+	}}
+	return CommandDescriptor{
+		Name:            "service.action.v1",
+		InputSchema:     ServiceCommandInputSchema("service.action.v1", profiles),
+		OutputSchema:    ServiceCommandOutputSchema("service.action.v1"),
+		Risk:            RiskPrivileged,
+		ServiceProfiles: profiles,
+	}
+}

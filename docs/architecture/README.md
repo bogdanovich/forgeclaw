@@ -30,6 +30,9 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Browser Capability B1 Admission](browser-capability-b1-admission.md):
   admitted local browser broker, typed session and action contracts, runtime
   approval and recovery boundaries, delivery sequence, and completion gates.
+- [Browser Capability N1 Admission](browser-capability-n1-admission.md):
+  admitted public-web network mode, worker-owned enforcing proxy, redirect and
+  DNS-rebinding boundaries, lifecycle rules, and deployed completion gates.
 - [Node Companion P0 Capability Contracts](node-companion-p0-contracts.md): admitted scope, bounded discovery schema, effective-policy projection, freshness, redaction, and completion gates for model-visible node capabilities.
 - [Node Companion P1 Owner-Control Admission](node-companion-p1-admission.md): admitted owner shell, cancellation, Linux root broker, and interactive terminal contracts with disabled production defaults and exact completion gates.
 - [Node Companion P2 File Transfer Admission](node-companion-p2-admission.md): admitted regular-file transfer, gateway spool, path safety, Linux administrator helper, approval, replay, deployment, and mandatory completion gates.
@@ -43,4 +46,5 @@ Internal architecture notes for major runtime mechanisms and subsystem design.
 - [Passive Diagnostics](passive-diagnostics.md): bounded redacted execution traces for direct human and Codex debugging without runtime coupling.
 - [Current Refactoring Audit](current-refactoring-audit.md): near-term architecture risks around metadata, delivery, turn state, context manager migration, and provider contracts.
 - [Reliability and Refactoring Roadmap](reliability-refactoring-roadmap.md): prioritized durability, security, ownership, provider-contract, and cross-platform verification work with explicit completion criteria.
+- [Test Suite Performance Roadmap](test-suite-performance-roadmap.md): measured test-runtime bottlenecks, coverage-preserving remediation phases, and explicit completion criteria.
 - [Hook System Guide](hooks/README.md): current hook architecture and protocol details.

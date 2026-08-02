@@ -668,6 +668,49 @@ func TestNodeInvokeToolRejectsLocallyUnavailableCommandBeforePreparation(t *test
 	}
 }
 
+func TestNodeInvokeToolKeepsServiceDispatchClosedUntilProfileIsEndToEndBound(t *testing.T) {
+	source := newFakeNodeInvocationSource(t)
+	snapshot := source.byRef["builder-node"]
+	descriptor := serviceStatusTestDescriptor()
+	snapshot.Catalog = nodes.CapabilityCatalog{Commands: []nodes.CommandDescriptor{descriptor}}
+	snapshot.CatalogHash = mustCatalogHash(t, snapshot.Catalog)
+	source.byRef["builder-node"] = snapshot
+	registration := source.registrations[snapshot.ID]
+	registration.Snapshot = snapshot
+	registration.AllowedCommands = []string{descriptor.Name}
+	registration.ApprovedCatalogHash = snapshot.CatalogHash
+	source.registrations[snapshot.ID] = registration
+	cfg := nodeDiscoveryTestConfig()
+	binding := cfg.Execution.Targets["build"]
+	binding.ServiceProfile = "server-services"
+	cfg.Execution.Targets["build"] = binding
+	ctx := nodeInvocationTestContext("actor-1", "call-service-closed")
+	discovered := decodeNodeResult(t, NewNodeDiscoveryTool(cfg, source).Execute(
+		ctx,
+		map[string]any{"action": "describe", "target": "build", "command": descriptor.Name},
+	))
+	result := NewNodeInvokeTool(cfg, source).Execute(ctx, map[string]any{
+		"target":             "build",
+		"command":            descriptor.Name,
+		"input":              map[string]any{"service": "vpn"},
+		"discovery_revision": discovered["discovery_revision"],
+	})
+	assertNodeDenialResult(
+		t,
+		result,
+		nodeDenialCommandUnavailable,
+		nodeConstraintCommandPolicy,
+		nodeActionRefreshDiscovery,
+	)
+	if source.prepareCalls != 0 || source.dispatchCalls != 0 {
+		t.Fatalf(
+			"unbound service invocation mutated state: prepare=%d dispatch=%d",
+			source.prepareCalls,
+			source.dispatchCalls,
+		)
+	}
+}
+
 func TestNodeInvokeToolReturnsSafeConstraintDenials(t *testing.T) {
 	tests := []struct {
 		name       string

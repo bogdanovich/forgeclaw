@@ -273,6 +273,35 @@ func TestConfigKeepsFileAuthorityAbsentByDefault(t *testing.T) {
 	if cfg.FileHelper != nil {
 		t.Fatalf("default file helper = %#v, want absent", cfg.FileHelper)
 	}
+	if cfg.ServicePolicies != nil {
+		t.Fatalf("default service policies = %#v, want absent", cfg.ServicePolicies)
+	}
+}
+
+func TestConfigNormalizesExplicitDisabledServicePolicyWithoutGrantingAuthority(t *testing.T) {
+	profile := servicePolicyFixture()
+	profile.Enabled = false
+	cfg, err := (Config{
+		GatewayURL:      "wss://gateway.example",
+		ServicePolicies: ServicePolicies{"server-services": profile},
+	}).Normalize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEnabledServicePolicy(cfg.ServicePolicies) {
+		t.Fatalf("disabled service profile granted authority: %#v", cfg.ServicePolicies)
+	}
+	descriptors, err := serviceCapabilityDescriptors(
+		cfg.ServicePolicies,
+		serviceEnforcement{status: true},
+		"linux",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(descriptors) != 0 {
+		t.Fatalf("disabled service profile advertised commands: %#v", descriptors)
+	}
 }
 
 func TestConfigNormalizesExplicitFilePolicy(t *testing.T) {

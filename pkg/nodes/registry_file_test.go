@@ -170,7 +170,7 @@ func TestFileRegistryApprovesOnlyAdvertisedCommands(t *testing.T) {
 	approved, err := registry.Approve(pairing.Node.ID, PairingApproval{
 		Aliases:         []Alias{"vpn-box", "primary"},
 		DisplayName:     " VPN box ",
-		AllowedCommands: []string{"service.status.v1", "node.info.v1"},
+		AllowedCommands: []string{"system.status.v1", "node.info.v1"},
 		At:              3,
 	})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestFileRegistryApprovesOnlyAdvertisedCommands(t *testing.T) {
 	if got := approved.Snapshot.Aliases; len(got) != 2 || got[0] != "primary" || got[1] != "vpn-box" {
 		t.Fatalf("approved aliases = %#v", got)
 	}
-	if got := approved.AllowedCommands; len(got) != 2 || got[0] != "node.info.v1" || got[1] != "service.status.v1" {
+	if got := approved.AllowedCommands; len(got) != 2 || got[0] != "node.info.v1" || got[1] != "system.status.v1" {
 		t.Fatalf("approved commands = %#v", got)
 	}
 	if approved.ApprovedAt != 3 || approved.RequestedAt != pairing.RequestedAt {
@@ -290,7 +290,7 @@ func TestFileRegistryKeepsApprovalWhenAdvertisedCatalogNarrows(t *testing.T) {
 		t.Fatal(upsertErr)
 	}
 	approved, err := registry.Approve(pairing.Node.ID, PairingApproval{
-		AllowedCommands: []string{"node.info.v1", "service.status.v1"},
+		AllowedCommands: []string{"node.info.v1", "system.status.v1"},
 		At:              2,
 	})
 	if err != nil {
@@ -613,7 +613,7 @@ func testCatalog(t *testing.T) CapabilityCatalog {
 			Risk:         RiskRead,
 		},
 		{
-			Name:         "service.status.v1",
+			Name:         "system.status.v1",
 			InputSchema:  objectSchema,
 			OutputSchema: objectSchema,
 			Risk:         RiskRead,

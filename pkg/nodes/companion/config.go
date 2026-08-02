@@ -58,6 +58,7 @@ type Config struct {
 	OwnerShell             *OwnerShellConfig        `json:"owner_shell,omitempty"`
 	FilePolicies           FilePolicies             `json:"node_file_policies,omitempty"`
 	FileHelper             *FileHelperClientConfig  `json:"file_helper,omitempty"`
+	ServicePolicies        ServicePolicies          `json:"node_service_policies,omitempty"`
 
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
@@ -196,6 +197,10 @@ func (cfg Config) Normalize(baseDir string) (Config, error) {
 	cfg.FileHelper, err = normalizeFileHelperClientConfig(cfg.FileHelper, baseDir)
 	if err != nil {
 		return Config{}, fmt.Errorf("validate file helper: %w", err)
+	}
+	cfg.ServicePolicies, err = normalizeServicePolicies(cfg.ServicePolicies)
+	if err != nil {
+		return Config{}, fmt.Errorf("validate node service policies: %w", err)
 	}
 	return cfg, nil
 }
