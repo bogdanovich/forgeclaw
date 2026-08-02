@@ -594,10 +594,14 @@ func (al *AgentLoop) interactionAnswerContent(record interactions.Record, msg bu
 		strings.TrimSpace(msg.Context.ReplyToMessageID) == "" {
 		return msg.Content
 	}
-	if al == nil || al.cfg == nil {
+	if al == nil {
 		return msg.Content
 	}
-	channel := al.cfg.Channels.Get(msg.Context.Channel)
+	cfg := al.GetConfig()
+	if cfg == nil {
+		return msg.Content
+	}
+	channel := cfg.Channels.Get(msg.Context.Channel)
 	if channel == nil || channel.Type != config.ChannelTelegram {
 		return msg.Content
 	}
